@@ -3,21 +3,30 @@
  * Header bits stay on ASERT. This dial reads accepted-share spacing only.
  * Pool-found tip gaps are a soak observation and are not an input.
  *
- * Target ~2s/share under ShearHash-v3. A step waits for a full share count
- * and a minimum window, then moves ±1 bit. RandomX-lite verify is on the
- * Node event loop; a 250ms SHA-256 farm target dropped shareBits to 5 and
- * 504'd /api/stats. Share bits may equal the header so a farm is throttled;
- * they still never exceed it. GPU/ASIC still mint nothing.
+ * Target ~2s/share under ShearHash-v3. A step waits for eight shares and
+ * 20s, then moves ±1 only when the sample interval is outside 1.4–2.8s.
+ * A 4-share / 8s window flipped the dial about twice a minute. RandomX-lite
+ * verify is on the Node event loop; a 250ms SHA-256 farm target dropped
+ * shareBits to 5 and 504'd /api/stats. Share bits may equal the header so a
+ * farm is throttled; they still never exceed it. GPU/ASIC still mint nothing.
  */
 import { MAX_BITS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 
 export const SHARE_VARDIFF_TARGET_MS = 2000;
-export const SHARE_VARDIFF_RETARGET_SHARES = 4;
-export const SHARE_VARDIFF_RETARGET_MS = 8_000;
+/** Both gates. Eight fast shares are not a window by themselves. */
+export const SHARE_VARDIFF_RETARGET_SHARES = 8;
+/** Do not tighten. The 8s gate thrashed ±1 on mixed workers of one dest. */
+export const SHARE_VARDIFF_RETARGET_MS = 20_000;
 /** One bit per full window. A farm still climbs; it does not jump. */
 export const SHARE_VARDIFF_CLIMB_MAX = 1;
 /** Ease per window stays 1 so a 1-thread reconnect is not dumped to the floor. */
 export const SHARE_VARDIFF_EASE_MAX = 1;
+/**
+ * Hold while the sample sits near 2s/share. A step is only for an interval
+ * outside this band. Inclusive on both edges.
+ */
+export const SHARE_VARDIFF_DEADBAND_LOW_MS = 1_400;
+export const SHARE_VARDIFF_DEADBAND_HIGH_MS = 2_800;
 /** 0: share bits may equal header bits so a farm can be throttled. */
 export const SHARE_BELOW_BLOCK = 0;
 /**
@@ -79,6 +88,9 @@ export function nextShareBits({
   const cur = clampShareBits(current, { blockBits, minBits });
   const target = Math.max(1, Number(targetMs) || SHARE_VARDIFF_TARGET_MS);
   const actual = Math.max(1, Number(actualIntervalMs) || target);
+  if (actual >= SHARE_VARDIFF_DEADBAND_LOW_MS && actual <= SHARE_VARDIFF_DEADBAND_HIGH_MS) {
+    return cur;
+  }
   const ratio = target / actual;
   let delta = Math.round(Math.log2(Math.max(1 / 16, Math.min(16, ratio))));
   if (delta > SHARE_VARDIFF_CLIMB_MAX) delta = SHARE_VARDIFF_CLIMB_MAX;
@@ -123,7 +135,7 @@ export function liveShareBits(rows, { blockBits, minBits = 1, fallback } = {}) {
 export function shouldRetargetShare({ shares, elapsedMs } = {}) {
   const n = Math.max(0, Number(shares) || 0);
   const ms = Math.max(0, Number(elapsedMs) || 0);
-  // The slower gate binds. Four fast shares are not a window, and one
+  // The slower gate binds. Eight fast shares are not a window, and one
   // slow share after a long pause is not a sample.
   return n >= SHARE_VARDIFF_RETARGET_SHARES && ms >= SHARE_VARDIFF_RETARGET_MS;
 }

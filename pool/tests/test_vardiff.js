@@ -24,6 +24,10 @@ import {
   SHARE_VARDIFF_TARGET_MS,
   SHARE_VARDIFF_RETARGET_MS,
   SHARE_VARDIFF_RETARGET_SHARES,
+  SHARE_VARDIFF_CLIMB_MAX,
+  SHARE_VARDIFF_EASE_MAX,
+  SHARE_VARDIFF_DEADBAND_LOW_MS,
+  SHARE_VARDIFF_DEADBAND_HIGH_MS,
   SHARE_BITS_V2_START,
   mintShareMinBits,
 } from '../src/share_vardiff.js';
@@ -138,6 +142,12 @@ describe('share vardiff', () => {
   });
 
   it('retargets only after a full share sample and the minimum window', () => {
+    assert.equal(SHARE_VARDIFF_RETARGET_SHARES, 8);
+    assert.equal(SHARE_VARDIFF_RETARGET_MS, 20_000);
+    assert.equal(SHARE_VARDIFF_CLIMB_MAX, 1);
+    assert.equal(SHARE_VARDIFF_EASE_MAX, 1);
+    assert.equal(SHARE_VARDIFF_DEADBAND_LOW_MS, 1_400);
+    assert.equal(SHARE_VARDIFF_DEADBAND_HIGH_MS, 2_800);
     assert.equal(shouldRetargetShare({
       shares: SHARE_VARDIFF_RETARGET_SHARES,
       elapsedMs: SHARE_VARDIFF_RETARGET_MS,
@@ -146,8 +156,19 @@ describe('share vardiff', () => {
       shares: SHARE_VARDIFF_RETARGET_SHARES,
       elapsedMs: 100,
     }), false);
+    assert.equal(shouldRetargetShare({ shares: 4, elapsedMs: 8_000 }), false);
+    assert.equal(shouldRetargetShare({ shares: 8, elapsedMs: 16_000 }), false);
     assert.equal(shouldRetargetShare({ shares: 1, elapsedMs: 20_000 }), false);
     assert.equal(shouldRetargetShare({ shares: 1, elapsedMs: 100 }), false);
+  });
+
+  it('holds inside the 1.4–2.8s band and steps only outside it', () => {
+    const band = { minBits: 8, blockBits: 21 };
+    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 1_400, ...band }), 12);
+    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 2_000, ...band }), 12);
+    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 2_800, ...band }), 12);
+    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 1_399, ...band }), 13);
+    assert.equal(nextShareBits({ current: 12, actualIntervalMs: 4_000, ...band }), 11);
   });
 
   it('a fast full sample climbs one bit off the floor', () => {
@@ -213,10 +234,10 @@ describe('share vardiff', () => {
 
   it('a slow full sample eases one bit and names the rate', () => {
     let state = { shares: 0, windowAt: 0, bits: 12, lastStepAt: 0 };
-    for (const t of [0, 10_000, 20_000, 30_000]) {
+    for (let i = 0; i < 8; i += 1) {
       state = destVardiffOnShare({
         state,
-        now: t,
+        now: i * 4_000,
         minBits: 8,
         blockBits: 1_209_269,
       });
@@ -225,6 +246,7 @@ describe('share vardiff', () => {
     assert.equal(state.from, 12);
     assert.equal(state.bits, 11);
     assert.equal(state.reason, 'rate_below_target');
+    assert.ok(state.intervalMs > SHARE_VARDIFF_DEADBAND_HIGH_MS);
   });
 
   it('the public dial is the lowest connected dest, not the template floor', () => {
@@ -257,25 +279,60 @@ describe('share vardiff', () => {
     assert.equal(thin.bits, 12);
     assert.equal(thin.shares, 1);
     let state = { shares: 0, windowAt: 1_000, bits: 10, lastStepAt: 0 };
-    for (const t of [1_000, 3_667, 6_334, 9_000]) {
+    for (let i = 0; i < 11; i += 1) {
       state = destVardiffOnShare({
         state,
-        now: t,
+        now: 1_000 + i * 2_000,
         minBits: 8,
         blockBits: 30,
       });
     }
     assert.equal(state.stepped, false);
     assert.equal(state.bits, 10);
+    assert.equal(state.reason, 'in_band');
     assert.equal(state.shares, 0);
+    assert.ok(state.intervalMs >= SHARE_VARDIFF_DEADBAND_LOW_MS);
+    assert.ok(state.intervalMs <= SHARE_VARDIFF_DEADBAND_HIGH_MS);
     const again = destVardiffOnShare({
       state,
-      now: 9_100,
+      now: 21_100,
       minBits: 8,
       blockBits: 30,
     });
     assert.equal(again.stepped, false);
     assert.equal(again.shares, 1);
+  });
+
+  it('a fast burst averaged with a slow tail does not flip', () => {
+    const times = [];
+    for (let t = 1_000; t <= 9_000; t += 1_000) times.push(t);
+    times.push(13_000, 17_000, 21_000);
+    const shortInterval = 8_000 / 9;
+    assert.equal(nextShareBits({
+      current: 12,
+      actualIntervalMs: shortInterval,
+      minBits: 8,
+      blockBits: 30,
+    }), 13);
+    let state = { shares: 0, windowAt: 1_000, bits: 12, lastStepAt: 0 };
+    for (const t of times) {
+      state = destVardiffOnShare({
+        state,
+        now: t,
+        minBits: 8,
+        blockBits: 30,
+      });
+      if (t < 21_000) {
+        assert.equal(state.stepped, false, `closed early at ${t}`);
+        assert.equal(state.bits, 12);
+      }
+    }
+    assert.equal(state.stepped, false);
+    assert.equal(state.reason, 'in_band');
+    assert.equal(state.bits, 12);
+    assert.equal(state.shares, 0);
+    assert.ok(state.intervalMs >= SHARE_VARDIFF_DEADBAND_LOW_MS);
+    assert.ok(state.intervalMs <= SHARE_VARDIFF_DEADBAND_HIGH_MS);
   });
 
   it('same dest follows the combined share rate, not the slow worker', () => {
@@ -288,16 +345,18 @@ describe('share vardiff', () => {
     });
     assert.equal(slowOnly, 9);
     let state = { shares: 0, windowAt: 1_000, bits: 10, lastStepAt: 0 };
-    for (const t of [1_000, 3_000, 5_000, 9_000]) {
+    for (let i = 0; i < 11; i += 1) {
       state = destVardiffOnShare({
         state,
-        now: t,
+        now: 1_000 + i * 2_000,
         minBits: 8,
         blockBits: 21,
       });
     }
     assert.equal(state.stepped, false);
+    assert.equal(state.reason, 'in_band');
     assert.equal(state.bits, 10);
+    assert.equal(state.shares, 0);
   });
 
   it('a new template does not slap a stepped dest back to the floor', () => {
@@ -330,6 +389,12 @@ describe('share vardiff', () => {
     assert.match(vd, /shouldRetargetShare/);
     assert.match(vd, /nextShareBits/);
     assert.match(vd, /destVardiffOnShare/);
+    assert.match(vd, /SHARE_VARDIFF_RETARGET_SHARES = 8/);
+    assert.match(vd, /SHARE_VARDIFF_RETARGET_MS = 20_000/);
+    assert.match(vd, /SHARE_VARDIFF_CLIMB_MAX = 1/);
+    assert.match(vd, /SHARE_VARDIFF_EASE_MAX = 1/);
+    assert.match(vd, /SHARE_VARDIFF_DEADBAND_LOW_MS = 1_400/);
+    assert.match(vd, /SHARE_VARDIFF_DEADBAND_HIGH_MS = 2_800/);
     assert.equal(vd.includes('lastFoundAt'), false);
     assert.equal(vd.includes('findAt'), false);
     assert.match(src, /destVardiffOnShare/);
@@ -338,6 +403,8 @@ describe('share vardiff', () => {
     assert.match(src, /event: 'vardiff_carry'/);
     assert.match(src, /reason: step\.reason/);
     assert.match(src, /findTouched: false/);
+    assert.match(src, /deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS/);
+    assert.match(src, /deadbandHighMs: SHARE_VARDIFF_DEADBAND_HIGH_MS/);
     assert.match(src, /function liveShareBits\(\)/);
     assert.equal(src.includes('shareBits: Number(lastJob?.shareBits'), false);
     assert.equal(/issueJob\(shareBits[,)]/.test(src), false);

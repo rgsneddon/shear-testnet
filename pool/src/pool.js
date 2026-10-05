@@ -75,6 +75,9 @@ import {
   liveShareBits as selectLiveShareBits,
   SHARE_BITS_V2_START,
   SHARE_VARDIFF_CLIMB_MAX,
+  SHARE_VARDIFF_DEADBAND_HIGH_MS,
+  SHARE_VARDIFF_DEADBAND_LOW_MS,
+  SHARE_VARDIFF_EASE_MAX,
   SHARE_VARDIFF_RETARGET_MS,
   SHARE_VARDIFF_RETARGET_SHARES,
   SHARE_VARDIFF_TARGET_MS,
@@ -1473,6 +1476,9 @@ export function createPool({
     minShares: SHARE_VARDIFF_RETARGET_SHARES,
     minWindowMs: SHARE_VARDIFF_RETARGET_MS,
     stepBits: SHARE_VARDIFF_CLIMB_MAX,
+    easeBits: SHARE_VARDIFF_EASE_MAX,
+    deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
+    deadbandHighMs: SHARE_VARDIFF_DEADBAND_HIGH_MS,
     floorBits: SHARE_FLOOR_BITS,
   }));
   function pushDestShareBits(destKey, next) {
@@ -2673,6 +2679,8 @@ export function createPool({
             elapsedMs: Math.round(Number(step.elapsedMs) || 0),
             intervalMs: Math.round(Number(step.intervalMs) || 0),
             targetMs: SHARE_VARDIFF_TARGET_MS,
+            deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
+            deadbandHighMs: SHARE_VARDIFF_DEADBAND_HIGH_MS,
             findTouched: false,
           }));
           pushDestShareBits(destKey, step.bits);
