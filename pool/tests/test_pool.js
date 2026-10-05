@@ -859,7 +859,9 @@ describe('public miner listing', () => {
 
   it('dashboard last-10 table uses Status not Kind; TESTNET sits above the fee note', () => {
     const dash = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
-    assert.match(dash, /<th>Hashes reported<\/th>/);
+    assert.match(dash, /<th title="This round">Round Hashes<\/th>/);
+    assert.doesNotMatch(dash, /<th>Hashes reported<\/th>/);
+    assert.doesNotMatch(dash, /<th[^>]*>Accepted shares<\/th>/);
     assert.doesNotMatch(dash, /Valid hashes \(round\)/);
     assert.match(dash, /Pool explorer · last 10 blocks/);
     assert.match(dash, />Status</);
@@ -938,7 +940,7 @@ describe('public miner listing', () => {
   it('pool miner table accepted shares follow the open round; lifetime accepted stays on the miner page', () => {
     const dash = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
     const miner = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
-    assert.match(dash, /<th title="This round">Accepted shares<\/th>/);
+    assert.match(dash, /<th title="This round">Round shares<\/th>/);
     assert.match(dash, /acceptedThisRoundCell\(w, roundShareState\)/);
     assert.doesNotMatch(dash, /\(w\.accepted \|\| 0\)/);
     assert.match(miner, /<div class="label">Accepted work<\/div>/);
