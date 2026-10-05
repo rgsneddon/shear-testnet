@@ -275,7 +275,7 @@ describe('explorer dests', () => {
     assert.match(page, />Height</);
     assert.match(page, /heightLabel/);
     assert.match(page, /Number\(b\.height\) - Number\(a\.height\)/);
-    assert.match(page, />Time</);
+    assert.match(page, />Found in</);
     assert.match(page, />Status</);
     assert.match(page, />Type</);
     assert.match(page, /confirmed/);
