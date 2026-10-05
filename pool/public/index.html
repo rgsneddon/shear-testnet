@@ -458,9 +458,8 @@
           </div>
         </div>
       </article>
-      <article class="panel-card"><div class="label">Consensus blockBits</div><div class="value" id="block-bits">—</div><p>Header next-work. Not share vardiff.</p></article>
-      <article class="panel-card"><div class="label">shareBits (vardiff)</div><div class="value" id="share-bits">—</div><p>Share target only. shareBits is not a retarget.</p></article>
-      <article class="panel-card"><div class="label">Average block time (sealed, all blocks)</div><div class="value" id="avg-block">—</div></article>
+      <article class="panel-card"><div class="label">blockBits</div><div class="value" id="block-bits">—</div></article>
+      <article class="panel-card"><div class="label">shareBits</div><div class="value" id="share-bits">—</div></article>
       <article class="panel-card"><div class="label">Uptime</div><div class="value" id="uptime">0s</div></article>
       <article class="panel-card"><div class="label">Last Block (pool)</div>
         <div class="value last-block-box" id="updated">
@@ -620,9 +619,25 @@
       if (m) return m + 'm ' + s + 's';
       return s + 's';
     }
-    function fmtSinceBlock(at) {
-      if (!at) return '—';
-      const sec = Math.max(0, Math.floor((Date.now() - Number(at)) / 1000));
+    // Pool wall clock from one /api/stats snapshot. foundAt is when this pool
+    // recorded the find. poolNow is that same snapshot. offsetMs is
+    // poolNow - clientNow at apply, so a late poll or a fast browser clock
+    // does not open the box already late. The header stamp is not this clock.
+    function poolFindClockOffsetMs(poolNow, clientNow) {
+      const server = Number(poolNow);
+      const client = Number(clientNow);
+      if (!(server > 0) || !Number.isFinite(client)) return 0;
+      return server - client;
+    }
+    function poolLastBlockAgeMs(foundAt, clientNow, offsetMs) {
+      const found = Number(foundAt) || 0;
+      if (!(found > 0) || !Number.isFinite(Number(clientNow))) return 0;
+      const offset = Number.isFinite(Number(offsetMs)) ? Number(offsetMs) : 0;
+      return Math.max(0, Number(clientNow) + offset - found);
+    }
+    function fmtSinceBlock(ageMs) {
+      if (!Number.isFinite(Number(ageMs))) return '—';
+      const sec = Math.max(0, Math.floor(Number(ageMs) / 1000));
       const h = Math.floor(sec / 3600);
       const m = Math.floor((sec % 3600) / 60);
       const s = sec % 60;
@@ -696,112 +711,6 @@
       const m = Math.floor(sec / 60);
       const s = Math.round(sec % 60);
       return m + 'm ' + s + 's';
-    }
-    function paintAvgBlock(s) {
-      const el = document.getElementById('avg-block');
-      if (!el) return;
-      const net = s && Number(s.networkAvgBlockTimeMs);
-      const ms = (Number.isFinite(net) && net > 0) ? net : (s && s.avgBlockTimeMs);
-      const gate = s && s.interval;
-      if (gate && gate.soaking) {
-        el.textContent = fmtAvgBlock(ms) + ' · soaking n=' + gate.sealedSamples + ' — ~90s not certified';
-        return;
-      }
-      if (gate && gate.certified90s) {
-        el.textContent = fmtAvgBlock(ms) + ' · n=' + gate.sealedSamples + ' ~90s certified';
-        return;
-      }
-      el.textContent = fmtAvgBlock(ms) + (gate ? (' · observational n=' + gate.sealedSamples) : '');
-    }
-    function paintLastBlock(s) {
-      const read = document.getElementById('last-block-read');
-      const needle = document.getElementById('last-block-needle');
-      const box = document.getElementById('updated');
-      const at = s && s.lastFoundAt;
-      const tau = (s && s.targetBlockIntervalMs) || 90_000;
-      const label = fmtSinceBlock(at);
-      if (read) read.textContent = label;
-      const elapsed = at ? Math.max(0, Date.now() - Number(at)) : 0;
-      const pct = at ? avgBlockNeedlePct(elapsed) : 4;
-      const col = at ? lastBlockNeedleColor(elapsed, tau) : '#c8e86a';
-      if (needle) {
-        needle.style.left = pct + '%';
-        needle.style.background = col;
-        needle.style.boxShadow = '0 0 6px ' + col + ', 0 0 16px ' + col;
-      }
-      if (box) {
-        box.setAttribute('aria-valuenow', String(elapsed));
-        box.setAttribute('aria-valuetext', label);
-      }
-      if (lastSeenFoundAt && at && Number(at) > Number(lastSeenFoundAt)) {
-        burstLastBlockFirework(pct);
-      }
-      if (at) lastSeenFoundAt = Number(at);
-    }
-    function unpackedBits(n) {
-      const v = Number(n);
-      if (!Number.isFinite(v) || v <= 0) return NaN;
-      return v >= 65536 ? v / 65536 : v;
-    }
-    function formatBitsDisplay(bits) {
-      if (!Number.isFinite(bits) || bits <= 0) return '—';
-      // Honest numeric bits: keep fractional digits (e.g. 26.1), trim trailing zeros; do not floor to words.
-      return bits.toFixed(6).replace(/\.?0+$/, '');
-    }
-    function resistFillPct(bits, minBits, maxBits) {
-      const lo = Number(minBits);
-      const hi = Number(maxBits);
-      const b = unpackedBits(bits);
-      if (!Number.isFinite(b) || !Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return 0;
-      return Math.max(0, Math.min(100, ((b - lo) / (hi - lo)) * 100));
-    }
-    function paintResistance(s) {
-      const bits = unpackedBits(s && (s.bits != null ? s.bits : s.bitsPacked));
-      const lo = Number(s && s.liveMinBits) || 4;
-      const hi = Number(s && s.maxBits) || 256;
-      const wordEl = document.getElementById('resist-word');
-      const fillEl = document.getElementById('resist-fill');
-      const meter = document.getElementById('difficulty');
-      if (!wordEl || !fillEl) return;
-      if (!Number.isFinite(bits) || bits <= 0) {
-        wordEl.textContent = '—';
-        fillEl.style.width = '0%';
-        return;
-      }
-      fillEl.style.width = resistFillPct(bits, lo, hi) + '%';
-      wordEl.textContent = formatBitsDisplay(bits);
-      if (meter) {
-        meter.setAttribute('aria-valuemin', String(lo));
-        meter.setAttribute('aria-valuemax', String(hi));
-        meter.setAttribute('aria-valuenow', String(bits));
-        meter.setAttribute('aria-valuetext', formatBitsDisplay(bits));
-      }
-    }
-    function paintFreezeBanner(el, s) {
-      if (!el) return;
-      const frozen = !!(s && s.frozen);
-      const policy = (s && s.policy) || {};
-      const line = frozen ? String(policy.freeze_banner || s.freeze_banner || '') : '';
-      el.hidden = !line;
-      el.textContent = line;
-    }
-    const boxEveryMs = {
-      height: 1000,
-      hashrate: 7000,
-      resistance: 2000,
-      crew: 4000,
-      uptime: 1000,
-      last: 1000,
-      miners: 1000
-    };
-    const boxPaintedAt = Object.create(null);
-    let explorerBlockKey = '';
-    function boxDue(name, now) {
-      const wait = boxEveryMs[name];
-      const prev = boxPaintedAt[name] || 0;
-      if (prev && (now - prev) < wait) return false;
-      boxPaintedAt[name] = now;
-      return true;
     }
     // Main miner table only. Lifetime `accepted` is unchanged for accounting
     // and for the miner page "Accepted work" card. A round ends when tip
@@ -895,6 +804,120 @@
       } catch (e) { /* private mode */ }
     }
     const roundShareState = loadRoundShareState();
+
+
+    function paintAvgBlock(s) {
+      const el = document.getElementById('avg-block');
+      if (!el) return;
+      const net = s && Number(s.networkAvgBlockTimeMs);
+      const ms = (Number.isFinite(net) && net > 0) ? net : (s && s.avgBlockTimeMs);
+      el.textContent = fmtAvgBlock(ms);
+    }
+    
+    let poolClockOffsetMs = 0;
+    let poolClockFoundAt = 0;
+    let poolClockTau = 90_000;
+    function notePoolFindClock(s, clientNow) {
+      const found = Number(s && s.lastFoundAt) || 0;
+      const server = Number(s && s.poolNow);
+      if (server > 0) poolClockOffsetMs = poolFindClockOffsetMs(server, clientNow);
+      if (s && Number(s.targetBlockIntervalMs) > 0) poolClockTau = Number(s.targetBlockIntervalMs);
+      poolClockFoundAt = found;
+    }
+    function renderPoolFindClock(clientNow) {
+      const read = document.getElementById('last-block-read');
+      const needle = document.getElementById('last-block-needle');
+      const box = document.getElementById('updated');
+      const at = poolClockFoundAt;
+      const tau = poolClockTau || 90_000;
+      const elapsed = at ? poolLastBlockAgeMs(at, clientNow, poolClockOffsetMs) : 0;
+      const label = at ? fmtSinceBlock(elapsed) : '—';
+      if (read) read.textContent = label;
+      const pct = at ? avgBlockNeedlePct(elapsed) : 4;
+      const col = at ? lastBlockNeedleColor(elapsed, tau) : '#c8e86a';
+      if (needle) {
+        needle.style.left = pct + '%';
+        needle.style.background = col;
+        needle.style.boxShadow = '0 0 6px ' + col + ', 0 0 16px ' + col;
+      }
+      if (box) {
+        box.setAttribute('aria-valuenow', String(elapsed));
+        box.setAttribute('aria-valuetext', label);
+      }
+      if (lastSeenFoundAt && at && Number(at) > Number(lastSeenFoundAt)) {
+        burstLastBlockFirework(pct);
+      }
+      if (at) lastSeenFoundAt = Number(at);
+    }
+    function paintLastBlock(s) {
+      const clientNow = Date.now();
+      notePoolFindClock(s, clientNow);
+      renderPoolFindClock(clientNow);
+    }
+    function unpackedBits(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v) || v <= 0) return NaN;
+      return v >= 65536 ? v / 65536 : v;
+    }
+    function formatBitsDisplay(bits) {
+      if (!Number.isFinite(bits) || bits <= 0) return '—';
+      // Honest numeric bits: keep fractional digits (e.g. 26.1), trim trailing zeros; do not floor to words.
+      return bits.toFixed(6).replace(/\.?0+$/, '');
+    }
+    function resistFillPct(bits, minBits, maxBits) {
+      const lo = Number(minBits);
+      const hi = Number(maxBits);
+      const b = unpackedBits(bits);
+      if (!Number.isFinite(b) || !Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return 0;
+      return Math.max(0, Math.min(100, ((b - lo) / (hi - lo)) * 100));
+    }
+    function paintResistance(s) {
+      const bits = unpackedBits(s && (s.bits != null ? s.bits : s.bitsPacked));
+      const lo = Number(s && s.liveMinBits) || 4;
+      const hi = Number(s && s.maxBits) || 256;
+      const wordEl = document.getElementById('resist-word');
+      const fillEl = document.getElementById('resist-fill');
+      const meter = document.getElementById('difficulty');
+      if (!wordEl || !fillEl) return;
+      if (!Number.isFinite(bits) || bits <= 0) {
+        wordEl.textContent = '—';
+        fillEl.style.width = '0%';
+        return;
+      }
+      fillEl.style.width = resistFillPct(bits, lo, hi) + '%';
+      wordEl.textContent = formatBitsDisplay(bits);
+      if (meter) {
+        meter.setAttribute('aria-valuemin', String(lo));
+        meter.setAttribute('aria-valuemax', String(hi));
+        meter.setAttribute('aria-valuenow', String(bits));
+        meter.setAttribute('aria-valuetext', formatBitsDisplay(bits));
+      }
+    }
+    function paintFreezeBanner(el, s) {
+      if (!el) return;
+      const frozen = !!(s && s.frozen);
+      const policy = (s && s.policy) || {};
+      const line = frozen ? String(policy.freeze_banner || s.freeze_banner || '') : '';
+      el.hidden = !line;
+      el.textContent = line;
+    }
+    const boxEveryMs = {
+      height: 1000,
+      hashrate: 7000,
+      resistance: 2000,
+      crew: 4000,
+      uptime: 1000,
+      miners: 1000
+    };
+    const boxPaintedAt = Object.create(null);
+    let explorerBlockKey = '';
+    function boxDue(name, now) {
+      const wait = boxEveryMs[name];
+      const prev = boxPaintedAt[name] || 0;
+      if (prev && (now - prev) < wait) return false;
+      boxPaintedAt[name] = now;
+      return true;
+    }
     function paint(s) {
       const now = Date.now();
       paintFreezeBanner(document.getElementById('freeze-banner'), s);
@@ -916,9 +939,9 @@
       const shareBitsEl = document.getElementById('share-bits');
       if (blockBitsEl) blockBitsEl.textContent = (s && s.blockBits != null) ? String(s.blockBits) : '—';
       if (shareBitsEl) shareBitsEl.textContent = (s && s.shareBits != null) ? String(s.shareBits) : '—';
-      paintAvgBlock(s);
+      /* avg block card locked off */
       if (boxDue('uptime', now)) document.getElementById('uptime').textContent = fmtUptime(s.uptimeMs);
-      if (boxDue('last', now)) paintLastBlock(s);
+      paintLastBlock(s);
       syncRoundAccepted(roundShareState, s);
       saveRoundShareState(roundShareState);
       if (boxDue('miners', now)) {
@@ -1040,6 +1063,7 @@
       return 'm*****/' + (w || '—');
     }
     function paintRecent(txs, s) {
+      window.__shearRecentTxs = Array.isArray(txs) ? txs : [];
       const body = document.querySelector('#recent-txs tbody');
       if (!body) return;
       const onlyBlocks = (Array.isArray(txs) ? txs : []).filter(function (t) {
@@ -1123,6 +1147,10 @@
       });
     }
     setInterval(tick, 1000);
+    setInterval(function () {
+      if (!poolClockFoundAt) return;
+      renderPoolFindClock(Date.now());
+    }, 250);
     tick();
     renderCmd();
   </script>

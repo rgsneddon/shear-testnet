@@ -117,7 +117,8 @@ describe('fee dest, auth pub, certify, public stats', () => {
     pool.close();
     const index = fs.readFileSync(path.join(root, 'pool/public/index.html'), 'utf8');
     const explorer = fs.readFileSync(path.join(root, 'explorer/explorer.html'), 'utf8');
-    assert.match(index, /~90s not certified/);
+    assert.doesNotMatch(index, /~90s certified/);
+    assert.match(index, /<div class="label">blockBits<\/div>/);
     assert.match(explorer, /~90s not certified/);
   });
 
