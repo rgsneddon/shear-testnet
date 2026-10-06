@@ -602,6 +602,9 @@ export const BAN_TTL_MS = 6 * 3600 * 1000;
 // is forbidden. SEAL_ESCAPE_V1 quarantines only rows that make the batch
 // unsealable.
 export const SEAL_ESCAPE_AFTER = 2;
+// Probes per escape, any batch width. A bisection stays under this.
+// A linear scan of the share cap does not.
+export const SEAL_ESCAPE_PROBE_CAP = 32;
 
 const HEADER_SEAL_FAULTS = new Set([
   'pow', 'merkle', 'prev', 'timestamp', 'bits', 'base_fee', 'version',
@@ -1775,6 +1778,10 @@ export function createPool({
   let pendingPayout = [];
   let lag1Shares = [];
   let openShares = [];
+  // Honest rows a body fault could not pay this round. Not lost work.
+  let deferredShares = [];
+  let headerHold = null;
+  let escapePinKeys = null;
   let sealing = false;
   let proofWarm = null;
   let sealFailStreak = 0;
@@ -2173,6 +2180,8 @@ export function createPool({
       if (sealing) return;
       lag1Shares = [];
       openShares = [];
+      deferredShares = [];
+      headerHold = null;
       resetOpenRound();
     });
     store.on('tip', (t) => {
@@ -2220,6 +2229,9 @@ export function createPool({
     for (const s of rec?.tpl?.shareBatch || []) {
       const k = sharePinKey(s, tipHdr);
       if (k) keys.push(k);
+    }
+    if (escapePinKeys) {
+      for (const k of escapePinKeys) keys.push(k);
     }
     pinLiveSharePow(keys);
     const m = liveSharePowMetrics();
@@ -2302,7 +2314,7 @@ export function createPool({
 
   // SEAL_ESCAPE_V1. Drop these objects only. A duplicate nonce keeps the
   // other copy. lostWork counts the dropped copies and names their dests.
-  function dropShareRefs(refs, reason, miner) {
+  function dropShareRefs(refs, reason, miner, evidence) {
     const bad = new Set(refs || []);
     if (!bad.size) return [];
     const dropped = [];
@@ -2344,6 +2356,7 @@ export function createPool({
       event: 'seal_batch_escape',
       alert: true,
       reason: String(reason || ''),
+      evidence: String(evidence || 'reproof'),
       miner: String(miner || ''),
       shares: dropped.length,
       units,
@@ -2368,70 +2381,265 @@ export function createPool({
     };
   }
 
+  function tipHashNow() {
+    const tipNow = store.tip();
+    if (!tipNow) return '';
+    return Buffer.isBuffer(tipNow.hash) ? tipNow.hash.toString('hex') : String(tipNow.hash);
+  }
+
   // Same issueJob path as a live template. Jobs created here are deleted.
-  // A promise from probeBlock is not a verdict, so it quarantines nothing.
+  // No job, no header, a thrown template, a cold proof, or a promise is not
+  // a verdict. Those quarantine nothing.
   function probeShares(shares) {
     if (typeof store.probeBlock !== 'function') return { ok: false, reason: 'append', pending: true };
+    if (sidecarAhead()) return { ok: false, reason: 'append', pending: true };
     const savedLag = lag1Shares;
     const savedLast = lastJob;
     const savedPrev = prevJob;
     const savedPrevAt = prevJobAt;
     const savedPacked = packedMempoolKey;
+    const savedHold = headerHold;
     const before = new Set();
     if (store.jobs && typeof store.jobs.keys === 'function') {
       for (const id of store.jobs.keys()) before.add(id);
     }
+    const tipHdr = store.tip()?.header || null;
+    const pinSnap = [];
+    for (const s of openShares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) pinSnap.push(k);
+    }
+    for (const s of lag1Shares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) pinSnap.push(k);
+    }
+    for (const s of deferredShares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) pinSnap.push(k);
+    }
+    escapePinKeys = pinSnap;
     lag1Shares = Array.isArray(shares) ? shares.slice() : [];
-    let verdict = { ok: false, reason: 'append' };
+    let verdict = { ok: false, reason: 'append', pending: true };
     try {
-      const job = issueJob(undefined, { force: true });
+      refreshSharePins();
+      const job = issueJob(undefined, { force: true, probe: true });
       const rec = job && store.jobs?.get?.(String(job.jobId));
-      if (rec?.tpl?.header) {
-        const got = store.probeBlock(blockFromTpl(rec.tpl));
+      if (job && rec?.tpl?.header) {
+        let got = null;
+        try { got = store.probeBlock(blockFromTpl(rec.tpl)); } catch { got = null; }
         if (got && typeof got.then === 'function') {
           verdict = { ok: false, reason: 'append', pending: true };
         } else if (got?.ok) verdict = { ok: true, reason: '' };
-        else verdict = { ok: false, reason: got?.reason || 'append' };
+        else if (got && got.pending !== true) {
+          verdict = { ok: false, reason: String(got.reason || 'append'), pending: false };
+        }
       }
     } catch {
-      verdict = { ok: false, reason: 'append' };
-    }
-    if (store.jobs && typeof store.jobs.keys === 'function') {
-      for (const id of [...store.jobs.keys()]) {
-        if (!before.has(id)) store.jobs.delete(id);
+      verdict = { ok: false, reason: 'append', pending: true };
+    } finally {
+      if (store.jobs && typeof store.jobs.keys === 'function') {
+        for (const id of [...store.jobs.keys()]) {
+          if (!before.has(id)) store.jobs.delete(id);
+        }
       }
+      lag1Shares = savedLag;
+      lastJob = savedLast;
+      prevJob = savedPrev;
+      prevJobAt = savedPrevAt;
+      packedMempoolKey = savedPacked;
+      headerHold = savedHold;
+      escapePinKeys = null;
+      refreshSharePins();
     }
-    lag1Shares = savedLag;
-    lastJob = savedLast;
-    prevJob = savedPrev;
-    prevJobAt = savedPrevAt;
-    packedMempoolKey = savedPacked;
     return verdict;
   }
 
-  function isolateBadRows() {
-    const rows = lag1Shares.slice();
-    if (!rows.length) return [];
-    const whole = probeShares(rows);
-    if (whole.ok || whole.pending) return [];
-    const empty = probeShares([]);
-    if (!empty.ok || empty.pending) return [];
-    const bad = [];
-    let good = [];
-    for (const row of rows) {
-      const got = probeShares(good.concat([row]));
-      if (got.ok) good = good.concat([row]);
-      else if (!got.pending) bad.push(row);
+  function yieldLoop() {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  async function probeYield(shares, probes) {
+    if (probes.n >= SEAL_ESCAPE_PROBE_CAP) return { ok: false, reason: 'append', budget: true };
+    const t0 = process.hrtime.bigint();
+    const got = probeShares(shares);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (!(Number(stats.sealEscapeStallMs) >= ms)) stats.sealEscapeStallMs = ms;
+    probes.n += 1;
+    stats.sealEscapeProbes = (Number(stats.sealEscapeProbes) || 0) + 1;
+    await yieldLoop();
+    stats.sealEscapeYields = (Number(stats.sealEscapeYields) || 0) + 1;
+    return got;
+  }
+
+  // Canonical order. A later copy of the same nonce is the duplicate.
+  // Dest noteCommit is shared by every honest share of that miner, so it
+  // is not a duplicate key.
+  function duplicateNonces(rows) {
+    const sorted = sortShares(rows);
+    const seen = new Set();
+    const drop = [];
+    for (const s of sorted) {
+      const k = String(s?.nonce ?? '');
+      if (seen.has(k)) drop.push(s);
+      else seen.add(k);
     }
-    return bad;
+    return drop;
+  }
+
+  function freshTemplateState() {
+    const key = batchKeyOf(lag1Shares);
+    if (store.jobs?.entries) {
+      for (const [id, rec] of [...store.jobs.entries()]) {
+        if (batchKeyOf(rec?.tpl?.shareBatch) === key) store.jobs.delete(id);
+      }
+    }
+    lastJob = null;
+    prevJob = null;
+    prevJobAt = 0;
+    packedMempoolKey = '';
+  }
+
+  function noteBoundedRebuild(why, key) {
+    freshTemplateState();
+    headerHold = {
+      batch: key,
+      tip: tipHashNow(),
+      reason: String(why || ''),
+      rebuilt: true,
+      latched: false,
+    };
+    stats.headerRebuilds = (Number(stats.headerRebuilds) || 0) + 1;
+    console.error(JSON.stringify({
+      event: 'seal_header_rebuild',
+      alert: true,
+      reason: String(why || ''),
+      shares: lag1Shares.length,
+    }));
+  }
+
+  // Largest canonical prefix that seals. A row is a singleton reject only
+  // when some other non-empty subset seals. If every non-empty subset fails,
+  // the fault is the template and nothing is lost.
+  async function partitionRows(rows, probes) {
+    let pool = rows.slice();
+    const singleton = [];
+    const defer = [];
+    while (pool.length) {
+      if (probes.n >= SEAL_ESCAPE_PROBE_CAP) {
+        defer.push(...pool);
+        break;
+      }
+      let lo = 0;
+      let hi = pool.length;
+      let budget = false;
+      // lo is the longest prefix already shown to seal. The upward mid
+      // reaches the full width, so a set that seals is not split on its
+      // last row.
+      while (lo < hi) {
+        if (probes.n >= SEAL_ESCAPE_PROBE_CAP) { budget = true; break; }
+        const mid = (lo + hi + 1) >> 1;
+        if (mid <= lo) break;
+        const got = await probeYield(pool.slice(0, mid), probes);
+        if (got.budget) { budget = true; break; }
+        if (got.pending) return { aborted: true };
+        if (got.ok) lo = mid;
+        else hi = mid - 1;
+      }
+      if (budget) {
+        defer.push(...pool.slice(lo));
+        break;
+      }
+      if (lo === pool.length) break;
+      const pivot = pool[lo];
+      if (probes.n >= SEAL_ESCAPE_PROBE_CAP) {
+        defer.push(...pool.slice(lo));
+        break;
+      }
+      const one = await probeYield([pivot], probes);
+      if (one.budget) {
+        defer.push(...pool.slice(lo));
+        break;
+      }
+      if (one.pending) return { aborted: true };
+      if (one.ok) {
+        defer.push(...pool.slice(lo));
+        break;
+      }
+      if (pool.length === 1) {
+        singleton.push(pivot);
+        break;
+      }
+      const other = pool[pool.length - 1] === pivot ? pool[0] : pool[pool.length - 1];
+      // A singleton drop needs another non-empty subset that seals. lo > 0
+      // is that subset. With no probe left and lo === 0, defer the rows.
+      const holdUnproven = () => {
+        if (lo > 0) {
+          singleton.push(pivot);
+          const rest = [];
+          for (const s of pool) if (s !== pivot) rest.push(s);
+          defer.push(...rest);
+        } else {
+          defer.push(...pool);
+        }
+      };
+      if (probes.n >= SEAL_ESCAPE_PROBE_CAP) {
+        holdUnproven();
+        break;
+      }
+      const alt = await probeYield([other], probes);
+      if (alt.budget) {
+        holdUnproven();
+        break;
+      }
+      if (alt.pending) return { aborted: true };
+      if (!alt.ok && lo === 0) return { presence: true, aborted: false, singleton: [], defer: [] };
+      singleton.push(pivot);
+      const rest = [];
+      for (const s of pool) if (s !== pivot) rest.push(s);
+      pool = rest;
+    }
+    return { presence: false, aborted: false, singleton, defer };
+  }
+
+  async function runBodyEscape(why, miner) {
+    const rows = sortShares(lag1Shares.slice());
+    if (!rows.length) return;
+    const probes = { n: 0 };
+    const whole = await probeYield(rows, probes);
+    if (whole.pending || whole.ok) return;
+    const empty = await probeYield([], probes);
+    if (empty.pending) return;
+    if (!empty.ok) {
+      noteBoundedRebuild(why, batchKeyOf(lag1Shares));
+      return;
+    }
+    const plan = await partitionRows(rows, probes);
+    if (!plan || plan.aborted) return;
+    if (plan.presence) {
+      noteBoundedRebuild(why, batchKeyOf(lag1Shares));
+      return;
+    }
+    if (plan.singleton.length) dropShareRefs(plan.singleton, why, miner, 'singleton');
+    if (plan.defer.length) {
+      const deferIds = new Set(plan.defer);
+      const stay = [];
+      const moved = [];
+      for (const s of lag1Shares) {
+        if (deferIds.has(s)) moved.push(s);
+        else stay.push(s);
+      }
+      lag1Shares = sortShares(stay);
+      deferredShares = sortShares(deferredShares.concat(moved));
+    }
   }
 
   // POOL_LAG1_CARRY_V1. Pool policy, not a consensus pin. A seal miss keeps
   // every share that has not itself failed re-proof. Unsealed holds are not
   // written into the consensus owed ledger. SEAL_BAN_V0 is forbidden: this
-  // path does not ban or kick. SEAL_ESCAPE_V1 drops only rows that make the
-  // same batch unsealable.
-  function noteSealFailure(reason, jobId, miner) {
+  // path does not ban or kick. SEAL_ESCAPE_V1 drops a row only for a failed
+  // re-proof, a duplicate nonce, or a singleton that fails while another
+  // non-empty subset seals.
+  async function noteSealFailure(reason, jobId, miner) {
     // SEAL_ESCAPE_V1. No dest ban and no kick on this path.
     stats.sealFailed = (Number(stats.sealFailed) || 0) + 1;
     const key = batchKeyOf(lag1Shares);
@@ -2441,6 +2649,7 @@ export function createPool({
       sealFailStreak = 1;
     }
     const why = String(reason || 'append');
+    const klass = sealFailureClass(why);
     console.error(JSON.stringify({
       event: 'seal_failed',
       alert: true,
@@ -2449,19 +2658,37 @@ export function createPool({
       streak: sealFailStreak,
       height: Number(store.tip()?.height || 0) + 1,
     }));
-    if (key && sealFailStreak >= SEAL_ESCAPE_AFTER && sealFailureClass(why) !== 'header') {
+    const tip = tipHashNow();
+    if (key && headerHold?.rebuilt && headerHold.batch === key && headerHold.tip === tip && headerHold.reason === why) {
+      headerHold.latched = true;
+      console.error(JSON.stringify({
+        event: 'seal_header_hold',
+        alert: true,
+        reason: why,
+        shares: lag1Shares.length,
+      }));
+    }
+    if (key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
       const parent = store.tip()?.header || null;
-      const rowBad = [];
-      if (parent) {
+      if (parent && klass !== 'header') {
+        const rowBad = [];
         for (const s of lag1Shares) {
           const one = verifyShareBatch({ parentHeader: parent, shares: [s], skipPow: true });
-          if (!one.ok) rowBad.push(s);
+          if (one.ok) continue;
+          // skipPow with no cached digest did not hash the row. That is a
+          // cold proof, not a failed share. A cached proof that disagrees,
+          // or an illegal width or dest, is positive evidence.
+          if (one.reason === 'share_pow' && !hasLiveSharePow(parent, s?.nonce)) continue;
+          rowBad.push(s);
         }
+        if (rowBad.length) dropShareRefs(rowBad, why, miner, 'reproof');
       }
-      const isolated = rowBad.length ? rowBad : (sealFailureClass(why) === 'body' ? isolateBadRows() : []);
-      if (isolated.length) dropShareRefs(isolated, why, miner);
+      const dups = duplicateNonces(lag1Shares);
+      if (dups.length) dropShareRefs(dups, 'dup_share', miner, 'duplicate');
+      if (klass === 'body') await runBodyEscape(why, miner);
+      else if (klass === 'header') noteBoundedRebuild(why, key);
     }
-    if (key && sealFailStreak >= SEAL_ESCAPE_AFTER) {
+    if (key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
       const who = String(miner || '');
       // The failed template is not the only copy. lag1Shares still holds it.
       if (store.jobs?.entries) {
@@ -2487,6 +2714,11 @@ export function createPool({
   function noteSealSuccess() {
     sealFailStreak = 0;
     sealFailBatch = '';
+    headerHold = null;
+    if (deferredShares.length) {
+      openShares = sortShares(deferredShares.concat(openShares));
+      deferredShares = [];
+    }
   }
 
   function lag1MissingProof(parentHeader, shares) {
@@ -2522,21 +2754,21 @@ export function createPool({
 
   function ensureCachedShareProofs() {
     const tipHdr = store.tip()?.header || null;
-    const pending = reproveSharesOffLoop(tipHdr, lag1Shares).then((got) => {
+    const pending = reproveSharesOffLoop(tipHdr, lag1Shares).then(async (got) => {
       if (proofWarm === pending) proofWarm = null;
       if (!got.ok) {
         const why = String(got.reason || 'share_pow');
         if (perShareFailure(why)) dropUnprovenShares(got.failed || [], why, '');
-        noteSealFailure(why, String(lastJob?.jobId || ''), '');
+        await noteSealFailure(why, String(lastJob?.jobId || ''), '');
       }
       refreshSharePins();
       const job = issueJob(undefined, { force: true });
       if (job) broadcastJob(job);
       return job;
-    }).catch(() => {
+    }).catch(async () => {
       if (proofWarm === pending) proofWarm = null;
       // A thrown worker is not a share_pow drop. The batch stays.
-      noteSealFailure('worker', '', '');
+      await noteSealFailure('worker', '', '');
       return null;
     });
     proofWarm = pending;
@@ -2560,7 +2792,7 @@ export function createPool({
         if (!proved.ok) {
           const why = String(proved.reason || 'share_pow');
           if (perShareFailure(why)) dropUnprovenShares(proved.failed || [], why, miner);
-          noteSealFailure(why, jid, miner);
+          await noteSealFailure(why, jid, miner);
           try {
             const next = issueJob(undefined, { force: true });
             if (next) broadcastJob(next);
@@ -2579,7 +2811,7 @@ export function createPool({
       noteSealSuccess();
       return got;
     }
-    noteSealFailure(got?.reason || 'append', jid, miner);
+    await noteSealFailure(got?.reason || 'append', jid, miner);
     try {
       const next = issueJob(undefined, { force: true });
       if (next) broadcastJob(next);
@@ -2587,12 +2819,17 @@ export function createPool({
     return got || { ok: false, reason: 'append' };
   }
 
-  function issueJob(shareBitsNow, { force = false } = {}) {
+  function issueJob(shareBitsNow, { force = false, probe = false } = {}) {
     if (sidecarAhead()) {
       logJobHold();
       return lastJob;
     }
     jobHoldLogged = false;
+    if (!probe && headerHold) {
+      const tipHex = tipHashNow();
+      if (headerHold.tip !== tipHex || headerHold.batch !== batchKeyOf(lag1Shares)) headerHold = null;
+      else if (headerHold.latched) return null;
+    }
     // No explicit dial: keep the live job's bits. The opening floor is only
     // for the first template, before any dest has stepped.
     const carriedTemplate = shareBitsNow != null
@@ -2633,7 +2870,7 @@ export function createPool({
     lag1Shares = selectBlockShares(provenLag1Shares(tipHdr, lag1Shares));
     const coldLag1 = lag1MissingProof(tipHdr, lag1Shares);
     if (coldLag1.length) {
-      if (!proofWarm) ensureCachedShareProofs();
+      if (!probe && !proofWarm) ensureCachedShareProofs();
       return null;
     }
     const live = snapshotRound();
@@ -4496,6 +4733,7 @@ export function createPool({
     sealFoundShare,
     whenShareProofs,
     get lag1Shares() { return lag1Shares; },
+    get deferredShares() { return deferredShares; },
     get openShares() { return openShares; },
     get lastJob() { return lastJob; },
     watchTipStall,

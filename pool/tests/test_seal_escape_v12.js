@@ -42,7 +42,7 @@ function watchFinder(pool, login) {
     workerKey: login,
     payoutDest: login,
     connections: [],
-    accepted: 0,
+    accepted: 1,
   });
 }
 
@@ -216,7 +216,7 @@ describe('v12 seal escape does not ban a finder', () => {
           miner: finder,
           powHash: nextPow(),
         });
-        assert.equal(paid.ok, true, paid.reason || `dup ${width}`);
+        assert.equal(paid.ok, true, `${paid.reason || 'no-reason'} job=${pool.lastJob?.jobId || ''} lag=${pool.lag1Shares.length} dup ${width}`);
         const sealed = pool.store.tip().shareBatch || [];
         assert.equal(countNonce(sealed, twinNonce), 1);
         for (const n of held.nonces) assert.equal(nonceSet(sealed).has(n), true);
