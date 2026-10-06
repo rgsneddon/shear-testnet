@@ -4,12 +4,14 @@
  * A block may mint at most MAX_HASH_UNITS_PER_BLOCK times the live unit.
  * Parent owed rows are paid first (oldest height, then noteCommit bytes).
  * This block's new credits then share whatever budget remains, pro-rata,
- * the same walk as retainedUnitsByCommit. Anything still unpaid and at
- * least the dust floor stays owed on this coinbase. Sub-dust nanos fold
- * into the public dust pot. Rows that do not fit in HASH_OWED_MAX_ENTRIES
- * sum into the public overflow total. Overflow is not burned and is not
- * paid to a different dest. Pot splits and the pool fee do not read this
- * ledger. Amounts stay BigInt so a value above 2^53 is not rounded.
+ * the same walk as retainedUnitsByCommit. Anything still unpaid stays on
+ * that noteCommit, including a balance below the dust floor.
+ * HASH_OWED_CARRY_V1 has no public dust pot and no unattributed overflow.
+ * HASH_OWED_MAX_ENTRIES only packs the oldest rows into hashOwed. The
+ * rest are hashOwedRest on the same map. A later block pays the whole
+ * map, oldest sinceHeight then noteCommit. Pot splits and the pool fee
+ * do not read this ledger. Amounts stay BigInt so a value above 2^53
+ * is not rounded.
  */
 import {
   HASH_BONUS_NANOS,
@@ -165,7 +167,7 @@ export function freshCreditsFromShares(shares, unit = HASH_BONUS_NANOS) {
   return [...by.values()];
 }
 
-function parseRow(row, dust) {
+function parseRow(row) {
   if (!row || typeof row !== 'object') return null;
   const noteCommit = buf32(row.noteCommit);
   const dest20 = buf20(row.dest20);
@@ -173,7 +175,6 @@ function parseRow(row, dust) {
   const since = asBi(row.sinceHeight);
   if (!noteCommit || !dest20 || nanos == null || since == null) return null;
   if (nanos <= 0n || nanos > MAX_U64 || since > BigInt(MAX_U32)) return null;
-  if (nanos < dust) return null;
   let expect;
   try {
     expect = noteCommitOfDest20(dest20);
@@ -197,25 +198,43 @@ function parseRow(row, dust) {
   };
 }
 
-/** Absent is an empty ledger. A present list must already be canonical. */
-export function hashOwedFromTx(tx, dust = hashOwedDustNanos()) {
-  if (tx == null) return [];
-  const raw = tx.hashOwed;
+function parseLedgerRows(raw) {
   if (raw == null || raw === '') return [];
   if (!Array.isArray(raw)) return null;
-  const floor = typeof dust === 'bigint' ? dust : asBi(dust);
-  if (floor == null || floor <= 0n) return null;
-  if (raw.length > HASH_OWED_MAX_ENTRIES) return null;
   const rows = [];
   for (const item of raw) {
-    const row = parseRow(item, floor);
+    const row = parseRow(item);
     if (!row) return null;
     rows.push(row);
   }
+  return rows;
+}
+
+/**
+ * Inline rows plus hashOwedRest, already sorted oldest-first.
+ * A public dust or overflow scalar is hash_owed: those nanos have no note.
+ * The dust argument is the payable floor for callers. It does not drop a row.
+ */
+export function hashOwedFromTx(tx, dust = hashOwedDustNanos()) {
+  if (tx == null) return [];
+  const floor = typeof dust === 'bigint' ? dust : asBi(dust);
+  if (floor == null || floor <= 0n) return null;
+  const dustPot = hashDustFromTx(tx);
+  const overPot = hashOverflowFromTx(tx);
+  if (dustPot == null || overPot == null || dustPot !== 0n || overPot !== 0n) return null;
+  const inline = parseLedgerRows(tx.hashOwed);
+  const rest = parseLedgerRows(tx.hashOwedRest);
+  if (inline == null || rest == null) return null;
+  if (inline.length > HASH_OWED_MAX_ENTRIES) return null;
+  const rows = inline.concat(rest);
   for (let i = 1; i < rows.length; i += 1) {
     if (cmpOwed(rows[i - 1], rows[i]) >= 0) return null;
   }
   return rows;
+}
+
+export function settledOwedRows(settled) {
+  return [...(settled?.owed || []), ...(settled?.owedRest || [])];
 }
 
 function parsePot(v) {
@@ -240,36 +259,35 @@ function jsonInt(n) {
   return n.toString();
 }
 
+function ledgerJson(rows) {
+  return rows.map((row) => {
+    const out = {
+      noteCommit: Buffer.from(row.noteCommit),
+      dest20: Buffer.from(row.dest20),
+      nanos: jsonInt(row.nanos),
+      sinceHeight: row.sinceHeight,
+    };
+    if (row.admitBase && !emptyBase(row.admitBase)) out.admitBase = Buffer.from(row.admitBase);
+    if (row.address) out.address = row.address;
+    return out;
+  });
+}
+
 export function writeHashLedger(tx, settled) {
   if (!tx || !settled) return tx;
-  if (settled.owed && settled.owed.length) {
-    tx.hashOwed = settled.owed.map((row) => {
-      const out = {
-        noteCommit: Buffer.from(row.noteCommit),
-        dest20: Buffer.from(row.dest20),
-        nanos: jsonInt(row.nanos),
-        sinceHeight: row.sinceHeight,
-      };
-      if (row.admitBase && !emptyBase(row.admitBase)) out.admitBase = Buffer.from(row.admitBase);
-      if (row.address) out.address = row.address;
-      return out;
-    });
-  } else {
-    delete tx.hashOwed;
-  }
-  if (settled.dust > 0n) tx.hashDustNanos = jsonInt(settled.dust);
-  else delete tx.hashDustNanos;
-  if (settled.overflow > 0n) tx.hashOwedOverflowNanos = jsonInt(settled.overflow);
-  else delete tx.hashOwedOverflowNanos;
+  if (settled.owed && settled.owed.length) tx.hashOwed = ledgerJson(settled.owed);
+  else delete tx.hashOwed;
+  if (settled.owedRest && settled.owedRest.length) tx.hashOwedRest = ledgerJson(settled.owedRest);
+  else delete tx.hashOwedRest;
+  delete tx.hashDustNanos;
+  delete tx.hashOwedOverflowNanos;
   return tx;
 }
 
 export function hashOwedDigestSuffix(tx) {
   const owed = hashOwedFromTx(tx);
-  const dust = hashDustFromTx(tx);
-  const overflow = hashOverflowFromTx(tx);
-  if (owed == null || dust == null || overflow == null) return null;
-  if (!owed.length && dust === 0n && overflow === 0n) return Buffer.alloc(0);
+  if (owed == null) return null;
+  if (!owed.length) return Buffer.alloc(0);
   const parts = [Buffer.from('hashowed1')];
   for (const row of owed) {
     parts.push(row.noteCommit);
@@ -278,8 +296,6 @@ export function hashOwedDigestSuffix(tx) {
     parts.push(u64le(row.nanos));
     parts.push(u32le(row.sinceHeight));
   }
-  parts.push(Buffer.from('hashdust1'), u64le(dust));
-  parts.push(Buffer.from('hashover1'), u64le(overflow));
   return Buffer.concat(parts);
 }
 
@@ -369,7 +385,9 @@ export function settleHashOwed({
   height = 0,
   unit = HASH_BONUS_NANOS,
 } = {}) {
-  const fail = (reason = 'hash_owed') => ({ ok: false, reason, pay: [], owed: [], dust: 0n, overflow: 0n, minted: 0n });
+  const fail = (reason = 'hash_owed') => ({
+    ok: false, reason, pay: [], owed: [], owedRest: [], dust: 0n, overflow: 0n, minted: 0n,
+  });
   const floor = dust == null ? hashOwedDustNanos(unit) : asBi(dust);
   const cap = maxEntries == null ? HASH_OWED_MAX_ENTRIES : Math.floor(Number(maxEntries));
   const unitBi = BigInt(hashBonusUnitNanos(unit));
@@ -378,15 +396,13 @@ export function settleHashOwed({
   if (floor == null || floor <= 0n || limit == null || limit < 0n || h == null || h > BigInt(MAX_U32)) return fail();
   if (!Number.isInteger(cap) || cap < 0) return fail();
   const blockHeight = Number(h);
-  let dustAcc = asBi(dustIn);
-  let overAcc = asBi(overflowIn);
-  if (dustAcc == null || overAcc == null) return fail();
-  if (overAcc > 0n && overAcc < floor) {
-    dustAcc += overAcc;
-    overAcc = 0n;
-  }
+  const dustAcc = asBi(dustIn);
+  const overAcc = asBi(overflowIn);
+  // A public scalar has no noteCommit. It cannot enter the carry map.
+  if (dustAcc == null || overAcc == null || dustAcc !== 0n || overAcc !== 0n) return fail();
 
   const parent = [];
+  const carriedLow = [];
   for (const row of owedIn || []) {
     const nanos = asBi(row?.nanos);
     const since = asBi(row?.sinceHeight);
@@ -410,7 +426,7 @@ export function settleHashOwed({
       admitBase: buf32(row.admitBase),
       address: typeof row.address === 'string' ? row.address : '',
     };
-    if (parsed.nanos < floor) dustAcc += parsed.nanos;
+    if (parsed.nanos < floor) carriedLow.push(parsed);
     else parent.push(parsed);
   }
   parent.sort(cmpOwed);
@@ -441,9 +457,8 @@ export function settleHashOwed({
   }
 
   const inSum = parent.reduce((n, row) => n + row.nanos, 0n)
-    + freshRows.reduce((n, row) => n + row.nanos, 0n)
-    + dustAcc
-    + overAcc;
+    + carriedLow.reduce((n, row) => n + row.nanos, 0n)
+    + freshRows.reduce((n, row) => n + row.nanos, 0n);
 
   const paid = new Map();
   let left = limit;
@@ -460,12 +475,7 @@ export function settleHashOwed({
       left = 0n;
       continue;
     }
-    if (left >= floor && row.nanos > left && row.nanos - left < floor) {
-      addPay(paid, row, left);
-      dustAcc += row.nanos - left;
-      left = 0n;
-      continue;
-    }
+    // A remainder below the floor stays on this note. Do not peel it into a pot.
     still.push(copyRow(row, row.nanos, row.sinceHeight));
   }
 
@@ -489,19 +499,17 @@ export function settleHashOwed({
     if (got >= floor) {
       addPay(paid, row, got);
       spentFresh += got;
-      if (unpaid >= floor) still.push(copyRow(row, unpaid, blockHeight));
-      else if (unpaid > 0n) dustAcc += unpaid;
-    } else if (row.nanos >= floor) {
+      if (unpaid > 0n) still.push(copyRow(row, unpaid, blockHeight));
+    } else if (row.nanos > 0n) {
       // A sub-dust slice stays on the owed row. Peeling it off would drop an above-dust credit.
       still.push(copyRow(row, row.nanos, blockHeight));
-    } else if (row.nanos > 0n) {
-      dustAcc += row.nanos;
     }
   }
   left -= spentFresh;
   void left;
 
   const merged = new Map();
+  for (const row of carriedLow) still.push(row);
   for (const row of still) {
     const hex = row.noteCommit.toString('hex');
     const prev = merged.get(hex);
@@ -516,28 +524,26 @@ export function settleHashOwed({
   }
   const owedAll = [];
   for (const row of merged.values()) {
-    if (row.nanos >= floor) owedAll.push(row);
-    else if (row.nanos > 0n) dustAcc += row.nanos;
+    if (row.nanos > 0n) owedAll.push(row);
   }
   owedAll.sort(cmpOwed);
   const owed = owedAll.slice(0, cap);
-  for (const row of owedAll.slice(cap)) overAcc += row.nanos;
+  const owedRest = owedAll.slice(cap);
 
   const pay = [...paid.values()].sort((a, b) => cmpNoteCommit(a.noteCommit, b.noteCommit));
   const minted = pay.reduce((n, row) => n + row.nanos, 0n);
-  const outSum = minted + owed.reduce((n, row) => n + row.nanos, 0n) + dustAcc + overAcc;
-  if (outSum !== inSum) return fail();
+  const carried = owed.reduce((n, row) => n + row.nanos, 0n)
+    + owedRest.reduce((n, row) => n + row.nanos, 0n);
+  if (minted + carried !== inSum) return fail();
   if (owed.length > cap) return fail();
-  for (const row of owed) {
-    if (row.nanos < floor) return fail();
-  }
   return {
     ok: true,
     reason: '',
     pay,
     owed,
-    dust: dustAcc,
-    overflow: overAcc,
+    owedRest,
+    dust: 0n,
+    overflow: 0n,
     minted,
   };
 }
@@ -547,11 +553,12 @@ export function sameHashLedger(tx, settled, dust = hashOwedDustNanos()) {
   const dustGot = hashDustFromTx(tx);
   const overGot = hashOverflowFromTx(tx);
   if (owed == null || dustGot == null || overGot == null || !settled?.ok) return false;
-  if (dustGot !== settled.dust || overGot !== settled.overflow) return false;
-  if (owed.length !== settled.owed.length) return false;
+  if (dustGot !== 0n || overGot !== 0n || settled.dust !== 0n || settled.overflow !== 0n) return false;
+  const expect = settledOwedRows(settled);
+  if (owed.length !== expect.length) return false;
   for (let i = 0; i < owed.length; i += 1) {
     const a = owed[i];
-    const b = settled.owed[i];
+    const b = expect[i];
     if (a.nanos !== b.nanos || a.sinceHeight !== b.sinceHeight) return false;
     if (!a.noteCommit.equals(b.noteCommit) || !a.dest20.equals(b.dest20)) return false;
     const aa = a.admitBase && !emptyBase(a.admitBase) ? a.admitBase : Buffer.alloc(0);
@@ -566,31 +573,24 @@ export function hashLedgerIdle(settled, freshCount = 0) {
   return freshCount === 0
     && settled.pay.length === 0
     && settled.owed.length === 0
+    && (settled.owedRest || []).length === 0
     && settled.dust === 0n
     && settled.overflow === 0n
     && settled.minted === 0n;
 }
 
-/** Copy the ledger onto a compacted coinbase. Absent stays absent. */
+/** Copy the ledger onto a compacted coinbase. The inline prefix is the oldest rows. */
 export function compactHashLedger(tx, row) {
   if (!tx || !row) return row;
   const owed = hashOwedFromTx(tx);
-  const dust = hashDustFromTx(tx);
-  const overflow = hashOverflowFromTx(tx);
-  if (owed == null || dust == null || overflow == null) return row;
-  if (owed.length) {
-    row.hashOwed = owed.map((item) => {
-      const out = {
-        noteCommit: Buffer.from(item.noteCommit),
-        dest20: Buffer.from(item.dest20),
-        nanos: jsonInt(item.nanos),
-        sinceHeight: item.sinceHeight,
-      };
-      if (item.admitBase && !emptyBase(item.admitBase)) out.admitBase = Buffer.from(item.admitBase);
-      return out;
-    });
-  }
-  if (dust > 0n) row.hashDustNanos = jsonInt(dust);
-  if (overflow > 0n) row.hashOwedOverflowNanos = jsonInt(overflow);
+  if (owed == null) return row;
+  const inline = owed.slice(0, HASH_OWED_MAX_ENTRIES);
+  const rest = owed.slice(HASH_OWED_MAX_ENTRIES);
+  if (inline.length) row.hashOwed = ledgerJson(inline);
+  else delete row.hashOwed;
+  if (rest.length) row.hashOwedRest = ledgerJson(rest);
+  else delete row.hashOwedRest;
+  delete row.hashDustNanos;
+  delete row.hashOwedOverflowNanos;
   return row;
 }

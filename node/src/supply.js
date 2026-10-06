@@ -27,6 +27,7 @@ import {
 import { canonicalCarry } from './chain.js';
 import {
   freshCreditsFromShares,
+  hashLedgerIdle,
   sameHashLedger,
   settleHashOwed,
 } from '../../crypto/hash_owed.js';
@@ -302,9 +303,9 @@ export function auditCirculatingSupply(blocks, {
       carry = carryOut;
       continue;
     }
+    const rowsOut = (settled.owed || []).concat(settled.owedRest || []);
     const parentIdle = owedState.length === 0 && dustState === 0n && overflowState === 0n;
-    const idle = parentIdle && fresh.length === 0 && settled.pay.length === 0
-      && settled.owed.length === 0 && settled.dust === 0n && settled.overflow === 0n;
+    const idle = parentIdle && hashLedgerIdle(settled, fresh.length);
     let mintedHashHere = settled.minted;
     const hashVouts = (cb?.vout || []).filter((o) => String(o?.kind || '') === 'hash');
     if (!shares.length && idle) {
@@ -320,7 +321,7 @@ export function auditCirculatingSupply(blocks, {
     const freshNanos = fresh.reduce((n, row) => n + row.nanos, 0n);
     acceptedHash += freshNanos + (mintedHashHere - settled.minted);
     permittedHashAll += mintedHashHere;
-    owedState = settled.owed;
+    owedState = rowsOut;
     dustState = settled.dust;
     overflowState = settled.overflow;
     const publicTotal = potMinted + mintedHashHere + levy;

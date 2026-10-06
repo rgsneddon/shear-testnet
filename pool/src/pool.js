@@ -3357,6 +3357,7 @@ export function createPool({
       schedulePotNanos: Number(supply.schedulePotNanos) || 0,
       potEmittedNanos: supply.potNanos,
       hashBonusEmittedNanos: supply.hashNanos,
+      hashOwedNanos: Number(supply.hashOwedNanos) || 0,
       extraMintedNanos: supply.extraMintNanos,
       burnedNanos: supply.burnedNanos,
       reserveMintedNanos: supply.reserveMintedNanos || 0,

@@ -87,6 +87,7 @@ import { packTx, packDigest, unpackShareBatch, u64le } from '../../crypto/pack.j
 import {
   freshCreditsFromShares,
   hashDustFromTx,
+  hashLedgerIdle,
   hashOwedDigestSuffix,
   hashOwedFromTx,
   hashOverflowFromTx,
@@ -660,7 +661,8 @@ export function coinbaseTx({
       : encodeDest(pay.dest20);
     vout.push(sealHashPay(pay, addr));
   }
-  if (!vout.length && carry <= 0 && settled.minted === 0n && settled.owed.length === 0) {
+  const carriedRows = (settled.owed?.length || 0) + (settled.owedRest?.length || 0);
+  if (!vout.length && carry <= 0 && settled.minted === 0n && carriedRows === 0) {
     throw new Error('coinbase_needs_dest');
   }
   const tx = {
@@ -1065,9 +1067,10 @@ function settlementFor(prev, height, shareBatch, unit) {
     unit,
   });
   if (!settled.ok) return { ok: false, reason: settled.reason || 'hash_owed' };
-  const idle = owedIn.length === 0 && dustIn === 0n && overflowIn === 0n
-    && fresh.length === 0 && settled.pay.length === 0 && settled.owed.length === 0
-    && settled.dust === 0n && settled.overflow === 0n;
+  // owedIn is the combined map, including rows that were packed in hashOwedRest.
+  // A ledger that only looks empty inline is not idle and must not mint a finder floor.
+  const parentIdle = owedIn.length === 0 && dustIn === 0n && overflowIn === 0n;
+  const idle = parentIdle && hashLedgerIdle(settled, fresh.length);
   return { ...settled, idle };
 }
 

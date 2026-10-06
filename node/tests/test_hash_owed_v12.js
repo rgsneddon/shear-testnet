@@ -35,6 +35,7 @@ import {
   hashOverflowFromTx,
   proRataNanos,
   settleHashOwed,
+  writeHashLedger,
 } from '../../crypto/hash_owed.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import {
@@ -67,9 +68,30 @@ function sumNanos(rows) {
   return (rows || []).reduce((n, row) => n + BigInt(row.nanos), 0n);
 }
 
+function allOwed(settled) {
+  return [...(settled.owed || []), ...(settled.owedRest || [])];
+}
+
 function conserved(settled, input) {
-  const out = settled.minted + sumNanos(settled.owed) + settled.dust + settled.overflow;
+  assert.equal(settled.dust, 0n);
+  assert.equal(settled.overflow, 0n);
+  const out = settled.minted + sumNanos(allOwed(settled));
   assert.equal(out, input);
+}
+
+function assertPerNote(settled, rows) {
+  const want = new Map();
+  for (const row of rows) {
+    const hex = row.noteCommit.toString('hex');
+    want.set(hex, (want.get(hex) || 0n) + row.nanos);
+  }
+  const got = new Map();
+  for (const row of [...(settled.pay || []), ...allOwed(settled)]) {
+    const hex = row.noteCommit.toString('hex');
+    got.set(hex, (got.get(hex) || 0n) + row.nanos);
+  }
+  assert.equal(got.size, want.size);
+  for (const [hex, nanos] of want) assert.equal(got.get(hex), nanos, hex);
 }
 
 function shareAt(dest, low, bits) {
@@ -108,18 +130,20 @@ describe('v12 hash-bonus owed ledger', () => {
             assert.equal(first.ok, true, first.reason);
             const input = sumNanos(fresh);
             conserved(first, input);
+            assertPerNote(first, fresh);
             assert.ok(first.owed.length <= cap);
-            for (const row of first.owed) assert.ok(row.nanos >= dust);
+            if (first.owedRest.length) assert.equal(first.owed.length, cap);
+            for (const row of allOwed(first)) assert.ok(row.nanos > 0n);
             for (const order of orders.slice(1)) {
               const other = settleHashOwed({ fresh: order, budget, dust, maxEntries: cap, height: 5 });
               assert.equal(other.ok, true);
+              conserved(other, input);
+              assertPerNote(other, order);
               assert.equal(other.minted, first.minted);
-              assert.equal(other.dust, first.dust);
-              assert.equal(other.overflow, first.overflow);
-              assert.equal(other.owed.length, first.owed.length);
-              for (let i = 0; i < first.owed.length; i += 1) {
-                assert.equal(other.owed[i].nanos, first.owed[i].nanos);
-                assert.equal(other.owed[i].noteCommit.equals(first.owed[i].noteCommit), true);
+              assert.equal(allOwed(other).length, allOwed(first).length);
+              for (let i = 0; i < allOwed(first).length; i += 1) {
+                assert.equal(allOwed(other)[i].nanos, allOwed(first)[i].nanos);
+                assert.equal(allOwed(other)[i].noteCommit.equals(allOwed(first)[i].noteCommit), true);
               }
             }
           }
@@ -128,7 +152,7 @@ describe('v12 hash-bonus owed ledger', () => {
     }
   });
 
-  it('folds below the dust floor and keeps the floor as a row', () => {
+  it('keeps a sub-dust balance on its note until the floor, then pays that note', () => {
     const dust = hashOwedDustNanos();
     assert.equal(dust, 256n);
     assert.equal(HASH_OWED_MAX_ENTRIES, 65536);
@@ -143,27 +167,53 @@ describe('v12 hash-bonus owed ledger', () => {
       height: 4,
     });
     assert.equal(settled.ok, true, settled.reason);
-    assert.equal(settled.dust, dust - 1n);
-    assert.equal(settled.owed.length, 2);
+    assert.equal(settled.dust, 0n);
+    assert.equal(settled.overflow, 0n);
+    assert.equal(allOwed(settled).length, 3);
     assert.equal(settled.owed[0].nanos, dust + 1n);
     assert.equal(settled.owed[0].sinceHeight, 1);
-    assert.equal(settled.owed[1].nanos, dust);
+    const heldBelow = allOwed(settled).find((row) => row.noteCommit.equals(below.noteCommit));
+    assert.equal(heldBelow.nanos, dust - 1n);
+    assert.equal(heldBelow.sinceHeight, 2);
     assert.equal(settled.minted, 0n);
     conserved(settled, (dust - 1n) + dust + (dust + 1n));
     const swept = settleHashOwed({
-      owedIn: settled.owed,
-      dustIn: settled.dust,
+      owedIn: allOwed(settled),
       budget: dust + (dust + 1n),
       dust,
       height: 5,
     });
     assert.equal(swept.minted, dust + (dust + 1n));
-    assert.equal(swept.owed.length, 0);
-    assert.equal(swept.dust, dust - 1n);
-    conserved(swept, dust + (dust + 1n) + (dust - 1n));
+    assert.equal(allOwed(swept).length, 1);
+    assert.equal(allOwed(swept)[0].noteCommit.equals(below.noteCommit), true);
+    assert.equal(allOwed(swept)[0].nanos, dust - 1n);
+    assert.equal(swept.dust, 0n);
+    conserved(swept, (dust - 1n) + dust + (dust + 1n));
+    const grown = settleHashOwed({
+      owedIn: allOwed(swept),
+      fresh: [destRow(1, dust - 1n, 6)],
+      budget: 0n,
+      dust,
+      height: 6,
+    });
+    assert.equal(allOwed(grown).length, 1);
+    assert.equal(allOwed(grown)[0].nanos, (dust - 1n) * 2n);
+    assert.equal(allOwed(grown)[0].noteCommit.equals(below.noteCommit), true);
+    assert.ok(allOwed(grown)[0].nanos >= dust);
+    const paid = settleHashOwed({
+      owedIn: allOwed(grown),
+      budget: (dust - 1n) * 2n,
+      dust,
+      height: 7,
+    });
+    assert.equal(paid.minted, (dust - 1n) * 2n);
+    assert.equal(paid.pay[0].noteCommit.equals(below.noteCommit), true);
+    assert.equal(allOwed(paid).length, 0);
+    assert.equal(paid.dust, 0n);
+    assert.equal(paid.overflow, 0n);
   });
 
-  it('publishes rows past the entry cap and does not pay them to someone else', () => {
+  it('keeps rows past the inline cap on their noteCommit and a later block pays them', () => {
     const dust = 10n;
     const rows = [];
     for (let i = 0; i < 10; i += 1) rows.push(destRow(i, 100n + BigInt(i), i + 1));
@@ -176,26 +226,109 @@ describe('v12 hash-bonus owed ledger', () => {
     });
     assert.equal(settled.ok, true, settled.reason);
     assert.equal(settled.owed.length, 4);
+    assert.equal(settled.owedRest.length, 6);
     assert.equal(settled.minted, 0n);
-    const kept = sumNanos(settled.owed);
-    assert.equal(settled.overflow, sumNanos(rows) - kept);
-    assert.ok(settled.overflow > dust);
+    assert.equal(settled.overflow, 0n);
+    assert.equal(settled.dust, 0n);
     for (const dropped of rows.slice(4)) {
       assert.equal(settled.owed.some((row) => row.noteCommit.equals(dropped.noteCommit)), false);
-      assert.equal(settled.pay.some((row) => row.noteCommit.equals(dropped.noteCommit)), false);
+      assert.equal(settled.owedRest.some((row) => row.noteCommit.equals(dropped.noteCommit) && row.nanos === dropped.nanos), true);
     }
+    conserved(settled, sumNanos(rows));
+    const tx = { coinbase: true };
+    writeHashLedger(tx, settled);
+    assert.equal(tx.hashDustNanos, undefined);
+    assert.equal(tx.hashOwedOverflowNanos, undefined);
+    assert.equal(hashOwedFromTx(tx).length, rows.length);
+    tx.hashDustNanos = 1;
+    assert.equal(hashOwedFromTx(tx), null);
+    delete tx.hashDustNanos;
+    tx.hashOwedOverflowNanos = 1;
+    assert.equal(hashOwedFromTx(tx), null);
+    delete tx.hashOwedOverflowNanos;
+    const oldest = settled.owed[0];
     const later = settleHashOwed({
-      owedIn: settled.owed,
-      overflowIn: settled.overflow,
-      budget: sumNanos(settled.owed),
+      owedIn: hashOwedFromTx(tx),
+      budget: oldest.nanos,
       dust,
       maxEntries: 4,
       height: 21,
     });
-    assert.equal(later.minted, sumNanos(settled.owed));
-    assert.equal(later.overflow, settled.overflow);
-    assert.equal(later.owed.length, 0);
-    conserved(later, sumNanos(settled.owed) + settled.overflow);
+    assert.equal(later.pay.length, 1);
+    assert.equal(later.pay[0].noteCommit.equals(oldest.noteCommit), true);
+    assert.equal(later.pay[0].nanos, oldest.nanos);
+    assert.equal(allOwed(later).length, rows.length - 1);
+    assert.equal(later.overflow, 0n);
+    conserved(later, sumNanos(rows));
+    const finish = settleHashOwed({
+      owedIn: allOwed(later),
+      budget: sumNanos(allOwed(later)),
+      dust,
+      maxEntries: 4,
+      height: 22,
+    });
+    assert.equal(finish.minted, sumNanos(allOwed(later)));
+    assert.equal(allOwed(finish).length, 0);
+    assert.equal(finish.dust, 0n);
+    assert.equal(finish.overflow, 0n);
+  });
+
+  it('attributes every nano around the inline cap, in any order', () => {
+    const dust = 10n;
+    const budgets = [0n, 1n, dust, dust * 3n, 100000n];
+    for (const cap of [1, 4, 8]) {
+      for (const n of [Math.max(1, cap - 1), cap, cap + 1]) {
+        for (const budget of budgets) {
+          const fresh = [];
+          for (let i = 0; i < n; i += 1) fresh.push(destRow(i + 20, dust + BigInt(i), 2));
+          const orders = [fresh, [...fresh].reverse()];
+          const first = settleHashOwed({ fresh, budget, dust, maxEntries: cap, height: 2 });
+          conserved(first, sumNanos(fresh));
+          assertPerNote(first, fresh);
+          assert.ok(first.owed.length <= cap);
+          if (first.owedRest.length) assert.equal(first.owed.length, cap);
+          for (const order of orders.slice(1)) {
+            const other = settleHashOwed({ fresh: order, budget, dust, maxEntries: cap, height: 2 });
+            conserved(other, sumNanos(fresh));
+            assertPerNote(other, order);
+            assert.equal(other.minted, first.minted);
+            assert.equal(allOwed(other).length, allOwed(first).length);
+          }
+        }
+      }
+    }
+  });
+
+  it('same-height sybil rows cannot orphan an older note', () => {
+    const dust = 10n;
+    const honest = destRow(0, 500n, 1);
+    const sybil = [];
+    for (let i = 1; i <= 8; i += 1) sybil.push(destRow(i, 100n, 5));
+    const orders = [
+      [honest, ...sybil],
+      [...sybil].reverse().concat(honest),
+    ];
+    for (const owedIn of orders) {
+      const settled = settleHashOwed({
+        owedIn,
+        budget: 500n,
+        dust,
+        maxEntries: 3,
+        height: 6,
+      });
+      assert.equal(settled.ok, true, settled.reason);
+      assert.equal(settled.pay.some((row) => row.noteCommit.equals(honest.noteCommit) && row.nanos === 500n), true);
+      for (const row of sybil) {
+        const held = allOwed(settled).find((item) => item.noteCommit.equals(row.noteCommit));
+        assert.ok(held);
+        assert.equal(held.nanos, row.nanos);
+      }
+      assert.equal(settled.dust, 0n);
+      assert.equal(settled.overflow, 0n);
+      conserved(settled, 500n + sumNanos(sybil));
+      assert.ok(settled.owedRest.length > 0);
+      assert.equal(settled.owed.length, 3);
+    }
   });
 
   it('pays older owed before new credit, independent of input order', () => {
@@ -290,7 +423,7 @@ describe('v12 hash-bonus owed ledger', () => {
           assert.equal(settled.owed.length, 0);
           assert.equal(settled.minted, sumNanos(fresh));
         } else {
-          assert.equal(sumNanos(settled.owed) + settled.dust + settled.overflow, sumNanos(fresh) - settled.minted);
+          assert.equal(sumNanos(allOwed(settled)), sumNanos(fresh) - settled.minted);
         }
         conserved(settled, sumNanos(fresh));
         const flipped = settleHashOwed({
@@ -480,10 +613,18 @@ describe('v12 hash-bonus owed ledger', () => {
       const supply = auditCirculatingSupply(chain.slice(0, n));
       assert.equal(supply.status, 'verified', `${supply.reason} at ${n}`);
     }
+    const mid = auditCirculatingSupply(chain.slice(0, 2));
+    assert.equal(mid.status, 'verified', mid.reason);
+    assert.equal(mid.hashOwedNanos, MAX_HASH_UNITS_PER_BLOCK);
+    assert.equal(mid.hashDustNanos, 0);
+    assert.equal(mid.hashOwedOverflowNanos, 0);
+    assert.equal(mid.circulatingNanos, mid.measuredPotNanos + mid.measuredHashNanos);
+    assert.ok(mid.hashOwedNanos > 0);
     const tipSupply = auditCirculatingSupply(chain);
     assert.equal(tipSupply.hashOwedNanos, 0);
     assert.equal(tipSupply.hashDustNanos, 0);
     assert.equal(tipSupply.hashOwedOverflowNanos, 0);
+    assert.equal(tipSupply.circulatingNanos, tipSupply.measuredPotNanos + tipSupply.measuredHashNanos);
 
     function reseal(tplBlock, txs) {
       const decoded = decodeHeader(Buffer.from(tplBlock.header));

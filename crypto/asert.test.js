@@ -477,7 +477,10 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /SHARE_BMAX=28/);
     assert.match(fp, /HASH_OWED=noteCommit-carry/);
     assert.match(fp, /HASH_OWED_DUST=256/);
-    assert.match(fp, /HASH_OWED_MAX=65536/);
+    assert.match(fp, /HASH_OWED_CARRY=v1/);
+    assert.match(fp, /HASH_OWED_OVERFLOW=forbidden/);
+    assert.match(fp, /HASH_OWED_INLINE=65536/);
+    assert.doesNotMatch(fp, /HASH_OWED_MAX=/);
     assert.equal(shareCreditMaxBits(), 28);
     assert.doesNotMatch(fp, /:ENC_SHARE=v5:/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);

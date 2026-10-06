@@ -164,16 +164,24 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     }];
     const store = { blocks, tip: () => blocks[1], reserveVault: emptyVault() };
     const fromLeaves = hashBonusEmittedOfBlock(blocks[0], HASH_BONUS_NANOS);
-    assert.equal(fromLeaves, units * HASH_BONUS_NANOS);
+    assert.equal(fromLeaves, 0);
     const fromShares = hashBonusEmittedOfBlock(blocks[1], HASH_BONUS_NANOS);
-    assert.equal(fromShares, 2 * unitsForShare() * HASH_BONUS_NANOS);
+    assert.equal(fromShares, 0);
+    const minted = hashBonusEmittedOfBlock({
+      height: 3,
+      aLeaves: [{ noteCommit: Buffer.alloc(32, 1), count: units }],
+      shareBatch: blocks[1].shareBatch,
+      txs: [{ coinbase: true, vout: [{ kind: 'hash', nanos: units, valueProof: { v: 17 } }] }],
+    }, HASH_BONUS_NANOS);
+    assert.equal(minted, 17);
     const supply = networkSupply(store);
     assert.equal(supply.supplyStatus, 'mismatch');
     assert.equal(supply.potNanos, 0);
     assert.equal(supply.hashNanos, 0);
-    assert.notEqual(supply.hashNanos, fromLeaves + fromShares);
+    assert.equal(supply.hashOwedNanos, 0);
+    assert.notEqual(supply.hashNanos, units * HASH_BONUS_NANOS);
     assert.equal(supply.schedulePotNanos, 2 * NANOS_PER_SHE);
-    assert.notEqual(supply.circulatingNanos, supply.schedulePotNanos + fromLeaves + fromShares);
+    assert.notEqual(supply.circulatingNanos, supply.schedulePotNanos + units * HASH_BONUS_NANOS);
   });
 
   it('empty-aLeaves + empty-shareBatch + one confidential-0 hash vout returns 256', () => {

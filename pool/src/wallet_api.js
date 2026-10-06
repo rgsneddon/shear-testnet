@@ -33,8 +33,7 @@ import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
-import { unitsForShare, creditBitsForShare } from '../../crypto/share_batch.js';
-import { unpackShareBatch } from '../../crypto/pack.js';
+import { unitsForShare } from '../../crypto/share_batch.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
 import { auditCirculatingSupply } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
@@ -621,48 +620,39 @@ function confidentialZeroNanos(o) {
   return Math.floor(Number(o.nanos) || 0) === 0;
 }
 
-/** Hash-bonus nanos minted in one sealed block. Compact shares drop dest; Tree-A counts remain.
- * Empty aLeaves and an empty shareBatch with one confidential hash vout (plaintext nanos 0)
- * is the sealed finder floor at unitsForShare(). */
+/**
+ * Hash-bonus nanos consensus minted in one sealed coinbase.
+ * Tree-A counts, share units, and owed rows are not a mint.
+ * One confidential hash vout with plaintext nanos 0 is the finder floor.
+ */
 export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
   const u = hashBonusUnitNanos(unit);
-  let n = 0;
-  for (const leaf of block?.aLeaves || []) {
-    n += Math.max(0, Math.floor(Number(leaf?.count) || 0)) * u;
-  }
-  if (n > 0) return n;
-  const packed = unpackShareBatch(block?.shareBatch || []);
-  if (packed.length) {
-    let units = 0;
-    for (const share of packed) {
-      const credit = creditBitsForShare(share, undefined, { strict: true });
-      if (!credit.ok) continue;
-      units += unitsForShare(credit.bits);
-    }
-    return units * u;
-  }
   const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
-  if (cb?.coinbase && Array.isArray(cb.vout)) {
-    const pays = [
-      ...expectedCoinbasePays(block.shareBatch || [], {
-        miner: block.miner,
-        hashBonusNanos: u,
-        potNanos: Number(block.blockSubsidyNanos) || undefined,
-      }),
-      ...paysFromALeaves(block.aLeaves || [], { hashBonusNanos: u }),
-    ];
-    const hashVouts = [];
-    for (const o of cb.vout) {
-      if (String(o.kind || '') !== 'hash') continue;
-      hashVouts.push(o);
-      const hit = matchSealedCoinbaseVout(o, pays);
-      n += Math.max(0, Math.floor(Number(hit.nanos || o.nanos || 0)));
-    }
-    if (n === 0 && hashVouts.length === 1 && confidentialZeroNanos(hashVouts[0])) {
-      n = unitsForShare() * u;
+  if (!cb || cb.coinbase !== true || !Array.isArray(cb.vout)) return 0;
+  let minted = 0;
+  let hashVouts = 0;
+  let confidentialFloor = false;
+  for (const o of cb.vout) {
+    if (String(o?.kind || '') !== 'hash') continue;
+    hashVouts += 1;
+    const raw = o?.valueProof && o.valueProof.v != null && o.valueProof.v !== '' && o.valueProof.v !== false
+      ? o.valueProof.v
+      : null;
+    if (raw != null) {
+      let n = null;
+      if (typeof raw === 'bigint') n = raw;
+      else if (typeof raw === 'number' && Number.isSafeInteger(raw)) n = BigInt(raw);
+      else if (typeof raw === 'string' && /^[0-9]+$/.test(raw)) {
+        try { n = BigInt(raw); } catch { n = null; }
+      }
+      if (n == null || n < 0n || n > BigInt(Number.MAX_SAFE_INTEGER)) return 0;
+      minted += Number(n);
+    } else if (confidentialZeroNanos(o)) {
+      confidentialFloor = true;
     }
   }
-  return n;
+  if (minted === 0 && hashVouts === 1 && confidentialFloor) return unitsForShare() * u;
+  return minted;
 }
 
 /** All SHE in existence: opened coinbase commitments, not the schedule echo. Staked coin stays out of the sum. */
@@ -687,6 +677,8 @@ function supplyCacheKey(store) {
     mix(Buffer.isBuffer(ex) ? ex.toString('hex') : (ex == null ? '' : String(ex)));
     mix(cb?.carryNanos ?? '');
     mix(Array.isArray(block?.shareBatch) ? block.shareBatch.length : 0);
+    mix(Array.isArray(cb?.hashOwed) ? cb.hashOwed.length : 0);
+    mix(Array.isArray(cb?.hashOwedRest) ? cb.hashOwedRest.length : 0);
     const vouts = cb?.vout || [];
     mix(vouts.length);
     for (const o of vouts) {
@@ -702,7 +694,7 @@ export function networkSupply(store) {
   if (h === _supplyAt && _supplyVal) return _supplyVal;
   if (_supplyBusy) {
     return _supplyVal || {
-      circulatingNanos: 0, potNanos: 0, hashNanos: 0, extraMintNanos: 0, burnedNanos: 0, lockedNanos: 0,
+      circulatingNanos: 0, potNanos: 0, hashNanos: 0, hashOwedNanos: 0, extraMintNanos: 0, burnedNanos: 0, lockedNanos: 0,
       supplyStatus: 'mismatch', differenceNanos: 0, schedulePotNanos: 0,
     };
   }
@@ -715,6 +707,7 @@ export function networkSupply(store) {
       circulatingNanos: audit.circulatingNanos,
       potNanos: audit.measuredPotNanos,
       hashNanos: audit.measuredHashNanos,
+      hashOwedNanos: audit.hashOwedNanos,
       levyNanos: audit.measuredLevyNanos,
       extraMintNanos: audit.extraMintNanos,
       burnedNanos: audit.burnedNanos,
@@ -755,6 +748,7 @@ export function explorerCirculation(store) {
     circulatingNanos: supply.circulatingNanos,
     circulating: nanosToShe(supply.circulatingNanos),
     emitted: nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos),
+    hashOwedNanos: Number(supply.hashOwedNanos) || 0,
     reserveMintedNanos: supply.reserveMintedNanos || 0,
     reserveVaultNanos: supply.vaultNanos || supply.lockedNanos || 0,
     accruingNanos: supply.accruingNanos || 0,
@@ -780,6 +774,7 @@ function publicHashTag(login) {
   return `m${hex}`;
 }
 
+/** Open-round work is not a mint. `included` stays false until a sealed hash note exists. */
 export function openRoundHashRows(miners, hashBonusNanos) {
   const book = miners && typeof miners.values === 'function'
     ? [...miners.values()]
@@ -798,7 +793,7 @@ export function openRoundHashRows(miners, hashBonusNanos) {
       count,
       weight: count,
       fee: 0,
-      included: true,
+      included: false,
       priority: 800 + count,
       prime: false,
       tag,
@@ -899,7 +894,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
         count,
         weight: count,
         fee: 0,
-        included: true,
+        included: false,
         priority: 800 + count,
         prime: false,
         tag,
