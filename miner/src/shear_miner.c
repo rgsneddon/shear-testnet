@@ -11,6 +11,7 @@
 #endif
 #include "shear_hash.h"
 #include "sha256.h"
+#include "../../crypto/share_stamp.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -368,7 +369,7 @@ static void apply_job(const char *line) {
   json_int(line, "shareBits", &sb);
   json_int(line, "blockBits", &bb);
   json_int(line, "bits", &bits);
-  job.share_bits = sb > 0 ? sb : 8;
+  job.share_bits = shear_clamp_share_bits(sb > 0 ? sb : SHEAR_SHARE_FLOOR_BITS);
   job.block_bits = bb > 0 ? bb : (bits > 0 ? bits : 16);
   if (!job.jobId[0]) snprintf(job.jobId, sizeof(job.jobId), "job");
   pthread_mutex_lock(&g_job_mu);
@@ -499,16 +500,24 @@ static void *hash_worker(void *arg) {
     unsigned char hashes[SHEAR_X8][32];
     for (int k = 0; k < SHEAR_X8; k++) {
       memcpy(headers[k], job.header, SHEAR_HEADER_LEN);
-      shear_set_nonce(headers[k], n + (uint64_t)k * (uint64_t)g_threads);
+      uint64_t stamped = shear_stamp_share_nonce(
+        n + (uint64_t)k * (uint64_t)g_threads, job.share_bits);
+      shear_set_nonce(headers[k], stamped);
     }
     shear_hash_x8(headers, hashes);
     atomic_fetch_add_explicit(&g_hashes, (uint64_t)SHEAR_X8, memory_order_relaxed);
     JobSnap live;
     if (copy_main_job(&live) && live.gen == job.gen) {
       for (int k = 0; k < SHEAR_X8; k++) {
-        if (!shear_meets_target(hashes[k], job.share_bits)) continue;
+        uint64_t stamped = shear_stamp_share_nonce(
+          n + (uint64_t)k * (uint64_t)g_threads, job.share_bits);
+        int shareHit = shear_meets_target(hashes[k], job.share_bits);
+        int blockBits = job.block_bits;
+        if (blockBits >= 65536) blockBits = (int)((unsigned)blockBits / 65536u);
+        int blockHit = blockBits > 0 && shear_meets_target(hashes[k], blockBits);
+        if (!shareHit && !blockHit) continue;
         /* 1 hash = 1 tx: each meeting nonce is its own share. Never fold the batch. */
-        enqueue_share(job.jobId, n + (uint64_t)k * (uint64_t)g_threads);
+        enqueue_share(job.jobId, stamped);
       }
     }
     n += (uint64_t)SHEAR_X8 * (uint64_t)g_threads;
@@ -654,6 +663,15 @@ static int mine_once(void) {
 }
 
 int main(int argc, char **argv) {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--stamp") == 0 && i + 1 < argc) {
+      int bits = atoi(argv[++i]);
+      unsigned long long low = (i + 1 < argc) ? strtoull(argv[++i], NULL, 0) : 1ull;
+      uint64_t stamped = shear_stamp_share_nonce(low, bits);
+      printf("%llu %d\n", (unsigned long long)stamped, shear_credit_bits_of_nonce(stamped));
+      return 0;
+    }
+  }
   int do_selftest = 0;
   int do_cfg = 0;
   int bench_secs = 0;

@@ -13,6 +13,7 @@
 #endif
 #include "shear_hash.h"
 #include "stratum_tls.h"
+#include "../../crypto/share_stamp.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -312,18 +313,14 @@ static void init_note_commit(void) {
   g_have_note = 1;
 }
 
-/* Credited width is the LE high byte. B_MAX is log2(MAX_HASH_UNITS)=28. */
+/* Credited width is the LE high byte. The clamp lives in share_stamp.h. */
 static uint64_t stamp_share_nonce(uint64_t n) {
   int sb = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
-  if (sb < 8) sb = 8;
-  if (sb > 28) sb = 28;
-  return (n & ((1ull << 56) - 1ull)) | ((uint64_t)(unsigned)sb << 56);
+  return shear_stamp_share_nonce(n, sb);
 }
 
 static int credit_bits_of_nonce(uint64_t nonce) {
-  int sb = (int)((nonce >> 56) & 0xffu);
-  if (sb < 8 || sb > 28) return -1;
-  return sb;
+  return shear_credit_bits_of_nonce(nonce);
 }
 
 static int share_or_block_hit(const unsigned char hash[32], uint64_t nonce) {
@@ -1214,6 +1211,15 @@ static int mine_once(void) {
 }
 
 int main(int argc, char **argv) {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--stamp") == 0 && i + 1 < argc) {
+      int bits = atoi(argv[++i]);
+      unsigned long long low = (i + 1 < argc) ? strtoull(argv[++i], NULL, 0) : 1ull;
+      uint64_t stamped = shear_stamp_share_nonce(low, bits);
+      printf("%llu %d\n", (unsigned long long)stamped, shear_credit_bits_of_nonce(stamped));
+      return 0;
+    }
+  }
   int do_selftest = 0;
   int do_cfg = 0;
   int bench_secs = 0;
