@@ -381,6 +381,21 @@ export function createStore(dir, {
     }
   }
 
+  /** Canonical genesis header time. 0 when this list does not start at genesis. */
+  function genesisHeaderMs(list) {
+    const rows = Array.isArray(list) ? list : [];
+    const g = rows.find((b) => Number(b?.height) === 1) || null;
+    if (!g?.header) return 0;
+    try {
+      const decoded = decodeHeader(Buffer.from(g.header));
+      if (!decoded.prevBlockHash.equals(GENESIS_PREV)) return 0;
+      const ts = Number(decoded.timestamp);
+      return Number.isFinite(ts) && ts > 0 ? ts : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   function applyReserve(block) {
     applyReserveBlock({ state: reserveVault, block, nowMs: blockTimeMs(block) });
     saveReserve();
@@ -656,7 +671,7 @@ export function createStore(dir, {
       } catch { /* verify hashes when the stored id is not 32 bytes */ }
       const spentCheck = verifyBlock(b, prev, {
         spentB,
-        tipHeight: Number(tip()?.height || b.height),
+        tipHeight: Number(prev?.height || 0),
         hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
         committedBps: Number(reserveVault.epochBps ?? 264),
         reserveState: reserveVault,
@@ -664,6 +679,7 @@ export function createStore(dir, {
         grandparentHeader: grandparentHeader(blocks.slice(0, i - 1)),
         sealedIntervalsMs: headerGapsMs(blocks.slice(0, i - 1)),
         nowMs: Date.now(),
+        genesisMs: genesisHeaderMs(blocks),
         trustedPowHash,
         skipSharePow: true,
       });
@@ -819,15 +835,14 @@ export function createStore(dir, {
     const prev = tip();
     const parentH = prev ? prev.height : 0;
     const incomingH = Number(block.height || (prev ? prev.height + 1 : 1));
-    const tipHeight = Math.max(
-      prev ? prev.height + 1 : 1,
-      incomingH,
-      Number(verifyOpts.tipHeight || 0),
-    );
+    // A peer-advertised height must not prune or skip validation.
+    // incomingH is the block's own claim. Burial uses only the parent already
+    // on this chain, so a tall advertised height cannot mark the block pruned.
+    const tipHeight = prev ? prev.height : 0;
     const shareN = Array.isArray(block.shareBatch) ? block.shareBatch.length : 0;
-    const toVerify = (block.samplesPruned || shareN || !shouldPruneSamples(incomingH, tipHeight))
-      ? block
-      : { ...block, samplesPruned: true };
+    const toVerify = (!shareN && shouldPruneSamples(incomingH, tipHeight))
+      ? { ...block, samplesPruned: true }
+      : block;
     const check = verifyBlock(toVerify, prev ? {
       hash: prev.hash,
       header: prev.header,
@@ -1026,6 +1041,31 @@ export function createStore(dir, {
           return { ok: false, reason: 'admit_link_tag' };
         }
       }
+      if (Array.isArray(tx.admit_proofs) && tx.admit_proofs.length > 1) {
+        const vins = (tx.vin || []).filter((v) => v && !v.coinbase);
+        if (tx.admit_proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
+        const seen = new Set();
+        for (let pi = 0; pi < tx.admit_proofs.length; pi++) {
+          const extra = tx.admit_proofs[pi];
+          const etag = extra?.spendTag;
+          let eth = '';
+          try { eth = etag ? Buffer.from(asU8(etag)).toString('hex') : ''; } catch { eth = ''; }
+          if (!eth || seen.has(eth)) return { ok: false, reason: 'admit_membership' };
+          seen.add(eth);
+          if (live.spendTags.has(eth)) return { ok: false, reason: 'admit_link_tag' };
+          const ct = extra.cTilde || vins[pi]?.commit;
+          let okExtra = false;
+          try {
+            okExtra = !!admit_verify(extra, live, { cTilde: ct, spendTag: etag, jroot: live.jroot });
+          } catch { okExtra = false; }
+          if (!okExtra) return { ok: false, reason: 'admit_membership' };
+          const posted = vins[pi]?.commit;
+          if (!posted || !ct) return { ok: false, reason: 'admit_membership' };
+          if (Buffer.from(asU8(posted)).toString('hex') !== Buffer.from(asU8(ct)).toString('hex')) {
+            return { ok: false, reason: 'admit_membership' };
+          }
+        }
+      }
       }
     }
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
@@ -1119,6 +1159,16 @@ export function createStore(dir, {
     return { trialVault: trial, lca, noVault: false };
   }
 
+  function trustedHashFor(block, verifyOpts) {
+    if (verifyOpts?.trustBlockHash && block?.hash) {
+      try {
+        const h = Buffer.from(block.hash);
+        if (h.length === 32) return h;
+      } catch { /* header is hashed when the stored id is not 32 bytes */ }
+    }
+    return verifyOpts?.trustedPowHash || null;
+  }
+
   function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null, verifyOpts = {}) {
     const noVault = verifyOpts.noVault === true;
     const vault = noVault ? null : (trialVault || reserveVault);
@@ -1141,7 +1191,7 @@ export function createStore(dir, {
     }
     return verifyBlock(fork[i], prev, {
       spentB: trialSpent,
-      tipHeight: Number(fork[fork.length - 1]?.height || fork.length),
+      tipHeight: Number(prev?.height || 0),
       hashBonusNanos: Number(vault?.liveHashBonusNanos || 1),
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
@@ -1149,11 +1199,12 @@ export function createStore(dir, {
       committedBps: Number(vault?.epochBps ?? 264),
       reserveState: vault,
       offLoopPow: !!verifyOpts.offLoopPow,
-      trustedPowHash: verifyOpts.trustedPowHash || null,
+      trustedPowHash: trustedHashFor(fork[i], verifyOpts),
       skipSharePow: !!verifyOpts.skipSharePow,
       grandparentHeader: grandparentHeader(accepted),
       sealedIntervalsMs: headerGapsMs(accepted),
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
+      genesisMs: genesisHeaderMs(accepted) || Number(verifyOpts.genesisMs) || 0,
     });
   }
 
@@ -1277,12 +1328,14 @@ export function createStore(dir, {
       if (i >= fork.length) return { ok: true, blocks: out };
       const check = verifyBlock(fork[i], parentView(prev), {
         ...verifyOpts,
+        trustedPowHash: trustedHashFor(fork[i], verifyOpts),
         tipHeight: Number(prev?.height || 0) + 1,
         evmHistory: history.concat(out),
         parentFluxset: null,
         grandparentHeader: grandparentHeader(history.concat(out)),
         sealedIntervalsMs: headerGapsMs(history.concat(out)),
         nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
+        genesisMs: genesisHeaderMs(history) || Number(verifyOpts.genesisMs) || 0,
       });
       const take = (c) => {
         if (!c?.ok) return c;
@@ -1606,7 +1659,7 @@ export function createStore(dir, {
     }
     // Sealed parent interval only. Caller bits (share target, boot override,
     // a private easier job) must not undercut the header miners are offered.
-    const bits = retarget(blocks);
+    const bits = retarget(blocks, now);
     void bitsIn;
     const lag1 = lag1Continuity(t ? t.header : null);
     let baseFeeNow = 1;

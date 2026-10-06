@@ -66,6 +66,43 @@ class _OfflineCatchupBook {
   final List<Map<String, dynamic>> notes;
 }
 
+class _NoteWallet {
+  _NoteWallet(this.ledger, this.id, this.dest, this.posts, this.seed);
+  final ShearLedger ledger;
+  final ShearIdentity id;
+  final String dest;
+  final List<Map<String, dynamic>> posts;
+  final Uint8List seed;
+}
+
+_NoteWallet _noteWallet(int count, {required int nanos}) {
+  final id = createIdentity();
+  final seed = hexToBytes(id.seedHex);
+  final probe = ShearLedger()..bindIdentity(id);
+  final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+  final d20 = hash20FromAddress(dest)!;
+  final notes = <Map<String, dynamic>>[];
+  final pubs = <Uint8List>[];
+  for (var i = 0; i < count; i++) {
+    final n = _offlinePot(nanos, 2, dest20: d20, seed: seed);
+    notes.add(n);
+    final x = admitScalarFromSeed(seed, n);
+    pubs.add(pointBytes(admitPub(x)));
+  }
+  final posts = <Map<String, dynamic>>[];
+  final pool = _RecordingPool(posts, pubs: pubs);
+  final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+  ledger.ingestSealedVouts(
+    notes,
+    spendSeed: seed,
+    dest: dest,
+    prev: Uint8List(32),
+    startIndex: 0,
+  );
+  ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+  return _NoteWallet(ledger, id, dest, posts, seed);
+}
+
 Map<String, dynamic> _offlinePot(int nanos, int height, {required Uint8List dest20, required Uint8List seed}) {
   var note = _sealNoteNoRange(nanos, dest20: dest20, kind: 'pot');
   note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
@@ -1283,12 +1320,207 @@ void main() {
       spendSeed: seed,
       allowPublicHttp: true,
     );
-    expect(posts.length, 2);
+    expect(posts.length, 1);
     final paid = posts.fold<double>(0, (sum, p) => sum + (p['amount'] as num).toDouble());
     expect(paid, closeTo(0.7, 1e-9));
     expect(posts.every((p) => p['to'] == bob), isTrue);
-    expect((posts.first['vin'] as List).length, 1);
+    expect((posts.first['vin'] as List).length, 2);
+    expect((posts.first['vin'] as List).length, lessThanOrEqualTo(kMaxInputsPerSend));
     expect(tx.to, bob);
+  });
+
+  test('sends of any size stay responsive and split only past the input cap', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = spentNote['commit'] is Uint8List ? (spentNote['commit'] as Uint8List)[0] : 1,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 2,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
+        _sealNoteNoRange(v, dest20: dest20, kind: kind);
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+
+    final wideNotes = <Map<String, dynamic>>[
+      for (var i = 0; i < 3000; i++)
+        {
+          'address': 'd',
+          'amount': i % 5 == 0 ? 0.05 : 0.99,
+          'height': 1,
+        },
+      {'address': 'd', 'amount': 500, 'height': 1, 'locked': true},
+      {'address': 'd', 'amount': 500, 'height': 100},
+    ];
+    final wideWatch = Stopwatch()..start();
+    final wide = selectSpendNotesWire({
+      'notes': wideNotes,
+      'needShe': 10,
+      'dests': ['d'],
+      'tip': 100,
+      'confs': 9,
+    });
+    wideWatch.stop();
+    expect(wideWatch.elapsedMilliseconds, lessThan(2000));
+    expect(wide['covered'], isTrue);
+    final wideBatches = (wide['batches'] as List).cast<Map>();
+    expect(wideBatches.length, greaterThan(1));
+    var wideInputs = 0;
+    for (final b in wideBatches) {
+      final picked = b['notes'] as List;
+      expect(picked.length, inInclusiveRange(1, kMaxInputsPerSend));
+      for (final n in picked) {
+        expect((n as Map)['she'], isNot(500));
+        wideInputs++;
+      }
+    }
+    expect(wideInputs, greaterThan(kMaxInputsPerSend));
+    final dustPlan = selectSpendNotesWire({
+      'notes': wideNotes,
+      'needShe': 1e-6,
+      'dests': ['d'],
+      'tip': 100,
+      'confs': 9,
+    });
+    expect(dustPlan['covered'], isTrue);
+    expect((dustPlan['batches'] as List).length, 1);
+    expect(((dustPlan['batches'] as List).first as Map)['notes'], hasLength(1));
+
+    Future<void> sendOf(_NoteWallet w, double amount, {String? memo}) async {
+      final bob = createIdentity();
+      final to = memo == null
+          ? destForLogin(bob.address, height: 1, viewKey: 'ab' * 32)!
+          : bob.paymentCodeFull;
+      w.posts.clear();
+      final before = identityHashCode(Isolate.current).toString();
+      final tx = await w.ledger.sendSpendableSum(
+        from: w.dest,
+        to: to,
+        amount: amount,
+        memo: memo,
+        restFrame: w.id.address,
+        paymentCode: w.id.paymentCode,
+        spendSeed: w.seed,
+        allowPublicHttp: true,
+      );
+      expect(debugSendSelectStamp, isNot(before));
+      expect(w.posts, isNotEmpty);
+      expect(tx.to, isNotEmpty);
+      for (final p in w.posts) {
+        expect((p['vin'] as List).length, inInclusiveRange(1, kMaxInputsPerSend));
+      }
+      final paid = w.posts.fold<double>(0, (s, p) => s + (p['amount'] as num).toDouble());
+      expect(paid, closeTo(amount, 1e-6));
+      if (memo != null) {
+        expect(w.posts.first['memoCt'], isNotNull);
+      } else {
+        expect(w.posts.first['memoCt'], isNull);
+      }
+    }
+
+    final tiny = _noteWallet(3, nanos: kUnitsPerShe);
+    expect(
+      tiny.ledger.spendableOwned(tiny.id.address, paymentCode: tiny.id.paymentCode),
+      closeTo(3, 1e-9),
+    );
+    await sendOf(tiny, 1e-6);
+    expect(tiny.posts.length, 1);
+    await sendOf(_noteWallet(3, nanos: kUnitsPerShe), 0.4);
+    await sendOf(_noteWallet(4, nanos: kUnitsPerShe), 2.5, memo: 'ten memo test');
+
+    final over = _noteWallet(9, nanos: kUnitsPerShe ~/ 5);
+    await sendOf(over, 1.7);
+    expect(over.posts.length, greaterThan(1));
+
+    final nearFee = estimateSendLevyUnits(inputs: 4);
+    final near = _noteWallet(4, nanos: kUnitsPerShe);
+    await sendOf(near, 4 - nearFee / kUnitsPerShe);
+    expect(near.posts.length, 1);
+
+    final full = _noteWallet(4, nanos: kUnitsPerShe);
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    await expectLater(
+      full.ledger.sendSpendableSum(
+        from: full.dest,
+        to: bob,
+        amount: 4,
+        restFrame: full.id.address,
+        paymentCode: full.id.paymentCode,
+        spendSeed: full.seed,
+        allowPublicHttp: true,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'fee_short')),
+    );
+    expect(full.posts, isEmpty);
+    expect(full.ledger.notes.every((n) => n['spent'] != true), isTrue);
+  });
+
+  test('consolidate merges until the note count fits one send, fees only', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 9,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 4,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
+        _sealNoteNoRange(v, dest20: dest20, kind: kind);
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    final w = _noteWallet(10, nanos: (0.25 * kUnitsPerShe).round());
+    final before = w.ledger.notes.where((n) => n['spent'] != true).fold<double>(
+      0,
+      (s, n) => s + ((n['amount'] as num?)?.toDouble() ?? 0),
+    );
+    final rounds = await w.ledger.consolidateSpendableNotes(
+      restFrame: w.id.address,
+      paymentCode: w.id.paymentCode,
+      spendSeed: w.seed,
+      allowPublicHttp: true,
+    );
+    expect(rounds, greaterThan(0));
+    final left = w.ledger.notes.where((n) => n['spent'] != true).toList();
+    expect(left.length, lessThanOrEqualTo(kMaxInputsPerSend));
+    final after = left.fold<double>(0, (s, n) => s + ((n['amount'] as num?)?.toDouble() ?? 0));
+    expect(before - after, greaterThan(0));
+    expect(before - after, lessThan(0.001));
+    for (final p in w.posts) {
+      expect((p['vin'] as List).length, inInclusiveRange(1, kMaxInputsPerSend));
+    }
+  });
+
+  test('cancel during a proof spends nothing', () async {
+    final w = _noteWallet(9, nanos: kUnitsPerShe ~/ 10);
+    final progress = SendProgress();
+    var calls = 0;
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) {
+      calls++;
+      progress.cancel();
+      return {
+        'admit_proof': true,
+        'v': 2,
+        'spendTag': Uint8List(32)..[0] = calls,
+        'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+        'cTilde': Uint8List(32)..[0] = 5,
+      };
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
+        _sealNoteNoRange(v, dest20: dest20, kind: kind);
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'cd' * 32)!;
+    await expectLater(
+      w.ledger.sendSpendableSum(
+        from: w.dest,
+        to: bob,
+        amount: 0.85,
+        restFrame: w.id.address,
+        paymentCode: w.id.paymentCode,
+        spendSeed: w.seed,
+        allowPublicHttp: true,
+        progress: progress,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'send_cancelled')),
+    );
+    expect(w.posts, isEmpty);
+    expect(w.ledger.notes.every((n) => n['spent'] != true), isTrue);
   });
 
   test('open recheck folds parked notes into the rest-frame spendable sum', () async {
@@ -8918,7 +9150,9 @@ class _RecordingPool extends ShearPoolClient {
     List<dynamic>? vout,
     dynamic excess,
     Map<String, dynamic>? admitProof,
+    List<Map<String, dynamic>>? admitProofs,
     String? spendTag,
+    int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
   }) async {
@@ -8931,6 +9165,9 @@ class _RecordingPool extends ShearPoolClient {
       'vout': vout,
       'excess': excess,
       'admit_proof': admitProof,
+      if (admitProofs != null) 'admit_proofs': admitProofs,
+      if (memoCt != null) 'memoCt': memoCt,
+      if (fee != null) 'postedFee': fee,
       'sig': sig,
       'spendPub': spendPub,
       'programId': programId,
@@ -8951,8 +9188,8 @@ class _RecordingPool extends ShearPoolClient {
     }
     final kindName = kind ?? 'send';
     final nanos = (amount * kUnitsPerShe).round();
-    final fee = kindName == 'send' ? levyNanos(nanos) : 0;
-    final leftover = held - nanos - fee;
+    final bookFee = kindName == 'send' ? levyNanos(nanos) : 0;
+    final leftover = held - nanos - bookFee;
     final changeDest = change ?? '';
     final parked = kindName == 'send' &&
         changeDest.isNotEmpty &&
@@ -9001,7 +9238,9 @@ class _ReasonPool extends ShearPoolClient {
     List<dynamic>? vout,
     dynamic excess,
     Map<String, dynamic>? admitProof,
+    List<Map<String, dynamic>>? admitProofs,
     String? spendTag,
+    int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
   }) async =>

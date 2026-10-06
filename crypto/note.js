@@ -1,6 +1,6 @@
 /**
  * Pedersen notes on ristretto255. C = v·G + r·H.
- * Range: native Bulletproofs+ (RANGE=bpplus). v3 bit-OR fails.
+ * Range: packed 64-bit OR proofs (RANGE=packed-bit). The wire label is not Bulletproofs+.
  * Coinbase exact-value: Schnorr that C − vG ∈ ⟨H⟩ for v from Tree-A.
  */
 import { createHash, randomBytes } from 'node:crypto';
@@ -253,12 +253,14 @@ export function sealCoinbaseNote(v, { dest20, noteCommit, kind } = {}) {
   const nc = noteCommit
     ? Buffer.from(noteCommit)
     : (dest20 ? noteCommitOfDest20(dest20) : Buffer.alloc(32));
+  const rangeProof = proveRange(v, r);
   const row = {
     kind: kind || 'hash',
     noteCommit: nc,
     commit: value.C,
     valueProof: { R: value.R, z: value.z, v },
     r: scalarBytes(r),
+    rangeProof: rangeProof && rangeProof.length ? rangeProof : Buffer.alloc(0),
   };
   if (dest20) {
     const d = Buffer.from(dest20);
@@ -317,6 +319,40 @@ export function verifySealedNote(vout, v) {
   return true;
 }
 
+/** Opened non-negative value of one coinbase output. Range proof is required. */
+export function openedCoinbaseNanos(vout) {
+  if (!vout?.commit || !vout.valueProof || vout.valueProof.v == null) return null;
+  const v = typeof vout.valueProof.v === 'bigint' ? Number(vout.valueProof.v) : Number(vout.valueProof.v);
+  if (!Number.isInteger(v) || v < 0) return null;
+  const pr = vout.rangeProof
+    ? (Buffer.isBuffer(vout.rangeProof) ? vout.rangeProof : Buffer.from(asU8(vout.rangeProof)))
+    : Buffer.alloc(0);
+  if (!pr.length || !verifyRange(vout.commit, pr)) return null;
+  if (!verifySealedNote(vout, v)) return null;
+  return v;
+}
+
+/**
+ * Every committing coinbase output opens, and the commitment sum equals that
+ * opened total. Levy notes are in the sum. A totals-only mint does not pass.
+ */
+export function coinbaseVoutsBound(vouts, excess) {
+  const rows = Array.isArray(vouts) ? vouts : [];
+  if (!rows.length) return { ok: false, reason: 'coinbase_output' };
+  let opened = 0;
+  let levy = 0;
+  for (const o of rows) {
+    if (!o?.commit) return { ok: false, reason: 'coinbase_output' };
+    const v = openedCoinbaseNanos(o);
+    if (v == null) return { ok: false, reason: 'coinbase_output' };
+    opened += v;
+    const kind = String(o.kind || '');
+    if (kind === 'finder-fee' || kind === 'reserve-fee') levy += v;
+  }
+  if (!verifyMintSum(rows, opened, excess)) return { ok: false, reason: 'pot' };
+  return { ok: true, opened, levy, rest: opened - levy };
+}
+
 export function mintTotal(vouts) {
   let acc = Point.ZERO;
   for (const o of vouts || []) {
@@ -344,6 +380,11 @@ export function excessOf(vouts) {
     s = Fn.add(s, scalarFrom(o.r));
   }
   return scalarBytes(s);
+}
+
+export function addExcess(excess, r) {
+  if (!excess || r == null) return null;
+  return scalarBytes(Fn.add(scalarFrom(excess), scalarFrom(r)));
 }
 
 /** Kernel k = Σ r_out − Σ (r_in + t) so sum(C_out) + fee·G = sum(C̃_in) + k·H. */

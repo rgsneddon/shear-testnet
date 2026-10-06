@@ -275,14 +275,14 @@ describe('website W-IMPL binds', () => {
     assert.match(pool, /shear-chrome\.js/);
   });
 
-  it('v11 law and the closed v10 soak note name their own fingerprints', () => {
+  it('v12 law and the closed v10 soak note name their own fingerprints', () => {
     const consensus = read('../../specs/consensus.md');
     const ops = read('../../docs/OPS-testnet-v10-90s.md');
-    assert.match(consensus, /shear-testnet-v11/);
-    assert.match(consensus, /median11/);
+    assert.match(consensus, /shear-testnet-v12/);
+    assert.match(consensus, /aserti3-2d/);
     assert.match(consensus, /GENESIS_BITS=17/);
-    assert.match(consensus, /τ=16T/);
-    assert.match(consensus, /ASERT_TAU_MS=1440000/);
+    assert.match(consensus, /τ=2h/);
+    assert.match(consensus, /ASERT_TAU_MS=7200000/);
     assert.match(consensus, /invent-must-not-return/);
     assert.match(ops, /shear-testnet-v10/);
     assert.match(ops, /median11/);

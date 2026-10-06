@@ -83,12 +83,14 @@ Map<String, dynamic>? nativeProveFlowSpend({
     final got = jsonDecode(r.stdout as String);
     if (got is! Map || got['ok'] != true || got['v'] != 2) return null;
     if (got['r'] != null) return null;
+    final blind = _unhex(got['t']);
     return {
       'admit_proof': true,
       'v': 2,
       'spendTag': _unhex(got['spendTag']),
       'blob': _unhex(got['blob']),
       'cTilde': _unhex(got['cTilde']),
+      if (blind != null) 't': blind,
     };
   } catch (_) {
     return null;

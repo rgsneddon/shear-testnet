@@ -1902,20 +1902,9 @@ export function createP2p({
       }
       const job = scheduleP2pVerify(() => {
         const before = store.tip();
-        const networkTip = Math.max(
-          advertisedPeerTip(recNow, 0),
-          Number(last?.height || 0),
-          Number(before?.height || 0),
-        );
-        const blocks = fork.map((b) => {
-          const h = Number(b?.height || 0);
-          const shares = Array.isArray(b.shareBatch) ? b.shareBatch.length : 0;
-          if (b.samplesPruned || shares || !shouldPruneSamples(h, networkTip)) return b;
-          return { ...b, samplesPruned: true };
-        });
-        return Promise.resolve(store.ingest(blocks, {
+        // IBD validates every block. A peer-advertised height is not a skip.
+        return Promise.resolve(store.ingest(fork, {
           offLoopPow: true,
-          tipHeight: networkTip,
         })).then((got) => ({ got, before }));
       });
       job.then(({ got, before }) => {

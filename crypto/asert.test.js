@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   nextBits,
-  bitsForBlock,
+  asertNextBits,
   templateStampMs,
   TARGET_BLOCK_INTERVAL_MS,
   MTP_FUTURE_MS,
@@ -71,81 +71,83 @@ import {
 } from './asert.js';
 import { verifyShareBatch } from './share_batch.js';
 
+function anchoredBits(height, timeMs, anchorBits = GENESIS_BITS_PACKED, anchorTimeMs = 0) {
+  return asertNextBits({
+    anchorBits,
+    anchorTimeMs,
+    anchorHeight: 1,
+    blockTimeMs: timeMs,
+    blockHeight: height,
+    parentTimeMs: anchorTimeMs,
+  });
+}
+
 describe('ASERT 90s block retarget', () => {
-  it('holds packed bits when the interval is 90 seconds', () => {
+  it('holds packed bits when the chain is on the 90s schedule', () => {
     assert.equal(TARGET_BLOCK_INTERVAL_MS, 90_000);
-    assert.equal(nextBits(GENESIS_BITS, TARGET_BLOCK_INTERVAL_MS), packBits(GENESIS_BITS));
+    const on = anchoredBits(11, 10 * TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(on.ok, true);
+    assert.equal(on.packed, GENESIS_BITS_PACKED);
     assert.equal(nextBits(packBits(21), 90_000), packBits(21));
   });
 
-  it('raises packed bits when blocks arrive faster than 90s', () => {
-    const next = unpackBits(nextBits(packBits(21), 45_000));
-    assert.ok(next > 21, `expected harden from 21, got ${next}`);
-    assert.ok(next - 21 <= ASERT_HARDEN_MAX, `45s stays inside the farm lid, got ${next}`);
-    const from16 = unpackBits(nextBits(packBits(16), 59_000));
-    assert.ok(from16 > 16, `59s must climb off 16, got ${from16}`);
-    assert.ok(from16 - 16 < 1, `one 59s gap is under a full bit, got ${from16}`);
-    assert.equal(nextBits(packBits(16), 90_000), packBits(16));
+  it('raises packed bits when the chain is ahead of the 90s schedule', () => {
+    const fast = anchoredBits(11, 10 * 45_000, packBits(21));
+    assert.ok(unpackBits(fast.packed) > 21, `expected harden from 21, got ${unpackBits(fast.packed)}`);
+    const from16 = anchoredBits(2, 59_000, packBits(16));
+    const climbed = unpackBits(from16.packed);
+    assert.ok(climbed > 16, `59s must climb off 16, got ${climbed}`);
+    assert.ok(climbed - 16 < 1, `one 59s gap is under a full bit, got ${climbed}`);
+    assert.equal(anchoredBits(2, 90_000, packBits(16)).packed, packBits(16));
     const held = nextBits(packBits(15), TARGET_BLOCK_INTERVAL_MS);
     assert.equal(nextBits(packBits(15), 0), held);
     assert.equal(nextBits(packBits(15), -1), held);
     assert.equal(nextBits(packBits(15), Number.NaN), held);
-    assert.equal(nextBits(packBits(15), 0.5), nextBits(packBits(15), 1));
-    const stuck = unpackBits(nextBits(packBits(16), 82_000));
-    assert.ok(stuck > 16, `82s must not sit in a dead band, got ${stuck}`);
   });
 
-  it('asert source describes the recursive parent step, not a spew lid', () => {
+  it('asert source describes genesis-anchored aserti3-2d, not a spew lid', () => {
     const src = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
     assert.equal(src.includes('stops a farm spew'), false);
     assert.equal(/restore\b[^\n]{0,80}log2/.test(src), false);
-    assert.match(src, /median of the last 11 sealed header gaps/i);
+    assert.match(src, /function asertNextBits/);
+    assert.match(src, /Not the v12 difficulty step/);
     assert.match(src, /function medianIntervalMs/);
   });
 
-  it('median of 11 pads one short gap to 90s and moves when six are short', () => {
+  it('median of 11 is not the difficulty step; six short gaps still harden the anchor', () => {
     assert.equal(ASERT_CURVE_WINDOW, 11);
     assert.equal(medianIntervalMs([2_000]), TARGET_BLOCK_INTERVAL_MS);
     const six = medianIntervalMs([2_000, 2_000, 2_000, 2_000, 2_000, 2_000]);
     assert.equal(six, 2_000);
-    const held = unpackBits(nextBits(GENESIS_BITS_PACKED, medianIntervalMs([2_000])));
-    assert.equal(held, GENESIS_BITS);
-    const moved = unpackBits(nextBits(GENESIS_BITS_PACKED, six));
+    const moved = unpackBits(anchoredBits(7, 6 * 2_000).packed);
     assert.ok(moved > GENESIS_BITS, `six short gaps must harden, got ${moved}`);
-    assert.ok(moved - GENESIS_BITS <= ASERT_HARDEN_MAX, `six short gaps stay inside the lid, got ${moved}`);
+    assert.ok(moved - GENESIS_BITS < 1, `six short gaps move a fraction of a bit under τ = 2h, got ${moved}`);
   });
 
-  it('eight 2000ms gaps from genesis add at least one bit; one fast gap stays under the lid', () => {
-    let packed = GENESIS_BITS_PACKED;
-    for (let n = 0; n < 8; n += 1) packed = nextBits(packed, 2_000);
-    const after8 = unpackBits(packed);
-    assert.ok(after8 >= GENESIS_BITS + 1, `eight 2000ms gaps must add >=1 bit, got ${after8}`);
-    const held = nextBits(packed, TARGET_BLOCK_INTERVAL_MS);
-    assert.equal(unpackBits(held), unpackBits(packed), `90000ms must not raise, got ${unpackBits(held)}`);
-    const one = unpackBits(nextBits(packBits(12), 1));
+  it('eight 2000ms gaps from genesis harden without a one-bit lid', () => {
+    const after8 = unpackBits(anchoredBits(9, 8 * 2_000).packed);
+    assert.ok(after8 > GENESIS_BITS, `eight 2000ms gaps must harden, got ${after8}`);
+    assert.ok(after8 - GENESIS_BITS < 1, `τ = 2h, so 16s of fast blocks is under one bit, got ${after8}`);
+    const one = unpackBits(anchoredBits(2, 1, packBits(12)).packed);
     assert.ok(one > 12, `1ms must harden, got ${one}`);
-    assert.ok(one - 12 <= ASERT_HARDEN_MAX, `1ms stays inside the farm lid, got ${one}`);
+    assert.ok(one - 12 < 1, `1ms is under a full bit, got ${one}`);
   });
 
-  it('fast-gap step keeps farm lid constants; stall at 8τ eases by ease max; HUD ≤ 256', () => {
-    assert.equal(ASERT_HARDEN_MAX, 1);
-    assert.equal(ASERT_EASE_MAX, 1);
-    assert.equal(ASERT_EASE_MAX_TESTNET, 1);
+  it('v12 drops the ±1 lid; a long stall eases through aserti3-2d and the emergency cap', () => {
+    assert.equal(ASERT_HARDEN_MAX, 0);
+    assert.equal(ASERT_EASE_MAX, 0);
+    assert.equal(ASERT_EASE_MAX_TESTNET, 0);
     assert.equal(ASERT_EASE_MAX_MAINNET, 1);
-    assert.equal(asertEaseMax(MAGIC_TESTNET), 1);
+    assert.equal(asertEaseMax(MAGIC_TESTNET), 0);
     assert.equal(asertEaseMax(MAGIC_MAINNET), 1);
-    assert.equal(asertHardenMax(MAGIC_TESTNET), 1);
+    assert.equal(asertHardenMax(MAGIC_TESTNET), 0);
     assert.equal(asertHardenMax(MAGIC_MAINNET), 6);
-    const jumped = unpackBits(nextBits(packBits(21), 3_500));
+    const jumped = unpackBits(anchoredBits(2, 3_500, packBits(21)).packed);
     assert.ok(jumped > 21, `3.5s must harden, got ${jumped}`);
-    assert.ok(jumped - 21 <= ASERT_HARDEN_MAX, `3.5s stays inside the farm lid, got ${jumped}`);
-    const oneMs = unpackBits(nextBits(packBits(21), 1));
-    assert.ok(oneMs - 21 <= ASERT_HARDEN_MAX, `1ms stays inside the farm lid, got ${oneMs}`);
-    assert.ok(oneMs > 21, `1ms must harden, got ${oneMs}`);
-    const stall = unpackBits(nextBits(packBits(21), ASERT_HALFLIFE_MS * 8));
-    const stallDrop = 21 - stall;
-    assert.ok(stallDrop > 0, `8τ stall must ease, got ${stall}`);
-    assert.ok(stallDrop <= ASERT_EASE_MAX + 1e-9, `8τ stall stays inside the ease lid, got ${stall}`);
+    assert.ok(jumped - 21 < 1, `3.5s is a fraction of a bit under τ = 2h, got ${jumped}`);
+    const stall = anchoredBits(2, ASERT_HALFLIFE_MS * 8, packBits(21));
+    assert.ok(unpackBits(stall.packed) < 21, `8τ stall must ease, got ${unpackBits(stall.packed)}`);
+    assert.equal(stall.easeBits, 2);
     const packedPaint = 731501;
     assert.ok(packedPaint > 256);
     assert.ok(displayBits(packedPaint) < 12);
@@ -153,90 +155,90 @@ describe('ASERT 90s block retarget', () => {
     assert.ok(displayBits(GENESIS_BITS_PACKED) <= MAX_BITS);
     assert.equal(displayBits(GENESIS_BITS_PACKED), GENESIS_BITS);
     const fp = consensusFingerprint();
-    assert.match(fp, /ASERT_STEP=median11\(log2\(T\/seen\)\)\*\(T\/tau\)/);
-    assert.equal(fp.includes('ASERT_STEP=(T-seen)/tau'), false);
+    assert.match(fp, /ASERT_STEP=aserti3-2d/);
+    assert.equal(fp.includes('ASERT_STEP=median11'), false);
     assert.equal(fp.includes('ASERT_STEP=8x2000ms=+1bit'), false);
-    assert.match(fp, /ASERT_HARDEN=1/);
+    assert.match(fp, /ASERT_HARDEN=0/);
     assert.match(fp, /HEADER_AHEAD_MS=15000/);
-    assert.match(fp, /ASERT_EASE=1/);
-    assert.match(fp, /ASERT_FLOOR=above-min-until-8tau/);
-    assert.equal(ASERT_HALFLIFE_MS, 16 * TARGET_BLOCK_INTERVAL_MS);
-    assert.equal(ASERT_HALFLIFE_MS, 1_440_000);
-    assert.match(fp, /ASERT_TAU_MS=1440000/);
+    assert.match(fp, /ASERT_EASE=0/);
+    assert.match(fp, /ASERT_EMERGENCY=2/);
+    assert.match(fp, /ASERT_FLOOR=clamp-live-min-max/);
+    assert.equal(ASERT_HALFLIFE_MS, 2 * 60 * 60 * 1000);
+    assert.equal(ASERT_HALFLIFE_MS, 7_200_000);
+    assert.match(fp, /ASERT_TAU_MS=7200000/);
     assert.doesNotMatch(fp, /ASERT_HARDEN=6/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v9/);
+    assert.match(mainnetFingerprint(), /ASERT_STEP=aserti3-2d/);
     assert.match(mainnetFingerprint(), /ASERT_EASE=1/);
     assert.match(mainnetFingerprint(), /ASERT_HARDEN=6/);
   });
 
   it('lowers packed bits when blocks arrive slower than 90s', () => {
-    const next = unpackBits(nextBits(packBits(21), 180_000));
+    const next = unpackBits(anchoredBits(11, 10 * 180_000, packBits(21)).packed);
     assert.ok(next < 21, `expected ease from 21, got ${next}`);
     assert.ok(next >= LIVE_MIN_BITS);
   });
 
   it('constant hashrate that would average 82s on integer-16 lands near 90s', () => {
     const hashesPerMs = (2 ** 16) / 82_000;
-    let packed = packBits(16);
+    let t = 0;
+    let bits = packBits(16);
     const last = [];
-    for (let i = 0; i < 2000; i += 1) {
-      const fp = unpackBits(packed);
-      const interval = (2 ** fp) / hashesPerMs;
-      packed = nextBits(packed, interval);
-      if (i >= 1800) last.push(interval);
+    for (let h = 2; h <= 1600; h += 1) {
+      const interval = (2 ** unpackBits(bits)) / hashesPerMs;
+      t += interval;
+      const quote = asertNextBits({
+        anchorBits: packBits(16),
+        anchorTimeMs: 0,
+        anchorHeight: 1,
+        blockTimeMs: t,
+        blockHeight: h,
+        parentTimeMs: t - interval,
+      });
+      assert.equal(quote.ok, true);
+      bits = quote.packed;
+      if (h > 1400) last.push(interval);
     }
     const mean = last.reduce((a, b) => a + b, 0) / last.length;
-    assert.ok(mean > 85_000 && mean < 95_000, `mean last-200 ${mean}`);
+    assert.ok(mean > 81_000 && mean < 99_000, `mean last-200 ${mean}`);
   });
 
-  it('farm on then off: tau-damped ASERT recenters near 90s; ease lid differs testnet vs mainnet on stall', () => {
+  it('a hashrate surge then a return recenters near 90s on the absolute anchor', () => {
     const target = TARGET_BLOCK_INTERVAL_MS;
     const baseHs = (2 ** GENESIS_BITS) / (target / 1000);
-    function run(magic) {
-      let packed = packBits(GENESIS_BITS);
-      const intervals = [];
-      const pushHs = (hs, n) => {
-        for (let i = 0; i < n; i += 1) {
-          const fp = unpackBits(packed);
-          const intervalMs = ((2 ** fp) / hs) * 1000;
-          intervals.push(intervalMs);
-          packed = nextBits(packed, intervalMs, magic);
-        }
-      };
-      pushHs(baseHs, 40);
-      for (let c = 0; c < 200; c += 1) {
-        pushHs(baseHs * 8, 1);
-        pushHs(baseHs, 1);
+    let t = 0;
+    let bits = packBits(GENESIS_BITS);
+    const intervals = [];
+    const pushHs = (hs, n) => {
+      for (let i = 0; i < n; i += 1) {
+        const intervalMs = ((2 ** unpackBits(bits)) / hs) * 1000;
+        const prev = t;
+        t += intervalMs;
+        intervals.push(intervalMs);
+        const quote = asertNextBits({
+          anchorBits: packBits(GENESIS_BITS),
+          anchorTimeMs: 0,
+          anchorHeight: 1,
+          blockTimeMs: t,
+          blockHeight: intervals.length + 1,
+          parentTimeMs: prev,
+        });
+        bits = quote.packed;
       }
-      const afterOsc = intervals.length;
-      pushHs(baseHs, 350);
-      return { intervals, afterOsc, packed };
+    };
+    pushHs(baseHs, 40);
+    for (let c = 0; c < 80; c += 1) {
+      pushHs(baseHs * 8, 1);
+      pushHs(baseHs, 1);
     }
-    function ewma(dts) {
-      const half = 288;
-      const alpha = 1 - 2 ** (-1 / half);
-      let e = target;
-      for (const dt of dts) {
-        const c = Math.max(target / 8, Math.min(target * 8, dt));
-        e = alpha * c + (1 - alpha) * e;
-      }
-      return e;
-    }
-    const tn = run(MAGIC_TESTNET);
-    const mn = run(MAGIC_MAINNET);
-    const tnSettle = ewma(tn.intervals.slice(-288));
-    const tnOsc = ewma(tn.intervals.slice(40, tn.afterOsc));
-    assert.ok(tnSettle > 80_000 && tnSettle < 105_000, `testnet long EWMA ${tnSettle}`);
-    assert.ok(tnOsc < 400_000, `testnet oscillation EWMA ${tnOsc}`);
-    // 8τ stall hits the ease lid. v10 testnet ease is −1, same as mainnet.
-    // Mainnet harden stays wider: a 1 ms gap climbs further on shear-v1.
-    const stall = ASERT_HALFLIFE_MS * 8;
-    const tnStall = unpackBits(nextBits(packBits(21), stall, MAGIC_TESTNET));
-    const mnStall = unpackBits(nextBits(packBits(21), stall, MAGIC_MAINNET));
-    assert.ok(tnStall < 21, `testnet 8τ must ease, got ${tnStall}`);
-    assert.ok(mnStall < 21, `mainnet 8τ must ease, got ${mnStall}`);
-    assert.ok(21 - tnStall <= asertEaseMax(MAGIC_TESTNET) + 1e-9, `testnet ease lid, got ${tnStall}`);
-    assert.ok(21 - mnStall <= asertEaseMax(MAGIC_MAINNET) + 1e-9, `mainnet ease lid, got ${mnStall}`);
+    pushHs(baseHs, 400);
+    const tail = intervals.slice(-200);
+    const mean = tail.reduce((a, b) => a + b, 0) / tail.length;
+    assert.ok(mean > 81_000 && mean < 99_000, `settled mean ${mean}`);
+    const retired = nextBits(packBits(21), ASERT_HALFLIFE_MS * 8, MAGIC_TESTNET);
+    assert.equal(retired, packBits(21));
+    const live = anchoredBits(2, ASERT_HALFLIFE_MS * 8, packBits(21));
+    assert.ok(unpackBits(live.packed) < 21);
   });
 
   it('is not stuck at 32 bits / 4.29e9 work', () => {
@@ -245,13 +247,14 @@ describe('ASERT 90s block retarget', () => {
     assert.equal(clampBits(40), packBits(40));
     assert.equal(clampBits(256), packBits(256));
     assert.equal(clampBits(300), packBits(256));
-    assert.ok(unpackBits(nextBits(packBits(32), 250)) > 32);
-    const fast36 = unpackBits(nextBits(packBits(36), 250)) - 36;
-    assert.ok(fast36 > 0.05, `250ms must move 36-bit work, got ${fast36}`);
-    assert.ok(fast36 <= ASERT_HARDEN_MAX);
-    assert.equal(nextBits(packBits(36), 90_000), packBits(36));
+    const fast32 = unpackBits(anchoredBits(2, 250, packBits(32)).packed);
+    assert.ok(fast32 > 32, `250ms must harden 32-bit work, got ${fast32}`);
+    const fast36 = unpackBits(anchoredBits(2, 250, packBits(36)).packed) - 36;
+    assert.ok(fast36 > 0, `250ms must move 36-bit work, got ${fast36}`);
+    assert.ok(fast36 < 1, `250ms is under one bit at τ = 2h, got ${fast36}`);
+    assert.equal(anchoredBits(2, 90_000, packBits(36)).packed, packBits(36));
     const parentTs = 1_700_000_000_000;
-    const eased = unpackBits(bitsForBlock(packBits(36), parentTs, parentTs + 12 * 3600_000));
+    const eased = unpackBits(anchoredBits(2, parentTs + 12 * 3600_000, packBits(36), parentTs).packed);
     assert.ok(eased < 36, `12h header delta must ease 36-bit freeze, got ${eased}`);
   });
 
@@ -266,7 +269,7 @@ describe('ASERT 90s block retarget', () => {
     const late = templateStampMs(parentTs, parentTs + 400_000);
     assert.equal(late, parentTs + 400_000);
     assert.ok(late <= parentTs + 400_000);
-    assert.ok(unpackBits(bitsForBlock(packBits(21), parentTs, late)) < 21);
+    assert.ok(unpackBits(anchoredBits(2, late, packBits(21), parentTs).packed) < 21);
     const src = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
     assert.equal(/holdAimed/.test(src), false);
     assert.notEqual(oneSec, parentTs + TARGET_BLOCK_INTERVAL_MS);
@@ -278,15 +281,15 @@ describe('ASERT 90s block retarget', () => {
     const fast = templateStampMs(parentTs, parentTs + 1_000, 26_000);
     assert.equal(fast, parentTs + 1_000);
     assert.ok(fast <= parentTs + 1_000);
-    assert.ok(unpackBits(bitsForBlock(parentBits, parentTs, fast)) > 21);
+    assert.ok(unpackBits(anchoredBits(2, fast, parentBits, parentTs).packed) > 21);
     const stillFast = templateStampMs(parentTs, parentTs + 1_000, 10_000);
     assert.equal(stillFast, parentTs + 1_000);
     const hold = templateStampMs(parentTs, parentTs + 90_000, 90_000);
     assert.equal(hold, parentTs + 90_000);
-    assert.equal(bitsForBlock(parentBits, parentTs, hold), parentBits);
+    assert.equal(anchoredBits(2, hold, parentBits, parentTs).packed, parentBits);
     const late = templateStampMs(parentTs, parentTs + 400_000, 26_000);
     assert.equal(late, parentTs + 400_000);
-    assert.ok(unpackBits(bitsForBlock(parentBits, parentTs, late)) < 21);
+    assert.ok(unpackBits(anchoredBits(2, late, parentBits, parentTs).packed) < 21);
     const skew = templateStampMs(parentTs, parentTs - 5_000);
     assert.equal(skew, parentTs + 1);
     assert.ok(skew > parentTs);
@@ -318,8 +321,8 @@ describe('ASERT 90s block retarget', () => {
     const stamp = templateStampMs(parentTs, wall, null, mtp);
     assert.ok(stamp - parentTs > 60_000, `interval ${stamp - parentTs} must not be the 3s cap`);
     const parentBits = packBits(21);
-    const want = bitsForBlock(parentBits, parentTs, stamp);
-    assert.ok(unpackBits(want) < 21, `long wall must ease, got ${unpackBits(want)}`);
+    const want = anchoredBits(2, stamp, parentBits, parentTs);
+    assert.ok(unpackBits(want.packed) < 21, `long wall must ease, got ${unpackBits(want.packed)}`);
   });
 });
 
@@ -345,7 +348,7 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(formatShe(1e-9), '0.00000000');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
     assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
@@ -372,13 +375,13 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(gate.includes('process.env.SHEAR_BITS'), false);
     assert.match(gate, /void bitsIn/);
     const chain = fs.readFileSync(path.join(root, 'node/src/chain.js'), 'utf8');
-    assert.match(chain, /void candidateTimestamp/);
-    assert.match(chain, /medianIntervalMs\(headerGapsMs\(chain\)\)/);
-    assert.match(chain, /Difficulty is network-wide/);
+    assert.match(chain, /asertNextBits\(/);
+    assert.match(chain, /candidateTimestamp/);
+    assert.doesNotMatch(chain, /medianIntervalMs\(headerGapsMs\(chain\)\)/);
     const consensus = fs.readFileSync(path.join(root, 'specs/consensus.md'), 'utf8');
     const ops = fs.readFileSync(path.join(root, 'docs/OPS-testnet-v10-90s.md'), 'utf8');
-    assert.match(consensus, /Difficulty is network-wide/);
-    assert.match(ops, /Difficulty is network-wide/);
+    assert.match(consensus, /aserti3-2d/);
+    assert.match(ops, /aserti3-2d/);
     const lib = path.join(root, 'wallet/lib');
     const dart = fs.readdirSync(lib).filter((name) => name.endsWith('.dart'));
     assert.ok(dart.length > 5);
@@ -451,7 +454,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
-    assert.match(fp, /NETWORK=shear-testnet-v11/);
+    assert.match(fp, /NETWORK=shear-testnet-v12/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v7/);
     assert.match(fp, /:4:17:/);
@@ -477,13 +480,15 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
     assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
     assert.match(fp, /ADMIT=ADMITv2/);
-    assert.match(fp, /RANGE=bpplus/);
+    assert.match(fp, /RANGE=packed-bit/);
     assert.match(fp, /LEVY=weight/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /BITS=q16\.16/);
-    assert.match(fp, /ASERT_HARDEN=1/);
-    assert.match(fp, /ASERT_EASE=1/);
-    assert.match(fp, /ASERT_FLOOR=above-min-until-8tau/);
+    assert.match(fp, /ASERT_HARDEN=0/);
+    assert.match(fp, /ASERT_EASE=0/);
+    assert.match(fp, /ASERT_EMERGENCY=2/);
+    assert.match(fp, /ASERT_FLOOR=clamp-live-min-max/);
+    assert.doesNotMatch(fp, /HISTORICAL_TIP=/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v9/);
     assert.equal(MTP_FUTURE_MS, 7_200_000);
     assert.match(fp, /MTP_FUTURE_MS=7200000/);
@@ -515,9 +520,9 @@ describe('hash-tx consensus law', () => {
     assert.equal(fp.includes('HASH_FN=ShearHash-v3'), true);
     assert.equal(fp.includes('HASH_FN=ShearHash-v2'), false);
     const law = consensusLaw();
-    assert.equal(PRODUCT_VERSION, '18.0');
+    assert.equal(PRODUCT_VERSION, '19.0');
     assert.equal(MINER_VERSION, '1.1');
-    assert.equal(SHEARK_MINER_VERSION, '2.8');
+    assert.equal(SHEARK_MINER_VERSION, '2.9');
     assert.equal(PRODUCT_VERSION.split('.').length, 2);
     assert.equal(MINER_VERSION.split('.').length, 2);
     assert.equal(SHEARK_MINER_VERSION.split('.').length, 2);
@@ -527,7 +532,8 @@ describe('hash-tx consensus law', () => {
     assert.equal(/^\d+\.\d+\.\d+$/.test(MINER_VERSION), false);
     assert.equal(/^\d+\.\d+$/.test('0.10'), true);
     assert.equal(/^\d+\.\d+$/.test('0.1.0'), false);
-    assert.equal(law.productVersion, '18.0');
+    assert.equal(law.productVersion, '19.0');
+    assert.equal(fp.includes('19.0'), false);
     assert.equal(fp.includes('18.0'), false);
     assert.equal(fp.includes('17.0'), false);
     assert.equal(fp.includes('16.0'), false);
@@ -564,7 +570,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /FORK=work-then-lowhash/);
     assert.equal(fp.includes(PRODUCT_VERSION), false);
     assert.equal(law.minerVersion, '1.1');
-    assert.equal(law.shearkMinerVersion, '2.8');
+    assert.equal(law.shearkMinerVersion, '2.9');
     assert.equal(fp.includes(SHEARK_MINER_VERSION), false);
     assert.equal(fp.includes('shearkMinerVersion'), false);
     assert.equal(law.hashTxLive, 1);

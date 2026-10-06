@@ -17,6 +17,8 @@ import {
 import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
+  levyNeed,
+  LEVY_CAP_NANOS,
   levyTaxed,
   txWeight,
   mempoolPressure,
@@ -1348,8 +1350,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const rec = reconstructOwner(store, from);
     const nanos = isVote ? 0 : Math.round(amount * NANOS_PER_SHE);
     const chainNanos = rec.spendableNanos;
+    const multiProofs = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
     const sealedSend = kindIn === 'send'
-      && body.admit_proof
+      && (body.admit_proof || multiProofs)
       && Array.isArray(body.vin) && body.vin.length
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
@@ -1365,7 +1368,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const programId = (isLock || isVote || isWithdraw) ? RESERVE_PROGRAM : '';
     const taxed = levyTaxed({ kind, programId });
     const depth = mempoolDepthBytes(store?.mempool || []);
-    const fee = taxed ? levyNanos(nanos, { depth }) : 0;
+    const postedFee = Number(body.fee);
+    const fee = (multiProofs && Number.isFinite(postedFee) && postedFee >= 0)
+      ? Math.floor(postedFee)
+      : (taxed ? levyNanos(nanos, { depth }) : 0);
     if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
@@ -1422,12 +1428,19 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           vout,
           ...(body.excess ? { excess: body.excess } : {}),
           ...(body.admit_proof ? { admit_proof: body.admit_proof, spendTag: body.spendTag || body.admit_proof.spendTag } : {}),
+          ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
     if (kind === 'send' && dummyCount(draft) < 1) {
       return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
     }
-    if (kind === 'send' && !draft.admit_proof) {
+    if (kind === 'send' && multiProofs) {
+      const need = levyNeed(draft);
+      if (!(fee >= need) || fee > LEVY_CAP_NANOS) {
+        return { status: 400, json: { ok: false, reason: 'levy' } };
+      }
+    }
+    if (kind === 'send' && !draft.admit_proof && !multiProofs) {
       const chainCovers = chainNanos >= nanos + fee;
       if (!(chainCovers && verifySpendSig(draft))) {
         return { status: 400, json: { ok: false, reason: 'admit_membership' } };

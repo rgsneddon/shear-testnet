@@ -225,8 +225,8 @@ describe('sequential IBD', () => {
     assert.equal(wire.samplesPruned, true);
     assert.equal(decodeWireBlock(wire).samplesPruned, true);
     const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
-    assert.match(storeSrc, /Number\(verifyOpts\.tipHeight \|\| 0\)/);
-    assert.match(storeSrc, /shouldPruneSamples\(incomingH, tipHeight\)/);
+    assert.doesNotMatch(storeSrc, /Number\(verifyOpts\.tipHeight \|\| 0\)/);
+    assert.match(storeSrc, /peer-advertised height must not prune/);
     assert.ok(SAMPLE_PRUNE_CONFIRMATIONS >= 1000);
   });
 
@@ -236,7 +236,8 @@ describe('sequential IBD', () => {
     assert.match(src, /if \(next\) \{\s*rec\.want = \[next\.hash\];/);
     assert.match(src, /got\?\.reason === 'hash_bonus'/);
     assert.match(src, /requeuePrevHash\(rec, lastHash\)/);
-    assert.match(src, /tipHeight: networkTip/);
+    assert.doesNotMatch(src, /tipHeight: networkTip/);
+    assert.match(src, /IBD validates every block/);
     assert.equal(isFinalIngestFail('hash_bonus'), false);
   });
 

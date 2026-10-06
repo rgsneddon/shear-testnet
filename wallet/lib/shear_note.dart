@@ -280,6 +280,8 @@ Uint8List kernelExcess(List<Map<String, dynamic>> vouts, List<Map<String, dynami
     final r = v['r'];
     if (r is! Uint8List) throw StateError('missing_r');
     s = scalarSub(s, scalarFromBytes(r));
+    final t = v['t'];
+    if (t is Uint8List) s = scalarSub(s, scalarFromBytes(t));
   }
   return scalarBytes(s);
 }

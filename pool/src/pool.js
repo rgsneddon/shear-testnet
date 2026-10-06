@@ -1812,11 +1812,23 @@ export function createPool({
     replyLine(sock, { id: msg.id, error: reason }, { drop });
   }
 
-  function parentIntervalBits() {
-    // Same call template() uses, including an empty book. A null here made
-    // sealReject ignore an undercut and leave the easier header up.
+  function parentIntervalBits(at = null) {
+    // Same quote template() seals: aserti3-2d for this header stamp.
+    // A null here made sealReject ignore an undercut and leave the easier header up.
     try {
-      return retarget(store.blocks || []);
+      const rows = store.blocks || [];
+      let stamp = Number(at);
+      if (!Number.isFinite(stamp)) {
+        const tip = store.tip();
+        if (tip?.header) {
+          const parent = decodeHeader(Buffer.from(tip.header));
+          const mtp = medianTimePast((rows).slice(-MTP_WINDOW).map((b) => {
+            try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
+          }));
+          stamp = templateStampMs(parent.timestamp, Date.now(), null, mtp);
+        }
+      }
+      return retarget(rows, Number.isFinite(stamp) ? stamp : undefined);
     } catch {
       return null;
     }
@@ -2339,7 +2351,7 @@ export function createPool({
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
         const stamp = templateStampMs(parent.timestamp, now, null, mtp);
-        const wantBits = parentIntervalBits() ?? decoded.bits;
+        const wantBits = parentIntervalBits(stamp) ?? decoded.bits;
         const liveTs = Number(decoded.timestamp);
         const overMtp = liveTs > Number(mtp) + MTP_FUTURE_MS;
         // Same jobId. A sealable header is left alone so miners finish the

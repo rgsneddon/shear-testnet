@@ -252,6 +252,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   int _mempoolDepth = 0;
   String? _flowSendAdvisory;
   bool _flowSendOk = false;
+  bool _flowSending = false;
+  String? _flowFeeQuote;
+  String? _flowProgressText;
+  SendProgress? _flowProgress;
+  int _flowQuoteGen = 0;
   String? _flowReceiveDest;
   String? _spentDestWarn;
   bool _newMemoExpanded = false;
@@ -2158,6 +2163,39 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (mounted) setState(() {});
   }
 
+  String _flowPhaseLabel(SendProgress p) {
+    if (p.phase == 'select') return 'Selecting notes…';
+    if (p.phase == 'prove') return 'Building proof ${p.done}/${p.total}…';
+    if (p.phase == 'broadcast') return 'Broadcasting…';
+    return p.phase;
+  }
+
+  void _watchFlowProgress(SendProgress progress) {
+    progress.onChange = () {
+      if (!mounted) return;
+      setState(() => _flowProgressText = _flowPhaseLabel(progress));
+    };
+  }
+
+  Future<void> _refreshFlowFee() async {
+    final ident = id;
+    final gen = ++_flowQuoteGen;
+    final amt = double.tryParse(flowAmt.text) ?? 0;
+    final memo = flowMemo.text.trim().isNotEmpty;
+    if (ident == null || amt <= 0) {
+      if (mounted && gen == _flowQuoteGen) setState(() => _flowFeeQuote = null);
+      return;
+    }
+    final units = await ledger.quoteSendLevyUnits(
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+      amount: amt,
+      memo: memo,
+    );
+    if (!mounted || gen != _flowQuoteGen) return;
+    setState(() => _flowFeeQuote = formatShe(units / kUnitsPerShe));
+  }
+
   void _noteFlowTo(String raw) {
     final d = raw.trim();
     final warn = d.isNotEmpty && ledger.warnSpentDestPaste(d)
@@ -2845,11 +2883,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         controller: flowAmt,
         decoration: const InputDecoration(labelText: 'Amount SHE'),
         keyboardType: TextInputType.number,
+        onChanged: (_) => _refreshFlowFee(),
       ),
-      TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
+      TextField(
+        controller: flowMemo,
+        decoration: const InputDecoration(labelText: 'Memo (optional)'),
+        onChanged: (_) => _refreshFlowFee(),
+      ),
+      Text(
+        _flowFeeQuote == null ? 'Fee …' : 'Fee $_flowFeeQuote SHE',
+        key: const Key('flow-send-fee'),
+      ),
+      if (_flowProgressText != null)
+        Text(_flowProgressText!, key: const Key('flow-send-progress')),
       FilledButton(
         key: const Key('flow-send'),
-        onPressed: () async {
+        onPressed: _flowSending
+            ? null
+            : () async {
           if (sidecar.sendBlocked && !walletAtTip(_syncLabel)) {
             setState(() {
               _flowSendAdvisory = sidecar.sendBlockedCopy;
@@ -2859,6 +2910,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           }
           final amount = double.tryParse(flowAmt.text) ?? 0;
           final bare = sidecar.committed == ClosureSendMode.connectBare;
+          final progress = SendProgress();
+          _watchFlowProgress(progress);
+          setState(() {
+            _flowSending = true;
+            _flowProgress = progress;
+            _flowProgressText = 'Selecting notes…';
+          });
           final result = await submitContinuumSend(
             ledger: ledger,
             restFrame: ident.address,
@@ -2871,9 +2929,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             local: false,
             allowPublicHttp: bare,
             depth: _mempoolDepth,
+            progress: progress,
           );
           if (!mounted) return;
           setState(() {
+            _flowSending = false;
+            _flowProgress = null;
+            _flowProgressText = null;
             flowTo.text = result.to;
             if (result.posted && result.tx != null) {
               _flowAcceptedTo = result.to;
@@ -2888,6 +2950,58 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           });
         },
         child: const Text('Send'),
+      ),
+      if (_flowSending)
+        TextButton(
+          key: const Key('flow-send-cancel'),
+          onPressed: () => _flowProgress?.cancel(),
+          child: const Text('Cancel'),
+        ),
+      OutlinedButton(
+        key: const Key('flow-consolidate'),
+        onPressed: _flowSending
+            ? null
+            : () async {
+          final who = id;
+          if (who == null) return;
+          final progress = SendProgress();
+          _watchFlowProgress(progress);
+          setState(() {
+            _flowSending = true;
+            _flowProgress = progress;
+            _flowProgressText = 'Selecting notes…';
+            _flowSendAdvisory = null;
+          });
+          try {
+            await ledger.consolidateSpendableNotes(
+              restFrame: who.address,
+              paymentCode: who.paymentCode,
+              spendSeed: hexToBytes(who.seedHex),
+              progress: progress,
+              allowPublicHttp: sidecar.committed == ClosureSendMode.connectBare,
+            );
+            if (!mounted) return;
+            setState(() {
+              _flowSendAdvisory = 'Consolidated';
+              _flowSendOk = true;
+            });
+          } catch (e) {
+            if (!mounted) return;
+            setState(() {
+              _flowSendAdvisory = flowSendAdvisoryOf(e);
+              _flowSendOk = false;
+            });
+          } finally {
+            if (mounted) {
+              setState(() {
+                _flowSending = false;
+                _flowProgress = null;
+                _flowProgressText = null;
+              });
+            }
+          }
+        },
+        child: const Text('Consolidate now'),
       ),
       if (_flowSendAdvisory != null) ...[
         const SizedBox(height: 8),

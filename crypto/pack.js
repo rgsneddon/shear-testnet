@@ -290,7 +290,7 @@ export function unpackShareBatch(rows = []) {
         ? Buffer.from(s.noteCommit, /^[0-9a-fA-F]+$/.test(s.noteCommit) ? 'hex' : 'utf8')
         : Buffer.from(s.noteCommit);
     }
-    return {
+    const row = {
       dest20: coerceDest20(s.dest20, dest),
       dest,
       noteCommit: nc && nc.length === 32 ? nc : undefined,
@@ -298,5 +298,12 @@ export function unpackShareBatch(rows = []) {
       lz: Number(s.lz || 0) & 0xff,
       viewTag: s.viewTag || null,
     };
+    // In-memory selection must keep the parent binding. The packed wire form
+    // does not carry it; the pool re-checks it against the sealed parent.
+    if (s.verifiedHeader) row.verifiedHeader = s.verifiedHeader;
+    if (s.shareBits != null) row.shareBits = Number(s.shareBits);
+    if (s.jobId) row.jobId = String(s.jobId);
+    if (s.hash) row.hash = s.hash;
+    return row;
   });
 }

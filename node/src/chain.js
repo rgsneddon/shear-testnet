@@ -7,8 +7,8 @@ import {
   GENESIS_BITS_PACKED,
   LIVE_MIN_BITS,
   MAX_BITS,
-  nextBits,
-  medianIntervalMs,
+  asertNextBits,
+  bitsAcceptAsert,
   TARGET_BLOCK_INTERVAL_MS,
   isPackedBits,
   unpackBits,
@@ -19,6 +19,8 @@ import {
   HASH_BONUS_NANOS_FLOOR,
   hashBonusUnitNanos,
   MAGIC_TESTNET,
+  MAGIC_TESTNET_V12,
+  MAGIC_MAINNET,
   extraMintAllowed,
   wrapMintForbidden,
   DEST_HRP,
@@ -57,6 +59,7 @@ import {
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields, admitBaseFromAddress } from '../../crypto/address.js';
 import {
   admit_verify,
+  admitVerifyBatch,
   attachAdmitPub,
   fluxsetFromBlocks,
   jroot as jrootOf,
@@ -69,6 +72,8 @@ import {
   sealCoinbaseNote,
   verifySealedNote,
   verifyMintSum,
+  openedCoinbaseNanos,
+  coinbaseVoutsBound,
   verifyRange,
   excessOf,
   verifyFlowConservation,
@@ -284,9 +289,22 @@ function blockTimeMs(block) {
   }
 }
 
+function mintWithLevy(vouts, scheduled, excess) {
+  const rows = (vouts || []).filter((o) => o?.commit);
+  let levy = 0;
+  for (const o of rows) {
+    if (o.kind !== 'finder-fee' && o.kind !== 'reserve-fee') continue;
+    const v = openedCoinbaseNanos(o);
+    if (v == null) return false;
+    levy += v;
+  }
+  return verifyMintSum(rows, scheduled + levy, excess);
+}
+
 export function wantPotNanos(block, opts = {}) {
   const nowMs = blockTimeMs(block) || Number(opts.nowMs) || 0;
-  const genesisMs = Number(opts.genesisMs) || nowMs;
+  const genesisMs = Number(opts.genesisMs);
+  if (!Number.isFinite(genesisMs) || genesisMs <= 0) return null;
   return potSubsidyAt({ nowMs, genesisMs, magic: opts.magic || MAGIC_TESTNET });
 }
 
@@ -602,8 +620,19 @@ export function buildTemplate({
   // Tree A is shareBatch units only. Typed sample counts are not money.
   const collated = fromBatch;
   const pay = destOf || ((login) => hasherPayoutDest(login) || '');
-  const genesisMs = chainGenesisMsFrom(parentBlocks, prevHeader);
-  const potNanos = potSubsidyAt({ nowMs: now, genesisMs: genesisMs || now, magic: MAGIC_TESTNET });
+  let genesisMs = chainGenesisMsFrom(parentBlocks, null);
+  if (!(genesisMs > 0) && prevHeader) {
+    try {
+      const parent = decodeHeader(Buffer.from(prevHeader));
+      if (parent.prevBlockHash.equals(GENESIS_PREV)) genesisMs = Number(parent.timestamp) || 0;
+    } catch { /* parent is not a readable header */ }
+  }
+  if (!(genesisMs > 0) && Number(height) === 1) genesisMs = Number(now) || 0;
+  const potNanos = potSubsidyAt({
+    nowMs: now,
+    genesisMs: genesisMs > 0 ? genesisMs : Number(now) || 0,
+    magic: MAGIC_TESTNET,
+  });
   const cb = coinbaseTx({
     height, miner, samples: collated, potShares, destOf: pay, hashBonusNanos, shareBatch: batch, poolDest, potNanos,
     hashBonusCustodyDest,
@@ -628,6 +657,7 @@ export function buildTemplate({
       })
       : { address: dest, nanos: split.reserve, kind: 'reserve-fee' });
   }
+  cb.excess = excessOf(cb.vout);
   const parentPubs = Array.isArray(parentFluxset)
     ? parentFluxset
     : fluxsetFromBlocks(parentBlocks || (prevBlock ? [prevBlock] : [])).pubs;
@@ -859,7 +889,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   } catch (e) {
     return { ok: false, reason: 'bad_header' };
   }
-  const wantPot = wantPotNanos(block, { genesisMs, magic, nowMs });
   if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return { ok: false, reason: 'prev' };
@@ -881,6 +910,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
+  let resolvedGenesisMs = 0;
   if (prev?.header) {
     let parent;
     try {
@@ -888,31 +918,30 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } catch {
       return { ok: false, reason: 'parent_header' };
     }
-    // Difficulty is network-wide. This block's work is the median of the
-    // sealed header gaps on the chain, not a pool forecast and not a miner
-    // target. The child stamp is not work. One gap, padded with the 90s
-    // target, does not move the median. sealedIntervalsMs is headerGapsMs of
-    // that sealed chain, the same window the template used.
-    let seen = TARGET_BLOCK_INTERVAL_MS;
-    if (Array.isArray(opts.sealedIntervalsMs)) {
-      seen = medianIntervalMs(opts.sealedIntervalsMs);
-    } else if (!parent.prevBlockHash.equals(GENESIS_PREV)) {
-      if (!opts.grandparentHeader) return { ok: false, reason: 'bits' };
-      let grand;
-      try {
-        grand = decodeHeader(Buffer.from(opts.grandparentHeader));
-      } catch {
-        return { ok: false, reason: 'parent_header' };
-      }
-      const gap = Number(parent.timestamp) - Number(grand.timestamp);
-      seen = medianIntervalMs([Number.isFinite(gap) && gap > 0 ? gap : TARGET_BLOCK_INTERVAL_MS]);
+    // Genesis-anchored aserti3-2d. The child stamp is the block time.
+    // Parent bits are not the anchor, so an emergency ease does not stick.
+    // A closed-book historical header may skip this check. v12 does not.
+    const ts = Number(decoded.timestamp);
+    const parentTs = Number(parent.timestamp);
+    const parentIsGenesis = parent.prevBlockHash.equals(GENESIS_PREV);
+    resolvedGenesisMs = parentIsGenesis ? parentTs : Number(genesisMs);
+    if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
+      return { ok: false, reason: 'genesis_ms' };
     }
-    const want = nextBits(parent.bits, seen, magic);
-    // The sealed prefix that holds the reserve lock was found under the
-    // one-gap parent interval. Those exact headers stay valid. Every other
-    // header still has to match the median of the sealed gaps.
-    if (decoded.bits !== want && !isHistoricalHeader(h)) return { ok: false, reason: 'bits' };
-    if (!isPackedBits(decoded.bits) || !isPackedBits(want)) return { ok: false, reason: 'bits' };
+    const heightNow = Number(block.height || (Number(prev.height) || 0) + 1);
+    const quote = asertNextBits({
+      anchorBits: parentIsGenesis ? parent.bits : GENESIS_BITS_PACKED,
+      anchorTimeMs: resolvedGenesisMs,
+      anchorHeight: parentIsGenesis ? Number(prev.height || 1) : 1,
+      blockTimeMs: ts,
+      blockHeight: heightNow,
+      parentTimeMs: parentTs,
+    });
+    const closedBook = String(magic) !== MAGIC_TESTNET_V12 && String(magic) !== MAGIC_MAINNET;
+    if ((!quote.ok || !bitsAcceptAsert(decoded.bits, quote)) && !(closedBook && isHistoricalHeader(h))) {
+      return { ok: false, reason: 'bits' };
+    }
+    if (!isPackedBits(decoded.bits)) return { ok: false, reason: 'bits' };
     const fp = unpackBits(decoded.bits);
     if (fp < LIVE_MIN_BITS || fp > MAX_BITS) return { ok: false, reason: 'bits' };
     const pWeight = Number(prev.weight != null
@@ -920,8 +949,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       : blockWeight(prev.txs || [], prev.bLeaves || []));
     const wantBase = nextBaseFee(Number(parent.baseFee || 1n), pWeight);
     if (Number(decoded.baseFee) !== wantBase) return { ok: false, reason: 'base_fee' };
-    const ts = Number(decoded.timestamp);
-    const parentTs = Number(parent.timestamp);
     if (!(ts > parentTs)) return { ok: false, reason: 'timestamp' };
     const window = Array.isArray(mtpTimestamps) && mtpTimestamps.length
       ? mtpTimestamps.slice(-MTP_WINDOW)
@@ -939,7 +966,16 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       return { ok: false, reason: 'bits' };
     }
     if (Number(decoded.baseFee) < 1) return { ok: false, reason: 'base_fee' };
+    resolvedGenesisMs = Number(decoded.timestamp);
   }
+  if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
+    return { ok: false, reason: 'genesis_ms' };
+  }
+  const wantPot = potSubsidyAt({
+    nowMs: Number(decoded.timestamp) || Number(nowMs) || 0,
+    genesisMs: resolvedGenesisMs,
+    magic,
+  });
   const samples = collateSamples(
     Array.isArray(block.samples) ? block.samples : (txs[0].samples || []),
   );
@@ -954,10 +990,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   let potNanos = 0;
   let bonusNanos = 0;
   const height = Number(block.height || (prev?.height || 0) + 1);
-  const tip = Number(tipHeight || height);
-  const buriedDeep = shouldPruneSamples(height, tip);
+  // Burial is only the parent this caller already accepted. opts.tipHeight is
+  // a peer advertisement and must not open skipFlow, sample prune, or pre_seal.
+  const localTip = Number(prev?.height || 0);
+  void tipHeight;
   void buried;
-  const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, tip);
+  const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, localTip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   const payAddr = (a) => a;
   const liveUnit = hashBonusUnitNanos(hashBonusNanos);
@@ -1021,8 +1059,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         bonusNanos = wantBonus;
         potNanos = wantPot;
         const T = wantPot + wantBonus;
-        const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
-        if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
+        if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       } else if (!shareBatch.length) {
         const floor = unitsForShare() * liveUnit;
         const minerDest = block.miner && isDestAddress(block.miner) ? block.miner : '';
@@ -1046,8 +1083,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         }
         potNanos = wantPot;
         const T = wantPot + bonusNanos;
-        const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
-        if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
+        if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       } else {
       for (const leaf of leaves) {
         const nc = ncHex(leaf.noteCommit);
@@ -1093,8 +1129,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (!matched) return { ok: false, reason: 'pot_prop' };
       }
       const T = wantPot + wantBonus;
-      const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
-      if (!verifyMintSum(money, T, txs[0].excess)) return { ok: false, reason: 'pot' };
+      if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       potNanos = wantPot;
       }
     } else {
@@ -1133,19 +1168,15 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!coinbase || !Array.isArray(coinbase.vout) || coinbase.vout.length === 0) {
       return { ok: false, reason: 'pot' };
     }
-    for (const o of hashVouts) {
-      const hasCommit = o.commit || o.noteCommit;
-      const hasNanos = Number(o.nanos || 0) > 0;
-      if (!hasCommit && !hasNanos) return { ok: false, reason: 'hash_bonus' };
-    }
-    if (confidential) {
-      const money = cbVouts.filter((o) => o.commit && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
-      if (!money.length) return { ok: false, reason: 'pot' };
-    } else {
-      const potSum = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
-      if (potSum !== wantPot) return { ok: false, reason: 'pot_sched' };
-    }
   }
+  const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess);
+  if (!boundCb.ok) return boundCb;
+  let potOpenedSum = 0;
+  for (const o of cbVouts) {
+    if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
+    potOpenedSum += Number(o.valueProof?.v);
+  }
+  if (potOpenedSum !== wantPot) return { ok: false, reason: 'pot_sched' };
   const aLeaves = (shareLeaves && shareLeaves.length)
     ? shareLeaves
     : (shareBatch.length && Array.isArray(block.aLeaves) && block.aLeaves.length
@@ -1284,6 +1315,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
       if (!verifyFlowConservation(tx)) return { ok: false, reason: 'commit_sum' };
+      const multi = Array.isArray(tx.admit_proofs) && tx.admit_proofs.length > 1;
+      if (!multi) {
       const proof = tx.admit_proof;
       if (!proof) return { ok: false, reason: 'admit_membership' };
       const tag = proof.spendTag || tx.spendTag;
@@ -1296,6 +1329,32 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       const th = Buffer.from(asU8(tag)).toString('hex');
       if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
       spentTags.add(th);
+      } else {
+      const vins = (tx.vin || []).filter((v) => v && !v.coinbase);
+      if (tx.admit_proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
+      const liveJ = { pubs, commits, jroot: live.jroot };
+      const items = [];
+      for (let pi = 0; pi < tx.admit_proofs.length; pi++) {
+        const proof = tx.admit_proofs[pi];
+        if (!proof) return { ok: false, reason: 'admit_membership' };
+        const tag = proof.spendTag;
+        if (!tag) return { ok: false, reason: 'admit_membership' };
+        const cTilde = proof.cTilde || vins[pi]?.commit;
+        if (!cTilde || !vins[pi]?.commit) return { ok: false, reason: 'admit_membership' };
+        const posted = Buffer.from(asU8(vins[pi].commit));
+        const want = Buffer.from(asU8(cTilde));
+        if (posted.length !== want.length || !posted.equals(want)) {
+          return { ok: false, reason: 'admit_membership' };
+        }
+        items.push({ proof: proof.blob || proof.proof || proof, cTilde, spendTag: tag });
+        const th = Buffer.from(asU8(tag)).toString('hex');
+        if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
+        spentTags.add(th);
+      }
+      if (!admitVerifyBatch(items, liveJ, { jroot: live.jroot })) {
+        return { ok: false, reason: 'admit_membership' };
+      }
+      }
     }
     for (const o of outs) pushPub(o);
     if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
@@ -1336,7 +1395,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     if (tx.kind === 'b-spend') {
       const commitH = Number(tx.commitHeight || 0);
-      const tip = Number(tipHeight || block.height || (prev?.height || 0) + 1);
+      const tip = localTip + 1;
       if (!(commitH >= 1) || tip < commitH) return { ok: false, reason: 'pre_seal' };
       const samePrev = commitH === Number(prev?.height || 0);
       const commitHeader = tx.commitHeader || (samePrev ? prev.header : null);
@@ -1368,15 +1427,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!funded.ok) return funded;
   }
   const split = splitLevy(fees);
-  const levyNote = (kind, want) => {
-    const o = txs[0].vout.find((v) => v.kind === kind);
-    if (want === 0 && !o) return 0;
-    if (!o) return -1;
-    if (o.commit) return verifySealedNote(o, want) ? want : -1;
-    return Number(o.nanos || 0);
+  const levyPaid = (kind, want) => {
+    const rows = txs[0].vout.filter((v) => v.kind === kind);
+    if (want === 0) return rows.length === 0 ? 0 : -1;
+    let sum = 0;
+    for (const o of rows) {
+      const v = openedCoinbaseNanos(o);
+      if (v == null) return -1;
+      sum += v;
+    }
+    return sum === want ? sum : -1;
   };
-  const finderPaid = levyNote('finder-fee', split.finder);
-  const reservePaid = levyNote('reserve-fee', split.reserve);
+  const finderPaid = levyPaid('finder-fee', split.finder);
+  const reservePaid = levyPaid('reserve-fee', split.reserve);
   if (finderPaid !== split.finder || reservePaid !== split.reserve) return { ok: false, reason: 'levy_split' };
   const finalPubs = live.pubs.slice();
   for (const tx of txs) {
@@ -1522,14 +1585,36 @@ export function parentSolveIntervalMs(blocks) {
   }
 }
 
-/** Template bits from the median of sealed header gaps. candidateTimestamp is
- *  ignored, so a miner-chosen stamp cannot freeze or ease the job target.
- *  verifyBlock uses that same median, never the child timestamp. */
+/** Full aserti3-2d packed bits for the next header.
+ *  candidateTimestamp is the stamp the template will seal. Verify recomputes
+ *  the same quote from that stamp and the genesis header. A missing stamp
+ *  means one target interval after the tip (the on-schedule quote).
+ *  The emergency ease window is verify-only. Template issues the full target.
+ *  The anchor is this chain's genesis header, never the parent bits.
+ */
 export function retarget(chain, candidateTimestamp) {
-  void candidateTimestamp;
   if (!chain.length) return GENESIS_BITS_PACKED;
-  const last = decodeHeader(Buffer.from(chain[chain.length - 1].header));
-  return nextBits(last.bits, medianIntervalMs(headerGapsMs(chain)));
+  let genesis;
+  let last;
+  try {
+    genesis = decodeHeader(Buffer.from(chain[0].header));
+    last = decodeHeader(Buffer.from(chain[chain.length - 1].header));
+  } catch {
+    return GENESIS_BITS_PACKED;
+  }
+  const parentTime = Number(last.timestamp);
+  let blockTime = Number(candidateTimestamp);
+  if (!Number.isFinite(blockTime)) blockTime = parentTime + TARGET_BLOCK_INTERVAL_MS;
+  const quote = asertNextBits({
+    anchorBits: Number(genesis.bits) || GENESIS_BITS_PACKED,
+    anchorTimeMs: Number(genesis.timestamp),
+    anchorHeight: Number(chain[0].height || 1),
+    blockTimeMs: blockTime,
+    blockHeight: Number(chain[chain.length - 1].height || chain.length) + 1,
+    parentTimeMs: parentTime,
+  });
+  if (!quote.ok) return GENESIS_BITS_PACKED;
+  return quote.packed;
 }
 
 export function genesisBlock({ miner, now = Date.now() }) {

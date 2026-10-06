@@ -295,6 +295,176 @@ bool sealFlowOnCaller = false;
 /// [flowSendAdvisoryOf] still collapses the remark the user sees.
 Object? debugLastContinuumSendError;
 
+/// Inputs on one Flow spend.
+///
+/// Measured 2026-10-06 with `crypto/native_admit.js` `nativeBench` on this
+/// host: one ADMITv2 proof is 170–240 ms and 20482 bytes at |J|≥4096
+/// (14018 bytes below that). A sealed vout is 14433-byte range proof,
+/// about 29420 bytes once hex-encoded. Eight proofs are ~1.8 s of background
+/// work, and the hex body (proofs + pay/change/dummy) stays under 0.5 MB.
+/// Cancel is checked between proofs. A ninth proof adds another ~220 ms and
+/// ~42 KB. Consensus levy is unchanged: `levyFromWeight` is
+/// max(100, ceil(jsonBytes/2048)), so the quote rises once the body passes
+/// 204800 bytes and stays far under the 0.001 SHE cap.
+const int kMaxInputsPerSend = 8;
+
+/// Sweep while more spendable notes than [kMaxInputsPerSend] remain.
+/// The marginal consensus levy of one extra proof is about
+/// ceil(42000/2048) = 21 units (dust), so a SHE cutoff would not track the
+/// cost. The cost is proof time and tx bytes, which cap the count.
+const int kConsolidateAboveCount = kMaxInputsPerSend;
+
+/// UI progress for a send. [cancel] is checked between proofs, not inside one.
+class SendProgress {
+  int done = 0;
+  int total = 1;
+  String phase = 'select';
+  bool cancelRequested = false;
+  void cancel() => cancelRequested = true;
+  void Function()? onChange;
+  void bump({int? done, int? total, String? phase}) {
+    if (done != null) this.done = done;
+    if (total != null) this.total = total;
+    if (phase != null) this.phase = phase;
+    onChange?.call();
+  }
+}
+
+/// Isolate stamp of the last [selectSpendNotesWire]. Differs from the UI isolate.
+String debugSendSelectStamp = '';
+
+const String kErrSendCancelled = 'Send cancelled';
+const String kErrSendTimeout = 'Send did not reach the node — try again';
+const String kErrFeeShort = 'Not enough spendable to cover this amount and the fee';
+
+/// Hex-JSON sizes from the measurement above, padded so the posted fee is
+/// not under the sealed body. Wallet quote only. `levy.js` is not modified.
+const int kMeasuredProofHexBytes = 42000;
+const int kMeasuredOutputHexBytes = 30000;
+const int kMeasuredTxBaseBytes = 512;
+
+int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = false}) {
+  final nIn = inputs < 1 ? 1 : inputs;
+  final nOut = outputs < 1 ? 1 : outputs;
+  final weight = kMeasuredTxBaseBytes +
+      nIn * kMeasuredProofHexBytes +
+      nOut * kMeasuredOutputHexBytes +
+      (memo ? 512 : 0);
+  final padded = (weight * 5) ~/ 4 + 8192;
+  final raw = (padded + 2047) ~/ 2048;
+  final fee = raw < kLevyFloorUnits ? kLevyFloorUnits : raw;
+  return fee > kLevyCapNanos ? kLevyCapNanos : fee;
+}
+
+double? _storedNoteShe(Map<dynamic, dynamic> n) {
+  final amt = n['amount'];
+  if (amt is num && amt > 0) return amt.toDouble();
+  final nanos = n['nanos'];
+  if (nanos is num && nanos > 0) return nanos.toDouble() / kUnitsPerShe;
+  final verified = n['verifiedNanos'];
+  if (verified is num && verified > 0) return verified.toDouble() / kUnitsPerShe;
+  return null;
+}
+
+/// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
+/// No value-proof open, no spend tag, no search beyond one greedy pass.
+/// Production calls this from [Isolate.run].
+Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  final notes = input['notes'] as List? ?? const [];
+  final need = (input['needShe'] as num?)?.toDouble() ?? 0.0;
+  final cap = (input['cap'] as num?)?.toInt() ?? kMaxInputsPerSend;
+  final tip = (input['tip'] as num?)?.toInt() ?? 0;
+  final floor = (input['confs'] as num?)?.toInt() ?? 9;
+  final hold = (input['holdShe'] as num?)?.toDouble() ?? 0.0;
+  final memo = input['memo'] == true;
+  final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
+  final dests = <String>{
+    for (final d in (input['dests'] as List? ?? const [])) d.toString(),
+  };
+  final rows = <Map<String, dynamic>>[];
+  for (var i = 0; i < notes.length; i++) {
+    final n = notes[i];
+    if (n is! Map) continue;
+    if (n['spent'] == true || n['locked'] == true) continue;
+    final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+    if (addr.isEmpty) continue;
+    if (dests.isNotEmpty && !dests.contains(addr)) continue;
+    final h = n['height'];
+    if (h is num && h >= 1) {
+      final height = h.toInt();
+      if (tip < height || (tip - height + 1) < floor) continue;
+    }
+    final she = _storedNoteShe(n);
+    if (she == null || she <= 0) continue;
+    rows.add({'i': i, 'she': she, 'addr': addr});
+  }
+  rows.sort((a, b) => (a['she'] as double).compareTo(b['she'] as double));
+  var reserved = 0.0;
+  var start = 0;
+  if (hold > 1e-12) {
+    for (; start < rows.length && reserved + 1e-12 < hold; start++) {
+      reserved += rows[start]['she'] as double;
+    }
+  }
+  final free = rows.sublist(start);
+  free.sort((a, b) => (b['she'] as double).compareTo(a['she'] as double));
+  final batches = <Map<String, dynamic>>[];
+  var remaining = need;
+  var cursor = 0;
+  var feeSum = 0.0;
+  while (remaining > 1e-12 && cursor < free.length) {
+    final taken = <Map<String, dynamic>>[];
+    var sum = 0.0;
+    while (cursor < free.length && taken.length < cap) {
+      final row = free[cursor];
+      taken.add(row);
+      sum += row['she'] as double;
+      cursor++;
+      final fee = estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo) /
+          kUnitsPerShe;
+      if (sum + 1e-12 >= remaining + fee) break;
+    }
+    final fee = estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo) /
+        kUnitsPerShe;
+    final room = sum - fee;
+    if (room <= 1e-12) {
+      return {
+        'stamp': stamp,
+        'covered': false,
+        'empty': false,
+        'shortFee': true,
+        'batches': batches,
+        'feeShe': feeSum + fee,
+      };
+    }
+    final pay = room < remaining ? room : remaining;
+    batches.add({
+      'pay': pay,
+      'feeShe': fee,
+      'notes': [
+        for (final r in taken)
+          {'index': r['i'], 'dest': r['addr'], 'she': r['she']},
+      ],
+    });
+    feeSum += fee;
+    remaining -= pay;
+  }
+  final freeSum = free.fold<double>(0, (s, r) => s + (r['she'] as double));
+  final covered = remaining <= 1e-12 && batches.isNotEmpty;
+  // Notes can cover the payment and still miss the weight levy. That is a
+  // fee failure, not an empty book.
+  final shortFee = !covered && free.isNotEmpty && freeSum + 1e-12 >= need;
+  return {
+    'stamp': stamp,
+    'covered': covered,
+    'empty': rows.isEmpty,
+    'shortFee': shortFee,
+    'batches': batches,
+    'feeShe': feeSum,
+  };
+}
+
 bool _flowCryptoOnCaller() =>
     sealFlowOnCaller ||
     debugFlowCryptoOnCaller ||
@@ -651,6 +821,7 @@ Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
     'vin': List<dynamic>.from(_hexify(raw['vin']) as List? ?? const []),
     'vout': List<dynamic>.from(_hexify(raw['vout']) as List? ?? const []),
     'admitProof': proof == null ? null : Map<String, dynamic>.from(_hexify(proof) as Map),
+    if (raw['admitProofs'] != null) 'admitProofs': _hexify(raw['admitProofs']),
   };
 }
 
@@ -1369,6 +1540,7 @@ Future<ContinuumSendResult> submitContinuumSend({
   bool privacyHopUp = false,
   bool allowPublicHttp = false,
   int depth = 0,
+  SendProgress? progress,
 }) async {
   final candidate = enteredTo.trim();
   if (!continuumPayable(candidate)) {
@@ -1413,6 +1585,7 @@ Future<ContinuumSendResult> submitContinuumSend({
       privacyHopUp: privacyHopUp,
       allowPublicHttp: allowPublicHttp,
       paintedCover: gap > 1e-12,
+      progress: progress,
     );
     return ContinuumSendResult(posted: true, to: candidate, remark: '', tx: tx);
   } catch (e) {
@@ -1553,6 +1726,15 @@ String flowSendAdvisoryOf(Object error) {
       msg.contains('syncTip') ||
       msg.contains('sync tip')) {
     return kErrSyncTip;
+  }
+  if (msg.contains('send_cancelled') || msg.contains(kErrSendCancelled)) {
+    return kErrSendCancelled;
+  }
+  if (msg.contains('send_timeout') || msg.contains(kErrSendTimeout)) {
+    return kErrSendTimeout;
+  }
+  if (msg.contains('fee_short') || msg.contains(kErrFeeShort)) {
+    return kErrFeeShort;
   }
   return kErrSendGeneric;
 }
@@ -2393,6 +2575,8 @@ class ShearLedger implements ReadProofSink {
       _unopenedListedProofs += unopened.toInt();
     }
     final folds = out['hashFolds'];
+    final frame = _restFrame;
+    if (frame != null && frame.isNotEmpty) consolidateIncomingRewards(frame);
     if (folds is! List) return;
     for (final raw in folds) {
       if (raw is! Map) continue;
@@ -2438,6 +2622,8 @@ class ShearLedger implements ReadProofSink {
         _immature.add((dest: matched, amount: she, height: h));
       }
     }
+    final again = _restFrame;
+    if (again != null && again.isNotEmpty) consolidateIncomingRewards(again);
   }
 
   /// Turn an unwrapped dest-owned note into a ShearView row so open collate
@@ -4503,13 +4689,13 @@ class ShearLedger implements ReadProofSink {
       if (!_noteOnDest(n, dest)) continue;
       if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
       if (!_noteMature(n, ignoreConfs: ignoreConfs)) continue;
+      final noteShe = _storedNoteShe(n) ?? _noteSheOf(n, amountFallback);
+      if (noteShe + 1e-18 < needShe) continue;
       final tag = _noteSpendTagHex(spendSeed, n);
       if (tag != null && _spentTagHex.contains(tag)) {
         n['spent'] = true;
         continue;
       }
-      final noteShe = _noteSheOf(n, amountFallback);
-      if (noteShe + 1e-18 < needShe) continue;
       if (best == null || noteShe > bestShe) {
         best = n;
         bestShe = noteShe;
@@ -6031,8 +6217,375 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  /// One Flow vin is one note. When no note covers [amount] and the rest-frame
-  /// sum does, post one proven send per note until the pay is filled.
+  /// Non-ssa1 rest-frame rewards join the coin ledger. ssa1 coinbase notes stay
+  /// put until [consolidateSpendableNotes] merges them on chain.
+  void consolidateIncomingRewards(String restFrame, {String? paymentCode}) {
+    final bound = _coinLedger;
+    if (bound == null || !isDestAddress(bound) || _isProgramVaultDest(bound)) return;
+    for (final n in _notes) {
+      if (n['spent'] == true) continue;
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty || isDestAddress(addr) || _isProgramVaultDest(addr)) continue;
+      n['address'] = bound;
+      n['dest'] = bound;
+      rememberDest(bound);
+    }
+  }
+
+  double _selectionHoldShe() {
+    var pending = 0.0;
+    for (final v in _lockDebitShe.values) {
+      if (v > 0) pending += v;
+    }
+    final reserve = _reserveHoldShe();
+    return reserve > pending ? reserve : pending;
+  }
+
+  Future<Map<String, dynamic>> _planSpendOffUi(
+    String restFrame,
+    String? paymentCode,
+    double amount, {
+    bool memo = false,
+  }) async {
+    final dests = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      dests.add(d);
+      dests.add(payKey(d));
+    }
+    for (final n in _notes) {
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty) continue;
+      if (isBindable(addr, restFrame: restFrame, paymentCode: paymentCode)) dests.add(addr);
+    }
+    final snap = <Map<String, dynamic>>[
+      for (final n in _notes)
+        {
+          'spent': n['spent'] == true,
+          'locked': n['locked'] == true,
+          'address': (n['address'] ?? n['dest'])?.toString() ?? '',
+          'height': n['height'],
+          'amount': n['amount'],
+          'nanos': n['nanos'],
+          'verifiedNanos': n['verifiedNanos'],
+        },
+    ];
+    final raw = await Isolate.run(() => selectSpendNotesWire({
+          'notes': snap,
+          'needShe': amount,
+          'cap': kMaxInputsPerSend,
+          'tip': bookTip,
+          'confs': spendableConfirmations,
+          'holdShe': _selectionHoldShe(),
+          'memo': memo,
+          'dests': dests.toList(),
+        }));
+    debugSendSelectStamp = raw['stamp']?.toString() ?? '';
+    return raw;
+  }
+
+  /// Weight-levy quote for [amount]. Selection runs off the UI isolate.
+  Future<int> quoteSendLevyUnits({
+    required String restFrame,
+    String? paymentCode,
+    required double amount,
+    bool memo = false,
+  }) async {
+    if (amount <= 0) return estimateSendLevyUnits(inputs: 1, memo: memo);
+    final plan = await _planSpendOffUi(restFrame, paymentCode, amount, memo: memo);
+    final fee = plan['feeShe'];
+    if (fee is num && fee > 0) return (fee.toDouble() * kUnitsPerShe).round();
+    return estimateSendLevyUnits(inputs: 1, memo: memo);
+  }
+
+  /// Merge the smallest mature notes until at most [kMaxInputsPerSend] remain.
+  /// Each batch is one Flow tx. The gap is the weight-levy quote.
+  Future<int> consolidateSpendableNotes({
+    required String restFrame,
+    String? paymentCode,
+    required Uint8List spendSeed,
+    SendProgress? progress,
+    bool allowPublicHttp = false,
+    bool privacyHopUp = false,
+  }) async {
+    var rounds = 0;
+    for (var guard = 0; guard < 100000; guard++) {
+      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+      final owned = <String>{};
+      for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+        if (isDestAddress(d)) {
+          owned.add(d);
+          owned.add(payKey(d));
+        }
+      }
+      final mature = <Map<String, dynamic>>[];
+      for (final n in _notes) {
+        if (n['spent'] == true || n['locked'] == true) continue;
+        if (!_noteMature(n)) continue;
+        final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+        if (addr.isEmpty || !owned.contains(addr)) continue;
+        final she = _storedNoteShe(n);
+        if (she == null || she <= 0) continue;
+        if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+        mature.add(n);
+      }
+      if (mature.length <= kConsolidateAboveCount) break;
+      mature.sort((a, b) => (_storedNoteShe(a) ?? 0).compareTo(_storedNoteShe(b) ?? 0));
+      final take = mature.sublist(0, kMaxInputsPerSend);
+      final sum = take.fold<double>(0, (s, n) => s + (_storedNoteShe(n) ?? 0));
+      final feeShe = estimateSendLevyUnits(inputs: take.length, outputs: 2) / kUnitsPerShe;
+      if (sum <= feeShe + 1e-12) break;
+      final src = (take.first['address'] ?? take.first['dest'])?.toString() ?? '';
+      final dest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
+      progress?.bump(phase: 'prove', done: 0, total: take.length);
+      await _sendManyNotes(
+        notes: take,
+        to: dest,
+        payShe: sum - feeShe,
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        spendSeed: spendSeed,
+        allowPublicHttp: allowPublicHttp,
+        privacyHopUp: privacyHopUp,
+        progress: progress,
+        proveDone: 0,
+        proveTotal: take.length,
+      );
+      rounds++;
+      if (Platform.environment['FLUTTER_TEST'] != 'true') {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+    }
+    return rounds;
+  }
+
+  /// One Flow tx. A batch spends every note in [notes]. Notes are marked spent
+  /// only after the node accepts the tx.
+  Future<ShearTx> _sendManyNotes({
+    required List<Map<String, dynamic>> notes,
+    required String to,
+    required double payShe,
+    required String restFrame,
+    String? paymentCode,
+    required Uint8List spendSeed,
+    String? memo,
+    bool allowPublicHttp = false,
+    bool privacyHopUp = false,
+    SendProgress? progress,
+    int proveDone = 0,
+    int proveTotal = 1,
+  }) async {
+    if (notes.isEmpty) throw StateError(kErrNoSealedNote);
+    if (pool == null) throw StateError(kErrNoSealedNote);
+    if (!localSendReady(pool!.baseUrl) && !privacyHopUp && !allowPublicHttp) {
+      throw StateError(kErrPublicHttp);
+    }
+    final src = (notes.first['address'] ?? notes.first['dest'])?.toString() ?? '';
+    if (!isDestAddress(src)) throw ArgumentError('bad_send');
+    var destTo = to;
+    SilentPay? pay;
+    if (isFullPaymentCode(to)) {
+      pay = silentPay(to);
+      if (pay == null) throw ArgumentError('bad_send');
+      destTo = pay.dest;
+    } else if (isShearAddress(to)) {
+      if (to.trim() == restFrame.trim()) {
+        destTo = currentDest(restFrame, paymentCode: paymentCode);
+      } else {
+        throw StateError(kErrPayIdentity);
+      }
+    } else if (!isDestAddress(to)) {
+      throw ArgumentError('bad_send');
+    }
+    if (destTo == src) throw ArgumentError('same_dest');
+    var inputSum = 0;
+    for (final n in notes) {
+      final she = _storedNoteShe(n);
+      if (she == null) throw StateError(kErrNoSealedNote);
+      inputSum += (she * kUnitsPerShe).round();
+    }
+    final memoOn = memo != null && memo.isNotEmpty;
+    final feeUnits = estimateSendLevyUnits(inputs: notes.length, outputs: 3, memo: memoOn);
+    var payNanos = (payShe * kUnitsPerShe).round();
+    if (payNanos + feeUnits > inputSum) payNanos = inputSum - feeUnits;
+    if (payNanos <= 0) throw StateError('fee_short');
+    final changeNanos = inputSum - payNanos - feeUnits;
+    String? changeDest;
+    if (changeNanos > 0) {
+      changeDest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
+      if (changeDest == src || changeDest == destTo) throw ArgumentError('same_dest');
+    }
+    Map<String, dynamic>? memoCt;
+    if (memoOn) {
+      if (pay?.shared == null) throw ArgumentError('no_shared');
+      memoCt = await memoSeal(destTo, memo, pay!.shared);
+    }
+    final vouts = <Map<String, dynamic>>[
+      {'address': destTo, 'nanos': payNanos, 'kind': 'send'},
+      if (changeDest != null) {'address': changeDest, 'nanos': changeNanos, 'kind': 'send'},
+      {'kind': 'dummy', 'nanos': 0},
+    ];
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+    final sealedBuilt = await _sealFlowOffUi({
+      'spendSeed': spendSeed,
+      'destTo': destTo,
+      'src': src,
+      'changeDest': changeDest,
+      'admitBase': admitBase ?? _admitBaseOf(paymentCode),
+      'vouts': [for (final o in vouts) Map<String, dynamic>.from(o)],
+    });
+    final sealed = <Map<String, dynamic>>[
+      for (final raw in (sealedBuilt['vouts'] as List))
+        if (raw is Map) Map<String, dynamic>.from(raw),
+    ];
+    final cols = await _fluxColumns();
+    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length) throw StateError('fluxset');
+    final vin = <Map<String, dynamic>>[];
+    final proofs = <Map<String, dynamic>>[];
+    var done = proveDone;
+    final total = proveTotal < notes.length ? notes.length : proveTotal;
+    for (final note in notes) {
+      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+      progress?.bump(phase: 'prove', done: done, total: total);
+      final spentNote = {
+        'kind': (note['kind'] as String?) ?? 'pot',
+        'commit': _noteBytes(note['commit'])!,
+        'noteCommit': _noteBytes(note['noteCommit'])!,
+        'r': _noteBytes(note['r'])!,
+      };
+      Map<String, dynamic> proved;
+      try {
+        proved = await _proveFlowOffUi({
+          'vin': [
+            {'commit': spentNote['commit'], 'r': spentNote['r']},
+          ],
+          'vout': sealed,
+          'spendSeed': spendSeed,
+          'spentNote': spentNote,
+          'pubs': cols.pubs,
+          'commits': cols.commits,
+        }).timeout(const Duration(seconds: 8));
+      } on TimeoutException {
+        throw StateError('send_timeout');
+      }
+      final proof = Map<String, dynamic>.from(proved['admitProof'] as Map);
+      final ct = proof['cTilde'];
+      final blind = proof['t'];
+      vin.add({
+        'commit': ct is Uint8List ? ct : spentNote['commit'],
+        'r': spentNote['r'],
+        if (blind is Uint8List) 't': blind,
+      });
+      proofs.add(proof);
+      done++;
+      progress?.bump(phase: 'prove', done: done, total: total);
+    }
+    final excess = kernelExcess(sealed, vin);
+    final postedVin = _postedVin(vin);
+    final postedVout = _postedVout(sealed);
+    if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
+      throw StateError('unspendable_dest');
+    }
+    final msg = spendMessage(from: src, vout: postedVout, kind: 'send', vin: postedVin);
+    final shared = _stealthShared[src];
+    final sig = shared != null
+        ? stealthSign(spendSeed, shared, msg)
+        : ed25519Sign(spendSeed, msg);
+    final pub = shared != null
+        ? stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared)
+        : ed25519PublicFromSeed(spendSeed);
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+    progress?.bump(phase: 'broadcast', done: done, total: total);
+    final wire = await flowPostHexOffUi(<String, dynamic>{
+      'vin': postedVin,
+      'vout': postedVout,
+      'admitProof': proofs.first,
+      'admitProofs': proofs,
+    });
+    final json = await pool!.send(
+      from: src,
+      to: destTo,
+      amount: payNanos / kUnitsPerShe,
+      memoCt: memoCt,
+      kind: 'send',
+      change: changeDest,
+      sig: _bytesHex(sig),
+      spendPub: _bytesHex(pub),
+      ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
+      vin: List<dynamic>.from(wire['vin'] as List? ?? const []),
+      vout: List<dynamic>.from(wire['vout'] as List? ?? const []),
+      excess: _bytesHex(excess),
+      admitProof: wire['admitProof'] is Map
+          ? Map<String, dynamic>.from(wire['admitProof'] as Map)
+          : proofs.first,
+      admitProofs: wire['admitProofs'] is List
+          ? List<Map<String, dynamic>>.from(
+              (wire['admitProofs'] as List).whereType<Map>().map((p) => Map<String, dynamic>.from(p)),
+            )
+          : null,
+      spendTag: proofs.first['spendTag'] is Uint8List
+          ? _bytesHex(proofs.first['spendTag'] as Uint8List)
+          : proofs.first['spendTag']?.toString(),
+      fee: feeUnits,
+    );
+    if (json['ok'] != true || json['tx'] is! Map) {
+      throw StateError(json['reason']?.toString() ?? 'send failed');
+    }
+    for (final note in notes) {
+      note['spent'] = true;
+      final d = (note['address'] ?? note['dest'])?.toString() ?? '';
+      if (d.isEmpty) continue;
+      final she = _storedNoteShe(note) ?? 0;
+      final left = spendable(payKey(d)) - she;
+      _spendable[payKey(d)] = left <= 1e-18 ? 0 : left;
+    }
+    for (var i = 0; i < sealed.length; i++) {
+      final o = sealed[i];
+      if ((o['kind'] as String?) == 'dummy') continue;
+      final addr = o['address'] as String?;
+      if (addr == null || (addr != src && addr != changeDest)) continue;
+      rememberNote({
+        'address': addr,
+        'dest': addr,
+        'kind': o['kind'] ?? 'send',
+        'commit': o['commit'],
+        'noteCommit': o['noteCommit'],
+        'r': o['r'],
+        'rEph': o['rEph'],
+        'rCt': o['rCt'],
+        'admitPub': o['admitPub'],
+        'index': i,
+        'verified': true,
+        'prev': Uint8List(32),
+        if (o['nanos'] != null) 'nanos': o['nanos'],
+        if (o['nanos'] != null) 'amount': (o['nanos'] as num) / kUnitsPerShe,
+      });
+      _proofCheckedDests.add(payKey(addr));
+    }
+    if (changeDest != null && changeNanos > 0) {
+      _spendable[changeDest] = spendable(changeDest) + changeNanos / kUnitsPerShe;
+      _dests.add(changeDest);
+    }
+    final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
+    final tx = ShearTx(
+      id: raw.id,
+      from: raw.from,
+      to: destTo,
+      amount: raw.amount,
+      kind: raw.kind,
+      height: raw.height,
+      confirmed: raw.confirmed,
+      memo: memoCt != null || raw.memo,
+      memoPlain: memo,
+      memoCt: memoCt ?? raw.memoCt,
+      change: changeDest,
+    );
+    _txs.add(tx);
+    return tx;
+  }
+
+  /// One note when one note covers. Otherwise batches of at most
+  /// [kMaxInputsPerSend], each batch one Flow tx.
   Future<ShearTx> sendSpendableSum({
     required String from,
     required String to,
@@ -6051,9 +6604,10 @@ class ShearLedger implements ReadProofSink {
     bool privacyHopUp = false,
     bool allowPublicHttp = false,
     bool paintedCover = false,
+    SendProgress? progress,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
-    Future<ShearTx> once(double pay, String src) {
+    Future<ShearTx> once(double pay, String src, {Map<String, dynamic>? note}) {
       return send(
         from: src,
         to: to,
@@ -6072,24 +6626,92 @@ class ShearLedger implements ReadProofSink {
         privacyHopUp: privacyHopUp,
         allowPublicHttp: allowPublicHttp,
         paintedCover: paintedCover,
+        progress: progress,
+        spendNote: note,
       );
     }
     if (sendKind != 'send' || local || paintedCover || restFrame == null) {
       return once(amount, from);
     }
-    try {
-      return await once(amount, from);
-    } catch (e) {
-      final msg = e is StateError ? e.message : '';
-      if (msg != 'no_note' && msg != kErrNoSealedNote && msg != 'insufficient') rethrow;
-      final slices = _sumSlices(restFrame, paymentCode, amount);
-      if (slices.length < 2) rethrow;
-      ShearTx? last;
-      for (final slice in slices) {
-        last = await once(slice.pay, slice.dest);
-      }
-      return last!;
+    if (spendSeed == null || spendSeed.length != 32 || pool == null) {
+      return once(amount, from);
     }
+    consolidateIncomingRewards(restFrame, paymentCode: paymentCode);
+    progress?.bump(phase: 'select', done: 0, total: 1);
+    final plan = await _planSpendOffUi(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo != null && memo.isNotEmpty,
+    );
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+    final rawBatches = (plan['batches'] as List? ?? const []).whereType<Map>().toList();
+    if (plan['covered'] != true || rawBatches.isEmpty) {
+      if (plan['shortFee'] == true) throw StateError('fee_short');
+      if (plan['empty'] == true) throw StateError(kErrNoSealedNote);
+      throw StateError('insufficient');
+    }
+    final batches = <({double pay, List<Map<String, dynamic>> notes})>[];
+    for (final b in rawBatches) {
+      final specs = (b['notes'] as List? ?? const []).whereType<Map>().toList();
+      final refs = <Map<String, dynamic>>[];
+      for (final spec in specs) {
+        final i = spec['index'];
+        if (i is! num || i < 0 || i >= _notes.length) continue;
+        refs.add(_notes[i.toInt()]);
+      }
+      final pay = (b['pay'] as num?)?.toDouble() ?? 0;
+      if (refs.isEmpty || pay <= 1e-12) continue;
+      batches.add((pay: pay, notes: refs));
+    }
+    if (batches.isEmpty) throw StateError('insufficient');
+    if (batches.length == 1 && batches.single.notes.length == 1) {
+      progress?.bump(phase: 'broadcast', done: 0, total: 1);
+      final only = batches.single;
+      final tx = await once(
+        only.pay,
+        (only.notes.single['address'] ?? only.notes.single['dest'])?.toString() ?? from,
+        note: only.notes.single,
+      );
+      progress?.bump(phase: 'broadcast', done: 1, total: 1);
+      return tx;
+    }
+    final totalProofs = batches.fold<int>(0, (s, b) => s + b.notes.length);
+    ShearTx? last;
+    var done = 0;
+    for (final batch in batches) {
+      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+      if (batch.notes.length == 1) {
+        progress?.bump(phase: 'prove', done: done, total: totalProofs);
+        last = await once(
+          batch.pay,
+          (batch.notes.single['address'] ?? batch.notes.single['dest'])?.toString() ?? from,
+          note: batch.notes.single,
+        );
+        done += 1;
+        progress?.bump(phase: 'prove', done: done, total: totalProofs);
+      } else {
+        last = await _sendManyNotes(
+          notes: batch.notes,
+          to: to,
+          payShe: batch.pay,
+          restFrame: restFrame,
+          paymentCode: paymentCode,
+          spendSeed: spendSeed,
+          memo: memo,
+          allowPublicHttp: allowPublicHttp,
+          privacyHopUp: privacyHopUp,
+          progress: progress,
+          proveDone: done,
+          proveTotal: totalProofs,
+        );
+        done += batch.notes.length;
+      }
+      if (Platform.environment['FLUTTER_TEST'] != 'true' && batches.length > 1) {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+    }
+    return last!;
   }
 
   double _roomAfterLevy(double she) {
@@ -6159,6 +6781,8 @@ class ShearLedger implements ReadProofSink {
     bool privacyHopUp = false,
     bool allowPublicHttp = false,
     bool paintedCover = false,
+    SendProgress? progress,
+    Map<String, dynamic>? spendNote,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
@@ -6302,9 +6926,18 @@ class ShearLedger implements ReadProofSink {
     List<Uint8List> livePubs = const [];
     List<Uint8List> liveCommits = const [];
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local && !paintedCover) {
-      // One sealed note covers this send. A sum of smaller notes is posted by
-      // sendSpendableSum as one transaction per note. Pull the pool note list
-      // when the local book has no covering note.
+      // The planner already chose this note off the UI isolate. Do not scan
+      // spend tags for every other note.
+      if (spendNote != null) {
+        final cols = await _fluxColumns();
+        livePubs = cols.pubs;
+        liveCommits = cols.commits;
+        chosen = spendNote;
+        final addr = (spendNote['address'] ?? spendNote['dest'])?.toString() ?? '';
+        if (addr.isNotEmpty) src = addr;
+        fundedShe = _storedNoteShe(spendNote) ?? spendable(src);
+      } else {
+      // Pull the pool note list when the local book has no covering note.
       final cols = await _fluxColumns();
       livePubs = cols.pubs;
       liveCommits = cols.commits;
@@ -6383,6 +7016,7 @@ class ShearLedger implements ReadProofSink {
       }
       chosen = spent;
       fundedShe = _noteSheOf(chosen!, spendable(src));
+      }
     }
     String? changeDest = change;
     if (sendKind == 'send') {
@@ -6519,16 +7153,33 @@ class ShearLedger implements ReadProofSink {
           'pubs': pubs.map(_bytesHex).toList(),
         }));
       }
-      final proved = await _proveFlowOffUi({
-        'vin': vin,
-        'vout': vouts,
-        'spendSeed': spendSeed,
-        'spentNote': spentNote,
-        'pubs': pubs,
-        'commits': commits,
-      });
+      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+      progress?.bump(phase: 'prove', done: 0, total: 1);
+      Map<String, dynamic> proved;
+      try {
+        proved = await _proveFlowOffUi({
+          'vin': vin,
+          'vout': vouts,
+          'spendSeed': spendSeed,
+          'spentNote': spentNote,
+          'pubs': pubs,
+          'commits': commits,
+        }).timeout(const Duration(seconds: 8));
+      } on TimeoutException {
+        throw StateError('send_timeout');
+      }
       admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
-      note['spent'] = true;
+      final ct = admitProof['cTilde'];
+      final blind = admitProof['t'];
+      if (ct is Uint8List) {
+        vin[0] = {
+          'commit': ct,
+          'r': vin[0]['r'] ?? spentNote['r'],
+          if (blind is Uint8List) 't': blind,
+        };
+        excess = kernelExcess(vouts, vin);
+      }
+      progress?.bump(phase: 'prove', done: 1, total: 1);
       }
     }
     final List<Map<String, dynamic>> postedVin;
@@ -6669,6 +7320,7 @@ class ShearLedger implements ReadProofSink {
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');
       }
+      chosen?['spent'] = true;
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
         // The pool balance below is already net. Debit only when Spendable
         // shows the opened-note cap, which is the gross sum.
@@ -7211,7 +7863,9 @@ class ShearPoolClient {
     List<dynamic>? vout,
     dynamic excess,
     Map<String, dynamic>? admitProof,
+    List<Map<String, dynamic>>? admitProofs,
     String? spendTag,
+    int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
   }) =>
@@ -7219,6 +7873,7 @@ class ShearPoolClient {
         'from': from,
         'to': to,
         'amount': amount,
+        if (fee != null) 'fee': fee,
         if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
         if (memoCt != null) 'memoCt': memoCt,
         if (open != null && open.isNotEmpty) 'open': open,
@@ -7236,6 +7891,7 @@ class ShearPoolClient {
         if (vout != null) 'vout': vout,
         if (excess != null) 'excess': excess,
         if (admitProof != null) 'admit_proof': admitProof,
+        if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
         if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
       }, legacyPoolSend: legacyPoolSend);
 
