@@ -23,7 +23,14 @@ fn wide(parts: &[&[u8]]) -> [u8; 64] {
 }
 
 fn chal(parts: &[&[u8]]) -> Scalar {
+    // Wide reduction is the Fiat-Shamir challenge. Do not switch this to a
+    // canonical-bytes parse: the hash is 64 bytes and is not a wire scalar.
     Scalar::from_bytes_mod_order_wide(&wide(parts))
+}
+
+/// Wire scalars must be canonical. `from_bytes_mod_order` would accept s+L.
+fn scalar_canonical(bytes: [u8; 32]) -> Option<Scalar> {
+    Scalar::from_canonical_bytes(bytes).into()
 }
 
 pub fn h_note() -> RistrettoPoint {
@@ -145,7 +152,8 @@ pub fn verify_range(c_bytes: &[u8; 32], proof: &[u8]) -> bool {
         return false;
     }
     let need = 1 + 32 + RANGE_BITS * 32 + RANGE_BITS * 192 + 64;
-    if proof.len() < need {
+    // Exact length. A shorter proof is truncated. Trailing bytes are malleable.
+    if proof.len() != need {
         return false;
     }
     let c = match decompress(&proof[1..33]) {
@@ -201,10 +209,22 @@ pub fn verify_range(c_bytes: &[u8; 32], proof: &[u8]) -> bool {
         let mut z1b = [0u8; 32];
         z1b.copy_from_slice(&proof[off + 160..off + 192]);
         off += 192;
-        let e0 = Scalar::from_bytes_mod_order(e0b);
-        let e1 = Scalar::from_bytes_mod_order(e1b);
-        let z0 = Scalar::from_bytes_mod_order(z0b);
-        let z1 = Scalar::from_bytes_mod_order(z1b);
+        let e0 = match scalar_canonical(e0b) {
+            Some(s) => s,
+            None => return false,
+        };
+        let e1 = match scalar_canonical(e1b) {
+            Some(s) => s,
+            None => return false,
+        };
+        let z0 = match scalar_canonical(z0b) {
+            Some(s) => s,
+            None => return false,
+        };
+        let z1 = match scalar_canonical(z1b) {
+            Some(s) => s,
+            None => return false,
+        };
         let e = chal(&[
             b"bit",
             &b_bytes[i],
@@ -240,7 +260,10 @@ pub fn verify_range(c_bytes: &[u8; 32], proof: &[u8]) -> bool {
     };
     let mut zb = [0u8; 32];
     zb.copy_from_slice(&proof[off + 32..off + 64]);
-    let z = Scalar::from_bytes_mod_order(zb);
+    let z = match scalar_canonical(zb) {
+        Some(s) => s,
+        None => return false,
+    };
     let e = chal(&[b"cons", &proof[1..33], &compress(&p), &proof[off..off + 32]]);
     if e == Scalar::ZERO {
         return false;
@@ -272,5 +295,52 @@ mod tests {
             *b = 0;
         }
         assert!(!verify_range(&cb, &z), "zero Fiat–Shamir e0/e1 rejected");
+    }
+
+    /// L = 2^252 + 27742317777372353535851937790883648493
+    fn add_l(bytes: &mut [u8; 32]) {
+        const L: [u8; 32] = [
+            0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9,
+            0xde, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x10,
+        ];
+        let mut carry = 0u16;
+        for i in 0..32 {
+            let sum = bytes[i] as u16 + L[i] as u16 + carry;
+            bytes[i] = (sum & 0xff) as u8;
+            carry = sum >> 8;
+        }
+        assert_eq!(carry, 0, "s+L overflowed 32 bytes");
+    }
+
+    #[test]
+    fn exact_length_and_canonical_scalars() {
+        let r = Scalar::from(9u64);
+        let h = h_note();
+        let need = 1 + 32 + RANGE_BITS * 32 + RANGE_BITS * 192 + 64;
+        for v in [0u64, 1, 2_000_000_000, u64::MAX] {
+            let c = (G * Scalar::from(v) + h * r).compress().to_bytes();
+            let p = prove_range(v, &r.to_bytes()).unwrap();
+            assert_eq!(p.len(), need, "v={v}");
+            assert!(verify_range(&c, &p), "honest v={v}");
+            let mut trail = p.clone();
+            trail.push(0);
+            assert!(!verify_range(&c, &trail), "trailing v={v}");
+            assert!(!verify_range(&c, &p[..p.len() - 1]), "short v={v}");
+            let mut z = p.clone();
+            let z_at = need - 32;
+            let mut zb = [0u8; 32];
+            zb.copy_from_slice(&z[z_at..]);
+            add_l(&mut zb);
+            z[z_at..].copy_from_slice(&zb);
+            assert!(!verify_range(&c, &z), "non-canonical z v={v}");
+            let mut e0 = p.clone();
+            let e0_at = 1 + 32 + RANGE_BITS * 32 + 64;
+            let mut eb = [0u8; 32];
+            eb.copy_from_slice(&e0[e0_at..e0_at + 32]);
+            add_l(&mut eb);
+            e0[e0_at..e0_at + 32].copy_from_slice(&eb);
+            assert!(!verify_range(&c, &e0), "non-canonical e0 v={v}");
+        }
     }
 }
