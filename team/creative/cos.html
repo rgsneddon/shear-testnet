@@ -55,6 +55,12 @@
   <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
   <link rel="stylesheet" href="../team.css" />
   <link rel="stylesheet" href="creative.css" />
+  <style>
+    /* live candles (2026-10-06): burnt stubs + hour counter; JS off keeps the static row */
+    .candles span.burnt { align-self: end; height: 7px; opacity: .32; box-shadow: none; background: linear-gradient(180deg, #8a7a58, #5e5240); }
+    .candles span.burnt::before { content: none; }
+    .candle-count { text-align: center; color: #9aa8c7; font-size: .85rem; margin: -.6rem 0 1rem; }
+  </style>
 </head>
 <body class="team-page gift-page">
   <div id="shear-chrome-root" data-active="TEAM" data-brand-base="../brand/"></div>
@@ -70,6 +76,36 @@
       <p class="copy">A soak isn't a progress bar. It's a vigil. Candle Count lays the 72-hour soak out as <strong>seventy-two candles</strong> in a row. The stamp lights the first one, and from then on each hour burns one candle down, honestly, at the speed of the hour and no faster.</p>
       <p class="copy">The one rule of the vigil: <strong>no retune mid-wick.</strong> If someone reaches for a dial while a candle is burning, that candle gutters out and the count starts again from the stamp. Anything learned waits for the next row. When the seventy-second candle burns down without a flicker, the verdict is just reading the wax.</p>
       <div class="candles" role="img" aria-label="Seventy-two candles, the first lit by the stamp"><span class="lit"></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+      <p class="candle-count" id="candle-count" hidden></p>
+      <script>
+        (function () {
+          var STAMP = Date.UTC(2026, 9, 5, 15, 39, 0); /* 16:39 BST 5 Oct 2026 */
+          var TOTAL = 72, HOUR = 3600000;
+          var row = document.querySelector('.candles');
+          var note = document.getElementById('candle-count');
+          if (!row) return;
+          var wicks = row.getElementsByTagName('span');
+          function paint() {
+            var elapsed = Math.floor((Date.now() - STAMP) / HOUR);
+            if (elapsed < 0) elapsed = 0;
+            var burnt = Math.min(elapsed, TOTAL);
+            for (var i = 0; i < wicks.length; i++) {
+              wicks[i].className = i < burnt ? 'burnt' : (i === elapsed ? 'lit' : '');
+            }
+            var done = burnt >= TOTAL;
+            row.setAttribute('aria-label', 'Seventy-two candles: ' + burnt + ' of 72 candles burned' + (done ? ', vigil complete' : ''));
+            if (note) {
+              note.textContent = done
+                ? 'Vigil complete · 72 of 72 burned · stamp 16:39 BST 5 Oct'
+                : 'Hour ' + (elapsed + 1) + ' of 72 · stamp 16:39 BST 5 Oct';
+              note.hidden = false;
+            }
+            return burnt;
+          }
+          paint();
+          setInterval(paint, 60000);
+        })();
+      </script>
       <blockquote>The stamp strikes the match; the first wick takes.
 One hour, one candle, whatever it takes.
 No hand on the dial while a flame&#x27;s still high.
