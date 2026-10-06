@@ -114,8 +114,8 @@ export function hashBonusUnitNanos(n) {
 }
 /** This public pool's construction rate (1%). Not a consensus requirement. */
 export const POOL_FEE_BPS = 100;
-/** Consensus cap: a pool may charge 0–3% of the pot. Hash bonus is never fee'd. */
-export const POOL_FEE_MAX_BPS = 300;
+/** Consensus cap: 0–2% of this block's subsidy. Carry is not fee'd. Hash bonus is never fee'd. */
+export const POOL_FEE_MAX_BPS = 200;
 /** A digest that meets this floor is worth 2^SHARE_FLOOR_BITS units. */
 export const SHARE_FLOOR_BITS = 8;
 /**

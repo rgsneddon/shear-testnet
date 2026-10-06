@@ -463,7 +463,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(TARGET_BLOCK_INTERVAL_MS, 90000);
     assert.match(fp, /HASH_TX_LIVE=1/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
-    assert.match(fp, /POOL_FEE_MAX_BPS=300/);
+    assert.match(fp, /POOL_FEE_MAX_BPS=200/);
     assert.doesNotMatch(fp, /POOL_FEE_BPS=100/);
     assert.match(fp, /AMOUNT=confidential/);
     assert.match(fp, /DUMMY_OUTS=1/);

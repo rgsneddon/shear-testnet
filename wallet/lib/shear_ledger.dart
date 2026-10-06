@@ -26,10 +26,10 @@ const kUnitsPerShe = 100000000000; // 10^11
 const kBlockPotShe = 1.0;
 
 /// Sealed pool fee is 1% of that pot. Compact drops `v` on a pool-fee note.
-/// The commitment still opens at this rate, any fee up to 3%, or the pot.
+/// The commitment still opens at this rate, any fee up to 2% of the subsidy, or the pot.
 /// Same candidates as `openedCoinbaseNanos`. A node balance is not a candidate.
 const kPoolFeeBps = 100;
-const kPoolFeeMaxBps = 300;
+const kPoolFeeMaxBps = 200;
 /// Fingerprint target interval (TARGET_BLOCK_INTERVAL_MS). Continuum display only.
 const kTargetBlockIntervalMs = 90000;
 

@@ -487,7 +487,7 @@ void main() {
 int _feeNanos() => (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
 
 /// A pool-fee note whose claimed v opens. A stand-in proof never opens and
-/// the 1..300 bps hunt does not return inside the test.
+/// the 1..200 bps hunt does not return inside the test.
 Map<String, dynamic> _feeNote(String dest, {required int height}) {
   final d20 = hash20FromAddress(dest)!;
   final fee = _feeNanos();

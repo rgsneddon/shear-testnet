@@ -17,7 +17,7 @@ function ncHex(buf) {
 
 /**
  * Coinbase compact drops `v` on a pool-fee note. The commitment still opens
- * at the sealed amount: the claimed v, this pool's 1%, any fee up to 3%, or
+ * at the sealed amount: the claimed v, this pool's 1%, any fee up to 2% of the subsidy, or
  * the whole pot.
  */
 export function openedCoinbaseNanos(vout, potNanos = BLOCK_SUBSIDY_NANOS) {

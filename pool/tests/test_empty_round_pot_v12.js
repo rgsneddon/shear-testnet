@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { GENESIS_BITS_PACKED, POOL_FEE_BPS, TARGET_BLOCK_INTERVAL_MS, asertNextBits } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET, POOL_FEE_BPS, POOL_FEE_MAX_BPS, SHARE_FLOOR_BITS, TARGET_BLOCK_INTERVAL_MS, asertNextBits } from '../../crypto/asert.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { openedCoinbaseNanos, sealCoinbaseNote, addExcess, noteCommitOfDest20 } from '../../crypto/note.js';
-import { unitsForShare } from '../../crypto/share_batch.js';
+import { aLeavesFromShares, destOfShare, noteCommitOfShare, unitsForShare } from '../../crypto/share_batch.js';
+import { epochMs, potSubsidyAt, potSubsidyNanos } from '../../crypto/pot_sched.js';
 import { createPool, potRoundShares, configuredFeeIdentity, THIS_POOL_DIRECT_FEE_DEST } from '../src/pool.js';
-import { GENESIS_PREV, buildTemplate, digestTx, potSharesFromBatch, verifyBlock } from '../../node/src/chain.js';
+import { GENESIS_PREV, buildTemplate, canonicalCarry, custodyPotShares, digestTx, potPaysFromLeaves, potSharesFromBatch, verifyBlock } from '../../node/src/chain.js';
 
 function minerDest() {
   const id = newIdentity();
@@ -408,105 +409,314 @@ describe('v12 empty round carries the pot to the next proven round', () => {
     }
   });
 
-  it('consensus accepts a pro-rata carry split and rejects a last-row dump', () => {
+  it('a pool fee is a bps of this subsidy only, across carries, epochs, and miner mixes', { timeout: 600_000 }, () => {
+    assert.equal(POOL_FEE_MAX_BPS, 200);
     const feeTo = configuredFeeIdentity().feeDest;
-    const now = 1_700_000_000_000;
-    const subsidy = 100_000_000_000;
-    const fee = Math.floor(subsidy * POOL_FEE_BPS / 10000);
-    const parentTpl = buildTemplate({
-      prev: GENESIS_PREV,
-      height: 1,
-      miner: feeTo,
-      bits: GENESIS_BITS_PACKED,
-      now,
-      potShares: [{ address: feeTo, nanos: fee, kind: 'pool-fee' }],
-      poolDest: feeTo,
-    });
-    const parent = {
-      header: parentTpl.header,
-      txs: parentTpl.txs,
-      samples: parentTpl.samples,
-      shareBatch: parentTpl.shareBatch || [],
-      miner: feeTo,
-      poolDest: feeTo,
-      aLeaves: parentTpl.aLeaves,
-      bLeaves: parentTpl.bLeaves,
-      rootA: parentTpl.rootA,
-      rootB: parentTpl.rootB,
-      weight: parentTpl.weight,
-      height: 1,
-    };
-    const sealedParent = verifyBlock(parent, null, { trustedPowHash: easyPowHash(), nowMs: now + 1_000 });
-    assert.equal(sealedParent.ok, true, sealedParent.reason);
-    const carry = Math.floor(Number(parent.txs[0].carryNanos) || 0);
-    assert.equal(carry, subsidy - fee);
-    const miners = [minerDest(), minerDest(), minerDest()];
-    const counts = [1, 4, 1];
-    const batch = [];
-    let nonce = 1n;
-    miners.forEach((dest, i) => {
-      for (let n = 0; n < counts[i]; n += 1) {
-        batch.push({ dest, dest20: hash20FromAddress(dest), nonce, lz: 8 });
-        nonce += 1n;
-      }
-    });
-    const childNow = now + TARGET_BLOCK_INTERVAL_MS;
-    const quote = asertNextBits({
-      anchorBits: GENESIS_BITS_PACKED,
-      anchorTimeMs: now,
-      anchorHeight: 1,
-      blockTimeMs: childNow,
-      blockHeight: 2,
-      parentTimeMs: now,
-    });
-    assert.equal(quote.ok, true);
-    assert.equal(quote.easeBits, 0);
-    function childWith(potShares) {
-      const tpl = buildTemplate({
-        prev: sealedParent.hash,
-        prevHeader: parent.header,
-        prevBlock: parent,
-        height: 2,
-        miner: miners[0],
-        bits: quote.packed,
-        now: childNow,
-        potShares,
-        shareBatch: batch,
-        poolDest: feeTo,
+    const genesisMs = 1_700_000_000_000;
+    const floor = SHARE_FLOOR_BITS;
+    const mixes = [
+      [{ bits: floor, n: 1 }],
+      [{ bits: floor, n: 1 }, { bits: floor + 3, n: 2 }, { bits: floor + 1, n: 1 }],
+      [{ bits: floor, n: 4 }, { bits: floor + 2, n: 1 }, { bits: floor + 5, n: 1 }, { bits: floor, n: 2 }, { bits: floor + 1, n: 3 }],
+    ];
+    const feeKey = hash20FromAddress(feeTo).toString('hex');
+
+    function batchOf(spec) {
+      const miners = spec.map(() => minerDest());
+      const batch = [];
+      let nonce = 1n;
+      spec.forEach((row, i) => {
+        for (let n = 0; n < row.n; n += 1) {
+          batch.push({
+            dest: miners[i],
+            dest20: hash20FromAddress(miners[i]),
+            nonce,
+            lz: floor,
+            shareBits: row.bits,
+          });
+          nonce += 1n;
+        }
       });
-      return verifyBlock({
+      return { miners, batch };
+    }
+
+    function mapRows(batch, pays) {
+      const destByNc = new Map();
+      for (const s of batch) {
+        const nc = noteCommitOfShare(s);
+        const dest = destOfShare(s);
+        if (nc && dest) destByNc.set(Buffer.from(nc).toString('hex'), dest);
+      }
+      destByNc.set(noteCommitOfDest20(hash20FromAddress(feeTo)).toString('hex'), feeTo);
+      return pays.map((p) => ({
+        address: destByNc.get(Buffer.from(p.noteCommit).toString('hex')) || '',
+        nanos: p.nanos,
+        kind: p.kind || 'pot',
+      }));
+    }
+
+    function rowsFor(batch, subsidy, carry, bps, foldDest = null) {
+      const fee = Math.floor(subsidy * bps / 10000);
+      const pool = foldDest || (fee > 0 ? feeTo : null);
+      return mapRows(batch, potPaysFromLeaves(aLeavesFromShares(batch), pool, fee, subsidy, carry));
+    }
+
+    function onSubsidyScale(subsidy, amount) {
+      if (!(amount > 0)) return true;
+      for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
+        if (Math.floor(subsidy * bps / 10000) === amount) return true;
+      }
+      return false;
+    }
+
+    function attackRows(batch, subsidy, carry, bps, foldDest = null) {
+      const minted = subsidy + carry;
+      const bad = Math.floor(minted * bps / 10000);
+      const pool = foldDest || feeTo;
+      return {
+        bad,
+        rows: mapRows(batch, potPaysFromLeaves(aLeavesFromShares(batch), pool, bad, minted, 0)),
+      };
+    }
+
+    function byAddress(rows) {
+      const got = new Map();
+      for (const row of rows) got.set(row.address, (got.get(row.address) || 0) + row.nanos);
+      return got;
+    }
+
+    function samePay(a, b) {
+      assert.equal(a.size, b.size);
+      for (const [dest, nanos] of a) assert.equal(b.get(dest), nanos);
+    }
+
+    function sealTpl(tpl, prev, now) {
+      const block = {
         header: tpl.header,
         txs: tpl.txs,
         samples: tpl.samples,
         shareBatch: tpl.shareBatch || [],
-        miner: miners[0],
-        poolDest: feeTo,
+        miner: tpl.miner,
+        poolDest: tpl.poolDest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,
         rootB: tpl.rootB,
         weight: tpl.weight,
-        height: 2,
-      }, {
-        ...parent,
-        hash: sealedParent.hash,
-      }, {
+        height: tpl.height,
+      };
+      const res = verifyBlock(block, prev, {
         trustedPowHash: easyPowHash(),
         skipSharePow: true,
-        nowMs: childNow + 1_000,
-        genesisMs: now,
+        nowMs: now + 1_000,
+        genesisMs,
+        poolDest: feeTo,
+        mtpTimestamps: [now - 1_000],
+      });
+      return { block, res };
+    }
+
+    function bitsAfter(parent, childNow, childHeight) {
+      const ph = decodeHeader(parent.block.header);
+      const quote = asertNextBits({
+        anchorBits: GENESIS_BITS_PACKED,
+        anchorTimeMs: genesisMs,
+        anchorHeight: 1,
+        blockTimeMs: childNow,
+        blockHeight: childHeight,
+        parentTimeMs: Number(ph.timestamp),
+      });
+      assert.equal(quote.ok, true, `asert h=${childHeight}`);
+      return quote.packed;
+    }
+
+    function emptyBlock(prev, height, now, bits) {
+      const subsidy = potSubsidyAt({ nowMs: now, genesisMs, magic: MAGIC_TESTNET });
+      const fee = Math.floor(subsidy * POOL_FEE_BPS / 10000);
+      const tpl = buildTemplate({
+        prev: height === 1 ? GENESIS_PREV : prev.res.hash,
+        prevHeader: prev?.block.header,
+        prevBlock: prev?.block,
+        height,
+        miner: feeTo,
+        bits,
+        now,
+        potShares: [{ address: feeTo, nanos: fee, kind: 'pool-fee' }],
         poolDest: feeTo,
       });
+      const got = sealTpl(tpl, prev ? { ...prev.block, hash: prev.res.hash } : null, now);
+      assert.equal(got.res.ok, true, `empty h=${height} ${got.res.reason}`);
+      return got;
     }
-    const fair = potSharesFromBatch(batch, feeTo, subsidy, carry);
-    const accepted = childWith(fair);
-    assert.equal(accepted.ok, true, accepted.reason);
-    const dumped = potSharesFromBatch(batch, feeTo, subsidy, 0);
-    const pots = dumped.filter((s) => s.kind !== 'pool-fee');
-    assert.ok(pots.length > 1);
-    pots[pots.length - 1].nanos += carry;
-    const rejected = childWith(dumped);
-    assert.equal(rejected.ok, false);
-    assert.equal(rejected.reason, 'pot_prop');
+
+    const paidTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: feeTo,
+      bits: GENESIS_BITS_PACKED,
+      now: genesisMs,
+      potShares: custodyPotShares(feeTo, potSubsidyNanos(0)),
+      poolDest: feeTo,
+    });
+    const paid = sealTpl(paidTpl, null, genesisMs);
+    assert.equal(paid.res.ok, true, paid.res.reason);
+    assert.equal(canonicalCarry(paid.block.txs[0]), 0);
+
+    const empties = [];
+    {
+      let prev = null;
+      let now = genesisMs;
+      let bits = GENESIS_BITS_PACKED;
+      for (let i = 0; i < 4; i += 1) {
+        const got = emptyBlock(prev, i + 1, now, bits);
+        empties.push(got);
+        const nextNow = now + TARGET_BLOCK_INTERVAL_MS;
+        bits = bitsAfter(got, nextNow, i + 2);
+        prev = got;
+        now = nextNow;
+      }
+    }
+
+    function prove(parent, batch, rows, now, miner) {
+      const height = parent.block.height + 1;
+      const tpl = buildTemplate({
+        prev: parent.res.hash,
+        prevHeader: parent.block.header,
+        prevBlock: parent.block,
+        height,
+        miner,
+        bits: bitsAfter(parent, now, height),
+        now,
+        potShares: rows,
+        shareBatch: batch,
+        poolDest: feeTo,
+      });
+      return sealTpl(tpl, { ...parent.block, hash: parent.res.hash }, now);
+    }
+
+    function assertSeparate(got, subsidy, carry, bps) {
+      assert.equal(got.res.ok, true, got.res.reason);
+      const opened = potOpened(got.block.txs[0].vout);
+      const fee = Math.floor(subsidy * bps / 10000);
+      const cap = Math.floor(subsidy * POOL_FEE_MAX_BPS / 10000);
+      assert.ok(fee <= cap);
+      assert.equal(opened.sum, subsidy + carry);
+      assert.equal(opened.byDest.get(feeKey) || 0, fee);
+      assert.equal(opened.sum - fee, subsidy - fee + carry);
+      assert.equal(canonicalCarry(got.block.txs[0]), 0);
+    }
+
+    function rejectCarryFee(parent, batch, subsidy, carry, now, miner, bps, foldDest = null) {
+      const { bad, rows } = attackRows(batch, subsidy, carry, bps, foldDest);
+      if (onSubsidyScale(subsidy, bad)) return false;
+      const got = prove(parent, batch, rows, now, miner);
+      assert.equal(got.res.ok, false);
+      assert.equal(got.res.reason, 'pot_prop');
+      return true;
+    }
+
+    const streaks = [
+      { name: 'none', parent: paid, now: genesisMs + TARGET_BLOCK_INTERVAL_MS },
+      { name: 'one', parent: empties[0], now: genesisMs + TARGET_BLOCK_INTERVAL_MS },
+      { name: 'several', parent: empties[3], now: genesisMs + 4 * TARGET_BLOCK_INTERVAL_MS },
+    ];
+    const built = mixes.map((spec) => batchOf(spec));
+    const dense = built[1];
+    const oneParent = streaks[1];
+    const oneSubsidy = potSubsidyAt({ nowMs: oneParent.now, genesisMs, magic: MAGIC_TESTNET });
+    const oneCarry = canonicalCarry(oneParent.parent.block.txs[0]);
+    assert.ok(oneCarry > 0);
+    let sawCarryReject = false;
+    for (let bps = 0; bps <= POOL_FEE_MAX_BPS; bps += 1) {
+      const rows = rowsFor(dense.batch, oneSubsidy, oneCarry, bps);
+      const flipped = [...dense.batch].reverse();
+      const rotated = [...dense.batch.slice(1), dense.batch[0]];
+      samePay(byAddress(rows), byAddress(rowsFor(flipped, oneSubsidy, oneCarry, bps)));
+      samePay(byAddress(rows), byAddress(rowsFor(rotated, oneSubsidy, oneCarry, bps)));
+      assert.equal([...byAddress(rows).values()].reduce((a, n) => a + n, 0), oneSubsidy + oneCarry);
+      const got = prove(oneParent.parent, dense.batch, rows, oneParent.now, dense.miners[0]);
+      assertSeparate(got, oneSubsidy, oneCarry, bps);
+    }
+    for (const bps of [POOL_FEE_MAX_BPS + 1, 250, 300, 10_000]) {
+      if (rejectCarryFee(oneParent.parent, dense.batch, oneSubsidy, oneCarry, oneParent.now, dense.miners[0], bps)) {
+        sawCarryReject = true;
+      }
+      if (rejectCarryFee(oneParent.parent, dense.batch, oneSubsidy, oneCarry, oneParent.now, dense.miners[0], bps, dense.miners[0])) {
+        sawCarryReject = true;
+      }
+    }
+    const folded = rowsFor(dense.batch, oneSubsidy, oneCarry, 1, dense.miners[0]);
+    const foldedGot = prove(oneParent.parent, dense.batch, folded, oneParent.now, dense.miners[0]);
+    assert.equal(foldedGot.res.ok, true, foldedGot.res.reason);
+    assert.equal(potOpened(foldedGot.block.txs[0].vout).sum, oneSubsidy + oneCarry);
+    const dumped = rowsFor(dense.batch, oneSubsidy, 0, POOL_FEE_BPS);
+    const dumpPots = dumped.filter((s) => s.kind !== 'pool-fee');
+    assert.ok(dumpPots.length > 1);
+    dumpPots[dumpPots.length - 1].nanos += oneCarry;
+    const fairDump = byAddress(rowsFor(dense.batch, oneSubsidy, oneCarry, POOL_FEE_BPS));
+    const dumpedPay = byAddress(dumped);
+    let dumpDiffers = dumpedPay.size !== fairDump.size;
+    for (const [dest, nanos] of dumpedPay) {
+      if (fairDump.get(dest) !== nanos) dumpDiffers = true;
+    }
+    assert.equal(dumpDiffers, true);
+    const dumpGot = prove(oneParent.parent, dense.batch, dumped, oneParent.now, dense.miners[0]);
+    assert.equal(dumpGot.res.ok, false);
+    assert.equal(dumpGot.res.reason, 'pot_prop');
+
+    for (const streak of streaks) {
+      const subsidy = potSubsidyAt({ nowMs: streak.now, genesisMs, magic: MAGIC_TESTNET });
+      const carry = canonicalCarry(streak.parent.block.txs[0]);
+      for (let i = 0; i < built.length; i += 1) {
+        if (streak.name === 'one' && i === 1) continue;
+        const { miners, batch } = built[i];
+        for (const bps of [0, 1, 100, POOL_FEE_MAX_BPS]) {
+          const rows = rowsFor(batch, subsidy, carry, bps);
+          samePay(byAddress(rows), byAddress(rowsFor([...batch].reverse(), subsidy, carry, bps)));
+          const got = prove(streak.parent, batch, rows, streak.now, miners[0]);
+          assertSeparate(got, subsidy, carry, bps);
+        }
+        if (carry > 0 && miners.length > 1) {
+          if (rejectCarryFee(streak.parent, batch, subsidy, carry, streak.now, miners[0], 100)) sawCarryReject = true;
+          const zero = rowsFor(batch, subsidy, 0, 100);
+          const pots = zero.filter((s) => s.kind !== 'pool-fee');
+          if (pots.length > 1) {
+            pots[pots.length - 1].nanos += carry;
+            const got = prove(streak.parent, batch, zero, streak.now, miners[0]);
+            assert.equal(got.res.reason, 'pot_prop');
+          }
+        }
+      }
+    }
+
+    const span = epochMs(MAGIC_TESTNET);
+    for (const epoch of [1, 7, 80]) {
+      const childNow = genesisMs + epoch * span + TARGET_BLOCK_INTERVAL_MS;
+      const subsidy = potSubsidyNanos(epoch);
+      const carry = canonicalCarry(empties[0].block.txs[0]);
+      assert.notEqual(subsidy, oneSubsidy);
+      for (const bps of [0, 1, 100, POOL_FEE_MAX_BPS]) {
+        const rows = rowsFor(dense.batch, subsidy, carry, bps);
+        const got = prove(empties[0], dense.batch, rows, childNow, dense.miners[0]);
+        assertSeparate(got, subsidy, carry, bps);
+      }
+      if (rejectCarryFee(empties[0], dense.batch, subsidy, carry, childNow, dense.miners[0], 100)) {
+        sawCarryReject = true;
+      }
+    }
+    assert.equal(sawCarryReject, true);
+    const reversed = prove(
+      streaks[2].parent,
+      [...dense.batch].reverse(),
+      rowsFor(dense.batch, potSubsidyAt({ nowMs: streaks[2].now, genesisMs, magic: MAGIC_TESTNET }), canonicalCarry(streaks[2].parent.block.txs[0]), 100),
+      streaks[2].now,
+      dense.miners[0],
+    );
+    assertSeparate(
+      reversed,
+      potSubsidyAt({ nowMs: streaks[2].now, genesisMs, magic: MAGIC_TESTNET }),
+      canonicalCarry(streaks[2].parent.block.txs[0]),
+      100,
+    );
   });
 });

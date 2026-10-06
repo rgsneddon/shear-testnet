@@ -46,7 +46,7 @@ HASH_TX_LIVE=1
 HASH_UNIT_FLOOR=1
 LAG1_SHAREBATCH=1
 POT_PROP=shareBatch
-POOL_FEE_MAX_BPS=300
+POOL_FEE_MAX_BPS=200
 POOL_FEE_BPS=100 (this public pool's construction rate; not required of other pools)
 DEST_HRP_SSA_ONLY=1
 SPEND_SIG_ONLY=1
@@ -77,6 +77,8 @@ MAX_SHARES_PER_BLOCK=65536
 SPEND_SIG=ed25519-shear-spend-v1
 POOL_WITHDRAW=eip712-spend-bound
 ```
+
+v12 consensus caps a pool fee at `POOL_FEE_MAX_BPS` (200) of that block's subsidy. Carried pot is not part of the fee base. This public pool still constructs at 100 bps.
 
 Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. **Hash bonus never goes to 0** (`HASH_UNIT_FLOOR=1`). Votes cannot zero the unit or move the pot schedule. Clients refuse to emit before that instant.
 

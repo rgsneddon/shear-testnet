@@ -409,7 +409,7 @@ function notePays(o, dest, nanos) {
 /**
  * Custodial coinbase: one hash note for 100% of the proven bonus, paid to a
  * dest that is not a hasher leaf (the pool). Pot split is pool policy from
- * 0% through POOL_FEE_MAX_BPS (3%). Hash bonus is never fee'd. Any pool can
+ * 0% through POOL_FEE_MAX_BPS (2% of this subsidy). Hash bonus is never fee'd. Any pool can
  * build this to its own dest — verify from the sealed notes, not an
  * out-of-band poolDest on the wire.
  */
@@ -479,7 +479,7 @@ export function matchDestBoundHashCustodyPot({
       if (ok && used.size === extra.length) return true;
     }
   }
-  // P2P ingest has no out-of-band poolDest. Accept 1–3% fee + rest on non-hasher dests.
+  // P2P ingest has no out-of-band poolDest. Accept 1% through the subsidy cap, plus the rest, on non-hasher dests. Carry is not fee'd.
   const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
   if (extra.length === 2 && pot > 0) {
     for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
@@ -495,14 +495,17 @@ export function matchDestBoundHashCustodyPot({
 }
 
 /**
- * Pot splits a pool may seal. Fee folded into a round participant is allowed
- * up to the 3% cap. Which dest receives it is that pool's choice, not book law.
+ * Pot splits a pool may seal. A fee folded into a round participant is a slice
+ * of this subsidy only, up to POOL_FEE_MAX_BPS. The split pot may include
+ * carry. Which dest receives the fee is that pool's choice, not book law.
  */
-function propPayCandidates(leaves, wantPot, hinted, extraAmt, shareBatch) {
+function propPayCandidates(leaves, feeBase, hinted, extraAmt, shareBatch, splitPot = null) {
+  const pot = splitPot == null ? feeBase : splitPot;
+  const base = Math.max(0, Math.floor(Number(feeBase) || 0));
   const candidates = [];
-  if (hinted) candidates.push(potPaysFromLeaves(leaves, hinted, extraAmt, wantPot));
-  candidates.push(potPaysFromLeaves(leaves, null, extraAmt, wantPot));
-  if (extraAmt > 0) candidates.push(potPaysFromLeaves(leaves, null, 0, wantPot));
+  if (hinted) candidates.push(potPaysFromLeaves(leaves, hinted, extraAmt, pot));
+  candidates.push(potPaysFromLeaves(leaves, null, extraAmt, pot));
+  if (extraAmt > 0) candidates.push(potPaysFromLeaves(leaves, null, 0, pot));
   if (!(extraAmt > 0)) {
     const dests = new Set();
     if (hinted && isDestAddress(hinted)) dests.add(hinted);
@@ -512,21 +515,31 @@ function propPayCandidates(leaves, wantPot, hinted, extraAmt, shareBatch) {
     }
     for (const dest of dests) {
       for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
-        const fee = Math.floor(wantPot * bps / 10000);
-        if (fee > 0) candidates.push(potPaysFromLeaves(leaves, dest, fee, wantPot));
+        const fee = Math.floor(base * bps / 10000);
+        if (fee > 0) candidates.push(potPaysFromLeaves(leaves, dest, fee, pot));
       }
     }
   }
   return candidates;
 }
 
-/** Per-hasher extra pot note: 0% (absent) through POOL_FEE_MAX_BPS. */
+/** One non-hasher pot note: absent (0) or a bps of `wantPot` through POOL_FEE_MAX_BPS. */
 export function extraPotFeeNanos(extraVouts = [], wantPot) {
   const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
   const maxFee = Math.floor(pot * POOL_FEE_MAX_BPS / 10000);
   const extra = Array.isArray(extraVouts) ? extraVouts : [];
   if (!extra.length) return 0;
   if (extra.length !== 1 || !(pot > 0)) return null;
+  const claimed = Math.floor(Number(extra[0]?.valueProof?.v));
+  // A published v above the subsidy cap cannot be a legal fee. A v on the
+  // subsidy scale is one verify. A missing v still hunts the scale.
+  if (claimed > maxFee) return null;
+  if (claimed > 0) {
+    for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
+      if (Math.floor(pot * bps / 10000) === claimed && verifySealedNote(extra[0], claimed)) return claimed;
+    }
+    return null;
+  }
   for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
     const n = Math.floor(pot * bps / 10000);
     if (n > 0 && n <= maxFee && verifySealedNote(extra[0], n)) return n;
@@ -1112,7 +1125,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         potVouts,
         leaves,
         liveUnit,
-        wantPot: mintedPot,
+        wantPot,
         hinted,
         hasherNcs,
       });
@@ -1164,19 +1177,27 @@ function verifyBlockConsensus(block, prev, opts = {}) {
             return { ok: false, reason: 'pot_prop' };
           }
         }
-        let extraAmt = extraPotFeeNanos(extra, mintedPot);
-        // A carried pot is miner money. The fee note may be a slice of this
-        // subsidy alone. The hasher notes still have to match one split of
-        // (minted pot − that fee), so a last-row carry dump does not pass.
-        if (extraAmt == null && carryIn > 0) extraAmt = extraPotFeeNanos(extra, wantPot);
+        // Fee is a bps of this subsidy only. Carry is miner money and is not
+        // a fee base. Hasher notes are one split of the minted pot minus that
+        // subsidy fee, so a last-row carry dump does not pass.
+        const extraAmt = extraPotFeeNanos(extra, wantPot);
         if (extraAmt == null) return { ok: false, reason: 'pot_prop' };
-        const candidates = propPayCandidates(leaves, mintedPot, hinted, extraAmt, shareBatch);
+        const candidates = propPayCandidates(leaves, wantPot, hinted, extraAmt, shareBatch, mintedPot);
         let matched = false;
         for (const pays of candidates) {
           let okTry = true;
           for (const pay of pays) {
             const hit = potVouts.find((o) => ncHex(o.noteCommit) === ncHex(pay.noteCommit));
-            if (!hit || !verifySealedNote(hit, pay.nanos)) {
+            if (!hit) {
+              okTry = false;
+              break;
+            }
+            const claimed = Math.floor(Number(hit.valueProof?.v));
+            if (claimed > 0 && claimed !== pay.nanos) {
+              okTry = false;
+              break;
+            }
+            if (!verifySealedNote(hit, pay.nanos)) {
               okTry = false;
               break;
             }
@@ -1218,7 +1239,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         const finderFloor = floorFinder > 0 && dest === hinted && paid.size === 1 && (paid.get(dest) || 0) === floorFinder;
         if (!provenByDest.has(dest) && !finderFloor) return { ok: false, reason: 'hash_bonus' };
       }
-      const maxFee = Math.floor(mintedPot * POOL_FEE_MAX_BPS / 10000);
+      const maxFee = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
       const hasherSet = new Set(provenByDest.keys());
       if (hasherSet.size) {
         const extra = potVouts.filter((o) => !hasherSet.has(o.address));
