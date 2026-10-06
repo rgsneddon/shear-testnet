@@ -7,7 +7,7 @@ import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAdd
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
-import { asU8, verifyRange } from './note.js';
+import { asU8, verifyRange, flowInputsBound } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound } from './spend.js';
 
@@ -62,6 +62,10 @@ export function admitMempool(pool, tx, opts = {}) {
     if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
     if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
   }
+  if (flowNeedsDummy(tx)) {
+    const boundIns = flowInputsBound(tx);
+    if (!boundIns.ok) return boundIns;
+  }
   if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
     return { ok: false, reason: 'dummy_outs' };
   }
@@ -83,7 +87,7 @@ export function admitMempool(pool, tx, opts = {}) {
     if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold) {
       const proof = tx.admit_proof;
       if (!proof) return { ok: false, reason: 'admit_membership' };
-      const cTilde = proof.cTilde || tx.vin?.[0]?.commit;
+      const cTilde = proof.cTilde;
       if (!admit_verify(proof, live, { cTilde, spendTag: proof.spendTag || tx.spendTag, jroot: live.jroot })) {
         return { ok: false, reason: 'admit_membership' };
       }

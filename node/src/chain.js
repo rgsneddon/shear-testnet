@@ -77,6 +77,7 @@ import {
   verifyRange,
   excessOf,
   verifyFlowConservation,
+  flowInputsBound,
   noteCommitOfDest20,
   asU8,
   pointFrom,
@@ -1297,6 +1298,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind })) {
       return { ok: false, reason: 'mint_forbidden' };
     }
+    if (flowNeedsDummy(tx)) {
+      const boundIns = flowInputsBound(tx);
+      if (!boundIns.ok) return boundIns;
+    }
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
       return { ok: false, reason: 'dummy_outs' };
     }
@@ -1321,7 +1326,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (!proof) return { ok: false, reason: 'admit_membership' };
       const tag = proof.spendTag || tx.spendTag;
       if (!tag) return { ok: false, reason: 'admit_membership' };
-      const cTilde = proof.cTilde || tx.vin?.[0]?.commit;
+      const cTilde = proof.cTilde;
       const liveJ = { pubs, commits, jroot: live.jroot };
       if (!admit_verify(proof, liveJ, { cTilde, spendTag: tag, jroot: live.jroot })) {
         return { ok: false, reason: 'admit_membership' };
@@ -1339,7 +1344,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (!proof) return { ok: false, reason: 'admit_membership' };
         const tag = proof.spendTag;
         if (!tag) return { ok: false, reason: 'admit_membership' };
-        const cTilde = proof.cTilde || vins[pi]?.commit;
+        const cTilde = proof.cTilde;
         if (!cTilde || !vins[pi]?.commit) return { ok: false, reason: 'admit_membership' };
         const posted = Buffer.from(asU8(vins[pi].commit));
         const want = Buffer.from(asU8(cTilde));

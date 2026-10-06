@@ -442,6 +442,41 @@ export function vinIdentifiesSpent(v) {
   return false;
 }
 
+/**
+ * Every Flow vin is bound to one Admit proof. cTilde must equal that vin's
+ * commit, the spend tag must be present, and an extra vin is not a proof.
+ * Call this before verifyFlowConservation so an unbound commit cannot enter the sum.
+ */
+export function flowInputsBound(tx) {
+  const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v);
+  if (!vins.length || vins.some((v) => v.coinbase)) {
+    return { ok: false, reason: 'admit_membership' };
+  }
+  const proofs = (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length)
+    ? tx.admit_proofs
+    : (tx?.admit_proof ? [tx.admit_proof] : []);
+  if (proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
+  for (let i = 0; i < vins.length; i += 1) {
+    const proof = proofs[i];
+    const tag = proof?.spendTag || (proofs.length === 1 ? tx.spendTag : null);
+    if (!tag || proof?.cTilde == null || vins[i]?.commit == null) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+    let posted;
+    let want;
+    try {
+      posted = Buffer.from(asU8(vins[i].commit));
+      want = Buffer.from(asU8(proof.cTilde));
+    } catch {
+      return { ok: false, reason: 'admit_membership' };
+    }
+    if (posted.length !== want.length || !posted.equals(want)) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+  }
+  return { ok: true, proofs, vins };
+}
+
 export function verifyFlowConservation(tx, _spentOf) {
   try {
     const vouts = tx?.vout || [];

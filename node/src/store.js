@@ -64,7 +64,7 @@ import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset } from '../../crypto/admit.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
-import { asU8 } from '../../crypto/note.js';
+import { asU8, flowInputsBound } from '../../crypto/note.js';
 import { blockWork } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
@@ -993,6 +993,8 @@ export function createStore(dir, {
       && chainHave < debitNow.nanos
       && chainHave + paintedOwedNanos >= debitNow.nanos);
     if (flowNeedsDummy(tx)) {
+      const boundIns = flowInputsBound(tx);
+      if (!boundIns.ok) return boundIns;
       const proof = tx.admit_proof;
       if (!proof && !paintedHold) return { ok: false, reason: 'admit_membership' };
       if (proof) {
@@ -1006,7 +1008,7 @@ export function createStore(dir, {
       let verified = false;
       let verifyErr = '';
       try {
-        const cTilde = proof.cTilde || tx.vin?.[0]?.commit;
+        const cTilde = proof.cTilde;
         verified = !!admit_verify(proof, live, { cTilde, spendTag: tag, jroot: live.jroot });
       } catch (e) {
         verifyErr = String(e && e.message ? e.message : e);
@@ -1053,7 +1055,7 @@ export function createStore(dir, {
           if (!eth || seen.has(eth)) return { ok: false, reason: 'admit_membership' };
           seen.add(eth);
           if (live.spendTags.has(eth)) return { ok: false, reason: 'admit_link_tag' };
-          const ct = extra.cTilde || vins[pi]?.commit;
+          const ct = extra.cTilde;
           let okExtra = false;
           try {
             okExtra = !!admit_verify(extra, live, { cTilde: ct, spendTag: etag, jroot: live.jroot });
