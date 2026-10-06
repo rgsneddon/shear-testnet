@@ -2563,6 +2563,12 @@ export function createPool({
           hash: String(scored.hash || ''),
           jobId: String(job?.jobId || ''),
           lz: Number(scored.bitsMet) & 0xff,
+          shareBits: Math.max(
+            SHARE_FLOOR_BITS,
+            Number(scored.creditedShareBits) > 0
+              ? Number(scored.creditedShareBits)
+              : SHARE_FLOOR_BITS,
+          ),
           verifiedHeader: Buffer.isBuffer(scored.header)
             ? scored.header.toString('hex').toLowerCase()
             : String(job?.header || '').toLowerCase(),

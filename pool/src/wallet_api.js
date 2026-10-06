@@ -33,7 +33,7 @@ import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
-import { unitsForShare } from '../../crypto/share_batch.js';
+import { unitsForShare, shareWorkBits } from '../../crypto/share_batch.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
 import { auditCirculatingSupply } from '../../node/src/supply.js';
@@ -632,7 +632,11 @@ export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
   }
   if (n > 0) return n;
   const packed = unpackShareBatch(block?.shareBatch || []);
-  if (packed.length) return packed.length * unitsForShare() * u;
+  if (packed.length) {
+    let units = 0;
+    for (const share of packed) units += unitsForShare(shareWorkBits(share));
+    return units * u;
+  }
   const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
   if (cb?.coinbase && Array.isArray(cb.vout)) {
     const pays = [

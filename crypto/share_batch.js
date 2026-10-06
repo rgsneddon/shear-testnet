@@ -1,7 +1,7 @@
 /**
  * Lag-1 proven shareBatch. A hash is one ShearHash-v3 digest of the frozen
- * parent header (nonce replaced). Units are 2^SHARE_FLOOR_BITS, never a
- * client counter.
+ * parent header (nonce replaced). Units are 2^credited share bits, and
+ * never below 2^SHARE_FLOOR_BITS. A missing bit field is the floor.
  *
  * Share difficulty binds hasher identity: the floor target is on
  * sha256("shear-share-dest-v1" || rx || noteCommit), not on rx alone.
@@ -38,10 +38,25 @@ export function shareMeetsFloor(rxHash, share, floorBits = SHARE_FLOOR_BITS) {
   return meetsTarget(destBoundShareHash(rxHash, nc), floorBits);
 }
 
+/** Work units of one share. Floor when bits are omitted, below the floor, or not a number. */
 export function unitsForShare(shareBits = SHARE_FLOOR_BITS) {
-  const b = Math.max(SHARE_FLOOR_BITS, Math.floor(Number(shareBits) || 0));
-  void b;
-  return 2 ** SHARE_FLOOR_BITS;
+  const raw = Math.floor(Number(shareBits));
+  const b = Math.max(SHARE_FLOOR_BITS, Number.isFinite(raw) ? raw : SHARE_FLOOR_BITS);
+  // 2^53 is not an exact JS integer. Cap the unit; the block unit cap rejects it.
+  if (b >= 53) return 2 ** 52;
+  return 2 ** b;
+}
+
+/** Credited difficulty on a share. Absent or below the floor stays the floor. */
+export function shareWorkBits(share) {
+  const raw = share?.creditedShareBits != null && share.creditedShareBits !== ''
+    ? share.creditedShareBits
+    : share?.shareBits;
+  if (raw == null || raw === '') return SHARE_FLOOR_BITS;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n)) return SHARE_FLOOR_BITS;
+  if (n > 52) return 52;
+  return Math.max(SHARE_FLOOR_BITS, n);
 }
 
 function asBuf(v, n) {
@@ -117,13 +132,26 @@ export function shareInclusionTie(share) {
 export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK) {
   const list = unpackShareBatch(shares);
   const limit = Math.max(0, Math.floor(Number(cap) || 0));
-  if (list.length <= limit) return sortShares(list);
+  const weight = (s) => unitsForShare(shareWorkBits(s));
+  let totalUnits = 0;
+  for (const s of list) totalUnits += weight(s);
+  // Floor shares: unit cap == count cap. Mixed vardiff may fill the unit cap first.
+  if (list.length <= limit && totalUnits <= MAX_HASH_UNITS_PER_BLOCK) return sortShares(list);
   const ranked = [...list].sort((a, b) => {
     const byWeight = shareInclusionWeight(b) - shareInclusionWeight(a);
     if (byWeight !== 0) return byWeight;
     return shareInclusionTie(a).compare(shareInclusionTie(b));
   });
-  return sortShares(ranked.slice(0, limit));
+  const kept = [];
+  let used = 0;
+  for (const s of ranked) {
+    if (kept.length >= limit) break;
+    const u = weight(s);
+    if (used + u > MAX_HASH_UNITS_PER_BLOCK) continue;
+    kept.push(s);
+    used += u;
+  }
+  return sortShares(kept);
 }
 
 export function collateShareUnits(shares = []) {
@@ -131,7 +159,7 @@ export function collateShareUnits(shares = []) {
   for (const s of unpackShareBatch(shares)) {
     const dest = destOfShare(s);
     if (!dest) continue;
-    by.set(dest, (by.get(dest) || 0) + unitsForShare());
+    by.set(dest, (by.get(dest) || 0) + unitsForShare(shareWorkBits(s)));
   }
   return by;
 }
@@ -141,7 +169,7 @@ export function aLeavesFromShares(shares = []) {
   for (const s of unpackShareBatch(shares)) {
     const nc = noteCommitOfShare(s);
     const key = nc.toString('hex');
-    by.set(key, (by.get(key) || 0) + unitsForShare());
+    by.set(key, (by.get(key) || 0) + unitsForShare(shareWorkBits(s)));
   }
   return [...by.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -250,6 +278,7 @@ export function verifyShareBatch({
     const header = setNonce(job, nonce);
     const cached = skipPow || (jobKey && liveSharePow.has(`${jobKey}:${nk}`));
     let lz = Number(s.lz) & 0xff;
+    const claimedBits = shareWorkBits(s);
     if (!cached) {
       if (!nc || Buffer.from(nc).length !== 32) {
         return { ok: false, reason: 'miner_addr' };
@@ -258,7 +287,7 @@ export function verifyShareBatch({
       const prepared = takeSharePow(header);
       const hash = prepared || shearHash(header);
       const bound = destBoundShareHash(hash, nc);
-      if (!meetsTarget(bound, floorBits)) {
+      if (!meetsTarget(bound, floorBits) || !meetsTarget(bound, claimedBits)) {
         return { ok: false, reason: 'share_pow' };
       }
       lz = leadingZeroBits(bound) & 0xff;
@@ -271,7 +300,8 @@ export function verifyShareBatch({
       noteCommit: nc && nc.length === 32 ? Buffer.from(nc) : Buffer.alloc(32),
       nonce,
       lz,
-      units: unitsForShare(),
+      shareBits: claimedBits,
+      units: unitsForShare(claimedBits),
       bound: !!(nc && nc.length === 32),
     });
   }

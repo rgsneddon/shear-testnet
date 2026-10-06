@@ -13,6 +13,8 @@ export const ENC_TX = 3;
 export const ENC_SHARE = 4;
 export const ENC_SHARE_V5 = 5;
 export const ENC_A_V5 = 6;
+/** note_commit || nonce || lz || credited share bits. v12 work weight. */
+export const ENC_SHARE_WORK = 7;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_A_LAYOUT_V5 = 'note_commit+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
@@ -20,6 +22,7 @@ export const A_BODY_LEN = 28;
 export const B_BODY_LEN = 76;
 export const SHARE_BODY_LEN = 29;
 export const SHARE_V5_BODY_MIN = 41;
+export const SHARE_WORK_BODY_LEN = 42;
 
 export function u64le(n) {
   const b = Buffer.alloc(8);
@@ -158,11 +161,46 @@ export function unpackShareV5(packed) {
   };
 }
 
+/** Credited share bits travel with the share. A v5 frame has no bits and pays the floor. */
+export function packShareWork({ noteCommit, nonce, lz = 0, shareBits = 0 } = {}) {
+  const commit = Buffer.isBuffer(noteCommit) ? noteCommit : Buffer.from(noteCommit);
+  if (commit.length !== 32) throw new Error('note_commit must be 32 bytes');
+  const bits = Math.max(0, Math.min(255, Math.floor(Number(shareBits) || 0)));
+  const body = Buffer.concat([
+    commit,
+    u64le(nonce || 0),
+    Buffer.from([Number(lz) & 0xff, bits & 0xff]),
+  ]);
+  return Buffer.concat([ENC_MAGIC, Buffer.from([ENC_SHARE_WORK]), body]);
+}
+
+export function unpackShareWork(packed) {
+  const { type, body } = unpackType(packed);
+  if (type !== ENC_SHARE_WORK || body.length !== SHARE_WORK_BODY_LEN) throw new Error('bad_share_work');
+  return {
+    noteCommit: Buffer.from(body.subarray(0, 32)),
+    nonce: body.readBigUInt64LE(32),
+    lz: body[40],
+    shareBits: body[41],
+  };
+}
+
 export function packShareBatch(shares = []) {
   const list = Array.isArray(shares) ? shares : [];
   return list.map((s) => {
     if (Buffer.isBuffer(s)) return s;
     if (s?.noteCommit && Buffer.from(s.noteCommit).length === 32) {
+      const bits = s.shareBits != null && s.shareBits !== ''
+        ? s.shareBits
+        : s.creditedShareBits;
+      if (bits != null && bits !== '') {
+        return packShareWork({
+          noteCommit: s.noteCommit,
+          nonce: s.nonce,
+          lz: s.lz,
+          shareBits: bits,
+        });
+      }
       return packShareV5({
         noteCommit: s.noteCommit,
         nonce: s.nonce,
@@ -188,7 +226,16 @@ function shareForPack(s) {
   const nc = asNoteCommit(s?.noteCommit)
     || ((dest20 && !dest20.equals(Buffer.alloc(20))) ? noteCommitOfDest20(dest20) : null);
   if (nc && nc.length === 32) {
-    return { noteCommit: nc, nonce: s?.nonce, lz: s?.lz, viewTag: s?.viewTag };
+    const bits = s?.shareBits != null && s.shareBits !== ''
+      ? s.shareBits
+      : s?.creditedShareBits;
+    return {
+      noteCommit: nc,
+      nonce: s?.nonce,
+      lz: s?.lz,
+      viewTag: s?.viewTag,
+      ...(bits != null && bits !== '' ? { shareBits: bits } : {}),
+    };
   }
   return { dest20, nonce: s?.nonce, lz: s?.lz };
 }
@@ -225,7 +272,7 @@ export function unpackShareBatchBytes(buf) {
     const frame = b.subarray(o, o + len);
     o += len;
     const type = frame[ENC_MAGIC.length];
-    out.push(type === ENC_SHARE_V5 ? unpackShareV5(frame) : unpackShare(frame));
+    out.push(unpackShareFrame(frame));
   }
   return out;
 }
@@ -272,16 +319,21 @@ export function shareRowJson(s) {
     nonce: String(s?.nonce ?? 0),
     lz: Number(s?.lz || 0) & 0xff,
     ...(tag ? { viewTag: tag.subarray(0, 1).toString('hex') } : {}),
+    ...(s?.shareBits != null && s.shareBits !== '' ? { shareBits: Number(s.shareBits) } : {}),
   };
+}
+
+function unpackShareFrame(buf) {
+  const type = buf[ENC_MAGIC.length];
+  if (type === ENC_SHARE_V5) return unpackShareV5(buf);
+  if (type === ENC_SHARE_WORK) return unpackShareWork(buf);
+  return unpackShare(buf);
 }
 
 export function unpackShareBatch(rows = []) {
   return (Array.isArray(rows) ? rows : []).map((s) => {
     if (Buffer.isBuffer(s) || typeof s === 'string') {
-      const buf = Buffer.from(s);
-      const type = buf[ENC_MAGIC.length];
-      if (type === ENC_SHARE_V5) return unpackShareV5(buf);
-      return unpackShare(buf);
+      return unpackShareFrame(Buffer.from(s));
     }
     const dest = String(s.dest || s.address || s.miner || '');
     let nc;
@@ -301,7 +353,10 @@ export function unpackShareBatch(rows = []) {
     // In-memory selection must keep the parent binding. The packed wire form
     // does not carry it; the pool re-checks it against the sealed parent.
     if (s.verifiedHeader) row.verifiedHeader = s.verifiedHeader;
-    if (s.shareBits != null) row.shareBits = Number(s.shareBits);
+    if (s.shareBits != null && s.shareBits !== '') row.shareBits = Number(s.shareBits);
+    else if (s.creditedShareBits != null && s.creditedShareBits !== '') {
+      row.shareBits = Number(s.creditedShareBits);
+    }
     if (s.jobId) row.jobId = String(s.jobId);
     if (s.hash) row.hash = s.hash;
     return row;

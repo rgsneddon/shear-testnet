@@ -18,6 +18,7 @@ import { isDestAddress } from '../../crypto/address.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import {
   unitsForShare,
+  shareWorkBits,
   destOfShare,
   noteCommitOfShare,
 } from '../../crypto/share_batch.js';
@@ -86,13 +87,13 @@ function shareCounts(share) {
 
 /**
  * Consensus hash bonus for one block, without opening a note.
- * A non-empty batch is one unitsForShare() per share.
+ * A non-empty batch is unitsForShare(share bits) per share. Missing bits are the floor.
  * An empty batch with one hash output is the finder floor.
  * An empty batch with no hash output is zero.
  */
 function permittedHash(block) {
   const unit = BigInt(hashBonusUnitNanos(HASH_BONUS_NANOS));
-  const perShare = BigInt(unitsForShare());
+  const floorShare = BigInt(unitsForShare());
   let shares = [];
   try {
     shares = unpackShareBatch(Array.isArray(block?.shareBatch) ? block.shareBatch : []);
@@ -102,7 +103,7 @@ function permittedHash(block) {
   const hashVouts = (block?.txs?.[0]?.vout || []).filter((o) => String(o?.kind || '') === 'hash');
   if (!shares.length) {
     if (hashVouts.length === 0) return { ok: true, nanos: 0n };
-    if (hashVouts.length === 1) return { ok: true, nanos: perShare * unit };
+    if (hashVouts.length === 1) return { ok: true, nanos: floorShare * unit };
     return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }
   if (shares.length > MAX_SHARES_PER_BLOCK) {
@@ -118,7 +119,8 @@ function permittedHash(block) {
     if (seen.has(nonce)) return { ok: false, reason: 'hash_bonus', nanos: 0n };
     seen.add(nonce);
   }
-  const units = BigInt(shares.length) * perShare;
+  let units = 0n;
+  for (const share of shares) units += BigInt(unitsForShare(shareWorkBits(share)));
   if (units > BigInt(MAX_HASH_UNITS_PER_BLOCK)) {
     return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }

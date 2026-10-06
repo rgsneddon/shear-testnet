@@ -7,10 +7,11 @@ import { encodeHeader } from '../../crypto/header.js';
 import { potSubsidyNanos, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '../../crypto/pot_sched.js';
 import {
   HASH_BONUS_NANOS,
+  SHARE_FLOOR_BITS,
   hashBonusUnitNanos,
   MAX_SHARES_PER_BLOCK,
 } from '../../crypto/asert.js';
-import { unitsForShare } from '../../crypto/share_batch.js';
+import { unitsForShare, shareWorkBits } from '../../crypto/share_batch.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
@@ -329,6 +330,29 @@ describe('v12 circulating supply is the public mint', () => {
     assert.equal(capped.status, 'mismatch');
     assert.equal(capped.measuredHashNanos, 0);
     assert.notEqual(capped.circulatingNanos, subsidy + overCap.length * unit);
+
+    const bitSpread = [SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 1, SHARE_FLOOR_BITS + 4, SHARE_FLOOR_BITS + 8];
+    for (const bits of bitSpread) {
+      const hasher = minerDest();
+      const work = unitsForShare(bits) * hashBonusUnitNanos(HASH_BONUS_NANOS);
+      assert.equal(shareWorkBits({ shareBits: bits }), bits);
+      const shareBatch = [{ dest: hasher, nonce: 1n, lz: bits, shareBits: bits }];
+      const paidBits = auditCirculatingSupply([potBlock(GENESIS, hasher, [
+        { nanos: subsidy, kind: 'pot' },
+        { nanos: work, kind: 'hash' },
+      ], 0, { shareBatch })]);
+      assert.equal(paidBits.status, 'verified', `bits ${bits}`);
+      assert.equal(paidBits.measuredHashNanos, work);
+      assert.equal(paidBits.circulatingNanos, subsidy + work);
+      if (bits === SHARE_FLOOR_BITS) continue;
+      const short = auditCirculatingSupply([potBlock(GENESIS, hasher, [
+        { nanos: subsidy, kind: 'pot' },
+        { nanos: unit, kind: 'hash' },
+      ], 0, { shareBatch })]);
+      assert.equal(short.status, 'mismatch', `floor hash at bits ${bits}`);
+      assert.equal(short.measuredHashNanos, 0);
+      assert.notEqual(short.circulatingNanos, subsidy + work);
+    }
   });
 
   it('holds empty-round streaks and pays them without minting the carry twice', () => {
