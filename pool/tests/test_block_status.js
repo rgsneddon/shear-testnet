@@ -110,7 +110,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(capped.length, 30);
   });
 
-  it('networkSupply uses the pot schedule when compact coinbase nanos are hidden', () => {
+  it('networkSupply does not echo the pot schedule when coinbase commitments do not open', () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -128,13 +128,16 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     }
     const store = { blocks, tip: () => blocks[2], reserveVault: emptyVault() };
     const supply = networkSupply(store);
-    assert.equal(supply.potNanos, 3 * NANOS_PER_SHE);
+    assert.equal(supply.supplyStatus, 'mismatch');
+    assert.equal(supply.potNanos, 0);
+    assert.notEqual(supply.circulatingNanos, 3 * NANOS_PER_SHE);
+    assert.equal(supply.schedulePotNanos, 3 * NANOS_PER_SHE);
+    assert.notEqual(supply.differenceNanos, 0);
     assert.equal(supply.hashNanos, 0);
-    assert.equal(supply.circulatingNanos, 3 * NANOS_PER_SHE);
     assert.equal(supply.vaultNanos, 0);
   });
 
-  it('networkSupply adds Tree-A hash bonus units on top of the 1 SHE pots', () => {
+  it('networkSupply does not treat a Tree-A count or a zero hash vout as minted bonus', () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -165,10 +168,12 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     const fromShares = hashBonusEmittedOfBlock(blocks[1], HASH_BONUS_NANOS);
     assert.equal(fromShares, 2 * unitsForShare() * HASH_BONUS_NANOS);
     const supply = networkSupply(store);
-    assert.equal(supply.potNanos, 2 * NANOS_PER_SHE);
-    assert.equal(supply.hashNanos, fromLeaves + fromShares);
-    assert.equal(supply.circulatingNanos, supply.potNanos + supply.hashNanos);
-    assert.ok(supply.circulatingNanos > supply.potNanos);
+    assert.equal(supply.supplyStatus, 'mismatch');
+    assert.equal(supply.potNanos, 0);
+    assert.equal(supply.hashNanos, 0);
+    assert.notEqual(supply.hashNanos, fromLeaves + fromShares);
+    assert.equal(supply.schedulePotNanos, 2 * NANOS_PER_SHE);
+    assert.notEqual(supply.circulatingNanos, supply.schedulePotNanos + fromLeaves + fromShares);
   });
 
   it('empty-aLeaves + empty-shareBatch + one confidential-0 hash vout returns 256', () => {
@@ -191,7 +196,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(got, unitsForShare() * HASH_BONUS_NANOS);
   });
 
-  it('networkSupply returns pot + hash + extra − burned and omits pull-book credit and open-round count', () => {
+  it('networkSupply ignores painted pot nanos, vault mint bank, pull credit, and open-round counts', () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -235,16 +240,16 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
       ],
     };
     const supply = networkSupply(store);
-    const want = pot + 256 + extra - burned;
-    assert.equal(supply.hashNanos, 256);
-    assert.equal(supply.potNanos, pot);
-    assert.equal(supply.extraMintNanos, extra);
-    assert.equal(supply.burnedNanos, burned);
-    assert.equal(supply.circulatingNanos, want);
-    assert.equal(supply.circulatingNanos, supply.potNanos + supply.hashNanos + supply.extraMintNanos - supply.burnedNanos);
+    assert.equal(supply.supplyStatus, 'mismatch');
+    assert.equal(supply.potNanos, 0);
+    assert.equal(supply.hashNanos, 0);
+    assert.equal(supply.extraMintNanos, 0);
+    assert.equal(supply.burnedNanos, 0);
+    assert.notEqual(supply.circulatingNanos, pot);
+    assert.notEqual(supply.circulatingNanos, pot + 256 + extra - burned);
     assert.equal(supply.lockedNanos, staked);
-    assert.notEqual(supply.circulatingNanos, want + pullCredit);
-    assert.notEqual(supply.circulatingNanos, want + openRound);
-    assert.notEqual(supply.circulatingNanos, want + staked);
+    assert.notEqual(supply.circulatingNanos, pullCredit);
+    assert.notEqual(supply.circulatingNanos, openRound);
+    assert.notEqual(supply.circulatingNanos, staked);
   });
 });

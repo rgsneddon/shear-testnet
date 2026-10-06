@@ -137,7 +137,7 @@ describe('IPC backfill window and parent repair', () => {
     assert.equal(window[window.length - 1].height, 10);
   });
 
-  it('hello backfill carries a gap wider than 8 onto an empty sidecar', async () => {
+  it('offers a gap wider than 8 and does not accept a synthetic digest', async () => {
     const miner = encodeDest(Buffer.alloc(20, 4));
     const tall = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ipc-tall-')));
     const behind = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ipc-behind-')));
@@ -160,12 +160,13 @@ describe('IPC backfill window and parent repair', () => {
     try {
       ipc = await attachPoolIpc({ store: tall, port: 0 });
       side = attachSidecarIpc({ store: behind, addr: `127.0.0.1:${ipc.port}` });
-      const ok = await waitFor(() => behind.tip()?.height === tall.tip().height, 20_000);
-      assert.equal(ok, true, `sidecar stuck at ${behind.tip()?.height || 0}`);
-      assert.equal(
-        Buffer.from(behind.tip().hash).equals(Buffer.from(tall.tip().hash)),
-        true,
+      const sawPow = await waitFor(
+        () => logs.some((line) => line.includes('"event":"ipc_apply"') && line.includes('"reason":"pow"')),
+        20_000,
       );
+      assert.equal(sawPow, true, `no pow reject in ${logs.join(' | ')}`);
+      assert.equal(behind.tip(), null);
+      assert.ok(tall.tip().height > IPC_BACKFILL_MAX);
       assert.ok(logs.some((line) => line.includes('"event":"ipc_backfill"') && line.includes('"refused":false')));
       assert.equal(logs.some((line) => line.includes('ipc_backfill_refuse')), false);
     } finally {

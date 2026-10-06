@@ -25,26 +25,69 @@ Ran with `node --test` from `C:\Users\rgsne\shear-testnet` on 2026-10-06. τ = 2
 - `pool/tests/test_empty_round_pot_v12.js` — empty rounds of counts 0, 1, 4, and 17 mint only this subsidy's pool-fee (`POOL_FEE_BPS`) and carry the miner remainder, including parent carry. A kind `pot` skim beside that carry is `pot_carry`. Zeroing the carry word is `pot`. Proven rounds of 1 miner, 3 miners, and a mixed idle/work set pay subsidy plus carry; the fee is the bps slice of the new subsidy, not of the carried pot. Idle miners are unpaid. Minted notes plus outstanding carry equal the sum of subsidies. `node/tests/test_coinbase_output_v12.js` passed (2) after this.
 - `pool/tests/test_fee_dest_v12.js` — the pool page paragraph that ends `Testnet.`, `GET /api/stats` `feeDest`, and `THIS_POOL_DIRECT_FEE_DEST` are the same address `ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv`. `isDestAddress` accepts it. The first pool coinbase (height 1, empty round) seals one `pool-fee` note to that dest for the bps slice and carries the miner pot. No `kind: pot` on that coinbase. v10 and v11 fee pins are refused, including via `SHEAR_POOL_FEE_PAYOUT_DEST`. `pool/tests/test_posture_067.js` fee-identity and public-stats checks passed. Worker dests, pubs, and the fluxset stay off public stats. No fee amount field.
 
+- `node/tests/test_supply_v12.js` — describe `v12 circulating supply is the public mint` passed (4) on 2026-10-06. Epochs 0, 1, 7, 80, and 120. Share counts 1, 4, and 15. Empty-round streaks of 1, 3, and 6. An oversized hash note is `mismatch` and is not credited. `node/src/supply.js` does not call `openedCoinbaseNanos` or `coinbaseVoutsBound` and does not read `valueProof`.
+- `pool/tests/test_block_status.js` — three `networkSupply` cases passed: unopened coinbase commitments are not painted as the schedule, a Tree-A count or a zero hash vout is not a minted bonus, and painted pot nanos, vault mint bank, pull credit, and open-round counts are not emission. The older assertion that height 1 is confirmed at tip 6 was not part of this run.
+- `node/tests/test_synthetic_pow_v12.js` — `verify, submit, RPC, ingest, and IPC hash the header` passed. A target-meeting stand-in seals only with in-process `{ trusted: true }`. `verifyBlock`, `submitHeader` without that flag, RPC `submitblock` and `submitHeader` (including a caller `trustedPowHash`), default `ingest`, P2P `ingest({ offLoopPow: true })`, and `applyVerifiedIpcBlock` return `pow`. `shearHash(header)` does not meet the genesis target.
+- `node/tests/test_ipc_backfill.js` passed (4). A gap wider than 8 is still offered. The empty sidecar stays at a null tip and logs `ipc_apply` reason `pow`. A jumped block still asks for its parent. `pool/tests/test_admit_template.js` — `forwards an admitted lock from a non-mining node into the job store` passed after that IPC change.
+
 `verifyOneForkBlock` passes `genesisMs` from the accepted prefix (`genesisHeaderMs`). The epoch-floor check is inside `test_asert_v12.js` (`pot follows the genesis header across append and ingest, including the epoch floor`). A fresh node syncing a multi-epoch chain is not a separate test yet.
 
 ## Not green on this run
 
 - `pool/tests/test_round_payout.js` — `pays N and M nanos to two miners plus 1 SHE pot on the next sealed job` failed. The first share submit came back without `result.status === 'OK'` (`undefined !== 'OK'`). Not claimed fixed.
 
+## Genesis procedure (READY for CoS)
+
+Build does not cut, deploy, SSH, bounce, or start the soak. CoS runs this from a clean checkout of the pushed `feat/shear-testnet-v12` tip.
+
+```
+node scripts/v12-genesis-cut.mjs --root <empty-dir-outside-the-repo-and-outside-testnet-v11>
+```
+
+A second run on the same root checks the book and does not reseal. A root inside the git checkout, under `~/.shear`, or under `%APPDATA%\Shear` exits 2 and does not wipe. Missing `--root` exits 2.
+
+Pins the script asserts: magic `shear-testnet-v12`, product `19.0`, wallet `0.72`, ShearK `2.9`, fee dest `ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv`. It writes `<root>/pool/pool-v12.json` from those pins. `kBookMagic` is still `shear-testnet-v11` (`walletBookPin: open`). Do not treat the wallet book pin as flipped.
+
+Genesis params: aserti3-2d, T = 90000 ms, τ = 7200000 ms, genesis bits packed 1114112, HEADER_AHEAD 15000 ms, MTP future 7200000 ms, pool fee 100 bps.
+
+sha256 at the dry run:
+
+- `crypto/asert.js` `4bb5b217138a8ba72f7dfe486804c13a71ca8a4429958f36a8f500360f9ebf7b`
+- `pool/src/posture.js` `5a7bce04524860750692b945fef280f4ea76f905a3cb281fe169c34d31794286`
+- `pool/src/pool.js` `49492529b7928b7b04eed741e4979a5d522869d409e11ca6f5a1e642c87662ac`
+- `node/src/supply.js` `1336bf473f9b4fad30b2946ea8456e3615361a410c69e491cf184c59b14e8598`
+- `wallet/lib/main.dart` `cd12154b548da5f57c2014abd4d356ae799565b09aad356d54a14d8e240c964e`
+- `wallet/lib/shear_identity.dart` `be2f4be597ef4f85ff62bb5eff19e1b08af6e5d2d083f0dab944747f36f1ac35`
+- `scripts/v12-genesis-cut.mjs` `792dc71e19e1755a6bca1588df50aa8ad5d39dd6227f6154673d8b45379bef03`
+
+### PoW bypassed locally
+
+The dry run seals a digest that meets the 17-bit genesis target. It is not `ShearHash(header)`. This host hashes at about 2.5 H/s, so a real grind is not the dry run. `localSeal` in the script output is `target-meeting digest, not ShearHash(header)`.
+
+Mandatory after the live cut, before the soak clock: a real ShearK miner finds block 1, and a node that is not the sealing pool verifies that header's ShearHash itself. P2P ingest does not take a caller digest. RPC `submitblock` / `submitHeader` ignore `trustedPowHash`, `powHash`, and `skipSharePow`. IPC apply hashes the header. In-process `{ trusted: true }` remains for tests and for the pool process after that process has already hashed the share. Reloading an already-accepted header in `rebuildSpentB` still skips ShearHash so status does not stall the event loop. That shortcut is not a peer-accept path.
+
+### Local dry run (2026-10-06, scratch dir, not a live datadir)
+
+`git HEAD` at the run was `cf83dbcdb04e545fa3f63237dbad1fbbe518553c` and the tree was dirty. First run exit 0, `cut: true`, `idempotent: false`. Second run exit 0, `cut: false`, `idempotent: true`, same hash and timestamp. `--root` set to the repo exited 2, `root is inside the git checkout`.
+
+Block 1: height 1, hash `0000000000000000000000000000000000000000000000000000000000000001`, feeNanos 1000000000, carryNanos 99000000000, subsidyNanos 100000000000, bits 1114112, timestamp 1791295054358, nextPacked 1114112, easeBits 0. Supply `verified`, circulatingNanos 1000000000, schedulePotNanos 100000000000, carryNanos 99000000000, differenceNanos 0, hashNanos 0. Explorer height 1, same hash, `supplyStatus: verified`, `inSync: true`. `walletBookPin: open`.
+
+CoS post-cut checks, on the real chain: block 1 coinbase pays one `pool-fee` note to the published fee address and carries the miner remainder; ASERT anchor and the supply audit are `verified`; the explorer tip matches the pool tip; block 1 was mined by ShearK and a second node accepted it by hashing the header.
+
 ## Open
 
-T21 supply: circulating is the sum of public block mints minus burns, next to expected emission and the difference, plus a UTXO commitment audit. The explorer re-runs both on its own chain and alerts. Per-note coinbase values stay public `valueProof.v` until that milestone. Empty rounds carry the miner pot and pay only this subsidy's pool-fee note; they do not hold the pot as pool income. T22 surge hardening is still open. Wallet shewall v3 and the surge orphan bound. Payouts: work-based PROP, 50/50 levy on chain, real hash bonus, restamp credit. T1–T18. Wallet Continuum 0.72 send/receive. Reserve magic (v12 is not in the pinned Reserve bytecode: `bootReserveEvm` throws `reserve_deploy: revert`). ShearK 2.9 packs, sites, tags, soak. The fleet addon is not rebuilt. No soak clock. No pool-fee keys were created or imported.
+Proven-round carry is still added to the last pot row in `issueJob`. It is not split across proven miners. Work-based PROP, the 50/50 levy, a real hash bonus from `shareBatch`, and restamp credit are open. T22 surge hardening, wallet shewall v3, and the surge orphan bound are open. T1–T18 except the public-copy CI split. Wallet Continuum 0.72 send/receive is not started. Reserve magic: v12 is not in the pinned Reserve bytecode (`bootReserveEvm` throws `reserve_deploy: revert`). ShearK 2.9 packs, site pin sentences, tags, and the soak are open. The fleet addon is not rebuilt. No soak clock. No pool-fee keys were created or imported. No tags.
 
-T23 live pool.js: read-only SSH to shear-pool (`77.42.91.84`) on 2026-10-06. Checkout is detached `250bded`. `git status` shows `pool/src/pool.js` modified. After stripping CR, that file is byte-identical to `origin/main` `pool/src/pool.js`. The dirty flag is the main content plus CRLF sitting on the old v11 commit. No host-only logic. Not copied onto this branch: copying it would drop the branch's stamp-aware `parentIntervalBits`. No service was restarted.
+`kBookMagic` is still `shear-testnet-v11`. Apex, README, pool, and explorer sentences still say Continuum 0.71 / Sentinel v18 / ShearK 2.8 / v11. The pool fee address line on `pool/public/index.html` stays as shipped when those sentences change. Wallet send/receive and T18 frame-timing are not started.
 
 `crypto/reserve_hold_spendable.test.js` — `sealing a 1 SHE lock drops spender spendable by 1 SHE and not by 2` did not reach the spendable assertion. `submitHeader` returned `reason: evm` because Reserve deploy reverts on this book. Principal-once is proven in `test_one_ledger_v12.js` without the EVM.
 
-Wallet display pin is `kWalletVersion` / `kCliVersion` `0.72` and pubspec `0.72.0+97`. Window titles on Android, Windows, and Linux say `Shear 0.72`. `kBookMagic` is still `shear-testnet-v11`. Apex, README, pool, and explorer strings still say Continuum 0.71 / Sentinel v18 / ShearK 2.8 / v11, and the older public-copy checks still require those sentences. That site pass is OPEN. Wallet send/receive and T18 frame-timing are not started.
+T23 live pool.js was read earlier. No host was contacted for this push. No service was restarted.
 
 ## Next step
 
-Flip `kBookMagic` and the apex/README/pool/explorer copy to 0.72 / Sentinel 19.0 / ShearK 2.9 / shear-testnet-v12. The pool fee address line on `pool/public/index.html` stays as shipped. Then T21 commitment-sum supply. Work-based PROP, the 50/50 levy, and the real hash bonus are still open. Reserve allowlist is still v11 bytecode.
+CoS cuts v12 from the genesis procedure above when the open payout items they care about are acceptable. Build's next code is the pro-rata carry split (fee stays a slice of the new subsidy only), then the pin flip. τ stays 2h.
 
 ## Hosts and services
 
-shear-pool `77.42.91.84`: read-only `git` and `scp` of `/opt/shear-v4/pool/src/pool.js`. No restart, no miner, no phone. `runtime/` and `wallet/android/build/` stay untracked.
+None this push. No SSH, no bounce, no miner change, no phone. `runtime/` and `wallet/android/build/` stay untracked. A branch push is not a deploy.

@@ -11,7 +11,6 @@ import {
   MIN_CONFIRMS_POLICY,
   RESERVE_PROGRAM,
   extraMintAllowed,
-  potSubsidyAt,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
@@ -37,6 +36,7 @@ import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custody
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
+import { auditCirculatingSupply } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -657,80 +657,64 @@ export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
   return n;
 }
 
-/** All SHE in existence: block pots + hash bonuses + extra mints − burns. Staked coin stays in. */
-let _supplyAt = -1;
+/** All SHE in existence: opened coinbase commitments, not the schedule echo. Staked coin stays out of the sum. */
+let _supplyAt = '';
 let _supplyVal = null;
 let _supplyBusy = false;
 
+function supplyCacheKey(store) {
+  const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
+  let h = 2166136261;
+  const mix = (s) => {
+    const str = String(s);
+    for (let i = 0; i < str.length; i += 1) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+  };
+  mix(blocks.length);
+  for (const block of blocks) {
+    const cb = block?.txs?.[0];
+    const ex = cb?.excess;
+    mix(Buffer.isBuffer(ex) ? ex.toString('hex') : (ex == null ? '' : String(ex)));
+    mix(cb?.carryNanos ?? '');
+    mix(Array.isArray(block?.shareBatch) ? block.shareBatch.length : 0);
+    const vouts = cb?.vout || [];
+    mix(vouts.length);
+    for (const o of vouts) {
+      mix(o?.rangeProof?.length || 0);
+      mix(o?.kind || '');
+    }
+  }
+  return `${blocks.length}:${h >>> 0}`;
+}
+
 export function networkSupply(store) {
-  const h = Number(store?.tip?.()?.height || store?.blocks?.length || 0);
+  const h = supplyCacheKey(store);
   if (h === _supplyAt && _supplyVal) return _supplyVal;
   if (_supplyBusy) {
     return _supplyVal || {
       circulatingNanos: 0, potNanos: 0, hashNanos: 0, extraMintNanos: 0, burnedNanos: 0, lockedNanos: 0,
+      supplyStatus: 'mismatch', differenceNanos: 0, schedulePotNanos: 0,
     };
   }
   _supplyBusy = true;
   try {
-    let extraMintNanos = 0;
-    let burnedNanos = 0;
-    const rows = store?.explorer;
-    if (Array.isArray(rows) && rows.length) {
-      for (const r of rows) {
-        const kind = String(r.kind || '');
-        const n = Math.max(0, Math.floor(Number(r.nanos || 0)));
-        if (!n) continue;
-        if (kind === 'burn') burnedNanos += n;
-        else if (r.mint === true) extraMintNanos += n;
-      }
-    } else {
-      for (const b of store?.blocks || []) {
-        for (const tx of b?.txs || []) {
-          if (tx?.coinbase) continue;
-          const n = Math.max(0, Math.floor(Number(tx.nanos || tx.vout?.[0]?.nanos || 0)));
-          if (!n) continue;
-          if (tx.mint === true) extraMintNanos += n;
-          const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
-          if (kind === 'burn') burnedNanos += n;
-        }
-      }
-    }
     const blocks = store?.blocks || [];
-    let genesisMs = 0;
-    try {
-      const g = blocks[0];
-      if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
-    } catch { genesisMs = 0; }
-    const unit = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-    let potNanos = 0;
-    let notedPot = 0;
-    let hashNanos = 0;
-    for (const b of blocks) {
-      let ts = genesisMs;
-      try {
-        if (b?.header) ts = Number(decodeHeader(Buffer.from(b.header)).timestamp) || ts;
-      } catch { /* schedule */ }
-      potNanos += potSubsidyAt({ nowMs: ts || genesisMs, genesisMs: genesisMs || ts, magic: MAGIC_TESTNET });
-      hashNanos += hashBonusEmittedOfBlock(b, unit);
-      const cb = Array.isArray(b?.txs) ? b.txs[0] : null;
-      if (cb?.coinbase) {
-        for (const o of cb.vout || []) {
-          const kind = String(o.kind || '');
-          if (kind === 'hash' || kind === 'finder-fee' || kind === 'reserve-fee') continue;
-          notedPot += Math.max(0, Math.floor(Number(o.nanos) || 0));
-        }
-      }
-    }
-    if (notedPot > 0) potNanos = notedPot;
+    const audit = auditCirculatingSupply(blocks, { magic: MAGIC_TESTNET });
     const vault = publicVaultView(store?.reserveVault || {}, Date.now());
-    const extra = Math.max(extraMintNanos, Math.floor(Number(vault.mintBankNanos) || 0));
-    const circulatingNanos = potNanos + hashNanos + extra - burnedNanos;
     _supplyVal = {
-      circulatingNanos: circulatingNanos > 0 ? circulatingNanos : 0,
-      potNanos,
-      hashNanos,
-      extraMintNanos: extra,
-      burnedNanos,
+      circulatingNanos: audit.circulatingNanos,
+      potNanos: audit.measuredPotNanos,
+      hashNanos: audit.measuredHashNanos,
+      levyNanos: audit.measuredLevyNanos,
+      extraMintNanos: audit.extraMintNanos,
+      burnedNanos: audit.burnedNanos,
+      schedulePotNanos: audit.schedulePotNanos,
+      carryNanos: audit.carryNanos,
+      differenceNanos: audit.differenceNanos,
+      supplyStatus: audit.status,
+      supplyReason: audit.reason,
       lockedNanos: Math.max(0, Math.floor(Number(vault.totalLockedNanos) || 0)),
       accruingNanos: Math.max(0, Math.floor(Number(vault.accruingNanos) || 0)),
       vaultNanos: Math.max(0, Math.floor(Number(vault.vaultNanos) || 0)),
@@ -754,7 +738,10 @@ export function explorerCirculation(store) {
     }
   }
   return {
-    proofs: true,
+    proofs: supply.supplyStatus === 'verified',
+    supplyStatus: supply.supplyStatus === 'verified' ? 'verified' : 'mismatch',
+    differenceNanos: Number(supply.differenceNanos) || 0,
+    schedulePotNanos: Number(supply.schedulePotNanos) || 0,
     amountHidden: false,
     noteCount,
     circulatingNanos: supply.circulatingNanos,

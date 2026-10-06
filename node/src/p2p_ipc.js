@@ -177,7 +177,10 @@ function stripTrustField(msg) {
   return msg;
 }
 
-/** Apply one sidecar-verified block. Does not call ShearHash. */
+/**
+ * Apply one IPC block by hashing the header in append.
+ * powHash is a 32-byte field check only. It is not ShearHash(header).
+ */
 export function applyVerifiedIpcBlock(store, msg) {
   stripTrustField(msg);
   if (!msg || msg.type !== 'ipc_block' || !msg.block || typeof msg.block !== 'object') {
@@ -186,6 +189,7 @@ export function applyVerifiedIpcBlock(store, msg) {
   if (msg.magic && msg.magic !== MAGIC_TESTNET) return { ok: false, reason: 'magic' };
   const powHex = String(msg.powHash || '').trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(powHex)) return { ok: false, reason: 'pow' };
+  void powHex;
   let block;
   try {
     block = decodeWireBlock(msg.block);
@@ -193,10 +197,7 @@ export function applyVerifiedIpcBlock(store, msg) {
     return { ok: false, reason: 'decode' };
   }
   if (block && Object.prototype.hasOwnProperty.call(block, 'trustedPowHash')) delete block.trustedPowHash;
-  return store.append(block, {
-    trustedPowHash: Buffer.from(powHex, 'hex'),
-    skipSharePow: true,
-  });
+  return store.append(block, {});
 }
 
 function forwardBlock(send, block) {
