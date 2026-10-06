@@ -89,4 +89,54 @@ describe('pool share credit follows the nonce byte', () => {
     assert.equal(grace.ok, true, grace.reason);
     assert.equal(grace.creditedShareBits, higher);
   });
+
+  it('submits every block-quality hash and withholds credit for an illegal or stale byte', () => {
+    const dest = minerDest();
+    const maxB = shareCreditMaxBits();
+    const bytes = [0, SHARE_FLOOR_BITS - 1, SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 4, maxB, maxB + 1, 255];
+    const parentBits = GENESIS_BITS_PACKED;
+    const blockHash = Buffer.alloc(32);
+    const shareOnly = Buffer.alloc(32, 0xff);
+    const now = Date.now();
+    for (const byte of bytes) {
+      const nonce = nonceWithShareTarget(41n, byte);
+      const header = setNonce(encodeHeader({
+        prevBlockHash: Buffer.alloc(32, 1),
+        merkleRoot: Buffer.alloc(32, 2),
+        continuityRoot: Buffer.alloc(32, 3),
+        timestamp: 1_700_000_000_000,
+        bits: parentBits,
+      }), nonce);
+      const jobs = [
+        { name: 'current', shareBits: byte, shareBitsPrev: 0, shareBitsAt: 0, shareBitsHist: [] },
+        { name: 'grace', shareBits: SHARE_FLOOR_BITS, shareBitsPrev: byte, shareBitsAt: now, shareBitsHist: [] },
+        { name: 'stale', shareBits: SHARE_FLOOR_BITS, shareBitsPrev: byte, shareBitsAt: now - 13_000, shareBitsHist: [{ bits: byte, at: now - 13_000 }] },
+        { name: 'other', shareBits: byte === SHARE_FLOOR_BITS ? byte + 1 : SHARE_FLOOR_BITS, shareBitsPrev: 0, shareBitsAt: 0, shareBitsHist: [] },
+      ];
+      for (const jobBits of jobs) {
+        for (const hash of [blockHash, shareOnly]) {
+          const job = { ...jobBits, header, blockBits: parentBits };
+          const got = judgeShare({ job, header, hash, dest });
+          const legal = byte >= SHARE_FLOOR_BITS && byte <= maxB;
+          const authorized = legal && (
+            jobBits.shareBits === byte
+            || (jobBits.name === 'grace' && jobBits.shareBitsPrev === byte)
+          );
+          if (hash === blockHash) {
+            assert.equal(got.ok, true, `${byte}/${jobBits.name}`);
+            assert.equal(got.block, true, `${byte}/${jobBits.name}`);
+            if (!authorized) assert.equal(got.creditedShareBits, 0, `${byte}/${jobBits.name}`);
+            else assert.ok(got.creditedShareBits === 0 || got.creditedShareBits === byte, `${byte}/${jobBits.name} ${got.creditedShareBits}`);
+          } else if (!authorized) {
+            assert.equal(got.ok, false, `${byte}/${jobBits.name} share`);
+            assert.equal(got.reason, 'share_target', `${byte}/${jobBits.name}`);
+          } else {
+            assert.equal(got.ok, false, `${byte}/${jobBits.name} low`);
+            assert.equal(got.reason, 'low_diff', `${byte}/${jobBits.name}`);
+            assert.equal(got.block, undefined);
+          }
+        }
+      }
+    }
+  });
 });

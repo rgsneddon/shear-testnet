@@ -1057,13 +1057,11 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
   }
   const hi = nonceHiFromShareHeader(header);
   const maxB = shareCreditMaxBits();
-  if (!Number.isInteger(hi) || hi < SHARE_FLOOR_BITS || hi > maxB) {
-    return { ok: false, reason: 'share_target', hash: hash.toString('hex'), header };
-  }
+  const byteLegal = Number.isInteger(hi) && hi >= SHARE_FLOOR_BITS && hi <= maxB;
   // The job target and the grace window authorize which byte may be submitted.
   // They do not pay the highest target the same digest also meets.
-  let allowed = Number.isFinite(current) && current === hi;
-  if (!allowed) {
+  let allowed = byteLegal && Number.isFinite(current) && current === hi;
+  if (byteLegal && !allowed) {
     const hist = [
       ...(Number.isFinite(prev) && prev > 0 ? [{ bits: prev, at: prevAt }] : []),
       ...(Array.isArray(job.shareBitsHist) ? job.shareBitsHist : []),
@@ -1077,10 +1075,7 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
       break;
     }
   }
-  if (!allowed) {
-    return { ok: false, reason: 'share_target', hash: hash.toString('hex'), header };
-  }
-  if (meetsTarget(shareHash, hi)) {
+  if (byteLegal && allowed && meetsTarget(shareHash, hi)) {
     return {
       ok: true,
       hash: hash.toString('hex'),
@@ -1090,9 +1085,8 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
       creditedShareBits: hi,
     };
   }
-  /* A block-quality raw hash is still a block. It is not share credit when
-   * the dest-bound digest misses the committed byte. An unstamped nonce
-   * already failed share_target above. */
+  /* A raw hash that meets the sealed block target is always a block candidate.
+   * An illegal byte, a stale grace byte, or a dest-bound miss earns no share. */
   if (blockOk) {
     return {
       ok: true,
@@ -1102,6 +1096,9 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
       bitsMet: leadingZeroBits(hash),
       creditedShareBits: 0,
     };
+  }
+  if (!byteLegal || !allowed) {
+    return { ok: false, reason: 'share_target', hash: hash.toString('hex'), header };
   }
   return { ok: false, reason: 'low_diff', hash: hash.toString('hex') };
 }
