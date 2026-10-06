@@ -336,7 +336,7 @@ export function openedCoinbaseNanos(vout) {
  * Every committing coinbase output opens, and the commitment sum equals that
  * opened total. Levy notes are in the sum. A totals-only mint does not pass.
  */
-export function coinbaseVoutsBound(vouts, excess) {
+export function coinbaseVoutsBound(vouts, excess, openedFor = null) {
   const rows = Array.isArray(vouts) ? vouts : [];
   if (!rows.length) {
     // Carry-only coinbase: nothing is minted. Excess must be the zero scalar.
@@ -352,7 +352,12 @@ export function coinbaseVoutsBound(vouts, excess) {
   let levy = 0;
   for (const o of rows) {
     if (!o?.commit) return { ok: false, reason: 'coinbase_output' };
-    const v = openedCoinbaseNanos(o);
+    let v = null;
+    if (typeof openedFor === 'function') {
+      const hinted = openedFor(o);
+      if (hinted != null && verifySealedNote(o, hinted)) v = hinted;
+    }
+    if (v == null) v = openedCoinbaseNanos(o);
     if (v == null) return { ok: false, reason: 'coinbase_output' };
     opened += v;
     const kind = String(o.kind || '');

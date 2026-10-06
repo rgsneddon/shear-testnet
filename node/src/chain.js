@@ -407,11 +407,8 @@ function notePays(o, dest, nanos) {
 }
 
 /**
- * Custodial coinbase: one hash note for 100% of the proven bonus, paid to a
- * dest that is not a hasher leaf (the pool). Pot split is pool policy from
- * 0% through POOL_FEE_MAX_BPS (2% of this subsidy). Hash bonus is never fee'd. Any pool can
- * build this to its own dest — verify from the sealed notes, not an
- * out-of-band poolDest on the wire.
+ * Old custodial shape: one hash note for the whole bonus, paid to a dest
+ * that is not a hasher leaf. v12 verifyBlockConsensus does not accept it.
  */
 export function matchCustodyCoinbase({
   hashVouts = [],
@@ -437,8 +434,8 @@ export function matchCustodyCoinbase({
 }
 
 /**
- * Dest-bound hash to hasher dests, pot still custodial on the pool dest.
- * Hash is never fee'd. Pot is 1% fee + rest on pool dest (custodyPotShares).
+ * Old shape: hash notes on hasher leaves, pot still custodial. v12
+ * verifyBlockConsensus does not accept it.
  */
 export function matchDestBoundHashCustodyPot({
   hashVouts = [],
@@ -523,7 +520,12 @@ function propPayCandidates(leaves, feeBase, hinted, extraAmt, shareBatch, splitP
   return candidates;
 }
 
-/** One non-hasher pot note: absent (0) or a bps of `wantPot` through POOL_FEE_MAX_BPS. */
+/**
+ * One non-hasher pot note: absent (0) or a bps of `wantPot` through
+ * POOL_FEE_MAX_BPS. The published valueProof.v is only a hint. A missing,
+ * high, or wrong v does not change the verdict: the note must open to a
+ * legal subsidy fee.
+ */
 export function extraPotFeeNanos(extraVouts = [], wantPot) {
   const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
   const maxFee = Math.floor(pot * POOL_FEE_MAX_BPS / 10000);
@@ -531,18 +533,14 @@ export function extraPotFeeNanos(extraVouts = [], wantPot) {
   if (!extra.length) return 0;
   if (extra.length !== 1 || !(pot > 0)) return null;
   const claimed = Math.floor(Number(extra[0]?.valueProof?.v));
-  // A published v above the subsidy cap cannot be a legal fee. A v on the
-  // subsidy scale is one verify. A missing v still hunts the scale.
-  if (claimed > maxFee) return null;
-  if (claimed > 0) {
+  if (claimed > 0 && claimed <= maxFee) {
     for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
       if (Math.floor(pot * bps / 10000) === claimed && verifySealedNote(extra[0], claimed)) return claimed;
     }
-    return null;
   }
   for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
     const n = Math.floor(pot * bps / 10000);
-    if (n > 0 && n <= maxFee && verifySealedNote(extra[0], n)) return n;
+    if (n > 0 && n <= maxFee && n !== claimed && verifySealedNote(extra[0], n)) return n;
   }
   return null;
 }
@@ -564,17 +562,15 @@ export function coinbaseTx({
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
   const bonuses = hashBonusByMiner(samples, hashBonusNanos, shareBatch);
-  const batchEmpty = !Array.isArray(shareBatch) || shareBatch.length === 0;
   const vout = [];
-  const custody = allowedHashBonusCustodyDest(hashBonusCustodyDest);
-  // An explicit empty list carries the pot. It does not default to the miner
-  // or the fee dest. Null still means "this caller did not choose shares".
+  // v12 does not retarget the hash bonus or the pot onto a custody dest.
+  // Explicit shares still name the pot. Callers that pass a custodial list
+  // build a block verify rejects.
+  void hashBonusCustodyDest;
   const explicit = Array.isArray(potShares);
   let shares = explicit ? potShares : null;
   if (!explicit) {
-    if (custody) {
-      shares = custodyPotShares(custody, pot);
-    } else if (Array.isArray(shareBatch) && shareBatch.length) {
+    if (Array.isArray(shareBatch) && shareBatch.length) {
       shares = potSharesFromBatch(shareBatch, poolDest, pot);
       if (!shares.length) shares = [{ address: miner, nanos: pot, kind: 'pot' }];
     } else if (carry > 0) {
@@ -591,28 +587,15 @@ export function coinbaseTx({
       admitBase: admitBaseFromAddress(pay),
     }));
   }
-  if (custody) {
-    let total = 0;
-    for (const n of bonuses.values()) total += n;
-    if (total > 0) {
-      const d20 = hash20FromAddress(custody);
-      vout.push(attachAdmitPub(sealCoinbaseNote(total, { dest20: d20, kind: 'hash' }), {
-        admitBase: admitBaseFromAddress(custody),
-      }));
-    }
-  } else {
-    // Hash bonus is DINS-DAG shareBatch units only. An empty batch mints
-    // pot (and pool fee) with no hash notes — the finder floor was a fake
-    // unit that failed pool genesis verify (poolDest ≠ miner).
-    void batchEmpty;
-    for (const [address, nanos] of bonuses) {
-      const pay = destOf(address);
-      if (!isDestAddress(pay)) continue;
-      const d20 = hash20FromAddress(pay);
-      vout.push(attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), {
-        admitBase: admitBaseFromAddress(pay),
-      }));
-    }
+  // Hash bonus is shareBatch units, paid to each hasher leaf. An empty
+  // batch mints pot (and pool fee) with no hash notes.
+  for (const [address, nanos] of bonuses) {
+    const pay = destOf(address);
+    if (!isDestAddress(pay)) continue;
+    const d20 = hash20FromAddress(pay);
+    vout.push(attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), {
+      admitBase: admitBaseFromAddress(pay),
+    }));
   }
   if (!vout.length && carry <= 0) {
     throw new Error('coinbase_needs_dest');
@@ -1076,6 +1059,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   let provenUnits = 0;
   let provenByDest = new Map();
   let shareLeaves = null;
+  // Amounts the coinbase rule already opened. A published valueProof.v
+  // that is missing or wrong does not replace these.
+  const provenOpen = new Map();
   if (!skipFlow) {
     if (shareBatch.length > MAX_SHARES_PER_BLOCK) return { ok: false, reason: 'share_cap' };
     if (prev?.header) {
@@ -1110,31 +1096,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         : (block.poolDest && isDestAddress(block.poolDest)
           ? block.poolDest
           : (block.miner && isDestAddress(block.miner) ? block.miner : ''));
-      const custody = matchCustodyCoinbase({
-        hashVouts,
-        poolDest: hinted,
-        wantBonus,
-        hasherNcs,
-      }) || matchCustodyCoinbase({
-        hashVouts,
-        wantBonus,
-        hasherNcs,
-      });
-      const destBoundHashCustodyPot = matchDestBoundHashCustodyPot({
-        hashVouts,
-        potVouts,
-        leaves,
-        liveUnit,
-        wantPot,
-        hinted,
-        hasherNcs,
-      });
-      if (custody || destBoundHashCustodyPot) {
-        bonusNanos = wantBonus;
-        potNanos = mintedPot;
-        const T = mintedPot + wantBonus;
-        if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
-      } else if (!shareBatch.length) {
+      // A proven batch pays hasher leaves and one pro-rata pot. Custodial
+      // shapes are not an accept, and a node-local env var cannot make them one.
+      if (!shareBatch.length) {
         const floor = unitsForShare() * liveUnit;
         const minerDest = block.miner && isDestAddress(block.miner) ? block.miner : '';
         const minerNc = minerDest ? ncHex(noteCommitOfDest20(hash20FromAddress(minerDest))) : '';
@@ -1162,9 +1126,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       for (const leaf of leaves) {
         const nc = ncHex(leaf.noteCommit);
         const hit = hashVouts.find((o) => ncHex(o.noteCommit) === nc);
-        if (!hit || !verifySealedNote(hit, leaf.count * liveUnit)) {
+        const nanos = leaf.count * liveUnit;
+        if (!hit || !verifySealedNote(hit, nanos)) {
           return { ok: false, reason: 'hash_bonus' };
         }
+        provenOpen.set(hit, nanos);
       }
       for (const o of hashVouts) {
         if (!hasherNcs.has(ncHex(o.noteCommit))) return { ok: false, reason: 'hash_bonus' };
@@ -1184,20 +1150,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (extraAmt == null) return { ok: false, reason: 'pot_prop' };
         const candidates = propPayCandidates(leaves, wantPot, hinted, extraAmt, shareBatch, mintedPot);
         let matched = false;
+        let matchedPays = null;
         for (const pays of candidates) {
           let okTry = true;
           for (const pay of pays) {
             const hit = potVouts.find((o) => ncHex(o.noteCommit) === ncHex(pay.noteCommit));
-            if (!hit) {
-              okTry = false;
-              break;
-            }
-            const claimed = Math.floor(Number(hit.valueProof?.v));
-            if (claimed > 0 && claimed !== pay.nanos) {
-              okTry = false;
-              break;
-            }
-            if (!verifySealedNote(hit, pay.nanos)) {
+            if (!hit || !verifySealedNote(hit, pay.nanos)) {
               okTry = false;
               break;
             }
@@ -1210,9 +1168,15 @@ function verifyBlockConsensus(block, prev, opts = {}) {
           if (extra.length === 1) covered.add(ncHex(extra[0].noteCommit));
           if (potVouts.some((o) => !covered.has(ncHex(o.noteCommit)))) continue;
           matched = true;
+          matchedPays = pays;
           break;
         }
         if (!matched) return { ok: false, reason: 'pot_prop' };
+        for (const pay of matchedPays) {
+          const hit = potVouts.find((o) => ncHex(o.noteCommit) === ncHex(pay.noteCommit));
+          if (hit) provenOpen.set(hit, pay.nanos);
+        }
+        if (extra.length === 1) provenOpen.set(extra[0], extraAmt);
       }
       const T = mintedPot + wantBonus;
       if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
@@ -1255,12 +1219,16 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       return { ok: false, reason: 'pot' };
     }
   }
-  const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess);
+  const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, (o) => (
+    provenOpen.has(o) ? provenOpen.get(o) : null
+  ));
   if (!boundCb.ok) return boundCb;
   let potOpenedSum = 0;
   for (const o of cbVouts) {
     if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
-    potOpenedSum += Number(o.valueProof?.v);
+    if (provenOpen.has(o)) potOpenedSum += Number(provenOpen.get(o));
+    else if (o?.valueProof?.v != null && o.valueProof.v !== '') potOpenedSum += Number(o.valueProof.v);
+    else potOpenedSum += Number(o.nanos || 0);
   }
   if (!Number.isSafeInteger(potOpenedSum) || potOpenedSum < 0) return { ok: false, reason: 'pot_sched' };
   // A proven share batch must pay this round, including anything carried in.

@@ -56,7 +56,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     }
   });
 
-  it('next seal dest-binds lag-1 hash bonus; PROP pot stays custodial until π', () => {
+  it('next seal dest-binds lag-1 hash bonus and rejects a custodial pot', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-payout-legs-'));
     const store = createStore(dir);
     const hasher = destMiner();
@@ -95,7 +95,22 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
       miner: hasher,
       powHash: '00'.repeat(32),
     }, { trusted: true });
-    assert.equal(got.ok, true, String(got?.reason || 'append'));
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'pot_prop');
+    const honestShares = splitPot([{ miner: hasher, count: units }], pool, BLOCK_SUBSIDY_NANOS, pool);
+    const honest = store.template({
+      miner: hasher,
+      poolDest: pool,
+      shareBatch: [share],
+      potShares: honestShares,
+    });
+    const paid = store.submitHeader({
+      jobId: honest.job.jobId,
+      nonce: 0n,
+      miner: hasher,
+      powHash: '00'.repeat(32),
+    }, { trusted: true });
+    assert.equal(paid.ok, true, String(paid?.reason || 'append'));
     const tip = store.tip();
     const vout = tip.txs[0].vout || [];
     const hashV = vout.filter((o) => o.kind === 'hash');
@@ -107,11 +122,15 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
       true,
     );
     const poolNc = noteCommitOfDest20(hash20FromAddress(pool));
+    const hasherNc = noteCommitOfDest20(hash20FromAddress(hasher));
+    const rest = potCreditAfterFeeNanos(BLOCK_SUBSIDY_NANOS);
     assert.ok(potV.some((o) => Buffer.from(o.noteCommit).equals(poolNc)));
     assert.equal(
-      potV.some((o) => Buffer.from(o.noteCommit).equals(noteCommitOfDest20(hash20FromAddress(hasher)))),
-      false,
+      potV.some((o) => Buffer.from(o.noteCommit).equals(hasherNc)),
+      true,
     );
+    const hasherPot = potV.find((o) => Buffer.from(o.noteCommit).equals(hasherNc));
+    assert.equal(verifySealedNote(hasherPot, rest), true);
 
     const sealedH = Number(tip.height);
     for (let h = sealedH + 1; h <= sealedH + 8; h += 1) {
@@ -119,8 +138,8 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     }
     const hashRec = reconstructOwner(store, hasher);
     const poolRec = reconstructOwner(store, pool);
-    assert.equal(hashRec.spendableNanos, units * HASH_BONUS_NANOS);
-    assert.ok(poolRec.spendableNanos >= potCreditAfterFeeNanos(BLOCK_SUBSIDY_NANOS));
+    assert.equal(hashRec.spendableNanos, rest + units * HASH_BONUS_NANOS);
+    assert.ok(poolRec.spendableNanos >= rest);
 
     const book = createPullBook(path.join(dir, 'pull'));
     const tag = publicMinerTag(hasher);

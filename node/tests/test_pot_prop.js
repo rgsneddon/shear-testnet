@@ -179,7 +179,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(got.reason, 'pot_prop');
   });
 
-  it('accepts dest-bound hash to hasher dests with custodial pot on the pool dest', () => {
+  it('rejects dest-bound hash when the pot is custodial on the pool dest', () => {
     const hasher = destOf(newIdentity());
     const pool = destOf(newIdentity());
     const TRUSTED = Buffer.alloc(32);
@@ -229,22 +229,19 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       weight: childTpl.weight,
       poolDest: pool,
     };
-    const got = verifyBlock(child, {
+    const prev = {
       ...parent,
       hash: okP.hash,
       header: parent.header,
       height: 1,
       weight: parent.weight,
-    }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
-    assert.equal(got.ok, true, got.reason);
-    const p2p = verifyBlock(child, {
-      ...parent,
-      hash: okP.hash,
-      header: parent.header,
-      height: 1,
-      weight: parent.weight,
-    }, { trustedPowHash: TRUSTED, skipSharePow: true });
-    assert.equal(p2p.ok, true, p2p.reason);
+    };
+    const got = verifyBlock(child, prev, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'pot_prop');
+    const p2p = verifyBlock(child, prev, { trustedPowHash: TRUSTED, skipSharePow: true });
+    assert.equal(p2p.ok, false);
+    assert.equal(p2p.reason, 'pot_prop');
     const kinds = (childTpl.txs[0].vout || []).map((o) => o.kind);
     assert.ok(kinds.includes('hash'));
     assert.ok(kinds.includes('pot'));
@@ -317,6 +314,21 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       }
       process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY = '1';
       assert.equal(allowedHashBonusCustodyDest(pool), pool);
+      const armed = buildTemplate({
+        prev: GENESIS_PREV,
+        height: 1,
+        miner: pool,
+        bits: GENESIS_BITS_PACKED,
+        now: 1_700_000_000_000,
+        shareBatch: [row],
+        poolDest: pool,
+        hashBonusCustodyDest: pool,
+      });
+      const armedHash = (armed.txs[0].vout || []).filter((o) => o.kind === 'hash');
+      assert.ok(armedHash.length >= 1);
+      for (const h of armedHash) {
+        assert.ok(Buffer.from(h.dest20).equals(Buffer.from(hasher20)));
+      }
       const chainSrc = fs.readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
       assert.match(chainSrc, /SHEAR_ALLOW_HASHBONUS_CUSTODY/);
       const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
