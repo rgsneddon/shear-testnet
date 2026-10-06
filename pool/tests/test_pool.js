@@ -281,29 +281,32 @@ describe('HTTP stats cannot stall', () => {
       shareBits: 8,
       bits: 16,
     });
-    await new Promise((resolve, reject) => {
-      pool.stratum.listen(0, '127.0.0.1', () => {
-        pool.httpServer.listen(0, '127.0.0.1', resolve);
+    try {
+      await new Promise((resolve, reject) => {
+        pool.stratum.listen(0, '127.0.0.1', () => {
+          pool.httpServer.listen(0, '127.0.0.1', resolve);
+        });
+        pool.stratum.on('error', reject);
       });
-      pool.stratum.on('error', reject);
-    });
-    const httpPort = pool.httpServer.address().port;
-    const t0 = Date.now();
-    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok(Date.now() - t0 < 500, 'stats handler must not wait on RandomX');
-    assert.equal(stats.ok, true);
-    assert.equal(stats.coin, 'SHE');
-    const fp = await fetch(`http://127.0.0.1:${httpPort}/fingerprint`).then((r) => r.json());
-    assert.equal(fp.ok, true);
-    assert.equal(fp.admit, 'ADMITv2');
-    assert.equal(fp.hashTxLive, 1);
-    assert.equal(fp.magic, 'shear-testnet-v11');
-    assert.ok(String(fp.fingerprint || '').length > 8);
-    const shePage = await fetch(`http://127.0.0.1:${httpPort}/miner/she1ccbe79d6`);
-    assert.equal(shePage.status, 404);
-    const sheApi = await fetch(`http://127.0.0.1:${httpPort}/api/miners/she1862e37`);
-    assert.equal(sheApi.status, 404);
-    pool.close();
+      const httpPort = pool.httpServer.address().port;
+      const t0 = Date.now();
+      const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+      assert.ok(Date.now() - t0 < 500, 'stats handler must not wait on RandomX');
+      assert.equal(stats.ok, true);
+      assert.equal(stats.coin, 'SHE');
+      const fp = await fetch(`http://127.0.0.1:${httpPort}/fingerprint`).then((r) => r.json());
+      assert.equal(fp.ok, true);
+      assert.equal(fp.admit, 'ADMITv2');
+      assert.equal(fp.hashTxLive, 1);
+      assert.equal(fp.magic, MAGIC_TESTNET);
+      assert.ok(String(fp.fingerprint || '').length > 8);
+      const shePage = await fetch(`http://127.0.0.1:${httpPort}/miner/she1ccbe79d6`);
+      assert.equal(shePage.status, 404);
+      const sheApi = await fetch(`http://127.0.0.1:${httpPort}/api/miners/she1862e37`);
+      assert.equal(sheApi.status, 404);
+    } finally {
+      pool.close();
+    }
   });
 
   it('does not sweep auto-payout from stats paint (borkatpayout)', async () => {
@@ -548,7 +551,6 @@ describe('pool dashboard + stratum', () => {
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(stats.nodesOnline, 1);
     assert.equal(stats.magic, MAGIC_TESTNET);
-    assert.equal(stats.magic, 'shear-testnet-v11');
     assert.equal(stats.network, MAGIC_TESTNET);
     assert.equal(stats.personalisation, 'ShearHash-v3');
     assert.equal(stats.rxMode, 'light');
