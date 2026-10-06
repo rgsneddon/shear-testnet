@@ -20,7 +20,15 @@ import {
   shouldAdopt,
   chainWorkOf,
   headerGapsMs,
+  shareCreditBound,
 } from './chain.js';
+import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
+import {
+  verifyShareBatch,
+  stashSharePow,
+  hasLiveSharePow,
+  sharePowCounters,
+} from '../../crypto/share_batch.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { isDestAddress } from '../../crypto/address.js';
@@ -634,51 +642,142 @@ export function createStore(dir, {
     savePolicyState();
   }
 
+  function blockHasBSpend(block) {
+    for (const tx of block?.txs || []) {
+      if (tx && tx.kind === 'b-spend') return true;
+    }
+    return false;
+  }
+
+  function spendIdsOf(block) {
+    if (Array.isArray(block?.bSpendIds)) return block.bSpendIds;
+    if (!blockHasBSpend(block)) return [];
+    return null;
+  }
+
+  function spentDelta(before, after) {
+    const ids = [];
+    for (const id of after) if (!before.has(id)) ids.push(id);
+    return ids;
+  }
+
+  function rollbackSpent(book, before) {
+    if (!(book instanceof Set)) return;
+    for (const id of book) if (!before.has(id)) book.delete(id);
+  }
+
+  let reorgFrom = null;
+  let reorgAccepted = null;
+  let reorgLca = 0;
+  let lastReorgMeasure = null;
+
   function rebuildSpentB() {
-    spentB.clear();
-    let i = 0;
-    const step = () => {
-      if (i >= blocks.length) return undefined;
-      const b = blocks[i];
-      const prev = i === 0 ? null : {
-        hash: blocks[i - 1].hash,
-        header: blocks[i - 1].header,
-        height: blocks[i - 1].height,
-        rootA: blocks[i - 1].rootA,
-        rootB: blocks[i - 1].rootB,
-        txs: blocks[i - 1].txs,
-        bLeaves: blocks[i - 1].bLeaves,
-        weight: blocks[i - 1].weight,
-      };
-      i += 1;
-      // Already-accepted blocks. Share credit is re-checked, including the
-      // dest-bound hash: skipSharePow would accept a rewritten nonce byte.
-      // A long batch hashes on this walk. That can stall status. It is not
-      // a width bypass.
+    const fromBlocks = reorgFrom || blocks;
+    const accepted = reorgAccepted || blocks;
+    const lca = reorgFrom ? reorgLca : 0;
+    const t0 = performance.now();
+    const shareOpts = { skipSharePow: false };
+    const disconnected = fromBlocks.slice(lca);
+    const connected = accepted.slice(lca);
+    for (let i = 0; i < accepted.length; i += 1) {
+      const b = accepted[i];
       let trustedPowHash = null;
       try {
         if (b?.hash && Buffer.from(b.hash).length === 32) trustedPowHash = Buffer.from(b.hash);
-      } catch { /* verify hashes when the stored id is not 32 bytes */ }
-      const spentCheck = verifyBlock(b, prev, {
-        spentB,
-        tipHeight: Number(prev?.height || 0),
-        hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
-        committedBps: Number(reserveVault.epochBps ?? 264),
-        reserveState: reserveVault,
-        spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, prev ? prev.height : 0)),
-        grandparentHeader: grandparentHeader(blocks.slice(0, i - 1)),
-        sealedIntervalsMs: headerGapsMs(blocks.slice(0, i - 1)),
-        nowMs: Date.now(),
-        genesisMs: genesisHeaderMs(blocks),
-        trustedPowHash,
-        skipSharePow: false,
-      });
-      if (spentCheck && typeof spentCheck.then === 'function') {
-        return spentCheck.then(step);
+      } catch { trustedPowHash = null; }
+      if (!trustedPowHash) return { ok: false, reason: 'share_credit_bind', at: i };
+      const bound = shareCreditBound(b);
+      if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind', at: i };
+    }
+    for (const b of disconnected) {
+      if (spendIdsOf(b) == null) return { ok: false, reason: 'spent_checkpoint_missing', at: lca };
+    }
+    for (const b of connected) {
+      if (spendIdsOf(b) == null) return { ok: false, reason: 'spent_checkpoint_missing', at: lca };
+    }
+    const nextSpent = new Set(spentB);
+    for (const b of disconnected) {
+      for (const id of spendIdsOf(b)) nextSpent.delete(id);
+    }
+    for (const b of connected) {
+      for (const id of spendIdsOf(b)) {
+        if (nextSpent.has(id)) return { ok: false, reason: 'double_open', at: lca };
+        nextSpent.add(id);
       }
-      return step();
+    }
+    const cold = [];
+    for (let i = 0; i < connected.length; i += 1) {
+      const b = connected[i];
+      const shares = Array.isArray(b.shareBatch) ? b.shareBatch : [];
+      if (!shares.length) continue;
+      const parentIdx = lca + i - 1;
+      const parentHeader = parentIdx >= 0 ? accepted[parentIdx]?.header : null;
+      if (!parentHeader) return { ok: false, reason: 'parent_header', at: lca + i };
+      for (const s of shares) {
+        if (!hasLiveSharePow(parentHeader, s?.nonce)) {
+          cold.push({ parentHeader, nonce: s.nonce });
+        }
+      }
+    }
+    const applyNextSpent = () => {
+      for (const id of spentB) if (!nextSpent.has(id)) spentB.delete(id);
+      for (const id of nextSpent) spentB.add(id);
     };
-    return step();
+    const measure = (syncSharePow, loopLagMs) => {
+      const ms = performance.now() - t0;
+      lastReorgMeasure = {
+        ms,
+        suffix: connected.length,
+        prefix: lca,
+        coldShares: cold.length,
+        syncSharePow,
+        loopLagMs,
+      };
+      return {
+        ok: true,
+        spent: nextSpent.size,
+        suffix: connected.length,
+        prefix: lca,
+        ms,
+        coldShares: cold.length,
+        syncSharePow,
+      };
+    };
+    if (!cold.length) {
+      applyNextSpent();
+      return measure(0, 0);
+    }
+    const beforeSync = sharePowCounters().sync;
+    return Promise.all(cold.map((c) => {
+      const header = setNonce(Buffer.from(c.parentHeader), BigInt(c.nonce));
+      c.header = header;
+      return hashHeaderOffLoop(header);
+    })).then((hashes) => {
+      for (let i = 0; i < cold.length; i += 1) stashSharePow(cold[i].header, hashes[i]);
+      for (let i = 0; i < connected.length; i += 1) {
+        const shares = connected[i].shareBatch || [];
+        if (!shares.length) continue;
+        const parentHeader = accepted[lca + i - 1].header;
+        const got = verifyShareBatch({
+          parentHeader,
+          shares,
+          skipPow: shareOpts.skipSharePow,
+        });
+        if (!got.ok) return { ok: false, reason: got.reason || 'share_pow', at: lca + i };
+      }
+      const syncSharePow = sharePowCounters().sync - beforeSync;
+      applyNextSpent();
+      return new Promise((resolve) => {
+        const y0 = performance.now();
+        setImmediate(() => {
+          resolve(measure(syncSharePow, performance.now() - y0));
+        });
+      });
+    }).catch((err) => ({
+      ok: false,
+      reason: 'share_pow',
+      error: String(err?.message || err),
+    }));
   }
 
   function bounceMempool(disconnected, connected) {
@@ -833,6 +932,7 @@ export function createStore(dir, {
     const toVerify = (!shareN && shouldPruneSamples(incomingH, tipHeight))
       ? { ...block, samplesPruned: true }
       : block;
+    const spentBefore = new Set(spentB);
     const check = verifyBlock(toVerify, prev ? {
       hash: prev.hash,
       header: prev.header,
@@ -878,11 +978,18 @@ export function createStore(dir, {
     const after = (c) => {
       // A failed consensus check keeps its own reason. The vault clock is a
       // second gate only after the block verifies.
-      if (!c?.ok) return c;
+      if (!c?.ok) {
+        rollbackSpent(spentB, spentBefore);
+        return c;
+      }
       for (const tx of (block.txs || []).slice(1)) {
         const pay = payoutOnTip(tx);
-        if (!pay.ok) return pay;
+        if (!pay.ok) {
+          rollbackSpent(spentB, spentBefore);
+          return pay;
+        }
       }
+      block.bSpendIds = spentDelta(spentBefore, spentB);
       return settleCheck(c, (okCheck) => completeAppend(okCheck, block));
     };
     if (check && typeof check.then === 'function') return check.then(after);
@@ -1181,7 +1288,8 @@ export function createStore(dir, {
       const pay = verifyReservePayout(vault, tx);
       if (!pay.ok) return pay;
     }
-    return verifyBlock(fork[i], prev, {
+    const beforeSpent = new Set(trialSpent);
+    const check = verifyBlock(fork[i], prev, {
       spentB: trialSpent,
       tipHeight: Number(prev?.height || 0),
       hashBonusNanos: Number(vault?.liveHashBonusNanos || 1),
@@ -1198,6 +1306,16 @@ export function createStore(dir, {
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       genesisMs: genesisHeaderMs(accepted) || Number(verifyOpts.genesisMs) || 0,
     });
+    const stamp = (c) => {
+      if (!c?.ok) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return c;
+      }
+      c.bSpendIds = spentDelta(beforeSpent, trialSpent);
+      return c;
+    };
+    if (check && typeof check.then === 'function') return check.then(stamp);
+    return stamp(check);
   }
 
   function verifyFork(fork, verifyOpts = {}) {
@@ -1215,6 +1333,7 @@ export function createStore(dir, {
         hash: check.hash,
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
+        bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
       });
       accepted.push(lean);
       if (!noVault && trialVault && i >= lca) {
@@ -1242,6 +1361,7 @@ export function createStore(dir, {
         hash: check.hash,
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
+        bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
       });
       accepted.push(lean);
       if (!noVault && trialVault && i >= lca) {
@@ -1316,10 +1436,13 @@ export function createStore(dir, {
   function verifySuffix(fork, parent, history, verifyOpts) {
     const out = [];
     let prev = parent;
+    const trialSpent = new Set();
     const step = (i) => {
       if (i >= fork.length) return { ok: true, blocks: out };
+      const beforeSpent = new Set(trialSpent);
       const check = verifyBlock(fork[i], parentView(prev), {
         ...verifyOpts,
+        spentB: trialSpent,
         trustedPowHash: trustedHashFor(fork[i], verifyOpts),
         tipHeight: Number(prev?.height || 0) + 1,
         evmHistory: history.concat(out),
@@ -1330,8 +1453,12 @@ export function createStore(dir, {
         genesisMs: genesisHeaderMs(history) || Number(verifyOpts.genesisMs) || 0,
       });
       const take = (c) => {
-        if (!c?.ok) return c;
+        if (!c?.ok) {
+          rollbackSpent(trialSpent, beforeSpent);
+          return c;
+        }
         const lean = leanVerified(fork[i], c, prev);
+        lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
         out.push(lean);
         prev = lean;
         return step(i + 1);
@@ -1430,22 +1557,34 @@ export function createStore(dir, {
     }
     const disconnected = fromBlocks.slice(lca);
     const connected = accepted.slice(lca);
-    if (fromBlocks.length) rememberFork(fromBlocks, 'valid-fork');
-    const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
-    blocks.length = 0;
-    for (const b of accepted) blocks.push(b);
-    if (disconnected.length) {
-      sideAnchor = lca > 0 ? lca - 1 : -1;
-      sideBlocks = (lca > 0 ? disconnected : fromBlocks).slice();
-    } else if (sideTipHash() && sideTipHash() === hex32(blocks[blocks.length - 1]?.hash).toLowerCase()) {
-      clearSide();
-    }
-    rememberHeaders(accepted, 'active');
-    rewriteChain();
-    rebuildExplorer();
-    refreshFlux();
-    replayVault();
-    const afterSpent = () => {
+    reorgFrom = fromBlocks;
+    reorgAccepted = accepted;
+    reorgLca = lca;
+    const spent = rebuildSpentB();
+    const commit = (spentResult) => {
+      if (!spentResult || spentResult.ok === false) {
+        return {
+          ok: false,
+          reason: spentResult?.reason || 'share_credit_bind',
+          at: spentResult?.at,
+          tip: tip(),
+        };
+      }
+      if (fromBlocks.length) rememberFork(fromBlocks, 'valid-fork');
+      const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
+      blocks.length = 0;
+      for (const b of accepted) blocks.push(b);
+      if (disconnected.length) {
+        sideAnchor = lca > 0 ? lca - 1 : -1;
+        sideBlocks = (lca > 0 ? disconnected : fromBlocks).slice();
+      } else if (sideTipHash() && sideTipHash() === hex32(blocks[blocks.length - 1]?.hash).toLowerCase()) {
+        clearSide();
+      }
+      rememberHeaders(accepted, 'active');
+      rewriteChain();
+      rebuildExplorer();
+      refreshFlux();
+      replayVault();
       bounceMempool(disconnected, connected);
       pruneBuried();
       reorgs.push(event);
@@ -1456,9 +1595,8 @@ export function createStore(dir, {
       evmSession = null;
       return { ok: true, reorg: true, tip: tip(), event };
     };
-    const spent = rebuildSpentB();
-    if (spent && typeof spent.then === 'function') return spent.then(afterSpent);
-    return afterSpent();
+    if (spent && typeof spent.then === 'function') return spent.then(commit);
+    return commit(spent);
   }
 
   let offLoopGate = Promise.resolve();
@@ -1782,6 +1920,9 @@ export function createStore(dir, {
     jobs,
     mempool,
     spentB,
+    reorgMeasure() {
+      return lastReorgMeasure;
+    },
     queueTx,
     noteOpenRound,
     openRoundRows,

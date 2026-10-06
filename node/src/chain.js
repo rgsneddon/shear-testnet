@@ -46,6 +46,7 @@ import {
   destOfShare,
   dest20OfShare,
   noteCommitOfShare,
+  retainedUnitsByCommit,
   selectBlockShares,
   stashSharePow,
   dropSharePowKeys,
@@ -980,6 +981,70 @@ function hashPaysMatch(hashVouts, pay, provenOpen, confidential) {
     used.add(idx);
   }
   return used.size === hashVouts.length;
+}
+
+function leafCommitHex(leaf) {
+  try {
+    if (leaf?.noteCommit) {
+      const b = Buffer.from(leaf.noteCommit);
+      if (b.length === 32 && !b.equals(Buffer.alloc(32))) return b.toString('hex');
+    }
+  } catch { /* dest20 below */ }
+  try {
+    if (leaf?.dest20) {
+      const d = Buffer.from(leaf.dest20);
+      if (d.length === 20) return noteCommitOfDest20(d).toString('hex');
+    }
+  } catch { /* no commit */ }
+  return '';
+}
+
+/**
+ * Cheap share-credit bind for a block this node already accepted.
+ * No ShearHash. A pruned block keeps aLeaves and drops the batch: the
+ * empty batch is not a fresh-credit lie. A live batch must reproduce
+ * each positive aLeaf, and the header continuity root must still match
+ * the stored leaves, so a rewritten nonce byte fails closed.
+ */
+export function shareCreditBound(block) {
+  const shares = Array.isArray(block?.shareBatch) ? block.shareBatch : [];
+  if (block?.samplesPruned === true && shares.length === 0) return { ok: true, reason: '' };
+  const leaves = Array.isArray(block?.aLeaves) ? block.aLeaves : [];
+  let positive = false;
+  for (const leaf of leaves) {
+    if (Number(leaf?.count) > 0) {
+      positive = true;
+      break;
+    }
+  }
+  let id = null;
+  if (Buffer.isBuffer(block?.hash) && block.hash.length === 32) id = block.hash;
+  else if (block?.hash instanceof Uint8Array && block.hash.length === 32) id = block.hash;
+  if (!id) return { ok: false, reason: 'share_credit_bind' };
+  if (shares.length === 0 && !positive) return { ok: true, reason: '' };
+  const retained = retainedUnitsByCommit(shares);
+  const seen = new Set();
+  for (const leaf of leaves) {
+    const count = Math.floor(Number(leaf?.count) || 0);
+    if (count <= 0) continue;
+    const hex = leafCommitHex(leaf);
+    if (!hex || (retained.get(hex) || 0) !== count) return { ok: false, reason: 'share_credit_bind' };
+    seen.add(hex);
+  }
+  for (const [hex, units] of retained) {
+    if (units > 0 && !seen.has(hex)) return { ok: false, reason: 'share_credit_bind' };
+  }
+  if (block?.samplesPruned !== true) {
+    let decoded;
+    try { decoded = decodeHeader(Buffer.from(block.header)); } catch {
+      return { ok: false, reason: 'share_credit_bind' };
+    }
+    const dual = buildDualTree({ aLeaves: leaves, bLeaves: block.bLeaves || [] });
+    if (!Buffer.from(dual.continuityRoot).equals(Buffer.from(decoded.continuityRoot))) {
+      return { ok: false, reason: 'share_credit_bind' };
+    }
+  }
+  return { ok: true, reason: '' };
 }
 
 function settlementFor(prev, height, shareBatch, unit) {

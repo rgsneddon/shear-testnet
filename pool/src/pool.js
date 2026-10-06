@@ -64,7 +64,17 @@ import {
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
 import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote } from '../../node/src/chain.js';
-import { sortShares, selectBlockShares, rememberLiveSharePow, destOfShare } from '../../crypto/share_batch.js';
+import {
+  sortShares,
+  selectBlockShares,
+  rememberLiveSharePow,
+  destOfShare,
+  pinLiveSharePow,
+  liveSharePowKey,
+  hasLiveSharePow,
+  reproveSharesOffLoop,
+  liveSharePowMetrics,
+} from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
@@ -1744,6 +1754,9 @@ export function createPool({
   let lag1Shares = [];
   let openShares = [];
   let sealing = false;
+  let proofWarm = null;
+  let sealFailStreak = 0;
+  let sealFailBatch = '';
   let paused = false;
   let restarting = false;
   const banPath = path.join(dataDir, 'pool-bans.json');
@@ -1809,6 +1822,9 @@ export function createPool({
     dropped: 0,
     lostWorkHashes: persistedLost.lostWorkHashes,
     lostWorkEvents: persistedLost.lostWorkEvents,
+    sealFailed: 0,
+    shareCacheEvictions: 0,
+    shareCacheWipes: 0,
     hashBusy: 0,
     coin: 'SHE',
     algo: ALGO,
@@ -2162,6 +2178,180 @@ export function createPool({
     return mempoolKey(store.mempool) !== packedMempoolKey;
   }
 
+  function sharePinKey(share, parentHeader) {
+    return liveSharePowKey(share?.verifiedHeader || parentHeader, share?.nonce);
+  }
+
+  function refreshSharePins() {
+    const tipHdr = store.tip()?.header || null;
+    const keys = [];
+    for (const s of openShares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) keys.push(k);
+    }
+    for (const s of lag1Shares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) keys.push(k);
+    }
+    const rec = lastJob?.jobId ? store.jobs.get(String(lastJob.jobId)) : null;
+    for (const s of rec?.tpl?.shareBatch || []) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) keys.push(k);
+    }
+    pinLiveSharePow(keys);
+    const m = liveSharePowMetrics();
+    stats.shareCacheEvictions = m.evictions;
+    stats.shareCacheWipes = m.wipes;
+    stats.shareCache = m;
+    return m;
+  }
+
+  function batchKeyOf(shares) {
+    return (shares || []).map((s) => String(s?.nonce ?? '')).sort().join(',');
+  }
+
+  function noteSealFailure(reason, jobId) {
+    stats.sealFailed = (Number(stats.sealFailed) || 0) + 1;
+    const key = batchKeyOf(lag1Shares);
+    if (key === sealFailBatch) sealFailStreak += 1;
+    else {
+      sealFailBatch = key;
+      sealFailStreak = 1;
+    }
+    console.error(JSON.stringify({
+      event: 'seal_failed',
+      alert: true,
+      reason: String(reason || 'append'),
+      jobId: String(jobId || ''),
+      streak: sealFailStreak,
+      height: Number(store.tip()?.height || 0) + 1,
+    }));
+    if (sealFailStreak >= 2) {
+      if (store.jobs?.entries) {
+        for (const [id, rec] of store.jobs) {
+          if (batchKeyOf(rec?.tpl?.shareBatch) === key) store.jobs.delete(id);
+        }
+      }
+      if (jobId && store.jobs?.delete) store.jobs.delete(String(jobId));
+      lag1Shares = [];
+      console.error(JSON.stringify({
+        event: 'seal_batch_held',
+        alert: true,
+        jobId: String(jobId || ''),
+        batch: key,
+      }));
+      sealFailStreak = 0;
+      sealFailBatch = '';
+    }
+    refreshSharePins();
+  }
+
+  function noteSealSuccess() {
+    sealFailStreak = 0;
+    sealFailBatch = '';
+  }
+
+  function lag1MissingProof(parentHeader, shares) {
+    if (!parentHeader || !shares?.length) return [];
+    const missing = [];
+    for (const s of shares) {
+      if (!hasLiveSharePow(parentHeader, s?.nonce) && !hasLiveSharePow(s?.verifiedHeader, s?.nonce)) {
+        missing.push(s);
+      }
+    }
+    return missing;
+  }
+
+  function creditAcceptedShare(rec) {
+    const opened = rememberOpenShare(openShares, rec);
+    if (opened.ok) {
+      rememberLiveSharePow(rec.verifiedHeader || rec.header, rec.nonce, {
+        noteCommit: noteCommitOfShare(rec),
+        shareBits: rec.shareBits,
+        lz: rec.lz,
+      });
+    }
+    refreshSharePins();
+    return opened;
+  }
+
+  function rollOpenRound() {
+    lag1Shares = selectBlockShares(openShares.slice());
+    openShares = [];
+    refreshSharePins();
+    return lag1Shares.slice();
+  }
+
+  function ensureCachedShareProofs() {
+    const tipHdr = store.tip()?.header || null;
+    const pending = reproveSharesOffLoop(tipHdr, lag1Shares).then((got) => {
+      if (proofWarm === pending) proofWarm = null;
+      if (!got.ok) {
+        const bad = new Set((got.failed || []).map((s) => String(s.nonce)));
+        lag1Shares = lag1Shares.filter((s) => !bad.has(String(s.nonce)));
+        noteSealFailure(got.reason || 'share_pow', String(lastJob?.jobId || ''));
+      }
+      refreshSharePins();
+      const job = issueJob(undefined, { force: true });
+      if (job) broadcastJob(job);
+      return job;
+    }).catch(() => {
+      if (proofWarm === pending) proofWarm = null;
+      noteSealFailure('share_pow', '');
+      return null;
+    });
+    proofWarm = pending;
+    return pending;
+  }
+
+  function whenShareProofs() {
+    return proofWarm || Promise.resolve(lastJob);
+  }
+
+  async function sealFoundShare({ jobId, nonce, miner, powHash, header } = {}) {
+    const jid = String(jobId || '');
+    const rec = jid ? store.jobs.get(jid) : null;
+    if (rec && header) rec.tpl = { ...rec.tpl, header };
+    const parent = store.tip()?.header || null;
+    const batch = rec?.tpl?.shareBatch || [];
+    if (parent && batch.length) {
+      const missing = batch.filter((s) => !hasLiveSharePow(parent, s?.nonce) && !hasLiveSharePow(s?.verifiedHeader, s?.nonce));
+      if (missing.length) {
+        const proved = await reproveSharesOffLoop(parent, batch);
+        if (!proved.ok) {
+          const bad = new Set((proved.failed || []).map((s) => String(s.nonce)));
+          lag1Shares = lag1Shares.filter((s) => !bad.has(String(s.nonce)));
+          rec.tpl = {
+            ...rec.tpl,
+            shareBatch: (rec.tpl.shareBatch || []).filter((s) => !bad.has(String(s.nonce))),
+          };
+          noteSealFailure(proved.reason || 'share_pow', jid);
+          try {
+            const next = issueJob(undefined, { force: true });
+            if (next) broadcastJob(next);
+          } catch { /* keep the live job */ }
+          return { ok: false, reason: proved.reason || 'share_pow' };
+        }
+      }
+    }
+    const got = await Promise.resolve(store.submitHeader({
+      jobId: jid,
+      nonce,
+      miner,
+      powHash,
+    }, { trusted: true }));
+    if (got?.ok) {
+      noteSealSuccess();
+      return got;
+    }
+    noteSealFailure(got?.reason || 'append', jid);
+    try {
+      const next = issueJob(undefined, { force: true });
+      if (next) broadcastJob(next);
+    } catch { /* keep the live job */ }
+    return got || { ok: false, reason: 'append' };
+  }
+
   function issueJob(shareBitsNow, { force = false } = {}) {
     if (sidecarAhead()) {
       logJobHold();
@@ -2206,6 +2396,11 @@ export function createPool({
     const poolPay = payoutDest(miner);
     const tipHdr = store.tip()?.header || null;
     lag1Shares = selectBlockShares(provenLag1Shares(tipHdr, lag1Shares));
+    const coldLag1 = lag1MissingProof(tipHdr, lag1Shares);
+    if (coldLag1.length) {
+      if (!proofWarm) ensureCachedShareProofs();
+      return null;
+    }
     const live = snapshotRound();
     const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
     const wantPot = wantLivePot();
@@ -2283,6 +2478,7 @@ export function createPool({
     }
     lastJob = job;
     lastIssueAt = now;
+    refreshSharePins();
     return job;
   }
 
@@ -2626,14 +2822,7 @@ export function createPool({
             ? scored.header.toString('hex').toLowerCase()
             : String(job?.header || '').toLowerCase(),
         };
-        const opened = rememberOpenShare(openShares, rec);
-        if (opened.ok) {
-          rememberLiveSharePow(scored.header || job?.header, params.nonce, {
-            noteCommit: noteCommitOfShare(rec),
-            shareBits: rec.shareBits,
-            lz: rec.lz,
-          });
-        }
+        creditAcceptedShare(rec);
       }
       const credited = Number(scored.creditedShareBits || 0);
       const proven = credited > 0 ? hashesProvenByShare(credited) : 0;
@@ -2667,14 +2856,15 @@ export function createPool({
     }
     let nextJob = null;
     let sealedBlock = false;
+    let sealTried = false;
+    let sealFailReason = '';
     if (scored.block && !closedRound && sidecarAhead()) {
       logJobHold();
     } else if (scored.block && !closedRound) {
       sealing = true;
+      sealTried = true;
       const jid = String(params.jobId || job.jobId || '');
-      const rec = jid ? store.jobs.get(jid) : null;
-      if (rec && scored.header) rec.tpl = { ...rec.tpl, header: scored.header };
-      const got = await Promise.resolve(store.submitHeader({
+      const got = await sealFoundShare({
         jobId: jid,
         nonce: params.nonce,
         miner: hasherPayoutDest(session?.login, {
@@ -2682,7 +2872,8 @@ export function createPool({
           height: Number(store.tip()?.height || 0) + 1,
         }),
         powHash: scored.hash,
-      }, { trusted: true }));
+        header: scored.header,
+      });
       sealing = false;
       if (got?.ok) {
         sealedBlock = true;
@@ -2733,27 +2924,23 @@ export function createPool({
         }));
         nextJob = true;
       } else {
-        console.error(JSON.stringify({
-          event: 'seal_failed',
-          reason: String(got?.reason || 'append'),
-          error: got?.error,
-          jobId: jid,
-          height: Number(store.tip()?.height || 0) + 1,
-        }));
-        try {
-          const base = issueJob(undefined, { force: true });
-          if (base) {
-            broadcastJob(base);
-            nextJob = true;
-          }
-        } catch { /* keep live job */ }
+        sealFailReason = String(got?.reason || 'seal_failed');
+        nextJob = true;
       }
     }
     try {
-      sock.write(line({
-        id: msg.id,
-        result: { status: 'OK', hash: scored.hash, block: sealedBlock },
-      }));
+      if (sealTried && !sealedBlock) {
+        sock.write(line({
+          id: msg.id,
+          error: 'seal_failed',
+          reason: sealFailReason || 'seal_failed',
+        }));
+      } else {
+        sock.write(line({
+          id: msg.id,
+          result: { status: 'OK', hash: scored.hash, block: sealedBlock },
+        }));
+      }
     } catch { /* ignore */ }
     if (!paused && !nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login) && Number(scored.creditedShareBits) > 0) {
       const destKey = destShareBitsKey(session?.login || session?.payoutDest);
@@ -4068,6 +4255,13 @@ export function createPool({
     jobHoldReason,
     restampJob: restampLiveHeader,
     restampTick: maybeRestampJob,
+    creditAcceptedShare,
+    rollOpenRound,
+    sealFoundShare,
+    whenShareProofs,
+    get lag1Shares() { return lag1Shares; },
+    get openShares() { return openShares; },
+    get lastJob() { return lastJob; },
     watchTipStall,
     sweepIdle: sweepIdleMiners,
     get pendingPayout() { return pendingPayout; },

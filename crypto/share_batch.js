@@ -20,6 +20,7 @@ import {
   shareCreditMaxBits,
 } from './asert.js';
 import { shearHash, meetsTarget, leadingZeroBits } from './shear_hash.js';
+import { hashHeaderOffLoop } from './hash_offloop.js';
 import { setNonce } from './header.js';
 import { packShareV5, unpackShareBatch } from './pack.js';
 import { isDestAddress, bech32Hrp, encodeDest, hash20FromAddress } from './address.js';
@@ -315,6 +316,67 @@ function shareJobKey(header) {
  * Not on the wire. Peers do not see it.
  */
 const liveSharePow = new Map();
+/** Keys the pool still needs: open round and the template's lag-1 batch. */
+const liveSharePins = new Set();
+/** One entry per accepted share, eight blocks of the count cap. Not a wipe line. */
+export const LIVE_SHARE_POW_BOUND = MAX_SHARES_PER_BLOCK * 8;
+let liveShareEvictions = 0;
+let liveShareWipes = 0;
+let syncSharePowHashes = 0;
+let preparedSharePowUses = 0;
+
+export function sharePowCounters() {
+  return { sync: syncSharePowHashes, prepared: preparedSharePowUses };
+}
+
+export function resetSharePowCounters() {
+  syncSharePowHashes = 0;
+  preparedSharePowUses = 0;
+}
+
+export function liveSharePowMetrics() {
+  return {
+    size: liveSharePow.size,
+    bound: LIVE_SHARE_POW_BOUND,
+    evictions: liveShareEvictions,
+    wipes: liveShareWipes,
+    pins: liveSharePins.size,
+    overBound: Math.max(0, liveSharePow.size - LIVE_SHARE_POW_BOUND),
+  };
+}
+
+/** Replace the pin set. An empty list pins nothing. Eviction will not drop these keys. */
+export function pinLiveSharePow(keys) {
+  liveSharePins.clear();
+  for (const key of keys || []) {
+    if (key) liveSharePins.add(String(key));
+  }
+  return liveSharePins.size;
+}
+
+export function liveSharePowKey(parentHeader, nonce) {
+  const job = shareJobKey(parentHeader);
+  if (!job || nonce == null || nonce === '') return '';
+  return `${job}:${String(nonce)}`;
+}
+
+export function hasLiveSharePow(parentHeader, nonce) {
+  const key = liveSharePowKey(parentHeader, nonce);
+  return !!key && liveSharePow.has(key);
+}
+
+function evictUnpinned(keepKey) {
+  if (liveSharePow.size <= LIVE_SHARE_POW_BOUND) return 0;
+  let n = 0;
+  for (const key of liveSharePow.keys()) {
+    if (liveSharePow.size <= LIVE_SHARE_POW_BOUND) break;
+    if (key === keepKey || liveSharePins.has(key)) continue;
+    liveSharePow.delete(key);
+    liveShareEvictions += 1;
+    n += 1;
+  }
+  return n;
+}
 
 /**
  * Digests ShearHash already computed off the accept thread for this process.
@@ -342,6 +404,7 @@ export function dropSharePowKeys(keys) {
 }
 
 export function clearLiveSharePow() {
+  if (liveSharePow.size) liveShareWipes += 1;
   liveSharePow.clear();
 }
 
@@ -369,8 +432,78 @@ export function rememberLiveSharePow(parentHeader, nonce, proof) {
     return true;
   }
   liveSharePow.set(key, { noteCommit: hex, bits, lz: lz & 0xff });
-  if (liveSharePow.size > MAX_SHARES_PER_BLOCK * 8) liveSharePow.clear();
+  // Drop the oldest unpinned jobs. Never the key just stored, and never a pin.
+  evictUnpinned(key);
   return liveSharePow.has(key);
+}
+
+/**
+ * Re-hash lag-1 rows that lost their process-local proof.
+ * RandomX runs off the accept thread. A miss is not a skipPow pass.
+ * Rows that meet the nonce-byte target are cached again. The rest are failed.
+ */
+export async function reproveSharesOffLoop(parentHeader, shares = []) {
+  const list = Array.isArray(shares) ? shares : [];
+  const job = asHeaderBuf(parentHeader);
+  if (!job || job.length !== 128) {
+    return { ok: false, reason: 'parent_header', failed: list.slice(), proved: 0 };
+  }
+  const cold = [];
+  for (const s of list) {
+    if (hasLiveSharePow(job, s?.nonce)) continue;
+    cold.push(s);
+  }
+  if (!cold.length) return { ok: true, reason: '', failed: [], proved: list.length };
+  const headers = [];
+  for (const s of cold) {
+    try {
+      headers.push(setNonce(job, BigInt(s?.nonce || 0)));
+    } catch {
+      return { ok: false, reason: 'share_pow', failed: cold.slice(), proved: 0 };
+    }
+  }
+  let hashes;
+  try {
+    hashes = await Promise.all(headers.map((header) => hashHeaderOffLoop(header)));
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'share_pow',
+      failed: cold.slice(),
+      proved: 0,
+      error: String(err?.message || err),
+    };
+  }
+  const failed = [];
+  let proved = 0;
+  for (let i = 0; i < cold.length; i += 1) {
+    const s = cold[i];
+    const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: true });
+    const nc = noteCommitOfShare(s);
+    if (!credit.ok || !nc || nc.length !== 32) {
+      failed.push(s);
+      continue;
+    }
+    const bound = destBoundShareHash(hashes[i], nc);
+    if (!meetsTarget(bound, credit.bits)) {
+      failed.push(s);
+      continue;
+    }
+    const lz = leadingZeroBits(bound) & 0xff;
+    const remembered = rememberLiveSharePow(job, s.nonce, {
+      noteCommit: nc,
+      shareBits: credit.bits,
+      lz,
+    });
+    if (!remembered) failed.push(s);
+    else proved += 1;
+  }
+  return {
+    ok: failed.length === 0,
+    reason: failed.length ? 'share_pow' : '',
+    failed,
+    proved,
+  };
 }
 
 function liveProofForShare(share) {
@@ -466,7 +599,9 @@ export function verifyShareBatch({
       }
       // P2P may have hashed this header on a worker. skipPow is not a width bypass.
       const prepared = takeSharePow(header);
+      if (prepared) preparedSharePowUses += 1;
       if (!prepared && skipPow) return { ok: false, reason: 'share_pow' };
+      if (!prepared) syncSharePowHashes += 1;
       const hash = prepared || shearHash(header);
       const bound = destBoundShareHash(hash, nc);
       if (!meetsTarget(bound, claimedBits)) {
