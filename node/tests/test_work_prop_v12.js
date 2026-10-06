@@ -7,6 +7,7 @@ import {
   BLOCK_SUBSIDY_NANOS,
   GENESIS_BITS_PACKED,
   HASH_BONUS_NANOS,
+  MAX_HASH_UNITS_PER_BLOCK,
   POOL_FEE_BPS,
   SHARE_FLOOR_BITS,
   TARGET_BLOCK_INTERVAL_MS,
@@ -15,10 +16,12 @@ import {
 } from '../../crypto/asert.js';
 import { meetsTarget } from '../../crypto/shear_hash.js';
 import {
+  aLeavesFromShares,
   clearLiveSharePow,
   destBoundShareHash,
   noteCommitOfShare,
   rememberLiveSharePow,
+  retainedUnitsByCommit,
   selectBlockShares,
   shareWorkBits,
   stashSharePow,
@@ -94,9 +97,94 @@ describe('v12 PROP pays share work', () => {
 
     const heavy = { dest: high, nonce: 9n, lz: 8, shareBits: 30 };
     const kept = selectBlockShares([heavy, stripped[0]]);
-    assert.equal(kept.length, 1);
-    assert.equal(shareWorkBits(kept[0]), SHARE_FLOOR_BITS);
-    assert.equal(selectBlockShares([heavy]).length, 0);
+    assert.equal(kept.length, 2);
+    assert.equal(selectBlockShares([heavy]).length, 1);
+    const alone = aLeavesFromShares([heavy]);
+    assert.equal(alone.length, 1);
+    assert.equal(alone[0].count, MAX_HASH_UNITS_PER_BLOCK);
+    assert.ok(unitsForShare(30) > MAX_HASH_UNITS_PER_BLOCK);
+  });
+
+  it('over the unit cap each noteCommit keeps a pro-rata share', () => {
+    clearLiveSharePow();
+    const widths = [SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 2, SHARE_FLOOR_BITS + 6];
+    const caps = [1_000, 50_000, 2 ** 20];
+    for (const cap of caps) {
+      for (const nDest of [1, 3, 8]) {
+        const dests = Array.from({ length: nDest }, () => minerDest());
+        const batch = [];
+        let nonce = 1n;
+        dests.forEach((dest, i) => {
+          const copies = 1 + (i % 3);
+          for (let c = 0; c < copies; c += 1) {
+            batch.push({
+              dest,
+              nonce,
+              lz: widths[i % widths.length],
+              shareBits: i === 0 ? 30 : widths[i % widths.length],
+            });
+            nonce += 1n;
+          }
+        });
+        const orders = [batch, [...batch].reverse()];
+        if (batch.length > 1) orders.push([...batch.slice(1), batch[0]]);
+        const first = retainedUnitsByCommit(orders[0], cap);
+        let sum = 0;
+        for (const u of first.values()) sum += u;
+        const raw = batch.reduce((n, row) => n + unitsForShare(shareWorkBits(row)), 0);
+        assert.equal(sum, raw > cap ? cap : raw, `sum cap ${cap} dests ${nDest}`);
+        for (const dest of dests) {
+          const hex = noteCommitOfShare({ dest }).toString('hex');
+          assert.ok((first.get(hex) || 0) > 0, `zero credit cap ${cap} dests ${nDest}`);
+        }
+        for (const order of orders.slice(1)) {
+          const other = retainedUnitsByCommit(order, cap);
+          assert.equal(other.size, first.size);
+          for (const [hex, u] of first) assert.equal(other.get(hex), u);
+        }
+      }
+    }
+    const high = minerDest();
+    const low = minerDest();
+    const parent = encodeHeader({
+      prevBlockHash: Buffer.alloc(32),
+      merkleRoot: Buffer.alloc(32),
+      continuityRoot: Buffer.alloc(32),
+      timestamp: 1_700_000_111_000,
+      bits: GENESIS_BITS_PACKED,
+    });
+    const heavy = { dest: high, nonce: 4n, lz: 8, shareBits: 30 };
+    const floor = { dest: low, nonce: 5n, lz: SHARE_FLOOR_BITS, shareBits: SHARE_FLOOR_BITS };
+    for (const row of [heavy, floor]) {
+      assert.equal(rememberLiveSharePow(parent, row.nonce, {
+        noteCommit: noteCommitOfShare(row),
+        shareBits: row.shareBits,
+        lz: row.lz,
+      }), true);
+    }
+    const proved = verifyShareBatch({ parentHeader: parent, shares: [heavy, floor], skipPow: true });
+    assert.equal(proved.ok, true, proved.reason);
+    assert.equal(proved.units, MAX_HASH_UNITS_PER_BLOCK);
+    const want = retainedUnitsByCommit([heavy, floor]);
+    assert.equal(proved.aLeaves.length, 2);
+    for (const leaf of proved.aLeaves) {
+      assert.equal(leaf.count, want.get(leaf.noteCommit.toString('hex')));
+      assert.ok(leaf.count > 0);
+    }
+    const picked = selectBlockShares(
+      [0, 1, 2, 3, 4].flatMap((i) => {
+        const dest = minerDest();
+        return [0, 1, 2, 3].map((k) => ({
+          dest,
+          nonce: BigInt(i * 10 + k + 1),
+          shareBits: SHARE_FLOOR_BITS + (i % 3),
+        }));
+      }),
+      3,
+    );
+    assert.equal(picked.length, 3);
+    assert.equal(new Set(picked.map((row) => row.dest)).size, 3);
+    clearLiveSharePow();
   });
 
   it('rejects credited bits the dest-bound hash does not meet', () => {

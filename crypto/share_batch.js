@@ -125,53 +125,111 @@ export function shareInclusionTie(share) {
 }
 
 /**
- * Keep at most `cap` shares. Over cap, higher hash-share weight stays.
- * Ties break on shareInclusionTie, then the kept set is canonical-sorted.
- * A block that already exceeds the cap still fails verify with share_cap.
+ * Keep at most `cap` shares. Under that count, every share stays. The unit
+ * cap scales credit later; it does not drop a share. Over the count, each
+ * noteCommit takes a turn in sorted order so one dest is not cleared to
+ * make room for another. A block over the count still fails verify with
+ * share_cap when the caller does not select first.
  */
 export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK) {
   const list = sharesAtProvenBits(unpackShareBatch(shares));
   const limit = Math.max(0, Math.floor(Number(cap) || 0));
-  const weight = (s) => unitsForShare(shareWorkBits(s));
-  let totalUnits = 0;
-  for (const s of list) totalUnits += weight(s);
-  // Floor shares: unit cap == count cap. Mixed vardiff may fill the unit cap first.
-  if (list.length <= limit && totalUnits <= MAX_HASH_UNITS_PER_BLOCK) return sortShares(list);
-  const ranked = [...list].sort((a, b) => {
-    const byWeight = shareInclusionWeight(b) - shareInclusionWeight(a);
-    if (byWeight !== 0) return byWeight;
-    return shareInclusionTie(a).compare(shareInclusionTie(b));
-  });
+  if (list.length <= limit) return sortShares(list);
+  const groups = new Map();
+  for (const s of sortShares(list)) {
+    const nc = noteCommitOfShare(s);
+    const hex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
+    const key = hex || `:${String(s.nonce)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  const keys = [...groups.keys()].sort();
   const kept = [];
-  let used = 0;
-  for (const s of ranked) {
-    if (kept.length >= limit) break;
-    const u = weight(s);
-    if (used + u > MAX_HASH_UNITS_PER_BLOCK) continue;
-    kept.push(s);
-    used += u;
+  let progressed = true;
+  while (kept.length < limit && progressed) {
+    progressed = false;
+    for (const key of keys) {
+      const bucket = groups.get(key);
+      if (!bucket.length) continue;
+      kept.push(bucket.shift());
+      progressed = true;
+      if (kept.length >= limit) break;
+    }
   }
   return sortShares(kept);
 }
 
-export function collateShareUnits(shares = []) {
+/**
+ * Credited units per noteCommit. Under the cap, every proven unit is kept.
+ * Over the cap, each noteCommit keeps floor(submitted * cap / total).
+ * Leftover units fill a zero credit first, then walk sorted noteCommit.
+ * A dest that still has zero takes one unit from a dest that has more than
+ * one, so accepted work is not dropped while another dest is paid.
+ */
+export function retainedUnitsByCommit(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
   const by = new Map();
   for (const s of unpackShareBatch(shares)) {
+    const nc = noteCommitOfShare(s);
+    if (!nc || nc.length !== 32 || nc.equals(Buffer.alloc(32))) continue;
+    const hex = Buffer.from(nc).toString('hex');
+    const units = BigInt(unitsForShare(shareWorkBits(s)));
+    by.set(hex, (by.get(hex) || 0n) + units);
+  }
+  const entries = [...by.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const total = entries.reduce((n, [, u]) => n + u, 0n);
+  const limit = BigInt(Math.max(0, Math.floor(Number(cap) || 0)));
+  const out = new Map();
+  if (total === 0n || limit <= 0n) return out;
+  if (total <= limit) {
+    for (const [hex, u] of entries) out.set(hex, Number(u));
+    return out;
+  }
+  const floors = entries.map(([hex, u]) => ({ hex, base: (u * limit) / total }));
+  let leftover = limit - floors.reduce((n, row) => n + row.base, 0n);
+  for (const row of floors) {
+    if (leftover <= 0n) break;
+    if (row.base === 0n) {
+      row.base += 1n;
+      leftover -= 1n;
+    }
+  }
+  let i = 0;
+  while (leftover > 0n && floors.length) {
+    floors[i % floors.length].base += 1n;
+    leftover -= 1n;
+    i += 1;
+  }
+  for (const row of floors) {
+    if (row.base > 0n) continue;
+    const donor = floors.find((other) => other.base > 1n);
+    if (!donor) break;
+    donor.base -= 1n;
+    row.base += 1n;
+  }
+  for (const row of floors) if (row.base > 0n) out.set(row.hex, Number(row.base));
+  return out;
+}
+
+export function collateShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
+  const retained = retainedUnitsByCommit(shares, cap);
+  const by = new Map();
+  const seen = new Set();
+  for (const s of unpackShareBatch(shares)) {
     const dest = destOfShare(s);
-    if (!dest) continue;
-    by.set(dest, (by.get(dest) || 0) + unitsForShare(shareWorkBits(s)));
+    const nc = noteCommitOfShare(s);
+    if (!dest || !nc || nc.length !== 32) continue;
+    const hex = Buffer.from(nc).toString('hex');
+    if (seen.has(hex)) continue;
+    seen.add(hex);
+    const units = retained.get(hex) || 0;
+    if (units > 0) by.set(dest, (by.get(dest) || 0) + units);
   }
   return by;
 }
 
-export function aLeavesFromShares(shares = []) {
-  const by = new Map();
-  for (const s of unpackShareBatch(shares)) {
-    const nc = noteCommitOfShare(s);
-    const key = nc.toString('hex');
-    by.set(key, (by.get(key) || 0) + unitsForShare(shareWorkBits(s)));
-  }
-  return [...by.entries()]
+export function aLeavesFromShares(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
+  const retained = retainedUnitsByCommit(shares, cap);
+  return [...retained.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([hex, count]) => ({ noteCommit: Buffer.from(hex, 'hex'), count }));
 }
@@ -371,11 +429,16 @@ export function verifyShareBatch({
       bound: !!(nc && nc.length === 32),
     });
   }
-  const units = proven.reduce((n, s) => n + s.units, 0);
+  const bound = proven.filter((s) => s.bound);
+  const unbound = proven.filter((s) => !s.bound).reduce((n, s) => n + s.units, 0);
+  const room = Math.max(0, MAX_HASH_UNITS_PER_BLOCK - unbound);
+  const retained = retainedUnitsByCommit(bound, room);
+  let boundUnits = 0;
+  for (const u of retained.values()) boundUnits += u;
+  const units = boundUnits + unbound;
   if (units > MAX_HASH_UNITS_PER_BLOCK) {
     return { ok: false, reason: 'hash_units' };
   }
-  const bound = proven.filter((s) => s.bound);
   return {
     ok: true,
     shares: proven,

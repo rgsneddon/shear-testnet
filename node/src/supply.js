@@ -18,9 +18,9 @@ import { isDestAddress } from '../../crypto/address.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import {
   unitsForShare,
-  shareWorkBits,
   destOfShare,
   noteCommitOfShare,
+  retainedUnitsByCommit,
 } from '../../crypto/share_batch.js';
 import { canonicalCarry } from './chain.js';
 
@@ -87,7 +87,7 @@ function shareCounts(share) {
 
 /**
  * Consensus hash bonus for one block, without opening a note.
- * A non-empty batch is unitsForShare(share bits) per share. Missing bits are the floor.
+ * A non-empty batch credits retainedUnitsByCommit. Under the unit cap that is 2^bits per share. Over the cap it is the pro-rata share of the cap. Missing bits are the floor.
  * An empty batch with one hash output is the finder floor.
  * An empty batch with no hash output is zero.
  */
@@ -120,7 +120,7 @@ function permittedHash(block) {
     seen.add(nonce);
   }
   let units = 0n;
-  for (const share of shares) units += BigInt(unitsForShare(shareWorkBits(share)));
+  for (const u of retainedUnitsByCommit(shares).values()) units += BigInt(u);
   if (units > BigInt(MAX_HASH_UNITS_PER_BLOCK)) {
     return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }

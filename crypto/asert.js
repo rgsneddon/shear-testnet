@@ -125,7 +125,13 @@ export const SHARE_FLOOR_BITS = 8;
  * HASH_BONUS_NANOS stays 1. This is headroom, not a bonus-unit retune.
  */
 export const MAX_SHARES_PER_BLOCK = 65536;
-export const MAX_HASH_UNITS_PER_BLOCK = MAX_SHARES_PER_BLOCK * (2 ** SHARE_FLOOR_BITS);
+/**
+ * Work-unit cap. 2^28 covers a 500 kH/s launch surge at T = 90s (about 4.5e7
+ * hashes) with headroom. 2^26 is the floor of that headroom. Do not restore
+ * 65536 * 2^SHARE_FLOOR_BITS (2^24): that bound sits inside the launch band
+ * once units are 2^bits. The share count above stays the body DoS bound.
+ */
+export const MAX_HASH_UNITS_PER_BLOCK = 2 ** 28;
 /** Median of last 11 header timestamps. Future skew 2 h (Bitcoin-class).
  *  15 min left only ~3 s of legal header time when the tip sat near the
  *  cap; ASERT then saw a 3 s interval and hardened +2 every round. */
@@ -272,6 +278,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `RX_KEY=${RX_KEY}`,
     `SHARE_FLOOR_BITS=${SHARE_FLOOR_BITS}`,
     `MAX_SHARES_PER_BLOCK=${MAX_SHARES_PER_BLOCK}`,
+    `MAX_HASH_UNITS=${MAX_HASH_UNITS_PER_BLOCK}`,
     `SPEND_SIG=${SPEND_SIG}`,
     `DEST_HRP_SSA_ONLY=1`,
     `SPEND_SIG_ONLY=1`,

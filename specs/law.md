@@ -23,7 +23,7 @@ Network: `shear-testnet-v11` (privacy-class). Frozen `shear-testnet-v9`, `shear-
 | `MAX_BITS` | `256` |
 | `SHARE_FLOOR_BITS` | `8` |
 | `MAX_SHARES_PER_BLOCK` | `65536` (v11). Direct from the closed v10 cap of `8192`. The 32768 rung is cancelled. Do not soft-merge 65536 onto v10. |
-| `MAX_HASH_UNITS_PER_BLOCK` | `MAX_SHARES_PER_BLOCK * 2^SHARE_FLOOR_BITS` = `16777216`. `HASH_BONUS_NANOS` stays `1`. |
+| `MAX_HASH_UNITS_PER_BLOCK` | `2^28` (`268435456`). Not `65536 * 2^SHARE_FLOOR_BITS`. `HASH_BONUS_NANOS` stays `1`. |
 | Interest | 400-day APR: `floor(staked * bps / 10000)`. Not × 400/365. |
 | Oracle | unweighted mean of the frozen 14-bank basket. Default **264** bps until first sealed observe. |
 | Late 99 days | idle, can vote, no interest |

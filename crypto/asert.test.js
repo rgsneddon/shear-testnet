@@ -434,7 +434,10 @@ describe('hash-tx consensus law', () => {
     assert.equal(SHARE_FLOOR_BITS, 8);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.equal(MAX_SHARES_PER_BLOCK, 65536);
-    assert.equal(MAX_HASH_UNITS_PER_BLOCK, 65536 * (2 ** SHARE_FLOOR_BITS));
+    assert.equal(MAX_HASH_UNITS_PER_BLOCK, 2 ** 28);
+    assert.ok(MAX_HASH_UNITS_PER_BLOCK >= 2 ** 26);
+    assert.notEqual(MAX_HASH_UNITS_PER_BLOCK, 65536 * (2 ** SHARE_FLOOR_BITS));
+    assert.match(fp, /MAX_HASH_UNITS=268435456/);
     const over = Array.from({ length: MAX_SHARES_PER_BLOCK + 1 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
     assert.equal(verifyShareBatch({ shares: over, skipPow: true }).reason, 'share_cap');
     const aboveV10 = Array.from({ length: 8193 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
