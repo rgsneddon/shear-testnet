@@ -55,22 +55,25 @@ describe('expectedCoinbasePays potNanos', () => {
 });
 
 describe('noteCommitSpendableNanos', () => {
-  it('recovers mature compact coinbase when explorer to is empty', () => {
+  it('counts an opened note and ignores a painted nanos row', () => {
     const alice = newIdentity();
     const dest = spendDestOf(alice.spendPub);
-    const want = noteCommitOfDest20(hash20FromAddress(dest));
-    const blocks = [{
-      height: 2,
-      txs: [{
-        coinbase: true,
-        vout: [{ kind: 'pot', noteCommit: want, nanos: 2 * NANOS_PER_SHE }],
-      }],
-    }];
+    const amount = 2 * NANOS_PER_SHE;
+    const note = sealCoinbaseNote(amount, { dest20: hash20FromAddress(dest), kind: 'pot' });
+    const blocks = [{ height: 2, txs: [{ coinbase: true, vout: [note] }] }];
     const immature = noteCommitSpendableNanos(blocks, dest, 2);
     assert.equal(immature, 0);
     const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
     const got = noteCommitSpendableNanos(blocks, dest, matureTip);
-    assert.equal(got, 2 * NANOS_PER_SHE);
+    assert.equal(got, amount);
+    const painted = [{
+      height: 2,
+      txs: [{
+        coinbase: true,
+        vout: [{ kind: 'pot', noteCommit: note.noteCommit, nanos: amount }],
+      }],
+    }];
+    assert.equal(noteCommitSpendableNanos(painted, dest, matureTip), 0);
     const other = spendDestOf(newIdentity().spendPub);
     assert.equal(noteCommitSpendableNanos(blocks, other, matureTip), 0);
   });

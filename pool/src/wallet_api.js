@@ -14,7 +14,7 @@ import {
   potSubsidyAt,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -205,18 +205,17 @@ export function reconstructOwner(store, address) {
   const rec = rowsToHistory(rows, dests, tipH);
   const mempool = store?.mempool || [];
   const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-  // #37 ran the honest vout walk only when matureSpendableNanos was ≤ 0.
-  // Hash dust or one painted 0.99 made that sum positive and skipped the walk,
-  // so N × pot-after-fee stayed. Once sealed coinbase notes exist they replace
-  // explorer coinbase credit. A zero note scan still keeps unsealed history.
+  // One ledger. Opened notes only. A plaintext row cannot raise the figure.
+  // Portal principal is subtracted once from that sum.
   let nanos = 0;
   for (const d of dests) {
-    const destRows = typeof store?.historyFor === 'function' ? store.historyFor(d) : rows;
     const noteNanos = noteCommitSpendableNanos(store.blocks || [], d, tipH, {
       hashBonusNanos: bonus,
-      coinbaseOnly: true,
+      coinbaseOnly: false,
     });
-    nanos += reconcileSpendable(destRows, d, tipH, noteNanos);
+    const locked = portalPrincipalNanos(store?.reserveVault, d);
+    const opened = reconcileSpendable([], d, tipH, noteNanos);
+    nanos += opened > locked ? opened - locked : 0;
     nanos -= mempoolDebitNanos(mempool, d);
   }
   if (nanos < 0) nanos = 0;

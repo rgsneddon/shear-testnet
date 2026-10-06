@@ -443,26 +443,15 @@ export function createStore(dir, {
   bootVault();
   writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
 
-  function destSpendableNanos(addr, tipH, chain = blocks, rows = explorer) {
-    // A positive explorer sum must not skip the sealed coinbase notes.
-    // Math.max(explorer, notes) kept N × 0.99 once any painted row matched `to`.
-    const owned = rows === explorer ? historyFor(addr) : rows;
+  function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
+    void _rows;
     const noteNanos = noteCommitSpendableNanos(chain, addr, tipH, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
-      coinbaseOnly: true,
+      coinbaseOnly: false,
     });
-    const gross = reconcileSpendable(owned, addr, tipH, noteNanos);
+    const gross = reconcileSpendable([], addr, tipH, noteNanos);
     const locked = portalPrincipalNanos(reserveVault, addr);
-    // A sealed lock row that still carries from+nanos is already inside gross.
-    // Public explorer rows hide both, so only the vault principal remains.
-    let already = 0;
-    for (const r of owned || []) {
-      if (String(r?.kind || '') !== 'lock') continue;
-      if (String(r?.from || '') !== String(addr || '')) continue;
-      already += Math.max(0, Math.floor(Number(r.nanos) || 0));
-    }
-    const extra = locked > already ? locked - already : 0;
-    return gross > extra ? gross - extra : 0;
+    return gross > locked ? gross - locked : 0;
   }
 
   const vortice = createVorticeCatalog(dir);

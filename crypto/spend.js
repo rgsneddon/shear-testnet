@@ -384,25 +384,16 @@ export function fundedDebit(tx) {
 const COINBASE_EXPLORER_KINDS = new Set(['coinbase', 'hash', 'pot', 'pool-fee', 'pool-withdraw']);
 
 /**
- * Coinbase credit follows sealed notes once any exist. A positive explorer
- * sum must not keep a prop (N × pot-after-fee) that the notes do not contain.
- * An empty note walk is fail-closed for pot, coinbase, and pool-fee. Hash
- * rows and real non-coinbase payments stay. Match-miss must not fall open
- * onto explorer pot.
+ * One ledger. Spendable is the opened-note sum the caller already walked.
+ * Plaintext explorer rows cannot raise it.
  */
 export function reconcileSpendable(rows, address, tipHeight, noteNanos, need = SPENDABLE_CONFIRMATIONS) {
-  const all = matureSpendableNanos(rows, address, tipHeight, need);
-  const note = Math.max(0, Math.floor(Number(noteNanos) || 0));
-  const coinbaseRows = (rows || []).filter((r) => COINBASE_EXPLORER_KINDS.has(String(r?.kind || '')));
-  const cb = matureSpendableNanos(coinbaseRows, address, tipHeight, need);
-  if (!(note > 0)) {
-    const kept = (rows || []).filter((r) => {
-      const kind = String(r?.kind || '');
-      return kind !== 'pot' && kind !== 'pool-fee' && kind !== 'pool-withdraw';
-    });
-    return matureSpendableNanos(kept, address, tipHeight, need);
-  }
-  return (all - cb) + note;
+  void rows;
+  void address;
+  void tipHeight;
+  void need;
+  // One ledger. A plaintext explorer row cannot raise spendable above opened notes.
+  return Math.max(0, Math.floor(Number(noteNanos) || 0));
 }
 
 /** Unclamped. Credits mature incoming only; debits every sealed outgoing. */
