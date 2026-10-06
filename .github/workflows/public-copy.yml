@@ -1,0 +1,11 @@
+name: public-copy
+on:
+  push:
+  pull_request:
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docs and public copy follow the live pins
+        run: node --test site/tests/test_docs.js tests/test_public_copy.js

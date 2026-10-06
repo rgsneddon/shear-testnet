@@ -20,6 +20,7 @@ Ran with `node --test` from `C:\Users\rgsne\shear-testnet` on 2026-10-06. τ = 2
 - `crypto/native/admit` `cargo test --lib exact_length_and_canonical_scalars` passed. Amounts 0, 1, 2_000_000_000, and `u64::MAX`. Trailing byte, short proof, non-canonical `z`, and non-canonical `e0` are rejected. DST `shear-bpplus-v2` and the Fiat-Shamir challenge strings are unchanged. The fingerprint label is already `RANGE=packed-bit`.
 - `node/tests/test_range_canonical_v12.js` — describe `v12 range proofs are exact length and canonical` passed (2) at `2c4dbd1` against the rebuilt `shearadmit.node`. Amounts 0, 1, 2_000_000_000, and 100_000_000_000. `verifyRange` and `admitMempool` reject a trailing byte, a short proof, and `s+L` on `z` and on `e0`. `verifyBlock` returns `range_proof` for a trailing byte. `crypto/note.test.js` and `crypto/dummy.test.js` passed on that addon.
 - `pool/tests/test_asert_ease_stall_v12.js` — `a stall with no new tx and no new miners eases within the spec window` passed. Gaps `8·T`, `8·T+60s`, `16·T`, and `32·T`. At `8·T` the job stays on the full packed target. Past that window the same jobId takes `quote.eased`, `bitsAcceptAsert` accepts it, and ease stays ≤ 2 bits. Miner count stays 0 and the mempool stays empty. A one-interval child quote has `easeBits` 0. `pool/tests/test_tip_stall.js` passed (3) after this. `node/tests/test_asert_v12.js` passed (5).
+- `tests/test_public_copy.js`, `site/tests/test_docs.js`, and `tests/test_admit_v1_grep.js` passed (10). The pin test reads `kWalletVersion` `0.72`, `PRODUCT_VERSION` `19.0`, `SHEARK_MINER_VERSION` `2.9`, and `MAGIC_TESTNET` `shear-testnet-v12`, and the fingerprint is `ASERT_STEP=aserti3-2d` with `ASERT_TAU_MS=7200000`. Product version and the wallet pin are absent from the fingerprint. `.github/workflows/public-copy.yml` runs the docs and public-copy tests. `admit-v1-grep.yml` runs only the ADMIT v1 grep.
 
 `verifyOneForkBlock` passes `genesisMs` from the accepted prefix (`genesisHeaderMs`). The epoch-floor check is inside `test_asert_v12.js` (`pot follows the genesis header across append and ingest, including the epoch floor`). A fresh node syncing a multi-epoch chain is not a separate test yet.
 
@@ -36,11 +37,11 @@ T23 live pool.js: read-only SSH to shear-pool (`77.42.91.84`) on 2026-10-06. Che
 
 `crypto/reserve_hold_spendable.test.js` — `sealing a 1 SHE lock drops spender spendable by 1 SHE and not by 2` did not reach the spendable assertion. `submitHeader` returned `reason: evm` because Reserve deploy reverts on this book. Principal-once is proven in `test_one_ledger_v12.js` without the EVM.
 
-Wallet Dart files on this branch (`wallet/lib/main.dart`, `shear_ledger.dart`, `shear_native_prove.dart`, `shear_note.dart`, `wallet/test/shear_wallet_test.dart`) are unfinished selector work. They are not Continuum 0.72 done. T18 frame-timing is not started.
+Wallet display pin is `kWalletVersion` / `kCliVersion` `0.72` and pubspec `0.72.0+97`. Window titles on Android, Windows, and Linux say `Shear 0.72`. `kBookMagic` is still `shear-testnet-v11`. Apex, README, pool, and explorer strings still say Continuum 0.71 / Sentinel v18 / ShearK 2.8 / v11, and the older public-copy checks still require those sentences. That site pass is OPEN. Wallet send/receive and T18 frame-timing are not started.
 
 ## Next step
 
-T21: a public block mint total, no per-note public value, commitment-sum supply, and an explorer alert. T22 waits to land with the T20 empty-batch fix. Reserve allowlist is still v11 bytecode.
+Retarget `node/tests/test_job_median_bits.js` and `node/tests/test_parent_interval_bits.js` onto genesis-anchored aserti3-2d, then the T20 empty-batch pot rule and T21 commitment-sum supply. Reserve allowlist is still v11 bytecode. Site strings are still the 0.71 pin set.
 
 ## Hosts and services
 

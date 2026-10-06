@@ -6,13 +6,19 @@ import { fileURLToPath } from 'node:url';
 import {
   ASERT_CURVE_WINDOW,
   ASERT_EASE_MAX,
+  ASERT_EMERGENCY_EASE_MAX,
+  ASERT_EMERGENCY_GAP_FACTOR,
   ASERT_HALFLIFE_MS,
   ASERT_HARDEN_MAX,
+  ASERT_STEP_ID,
+  ASERT_TAU_MS,
   BLOCK_SUBSIDY_NANOS,
   GENESIS_BITS,
   HASH_BONUS_NANOS,
   MAGIC_TESTNET,
   MAGIC_TESTNET_V10,
+  MAGIC_TESTNET_V11,
+  MAGIC_TESTNET_V12,
   PRODUCT_VERSION,
   SHEARK_MINER_VERSION,
   consensusFingerprint,
@@ -260,14 +266,14 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /\*\*Working branch:\*\* `feat\/admit-v2`/);
     assert.match(ops, /git checkout main/);
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
-    assert.match(ops, /Pins are \*\*0\.71\*\*/);
-    assert.match(ops, /ShearK \*\*2\.8\*\*/);
-    assert.match(ops, /Shear Sentinel \*\*v18\*\*/);
+    assert.match(ops, /Pins are \*\*0\.72\*\*/);
+    assert.match(ops, /ShearK \*\*2\.9\*\*/);
+    assert.match(ops, /Shear Sentinel \*\*v19\*\*/);
     assert.doesNotMatch(ops, /Shear Sentinel \*\*v16\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.41\*\*/);
-    assert.match(ops, /Pin \*\*0\.71\*\*/);
+    assert.match(ops, /Pin \*\*0\.72\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
@@ -318,28 +324,43 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(md, /WINDOWS_HANDOFF\.md/);
   });
 
-  it('wallet pin 0.71 leaves Sentinel 18.0, ShearK 2.8, magic, reward, and fingerprint', () => {
-    assert.equal(PRODUCT_VERSION, '18.0');
-    assert.equal(SHEARK_MINER_VERSION, '2.8');
+  it('v12 pins are node 19.0, ShearK, shear-testnet-v12, and wallet 0.72', () => {
+    const walletPin = read('wallet/lib/main.dart').match(/const kWalletVersion = '(\d+\.\d+)'/);
+    assert.ok(walletPin, 'kWalletVersion');
+    assert.equal(walletPin[1], '0.72');
+    assert.match(read('wallet/lib/shear_cli.dart'), /const kCliVersion = '0\.72'/);
+    assert.match(read('wallet/pubspec.yaml'), /version: 0\.72\.0\+\d+/);
+    assert.equal(PRODUCT_VERSION, '19.0');
+    assert.equal(SHEARK_MINER_VERSION, '2.9');
     assert.equal(MAGIC_TESTNET_V10, 'shear-testnet-v10');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET_V11, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
+    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(GENESIS_BITS, 17);
-    assert.equal(ASERT_HALFLIFE_MS, 1_440_000);
+    assert.equal(ASERT_HALFLIFE_MS, 7_200_000);
+    assert.equal(ASERT_TAU_MS, ASERT_HALFLIFE_MS);
+    assert.equal(ASERT_STEP_ID, 'aserti3-2d');
     assert.equal(ASERT_CURVE_WINDOW, 11);
-    assert.equal(ASERT_HARDEN_MAX, 1);
-    assert.equal(ASERT_EASE_MAX, 1);
+    assert.equal(ASERT_HARDEN_MAX, 0);
+    assert.equal(ASERT_EASE_MAX, 0);
+    assert.equal(ASERT_EMERGENCY_EASE_MAX, 2);
+    assert.equal(ASERT_EMERGENCY_GAP_FACTOR, 8);
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS, 1);
     const fp = consensusFingerprint();
-    assert.equal(fp.includes('0.71'), false);
-    assert.equal(fp.includes('0.70'), false);
-    assert.equal(fp.includes('18.0'), false);
-    assert.equal(fp.includes('17.0'), false);
-    assert.match(fp, /NETWORK=shear-testnet-v11/);
-    assert.match(fp, /ASERT_TAU_MS=1440000/);
+    for (const banned of ['0.72', '0.71', '0.70', '19.0', '18.0', '17.0', PRODUCT_VERSION, SHEARK_MINER_VERSION]) {
+      assert.equal(fp.includes(banned), false, banned);
+    }
+    assert.match(fp, new RegExp(`NETWORK=${MAGIC_TESTNET}`));
+    assert.match(fp, new RegExp(`ASERT_TAU_MS=${ASERT_TAU_MS}`));
+    assert.match(fp, new RegExp(`ASERT_STEP=${ASERT_STEP_ID}`));
+    assert.doesNotMatch(fp, /ASERT_STEP=median11/);
+    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v11/);
+    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v10/);
     assert.match(fp, /:4:17:/);
-    assert.match(fp, /ASERT_STEP=median11/);
-    assert.doesNotMatch(fp, /shear-testnet-v10/);
+    assert.match(fp, /RANGE=packed-bit/);
+    assert.match(fp, /ASERT_EMERGENCY=2/);
+    assert.match(fp, /ASERT_EMERGENCY_GAP=8/);
     assert.match(fp, /DINS=pot\+hash/);
   });
 });
