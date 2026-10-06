@@ -22,6 +22,7 @@ Ran with `node --test` from `C:\Users\rgsne\shear-testnet` on 2026-10-06. τ = 2
 - `pool/tests/test_asert_ease_stall_v12.js` — `a stall with no new tx and no new miners eases within the spec window` passed. Gaps `8·T`, `8·T+60s`, `16·T`, and `32·T`. At `8·T` the job stays on the full packed target. Past that window the same jobId takes `quote.eased`, `bitsAcceptAsert` accepts it, and ease stays ≤ 2 bits. Miner count stays 0 and the mempool stays empty. A one-interval child quote has `easeBits` 0. `pool/tests/test_tip_stall.js` passed (3) after this. `node/tests/test_asert_v12.js` passed (5).
 - `tests/test_public_copy.js`, `site/tests/test_docs.js`, and `tests/test_admit_v1_grep.js` passed (10). The pin test reads `kWalletVersion` `0.72`, `PRODUCT_VERSION` `19.0`, `SHEARK_MINER_VERSION` `2.9`, and `MAGIC_TESTNET` `shear-testnet-v12`, and the fingerprint is `ASERT_STEP=aserti3-2d` with `ASERT_TAU_MS=7200000`. Product version and the wallet pin are absent from the fingerprint. `.github/workflows/public-copy.yml` runs the docs and public-copy tests. `admit-v1-grep.yml` runs only the ADMIT v1 grep.
 - `node/tests/test_job_median_bits.js` — `follows genesis-anchored aserti3-2d, not a caller target` passed. Genesis job bits stay `1114112` when the caller passes `1`. A 2s gap seals `1114913`. Six more 2s gaps seal `1120520`. A stamp 20·T later issues packed `1104136`, not the eased floor `1017397` and not the caller override. `node/tests/test_parent_interval_bits.js` — `retarget and verifyBlock use the anchored quote, not a caller target` passed. A zero gap and a stamp 50ms before the parent quote the anchored formula. `verifyBlock` rejects a same-timestamp child as `timestamp`, accepts a 1ms child and a 45s child at `quote.packed`, and returns `bits` when those headers carry the genesis seed or each other's target.
+- `pool/tests/test_empty_round_pot_v12.js` — `holds the pot at the fee dest for any connected-miner count` passed. Counts 0, 1, 4, and 17 with no proven shares. The coinbase dest is the fee dest. None of the connected miners are paid, including the first map entry. A mixed round pays the two miners with proven counts 1 and 9, and not the two idle miners inserted around them. The `hasherPay` count-1 fallback is gone.
 
 `verifyOneForkBlock` passes `genesisMs` from the accepted prefix (`genesisHeaderMs`). The epoch-floor check is inside `test_asert_v12.js` (`pot follows the genesis header across append and ingest, including the epoch floor`). A fresh node syncing a multi-epoch chain is not a separate test yet.
 
@@ -31,7 +32,7 @@ Ran with `node --test` from `C:\Users\rgsne\shear-testnet` on 2026-10-06. τ = 2
 
 ## Open
 
-T21 supply: circulating is the sum of public block mints minus burns, next to expected emission and the difference, plus a UTXO commitment audit. The explorer re-runs both on its own chain and alerts. Per-note coinbase values stay public `valueProof.v` until that milestone. T20 empty-batch pot fallback lands with T22 surge hardening. Wallet shewall v3 and the surge orphan bound. Payouts: work-based PROP, pot hold rule, 50/50 levy on chain, real hash bonus, restamp credit. T1–T18. Wallet Continuum 0.72. Reserve magic (v12 is not in the pinned Reserve bytecode: `bootReserveEvm` throws `reserve_deploy: revert`). ShearK 2.9 packs, sites, tags, soak. The fleet addon is not rebuilt. No soak clock.
+T21 supply: circulating is the sum of public block mints minus burns, next to expected emission and the difference, plus a UTXO commitment audit. The explorer re-runs both on its own chain and alerts. Per-note coinbase values stay public `valueProof.v` until that milestone. T20 empty-round pot hold is in `potRoundShares`. T22 surge hardening is still open and should land beside the remaining payout work. Wallet shewall v3 and the surge orphan bound. Payouts: work-based PROP, pot hold rule, 50/50 levy on chain, real hash bonus, restamp credit. T1–T18. Wallet Continuum 0.72. Reserve magic (v12 is not in the pinned Reserve bytecode: `bootReserveEvm` throws `reserve_deploy: revert`). ShearK 2.9 packs, sites, tags, soak. The fleet addon is not rebuilt. No soak clock.
 
 T23 live pool.js: read-only SSH to shear-pool (`77.42.91.84`) on 2026-10-06. Checkout is detached `250bded`. `git status` shows `pool/src/pool.js` modified. After stripping CR, that file is byte-identical to `origin/main` `pool/src/pool.js`. The dirty flag is the main content plus CRLF sitting on the old v11 commit. No host-only logic. Not copied onto this branch: copying it would drop the branch's stamp-aware `parentIntervalBits`. No service was restarted.
 
@@ -41,7 +42,7 @@ Wallet display pin is `kWalletVersion` / `kCliVersion` `0.72` and pubspec `0.72.
 
 ## Next step
 
-T20 empty-batch pot rule, then T21 commitment-sum supply. Reserve allowlist is still v11 bytecode. Site strings are still the 0.71 pin set.
+T21 commitment-sum supply. The empty-round pot now holds at the fee dest. Work-based PROP, the 50/50 levy, and the real hash bonus are still open. Reserve allowlist is still v11 bytecode. Site strings are still the 0.71 pin set.
 
 ## Hosts and services
 

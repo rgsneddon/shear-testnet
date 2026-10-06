@@ -300,6 +300,25 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
 }
 
 /**
+ * Pot for the job being issued. A proven lag-1 batch wins. Otherwise the
+ * live round's proven counts are split. An empty proven round holds the
+ * whole pot at the fee dest. It never pays the first miner in the map.
+ */
+export function potRoundShares({ lag1Shares = [], potRows = [], feeTo, wantPot } = {}) {
+  if (Array.isArray(lag1Shares) && lag1Shares.length) {
+    return potSharesFromBatch(lag1Shares, feeTo, wantPot);
+  }
+  const rows = (Array.isArray(potRows) ? potRows : [])
+    .filter((s) => Math.floor(Number(s.count) || 0) > 0);
+  if (rows.length) return splitPot(rows, feeTo, wantPot, feeTo);
+  const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
+  if (pot > 0 && isDestAddress(feeTo)) {
+    return [{ address: feeTo, nanos: pot, kind: 'pot' }];
+  }
+  return [];
+}
+
+/**
  * Job identity for lag-1 trust: every field except nonce. Shares found on
  * the sealed parent (any nonce) are the same job; a restamp is not.
  * Exact-header compare kept only the finder's winning nonce, so every other
@@ -2152,21 +2171,17 @@ export function createPool({
       return null;
     }
     const feeTo = ident.feeDest;
-    const potShares = lag1Shares.length
-      ? potSharesFromBatch(lag1Shares, feeTo, wantPot)
-      : splitPot(
-        potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
-        feeTo,
-        wantPot,
-        feeTo,
-      );
+    const held = !lag1Shares.length && !potRows.length;
+    const potShares = potRoundShares({ lag1Shares, potRows, feeTo, wantPot });
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
-    // still issues; shareBatch credit stays hasher dests only. The finder
-    // address is the hasher, never the pool fee note.
-    const payout = hasherPay
-      || potShares.find((s) => s.kind === 'pot')?.address
-      || poolPay
-      || poolFeeDest();
+    // still issues; shareBatch credit stays hasher dests only. An empty proven
+    // round holds the pot at the fee dest, never the first miner in the map.
+    const payout = held
+      ? feeTo
+      : (hasherPay
+        || potShares.find((s) => s.kind === 'pot')?.address
+        || poolPay
+        || poolFeeDest());
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     // Block target is consensus next-work for this parent (retarget → nextBits).
