@@ -213,6 +213,107 @@ describe('v12 hash-bonus owed ledger', () => {
     assert.equal(paid.overflow, 0n);
   });
 
+  it('pays parent sub-dust from spare budget and keeps payable rows in the inline window', () => {
+    const floors = [2n, 7n, 256n];
+    const counts = [1, 3, 17];
+    for (const dust of floors) {
+      for (const n of counts) {
+        const span = dust - 1n;
+        const lows = [];
+        for (let i = 0; i < n; i += 1) {
+          const nanos = 1n + BigInt(i % Number(span));
+          lows.push(destRow(i, nanos, i + 1));
+        }
+        const input = sumNanos(lows);
+        for (const owedIn of [lows, [...lows].reverse()]) {
+          const none = settleHashOwed({ owedIn, budget: 0n, dust, height: 3 });
+          assert.equal(none.minted, 0n);
+          assert.equal(allOwed(none).length, n);
+          conserved(none, input);
+          const paidAll = settleHashOwed({ owedIn, budget: input, dust, height: 4 });
+          assert.equal(paidAll.minted, input);
+          assert.equal(allOwed(paidAll).length, 0);
+          for (const row of lows) {
+            const got = paidAll.pay.find((p) => p.noteCommit.equals(row.noteCommit));
+            assert.equal(got.nanos, row.nanos);
+          }
+          conserved(paidAll, input);
+        }
+        const payable = destRow(100, dust, 80);
+        const mixed = settleHashOwed({
+          owedIn: [payable, ...lows],
+          budget: dust,
+          dust,
+          maxEntries: 1,
+          height: 5,
+        });
+        assert.equal(mixed.pay.length, 1);
+        assert.equal(mixed.pay[0].noteCommit.equals(payable.noteCommit), true);
+        assert.equal(mixed.pay[0].nanos, dust);
+        assert.equal(sumNanos(allOwed(mixed)), input);
+        assert.equal(mixed.owed.length, 1);
+        assert.equal(mixed.owedRest.length, n - 1);
+        assert.ok(mixed.owed[0].nanos < dust);
+        conserved(mixed, input + dust);
+      }
+    }
+
+    const dust = 256n;
+    const oldLow = destRow(1, dust - 1n, 1);
+    const youngPay = destRow(2, dust, 9);
+    const packed = settleHashOwed({
+      owedIn: [youngPay, oldLow],
+      budget: 0n,
+      dust,
+      maxEntries: 1,
+      height: 10,
+    });
+    assert.equal(packed.owed.length, 1);
+    assert.equal(packed.owed[0].noteCommit.equals(youngPay.noteCommit), true);
+    assert.equal(packed.owedRest[0].noteCommit.equals(oldLow.noteCommit), true);
+    assert.equal(packed.minted, 0n);
+    conserved(packed, (dust - 1n) + dust);
+
+    for (const bite of [1n, 2n, dust - 1n]) {
+      const row = destRow(7, dust - 1n, 3);
+      const one = settleHashOwed({ owedIn: [row], budget: bite, dust, height: 11 });
+      assert.equal(one.minted, bite);
+      assert.equal(one.pay[0].noteCommit.equals(row.noteCommit), true);
+      assert.equal(sumNanos(allOwed(one)), (dust - 1n) - bite);
+      conserved(one, dust - 1n);
+    }
+
+    const older = destRow(3, 40n, 1);
+    const younger = destRow(4, 50n, 2);
+    const slice = settleHashOwed({
+      owedIn: [younger, older],
+      budget: 30n,
+      dust,
+      height: 12,
+    });
+    assert.equal(slice.pay.length, 1);
+    assert.equal(slice.pay[0].noteCommit.equals(older.noteCommit), true);
+    assert.equal(slice.pay[0].nanos, 30n);
+    assert.equal(allOwed(slice).find((row) => row.noteCommit.equals(older.noteCommit)).nanos, 10n);
+    assert.equal(allOwed(slice).find((row) => row.noteCommit.equals(younger.noteCommit)).nanos, 50n);
+    conserved(slice, 90n);
+
+    const parent = destRow(8, 10n, 1);
+    const fresh = destRow(8, 10n, 20);
+    const same = settleHashOwed({
+      owedIn: [parent],
+      fresh: [fresh],
+      budget: 1000n,
+      dust,
+      height: 20,
+    });
+    assert.equal(same.minted, 10n);
+    assert.equal(allOwed(same).length, 1);
+    assert.equal(allOwed(same)[0].nanos, 10n);
+    assert.equal(allOwed(same)[0].noteCommit.equals(parent.noteCommit), true);
+    conserved(same, 20n);
+  });
+
   it('keeps rows past the inline cap on their noteCommit and a later block pays them', () => {
     const dust = 10n;
     const rows = [];

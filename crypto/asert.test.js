@@ -478,6 +478,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_OWED=noteCommit-carry/);
     assert.match(fp, /HASH_OWED_DUST=256/);
     assert.match(fp, /HASH_OWED_CARRY=v1/);
+    assert.match(fp, /HASH_OWED_SUBDUST=spare-fifo-v1/);
     assert.match(fp, /HASH_OWED_OVERFLOW=forbidden/);
     assert.match(fp, /HASH_OWED_INLINE=65536/);
     assert.doesNotMatch(fp, /HASH_OWED_MAX=/);

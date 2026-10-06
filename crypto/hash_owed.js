@@ -5,11 +5,13 @@
  * Parent owed rows are paid first (oldest height, then noteCommit bytes).
  * This block's new credits then share whatever budget remains, pro-rata,
  * the same walk as retainedUnitsByCommit. Anything still unpaid stays on
- * that noteCommit, including a balance below the dust floor.
+ * that noteCommit. After every row at or above the dust floor is handled,
+ * spare budget pays parent rows still below the floor, oldest first, even
+ * for one nano (HASH_OWED_SUBDUST_V1). A fresh credit below the floor is
+ * not spent from that spare in the same settle.
  * HASH_OWED_CARRY_V1 has no public dust pot and no unattributed overflow.
- * HASH_OWED_MAX_ENTRIES only packs the oldest rows into hashOwed. The
- * rest are hashOwedRest on the same map. A later block pays the whole
- * map, oldest sinceHeight then noteCommit. Pot splits and the pool fee
+ * The inline pack takes payable rows first, then sub-dust rows. The tail
+ * is hashOwedRest on the same map. Pot splits and the pool fee
  * do not read this ledger. Amounts stay BigInt so a value above 2^53
  * is not rounded.
  */
@@ -506,10 +508,30 @@ export function settleHashOwed({
     }
   }
   left -= spentFresh;
+
+  // HASH_OWED_SUBDUST_V1. Spare after the floor walk pays parent rows that
+  // are still below the floor. A partial below the floor is a real pay.
+  // Fresh credits below the floor stay in `still` and are not in this walk.
+  carriedLow.sort(cmpOwed);
+  const unpaidLow = [];
+  for (const row of carriedLow) {
+    if (left <= 0n) {
+      unpaidLow.push(row);
+      continue;
+    }
+    if (left >= row.nanos) {
+      addPay(paid, row, row.nanos);
+      left -= row.nanos;
+      continue;
+    }
+    addPay(paid, row, left);
+    unpaidLow.push(copyRow(row, row.nanos - left, row.sinceHeight));
+    left = 0n;
+  }
   void left;
 
   const merged = new Map();
-  for (const row of carriedLow) still.push(row);
+  for (const row of unpaidLow) still.push(row);
   for (const row of still) {
     const hex = row.noteCommit.toString('hex');
     const prev = merged.get(hex);
@@ -526,9 +548,18 @@ export function settleHashOwed({
   for (const row of merged.values()) {
     if (row.nanos > 0n) owedAll.push(row);
   }
-  owedAll.sort(cmpOwed);
-  const owed = owedAll.slice(0, cap);
-  const owedRest = owedAll.slice(cap);
+  // Payable rows take the inline window. Sub-dust does not sit ahead of them.
+  const payable = [];
+  const low = [];
+  for (const row of owedAll) {
+    if (row.nanos >= floor) payable.push(row);
+    else low.push(row);
+  }
+  payable.sort(cmpOwed);
+  low.sort(cmpOwed);
+  const packed = payable.concat(low);
+  const owed = packed.slice(0, cap);
+  const owedRest = packed.slice(cap);
 
   const pay = [...paid.values()].sort((a, b) => cmpNoteCommit(a.noteCommit, b.noteCommit));
   const minted = pay.reduce((n, row) => n + row.nanos, 0n);

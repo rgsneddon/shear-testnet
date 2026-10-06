@@ -328,6 +328,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'HASH_OWED=noteCommit-carry',
     `HASH_OWED_DUST=${hashOwedDustNanos()}`,
     'HASH_OWED_CARRY=v1',
+    'HASH_OWED_SUBDUST=spare-fifo-v1',
     'HASH_OWED_OVERFLOW=forbidden',
     `HASH_OWED_INLINE=${HASH_OWED_MAX_ENTRIES}`,
     'DANDELIONPP=1',
