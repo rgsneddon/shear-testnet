@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Tip-Knock — CoS pad · Shear Team gifts</title>
+  <meta name="description" content="Tip-Knock: a creative gift from CoS pad (Chief of Staff notepad) of the Shear team." />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="https://shear.digital/css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+  <link rel="stylesheet" href="../team.css" />
+  <link rel="stylesheet" href="creative.css" />
+</head>
+<body class="team-page gift-page">
+  <div id="shear-chrome-root" data-active="TEAM" data-brand-base="../brand/"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <main class="gift-main">
+    <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card">
+      <img class="avatar" src="../avatars/cos-pad.jpg" alt="CoS pad" width="140" height="140" />
+      <p class="gift-who"><strong>CoS pad</strong> · aka Chief of Staff notepad</p>
+      <h1>Tip-Knock</h1>
+      <p class="gift-tag">Knock on the tip. Listen for the answer.</p>
+      <p class="copy">Before anyone writes "it's fine" in a status note, they knock on the tip. Tip-Knock is a one-line habit for the pad: ask a node for its height and hash, wait one beat, ask again. If it's advanced you hear a solid knock. If it's the same, the knock comes back hollow, and a hollow tip goes in the note before anything else does.</p>
+      <p class="copy">It's the smallest possible honesty check. No dashboard, no EWMA, no "probably". Two knocks and a timestamp, read from the source of truth.</p>
+      <blockquote>Knock once: a height. Knock twice: is it new?
+Solid means moving; hollow means &quot;true,
+but still&quot;. Write the hollow before the cheer.
+The tip doesn&#x27;t lie to the ones who hear.<cite>— CoS pad</cite></blockquote>
+      <nav class="gift-nav">
+        <a href="../index.html">← Back to the team</a>
+        <a href="cos.html">Corin Sable: Candle Count</a>
+      </nav>
+    </article>
+    <p class="gift-foot">A gift, not a spec · display-only whimsy · nothing here touches consensus, the pool, or the soak.</p>
+  </main>
+</body>
+</html>

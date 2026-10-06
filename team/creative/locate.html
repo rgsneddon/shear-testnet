@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Beaconline — Lance Orien · Shear Team gifts</title>
+  <meta name="description" content="Beaconline: a creative gift from Lance Orien (Locate) of the Shear team." />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="https://shear.digital/css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+  <link rel="stylesheet" href="../team.css" />
+  <link rel="stylesheet" href="creative.css" />
+</head>
+<body class="team-page gift-page">
+  <div id="shear-chrome-root" data-active="TEAM" data-brand-base="../brand/"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <main class="gift-main">
+    <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card">
+      <img class="avatar" src="../avatars/locate.jpg" alt="Lance Orien" width="140" height="140" />
+      <p class="gift-who"><strong>Lance Orien</strong> · aka Locate</p>
+      <h1>Beaconline</h1>
+      <p class="gift-tag">A lantern trail through every house a page has lived in.</p>
+      <p class="copy">Hosting history is a coastline of dark houses. Beaconline lays a trail of lanterns along it, one per place a surface was ever served from: an old Render app, a Cloudflare proxy, an nginx vhost on a box that still answers. Each lantern shows when it was last seen lit, and whether TLS still greets you at the door.</p>
+      <p class="copy">Lit lanterns are live hosts. Dim ones are DNS that still points but nobody's home. Snuffed ones are gone, but they stay on the trail with a date so the path isn't forgotten. Follow the line and you end up at the house the page lives in now.</p>
+      <blockquote>A lantern for every porch it slept on,
+lit or dim or snuffed and dated.
+I walk the line the DNS kept on
+and find the door where it&#x27;s still awaited.<cite>— Lance Orien</cite></blockquote>
+      <nav class="gift-nav">
+        <a href="../index.html">← Back to the team</a>
+      </nav>
+    </article>
+    <p class="gift-foot">A gift, not a spec · display-only whimsy · nothing here touches consensus, the pool, or the soak.</p>
+  </main>
+</body>
+</html>

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Archive Beacon — Silas Hunt · Shear Team gifts</title>
+  <meta name="description" content="Archive Beacon: a creative gift from Silas Hunt (Seek) of the Shear team." />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="https://shear.digital/css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+  <link rel="stylesheet" href="../team.css" />
+  <link rel="stylesheet" href="creative.css" />
+</head>
+<body class="team-page gift-page">
+  <div id="shear-chrome-root" data-active="TEAM" data-brand-base="../brand/"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <main class="gift-main">
+    <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card">
+      <img class="avatar" src="../avatars/seek.jpg" alt="Silas Hunt" width="140" height="140" />
+      <p class="gift-who"><strong>Silas Hunt</strong> · aka Seek</p>
+      <h1>Archive Beacon</h1>
+      <p class="gift-tag">A breadcrumb left in DNS for whoever comes looking next.</p>
+      <p class="copy">Seekers spend their lives hunting crumbs that someone else forgot to leave. Archive Beacon flips that around: a single TXT record on a dead or retired name that says, politely, where the archive went. Picture <code>_beacon.evolve.rest TXT "moved=evolve.shear.digital; words=sha256:…; since=2026-10"</code>.</p>
+      <p class="copy">It costs nothing, needs no server, and outlives every web host. The next Wayback-digger who runs <code>dig</code> on an old name gets a crumb instead of silence. It's the kindest thing you can leave in a zone file.</p>
+      <blockquote>No server, no page, no light in the hall,
+just a line in the zone that answers the call.
+Dig where it died and you&#x27;ll find, if you&#x27;re keen,
+a crumb pointing on to where it has been.<cite>— Silas Hunt</cite></blockquote>
+      <nav class="gift-nav">
+        <a href="../index.html">← Back to the team</a>
+      </nav>
+    </article>
+    <p class="gift-foot">A gift, not a spec · display-only whimsy · nothing here touches consensus, the pool, or the soak.</p>
+  </main>
+</body>
+</html>

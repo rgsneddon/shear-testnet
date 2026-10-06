@@ -54,6 +54,15 @@
   <link rel="stylesheet" href="shared/shear-chrome.css" />
   <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
   <link rel="stylesheet" href="team.css" />
+  <style>
+    /* creative gift links (soft add 2026-10-05) */
+    .avatar-link { display: inline-block; line-height: 0; border-radius: 22px; transition: transform .18s ease, box-shadow .18s ease; }
+    .avatar-link:hover, .avatar-link:focus-visible { transform: translateY(-2px); box-shadow: 0 0 0 2px rgba(94,234,212,.55), 0 10px 26px rgba(94,234,212,.18); outline: none; }
+    .card-cos .avatar-link { border-radius: 26px; }
+    .assist-grid .avatar-link { border-radius: 20px; }
+    .name-link { color: inherit; text-decoration: none; }
+    .name-link:hover, .name-link:focus-visible { color: var(--accent); }
+  </style>
 </head>
 <body class="team-page">
   <div id="shear-chrome-root" data-active="TEAM" data-brand-base="brand/"></div>
@@ -99,9 +108,9 @@
     <section class="tier tier-cos" aria-label="Chief of Staff">
       <h2 class="tier-label">Chief of Staff</h2>
       <article class="card card-cos">
-        <img class="avatar" src="avatars/cos.jpg" alt="Corin Sable" width="160" height="160" />
+        <a class="avatar-link" href="creative/cos.html" title="Corin Sable's gift"><img class="avatar" src="avatars/cos.jpg" alt="Corin Sable" width="160" height="160" /></a>
         <div class="card-body">
-          <h3>Corin Sable</h3>
+          <h3><a class="name-link" href="creative/cos.html">Corin Sable</a></h3>
           <p class="aka-line">aka <strong>CoS 29/9/26</strong></p>
           <p class="role">Chief of Staff</p>
           <p class="bio">Coordinates Shear specialist lanes, synthesizes ranked findings, and keeps Build aligned with Russell’s locks — defensive only, credits frugal, one conductor.</p>
@@ -136,9 +145,9 @@
       <div class="assist-grid">
 
         <article class="card">
-          <img class="avatar" src="avatars/protocol-assailant.jpg" alt="Pax Revere" width="120" height="120" />
+          <a class="avatar-link" href="creative/protocol-assailant.html" title="Pax Revere's gift"><img class="avatar" src="avatars/protocol-assailant.jpg" alt="Pax Revere" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Pax Revere</h3>
+            <h3><a class="name-link" href="creative/protocol-assailant.html">Pax Revere</a></h3>
             <p class="aka-line">aka <strong>Protocol Assailant</strong></p>
             <p class="role">Coding Assistant · Protocol</p>
             <p class="bio">Defensive adversarial review of P2P, consensus, ASERT/retarget, and network surfaces — formula correctness without exploit paint.</p>
@@ -146,9 +155,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/attack-cartographer.jpg" alt="Atlas Quill" width="120" height="120" />
+          <a class="avatar-link" href="creative/attack-cartographer.html" title="Atlas Quill's gift"><img class="avatar" src="avatars/attack-cartographer.jpg" alt="Atlas Quill" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Atlas Quill</h3>
+            <h3><a class="name-link" href="creative/attack-cartographer.html">Atlas Quill</a></h3>
             <p class="aka-line">aka <strong>Attack Cartographer</strong></p>
             <p class="role">Coding Assistant · Threat map</p>
             <p class="bio">Maps known attack classes across privacy coins, RandomX/CPU-PoW, and confidential amount systems onto Shear’s threat surface.</p>
@@ -156,9 +165,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/mining-economics.jpg" alt="Mira Caldera" width="120" height="120" />
+          <a class="avatar-link" href="creative/mining-economics.html" title="Mira Caldera's gift"><img class="avatar" src="avatars/mining-economics.jpg" alt="Mira Caldera" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Mira Caldera</h3>
+            <h3><a class="name-link" href="creative/mining-economics.html">Mira Caldera</a></h3>
             <p class="aka-line">aka <strong>Mining Economics</strong></p>
             <p class="role">Coding Assistant · Economics</p>
             <p class="bio">Reward fairness, hashrate concentration, fee/emission incentives, and block-time economics — sealed-header truth over invent paint.</p>
@@ -166,9 +175,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/codebase-auditor.jpg" alt="Cedric Lin" width="120" height="120" />
+          <a class="avatar-link" href="creative/codebase-auditor.html" title="Cedric Lin's gift"><img class="avatar" src="avatars/codebase-auditor.jpg" alt="Cedric Lin" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Cedric Lin</h3>
+            <h3><a class="name-link" href="creative/codebase-auditor.html">Cedric Lin</a></h3>
             <p class="aka-line">aka <strong>Codebase Auditor</strong></p>
             <p class="role">Coding Assistant · Codebase</p>
             <p class="bio">Tip-repo review of shear-pool-node and siblings — pins, diffs, and whether live deploy matches local law.</p>
@@ -176,9 +185,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/wallet-hardening.jpg" alt="Wren Lockhart" width="120" height="120" />
+          <a class="avatar-link" href="creative/wallet-hardening.html" title="Wren Lockhart's gift"><img class="avatar" src="avatars/wallet-hardening.jpg" alt="Wren Lockhart" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Wren Lockhart</h3>
+            <h3><a class="name-link" href="creative/wallet-hardening.html">Wren Lockhart</a></h3>
             <p class="aka-line">aka <strong>Wallet Hardening</strong></p>
             <p class="role">Coding Assistant · Wallet</p>
             <p class="bio">Continuum / ShearK threat model: keys, seeds, RPC/API surfaces, confidential amounts — wallets must show correct sums.</p>
@@ -186,9 +195,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/pool-op-wallet.jpg" alt="Owen Ledger" width="120" height="120" />
+          <a class="avatar-link" href="creative/pool-op-wallet.html" title="Owen Ledger's gift"><img class="avatar" src="avatars/pool-op-wallet.jpg" alt="Owen Ledger" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Owen Ledger</h3>
+            <h3><a class="name-link" href="creative/pool-op-wallet.html">Owen Ledger</a></h3>
             <p class="aka-line">aka <strong>Pool Op Wallet</strong></p>
             <p class="role">Coding Assistant · Pool custody</p>
             <p class="bio">Operator wallet and custody surfaces on pool admin — fee dest, payouts, and admin auth boundaries.</p>
@@ -196,9 +205,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/pool-share-auditor.jpg" alt="Shannon Pike" width="120" height="120" />
+          <a class="avatar-link" href="creative/pool-share-auditor.html" title="Shannon Pike's gift"><img class="avatar" src="avatars/pool-share-auditor.jpg" alt="Shannon Pike" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Shannon Pike</h3>
+            <h3><a class="name-link" href="creative/pool-share-auditor.html">Shannon Pike</a></h3>
             <p class="aka-line">aka <strong>Pool Share Auditor</strong></p>
             <p class="role">Coding Assistant · Shares</p>
             <p class="bio">Stratum fairness, share validation, difficulty accounting — pool vardiff never substitutes for consensus bits.</p>
@@ -206,9 +215,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/vault-security.jpg" alt="Vesper Kane" width="120" height="120" />
+          <a class="avatar-link" href="creative/vault-security.html" title="Vesper Kane's gift"><img class="avatar" src="avatars/vault-security.jpg" alt="Vesper Kane" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Vesper Kane</h3>
+            <h3><a class="name-link" href="creative/vault-security.html">Vesper Kane</a></h3>
             <p class="aka-line">aka <strong>Vault Security</strong></p>
             <p class="role">Coding Assistant · Vault</p>
             <p class="bio">Shear Vault / Reserve structure — custody, interest/oracle, lock/vote/withdraw paths, invent-must-not-return.</p>
@@ -216,9 +225,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/privacy-auditor.jpg" alt="Priya Shade" width="120" height="120" />
+          <a class="avatar-link" href="creative/privacy-auditor.html" title="Priya Shade's gift"><img class="avatar" src="avatars/privacy-auditor.jpg" alt="Priya Shade" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Priya Shade</h3>
+            <h3><a class="name-link" href="creative/privacy-auditor.html">Priya Shade</a></h3>
             <p class="aka-line">aka <strong>Privacy Auditor</strong></p>
             <p class="role">Coding Assistant · Privacy</p>
             <p class="bio">Holes and gaps in Shear privacy mechanisms and public claims — ADMITv2 amounts, unlinkability, and HUD honesty.</p>
@@ -226,9 +235,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/website-analyst.jpg" alt="Willow Finch" width="120" height="120" />
+          <a class="avatar-link" href="creative/website-analyst.html" title="Willow Finch's gift"><img class="avatar" src="avatars/website-analyst.jpg" alt="Willow Finch" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Willow Finch</h3>
+            <h3><a class="name-link" href="creative/website-analyst.html">Willow Finch</a></h3>
             <p class="aka-line">aka <strong>Website Analyst</strong></p>
             <p class="role">Coding Assistant · Site</p>
             <p class="bio">shear.digital suite continuity — links, UX, saas-dark lock, and no suite redesign without Russell GO.</p>
@@ -236,9 +245,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/fux.jpg" alt="Felix Uxbridge" width="120" height="120" />
+          <a class="avatar-link" href="creative/fux.html" title="Felix Uxbridge's gift"><img class="avatar" src="avatars/fux.jpg" alt="Felix Uxbridge" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Felix Uxbridge</h3>
+            <h3><a class="name-link" href="creative/fux.html">Felix Uxbridge</a></h3>
             <p class="aka-line">aka <strong>FUX</strong></p>
             <p class="role">Coding Assistant · Functionality / UX</p>
             <p class="bio">End-to-end product usability from miner → pool → wallet → suite — Flow watches and invent/UI-clamp rejects.</p>
@@ -255,9 +264,9 @@
       <div class="assist-grid">
 
         <article class="card">
-          <img class="avatar" src="avatars/locate.jpg" alt="Lance Orien" width="120" height="120" />
+          <a class="avatar-link" href="creative/locate.html" title="Lance Orien's gift"><img class="avatar" src="avatars/locate.jpg" alt="Lance Orien" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Lance Orien</h3>
+            <h3><a class="name-link" href="creative/locate.html">Lance Orien</a></h3>
             <p class="aka-line">aka <strong>Locate</strong></p>
             <p class="role">Search Assistant · Hosting</p>
             <p class="bio">Tracks where Shear/Evolve surfaces were hosted — DNS, nginx vhosts, Cloudflare, Render, and remnant infra footprints.</p>
@@ -265,9 +274,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/find.jpg" alt="Finn Decker" width="120" height="120" />
+          <a class="avatar-link" href="creative/find.html" title="Finn Decker's gift"><img class="avatar" src="avatars/find.jpg" alt="Finn Decker" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Finn Decker</h3>
+            <h3><a class="name-link" href="creative/find.html">Finn Decker</a></h3>
             <p class="aka-line">aka <strong>Find</strong></p>
             <p class="role">Search Assistant · Copy</p>
             <p class="bio">Recovers surviving marketing and docs copy — Bitcointalk ANNs, READMEs, restore-privacy suite fragments.</p>
@@ -275,9 +284,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/identify.jpg" alt="Ida Vesper" width="120" height="120" />
+          <a class="avatar-link" href="creative/identify.html" title="Ida Vesper's gift"><img class="avatar" src="avatars/identify.jpg" alt="Ida Vesper" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Ida Vesper</h3>
+            <h3><a class="name-link" href="creative/identify.html">Ida Vesper</a></h3>
             <p class="aka-line">aka <strong>Identify</strong></p>
             <p class="role">Search Assistant · Structure</p>
             <p class="bio">Identifies true page structure/IA and rebuilds faithful static explainers from recovered Evolve remnants.</p>
@@ -285,9 +294,9 @@
         </article>
 
         <article class="card">
-          <img class="avatar" src="avatars/seek.jpg" alt="Silas Hunt" width="120" height="120" />
+          <a class="avatar-link" href="creative/seek.html" title="Silas Hunt's gift"><img class="avatar" src="avatars/seek.jpg" alt="Silas Hunt" width="120" height="120" /></a>
           <div class="card-body">
-            <h3>Silas Hunt</h3>
+            <h3><a class="name-link" href="creative/seek.html">Silas Hunt</a></h3>
             <p class="aka-line">aka <strong>Seek</strong></p>
             <p class="role">Search Assistant · Archives</p>
             <p class="bio">Hunts archives, Waybacks, DNS history, and Russell repos for any remnant of evolve.rest and kin.</p>

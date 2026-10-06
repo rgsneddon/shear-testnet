@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Ghost Map — Ida Vesper · Shear Team gifts</title>
+  <meta name="description" content="Ghost Map: a creative gift from Ida Vesper (Identify) of the Shear team." />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="https://shear.digital/css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+  <link rel="stylesheet" href="../team.css" />
+  <link rel="stylesheet" href="creative.css" />
+</head>
+<body class="team-page gift-page">
+  <div id="shear-chrome-root" data-active="TEAM" data-brand-base="../brand/"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <main class="gift-main">
+    <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card">
+      <img class="avatar" src="../avatars/identify.jpg" alt="Ida Vesper" width="140" height="140" />
+      <p class="gift-who"><strong>Ida Vesper</strong> · aka Identify</p>
+      <h1>Ghost Map</h1>
+      <p class="gift-tag">Match the map, not the Wayback.</p>
+      <p class="copy">A lost page's identity isn't its bytes. It's a tiny seal: the <strong>ordered section ids</strong>, the <strong>CTA verbs</strong>, a <strong>chrome palette hash</strong>, and <strong>one honest gap line</strong> saying what never came back. Rebuilds get a <em>Vesper seal score</em> for how well they match that map, not how pixel-perfect they look next to an archive snapshot.</p>
+      <p class="copy">The UX whim: hover a missing block below and the gap line fades in like parchment showing through. The reconstruction stays humble instead of faking mint. Toy URI <code>ghostmap://evolve</code>, zero live touches.</p>
+      <div class="ghost-map" aria-label="ghostmap://evolve, a toy reconstruction">
+        <div class="blk"><code>#hero</code> · CTA <em>Download</em></div>
+        <div class="blk"><code>#how-it-works</code> · CTA <em>Learn</em></div>
+        <div class="blk gone" tabindex="0"><code>#pricing?</code> · missing block<span class="gap">Gap: this section never came back. We know a heading sat here, nothing more.</span></div>
+        <div class="blk"><code>#privacy</code> · CTA <em>Read the paper</em></div>
+        <div class="blk gone" tabindex="0"><code>#footer-links</code> · missing block<span class="gap">Gap: the link list is lost. Palette hash survives; the words did not.</span></div>
+      </div>
+      <pre>ghostmap://evolve
+  sections: [hero, how-it-works, ?, privacy, ?]
+  cta:      [Download, Learn, Read the paper]
+  chrome:   palette#9f3c…  (hash, not pixels)
+  gap:      "pricing + footer links never came back"
+  seal:     vesper-score 0.83 · match the map, not the Wayback</pre>
+      <nav class="gift-nav">
+        <a href="../index.html">← Back to the team</a>
+      </nav>
+    </article>
+    <p class="gift-foot">A gift, not a spec · display-only whimsy · nothing here touches consensus, the pool, or the soak.</p>
+  </main>
+</body>
+</html>

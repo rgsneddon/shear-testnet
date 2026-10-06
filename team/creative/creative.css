@@ -1,0 +1,39 @@
+.gift-main { max-width: 760px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+.gift-card { background: linear-gradient(180deg, var(--panel), var(--panel-2)); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.6rem 1.5rem 1.4rem; text-align: center; }
+.gift-card .avatar { width: 140px; height: 140px; border-radius: 26px; display: block; margin: 0 auto 1rem; }
+.gift-who { margin: 0; color: var(--muted); font-size: .9rem; letter-spacing: .04em; }
+.gift-who strong { color: var(--text); }
+.gift-card h1 { margin: .35rem 0 .2rem; font-size: clamp(1.8rem, 4vw, 2.5rem); letter-spacing: -0.02em;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.gift-tag { margin: 0 0 1.2rem; color: var(--accent); font-weight: 600; font-size: .92rem; }
+.gift-card p.copy { text-align: left; color: var(--text); opacity: .92; line-height: 1.62; margin: 0 0 .9rem; }
+.gift-card code, .gift-card pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; }
+.gift-card p code { background: rgba(94,234,212,.08); border: 1px solid rgba(94,234,212,.18); border-radius: 6px; padding: .05em .35em; }
+.gift-card pre { text-align: left; background: rgba(0,0,0,.35); border: 1px solid var(--line); border-radius: 12px; padding: .9rem 1rem; overflow-x: auto; color: var(--muted); margin: 0 0 1rem; }
+.gift-card blockquote { text-align: left; margin: 1.2rem 0 .6rem; padding: 1rem 1.2rem; border-left: 3px solid var(--accent-2);
+  background: rgba(139,92,246,.07); border-radius: 0 14px 14px 0; font-style: italic; line-height: 1.7; color: var(--text); white-space: pre-line; }
+.gift-card blockquote cite { display: block; margin-top: .5rem; font-style: normal; font-size: .85rem; color: var(--muted); }
+.gift-nav { display: flex; flex-wrap: wrap; gap: .6rem 1.2rem; justify-content: center; margin: 1.4rem 0 0; font-size: .92rem; }
+.gift-nav a { color: var(--text); text-decoration: none; border-bottom: 1px solid rgba(94,234,212,.45); }
+.gift-nav a:hover { color: var(--accent); }
+.gift-foot { text-align: center; color: var(--muted); font-size: .82rem; margin-top: 1.4rem; }
+/* Ghost Map toy */
+.ghost-map { display: grid; gap: .45rem; margin: .4rem 0 1rem; text-align: left; }
+.ghost-map .blk { border: 1px solid var(--line); border-radius: 10px; padding: .55rem .8rem; background: rgba(255,255,255,.03); font-size: .9rem; position: relative; }
+.ghost-map .blk.gone { border-style: dashed; color: var(--muted); background: repeating-linear-gradient(135deg, rgba(255,255,255,.02) 0 8px, transparent 8px 16px); cursor: help; }
+.ghost-map .gap { display: block; opacity: 0; transition: opacity .9s ease; color: #e9d8a6; font-style: italic; font-size: .85rem; margin-top: .25rem; }
+.ghost-map .blk.gone:hover .gap, .ghost-map .blk.gone:focus .gap { opacity: .9; }
+/* Candle Count toy */
+.candles { display: grid; grid-template-columns: repeat(12, 1fr); gap: 5px; margin: .4rem 0 1.1rem; }
+.candles span { height: 26px; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, #f8e7b5, #d9c08a); position: relative; opacity: .5; }
+.candles span.lit { opacity: 1; box-shadow: 0 -6px 14px rgba(255,190,90,.45); }
+.candles span.lit::before { content: ''; position: absolute; left: 50%; top: -9px; width: 6px; height: 9px; transform: translateX(-50%);
+  background: radial-gradient(circle at 50% 70%, #fff6c8, #ffb347 60%, transparent 70%); border-radius: 50% 50% 40% 40%; animation: flick 1.6s infinite alternate; }
+@keyframes flick { from { transform: translateX(-50%) scaleY(1); } to { transform: translateX(-50%) scaleY(1.25); } }
+.unfinished { display: inline-block; border: 1px dashed #e9d8a6; color: #e9d8a6; border-radius: 999px; padding: .1rem .7rem; font-size: .8rem; }
+@media (max-width: 640px) { .candles { grid-template-columns: repeat(8, 1fr); } }
+/* keep gift cards legible if the suite chrome flips to light theme (panels stay dark) */
+.gift-card, .gift-card p.copy, .gift-card blockquote, .gift-who strong, .gift-nav a { color: #e8eefc; }
+.gift-who, .gift-card blockquote cite, .gift-card pre { color: #9aa8c7; }
+.gift-card .ghost-map .blk { color: #e8eefc; } .gift-card .ghost-map .blk.gone { color: #9aa8c7; }
