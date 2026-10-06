@@ -243,7 +243,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     const child = mine(childTpl);
     const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'hash_bonus');
+    assert.equal(got.reason, 'hash_owed');
   });
 
   it('samplesPruned does not skip shareBatch until 1000 confirms vs tip', async () => {

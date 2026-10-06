@@ -133,6 +133,19 @@ export const MAX_SHARES_PER_BLOCK = 65536;
  */
 export const MAX_HASH_UNITS_PER_BLOCK = 2 ** 28;
 /**
+ * Owed hash-bonus rows on one coinbase. One block's distinct noteCommits fit.
+ * Rows past this cap sum into a public overflow total. They are not burned
+ * and they are not paid to a different dest.
+ */
+export const HASH_OWED_MAX_ENTRIES = MAX_SHARES_PER_BLOCK;
+/**
+ * Shortfalls smaller than one floor share fold into the public dust pot.
+ * The floor share is 2^SHARE_FLOOR_BITS units at the live hash-bonus unit.
+ */
+export function hashOwedDustNanos(unit = HASH_BONUS_NANOS) {
+  return (1n << BigInt(SHARE_FLOOR_BITS)) * BigInt(hashBonusUnitNanos(unit));
+}
+/**
  * Highest share width a validator may credit. A lone share above this is
  * retained at the unit cap, so its expected units per hash would fall below 1.
  * B_MAX = min(52, floor(log2(MAX_HASH_UNITS_PER_BLOCK))). At 2^28 that is 28.
@@ -312,6 +325,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'SHARE_BIND=rx+noteCommit',
     'SHARE_CREDIT=nonce-hi-le',
     `SHARE_BMAX=${shareCreditMaxBits()}`,
+    'HASH_OWED=noteCommit-carry',
+    `HASH_OWED_DUST=${hashOwedDustNanos()}`,
+    `HASH_OWED_MAX=${HASH_OWED_MAX_ENTRIES}`,
     'DANDELIONPP=1',
     'VIEW_TAG=1',
     'KDF=argon2id-shewall',

@@ -25,6 +25,11 @@ import {
   creditBitsForShare,
 } from '../../crypto/share_batch.js';
 import { canonicalCarry } from './chain.js';
+import {
+  freshCreditsFromShares,
+  sameHashLedger,
+  settleHashOwed,
+} from '../../crypto/hash_owed.js';
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const ZERO_32 = Buffer.alloc(32);
@@ -196,6 +201,9 @@ export function auditCirculatingSupply(blocks, {
     measuredLevyNanos: 0,
     schedulePotNanos: 0,
     carryNanos: 0,
+    hashOwedNanos: 0,
+    hashDustNanos: 0,
+    hashOwedOverflowNanos: 0,
     extraMintNanos: safeNum(extra) || 0,
     burnedNanos: safeNum(burned) || 0,
     differenceNanos: 0,
@@ -221,7 +229,11 @@ export function auditCirculatingSupply(blocks, {
   let mintedLevy = 0n;
   let schedulePot = 0n;
   let permittedHashAll = 0n;
+  let acceptedHash = 0n;
   let carry = 0n;
+  let owedState = [];
+  let dustState = 0n;
+  let overflowState = 0n;
   let ok = true;
   let reason = '';
 
@@ -262,8 +274,56 @@ export function auditCirculatingSupply(blocks, {
       carry = carryOut;
       continue;
     }
-    permittedHashAll += hash.nanos;
-    const publicTotal = potMinted + hash.nanos + levy;
+    const shares = (() => {
+      try {
+        return unpackShareBatch(Array.isArray(block?.shareBatch) ? block.shareBatch : []);
+      } catch {
+        return null;
+      }
+    })();
+    if (shares == null) {
+      ok = false;
+      reason = reason || 'hash_bonus';
+      carry = carryOut;
+      continue;
+    }
+    const fresh = shares.length ? freshCreditsFromShares(shares) : [];
+    const blockHeight = Number(block?.height);
+    const settled = settleHashOwed({
+      owedIn: owedState,
+      dustIn: dustState,
+      overflowIn: overflowState,
+      fresh,
+      height: Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : 0,
+    });
+    if (!settled.ok || !sameHashLedger(cb, settled)) {
+      ok = false;
+      reason = reason || 'hash_owed';
+      carry = carryOut;
+      continue;
+    }
+    const parentIdle = owedState.length === 0 && dustState === 0n && overflowState === 0n;
+    const idle = parentIdle && fresh.length === 0 && settled.pay.length === 0
+      && settled.owed.length === 0 && settled.dust === 0n && settled.overflow === 0n;
+    let mintedHashHere = settled.minted;
+    const hashVouts = (cb?.vout || []).filter((o) => String(o?.kind || '') === 'hash');
+    if (!shares.length && idle) {
+      if (hashVouts.length === 0) mintedHashHere = 0n;
+      else if (hashVouts.length === 1) mintedHashHere = BigInt(unitsForShare()) * BigInt(hashBonusUnitNanos(HASH_BONUS_NANOS));
+      else {
+        ok = false;
+        reason = reason || 'hash_bonus';
+        carry = carryOut;
+        continue;
+      }
+    }
+    const freshNanos = fresh.reduce((n, row) => n + row.nanos, 0n);
+    acceptedHash += freshNanos + (mintedHashHere - settled.minted);
+    permittedHashAll += mintedHashHere;
+    owedState = settled.owed;
+    dustState = settled.dust;
+    overflowState = settled.overflow;
+    const publicTotal = potMinted + mintedHashHere + levy;
     if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess)) {
       ok = false;
       reason = reason || 'supply';
@@ -271,9 +331,15 @@ export function auditCirculatingSupply(blocks, {
       continue;
     }
     mintedPot += potMinted;
-    mintedHash += hash.nanos;
+    mintedHash += mintedHashHere;
     mintedLevy += levy;
     carry = carryOut;
+  }
+  let outstanding = dustState + overflowState;
+  for (const row of owedState) outstanding += row.nanos;
+  if (mintedHash + outstanding !== acceptedHash) {
+    ok = false;
+    reason = reason || 'hash_owed';
   }
 
   const circulating = mintedPot + mintedHash + extra - burned;
@@ -290,6 +356,9 @@ export function auditCirculatingSupply(blocks, {
     measuredLevyNanos: safeNum(mintedLevy),
     schedulePotNanos: safeNum(schedulePot),
     carryNanos: safeNum(carry),
+    hashOwedNanos: safeNum(owedState.reduce((n, row) => n + row.nanos, 0n)),
+    hashDustNanos: safeNum(dustState),
+    hashOwedOverflowNanos: safeNum(overflowState),
     extraMintNanos: safeNum(extra),
     burnedNanos: safeNum(burned),
     differenceNanos: safeSigned(difference),

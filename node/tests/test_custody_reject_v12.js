@@ -420,11 +420,11 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       const moved = retargetHash(tpl, stranger, bonus);
       const movedRes = sameVerdict(moved, prev, now);
       assert.equal(movedRes.ok, false, `${label} hash`);
-      assert.equal(movedRes.reason, 'hash_bonus', label);
+      assert.equal(movedRes.reason, 'hash_owed', label);
       const both = retargetHash(whole.block, stranger, bonus);
       const bothRes = sameVerdict(both, prev, now);
       assert.equal(bothRes.ok, false, `${label} both`);
-      assert.ok(bothRes.reason === 'hash_bonus' || bothRes.reason === 'pot_prop', bothRes.reason);
+      assert.equal(bothRes.reason, 'hash_owed', `${label} both ${bothRes.reason}`);
 
       painted.push({ block: honest.block, prev, now, attack: whole.block });
       return honest;

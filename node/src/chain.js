@@ -56,7 +56,7 @@ import {
   blockNeedsEvm,
   executeBlockEvm,
 } from '../../crypto/reserve_evm.js';
-import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields, admitBaseFromAddress } from '../../crypto/address.js';
+import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields, admitBaseFromAddress, encodeDest } from '../../crypto/address.js';
 import {
   admit_verify,
   admitVerifyBatch,
@@ -83,6 +83,16 @@ import {
   pointFrom,
 } from '../../crypto/note.js';
 import { packTx, packDigest, unpackShareBatch, u64le } from '../../crypto/pack.js';
+import {
+  freshCreditsFromShares,
+  hashDustFromTx,
+  hashOwedDigestSuffix,
+  hashOwedFromTx,
+  hashOverflowFromTx,
+  sameHashLedger,
+  settleHashOwed,
+  writeHashLedger,
+} from '../../crypto/hash_owed.js';
 import { buildDualTree, spendB } from '../../crypto/clearing.js';
 import {
   nextBaseFee,
@@ -217,8 +227,15 @@ export function digestTx(tx) {
   // so a paid-out coinbase keeps the previous digest. A peer who changes the
   // carry changes the merkle root.
   const carry = tx?.coinbase ? canonicalCarry(tx) : 0;
-  if (tx?.coinbase && carry) {
-    return packDigest(Buffer.concat([packed, Buffer.from('potcarry1'), u64le(carry)]));
+  const owedSuffix = tx?.coinbase ? hashOwedDigestSuffix(tx) : Buffer.alloc(0);
+  if (tx?.coinbase && owedSuffix == null) {
+    return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
+  }
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length))) {
+    const parts = [packed];
+    if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
+    if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
+    return packDigest(Buffer.concat(parts));
   }
   return packDigest(packed);
 }
@@ -553,11 +570,26 @@ export function allowedHashBonusCustodyDest(dest) {
   return dest && isDestAddress(dest) ? dest : '';
 }
 
+function sealHashPay(pay, address) {
+  const nanos = Number(pay.nanos);
+  const base = pay.admitBase && Buffer.from(pay.admitBase).length === 32
+    ? pay.admitBase
+    : (address ? admitBaseFromAddress(address) : null);
+  return attachAdmitPub(sealCoinbaseNote(nanos, {
+    dest20: pay.dest20,
+    noteCommit: pay.noteCommit,
+    kind: 'hash',
+  }), { admitBase: base || null });
+}
+
 export function coinbaseTx({
   height, miner, samples = [], potShares = null, destOf = (a) => a, hashBonusNanos = HASH_BONUS_NANOS,
   shareBatch = null, poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS,
   hashBonusCustodyDest = null,
   carryNanos = 0,
+  hashOwedIn = null,
+  hashDustIn = null,
+  hashOverflowIn = null,
 }) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
@@ -587,20 +619,50 @@ export function coinbaseTx({
       admitBase: admitBaseFromAddress(pay),
     }));
   }
-  // Hash bonus is shareBatch units, paid to each hasher leaf. An empty
-  // batch mints pot (and pool fee) with no hash notes.
-  for (const [address, nanos] of bonuses) {
-    const pay = destOf(address);
-    if (!isDestAddress(pay)) continue;
-    const d20 = hash20FromAddress(pay);
-    vout.push(attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), {
-      admitBase: admitBaseFromAddress(pay),
-    }));
+  // Hash notes follow the owed settlement. Under the cap with nothing
+  // owed, that is the retained share and the vout order matches the
+  // first-seen dest order. An empty batch with an empty ledger mints no
+  // hash note here. A later producer pays parent rows the same way.
+  const fresh = freshCreditsFromShares(shareBatch || [], hashBonusNanos);
+  const settled = settleHashOwed({
+    owedIn: hashOwedIn || [],
+    dustIn: hashDustIn || 0n,
+    overflowIn: hashOverflowIn || 0n,
+    fresh,
+    height,
+    unit: hashBonusNanos,
+  });
+  if (!settled.ok) throw new Error(settled.reason || 'hash_owed');
+  const payByHex = new Map(settled.pay.map((p) => [p.noteCommit.toString('hex'), p]));
+  const emitted = new Set();
+  for (const [address] of bonuses) {
+    const payAddr = destOf(address);
+    if (!isDestAddress(payAddr)) continue;
+    const d20 = hash20FromAddress(payAddr);
+    if (!d20) continue;
+    let nc;
+    try { nc = noteCommitOfDest20(d20); } catch { continue; }
+    const hex = nc.toString('hex');
+    const pay = payByHex.get(hex);
+    if (!pay || emitted.has(hex)) continue;
+    if (pay.nanos > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('hash_owed');
+    emitted.add(hex);
+    vout.push(sealHashPay(pay, payAddr));
   }
-  if (!vout.length && carry <= 0) {
+  for (const pay of settled.pay) {
+    const hex = pay.noteCommit.toString('hex');
+    if (emitted.has(hex)) continue;
+    if (pay.nanos > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('hash_owed');
+    emitted.add(hex);
+    const addr = pay.address && isDestAddress(pay.address)
+      ? pay.address
+      : encodeDest(pay.dest20);
+    vout.push(sealHashPay(pay, addr));
+  }
+  if (!vout.length && carry <= 0 && settled.minted === 0n && settled.owed.length === 0) {
     throw new Error('coinbase_needs_dest');
   }
-  return {
+  const tx = {
     coinbase: true,
     height,
     vin: [{ coinbase: true, height }],
@@ -608,6 +670,8 @@ export function coinbaseTx({
     excess: excessOf(vout),
     carryNanos: carry,
   };
+  writeHashLedger(tx, settled);
+  return tx;
 }
 
 export function buildTemplate({
@@ -661,6 +725,13 @@ export function buildTemplate({
   // Anything still unpaid, including an empty list, stays carried. Solo
   // (null shares) pays the miner the subsidy plus that carry and carries nothing.
   const carryIn = canonicalCarry(prevBlock?.txs?.[0]) || 0;
+  const parentCb = prevBlock?.txs?.[0] || null;
+  const hashOwedIn = hashOwedFromTx(parentCb);
+  const hashDustIn = hashDustFromTx(parentCb);
+  const hashOverflowIn = hashOverflowFromTx(parentCb);
+  if (hashOwedIn == null || hashDustIn == null || hashOverflowIn == null) {
+    throw new Error('hash_owed');
+  }
   const payable = subsidy + carryIn;
   const explicit = Array.isArray(potShares);
   let minted = 0;
@@ -680,6 +751,9 @@ export function buildTemplate({
     potNanos: explicit ? Math.max(subsidy, minted) : payable,
     carryNanos: carryOut > 0 ? carryOut : 0,
     hashBonusCustodyDest,
+    hashOwedIn,
+    hashDustIn,
+    hashOverflowIn,
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
@@ -878,6 +952,58 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false } = {}) {
       dropSharePowKeys(shareKeys);
     },
   };
+}
+
+function hashPaysMatch(hashVouts, pay, provenOpen, confidential) {
+  if (hashVouts.length !== pay.length) return false;
+  const used = new Set();
+  for (const p of pay) {
+    const hex = p.noteCommit.toString('hex');
+    let idx = -1;
+    for (let i = 0; i < hashVouts.length; i += 1) {
+      if (used.has(i)) continue;
+      if (ncHex(hashVouts[i].noteCommit) === hex) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) return false;
+    const nanos = Number(p.nanos);
+    if (!Number.isSafeInteger(nanos) || nanos < 0) return false;
+    const hit = hashVouts[idx];
+    if (confidential) {
+      if (!verifySealedNote(hit, nanos)) return false;
+      if (provenOpen) provenOpen.set(hit, nanos);
+    } else if (Number(hit.nanos || 0) !== nanos) {
+      return false;
+    }
+    used.add(idx);
+  }
+  return used.size === hashVouts.length;
+}
+
+function settlementFor(prev, height, shareBatch, unit) {
+  const parent = prev?.txs?.[0] || null;
+  const owedIn = hashOwedFromTx(parent);
+  const dustIn = hashDustFromTx(parent);
+  const overflowIn = hashOverflowFromTx(parent);
+  if (owedIn == null || dustIn == null || overflowIn == null) {
+    return { ok: false, reason: 'hash_owed' };
+  }
+  const fresh = shareBatch.length ? freshCreditsFromShares(shareBatch, unit) : [];
+  const settled = settleHashOwed({
+    owedIn,
+    dustIn,
+    overflowIn,
+    fresh,
+    height,
+    unit,
+  });
+  if (!settled.ok) return { ok: false, reason: settled.reason || 'hash_owed' };
+  const idle = owedIn.length === 0 && dustIn === 0n && overflowIn === 0n
+    && fresh.length === 0 && settled.pay.length === 0 && settled.owed.length === 0
+    && settled.dust === 0n && settled.overflow === 0n;
+  return { ...settled, idle };
 }
 
 function verifyBlockConsensus(block, prev, opts = {}) {
@@ -1091,8 +1217,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } else if (shareBatch.length) {
       return { ok: false, reason: 'share_batch' };
     }
+    const settlement = settlementFor(prev, height, shareBatch, liveUnit);
+    if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
+    if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
     if (confidential) {
-      const wantBonus = provenUnits * liveUnit;
       const sealedLeaves = Array.isArray(block.aLeaves) ? block.aLeaves : [];
       const fromSealed = sealedLeaves.map((l) => {
         const d20 = l.dest20 ? Buffer.from(l.dest20) : Buffer.alloc(20);
@@ -1111,7 +1239,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
           : (block.miner && isDestAddress(block.miner) ? block.miner : ''));
       // A proven batch pays hasher leaves and one pro-rata pot. Custodial
       // shapes are not an accept, and a node-local env var cannot make them one.
-      if (!shareBatch.length) {
+      if (settlement.idle && !shareBatch.length) {
         const floor = unitsForShare() * liveUnit;
         const minerDest = block.miner && isDestAddress(block.miner) ? block.miner : '';
         const minerNc = minerDest ? ncHex(noteCommitOfDest20(hash20FromAddress(minerDest))) : '';
@@ -1136,19 +1264,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         const T = mintedPot + bonusNanos;
         if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       } else {
-      for (const leaf of leaves) {
-        const nc = ncHex(leaf.noteCommit);
-        const hit = hashVouts.find((o) => ncHex(o.noteCommit) === nc);
-        const nanos = leaf.count * liveUnit;
-        if (!hit || !verifySealedNote(hit, nanos)) {
-          return { ok: false, reason: 'hash_bonus' };
-        }
-        provenOpen.set(hit, nanos);
+      if (!hashPaysMatch(hashVouts, settlement.pay, provenOpen, true)) {
+        return { ok: false, reason: 'hash_owed' };
       }
-      for (const o of hashVouts) {
-        if (!hasherNcs.has(ncHex(o.noteCommit))) return { ok: false, reason: 'hash_bonus' };
+      bonusNanos = Number(settlement.minted);
+      if (!Number.isSafeInteger(bonusNanos) || bonusNanos < 0) {
+        return { ok: false, reason: 'hash_owed' };
       }
-      bonusNanos = wantBonus;
       if (hasherNcs.size) {
         const extra = potVouts.filter((o) => !hasherNcs.has(ncHex(o.noteCommit)));
         for (const o of extra) {
@@ -1191,30 +1313,24 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         }
         if (extra.length === 1) provenOpen.set(extra[0], extraAmt);
       }
-      const T = mintedPot + wantBonus;
+      const T = mintedPot + bonusNanos;
       if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       potNanos = mintedPot;
       }
     } else {
       potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
-      bonusNanos = hashVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
       if (potNanos + carryOut !== payablePot) return { ok: false, reason: 'pot_sched' };
-      const floorFinder = !shareBatch.length ? unitsForShare() * liveUnit : 0;
-      if (shareBatch.length) {
-        if (bonusNanos !== provenUnits * liveUnit) return { ok: false, reason: 'hash_bonus' };
-      } else if (bonusNanos !== 0 && bonusNanos !== floorFinder) {
-        return { ok: false, reason: 'hash_bonus' };
-      }
-      const paid = new Map();
-      for (const o of hashVouts) {
-        paid.set(o.address, (paid.get(o.address) || 0) + Number(o.nanos || 0));
-      }
-      for (const [dest, units] of provenByDest) {
-        if ((paid.get(dest) || 0) !== units * liveUnit) return { ok: false, reason: 'hash_bonus' };
-      }
-      for (const dest of paid.keys()) {
-        const finderFloor = floorFinder > 0 && dest === hinted && paid.size === 1 && (paid.get(dest) || 0) === floorFinder;
-        if (!provenByDest.has(dest) && !finderFloor) return { ok: false, reason: 'hash_bonus' };
+      if (settlement.idle && !shareBatch.length) {
+        const floorFinder = unitsForShare() * liveUnit;
+        bonusNanos = hashVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
+        if (bonusNanos !== 0 && bonusNanos !== floorFinder) return { ok: false, reason: 'hash_bonus' };
+      } else if (!hashPaysMatch(hashVouts, settlement.pay, null, false)) {
+        return { ok: false, reason: 'hash_owed' };
+      } else {
+        bonusNanos = Number(settlement.minted);
+        if (!Number.isSafeInteger(bonusNanos) || bonusNanos < 0) {
+          return { ok: false, reason: 'hash_owed' };
+        }
       }
       const maxFee = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
       const hasherSet = new Set(provenByDest.keys());
@@ -1227,8 +1343,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
   }
   if (skipFlow) {
+    const buriedSettle = settlementFor(prev, height, shareBatch, liveUnit);
+    if (!buriedSettle.ok) return { ok: false, reason: buriedSettle.reason || 'hash_owed' };
+    if (!sameHashLedger(txs[0], buriedSettle)) return { ok: false, reason: 'hash_owed' };
+    if (!buriedSettle.idle) {
+      const minted = Number(buriedSettle.minted);
+      if (!Number.isSafeInteger(minted) || minted < 0) return { ok: false, reason: 'hash_owed' };
+      if (!hashPaysMatch(hashVouts, buriedSettle.pay, provenOpen, confidential)) {
+        return { ok: false, reason: 'hash_owed' };
+      }
+      bonusNanos = minted;
+    }
     const coinbase = txs[0];
-    if (!coinbase || !Array.isArray(coinbase.vout) || (coinbase.vout.length === 0 && carryOut <= 0)) {
+    if (!coinbase || !Array.isArray(coinbase.vout) || (coinbase.vout.length === 0 && carryOut <= 0 && buriedSettle.owed.length === 0)) {
       return { ok: false, reason: 'pot' };
     }
   }

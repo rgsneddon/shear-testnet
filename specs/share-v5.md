@@ -1,6 +1,6 @@
 # ENC_SHARE v5 (shear-testnet-v3)
 
-Fingerprint: `ENC_SHARE=v5+work7`. `SHARE_UNITS=2^bits`. `SHARE_CREDIT=nonce-hi-le`. The work frame carries credited bits, and those bits must equal the little-endian high byte of the nonce inside the ShearHash preimage. A v5 body with no bit field is the floor unit only when that byte is the floor. Job header stays the frozen 128-byte ShearHash-v3 template. A cache hit binds noteCommit and that byte.
+Fingerprint: `ENC_SHARE=v5+work7`. `SHARE_UNITS=2^bits`. `SHARE_CREDIT=nonce-hi-le`. The work frame carries credited bits, and those bits must equal the little-endian high byte of the nonce inside the ShearHash preimage. A v5 body with no bit field is the floor unit only when that byte is the floor. Job header stays the frozen 128-byte ShearHash-v3 template. A cache hit binds noteCommit and that byte. A full `2^b` credit that this block does not pay is an owed `noteCommit` row (`HASH_OWED`), paid once by any later producer.
 
 ```
 ENC_SHARE_V5 = note_commit || nonce_u64le || lz_u8 || view_tag?

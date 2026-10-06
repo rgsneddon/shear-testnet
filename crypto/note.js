@@ -94,6 +94,16 @@ export function reviveTx(tx) {
   }
   if (out.spendTag != null && !Buffer.isBuffer(out.spendTag)) out.spendTag = reviveField(out.spendTag);
   if (out.excess != null) out.excess = reviveField(out.excess);
+  if (Array.isArray(out.hashOwed)) {
+    out.hashOwed = out.hashOwed.map((row) => {
+      if (!row || typeof row !== 'object') return row;
+      const next = { ...row };
+      if (next.noteCommit != null) next.noteCommit = reviveField(next.noteCommit);
+      if (next.dest20 != null) next.dest20 = reviveField(next.dest20);
+      if (next.admitBase != null) next.admitBase = reviveField(next.admitBase);
+      return next;
+    });
+  }
   return out;
 }
 
