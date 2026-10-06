@@ -513,7 +513,11 @@ export function createStore(dir, {
 
   function persist(block) {
     fs.writeFileSync(magicFile, MAGIC_TESTNET);
-    const row = archiveFast ? pruneSamples(block) : block;
+    const tipH = Number(block?.height || 0);
+    // The block being written is the tip. Fast-sync must not mark it pruned.
+    const row = archiveFast && shouldPruneSamples(tipH, tipH)
+      ? pruneSamples(block)
+      : block;
     const diskBlocks = blocks.slice(0, -1).concat([row]);
     if (!segmented && diskBlocks.length > 1 && fs.existsSync(binFile)) {
       migrateMonolith(diskBlocks);
@@ -543,11 +547,16 @@ export function createStore(dir, {
 
   function pruneBuried() {
     const tipH = tip()?.height || 0;
+    const asked = Number(pruneAfter);
+    const pruneDepth = Math.max(
+      SAMPLE_PRUNE_CONFIRMATIONS,
+      Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : SAMPLE_PRUNE_CONFIRMATIONS,
+    );
     const dirtySegs = new Set();
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
       if (b.samplesPruned) continue;
-      if (!shouldPruneSamples(b.height, tipH, pruneAfter)) continue;
+      if (!shouldPruneSamples(b.height, tipH, pruneDepth)) continue;
       const nTx = (b.txs || []).length;
       const nVout = (b.txs?.[0]?.vout || []).length;
       const next = pruneSamples(b);
@@ -558,10 +567,13 @@ export function createStore(dir, {
     }
     if (dirtySegs.size) {
       fs.mkdirSync(segDir, { recursive: true });
-      // Fast-sync persist already drops samples on disk. A later segment
-      // rewrite must not copy the in-memory tip's share batch back over that.
+      // Only a block this tip buries is stored without its share batch.
       const image = archiveFast
-        ? blocks.map((b) => (b.samplesPruned ? b : pruneSamples(b)))
+        ? blocks.map((b) => (
+          shouldPruneSamples(b.height, tipH, pruneDepth)
+            ? (b.samplesPruned ? b : pruneSamples(b))
+            : b
+        ))
         : blocks;
       if (!segmented) {
         writeChainSegments(segDir, image);
@@ -740,7 +752,8 @@ export function createStore(dir, {
         if (b?.hash && Buffer.from(b.hash).length === 32) trustedPowHash = Buffer.from(b.hash);
       } catch { trustedPowHash = null; }
       if (!trustedPowHash) return { ok: false, reason: 'share_credit_bind', at: i };
-      const bound = shareCreditBound(b);
+      const chainTip = Number(accepted[accepted.length - 1]?.height || 0);
+      const bound = shareCreditBound(b, chainTip);
       if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind', at: i };
     }
     for (const b of disconnected) {
@@ -1097,6 +1110,7 @@ export function createStore(dir, {
       acceptedSeries,
       block: stored,
       unit: unitNow,
+      tipHeight: full.height,
     });
     if (!owedNext.ok) throw new Error(owedNext.reason || 'hash_owed');
     owedRows = owedNext.rows;
@@ -1418,6 +1432,7 @@ export function createStore(dir, {
         acceptedSeries: owedWalk.hashAcceptedSeries,
         block: fork[i],
         unit: owedUnit,
+        tipHeight: fork.reduce((m, b) => Math.max(m, Number(b?.height) || 0), 0),
       });
       if (!owedNext.ok) {
         rollbackSpent(trialSpent, beforeSpent);
@@ -1600,6 +1615,11 @@ export function createStore(dir, {
     }));
     if (n === list.length) return { ok: true, rows, series, snaps };
     const units = bonusUnitsBefore(list);
+    let tipH = 0;
+    for (const b of list) {
+      const h = Number(b?.height);
+      if (Number.isInteger(h) && h > tipH) tipH = h;
+    }
     for (let i = n; i < list.length; i += 1) {
       const next = advanceHashOwed({
         owedIn: rows,
@@ -1607,6 +1627,7 @@ export function createStore(dir, {
         block: list[i],
         unit: units[i],
         height: Number(list[i]?.height) || i + 1,
+        tipHeight: tipH,
       });
       if (!next.ok) return { ok: false, reason: next.reason || 'hash_owed' };
       rows = next.rows;
@@ -1658,11 +1679,16 @@ export function createStore(dir, {
           return c;
         }
         const owedUnit = allUnits[history.length + i];
+        const tipH = (history || []).concat(fork || []).reduce(
+          (m, b) => Math.max(m, Number(b?.height) || 0),
+          0,
+        );
         const owedNext = advanceHashOwed({
           owedIn: owedWalk.owedIn,
           acceptedSeries: owedWalk.hashAcceptedSeries,
           block: fork[i],
           unit: owedUnit,
+          tipHeight: tipH,
         });
         if (!owedNext.ok) {
           rollbackSpent(trialSpent, beforeSpent);

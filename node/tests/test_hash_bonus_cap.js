@@ -264,11 +264,12 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       ...parent, hash: okP.hash, header: parent.header, height: 1,
     }, { tipHeight: 2 }));
     assert.equal(live.ok, false);
-    assert.equal(live.reason, 'hash_bonus');
+    assert.equal(live.reason, 'samples_pruned');
     const buried = await Promise.resolve(verifyBlock(child, {
       ...parent, hash: okP.hash, header: parent.header, height: 1,
     }, { tipHeight: 2 + SAMPLE_PRUNE_CONFIRMATIONS }));
-    assert.equal(buried.ok, true, buried.reason);
+    assert.equal(buried.ok, false);
+    assert.equal(buried.reason, 'samples_pruned');
   });
 });
 

@@ -6,7 +6,7 @@
  */
 import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { admitWireTx } from '../../crypto/chronoflux.js';
+import { admitWireTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { txWeight } from '../../crypto/levy.js';
 import { reviveBytes } from '../../crypto/note.js';
 import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
@@ -197,6 +197,12 @@ export function applyVerifiedIpcBlock(store, msg) {
     return { ok: false, reason: 'decode' };
   }
   if (block && Object.prototype.hasOwnProperty.call(block, 'trustedPowHash')) delete block.trustedPowHash;
+  let tipH = 0;
+  try { tipH = Number(store.tip()?.height || 0); } catch { tipH = 0; }
+  const h = Number(block.height || (tipH + 1));
+  if (block.samplesPruned && !shouldPruneSamples(h, tipH)) {
+    return { ok: false, reason: 'samples_pruned' };
+  }
   return store.append(block, {});
 }
 

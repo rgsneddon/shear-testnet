@@ -238,6 +238,12 @@ export function auditCirculatingSupply(blocks, {
   let ok = true;
   let reason = '';
   const units = bonusUnitsBefore(list);
+  let auditTip = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    const h = Number(list[i]?.height);
+    const n = Number.isInteger(h) ? h : i + 1;
+    if (n > auditTip) auditTip = n;
+  }
 
   for (let bi = 0; bi < list.length; bi += 1) {
     const block = list[bi];
@@ -291,7 +297,7 @@ export function auditCirculatingSupply(blocks, {
       carry = carryOut;
       continue;
     }
-    const gotFresh = freshForBlock(block, unit);
+    const gotFresh = freshForBlock(block, unit, auditTip);
     if (!gotFresh.ok) {
       ok = false;
       reason = reason || 'hash_owed';

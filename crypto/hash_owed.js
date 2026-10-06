@@ -14,7 +14,9 @@
  * is node state. The coinbase wire carries hashOwedRoot only
  * (HASH_OWED_WIRE=root-v1). Each block also seals this block's fresh
  * per-noteCommit credits (HASH_OWED_RECOVER=sealed-credits-v1). Replay
- * reads that record, not the prunable share batch. The hash-bonus unit
+ * reads that record, not the prunable share batch, and only after this
+ * chain's own tip buries the block by SAMPLE_PRUNE_CONFIRMATIONS. A
+ * samplesPruned flag alone is not burial. The hash-bonus unit
  * is the one live at that height (HASH_OWED_UNIT_HISTORY=per-height).
  * hashAcceptedUnits is required and must match settlement
  * (HASH_ACCEPTED_UNITS=validated). HASH_OWED_BUDGET_SCALE_V1 sets this block's
@@ -30,6 +32,7 @@ import {
   HASH_OWED_SCALE_K,
   HASH_OWED_SCALE_WINDOW,
   MAX_HASH_UNITS_PER_BLOCK,
+  SAMPLE_PRUNE_CONFIRMATIONS,
   SHARE_FLOOR_BITS,
   hashBonusUnitNanos,
   hashOwedDustNanos,
@@ -382,13 +385,26 @@ function coinbaseTx(block) {
 }
 
 /**
+ * Same burial as flowSkipAllowed: SAMPLE_PRUNE_CONFIRMATIONS under the
+ * caller's own tip, and the block is marked pruned. A peer flag is not enough.
+ */
+export function sealedCreditsBuried(block, tipHeight) {
+  const tip = Number(tipHeight);
+  const h = Number(block?.height);
+  if (!Number.isFinite(tip) || !Number.isFinite(h)) return false;
+  if (block?.samplesPruned !== true) return false;
+  return Math.max(0, tip - h) >= SAMPLE_PRUNE_CONFIRMATIONS;
+}
+
+/**
  * Fresh credits for one block. A share batch that is still present must
  * match the sealed record on noteCommit and nanos. The packed frame does
  * not carry dest, so dest is the sealed row, bound by the coinbase credit
- * root. A pruned batch is not a source. A missing record on an unpruned
- * block is the share batch itself.
+ * root. An empty batch is not a source unless this tip buries the block.
+ * A missing record on an unpruned block is the share batch itself.
+ * `tipHeight` is the caller's accepted tip, never a peer advertisement.
  */
-export function freshForBlock(block, unit = HASH_BONUS_NANOS) {
+export function freshForBlock(block, unit = HASH_BONUS_NANOS, tipHeight = null) {
   let shares = [];
   try {
     shares = unpackShareBatch(block?.shareBatch || []);
@@ -409,7 +425,7 @@ export function freshForBlock(block, unit = HASH_BONUS_NANOS) {
   if (shares.length) {
     if (!shareWitnessAgrees(shares, recorded, unit)) return { ok: false, fresh: [] };
     if (fromShares.length && !creditsEqual(recorded, fromShares)) return { ok: false, fresh: [] };
-  } else if (recorded.length && block?.samplesPruned !== true) {
+  } else if (recorded.length && !sealedCreditsBuried(block, tipHeight)) {
     return { ok: false, fresh: [] };
   }
   return { ok: true, fresh: recorded };
@@ -899,8 +915,8 @@ export function settleHashOwed({
   };
 }
 
-export function acceptedUnitsOfBlock(block, unit = HASH_BONUS_NANOS) {
-  const got = freshForBlock(block, unit);
+export function acceptedUnitsOfBlock(block, unit = HASH_BONUS_NANOS, tipHeight = null) {
+  const got = freshForBlock(block, unit, tipHeight);
   if (!got.ok) return null;
   const u = BigInt(hashBonusUnitNanos(unit));
   if (u <= 0n) return null;
@@ -924,6 +940,12 @@ export function replayHashOwed(blocks, { unit = null, units = null } = {}) {
   const accepted = [];
   const snaps = [];
   const list = Array.isArray(blocks) ? blocks : [];
+  let tipH = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    const h = Number(list[i]?.height);
+    const n = Number.isInteger(h) ? h : i + 1;
+    if (n > tipH) tipH = n;
+  }
   for (let i = 0; i < list.length; i += 1) {
     const block = list[i];
     const u = Array.isArray(units) ? units[i] : (unit == null ? HASH_BONUS_NANOS : unit);
@@ -933,6 +955,7 @@ export function replayHashOwed(blocks, { unit = null, units = null } = {}) {
       block,
       unit: u,
       height: Number.isInteger(Number(block?.height)) ? Number(block.height) : i + 1,
+      tipHeight: tipH,
     });
     if (!next.ok) return { ok: false, reason: next.reason || 'hash_owed', rows: [], accepted: [], snaps: [] };
     rows = next.rows;
@@ -949,9 +972,10 @@ export function advanceHashOwed({
   block,
   unit = HASH_BONUS_NANOS,
   height = null,
+  tipHeight = null,
 } = {}) {
   const h = height == null ? Number(block?.height || 0) : Number(height);
-  const gotFresh = freshForBlock(block, unit);
+  const gotFresh = freshForBlock(block, unit, tipHeight);
   if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
   const fresh = gotFresh.fresh;
   const budget = hashBudgetNanos(acceptedSeries, unit);

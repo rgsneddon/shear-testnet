@@ -87,6 +87,7 @@ import { packTx, packDigest, unpackShareBatch, u64le } from '../../crypto/pack.j
 import {
   freshCreditsFromShares,
   freshForBlock,
+  sealedCreditsBuried,
   hashBudgetNanos,
   hashDustFromTx,
   hashLedgerIdle,
@@ -1024,9 +1025,9 @@ function leafCommitHex(leaf) {
  * each positive aLeaf, and the header continuity root must still match
  * the stored leaves, so a rewritten nonce byte fails closed.
  */
-export function shareCreditBound(block) {
+export function shareCreditBound(block, tipHeight = null) {
   const shares = Array.isArray(block?.shareBatch) ? block.shareBatch : [];
-  if (block?.samplesPruned === true && shares.length === 0) return { ok: true, reason: '' };
+  if (sealedCreditsBuried(block, tipHeight) && shares.length === 0) return { ok: true, reason: '' };
   const leaves = Array.isArray(block?.aLeaves) ? block.aLeaves : [];
   let positive = false;
   for (const leaf of leaves) {
@@ -1084,7 +1085,7 @@ function settlementFor(prev, height, block, unit, extra = {}) {
   const series = extra.hashAcceptedSeries;
   const budget = series == null ? null : hashBudgetNanos(series, unit);
   if (series != null && budget == null) return { ok: false, reason: 'hash_owed' };
-  const gotFresh = freshForBlock(creditBlock, unit);
+  const gotFresh = freshForBlock(creditBlock, unit, extra.tipHeight);
   if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
   const fresh = gotFresh.fresh;
   const settled = settleHashOwed({
@@ -1280,6 +1281,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const localTip = Number(prev?.height || 0);
   void tipHeight;
   void buried;
+  // A peer flag does not prune. Burial is this parent's height, not opts.tipHeight.
+  if (block.samplesPruned && !shouldPruneSamples(height, localTip)) {
+    return { ok: false, reason: 'samples_pruned' };
+  }
   const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, localTip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   // Burial may skip Flow checks. It does not skip share credit. A batch that
@@ -1322,6 +1327,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const settlement = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
+      tipHeight: localTip,
     });
     if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
@@ -1451,6 +1457,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const buriedSettle = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
+      tipHeight: localTip,
     });
     if (!buriedSettle.ok) return { ok: false, reason: buriedSettle.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], buriedSettle)) return { ok: false, reason: 'hash_owed' };

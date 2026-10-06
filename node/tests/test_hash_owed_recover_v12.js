@@ -32,6 +32,8 @@ import {
   rememberLiveSharePow,
 } from '../../crypto/share_batch.js';
 import {
+  creditsEqual,
+  freshForBlock,
   hashOwedFromTx,
   hashOwedRoot,
   replayHashOwed,
@@ -143,8 +145,9 @@ describe('HASH_OWED_RECOVER_V1', () => {
     const next = appendTpl(store, dest, 13, t0 + 180_000, []);
     assert.equal(next.ok, true, next.reason);
     const buried = store.blocks.find((b) => Number(b.height) === 2);
-    assert.equal(buried.samplesPruned, true);
-    assert.equal((buried.shareBatch || []).length, 0);
+    // pruneAfter cannot open burial before SAMPLE_PRUNE_CONFIRMATIONS.
+    assert.notEqual(buried.samplesPruned, true);
+    assert.ok((buried.shareBatch || []).length > 0);
     assert.ok((buried.hashCredits || []).length > 0);
     const replayed = replayHashOwed(store.blocks);
     const fromShares = replayHashOwed([store.blocks[0], creditSnap, store.blocks[2]]);
@@ -159,8 +162,8 @@ describe('HASH_OWED_RECOVER_V1', () => {
     const again = createStore(dir, { pruneAfter: 1 });
     assert.equal(again.blocks.length, store.blocks.length);
     const reloaded = again.blocks.find((b) => Number(b.height) === 2);
-    assert.equal(reloaded.samplesPruned, true);
-    assert.equal((reloaded.shareBatch || []).length, 0);
+    assert.equal(reloaded.samplesPruned, false);
+    assert.ok((reloaded.shareBatch || []).length > 0);
     assert.ok((reloaded.hashCredits || []).length > 0);
     const job2 = again.template({ miner: dest, now: t0 + 270_000 });
     assert.ok(job2.tpl);
@@ -173,7 +176,8 @@ describe('HASH_OWED_RECOVER_V1', () => {
     assert.ok((fast.blocks[1].shareBatch || []).length > 0);
     const bounced = createStore(fastDir, { pruneAfter: 1, fastSync: true });
     assert.equal(bounced.blocks.length, 2);
-    assert.equal((bounced.blocks[1].shareBatch || []).length, 0);
+    assert.equal(bounced.blocks[1].samplesPruned, false);
+    assert.ok((bounced.blocks[1].shareBatch || []).length > 0);
     assert.ok(Array.isArray(bounced.blocks[1].hashCredits));
     assert.ok(bounced.template({ miner: dest, now: t0 + 180_000 }).tpl);
     const buriedSupply = auditCirculatingSupply(store.blocks);
@@ -367,12 +371,16 @@ describe('HASH_OWED_RECOVER_V1', () => {
       const pruned = pruneSamples(block);
       assert.equal((pruned.shareBatch || []).length, 0);
       assert.equal((pruned.hashCredits || []).length > 0, item.want > 0);
-      const fromCredits = replayHashOwed([pruned]);
+      assert.equal(replayHashOwed([pruned]).ok, false);
       const fromShares = replayHashOwed([block]);
-      assert.equal(fromCredits.ok, true, fromCredits.reason);
       assert.equal(fromShares.ok, true, fromShares.reason);
-      assert.equal(fromCredits.rows.length, item.want);
-      assert.equal(hashOwedRoot(fromCredits.rows).equals(hashOwedRoot(fromShares.rows)), true);
+      assert.equal(fromShares.rows.length, item.want);
+      const buriedFresh = freshForBlock(pruned, HASH_BONUS_NANOS, Number(pruned.height) + SAMPLE_PRUNE_CONFIRMATIONS);
+      const liveFresh = freshForBlock(block, HASH_BONUS_NANOS, Number(block.height));
+      assert.equal(buriedFresh.ok, true, buriedFresh.reason);
+      assert.equal(liveFresh.ok, true, liveFresh.reason);
+      assert.equal(creditsEqual(buriedFresh.fresh, block.hashCredits), true);
+      assert.equal(creditsEqual(buriedFresh.fresh, liveFresh.fresh), true);
     }
     assert.equal(HASH_OWED_MAX_ENTRIES, cap);
   });
