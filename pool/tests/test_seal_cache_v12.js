@@ -88,6 +88,9 @@ describe('v12 pool seal survives share-cache eviction', () => {
     assert.match(poolSrc, /error: 'seal_failed'/);
     const noteFail = poolSrc.split('function noteSealFailure')[1].split('function noteSealSuccess')[0];
     assert.match(noteFail, /seal_batch_carry/);
+    assert.match(noteFail, /SEAL_ESCAPE_V1/);
+    assert.doesNotMatch(noteFail, /bans\.add/);
+    assert.doesNotMatch(noteFail, /kickMiner/);
     assert.doesNotMatch(noteFail, /lag1Shares = \[\]/);
     assert.doesNotMatch(noteFail, /seal_batch_held/);
     const warm = poolSrc.split('function ensureCachedShareProofs')[1].split('function whenShareProofs')[0];

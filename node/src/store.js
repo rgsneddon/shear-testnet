@@ -943,24 +943,16 @@ export function createStore(dir, {
     return onOk(check);
   }
 
-  function append(block, verifyOpts = {}) {
-    const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
-    if (incoming && incoming.length === 32) {
-      for (const b of blocks) {
-        if (b.hash && Buffer.from(b.hash).equals(incoming)) {
-          return { ok: false, reason: 'not_heavier', tip: tip() };
-        }
-      }
-    }
+  function verifyAgainstTip(block, extra = {}) {
     const prev = tip();
     const parentH = prev ? prev.height : 0;
-    const incomingH = Number(block.height || (prev ? prev.height + 1 : 1));
+    const tipHeight = parentH;
+    const incomingH = Number(block?.height || (prev ? prev.height + 1 : 1));
+    const shareN = Array.isArray(block?.shareBatch) ? block.shareBatch.length : 0;
+    const probe = extra.probeBody === true;
     // A peer-advertised height must not prune or skip validation.
-    // incomingH is the block's own claim. Burial uses only the parent already
-    // on this chain, so a tall advertised height cannot mark the block pruned.
-    const tipHeight = prev ? prev.height : 0;
-    const shareN = Array.isArray(block.shareBatch) ? block.shareBatch.length : 0;
-    const toVerify = (!shareN && shouldPruneSamples(incomingH, tipHeight))
+    // Burial uses only the parent already on this chain.
+    const toVerify = (!probe && !shareN && shouldPruneSamples(incomingH, tipHeight))
       ? { ...block, samplesPruned: true }
       : block;
     const spentBefore = new Set(spentB);
@@ -995,18 +987,53 @@ export function createStore(dir, {
         } catch { return 0; }
       })(),
       magic: MAGIC_TESTNET,
-      trustedPowHash: verifyOpts.trustedPowHash || null,
-      skipSharePow: !!verifyOpts.skipSharePow,
-      offLoopPow: !!verifyOpts.offLoopPow,
+      trustedPowHash: probe ? null : (extra.trustedPowHash || null),
+      skipSharePow: probe ? true : !!extra.skipSharePow,
+      offLoopPow: probe ? false : !!extra.offLoopPow,
+      probeBody: probe,
       grandparentHeader: grandparentHeader(blocks),
       sealedIntervalsMs: headerGapsMs(blocks),
       parentFluxset: liveFlux,
       parentSpendTags: liveFlux.spendTags,
-      poolDest: verifyOpts.poolDest
-        || block.poolDest
-        || (block.miner && isDestAddress(block.miner) ? block.miner : null),
+      poolDest: extra.poolDest
+        || block?.poolDest
+        || (block?.miner && isDestAddress(block.miner) ? block.miner : null),
       owedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
+    });
+    return { check, spentBefore };
+  }
+
+  function probeBlock(block) {
+    const { check, spentBefore } = verifyAgainstTip(block, { probeBody: true });
+    const finish = (c) => {
+      rollbackSpent(spentB, spentBefore);
+      if (!c?.ok) return { ok: false, reason: c?.reason || 'append' };
+      return { ok: true, reason: '' };
+    };
+    if (check && typeof check.then === 'function') {
+      return check.then(finish, (err) => {
+        rollbackSpent(spentB, spentBefore);
+        return { ok: false, reason: 'append', error: String(err?.message || err) };
+      });
+    }
+    return finish(check);
+  }
+
+  function append(block, verifyOpts = {}) {
+    const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
+    if (incoming && incoming.length === 32) {
+      for (const b of blocks) {
+        if (b.hash && Buffer.from(b.hash).equals(incoming)) {
+          return { ok: false, reason: 'not_heavier', tip: tip() };
+        }
+      }
+    }
+    const { check, spentBefore } = verifyAgainstTip(block, {
+      trustedPowHash: verifyOpts.trustedPowHash || null,
+      skipSharePow: !!verifyOpts.skipSharePow,
+      offLoopPow: !!verifyOpts.offLoopPow,
+      poolDest: verifyOpts.poolDest,
     });
     const after = (c) => {
       // A failed consensus check keeps its own reason. The vault clock is a
@@ -2003,6 +2030,7 @@ export function createStore(dir, {
     ingest,
     template,
     submitHeader,
+    probeBlock,
     jobs,
     mempool,
     spentB,

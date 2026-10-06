@@ -206,7 +206,7 @@ describe('v12 pool seal carries proven lag-1 shares', () => {
       const clean = poolAt('clean');
       pools.push(clean);
       const paid = await carryThenPay(one, [{ dest, low: 11, bits: SHARE_FLOOR_BITS }], { fails: 2, mode: 'pow' });
-      assert.ok(one.stats.sealStrikes >= 1);
+      assert.equal(one.adminOps.health().bans, 0);
       const { nonces: cleanNonces } = await holdRound(clean, [{ dest: minerDest(), low: 11, bits: SHARE_FLOOR_BITS }]);
       const cleanPaid = await clean.sealFoundShare({
         jobId: clean.lastJob.jobId,

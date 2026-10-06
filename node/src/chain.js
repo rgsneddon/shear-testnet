@@ -1170,7 +1170,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // P2P omits that field. It stashes a worker ShearHash, then this branch
   // still checks the target. A missing stash hashes here (local mine / tests).
   let hash;
-  if (trustedPowHash) {
+  if (opts.probeBody === true) {
+    // In-process template probe. store.append never sets this, and the
+    // stand-in is not block work. Every other check still runs.
+    hash = Buffer.alloc(32);
+  } else if (trustedPowHash) {
     hash = Buffer.from(trustedPowHash);
     if (hash.length !== 32 || !meetsTarget(hash, decoded.bits)) {
       return { ok: false, reason: 'pow' };

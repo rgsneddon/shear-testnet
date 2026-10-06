@@ -69,6 +69,7 @@ import {
   selectBlockShares,
   rememberLiveSharePow,
   destOfShare,
+  verifyShareBatch,
   pinLiveSharePow,
   liveSharePowKey,
   hasLiveSharePow,
@@ -596,6 +597,26 @@ export function banInvalidKeys({ login, workerKey } = {}) {
 export const DEST_BAN_MIN_ACCEPTS = 3;
 export const IP_SOFT_STRIKES = 8;
 export const BAN_TTL_MS = 6 * 3600 * 1000;
+// Pool policy, not a consensus pin. The second consecutive failure of one
+// lag-1 batch recuts the template. SEAL_BAN_V0 (a dest ban on that streak)
+// is forbidden. SEAL_ESCAPE_V1 quarantines only rows that make the batch
+// unsealable.
+export const SEAL_ESCAPE_AFTER = 2;
+
+const HEADER_SEAL_FAULTS = new Set([
+  'pow', 'merkle', 'prev', 'timestamp', 'bits', 'base_fee', 'version',
+  'bad_header', 'stale_job', 'worker', 'parent_header', 'genesis_ms',
+  'no_header', 'not_heavier',
+]);
+
+export function sealFailureClass(reason) {
+  const why = String(reason || '');
+  if (why === 'share_pow' || why === 'miner_addr' || why === 'share_target' || why === 'hash_bonus') {
+    return 'share';
+  }
+  if (HEADER_SEAL_FAULTS.has(why)) return 'header';
+  return 'body';
+}
 
 export function shouldDurableDestBan(session) {
   return (Number(session?.accepted) || 0) >= DEST_BAN_MIN_ACCEPTS;
@@ -2221,8 +2242,7 @@ export function createPool({
 
   // Per-share re-proof only. pow, append, tip, and worker keep the batch.
   function perShareFailure(reason) {
-    const why = String(reason || '');
-    return why === 'share_pow' || why === 'miner_addr' || why === 'share_target' || why === 'hash_bonus';
+    return sealFailureClass(reason) === 'share';
   }
 
   function dropUnprovenShares(failed, reason, miner) {
@@ -2265,10 +2285,154 @@ export function createPool({
     return dropped;
   }
 
+  function removeShareCopies(list, dropCount) {
+    const left = new Map(dropCount);
+    const out = [];
+    for (const s of list || []) {
+      const k = String(s?.nonce ?? '');
+      const n = left.get(k) || 0;
+      if (n > 0) {
+        left.set(k, n - 1);
+        continue;
+      }
+      out.push(s);
+    }
+    return out;
+  }
+
+  // SEAL_ESCAPE_V1. Drop these objects only. A duplicate nonce keeps the
+  // other copy. lostWork counts the dropped copies and names their dests.
+  function dropShareRefs(refs, reason, miner) {
+    const bad = new Set(refs || []);
+    if (!bad.size) return [];
+    const dropped = [];
+    const keep = [];
+    for (const s of lag1Shares) {
+      if (bad.has(s)) dropped.push(s);
+      else keep.push(s);
+    }
+    if (!dropped.length) return [];
+    lag1Shares = keep;
+    const dropCount = new Map();
+    for (const s of dropped) {
+      const k = String(s?.nonce ?? '');
+      dropCount.set(k, (dropCount.get(k) || 0) + 1);
+    }
+    if (openShares.length) openShares = removeShareCopies(openShares, dropCount);
+    if (store.jobs && typeof store.jobs.values === 'function') {
+      for (const rec of store.jobs.values()) {
+        if (!Array.isArray(rec?.tpl?.shareBatch)) continue;
+        rec.tpl = {
+          ...rec.tpl,
+          shareBatch: removeShareCopies(rec.tpl.shareBatch, dropCount),
+        };
+      }
+    }
+    let units = 0;
+    const dests = [];
+    for (const s of dropped) {
+      units += shareWorkUnits(s);
+      const d = destOfShare(s);
+      if (d) dests.push(d);
+    }
+    if (units > 0) {
+      stats.lostWorkHashes = (Number(stats.lostWorkHashes) || 0) + units;
+      stats.lostWorkEvents = (Number(stats.lostWorkEvents) || 0) + 1;
+      saveLostWork();
+    }
+    console.error(JSON.stringify({
+      event: 'seal_batch_escape',
+      alert: true,
+      reason: String(reason || ''),
+      miner: String(miner || ''),
+      shares: dropped.length,
+      units,
+      dests,
+    }));
+    return dropped;
+  }
+
+  function blockFromTpl(tpl) {
+    return {
+      header: tpl.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      shareBatch: tpl.shareBatch || [],
+      miner: tpl.miner,
+      poolDest: tpl.poolDest || '',
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      rootA: tpl.rootA,
+      rootB: tpl.rootB,
+      height: tpl.height,
+    };
+  }
+
+  // Same issueJob path as a live template. Jobs created here are deleted.
+  // A promise from probeBlock is not a verdict, so it quarantines nothing.
+  function probeShares(shares) {
+    if (typeof store.probeBlock !== 'function') return { ok: false, reason: 'append', pending: true };
+    const savedLag = lag1Shares;
+    const savedLast = lastJob;
+    const savedPrev = prevJob;
+    const savedPrevAt = prevJobAt;
+    const savedPacked = packedMempoolKey;
+    const before = new Set();
+    if (store.jobs && typeof store.jobs.keys === 'function') {
+      for (const id of store.jobs.keys()) before.add(id);
+    }
+    lag1Shares = Array.isArray(shares) ? shares.slice() : [];
+    let verdict = { ok: false, reason: 'append' };
+    try {
+      const job = issueJob(undefined, { force: true });
+      const rec = job && store.jobs?.get?.(String(job.jobId));
+      if (rec?.tpl?.header) {
+        const got = store.probeBlock(blockFromTpl(rec.tpl));
+        if (got && typeof got.then === 'function') {
+          verdict = { ok: false, reason: 'append', pending: true };
+        } else if (got?.ok) verdict = { ok: true, reason: '' };
+        else verdict = { ok: false, reason: got?.reason || 'append' };
+      }
+    } catch {
+      verdict = { ok: false, reason: 'append' };
+    }
+    if (store.jobs && typeof store.jobs.keys === 'function') {
+      for (const id of [...store.jobs.keys()]) {
+        if (!before.has(id)) store.jobs.delete(id);
+      }
+    }
+    lag1Shares = savedLag;
+    lastJob = savedLast;
+    prevJob = savedPrev;
+    prevJobAt = savedPrevAt;
+    packedMempoolKey = savedPacked;
+    return verdict;
+  }
+
+  function isolateBadRows() {
+    const rows = lag1Shares.slice();
+    if (!rows.length) return [];
+    const whole = probeShares(rows);
+    if (whole.ok || whole.pending) return [];
+    const empty = probeShares([]);
+    if (!empty.ok || empty.pending) return [];
+    const bad = [];
+    let good = [];
+    for (const row of rows) {
+      const got = probeShares(good.concat([row]));
+      if (got.ok) good = good.concat([row]);
+      else if (!got.pending) bad.push(row);
+    }
+    return bad;
+  }
+
   // POOL_LAG1_CARRY_V1. Pool policy, not a consensus pin. A seal miss keeps
   // every share that has not itself failed re-proof. Unsealed holds are not
-  // written into the consensus owed ledger.
+  // written into the consensus owed ledger. SEAL_BAN_V0 is forbidden: this
+  // path does not ban or kick. SEAL_ESCAPE_V1 drops only rows that make the
+  // same batch unsealable.
   function noteSealFailure(reason, jobId, miner) {
+    // SEAL_ESCAPE_V1. No dest ban and no kick on this path.
     stats.sealFailed = (Number(stats.sealFailed) || 0) + 1;
     const key = batchKeyOf(lag1Shares);
     if (key && key === sealFailBatch) sealFailStreak += 1;
@@ -2276,24 +2440,29 @@ export function createPool({
       sealFailBatch = key;
       sealFailStreak = 1;
     }
+    const why = String(reason || 'append');
     console.error(JSON.stringify({
       event: 'seal_failed',
       alert: true,
-      reason: String(reason || 'append'),
+      reason: why,
       jobId: String(jobId || ''),
       streak: sealFailStreak,
       height: Number(store.tip()?.height || 0) + 1,
     }));
-    if (key && sealFailStreak >= 2) {
-      const who = String(miner || '');
-      if (who) {
-        stats.sealStrikes = (Number(stats.sealStrikes) || 0) + 1;
-        if (miners.has(who)) {
-          bans.add(who);
-          saveBans();
-          try { kickMiner(who); } catch { /* no socket */ }
+    if (key && sealFailStreak >= SEAL_ESCAPE_AFTER && sealFailureClass(why) !== 'header') {
+      const parent = store.tip()?.header || null;
+      const rowBad = [];
+      if (parent) {
+        for (const s of lag1Shares) {
+          const one = verifyShareBatch({ parentHeader: parent, shares: [s], skipPow: true });
+          if (!one.ok) rowBad.push(s);
         }
       }
+      const isolated = rowBad.length ? rowBad : (sealFailureClass(why) === 'body' ? isolateBadRows() : []);
+      if (isolated.length) dropShareRefs(isolated, why, miner);
+    }
+    if (key && sealFailStreak >= SEAL_ESCAPE_AFTER) {
+      const who = String(miner || '');
       // The failed template is not the only copy. lag1Shares still holds it.
       if (store.jobs?.entries) {
         for (const [id, rec] of store.jobs) {
