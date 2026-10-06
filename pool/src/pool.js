@@ -63,7 +63,7 @@ import {
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
 import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote } from '../../node/src/chain.js';
-import { sortShares, selectBlockShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
+import { sortShares, selectBlockShares, rememberLiveSharePow, destOfShare } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
@@ -298,6 +298,31 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
     else out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
   }
   return out.filter((s) => s.nanos > 0);
+}
+
+/**
+ * Template miner. Eligible dests are the ones with proven work. Order is
+ * payout-address localeCompare, never miner-map insertion order. No proven
+ * dest means no hasher: the caller holds the pot on the fee note.
+ */
+export function templateHasherDest(rows, provenDests) {
+  const proven = new Set();
+  const list = provenDests instanceof Set ? provenDests : (Array.isArray(provenDests) ? provenDests : []);
+  for (const dest of list) {
+    const s = String(dest || '').trim();
+    if (isDestAddress(s)) proven.add(s);
+  }
+  const eligible = [];
+  const seen = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (isCminerFeeLogin(row?.workerKey || row?.login)) continue;
+    const dest = hasherPayoutDest(row?.login, { dest: row?.payoutDest });
+    if (!dest || !proven.has(dest) || seen.has(dest)) continue;
+    seen.add(dest);
+    eligible.push(dest);
+  }
+  eligible.sort((a, b) => a.localeCompare(b));
+  return eligible[0] || '';
 }
 
 /**
@@ -2150,12 +2175,6 @@ export function createPool({
       if (rec && rec.job) rec.job = job;
       return job;
     }
-    const hasherRow = [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))
-      || [...miners.values()][0];
-    const hasherPay = hasherPayoutDest(hasherRow?.login, {
-      dest: hasherRow?.payoutDest,
-      height: Number(store.tip()?.height || 0) + 1,
-    });
     const poolPay = payoutDest(miner);
     const tipHdr = store.tip()?.header || null;
     lag1Shares = selectBlockShares(provenLag1Shares(tipHdr, lag1Shares));
@@ -2188,9 +2207,19 @@ export function createPool({
         carryNanos: carryIn,
       });
     }
+    const provenDests = [];
+    for (const share of lag1Shares) {
+      const dest = destOfShare(share);
+      if (dest && isDestAddress(dest)) provenDests.push(dest);
+    }
+    for (const row of potRows) {
+      if (isDestAddress(row.miner)) provenDests.push(row.miner);
+    }
+    const hasherPay = templateHasherDest([...miners.values()], provenDests);
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
     // still issues; shareBatch credit stays hasher dests only. An empty proven
     // round carries the miner pot and pays only this block's fee note.
+    // A connected miner with no proven share is not this header's miner.
     const payout = hasherPay
       || potShares.find((s) => s.kind === 'pot')?.address
       || poolPay
