@@ -21,13 +21,13 @@ Ran with `node --test` from `C:\Users\rgsne\shear-testnet` on 2026-10-06. τ = 2
 - `node/tests/test_range_canonical_v12.js` — describe `v12 range proofs are exact length and canonical` passed (2) at `2c4dbd1` against the rebuilt `shearadmit.node`. Amounts 0, 1, 2_000_000_000, and 100_000_000_000. `verifyRange` and `admitMempool` reject a trailing byte, a short proof, and `s+L` on `z` and on `e0`. `verifyBlock` returns `range_proof` for a trailing byte. `crypto/note.test.js` and `crypto/dummy.test.js` passed on that addon.
 - `pool/tests/test_asert_ease_stall_v12.js` — `a stall with no new tx and no new miners eases within the spec window` passed. Gaps `8·T`, `8·T+60s`, `16·T`, and `32·T`. At `8·T` the job stays on the full packed target. Past that window the same jobId takes `quote.eased`, `bitsAcceptAsert` accepts it, and ease stays ≤ 2 bits. Miner count stays 0 and the mempool stays empty. A one-interval child quote has `easeBits` 0. `pool/tests/test_tip_stall.js` passed (3) after this. `node/tests/test_asert_v12.js` passed (5).
 - `tests/test_public_copy.js`, `site/tests/test_docs.js`, and `tests/test_admit_v1_grep.js` passed (10). The pin test reads `kWalletVersion` `0.72`, `PRODUCT_VERSION` `19.0`, `SHEARK_MINER_VERSION` `2.9`, and `MAGIC_TESTNET` `shear-testnet-v12`, and the fingerprint is `ASERT_STEP=aserti3-2d` with `ASERT_TAU_MS=7200000`. Product version and the wallet pin are absent from the fingerprint. `.github/workflows/public-copy.yml` runs the docs and public-copy tests. `admit-v1-grep.yml` runs only the ADMIT v1 grep.
+- `node/tests/test_job_median_bits.js` — `follows genesis-anchored aserti3-2d, not a caller target` passed. Genesis job bits stay `1114112` when the caller passes `1`. A 2s gap seals `1114913`. Six more 2s gaps seal `1120520`. A stamp 20·T later issues packed `1104136`, not the eased floor `1017397` and not the caller override. `node/tests/test_parent_interval_bits.js` — `retarget and verifyBlock use the anchored quote, not a caller target` passed. A zero gap and a stamp 50ms before the parent quote the anchored formula. `verifyBlock` rejects a same-timestamp child as `timestamp`, accepts a 1ms child and a 45s child at `quote.packed`, and returns `bits` when those headers carry the genesis seed or each other's target.
 
 `verifyOneForkBlock` passes `genesisMs` from the accepted prefix (`genesisHeaderMs`). The epoch-floor check is inside `test_asert_v12.js` (`pot follows the genesis header across append and ingest, including the epoch floor`). A fresh node syncing a multi-epoch chain is not a separate test yet.
 
 ## Not green on this run
 
 - `pool/tests/test_round_payout.js` — `pays N and M nanos to two miners plus 1 SHE pot on the next sealed job` failed. The first share submit came back without `result.status === 'OK'` (`undefined !== 'OK'`). Not claimed fixed.
-- `node/tests/test_job_median_bits.js` and `node/tests/test_parent_interval_bits.js` still expect median-11 `nextBits`. They fail before the new ease path. Not claimed fixed.
 
 ## Open
 
@@ -41,7 +41,7 @@ Wallet display pin is `kWalletVersion` / `kCliVersion` `0.72` and pubspec `0.72.
 
 ## Next step
 
-Retarget `node/tests/test_job_median_bits.js` and `node/tests/test_parent_interval_bits.js` onto genesis-anchored aserti3-2d, then the T20 empty-batch pot rule and T21 commitment-sum supply. Reserve allowlist is still v11 bytecode. Site strings are still the 0.71 pin set.
+T20 empty-batch pot rule, then T21 commitment-sum supply. Reserve allowlist is still v11 bytecode. Site strings are still the 0.71 pin set.
 
 ## Hosts and services
 
