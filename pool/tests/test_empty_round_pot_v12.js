@@ -9,7 +9,7 @@ import { GENESIS_BITS_PACKED, MAGIC_TESTNET, POOL_FEE_BPS, POOL_FEE_MAX_BPS, SHA
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { openedCoinbaseNanos, sealCoinbaseNote, addExcess, noteCommitOfDest20 } from '../../crypto/note.js';
-import { aLeavesFromShares, destOfShare, noteCommitOfShare, unitsForShare } from '../../crypto/share_batch.js';
+import { aLeavesFromShares, clearLiveSharePow, destOfShare, noteCommitOfShare, rememberLiveSharePow, shareWorkBits, unitsForShare } from '../../crypto/share_batch.js';
 import { epochMs, potSubsidyAt, potSubsidyNanos } from '../../crypto/pot_sched.js';
 import { createPool, potRoundShares, configuredFeeIdentity, THIS_POOL_DIRECT_FEE_DEST } from '../src/pool.js';
 import { GENESIS_PREV, buildTemplate, canonicalCarry, custodyPotShares, digestTx, potPaysFromLeaves, potSharesFromBatch, verifyBlock } from '../../node/src/chain.js';
@@ -505,6 +505,18 @@ describe('v12 empty round carries the pot to the next proven round', () => {
         weight: tpl.weight,
         height: tpl.height,
       };
+      clearLiveSharePow();
+      if (prev?.header) {
+        for (const row of block.shareBatch || []) {
+          const bits = shareWorkBits(row);
+          if (bits <= SHARE_FLOOR_BITS) continue;
+          rememberLiveSharePow(prev.header, row.nonce, {
+            noteCommit: noteCommitOfShare(row),
+            shareBits: bits,
+            lz: row.lz,
+          });
+        }
+      }
       const res = verifyBlock(block, prev, {
         trustedPowHash: easyPowHash(),
         skipSharePow: true,

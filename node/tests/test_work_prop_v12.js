@@ -15,8 +15,10 @@ import {
 } from '../../crypto/asert.js';
 import { meetsTarget } from '../../crypto/shear_hash.js';
 import {
+  clearLiveSharePow,
   destBoundShareHash,
   noteCommitOfShare,
+  rememberLiveSharePow,
   selectBlockShares,
   shareWorkBits,
   stashSharePow,
@@ -206,6 +208,14 @@ describe('v12 PROP pays share work', () => {
       countPays.find((row) => row.address === high)?.nanos,
     );
     function check(potShares, shareBatch) {
+      clearLiveSharePow();
+      for (const row of shareBatch) {
+        rememberLiveSharePow(parent.header, row.nonce, {
+          noteCommit: noteCommitOfShare(row),
+          shareBits: shareWorkBits(row),
+          lz: row.lz,
+        });
+      }
       const tpl = buildTemplate({
         prev: sealed.hash,
         prevHeader: parent.header,

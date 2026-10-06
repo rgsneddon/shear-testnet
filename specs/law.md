@@ -53,7 +53,8 @@ SPEND_SIG_ONLY=1
 MEMO_NOT_DEST_KEYED=1
 AMOUNT=confidential
 DUMMY_OUTS=1
-ENC_SHARE=v5
+ENC_SHARE=v5+work7
+SHARE_UNITS=2^bits
 DANDELIONPP=1
 VIEW_TAG=1
 KDF=argon2id-shewall
@@ -80,6 +81,8 @@ POOL_WITHDRAW=eip712-spend-bound
 
 v12 consensus caps a pool fee at `POOL_FEE_MAX_BPS` (200) of that block's subsidy. Carried pot is not part of the fee base. This public pool still constructs at 100 bps.
 
+v12 share credit is `ENC_SHARE=v5+work7` and `SHARE_UNITS=2^bits`. A live cache hit binds that nonce to its noteCommit and proven width. `skipPow` alone does not credit bits above the floor.
+
 Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. **Hash bonus never goes to 0** (`HASH_UNIT_FLOOR=1`). Votes cannot zero the unit or move the pot schedule. Clients refuse to emit before that instant.
 
 ## Hash unit (proven)
@@ -104,7 +107,7 @@ Lag-1: ShearHash-v3 key K includes `continuity_root` and `merkle_root`. This-rou
 
 Block N pays the shares proven on the frozen job header of the previous open round (parent sealed header; nonce replaced per share; no restamp).
 
-Body encoding `ENC_SHARE=v5` = `note_commit || nonce_u64le || lz_u8` (optional view tag). Wire and disk store packed frames, not one JSON object per share. `shareBatch` max `MAX_SHARES_PER_BLOCK`. Canonical order is `(noteCommit, nonce)`. Over-cap inclusion keeps higher hash-share weight; equal weight breaks on sha256(noteCommit || nonce), not on a low dest20. Duplicate nonce = `dup_share`. Tree A stays `note_commit+u64count`; count must equal summed units for that dest; mismatch = `hash_bonus`.
+Body encoding `ENC_SHARE=v5` = `note_commit || nonce_u64le || lz_u8` (optional view tag). The work frame (`ENC_SHARE_WORK`) adds credited bits, and those bits are `2^bits` units when the dest-bound hash meets them. Wire and disk store packed frames, not one JSON object per share. `shareBatch` max `MAX_SHARES_PER_BLOCK`. Canonical order is `(noteCommit, nonce)`. Over-cap inclusion keeps higher hash-share weight; equal weight breaks on sha256(noteCommit || nonce), not on a low dest20. Duplicate nonce = `dup_share`. Tree A stays `note_commit+u64count`; count must equal summed units for that dest; mismatch = `hash_bonus`.
 
 `skipFlow` when buried && samplesPruned may skip `shareBatch` bodies. It may not skip hash vouts / `ssa1` checks. IBD of a pruned height is assume-valid after 1000. Full nodes validate `shareBatch` until prune-1000; money vouts forever.
 

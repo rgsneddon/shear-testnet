@@ -130,7 +130,7 @@ export function shareInclusionTie(share) {
  * A block that already exceeds the cap still fails verify with share_cap.
  */
 export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK) {
-  const list = unpackShareBatch(shares);
+  const list = sharesAtProvenBits(unpackShareBatch(shares));
   const limit = Math.max(0, Math.floor(Number(cap) || 0));
   const weight = (s) => unitsForShare(shareWorkBits(s));
   let totalUnits = 0;
@@ -194,8 +194,13 @@ function shareJobKey(header) {
   }
 }
 
-/** Process-local: floor shares the pool already hashed live. Not on the wire. */
-const liveSharePow = new Set();
+/**
+ * Process-local proofs for shares this process already hashed.
+ * Keyed by job and nonce. The value binds noteCommit and the proven bit
+ * width. A hit cannot be restamped onto another dest or a higher width.
+ * Not on the wire. Peers do not see it.
+ */
+const liveSharePow = new Map();
 
 /**
  * Digests ShearHash already computed off the accept thread for this process.
@@ -222,11 +227,62 @@ export function dropSharePowKeys(keys) {
   for (const key of keys || []) preparedSharePow.delete(key);
 }
 
-export function rememberLiveSharePow(parentHeader, nonce) {
+export function clearLiveSharePow() {
+  liveSharePow.clear();
+}
+
+/**
+ * Record a share this process already proved. Incomplete proof records nothing.
+ * A second proof cannot move the nonce to another noteCommit or a higher width.
+ */
+export function rememberLiveSharePow(parentHeader, nonce, proof) {
   const job = shareJobKey(parentHeader);
-  if (!job) return;
-  liveSharePow.add(`${job}:${String(nonce)}`);
+  if (!job || !proof) return false;
+  const nc = asBuf(proof.noteCommit, 32);
+  if (!nc || proof.shareBits == null || proof.shareBits === '') return false;
+  const lz = Number(proof.lz);
+  if (!Number.isFinite(lz)) return false;
+  const bits = shareWorkBits({ shareBits: proof.shareBits });
+  const key = `${job}:${String(nonce)}`;
+  const hex = Buffer.from(nc).toString('hex');
+  const prev = liveSharePow.get(key);
+  if (prev) {
+    if (prev.noteCommit !== hex || bits > prev.bits) return false;
+    return true;
+  }
+  liveSharePow.set(key, { noteCommit: hex, bits, lz: lz & 0xff });
   if (liveSharePow.size > MAX_SHARES_PER_BLOCK * 8) liveSharePow.clear();
+  return liveSharePow.has(key);
+}
+
+function liveProofForShare(share) {
+  if (!share?.verifiedHeader) return null;
+  const buf = asHeaderBuf(share.verifiedHeader);
+  if (!buf || buf.length !== 128) return null;
+  const job = shareJobKey(buf);
+  if (!job || share.nonce == null || share.nonce === '') return null;
+  return liveSharePow.get(`${job}:${String(share.nonce)}`) || null;
+}
+
+/** Drop a cached nonce whose dest moved, and clamp a cached width that grew. */
+function sharesAtProvenBits(list) {
+  const out = [];
+  for (const s of list) {
+    const proof = liveProofForShare(s);
+    if (!proof) {
+      out.push(s);
+      continue;
+    }
+    const nc = noteCommitOfShare(s);
+    const hex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
+    if (!hex || hex !== proof.noteCommit) continue;
+    if (shareWorkBits(s) > proof.bits) {
+      out.push({ ...s, shareBits: proof.bits, creditedShareBits: proof.bits });
+    } else {
+      out.push(s);
+    }
+  }
+  return out;
 }
 
 /**
@@ -276,10 +332,20 @@ export function verifyShareBatch({
       nc = noteCommitOfDest20(dest20OfShare({ ...s, dest }));
     }
     const header = setNonce(job, nonce);
-    const cached = skipPow || (jobKey && liveSharePow.has(`${jobKey}:${nk}`));
-    let lz = Number(s.lz) & 0xff;
     const claimedBits = shareWorkBits(s);
-    if (!cached) {
+    const ncHex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
+    const cachedProof = jobKey ? liveSharePow.get(`${jobKey}:${nk}`) : null;
+    let lz = Number(s.lz) & 0xff;
+    if (cachedProof) {
+      // The nonce is already bound. A different dest or a higher width is not re-hashed.
+      if (!ncHex || ncHex !== cachedProof.noteCommit || claimedBits > cachedProof.bits) {
+        return { ok: false, reason: 'share_pow' };
+      }
+      lz = cachedProof.lz;
+    } else if (skipPow && claimedBits <= SHARE_FLOOR_BITS) {
+      // Historical floor rows and status rebuild of floor batches. Above-floor
+      // work is not credited from skipPow. A cache hit above still binds dest.
+    } else {
       if (!nc || Buffer.from(nc).length !== 32) {
         return { ok: false, reason: 'miner_addr' };
       }

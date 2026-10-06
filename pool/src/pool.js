@@ -2574,7 +2574,13 @@ export function createPool({
             : String(job?.header || '').toLowerCase(),
         };
         const opened = rememberOpenShare(openShares, rec);
-        if (opened.ok) rememberLiveSharePow(scored.header || job?.header, params.nonce);
+        if (opened.ok) {
+          rememberLiveSharePow(scored.header || job?.header, params.nonce, {
+            noteCommit: noteCommitOfShare(rec),
+            shareBits: rec.shareBits,
+            lz: rec.lz,
+          });
+        }
       }
       const credited = Number(scored.creditedShareBits || 0);
       const proven = credited > 0 ? hashesProvenByShare(credited) : 0;
