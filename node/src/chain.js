@@ -85,8 +85,8 @@ import {
 } from '../../crypto/note.js';
 import { packTx, packDigest, unpackShareBatch, u64le } from '../../crypto/pack.js';
 import {
-  acceptedUnitsOfBlock,
   freshCreditsFromShares,
+  freshForBlock,
   hashBudgetNanos,
   hashDustFromTx,
   hashLedgerIdle,
@@ -94,7 +94,6 @@ import {
   hashOwedFromTx,
   hashOwedRootAgrees,
   hashOverflowFromTx,
-  replayHashOwed,
   sameHashLedger,
   settleHashOwed,
   writeHashLedger,
@@ -706,6 +705,7 @@ export function buildTemplate({
   parentFluxset = null,
   parentBlocks = null,
   hashAcceptedSeries = null,
+  hashOwedIn: hashOwedInOpt = null,
 }) {
   const batch = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const fromBatch = batch.length
@@ -739,21 +739,10 @@ export function buildTemplate({
   const carryIn = canonicalCarry(prevBlock?.txs?.[0]) || 0;
   const parentCb = prevBlock?.txs?.[0] || null;
   let series = Array.isArray(hashAcceptedSeries) ? hashAcceptedSeries : null;
-  let hashOwedIn = hashOwedFromTx(parentCb);
-  if (hashOwedIn == null && Array.isArray(parentBlocks) && parentBlocks.length) {
-    const replay = replayHashOwed(parentBlocks, { unit: hashBonusNanos });
-    if (!replay.ok || !hashOwedRootAgrees(parentCb, replay.rows)) throw new Error('hash_owed');
-    hashOwedIn = replay.rows;
-    if (series == null) series = replay.accepted;
-  }
-  if (series == null && Array.isArray(parentBlocks)) {
-    const lifted = [];
-    for (const block of parentBlocks) {
-      const n = acceptedUnitsOfBlock(block, hashBonusNanos);
-      if (n == null) throw new Error('hash_owed');
-      lifted.push(n);
-    }
-    series = lifted;
+  // Maintained owed state. A lean parent root is not a reason to walk the chain.
+  let hashOwedIn = Array.isArray(hashOwedInOpt) ? hashOwedInOpt : hashOwedFromTx(parentCb);
+  if (Array.isArray(hashOwedInOpt) && parentCb && !hashOwedRootAgrees(parentCb, hashOwedInOpt)) {
+    throw new Error('hash_owed');
   }
   const hashDustIn = hashDustFromTx(parentCb);
   const hashOverflowIn = hashOverflowFromTx(parentCb);
@@ -867,6 +856,7 @@ export function buildTemplate({
     miner,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
+    hashCredits: freshCreditsFromShares(batch, hashBonusNanos),
   };
 }
 
@@ -1075,7 +1065,9 @@ export function shareCreditBound(block) {
   return { ok: true, reason: '' };
 }
 
-function settlementFor(prev, height, shareBatch, unit, extra = {}) {
+function settlementFor(prev, height, block, unit, extra = {}) {
+  const shareBatch = Array.isArray(block?.shareBatch) ? block.shareBatch : (Array.isArray(block) ? block : []);
+  const creditBlock = block && !Array.isArray(block) ? block : { shareBatch };
   const parent = prev?.txs?.[0] || null;
   let owedIn;
   if (extra.owedIn != null) {
@@ -1092,7 +1084,9 @@ function settlementFor(prev, height, shareBatch, unit, extra = {}) {
   const series = extra.hashAcceptedSeries;
   const budget = series == null ? null : hashBudgetNanos(series, unit);
   if (series != null && budget == null) return { ok: false, reason: 'hash_owed' };
-  const fresh = shareBatch.length ? freshCreditsFromShares(shareBatch, unit) : [];
+  const gotFresh = freshForBlock(creditBlock, unit);
+  if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
+  const fresh = gotFresh.fresh;
   const settled = settleHashOwed({
     owedIn,
     dustIn,
@@ -1325,7 +1319,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } else if (shareBatch.length) {
       return { ok: false, reason: 'share_batch' };
     }
-    const settlement = settlementFor(prev, height, shareBatch, liveUnit, {
+    const settlement = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
     });
@@ -1454,7 +1448,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
   }
   if (skipFlow) {
-    const buriedSettle = settlementFor(prev, height, shareBatch, liveUnit, {
+    const buriedSettle = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
     });

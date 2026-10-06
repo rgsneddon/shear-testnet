@@ -24,6 +24,7 @@ import {
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
 import { extraMint } from './mint.js';
 import { splitLevy } from './levy.js';
+import { decodeHeader } from './header.js';
 
 export const VOTE_INCREASE = 'increase bonus';
 export const VOTE_DECREASE = 'decrease bonus';
@@ -606,6 +607,23 @@ export function verifyReservePayout(state, tx) {
 }
 
 /** Honour Reserve lock / vote / withdraw txs already sealed in a block. */
+/** Hash-bonus unit live at each block, before that block's own enact. */
+export function bonusUnitsBefore(blocks) {
+  const state = emptyVault();
+  const units = [];
+  for (const block of blocks || []) {
+    units.push(hashBonusUnitNanos(state.liveHashBonusNanos));
+    let nowMs = 0;
+    try {
+      nowMs = Number(decodeHeader(Buffer.from(block.header)).timestamp);
+    } catch {
+      nowMs = 0;
+    }
+    applyReserveBlock({ state, block, nowMs });
+  }
+  return units;
+}
+
 export function applyReserveBlock({ state, block, nowMs }) {
   if (!state || state.blankFork) return [];
   const txs = Array.isArray(block?.txs) ? block.txs : [];

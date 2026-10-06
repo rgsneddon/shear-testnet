@@ -26,12 +26,13 @@ import {
 } from '../../crypto/share_batch.js';
 import { canonicalCarry } from './chain.js';
 import {
-  freshCreditsFromShares,
+  freshForBlock,
   hashBudgetNanos,
   hashLedgerIdle,
   sameHashLedger,
   settleHashOwed,
 } from '../../crypto/hash_owed.js';
+import { bonusUnitsBefore } from '../../crypto/reserve_vault.js';
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const ZERO_32 = Buffer.alloc(32);
@@ -96,25 +97,22 @@ function shareCounts(share) {
 
 /**
  * Consensus hash bonus for one block, without opening a note.
- * A non-empty batch credits retainedUnitsByCommit. Under the unit cap that is 2^bits per share. Over the cap it is the pro-rata share of the cap. Missing bits are the floor.
- * An empty batch with one hash output is the finder floor.
- * An empty batch with no hash output is zero.
+ * A non-empty batch credits retainedUnitsByCommit. Under the unit cap that
+ * is 2^bits per share. Over the cap it is the pro-rata share of the cap.
+ * An empty batch is not a finder-floor shortcut: a later block pays every
+ * parent row the settlement names, and a pruned batch has no shares to sum.
+ * The idle one-output finder floor is applied by the audit, which can see
+ * the owed ledger. Missing bits on a present share are rejected.
  */
 function permittedHash(block) {
   const unit = BigInt(hashBonusUnitNanos(HASH_BONUS_NANOS));
-  const floorShare = BigInt(unitsForShare());
   let shares = [];
   try {
     shares = unpackShareBatch(Array.isArray(block?.shareBatch) ? block.shareBatch : []);
   } catch {
     return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }
-  const hashVouts = (block?.txs?.[0]?.vout || []).filter((o) => String(o?.kind || '') === 'hash');
-  if (!shares.length) {
-    if (hashVouts.length === 0) return { ok: true, nanos: 0n };
-    if (hashVouts.length === 1) return { ok: true, nanos: floorShare * unit };
-    return { ok: false, reason: 'hash_bonus', nanos: 0n };
-  }
+  if (!shares.length) return { ok: true, nanos: 0n, pruned: block?.samplesPruned === true };
   if (shares.length > MAX_SHARES_PER_BLOCK) {
     return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }
@@ -239,8 +237,11 @@ export function auditCirculatingSupply(blocks, {
   let overflowState = 0n;
   let ok = true;
   let reason = '';
+  const units = bonusUnitsBefore(list);
 
-  for (const block of list) {
+  for (let bi = 0; bi < list.length; bi += 1) {
+    const block = list[bi];
+    const unit = units[bi] == null ? HASH_BONUS_NANOS : units[bi];
     const ts = headerMs(block);
     if (!(ts > 0)) {
       ok = false;
@@ -290,9 +291,16 @@ export function auditCirculatingSupply(blocks, {
       carry = carryOut;
       continue;
     }
-    const fresh = shares.length ? freshCreditsFromShares(shares) : [];
+    const gotFresh = freshForBlock(block, unit);
+    if (!gotFresh.ok) {
+      ok = false;
+      reason = reason || 'hash_owed';
+      carry = carryOut;
+      continue;
+    }
+    const fresh = gotFresh.fresh;
     const blockHeight = Number(block?.height);
-    const budget = hashBudgetNanos(acceptedSeries, HASH_BONUS_NANOS);
+    const budget = hashBudgetNanos(acceptedSeries, unit);
     if (budget == null) {
       ok = false;
       reason = reason || 'hash_owed';
@@ -305,6 +313,7 @@ export function auditCirculatingSupply(blocks, {
       overflowIn: overflowState,
       fresh,
       height: Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : 0,
+      unit,
       budget,
     });
     if (!settled.ok || !sameHashLedger(cb, settled)) {
@@ -320,7 +329,7 @@ export function auditCirculatingSupply(blocks, {
     const hashVouts = (cb?.vout || []).filter((o) => String(o?.kind || '') === 'hash');
     if (!shares.length && idle) {
       if (hashVouts.length === 0) mintedHashHere = 0n;
-      else if (hashVouts.length === 1) mintedHashHere = BigInt(unitsForShare()) * BigInt(hashBonusUnitNanos(HASH_BONUS_NANOS));
+      else if (hashVouts.length === 1) mintedHashHere = BigInt(unitsForShare()) * BigInt(hashBonusUnitNanos(unit));
       else {
         ok = false;
         reason = reason || 'hash_bonus';

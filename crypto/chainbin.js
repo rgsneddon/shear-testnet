@@ -7,6 +7,7 @@ import { encodeHeader, decodeHeader } from './header.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from './pack.js';
 import { compactTx } from './chronoflux.js';
 import { reviveBytes } from './note.js';
+import { packHashCreditBytes, unpackHashCreditBytes } from './hash_owed.js';
 
 const MAGIC = Buffer.from('shear-chn-v1\0\0\0');
 
@@ -63,6 +64,12 @@ export function packEpochBlock(block) {
     n.writeUInt32LE(body.length, 0);
     chunks.push(n, body);
   }
+  if (Array.isArray(block.hashCredits)) {
+    const body = packHashCreditBytes(block.hashCredits);
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -87,6 +94,8 @@ export function unpackEpochBlock(buf) {
   let shareBatch = [];
   let bSpendIds;
   let sawSpendIds = false;
+  let hashCredits;
+  let sawCredits = false;
   if (o + 4 <= b.length) {
     const sLen = b.readUInt32LE(o);
     o += 4;
@@ -95,18 +104,26 @@ export function unpackEpochBlock(buf) {
     } else {
       if (sLen > 0) shareBatch = unpackShareBatchBytes(b.subarray(o, o + sLen));
       o += sLen;
-      if (o + 4 <= b.length) {
-        const idLen = b.readUInt32LE(o);
-        o += 4;
-        if (idLen <= b.length - o) {
-          try {
-            const parsed = JSON.parse(b.subarray(o, o + idLen).toString() || 'null');
-            if (Array.isArray(parsed) && parsed.every((id) => typeof id === 'string')) {
-              bSpendIds = parsed;
-              sawSpendIds = true;
-            }
-          } catch { /* absent stamp stays fail-closed for a b-spend */ }
+      while (o + 4 <= b.length) {
+        const nLen = b.readUInt32LE(o);
+        if (nLen > b.length - (o + 4)) break;
+        const body = b.subarray(o + 4, o + 4 + nLen);
+        const credits = unpackHashCreditBytes(body);
+        if (credits) {
+          hashCredits = credits;
+          sawCredits = true;
+          o += 4 + nLen;
+          continue;
         }
+        let parsed = null;
+        try { parsed = JSON.parse(body.toString('utf8')); } catch { parsed = null; }
+        if (Array.isArray(parsed) && parsed.every((id) => typeof id === 'string')) {
+          bSpendIds = parsed;
+          sawSpendIds = true;
+          o += 4 + nLen;
+          continue;
+        }
+        break;
       }
     }
   }
@@ -127,6 +144,7 @@ export function unpackEpochBlock(buf) {
     weight: b.readUInt32LE(232),
   };
   if (sawSpendIds) block.bSpendIds = bSpendIds;
+  if (sawCredits) block.hashCredits = hashCredits;
   return block;
 }
 

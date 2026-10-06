@@ -52,7 +52,13 @@ function potBlock(ts, miner, notes, carryNanos = 0, extra = {}) {
     potShares: shares,
     potNanos: shares.reduce((a, s) => a + s.nanos, 0),
     carryNanos,
+    shareBatch: extra.shareBatch || [],
   });
+  // The caller names the hash notes, including an inflated one. The stamp
+  // stays the settlement of the share batch. Drop the notes coinbaseTx sealed
+  // so the caller's amounts are the ones the audit sums.
+  tx.vout = (tx.vout || []).filter((o) => String(o?.kind || '') !== 'hash');
+  tx.excess = excessOf(tx.vout);
   const rest = notes.filter((n) => n.kind === 'finder-fee' || n.kind === 'reserve-fee' || n.kind === 'hash');
   for (const n of rest) {
     const sealed = sealCoinbaseNote(n.nanos, {

@@ -275,6 +275,8 @@ describe('v12 hash-owed frame', () => {
       bits: q3.packed,
       now: when3,
       shareBatch: [],
+      hashOwedIn: full.rows,
+      hashAcceptedSeries: full.accepted,
     });
     const paid = (next.txs[0].vout || []).filter((o) => o.kind === 'hash');
     assert.ok(paid.length >= rawRows.length);

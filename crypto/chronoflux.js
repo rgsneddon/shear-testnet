@@ -23,7 +23,7 @@ import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custody
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
 import { hash20FromAddress } from './address.js';
-import { compactHashLedger } from './hash_owed.js';
+import { compactHashLedger, packHashCreditBytes } from './hash_owed.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -536,7 +536,7 @@ export function admitWireTx(tx) {
 export function compactChainBlock(block) {
   const samplesPruned = !!block.samplesPruned;
   const bLeavesPruned = !!block.bLeavesPruned || samplesPruned;
-  return {
+  const row = {
     magic: block.magic,
     height: block.height,
     miner: block.miner,
@@ -554,4 +554,8 @@ export function compactChainBlock(block) {
     txs: (block.txs || []).map(compactTx),
     sharePacked: packShareBatchBytes(block.shareBatch || []).toString('hex'),
   };
+  if (Array.isArray(block.hashCredits)) {
+    row.hashCreditPacked = packHashCreditBytes(block.hashCredits).toString('hex');
+  }
+  return row;
 }

@@ -12,7 +12,12 @@
  * HASH_OWED_CARRY_V1 has no public dust pot and no unattributed overflow.
  * The inline pack takes payable rows first, then sub-dust rows. That pack
  * is node state. The coinbase wire carries hashOwedRoot only
- * (HASH_OWED_WIRE=root-v1). HASH_OWED_BUDGET_SCALE_V1 sets this block's
+ * (HASH_OWED_WIRE=root-v1). Each block also seals this block's fresh
+ * per-noteCommit credits (HASH_OWED_RECOVER=sealed-credits-v1). Replay
+ * reads that record, not the prunable share batch. The hash-bonus unit
+ * is the one live at that height (HASH_OWED_UNIT_HISTORY=per-height).
+ * hashAcceptedUnits is required and must match settlement
+ * (HASH_ACCEPTED_UNITS=validated). HASH_OWED_BUDGET_SCALE_V1 sets this block's
  * mint capacity to max(MAX_HASH_UNITS, k * lowerMedian) over the
  * fingerprinted window of sealed accepted units, and never below the floor.
  * Pot splits and the pool fee do not read this ledger. Amounts stay BigInt
@@ -110,6 +115,9 @@ function cmpOwed(a, b) {
 }
 
 const ROOT_PREFIX = Buffer.from('hashowed-root-v1');
+const CREDIT_PREFIX = Buffer.from('hashowed-credits-v1');
+const CREDIT_MAGIC = Buffer.from('hcrd1');
+const CREDIT_ROW = 32 + 20 + 32 + 8;
 
 function rootBytes(v) {
   if (v == null || v === '') return null;
@@ -175,6 +183,236 @@ export function hashOwedRootAgrees(tx, rows) {
   const expect = hashOwedRoot(rows || []);
   if (!root) return (rows || []).length === 0;
   return root.equals(expect);
+}
+
+function creditBase(row) {
+  return row?.admitBase && !emptyBase(row.admitBase) ? Buffer.from(row.admitBase) : Buffer.alloc(32);
+}
+
+/** Canonical credit root. sinceHeight is not part of a fresh credit. */
+export function hashCreditRoot(rows) {
+  const ordered = [...(rows || [])].sort((a, b) => cmpNoteCommit(a.noteCommit, b.noteCommit));
+  const parts = [CREDIT_PREFIX];
+  for (const row of ordered) {
+    parts.push(Buffer.from(row.noteCommit));
+    parts.push(Buffer.from(row.dest20));
+    parts.push(creditBase(row));
+    parts.push(u64le(row.nanos));
+  }
+  return createHash('sha256').update(Buffer.concat(parts)).digest();
+}
+
+function creditRowBytes(row) {
+  const out = Buffer.alloc(CREDIT_ROW);
+  Buffer.from(row.noteCommit).copy(out, 0);
+  Buffer.from(row.dest20).copy(out, 32);
+  creditBase(row).copy(out, 52);
+  u64le(row.nanos).copy(out, 84);
+  return out;
+}
+
+/** Non-prunable body of this block's fresh credits. The empty record is real. */
+export function packHashCreditBytes(rows) {
+  const ordered = [...(rows || [])].sort((a, b) => cmpNoteCommit(a.noteCommit, b.noteCommit));
+  const body = Buffer.alloc(CREDIT_MAGIC.length + 4 + ordered.length * CREDIT_ROW);
+  CREDIT_MAGIC.copy(body, 0);
+  body.writeUInt32LE(ordered.length, CREDIT_MAGIC.length);
+  let o = CREDIT_MAGIC.length + 4;
+  for (const row of ordered) {
+    creditRowBytes(row).copy(body, o);
+    o += CREDIT_ROW;
+  }
+  return body;
+}
+
+export function unpackHashCreditBytes(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  if (b.length < CREDIT_MAGIC.length + 4) return null;
+  if (!b.subarray(0, CREDIT_MAGIC.length).equals(CREDIT_MAGIC)) return null;
+  const n = b.readUInt32LE(CREDIT_MAGIC.length);
+  if (b.length !== CREDIT_MAGIC.length + 4 + n * CREDIT_ROW) return null;
+  const rows = [];
+  let o = CREDIT_MAGIC.length + 4;
+  let prev = null;
+  for (let i = 0; i < n; i += 1) {
+    const noteCommit = Buffer.from(b.subarray(o, o + 32));
+    const dest20 = Buffer.from(b.subarray(o + 32, o + 52));
+    const admit = Buffer.from(b.subarray(o + 52, o + 84));
+    const nanos = b.readBigUInt64LE(o + 84);
+    o += CREDIT_ROW;
+    if (prev && cmpNoteCommit(prev, noteCommit) >= 0) return null;
+    prev = noteCommit;
+    let expect;
+    try { expect = noteCommitOfDest20(dest20); } catch { return null; }
+    if (!expect.equals(noteCommit) || nanos <= 0n) return null;
+    rows.push({
+      noteCommit,
+      dest20,
+      nanos,
+      sinceHeight: 0,
+      admitBase: emptyBase(admit) ? null : admit,
+      address: '',
+    });
+  }
+  return rows;
+}
+
+function parseCreditList(raw) {
+  if (raw == null) return null;
+  if (Buffer.isBuffer(raw) || raw instanceof Uint8Array) return unpackHashCreditBytes(raw);
+  if (typeof raw === 'string' && /^[0-9a-fA-F]+$/.test(raw)) {
+    try { return unpackHashCreditBytes(Buffer.from(raw, 'hex')); } catch { return null; }
+  }
+  if (!Array.isArray(raw)) return null;
+  const rows = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return null;
+    const noteCommit = buf32(item.noteCommit);
+    const dest20 = buf20(item.dest20);
+    const nanos = asBi(item.nanos);
+    if (!noteCommit || !dest20 || nanos == null || nanos <= 0n || nanos > MAX_U64) return null;
+    let expect;
+    try { expect = noteCommitOfDest20(dest20); } catch { return null; }
+    if (!expect.equals(noteCommit)) return null;
+    const hex = noteCommit.toString('hex');
+    if (seen.has(hex)) return null;
+    seen.add(hex);
+    let admitBase = null;
+    if (item.admitBase != null && item.admitBase !== '') {
+      const base = buf32(item.admitBase);
+      if (!base || emptyBase(base)) return null;
+      admitBase = base;
+    }
+    rows.push({
+      noteCommit,
+      dest20,
+      nanos,
+      sinceHeight: 0,
+      admitBase,
+      address: typeof item.address === 'string' ? item.address : '',
+    });
+  }
+  return rows;
+}
+
+export function creditsEqual(a, b) {
+  const left = parseCreditList(a);
+  const right = parseCreditList(b);
+  if (left == null || right == null || left.length !== right.length) return false;
+  const as = [...left].sort((x, y) => cmpNoteCommit(x.noteCommit, y.noteCommit));
+  const bs = [...right].sort((x, y) => cmpNoteCommit(x.noteCommit, y.noteCommit));
+  for (let i = 0; i < as.length; i += 1) {
+    if (as[i].nanos !== bs[i].nanos) return false;
+    if (!as[i].noteCommit.equals(bs[i].noteCommit) || !as[i].dest20.equals(bs[i].dest20)) return false;
+    if (!creditBase(as[i]).equals(creditBase(bs[i]))) return false;
+  }
+  return true;
+}
+
+/**
+ * Dest the share itself still carries. The packed share frame keeps
+ * noteCommit and bits, not the address, so a missing dest is not a zero dest.
+ */
+function explicitDest20(share) {
+  const field = buf20(share?.dest20);
+  const addr = String(share?.dest || share?.address || share?.miner || '');
+  let fromAddr = null;
+  if (addr) {
+    const derived = dest20OfShare({ dest: addr });
+    if (derived && !derived.equals(Buffer.alloc(20))) fromAddr = Buffer.from(derived);
+  }
+  const fieldReal = field && !field.equals(Buffer.alloc(20)) ? field : null;
+  if (fieldReal && fromAddr && !fieldReal.equals(fromAddr)) return { ok: false, dest20: null };
+  return { ok: true, dest20: fieldReal || fromAddr };
+}
+
+/**
+ * Share batches witness noteCommit and nanos. Dest and admit base live in
+ * the sealed credit record, which the coinbase credit root binds.
+ */
+function shareWitnessAgrees(shares, recorded, unit) {
+  const u = BigInt(hashBonusUnitNanos(unit));
+  if (u <= 0n) return false;
+  let list = [];
+  try {
+    list = unpackShareBatch(shares || []);
+  } catch {
+    return false;
+  }
+  const by = new Map();
+  for (const share of list) {
+    const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true });
+    if (!credit.ok) continue;
+    const nc = noteCommitOfShare(share);
+    if (!nc || nc.length !== 32 || nc.equals(Buffer.alloc(32))) return false;
+    const carried = explicitDest20(share);
+    if (!carried.ok) return false;
+    if (carried.dest20) {
+      let expect;
+      try { expect = noteCommitOfDest20(carried.dest20); } catch { return false; }
+      if (!expect.equals(Buffer.from(nc))) return false;
+    }
+    const hex = Buffer.from(nc).toString('hex');
+    const nanos = BigInt(unitsForShare(credit.bits)) * u;
+    const prev = by.get(hex);
+    if (!prev) {
+      by.set(hex, { nanos, dest20: carried.dest20 });
+    } else {
+      prev.nanos += nanos;
+      if (carried.dest20) {
+        if (prev.dest20 && !prev.dest20.equals(carried.dest20)) return false;
+        prev.dest20 = carried.dest20;
+      }
+    }
+  }
+  if (by.size !== recorded.length) return false;
+  for (const row of recorded) {
+    const got = by.get(row.noteCommit.toString('hex'));
+    if (!got || got.nanos !== row.nanos) return false;
+    if (got.dest20 && !got.dest20.equals(row.dest20)) return false;
+    by.delete(row.noteCommit.toString('hex'));
+  }
+  return by.size === 0;
+}
+
+function coinbaseTx(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  return txs.find((tx) => tx && tx.coinbase) || txs[0] || null;
+}
+
+/**
+ * Fresh credits for one block. A share batch that is still present must
+ * match the sealed record on noteCommit and nanos. The packed frame does
+ * not carry dest, so dest is the sealed row, bound by the coinbase credit
+ * root. A pruned batch is not a source. A missing record on an unpruned
+ * block is the share batch itself.
+ */
+export function freshForBlock(block, unit = HASH_BONUS_NANOS) {
+  let shares = [];
+  try {
+    shares = unpackShareBatch(block?.shareBatch || []);
+  } catch {
+    return { ok: false, fresh: [] };
+  }
+  const fromShares = freshCreditsFromShares(shares, unit);
+  const hasField = block != null && Object.prototype.hasOwnProperty.call(block, 'hashCredits');
+  if (!hasField) {
+    if (block?.samplesPruned === true && shares.length === 0) return { ok: false, fresh: [] };
+    return { ok: true, fresh: fromShares };
+  }
+  const recorded = parseCreditList(block.hashCredits);
+  if (recorded == null) return { ok: false, fresh: [] };
+  const root = rootBytes(coinbaseTx(block)?.hashCreditRoot);
+  if (recorded.length && !root) return { ok: false, fresh: [] };
+  if (root && !root.equals(hashCreditRoot(recorded))) return { ok: false, fresh: [] };
+  if (shares.length) {
+    if (!shareWitnessAgrees(shares, recorded, unit)) return { ok: false, fresh: [] };
+    if (fromShares.length && !creditsEqual(recorded, fromShares)) return { ok: false, fresh: [] };
+  } else if (recorded.length && block?.samplesPruned !== true) {
+    return { ok: false, fresh: [] };
+  }
+  return { ok: true, fresh: recorded };
 }
 
 function emptyBase(buf) {
@@ -339,8 +577,10 @@ export function writeHashLedger(tx, settled) {
   const rows = settledOwedRows(settled).map((row) => copyRow(row, row.nanos, row.sinceHeight));
   tx.hashOwedLocal = rows;
   tx.hashOwedRoot = hashOwedRoot(rows);
-  if (settled.acceptedUnits != null) tx.hashAcceptedUnits = settled.acceptedUnits.toString();
-  else delete tx.hashAcceptedUnits;
+  tx.hashCreditRoot = hashCreditRoot(settled.fresh || []);
+  tx.hashBonusUnit = hashBonusUnitNanos(settled.unit == null ? HASH_BONUS_NANOS : settled.unit);
+  if (settled.acceptedUnits == null) delete tx.hashAcceptedUnits;
+  else tx.hashAcceptedUnits = settled.acceptedUnits.toString();
   delete tx.hashOwed;
   delete tx.hashOwedRest;
   delete tx.hashDustNanos;
@@ -359,12 +599,18 @@ export function hashOwedDigestSuffix(tx) {
     root = expect;
   }
   if (!root) return Buffer.alloc(0);
-  const parts = [Buffer.from('hashowed2'), root];
-  if (tx?.hashAcceptedUnits != null && tx.hashAcceptedUnits !== '') {
-    const n = asBi(tx.hashAcceptedUnits);
-    if (n == null || n > MAX_U64) return null;
-    parts.push(Buffer.from('hashacc1'), u64le(n));
+  const credit = rootBytes(tx?.hashCreditRoot);
+  const unitN = asBi(tx?.hashBonusUnit);
+  const accepted = asBi(tx?.hashAcceptedUnits);
+  if (!credit || unitN == null || unitN < 1n || unitN > BigInt(MAX_U32) || accepted == null || accepted > MAX_U64) {
+    return null;
   }
+  const parts = [
+    Buffer.from('hashowed2'), root,
+    Buffer.from('hashcred1'), credit,
+    Buffer.from('hashunit1'), u32le(unitN),
+    Buffer.from('hashacc1'), u64le(accepted),
+  ];
   return Buffer.concat(parts);
 }
 
@@ -636,7 +882,8 @@ export function settleHashOwed({
   if (minted + carried !== inSum) return fail();
   if (owed.length > cap) return fail();
   const freshNanos = freshRows.reduce((n, row) => n + row.nanos, 0n);
-  const acceptedUnits = freshNanos % unitBi === 0n ? freshNanos / unitBi : null;
+  if (unitBi <= 0n || freshNanos % unitBi !== 0n) return fail();
+  const acceptedUnits = freshNanos / unitBi;
   return {
     ok: true,
     reason: '',
@@ -647,45 +894,52 @@ export function settleHashOwed({
     overflow: 0n,
     minted,
     acceptedUnits,
+    fresh: freshRows,
+    unit: hashBonusUnitNanos(unit),
   };
 }
 
 export function acceptedUnitsOfBlock(block, unit = HASH_BONUS_NANOS) {
-  const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
-  const stamped = cb ? asBi(cb.hashAcceptedUnits) : null;
-  if (stamped != null) return stamped;
-  const fresh = freshCreditsFromShares(block?.shareBatch || [], unit);
+  const got = freshForBlock(block, unit);
+  if (!got.ok) return null;
   const u = BigInt(hashBonusUnitNanos(unit));
+  if (u <= 0n) return null;
   let n = 0n;
-  for (const row of fresh) {
-    if (u <= 0n || row.nanos % u !== 0n) return null;
+  for (const row of got.fresh) {
+    if (row.nanos % u !== 0n) return null;
     n += row.nanos / u;
   }
+  const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
+  const stamped = cb ? asBi(cb.hashAcceptedUnits) : null;
+  if (stamped == null || stamped !== n) return null;
   return n;
 }
 
 /**
- * Replay the owed map from sealed share batches and check each coinbase root.
- * A pruned share batch cannot rebuild fresh credits. That hole is 035.
+ * Replay the owed map from sealed per-block credits. Share batches are not
+ * the source. `units[i]` is the hash-bonus unit live at that block.
  */
-export function replayHashOwed(blocks, { unit = HASH_BONUS_NANOS } = {}) {
+export function replayHashOwed(blocks, { unit = null, units = null } = {}) {
   let rows = [];
   const accepted = [];
+  const snaps = [];
   const list = Array.isArray(blocks) ? blocks : [];
   for (let i = 0; i < list.length; i += 1) {
     const block = list[i];
+    const u = Array.isArray(units) ? units[i] : (unit == null ? HASH_BONUS_NANOS : unit);
     const next = advanceHashOwed({
       owedIn: rows,
       acceptedSeries: accepted,
       block,
-      unit,
+      unit: u,
       height: Number.isInteger(Number(block?.height)) ? Number(block.height) : i + 1,
     });
-    if (!next.ok) return { ok: false, reason: next.reason || 'hash_owed', rows: [], accepted: [] };
+    if (!next.ok) return { ok: false, reason: next.reason || 'hash_owed', rows: [], accepted: [], snaps: [] };
     rows = next.rows;
     accepted.push(next.acceptedUnits);
+    snaps.push({ rows, accepted: accepted.slice() });
   }
-  return { ok: true, reason: '', rows, accepted };
+  return { ok: true, reason: '', rows, accepted, snaps };
 }
 
 /** One block of the replay. `acceptedSeries` is the history before this block. */
@@ -697,7 +951,9 @@ export function advanceHashOwed({
   height = null,
 } = {}) {
   const h = height == null ? Number(block?.height || 0) : Number(height);
-  const fresh = freshCreditsFromShares(block?.shareBatch || [], unit);
+  const gotFresh = freshForBlock(block, unit);
+  if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
+  const fresh = gotFresh.fresh;
   const budget = hashBudgetNanos(acceptedSeries, unit);
   if (budget == null) return { ok: false, reason: 'hash_owed' };
   const settled = settleHashOwed({
@@ -751,10 +1007,14 @@ export function sameHashLedger(tx, settled, dust = hashOwedDustNanos()) {
     const local = parseLedgerRows(tx.hashOwedLocal);
     if (local == null || !rowsEqual(local, expect)) return false;
   }
-  if (settled.acceptedUnits != null) {
-    const got = asBi(tx?.hashAcceptedUnits);
-    if (got == null || got !== settled.acceptedUnits) return false;
-  }
+  if (settled.acceptedUnits == null) return false;
+  const got = asBi(tx?.hashAcceptedUnits);
+  if (got == null || got !== settled.acceptedUnits) return false;
+  const credit = rootBytes(tx?.hashCreditRoot);
+  if (!credit || !credit.equals(hashCreditRoot(settled.fresh || []))) return false;
+  const unitStamp = asBi(tx?.hashBonusUnit);
+  const unitWant = hashBonusUnitNanos(settled.unit == null ? HASH_BONUS_NANOS : settled.unit);
+  if (unitStamp == null || Number(unitStamp) !== unitWant) return false;
   return true;
 }
 
@@ -788,6 +1048,13 @@ export function compactHashLedger(tx, row) {
   }
   if (root) row.hashOwedRoot = root;
   else delete row.hashOwedRoot;
+  delete row.hashCredits;
+  const credit = rootBytes(tx.hashCreditRoot);
+  if (credit) row.hashCreditRoot = credit;
+  else delete row.hashCreditRoot;
+  const unitN = asBi(tx.hashBonusUnit);
+  if (unitN != null && unitN >= 1n && unitN <= BigInt(MAX_U32)) row.hashBonusUnit = Number(unitN);
+  else delete row.hashBonusUnit;
   if (tx.hashAcceptedUnits != null && tx.hashAcceptedUnits !== '') {
     const n = asBi(tx.hashAcceptedUnits);
     if (n == null) return row;

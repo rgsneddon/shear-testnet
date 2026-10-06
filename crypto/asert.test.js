@@ -485,6 +485,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_OWED_SCALE_WINDOW=80/);
     assert.match(fp, /HASH_OWED_SCALE_K=2/);
     assert.match(fp, /HASH_OWED_WIRE=root-v1/);
+    assert.match(fp, /HASH_OWED_RECOVER=sealed-credits-v1/);
+    assert.match(fp, /HASH_OWED_UNIT_HISTORY=per-height/);
+    assert.match(fp, /HASH_ACCEPTED_UNITS=validated/);
     assert.doesNotMatch(fp, /HASH_OWED_MAX=/);
     assert.equal(shareCreditMaxBits(), 28);
     assert.doesNotMatch(fp, /:ENC_SHARE=v5:/);

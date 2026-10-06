@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
+import { packHashCreditBytes, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
 import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
@@ -509,6 +510,7 @@ export function encodeWireBlock(b) {
     samples: b.samples,
     miner: b.miner,
     sharePacked: packShareBatchBytes(b.shareBatch || []).toString('hex'),
+    hashCreditPacked: Array.isArray(b.hashCredits) ? packHashCreditBytes(b.hashCredits).toString('hex') : '',
     aLeaves: b.aLeaves,
     bLeaves: b.bLeaves,
     rootA: b.rootA,
@@ -529,6 +531,9 @@ export function decodeWireBlock(w) {
     shareBatch: w.sharePacked
       ? unpackShareBatchBytes(Buffer.from(String(w.sharePacked), 'hex'))
       : (Array.isArray(w.shareBatch) ? w.shareBatch : []),
+    hashCredits: w.hashCreditPacked
+      ? unpackHashCreditBytes(Buffer.from(String(w.hashCreditPacked), 'hex'))
+      : (Array.isArray(w.hashCredits) ? w.hashCredits : undefined),
     aLeaves: reviveDeep(w.aLeaves),
     bLeaves: reviveDeep(w.bLeaves),
     rootA: reviveDeep(w.rootA),
