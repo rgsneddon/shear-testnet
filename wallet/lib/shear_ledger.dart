@@ -282,6 +282,15 @@ int debugUiHeavyCount = 0;
 /// Isolate that last ran [ShearLedger.followOffUi]'s body. Differs from the UI isolate.
 String debugCreditFollowStamp = '';
 
+/// Isolate that last opened sealed notes. The credit worker is already off
+/// the UI isolate, so this matches [debugCreditFollowStamp]. A nested
+/// [Isolate.run] from that worker never returned on the phone.
+String debugScanIsolateStamp = '';
+
+/// Set only inside [creditFollowWorker]. That isolate must not call
+/// [Isolate.run] again to scan notes.
+bool _creditWorkerInlineScan = false;
+
 /// `balances` or `credits`, from the worker that ran the real sync method.
 String debugCreditFollowKind = '';
 
@@ -373,6 +382,7 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
     if (j['paymentCode'] != null) 'paymentCode': j['paymentCode'],
     'dests': j['dests'] ?? spec['dests'],
     'txs': j['txs'] ?? const <dynamic>[],
+    if (j.containsKey('notes')) 'notes': j['notes'],
     // A session that has not remembered a tip stores 0. That is not a rewind
     // of the live book the UI already sealed.
     'sealed': () {
@@ -388,6 +398,7 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
 /// Tip, balance, notes, and history run here. The UI isolate only adopts the
 /// book the worker already collated.
 Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
+  _creditWorkerInlineScan = true;
   var spec = jsonDecode(specJson) as Map<String, dynamic>;
   spec = await _bookFromSession(spec);
   spec.remove('sessionPassword');
@@ -469,6 +480,7 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
       out.remove('nodeNotes');
     }
     out['stamp'] = identityHashCode(Isolate.current).toString();
+    out['scanStamp'] = debugScanIsolateStamp;
     out['kind'] = spendableFirst
         ? 'spendable'
         : !chain
@@ -477,6 +489,7 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson) async {
     out['opened'] = opened;
     return out;
   } finally {
+    _creditWorkerInlineScan = false;
     pool?.close();
   }
 }
@@ -615,6 +628,13 @@ Map<String, dynamic> scanSealedWire(Map<String, dynamic> raw) {
 }
 
 Future<Map<String, dynamic>> scanSealedWireOffUi(Map<String, dynamic> raw) {
+  // The credit worker is already an isolate. Nested Isolate.run from that
+  // worker never finished on the phone, so the fee book stayed closed and
+  // spendable painted 0 SHE after the shell came up.
+  if (_creditWorkerInlineScan) {
+    debugScanIsolateStamp = identityHashCode(Isolate.current).toString();
+    return Future<Map<String, dynamic>>.value(scanSealedWire(raw));
+  }
   return Isolate.run(() => scanSealedWire(raw));
 }
 
@@ -1886,6 +1906,34 @@ class ShearLedger implements ReadProofSink {
   /// One address that receives coins and that change returns to.
   String? _coinLedger;
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
+
+  /// Verified notes, JSON-safe, for the sealed session. Bytes are `{__b64}`.
+  List<Map<String, dynamic>> exportNotesForSession() {
+    final out = <Map<String, dynamic>>[];
+    for (final n in _notes) {
+      if (n['verified'] != true) continue;
+      final encoded = _followEncode(n);
+      if (encoded is Map) out.add(Map<String, dynamic>.from(encoded));
+    }
+    return out;
+  }
+
+  /// Put a saved book back before the next notes read. A restored mature fee
+  /// stays the spendable figure while that read is still open.
+  void restoreSessionNotes(List<Map<String, dynamic>> encoded) {
+    for (final raw in encoded) {
+      final revived = _followRevive(raw);
+      if (revived is! Map) continue;
+      final note = Map<String, dynamic>.from(revived);
+      rememberNote(note);
+      if (note['verified'] != true) continue;
+      final dest = (note['dest'] ?? note['address'])?.toString() ?? '';
+      if (dest.isEmpty) continue;
+      rememberDest(dest);
+      _proofCheckedDests.add(payKey(dest));
+    }
+  }
+
   void rememberNote(Map<String, dynamic> note) {
     final incoming = Map<String, dynamic>.from(note);
     final commit = _noteBytes(incoming['commit']);
@@ -4322,6 +4370,8 @@ class ShearLedger implements ReadProofSink {
     final result = await Isolate.run(() => creditFollowWorker(jsonEncode(spec)));
     debugLastFollowResultKeys = result.keys.map((k) => k.toString()).toList();
     debugCreditFollowStamp = result['stamp']?.toString() ?? '';
+    final scanStamp = result['scanStamp']?.toString() ?? '';
+    if (scanStamp.isNotEmpty) debugScanIsolateStamp = scanStamp;
     debugCreditFollowKind = result['kind']?.toString() ?? '';
     debugCreditFollowKinds.add(debugCreditFollowKind);
     debugCreditFollowStamps.add(debugCreditFollowStamp);

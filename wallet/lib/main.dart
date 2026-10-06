@@ -778,6 +778,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       session.rememberedSealedHeight,
       genesis: session.rememberedChainGenesis,
     );
+    if (session.rememberedNotes.isNotEmpty) {
+      ledger.restoreSessionNotes(session.rememberedNotes);
+      ledger.recheckRestFrameSpendable(id!.address, paymentCode: id!.paymentCode);
+    }
     if (session.rememberedTxs.isNotEmpty) {
       await applyUserArchiveOffUi(ledger, {
         'dests': session.rememberedDests,
@@ -908,17 +912,25 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       return;
     }
     // Paint a responding shell before the credit await. The await is the
-    // worker isolate. Sync chrome and block info stay down until it returns.
+    // worker isolate. A first open keeps the height down until it returns.
+    // A saved tip keeps that height up while the notes read is still open.
     _creditBusy = true;
     debugPopulationOrder.add('spendable');
     _spendableAwaiting = true;
+    // A saved tip and an opened mature fee are already a book. The shell
+    // paints that height and that coin while the notes read is still open.
+    // A first open has neither, so height stays down and spendable stays ….
+    final restoredTip = ledger.sealedHeight > 0;
+    final restoredCoins = restoredTip &&
+        ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) > 1e-12;
+    if (restoredCoins) _spendableAwaiting = false;
     debugPopulationOrder.add('shell');
     if (mounted) {
       setState(() {
         _lockError = null;
         unlocked = true;
         _verifying = false;
-        _chromeReady = false;
+        _chromeReady = restoredTip;
       });
     }
     await Future<void>.delayed(Duration.zero);
@@ -1459,6 +1471,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     session.rememberedDestCount = ledger.destCount;
     session.rememberedDestIndex = ledger.destIndex;
     session.rememberedSealedHeight = ledger.sealedHeight;
+    session.rememberedNotes = ledger.exportNotesForSession();
     session.rememberedChainGenesis = ledger.chainGenesis;
     session.rememberedTxs = [
       for (final t in ledger.transactions)

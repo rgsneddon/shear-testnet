@@ -211,6 +211,8 @@ class ShearSession {
   int rememberedDestCount = 1;
   int rememberedDestIndex = 0;
   int rememberedSealedHeight = 0;
+  /// Opened notes from the last credit follow. Encoded with `{__b64}` bytes.
+  List<Map<String, dynamic>> rememberedNotes = const [];
   String? rememberedChainGenesis;
   Map<String, dynamic>? rememberedReserve;
   List<Vortice> deployedVortices = const [];
@@ -349,6 +351,7 @@ class ShearSession {
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
         'sealedHeight': rememberedSealedHeight,
+        'notes': rememberedNotes,
         if (rememberedChainGenesis != null && rememberedChainGenesis!.isNotEmpty)
           'chainGenesis': rememberedChainGenesis,
         'txs': rememberedTxs,
@@ -364,6 +367,7 @@ class ShearSession {
     rememberedDestCount = 1;
     rememberedDestIndex = 0;
     rememberedSealedHeight = 0;
+    rememberedNotes = const [];
     rememberedChainGenesis = null;
     rememberedReserve = null;
     deployedVortices = const [];
@@ -388,6 +392,10 @@ class ShearSession {
     rememberedDestCount = (j['destCount'] as num?)?.toInt() ?? 1;
     rememberedDestIndex = (j['destIndex'] as num?)?.toInt() ?? 0;
     rememberedSealedHeight = (j['sealedHeight'] as num?)?.toInt() ?? 0;
+    rememberedNotes = ((j['notes'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
     rememberedChainGenesis = j['chainGenesis']?.toString();
     rememberedTxs = ((j['txs'] as List?) ?? const [])
         .whereType<Map>()
