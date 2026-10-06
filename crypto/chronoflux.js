@@ -394,7 +394,7 @@ function compactVout(o) {
     if (o.rCt) row.rCt = o.rCt;
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
-    const coinbaseMoney = kind === 'hash' || kind === 'pot' || kind === 'finder-fee' || kind === 'reserve-fee';
+    const coinbaseMoney = kind === 'hash' || kind === 'pot' || kind === 'pool-fee' || kind === 'finder-fee' || kind === 'reserve-fee';
     if (reserveKind || coinbaseMoney) {
       const d20 = dest20FromOpen(o);
       if (d20) row.dest20 = d20;
@@ -445,6 +445,8 @@ export function compactTx(tx) {
     };
     if (tx.excess) row.excess = tx.excess;
     if (tx.jroot) row.jroot = tx.jroot;
+    const carry = Math.floor(Number(tx.carryNanos) || 0);
+    if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;
     return row;
   }
   const out = compactValue(tx);

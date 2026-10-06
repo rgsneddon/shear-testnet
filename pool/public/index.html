@@ -141,9 +141,9 @@
     #start-mining input { max-width:100%; }
     .cmd-row { display:flex; flex-direction:row; gap:8px; align-items:stretch; width:100%; max-width:100%; min-width:0; }
     .cmd-row pre { flex:1 1 auto; min-width:0; max-width:100%; margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
-    .cmd-row button { flex:0 0 auto; align-self:center; white-space:nowrap; padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-family:"Segoe UI",system-ui,sans-serif; font-size:.85rem; }
-    .cmd-row button:disabled { opacity:.55; cursor:not-allowed; }
-    .cmd-row button.is-copied { color:var(--green); }
+    .cmd-row button, #copy-fee-dest { flex:0 0 auto; align-self:center; white-space:nowrap; padding:.4rem .7rem; background:var(--input); color:var(--cyan); border:1px solid var(--blue); cursor:pointer; font-family:"Segoe UI",system-ui,sans-serif; font-size:.85rem; }
+    .cmd-row button:disabled, #copy-fee-dest:disabled { opacity:.55; cursor:not-allowed; }
+    .cmd-row button.is-copied, #copy-fee-dest.is-copied { color:var(--green); }
     table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
     th, td { text-align:left; padding:.35rem .45rem; border-bottom:1px solid rgba(26,111,181,.2); font-size:.88rem; overflow-wrap:anywhere; word-break:break-word; }
     .table-wrap { width:100%; max-width:100%; overflow-x:auto; }
@@ -395,7 +395,7 @@
       <section class="panel-card">
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-        <p>Shear is a private cryptocurrency. Continuity-settled proof of work. DINS-DAG settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. <strong>Testnet.</strong></p>
+        <p>Shear is a private cryptocurrency. Continuity-settled proof of work. DINS-DAG settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. <strong>Testnet.</strong> Pool fee address : <code id="pool-fee-dest">ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv</code> <button type="button" id="copy-fee-dest">Copy dest</button></p>
         <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot after the 1% fee seal to that <code>ssa1</code> in the found block. Continuum lists that seal as blockfound. This pool is not custodial - we merely process what the node tells us.</p>
         <p>Privacy is ADMITv2 membership over the notes on this blockchain, with confidential amounts. Offer a silent ID (<code>she1</code>) when someone pays you. Coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure.</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
@@ -576,6 +576,23 @@
       };
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(cmd).then(go).catch(go);
+      } else {
+        go();
+      }
+    });
+    document.getElementById('copy-fee-dest').addEventListener('click', function () {
+      const addr = document.getElementById('pool-fee-dest').textContent;
+      const btn = document.getElementById('copy-fee-dest');
+      const go = function () {
+        btn.classList.add('is-copied');
+        btn.textContent = 'Copied';
+        setTimeout(function () {
+          btn.classList.remove('is-copied');
+          btn.textContent = 'Copy dest';
+        }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(addr).then(go).catch(go);
       } else {
         go();
       }

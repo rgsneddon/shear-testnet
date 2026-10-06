@@ -338,7 +338,16 @@ export function openedCoinbaseNanos(vout) {
  */
 export function coinbaseVoutsBound(vouts, excess) {
   const rows = Array.isArray(vouts) ? vouts : [];
-  if (!rows.length) return { ok: false, reason: 'coinbase_output' };
+  if (!rows.length) {
+    // Carry-only coinbase: nothing is minted. Excess must be the zero scalar.
+    if (excess != null) {
+      let got;
+      try { got = Buffer.from(asU8(excess)); } catch { return { ok: false, reason: 'coinbase_output' }; }
+      const zero = Buffer.from(asU8(excessOf([])));
+      if (!got.equals(zero)) return { ok: false, reason: 'coinbase_output' };
+    }
+    return { ok: true, opened: 0, levy: 0, rest: 0 };
+  }
   let opened = 0;
   let levy = 0;
   for (const o of rows) {

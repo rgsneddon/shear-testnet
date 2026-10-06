@@ -82,7 +82,7 @@ import {
   asU8,
   pointFrom,
 } from '../../crypto/note.js';
-import { packTx, packDigest, unpackShareBatch } from '../../crypto/pack.js';
+import { packTx, packDigest, unpackShareBatch, u64le } from '../../crypto/pack.js';
 import { buildDualTree, spendB } from '../../crypto/clearing.js';
 import {
   nextBaseFee,
@@ -172,6 +172,14 @@ function lookupSpentVout(vin, block, prev, bodyIndex, history) {
   return null;
 }
 
+/** Non-negative safe-integer carry, 0 when absent. Null is not a carry. */
+export function canonicalCarry(tx) {
+  if (tx == null || tx.carryNanos == null || tx.carryNanos === '') return 0;
+  const n = typeof tx.carryNanos === 'bigint' ? Number(tx.carryNanos) : Number(tx.carryNanos);
+  if (!Number.isSafeInteger(n) || n < 0) return null;
+  return n;
+}
+
 export function digestTx(tx) {
   const vins = (tx.vin || []).map((v, i) => {
     const prev = ref32(v.prev) || Buffer.alloc(32);
@@ -198,13 +206,21 @@ export function digestTx(tx) {
       kind: kindByte(o.kind),
     };
   });
-  return packDigest(packTx({
+  const packed = packTx({
     version: 1,
     vins: vins.length ? vins : [{ prev: Buffer.alloc(32), index: Number(tx.height || 0), dest20: Buffer.alloc(20) }],
     vouts,
     memoH: tx.memoH || null,
     bFlag: tx.bFlag || tx.kind === 'b-spend' ? 1 : 0,
-  }));
+  });
+  // A positive carry is bound into the coinbase digest. Zero omits the suffix,
+  // so a paid-out coinbase keeps the previous digest. A peer who changes the
+  // carry changes the merkle root.
+  const carry = tx?.coinbase ? canonicalCarry(tx) : 0;
+  if (tx?.coinbase && carry) {
+    return packDigest(Buffer.concat([packed, Buffer.from('potcarry1'), u64le(carry)]));
+  }
+  return packDigest(packed);
 }
 
 function aLeavesOf(collated, pay) {
@@ -292,6 +308,8 @@ function blockTimeMs(block) {
 
 function mintWithLevy(vouts, scheduled, excess) {
   const rows = (vouts || []).filter((o) => o?.commit);
+  // A carried pot mints no note. The empty commitment sum is a mint of zero.
+  if (!rows.length) return Math.floor(Number(scheduled) || 0) === 0;
   let levy = 0;
   for (const o of rows) {
     if (o.kind !== 'finder-fee' && o.kind !== 'reserve-fee') continue;
@@ -527,19 +545,26 @@ export function coinbaseTx({
   height, miner, samples = [], potShares = null, destOf = (a) => a, hashBonusNanos = HASH_BONUS_NANOS,
   shareBatch = null, poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS,
   hashBonusCustodyDest = null,
+  carryNanos = 0,
 }) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
   const bonuses = hashBonusByMiner(samples, hashBonusNanos, shareBatch);
   const batchEmpty = !Array.isArray(shareBatch) || shareBatch.length === 0;
   const vout = [];
   const custody = allowedHashBonusCustodyDest(hashBonusCustodyDest);
-  let shares = potShares && potShares.length ? potShares : null;
-  if (!shares) {
+  // An explicit empty list carries the pot. It does not default to the miner
+  // or the fee dest. Null still means "this caller did not choose shares".
+  const explicit = Array.isArray(potShares);
+  let shares = explicit ? potShares : null;
+  if (!explicit) {
     if (custody) {
       shares = custodyPotShares(custody, pot);
     } else if (Array.isArray(shareBatch) && shareBatch.length) {
       shares = potSharesFromBatch(shareBatch, poolDest, pot);
       if (!shares.length) shares = [{ address: miner, nanos: pot, kind: 'pot' }];
+    } else if (carry > 0) {
+      shares = [];
     } else {
       shares = [{ address: miner, nanos: pot, kind: 'pot' }];
     }
@@ -575,7 +600,7 @@ export function coinbaseTx({
       }));
     }
   }
-  if (!vout.length) {
+  if (!vout.length && carry <= 0) {
     throw new Error('coinbase_needs_dest');
   }
   return {
@@ -584,6 +609,7 @@ export function coinbaseTx({
     vin: [{ coinbase: true, height }],
     vout,
     excess: excessOf(vout),
+    carryNanos: carry,
   };
 }
 
@@ -629,13 +655,33 @@ export function buildTemplate({
     } catch { /* parent is not a readable header */ }
   }
   if (!(genesisMs > 0) && Number(height) === 1) genesisMs = Number(now) || 0;
-  const potNanos = potSubsidyAt({
+  const subsidy = potSubsidyAt({
     nowMs: now,
     genesisMs: genesisMs > 0 ? genesisMs : Number(now) || 0,
     magic: MAGIC_TESTNET,
   });
+  // Parent carry is unminted miner pot. Explicit shares mint what they name.
+  // Anything still unpaid, including an empty list, stays carried. Solo
+  // (null shares) pays the miner the subsidy plus that carry and carries nothing.
+  const carryIn = canonicalCarry(prevBlock?.txs?.[0]) || 0;
+  const payable = subsidy + carryIn;
+  const explicit = Array.isArray(potShares);
+  let minted = 0;
+  if (explicit) {
+    for (const s of potShares) minted += Math.max(0, Math.floor(Number(s.nanos) || 0));
+  }
+  const carryOut = explicit ? payable - minted : 0;
   const cb = coinbaseTx({
-    height, miner, samples: collated, potShares, destOf: pay, hashBonusNanos, shareBatch: batch, poolDest, potNanos,
+    height,
+    miner,
+    samples: collated,
+    potShares: explicit ? potShares : null,
+    destOf: pay,
+    hashBonusNanos,
+    shareBatch: batch,
+    poolDest,
+    potNanos: explicit ? Math.max(subsidy, minted) : payable,
+    carryNanos: carryOut > 0 ? carryOut : 0,
     hashBonusCustodyDest,
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
@@ -977,6 +1023,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     genesisMs: resolvedGenesisMs,
     magic,
   });
+  // Empty rounds carry the unminted pot. The next block's outputs plus its
+  // own carry must equal this subsidy plus the parent carry. Paying the pot
+  // and carrying it would mint twice. Dropping it mints nothing.
+  const carryOut = canonicalCarry(txs[0]);
+  const carryIn = prev?.txs?.[0] ? canonicalCarry(prev.txs[0]) : 0;
+  if (carryOut == null || carryIn == null || !Number.isSafeInteger(wantPot) || wantPot < 0) {
+    return { ok: false, reason: 'pot_sched' };
+  }
+  const payablePot = wantPot + carryIn;
+  const mintedPot = payablePot - carryOut;
+  if (!Number.isSafeInteger(payablePot) || !Number.isSafeInteger(mintedPot) || mintedPot < 0) {
+    return { ok: false, reason: 'pot_sched' };
+  }
   const samples = collateSamples(
     Array.isArray(block.samples) ? block.samples : (txs[0].samples || []),
   );
@@ -1052,14 +1111,14 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         potVouts,
         leaves,
         liveUnit,
-        wantPot,
+        wantPot: mintedPot,
         hinted,
         hasherNcs,
       });
       if (custody || destBoundHashCustodyPot) {
         bonusNanos = wantBonus;
-        potNanos = wantPot;
-        const T = wantPot + wantBonus;
+        potNanos = mintedPot;
+        const T = mintedPot + wantBonus;
         if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       } else if (!shareBatch.length) {
         const floor = unitsForShare() * liveUnit;
@@ -1082,8 +1141,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         } else {
           return { ok: false, reason: 'hash_bonus' };
         }
-        potNanos = wantPot;
-        const T = wantPot + bonusNanos;
+        potNanos = mintedPot;
+        const T = mintedPot + bonusNanos;
         if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       } else {
       for (const leaf of leaves) {
@@ -1100,13 +1159,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (hasherNcs.size) {
         const extra = potVouts.filter((o) => !hasherNcs.has(ncHex(o.noteCommit)));
         for (const o of extra) {
-          if (verifySealedNote(o, wantPot)) {
+          if (verifySealedNote(o, mintedPot)) {
             return { ok: false, reason: 'pot_prop' };
           }
         }
-        const extraAmt = extraPotFeeNanos(extra, wantPot);
+        const extraAmt = extraPotFeeNanos(extra, mintedPot);
         if (extraAmt == null) return { ok: false, reason: 'pot_prop' };
-        const candidates = propPayCandidates(leaves, wantPot, hinted, extraAmt, shareBatch);
+        const candidates = propPayCandidates(leaves, mintedPot, hinted, extraAmt, shareBatch);
         let matched = false;
         for (const pays of candidates) {
           let okTry = true;
@@ -1129,14 +1188,14 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         }
         if (!matched) return { ok: false, reason: 'pot_prop' };
       }
-      const T = wantPot + wantBonus;
+      const T = mintedPot + wantBonus;
       if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
-      potNanos = wantPot;
+      potNanos = mintedPot;
       }
     } else {
       potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
       bonusNanos = hashVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
-      if (potNanos !== wantPot) return { ok: false, reason: 'pot_sched' };
+      if (potNanos + carryOut !== payablePot) return { ok: false, reason: 'pot_sched' };
       const floorFinder = !shareBatch.length ? unitsForShare() * liveUnit : 0;
       if (shareBatch.length) {
         if (bonusNanos !== provenUnits * liveUnit) return { ok: false, reason: 'hash_bonus' };
@@ -1154,19 +1213,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         const finderFloor = floorFinder > 0 && dest === hinted && paid.size === 1 && (paid.get(dest) || 0) === floorFinder;
         if (!provenByDest.has(dest) && !finderFloor) return { ok: false, reason: 'hash_bonus' };
       }
-      const maxFee = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
+      const maxFee = Math.floor(mintedPot * POOL_FEE_MAX_BPS / 10000);
       const hasherSet = new Set(provenByDest.keys());
       if (hasherSet.size) {
         const extra = potVouts.filter((o) => !hasherSet.has(o.address));
         const extraNanos = extra.reduce((a, o) => a + Number(o.nanos || 0), 0);
         if (extraNanos > maxFee) return { ok: false, reason: 'pot_prop' };
-        if (extraNanos === wantPot) return { ok: false, reason: 'pot_prop' };
+        if (mintedPot > 0 && extraNanos === mintedPot) return { ok: false, reason: 'pot_prop' };
       }
     }
   }
   if (skipFlow) {
     const coinbase = txs[0];
-    if (!coinbase || !Array.isArray(coinbase.vout) || coinbase.vout.length === 0) {
+    if (!coinbase || !Array.isArray(coinbase.vout) || (coinbase.vout.length === 0 && carryOut <= 0)) {
       return { ok: false, reason: 'pot' };
     }
   }
@@ -1177,7 +1236,30 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
     potOpenedSum += Number(o.valueProof?.v);
   }
-  if (potOpenedSum !== wantPot) return { ok: false, reason: 'pot_sched' };
+  if (!Number.isSafeInteger(potOpenedSum) || potOpenedSum < 0) return { ok: false, reason: 'pot_sched' };
+  // A proven share batch must pay this round, including anything carried in.
+  // An empty batch may carry the miner pot. The only note that may sit beside
+  // that carry is a pool-fee at or under POOL_FEE_MAX_BPS of this subsidy.
+  // A pot note, or a fee above that cap, is a skim.
+  if (shareBatch.length > 0 && carryOut !== 0) return { ok: false, reason: 'pot_carry' };
+  if (!shareBatch.length && carryOut !== 0 && potOpenedSum !== 0) {
+    const feeCap = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
+    let feeOpened = 0;
+    let feeOnly = true;
+    for (const o of cbVouts) {
+      if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
+      const v = Math.floor(Number(o.valueProof?.v) || 0);
+      if (o.kind !== 'pool-fee' || !(v > 0)) {
+        feeOnly = false;
+        break;
+      }
+      feeOpened += v;
+    }
+    if (!feeOnly || feeOpened !== potOpenedSum || feeOpened > feeCap) {
+      return { ok: false, reason: 'pot_carry' };
+    }
+  }
+  if (potOpenedSum + carryOut !== payablePot) return { ok: false, reason: 'pot_sched' };
   const aLeaves = (shareLeaves && shareLeaves.length)
     ? shareLeaves
     : (shareBatch.length && Array.isArray(block.aLeaves) && block.aLeaves.length

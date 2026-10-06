@@ -78,7 +78,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const solo = fs.readFileSync(new URL('../src/solo_stratum.js', import.meta.url), 'utf8');
     assert.equal(isDestAddress(THIS_POOL_DIRECT_FEE_DEST), true);
     const posture = fs.readFileSync(new URL('../../pool/src/posture.js', import.meta.url), 'utf8');
-    assert.match(posture, /THIS_POOL_DIRECT_FEE_DEST = 'ssa1q5495/);
+    assert.match(posture, /THIS_POOL_DIRECT_FEE_DEST = 'ssa1qfqhu/);
     assert.match(posture, /V10_POOL_FEE_DEST/);
     assert.match(src, /configuredFeeIdentity\(\)/);
     assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);

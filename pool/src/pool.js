@@ -54,7 +54,7 @@ import {
   intervalCertify,
   narrowPublicStats,
 } from './posture.js';
-export { THIS_POOL_DIRECT_FEE_DEST, configuredFeeIdentity, feeIdentityCheck, stratumListenPlan, authPubGate, intervalCertify, CERTIFY_WINDOW } from './posture.js';
+export { THIS_POOL_DIRECT_FEE_DEST, V10_POOL_FEE_DEST, V11_POOL_FEE_DEST, configuredFeeIdentity, feeIdentityCheck, stratumListenPlan, authPubGate, intervalCertify, CERTIFY_WINDOW } from './posture.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
 import {
   buildAutoPayoutTx,
@@ -301,8 +301,9 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
 
 /**
  * Pot for the job being issued. A proven lag-1 batch wins. Otherwise the
- * live round's proven counts are split. An empty proven round holds the
- * whole pot at the fee dest. It never pays the first miner in the map.
+ * live round's proven counts are split. An empty proven round returns no
+ * miner rows from this splitter. issueJob adds this block's pool-fee note
+ * and carries the miner remainder. The fee dest never receives the pot.
  */
 export function potRoundShares({ lag1Shares = [], potRows = [], feeTo, wantPot } = {}) {
   if (Array.isArray(lag1Shares) && lag1Shares.length) {
@@ -311,10 +312,6 @@ export function potRoundShares({ lag1Shares = [], potRows = [], feeTo, wantPot }
   const rows = (Array.isArray(potRows) ? potRows : [])
     .filter((s) => Math.floor(Number(s.count) || 0) > 0);
   if (rows.length) return splitPot(rows, feeTo, wantPot, feeTo);
-  const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
-  if (pot > 0 && isDestAddress(feeTo)) {
-    return [{ address: feeTo, nanos: pot, kind: 'pot' }];
-  }
   return [];
 }
 
@@ -2171,17 +2168,30 @@ export function createPool({
       return null;
     }
     const feeTo = ident.feeDest;
-    const held = !lag1Shares.length && !potRows.length;
-    const potShares = potRoundShares({ lag1Shares, potRows, feeTo, wantPot });
+    const emptyRound = !lag1Shares.length && !potRows.length;
+    const carryIn = Math.max(0, Math.floor(Number(store.tip()?.txs?.[0]?.carryNanos) || 0));
+    // Fee is this block's subsidy only. Parent carry is miner pot and is not fee'd again.
+    const feeNanos = Math.floor(wantPot * POOL_FEE_BPS / 10000);
+    let potShares;
+    if (emptyRound) {
+      potShares = feeNanos > 0 && isDestAddress(feeTo)
+        ? [{ address: feeTo, nanos: feeNanos, kind: 'pool-fee' }]
+        : [];
+    } else {
+      potShares = potRoundShares({ lag1Shares, potRows, feeTo, wantPot });
+      if (carryIn > 0) {
+        const pots = potShares.filter((s) => s.kind !== 'pool-fee');
+        if (pots.length) pots[pots.length - 1].nanos += carryIn;
+      }
+    }
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
     // still issues; shareBatch credit stays hasher dests only. An empty proven
-    // round holds the pot at the fee dest, never the first miner in the map.
-    const payout = held
-      ? feeTo
-      : (hasherPay
-        || potShares.find((s) => s.kind === 'pot')?.address
-        || poolPay
-        || poolFeeDest());
+    // round carries the miner pot and pays only this block's fee note.
+    const payout = hasherPay
+      || potShares.find((s) => s.kind === 'pot')?.address
+      || poolPay
+      || feeTo
+      || poolFeeDest();
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     // Block target is consensus next-work for this parent (retarget → nextBits).
@@ -2985,6 +2995,10 @@ export function createPool({
       if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || genesisMs;
     } catch { /* wall */ }
     const ev = epochView({ nowMs: Date.now(), genesisMs, magic: MAGIC_TESTNET });
+    const feeIdent = configuredFeeIdentity();
+    const feePublish = feeIdent.ok && isDestAddress(feeIdent.feeDest)
+      ? feeIdent.feeDest
+      : THIS_POOL_DIRECT_FEE_DEST;
     return narrowPublicStats({
       ok: true,
       coin: 'SHE',
@@ -3012,7 +3026,8 @@ export function createPool({
       stratum: `:${stratumPort}`,
       stratumBind: stratumBindHost(stratumBind),
       poolFeeBps: POOL_FEE_BPS,
-      feeDestTail: String((configuredFeeIdentity().feeDest || '')).slice(-4),
+      feeDest: feePublish,
+      feeDestTail: String(feePublish).slice(-4),
       lostWorkHashes: Number(stats.lostWorkHashes) || 0,
       lostWorkEvents: Number(stats.lostWorkEvents) || 0,
       hashBusy: Number(stats.hashBusy) || 0,

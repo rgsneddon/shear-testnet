@@ -1,12 +1,13 @@
 /**
  * Operator posture that is not book law: fee identity, stratum listen,
  * interval certify wording, and the bound stratum auth pub.
- * shear-testnet-v11 seals the 1% pool fee and admin spend to one dest.
- * The closed v10 pin is refused here so a copied unit cannot keep it.
+ * shear-testnet-v12 seals the 1% pool fee and admin spend to one dest.
+ * The closed v10 and v11 pins are refused here so a copied unit cannot keep them.
  */
 
 export const V10_POOL_FEE_DEST = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
-export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1q5495s7qwnljwkt2q8896vect0qaj3argt68hvet8t3vkhf9f7tcn0qhsd2q45e4lnay7u98sp22sddc639hqt0d8jj';
+export const V11_POOL_FEE_DEST = 'ssa1q5495s7qwnljwkt2q8896vect0qaj3argt68hvet8t3vkhf9f7tcn0qhsd2q45e4lnay7u98sp22sddc639hqt0d8jj';
+export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
 
 export const CERTIFY_WINDOW = 288;
 
@@ -52,6 +53,9 @@ export function configuredFeeIdentity({
   ).trim();
   if (fee === V10_POOL_FEE_DEST || admin === V10_POOL_FEE_DEST) {
     return { ok: false, lab: false, reason: 'v10_fee_dest', feeDest: fee, adminSpendDest: admin };
+  }
+  if (fee === V11_POOL_FEE_DEST || admin === V11_POOL_FEE_DEST) {
+    return { ok: false, lab: false, reason: 'v11_fee_dest', feeDest: fee, adminSpendDest: admin };
   }
   return feeIdentityCheck({
     feeDest: fee,
@@ -125,12 +129,16 @@ export function intervalCertify({
   };
 }
 
-/** Public stats shape: counts and a tail, never the full fee dest or a fluxset. */
+/** Public stats: the pool fee address is published. Amounts, worker dests, and the fluxset are not. */
 export function narrowPublicStats(stats) {
   const src = stats && typeof stats === 'object' ? { ...stats } : {};
   const full = String(src.feeDest || '');
-  if (full) src.feeDestTail = full.slice(-4);
-  delete src.feeDest;
+  if (full) {
+    src.feeDest = full;
+    src.feeDestTail = full.slice(-4);
+  }
+  delete src.feeNanos;
+  delete src.poolFeeNanos;
   delete src.fluxset;
   delete src.pubs;
   delete src.workerPubs;
