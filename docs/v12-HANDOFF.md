@@ -29,6 +29,7 @@ Ran with `node --test` from `C:\Users\rgsne\shear-testnet` on 2026-10-06. τ = 2
 - `pool/tests/test_block_status.js` — three `networkSupply` cases passed: unopened coinbase commitments are not painted as the schedule, a Tree-A count or a zero hash vout is not a minted bonus, and painted pot nanos, vault mint bank, pull credit, and open-round counts are not emission. The older assertion that height 1 is confirmed at tip 6 was not part of this run.
 - `node/tests/test_synthetic_pow_v12.js` — `verify, submit, RPC, ingest, and IPC hash the header` passed. A target-meeting stand-in seals only with in-process `{ trusted: true }`. `verifyBlock`, `submitHeader` without that flag, RPC `submitblock` and `submitHeader` (including a caller `trustedPowHash`), default `ingest`, P2P `ingest({ offLoopPow: true })`, and `applyVerifiedIpcBlock` return `pow`. `shearHash(header)` does not meet the genesis target.
 - `node/tests/test_ipc_backfill.js` passed (4). A gap wider than 8 is still offered. The empty sidecar stays at a null tip and logs `ipc_apply` reason `pow`. A jumped block still asks for its parent. `pool/tests/test_admit_template.js` — `forwards an admitted lock from a non-mining node into the job store` passed after that IPC change.
+- `pool/tests/test_empty_round_pot_v12.js` passed (4). A carried pot is one split of (subsidy − this block's fee + carry), using the same weights as that round's pot. Live rows sort by address. A share batch sorts by note commit. Shuffled order pays the same nanos. The fee stays `floor(subsidy * POOL_FEE_BPS / 10000)`. Consensus seals that split and returns `pot_prop` for a last-row dump. Weights are still share counts, not share difficulty.
 
 `verifyOneForkBlock` passes `genesisMs` from the accepted prefix (`genesisHeaderMs`). The epoch-floor check is inside `test_asert_v12.js` (`pot follows the genesis header across append and ingest, including the epoch floor`). A fresh node syncing a multi-epoch chain is not a separate test yet.
 
@@ -54,7 +55,7 @@ sha256 at the dry run:
 
 - `crypto/asert.js` `4bb5b217138a8ba72f7dfe486804c13a71ca8a4429958f36a8f500360f9ebf7b`
 - `pool/src/posture.js` `5a7bce04524860750692b945fef280f4ea76f905a3cb281fe169c34d31794286`
-- `pool/src/pool.js` `49492529b7928b7b04eed741e4979a5d522869d409e11ca6f5a1e642c87662ac`
+- `pool/src/pool.js` at the dry run was `49492529b7928b7b04eed741e4979a5d522869d409e11ca6f5a1e642c87662ac`. This push's pool.js is `501a44ea035ed3da652f70ab1f43eaab6bfe1273c144b00f88d12d617891980e` (pro-rata carry). CoS uses the hash the script prints.
 - `node/src/supply.js` `1336bf473f9b4fad30b2946ea8456e3615361a410c69e491cf184c59b14e8598`
 - `wallet/lib/main.dart` `cd12154b548da5f57c2014abd4d356ae799565b09aad356d54a14d8e240c964e`
 - `wallet/lib/shear_identity.dart` `be2f4be597ef4f85ff62bb5eff19e1b08af6e5d2d083f0dab944747f36f1ac35`
@@ -76,7 +77,7 @@ CoS post-cut checks, on the real chain: block 1 coinbase pays one `pool-fee` not
 
 ## Open
 
-Proven-round carry is still added to the last pot row in `issueJob`. It is not split across proven miners. Work-based PROP, the 50/50 levy, a real hash bonus from `shareBatch`, and restamp credit are open. T22 surge hardening, wallet shewall v3, and the surge orphan bound are open. T1–T18 except the public-copy CI split. Wallet Continuum 0.72 send/receive is not started. Reserve magic: v12 is not in the pinned Reserve bytecode (`bootReserveEvm` throws `reserve_deploy: revert`). ShearK 2.9 packs, site pin sentences, tags, and the soak are open. The fleet addon is not rebuilt. No soak clock. No pool-fee keys were created or imported. No tags.
+Work-based PROP, the 50/50 levy, a real hash bonus from `shareBatch`, and restamp credit are open. Carried pot is split by the same share counts as the round pot, not by share difficulty. T22 surge hardening, wallet shewall v3, and the surge orphan bound are open. T1–T18 except the public-copy CI split. Wallet Continuum 0.72 send/receive is not started. Reserve magic: v12 is not in the pinned Reserve bytecode (`bootReserveEvm` throws `reserve_deploy: revert`). ShearK 2.9 packs, site pin sentences, tags, and the soak are open. The fleet addon is not rebuilt. No soak clock. No pool-fee keys were created or imported. No tags.
 
 `kBookMagic` is still `shear-testnet-v11`. Apex, README, pool, and explorer sentences still say Continuum 0.71 / Sentinel v18 / ShearK 2.8 / v11. The pool fee address line on `pool/public/index.html` stays as shipped when those sentences change. Wallet send/receive and T18 frame-timing are not started.
 
@@ -86,7 +87,7 @@ T23 live pool.js was read earlier. No host was contacted for this push. No servi
 
 ## Next step
 
-CoS cuts v12 from the genesis procedure above when the open payout items they care about are acceptable. Build's next code is the pro-rata carry split (fee stays a slice of the new subsidy only), then the pin flip. τ stays 2h.
+CoS cuts v12 from the genesis procedure above when the open payout items they care about are acceptable. Build's next code is work-based PROP, the 50/50 levy, and the real hash bonus. The pin flip stays deferred. τ stays 2h.
 
 ## Hosts and services
 

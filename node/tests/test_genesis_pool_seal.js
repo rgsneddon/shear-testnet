@@ -140,7 +140,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     assert.ok(due[0].nanos >= PI_SHE_NANOS);
 
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
     assert.doesNotMatch(src, /custodyPotShares\(poolPay/);
     assert.match(src, /shareBatch: lag1Shares/);
     assert.match(src, /nanos: 0,/);

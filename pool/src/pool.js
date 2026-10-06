@@ -265,11 +265,12 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   return sum / n;
 }
 
-/** PROP of (pot - 100 bps) across hasher dests. Fee dest gets only the fee. */
-export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null) {
+/** PROP of (pot - 100 bps + carry) across hasher dests. Fee is the subsidy only. */
+export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null, carryNanos = 0) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
   const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
-  const rest = pot - fee;
+  const rest = pot - fee + carry;
   const named = feeDest && isDestAddress(feeDest) ? feeDest : '';
   const feeAddr = named || poolFeeDest() || payoutDest(poolDest);
   const by = new Map();
@@ -301,17 +302,18 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
 
 /**
  * Pot for the job being issued. A proven lag-1 batch wins. Otherwise the
- * live round's proven counts are split. An empty proven round returns no
- * miner rows from this splitter. issueJob adds this block's pool-fee note
- * and carries the miner remainder. The fee dest never receives the pot.
+ * live round's proven counts are split. Carry is part of that same split.
+ * An empty proven round returns no miner rows. issueJob adds this block's
+ * pool-fee note and carries the miner remainder. The fee dest never receives the pot.
  */
-export function potRoundShares({ lag1Shares = [], potRows = [], feeTo, wantPot } = {}) {
+export function potRoundShares({ lag1Shares = [], potRows = [], feeTo, wantPot, carryNanos = 0 } = {}) {
+  const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
   if (Array.isArray(lag1Shares) && lag1Shares.length) {
-    return potSharesFromBatch(lag1Shares, feeTo, wantPot);
+    return potSharesFromBatch(lag1Shares, feeTo, wantPot, carry);
   }
   const rows = (Array.isArray(potRows) ? potRows : [])
     .filter((s) => Math.floor(Number(s.count) || 0) > 0);
-  if (rows.length) return splitPot(rows, feeTo, wantPot, feeTo);
+  if (rows.length) return splitPot(rows, feeTo, wantPot, feeTo, carry);
   return [];
 }
 
@@ -2178,11 +2180,13 @@ export function createPool({
         ? [{ address: feeTo, nanos: feeNanos, kind: 'pool-fee' }]
         : [];
     } else {
-      potShares = potRoundShares({ lag1Shares, potRows, feeTo, wantPot });
-      if (carryIn > 0) {
-        const pots = potShares.filter((s) => s.kind !== 'pool-fee');
-        if (pots.length) pots[pots.length - 1].nanos += carryIn;
-      }
+      potShares = potRoundShares({
+        lag1Shares,
+        potRows,
+        feeTo,
+        wantPot,
+        carryNanos: carryIn,
+      });
     }
     // she1 login may have no dest yet (dest arrives as owned ssa1). The header
     // still issues; shareBatch credit stays hasher dests only. An empty proven

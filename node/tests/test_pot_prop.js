@@ -81,7 +81,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.match(posture, /THIS_POOL_DIRECT_FEE_DEST = 'ssa1qfqhu/);
     assert.match(posture, /V10_POOL_FEE_DEST/);
     assert.match(src, /configuredFeeIdentity\(\)/);
-    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
     assert.doesNotMatch(src, /ssa1qzcru37269/);
     assert.match(src, /Solo never reaches this function/);
     assert.equal(consensusFingerprint().includes(THIS_POOL_DIRECT_FEE_DEST), false);
@@ -339,7 +339,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const sum = shares.reduce((a, s) => a + s.nanos, 0);
     assert.equal(sum, wantPot);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
     assert.doesNotMatch(src, /custodyPotShares\(poolPay, wantPot\)/);
     assert.match(src, /splitPot\(/);
     assert.match(src, /wantLivePot\(\)/);
@@ -488,7 +488,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const owned = signSpendTx(structuredClone(spend), minerKey);
     assert.equal(verifySpendSig(owned), true);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
     assert.doesNotMatch(src, /custodyPotShares\(/);
   });
 });

@@ -327,15 +327,16 @@ export function wantPotNanos(block, opts = {}) {
   return potSubsidyAt({ nowMs, genesisMs, magic: opts.magic || MAGIC_TESTNET });
 }
 
-/** PROP of (pot − pool fee) across Tree-A note_commits. Pool note gets only the fee. */
-export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null, potNanos = BLOCK_SUBSIDY_NANOS) {
+/** PROP of (pot − pool fee + carry) across Tree-A note_commits. The fee is not taken from carry. */
+export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null, potNanos = BLOCK_SUBSIDY_NANOS, carryNanos = 0) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
   const pool = poolDest && isDestAddress(poolDest) ? poolDest : '';
   const poolNc = pool ? noteCommitOfDest20(hash20FromAddress(pool)).toString('hex') : '';
   const fee = feeNanos != null
     ? Math.max(0, Math.floor(Number(feeNanos) || 0))
     : (poolNc ? Math.floor(pot * POOL_FEE_BPS / 10000) : 0);
-  const rest = pot - fee;
+  const rest = pot - fee + carry;
   const list = (leaves || []).map((l) => ({
     noteCommit: Buffer.from(l.noteCommit || []),
     count: Number(l.count) || 0,
@@ -358,10 +359,10 @@ export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null,
   return out.filter((s) => s.nanos > 0);
 }
 
-/** PROP of (pot - pool fee) across dest20 in shareBatch. Pool dest gets only the fee. */
-export function potSharesFromBatch(shareBatch = [], poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS) {
+/** PROP of (pot - pool fee + carry) across dest20 in shareBatch. Pool dest gets only the fee. */
+export function potSharesFromBatch(shareBatch = [], poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS, carryNanos = 0) {
   const leaves = aLeavesFromShares(shareBatch);
-  const pays = potPaysFromLeaves(leaves, poolDest, null, potNanos);
+  const pays = potPaysFromLeaves(leaves, poolDest, null, potNanos, carryNanos);
   const destByNc = new Map();
   for (const s of shareBatch || []) {
     const dest = destOfShare(s);
@@ -1163,7 +1164,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
             return { ok: false, reason: 'pot_prop' };
           }
         }
-        const extraAmt = extraPotFeeNanos(extra, mintedPot);
+        let extraAmt = extraPotFeeNanos(extra, mintedPot);
+        // A carried pot is miner money. The fee note may be a slice of this
+        // subsidy alone. The hasher notes still have to match one split of
+        // (minted pot − that fee), so a last-row carry dump does not pass.
+        if (extraAmt == null && carryIn > 0) extraAmt = extraPotFeeNanos(extra, wantPot);
         if (extraAmt == null) return { ok: false, reason: 'pot_prop' };
         const candidates = propPayCandidates(leaves, mintedPot, hinted, extraAmt, shareBatch);
         let matched = false;
