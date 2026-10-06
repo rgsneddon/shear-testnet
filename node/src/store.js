@@ -221,6 +221,7 @@ export function createStore(dir, {
       throw new Error(`datadir_magic:${diskMagic}`);
     }
   }
+  restoreSpentB();
 
   function on(ev, fn) {
     if (!listeners[ev]) listeners[ev] = [];
@@ -653,6 +654,23 @@ export function createStore(dir, {
     if (Array.isArray(block?.bSpendIds)) return block.bSpendIds;
     if (!blockHasBSpend(block)) return [];
     return null;
+  }
+
+  // Fill the live book before any append or reorg. A b-spend with no stamp
+  // does not start as an empty book. A chain this process wrote has the trailer.
+  function restoreSpentB() {
+    for (let i = 0; i < blocks.length; i += 1) {
+      const b = blocks[i];
+      const ids = spendIdsOf(b);
+      if (ids == null) throw new Error('spent_checkpoint_missing');
+      if (blockHasBSpend(b) && ids.length === 0) throw new Error('spent_checkpoint_missing');
+      for (const id of ids) {
+        const key = String(id || '');
+        if (!key) throw new Error('spent_checkpoint_missing');
+        if (spentB.has(key)) throw new Error('double_open');
+        spentB.add(key);
+      }
+    }
   }
 
   function spentDelta(before, after) {

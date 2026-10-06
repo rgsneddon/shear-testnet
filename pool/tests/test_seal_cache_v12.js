@@ -86,6 +86,13 @@ describe('v12 pool seal survives share-cache eviction', () => {
     const poolSrc = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(poolSrc, /result: \{ status: 'OK', hash: scored\.hash, block: sealedBlock \}/);
     assert.match(poolSrc, /error: 'seal_failed'/);
+    const noteFail = poolSrc.split('function noteSealFailure')[1].split('function noteSealSuccess')[0];
+    assert.match(noteFail, /seal_batch_carry/);
+    assert.doesNotMatch(noteFail, /lag1Shares = \[\]/);
+    assert.doesNotMatch(noteFail, /seal_batch_held/);
+    const warm = poolSrc.split('function ensureCachedShareProofs')[1].split('function whenShareProofs')[0];
+    assert.match(warm, /noteSealFailure\('worker'/);
+    assert.match(reprove, /reason: 'worker'/);
   });
 
   it('evicts unpinned proofs, refuses a bad seal, and reseals a wiped lag-1 batch', { timeout: 420_000 }, async () => {
@@ -234,8 +241,10 @@ describe('v12 pool seal survives share-cache eviction', () => {
         powHash: badPow,
       });
       assert.equal(fail2.ok, false);
-      assert.equal(held.lag1Shares.length, 0);
-      assert.ok(logs.some((line) => line.includes('seal_batch_held')));
+      assert.ok(held.lag1Shares.some((s) => String(s.nonce) === String(heldNonce)));
+      assert.equal(Number(held.stats.lostWorkHashes) || 0, 0);
+      assert.ok(logs.some((line) => line.includes('seal_batch_carry')));
+      assert.equal(logs.some((line) => line.includes('seal_batch_held')), false);
       const stale = await held.sealFoundShare({
         jobId: againId,
         nonce: 0n,
@@ -243,6 +252,22 @@ describe('v12 pool seal survives share-cache eviction', () => {
         powHash: badPow,
       });
       assert.equal(stale.reason, 'stale_job');
+      assert.ok(held.lag1Shares.some((s) => String(s.nonce) === String(heldNonce)));
+      const carried = held.lastJob;
+      assert.ok(carried?.jobId);
+      assert.notEqual(String(carried.jobId), String(againId));
+      const carriedBatch = held.store.jobs.get(String(carried.jobId))?.tpl?.shareBatch || [];
+      assert.ok(carriedBatch.some((s) => String(s.nonce) === String(heldNonce)));
+      const paid = await held.sealFoundShare({
+        jobId: carried.jobId,
+        nonce: 0n,
+        miner: FEE,
+        powHash: easyPow(31).toString('hex'),
+      });
+      assert.equal(paid.ok, true, paid.reason);
+      const sealedHeld = held.store.tip();
+      assert.ok((sealedHeld.shareBatch || []).some((s) => String(s.nonce) === String(heldNonce)));
+      assert.equal(Number(held.stats.lostWorkHashes) || 0, 0);
 
       const genesis = live.issueJob(undefined, { force: true });
       const hasher = minerDest();

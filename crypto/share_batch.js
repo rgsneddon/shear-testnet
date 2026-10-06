@@ -445,8 +445,9 @@ export function rememberLiveSharePow(parentHeader, nonce, proof) {
 export async function reproveSharesOffLoop(parentHeader, shares = []) {
   const list = Array.isArray(shares) ? shares : [];
   const job = asHeaderBuf(parentHeader);
+  // A missing parent is not a per-share failure. Callers must keep the batch.
   if (!job || job.length !== 128) {
-    return { ok: false, reason: 'parent_header', failed: list.slice(), proved: 0 };
+    return { ok: false, reason: 'parent_header', failed: [], proved: 0 };
   }
   const cold = [];
   for (const s of list) {
@@ -454,36 +455,42 @@ export async function reproveSharesOffLoop(parentHeader, shares = []) {
     cold.push(s);
   }
   if (!cold.length) return { ok: true, reason: '', failed: [], proved: list.length };
-  const headers = [];
-  for (const s of cold) {
-    try {
-      headers.push(setNonce(job, BigInt(s?.nonce || 0)));
-    } catch {
-      return { ok: false, reason: 'share_pow', failed: cold.slice(), proved: 0 };
-    }
-  }
-  let hashes;
-  try {
-    hashes = await Promise.all(headers.map((header) => hashHeaderOffLoop(header)));
-  } catch (err) {
-    return {
-      ok: false,
-      reason: 'share_pow',
-      failed: cold.slice(),
-      proved: 0,
-      error: String(err?.message || err),
-    };
-  }
+  // Illegal rows fail closed before RandomX. A worker miss is not those rows.
   const failed = [];
-  let proved = 0;
-  for (let i = 0; i < cold.length; i += 1) {
-    const s = cold[i];
+  const hashable = [];
+  for (const s of cold) {
+    let header;
+    try {
+      header = setNonce(job, BigInt(s?.nonce || 0));
+    } catch {
+      failed.push(s);
+      continue;
+    }
     const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: true });
     const nc = noteCommitOfShare(s);
     if (!credit.ok || !nc || nc.length !== 32) {
       failed.push(s);
       continue;
     }
+    hashable.push({ share: s, header, credit, nc });
+  }
+  let hashes = [];
+  if (hashable.length) {
+    try {
+      hashes = await Promise.all(hashable.map((row) => hashHeaderOffLoop(row.header)));
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'worker',
+        failed: [],
+        proved: 0,
+        error: String(err?.message || err),
+      };
+    }
+  }
+  let proved = list.length - cold.length;
+  for (let i = 0; i < hashable.length; i += 1) {
+    const { share: s, credit, nc } = hashable[i];
     const bound = destBoundShareHash(hashes[i], nc);
     if (!meetsTarget(bound, credit.bits)) {
       failed.push(s);

@@ -74,6 +74,7 @@ import {
   hasLiveSharePow,
   reproveSharesOffLoop,
   liveSharePowMetrics,
+  unitsForShare,
 } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
@@ -1823,6 +1824,7 @@ export function createPool({
     lostWorkHashes: persistedLost.lostWorkHashes,
     lostWorkEvents: persistedLost.lostWorkEvents,
     sealFailed: 0,
+    sealStrikes: 0,
     shareCacheEvictions: 0,
     shareCacheWipes: 0,
     hashBusy: 0,
@@ -2210,10 +2212,66 @@ export function createPool({
     return (shares || []).map((s) => String(s?.nonce ?? '')).sort().join(',');
   }
 
-  function noteSealFailure(reason, jobId) {
+  function shareWorkUnits(share) {
+    const bits = share?.creditedShareBits != null && share.creditedShareBits !== ''
+      ? share.creditedShareBits
+      : share?.shareBits;
+    return unitsForShare(bits);
+  }
+
+  // Per-share re-proof only. pow, append, tip, and worker keep the batch.
+  function perShareFailure(reason) {
+    const why = String(reason || '');
+    return why === 'share_pow' || why === 'miner_addr' || why === 'share_target' || why === 'hash_bonus';
+  }
+
+  function dropUnprovenShares(failed, reason, miner) {
+    const bad = new Set((failed || []).map((s) => String(s?.nonce ?? '')));
+    if (!bad.size) return [];
+    const dropped = [];
+    const keep = [];
+    for (const s of lag1Shares) {
+      if (bad.has(String(s?.nonce ?? ''))) dropped.push(s);
+      else keep.push(s);
+    }
+    lag1Shares = keep;
+    if (openShares.length) {
+      openShares = openShares.filter((s) => !bad.has(String(s?.nonce ?? '')));
+    }
+    if (store.jobs && typeof store.jobs.values === 'function') {
+      for (const rec of store.jobs.values()) {
+        if (!Array.isArray(rec?.tpl?.shareBatch)) continue;
+        rec.tpl = {
+          ...rec.tpl,
+          shareBatch: rec.tpl.shareBatch.filter((s) => !bad.has(String(s?.nonce ?? ''))),
+        };
+      }
+    }
+    let units = 0;
+    for (const s of dropped) units += shareWorkUnits(s);
+    if (units > 0) {
+      stats.lostWorkHashes = (Number(stats.lostWorkHashes) || 0) + units;
+      stats.lostWorkEvents = (Number(stats.lostWorkEvents) || 0) + 1;
+      saveLostWork();
+    }
+    console.error(JSON.stringify({
+      event: 'share_pow_drop',
+      alert: true,
+      reason: String(reason || 'share_pow'),
+      miner: String(miner || ''),
+      shares: dropped.length,
+      units,
+    }));
+    return dropped;
+  }
+
+  // POOL_LAG1_CARRY_V1. Pool policy, not a consensus pin. A seal miss keeps
+  // every share that has not itself failed re-proof. Unsealed holds are not
+  // written into the consensus owed ledger.
+  function noteSealFailure(reason, jobId, miner) {
     stats.sealFailed = (Number(stats.sealFailed) || 0) + 1;
     const key = batchKeyOf(lag1Shares);
-    if (key === sealFailBatch) sealFailStreak += 1;
+    if (key && key === sealFailBatch) sealFailStreak += 1;
     else {
       sealFailBatch = key;
       sealFailStreak = 1;
@@ -2226,19 +2284,30 @@ export function createPool({
       streak: sealFailStreak,
       height: Number(store.tip()?.height || 0) + 1,
     }));
-    if (sealFailStreak >= 2) {
+    if (key && sealFailStreak >= 2) {
+      const who = String(miner || '');
+      if (who) {
+        stats.sealStrikes = (Number(stats.sealStrikes) || 0) + 1;
+        if (miners.has(who)) {
+          bans.add(who);
+          saveBans();
+          try { kickMiner(who); } catch { /* no socket */ }
+        }
+      }
+      // The failed template is not the only copy. lag1Shares still holds it.
       if (store.jobs?.entries) {
         for (const [id, rec] of store.jobs) {
           if (batchKeyOf(rec?.tpl?.shareBatch) === key) store.jobs.delete(id);
         }
       }
       if (jobId && store.jobs?.delete) store.jobs.delete(String(jobId));
-      lag1Shares = [];
       console.error(JSON.stringify({
-        event: 'seal_batch_held',
+        event: 'seal_batch_carry',
         alert: true,
         jobId: String(jobId || ''),
-        batch: key,
+        batchId: createHash('sha256').update(key).digest('hex').slice(0, 16),
+        shares: lag1Shares.length,
+        miner: who,
       }));
       sealFailStreak = 0;
       sealFailBatch = '';
@@ -2287,9 +2356,9 @@ export function createPool({
     const pending = reproveSharesOffLoop(tipHdr, lag1Shares).then((got) => {
       if (proofWarm === pending) proofWarm = null;
       if (!got.ok) {
-        const bad = new Set((got.failed || []).map((s) => String(s.nonce)));
-        lag1Shares = lag1Shares.filter((s) => !bad.has(String(s.nonce)));
-        noteSealFailure(got.reason || 'share_pow', String(lastJob?.jobId || ''));
+        const why = String(got.reason || 'share_pow');
+        if (perShareFailure(why)) dropUnprovenShares(got.failed || [], why, '');
+        noteSealFailure(why, String(lastJob?.jobId || ''), '');
       }
       refreshSharePins();
       const job = issueJob(undefined, { force: true });
@@ -2297,7 +2366,8 @@ export function createPool({
       return job;
     }).catch(() => {
       if (proofWarm === pending) proofWarm = null;
-      noteSealFailure('share_pow', '');
+      // A thrown worker is not a share_pow drop. The batch stays.
+      noteSealFailure('worker', '', '');
       return null;
     });
     proofWarm = pending;
@@ -2319,13 +2389,9 @@ export function createPool({
       if (missing.length) {
         const proved = await reproveSharesOffLoop(parent, batch);
         if (!proved.ok) {
-          const bad = new Set((proved.failed || []).map((s) => String(s.nonce)));
-          lag1Shares = lag1Shares.filter((s) => !bad.has(String(s.nonce)));
-          rec.tpl = {
-            ...rec.tpl,
-            shareBatch: (rec.tpl.shareBatch || []).filter((s) => !bad.has(String(s.nonce))),
-          };
-          noteSealFailure(proved.reason || 'share_pow', jid);
+          const why = String(proved.reason || 'share_pow');
+          if (perShareFailure(why)) dropUnprovenShares(proved.failed || [], why, miner);
+          noteSealFailure(why, jid, miner);
           try {
             const next = issueJob(undefined, { force: true });
             if (next) broadcastJob(next);
@@ -2344,7 +2410,7 @@ export function createPool({
       noteSealSuccess();
       return got;
     }
-    noteSealFailure(got?.reason || 'append', jid);
+    noteSealFailure(got?.reason || 'append', jid, miner);
     try {
       const next = issueJob(undefined, { force: true });
       if (next) broadcastJob(next);

@@ -55,7 +55,15 @@ export function packEpochBlock(block) {
   const hash = Buffer.from(block.hash || Buffer.alloc(32));
   const sLen = Buffer.alloc(4);
   sLen.writeUInt32LE(sJson.length, 0);
-  return Buffer.concat([parts[0], rootA, rootB, hash, meta, lens, aJson, bJson, txs, sLen, sJson]);
+  const chunks = [parts[0], rootA, rootB, hash, meta, lens, aJson, bJson, txs, sLen, sJson];
+  // Optional trailer. Old books end at the share batch and have no stamp.
+  if (Array.isArray(block.bSpendIds)) {
+    const body = Buffer.from(JSON.stringify(block.bSpendIds.map((id) => String(id))));
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
+  return Buffer.concat(chunks);
 }
 
 export function unpackEpochBlock(buf) {
@@ -77,15 +85,33 @@ export function unpackEpochBlock(buf) {
   const txs = JSON.parse(b.subarray(o, o + tLen).toString() || '[]', reviveBytes);
   o += tLen;
   let shareBatch = [];
+  let bSpendIds;
+  let sawSpendIds = false;
   if (o + 4 <= b.length) {
     const sLen = b.readUInt32LE(o);
     o += 4;
-    if (sLen > 0 && o + sLen <= b.length) {
-      shareBatch = unpackShareBatchBytes(b.subarray(o, o + sLen));
+    if (sLen > b.length - o) {
+      o = b.length;
+    } else {
+      if (sLen > 0) shareBatch = unpackShareBatchBytes(b.subarray(o, o + sLen));
+      o += sLen;
+      if (o + 4 <= b.length) {
+        const idLen = b.readUInt32LE(o);
+        o += 4;
+        if (idLen <= b.length - o) {
+          try {
+            const parsed = JSON.parse(b.subarray(o, o + idLen).toString() || 'null');
+            if (Array.isArray(parsed) && parsed.every((id) => typeof id === 'string')) {
+              bSpendIds = parsed;
+              sawSpendIds = true;
+            }
+          } catch { /* absent stamp stays fail-closed for a b-spend */ }
+        }
+      }
     }
   }
   decodeHeader(header);
-  return {
+  const block = {
     header,
     rootA,
     rootB,
@@ -100,6 +126,8 @@ export function unpackEpochBlock(buf) {
     bLeavesPruned: !!(flags & 2),
     weight: b.readUInt32LE(232),
   };
+  if (sawSpendIds) block.bSpendIds = bSpendIds;
+  return block;
 }
 
 export function writeChainBin(path, blocks) {
