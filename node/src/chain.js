@@ -65,7 +65,7 @@ import {
   jroot as jrootOf,
 } from '../../crypto/admit.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound } from '../../crypto/spend.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw } from '../../crypto/spend.js';
 import { portalIdFromDest } from '../../crypto/reserve_vault.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
@@ -97,7 +97,7 @@ import {
   poolFeeDest,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange, reserveDest20Open } from '../../crypto/dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange } from '../../crypto/dummy.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -1307,15 +1307,14 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     if (moneyNeedsRange(tx)) {
       for (const o of (tx.vout || [])) {
-        if (reserveDest20Open(o)) continue;
-        if (!o?.commit) return { ok: false, reason: 'range_proof' };
-        if (o.rangeProof === true) return { ok: false, reason: 'range_proof' };
-        if (o.rangeProof && !verifyRange(o.commit, o.rangeProof)) {
+        if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
           return { ok: false, reason: 'range_proof' };
         }
-        if (flowNeedsDummy(tx) && !o.rangeProof) return { ok: false, reason: 'range_proof' };
+        if (!verifyRange(o.commit, o.rangeProof)) return { ok: false, reason: 'range_proof' };
       }
     }
+    const stake = boundReserveWithdraw(tx, reserveState);
+    if (!stake.ok) return stake;
     if (flowNeedsDummy(tx)) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };

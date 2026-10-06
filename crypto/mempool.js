@@ -43,6 +43,14 @@ export function admitMempool(pool, tx, opts = {}) {
     const link = sealedVinLinkField(v);
     if (link) return { ok: false, reason: 'vin_link' };
   }
+  if (moneyNeedsRange(tx)) {
+    for (const o of (tx.vout || [])) {
+      if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
+        return { ok: false, reason: 'range_proof' };
+      }
+      if (!verifyRange(o.commit, o.rangeProof)) return { ok: false, reason: 'range_proof' };
+    }
+  }
   const bound = verifyPoolWithdrawBound(tx);
   if (!bound.ok) return bound;
   const fields = checkTxAddressFields(tx, { coinbase: false });
@@ -70,16 +78,6 @@ export function admitMempool(pool, tx, opts = {}) {
     return { ok: false, reason: 'dummy_outs' };
   }
   const paintedHold = opts.paintedHold === true && paintedSpendSig(tx);
-  if (moneyNeedsRange(tx)) {
-    for (const o of (tx.vout || [])) {
-      if (!o?.commit) return { ok: false, reason: 'range_proof' };
-      if (o.rangeProof === true) return { ok: false, reason: 'range_proof' };
-      if (o.rangeProof && !verifyRange(o.commit, o.rangeProof)) {
-        return { ok: false, reason: 'range_proof' };
-      }
-      if (flowNeedsDummy(tx) && !o.rangeProof && !paintedHold) return { ok: false, reason: 'range_proof' };
-    }
-  }
   if (flowNeedsDummy(tx)) {
     const live = opts.fluxset && !Array.isArray(opts.fluxset)
       ? opts.fluxset

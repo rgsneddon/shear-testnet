@@ -25,27 +25,17 @@ export function flowNeedsDummy(tx) {
   return k === 'send' || k === '' || k === 'transfer';
 }
 
-/** Money C on Flow and Reserve notes. Missing C is range_proof, including lock/vote/withdraw. */
+/**
+ * Every non-coinbase tx is a money tx. Each of its outputs needs a range proof.
+ * Coinbase outputs are bound by coinbaseVoutsBound, not this gate.
+ */
 export function moneyNeedsRange(tx) {
-  if (!tx || tx.coinbase) return false;
-  const k = String(tx.kind || tx.vout?.[0]?.kind || '');
-  return flowNeedsDummy(tx) || k === 'lock' || k === 'vote' || k === 'withdraw';
+  return !!(tx && !tx.coinbase);
 }
 
-/**
- * Historical Reserve compact: dest20 + valueProof.v, no Pedersen C.
- * Live heights 188/198/199 were mined this way; new mempool locks still need C.
- */
-export function reserveDest20Open(o) {
-  const k = String(o?.kind || '');
-  if (k !== 'lock' && k !== 'vote' && k !== 'withdraw') return false;
-  if (o?.commit) return false;
-  try {
-    const d = Buffer.from(asU8(o.dest20));
-    return d.length >= 20;
-  } catch {
-    return false;
-  }
+/** v12 has no dest20 compact skip. A lock, vote, or withdraw without C is not open. */
+export function reserveDest20Open(_o) {
+  return false;
 }
 
 export function dummyCount(tx) {

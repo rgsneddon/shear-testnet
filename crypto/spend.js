@@ -12,8 +12,10 @@ import { isSpendableHeight } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
-import { claimedVoutNanos, reserveDest20Open } from './dummy.js';
-import { asU8 } from './note.js';
+import { claimedVoutNanos } from './dummy.js';
+import { asU8, verifyRange } from './note.js';
+import { interestNanos } from './reserve_oracle.js';
+import { portalIdFromDest } from './reserve_vault.js';
 
 function dest20Of(addr) {
   const h = hash20FromAddress(addr);
@@ -313,26 +315,47 @@ function destOpeningShape(open) {
  */
 export function verifyReservePortalOpen(tx) {
   if (!reserveNeedsPortalOpen(tx)) return true;
-  // Gossip compact drops the address string and the local opening. The spend
-  // pub and sig are the admit proof. A body with no spend pub stays on the
-  // historical compact path: sealed range proof, modern commit+valueProof
-  // (spendPub stripped; rangeProof-only is not enough), or dest20 with no Pedersen C.
   if (spendPubFromTx(tx)) return verifySpendSig(tx);
-  const dest = reservePortalDest(tx);
-  if (!dest) {
-    const o = tx?.vout?.[0];
-    if (o?.commit && o.rangeProof && o.rangeProof !== true) return true;
-    if (o?.commit && o.valueProof && o.valueProof !== true) return true;
-    return reserveDest20Open(o);
+  const o = tx?.vout?.[0];
+  if (!o?.commit || !o.rangeProof || o.rangeProof === true) return false;
+  try {
+    return verifyRange(o.commit, o.rangeProof);
+  } catch {
+    return false;
   }
-  return verifySpendSig(tx);
+}
+
+/**
+ * A withdraw pays only stake that is already locked. Principal 0 cannot
+ * withdraw any amount. The cap is principal plus this epoch's interest.
+ */
+export function boundReserveWithdraw(tx, reserveState = null) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'withdraw') return { ok: true };
+  const o = tx?.vout?.[0];
+  const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
+  const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
+  if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };
+  const dest = String(tx?.from || tx?.vin?.[0]?.address || '');
+  const portals = reserveState?.portals || {};
+  const pid = String(tx?.portalId || '').toLowerCase();
+  let portal = (pid && portals[pid]) || (dest && portals[dest]) || null;
+  if (!portal && dest) {
+    const id = portalIdFromDest(dest);
+    if (id && portals[id]) portal = portals[id];
+  }
+  const staked = Math.max(0, Math.floor(Number(portal?.staked || 0)));
+  const idle = Math.max(0, Math.floor(Number(portal?.idle || 0)));
+  const principal = staked + idle;
+  if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
+  const bps = Math.max(0, Math.floor(Number(reserveState?.epochBps || 0)));
+  const cap = principal + interestNanos(staked, bps);
+  if (claimed > cap) return { ok: false, reason: 'insufficient' };
+  return { ok: true, principal, claimed, cap };
 }
 
 export function fundedDebit(tx) {
   if (!tx || tx.coinbase) return null;
-  if (reserveDest20Open(tx?.vout?.[0]) && !(tx.from || tx.vin?.[0]?.address)) {
-    return null;
-  }
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
   let from = kind === 'vote'
@@ -416,7 +439,7 @@ export function mempoolDebitNanos(txs, address) {
  * Walk body txs in order. Same-block incoming is not credited.
  * `spendableOf(addr)` is mature Continuum at the parent tip.
  */
-export function verifyFundedBody(body, spendableOf, { seenDigests = null } = {}) {
+export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null } = {}) {
   const spent = new Map();
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
   const have = (addr) => {
@@ -424,6 +447,8 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null } = {})
     return base - (spent.get(addr) || 0);
   };
   for (const tx of body || []) {
+    const stake = boundReserveWithdraw(tx, reserveState);
+    if (!stake.ok) return stake;
     const d = fundedDebit(tx);
     if (!d) continue;
     if (flowSendNeedsOpen(tx)) {

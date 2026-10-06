@@ -72,8 +72,11 @@ describe('Flow dummy outs', () => {
     assert.equal(send.vin[0].commit, undefined);
     assert.equal(verifyFlowConservation(send), false);
     assert.equal(reserveDest20Open({ kind: 'lock' }), false);
-    assert.equal(reserveDest20Open({ kind: 'lock', dest20: Buffer.alloc(20, 3) }), true);
+    assert.equal(reserveDest20Open({ kind: 'lock', dest20: Buffer.alloc(20, 3) }), false);
     assert.equal(reserveDest20Open({ kind: 'lock', dest20: Buffer.alloc(20, 3), commit: Buffer.alloc(32, 1) }), false);
+    assert.equal(moneyNeedsRange({ kind: 'vortice-register' }), true);
+    assert.equal(moneyNeedsRange({ kind: 'evm-value' }), true);
+    assert.equal(moneyNeedsRange({ coinbase: true, kind: 'lock' }), false);
     const compactBare = compactTx(send);
     assert.equal(compactBare.nanos, undefined);
     assert.equal(compactBare.from, undefined);

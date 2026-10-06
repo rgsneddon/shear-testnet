@@ -14,14 +14,14 @@ const dest = 'ssa1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
 const other = 'ssa1qyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy';
 
 describe('funded spend / no double-spend', () => {
-  it('dest20-only compact vote/lock is a portal open without dest plaintext', () => {
+  it('dest20-only compact vote/lock is not a portal open', () => {
     const d20 = Buffer.alloc(20, 9);
     assert.equal(verifyReservePortalOpen({
       kind: 'vote',
       payer: dest,
       vin: [{}],
       vout: [{ kind: 'vote', dest20: d20 }],
-    }), true);
+    }), false);
     assert.equal(verifyReservePortalOpen({
       kind: 'vote',
       vin: [{}],
@@ -31,7 +31,7 @@ describe('funded spend / no double-spend', () => {
       kind: 'lock',
       vin: [{}],
       vout: [{ kind: 'lock', dest20: d20, valueProof: { v: 1 } }],
-    }), true);
+    }), false);
     const vote = {
       kind: 'vote',
       payer: dest,
@@ -41,9 +41,8 @@ describe('funded spend / no double-spend', () => {
       sig: '00',
     };
     assert.equal(flowSendNeedsOpen(vote), false);
-    assert.equal(fundedDebit(vote), null);
     const funded = verifyFundedBody([vote], () => 0);
-    assert.equal(funded.ok, true, funded.reason);
+    assert.equal(funded.ok, false);
   });
 
   it('sealed compact lock with commit+valueProof and no spendPub opens the portal', () => {
@@ -64,7 +63,7 @@ describe('funded spend / no double-spend', () => {
     assert.ok(o.valueProof);
     const range = o.rangeProof;
     delete o.rangeProof;
-    assert.equal(verifyReservePortalOpen(sealed), true);
+    assert.equal(verifyReservePortalOpen(sealed), false);
     const vp = o.valueProof;
     delete o.valueProof;
     assert.equal(verifyReservePortalOpen(sealed), false);
