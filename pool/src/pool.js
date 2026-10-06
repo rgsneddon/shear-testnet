@@ -11,7 +11,7 @@ import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce 
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
-import { destBoundShareHash, noteCommitOfShare, shareMeetsFloor } from '../../crypto/share_batch.js';
+import { destBoundShareHash, noteCommitOfShare, shareTargetByte } from '../../crypto/share_batch.js';
 import {
   BLOCK_SUBSIDY_NANOS,
   POOL_FEE_BPS,
@@ -37,6 +37,7 @@ import {
   LIVE_MIN_BITS,
   MAX_BITS,
   SHARE_FLOOR_BITS,
+  shareCreditMaxBits,
   displayBits,
   bitsAcceptAsert,
   SHEARK_MINER_VERSION,
@@ -1018,13 +1019,30 @@ export function jobWithinGrace(job, prevJob, prevJobAt, now = Date.now()) {
   return at > 0 && (Number(now) - at) < PREV_JOB_GRACE_MS;
 }
 
+function nonceHiFromShareHeader(header) {
+  try {
+    const buf = Buffer.isBuffer(header)
+      ? header
+      : (header instanceof Uint8Array ? Buffer.from(header) : null);
+    const raw = buf && buf.length === 128
+      ? buf
+      : (typeof header === 'string' && /^[0-9a-fA-F]+$/.test(header) && header.length >= 256
+        ? Buffer.from(header, 'hex')
+        : null);
+    if (!raw || raw.length < 120) return -1;
+    return shareTargetByte(raw.readBigUInt64LE(112));
+  } catch {
+    return -1;
+  }
+}
+
 export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
   const current = Number(shareBits ?? job?.shareBits);
   const prev = Number(job.shareBitsPrev);
   const prevAt = Number(job.shareBitsAt) || 0;
   const now = Date.now();
   // Block credit is the sealed header target. shareBits and a substituted
-  // job.blockBits are not that target.
+  // job.blockBits are not that target. Share credit is the nonce high byte.
   const sealedBits = headerWorkBits(header || job?.header);
   const blockTarget = sealedBits != null ? sealedBits : Number(job.blockBits || job.bits);
   const blockOk = meetsTarget(hash, blockTarget);
@@ -1037,31 +1055,44 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
     }
     shareHash = destBoundShareHash(hash, nc);
   }
-  let creditedShareBits = 0;
-  if (meetsTarget(shareHash, current)) creditedShareBits = current;
-  const hist = [
-    ...(Number.isFinite(prev) && prev > 0 ? [{ bits: prev, at: prevAt }] : []),
-    ...(Array.isArray(job.shareBitsHist) ? job.shareBitsHist : []),
-  ];
-  for (const row of hist) {
-    const b = Number(row?.bits);
-    const at = Number(row?.at) || 0;
-    if (!(b > 0) || b === current) continue;
-    if (now - at >= 12_000) continue;
-    if (meetsTarget(shareHash, b) && b > creditedShareBits) creditedShareBits = b;
+  const hi = nonceHiFromShareHeader(header);
+  const maxB = shareCreditMaxBits();
+  if (!Number.isInteger(hi) || hi < SHARE_FLOOR_BITS || hi > maxB) {
+    return { ok: false, reason: 'share_target', hash: hash.toString('hex'), header };
   }
-  /* Dest-bound miners still submit RandomX block hits (shareBits often
-   * equals unpacked header bits). Those are blocks, not low_diff. */
-  if (creditedShareBits > 0) {
+  // The job target and the grace window authorize which byte may be submitted.
+  // They do not pay the highest target the same digest also meets.
+  let allowed = Number.isFinite(current) && current === hi;
+  if (!allowed) {
+    const hist = [
+      ...(Number.isFinite(prev) && prev > 0 ? [{ bits: prev, at: prevAt }] : []),
+      ...(Array.isArray(job.shareBitsHist) ? job.shareBitsHist : []),
+    ];
+    for (const row of hist) {
+      const b = Number(row?.bits);
+      const at = Number(row?.at) || 0;
+      if (b !== hi) continue;
+      if (now - at >= 12_000) continue;
+      allowed = true;
+      break;
+    }
+  }
+  if (!allowed) {
+    return { ok: false, reason: 'share_target', hash: hash.toString('hex'), header };
+  }
+  if (meetsTarget(shareHash, hi)) {
     return {
       ok: true,
       hash: hash.toString('hex'),
       block: blockOk,
       header,
       bitsMet: leadingZeroBits(shareHash),
-      creditedShareBits,
+      creditedShareBits: hi,
     };
   }
+  /* A block-quality raw hash is still a block. It is not share credit when
+   * the dest-bound digest misses the committed byte. An unstamped nonce
+   * already failed share_target above. */
   if (blockOk) {
     return {
       ok: true,
@@ -2584,7 +2615,8 @@ export function createPool({
     if (session) {
       session.accepted += 1;
       const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
-      if (isDestAddress(destPay) && hashBuf.length === 32 && shareMeetsFloor(hashBuf, { dest: destPay }, SHARE_FLOOR_BITS)) {
+      const creditedBits = Number(scored.creditedShareBits) || 0;
+      if (isDestAddress(destPay) && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
         const rec = {
           dest: destPay,
           dest20: hash20FromAddress(destPay),
@@ -2592,12 +2624,7 @@ export function createPool({
           hash: String(scored.hash || ''),
           jobId: String(job?.jobId || ''),
           lz: Number(scored.bitsMet) & 0xff,
-          shareBits: Math.max(
-            SHARE_FLOOR_BITS,
-            Number(scored.creditedShareBits) > 0
-              ? Number(scored.creditedShareBits)
-              : SHARE_FLOOR_BITS,
-          ),
+          shareBits: creditedBits,
           verifiedHeader: Buffer.isBuffer(scored.header)
             ? scored.header.toString('hex').toLowerCase()
             : String(job?.header || '').toLowerCase(),

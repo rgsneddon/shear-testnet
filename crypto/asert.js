@@ -132,6 +132,17 @@ export const MAX_SHARES_PER_BLOCK = 65536;
  * once units are 2^bits. The share count above stays the body DoS bound.
  */
 export const MAX_HASH_UNITS_PER_BLOCK = 2 ** 28;
+/**
+ * Highest share width a validator may credit. A lone share above this is
+ * retained at the unit cap, so its expected units per hash would fall below 1.
+ * B_MAX = min(52, floor(log2(MAX_HASH_UNITS_PER_BLOCK))). At 2^28 that is 28.
+ */
+export function shareCreditMaxBits(maxUnits = MAX_HASH_UNITS_PER_BLOCK) {
+  const cap = Number(maxUnits);
+  if (!Number.isFinite(cap) || cap < 2) return SHARE_FLOOR_BITS;
+  const log = Math.floor(Math.log2(cap));
+  return Math.min(52, Math.max(SHARE_FLOOR_BITS, log));
+}
 /** Median of last 11 header timestamps. Future skew 2 h (Bitcoin-class).
  *  15 min left only ~3 s of legal header time when the tip sat near the
  *  cap; ASERT then saw a 3 s interval and hardened +2 every round. */
@@ -299,6 +310,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ENC_SHARE=v5+work7',
     'SHARE_UNITS=2^bits',
     'SHARE_BIND=rx+noteCommit',
+    'SHARE_CREDIT=nonce-hi-le',
+    `SHARE_BMAX=${shareCreditMaxBits()}`,
     'DANDELIONPP=1',
     'VIEW_TAG=1',
     'KDF=argon2id-shewall',

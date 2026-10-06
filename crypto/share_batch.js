@@ -1,12 +1,14 @@
 /**
  * Lag-1 proven shareBatch. A hash is one ShearHash-v3 digest of the frozen
- * parent header (nonce replaced). Units are 2^credited share bits, and
- * never below 2^SHARE_FLOOR_BITS. A missing bit field is the floor.
+ * parent header (nonce replaced). The credited width is the little-endian
+ * high byte of that nonce (header offset 119). Units are 2^b when that byte
+ * is b, the packed claim is b, and the dest-bound digest meets b.
  *
- * Share difficulty binds hasher identity: the floor target is on
+ * Share difficulty binds hasher identity: the target is on
  * sha256("shear-share-dest-v1" || rx || noteCommit), not on rx alone.
  * A third-party pool cannot restamp dest/noteCommit on a stolen nonce.
- * Block POW stays ShearHash-v3 of the 128-byte header.
+ * Block POW stays ShearHash-v3 of the child header. The share byte does not
+ * constrain that header's nonce.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -15,6 +17,7 @@ import {
   MAX_HASH_UNITS_PER_BLOCK,
   DEST_HRP,
   HASH_BONUS_NANOS,
+  shareCreditMaxBits,
 } from './asert.js';
 import { shearHash, meetsTarget, leadingZeroBits } from './shear_hash.js';
 import { setNonce } from './header.js';
@@ -47,7 +50,7 @@ export function unitsForShare(shareBits = SHARE_FLOOR_BITS) {
   return 2 ** b;
 }
 
-/** Credited difficulty on a share. Absent or below the floor stays the floor. */
+/** Packed difficulty field. Absent or below the floor stays the floor. Not the credit law. */
 export function shareWorkBits(share) {
   const raw = share?.creditedShareBits != null && share.creditedShareBits !== ''
     ? share.creditedShareBits
@@ -57,6 +60,57 @@ export function shareWorkBits(share) {
   if (!Number.isFinite(n)) return SHARE_FLOOR_BITS;
   if (n > 52) return 52;
   return Math.max(SHARE_FLOOR_BITS, n);
+}
+
+/** LE high byte of the share nonce. Header byte 119. Low 56 bits are the search. */
+export const SHARE_NONCE_TARGET_SHIFT = 56n;
+const SHARE_NONCE_LOW_MASK = (1n << SHARE_NONCE_TARGET_SHIFT) - 1n;
+
+export function shareTargetByte(nonce) {
+  try {
+    const n = BigInt(nonce);
+    if (n < 0n) return -1;
+    return Number((n >> SHARE_NONCE_TARGET_SHIFT) & 0xffn);
+  } catch {
+    return -1;
+  }
+}
+
+/** Low 56 bits of `nonce`, with credited width `bits` in the high byte. */
+export function nonceWithShareTarget(nonce, bits) {
+  const low = BigInt(nonce ?? 0) & SHARE_NONCE_LOW_MASK;
+  const b = BigInt(Math.floor(Number(bits)) & 0xff);
+  return low | (b << SHARE_NONCE_TARGET_SHIFT);
+}
+
+function declaredShareBits(share) {
+  const raw = share?.creditedShareBits != null && share.creditedShareBits !== ''
+    ? share.creditedShareBits
+    : share?.shareBits;
+  if (raw == null || raw === '') return null;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
+/**
+ * Credit width from the nonce high byte.
+ * strict: the packed claim must equal that byte (verify, supply).
+ * A legal byte outside the packed field is still that byte when strict is false (select).
+ * An illegal byte is never clamped up to the floor.
+ */
+export function creditBitsForShare(share, floor = SHARE_FLOOR_BITS, { strict = true } = {}) {
+  const hi = shareTargetByte(share?.nonce);
+  const maxB = shareCreditMaxBits();
+  const floorN = Math.floor(Number(floor));
+  const lo = Number.isFinite(floorN) ? Math.max(SHARE_FLOOR_BITS, floorN) : SHARE_FLOOR_BITS;
+  if (!Number.isInteger(hi) || hi < lo || hi > maxB) {
+    return { ok: false, reason: 'share_target', bits: hi };
+  }
+  const declared = declaredShareBits(share);
+  const claim = declared == null ? lo : declared;
+  if (strict && claim !== hi) return { ok: false, reason: 'share_target', bits: hi };
+  return { ok: true, bits: hi, reason: '' };
 }
 
 function asBuf(v, n) {
@@ -172,7 +226,9 @@ export function retainedUnitsByCommit(shares = [], cap = MAX_HASH_UNITS_PER_BLOC
     const nc = noteCommitOfShare(s);
     if (!nc || nc.length !== 32 || nc.equals(Buffer.alloc(32))) continue;
     const hex = Buffer.from(nc).toString('hex');
-    const units = BigInt(unitsForShare(shareWorkBits(s)));
+    const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: false });
+    if (!credit.ok) continue;
+    const units = BigInt(unitsForShare(credit.bits));
     by.set(hex, (by.get(hex) || 0n) + units);
   }
   const entries = [...by.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
@@ -300,12 +356,16 @@ export function rememberLiveSharePow(parentHeader, nonce, proof) {
   if (!nc || proof.shareBits == null || proof.shareBits === '') return false;
   const lz = Number(proof.lz);
   if (!Number.isFinite(lz)) return false;
-  const bits = shareWorkBits({ shareBits: proof.shareBits });
+  const hi = shareTargetByte(nonce);
+  const raw = Math.floor(Number(proof.shareBits));
+  const maxB = shareCreditMaxBits();
+  if (!Number.isFinite(raw) || raw !== hi || hi < SHARE_FLOOR_BITS || hi > maxB) return false;
+  const bits = hi;
   const key = `${job}:${String(nonce)}`;
   const hex = Buffer.from(nc).toString('hex');
   const prev = liveSharePow.get(key);
   if (prev) {
-    if (prev.noteCommit !== hex || bits > prev.bits) return false;
+    if (prev.noteCommit !== hex || bits !== prev.bits) return false;
     return true;
   }
   liveSharePow.set(key, { noteCommit: hex, bits, lz: lz & 0xff });
@@ -322,32 +382,30 @@ function liveProofForShare(share) {
   return liveSharePow.get(`${job}:${String(share.nonce)}`) || null;
 }
 
-/** Drop a cached nonce whose dest moved, and clamp a cached width that grew. */
+/** Keep a share only at the nonce-byte width. A moved dest or a different cached width is dropped. */
 function sharesAtProvenBits(list) {
   const out = [];
   for (const s of list) {
+    const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: false });
+    if (!credit.ok) continue;
     const proof = liveProofForShare(s);
-    if (!proof) {
-      out.push(s);
-      continue;
+    if (proof) {
+      const nc = noteCommitOfShare(s);
+      const hex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
+      if (!hex || hex !== proof.noteCommit || proof.bits !== credit.bits) continue;
     }
-    const nc = noteCommitOfShare(s);
-    const hex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
-    if (!hex || hex !== proof.noteCommit) continue;
-    if (shareWorkBits(s) > proof.bits) {
-      out.push({ ...s, shareBits: proof.bits, creditedShareBits: proof.bits });
-    } else {
-      out.push(s);
-    }
+    out.push({ ...s, shareBits: credit.bits, creditedShareBits: credit.bits });
   }
   return out;
 }
 
 /**
  * Recompute ShearHash-v3 on the frozen parent job header.
- * Duplicate nonce = dup_share. Miss floor = share_pow. Dest must be ssa1.
- * Live pool shares already hashed off-thread skip a second RandomX on the
- * event loop (p2p / tests still hash).
+ * Duplicate nonce = dup_share. Credit is the nonce high byte. A packed claim
+ * that disagrees, or a byte outside [floor, B_MAX], is share_target and is
+ * not hashed. A dest-bound digest that misses that byte is share_pow.
+ * A cache hit at that exact dest and width skips a second RandomX. skipPow
+ * does not credit a row that has no such proof and no prepared digest.
  */
 export function verifyShareBatch({
   parentHeader,
@@ -390,28 +448,28 @@ export function verifyShareBatch({
       nc = noteCommitOfDest20(dest20OfShare({ ...s, dest }));
     }
     const header = setNonce(job, nonce);
-    const claimedBits = shareWorkBits(s);
+    const credit = creditBitsForShare(s, floorBits, { strict: true });
+    if (!credit.ok) return { ok: false, reason: credit.reason };
+    const claimedBits = credit.bits;
     const ncHex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
     const cachedProof = jobKey ? liveSharePow.get(`${jobKey}:${nk}`) : null;
     let lz = Number(s.lz) & 0xff;
     if (cachedProof) {
-      // The nonce is already bound. A different dest or a higher width is not re-hashed.
-      if (!ncHex || ncHex !== cachedProof.noteCommit || claimedBits > cachedProof.bits) {
+      // The nonce is already bound. A different dest or a different width is not re-hashed.
+      if (!ncHex || ncHex !== cachedProof.noteCommit || claimedBits !== cachedProof.bits) {
         return { ok: false, reason: 'share_pow' };
       }
       lz = cachedProof.lz;
-    } else if (skipPow && claimedBits <= SHARE_FLOOR_BITS) {
-      // Historical floor rows and status rebuild of floor batches. Above-floor
-      // work is not credited from skipPow. A cache hit above still binds dest.
     } else {
       if (!nc || Buffer.from(nc).length !== 32) {
         return { ok: false, reason: 'miner_addr' };
       }
-      // P2P may have hashed this header on a worker. The floor check stays here.
+      // P2P may have hashed this header on a worker. skipPow is not a width bypass.
       const prepared = takeSharePow(header);
+      if (!prepared && skipPow) return { ok: false, reason: 'share_pow' };
       const hash = prepared || shearHash(header);
       const bound = destBoundShareHash(hash, nc);
-      if (!meetsTarget(bound, floorBits) || !meetsTarget(bound, claimedBits)) {
+      if (!meetsTarget(bound, claimedBits)) {
         return { ok: false, reason: 'share_pow' };
       }
       lz = leadingZeroBits(bound) & 0xff;
@@ -458,25 +516,32 @@ export function findShare(header, {
   const job = Buffer.from(header);
   const d20 = dest20 ? Buffer.from(dest20) : dest20OfShare({ dest });
   const addr = dest || encodeDest(d20);
-  for (let n = BigInt(startNonce); n < BigInt(startNonce) + BigInt(maxTries); n += 1n) {
-    const h = setNonce(job, n);
+  const width = Math.floor(Number(floorBits));
+  const bits = Number.isFinite(width) ? width : SHARE_FLOOR_BITS;
+  let n = BigInt(startNonce) & SHARE_NONCE_LOW_MASK;
+  const limit = n + BigInt(maxTries);
+  for (; n < limit; n += 1n) {
+    const stamped = nonceWithShareTarget(n, bits);
+    const h = setNonce(job, stamped);
     const hash = shearHash(h);
     const share = {
       dest20: d20,
       dest: addr,
-      nonce: n,
+      nonce: stamped,
       lz: 0,
+      shareBits: bits,
+      creditedShareBits: bits,
     };
     const nc = noteCommitOfShare(share);
     const bound = destBoundShareHash(hash, nc);
-    if (meetsTarget(bound, floorBits)) {
+    if (meetsTarget(bound, bits)) {
       share.lz = leadingZeroBits(bound) & 0xff;
       return {
         ...share,
         noteCommit: nc,
         packed: packShareV5({
           noteCommit: nc,
-          nonce: n,
+          nonce: stamped,
           lz: share.lz,
         }),
         header: h,

@@ -12,6 +12,7 @@ import {
   hashBonusUnitNanos,
   MAX_SHARES_PER_BLOCK,
   MAX_HASH_UNITS_PER_BLOCK,
+  SHARE_FLOOR_BITS,
 } from '../../crypto/asert.js';
 import { verifyMintSum, verifyRange, excessOf } from '../../crypto/note.js';
 import { isDestAddress } from '../../crypto/address.js';
@@ -21,6 +22,7 @@ import {
   destOfShare,
   noteCommitOfShare,
   retainedUnitsByCommit,
+  creditBitsForShare,
 } from '../../crypto/share_batch.js';
 import { canonicalCarry } from './chain.js';
 
@@ -118,6 +120,8 @@ function permittedHash(block) {
     }
     if (seen.has(nonce)) return { ok: false, reason: 'hash_bonus', nanos: 0n };
     seen.add(nonce);
+    const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true });
+    if (!credit.ok) return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }
   let units = 0n;
   for (const u of retainedUnitsByCommit(shares).values()) units += BigInt(u);

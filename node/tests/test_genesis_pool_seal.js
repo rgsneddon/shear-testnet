@@ -7,7 +7,13 @@ import { newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/a
 import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, PI_SHE_NANOS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { createStore } from '../src/store.js';
-import { unitsForShare, dest20OfShare } from '../../crypto/share_batch.js';
+import {
+  unitsForShare,
+  dest20OfShare,
+  nonceWithShareTarget,
+  noteCommitOfShare,
+  rememberLiveSharePow,
+} from '../../crypto/share_batch.js';
 import { noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
 import { custodyPotShares } from '../src/chain.js';
 import { reconstructOwner } from '../../pool/src/wallet_api.js';
@@ -79,10 +85,16 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     const share = {
       dest: hasher,
       dest20: dest20OfShare({ dest: hasher }),
-      nonce: 1n,
+      nonce: nonceWithShareTarget(1n, SHARE_FLOOR_BITS),
       lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
       verifiedHeader: Buffer.from(parent.header).toString('hex'),
     };
+    assert.equal(rememberLiveSharePow(parent.header, share.nonce, {
+      noteCommit: noteCommitOfShare(share),
+      shareBits: SHARE_FLOOR_BITS,
+      lz: SHARE_FLOOR_BITS,
+    }), true);
     const { job } = store.template({
       miner: hasher,
       poolDest: pool,

@@ -9,7 +9,14 @@ import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS, GENESIS_BITS_PACKE
 import { potSubsidyNanos, epochMs } from '../../crypto/pot_sched.js';
 import { poolFeeDest } from '../../crypto/levy.js';
 import { splitPot, THIS_POOL_DIRECT_FEE_DEST } from '../../pool/src/pool.js';
-import { findShare, dest20OfShare } from '../../crypto/share_batch.js';
+import {
+  findShare,
+  dest20OfShare,
+  nonceWithShareTarget,
+  noteCommitOfShare,
+  rememberLiveSharePow,
+  clearLiveSharePow,
+} from '../../crypto/share_batch.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -27,6 +34,22 @@ import { sealCoinbaseNote, excessOf, noteCommitOfDest20, verifySealedNote } from
 
 function destOf(id) {
   return freshStealthDest(id).dest;
+}
+
+function floorNonce(low) {
+  return nonceWithShareTarget(low, SHARE_FLOOR_BITS);
+}
+
+function seedFloor(header, rows) {
+  clearLiveSharePow();
+  if (!header) return;
+  for (const row of rows || []) {
+    rememberLiveSharePow(header, row.nonce, {
+      noteCommit: noteCommitOfShare(row),
+      shareBits: SHARE_FLOOR_BITS,
+      lz: SHARE_FLOOR_BITS,
+    });
+  }
 }
 
 function mine(tpl) {
@@ -64,8 +87,8 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(shares.find((s) => s.address === bob).nanos, rest / 2);
 
     const batch = [
-      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: 1n, lz: 8 },
-      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: 2n, lz: 8 },
+      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: floorNonce(1n), lz: 8 },
+      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: floorNonce(2n), lz: 8 },
     ];
     const prop = potSharesFromBatch(batch, poolFeeDest());
     const propPot = prop.reduce((a, s) => a + s.nanos, 0);
@@ -89,7 +112,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.doesNotMatch(solo, /THIS_POOL_DIRECT_FEE_DEST/);
     const miner = destOf(newIdentity());
     const batch = [
-      { dest: miner, dest20: dest20OfShare({ dest: miner }), nonce: 1n, lz: 8 },
+      { dest: miner, dest20: dest20OfShare({ dest: miner }), nonce: floorNonce(1n), lz: 8 },
     ];
     const soloShares = potSharesFromBatch(batch, null);
     assert.equal(soloShares.length, 1);
@@ -100,8 +123,8 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const bob = destOf(newIdentity());
     const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
     const poolShares = potSharesFromBatch([
-      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: 3n, lz: 8 },
-      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: 4n, lz: 8 },
+      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: floorNonce(3n), lz: 8 },
+      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: floorNonce(4n), lz: 8 },
     ], THIS_POOL_DIRECT_FEE_DEST);
     assert.equal(poolShares.find((s) => s.address === THIS_POOL_DIRECT_FEE_DEST).nanos, fee);
     assert.equal(poolShares.find((s) => s.kind === 'pool-fee').address, THIS_POOL_DIRECT_FEE_DEST);
@@ -132,7 +155,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(okP.ok, true, okP.reason);
     const now = 1_700_000_090_000;
     const ph = decodeHeader(parent.header);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8 };
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -168,6 +191,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       bLeaves: childTpl.bLeaves,
       weight: childTpl.weight,
     };
+    seedFloor(parent.header, child.shareBatch);
     const got = verifyBlock(child, {
       ...parent,
       hash: okP.hash,
@@ -204,7 +228,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(okP.ok, true, okP.reason);
     const now = 1_700_000_090_000;
     const ph = decodeHeader(parent.header);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8 };
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -236,6 +260,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       height: 1,
       weight: parent.weight,
     };
+    seedFloor(parent.header, child.shareBatch);
     const got = verifyBlock(child, prev, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'pot_prop');
@@ -254,7 +279,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const pool = destOf(poolId);
     const hasher20 = hash20FromAddress(hasher);
     const pool20 = hash20FromAddress(pool);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8 };
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -295,7 +320,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       const pool = destOf(newIdentity());
       assert.equal(allowedHashBonusCustodyDest(pool), '');
       const hasher20 = hash20FromAddress(hasher);
-      const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+      const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8 };
       const tpl = buildTemplate({
         prev: GENESIS_PREV,
         height: 1,
@@ -483,7 +508,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const pool = encodeDest(destCommitFromSpendPub(ed25519RawPub(poolKey)));
     const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
     const rest = BLOCK_SUBSIDY_NANOS - fee;
-    const row = { dest20: dest20OfShare({ dest: miner }), dest: miner, nonce: 1n, lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: miner }), dest: miner, nonce: floorNonce(1n), lz: 8 };
     const shares = potSharesFromBatch([row], pool, BLOCK_SUBSIDY_NANOS);
     const tpl = buildTemplate({
       prev: GENESIS_PREV,

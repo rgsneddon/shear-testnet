@@ -1054,6 +1054,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   void buried;
   const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, localTip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
+  // Burial may skip Flow checks. It does not skip share credit. A batch that
+  // is still on the block takes the same nonce-byte gate as a live accept.
+  if (skipFlow && shareBatch.length) {
+    if (shareBatch.length > MAX_SHARES_PER_BLOCK) return { ok: false, reason: 'share_cap' };
+    if (!prev?.header) return { ok: false, reason: 'share_batch' };
+    const buriedShares = verifyShareBatch({
+      parentHeader: prev.header,
+      shares: shareBatch,
+      floorBits: SHARE_FLOOR_BITS,
+      skipPow: !!skipSharePow,
+    });
+    if (!buriedShares.ok) return buriedShares;
+  }
   const payAddr = (a) => a;
   const liveUnit = hashBonusUnitNanos(hashBonusNanos);
   let provenUnits = 0;

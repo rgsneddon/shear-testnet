@@ -10,6 +10,7 @@ import {
   MAX_HASH_UNITS_PER_BLOCK,
   POOL_FEE_BPS,
   SHARE_FLOOR_BITS,
+  shareCreditMaxBits,
   TARGET_BLOCK_INTERVAL_MS,
   asertNextBits,
   hashBonusUnitNanos,
@@ -19,6 +20,7 @@ import {
   aLeavesFromShares,
   clearLiveSharePow,
   destBoundShareHash,
+  nonceWithShareTarget,
   noteCommitOfShare,
   rememberLiveSharePow,
   retainedUnitsByCommit,
@@ -64,10 +66,16 @@ describe('v12 PROP pays share work', () => {
     const lowBits = SHARE_FLOOR_BITS;
     const highBits = SHARE_FLOOR_BITS + 4;
     const batch = [
-      { dest: low, nonce: 1n, lz: lowBits, shareBits: lowBits },
-      { dest: high, nonce: 2n, lz: highBits, shareBits: highBits },
+      { dest: low, nonce: nonceWithShareTarget(1n, lowBits), lz: lowBits, shareBits: lowBits },
+      { dest: high, nonce: nonceWithShareTarget(2n, highBits), lz: highBits, shareBits: highBits },
     ];
-    const stripped = batch.map((row) => ({ dest: row.dest, nonce: row.nonce, lz: SHARE_FLOOR_BITS }));
+    // Omitted packed claim is the floor only. The nonce byte is still the floor,
+    // so these rows credit 2^floor and the wire stays a v5 body.
+    const stripped = batch.map((row, i) => ({
+      dest: row.dest,
+      nonce: nonceWithShareTarget(BigInt(i + 1), SHARE_FLOOR_BITS),
+      lz: SHARE_FLOOR_BITS,
+    }));
     const subsidies = [10_000, 100_000_003, BLOCK_SUBSIDY_NANOS];
     const carries = [0, 17, 50_000];
     for (const subsidy of subsidies) {
@@ -95,14 +103,32 @@ describe('v12 PROP pays share work', () => {
     assert.equal(floorOnly[0].shareBits, undefined);
     assert.equal(unitsForShare(shareWorkBits(floorOnly[0])), unitsForShare());
 
-    const heavy = { dest: high, nonce: 9n, lz: 8, shareBits: 30 };
+    const bMax = shareCreditMaxBits();
+    const heavy = {
+      dest: high,
+      nonce: nonceWithShareTarget(9n, bMax),
+      lz: 8,
+      shareBits: bMax,
+    };
     const kept = selectBlockShares([heavy, stripped[0]]);
     assert.equal(kept.length, 2);
     assert.equal(selectBlockShares([heavy]).length, 1);
     const alone = aLeavesFromShares([heavy]);
     assert.equal(alone.length, 1);
     assert.equal(alone[0].count, MAX_HASH_UNITS_PER_BLOCK);
-    assert.ok(unitsForShare(30) > MAX_HASH_UNITS_PER_BLOCK);
+    assert.equal(unitsForShare(bMax), MAX_HASH_UNITS_PER_BLOCK);
+    const illegal = {
+      dest: high,
+      nonce: nonceWithShareTarget(9n, bMax + 1),
+      lz: 8,
+      shareBits: bMax + 1,
+    };
+    assert.equal(aLeavesFromShares([illegal]).length, 0);
+    assert.equal(verifyShareBatch({
+      parentHeader: Buffer.alloc(128),
+      shares: [illegal],
+      skipPow: true,
+    }).reason, 'share_target');
   });
 
   it('over the unit cap each noteCommit keeps a pro-rata share', () => {
@@ -117,11 +143,12 @@ describe('v12 PROP pays share work', () => {
         dests.forEach((dest, i) => {
           const copies = 1 + (i % 3);
           for (let c = 0; c < copies; c += 1) {
+            const bits = i === 0 ? shareCreditMaxBits() : widths[i % widths.length];
             batch.push({
               dest,
-              nonce,
-              lz: widths[i % widths.length],
-              shareBits: i === 0 ? 30 : widths[i % widths.length],
+              nonce: nonceWithShareTarget(nonce, bits),
+              lz: bits,
+              shareBits: bits,
             });
             nonce += 1n;
           }
@@ -153,8 +180,19 @@ describe('v12 PROP pays share work', () => {
       timestamp: 1_700_000_111_000,
       bits: GENESIS_BITS_PACKED,
     });
-    const heavy = { dest: high, nonce: 4n, lz: 8, shareBits: 30 };
-    const floor = { dest: low, nonce: 5n, lz: SHARE_FLOOR_BITS, shareBits: SHARE_FLOOR_BITS };
+    const heavyBits = shareCreditMaxBits();
+    const heavy = {
+      dest: high,
+      nonce: nonceWithShareTarget(4n, heavyBits),
+      lz: 8,
+      shareBits: heavyBits,
+    };
+    const floor = {
+      dest: low,
+      nonce: nonceWithShareTarget(5n, SHARE_FLOOR_BITS),
+      lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
+    };
     for (const row of [heavy, floor]) {
       assert.equal(rememberLiveSharePow(parent, row.nonce, {
         noteCommit: noteCommitOfShare(row),
@@ -174,11 +212,14 @@ describe('v12 PROP pays share work', () => {
     const picked = selectBlockShares(
       [0, 1, 2, 3, 4].flatMap((i) => {
         const dest = minerDest();
-        return [0, 1, 2, 3].map((k) => ({
-          dest,
-          nonce: BigInt(i * 10 + k + 1),
-          shareBits: SHARE_FLOOR_BITS + (i % 3),
-        }));
+        return [0, 1, 2, 3].map((k) => {
+          const bits = SHARE_FLOOR_BITS + (i % 3);
+          return {
+            dest,
+            nonce: nonceWithShareTarget(BigInt(i * 10 + k + 1), bits),
+            shareBits: bits,
+          };
+        });
       }),
       3,
     );
@@ -189,10 +230,10 @@ describe('v12 PROP pays share work', () => {
 
   it('rejects credited bits the dest-bound hash does not meet', () => {
     const dest = minerDest();
-    const share = { dest, nonce: 3n, lz: 0 };
-    const nc = noteCommitOfShare(share);
     const meet = SHARE_FLOOR_BITS + 2;
     const miss = meet + 4;
+    const share = { dest, nonce: nonceWithShareTarget(3n, meet), lz: 0, shareBits: meet };
+    const nc = noteCommitOfShare(share);
     const rx = rxForBits(nc, meet, miss);
     assert.ok(rx, 'sha256 search finds a bound hash at the claimed width');
     const parent = encodeHeader({
@@ -206,25 +247,33 @@ describe('v12 PROP pays share work', () => {
     stashSharePow(header, rx);
     const ok = verifyShareBatch({
       parentHeader: parent,
-      shares: [{ ...share, shareBits: meet }],
+      shares: [share],
     });
     assert.equal(ok.ok, true, ok.reason);
     assert.equal(ok.units, unitsForShare(meet));
     assert.equal(ok.aLeaves[0].count, unitsForShare(meet));
-    stashSharePow(header, rx);
-    const denied = verifyShareBatch({
+    const relabel = verifyShareBatch({
       parentHeader: parent,
       shares: [{ ...share, shareBits: miss }],
     });
+    assert.equal(relabel.ok, false);
+    assert.equal(relabel.reason, 'share_target');
+    const tooHigh = { ...share, nonce: nonceWithShareTarget(3n, miss), shareBits: miss };
+    const highHeader = setNonce(parent, tooHigh.nonce);
+    stashSharePow(highHeader, rx);
+    const denied = verifyShareBatch({
+      parentHeader: parent,
+      shares: [tooHigh],
+    });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'share_pow');
-    stashSharePow(header, rx);
-    const floor = verifyShareBatch({
+    const unstamped = verifyShareBatch({
       parentHeader: parent,
-      shares: [share],
+      shares: [{ dest, nonce: 3n, lz: 0, shareBits: SHARE_FLOOR_BITS }],
+      skipPow: true,
     });
-    assert.equal(floor.ok, true, floor.reason);
-    assert.equal(floor.units, unitsForShare());
+    assert.equal(unstamped.ok, false);
+    assert.equal(unstamped.reason, 'share_target');
   });
 
   it('consensus seals a work split and rejects the same counts', () => {
@@ -270,7 +319,7 @@ describe('v12 PROP pays share work', () => {
         batch.push({
           dest,
           dest20: hash20FromAddress(dest),
-          nonce,
+          nonce: nonceWithShareTarget(nonce, bits[i]),
           lz: bits[i],
           shareBits: bits[i],
         });
@@ -289,7 +338,12 @@ describe('v12 PROP pays share work', () => {
     assert.equal(quote.ok, true);
     assert.equal(quote.easeBits, 0);
     const workPays = potSharesFromBatch(batch, feeTo, subsidy, carry);
-    const countBatch = batch.map((row) => ({ ...row, shareBits: SHARE_FLOOR_BITS }));
+    const countBatch = batch.map((row, i) => ({
+      ...row,
+      nonce: nonceWithShareTarget(BigInt(i + 1), SHARE_FLOOR_BITS),
+      lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
+    }));
     const countPays = potSharesFromBatch(countBatch, feeTo, subsidy, carry);
     assert.notEqual(
       workPays.find((row) => row.address === high)?.nanos,

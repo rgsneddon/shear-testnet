@@ -651,9 +651,10 @@ export function createStore(dir, {
         weight: blocks[i - 1].weight,
       };
       i += 1;
-      // Already-accepted blocks. ShearHash here would hold the event loop
-      // after a losing tip is dropped: status stops, the miner keeps the old
-      // job, and later fleet blocks sit unread.
+      // Already-accepted blocks. Share credit is re-checked, including the
+      // dest-bound hash: skipSharePow would accept a rewritten nonce byte.
+      // A long batch hashes on this walk. That can stall status. It is not
+      // a width bypass.
       let trustedPowHash = null;
       try {
         if (b?.hash && Buffer.from(b.hash).length === 32) trustedPowHash = Buffer.from(b.hash);
@@ -670,7 +671,7 @@ export function createStore(dir, {
         nowMs: Date.now(),
         genesisMs: genesisHeaderMs(blocks),
         trustedPowHash,
-        skipSharePow: true,
+        skipSharePow: false,
       });
       if (spentCheck && typeof spentCheck.then === 'function') {
         return spentCheck.then(step);

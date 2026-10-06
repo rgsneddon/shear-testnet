@@ -23,6 +23,7 @@ import {
   aLeavesFromShares,
   clearLiveSharePow,
   dest20OfShare,
+  nonceWithShareTarget,
   noteCommitOfShare,
   rememberLiveSharePow,
   shareWorkBits,
@@ -65,13 +66,14 @@ function easyPowHash() {
 }
 
 function shareRow(dest, nonce, bits, header) {
+  const width = Math.floor(Number(bits));
   return {
     dest,
     dest20: dest20OfShare({ dest }),
-    nonce: BigInt(nonce),
-    lz: bits,
-    shareBits: bits,
-    creditedShareBits: bits,
+    nonce: nonceWithShareTarget(BigInt(nonce), width),
+    lz: width,
+    shareBits: width,
+    creditedShareBits: width,
     verifiedHeader: header,
   };
 }
@@ -81,12 +83,11 @@ function seed(header, rows) {
   if (!header) return;
   for (const row of rows || []) {
     const bits = shareWorkBits(row);
-    if (bits <= SHARE_FLOOR_BITS) continue;
-    assert.equal(rememberLiveSharePow(header, row.nonce, {
+    rememberLiveSharePow(header, row.nonce, {
       noteCommit: noteCommitOfShare(row),
       shareBits: bits,
       lz: row.lz,
-    }), true);
+    });
   }
 }
 
@@ -536,13 +537,21 @@ describe('v12 consensus rejects a custodial coinbase', () => {
     }, { trusted: true });
     assert.equal(booted.ok, true, booted.reason);
     const parentTip = store.tip();
+    const shareNonce = nonceWithShareTarget(1n, SHARE_FLOOR_BITS);
     const share = {
       dest: hasher,
       dest20: dest20OfShare({ dest: hasher }),
-      nonce: 1n,
+      nonce: shareNonce,
       lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
+      creditedShareBits: SHARE_FLOOR_BITS,
       verifiedHeader: Buffer.from(parentTip.header).toString('hex'),
     };
+    assert.equal(rememberLiveSharePow(parentTip.header, shareNonce, {
+      noteCommit: noteCommitOfShare(share),
+      shareBits: SHARE_FLOOR_BITS,
+      lz: SHARE_FLOOR_BITS,
+    }), true);
     const badJob = store.template({
       miner: hasher,
       poolDest: pool,
@@ -593,16 +602,25 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       powHash: '00'.repeat(32),
     }, { trusted: true }).ok, true);
     const rpcParent = rpcStore.tip();
+    const rpcNonce = nonceWithShareTarget(2n, SHARE_FLOOR_BITS);
+    const rpcShare = {
+      dest: hasher,
+      dest20: dest20OfShare({ dest: hasher }),
+      nonce: rpcNonce,
+      lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
+      creditedShareBits: SHARE_FLOOR_BITS,
+      verifiedHeader: Buffer.from(rpcParent.header).toString('hex'),
+    };
+    assert.equal(rememberLiveSharePow(rpcParent.header, rpcNonce, {
+      noteCommit: noteCommitOfShare(rpcShare),
+      shareBits: SHARE_FLOOR_BITS,
+      lz: SHARE_FLOOR_BITS,
+    }), true);
     const rpcJob = rpcStore.template({
       miner: hasher,
       poolDest: pool,
-      shareBatch: [{
-        dest: hasher,
-        dest20: dest20OfShare({ dest: hasher }),
-        nonce: 2n,
-        lz: SHARE_FLOOR_BITS,
-        verifiedHeader: Buffer.from(rpcParent.header).toString('hex'),
-      }],
+      shareBatch: [rpcShare],
       potShares: custodyPotShares(pool, BLOCK_SUBSIDY_NANOS),
       now: genesisMs + TARGET_BLOCK_INTERVAL_MS,
     });

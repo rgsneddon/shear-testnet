@@ -15,7 +15,7 @@
  * shareBits to 5 and 504'd /api/stats. Share bits may equal the header so a
  * farm is throttled; they still never exceed it. GPU/ASIC still mint nothing.
  */
-import { MAX_BITS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { MAX_BITS, SHARE_FLOOR_BITS, shareCreditMaxBits } from '../../crypto/asert.js';
 
 export const SHARE_VARDIFF_TARGET_MS = 2000;
 /** Both gates. Eight fast shares are not a window by themselves. */
@@ -83,7 +83,7 @@ export function clampShareBits(bits, { blockBits, minBits = 1, maxBits = MAX_BIT
     const easy = Math.max(minBits, cap - SHARE_BELOW_BLOCK);
     n = Math.min(n, easy);
   }
-  return n;
+  return Math.min(n, shareCreditMaxBits());
 }
 
 /** Faster shares than targetMs → higher share bits (harder). */

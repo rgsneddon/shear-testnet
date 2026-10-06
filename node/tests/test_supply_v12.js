@@ -11,7 +11,7 @@ import {
   hashBonusUnitNanos,
   MAX_SHARES_PER_BLOCK,
 } from '../../crypto/asert.js';
-import { unitsForShare, shareWorkBits } from '../../crypto/share_batch.js';
+import { unitsForShare, shareWorkBits, nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
@@ -86,7 +86,12 @@ function shareRows(groups) {
   let nonce = 1n;
   for (const group of groups) {
     for (let i = 0; i < group.count; i += 1) {
-      rows.push({ dest: group.dest, nonce, lz: 8 });
+      rows.push({
+        dest: group.dest,
+        nonce: nonceWithShareTarget(nonce, SHARE_FLOOR_BITS),
+        lz: SHARE_FLOOR_BITS,
+        shareBits: SHARE_FLOOR_BITS,
+      });
       nonce += 1n;
     }
   }
@@ -336,7 +341,12 @@ describe('v12 circulating supply is the public mint', () => {
       const hasher = minerDest();
       const work = unitsForShare(bits) * hashBonusUnitNanos(HASH_BONUS_NANOS);
       assert.equal(shareWorkBits({ shareBits: bits }), bits);
-      const shareBatch = [{ dest: hasher, nonce: 1n, lz: bits, shareBits: bits }];
+      const shareBatch = [{
+        dest: hasher,
+        nonce: nonceWithShareTarget(1n, bits),
+        lz: bits,
+        shareBits: bits,
+      }];
       const paidBits = auditCirculatingSupply([potBlock(GENESIS, hasher, [
         { nanos: subsidy, kind: 'pot' },
         { nanos: work, kind: 'hash' },

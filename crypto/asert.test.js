@@ -34,6 +34,7 @@ import {
   SHARE_FLOOR_BITS,
   MAX_SHARES_PER_BLOCK,
   MAX_HASH_UNITS_PER_BLOCK,
+  shareCreditMaxBits,
   hashBonusUnitNanos,
   formatShe,
   HASH_BONUS_VOTE_DELTA_NANOS,
@@ -472,6 +473,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /DUMMY_OUTS=1/);
     assert.match(fp, /ENC_SHARE=v5\+work7/);
     assert.match(fp, /SHARE_UNITS=2\^bits/);
+    assert.match(fp, /SHARE_CREDIT=nonce-hi-le/);
+    assert.match(fp, /SHARE_BMAX=28/);
+    assert.equal(shareCreditMaxBits(), 28);
     assert.doesNotMatch(fp, /:ENC_SHARE=v5:/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /DANDELIONPP=1/);

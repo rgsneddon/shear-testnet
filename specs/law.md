@@ -81,7 +81,7 @@ POOL_WITHDRAW=eip712-spend-bound
 
 v12 consensus caps a pool fee at `POOL_FEE_MAX_BPS` (200) of that block's subsidy. Carried pot is not part of the fee base. This public pool still constructs at 100 bps.
 
-v12 share credit is `ENC_SHARE=v5+work7` and `SHARE_UNITS=2^bits`. A live cache hit binds that nonce to its noteCommit and proven width. `skipPow` alone does not credit bits above the floor.
+v12 share credit is `ENC_SHARE=v5+work7`, `SHARE_UNITS=2^bits`, and `SHARE_CREDIT=nonce-hi-le`. The little-endian high byte of the share nonce (header offset 119) is the credited width `b`. A validator credits `2^b` only when that byte is `b`, the packed claim is `b`, and the dest-bound digest meets `b`. Legal `b` is `[SHARE_FLOOR_BITS, SHARE_BMAX]` with `SHARE_BMAX = min(52, floor(log2(MAX_HASH_UNITS)))`. A live cache hit binds that nonce to its noteCommit and that same width. `skipPow` does not credit a row that has no such proof.
 
 Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. **Hash bonus never goes to 0** (`HASH_UNIT_FLOOR=1`). Votes cannot zero the unit or move the pot schedule. Clients refuse to emit before that instant.
 

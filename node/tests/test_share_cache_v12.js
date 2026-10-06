@@ -8,6 +8,7 @@ import { meetsTarget } from '../../crypto/shear_hash.js';
 import {
   clearLiveSharePow,
   destBoundShareHash,
+  nonceWithShareTarget,
   noteCommitOfShare,
   rememberLiveSharePow,
   selectBlockShares,
@@ -57,7 +58,12 @@ describe('v12 share cache binds dest and bits', () => {
       bits: GENESIS_BITS_PACKED,
     });
     const proven = widths.map((bits, i) => {
-      const share = { dest: victims[i], nonce: BigInt(i + 1), lz: 0 };
+      const share = {
+        dest: victims[i],
+        nonce: nonceWithShareTarget(BigInt(i + 1), bits),
+        lz: 0,
+        shareBits: bits,
+      };
       const nc = noteCommitOfShare(share);
       const rx = rxForBits(nc, bits, bits + 1);
       assert.ok(rx, `bound hash at width ${bits}`);
@@ -97,7 +103,7 @@ describe('v12 share cache binds dest and bits', () => {
               skipPow,
             });
             assert.equal(stolen.ok, false, `steal ${row.bits} ${claim} skip=${skipPow}`);
-            assert.equal(stolen.reason, 'share_pow');
+            assert.equal(stolen.reason, claim === row.bits ? 'share_pow' : 'share_target');
           }
         }
         for (const claim of [row.bits + 1, 52]) {
@@ -107,7 +113,7 @@ describe('v12 share cache binds dest and bits', () => {
             skipPow,
           });
           assert.equal(inflated.ok, false);
-          assert.equal(inflated.reason, 'share_pow');
+          assert.equal(inflated.reason, 'share_target');
         }
       }
       const again = verifyShareBatch({ parentHeader: parent, shares: honestRows(), skipPow });
@@ -136,8 +142,21 @@ describe('v12 share cache binds dest and bits', () => {
       shares: [{ ...floorRow.share, shareBits: floorRow.bits }],
       skipPow: true,
     });
-    assert.equal(floorOnly.ok, true, floorOnly.reason);
-    assert.equal(floorOnly.units, unitsForShare(SHARE_FLOOR_BITS));
+    assert.equal(floorOnly.ok, false);
+    assert.equal(floorOnly.reason, 'share_pow');
+    assert.equal(rememberLiveSharePow(parent, floorRow.share.nonce, {
+      noteCommit: floorRow.nc,
+      shareBits: floorRow.bits,
+      lz: floorRow.bits,
+    }), true);
+    const floorCached = verifyShareBatch({
+      parentHeader: parent,
+      shares: [{ ...floorRow.share, shareBits: floorRow.bits }],
+      skipPow: true,
+    });
+    assert.equal(floorCached.ok, true, floorCached.reason);
+    assert.equal(floorCached.units, unitsForShare(SHARE_FLOOR_BITS));
+    clearLiveSharePow();
     for (const row of proven) {
       const miss = rxThatMisses(row.nc, SHARE_FLOOR_BITS);
       assert.ok(miss);
@@ -172,7 +191,7 @@ describe('v12 share cache binds dest and bits', () => {
         shares: [{ ...disk, shareBits: row.bits + 1 }],
       });
       assert.equal(mutated.ok, false);
-      assert.equal(mutated.reason, 'share_pow');
+      assert.equal(mutated.reason, 'share_target');
       const attackerNc = noteCommitOfShare({ dest: attackers[0] });
       const stolenMiss = rxThatMisses(attackerNc, SHARE_FLOOR_BITS);
       assert.ok(stolenMiss);

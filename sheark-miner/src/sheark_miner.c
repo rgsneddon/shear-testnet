@@ -312,12 +312,27 @@ static void init_note_commit(void) {
   g_have_note = 1;
 }
 
-static int share_or_block_hit(const unsigned char hash[32]) {
+/* Credited width is the LE high byte. B_MAX is log2(MAX_HASH_UNITS)=28. */
+static uint64_t stamp_share_nonce(uint64_t n) {
   int sb = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+  if (sb < 8) sb = 8;
+  if (sb > 28) sb = 28;
+  return (n & ((1ull << 56) - 1ull)) | ((uint64_t)(unsigned)sb << 56);
+}
+
+static int credit_bits_of_nonce(uint64_t nonce) {
+  int sb = (int)((nonce >> 56) & 0xffu);
+  if (sb < 8 || sb > 28) return -1;
+  return sb;
+}
+
+static int share_or_block_hit(const unsigned char hash[32], uint64_t nonce) {
+  int sb = credit_bits_of_nonce(nonce);
   int bb = atomic_load_explicit(&g_block_bits_live, memory_order_relaxed);
   if (bb > 0 && shear_meets_target(hash, bb)) return 1;
-  /* dest-bound submit only when the job says shareBind=dest. Live rx-floor
-   * pools reject dest-only hits as low_diff. */
+  /* Share credit is the byte in this nonce, not a later vardiff dial.
+   * dest-bound submit only when the job says shareBind=dest. */
+  if (sb < 0) return 0;
   if (atomic_load_explicit(&g_share_bind_dest, memory_order_relaxed) && g_have_note) {
     unsigned char bound[32];
     shear_share_bind(hash, g_note_commit, bound);
@@ -856,7 +871,7 @@ static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char 
   snprintf(s->jobId, sizeof(s->jobId), "%s", jobId);
   s->nonce = nonce;
   s->gen = gen;
-  s->share_bits = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+  s->share_bits = credit_bits_of_nonce(nonce);
   shear_hash_hex(hash, s->hash);
   snprintf(g_last_job, sizeof(g_last_job), "%s", jobId);
   g_last_nonce = nonce;
@@ -948,21 +963,22 @@ static void *hash_worker(void *arg) {
       primed = 0;
       memcpy(header, live, SHEAR_HEADER_LEN);
     }
-    shear_set_nonce(header, n);
+    uint64_t stamped = stamp_share_nonce(n);
+    shear_set_nonce(header, stamped);
     if (!primed) {
       if (shear_hash_first(header) != 0) {
         unsigned char hash[32];
         shear_hash(header, hash);
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-            && share_or_block_hit(hash)) {
-          enqueue_share(job.jobId, n, hash, job.gen);
+            && share_or_block_hit(hash, stamped)) {
+          enqueue_share(job.jobId, stamped, hash, job.gen);
         }
         n += (uint64_t)g_threads;
         continue;
       }
       primed = 1;
-      primed_n = n;
+      primed_n = stamped;
       memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
       n += (uint64_t)g_threads;
       continue;
@@ -974,14 +990,14 @@ static void *hash_worker(void *arg) {
     }
     atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-        && share_or_block_hit(hash)) {
+        && share_or_block_hit(hash, primed_n)) {
       unsigned char check[32];
       shear_hash(primed_hdr, check);
       if (memcmp(hash, check, 32) != 0) {
         memcpy(hash, check, 32);
-        if (!share_or_block_hit(hash)) {
+        if (!share_or_block_hit(hash, primed_n)) {
           g_dropped++;
-          primed_n = n;
+          primed_n = stamped;
           memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
           n += (uint64_t)g_threads;
           continue;
@@ -989,7 +1005,7 @@ static void *hash_worker(void *arg) {
       }
       enqueue_share(job.jobId, primed_n, hash, job.gen);
     }
-    primed_n = n;
+    primed_n = stamped;
     memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
     n += (uint64_t)g_threads;
   }

@@ -1,6 +1,6 @@
 # ENC_SHARE v5 (shear-testnet-v3)
 
-Fingerprint: `ENC_SHARE=v5+work7`. `SHARE_UNITS=2^bits`. A v5 body with no bit field is still the floor unit. The work frame carries credited bits. Share codec is the body, not the PoW preimage. Job header stays the frozen 128-byte ShearHash-v3 template. A cache hit binds noteCommit and those bits.
+Fingerprint: `ENC_SHARE=v5+work7`. `SHARE_UNITS=2^bits`. `SHARE_CREDIT=nonce-hi-le`. The work frame carries credited bits, and those bits must equal the little-endian high byte of the nonce inside the ShearHash preimage. A v5 body with no bit field is the floor unit only when that byte is the floor. Job header stays the frozen 128-byte ShearHash-v3 template. A cache hit binds noteCommit and that byte.
 
 ```
 ENC_SHARE_V5 = note_commit || nonce_u64le || lz_u8 || view_tag?
