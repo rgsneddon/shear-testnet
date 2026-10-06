@@ -1589,27 +1589,26 @@ export function parentSolveIntervalMs(blocks) {
   }
 }
 
-/** Full aserti3-2d packed bits for the next header.
- *  candidateTimestamp is the stamp the template will seal. Verify recomputes
- *  the same quote from that stamp and the genesis header. A missing stamp
- *  means one target interval after the tip (the on-schedule quote).
- *  The emergency ease window is verify-only. Template issues the full target.
- *  The anchor is this chain's genesis header, never the parent bits.
+/** aserti3-2d quote for the next header, including the emergency ease window.
+ *  candidateTimestamp is the stamp the template will seal. A missing stamp
+ *  means one target interval after the tip. The anchor is genesis, never
+ *  the parent bits. Template issuance uses `packed`. A stall timer may issue
+ *  `eased` only when `easeBits > 0`.
  */
-export function retarget(chain, candidateTimestamp) {
-  if (!chain.length) return GENESIS_BITS_PACKED;
+export function retargetQuote(chain, candidateTimestamp) {
+  if (!chain.length) return { ok: false, reason: 'asert_anchor' };
   let genesis;
   let last;
   try {
     genesis = decodeHeader(Buffer.from(chain[0].header));
     last = decodeHeader(Buffer.from(chain[chain.length - 1].header));
   } catch {
-    return GENESIS_BITS_PACKED;
+    return { ok: false, reason: 'asert_anchor' };
   }
   const parentTime = Number(last.timestamp);
   let blockTime = Number(candidateTimestamp);
   if (!Number.isFinite(blockTime)) blockTime = parentTime + TARGET_BLOCK_INTERVAL_MS;
-  const quote = asertNextBits({
+  return asertNextBits({
     anchorBits: Number(genesis.bits) || GENESIS_BITS_PACKED,
     anchorTimeMs: Number(genesis.timestamp),
     anchorHeight: Number(chain[0].height || 1),
@@ -1617,6 +1616,14 @@ export function retarget(chain, candidateTimestamp) {
     blockHeight: Number(chain[chain.length - 1].height || chain.length) + 1,
     parentTimeMs: parentTime,
   });
+}
+
+/** Full aserti3-2d packed bits for the next header.
+ *  The emergency ease window is not this return value. A fresh template
+ *  issues the full target. `retargetQuote` carries the ease window.
+ */
+export function retarget(chain, candidateTimestamp) {
+  const quote = retargetQuote(chain, candidateTimestamp);
   if (!quote.ok) return GENESIS_BITS_PACKED;
   return quote.packed;
 }

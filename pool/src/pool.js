@@ -38,6 +38,7 @@ import {
   MAX_BITS,
   SHARE_FLOOR_BITS,
   displayBits,
+  bitsAcceptAsert,
   SHEARK_MINER_VERSION,
   PRODUCT_VERSION,
   PI_SHE_NANOS,
@@ -61,7 +62,7 @@ import {
 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
-import { potSharesFromBatch, hashBonusByMiner, retarget } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote } from '../../node/src/chain.js';
 import { sortShares, selectBlockShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
@@ -1921,9 +1922,13 @@ export function createPool({
     let decoded;
     try { decoded = decodeHeader(headerFromHex(lastJob.header)); }
     catch { return 'header'; }
-    const wantBits = parentIntervalBits();
-    if (wantBits != null && Number(decoded.bits) !== Number(wantBits)) return 'bits';
     const ts = Number(decoded.timestamp);
+    if (!tip?.header) {
+      if (Number(decoded.bits) !== Number(GENESIS_BITS_PACKED)) return 'bits';
+    } else {
+      const quote = retargetQuote(store.blocks || [], ts);
+      if (!quote?.ok || !bitsAcceptAsert(Number(decoded.bits), quote)) return 'bits';
+    }
     if (!(ts > 0) || ts > Number(now) + HEADER_AHEAD_MS) return 'timestamp';
     if (tip?.header) {
       let parent;
@@ -2335,13 +2340,13 @@ export function createPool({
     }
     return lastJob;
   }
-  function maybeRestampJob() {
-    watchTipStall();
+  function maybeRestampJob(now = Date.now()) {
+    watchTipStall(now);
     if (paused) return lastJob;
     if (!lastJob) return lastJob;
-    const now = Date.now();
-    if ((now - lastEaseAt) < JOB_RESTAMP_MS) return lastJob;
-    lastEaseAt = now;
+    const wall = Number(now);
+    if ((wall - lastEaseAt) < JOB_RESTAMP_MS) return lastJob;
+    lastEaseAt = wall;
     const tip = store.tip();
     if (tip?.header) {
       try {
@@ -2350,17 +2355,20 @@ export function createPool({
         const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
-        const stamp = templateStampMs(parent.timestamp, now, null, mtp);
-        const wantBits = parentIntervalBits(stamp) ?? decoded.bits;
+        const stamp = templateStampMs(parent.timestamp, wall, null, mtp);
+        const quote = retargetQuote(store.blocks || [], stamp);
+        // Past 8·T the same job eases to the verify floor. Before that window
+        // a sealable header stays up so a short tick does not restart the search.
+        const easing = !!(quote?.ok && quote.easeBits > 0);
+        const wantBits = quote?.ok
+          ? (easing ? quote.eased : quote.packed)
+          : (parentIntervalBits(stamp) ?? decoded.bits);
         const liveTs = Number(decoded.timestamp);
         const overMtp = liveTs > Number(mtp) + MTP_FUTURE_MS;
-        // Same jobId. A sealable header is left alone so miners finish the
-        // search. Timestamp ticks do not retarget. Any packed undercut,
-        // including a fraction under one bit, is rewritten to consensus work.
-        if (!overMtp && decoded.bits === wantBits) {
-          if (liveJobCanSeal(now)) return lastJob;
+        if (!easing && !overMtp && Number(decoded.bits) === Number(wantBits)) {
+          if (liveJobCanSeal(wall)) return lastJob;
           const before = String(lastJob.header || '');
-          const job = restampLiveHeader(now);
+          const job = restampLiveHeader(wall);
           if (job && String(job.header || '') !== before) broadcastJob(job);
           return job;
         }
@@ -3957,6 +3965,7 @@ export function createPool({
     noteSidecarTip,
     jobHoldReason,
     restampJob: restampLiveHeader,
+    restampTick: maybeRestampJob,
     watchTipStall,
     sweepIdle: sweepIdleMiners,
     get pendingPayout() { return pendingPayout; },
