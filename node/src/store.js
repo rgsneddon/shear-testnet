@@ -29,6 +29,7 @@ import {
   hasLiveSharePow,
   sharePowCounters,
 } from '../../crypto/share_batch.js';
+import { advanceHashOwed, replayHashOwed } from '../../crypto/hash_owed.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { isDestAddress } from '../../crypto/address.js';
@@ -193,6 +194,8 @@ export function createStore(dir, {
   const checkpointOpts = { first: sealFirst, every: sealEvery };
   let evmSession = null;
   let vaultSeal = null;
+  let owedRows = [];
+  let acceptedSeries = [];
 
   const segLoaded = readChainSegments(segDir);
   if (segLoaded) {
@@ -450,6 +453,7 @@ export function createStore(dir, {
   }
 
   bootVault();
+  syncOwed(blocks);
   writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
 
   function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
@@ -658,6 +662,15 @@ export function createStore(dir, {
 
   // Fill the live book before any append or reorg. A b-spend with no stamp
   // does not start as an empty book. A chain this process wrote has the trailer.
+  function syncOwed(chain) {
+    const got = replayHashOwed(chain || [], {
+      unit: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
+    });
+    if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
+    owedRows = got.rows;
+    acceptedSeries = got.accepted.slice();
+  }
+
   function restoreSpentB() {
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
@@ -992,6 +1005,8 @@ export function createStore(dir, {
       poolDest: verifyOpts.poolDest
         || block.poolDest
         || (block.miner && isDestAddress(block.miner) ? block.miner : null),
+      owedIn: owedRows,
+      hashAcceptedSeries: acceptedSeries.slice(),
     });
     const after = (c) => {
       // A failed consensus check keeps its own reason. The vault clock is a
@@ -1025,6 +1040,15 @@ export function createStore(dir, {
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     };
     const stored = leanBlock(full);
+    const owedNext = advanceHashOwed({
+      owedIn: owedRows,
+      acceptedSeries,
+      block: stored,
+      unit: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
+    });
+    if (!owedNext.ok) throw new Error(owedNext.reason || 'hash_owed');
+    owedRows = owedNext.rows;
+    acceptedSeries = owedNext.acceptedSeries;
     indexSealed(stored);
     applyReserve(stored);
     blocks.push(stored);
@@ -1307,10 +1331,14 @@ export function createStore(dir, {
       if (!pay.ok) return pay;
     }
     const beforeSpent = new Set(trialSpent);
+    const owedWalk = verifyOpts.owedWalk || { owedIn: [], hashAcceptedSeries: [] };
+    const owedUnit = hashBonusUnitNanos(vault?.liveHashBonusNanos || 1);
     const check = verifyBlock(fork[i], prev, {
       spentB: trialSpent,
       tipHeight: Number(prev?.height || 0),
       hashBonusNanos: Number(vault?.liveHashBonusNanos || 1),
+      owedIn: owedWalk.owedIn,
+      hashAcceptedSeries: owedWalk.hashAcceptedSeries,
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH, accepted, rows)),
@@ -1329,6 +1357,18 @@ export function createStore(dir, {
         rollbackSpent(trialSpent, beforeSpent);
         return c;
       }
+      const owedNext = advanceHashOwed({
+        owedIn: owedWalk.owedIn,
+        acceptedSeries: owedWalk.hashAcceptedSeries,
+        block: fork[i],
+        unit: owedUnit,
+      });
+      if (!owedNext.ok) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return { ok: false, reason: owedNext.reason || 'hash_owed' };
+      }
+      owedWalk.owedIn = owedNext.rows;
+      owedWalk.hashAcceptedSeries = owedNext.acceptedSeries;
       c.bSpendIds = spentDelta(beforeSpent, trialSpent);
       return c;
     };
@@ -1341,9 +1381,10 @@ export function createStore(dir, {
     if (needs) return verifyForkAsync(fork, verifyOpts);
     const accepted = [];
     const trialSpent = new Set();
+    const owedWalk = { owedIn: [], hashAcceptedSeries: [] };
     const { trialVault, lca, noVault } = trialVaultForFork(fork);
     for (let i = 0; i < fork.length; i += 1) {
-      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, { ...verifyOpts, noVault: !!noVault });
+      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, { ...verifyOpts, noVault: !!noVault, owedWalk });
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       const lean = leanBlock({
         ...fork[i],
@@ -1365,8 +1406,9 @@ export function createStore(dir, {
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
+    const owedWalk = { owedIn: [], hashAcceptedSeries: [] };
     const { trialVault, lca, noVault } = trialVaultForFork(fork);
-    const opts = { ...verifyOpts, noVault: !!noVault };
+    const opts = { ...verifyOpts, noVault: !!noVault, owedWalk };
     for (let i = 0; i < fork.length; i += 1) {
       const check = await Promise.resolve(
         verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, opts),
@@ -1455,11 +1497,17 @@ export function createStore(dir, {
     const out = [];
     let prev = parent;
     const trialSpent = new Set();
+    const owedUnit = hashBonusUnitNanos(verifyOpts?.hashBonusNanos || reserveVault.liveHashBonusNanos);
+    const seed = replayHashOwed(history, { unit: owedUnit });
+    if (!seed.ok) return { ok: false, reason: seed.reason || 'hash_owed' };
+    const owedWalk = { owedIn: seed.rows, hashAcceptedSeries: seed.accepted.slice() };
     const step = (i) => {
       if (i >= fork.length) return { ok: true, blocks: out };
       const beforeSpent = new Set(trialSpent);
       const check = verifyBlock(fork[i], parentView(prev), {
         ...verifyOpts,
+        owedIn: owedWalk.owedIn,
+        hashAcceptedSeries: owedWalk.hashAcceptedSeries,
         spentB: trialSpent,
         trustedPowHash: trustedHashFor(fork[i], verifyOpts),
         tipHeight: Number(prev?.height || 0) + 1,
@@ -1475,6 +1523,18 @@ export function createStore(dir, {
           rollbackSpent(trialSpent, beforeSpent);
           return c;
         }
+        const owedNext = advanceHashOwed({
+          owedIn: owedWalk.owedIn,
+          acceptedSeries: owedWalk.hashAcceptedSeries,
+          block: fork[i],
+          unit: owedUnit,
+        });
+        if (!owedNext.ok) {
+          rollbackSpent(trialSpent, beforeSpent);
+          return { ok: false, reason: owedNext.reason || 'hash_owed' };
+        }
+        owedWalk.owedIn = owedNext.rows;
+        owedWalk.hashAcceptedSeries = owedNext.acceptedSeries;
         const lean = leanVerified(fork[i], c, prev);
         lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
         out.push(lean);
@@ -1567,6 +1627,12 @@ export function createStore(dir, {
         tip: tip(),
       };
     }
+    const owedReplay = replayHashOwed(accepted, {
+      unit: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
+    });
+    if (!owedReplay.ok) {
+      return { ok: false, reason: owedReplay.reason || 'hash_owed', tip: tip() };
+    }
     const lca = commonPrefixLen(fromBlocks, accepted);
     const depth = fromBlocks.length - lca;
     if (haltDepth > 0 && depth >= haltDepth) {
@@ -1592,6 +1658,8 @@ export function createStore(dir, {
       const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
       blocks.length = 0;
       for (const b of accepted) blocks.push(b);
+      owedRows = owedReplay.rows;
+      acceptedSeries = owedReplay.accepted.slice();
       if (disconnected.length) {
         sideAnchor = lca > 0 ? lca - 1 : -1;
         sideBlocks = (lca > 0 ? disconnected : fromBlocks).slice();

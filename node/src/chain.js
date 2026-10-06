@@ -85,12 +85,16 @@ import {
 } from '../../crypto/note.js';
 import { packTx, packDigest, unpackShareBatch, u64le } from '../../crypto/pack.js';
 import {
+  acceptedUnitsOfBlock,
   freshCreditsFromShares,
+  hashBudgetNanos,
   hashDustFromTx,
   hashLedgerIdle,
   hashOwedDigestSuffix,
   hashOwedFromTx,
+  hashOwedRootAgrees,
   hashOverflowFromTx,
+  replayHashOwed,
   sameHashLedger,
   settleHashOwed,
   writeHashLedger,
@@ -592,6 +596,7 @@ export function coinbaseTx({
   hashOwedIn = null,
   hashDustIn = null,
   hashOverflowIn = null,
+  hashAcceptedSeries = null,
 }) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
@@ -626,6 +631,8 @@ export function coinbaseTx({
   // first-seen dest order. An empty batch with an empty ledger mints no
   // hash note here. A later producer pays parent rows the same way.
   const fresh = freshCreditsFromShares(shareBatch || [], hashBonusNanos);
+  const budget = hashAcceptedSeries == null ? null : hashBudgetNanos(hashAcceptedSeries, hashBonusNanos);
+  if (hashAcceptedSeries != null && budget == null) throw new Error('hash_owed');
   const settled = settleHashOwed({
     owedIn: hashOwedIn || [],
     dustIn: hashDustIn || 0n,
@@ -633,6 +640,7 @@ export function coinbaseTx({
     fresh,
     height,
     unit: hashBonusNanos,
+    budget,
   });
   if (!settled.ok) throw new Error(settled.reason || 'hash_owed');
   const payByHex = new Map(settled.pay.map((p) => [p.noteCommit.toString('hex'), p]));
@@ -697,6 +705,7 @@ export function buildTemplate({
   hashBonusCustodyDest = null,
   parentFluxset = null,
   parentBlocks = null,
+  hashAcceptedSeries = null,
 }) {
   const batch = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const fromBatch = batch.length
@@ -729,7 +738,23 @@ export function buildTemplate({
   // (null shares) pays the miner the subsidy plus that carry and carries nothing.
   const carryIn = canonicalCarry(prevBlock?.txs?.[0]) || 0;
   const parentCb = prevBlock?.txs?.[0] || null;
-  const hashOwedIn = hashOwedFromTx(parentCb);
+  let series = Array.isArray(hashAcceptedSeries) ? hashAcceptedSeries : null;
+  let hashOwedIn = hashOwedFromTx(parentCb);
+  if (hashOwedIn == null && Array.isArray(parentBlocks) && parentBlocks.length) {
+    const replay = replayHashOwed(parentBlocks, { unit: hashBonusNanos });
+    if (!replay.ok || !hashOwedRootAgrees(parentCb, replay.rows)) throw new Error('hash_owed');
+    hashOwedIn = replay.rows;
+    if (series == null) series = replay.accepted;
+  }
+  if (series == null && Array.isArray(parentBlocks)) {
+    const lifted = [];
+    for (const block of parentBlocks) {
+      const n = acceptedUnitsOfBlock(block, hashBonusNanos);
+      if (n == null) throw new Error('hash_owed');
+      lifted.push(n);
+    }
+    series = lifted;
+  }
   const hashDustIn = hashDustFromTx(parentCb);
   const hashOverflowIn = hashOverflowFromTx(parentCb);
   if (hashOwedIn == null || hashDustIn == null || hashOverflowIn == null) {
@@ -757,6 +782,7 @@ export function buildTemplate({
     hashOwedIn,
     hashDustIn,
     hashOverflowIn,
+    hashAcceptedSeries: series,
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
@@ -1049,14 +1075,23 @@ export function shareCreditBound(block) {
   return { ok: true, reason: '' };
 }
 
-function settlementFor(prev, height, shareBatch, unit) {
+function settlementFor(prev, height, shareBatch, unit, extra = {}) {
   const parent = prev?.txs?.[0] || null;
-  const owedIn = hashOwedFromTx(parent);
+  let owedIn;
+  if (extra.owedIn != null) {
+    if (!hashOwedRootAgrees(parent, extra.owedIn)) return { ok: false, reason: 'hash_owed' };
+    owedIn = extra.owedIn;
+  } else {
+    owedIn = hashOwedFromTx(parent);
+  }
   const dustIn = hashDustFromTx(parent);
   const overflowIn = hashOverflowFromTx(parent);
   if (owedIn == null || dustIn == null || overflowIn == null) {
     return { ok: false, reason: 'hash_owed' };
   }
+  const series = extra.hashAcceptedSeries;
+  const budget = series == null ? null : hashBudgetNanos(series, unit);
+  if (series != null && budget == null) return { ok: false, reason: 'hash_owed' };
   const fresh = shareBatch.length ? freshCreditsFromShares(shareBatch, unit) : [];
   const settled = settleHashOwed({
     owedIn,
@@ -1065,6 +1100,7 @@ function settlementFor(prev, height, shareBatch, unit) {
     fresh,
     height,
     unit,
+    budget,
   });
   if (!settled.ok) return { ok: false, reason: settled.reason || 'hash_owed' };
   // owedIn is the combined map, including rows that were packed in hashOwedRest.
@@ -1285,7 +1321,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } else if (shareBatch.length) {
       return { ok: false, reason: 'share_batch' };
     }
-    const settlement = settlementFor(prev, height, shareBatch, liveUnit);
+    const settlement = settlementFor(prev, height, shareBatch, liveUnit, {
+      owedIn: opts.owedIn,
+      hashAcceptedSeries: opts.hashAcceptedSeries,
+    });
     if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
     if (confidential) {
@@ -1411,7 +1450,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
   }
   if (skipFlow) {
-    const buriedSettle = settlementFor(prev, height, shareBatch, liveUnit);
+    const buriedSettle = settlementFor(prev, height, shareBatch, liveUnit, {
+      owedIn: opts.owedIn,
+      hashAcceptedSeries: opts.hashAcceptedSeries,
+    });
     if (!buriedSettle.ok) return { ok: false, reason: buriedSettle.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], buriedSettle)) return { ok: false, reason: 'hash_owed' };
     if (!buriedSettle.idle) {

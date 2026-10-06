@@ -139,6 +139,13 @@ export const MAX_HASH_UNITS_PER_BLOCK = 2 ** 28;
  */
 export const HASH_OWED_MAX_ENTRIES = MAX_SHARES_PER_BLOCK;
 /**
+ * HASH_OWED_BUDGET_SCALE_V1. The window is τ/T. k is at least 1.
+ * Capacity is max(MAX_HASH_UNITS_PER_BLOCK, k * lower median) and never
+ * shrinks the 2^28 floor. The median is an observed sample.
+ */
+export const HASH_OWED_SCALE_WINDOW = ASERT_TAU_BLOCKS;
+export const HASH_OWED_SCALE_K = 2;
+/**
  * Shortfalls smaller than one floor share fold into the public dust pot.
  * The floor share is 2^SHARE_FLOOR_BITS units at the live hash-bonus unit.
  */
@@ -331,6 +338,10 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'HASH_OWED_SUBDUST=spare-fifo-v1',
     'HASH_OWED_OVERFLOW=forbidden',
     `HASH_OWED_INLINE=${HASH_OWED_MAX_ENTRIES}`,
+    'HASH_OWED_BUDGET_SCALE=v1',
+    `HASH_OWED_SCALE_WINDOW=${HASH_OWED_SCALE_WINDOW}`,
+    `HASH_OWED_SCALE_K=${HASH_OWED_SCALE_K}`,
+    'HASH_OWED_WIRE=root-v1',
     'DANDELIONPP=1',
     'VIEW_TAG=1',
     'KDF=argon2id-shewall',

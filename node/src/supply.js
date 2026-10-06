@@ -27,6 +27,7 @@ import {
 import { canonicalCarry } from './chain.js';
 import {
   freshCreditsFromShares,
+  hashBudgetNanos,
   hashLedgerIdle,
   sameHashLedger,
   settleHashOwed,
@@ -233,6 +234,7 @@ export function auditCirculatingSupply(blocks, {
   let acceptedHash = 0n;
   let carry = 0n;
   let owedState = [];
+  let acceptedSeries = [];
   let dustState = 0n;
   let overflowState = 0n;
   let ok = true;
@@ -290,12 +292,20 @@ export function auditCirculatingSupply(blocks, {
     }
     const fresh = shares.length ? freshCreditsFromShares(shares) : [];
     const blockHeight = Number(block?.height);
+    const budget = hashBudgetNanos(acceptedSeries, HASH_BONUS_NANOS);
+    if (budget == null) {
+      ok = false;
+      reason = reason || 'hash_owed';
+      carry = carryOut;
+      continue;
+    }
     const settled = settleHashOwed({
       owedIn: owedState,
       dustIn: dustState,
       overflowIn: overflowState,
       fresh,
       height: Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : 0,
+      budget,
     });
     if (!settled.ok || !sameHashLedger(cb, settled)) {
       ok = false;
@@ -322,6 +332,7 @@ export function auditCirculatingSupply(blocks, {
     acceptedHash += freshNanos + (mintedHashHere - settled.minted);
     permittedHashAll += mintedHashHere;
     owedState = rowsOut;
+    acceptedSeries.push(settled.acceptedUnits == null ? 0n : settled.acceptedUnits);
     dustState = settled.dust;
     overflowState = settled.overflow;
     const publicTotal = potMinted + mintedHashHere + levy;

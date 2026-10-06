@@ -481,6 +481,10 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_OWED_SUBDUST=spare-fifo-v1/);
     assert.match(fp, /HASH_OWED_OVERFLOW=forbidden/);
     assert.match(fp, /HASH_OWED_INLINE=65536/);
+    assert.match(fp, /HASH_OWED_BUDGET_SCALE=v1/);
+    assert.match(fp, /HASH_OWED_SCALE_WINDOW=80/);
+    assert.match(fp, /HASH_OWED_SCALE_K=2/);
+    assert.match(fp, /HASH_OWED_WIRE=root-v1/);
     assert.doesNotMatch(fp, /HASH_OWED_MAX=/);
     assert.equal(shareCreditMaxBits(), 28);
     assert.doesNotMatch(fp, /:ENC_SHARE=v5:/);

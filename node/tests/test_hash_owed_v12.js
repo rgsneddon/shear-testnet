@@ -32,6 +32,7 @@ import {
   freshCreditsFromShares,
   hashDustFromTx,
   hashOwedFromTx,
+  hashOwedRoot,
   hashOverflowFromTx,
   proRataNanos,
   settleHashOwed,
@@ -820,13 +821,14 @@ describe('v12 hash-bonus owed ledger', () => {
     assert.equal((again.block.txs[0].vout || []).some((o) => o.kind === 'hash'), false);
 
     const packed = reviveTx(compactTx(firstOrder.block.txs[0]));
-    const round = hashOwedFromTx(packed);
-    assert.equal(round.length, owedA.length);
-    assert.equal(round[0].nanos, owedA[0].nanos);
-    assert.equal(round[0].noteCommit.equals(owedA[0].noteCommit), true);
+    assert.equal(packed.hashOwed, undefined);
+    assert.equal(packed.hashOwedRest, undefined);
+    assert.equal(packed.hashOwedLocal, undefined);
+    assert.equal(hashOwedFromTx(packed), null);
+    assert.equal(hashOwedRoot(owedA).equals(Buffer.from(packed.hashOwedRoot)), true);
     assert.equal(digestTx(packed).equals(digestTx(firstOrder.block.txs[0])), true);
     const stripped = { ...packed };
-    delete stripped.hashOwed;
+    delete stripped.hashOwedRoot;
     assert.equal(digestTx(stripped).equals(digestTx(packed)), false);
   });
 });

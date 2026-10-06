@@ -13,7 +13,7 @@ import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
 
 export const P2P_IPC_HOST = '127.0.0.1';
 export const P2P_IPC_PORT = 30313;
-const IPC_MAX_FRAME = 8 * 1024 * 1024;
+export const IPC_MAX_FRAME = 8 * 1024 * 1024;
 /**
  * Blocks forwarded per turn on hello / parent repair.
  * A wider gap is chunked. It is not a reason to send nothing.
