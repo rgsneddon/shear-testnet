@@ -442,10 +442,12 @@ export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null,
     paid += nanos;
     if (nanos > 0) out.push({ noteCommit: sorted[i].noteCommit, nanos, kind: 'pot' });
   }
+  // The fee is its own note even when the fee dest also hashed. Adding it
+  // into a hasher note is not a different block from a no-fee pot once the
+  // dest is gone, and load has no dest. A folded coinbase is pot_prop
+  // whenever the opened notes are not this split plus one fee note.
   if (poolNc && fee > 0) {
-    const existing = out.find((s) => ncHex(s.noteCommit) === poolNc);
-    if (existing) existing.nanos += fee;
-    else out.push({ noteCommit: noteCommitOfDest20(hash20FromAddress(pool)), nanos: fee, kind: 'pool-fee' });
+    out.push({ noteCommit: noteCommitOfDest20(hash20FromAddress(pool)), nanos: fee, kind: 'pool-fee' });
   }
   return out.filter((s) => s.nanos > 0);
 }
@@ -583,9 +585,75 @@ export function matchDestBoundHashCustodyPot({
 }
 
 /**
- * Pot splits a pool may seal. A fee folded into a round participant is a slice
- * of this subsidy only, up to POOL_FEE_MAX_BPS. The split pot may include
- * carry. Which dest receives the fee is that pool's choice, not book law.
+ * Subsidy fees a block may open. The amount is floor(subsidy * bps / 10000)
+ * for a bps from 1 through POOL_FEE_MAX_BPS, or zero. Carry is not a fee base.
+ */
+function legalSubsidyFees(wantPot) {
+  const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
+  const maxFee = Math.floor(pot * POOL_FEE_MAX_BPS / 10000);
+  const out = [0];
+  const seen = new Set([0]);
+  for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
+    const n = Math.floor(pot * bps / 10000);
+    if (n > 0 && n <= maxFee && !seen.has(n)) {
+      seen.add(n);
+      out.push(n);
+    }
+  }
+  return out;
+}
+
+/** Each pay takes one unused opening of that noteCommit and nanos. */
+function assignPotPays(rows, pays) {
+  if (rows.length !== pays.length) return false;
+  const used = new Set();
+  for (const pay of pays) {
+    const want = ncHex(pay.noteCommit);
+    let hit = -1;
+    for (let i = 0; i < rows.length; i += 1) {
+      if (used.has(i)) continue;
+      if (rows[i].nc !== want || rows[i].v !== pay.nanos) continue;
+      hit = i;
+      break;
+    }
+    if (hit < 0) return false;
+    used.add(hit);
+  }
+  return used.size === rows.length;
+}
+
+/**
+ * Pot openings are the work split of (minted pot − fee) plus one note that
+ * opens to a legal subsidy fee. Fee identity is that note. No pool dest,
+ * miner, or share address is required. A fee added into a hasher note does
+ * not match. Two notes may share a noteCommit: the work slice and the fee.
+ */
+function matchUnfoldedPot(potVouts, leaves, wantPot, mintedPot) {
+  const rows = [];
+  for (const o of potVouts) {
+    const v = openedCoinbaseNanos(o);
+    if (!Number.isSafeInteger(v) || v <= 0) return null;
+    rows.push({ o, v, nc: ncHex(o.noteCommit) });
+  }
+  for (const fee of legalSubsidyFees(wantPot)) {
+    const pays = potPaysFromLeaves(leaves, null, fee, mintedPot, 0);
+    if (fee === 0) {
+      if (assignPotPays(rows, pays)) return rows;
+      continue;
+    }
+    for (let i = 0; i < rows.length; i += 1) {
+      if (rows[i].v !== fee) continue;
+      const rest = rows.filter((_, j) => j !== i);
+      if (!assignPotPays(rest, pays)) continue;
+      return rows;
+    }
+  }
+  return null;
+}
+
+/**
+ * Older candidate list. Verify does not call this. A dest string is not
+ * book law. matchUnfoldedPot reads the openings.
  */
 function propPayCandidates(leaves, feeBase, hinted, extraAmt, shareBatch, splitPot = null) {
   const pot = splitPot == null ? feeBase : splitPot;
@@ -1247,6 +1315,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     genesisMs = 0,
     magic = MAGIC_TESTNET,
   } = opts;
+  // A pool dest passed by the store is not a pot witness. The openings are.
+  void poolDest;
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
   let decoded;
@@ -1455,11 +1525,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         ? shareLeaves
         : aLeavesFromShares(shareBatch);
       const hasherNcs = new Set(leaves.map((l) => ncHex(l.noteCommit)));
-      const hinted = (poolDest && isDestAddress(poolDest))
-        ? poolDest
-        : (block.poolDest && isDestAddress(block.poolDest)
-          ? block.poolDest
-          : (block.miner && isDestAddress(block.miner) ? block.miner : ''));
+      // poolDest and block.miner are not a fee witness. The openings are.
       // A proven batch pays hasher leaves and one pro-rata pot. Custodial
       // shapes are not an accept, and a node-local env var cannot make them one.
       if (settlement.idle && !shareBatch.length) {
@@ -1495,46 +1561,18 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         return { ok: false, reason: 'hash_owed' };
       }
       if (hasherNcs.size) {
-        const extra = potVouts.filter((o) => !hasherNcs.has(ncHex(o.noteCommit)));
-        for (const o of extra) {
-          if (verifySealedNote(o, mintedPot)) {
+        for (const o of potVouts) {
+          if (!hasherNcs.has(ncHex(o.noteCommit)) && verifySealedNote(o, mintedPot)) {
             return { ok: false, reason: 'pot_prop' };
           }
         }
         // Fee is a bps of this subsidy only. Carry is miner money and is not
-        // a fee base. Hasher notes are one split of the minted pot minus that
-        // subsidy fee, so a last-row carry dump does not pass.
-        const extraAmt = extraPotFeeNanos(extra, wantPot);
-        if (extraAmt == null) return { ok: false, reason: 'pot_prop' };
-        const candidates = propPayCandidates(leaves, wantPot, hinted, extraAmt, shareBatch, mintedPot);
-        let matched = false;
-        let matchedPays = null;
-        for (const pays of candidates) {
-          let okTry = true;
-          for (const pay of pays) {
-            const hit = potVouts.find((o) => ncHex(o.noteCommit) === ncHex(pay.noteCommit));
-            if (!hit || !verifySealedNote(hit, pay.nanos)) {
-              okTry = false;
-              break;
-            }
-          }
-          if (!okTry) continue;
-          const extraOk = extra.length === 0
-            || (extra.length === 1 && verifySealedNote(extra[0], extraAmt));
-          if (!extraOk) continue;
-          const covered = new Set(pays.map((p) => ncHex(p.noteCommit)));
-          if (extra.length === 1) covered.add(ncHex(extra[0].noteCommit));
-          if (potVouts.some((o) => !covered.has(ncHex(o.noteCommit)))) continue;
-          matched = true;
-          matchedPays = pays;
-          break;
-        }
-        if (!matched) return { ok: false, reason: 'pot_prop' };
-        for (const pay of matchedPays) {
-          const hit = potVouts.find((o) => ncHex(o.noteCommit) === ncHex(pay.noteCommit));
-          if (hit) provenOpen.set(hit, pay.nanos);
-        }
-        if (extra.length === 1) provenOpen.set(extra[0], extraAmt);
+        // a fee base. The work notes are the split of the minted pot minus
+        // that fee. One extra note opens to the fee. A fee added into a work
+        // note does not match, on live append, ingest, IPC, or load.
+        const matchedRows = matchUnfoldedPot(potVouts, leaves, wantPot, mintedPot);
+        if (!matchedRows) return { ok: false, reason: 'pot_prop' };
+        for (const row of matchedRows) provenOpen.set(row.o, row.v);
       }
       const T = mintedPot + bonusNanos;
       if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };

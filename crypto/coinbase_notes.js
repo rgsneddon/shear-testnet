@@ -241,9 +241,12 @@ export function expectedCoinbasePays(shareBatch, {
     }
   }
   if (pool && fee > 0) {
-    const existing = out.find((s) => s.kind === 'pot' && s.address === pool);
-    if (existing) existing.nanos += fee;
-    else out.push({ address: pool, nanos: fee, kind: 'pot' });
+    out.push({
+      address: pool,
+      nanos: fee,
+      kind: 'pool-fee',
+      noteCommit: noteCommitOfDest20(hash20FromAddress(pool)),
+    });
   }
   return out;
 }

@@ -88,6 +88,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
       nonce: nonceWithShareTarget(1n, SHARE_FLOOR_BITS),
       lz: SHARE_FLOOR_BITS,
       shareBits: SHARE_FLOOR_BITS,
+      proofSlot: 0,
       verifiedHeader: Buffer.from(parent.header).toString('hex'),
     };
     assert.equal(rememberLiveSharePow(parent.header, share.nonce, {

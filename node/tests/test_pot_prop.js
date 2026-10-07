@@ -155,7 +155,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(okP.ok, true, okP.reason);
     const now = 1_700_000_090_000;
     const ph = decodeHeader(parent.header);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -228,7 +228,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(okP.ok, true, okP.reason);
     const now = 1_700_000_090_000;
     const ph = decodeHeader(parent.header);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -279,7 +279,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const pool = destOf(poolId);
     const hasher20 = hash20FromAddress(hasher);
     const pool20 = hash20FromAddress(pool);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -320,7 +320,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       const pool = destOf(newIdentity());
       assert.equal(allowedHashBonusCustodyDest(pool), '');
       const hasher20 = hash20FromAddress(hasher);
-      const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8 };
+      const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
       const tpl = buildTemplate({
         prev: GENESIS_PREV,
         height: 1,
@@ -508,7 +508,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const pool = encodeDest(destCommitFromSpendPub(ed25519RawPub(poolKey)));
     const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
     const rest = BLOCK_SUBSIDY_NANOS - fee;
-    const row = { dest20: dest20OfShare({ dest: miner }), dest: miner, nonce: floorNonce(1n), lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: miner }), dest: miner, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
     const shares = potSharesFromBatch([row], pool, BLOCK_SUBSIDY_NANOS);
     const tpl = buildTemplate({
       prev: GENESIS_PREV,

@@ -311,9 +311,7 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
     if (nanos > 0) out.push({ address: addr, nanos, kind: 'pot' });
   }
   if (fee > 0 && feeAddr && isDestAddress(feeAddr)) {
-    const existing = out.find((s) => s.address === feeAddr);
-    if (existing) existing.nanos += fee;
-    else out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
+    out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
   }
   return out.filter((s) => s.nanos > 0);
 }
