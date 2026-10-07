@@ -21,6 +21,8 @@ import {
   chainWorkOf,
   headerGapsMs,
   shareCreditBound,
+  verifyLoadedChain,
+  chainLoadSeal,
 } from './chain.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
@@ -261,6 +263,7 @@ export function createStore(dir, {
   const explorerFile = path.join(dir, 'explorer.jsonl');
   const vaultFile = path.join(dir, 'reserve.json');
   const magicFile = path.join(dir, 'book.magic');
+  const sealFile = path.join(dir, 'book.seal');
   const blocks = [];
   const explorer = [];
   const spentB = new Set();
@@ -312,6 +315,20 @@ export function createStore(dir, {
       // Empty cut. v8 and v9 books do not join this magic. No soft-merge.
       throw new Error(`datadir_magic:${diskMagic}`);
     }
+  }
+  // book.seal skips ShearHash on a book this store wrote. Merkle, prev, bits,
+  // and the spend trailer still run. A foreign chain.bin has no matching seal
+  // and is hashed before restoreSpentB, bootVault, and syncOwed.
+  if (blocks.length) {
+    const want = chainLoadSeal(blocks);
+    let got = '';
+    if (fs.existsSync(sealFile)) {
+      try { got = fs.readFileSync(sealFile, 'utf8').trim(); } catch { got = ''; }
+    }
+    const trustStoredHash = got.length > 0 && got === want;
+    const checked = verifyLoadedChain(blocks, { trustStoredHash });
+    if (!checked.ok) throw new Error(checked.reason || 'pow');
+    if (!trustStoredHash) writeLoadSeal(blocks);
   }
   restoreSpentB();
 
@@ -581,6 +598,10 @@ export function createStore(dir, {
     }
   }
 
+  function writeLoadSeal(rows) {
+    fs.writeFileSync(sealFile, `${chainLoadSeal(rows)}\n`);
+  }
+
   function migrateMonolith(diskBlocks) {
     const tmp = path.join(dir, 'segments.migrating');
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -592,6 +613,7 @@ export function createStore(dir, {
     fs.rmSync(tmp, { recursive: true, force: true });
     if (fs.existsSync(binFile)) fs.renameSync(binFile, `${binFile}.legacy`);
     segmented = true;
+    writeLoadSeal(diskBlocks);
   }
 
   function persist(block) {
@@ -612,6 +634,7 @@ export function createStore(dir, {
     }
     fs.appendFileSync(file, `${slimRow(row)}\n`);
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
+    writeLoadSeal(blocks);
   }
 
   function rewriteChain() {
@@ -622,6 +645,7 @@ export function createStore(dir, {
     writeSlimIndex();
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
     segmented = true;
+    writeLoadSeal(blocks);
   }
 
   function tip() {

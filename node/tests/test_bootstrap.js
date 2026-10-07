@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { writeChainBin } from '../../crypto/chainbin.js';
 import {
   writeLatestBootstrap,
   applyLatestBootstrap,
@@ -82,10 +83,14 @@ describe('latest-only prune bootstrap', () => {
     assert.equal(man.height, 4);
 
     const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-dst-'));
-    const applied = applyLatestBootstrap(dest, src);
-    assert.equal(applied.height, 4);
-    assert.equal(fs.existsSync(path.join(dest, 'chain.bin')), true);
-    assert.throws(() => applyLatestBootstrap(dest, src), /bootstrap_datadir_not_empty/);
+    assert.throws(
+      () => applyLatestBootstrap(dest, src),
+      /prev|pow|merkle|bad_header|coinbase|bits|timestamp|no_header|height/,
+    );
+    assert.equal(fs.existsSync(path.join(dest, 'chain.bin')), false);
+    const dirty = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-dirty-'));
+    fs.writeFileSync(path.join(dirty, 'chain.bin'), Buffer.alloc(0));
+    assert.throws(() => applyLatestBootstrap(dirty, src), /bootstrap_datadir_not_empty/);
   });
 
   it('snapshot cadence is 200 and the reorg freeze stays 1000 then 400', () => {
@@ -138,6 +143,28 @@ describe('latest-only prune bootstrap', () => {
     assert.equal(html.includes('FAST_SYNC=1'), false);
     assert.match(html, /shear-testnet-v11/);
     assert.match(html, /never hooks a bootstrap/i);
+  });
+
+  it('publisher refuses a snapshot whose headers are not this chain', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-fake-'));
+    const blocks = [];
+    for (let h = 1; h <= 3; h += 1) blocks.push(prunedBlock(h, h));
+    blocks.push({
+      height: 1008,
+      hash: Buffer.alloc(32, 9),
+      header: Buffer.alloc(128, 9),
+      rootA: Buffer.alloc(32, 1),
+      rootB: Buffer.alloc(32, 2),
+      samplesPruned: false,
+      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
+      shareBatch: [{ nonce: '1' }],
+    });
+    writeChainBin(path.join(dir, 'chain.bin'), blocks);
+    const out = path.join(dir, 'out');
+    const got = publishOnce({ dataDir: dir, publishDir: out });
+    assert.equal(got.ok, false);
+    assert.match(got.reason, /prev|pow|merkle|bad_header|coinbase|bits|timestamp|no_header|height/);
+    assert.equal(fs.existsSync(path.join(out, 'latest.bin')), false);
   });
 
   it('publisher leaves the chain alone when chain.bin is absent', () => {

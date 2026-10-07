@@ -246,6 +246,9 @@ describe('v12 b-spend stamps survive a restart', () => {
     assert.equal(reopened.ok, true, reopened.reason);
     assert.equal(bounced.spentB.has(id), true);
 
+    // Trusted-pow headers in a new dir have no book.seal. Load hashes them and
+    // fails pow before restoreSpentB. A real ShearHash trailer mismatch is
+    // test_load_verify_v12.js. The same-dir restart above still has the seal.
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-bare-'));
     const stripped = bounced.blocks.map((b) => {
       const copy = { ...b };
@@ -253,14 +256,14 @@ describe('v12 b-spend stamps survive a restart', () => {
       return copy;
     });
     writeChainBin(path.join(bare, 'chain.bin'), stripped);
-    assert.throws(() => createStore(bare, { pruneAfter: 1_000_000 }), /spent_checkpoint_missing/);
+    assert.throws(() => createStore(bare, { pruneAfter: 1_000_000 }), /pow/);
 
     const dupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-dup-'));
     const duplicated = bounced.blocks.map((b) => ({ ...b, bSpendIds: Array.isArray(b.bSpendIds) ? b.bSpendIds.slice() : [] }));
     const host = duplicated.find((b) => !(b.bSpendIds || []).includes(id));
     host.bSpendIds = host.bSpendIds.concat([id]);
     writeChainBin(path.join(dupDir, 'chain.bin'), duplicated);
-    assert.throws(() => createStore(dupDir, { pruneAfter: 1_000_000 }), /spent_checkpoint_mismatch/);
+    assert.throws(() => createStore(dupDir, { pruneAfter: 1_000_000 }), /pow/);
 
     const twinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-twin-'));
     const twinned = bounced.blocks.map((b) => ({
@@ -274,7 +277,7 @@ describe('v12 b-spend stamps survive a restart', () => {
     carrier.txs = carrier.txs.concat([{ ...copiedSpend, id: 'bspend-copied' }]);
     carrier.bSpendIds = [id];
     writeChainBin(path.join(twinDir, 'chain.bin'), twinned);
-    assert.throws(() => createStore(twinDir, { pruneAfter: 1_000_000 }), /double_open/);
+    assert.throws(() => createStore(twinDir, { pruneAfter: 1_000_000 }), /pow/);
 
     const oldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-old-'));
     const mixed = bounced.blocks.map((b) => {
@@ -284,9 +287,7 @@ describe('v12 b-spend stamps survive a restart', () => {
       return copy;
     });
     writeChainBin(path.join(oldDir, 'chain.bin'), mixed);
-    const oldStore = createStore(oldDir, { pruneAfter: 1_000_000 });
-    assert.equal(oldStore.spentB.has(id), true);
-    assert.equal(tipHex(oldStore), tipHex(bounced));
+    assert.throws(() => createStore(oldDir, { pruneAfter: 1_000_000 }), /pow/);
   });
 
   it('rejects a trailer that is not the set of ids derived from that block', { timeout: 180_000 }, () => {
@@ -415,24 +416,25 @@ describe('v12 b-spend stamps survive a restart', () => {
         });
         throw new Error(`partial loaded has0=${has0} has1=${has1} respend=${again.ok}:${again.reason}`);
       }
-      assert.match(String(err.message), /spent_checkpoint_mismatch/, 'partial');
+      assert.match(String(err.message), /pow/, 'partial');
     }
+    // Same trusted-pow foreign files as the restart case: pow, not the trailer.
     expectTrailer(snapshot, (chain) => {
       at(chain, multiH).bSpendIds = [ids[0], ids[1], 'extra-not-a-leaf'];
-    }, /spent_checkpoint_mismatch/, 'extra');
+    }, /pow/, 'extra');
     expectTrailer(snapshot, (chain) => {
       at(chain, singleH).bSpendIds = ['wrong-not-a-leaf'];
-    }, /spent_checkpoint_mismatch/, 'wrong');
+    }, /pow/, 'wrong');
     expectTrailer(snapshot, (chain) => {
       const a = at(chain, multiH);
       const b = at(chain, singleH);
       const swap = a.bSpendIds;
       a.bSpendIds = b.bSpendIds;
       b.bSpendIds = swap;
-    }, /spent_checkpoint_mismatch/, 'swapped');
+    }, /pow/, 'swapped');
     expectTrailer(snapshot, (chain) => {
       delete at(chain, multiH).bSpendIds;
-    }, /spent_checkpoint_missing/, 'stripped');
+    }, /pow/, 'stripped');
 
     const keepParent = bounced.blocks.length - 2;
     assert.ok(keepParent > bounced.blocks.findIndex((b) => Number(b.height) === singleH));

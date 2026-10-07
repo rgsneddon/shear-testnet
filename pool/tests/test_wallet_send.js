@@ -321,9 +321,8 @@ describe('wallet fluxset RPC', () => {
       txs: [{ coinbase: true, vout: [] }],
     });
     writeChainBin(path.join(binDir, 'chain.bin'), packed);
-    const booted = createStore(binDir);
-    assert.equal(reconstructOwner(booted, hasher).spendableNanos, n * hashNanos);
-    assert.equal(reconstructOwner(booted, pool).spendableNanos, n * rest);
+    assert.throws(() => createStore(binDir), /pow|merkle|bad_header|prev|coinbase|bits|timestamp|no_header|height/);
+    assert.equal(fs.existsSync(path.join(binDir, 'reserve.json')), false);
     fs.rmSync(binDir, { recursive: true, force: true });
   });
 

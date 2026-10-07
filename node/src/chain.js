@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { potSubsidyAt, chainGenesisMs as genesisMsOf } from '../../crypto/pot_sched.js';
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
@@ -1860,6 +1861,100 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
     evm: ran,
     evmSession: session,
   };
+}
+
+function asBuf(v) {
+  if (Buffer.isBuffer(v)) return v;
+  if (v == null) return Buffer.alloc(0);
+  try { return Buffer.from(v); } catch { return Buffer.alloc(0); }
+}
+
+/** sha256 over each block's header and stored hash. Not a MAC.
+ *  persist and a successful foreign verify write it. writeChainBin does not.
+ */
+export function chainLoadSeal(blocks) {
+  const h = createHash('sha256');
+  for (const b of Array.isArray(blocks) ? blocks : []) {
+    const header = asBuf(b?.header);
+    const hash = asBuf(b?.hash);
+    const n = Buffer.alloc(8);
+    n.writeUInt32LE(header.length >>> 0, 0);
+    n.writeUInt32LE(hash.length >>> 0, 4);
+    h.update(n);
+    h.update(header);
+    h.update(hash);
+  }
+  return h.digest('hex');
+}
+
+/**
+ * Load check for a chain.bin or latest.bin this store did not seal.
+ * Empty passes. Does not call verifyBlock: a pruned body is not a live accept.
+ * Prev is compared before ShearHash so a flipped prev byte is `prev`.
+ * trustStoredHash skips ShearHash when book.seal already binds header||hash.
+ * Merkle, linkage, bits, and the coinbase still run on that path.
+ */
+export function verifyLoadedChain(blocks, { trustStoredHash = false } = {}) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  if (!list.length) return { ok: true };
+  let prevLink = GENESIS_PREV;
+  let prevDecoded = null;
+  let prevHeight = 0;
+  let genesisMs = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    const block = list[i];
+    const header = asBuf(block?.header);
+    if (!block?.header || header.length === 0) return { ok: false, reason: 'no_header' };
+    let decoded;
+    try {
+      decoded = decodeHeader(header);
+    } catch {
+      return { ok: false, reason: 'bad_header' };
+    }
+    if (!decoded.prevBlockHash.equals(prevLink)) return { ok: false, reason: 'prev' };
+    const height = Number(block.height);
+    if (height !== i + 1) return { ok: false, reason: 'height' };
+    const ts = Number(decoded.timestamp);
+    if (!Number.isFinite(ts) || ts <= 0) return { ok: false, reason: 'timestamp' };
+    if (prevDecoded && !(ts > Number(prevDecoded.timestamp))) return { ok: false, reason: 'timestamp' };
+    const stored = asBuf(block.hash);
+    if (stored.length !== 32) return { ok: false, reason: 'pow' };
+    let link = stored;
+    if (!trustStoredHash) {
+      const hash = shearHash(header);
+      if (!meetsTarget(hash, decoded.bits) || !stored.equals(hash)) {
+        return { ok: false, reason: 'pow' };
+      }
+      link = hash;
+    }
+    if (!prevDecoded) {
+      if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
+        return { ok: false, reason: 'bits' };
+      }
+      genesisMs = ts;
+    } else {
+      const parentIsGenesis = prevDecoded.prevBlockHash.equals(GENESIS_PREV);
+      const quote = asertNextBits({
+        anchorBits: parentIsGenesis ? prevDecoded.bits : GENESIS_BITS_PACKED,
+        anchorTimeMs: parentIsGenesis ? Number(prevDecoded.timestamp) : genesisMs,
+        anchorHeight: parentIsGenesis ? prevHeight : 1,
+        blockTimeMs: ts,
+        blockHeight: height,
+        parentTimeMs: Number(prevDecoded.timestamp),
+      });
+      if (!quote.ok || !bitsAcceptAsert(decoded.bits, quote) || !isPackedBits(decoded.bits)) {
+        return { ok: false, reason: 'bits' };
+      }
+    }
+    const txs = Array.isArray(block.txs) ? block.txs : [];
+    if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
+    const merkle = merkleRoot(txs.map(digestTx));
+    if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
+    prevLink = link;
+    prevDecoded = decoded;
+    prevHeight = height;
+  }
+  return { ok: true };
 }
 
 /**

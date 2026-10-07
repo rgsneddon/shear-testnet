@@ -9,6 +9,7 @@ import path from 'node:path';
 import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
+import { verifyLoadedChain, chainLoadSeal } from './chain.js';
 
 function hexHash(h) {
   if (h == null || h === '') return '';
@@ -137,6 +138,8 @@ export function readLatestBootstrap(fromDir) {
       throw new Error('bootstrap_dropped_txs');
     }
   }
+  const checked = verifyLoadedChain(blocks);
+  if (!checked.ok) throw new Error(checked.reason || 'pow');
   return { manifest, blocks, paths };
 }
 
@@ -152,6 +155,7 @@ export function applyLatestBootstrap(dataDir, fromDir) {
   writeChainBin(dest.bin, blocks);
   fs.writeFileSync(dest.json, `${JSON.stringify(manifest)}\n`);
   writeChainBin(chainBin, blocks);
+  fs.writeFileSync(path.join(dataDir, 'book.seal'), `${chainLoadSeal(blocks)}\n`);
   return manifest;
 }
 
