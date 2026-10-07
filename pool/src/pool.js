@@ -72,6 +72,7 @@ import {
   destOfShare,
   verifyShareBatch,
   pinLiveSharePow,
+  pinOneLiveSharePow,
   liveSharePowKey,
   hasLiveSharePow,
   reproveSharesOffLoop,
@@ -615,8 +616,10 @@ export const SEAL_ESCAPE_AFTER = 2;
 // Probes per escape, any batch width. A bisection stays under this.
 // A linear scan of the share cap does not.
 export const SEAL_ESCAPE_PROBE_CAP = 32;
-// After one rebuild, this many more identical header faults, or two block
-// intervals, and the pool stops holding that template.
+// After one rebuild, this many more header faults, or two block intervals
+// from the first fault on that batch and tip, and the pool stops holding
+// that template. A rebuild, a reason change, or a transient fault does not
+// move the first-fault time.
 export const HEADER_HOLD_MAX_FAULTS = SEAL_ESCAPE_AFTER;
 export const HEADER_HOLD_DEADLINE_MS = TARGET_BLOCK_INTERVAL_MS * 2;
 
@@ -627,11 +630,12 @@ export function transientHeaderFault(reason) {
 }
 
 export function headerHoldExpired(hold, now = Date.now()) {
-  if (!hold?.rebuilt) return false;
-  const faults = Number(hold.faults) || 0;
+  if (!hold) return false;
   const at = Number(hold.at) || 0;
-  if (faults >= HEADER_HOLD_MAX_FAULTS) return true;
   if (at > 0 && Number(now) - at >= HEADER_HOLD_DEADLINE_MS) return true;
+  if (!hold.rebuilt) return false;
+  const faults = Number(hold.faults) || 0;
+  if (faults >= HEADER_HOLD_MAX_FAULTS) return true;
   return false;
 }
 
@@ -954,8 +958,21 @@ export function rememberOpenShare(openShares, rec) {
   const list = Array.isArray(openShares) ? openShares : [];
   const fp = rec?.fp || openShareFingerprint(rec, rec?.nonce, rec?.hash);
   if (!fp) return { ok: false, reason: 'bad_share', list };
-  if (list.some((s) => String(s.fp || '') === fp)) return { ok: false, reason: 'duplicate_share', list };
+  // Same duplicate rule as a full scan. The set is rebuilt when the list
+  // was replaced or edited outside this function, so a cap-sized round stays
+  // linear. The property is not enumerable and is not a wire field.
+  let seen = list._openFp;
+  if (!(seen instanceof Set) || seen.size !== list.length) {
+    seen = new Set();
+    for (const s of list) {
+      const id = String(s?.fp || '');
+      if (id) seen.add(id);
+    }
+    Object.defineProperty(list, '_openFp', { value: seen, writable: true, configurable: true });
+  }
+  if (seen.has(fp)) return { ok: false, reason: 'duplicate_share', list };
   list.push({ ...rec, fp });
+  seen.add(fp);
   return { ok: true, list };
 }
 
@@ -2656,20 +2673,39 @@ export function createPool({
 
   function noteBoundedRebuild(why, key) {
     freshTemplateState();
+    const tip = tipHashNow();
+    const same = headerHold && headerHold.batch === key && headerHold.tip === tip;
+    const reason = String(why || '');
+    const reasons = same && headerHold.reasons ? headerHold.reasons : {};
+    if (!same) reasons[reason] = (Number(reasons[reason]) || 0) + 1;
     headerHold = {
       batch: key,
-      tip: tipHashNow(),
-      reason: String(why || ''),
+      tip,
+      reason,
       rebuilt: true,
       latched: false,
-      at: Date.now(),
-      faults: 0,
+      at: same && Number(headerHold.at) > 0 ? Number(headerHold.at) : Date.now(),
+      faults: same ? (Number(headerHold.faults) || 0) : 0,
+      reasons,
+      alerted: same ? headerHold.alerted === true : false,
     };
     stats.headerRebuilds = (Number(stats.headerRebuilds) || 0) + 1;
+    if (!headerHold.alerted) {
+      headerHold.alerted = true;
+      console.error(JSON.stringify({
+        event: 'seal_header_hold',
+        alert: true,
+        at: headerHold.at,
+        reason,
+        reasons: headerHold.reasons,
+        shares: lag1Shares.length,
+      }));
+    }
     console.error(JSON.stringify({
       event: 'seal_header_rebuild',
-      alert: true,
-      reason: String(why || ''),
+      alert: false,
+      at: headerHold.at,
+      reason,
       shares: lag1Shares.length,
     }));
   }
@@ -2801,6 +2837,8 @@ export function createPool({
   // and publish a template without them. Unsealed holds are not lostWork.
   function releaseHeldBatch(why) {
     const batchKey = String(headerHold?.batch || '');
+    const at = Number(headerHold?.at) || 0;
+    const reasons = headerHold?.reasons || {};
     if (lag1Shares.length) {
       deferredShares = sortShares(deferredShares.concat(lag1Shares));
       lag1Shares = [];
@@ -2813,6 +2851,8 @@ export function createPool({
       event: 'seal_header_fallback',
       alert: true,
       reason: String(why || ''),
+      at,
+      reasons,
       shares: deferredShares.length,
     }));
   }
@@ -2845,22 +2885,44 @@ export function createPool({
     }));
     const tip = tipHashNow();
     let released = false;
-    if (!transient && key && headerHold?.rebuilt && headerHold.batch === key && headerHold.tip === tip && headerHold.reason === why) {
-      headerHold.faults = (Number(headerHold.faults) || 0) + 1;
-      if (headerHoldExpired(headerHold)) {
-        releaseHeldBatch(why);
-        released = true;
-      } else {
-        headerHold.latched = true;
-        forgetBatchJobs(key);
-        lastJob = null;
+    if (key && klass === 'header') {
+      const same = headerHold && headerHold.batch === key && headerHold.tip === tip;
+      if (!same) {
+        headerHold = {
+          batch: key,
+          tip,
+          reason: why,
+          rebuilt: false,
+          latched: false,
+          at: Date.now(),
+          faults: 0,
+          reasons: {},
+          alerted: false,
+        };
+      }
+      headerHold.reasons[why] = (Number(headerHold.reasons[why]) || 0) + 1;
+      if (!headerHold.alerted) {
+        headerHold.alerted = true;
         console.error(JSON.stringify({
           event: 'seal_header_hold',
           alert: true,
+          at: headerHold.at,
           reason: why,
+          reasons: headerHold.reasons,
           shares: lag1Shares.length,
-          faults: headerHold.faults,
         }));
+      }
+      if (!transient && headerHold.rebuilt) {
+        headerHold.faults = (Number(headerHold.faults) || 0) + 1;
+        headerHold.reason = why;
+      }
+      if (headerHoldExpired(headerHold)) {
+        releaseHeldBatch(why);
+        released = true;
+      } else if (!transient && headerHold.rebuilt && (Number(headerHold.faults) || 0) > 0) {
+        headerHold.latched = true;
+        forgetBatchJobs(key);
+        lastJob = null;
       }
     }
     if (!released && key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
@@ -2935,8 +2997,15 @@ export function createPool({
         shareBits: rec.shareBits,
         lz: rec.lz,
       });
+      // One new pin. Rebuilding every open, lag-1, and template key here is
+      // quadratic in the round, so a full cap never finishes inside a block.
+      const pinned = sharePinKey(rec, store.tip()?.header || rec.verifiedHeader || rec.header || null);
+      if (pinned) pinOneLiveSharePow(pinned);
     }
-    refreshSharePins();
+    const m = liveSharePowMetrics();
+    stats.shareCacheEvictions = m.evictions;
+    stats.shareCacheWipes = m.wipes;
+    stats.shareCache = m;
     return opened;
   }
 
@@ -2947,24 +3016,39 @@ export function createPool({
     return lag1Shares.slice();
   }
 
+  function publishLiveJob(prior) {
+    let job = null;
+    try {
+      job = issueJob(undefined, { force: true, proofPending: true });
+    } catch {
+      job = null;
+    }
+    if (!job) job = prior || null;
+    if (job) {
+      try { broadcastJob(job); } catch { /* the caller still has the job */ }
+    }
+    return job;
+  }
+
   function ensureCachedShareProofs() {
     const tipHdr = store.tip()?.header || null;
     const pending = reproveSharesOffLoop(tipHdr, lag1Shares).then(async (got) => {
       if (proofWarm === pending) proofWarm = null;
+      const prior = lastJob;
       if (!got.ok) {
         const why = String(got.reason || 'share_pow');
         if (perShareFailure(why)) dropUnprovenShares(got.failed || [], why, '');
-        await noteSealFailure(why, String(lastJob?.jobId || ''), '');
+        await noteSealFailure(why, String(prior?.jobId || ''), '');
       }
       refreshSharePins();
-      const job = issueJob(undefined, { force: true });
-      if (job) broadcastJob(job);
-      return job;
+      return publishLiveJob(prior);
     }).catch(async () => {
       if (proofWarm === pending) proofWarm = null;
-      // A thrown worker is not a share_pow drop. The batch stays.
-      await noteSealFailure('worker', '', '');
-      return null;
+      // A thrown worker is not a share_pow drop. The batch stays, and the
+      // pool still broadcasts a job. The first-fault deadline still applies.
+      const prior = lastJob;
+      await noteSealFailure('worker', String(prior?.jobId || ''), '');
+      return publishLiveJob(prior);
     });
     proofWarm = pending;
     return pending;
@@ -3014,13 +3098,13 @@ export function createPool({
     return got || { ok: false, reason: 'append' };
   }
 
-  function issueJob(shareBitsNow, { force = false, probe = false } = {}) {
+  function issueJob(shareBitsNow, { force = false, probe = false, proofPending = false } = {}) {
     if (sidecarAhead()) {
       logJobHold();
       return lastJob;
     }
     jobHoldLogged = false;
-    if (!probe && headerHold?.rebuilt && headerHoldExpired(headerHold)) {
+    if (!probe && headerHold && headerHoldExpired(headerHold)) {
       releaseHeldBatch(headerHold.reason);
     }
     if (!probe && headerHold) {
@@ -3066,7 +3150,7 @@ export function createPool({
     const tipHdr = store.tip()?.header || null;
     bindLag1ToTip();
     const coldLag1 = lag1MissingProof(tipHdr, lag1Shares);
-    if (coldLag1.length) {
+    if (coldLag1.length && !proofPending) {
       if (!probe && !proofWarm) ensureCachedShareProofs();
       return null;
     }

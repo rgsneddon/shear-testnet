@@ -354,6 +354,12 @@ export function pinLiveSharePow(keys) {
   return liveSharePins.size;
 }
 
+/** Keep one more key pinned. Does not drop keys already pinned. */
+export function pinOneLiveSharePow(key) {
+  if (key) liveSharePins.add(String(key));
+  return liveSharePins.size;
+}
+
 export function liveSharePowKey(parentHeader, nonce) {
   const job = shareJobKey(parentHeader);
   if (!job || nonce == null || nonce === '') return '';
