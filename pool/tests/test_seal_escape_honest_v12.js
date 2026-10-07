@@ -370,18 +370,12 @@ describe('v12 seal escape keeps honest work', () => {
         assert.equal(planted.shares.length, 1);
       }
 
-      // Header faults keep every share and stop rebuilding the same template.
+      // Header faults keep every share. The pool still has a job to seal.
       for (const mode of ['pow', 'merkle', 'prev', 'bits', 'worker', 'stale_job']) {
         const pool = poolAt(`hdr-${mode}`);
         pools.push(pool);
         watchFinder(pool, finder);
         const planted = await plant(pool, rowsOf(3, dests, 11000 + mode.length));
-        let templates = 0;
-        const realTemplate = pool.store.template.bind(pool.store);
-        pool.store.template = (opts) => {
-          templates += 1;
-          return realTemplate(opts);
-        };
         const realSubmit = pool.store.submitHeader.bind(pool.store);
         pool.store.submitHeader = (req, opts) => {
           if (mode === 'worker') return { ok: false, reason: 'worker' };
@@ -405,22 +399,18 @@ describe('v12 seal escape keeps honest work', () => {
               corrupted.add(id);
             }
           }
-          if (!pool.lastJob?.jobId) break;
+          const job = pool.lastJob || pool.issueJob(undefined, { force: true });
+          assert.ok(job?.jobId, `${mode} live job ${i}`);
           await pool.sealFoundShare({
-            jobId: pool.lastJob.jobId, nonce: 0n, miner: finder, powHash: nextPow(),
+            jobId: job.jobId, nonce: 0n, miner: finder, powHash: nextPow(),
           });
         }
-        const mid = templates;
-        if (pool.lastJob?.jobId) {
-          await pool.sealFoundShare({
-            jobId: pool.lastJob.jobId, nonce: 0n, miner: finder, powHash: nextPow(),
-          });
-        }
-        assert.equal(templates, mid, `${mode} rebuild bound`);
-        assert.ok(templates <= SEAL_ESCAPE_AFTER + 1, `${mode} templates ${templates}`);
+        const live = pool.issueJob(undefined, { force: true });
+        assert.ok(live?.jobId, `${mode} job after faults`);
         assert.equal((Number(pool.stats.lostWorkHashes) || 0) - beforeLost, 0, mode);
         assert.equal(pool.adminOps.health().bans, beforeBans, mode);
-        assert.equal(pool.lag1Shares.length, planted.shares.length, mode);
+        const kept = pool.lag1Shares.length + pool.openShares.length + pool.deferredShares.length;
+        assert.equal(kept, planted.shares.length, mode);
         for (const login of [finder]) assert.equal(pool.miners.has(login), true);
       }
 

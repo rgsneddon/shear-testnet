@@ -615,6 +615,25 @@ export const SEAL_ESCAPE_AFTER = 2;
 // Probes per escape, any batch width. A bisection stays under this.
 // A linear scan of the share cap does not.
 export const SEAL_ESCAPE_PROBE_CAP = 32;
+// After one rebuild, this many more identical header faults, or two block
+// intervals, and the pool stops holding that template.
+export const HEADER_HOLD_MAX_FAULTS = SEAL_ESCAPE_AFTER;
+export const HEADER_HOLD_DEADLINE_MS = TARGET_BLOCK_INTERVAL_MS * 2;
+
+export function transientHeaderFault(reason) {
+  const why = String(reason || '');
+  if (why === 'worker' || why === 'stale_job') return true;
+  return /timeout/i.test(why);
+}
+
+export function headerHoldExpired(hold, now = Date.now()) {
+  if (!hold?.rebuilt) return false;
+  const faults = Number(hold.faults) || 0;
+  const at = Number(hold.at) || 0;
+  if (faults >= HEADER_HOLD_MAX_FAULTS) return true;
+  if (at > 0 && Number(now) - at >= HEADER_HOLD_DEADLINE_MS) return true;
+  return false;
+}
 
 const HEADER_SEAL_FAULTS = new Set([
   'pow', 'merkle', 'prev', 'timestamp', 'bits', 'base_fee', 'version',
@@ -2643,6 +2662,8 @@ export function createPool({
       reason: String(why || ''),
       rebuilt: true,
       latched: false,
+      at: Date.now(),
+      faults: 0,
     };
     stats.headerRebuilds = (Number(stats.headerRebuilds) || 0) + 1;
     console.error(JSON.stringify({
@@ -2769,6 +2790,33 @@ export function createPool({
     }
   }
 
+  function forgetBatchJobs(batchKey) {
+    if (!batchKey || !store.jobs?.entries) return;
+    for (const [id, rec] of [...store.jobs.entries()]) {
+      if (batchKeyOf(rec?.tpl?.shareBatch) === batchKey) store.jobs.delete(id);
+    }
+  }
+
+  // The held template is not sealable. Carry its shares onto the next round
+  // and publish a template without them. Unsealed holds are not lostWork.
+  function releaseHeldBatch(why) {
+    const batchKey = String(headerHold?.batch || '');
+    if (lag1Shares.length) {
+      deferredShares = sortShares(deferredShares.concat(lag1Shares));
+      lag1Shares = [];
+    }
+    forgetBatchJobs(batchKey);
+    headerHold = null;
+    freshTemplateState();
+    stats.headerFallbacks = (Number(stats.headerFallbacks) || 0) + 1;
+    console.error(JSON.stringify({
+      event: 'seal_header_fallback',
+      alert: true,
+      reason: String(why || ''),
+      shares: deferredShares.length,
+    }));
+  }
+
   // POOL_LAG1_CARRY_V1. Pool policy, not a consensus pin. A seal miss keeps
   // every share that has not itself failed re-proof. Unsealed holds are not
   // written into the consensus owed ledger. SEAL_BAN_V0 is forbidden: this
@@ -2785,7 +2833,8 @@ export function createPool({
       sealFailStreak = 1;
     }
     const why = String(reason || 'append');
-    const klass = sealFailureClass(why);
+    const transient = transientHeaderFault(why);
+    const klass = transient ? 'header' : sealFailureClass(why);
     console.error(JSON.stringify({
       event: 'seal_failed',
       alert: true,
@@ -2795,16 +2844,26 @@ export function createPool({
       height: Number(store.tip()?.height || 0) + 1,
     }));
     const tip = tipHashNow();
-    if (key && headerHold?.rebuilt && headerHold.batch === key && headerHold.tip === tip && headerHold.reason === why) {
-      headerHold.latched = true;
-      console.error(JSON.stringify({
-        event: 'seal_header_hold',
-        alert: true,
-        reason: why,
-        shares: lag1Shares.length,
-      }));
+    let released = false;
+    if (!transient && key && headerHold?.rebuilt && headerHold.batch === key && headerHold.tip === tip && headerHold.reason === why) {
+      headerHold.faults = (Number(headerHold.faults) || 0) + 1;
+      if (headerHoldExpired(headerHold)) {
+        releaseHeldBatch(why);
+        released = true;
+      } else {
+        headerHold.latched = true;
+        forgetBatchJobs(key);
+        lastJob = null;
+        console.error(JSON.stringify({
+          event: 'seal_header_hold',
+          alert: true,
+          reason: why,
+          shares: lag1Shares.length,
+          faults: headerHold.faults,
+        }));
+      }
     }
-    if (key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
+    if (!released && key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
       const parent = store.tip()?.header || null;
       if (parent && klass !== 'header') {
         const rowBad = [];
@@ -2824,7 +2883,7 @@ export function createPool({
       if (klass === 'body') await runBodyEscape(why, miner);
       else if (klass === 'header') noteBoundedRebuild(why, key);
     }
-    if (key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
+    if (!released && key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
       const who = String(miner || '');
       // The failed template is not the only copy. lag1Shares still holds it.
       if (store.jobs?.entries) {
@@ -2961,10 +3020,12 @@ export function createPool({
       return lastJob;
     }
     jobHoldLogged = false;
+    if (!probe && headerHold?.rebuilt && headerHoldExpired(headerHold)) {
+      releaseHeldBatch(headerHold.reason);
+    }
     if (!probe && headerHold) {
       const tipHex = tipHashNow();
       if (headerHold.tip !== tipHex || headerHold.batch !== batchKeyOf(lag1Shares)) headerHold = null;
-      else if (headerHold.latched) return null;
     }
     // No explicit dial: keep the live job's bits. The opening floor is only
     // for the first template, before any dest has stepped.

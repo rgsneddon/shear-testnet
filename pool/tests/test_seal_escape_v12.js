@@ -157,17 +157,37 @@ describe('v12 seal escape does not ban a finder', () => {
           assert.equal(pool.miners.has(login), true, login);
         }
         assert.equal(Number(pool.stats.lostWorkHashes) || 0, beforeLost, spec.mode);
-        const still = nonceSet(pool.lag1Shares);
+        const still = nonceSet([
+          ...pool.lag1Shares,
+          ...pool.openShares,
+          ...pool.deferredShares,
+        ]);
         for (const n of held.nonces) assert.equal(still.has(n), true, spec.mode);
+        const live = pool.lastJob || pool.issueJob(undefined, { force: true });
+        assert.ok(live?.jobId, `${spec.mode} live job`);
         const paid = await pool.sealFoundShare({
-          jobId: pool.lastJob.jobId,
+          jobId: live.jobId,
           nonce: 0n,
           miner: finders[0] || workerA,
           powHash: nextPow(),
         });
         assert.equal(paid.ok, true, paid.reason || spec.mode);
-        const sealed = nonceSet(pool.store.tip().shareBatch);
+        let sealed = nonceSet(pool.store.tip().shareBatch);
+        if (held.nonces.some((n) => !sealed.has(n))) {
+          pool.rollOpenRound();
+          const job = pool.issueJob(undefined, { force: true });
+          assert.ok(job?.jobId, `${spec.mode} pay job`);
+          const again = await pool.sealFoundShare({
+            jobId: job.jobId,
+            nonce: 0n,
+            miner: finders[0] || workerA,
+            powHash: nextPow(),
+          });
+          assert.equal(again.ok, true, again.reason || spec.mode);
+          sealed = nonceSet(pool.store.tip().shareBatch);
+        }
         for (const n of held.nonces) assert.equal(sealed.has(n), true, spec.mode);
+        assert.equal((Number(pool.stats.lostWorkHashes) || 0) - beforeLost, 0, spec.mode);
         assert.equal(pool.adminOps.health().bans, beforeBans);
       }
 
