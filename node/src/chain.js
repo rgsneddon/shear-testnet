@@ -921,12 +921,26 @@ function dropPreparedHeader(header) {
   preparedHeaderPow.delete(headerPowKey(header));
 }
 
+function shareNonceKeys(shares) {
+  const out = new Set();
+  let rows = [];
+  try { rows = unpackShareBatch(shares || []); } catch {
+    rows = Array.isArray(shares) ? shares : [];
+  }
+  for (const s of rows) {
+    try { out.add(BigInt(s?.nonce || 0).toString()); } catch { /* skip */ }
+  }
+  return out;
+}
+
 /**
  * Hash the header and each share header on the worker before the sync
  * verifier runs. The sync verifier still checks targets; this only moves
  * RandomX off the accept thread. trustedPowHash is never invented here.
+ * When the store supplies the grandparent header, each share is also hashed
+ * against that header so a one-step deferred proof is not a sync RandomX.
  */
-async function prepareOffLoopPow(block, prev, { skipSharePow = false } = {}) {
+async function prepareOffLoopPow(block, prev, { skipSharePow = false, priorHeader = null } = {}) {
   if (!block?.header) return { ok: false, reason: 'no_header' };
   const h = Buffer.from(block.header);
   let decoded;
@@ -947,9 +961,18 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false } = {}) {
       rows = [];
     }
     const parent = Buffer.from(prev.header);
+    let prior = null;
+    if (priorHeader) {
+      try {
+        const raw = Buffer.isBuffer(priorHeader) ? Buffer.from(priorHeader) : Buffer.from(priorHeader);
+        if (raw.length === 128) prior = raw;
+      } catch { prior = null; }
+    }
     for (const s of rows) {
       try {
-        shareHeaders.push(setNonce(parent, BigInt(s?.nonce || 0)));
+        const nonce = BigInt(s?.nonce || 0);
+        shareHeaders.push(setNonce(parent, nonce));
+        if (prior) shareHeaders.push(setNonce(prior, nonce));
       } catch { /* sync verifier reports the bad row */ }
     }
   }
@@ -1107,7 +1130,10 @@ function settlementFor(prev, height, block, unit, extra = {}) {
 
 function verifyBlockConsensus(block, prev, opts = {}) {
   if (opts.offLoopPow && !opts.trustedPowHash) {
-    return prepareOffLoopPow(block, prev, { skipSharePow: !!opts.skipSharePow }).then((ready) => {
+    return prepareOffLoopPow(block, prev, {
+      skipSharePow: !!opts.skipSharePow,
+      priorHeader: opts.grandparentHeader || null,
+    }).then((ready) => {
       if (!ready.ok) return ready;
       let result;
       try {
@@ -1294,6 +1320,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!prev?.header) return { ok: false, reason: 'share_batch' };
     const buriedShares = verifyShareBatch({
       parentHeader: prev.header,
+      priorHeader: opts.grandparentHeader || null,
+      excludeNonces: shareNonceKeys(prev?.shareBatch),
       shares: shareBatch,
       floorBits: SHARE_FLOOR_BITS,
       skipPow: !!skipSharePow,
@@ -1313,6 +1341,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (prev?.header) {
       const proved = verifyShareBatch({
         parentHeader: prev.header,
+        priorHeader: opts.grandparentHeader || null,
+        excludeNonces: shareNonceKeys(prev?.shareBatch),
         shares: shareBatch,
         floorBits: SHARE_FLOOR_BITS,
         skipPow: !!skipSharePow,

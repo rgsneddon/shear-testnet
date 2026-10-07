@@ -539,16 +539,66 @@ function sharesAtProvenBits(list) {
   return out;
 }
 
+function headerWorkBuf(header) {
+  const raw = asHeaderBuf(header);
+  if (!raw || raw.length !== 128) return null;
+  return raw;
+}
+
+function nonceKeySet(excludeNonces) {
+  if (excludeNonces instanceof Set) return excludeNonces;
+  const out = new Set();
+  if (!excludeNonces) return out;
+  for (const n of excludeNonces) {
+    try { out.add(BigInt(n).toString()); } catch { /* skip */ }
+  }
+  return out;
+}
+
+/**
+ * Proof of one share against one header. A cache hit that names another dest
+ * or width is a contradiction and is not re-hashed. skipPow with no cache
+ * entry and no prepared digest does not hash.
+ */
+function proveShareOn(headerBuf, { nonce, nk, nc, ncHex, claimedBits, skipPow }) {
+  const jobKey = shareJobKey(headerBuf);
+  const cached = jobKey ? liveSharePow.get(`${jobKey}:${nk}`) : null;
+  if (cached) {
+    if (!ncHex || ncHex !== cached.noteCommit || claimedBits !== cached.bits) {
+      return { ok: false, reason: 'share_pow', contradict: true };
+    }
+    return { ok: true, lz: Number(cached.lz) & 0xff };
+  }
+  let stamped;
+  try { stamped = setNonce(Buffer.from(headerBuf), nonce); } catch {
+    return { ok: false, reason: 'share_pow' };
+  }
+  const prepared = takeSharePow(stamped);
+  if (prepared) preparedSharePowUses += 1;
+  if (!prepared && skipPow) return { ok: false, reason: 'share_pow', cold: true };
+  if (!nc || Buffer.from(nc).length !== 32) return { ok: false, reason: 'miner_addr' };
+  if (!prepared) syncSharePowHashes += 1;
+  const hash = prepared || shearHash(stamped);
+  const bound = destBoundShareHash(hash, nc);
+  if (!meetsTarget(bound, claimedBits)) return { ok: false, reason: 'share_pow' };
+  return { ok: true, lz: leadingZeroBits(bound) & 0xff };
+}
+
 /**
  * Recompute ShearHash-v3 on the frozen parent job header.
- * Duplicate nonce = dup_share. Credit is the nonce high byte. A packed claim
- * that disagrees, or a byte outside [floor, B_MAX], is share_target and is
- * not hashed. A dest-bound digest that misses that byte is share_pow.
- * A cache hit at that exact dest and width skips a second RandomX. skipPow
- * does not credit a row that has no such proof and no prepared digest.
+ * A share that misses that header may verify against priorHeader, the
+ * parent of the parent, when its nonce is not already in excludeNonces.
+ * That is one step, not an arbitrary ancestor. Duplicate nonce = dup_share.
+ * Credit is the nonce high byte. A packed claim that disagrees, or a byte
+ * outside [floor, B_MAX], is share_target and is not hashed. A dest-bound
+ * digest that misses that byte is share_pow. A cache hit at that exact dest
+ * and width skips a second RandomX. skipPow does not credit a row that has
+ * no such proof and no prepared digest.
  */
 export function verifyShareBatch({
   parentHeader,
+  priorHeader = null,
+  excludeNonces = null,
   shares = [],
   floorBits = SHARE_FLOOR_BITS,
   skipPow = false,
@@ -562,7 +612,8 @@ export function verifyShareBatch({
   }
   if (!parentHeader) return { ok: false, reason: 'parent_header' };
   const job = Buffer.from(parentHeader);
-  const jobKey = shareJobKey(job);
+  const priorBuf = headerWorkBuf(priorHeader);
+  const paid = nonceKeySet(excludeNonces);
   const seenNonce = new Set();
   const proven = [];
   for (const s of list) {
@@ -587,35 +638,19 @@ export function verifyShareBatch({
     if (dest && (!nc || nc.length !== 32)) {
       nc = noteCommitOfDest20(dest20OfShare({ ...s, dest }));
     }
-    const header = setNonce(job, nonce);
     const credit = creditBitsForShare(s, floorBits, { strict: true });
     if (!credit.ok) return { ok: false, reason: credit.reason };
     const claimedBits = credit.bits;
     const ncHex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
-    const cachedProof = jobKey ? liveSharePow.get(`${jobKey}:${nk}`) : null;
-    let lz = Number(s.lz) & 0xff;
-    if (cachedProof) {
-      // The nonce is already bound. A different dest or a different width is not re-hashed.
-      if (!ncHex || ncHex !== cachedProof.noteCommit || claimedBits !== cachedProof.bits) {
-        return { ok: false, reason: 'share_pow' };
-      }
-      lz = cachedProof.lz;
-    } else {
-      if (!nc || Buffer.from(nc).length !== 32) {
-        return { ok: false, reason: 'miner_addr' };
-      }
-      // P2P may have hashed this header on a worker. skipPow is not a width bypass.
-      const prepared = takeSharePow(header);
-      if (prepared) preparedSharePowUses += 1;
-      if (!prepared && skipPow) return { ok: false, reason: 'share_pow' };
-      if (!prepared) syncSharePowHashes += 1;
-      const hash = prepared || shearHash(header);
-      const bound = destBoundShareHash(hash, nc);
-      if (!meetsTarget(bound, claimedBits)) {
-        return { ok: false, reason: 'share_pow' };
-      }
-      lz = leadingZeroBits(bound) & 0xff;
+    const ctx = { nonce, nk, nc, ncHex, claimedBits, skipPow };
+    let proved = proveShareOn(job, ctx);
+    // Already paid in the parent block cannot be replayed against the grandparent.
+    if (!proved.ok && !proved.contradict && priorBuf && !paid.has(nk)) {
+      const alt = proveShareOn(priorBuf, ctx);
+      if (alt.ok || proved.cold) proved = alt;
     }
+    if (!proved.ok) return { ok: false, reason: proved.reason || 'share_pow' };
+    const lz = proved.lz;
     // Historical persist dropped dest/noteCommit and kept nonce+lz. POW still binds
     // the share; hasher identity is the sealed aLeaf. New rows keep noteCommit.
     proven.push({

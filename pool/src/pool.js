@@ -37,6 +37,7 @@ import {
   LIVE_MIN_BITS,
   MAX_BITS,
   SHARE_FLOOR_BITS,
+  MAX_SHARES_PER_BLOCK,
   shareCreditMaxBits,
   displayBits,
   bitsAcceptAsert,
@@ -374,21 +375,30 @@ export function shareJobId(header) {
 }
 
 /**
- * Lag-1 shares must verify against the sealed parent. A restamped share or a
- * bech32-as-dest20 row that fails share_pow/miner_addr must not freeze the
- * next template. Drop the bad rows; an empty batch is still sealable.
+ * Lag-1 shares must verify against the sealed parent, or against the
+ * parent's parent when that nonce is not already in excludeNonces.
+ * One step only. A restamped share or a bech32-as-dest20 row that fails
+ * share_pow/miner_addr must not freeze the next template. The caller counts
+ * rows this filter does not keep. An empty batch is still sealable.
  */
-export function provenLag1Shares(parentHeader, shares) {
+export function provenLag1Shares(parentHeader, shares, priorHeader = null, excludeNonces = null) {
   const list = Array.isArray(shares) ? shares : [];
   if (!list.length || !parentHeader) return [];
   const parentId = shareJobId(parentHeader);
+  const priorId = shareJobId(priorHeader);
+  const paid = excludeNonces instanceof Set ? excludeNonces : new Set();
   const trusted = [];
   for (const s of list) {
     const id = shareJobId(s?.verifiedHeader);
-    if (id && parentId && id === parentId) trusted.push(s);
+    if (!id || !parentId) continue;
+    let nonce = '';
+    try { nonce = BigInt(s?.nonce || 0).toString(); } catch { nonce = ''; }
+    if (id === parentId) {
+      trusted.push(s);
+      continue;
+    }
+    if (priorId && id === priorId && nonce && !paid.has(nonce)) trusted.push(s);
   }
-  // Never RandomX leftovers on the event loop. A restamp / missing
-  // verifiedHeader cannot freeze the next job; drop it.
   return sortShares(trusted);
 }
 
@@ -2178,10 +2188,25 @@ export function createPool({
   if (typeof store.on === 'function') {
     store.on('reorg', () => {
       if (sealing) return;
-      lag1Shares = [];
+      headerHold = null;
+      const ctx = tipShareContext();
+      const all = [];
+      const seen = new Set();
+      for (const s of lag1Shares.concat(openShares, deferredShares)) {
+        if (!s || seen.has(s)) continue;
+        seen.add(s);
+        all.push(s);
+      }
+      const kept = ctx.parentHeader
+        ? provenLag1Shares(ctx.parentHeader, all, ctx.priorHeader, ctx.paid)
+        : [];
+      const keep = new Set(kept);
+      const dropped = [];
+      for (const s of all) if (!keep.has(s)) dropped.push(s);
+      lag1Shares = kept;
       openShares = [];
       deferredShares = [];
-      headerHold = null;
+      if (dropped.length) countUnpayableShares(dropped, 'reorg', 'reorg');
       resetOpenRound();
     });
     store.on('tip', (t) => {
@@ -2250,6 +2275,117 @@ export function createPool({
       ? share.creditedShareBits
       : share?.shareBits;
     return unitsForShare(bits);
+  }
+
+  function nonceKeyOf(share) {
+    try { return BigInt(share?.nonce || 0).toString(); } catch { return ''; }
+  }
+
+  function nonceSetOf(shares) {
+    const out = new Set();
+    for (const s of shares || []) {
+      const k = nonceKeyOf(s);
+      if (k) out.add(k);
+    }
+    return out;
+  }
+
+  function tipShareContext() {
+    const blocks = Array.isArray(store.blocks) ? store.blocks : [];
+    const tip = blocks.length ? blocks[blocks.length - 1] : null;
+    const prior = blocks.length >= 2 ? blocks[blocks.length - 2] : null;
+    return {
+      parentHeader: tip?.header || null,
+      priorHeader: prior?.header || null,
+      paid: nonceSetOf(tip?.shareBatch),
+    };
+  }
+
+  // A proven row that cannot be sealed on this parent or its parent.
+  // lostWork names the dests. Already-paid nonces are not passed here.
+  function countUnpayableShares(refs, reason, evidence) {
+    const bad = new Set(refs || []);
+    if (!bad.size) return [];
+    const pull = (list) => {
+      const keep = [];
+      for (const s of list || []) {
+        if (bad.has(s)) continue;
+        keep.push(s);
+      }
+      return keep;
+    };
+    lag1Shares = pull(lag1Shares);
+    openShares = pull(openShares);
+    deferredShares = pull(deferredShares);
+    const seen = new Set();
+    const named = [];
+    let units = 0;
+    const dests = [];
+    for (const s of refs) {
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      named.push(s);
+      units += shareWorkUnits(s);
+      const d = destOfShare(s);
+      if (d) dests.push(d);
+    }
+    if (units > 0) {
+      stats.lostWorkHashes = (Number(stats.lostWorkHashes) || 0) + units;
+      stats.lostWorkEvents = (Number(stats.lostWorkEvents) || 0) + 1;
+      saveLostWork();
+    }
+    console.error(JSON.stringify({
+      event: 'share_unpayable',
+      alert: true,
+      reason: String(reason || ''),
+      evidence: String(evidence || ''),
+      shares: named.length,
+      units,
+      dests,
+    }));
+    return named;
+  }
+
+  function bindLag1ToTip() {
+    const ctx = tipShareContext();
+    if (!ctx.parentHeader) {
+      lag1Shares = [];
+      return;
+    }
+    const before = lag1Shares.slice();
+    const trusted = provenLag1Shares(ctx.parentHeader, before, ctx.priorHeader, ctx.paid);
+    const keep = new Set(trusted);
+    const priorId = shareJobId(ctx.priorHeader);
+    const parentId = shareJobId(ctx.parentHeader);
+    const unpayable = [];
+    for (const s of before) {
+      if (keep.has(s)) continue;
+      // In the tip's share batch already. Paid, not lost, even if the proof
+      // header is now the great-grandparent.
+      if (ctx.paid.has(nonceKeyOf(s))) continue;
+      unpayable.push(s);
+    }
+    const expiring = [];
+    const fresh = [];
+    for (const s of trusted) {
+      const id = shareJobId(s?.verifiedHeader);
+      if (priorId && id === priorId && id !== parentId) expiring.push(s);
+      else fresh.push(s);
+    }
+    let selected;
+    if (trusted.length <= MAX_SHARES_PER_BLOCK) {
+      selected = selectBlockShares(trusted);
+    } else {
+      const keptExp = selectBlockShares(expiring, MAX_SHARES_PER_BLOCK);
+      const room = MAX_SHARES_PER_BLOCK - keptExp.length;
+      const keptFresh = room > 0 ? selectBlockShares(fresh, room) : [];
+      selected = sortShares(keptExp.concat(keptFresh));
+      const selectedSet = new Set(selected);
+      const expiringSpill = expiring.filter((s) => !selectedSet.has(s));
+      if (expiringSpill.length) countUnpayableShares(expiringSpill, 'share_cap', 'cap');
+    }
+    lag1Shares = selected;
+    if (unpayable.length) countUnpayableShares(unpayable, 'stale_parent', 'parent');
   }
 
   // Per-share re-proof only. pow, append, tip, and worker keep the batch.
@@ -2867,7 +3003,7 @@ export function createPool({
     }
     const poolPay = payoutDest(miner);
     const tipHdr = store.tip()?.header || null;
-    lag1Shares = selectBlockShares(provenLag1Shares(tipHdr, lag1Shares));
+    bindLag1ToTip();
     const coldLag1 = lag1MissingProof(tipHdr, lag1Shares);
     if (coldLag1.length) {
       if (!probe && !proofWarm) ensureCachedShareProofs();

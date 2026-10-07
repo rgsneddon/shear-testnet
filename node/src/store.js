@@ -851,10 +851,15 @@ export function createStore(dir, {
       const parentIdx = lca + i - 1;
       const parentHeader = parentIdx >= 0 ? accepted[parentIdx]?.header : null;
       if (!parentHeader) return { ok: false, reason: 'parent_header', at: lca + i };
+      const priorHeader = parentIdx >= 1 ? accepted[parentIdx - 1]?.header : null;
       for (const s of shares) {
-        if (!hasLiveSharePow(parentHeader, s?.nonce)) {
-          cold.push({ parentHeader, nonce: s.nonce });
-        }
+        const nonce = s?.nonce;
+        const queue = (header) => {
+          if (!header || hasLiveSharePow(header, nonce)) return;
+          cold.push({ header, nonce });
+        };
+        queue(parentHeader);
+        queue(priorHeader);
       }
     }
     const applyNextSpent = () => {
@@ -887,17 +892,25 @@ export function createStore(dir, {
     }
     const beforeSync = sharePowCounters().sync;
     return Promise.all(cold.map((c) => {
-      const header = setNonce(Buffer.from(c.parentHeader), BigInt(c.nonce));
-      c.header = header;
+      const header = setNonce(Buffer.from(c.header), BigInt(c.nonce));
+      c.stamped = header;
       return hashHeaderOffLoop(header);
     })).then((hashes) => {
-      for (let i = 0; i < cold.length; i += 1) stashSharePow(cold[i].header, hashes[i]);
+      for (let i = 0; i < cold.length; i += 1) stashSharePow(cold[i].stamped, hashes[i]);
       for (let i = 0; i < connected.length; i += 1) {
         const shares = connected[i].shareBatch || [];
         if (!shares.length) continue;
-        const parentHeader = accepted[lca + i - 1].header;
+        const parentIdx = lca + i - 1;
+        const parentHeader = accepted[parentIdx].header;
+        const priorHeader = parentIdx >= 1 ? accepted[parentIdx - 1]?.header : null;
+        const paid = new Set();
+        for (const s of accepted[parentIdx]?.shareBatch || []) {
+          try { paid.add(BigInt(s?.nonce || 0).toString()); } catch { /* skip */ }
+        }
         const got = verifyShareBatch({
           parentHeader,
+          priorHeader,
+          excludeNonces: paid,
           shares,
           skipPow: shareOpts.skipSharePow,
         });
@@ -1072,6 +1085,7 @@ export function createStore(dir, {
       txs: prev.txs,
       bLeaves: prev.bLeaves,
       weight: prev.weight,
+      shareBatch: prev.shareBatch,
     } : null, {
       spentB,
       tipHeight,
@@ -1461,6 +1475,7 @@ export function createStore(dir, {
       txs: accepted[i - 1].txs,
       bLeaves: accepted[i - 1].bLeaves,
       weight: accepted[i - 1].weight,
+      shareBatch: accepted[i - 1].shareBatch,
     };
     const parentH = i === 0 ? 0 : Number(accepted[i - 1].height || i);
     const rows = [];
@@ -1650,6 +1665,7 @@ export function createStore(dir, {
       txs: block.txs,
       bLeaves: block.bLeaves,
       weight: block.weight,
+      shareBatch: block.shareBatch,
     };
   }
 
