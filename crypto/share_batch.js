@@ -364,6 +364,60 @@ export function paidWorkKeys(shares, provedOnHeader) {
   return out;
 }
 
+function workBitsOf(share) {
+  const raw = share?.shareBits != null && share.shareBits !== ''
+    ? share.shareBits
+    : share?.creditedShareBits;
+  if (raw == null || raw === '') return null;
+  return raw;
+}
+
+function claimedProofSlot(share) {
+  const slot = share?.proofSlot;
+  if (slot === 0 || slot === 1 || slot === '0' || slot === '1') return Number(slot);
+  return null;
+}
+
+/**
+ * A work row is packable only with slot 0 or 1.
+ * Slot 0 matches this block's parent job. Slot 1 matches that parent's parent.
+ * keepClaim leaves an existing 0 or 1 alone so a caller that already bound the
+ * slot is not restamped. Otherwise the slot comes only from verifiedHeader.
+ * A work row that matches neither header is unslotted and must not be packed.
+ * A row with no share bits is not a work frame.
+ */
+export function bindShareProofSlots(shares, parentHeader, priorHeader = null, { keepClaim = false } = {}) {
+  const parentId = shareJobKey(parentHeader);
+  const priorId = shareJobKey(priorHeader);
+  const slotted = [];
+  const unslotted = [];
+  for (const s of Array.isArray(shares) ? shares : []) {
+    if (!s || typeof s !== 'object' || Buffer.isBuffer(s)) {
+      if (s) slotted.push(s);
+      continue;
+    }
+    if (workBitsOf(s) == null) {
+      slotted.push(s);
+      continue;
+    }
+    if (keepClaim && claimedProofSlot(s) != null) {
+      slotted.push(s);
+      continue;
+    }
+    const id = shareJobKey(s.verifiedHeader);
+    if (parentId && id === parentId) {
+      s.proofSlot = 0;
+      slotted.push(s);
+    } else if (priorId && id === priorId && id !== parentId) {
+      s.proofSlot = 1;
+      slotted.push(s);
+    } else {
+      unslotted.push(s);
+    }
+  }
+  return { slotted, unslotted };
+}
+
 /**
  * One sealing window. Expiring rows (prior header) fill the count cap first.
  * Fresh rows fill what remains. Fresh overflow is still eligible on the next

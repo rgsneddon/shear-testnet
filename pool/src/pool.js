@@ -68,6 +68,7 @@ import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote } from '.
 import {
   sortShares,
   selectBlockShares,
+  bindShareProofSlots,
   splitDeferWindow,
   shareWorkKey,
   paidWorkKeys,
@@ -2304,8 +2305,9 @@ export function createPool({
       if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
       if (split.carry.length) deferredShares = sortShares(split.carry);
       if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
-      stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+      const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
       lag1Shares = split.seal;
+      if (unslotted.length) disposeUnpayable(unslotted, 'unstamped_slot');
       if (dropped.length) disposeUnpayable(dropped, 'reorg');
       resetOpenRound();
     });
@@ -2531,13 +2533,12 @@ export function createPool({
   }
 
   function stampSealSlots(rows, parentHeader, priorHeader) {
-    const parentId = shareJobId(parentHeader);
-    const priorId = shareJobId(priorHeader);
-    for (const s of rows || []) {
-      const id = shareJobId(s?.verifiedHeader);
-      if (parentId && id === parentId) s.proofSlot = 0;
-      else if (priorId && id === priorId) s.proofSlot = 1;
+    const bound = bindShareProofSlots(rows, parentHeader, priorHeader);
+    if (Array.isArray(rows)) {
+      rows.length = 0;
+      for (const s of bound.slotted) rows.push(s);
     }
+    return bound.unslotted;
   }
 
   function bindLag1ToTip() {
@@ -2561,8 +2562,9 @@ export function createPool({
     const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK);
     if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
-    stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+    const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
     lag1Shares = split.seal;
+    if (unslotted.length) disposeUnpayable(unslotted, 'unstamped_slot');
     if (unpayable.length) disposeUnpayable(unpayable, 'stale_window');
   }
 
@@ -3157,12 +3159,13 @@ export function createPool({
     const ctx = tipShareContext();
     const split = ctx.parentHeader
       ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK)
-      : { seal: selectBlockShares(openShares.slice()), carry: [], owe: [], stale: [] };
+      : { seal: [], carry: openShares.slice(), owe: [], stale: [] };
     if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
     if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
-    stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+    const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
     lag1Shares = split.seal;
+    if (unslotted.length) disposeUnpayable(unslotted, 'unstamped_slot');
     openShares = [];
     refreshSharePins();
     return lag1Shares.slice();

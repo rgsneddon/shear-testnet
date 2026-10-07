@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { explorerRecentTxs, confirmedBlockTxs, networkSupply, hashBonusEmittedOfBlock } from '../src/wallet_api.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { encodeHeader } from '../../crypto/header.js';
@@ -73,18 +73,28 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(byH[3].confirmations, 1);
     assert.equal(byH[1].pending, true);
     assert.equal(byH[1].confirmations, 3);
-    const deep = [];
-    for (let h = 1; h <= 6; h += 1) deep.push(block(h, h));
-    const store6 = { blocks: deep, tip: () => deep[deep.length - 1] };
-    const later = confirmedBlockTxs(store6, 10);
+    const need = SPENDABLE_CONFIRMATIONS;
+    assert.ok(need > 1);
+    const short = [];
+    for (let h = 1; h <= need - 1; h += 1) short.push(block(h, h));
+    const early = confirmedBlockTxs({ blocks: short, tip: () => short[short.length - 1] }, 10);
+    const early1 = early.find((t) => t.height === 1);
+    const earlyTip = early.find((t) => t.height === need - 1);
+    assert.equal(early1.status, 'pending');
+    assert.equal(early1.pending, true);
+    assert.equal(early1.confirmations, need - 1);
+    assert.equal(earlyTip.status, 'pending');
+    assert.equal(earlyTip.confirmations, 1);
+    const deep = short.concat([block(need, need)]);
+    const later = confirmedBlockTxs({ blocks: deep, tip: () => deep[deep.length - 1] }, 10);
     const h1 = later.find((t) => t.height === 1);
-    const h6 = later.find((t) => t.height === 6);
+    const tip = later.find((t) => t.height === need);
     assert.equal(h1.status, 'confirmed');
     assert.equal(h1.pending, false);
-    assert.equal(h1.confirmations, 6);
-    assert.equal(h6.status, 'pending');
-    assert.equal(h6.pending, true);
-    assert.equal(h6.confirmations, 1);
+    assert.equal(h1.confirmations, need);
+    assert.equal(tip.status, 'pending');
+    assert.equal(tip.pending, true);
+    assert.equal(tip.confirmations, 1);
   });
 
   it('explorer recent Infinity returns every sealed block', () => {

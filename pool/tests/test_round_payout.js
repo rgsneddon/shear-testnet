@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
-import { selectBlockShares, unitsForShare, shareWorkBits } from '../../crypto/share_batch.js';
+import { nonceWithShareTarget, selectBlockShares, unitsForShare, shareWorkBits } from '../../crypto/share_batch.js';
 import { createPool, splitPot, provenLag1Shares } from '../src/pool.js';
 import { potSharesFromBatch } from '../../node/src/chain.js';
 
@@ -25,15 +25,21 @@ function sumNanos(rows) {
   return (rows || []).reduce((a, row) => a + row.nanos, 0);
 }
 
-/** Share rows in dest order. shareBits is the credited difficulty, not a count. */
+/** Share rows in dest order. The nonce high byte is the credited width. */
 function shareBatch(dests, spec) {
   const rows = [];
-  let nonce = 1n;
+  let low = 1n;
   dests.forEach((dest, i) => {
     const bits = spec[i].bits;
     for (let k = 0; k < spec[i].n; k += 1) {
-      rows.push({ dest, nonce, lz: bits, shareBits: bits });
-      nonce += 1n;
+      rows.push({
+        dest,
+        nonce: nonceWithShareTarget(low, bits),
+        lz: bits,
+        shareBits: bits,
+        creditedShareBits: bits,
+      });
+      low += 1n;
     }
   });
   return rows;
@@ -151,24 +157,37 @@ describe('round payouts', () => {
     const sealed = Buffer.from(job.header, 'hex');
     const restamp = Buffer.from(job.header, 'hex');
     restamp.writeBigUInt64LE(restamp.readBigUInt64LE(100) + 10_000n, 100);
+    const aliceNonce = nonceWithShareTarget(11n, SHARE_FLOOR_BITS);
+    const bobNonce = nonceWithShareTarget(12n, SHARE_FLOOR_BITS);
+    const staleNonce = nonceWithShareTarget(13n, SHARE_FLOOR_BITS);
     const aliceShare = {
       dest: destA,
-      nonce: 11n,
+      nonce: aliceNonce,
+      lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
       verifiedHeader: sealed.toString('hex'),
     };
     const bob = newIdentity();
     const destB = freshStealthDest(bob).dest;
     const bobShare = {
       dest: destB,
-      nonce: 12n,
+      nonce: bobNonce,
+      lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
       verifiedHeader: sealed.toString('hex'),
     };
-    const stale = { dest: destB, nonce: 13n, verifiedHeader: restamp.toString('hex') };
+    const stale = {
+      dest: destB,
+      nonce: staleNonce,
+      lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
+      verifiedHeader: restamp.toString('hex'),
+    };
     const mixed = provenLag1Shares(sealed, [aliceShare, bobShare, stale]);
     assert.equal(mixed.length, 2);
     assert.equal(mixed.some((s) => s.dest === destA), true);
-    assert.equal(mixed.some((s) => s.dest === destB && String(s.nonce) === '12'), true);
-    assert.equal(mixed.some((s) => String(s.nonce) === '13'), false);
+    assert.equal(mixed.some((s) => s.dest === destB && s.nonce === bobNonce), true);
+    assert.equal(mixed.some((s) => s.nonce === staleNonce), false);
     const selected = selectBlockShares(mixed);
     assert.ok(selected.length > 0);
     assert.ok(selected.every((s) => s.verifiedHeader));

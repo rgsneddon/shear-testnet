@@ -11,6 +11,9 @@ import {
   TARGET_BLOCK_INTERVAL_MS,
   MAGIC_TESTNET,
   HASH_TX_LIVE,
+  SHARE_FLOOR_BITS,
+  shareCreditMaxBits,
+  MAX_HASH_UNITS_PER_BLOCK,
 } from '../../crypto/asert.js';
 import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { payoutDest, newIdentity, encodeHrp, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
@@ -19,6 +22,7 @@ import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, 
 import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
+import { nonceWithShareTarget, unitsForShare } from '../../crypto/share_batch.js';
 import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -430,9 +434,62 @@ describe('admit', () => {
     const hashes = 1_000_000;
     const hud = hashBonusByMiner([{ miner: dest, count: hashes }]);
     assert.equal(hud.size, 0);
-    const bonuses = hashBonusByMiner([], HASH_BONUS_NANOS, [{ dest, nonce: 1n, lz: 8 }]);
-    assert.equal(bonuses.get(dest), 2 ** 8 * HASH_BONUS_NANOS);
-    assert.notEqual(bonuses.get(dest), Math.floor(hashes * HASH_BONUS_NANOS * (10000 - POOL_FEE_BPS) / 10000));
+    const widths = [SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 1, SHARE_FLOOR_BITS + 4, shareCreditMaxBits()];
+    const oneEach = widths.map((bits) => ({ bits, dest: freshStealthDest(newIdentity()).dest }));
+    const stackedWidths = widths.filter((bits) => bits < shareCreditMaxBits());
+    const stacked = freshStealthDest(newIdentity()).dest;
+    const illegalOnly = freshStealthDest(newIdentity()).dest;
+    const rows = [];
+    let low = 1n;
+    for (const row of oneEach) {
+      rows.push({
+        dest: row.dest,
+        nonce: nonceWithShareTarget(low, row.bits),
+        lz: row.bits,
+        shareBits: row.bits,
+      });
+      low += 1n;
+    }
+    for (const bits of stackedWidths) {
+      rows.push({
+        dest: stacked,
+        nonce: nonceWithShareTarget(low, bits),
+        lz: bits,
+        shareBits: bits,
+      });
+      low += 1n;
+    }
+    rows.push({ dest: stacked, nonce: 1n, lz: SHARE_FLOOR_BITS, shareBits: SHARE_FLOOR_BITS });
+    rows.push({ dest: illegalOnly, nonce: 1n, lz: SHARE_FLOOR_BITS, shareBits: SHARE_FLOOR_BITS });
+    for (let i = rows.length - 1; i > 0; i -= 1) {
+      const j = (i * 17 + 3) % (i + 1);
+      const tmp = rows[i];
+      rows[i] = rows[j];
+      rows[j] = tmp;
+    }
+    for (const row of oneEach) {
+      const alone = hashBonusByMiner([], HASH_BONUS_NANOS, [{
+        dest: row.dest,
+        nonce: nonceWithShareTarget(low, row.bits),
+        lz: row.bits,
+        shareBits: row.bits,
+      }]);
+      low += 1n;
+      assert.equal(alone.get(row.dest), unitsForShare(row.bits) * HASH_BONUS_NANOS);
+      assert.equal(alone.size, 1);
+    }
+    const stackedAlone = hashBonusByMiner([], HASH_BONUS_NANOS, rows.filter((row) => row.dest === stacked && row.nonce !== 1n));
+    let stackedExpect = 0;
+    for (const bits of stackedWidths) stackedExpect += unitsForShare(bits) * HASH_BONUS_NANOS;
+    assert.equal(stackedAlone.get(stacked), stackedExpect);
+    const bonuses = hashBonusByMiner([], HASH_BONUS_NANOS, rows);
+    let paidUnits = 0;
+    for (const value of bonuses.values()) paidUnits += value;
+    assert.equal(paidUnits, MAX_HASH_UNITS_PER_BLOCK * HASH_BONUS_NANOS);
+    assert.equal(bonuses.has(illegalOnly), false);
+    for (const row of oneEach) assert.equal(bonuses.has(row.dest), true);
+    assert.equal(bonuses.has(stacked), true);
+    assert.notEqual(bonuses.get(stacked), Math.floor(hashes * HASH_BONUS_NANOS * (10000 - POOL_FEE_BPS) / 10000));
   });
 });
 

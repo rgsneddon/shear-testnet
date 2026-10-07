@@ -51,6 +51,7 @@ import {
   noteCommitOfShare,
   retainedUnitsByCommit,
   selectBlockShares,
+  bindShareProofSlots,
   stashSharePow,
   dropSharePowKeys,
 } from '../../crypto/share_batch.js';
@@ -845,7 +846,13 @@ export function buildTemplate({
   hashAcceptedSeries = null,
   hashOwedIn: hashOwedInOpt = null,
 }) {
-  const batch = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
+  const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
+  const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
+    ? parentBlocks[parentBlocks.length - 2]
+    : null;
+  const batch = bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
+    keepClaim: true,
+  }).slotted;
   const fromBatch = batch.length
     ? [...collateShareUnits(batch)].map(([minerAddr, count]) => ({
       miner: minerAddr,
