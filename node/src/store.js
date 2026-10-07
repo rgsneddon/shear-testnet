@@ -38,6 +38,7 @@ import { publicExplorerRow } from '../../crypto/dummy.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
+import { bLeafId } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, cloneVault, applyReserveBlock, bonusUnitsBefore, verifyReservePayout, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
@@ -126,6 +127,88 @@ function commonPrefixLen(a, b) {
 
 function txIdOf(tx) {
   return String(tx?.id || '');
+}
+
+function bufExact(x, n) {
+  if (x == null || x === '') return null;
+  let b;
+  try { b = Buffer.from(x); } catch { return null; }
+  return b.length === n ? b : null;
+}
+
+function spendLeafOf(tx) {
+  if (tx?.leaf && typeof tx.leaf === 'object') {
+    const dest20 = bufExact(tx.leaf.dest20, 20);
+    const memoH = tx.leaf.memoH == null || tx.leaf.memoH === ''
+      ? Buffer.alloc(32)
+      : bufExact(tx.leaf.memoH, 32);
+    if (!dest20 || !memoH) return null;
+    return {
+      dest20,
+      unit: Number(tx.leaf.unit || 0),
+      nonce: Number(tx.leaf.nonce || 0),
+      memoH,
+      tag: tx.leaf.tag != null ? String(tx.leaf.tag) : '',
+    };
+  }
+  const dest20 = bufExact(hash20FromAddress(tx?.to || tx?.vout?.[0]?.address || ''), 20);
+  if (!dest20) return null;
+  const memoH = tx?.memoH == null || tx?.memoH === ''
+    ? Buffer.alloc(32)
+    : bufExact(tx.memoH, 32);
+  if (!memoH) return null;
+  return {
+    dest20,
+    unit: Number(tx?.unit || tx?.nanos || 0),
+    nonce: Number(tx?.nonce || 0),
+    memoH,
+    tag: tx?.tag ? String(tx.tag) : 'b-spend',
+  };
+}
+
+// Ids the block's own b-spend txs name. No merkle verify. Null fails closed.
+function deriveSpendIds(block) {
+  const ids = [];
+  const seen = new Set();
+  for (const tx of block?.txs || []) {
+    if (!tx || tx.kind !== 'b-spend') continue;
+    const leaf = spendLeafOf(tx);
+    if (!leaf) return null;
+    let id;
+    try {
+      id = bLeafId(leaf, Number(tx.commitHeight || 0), Number(tx.index || 0));
+    } catch {
+      return null;
+    }
+    if (!id || seen.has(id)) return null;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+// Trailer is a checksum of those ids. Peer blocks never arrive through it.
+function matchedSpendIds(block) {
+  const derived = deriveSpendIds(block);
+  if (derived == null) return { ok: false, reason: 'spent_checkpoint_mismatch' };
+  const stamped = Array.isArray(block?.bSpendIds);
+  if (!stamped) {
+    if (derived.length > 0) return { ok: false, reason: 'spent_checkpoint_missing' };
+    return { ok: true, ids: [] };
+  }
+  const keys = [];
+  for (const id of block.bSpendIds) {
+    const key = String(id ?? '');
+    if (!key) return { ok: false, reason: 'spent_checkpoint_missing' };
+    keys.push(key);
+  }
+  if (derived.length > 0 && keys.length === 0) return { ok: false, reason: 'spent_checkpoint_missing' };
+  if (keys.length !== derived.length) return { ok: false, reason: 'spent_checkpoint_mismatch' };
+  const want = new Set(derived);
+  for (const key of keys) {
+    if (!want.has(key)) return { ok: false, reason: 'spent_checkpoint_mismatch' };
+  }
+  return { ok: true, ids: derived.slice() };
 }
 
 function potIdsOf(block) {
@@ -672,27 +755,12 @@ export function createStore(dir, {
     savePolicyState();
   }
 
-  function blockHasBSpend(block) {
-    for (const tx of block?.txs || []) {
-      if (tx && tx.kind === 'b-spend') return true;
-    }
-    return false;
-  }
-
   function stampCredits(block, unit) {
     if (!block || Object.prototype.hasOwnProperty.call(block, 'hashCredits')) return;
     if (block.samplesPruned === true && !(block.shareBatch || []).length) return;
     block.hashCredits = freshCreditsFromShares(block.shareBatch || [], unit);
   }
 
-  function spendIdsOf(block) {
-    if (Array.isArray(block?.bSpendIds)) return block.bSpendIds;
-    if (!blockHasBSpend(block)) return [];
-    return null;
-  }
-
-  // Fill the live book before any append or reorg. A b-spend with no stamp
-  // does not start as an empty book. A chain this process wrote has the trailer.
   function syncOwed(chain) {
     const list = chain || [];
     const units = unitAt.length === list.length ? unitAt : bonusUnitsBefore(list);
@@ -706,17 +774,14 @@ export function createStore(dir, {
     }));
   }
 
+  // Trailer must match ids derived from this block's own b-spend txs.
   function restoreSpentB() {
     for (let i = 0; i < blocks.length; i += 1) {
-      const b = blocks[i];
-      const ids = spendIdsOf(b);
-      if (ids == null) throw new Error('spent_checkpoint_missing');
-      if (blockHasBSpend(b) && ids.length === 0) throw new Error('spent_checkpoint_missing');
-      for (const id of ids) {
-        const key = String(id || '');
-        if (!key) throw new Error('spent_checkpoint_missing');
-        if (spentB.has(key)) throw new Error('double_open');
-        spentB.add(key);
+      const got = matchedSpendIds(blocks[i]);
+      if (!got.ok) throw new Error(got.reason || 'spent_checkpoint_missing');
+      for (const id of got.ids) {
+        if (spentB.has(id)) throw new Error('double_open');
+        spentB.add(id);
       }
     }
   }
@@ -756,18 +821,24 @@ export function createStore(dir, {
       const bound = shareCreditBound(b, chainTip);
       if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind', at: i };
     }
+    const dropIds = [];
     for (const b of disconnected) {
-      if (spendIdsOf(b) == null) return { ok: false, reason: 'spent_checkpoint_missing', at: lca };
+      const got = matchedSpendIds(b);
+      if (!got.ok) return { ok: false, reason: got.reason || 'spent_checkpoint_missing', at: lca };
+      dropIds.push(got.ids);
     }
+    const addIds = [];
     for (const b of connected) {
-      if (spendIdsOf(b) == null) return { ok: false, reason: 'spent_checkpoint_missing', at: lca };
+      const got = matchedSpendIds(b);
+      if (!got.ok) return { ok: false, reason: got.reason || 'spent_checkpoint_missing', at: lca };
+      addIds.push(got.ids);
     }
     const nextSpent = new Set(spentB);
-    for (const b of disconnected) {
-      for (const id of spendIdsOf(b)) nextSpent.delete(id);
+    for (const ids of dropIds) {
+      for (const id of ids) nextSpent.delete(id);
     }
-    for (const b of connected) {
-      for (const id of spendIdsOf(b)) {
+    for (const ids of addIds) {
+      for (const id of ids) {
         if (nextSpent.has(id)) return { ok: false, reason: 'double_open', at: lca };
         nextSpent.add(id);
       }

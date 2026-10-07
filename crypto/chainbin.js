@@ -73,6 +73,7 @@ export function packEpochBlock(block) {
   return Buffer.concat(chunks);
 }
 
+/** Local chain.bin record. Peer and IPC blocks do not enter through this trailer. */
 export function unpackEpochBlock(buf) {
   const b = Buffer.from(buf);
   const header = Buffer.from(b.subarray(0, 128));
