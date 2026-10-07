@@ -9,7 +9,8 @@ import path from 'node:path';
 import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
-import { verifyLoadedChain, chainLoadSeal } from './chain.js';
+import { verifyLoadedChain, chainLoadSeal, chainWorkOf } from './chain.js';
+import { bookSealKeyFor } from './book_seal_key.js';
 
 function hexHash(h) {
   if (h == null || h === '') return '';
@@ -138,9 +139,27 @@ export function readLatestBootstrap(fromDir) {
       throw new Error('bootstrap_dropped_txs');
     }
   }
-  const checked = verifyLoadedChain(blocks);
+  const checked = verifyLoadedChain(blocks, { nowMs: Date.now() });
   if (!checked.ok) throw new Error(checked.reason || 'pow');
+  const install = bootstrapMayInstall([], blocks);
+  if (!install.ok) throw new Error(install.reason || 'checkpoint');
   return { manifest, blocks, paths };
+}
+
+/**
+ * A bootstrap installs only into an empty book.
+ * The remote chain must have positive work. It does not replace a chain.
+ * Genesis and checkpoint pins are enforced by verifyLoadedChain when set.
+ */
+export function bootstrapMayInstall(localBlocks, remoteBlocks) {
+  const local = Array.isArray(localBlocks) ? localBlocks : [];
+  const remote = Array.isArray(remoteBlocks) ? remoteBlocks : [];
+  if (local.length) return { ok: false, reason: 'bootstrap_datadir_not_empty' };
+  if (!remote.length) return { ok: false, reason: 'bootstrap_empty' };
+  let work = 0n;
+  try { work = chainWorkOf(remote); } catch { return { ok: false, reason: 'pow' }; }
+  if (work <= 0n) return { ok: false, reason: 'checkpoint' };
+  return { ok: true, work };
 }
 
 /** Empty datadir only. Copies latest.json + latest.bin into SHEAR_DATA and installs chain.bin. */
@@ -155,7 +174,8 @@ export function applyLatestBootstrap(dataDir, fromDir) {
   writeChainBin(dest.bin, blocks);
   fs.writeFileSync(dest.json, `${JSON.stringify(manifest)}\n`);
   writeChainBin(chainBin, blocks);
-  fs.writeFileSync(path.join(dataDir, 'book.seal'), `${chainLoadSeal(blocks)}\n`);
+  const key = bookSealKeyFor(dataDir);
+  fs.writeFileSync(path.join(dataDir, 'book.seal'), `${chainLoadSeal(blocks, key)}\n`);
   return manifest;
 }
 

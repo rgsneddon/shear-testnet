@@ -23,7 +23,10 @@ import {
   shareCreditBound,
   verifyLoadedChain,
   chainLoadSeal,
+  V12_GENESIS_BLOCK_HASH,
+  V12_BOOTSTRAP_CHECKPOINT,
 } from './chain.js';
+import { bookSealKeyFor } from './book_seal_key.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
   verifyShareBatch,
@@ -255,6 +258,9 @@ export function createStore(dir, {
   fastSync = String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
   firstCheckpoint = CHECKPOINT_FIRST_HEIGHT,
   checkpointEvery = CHECKPOINT_EVERY_BLOCKS,
+  genesisHash = V12_GENESIS_BLOCK_HASH,
+  checkpoint = V12_BOOTSTRAP_CHECKPOINT,
+  loadNowMs = null,
 } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
@@ -317,17 +323,23 @@ export function createStore(dir, {
       throw new Error(`datadir_magic:${diskMagic}`);
     }
   }
-  // book.seal skips ShearHash on a book this store wrote. Merkle, prev, bits,
-  // and the spend trailer still run. A foreign chain.bin has no matching seal
-  // and is hashed before restoreSpentB, bootVault, and syncOwed.
+  // book.seal skips ShearHash only when it matches this install's key.
+  // The key lives outside the datadir. Body consensus still runs.
+  // A foreign chain.bin is hashed before restoreSpentB, bootVault, and syncOwed.
+  const sealKey = bookSealKeyFor(dir);
   if (blocks.length) {
-    const want = chainLoadSeal(blocks);
+    const want = chainLoadSeal(blocks, sealKey);
     let got = '';
     if (fs.existsSync(sealFile)) {
       try { got = fs.readFileSync(sealFile, 'utf8').trim(); } catch { got = ''; }
     }
     const trustStoredHash = got.length > 0 && got === want;
-    const checked = verifyLoadedChain(blocks, { trustStoredHash });
+    const checked = verifyLoadedChain(blocks, {
+      trustStoredHash,
+      nowMs: loadNowMs,
+      genesisHash,
+      checkpoint,
+    });
     if (!checked.ok) throw new Error(checked.reason || 'pow');
     if (!trustStoredHash) writeLoadSeal(blocks);
   }
@@ -600,7 +612,7 @@ export function createStore(dir, {
   }
 
   function writeLoadSeal(rows) {
-    fs.writeFileSync(sealFile, `${chainLoadSeal(rows)}\n`);
+    fs.writeFileSync(sealFile, `${chainLoadSeal(rows, sealKey)}\n`);
   }
 
   function migrateMonolith(diskBlocks) {

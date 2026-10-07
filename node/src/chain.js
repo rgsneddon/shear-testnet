@@ -65,6 +65,8 @@ import {
   admitVerifyBatch,
   attachAdmitPub,
   fluxsetFromBlocks,
+  applyBlockToFluxset,
+  emptyFluxset,
   jroot as jrootOf,
 } from '../../crypto/admit.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
@@ -97,6 +99,7 @@ import {
   hashOwedFromTx,
   hashOwedRootAgrees,
   hashOverflowFromTx,
+  advanceHashOwed,
   sameHashLedger,
   settleHashOwed,
   writeHashLedger,
@@ -132,6 +135,22 @@ export {
 } from '../../crypto/chronoflux.js';
 
 export const GENESIS_PREV = Buffer.alloc(32);
+
+/**
+ * Height-1 block hash, lowercase hex. Empty until the v12 genesis cut fills it.
+ * A non-empty pin rejects every other height-1 hash, including one with genesis bits.
+ */
+export const V12_GENESIS_BLOCK_HASH = '';
+
+/**
+ * Optional bootstrap checkpoint. height 0 means unset.
+ * CoS fills the hash from the genesis script at the cut.
+ * Install rule: a bootstrap may land only in an empty book, the remote chain
+ * must have positive work, and these pins must match when they are set.
+ * A backdated walk can still ease ASERT by about one bit per 2h MTP gap.
+ * The pins are the anchor. The future bound does not replace them.
+ */
+export const V12_BOOTSTRAP_CHECKPOINT = Object.freeze({ height: 0, hash: '' });
 
 function dest20Of(addr) {
   const h = hash20FromAddress(addr);
@@ -1304,20 +1323,29 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   let potNanos = 0;
   let bonusNanos = 0;
   const height = Number(block.height || (prev?.height || 0) + 1);
-  // Burial is only the parent this caller already accepted. opts.tipHeight is
-  // a peer advertisement and must not open skipFlow, sample prune, or pre_seal.
-  const localTip = Number(prev?.height || 0);
+  // Burial on the live path is only the parent this caller already accepted.
+  // opts.tipHeight is a peer advertisement and must not open skipFlow.
+  // loadReplay is this book's own tip, used only while checking a loaded chain.
+  const parentHeight = Number(prev?.height || 0);
+  // Live burial is the parent this caller already accepted. A peer tipHeight
+  // does not open it. loadReplay is this book's own tip, and only for the
+  // prune and hash-credit checks. Spend maturity stays this block's height.
+  const burialTip = opts.loadReplay === true
+    ? (Number(opts.tipHeight) || parentHeight)
+    : parentHeight;
   void tipHeight;
   void buried;
-  // A peer flag does not prune. Burial is this parent's height, not opts.tipHeight.
-  if (block.samplesPruned && !shouldPruneSamples(height, localTip)) {
+  if (block.samplesPruned && !shouldPruneSamples(height, burialTip)) {
     return { ok: false, reason: 'samples_pruned' };
   }
-  const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, localTip);
+  const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, burialTip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   // Burial may skip Flow checks. It does not skip share credit. A batch that
   // is still on the block takes the same nonce-byte gate as a live accept.
-  if (skipFlow && shareBatch.length) {
+  // A reload cannot re-hash shares: the live cache is empty, and skipPow
+  // without a cache is share_pow. Share bytes still have to match the sealed
+  // credit record. Header proof-of-work is the load loop's job.
+  if (!opts.loadReplay && skipFlow && shareBatch.length) {
     if (shareBatch.length > MAX_SHARES_PER_BLOCK) return { ok: false, reason: 'share_cap' };
     if (!prev?.header) return { ok: false, reason: 'share_batch' };
     const buriedShares = verifyShareBatch({
@@ -1341,25 +1369,27 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (!skipFlow) {
     if (shareBatch.length > MAX_SHARES_PER_BLOCK) return { ok: false, reason: 'share_cap' };
     if (prev?.header) {
-      const proved = verifyShareBatch({
-        parentHeader: prev.header,
-        priorHeader: opts.grandparentHeader || null,
-        excludeNonces: shareNonceKeys(prev?.shareBatch, opts.grandparentHeader || null),
-        shares: shareBatch,
-        floorBits: SHARE_FLOOR_BITS,
-        skipPow: !!skipSharePow,
-      });
-      if (!proved.ok) return proved;
-      provenUnits = proved.units;
-      provenByDest = proved.byDest;
-      shareLeaves = proved.aLeaves;
+      if (!opts.loadReplay) {
+        const proved = verifyShareBatch({
+          parentHeader: prev.header,
+          priorHeader: opts.grandparentHeader || null,
+          excludeNonces: shareNonceKeys(prev?.shareBatch, opts.grandparentHeader || null),
+          shares: shareBatch,
+          floorBits: SHARE_FLOOR_BITS,
+          skipPow: !!skipSharePow,
+        });
+        if (!proved.ok) return proved;
+        provenUnits = proved.units;
+        provenByDest = proved.byDest;
+        shareLeaves = proved.aLeaves;
+      }
     } else if (shareBatch.length) {
       return { ok: false, reason: 'share_batch' };
     }
     const settlement = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
-      tipHeight: localTip,
+      tipHeight: burialTip,
     });
     if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
@@ -1489,7 +1519,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const buriedSettle = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
-      tipHeight: localTip,
+      tipHeight: burialTip,
     });
     if (!buriedSettle.ok) return { ok: false, reason: buriedSettle.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], buriedSettle)) return { ok: false, reason: 'hash_owed' };
@@ -1762,7 +1792,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     if (tx.kind === 'b-spend') {
       const commitH = Number(tx.commitHeight || 0);
-      const tip = localTip + 1;
+      const tip = parentHeight + 1;
       if (!(commitH >= 1) || tip < commitH) return { ok: false, reason: 'pre_seal' };
       const samePrev = commitH === Number(prev?.height || 0);
       const commitHeader = tx.commitHeader || (samePrev ? prev.header : null);
@@ -1870,11 +1900,16 @@ function asBuf(v) {
   try { return Buffer.from(v); } catch { return Buffer.alloc(0); }
 }
 
-/** sha256 over each block's header and stored hash. Not a MAC.
- *  persist and a successful foreign verify write it. writeChainBin does not.
+/** Keyed sha256 over each block's header and stored hash.
+ *  The key is the per-install secret kept outside the datadir.
+ *  A copied chain.bin plus book.seal does not verify under another install.
+ *  persist and a successful verify write it. writeChainBin does not.
  */
-export function chainLoadSeal(blocks) {
+export function chainLoadSeal(blocks, key) {
+  const k = asBuf(key);
+  if (k.length !== 32) throw new Error('seal_key');
   const h = createHash('sha256');
+  h.update(k);
   for (const b of Array.isArray(blocks) ? blocks : []) {
     const header = asBuf(b?.header);
     const hash = asBuf(b?.hash);
@@ -1888,20 +1923,49 @@ export function chainLoadSeal(blocks) {
   return h.digest('hex');
 }
 
+/** Empty string means the pin is unset. A non-hex pin is refused. */
+function normGenesisPin(hex) {
+  const s = String(hex || '').trim().toLowerCase();
+  if (!s) return '';
+  if (!/^[0-9a-f]{64}$/.test(s)) return null;
+  return s;
+}
+
 /**
- * Load check for a chain.bin or latest.bin this store did not seal.
- * Empty passes. Does not call verifyBlock: a pruned body is not a live accept.
- * Prev is compared before ShearHash so a flipped prev byte is `prev`.
- * trustStoredHash skips ShearHash when book.seal already binds header||hash.
- * Merkle, linkage, bits, and the coinbase still run on that path.
+ * Load check for a chain.bin or latest.bin before the vault boots.
+ * Empty passes. Header linkage runs first. Body consensus then runs with
+ * loadReplay so a pruned body can be buried under this book's own tip.
+ * That replay does not call Date.now. The future ceiling is one clock,
+ * nowMs or the load time, plus MTP_FUTURE_MS, applied to every stamp.
+ * trustStoredHash skips ShearHash only when book.seal matches this install's key.
+ * It does not skip the mint, range, spend, or hash-ledger checks.
  */
-export function verifyLoadedChain(blocks, { trustStoredHash = false } = {}) {
+export function verifyLoadedChain(blocks, {
+  trustStoredHash = false,
+  nowMs = null,
+  genesisHash = V12_GENESIS_BLOCK_HASH,
+  checkpoint = V12_BOOTSTRAP_CHECKPOINT,
+} = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true };
+  const givenClock = Number(nowMs);
+  const clock = Number.isFinite(givenClock) && givenClock > 0 ? givenClock : Date.now();
+  const pinned = normGenesisPin(genesisHash);
+  if (pinned == null) return { ok: false, reason: 'genesis' };
+  const cpHeight = Math.floor(Number(checkpoint?.height) || 0);
+  const cpHash = cpHeight > 0 ? normGenesisPin(checkpoint?.hash) : '';
+  if (cpHeight > 0 && !cpHash) return { ok: false, reason: 'checkpoint' };
+  const loadTip = Number(list[list.length - 1]?.height) || list.length;
   let prevLink = GENESIS_PREV;
   let prevDecoded = null;
   let prevHeight = 0;
   let genesisMs = 0;
+  let owedIn = [];
+  let acceptedSeries = [];
+  const spentB = new Set();
+  const mtp = [];
+  let flux = emptyFluxset();
+  let sawCheckpoint = cpHeight <= 0;
   for (let i = 0; i < list.length; i += 1) {
     const block = list[i];
     const header = asBuf(block?.header);
@@ -1918,6 +1982,7 @@ export function verifyLoadedChain(blocks, { trustStoredHash = false } = {}) {
     const ts = Number(decoded.timestamp);
     if (!Number.isFinite(ts) || ts <= 0) return { ok: false, reason: 'timestamp' };
     if (prevDecoded && !(ts > Number(prevDecoded.timestamp))) return { ok: false, reason: 'timestamp' };
+    if (ts > clock + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
     const stored = asBuf(block.hash);
     if (stored.length !== 32) return { ok: false, reason: 'pow' };
     let link = stored;
@@ -1927,6 +1992,13 @@ export function verifyLoadedChain(blocks, { trustStoredHash = false } = {}) {
         return { ok: false, reason: 'pow' };
       }
       link = hash;
+    }
+    if (i === 0 && pinned && link.toString('hex') !== pinned) {
+      return { ok: false, reason: 'genesis' };
+    }
+    if (cpHeight > 0 && height === cpHeight) {
+      if (link.toString('hex') !== cpHash) return { ok: false, reason: 'checkpoint' };
+      sawCheckpoint = true;
     }
     if (!prevDecoded) {
       if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
@@ -1951,10 +2023,43 @@ export function verifyLoadedChain(blocks, { trustStoredHash = false } = {}) {
     if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
     const merkle = merkleRoot(txs.map(digestTx));
     if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
+    const prevBlock = i === 0 ? null : list[i - 1];
+    const body = verifyBlockConsensus(block, prevBlock, {
+      trustedPowHash: link,
+      loadReplay: true,
+      tipHeight: loadTip,
+      genesisMs,
+      mtpTimestamps: mtp.slice(),
+      owedIn,
+      hashAcceptedSeries: acceptedSeries,
+      spentB,
+      magic: MAGIC_TESTNET,
+      hashBonusNanos: HASH_BONUS_NANOS,
+      grandparentHeader: i >= 2 ? list[i - 2].header : null,
+      parentFluxset: flux,
+      parentSpendTags: flux.spendTags,
+    });
+    if (!body || typeof body.then === 'function' || body.ok !== true) {
+      return { ok: false, reason: body?.reason || 'pow' };
+    }
+    const stepped = advanceHashOwed({
+      owedIn,
+      acceptedSeries,
+      block,
+      unit: HASH_BONUS_NANOS,
+      tipHeight: loadTip,
+    });
+    if (!stepped.ok) return { ok: false, reason: stepped.reason || 'hash_owed' };
+    owedIn = stepped.rows;
+    acceptedSeries = stepped.acceptedSeries;
+    flux = applyBlockToFluxset(flux, block);
+    mtp.push(ts);
+    if (mtp.length > MTP_WINDOW) mtp.splice(0, mtp.length - MTP_WINDOW);
     prevLink = link;
     prevDecoded = decoded;
     prevHeight = height;
   }
+  if (!sawCheckpoint) return { ok: false, reason: 'checkpoint' };
   return { ok: true };
 }
 
