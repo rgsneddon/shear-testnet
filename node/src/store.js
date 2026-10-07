@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
@@ -22,6 +23,7 @@ import {
   headerGapsMs,
   shareCreditBound,
   verifyLoadedChain,
+  verifyLoadedChainAsync,
   chainLoadSeal,
   V12_GENESIS_BLOCK_HASH,
   V12_BOOTSTRAP_CHECKPOINT,
@@ -67,6 +69,7 @@ import {
   writeChainSegments,
   segmentFileName,
   CHAIN_SEGMENT_BLOCKS,
+  packEpochBlock,
 } from '../../crypto/chainbin.js';
 import {
   writeLatestBootstrap,
@@ -78,7 +81,8 @@ import {
 } from './bootstrap.js';
 import { blockWeight } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
-import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset } from '../../crypto/admit.js';
+import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, jroot } from '../../crypto/admit.js';
+import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { asU8, flowInputsBound } from '../../crypto/note.js';
 import { blockWork } from '../../crypto/asert.js';
@@ -252,6 +256,8 @@ function grandparentHeader(chain) {
   return chain[chain.length - 2]?.header || null;
 }
 
+const loadResumeToken = Symbol('shear-load-resume');
+
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
@@ -261,7 +267,9 @@ export function createStore(dir, {
   genesisHash = V12_GENESIS_BLOCK_HASH,
   checkpoint = V12_BOOTSTRAP_CHECKPOINT,
   loadNowMs = null,
-} = {}) {
+  yieldForeign = false,
+  onLoadProgress = null,
+} = {}, resume = null) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
@@ -271,6 +279,7 @@ export function createStore(dir, {
   const vaultFile = path.join(dir, 'reserve.json');
   const magicFile = path.join(dir, 'book.magic');
   const sealFile = path.join(dir, 'book.seal');
+  const snapFile = path.join(dir, 'book.snap');
   const blocks = [];
   const explorer = [];
   const spentB = new Set();
@@ -289,8 +298,14 @@ export function createStore(dir, {
   let vaultSeal = null;
   let owedRows = [];
   let acceptedSeries = [];
+  let owedSeriesAll = acceptedSeries;
   let owedSnap = [];
   let unitAt = [];
+  let loadMode = 'empty';
+  let preFlux = null;
+  let prefixHeight = 0;
+  let frameHash = null;
+  let frameCovered = 0;
 
   const segLoaded = readChainSegments(segDir);
   if (segLoaded) {
@@ -323,27 +338,179 @@ export function createStore(dir, {
       throw new Error(`datadir_magic:${diskMagic}`);
     }
   }
-  // book.seal skips ShearHash only when it matches this install's key.
-  // The key lives outside the datadir. Body consensus still runs.
-  // A foreign chain.bin is hashed before restoreSpentB, bootVault, and syncOwed.
+  // book.seal skips the header ShearHash when it matches this install's key.
+  // book.snap skips the body prefix only when that same key verifies it and
+  // the snap binds this chain. A miss replays. A foreign book never uses it.
   const sealKey = bookSealKeyFor(dir);
-  if (blocks.length) {
+  loadMode = blocks.length ? 'full' : 'empty';
+  const snapExpect = {
+    rules: consensusFingerprint(MAGIC_TESTNET),
+    genesisPin: String(genesisHash || ''),
+    checkpoint,
+  };
+  function tipBuf(rows) {
+    if (!rows.length) return Buffer.alloc(0);
+    try { return Buffer.from(rows[rows.length - 1].hash); } catch { return Buffer.alloc(0); }
+  }
+  const resumed = !!(resume && resume.token === loadResumeToken && resume.verified === true
+    && resume.height === blocks.length && tipBuf(blocks).equals(Buffer.from(resume.tipHash || [])));
+  if (blocks.length && !resumed) {
     const want = chainLoadSeal(blocks, sealKey);
     let got = '';
     if (fs.existsSync(sealFile)) {
       try { got = fs.readFileSync(sealFile, 'utf8').trim(); } catch { got = ''; }
     }
     const trustStoredHash = got.length > 0 && got === want;
-    const checked = verifyLoadedChain(blocks, {
-      trustStoredHash,
-      nowMs: loadNowMs,
-      genesisHash,
-      checkpoint,
-    });
-    if (!checked.ok) throw new Error(checked.reason || 'pow');
-    if (!trustStoredHash) writeLoadSeal(blocks);
+    const plan = trustStoredHash ? acceptBookSnap(readBookSnap(snapFile, sealKey, snapExpect)) : null;
+    if (plan && plan.height === blocks.length) {
+      applySnap(plan, plan.height);
+      loadMode = 'snap';
+    } else if (plan) {
+      const priorFlux = {
+        pubs: plan.pubs,
+        commits: plan.commits,
+        spendTags: new Set(plan.spendTags),
+        jroot: jroot({ pubs: plan.pubs, commits: plan.commits }),
+      };
+      const checked = verifyLoadedChain(blocks, {
+        trustStoredHash: true,
+        nowMs: loadNowMs,
+        genesisHash,
+        checkpoint,
+        fromIndex: plan.height,
+        prior: {
+          owedRows: plan.owedRows,
+          acceptedSeries: plan.acceptedSeries.slice(),
+          spentIds: plan.spentIds,
+          flux: priorFlux,
+        },
+      });
+      if (!checked.ok) throw new Error(checked.reason || 'pow');
+      owedRows = checked.owedRows;
+      acceptedSeries = checked.acceptedSeries;
+      owedSeriesAll = acceptedSeries;
+      spentB.clear();
+      for (const id of checked.spentIds) spentB.add(id);
+      preFlux = checked.flux;
+      unitAt = plan.unitAt.slice(0, plan.height);
+      prefixHeight = plan.height;
+      loadMode = 'suffix';
+    } else if (yieldForeign) {
+      const tipHash = tipBuf(blocks);
+      const height = blocks.length;
+      return verifyLoadedChainAsync(blocks, {
+        trustStoredHash,
+        nowMs: loadNowMs,
+        genesisHash,
+        checkpoint,
+        onProgress: onLoadProgress,
+      }).then((checked) => {
+        if (!checked.ok) throw new Error(checked.reason || 'pow');
+        return createStore(dir, {
+          pruneAfter,
+          reorgHaltDepth,
+          fastSync,
+          firstCheckpoint,
+          checkpointEvery,
+          genesisHash,
+          checkpoint,
+          loadNowMs,
+          yieldForeign: false,
+          onLoadProgress,
+        }, {
+          token: loadResumeToken,
+          verified: true,
+          height,
+          tipHash,
+        });
+      });
+    } else {
+      const checked = verifyLoadedChain(blocks, {
+        trustStoredHash,
+        nowMs: loadNowMs,
+        genesisHash,
+        checkpoint,
+      });
+      if (!checked.ok) throw new Error(checked.reason || 'pow');
+      if (!trustStoredHash) writeLoadSeal(blocks);
+    }
+  } else if (resumed) {
+    writeLoadSeal(blocks);
   }
-  restoreSpentB();
+  if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
+
+  function chainDiskDigest() {
+    const h = createHash('sha256');
+    h.update('bookdisk1');
+    if (segmented && fs.existsSync(segDir)) {
+      const names = fs.readdirSync(segDir).filter((name) => /^seg-\d+\.bin$/.test(name));
+      names.sort((a, b) => Number(/^seg-(\d+)\.bin$/.exec(a)[1]) - Number(/^seg-(\d+)\.bin$/.exec(b)[1]));
+      for (const name of names) {
+        const buf = fs.readFileSync(path.join(segDir, name));
+        const n = Buffer.alloc(4);
+        n.writeUInt32LE(buf.length >>> 0, 0);
+        h.update(n);
+        h.update(buf);
+      }
+      return h.digest('hex');
+    }
+    const rawFile = fs.existsSync(binFile) ? binFile : (fs.existsSync(file) ? file : '');
+    if (rawFile) {
+      const buf = fs.readFileSync(rawFile);
+      const n = Buffer.alloc(4);
+      n.writeUInt32LE(buf.length >>> 0, 0);
+      h.update(n);
+      h.update(buf);
+    }
+    return h.digest('hex');
+  }
+
+  function vaultCommitmentFromFile() {
+    if (!fs.existsSync(vaultFile)) return '';
+    try {
+      const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
+      if (!raw || typeof raw !== 'object' || !raw.portals) return '';
+      delete raw.vaultSeal;
+      delete raw.blankFork;
+      return vaultCommitment(raw);
+    } catch {
+      return '';
+    }
+  }
+
+  function acceptBookSnap(snap) {
+    if (!snap || snap.height < 1 || snap.height > blocks.length) return null;
+    let tipHash;
+    try { tipHash = Buffer.from(blocks[snap.height - 1].hash); } catch { return null; }
+    if (tipHash.length !== 32 || !tipHash.equals(snap.tipHash)) return null;
+    const gms = genesisHeaderMs(blocks);
+    if (!gms || gms !== snap.genesisMs) return null;
+    const vaultNow = vaultCommitmentFromFile();
+    if (!vaultNow || vaultNow !== snap.vaultCommitment) return null;
+    if (snap.height === blocks.length && snap.diskDigest === chainDiskDigest()) return snap;
+    if (snap.height < blocks.length) {
+      let frame = '';
+      try { frame = frameDigest(blocks.slice(0, snap.height)); } catch { return null; }
+      if (frame === snap.frameDigest) return snap;
+    }
+    return null;
+  }
+
+  function applySnap(plan, height) {
+    owedRows = plan.owedRows;
+    acceptedSeries = plan.acceptedSeries.slice();
+    owedSeriesAll = acceptedSeries;
+    spentB.clear();
+    for (const id of plan.spentIds) spentB.add(String(id));
+    preFlux = {
+      pubs: plan.pubs,
+      commits: plan.commits,
+      spendTags: new Set(plan.spendTags),
+      jroot: jroot({ pubs: plan.pubs, commits: plan.commits }),
+    };
+    unitAt = plan.unitAt.slice();
+    prefixHeight = height;
+  }
 
   function on(ev, fn) {
     if (!listeners[ev]) listeners[ev] = [];
@@ -421,7 +588,7 @@ export function createStore(dir, {
   loadExplorer();
   rememberHeaders(blocks, 'active');
 
-  let liveFlux = fluxsetFromBlocks(blocks);
+  let liveFlux = preFlux || fluxsetFromBlocks(blocks);
   function refreshFlux() {
     liveFlux = fluxsetFromBlocks(blocks);
   }
@@ -556,7 +723,15 @@ export function createStore(dir, {
     saveReserve();
   }
 
+  function installVault(raw) {
+    const coerced = cloneVault(raw);
+    for (const k of Object.keys(reserveVault)) delete reserveVault[k];
+    Object.assign(reserveVault, coerced);
+    reserveVault.liveHashBonusNanos = hashBonusUnitNanos(reserveVault.liveHashBonusNanos);
+  }
+
   function bootVault() {
+    let loaded = null;
     if (fs.existsSync(vaultFile)) {
       try {
         const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
@@ -564,17 +739,37 @@ export function createStore(dir, {
           if (raw.vaultSeal && raw.vaultSeal.hash) vaultSeal = raw.vaultSeal;
           delete raw.vaultSeal;
           delete raw.blankFork;
-          Object.assign(reserveVault, raw);
-          reserveVault.liveHashBonusNanos = hashBonusUnitNanos(reserveVault.liveHashBonusNanos);
-          if (!reserveVault.oracle) reserveVault.oracle = loadedOracle;
+          loaded = raw;
         }
       } catch { /* rebuild from chain */ }
+    }
+    // An exact snap already committed this file. Replaying it would walk every block.
+    if (loadMode === 'snap' && loaded && vaultCommitmentFromFile()) {
+      installVault(loaded);
+      syncBlankFlag();
+      return;
+    }
+    // A shorter snap committed the prefix vault. Apply only the unsealed suffix.
+    if (loadMode === 'suffix' && loaded && vaultCommitmentFromFile()) {
+      installVault(loaded);
+      for (const b of blocks.slice(prefixHeight)) {
+        unitAt.push(hashBonusUnitNanos(reserveVault.liveHashBonusNanos));
+        applyReserveBlock({ state: reserveVault, block: b, nowMs: blockTimeMs(b) });
+      }
+      refreshVaultSeal();
+      syncBlankFlag();
+      saveReserve();
+      return;
+    }
+    if (loaded) {
+      if (!reserveVault.oracle && loaded.oracle) reserveVault.oracle = loaded.oracle;
     }
     replayVault();
   }
 
   bootVault();
   syncOwed(blocks);
+  if (loadMode !== 'snap') persistBookSnap();
   writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
 
   function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
@@ -615,6 +810,62 @@ export function createStore(dir, {
     fs.writeFileSync(sealFile, `${chainLoadSeal(rows, sealKey)}\n`);
   }
 
+  function resetFrameHash() {
+    frameHash = null;
+    frameCovered = 0;
+  }
+
+  /** Running frame digest. Each new block is packed once. A rewrite starts over. */
+  function frameDigestNow() {
+    if (!frameHash || frameCovered > blocks.length) resetFrameHash();
+    if (!frameHash) {
+      frameHash = createHash('sha256');
+      frameHash.update('bookframe1');
+      frameCovered = 0;
+    }
+    while (frameCovered < blocks.length) {
+      const rec = packEpochBlock(blocks[frameCovered]);
+      const n = Buffer.alloc(4);
+      n.writeUInt32LE(rec.length >>> 0, 0);
+      frameHash.update(n);
+      frameHash.update(rec);
+      frameCovered += 1;
+    }
+    return frameHash.copy().digest('hex');
+  }
+
+  function persistBookSnap() {
+    if (!blocks.length) return;
+    if (acceptedSeries.length !== blocks.length || unitAt.length !== blocks.length) return;
+    try {
+      const commit = vaultCommitmentFromFile();
+      const gms = genesisHeaderMs(blocks);
+      const tipHash = Buffer.from(blocks[blocks.length - 1].hash);
+      if (!commit || !gms || tipHash.length !== 32) return;
+      const cp = snapExpect.checkpoint || {};
+      const cpH = Math.floor(Number(cp.height) || 0);
+      writeBookSnap(snapFile, sealKey, {
+        rules: snapExpect.rules,
+        genesisPin: snapExpect.genesisPin,
+        checkpointHeight: cpH,
+        checkpointHash: cpH > 0 ? String(cp.hash || '') : '',
+        height: blocks.length,
+        tipHash,
+        diskDigest: chainDiskDigest(),
+        frameDigest: frameDigestNow(),
+        genesisMs: gms,
+        vaultCommitment: commit,
+        owedRows,
+        acceptedSeries,
+        spentIds: [...spentB],
+        pubs: liveFlux?.pubs || [],
+        commits: liveFlux?.commits || [],
+        spendTags: [...(liveFlux?.spendTags || [])],
+        unitAt,
+      });
+    } catch { /* leave the previous snap; the next load replays */ }
+  }
+
   function migrateMonolith(diskBlocks) {
     const tmp = path.join(dir, 'segments.migrating');
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -648,6 +899,7 @@ export function createStore(dir, {
     fs.appendFileSync(file, `${slimRow(row)}\n`);
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
     writeLoadSeal(blocks);
+    persistBookSnap();
   }
 
   function rewriteChain() {
@@ -659,6 +911,8 @@ export function createStore(dir, {
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
     segmented = true;
     writeLoadSeal(blocks);
+    resetFrameHash();
+    persistBookSnap();
   }
 
   function tip() {
@@ -702,6 +956,8 @@ export function createStore(dir, {
         writeChainSegments(segDir, image, { only: dirtySegs });
       }
       try { writeLatestBootstrap(dir, blocks); } catch { /* observer/bootstrap must not halt append */ }
+      resetFrameHash();
+      try { persistBookSnap(); } catch { /* the next load replays if the snap is stale */ }
     }
     return dirtySegs.size > 0;
   }
@@ -800,15 +1056,20 @@ export function createStore(dir, {
 
   function syncOwed(chain) {
     const list = chain || [];
+    if ((loadMode === 'snap' || loadMode === 'suffix') && acceptedSeries.length === list.length) {
+      // Tip only. An earlier hole is recomputed by seedHistory, not stored as a copy per height.
+      owedSeriesAll = acceptedSeries;
+      owedSnap = [];
+      if (list.length) owedSnap[list.length - 1] = { rows: owedRows, seriesEnd: acceptedSeries.length };
+      return;
+    }
     const units = unitAt.length === list.length ? unitAt : bonusUnitsBefore(list);
     const got = replayHashOwed(list, { units });
     if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
     owedRows = got.rows;
-    acceptedSeries = got.accepted.slice();
-    owedSnap = (got.snaps || []).map((s) => ({
-      rows: s.rows,
-      series: (s.series || s.accepted || []).slice(),
-    }));
+    acceptedSeries = got.accepted;
+    owedSeriesAll = acceptedSeries;
+    owedSnap = got.snaps || [];
   }
 
   // Trailer must match ids derived from this block's own b-spend txs.
@@ -1724,6 +1985,30 @@ export function createStore(dir, {
     try { return hex32(block?.hash).toLowerCase(); } catch { return ''; }
   }
 
+  function seriesOfSnap(snap) {
+    if (!snap || typeof snap !== 'object') return null;
+    if (Number.isInteger(snap.seriesEnd) && snap.seriesEnd >= 0) {
+      if (!Array.isArray(owedSeriesAll) || owedSeriesAll.length < snap.seriesEnd) return null;
+      return owedSeriesAll.slice(0, snap.seriesEnd);
+    }
+    if (Array.isArray(snap.series)) return snap.series.slice();
+    if (Array.isArray(snap.accepted)) return snap.accepted.slice();
+    return null;
+  }
+
+  function snapsFromReplay(list) {
+    const got = replayHashOwed(list, { units: bonusUnitsBefore(list) });
+    if (!got.ok) return null;
+    return {
+      rows: got.rows,
+      series: got.accepted.slice(),
+      snaps: (got.snaps || []).map((s) => ({
+        rows: s.rows,
+        series: got.accepted.slice(0, s.seriesEnd),
+      })),
+    };
+  }
+
   /** Owed state at the end of `history`, from the local snap plus any side tail. */
   function seedHistory(history) {
     const list = Array.isArray(history) ? history : [];
@@ -1731,16 +2016,24 @@ export function createStore(dir, {
     while (n < list.length && n < blocks.length && blockHex(list[n]) && blockHex(list[n]) === blockHex(blocks[n])) n += 1;
     let rows = [];
     let series = [];
+    let snaps = [];
     if (n > 0) {
-      const snap = owedSnap[n - 1];
-      if (!snap) return { ok: false, reason: 'hash_owed' };
-      rows = snap.rows;
-      series = (snap.series || snap.accepted || []).slice();
+      let hole = false;
+      for (let i = 0; i < n; i += 1) {
+        if (!seriesOfSnap(owedSnap[i])) { hole = true; break; }
+      }
+      if (!hole) {
+        rows = owedSnap[n - 1].rows;
+        series = seriesOfSnap(owedSnap[n - 1]);
+        snaps = owedSnap.slice(0, n).map((s) => ({ rows: s.rows, series: seriesOfSnap(s) }));
+      } else {
+        const filled = snapsFromReplay(list.slice(0, n));
+        if (!filled) return { ok: false, reason: 'hash_owed' };
+        rows = filled.rows;
+        series = filled.series;
+        snaps = filled.snaps;
+      }
     }
-    const snaps = owedSnap.slice(0, n).map((s) => ({
-      rows: s.rows,
-      series: (s.series || s.accepted || []).slice(),
-    }));
     if (n === list.length) return { ok: true, rows, series, snaps };
     const units = bonusUnitsBefore(list);
     let tipH = 0;
@@ -1954,6 +2247,7 @@ export function createStore(dir, {
       for (const b of accepted) blocks.push(b);
       owedRows = verified.owedRows || [];
       acceptedSeries = (verified.owedSeries || []).slice();
+      owedSeriesAll = acceptedSeries;
       owedSnap = verified.owedSnaps;
       if (disconnected.length) {
         sideAnchor = lca > 0 ? lca - 1 : -1;
@@ -2285,6 +2579,7 @@ export function createStore(dir, {
   return {
     dir,
     blocks,
+    loadMode,
     explorer,
     tip,
     chainWorkHex() {

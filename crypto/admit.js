@@ -256,11 +256,7 @@ export function emptyFluxset() {
   return { pubs: [], commits: [], spendTags: new Set(), jroot: jroot({ pubs: [], commits: [] }) };
 }
 
-/** Append one sealed block's notes and spend-tags onto a live J. */
-export function applyBlockToFluxset(live, block) {
-  const pubs = Array.isArray(live?.pubs) ? live.pubs.slice() : [];
-  const commits = Array.isArray(live?.commits) ? live.commits.slice() : [];
-  const spendTags = new Set(live?.spendTags || []);
+function absorbFluxBlock(pubs, commits, spendTags, block) {
   for (const tx of block?.txs || []) {
     const tag = tx.admit_proof?.spendTag || tx.spendTag;
     if (tag) {
@@ -277,31 +273,32 @@ export function applyBlockToFluxset(live, block) {
       }
     }
   }
+}
+
+/** Append one sealed block's notes and spend-tags onto a live J. */
+export function applyBlockToFluxset(live, block) {
+  const pubs = Array.isArray(live?.pubs) ? live.pubs.slice() : [];
+  const commits = Array.isArray(live?.commits) ? live.commits.slice() : [];
+  const spendTags = new Set(live?.spendTags || []);
+  absorbFluxBlock(pubs, commits, spendTags, block);
   return { pubs, commits, spendTags, jroot: jroot({ pubs, commits }) };
+}
+
+/** Same absorb as applyBlockToFluxset, on the caller's object. Load replay uses this so the note lists are not copied at every height. */
+export function appendFluxBlock(live, block) {
+  const dest = live && Array.isArray(live.pubs) && Array.isArray(live.commits) && live.spendTags instanceof Set
+    ? live
+    : emptyFluxset();
+  absorbFluxBlock(dest.pubs, dest.commits, dest.spendTags, block);
+  dest.jroot = jroot({ pubs: dest.pubs, commits: dest.commits });
+  return dest;
 }
 
 export function fluxsetFromBlocks(blocks) {
   const pubs = [];
   const commits = [];
   const spendTags = new Set();
-  for (const b of blocks || []) {
-    for (const tx of b?.txs || []) {
-      const tag = tx.admit_proof?.spendTag || tx.spendTag;
-      if (tag) {
-        const h = hexTag(tag);
-        if (h) spendTags.add(h);
-      }
-      for (const o of tx.vout || []) {
-        if (!o?.admitPub) continue;
-        try {
-          pubs.push(pubFromAdmit(o.admitPub));
-          commits.push(o.commit ? Buffer.from(asU8(o.commit)) : Buffer.alloc(32));
-        } catch {
-          /* skip unreadable */
-        }
-      }
-    }
-  }
+  for (const b of blocks || []) absorbFluxBlock(pubs, commits, spendTags, b);
   return { pubs, commits, spendTags, jroot: jroot({ pubs, commits }) };
 }
 

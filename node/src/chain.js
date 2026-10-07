@@ -22,6 +22,7 @@ import {
   MAGIC_TESTNET,
   MAGIC_TESTNET_V12,
   MAGIC_MAINNET,
+  consensusFingerprint,
   extraMintAllowed,
   wrapMintForbidden,
   DEST_HRP,
@@ -65,7 +66,7 @@ import {
   admitVerifyBatch,
   attachAdmitPub,
   fluxsetFromBlocks,
-  applyBlockToFluxset,
+  appendFluxBlock,
   emptyFluxset,
   jroot as jrootOf,
 } from '../../crypto/admit.js';
@@ -1991,15 +1992,34 @@ function asBuf(v) {
   try { return Buffer.from(v); } catch { return Buffer.alloc(0); }
 }
 
-/** Keyed sha256 over each block's header and stored hash.
+/** Domain for book.seal. A seal without it was written before the body snapshot and is not trusted. */
+export const BOOK_SEAL_DOMAIN = 'bookseal1';
+
+/** Keyed sha256 over the rules id, the genesis pin, the checkpoint, and each header and stored hash.
  *  The key is the per-install secret kept outside the datadir.
  *  A copied chain.bin plus book.seal does not verify under another install.
+ *  A seal from an older domain, or from another fingerprint, does not match.
  *  persist and a successful verify write it. writeChainBin does not.
+ *  Header and hash only. The body shortcut is book.snap, not this seal.
  */
-export function chainLoadSeal(blocks, key) {
+export function chainLoadSeal(blocks, key, magic = MAGIC_TESTNET) {
   const k = asBuf(key);
   if (k.length !== 32) throw new Error('seal_key');
+  const rules = Buffer.from(String(consensusFingerprint(magic)), 'utf8');
+  const pin = Buffer.from(String(V12_GENESIS_BLOCK_HASH || ''), 'utf8');
+  const cpH = Math.floor(Number(V12_BOOTSTRAP_CHECKPOINT?.height) || 0);
+  const cpHash = Buffer.from(cpH > 0 ? String(V12_BOOTSTRAP_CHECKPOINT?.hash || '') : '', 'utf8');
   const h = createHash('sha256');
+  const domain = Buffer.from(BOOK_SEAL_DOMAIN, 'utf8');
+  h.update(u32le(domain.length));
+  h.update(domain);
+  h.update(u32le(rules.length));
+  h.update(rules);
+  h.update(u32le(pin.length));
+  h.update(pin);
+  h.update(u32le(cpH));
+  h.update(u32le(cpHash.length));
+  h.update(cpHash);
   h.update(k);
   for (const b of Array.isArray(blocks) ? blocks : []) {
     const header = asBuf(b?.header);
@@ -2012,6 +2032,12 @@ export function chainLoadSeal(blocks, key) {
     h.update(hash);
   }
   return h.digest('hex');
+}
+
+function u32le(n) {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(Number(n) >>> 0, 0);
+  return b;
 }
 
 /** Empty string means the pin is unset. A non-hex pin is refused. */
@@ -2035,16 +2061,20 @@ function normGenesisPin(hex) {
  * on the block. An empty genesis pin is not an assume-valid anchor.
  * A buried pruned batch is empty, so those frames are not re-hashed.
  * Mint, range, spend, the fee cap, and the hash ledger still run.
+ * fromIndex replays only the suffix. The prefix state is the caller's,
+ * already checked under this install's snapshot. It is not a weaker rule.
  */
-export function verifyLoadedChain(blocks, {
+function beginLoaded(blocks, {
   trustStoredHash = false,
   trustShareWork = null,
   nowMs = null,
   genesisHash = V12_GENESIS_BLOCK_HASH,
   checkpoint = V12_BOOTSTRAP_CHECKPOINT,
+  fromIndex = 0,
+  prior = null,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
-  if (!list.length) return { ok: true };
+  if (!list.length) return { ok: true, empty: true };
   const givenClock = Number(nowMs);
   const clock = Number.isFinite(givenClock) && givenClock > 0 ? givenClock : Date.now();
   const pinned = normGenesisPin(genesisHash);
@@ -2052,6 +2082,8 @@ export function verifyLoadedChain(blocks, {
   const cpHeight = Math.floor(Number(checkpoint?.height) || 0);
   const cpHash = cpHeight > 0 ? normGenesisPin(checkpoint?.hash) : '';
   if (cpHeight > 0 && !cpHash) return { ok: false, reason: 'checkpoint' };
+  const start = Math.floor(Number(fromIndex) || 0);
+  if (start < 0 || start > list.length) return { ok: false, reason: 'height' };
   const loadTip = Number(list[list.length - 1]?.height) || list.length;
   let prevLink = GENESIS_PREV;
   let prevDecoded = null;
@@ -2062,106 +2094,204 @@ export function verifyLoadedChain(blocks, {
   const spentB = new Set();
   const mtp = [];
   let flux = emptyFluxset();
-  let sawCheckpoint = cpHeight <= 0;
-  for (let i = 0; i < list.length; i += 1) {
-    const block = list[i];
-    const header = asBuf(block?.header);
-    if (!block?.header || header.length === 0) return { ok: false, reason: 'no_header' };
-    let decoded;
+  if (start > 0) {
+    if (!prior) return { ok: false, reason: 'height' };
     try {
-      decoded = decodeHeader(header);
+      const genesisDecoded = decodeHeader(asBuf(list[0].header));
+      genesisMs = Number(genesisDecoded.timestamp);
+      prevDecoded = decodeHeader(asBuf(list[start - 1].header));
+      prevLink = asBuf(list[start - 1].hash);
+      prevHeight = Number(list[start - 1].height);
     } catch {
       return { ok: false, reason: 'bad_header' };
     }
-    if (!decoded.prevBlockHash.equals(prevLink)) return { ok: false, reason: 'prev' };
-    const height = Number(block.height);
-    if (height !== i + 1) return { ok: false, reason: 'height' };
-    const ts = Number(decoded.timestamp);
-    if (!Number.isFinite(ts) || ts <= 0) return { ok: false, reason: 'timestamp' };
-    if (prevDecoded && !(ts > Number(prevDecoded.timestamp))) return { ok: false, reason: 'timestamp' };
-    if (ts > clock + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
-    const stored = asBuf(block.hash);
-    if (stored.length !== 32) return { ok: false, reason: 'pow' };
-    let link = stored;
-    if (!trustStoredHash) {
-      const hash = shearHash(header);
-      if (!meetsTarget(hash, decoded.bits) || !stored.equals(hash)) {
-        return { ok: false, reason: 'pow' };
-      }
-      link = hash;
+    if (prevLink.length !== 32 || !Number.isFinite(genesisMs) || genesisMs <= 0) {
+      return { ok: false, reason: 'prev' };
     }
-    if (i === 0 && pinned && link.toString('hex') !== pinned) {
-      return { ok: false, reason: 'genesis' };
-    }
-    if (cpHeight > 0 && height === cpHeight) {
-      if (link.toString('hex') !== cpHash) return { ok: false, reason: 'checkpoint' };
-      sawCheckpoint = true;
-    }
-    if (!prevDecoded) {
-      if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
-        return { ok: false, reason: 'bits' };
-      }
-      genesisMs = ts;
-    } else {
-      const parentIsGenesis = prevDecoded.prevBlockHash.equals(GENESIS_PREV);
-      const quote = asertNextBits({
-        anchorBits: parentIsGenesis ? prevDecoded.bits : GENESIS_BITS_PACKED,
-        anchorTimeMs: parentIsGenesis ? Number(prevDecoded.timestamp) : genesisMs,
-        anchorHeight: parentIsGenesis ? prevHeight : 1,
-        blockTimeMs: ts,
-        blockHeight: height,
-        parentTimeMs: Number(prevDecoded.timestamp),
-      });
-      if (!quote.ok || !bitsAcceptAsert(decoded.bits, quote) || !isPackedBits(decoded.bits)) {
-        return { ok: false, reason: 'bits' };
+    owedIn = Array.isArray(prior.owedRows) ? prior.owedRows : [];
+    acceptedSeries = Array.isArray(prior.acceptedSeries) ? prior.acceptedSeries : [];
+    for (const id of prior.spentIds || []) spentB.add(String(id));
+    if (prior.flux && Array.isArray(prior.flux.pubs)) flux = prior.flux;
+    const mtpFrom = Math.max(0, start - MTP_WINDOW);
+    for (let j = mtpFrom; j < start; j += 1) {
+      try {
+        mtp.push(Number(decodeHeader(asBuf(list[j].header)).timestamp));
+      } catch {
+        return { ok: false, reason: 'bad_header' };
       }
     }
-    const txs = Array.isArray(block.txs) ? block.txs : [];
-    if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
-    const merkle = merkleRoot(txs.map(digestTx));
-    if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
-    const prevBlock = i === 0 ? null : list[i - 1];
-    const body = verifyBlockConsensus(block, prevBlock, {
-      trustedPowHash: link,
-      loadReplay: true,
-      // A foreign book cannot set this. An explicit false keeps the share
-      // hash on an own-keyed load, which is how the load test reaches it
-      // without a second header search. createStore does not pass it.
-      trustShareWork: trustStoredHash === true && trustShareWork !== false,
-      tipHeight: loadTip,
+  }
+  return {
+    ok: true,
+    list,
+    state: {
+      clock,
+      pinned,
+      cpHeight,
+      cpHash,
+      loadTip,
+      start,
+      prevLink,
+      prevDecoded,
+      prevHeight,
       genesisMs,
-      mtpTimestamps: mtp.slice(),
-      owedIn,
-      hashAcceptedSeries: acceptedSeries,
-      spentB,
-      magic: MAGIC_TESTNET,
-      hashBonusNanos: HASH_BONUS_NANOS,
-      grandparentHeader: i >= 2 ? list[i - 2].header : null,
-      parentFluxset: flux,
-      parentSpendTags: flux.spendTags,
-    });
-    if (!body || typeof body.then === 'function' || body.ok !== true) {
-      return { ok: false, reason: body?.reason || 'pow' };
-    }
-    const stepped = advanceHashOwed({
       owedIn,
       acceptedSeries,
-      block,
-      unit: HASH_BONUS_NANOS,
-      tipHeight: loadTip,
-    });
-    if (!stepped.ok) return { ok: false, reason: stepped.reason || 'hash_owed' };
-    owedIn = stepped.rows;
-    acceptedSeries = stepped.acceptedSeries;
-    flux = applyBlockToFluxset(flux, block);
-    mtp.push(ts);
-    if (mtp.length > MTP_WINDOW) mtp.splice(0, mtp.length - MTP_WINDOW);
-    prevLink = link;
-    prevDecoded = decoded;
-    prevHeight = height;
+      spentB,
+      mtp,
+      flux,
+      sawCheckpoint: cpHeight <= 0 || (start > 0 && cpHeight <= start),
+      trustStoredHash: trustStoredHash === true,
+      trustShareWork: trustStoredHash === true && trustShareWork !== false,
+    },
+  };
+}
+
+function stepLoaded(state, list, i) {
+  const block = list[i];
+  const header = asBuf(block?.header);
+  if (!block?.header || header.length === 0) return { ok: false, reason: 'no_header' };
+  let decoded;
+  try {
+    decoded = decodeHeader(header);
+  } catch {
+    return { ok: false, reason: 'bad_header' };
   }
-  if (!sawCheckpoint) return { ok: false, reason: 'checkpoint' };
-  return { ok: true };
+  if (!decoded.prevBlockHash.equals(state.prevLink)) return { ok: false, reason: 'prev' };
+  const height = Number(block.height);
+  if (height !== i + 1) return { ok: false, reason: 'height' };
+  const ts = Number(decoded.timestamp);
+  if (!Number.isFinite(ts) || ts <= 0) return { ok: false, reason: 'timestamp' };
+  if (state.prevDecoded && !(ts > Number(state.prevDecoded.timestamp))) return { ok: false, reason: 'timestamp' };
+  if (ts > state.clock + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
+  const stored = asBuf(block.hash);
+  if (stored.length !== 32) return { ok: false, reason: 'pow' };
+  let link = stored;
+  if (!state.trustStoredHash) {
+    const hash = shearHash(header);
+    if (!meetsTarget(hash, decoded.bits) || !stored.equals(hash)) {
+      return { ok: false, reason: 'pow' };
+    }
+    link = hash;
+  }
+  if (i === 0 && state.pinned && link.toString('hex') !== state.pinned) {
+    return { ok: false, reason: 'genesis' };
+  }
+  if (state.cpHeight > 0 && height === state.cpHeight) {
+    if (link.toString('hex') !== state.cpHash) return { ok: false, reason: 'checkpoint' };
+    state.sawCheckpoint = true;
+  }
+  if (!state.prevDecoded) {
+    if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
+      return { ok: false, reason: 'bits' };
+    }
+    state.genesisMs = ts;
+  } else {
+    const parentIsGenesis = state.prevDecoded.prevBlockHash.equals(GENESIS_PREV);
+    const quote = asertNextBits({
+      anchorBits: parentIsGenesis ? state.prevDecoded.bits : GENESIS_BITS_PACKED,
+      anchorTimeMs: parentIsGenesis ? Number(state.prevDecoded.timestamp) : state.genesisMs,
+      anchorHeight: parentIsGenesis ? state.prevHeight : 1,
+      blockTimeMs: ts,
+      blockHeight: height,
+      parentTimeMs: Number(state.prevDecoded.timestamp),
+    });
+    if (!quote.ok || !bitsAcceptAsert(decoded.bits, quote) || !isPackedBits(decoded.bits)) {
+      return { ok: false, reason: 'bits' };
+    }
+  }
+  const txs = Array.isArray(block.txs) ? block.txs : [];
+  if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
+  const merkle = merkleRoot(txs.map(digestTx));
+  if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
+  const prevBlock = i === 0 ? null : list[i - 1];
+  const body = verifyBlockConsensus(block, prevBlock, {
+    trustedPowHash: link,
+    loadReplay: true,
+    // A foreign book cannot set this. An explicit false keeps the share
+    // hash on an own-keyed load, which is how the load test reaches it
+    // without a second header search. createStore does not pass it.
+    trustShareWork: state.trustShareWork,
+    tipHeight: state.loadTip,
+    genesisMs: state.genesisMs,
+    mtpTimestamps: state.mtp.slice(),
+    owedIn: state.owedIn,
+    hashAcceptedSeries: state.acceptedSeries,
+    spentB: state.spentB,
+    magic: MAGIC_TESTNET,
+    hashBonusNanos: HASH_BONUS_NANOS,
+    grandparentHeader: i >= 2 ? list[i - 2].header : null,
+    parentFluxset: state.flux,
+    parentSpendTags: state.flux.spendTags,
+  });
+  if (!body || typeof body.then === 'function' || body.ok !== true) {
+    return { ok: false, reason: body?.reason || 'pow' };
+  }
+  const stepped = advanceHashOwed({
+    owedIn: state.owedIn,
+    acceptedSeries: state.acceptedSeries,
+    block,
+    unit: HASH_BONUS_NANOS,
+    tipHeight: state.loadTip,
+  });
+  if (!stepped.ok) return { ok: false, reason: stepped.reason || 'hash_owed' };
+  state.owedIn = stepped.rows;
+  state.acceptedSeries = stepped.acceptedSeries;
+  state.flux = appendFluxBlock(state.flux, block);
+  state.mtp.push(ts);
+  if (state.mtp.length > MTP_WINDOW) state.mtp.splice(0, state.mtp.length - MTP_WINDOW);
+  state.prevLink = link;
+  state.prevDecoded = decoded;
+  state.prevHeight = height;
+  return null;
+}
+
+function finishLoaded(begun) {
+  if (begun.empty) return { ok: true };
+  if (!begun.ok) return begun;
+  const state = begun.state;
+  if (!state.sawCheckpoint) return { ok: false, reason: 'checkpoint' };
+  return {
+    ok: true,
+    owedRows: state.owedIn,
+    acceptedSeries: state.acceptedSeries,
+    spentIds: [...state.spentB],
+    flux: state.flux,
+    genesisMs: state.genesisMs,
+  };
+}
+
+export function verifyLoadedChain(blocks, opts = {}) {
+  const begun = beginLoaded(blocks, opts);
+  if (!begun.ok || begun.empty) return finishLoaded(begun);
+  const { list, state } = begun;
+  for (let i = state.start; i < list.length; i += 1) {
+    const stop = stepLoaded(state, list, i);
+    if (stop) return stop;
+  }
+  return finishLoaded(begun);
+}
+
+/** Same load rules as verifyLoadedChain. Yields once per block so the event loop can log progress and serve timers. */
+export async function verifyLoadedChainAsync(blocks, opts = {}) {
+  const begun = beginLoaded(blocks, opts);
+  if (!begun.ok || begun.empty) return finishLoaded(begun);
+  const { list, state } = begun;
+  const total = list.length;
+  const stride = Math.max(1, Math.ceil((total - state.start) / 8));
+  for (let i = state.start; i < total; i += 1) {
+    await new Promise((resolve) => { setImmediate(resolve); });
+    if (!opts.quiet) {
+      const n = i + 1;
+      if (i === state.start || n === total || (n - state.start) % stride === 0) {
+        process.stderr.write(`book-replay ${n}/${total}\n`);
+      }
+    }
+    if (typeof opts.onProgress === 'function') opts.onProgress({ height: i + 1, total });
+    const stop = stepLoaded(state, list, i);
+    if (stop) return stop;
+  }
+  return finishLoaded(begun);
 }
 
 /**

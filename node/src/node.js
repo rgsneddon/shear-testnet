@@ -162,7 +162,7 @@ export async function startNode({
     };
   }
   fs.mkdirSync(dataDir, { recursive: true });
-  const store = createStore(dataDir, { fastSync: !!fastSync });
+  const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true });
   store.reserveVault = store.reserveVault || emptyVault();
   store.oracleSnapshot = loadOracleSnapshot({ dataDir });
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });

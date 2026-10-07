@@ -959,8 +959,7 @@ export function replayHashOwed(blocks, { unit = null, units = null } = {}) {
     });
     if (!next.ok) return { ok: false, reason: next.reason || 'hash_owed', rows: [], accepted: [], snaps: [] };
     rows = next.rows;
-    accepted.push(next.acceptedUnits);
-    snaps.push({ rows, accepted: accepted.slice() });
+    snaps.push({ rows, seriesEnd: accepted.length });
   }
   return { ok: true, reason: '', rows, accepted, snaps };
 }
@@ -991,12 +990,14 @@ export function advanceHashOwed({
   const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
   if (!cb || !sameHashLedger(cb, settled)) return { ok: false, reason: 'hash_owed' };
   const acceptedUnits = settled.acceptedUnits == null ? 0n : settled.acceptedUnits;
+  const series = Array.isArray(acceptedSeries) ? acceptedSeries : [];
+  series.push(acceptedUnits);
   return {
     ok: true,
     reason: '',
     rows: settledOwedRows(settled),
     acceptedUnits,
-    acceptedSeries: [...acceptedSeries, acceptedUnits],
+    acceptedSeries: series,
     settled,
   };
 }
