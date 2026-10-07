@@ -2,6 +2,7 @@
  * shear-enc-v1: packed txs and leaves as hash bytes, not JSON.
  * Magic 12 ASCII + type u8 + body. Digest is SHA-256 of the packed buffer.
  */
+import { createHash } from 'node:crypto';
 import { sha256 } from './shear_hash.js';
 import { hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
@@ -162,42 +163,106 @@ export function unpackShareV5(packed) {
 }
 
 /** Credited share bits travel with the share. A v5 frame has no bits and pays the floor.
- * Optional trailing byte: 0 proved on this block's parent header, 1 on that parent's parent.
- * Absent means a row packed before that binding existed. */
+ * v12 work frames always carry the header slot: 0 on this block's parent, 1 on that parent's parent.
+ * A 42-byte body is not a work share. */
 export function packShareWork({ noteCommit, nonce, lz = 0, shareBits = 0, proofSlot } = {}) {
   const commit = Buffer.isBuffer(noteCommit) ? noteCommit : Buffer.from(noteCommit);
   if (commit.length !== 32) throw new Error('note_commit must be 32 bytes');
   const bits = Math.max(0, Math.min(255, Math.floor(Number(shareBits) || 0)));
+  const slot = Number(proofSlot);
+  if (proofSlot == null || proofSlot === '' || (slot !== 0 && slot !== 1)) {
+    throw new Error('bad_share_work');
+  }
   const parts = [
     commit,
     u64le(nonce || 0),
-    Buffer.from([Number(lz) & 0xff, bits & 0xff]),
+    Buffer.from([Number(lz) & 0xff, bits & 0xff, slot]),
   ];
-  const slot = Number(proofSlot);
-  if (proofSlot != null && proofSlot !== '' && (slot === 0 || slot === 1)) {
-    parts.push(Buffer.from([slot]));
-  }
   return Buffer.concat([ENC_MAGIC, Buffer.from([ENC_SHARE_WORK]), Buffer.concat(parts)]);
 }
 
 export function unpackShareWork(packed) {
   const { type, body } = unpackType(packed);
   if (type !== ENC_SHARE_WORK) throw new Error('bad_share_work');
-  if (body.length !== SHARE_WORK_BODY_LEN && body.length !== SHARE_WORK_BODY_LEN + 1) {
-    throw new Error('bad_share_work');
-  }
-  const row = {
+  if (body.length !== SHARE_WORK_BODY_LEN + 1) throw new Error('bad_share_work');
+  const slot = body[SHARE_WORK_BODY_LEN];
+  if (slot !== 0 && slot !== 1) throw new Error('bad_share_work');
+  return {
     noteCommit: Buffer.from(body.subarray(0, 32)),
     nonce: body.readBigUInt64LE(32),
     lz: body[40],
     shareBits: body[41],
+    proofSlot: slot,
   };
-  if (body.length === SHARE_WORK_BODY_LEN + 1) {
-    const slot = body[42];
-    if (slot !== 0 && slot !== 1) throw new Error('bad_share_work');
-    row.proofSlot = slot;
+}
+
+function slotRootBytes(v) {
+  if (v == null || v === '') return null;
+  if (Buffer.isBuffer(v) && v.length === 32) return Buffer.from(v);
+  if (v instanceof Uint8Array && v.length === 32) return Buffer.from(v);
+  if (typeof v === 'string' && /^[0-9a-fA-F]{64}$/.test(v)) return Buffer.from(v, 'hex');
+  if (v && typeof v === 'object' && typeof v.$hex === 'string' && /^[0-9a-fA-F]{64}$/.test(v.$hex)) {
+    return Buffer.from(v.$hex, 'hex');
   }
-  return row;
+  if (v && typeof v === 'object' && v.type === 'Buffer' && Array.isArray(v.data) && v.data.length === 32) {
+    return Buffer.from(v.data);
+  }
+  return null;
+}
+
+/** sha256 over the packed frames in stored order. The empty batch has a root.
+ * Frames are the disk form: a dest with no noteCommit still packs as work when it has bits. */
+export function shareSlotRoot(shares = []) {
+  const list = (Array.isArray(shares) ? shares : []).map(shareForPack);
+  const frames = packShareBatch(list);
+  const h = createHash('sha256');
+  h.update(Buffer.from('shareslot1'));
+  const n = Buffer.alloc(4);
+  n.writeUInt32LE(frames.length);
+  h.update(n);
+  for (const frame of frames) {
+    if (frame[ENC_MAGIC.length] === ENC_SHARE_WORK) {
+      const bodyLen = frame.length - ENC_MAGIC.length - 1;
+      if (bodyLen !== SHARE_WORK_BODY_LEN + 1) throw new Error('bad_share_work');
+      const slot = frame[frame.length - 1];
+      if (slot !== 0 && slot !== 1) throw new Error('bad_share_work');
+    }
+    const len = Buffer.alloc(4);
+    len.writeUInt32LE(frame.length);
+    h.update(len);
+    h.update(frame);
+  }
+  return h.digest();
+}
+
+/** Empty when the coinbase has no root. Null when the field is present and not 32 bytes. */
+export function shareSlotDigestSuffix(tx) {
+  if (!tx || tx.shareSlotRoot == null || tx.shareSlotRoot === '') return Buffer.alloc(0);
+  const root = slotRootBytes(tx.shareSlotRoot);
+  if (!root) return null;
+  return Buffer.concat([Buffer.from('shareslot1'), root]);
+}
+
+/**
+ * Null when the committed root matches the batch.
+ * A buried pruned block has no frames left, so a sealed root is not recomputed.
+ * An empty batch with no root is an older empty round.
+ */
+export function shareSlotCommitment(tx, shares, { samplesPruned = false, buried = false } = {}) {
+  const list = Array.isArray(shares) ? shares : [];
+  const rawPresent = !!(tx && tx.shareSlotRoot != null && tx.shareSlotRoot !== '');
+  const committed = rawPresent ? slotRootBytes(tx.shareSlotRoot) : null;
+  if (rawPresent && !committed) return 'share_slot';
+  if (samplesPruned && buried && list.length === 0) return null;
+  if (!list.length) {
+    if (!committed) return null;
+    if (!committed.equals(shareSlotRoot([]))) return 'share_slot';
+    return null;
+  }
+  let expect;
+  try { expect = shareSlotRoot(list); } catch { return 'share_slot'; }
+  if (!committed || !committed.equals(expect)) return 'share_slot';
+  return null;
 }
 
 export function packShareBatch(shares = []) {
@@ -369,8 +434,8 @@ export function unpackShareBatch(rows = []) {
       lz: Number(s.lz || 0) & 0xff,
       viewTag: s.viewTag || null,
     };
-    // In-memory selection must keep the parent binding. The packed wire form
-    // does not carry it; the pool re-checks it against the sealed parent.
+    // In-memory selection keeps the parent binding. A work frame also carries
+    // proofSlot, and the coinbase shareSlotRoot commits that byte.
     if (s.verifiedHeader) row.verifiedHeader = s.verifiedHeader;
     if (s.shareBits != null && s.shareBits !== '') row.shareBits = Number(s.shareBits);
     else if (s.creditedShareBits != null && s.creditedShareBits !== '') {

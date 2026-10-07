@@ -472,6 +472,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /AMOUNT=confidential/);
     assert.match(fp, /DUMMY_OUTS=1/);
     assert.match(fp, /ENC_SHARE=v5\+work7/);
+    assert.match(fp, /SHARE_SLOT=bound-v1/);
     assert.match(fp, /SHARE_UNITS=2\^bits/);
     assert.match(fp, /SHARE_CREDIT=nonce-hi-le/);
     assert.match(fp, /SHARE_BMAX=28/);

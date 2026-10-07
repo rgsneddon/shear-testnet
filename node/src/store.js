@@ -896,9 +896,11 @@ export function createStore(dir, {
           cold.push({ header, nonce });
         };
         const slot = s?.proofSlot;
+        const workRow = (s?.shareBits != null && s.shareBits !== '')
+          || (s?.creditedShareBits != null && s.creditedShareBits !== '');
         if (slot === 1 || slot === '1') queue(priorHeader);
         else if (slot === 0 || slot === '0') queue(parentHeader);
-        else {
+        else if (!workRow) {
           queue(parentHeader);
           queue(priorHeader);
         }

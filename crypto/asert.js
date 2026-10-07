@@ -328,6 +328,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'AMOUNT=confidential',
     'DUMMY_OUTS=1',
     'ENC_SHARE=v5+work7',
+    'SHARE_SLOT=bound-v1',
     'SHARE_UNITS=2^bits',
     'SHARE_BIND=rx+noteCommit',
     'SHARE_CREDIT=nonce-hi-le',

@@ -39,7 +39,7 @@ import {
   verifyBlock,
 } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
-import { sealCoinbaseNote, addExcess } from '../../crypto/note.js';
+import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
 
 function minerDest() {
@@ -66,8 +66,8 @@ describe('v12 PROP pays share work', () => {
     const lowBits = SHARE_FLOOR_BITS;
     const highBits = SHARE_FLOOR_BITS + 4;
     const batch = [
-      { dest: low, nonce: nonceWithShareTarget(1n, lowBits), lz: lowBits, shareBits: lowBits },
-      { dest: high, nonce: nonceWithShareTarget(2n, highBits), lz: highBits, shareBits: highBits },
+      { dest: low, nonce: nonceWithShareTarget(1n, lowBits), lz: lowBits, shareBits: lowBits, proofSlot: 0 },
+      { dest: high, nonce: nonceWithShareTarget(2n, highBits), lz: highBits, shareBits: highBits, proofSlot: 0 },
     ];
     // Omitted packed claim is the floor only. The nonce byte is still the floor,
     // so these rows credit 2^floor and the wire stays a v5 body.
@@ -186,12 +186,14 @@ describe('v12 PROP pays share work', () => {
       nonce: nonceWithShareTarget(4n, heavyBits),
       lz: 8,
       shareBits: heavyBits,
+      proofSlot: 0,
     };
     const floor = {
       dest: low,
       nonce: nonceWithShareTarget(5n, SHARE_FLOOR_BITS),
       lz: SHARE_FLOOR_BITS,
       shareBits: SHARE_FLOOR_BITS,
+      proofSlot: 0,
     };
     for (const row of [heavy, floor]) {
       assert.equal(rememberLiveSharePow(parent, row.nonce, {
@@ -232,7 +234,7 @@ describe('v12 PROP pays share work', () => {
     const dest = minerDest();
     const meet = SHARE_FLOOR_BITS + 2;
     const miss = meet + 4;
-    const share = { dest, nonce: nonceWithShareTarget(3n, meet), lz: 0, shareBits: meet };
+    const share = { dest, nonce: nonceWithShareTarget(3n, meet), lz: 0, shareBits: meet, proofSlot: 0 };
     const nc = noteCommitOfShare(share);
     const rx = rxForBits(nc, meet, miss);
     assert.ok(rx, 'sha256 search finds a bound hash at the claimed width');
@@ -322,6 +324,7 @@ describe('v12 PROP pays share work', () => {
           nonce: nonceWithShareTarget(nonce, bits[i]),
           lz: bits[i],
           shareBits: bits[i],
+          proofSlot: 0,
         });
         nonce += 1n;
       }
@@ -408,7 +411,12 @@ describe('v12 PROP pays share work', () => {
       potShares: workPays,
       potNanos: subsidy,
       carryNanos: 0,
+      shareBatch: batch,
     });
+    // The ledger stays the settlement of the share batch. The hash note the
+    // audit sums is the caller's total, one note for every credited unit.
+    tx.vout = (tx.vout || []).filter((o) => String(o?.kind || '') !== 'hash');
+    tx.excess = excessOf(tx.vout);
     const sealedHash = sealCoinbaseNote(hashNanos, {
       dest20: hash20FromAddress(low),
       kind: 'hash',

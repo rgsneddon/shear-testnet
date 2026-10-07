@@ -53,6 +53,7 @@ function shareAt(dest, low, bits) {
     lz: bits,
     shareBits: bits,
     creditedShareBits: bits,
+    proofSlot: 0,
   };
 }
 

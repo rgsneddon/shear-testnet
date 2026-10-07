@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MAX_SHARES_PER_BLOCK } from './asert.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from './pack.js';
-import { selectBlockShares, shareInclusionTie } from './share_batch.js';
+import { nonceWithShareTarget, selectBlockShares } from './share_batch.js';
 import { writeChainSegments, readChainSegments, segmentFileName } from './chainbin.js';
 import { encodeHeader } from './header.js';
 import { EMPTY_ROOT } from './merkle.js';
@@ -34,22 +34,21 @@ function fakeBlock(height) {
 }
 
 describe('v11 65536 lean share path', () => {
-  it('keeps the heavier share, not the lower dest', () => {
-    const weakLow = { noteCommit: Buffer.alloc(32, 1), nonce: 1n, lz: 8 };
-    const strongHigh = { noteCommit: Buffer.alloc(32, 250), nonce: 1n, lz: 12 };
-    const kept = selectBlockShares([weakLow, strongHigh], 1);
+  it('over the count, the first turn is the lower noteCommit, not the heavier share', () => {
+    const weakLow = { noteCommit: Buffer.alloc(32, 1), nonce: nonceWithShareTarget(1n, 8), lz: 8 };
+    const strongHigh = { noteCommit: Buffer.alloc(32, 250), nonce: nonceWithShareTarget(1n, 12), lz: 12 };
+    const kept = selectBlockShares([strongHigh, weakLow], 1);
     assert.equal(kept.length, 1);
-    assert.equal(kept[0].lz, 12);
-    assert.equal(kept[0].noteCommit[0], 250);
+    assert.equal(kept[0].noteCommit[0], 1);
+    assert.equal(kept[0].lz, 8);
   });
 
-  it('breaks equal weight on the share tie, not on dest order', () => {
-    const low = { noteCommit: Buffer.alloc(32, 1), nonce: 1n, lz: 8 };
-    const high = { noteCommit: Buffer.alloc(32, 9), nonce: 1n, lz: 8 };
-    const kept = selectBlockShares([low, high], 1);
-    const want = shareInclusionTie(low).compare(shareInclusionTie(high)) <= 0 ? low : high;
-    assert.equal(kept[0].noteCommit[0], want.noteCommit[0]);
-    assert.notEqual(kept[0].noteCommit[0], 0);
+  it('breaks a count tie on noteCommit order, not on a share-hash tie', () => {
+    const low = { noteCommit: Buffer.alloc(32, 1), nonce: nonceWithShareTarget(1n, 8), lz: 8 };
+    const high = { noteCommit: Buffer.alloc(32, 9), nonce: nonceWithShareTarget(1n, 8), lz: 8 };
+    const kept = selectBlockShares([high, low], 1);
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0].noteCommit[0], 1);
   });
 
   it('round-trips packed frames and still reads a legacy JSON array', () => {

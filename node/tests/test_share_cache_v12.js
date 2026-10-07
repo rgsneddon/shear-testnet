@@ -63,6 +63,7 @@ describe('v12 share cache binds dest and bits', () => {
         nonce: nonceWithShareTarget(BigInt(i + 1), bits),
         lz: 0,
         shareBits: bits,
+        proofSlot: 0,
       };
       const nc = noteCommitOfShare(share);
       const rx = rxForBits(nc, bits, bits + 1);
@@ -99,7 +100,7 @@ describe('v12 share cache binds dest and bits', () => {
           for (const claim of [row.bits, row.bits + 1, 52]) {
             const stolen = verifyShareBatch({
               parentHeader: parent,
-              shares: [{ dest: attacker, nonce: row.share.nonce, lz: claim, shareBits: claim }],
+              shares: [{ dest: attacker, nonce: row.share.nonce, lz: claim, shareBits: claim, proofSlot: 0 }],
               skipPow,
             });
             assert.equal(stolen.ok, false, `steal ${row.bits} ${claim} skip=${skipPow}`);
@@ -179,6 +180,7 @@ describe('v12 share cache binds dest and bits', () => {
         nonce: row.share.nonce.toString(),
         lz: 0,
         shareBits: row.bits,
+        proofSlot: 0,
         noteCommit: row.nc.toString('hex'),
       }));
       stashSharePow(row.header, row.rx);
@@ -198,7 +200,7 @@ describe('v12 share cache binds dest and bits', () => {
       stashSharePow(row.header, stolenMiss);
       const moved = verifyShareBatch({
         parentHeader: parent,
-        shares: [{ dest: attackers[0], nonce: row.share.nonce, lz: 0, shareBits: row.bits }],
+        shares: [{ dest: attackers[0], nonce: row.share.nonce, lz: 0, shareBits: row.bits, proofSlot: 0 }],
       });
       assert.equal(moved.ok, false);
       assert.equal(moved.reason, 'share_pow');

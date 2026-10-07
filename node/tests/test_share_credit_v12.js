@@ -25,7 +25,9 @@ import {
   unitsForShare,
   verifyShareBatch,
 } from '../../crypto/share_batch.js';
-import { GENESIS_PREV, buildTemplate, potSharesFromBatch, verifyBlock } from '../src/chain.js';
+import { merkleRoot } from '../../crypto/merkle.js';
+import { shareSlotRoot } from '../../crypto/pack.js';
+import { GENESIS_PREV, buildTemplate, digestTx, potSharesFromBatch, verifyBlock } from '../src/chain.js';
 
 function minerDest() {
   const id = newIdentity();
@@ -42,9 +44,16 @@ function parentHeader() {
   });
 }
 
-/** A dest-bound digest that meets `meet` and misses `miss`, without ShearHash. */
+/**
+ * A dest-bound digest that meets `meet` and misses `miss`, without ShearHash.
+ * A one-bit band at width b lands about once in 2^(b+1) draws. Eight expected
+ * hits keeps a miss under a percent at every width this file uses.
+ */
 function rxForBits(noteCommit, meet, miss) {
-  const limit = meet <= 16 ? 250_000 : 20_000;
+  const width = Math.max(1, Math.floor(Number(meet) || 1));
+  const band = miss == null ? width : width + 1;
+  const span = band >= 31 ? Number.MAX_SAFE_INTEGER : (2 ** band);
+  const limit = Math.min(2_000_000, Math.max(20_000, span * 8));
   for (let i = 0; i < limit; i += 1) {
     const rx = Buffer.alloc(32);
     rx.writeUInt32LE(i, 0);
@@ -64,6 +73,7 @@ function shareAt(dest, low, bits) {
     lz: bits,
     shareBits: bits,
     creditedShareBits: bits,
+    proofSlot: 0,
   };
 }
 
@@ -265,13 +275,30 @@ describe('v12 share credit is the nonce high byte', () => {
       assert.equal(res.ok, true, `h=${height} ${res.reason}`);
       return { block, hash: res.hash, pow };
     }
+    function restamp(block, shares) {
+      const rows = shares.map((row) => ({ ...row, noteCommit: noteCommitOfShare(row) }));
+      block.shareBatch = rows;
+      block.txs[0].shareSlotRoot = shareSlotRoot(rows);
+      const decoded = decodeHeader(block.header);
+      decoded.merkleRoot = merkleRoot(block.txs.map(digestTx));
+      block.header = encodeHeader(decoded);
+    }
     const g = sealEmpty(null, null, 1, genesisMs, 1);
     const mid = sealEmpty(g.block, g.hash, 2, genesisMs + 90_000, 2);
     const childNow = genesisMs + 180_000;
     const child = sealEmpty(mid.block, mid.hash, 3, childNow, 3);
     child.block.samplesPruned = true;
-    child.block.shareBatch = [shareAt(dest, 1n, 0)];
     const buriedPrev = viewOf(mid.block, mid.hash, child.block.height + SAMPLE_PRUNE_CONFIRMATIONS);
+    const swapped = [shareAt(dest, 1n, 0)];
+    child.block.shareBatch = swapped;
+    const unbound = verifyBlock(child.block, buriedPrev, {
+      trustedPowHash: child.pow,
+      skipSharePow: true,
+      genesisMs,
+    });
+    assert.equal(unbound.ok, false);
+    assert.equal(unbound.reason, 'share_slot');
+    restamp(child.block, swapped);
     const buried = verifyBlock(child.block, buriedPrev, {
       trustedPowHash: child.pow,
       skipSharePow: true,
@@ -279,7 +306,7 @@ describe('v12 share credit is the nonce high byte', () => {
     });
     assert.equal(buried.ok, false);
     assert.equal(buried.reason, 'share_target');
-    child.block.shareBatch = [shareAt(dest, 4n, SHARE_FLOOR_BITS)];
+    restamp(child.block, [shareAt(dest, 4n, SHARE_FLOOR_BITS)]);
     clearLiveSharePow();
     const unproven = verifyBlock(child.block, buriedPrev, {
       trustedPowHash: child.pow,

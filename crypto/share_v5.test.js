@@ -57,7 +57,7 @@ describe('ENC_SHARE v5', () => {
     }), true);
     const v = verifyShareBatch({
       parentHeader: Buffer.alloc(128),
-      shares: [{ ...wire, nonce: stampedNonce.toString(), shareBits: 8 }],
+      shares: [{ ...wire, nonce: stampedNonce.toString(), shareBits: 8, proofSlot: 0 }],
       skipPow: true,
     });
     assert.equal(v.ok, true, v.reason);

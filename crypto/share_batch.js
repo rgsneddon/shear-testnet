@@ -711,10 +711,12 @@ function proveShareOn(headerBuf, { nonce, nk, nc, ncHex, claimedBits, skipPow })
 
 /**
  * Recompute ShearHash-v3 on the frozen parent job header.
- * A share that misses that header may verify against priorHeader, the
- * parent of the parent, for one step. Identity is that header plus the
- * nonce. The same nonce on both headers is two units. The same header and
- * nonce twice is dup_share. excludeNonces may be bare nonces or work keys.
+ * A work row names its header with proofSlot. 0 is parentHeader. 1 is
+ * priorHeader, the parent of that parent, for one step. A work row with no
+ * slot is share_slot and is not tried on both headers. Identity is that
+ * header plus the nonce. The same nonce on both headers is two units. The
+ * same header and nonce twice is dup_share. excludeNonces may be bare
+ * nonces or work keys. Verification does not write the slot back.
  * Credit is the nonce high byte. A packed claim that disagrees, or a byte
  * outside [floor, B_MAX], is share_target and is not hashed. A dest-bound
  * digest that misses that byte is share_pow. A cache hit at that exact dest
@@ -778,12 +780,15 @@ export function verifyShareBatch({
     const wantSlot = s.proofSlot === 1 || s.proofSlot === '1'
       ? 1
       : (s.proofSlot === 0 || s.proofSlot === '0' ? 0 : null);
+    const workRow = (s.shareBits != null && s.shareBits !== '')
+      || (s.creditedShareBits != null && s.creditedShareBits !== '');
+    if (workRow && wantSlot == null) return { ok: false, reason: 'share_slot' };
     const tries = [];
     if (wantSlot === 1) {
       if (priorBuf) tries.push([priorBuf, 1]);
     } else if (wantSlot === 0) {
       tries.push([job, 0]);
-    } else {
+    } else if (!workRow) {
       tries.push([job, 0]);
       if (priorBuf) tries.push([priorBuf, 1]);
     }
@@ -817,9 +822,6 @@ export function verifyShareBatch({
       return { ok: false, reason: lastFail.reason || 'share_pow' };
     }
     seenWork.add(chosen.key);
-    if (s && typeof s === 'object') s.proofSlot = chosen.slot;
-    const src = s && s._src;
-    if (src && typeof src === 'object') src.proofSlot = chosen.slot;
     const lz = chosen.attempt.lz;
     // Historical persist dropped dest/noteCommit and kept nonce+lz. POW still binds
     // the share; hasher identity is the sealed aLeaf. New rows keep noteCommit.

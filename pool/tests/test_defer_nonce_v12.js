@@ -163,18 +163,31 @@ describe('v12 defer-window identity', () => {
     const bits = SHARE_FLOOR_BITS;
     const parentRow = pinShare(shareOf(dest, parent, 11, bits));
     const priorRow = pinShare(shareOf(dest, prior, 11, bits));
-    const both = verifyShareBatch({
+    const unmarked = verifyShareBatch({
       parentHeader: parent,
       priorHeader: prior,
       shares: [parentRow, priorRow],
+      skipPow: true,
+    });
+    assert.equal(unmarked.ok, false);
+    assert.equal(unmarked.reason, 'share_slot');
+    assert.equal(parentRow.proofSlot, undefined);
+    assert.equal(priorRow.proofSlot, undefined);
+    const both = verifyShareBatch({
+      parentHeader: parent,
+      priorHeader: prior,
+      shares: [
+        { ...parentRow, proofSlot: 0 },
+        { ...priorRow, proofSlot: 1 },
+      ],
       skipPow: true,
     });
     assert.equal(both.ok, true, both.reason);
     assert.equal(both.shares.length, 2);
     const slots = both.shares.map((s) => s.proofSlot).sort();
     assert.deepEqual(slots, [0, 1]);
-    assert.equal(parentRow.proofSlot === 0 || parentRow.proofSlot === 1, true);
-    assert.notEqual(parentRow.proofSlot, priorRow.proofSlot);
+    assert.equal(parentRow.proofSlot, undefined);
+    assert.equal(priorRow.proofSlot, undefined);
 
     const marked = verifyShareBatch({
       parentHeader: parent,
@@ -223,8 +236,8 @@ describe('v12 defer-window identity', () => {
       parentHeader: headerFill(3),
       priorHeader: headerFill(4),
       shares: [
-        shareOf(dest, headerFill(3), 4, bits),
-        shareOf(dest, headerFill(3), 4, bits),
+        { ...shareOf(dest, headerFill(3), 4, bits), proofSlot: 0 },
+        { ...shareOf(dest, headerFill(3), 4, bits), proofSlot: 0 },
       ],
       skipPow: true,
     });
@@ -236,11 +249,12 @@ describe('v12 defer-window identity', () => {
       parentHeader: parent,
       priorHeader: prior,
       excludeNonces: paid,
-      shares: [{ ...priorRow }],
+      shares: [{ ...priorRow, proofSlot: 1 }],
       skipPow: true,
     });
     assert.equal(otherHeader.ok, true, otherHeader.reason);
     assert.equal(otherHeader.shares[0].proofSlot, 1);
+    assert.equal(priorRow.proofSlot, undefined);
     const sameHeader = verifyShareBatch({
       parentHeader: parent,
       priorHeader: prior,
@@ -254,7 +268,7 @@ describe('v12 defer-window identity', () => {
       parentHeader: parent,
       priorHeader: prior,
       excludeNonces: new Set([BigInt(parentRow.nonce).toString()]),
-      shares: [{ ...priorRow }],
+      shares: [{ ...priorRow, proofSlot: 1 }],
       skipPow: true,
     });
     assert.equal(bare.ok, false);
@@ -267,19 +281,17 @@ describe('v12 defer-window identity', () => {
     assert.equal(keys.has(shareWorkKey(prior, priorRow.nonce)), false);
   });
 
-  it('keeps a 42-byte share body and accepts only slot 0 or 1', () => {
+  it('rejects a 42-byte work body and accepts only slot 0 or 1', () => {
     const dest = destsOf(1)[0];
     const row = shareOf(dest, headerFill(5), 9, SHARE_FLOOR_BITS);
-    const plain = packShareWork({
+    assert.throws(() => packShareWork({
       noteCommit: row.noteCommit,
       nonce: row.nonce,
       lz: row.lz,
       shareBits: row.shareBits,
-    });
-    assert.equal(plain.length, ENC_MAGIC.length + 1 + SHARE_WORK_BODY_LEN);
-    const opened = unpackShareWork(plain);
-    assert.equal(opened.proofSlot, undefined);
-    assert.equal(opened.nonce, BigInt(row.nonce));
+    }), /bad_share_work/);
+    assert.throws(() => packShareBatchBytes([row]), /bad_share_work/);
+    const stamped = [];
     for (const slot of [0, 1]) {
       const packed = packShareWork({
         noteCommit: row.noteCommit,
@@ -288,18 +300,24 @@ describe('v12 defer-window identity', () => {
         shareBits: row.shareBits,
         proofSlot: slot,
       });
-      assert.equal(packed.length, plain.length + 1);
+      assert.equal(packed.length, ENC_MAGIC.length + 1 + SHARE_WORK_BODY_LEN + 1);
       assert.equal(unpackShareWork(packed).proofSlot, slot);
       const round = unpackShareBatchBytes(packShareBatchBytes([{ ...row, proofSlot: slot }]));
       assert.equal(round.length, 1);
       assert.equal(round[0].proofSlot, slot);
       assert.equal(BigInt(round[0].nonce), BigInt(row.nonce));
+      stamped.push(packed);
     }
-    const absent = unpackShareBatchBytes(packShareBatchBytes([row]));
-    assert.equal(absent[0].proofSlot, undefined);
-    const bad = Buffer.concat([plain, Buffer.from([2])]);
+    const short = Buffer.concat([
+      ENC_MAGIC,
+      Buffer.from([stamped[0][ENC_MAGIC.length]]),
+      stamped[0].subarray(ENC_MAGIC.length + 1, stamped[0].length - 1),
+    ]);
+    assert.equal(short.length, ENC_MAGIC.length + 1 + SHARE_WORK_BODY_LEN);
+    assert.throws(() => unpackShareWork(short), /bad_share_work/);
+    const bad = Buffer.concat([short, Buffer.from([2])]);
     assert.throws(() => unpackShareWork(bad), /bad_share_work/);
-    const extra = Buffer.concat([plain, Buffer.from([0, 0])]);
+    const extra = Buffer.concat([stamped[0], Buffer.from([0])]);
     assert.throws(() => unpackShareWork(extra), /bad_share_work/);
   });
 

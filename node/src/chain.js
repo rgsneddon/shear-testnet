@@ -87,7 +87,15 @@ import {
   asU8,
   pointFrom,
 } from '../../crypto/note.js';
-import { packTx, packDigest, unpackShareBatch, u64le } from '../../crypto/pack.js';
+import {
+  packTx,
+  packDigest,
+  unpackShareBatch,
+  u64le,
+  shareSlotRoot,
+  shareSlotDigestSuffix,
+  shareSlotCommitment,
+} from '../../crypto/pack.js';
 import {
   freshCreditsFromShares,
   freshForBlock,
@@ -255,13 +263,15 @@ export function digestTx(tx) {
   // carry changes the merkle root.
   const carry = tx?.coinbase ? canonicalCarry(tx) : 0;
   const owedSuffix = tx?.coinbase ? hashOwedDigestSuffix(tx) : Buffer.alloc(0);
-  if (tx?.coinbase && owedSuffix == null) {
+  const slotSuffix = tx?.coinbase ? shareSlotDigestSuffix(tx) : Buffer.alloc(0);
+  if (tx?.coinbase && (owedSuffix == null || slotSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length))) {
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
+    if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
     return packDigest(Buffer.concat(parts));
   }
   return packDigest(packed);
@@ -816,6 +826,7 @@ export function buildTemplate({
       : { address: dest, nanos: split.reserve, kind: 'reserve-fee' });
   }
   cb.excess = excessOf(cb.vout);
+  cb.shareSlotRoot = shareSlotRoot(batch);
   const parentPubs = Array.isArray(parentFluxset)
     ? parentFluxset
     : fluxsetFromBlocks(parentBlocks || (prevBlock ? [prevBlock] : [])).pubs;
@@ -985,12 +996,14 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false, priorHeade
       try {
         const nonce = BigInt(s?.nonce || 0);
         const slot = s?.proofSlot;
+        const workRow = (s?.shareBits != null && s.shareBits !== '')
+          || (s?.creditedShareBits != null && s.creditedShareBits !== '');
         if (slot === 1 || slot === '1') {
           if (prior) shareHeaders.push(setNonce(prior, nonce));
           else shareHeaders.push(setNonce(parent, nonce));
         } else if (slot === 0 || slot === '0') {
           shareHeaders.push(setNonce(parent, nonce));
-        } else {
+        } else if (!workRow) {
           shareHeaders.push(setNonce(parent, nonce));
           if (prior) shareHeaders.push(setNonce(prior, nonce));
         }
@@ -1208,6 +1221,22 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return { ok: false, reason: 'prev' };
+  // The slot byte is consensus. Check it before header work so a flipped
+  // trailer is share_slot and does not depend on proof-of-work. An unburied
+  // pruned block keeps the samples_pruned reason from the later check.
+  const slotHeight = Number(block.height || (Number(prev?.height || 0) + 1));
+  const slotParent = Number(prev?.height || 0);
+  const slotBurial = opts.loadReplay === true
+    ? (Number(opts.tipHeight) || slotParent)
+    : slotParent;
+  const slotPrunedEarly = !!block.samplesPruned && !shouldPruneSamples(slotHeight, slotBurial);
+  if (!slotPrunedEarly && Array.isArray(block.txs) && block.txs[0]?.coinbase) {
+    const slotReason = shareSlotCommitment(block.txs[0], block.shareBatch || [], {
+      samplesPruned: !!block.samplesPruned,
+      buried: shouldPruneSamples(slotHeight, slotBurial),
+    });
+    if (slotReason) return { ok: false, reason: slotReason };
+  }
   // Local pool already hashed this header off-thread and passes trustedPowHash.
   // P2P omits that field. It stashes a worker ShearHash, then this branch
   // still checks the target. A missing stash hashes here (local mine / tests).
@@ -1394,16 +1423,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
     if (confidential) {
-      const sealedLeaves = Array.isArray(block.aLeaves) ? block.aLeaves : [];
-      const fromSealed = sealedLeaves.map((l) => {
-        const d20 = l.dest20 ? Buffer.from(l.dest20) : Buffer.alloc(20);
-        let nc = l.noteCommit ? Buffer.from(l.noteCommit) : null;
-        if (!nc || nc.length !== 32) nc = noteCommitOfDest20(d20);
-        return { ...l, dest20: d20, noteCommit: nc, count: Number(l.count) || 1 };
-      });
+      // A proven batch supplies its own leaves. Disk aLeaves keep dest20 and
+      // drop noteCommit, so a load that did not re-prove must use the share
+      // batch that is still on the block. That is the same witness the pot was sealed from.
       const leaves = (shareLeaves && shareLeaves.length)
         ? shareLeaves
-        : (shareBatch.length && fromSealed.length ? fromSealed : aLeavesFromShares(shareBatch));
+        : aLeavesFromShares(shareBatch);
       const hasherNcs = new Set(leaves.map((l) => ncHex(l.noteCommit)));
       const hinted = (poolDest && isDestAddress(poolDest))
         ? poolDest

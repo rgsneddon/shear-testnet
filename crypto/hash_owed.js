@@ -1056,6 +1056,9 @@ export function hashLedgerIdle(settled, freshCount = 0) {
 /** Copy the root onto a compacted coinbase. Rows stay off the wire. */
 export function compactHashLedger(tx, row) {
   if (!tx || !row) return row;
+  const slotRoot = rootBytes(tx.shareSlotRoot);
+  if (slotRoot) row.shareSlotRoot = slotRoot;
+  else delete row.shareSlotRoot;
   delete row.hashOwed;
   delete row.hashOwedRest;
   delete row.hashOwedLocal;
