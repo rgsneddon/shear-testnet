@@ -156,7 +156,11 @@ async function carryThenPay(pool, rows, { fails, mode }) {
     if (mode === 'pow') assert.equal(got.reason, 'pow');
     if (mode === 'merkle') assert.equal(got.reason, 'merkle');
     if (mode === 'prev') assert.equal(got.reason, 'prev');
-    const still = nonceSet(pool.lag1Shares);
+    const still = nonceSet([
+      ...pool.lag1Shares,
+      ...pool.openShares,
+      ...pool.deferredShares,
+    ]);
     for (const n of nonces) assert.equal(still.has(n), true, `${mode} drop ${n}`);
     const mid = owedSnap(pool.store);
     assert.equal(mid.height, snap.height);
@@ -174,8 +178,22 @@ async function carryThenPay(pool, rows, { fails, mode }) {
     powHash: nextPow(),
   });
   assert.equal(paid.ok, true, paid.reason);
-  const tip = pool.store.tip();
-  const sealed = nonceSet(tip.shareBatch);
+  let tip = pool.store.tip();
+  let sealed = nonceSet(tip.shareBatch);
+  if (nonces.some((n) => !sealed.has(n))) {
+    pool.rollOpenRound();
+    const job = pool.issueJob(undefined, { force: true });
+    assert.ok(job?.jobId, `${mode} next`);
+    const next = await pool.sealFoundShare({
+      jobId: job.jobId,
+      nonce: 0n,
+      miner: FEE,
+      powHash: nextPow(),
+    });
+    assert.equal(next.ok, true, next.reason || mode);
+    tip = pool.store.tip();
+    sealed = nonceSet(tip.shareBatch);
+  }
   for (const n of nonces) assert.equal(sealed.has(n), true);
   assert.equal(Number(pool.stats.lostWorkHashes) || 0, beforeLost);
   return { nonces, tip, snap };

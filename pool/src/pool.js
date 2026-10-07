@@ -68,6 +68,9 @@ import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote } from '.
 import {
   sortShares,
   selectBlockShares,
+  splitDeferWindow,
+  shareWorkKey,
+  paidWorkKeys,
   rememberLiveSharePow,
   destOfShare,
   verifyShareBatch,
@@ -377,10 +380,11 @@ export function shareJobId(header) {
 
 /**
  * Lag-1 shares must verify against the sealed parent, or against the
- * parent's parent when that nonce is not already in excludeNonces.
- * One step only. A restamped share or a bech32-as-dest20 row that fails
- * share_pow/miner_addr must not freeze the next template. The caller counts
- * rows this filter does not keep. An empty batch is still sealable.
+ * parent's parent when that header and nonce are not already paid.
+ * One step only. The same nonce on the other header is a different unit.
+ * A restamped share or a bech32-as-dest20 row that fails share_pow/miner_addr
+ * must not freeze the next template. The caller counts rows this filter
+ * does not keep. An empty batch is still sealable.
  */
 export function provenLag1Shares(parentHeader, shares, priorHeader = null, excludeNonces = null) {
   const list = Array.isArray(shares) ? shares : [];
@@ -398,7 +402,9 @@ export function provenLag1Shares(parentHeader, shares, priorHeader = null, exclu
       trusted.push(s);
       continue;
     }
-    if (priorId && id === priorId && nonce && !paid.has(nonce)) trusted.push(s);
+    const work = shareWorkKey(s?.verifiedHeader || priorHeader, s?.nonce);
+    const blocked = (nonce && paid.has(nonce)) || (work && paid.has(work));
+    if (priorId && id === priorId && nonce && !blocked) trusted.push(s);
   }
   return sortShares(trusted);
 }
@@ -1886,6 +1892,52 @@ export function createPool({
     } catch { /* datadir may be read-only in tests */ }
   }
   const persistedLost = loadLostWork();
+  const owedPath = path.join(dataDir, 'window-owed.json');
+  const owedByNote = new Map();
+  const owedWork = new Set();
+  function loadWindowOwed() {
+    try {
+      const j = JSON.parse(fs.readFileSync(owedPath, 'utf8'));
+      const rows = Array.isArray(j?.rows) ? j.rows : [];
+      for (const row of rows) {
+        const hex = String(row?.noteCommit || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+        let units = 0n;
+        try { units = BigInt(row.units); } catch { continue; }
+        if (units <= 0n) continue;
+        const works = [];
+        for (const w of row.works || []) {
+          const id = String(w || '');
+          if (!id || owedWork.has(id)) continue;
+          owedWork.add(id);
+          works.push(id);
+        }
+        if (!works.length) continue;
+        const prev = owedByNote.get(hex);
+        if (!prev) owedByNote.set(hex, { units, works });
+        else {
+          prev.units += units;
+          prev.works.push(...works);
+        }
+      }
+    } catch { /* first boot */ }
+  }
+  function windowOwedSum() {
+    let n = 0n;
+    for (const row of owedByNote.values()) n += row.units;
+    return n;
+  }
+  function saveWindowOwed() {
+    try {
+      const rows = [];
+      for (const [hex, row] of owedByNote) {
+        rows.push({ noteCommit: hex, units: row.units.toString(), works: row.works });
+      }
+      rows.sort((a, b) => (a.noteCommit < b.noteCommit ? -1 : a.noteCommit > b.noteCommit ? 1 : 0));
+      fs.writeFileSync(owedPath, JSON.stringify({ version: 1, rows }));
+    } catch { /* datadir may be read-only in tests */ }
+  }
+  loadWindowOwed();
   const stats = {
     started: Date.now(),
     lastFoundAt: 0,
@@ -1897,6 +1949,8 @@ export function createPool({
     dropped: 0,
     lostWorkHashes: persistedLost.lostWorkHashes,
     lostWorkEvents: persistedLost.lostWorkEvents,
+    windowOwedUnits: windowOwedSum().toString(),
+    windowOwedNotes: owedByNote.size,
     sealFailed: 0,
     sealStrikes: 0,
     shareCacheEvictions: 0,
@@ -2238,11 +2292,23 @@ export function createPool({
         : [];
       const keep = new Set(kept);
       const dropped = [];
-      for (const s of all) if (!keep.has(s)) dropped.push(s);
-      lag1Shares = kept;
-      openShares = [];
+      for (const s of all) {
+        if (keep.has(s)) continue;
+        const work = shareWorkKey(s?.verifiedHeader, s?.nonce);
+        if (work && ctx.paid.has(work)) continue;
+        dropped.push(s);
+      }
       deferredShares = [];
-      if (dropped.length) countUnpayableShares(dropped, 'reorg', 'reorg');
+      openShares = [];
+      const split = ctx.parentHeader
+        ? splitDeferWindow(kept, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK)
+        : { seal: kept, carry: [], owe: [], stale: [] };
+      if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
+      if (split.carry.length) deferredShares = sortShares(split.carry);
+      if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
+      stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+      lag1Shares = split.seal;
+      if (dropped.length) disposeUnpayable(dropped, 'reorg');
       resetOpenRound();
     });
     store.on('tip', (t) => {
@@ -2303,7 +2369,7 @@ export function createPool({
   }
 
   function batchKeyOf(shares) {
-    return (shares || []).map((s) => String(s?.nonce ?? '')).sort().join(',');
+    return (shares || []).map((s) => shareIdentityKey(s)).sort().join(',');
   }
 
   function shareWorkUnits(share) {
@@ -2315,6 +2381,13 @@ export function createPool({
 
   function nonceKeyOf(share) {
     try { return BigInt(share?.nonce || 0).toString(); } catch { return ''; }
+  }
+
+  function shareIdentityKey(share) {
+    const work = shareWorkKey(share?.verifiedHeader, share?.nonce);
+    if (work) return work;
+    const bare = nonceKeyOf(share);
+    return bare ? `n:${bare}` : '';
   }
 
   function nonceSetOf(shares) {
@@ -2333,8 +2406,74 @@ export function createPool({
     return {
       parentHeader: tip?.header || null,
       priorHeader: prior?.header || null,
-      paid: nonceSetOf(tip?.shareBatch),
+      paid: paidWorkKeys(tip?.shareBatch, prior?.header || null),
     };
+  }
+
+  function refreshWindowOwedStats() {
+    stats.windowOwedUnits = windowOwedSum().toString();
+    stats.windowOwedNotes = owedByNote.size;
+  }
+
+  function attributableShare(share) {
+    if (!share?.verifiedHeader) return false;
+    const nc = noteCommitOfShare(share);
+    return !!(nc && nc.length === 32 && !Buffer.from(nc).equals(Buffer.alloc(32)));
+  }
+
+  function forgetWorkKeys(keys) {
+    const drop = keys instanceof Set ? keys : new Set(keys || []);
+    if (!drop.size) return;
+    const pull = (list) => (list || []).filter((s) => !drop.has(shareIdentityKey(s)));
+    lag1Shares = pull(lag1Shares);
+    openShares = pull(openShares);
+    deferredShares = pull(deferredShares);
+  }
+
+  // Proven units that cannot seal in this window. Counted on noteCommit.
+  // Not lostWork, and not a consensus mint: the hash-owed root still comes
+  // only from shares that sealed into a block.
+  function creditUnsealedOwed(refs, reason) {
+    const list = Array.isArray(refs) ? refs : [];
+    const credited = [];
+    const keys = new Set();
+    let added = 0n;
+    const dests = [];
+    for (const s of list) {
+      const id = shareIdentityKey(s);
+      if (!id || owedWork.has(id) || keys.has(id)) continue;
+      if (!attributableShare(s)) continue;
+      const nc = noteCommitOfShare(s);
+      const hex = Buffer.from(nc).toString('hex');
+      const units = BigInt(unitsForShare(s?.creditedShareBits ?? s?.shareBits));
+      if (units <= 0n) continue;
+      keys.add(id);
+      owedWork.add(id);
+      const prev = owedByNote.get(hex);
+      if (!prev) owedByNote.set(hex, { units, works: [id] });
+      else {
+        prev.units += units;
+        prev.works.push(id);
+      }
+      added += units;
+      credited.push(s);
+      const d = destOfShare(s);
+      if (d && dests.length < 32) dests.push(d);
+    }
+    if (!credited.length) return [];
+    forgetWorkKeys(keys);
+    refreshWindowOwedStats();
+    saveWindowOwed();
+    console.error(JSON.stringify({
+      event: 'share_window_owed',
+      alert: true,
+      reason: String(reason || ''),
+      shares: credited.length,
+      units: added.toString(),
+      notes: owedByNote.size,
+      dests,
+    }));
+    return credited;
   }
 
   // A proven row that cannot be sealed on this parent or its parent.
@@ -2382,6 +2521,27 @@ export function createPool({
     return named;
   }
 
+  function disposeUnpayable(rows, reason) {
+    const named = [];
+    const junk = [];
+    for (const s of rows || []) {
+      if (attributableShare(s)) named.push(s);
+      else junk.push(s);
+    }
+    if (named.length) creditUnsealedOwed(named, reason);
+    if (junk.length) countUnpayableShares(junk, reason, 'parent');
+  }
+
+  function stampSealSlots(rows, parentHeader, priorHeader) {
+    const parentId = shareJobId(parentHeader);
+    const priorId = shareJobId(priorHeader);
+    for (const s of rows || []) {
+      const id = shareJobId(s?.verifiedHeader);
+      if (parentId && id === parentId) s.proofSlot = 0;
+      else if (priorId && id === priorId) s.proofSlot = 1;
+    }
+  }
+
   function bindLag1ToTip() {
     const ctx = tipShareContext();
     if (!ctx.parentHeader) {
@@ -2391,37 +2551,21 @@ export function createPool({
     const before = lag1Shares.slice();
     const trusted = provenLag1Shares(ctx.parentHeader, before, ctx.priorHeader, ctx.paid);
     const keep = new Set(trusted);
-    const priorId = shareJobId(ctx.priorHeader);
-    const parentId = shareJobId(ctx.parentHeader);
     const unpayable = [];
     for (const s of before) {
       if (keep.has(s)) continue;
-      // In the tip's share batch already. Paid, not lost, even if the proof
-      // header is now the great-grandparent.
-      if (ctx.paid.has(nonceKeyOf(s))) continue;
+      const work = shareWorkKey(s?.verifiedHeader, s?.nonce);
+      // Paid on this header already. A different header with the same nonce is not.
+      if (work && ctx.paid.has(work)) continue;
+      if (!work && ctx.paid.has(nonceKeyOf(s))) continue;
       unpayable.push(s);
     }
-    const expiring = [];
-    const fresh = [];
-    for (const s of trusted) {
-      const id = shareJobId(s?.verifiedHeader);
-      if (priorId && id === priorId && id !== parentId) expiring.push(s);
-      else fresh.push(s);
-    }
-    let selected;
-    if (trusted.length <= MAX_SHARES_PER_BLOCK) {
-      selected = selectBlockShares(trusted);
-    } else {
-      const keptExp = selectBlockShares(expiring, MAX_SHARES_PER_BLOCK);
-      const room = MAX_SHARES_PER_BLOCK - keptExp.length;
-      const keptFresh = room > 0 ? selectBlockShares(fresh, room) : [];
-      selected = sortShares(keptExp.concat(keptFresh));
-      const selectedSet = new Set(selected);
-      const expiringSpill = expiring.filter((s) => !selectedSet.has(s));
-      if (expiringSpill.length) countUnpayableShares(expiringSpill, 'share_cap', 'cap');
-    }
-    lag1Shares = selected;
-    if (unpayable.length) countUnpayableShares(unpayable, 'stale_parent', 'parent');
+    const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK);
+    if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
+    if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
+    stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+    lag1Shares = split.seal;
+    if (unpayable.length) disposeUnpayable(unpayable, 'stale_window');
   }
 
   // Per-share re-proof only. pow, append, tip, and worker keep the batch.
@@ -2430,24 +2574,24 @@ export function createPool({
   }
 
   function dropUnprovenShares(failed, reason, miner) {
-    const bad = new Set((failed || []).map((s) => String(s?.nonce ?? '')));
+    const bad = new Set((failed || []).map((s) => shareIdentityKey(s)).filter(Boolean));
     if (!bad.size) return [];
     const dropped = [];
     const keep = [];
     for (const s of lag1Shares) {
-      if (bad.has(String(s?.nonce ?? ''))) dropped.push(s);
+      if (bad.has(shareIdentityKey(s))) dropped.push(s);
       else keep.push(s);
     }
     lag1Shares = keep;
     if (openShares.length) {
-      openShares = openShares.filter((s) => !bad.has(String(s?.nonce ?? '')));
+      openShares = openShares.filter((s) => !bad.has(shareIdentityKey(s)));
     }
     if (store.jobs && typeof store.jobs.values === 'function') {
       for (const rec of store.jobs.values()) {
         if (!Array.isArray(rec?.tpl?.shareBatch)) continue;
         rec.tpl = {
           ...rec.tpl,
-          shareBatch: rec.tpl.shareBatch.filter((s) => !bad.has(String(s?.nonce ?? ''))),
+          shareBatch: rec.tpl.shareBatch.filter((s) => !bad.has(shareIdentityKey(s))),
         };
       }
     }
@@ -2473,7 +2617,7 @@ export function createPool({
     const left = new Map(dropCount);
     const out = [];
     for (const s of list || []) {
-      const k = String(s?.nonce ?? '');
+      const k = shareIdentityKey(s);
       const n = left.get(k) || 0;
       if (n > 0) {
         left.set(k, n - 1);
@@ -2499,7 +2643,8 @@ export function createPool({
     lag1Shares = keep;
     const dropCount = new Map();
     for (const s of dropped) {
-      const k = String(s?.nonce ?? '');
+      const k = shareIdentityKey(s);
+      if (!k) continue;
       dropCount.set(k, (dropCount.get(k) || 0) + 1);
     }
     if (openShares.length) openShares = removeShareCopies(openShares, dropCount);
@@ -2643,15 +2788,16 @@ export function createPool({
     return got;
   }
 
-  // Canonical order. A later copy of the same nonce is the duplicate.
-  // Dest noteCommit is shared by every honest share of that miner, so it
-  // is not a duplicate key.
+  // Canonical order. A later copy of the same header and nonce is the duplicate.
+  // The same nonce on another header is a different unit. Dest noteCommit is
+  // shared by every honest share of that miner, so it is not a duplicate key.
   function duplicateNonces(rows) {
     const sorted = sortShares(rows);
     const seen = new Set();
     const drop = [];
     for (const s of sorted) {
-      const k = String(s?.nonce ?? '');
+      const k = shareIdentityKey(s);
+      if (!k) continue;
       if (seen.has(k)) drop.push(s);
       else seen.add(k);
     }
@@ -3010,7 +3156,15 @@ export function createPool({
   }
 
   function rollOpenRound() {
-    lag1Shares = selectBlockShares(openShares.slice());
+    const ctx = tipShareContext();
+    const split = ctx.parentHeader
+      ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK)
+      : { seal: selectBlockShares(openShares.slice()), carry: [], owe: [], stale: [] };
+    if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
+    if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
+    if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
+    stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+    lag1Shares = split.seal;
     openShares = [];
     refreshSharePins();
     return lag1Shares.slice();
@@ -3059,6 +3213,11 @@ export function createPool({
   }
 
   async function sealFoundShare({ jobId, nonce, miner, powHash, header } = {}) {
+    // The accept path holds this too. A tip event inside the seal must not
+    // rebind the batch that is being sealed and owe shares the block just paid.
+    const sealingBefore = sealing;
+    sealing = true;
+    try {
     const jid = String(jobId || '');
     const rec = jid ? store.jobs.get(jid) : null;
     if (rec && header) rec.tpl = { ...rec.tpl, header };
@@ -3096,6 +3255,9 @@ export function createPool({
       if (next) broadcastJob(next);
     } catch { /* keep the live job */ }
     return got || { ok: false, reason: 'append' };
+    } finally {
+      sealing = sealingBefore;
+    }
   }
 
   function issueJob(shareBitsNow, { force = false, probe = false, proofPending = false } = {}) {
@@ -3631,8 +3793,7 @@ export function createPool({
       if (got?.ok) {
         sealedBlock = true;
         stats.blocks += 1;
-        lag1Shares = selectBlockShares(openShares.slice());
-        openShares = [];
+        rollOpenRound();
         try {
           const sealed = store.tip();
           // Wall clock, not header time: the job stamp may be 90s ahead of now.
@@ -4039,6 +4200,8 @@ export function createPool({
       feeDestTail: String(feePublish).slice(-4),
       lostWorkHashes: Number(stats.lostWorkHashes) || 0,
       lostWorkEvents: Number(stats.lostWorkEvents) || 0,
+      windowOwedUnits: String(stats.windowOwedUnits || '0'),
+      windowOwedNotes: Number(stats.windowOwedNotes) || 0,
       hashBusy: Number(stats.hashBusy) || 0,
       hashQueue: hashWait.size,
       topDestSharePct: topDestSharePct(workers),
@@ -5011,6 +5174,14 @@ export function createPool({
     restampTick: maybeRestampJob,
     creditAcceptedShare,
     rollOpenRound,
+    windowOwedRows() {
+      const out = [];
+      for (const [hex, row] of owedByNote) {
+        out.push({ noteCommit: hex, units: row.units.toString() });
+      }
+      out.sort((a, b) => (a.noteCommit < b.noteCommit ? -1 : a.noteCommit > b.noteCommit ? 1 : 0));
+      return out;
+    },
     sealFoundShare,
     whenShareProofs,
     get lag1Shares() { return lag1Shares; },

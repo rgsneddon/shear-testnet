@@ -41,6 +41,7 @@ import {
 import { isHistoricalHeader } from '../../crypto/historical_prefix.js';
 import {
   verifyShareBatch,
+  paidWorkKeys,
   collateShareUnits,
   aLeavesFromShares,
   unitsForShare,
@@ -922,16 +923,8 @@ function dropPreparedHeader(header) {
   preparedHeaderPow.delete(headerPowKey(header));
 }
 
-function shareNonceKeys(shares) {
-  const out = new Set();
-  let rows = [];
-  try { rows = unpackShareBatch(shares || []); } catch {
-    rows = Array.isArray(shares) ? shares : [];
-  }
-  for (const s of rows) {
-    try { out.add(BigInt(s?.nonce || 0).toString()); } catch { /* skip */ }
-  }
-  return out;
+function shareNonceKeys(shares, provedOnHeader) {
+  return paidWorkKeys(shares, provedOnHeader);
 }
 
 /**
@@ -972,8 +965,16 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false, priorHeade
     for (const s of rows) {
       try {
         const nonce = BigInt(s?.nonce || 0);
-        shareHeaders.push(setNonce(parent, nonce));
-        if (prior) shareHeaders.push(setNonce(prior, nonce));
+        const slot = s?.proofSlot;
+        if (slot === 1 || slot === '1') {
+          if (prior) shareHeaders.push(setNonce(prior, nonce));
+          else shareHeaders.push(setNonce(parent, nonce));
+        } else if (slot === 0 || slot === '0') {
+          shareHeaders.push(setNonce(parent, nonce));
+        } else {
+          shareHeaders.push(setNonce(parent, nonce));
+          if (prior) shareHeaders.push(setNonce(prior, nonce));
+        }
       } catch { /* sync verifier reports the bad row */ }
     }
   }
@@ -1322,7 +1323,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const buriedShares = verifyShareBatch({
       parentHeader: prev.header,
       priorHeader: opts.grandparentHeader || null,
-      excludeNonces: shareNonceKeys(prev?.shareBatch),
+      excludeNonces: shareNonceKeys(prev?.shareBatch, opts.grandparentHeader || null),
       shares: shareBatch,
       floorBits: SHARE_FLOOR_BITS,
       skipPow: !!skipSharePow,
@@ -1343,7 +1344,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       const proved = verifyShareBatch({
         parentHeader: prev.header,
         priorHeader: opts.grandparentHeader || null,
-        excludeNonces: shareNonceKeys(prev?.shareBatch),
+        excludeNonces: shareNonceKeys(prev?.shareBatch, opts.grandparentHeader || null),
         shares: shareBatch,
         floorBits: SHARE_FLOOR_BITS,
         skipPow: !!skipSharePow,

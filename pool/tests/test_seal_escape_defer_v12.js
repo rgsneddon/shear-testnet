@@ -427,7 +427,9 @@ describe('v12 deferred seal-escape shares are paid', () => {
       const gone = deferred.filter((n) => !live.has(n));
       assert.equal(gone.length, 0, `reorg dropped ${gone.length}`);
       const lost = (Number(pool.stats.lostWorkHashes) || 0) - beforeLost;
-      assert.equal(lost, unitsForShare(staleBits), `lost ${lost}`);
+      assert.equal(lost, 0, `lost ${lost}`);
+      const owed = pool.windowOwedRows().reduce((sum, row) => sum + BigInt(row.units), 0n);
+      assert.equal(owed, BigInt(unitsForShare(staleBits)));
       assert.equal(live.has(nonceKey(stale)), false);
       const fromHeight = Number(pool.store.tip().height) + 1;
       const next = pool.lastJob || pool.issueJob(undefined, { force: true });

@@ -161,28 +161,43 @@ export function unpackShareV5(packed) {
   };
 }
 
-/** Credited share bits travel with the share. A v5 frame has no bits and pays the floor. */
-export function packShareWork({ noteCommit, nonce, lz = 0, shareBits = 0 } = {}) {
+/** Credited share bits travel with the share. A v5 frame has no bits and pays the floor.
+ * Optional trailing byte: 0 proved on this block's parent header, 1 on that parent's parent.
+ * Absent means a row packed before that binding existed. */
+export function packShareWork({ noteCommit, nonce, lz = 0, shareBits = 0, proofSlot } = {}) {
   const commit = Buffer.isBuffer(noteCommit) ? noteCommit : Buffer.from(noteCommit);
   if (commit.length !== 32) throw new Error('note_commit must be 32 bytes');
   const bits = Math.max(0, Math.min(255, Math.floor(Number(shareBits) || 0)));
-  const body = Buffer.concat([
+  const parts = [
     commit,
     u64le(nonce || 0),
     Buffer.from([Number(lz) & 0xff, bits & 0xff]),
-  ]);
-  return Buffer.concat([ENC_MAGIC, Buffer.from([ENC_SHARE_WORK]), body]);
+  ];
+  const slot = Number(proofSlot);
+  if (proofSlot != null && proofSlot !== '' && (slot === 0 || slot === 1)) {
+    parts.push(Buffer.from([slot]));
+  }
+  return Buffer.concat([ENC_MAGIC, Buffer.from([ENC_SHARE_WORK]), Buffer.concat(parts)]);
 }
 
 export function unpackShareWork(packed) {
   const { type, body } = unpackType(packed);
-  if (type !== ENC_SHARE_WORK || body.length !== SHARE_WORK_BODY_LEN) throw new Error('bad_share_work');
-  return {
+  if (type !== ENC_SHARE_WORK) throw new Error('bad_share_work');
+  if (body.length !== SHARE_WORK_BODY_LEN && body.length !== SHARE_WORK_BODY_LEN + 1) {
+    throw new Error('bad_share_work');
+  }
+  const row = {
     noteCommit: Buffer.from(body.subarray(0, 32)),
     nonce: body.readBigUInt64LE(32),
     lz: body[40],
     shareBits: body[41],
   };
+  if (body.length === SHARE_WORK_BODY_LEN + 1) {
+    const slot = body[42];
+    if (slot !== 0 && slot !== 1) throw new Error('bad_share_work');
+    row.proofSlot = slot;
+  }
+  return row;
 }
 
 export function packShareBatch(shares = []) {
@@ -199,6 +214,7 @@ export function packShareBatch(shares = []) {
           nonce: s.nonce,
           lz: s.lz,
           shareBits: bits,
+          proofSlot: s.proofSlot,
         });
       }
       return packShareV5({
@@ -229,12 +245,15 @@ function shareForPack(s) {
     const bits = s?.shareBits != null && s.shareBits !== ''
       ? s.shareBits
       : s?.creditedShareBits;
+    const slot = s?.proofSlot;
+    const stamped = slot === 0 || slot === 1 || slot === '0' || slot === '1';
     return {
       noteCommit: nc,
       nonce: s?.nonce,
       lz: s?.lz,
       viewTag: s?.viewTag,
       ...(bits != null && bits !== '' ? { shareBits: bits } : {}),
+      ...(stamped ? { proofSlot: Number(slot) } : {}),
     };
   }
   return { dest20, nonce: s?.nonce, lz: s?.lz };
@@ -359,6 +378,9 @@ export function unpackShareBatch(rows = []) {
     }
     if (s.jobId) row.jobId = String(s.jobId);
     if (s.hash) row.hash = s.hash;
+    if (s.proofSlot === 0 || s.proofSlot === 1 || s.proofSlot === '0' || s.proofSlot === '1') {
+      row.proofSlot = Number(s.proofSlot);
+    }
     return row;
   });
 }

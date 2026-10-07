@@ -27,6 +27,7 @@ import {
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
   verifyShareBatch,
+  paidWorkKeys,
   stashSharePow,
   hasLiveSharePow,
   sharePowCounters,
@@ -882,8 +883,13 @@ export function createStore(dir, {
           if (!header || hasLiveSharePow(header, nonce)) return;
           cold.push({ header, nonce });
         };
-        queue(parentHeader);
-        queue(priorHeader);
+        const slot = s?.proofSlot;
+        if (slot === 1 || slot === '1') queue(priorHeader);
+        else if (slot === 0 || slot === '0') queue(parentHeader);
+        else {
+          queue(parentHeader);
+          queue(priorHeader);
+        }
       }
     }
     const applyNextSpent = () => {
@@ -927,10 +933,7 @@ export function createStore(dir, {
         const parentIdx = lca + i - 1;
         const parentHeader = accepted[parentIdx].header;
         const priorHeader = parentIdx >= 1 ? accepted[parentIdx - 1]?.header : null;
-        const paid = new Set();
-        for (const s of accepted[parentIdx]?.shareBatch || []) {
-          try { paid.add(BigInt(s?.nonce || 0).toString()); } catch { /* skip */ }
-        }
+        const paid = paidWorkKeys(accepted[parentIdx]?.shareBatch, priorHeader);
         const got = verifyShareBatch({
           parentHeader,
           priorHeader,
