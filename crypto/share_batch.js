@@ -685,7 +685,7 @@ function paidBlocks(paid, headerBuf, nk) {
  * or width is a contradiction and is not re-hashed. skipPow with no cache
  * entry and no prepared digest does not hash.
  */
-function proveShareOn(headerBuf, { nonce, nk, nc, ncHex, claimedBits, skipPow }) {
+function proveShareOn(headerBuf, { nonce, nk, nc, ncHex, claimedBits, skipPow, trustWork }) {
   const jobKey = shareJobKey(headerBuf);
   const cached = jobKey ? liveSharePow.get(`${jobKey}:${nk}`) : null;
   if (cached) {
@@ -700,6 +700,9 @@ function proveShareOn(headerBuf, { nonce, nk, nc, ncHex, claimedBits, skipPow })
   }
   const prepared = takeSharePow(stamped);
   if (prepared) preparedSharePowUses += 1;
+  // Own-install keyed load only. The slot, width, dest, and work key
+  // were already checked. A foreign load must not set this.
+  if (!prepared && trustWork) return { ok: true, lz: 0, trusted: true };
   if (!prepared && skipPow) return { ok: false, reason: 'share_pow', cold: true };
   if (!nc || Buffer.from(nc).length !== 32) return { ok: false, reason: 'miner_addr' };
   if (!prepared) syncSharePowHashes += 1;
@@ -721,7 +724,9 @@ function proveShareOn(headerBuf, { nonce, nk, nc, ncHex, claimedBits, skipPow })
  * outside [floor, B_MAX], is share_target and is not hashed. A dest-bound
  * digest that misses that byte is share_pow. A cache hit at that exact dest
  * and width skips a second RandomX. skipPow does not credit a row that has
- * no such proof and no prepared digest.
+ * no such proof and no prepared digest. trustWork credits a row that already
+ * passed the slot, width, dest, duplicate, and paid-work checks. It is the
+ * own-install load shortcut. A foreign load leaves it false and hashes.
  */
 export function verifyShareBatch({
   parentHeader,
@@ -730,6 +735,7 @@ export function verifyShareBatch({
   shares = [],
   floorBits = SHARE_FLOOR_BITS,
   skipPow = false,
+  trustWork = false,
 } = {}) {
   const raw = Array.isArray(shares) ? shares : [];
   const linked = [];
@@ -776,7 +782,7 @@ export function verifyShareBatch({
     if (!credit.ok) return { ok: false, reason: credit.reason };
     const claimedBits = credit.bits;
     const ncHex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
-    const ctx = { nonce, nk, nc, ncHex, claimedBits, skipPow };
+    const ctx = { nonce, nk, nc, ncHex, claimedBits, skipPow, trustWork: !!trustWork };
     const wantSlot = s.proofSlot === 1 || s.proofSlot === '1'
       ? 1
       : (s.proofSlot === 0 || s.proofSlot === '0' ? 0 : null);

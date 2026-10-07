@@ -277,6 +277,43 @@ export function digestTx(tx) {
   return packDigest(packed);
 }
 
+function noteCommitOfStoredLeaf(leaf) {
+  const raw = leaf?.noteCommit;
+  if (raw != null && raw !== '') {
+    try {
+      const nc = Buffer.from(raw);
+      if (nc.length === 32 && !nc.equals(Buffer.alloc(32))) return nc;
+    } catch { /* dest20 below */ }
+  }
+  let d20 = null;
+  try { d20 = Buffer.from(leaf?.dest20 || Buffer.alloc(0)); } catch { d20 = null; }
+  if (!d20 || d20.length !== 20 || d20.equals(Buffer.alloc(20))) return null;
+  return noteCommitOfDest20(d20);
+}
+
+/** Proven share leaves and the stored Tree-A leaves name the same counts. */
+function sameLeafCounts(proven, stored) {
+  const want = new Map();
+  for (const leaf of proven || []) {
+    const nc = noteCommitOfStoredLeaf(leaf);
+    if (!nc) return false;
+    const key = nc.toString('hex');
+    want.set(key, (want.get(key) || 0) + (Number(leaf.count) || 0));
+  }
+  const have = new Map();
+  for (const leaf of stored || []) {
+    const nc = noteCommitOfStoredLeaf(leaf);
+    if (!nc) return false;
+    const key = nc.toString('hex');
+    have.set(key, (have.get(key) || 0) + (Number(leaf.count) || 0));
+  }
+  if (have.size !== want.size) return false;
+  for (const [key, count] of want) {
+    if (have.get(key) !== count) return false;
+  }
+  return true;
+}
+
 function aLeavesOf(collated, pay) {
   return collated.map((s) => {
     const d20 = dest20Of(pay(s.miner || s.address || s.dest || ''));
@@ -1369,24 +1406,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, burialTip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
-  // Burial may skip Flow checks. It does not skip share credit. A batch that
-  // is still on the block takes the same nonce-byte gate as a live accept.
-  // A reload cannot re-hash shares: the live cache is empty, and skipPow
-  // without a cache is share_pow. Share bytes still have to match the sealed
-  // credit record. Header proof-of-work is the load loop's job.
-  if (!opts.loadReplay && skipFlow && shareBatch.length) {
-    if (shareBatch.length > MAX_SHARES_PER_BLOCK) return { ok: false, reason: 'share_cap' };
-    if (!prev?.header) return { ok: false, reason: 'share_batch' };
-    const buriedShares = verifyShareBatch({
-      parentHeader: prev.header,
-      priorHeader: opts.grandparentHeader || null,
-      excludeNonces: shareNonceKeys(prev?.shareBatch, opts.grandparentHeader || null),
-      shares: shareBatch,
-      floorBits: SHARE_FLOOR_BITS,
-      skipPow: !!skipSharePow,
-    });
-    if (!buriedShares.ok) return buriedShares;
-  }
   const payAddr = (a) => a;
   const liveUnit = hashBonusUnitNanos(hashBonusNanos);
   let provenUnits = 0;
@@ -1395,26 +1414,33 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // Amounts the coinbase rule already opened. A published valueProof.v
   // that is missing or wrong does not replace these.
   const provenOpen = new Map();
-  if (!skipFlow) {
+  // Frames still on the block take the live batch rules on every path,
+  // including load. A foreign load hashes each share. An own-install keyed
+  // load sets trustShareWork and skips only that hash. skipPow with an empty
+  // cache stays share_pow and is not this shortcut. A buried pruned block
+  // has an empty batch, so there is no share frame to hash. There is no
+  // release assume-valid anchor: an empty genesis pin does not skip a share.
+  const trustWork = opts.loadReplay === true && opts.trustShareWork === true;
+  if (shareBatch.length) {
     if (shareBatch.length > MAX_SHARES_PER_BLOCK) return { ok: false, reason: 'share_cap' };
-    if (prev?.header) {
-      if (!opts.loadReplay) {
-        const proved = verifyShareBatch({
-          parentHeader: prev.header,
-          priorHeader: opts.grandparentHeader || null,
-          excludeNonces: shareNonceKeys(prev?.shareBatch, opts.grandparentHeader || null),
-          shares: shareBatch,
-          floorBits: SHARE_FLOOR_BITS,
-          skipPow: !!skipSharePow,
-        });
-        if (!proved.ok) return proved;
-        provenUnits = proved.units;
-        provenByDest = proved.byDest;
-        shareLeaves = proved.aLeaves;
-      }
-    } else if (shareBatch.length) {
-      return { ok: false, reason: 'share_batch' };
+    if (!prev?.header) return { ok: false, reason: 'share_batch' };
+    const proved = verifyShareBatch({
+      parentHeader: prev.header,
+      priorHeader: opts.grandparentHeader || null,
+      excludeNonces: shareNonceKeys(prev?.shareBatch, opts.grandparentHeader || null),
+      shares: shareBatch,
+      floorBits: SHARE_FLOOR_BITS,
+      skipPow: trustWork ? false : !!skipSharePow,
+      trustWork,
+    });
+    if (!proved.ok) return proved;
+    if (!skipFlow) {
+      provenUnits = proved.units;
+      provenByDest = proved.byDest;
+      shareLeaves = proved.aLeaves;
     }
+  }
+  if (!skipFlow) {
     const settlement = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
@@ -1423,9 +1449,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
     if (confidential) {
-      // A proven batch supplies its own leaves. Disk aLeaves keep dest20 and
-      // drop noteCommit, so a load that did not re-prove must use the share
-      // batch that is still on the block. That is the same witness the pot was sealed from.
+      // Proven leaves win. Disk aLeaves keep dest20 and drop noteCommit, so a
+      // batch that did not produce leaves falls back to the share batch.
       const leaves = (shareLeaves && shareLeaves.length)
         ? shareLeaves
         : aLeavesFromShares(shareBatch);
@@ -1596,6 +1621,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
   }
   if (potOpenedSum + carryOut !== payablePot) return { ok: false, reason: 'pot_sched' };
+  if (!skipFlow && Array.isArray(shareLeaves) && Array.isArray(block.aLeaves) && block.aLeaves.length) {
+    if (!sameLeafCounts(shareLeaves, block.aLeaves)) return { ok: false, reason: 'hash_bonus' };
+  }
   const aLeaves = (shareLeaves && shareLeaves.length)
     ? shareLeaves
     : (shareBatch.length && Array.isArray(block.aLeaves) && block.aLeaves.length
@@ -1962,11 +1990,17 @@ function normGenesisPin(hex) {
  * loadReplay so a pruned body can be buried under this book's own tip.
  * That replay does not call Date.now. The future ceiling is one clock,
  * nowMs or the load time, plus MTP_FUTURE_MS, applied to every stamp.
- * trustStoredHash skips ShearHash only when book.seal matches this install's key.
- * It does not skip the mint, range, spend, or hash-ledger checks.
+ * trustStoredHash skips the header ShearHash only when book.seal matches
+ * this install's key. That same match sets trustShareWork, which skips the
+ * share hash and still checks the slot, the width, the dest, duplicates,
+ * and the paid work key. A foreign book hashes every share that is still
+ * on the block. An empty genesis pin is not an assume-valid anchor.
+ * A buried pruned batch is empty, so those frames are not re-hashed.
+ * Mint, range, spend, the fee cap, and the hash ledger still run.
  */
 export function verifyLoadedChain(blocks, {
   trustStoredHash = false,
+  trustShareWork = null,
   nowMs = null,
   genesisHash = V12_GENESIS_BLOCK_HASH,
   checkpoint = V12_BOOTSTRAP_CHECKPOINT,
@@ -2052,6 +2086,10 @@ export function verifyLoadedChain(blocks, {
     const body = verifyBlockConsensus(block, prevBlock, {
       trustedPowHash: link,
       loadReplay: true,
+      // A foreign book cannot set this. An explicit false keeps the share
+      // hash on an own-keyed load, which is how the load test reaches it
+      // without a second header search. createStore does not pass it.
+      trustShareWork: trustStoredHash === true && trustShareWork !== false,
       tipHeight: loadTip,
       genesisMs,
       mtpTimestamps: mtp.slice(),
