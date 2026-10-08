@@ -9,7 +9,9 @@
  */
 import { PI_SHE_NANOS, POOL_FEE_BPS, NANOS_PER_SHE, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { isDestAddress } from '../../crypto/address.js';
-import { containsShe1, poolWithdrawTx } from '../../crypto/levy.js';
+import { containsShe1, custodialPullAllowed, poolWithdrawTx } from '../../crypto/levy.js';
+
+export { custodialPullAllowed };
 import { signSpendTx } from '../../crypto/spend.js';
 
 export const AUTO_PAYOUT_MIN_NANOS = PI_SHE_NANOS;
@@ -86,6 +88,7 @@ export function shouldAutoPayout({ confirmedNanos, dest } = {}) {
  * Miner receives `nanos` in full. `fee` is extra, sponsored by the pool dest.
  */
 export function buildAutoPayoutTx({ from, to, nanos, fee = 0, id, spendKey } = {}) {
+  if (!custodialPullAllowed()) return { ok: false, reason: 'custodial_pull' };
   const gate = shouldAutoPayout({ confirmedNanos: nanos, dest: to });
   if (!gate.ok) return gate;
   if (!isDestAddress(from) || containsShe1(from)) return { ok: false, reason: 'bad_pool_dest' };
@@ -107,6 +110,7 @@ export function buildAutoPayoutTx({ from, to, nanos, fee = 0, id, spendKey } = {
 
 /** Operator surplus above the 10 SHE reserve. Dest comes from SHEAR_POOL_FEE_PAYOUT_DEST. */
 export function buildPoolFeeSweepTx({ from, to, nanos, fee = 0, id, spendKey } = {}) {
+  if (!custodialPullAllowed()) return { ok: false, reason: 'custodial_pull' };
   if (!isDestAddress(from) || containsShe1(from)) return { ok: false, reason: 'bad_pool_dest' };
   if (!isMinerSsa1(to) || String(to).trim().split('.')[0] === String(from).trim().split('.')[0]) {
     return { ok: false, reason: 'bad_fee_dest' };

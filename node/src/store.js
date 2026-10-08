@@ -81,7 +81,7 @@ import {
   CHECKPOINT_FIRST_HEIGHT,
   CHECKPOINT_EVERY_BLOCKS,
 } from './bootstrap.js';
-import { blockWeight } from '../../crypto/levy.js';
+import { blockWeight, custodialPullAllowed } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, jroot } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
@@ -1804,6 +1804,12 @@ export function createStore(dir, {
     }
     if (pause.poolWithdraw && String(tx?.kind || '') === 'pool-withdraw') {
       return { ok: false, reason: 'paused' };
+    }
+    if (!custodialPullAllowed() && (
+      String(tx?.kind || '') === 'pool-withdraw'
+      || String(tx?.vout?.[0]?.kind || '') === 'pool-withdraw'
+    )) {
+      return { ok: false, reason: 'custodial_pull' };
     }
     const bound = verifyPoolWithdrawBound(tx);
     if (!bound.ok) return bound;

@@ -122,7 +122,9 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
     });
     pool.store.tip = () => ({ height: 40 });
     pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
-    assert.equal(pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 }).ok, true);
+    const credited = pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 });
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
     const r = await fetch(`http://127.0.0.1:${pool.httpServer.address().port}/api/miners/${encodeURIComponent(tag)}/withdraw`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -159,7 +161,9 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
       accepted: 1,
       lastShareAt: Date.now(),
     });
-    assert.equal(pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 }).ok, true);
+    const credited = pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 });
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
     const r = await fetch(`http://127.0.0.1:${pool.httpServer.address().port}/api/miners/${encodeURIComponent(tag)}/withdraw`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

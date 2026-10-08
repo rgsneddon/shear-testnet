@@ -147,16 +147,15 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
       spendKey: poolBox.key,
     });
-    assert.equal(built.ok, true, built.reason);
-    assert.equal(built.tx.to, dest.split('.')[0]);
-    assert.equal(built.tx.nanos, sweep.nanos);
-    assert.equal(built.tx.poolPaysFee, true);
+    assert.equal(built.ok, false);
+    assert.equal(built.reason, 'custodial_pull');
+    assert.equal(built.tx, undefined);
     assert.equal(buildPoolFeeSweepTx({
       from: poolBox.dest,
       to: poolBox.dest,
       nanos: sweep.nanos,
       spendKey: poolBox.key,
-    }).reason, 'bad_fee_dest');
+    }).reason, 'custodial_pull');
   });
 
   it('auto tx pays the miner in full and marks poolPaysFee', () => {
@@ -169,13 +168,9 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
       spendKey: poolBox.key,
     });
-    assert.equal(built.ok, true, built.reason);
-    assert.equal(built.tx.nanos, PI_SHE_NANOS);
-    assert.equal(built.tx.fee, 100);
-    assert.equal(built.tx.sponsor, poolBox.dest);
-    assert.equal(built.tx.poolPaysFee, true);
-    assert.equal(built.tx.to, dest.split('.')[0]);
-    assert.equal(built.tx.from, poolBox.dest);
+    assert.equal(built.ok, false);
+    assert.equal(built.reason, 'custodial_pull');
+    assert.equal(built.tx, undefined);
   });
 
   it('refuses to build an unsigned auto-pay body without a spend key', () => {
@@ -188,7 +183,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
     });
     assert.equal(skipped.ok, false);
-    assert.equal(skipped.reason, 'need_spend_key');
+    assert.equal(skipped.reason, 'custodial_pull');
     const unsigned = poolWithdrawTx({
       from: poolBox.dest,
       to: dest.split('.')[0],
@@ -196,72 +191,38 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
     });
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
-    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'unsigned');
+    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'range_proof');
   });
 
-  it('credits pot after fee plus hash bonus; auto-pays at π; sentNanos is all-time pulled', () => {
+  it('v12 does not credit a custodial pot or hash leg', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-auto-'));
     const book = createPullBook(dir);
     const dest = ssa1();
     const tag = publicMinerTag(dest);
     const potShare = potCreditAfterFeeNanos(BLOCK_SUBSIDY_NANOS);
     const hashN = 256;
-    assert.equal(book.creditRound(
+    const credited = book.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 1, nanos: potShare, hashByDest: new Map([[dest, hashN]]) },
-    ).ok, true);
+    );
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
     const young = book.view(tag, { tipHeight: 1, need: 30 });
     assert.equal(young.confirmedNanos, 0);
-    assert.equal(young.hashPaidNanos, hashN);
-    assert.equal(young.sentNanos, hashN);
-    const ripe = book.view(tag, { tipHeight: 40, need: 30 });
-    assert.equal(ripe.confirmedNanos, potShare);
-    assert.equal(ripe.confirmedHashNanos, hashN);
-    assert.equal(ripe.hashPaidNanos, hashN);
-    assert.ok(ripe.confirmedPotNanos <= potShare);
-    assert.equal(ripe.sentNanos, hashN);
-    const wouldFeeHash = Math.floor(hashN * POOL_FEE_BPS / 10000);
-    assert.ok(wouldFeeHash > 0);
-    assert.equal(ripe.confirmedHashNanos, hashN);
-    const due = book.dueAuto({ tipHeight: 40, need: 30 });
-    if (ripe.confirmedNanos >= PI_SHE_NANOS) {
-      assert.equal(due.length, 1);
-      assert.equal(due[0].dest, dest.split('.')[0]);
-      const taken = book.takeConfirmed(tag, {
-        tipHeight: 40,
-        need: 30,
-        amountNanos: due[0].nanos,
-        skipCooldown: true,
-      });
-      assert.equal(taken.ok, true);
-      const after = book.view(tag, { tipHeight: 40, need: 30 });
-      assert.equal(after.sentNanos, taken.nanos + hashN);
-      assert.match(after.destRedacted, /^ssa1\*{8}/);
-    } else {
-      assert.equal(due.length, 0);
-      book.creditRound(
-        [{ tag, dest, count: 10 }],
-        { height: 2, nanos: PI_SHE_NANOS, hashByDest: new Map() },
-      );
-      const later = book.view(tag, { tipHeight: 40, need: 30 });
-      assert.ok(later.confirmedNanos >= PI_SHE_NANOS);
-      const pay = book.dueAuto({ tipHeight: 40, need: 30 });
-      assert.equal(pay.length, 1);
-      const taken = book.takeConfirmed(tag, {
-        tipHeight: 40,
-        need: 30,
-        amountNanos: pay[0].nanos,
-        skipCooldown: true,
-      });
-      assert.equal(taken.ok, true);
-      const sent = book.view(tag, { tipHeight: 40, need: 30 });
-      assert.equal(sent.sentNanos, taken.nanos + hashN);
+    assert.equal(young.pendingNanos, 0);
+    assert.equal(young.hashPaidNanos, 0);
+    assert.equal(young.sentNanos, 0);
+    assert.equal(book.dueAuto({ tipHeight: 40, need: 30 }).length, 0);
+    assert.equal(book.ledger(tag).length, 0);
+    const file = path.join(dir, 'pull-book.json');
+    if (fs.existsSync(file)) {
+      const disk = fs.readFileSync(file, 'utf8');
+      assert.doesNotMatch(disk, /ssa1/);
+      assert.equal(disk.includes(String(potShare)), false);
     }
-    const disk = fs.readFileSync(path.join(dir, 'pull-book.json'), 'utf8');
-    assert.doesNotMatch(disk, /ssa1/);
   });
 
-  it('bound auto-pay credits pulled only after successful queueTx; unsigned is refused', async () => {
+  it('v12 sweep does not queue a custodial pull; an unsigned withdraw stays unbound', async () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
     const unsigned = poolWithdrawTx({
@@ -271,7 +232,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
     });
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
-    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'unsigned');
+    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'range_proof');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-auto-sweep-'));
     const pool = createPool({
       dataDir: dir,
@@ -281,28 +242,29 @@ describe('auto payout at π SHE to miner ssa1', () => {
       httpPort: 0,
     });
     const tag = publicMinerTag(dest);
-    pool.pullBook.creditRound(
+    const credited = pool.pullBook.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
     );
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
     pool.store.tip = () => ({ height: 40 });
-    const before = pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos;
+    assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, 0);
     assert.equal(typeof pool.sweepAutoPayouts, 'function');
-    pool.store.queueTx = () => ({ ok: false, reason: 'forced' });
+    let calls = 0;
+    pool.store.queueTx = () => {
+      calls += 1;
+      return { ok: true, tx: { id: 'should-not-run' } };
+    };
     assert.equal((await pool.runAutoPayoutSweep()).length, 0);
     assert.equal((await pool.sweepAutoPayouts({ maxRows: 1 })).length, 0);
-    assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, before);
-    pool.store.queueTx = (tx) => {
-      assert.equal(verifyPoolWithdrawBound(tx).ok, true);
-      return { ok: true, tx };
-    };
-    const sent = await pool.runAutoPayoutSweep();
-    assert.equal(sent.length, 1);
-    assert.ok(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos > before);
+    assert.equal(calls, 0);
+    assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, 0);
+    assert.equal(pool.pullBook.dueAuto({ tipHeight: 40, need: 30 }).length, 0);
     pool.close();
   });
 
-  it('compact pool-withdraw keeps operator dest20; a foreign spendPub is rejected', () => {
+  it('a compact signed pool-withdraw still binds, and v12 admits it as range_proof', () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
     const built = buildAutoPayoutTx({
@@ -312,18 +274,28 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
       spendKey: poolBox.key,
     });
-    assert.equal(built.ok, true, built.reason);
-    const sealed = compactTx(built.tx);
+    assert.equal(built.ok, false);
+    assert.equal(built.reason, 'custodial_pull');
+    assert.equal(built.tx, undefined);
+    const tx = poolWithdrawTx({
+      from: poolBox.dest,
+      to: dest,
+      nanos: PI_SHE_NANOS,
+      fee: 100,
+      id: 'compact-plain',
+    });
+    signSpendTx(tx, poolBox.key);
+    const sealed = compactTx(tx);
     assert.equal(sealed.from, undefined);
     assert.equal(sealed.vin[0].address, undefined);
     assert.ok(sealed.vin[0].dest20);
     assert.ok(sealed.spendPub);
     assert.equal(verifyPoolWithdrawBound(sealed).ok, true, 'sealed operator bind');
-    assert.equal(admitMempool(emptyMempool(), sealed).ok, true);
+    assert.equal(admitMempool(emptyMempool(), sealed).reason, 'range_proof');
     const stolen = { ...sealed, spendPub: undefined, sig: undefined, vin: sealed.vin.map((v) => ({ ...v })) };
     signSpendTx(stolen, spendBox(newIdentity()).key);
     assert.equal(verifyPoolWithdrawBound(stolen).ok, false);
-    assert.equal(admitMempool(emptyMempool(), stolen).reason, 'unsigned');
+    assert.equal(admitMempool(emptyMempool(), stolen).reason, 'range_proof');
   });
 
   it('bootPoolOperator writes a matching spend seed and signs auto-pay', () => {
@@ -340,10 +312,9 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
       spendKey: boot.operatorSpendKey,
     });
-    assert.equal(built.ok, true, built.reason);
-    const sealed = compactTx(built.tx);
-    assert.equal(verifyPoolWithdrawBound(sealed).ok, true);
-    assert.equal(admitMempool(emptyMempool(), sealed).ok, true);
+    assert.equal(built.ok, false);
+    assert.equal(built.reason, 'custodial_pull');
+    assert.equal(built.tx, undefined);
     const again = bootPoolOperator({ dataDir: dir });
     assert.equal(again.miner, boot.miner);
     assert.equal(again.signed, true);
@@ -367,10 +338,11 @@ describe('auto payout at π SHE to miner ssa1', () => {
       httpPort: 0,
     });
     const tag = publicMinerTag(dest);
-    pool.pullBook.creditRound(
+    const credited = pool.pullBook.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
     );
+    assert.equal(credited.reason, 'custodial_pull');
     pool.store.tip = () => ({ height: 40 });
     const bound = [];
     pool.store.queueTx = (tx) => {
@@ -380,16 +352,14 @@ describe('auto payout at π SHE to miner ssa1', () => {
     };
     assert.equal((await pool.runAutoPayoutSweep()).length, 0);
     assert.deepEqual(bound, []);
-    const skipped = pool.publicStats().autoPayoutLastError;
-    assert.equal(skipped?.reason, 'unsigned');
-    assert.equal(skipped?.tag, tag);
-    assert.match(skipped.fromRedacted, /^ssa1\*{8}/);
-    assert.equal(JSON.stringify(skipped).includes(boot.miner), false);
+    assert.equal(pool.publicStats().autoPayoutLastError, null);
+    assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, 0);
     fs.writeFileSync(seedPath, seedHex, { mode: 0o600 });
     const sent = await pool.runAutoPayoutSweep();
-    assert.equal(sent.length, 1);
-    assert.deepEqual(bound, [true]);
+    assert.equal(sent.length, 0);
+    assert.deepEqual(bound, []);
     assert.equal(pool.publicStats().autoPayoutLastError, null);
+    assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, 0);
     pool.close();
   });
 
@@ -415,18 +385,27 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
       spendKey: poolBox.key,
     });
-    assert.equal(built.ok, true, built.reason);
-    assert.equal(built.tx.vin?.[0]?.commit, undefined);
-    const queued = store.queueTx(built.tx);
-    assert.equal(queued.ok, true, queued.reason);
+    assert.equal(built.ok, false);
+    assert.equal(built.reason, 'custodial_pull');
+    assert.equal(built.tx, undefined);
+    const signed = poolWithdrawTx({
+      from: poolBox.dest,
+      to: minerDest,
+      nanos: PI_SHE_NANOS,
+      fee: 100,
+      id: 'pi-plain',
+    });
+    signSpendTx(signed, poolBox.key);
+    const queued = store.queueTx(signed);
+    assert.equal(queued.ok, false);
+    assert.equal(queued.reason, 'custodial_pull');
     assert.notEqual(queued.reason, 'insufficient');
+    assert.equal((store.mempool || []).some((m) => m.id === 'pi-plain'), false);
   });
 
   it('sweep takeConfirmed after a funded custody queue; lastPullMs advances', async () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
-    const hasherA = spendDestOf(newIdentity().spendPub);
-    const hasherB = spendDestOf(newIdentity().spendPub);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-custody-sweep-'));
     const pool = createPool({
       dataDir: dir,
@@ -435,20 +414,26 @@ describe('auto payout at π SHE to miner ssa1', () => {
       stratumPort: 0,
       httpPort: 0,
     });
-    injectMatureCustody(pool.store, poolBox.dest, [hasherA, hasherB], { pots: 4, tipHeight: 40 });
     const tag = publicMinerTag(dest);
-    pool.pullBook.creditRound(
+    const credited = pool.pullBook.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
     );
+    assert.equal(credited.reason, 'custodial_pull');
     const before = pool.pullBook.view(tag, { tipHeight: 40, need: 30 });
     assert.equal(before.lastPullMs, 0);
-    assert.ok(before.confirmedNanos >= PI_SHE_NANOS);
+    assert.equal(before.confirmedNanos, 0);
+    let calls = 0;
+    pool.store.queueTx = () => {
+      calls += 1;
+      return { ok: true, tx: { id: 'should-not-run' } };
+    };
     const sent = await pool.runAutoPayoutSweep();
-    assert.equal(sent.length, 1, JSON.stringify(sent));
+    assert.equal(sent.length, 0, JSON.stringify(sent));
+    assert.equal(calls, 0);
     const after = pool.pullBook.view(tag, { tipHeight: 40, need: 30 });
-    assert.ok(after.lastPullMs > 0);
-    assert.ok(after.sentNanos >= PI_SHE_NANOS);
+    assert.equal(after.lastPullMs, 0);
+    assert.equal(after.sentNanos, 0);
     pool.close();
   });
 
@@ -464,47 +449,45 @@ describe('auto payout at π SHE to miner ssa1', () => {
       httpPort: 0,
     });
     const tag = publicMinerTag(dest);
-    pool.pullBook.creditRound(
+    const credited = pool.pullBook.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
     );
+    assert.equal(credited.reason, 'custodial_pull');
     pool.store.tip = () => ({ height: 40 });
     const httpPort = await listenHttp(pool);
-    pool.store.queueTx = () => ({
-      ok: false,
-      reason: 'insufficient',
-      have: 1,
-      need: PI_SHE_NANOS,
-    });
-    assert.equal((await pool.runAutoPayoutSweep()).length, 0);
-    const statsErr = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.equal(statsErr.autoPayoutLastError?.reason, 'insufficient');
-    assert.equal(statsErr.autoPayoutLastError?.tag, tag);
-    assert.equal(typeof statsErr.autoPayoutLastError?.at, 'number');
-    assert.match(statsErr.autoPayoutLastError.fromRedacted, /^ssa1\*{8}/);
-    assert.equal(JSON.stringify(statsErr.autoPayoutLastError).includes(poolBox.dest), false);
-    assert.equal(JSON.stringify(statsErr.autoPayoutLastError).includes('spend'), false);
-    const minerErr = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`).then((r) => r.json());
-    assert.equal(minerErr.autoPayoutLastError?.reason, 'insufficient');
-    dumpScratch('stats-error.json', statsErr);
-    pool.store.queueTx = (tx) => {
-      assert.equal(verifyPoolWithdrawBound(tx).ok, true);
-      return { ok: true, tx };
+    let calls = 0;
+    pool.store.queueTx = () => {
+      calls += 1;
+      return {
+        ok: false,
+        reason: 'insufficient',
+        have: 1,
+        need: PI_SHE_NANOS,
+      };
     };
-    assert.equal((await pool.runAutoPayoutSweep()).length, 1);
-    const statsOk = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.equal(statsOk.autoPayoutLastError, null);
-    const minerOk = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`).then((r) => r.json());
-    assert.equal(minerOk.autoPayoutLastError, undefined);
-    dumpScratch('stats-ok.json', statsOk);
+    assert.equal((await pool.runAutoPayoutSweep()).length, 0);
+    assert.equal(calls, 0);
+    const statsErr = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+    assert.equal(statsErr.ok, true);
+    assert.equal(statsErr.autoPayoutLastError, null);
+    assert.equal(JSON.stringify(statsErr).includes(poolBox.dest), false);
+    const minerRes = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${tag}`);
+    const minerErr = await minerRes.json();
+    assert.equal(minerRes.status, 404);
+    assert.equal(minerErr.reason, 'unknown_miner');
+    assert.equal(JSON.stringify(minerErr).includes(String(PI_SHE_NANOS)), false);
+    const view = pool.pullBook.view(tag, { tipHeight: 40, need: 30 });
+    assert.equal(view.pendingNanos, 0);
+    assert.equal(view.confirmedNanos, 0);
+    assert.equal(view.sentNanos, 0);
+    dumpScratch('stats-error.json', statsErr);
     pool.close();
   });
 
   it('yields so /api/stats progresses under a slow queueTx', async () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
-    const hasherA = spendDestOf(newIdentity().spendPub);
-    const hasherB = spendDestOf(newIdentity().spendPub);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-payout-yield-'));
     const pool = createPool({
       dataDir: dir,
@@ -513,20 +496,18 @@ describe('auto payout at π SHE to miner ssa1', () => {
       stratumPort: 0,
       httpPort: 0,
     });
-    injectMatureCustody(pool.store, poolBox.dest, [hasherA, hasherB], { pots: 4, tipHeight: 40 });
     const tag = publicMinerTag(dest);
-    pool.pullBook.creditRound(
+    const credited = pool.pullBook.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
     );
+    assert.equal(credited.reason, 'custodial_pull');
     const httpPort = await listenHttp(pool);
     pool.paintStatsSnap();
-    const orig = pool.store.queueTx.bind(pool.store);
-    pool.store.queueTx = (tx) => new Promise((resolve) => {
-      setTimeout(() => {
-        assert.equal(verifyPoolWithdrawBound(tx).ok, true);
-        resolve(orig(tx));
-      }, 600);
+    let calls = 0;
+    pool.store.queueTx = () => new Promise((resolve) => {
+      calls += 1;
+      setTimeout(() => resolve({ ok: true, tx: { id: 'should-not-run' } }), 600);
     });
     const sweepP = pool.runAutoPayoutSweep();
     const t0 = Date.now();
@@ -537,14 +518,15 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.ok(stats.loginAuth);
     assert.ok(dt < 300, `/api/stats stalled ${dt}ms during slow queueTx`);
     const sent = await sweepP;
-    assert.equal(sent.length, 1, JSON.stringify(sent));
-    dumpScratch('payout-yield-stats.json', { dt, stats, sent });
+    assert.equal(sent.length, 0, JSON.stringify(sent));
+    assert.equal(calls, 0);
+    dumpScratch('payout-yield-stats.json', { dt, stats, sent, calls });
     pool.close();
   });
 
   it('miner page does not publish sealed amounts in the three boxes', () => {
     const html = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
-    assert.equal(html.split('Shear Privacy').length - 1, 6);
+    assert.equal(html.split('Shear Privacy').length - 1, 7);
     assert.equal(html.includes('Waiting payout'), false);
     assert.equal(html.includes('id="m-payout-error"'), false);
     assert.equal(html.includes('autoPayoutLastError'), false);

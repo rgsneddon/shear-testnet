@@ -90,7 +90,7 @@ describe('bootPoolOperator matching spend seed', () => {
       spendKey: mismatched.operatorSpendKey,
     });
     assert.equal(skipped.ok, false);
-    assert.equal(skipped.reason, 'need_spend_key');
+    assert.equal(skipped.reason, 'custodial_pull');
     const pool = createPool({
       dataDir: dir,
       miner: boot.miner,
@@ -99,10 +99,11 @@ describe('bootPoolOperator matching spend seed', () => {
       httpPort: 0,
     });
     const tag = publicMinerTag(dest);
-    pool.pullBook.creditRound(
+    const credited = pool.pullBook.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 1, nanos: PI_SHE_NANOS, hashByDest: new Map() },
     );
+    assert.equal(credited.reason, 'custodial_pull');
     pool.store.tip = () => ({ height: 40 });
     const bound = [];
     pool.store.queueTx = (tx) => {
@@ -111,9 +112,9 @@ describe('bootPoolOperator matching spend seed', () => {
     };
     assert.equal((await pool.runAutoPayoutSweep()).length, 0);
     assert.deepEqual(bound, []);
-    const err = pool.publicStats().autoPayoutLastError;
-    assert.equal(err?.reason, 'unsigned');
+    assert.equal(pool.publicStats().autoPayoutLastError, null);
     assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, 0);
+    assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).confirmedNanos, 0);
     assert.equal(pool.publicStats().bootPoolOperator.signed, false);
     pool.close();
   });
@@ -164,8 +165,16 @@ describe('bootPoolOperator matching spend seed', () => {
       fee: 100,
       spendKey: boot.operatorSpendKey,
     });
-    assert.equal(built.ok, true, built.reason);
-    const sealed = compactTx(built.tx);
+    assert.equal(built.ok, false);
+    assert.equal(built.reason, 'custodial_pull');
+    const hand = poolWithdrawTx({
+      from: boot.miner,
+      to: dest,
+      nanos: PI_SHE_NANOS,
+      fee: 100,
+    });
+    signSpendTx(hand, boot.operatorSpendKey);
+    const sealed = compactTx(hand);
     assert.equal(verifyPoolWithdrawBound(sealed).ok, true);
     const stolen = { ...sealed, spendPub: undefined, sig: undefined, vin: sealed.vin.map((v) => ({ ...v })) };
     signSpendTx(stolen, spendBox(newIdentity()).key);

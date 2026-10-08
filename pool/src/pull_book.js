@@ -11,6 +11,7 @@ import { hash20FromAddress, encodeDest } from '../../crypto/address.js';
 import { asU8 } from '../../crypto/note.js';
 import {
   AUTO_PAYOUT_MIN_NANOS,
+  custodialPullAllowed,
   isMinerSsa1,
   shouldAutoPayout,
   potCreditAfterFeeNanos,
@@ -180,6 +181,7 @@ export function createPullBook(dir) {
     finderTag = '',
     finderWorker = '',
   } = {}) {
+    if (!custodialPullAllowed()) return { ok: false, reason: 'custodial_pull' };
     const list = (rows || []).filter((r) => r && r.tag && (Number(r.count) || 0) > 0);
     const total = list.reduce((a, r) => a + (Number(r.count) || 0), 0);
     const pot = Math.max(0, Math.floor(Number(nanos) || 0));
@@ -251,6 +253,27 @@ export function createPullBook(dir) {
 
   function view(tag, { tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
     const key = String(tag || '').trim().toLowerCase();
+    if (!custodialPullAllowed()) {
+      const dest = destOf(key);
+      return {
+        pendingNanos: 0,
+        confirmedNanos: 0,
+        unconfirmedNanos: 0,
+        confirmedPotNanos: 0,
+        confirmedHashNanos: 0,
+        hashPaidNanos: 0,
+        sentNanos: 0,
+        lastPullMs: 0,
+        nextPullMs: 0,
+        dest,
+        destRedacted: redactSsa1(dest),
+        autoPayoutMinNanos: 0,
+        foundBlocks: 0,
+        oldestUnconfirmedHeight: 0,
+        confirmRemain: 0,
+        confirmNeed: Math.max(1, Number(need) || 1),
+      };
+    }
     let unconfirmedPot = 0;
     let confirmedPot = 0;
     let hashPaid = 0;
@@ -446,6 +469,7 @@ export function createPullBook(dir) {
   }
 
   function ledger(tag) {
+    if (!custodialPullAllowed()) return [];
     const key = String(tag || '').trim().toLowerCase();
     const byH = new Map();
     for (const c of state.credits) {
@@ -481,6 +505,7 @@ export function createPullBook(dir) {
   }
 
   function dueAuto({ tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
+    if (!custodialPullAllowed()) return [];
     const out = [];
     for (const tag of tags()) {
       const dest = destOf(tag);

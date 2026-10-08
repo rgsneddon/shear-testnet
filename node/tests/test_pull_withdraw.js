@@ -101,7 +101,8 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     assert.equal(decodeHeader(tpl.header).bits, GENESIS_BITS_PACKED);
     const block = blockFromTpl(tpl);
     const got = verifyBlock(block, null, { trustedPowHash: TRUSTED_POW });
-    assert.equal(got.ok, true, got.reason);
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'range_proof');
     const body = JSON.stringify(block.txs.slice(1));
     assert.equal(body.includes('she1'), false);
     assert.equal(containsShe1(block.txs[1]), false);
@@ -122,7 +123,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const leak = blockFromTpl(leakTpl);
     const denied = verifyBlock(leak, null, { trustedPowHash: TRUSTED_POW });
     assert.equal(denied.ok, false);
-    assert.equal(denied.reason, 'she1_on_chain');
+    assert.equal(denied.reason, 'range_proof');
 
     const api = handleWalletApi(new URL('http://127.0.0.1/api/pool/withdraw'), 'POST', {
       login: '',
@@ -234,12 +235,9 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
         fee,
         spendKey: poolBox.key,
       });
-      assert.equal(built.ok, true, built.reason);
-      assert.equal(built.tx.from, poolBox.dest);
-      assert.equal(built.tx.sponsor, poolBox.dest);
-      assert.equal(built.tx.fee, fee);
-      assert.equal(built.tx.kind, 'pool-withdraw');
-      assert.equal(built.tx.poolPaysFee, true);
+      assert.equal(built.ok, false);
+      assert.equal(built.reason, 'custodial_pull');
+      assert.equal(built.tx, undefined);
     } finally {
       if (prev === undefined) delete process.env.SHEAR_POOL_WALLET_LOCK;
       else process.env.SHEAR_POOL_WALLET_LOCK = prev;
@@ -253,10 +251,10 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const pool = poolBox.dest;
     const unsigned = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100 });
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
-    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'unsigned');
+    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'range_proof');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-bound-'));
     const store = createStore(dir);
-    assert.equal(store.queueTx(unsigned).reason, 'unsigned');
+    assert.equal(store.queueTx(unsigned).reason, 'custodial_pull');
     const built = buildAutoPayoutTx({
       from: pool,
       to: dest,
@@ -264,20 +262,32 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       fee: 100,
       spendKey: poolBox.key,
     });
-    assert.equal(built.ok, true, built.reason);
-    assert.equal(verifyPoolWithdrawBound(built.tx).ok, true);
-    built.tx.vin[0].commit = Buffer.alloc(32, 7);
-    const queued = store.queueTx(built.tx);
-    assert.equal(queued.ok, true, queued.reason);
-    const failed = store.queueTx(poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100, id: 'no-sig' }));
-    assert.equal(failed.ok, false);
-    assert.equal(failed.reason, 'unsigned');
-    const sealed = compactTx(built.tx);
-    assert.ok(sealed.vin[0].dest20);
-    assert.equal(sealed.from, undefined);
-    assert.equal(verifyPoolWithdrawBound(sealed).ok, true);
-    const stolen = { ...sealed, spendPub: undefined, sig: undefined, vin: sealed.vin.map((v) => ({ ...v })) };
-    signSpendTx(stolen, spendBox(newIdentity()).key);
-    assert.equal(store.queueTx({ ...stolen, id: 'stolen-compact' }).reason, 'unsigned');
+    assert.equal(built.ok, false);
+    assert.equal(built.reason, 'custodial_pull');
+    const signed = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100, id: 'signed-plain' });
+    signSpendTx(signed, poolBox.key);
+    assert.equal(verifyPoolWithdrawBound(signed).ok, true);
+    const queued = store.queueTx(signed);
+    assert.equal(queued.ok, false);
+    assert.equal(queued.reason, 'custodial_pull');
+    assert.equal((store.mempool || []).some((m) => m.id === 'signed-plain'), false);
+    const bare = {
+      id: 'no-range',
+      kind: 'send',
+      from: pool,
+      to: dest,
+      vin: [{ address: pool }],
+      vout: [{ address: dest, nanos: 1, kind: 'send' }],
+    };
+    signSpendTx(bare, poolBox.key);
+    assert.equal(admitMempool(emptyMempool(), bare).reason, 'range_proof');
+    const missing = store.queueTx(bare);
+    assert.equal(missing.ok, false);
+    assert.equal(missing.reason, 'admit_membership');
+    assert.equal((store.mempool || []).some((m) => m.id === 'no-range'), false);
+    const tpl = store.template({ miner: dest, now: 1_700_000_000_000 });
+    const ids = (tpl.txs || []).map((t) => t.id);
+    assert.equal(ids.includes('signed-plain'), false);
+    assert.equal(ids.includes('no-range'), false);
   });
 });

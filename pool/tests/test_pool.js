@@ -1342,7 +1342,9 @@ describe('public miner listing', () => {
     const httpPort = pool.httpServer.address().port;
     pool.store.tip = () => ({ height: 40 });
     pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
-    assert.equal(pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 }).ok, true);
+    const credited = pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1, nanos: 100000000000 });
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
     const r = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}/withdraw`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1351,11 +1353,19 @@ describe('public miner listing', () => {
     const json = await r.json();
     assert.equal(r.status, 410);
     assert.equal(json.reason, 'auto_payout');
+    const unknown = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent('mdeadbeef')}/withdraw`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(unknown.status, 410);
+    assert.equal((await unknown.json()).reason, 'auto_payout');
     const view = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`);
     const miner = await view.json();
-    assert.equal(miner.ok, true);
-    assert.match(miner.confirmedSentLabel, /^Confirmed sent to ssa1\*{8}/);
-    assert.equal(typeof miner.sentNanos, 'number');
+    assert.equal(view.status, 404);
+    assert.equal(miner.reason, 'unknown_miner');
+    assert.equal(JSON.stringify(miner).includes('100000000000'), false);
+    assert.equal(miner.pendingShe, undefined);
     pool.close();
   });
 
@@ -1378,20 +1388,22 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const hashByDest = new Map([[dest, 11]]);
-    assert.equal(pool.pullBook.creditRound(
+    const credited = pool.pullBook.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 4, nanos: 100000000000, hashByDest },
-    ).ok, true);
-    const internal = pool.pullBook.ledger(tag);
-    assert.equal(internal[0].hashBonusNanos, 11);
-    assert.equal(internal[0].totalNanos, internal[0].blockRwdNanos + 11);
-    const page = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`).then((r) => r.json());
-    assert.equal(page.ok, true);
-    assert.equal(page.ledger.length, 1);
-    assert.equal(Object.hasOwn(page.ledger[0], 'hashBonusNanos'), false);
-    assert.equal(page.ledger[0].totalNanos, page.ledger[0].blockRwdNanos);
-    assert.equal(page.ledger[0].blockRwdNanos, 100000000000);
-    assert.equal(JSON.stringify(page).includes('hashBonusNanos'), false);
+    );
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
+    assert.equal(pool.pullBook.ledger(tag).length, 0);
+    const pageRes = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`);
+    const page = await pageRes.json();
+    assert.equal(pageRes.status, 404);
+    assert.equal(page.reason, 'unknown_miner');
+    assert.equal(page.ledger, undefined);
+    const body = JSON.stringify(page);
+    assert.equal(body.includes('hashBonusNanos'), false);
+    assert.equal(body.includes('100000000000'), false);
+    assert.equal(body.includes('"blockRwdNanos"'), false);
     pool.close();
   });
 });

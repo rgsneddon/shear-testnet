@@ -227,6 +227,11 @@ export function containsShe1(obj) {
   return /(?:^|[^a-z])she1[0-9a-z]*/i.test(s.replace(/ssa1/gi, ''));
 }
 
+/** This chain pays miners in coinbase notes. Another magic is the old custodial book. */
+export function custodialPullAllowed(magic = MAGIC_TESTNET) {
+  return String(magic || '') !== String(MAGIC_TESTNET);
+}
+
 export function poolWithdrawTx({ from, to, nanos, fee, id } = {}) {
   const L = Math.max(0, Math.floor(Number(fee) || 0));
   // One pool wallet: miner pots and the pull levy both sit on `from`.

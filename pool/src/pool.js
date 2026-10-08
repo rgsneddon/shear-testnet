@@ -45,7 +45,7 @@ import {
   PRODUCT_VERSION,
   PI_SHE_NANOS,
 } from '../../crypto/asert.js';
-import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
+import { poolFeeDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
 import {
@@ -4543,6 +4543,7 @@ export function createPool({
     maxRows = PAYOUT_SWEEP_MAX_ROWS,
     budgetMs = PAYOUT_SWEEP_BUDGET_MS,
   } = {}) {
+    if (!custodialPullAllowed()) return [];
     const tipH = Number(store.tip?.()?.height || 0);
     const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
     const from = payoutDest(miner) || poolFeeDest();
@@ -4641,6 +4642,12 @@ export function createPool({
   function queueSend(t, meta) {
     const id = t.id || `send-${Date.now()}`;
     const tx = { id, ...t };
+    if (!custodialPullAllowed() && (
+      String(tx.kind || '') === 'pool-withdraw'
+      || String(tx.vout?.[0]?.kind || '') === 'pool-withdraw'
+    )) {
+      return { ok: false, reason: 'custodial_pull' };
+    }
     const owedRaw = Number(meta && meta.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     if (typeof store.queueTx === 'function') {
@@ -4912,19 +4919,8 @@ export function createPool({
     if (url.pathname.startsWith('/api/miners/')) {
       const parts = url.pathname.slice('/api/miners/'.length).split('/').filter(Boolean);
       const tag = decodeURIComponent(parts[0] || '');
-      const rows = minerByTag(tag);
       res.setHeader('content-type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
-      const tipH = Number(store.tip?.()?.height || 0);
-      const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
-      const pull = pullBook.view(tag, { tipHeight: tipH, need });
-      const held = typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [];
-      const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
-      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length && !known) {
-        res.statusCode = 404;
-        res.end(JSON.stringify({ ok: false, reason: 'unknown_miner', tag }));
-        return;
-      }
       if (parts[1] === 'withdraw' && req.method === 'POST') {
         res.statusCode = 410;
         res.end(JSON.stringify({
@@ -4934,6 +4930,17 @@ export function createPool({
           autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
           dest: 'ssa1',
         }));
+        return;
+      }
+      const rows = minerByTag(tag);
+      const tipH = Number(store.tip?.()?.height || 0);
+      const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
+      const pull = pullBook.view(tag, { tipHeight: tipH, need });
+      const held = typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [];
+      const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
+      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length && !known) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ ok: false, reason: 'unknown_miner', tag }));
         return;
       }
       res.end(JSON.stringify(minerPublicJson(tag)));

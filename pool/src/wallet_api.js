@@ -25,6 +25,7 @@ import {
   poolPayoutDest,
   poolFeeDest,
   poolWithdrawTx,
+  custodialPullAllowed,
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
@@ -973,6 +974,7 @@ export function paintedSpendableNanos(store, pullBook, address, chainNanos) {
 
 /** Dest-scoped owed-π / confirming pot from the pull-book (credits still below π). */
 export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30 } = {}) {
+  if (!custodialPullAllowed()) return { owedPi: 0, confirmingPot: 0 };
   if (!pullBook || typeof pullBook.viewByDest !== 'function' || !isDestAddress(address)) {
     return { owedPi: 0, confirmingPot: 0 };
   }

@@ -308,13 +308,15 @@ describe('operator admin fee wallet', () => {
     }
   });
 
-  it('admin may withdraw only the fee dest; unpaid miner credits are reserved', () => {
+  it('a refused pull credit reserves nothing, and a plaintext fee row is not spendable', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-split-'));
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const book = createPullBook(dir);
     const pot = potCreditNanos();
-    assert.equal(book.creditRound([{ tag: 'mabcdef12', dest, count: 10 }], { height: 5, nanos: pot }).ok, true);
+    const credited = book.creditRound([{ tag: 'mabcdef12', dest, count: 10 }], { height: 5, nanos: pot });
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
     const fee = configuredFeeIdentity().feeDest;
     const store = {
       historyFor: (addr) => (addr === fee ? [{
@@ -324,9 +326,9 @@ describe('operator admin fee wallet', () => {
       mempool: [],
     };
     const bal = adminWalletBalance(store, dest, book);
-    assert.equal(bal.spendable, 1);
-    assert.equal(bal.minerReservedNanos, pot);
-    assert.ok(bal.minerReserved > 0.9);
-    assert.ok(bal.minerReserved < 1);
+    assert.equal(bal.spendableNanos, 0);
+    assert.equal(bal.spendable, 0);
+    assert.equal(bal.minerReservedNanos, 0);
+    assert.equal(bal.minerReserved, 0);
   });
 });

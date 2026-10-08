@@ -355,7 +355,9 @@ describe('wallet pending incoming', () => {
     const book = createPullBook(path.join(dir, 'pull'));
     const tag = publicMinerTag(dest);
     const pot = potCreditNanos();
-    assert.equal(book.creditRound([{ tag, dest, count: 10 }], { height: 1, nanos: pot, now: 1 }).ok, true);
+    const credited = book.creditRound([{ tag, dest, count: 10 }], { height: 1, nanos: pot, now: 1 });
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
     const bare = handleWalletApi(new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`), 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
     assert.equal(bare.status, 401);
     assert.equal(bare.json.owedPi, undefined);
@@ -364,12 +366,13 @@ describe('wallet pending incoming', () => {
     const first = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
     const second = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
     const view = book.viewByDest(dest, { tipHeight: store.tip()?.height || 0, need: 30 });
+    assert.equal(view.pendingNanos, 0);
     assert.equal(first.status, 200);
     assert.equal(second.status, 200);
+    assert.equal(first.json.owedPi, 0);
+    assert.equal(first.json.confirmingPot, 0);
+    assert.equal(second.json.owedPi, 0);
     assert.equal(first.json.owedPi, view.pendingNanos / NANOS_PER_SHE);
-    assert.equal(first.json.confirmingPot, first.json.owedPi);
-    assert.equal(second.json.owedPi, first.json.owedPi);
-    assert.ok(first.json.owedPi > 0);
   });
 });
 
