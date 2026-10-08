@@ -1062,6 +1062,15 @@ function takePreparedHeader(header) {
   return found;
 }
 
+function peekPreparedHeader(header) {
+  const found = preparedHeaderPow.get(headerPowKey(header));
+  return found ? Buffer.from(found) : null;
+}
+
+export function discardPreparedHeader(header) {
+  if (header) dropPreparedHeader(header);
+}
+
 function dropPreparedHeader(header) {
   preparedHeaderPow.delete(headerPowKey(header));
 }
@@ -1275,6 +1284,147 @@ function settlementFor(prev, height, block, unit, extra = {}) {
   return { ...settled, idle };
 }
 
+/**
+ * Header proof-of-work and the cheap header rules.
+ * The store runs this before any owed replay. `consumePrepared` drops a
+ * stashed header hash after this call. A gate that leaves the stash for
+ * the body sets it false.
+ */
+export function assessHeader(block, prev, opts = {}) {
+  const consume = opts.consumePrepared === true;
+  const trustedPowHash = opts.trustedPowHash || null;
+  const mtpTimestamps = opts.mtpTimestamps || null;
+  const nowMs = opts.nowMs == null ? null : opts.nowMs;
+  const genesisMs = Number(opts.genesisMs) || 0;
+  const magic = opts.magic || MAGIC_TESTNET;
+  let headerBuf = null;
+  const finish = (result) => {
+    if (consume && headerBuf) dropPreparedHeader(headerBuf);
+    return result;
+  };
+  if (!block?.header) return finish({ ok: false, reason: 'no_header' });
+  const h = Buffer.from(block.header);
+  headerBuf = h;
+  let decoded;
+  try {
+    decoded = decodeHeader(h);
+  } catch (e) {
+    return finish({ ok: false, reason: 'bad_header' });
+  }
+  if (decoded.version !== VERSION) return finish({ ok: false, reason: 'version' });
+  const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
+  if (!decoded.prevBlockHash.equals(wantPrev)) return finish({ ok: false, reason: 'prev' });
+  // The slot byte is consensus. Check it before header work so a flipped
+  // trailer is share_slot and does not depend on proof-of-work. An unburied
+  // pruned block keeps the samples_pruned reason from the later check.
+  const slotHeight = Number(block.height || (Number(prev?.height || 0) + 1));
+  const slotParent = Number(prev?.height || 0);
+  const slotBurial = opts.loadReplay === true
+    ? (Number(opts.tipHeight) || slotParent)
+    : slotParent;
+  const slotPrunedEarly = !!block.samplesPruned && !shouldPruneSamples(slotHeight, slotBurial);
+  if (!slotPrunedEarly && Array.isArray(block.txs) && block.txs[0]?.coinbase) {
+    const slotReason = shareSlotCommitment(block.txs[0], block.shareBatch || [], {
+      samplesPruned: !!block.samplesPruned,
+      buried: shouldPruneSamples(slotHeight, slotBurial),
+    });
+    if (slotReason) return finish({ ok: false, reason: slotReason });
+  }
+  // Local pool already hashed this header off-thread and passes trustedPowHash.
+  // P2P omits that field. It stashes a worker ShearHash, then this branch
+  // still checks the target. A missing stash hashes here (local mine / tests).
+  let hash;
+  if (opts.probeBody === true) {
+    // In-process template probe. store.append never sets this, and the
+    // stand-in is not block work. Every other check still runs.
+    hash = Buffer.alloc(32);
+  } else if (opts.preparedHash) {
+    hash = Buffer.from(opts.preparedHash);
+    if (hash.length !== 32 || !meetsTarget(hash, decoded.bits)) {
+      return finish({ ok: false, reason: 'pow' });
+    }
+  } else if (trustedPowHash) {
+    hash = Buffer.from(trustedPowHash);
+    if (hash.length !== 32 || !meetsTarget(hash, decoded.bits)) {
+      return finish({ ok: false, reason: 'pow' });
+    }
+  } else {
+    const prepared = peekPreparedHeader(h);
+    if (prepared) hash = prepared;
+    else {
+      hash = shearHash(h);
+      stashPreparedHeader(h, hash);
+    }
+    if (!meetsTarget(hash, decoded.bits)) return finish({ ok: false, reason: 'pow' });
+  }
+  const txs = Array.isArray(block.txs) ? block.txs : [];
+  if (!txs.length || !txs[0]?.coinbase) return finish({ ok: false, reason: 'coinbase' });
+  const merkle = merkleRoot(txs.map(digestTx));
+  if (!merkle.equals(decoded.merkleRoot)) return finish({ ok: false, reason: 'merkle' });
+  let resolvedGenesisMs = 0;
+  if (prev?.header) {
+    let parent;
+    try {
+      parent = decodeHeader(Buffer.from(prev.header));
+    } catch {
+      return finish({ ok: false, reason: 'parent_header' });
+    }
+    // Genesis-anchored aserti3-2d. The child stamp is the block time.
+    // Parent bits are not the anchor, so an emergency ease does not stick.
+    // A closed-book historical header may skip this check. v12 does not.
+    const ts = Number(decoded.timestamp);
+    const parentTs = Number(parent.timestamp);
+    const parentIsGenesis = parent.prevBlockHash.equals(GENESIS_PREV);
+    resolvedGenesisMs = parentIsGenesis ? parentTs : Number(genesisMs);
+    if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
+      return finish({ ok: false, reason: 'genesis_ms' });
+    }
+    const heightNow = Number(block.height || (Number(prev.height) || 0) + 1);
+    const quote = asertNextBits({
+      anchorBits: parentIsGenesis ? parent.bits : GENESIS_BITS_PACKED,
+      anchorTimeMs: resolvedGenesisMs,
+      anchorHeight: parentIsGenesis ? Number(prev.height || 1) : 1,
+      blockTimeMs: ts,
+      blockHeight: heightNow,
+      parentTimeMs: parentTs,
+    });
+    const closedBook = String(magic) !== MAGIC_TESTNET_V12 && String(magic) !== MAGIC_MAINNET;
+    if ((!quote.ok || !bitsAcceptAsert(decoded.bits, quote)) && !(closedBook && isHistoricalHeader(h))) {
+      return finish({ ok: false, reason: 'bits' });
+    }
+    if (!isPackedBits(decoded.bits)) return finish({ ok: false, reason: 'bits' });
+    const fp = unpackBits(decoded.bits);
+    if (fp < LIVE_MIN_BITS || fp > MAX_BITS) return finish({ ok: false, reason: 'bits' });
+    const pWeight = Number(prev.weight != null
+      ? prev.weight
+      : blockWeight(prev.txs || [], prev.bLeaves || []));
+    const wantBase = nextBaseFee(Number(parent.baseFee || 1n), pWeight);
+    if (Number(decoded.baseFee) !== wantBase) return finish({ ok: false, reason: 'base_fee' });
+    if (!(ts > parentTs)) return finish({ ok: false, reason: 'timestamp' });
+    const window = Array.isArray(mtpTimestamps) && mtpTimestamps.length
+      ? mtpTimestamps.slice(-MTP_WINDOW)
+      : [parentTs];
+    const mtp = medianTimePast(window);
+    if (ts > mtp + MTP_FUTURE_MS) return finish({ ok: false, reason: 'timestamp' });
+    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + HEADER_AHEAD_MS) {
+      return finish({ ok: false, reason: 'timestamp' });
+    }
+    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + MTP_FUTURE_MS) {
+      return finish({ ok: false, reason: 'timestamp' });
+    }
+  } else {
+    if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
+      return finish({ ok: false, reason: 'bits' });
+    }
+    if (Number(decoded.baseFee) < 1) return finish({ ok: false, reason: 'base_fee' });
+    resolvedGenesisMs = Number(decoded.timestamp);
+  }
+  if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
+    return finish({ ok: false, reason: 'genesis_ms' });
+  }
+  return finish({ ok: true, hash, decoded, genesisMs: resolvedGenesisMs });
+}
+
 function verifyBlockConsensus(block, prev, opts = {}) {
   if (opts.offLoopPow && !opts.trustedPowHash) {
     return prepareOffLoopPow(block, prev, {
@@ -1325,116 +1475,16 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   } = opts;
   // A pool dest passed by the store is not a pot witness. The openings are.
   void poolDest;
-  if (!block?.header) return { ok: false, reason: 'no_header' };
-  const h = Buffer.from(block.header);
-  let decoded;
-  try {
-    decoded = decodeHeader(h);
-  } catch (e) {
-    return { ok: false, reason: 'bad_header' };
-  }
-  if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
-  const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
-  if (!decoded.prevBlockHash.equals(wantPrev)) return { ok: false, reason: 'prev' };
-  // The slot byte is consensus. Check it before header work so a flipped
-  // trailer is share_slot and does not depend on proof-of-work. An unburied
-  // pruned block keeps the samples_pruned reason from the later check.
-  const slotHeight = Number(block.height || (Number(prev?.height || 0) + 1));
-  const slotParent = Number(prev?.height || 0);
-  const slotBurial = opts.loadReplay === true
-    ? (Number(opts.tipHeight) || slotParent)
-    : slotParent;
-  const slotPrunedEarly = !!block.samplesPruned && !shouldPruneSamples(slotHeight, slotBurial);
-  if (!slotPrunedEarly && Array.isArray(block.txs) && block.txs[0]?.coinbase) {
-    const slotReason = shareSlotCommitment(block.txs[0], block.shareBatch || [], {
-      samplesPruned: !!block.samplesPruned,
-      buried: shouldPruneSamples(slotHeight, slotBurial),
-    });
-    if (slotReason) return { ok: false, reason: slotReason };
-  }
-  // Local pool already hashed this header off-thread and passes trustedPowHash.
-  // P2P omits that field. It stashes a worker ShearHash, then this branch
-  // still checks the target. A missing stash hashes here (local mine / tests).
-  let hash;
-  if (opts.probeBody === true) {
-    // In-process template probe. store.append never sets this, and the
-    // stand-in is not block work. Every other check still runs.
-    hash = Buffer.alloc(32);
-  } else if (trustedPowHash) {
-    hash = Buffer.from(trustedPowHash);
-    if (hash.length !== 32 || !meetsTarget(hash, decoded.bits)) {
-      return { ok: false, reason: 'pow' };
-    }
-  } else {
-    const prepared = takePreparedHeader(h);
-    hash = prepared || shearHash(h);
-    if (!meetsTarget(hash, decoded.bits)) return { ok: false, reason: 'pow' };
-  }
+  void mtpTimestamps;
+  void nowMs;
+  void genesisMs;
+  void magic;
+  void trustedPowHash;
+  const assessed = assessHeader(block, prev, { ...opts, consumePrepared: true });
+  if (!assessed.ok) return assessed;
+  const { hash, decoded } = assessed;
+  const resolvedGenesisMs = assessed.genesisMs;
   const txs = Array.isArray(block.txs) ? block.txs : [];
-  if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
-  const merkle = merkleRoot(txs.map(digestTx));
-  if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
-  let resolvedGenesisMs = 0;
-  if (prev?.header) {
-    let parent;
-    try {
-      parent = decodeHeader(Buffer.from(prev.header));
-    } catch {
-      return { ok: false, reason: 'parent_header' };
-    }
-    // Genesis-anchored aserti3-2d. The child stamp is the block time.
-    // Parent bits are not the anchor, so an emergency ease does not stick.
-    // A closed-book historical header may skip this check. v12 does not.
-    const ts = Number(decoded.timestamp);
-    const parentTs = Number(parent.timestamp);
-    const parentIsGenesis = parent.prevBlockHash.equals(GENESIS_PREV);
-    resolvedGenesisMs = parentIsGenesis ? parentTs : Number(genesisMs);
-    if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
-      return { ok: false, reason: 'genesis_ms' };
-    }
-    const heightNow = Number(block.height || (Number(prev.height) || 0) + 1);
-    const quote = asertNextBits({
-      anchorBits: parentIsGenesis ? parent.bits : GENESIS_BITS_PACKED,
-      anchorTimeMs: resolvedGenesisMs,
-      anchorHeight: parentIsGenesis ? Number(prev.height || 1) : 1,
-      blockTimeMs: ts,
-      blockHeight: heightNow,
-      parentTimeMs: parentTs,
-    });
-    const closedBook = String(magic) !== MAGIC_TESTNET_V12 && String(magic) !== MAGIC_MAINNET;
-    if ((!quote.ok || !bitsAcceptAsert(decoded.bits, quote)) && !(closedBook && isHistoricalHeader(h))) {
-      return { ok: false, reason: 'bits' };
-    }
-    if (!isPackedBits(decoded.bits)) return { ok: false, reason: 'bits' };
-    const fp = unpackBits(decoded.bits);
-    if (fp < LIVE_MIN_BITS || fp > MAX_BITS) return { ok: false, reason: 'bits' };
-    const pWeight = Number(prev.weight != null
-      ? prev.weight
-      : blockWeight(prev.txs || [], prev.bLeaves || []));
-    const wantBase = nextBaseFee(Number(parent.baseFee || 1n), pWeight);
-    if (Number(decoded.baseFee) !== wantBase) return { ok: false, reason: 'base_fee' };
-    if (!(ts > parentTs)) return { ok: false, reason: 'timestamp' };
-    const window = Array.isArray(mtpTimestamps) && mtpTimestamps.length
-      ? mtpTimestamps.slice(-MTP_WINDOW)
-      : [parentTs];
-    const mtp = medianTimePast(window);
-    if (ts > mtp + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
-    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + HEADER_AHEAD_MS) {
-      return { ok: false, reason: 'timestamp' };
-    }
-    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + MTP_FUTURE_MS) {
-      return { ok: false, reason: 'timestamp' };
-    }
-  } else {
-    if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
-      return { ok: false, reason: 'bits' };
-    }
-    if (Number(decoded.baseFee) < 1) return { ok: false, reason: 'base_fee' };
-    resolvedGenesisMs = Number(decoded.timestamp);
-  }
-  if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
-    return { ok: false, reason: 'genesis_ms' };
-  }
   const wantPot = potSubsidyAt({
     nowMs: Number(decoded.timestamp) || Number(nowMs) || 0,
     genesisMs: resolvedGenesisMs,

@@ -27,6 +27,8 @@ import {
   chainLoadSeal,
   V12_GENESIS_BLOCK_HASH,
   V12_BOOTSTRAP_CHECKPOINT,
+  assessHeader,
+  discardPreparedHeader,
 } from './chain.js';
 import { bookSealKeyFor } from './book_seal_key.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
@@ -258,6 +260,13 @@ function grandparentHeader(chain) {
 
 const loadResumeToken = Symbol('shear-load-resume');
 
+/**
+ * Owed state is kept at block 0, at the tip, and every this many blocks.
+ * A fork replays only from the checkpoint at or below its anchor, so the
+ * walk is this spacing plus the fork, not the chain length.
+ */
+export const OWED_CHECKPOINT_SPACING = 32;
+
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
@@ -299,7 +308,20 @@ export function createStore(dir, {
   let owedRows = [];
   let acceptedSeries = [];
   let owedSeriesAll = acceptedSeries;
-  let owedSnap = [];
+  let owedCkpt = [];
+  let vaultCkpt = [];
+  let seedCache = null;
+  const owedSeed = {
+    forkAdvances: 0,
+    forkGenesis: 0,
+    cached: 0,
+    suffixAdvances: 0,
+    loadBlocks: 0,
+    refused: 0,
+  };
+  // A legacy snap has no checkpoint trailer. Back-fill once, then rewrite
+  // the snap so the next start does not replay the prefix again.
+  let snapRewrite = false;
   let unitAt = [];
   let loadMode = 'empty';
   let preFlux = null;
@@ -386,8 +408,9 @@ export function createStore(dir, {
         },
       });
       if (!checked.ok) throw new Error(checked.reason || 'pow');
+      adoptPlanCheckpoints(plan);
       owedRows = checked.owedRows;
-      acceptedSeries = checked.acceptedSeries;
+      acceptedSeries = checked.acceptedSeries.slice();
       owedSeriesAll = acceptedSeries;
       spentB.clear();
       for (const id of checked.spentIds) spentB.add(id);
@@ -496,10 +519,23 @@ export function createStore(dir, {
     return null;
   }
 
+  function adoptPlanCheckpoints(plan) {
+    if (!Array.isArray(plan?.owedCheckpoints)) {
+      owedCkpt = [];
+      return;
+    }
+    owedCkpt = plan.owedCheckpoints.map((c) => ({
+      at: Number(c.at),
+      seriesEnd: Number(c.seriesEnd),
+      rows: c.rows,
+    }));
+  }
+
   function applySnap(plan, height) {
     owedRows = plan.owedRows;
     acceptedSeries = plan.acceptedSeries.slice();
     owedSeriesAll = acceptedSeries;
+    adoptPlanCheckpoints(plan);
     spentB.clear();
     for (const id of plan.spentIds) spentB.add(String(id));
     preFlux = {
@@ -714,9 +750,13 @@ export function createStore(dir, {
     reserveVault.votes = { increase: 0, decrease: 0, hold: 0 };
     reserveVault.blankFork = false;
     unitAt = [];
-    for (const b of blocks) {
+    vaultCkpt = [];
+    const tipAt = blocks.length - 1;
+    for (let i = 0; i < blocks.length; i += 1) {
+      const b = blocks[i];
       unitAt.push(hashBonusUnitNanos(reserveVault.liveHashBonusNanos));
       applyReserveBlock({ state: reserveVault, block: b, nowMs: blockTimeMs(b) });
+      if (keepOwedIndex(i, tipAt)) vaultCkpt.push({ at: i, vault: cloneVault(reserveVault) });
     }
     refreshVaultSeal();
     syncBlankFlag();
@@ -769,7 +809,8 @@ export function createStore(dir, {
 
   bootVault();
   syncOwed(blocks);
-  if (loadMode !== 'snap') persistBookSnap();
+  ensureVaultCheckpoints();
+  if (loadMode !== 'snap' || snapRewrite) persistBookSnap();
   writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
 
   function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
@@ -857,6 +898,11 @@ export function createStore(dir, {
         vaultCommitment: commit,
         owedRows,
         acceptedSeries,
+        owedCheckpoints: owedCkpt.map((c) => ({
+          at: c.at,
+          seriesEnd: c.seriesEnd,
+          rows: c.rows,
+        })),
         spentIds: [...spentB],
         pubs: liveFlux?.pubs || [],
         commits: liveFlux?.commits || [],
@@ -1054,13 +1100,104 @@ export function createStore(dir, {
     block.hashCredits = freshCreditsFromShares(block.shareBatch || [], unit);
   }
 
+  function keepOwedIndex(at, tipAt) {
+    if (!Number.isInteger(at) || at < 0 || at > tipAt) return false;
+    if (at === 0 || at === tipAt) return true;
+    return ((at + 1) % OWED_CHECKPOINT_SPACING) === 0;
+  }
+
+  function compressReplaySnaps(snaps, n) {
+    const tipAt = n - 1;
+    const out = [];
+    for (let i = 0; i < snaps.length; i += 1) {
+      if (!keepOwedIndex(i, tipAt)) continue;
+      const s = snaps[i];
+      out.push({
+        at: i,
+        rows: s.rows,
+        seriesEnd: Number.isInteger(s.seriesEnd) ? s.seriesEnd : i + 1,
+      });
+    }
+    return out;
+  }
+
+  function checkpointsCover(n) {
+    if (n <= 0) return true;
+    if (!owedCkpt.length) return false;
+    let prev = -1;
+    for (const c of owedCkpt) {
+      if (!c || !Number.isInteger(c.at) || c.at <= prev) return false;
+      if (c.at - prev > OWED_CHECKPOINT_SPACING) return false;
+      if (!Array.isArray(c.rows) || !Number.isInteger(c.seriesEnd) || c.seriesEnd < 0) return false;
+      prev = c.at;
+    }
+    const tip = owedCkpt[owedCkpt.length - 1];
+    return tip.at === n - 1 && tip.seriesEnd === acceptedSeries.length && prev === n - 1;
+  }
+
+  function replayOwedFrom(list, fromAt, rowsIn, seriesIn) {
+    const tipAt = list.length - 1;
+    let rows = rowsIn;
+    let series = seriesIn;
+    const units = unitAt.length === list.length ? unitAt : bonusUnitsBefore(list);
+    const tipH = Number(list[tipAt]?.height || tipAt + 1);
+    for (let i = fromAt; i <= tipAt; i += 1) {
+      const next = advanceHashOwed({
+        owedIn: rows,
+        acceptedSeries: series,
+        block: list[i],
+        unit: units[i],
+        height: Number(list[i]?.height) || i + 1,
+        tipHeight: tipH,
+      });
+      if (!next.ok) return null;
+      rows = next.rows;
+      series = next.acceptedSeries;
+      owedSeed.loadBlocks += 1;
+      if (keepOwedIndex(i, tipAt)) {
+        owedCkpt = owedCkpt.filter((c) => c.at !== i);
+        owedCkpt.push({ at: i, rows: copyOwedRows(rows), seriesEnd: series.length });
+      }
+    }
+    owedCkpt.sort((a, b) => a.at - b.at);
+    return { rows, series };
+  }
+
   function syncOwed(chain) {
     const list = chain || [];
     if ((loadMode === 'snap' || loadMode === 'suffix') && acceptedSeries.length === list.length) {
-      // Tip only. An earlier hole is recomputed by seedHistory, not stored as a copy per height.
       owedSeriesAll = acceptedSeries;
-      owedSnap = [];
-      if (list.length) owedSnap[list.length - 1] = { rows: owedRows, seriesEnd: acceptedSeries.length };
+      if (!checkpointsCover(list.length)) {
+        const last = owedCkpt.length ? owedCkpt[owedCkpt.length - 1] : null;
+        const canExtend = last
+          && last.at < list.length
+          && last.seriesEnd <= acceptedSeries.length
+          && last.seriesEnd === last.at + 1;
+        if (!canExtend) {
+          const units = unitAt.length === list.length ? unitAt : bonusUnitsBefore(list);
+          const got = replayHashOwed(list, { units });
+          if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
+          owedRows = got.rows;
+          acceptedSeries = got.accepted;
+          owedSeriesAll = acceptedSeries;
+          owedCkpt = compressReplaySnaps(got.snaps || [], list.length);
+          owedSeed.loadBlocks += list.length;
+          snapRewrite = true;
+        } else {
+          const filled = replayOwedFrom(
+            list,
+            last.at + 1,
+            last.rows.slice(),
+            acceptedSeries.slice(0, last.seriesEnd),
+          );
+          if (!filled) throw new Error('hash_owed_replay');
+          owedRows = filled.rows;
+          acceptedSeries = filled.series;
+          owedSeriesAll = acceptedSeries;
+          snapRewrite = true;
+        }
+      }
+      seedCache = null;
       return;
     }
     const units = unitAt.length === list.length ? unitAt : bonusUnitsBefore(list);
@@ -1069,7 +1206,112 @@ export function createStore(dir, {
     owedRows = got.rows;
     acceptedSeries = got.accepted;
     owedSeriesAll = acceptedSeries;
-    owedSnap = got.snaps || [];
+    owedCkpt = compressReplaySnaps(got.snaps || [], list.length);
+    seedCache = null;
+  }
+
+  function copyOwedRows(rows) {
+    return Array.isArray(rows) ? rows.slice() : [];
+  }
+
+  function rememberOwed(at) {
+    const tipAt = at;
+    owedCkpt = owedCkpt.filter((c) => keepOwedIndex(c.at, tipAt) && c.at !== tipAt);
+    owedCkpt.push({ at: tipAt, rows: copyOwedRows(owedRows), seriesEnd: acceptedSeries.length });
+    owedCkpt.sort((a, b) => a.at - b.at);
+    seedCache = null;
+  }
+
+  function rememberVault(at) {
+    const tipAt = at;
+    vaultCkpt = vaultCkpt.filter((c) => keepOwedIndex(c.at, tipAt) && c.at !== tipAt);
+    vaultCkpt.push({ at: tipAt, vault: cloneVault(reserveVault) });
+    vaultCkpt.sort((a, b) => a.at - b.at);
+  }
+
+  function fillAllVaultCheckpoints() {
+    const trial = cloneVault(emptyVault());
+    if (reserveVault?.oracle) {
+      try { trial.oracle = JSON.parse(JSON.stringify(reserveVault.oracle)); } catch { /* empty oracle */ }
+    }
+    vaultCkpt = [];
+    const tipAt = blocks.length - 1;
+    for (let i = 0; i <= tipAt; i += 1) {
+      applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) });
+      if (keepOwedIndex(i, tipAt)) vaultCkpt.push({ at: i, vault: cloneVault(trial) });
+    }
+  }
+
+  function vaultGapsOk() {
+    const tipAt = blocks.length - 1;
+    if (tipAt < 0) return true;
+    if (!vaultCkpt.length) return false;
+    let prev = -1;
+    for (const c of vaultCkpt) {
+      if (!c || c.at <= prev || c.at - prev > OWED_CHECKPOINT_SPACING) return false;
+      prev = c.at;
+    }
+    return vaultCkpt[vaultCkpt.length - 1].at === tipAt && prev === tipAt;
+  }
+
+  function ensureVaultCheckpoints() {
+    if (vaultGapsOk()) return;
+    fillAllVaultCheckpoints();
+  }
+
+  function vaultAfter(at) {
+    if (at < 0) return cloneVault(emptyVault());
+    let best = null;
+    for (const c of vaultCkpt) {
+      if (c.at <= at && (!best || c.at > best.at)) best = c;
+    }
+    const trial = best ? cloneVault(best.vault) : cloneVault(emptyVault());
+    const start = best ? best.at + 1 : 0;
+    for (let i = start; i <= at; i += 1) {
+      applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) });
+    }
+    return trial;
+  }
+
+  function unitsAlong(history, fork) {
+    const units = [];
+    const rows = Array.isArray(history) ? history : [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const u = i < unitAt.length ? unitAt[i] : HASH_BONUS_NANOS;
+      units.push(hashBonusUnitNanos(u));
+    }
+    if (!fork || !fork.length) return units;
+    const trial = vaultAfter(rows.length - 1);
+    for (const block of fork) {
+      units.push(hashBonusUnitNanos(trial.liveHashBonusNanos));
+      applyReserveBlock({ state: trial, block, nowMs: blockTimeMs(block) });
+    }
+    return units;
+  }
+
+  function repairVaultAfterAdopt(lca) {
+    if (vaultSeal && blocks.length && !chainHasSealAncestry(blocks, vaultSeal)) {
+      vaultCkpt = vaultCkpt.filter((c) => c.at < lca);
+      syncBlankFlag();
+      saveReserve();
+      return;
+    }
+    vaultCkpt = vaultCkpt.filter((c) => c.at < lca);
+    if (unitAt.length > lca) unitAt.length = lca;
+    const tipAt = blocks.length - 1;
+    const last = vaultCkpt.length ? vaultCkpt[vaultCkpt.length - 1] : null;
+    const trial = last ? cloneVault(last.vault) : cloneVault(emptyVault());
+    const start = last ? last.at + 1 : 0;
+    for (let i = start; i <= tipAt; i += 1) {
+      const unit = hashBonusUnitNanos(trial.liveHashBonusNanos);
+      if (i >= lca || i === unitAt.length) unitAt.push(unit);
+      applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) });
+      if (keepOwedIndex(i, tipAt)) vaultCkpt.push({ at: i, vault: cloneVault(trial) });
+    }
+    installVault(trial);
+    refreshVaultSeal();
+    syncBlankFlag();
+    saveReserve();
   }
 
   // Trailer must match ids derived from this block's own b-spend txs.
@@ -1502,11 +1744,13 @@ export function createStore(dir, {
     if (!owedNext.ok) throw new Error(owedNext.reason || 'hash_owed');
     owedRows = owedNext.rows;
     acceptedSeries = owedNext.acceptedSeries;
-    owedSnap.push({ rows: owedRows, series: acceptedSeries.slice() });
+    owedSeriesAll = acceptedSeries;
     unitAt.push(unitNow);
     indexSealed(stored);
     applyReserve(stored);
     blocks.push(stored);
+    rememberOwed(blocks.length - 1);
+    rememberVault(blocks.length - 1);
     refreshVaultSeal();
     syncBlankFlag();
     saveReserve();
@@ -1835,9 +2079,21 @@ export function createStore(dir, {
     return stamp(check);
   }
 
+  function noteForkSnap(snaps, at, rows, seriesEnd, tipAt) {
+    if (!keepOwedIndex(at, tipAt)) return;
+    snaps.push({ at, rows: copyOwedRows(rows), seriesEnd });
+  }
+
   function verifyFork(fork, verifyOpts = {}) {
     const needs = (fork || []).some((b) => blockNeedsEvm(b?.txs || []));
     if (needs) return verifyForkAsync(fork, verifyOpts);
+    if (!verifyOpts.headerGate) {
+      const gated = gateForkChain(fork, verifyOpts);
+      if (gated && typeof gated.then === 'function') {
+        return gated.then((g) => (g.ok ? verifyFork(fork, { ...verifyOpts, headerGate: true }) : g));
+      }
+      if (!gated.ok) return gated;
+    }
     const accepted = [];
     const trialSpent = new Set();
     const units = bonusUnitsBefore(fork);
@@ -1865,7 +2121,7 @@ export function createStore(dir, {
       if (!noVault && trialVault && i >= lca) {
         applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
       }
-      owedSnaps.push({ rows: owedWalk.owedIn, series: owedWalk.hashAcceptedSeries.slice() });
+      noteForkSnap(owedSnaps, i, owedWalk.owedIn, owedWalk.hashAcceptedSeries.length, fork.length - 1);
     }
     return {
       ok: true,
@@ -1877,6 +2133,8 @@ export function createStore(dir, {
   }
 
   async function verifyForkAsync(fork, verifyOpts = {}) {
+    const gated = await Promise.resolve(gateForkChain(fork, verifyOpts));
+    if (!gated.ok) return gated;
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
@@ -1908,7 +2166,7 @@ export function createStore(dir, {
       if (!noVault && trialVault && i >= lca) {
         applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
       }
-      owedSnaps.push({ rows: owedWalk.owedIn, series: owedWalk.hashAcceptedSeries.slice() });
+      noteForkSnap(owedSnaps, i, owedWalk.owedIn, owedWalk.hashAcceptedSeries.length, fork.length - 1);
     }
     return {
       ok: true,
@@ -1985,63 +2243,128 @@ export function createStore(dir, {
     try { return hex32(block?.hash).toLowerCase(); } catch { return ''; }
   }
 
-  function seriesOfSnap(snap) {
-    if (!snap || typeof snap !== 'object') return null;
-    if (Number.isInteger(snap.seriesEnd) && snap.seriesEnd >= 0) {
-      if (!Array.isArray(owedSeriesAll) || owedSeriesAll.length < snap.seriesEnd) return null;
-      return owedSeriesAll.slice(0, snap.seriesEnd);
-    }
-    if (Array.isArray(snap.series)) return snap.series.slice();
-    if (Array.isArray(snap.accepted)) return snap.accepted.slice();
-    return null;
-  }
-
-  function snapsFromReplay(list) {
-    const got = replayHashOwed(list, { units: bonusUnitsBefore(list) });
-    if (!got.ok) return null;
-    return {
-      rows: got.rows,
-      series: got.accepted.slice(),
-      snaps: (got.snaps || []).map((s) => ({
-        rows: s.rows,
-        series: got.accepted.slice(0, s.seriesEnd),
-      })),
-    };
-  }
-
-  /** Owed state at the end of `history`, from the local snap plus any side tail. */
-  function seedHistory(history) {
-    const list = Array.isArray(history) ? history : [];
-    let n = 0;
-    while (n < list.length && n < blocks.length && blockHex(list[n]) && blockHex(list[n]) === blockHex(blocks[n])) n += 1;
-    let rows = [];
-    let series = [];
-    let snaps = [];
-    if (n > 0) {
-      let hole = false;
-      for (let i = 0; i < n; i += 1) {
-        if (!seriesOfSnap(owedSnap[i])) { hole = true; break; }
-      }
-      if (!hole) {
-        rows = owedSnap[n - 1].rows;
-        series = seriesOfSnap(owedSnap[n - 1]);
-        snaps = owedSnap.slice(0, n).map((s) => ({ rows: s.rows, series: seriesOfSnap(s) }));
-      } else {
-        const filled = snapsFromReplay(list.slice(0, n));
-        if (!filled) return { ok: false, reason: 'hash_owed' };
-        rows = filled.rows;
-        series = filled.series;
-        snaps = filled.snaps;
-      }
-    }
-    if (n === list.length) return { ok: true, rows, series, snaps };
-    const units = bonusUnitsBefore(list);
+  function listTipHeight(list) {
     let tipH = 0;
-    for (const b of list) {
+    for (const b of list || []) {
       const h = Number(b?.height);
       if (Number.isInteger(h) && h > tipH) tipH = h;
     }
-    for (let i = n; i < list.length; i += 1) {
+    return tipH;
+  }
+
+  function nearestOwedCheckpoint(at) {
+    let best = null;
+    for (const c of owedCkpt) {
+      if (!c || !Number.isInteger(c.at) || c.at > at) continue;
+      if (!Number.isInteger(c.seriesEnd) || c.seriesEnd < 0) continue;
+      if (!best || c.at > best.at) best = c;
+    }
+    return best;
+  }
+
+  function gatePrevFrom(block, hash, prev) {
+    return {
+      hash,
+      header: block.header,
+      height: (prev ? Number(prev.height || 0) : 0) + 1,
+      txs: block.txs,
+      bLeaves: block.bLeaves,
+      weight: block.weight,
+      shareBatch: block.shareBatch,
+    };
+  }
+
+  function gateOneHeader(block, prev, history, verifyOpts) {
+    const opts = {
+      trustedPowHash: trustedHashFor(block, verifyOpts),
+      genesisMs: genesisHeaderMs(history) || Number(verifyOpts.genesisMs) || 0,
+      nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
+      consumePrepared: false,
+      magic: MAGIC_TESTNET,
+      probeBody: verifyOpts.probeBody === true,
+    };
+    const finish = (assessed) => {
+      if (!assessed.ok) discardPreparedHeader(block?.header);
+      return assessed;
+    };
+    const offLoop = !!verifyOpts.offLoopPow && !opts.trustedPowHash && opts.probeBody !== true;
+    if (offLoop) {
+      return hashHeaderOffLoop(Buffer.from(block.header)).then((hash) => (
+        finish(assessHeader(block, prev, { ...opts, preparedHash: hash }))
+      ));
+    }
+    return finish(assessHeader(block, prev, opts));
+  }
+
+  /** Header proof-of-work and the cheap header rules, before any owed walk. */
+  function gateForkHeaders(fork, parent, history, verifyOpts) {
+    const step = (i, prev) => {
+      if (i >= fork.length) return { ok: true };
+      const got = gateOneHeader(fork[i], prev, history, verifyOpts);
+      const take = (assessed) => {
+        if (!assessed?.ok) return { ok: false, reason: assessed?.reason || 'pow', at: i };
+        return step(i + 1, gatePrevFrom(fork[i], assessed.hash, prev));
+      };
+      if (got && typeof got.then === 'function') return got.then(take);
+      return take(got);
+    };
+    return step(0, parent);
+  }
+
+  /** Same gate for a chain that does not share this store's prefix. */
+  function gateForkChain(fork, verifyOpts) {
+    return gateForkHeaders(fork, null, fork, verifyOpts);
+  }
+
+  /**
+   * Owed state at the end of `history`. A shared prefix replays only from
+   * the checkpoint at or below the anchor. It never replays from genesis.
+   * `candidateTipAt` selects which checkpoints to keep. `candidateTipHeight`
+   * is the height burial would see on the candidate chain.
+   */
+  function seedHistory(history, candidateTipAt = null, candidateTipHeight = null) {
+    const list = Array.isArray(history) ? history : [];
+    let n = 0;
+    while (n < list.length && n < blocks.length && blockHex(list[n]) && blockHex(list[n]) === blockHex(blocks[n])) n += 1;
+    const tipH = candidateTipHeight != null ? Number(candidateTipHeight) : listTipHeight(list);
+    const tipAt = candidateTipAt != null ? Number(candidateTipAt) : Math.max(0, list.length - 1);
+    const anchorHash = n > 0 ? blockHex(blocks[n - 1]) : '';
+    const key = `${n}|${blocks.length}|${tipH}|${tipAt}|${anchorHash}|${list.length}`;
+    if (seedCache && seedCache.key === key) {
+      owedSeed.cached += 1;
+      return {
+        ok: true,
+        rows: copyOwedRows(seedCache.rows),
+        series: seedCache.series.slice(),
+        snaps: seedCache.snaps.map((s) => ({
+          at: s.at,
+          rows: copyOwedRows(s.rows),
+          seriesEnd: s.seriesEnd,
+        })),
+      };
+    }
+    const snaps = [];
+    let rows = [];
+    let series = [];
+    if (n > 0) {
+      const ck = nearestOwedCheckpoint(n - 1);
+      if (!ck || ck.seriesEnd !== ck.at + 1 || !Array.isArray(owedSeriesAll) || owedSeriesAll.length < ck.seriesEnd) {
+        owedSeed.refused += 1;
+        return { ok: false, reason: 'owed_checkpoint' };
+      }
+      for (const c of owedCkpt) {
+        if (!c || c.at > ck.at || c.at >= list.length) continue;
+        if (!keepOwedIndex(c.at, tipAt)) continue;
+        snaps.push({ at: c.at, rows: copyOwedRows(c.rows), seriesEnd: c.seriesEnd });
+      }
+      rows = copyOwedRows(ck.rows);
+      series = owedSeriesAll.slice(0, ck.seriesEnd);
+    }
+    const units = n > 0
+      ? unitsAlong(list.slice(0, n), list.slice(n))
+      : (list.length ? bonusUnitsBefore(list) : []);
+    const from = n > 0 ? (nearestOwedCheckpoint(n - 1).at + 1) : 0;
+    for (let i = from; i < list.length; i += 1) {
       const next = advanceHashOwed({
         owedIn: rows,
         acceptedSeries: series,
@@ -2050,22 +2373,75 @@ export function createStore(dir, {
         height: Number(list[i]?.height) || i + 1,
         tipHeight: tipH,
       });
-      if (!next.ok) return { ok: false, reason: next.reason || 'hash_owed' };
+      if (!next.ok) {
+        // A rewritten share on a block this node already accepted is the
+        // share-credit bind, not a new owed ledger. The suffix check still
+        // runs only after this prefix agrees.
+        if (i < n) {
+          const bound = shareCreditBound(list[i], tipH);
+          if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind' };
+        }
+        return { ok: false, reason: next.reason || 'hash_owed' };
+      }
       rows = next.rows;
       series = next.acceptedSeries;
-      snaps.push({ rows, series: series.slice() });
+      owedSeed.forkAdvances += 1;
+      if (keepOwedIndex(i, tipAt)) {
+        snaps.push({ at: i, rows: copyOwedRows(rows), seriesEnd: series.length });
+      }
     }
-    return { ok: true, rows, series, snaps };
+    seedCache = {
+      key,
+      rows: copyOwedRows(rows),
+      series: series.slice(),
+      snaps: snaps.map((s) => ({ at: s.at, rows: copyOwedRows(s.rows), seriesEnd: s.seriesEnd })),
+    };
+    return {
+      ok: true,
+      rows: copyOwedRows(rows),
+      series: series.slice(),
+      snaps: seedCache.snaps.map((s) => ({
+        at: s.at,
+        rows: copyOwedRows(s.rows),
+        seriesEnd: s.seriesEnd,
+      })),
+    };
   }
 
-  /** Verify only the new suffix. The prefix already passed when it was appended. */
+  function snapsCoverTip(snaps, n, series) {
+    if (!Array.isArray(snaps) || !Array.isArray(series) || series.length !== n || n < 1) return false;
+    let tip = null;
+    const seen = new Set();
+    for (const s of snaps) {
+      if (!s || !Number.isInteger(s.at) || s.at < 0 || s.at >= n || seen.has(s.at)) return false;
+      if (!Array.isArray(s.rows) || !Number.isInteger(s.seriesEnd) || s.seriesEnd < 0) return false;
+      seen.add(s.at);
+      if (s.at === n - 1) tip = s;
+    }
+    return !!tip && tip.seriesEnd === n;
+  }
+
+  /** Verify only the new suffix. Header rules run before any owed replay. */
   function verifySuffix(fork, parent, history, verifyOpts) {
+    const gated = gateForkHeaders(fork, parent, history, verifyOpts);
+    const go = () => verifySuffixBody(fork, parent, history, verifyOpts);
+    if (gated && typeof gated.then === 'function') {
+      return gated.then((g) => (g.ok ? go() : { ok: false, reason: g.reason || 'pow', at: g.at }));
+    }
+    if (!gated.ok) return { ok: false, reason: gated.reason || 'pow', at: gated.at };
+    return go();
+  }
+
+  function verifySuffixBody(fork, parent, history, verifyOpts) {
     const out = [];
     let prev = parent;
     const trialSpent = new Set();
-    const seeded = seedHistory(history);
+    const rows = Array.isArray(history) ? history : [];
+    const tipAt = rows.length + fork.length - 1;
+    const tipH = listTipHeight(rows.concat(fork));
+    const seeded = seedHistory(rows, tipAt, tipH);
     if (!seeded.ok) return { ok: false, reason: seeded.reason || 'hash_owed' };
-    const allUnits = bonusUnitsBefore((history || []).concat(fork || []));
+    const allUnits = unitsAlong(rows, fork);
     const owedWalk = { owedIn: seeded.rows, hashAcceptedSeries: seeded.series.slice() };
     const suffixSnaps = [];
     const step = (i) => {
@@ -2081,34 +2457,31 @@ export function createStore(dir, {
       const beforeSpent = new Set(trialSpent);
       const check = verifyBlock(fork[i], parentView(prev), {
         ...verifyOpts,
-        hashBonusNanos: allUnits[history.length + i],
+        hashBonusNanos: allUnits[rows.length + i],
         owedIn: owedWalk.owedIn,
         hashAcceptedSeries: owedWalk.hashAcceptedSeries,
         spentB: trialSpent,
         trustedPowHash: trustedHashFor(fork[i], verifyOpts),
         tipHeight: Number(prev?.height || 0) + 1,
-        evmHistory: history.concat(out),
+        evmHistory: rows.concat(out),
         parentFluxset: null,
-        grandparentHeader: grandparentHeader(history.concat(out)),
-        sealedIntervalsMs: headerGapsMs(history.concat(out)),
+        grandparentHeader: grandparentHeader(rows.concat(out)),
+        sealedIntervalsMs: headerGapsMs(rows.concat(out)),
         nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
-        genesisMs: genesisHeaderMs(history) || Number(verifyOpts.genesisMs) || 0,
+        genesisMs: genesisHeaderMs(rows) || Number(verifyOpts.genesisMs) || 0,
       });
       const take = (c) => {
         if (!c?.ok) {
           rollbackSpent(trialSpent, beforeSpent);
           return c;
         }
-        const owedUnit = allUnits[history.length + i];
-        const tipH = (history || []).concat(fork || []).reduce(
-          (m, b) => Math.max(m, Number(b?.height) || 0),
-          0,
-        );
+        const owedUnit = allUnits[rows.length + i];
         const owedNext = advanceHashOwed({
           owedIn: owedWalk.owedIn,
           acceptedSeries: owedWalk.hashAcceptedSeries,
           block: fork[i],
           unit: owedUnit,
+          height: Number(fork[i]?.height) || (Number(prev?.height || 0) + 1),
           tipHeight: tipH,
         });
         if (!owedNext.ok) {
@@ -2118,7 +2491,15 @@ export function createStore(dir, {
         stampCredits(fork[i], owedUnit);
         owedWalk.owedIn = owedNext.rows;
         owedWalk.hashAcceptedSeries = owedNext.acceptedSeries;
-        suffixSnaps.push({ rows: owedNext.rows, series: owedNext.acceptedSeries.slice() });
+        owedSeed.suffixAdvances += 1;
+        const at = rows.length + i;
+        if (keepOwedIndex(at, tipAt)) {
+          suffixSnaps.push({
+            at,
+            rows: copyOwedRows(owedNext.rows),
+            seriesEnd: owedNext.acceptedSeries.length,
+          });
+        }
         const lean = leanVerified(fork[i], c, prev);
         lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
         out.push(lean);
@@ -2217,7 +2598,7 @@ export function createStore(dir, {
         tip: tip(),
       };
     }
-    if (!Array.isArray(verified.owedSnaps) || verified.owedSnaps.length !== accepted.length) {
+    if (!snapsCoverTip(verified.owedSnaps, accepted.length, verified.owedSeries)) {
       return { ok: false, reason: 'hash_owed', tip: tip() };
     }
     const lca = commonPrefixLen(fromBlocks, accepted);
@@ -2248,7 +2629,11 @@ export function createStore(dir, {
       owedRows = verified.owedRows || [];
       acceptedSeries = (verified.owedSeries || []).slice();
       owedSeriesAll = acceptedSeries;
-      owedSnap = verified.owedSnaps;
+      owedCkpt = verified.owedSnaps
+        .filter((s) => keepOwedIndex(s.at, accepted.length - 1))
+        .map((s) => ({ at: s.at, rows: copyOwedRows(s.rows), seriesEnd: s.seriesEnd }))
+        .sort((a, b) => a.at - b.at);
+      seedCache = null;
       if (disconnected.length) {
         sideAnchor = lca > 0 ? lca - 1 : -1;
         sideBlocks = (lca > 0 ? disconnected : fromBlocks).slice();
@@ -2259,7 +2644,7 @@ export function createStore(dir, {
       rewriteChain();
       rebuildExplorer();
       refreshFlux();
-      replayVault();
+      repairVaultAfterAdopt(lca);
       bounceMempool(disconnected, connected);
       pruneBuried();
       reorgs.push(event);
@@ -2660,5 +3045,19 @@ export function createStore(dir, {
     reorgHaltDepth: haltDepth,
     headers,
     policyState,
+    owedView() {
+      return {
+        rows: copyOwedRows(owedRows),
+        series: acceptedSeries.slice(),
+        checkpoints: owedCkpt.map((c) => ({
+          at: c.at,
+          seriesEnd: c.seriesEnd,
+          rowCount: Array.isArray(c.rows) ? c.rows.length : 0,
+        })),
+      };
+    },
+    owedSeedStats() {
+      return { ...owedSeed };
+    },
   };
 }

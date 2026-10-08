@@ -133,6 +133,18 @@ export function encodeBookSnap(state, key) {
     if (v < 0n || v > 0xffffffffffffffffn) throw new Error('snap_unit');
     parts.push(u64(v));
   }
+  if (Array.isArray(state.owedCheckpoints)) {
+    parts.push(u32(state.owedCheckpoints.length));
+    for (const ck of state.owedCheckpoints) {
+      const at = Number(ck?.at);
+      const end = Number(ck?.seriesEnd);
+      if (!Number.isInteger(at) || at < 0 || !Number.isInteger(end) || end < 0) throw new Error('snap_ckpt');
+      parts.push(u32(at), u32(end));
+      const rows = Array.isArray(ck?.rows) ? ck.rows : [];
+      parts.push(u32(rows.length));
+      for (const row of rows) putRow(parts, row);
+    }
+  }
   const payload = Buffer.concat(parts);
   const mac = createHmac('sha256', k).update(MAGIC).update(payload).digest();
   return Buffer.concat([MAGIC, u32(payload.length), payload, mac]);
@@ -282,6 +294,42 @@ export function decodeBookSnap(buf, key, expected = {}) {
     unitAt.push(Number(n.v));
     o = n.o;
   }
+  let owedCheckpoints = null;
+  if (o < payload.length) {
+    const nck = readU32(payload, o);
+    if (!nck) return null;
+    o = nck.o;
+    owedCheckpoints = [];
+    for (let i = 0; i < nck.v; i += 1) {
+      const at = readU32(payload, o);
+      if (!at) return null;
+      o = at.o;
+      const end = readU32(payload, o);
+      if (!end) return null;
+      o = end.o;
+      const nrow = readU32(payload, o);
+      if (!nrow) return null;
+      o = nrow.o;
+      const rows = [];
+      for (let r = 0; r < nrow.v; r += 1) {
+        const nc = take(payload, o, 32);
+        const d20 = take(payload, o + 32, 20);
+        const base = take(payload, o + 52, 32);
+        const nanos = readU64(payload, o + 84);
+        const since = readU32(payload, o + 92);
+        if (!nc || !d20 || !base || !nanos || !since) return null;
+        rows.push({
+          noteCommit: Buffer.from(nc),
+          dest20: Buffer.from(d20),
+          admitBase: Buffer.from(base),
+          nanos: nanos.v,
+          sinceHeight: since.v,
+        });
+        o = since.o;
+      }
+      owedCheckpoints.push({ at: at.v, seriesEnd: end.v, rows });
+    }
+  }
   if (o !== payload.length) return null;
   const state = {
     rules: rules.v,
@@ -301,6 +349,7 @@ export function decodeBookSnap(buf, key, expected = {}) {
     commits,
     spendTags,
     unitAt,
+    owedCheckpoints,
   };
   if (expected.rules != null && state.rules !== String(expected.rules)) return null;
   if (expected.genesisPin != null && state.genesisPin !== String(expected.genesisPin)) return null;

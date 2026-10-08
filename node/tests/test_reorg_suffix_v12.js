@@ -48,6 +48,8 @@ function sealNext(store, dest, tag, share = null) {
     ? Number(decodeHeader(Buffer.from(tip.header)).timestamp) + 90_000
     : 1_700_000_000_000;
   if (share && tip?.header) {
+    // The template keeps a share only when it names the parent header.
+    share.verifiedHeader = tip.header;
     rememberLiveSharePow(tip.header, share.nonce, {
       noteCommit: noteCommitOfShare(share),
       shareBits: share.shareBits,
