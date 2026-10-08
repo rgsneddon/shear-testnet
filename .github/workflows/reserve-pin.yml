@@ -1,0 +1,17 @@
+# Fails when MAGIC_TESTNET, Reserve.sol, and the pinned Reserve.json disagree.
+name: reserve-pin
+on:
+  push:
+  pull_request:
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install node deps
+        run: npm ci
+      - name: Reserve pin and mine gate
+        run: node --test --test-concurrency=1 crypto/reserve_evm.test.js node/tests/test_reserve_pin_v12.js

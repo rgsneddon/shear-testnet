@@ -29,6 +29,14 @@ export function shearMagicBytes(network = MAGIC_TESTNET) {
   return keccak256(Buffer.from(String(network), 'utf8'));
 }
 
+/** True when the pinned creation bytecode contains this book's magic.
+ *  A miss is the constructor revert `reserve_deploy`. */
+export function reservePinOk(network = MAGIC_TESTNET) {
+  const hash = Buffer.from(shearMagicBytes(network)).toString('hex');
+  const code = String(RESERVE_BYTECODE || '').replace(/^0x/i, '').toLowerCase();
+  return hash.length === 64 && code.includes(hash);
+}
+
 export function reserveAddress() {
   return createAddressFromString(
     bytesToHex(keccak256(Buffer.from('shear-reserve-v1', 'utf8')).subarray(12)),

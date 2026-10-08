@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { PI_SHE_NANOS, RESERVE_EPOCH_MS, NANOS_PER_SHE, MAGIC_TESTNET, EPOCH_DAYS_TESTNET } from './asert.js';
+import { PI_SHE_NANOS, RESERVE_EPOCH_MS, NANOS_PER_SHE, MAGIC_TESTNET, MAGIC_TESTNET_V12, EPOCH_DAYS_TESTNET } from './asert.js';
 import {
   bootReserveEvm,
+  reservePinOk,
   callReserve,
   encodeDeposit,
   encodeVote,
@@ -24,11 +25,23 @@ const destA = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
 const destB = 'ssa1ppppppppppppppppppppppppppppppppppppppppppppppppppppp';
 
 describe('Reserve bytecode on the Shear EVM', () => {
-  it('bootReserveEvm defaults to MAGIC_TESTNET', () => {
+  it('bootReserveEvm defaults to MAGIC_TESTNET', async () => {
     const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
     assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET \}/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
+    assert.equal(reservePinOk(), true);
+    assert.equal(reservePinOk('shear-testnet-v11'), true);
+    assert.equal(reservePinOk('shear-testnet-not-a-book'), false);
+    const live = await bootReserveEvm();
+    assert.ok(live.address);
+    const got = await callReserve(live, selector('magic()'), { staticCall: true });
+    assert.equal(got.ok, true, got.reason);
+    assert.equal(
+      Buffer.from(got.returnValue).equals(Buffer.from(shearMagicBytes(MAGIC_TESTNET))),
+      true,
+    );
   });
 
   it('CREATE with shear-testnet-v11 succeeds and an unknown magic reverts', async () => {

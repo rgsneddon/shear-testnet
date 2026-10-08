@@ -196,7 +196,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     }));
     const empty = await verifyBlock(b2, null, { trustedPowHash: TRUSTED });
     assert.equal(empty.ok, false);
-    assert.ok(empty.reason === 'evm' || empty.reason === 'mint_amount', empty.reason);
+    assert.equal(empty.reason, 'insufficient');
     const unbound = withdrawTx({ from: dest, to: dest, nanos: want + 1, id: 'wd-over' });
     unbound.fee = 0;
     const over = mine(buildTemplate({
@@ -209,7 +209,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     }));
     const overGot = await verifyBlock(over, null, { evmSession: v1.evmSession, nowMs: t1, reserveState: state, trustedPowHash: TRUSTED });
     assert.equal(overGot.ok, false);
-    assert.equal(overGot.reason, 'mint_amount');
+    assert.equal(overGot.reason, 'insufficient');
     const v2 = await verifyBlock(b2, null, { evmSession: v1.evmSession, nowMs: t1, reserveState: state, trustedPowHash: TRUSTED });
     assert.equal(v2.ok, true, v2.reason || v2.error);
     assert.equal(v2.evm.totalLocked, 0);

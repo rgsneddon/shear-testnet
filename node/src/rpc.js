@@ -9,6 +9,7 @@ import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { networkReport } from './network_report.js';
 import { oracleView } from './oracle_feed.js';
 import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
+import { reservePinOk } from '../../crypto/reserve_evm.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -24,6 +25,11 @@ function toHex(v) {
     return out;
   }
   return v;
+}
+
+function minePinOk(store) {
+  if (store && typeof store.reservePinOk === 'function') return store.reservePinOk() === true;
+  return reservePinOk();
 }
 
 function blockAtHeight(store, height) {
@@ -352,6 +358,7 @@ export function createRpc({
       return store.queueTx(tx, { paintedOwedNanos: owed });
     }
     if (m === 'gettemplate' || m === 'template') {
+      if (!minePinOk(store)) return { ok: false, reason: 'reserve_deploy' };
       if (typeof store.template !== 'function') return { ok: false, reason: 'no_store' };
       const miner = String(params.miner || params[0] || encodeDest(Buffer.alloc(20, 9)));
       if (!isDestAddress(miner)) return { ok: false, reason: 'coinbase_needs_dest' };
@@ -368,6 +375,7 @@ export function createRpc({
       };
     }
     if (m === 'submitblock' || m === 'submitHeader') {
+      if (!minePinOk(store)) return { ok: false, reason: 'reserve_deploy' };
       if (typeof store.submitHeader !== 'function') return { ok: false, reason: 'no_store' };
       return store.submitHeader({
         jobId: params.jobId || params[0],

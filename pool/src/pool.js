@@ -64,6 +64,7 @@ import {
 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
+import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote } from '../../node/src/chain.js';
 import {
   sortShares,
@@ -3261,7 +3262,15 @@ export function createPool({
     }
   }
 
+  let reservePinLogged = false;
   function issueJob(shareBitsNow, { force = false, probe = false, proofPending = false } = {}) {
+    if (!reservePinOk()) {
+      if (!reservePinLogged) {
+        reservePinLogged = true;
+        console.error(JSON.stringify({ event: 'reserve_deploy', reason: 'reserve_pin' }));
+      }
+      return null;
+    }
     if (sidecarAhead()) {
       logJobHold();
       return lastJob;

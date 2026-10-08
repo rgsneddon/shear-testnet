@@ -293,6 +293,7 @@ describe('Reserve Solidity is Shear-only copy', () => {
     assert.match(src, /shear-testnet-v6/);
     assert.match(src, /shear-testnet-v8/);
     assert.match(src, /shear-testnet-v11/);
+    assert.match(src, /shear-testnet-v12/);
     assert.match(src, /shear-v1/);
     assert.match(src, /shear-reserve-v1/);
     assert.match(src, /400/);
