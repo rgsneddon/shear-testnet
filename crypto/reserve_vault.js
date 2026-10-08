@@ -259,6 +259,12 @@ function portalStakeNanos(p) {
   return asBig(p?.staked) + asBig(p?.idle);
 }
 
+/** Locked now, plus principal already paid out. The paid principal stays
+ *  subtracted so the original notes and the withdraw note are not both spendable. */
+function portalHeldNanos(p) {
+  return portalStakeNanos(p) + asBig(p?.redeemedNanos);
+}
+
 /** Confirmed lock principal this dest cannot spend.
  *  Own portal, plus any portal whose payout is this dest.
  *  Does not create an empty portal. */
@@ -275,7 +281,7 @@ export function portalPrincipalNanos(state, dest) {
     const payDest = p.payout ? String(p.payout) : '';
     if (pid !== id && payId !== id && payDest !== want) continue;
     seen.add(pid);
-    n += portalStakeNanos(p);
+    n += portalHeldNanos(p);
   }
   return asNum(n);
 }
@@ -334,7 +340,7 @@ function portalPublic(p) {
   };
 }
 
-export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPortalId } = {}) {
+export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPortalId, ownerPub } = {}) {
   const id = portalKey(portalId || dest);
   if (!id) return { ok: false, reason: 'bad_dest' };
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
@@ -343,6 +349,11 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
   const n = asBig(nanos);
   if (n <= 0n) return { ok: false, reason: 'bad_amount' };
   const p = portalOf(state, id);
+  const pub = String(ownerPub || '').replace(/^0x/i, '').toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(pub)) {
+    if (p.ownerPub && p.ownerPub !== pub) return { ok: false, reason: 'unsigned' };
+    if (!p.ownerPub) p.ownerPub = pub;
+  }
   if (payoutPortalId && isPortalId(payoutPortalId) && !p.payoutPortalId) {
     p.payoutPortalId = String(payoutPortalId).toLowerCase();
   }
@@ -655,6 +666,7 @@ export function applyReserveBlock({ state, block, nowMs }) {
           nowMs,
           payout: act.payout,
           payoutPortalId: act.payoutPortalId,
+          ownerPub: tx.spendPub,
         }),
       });
       continue;
@@ -778,6 +790,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   }
   state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
+  p.redeemedNanos = asBig(p.redeemedNanos) + asBig(principal);
   if (Number(p.voteEpoch || 0) === Number(state.currentEpoch || 0)) {
     if (p.vote === VOTE_INCREASE && Number(state.votes.increase) > 0) state.votes.increase -= 1;
     if (p.vote === VOTE_DECREASE && Number(state.votes.decrease) > 0) state.votes.decrease -= 1;

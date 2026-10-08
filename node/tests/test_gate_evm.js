@@ -9,6 +9,7 @@ import { lockTx, withdrawTx, emptyVault, deposit } from '../../crypto/reserve_va
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote, verifyRange } from '../../crypto/note.js';
+import { signSpendTx } from '../../crypto/spend.js';
 
 function rangeProofsLive() {
   try {
@@ -157,11 +158,14 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
 
   it('persists EVM session: lock then withdraw against shipped verifyBlock', async () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const pay = freshStealthDest(id);
+    const dest = pay.dest;
+    const key = { type: 'ed25519-stealth', seed: ed25519SeedOf(id.privateKey), shared: pay.shared };
     const t0 = 1_700_000_000_000;
     const lock = lockTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'lock-p' });
     lock.fee = levyNeed(lock, []);
     lock.maxLevy = lock.fee;
+    signSpendTx(lock, key);
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -181,6 +185,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const want = PI_SHE_NANOS + interestNanos(PI_SHE_NANOS, GENESIS_BPS);
     const wd = withdrawTx({ from: dest, to: dest, nanos: want, id: 'wd-p' });
     wd.fee = 0;
+    signSpendTx(wd, key);
     const b2 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,

@@ -72,7 +72,7 @@ import {
   jroot as jrootOf,
 } from '../../crypto/admit.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw } from '../../crypto/spend.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, reserveAuth } from '../../crypto/spend.js';
 import { portalIdFromDest } from '../../crypto/reserve_vault.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
@@ -1806,6 +1806,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } catch { /* skip */ }
   };
   const body = txs.slice(1);
+  const seenOwners = new Map();
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
@@ -1855,6 +1856,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (!verifyRange(o.commit, o.rangeProof)) return { ok: false, reason: 'range_proof' };
       }
     }
+    const typed = typedCommitRejected(tx);
+    if (typed) return typed;
     const stake = boundReserveWithdraw(tx, reserveState);
     if (!stake.ok) return stake;
     if (flowNeedsDummy(tx)) {
@@ -1903,7 +1906,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     for (const o of outs) pushPub(o);
-    if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
+    if (String(tx.kind || '') === 'withdraw' && String(tx.programId || '') === RESERVE_PROGRAM) {
       const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);
       const dest = String(tx.from || tx.vin?.[0]?.address || '');
       const portals = reserveState?.portals || {};
@@ -1923,6 +1926,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         : claimed;
       if (got !== want) return { ok: false, reason: 'mint_amount' };
     }
+    const auth = reserveAuth(tx, reserveState, seenOwners);
+    if (!auth.ok) return auth;
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
     const bound = verifyPoolWithdrawBound(tx);
     if (!bound.ok) return bound;

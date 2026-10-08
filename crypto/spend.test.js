@@ -45,31 +45,35 @@ describe('funded spend / no double-spend', () => {
     assert.equal(funded.ok, false);
   });
 
-  it('sealed compact lock with commit+valueProof and no spendPub opens the portal', () => {
+  it('a range proof does not open a reserve portal; a kept owner sig does', () => {
     const id = newIdentity();
     const d20 = hash20FromAddress(id.address);
     const note = sealNote(1, { dest20: d20, kind: 'lock' });
-    const sealed = compactTx({
+    const unsigned = compactTx({
       kind: 'lock',
       from: id.address,
       to: id.address,
       spendPub: id.spendPub.toString('hex'),
+      portalId: 'ab'.repeat(32),
       vin: [{ address: id.address, dest20: d20 }],
       vout: [{ ...note, kind: 'lock', address: id.address }],
     });
-    assert.equal(spendPubFromTx(sealed), null);
-    const o = sealed.vout[0];
-    assert.ok(o.commit);
-    assert.ok(o.valueProof);
-    const range = o.rangeProof;
-    delete o.rangeProof;
-    assert.equal(verifyReservePortalOpen(sealed), false);
-    const vp = o.valueProof;
-    delete o.valueProof;
-    assert.equal(verifyReservePortalOpen(sealed), false);
-    o.rangeProof = range;
+    assert.equal(spendPubFromTx(unsigned)?.toString('hex'), id.spendPub.toString('hex'));
+    assert.equal(verifyReservePortalOpen(unsigned), false);
+    const signed = {
+      kind: 'lock',
+      from: encodeDest(destCommitFromSpendPub(id.spendPub)),
+      to: id.address,
+      portalId: 'cd'.repeat(32),
+      vin: [{ dest20: d20 }],
+      vout: [{ ...note, kind: 'lock' }],
+    };
+    signSpendTx(signed, id.privateKey);
+    const sealed = compactTx(signed);
+    assert.equal(spendPubFromTx(sealed)?.toString('hex'), signed.spendPub);
     assert.equal(verifyReservePortalOpen(sealed), true);
-    o.valueProof = vp;
+    delete sealed.sig;
+    assert.equal(verifyReservePortalOpen(sealed), false);
   });
 
   it('debits amount plus levy from the sender', () => {

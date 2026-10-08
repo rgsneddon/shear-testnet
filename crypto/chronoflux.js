@@ -486,7 +486,7 @@ export function compactTx(tx) {
   if (tx.vout) out.vout = (tx.vout || []).map(compactVout);
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
-  if ((keepDest || poolWithdraw) && tx.spendPub) out.spendPub = tx.spendPub;
+  if ((keepDest || poolWithdraw || reserveTx) && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
     if (tx.admit_proof.blob || tx.admit_proof.v === 2) {

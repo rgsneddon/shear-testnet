@@ -379,6 +379,8 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
       if (coinbaseOnly && !tx?.coinbase) continue;
       for (const o of tx.vout || []) {
         const kind = String(o.kind || tx.kind || '');
+        // A lock or vote receipt is vault principal, not a second coin.
+        if (kind === 'lock' || kind === 'vote') continue;
         const byNote = !!(o.noteCommit && noteCommitEq(o.noteCommit, want));
         const byDest = kind === 'pool-withdraw' && sameDest20(o.dest20, dest20);
         if (!byNote && !byDest) continue;

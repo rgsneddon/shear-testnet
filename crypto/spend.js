@@ -12,8 +12,8 @@ import { isSpendableHeight } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
-import { claimedVoutNanos } from './dummy.js';
-import { asU8, verifyRange } from './note.js';
+import { claimedVoutNanos, flowNeedsDummy } from './dummy.js';
+import { asU8 } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
 import { portalIdFromDest } from './reserve_vault.js';
 
@@ -48,7 +48,7 @@ export function spendPackDigest(tx) {
     return {
       prev: prev.length === 32 ? Buffer.from(prev) : Buffer.alloc(32),
       index: Number(v.index || i),
-      dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : Buffer.alloc(20),
+      dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Field(v.dest20),
     };
   });
   const vouts = (tx?.vout || []).map((o) => {
@@ -64,13 +64,21 @@ export function spendPackDigest(tx) {
       kind: kindByte(o.kind || tx?.kind),
     };
   });
-  return packDigest(packTx({
+  const packed = packDigest(packTx({
     version: 1,
     vins: vins.length ? vins : [{ prev: Buffer.alloc(32), index: Number(tx?.height || 0), dest20: Buffer.alloc(20) }],
     vouts,
     memoH: tx?.memoH || null,
     bFlag: tx?.bFlag || tx?.kind === 'b-spend' ? 1 : 0,
   }));
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return packed;
+  // The signature covers which portal is named. A stolen sig cannot be retargeted.
+  return createHash('sha256')
+    .update(packed)
+    .update(Buffer.from(String(tx?.portalId || '').toLowerCase()))
+    .update(Buffer.from(String(tx?.payoutPortalId || '').toLowerCase()))
+    .digest();
 }
 
 export function spendMessage(tx) {
@@ -311,18 +319,76 @@ function destOpeningShape(open) {
 }
 
 /**
- * Vote/lock/withdraw prove the vault dest by spend sig. Opening is local-only.
+ * Vote/lock/withdraw authority is the owner signature. A range proof is not
+ * an authorization, and a missing spendPub is not an authorization.
  */
 export function verifyReservePortalOpen(tx) {
   if (!reserveNeedsPortalOpen(tx)) return true;
-  if (spendPubFromTx(tx)) return verifySpendSig(tx);
-  const o = tx?.vout?.[0];
-  if (!o?.commit || !o.rangeProof || o.rangeProof === true) return false;
-  try {
-    return verifyRange(o.commit, o.rangeProof);
-  } catch {
-    return false;
+  if (!spendPubFromTx(tx)) return false;
+  return verifySpendSig(tx);
+}
+
+/** vin.commit on a non-Flow kind has no membership proof. Reject it. */
+export function typedCommitRejected(tx) {
+  if (!tx || tx.coinbase || flowNeedsDummy(tx)) return null;
+  const vins = Array.isArray(tx.vin) ? tx.vin : [];
+  for (const v of vins) {
+    if (!v || v.coinbase) continue;
+    if (v.commit || v.cTilde || v.pseudo || v.noteCommit || v.prev) {
+      return { ok: false, reason: 'admit_membership' };
+    }
   }
+  return null;
+}
+
+function reserveKindOf(tx) {
+  return String(tx?.kind || tx?.vout?.[0]?.kind || '');
+}
+
+/** Portal named by the tx. A from-dest that disagrees with portalId is a retarget. */
+export function reservePortalRef(tx) {
+  const from = String(tx?.from || tx?.vin?.[0]?.address || '');
+  const fromId = from ? portalIdFromDest(from) : '';
+  const pid = String(tx?.portalId || tx?.vout?.[0]?.portalId || '').toLowerCase();
+  if (pid && fromId && pid !== fromId) return { ok: false, reason: 'payout_mismatch' };
+  return { ok: true, id: fromId || pid, from };
+}
+
+function voutDest20(o) {
+  if (!o) return null;
+  try {
+    if (o.dest20) {
+      const b = Buffer.from(asU8(o.dest20));
+      if (b.length >= 20) return Buffer.from(b.subarray(0, 20));
+    }
+  } catch { /* fall through */ }
+  const h = hash20FromAddress(o.address || '');
+  return h ? Buffer.from(h) : null;
+}
+
+/**
+ * Owner key recorded on the portal, plus any earlier lock in this body.
+ * `seenOwners` is a Map of portal id → spendPub hex for the block being checked.
+ */
+export function reserveAuth(tx, reserveState = null, seenOwners = null) {
+  if (!reserveNeedsPortalOpen(tx)) return { ok: true };
+  if (!verifyReservePortalOpen(tx)) {
+    return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  }
+  const ref = reservePortalRef(tx);
+  if (!ref.ok) return ref;
+  const pub = spendPubFromTx(tx).toString('hex').toLowerCase();
+  const recorded = String(reserveState?.portals?.[ref.id]?.ownerPub || '').toLowerCase();
+  const seen = seenOwners instanceof Map ? String(seenOwners.get(ref.id) || '') : '';
+  const want = recorded || seen;
+  if (want && want !== pub) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  if (reserveKindOf(tx) === 'withdraw' && recorded && recorded !== pub) {
+    return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  }
+  if (seenOwners instanceof Map && ref.id && reserveKindOf(tx) === 'lock') {
+    seenOwners.set(ref.id, pub);
+  }
+  return { ok: true };
 }
 
 /**
@@ -332,18 +398,16 @@ export function verifyReservePortalOpen(tx) {
 export function boundReserveWithdraw(tx, reserveState = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return { ok: true };
+  if (Array.isArray(tx?.vout) && tx.vout.length > 1) return { ok: false, reason: 'mint_amount' };
   const o = tx?.vout?.[0];
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
   const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
   if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };
-  const dest = String(tx?.from || tx?.vin?.[0]?.address || '');
+  const ref = reservePortalRef(tx);
+  if (!ref.ok) return ref;
   const portals = reserveState?.portals || {};
-  const pid = String(tx?.portalId || '').toLowerCase();
-  let portal = (pid && portals[pid]) || (dest && portals[dest]) || null;
-  if (!portal && dest) {
-    const id = portalIdFromDest(dest);
-    if (id && portals[id]) portal = portals[id];
-  }
+  const dest = ref.from;
+  let portal = (ref.id && portals[ref.id]) || (dest && portals[dest]) || null;
   const staked = Math.max(0, Math.floor(Number(portal?.staked || 0)));
   const idle = Math.max(0, Math.floor(Number(portal?.idle || 0)));
   const principal = staked + idle;
@@ -351,6 +415,19 @@ export function boundReserveWithdraw(tx, reserveState = null) {
   const bps = Math.max(0, Math.floor(Number(reserveState?.epochBps || 0)));
   const cap = principal + interestNanos(staked, bps);
   if (claimed > cap) return { ok: false, reason: 'insufficient' };
+  if (portal?.payout) {
+    const want = hash20FromAddress(portal.payout);
+    const got = voutDest20(o);
+    if (!want || !got || !Buffer.from(want).equals(got)) {
+      return { ok: false, reason: 'payout_mismatch' };
+    }
+  }
+  if (portal?.payoutPortalId) {
+    const payPid = String(tx?.payoutPortalId || '').toLowerCase();
+    if (!payPid || payPid !== String(portal.payoutPortalId).toLowerCase()) {
+      return { ok: false, reason: 'payout_mismatch' };
+    }
+  }
   return { ok: true, principal, claimed, cap };
 }
 
@@ -433,13 +510,22 @@ export function mempoolDebitNanos(txs, address) {
 export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null } = {}) {
   const spent = new Map();
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
+  const seenOwners = new Map();
   const have = (addr) => {
     const base = Math.max(0, Math.floor(Number(typeof spendableOf === 'function' ? spendableOf(addr) : 0) || 0));
     return base - (spent.get(addr) || 0);
   };
   for (const tx of body || []) {
+    const typed = typedCommitRejected(tx);
+    if (typed) return typed;
     const stake = boundReserveWithdraw(tx, reserveState);
     if (!stake.ok) return stake;
+    const kind = reserveKindOf(tx);
+    if (kind === 'lock' && !fundedDebit(tx)) {
+      return { ok: false, reason: 'insufficient', from: reservePortalDest(tx) };
+    }
+    const auth = reserveAuth(tx, reserveState, seenOwners);
+    if (!auth.ok) return auth;
     const d = fundedDebit(tx);
     if (!d) continue;
     if (flowSendNeedsOpen(tx)) {
@@ -453,12 +539,10 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
         seen.add(digest);
       }
     }
-    if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
-      if (!sealedCompactSpend(tx)) {
-        return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
-      }
-    }
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
+    if (noteBound && !flowNeedsDummy(tx)) {
+      return { ok: false, reason: 'admit_membership', from: d.from };
+    }
     if (!noteBound && have(d.from) < d.nanos) {
       return { ok: false, reason: 'insufficient', from: d.from, need: d.nanos, have: have(d.from) };
     }

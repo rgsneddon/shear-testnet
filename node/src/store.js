@@ -61,7 +61,7 @@ import {
 } from '../../crypto/vault_seal.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, verifyReservePortalOpen, reserveNeedsPortalOpen, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
   writeChainBin,
@@ -1914,6 +1914,8 @@ export function createStore(dir, {
       }
       }
     }
+    const typed = typedCommitRejected(tx);
+    if (typed) return typed;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
     if (debit && !noteBound) {
@@ -1945,11 +1947,12 @@ export function createStore(dir, {
         }
       }
     }
-    if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
+    const auth = reserveAuth(tx, reserveVault, null);
+    if (!auth.ok) {
       try {
-        console.error(JSON.stringify({ event: 'admit_fail', id: String(tx?.id || ''), reason: 'unsigned' }));
+        console.error(JSON.stringify({ event: 'admit_fail', id: String(tx?.id || ''), reason: auth.reason || 'unsigned' }));
       } catch { /* ignore */ }
-      return { ok: false, reason: 'unsigned' };
+      return auth;
     }
     const pay = payoutOnTip(tx);
     if (!pay.ok) return pay;
