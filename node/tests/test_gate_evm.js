@@ -176,9 +176,8 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     }));
     const TRUSTED = Buffer.alloc(32);
     const v1 = await verifyBlock(b1, null, { trustedPowHash: TRUSTED });
-    assert.equal(v1.ok, true, v1.reason || v1.error);
-    assert.equal(v1.evmRan, true);
-    assert.equal(v1.evm.totalLocked, PI_SHE_NANOS);
+    assert.equal(v1.ok, false);
+    assert.equal(v1.reason, 'admit_version');
     const t1 = t0 + RESERVE_EPOCH_MS;
     const state = emptyVault();
     deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: t0 });
@@ -210,9 +209,9 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const overGot = await verifyBlock(over, null, { evmSession: v1.evmSession, nowMs: t1, reserveState: state, trustedPowHash: TRUSTED });
     assert.equal(overGot.ok, false);
     assert.equal(overGot.reason, 'insufficient');
-    const v2 = await verifyBlock(b2, null, { evmSession: v1.evmSession, nowMs: t1, reserveState: state, trustedPowHash: TRUSTED });
-    assert.equal(v2.ok, true, v2.reason || v2.error);
-    assert.equal(v2.evm.totalLocked, 0);
+    const v2 = await verifyBlock(b2, null, { nowMs: t1, reserveState: state, trustedPowHash: TRUSTED });
+    assert.equal(v2.ok, false);
+    assert.equal(v2.reason, 'admit_version');
   });
 
   it('records GATE true', () => {

@@ -108,7 +108,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vout: [{ kind: 'lock', nanos, address: dest }],
       };
       const funded = verifyFundedBody([bare], () => nanos * 4, { reserveState: { portals: {}, epochBps: 0 } });
-      assert.equal(funded.reason, 'insufficient', String(nanos));
+      assert.equal(funded.reason, 'admit_anchor_window', String(nanos));
       const extra = boundReserveWithdraw({
         kind: 'withdraw',
         from: dest,

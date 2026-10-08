@@ -8,7 +8,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, kernelExcess } from './note.js';
 import { merkleRoot } from './merkle.js';
-import { nativeJroot, nativeProve, nativeVerify, nativeVerifyBatch } from './native_admit.js';
+import { nativeJroot, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -160,6 +160,78 @@ export function admitVerifyBatch(items, fluxset, extra = {}) {
 
 export const admit_prove = admitProve;
 export const admit_verify = admitVerify;
+
+/** C̃ = C + t·H. t is a fresh scalar the caller just drew. */
+export function blindCommit(c, t) {
+  const H = pointFrom(noteH());
+  const C = pointFrom(c);
+  return pointBytes(C.add(H.multiply(scalarFrom(t))));
+}
+
+/**
+ * ADMITv3 prove. ctx is the 64-byte statement, built with this same t's C̃.
+ * t must be a new scalar for this proof. This function does not reuse a tx field.
+ */
+export function admitProveV3({ x, index, pubs, commits, c, t, ctx }) {
+  const destLeaves = (pubs || []).map(pubBytes).filter(Boolean);
+  const cLeaves = (commits || []).map(commitBytes).filter((b) => b && b.length === 32);
+  const n = destLeaves.length;
+  if (!n || n !== cLeaves.length) return null;
+  if (index < 0 || index >= n) return null;
+  if (t == null) return null;
+  const context = Buffer.isBuffer(ctx) ? ctx : Buffer.from(ctx || []);
+  if (context.length !== 64) return null;
+  const P = destLeaves[index];
+  const C = c || cLeaves[index];
+  const got = nativeProveV3({
+    x: scalarBytes(x),
+    p: P,
+    c: Buffer.from(asU8(C)),
+    t: scalarBytes(t),
+    index,
+    destLeaves,
+    cLeaves,
+    ctx: context,
+  });
+  if (!got || !got.proof || got.proof[0] !== 3) return null;
+  return {
+    admit_proof: true,
+    v: 3,
+    spendTag: Buffer.from(got.proof.subarray(1, 33)),
+    blob: got.proof,
+    cTilde: got.cTilde,
+    t: scalarBytes(t),
+  };
+}
+
+export function admitVerifyV3(proof, fluxset, extra = {}) {
+  try {
+    const blob = proof?.blob || proof?.proof;
+    if (!blob) return false;
+    const pr = Buffer.from(asU8(blob));
+    if (!pr.length || pr[0] !== 3) return false;
+    if (pr.length > 39874) return false;
+    const context = extra.ctx;
+    if (!context || Buffer.from(asU8(context)).length !== 64) return false;
+    let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;
+    if (!jr) {
+      const { destLeaves, cLeaves } = leafLists(fluxset);
+      jr = nativeJroot(destLeaves, cLeaves);
+    }
+    const tag = extra.spendTag || proof.spendTag;
+    const ct = extra.cTilde || extra.c_tilde || proof.cTilde;
+    if (!jr || !tag || !ct) return false;
+    return nativeVerifyV3({
+      proof: pr,
+      jroot: jr,
+      cTilde: Buffer.from(asU8(ct)),
+      spendTag: Buffer.from(asU8(tag)),
+      ctx: Buffer.from(asU8(context)),
+    });
+  } catch {
+    return false;
+  }
+}
 
 const XDST = Buffer.from('shear-admit-x-v1');
 

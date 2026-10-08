@@ -71,7 +71,7 @@ import {
   emptyFluxset,
   jroot as jrootOf,
 } from '../../crypto/admit.js';
-import { checkAdmitAnchor } from '../../crypto/admit_v3.js';
+import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, reserveAuth } from '../../crypto/spend.js';
 import { portalIdFromDest } from '../../crypto/reserve_vault.js';
@@ -1479,7 +1479,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   void mtpTimestamps;
   void nowMs;
   void genesisMs;
-  void magic;
   void trustedPowHash;
   const assessed = assessHeader(block, prev, { ...opts, consumePrepared: true });
   if (!assessed.ok) return assessed;
@@ -1928,6 +1927,16 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         ? (verifySealedNote(o, want) ? want : -1)
         : claimed;
       if (got !== want) return { ok: false, reason: 'mint_amount' };
+    }
+    const noteFund = verifyTypedAdmitFunding(tx, {
+      height,
+      blocks: Array.isArray(evmHistory) ? evmHistory : [],
+      spentTags,
+      magic,
+    });
+    if (!noteFund.ok) return noteFund;
+    if (Array.isArray(noteFund.tags)) {
+      for (const th of noteFund.tags) spentTags.add(th);
     }
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;

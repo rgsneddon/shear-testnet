@@ -282,7 +282,7 @@ describe('funded spend / no double-spend', () => {
     assert.equal(refused.reason, 'insufficient');
   });
 
-  it('signed vote with recovered dest notes is funded; empty dest is insufficient', () => {
+  it('a plaintext vote is not funded by a balance', () => {
     const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
     const key = ed25519PrivateFromSeed(seed);
     const from = encodeDest(destCommitFromSpendPub(ed25519RawPub(key)));
@@ -301,9 +301,10 @@ describe('funded spend / no double-spend', () => {
     signSpendTx(tx, key);
     const empty = verifyFundedBody([tx], () => 0);
     assert.equal(empty.ok, false);
-    assert.equal(empty.reason, 'insufficient');
+    assert.equal(empty.reason, 'admit_version');
     const funded = verifyFundedBody([tx], (addr) => (addr === from ? fee : 0));
-    assert.equal(funded.ok, true, funded.reason);
+    assert.equal(funded.ok, false);
+    assert.equal(funded.reason, 'admit_version');
   });
 
   it('lock and vote spend digests differ when dest is the same', () => {

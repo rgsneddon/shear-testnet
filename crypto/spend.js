@@ -16,6 +16,7 @@ import { claimedVoutNanos, flowNeedsDummy } from './dummy.js';
 import { asU8 } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
 import { portalIdFromDest } from './reserve_vault.js';
+import { typedAdmitStructure } from './admit_v3.js';
 
 function dest20Of(addr) {
   const h = hash20FromAddress(addr);
@@ -328,13 +329,39 @@ export function verifyReservePortalOpen(tx) {
   return verifySpendSig(tx);
 }
 
-/** vin.commit on a non-Flow kind has no membership proof. Reject it. */
+function v3CommitCovers(tx, vin) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return false;
+  let posted = null;
+  try {
+    const b = Buffer.from(asU8(vin?.commit));
+    if (b.length === 32) posted = b;
+  } catch { posted = null; }
+  if (!posted) return false;
+  const proofs = [];
+  if (tx?.admit_proof) proofs.push(tx.admit_proof);
+  if (Array.isArray(tx?.admit_proofs)) proofs.push(...tx.admit_proofs);
+  for (const proof of proofs) {
+    const blob = proof?.blob || proof?.proof;
+    if (!blob) continue;
+    const pr = Buffer.from(asU8(blob));
+    if (!pr.length || pr[0] !== 3) continue;
+    try {
+      const ct = Buffer.from(asU8(proof.cTilde));
+      if (ct.length === 32 && ct.equals(posted)) return true;
+    } catch { /* next proof */ }
+  }
+  return false;
+}
+
+/** vin.commit on a non-Flow kind has no membership proof. A v3 input may carry C̃. */
 export function typedCommitRejected(tx) {
   if (!tx || tx.coinbase || flowNeedsDummy(tx)) return null;
   const vins = Array.isArray(tx.vin) ? tx.vin : [];
   for (const v of vins) {
     if (!v || v.coinbase) continue;
     if (v.commit || v.cTilde || v.pseudo || v.noteCommit || v.prev) {
+      if (v3CommitCovers(tx, v) && !v.cTilde && !v.pseudo && !v.noteCommit && !v.prev) continue;
       return { ok: false, reason: 'admit_membership' };
     }
   }
@@ -435,6 +462,7 @@ export function fundedDebit(tx) {
   if (!tx || tx.coinbase) return null;
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
+  if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') return null;
   let from = kind === 'vote'
     ? String(tx.payer || tx.vin?.[0]?.address || '')
     : String(tx.from || tx.vin?.[0]?.address || '');
@@ -521,8 +549,9 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
     const stake = boundReserveWithdraw(tx, reserveState);
     if (!stake.ok) return stake;
     const kind = reserveKindOf(tx);
-    if (kind === 'lock' && !fundedDebit(tx)) {
-      return { ok: false, reason: 'insufficient', from: reservePortalDest(tx) };
+    if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {
+      const structure = typedAdmitStructure(tx);
+      if (!structure.ok) return structure;
     }
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;

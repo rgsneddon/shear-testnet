@@ -20,9 +20,12 @@ use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::IsIdentity;
+use rand_core::{OsRng, RngCore};
 
 pub const MAX_PROOF: usize = 32768;
+pub const MAX_PROOF_V3: usize = 39874;
 pub const VERSION: u8 = 2;
+pub const VERSION_V3: u8 = 3;
 const HDR: usize = 1 + 32 * 8 + 1; // version, tag, ct, dest_root, c_root, p_com, r_x, z_x, z_w, n_layers
 
 pub struct Proof {
@@ -31,6 +34,22 @@ pub struct Proof {
 
 fn chal(parts: &[&[u8]]) -> Scalar {
     Scalar::from_bytes_mod_order_wide(&sha512_64(parts))
+}
+
+fn scalar_in(bytes: [u8; 32], v3: bool) -> Option<Scalar> {
+    if !v3 {
+        return Some(Scalar::from_bytes_mod_order(bytes));
+    }
+    Scalar::from_canonical_bytes(bytes).into()
+}
+
+fn os_rand32() -> Option<[u8; 32]> {
+    let mut b = [0u8; 32];
+    OsRng.fill_bytes(&mut b);
+    if b == [0u8; 32] {
+        return None;
+    }
+    Some(b)
 }
 
 fn hp(p: &RistrettoPoint) -> RistrettoPoint {
@@ -69,7 +88,24 @@ pub fn admit_prove(
     c_leaves: &[u8],
     n: usize,
 ) -> Option<([u8; 32], Vec<u8>)> {
-    admit_prove_in(x, p, c, t, index, dest_leaves, c_leaves, n, &ZERO_BIND)
+    admit_prove_in(x, p, c, t, index, dest_leaves, c_leaves, n, &ZERO_BIND, &[])
+}
+
+pub fn admit_prove_v3(
+    x: &[u8; 32],
+    p: &[u8; 32],
+    c: &[u8; 32],
+    t: &[u8; 32],
+    index: usize,
+    dest_leaves: &[u8],
+    c_leaves: &[u8],
+    n: usize,
+    ctx: &[u8],
+) -> Option<([u8; 32], Vec<u8>)> {
+    if ctx.len() != 64 {
+        return None;
+    }
+    admit_prove_in(x, p, c, t, index, dest_leaves, c_leaves, n, &ZERO_BIND, ctx)
 }
 
 pub fn admit_prove_in(
@@ -82,16 +118,21 @@ pub fn admit_prove_in(
     c_leaves: &[u8],
     n: usize,
     forest_bind: &[u8; 32],
+    ctx: &[u8],
 ) -> Option<([u8; 32], Vec<u8>)> {
     if n == 0 || index >= n {
         return None;
     }
-    let ts = Scalar::from_bytes_mod_order(*t);
+    let v3 = !ctx.is_empty();
+    if v3 && ctx.len() != 64 {
+        return None;
+    }
+    let ts = scalar_in(*t, v3)?;
     if ts == Scalar::ZERO {
         return None;
     }
     let c_tilde = rerand_c(c, t)?;
-    let xs = Scalar::from_bytes_mod_order(*x);
+    let xs = scalar_in(*x, v3)?;
     if xs == Scalar::ZERO {
         return None;
     }
@@ -125,7 +166,7 @@ pub fn admit_prove_in(
         for layer in (1..n_layers).rev() {
             let td = vs_rand();
             let tc = rs_rand();
-            let pr = paired_prove(&dpath[layer], &cpath[layer], slots[layer], &td, &tc)?;
+            let pr = paired_prove(&dpath[layer], &cpath[layer], slots[layer], &td, &tc, ctx)?;
             if layer + 1 < n_layers {
                 let parent_d = commit_vesta(&dpath[layer]);
                 let parent_c = commit_ristretto_encodings(&cpath[layer]);
@@ -171,27 +212,58 @@ pub fn admit_prove_in(
         &w,
         &ct_pt,
         &p_com,
+        ctx,
     )?;
     mem.extend_from_slice(&leaf);
-    let k = chal(&[b"k", x, t]);
-    let a_w = chal(&[b"aw", x, t]);
+    let nonce_rand = if v3 { os_rand32()? } else { [0u8; 32] };
+    let k = if v3 {
+        chal(&[b"k", ctx, x, t, &nonce_rand])
+    } else {
+        chal(&[b"k", x, t])
+    };
+    let a_w = if v3 {
+        chal(&[b"aw", ctx, x, t, &nonce_rand])
+    } else {
+        chal(&[b"aw", x, t])
+    };
     let r_x = G * k + u * a_w;
     let dest_q = leaf_qd(&leaf)?;
-    let e2 = chal(&[
-        b"dleq",
-        &r_x.compress().to_bytes(),
-        &p_com.compress().to_bytes(),
-        &tag,
-        &c_tilde,
-        &jr,
-        &dest_q,
-        forest_bind,
-    ]);
+    let bind = if v3 {
+        forest_bind_v3(ctx, &[(tag, c_tilde)])
+    } else {
+        *forest_bind
+    };
+    let rx_b = r_x.compress().to_bytes();
+    let pc_b = p_com.compress().to_bytes();
+    let e2 = if v3 {
+        chal(&[
+            ctx,
+            b"dleq",
+            &rx_b,
+            &pc_b,
+            &tag,
+            &c_tilde,
+            &jr,
+            &dest_q,
+            &bind,
+        ])
+    } else {
+        chal(&[
+            b"dleq",
+            &rx_b,
+            &pc_b,
+            &tag,
+            &c_tilde,
+            &jr,
+            &dest_q,
+            &bind,
+        ])
+    };
     let z_x = k + e2 * xs;
     let z_w = a_w + e2 * w;
 
     let mut proof = Vec::new();
-    proof.push(VERSION);
+    proof.push(if v3 { VERSION_V3 } else { VERSION });
     proof.extend_from_slice(&tag);
     proof.extend_from_slice(&c_tilde);
     proof.extend_from_slice(&dest_root);
@@ -202,7 +274,8 @@ pub fn admit_prove_in(
     proof.extend_from_slice(&z_w.to_bytes());
     proof.push(n_layers as u8);
     proof.extend_from_slice(&mem);
-    if proof.len() > MAX_PROOF {
+    let cap = if v3 { MAX_PROOF_V3 } else { MAX_PROOF };
+    if proof.len() > cap {
         return None;
     }
     Some((c_tilde, proof))
@@ -237,7 +310,20 @@ pub fn admit_verify(
     c_leaves: &[u8],
     n: usize,
 ) -> bool {
-    admit_verify_in(proof, jr, c_tilde, spend_tag, dest_leaves, c_leaves, n, &ZERO_BIND)
+    admit_verify_in(proof, jr, c_tilde, spend_tag, dest_leaves, c_leaves, n, &ZERO_BIND, &[])
+}
+
+pub fn admit_verify_v3(
+    proof: &[u8],
+    jr: &[u8; 32],
+    c_tilde: &[u8; 32],
+    spend_tag: &[u8; 32],
+    ctx: &[u8],
+) -> bool {
+    if ctx.len() != 64 {
+        return false;
+    }
+    admit_verify_in(proof, jr, c_tilde, spend_tag, &[], &[], 0, &ZERO_BIND, ctx)
 }
 
 pub fn admit_verify_in(
@@ -249,9 +335,19 @@ pub fn admit_verify_in(
     c_leaves: &[u8],
     n: usize,
     forest_bind: &[u8; 32],
+    ctx: &[u8],
 ) -> bool {
     let _ = (dest_leaves, c_leaves, n);
-    if proof.is_empty() || proof[0] != VERSION {
+    let v3 = !ctx.is_empty();
+    if v3 && ctx.len() != 64 {
+        return false;
+    }
+    let want_ver = if v3 { VERSION_V3 } else { VERSION };
+    if proof.is_empty() || proof[0] != want_ver {
+        return false;
+    }
+    let cap = if v3 { MAX_PROOF_V3 } else { MAX_PROOF };
+    if proof.len() > cap {
         return false;
     }
     if n > 0 && proof.len() == 4 + 64 + n * 32 {
@@ -296,8 +392,20 @@ pub fn admit_verify_in(
         Some(x) => x,
         None => return false,
     };
-    let z_x = Scalar::from_bytes_mod_order(read32(proof, 193).unwrap_or([0u8; 32]));
-    let z_w = Scalar::from_bytes_mod_order(read32(proof, 225).unwrap_or([0u8; 32]));
+    let z_x = match scalar_in(match read32(proof, 193) {
+        Some(b) => b,
+        None => return false,
+    }, v3) {
+        Some(s) => s,
+        None => return false,
+    };
+    let z_w = match scalar_in(match read32(proof, 225) {
+        Some(b) => b,
+        None => return false,
+    }, v3) {
+        Some(s) => s,
+        None => return false,
+    };
     let n_layers = *proof.get(257).unwrap_or(&0u8) as usize;
     if n_layers == 0 || n_layers > 8 {
         return false;
@@ -350,7 +458,7 @@ pub fn admit_verify_in(
                 return false;
             }
             let pr = &proof[off..off + PAIRED_LEN];
-            if !paired_verify(&dest_parent, &c_parent, pr) {
+            if !paired_verify(&dest_parent, &c_parent, pr, ctx) {
                 return false;
             }
             prev_off = Some(off);
@@ -426,7 +534,7 @@ pub fn admit_verify_in(
         Some(p) => p,
         None => return false,
     };
-    if !leaf_verify(&dest_parent, &siblings, &p_sib, &ct, &p_com, leaf) {
+    if !leaf_verify(&dest_parent, &siblings, &p_sib, &ct, &p_com, leaf, ctx) {
         return false;
     }
     let dest_q = match leaf_qd(leaf) {
@@ -438,16 +546,35 @@ pub fn admit_verify_in(
         Some(p) => p,
         None => return false,
     };
-    let e2 = chal(&[
-        b"dleq",
-        &r_x_b,
-        &p_com_b,
-        &tag,
-        c_tilde,
-        jr,
-        &dest_q,
-        forest_bind,
-    ]);
+    let bind = if v3 {
+        forest_bind_v3(ctx, &[(*spend_tag, *c_tilde)])
+    } else {
+        *forest_bind
+    };
+    let e2 = if v3 {
+        chal(&[
+            ctx,
+            b"dleq",
+            &r_x_b,
+            &p_com_b,
+            &tag,
+            c_tilde,
+            jr,
+            &dest_q,
+            &bind,
+        ])
+    } else {
+        chal(&[
+            b"dleq",
+            &r_x_b,
+            &p_com_b,
+            &tag,
+            c_tilde,
+            jr,
+            &dest_q,
+            &bind,
+        ])
+    };
     if G * z_x + u * z_w != r_x + p_com * e2 {
         return false;
     }
@@ -470,6 +597,17 @@ pub fn admit_verify_batch(
         }
     }
     true
+}
+
+fn forest_bind_v3(ctx: &[u8], pairs: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
+    let mut parts: Vec<&[u8]> = Vec::with_capacity(2 + pairs.len() * 2);
+    parts.push(ctx);
+    parts.push(b"forest");
+    for (tag, ct) in pairs {
+        parts.push(tag);
+        parts.push(ct);
+    }
+    chal(&parts).to_bytes()
 }
 
 fn forest_bind_of(pre: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
@@ -525,6 +663,7 @@ pub fn forest_prove(
             c_leaves,
             n,
             &bind,
+            &[],
         )?);
     }
     Some(out)
@@ -559,7 +698,7 @@ pub fn forest_verify(
     }
     let bind = forest_bind_of(&pre);
     for (pr, ct, tag) in proofs {
-        if !admit_verify_in(pr, jr, ct, tag, dest_leaves, c_leaves, n, &bind) {
+        if !admit_verify_in(pr, jr, ct, tag, dest_leaves, c_leaves, n, &bind, &[]) {
             return false;
         }
     }

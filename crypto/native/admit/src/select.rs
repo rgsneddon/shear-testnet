@@ -482,8 +482,14 @@ fn pair_chal(
     pc: &[u8; 32],
     wc: &[u8; 32],
     qc: &[u8; 32],
+    ctx: &[u8],
 ) -> [u8; 64] {
-    sha512_64(&[rpd, rqd, rpc, rqc, pd, wd, qd, pc, wc, qc, b"cds-pair"])
+    // An empty ctx is the v2 transcript. Do not absorb a prefix.
+    if ctx.is_empty() {
+        sha512_64(&[rpd, rqd, rpc, rqc, pd, wd, qd, pc, wc, qc, b"cds-pair"])
+    } else {
+        sha512_64(&[ctx, rpd, rqd, rpc, rqc, pd, wd, qd, pc, wc, qc, b"cds-pair"])
+    }
 }
 
 /// Dest + C CDS with one wrap-around. Same hidden slot for both trees.
@@ -493,6 +499,7 @@ pub fn paired_prove(
     index: usize,
     t_d: &vesta::Scalar,
     t_c: &RScalar,
+    ctx: &[u8],
 ) -> Option<Vec<u8>> {
     if index >= ARITY {
         return None;
@@ -563,6 +570,7 @@ pub fn paired_prove(
         &pc_b,
         &wc_b,
         &qc_b,
+        ctx,
     );
     let mut ed = vesta::Scalar::from_uniform_bytes(&hv);
     let mut ec = RScalar::from_bytes_mod_order_wide(&hv);
@@ -595,6 +603,7 @@ pub fn paired_prove(
             &pc_b,
             &wc_b,
             &qc_b,
+            ctx,
         );
         ed = vesta::Scalar::from_uniform_bytes(&hv);
         ec = RScalar::from_bytes_mod_order_wide(&hv);
@@ -618,6 +627,7 @@ pub fn paired_prove(
         &pc_b,
         &wc_b,
         &qc_b,
+        ctx,
     );
     let mut e0d = vesta::Scalar::from_uniform_bytes(&seed0);
     let mut e0c = RScalar::from_bytes_mod_order_wide(&seed0);
@@ -644,6 +654,7 @@ pub fn paired_prove(
             &pc_b,
             &wc_b,
             &qc_b,
+            ctx,
         );
         e0d = vesta::Scalar::from_uniform_bytes(&seed0);
         e0c = RScalar::from_bytes_mod_order_wide(&seed0);
@@ -666,7 +677,7 @@ pub fn paired_prove(
     Some(out)
 }
 
-pub fn paired_verify(dest_parent: &[u8; 32], c_parent: &[u8; 32], proof: &[u8]) -> bool {
+pub fn paired_verify(dest_parent: &[u8; 32], c_parent: &[u8; 32], proof: &[u8], ctx: &[u8]) -> bool {
     if proof.len() != PAIRED_LEN {
         return false;
     }
@@ -768,6 +779,7 @@ pub fn paired_verify(dest_parent: &[u8; 32], c_parent: &[u8; 32], proof: &[u8]) 
             c_parent,
             &wc_b,
             &qc_b,
+            ctx,
         );
         last = hv;
         ed = vesta::Scalar::from_uniform_bytes(&hv);
@@ -814,21 +826,40 @@ fn leaf_chal(
     pcom: &[u8; 32],
     siblings_c: &[u8],
     siblings_p: &[u8],
+    ctx: &[u8],
 ) -> [u8; 64] {
-    sha512_64(&[
-        rpd,
-        rqd,
-        rc,
-        rp,
-        pd,
-        wd,
-        qd,
-        ct,
-        pcom,
-        siblings_c,
-        siblings_p,
-        b"cds-leaf",
-    ])
+    if ctx.is_empty() {
+        sha512_64(&[
+            rpd,
+            rqd,
+            rc,
+            rp,
+            pd,
+            wd,
+            qd,
+            ct,
+            pcom,
+            siblings_c,
+            siblings_p,
+            b"cds-leaf",
+        ])
+    } else {
+        sha512_64(&[
+            ctx,
+            rpd,
+            rqd,
+            rc,
+            rp,
+            pd,
+            wd,
+            qd,
+            ct,
+            pcom,
+            siblings_c,
+            siblings_p,
+            b"cds-leaf",
+        ])
+    }
 }
 
 /// Leaf: dest CDS + C̃ = C_j + t H + P̃ = P_j + w U, same hidden slot.
@@ -843,6 +874,7 @@ pub fn leaf_prove(
     w_p: &RScalar,
     c_tilde: &RistrettoPoint,
     p_com: &RistrettoPoint,
+    ctx: &[u8],
 ) -> Option<Vec<u8>> {
     if index >= ARITY {
         return None;
@@ -917,6 +949,7 @@ pub fn leaf_prove(
         &pcom_b,
         &sib_c,
         &sib_p,
+        ctx,
     );
     let mut ed = vesta::Scalar::from_uniform_bytes(&hv);
     let mut ec = RScalar::from_bytes_mod_order_wide(&hv);
@@ -950,6 +983,7 @@ pub fn leaf_prove(
             &pcom_b,
             &sib_c,
             &sib_p,
+            ctx,
         );
         ed = vesta::Scalar::from_uniform_bytes(&hv);
         ec = RScalar::from_bytes_mod_order_wide(&hv);
@@ -973,6 +1007,7 @@ pub fn leaf_prove(
         &pcom_b,
         &sib_c,
         &sib_p,
+        ctx,
     );
     let mut e0d = vesta::Scalar::from_uniform_bytes(&seed0);
     let mut e0c = RScalar::from_bytes_mod_order_wide(&seed0);
@@ -1001,6 +1036,7 @@ pub fn leaf_prove(
             &pcom_b,
             &sib_c,
             &sib_p,
+            ctx,
         );
         e0d = vesta::Scalar::from_uniform_bytes(&seed0);
         e0c = RScalar::from_bytes_mod_order_wide(&seed0);
@@ -1034,6 +1070,7 @@ pub fn leaf_verify(
     c_tilde: &RistrettoPoint,
     p_com: &RistrettoPoint,
     proof: &[u8],
+    ctx: &[u8],
 ) -> bool {
     if proof.len() != LEAF_PAIRED_LEN {
         return false;
@@ -1124,6 +1161,7 @@ pub fn leaf_verify(
             &pcom_b,
             &sib_c,
             &sib_p,
+            ctx,
         );
         last = hv;
         ed = vesta::Scalar::from_uniform_bytes(&hv);
@@ -1203,18 +1241,18 @@ mod tests {
         }
         let td = vs_rand();
         let tc = rs_rand();
-        let pr = paired_prove(&d, &c, 4, &td, &tc).expect("pair");
+        let pr = paired_prove(&d, &c, 4, &td, &tc, &[]).expect("pair");
         assert_eq!(pr.len(), PAIRED_LEN);
         let pd = commit_vesta(&d);
         let pc = commit_ristretto_encodings(&c);
-        assert!(paired_verify(&pd, &pc, &pr));
-        assert!(!paired_verify(&pc, &pd, &pr));
-        let pr_m = paired_prove(&d, &c, 4, &td, &tc).expect("p2");
+        assert!(paired_verify(&pd, &pc, &pr, &[]));
+        assert!(!paired_verify(&pc, &pd, &pr, &[]));
+        let pr_m = paired_prove(&d, &c, 4, &td, &tc, &[]).expect("p2");
         // swapping C parent (mixed trees) fails
         let mut c2 = c;
         c2[0][0] ^= 1;
         let pc2 = commit_ristretto_encodings(&c2);
-        assert!(!paired_verify(&pd, &pc2, &pr_m));
+        assert!(!paired_verify(&pd, &pc2, &pr_m, &[]));
     }
 
     #[test]
@@ -1240,19 +1278,19 @@ mod tests {
         let ct = pts[6] + ristretto_h_note() * t;
         let pcom = dest_p[6] + u * w;
         let td = vs_rand();
-        let pr = leaf_prove(&d, &c, &p_ch, 6, &td, &t, &w, &ct, &pcom).expect("leaf");
+        let pr = leaf_prove(&d, &c, &p_ch, 6, &td, &t, &w, &ct, &pcom, &[]).expect("leaf");
         let pd = commit_vesta(&d);
-        assert!(leaf_verify(&pd, &c, &p_ch, &ct, &pcom, &pr));
+        assert!(leaf_verify(&pd, &c, &p_ch, &ct, &pcom, &pr, &[]));
         let fake = ct + ristretto_h_note() * rs_rand();
-        assert!(!leaf_verify(&pd, &c, &p_ch, &fake, &pcom, &pr));
+        assert!(!leaf_verify(&pd, &c, &p_ch, &fake, &pcom, &pr, &[]));
         let fake_p = pcom + u * rs_rand();
-        assert!(!leaf_verify(&pd, &c, &p_ch, &ct, &fake_p, &pr));
+        assert!(!leaf_verify(&pd, &c, &p_ch, &ct, &fake_p, &pr, &[]));
         let mut c2 = c;
         c2.swap(6, 7);
-        assert!(!leaf_verify(&pd, &c2, &p_ch, &ct, &pcom, &pr));
+        assert!(!leaf_verify(&pd, &c2, &p_ch, &ct, &pcom, &pr, &[]));
         assert!(!pr.windows(32).any(|w| w == &d[6]));
         assert!(
-            leaf_prove(&d, &c, &p_ch, 6, &td, &t, &w, &ct, &(dest_p[0] + u * w)).is_none(),
+            leaf_prove(&d, &c, &p_ch, 6, &td, &t, &w, &ct, &(dest_p[0] + u * w), &[]).is_none(),
             "p_com must be the selected dest P"
         );
     }

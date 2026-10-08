@@ -12,7 +12,8 @@ mod tree;
 pub use bpplus::{prove_range, verify_range, RANGE_BITS};
 pub use leaf::{c_leaf_scalar, dest_leaf_fp, DST_LEAF};
 pub use prove::{
-    admit_prove, admit_verify, admit_verify_batch, forest_prove, forest_verify, Proof, MAX_PROOF,
+    admit_prove, admit_prove_v3, admit_verify, admit_verify_v3, admit_verify_batch, forest_prove,
+    forest_verify, Proof, MAX_PROOF, MAX_PROOF_V3,
 };
 pub use tree::{c_root, jroot, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
@@ -165,6 +166,114 @@ pub extern "C" fn shear_admit_prove(
                 OK
             }
             None => BAD,
+        }
+    }))
+    .unwrap_or(BAD)
+}
+
+/// v3 prove. `ctx` is 64 bytes. Returns proof length, or 0. `out` holds MAX_PROOF_V3.
+#[no_mangle]
+pub extern "C" fn shear_admit_prove_v3(
+    x: *const u8,
+    p: *const u8,
+    c: *const u8,
+    t: *const u8,
+    index: u32,
+    dest_leaves: *const u8,
+    c_leaves: *const u8,
+    n: u32,
+    ctx: *const u8,
+    ctx_len: u32,
+    c_tilde_out: *mut u8,
+    proof_out: *mut u8,
+    proof_len: *mut u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let n = n as usize;
+        let x = match b32(x) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let p = match b32(p) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let c = match b32(c) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let t = match b32(t) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let ctx_b = match slice(ctx, ctx_len as usize) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let dest = match slice(dest_leaves, n.saturating_mul(32)) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let cs = match slice(c_leaves, n.saturating_mul(32)) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        if c_tilde_out.is_null() || proof_out.is_null() || proof_len.is_null() {
+            return BAD;
+        }
+        match admit_prove_v3(&x, &p, &c, &t, index as usize, dest, cs, n, ctx_b) {
+            Some((ct, proof)) => {
+                if proof.len() > MAX_PROOF_V3 {
+                    return BAD;
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ct.as_ptr(), c_tilde_out, 32);
+                    std::ptr::copy_nonoverlapping(proof.as_ptr(), proof_out, proof.len());
+                    *proof_len = proof.len() as u32;
+                }
+                OK
+            }
+            None => BAD,
+        }
+    }))
+    .unwrap_or(BAD)
+}
+
+#[no_mangle]
+pub extern "C" fn shear_admit_verify_v3(
+    proof: *const u8,
+    proof_len: u32,
+    jroot_bytes: *const u8,
+    c_tilde: *const u8,
+    spend_tag: *const u8,
+    ctx: *const u8,
+    ctx_len: u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let pr = match slice(proof, proof_len as usize) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let jr = match b32(jroot_bytes) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let ct = match b32(c_tilde) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let tag = match b32(spend_tag) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let ctx_b = match slice(ctx, ctx_len as usize) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        if admit_verify_v3(pr, &jr, &ct, &tag, ctx_b) {
+            OK
+        } else {
+            BAD
         }
     }))
     .unwrap_or(BAD)

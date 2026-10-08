@@ -62,7 +62,7 @@ import {
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
-import { checkAdmitAnchor } from '../../crypto/admit_v3.js';
+import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
   writeChainBin,
@@ -1919,6 +1919,24 @@ export function createStore(dir, {
     }
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
+    const spentNow = new Set(liveFlux.spendTags || []);
+    for (const m of mempool) {
+      const tags = [];
+      if (m?.admit_proof?.spendTag) tags.push(m.admit_proof.spendTag);
+      if (Array.isArray(m?.admit_proofs)) {
+        for (const proof of m.admit_proofs) if (proof?.spendTag) tags.push(proof.spendTag);
+      }
+      for (const tag of tags) {
+        try { spentNow.add(Buffer.from(asU8(tag)).toString('hex')); } catch { /* skip */ }
+      }
+    }
+    const noteFund = verifyTypedAdmitFunding(tx, {
+      height: Number(t?.height || 0) + 1,
+      blocks,
+      spentTags: spentNow,
+      magic: MAGIC_TESTNET,
+    });
+    if (!noteFund.ok) return noteFund;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
     if (debit && !noteBound) {

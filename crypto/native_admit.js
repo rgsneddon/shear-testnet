@@ -98,6 +98,37 @@ export function nativeProve({ x, p, c, t, index, destLeaves, cLeaves }) {
   }
 }
 
+export function nativeProveV3({ x, p, c, t, index, destLeaves, cLeaves, ctx }) {
+  if (!native || typeof native.proveV3 !== 'function') return null;
+  try {
+    const xb = as32(x);
+    const pb = as32(p);
+    const cb = as32(c);
+    const tb = as32(t);
+    const context = Buffer.isBuffer(ctx) ? ctx : Buffer.from(ctx || []);
+    if (!xb || !pb || !cb || !tb || context.length !== 64) return null;
+    const dest = leafList(destLeaves);
+    const cs = leafList(cLeaves);
+    const got = native.proveV3(xb, pb, cb, tb, index >>> 0, dest, cs, context);
+    if (!got || got === false || !got.proof || !got.cTilde) return null;
+    return { cTilde: Buffer.from(got.cTilde), proof: Buffer.from(got.proof) };
+  } catch {
+    return null;
+  }
+}
+
+export function nativeVerifyV3({ proof, jroot, cTilde, spendTag, ctx }) {
+  if (!native || typeof native.verifyV3 !== 'function') return false;
+  try {
+    const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
+    const context = Buffer.from(ctx || []);
+    if (context.length !== 64) return false;
+    return !!native.verifyV3(pr, as32(jroot), as32(cTilde), as32(spendTag), context);
+  } catch {
+    return false;
+  }
+}
+
 export function nativeVerify({ proof, jroot, cTilde, spendTag, destLeaves = [], cLeaves = [] }) {
   if (!native) return false;
   try {

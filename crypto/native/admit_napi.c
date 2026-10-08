@@ -12,6 +12,15 @@ int32_t shear_admit_prove(
     const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
     uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
     uint8_t *c_tilde_out, uint8_t *proof_out, uint32_t *proof_len);
+int32_t shear_admit_prove_v3(
+    const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
+    uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
+    const uint8_t *ctx, uint32_t ctx_len,
+    uint8_t *c_tilde_out, uint8_t *proof_out, uint32_t *proof_len);
+int32_t shear_admit_verify_v3(
+    const uint8_t *proof, uint32_t proof_len, const uint8_t *jroot,
+    const uint8_t *c_tilde, const uint8_t *spend_tag,
+    const uint8_t *ctx, uint32_t ctx_len);
 int32_t shear_admit_verify(
     const uint8_t *proof, uint32_t proof_len, const uint8_t *jroot,
     const uint8_t *c_tilde, const uint8_t *spend_tag,
@@ -166,6 +175,90 @@ static napi_value prove_fn(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, obj, "cTilde", ct_v);
   napi_set_named_property(env, obj, "proof", pr_v);
   return obj;
+}
+
+static napi_value prove_v3_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 8;
+  napi_value argv[8];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint8_t x[32], p[32], c[32], t[32];
+  uint32_t index = 0;
+  if (argc < 8
+      || buf32(env, argv[0], x) || buf32(env, argv[1], p) || buf32(env, argv[2], c) || buf32(env, argv[3], t)) {
+    napi_throw_error(env, NULL, "prove v3 scalars");
+    return NULL;
+  }
+  napi_get_value_uint32(env, argv[4], &index);
+  uint8_t *dest = NULL, *cs = NULL;
+  uint32_t nd = 0, nc = 0;
+  if (concat_32s(env, argv[5], &dest, &nd) || concat_32s(env, argv[6], &cs, &nc)) {
+    free(dest);
+    free(cs);
+    napi_throw_error(env, NULL, "prove v3 leaves");
+    return NULL;
+  }
+  void *ctxp = NULL;
+  size_t ctxlen = 0;
+  if (napi_get_buffer_info(env, argv[7], &ctxp, &ctxlen) != napi_ok || ctxlen != 64 || !ctxp) {
+    free(dest);
+    free(cs);
+    napi_value f;
+    napi_get_boolean(env, 0, &f);
+    return f;
+  }
+  uint32_t n = nd < nc ? nd : nc;
+  uint8_t ct[32];
+  uint32_t maxp = 39874;
+  uint8_t *proof = (uint8_t *)malloc(maxp);
+  uint32_t plen = 0;
+  int32_t ok = 0;
+  if (proof) {
+    ok = shear_admit_prove_v3(
+      x, p, c, t, index, dest, cs, n,
+      (const uint8_t *)ctxp, (uint32_t)ctxlen, ct, proof, &plen);
+  }
+  free(dest);
+  free(cs);
+  if (!proof || ok != 1) {
+    free(proof);
+    napi_value f;
+    napi_get_boolean(env, 0, &f);
+    return f;
+  }
+  napi_value obj, ct_v, pr_v;
+  napi_create_object(env, &obj);
+  ct_v = buf_from(env, ct, 32);
+  pr_v = buf_from(env, proof, plen);
+  free(proof);
+  napi_set_named_property(env, obj, "cTilde", ct_v);
+  napi_set_named_property(env, obj, "proof", pr_v);
+  return obj;
+}
+
+static napi_value verify_v3_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value argv[5];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  void *pr = NULL;
+  size_t prlen = 0;
+  uint8_t jr[32], ct[32], tag[32];
+  void *ctxp = NULL;
+  size_t ctxlen = 0;
+  if (argc < 5
+      || napi_get_buffer_info(env, argv[0], &pr, &prlen) != napi_ok
+      || buf32(env, argv[1], jr) || buf32(env, argv[2], ct) || buf32(env, argv[3], tag)
+      || napi_get_buffer_info(env, argv[4], &ctxp, &ctxlen) != napi_ok
+      || ctxlen != 64 || !ctxp) {
+    napi_value f;
+    napi_get_boolean(env, 0, &f);
+    return f;
+  }
+  int32_t ok = shear_admit_verify_v3(
+    (const uint8_t *)pr, (uint32_t)prlen, jr, ct, tag,
+    (const uint8_t *)ctxp, (uint32_t)ctxlen);
+  napi_value out;
+  napi_get_boolean(env, ok == 1, &out);
+  return out;
 }
 
 static napi_value verify_fn(napi_env env, napi_callback_info info) {
@@ -353,7 +446,9 @@ static napi_value init(napi_env env, napi_value exports) {
   EX("leaf", leaf_fn);
   EX("jroot", jroot_fn);
   EX("prove", prove_fn);
+  EX("proveV3", prove_v3_fn);
   EX("verify", verify_fn);
+  EX("verifyV3", verify_v3_fn);
   EX("proveRange", prove_range_fn);
   EX("verifyRange", verify_range_fn);
   EX("verifyBatch", verify_batch_fn);
