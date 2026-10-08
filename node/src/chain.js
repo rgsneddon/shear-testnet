@@ -71,6 +71,7 @@ import {
   emptyFluxset,
   jroot as jrootOf,
 } from '../../crypto/admit.js';
+import { checkAdmitAnchor } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, reserveAuth } from '../../crypto/spend.js';
 import { portalIdFromDest } from '../../crypto/reserve_vault.js';
@@ -1809,6 +1810,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const seenOwners = new Map();
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
+    const anchored = checkAdmitAnchor(tx, height);
+    if (!anchored.ok) return anchored;
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
     const fields = checkTxAddressFields(tx, { coinbase: false });
     if (!fields.ok) {

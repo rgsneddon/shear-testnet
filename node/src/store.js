@@ -62,6 +62,7 @@ import {
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
+import { checkAdmitAnchor } from '../../crypto/admit_v3.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
   writeChainBin,
@@ -1818,6 +1819,8 @@ export function createStore(dir, {
     try {
       if (t?.header) base = Number(decodeHeader(Buffer.from(t.header)).baseFee || 1n);
     } catch { base = 1; }
+    const anchored = checkAdmitAnchor(tx, Number(t?.height || 0) + 1);
+    if (!anchored.ok) return anchored;
     const book = emptyMempool();
     book.txs = mempool;
     const id = String(tx?.id || '');
