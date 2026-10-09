@@ -90,6 +90,9 @@ import {
   noteCommitOfDest20,
   asU8,
   pointFrom,
+  txSpendTags,
+  canonicalSpendTag,
+  sameSpendProof,
 } from '../../crypto/note.js';
 import {
   packTx,
@@ -1927,30 +1930,45 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
       if (!verifyFlowConservation(tx)) return { ok: false, reason: 'commit_sum' };
+      const parsed = txSpendTags(tx);
+      if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
       const multi = Array.isArray(tx.admit_proofs) && tx.admit_proofs.length > 1;
+      const liveJ = { pubs, commits, jroot: live.jroot };
+      const spendOne = (proof, tag) => {
+        if (!tag) return { ok: false, reason: 'admit_membership' };
+        if (!admit_verify(proof, liveJ, { cTilde: proof.cTilde, spendTag: tag, jroot: live.jroot })) {
+          return { ok: false, reason: 'admit_membership' };
+        }
+        const th = tag.toString('hex');
+        if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
+        spentTags.add(th);
+        return null;
+      };
       if (!multi) {
       const proof = tx.admit_proof;
       if (!proof) return { ok: false, reason: 'admit_membership' };
-      const tag = proof.spendTag || tx.spendTag;
-      if (!tag) return { ok: false, reason: 'admit_membership' };
-      const cTilde = proof.cTilde;
-      const liveJ = { pubs, commits, jroot: live.jroot };
-      if (!admit_verify(proof, liveJ, { cTilde, spendTag: tag, jroot: live.jroot })) {
-        return { ok: false, reason: 'admit_membership' };
+      const one = canonicalSpendTag(proof);
+      if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
+      const failed = spendOne(proof, one.tag);
+      if (failed) return failed;
+      for (let pi = 0; pi < parsed.proofs.length; pi += 1) {
+        if (sameSpendProof(parsed.proofs[pi], proof)) continue;
+        const extra = canonicalSpendTag(parsed.proofs[pi]);
+        if (!extra.ok) return { ok: false, reason: extra.reason || 'admit_membership' };
+        const extraFail = spendOne(parsed.proofs[pi], extra.tag);
+        if (extraFail) return extraFail;
       }
-      const th = Buffer.from(asU8(tag)).toString('hex');
-      if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
-      spentTags.add(th);
       } else {
       const vins = (tx.vin || []).filter((v) => v && !v.coinbase);
       if (tx.admit_proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
-      const liveJ = { pubs, commits, jroot: live.jroot };
       const items = [];
-      for (let pi = 0; pi < tx.admit_proofs.length; pi++) {
+      const tags = [];
+      for (let pi = 0; pi < tx.admit_proofs.length; pi += 1) {
         const proof = tx.admit_proofs[pi];
         if (!proof) return { ok: false, reason: 'admit_membership' };
-        const tag = proof.spendTag;
-        if (!tag) return { ok: false, reason: 'admit_membership' };
+        const one = canonicalSpendTag(proof);
+        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
+        if (!one.tag) return { ok: false, reason: 'admit_membership' };
         const cTilde = proof.cTilde;
         if (!cTilde || !vins[pi]?.commit) return { ok: false, reason: 'admit_membership' };
         const posted = Buffer.from(asU8(vins[pi].commit));
@@ -1958,13 +1976,25 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (posted.length !== want.length || !posted.equals(want)) {
           return { ok: false, reason: 'admit_membership' };
         }
-        items.push({ proof: proof.blob || proof.proof || proof, cTilde, spendTag: tag });
-        const th = Buffer.from(asU8(tag)).toString('hex');
-        if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
-        spentTags.add(th);
+        items.push({ proof: proof.blob || proof.proof || proof, cTilde, spendTag: one.tag });
+        tags.push(one.tag);
       }
       if (!admitVerifyBatch(items, liveJ, { jroot: live.jroot })) {
         return { ok: false, reason: 'admit_membership' };
+      }
+      const seen = new Set();
+      for (const tag of tags) {
+        const th = tag.toString('hex');
+        if (seen.has(th) || spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
+        seen.add(th);
+        spentTags.add(th);
+      }
+      for (let pi = 0; pi < parsed.proofs.length; pi += 1) {
+        if (tx.admit_proofs.some((p) => sameSpendProof(p, parsed.proofs[pi]))) continue;
+        const extra = canonicalSpendTag(parsed.proofs[pi]);
+        if (!extra.ok) return { ok: false, reason: extra.reason || 'admit_membership' };
+        const extraFail = spendOne(parsed.proofs[pi], extra.tag);
+        if (extraFail) return extraFail;
       }
       }
     }

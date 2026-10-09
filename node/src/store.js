@@ -89,7 +89,7 @@ import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempoo
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
-import { asU8, flowInputsBound } from '../../crypto/note.js';
+import { asU8, flowInputsBound, txSpendTags, canonicalSpendTag } from '../../crypto/note.js';
 import { blockWork } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
@@ -1595,6 +1595,46 @@ export function createStore(dir, {
     }));
   }
 
+  /**
+   * A v2 flow proof is bound to the current root. After the root moves, that
+   * proof can never verify again, but its blob tag would still reserve the note.
+   * Drop those txs so a re-proof can queue. Reserve actions and painted holds stay.
+   * Template still keeps an admit_membership miss that has not been swept here.
+   */
+  function dropStaleFlowSpends() {
+    const live = liveFlux;
+    if (!live?.jroot || !Array.isArray(live.pubs) || live.pubs.length < 1) return;
+    const keep = [];
+    for (const tx of mempool) {
+      if (!flowNeedsDummy(tx)) {
+        keep.push(tx);
+        continue;
+      }
+      const parsed = txSpendTags(tx);
+      if (!parsed.proofs.length || parsed.reason === 'admit_tag') {
+        keep.push(tx);
+        continue;
+      }
+      let fresh = true;
+      for (const proof of parsed.proofs) {
+        const one = canonicalSpendTag(proof);
+        if (!one.tag || !admit_verify(proof, live, {
+          cTilde: proof.cTilde,
+          spendTag: one.tag,
+          jroot: live.jroot,
+        })) {
+          fresh = false;
+          break;
+        }
+      }
+      if (fresh) keep.push(tx);
+    }
+    if (keep.length !== mempool.length) {
+      mempool.length = 0;
+      mempool.push(...keep);
+    }
+  }
+
   function bounceMempool(disconnected, connected) {
     const winnerIds = new Set();
     const winnerInputs = new Set();
@@ -1602,18 +1642,18 @@ export function createStore(dir, {
       for (const tx of (b.txs || []).slice(1)) {
         const id = txIdOf(tx);
         if (id) winnerIds.add(id);
-        const tag = tx.admit_proof?.spendTag || tx.spendTag;
-        if (tag) winnerInputs.add(Buffer.from(asU8(tag)).toString('hex'));
+        for (const tag of txSpendTags(tx).tags) winnerInputs.add(tag.toString('hex'));
         for (const vin of tx.vin || []) {
           winnerInputs.add(`${vin.prev || ''}:${vin.index}`);
         }
       }
     }
+    const tagSpent = (tx) => txSpendTags(tx).tags.some((tag) => winnerInputs.has(tag.toString('hex')));
     for (let i = mempool.length - 1; i >= 0; i -= 1) {
       const tx = mempool[i];
       const id = txIdOf(tx);
       const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
-      if ((id && winnerIds.has(id)) || spent) mempool.splice(i, 1);
+      if ((id && winnerIds.has(id)) || spent || tagSpent(tx)) mempool.splice(i, 1);
     }
     let base = 1;
     const t = tip();
@@ -1628,7 +1668,7 @@ export function createStore(dir, {
         const id = txIdOf(tx);
         if (id && winnerIds.has(id)) continue;
         const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
-        if (spent) continue;
+        if (spent || tagSpent(tx)) continue;
         if (id && mempool.some((m) => txIdOf(m) === id)) continue;
         admitMempool(book, {
           ...tx,
@@ -1641,6 +1681,9 @@ export function createStore(dir, {
           baseFee: base,
           reserveState: reserveVault,
           nowMs: headerStamp(),
+          fluxset: liveFlux,
+          spendTags: liveFlux?.spendTags,
+          commits: liveFlux?.commits,
         });
       }
     }
@@ -1883,6 +1926,7 @@ export function createStore(dir, {
     syncBlankFlag();
     saveReserve();
     liveFlux = applyBlockToFluxset(liveFlux, stored);
+    dropStaleFlowSpends();
     const idx = stored.height - 1;
     supplyTip = check.supplyState;
     supplyAt[idx] = supplyTip;
@@ -1974,82 +2018,66 @@ export function createStore(dir, {
       && paintedSpendSig(tx)
       && chainHave < debitNow.nanos
       && chainHave + paintedOwedNanos >= debitNow.nanos);
+    const spentNow = new Set(liveFlux.spendTags || []);
+    for (const m of mempool) {
+      for (const tag of txSpendTags(m).tags) spentNow.add(tag.toString('hex'));
+    }
     if (flowNeedsDummy(tx)) {
       const boundIns = flowInputsBound(tx);
       if (!boundIns.ok) return boundIns;
-      const proof = tx.admit_proof;
-      if (!proof && !paintedHold) return { ok: false, reason: 'admit_membership' };
-      if (proof) {
+      const parsed = txSpendTags(tx);
+      const hasProof = parsed.proofs.length > 0;
+      if (!hasProof && !paintedHold) return { ok: false, reason: 'admit_membership' };
+      if (hasProof) {
+      if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
       const live = liveFlux;
-      const rlen = Array.isArray(proof.r) ? proof.r.length : -1;
+      const rlen = Array.isArray(tx.admit_proof?.r) ? tx.admit_proof.r.length : -1;
       const n = (live.pubs || []).length;
-      const tag = proof.spendTag || tx.spendTag;
-      let th = '';
-      try { th = tag ? Buffer.from(asU8(tag)).toString('hex') : ''; } catch { th = ''; }
-      const spent = th ? live.spendTags.has(th) : false;
-      let verified = false;
-      let verifyErr = '';
-      try {
-        const cTilde = proof.cTilde;
-        verified = !!admit_verify(proof, live, { cTilde, spendTag: tag, jroot: live.jroot });
-      } catch (e) {
-        verifyErr = String(e && e.message ? e.message : e);
-      }
-      if (!verified) {
-        let pub0 = '';
+      const seen = new Set();
+      for (let pi = 0; pi < parsed.proofs.length; pi += 1) {
+        const extra = parsed.proofs[pi];
+        const one = canonicalSpendTag(extra);
+        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
+        if (!one.tag) return { ok: false, reason: 'admit_membership' };
+        const th = one.tag.toString('hex');
+        const spent = spentNow.has(th);
+        let verified = false;
+        let verifyErr = '';
         try {
-          const p0 = live.pubs[0];
-          pub0 = Buffer.from(asU8(typeof p0?.toBytes === 'function' ? p0.toBytes() : p0)).toString('hex');
-        } catch { /* ignore */ }
-        console.error(JSON.stringify({
-          event: 'admit_fail',
-          why: verifyErr || 'verify',
-          n,
-          rlen,
-          jroot: Buffer.from(live.jroot || []).toString('hex'),
-          spendTag: th,
-          spent,
-          verifyErr,
-          pub0,
-        }));
-        return { ok: false, reason: 'admit_membership' };
-      }
-      if (!tag) return { ok: false, reason: 'admit_membership' };
-      if (live.spendTags.has(th)) {
-        console.error(JSON.stringify({ event: 'admit_fail', why: 'spent_tag', n, rlen, spendTag: th }));
-        return { ok: false, reason: 'admit_link_tag' };
-      }
-      for (const m of mempool) {
-        const mt = m.admit_proof?.spendTag || m.spendTag;
-        if (mt && Buffer.from(asU8(mt)).toString('hex') === th) {
+          verified = !!admit_verify(extra, live, { cTilde: extra.cTilde, spendTag: one.tag, jroot: live.jroot });
+        } catch (e) {
+          verifyErr = String(e && e.message ? e.message : e);
+        }
+        if (!verified) {
+          if (pi === 0) {
+            let pub0 = '';
+            try {
+              const p0 = live.pubs[0];
+              pub0 = Buffer.from(asU8(typeof p0?.toBytes === 'function' ? p0.toBytes() : p0)).toString('hex');
+            } catch { /* ignore */ }
+            console.error(JSON.stringify({
+              event: 'admit_fail',
+              why: verifyErr || 'verify',
+              n,
+              rlen,
+              jroot: Buffer.from(live.jroot || []).toString('hex'),
+              spendTag: th,
+              spent,
+              verifyErr,
+              pub0,
+            }));
+          }
+          return { ok: false, reason: 'admit_membership' };
+        }
+        if (seen.has(th) || spentNow.has(th)) {
+          if (pi === 0) {
+            console.error(JSON.stringify({ event: 'admit_fail', why: 'spent_tag', n, rlen, spendTag: th }));
+          }
           return { ok: false, reason: 'admit_link_tag' };
         }
+        seen.add(th);
       }
-      if (Array.isArray(tx.admit_proofs) && tx.admit_proofs.length > 1) {
-        const vins = (tx.vin || []).filter((v) => v && !v.coinbase);
-        if (tx.admit_proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
-        const seen = new Set();
-        for (let pi = 0; pi < tx.admit_proofs.length; pi++) {
-          const extra = tx.admit_proofs[pi];
-          const etag = extra?.spendTag;
-          let eth = '';
-          try { eth = etag ? Buffer.from(asU8(etag)).toString('hex') : ''; } catch { eth = ''; }
-          if (!eth || seen.has(eth)) return { ok: false, reason: 'admit_membership' };
-          seen.add(eth);
-          if (live.spendTags.has(eth)) return { ok: false, reason: 'admit_link_tag' };
-          const ct = extra.cTilde;
-          let okExtra = false;
-          try {
-            okExtra = !!admit_verify(extra, live, { cTilde: ct, spendTag: etag, jroot: live.jroot });
-          } catch { okExtra = false; }
-          if (!okExtra) return { ok: false, reason: 'admit_membership' };
-          const posted = vins[pi]?.commit;
-          if (!posted || !ct) return { ok: false, reason: 'admit_membership' };
-          if (Buffer.from(asU8(posted)).toString('hex') !== Buffer.from(asU8(ct)).toString('hex')) {
-            return { ok: false, reason: 'admit_membership' };
-          }
-        }
-      }
+      if (!parsed.ok) return { ok: false, reason: parsed.reason || 'admit_link_tag' };
       }
     }
     const typed = typedCommitRejected(tx);
@@ -2060,17 +2088,6 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
-    const spentNow = new Set(liveFlux.spendTags || []);
-    for (const m of mempool) {
-      const tags = [];
-      if (m?.admit_proof?.spendTag) tags.push(m.admit_proof.spendTag);
-      if (Array.isArray(m?.admit_proofs)) {
-        for (const proof of m.admit_proofs) if (proof?.spendTag) tags.push(proof.spendTag);
-      }
-      for (const tag of tags) {
-        try { spentNow.add(Buffer.from(asU8(tag)).toString('hex')); } catch { /* skip */ }
-      }
-    }
     const noteFund = verifyTypedAdmitFunding(tx, {
       height: Number(t?.height || 0) + 1,
       blocks,
@@ -2742,12 +2759,10 @@ export function createStore(dir, {
     const n = Math.min(list?.length || 0, endIdx + 1);
     for (let i = 0; i < n; i += 1) {
       for (const tx of list[i]?.txs || []) {
-        const tag = tx?.admit_proof?.spendTag || tx?.spendTag;
-        if (!tag) continue;
-        try {
-          const hex = Buffer.from(tag).toString('hex');
+        for (const tag of txSpendTags(tx).tags) {
+          const hex = tag.toString('hex');
           if (hex) spendTags.add(hex);
-        } catch { /* skip */ }
+        }
       }
     }
     return spendTags;
@@ -3165,6 +3180,7 @@ export function createStore(dir, {
       supplyTip = supplyAt.length ? supplyAt[supplyAt.length - 1] : null;
       repairVaultAfterAdopt(lca);
       bounceMempool(disconnected, connected);
+      dropStaleFlowSpends();
       pruneBuried();
       reorgs.push(event);
       if (reorgs.length > 64) reorgs.splice(0, reorgs.length - 64);
@@ -3385,6 +3401,7 @@ export function createStore(dir, {
     book.baseFee = baseFeeNow;
     const pendingTxs = [];
     const keep = [];
+    const spendSeen = new Set(liveFlux.spendTags || []);
     for (const raw of mempool) {
       const m = reviveTx(raw);
       const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
@@ -3416,7 +3433,7 @@ export function createStore(dir, {
       const got = admitMempool(book, tx, {
         baseFee: baseFeeNow,
         fluxset: live,
-        spendTags: live.spendTags,
+        spendTags: spendSeen,
         commits: live.commits,
         reserveState: reserveVault,
         nowMs: now,
@@ -3427,9 +3444,13 @@ export function createStore(dir, {
       if (got.ok) {
         pendingTxs.push(got.tx);
         keep.push(m);
+        for (const tag of txSpendTags(got.tx).tags) spendSeen.add(tag.toString('hex'));
+        if (Array.isArray(got.tags)) {
+          for (const th of got.tags) if (th) spendSeen.add(String(th));
+        }
       } else {
         console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: got.reason }));
-        if (!got.vault && got.reason !== 'admit') keep.push(m);
+        if (!got.vault && got.reason !== 'admit' && got.reason !== 'admit_link_tag') keep.push(m);
       }
     }
     mempool.length = 0;

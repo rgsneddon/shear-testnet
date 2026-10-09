@@ -7,7 +7,7 @@ import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAdd
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
-import { asU8, verifyRange, flowInputsBound } from './note.js';
+import { verifyRange, flowInputsBound, txSpendTags, canonicalSpendTag } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
@@ -20,6 +20,19 @@ export const MEMPOOL_KIND_B_SPEND = 'b-spend';
 
 export function emptyMempool() {
   return { txs: [], baseFee: 1, max: MEMPOOL_MAX };
+}
+
+/** Chain tags plus every tag already accepted into this book. Callers pass a copy; this does not mutate it. */
+function runningSpendTags(book, opts) {
+  const tags = new Set();
+  const src = opts?.spendTags;
+  if (src && typeof src.forEach === 'function') {
+    src.forEach((tag) => tags.add(String(tag)));
+  }
+  for (const prev of book?.txs || []) {
+    for (const tag of txSpendTags(prev).tags) tags.add(tag.toString('hex'));
+  }
+  return tags;
 }
 
 export function admitMempool(pool, tx, opts = {}) {
@@ -63,17 +76,20 @@ export function admitMempool(pool, tx, opts = {}) {
   // Lock, vote, and withdraw: same funding check, same drawn mint, same
   // header-time vault trial as queue and consensus. A vault miss is marked
   // so the template drops the tx instead of retrying it forever.
+  const runningTags = runningSpendTags(book, opts);
+  let fundTags = null;
   if (txIsReserveAction(tx) && ('reserveState' in opts || 'nowMs' in opts || typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null)) {
     const wantFund = typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null;
     if (wantFund) {
       const noteFund = verifyTypedAdmitFunding(tx, {
         height: Number(opts.height || 0),
         blocks: opts.blocks || [],
-        spentTags: opts.spendTags,
+        spentTags: runningTags,
         magic: opts.magic,
         noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
       });
       if (!noteFund.ok) return noteFund;
+      if (Array.isArray(noteFund.tags)) fundTags = noteFund.tags;
     }
     const drawn = new Set();
     const minted = opts.reserveState?.mintedIds || {};
@@ -126,18 +142,23 @@ export function admitMempool(pool, tx, opts = {}) {
       ? opts.fluxset
       : { pubs: opts.fluxset || opts.pubs || [], commits: opts.commits || [] };
     if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold) {
-      const proof = tx.admit_proof;
-      if (!proof) return { ok: false, reason: 'admit_membership' };
-      const cTilde = proof.cTilde;
-      if (!admit_verify(proof, live, { cTilde, spendTag: proof.spendTag || tx.spendTag, jroot: live.jroot })) {
-        return { ok: false, reason: 'admit_membership' };
+      const parsed = txSpendTags(tx);
+      if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
+      if (!parsed.proofs.length) return { ok: false, reason: 'admit_membership' };
+      const seen = new Set();
+      for (let pi = 0; pi < parsed.proofs.length; pi += 1) {
+        const proof = parsed.proofs[pi];
+        const one = canonicalSpendTag(proof);
+        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
+        if (!one.tag) return { ok: false, reason: 'admit_membership' };
+        if (!admit_verify(proof, live, { cTilde: proof.cTilde, spendTag: one.tag, jroot: live.jroot })) {
+          return { ok: false, reason: 'admit_membership' };
+        }
+        const th = one.tag.toString('hex');
+        if (seen.has(th) || runningTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
+        seen.add(th);
       }
-      const tag = proof.spendTag || tx.spendTag;
-      if (!tag) return { ok: false, reason: 'admit_membership' };
-      const spent = opts.spendTags;
-      if (spent && spent.has(Buffer.from(asU8(tag)).toString('hex'))) {
-        return { ok: false, reason: 'admit_link_tag' };
-      }
+      if (!parsed.ok) return { ok: false, reason: parsed.reason || 'admit_link_tag' };
     }
   }
   const depth = mempoolDepthBytes(book.txs);
@@ -149,7 +170,10 @@ export function admitMempool(pool, tx, opts = {}) {
   }
   if ((book.txs || []).length >= (book.max || MEMPOOL_MAX)) return { ok: false, reason: 'full' };
   book.txs.push({ ...tx, fee: paid, kind });
-  return { ok: true, tx: book.txs[book.txs.length - 1] };
+  const accepted = book.txs[book.txs.length - 1];
+  const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));
+  for (const th of tags) runningTags.add(String(th));
+  return { ok: true, tx: accepted, tags };
 }
 
 /** After header retarget, drop or mark requote if paid < new base levy. */

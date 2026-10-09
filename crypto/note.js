@@ -466,6 +466,123 @@ export function vinIdentifiesSpent(v) {
   return false;
 }
 
+function proofBlobBytes(proof) {
+  const raw = proof?.blob ?? proof?.proof;
+  if (raw == null || raw === '') return null;
+  try {
+    const blob = Buffer.from(asU8(raw));
+    return blob.length ? blob : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A versioned Admit blob carries the spend tag at bytes 1..33. */
+function versionedSpendTag(blob) {
+  if (!blob || blob.length < 33) return null;
+  if (blob[0] !== 2 && blob[0] !== 3) return null;
+  return Buffer.from(blob.subarray(1, 33));
+}
+
+function postedSpendTag(tag) {
+  if (tag == null || tag === '') return { present: false, tag: null };
+  try {
+    const buf = Buffer.from(asU8(tag));
+    if (buf.length === 32) return { present: true, tag: buf };
+  } catch { /* present, but not a tag */ }
+  return { present: true, tag: null };
+}
+
+/**
+ * One proof's spend tag. A version 2 or 3 blob owns the tag. A JSON field
+ * that disagrees is admit_tag, and the blob tag is still returned. A proof
+ * with no versioned blob keeps a 32-byte field so a shape check can bind.
+ */
+export function canonicalSpendTag(proof) {
+  const fromBytes = versionedSpendTag(proofBlobBytes(proof));
+  const field = postedSpendTag(proof?.spendTag);
+  if (fromBytes) {
+    if (field.present && (!field.tag || !field.tag.equals(fromBytes))) {
+      return { ok: false, reason: 'admit_tag', tag: fromBytes };
+    }
+    return { ok: true, reason: null, tag: fromBytes };
+  }
+  if (field.tag) return { ok: true, reason: null, tag: field.tag };
+  return { ok: false, reason: 'admit_membership', tag: null };
+}
+
+/**
+ * Identity of one proof. A versioned blob is its bytes. A shape proof is its
+ * tag and cTilde. Reference equality is not identity: reviveTx copies admit_proof.
+ */
+function proofIdentity(proof) {
+  const blob = proofBlobBytes(proof);
+  if (blob && blob.length >= 33 && (blob[0] === 2 || blob[0] === 3)) {
+    return `b:${blob.toString('hex')}`;
+  }
+  const one = canonicalSpendTag(proof);
+  if (!one.tag) return null;
+  let ct = '';
+  try {
+    if (proof?.cTilde != null) ct = Buffer.from(asU8(proof.cTilde)).toString('hex');
+  } catch { ct = ''; }
+  return `s:${one.tag.toString('hex')}:${ct}`;
+}
+
+/** True when both objects are the same proof, including a revived copy. */
+export function sameSpendProof(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ia = proofIdentity(a);
+  const ib = proofIdentity(b);
+  return !!(ia && ib && ia === ib);
+}
+
+/**
+ * admit_proof, then each admit_proofs entry that is not that same proof.
+ * A copy of admit_proofs[0] stored again as admit_proof is one proof.
+ * Two list entries with the same tag stay two proofs so the tag check can reject them.
+ */
+export function txProofs(tx) {
+  const out = [];
+  const list = Array.isArray(tx?.admit_proofs) ? tx.admit_proofs.filter(Boolean) : [];
+  if (tx?.admit_proof && !list.some((proof) => sameSpendProof(proof, tx.admit_proof))) {
+    out.push(tx.admit_proof);
+  }
+  for (const proof of list) out.push(proof);
+  return out;
+}
+
+/**
+ * Every proof's spend tag. Tags are the blob bytes when the proof is versioned.
+ * A missing proof list is an empty success (coinbase). A field that disagrees
+ * with those bytes is admit_tag, and the blob tags are still listed so a stored
+ * lie cannot un-spend the note. Duplicate tags in one tx are admit_link_tag.
+ * A lone tx.spendTag with no proof is not a nullifier.
+ */
+export function txSpendTags(tx) {
+  const proofs = txProofs(tx);
+  if (!proofs.length) return { ok: true, reason: null, tags: [], proofs };
+  const tags = [];
+  const seen = new Set();
+  let reason = null;
+  for (const proof of proofs) {
+    const one = canonicalSpendTag(proof);
+    if (!one.ok) reason = reason || one.reason || 'admit_membership';
+    if (!one.tag) continue;
+    const hex = one.tag.toString('hex');
+    if (seen.has(hex)) reason = reason || 'admit_link_tag';
+    seen.add(hex);
+    tags.push(one.tag);
+  }
+  const top = postedSpendTag(tx?.spendTag);
+  if (top.present && tags[0] && (!top.tag || !top.tag.equals(tags[0]))) {
+    reason = reason || 'admit_tag';
+  }
+  if (reason) return { ok: false, reason, tags, proofs };
+  return { ok: true, reason: null, tags, proofs };
+}
+
 /**
  * Every Flow vin is bound to one Admit proof. cTilde must equal that vin's
  * commit, the spend tag must be present, and an extra vin is not a proof.
@@ -480,12 +597,19 @@ export function flowInputsBound(tx) {
     ? tx.admit_proofs
     : (tx?.admit_proof ? [tx.admit_proof] : []);
   if (proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
+  const tags = [];
+  const seen = new Set();
   for (let i = 0; i < vins.length; i += 1) {
     const proof = proofs[i];
-    const tag = proof?.spendTag || (proofs.length === 1 ? tx.spendTag : null);
-    if (!tag || proof?.cTilde == null || vins[i]?.commit == null) {
+    const one = canonicalSpendTag(proof);
+    if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
+    if (!one.tag || proof?.cTilde == null || vins[i]?.commit == null) {
       return { ok: false, reason: 'admit_membership' };
     }
+    const hex = one.tag.toString('hex');
+    if (seen.has(hex)) return { ok: false, reason: 'admit_link_tag' };
+    seen.add(hex);
+    tags.push(one.tag);
     let posted;
     let want;
     try {
@@ -497,6 +621,10 @@ export function flowInputsBound(tx) {
     if (posted.length !== want.length || !posted.equals(want)) {
       return { ok: false, reason: 'admit_membership' };
     }
+  }
+  const top = postedSpendTag(tx?.spendTag);
+  if (top.present && (!top.tag || !tags[0] || !top.tag.equals(tags[0]))) {
+    return { ok: false, reason: 'admit_tag' };
   }
   return { ok: true, proofs, vins };
 }

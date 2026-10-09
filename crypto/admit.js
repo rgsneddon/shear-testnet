@@ -6,7 +6,7 @@
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
-import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, kernelExcess } from './note.js';
+import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, kernelExcess, txSpendTags } from './note.js';
 import { merkleRoot } from './merkle.js';
 import { nativeJroot, nativeFrontierAppend, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
 
@@ -409,8 +409,9 @@ export function receiptAdmitRejected(tx) {
 
 function absorbFluxBlock(pubs, commits, spendTags, block) {
   for (const tx of block?.txs || []) {
-    const tag = tx.admit_proof?.spendTag || tx.spendTag;
-    if (tag) {
+    // Blob bytes win. Record them even when a JSON field disagrees, so a stored lie cannot un-spend the note.
+    const parsed = txSpendTags(tx);
+    for (const tag of parsed.tags) {
       const h = hexTag(tag);
       if (h) spendTags.add(h);
     }

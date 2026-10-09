@@ -21,7 +21,7 @@ import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, 
 import { packShareBatchBytes } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, openedCoinbaseNanos } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
-import { verifySealedNote, asU8 } from './note.js';
+import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags } from './note.js';
 import { hash20FromAddress } from './address.js';
 import { canonicalReserveFields } from './reserve_vault.js';
 import { compactHashLedger, packHashCreditBytes } from './hash_owed.js';
@@ -516,6 +516,22 @@ export function compactTx(tx) {
     delete out.members;
   }
   if (tx.spendTag) out.spendTag = tx.spendTag;
+  // The sealed tag is the blob's. A disagreeing JSON field does not survive.
+  try {
+    if (out.admit_proof) {
+      const one = canonicalSpendTag(tx.admit_proof);
+      if (one.tag) out.admit_proof.spendTag = one.tag;
+    }
+    if (Array.isArray(out.admit_proofs) && Array.isArray(tx.admit_proofs)) {
+      out.admit_proofs = out.admit_proofs.map((proof, i) => {
+        const one = canonicalSpendTag(tx.admit_proofs[i] || proof);
+        if (!one.tag || !proof || typeof proof !== 'object') return proof;
+        return { ...proof, spendTag: one.tag };
+      });
+    }
+    const parsed = txSpendTags(tx);
+    if (parsed.tags.length) out.spendTag = parsed.tags[0];
+  } catch { /* compact must not throw on a fixture */ }
   if (tx.jroot) out.jroot = tx.jroot;
   if (tx.excess) out.excess = tx.excess;
   if (reserveFields) {

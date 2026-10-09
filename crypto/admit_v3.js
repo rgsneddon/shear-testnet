@@ -283,7 +283,20 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
     if (want.length !== 32 || !Buffer.from(got).equals(want)) {
       return { ok: false, reason: 'admit_anchor_root', proofChecked: true };
     }
-    const tag = bytes32(proof.spendTag) || Buffer.from(pr.subarray(1, 33));
+    // The tag is the proof bytes. A JSON field that disagrees is not a second tag.
+    // This sits after the short-blob return so a 40-byte junk proof stays admit_membership.
+    const fromBytes = Buffer.from(pr.subarray(1, 33));
+    const field = bytes32(proof.spendTag);
+    if (proof.spendTag != null && proof.spendTag !== '' && (!field || !field.equals(fromBytes))) {
+      return { ok: false, reason: 'admit_tag', proofChecked: true };
+    }
+    if (tags.length === 0 && tx?.spendTag != null && tx.spendTag !== '') {
+      const top = bytes32(tx.spendTag);
+      if (!top || !top.equals(fromBytes)) {
+        return { ok: false, reason: 'admit_tag', proofChecked: true };
+      }
+    }
+    const tag = fromBytes;
     const th = Buffer.from(tag).toString('hex');
     if (!th || seen.has(th)) return { ok: false, reason: 'admit_link_tag', proofChecked: true };
     if (spentTags && typeof spentTags.has === 'function' && spentTags.has(th)) {
