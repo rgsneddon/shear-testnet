@@ -369,17 +369,20 @@ export function typedCommitRejected(tx) {
 }
 
 /**
- * A lock or vote spends hidden notes. The public outputs must open, and
- * sum(C_out) + fee·G = sum(C̃) + excess·H. The excess scalar is the only
- * opening material that survives compactTx. A vote receipt is 0, so a vote
- * passes only when the spent notes open to the fee. Withdraw is a vault mint,
- * not this sum.
+ * Lock, vote, and withdraw spend a hidden note. Every public output must
+ * open, and sum(C_out) + fee·G = sum(C̃) + W·G + excess·H. The excess
+ * scalar is the only opening material that survives compactTx. W is 0 for
+ * lock and vote, so a vote receipt passes only when the spent notes open
+ * to the fee. For withdraw, W is the sum of the opened outputs: the vault
+ * mint covers that value, and the hidden input must open to the fee alone.
+ * A subsidy note cannot fund the withdrawal.
  */
 export function typedCommitSum(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote') return { ok: true, skip: true };
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
+  let payout = 0;
   for (const o of outs) {
     const raw = o?.valueProof?.v;
     const v = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
@@ -387,8 +390,13 @@ export function typedCommitSum(tx) {
       return { ok: false, reason: 'commit_sum' };
     }
     if (!verifySealedNote(o, v)) return { ok: false, reason: 'commit_sum' };
+    if (kind === 'withdraw') {
+      if (payout > Number.MAX_SAFE_INTEGER - v) return { ok: false, reason: 'commit_sum' };
+      payout += v;
+    }
   }
-  if (!verifyFlowConservation(tx)) return { ok: false, reason: 'commit_sum' };
+  const vaultPayout = kind === 'withdraw' ? payout : 0;
+  if (!verifyFlowConservation(tx, null, vaultPayout)) return { ok: false, reason: 'commit_sum' };
   return { ok: true };
 }
 

@@ -326,6 +326,30 @@ function aLeavesOf(collated, pay) {
   });
 }
 
+function publishedALeaves(block) {
+  if (!Array.isArray(block?.aLeaves)) return [];
+  return block.aLeaves.map((l) => {
+    const d20 = Buffer.from(l.dest20);
+    const nc = l.noteCommit && Buffer.from(l.noteCommit).length === 32
+      ? Buffer.from(l.noteCommit)
+      : noteCommitOfDest20(d20);
+    return { dest20: d20, count: Number(l.count) || 1, noteCommit: nc };
+  });
+}
+
+function publishedBLeaves(block, txs) {
+  if (Array.isArray(block?.bLeaves)) {
+    return block.bLeaves.map((l) => ({
+      dest20: Buffer.from(l.dest20),
+      unit: Number(l.unit || 0),
+      nonce: Number(l.nonce || 0),
+      memoH: l.memoH ? Buffer.from(l.memoH) : Buffer.alloc(32),
+      tag: String(l.tag || ''),
+    }));
+  }
+  return bLeavesOf((txs || []).slice(1), (a) => a);
+}
+
 function bLeavesOf(txs, pay) {
   const out = [];
   for (const tx of txs || []) {
@@ -1525,7 +1549,18 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     : parentHeight;
   void tipHeight;
   void buried;
+  // Continuity before the unburied-prune reject. A lied root is continuity.
+  // A matching root is still samples_pruned, and a later pot or hash check
+  // must not replace that reason. Peer tipHeight does not bury this block.
+  // A buried pruned block skips this and uses skipFlow below.
   if (block.samplesPruned && !shouldPruneSamples(height, burialTip)) {
+    const dualEarly = buildDualTree({
+      aLeaves: publishedALeaves(block),
+      bLeaves: publishedBLeaves(block, txs),
+    });
+    if (!Buffer.from(dualEarly.continuityRoot).equals(Buffer.from(decoded.continuityRoot))) {
+      return { ok: false, reason: 'continuity' };
+    }
     return { ok: false, reason: 'samples_pruned' };
   }
   const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, burialTip);

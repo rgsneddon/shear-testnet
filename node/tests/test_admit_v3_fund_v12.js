@@ -16,6 +16,7 @@ import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { newIdentity, encodeDest } from '../../crypto/address.js';
 import { lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import { signSpendTx } from '../../crypto/spend.js';
+import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { levyNeed } from '../../crypto/levy.js';
 import {
   admitProveV3,
@@ -134,7 +135,7 @@ function indexOfCommit(blocks, anchor, commit) {
   return { index: -1, note: null, height: 0 };
 }
 
-function proveFunded(tx, { x, index, flux, note, anchor }) {
+function proveFunded(tx, { x, index, flux, note, anchor, noteR }) {
   let fee = 0;
   let settled = null;
   for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -181,6 +182,11 @@ function proveFunded(tx, { x, index, flux, note, anchor }) {
     tx.vin = [{ commit: Buffer.from(real.cTilde) }];
     const need = levyNeed(tx);
     if (need === fee) {
+      const rIn = note?.r || noteR;
+      if (rIn) {
+        const k = kernelExcess(tx.vout, [{ r: rIn, t: scalarBytes(t) }]);
+        if (k) tx.excess = k;
+      }
       settled = real;
       break;
     }
@@ -325,7 +331,7 @@ describe('ADMITv3 note consumption', () => {
       assert.ok(flux.jroot && Buffer.from(asU8(flux.jroot)).length === 32);
 
       assert.deepEqual(Buffer.from(asU8(pot.commit)), noteOpen.commit);
-      const spend = { x, index: found.index, flux, note: pot, anchor };
+      const spend = { x, index: found.index, flux, note: pot, anchor, noteR: noteOpen.r };
       let mismatched = null;
       for (const nanos of AMOUNTS) {
         const mismatch = stripPayer(lockTx({
@@ -381,6 +387,24 @@ describe('ADMITv3 note consumption', () => {
       const queuedVote = store.queueTx(vote);
       assert.equal(queuedVote.ok, false, queuedVote.reason);
       assert.equal(queuedVote.reason, 'commit_sum', queuedVote.reason);
+
+      for (const nanos of AMOUNTS) {
+        const withdraw = stripPayer(withdrawTx({
+          from: who.dest,
+          to: who.dest,
+          nanos,
+          id: `v3-withdraw-pot-${nanos}`,
+        }));
+        proveFunded(withdraw, spend);
+        assert.ok(withdraw.excess, `excess ${nanos}`);
+        signSpendTx(withdraw, who.key);
+        const queuedWithdraw = store.queueTx(withdraw);
+        assert.equal(queuedWithdraw.ok, false, `${nanos} ${queuedWithdraw.reason}`);
+        assert.equal(queuedWithdraw.reason, 'commit_sum', `${nanos} ${queuedWithdraw.reason}`);
+        const parked = admitMempool(emptyMempool(), withdraw, { baseFee: 1 });
+        assert.equal(parked.ok, false, `${nanos} ${parked.reason}`);
+        assert.equal(parked.reason, 'commit_sum', `${nanos} ${parked.reason}`);
+      }
 
       const lock = stripPayer(lockTx({
         from: who.dest,

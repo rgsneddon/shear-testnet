@@ -2123,15 +2123,58 @@ export function createStore(dir, {
     snaps.push({ at, rows: copyOwedRows(rows), seriesEnd });
   }
 
+  /**
+   * A later header fault must not hide an earlier body fault. When the
+   * header gate fails at index i > 0, body-check 0..i-1 and return that
+   * reason. Index 0 stays the header reason, so pow stays pow. This pass
+   * does not stamp credits or apply the reserve.
+   */
+  function prefixBodyFault(fork, gated, verifyOpts) {
+    const at = Number(gated?.at);
+    if (!Number.isInteger(at) || at <= 0) return gated;
+    const accepted = [];
+    const trialSpent = new Set();
+    const units = bonusUnitsBefore(fork);
+    const owedWalk = { owedIn: [], hashAcceptedSeries: [] };
+    const { trialVault, noVault } = trialVaultForFork(fork);
+    const step = (i) => {
+      if (i >= at) return null;
+      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
+        ...verifyOpts,
+        noVault: !!noVault,
+        owedWalk,
+        unitAt: units[i],
+      });
+      const take = (c) => {
+        if (!c?.ok) return { ok: false, reason: c.reason, at: i };
+        const lean = leanBlock({
+          ...fork[i],
+          magic: MAGIC_TESTNET,
+          hash: c.hash,
+          height: i + 1,
+          weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
+          bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
+        });
+        accepted.push(lean);
+        return step(i + 1);
+      };
+      if (check && typeof check.then === 'function') return check.then(take);
+      return take(check);
+    };
+    const fault = step(0);
+    if (fault && typeof fault.then === 'function') return fault.then((found) => found || gated);
+    return fault || gated;
+  }
+
   function verifyFork(fork, verifyOpts = {}) {
     const needs = (fork || []).some((b) => blockNeedsEvm(b?.txs || []));
     if (needs) return verifyForkAsync(fork, verifyOpts);
     if (!verifyOpts.headerGate) {
       const gated = gateForkChain(fork, verifyOpts);
       if (gated && typeof gated.then === 'function') {
-        return gated.then((g) => (g.ok ? verifyFork(fork, { ...verifyOpts, headerGate: true }) : g));
+        return gated.then((g) => (g.ok ? verifyFork(fork, { ...verifyOpts, headerGate: true }) : prefixBodyFault(fork, g, verifyOpts)));
       }
-      if (!gated.ok) return gated;
+      if (!gated.ok) return prefixBodyFault(fork, gated, verifyOpts);
     }
     const accepted = [];
     const trialSpent = new Set();
@@ -2173,7 +2216,7 @@ export function createStore(dir, {
 
   async function verifyForkAsync(fork, verifyOpts = {}) {
     const gated = await Promise.resolve(gateForkChain(fork, verifyOpts));
-    if (!gated.ok) return gated;
+    if (!gated.ok) return prefixBodyFault(fork, gated, verifyOpts);
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;

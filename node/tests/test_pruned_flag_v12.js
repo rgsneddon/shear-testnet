@@ -26,6 +26,7 @@ import {
 } from '../../crypto/share_batch.js';
 import { decodeWireBlock, encodeWireBlock } from '../src/p2p.js';
 import { applyVerifiedIpcBlock } from '../src/p2p_ipc.js';
+import { verifyBlock } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 
@@ -191,6 +192,25 @@ describe('samplesPruned does not forge hash credits', () => {
     assert.equal(rejected.ok, false, rejected.reason);
     assert.equal(rejected.reason, 'samples_pruned');
     assert.equal(store.tip().height, tipBefore);
+    const tipNow = store.tip();
+    const tall = verifyBlock(forged, {
+      hash: tipNow.hash,
+      header: tipNow.header,
+      height: tipNow.height,
+      rootA: tipNow.rootA,
+      rootB: tipNow.rootB,
+      txs: tipNow.txs,
+      bLeaves: tipNow.bLeaves,
+      weight: tipNow.weight,
+    }, {
+      tipHeight: tipNow.height + SAMPLE_PRUNE_CONFIRMATIONS,
+      trustedPowHash: easyPow(3),
+      skipSharePow: true,
+      genesisMs: t0,
+      nowMs: t0 + 180_000,
+    });
+    assert.equal(tall.ok, false, tall.reason);
+    assert.equal(tall.reason, 'samples_pruned');
     const wired = decodeWireBlock(encodeWireBlock({ ...forged, hash: easyPow(3) }));
     assert.equal(wired.samplesPruned, true);
     const viaWire = store.ingest([wired], { trustedPowHash: easyPow(4), skipSharePow: true });

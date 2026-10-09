@@ -501,7 +501,13 @@ export function flowInputsBound(tx) {
   return { ok: true, proofs, vins };
 }
 
-export function verifyFlowConservation(tx, _spentOf) {
+/**
+ * sum(C_out) + fee·G = sum(C̃_in) + W·G + excess·H.
+ * W is the vault payout. It is 0 for Flow, lock, and vote. A withdraw
+ * passes W equal to the opened outputs, so the hidden input must open
+ * to the fee. The default keeps every Flow caller unchanged.
+ */
+export function verifyFlowConservation(tx, _spentOf, vaultPayout = 0) {
   try {
     const vouts = tx?.vout || [];
     const vins = tx?.vin || [];
@@ -516,8 +522,10 @@ export function verifyFlowConservation(tx, _spentOf) {
     if (!outC || !inC) return false;
     if (!tx.excess) return false;
     const fee = Math.max(0, Math.floor(Number(tx.fee || 0)));
+    const payout = Math.max(0, Math.floor(Number(vaultPayout) || 0));
     const lhs = fee ? outC.add(mulG(fee)) : outC;
-    const rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
+    let rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
+    if (payout) rhs = rhs.add(mulG(payout));
     return lhs.equals(rhs);
   } catch {
     return false;

@@ -9,7 +9,7 @@ import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { asU8, verifyRange, flowInputsBound } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum } from './spend.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -51,6 +51,11 @@ export function admitMempool(pool, tx, opts = {}) {
       if (!verifyRange(o.commit, o.rangeProof)) return { ok: false, reason: 'range_proof' };
     }
   }
+  // Same sum as the block body. A missing range proof already returned.
+  // Flow sends skip this. An unbalanced lock, vote, or withdraw does not
+  // sit in a template until the block path rejects it.
+  const summed = typedCommitSum(tx);
+  if (!summed.ok) return summed;
   const bound = verifyPoolWithdrawBound(tx);
   if (!bound.ok) return bound;
   const fields = checkTxAddressFields(tx, { coinbase: false });
