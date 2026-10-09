@@ -496,7 +496,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
       for (const [dest, nanos] of a) assert.equal(b.get(dest), nanos);
     }
 
-    function sealTpl(tpl, prev, now) {
+    function sealTpl(tpl, prev, now, parents) {
       const block = {
         header: tpl.header,
         txs: tpl.txs,
@@ -529,7 +529,9 @@ describe('v12 empty round carries the pot to the next proven round', () => {
         genesisMs,
         poolDest: feeTo,
         mtpTimestamps: [now - 1_000],
+        ...(Array.isArray(parents) ? { supplyParents: parents } : {}),
       });
+      if (res?.ok && res.hash) block.hash = res.hash;
       return { block, res };
     }
 
@@ -547,7 +549,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
       return quote.packed;
     }
 
-    function emptyBlock(prev, height, now, bits) {
+    function emptyBlock(prev, height, now, bits, prior) {
       const subsidy = potSubsidyAt({ nowMs: now, genesisMs, magic: MAGIC_TESTNET });
       const fee = Math.floor(subsidy * POOL_FEE_BPS / 10000);
       const tpl = buildTemplate({
@@ -561,7 +563,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
         potShares: [{ address: feeTo, nanos: fee, kind: 'pool-fee' }],
         poolDest: feeTo,
       });
-      const got = sealTpl(tpl, prev ? { ...prev.block, hash: prev.res.hash } : null, now);
+      const got = sealTpl(tpl, prev ? { ...prev.block, hash: prev.res.hash } : null, now, prior);
       assert.equal(got.res.ok, true, `empty h=${height} ${got.res.reason}`);
       return got;
     }
@@ -585,7 +587,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
       let now = genesisMs;
       let bits = GENESIS_BITS_PACKED;
       for (let i = 0; i < 4; i += 1) {
-        const got = emptyBlock(prev, i + 1, now, bits);
+        const got = emptyBlock(prev, i + 1, now, bits, empties.map((row) => row.block));
         empties.push(got);
         const nextNow = now + TARGET_BLOCK_INTERVAL_MS;
         bits = bitsAfter(got, nextNow, i + 2);
@@ -594,7 +596,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
       }
     }
 
-    function prove(parent, batch, rows, now, miner) {
+    function prove(parent, batch, rows, now, miner, parents) {
       const height = parent.block.height + 1;
       const tpl = buildTemplate({
         prev: parent.res.hash,
@@ -608,7 +610,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
         shareBatch: batch,
         poolDest: feeTo,
       });
-      return sealTpl(tpl, { ...parent.block, hash: parent.res.hash }, now);
+      return sealTpl(tpl, { ...parent.block, hash: parent.res.hash }, now, parents);
     }
 
     function assertSeparate(got, subsidy, carry, bps) {
@@ -633,9 +635,9 @@ describe('v12 empty round carries the pot to the next proven round', () => {
     }
 
     const streaks = [
-      { name: 'none', parent: paid, now: genesisMs + TARGET_BLOCK_INTERVAL_MS },
-      { name: 'one', parent: empties[0], now: genesisMs + TARGET_BLOCK_INTERVAL_MS },
-      { name: 'several', parent: empties[3], now: genesisMs + 4 * TARGET_BLOCK_INTERVAL_MS },
+      { name: 'none', parent: paid, now: genesisMs + TARGET_BLOCK_INTERVAL_MS, chain: [paid.block] },
+      { name: 'one', parent: empties[0], now: genesisMs + TARGET_BLOCK_INTERVAL_MS, chain: [empties[0].block] },
+      { name: 'several', parent: empties[3], now: genesisMs + 4 * TARGET_BLOCK_INTERVAL_MS, chain: empties.map((row) => row.block) },
     ];
     const built = mixes.map((spec) => batchOf(spec));
     const dense = built[1];
@@ -690,7 +692,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
         for (const bps of [0, 1, 100, POOL_FEE_MAX_BPS]) {
           const rows = rowsFor(batch, subsidy, carry, bps);
           samePay(byAddress(rows), byAddress(rowsFor([...batch].reverse(), subsidy, carry, bps)));
-          const got = prove(streak.parent, batch, rows, streak.now, miners[0]);
+          const got = prove(streak.parent, batch, rows, streak.now, miners[0], streak.chain);
           assertSeparate(got, subsidy, carry, bps);
         }
         if (carry > 0 && miners.length > 1) {

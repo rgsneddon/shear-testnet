@@ -757,6 +757,12 @@ export function recordIngestFail(rec, reason) {
   return noteExpensiveFail(rec);
 }
 
+/** A shaped proof that failed verification. Cheap shape rejects do not call this. */
+export function recordProofFail(rec) {
+  if (!rec) return false;
+  return noteExpensiveFail(rec);
+}
+
 /** Out-of-order getblock: do not drop the child. Retry after in-flight parents land. */
 export function requeuePrevHash(rec, hash) {
   const h = String(hash || '');
@@ -1139,6 +1145,14 @@ export function createP2p({
     const got = store.queueTx(tx);
     if (!got?.ok) {
       seenTx.delete(id);
+      if (got?.proofChecked) {
+        const rec = peers.get(fromSock);
+        if (recordProofFail(rec)) {
+          const until = Date.now() + P2P_BAN_MS;
+          if (rec?.remote) peerBans.set(rec.remote, until);
+          try { fromSock.destroy(); } catch { /* ignore */ }
+        }
+      }
       return;
     }
     const payload = wireTx(got.tx || tx);

@@ -163,6 +163,7 @@ function sealOn(chain, pubs, dest, stamp) {
     trustedPowHash: easyPowHash(),
     skipSharePow: true,
     nowMs: stamp,
+    supplyParents: chain,
   });
   return { got, block };
 }

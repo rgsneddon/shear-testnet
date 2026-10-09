@@ -231,18 +231,36 @@ export function typedAdmitStructure(tx) {
  * the window. The branch root at A is recomputed. A cleartext payer or a
  * noteSpends list is a public debit and is rejected.
  */
-export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic = MAGIC_TESTNET } = {}) {
+let anchorFluxRebuildCount = 0;
+
+export function anchorFluxRebuilds() {
+  return anchorFluxRebuildCount;
+}
+
+export function resetAnchorFluxRebuilds() {
+  anchorFluxRebuildCount = 0;
+}
+
+export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic = MAGIC_TESTNET, noteAtAnchor = null } = {}) {
   const structure = typedAdmitStructure(tx);
   if (!structure.ok || structure.skip) return structure;
   const window = anchorRejectReason(structure.anchor, height);
   if (window) return { ok: false, reason: window };
-  const subset = (blocks || []).filter((b) => {
-    const h = Number(b?.height || 0);
-    return h > 0 && h <= structure.anchor;
-  });
-  const live = fluxsetFromBlocks(subset);
-  const n = (live.pubs || []).length;
-  if (n < 1 || !live.jroot) return { ok: false, reason: 'admit_anchor_root' };
+  let live = null;
+  if (typeof noteAtAnchor === 'function') {
+    live = noteAtAnchor(structure.anchor);
+    if (!live || !live.jroot) return { ok: false, reason: 'admit_anchor_root' };
+  } else {
+    anchorFluxRebuildCount += 1;
+    const subset = (blocks || []).filter((b) => {
+      const h = Number(b?.height || 0);
+      return h > 0 && h <= structure.anchor;
+    });
+    live = fluxsetFromBlocks(subset);
+  }
+  const stated = Number(live?.n);
+  const n = Number.isInteger(stated) && stated >= 1 ? stated : (live?.pubs || []).length;
+  if (n < 1 || !live?.jroot) return { ok: false, reason: 'admit_anchor_root' };
   const digest = txDigestV3({ ...tx, anchor: structure.anchor }, magic);
   const ctx = admitV3Context({
     magic,
@@ -255,17 +273,17 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
   const seen = new Set();
   for (const proof of structure.proofs) {
     const pr = Buffer.from(asU8(proof.blob || proof.proof));
-    if (pr.length < 129) return { ok: false, reason: 'admit_membership' };
+    if (pr.length < 129) return { ok: false, reason: 'admit_membership', proofChecked: true };
     const got = anchorRootHash(pr.subarray(65, 97), pr.subarray(97, 129));
     const want = Buffer.from(asU8(live.jroot));
     if (want.length !== 32 || !Buffer.from(got).equals(want)) {
-      return { ok: false, reason: 'admit_anchor_root' };
+      return { ok: false, reason: 'admit_anchor_root', proofChecked: true };
     }
     const tag = bytes32(proof.spendTag) || Buffer.from(pr.subarray(1, 33));
     const th = Buffer.from(tag).toString('hex');
-    if (!th || seen.has(th)) return { ok: false, reason: 'admit_link_tag' };
+    if (!th || seen.has(th)) return { ok: false, reason: 'admit_link_tag', proofChecked: true };
     if (spentTags && typeof spentTags.has === 'function' && spentTags.has(th)) {
-      return { ok: false, reason: 'admit_link_tag' };
+      return { ok: false, reason: 'admit_link_tag', proofChecked: true };
     }
     const ok = admitVerifyV3(proof, live, {
       jroot: live.jroot,
@@ -273,7 +291,7 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
       spendTag: tag,
       ctx,
     });
-    if (!ok) return { ok: false, reason: 'admit_membership' };
+    if (!ok) return { ok: false, reason: 'admit_membership', proofChecked: true };
     seen.add(th);
     tags.push(th);
   }

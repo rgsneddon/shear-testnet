@@ -29,8 +29,10 @@ import {
   V12_BOOTSTRAP_CHECKPOINT,
   assessHeader,
   discardPreparedHeader,
+  noteFromAnchor,
 } from './chain.js';
 import { bookSealKeyFor } from './book_seal_key.js';
+import { emptySupplyState, foldSupply, supplyFromScalar, supplyLinks, supplyStep } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
   verifyShareBatch,
@@ -51,7 +53,7 @@ import { hash20FromAddress } from '../../crypto/address.js';
 import { bLeafId } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, bonusUnitsBefore, verifyReservePayout, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -84,7 +86,7 @@ import {
 } from './bootstrap.js';
 import { blockWeight, custodialPullAllowed } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
-import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, jroot, receiptAdmitRejected } from '../../crypto/admit.js';
+import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, jroot, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { asU8, flowInputsBound } from '../../crypto/note.js';
@@ -324,6 +326,9 @@ export function createStore(dir, {
   // the snap so the next start does not replay the prefix again.
   let snapRewrite = false;
   let unitAt = [];
+  let supplyTip = null;
+  let supplyAt = [];
+  let anchorAt = [];
   let loadMode = 'empty';
   let preFlux = null;
   let prefixHeight = 0;
@@ -385,10 +390,12 @@ export function createStore(dir, {
     }
     const trustStoredHash = got.length > 0 && got === want;
     const plan = trustStoredHash ? acceptBookSnap(readBookSnap(snapFile, sealKey, snapExpect)) : null;
-    if (plan && plan.height === blocks.length) {
+    const planOk = plan && planSupplyLinks(plan);
+    if (planOk && plan.height === blocks.length) {
       applySnap(plan, plan.height);
+      installSupplyPlan(plan);
       loadMode = 'snap';
-    } else if (plan) {
+    } else if (planOk) {
       const priorFlux = {
         pubs: plan.pubs,
         commits: plan.commits,
@@ -406,9 +413,22 @@ export function createStore(dir, {
           acceptedSeries: plan.acceptedSeries.slice(),
           spentIds: plan.spentIds,
           flux: priorFlux,
+          supply: supplyFromScalar(plan.supplySnaps[plan.height - 1], {
+            owedRows: plan.owedRows,
+            acceptedSeries: plan.acceptedSeries,
+            owedKnown: true,
+          }),
+          anchors: (plan.anchorWindow || []).reduce((at, a) => {
+            at[a.height] = { n: a.n, jroot: Buffer.from(a.jroot) };
+            return at;
+          }, []),
         },
       });
       if (!checked.ok) throw new Error(checked.reason || 'pow');
+      if (!checked.supply) throw new Error('supply_state');
+      supplyTip = checked.supply;
+      supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
+      anchorAt = Array.isArray(checked.anchors) ? checked.anchors : [];
       adoptPlanCheckpoints(plan);
       owedRows = checked.owedRows;
       acceptedSeries = checked.acceptedSeries.slice();
@@ -456,10 +476,17 @@ export function createStore(dir, {
         checkpoint,
       });
       if (!checked.ok) throw new Error(checked.reason || 'pow');
+      if (!checked.supply) throw new Error('supply_state');
+      supplyTip = checked.supply;
+      supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
+      anchorAt = Array.isArray(checked.anchors) ? checked.anchors : [];
       if (!trustStoredHash) writeLoadSeal(blocks);
     }
   } else if (resumed) {
     writeLoadSeal(blocks);
+    const folded = foldSupply(blocks);
+    if (!folded.ok) throw new Error(folded.reason || 'supply');
+    supplyTip = folded.state;
   }
   if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
 
@@ -886,6 +913,74 @@ export function createStore(dir, {
     return frameHash.copy().digest('hex');
   }
 
+  function supplySnapsForSnap() {
+    if (supplyAt.length !== blocks.length) return undefined;
+    const snaps = [];
+    for (let i = 0; i < supplyAt.length; i += 1) {
+      const s = supplyAt[i];
+      if (!supplyLinks(s, blocks[i])) return undefined;
+      snaps.push({
+        height: s.height,
+        blockHash: s.blockHash,
+        schedulePot: s.schedulePot,
+        carry: s.carry,
+        mintedPot: s.mintedPot,
+        mintedHash: s.mintedHash,
+        mintedLevy: s.mintedLevy,
+        permittedHashAll: s.permittedHashAll,
+        acceptedHash: s.acceptedHash,
+        dust: s.dust,
+        overflow: s.overflow,
+        liveUnit: s.liveUnit,
+        genesisMs: s.genesisMs,
+      });
+    }
+    return snaps;
+  }
+
+  function anchorWindowForSnap() {
+    const window = [];
+    const fromH = Math.max(1, blocks.length - 127);
+    for (let h = fromH; h <= blocks.length; h += 1) {
+      const rec = anchorAt[h];
+      if (!rec?.jroot) return undefined;
+      window.push({ height: h, n: rec.n, jroot: rec.jroot });
+    }
+    return window;
+  }
+
+  function installSupplyPlan(plan) {
+    supplyAt = [];
+    anchorAt = [];
+    const series = Array.isArray(plan.acceptedSeries) ? plan.acceptedSeries : [];
+    const byAt = new Map();
+    for (const c of plan.owedCheckpoints || []) byAt.set(Number(c.at), c);
+    for (let i = 0; i < plan.supplySnaps.length; i += 1) {
+      const tip = i === plan.supplySnaps.length - 1;
+      const ck = byAt.get(i);
+      const owedKnown = tip || !!ck;
+      supplyAt[i] = supplyFromScalar(plan.supplySnaps[i], {
+        owedRows: owedKnown ? (tip ? plan.owedRows : ck.rows) : [],
+        acceptedSeries: owedKnown ? series.slice(0, tip ? series.length : ck.seriesEnd) : [],
+        owedKnown,
+      });
+    }
+    supplyTip = supplyAt[supplyAt.length - 1] || null;
+    for (const a of plan.anchorWindow || []) {
+      anchorAt[a.height] = { n: a.n, jroot: Buffer.from(a.jroot) };
+    }
+  }
+
+  function planSupplyLinks(plan) {
+    if (!plan || !Array.isArray(plan.supplySnaps) || plan.supplySnaps.length !== plan.height) return false;
+    if (!Array.isArray(plan.anchorWindow) || !plan.anchorWindow.length) return false;
+    for (let i = 0; i < plan.supplySnaps.length; i += 1) {
+      const row = supplyFromScalar(plan.supplySnaps[i], { owedKnown: true });
+      if (!supplyLinks(row, blocks[i])) return false;
+    }
+    return true;
+  }
+
   function persistBookSnap() {
     if (!blocks.length) return;
     if (acceptedSeries.length !== blocks.length || unitAt.length !== blocks.length) return;
@@ -919,6 +1014,8 @@ export function createStore(dir, {
         commits: liveFlux?.commits || [],
         spendTags: [...(liveFlux?.spendTags || [])],
         unitAt,
+        supplySnaps: supplySnapsForSnap(),
+        anchorWindow: anchorWindowForSnap(),
       });
     } catch { /* leave the previous snap; the next load replays */ }
   }
@@ -1150,7 +1247,11 @@ export function createStore(dir, {
     const tipAt = list.length - 1;
     let rows = rowsIn;
     let series = seriesIn;
-    const units = unitAt.length === list.length ? unitAt : bonusUnitsBefore(list);
+    const unitWalk = unitAt.length === list.length
+      ? { ok: true, units: unitAt }
+      : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
+    if (!unitWalk.ok) return null;
+    const units = unitWalk.units;
     const tipH = Number(list[tipAt]?.height || tipAt + 1);
     for (let i = fromAt; i <= tipAt; i += 1) {
       const next = advanceHashOwed({
@@ -1185,7 +1286,11 @@ export function createStore(dir, {
           && last.seriesEnd <= acceptedSeries.length
           && last.seriesEnd === last.at + 1;
         if (!canExtend) {
-          const units = unitAt.length === list.length ? unitAt : bonusUnitsBefore(list);
+          const unitWalk = unitAt.length === list.length
+            ? { ok: true, units: unitAt }
+            : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
+          if (!unitWalk.ok) throw new Error(unitWalk.reason || 'epoch_open');
+          const units = unitWalk.units;
           const got = replayHashOwed(list, { units });
           if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
           owedRows = got.rows;
@@ -1211,7 +1316,11 @@ export function createStore(dir, {
       seedCache = null;
       return;
     }
-    const units = unitAt.length === list.length ? unitAt : bonusUnitsBefore(list);
+    const unitWalk = unitAt.length === list.length
+      ? { ok: true, units: unitAt }
+      : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
+    if (!unitWalk.ok) throw new Error(unitWalk.reason || 'epoch_open');
+    const units = unitWalk.units;
     const got = replayHashOwed(list, { units });
     if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
     owedRows = got.rows;
@@ -1285,19 +1394,14 @@ export function createStore(dir, {
   }
 
   function unitsAlong(history, fork) {
-    const units = [];
     const rows = Array.isArray(history) ? history : [];
-    for (let i = 0; i < rows.length; i += 1) {
-      const u = i < unitAt.length ? unitAt[i] : HASH_BONUS_NANOS;
-      units.push(hashBonusUnitNanos(u));
-    }
-    if (!fork || !fork.length) return units;
-    const trial = vaultAfter(rows.length - 1);
-    for (const block of fork) {
-      units.push(hashBonusUnitNanos(trial.liveHashBonusNanos));
-      applyReserveBlock({ state: trial, block, nowMs: blockTimeMs(block) });
-    }
-    return units;
+    return unitsAlongChain({
+      unitAt,
+      history: rows,
+      fork,
+      vault: rows.length ? vaultAfter(rows.length - 1) : emptyVault(),
+      timeOf: (block) => blockTimeMs(block),
+    });
   }
 
   function repairVaultAfterAdopt(lca) {
@@ -1671,6 +1775,8 @@ export function createStore(dir, {
       sealedIntervalsMs: headerGapsMs(blocks),
       parentFluxset: liveFlux,
       parentSpendTags: liveFlux.spendTags,
+      ...(blocks.length && supplyTip ? { parentSupply: supplyTip } : {}),
+      noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       poolDest: extra.poolDest
         || block?.poolDest
         || (block?.miner && isDestAddress(block.miner) ? block.miner : null),
@@ -1706,7 +1812,7 @@ export function createStore(dir, {
       }
     }
     const { check, spentBefore } = verifyAgainstTip(block, {
-      trustedPowHash: verifyOpts.trustedPowHash || null,
+      trustedPowHash: trustedHashFor(block, verifyOpts),
       skipSharePow: !!verifyOpts.skipSharePow,
       offLoopPow: !!verifyOpts.offLoopPow,
       poolDest: verifyOpts.poolDest,
@@ -1735,6 +1841,7 @@ export function createStore(dir, {
 
   function completeAppend(check, block) {
     if (!check.ok) return check;
+    if (!check.supplyState) return { ok: false, reason: 'supply_state' };
     const prev = tip();
     const full = {
       ...block,
@@ -1767,6 +1874,17 @@ export function createStore(dir, {
     syncBlankFlag();
     saveReserve();
     liveFlux = applyBlockToFluxset(liveFlux, stored);
+    const idx = stored.height - 1;
+    supplyTip = check.supplyState;
+    supplyAt[idx] = supplyTip;
+    if (idx > 0 && !keepOwedIndex(idx - 1, idx)) {
+      const priorSupply = supplyAt[idx - 1];
+      if (priorSupply) supplyAt[idx - 1] = supplyFromScalar(priorSupply, { owedKnown: false });
+    }
+    anchorAt[stored.height] = {
+      n: liveFlux.pubs.length,
+      jroot: liveFlux.jroot ? Buffer.from(liveFlux.jroot) : Buffer.alloc(32),
+    };
     persist(stored);
     rememberHeaders([stored], 'active');
     {
@@ -1952,6 +2070,7 @@ export function createStore(dir, {
       blocks,
       spentTags: spentNow,
       magic: MAGIC_TESTNET,
+      noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     });
     if (!noteFund.ok) return noteFund;
     const summed = typedCommitSum(tx);
@@ -2067,8 +2186,7 @@ export function createStore(dir, {
       shareBatch: accepted[i - 1].shareBatch,
     };
     const parentH = i === 0 ? 0 : Number(accepted[i - 1].height || i);
-    const rows = [];
-    for (const b of accepted) rows.push(...sealedExplorerRows(b));
+    const rows = Array.isArray(verifyOpts.explorerRows) ? verifyOpts.explorerRows : [];
     for (const tx of (fork[i]?.txs || []).slice(1)) {
       const clockField = typedClockRejected(tx);
       if (clockField) return clockField;
@@ -2083,7 +2201,9 @@ export function createStore(dir, {
       ? hashBonusUnitNanos(verifyOpts.unitAt)
       : hashBonusUnitNanos(vault?.liveHashBonusNanos || 1);
     const check = verifyBlock(fork[i], prev, {
-      supplyParents: accepted,
+      parentSupply: verifyOpts.parentSupply,
+      parentFluxset: verifyOpts.parentFlux,
+      noteAtAnchor: verifyOpts.noteAtAnchor,
       spentB: trialSpent,
       tipHeight: Number(prev?.height || 0),
       hashBonusNanos: owedUnit,
@@ -2133,6 +2253,37 @@ export function createStore(dir, {
     snaps.push({ at, rows: copyOwedRows(rows), seriesEnd });
   }
 
+  function forkRunState(fork) {
+    const gms = genesisHeaderMs(fork) || 0;
+    let supply = emptySupplyState(gms);
+    const flux = emptyFluxset();
+    const anchors = [];
+    const rows = [];
+    return {
+      opts() {
+        return {
+          parentSupply: supply,
+          parentFlux: flux,
+          explorerRows: rows,
+          noteAtAnchor: (anchor) => noteFromAnchor(flux, anchors, anchor),
+        };
+      },
+      take(check, lean) {
+        if (!check?.supplyState) return { ok: false, reason: 'supply_state' };
+        supply = check.supplyState;
+        appendFluxBlock(flux, lean);
+        const h = Number(lean?.height) || 0;
+        anchors[h] = {
+          n: flux.pubs.length,
+          jroot: flux.jroot ? Buffer.from(flux.jroot) : Buffer.alloc(32),
+        };
+        rows.push(...sealedExplorerRows(lean));
+        return { ok: true };
+      },
+      supply() { return supply; },
+    };
+  }
+
   /**
    * A later header fault must not hide an earlier body fault. When the
    * header gate fails at index i > 0, body-check 0..i-1 and return that
@@ -2144,9 +2295,14 @@ export function createStore(dir, {
     if (!Number.isInteger(at) || at <= 0) return gated;
     const accepted = [];
     const trialSpent = new Set();
-    const units = bonusUnitsBefore(fork);
+    const walkedUnits = unitsAlongChain({ fork, timeOf: (block) => blockTimeMs(block) });
+    if ((!walkedUnits.ok && Number(walkedUnits.at) < at) || !walkedUnits.units) {
+      return { ok: false, reason: walkedUnits.reason || 'epoch_open', at: walkedUnits.at || 0 };
+    }
+    const units = walkedUnits.units;
     const owedWalk = { owedIn: [], hashAcceptedSeries: [] };
     const { trialVault, noVault } = trialVaultForFork(fork);
+    const forkRun = forkRunState(fork);
     const step = (i) => {
       if (i >= at) return null;
       const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
@@ -2154,6 +2310,7 @@ export function createStore(dir, {
         noVault: !!noVault,
         owedWalk,
         unitAt: units[i],
+        ...forkRun.opts(),
       });
       const take = (c) => {
         if (!c?.ok) return { ok: false, reason: c.reason, at: i };
@@ -2166,6 +2323,8 @@ export function createStore(dir, {
           bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
         });
         accepted.push(lean);
+        const stepped = forkRun.take(c, lean);
+        if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply_state', at: i };
         if (!noVault && trialVault) {
           const applied = applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
           if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
@@ -2192,16 +2351,22 @@ export function createStore(dir, {
     }
     const accepted = [];
     const trialSpent = new Set();
-    const units = bonusUnitsBefore(fork);
+    const walkedUnits = unitsAlongChain({ fork, timeOf: (block) => blockTimeMs(block) });
+    if (!walkedUnits.ok || !walkedUnits.units) {
+      return { ok: false, reason: walkedUnits.reason || 'epoch_open', at: walkedUnits.at || 0 };
+    }
+    const units = walkedUnits.units;
     const owedWalk = { owedIn: [], hashAcceptedSeries: [] };
     const owedSnaps = [];
     const { trialVault, lca, noVault } = trialVaultForFork(fork);
+    const forkRun = forkRunState(fork);
     for (let i = 0; i < fork.length; i += 1) {
       const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
         ...verifyOpts,
         noVault: !!noVault,
         owedWalk,
         unitAt: units[i],
+        ...forkRun.opts(),
       });
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       stampCredits(fork[i], units[i]);
@@ -2214,6 +2379,8 @@ export function createStore(dir, {
         bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
       });
       accepted.push(lean);
+      const stepped = forkRun.take(check, lean);
+      if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply_state', at: i };
       if (!noVault && trialVault) {
         const applied = applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
         if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
@@ -2226,6 +2393,7 @@ export function createStore(dir, {
       owedRows: owedWalk.owedIn,
       owedSeries: owedWalk.hashAcceptedSeries.slice(),
       owedSnaps,
+      supply: forkRun.supply(),
     };
   }
 
@@ -2235,10 +2403,15 @@ export function createStore(dir, {
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
-    const units = bonusUnitsBefore(fork);
+    const walkedUnits = unitsAlongChain({ fork, timeOf: (block) => blockTimeMs(block) });
+    if (!walkedUnits.ok || !walkedUnits.units) {
+      return { ok: false, reason: walkedUnits.reason || 'epoch_open', at: walkedUnits.at || 0 };
+    }
+    const units = walkedUnits.units;
     const owedWalk = { owedIn: [], hashAcceptedSeries: [] };
     const owedSnaps = [];
     const { trialVault, lca, noVault } = trialVaultForFork(fork);
+    const forkRun = forkRunState(fork);
     for (let i = 0; i < fork.length; i += 1) {
       const check = await Promise.resolve(
         verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, {
@@ -2246,6 +2419,7 @@ export function createStore(dir, {
           noVault: !!noVault,
           owedWalk,
           unitAt: units[i],
+          ...forkRun.opts(),
         }),
       );
       if (check.evmSession) trialSession = check.evmSession;
@@ -2260,6 +2434,8 @@ export function createStore(dir, {
         bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
       });
       accepted.push(lean);
+      const stepped = forkRun.take(check, lean);
+      if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply_state', at: i };
       if (!noVault && trialVault) {
         const applied = applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
         if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
@@ -2272,6 +2448,7 @@ export function createStore(dir, {
       owedRows: owedWalk.owedIn,
       owedSeries: owedWalk.hashAcceptedSeries.slice(),
       owedSnaps,
+      supply: forkRun.supply(),
     };
   }
 
@@ -2458,9 +2635,13 @@ export function createStore(dir, {
       rows = copyOwedRows(ck.rows);
       series = owedSeriesAll.slice(0, ck.seriesEnd);
     }
-    const units = n > 0
+    const walked = n > 0
       ? unitsAlong(list.slice(0, n), list.slice(n))
-      : (list.length ? bonusUnitsBefore(list) : []);
+      : (list.length
+        ? unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) })
+        : { ok: true, reason: '', units: [] });
+    if (!walked.ok || !walked.units) return { ok: false, reason: walked.reason || 'epoch_open' };
+    const units = walked.units;
     const from = n > 0 ? (nearestOwedCheckpoint(n - 1).at + 1) : 0;
     for (let i = from; i < list.length; i += 1) {
       const next = advanceHashOwed({
@@ -2519,6 +2700,57 @@ export function createStore(dir, {
     return !!tip && tip.seriesEnd === n;
   }
 
+  function supplyCarriedTo(endIdx) {
+    if (endIdx < 0 || endIdx >= blocks.length) return null;
+    let from = endIdx;
+    while (from > 0 && !(supplyAt[from] && supplyAt[from].owedKnown && supplyLinks(supplyAt[from], blocks[from]))) {
+      from -= 1;
+    }
+    const base = supplyAt[from];
+    if (!base || base.owedKnown !== true || !supplyLinks(base, blocks[from])) return null;
+    let state = base;
+    for (let i = from + 1; i <= endIdx; i += 1) {
+      const block = blocks[i];
+      const stepped = supplyStep(state, block, {
+        unit: unitAt[i] == null ? undefined : unitAt[i],
+        height: Number(block?.height) || i + 1,
+        tipHeight: Number(block?.height) || i + 1,
+        genesisMs: state.genesisMs,
+        blockHash: block?.hash,
+        magic: MAGIC_TESTNET,
+      });
+      if (!stepped.ok) return null;
+      state = stepped.state;
+    }
+    return state;
+  }
+
+  function fluxCarriedTo(endIdx) {
+    const block = blocks[endIdx];
+    const height = Number(block?.height) || endIdx + 1;
+    const rec = anchorAt[height];
+    if (!rec?.jroot || !liveFlux || !Array.isArray(liveFlux.pubs)) return null;
+    const n = Number(rec.n) || 0;
+    if (n > liveFlux.pubs.length) return null;
+    const spendTags = new Set();
+    for (let i = 0; i <= endIdx; i += 1) {
+      for (const tx of blocks[i]?.txs || []) {
+        const tag = tx?.admit_proof?.spendTag || tx?.spendTag;
+        if (!tag) continue;
+        try {
+          const hex = Buffer.from(tag).toString('hex');
+          if (hex) spendTags.add(hex);
+        } catch { /* skip */ }
+      }
+    }
+    return {
+      pubs: liveFlux.pubs.slice(0, n),
+      commits: (liveFlux.commits || []).slice(0, n),
+      spendTags,
+      jroot: Buffer.from(rec.jroot),
+    };
+  }
+
   /** Verify only the new suffix. Header rules run before any owed replay. */
   function verifySuffix(fork, parent, history, verifyOpts) {
     const gated = gateForkHeaders(fork, parent, history, verifyOpts);
@@ -2539,7 +2771,51 @@ export function createStore(dir, {
     const tipH = listTipHeight(rows.concat(fork));
     const seeded = seedHistory(rows, tipAt, tipH);
     if (!seeded.ok) return { ok: false, reason: seeded.reason || 'hash_owed' };
-    const allUnits = unitsAlong(rows, fork);
+    const allUnitsWalk = unitsAlong(rows, fork);
+    if (!allUnitsWalk.ok || !allUnitsWalk.units) {
+      return { ok: false, reason: allUnitsWalk.reason || 'epoch_open' };
+    }
+    const allUnits = allUnitsWalk.units;
+    const gms = genesisHeaderMs(rows) || Number(verifyOpts.genesisMs) || 0;
+    const canonical = rows.length > 0 && rows.length <= blocks.length
+      && rows.every((row, i) => row === blocks[i]);
+    let supply = null;
+    let flux = null;
+    let anchors = null;
+    if (!rows.length) {
+      supply = emptySupplyState(gms);
+      flux = emptyFluxset();
+      anchors = [];
+    } else if (canonical) {
+      const endIdx = rows.length - 1;
+      supply = supplyCarriedTo(endIdx);
+      flux = fluxCarriedTo(endIdx);
+      if (supply && flux) anchors = anchorAt.slice();
+    }
+    if (!supply || !flux || !anchors) {
+      supply = emptySupplyState(gms);
+      for (let hi = 0; hi < rows.length; hi += 1) {
+        const stepped = supplyStep(supply, rows[hi], {
+          unit: allUnits[hi],
+          height: Number(rows[hi]?.height) || hi + 1,
+          tipHeight: Number(rows[hi]?.height) || hi + 1,
+          genesisMs: gms,
+          blockHash: rows[hi]?.hash,
+          magic: MAGIC_TESTNET,
+        });
+        if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
+        supply = stepped.state;
+      }
+      flux = fluxsetFromBlocks(rows);
+      anchors = [];
+      if (rows.length) {
+        const lastH = Number(rows[rows.length - 1]?.height) || rows.length;
+        anchors[lastH] = {
+          n: flux.pubs.length,
+          jroot: flux.jroot ? Buffer.from(flux.jroot) : Buffer.alloc(32),
+        };
+      }
+    }
     const trialVault = cloneVault(emptyVault());
     for (const b of rows) {
       const applied = applyReserveBlock({ state: trialVault, block: b, nowMs: blockTimeMs(b) });
@@ -2555,6 +2831,7 @@ export function createStore(dir, {
           owedRows: owedWalk.owedIn,
           owedSeries: owedWalk.hashAcceptedSeries.slice(),
           owedSnaps: seeded.snaps.concat(suffixSnaps),
+          supply,
         };
       }
       const beforeSpent = new Set(trialSpent);
@@ -2567,7 +2844,9 @@ export function createStore(dir, {
         trustedPowHash: trustedHashFor(fork[i], verifyOpts),
         tipHeight: Number(prev?.height || 0) + 1,
         evmHistory: rows.concat(out),
-        parentFluxset: null,
+        parentSupply: supply,
+        parentFluxset: flux,
+        noteAtAnchor: (anchor) => noteFromAnchor(flux, anchors, anchor),
         grandparentHeader: grandparentHeader(rows.concat(out)),
         sealedIntervalsMs: headerGapsMs(rows.concat(out)),
         nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
@@ -2608,6 +2887,14 @@ export function createStore(dir, {
         lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
         const applied = applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
         if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
+        if (!c.supplyState) return { ok: false, reason: 'supply_state' };
+        supply = c.supplyState;
+        appendFluxBlock(flux, lean);
+        const ah = Number(lean.height) || 0;
+        anchors[ah] = {
+          n: flux.pubs.length,
+          jroot: flux.jroot ? Buffer.from(flux.jroot) : Buffer.alloc(32),
+        };
         out.push(lean);
         prev = lean;
         return step(i + 1);
@@ -2658,6 +2945,7 @@ export function createStore(dir, {
         owedRows: verified.owedRows,
         owedSeries: verified.owedSeries,
         owedSnaps: verified.owedSnaps,
+        supply: verified.supply,
       });
     };
     if (checked && typeof checked.then === 'function') return checked.then(apply);
@@ -2750,6 +3038,21 @@ export function createStore(dir, {
       rewriteChain();
       rebuildExplorer();
       refreshFlux();
+      anchorAt = [];
+      {
+        const carried = emptyFluxset();
+        for (const b of blocks) {
+          appendFluxBlock(carried, b);
+          const h = Number(b?.height) || 0;
+          anchorAt[h] = {
+            n: carried.pubs.length,
+            jroot: carried.jroot ? Buffer.from(carried.jroot) : Buffer.alloc(32),
+          };
+        }
+      }
+      supplyAt = [];
+      const adoptedTip = blocks[blocks.length - 1];
+      supplyTip = verified.supply && supplyLinks(verified.supply, adoptedTip) ? verified.supply : null;
       repairVaultAfterAdopt(lca);
       bounceMempool(disconnected, connected);
       pruneBuried();

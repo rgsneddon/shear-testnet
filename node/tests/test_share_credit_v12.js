@@ -246,7 +246,7 @@ describe('v12 share credit is the nonce high byte', () => {
       assert.equal(quote.ok, true, quote.reason || 'asert');
       return quote.packed;
     }
-    function sealEmpty(prev, prevHash, height, now, tag) {
+    function sealEmpty(prev, prevHash, height, now, tag, parents) {
       const tpl = buildTemplate({
         prev: height === 1 ? GENESIS_PREV : prevHash,
         prevHeader: prev?.header,
@@ -271,8 +271,10 @@ describe('v12 share credit is the nonce high byte', () => {
       const res = verifyBlock(block, prev ? viewOf(prev, prevHash, height - 1) : null, {
         trustedPowHash: pow,
         genesisMs,
+        ...(Array.isArray(parents) ? { supplyParents: parents } : {}),
       });
       assert.equal(res.ok, true, `h=${height} ${res.reason}`);
+      block.hash = res.hash;
       return { block, hash: res.hash, pow };
     }
     function restamp(block, shares) {
@@ -286,7 +288,7 @@ describe('v12 share credit is the nonce high byte', () => {
     const g = sealEmpty(null, null, 1, genesisMs, 1);
     const mid = sealEmpty(g.block, g.hash, 2, genesisMs + 90_000, 2);
     const childNow = genesisMs + 180_000;
-    const child = sealEmpty(mid.block, mid.hash, 3, childNow, 3);
+    const child = sealEmpty(mid.block, mid.hash, 3, childNow, 3, [g.block, mid.block]);
     child.block.samplesPruned = true;
     const buriedPrev = viewOf(mid.block, mid.hash, child.block.height + SAMPLE_PRUNE_CONFIRMATIONS);
     const swapped = [shareAt(dest, 1n, 0)];

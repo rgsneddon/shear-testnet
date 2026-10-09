@@ -582,6 +582,7 @@ describe('v12 hash-bonus owed ledger', () => {
       nowMs: now + 1_000,
     });
     assert.equal(sealedG.ok, true, sealedG.reason);
+    genesisBlock.hash = sealedG.hash;
     assert.equal(hashOwedFromTx(genesisBlock.txs[0]).length, 0);
 
     const bits = shareCreditMaxBits();
@@ -605,7 +606,7 @@ describe('v12 hash-bonus owed ledger', () => {
     });
     assert.equal(quote.ok, true, quote.reason);
     const carry = subsidy - fee;
-    function sealChild(shareBatch, miner, prevBlock, prevHash, prevHeader, height, when, potShares) {
+    function sealChild(shareBatch, miner, prevBlock, prevHash, prevHeader, height, when, potShares, parents) {
       clearLiveSharePow();
       for (const row of shareBatch) {
         assert.equal(rememberLiveSharePow(prevHeader, row.nonce, {
@@ -654,6 +655,7 @@ describe('v12 hash-bonus owed ledger', () => {
         nowMs: when + 1_000,
         genesisMs: now,
         poolDest: feeTo,
+        ...(Array.isArray(parents) ? { supplyParents: parents } : {}),
       });
       return { block, verdict, tpl };
     }
@@ -685,7 +687,7 @@ describe('v12 hash-bonus owed ledger', () => {
     const third = shareAt(c, 9n, SHARE_FLOOR_BITS);
     const when3 = childNow + TARGET_BLOCK_INTERVAL_MS;
     const pays3 = potSharesFromBatch([third], feeTo, subsidy, 0);
-    const poolB = sealChild([third], c, parent2, firstOrder.verdict.hash, firstOrder.block.header, 3, when3, pays3);
+    const poolB = sealChild([third], c, parent2, firstOrder.verdict.hash, firstOrder.block.header, 3, when3, pays3, [genesisBlock, parent2]);
     assert.equal(poolB.verdict.ok, true, poolB.verdict.reason);
     const owed3 = hashOwedFromTx(poolB.block.txs[0]);
     assert.equal(owed3.length, 1);
@@ -701,7 +703,7 @@ describe('v12 hash-bonus owed ledger', () => {
     const parent3 = { ...poolB.block, hash: poolB.verdict.hash };
     const when4 = when3 + TARGET_BLOCK_INTERVAL_MS;
     const soloPays = potSharesFromBatch([], feeTo, subsidy, 0);
-    const soloBlock = sealChild([], solo, parent3, poolB.verdict.hash, poolB.block.header, 4, when4, [{ address: solo, nanos: subsidy, kind: 'pot' }]);
+    const soloBlock = sealChild([], solo, parent3, poolB.verdict.hash, poolB.block.header, 4, when4, [{ address: solo, nanos: subsidy, kind: 'pot' }], [genesisBlock, parent2, parent3]);
     void soloPays;
     assert.equal(soloBlock.verdict.ok, true, soloBlock.verdict.reason);
     assert.equal(hashOwedFromTx(soloBlock.block.txs[0]).length, 0);
@@ -810,13 +812,13 @@ describe('v12 hash-bonus owed ledger', () => {
     assert.equal(messyVerdict.reason, 'hash_owed');
 
     const otherSolo = minerDest();
-    const fork = sealChild([], otherSolo, parent2, firstOrder.verdict.hash, firstOrder.block.header, 3, when3, [{ address: otherSolo, nanos: subsidy, kind: 'pot' }]);
+    const fork = sealChild([], otherSolo, parent2, firstOrder.verdict.hash, firstOrder.block.header, 3, when3, [{ address: otherSolo, nanos: subsidy, kind: 'pot' }], [genesisBlock, parent2]);
     assert.equal(fork.verdict.ok, true, fork.reason || fork.verdict.reason);
     assert.equal(hashOwedFromTx(fork.block.txs[0]).length, 0);
     const forkHash = (fork.block.txs[0].vout || []).filter((o) => o.kind === 'hash');
     assert.equal(forkHash.length, 2);
     for (const note of forkHash) assert.equal(BigInt(note.valueProof.v), BigInt(MAX_HASH_UNITS_PER_BLOCK) / 2n);
-    const again = sealChild([], minerDest(), { ...fork.block, hash: fork.verdict.hash }, fork.verdict.hash, fork.block.header, 4, when4, [{ address: minerDest(), nanos: subsidy, kind: 'pot' }]);
+    const again = sealChild([], minerDest(), { ...fork.block, hash: fork.verdict.hash }, fork.verdict.hash, fork.block.header, 4, when4, [{ address: minerDest(), nanos: subsidy, kind: 'pot' }], [genesisBlock, parent2, { ...fork.block, hash: fork.verdict.hash }]);
     assert.equal(again.verdict.ok, true, again.verdict.reason);
     assert.equal((again.block.txs[0].vout || []).some((o) => o.kind === 'hash'), false);
 

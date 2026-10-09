@@ -74,7 +74,7 @@ import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
 import { emptyVault, cloneVault, applyReserveBlock } from '../../crypto/reserve_vault.js';
-import { auditCirculatingSupply } from './supply.js';
+import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -1953,6 +1953,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       blocks: Array.isArray(evmHistory) ? evmHistory : [],
       spentTags,
       magic,
+      noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
     });
     if (!noteFund.ok) return noteFund;
     if (Array.isArray(noteFund.tags)) {
@@ -2054,29 +2055,56 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       return { ok: false, reason: applied.reason || 'epoch_open' };
     }
   }
-  const supply = supplyIdentity(block, prev, opts);
-  if (!supply.ok) return supply;
-  return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot };
-}
-
-function supplyParentsOf(prev, opts) {
-  if (Array.isArray(opts?.supplyParents)) return opts.supplyParents;
-  if (Array.isArray(opts?.evmHistory) && opts.evmHistory.length) return opts.evmHistory;
-  if (!prev) return [];
-  if (Number(prev.height || 0) <= 1) return [prev];
-  return null;
-}
-
-/** Parent chain plus this block. A chain that does not start at genesis is not invented. */
-function supplyIdentity(block, prev, opts) {
-  const parents = supplyParentsOf(prev, opts);
-  if (parents == null) return { ok: true };
-  if (parents.length && Number(parents[0]?.height || 0) > 1) return { ok: true };
-  const audit = auditCirculatingSupply(parents.concat([block]), {
-    magic: opts?.magic || undefined,
+  const parentSupply = parentSupplyState(prev, block, opts, height);
+  if (!parentSupply.ok) return parentSupply;
+  const stepped = supplyStep(parentSupply.state, block, {
+    magic,
+    unit: hashBonusNanos,
+    tipHeight: height,
+    height,
+    genesisMs: resolvedGenesisMs || genesisMs || 0,
+    blockHash: hash,
   });
-  if (audit.status === 'verified') return { ok: true };
-  return { ok: false, reason: audit.reason || 'supply' };
+  if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
+  return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot, supplyState: stepped.state };
+}
+
+/**
+ * Parent supply for this block. A carried state must link to `prev`.
+ * A missing state is not invented from a window of history. A genesis
+ * child may fold that one parent. Anything taller fails closed.
+ */
+function parentSupplyState(prev, block, opts, height) {
+  const magic = opts?.magic;
+  const genesisMs = Number(opts?.genesisMs) || 0;
+  const tipHeight = Number.isInteger(height) && height > 0 ? height : 1;
+  if (opts && Object.prototype.hasOwnProperty.call(opts, 'parentSupply') && opts.parentSupply) {
+    if (!prev) {
+      if (Number(opts.parentSupply.height) !== 0) return { ok: false, reason: 'supply_state' };
+      return { ok: true, state: opts.parentSupply };
+    }
+    if (!supplyLinks(opts.parentSupply, prev)) return { ok: false, reason: 'supply_state' };
+    return { ok: true, state: opts.parentSupply };
+  }
+  if (Array.isArray(opts?.supplyParents)) {
+    const parents = opts.supplyParents;
+    if (!parents.length) {
+      if (!prev) return { ok: true, state: emptySupplyState(genesisMs) };
+      return { ok: false, reason: 'supply_state' };
+    }
+    if (Number(parents[0]?.height || 0) !== 1) return { ok: false, reason: 'supply_state' };
+    const folded = foldSupply(parents, { magic, genesisMs, tipHeight });
+    if (!folded.ok) return { ok: false, reason: folded.reason || 'supply' };
+    if (prev && !supplyLinks(folded.state, prev)) return { ok: false, reason: 'supply_state' };
+    return { ok: true, state: folded.state };
+  }
+  if (!prev) return { ok: true, state: emptySupplyState(genesisMs) };
+  if (Number(prev.height || 0) <= 1) {
+    const folded = foldSupply([prev], { magic, genesisMs, tipHeight });
+    if (!folded.ok) return { ok: false, reason: folded.reason || 'supply' };
+    return { ok: true, state: folded.state };
+  }
+  return { ok: false, reason: 'supply_state' };
 }
 
 function headerTimeMs(block) {
@@ -2228,6 +2256,9 @@ function beginLoaded(blocks, {
   const spentB = new Set();
   const mtp = [];
   let flux = emptyFluxset();
+  let supply = emptySupplyState();
+  let supplyAt = [];
+  let anchors = [];
   const vault = emptyVault();
   if (start > 0) {
     for (let j = 0; j < start; j += 1) {
@@ -2255,6 +2286,12 @@ function beginLoaded(blocks, {
     acceptedSeries = Array.isArray(prior.acceptedSeries) ? prior.acceptedSeries : [];
     for (const id of prior.spentIds || []) spentB.add(String(id));
     if (prior.flux && Array.isArray(prior.flux.pubs)) flux = prior.flux;
+    if (!prior.supply || !supplyLinks(prior.supply, list[start - 1])) {
+      return { ok: false, reason: 'supply_state' };
+    }
+    supply = prior.supply;
+    if (Array.isArray(prior.supplyAt)) supplyAt = prior.supplyAt.slice();
+    if (Array.isArray(prior.anchors)) anchors = prior.anchors.slice();
     const mtpFrom = Math.max(0, start - MTP_WINDOW);
     for (let j = mtpFrom; j < start; j += 1) {
       try {
@@ -2284,6 +2321,9 @@ function beginLoaded(blocks, {
       mtp,
       flux,
       vault,
+      supply,
+      supplyAt,
+      anchors,
       sawCheckpoint: cpHeight <= 0 || (start > 0 && cpHeight <= start),
       trustStoredHash: trustStoredHash === true,
       trustShareWork: trustStoredHash === true && trustShareWork !== false,
@@ -2367,13 +2407,19 @@ function stepLoaded(state, list, i) {
     grandparentHeader: i >= 2 ? list[i - 2].header : null,
     parentFluxset: state.flux,
     parentSpendTags: state.flux.spendTags,
-    supplyParents: list.slice(0, i),
-    evmHistory: list.slice(0, i),
+    parentSupply: state.supply,
+    noteAtAnchor: (anchor) => noteFromAnchor(state.flux, state.anchors, anchor),
+    evmHistory: historyPrefix(list, i),
     reserveState: state.vault,
   });
   if (!body || typeof body.then === 'function' || body.ok !== true) {
     return { ok: false, reason: body?.reason || 'pow' };
   }
+  if (!body.supplyState || !supplyLinks(body.supplyState, { height, hash: link })) {
+    return { ok: false, reason: 'supply_state' };
+  }
+  state.supply = body.supplyState;
+  state.supplyAt.push(body.supplyState);
   const appliedVault = applyReserveBlock({ state: state.vault, block, nowMs: ts });
   if (appliedVault && appliedVault.ok === false) {
     return { ok: false, reason: appliedVault.reason || 'epoch_open' };
@@ -2389,6 +2435,11 @@ function stepLoaded(state, list, i) {
   state.owedIn = stepped.rows;
   state.acceptedSeries = stepped.acceptedSeries;
   state.flux = appendFluxBlock(state.flux, block);
+  const root = state.flux.jroot;
+  state.anchors[height] = {
+    n: state.flux.pubs.length,
+    jroot: root ? Buffer.from(root) : Buffer.alloc(32),
+  };
   state.mtp.push(ts);
   if (state.mtp.length > MTP_WINDOW) state.mtp.splice(0, state.mtp.length - MTP_WINDOW);
   state.prevLink = link;
@@ -2409,7 +2460,35 @@ function finishLoaded(begun) {
     spentIds: [...state.spentB],
     flux: state.flux,
     genesisMs: state.genesisMs,
+    supply: state.supply,
+    supplyAt: state.supplyAt,
+    anchors: state.anchors,
   };
+}
+
+export function noteFromAnchor(flux, anchors, anchor) {
+  const rec = anchors && anchors[Number(anchor)];
+  if (!rec || !rec.jroot || !flux || !Array.isArray(flux.pubs)) return null;
+  const n = Number(rec.n);
+  if (!Number.isInteger(n) || n < 1 || n > flux.pubs.length) return null;
+  return { jroot: rec.jroot, n };
+}
+
+/** A prefix view. Load uses this so each height does not copy the chain. */
+export function historyPrefix(list, end) {
+  const n = Math.max(0, Number(end) || 0);
+  const target = [];
+  target.length = n;
+  return new Proxy(target, {
+    get(obj, prop, recv) {
+      if (typeof prop === 'string') {
+        const idx = Number(prop);
+        if (Number.isInteger(idx) && String(idx) === prop && idx >= 0 && idx < n) return list[idx];
+      }
+      const val = Reflect.get(obj, prop, recv);
+      return typeof val === 'function' ? val.bind(recv) : val;
+    },
+  });
 }
 
 export function verifyLoadedChain(blocks, opts = {}) {

@@ -169,6 +169,254 @@ function commitmentsMatch(vouts, total, excess) {
   return verifyMintSum(rows, Number(total), excess);
 }
 
+const U64 = 0xffffffffffffffffn;
+
+function fitsU64(n) {
+  return typeof n === 'bigint' && n >= 0n && n <= U64;
+}
+
+function copySupply(state) {
+  return {
+    height: Number(state.height) || 0,
+    blockHash: state.blockHash ? Buffer.from(state.blockHash) : null,
+    schedulePot: state.schedulePot,
+    carry: state.carry,
+    mintedPot: state.mintedPot,
+    mintedHash: state.mintedHash,
+    mintedLevy: state.mintedLevy,
+    permittedHashAll: state.permittedHashAll,
+    acceptedHash: state.acceptedHash,
+    owedRows: state.owedRows.slice(),
+    dust: state.dust,
+    overflow: state.overflow,
+    acceptedSeries: state.acceptedSeries.slice(),
+    liveUnit: state.liveUnit,
+    genesisMs: state.genesisMs,
+    owedKnown: state.owedKnown !== false,
+  };
+}
+
+/** Supply before genesis. Owed rows are known because there are none. */
+export function emptySupplyState(genesisMs = 0) {
+  const g = Number(genesisMs) || 0;
+  return {
+    height: 0,
+    blockHash: null,
+    schedulePot: 0n,
+    carry: 0n,
+    mintedPot: 0n,
+    mintedHash: 0n,
+    mintedLevy: 0n,
+    permittedHashAll: 0n,
+    acceptedHash: 0n,
+    owedRows: [],
+    dust: 0n,
+    overflow: 0n,
+    acceptedSeries: [],
+    liveUnit: HASH_BONUS_NANOS,
+    genesisMs: Number.isFinite(g) && g > 0 ? g : 0,
+    owedKnown: true,
+  };
+}
+
+/** Scalar snap plus the owed rows the caller still has. */
+export function supplyFromScalar(scalar, {
+  owedRows = [],
+  acceptedSeries = [],
+  owedKnown = false,
+} = {}) {
+  if (!scalar) return null;
+  return {
+    height: Number(scalar.height) || 0,
+    blockHash: scalar.blockHash ? Buffer.from(scalar.blockHash) : null,
+    schedulePot: BigInt(scalar.schedulePot || 0),
+    carry: BigInt(scalar.carry || 0),
+    mintedPot: BigInt(scalar.mintedPot || 0),
+    mintedHash: BigInt(scalar.mintedHash || 0),
+    mintedLevy: BigInt(scalar.mintedLevy || 0),
+    permittedHashAll: BigInt(scalar.permittedHashAll || 0),
+    acceptedHash: BigInt(scalar.acceptedHash || 0),
+    owedRows: Array.isArray(owedRows) ? owedRows.slice() : [],
+    dust: BigInt(scalar.dust || 0),
+    overflow: BigInt(scalar.overflow || 0),
+    acceptedSeries: Array.isArray(acceptedSeries) ? acceptedSeries.slice() : [],
+    liveUnit: Number(scalar.liveUnit) || HASH_BONUS_NANOS,
+    genesisMs: Number(scalar.genesisMs) || 0,
+    owedKnown: owedKnown === true,
+  };
+}
+
+/** `state` is the supply after `block`, not after its child. */
+export function supplyLinks(state, block) {
+  if (!state || !block) return false;
+  const h = Number(block.height);
+  if (!Number.isInteger(h) || h < 1 || Number(state.height) !== h) return false;
+  if (!state.blockHash || !block.hash) return false;
+  try {
+    const a = Buffer.from(state.blockHash);
+    const b = Buffer.from(block.hash);
+    return a.length === 32 && b.length === 32 && a.equals(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One block on top of a copied parent state.
+ * A failure still applies the same accumulator updates as the public audit,
+ * so a later reconcile sees the same first reason and the same difference.
+ * The caller decides whether to stop.
+ */
+function accountBlock(prev, block, opts = {}) {
+  const state = copySupply(prev);
+  const ts = headerMs(block);
+  if (!(ts > 0)) return { reason: 'header', state };
+  const genesisMs = Number(state.genesisMs) > 0 ? Number(state.genesisMs) : (Number(opts.genesisMs) || ts);
+  state.genesisMs = genesisMs;
+  const permitted = potSubsidyAt({ nowMs: ts, genesisMs, magic: opts.magic || MAGIC_TESTNET });
+  if (!Number.isSafeInteger(permitted) || permitted < 0) return { reason: 'pot_sched', state };
+  const permittedBi = BigInt(permitted);
+  state.schedulePot += permittedBi;
+  const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
+  const carryOutN = canonicalCarry(cb);
+  if (carryOutN == null) return { reason: 'pot_sched', state };
+  const carryOut = BigInt(carryOutN);
+  const potMinted = permittedBi + state.carry - carryOut;
+  if (potMinted < 0n) return { reason: 'pot_sched', state };
+  const hash = permittedHash(block);
+  const levy = publicLevy(block);
+  if (!hash.ok || levy == null) {
+    state.carry = carryOut;
+    return { reason: hash.reason || 'supply', state };
+  }
+  let shares = null;
+  try {
+    shares = unpackShareBatch(Array.isArray(block?.shareBatch) ? block.shareBatch : []);
+  } catch {
+    shares = null;
+  }
+  if (shares == null) {
+    state.carry = carryOut;
+    return { reason: 'hash_bonus', state };
+  }
+  const unit = hashBonusUnitNanos(opts.unit == null ? state.liveUnit : opts.unit);
+  const blockHeight = Number(opts.height) || Number(block?.height) || 0;
+  const tipHeight = Number(opts.tipHeight) > 0 ? Number(opts.tipHeight) : blockHeight;
+  const gotFresh = freshForBlock(block, unit, tipHeight);
+  if (!gotFresh.ok) {
+    state.carry = carryOut;
+    return { reason: 'hash_owed', state };
+  }
+  const fresh = gotFresh.fresh;
+  const budget = hashBudgetNanos(state.acceptedSeries, unit);
+  if (budget == null) {
+    state.carry = carryOut;
+    return { reason: 'hash_owed', state };
+  }
+  const settled = settleHashOwed({
+    owedIn: state.owedRows,
+    dustIn: state.dust,
+    overflowIn: state.overflow,
+    fresh,
+    height: Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : 0,
+    unit,
+    budget,
+  });
+  if (!settled.ok || !sameHashLedger(cb, settled)) {
+    state.carry = carryOut;
+    return { reason: 'hash_owed', state };
+  }
+  const rowsOut = (settled.owed || []).concat(settled.owedRest || []);
+  const parentIdle = state.owedRows.length === 0 && state.dust === 0n && state.overflow === 0n;
+  const idle = parentIdle && hashLedgerIdle(settled, fresh.length);
+  let mintedHashHere = settled.minted;
+  const hashVouts = (cb?.vout || []).filter((o) => String(o?.kind || '') === 'hash');
+  if (!shares.length && idle) {
+    if (hashVouts.length === 0) mintedHashHere = 0n;
+    else if (hashVouts.length === 1) mintedHashHere = BigInt(unitsForShare()) * BigInt(hashBonusUnitNanos(unit));
+    else {
+      state.carry = carryOut;
+      return { reason: 'hash_bonus', state };
+    }
+  }
+  const freshNanos = fresh.reduce((n, row) => n + row.nanos, 0n);
+  state.acceptedHash += freshNanos + (mintedHashHere - settled.minted);
+  state.permittedHashAll += mintedHashHere;
+  state.owedRows = rowsOut.slice();
+  state.acceptedSeries.push(settled.acceptedUnits == null ? 0n : settled.acceptedUnits);
+  state.dust = settled.dust;
+  state.overflow = settled.overflow;
+  state.carry = carryOut;
+  const publicTotal = potMinted + mintedHashHere + levy;
+  if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess)) {
+    return { reason: 'supply', state };
+  }
+  state.mintedPot += potMinted;
+  state.mintedHash += mintedHashHere;
+  state.mintedLevy += levy;
+  state.liveUnit = unit;
+  state.height = blockHeight;
+  state.owedKnown = true;
+  const hashBytes = opts.blockHash || block?.hash;
+  state.blockHash = hashBytes ? Buffer.from(hashBytes) : state.blockHash;
+  if (!fitsU64(state.schedulePot) || !fitsU64(state.carry) || !fitsU64(state.mintedPot)
+    || !fitsU64(state.mintedHash) || !fitsU64(state.mintedLevy) || !fitsU64(state.permittedHashAll)
+    || !fitsU64(state.acceptedHash) || !fitsU64(state.dust) || !fitsU64(state.overflow)) {
+    return { reason: 'supply', state };
+  }
+  return { reason: '', state };
+}
+
+/**
+ * O(block). `prev` is the parent supply. A missing parent is the caller's
+ * `supply_state`. This step only accepts a block whose own accounts balance.
+ */
+export function supplyStep(prev, block, opts = {}) {
+  if (!prev || prev.owedKnown === false) return { ok: false, reason: 'supply_state', state: null };
+  const next = accountBlock(prev, block, opts);
+  if (next.reason) return { ok: false, reason: next.reason, state: null };
+  let outstanding = next.state.dust + next.state.overflow;
+  for (const row of next.state.owedRows) outstanding += row.nanos;
+  if (next.state.mintedHash + outstanding !== next.state.acceptedHash) {
+    return { ok: false, reason: 'hash_owed', state: null };
+  }
+  const difference = next.state.mintedPot + next.state.mintedHash
+    - next.state.schedulePot + next.state.carry - next.state.permittedHashAll;
+  if (difference !== 0n) return { ok: false, reason: 'supply', state: null };
+  return { ok: true, reason: '', state: next.state };
+}
+
+/** Fold a genesis-rooted list. One unit walk, then one step per block. */
+export function foldSupply(blocks, opts = {}) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  const genesisMs = Number(opts.genesisMs) > 0 ? Number(opts.genesisMs) : (headerMs(list[0]) || 0);
+  if (!list.length) return { ok: true, reason: '', state: emptySupplyState(genesisMs) };
+  const units = opts.units || bonusUnitsBefore(list);
+  if (!units) return { ok: false, reason: 'epoch_open', state: null };
+  let tip = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    const h = Number(list[i]?.height);
+    if (Number.isInteger(h) && h > tip) tip = h;
+  }
+  if (!tip) tip = list.length;
+  const tipHeight = Number(opts.tipHeight) > 0 ? Number(opts.tipHeight) : tip;
+  let state = emptySupplyState(genesisMs);
+  for (let i = 0; i < list.length; i += 1) {
+    const h = Number(list[i]?.height) || (i + 1);
+    const stepped = supplyStep(state, list[i], {
+      magic: opts.magic,
+      unit: units[i] == null ? HASH_BONUS_NANOS : units[i],
+      tipHeight,
+      height: h,
+      genesisMs,
+      blockHash: list[i]?.hash || null,
+    });
+    if (!stepped.ok) return stepped;
+    state = stepped.state;
+  }
+  return { ok: true, reason: '', state };
+}
+
 /**
  * @returns {{
  *   status: 'verified' | 'mismatch',
@@ -224,144 +472,43 @@ export function auditCirculatingSupply(blocks, {
   const genesisMs = headerMs(list[0]);
   if (!(genesisMs > 0)) return { ...blank, reason: 'genesis_ms' };
 
-  let mintedPot = 0n;
-  let mintedHash = 0n;
-  let mintedLevy = 0n;
-  let schedulePot = 0n;
-  let permittedHashAll = 0n;
-  let acceptedHash = 0n;
-  let carry = 0n;
-  let owedState = [];
-  let acceptedSeries = [];
-  let dustState = 0n;
-  let overflowState = 0n;
   let ok = true;
   let reason = '';
   const units = bonusUnitsBefore(list);
+  if (!units) return { ...blank, reason: 'epoch_open' };
   let auditTip = 0;
   for (let i = 0; i < list.length; i += 1) {
     const h = Number(list[i]?.height);
     const n = Number.isInteger(h) ? h : i + 1;
     if (n > auditTip) auditTip = n;
   }
-
+  let state = emptySupplyState(genesisMs);
   for (let bi = 0; bi < list.length; bi += 1) {
-    const block = list[bi];
-    const unit = units[bi] == null ? HASH_BONUS_NANOS : units[bi];
-    const ts = headerMs(block);
-    if (!(ts > 0)) {
-      ok = false;
-      reason = reason || 'header';
-      continue;
-    }
-    const permitted = potSubsidyAt({ nowMs: ts, genesisMs, magic });
-    if (!Number.isSafeInteger(permitted) || permitted < 0) {
-      ok = false;
-      reason = reason || 'pot_sched';
-      continue;
-    }
-    const permittedBi = BigInt(permitted);
-    schedulePot += permittedBi;
-    const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
-    const carryOutN = canonicalCarry(cb);
-    if (carryOutN == null) {
-      ok = false;
-      reason = reason || 'pot_sched';
-      continue;
-    }
-    const carryOut = BigInt(carryOutN);
-    const potMinted = permittedBi + carry - carryOut;
-    if (potMinted < 0n) {
-      ok = false;
-      reason = reason || 'pot_sched';
-      continue;
-    }
-    const hash = permittedHash(block);
-    const levy = publicLevy(block);
-    if (!hash.ok || levy == null) {
-      ok = false;
-      reason = reason || hash.reason || 'supply';
-      carry = carryOut;
-      continue;
-    }
-    const shares = (() => {
-      try {
-        return unpackShareBatch(Array.isArray(block?.shareBatch) ? block.shareBatch : []);
-      } catch {
-        return null;
-      }
-    })();
-    if (shares == null) {
-      ok = false;
-      reason = reason || 'hash_bonus';
-      carry = carryOut;
-      continue;
-    }
-    const gotFresh = freshForBlock(block, unit, auditTip);
-    if (!gotFresh.ok) {
-      ok = false;
-      reason = reason || 'hash_owed';
-      carry = carryOut;
-      continue;
-    }
-    const fresh = gotFresh.fresh;
-    const blockHeight = Number(block?.height);
-    const budget = hashBudgetNanos(acceptedSeries, unit);
-    if (budget == null) {
-      ok = false;
-      reason = reason || 'hash_owed';
-      carry = carryOut;
-      continue;
-    }
-    const settled = settleHashOwed({
-      owedIn: owedState,
-      dustIn: dustState,
-      overflowIn: overflowState,
-      fresh,
-      height: Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : 0,
-      unit,
-      budget,
+    const h = Number(list[bi]?.height);
+    const next = accountBlock(state, list[bi], {
+      magic,
+      unit: units[bi] == null ? HASH_BONUS_NANOS : units[bi],
+      tipHeight: auditTip,
+      height: Number.isInteger(h) && h > 0 ? h : bi + 1,
+      genesisMs,
+      blockHash: list[bi]?.hash || null,
     });
-    if (!settled.ok || !sameHashLedger(cb, settled)) {
+    state = next.state;
+    if (next.reason) {
       ok = false;
-      reason = reason || 'hash_owed';
-      carry = carryOut;
-      continue;
+      reason = reason || next.reason;
     }
-    const rowsOut = (settled.owed || []).concat(settled.owedRest || []);
-    const parentIdle = owedState.length === 0 && dustState === 0n && overflowState === 0n;
-    const idle = parentIdle && hashLedgerIdle(settled, fresh.length);
-    let mintedHashHere = settled.minted;
-    const hashVouts = (cb?.vout || []).filter((o) => String(o?.kind || '') === 'hash');
-    if (!shares.length && idle) {
-      if (hashVouts.length === 0) mintedHashHere = 0n;
-      else if (hashVouts.length === 1) mintedHashHere = BigInt(unitsForShare()) * BigInt(hashBonusUnitNanos(unit));
-      else {
-        ok = false;
-        reason = reason || 'hash_bonus';
-        carry = carryOut;
-        continue;
-      }
-    }
-    const freshNanos = fresh.reduce((n, row) => n + row.nanos, 0n);
-    acceptedHash += freshNanos + (mintedHashHere - settled.minted);
-    permittedHashAll += mintedHashHere;
-    owedState = rowsOut;
-    acceptedSeries.push(settled.acceptedUnits == null ? 0n : settled.acceptedUnits);
-    dustState = settled.dust;
-    overflowState = settled.overflow;
-    const publicTotal = potMinted + mintedHashHere + levy;
-    if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess)) {
-      ok = false;
-      reason = reason || 'supply';
-      carry = carryOut;
-      continue;
-    }
-    mintedPot += potMinted;
-    mintedHash += mintedHashHere;
-    mintedLevy += levy;
-    carry = carryOut;
   }
+  const mintedPot = state.mintedPot;
+  const mintedHash = state.mintedHash;
+  const mintedLevy = state.mintedLevy;
+  const schedulePot = state.schedulePot;
+  const permittedHashAll = state.permittedHashAll;
+  const acceptedHash = state.acceptedHash;
+  const carry = state.carry;
+  const owedState = state.owedRows;
+  const dustState = state.dust;
+  const overflowState = state.overflow;
   let outstanding = dustState + overflowState;
   for (const row of owedState) outstanding += row.nanos;
   if (mintedHash + outstanding !== acceptedHash) {

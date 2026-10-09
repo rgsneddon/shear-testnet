@@ -627,21 +627,59 @@ export function verifyReservePayout(state, tx, clockMs) {
 }
 
 /** Honour Reserve lock / vote / withdraw txs already sealed in a block. */
-/** Hash-bonus unit live at each block, before that block's own enact. */
-export function bonusUnitsBefore(blocks) {
-  const state = emptyVault();
+/**
+ * Units before each block. History uses the caller's recorded units.
+ * The fork is applied to `vault`. A rejected apply stops the walk.
+ * The vault is the live state before the fork, not a replay of history.
+ */
+export function unitsAlongChain({
+  unitAt = [],
+  history = [],
+  fork = [],
+  vault = null,
+  timeOf = null,
+} = {}) {
   const units = [];
-  for (const block of blocks || []) {
-    units.push(hashBonusUnitNanos(state.liveHashBonusNanos));
+  const rows = Array.isArray(history) ? history : [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const recorded = i < unitAt.length ? unitAt[i] : HASH_BONUS_NANOS;
+    units.push(hashBonusUnitNanos(recorded));
+  }
+  const trial = vault || emptyVault();
+  const blocks = Array.isArray(fork) ? fork : [];
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
+    units.push(hashBonusUnitNanos(trial.liveHashBonusNanos));
     let nowMs = 0;
     try {
-      nowMs = Number(decodeHeader(Buffer.from(block.header)).timestamp);
+      nowMs = typeof timeOf === 'function' ? Number(timeOf(block)) || 0 : 0;
     } catch {
       nowMs = 0;
     }
-    applyReserveBlock({ state, block, nowMs });
+    const applied = applyReserveBlock({ state: trial, block, nowMs });
+    if (applied && applied.ok === false) {
+      return { ok: false, reason: applied.reason || 'epoch_open', units, at: rows.length + i };
+    }
   }
-  return units;
+  return { ok: true, reason: '', units, at: rows.length + blocks.length };
+}
+
+/** Hash-bonus unit live at each block, before that block's own enact. */
+export function bonusUnitsBefore(blocks) {
+  const walked = unitsAlongChain({
+    history: [],
+    fork: blocks || [],
+    vault: emptyVault(),
+    timeOf: (block) => {
+      try {
+        return Number(decodeHeader(Buffer.from(block.header)).timestamp);
+      } catch {
+        return 0;
+      }
+    },
+  });
+  if (!walked.ok) return null;
+  return walked.units;
 }
 
 function finishReserveApply(results) {

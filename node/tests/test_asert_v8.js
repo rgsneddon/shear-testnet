@@ -294,6 +294,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       parentIntervalMs: TARGET_BLOCK_INTERVAL_MS,
       grandparentHeader: genesis.header,
       nowMs: t0 + gap + gap,
+      supplyParents: [genesis, child],
     });
     assert.equal(honest.ok, true, honest.reason);
 

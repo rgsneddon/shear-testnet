@@ -133,9 +133,10 @@ export function encodeBookSnap(state, key) {
     if (v < 0n || v > 0xffffffffffffffffn) throw new Error('snap_unit');
     parts.push(u64(v));
   }
-  if (Array.isArray(state.owedCheckpoints)) {
-    parts.push(u32(state.owedCheckpoints.length));
-    for (const ck of state.owedCheckpoints) {
+  if (Array.isArray(state.owedCheckpoints) || Array.isArray(state.supplySnaps)) {
+    const checkpoints = Array.isArray(state.owedCheckpoints) ? state.owedCheckpoints : [];
+    parts.push(u32(checkpoints.length));
+    for (const ck of checkpoints) {
       const at = Number(ck?.at);
       const end = Number(ck?.seriesEnd);
       if (!Number.isInteger(at) || at < 0 || !Number.isInteger(end) || end < 0) throw new Error('snap_ckpt');
@@ -143,6 +144,33 @@ export function encodeBookSnap(state, key) {
       const rows = Array.isArray(ck?.rows) ? ck.rows : [];
       parts.push(u32(rows.length));
       for (const row of rows) putRow(parts, row);
+    }
+  }
+  if (Array.isArray(state.supplySnaps)) {
+    parts.push(u32(state.supplySnaps.length));
+    for (const s of state.supplySnaps) {
+      const hash = bytesOf(s?.blockHash, 32);
+      const at = Number(s?.height);
+      if (!hash || !Number.isInteger(at) || at < 1) throw new Error('snap_supply');
+      parts.push(u32(at), hash);
+      const nums = [
+        s.schedulePot, s.carry, s.mintedPot, s.mintedHash, s.mintedLevy,
+        s.permittedHashAll, s.acceptedHash, s.dust, s.overflow, s.liveUnit, s.genesisMs,
+      ];
+      for (const n of nums) {
+        const v = BigInt(n ?? 0);
+        if (v < 0n || v > 0xffffffffffffffffn) throw new Error('snap_supply');
+        parts.push(u64(v));
+      }
+    }
+    const anchors = Array.isArray(state.anchorWindow) ? state.anchorWindow : [];
+    parts.push(u32(anchors.length));
+    for (const a of anchors) {
+      const root = bytesOf(a?.jroot, 32);
+      const at = Number(a?.height);
+      const n = Number(a?.n);
+      if (!root || !Number.isInteger(at) || at < 1 || !Number.isInteger(n) || n < 0) throw new Error('snap_supply');
+      parts.push(u32(at), u32(n), root);
     }
   }
   const payload = Buffer.concat(parts);
@@ -330,6 +358,60 @@ export function decodeBookSnap(buf, key, expected = {}) {
       owedCheckpoints.push({ at: at.v, seriesEnd: end.v, rows });
     }
   }
+  let supplySnaps = null;
+  let anchorWindow = null;
+  if (o < payload.length) {
+    const nsc = readU32(payload, o);
+    if (!nsc) return null;
+    o = nsc.o;
+    supplySnaps = [];
+    for (let i = 0; i < nsc.v; i += 1) {
+      const h = readU32(payload, o);
+      if (!h || h.v < 1) return null;
+      o = h.o;
+      const hash = take(payload, o, 32);
+      if (!hash) return null;
+      o += 32;
+      const nums = [];
+      for (let k = 0; k < 11; k += 1) {
+        const n = readU64(payload, o);
+        if (!n) return null;
+        nums.push(n.v);
+        o = n.o;
+      }
+      supplySnaps.push({
+        height: h.v,
+        blockHash: Buffer.from(hash),
+        schedulePot: nums[0],
+        carry: nums[1],
+        mintedPot: nums[2],
+        mintedHash: nums[3],
+        mintedLevy: nums[4],
+        permittedHashAll: nums[5],
+        acceptedHash: nums[6],
+        dust: nums[7],
+        overflow: nums[8],
+        liveUnit: Number(nums[9]),
+        genesisMs: Number(nums[10]),
+      });
+    }
+    const nanc = readU32(payload, o);
+    if (!nanc) return null;
+    o = nanc.o;
+    anchorWindow = [];
+    for (let i = 0; i < nanc.v; i += 1) {
+      const ah = readU32(payload, o);
+      if (!ah || ah.v < 1) return null;
+      o = ah.o;
+      const an = readU32(payload, o);
+      if (!an) return null;
+      o = an.o;
+      const root = take(payload, o, 32);
+      if (!root) return null;
+      o += 32;
+      anchorWindow.push({ height: ah.v, n: an.v, jroot: Buffer.from(root) });
+    }
+  }
   if (o !== payload.length) return null;
   const state = {
     rules: rules.v,
@@ -350,6 +432,8 @@ export function decodeBookSnap(buf, key, expected = {}) {
     spendTags,
     unitAt,
     owedCheckpoints,
+    supplySnaps,
+    anchorWindow,
   };
   if (expected.rules != null && state.rules !== String(expected.rules)) return null;
   if (expected.genesisPin != null && state.genesisPin !== String(expected.genesisPin)) return null;
