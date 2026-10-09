@@ -71,7 +71,7 @@ import {
   jroot as jrootOf,
   extendZeroRoot,
 } from '../../crypto/admit.js';
-import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
+import { ANCHOR_WINDOW, checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
@@ -2285,6 +2285,7 @@ function beginLoaded(blocks, {
   checkpoint = V12_BOOTSTRAP_CHECKPOINT,
   fromIndex = 0,
   prior = null,
+  reorgHaltDepth = 0,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true, empty: true };
@@ -2378,8 +2379,52 @@ function beginLoaded(blocks, {
       sawCheckpoint: cpHeight <= 0 || (start > 0 && cpHeight <= start),
       trustStoredHash: trustStoredHash === true,
       trustShareWork: trustStoredHash === true && trustShareWork !== false,
+      reorgHaltDepth: Math.max(0, Math.floor(Number(reorgHaltDepth) || 0)),
     },
   };
+}
+
+/**
+ * Owed rows and Admit frontiers share this spacing. A fork replays from the
+ * checkpoint at or below its anchor, so the walk is this spacing plus the
+ * fork, not the chain length.
+ */
+export const OWED_CHECKPOINT_SPACING = 32;
+
+/**
+ * Heights behind the tip that keep a frontier blob, plus one checkpoint
+ * spacing. Halt depth 0 still covers the admit anchor window, so a spend
+ * inside that window does not replay, and a deeper ancestor replays from
+ * the previous checkpoint.
+ */
+export function frontierWindow(haltDepth) {
+  const halt = Math.max(0, Math.floor(Number(haltDepth) || 0));
+  return Math.max(ANCHOR_WINDOW, halt) + OWED_CHECKPOINT_SPACING;
+}
+
+/** True when this height keeps frontier blobs. Other heights keep n and jroot. */
+export function keepsFrontier(height, tipHeight, haltDepth) {
+  const h = Number(height);
+  const tip = Number(tipHeight);
+  if (!Number.isInteger(h) || h < 1) return false;
+  if (!Number.isInteger(tip) || tip < 1 || h > tip) return false;
+  if (h === 1 || h === tip) return true;
+  if (tip - h < frontierWindow(haltDepth)) return true;
+  return h % OWED_CHECKPOINT_SPACING === 0;
+}
+
+/** Drop frontier blobs that are outside the reorg window and are not checkpoints. */
+export function retainFrontierBlobs(anchors, tipHeight, haltDepth) {
+  if (!Array.isArray(anchors)) return;
+  const tip = Number(tipHeight) || 0;
+  for (let h = 1; h < anchors.length; h += 1) {
+    const rec = anchors[h];
+    if (!rec || (!rec.frontier && !rec.zeroFrontier)) continue;
+    if (!keepsFrontier(h, tip, haltDepth)) {
+      rec.frontier = null;
+      rec.zeroFrontier = null;
+    }
+  }
 }
 
 function stepLoaded(state, list, i) {
@@ -2487,13 +2532,16 @@ function stepLoaded(state, list, i) {
   state.acceptedSeries = stepped.acceptedSeries;
   state.flux = appendFluxBlock(state.flux, block);
   const root = state.flux.jroot;
-  state.anchors[height] = {
+  const row = {
     n: state.flux.pubs.length,
     jroot: root ? Buffer.from(root) : Buffer.alloc(32),
-    frontier: state.flux.frontier || null,
-    zeroFrontier: state.flux.zeroFrontier || null,
     zeroRoot: state.flux.zeroRoot ? Buffer.from(state.flux.zeroRoot) : null,
   };
+  if (keepsFrontier(height, state.loadTip, state.reorgHaltDepth)) {
+    row.frontier = state.flux.frontier || null;
+    row.zeroFrontier = state.flux.zeroFrontier || null;
+  }
+  state.anchors[height] = row;
   state.mtp.push(ts);
   if (state.mtp.length > MTP_WINDOW) state.mtp.splice(0, state.mtp.length - MTP_WINDOW);
   state.prevLink = link;
@@ -2507,6 +2555,7 @@ function finishLoaded(begun) {
   if (!begun.ok) return begun;
   const state = begun.state;
   if (!state.sawCheckpoint) return { ok: false, reason: 'checkpoint' };
+  retainFrontierBlobs(state.anchors, state.loadTip, state.reorgHaltDepth);
   return {
     ok: true,
     owedRows: state.owedIn,

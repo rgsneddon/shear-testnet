@@ -31,7 +31,13 @@ import {
   discardPreparedHeader,
   noteFromAnchor,
   digestTx,
+  OWED_CHECKPOINT_SPACING,
+  keepsFrontier,
+  frontierWindow,
+  retainFrontierBlobs,
 } from './chain.js';
+
+export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
 import { emptySupplyState, foldSupply, supplyFromScalar, supplyLinks, supplyStep } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
@@ -265,13 +271,6 @@ function grandparentHeader(chain) {
 
 const loadResumeToken = Symbol('shear-load-resume');
 
-/**
- * Owed state is kept at block 0, at the tip, and every this many blocks.
- * A fork replays only from the checkpoint at or below its anchor, so the
- * walk is this spacing plus the fork, not the chain length.
- */
-export const OWED_CHECKPOINT_SPACING = 32;
-
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
@@ -404,6 +403,7 @@ export function createStore(dir, {
         nowMs: loadNowMs,
         genesisHash,
         checkpoint,
+        reorgHaltDepth: haltDepth,
         fromIndex: plan.height,
         prior: {
           owedRows: plan.owedRows,
@@ -444,6 +444,7 @@ export function createStore(dir, {
         nowMs: loadNowMs,
         genesisHash,
         checkpoint,
+        reorgHaltDepth: haltDepth,
         onProgress: onLoadProgress,
       }).then((checked) => {
         if (!checked.ok) throw new Error(checked.reason || 'pow');
@@ -471,6 +472,7 @@ export function createStore(dir, {
         nowMs: loadNowMs,
         genesisHash,
         checkpoint,
+        reorgHaltDepth: haltDepth,
       });
       if (!checked.ok) throw new Error(checked.reason || 'pow');
       if (!checked.supply) throw new Error('supply_state');
@@ -946,21 +948,23 @@ export function createStore(dir, {
   }
 
   function anchorWindowForSnap() {
+    const tipH = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
+    if (tipH < 1) return undefined;
     const window = [];
-    const fromH = Math.max(1, blocks.length - 127);
-    for (let h = fromH; h <= blocks.length; h += 1) {
+    for (let h = 1; h <= tipH; h += 1) {
+      if (!keepsFrontier(h, tipH, haltDepth)) continue;
       const rec = anchorAt[h];
-      if (!rec?.jroot) return undefined;
+      if (!rec?.jroot || !rec.frontier?.length || !rec.zeroFrontier?.length) return undefined;
       window.push({
         height: h,
         n: rec.n,
         jroot: rec.jroot,
-        frontier: rec.frontier || null,
-        zeroFrontier: rec.zeroFrontier || null,
+        frontier: rec.frontier,
+        zeroFrontier: rec.zeroFrontier,
         zeroRoot: rec.zeroRoot || null,
       });
     }
-    return window;
+    return window.length ? window : undefined;
   }
 
   function installSupplyPlan(plan) {
@@ -983,6 +987,8 @@ export function createStore(dir, {
     for (const a of plan.anchorWindow || []) {
       anchorAt[a.height] = anchorFromSnap(a);
     }
+    const tipH = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
+    retainFrontierBlobs(anchorAt, tipH, haltDepth);
   }
 
   function anchorFromSnap(a) {
@@ -1960,7 +1966,8 @@ export function createStore(dir, {
       const priorSupply = supplyAt[idx - 1];
       if (priorSupply) supplyAt[idx - 1] = supplyFromScalar(priorSupply, { owedKnown: false });
     }
-    anchorAt[stored.height] = anchorRecord(liveFlux);
+    anchorAt[stored.height] = anchorRecord(liveFlux, true);
+    releaseExitedFrontier(stored.height);
     persist(stored);
     rememberHeaders([stored], 'active');
     {
@@ -2386,7 +2393,7 @@ export function createStore(dir, {
         supply = check.supplyState;
         appendFluxBlock(flux, lean);
         const h = Number(lean?.height) || 0;
-        anchors[h] = anchorRecord(flux);
+        anchors[h] = anchorRecord(flux, false);
         rows.push(...sealedExplorerRows(lean));
         return { ok: true };
       },
@@ -2820,14 +2827,39 @@ export function createStore(dir, {
     return !!tip && tip.seriesEnd === n;
   }
 
-  function anchorRecord(flux) {
-    return {
+  function anchorRecord(flux, keepBlobs = true) {
+    const rec = {
       n: flux?.pubs?.length || 0,
       jroot: flux?.jroot ? Buffer.from(flux.jroot) : Buffer.alloc(32),
-      frontier: flux?.frontier || null,
-      zeroFrontier: flux?.zeroFrontier || null,
       zeroRoot: flux?.zeroRoot ? Buffer.from(flux.zeroRoot) : null,
     };
+    if (keepBlobs) {
+      rec.frontier = flux?.frontier || null;
+      rec.zeroFrontier = flux?.zeroFrontier || null;
+    }
+    return rec;
+  }
+
+  function releaseExitedFrontier(tipHeight) {
+    const exited = tipHeight - frontierWindow(haltDepth);
+    if (exited < 1) return;
+    const rec = anchorAt[exited];
+    if (!rec || keepsFrontier(exited, tipHeight, haltDepth)) return;
+    rec.frontier = null;
+    rec.zeroFrontier = null;
+  }
+
+  function indexAtHeight(list, height, endIdx) {
+    const guess = height - 1;
+    if (guess >= 0 && guess <= endIdx) {
+      const bh = Number(list[guess]?.height) || guess + 1;
+      if (bh === height) return guess;
+    }
+    for (let i = 0; i <= endIdx; i += 1) {
+      const bh = Number(list[i]?.height) || i + 1;
+      if (bh === height) return i;
+    }
+    return -1;
   }
 
   function tagsThrough(list, endIdx) {
@@ -2844,32 +2876,66 @@ export function createStore(dir, {
     return spendTags;
   }
 
-  /** Flux at a stored anchor. The frontier is the cached tree, not a rescan. */
-  function fluxFromAnchor(rec, list, endIdx) {
-    if (!rec?.jroot || !liveFlux || !Array.isArray(liveFlux.pubs)) return null;
-    const n = Number(rec.n) || 0;
-    if (n > liveFlux.pubs.length) return null;
-    const flux = {
+  function assembleFlux(rec, list, endIdx) {
+    const n = Number(rec?.n) || 0;
+    if (!rec?.jroot || !rec.frontier || !rec.zeroFrontier) return null;
+    if (!liveFlux || !Array.isArray(liveFlux.pubs) || n > liveFlux.pubs.length) return null;
+    return {
       pubs: liveFlux.pubs.slice(0, n),
       commits: (liveFlux.commits || []).slice(0, n),
       spendTags: tagsThrough(list, endIdx),
       jroot: Buffer.from(rec.jroot),
+      frontier: rec.frontier,
+      zeroFrontier: rec.zeroFrontier,
+      zeroRoot: rec.zeroRoot ? Buffer.from(rec.zeroRoot) : Buffer.from(rec.jroot),
     };
-    if (rec.frontier && rec.zeroFrontier) {
-      flux.frontier = rec.frontier;
-      flux.zeroFrontier = rec.zeroFrontier;
-      flux.zeroRoot = rec.zeroRoot ? Buffer.from(rec.zeroRoot) : Buffer.from(rec.jroot);
+  }
+
+  /**
+   * Flux through list[endIdx]. A missing blob replays from the nearest kept
+   * frontier. A missing anchor row is a snap hole and replays the same way.
+   * A stored jroot that the replay does not match fails closed.
+   */
+  function fluxThroughIndex(list, endIdx) {
+    if (!Array.isArray(list) || endIdx < 0 || endIdx >= list.length) return null;
+    if (!liveFlux || !Array.isArray(liveFlux.pubs)) return null;
+    const h = Number(list[endIdx]?.height) || endIdx + 1;
+    const direct = anchorAt[h];
+    if (direct?.frontier && direct?.zeroFrontier && direct?.jroot) {
+      return assembleFlux(direct, list, endIdx);
     }
+    let baseH = 0;
+    for (let at = h - 1; at >= 1; at -= 1) {
+      const prior = anchorAt[at];
+      if (prior?.frontier && prior?.zeroFrontier && prior?.jroot) {
+        baseH = at;
+        break;
+      }
+    }
+    let flux;
+    if (baseH > 0) {
+      const baseIdx = indexAtHeight(list, baseH, endIdx);
+      if (baseIdx < 0) return null;
+      flux = assembleFlux(anchorAt[baseH], list, baseIdx);
+      if (!flux) return null;
+    } else {
+      flux = emptyFluxset();
+    }
+    for (let i = 0; i <= endIdx; i += 1) {
+      const bh = Number(list[i]?.height) || i + 1;
+      if (bh <= baseH) continue;
+      appendFluxBlock(flux, list[i]);
+    }
+    if (direct?.jroot) {
+      if (!flux.jroot || !Buffer.from(flux.jroot).equals(Buffer.from(direct.jroot))) return null;
+    }
+    if (!flux.frontier || !flux.zeroFrontier) return null;
     return flux;
   }
 
   function fluxKeptThrough(index, list) {
     if (index <= 0) return emptyFluxset();
-    const block = list[index - 1];
-    const h = Number(block?.height) || index;
-    const rec = anchorAt[h];
-    if (!rec?.frontier || !rec?.zeroFrontier) return null;
-    return fluxFromAnchor(rec, list, index - 1);
+    return fluxThroughIndex(list, index - 1);
   }
 
   /**
@@ -2910,10 +2976,7 @@ export function createStore(dir, {
   }
 
   function fluxCarriedTo(endIdx) {
-    const block = blocks[endIdx];
-    const height = Number(block?.height) || endIdx + 1;
-    const rec = anchorAt[height];
-    return fluxFromAnchor(rec, blocks, endIdx);
+    return fluxThroughIndex(blocks, endIdx);
   }
 
   /** Verify only the new suffix. Header rules run before any owed replay. */
@@ -2970,8 +3033,7 @@ export function createStore(dir, {
       anchors = [];
       if (prefix > 0) {
         const carried = supplyCarriedTo(prefix - 1, tipH);
-        const h = Number(blocks[prefix - 1]?.height) || prefix;
-        const restored = anchorAt[h] ? fluxFromAnchor(anchorAt[h], blocks, prefix - 1) : null;
+        const restored = fluxThroughIndex(blocks, prefix - 1);
         if (carried && restored?.frontier) {
           supply = carried;
           flux = restored;
@@ -2992,7 +3054,7 @@ export function createStore(dir, {
         supply = stepped.state;
         appendFluxBlock(flux, rows[hi]);
         const hh = Number(rows[hi]?.height) || hi + 1;
-        anchors[hh] = anchorRecord(flux);
+        anchors[hh] = anchorRecord(flux, false);
       }
     }
     const trialVault = cloneVault(emptyVault());
@@ -3073,7 +3135,7 @@ export function createStore(dir, {
         supply = c.supplyState;
         appendFluxBlock(flux, lean);
         const ah = Number(lean.height) || 0;
-        anchors[ah] = anchorRecord(flux);
+        anchors[ah] = anchorRecord(flux, false);
         out.push(lean);
         prev = lean;
         return step(i + 1);
@@ -3262,6 +3324,11 @@ export function createStore(dir, {
       rememberHeaders(accepted, 'active');
       rewriteChain();
       rebuildExplorer();
+      const adoptedTip = Number(accepted[accepted.length - 1]?.height) || accepted.length;
+      const rememberAnchor = (block) => {
+        const h = Number(block?.height) || 0;
+        anchorAt[h] = anchorRecord(liveFlux, keepsFrontier(h, adoptedTip, haltDepth));
+      };
       if (keptFlux) {
         liveFlux = keptFlux;
         const keepH = lca > 0 ? (Number(fromBlocks[lca - 1]?.height) || lca) : 0;
@@ -3271,13 +3338,14 @@ export function createStore(dir, {
         anchorAt = [];
         for (const b of accepted.slice(0, lca)) {
           appendFluxBlock(liveFlux, b);
-          anchorAt[Number(b?.height) || 0] = anchorRecord(liveFlux);
+          rememberAnchor(b);
         }
       }
       for (const b of connected) {
         appendFluxBlock(liveFlux, b);
-        anchorAt[Number(b?.height) || 0] = anchorRecord(liveFlux);
+        rememberAnchor(b);
       }
+      retainFrontierBlobs(anchorAt, adoptedTip, haltDepth);
       supplyAt = adoptedSupply;
       supplyTip = supplyAt.length ? supplyAt[supplyAt.length - 1] : null;
       repairVaultAfterAdopt(lca);
@@ -3720,6 +3788,29 @@ export function createStore(dir, {
       return noteFromAnchor(liveFlux, anchorAt, Number(anchor));
     },
     jroot: () => liveFlux.jroot,
+    anchorView() {
+      const tipH = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
+      let roots = 0;
+      let withFrontier = 0;
+      let blobBytes = 0;
+      let maxBlob = 0;
+      const heights = [];
+      for (let h = 1; h <= tipH; h += 1) {
+        const rec = anchorAt[h];
+        if (!rec?.jroot || rec.jroot.length !== 32) continue;
+        roots += 1;
+        const f = rec.frontier?.length || 0;
+        const z = rec.zeroFrontier?.length || 0;
+        if (f > maxBlob) maxBlob = f;
+        if (z > maxBlob) maxBlob = z;
+        if (f || z) {
+          withFrontier += 1;
+          blobBytes += f + z;
+          heights.push(h);
+        }
+      }
+      return { tip: tipH, roots, withFrontier, blobBytes, maxBlob, heights };
+    },
     hashTxLive: HASH_TX_LIVE,
     consensusFingerprint,
     pause,
