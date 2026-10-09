@@ -70,7 +70,7 @@ import {
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
-import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
+import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -96,7 +96,7 @@ import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempoo
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
-import { asU8, flowInputsBound, txSpendTags, canonicalSpendTag } from '../../crypto/note.js';
+import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag } from '../../crypto/note.js';
 import { blockWork } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
@@ -2062,6 +2062,10 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
+    if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
+      const carry = unboundMembershipCarry(tx);
+      if (!carry.ok) return carry;
+    }
     if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
       return { ok: false, reason: 'paused' };
     }
@@ -2117,8 +2121,9 @@ export function createStore(dir, {
       const rlen = Array.isArray(tx.admit_proof?.r) ? tx.admit_proof.r.length : -1;
       const n = (live.pubs || []).length;
       const seen = new Set();
-      for (let pi = 0; pi < parsed.proofs.length; pi += 1) {
-        const extra = parsed.proofs[pi];
+      const boundProofs = boundIns.proofs || [];
+      for (let pi = 0; pi < boundProofs.length; pi += 1) {
+        const extra = boundProofs[pi];
         const one = canonicalSpendTag(extra);
         if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
         if (!one.tag) return { ok: false, reason: 'admit_membership' };

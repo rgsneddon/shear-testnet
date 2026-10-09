@@ -7,11 +7,11 @@ import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAdd
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
-import { verifyRange, flowInputsBound, txSpendTags, canonicalSpendTag, asU8 } from './note.js';
+import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8 } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
-import { verifyTypedAdmitFunding, checkAdmitAnchor } from './admit_v3.js';
+import { verifyTypedAdmitFunding, checkAdmitAnchor, typedKindNeedsAdmitV3 } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -50,6 +50,10 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
+  if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
+    const carry = unboundMembershipCarry(tx);
+    if (!carry.ok) return carry;
+  }
   const kind = String(tx.kind || MEMPOOL_KIND_SEND);
   const allowed = new Set([
     MEMPOOL_KIND_SEND,
@@ -165,8 +169,9 @@ export function admitMempool(pool, tx, opts = {}) {
     if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
     if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
   }
+  let boundIns = null;
   if (flowNeedsDummy(tx)) {
-    const boundIns = flowInputsBound(tx);
+    boundIns = flowInputsBound(tx);
     if (!boundIns.ok) return boundIns;
   }
   if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
@@ -180,10 +185,11 @@ export function admitMempool(pool, tx, opts = {}) {
     if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold) {
       const parsed = txSpendTags(tx);
       if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
-      if (!parsed.proofs.length) return { ok: false, reason: 'admit_membership' };
+      const boundProofs = boundIns?.proofs || [];
+      if (!boundProofs.length) return { ok: false, reason: 'admit_membership' };
       const seen = new Set();
-      for (let pi = 0; pi < parsed.proofs.length; pi += 1) {
-        const proof = parsed.proofs[pi];
+      for (let pi = 0; pi < boundProofs.length; pi += 1) {
+        const proof = boundProofs[pi];
         const one = canonicalSpendTag(proof);
         if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
         if (!one.tag) return { ok: false, reason: 'admit_membership' };

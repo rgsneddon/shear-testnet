@@ -622,11 +622,33 @@ export function flowInputsBound(tx) {
       return { ok: false, reason: 'admit_membership' };
     }
   }
+  // The bound list is the only spend. A distinct admit_proof beside it is not
+  // a second input, and verifying it would mark a note the vin does not spend.
+  const listed = txProofs(tx);
+  for (const proof of listed) {
+    if (!proofs.some((bound) => sameSpendProof(bound, proof))) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+  }
   const top = postedSpendTag(tx?.spendTag);
   if (top.present && (!top.tag || !tags[0] || !top.tag.equals(tags[0]))) {
     return { ok: false, reason: 'admit_tag' };
   }
   return { ok: true, proofs, vins };
+}
+
+/**
+ * Kinds that do not verify membership cannot carry a proof or a top spend tag.
+ * A queued or sealed blob would otherwise enter the spent set with no admit_verify.
+ * An empty list and an absent tag are not a carry.
+ */
+export function unboundMembershipCarry(tx) {
+  if (tx?.admit_proof) return { ok: false, reason: 'admit_membership' };
+  if (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length > 0) {
+    return { ok: false, reason: 'admit_membership' };
+  }
+  if (postedSpendTag(tx?.spendTag).present) return { ok: false, reason: 'admit_membership' };
+  return { ok: true };
 }
 
 /**

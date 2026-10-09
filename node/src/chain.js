@@ -71,7 +71,7 @@ import {
   jroot as jrootOf,
   extendZeroRoot,
 } from '../../crypto/admit.js';
-import { ANCHOR_WINDOW, checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
+import { ANCHOR_WINDOW, checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
@@ -87,12 +87,12 @@ import {
   excessOf,
   verifyFlowConservation,
   flowInputsBound,
+  unboundMembershipCarry,
   noteCommitOfDest20,
   asU8,
   pointFrom,
   txSpendTags,
   canonicalSpendTag,
-  sameSpendProof,
 } from '../../crypto/note.js';
 import {
   packTx,
@@ -1864,11 +1864,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       commits.push(Buffer.from(asU8(o.commit)));
     } catch { /* skip */ }
   };
+  const coinbaseCarry = (txs[0]?.coinbase || String(txs[0]?.kind || '') === 'coinbase')
+    ? unboundMembershipCarry(txs[0])
+    : { ok: true };
+  if (!coinbaseCarry.ok) return coinbaseCarry;
   const body = txs.slice(1);
   const seenOwners = new Map();
   const drawnWithdraws = new Set();
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
+    if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
+      const carry = unboundMembershipCarry(tx);
+      if (!carry.ok) return carry;
+    }
     const anchored = checkAdmitAnchor(tx, height);
     if (!anchored.ok) return anchored;
     const clockField = typedClockRejected(tx);
@@ -1907,8 +1915,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind })) {
       return { ok: false, reason: 'mint_forbidden' };
     }
+    let boundIns = null;
     if (flowNeedsDummy(tx)) {
-      const boundIns = flowInputsBound(tx);
+      boundIns = flowInputsBound(tx);
       if (!boundIns.ok) return boundIns;
     }
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
@@ -1932,7 +1941,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (!verifyFlowConservation(tx)) return { ok: false, reason: 'commit_sum' };
       const parsed = txSpendTags(tx);
       if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
-      const multi = Array.isArray(tx.admit_proofs) && tx.admit_proofs.length > 1;
+      // Verify the bound list only. tx.admit_proof is not a spend unless it is
+      // that list. A distinct extra never reaches admit_verify or spentTags.
+      const boundProofs = boundIns?.proofs || [];
+      const vins = boundIns?.vins || [];
+      if (boundProofs.length !== vins.length || boundProofs.length < 1) {
+        return { ok: false, reason: 'admit_membership' };
+      }
       const liveJ = { pubs, commits, jroot: live.jroot };
       const spendOne = (proof, tag) => {
         if (!tag) return { ok: false, reason: 'admit_membership' };
@@ -1944,27 +1959,17 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         spentTags.add(th);
         return null;
       };
-      if (!multi) {
-      const proof = tx.admit_proof;
-      if (!proof) return { ok: false, reason: 'admit_membership' };
-      const one = canonicalSpendTag(proof);
-      if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
-      const failed = spendOne(proof, one.tag);
-      if (failed) return failed;
-      for (let pi = 0; pi < parsed.proofs.length; pi += 1) {
-        if (sameSpendProof(parsed.proofs[pi], proof)) continue;
-        const extra = canonicalSpendTag(parsed.proofs[pi]);
-        if (!extra.ok) return { ok: false, reason: extra.reason || 'admit_membership' };
-        const extraFail = spendOne(parsed.proofs[pi], extra.tag);
-        if (extraFail) return extraFail;
-      }
+      if (boundProofs.length === 1) {
+        const proof = boundProofs[0];
+        const one = canonicalSpendTag(proof);
+        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
+        const failed = spendOne(proof, one.tag);
+        if (failed) return failed;
       } else {
-      const vins = (tx.vin || []).filter((v) => v && !v.coinbase);
-      if (tx.admit_proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
       const items = [];
       const tags = [];
-      for (let pi = 0; pi < tx.admit_proofs.length; pi += 1) {
-        const proof = tx.admit_proofs[pi];
+      for (let pi = 0; pi < boundProofs.length; pi += 1) {
+        const proof = boundProofs[pi];
         if (!proof) return { ok: false, reason: 'admit_membership' };
         const one = canonicalSpendTag(proof);
         if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
@@ -1988,13 +1993,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (seen.has(th) || spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
         seen.add(th);
         spentTags.add(th);
-      }
-      for (let pi = 0; pi < parsed.proofs.length; pi += 1) {
-        if (tx.admit_proofs.some((p) => sameSpendProof(p, parsed.proofs[pi]))) continue;
-        const extra = canonicalSpendTag(parsed.proofs[pi]);
-        if (!extra.ok) return { ok: false, reason: extra.reason || 'admit_membership' };
-        const extraFail = spendOne(parsed.proofs[pi], extra.tag);
-        if (extraFail) return extraFail;
       }
       }
     }
