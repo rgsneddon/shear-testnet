@@ -10,13 +10,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
+import { bookSealKeyPath } from '../src/book_seal_key.js';
 import { buildTemplate, verifyBlock } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS, MTP_FUTURE_MS, MTP_WINDOW } from '../../crypto/asert.js';
 import { epochMs } from '../../crypto/pot_sched.js';
 import { newIdentity, encodeDest, hash20FromAddress, admitBaseFromAddress } from '../../crypto/address.js';
-import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw } from '../../crypto/reserve_vault.js';
+import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw, withdrawMintId, portalIdFromDest } from '../../crypto/reserve_vault.js';
 import { signSpendTx, typedCommitSum, verifySpendSig } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { levyNeed, splitLevy } from '../../crypto/levy.js';
@@ -293,6 +294,49 @@ function indexInFlux(flux, commit) {
   return -1;
 }
 
+/** A real template block whose stored hash is the caller-chosen stand-in. */
+function sealedTemplateBlock(store, dest, tx, hash) {
+  const tip = store.tip();
+  const { tpl } = store.template({
+    miner: dest,
+    shareBits: 4,
+    now: headerTime(tip) + TARGET_BLOCK_INTERVAL_MS,
+  });
+  const stamp = headerTime({ header: tpl.header });
+  const built = buildTemplate({
+    prev: tip.hash,
+    prevHeader: tip.header,
+    prevBlock: tip,
+    height: tip.height + 1,
+    miner: dest,
+    now: stamp,
+    bits: Number(decodeHeader(Buffer.from(tpl.header)).bits),
+    txs: [tx],
+    parentBlocks: store.blocks,
+  });
+  return {
+    header: built.header,
+    txs: built.txs,
+    samples: built.samples,
+    shareBatch: built.shareBatch || [],
+    miner: dest,
+    aLeaves: built.aLeaves,
+    bLeaves: built.bLeaves,
+    rootA: built.rootA,
+    rootB: built.rootB,
+    weight: built.weight,
+    hash,
+  };
+}
+
+function forkVerdict(store, block) {
+  return Promise.resolve(store.verifyFork(store.blocks.concat([block]), {
+    trustBlockHash: true,
+    skipSharePow: true,
+    nowMs: Date.now(),
+  }));
+}
+
 function resealReceipt(tx, nanos, kind) {
   const prev = tx.vout[0] || {};
   const raw = prev.dest20 || hash20FromAddress(tx.to || '');
@@ -410,9 +454,10 @@ describe('ADMITv3 note consumption', () => {
     }
   });
 
-  it('an in-window lock spends the original note, and a bad proof does not', { timeout: 1_800_000 }, async () => {
+  it('an in-window lock spends the original note, and a bad proof does not', { timeout: 7_200_000 }, async () => {
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-fund-'));
+    const scratch = [];
     const store = createStore(dir);
     try {
       const readyAt = 17;
@@ -965,6 +1010,36 @@ describe('ADMITv3 note consumption', () => {
       assert.equal(store.tip().height, earlyTip.height);
       assert.equal(Number(store.reserveVault.totalLockedNanos), lockedBefore);
 
+      // The same body, on a chain that does not extend this tip. Wall clock is
+      // past the epoch. Header time is not. Fork and adopt must both refuse.
+      console.error('phase early-fork');
+      const clocked = sealedTemplateBlock(store, who.dest, futureClock, easyPowHash());
+      const clockFork = await forkVerdict(store, clocked);
+      assert.equal(clockFork.ok, false, clockFork.reason);
+      assert.equal(clockFork.reason, 'now_ms', `${clockFork.reason} at ${clockFork.at}`);
+      const leakedBlock = sealedTemplateBlock(store, who.dest, leakedVote, easyPowHash());
+      const leakedFork = await forkVerdict(store, leakedBlock);
+      assert.equal(leakedFork.ok, false, leakedFork.reason);
+      assert.equal(leakedFork.reason, 'receipt_admitpub', `${leakedFork.reason} at ${leakedFork.at}`);
+      const earlyForkBlock = sealedTemplateBlock(store, who.dest, early, easyPowHash());
+      const earlyFork = await forkVerdict(store, earlyForkBlock);
+      assert.equal(earlyFork.ok, false, earlyFork.reason);
+      assert.equal(earlyFork.reason, 'epoch_open', `${earlyFork.reason} at ${earlyFork.at}`);
+      assert.equal(store.tip().height, earlyTip.height);
+      const rivalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-early-fork-'));
+      scratch.push(rivalDir);
+      const rival = createStore(rivalDir);
+      await sealEmpty(rival, who.dest, T0 + 60_000, null);
+      const adoptedEarly = await Promise.resolve(rival.ingest(store.blocks.concat([earlyForkBlock]), {
+        trustBlockHash: true,
+        skipSharePow: true,
+        nowMs: Date.now(),
+      }));
+      assert.equal(adoptedEarly.ok, false, adoptedEarly.reason);
+      assert.equal(adoptedEarly.reason, 'epoch_open', adoptedEarly.reason);
+      assert.equal(rival.tip().height, 1);
+      assert.equal(Number(rival.reserveVault.totalLockedNanos), 0);
+
       const epochEnd = Number(store.reserveVault.epochStartMs) + epochMs(MAGIC_TESTNET);
       const span = epochEnd - headerTime(store.tip());
       assert.ok(span > 0, 'epoch already closed');
@@ -972,6 +1047,7 @@ describe('ADMITv3 note consumption', () => {
       // future stamp clamps to about one MTP_FUTURE_MS per window of blocks.
       // The cap is that many windows for any epoch length, plus one window.
       const stepCap = Math.ceil(span / MTP_FUTURE_MS) * MTP_WINDOW + MTP_WINDOW;
+      console.error('phase walk');
       let steps = 0;
       while (headerTime(store.tip()) < epochEnd && steps < stepCap) {
         const parentTs = headerTime(store.tip());
@@ -1023,6 +1099,12 @@ describe('ADMITv3 note consumption', () => {
         admit_proof: { ...withdraw.admit_proof, blob },
       }), false);
       const tipBeforeDraw = store.tip().height;
+      const prefixDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-prefix-'));
+      scratch.push(prefixDir);
+      fs.cpSync(dir, prefixDir, { recursive: true });
+      // The seal key is outside the datadir. Without it the copy is a foreign
+      // book, trustStoredHash is false, and easyPowHash headers fail as pow.
+      fs.copyFileSync(bookSealKeyPath(dir), bookSealKeyPath(prefixDir));
       const queuedDraw = store.queueTx(withdraw);
       assert.equal(queuedDraw.ok, true, queuedDraw.reason || 'withdraw queue');
       const drawClock = headerTime(store.tip()) + TARGET_BLOCK_INTERVAL_MS;
@@ -1102,8 +1184,138 @@ describe('ADMITv3 note consumption', () => {
       assert.equal(rejectedSupply.ok, false, 'tampered supply');
       assert.equal(rejectedSupply.reason, 'supply', rejectedSupply.reason);
       assert.equal(store.tip().height, supplyTip.height);
+
+      console.error('phase sealed');
+      const mintPortal = portalIdFromDest(who.dest);
+      const mintId = withdrawMintId(mintPortal, store.reserveVault.currentEpoch);
+      assert.equal(store.reserveVault.mintedIds[mintId], true);
+      const paidPortal = store.reserveVault.portals[mintPortal];
+      assert.ok(paidPortal, 'withdraw keeps the portal');
+      assert.equal(paidPortal.staked, 0n);
+      assert.equal(paidPortal.idle, 0n);
+      assert.ok(paidPortal.redeemedNanos > 0n, 'paid principal stays on the portal');
+      assert.equal(BigInt(portalPrincipalNanos(store.reserveVault, who.dest)), paidPortal.redeemedNanos);
+      const spareAnchor = walletAnchor(store.tip().height + 1);
+      const spareFlux = anchorFlux(store.blocks, spareAnchor);
+      let spare = null;
+      for (let i = openings.length - 1; i >= 0; i -= 1) {
+        const o = openings[i];
+        if (!(o.height > 0 && o.height <= spareAnchor)) continue;
+        if (o.height === drawOpen.height) continue;
+        const idx = indexInFlux(spareFlux, o.commit);
+        if (idx < 0) continue;
+        spare = { o, idx };
+        break;
+      }
+      assert.ok(spare, 'unspent pot inside the anchor');
+      const sparePot = potOf(store, spare.o.height);
+      const redraw = stripPayer(withdrawTx({
+        from: who.dest,
+        to: who.dest,
+        nanos: cap,
+        id: 'v3-withdraw-again',
+      }));
+      proveChanged(redraw, {
+        x: admitScalarFromSeed(who.spendSeed, sparePot),
+        index: spare.idx,
+        flux: spareFlux,
+        note: sparePot,
+        anchor: spareAnchor,
+        noteR: spare.o.r,
+        noteV: spare.o.v,
+        receiptNanos: cap,
+        base,
+      });
+      signSpendTx(redraw, who.key);
+      const queuedRedraw = store.queueTx(redraw);
+      assert.equal(queuedRedraw.ok, false, queuedRedraw.reason);
+      // A portal with no stake left fails the withdraw bound. The vault cap
+      // is not reached, and the tip does not move.
+      assert.equal(queuedRedraw.reason, 'insufficient', queuedRedraw.reason);
+      assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
+      assert.equal(store.tip().height, supplyTip.height);
+
+      const snapped = createStore(dir);
+      assert.equal(snapped.tip().height, supplyTip.height);
+      assert.equal(Number(snapped.reserveVault.totalLockedNanos), 0);
+      assert.equal(snapped.reserveVault.mintedIds[mintId], true);
+
+      const prefix = createStore(prefixDir);
+      assert.ok(Number(prefix.reserveVault.totalLockedNanos) > 0);
+      assert.equal(prefix.reserveVault.mintedIds[mintId], undefined);
+      const withdrawBlock = store.blocks[store.blocks.length - 1];
+      assert.ok(withdrawBlock.txs.some((tx) => tx.id === withdraw.id));
+      const high = Buffer.alloc(32);
+      high[4] = 0xff;
+      high[5] = 0xff;
+      high[6] = 0xff;
+      const drawStamp = headerTime(withdrawBlock);
+      const { tpl: sibTpl } = prefix.template({
+        miner: who.dest,
+        shareBits: 4,
+        now: drawStamp,
+      });
+      const sibling = {
+        header: sibTpl.header,
+        txs: sibTpl.txs,
+        samples: sibTpl.samples,
+        shareBatch: sibTpl.shareBatch || [],
+        miner: who.dest,
+        aLeaves: sibTpl.aLeaves,
+        bLeaves: sibTpl.bLeaves,
+        rootA: sibTpl.rootA,
+        rootB: sibTpl.rootB,
+        weight: sibTpl.weight,
+      };
+      const sealedSib = await Promise.resolve(prefix.append(sibling, {
+        trustedPowHash: high,
+        skipSharePow: true,
+      }));
+      assert.equal(sealedSib.ok, true, sealedSib.reason || 'sibling');
+      assert.equal(
+        Number(decodeHeader(Buffer.from(prefix.tip().header)).bits),
+        Number(decodeHeader(Buffer.from(withdrawBlock.header)).bits),
+      );
+      const ibd = await Promise.resolve(prefix.ingest([withdrawBlock], {
+        trustBlockHash: true,
+        skipSharePow: true,
+        nowMs: Date.now(),
+      }));
+      assert.equal(ibd.ok, true, `${ibd.reason || 'ibd'} ${ibd.at ?? ''}`);
+      assert.equal(Buffer.from(prefix.tip().hash).equals(Buffer.from(withdrawBlock.hash)), true);
+      assert.equal(Number(prefix.reserveVault.totalLockedNanos), 0);
+      assert.equal(prefix.reserveVault.mintedIds[mintId], true);
+
+      console.error('phase replay');
+      const replayDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-replay-'));
+      scratch.push(replayDir);
+      fs.cpSync(dir, replayDir, { recursive: true });
+      fs.copyFileSync(bookSealKeyPath(dir), bookSealKeyPath(replayDir));
+      fs.rmSync(path.join(replayDir, 'book.snap'), { force: true });
+      const replayed = createStore(replayDir);
+      assert.equal(replayed.loadMode, 'full');
+      assert.equal(replayed.tip().height, supplyTip.height);
+      assert.equal(Number(replayed.reserveVault.totalLockedNanos), 0);
+      assert.equal(replayed.reserveVault.mintedIds[mintId], true);
+
+      console.error('phase adopt');
+      const forkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-adopt-'));
+      scratch.push(forkDir);
+      const forked = createStore(forkDir);
+      await sealEmpty(forked, who.dest, T0 + 120_000, null);
+      const adopted = await Promise.resolve(forked.ingest(store.blocks, {
+        trustBlockHash: true,
+        skipSharePow: true,
+        nowMs: Date.now(),
+      }));
+      assert.equal(adopted.ok, true, `${adopted.reason || 'adopt'} ${adopted.at ?? ''}`);
+      assert.equal(forked.tip().height, supplyTip.height);
+      assert.equal(Buffer.from(forked.tip().hash).equals(Buffer.from(withdrawBlock.hash)), true);
+      assert.equal(Number(forked.reserveVault.totalLockedNanos), 0);
+      assert.equal(forked.reserveVault.mintedIds[mintId], true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+      for (const extra of scratch) fs.rmSync(extra, { recursive: true, force: true });
     }
   });
 });

@@ -2070,6 +2070,10 @@ export function createStore(dir, {
     const rows = [];
     for (const b of accepted) rows.push(...sealedExplorerRows(b));
     for (const tx of (fork[i]?.txs || []).slice(1)) {
+      const clockField = typedClockRejected(tx);
+      if (clockField) return clockField;
+      const receiptPub = receiptAdmitRejected(tx);
+      if (receiptPub) return receiptPub;
       const pay = verifyReservePayout(vault, tx, blockTimeMs(fork[i]));
       if (!pay.ok) return pay;
     }
@@ -2086,7 +2090,8 @@ export function createStore(dir, {
       owedIn: owedWalk.owedIn,
       hashAcceptedSeries: owedWalk.hashAcceptedSeries,
       evmSession: trialSession,
-      evmHistory: trialSession ? [] : accepted,
+      // The session already executed this prefix. Admit still needs the blocks.
+      evmHistory: accepted,
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH, accepted, rows)),
       committedBps: Number(vault?.epochBps ?? 264),
       reserveState: vault,

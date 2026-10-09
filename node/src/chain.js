@@ -2368,6 +2368,7 @@ function stepLoaded(state, list, i) {
     parentFluxset: state.flux,
     parentSpendTags: state.flux.spendTags,
     supplyParents: list.slice(0, i),
+    evmHistory: list.slice(0, i),
     reserveState: state.vault,
   });
   if (!body || typeof body.then === 'function' || body.ok !== true) {
