@@ -3759,6 +3759,24 @@ export function createStore(dir, {
     return out.sort((a, b) => b.count - a.count);
   }
 
+  // Chain tags stay in the live set. Copying them once per admit, or once per
+  // template, grows with chain history. The overlay is only this build's tags.
+  function chainSpendView(chain) {
+    const overlay = new Set();
+    const source = chain && typeof chain.has === 'function' ? chain : null;
+    return {
+      has(tag) {
+        const hex = String(tag);
+        if (source && source.has(hex)) return true;
+        return overlay.has(hex);
+      },
+      add(tag) {
+        const hex = String(tag);
+        if (hex) overlay.add(hex);
+      },
+    };
+  }
+
   function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null, hashBonusCustodyDest = null } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
@@ -3785,7 +3803,7 @@ export function createStore(dir, {
     book.baseFee = baseFeeNow;
     const pendingTxs = [];
     const keep = [];
-    const spendSeen = new Set(liveFlux.spendTags || []);
+    const spendSeen = chainSpendView(liveFlux.spendTags);
     const bSpent = new Set(spentB);
     // One clone of the chain vault. Each accepted reserve tx is applied once.
     let carried = cloneVault(reserveVault);
