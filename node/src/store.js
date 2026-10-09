@@ -414,7 +414,7 @@ export function createStore(dir, {
             owedKnown: true,
           }),
           anchors: (plan.anchorWindow || []).reduce((at, a) => {
-            at[a.height] = { n: a.n, jroot: Buffer.from(a.jroot) };
+            at[a.height] = anchorFromSnap(a);
             return at;
           }, []),
         },
@@ -949,7 +949,14 @@ export function createStore(dir, {
     for (let h = fromH; h <= blocks.length; h += 1) {
       const rec = anchorAt[h];
       if (!rec?.jroot) return undefined;
-      window.push({ height: h, n: rec.n, jroot: rec.jroot });
+      window.push({
+        height: h,
+        n: rec.n,
+        jroot: rec.jroot,
+        frontier: rec.frontier || null,
+        zeroFrontier: rec.zeroFrontier || null,
+        zeroRoot: rec.zeroRoot || null,
+      });
     }
     return window;
   }
@@ -972,8 +979,16 @@ export function createStore(dir, {
     }
     supplyTip = supplyAt[supplyAt.length - 1] || null;
     for (const a of plan.anchorWindow || []) {
-      anchorAt[a.height] = { n: a.n, jroot: Buffer.from(a.jroot) };
+      anchorAt[a.height] = anchorFromSnap(a);
     }
+  }
+
+  function anchorFromSnap(a) {
+    const rec = { n: a.n, jroot: Buffer.from(a.jroot) };
+    if (a.frontier?.length) rec.frontier = Buffer.from(a.frontier);
+    if (a.zeroFrontier?.length) rec.zeroFrontier = Buffer.from(a.zeroFrontier);
+    if (a.zeroRoot?.length === 32) rec.zeroRoot = Buffer.from(a.zeroRoot);
+    return rec;
   }
 
   function planSupplyLinks(plan) {
@@ -1460,6 +1475,12 @@ export function createStore(dir, {
   let reorgFrom = null;
   let reorgAccepted = null;
   let reorgLca = 0;
+
+  function clearReorgMarkers() {
+    reorgFrom = null;
+    reorgAccepted = null;
+    reorgLca = 0;
+  }
   let lastReorgMeasure = null;
 
   function rebuildSpentB() {
@@ -1529,10 +1550,6 @@ export function createStore(dir, {
         }
       }
     }
-    const applyNextSpent = () => {
-      for (const id of spentB) if (!nextSpent.has(id)) spentB.delete(id);
-      for (const id of nextSpent) spentB.add(id);
-    };
     const measure = (syncSharePow, loopLagMs) => {
       const ms = performance.now() - t0;
       lastReorgMeasure = {
@@ -1546,6 +1563,7 @@ export function createStore(dir, {
       return {
         ok: true,
         spent: nextSpent.size,
+        nextSpent,
         suffix: connected.length,
         prefix: lca,
         ms,
@@ -1553,10 +1571,7 @@ export function createStore(dir, {
         syncSharePow,
       };
     };
-    if (!cold.length) {
-      applyNextSpent();
-      return measure(0, 0);
-    }
+    if (!cold.length) return measure(0, 0);
     const beforeSync = sharePowCounters().sync;
     return Promise.all(cold.map((c) => {
       const header = setNonce(Buffer.from(c.header), BigInt(c.nonce));
@@ -1581,7 +1596,6 @@ export function createStore(dir, {
         if (!got.ok) return { ok: false, reason: got.reason || 'share_pow', at: lca + i };
       }
       const syncSharePow = sharePowCounters().sync - beforeSync;
-      applyNextSpent();
       return new Promise((resolve) => {
         const y0 = performance.now();
         setImmediate(() => {
@@ -2436,6 +2450,8 @@ export function createStore(dir, {
       owedSeries: owedWalk.hashAcceptedSeries.slice(),
       owedSnaps,
       supply: forkRun.supply(),
+      units,
+      burialTip,
     };
   }
 
@@ -2493,6 +2509,8 @@ export function createStore(dir, {
       owedSeries: owedWalk.hashAcceptedSeries.slice(),
       owedSnaps,
       supply: forkRun.supply(),
+      units,
+      burialTip,
     };
   }
 
@@ -2935,6 +2953,8 @@ export function createStore(dir, {
           owedSeries: owedWalk.hashAcceptedSeries.slice(),
           owedSnaps: seeded.snaps.concat(suffixSnaps),
           supply,
+          units: allUnits,
+          burialTip: tipH,
         };
       }
       const beforeSpent = new Set(trialSpent);
@@ -3047,7 +3067,9 @@ export function createStore(dir, {
         owedSeries: verified.owedSeries,
         owedSnaps: verified.owedSnaps,
         supply: verified.supply,
-      });
+        units: verified.units,
+        burialTip: verified.burialTip,
+      }, verifyOpts);
     };
     if (checked && typeof checked.then === 'function') return checked.then(apply);
     return apply(checked);
@@ -3057,12 +3079,12 @@ export function createStore(dir, {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const verified = verifyOpts.offLoopPow ? verifyForkAsync(fork, verifyOpts) : verifyFork(fork, verifyOpts);
     if (verified && typeof verified.then === 'function') {
-      return verified.then((v) => finishAdopt(v));
+      return verified.then((v) => finishAdopt(v, verifyOpts));
     }
-    return finishAdopt(verified);
+    return finishAdopt(verified, verifyOpts);
   }
 
-  function finishAdopt(verified) {
+  function finishAdopt(verified, verifyOpts = {}) {
     if (!verified.ok) return verified;
     const accepted = verified.accepted;
     rememberFork(accepted, 'valid-fork');
@@ -3110,6 +3132,7 @@ export function createStore(dir, {
     const spent = rebuildSpentB();
     const commit = (spentResult) => {
       if (!spentResult || spentResult.ok === false) {
+        clearReorgMarkers();
         return {
           ok: false,
           reason: spentResult?.reason || 'share_credit_bind',
@@ -3117,30 +3140,51 @@ export function createStore(dir, {
           tip: tip(),
         };
       }
-      if (fromBlocks.length) rememberFork(fromBlocks, 'valid-fork');
-      const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
-      const tipH = Number(accepted[accepted.length - 1]?.height) || accepted.length;
+      if (verifyOpts.failCommitAfterSpent === true) {
+        clearReorgMarkers();
+        return { ok: false, reason: 'adopt_aborted', tip: tip() };
+      }
+      const burialTip = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
+        ? verified.burialTip
+        : (Number(accepted[accepted.length - 1]?.height) || accepted.length);
       const keptFlux = fluxKeptThrough(lca, fromBlocks);
       const prefixAnchors = anchorAt.slice();
       const prefixSupply = lca > 0
-        ? supplyCarriedTo(lca - 1, tipH)
+        ? supplyCarriedTo(lca - 1, burialTip)
         : emptySupplyState(genesisHeaderMs(accepted) || 0);
-      if (!prefixSupply) return { ok: false, reason: 'supply', tip: tip() };
+      if (!prefixSupply) {
+        clearReorgMarkers();
+        return { ok: false, reason: 'supply', tip: tip() };
+      }
       const adoptedSupply = supplyAt.slice(0, lca);
       let carriedSupply = prefixSupply;
+      const units = Array.isArray(verified.units) ? verified.units : null;
       for (let i = lca; i < accepted.length; i += 1) {
         const block = accepted[i];
         const stepped = supplyStep(carriedSupply, block, {
+          unit: units && units[i] != null ? units[i] : undefined,
           height: Number(block?.height) || i + 1,
-          tipHeight: tipH,
+          tipHeight: burialTip,
           genesisMs: carriedSupply.genesisMs,
           blockHash: block?.hash,
           magic: MAGIC_TESTNET,
         });
-        if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply', tip: tip() };
+        if (!stepped.ok) {
+          clearReorgMarkers();
+          return { ok: false, reason: stepped.reason || 'supply', tip: tip() };
+        }
         carriedSupply = stepped.state;
         adoptedSupply.push(carriedSupply);
       }
+      const nextSpent = spentResult.nextSpent;
+      if (!(nextSpent instanceof Set)) {
+        clearReorgMarkers();
+        return { ok: false, reason: 'share_credit_bind', tip: tip() };
+      }
+      for (const id of spentB) if (!nextSpent.has(id)) spentB.delete(id);
+      for (const id of nextSpent) spentB.add(id);
+      if (fromBlocks.length) rememberFork(fromBlocks, 'valid-fork');
+      const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
       blocks.length = 0;
       for (const b of accepted) blocks.push(b);
       owedRows = verified.owedRows || [];
@@ -3188,6 +3232,7 @@ export function createStore(dir, {
       emit('reorg', event);
       emit('tip', { hash: hex32(tip().hash), height: tip().height, reorg: true });
       evmSession = null;
+      clearReorgMarkers();
       return { ok: true, reorg: true, tip: tip(), event };
     };
     if (spent && typeof spent.then === 'function') return spent.then(commit);

@@ -48,6 +48,23 @@ function putStr(parts, s) {
   parts.push(u32(b.length), b);
 }
 
+function putBlob(parts, v) {
+  let b = Buffer.alloc(0);
+  if (v != null) {
+    try { b = Buffer.from(v); } catch { b = Buffer.alloc(0); }
+  }
+  parts.push(u32(b.length));
+  if (b.length) parts.push(b);
+}
+
+function readBlob(buf, o) {
+  const n = readU32(buf, o);
+  if (!n) return null;
+  if (n.v > buf.length - n.o) return null;
+  const b = n.v === 0 ? Buffer.alloc(0) : Buffer.from(take(buf, n.o, n.v));
+  return { v: b, o: n.o + n.v };
+}
+
 function putRow(parts, row) {
   const nc = bytesOf(row?.noteCommit, 32);
   const d20 = bytesOf(row?.dest20, 20);
@@ -171,6 +188,13 @@ export function encodeBookSnap(state, key) {
       const n = Number(a?.n);
       if (!root || !Number.isInteger(at) || at < 1 || !Number.isInteger(n) || n < 0) throw new Error('snap_supply');
       parts.push(u32(at), u32(n), root);
+    }
+    parts.push(u32(anchors.length));
+    for (const a of anchors) {
+      putBlob(parts, a?.frontier);
+      putBlob(parts, a?.zeroFrontier);
+      const zr = bytesOf(a?.zeroRoot, 32);
+      parts.push(zr || Buffer.alloc(32));
     }
   }
   const payload = Buffer.concat(parts);
@@ -410,6 +434,25 @@ export function decodeBookSnap(buf, key, expected = {}) {
       if (!root) return null;
       o += 32;
       anchorWindow.push({ height: ah.v, n: an.v, jroot: Buffer.from(root) });
+    }
+    if (o < payload.length) {
+      const nf = readU32(payload, o);
+      if (!nf || nf.v !== anchorWindow.length) return null;
+      o = nf.o;
+      for (let i = 0; i < nf.v; i += 1) {
+        const fr = readBlob(payload, o);
+        if (!fr) return null;
+        o = fr.o;
+        const zf = readBlob(payload, o);
+        if (!zf) return null;
+        o = zf.o;
+        const zr = take(payload, o, 32);
+        if (!zr) return null;
+        o += 32;
+        if (fr.v.length) anchorWindow[i].frontier = fr.v;
+        if (zf.v.length) anchorWindow[i].zeroFrontier = zf.v;
+        if (fr.v.length) anchorWindow[i].zeroRoot = Buffer.from(zr);
+      }
     }
   }
   if (o !== payload.length) return null;

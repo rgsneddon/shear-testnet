@@ -4,6 +4,7 @@
  * The commitment sum must match pot minted + that hash + the public fee.
  * An oversized hash changes the sum, so it cannot cancel out of the reconcile.
  */
+import { createHash } from 'node:crypto';
 import { decodeHeader } from '../../crypto/header.js';
 import { potSubsidyAt } from '../../crypto/pot_sched.js';
 import {
@@ -136,19 +137,38 @@ function permittedHash(block) {
   return { ok: true, nanos: units * unit };
 }
 
+const rangeVerified = new Set();
+let rangeVerifyCalls = 0;
+
+/** How many coinbase range proofs this process actually verified. A repeat of the same bytes does not add. */
+export function coinbaseRangeVerifies() {
+  return rangeVerifyCalls;
+}
+
+function rangeKey(commit, proof) {
+  return createHash('sha256').update(Buffer.from(commit)).update(proof).digest('hex');
+}
+
 function rangeBound(vouts) {
   const rows = Array.isArray(vouts) ? vouts : [];
   for (const o of rows) {
     if (!o?.commit) return false;
     let pr;
+    let commit;
     try {
+      commit = Buffer.from(o.commit);
       pr = o.rangeProof
         ? (Buffer.isBuffer(o.rangeProof) ? o.rangeProof : Buffer.from(o.rangeProof))
         : Buffer.alloc(0);
     } catch {
       return false;
     }
-    if (!pr.length || !verifyRange(o.commit, pr)) return false;
+    if (!pr.length || commit.length !== 32) return false;
+    const key = rangeKey(commit, pr);
+    if (rangeVerified.has(key)) continue;
+    rangeVerifyCalls += 1;
+    if (!verifyRange(commit, pr)) return false;
+    rangeVerified.add(key);
   }
   return true;
 }
