@@ -96,16 +96,19 @@ export function admitMempool(pool, tx, opts = {}) {
     if (wantFund) {
       const verdict = opts.verifiedFund;
       let usedVerdict = false;
-      if (verdict && verdict.ok && Array.isArray(verdict.tags) && verdict.tags.length > 0) {
+      const ownHex = txSpendTags(tx).tags.map((tag) => tag.toString('hex'));
+      if (ownHex.some((th) => runningTags.has(th))) {
+        return { ok: false, reason: 'admit_link_tag' };
+      }
+      if (verdict && verdict.ok && Array.isArray(verdict.tags) && verdict.tags.length > 0 && ownHex.length > 0) {
         const anchored = checkAdmitAnchor(tx, Number(opts.height || 0));
         const live = typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor(Number(verdict.anchor)) : null;
         const liveRoot = rootHexOf(live);
-        if (anchored.ok && anchored.anchor != null && Number(anchored.anchor) === Number(verdict.anchor)
+        const sameTags = verdict.tags.length === ownHex.length
+          && verdict.tags.every((th) => ownHex.includes(String(th)));
+        if (sameTags && anchored.ok && anchored.anchor != null && Number(anchored.anchor) === Number(verdict.anchor)
             && liveRoot && liveRoot === String(verdict.root || '')) {
-          for (const th of verdict.tags) {
-            if (runningTags.has(String(th))) return { ok: false, reason: 'admit_link_tag' };
-          }
-          fundTags = verdict.tags.map((th) => String(th));
+          fundTags = ownHex.slice();
           usedVerdict = true;
         }
       }

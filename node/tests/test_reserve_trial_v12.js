@@ -366,7 +366,7 @@ describe('v12 reserve trial is incremental', () => {
           anchor,
           height: includeAt,
         });
-        const remembered = rememberFundVerdict(built.digest, anchor, liveRoot, [built.tag]);
+        const remembered = rememberFundVerdict(asTemplated(built.tx, includeAt), store.tip(), anchor, liveRoot, [built.tag]);
         assert.equal(remembered, true, `verdict ${k} ${i}`);
         rows.push(built.tx);
       }

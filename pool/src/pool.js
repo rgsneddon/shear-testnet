@@ -1838,6 +1838,8 @@ export function createPool({
   let proofWarm = null;
   let sealFailStreak = 0;
   let sealFailBatch = '';
+  // Body faults that survive an empty share probe. Cleared when the tip moves.
+  let bodyTxHold = null;
   let paused = false;
   let restarting = false;
   const banPath = path.join(dataDir, 'pool-bans.json');
@@ -2941,15 +2943,105 @@ export function createPool({
     return { presence: false, aborted: false, singleton, defer };
   }
 
+  function dropMempoolTx(tx) {
+    if (!Array.isArray(store.mempool)) return false;
+    const id = String(tx?.id || '');
+    const next = [];
+    let removed = false;
+    for (const row of store.mempool) {
+      if (!removed && (row === tx || (id && String(row?.id || '') === id))) {
+        removed = true;
+        continue;
+      }
+      next.push(row);
+    }
+    if (!removed) return false;
+    store.mempool.length = 0;
+    store.mempool.push(...next);
+    return true;
+  }
+
+  async function probeMempool(list, probes) {
+    const saved = (store.mempool || []).slice();
+    store.mempool.length = 0;
+    for (const tx of list) store.mempool.push(tx);
+    freshTemplateState();
+    let got;
+    try {
+      got = await probeYield([], probes);
+    } finally {
+      store.mempool.length = 0;
+      for (const tx of saved) store.mempool.push(tx);
+      freshTemplateState();
+    }
+    return got;
+  }
+
+  // One user tx inside a share-less template that still fails.
+  // Follows a failing half so several bad txs are dropped one at a time.
+  // Stops inside the same probe cap. No user tx returns null.
+  async function isolateBodyTx(probes) {
+    let group = (store.mempool || []).filter((tx) => tx && !tx.coinbase);
+    if (!group.length) return null;
+    const coinbase = (store.mempool || []).filter((tx) => tx && tx.coinbase);
+    while (group.length > 1) {
+      if (probes.n >= SEAL_ESCAPE_PROBE_CAP) return null;
+      const mid = Math.max(1, group.length >> 1);
+      const left = group.slice(0, mid);
+      const got = await probeMempool(coinbase.concat(left), probes);
+      if (got.pending || got.budget) return null;
+      const right = group.slice(mid);
+      group = got.ok ? right : left;
+      if (!group.length) return null;
+    }
+    return group[0] || null;
+  }
+
+  async function escapeBodyTx(why, probes) {
+    while (probes.n < SEAL_ESCAPE_PROBE_CAP) {
+      const got = await probeYield([], probes);
+      if (got.pending) return;
+      if (got.ok) return;
+      if (got.budget) break;
+      const bad = await isolateBodyTx(probes);
+      if (!bad) break;
+      const id = String(bad.id || '');
+      if (!dropMempoolTx(bad)) break;
+      console.error(JSON.stringify({
+        event: 'seal_body_tx_fault',
+        alert: true,
+        id,
+        reason: String(why || ''),
+      }));
+      freshTemplateState();
+    }
+    const held = (store.mempool || []).find((tx) => tx && !tx.coinbase);
+    if (!held) return;
+    bodyTxHold = { tip: tipHashNow(), reason: String(why || '') };
+    console.error(JSON.stringify({
+      event: 'seal_body_tx_fault',
+      alert: true,
+      id: String(held.id || ''),
+      reason: String(why || ''),
+      coinbaseOnly: true,
+    }));
+  }
+
   async function runBodyEscape(why, miner) {
     const rows = sortShares(lag1Shares.slice());
-    if (!rows.length) return;
     const probes = { n: 0 };
+    if (!rows.length) {
+      await escapeBodyTx(why, probes);
+      return;
+    }
     const whole = await probeYield(rows, probes);
     if (whole.pending || whole.ok) return;
     const empty = await probeYield([], probes);
     if (empty.pending) return;
     if (!empty.ok) {
+      await escapeBodyTx(why, probes);
+      const again = await probeYield([], probes);
+      if (again.pending || again.ok || again.budget) return;
       noteBoundedRebuild(why, batchKeyOf(lag1Shares));
       return;
     }
@@ -3014,9 +3106,12 @@ export function createPool({
     // SEAL_ESCAPE_V1. No dest ban and no kick on this path.
     stats.sealFailed = (Number(stats.sealFailed) || 0) + 1;
     const key = batchKeyOf(lag1Shares);
-    if (key && key === sealFailBatch) sealFailStreak += 1;
+    // An empty share batch is still a streak. Body faults with no shares
+    // used to reset forever and never reach the escape.
+    const streakKey = key || 'coinbase';
+    if (streakKey === sealFailBatch) sealFailStreak += 1;
     else {
-      sealFailBatch = key;
+      sealFailBatch = streakKey;
       sealFailStreak = 1;
     }
     const why = String(reason || 'append');
@@ -3072,9 +3167,10 @@ export function createPool({
         lastJob = null;
       }
     }
-    if (!released && key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
+    const bodyWithNoShares = klass === 'body' && !key;
+    if (!released && (key || bodyWithNoShares) && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
       const parent = store.tip()?.header || null;
-      if (parent && klass !== 'header') {
+      if (parent && key && klass !== 'header') {
         const rowBad = [];
         for (const s of lag1Shares) {
           const one = verifyShareBatch({ parentHeader: parent, shares: [s], skipPow: true });
@@ -3090,9 +3186,9 @@ export function createPool({
       const dups = duplicateNonces(lag1Shares);
       if (dups.length) dropShareRefs(dups, 'dup_share', miner, 'duplicate');
       if (klass === 'body') await runBodyEscape(why, miner);
-      else if (klass === 'header') noteBoundedRebuild(why, key);
+      else if (key && klass === 'header') noteBoundedRebuild(why, key);
     }
-    if (!released && key && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
+    if (!released && (key || bodyWithNoShares) && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
       const who = String(miner || '');
       // The failed template is not the only copy. lag1Shares still holds it.
       if (store.jobs?.entries) {
@@ -3379,15 +3475,38 @@ export function createPool({
     // `bits` / lockBits may size an empty book only. A live parent never
     // keeps that override. A share that misses the issued target is not a block.
     void lockBits;
-    const { job, tpl } = store.template({
-      miner: payout,
-      samples,
-      potShares,
-      shareBits: sb,
-      shareBatch: lag1Shares,
-      poolDest: poolPay,
-      wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
-    });
+    if (bodyTxHold && bodyTxHold.tip !== tipHash) bodyTxHold = null;
+    const holdUserTxs = !!(bodyTxHold && bodyTxHold.tip === tipHash);
+    let stashed = null;
+    if (holdUserTxs && Array.isArray(store.mempool)) {
+      stashed = [];
+      const stay = [];
+      for (const tx of store.mempool) {
+        if (tx && !tx.coinbase) stashed.push(tx);
+        else stay.push(tx);
+      }
+      store.mempool.length = 0;
+      store.mempool.push(...stay);
+    }
+    let built;
+    try {
+      built = store.template({
+        miner: payout,
+        samples,
+        potShares,
+        shareBits: sb,
+        shareBatch: lag1Shares,
+        poolDest: poolPay,
+        wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
+      });
+    } finally {
+      if (stashed && stashed.length && Array.isArray(store.mempool)) {
+        const kept = store.mempool.slice();
+        store.mempool.length = 0;
+        store.mempool.push(...kept, ...stashed);
+      }
+    }
+    const { job, tpl } = built;
     const gate = gateJob(job);
     if (!gate.ok) return null;
     packedMempoolKey = mempoolKey(store.mempool);

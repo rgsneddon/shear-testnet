@@ -30,7 +30,6 @@ import {
   assessHeader,
   discardPreparedHeader,
   noteFromAnchor,
-  digestTx,
   OWED_CHECKPOINT_SPACING,
   keepsFrontier,
   frontierWindow,
@@ -1712,8 +1711,15 @@ export function createStore(dir, {
           fluxset: liveFlux,
           spendTags: liveFlux?.spendTags,
           commits: liveFlux?.commits,
+          height: Number(t?.height || 0) + 1,
+          blocks,
+          magic: MAGIC_TESTNET,
+          noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
         };
-        if (txIsReserveAction(row)) admitOpts.reserveCarried = carried;
+        if (txIsReserveAction(row)) {
+          admitOpts.reserveCarried = carried;
+          admitOpts.verifiedFund = fundVerdictFor(row);
+        }
         const got = admitMempool(book, row, admitOpts);
         if (got && got.ok && got.vaultState) carried = got.vaultState;
       }
@@ -1972,8 +1978,12 @@ export function createStore(dir, {
     rememberHeaders([stored], 'active');
     {
       const sealedIds = new Set((stored.txs || []).map((t) => String(t.id || '')));
+      const spentNow = liveFlux?.spendTags || new Set();
       for (let i = mempool.length - 1; i >= 0; i -= 1) {
-        if (sealedIds.has(String(mempool[i].id))) mempool.splice(i, 1);
+        const row = mempool[i];
+        const idHit = sealedIds.has(String(row?.id || ''));
+        const tagHit = txSpendTags(row).tags.some((tag) => spentNow.has(tag.toString('hex')));
+        if (idHit || tagHit) mempool.splice(i, 1);
       }
     }
     for (const tx of (stored.txs || []).slice(1)) {
@@ -2020,12 +2030,15 @@ export function createStore(dir, {
   }
 
   function fundVerdictFor(tx) {
-    const anchor = Number(tx?.anchor);
+    const height = Number(tip()?.height || 0) + 1;
+    const anchored = checkAdmitAnchor(tx, height);
+    if (!anchored.ok || anchored.anchor == null) return null;
+    const anchor = Number(anchored.anchor);
     if (!Number.isInteger(anchor)) return null;
     const rec = noteFromAnchor(liveFlux, anchorAt, anchor);
     const root = rootHex(rec?.jroot);
     if (!root) return null;
-    return readFundVerdict(digestTx(tx).toString('hex'), anchor, root);
+    return readFundVerdict(tx, tip(), anchor, root);
   }
 
   /** Apply each mempool reserve tx once onto a clone of the chain vault. */
@@ -2211,11 +2224,6 @@ export function createStore(dir, {
     if (txIsReserveAction(tx)) {
       if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
       ensureMempoolVault(stamp);
-      if (noteFund.anchor != null && Array.isArray(noteFund.tags) && noteFund.tags.length) {
-        const rec = noteFromAnchor(liveFlux, anchorAt, noteFund.anchor);
-        const root = rootHex(rec?.jroot);
-        if (root) rememberFundVerdict(digestTx(tx).toString('hex'), noteFund.anchor, root, noteFund.tags);
-      }
     }
     const live = liveFlux;
     const admitOpts = {
@@ -2236,6 +2244,12 @@ export function createStore(dir, {
     }
     const got = admitMempool(book, tx, admitOpts);
     if (got && got.ok && got.vaultState) mempoolVault = got.vaultState;
+    if (got.ok && got.tx && !got.duplicate && txIsReserveAction(got.tx) && noteFund?.ok && noteFund.anchor != null) {
+      const rec = noteFromAnchor(liveFlux, anchorAt, noteFund.anchor);
+      const root = rootHex(rec?.jroot);
+      const own = txSpendTags(got.tx).tags.map((tag) => tag.toString('hex'));
+      if (root && own.length) rememberFundVerdict(got.tx, tip(), noteFund.anchor, root, own);
+    }
     if (got.ok && got.tx && !got.duplicate) {
       emit('tx', got.tx);
       try {
