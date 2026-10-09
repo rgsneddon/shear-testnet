@@ -137,19 +137,72 @@ function permittedHash(block) {
   return { ok: true, nanos: units * unit };
 }
 
+/**
+ * V8 Set and Map throw RangeError at 2^24 entries. This cache only skips a
+ * repeat of a proof this process already accepted. It is not the history.
+ * 2^20 is sixteen times under that limit, for any chain length and any
+ * output count. Oldest keys leave first.
+ */
+export const RANGE_VERIFIED_CAP = 2 ** 20;
+const RANGE_VERIFIED_HARD_MAX = 2 ** 24 - 1;
+
 const rangeVerified = new Set();
+const rangeOrder = [];
+let rangeCursor = 0;
 let rangeVerifyCalls = 0;
+let rangeInserts = 0;
 
 /** How many coinbase range proofs this process actually verified. A repeat of the same bytes does not add. */
 export function coinbaseRangeVerifies() {
   return rangeVerifyCalls;
 }
 
+/** Keys retained. Never above RANGE_VERIFIED_CAP. */
+export function rangeVerifiedSize() {
+  return rangeVerified.size;
+}
+
+/** New keys recorded. A hit does not add. */
+export function rangeVerifiedInserts() {
+  return rangeInserts;
+}
+
+/**
+ * Record a proof the caller already verified. A full cache drops the oldest
+ * key. An engine RangeError stays inside this function: the verdict already
+ * stands, and a cache miss on the next call re-verifies.
+ */
+export function rememberVerifiedRange(key) {
+  if (typeof key !== 'string' || key.length === 0) return;
+  if (rangeVerified.has(key)) return;
+  if (rangeVerified.size >= RANGE_VERIFIED_HARD_MAX) return;
+  let replaced = null;
+  if (rangeVerified.size >= RANGE_VERIFIED_CAP) {
+    replaced = rangeOrder[rangeCursor];
+    rangeVerified.delete(replaced);
+  }
+  try {
+    rangeVerified.add(key);
+  } catch (err) {
+    if (replaced != null && !rangeVerified.has(replaced)) rangeVerified.add(replaced);
+    if (err instanceof RangeError) return;
+    throw err;
+  }
+  if (replaced != null) {
+    rangeOrder[rangeCursor] = key;
+    rangeCursor += 1;
+    if (rangeCursor === RANGE_VERIFIED_CAP) rangeCursor = 0;
+  } else {
+    rangeOrder.push(key);
+  }
+  rangeInserts += 1;
+}
+
 function rangeKey(commit, proof) {
   return createHash('sha256').update(Buffer.from(commit)).update(proof).digest('hex');
 }
 
-function rangeBound(vouts) {
+function rangeBound(vouts, remember) {
   const rows = Array.isArray(vouts) ? vouts : [];
   for (const o of rows) {
     if (!o?.commit) return false;
@@ -168,12 +221,12 @@ function rangeBound(vouts) {
     if (rangeVerified.has(key)) continue;
     rangeVerifyCalls += 1;
     if (!verifyRange(commit, pr)) return false;
-    rangeVerified.add(key);
+    if (remember) rememberVerifiedRange(key);
   }
   return true;
 }
 
-function commitmentsMatch(vouts, total, excess) {
+function commitmentsMatch(vouts, total, excess, remember) {
   const rows = Array.isArray(vouts) ? vouts : [];
   if (total < 0n || total > MAX_SAFE) return false;
   if (!rows.length) {
@@ -185,7 +238,7 @@ function commitmentsMatch(vouts, total, excess) {
       return false;
     }
   }
-  if (!rangeBound(rows)) return false;
+  if (!rangeBound(rows, remember)) return false;
   return verifyMintSum(rows, Number(total), excess);
 }
 
@@ -368,7 +421,8 @@ function accountBlock(prev, block, opts = {}) {
   state.overflow = settled.overflow;
   state.carry = carryOut;
   const publicTotal = potMinted + mintedHashHere + levy;
-  if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess)) {
+  const rememberRange = opts.rememberRange !== false;
+  if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
   }
   state.mintedPot += potMinted;
@@ -512,6 +566,7 @@ export function auditCirculatingSupply(blocks, {
       height: Number.isInteger(h) && h > 0 ? h : bi + 1,
       genesisMs,
       blockHash: list[bi]?.hash || null,
+      rememberRange: false,
     });
     state = next.state;
     if (next.reason) {
