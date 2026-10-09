@@ -92,7 +92,7 @@ import {
   CHECKPOINT_EVERY_BLOCKS,
 } from './bootstrap.js';
 import { blockWeight, custodialPullAllowed } from '../../crypto/levy.js';
-import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
+import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
@@ -1627,6 +1627,7 @@ export function createStore(dir, {
     if (keep.length !== mempool.length) {
       mempool.length = 0;
       mempool.push(...keep);
+      syncMempoolTags();
     }
   }
 
@@ -1660,8 +1661,10 @@ export function createStore(dir, {
     mempoolVault = null;
     const stamp = headerStamp();
     let carried = ensureMempoolVault(stamp);
+    syncMempoolTags();
     const book = emptyMempool();
     book.txs = mempool.slice();
+    book.tagIndex = mempoolTags;
     for (const b of disconnected || []) {
       for (const tx of (b.txs || []).slice(1)) {
         if (tx?.coinbase) continue;
@@ -1973,6 +1976,7 @@ export function createStore(dir, {
       const { dropped } = retargetMempool(book, bf);
       mempool.length = 0;
       mempool.push(...book.txs);
+      syncMempoolTags();
       void dropped;
     } catch { /* keep */ }
     mempoolVault = null;
@@ -2075,6 +2079,7 @@ export function createStore(dir, {
     if (!anchored.ok) return anchored;
     const book = emptyMempool();
     book.txs = mempool;
+    book.tagIndex = mempoolTags;
     const id = String(tx?.id || '');
     if (id && mempool.some((m) => String(m.id) === id)) {
       return { ok: true, tx, duplicate: true };
@@ -2091,10 +2096,17 @@ export function createStore(dir, {
       && paintedSpendSig(tx)
       && chainHave < debitNow.nanos
       && chainHave + paintedOwedNanos >= debitNow.nanos);
-    const spentNow = new Set(liveFlux.spendTags || []);
-    for (const m of mempool) {
-      for (const tag of txSpendTags(m).tags) spentNow.add(tag.toString('hex'));
-    }
+    const selfId = String(tx?.id || '');
+    const chainTags = liveFlux.spendTags;
+    const spentNow = {
+      has(tag) {
+        const hex = String(tag);
+        if (chainTags && typeof chainTags.has === 'function' && chainTags.has(hex)) return true;
+        if (!mempoolTags.has(hex)) return false;
+        const owner = String(mempoolTags.get(hex) || '');
+        return !(selfId && owner === selfId);
+      },
+    };
     if (flowNeedsDummy(tx)) {
       const boundIns = flowInputsBound(tx);
       if (!boundIns.ok) return boundIns;
@@ -3284,6 +3296,7 @@ export function createStore(dir, {
     sideBlocks = image.sideBlocks;
     mempool.length = 0;
     mempool.push(...image.mempool);
+    syncMempoolTags();
     mempoolVault = image.mempoolVault;
     seedCache = image.seedCache;
     evmSession = image.evmSession;
@@ -3705,6 +3718,11 @@ export function createStore(dir, {
   let jobSeq = 1;
   const jobs = new Map();
   const mempool = [];
+  const mempoolTags = new Map();
+  function syncMempoolTags() {
+    mempoolTags.clear();
+    for (const row of mempool) rememberMempoolTag(mempoolTags, row);
+  }
   // Null means the running trial is stale. The next reserve arrival rebuilds it.
   let mempoolVault = null;
   const openRound = new Map();
@@ -3880,6 +3898,7 @@ export function createStore(dir, {
     }
     mempool.length = 0;
     mempool.push(...keep);
+    syncMempoolTags();
     if (reserveDropped) mempoolVault = null;
     else if (mempool.filter(txIsReserveAction).length === reserveIncluded) mempoolVault = carried;
     const tpl = buildTemplate({

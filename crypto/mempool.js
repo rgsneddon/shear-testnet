@@ -19,20 +19,39 @@ export const MEMPOOL_KIND_SEND = 'send';
 export const MEMPOOL_KIND_B_SPEND = 'b-spend';
 
 export function emptyMempool() {
-  return { txs: [], baseFee: 1, max: MEMPOOL_MAX };
+  return { txs: [], baseFee: 1, max: MEMPOOL_MAX, tagIndex: new Map() };
 }
 
-/** Chain tags plus every tag already accepted into this book. Callers pass a copy; this does not mutate it. */
-function runningSpendTags(book, opts) {
-  const tags = new Set();
-  const src = opts?.spendTags;
-  if (src && typeof src.forEach === 'function') {
-    src.forEach((tag) => tags.add(String(tag)));
+/** tag hex → tx id. One walk when the set changes, not one walk per arrival. */
+export function rememberMempoolTag(index, tx, tags) {
+  if (!index || typeof index.set !== 'function' || !tx) return;
+  const id = String(tx.id || '');
+  const list = Array.isArray(tags) ? tags : txSpendTags(tx).tags.map((tag) => tag.toString('hex'));
+  for (const th of list) {
+    const hex = String(th || '');
+    if (hex) index.set(hex, id);
   }
-  for (const prev of book?.txs || []) {
-    for (const tag of txSpendTags(prev).tags) tags.add(tag.toString('hex'));
+}
+
+function tagHeld(book, opts, hex, selfId) {
+  const chain = opts?.spendTags;
+  if (chain && typeof chain.has === 'function' && chain.has(hex)) return true;
+  const indexes = [book?.tagIndex, opts?.tagIndex];
+  for (const index of indexes) {
+    if (!index || typeof index.get !== 'function' || !index.has(hex)) continue;
+    const owner = String(index.get(hex) || '');
+    if (selfId && owner === selfId) continue;
+    return true;
   }
-  return tags;
+  return false;
+}
+
+function spentView(book, opts, selfId) {
+  return {
+    has(tag) {
+      return tagHeld(book, opts, String(tag), selfId);
+    },
+  };
 }
 
 function rootHexOf(live) {
@@ -81,7 +100,8 @@ export function admitMempool(pool, tx, opts = {}) {
   // Lock, vote, and withdraw: same funding check, same drawn mint, same
   // header-time vault trial as queue and consensus. A vault miss is marked
   // so the template drops the tx instead of retrying it forever.
-  const runningTags = runningSpendTags(book, opts);
+  const selfId = String(tx?.id || '');
+  const runningTags = spentView(book, opts, selfId);
   let fundTags = null;
   let vaultState = null;
   if (txIsReserveAction(tx) && ('reserveState' in opts || 'nowMs' in opts || typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null || 'reserveCarried' in opts)) {
@@ -205,7 +225,8 @@ export function admitMempool(pool, tx, opts = {}) {
   book.txs.push({ ...tx, fee: paid, kind });
   const accepted = book.txs[book.txs.length - 1];
   const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));
-  for (const th of tags) runningTags.add(String(th));
+  if (!book.tagIndex) book.tagIndex = new Map();
+  rememberMempoolTag(book.tagIndex, accepted, tags);
   return { ok: true, tx: accepted, tags, vaultState };
 }
 
@@ -225,5 +246,9 @@ export function retargetMempool(pool, nextBase) {
     }
   }
   book.txs = keep;
+  if (book.tagIndex) {
+    book.tagIndex.clear();
+    for (const row of keep) rememberMempoolTag(book.tagIndex, row);
+  }
   return { ok: true, dropped, nextBaseFee: nextBaseFee(base, keep.length || 1) };
 }

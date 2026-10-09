@@ -553,14 +553,68 @@ export function txProofs(tx) {
   return out;
 }
 
+let spendTagParses = 0;
+const spendTagMemo = new WeakMap();
+
+/** How many times a spend-tag parse ran. A cache hit does not count. */
+export function txSpendTagParses() {
+  return spendTagParses;
+}
+
+export function resetTxSpendTagParses() {
+  spendTagParses = 0;
+}
+
+/**
+ * Proof object identity, not the blob bytes. Replacing a proof or a blob
+ * parses again. Editing bytes inside the same blob object does not.
+ */
+function spendTagStamp(tx) {
+  const list = Array.isArray(tx?.admit_proofs) ? tx.admit_proofs : null;
+  const top = tx?.admit_proof || null;
+  const parts = [top, tx?.spendTag ?? null, list];
+  if (top && typeof top === 'object') parts.push(top.blob ?? null, top.proof ?? null, top.spendTag ?? null);
+  if (list) {
+    for (let i = 0; i < list.length; i += 1) {
+      const proof = list[i];
+      parts.push(proof || null);
+      if (proof && typeof proof === 'object') {
+        parts.push(proof.blob ?? null, proof.proof ?? null, proof.spendTag ?? null);
+      }
+    }
+  }
+  return parts;
+}
+
+function sameSpendTagStamp(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /**
  * Every proof's spend tag. Tags are the blob bytes when the proof is versioned.
  * A missing proof list is an empty success (coinbase). A field that disagrees
  * with those bytes is admit_tag, and the blob tags are still listed so a stored
  * lie cannot un-spend the note. Duplicate tags in one tx are admit_link_tag.
  * A lone tx.spendTag with no proof is not a nullifier.
+ * The same tx object is parsed once until a proof object is replaced.
  */
 export function txSpendTags(tx) {
+  if (tx && typeof tx === 'object') {
+    const stamp = spendTagStamp(tx);
+    const hit = spendTagMemo.get(tx);
+    if (hit && sameSpendTagStamp(hit.stamp, stamp)) return hit.result;
+    spendTagParses += 1;
+    const result = parseTxSpendTags(tx);
+    spendTagMemo.set(tx, { stamp, result });
+    return result;
+  }
+  spendTagParses += 1;
+  return parseTxSpendTags(tx);
+}
+
+function parseTxSpendTags(tx) {
   const proofs = txProofs(tx);
   if (!proofs.length) return { ok: true, reason: null, tags: [], proofs };
   const tags = [];
