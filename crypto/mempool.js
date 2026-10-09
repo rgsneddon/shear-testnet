@@ -7,12 +7,12 @@ import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAdd
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
-import { verifyRange, flowInputsBound, txSpendTags, canonicalSpendTag } from './note.js';
+import { verifyRange, flowInputsBound, txSpendTags, canonicalSpendTag, asU8 } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
-import { verifyTypedAdmitFunding } from './admit_v3.js';
-import { trialReserveApply, txIsReserveAction } from './reserve_vault.js';
+import { verifyTypedAdmitFunding, checkAdmitAnchor } from './admit_v3.js';
+import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -33,6 +33,16 @@ function runningSpendTags(book, opts) {
     for (const tag of txSpendTags(prev).tags) tags.add(tag.toString('hex'));
   }
   return tags;
+}
+
+function rootHexOf(live) {
+  try {
+    if (!live?.jroot) return '';
+    const b = Buffer.from(asU8(live.jroot));
+    return b.length === 32 ? b.toString('hex') : '';
+  } catch {
+    return '';
+  }
 }
 
 export function admitMempool(pool, tx, opts = {}) {
@@ -78,18 +88,38 @@ export function admitMempool(pool, tx, opts = {}) {
   // so the template drops the tx instead of retrying it forever.
   const runningTags = runningSpendTags(book, opts);
   let fundTags = null;
-  if (txIsReserveAction(tx) && ('reserveState' in opts || 'nowMs' in opts || typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null)) {
+  let vaultState = null;
+  if (txIsReserveAction(tx) && ('reserveState' in opts || 'nowMs' in opts || typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null || 'reserveCarried' in opts)) {
+    const prior = (book.txs || []).filter(txIsReserveAction);
+    if (prior.length >= RESERVE_ACTION_CAP) return { ok: false, reason: 'reserve_cap' };
     const wantFund = typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null;
     if (wantFund) {
-      const noteFund = verifyTypedAdmitFunding(tx, {
-        height: Number(opts.height || 0),
-        blocks: opts.blocks || [],
-        spentTags: runningTags,
-        magic: opts.magic,
-        noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
-      });
-      if (!noteFund.ok) return noteFund;
-      if (Array.isArray(noteFund.tags)) fundTags = noteFund.tags;
+      const verdict = opts.verifiedFund;
+      let usedVerdict = false;
+      if (verdict && verdict.ok && Array.isArray(verdict.tags) && verdict.tags.length > 0) {
+        const anchored = checkAdmitAnchor(tx, Number(opts.height || 0));
+        const live = typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor(Number(verdict.anchor)) : null;
+        const liveRoot = rootHexOf(live);
+        if (anchored.ok && anchored.anchor != null && Number(anchored.anchor) === Number(verdict.anchor)
+            && liveRoot && liveRoot === String(verdict.root || '')) {
+          for (const th of verdict.tags) {
+            if (runningTags.has(String(th))) return { ok: false, reason: 'admit_link_tag' };
+          }
+          fundTags = verdict.tags.map((th) => String(th));
+          usedVerdict = true;
+        }
+      }
+      if (!usedVerdict) {
+        const noteFund = verifyTypedAdmitFunding(tx, {
+          height: Number(opts.height || 0),
+          blocks: opts.blocks || [],
+          spentTags: runningTags,
+          magic: opts.magic,
+          noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
+        });
+        if (!noteFund.ok) return noteFund;
+        if (Array.isArray(noteFund.tags)) fundTags = noteFund.tags;
+      }
     }
     const drawn = new Set();
     const minted = opts.reserveState?.mintedIds || {};
@@ -102,13 +132,16 @@ export function admitMempool(pool, tx, opts = {}) {
     }
     const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn);
     if (!stake.ok) return { ...stake, vault: true };
-    const prior = (book.txs || []).filter(txIsReserveAction);
+    // A carried vault already includes every accepted reserve tx. Trial only
+    // this one. A caller with no carried vault still trials the prefix once.
+    const useCarried = Object.prototype.hasOwnProperty.call(opts, 'reserveCarried');
     const tried = trialReserveApply({
-      state: opts.reserveState || null,
-      txs: [...prior, tx],
+      state: useCarried ? opts.reserveCarried : (opts.reserveState || null),
+      txs: useCarried ? [tx] : [...prior, tx],
       nowMs: Number(opts.nowMs) || 0,
     });
     if (!tried.ok) return { ok: false, reason: tried.reason || 'no_vault', vault: true };
+    vaultState = tried.state || null;
   }
   const bound = verifyPoolWithdrawBound(tx);
   if (!bound.ok) return bound;
@@ -173,7 +206,7 @@ export function admitMempool(pool, tx, opts = {}) {
   const accepted = book.txs[book.txs.length - 1];
   const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));
   for (const th of tags) runningTags.add(String(th));
-  return { ok: true, tx: accepted, tags };
+  return { ok: true, tx: accepted, tags, vaultState };
 }
 
 /** After header retarget, drop or mark requote if paid < new base levy. */

@@ -30,6 +30,7 @@ import {
   assessHeader,
   discardPreparedHeader,
   noteFromAnchor,
+  digestTx,
 } from './chain.js';
 import { bookSealKeyFor } from './book_seal_key.js';
 import { emptySupplyState, foldSupply, supplyFromScalar, supplyLinks, supplyStep } from './supply.js';
@@ -53,7 +54,7 @@ import { hash20FromAddress } from '../../crypto/address.js';
 import { bLeafId } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -65,6 +66,7 @@ import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
+import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
   writeChainBin,
@@ -1674,6 +1676,11 @@ export function createStore(dir, {
     try {
       if (t?.header) base = Number(decodeHeader(Buffer.from(t.header)).baseFee || 1n);
     } catch { base = 1; }
+    // The chain vault moved with the tip. Rebuild once, then each returned
+    // reserve tx is applied on its own.
+    mempoolVault = null;
+    const stamp = headerStamp();
+    let carried = ensureMempoolVault(stamp);
     const book = emptyMempool();
     book.txs = mempool.slice();
     for (const b of disconnected || []) {
@@ -1684,25 +1691,30 @@ export function createStore(dir, {
         const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
         if (spent || tagSpent(tx)) continue;
         if (id && mempool.some((m) => txIdOf(m) === id)) continue;
-        admitMempool(book, {
+        const row = {
           ...tx,
           kind: tx.kind || 'send',
           to: tx.to || tx.vout?.[0]?.address,
           from: tx.from || tx.vin?.[0]?.address,
           nanos: tx.nanos || tx.vout?.[0]?.nanos,
           fee: tx.fee,
-        }, {
+        };
+        const admitOpts = {
           baseFee: base,
           reserveState: reserveVault,
-          nowMs: headerStamp(),
+          nowMs: stamp,
           fluxset: liveFlux,
           spendTags: liveFlux?.spendTags,
           commits: liveFlux?.commits,
-        });
+        };
+        if (txIsReserveAction(row)) admitOpts.reserveCarried = carried;
+        const got = admitMempool(book, row, admitOpts);
+        if (got && got.ok && got.vaultState) carried = got.vaultState;
       }
     }
     mempool.length = 0;
     mempool.push(...book.txs);
+    mempoolVault = carried;
   }
 
   function makeReorgEvent({ fromBlocks, toBlocks, lca }) {
@@ -1972,6 +1984,7 @@ export function createStore(dir, {
       mempool.push(...book.txs);
       void dropped;
     } catch { /* keep */ }
+    mempoolVault = null;
     refreshPolicy({ newBlock: true, nowMs: blockTimeMs(stored) });
     emit('tip', { hash: hex32(stored.hash), height: stored.height });
     if (check.evmSession) evmSession = check.evmSession;
@@ -1987,6 +2000,42 @@ export function createStore(dir, {
       }
     }
     return seen;
+  }
+
+  function rootHex(jroot) {
+    try {
+      if (!jroot) return '';
+      const b = Buffer.from(asU8(jroot));
+      return b.length === 32 ? b.toString('hex') : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function fundVerdictFor(tx) {
+    const anchor = Number(tx?.anchor);
+    if (!Number.isInteger(anchor)) return null;
+    const rec = noteFromAnchor(liveFlux, anchorAt, anchor);
+    const root = rootHex(rec?.jroot);
+    if (!root) return null;
+    return readFundVerdict(digestTx(tx).toString('hex'), anchor, root);
+  }
+
+  /** Apply each mempool reserve tx once onto a clone of the chain vault. */
+  function ensureMempoolVault(nowMs) {
+    if (mempoolVault) return mempoolVault;
+    let carried = cloneVault(reserveVault);
+    let n = 0;
+    for (const row of mempool) {
+      if (!txIsReserveAction(row)) continue;
+      if (n >= RESERVE_ACTION_CAP) break;
+      const tried = trialReserveApply({ state: carried, txs: [row], nowMs });
+      if (!tried.ok) continue;
+      carried = tried.state;
+      n += 1;
+    }
+    mempoolVault = carried;
+    return mempoolVault;
   }
 
   function queueTx(tx, opts = {}) {
@@ -2102,6 +2151,9 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    if (txIsReserveAction(tx) && mempool.filter(txIsReserveAction).length >= RESERVE_ACTION_CAP) {
+      return { ok: false, reason: 'reserve_cap' };
+    }
     const noteFund = verifyTypedAdmitFunding(tx, {
       height: Number(t?.height || 0) + 1,
       blocks,
@@ -2151,15 +2203,15 @@ export function createStore(dir, {
     const stamp = headerStamp(opts.nowMs);
     if (txIsReserveAction(tx)) {
       if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
-      const tried = trialReserveApply({
-        state: reserveVault,
-        txs: [...mempool.filter(txIsReserveAction), tx],
-        nowMs: stamp,
-      });
-      if (!tried.ok) return { ok: false, reason: tried.reason || 'no_vault', vault: true };
+      ensureMempoolVault(stamp);
+      if (noteFund.anchor != null && Array.isArray(noteFund.tags) && noteFund.tags.length) {
+        const rec = noteFromAnchor(liveFlux, anchorAt, noteFund.anchor);
+        const root = rootHex(rec?.jroot);
+        if (root) rememberFundVerdict(digestTx(tx).toString('hex'), noteFund.anchor, root, noteFund.tags);
+      }
     }
     const live = liveFlux;
-    const got = admitMempool(book, tx, {
+    const admitOpts = {
       baseFee: base,
       fluxset: live,
       spendTags: live.spendTags,
@@ -2170,7 +2222,13 @@ export function createStore(dir, {
       height: Number(t?.height || 0) + 1,
       blocks,
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
-    });
+    };
+    if (txIsReserveAction(tx)) {
+      admitOpts.reserveCarried = mempoolVault;
+      admitOpts.verifiedFund = fundVerdictFor(tx);
+    }
+    const got = admitMempool(book, tx, admitOpts);
+    if (got && got.ok && got.vaultState) mempoolVault = got.vaultState;
     if (got.ok && got.tx && !got.duplicate) {
       emit('tx', got.tx);
       try {
@@ -3386,6 +3444,8 @@ export function createStore(dir, {
   let jobSeq = 1;
   const jobs = new Map();
   const mempool = [];
+  // Null means the running trial is stale. The next reserve arrival rebuilds it.
+  let mempoolVault = null;
   const openRound = new Map();
   const OPEN_ROUND_TTL_MS = 180_000;
 
@@ -3447,6 +3507,10 @@ export function createStore(dir, {
     const pendingTxs = [];
     const keep = [];
     const spendSeen = new Set(liveFlux.spendTags || []);
+    // One clone of the chain vault. Each accepted reserve tx is applied once.
+    let carried = cloneVault(reserveVault);
+    let reserveIncluded = 0;
+    let reserveDropped = false;
     for (const raw of mempool) {
       const m = reviveTx(raw);
       const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
@@ -3459,6 +3523,10 @@ export function createStore(dir, {
       };
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
+      if (txIsReserveAction(tx) && reserveIncluded >= RESERVE_ACTION_CAP) {
+        keep.push(m);
+        continue;
+      }
       // Chain notes do not cover a painted spend, so it stays queued and out of the block.
       if (paintedSpendSig(tx)) {
         const held = fundedDebit(tx);
@@ -3475,7 +3543,7 @@ export function createStore(dir, {
         }
       }
       const live = liveFlux;
-      const got = admitMempool(book, tx, {
+      const admitOpts = {
         baseFee: baseFeeNow,
         fluxset: live,
         spendTags: spendSeen,
@@ -3485,21 +3553,35 @@ export function createStore(dir, {
         height,
         blocks,
         noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
-      });
+      };
+      if (txIsReserveAction(tx)) {
+        admitOpts.reserveCarried = carried;
+        admitOpts.verifiedFund = fundVerdictFor(tx);
+      }
+      const got = admitMempool(book, tx, admitOpts);
       if (got.ok) {
         pendingTxs.push(got.tx);
         keep.push(m);
+        if (got.vaultState) {
+          carried = got.vaultState;
+          reserveIncluded += 1;
+        }
         for (const tag of txSpendTags(got.tx).tags) spendSeen.add(tag.toString('hex'));
         if (Array.isArray(got.tags)) {
           for (const th of got.tags) if (th) spendSeen.add(String(th));
         }
       } else {
         console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: got.reason }));
+        if (txIsReserveAction(tx) && (got.vault || got.reason === 'admit' || got.reason === 'admit_link_tag')) {
+          reserveDropped = true;
+        }
         if (!got.vault && got.reason !== 'admit' && got.reason !== 'admit_link_tag') keep.push(m);
       }
     }
     mempool.length = 0;
     mempool.push(...keep);
+    if (reserveDropped) mempoolVault = null;
+    else if (mempool.filter(txIsReserveAction).length === reserveIncluded) mempoolVault = carried;
     const tpl = buildTemplate({
       prev: t ? t.hash : GENESIS_PREV,
       prevHeader: t ? t.header : null,
@@ -3634,6 +3716,9 @@ export function createStore(dir, {
       spendTags: new Set(liveFlux.spendTags),
       jroot: liveFlux.jroot,
     }),
+    anchorNote(anchor) {
+      return noteFromAnchor(liveFlux, anchorAt, Number(anchor));
+    },
     jroot: () => liveFlux.jroot,
     hashTxLive: HASH_TX_LIVE,
     consensusFingerprint,

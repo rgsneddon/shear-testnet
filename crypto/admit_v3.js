@@ -236,6 +236,7 @@ export function typedAdmitStructure(tx) {
  * noteSpends list is a public debit and is rejected.
  */
 let anchorFluxRebuildCount = 0;
+let typedProofVerifies = 0;
 
 export function anchorFluxRebuilds() {
   return anchorFluxRebuildCount;
@@ -243,6 +244,15 @@ export function anchorFluxRebuilds() {
 
 export function resetAnchorFluxRebuilds() {
   anchorFluxRebuildCount = 0;
+}
+
+/** How many times typed funding called admitVerifyV3. A cached verdict does not. */
+export function typedProofVerifyCount() {
+  return typedProofVerifies;
+}
+
+export function resetTypedProofVerifies() {
+  typedProofVerifies = 0;
 }
 
 export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic = MAGIC_TESTNET, noteAtAnchor = null } = {}) {
@@ -302,6 +312,7 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
     if (spentTags && typeof spentTags.has === 'function' && spentTags.has(th)) {
       return { ok: false, reason: 'admit_link_tag', proofChecked: true };
     }
+    typedProofVerifies += 1;
     const ok = admitVerifyV3(proof, live, {
       jroot: live.jroot,
       cTilde: proof.cTilde,

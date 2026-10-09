@@ -33,6 +33,68 @@ export const KIND_LOCK = 'lock';
 export const KIND_WITHDRAW = 'withdraw';
 export const KIND_VOTE = 'vote';
 
+/**
+ * How many reserve actions one mempool, and one template, will trial.
+ * This is liveness policy. A block is not rejected at this count, and it
+ * is not a verify-weight parameter.
+ */
+export const RESERVE_ACTION_CAP = 4096;
+
+const openMemo = new Map();
+const OPEN_MEMO_MAX = 8192;
+let reserveApplyCount = 0;
+let reserveOpenMisses = 0;
+
+export function reserveTrialStats() {
+  return { applies: reserveApplyCount, opens: reserveOpenMisses };
+}
+
+/** Clears the counters. Cached openings stay, so a later trial can hit. */
+export function resetReserveTrialStats() {
+  reserveApplyCount = 0;
+  reserveOpenMisses = 0;
+}
+
+function openingKey(commit, valueProof, rangeProof, claimed) {
+  const r = Buffer.from(asU8(valueProof?.R || []));
+  const z = Buffer.from(asU8(valueProof?.z || []));
+  const rp = rangeProof ? Buffer.from(asU8(rangeProof)) : Buffer.alloc(0);
+  return createHash('sha256')
+    .update(commit)
+    .update(r)
+    .update(z)
+    .update(rp)
+    .update(String(claimed))
+    .digest('hex');
+}
+
+/** Same commit, proof bytes, and claimed value always open the same way. */
+function openingOf(vout, claimed) {
+  let commit;
+  try {
+    commit = Buffer.from(asU8(vout?.commit));
+  } catch {
+    return null;
+  }
+  if (commit.length !== 32 || !vout?.valueProof) return null;
+  let key;
+  try {
+    key = openingKey(commit, vout.valueProof, vout.rangeProof, claimed);
+  } catch {
+    return null;
+  }
+  const hit = openMemo.get(key);
+  if (hit) return hit;
+  reserveOpenMisses += 1;
+  const row = { opened: !!verifySealedNote(vout, claimed), nanos: claimed };
+  if (openMemo.size >= OPEN_MEMO_MAX) {
+    const first = openMemo.keys().next().value;
+    if (first !== undefined) openMemo.delete(first);
+  }
+  openMemo.set(key, row);
+  return row;
+}
+
 function asBig(n) {
   if (typeof n === 'bigint') return n < 0n ? 0n : n;
   const v = Math.floor(Number(n) || 0);
@@ -560,7 +622,13 @@ export function reserveAction(tx) {
   let nanos = claimed;
   let opened = true;
   if (o?.commit && o?.valueProof) {
-    opened = !!verifySealedNote(o, claimed);
+    const cached = openingOf(o, claimed);
+    if (cached) {
+      opened = cached.opened;
+      nanos = cached.nanos;
+    } else {
+      opened = !!verifySealedNote(o, claimed);
+    }
   }
   const legacyTo = tx?.to || o?.address || destFromDest20(o?.dest20) || '';
   const legacyFrom = tx?.from || tx?.vin?.[0]?.address || destFromDest20(tx?.vin?.[0]?.dest20) || '';
@@ -792,6 +860,7 @@ export function applyReserveBlock({ state, block, nowMs }) {
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
+    reserveApplyCount += 1;
     const act = reserveAction(tx);
     if (!act || act.opened === false) continue;
     if (act.kind === KIND_LOCK) {
