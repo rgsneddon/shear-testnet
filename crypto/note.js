@@ -504,8 +504,9 @@ export function flowInputsBound(tx) {
 /**
  * sum(C_out) + fee·G = sum(C̃_in) + W·G + excess·H.
  * W is the vault payout. It is 0 for Flow, lock, and vote. A withdraw
- * passes W equal to the opened outputs, so the hidden input must open
- * to the fee. The default keeps every Flow caller unchanged.
+ * passes W equal to the opened receipt, so a hidden change output lets
+ * the spent note open to fee + change. The default keeps every Flow
+ * caller unchanged.
  */
 export function verifyFlowConservation(tx, _spentOf, vaultPayout = 0) {
   try {

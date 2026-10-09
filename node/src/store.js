@@ -61,7 +61,7 @@ import {
 } from '../../crypto/vault_seal.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -84,7 +84,7 @@ import {
 } from './bootstrap.js';
 import { blockWeight, custodialPullAllowed } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
-import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, jroot } from '../../crypto/admit.js';
+import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, jroot, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { asU8, flowInputsBound } from '../../crypto/note.js';
@@ -703,16 +703,18 @@ export function createStore(dir, {
     };
   }
 
-  function payoutOnTip(tx) {
+  function payoutOnTip(tx, clockMs) {
     if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
-    return verifyReservePayout(reserveVault, tx);
+    const given = Number(clockMs);
+    const clock = Number.isFinite(given) && given > 0 ? given : (blockTimeMs(tip()) + 1);
+    return verifyReservePayout(reserveVault, tx, clock);
   }
 
   function blockTimeMs(block) {
     try {
       return Number(decodeHeader(Buffer.from(block.header)).timestamp);
     } catch {
-      return Date.now();
+      return 0;
     }
   }
 
@@ -731,8 +733,13 @@ export function createStore(dir, {
     }
   }
 
+  function commitReserveApply(applied) {
+    if (applied && applied.ok === false) throw new Error(applied.reason || 'epoch_open');
+    return applied;
+  }
+
   function applyReserve(block) {
-    applyReserveBlock({ state: reserveVault, block, nowMs: blockTimeMs(block) });
+    commitReserveApply(applyReserveBlock({ state: reserveVault, block, nowMs: blockTimeMs(block) }));
     saveReserve();
   }
 
@@ -756,7 +763,7 @@ export function createStore(dir, {
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
       unitAt.push(hashBonusUnitNanos(reserveVault.liveHashBonusNanos));
-      applyReserveBlock({ state: reserveVault, block: b, nowMs: blockTimeMs(b) });
+      commitReserveApply(applyReserveBlock({ state: reserveVault, block: b, nowMs: blockTimeMs(b) }));
       if (keepOwedIndex(i, tipAt)) vaultCkpt.push({ at: i, vault: cloneVault(reserveVault) });
     }
     refreshVaultSeal();
@@ -795,7 +802,7 @@ export function createStore(dir, {
       installVault(loaded);
       for (const b of blocks.slice(prefixHeight)) {
         unitAt.push(hashBonusUnitNanos(reserveVault.liveHashBonusNanos));
-        applyReserveBlock({ state: reserveVault, block: b, nowMs: blockTimeMs(b) });
+        commitReserveApply(applyReserveBlock({ state: reserveVault, block: b, nowMs: blockTimeMs(b) }));
       }
       refreshVaultSeal();
       syncBlankFlag();
@@ -1241,7 +1248,7 @@ export function createStore(dir, {
     vaultCkpt = [];
     const tipAt = blocks.length - 1;
     for (let i = 0; i <= tipAt; i += 1) {
-      applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) });
+      commitReserveApply(applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) }));
       if (keepOwedIndex(i, tipAt)) vaultCkpt.push({ at: i, vault: cloneVault(trial) });
     }
   }
@@ -1272,7 +1279,7 @@ export function createStore(dir, {
     const trial = best ? cloneVault(best.vault) : cloneVault(emptyVault());
     const start = best ? best.at + 1 : 0;
     for (let i = start; i <= at; i += 1) {
-      applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) });
+      commitReserveApply(applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) }));
     }
     return trial;
   }
@@ -1309,7 +1316,7 @@ export function createStore(dir, {
     for (let i = start; i <= tipAt; i += 1) {
       const unit = hashBonusUnitNanos(trial.liveHashBonusNanos);
       if (i >= lca || i === unitAt.length) unitAt.push(unit);
-      applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) });
+      commitReserveApply(applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) }));
       if (keepOwedIndex(i, tipAt)) vaultCkpt.push({ at: i, vault: cloneVault(trial) });
     }
     installVault(trial);
@@ -1711,8 +1718,9 @@ export function createStore(dir, {
         rollbackSpent(spentB, spentBefore);
         return c;
       }
+      const vaultClock = blockTimeMs(block);
       for (const tx of (block.txs || []).slice(1)) {
-        const pay = payoutOnTip(tx);
+        const pay = payoutOnTip(tx, vaultClock);
         if (!pay.ok) {
           rollbackSpent(spentB, spentBefore);
           return pay;
@@ -1924,6 +1932,10 @@ export function createStore(dir, {
     if (typed) return typed;
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
+    const clockField = typedClockRejected(tx);
+    if (clockField) return clockField;
+    const receiptPub = receiptAdmitRejected(tx);
+    if (receiptPub) return receiptPub;
     const spentNow = new Set(liveFlux.spendTags || []);
     for (const m of mempool) {
       const tags = [];
@@ -2027,10 +2039,6 @@ export function createStore(dir, {
     }
     const trial = trialVaultAtForkRoot();
     const lca = commonPrefixLen(blocks, list);
-    for (let i = 0; i < lca; i += 1) {
-      const b = blocks[i];
-      applyReserveBlock({ state: trial, block: b, nowMs: blockTimeMs(b) });
-    }
     return { trialVault: trial, lca, noVault: false };
   }
 
@@ -2062,7 +2070,7 @@ export function createStore(dir, {
     const rows = [];
     for (const b of accepted) rows.push(...sealedExplorerRows(b));
     for (const tx of (fork[i]?.txs || []).slice(1)) {
-      const pay = verifyReservePayout(vault, tx);
+      const pay = verifyReservePayout(vault, tx, blockTimeMs(fork[i]));
       if (!pay.ok) return pay;
     }
     const beforeSpent = new Set(trialSpent);
@@ -2071,6 +2079,7 @@ export function createStore(dir, {
       ? hashBonusUnitNanos(verifyOpts.unitAt)
       : hashBonusUnitNanos(vault?.liveHashBonusNanos || 1);
     const check = verifyBlock(fork[i], prev, {
+      supplyParents: accepted,
       spentB: trialSpent,
       tipHeight: Number(prev?.height || 0),
       hashBonusNanos: owedUnit,
@@ -2152,6 +2161,10 @@ export function createStore(dir, {
           bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
         });
         accepted.push(lean);
+        if (!noVault && trialVault) {
+          const applied = applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+          if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
+        }
         return step(i + 1);
       };
       if (check && typeof check.then === 'function') return check.then(take);
@@ -2196,8 +2209,9 @@ export function createStore(dir, {
         bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
       });
       accepted.push(lean);
-      if (!noVault && trialVault && i >= lca) {
-        applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+      if (!noVault && trialVault) {
+        const applied = applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+        if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
       }
       noteForkSnap(owedSnaps, i, owedWalk.owedIn, owedWalk.hashAcceptedSeries.length, fork.length - 1);
     }
@@ -2241,8 +2255,9 @@ export function createStore(dir, {
         bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
       });
       accepted.push(lean);
-      if (!noVault && trialVault && i >= lca) {
-        applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+      if (!noVault && trialVault) {
+        const applied = applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+        if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
       }
       noteForkSnap(owedSnaps, i, owedWalk.owedIn, owedWalk.hashAcceptedSeries.length, fork.length - 1);
     }
@@ -2520,6 +2535,11 @@ export function createStore(dir, {
     const seeded = seedHistory(rows, tipAt, tipH);
     if (!seeded.ok) return { ok: false, reason: seeded.reason || 'hash_owed' };
     const allUnits = unitsAlong(rows, fork);
+    const trialVault = cloneVault(emptyVault());
+    for (const b of rows) {
+      const applied = applyReserveBlock({ state: trialVault, block: b, nowMs: blockTimeMs(b) });
+      if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
+    }
     const owedWalk = { owedIn: seeded.rows, hashAcceptedSeries: seeded.series.slice() };
     const suffixSnaps = [];
     const step = (i) => {
@@ -2547,6 +2567,7 @@ export function createStore(dir, {
         sealedIntervalsMs: headerGapsMs(rows.concat(out)),
         nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
         genesisMs: genesisHeaderMs(rows) || Number(verifyOpts.genesisMs) || 0,
+        reserveState: trialVault,
       });
       const take = (c) => {
         if (!c?.ok) {
@@ -2580,6 +2601,8 @@ export function createStore(dir, {
         }
         const lean = leanVerified(fork[i], c, prev);
         lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
+        const applied = applyReserveBlock({ state: trialVault, block: lean, nowMs: blockTimeMs(lean) });
+        if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
         out.push(lean);
         prev = lean;
         return step(i + 1);

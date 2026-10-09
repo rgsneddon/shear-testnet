@@ -66,11 +66,15 @@ import {
   fluxsetFromBlocks,
   appendFluxBlock,
   emptyFluxset,
+  outputJoinsAdmitSet,
+  receiptAdmitRejected,
   jroot as jrootOf,
 } from '../../crypto/admit.js';
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected } from '../../crypto/spend.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
+import { emptyVault, cloneVault, applyReserveBlock } from '../../crypto/reserve_vault.js';
+import { auditCirculatingSupply } from './supply.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -966,11 +970,11 @@ export function buildTemplate({
     : fluxsetFromBlocks(parentBlocks || (prevBlock ? [prevBlock] : [])).pubs;
   const newPubs = [...parentPubs];
   for (const o of cb.vout || []) {
-    if (o?.admitPub) newPubs.push(o.admitPub);
+    if (outputJoinsAdmitSet(cb, o)) newPubs.push(o.admitPub);
   }
   for (const tx of txs || []) {
     for (const o of tx.vout || []) {
-      if (o?.admitPub) newPubs.push(o.admitPub);
+      if (outputJoinsAdmitSet(tx, o)) newPubs.push(o.admitPub);
     }
   }
   if (Number(height) === 1 || parentPubs.length || prevBlock || parentBlocks) {
@@ -1829,8 +1833,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const pubs = (live.pubs || []).slice();
   const commits = (live.commits || []).slice();
   const spentTags = new Set(live.spendTags || []);
-  const pushPub = (o) => {
-    if (!o?.admitPub || !o?.commit) return;
+  const pushPub = (tx, o) => {
+    if (!outputJoinsAdmitSet(tx, o) || !o?.commit) return;
     try {
       pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
       commits.push(Buffer.from(asU8(o.commit)));
@@ -1843,6 +1847,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const tx = body[i];
     const anchored = checkAdmitAnchor(tx, height);
     if (!anchored.ok) return anchored;
+    const clockField = typedClockRejected(tx);
+    if (clockField) return clockField;
+    const receiptPub = receiptAdmitRejected(tx);
+    if (receiptPub) return receiptPub;
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
     const fields = checkTxAddressFields(tx, { coinbase: false });
     if (!fields.ok) {
@@ -1939,7 +1947,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
       }
     }
-    for (const o of outs) pushPub(o);
+    for (const o of outs) pushPub(tx, o);
     const noteFund = verifyTypedAdmitFunding(tx, {
       height,
       blocks: Array.isArray(evmHistory) ? evmHistory : [],
@@ -2024,7 +2032,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const finalPubs = live.pubs.slice();
   for (const tx of txs) {
     for (const o of tx.vout || []) {
-      if (!o?.admitPub) continue;
+      if (!outputJoinsAdmitSet(tx, o)) continue;
       try {
         finalPubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
       } catch { /* skip */ }
@@ -2035,14 +2043,47 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
     return { ok: false, reason: 'admit_membership' };
   }
+  if (reserveState && !reserveState.blankFork) {
+    const trial = cloneVault(reserveState);
+    const applied = applyReserveBlock({
+      state: trial,
+      block,
+      nowMs: Number(decoded.timestamp),
+    });
+    if (applied && applied.ok === false) {
+      return { ok: false, reason: applied.reason || 'epoch_open' };
+    }
+  }
+  const supply = supplyIdentity(block, prev, opts);
+  if (!supply.ok) return supply;
   return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot };
+}
+
+function supplyParentsOf(prev, opts) {
+  if (Array.isArray(opts?.supplyParents)) return opts.supplyParents;
+  if (Array.isArray(opts?.evmHistory) && opts.evmHistory.length) return opts.evmHistory;
+  if (!prev) return [];
+  if (Number(prev.height || 0) <= 1) return [prev];
+  return null;
+}
+
+/** Parent chain plus this block. A chain that does not start at genesis is not invented. */
+function supplyIdentity(block, prev, opts) {
+  const parents = supplyParentsOf(prev, opts);
+  if (parents == null) return { ok: true };
+  if (parents.length && Number(parents[0]?.height || 0) > 1) return { ok: true };
+  const audit = auditCirculatingSupply(parents.concat([block]), {
+    magic: opts?.magic || undefined,
+  });
+  if (audit.status === 'verified') return { ok: true };
+  return { ok: false, reason: audit.reason || 'supply' };
 }
 
 function headerTimeMs(block) {
   try {
     return Number(decodeHeader(Buffer.from(block.header)).timestamp);
   } catch {
-    return Date.now();
+    return 0;
   }
 }
 
@@ -2066,8 +2107,10 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
       }
     }
   }
-  const nowMs = opts.nowMs != null ? opts.nowMs : headerTimeMs(block);
-  const ran = await executeBlockEvm(session, block.txs || [], nowMs);
+  const headerMs = consensus?.decoded?.timestamp != null
+    ? Number(consensus.decoded.timestamp)
+    : headerTimeMs(block);
+  const ran = await executeBlockEvm(session, block.txs || [], headerMs);
   if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
   return {
     ...consensus,
@@ -2185,6 +2228,15 @@ function beginLoaded(blocks, {
   const spentB = new Set();
   const mtp = [];
   let flux = emptyFluxset();
+  const vault = emptyVault();
+  if (start > 0) {
+    for (let j = 0; j < start; j += 1) {
+      let priorTs = 0;
+      try { priorTs = Number(decodeHeader(asBuf(list[j].header)).timestamp); } catch { priorTs = 0; }
+      const applied = applyReserveBlock({ state: vault, block: list[j], nowMs: priorTs });
+      if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
+    }
+  }
   if (start > 0) {
     if (!prior) return { ok: false, reason: 'height' };
     try {
@@ -2231,6 +2283,7 @@ function beginLoaded(blocks, {
       spentB,
       mtp,
       flux,
+      vault,
       sawCheckpoint: cpHeight <= 0 || (start > 0 && cpHeight <= start),
       trustStoredHash: trustStoredHash === true,
       trustShareWork: trustStoredHash === true && trustShareWork !== false,
@@ -2314,9 +2367,15 @@ function stepLoaded(state, list, i) {
     grandparentHeader: i >= 2 ? list[i - 2].header : null,
     parentFluxset: state.flux,
     parentSpendTags: state.flux.spendTags,
+    supplyParents: list.slice(0, i),
+    reserveState: state.vault,
   });
   if (!body || typeof body.then === 'function' || body.ok !== true) {
     return { ok: false, reason: body?.reason || 'pow' };
+  }
+  const appliedVault = applyReserveBlock({ state: state.vault, block, nowMs: ts });
+  if (appliedVault && appliedVault.ok === false) {
+    return { ok: false, reason: appliedVault.reason || 'epoch_open' };
   }
   const stepped = advanceHashOwed({
     owedIn: state.owedIn,

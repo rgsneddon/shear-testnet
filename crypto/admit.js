@@ -328,6 +328,27 @@ export function emptyFluxset() {
   return { pubs: [], commits: [], spendTags: new Set(), jroot: jroot({ pubs: [], commits: [] }) };
 }
 
+/** A lock or vote receipt is the vault's record, not a note. A withdraw payout is. */
+export function outputJoinsAdmitSet(tx, o) {
+  if (!o?.admitPub) return false;
+  const k = String(o?.kind || tx?.kind || '');
+  return k !== 'lock' && k !== 'vote';
+}
+
+/** An admitPub on a lock or vote receipt would make the stake spendable twice. */
+export function receiptAdmitRejected(tx) {
+  const kind = String(tx?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote') return null;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  for (const o of outs) {
+    const k = String(o?.kind || kind);
+    if ((k === 'lock' || k === 'vote') && o?.admitPub) {
+      return { ok: false, reason: 'receipt_admitpub' };
+    }
+  }
+  return null;
+}
+
 function absorbFluxBlock(pubs, commits, spendTags, block) {
   for (const tx of block?.txs || []) {
     const tag = tx.admit_proof?.spendTag || tx.spendTag;
@@ -336,7 +357,7 @@ function absorbFluxBlock(pubs, commits, spendTags, block) {
       if (h) spendTags.add(h);
     }
     for (const o of tx.vout || []) {
-      if (!o?.admitPub) continue;
+      if (!outputJoinsAdmitSet(tx, o)) continue;
       try {
         pubs.push(pubFromAdmit(o.admitPub));
         commits.push(o.commit ? Buffer.from(asU8(o.commit)) : Buffer.alloc(32));

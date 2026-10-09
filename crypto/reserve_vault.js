@@ -551,7 +551,8 @@ function txKind(tx) {
 export function reserveAction(tx) {
   const kind = txKind(tx);
   if (kind !== KIND_LOCK && kind !== KIND_VOTE && kind !== KIND_WITHDRAW) return null;
-  const o = tx?.vout?.[0] || {};
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const o = outs.find((row) => String(row?.kind || kind) === kind) || outs[0] || {};
   const claimed = o?.valueProof?.v != null
     ? Math.floor(Number(o.valueProof.v))
     : Math.floor(Number(tx?.nanos || o?.nanos || 0));
@@ -585,7 +586,7 @@ export function reserveAction(tx) {
   };
 }
 
-export function verifyReservePayout(state, tx) {
+export function verifyReservePayout(state, tx, clockMs) {
   const act = reserveAction(tx);
   if (!act) return { ok: true };
   if (!state) return { ok: false, reason: 'no_vault' };
@@ -611,9 +612,8 @@ export function verifyReservePayout(state, tx) {
   if (act.payout && (isShearAddress(act.payout) || !isDestAddress(act.payout))) {
     return { ok: false, reason: 'shear1' };
   }
-  const nowMs = Number(tx?.nowMs);
-  const clock = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
-  if (!state?.epochStartMs || clock < state.epochStartMs + epochMs(state.magic)) {
+  const clock = Number(clockMs);
+  if (!Number.isFinite(clock) || clock <= 0 || !state?.epochStartMs || clock < state.epochStartMs + epochMs(state.magic)) {
     return { ok: false, reason: 'epoch_open' };
   }
   if (!p) return { ok: false, reason: 'empty' };
@@ -644,6 +644,13 @@ export function bonusUnitsBefore(blocks) {
   return units;
 }
 
+function finishReserveApply(results) {
+  const bad = results.find((row) => row && row.ok === false);
+  results.ok = !bad;
+  if (bad) results.reason = bad.reason || 'epoch_open';
+  return results;
+}
+
 export function applyReserveBlock({ state, block, nowMs }) {
   if (!state || state.blankFork) return [];
   const txs = Array.isArray(block?.txs) ? block.txs : [];
@@ -651,7 +658,9 @@ export function applyReserveBlock({ state, block, nowMs }) {
   // First block whose time is past the epoch collates votes into the live
   // hash bonus. Winning plurality moves the bonus by ±1. Height is unchanged.
   if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
-    results.push({ action: 'enact', ...enact({ state, nowMs }) });
+    const did = enact({ state, nowMs });
+    results.push({ action: 'enact', ...did });
+    if (!did.ok) return finishReserveApply(results);
   }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
   const userFees = txs.filter((t) => t && !t.coinbase)
@@ -665,49 +674,46 @@ export function applyReserveBlock({ state, block, nowMs }) {
     const act = reserveAction(tx);
     if (!act || act.opened === false) continue;
     if (act.kind === KIND_LOCK) {
-      results.push({
-        action: KIND_LOCK,
-        ...deposit({
-          state,
-          portalId: act.portalId,
-          dest: act.dest,
-          nanos: act.nanos,
-          nowMs,
-          payout: act.payout,
-          payoutPortalId: act.payoutPortalId,
-          ownerPub: tx.spendPub,
-        }),
+      const got = deposit({
+        state,
+        portalId: act.portalId,
+        dest: act.dest,
+        nanos: act.nanos,
+        nowMs,
+        payout: act.payout,
+        payoutPortalId: act.payoutPortalId,
+        ownerPub: tx.spendPub,
       });
+      results.push({ action: KIND_LOCK, ...got });
+      if (!got.ok) return finishReserveApply(results);
       continue;
     }
     if (act.kind === KIND_VOTE) {
-      results.push({
-        action: KIND_VOTE,
-        ...vote({
-          state,
-          portalId: act.portalId,
-          dest: act.dest,
-          choice: act.choice,
-          nowMs,
-        }),
+      const got = vote({
+        state,
+        portalId: act.portalId,
+        dest: act.dest,
+        choice: act.choice,
+        nowMs,
       });
+      results.push({ action: KIND_VOTE, ...got });
+      if (!got.ok) return finishReserveApply(results);
       continue;
     }
     if (act.kind === KIND_WITHDRAW) {
-      results.push({
-        action: KIND_WITHDRAW,
-        ...withdraw({
-          state,
-          portalId: act.portalId,
-          dest: act.dest,
-          nowMs,
-          payout: act.payout,
-          payoutPortalId: act.payoutPortalId,
-        }),
+      const got = withdraw({
+        state,
+        portalId: act.portalId,
+        dest: act.dest,
+        nowMs,
+        payout: act.payout,
+        payoutPortalId: act.payoutPortalId,
       });
+      results.push({ action: KIND_WITHDRAW, ...got });
+      if (!got.ok) return finishReserveApply(results);
     }
   }
-  return results;
+  return finishReserveApply(results);
 }
 
 export function enact({ state, nowMs } = {}) {

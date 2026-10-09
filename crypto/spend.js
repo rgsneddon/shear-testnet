@@ -39,6 +39,32 @@ function dest20Field(x) {
   return Buffer.alloc(20);
 }
 
+function lenPref(buf) {
+  const body = Buffer.from(buf || []);
+  const n = Buffer.alloc(4);
+  n.writeUInt32LE(body.length >>> 0);
+  return Buffer.concat([n, body]);
+}
+
+function canonicalFee(tx) {
+  const n = Math.floor(Number(tx?.fee || 0));
+  const v = Number.isSafeInteger(n) && n > 0 ? n : 0;
+  const out = Buffer.alloc(8);
+  out.writeBigUInt64LE(BigInt(v));
+  return out;
+}
+
+function proofBlob(proof) {
+  if (!proof) return Buffer.alloc(0);
+  const raw = proof.blob || proof.proof || (Buffer.isBuffer(proof) ? proof : null);
+  if (raw == null) return Buffer.alloc(0);
+  try {
+    return Buffer.from(asU8(raw));
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
 /** Pack digest of the spend body. sig and open are not hashed. */
 export function spendPackDigest(tx) {
   const vins = (tx?.vin || []).map((v, i) => {
@@ -72,12 +98,22 @@ export function spendPackDigest(tx) {
   }));
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return packed;
-  // The signature covers which portal is named. A stolen sig cannot be retargeted.
-  return createHash('sha256')
+  // Portal, fee, and the admit blob are signed. A stolen sig cannot be
+  // retargeted, repriced, or pointed at a different proof. Flow sends stay
+  // on the packed body alone.
+  const h = createHash('sha256')
     .update(packed)
     .update(Buffer.from(String(tx?.portalId || '').toLowerCase()))
     .update(Buffer.from(String(tx?.payoutPortalId || '').toLowerCase()))
-    .digest();
+    .update(canonicalFee(tx));
+  const proofs = [];
+  if (tx?.admit_proof) proofs.push(tx.admit_proof);
+  if (Array.isArray(tx?.admit_proofs)) proofs.push(...tx.admit_proofs);
+  const count = Buffer.alloc(4);
+  count.writeUInt32LE(proofs.length >>> 0);
+  h.update(count);
+  for (const proof of proofs) h.update(lenPref(proofBlob(proof)));
+  return h.digest();
 }
 
 export function spendMessage(tx) {
@@ -370,6 +406,15 @@ export function v12KindRejected(tx) {
   return { ok: false, reason: 'kind' };
 }
 
+/** The vault clock is the block header. A typed tx cannot carry its own nowMs. */
+export function typedClockRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return null;
+  if (tx.nowMs == null) return null;
+  return { ok: false, reason: 'now_ms' };
+}
+
 /** vin.commit on a non-Flow kind has no membership proof. A v3 input may carry C̃. */
 export function typedCommitRejected(tx) {
   if (!tx || tx.coinbase || flowNeedsDummy(tx)) return null;
@@ -385,13 +430,14 @@ export function typedCommitRejected(tx) {
 }
 
 /**
- * Lock, vote, and withdraw spend a hidden note. Every public output must
- * open, and sum(C_out) + fee·G = sum(C̃) + W·G + excess·H. The excess
- * scalar is the only opening material that survives compactTx. W is 0 for
- * lock and vote, so a vote receipt passes only when the spent notes open
- * to the fee. For withdraw, W is the sum of the opened outputs: the vault
- * mint covers that value, and the hidden input must open to the fee alone.
- * A subsidy note cannot fund the withdrawal.
+ * Lock, vote, and withdraw spend a hidden note.
+ * sum(C_out) + fee·G = sum(C̃) + W·G + excess·H. The excess scalar is the
+ * only opening material that survives compactTx. The vault receipt opens.
+ * A change output stays hidden: range-proved, in the commitment sum, and
+ * not opened, so a compact body that dropped its value still balances.
+ * W is 0 for lock and vote. For withdraw, W is the opened receipt. The
+ * spent note opens to the fee plus the hidden change. A fee that is not
+ * that remainder is commit_sum. The receipt does not have to equal the fee.
  */
 export function typedCommitSum(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
@@ -399,18 +445,28 @@ export function typedCommitSum(tx) {
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
   let payout = 0;
+  let opened = 0;
   for (const o of outs) {
+    const outKind = String(o?.kind || kind);
+    if (outKind !== kind) {
+      if (!o?.commit || !o?.rangeProof || o.rangeProof === true) {
+        return { ok: false, reason: 'commit_sum' };
+      }
+      continue;
+    }
     const raw = o?.valueProof?.v;
     const v = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
     if (!o?.commit || !o?.valueProof || !Number.isInteger(v) || v < 0) {
       return { ok: false, reason: 'commit_sum' };
     }
     if (!verifySealedNote(o, v)) return { ok: false, reason: 'commit_sum' };
+    opened += 1;
     if (kind === 'withdraw') {
       if (payout > Number.MAX_SAFE_INTEGER - v) return { ok: false, reason: 'commit_sum' };
       payout += v;
     }
   }
+  if (opened < 1) return { ok: false, reason: 'commit_sum' };
   const vaultPayout = kind === 'withdraw' ? payout : 0;
   if (!verifyFlowConservation(tx, null, vaultPayout)) return { ok: false, reason: 'commit_sum' };
   return { ok: true };
@@ -482,8 +538,10 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
 export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return { ok: true };
-  if (Array.isArray(tx?.vout) && tx.vout.length > 1) return { ok: false, reason: 'mint_amount' };
-  const o = tx?.vout?.[0];
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const receipts = outs.filter((row) => String(row?.kind || kind) === 'withdraw');
+  if (receipts.length !== 1) return { ok: false, reason: 'mint_amount' };
+  const o = receipts[0];
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
   const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
   if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };

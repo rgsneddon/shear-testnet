@@ -68,7 +68,7 @@ describe('fork trial vault (VS-R1)', () => {
     assert.match(src, /function trialVaultForFork\(/);
     assert.match(src, /cloneVault\(emptyVault\(\)\)/);
     assert.match(src, /applyReserveBlock\(\{ state: trialVault, block: lean/);
-    assert.match(src, /verifyOneForkBlock\(fork, i, accepted, trialSpent, null, trialVault\)/);
+    assert.match(src, /verifyOneForkBlock\(fork, i, accepted, trialSpent, null, trialVault/);
     assert.equal(/applyReserveBlock\(\{\s*state:\s*reserveVault/.test(src.split('function verifyFork')[1]?.split('function adopt')[0] || ''), false);
     assert.equal(/saveReserve\(\)/.test(src.split('function verifyFork')[1]?.split('function adopt')[0] || ''), false);
   });

@@ -10,20 +10,25 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { buildTemplate } from '../src/chain.js';
+import { buildTemplate, verifyBlock } from '../src/chain.js';
+import { auditCirculatingSupply } from '../src/supply.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
-import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
-import { lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
-import { signSpendTx, typedCommitSum } from '../../crypto/spend.js';
+import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS, MTP_FUTURE_MS, MTP_WINDOW } from '../../crypto/asert.js';
+import { epochMs } from '../../crypto/pot_sched.js';
+import { newIdentity, encodeDest, hash20FromAddress, admitBaseFromAddress } from '../../crypto/address.js';
+import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw } from '../../crypto/reserve_vault.js';
+import { signSpendTx, typedCommitSum, verifySpendSig } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { levyNeed, splitLevy } from '../../crypto/levy.js';
+import { compactTx } from '../../crypto/chronoflux.js';
 import {
   admitProveV3,
   admitPub,
   admitScalarFromSeed,
   fluxsetFromBlocks,
   blindCommit,
+  attachAdmitPub,
+  outputJoinsAdmitSet,
 } from '../../crypto/admit.js';
 import {
   asU8,
@@ -85,7 +90,7 @@ function stripPayer(tx) {
   return tx;
 }
 
-async function sealEmpty(store, dest, now) {
+async function sealEmpty(store, dest, now, openings) {
   const { tpl } = store.template({ miner: dest, shareBits: 4, now });
   const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
   const opening = pot?.r && pot.commit
@@ -107,7 +112,8 @@ async function sealEmpty(store, dest, now) {
     trustedPowHash: easyPowHash(),
     skipSharePow: true,
   }));
-  assert.equal(got.ok, true, got.reason || 'seal');
+  assert.equal(got.ok, true, `${got.reason || 'seal'}${got.error ? ` ${got.error}` : ''}`);
+  if (openings && opening) openings.push({ height: store.tip().height, ...opening });
   return opening;
 }
 
@@ -269,6 +275,109 @@ function proveBalanced(tx, { x, index, flux, note, anchor, noteR, noteV }) {
   return settled;
 }
 
+function headerTime(block) {
+  return Number(decodeHeader(Buffer.from(block.header)).timestamp);
+}
+
+function potOf(store, height) {
+  const block = store.blocks.find((b) => Number(b.height) === height);
+  return (block?.txs?.[0]?.vout || []).find((o) => o.kind === 'pot') || null;
+}
+
+function indexInFlux(flux, commit) {
+  const want = Buffer.from(asU8(commit));
+  for (let i = 0; i < (flux.commits || []).length; i += 1) {
+    const got = Buffer.from(asU8(flux.commits[i]));
+    if (got.length === want.length && got.equals(want)) return i;
+  }
+  return -1;
+}
+
+function resealReceipt(tx, nanos, kind) {
+  const prev = tx.vout[0] || {};
+  const raw = prev.dest20 || hash20FromAddress(tx.to || '');
+  const d20 = Buffer.from(asU8(raw));
+  const sealed = sealCoinbaseNote(nanos, { dest20: d20, kind });
+  return {
+    ...sealed,
+    kind,
+    dest20: d20,
+    portalId: prev.portalId || tx.portalId,
+  };
+}
+
+/** Receipt opens to receiptNanos. Hidden change is noteV − fee. Any note, any fee below it. */
+function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptNanos, base }) {
+  let fee = 0;
+  let settled = null;
+  const kind = String(tx.kind);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const changeN = noteV - fee;
+    assert.ok(changeN > 0, `change ${noteV} ${fee}`);
+    const sealedReceipt = resealReceipt(tx, receiptNanos, kind);
+    const receipt = kind === 'withdraw'
+      ? attachAdmitPub(sealedReceipt, { admitBase: base })
+      : sealedReceipt;
+    const d20 = Buffer.from(asU8(receipt.dest20));
+    const change = attachAdmitPub(sealNote(changeN, { dest20: d20, kind: 'send' }), { admitBase: base });
+    change.kind = 'send';
+    change.dest20 = d20;
+    tx.vout = [receipt, change];
+    tx.nanos = receiptNanos;
+    tx.fee = fee;
+    tx.anchor = anchor;
+    const t = randomScalar();
+    const probe = admitProveV3({
+      x,
+      index,
+      pubs: flux.pubs,
+      commits: flux.commits,
+      c: note.commit,
+      t,
+      ctx: Buffer.alloc(64, 9),
+    });
+    assert.ok(probe, `change probe ${attempt}`);
+    tx.vin = [{ commit: Buffer.from(probe.cTilde) }];
+    tx.admit_proof = probe;
+    tx.excess = kernelExcess(tx.vout, [{ r: noteR, t: scalarBytes(t) }]);
+    assert.ok(tx.excess, 'change excess');
+    const digest = txDigestV3(tx, MAGIC_TESTNET);
+    const ctx = admitV3Context({
+      magic: MAGIC_TESTNET,
+      anchor,
+      root: flux.jroot,
+      n: flux.pubs.length,
+      digest,
+    });
+    const real = admitProveV3({
+      x,
+      index,
+      pubs: flux.pubs,
+      commits: flux.commits,
+      c: note.commit,
+      t,
+      ctx,
+    });
+    assert.ok(real, `change prove ${attempt}`);
+    tx.admit_proof = real;
+    tx.vin = [{ commit: Buffer.from(real.cTilde) }];
+    const need = levyNeed(tx);
+    if (need === fee) {
+      settled = real;
+      break;
+    }
+    fee = need;
+  }
+  assert.ok(settled, 'changed fee did not settle');
+  assert.equal(tx.fee, levyNeed(tx));
+  assert.equal(noteV, tx.fee + (noteV - tx.fee));
+  const summed = typedCommitSum(tx);
+  assert.equal(summed.ok, true, summed.reason || 'changed sum');
+  const lean = typedCommitSum(compactTx(tx));
+  assert.equal(lean.ok, true, lean.reason || 'changed compact');
+  return settled;
+}
+
 describe('ADMITv3 note consumption', () => {
   it('unfunded and public-debit typed txs never queue, at every amount', () => {
     const who = payer();
@@ -301,15 +410,16 @@ describe('ADMITv3 note consumption', () => {
     }
   });
 
-  it('an in-window lock spends the original note, and a bad proof does not', { timeout: 300_000 }, async () => {
+  it('an in-window lock spends the original note, and a bad proof does not', { timeout: 1_800_000 }, async () => {
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-fund-'));
     const store = createStore(dir);
     try {
       const readyAt = 17;
+      const openings = [];
       let noteOpen = null;
       for (let i = 0; i < readyAt - 1; i += 1) {
-        const opening = await sealEmpty(store, who.dest, T0 + i * TARGET_BLOCK_INTERVAL_MS);
+        const opening = await sealEmpty(store, who.dest, T0 + i * TARGET_BLOCK_INTERVAL_MS, openings);
         if (!noteOpen && opening) noteOpen = opening;
       }
       assert.ok(noteOpen && noteOpen.v > AMOUNTS[AMOUNTS.length - 1], String(noteOpen && noteOpen.v));
@@ -566,7 +676,7 @@ describe('ADMITv3 note consumption', () => {
 
       const queued = store.queueTx(lock);
       assert.equal(queued.ok, true, queued.reason || 'queue');
-      await sealEmpty(store, who.dest, now);
+      await sealEmpty(store, who.dest, now, openings);
       assert.equal(store.tip().height, readyAt);
       const sealed = store.blocks[store.blocks.length - 1].txs.find((tx) => tx.id === lock.id);
       assert.ok(sealed, 'lock sealed');
@@ -694,6 +804,304 @@ describe('ADMITv3 note consumption', () => {
           assert.equal(got.reason, 'admit_link_tag', `${kind} ${amount} ${got.reason}`);
         }
       }
+
+      const base = admitBaseFromAddress(who.dest);
+      let nextHeight = 2;
+      while (!(Number(store.reserveVault.epochStartMs) > 0) && nextHeight <= 12) {
+        const pot = potOf(store, nextHeight);
+        const open = openings.find((o) => o.height === nextHeight);
+        const anchor = walletAnchor(store.tip().height + 1);
+        const flux = anchorFlux(store.blocks, anchor);
+        const index = indexInFlux(flux, pot.commit);
+        assert.ok(index >= 0, `lock pot ${nextHeight}`);
+        const x = admitScalarFromSeed(who.spendSeed, pot);
+        const extra = stripPayer(lockTx({
+          from: who.dest,
+          to: who.dest,
+          nanos: 1,
+          id: `v3-lock-join-${nextHeight}`,
+        }));
+        proveBalanced(extra, { x, index, flux, note: pot, anchor, noteR: open.r, noteV: open.v });
+        signSpendTx(extra, who.key);
+        const queuedExtra = store.queueTx(extra);
+        assert.equal(queuedExtra.ok, true, `${nextHeight} ${queuedExtra.reason}`);
+        const clock = headerTime(store.tip()) + TARGET_BLOCK_INTERVAL_MS;
+        await sealEmpty(store, who.dest, clock, openings);
+        const sealedExtra = store.blocks[store.blocks.length - 1].txs.find((tx) => tx.id === extra.id);
+        assert.ok(sealedExtra, `lock ${nextHeight}`);
+        nextHeight += 1;
+      }
+      assert.ok(Number(store.reserveVault.epochStartMs) > 0, 'portal joined');
+
+      const votePotH = nextHeight;
+      const votePot = potOf(store, votePotH);
+      const voteOpen = openings.find((o) => o.height === votePotH);
+      const voteAnchor = walletAnchor(store.tip().height + 1);
+      const voteFlux = anchorFlux(store.blocks, voteAnchor);
+      const voteIndex = indexInFlux(voteFlux, votePot.commit);
+      assert.ok(voteIndex >= 0, 'vote pot');
+      const changedVote = stripPayer(voteTx({
+        from: who.dest,
+        dest: who.dest,
+        choice: VOTE_HOLD,
+        id: 'v3-vote-change',
+      }));
+      changedVote.choice = VOTE_HOLD;
+      proveChanged(changedVote, {
+        x: admitScalarFromSeed(who.spendSeed, votePot),
+        index: voteIndex,
+        flux: voteFlux,
+        note: votePot,
+        anchor: voteAnchor,
+        noteR: voteOpen.r,
+        noteV: voteOpen.v,
+        receiptNanos: 0,
+        base,
+      });
+      assert.ok(changedVote.fee > 0 && changedVote.fee < voteOpen.v);
+      assert.equal(changedVote.vout[0].admitPub, undefined);
+      assert.equal(outputJoinsAdmitSet(changedVote, changedVote.vout[0]), false);
+      assert.equal(outputJoinsAdmitSet(changedVote, changedVote.vout[1]), true);
+      const leakedVote = {
+        ...changedVote,
+        vout: [
+          { ...changedVote.vout[0], admitPub: changedVote.vout[1].admitPub },
+          changedVote.vout[1],
+        ],
+      };
+      const leaked = store.queueTx(leakedVote);
+      assert.equal(leaked.ok, false, leaked.reason);
+      assert.equal(leaked.reason, 'receipt_admitpub', leaked.reason);
+      signSpendTx(changedVote, who.key);
+      assert.equal(verifySpendSig(changedVote), true);
+      assert.equal(verifySpendSig({ ...changedVote, fee: changedVote.fee + 1 }), false);
+      const pubsBeforeVote = fluxsetFromBlocks(store.blocks).pubs.length;
+      const queuedVoteOk = store.queueTx(changedVote);
+      assert.equal(queuedVoteOk.ok, true, queuedVoteOk.reason || 'vote queue');
+      const voteClock = headerTime(store.tip()) + TARGET_BLOCK_INTERVAL_MS;
+      await sealEmpty(store, who.dest, voteClock, openings);
+      const voteBlock = store.blocks[store.blocks.length - 1];
+      const sealedVote = voteBlock.txs.find((tx) => tx.id === changedVote.id);
+      assert.ok(sealedVote, 'vote sealed');
+      assert.equal(typedCommitSum(sealedVote).ok, true);
+      assert.equal(Number(store.reserveVault.votes.hold), 1);
+      let joinedOnVote = 0;
+      for (const tx of voteBlock.txs) {
+        for (const o of tx.vout || []) if (outputJoinsAdmitSet(tx, o)) joinedOnVote += 1;
+      }
+      const pubsAfterVote = fluxsetFromBlocks(store.blocks).pubs.length;
+      assert.equal(pubsAfterVote - pubsBeforeVote, joinedOnVote);
+      const sealedReceipt = sealedVote.vout.find((o) => o.kind === 'vote');
+      assert.ok(sealedReceipt);
+      assert.equal(sealedReceipt.admitPub, undefined);
+      assert.equal(outputJoinsAdmitSet(sealedVote, sealedReceipt), false);
+      const votePotOut = voteBlock.txs[0].vout.find((o) => o.kind === 'pot');
+      assert.equal(outputJoinsAdmitSet(voteBlock.txs[0], votePotOut), true);
+
+      const lockedBefore = Number(store.reserveVault.totalLockedNanos);
+      const earlyPot = potOf(store, votePotH + 1);
+      const earlyOpen = openings.find((o) => o.height === votePotH + 1);
+      const earlyAnchor = walletAnchor(store.tip().height + 1);
+      const earlyFlux = anchorFlux(store.blocks, earlyAnchor);
+      const earlyIndex = indexInFlux(earlyFlux, earlyPot.commit);
+      assert.ok(earlyIndex >= 0, 'early withdraw pot');
+      const earlyPreview = previewWithdraw(store.reserveVault, who.dest);
+      const early = stripPayer(withdrawTx({
+        from: who.dest,
+        to: who.dest,
+        nanos: earlyPreview.payout,
+        id: 'v3-withdraw-early',
+      }));
+      proveChanged(early, {
+        x: admitScalarFromSeed(who.spendSeed, earlyPot),
+        index: earlyIndex,
+        flux: earlyFlux,
+        note: earlyPot,
+        anchor: earlyAnchor,
+        noteR: earlyOpen.r,
+        noteV: earlyOpen.v,
+        receiptNanos: earlyPreview.payout,
+        base,
+      });
+      signSpendTx(early, who.key);
+      const futureClock = { ...early, nowMs: headerTime(store.tip()) + epochMs(MAGIC_TESTNET) };
+      assert.equal(store.queueTx(futureClock).reason, 'now_ms');
+      assert.equal(store.queueTx({ ...early, nowMs: 1 }).reason, 'now_ms');
+      const queuedEarly = store.queueTx(early);
+      assert.equal(queuedEarly.ok, false, queuedEarly.reason);
+      assert.equal(queuedEarly.reason, 'epoch_open', queuedEarly.reason);
+      const earlyTip = store.tip();
+      const { tpl: earlyTpl } = store.template({
+        miner: who.dest,
+        shareBits: 4,
+        now: headerTime(earlyTip) + TARGET_BLOCK_INTERVAL_MS,
+      });
+      const earlyStamp = headerTime({ header: earlyTpl.header });
+      const builtEarly = buildTemplate({
+        prev: earlyTip.hash,
+        prevHeader: earlyTip.header,
+        prevBlock: earlyTip,
+        height: earlyTip.height + 1,
+        miner: who.dest,
+        now: earlyStamp,
+        bits: Number(decodeHeader(Buffer.from(earlyTpl.header)).bits),
+        txs: [early],
+        parentBlocks: store.blocks,
+      });
+      const appendedEarly = await Promise.resolve(store.append({
+        header: builtEarly.header,
+        txs: builtEarly.txs,
+        samples: builtEarly.samples,
+        shareBatch: builtEarly.shareBatch || [],
+        miner: who.dest,
+        aLeaves: builtEarly.aLeaves,
+        bLeaves: builtEarly.bLeaves,
+        rootA: builtEarly.rootA,
+        rootB: builtEarly.rootB,
+        weight: builtEarly.weight,
+      }, { trustedPowHash: easyPowHash(), skipSharePow: true }));
+      assert.equal(appendedEarly.ok, false, appendedEarly.reason);
+      assert.equal(appendedEarly.reason, 'epoch_open', appendedEarly.reason);
+      assert.equal(store.tip().height, earlyTip.height);
+      assert.equal(Number(store.reserveVault.totalLockedNanos), lockedBefore);
+
+      const epochEnd = Number(store.reserveVault.epochStartMs) + epochMs(MAGIC_TESTNET);
+      const span = epochEnd - headerTime(store.tip());
+      assert.ok(span > 0, 'epoch already closed');
+      // The median of the last MTP window lags the parent, so a requested
+      // future stamp clamps to about one MTP_FUTURE_MS per window of blocks.
+      // The cap is that many windows for any epoch length, plus one window.
+      const stepCap = Math.ceil(span / MTP_FUTURE_MS) * MTP_WINDOW + MTP_WINDOW;
+      let steps = 0;
+      while (headerTime(store.tip()) < epochEnd && steps < stepCap) {
+        const parentTs = headerTime(store.tip());
+        await sealEmpty(store, who.dest, Math.max(epochEnd, parentTs + MTP_FUTURE_MS - 1), openings);
+        steps += 1;
+      }
+      assert.ok(headerTime(store.tip()) >= epochEnd, `epoch open after ${steps}`);
+
+      const drawPot = potOf(store, votePotH + 1);
+      const drawOpen = openings.find((o) => o.height === votePotH + 1);
+      const drawAnchor = walletAnchor(store.tip().height + 1);
+      const drawFlux = anchorFlux(store.blocks, drawAnchor);
+      const drawIndex = indexInFlux(drawFlux, drawPot.commit);
+      assert.ok(drawIndex >= 0, 'withdraw pot');
+      const preview = previewWithdraw(store.reserveVault, who.dest);
+      assert.ok(preview.principal > 0);
+      const cap = preview.payout;
+      assert.ok(cap >= preview.principal);
+      const withdraw = stripPayer(withdrawTx({
+        from: who.dest,
+        to: who.dest,
+        nanos: cap,
+        id: 'v3-withdraw-change',
+      }));
+      proveChanged(withdraw, {
+        x: admitScalarFromSeed(who.spendSeed, drawPot),
+        index: drawIndex,
+        flux: drawFlux,
+        note: drawPot,
+        anchor: drawAnchor,
+        noteR: drawOpen.r,
+        noteV: drawOpen.v,
+        receiptNanos: cap,
+        base,
+      });
+      assert.notEqual(withdraw.fee, drawOpen.v);
+      const wrongFee = typedCommitSum({ ...withdraw, fee: withdraw.fee + 1 });
+      assert.equal(wrongFee.ok, false);
+      assert.equal(wrongFee.reason, 'commit_sum');
+      const exactOnly = typedCommitSum({ ...withdraw, fee: drawOpen.v });
+      assert.equal(exactOnly.ok, false);
+      assert.equal(exactOnly.reason, 'commit_sum');
+      signSpendTx(withdraw, who.key);
+      assert.equal(verifySpendSig(withdraw), true);
+      const blob = Buffer.from(asU8(withdraw.admit_proof.blob));
+      blob[blob.length - 1] ^= 0xff;
+      assert.equal(verifySpendSig({
+        ...withdraw,
+        admit_proof: { ...withdraw.admit_proof, blob },
+      }), false);
+      const tipBeforeDraw = store.tip().height;
+      const queuedDraw = store.queueTx(withdraw);
+      assert.equal(queuedDraw.ok, true, queuedDraw.reason || 'withdraw queue');
+      const drawClock = headerTime(store.tip()) + TARGET_BLOCK_INTERVAL_MS;
+      await sealEmpty(store, who.dest, drawClock, openings);
+      assert.equal(store.tip().height, tipBeforeDraw + 1);
+      const sealedDraw = store.blocks[store.blocks.length - 1].txs.find((tx) => tx.id === withdraw.id);
+      assert.ok(sealedDraw, 'withdraw sealed');
+      assert.equal(typedCommitSum(sealedDraw).ok, true);
+      assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
+
+      assert.equal(auditCirculatingSupply([]).status, 'verified');
+      const liveSupply = auditCirculatingSupply(store.blocks);
+      assert.equal(liveSupply.status, 'verified', liveSupply.reason || 'supply');
+      const supplyTip = store.tip();
+      const { tpl } = store.template({
+        miner: who.dest,
+        shareBits: 4,
+        now: headerTime(supplyTip) + TARGET_BLOCK_INTERVAL_MS,
+      });
+      const nextBlock = {
+        header: tpl.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        shareBatch: tpl.shareBatch || [],
+        miner: who.dest,
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        rootA: tpl.rootA,
+        rootB: tpl.rootB,
+        weight: tpl.weight,
+      };
+      const prevView = {
+        hash: supplyTip.hash,
+        header: supplyTip.header,
+        height: supplyTip.height,
+        rootA: supplyTip.rootA,
+        rootB: supplyTip.rootB,
+        txs: supplyTip.txs,
+        bLeaves: supplyTip.bLeaves,
+        weight: supplyTip.weight,
+        shareBatch: supplyTip.shareBatch,
+      };
+      const verifyOpts = {
+        trustedPowHash: easyPowHash(),
+        skipSharePow: true,
+        evmHistory: store.blocks,
+        genesisMs: T0,
+        magic: MAGIC_TESTNET,
+        tipHeight: supplyTip.height,
+        hashBonusNanos: Number(store.reserveVault.liveHashBonusNanos || 1),
+        reserveState: store.reserveVault,
+        spentB: new Set(),
+        nowMs: Date.now(),
+        mtpTimestamps: store.blocks.slice(-11).map((b) => headerTime(b)),
+      };
+      const honestNext = await Promise.resolve(verifyBlock(nextBlock, prevView, {
+        ...verifyOpts,
+        supplyParents: store.blocks,
+      }));
+      assert.equal(honestNext.ok, true, honestNext.reason || 'honest supply');
+      const forged = store.blocks.map((b) => ({
+        ...b,
+        txs: (b.txs || []).map((tx) => ({
+          ...tx,
+          vout: (tx.vout || []).map((o) => ({
+            ...o,
+            commit: o.commit ? Buffer.from(asU8(o.commit)) : o.commit,
+          })),
+        })),
+      }));
+      const forgedPot = forged[0].txs[0].vout.find((o) => o.kind === 'pot');
+      forgedPot.commit[0] ^= 0xff;
+      const rejectedSupply = await Promise.resolve(verifyBlock(nextBlock, prevView, {
+        ...verifyOpts,
+        supplyParents: forged,
+      }));
+      assert.equal(rejectedSupply.ok, false, 'tampered supply');
+      assert.equal(rejectedSupply.reason, 'supply', rejectedSupply.reason);
+      assert.equal(store.tip().height, supplyTip.height);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

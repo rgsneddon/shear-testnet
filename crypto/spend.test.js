@@ -2,8 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen } from './spend.js';
-import { sealNote } from './note.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen, typedCommitSum } from './spend.js';
+import { sealNote, sealCoinbaseNote, randomScalar, scalarBytes, kernelExcess } from './note.js';
+import { blindCommit } from './admit.js';
 import { compactTx } from './chronoflux.js';
 import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest, ed25519PrivateFromSeed, ed25519RawPub, encodeDest } from './address.js';
 import { destCommitFromSpendPub } from './stealth_ed25519.js';
@@ -327,5 +328,104 @@ describe('funded spend / no double-spend', () => {
       vout: [{ address: from, nanos: 0, kind: 'vote' }],
     };
     assert.equal(spendPackDigest(lock).equals(spendPackDigest(vote)), false);
+  });
+
+  it('a flow digest ignores the fee, and a typed digest binds the fee and the admit blob', () => {
+    const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
+    const key = ed25519PrivateFromSeed(seed);
+    const send = {
+      kind: 'send',
+      fee: 1,
+      vin: [{ address: dest }],
+      vout: [{ address: dest, nanos: 1, kind: 'send' }],
+    };
+    const repriced = { ...send, fee: send.fee + 1 };
+    assert.equal(spendPackDigest(send).equals(spendPackDigest(repriced)), true);
+    const lock = {
+      kind: 'lock',
+      fee: 1,
+      portalId: 'portal-a',
+      payoutPortalId: 'portal-b',
+      vin: [{ noteCommit: Buffer.alloc(32, 2) }],
+      vout: [{ kind: 'lock', nanos: 1 }],
+    };
+    assert.equal(spendPackDigest(lock).equals(spendPackDigest({ ...lock, fee: lock.fee + 1 })), false);
+    const blob = Buffer.from([3, 9, 8, 7]);
+    const withBlob = { ...lock, admit_proof: { blob } };
+    assert.equal(spendPackDigest(lock).equals(spendPackDigest(withBlob)), false);
+    const flipped = Buffer.from(blob);
+    flipped[flipped.length - 1] ^= 0xff;
+    assert.equal(
+      spendPackDigest(withBlob).equals(spendPackDigest({ ...withBlob, admit_proof: { blob: flipped } })),
+      false,
+    );
+    signSpendTx(withBlob, key);
+    assert.equal(verifySpendSig(withBlob), true);
+    assert.equal(verifySpendSig({ ...withBlob, fee: withBlob.fee + 1 }), false);
+    assert.equal(verifySpendSig({ ...withBlob, admit_proof: { ...withBlob.admit_proof, blob: flipped } }), false);
+  });
+
+  it('a hidden change lets any note fund a vote or withdraw, and a compact body still balances', () => {
+    const d20 = Buffer.alloc(20, 4);
+    const amounts = [1, 1_000_000, 50_000_000_000];
+    for (const noteV of amounts) {
+      const fees = [0, 1, Math.floor(noteV / 2)].filter((fee, i, all) => fee < noteV && all.indexOf(fee) === i);
+      for (const fee of fees) {
+        const note = sealCoinbaseNote(noteV, { dest20: d20, kind: 'pot' });
+        const t = randomScalar();
+        const tb = scalarBytes(t);
+        const vin = [{ commit: Buffer.from(blindCommit(note.commit, tb)), r: note.r, t: tb }];
+        const voteReceipt = sealCoinbaseNote(0, { dest20: d20, kind: 'vote' });
+        const voteChange = sealNote(noteV - fee, { dest20: d20, kind: 'send' });
+        const vote = {
+          kind: 'vote',
+          fee,
+          vin: [{ commit: vin[0].commit }],
+          vout: [voteReceipt, voteChange],
+          excess: kernelExcess([voteReceipt, voteChange], vin),
+        };
+        const voted = typedCommitSum(vote);
+        assert.equal(voted.ok, true, `${noteV} ${fee} ${voted.reason}`);
+        const leanVote = compactTx(vote);
+        assert.equal(leanVote.vout[1].valueProof?.v, undefined);
+        const leanVoted = typedCommitSum(leanVote);
+        assert.equal(leanVoted.ok, true, `${noteV} ${fee} lean ${leanVoted.reason}`);
+        const wrongFee = typedCommitSum({ ...vote, fee: fee + 1 });
+        assert.equal(wrongFee.ok, false, String(noteV));
+        assert.equal(wrongFee.reason, 'commit_sum');
+
+        const cap = noteV === 1 ? 0 : noteV + 1;
+        const receipt = sealCoinbaseNote(cap, { dest20: d20, kind: 'withdraw' });
+        const change = sealNote(noteV - fee, { dest20: d20, kind: 'send' });
+        const withdraw = {
+          kind: 'withdraw',
+          fee,
+          vin: [{ commit: vin[0].commit }],
+          vout: [receipt, change],
+          excess: kernelExcess([receipt, change], vin),
+        };
+        const drawn = typedCommitSum(withdraw);
+        assert.equal(drawn.ok, true, `${noteV} ${fee} ${cap} ${drawn.reason}`);
+        const leanDrawn = typedCommitSum(compactTx(withdraw));
+        assert.equal(leanDrawn.ok, true, `${noteV} lean withdraw ${leanDrawn.reason}`);
+        const notRemainder = typedCommitSum({ ...withdraw, fee: noteV });
+        assert.equal(notRemainder.ok, false);
+        assert.equal(notRemainder.reason, 'commit_sum');
+      }
+      const bare = sealCoinbaseNote(noteV, { dest20: d20, kind: 'pot' });
+      const tb = scalarBytes(randomScalar());
+      const receipt = sealCoinbaseNote(noteV === 1 ? 0 : 7, { dest20: d20, kind: 'withdraw' });
+      const exact = {
+        kind: 'withdraw',
+        fee: noteV,
+        vin: [{ commit: Buffer.from(blindCommit(bare.commit, tb)) }],
+        vout: [receipt],
+        excess: kernelExcess([receipt], [{ r: bare.r, t: tb }]),
+      };
+      assert.equal(typedCommitSum(exact).ok, true, String(noteV));
+      const short = typedCommitSum({ ...exact, fee: noteV > 0 ? noteV - 1 : 1 });
+      assert.equal(short.ok, false);
+      assert.equal(short.reason, 'commit_sum');
+    }
   });
 });

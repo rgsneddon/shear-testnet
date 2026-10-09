@@ -9,7 +9,8 @@ import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { asU8, verifyRange, flowInputsBound } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected } from './spend.js';
+import { receiptAdmitRejected } from './admit.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -36,6 +37,10 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!allowed.has(kind)) {
     return { ok: false, reason: 'kind' };
   }
+  const clockField = typedClockRejected(tx);
+  if (clockField) return clockField;
+  const receiptPub = receiptAdmitRejected(tx);
+  if (receiptPub) return receiptPub;
   for (const v of tx.vin || []) {
     const link = sealedVinLinkField(v);
     if (link) return { ok: false, reason: 'vin_link' };
