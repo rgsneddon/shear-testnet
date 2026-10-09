@@ -23,6 +23,7 @@ import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custody
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
 import { hash20FromAddress } from './address.js';
+import { canonicalReserveFields } from './reserve_vault.js';
 import { compactHashLedger, packHashCreditBytes } from './hash_owed.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
@@ -456,6 +457,7 @@ export function compactTx(tx) {
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
   const keepDest = kind === 'vortice-register';
   const reserveTx = RESERVE_TX_KINDS.has(kind);
+  const reserveFields = reserveTx ? canonicalReserveFields(tx) : null;
   const poolWithdraw = kind === 'pool-withdraw';
   delete out.nanos;
   delete out.changeNanos;
@@ -516,6 +518,12 @@ export function compactTx(tx) {
   if (tx.spendTag) out.spendTag = tx.spendTag;
   if (tx.jroot) out.jroot = tx.jroot;
   if (tx.excess) out.excess = tx.excess;
+  if (reserveFields) {
+    if (reserveFields.portalId) out.portalId = reserveFields.portalId;
+    if (reserveFields.payoutPortalId) out.payoutPortalId = reserveFields.payoutPortalId;
+    if (reserveFields.programId) out.programId = reserveFields.programId;
+    if (reserveFields.kind === 'vote') out.choice = reserveFields.choice;
+  }
   return out;
 }
 

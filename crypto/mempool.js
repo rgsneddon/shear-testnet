@@ -9,8 +9,10 @@ import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { asU8, verifyRange, flowInputsBound } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
+import { verifyTypedAdmitFunding } from './admit_v3.js';
+import { trialReserveApply, txIsReserveAction } from './reserve_vault.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -58,6 +60,40 @@ export function admitMempool(pool, tx, opts = {}) {
   // sit in a template until the block path rejects it.
   const summed = typedCommitSum(tx);
   if (!summed.ok) return summed;
+  // Lock, vote, and withdraw: same funding check, same drawn mint, same
+  // header-time vault trial as queue and consensus. A vault miss is marked
+  // so the template drops the tx instead of retrying it forever.
+  if (txIsReserveAction(tx) && ('reserveState' in opts || 'nowMs' in opts || typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null)) {
+    const wantFund = typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null;
+    if (wantFund) {
+      const noteFund = verifyTypedAdmitFunding(tx, {
+        height: Number(opts.height || 0),
+        blocks: opts.blocks || [],
+        spentTags: opts.spendTags,
+        magic: opts.magic,
+        noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
+      });
+      if (!noteFund.ok) return noteFund;
+    }
+    const drawn = new Set();
+    const minted = opts.reserveState?.mintedIds || {};
+    for (const id of Object.keys(minted)) {
+      if (minted[id]) drawn.add(id);
+    }
+    for (const prev of book.txs || []) {
+      const id = reserveWithdrawMintId(prev, opts.reserveState || null);
+      if (id) drawn.add(id);
+    }
+    const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn);
+    if (!stake.ok) return { ...stake, vault: true };
+    const prior = (book.txs || []).filter(txIsReserveAction);
+    const tried = trialReserveApply({
+      state: opts.reserveState || null,
+      txs: [...prior, tx],
+      nowMs: Number(opts.nowMs) || 0,
+    });
+    if (!tried.ok) return { ok: false, reason: tried.reason || 'no_vault', vault: true };
+  }
   const bound = verifyPoolWithdrawBound(tx);
   if (!bound.ok) return bound;
   const fields = checkTxAddressFields(tx, { coinbase: false });

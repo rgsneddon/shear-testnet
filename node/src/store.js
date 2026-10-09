@@ -53,7 +53,7 @@ import { hash20FromAddress } from '../../crypto/address.js';
 import { bLeafId } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -742,6 +742,21 @@ export function createStore(dir, {
       return Number(decodeHeader(Buffer.from(block.header)).timestamp);
     } catch {
       return 0;
+    }
+  }
+
+  /** Next header stamp. Mempool and template trial the vault at this time. */
+  function headerStamp(nowMs) {
+    const t = tip();
+    const given = Number(nowMs);
+    const wall = Number.isFinite(given) && given > 0 ? given : Date.now();
+    if (!t?.header) return wall;
+    try {
+      const parent = decodeHeader(Buffer.from(t.header));
+      const mtp = medianTimePast(blocks.slice(-MTP_WINDOW).map((b) => blockTimeMs(b)));
+      return templateStampMs(parent.timestamp, wall, null, mtp);
+    } catch {
+      return wall;
     }
   }
 
@@ -1632,7 +1647,11 @@ export function createStore(dir, {
           from: tx.from || tx.vin?.[0]?.address,
           nanos: tx.nanos || tx.vout?.[0]?.nanos,
           fee: tx.fee,
-        }, { baseFee: base });
+        }, {
+          baseFee: base,
+          reserveState: reserveVault,
+          nowMs: headerStamp(),
+        });
       }
     }
     mempool.length = 0;
@@ -2111,8 +2130,16 @@ export function createStore(dir, {
       } catch { /* ignore */ }
       return auth;
     }
-    const pay = payoutOnTip(tx);
-    if (!pay.ok) return pay;
+    const stamp = headerStamp(opts.nowMs);
+    if (txIsReserveAction(tx)) {
+      if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
+      const tried = trialReserveApply({
+        state: reserveVault,
+        txs: [...mempool.filter(txIsReserveAction), tx],
+        nowMs: stamp,
+      });
+      if (!tried.ok) return { ok: false, reason: tried.reason || 'no_vault', vault: true };
+    }
     const live = liveFlux;
     const got = admitMempool(book, tx, {
       baseFee: base,
@@ -2120,6 +2147,11 @@ export function createStore(dir, {
       spendTags: live.spendTags,
       commits: live.commits,
       paintedHold,
+      reserveState: reserveVault,
+      nowMs: stamp,
+      height: Number(t?.height || 0) + 1,
+      blocks,
+      noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     });
     if (got.ok && got.tx && !got.duplicate) {
       emit('tx', got.tx);
@@ -3302,13 +3334,18 @@ export function createStore(dir, {
         fluxset: live,
         spendTags: live.spendTags,
         commits: live.commits,
+        reserveState: reserveVault,
+        nowMs: now,
+        height,
+        blocks,
+        noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       });
       if (got.ok) {
         pendingTxs.push(got.tx);
         keep.push(m);
       } else {
         console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: got.reason }));
-        if (got.reason !== 'admit') keep.push(m);
+        if (!got.vault && got.reason !== 'admit') keep.push(m);
       }
     }
     mempool.length = 0;

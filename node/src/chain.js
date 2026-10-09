@@ -73,7 +73,7 @@ import {
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
-import { emptyVault, cloneVault, applyReserveBlock } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
@@ -276,6 +276,10 @@ export function digestTx(tx) {
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
     if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
     return packDigest(Buffer.concat(parts));
+  }
+  const reserveSuffix = reserveDigestSuffix(tx);
+  if (reserveSuffix && reserveSuffix.length) {
+    return packDigest(Buffer.concat([packed, reserveSuffix]));
   }
   return packDigest(packed);
 }
@@ -2044,17 +2048,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
     return { ok: false, reason: 'admit_membership' };
   }
-  if (reserveState && !reserveState.blankFork) {
-    const trial = cloneVault(reserveState);
-    const applied = applyReserveBlock({
-      state: trial,
-      block,
-      nowMs: Number(decoded.timestamp),
-    });
-    if (applied && applied.ok === false) {
-      return { ok: false, reason: applied.reason || 'epoch_open' };
-    }
-  }
+  const vaultTry = trialReserveApply({
+    state: reserveState,
+    block,
+    nowMs: Number(decoded.timestamp),
+  });
+  if (!vaultTry.ok) return { ok: false, reason: vaultTry.reason || 'epoch_open' };
   const parentSupply = parentSupplyState(prev, block, opts, height);
   if (!parentSupply.ok) return parentSupply;
   const stepped = supplyStep(parentSupply.state, block, {

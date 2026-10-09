@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
 import { asU8 } from './note.js';
 import { admitVerifyV3, fluxsetFromBlocks } from './admit.js';
+import { reserveDigestSuffix } from './reserve_vault.js';
 
 export const ANCHOR_QUANTUM = 8;
 export const ANCHOR_WINDOW = 64;
@@ -163,6 +164,9 @@ export function txDigestV3(tx, magic = MAGIC_TESTNET) {
   parts.push(lenPref(Buffer.from(String(tx?.portalId || '').toLowerCase())));
   parts.push(lenPref(Buffer.from(String(tx?.programId || ''))));
   parts.push(lenPref(Buffer.from(String(tx?.payoutPortalId || '').toLowerCase())));
+  // Choice and the other sealed reserve fields. Sends omit this suffix.
+  const reserveSuffix = reserveDigestSuffix(tx);
+  if (reserveSuffix) parts.push(reserveSuffix);
   return createHash('sha256').update(Buffer.concat(parts)).digest();
 }
 

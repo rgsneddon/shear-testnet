@@ -13,7 +13,7 @@ import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
-import { portalIdFromDest, withdrawMintId } from './reserve_vault.js';
+import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
 
 function dest20Of(addr) {
@@ -113,6 +113,8 @@ export function spendPackDigest(tx) {
   count.writeUInt32LE(proofs.length >>> 0);
   h.update(count);
   for (const proof of proofs) h.update(lenPref(proofBlob(proof)));
+  const reserveSuffix = reserveDigestSuffix(tx);
+  if (reserveSuffix) h.update(reserveSuffix);
   return h.digest();
 }
 

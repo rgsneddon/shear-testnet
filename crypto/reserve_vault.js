@@ -586,6 +586,89 @@ export function reserveAction(tx) {
   };
 }
 
+function lenPrefUtf8(value) {
+  const b = Buffer.from(String(value ?? ''));
+  const n = Buffer.alloc(4);
+  n.writeUInt32LE(b.length >>> 0);
+  return Buffer.concat([n, b]);
+}
+
+function i64le(value) {
+  const b = Buffer.alloc(8);
+  const n = Math.floor(Number(value));
+  const v = Number.isSafeInteger(n) ? BigInt(n) : 0n;
+  b.writeBigInt64LE(v);
+  return b;
+}
+
+function commit32(o) {
+  try {
+    if (!o?.commit) return Buffer.alloc(0);
+    const b = Buffer.from(asU8(o.commit));
+    return b.length === 32 ? b : Buffer.alloc(0);
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+/**
+ * Sealed fields reserveAction decides from. Address strings are not included.
+ * The same bytes fall out of a fat body and of compactTx, which stamps the
+ * portal ids before it drops the addresses.
+ */
+export function canonicalReserveFields(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== KIND_LOCK && kind !== KIND_VOTE && kind !== KIND_WITHDRAW) return null;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const o = outs.find((row) => String(row?.kind || kind) === kind) || outs[0] || {};
+  const raw = o?.valueProof?.v != null ? o.valueProof.v : (tx?.nanos != null ? tx.nanos : o?.nanos);
+  const n = Math.floor(Number(raw));
+  const nanos = Number.isFinite(n) ? n : 0;
+  const legacyTo = tx?.to || o?.address || destFromDest20(o?.dest20) || '';
+  const legacyFrom = tx?.from || tx?.vin?.[0]?.address || destFromDest20(tx?.vin?.[0]?.dest20) || '';
+  let portalId = String(tx?.portalId || o?.portalId || '').toLowerCase();
+  if (!isPortalId(portalId)) {
+    const dest = kind === KIND_WITHDRAW ? legacyFrom : legacyTo;
+    portalId = dest ? portalIdFromDest(dest) : '';
+  }
+  let payoutPortalId = String(tx?.payoutPortalId || '').toLowerCase();
+  if (!isPortalId(payoutPortalId)) {
+    const pay = kind === KIND_WITHDRAW ? legacyTo : legacyFrom;
+    payoutPortalId = pay ? portalIdFromDest(pay) : '';
+  }
+  const choice = kind === KIND_VOTE ? String(tx?.choice ?? '') : '';
+  return {
+    kind,
+    portalId,
+    payoutPortalId,
+    programId: String(tx?.programId || ''),
+    nanos,
+    choice,
+    commit: commit32(o),
+  };
+}
+
+/** Merkle, owner, and v3 transcript suffix for a lock, vote, or withdraw. */
+export function reserveDigestSuffix(tx) {
+  const fields = canonicalReserveFields(tx);
+  if (!fields) return null;
+  return Buffer.concat([
+    Buffer.from('reserveact1'),
+    lenPrefUtf8(fields.kind),
+    lenPrefUtf8(fields.portalId),
+    lenPrefUtf8(fields.payoutPortalId),
+    lenPrefUtf8(fields.programId),
+    lenPrefUtf8(fields.choice),
+    i64le(fields.nanos),
+    fields.commit,
+  ]);
+}
+
+export function txIsReserveAction(tx) {
+  if (!tx || tx.coinbase) return false;
+  return canonicalReserveFields(tx) != null;
+}
+
 export function verifyReservePayout(state, tx, clockMs) {
   const act = reserveAction(tx);
   if (!act) return { ok: true };
@@ -752,6 +835,30 @@ export function applyReserveBlock({ state, block, nowMs }) {
     }
   }
   return finishReserveApply(results);
+}
+
+/**
+ * One vault verdict for queue, mempool, template, and consensus.
+ * `nowMs` is the header time the caller will seal, never the wall clock.
+ * No reserve row is success. A reserve row with no vault fails closed.
+ * applyReserveBlock's empty return is not success.
+ */
+export function trialReserveApply({ state, txs, block, nowMs } = {}) {
+  const rows = Array.isArray(txs) ? txs : (Array.isArray(block?.txs) ? block.txs : []);
+  if (!rows.some(txIsReserveAction)) return { ok: true };
+  if (!state) return { ok: false, reason: 'no_vault' };
+  if (state.blankFork) return { ok: false, reason: 'blank_vault' };
+  const trial = cloneVault(state);
+  const applied = applyReserveBlock({
+    state: trial,
+    block: block && Array.isArray(block.txs) ? block : { txs: rows },
+    nowMs: Number(nowMs) || 0,
+  });
+  if (applied && applied.ok === false) {
+    return { ok: false, reason: applied.reason || 'epoch_open' };
+  }
+  if (!applied || applied.ok !== true) return { ok: false, reason: 'no_vault' };
+  return { ok: true, state: trial };
 }
 
 export function enact({ state, nowMs } = {}) {
