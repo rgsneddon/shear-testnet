@@ -1473,6 +1473,24 @@ export function assessHeader(block, prev, opts = {}) {
   return finish({ ok: true, hash, decoded, genesisMs: resolvedGenesisMs });
 }
 
+// Parent tags stay in the live set. Copying them once per block grows with
+// chain history. The overlay is only the tags this block accepts.
+function parentSpendView(chain) {
+  const overlay = new Set();
+  const source = chain && typeof chain.has === 'function' ? chain : null;
+  return {
+    has(tag) {
+      const hex = String(tag);
+      if (source && source.has(hex)) return true;
+      return overlay.has(hex);
+    },
+    add(tag) {
+      const hex = String(tag);
+      if (hex) overlay.add(hex);
+    },
+  };
+}
+
 function verifyBlockConsensus(block, prev, opts = {}) {
   if (opts.offLoopPow && !opts.trustedPowHash) {
     return prepareOffLoopPow(block, prev, {
@@ -1856,7 +1874,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const pubs = (live.pubs || []).slice();
   const commits = (live.commits || []).slice();
-  const spentTags = new Set(live.spendTags || []);
+  const spentTags = parentSpendView(live.spendTags);
   const pushPub = (tx, o) => {
     if (!outputJoinsAdmitSet(tx, o) || !o?.commit) return;
     try {
