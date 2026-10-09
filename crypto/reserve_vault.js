@@ -555,9 +555,11 @@ export function reserveAction(tx) {
   const claimed = o?.valueProof?.v != null
     ? Math.floor(Number(o.valueProof.v))
     : Math.floor(Number(tx?.nanos || o?.nanos || 0));
+  // A failed opening is not amount 0. Zero would pass an over-mint check.
   let nanos = claimed;
+  let opened = true;
   if (o?.commit && o?.valueProof) {
-    nanos = verifySealedNote(o, claimed) ? claimed : 0;
+    opened = !!verifySealedNote(o, claimed);
   }
   const legacyTo = tx?.to || o?.address || destFromDest20(o?.dest20) || '';
   const legacyFrom = tx?.from || tx?.vin?.[0]?.address || destFromDest20(tx?.vin?.[0]?.dest20) || '';
@@ -576,6 +578,7 @@ export function reserveAction(tx) {
     portalId,
     payoutPortalId,
     nanos,
+    opened,
     choice: tx?.choice,
     dest: kind === KIND_WITHDRAW ? legacyFrom : legacyTo,
     payout: kind === KIND_WITHDRAW ? legacyTo : legacyFrom,
@@ -588,11 +591,16 @@ export function verifyReservePayout(state, tx) {
   if (!state) return { ok: false, reason: 'no_vault' };
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   if (act.kind === KIND_LOCK) {
+    if (act.opened === false) return { ok: false, reason: 'bad_amount' };
     if (!(act.nanos > 0)) return { ok: false, reason: 'bad_amount' };
     if (act.dest && isShearAddress(act.dest)) return { ok: false, reason: 'shear1' };
     return { ok: true };
   }
   if (act.kind !== KIND_WITHDRAW) return { ok: true };
+  if (String(tx?.programId || '') !== RESERVE_PROGRAM) {
+    return { ok: false, reason: 'mint_forbidden' };
+  }
+  if (act.opened === false) return { ok: false, reason: 'mint_amount' };
   const p = act.portalId ? state?.portals?.[act.portalId] : null;
   if (act.payoutPortalId && p?.payoutPortalId && act.payoutPortalId !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
@@ -612,6 +620,7 @@ export function verifyReservePayout(state, tx) {
   const principal = asNum(asBig(p.staked) + asBig(p.idle));
   const interest = reserveInterestNanos(p.staked, state.epochBps);
   if (act.nanos > principal + interest) return { ok: false, reason: 'over_mint' };
+  if (act.nanos !== principal + interest) return { ok: false, reason: 'mint_amount' };
   const mintId = withdrawMintId(p.id || act.portalId, state.currentEpoch);
   if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
   return { ok: true };
@@ -654,7 +663,7 @@ export function applyReserveBlock({ state, block, nowMs }) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
     const act = reserveAction(tx);
-    if (!act) continue;
+    if (!act || act.opened === false) continue;
     if (act.kind === KIND_LOCK) {
       results.push({
         action: KIND_LOCK,
@@ -772,9 +781,12 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (principal <= 0) return { ok: false, reason: 'empty' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
   const interest = reserveInterestNanos(p.staked, state.epochBps);
+  const mintId = withdrawMintId(p.id, state.currentEpoch);
+  if (state.mintedIds && state.mintedIds[mintId]) {
+    return { ok: false, reason: 'double_mint' };
+  }
   let mint = null;
   if (interest > 0) {
-    const mintId = withdrawMintId(p.id, state.currentEpoch);
     const paid = payoutStakeReward({
       state,
       reward: interest,
@@ -787,6 +799,9 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!mint.ok) return { ok: false, reason: mint.reason };
   } else if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' })) {
     return { ok: false, reason: 'mint_forbidden' };
+  } else {
+    state.mintedIds = state.mintedIds || Object.create(null);
+    state.mintedIds[mintId] = true;
   }
   state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;

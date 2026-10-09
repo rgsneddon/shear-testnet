@@ -19,6 +19,8 @@ import {
   emptyVault,
   deposit,
   withdraw,
+  applyReserveBlock,
+  verifyReservePayout,
   portalIdFromDest,
   portalPrincipalNanos,
 } from '../../crypto/reserve_vault.js';
@@ -215,6 +217,108 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         txs: [{ kind: 'withdraw', vout: [{ ...back, kind: 'withdraw' }] }],
       }];
       assert.equal(noteCommitSpendableNanos(paidBlocks, dest, 30), nanos);
+    }
+  });
+
+  it('a withdraw mints only an opened principal plus interest, once per portal', () => {
+    const dest = stealthBox().dest;
+    const id = portalIdFromDest(dest);
+    for (const nanos of AMOUNTS) {
+      const portal = {
+        staked: nanos,
+        idle: 0,
+        payout: dest,
+        payoutPortalId: id,
+      };
+      const state = {
+        epochBps: 0,
+        currentEpoch: 4,
+        mintedIds: Object.create(null),
+        portals: { [id]: { ...portal } },
+      };
+      const opened = sealNote(nanos, { dest20: hash20FromAddress(dest), kind: 'withdraw' });
+      const tx = {
+        kind: 'withdraw',
+        programId: RESERVE_PROGRAM,
+        portalId: id,
+        payoutPortalId: id,
+        nanos,
+        vout: [{ ...opened, kind: 'withdraw', address: dest }],
+      };
+      const drawn = new Set();
+      const first = boundReserveWithdraw(tx, state, drawn);
+      assert.equal(first.ok, true, `${nanos} ${first.reason}`);
+      drawn.add(first.mintId);
+      const second = boundReserveWithdraw({ ...tx, id: 'again' }, state, drawn);
+      assert.equal(second.reason, 'double_mint', `${nanos} ${second.reason}`);
+      state.mintedIds[first.mintId] = true;
+      const later = boundReserveWithdraw({ ...tx, id: 'later' }, state, new Set());
+      assert.equal(later.reason, 'double_mint', `${nanos} later ${later.reason}`);
+
+      const foreign = boundReserveWithdraw({
+        ...tx,
+        programId: 'not-the-reserve',
+        vin: [{ commit: Buffer.alloc(32, 9) }],
+      }, {
+        epochBps: 0,
+        currentEpoch: 4,
+        portals: { [id]: { ...portal } },
+      });
+      assert.equal(foreign.reason, 'mint_forbidden', `${nanos} ${foreign.reason}`);
+
+      const broken = sealNote(nanos, { dest20: hash20FromAddress(dest), kind: 'withdraw' });
+      broken.valueProof = { ...broken.valueProof, z: Buffer.alloc(32, 1) };
+      const unopened = boundReserveWithdraw({
+        ...tx,
+        vout: [{ ...broken, kind: 'withdraw' }],
+      }, {
+        epochBps: 0,
+        currentEpoch: 4,
+        portals: { [id]: { ...portal } },
+      });
+      assert.equal(unopened.reason, 'mint_amount', `${nanos} ${unopened.reason}`);
+
+      const partial = sealNote(nanos > 1 ? nanos - 1 : 0, {
+        dest20: hash20FromAddress(dest),
+        kind: 'withdraw',
+      });
+      const short = boundReserveWithdraw({
+        ...tx,
+        nanos: nanos > 1 ? nanos - 1 : 0,
+        vout: [{ ...partial, kind: 'withdraw' }],
+      }, {
+        epochBps: 0,
+        currentEpoch: 9,
+        portals: { [id]: { ...portal } },
+      });
+      assert.equal(short.reason, 'mint_amount', `${nanos} short ${short.reason}`);
+
+      const vault = emptyVault();
+      assert.equal(deposit({ state: vault, dest, nanos, nowMs: 1, payout: dest, payoutPortalId: id }).ok, true);
+      const before = Number(vault.totalLockedNanos);
+      const skipped = applyReserveBlock({
+        state: vault,
+        block: {
+          txs: [{
+            kind: 'withdraw',
+            programId: 'not-the-reserve',
+            vin: [{ commit: Buffer.alloc(32, 4) }],
+            vout: [{ ...opened, kind: 'withdraw' }],
+          }],
+        },
+        nowMs: 1 + RESERVE_EPOCH_MS,
+      });
+      assert.equal(skipped.some((r) => r.action === 'withdraw' && r.ok === true), false);
+      assert.equal(Number(vault.totalLockedNanos), before);
+      const pay = verifyReservePayout(vault, {
+        kind: 'withdraw',
+        programId: 'not-the-reserve',
+        from: dest,
+        nanos,
+        vout: [{ ...opened, kind: 'withdraw' }],
+        nowMs: 1 + RESERVE_EPOCH_MS,
+      });
+      assert.equal(pay.reason, 'mint_forbidden', `${nanos} ${pay.reason}`);
     }
   });
 });

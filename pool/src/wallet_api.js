@@ -13,7 +13,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -205,17 +205,15 @@ export function reconstructOwner(store, address) {
   const rec = rowsToHistory(rows, dests, tipH);
   const mempool = store?.mempool || [];
   const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-  // One ledger. Opened notes only. A plaintext row cannot raise the figure.
-  // Portal principal is subtracted once from that sum.
+  // One ledger. Opened notes only. Portal principal is not a second debit.
   let nanos = 0;
   for (const d of dests) {
     const noteNanos = noteCommitSpendableNanos(store.blocks || [], d, tipH, {
       hashBonusNanos: bonus,
       coinbaseOnly: false,
     });
-    const locked = portalPrincipalNanos(store?.reserveVault, d);
     const opened = reconcileSpendable([], d, tipH, noteNanos);
-    nanos += opened > locked ? opened - locked : 0;
+    nanos += opened;
     nanos -= mempoolDebitNanos(mempool, d);
   }
   if (nanos < 0) nanos = 0;

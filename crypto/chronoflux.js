@@ -489,10 +489,15 @@ export function compactTx(tx) {
   if ((keepDest || poolWithdraw || reserveTx) && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
-    if (tx.admit_proof.blob || tx.admit_proof.v === 2) {
+    if (tx.admit_proof.blob || tx.admit_proof.v === 2 || tx.admit_proof.v === 3) {
+      let ver = 2;
+      try {
+        const blob = Buffer.from(asU8(tx.admit_proof.blob || []));
+        if (blob.length > 0 && blob[0] === 3) ver = 3;
+      } catch { /* a blob that is not bytes stays a version-2 label */ }
       out.admit_proof = {
         admit_proof: true,
-        v: 2,
+        v: ver,
         spendTag: tx.admit_proof.spendTag,
         blob: tx.admit_proof.blob,
         cTilde: tx.admit_proof.cTilde,

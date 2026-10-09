@@ -24,7 +24,18 @@ import {
   fluxsetFromBlocks,
   blindCommit,
 } from '../../crypto/admit.js';
-import { asU8, pointBytes, pointFrom, randomScalar, scalarBytes } from '../../crypto/note.js';
+import {
+  asU8,
+  pointBytes,
+  pointFrom,
+  randomScalar,
+  scalarBytes,
+  kernelExcess,
+  openedCoinbaseNanos,
+  sealCoinbaseNote,
+} from '../../crypto/note.js';
+import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
+import { portalPrincipalNanos } from '../../crypto/reserve_vault.js';
 import {
   walletAnchor,
   txDigestV3,
@@ -74,6 +85,10 @@ function stripPayer(tx) {
 
 async function sealEmpty(store, dest, now) {
   const { tpl } = store.template({ miner: dest, shareBits: 4, now });
+  const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+  const opening = pot?.r && pot.commit
+    ? { r: pot.r, v: openedCoinbaseNanos(pot), commit: Buffer.from(asU8(pot.commit)) }
+    : null;
   const block = {
     header: tpl.header,
     txs: tpl.txs,
@@ -91,7 +106,7 @@ async function sealEmpty(store, dest, now) {
     skipSharePow: true,
   }));
   assert.equal(got.ok, true, got.reason || 'seal');
-  return got;
+  return opening;
 }
 
 function anchorFlux(blocks, anchor) {
@@ -176,6 +191,77 @@ function proveFunded(tx, { x, index, flux, note, anchor }) {
   return settled;
 }
 
+function resealLock(tx, nanos) {
+  const prev = tx.vout[0] || {};
+  const d20 = Buffer.from(asU8(prev.dest20));
+  const sealed = sealCoinbaseNote(nanos, { dest20: d20, kind: 'lock' });
+  tx.vout = [{
+    ...sealed,
+    kind: 'lock',
+    dest20: d20,
+    portalId: prev.portalId || tx.portalId,
+  }];
+  tx.nanos = nanos;
+}
+
+/** Output opens to noteV − fee, and excess binds that sum to the spent note. */
+function proveBalanced(tx, { x, index, flux, note, anchor, noteR, noteV }) {
+  let fee = 0;
+  let settled = null;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const out = noteV - fee;
+    assert.ok(out > 0, `fee consumes the note ${noteV} fee ${fee}`);
+    resealLock(tx, out);
+    const t = randomScalar();
+    tx.fee = fee;
+    tx.anchor = anchor;
+    const probe = admitProveV3({
+      x,
+      index,
+      pubs: flux.pubs,
+      commits: flux.commits,
+      c: note.commit,
+      t,
+      ctx: Buffer.alloc(64, 9),
+    });
+    assert.ok(probe, `balance probe ${attempt}`);
+    tx.vin = [{ commit: Buffer.from(probe.cTilde) }];
+    tx.admit_proof = probe;
+    tx.excess = kernelExcess(tx.vout, [{ r: noteR, t: scalarBytes(t) }]);
+    assert.ok(tx.excess, 'excess');
+    const digest = txDigestV3(tx, MAGIC_TESTNET);
+    const ctx = admitV3Context({
+      magic: MAGIC_TESTNET,
+      anchor,
+      root: flux.jroot,
+      n: flux.pubs.length,
+      digest,
+    });
+    const real = admitProveV3({
+      x,
+      index,
+      pubs: flux.pubs,
+      commits: flux.commits,
+      c: note.commit,
+      t,
+      ctx,
+    });
+    assert.ok(real, `balance prove ${attempt}`);
+    tx.admit_proof = real;
+    tx.vin = [{ commit: Buffer.from(real.cTilde) }];
+    const need = levyNeed(tx);
+    if (need === fee) {
+      settled = real;
+      break;
+    }
+    fee = need;
+  }
+  assert.ok(settled, 'balanced fee did not settle');
+  assert.equal(tx.nanos + tx.fee, noteV);
+  assert.equal(tx.fee, levyNeed(tx));
+  return settled;
+}
+
 describe('ADMITv3 note consumption', () => {
   it('unfunded and public-debit typed txs never queue, at every amount', () => {
     const who = payer();
@@ -208,15 +294,18 @@ describe('ADMITv3 note consumption', () => {
     }
   });
 
-  it('an in-window lock spends the original note, and a bad proof does not', { timeout: 180_000 }, async () => {
+  it('an in-window lock spends the original note, and a bad proof does not', { timeout: 300_000 }, async () => {
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-fund-'));
     const store = createStore(dir);
     try {
       const readyAt = 17;
+      let noteOpen = null;
       for (let i = 0; i < readyAt - 1; i += 1) {
-        await sealEmpty(store, who.dest, T0 + i * TARGET_BLOCK_INTERVAL_MS);
+        const opening = await sealEmpty(store, who.dest, T0 + i * TARGET_BLOCK_INTERVAL_MS);
+        if (!noteOpen && opening) noteOpen = opening;
       }
+      assert.ok(noteOpen && noteOpen.v > AMOUNTS[AMOUNTS.length - 1], String(noteOpen && noteOpen.v));
       assert.equal(store.tip().height, readyAt - 1);
       const anchor = walletAnchor(readyAt);
       assert.equal(typeof anchor, 'number');
@@ -235,14 +324,73 @@ describe('ADMITv3 note consumption', () => {
       assert.ok(flux.pubs.length >= found.index + 1);
       assert.ok(flux.jroot && Buffer.from(asU8(flux.jroot)).length === 32);
 
-      const nanos = AMOUNTS[0];
+      assert.deepEqual(Buffer.from(asU8(pot.commit)), noteOpen.commit);
+      const spend = { x, index: found.index, flux, note: pot, anchor };
+      let mismatched = null;
+      for (const nanos of AMOUNTS) {
+        const mismatch = stripPayer(lockTx({
+          from: who.dest,
+          to: who.dest,
+          nanos,
+          id: `v3-mismatch-${nanos}`,
+        }));
+        proveFunded(mismatch, spend);
+        signSpendTx(mismatch, who.key);
+        const queuedMismatch = store.queueTx(mismatch);
+        assert.equal(queuedMismatch.ok, false, `${nanos} ${queuedMismatch.reason}`);
+        assert.equal(queuedMismatch.reason, 'commit_sum', `${nanos} ${queuedMismatch.reason}`);
+        mismatched = mismatch;
+      }
+      const nowMis = T0 + (readyAt - 1) * TARGET_BLOCK_INTERVAL_MS;
+      const tipMis = store.tip();
+      const bitsMis = Number(decodeHeader(Buffer.from(tipMis.header)).bits);
+      const builtMis = buildTemplate({
+        prev: tipMis.hash,
+        prevHeader: tipMis.header,
+        prevBlock: tipMis,
+        height: tipMis.height + 1,
+        miner: who.dest,
+        now: nowMis,
+        bits: bitsMis,
+        txs: [mismatched],
+        parentBlocks: store.blocks,
+      });
+      const appendedMis = await Promise.resolve(store.append({
+        header: builtMis.header,
+        txs: builtMis.txs,
+        samples: builtMis.samples,
+        shareBatch: builtMis.shareBatch || [],
+        miner: who.dest,
+        aLeaves: builtMis.aLeaves,
+        bLeaves: builtMis.bLeaves,
+        rootA: builtMis.rootA,
+        rootB: builtMis.rootB,
+        weight: builtMis.weight,
+      }, { trustedPowHash: easyPowHash(), skipSharePow: true }));
+      assert.equal(appendedMis.ok, false, appendedMis.reason);
+      assert.equal(appendedMis.reason, 'commit_sum', appendedMis.reason);
+      assert.equal(store.tip().height, readyAt - 1);
+      const vote = stripPayer(voteTx({
+        from: who.dest,
+        dest: who.dest,
+        choice: 'hold',
+        id: 'v3-vote-pot',
+      }));
+      proveFunded(vote, spend);
+      signSpendTx(vote, who.key);
+      const queuedVote = store.queueTx(vote);
+      assert.equal(queuedVote.ok, false, queuedVote.reason);
+      assert.equal(queuedVote.reason, 'commit_sum', queuedVote.reason);
+
       const lock = stripPayer(lockTx({
         from: who.dest,
         to: who.dest,
-        nanos,
-        id: `v3-lock-${nanos}`,
+        nanos: 1,
+        id: 'v3-lock-balanced',
       }));
-      const proof = proveFunded(lock, { x, index: found.index, flux, note: pot, anchor });
+      const proof = proveBalanced(lock, { ...spend, noteR: noteOpen.r, noteV: noteOpen.v });
+      assert.ok(lock.nanos > 0 && lock.nanos !== noteOpen.v);
+      assert.ok(!AMOUNTS.includes(lock.nanos), String(lock.nanos));
       signSpendTx(lock, who.key);
       const tag = Buffer.from(proof.spendTag).toString('hex');
 
@@ -286,7 +434,7 @@ describe('ADMITv3 note consumption', () => {
       const plainBlockTx = lockTx({
         from: who.dest,
         to: who.dest,
-        nanos,
+        nanos: AMOUNTS[0],
         id: 'block-plain',
       });
       const builtPlain = buildTemplate({
@@ -360,11 +508,26 @@ describe('ADMITv3 note consumption', () => {
       assert.equal(sealedTag, tag);
       const spent = fluxsetFromBlocks(store.blocks);
       assert.equal(spent.spendTags.has(tag), true);
+      assert.equal(Number(store.reserveVault.totalLockedNanos), lock.nanos);
+      const tipH = store.tip().height;
+      const walk = noteCommitSpendableNanos(store.blocks, who.dest, tipH);
+      assert.equal(store.spendableNanos(who.dest), walk);
+      const principal = portalPrincipalNanos(store.reserveVault, who.dest);
+      assert.equal(principal, lock.nanos);
+      assert.ok(walk > principal);
+
+      const reloaded = createStore(dir);
+      assert.equal(reloaded.tip().height, tipH);
+      assert.equal(Number(reloaded.reserveVault.totalLockedNanos), lock.nanos);
+      assert.equal(
+        reloaded.spendableNanos(who.dest),
+        noteCommitSpendableNanos(reloaded.blocks, who.dest, tipH),
+      );
 
       const again = stripPayer(lockTx({
         from: who.dest,
         to: who.dest,
-        nanos,
+        nanos: lock.nanos,
         id: 'v3-lock-again',
       }));
       again.anchor = anchor;

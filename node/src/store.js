@@ -51,7 +51,7 @@ import { hash20FromAddress } from '../../crypto/address.js';
 import { bLeafId } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, bonusUnitsBefore, verifyReservePayout, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, bonusUnitsBefore, verifyReservePayout } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -61,7 +61,7 @@ import {
 } from '../../crypto/vault_seal.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -816,13 +816,13 @@ export function createStore(dir, {
 
   function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
     void _rows;
+    // One note walk. Portal principal is vault state, not a second debit of
+    // those notes. A lock receipt is omitted by kind inside the walk.
     const noteNanos = noteCommitSpendableNanos(chain, addr, tipH, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       coinbaseOnly: false,
     });
-    const gross = reconcileSpendable([], addr, tipH, noteNanos);
-    const locked = portalPrincipalNanos(reserveVault, addr);
-    return gross > locked ? gross - locked : 0;
+    return reconcileSpendable([], addr, tipH, noteNanos);
   }
 
   const vortice = createVorticeCatalog(dir);
@@ -1937,6 +1937,15 @@ export function createStore(dir, {
       magic: MAGIC_TESTNET,
     });
     if (!noteFund.ok) return noteFund;
+    const summed = typedCommitSum(tx);
+    if (!summed.ok) return summed;
+    const drawn = new Set();
+    for (const m of mempool) {
+      const id = reserveWithdrawMintId(m, reserveVault);
+      if (id) drawn.add(id);
+    }
+    const stake = boundReserveWithdraw(tx, reserveVault, drawn);
+    if (!stake.ok) return stake;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
     if (debit && !noteBound) {

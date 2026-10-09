@@ -6,16 +6,16 @@
  * Spend authority is Ed25519 over shear-spend-v1 || packDigest.
  */
 import { createHash, createPublicKey, sign, verify } from 'node:crypto';
-import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN } from './asert.js';
+import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM } from './asert.js';
 import { levyTaxed, txAmountNanos } from './levy.js';
 import { isSpendableHeight } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy } from './dummy.js';
-import { asU8 } from './note.js';
+import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
-import { portalIdFromDest } from './reserve_vault.js';
+import { portalIdFromDest, withdrawMintId } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
 
 function dest20Of(addr) {
@@ -368,6 +368,39 @@ export function typedCommitRejected(tx) {
   return null;
 }
 
+/**
+ * A lock or vote spends hidden notes. The public outputs must open, and
+ * sum(C_out) + fee·G = sum(C̃) + excess·H. The excess scalar is the only
+ * opening material that survives compactTx. A vote receipt is 0, so a vote
+ * passes only when the spent notes open to the fee. Withdraw is a vault mint,
+ * not this sum.
+ */
+export function typedCommitSum(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote') return { ok: true, skip: true };
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  if (!outs.length) return { ok: false, reason: 'commit_sum' };
+  for (const o of outs) {
+    const raw = o?.valueProof?.v;
+    const v = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
+    if (!o?.commit || !o?.valueProof || !Number.isInteger(v) || v < 0) {
+      return { ok: false, reason: 'commit_sum' };
+    }
+    if (!verifySealedNote(o, v)) return { ok: false, reason: 'commit_sum' };
+  }
+  if (!verifyFlowConservation(tx)) return { ok: false, reason: 'commit_sum' };
+  return { ok: true };
+}
+
+/** Portal-epoch id for a withdraw. Empty when this tx is not a withdraw. */
+export function reserveWithdrawMintId(tx, reserveState = null) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'withdraw') return '';
+  const ref = reservePortalRef(tx);
+  if (!ref.ok || !ref.id) return '';
+  return withdrawMintId(ref.id, reserveState?.currentEpoch || 0);
+}
+
 function reserveKindOf(tx) {
   return String(tx?.kind || tx?.vout?.[0]?.kind || '');
 }
@@ -422,7 +455,7 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
  * A withdraw pays only stake that is already locked. Principal 0 cannot
  * withdraw any amount. The cap is principal plus this epoch's interest.
  */
-export function boundReserveWithdraw(tx, reserveState = null) {
+export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return { ok: true };
   if (Array.isArray(tx?.vout) && tx.vout.length > 1) return { ok: false, reason: 'mint_amount' };
@@ -455,7 +488,20 @@ export function boundReserveWithdraw(tx, reserveState = null) {
       return { ok: false, reason: 'payout_mismatch' };
     }
   }
-  return { ok: true, principal, claimed, cap };
+  // A foreign program does not own the vault, so it cannot mint.
+  if (String(tx?.programId || '') !== RESERVE_PROGRAM) {
+    return { ok: false, reason: 'mint_forbidden' };
+  }
+  // The label is not an amount. The output must open to exactly principal + interest.
+  if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
+    return { ok: false, reason: 'mint_amount' };
+  }
+  const mintId = withdrawMintId(ref.id, reserveState?.currentEpoch || 0);
+  const already = reserveState?.mintedIds && reserveState.mintedIds[mintId];
+  if (already || (drawn instanceof Set && drawn.has(mintId))) {
+    return { ok: false, reason: 'double_mint' };
+  }
+  return { ok: true, principal, claimed, cap, mintId };
 }
 
 export function fundedDebit(tx) {
@@ -539,6 +585,7 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
   const spent = new Map();
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
   const seenOwners = new Map();
+  const drawn = new Set();
   const have = (addr) => {
     const base = Math.max(0, Math.floor(Number(typeof spendableOf === 'function' ? spendableOf(addr) : 0) || 0));
     return base - (spent.get(addr) || 0);
@@ -546,7 +593,7 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
   for (const tx of body || []) {
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
-    const stake = boundReserveWithdraw(tx, reserveState);
+    const stake = boundReserveWithdraw(tx, reserveState, drawn);
     if (!stake.ok) return stake;
     const kind = reserveKindOf(tx);
     if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {
@@ -555,6 +602,7 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
     }
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;
+    if (stake.mintId) drawn.add(stake.mintId);
     const d = fundedDebit(tx);
     if (!d) continue;
     if (flowSendNeedsOpen(tx)) {

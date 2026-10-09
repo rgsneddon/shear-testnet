@@ -36,8 +36,6 @@ import {
   MTP_FUTURE_MS,
   HEADER_AHEAD_MS,
   medianTimePast,
-  GENESIS_BPS,
-  RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
 import { isHistoricalHeader } from '../../crypto/historical_prefix.js';
 import {
@@ -55,7 +53,6 @@ import {
   stashSharePow,
   dropSharePowKeys,
 } from '../../crypto/share_batch.js';
-import { interestNanos } from '../../crypto/reserve_oracle.js';
 import {
   bootReserveEvm,
   blockNeedsEvm,
@@ -73,8 +70,7 @@ import {
 } from '../../crypto/admit.js';
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, reserveAuth } from '../../crypto/spend.js';
-import { portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth } from '../../crypto/spend.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -1807,6 +1803,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   };
   const body = txs.slice(1);
   const seenOwners = new Map();
+  const drawnWithdraws = new Set();
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
     const anchored = checkAdmitAnchor(tx, height);
@@ -1860,7 +1857,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
-    const stake = boundReserveWithdraw(tx, reserveState);
+    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws);
     if (!stake.ok) return stake;
     if (flowNeedsDummy(tx)) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
@@ -1908,26 +1905,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     for (const o of outs) pushPub(o);
-    if (String(tx.kind || '') === 'withdraw' && String(tx.programId || '') === RESERVE_PROGRAM) {
-      const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);
-      const dest = String(tx.from || tx.vin?.[0]?.address || '');
-      const portals = reserveState?.portals || {};
-      const pid = String(tx.portalId || '').toLowerCase();
-      const portal = (pid && portals[pid])
-        || (dest && (portals[dest] || portals[portalIdFromDest(dest)]))
-        || null;
-      if (!portal) return { ok: false, reason: 'mint_amount' };
-      const staked = Number(portal.staked || 0);
-      const idle = Number(portal.idle || 0);
-      const principal = staked + idle;
-      const want = principal + interestNanos(staked, bps);
-      const o = tx.vout?.[0];
-      const claimed = o?.valueProof?.v != null ? Number(o.valueProof.v) : Number(o?.nanos ?? tx.nanos ?? 0);
-      const got = o?.commit
-        ? (verifySealedNote(o, want) ? want : -1)
-        : claimed;
-      if (got !== want) return { ok: false, reason: 'mint_amount' };
-    }
     const noteFund = verifyTypedAdmitFunding(tx, {
       height,
       blocks: Array.isArray(evmHistory) ? evmHistory : [],
@@ -1938,6 +1915,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (Array.isArray(noteFund.tags)) {
       for (const th of noteFund.tags) spentTags.add(th);
     }
+    const summed = typedCommitSum(tx);
+    if (!summed.ok) return summed;
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
@@ -1984,9 +1963,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       });
       if (!got.ok) return got;
     }
+    if (stake.mintId) drawnWithdraws.add(stake.mintId);
   }
   if (typeof spendableOf === 'function') {
-    const funded = verifyFundedBody(body, spendableOf, { seenDigests });
+    const funded = verifyFundedBody(body, spendableOf, { seenDigests, reserveState });
     if (!funded.ok) return funded;
   }
   const split = splitLevy(fees);
