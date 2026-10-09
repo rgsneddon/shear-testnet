@@ -30,7 +30,8 @@ describe('policy mempool', () => {
       fee: 2,
       vout: [{ address: dest, nanos: 1 }],
     }, { baseFee: 1 });
-    assert.equal(claim.ok, true);
+    assert.equal(claim.ok, false);
+    assert.equal(claim.reason, 'kind');
     book.txs[0].fee = 1;
     const drop = retargetMempool(book, 8);
     assert.ok(drop.dropped.length >= 1);

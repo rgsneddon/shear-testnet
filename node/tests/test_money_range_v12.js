@@ -16,6 +16,7 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { portalIdFromDest } from '../../crypto/reserve_vault.js';
 
 const KINDS = ['lock', 'vote', 'withdraw', 'vortice-register', 'evm-value', 'pool-withdraw'];
+const ADDRESS_KINDS = new Set(['vortice-register', 'evm-value', 'pool-withdraw']);
 
 function minerDest() {
   const id = newIdentity();
@@ -53,7 +54,8 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         const tx = plainTx(kind, dest, nanos);
         const parked = admitMempool(emptyMempool(), tx, { baseFee: 1 });
         assert.equal(parked.ok, false, kind);
-        assert.equal(parked.reason, 'range_proof', `${kind} ${nanos}`);
+        const want = ADDRESS_KINDS.has(kind) ? 'kind' : 'range_proof';
+        assert.equal(parked.reason, want, `${kind} ${nanos}`);
       }
       const bare = plainTx('withdraw', dest, nanos);
       assert.equal(boundReserveWithdraw(bare, { portals: {}, epochBps: 0 }).reason, 'insufficient');
@@ -118,7 +120,7 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
           vin: [{ address: dest }],
           vout: [{ ...note, kind: 'withdraw', address: dest }],
         },
-        reason: 'insufficient',
+        reason: 'admit_version',
         reserveState: { portals: {}, epochBps: 0 },
       });
       cases.push({
@@ -131,7 +133,7 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
           vin: [{ address: dest }],
           vout: [{ ...note, kind: 'withdraw', address: dest }],
         },
-        reason: 'insufficient',
+        reason: 'admit_version',
         reserveState: {
           epochBps: 0,
           portals: { [portalIdFromDest(dest)]: { staked: 0, idle: Math.max(0, nanos - 1) } },

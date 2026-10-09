@@ -51,7 +51,7 @@ import { hash20FromAddress } from '../../crypto/address.js';
 import { bLeafId } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, bonusUnitsBefore, verifyReservePayout } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, bonusUnitsBefore, verifyReservePayout, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -61,7 +61,7 @@ import {
 } from '../../crypto/vault_seal.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected } from '../../crypto/spend.js';
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -816,13 +816,16 @@ export function createStore(dir, {
 
   function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
     void _rows;
-    // One note walk. Portal principal is vault state, not a second debit of
-    // those notes. A lock receipt is omitted by kind inside the walk.
+    // The note walk still holds a pot a v3 lock spent, because that spend
+    // hides the leaf. Subtract the vault principal once so the same value
+    // is not spendable again. Lock receipts are already omitted by kind.
     const noteNanos = noteCommitSpendableNanos(chain, addr, tipH, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       coinbaseOnly: false,
     });
-    return reconcileSpendable([], addr, tipH, noteNanos);
+    const opened = reconcileSpendable([], addr, tipH, noteNanos);
+    const locked = Math.max(0, Math.floor(Number(portalPrincipalNanos(reserveVault, addr)) || 0));
+    return Math.max(0, opened - locked);
   }
 
   const vortice = createVorticeCatalog(dir);
@@ -1919,6 +1922,8 @@ export function createStore(dir, {
     }
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
+    const kindGate = v12KindRejected(tx);
+    if (kindGate) return kindGate;
     const spentNow = new Set(liveFlux.spendTags || []);
     for (const m of mempool) {
       const tags = [];
@@ -1948,19 +1953,10 @@ export function createStore(dir, {
     if (!stake.ok) return stake;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
-    if (debit && !noteBound) {
-      const tipH = Number(t?.height || 0);
-      const haveChain = destSpendableNanos(debit.from, tipH) - mempoolDebitNanos(mempool, debit.from);
-      const have = paintedHold ? haveChain + paintedOwedNanos : haveChain;
-      if (have < debit.nanos) {
-        console.error(JSON.stringify({
-          event: 'insufficient',
-          from: debit.from,
-          need: debit.nanos,
-          have,
-        }));
-        return { ok: false, reason: 'insufficient', need: debit.nanos, have };
-      }
+    // A painted owed figure and the note walk are not inputs. Only a
+    // note-bound Flow spend carries value.
+    if (debit && !(noteBound && flowNeedsDummy(tx))) {
+      return { ok: false, reason: 'kind', from: debit.from };
     }
     if (debit && flowSendNeedsOpen(tx)) {
       if (!verifySpendSig(tx)) {

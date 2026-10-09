@@ -115,8 +115,9 @@ describe('privacy.walk', () => {
     }), spendKey);
     assert.equal(verifySpendSig(tx), true);
     assert.equal(SPENDABLE_CONFIRMATIONS, 9);
-    const funded = verifyFundedBody([tx], (addr) => (addr === bobPay.dest ? 3 * NANOS_PER_SHE : 0));
-    assert.equal(funded.ok, true, funded.reason);
+    const funded = verifyFundedBody([tx], () => Number.MAX_SAFE_INTEGER);
+    assert.equal(funded.ok, false, funded.reason);
+    assert.equal(funded.reason, 'kind');
     assert.notEqual(change.dest, bobPay.dest);
     const foreign = generateKeyPairSync('ed25519');
     const stolen = signSpendTx({ ...tx, sig: undefined, spendPub: undefined }, foreign.privateKey);

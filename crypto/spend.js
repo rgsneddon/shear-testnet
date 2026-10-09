@@ -1,8 +1,6 @@
 /**
- * Funded-spend law. A dest cannot pay more than its mature Continuum.
- * Incoming in the same block / mempool is not spendable (9-conf).
- * Outgoing on the sealed book always debits, even before 6 confs —
- * otherwise a dest could send, wait, and send the same coins again.
+ * Funded-spend law. v12 value comes from a balanced ADMITv3 input.
+ * An address balance is not value, and spendableOf is not consulted.
  * Spend authority is Ed25519 over shear-spend-v1 || packDigest.
  */
 import { createHash, createPublicKey, sign, verify } from 'node:crypto';
@@ -354,6 +352,24 @@ function v3CommitCovers(tx, vin) {
   return false;
 }
 
+/** Body kinds that may move value. Anything else is an address-funded mint. */
+const V12_VALUE_KINDS = new Set([
+  'send',
+  'transfer',
+  'lock',
+  'vote',
+  'withdraw',
+  'b-spend',
+]);
+
+/** claim, evm-value, pool-withdraw, vortice-register, user-spend, and unknown kinds. */
+export function v12KindRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
+  if (V12_VALUE_KINDS.has(kind)) return null;
+  return { ok: false, reason: 'kind' };
+}
+
 /** vin.commit on a non-Flow kind has no membership proof. A v3 input may carry C̃. */
 export function typedCommitRejected(tx) {
   if (!tx || tx.coinbase || flowNeedsDummy(tx)) return null;
@@ -586,21 +602,19 @@ export function mempoolDebitNanos(txs, address) {
 }
 
 /**
- * Walk body txs in order. Same-block incoming is not credited.
- * `spendableOf(addr)` is mature Continuum at the parent tip.
+ * Walk body txs in order. An address balance is not value: a debit that is
+ * not a note-bound Flow spend is rejected. `spendableOf` is ignored.
  */
 export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null } = {}) {
-  const spent = new Map();
+  void spendableOf;
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
   const seenOwners = new Map();
   const drawn = new Set();
-  const have = (addr) => {
-    const base = Math.max(0, Math.floor(Number(typeof spendableOf === 'function' ? spendableOf(addr) : 0) || 0));
-    return base - (spent.get(addr) || 0);
-  };
   for (const tx of body || []) {
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
+    const kindGate = v12KindRejected(tx);
+    if (kindGate) return kindGate;
     const stake = boundReserveWithdraw(tx, reserveState, drawn);
     if (!stake.ok) return stake;
     const kind = reserveKindOf(tx);
@@ -625,13 +639,9 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
       }
     }
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
-    if (noteBound && !flowNeedsDummy(tx)) {
-      return { ok: false, reason: 'admit_membership', from: d.from };
+    if (!(noteBound && flowNeedsDummy(tx))) {
+      return { ok: false, reason: 'kind', from: d.from };
     }
-    if (!noteBound && have(d.from) < d.nanos) {
-      return { ok: false, reason: 'insufficient', from: d.from, need: d.nanos, have: have(d.from) };
-    }
-    spent.set(d.from, (spent.get(d.from) || 0) + d.nanos);
   }
   return { ok: true };
 }

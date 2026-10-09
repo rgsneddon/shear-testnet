@@ -251,7 +251,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const pool = poolBox.dest;
     const unsigned = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100 });
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
-    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'range_proof');
+    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'kind');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-bound-'));
     const store = createStore(dir);
     assert.equal(store.queueTx(unsigned).reason, 'custodial_pull');

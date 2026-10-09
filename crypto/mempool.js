@@ -28,10 +28,7 @@ export function admitMempool(pool, tx, opts = {}) {
   const allowed = new Set([
     MEMPOOL_KIND_SEND,
     MEMPOOL_KIND_B_SPEND,
-    'claim',
-    'evm-value',
-    'pool-withdraw',
-    'vortice-register',
+    'transfer',
     'lock',
     'vote',
     'withdraw',

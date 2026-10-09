@@ -70,7 +70,7 @@ import {
 } from '../../crypto/admit.js';
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth } from '../../crypto/spend.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected } from '../../crypto/spend.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -1892,8 +1892,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
-    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws);
-    if (!stake.ok) return stake;
+    const kindGate = v12KindRejected(tx);
+    if (kindGate) return kindGate;
     if (flowNeedsDummy(tx)) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
@@ -1952,6 +1952,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     const summed = typedCommitSum(tx);
     if (!summed.ok) return summed;
+    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws);
+    if (!stake.ok) return stake;
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };

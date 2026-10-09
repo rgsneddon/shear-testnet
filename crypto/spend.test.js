@@ -128,7 +128,7 @@ describe('funded spend / no double-spend', () => {
     assert.equal(matureSpendableNanos(rows, dest, 10, SPENDABLE_CONFIRMATIONS), 7 * NANOS_PER_SHE);
   });
 
-  it('rejects two spends of the same mature coins in one body', () => {
+  it('an address balance does not fund a send, at any amount', () => {
     const id = newIdentity();
     const { privateKey: eph } = generateKeyPairSync('x25519');
     const pay = silentPay(id.paymentCodeFull, eph);
@@ -136,7 +136,7 @@ describe('funded spend / no double-spend', () => {
     const to = from;
     const nanos = NANOS_PER_SHE;
     const fee = levyNanos(nanos);
-    const spendableOf = (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0);
+    const spendableOf = () => Number.MAX_SAFE_INTEGER;
     const rec = recognizeSilentDest({
       viewKey: id.viewKey, spendPub: id.spendPub, dest: from, ephPub: pay.ephPub,
     });
@@ -152,13 +152,14 @@ describe('funded spend / no double-spend', () => {
       vout: [{ address: to, nanos: amount }],
     }, key);
     const once = verifyFundedBody([tx('a', nanos)], spendableOf);
-    assert.equal(once.ok, true, once.reason);
+    assert.equal(once.ok, false);
+    assert.equal(once.reason, 'kind');
     const twice = verifyFundedBody([tx('a', nanos), tx('b', nanos)], spendableOf);
     assert.equal(twice.ok, false);
-    assert.equal(twice.reason, 'replay');
-    const over = verifyFundedBody([tx('a', nanos), tx('b', nanos + NANOS_PER_SHE)], spendableOf);
+    assert.equal(twice.reason, 'kind');
+    const over = verifyFundedBody([tx('a', 1), tx('b', nanos + NANOS_PER_SHE)], spendableOf);
     assert.equal(over.ok, false);
-    assert.equal(over.reason, 'insufficient');
+    assert.equal(over.reason, 'kind');
   });
 
   it('mempool already-queued debit blocks a second pull of the same coins', () => {
@@ -277,9 +278,9 @@ describe('funded spend / no double-spend', () => {
     assert.equal(destMap.ok, true, destMap.reason);
     const unbound = { ...tx, vin: [{ address: from }] };
     signSpendTx(unbound, key);
-    const refused = verifyFundedBody([unbound], () => 0);
+    const refused = verifyFundedBody([unbound], () => Number.MAX_SAFE_INTEGER);
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'insufficient');
+    assert.equal(refused.reason, 'kind');
   });
 
   it('a plaintext vote is not funded by a balance', () => {

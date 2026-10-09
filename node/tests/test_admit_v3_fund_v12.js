@@ -13,11 +13,11 @@ import { createStore } from '../src/store.js';
 import { buildTemplate } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
-import { newIdentity, encodeDest } from '../../crypto/address.js';
+import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
 import { lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
-import { signSpendTx } from '../../crypto/spend.js';
+import { signSpendTx, typedCommitSum } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
-import { levyNeed } from '../../crypto/levy.js';
+import { levyNeed, splitLevy } from '../../crypto/levy.js';
 import {
   admitProveV3,
   admitPub,
@@ -34,6 +34,7 @@ import {
   kernelExcess,
   openedCoinbaseNanos,
   sealCoinbaseNote,
+  sealNote,
 } from '../../crypto/note.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { portalPrincipalNanos } from '../../crypto/reserve_vault.js';
@@ -388,6 +389,7 @@ describe('ADMITv3 note consumption', () => {
       assert.equal(queuedVote.ok, false, queuedVote.reason);
       assert.equal(queuedVote.reason, 'commit_sum', queuedVote.reason);
 
+      let unbalanced = null;
       for (const nanos of AMOUNTS) {
         const withdraw = stripPayer(withdrawTx({
           from: who.dest,
@@ -404,7 +406,47 @@ describe('ADMITv3 note consumption', () => {
         const parked = admitMempool(emptyMempool(), withdraw, { baseFee: 1 });
         assert.equal(parked.ok, false, `${nanos} ${parked.reason}`);
         assert.equal(parked.reason, 'commit_sum', `${nanos} ${parked.reason}`);
+        unbalanced = withdraw;
       }
+      const openedIn = noteOpen.v;
+      const feeSpread = [0, 1, Math.floor(openedIn / 2), openedIn, openedIn + 1];
+      for (const fee of feeSpread) {
+        const trial = { ...unbalanced, fee, id: `v3-withdraw-fee-${fee}` };
+        const summed = typedCommitSum(trial);
+        if (fee === openedIn) {
+          assert.equal(summed.ok, true, `${fee} ${summed.reason}`);
+        } else {
+          assert.equal(summed.ok, false, String(fee));
+          assert.equal(summed.reason, 'commit_sum', `${fee} ${summed.reason}`);
+        }
+      }
+      const tipBeforeFee = store.tip().height;
+      const builtFee = buildTemplate({
+        prev: store.tip().hash,
+        prevHeader: store.tip().header,
+        prevBlock: store.tip(),
+        height: store.tip().height + 1,
+        miner: who.dest,
+        now: T0 + (readyAt - 1) * TARGET_BLOCK_INTERVAL_MS,
+        bits: Number(decodeHeader(Buffer.from(store.tip().header)).bits),
+        txs: [unbalanced],
+        parentBlocks: store.blocks,
+      });
+      const appendedFee = await Promise.resolve(store.append({
+        header: builtFee.header,
+        txs: builtFee.txs,
+        samples: builtFee.samples,
+        shareBatch: builtFee.shareBatch || [],
+        miner: who.dest,
+        aLeaves: builtFee.aLeaves,
+        bLeaves: builtFee.bLeaves,
+        rootA: builtFee.rootA,
+        rootB: builtFee.rootB,
+        weight: builtFee.weight,
+      }, { trustedPowHash: easyPowHash(), skipSharePow: true }));
+      assert.equal(appendedFee.ok, false, appendedFee.reason);
+      assert.equal(appendedFee.reason, 'commit_sum', appendedFee.reason);
+      assert.equal(store.tip().height, tipBeforeFee);
 
       const lock = stripPayer(lockTx({
         from: who.dest,
@@ -535,18 +577,94 @@ describe('ADMITv3 note consumption', () => {
       assert.equal(Number(store.reserveVault.totalLockedNanos), lock.nanos);
       const tipH = store.tip().height;
       const walk = noteCommitSpendableNanos(store.blocks, who.dest, tipH);
-      assert.equal(store.spendableNanos(who.dest), walk);
       const principal = portalPrincipalNanos(store.reserveVault, who.dest);
       assert.equal(principal, lock.nanos);
       assert.ok(walk > principal);
+      const spendable = walk - principal;
+      assert.ok(spendable < walk);
+      assert.equal(store.spendableNanos(who.dest), spendable);
+      const cb = store.blocks[store.blocks.length - 1].txs[0];
+      const openedKind = (kind) => {
+        let sum = 0;
+        for (const o of cb.vout || []) {
+          if (o.kind !== kind) continue;
+          const v = openedCoinbaseNanos(o);
+          assert.notEqual(v, null, kind);
+          sum += v;
+        }
+        return sum;
+      };
+      const split = splitLevy(lock.fee);
+      assert.equal(openedKind('finder-fee'), split.finder);
+      assert.equal(openedKind('reserve-fee'), split.reserve);
 
       const reloaded = createStore(dir);
       assert.equal(reloaded.tip().height, tipH);
       assert.equal(Number(reloaded.reserveVault.totalLockedNanos), lock.nanos);
-      assert.equal(
-        reloaded.spendableNanos(who.dest),
-        noteCommitSpendableNanos(reloaded.blocks, who.dest, tipH),
-      );
+      const reWalk = noteCommitSpendableNanos(reloaded.blocks, who.dest, tipH);
+      const rePrincipal = portalPrincipalNanos(reloaded.reserveVault, who.dest);
+      assert.equal(rePrincipal, lock.nanos);
+      assert.ok(reWalk > rePrincipal);
+      assert.equal(reloaded.spendableNanos(who.dest), reWalk - rePrincipal);
+
+      const d20 = hash20FromAddress(who.dest);
+      const plainKinds = ['claim', 'evm-value', 'vortice-register', 'user-spend', 'no-such-kind'];
+      const plainAmounts = [1, walk];
+      for (const kind of plainKinds) {
+        for (const nanos of plainAmounts) {
+          const note = sealNote(nanos, { dest20: d20, kind });
+          const plain = {
+            id: `plain-${kind}-${nanos}`,
+            kind,
+            from: who.dest,
+            to: who.dest,
+            nanos,
+            fee: 0,
+            vin: [{ address: who.dest }],
+            vout: [{ ...note, kind, address: who.dest }],
+          };
+          const queuedPlainKind = store.queueTx(plain);
+          assert.equal(queuedPlainKind.ok, false, `${kind} ${nanos} ${queuedPlainKind.reason}`);
+          assert.equal(queuedPlainKind.reason, 'kind', `${kind} ${nanos} ${queuedPlainKind.reason}`);
+        }
+      }
+      const tipBeforePlain = store.tip().height;
+      const plainBlock = {
+        id: 'block-evm-walk',
+        kind: 'evm-value',
+        from: who.dest,
+        to: who.dest,
+        nanos: walk,
+        fee: 0,
+        vin: [{ address: who.dest }],
+        vout: [{ ...sealNote(walk, { dest20: d20, kind: 'evm-value' }), kind: 'evm-value', address: who.dest }],
+      };
+      const builtPlainKind = buildTemplate({
+        prev: store.tip().hash,
+        prevHeader: store.tip().header,
+        prevBlock: store.tip(),
+        height: tipBeforePlain + 1,
+        miner: who.dest,
+        now: T0 + tipBeforePlain * TARGET_BLOCK_INTERVAL_MS,
+        bits: Number(decodeHeader(Buffer.from(store.tip().header)).bits),
+        txs: [plainBlock],
+        parentBlocks: store.blocks,
+      });
+      const appendedPlainKind = await Promise.resolve(store.append({
+        header: builtPlainKind.header,
+        txs: builtPlainKind.txs,
+        samples: builtPlainKind.samples,
+        shareBatch: builtPlainKind.shareBatch || [],
+        miner: who.dest,
+        aLeaves: builtPlainKind.aLeaves,
+        bLeaves: builtPlainKind.bLeaves,
+        rootA: builtPlainKind.rootA,
+        rootB: builtPlainKind.rootB,
+        weight: builtPlainKind.weight,
+      }, { trustedPowHash: easyPowHash(), skipSharePow: true }));
+      assert.equal(appendedPlainKind.ok, false, appendedPlainKind.reason);
+      assert.equal(appendedPlainKind.reason, 'kind', appendedPlainKind.reason);
+      assert.equal(store.tip().height, tipBeforePlain);
 
       const again = stripPayer(lockTx({
         from: who.dest,

@@ -57,18 +57,20 @@ describe('Flow spend is an Ed25519 signature', () => {
     const { tx, from } = signedSend(id);
     assert.equal(flowSendNeedsOpen(tx), true);
     assert.equal(verifySpendSig(tx), true);
-    const got = verifyFundedBody([tx], (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0));
-    assert.equal(got.ok, true, got.reason);
+    const got = verifyFundedBody([tx], () => Number.MAX_SAFE_INTEGER);
+    assert.equal(got.ok, false, got.reason);
+    assert.equal(got.reason, 'kind');
   });
 
   it('rejects replay of the same signed body', () => {
     const id = newIdentity();
     const { tx, from } = signedSend(id);
     const copy = { ...tx, id: 'copy' };
-    const got = verifyFundedBody([tx, copy], (addr) => (addr === from ? 10 * NANOS_PER_SHE : 0));
+    const got = verifyFundedBody([tx, copy], () => Number.MAX_SAFE_INTEGER);
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'replay');
+    assert.equal(got.reason, 'kind');
     assert.equal(spendPackDigest(tx).equals(spendPackDigest(copy)), true);
+    void from;
   });
 
   it('fails if the amount is mutated after signing', () => {
