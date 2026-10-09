@@ -1093,7 +1093,6 @@ export function createStore(dir, {
     segmented = true;
     writeLoadSeal(blocks);
     resetFrameHash();
-    persistBookSnap();
   }
 
   function tip() {
@@ -1429,31 +1428,6 @@ export function createStore(dir, {
       vault: rows.length ? vaultAfter(rows.length - 1) : emptyVault(),
       timeOf: (block) => blockTimeMs(block),
     });
-  }
-
-  function repairVaultAfterAdopt(lca) {
-    if (vaultSeal && blocks.length && !chainHasSealAncestry(blocks, vaultSeal)) {
-      vaultCkpt = vaultCkpt.filter((c) => c.at < lca);
-      syncBlankFlag();
-      saveReserve();
-      return;
-    }
-    vaultCkpt = vaultCkpt.filter((c) => c.at < lca);
-    if (unitAt.length > lca) unitAt.length = lca;
-    const tipAt = blocks.length - 1;
-    const last = vaultCkpt.length ? vaultCkpt[vaultCkpt.length - 1] : null;
-    const trial = last ? cloneVault(last.vault) : cloneVault(emptyVault());
-    const start = last ? last.at + 1 : 0;
-    for (let i = start; i <= tipAt; i += 1) {
-      const unit = hashBonusUnitNanos(trial.liveHashBonusNanos);
-      if (i >= lca || i === unitAt.length) unitAt.push(unit);
-      commitReserveApply(applyReserveBlock({ state: trial, block: blocks[i], nowMs: blockTimeMs(blocks[i]) }));
-      if (keepOwedIndex(i, tipAt)) vaultCkpt.push({ at: i, vault: cloneVault(trial) });
-    }
-    installVault(trial);
-    refreshVaultSeal();
-    syncBlankFlag();
-    saveReserve();
   }
 
   // Trailer must match ids derived from this block's own b-spend txs.
@@ -3214,6 +3188,168 @@ export function createStore(dir, {
     return apply(checked);
   }
 
+  // A copy appendFluxBlock can extend without touching the live book.
+  function detachFlux(flux) {
+    if (!flux || !Array.isArray(flux.pubs) || !(flux.spendTags instanceof Set)) return emptyFluxset();
+    return {
+      pubs: flux.pubs.slice(),
+      commits: (flux.commits || []).slice(),
+      spendTags: new Set(flux.spendTags),
+      jroot: flux.jroot ? Buffer.from(flux.jroot) : null,
+      frontier: flux.frontier ? Buffer.from(flux.frontier) : null,
+      zeroFrontier: flux.zeroFrontier ? Buffer.from(flux.zeroFrontier) : null,
+      zeroRoot: flux.zeroRoot ? Buffer.from(flux.zeroRoot) : null,
+    };
+  }
+
+  function fileBytes(file) {
+    try {
+      if (!fs.existsSync(file)) return null;
+      return fs.readFileSync(file);
+    } catch {
+      return null;
+    }
+  }
+
+  function putFileBytes(file, bytes) {
+    if (bytes == null) {
+      try { if (fs.existsSync(file)) fs.rmSync(file); } catch { /* absent before publish */ }
+      return;
+    }
+    fs.writeFileSync(file, bytes);
+  }
+
+  function captureAdoptImage() {
+    return {
+      spent: new Set(spentB),
+      blocks: blocks.slice(),
+      liveFlux,
+      anchorAt,
+      supplyAt,
+      supplyTip,
+      unitAt,
+      vaultCkpt,
+      vault: cloneVault(reserveVault),
+      vaultSeal,
+      owedRows,
+      acceptedSeries,
+      owedSeriesAll,
+      owedCkpt,
+      sideAnchor,
+      sideBlocks: sideBlocks.slice(),
+      mempool: mempool.slice(),
+      mempoolVault,
+      seedCache,
+      evmSession,
+      reorgs: reorgs.slice(),
+      explorer: explorer.slice(),
+      policy: policyState,
+      headers: new Map(headers),
+      forks: new Map(forks),
+      snap: fileBytes(snapFile),
+      vaultBytes: fileBytes(vaultFile),
+      explorerBytes: fileBytes(explorerFile),
+      policyBytes: fileBytes(policyStatePath),
+    };
+  }
+
+  function restoreAdoptImage(image) {
+    spentB.clear();
+    for (const id of image.spent) spentB.add(id);
+    blocks.length = 0;
+    for (const b of image.blocks) blocks.push(b);
+    liveFlux = image.liveFlux;
+    anchorAt = image.anchorAt;
+    supplyAt = image.supplyAt;
+    supplyTip = image.supplyTip;
+    unitAt = image.unitAt;
+    vaultCkpt = image.vaultCkpt;
+    installVault(image.vault);
+    vaultSeal = image.vaultSeal;
+    owedRows = image.owedRows;
+    acceptedSeries = image.acceptedSeries;
+    owedSeriesAll = image.owedSeriesAll;
+    owedCkpt = image.owedCkpt;
+    sideAnchor = image.sideAnchor;
+    sideBlocks = image.sideBlocks;
+    mempool.length = 0;
+    mempool.push(...image.mempool);
+    mempoolVault = image.mempoolVault;
+    seedCache = image.seedCache;
+    evmSession = image.evmSession;
+    reorgs.length = 0;
+    reorgs.push(...image.reorgs);
+    explorer.length = 0;
+    explorer.push(...image.explorer);
+    policyState = image.policy;
+    headers.clear();
+    for (const [k, v] of image.headers) headers.set(k, v);
+    forks.clear();
+    for (const [k, v] of image.forks) forks.set(k, v);
+    try { rewriteChain(); } catch { /* memory is already the pre-publish book */ }
+    putFileBytes(snapFile, image.snap);
+    putFileBytes(vaultFile, image.vaultBytes);
+    putFileBytes(explorerFile, image.explorerBytes);
+    putFileBytes(policyStatePath, image.policyBytes);
+    clearReorgMarkers();
+  }
+
+  function stageAdoptFlux(lca, fromBlocks, accepted, connected, keptFlux, adoptedTip) {
+    let flux;
+    let anchors;
+    if (keptFlux) {
+      flux = detachFlux(keptFlux);
+      if (lca > 0) {
+        const keepH = Number(fromBlocks[lca - 1]?.height) || lca;
+        anchors = anchorAt.slice(0, keepH + 1).map((rec) => (rec ? { ...rec } : rec));
+      } else {
+        anchors = [];
+      }
+    } else {
+      flux = emptyFluxset();
+      anchors = [];
+      for (const b of accepted.slice(0, lca)) {
+        appendFluxBlock(flux, b);
+        const h = Number(b?.height) || 0;
+        anchors[h] = anchorRecord(flux, keepsFrontier(h, adoptedTip, haltDepth));
+      }
+    }
+    for (const b of connected) {
+      appendFluxBlock(flux, b);
+      const h = Number(b?.height) || 0;
+      anchors[h] = anchorRecord(flux, keepsFrontier(h, adoptedTip, haltDepth));
+    }
+    retainFrontierBlobs(anchors, adoptedTip, haltDepth);
+    return { flux, anchors };
+  }
+
+  // Replay the vault on a clone. The live checkpoints and unit list stay put until publish.
+  function stageAdoptVault(lca, accepted, failAt) {
+    if (vaultSeal && accepted.length && !chainHasSealAncestry(accepted, vaultSeal)) {
+      return {
+        blankOnly: true,
+        ckpt: vaultCkpt.filter((c) => c.at < lca).map((c) => ({ at: c.at, vault: cloneVault(c.vault) })),
+      };
+    }
+    const ckpt = vaultCkpt.filter((c) => c.at < lca).map((c) => ({ at: c.at, vault: cloneVault(c.vault) }));
+    const units = unitAt.slice(0, Math.min(unitAt.length, lca));
+    const tipAt = accepted.length - 1;
+    const last = ckpt.length ? ckpt[ckpt.length - 1] : null;
+    const trial = last ? cloneVault(last.vault) : cloneVault(emptyVault());
+    const start = last ? last.at + 1 : 0;
+    for (let i = start; i <= tipAt; i += 1) {
+      const unit = hashBonusUnitNanos(trial.liveHashBonusNanos);
+      if (i >= lca || i === units.length) units.push(unit);
+      if (Number.isInteger(failAt) && failAt >= 0 && i === lca + failAt) throw new Error('epoch_open');
+      commitReserveApply(applyReserveBlock({ state: trial, block: accepted[i], nowMs: blockTimeMs(accepted[i]) }));
+      if (keepOwedIndex(i, tipAt)) ckpt.push({ at: i, vault: cloneVault(trial) });
+    }
+    let seal = vaultSeal;
+    const next = deriveVaultSeal(accepted, trial);
+    if (next && (!seal || chainHasSealAncestry(accepted, seal))) seal = next;
+    return { blankOnly: false, ckpt, unitAt: units, trial, seal };
+  }
+
   function adopt(fork, verifyOpts = {}) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const verified = verifyOpts.offLoopPow ? verifyForkAsync(fork, verifyOpts) : verifyFork(fork, verifyOpts);
@@ -3279,6 +3415,7 @@ export function createStore(dir, {
           tip: tip(),
         };
       }
+      // Fault injection for the adopt tests. A peer ingest does not pass these fields.
       if (verifyOpts.failCommitAfterSpent === true) {
         clearReorgMarkers();
         return { ok: false, reason: 'adopt_aborted', tip: tip() };
@@ -3286,99 +3423,126 @@ export function createStore(dir, {
       const burialTip = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
         ? verified.burialTip
         : (Number(accepted[accepted.length - 1]?.height) || accepted.length);
-      const keptFlux = fluxKeptThrough(lca, fromBlocks);
-      const prefixAnchors = anchorAt.slice();
-      const prefixSupply = lca > 0
-        ? supplyCarriedTo(lca - 1, burialTip)
-        : emptySupplyState(genesisHeaderMs(accepted) || 0);
-      if (!prefixSupply) {
-        clearReorgMarkers();
-        return { ok: false, reason: 'supply', tip: tip() };
-      }
-      const adoptedSupply = supplyAt.slice(0, lca);
-      let carriedSupply = prefixSupply;
-      const units = Array.isArray(verified.units) ? verified.units : null;
-      for (let i = lca; i < accepted.length; i += 1) {
-        const block = accepted[i];
-        const stepped = supplyStep(carriedSupply, block, {
-          unit: units && units[i] != null ? units[i] : undefined,
-          height: Number(block?.height) || i + 1,
-          tipHeight: burialTip,
-          genesisMs: carriedSupply.genesisMs,
-          blockHash: block?.hash,
-          magic: MAGIC_TESTNET,
-        });
-        if (!stepped.ok) {
+      const adoptedTip = Number(accepted[accepted.length - 1]?.height) || accepted.length;
+      let adoptedSupply;
+      let stagedFlux;
+      let stagedVault;
+      try {
+        const keptFlux = fluxKeptThrough(lca, fromBlocks);
+        const prefixSupply = lca > 0
+          ? supplyCarriedTo(lca - 1, burialTip)
+          : emptySupplyState(genesisHeaderMs(accepted) || 0);
+        if (!prefixSupply) {
           clearReorgMarkers();
-          return { ok: false, reason: stepped.reason || 'supply', tip: tip() };
+          return { ok: false, reason: 'supply', tip: tip() };
         }
-        carriedSupply = stepped.state;
-        adoptedSupply.push(carriedSupply);
+        adoptedSupply = supplyAt.slice(0, lca);
+        let carriedSupply = prefixSupply;
+        const units = Array.isArray(verified.units) ? verified.units : null;
+        const failSupplyAt = Number.isInteger(verifyOpts.failSupplyAt) && verifyOpts.failSupplyAt >= 0
+          ? verifyOpts.failSupplyAt
+          : null;
+        for (let i = lca; i < accepted.length; i += 1) {
+          if (verifyOpts.throwSupply === true && i === lca) throw new Error('supply_throw');
+          const block = accepted[i];
+          const stepped = supplyStep(carriedSupply, block, {
+            unit: units && units[i] != null ? units[i] : undefined,
+            height: Number(block?.height) || i + 1,
+            tipHeight: burialTip,
+            genesisMs: carriedSupply.genesisMs,
+            blockHash: block?.hash,
+            magic: MAGIC_TESTNET,
+          });
+          if (!stepped.ok || failSupplyAt === i - lca) {
+            clearReorgMarkers();
+            return { ok: false, reason: stepped.ok ? 'supply' : (stepped.reason || 'supply'), tip: tip() };
+          }
+          carriedSupply = stepped.state;
+          adoptedSupply.push(carriedSupply);
+        }
+        stagedFlux = stageAdoptFlux(lca, fromBlocks, accepted, connected, keptFlux, adoptedTip);
+        const failVaultAt = Number.isInteger(verifyOpts.failVaultApplyAt) && verifyOpts.failVaultApplyAt >= 0
+          ? verifyOpts.failVaultApplyAt
+          : null;
+        stagedVault = stageAdoptVault(lca, accepted, failVaultAt);
+      } catch (err) {
+        clearReorgMarkers();
+        return { ok: false, reason: err?.message || 'adopt_aborted', tip: tip() };
       }
       const nextSpent = spentResult.nextSpent;
       if (!(nextSpent instanceof Set)) {
         clearReorgMarkers();
         return { ok: false, reason: 'share_credit_bind', tip: tip() };
       }
-      for (const id of spentB) if (!nextSpent.has(id)) spentB.delete(id);
-      for (const id of nextSpent) spentB.add(id);
-      if (fromBlocks.length) rememberFork(fromBlocks, 'valid-fork');
-      const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
-      blocks.length = 0;
-      for (const b of accepted) blocks.push(b);
-      owedRows = verified.owedRows || [];
-      acceptedSeries = (verified.owedSeries || []).slice();
-      owedSeriesAll = acceptedSeries;
-      owedCkpt = verified.owedSnaps
-        .filter((s) => keepOwedIndex(s.at, accepted.length - 1))
-        .map((s) => ({ at: s.at, rows: copyOwedRows(s.rows), seriesEnd: s.seriesEnd }))
-        .sort((a, b) => a.at - b.at);
-      seedCache = null;
-      if (disconnected.length) {
-        sideAnchor = lca > 0 ? lca - 1 : -1;
-        sideBlocks = (lca > 0 ? disconnected : fromBlocks).slice();
-      } else if (sideTipHash() && sideTipHash() === hex32(blocks[blocks.length - 1]?.hash).toLowerCase()) {
-        clearSide();
-      }
-      rememberHeaders(accepted, 'active');
-      rewriteChain();
-      rebuildExplorer();
-      const adoptedTip = Number(accepted[accepted.length - 1]?.height) || accepted.length;
-      const rememberAnchor = (block) => {
-        const h = Number(block?.height) || 0;
-        anchorAt[h] = anchorRecord(liveFlux, keepsFrontier(h, adoptedTip, haltDepth));
+      const image = captureAdoptImage();
+      const fault = (stage) => {
+        if (verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
       };
-      if (keptFlux) {
-        liveFlux = keptFlux;
-        const keepH = lca > 0 ? (Number(fromBlocks[lca - 1]?.height) || lca) : 0;
-        anchorAt = lca > 0 ? prefixAnchors.slice(0, keepH + 1) : [];
-      } else {
-        liveFlux = emptyFluxset();
-        anchorAt = [];
-        for (const b of accepted.slice(0, lca)) {
-          appendFluxBlock(liveFlux, b);
-          rememberAnchor(b);
+      try {
+        for (const id of spentB) if (!nextSpent.has(id)) spentB.delete(id);
+        for (const id of nextSpent) spentB.add(id);
+        fault('spent');
+        if (fromBlocks.length) rememberFork(fromBlocks, 'valid-fork');
+        const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
+        blocks.length = 0;
+        for (const b of accepted) blocks.push(b);
+        owedRows = verified.owedRows || [];
+        acceptedSeries = (verified.owedSeries || []).slice();
+        owedSeriesAll = acceptedSeries;
+        owedCkpt = verified.owedSnaps
+          .filter((s) => keepOwedIndex(s.at, accepted.length - 1))
+          .map((s) => ({ at: s.at, rows: copyOwedRows(s.rows), seriesEnd: s.seriesEnd }))
+          .sort((a, b) => a.at - b.at);
+        seedCache = null;
+        if (disconnected.length) {
+          sideAnchor = lca > 0 ? lca - 1 : -1;
+          sideBlocks = (lca > 0 ? disconnected : fromBlocks).slice();
+        } else if (sideTipHash() && sideTipHash() === hex32(blocks[blocks.length - 1]?.hash).toLowerCase()) {
+          clearSide();
         }
+        rememberHeaders(accepted, 'active');
+        fault('blocks');
+        rewriteChain();
+        fault('chain');
+        rebuildExplorer();
+        fault('explorer');
+        liveFlux = stagedFlux.flux;
+        anchorAt = stagedFlux.anchors;
+        supplyAt = adoptedSupply;
+        supplyTip = supplyAt.length ? supplyAt[supplyAt.length - 1] : null;
+        fault('flux');
+        if (stagedVault.blankOnly) {
+          vaultCkpt = stagedVault.ckpt;
+          syncBlankFlag();
+          saveReserve();
+        } else {
+          vaultCkpt = stagedVault.ckpt;
+          unitAt = stagedVault.unitAt;
+          installVault(stagedVault.trial);
+          vaultSeal = stagedVault.seal;
+          syncBlankFlag();
+          saveReserve();
+        }
+        fault('vault');
+        bounceMempool(disconnected, connected);
+        dropStaleFlowSpends();
+        pruneBuried();
+        fault('tail');
+        reorgs.push(event);
+        if (reorgs.length > 64) reorgs.splice(0, reorgs.length - 64);
+        refreshPolicy({ reorgDepth: event.depth, nowMs: Date.now() });
+        persistBookSnap();
+        fault('snap');
+        fault('emit');
+        emit('reorg', event);
+        emit('tip', { hash: hex32(tip().hash), height: tip().height, reorg: true });
+        evmSession = null;
+        clearReorgMarkers();
+        return { ok: true, reorg: true, tip: tip(), event };
+      } catch (err) {
+        try { restoreAdoptImage(image); } catch { clearReorgMarkers(); }
+        return { ok: false, reason: err?.message || 'adopt_aborted', tip: tip() };
       }
-      for (const b of connected) {
-        appendFluxBlock(liveFlux, b);
-        rememberAnchor(b);
-      }
-      retainFrontierBlobs(anchorAt, adoptedTip, haltDepth);
-      supplyAt = adoptedSupply;
-      supplyTip = supplyAt.length ? supplyAt[supplyAt.length - 1] : null;
-      repairVaultAfterAdopt(lca);
-      bounceMempool(disconnected, connected);
-      dropStaleFlowSpends();
-      pruneBuried();
-      reorgs.push(event);
-      if (reorgs.length > 64) reorgs.splice(0, reorgs.length - 64);
-      refreshPolicy({ reorgDepth: event.depth, nowMs: Date.now() });
-      emit('reorg', event);
-      emit('tip', { hash: hex32(tip().hash), height: tip().height, reorg: true });
-      evmSession = null;
-      clearReorgMarkers();
-      return { ok: true, reorg: true, tip: tip(), event };
     };
     if (spent && typeof spent.then === 'function') return spent.then(commit);
     return commit(spent);
