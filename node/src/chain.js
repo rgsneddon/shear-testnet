@@ -69,6 +69,7 @@ import {
   outputJoinsAdmitSet,
   receiptAdmitRejected,
   jroot as jrootOf,
+  extendZeroRoot,
 } from '../../crypto/admit.js';
 import { checkAdmitAnchor, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
@@ -969,20 +970,33 @@ export function buildTemplate({
   }
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
-  const parentPubs = Array.isArray(parentFluxset)
-    ? parentFluxset
-    : fluxsetFromBlocks(parentBlocks || (prevBlock ? [prevBlock] : [])).pubs;
-  const newPubs = [...parentPubs];
+  const addedPubs = [];
   for (const o of cb.vout || []) {
-    if (outputJoinsAdmitSet(cb, o)) newPubs.push(o.admitPub);
+    if (outputJoinsAdmitSet(cb, o)) addedPubs.push(o.admitPub);
   }
   for (const tx of txs || []) {
     for (const o of tx.vout || []) {
-      if (outputJoinsAdmitSet(tx, o)) newPubs.push(o.admitPub);
+      if (outputJoinsAdmitSet(tx, o)) addedPubs.push(o.admitPub);
     }
   }
-  if (Number(height) === 1 || parentPubs.length || prevBlock || parentBlocks) {
-    cb.jroot = jrootOf(newPubs.map((p) => (typeof p?.toBytes === 'function' ? p : p)));
+  // The live flux already has a pubs-only frontier. Extend it by this block's
+  // notes. Rebuilding J from every ancestor is what made connect and reorg
+  // quadratic.
+  let parentFlux = null;
+  if (parentFluxset && !Array.isArray(parentFluxset) && parentFluxset.zeroFrontier) {
+    parentFlux = parentFluxset;
+  } else if (!Array.isArray(parentFluxset)) {
+    parentFlux = fluxsetFromBlocks(parentBlocks || (prevBlock ? [prevBlock] : []));
+  }
+  const parentPubs = parentFlux?.pubs
+    || (Array.isArray(parentFluxset) ? parentFluxset : []);
+  let root = parentFlux ? extendZeroRoot(parentFlux, addedPubs) : null;
+  if (!root && (Number(height) === 1 || parentPubs.length || prevBlock || parentBlocks)) {
+    const newPubs = [...parentPubs, ...addedPubs];
+    root = jrootOf(newPubs.map((p) => (typeof p?.toBytes === 'function' ? p : p)));
+  }
+  if (root && (Number(height) === 1 || parentPubs.length || prevBlock || parentBlocks || addedPubs.length)) {
+    cb.jroot = root;
   }
   const bodyTxs = [cb, ...txs];
   const merkle = merkleRoot(bodyTxs.map(digestTx));
@@ -1348,9 +1362,11 @@ export function assessHeader(block, prev, opts = {}) {
   // pruned block keeps the samples_pruned reason from the later check.
   const slotHeight = Number(block.height || (Number(prev?.height || 0) + 1));
   const slotParent = Number(prev?.height || 0);
-  const slotBurial = opts.loadReplay === true
-    ? (Number(opts.tipHeight) || slotParent)
-    : slotParent;
+  // burialTip is the caller's own tip (load, fork, or suffix). A peer
+  // tipHeight does not bury. Live append leaves burialTip unset.
+  const slotBurial = Number.isInteger(opts.burialTip) && opts.burialTip >= 0
+    ? Number(opts.burialTip)
+    : (opts.loadReplay === true ? (Number(opts.tipHeight) || slotParent) : slotParent);
   const slotPrunedEarly = !!block.samplesPruned && !shouldPruneSamples(slotHeight, slotBurial);
   if (!slotPrunedEarly && Array.isArray(block.txs) && block.txs[0]?.coinbase) {
     const slotReason = shareSlotCommitment(block.txs[0], block.shareBatch || [], {
@@ -1550,11 +1566,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // loadReplay is this book's own tip, used only while checking a loaded chain.
   const parentHeight = Number(prev?.height || 0);
   // Live burial is the parent this caller already accepted. A peer tipHeight
-  // does not open it. loadReplay is this book's own tip, and only for the
-  // prune and hash-credit checks. Spend maturity stays this block's height.
-  const burialTip = opts.loadReplay === true
-    ? (Number(opts.tipHeight) || parentHeight)
-    : parentHeight;
+  // does not open it. loadReplay is this book's own tip. Fork and suffix
+  // pass burialTip, the tip of the chain they are validating, and that
+  // overwrites a peer field. Spend maturity stays this block's height.
+  const burialTip = Number.isInteger(opts.burialTip) && opts.burialTip >= 0
+    ? Number(opts.burialTip)
+    : (opts.loadReplay === true ? (Number(opts.tipHeight) || parentHeight) : parentHeight);
   void tipHeight;
   void buried;
   // Continuity before the unburied-prune reject. A lied root is continuity.
@@ -2034,16 +2051,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const finderPaid = levyPaid('finder-fee', split.finder);
   const reservePaid = levyPaid('reserve-fee', split.reserve);
   if (finderPaid !== split.finder || reservePaid !== split.reserve) return { ok: false, reason: 'levy_split' };
-  const finalPubs = live.pubs.slice();
+  const addedPubs = [];
   for (const tx of txs) {
     for (const o of tx.vout || []) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
       try {
-        finalPubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
+        addedPubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
       } catch { /* skip */ }
     }
   }
-  const wantRoot = Buffer.from(jrootOf(finalPubs));
+  const extended = live.zeroFrontier ? extendZeroRoot(live, addedPubs) : null;
+  const wantRoot = extended
+    ? Buffer.from(extended)
+    : Buffer.from(jrootOf(live.pubs.concat(addedPubs)));
   const gotRoot = txs[0].jroot;
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
     return { ok: false, reason: 'admit_membership' };
@@ -2054,12 +2074,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     nowMs: Number(decoded.timestamp),
   });
   if (!vaultTry.ok) return { ok: false, reason: vaultTry.reason || 'epoch_open' };
-  const parentSupply = parentSupplyState(prev, block, opts, height);
+  const parentSupply = parentSupplyState(prev, block, opts, height, burialTip);
   if (!parentSupply.ok) return parentSupply;
   const stepped = supplyStep(parentSupply.state, block, {
     magic,
     unit: hashBonusNanos,
-    tipHeight: height,
+    tipHeight: burialTip,
     height,
     genesisMs: resolvedGenesisMs || genesisMs || 0,
     blockHash: hash,
@@ -2073,10 +2093,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
  * A missing state is not invented from a window of history. A genesis
  * child may fold that one parent. Anything taller fails closed.
  */
-function parentSupplyState(prev, block, opts, height) {
+function parentSupplyState(prev, block, opts, height, burialTip) {
   const magic = opts?.magic;
   const genesisMs = Number(opts?.genesisMs) || 0;
-  const tipHeight = Number.isInteger(height) && height > 0 ? height : 1;
+  const tipHeight = Number.isInteger(burialTip) && burialTip >= 0
+    ? burialTip
+    : (Number.isInteger(height) && height > 0 ? height : 1);
   if (opts && Object.prototype.hasOwnProperty.call(opts, 'parentSupply') && opts.parentSupply) {
     if (!prev) {
       if (Number(opts.parentSupply.height) !== 0) return { ok: false, reason: 'supply_state' };
@@ -2438,6 +2460,9 @@ function stepLoaded(state, list, i) {
   state.anchors[height] = {
     n: state.flux.pubs.length,
     jroot: root ? Buffer.from(root) : Buffer.alloc(32),
+    frontier: state.flux.frontier || null,
+    zeroFrontier: state.flux.zeroFrontier || null,
+    zeroRoot: state.flux.zeroRoot ? Buffer.from(state.flux.zeroRoot) : null,
   };
   state.mtp.push(ts);
   if (state.mtp.length > MTP_WINDOW) state.mtp.splice(0, state.mtp.length - MTP_WINDOW);

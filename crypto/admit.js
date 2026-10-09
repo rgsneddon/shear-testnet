@@ -8,7 +8,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, kernelExcess } from './note.js';
 import { merkleRoot } from './merkle.js';
-import { nativeJroot, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
+import { nativeJroot, nativeFrontierAppend, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -324,8 +324,66 @@ export function pubFromAdmit(buf) {
  * Spent notes stay in J (Admit does not reveal which flowline moved).
  * Double-spend is a repeated spendTag.
  */
+const frontierStats = { appendedLeaves: 0, fullRoots: 0 };
+
+/** Leaves fed to the append-only frontier, and how often a call rebuilt the whole root. */
+export function takeFrontierStats() {
+  const snap = { appendedLeaves: frontierStats.appendedLeaves, fullRoots: frontierStats.fullRoots };
+  frontierStats.appendedLeaves = 0;
+  frontierStats.fullRoots = 0;
+  return snap;
+}
+
+function blankFrontier() {
+  return nativeFrontierAppend(null, [], []);
+}
+
+function pairsFrom(pubs, commits) {
+  const dest = [];
+  const cs = [];
+  const n = Math.max(pubs?.length || 0, commits?.length || 0);
+  for (let i = 0; i < n; i += 1) {
+    const d = pubBytes(pubs[i]);
+    const c = commitBytes(commits[i] || pubs[i]?.commit);
+    if (!d || !c || c.length !== 32) continue;
+    dest.push(d);
+    cs.push(c);
+  }
+  return { dest, cs };
+}
+
+function extendFrontier(prev, dest, cs) {
+  const ext = nativeFrontierAppend(prev, dest, cs);
+  if (!ext) return null;
+  frontierStats.appendedLeaves += dest.length;
+  return ext;
+}
+
+/** Pubs-only root, the coinbase jroot. Null when the parent has no frontier yet. */
+export function extendZeroRoot(flux, newPubs) {
+  if (!flux?.zeroFrontier) return null;
+  const dest = [];
+  for (const p of newPubs || []) {
+    const d = pubBytes(p);
+    if (d) dest.push(d);
+  }
+  const zeros = dest.map(() => Buffer.alloc(32));
+  const ext = nativeFrontierAppend(flux.zeroFrontier, dest, zeros);
+  return ext ? ext.root : null;
+}
+
 export function emptyFluxset() {
-  return { pubs: [], commits: [], spendTags: new Set(), jroot: jroot({ pubs: [], commits: [] }) };
+  const blank = blankFrontier();
+  const zero = blankFrontier();
+  return {
+    pubs: [],
+    commits: [],
+    spendTags: new Set(),
+    jroot: blank?.root || jroot({ pubs: [], commits: [] }),
+    frontier: blank?.frontier || null,
+    zeroFrontier: zero?.frontier || null,
+    zeroRoot: zero?.root || blank?.root || null,
+  };
 }
 
 /** A lock or vote receipt is the vault's record, not a note. A withdraw payout is. */
@@ -370,11 +428,92 @@ function absorbFluxBlock(pubs, commits, spendTags, block) {
 
 /** Append one sealed block's notes and spend-tags onto a live J. */
 export function applyBlockToFluxset(live, block) {
-  const pubs = Array.isArray(live?.pubs) ? live.pubs.slice() : [];
-  const commits = Array.isArray(live?.commits) ? live.commits.slice() : [];
-  const spendTags = new Set(live?.spendTags || []);
-  absorbFluxBlock(pubs, commits, spendTags, block);
-  return { pubs, commits, spendTags, jroot: jroot({ pubs, commits }) };
+  const dest = {
+    pubs: Array.isArray(live?.pubs) ? live.pubs.slice() : [],
+    commits: Array.isArray(live?.commits) ? live.commits.slice() : [],
+    spendTags: new Set(live?.spendTags || []),
+    jroot: live?.jroot || null,
+    frontier: live?.frontier || null,
+    zeroFrontier: live?.zeroFrontier || null,
+    zeroRoot: live?.zeroRoot || null,
+  };
+  return appendFluxBlock(dest, block);
+}
+
+function installFrontiers(dest, addedDest, addedCs) {
+  const zeros = addedDest.map(() => Buffer.alloc(32));
+  if (dest.frontier) {
+    const ext = extendFrontier(dest.frontier, addedDest, addedCs);
+    const zext = dest.zeroFrontier ? nativeFrontierAppend(dest.zeroFrontier, addedDest, zeros) : null;
+    if (ext && zext) {
+      dest.frontier = ext.frontier;
+      dest.jroot = ext.root;
+      dest.zeroFrontier = zext.frontier;
+      dest.zeroRoot = zext.root;
+      return;
+    }
+  }
+  frontierStats.fullRoots += 1;
+  const all = pairsFrom(dest.pubs, dest.commits);
+  let blob = blankFrontier()?.frontier || null;
+  let root = null;
+  let zblob = blankFrontier()?.frontier || null;
+  let zroot = null;
+  const step = 64;
+  for (let i = 0; i < all.dest.length; i += step) {
+    const d = all.dest.slice(i, i + step);
+    const c = all.cs.slice(i, i + step);
+    const ext = extendFrontier(blob, d, c);
+    const zext = nativeFrontierAppend(zblob, d, d.map(() => Buffer.alloc(32)));
+    if (!ext || !zext) {
+      dest.jroot = jroot({ pubs: dest.pubs, commits: dest.commits });
+      dest.frontier = null;
+      dest.zeroFrontier = null;
+      dest.zeroRoot = null;
+      return;
+    }
+    blob = ext.frontier;
+    root = ext.root;
+    zblob = zext.frontier;
+    zroot = zext.root;
+  }
+  if (!all.dest.length) {
+    const blank = blankFrontier();
+    dest.frontier = blank?.frontier || null;
+    dest.jroot = blank?.root || jroot({ pubs: [], commits: [] });
+    dest.zeroFrontier = dest.frontier;
+    dest.zeroRoot = dest.jroot;
+    return;
+  }
+  dest.frontier = blob;
+  dest.jroot = root;
+  dest.zeroFrontier = zblob;
+  dest.zeroRoot = zroot;
+}
+
+/**
+ * A fluxset whose leaves are already the snap's note list.
+ * One frontier pass, so the next append does not recompute the whole root.
+ */
+export function fluxWithLeaves(pubs, commits, spendTags) {
+  const dest = [];
+  const cs = [];
+  const n = Math.min(pubs?.length || 0, commits?.length || 0);
+  for (let i = 0; i < n; i += 1) {
+    const d = pubBytes(pubs[i]);
+    const c = commitBytes(commits[i]);
+    if (!d || !c || c.length !== 32) continue;
+    dest.push(d);
+    cs.push(c);
+  }
+  const live = emptyFluxset();
+  live.pubs = dest;
+  live.commits = cs;
+  live.spendTags = spendTags instanceof Set ? new Set(spendTags) : new Set(spendTags || []);
+  live.frontier = null;
+  live.zeroFrontier = null;
+  installFrontiers(live, [], []);
+  return live;
 }
 
 /** Same absorb as applyBlockToFluxset, on the caller's object. Load replay uses this so the note lists are not copied at every height. */
@@ -382,17 +521,17 @@ export function appendFluxBlock(live, block) {
   const dest = live && Array.isArray(live.pubs) && Array.isArray(live.commits) && live.spendTags instanceof Set
     ? live
     : emptyFluxset();
+  const before = dest.pubs.length;
   absorbFluxBlock(dest.pubs, dest.commits, dest.spendTags, block);
-  dest.jroot = jroot({ pubs: dest.pubs, commits: dest.commits });
+  const added = pairsFrom(dest.pubs.slice(before), dest.commits.slice(before));
+  installFrontiers(dest, added.dest, added.cs);
   return dest;
 }
 
 export function fluxsetFromBlocks(blocks) {
-  const pubs = [];
-  const commits = [];
-  const spendTags = new Set();
-  for (const b of blocks || []) absorbFluxBlock(pubs, commits, spendTags, b);
-  return { pubs, commits, spendTags, jroot: jroot({ pubs, commits }) };
+  const live = emptyFluxset();
+  for (const b of blocks || []) appendFluxBlock(live, b);
+  return live;
 }
 
 export function compactAdmitProof(proof) {

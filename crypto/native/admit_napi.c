@@ -8,6 +8,11 @@ int32_t shear_admit_max_proof(void);
 int32_t shear_admit_arity(void);
 int32_t shear_admit_leaf(const uint8_t *p, uint8_t *out);
 int32_t shear_admit_jroot(const uint8_t *dest, const uint8_t *c, uint32_t n, uint8_t *out);
+int32_t shear_admit_frontier_append(
+    const uint8_t *prev, uint32_t prev_len,
+    const uint8_t *dest, const uint8_t *c, uint32_t n,
+    uint8_t *out_frontier, uint32_t out_cap, uint32_t *out_len,
+    uint8_t *out_root);
 int32_t shear_admit_prove(
     const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
     uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
@@ -435,6 +440,50 @@ static napi_value bench_fn(napi_env env, napi_callback_info info) {
   return obj;
 }
 
+static napi_value frontier_append_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  void *prev_data = NULL;
+  size_t prev_len = 0;
+  if (argc < 3 || napi_get_buffer_info(env, argv[0], &prev_data, &prev_len) != napi_ok) {
+    napi_throw_error(env, NULL, "frontier prev");
+    return NULL;
+  }
+  if (prev_len > 0 && !prev_data) {
+    napi_throw_error(env, NULL, "frontier prev");
+    return NULL;
+  }
+  uint8_t *dest = NULL, *cs = NULL;
+  uint32_t nd = 0, nc = 0;
+  if (concat_32s(env, argv[1], &dest, &nd) != 0 || concat_32s(env, argv[2], &cs, &nc) != 0 || nd != nc) {
+    free(dest);
+    free(cs);
+    napi_throw_error(env, NULL, "frontier leaves");
+    return NULL;
+  }
+  uint8_t frontier[16384];
+  uint8_t root[32];
+  uint32_t out_len = 0;
+  int32_t ok = shear_admit_frontier_append(
+      (const uint8_t *)prev_data, (uint32_t)prev_len, dest, cs, nd,
+      frontier, (uint32_t)sizeof(frontier), &out_len, root);
+  free(dest);
+  free(cs);
+  if (ok != 1 || out_len == 0 || out_len > sizeof(frontier)) {
+    napi_value f;
+    napi_get_boolean(env, 0, &f);
+    return f;
+  }
+  napi_value obj, root_v, fr_v;
+  napi_create_object(env, &obj);
+  root_v = buf_from(env, root, 32);
+  fr_v = buf_from(env, frontier, out_len);
+  napi_set_named_property(env, obj, "root", root_v);
+  napi_set_named_property(env, obj, "frontier", fr_v);
+  return obj;
+}
+
 static napi_value init(napi_env env, napi_value exports) {
   napi_value fn;
 #define EX(name, fnp) \
@@ -445,6 +494,7 @@ static napi_value init(napi_env env, napi_value exports) {
   EX("arity", arity_fn);
   EX("leaf", leaf_fn);
   EX("jroot", jroot_fn);
+  EX("frontierAppend", frontier_append_fn);
   EX("prove", prove_fn);
   EX("proveV3", prove_v3_fn);
   EX("verify", verify_fn);

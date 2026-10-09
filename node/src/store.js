@@ -86,7 +86,7 @@ import {
 } from './bootstrap.js';
 import { blockWeight, custodialPullAllowed } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, retargetMempool } from '../../crypto/mempool.js';
-import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, jroot, receiptAdmitRejected } from '../../crypto/admit.js';
+import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { asU8, flowInputsBound } from '../../crypto/note.js';
@@ -396,12 +396,7 @@ export function createStore(dir, {
       installSupplyPlan(plan);
       loadMode = 'snap';
     } else if (planOk) {
-      const priorFlux = {
-        pubs: plan.pubs,
-        commits: plan.commits,
-        spendTags: new Set(plan.spendTags),
-        jroot: jroot({ pubs: plan.pubs, commits: plan.commits }),
-      };
+      const priorFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
       const checked = verifyLoadedChain(blocks, {
         trustStoredHash: true,
         nowMs: loadNowMs,
@@ -566,12 +561,7 @@ export function createStore(dir, {
     adoptPlanCheckpoints(plan);
     spentB.clear();
     for (const id of plan.spentIds) spentB.add(String(id));
-    preFlux = {
-      pubs: plan.pubs,
-      commits: plan.commits,
-      spendTags: new Set(plan.spendTags),
-      jroot: jroot({ pubs: plan.pubs, commits: plan.commits }),
-    };
+    preFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
     unitAt = plan.unitAt.slice();
     prefixHeight = height;
   }
@@ -1900,10 +1890,7 @@ export function createStore(dir, {
       const priorSupply = supplyAt[idx - 1];
       if (priorSupply) supplyAt[idx - 1] = supplyFromScalar(priorSupply, { owedKnown: false });
     }
-    anchorAt[stored.height] = {
-      n: liveFlux.pubs.length,
-      jroot: liveFlux.jroot ? Buffer.from(liveFlux.jroot) : Buffer.alloc(32),
-    };
+    anchorAt[stored.height] = anchorRecord(liveFlux);
     persist(stored);
     rememberHeaders([stored], 'active');
     {
@@ -2232,12 +2219,16 @@ export function createStore(dir, {
     const owedUnit = verifyOpts.unitAt != null
       ? hashBonusUnitNanos(verifyOpts.unitAt)
       : hashBonusUnitNanos(vault?.liveHashBonusNanos || 1);
+    const burialTip = Number.isInteger(verifyOpts.burialTip)
+      ? verifyOpts.burialTip
+      : forkBurial(fork);
     const check = verifyBlock(fork[i], prev, {
       parentSupply: verifyOpts.parentSupply,
       parentFluxset: verifyOpts.parentFlux,
       noteAtAnchor: verifyOpts.noteAtAnchor,
       spentB: trialSpent,
       tipHeight: Number(prev?.height || 0),
+      burialTip,
       hashBonusNanos: owedUnit,
       owedIn: owedWalk.owedIn,
       hashAcceptedSeries: owedWalk.hashAcceptedSeries,
@@ -2265,7 +2256,8 @@ export function createStore(dir, {
         acceptedSeries: owedWalk.hashAcceptedSeries,
         block: fork[i],
         unit: owedUnit,
-        tipHeight: fork.reduce((m, b) => Math.max(m, Number(b?.height) || 0), 0),
+        // Structural tip. A height field on a later decoy must not bury this block.
+        tipHeight: burialTip,
       });
       if (!owedNext.ok) {
         rollbackSpent(trialSpent, beforeSpent);
@@ -2305,10 +2297,7 @@ export function createStore(dir, {
         supply = check.supplyState;
         appendFluxBlock(flux, lean);
         const h = Number(lean?.height) || 0;
-        anchors[h] = {
-          n: flux.pubs.length,
-          jroot: flux.jroot ? Buffer.from(flux.jroot) : Buffer.alloc(32),
-        };
+        anchors[h] = anchorRecord(flux);
         rows.push(...sealedExplorerRows(lean));
         return { ok: true };
       },
@@ -2335,6 +2324,7 @@ export function createStore(dir, {
     const owedWalk = { owedIn: [], hashAcceptedSeries: [] };
     const { trialVault, noVault } = trialVaultForFork(fork);
     const forkRun = forkRunState(fork);
+    const burialTip = forkBurial(fork);
     const step = (i) => {
       if (i >= at) return null;
       const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
@@ -2342,6 +2332,7 @@ export function createStore(dir, {
         noVault: !!noVault,
         owedWalk,
         unitAt: units[i],
+        burialTip,
         ...forkRun.opts(),
       });
       const take = (c) => {
@@ -2392,6 +2383,7 @@ export function createStore(dir, {
     const owedSnaps = [];
     const { trialVault, lca, noVault } = trialVaultForFork(fork);
     const forkRun = forkRunState(fork);
+    const burialTip = forkBurial(fork);
     for (let i = 0; i < fork.length; i += 1) {
       const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
         ...verifyOpts,
@@ -2399,6 +2391,7 @@ export function createStore(dir, {
         owedWalk,
         unitAt: units[i],
         ...forkRun.opts(),
+        burialTip,
       });
       if (!check.ok) return { ok: false, reason: check.reason, at: i };
       stampCredits(fork[i], units[i]);
@@ -2444,6 +2437,7 @@ export function createStore(dir, {
     const owedSnaps = [];
     const { trialVault, lca, noVault } = trialVaultForFork(fork);
     const forkRun = forkRunState(fork);
+    const burialTip = forkBurial(fork);
     for (let i = 0; i < fork.length; i += 1) {
       const check = await Promise.resolve(
         verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, {
@@ -2452,6 +2446,7 @@ export function createStore(dir, {
           owedWalk,
           unitAt: units[i],
           ...forkRun.opts(),
+          burialTip,
         }),
       );
       if (check.evmSession) trialSession = check.evmSession;
@@ -2732,7 +2727,72 @@ export function createStore(dir, {
     return !!tip && tip.seriesEnd === n;
   }
 
-  function supplyCarriedTo(endIdx) {
+  function anchorRecord(flux) {
+    return {
+      n: flux?.pubs?.length || 0,
+      jroot: flux?.jroot ? Buffer.from(flux.jroot) : Buffer.alloc(32),
+      frontier: flux?.frontier || null,
+      zeroFrontier: flux?.zeroFrontier || null,
+      zeroRoot: flux?.zeroRoot ? Buffer.from(flux.zeroRoot) : null,
+    };
+  }
+
+  function tagsThrough(list, endIdx) {
+    const spendTags = new Set();
+    const n = Math.min(list?.length || 0, endIdx + 1);
+    for (let i = 0; i < n; i += 1) {
+      for (const tx of list[i]?.txs || []) {
+        const tag = tx?.admit_proof?.spendTag || tx?.spendTag;
+        if (!tag) continue;
+        try {
+          const hex = Buffer.from(tag).toString('hex');
+          if (hex) spendTags.add(hex);
+        } catch { /* skip */ }
+      }
+    }
+    return spendTags;
+  }
+
+  /** Flux at a stored anchor. The frontier is the cached tree, not a rescan. */
+  function fluxFromAnchor(rec, list, endIdx) {
+    if (!rec?.jroot || !liveFlux || !Array.isArray(liveFlux.pubs)) return null;
+    const n = Number(rec.n) || 0;
+    if (n > liveFlux.pubs.length) return null;
+    const flux = {
+      pubs: liveFlux.pubs.slice(0, n),
+      commits: (liveFlux.commits || []).slice(0, n),
+      spendTags: tagsThrough(list, endIdx),
+      jroot: Buffer.from(rec.jroot),
+    };
+    if (rec.frontier && rec.zeroFrontier) {
+      flux.frontier = rec.frontier;
+      flux.zeroFrontier = rec.zeroFrontier;
+      flux.zeroRoot = rec.zeroRoot ? Buffer.from(rec.zeroRoot) : Buffer.from(rec.jroot);
+    }
+    return flux;
+  }
+
+  function fluxKeptThrough(index, list) {
+    if (index <= 0) return emptyFluxset();
+    const block = list[index - 1];
+    const h = Number(block?.height) || index;
+    const rec = anchorAt[h];
+    if (!rec?.frontier || !rec?.zeroFrontier) return null;
+    return fluxFromAnchor(rec, list, index - 1);
+  }
+
+  /**
+   * Burial for a from-genesis fork. The store tip is the chain that already
+   * pruned history. The candidate length is this fork's own height, not a
+   * height field a peer wrote on a decoy block.
+   */
+  function forkBurial(fork) {
+    const storeTip = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
+    const candidate = Array.isArray(fork) ? fork.length : 0;
+    return Math.max(storeTip, candidate);
+  }
+
+  function supplyCarriedTo(endIdx, tipH) {
     if (endIdx < 0 || endIdx >= blocks.length) return null;
     let from = endIdx;
     while (from > 0 && !(supplyAt[from] && supplyAt[from].owedKnown && supplyLinks(supplyAt[from], blocks[from]))) {
@@ -2740,13 +2800,14 @@ export function createStore(dir, {
     }
     const base = supplyAt[from];
     if (!base || base.owedKnown !== true || !supplyLinks(base, blocks[from])) return null;
+    const burial = Number.isInteger(tipH) && tipH >= 0 ? tipH : (Number(blocks[endIdx]?.height) || endIdx + 1);
     let state = base;
     for (let i = from + 1; i <= endIdx; i += 1) {
       const block = blocks[i];
       const stepped = supplyStep(state, block, {
         unit: unitAt[i] == null ? undefined : unitAt[i],
         height: Number(block?.height) || i + 1,
-        tipHeight: Number(block?.height) || i + 1,
+        tipHeight: burial,
         genesisMs: state.genesisMs,
         blockHash: block?.hash,
         magic: MAGIC_TESTNET,
@@ -2761,26 +2822,7 @@ export function createStore(dir, {
     const block = blocks[endIdx];
     const height = Number(block?.height) || endIdx + 1;
     const rec = anchorAt[height];
-    if (!rec?.jroot || !liveFlux || !Array.isArray(liveFlux.pubs)) return null;
-    const n = Number(rec.n) || 0;
-    if (n > liveFlux.pubs.length) return null;
-    const spendTags = new Set();
-    for (let i = 0; i <= endIdx; i += 1) {
-      for (const tx of blocks[i]?.txs || []) {
-        const tag = tx?.admit_proof?.spendTag || tx?.spendTag;
-        if (!tag) continue;
-        try {
-          const hex = Buffer.from(tag).toString('hex');
-          if (hex) spendTags.add(hex);
-        } catch { /* skip */ }
-      }
-    }
-    return {
-      pubs: liveFlux.pubs.slice(0, n),
-      commits: (liveFlux.commits || []).slice(0, n),
-      spendTags,
-      jroot: Buffer.from(rec.jroot),
-    };
+    return fluxFromAnchor(rec, blocks, endIdx);
   }
 
   /** Verify only the new suffix. Header rules run before any owed replay. */
@@ -2800,7 +2842,12 @@ export function createStore(dir, {
     const trialSpent = new Set();
     const rows = Array.isArray(history) ? history : [];
     const tipAt = rows.length + fork.length - 1;
-    const tipH = listTipHeight(rows.concat(fork));
+    // Candidate height is the linked length, not the largest height field.
+    // The store tip covers history this node already pruned. A peer tipHeight
+    // is not part of this.
+    const storeTip = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
+    const baseH = rows.length ? (Number(rows[rows.length - 1]?.height) || rows.length) : 0;
+    const tipH = Math.max(storeTip, baseH + fork.length);
     const seeded = seedHistory(rows, tipAt, tipH);
     if (!seeded.ok) return { ok: false, reason: seeded.reason || 'hash_owed' };
     const allUnitsWalk = unitsAlong(rows, fork);
@@ -2820,32 +2867,41 @@ export function createStore(dir, {
       anchors = [];
     } else if (canonical) {
       const endIdx = rows.length - 1;
-      supply = supplyCarriedTo(endIdx);
+      supply = supplyCarriedTo(endIdx, tipH);
       flux = fluxCarriedTo(endIdx);
       if (supply && flux) anchors = anchorAt.slice();
     }
     if (!supply || !flux || !anchors) {
+      const prefix = commonPrefixLen(blocks, rows);
+      let from = 0;
       supply = emptySupplyState(gms);
-      for (let hi = 0; hi < rows.length; hi += 1) {
+      flux = emptyFluxset();
+      anchors = [];
+      if (prefix > 0) {
+        const carried = supplyCarriedTo(prefix - 1, tipH);
+        const h = Number(blocks[prefix - 1]?.height) || prefix;
+        const restored = anchorAt[h] ? fluxFromAnchor(anchorAt[h], blocks, prefix - 1) : null;
+        if (carried && restored?.frontier) {
+          supply = carried;
+          flux = restored;
+          anchors = anchorAt.slice();
+          from = prefix;
+        }
+      }
+      for (let hi = from; hi < rows.length; hi += 1) {
         const stepped = supplyStep(supply, rows[hi], {
           unit: allUnits[hi],
           height: Number(rows[hi]?.height) || hi + 1,
-          tipHeight: Number(rows[hi]?.height) || hi + 1,
+          tipHeight: tipH,
           genesisMs: gms,
           blockHash: rows[hi]?.hash,
           magic: MAGIC_TESTNET,
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
         supply = stepped.state;
-      }
-      flux = fluxsetFromBlocks(rows);
-      anchors = [];
-      if (rows.length) {
-        const lastH = Number(rows[rows.length - 1]?.height) || rows.length;
-        anchors[lastH] = {
-          n: flux.pubs.length,
-          jroot: flux.jroot ? Buffer.from(flux.jroot) : Buffer.alloc(32),
-        };
+        appendFluxBlock(flux, rows[hi]);
+        const hh = Number(rows[hi]?.height) || hi + 1;
+        anchors[hh] = anchorRecord(flux);
       }
     }
     const trialVault = cloneVault(emptyVault());
@@ -2875,6 +2931,7 @@ export function createStore(dir, {
         spentB: trialSpent,
         trustedPowHash: trustedHashFor(fork[i], verifyOpts),
         tipHeight: Number(prev?.height || 0) + 1,
+        burialTip: tipH,
         evmHistory: rows.concat(out),
         parentSupply: supply,
         parentFluxset: flux,
@@ -2923,10 +2980,7 @@ export function createStore(dir, {
         supply = c.supplyState;
         appendFluxBlock(flux, lean);
         const ah = Number(lean.height) || 0;
-        anchors[ah] = {
-          n: flux.pubs.length,
-          jroot: flux.jroot ? Buffer.from(flux.jroot) : Buffer.alloc(32),
-        };
+        anchors[ah] = anchorRecord(flux);
         out.push(lean);
         prev = lean;
         return step(i + 1);
@@ -3050,6 +3104,28 @@ export function createStore(dir, {
       }
       if (fromBlocks.length) rememberFork(fromBlocks, 'valid-fork');
       const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
+      const tipH = Number(accepted[accepted.length - 1]?.height) || accepted.length;
+      const keptFlux = fluxKeptThrough(lca, fromBlocks);
+      const prefixAnchors = anchorAt.slice();
+      const prefixSupply = lca > 0
+        ? supplyCarriedTo(lca - 1, tipH)
+        : emptySupplyState(genesisHeaderMs(accepted) || 0);
+      if (!prefixSupply) return { ok: false, reason: 'supply', tip: tip() };
+      const adoptedSupply = supplyAt.slice(0, lca);
+      let carriedSupply = prefixSupply;
+      for (let i = lca; i < accepted.length; i += 1) {
+        const block = accepted[i];
+        const stepped = supplyStep(carriedSupply, block, {
+          height: Number(block?.height) || i + 1,
+          tipHeight: tipH,
+          genesisMs: carriedSupply.genesisMs,
+          blockHash: block?.hash,
+          magic: MAGIC_TESTNET,
+        });
+        if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply', tip: tip() };
+        carriedSupply = stepped.state;
+        adoptedSupply.push(carriedSupply);
+      }
       blocks.length = 0;
       for (const b of accepted) blocks.push(b);
       owedRows = verified.owedRows || [];
@@ -3069,22 +3145,24 @@ export function createStore(dir, {
       rememberHeaders(accepted, 'active');
       rewriteChain();
       rebuildExplorer();
-      refreshFlux();
-      anchorAt = [];
-      {
-        const carried = emptyFluxset();
-        for (const b of blocks) {
-          appendFluxBlock(carried, b);
-          const h = Number(b?.height) || 0;
-          anchorAt[h] = {
-            n: carried.pubs.length,
-            jroot: carried.jroot ? Buffer.from(carried.jroot) : Buffer.alloc(32),
-          };
+      if (keptFlux) {
+        liveFlux = keptFlux;
+        const keepH = lca > 0 ? (Number(fromBlocks[lca - 1]?.height) || lca) : 0;
+        anchorAt = lca > 0 ? prefixAnchors.slice(0, keepH + 1) : [];
+      } else {
+        liveFlux = emptyFluxset();
+        anchorAt = [];
+        for (const b of accepted.slice(0, lca)) {
+          appendFluxBlock(liveFlux, b);
+          anchorAt[Number(b?.height) || 0] = anchorRecord(liveFlux);
         }
       }
-      supplyAt = [];
-      const adoptedTip = blocks[blocks.length - 1];
-      supplyTip = verified.supply && supplyLinks(verified.supply, adoptedTip) ? verified.supply : null;
+      for (const b of connected) {
+        appendFluxBlock(liveFlux, b);
+        anchorAt[Number(b?.height) || 0] = anchorRecord(liveFlux);
+      }
+      supplyAt = adoptedSupply;
+      supplyTip = supplyAt.length ? supplyAt[supplyAt.length - 1] : null;
       repairVaultAfterAdopt(lca);
       bounceMempool(disconnected, connected);
       pruneBuried();
@@ -3114,7 +3192,9 @@ export function createStore(dir, {
     const extendsTip = t
       ? decoded.prevBlockHash.equals(Buffer.from(t.hash))
       : decoded.prevBlockHash.equals(GENESIS_PREV);
-    if (extendsTip) {
+    // One new block extends the tip in place. A batch is one chain: burial
+    // is that batch's own height, so pruned history is not judged at depth 0.
+    if (extendsTip && fork.length === 1) {
       if (verifyOpts.offLoopPow || fork.some((b) => blockNeedsEvm(b?.txs || []))) {
         return (async () => {
           let last = null;
@@ -3133,6 +3213,10 @@ export function createStore(dir, {
         last = got;
       }
       return last;
+    }
+    if (extendsTip && fork.length > 1) {
+      if (!blocks.length) return adopt(fork, verifyOpts);
+      return stageOrAdopt(fork, verifyOpts, blocks.length - 1);
     }
     const prevHex = Buffer.from(decoded.prevBlockHash).toString('hex').toLowerCase();
     const anchorIdx = indexByHex(blocks, prevHex);

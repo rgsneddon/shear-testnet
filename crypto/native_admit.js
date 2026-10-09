@@ -80,6 +80,19 @@ export function nativeJroot(destLeaves, cLeaves) {
   }
 }
 
+/** Extend a JF01 frontier. An empty prev starts at zero leaves. Root matches nativeJroot of the whole set. */
+export function nativeFrontierAppend(prev, destLeaves, cLeaves) {
+  if (!native || typeof native.frontierAppend !== 'function') return null;
+  try {
+    const prior = prev && prev.length ? Buffer.from(prev) : Buffer.alloc(0);
+    const o = native.frontierAppend(prior, leafList(destLeaves), leafList(cLeaves));
+    if (!o || !o.root || o.root.length !== 32 || !o.frontier || !o.frontier.length) return null;
+    return { root: Buffer.from(o.root), frontier: Buffer.from(o.frontier) };
+  } catch {
+    return null;
+  }
+}
+
 export function nativeProve({ x, p, c, t, index, destLeaves, cLeaves }) {
   if (!native) return null;
   try {

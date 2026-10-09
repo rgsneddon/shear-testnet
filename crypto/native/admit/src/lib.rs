@@ -109,6 +109,56 @@ pub extern "C" fn shear_admit_jroot(
     .unwrap_or(BAD)
 }
 
+/// Extend a JF01 frontier blob by n leaves. `prev_len == 0` starts at n = 0.
+/// Writes the new blob and the 32-byte root. The root matches `jroot` of the
+/// whole set when every append is applied in order.
+#[no_mangle]
+pub extern "C" fn shear_admit_frontier_append(
+    prev: *const u8,
+    prev_len: u32,
+    dest_leaves: *const u8,
+    c_leaves: *const u8,
+    n: u32,
+    out_frontier: *mut u8,
+    out_cap: u32,
+    out_len: *mut u32,
+    out_root: *mut u8,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let n = n as usize;
+        let prev_len = prev_len as usize;
+        let prev_bytes = match slice(prev, prev_len) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        let d = match slice(dest_leaves, n.saturating_mul(32)) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        let c = match slice(c_leaves, n.saturating_mul(32)) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        if out_frontier.is_null() || out_len.is_null() || out_root.is_null() {
+            return BAD;
+        }
+        let (blob, root) = match tree::frontier_append(prev_bytes, d, c, n) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        if blob.len() > out_cap as usize || blob.len() > tree::FRONTIER_MAX {
+            return BAD;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(blob.as_ptr(), out_frontier, blob.len());
+            std::ptr::copy_nonoverlapping(root.as_ptr(), out_root, 32);
+            *out_len = blob.len() as u32;
+        }
+        OK
+    }))
+    .unwrap_or(BAD)
+}
+
 /// prove: returns proof length, or 0 on failure. `out` must hold MAX_PROOF bytes.
 #[no_mangle]
 pub extern "C" fn shear_admit_prove(
