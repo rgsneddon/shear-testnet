@@ -516,21 +516,32 @@ export function compactTx(tx) {
     delete out.members;
   }
   if (tx.spendTag) out.spendTag = tx.spendTag;
-  // The sealed tag is the blob's. A disagreeing JSON field does not survive.
+  // A present JSON tag is replaced by the blob tag, so a lie does not survive.
+  // An absent tag stays absent. txDigestV3 binds that field, and filling it
+  // in after the proof would make the sealed body fail on reload.
   try {
+    const fieldWasPosted = (value) => value != null && value !== '';
     if (out.admit_proof) {
       const one = canonicalSpendTag(tx.admit_proof);
-      if (one.tag) out.admit_proof.spendTag = one.tag;
+      if (fieldWasPosted(tx.admit_proof.spendTag) && one.tag) out.admit_proof.spendTag = one.tag;
+      else if (!fieldWasPosted(tx.admit_proof.spendTag)) delete out.admit_proof.spendTag;
     }
     if (Array.isArray(out.admit_proofs) && Array.isArray(tx.admit_proofs)) {
       out.admit_proofs = out.admit_proofs.map((proof, i) => {
-        const one = canonicalSpendTag(tx.admit_proofs[i] || proof);
+        const src = tx.admit_proofs[i] || proof;
+        const one = canonicalSpendTag(src);
         if (!one.tag || !proof || typeof proof !== 'object') return proof;
+        if (!fieldWasPosted(src.spendTag)) {
+          const next = { ...proof };
+          delete next.spendTag;
+          return next;
+        }
         return { ...proof, spendTag: one.tag };
       });
     }
     const parsed = txSpendTags(tx);
-    if (parsed.tags.length) out.spendTag = parsed.tags[0];
+    if (fieldWasPosted(tx.spendTag) && parsed.tags.length) out.spendTag = parsed.tags[0];
+    else if (!fieldWasPosted(tx.spendTag)) delete out.spendTag;
   } catch { /* compact must not throw on a fixture */ }
   if (tx.jroot) out.jroot = tx.jroot;
   if (tx.excess) out.excess = tx.excess;
