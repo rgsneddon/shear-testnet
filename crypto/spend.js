@@ -391,7 +391,7 @@ function v3CommitCovers(tx, vin) {
 }
 
 /** Body kinds that may move value. Anything else is an address-funded mint. */
-const V12_VALUE_KINDS = new Set([
+export const V12_VALUE_KINDS = new Set([
   'send',
   'transfer',
   'lock',
@@ -400,12 +400,25 @@ const V12_VALUE_KINDS = new Set([
   'b-spend',
 ]);
 
+/**
+ * The top-level kind. A missing kind, or a first output whose kind differs,
+ * is empty so a vout label cannot impersonate a balance rule.
+ */
+export function txKind(tx) {
+  if (!tx || tx.coinbase) return '';
+  const top = tx.kind == null ? '' : String(tx.kind);
+  if (!top) return '';
+  const raw = tx.vout?.[0]?.kind;
+  if (raw != null && String(raw) !== '' && String(raw) !== top) return '';
+  return top;
+}
+
 /** claim, evm-value, pool-withdraw, vortice-register, user-spend, and unknown kinds. */
 export function v12KindRejected(tx) {
   if (!tx || tx.coinbase) return null;
-  const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
-  if (V12_VALUE_KINDS.has(kind)) return null;
-  return { ok: false, reason: 'kind' };
+  const kind = txKind(tx);
+  if (!kind || !V12_VALUE_KINDS.has(kind)) return { ok: false, reason: 'kind' };
+  return null;
 }
 
 /** The vault clock is the block header. A typed tx cannot carry its own nowMs. */
@@ -591,8 +604,8 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
 export function fundedDebit(tx) {
   if (!tx || tx.coinbase) return null;
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
-  const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
-  if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') return null;
+  const kind = txKind(tx);
+  if (!kind || kind === 'lock' || kind === 'vote' || kind === 'withdraw') return null;
   let from = kind === 'vote'
     ? String(tx.payer || tx.vin?.[0]?.address || '')
     : String(tx.from || tx.vin?.[0]?.address || '');

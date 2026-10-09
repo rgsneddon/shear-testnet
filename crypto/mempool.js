@@ -9,7 +9,7 @@ import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8 } from './note.js';
 import { sealedVinLinkField } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, v12KindRejected } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, typedKindNeedsAdmitV3 } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
@@ -54,18 +54,9 @@ export function admitMempool(pool, tx, opts = {}) {
     const carry = unboundMembershipCarry(tx);
     if (!carry.ok) return carry;
   }
-  const kind = String(tx.kind || MEMPOOL_KIND_SEND);
-  const allowed = new Set([
-    MEMPOOL_KIND_SEND,
-    MEMPOOL_KIND_B_SPEND,
-    'transfer',
-    'lock',
-    'vote',
-    'withdraw',
-  ]);
-  if (!allowed.has(kind)) {
-    return { ok: false, reason: 'kind' };
-  }
+  const kindGate = v12KindRejected(tx);
+  if (kindGate) return kindGate;
+  const kind = String(tx.kind);
   const clockField = typedClockRejected(tx);
   if (clockField) return clockField;
   const receiptPub = receiptAdmitRejected(tx);

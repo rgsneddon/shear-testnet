@@ -56,7 +56,7 @@ import { publicExplorerRow } from '../../crypto/dummy.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
-import { bLeafId } from '../../crypto/clearing.js';
+import { bLeafId, bindBSpend } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from '../../crypto/reserve_vault.js';
@@ -1672,7 +1672,7 @@ export function createStore(dir, {
         if (id && mempool.some((m) => txIdOf(m) === id)) continue;
         const row = {
           ...tx,
-          kind: tx.kind || 'send',
+          kind: tx.kind,
           to: tx.to || tx.vout?.[0]?.address,
           from: tx.from || tx.vin?.[0]?.address,
           nanos: tx.nanos || tx.vout?.[0]?.nanos,
@@ -2040,6 +2040,18 @@ export function createStore(dir, {
       const carry = unboundMembershipCarry(tx);
       if (!carry.ok) return carry;
     }
+    const kindGate = v12KindRejected(tx);
+    if (kindGate) return kindGate;
+    if (String(tx.kind || '') === 'b-spend') {
+      const tipNow = tip();
+      const boundB = bindBSpend(tx, {
+        history: blocks,
+        prev: tipNow,
+        tipHeight: Number(tipNow?.height || 0) + 1,
+        spent: new Set(spentB),
+      });
+      if (!boundB.ok) return boundB;
+    }
     if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
       return { ok: false, reason: 'paused' };
     }
@@ -2144,8 +2156,6 @@ export function createStore(dir, {
     }
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
-    const kindGate = v12KindRejected(tx);
-    if (kindGate) return kindGate;
     const clockField = typedClockRejected(tx);
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
@@ -3758,6 +3768,7 @@ export function createStore(dir, {
     const pendingTxs = [];
     const keep = [];
     const spendSeen = new Set(liveFlux.spendTags || []);
+    const bSpent = new Set(spentB);
     // One clone of the chain vault. Each accepted reserve tx is applied once.
     let carried = cloneVault(reserveVault);
     let reserveIncluded = 0;
@@ -3774,6 +3785,35 @@ export function createStore(dir, {
       };
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
+      const earlyKind = v12KindRejected(tx);
+      if (earlyKind) {
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: earlyKind.reason }));
+        } catch { /* ignore */ }
+        continue;
+      }
+      if (String(tx.kind || '') === 'b-spend') {
+        const carriedProof = unboundMembershipCarry(tx);
+        if (!carriedProof.ok) {
+          try {
+            console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: carriedProof.reason }));
+          } catch { /* ignore */ }
+          continue;
+        }
+        const boundB = bindBSpend(tx, {
+          history: blocks,
+          prev: t,
+          tipHeight: height,
+          spent: bSpent,
+        });
+        if (!boundB.ok) {
+          try {
+            console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: boundB.reason }));
+          } catch { /* ignore */ }
+          if (boundB.reason === 'immature' || boundB.reason === 'pre_seal') keep.push(m);
+          continue;
+        }
+      }
       if (txIsReserveAction(tx) && reserveIncluded >= RESERVE_ACTION_CAP) {
         keep.push(m);
         continue;
@@ -3826,7 +3866,16 @@ export function createStore(dir, {
         if (txIsReserveAction(tx) && (got.vault || got.reason === 'admit' || got.reason === 'admit_link_tag')) {
           reserveDropped = true;
         }
-        if (!got.vault && got.reason !== 'admit' && got.reason !== 'admit_link_tag') keep.push(m);
+        const permanent = got.reason === 'kind'
+          || got.reason === 'commit_sum'
+          || got.reason === 'proof'
+          || got.reason === 'continuity'
+          || got.reason === 'bad_header'
+          || got.reason === 'double_open'
+          || got.reason === 'no_header'
+          || got.reason === 'admit'
+          || got.reason === 'admit_link_tag';
+        if (!got.vault && !permanent) keep.push(m);
       }
     }
     mempool.length = 0;

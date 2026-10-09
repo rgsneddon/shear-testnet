@@ -119,7 +119,7 @@ import {
   settleHashOwed,
   writeHashLedger,
 } from '../../crypto/hash_owed.js';
-import { buildDualTree, spendB } from '../../crypto/clearing.js';
+import { buildDualTree, bindBSpend } from '../../crypto/clearing.js';
 import {
   nextBaseFee,
   blockWeight,
@@ -1877,6 +1877,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       const carry = unboundMembershipCarry(tx);
       if (!carry.ok) return carry;
     }
+    const kindGate = v12KindRejected(tx);
+    if (kindGate) return kindGate;
     const anchored = checkAdmitAnchor(tx, height);
     if (!anchored.ok) return anchored;
     const clockField = typedClockRejected(tx);
@@ -1933,8 +1935,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
-    const kindGate = v12KindRejected(tx);
-    if (kindGate) return kindGate;
     if (flowNeedsDummy(tx)) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
@@ -2031,29 +2031,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (!gate.ok) return { ok: false, reason: gate.reason || 'vortice_register' };
     }
     if (tx.kind === 'b-spend') {
-      const commitH = Number(tx.commitHeight || 0);
-      const tip = parentHeight + 1;
-      if (!(commitH >= 1) || tip < commitH) return { ok: false, reason: 'pre_seal' };
-      const samePrev = commitH === Number(prev?.height || 0);
-      const commitHeader = tx.commitHeader || (samePrev ? prev.header : null);
-      const commitRootA = tx.commitRootA || (samePrev ? prev.rootA : null);
-      const commitRootB = tx.commitRootB || (samePrev ? prev.rootB : null);
-      if (!commitHeader) return { ok: false, reason: 'pre_seal' };
-      const got = spendB({
-        leaf: tx.leaf || {
-          dest20: dest20Of(tx.to || outs[0]?.address || ''),
-          unit: Number(tx.unit || tx.nanos || 0),
-          nonce: Number(tx.nonce || 0),
-          memoH: tx.memoH || Buffer.alloc(32),
-          tag: tx.tag || 'b-spend',
-        },
-        proof: tx.proof || [],
-        header: commitHeader,
-        rootA: commitRootA,
-        rootB: commitRootB,
-        height: commitH,
-        index: Number(tx.index || 0),
-        tipHeight: tip,
+      const got = bindBSpend(tx, {
+        history: evmHistory,
+        prev,
+        tipHeight: parentHeight + 1,
         spent,
       });
       if (!got.ok) return got;

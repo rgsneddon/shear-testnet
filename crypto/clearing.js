@@ -6,7 +6,8 @@
 import { sha256 } from './shear_hash.js';
 import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
 import { packALeafV5, packBLeaf, packDigest } from './pack.js';
-import { noteCommitOfDest20 } from './note.js';
+import { noteCommitOfDest20, openedCoinbaseNanos } from './note.js';
+import { hash20FromAddress } from './address.js';
 import { decodeHeader } from './header.js';
 import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 
@@ -87,4 +88,71 @@ export function spendB({
 export function bProof(bLeaves, index) {
   const digests = (bLeaves || []).map((l) => bLeafBytes(l));
   return merkleProof(digests, index);
+}
+
+/** The block this node already has at `height`, or null. A tx field is not a block. */
+export function chainBlockAt(height, history, prev) {
+  const h = Number(height);
+  if (!Number.isInteger(h) || h < 1) return null;
+  const hit = (b) => !!(b && b.header && Number(b.height) === h);
+  if (hit(prev)) return prev;
+  if (history && typeof history.length === 'number') {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const b = history[i];
+      if (hit(b)) return b;
+    }
+  }
+  return null;
+}
+
+function leafOf(tx) {
+  if (tx?.leaf && tx.leaf.dest20 != null) return tx.leaf;
+  let dest20 = Buffer.alloc(20);
+  try {
+    const h = hash20FromAddress(tx?.to || tx?.vout?.[0]?.address || '');
+    if (h) dest20 = Buffer.from(h);
+  } catch { /* zero dest */ }
+  return {
+    dest20,
+    unit: Number(tx?.unit || tx?.nanos || 0),
+    nonce: Number(tx?.nonce || 0),
+    memoH: tx?.memoH || Buffer.alloc(32),
+    tag: tx?.tag || 'b-spend',
+  };
+}
+
+/**
+ * Spend a B leaf against the chain block at commitHeight.
+ * commitHeader, commitRootA, and commitRootB on the tx are ignored.
+ * Every output opens, and the opened sum is the leaf unit.
+ */
+export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spent = null } = {}) {
+  const commitH = Number(tx?.commitHeight || 0);
+  const block = chainBlockAt(commitH, history, prev);
+  if (!block?.header) return { ok: false, reason: 'pre_seal' };
+  const leaf = leafOf(tx);
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  if (!outs.length) return { ok: false, reason: 'commit_sum' };
+  let sum = 0;
+  for (const o of outs) {
+    const v = openedCoinbaseNanos(o);
+    if (!Number.isSafeInteger(v) || v < 0) return { ok: false, reason: 'commit_sum' };
+    if (sum > Number.MAX_SAFE_INTEGER - v) return { ok: false, reason: 'commit_sum' };
+    sum += v;
+  }
+  const unit = Number(leaf.unit);
+  if (!Number.isSafeInteger(unit) || unit < 0 || sum !== unit) {
+    return { ok: false, reason: 'commit_sum' };
+  }
+  return spendB({
+    leaf,
+    proof: tx?.proof || [],
+    header: block.header,
+    rootA: block.rootA,
+    rootB: block.rootB,
+    height: commitH,
+    index: Number(tx?.index || 0),
+    tipHeight,
+    spent,
+  });
 }

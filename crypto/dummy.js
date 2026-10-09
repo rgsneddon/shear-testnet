@@ -20,9 +20,10 @@ export function viewTagOf(noteCommit) {
 
 export function flowNeedsDummy(tx) {
   if (!tx || tx.coinbase) return false;
-  const k = String(tx.kind || tx.vout?.[0]?.kind || '');
-  if (TYPED_NO_DUMMY.has(k)) return false;
-  return k === 'send' || k === '' || k === 'transfer';
+  // A vout kind is not the tx kind. A missing top kind is not Flow.
+  const k = String(tx.kind || '');
+  if (!k || TYPED_NO_DUMMY.has(k)) return false;
+  return k === 'send' || k === 'transfer';
 }
 
 /**
