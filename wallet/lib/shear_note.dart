@@ -226,9 +226,24 @@ Map<String, dynamic> wrapNoteBlind(Map<String, dynamic> vout, Element admitBase)
   return {...vout, 'rEph': wrap['rEph']!, 'rCt': wrap['rCt']!};
 }
 
+bool publicValueOpenKind(String? kind) {
+  return kind == 'pot' ||
+      kind == 'hash' ||
+      kind == 'pool-fee' ||
+      kind == 'finder-fee' ||
+      kind == 'reserve-fee' ||
+      kind == 'lock' ||
+      kind == 'vote' ||
+      kind == 'withdraw' ||
+      kind == 'pool-withdraw';
+}
+
 /// Compact a sealed vout the way chain persist does: drop r, keep rEph/rCt.
+/// Hidden kinds drop the value opening. The range proof stays.
 Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
-  final kind = (o['kind'] as String?) ?? 'pot';
+  final posted = o['kind'] as String?;
+  final kind = (posted == null || posted.isEmpty) ? 'pot' : posted;
+  final keepOpen = publicValueOpenKind(posted);
   if (o['commit'] is! Uint8List) {
     if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'vortice-register') {
       return {
@@ -243,7 +258,7 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
     'kind': kind,
     'noteCommit': o['noteCommit'],
     'commit': o['commit'],
-    'valueProof': o['valueProof'],
+    if (keepOpen && o['valueProof'] != null) 'valueProof': o['valueProof'],
   };
   if (o['rangeProof'] != null) row['rangeProof'] = o['rangeProof'];
   if (o['viewTag'] != null) row['viewTag'] = o['viewTag'];
@@ -257,8 +272,8 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
     final n = o['nanos'];
     if (n is num) row['nanos'] = n.round();
   }
-  final coinbaseMoney = kind == 'hash' || kind == 'pot' || kind == 'finder-fee' || kind == 'reserve-fee';
-  if (coinbaseMoney) {
+  final coinbaseMoney = posted == 'hash' || posted == 'pot' || posted == 'pool-fee' || posted == 'finder-fee' || posted == 'reserve-fee';
+  if (keepOpen && coinbaseMoney) {
     final vp = row['valueProof'];
     if (vp is Map && vp['v'] == null && o['nanos'] is num) {
       row['valueProof'] = {...vp, 'v': o['nanos']};

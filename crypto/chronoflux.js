@@ -377,18 +377,52 @@ function attachReserveSeal(row, o) {
   }
 }
 
-function compactVout(o) {
+const COINBASE_OPEN_KINDS = new Set(['pot', 'hash', 'pool-fee', 'finder-fee', 'reserve-fee']);
+
+/** A public receipt may carry {R,z,v}. A hidden output, including one labelled as a public kind, may not. */
+export function outputMayCarryValueOpen(tx, o) {
+  if (!o || typeof o !== 'object') return false;
+  const kind = o.kind == null || o.kind === '' ? '' : String(o.kind);
+  if (tx?.coinbase || String(tx?.kind || '') === 'coinbase') return COINBASE_OPEN_KINDS.has(kind);
+  const top = tx?.kind == null ? '' : String(tx.kind);
+  if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'pool-withdraw') return kind === top;
+  return false;
+}
+
+function carriesValueOpen(o) {
+  const vp = o?.valueProof;
+  if (vp == null || vp === false || vp === '') return false;
+  if (typeof vp !== 'object') return true;
+  return Object.keys(vp).length > 0;
+}
+
+/** Hidden outputs reject a valueProof. The range proof stays. Reason value_open. */
+export function valueOpenRejected(tx) {
+  if (!tx || typeof tx !== 'object') return null;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (!carriesValueOpen(o)) continue;
+    if (outputMayCarryValueOpen(tx, o)) continue;
+    return { ok: false, reason: 'value_open' };
+  }
+  return null;
+}
+
+function compactVout(o, tx) {
   if (!o) return o;
-  const kind = o.kind || 'pot';
+  const posted = o.kind == null || o.kind === '' ? '' : String(o.kind);
+  const kind = posted || 'pot';
   const keepDest = kind === 'vortice-register';
-  const reserveKind = RESERVE_TX_KINDS.has(kind);
+  const reserveKind = RESERVE_TX_KINDS.has(posted);
+  const coinbaseMoney = COINBASE_OPEN_KINDS.has(posted);
+  const keepOpen = outputMayCarryValueOpen(tx, o);
   if (o.commit) {
     const row = {
       kind,
       noteCommit: o.noteCommit,
       commit: o.commit,
-      valueProof: o.valueProof,
     };
+    if (keepOpen && o.valueProof) row.valueProof = o.valueProof;
     if (o.rangeProof) row.rangeProof = o.rangeProof;
     if (o.viewTag) row.viewTag = o.viewTag;
     if (o.admitPub) row.admitPub = o.admitPub;
@@ -396,17 +430,13 @@ function compactVout(o) {
     if (o.rCt) row.rCt = o.rCt;
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
-    const coinbaseMoney = kind === 'hash' || kind === 'pot' || kind === 'pool-fee' || kind === 'finder-fee' || kind === 'reserve-fee';
     if (reserveKind || coinbaseMoney) {
       const d20 = dest20FromOpen(o);
       if (d20) row.dest20 = d20;
-      if (coinbaseMoney && o.valueProof?.v != null) {
+      if (keepOpen && coinbaseMoney && o.valueProof?.v != null) {
         row.valueProof = { ...(row.valueProof && typeof row.valueProof === 'object' ? compactValue(o.valueProof) : {}), v: Math.floor(Number(o.valueProof.v)) };
       }
-      if (reserveKind) attachReserveSeal(row, o);
-    } else if (row.valueProof && typeof row.valueProof === 'object') {
-      const { v: _v, ...vp } = row.valueProof;
-      row.valueProof = vp;
+      if (keepOpen && reserveKind) attachReserveSeal(row, o);
     }
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
@@ -416,11 +446,13 @@ function compactVout(o) {
   const d20 = dest20FromOpen(o);
   if (d20) row.dest20 = d20;
   if (o.noteCommit) row.noteCommit = o.noteCommit;
-  const claimed = claimedReserveV(o);
-  if (Number.isFinite(claimed)) {
-    row.valueProof = { ...(o.valueProof && typeof o.valueProof === 'object' ? compactValue(o.valueProof) : {}), v: claimed };
+  if (keepOpen) {
+    const claimed = claimedReserveV(o);
+    if (Number.isFinite(claimed)) {
+      row.valueProof = { ...(o.valueProof && typeof o.valueProof === 'object' ? compactValue(o.valueProof) : {}), v: claimed };
+    }
+    if (reserveKind) attachReserveSeal(row, o);
   }
-  if (reserveKind) attachReserveSeal(row, o);
   if (keepDest && o.address) row.address = o.address;
   if (o.memo) row.memo = true;
   return row;
@@ -443,7 +475,7 @@ export function compactTx(tx) {
       coinbase: true,
       height: tx.height,
       vin: [{ coinbase: true, height: tx.height }],
-      vout: (tx.vout || []).map(compactVout),
+      vout: (tx.vout || []).map((o) => compactVout(o, tx)),
     };
     if (tx.excess) row.excess = tx.excess;
     if (tx.jroot) row.jroot = tx.jroot;
@@ -485,7 +517,7 @@ export function compactTx(tx) {
       return row;
     });
   }
-  if (tx.vout) out.vout = (tx.vout || []).map(compactVout);
+  if (tx.vout) out.vout = (tx.vout || []).map((o) => compactVout(o, tx));
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
   if ((keepDest || poolWithdraw || reserveTx) && tx.spendPub) out.spendPub = tx.spendPub;

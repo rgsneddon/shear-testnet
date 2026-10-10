@@ -376,9 +376,11 @@ describe('chronoflux prune + collate', () => {
     });
     assert.deepEqual(Object.keys(commitOnly.vin[0]), ['commit']);
     assert.equal(sealedVinLinkField(commitOnly.vin[0]), null);
+    for (const o of commitOnly.vout || []) delete o.valueProof;
     const admitCommit = admitMempool(emptyMempool(), commitOnly);
     assert.notEqual(admitCommit.reason, 'vin_link');
     const linked = attachDummyOuts({ ...fat, id: 'linked-vin' });
+    for (const o of linked.vout || []) delete o.valueProof;
     assert.equal(admitMempool(emptyMempool(), linked).reason, 'vin_link');
     const tpl = buildTemplate({
       prev: GENESIS_PREV,

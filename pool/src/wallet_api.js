@@ -32,7 +32,7 @@ import {
 import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
-import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
+import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
@@ -1328,18 +1328,30 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
     const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
     const isWithdraw = kindIn === 'withdraw' && programIn === RESERVE_PROGRAM;
-    if (!isDestAddress(from) || !isDestAddress(to)) {
+    const multiProofsEarly = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
+    const sealedSendEarly = kindIn === 'send'
+      && (body.admit_proof || multiProofsEarly)
+      && Array.isArray(body.vin) && body.vin.length
+      && Array.isArray(body.vout) && body.vout.length
+      && (body.sig || body.signature)
+      && body.spendPub;
+    const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
+    if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
+    if ((!sealedSendEarly && !isDestAddress(from)) || !isDestAddress(to)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    if (!(amount > 0) && !isVote) {
+    if (!(amount > 0) && !isVote && !sealedSendEarly) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const poolPay = isDestAddress(String(poolDest || '')) ? String(poolDest) : '';
     if (poolPay && from === poolPay) {
       return { status: 403, json: { ok: false, reason: 'pool_dest' } };
     }
-    const rec = reconstructOwner(store, from);
-    const nanos = isVote ? 0 : Math.round(amount * NANOS_PER_SHE);
+    const rec = (sealedSendEarly && !isDestAddress(from))
+      ? { spendableNanos: 0 }
+      : reconstructOwner(store, from);
+    const hasAmount = Number.isFinite(amount) && amount > 0;
+    const nanos = isVote ? 0 : (hasAmount ? Math.round(amount * NANOS_PER_SHE) : 0);
     const chainNanos = rec.spendableNanos;
     const multiProofs = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
     const sealedSend = kindIn === 'send'

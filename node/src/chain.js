@@ -72,7 +72,7 @@ import {
   extendZeroRoot,
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
-import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
+import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
@@ -1882,6 +1882,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       commits.push(Buffer.from(asU8(o.commit)));
     } catch { /* skip */ }
   };
+  for (const tx of txs) {
+    const open = valueOpenRejected(tx);
+    if (open) return open;
+  }
   const coinbaseCarry = (txs[0]?.coinbase || String(txs[0]?.kind || '') === 'coinbase')
     ? unboundMembershipCarry(txs[0])
     : { ok: true };

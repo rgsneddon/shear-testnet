@@ -6566,7 +6566,10 @@ class ShearLedger implements ReadProofSink {
       _spendable[changeDest] = spendable(changeDest) + changeNanos / kUnitsPerShe;
       _dests.add(changeDest);
     }
-    final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
+    final echoed = Map<String, dynamic>.from(json['tx'] as Map);
+    echoed['amount'] ??= payNanos / kUnitsPerShe;
+    echoed['from'] ??= src;
+    final raw = ShearTx.fromJson(echoed);
     final tx = ShearTx(
       id: raw.id,
       from: raw.from,
@@ -7326,7 +7329,10 @@ class ShearLedger implements ReadProofSink {
         // shows the opened-note cap, which is the gross sum.
         _noteLockDebit(src, needShe);
       }
-      final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
+      final echoed = Map<String, dynamic>.from(json['tx'] as Map);
+      echoed['amount'] ??= needShe;
+      echoed['from'] ??= src;
+      final raw = ShearTx.fromJson(echoed);
       // wallet_api.js sets fromBalance to 0 and sends changeBalance for the
       // pool's reconstructed leftover whenever change is parked. That figure
       // is the spent output, not the other confirmed notes on this dest.
@@ -7868,11 +7874,21 @@ class ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
-  }) =>
-      _post('/api/wallet/send', {
-        'from': from,
+  }) {
+    final sealedSend = (kind == null || kind.isEmpty || kind == 'send') &&
+        sig != null &&
+        sig.isNotEmpty &&
+        spendPub != null &&
+        spendPub.isNotEmpty &&
+        vin != null &&
+        vin.isNotEmpty &&
+        vout != null &&
+        vout.isNotEmpty &&
+        (admitProof != null || (admitProofs != null && admitProofs.isNotEmpty));
+    return _post('/api/wallet/send', {
+        if (!sealedSend) 'from': from,
         'to': to,
-        'amount': amount,
+        if (!sealedSend) 'amount': amount,
         if (fee != null) 'fee': fee,
         if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
         if (memoCt != null) 'memoCt': memoCt,
@@ -7886,7 +7902,7 @@ class ShearPoolClient {
         if (choice != null && choice.isNotEmpty) 'choice': choice,
         if (currentEpoch != null) 'currentEpoch': currentEpoch,
         if (epochStartMs != null) 'epochStartMs': epochStartMs,
-        if (change != null && change.isNotEmpty) 'change': change,
+        if (!sealedSend && change != null && change.isNotEmpty) 'change': change,
         if (vin != null) 'vin': vin,
         if (vout != null) 'vout': vout,
         if (excess != null) 'excess': excess,
@@ -7894,6 +7910,7 @@ class ShearPoolClient {
         if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
         if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
       }, legacyPoolSend: legacyPoolSend);
+  }
 
   Future<Map<String, dynamic>> fluxset() async {
     final got = await _getRawFirst(const ['/fluxset', '/api/wallet/fluxset']);
