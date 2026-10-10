@@ -34,7 +34,7 @@ import {
 import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
-import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected } from '../../crypto/chronoflux.js';
+import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
@@ -1102,6 +1102,33 @@ export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30
   return { owedPi: she, confirmingPot: she };
 }
 
+/** A local opening on a hidden output is not relayed. Public reserve kinds keep v. */
+function stripHiddenValueOpen(kind, vout) {
+  if (!Array.isArray(vout)) return vout;
+  const tx = { kind: kind || '' };
+  return vout.map((o) => {
+    if (!o || typeof o !== 'object') return o;
+    if (!Object.prototype.hasOwnProperty.call(o, 'valueProof')) return o;
+    if (outputMayCarryValueOpen(tx, o)) return o;
+    const next = { ...o };
+    delete next.valueProof;
+    return next;
+  });
+}
+
+/** The client attached a spend body. A from/to/amount quote is not one. */
+function clientPostedSpendBody(body) {
+  if (!body || typeof body !== 'object') return false;
+  if (body.admit_proof) return true;
+  if (Array.isArray(body.admit_proofs) && body.admit_proofs.length > 0) return true;
+  return Array.isArray(body.vin) && body.vin.length > 0
+    && Array.isArray(body.vout) && body.vout.length > 0;
+}
+
+function clientHasSpendSig(body) {
+  return !!(body && (body.sig || body.signature) && body.spendPub);
+}
+
 function requestDestOpen(url, body) {
   const q = url && url.searchParams
     ? (url.searchParams.get('open') || url.searchParams.get('destOpen') || '')
@@ -1511,8 +1538,6 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
       && body.spendPub;
-    const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
-    if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
     if ((!sealedSendEarly && !isDestAddress(from)) || !isDestAddress(to)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
@@ -1540,9 +1565,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
       && body.spendPub;
+    // A posted body with no signature is unsigned, including when the book is short.
+    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && (kindIn === 'send' || isLock || isVote || isWithdraw)) {
+      return { status: 403, json: { ok: false, reason: 'unsigned' } };
+    }
     if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
+    if (Array.isArray(body.vout)) body.vout = stripHiddenValueOpen(kindIn, body.vout);
+    const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
+    if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
     const memoCt = body.memoCt || null;
     const kind = isLock ? 'lock' : isVote ? 'vote' : isWithdraw ? 'withdraw' : 'send';
     const programId = (isLock || isVote || isWithdraw) ? RESERVE_PROGRAM : '';
