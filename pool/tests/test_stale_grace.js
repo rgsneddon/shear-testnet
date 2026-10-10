@@ -70,7 +70,7 @@ function loginAndSubmit(port, dest, submits) {
       sock.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login: `${dest}.rig`, client: 'ShearHash', name: 'ShearK-Miner', version: '2.1', threads: 1 },
+        params: { login: `${dest}.rig`, client: 'ShearHash', name: 'ShearK-Miner', version: '2.9', threads: 1 },
       }) + '\n');
     });
     sock.on('data', (c) => {

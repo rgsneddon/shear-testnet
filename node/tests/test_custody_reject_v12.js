@@ -103,7 +103,7 @@ function asView(parent) {
   };
 }
 
-function check(block, prev, now) {
+function check(block, prev, now, parents) {
   seed(prev?.header, block.shareBatch || []);
   return verifyBlock(block, prev, {
     trustedPowHash: easyPowHash(),
@@ -113,10 +113,13 @@ function check(block, prev, now) {
     mtpTimestamps: [now - 1_000],
     poolDest: feeTo,
     magic: MAGIC_TESTNET,
+    // A child of a non-genesis block has no supply of its own. The node
+    // carries parentSupply. This direct verifier passes the same prefix.
+    ...(Array.isArray(parents) ? { supplyParents: parents } : {}),
   });
 }
 
-function seal(tpl, prev, now) {
+function seal(tpl, prev, now, parents) {
   const block = {
     header: tpl.header,
     txs: tpl.txs,
@@ -131,7 +134,9 @@ function seal(tpl, prev, now) {
     weight: tpl.weight,
     height: tpl.height,
   };
-  return { block, res: check(block, asView(prev), now) };
+  const res = check(block, asView(prev), now, parents);
+  if (res?.ok && res.hash) block.hash = res.hash;
+  return { block, res };
 }
 
 function bitsAfter(parent, childNow, childHeight) {
@@ -219,9 +224,9 @@ function withEnv(on, fn) {
   }
 }
 
-function sameVerdict(block, prev, now) {
-  const off = withEnv(false, () => check(block, prev, now));
-  const on = withEnv(true, () => check(block, prev, now));
+function sameVerdict(block, prev, now, parents) {
+  const off = withEnv(false, () => check(block, prev, now, parents));
+  const on = withEnv(true, () => check(block, prev, now, parents));
   assert.equal(on.ok, off.ok);
   assert.equal(on.reason, off.reason);
   return off;
@@ -272,6 +277,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
     assert.equal(paid.res.ok, true, paid.res.reason);
     assert.equal(canonicalCarry(paid.block.txs[0]), 0);
 
+    const history = [paid.block];
     const empties = [];
     {
       let parent = paid;
@@ -292,23 +298,34 @@ describe('v12 consensus rejects a custodial coinbase', () => {
           potShares: [{ address: feeTo, nanos: fee, kind: 'pool-fee' }],
           poolDest: feeTo,
         });
-        const got = seal(tpl, parent, now);
+        const got = seal(tpl, parent, now, history.slice());
         assert.equal(got.res.ok, true, `empty h=${height} ${got.res.reason}`);
         assert.ok(canonicalCarry(got.block.txs[0]) > 0);
-        empties.push({ parent: got, now });
+        empties.push({ parent: got, now, chain: history.slice() });
+        history.push(got.block);
         parent = got;
       }
     }
 
     const streaks = [
-      { name: 'none', parent: paid, now: genesisMs + TARGET_BLOCK_INTERVAL_MS },
-      { name: 'one', parent: empties[0].parent, now: empties[0].now + TARGET_BLOCK_INTERVAL_MS },
-      { name: 'several', parent: empties[3].parent, now: empties[3].now + TARGET_BLOCK_INTERVAL_MS },
+      { name: 'none', parent: paid, now: genesisMs + TARGET_BLOCK_INTERVAL_MS, chain: [paid.block] },
+      {
+        name: 'one',
+        parent: empties[0].parent,
+        now: empties[0].now + TARGET_BLOCK_INTERVAL_MS,
+        chain: empties[0].chain.concat([empties[0].parent.block]),
+      },
+      {
+        name: 'several',
+        parent: empties[3].parent,
+        now: empties[3].now + TARGET_BLOCK_INTERVAL_MS,
+        chain: empties[3].chain.concat([empties[3].parent.block]),
+      },
     ];
     const counts = [1, 3, 8];
     const painted = [];
 
-    function consider(parent, now, dests, bitsFor, label) {
+    function consider(parent, now, dests, bitsFor, label, chain) {
       const height = parent.block.height + 1;
       const subsidy = potSubsidyAt({ nowMs: now, genesisMs, magic: MAGIC_TESTNET });
       const carry = canonicalCarry(parent.block.txs[0]) || 0;
@@ -330,7 +347,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
         potShares: honestRows,
         poolDest: feeTo,
       });
-      const honest = seal(tpl, parent, now);
+      const honest = seal(tpl, parent, now, chain);
       assert.equal(honest.res.ok, true, `${label} honest ${honest.res.reason}`);
       const opened = openedPot(honest.block.txs[0].vout);
       const fee = Math.floor(subsidy * POOL_FEE_BPS / 10000);
@@ -363,7 +380,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
         shareBatch: batch,
         potShares: [{ address: stranger, nanos: payable, kind: 'pot' }],
         poolDest: feeTo,
-      }), parent, now);
+      }), parent, now, chain);
       assert.equal(whole.res.ok, false, label);
       assert.equal(whole.res.reason, 'pot_prop', label);
 
@@ -386,7 +403,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
         shareBatch: batch,
         potShares: overRows,
         poolDest: feeTo,
-      }), parent, now);
+      }), parent, now, chain);
       assert.equal(over.res.ok, false, `${label} over-cap`);
       assert.equal(over.res.reason, 'pot_prop', label);
 
@@ -409,7 +426,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
             shareBatch: batch,
             potShares: carryRows,
             poolDest: feeTo,
-          }), parent, now);
+          }), parent, now, chain);
           assert.equal(skim.res.ok, false, `${label} carry fee`);
           assert.equal(skim.res.reason, 'pot_prop', label);
         }
@@ -418,15 +435,15 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       const leaves = aLeavesFromShares(batch);
       const bonus = leaves.reduce((a, l) => a + l.count * HASH_BONUS_NANOS, 0);
       const moved = retargetHash(tpl, stranger, bonus);
-      const movedRes = sameVerdict(moved, prev, now);
+      const movedRes = sameVerdict(moved, prev, now, chain);
       assert.equal(movedRes.ok, false, `${label} hash`);
       assert.equal(movedRes.reason, 'hash_owed', label);
       const both = retargetHash(whole.block, stranger, bonus);
-      const bothRes = sameVerdict(both, prev, now);
+      const bothRes = sameVerdict(both, prev, now, chain);
       assert.equal(bothRes.ok, false, `${label} both`);
       assert.equal(bothRes.reason, 'hash_owed', `${label} both ${bothRes.reason}`);
 
-      painted.push({ block: honest.block, prev, now, attack: whole.block });
+      painted.push({ block: honest.block, prev, now, attack: whole.block, chain });
       return honest;
     }
 
@@ -436,7 +453,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
         const bitsFor = n === 1
           ? () => SHARE_FLOOR_BITS + 12
           : (i) => SHARE_FLOOR_BITS + (n === 3 ? i * 5 : 0);
-        consider(streak.parent, streak.now, dests, bitsFor, `${streak.name}/${n}`);
+        consider(streak.parent, streak.now, dests, bitsFor, `${streak.name}/${n}`, streak.chain);
       }
     }
 
@@ -446,15 +463,15 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       for (const n of [1, 3]) {
         const dests = Array.from({ length: n }, () => minerDest());
         const bitsFor = (i) => SHARE_FLOOR_BITS + i * 4;
-        consider(paid, now, dests, bitsFor, `epoch${epoch}/${n}`);
+        consider(paid, now, dests, bitsFor, `epoch${epoch}/${n}`, [paid.block]);
       }
     }
 
     const sample = painted[1];
     for (const mode of ['strip', 'one', 'huge']) {
-      const honestV = sameVerdict(paintV(sample.block, mode), sample.prev, sample.now);
+      const honestV = sameVerdict(paintV(sample.block, mode), sample.prev, sample.now, sample.chain);
       assert.equal(honestV.ok, true, `honest ${mode} ${honestV.reason}`);
-      const attackV = sameVerdict(paintV(sample.attack, mode), sample.prev, sample.now);
+      const attackV = sameVerdict(paintV(sample.attack, mode), sample.prev, sample.now, sample.chain);
       assert.equal(attackV.ok, false, `attack ${mode}`);
       assert.equal(attackV.reason, 'pot_prop', mode);
     }
@@ -481,7 +498,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
         shareBatch: batch,
         potShares: rows,
         poolDest: feeTo,
-      }), shuffleParent, shuffleNow);
+      }), shuffleParent, shuffleNow, streaks[1].chain);
     }
     const left = shuffled(forward);
     const right = shuffled(backward);
@@ -514,7 +531,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
         shareBatch: capBatch,
         potShares: capRows,
         poolDest: feeTo,
-      }), capParent, capNow);
+      }), capParent, capNow, [paid.block]);
       assert.equal(got.res.ok, true, `bps ${bps} ${got.res.reason}`);
       const opened = openedPot(got.block.txs[0].vout);
       assert.equal(opened.by.get(hash20FromAddress(feeTo).toString('hex')) || 0, fee);

@@ -185,6 +185,7 @@ describe('v12 hash-owed frame', () => {
       lz: bits,
       shareBits: bits,
       creditedShareBits: bits,
+      proofSlot: 0,
     }));
     clearLiveSharePow();
     for (const row of batch) {

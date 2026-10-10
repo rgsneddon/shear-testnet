@@ -102,6 +102,9 @@ function shareAt(dest, low, bits) {
     lz: bits,
     shareBits: bits,
     creditedShareBits: bits,
+    // Slot 0 is this block's parent job. An unslotted work row is dropped
+    // before settlement, so the local owed map stays empty.
+    proofSlot: 0,
   };
 }
 

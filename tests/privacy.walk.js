@@ -281,10 +281,10 @@ describe('privacy.walk', () => {
   it('10: stratum she1 is RAM-only; serialized miner row and pool-miner.json have no she1/IP/UA', () => {
     const alice = newIdentity();
     const owned = freshStealthDest(alice).dest;
-    const sheOnly = admitClient({ version: '2.1', login: alice.paymentCode, client: 'ShearHash' });
+    const sheOnly = admitClient({ version: '2.9', login: alice.paymentCode, client: 'ShearHash' });
     assert.equal(sheOnly.payoutDest, '');
     assert.equal(sheOnly.ramAlias, true);
-    const sheOwned = admitClient({ version: '2.1', login: `${alice.paymentCode}.worker`, dest: owned, client: 'ShearHash' });
+    const sheOwned = admitClient({ version: '2.9', login: `${alice.paymentCode}.worker`, dest: owned, client: 'ShearHash' });
     assert.equal(sheOwned.payoutDest, owned);
     assert.equal(sheOwned.login.startsWith('ssa1'), true);
     assert.equal(hasherPayoutDest(alice.paymentCode, { dest: aliasDestOfSilentId(alice.paymentCode) }), null);

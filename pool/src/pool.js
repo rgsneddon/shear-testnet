@@ -531,8 +531,8 @@ export function isCminerFeeLogin() {
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
 export { SHEARK_MINER_VERSION };
 
-/** Major.minor compare. Pre-2.0 ShearK is refused. */
-export function minerVersionAtLeast(version, min = '2.0') {
+/** Major.minor compare. Below the source ShearK version is refused. */
+export function minerVersionAtLeast(version, min = SHEARK_MINER_VERSION) {
   const parse = (s) => {
     const m = String(s || '').trim().match(/^(\d+)\.(\d+)/);
     if (!m) return null;
