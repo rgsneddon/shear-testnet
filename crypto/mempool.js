@@ -219,7 +219,6 @@ export function admitMempool(pool, tx, opts = {}) {
       if (!parsed.ok) return { ok: false, reason: parsed.reason || 'admit_link_tag' };
     }
   }
-  const depth = mempoolDepthBytes(book.txs);
   const need = levyTaxed({ ...tx, kind }) ? levyNanos(0, { tx }) : 0;
   const paid = Math.floor(Number(tx.fee || tx.paid || 0));
   if (paid < need) return { ok: false, reason: 'levy', need, paid };
