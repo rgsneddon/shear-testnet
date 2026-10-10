@@ -2908,7 +2908,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             });
             return;
           }
+          final nanosWire = parseSheDecimalToNanos(flowAmt.text.trim());
           final amount = double.tryParse(flowAmt.text) ?? 0;
+          if (flowAmt.text.trim().isNotEmpty && nanosWire == null) {
+            setState(() {
+              _flowSendAdvisory = kErrSendGeneric;
+              _flowSendOk = false;
+            });
+            return;
+          }
           final bare = sidecar.committed == ClosureSendMode.connectBare;
           final progress = SendProgress();
           _watchFlowProgress(progress);
@@ -2924,6 +2932,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             startTo: _flowAcceptedTo,
             enteredTo: flowTo.text,
             amount: amount,
+            nanosWire: nanosWire,
             memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
             spendSeed: hexToBytes(ident.seedHex),
             local: false,
@@ -3227,7 +3236,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   String _txFeeAdvice(int amountNanos, {required String oneFeeTo, int? depth}) {
-    final L = levyNanos(amountNanos, depth: depth ?? _mempoolDepth);
+    final L = amountNanos == 0
+        ? estimateSendLevyUnits(inputs: 1, outputs: 1)
+        : levyNanos(amountNanos, depth: depth ?? _mempoolDepth);
     return 'Tx fee ${formatShe(L / kUnitsPerShe)} SHE from Continuum spendable (mempool L now). One fee to $oneFeeTo.';
   }
 
@@ -3642,8 +3653,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final out = reserve.withdrawTo(ledger, dest: dest, payout: to, nowMs: now);
-    if (out == null) {
+    final posted = await postReserveWithdraw(
+      ledger,
+      reserve: reserve,
+      dest: dest,
+      payout: to,
+      nowMs: now,
+      spendSeed: hexToBytes(ident.seedHex),
+      local: ledger.pool == null || widget.skipPoolSync,
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+    );
+    if (posted == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(reserveEpochStillOpenCopy())),
@@ -3654,7 +3675,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (mounted) setState(() {});
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Withdraw signed — Continuum updates when the payout is sealed')),
+        SnackBar(content: Text('Withdraw submitted — tx ${posted.tx.id}')),
       );
     }
   }
@@ -3681,7 +3702,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       return;
     }
     var depth = await _mempoolDepthNow();
-    var voteL = levyNanos(0, depth: depth);
+    var voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
     if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -3699,7 +3720,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
     if (sealed != true || !mounted) return;
     depth = await _mempoolDepthNow();
-    voteL = levyNanos(0, depth: depth);
+    voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
     if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -3779,6 +3800,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final idleShe = formatShe(p.idle / kUnitsPerShe);
     final totalShe = formatShe(p.nanos / kUnitsPerShe);
     final programShe = formatShe(reserve.totalLockedNanos / kUnitsPerShe);
+    final vortex = reconstructVortexSums(
+      reserve,
+      dest,
+      flowNanos: (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) * kUnitsPerShe).round(),
+    );
     final needVoteShe = formatShe(p.remainingToVoteNanos / kUnitsPerShe);
     final rw = dest.isEmpty
         ? const ReserveRewards(
@@ -3934,6 +3960,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     ], key: const Key('reserve-yours-box'));
     final overall = _panel(context, [
             Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text('program ${vortex.overallNanos}', key: const Key('vortex-overall-program')),
             Text('Program locked  $programShe SHE'),
             Text('Program staked  ${formatShe(reserve.totalStakedNanos / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
             Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
@@ -4044,6 +4071,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             textAlign: TextAlign.left,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+          Text('portal ${vortex.yourNanos}', key: const Key('vortex-your-portal')),
+          Text('Flow continuum ${vortex.flowNanos}', key: const Key('vortex-flow-continuum')),
           Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
           Text('Idle  $idleShe SHE', textAlign: TextAlign.justify),
           Text(

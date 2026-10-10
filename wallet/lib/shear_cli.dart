@@ -969,16 +969,24 @@ Future<int> _claimRewards(
   _Flags flags,
 ) async {
   final payout = flags['payout'] ?? dest;
-  final got = reserve.withdrawTo(ledger, dest: dest, payout: payout, nowMs: now);
-  if (got == null) {
+  final posted = await postReserveWithdraw(
+    ledger,
+    reserve: reserve,
+    dest: dest,
+    payout: payout,
+    nowMs: now,
+    local: ledger.pool == null,
+  );
+  if (posted == null) {
     err.writeln('nothing to claim — no staked principal or accrued rewards');
     return 1;
   }
+  final got = posted.settled;
   session.rememberedReserve = _portalSnap(reserve, dest, now);
   await session.persist();
   final she = (got['payout'] ?? 0) / kUnitsPerShe;
   out.writeln(flags.json
-      ? jsonEncode({'ok': true, 'payoutDest': payout, ...got, 'payoutShe': formatShe(she)})
+      ? jsonEncode({'ok': true, 'payoutDest': payout, 'txid': posted.tx.id, 'kind': posted.tx.kind, ...got, 'payoutShe': formatShe(she)})
       : 'claimed  principal=${got['principal']}  interest=${got['interest']}  onto $payout');
   return 0;
 }

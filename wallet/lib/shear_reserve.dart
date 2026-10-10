@@ -54,7 +54,86 @@ String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
 
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
-    'Return principal and $days-day APR interest to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
+    'Return principal and $days-day APR interest to Continuum.\nThis settles the finished epoch.\nPosts a withdraw transaction. Not full custody.';
+
+class VortexSums {
+  const VortexSums({
+    required this.yourNanos,
+    required this.overallNanos,
+    required this.flowNanos,
+  });
+
+  /// Portal principal. Role label: portal.
+  final int yourNanos;
+  /// Program locked total. Role label: program.
+  final int overallNanos;
+  /// Continuum figure the caller already reconstructed. Role label: continuum.
+  final int flowNanos;
+}
+
+/// One reconstruct for the Vortex Your, Overall, and Flow lines.
+VortexSums reconstructVortexSums(ShearReserve reserve, String dest, {int flowNanos = 0}) {
+  final your = dest.isEmpty ? 0 : reserve.portal(dest).nanos;
+  final overall = reserve.totalLockedNanos < 0 ? 0 : reserve.totalLockedNanos;
+  final flow = flowNanos < 0 ? 0 : flowNanos;
+  return VortexSums(
+    yourNanos: your < 0 ? 0 : your,
+    overallNanos: overall,
+    flowNanos: flow,
+  );
+}
+
+/// Payout a withdraw would post, without mutating the reserve.
+int reserveWithdrawPayoutNanos(ShearReserve reserve, String dest, int nowMs) {
+  final epochOver = reserve.epochIsOver(nowMs);
+  final p = reserve.portal(dest);
+  if (!epochOver && p.claimableRewards <= 0) return 0;
+  final principal = (epochOver || reserve.bonusEnacted) ? p.nanos : 0;
+  final interest = epochOver
+      ? (p.claimableRewards > 0 ? p.claimableRewards : reserveInterestNanos(p.staked, reserve.epochBps))
+      : p.claimableRewards;
+  if (principal <= 0 && interest <= 0) return 0;
+  if (!extraMintAllowed(kReserveProgram)) return 0;
+  return principal + interest;
+}
+
+/// Post kind withdraw, then settle the local portal. A failed send leaves the portal.
+Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
+  ShearLedger ledger, {
+  required ShearReserve reserve,
+  required String dest,
+  required String payout,
+  required int nowMs,
+  Uint8List? spendSeed,
+  bool local = true,
+  String? restFrame,
+  String? paymentCode,
+  bool allowPublicHttp = false,
+}) async {
+  final nanos = reserveWithdrawPayoutNanos(reserve, dest, nowMs);
+  if (nanos <= 0) return null;
+  final amount = nanos / kUnitsPerShe;
+  final from = (restFrame != null && restFrame.isNotEmpty)
+      ? ledger.currentDest(restFrame, paymentCode: paymentCode)
+      : payout;
+  final tx = await ledger.send(
+    from: from.isNotEmpty ? from : payout,
+    to: payout,
+    amount: amount,
+    kind: 'withdraw',
+    programId: kReserveProgram,
+    local: local,
+    spendSeed: spendSeed,
+    restFrame: restFrame,
+    paymentCode: paymentCode,
+    allowPublicHttp: allowPublicHttp || !local,
+    nanosWire: nanos.toString(),
+  );
+  if (tx.kind != 'withdraw') return null;
+  final settled = reserve.withdraw(dest: dest, nowMs: nowMs, payout: payout);
+  if (settled == null) return null;
+  return (tx: tx, settled: settled);
+}
 
 /// Unsealed oracle observe is advisory. It never mints Spendable.
 String vaultObserveLabel({required bool sealed}) => sealed
@@ -728,7 +807,9 @@ Future<ReserveVoteResult> commandReserveVote({
       remark: voteFailCopy(StateError('vote_locked')),
     );
   }
-  final voteL = levyNanos(0, depth: depth);
+  // Consensus weight quote. Amount bps and depth surge are not the vote fee.
+  depth;
+  final voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
   final needShe = voteL / kUnitsPerShe;
   if (ledger.spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 < needShe) {
     return ReserveVoteResult(
@@ -759,14 +840,7 @@ Future<ReserveVoteResult> commandReserveVote({
       spendSeed: spendSeed,
     );
   } catch (e) {
-    final shown = voteFailCopy(e);
-    if (shown.toLowerCase().contains('insufficient')) {
-      return ReserveVoteResult(
-        enacted: false,
-        remark: 'Not enough Continuum spendable for vote tx fee ${formatShe(needShe)} SHE',
-      );
-    }
-    return ReserveVoteResult(enacted: false, remark: shown);
+    return ReserveVoteResult(enacted: false, remark: voteFailCopy(e));
   }
   final err = reserve.vote(
     dest: dest,

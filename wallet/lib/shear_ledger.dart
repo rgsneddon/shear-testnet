@@ -343,6 +343,22 @@ const int kMeasuredProofHexBytes = 42000;
 const int kMeasuredOutputHexBytes = 30000;
 const int kMeasuredTxBaseBytes = 512;
 
+/// SHE text as an exact nanos decimal. A non-integer or an extra non-zero
+/// digit past 11 places is refused. The result is never a JS-style round.
+String? parseSheDecimalToNanos(String raw) {
+  final s = raw.trim();
+  if (!RegExp(r'^\d+(\.\d+)?$').hasMatch(s)) return null;
+  final parts = s.split('.');
+  final whole = parts[0];
+  final frac = parts.length > 1 ? parts[1] : '';
+  if (frac.length > 11 && RegExp(r'[^0]').hasMatch(frac.substring(11))) return null;
+  final frac11 = (frac.length >= 11 ? frac.substring(0, 11) : frac.padRight(11, '0'));
+  final scale = BigInt.from(kUnitsPerShe);
+  final nanos = BigInt.parse(whole) * scale + BigInt.parse(frac11.isEmpty ? '0' : frac11);
+  if (nanos < BigInt.zero) return null;
+  return nanos.toString();
+}
+
 int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = false}) {
   final nIn = inputs < 1 ? 1 : inputs;
   final nOut = outputs < 1 ? 1 : outputs;
@@ -1541,57 +1557,71 @@ Future<ContinuumSendResult> submitContinuumSend({
   bool allowPublicHttp = false,
   int depth = 0,
   SendProgress? progress,
+  String? nanosWire,
 }) async {
   final candidate = enteredTo.trim();
   if (!continuumPayable(candidate)) {
     return ContinuumSendResult(posted: false, to: startTo, remark: kErrShortShe1);
   }
-  if (amount <= 0) {
+  if (amount <= 0 && (nanosWire == null || nanosWire.isEmpty)) {
     return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
   }
-  final nanos = (amount * kUnitsPerShe).round();
-  final levy = levyNanos(nanos, depth: depth);
-  final need = amount + levy / kUnitsPerShe;
-  final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
-  if (painted + 1e-12 < need) {
-    return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
-  }
-  debugLastContinuumSendError = null;
-  final mark = ledger.markPaintedBook();
-  final gap = ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need);
-  if (gap == null) {
-    ledger.restorePaintedBook(mark);
-    return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+  if (!ledger.beginSend()) {
+    return ContinuumSendResult(posted: false, to: candidate, remark: 'send_in_flight');
   }
   try {
-    final paintedFrom = ledger.paintedFundDest;
-    final from = gap > 1e-12 && isDestAddress(paintedFrom)
-        ? paintedFrom
-        : flowSpendFrom(
-            ledger,
-            restFrame: restFrame,
-            paymentCode: paymentCode,
-            amount: need,
-          );
-    final tx = await ledger.sendSpendableSum(
-      from: from,
-      to: candidate,
-      amount: amount,
-      memo: memo,
-      local: local,
-      restFrame: restFrame,
-      paymentCode: paymentCode,
-      spendSeed: spendSeed,
-      privacyHopUp: privacyHopUp,
-      allowPublicHttp: allowPublicHttp,
-      paintedCover: gap > 1e-12,
-      progress: progress,
+    // Weight quote, not the amount-bps figure. Depth surge is not the consensus levy.
+    depth;
+    final levy = estimateSendLevyUnits(
+      inputs: 1,
+      outputs: 3,
+      memo: memo != null && memo.isNotEmpty,
     );
-    return ContinuumSendResult(posted: true, to: candidate, remark: '', tx: tx);
-  } catch (e) {
-    debugLastContinuumSendError = e;
-    ledger.restorePaintedBook(mark);
-    return ContinuumSendResult(posted: false, to: candidate, remark: flowSendAdvisoryOf(e));
+    final need = amount + levy / kUnitsPerShe;
+    final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
+    if (painted + 1e-12 < need) {
+      return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+    }
+    debugLastContinuumSendError = null;
+    final mark = ledger.markPaintedBook();
+    final gap = ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need);
+    if (gap == null) {
+      ledger.restorePaintedBook(mark);
+      return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+    }
+    try {
+      final paintedFrom = ledger.paintedFundDest;
+      final from = gap > 1e-12 && isDestAddress(paintedFrom)
+          ? paintedFrom
+          : flowSpendFrom(
+              ledger,
+              restFrame: restFrame,
+              paymentCode: paymentCode,
+              amount: need,
+            );
+      final tx = await ledger.sendSpendableSum(
+        from: from,
+        to: candidate,
+        amount: amount,
+        memo: memo,
+        local: local,
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        spendSeed: spendSeed,
+        privacyHopUp: privacyHopUp,
+        allowPublicHttp: allowPublicHttp,
+        paintedCover: gap > 1e-12,
+        progress: progress,
+        nanosWire: nanosWire,
+      );
+      return ContinuumSendResult(posted: true, to: candidate, remark: '', tx: tx);
+    } catch (e) {
+      debugLastContinuumSendError = e;
+      ledger.restorePaintedBook(mark);
+      return ContinuumSendResult(posted: false, to: candidate, remark: flowSendAdvisoryOf(e));
+    }
+  } finally {
+    ledger.endSend();
   }
 }
 
@@ -2290,6 +2320,19 @@ class ShearLedger implements ReadProofSink {
   }
 
   final ShearPoolClient? pool;
+  bool _sendInFlight = false;
+
+  /// One in-flight Continuum send. A second call returns false until [endSend].
+  bool beginSend() {
+    if (_sendInFlight) return false;
+    _sendInFlight = true;
+    return true;
+  }
+
+  void endSend() {
+    _sendInFlight = false;
+  }
+
   final Map<String, double> _spendable = {};
   /// Session header nanos. Never copied into [_spendable].
   final Map<String, double> _advisorySpendable = {};
@@ -6608,9 +6651,11 @@ class ShearLedger implements ReadProofSink {
     bool allowPublicHttp = false,
     bool paintedCover = false,
     SendProgress? progress,
+    String? nanosWire,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     Future<ShearTx> once(double pay, String src, {Map<String, dynamic>? note}) {
+      final same = nanosWire != null && (pay - amount).abs() <= 1e-12;
       return send(
         from: src,
         to: to,
@@ -6631,6 +6676,7 @@ class ShearLedger implements ReadProofSink {
         paintedCover: paintedCover,
         progress: progress,
         spendNote: note,
+        nanosWire: same ? nanosWire : null,
       );
     }
     if (sendKind != 'send' || local || paintedCover || restFrame == null) {
@@ -6786,6 +6832,7 @@ class ShearLedger implements ReadProofSink {
     bool paintedCover = false,
     SendProgress? progress,
     Map<String, dynamic>? spendNote,
+    String? nanosWire,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
@@ -6856,7 +6903,11 @@ class ShearLedger implements ReadProofSink {
       } catch (_) {}
     }
     final taxed = levyTaxed(sendKind);
-    final nanos = sendKind == 'vote' ? 0 : (amount * kUnitsPerShe).round();
+    var nanos = sendKind == 'vote' ? 0 : (amount * kUnitsPerShe).round();
+    if (sendKind != 'vote' && nanosWire != null && RegExp(r'^\d+$').hasMatch(nanosWire)) {
+      final big = BigInt.parse(nanosWire);
+      if (big >= BigInt.zero && big.bitLength <= 62) nanos = big.toInt();
+    }
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
     final needShe = (sendKind == 'vote' ? 0.0 : amount) + levy / kUnitsPerShe;
     if (restFrame != null && (sendKind == 'vote' || sendKind == 'lock')) {
@@ -6892,7 +6943,8 @@ class ShearLedger implements ReadProofSink {
       final hopped = _hopOffMiningMailbox(src, restFrame, paymentCode: paymentCode);
       if (hopped != src) src = hopped;
     }
-    if (!paintedCover) {
+    // A withdraw pays the reserve principal. Continuum spendable is not the source.
+    if (!paintedCover && sendKind != 'withdraw') {
       final usable = _shownSpendable(src);
       final owned = restFrame == null
           ? usable
@@ -6905,7 +6957,7 @@ class ShearLedger implements ReadProofSink {
         _spendable[pk] = usable;
       }
     }
-    if (spendable(src) < needShe) {
+    if (sendKind != 'withdraw' && spendable(src) < needShe) {
       var fromNotes = 0.0;
       for (final n in _notes) {
         if (n['spent'] == true) continue;
@@ -6917,7 +6969,7 @@ class ShearLedger implements ReadProofSink {
         _spendable[src] = fromNotes;
       }
     }
-    if (spendable(src) < needShe) {
+    if (sendKind != 'withdraw' && spendable(src) < needShe) {
       final owned = restFrame == null
           ? spendable(src)
           : spendableOwned(restFrame, paymentCode: paymentCode);
@@ -7280,6 +7332,7 @@ class ShearLedger implements ReadProofSink {
               ? _bytesHex(admitProof!['spendTag'] as Uint8List)
               : admitProof?['spendTag']?.toString(),
           paintedOwedNanos: paintedCover ? _paintedFundOwedNanos : 0,
+          nanosWire: nanosWire,
         );
       }
 
@@ -7342,7 +7395,7 @@ class ShearLedger implements ReadProofSink {
         _spendable[src] = left <= 1e-18 ? 0 : left;
         final noteChange = fundedShe - needShe;
         _parkChange(src, changeDest, changeShe: noteChange > 1e-18 ? noteChange : null);
-      } else {
+      } else if (sendKind != 'withdraw') {
         final reported = (json['fromBalance'] as num?)?.toDouble();
         var nextBal = reported ?? (spendable(src) - needShe);
         if (nextBal < 0) nextBal = 0;
@@ -7372,15 +7425,17 @@ class ShearLedger implements ReadProofSink {
       _txs.add(tx);
       return tx;
     }
-    final netBook = spendable(src) - needShe;
-    _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
-    if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
-      // This book is already net. A confirmRound pot has no opened-note cap,
-      // so the assignment above is the only cut. The cap path shows the gross
-      // opened sum and needs this debit once so a 0 book cannot paint it back.
-      _noteLockDebit(src, needShe);
+    if (sendKind != 'withdraw') {
+      final netBook = spendable(src) - needShe;
+      _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
+      if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
+        // This book is already net. A confirmRound pot has no opened-note cap,
+        // so the assignment above is the only cut. The cap path shows the gross
+        // opened sum and needs this debit once so a 0 book cannot paint it back.
+        _noteLockDebit(src, needShe);
+      }
+      _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     }
-    _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
@@ -7874,6 +7929,7 @@ class ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    String? nanosWire,
   }) {
     final sealedSend = (kind == null || kind.isEmpty || kind == 'send') &&
         sig != null &&
@@ -7888,7 +7944,8 @@ class ShearPoolClient {
     return _post('/api/wallet/send', {
         if (!sealedSend) 'from': from,
         'to': to,
-        if (!sealedSend) 'amount': amount,
+        if (nanosWire != null && nanosWire.isNotEmpty) 'nanos': nanosWire,
+        if (!sealedSend && (nanosWire == null || nanosWire.isEmpty)) 'amount': amount,
         if (fee != null) 'fee': fee,
         if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
         if (memoCt != null) 'memoCt': memoCt,

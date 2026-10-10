@@ -332,13 +332,19 @@ function portalHeldNanos(p) {
   return portalStakeNanos(p) + asBig(p?.redeemedNanos);
 }
 
+function exactBig(n) {
+  if (typeof n === 'bigint') return n < 0n ? 0n : n;
+  if (typeof n === 'string' && /^\d+$/.test(n.trim())) return BigInt(n.trim());
+  return asBig(n);
+}
+
 /** Confirmed lock principal this dest cannot spend.
  *  Own portal, plus any portal whose payout is this dest.
  *  Does not create an empty portal. */
-export function portalPrincipalNanos(state, dest) {
-  if (!state || !state.portals) return 0;
+function portalPrincipalBig(state, dest) {
+  if (!state || !state.portals) return 0n;
   const id = portalKey(dest);
-  if (!id) return 0;
+  if (!id) return 0n;
   const want = String(dest || '');
   let n = 0n;
   const seen = new Set();
@@ -350,7 +356,27 @@ export function portalPrincipalNanos(state, dest) {
     seen.add(pid);
     n += portalHeldNanos(p);
   }
-  return asNum(n);
+  return n;
+}
+
+export function portalPrincipalNanos(state, dest) {
+  return asNum(portalPrincipalBig(state, dest));
+}
+
+const MAX_SAFE_NANOS = 9007199254740991n;
+
+function wireNanos(n) {
+  const x = typeof n === 'bigint' ? n : 0n;
+  return x <= MAX_SAFE_NANOS ? Number(x) : x.toString();
+}
+
+/** Your (portal), Overall (program), and Flow (continuum) from one vault read. */
+export function vortexSums(state, dest, flowNanos = 0) {
+  return {
+    your: { role: 'portal', nanos: wireNanos(portalPrincipalBig(state, dest)) },
+    overall: { role: 'program', nanos: wireNanos(exactBig(state?.totalLockedNanos)) },
+    flow: { role: 'continuum', nanos: wireNanos(exactBig(flowNanos)) },
+  };
 }
 
 function copyPortal(row) {
@@ -681,8 +707,21 @@ function vinDest20(from) {
   return d20 ? { address: from, dest20: d20 } : { address: from };
 }
 
+function exactFloorNanos(nanos) {
+  if (typeof nanos === 'bigint') {
+    if (nanos < 0n) return 0;
+    return nanos <= 9007199254740991n ? Number(nanos) : nanos.toString();
+  }
+  if (typeof nanos === 'string' && /^\d+$/.test(nanos.trim())) {
+    return exactFloorNanos(BigInt(nanos.trim()));
+  }
+  const n = Math.floor(Number(nanos) || 0);
+  if (!Number.isSafeInteger(n) || n < 0) return 0;
+  return n;
+}
+
 export function lockTx({ from, to, nanos, id }) {
-  const n = Math.floor(Number(nanos));
+  const n = exactFloorNanos(nanos);
   return {
     id,
     programId: RESERVE_PROGRAM,
@@ -698,7 +737,7 @@ export function lockTx({ from, to, nanos, id }) {
 }
 
 export function withdrawTx({ from, to, nanos, id }) {
-  const n = Math.floor(Number(nanos));
+  const n = exactFloorNanos(nanos);
   return {
     id,
     programId: RESERVE_PROGRAM,

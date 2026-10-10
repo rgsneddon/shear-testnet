@@ -13,10 +13,11 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
+  bindWeightFee,
   LEVY_CAP_NANOS,
   levyTaxed,
   txWeight,
@@ -999,6 +1000,62 @@ function destHoldResponse(address, open) {
   return null;
 }
 
+const SHE_SCALE = 100_000_000_000n;
+const MAX_SAFE_NANOS = 9007199254740991n;
+
+function wireNanos(n) {
+  return n <= MAX_SAFE_NANOS ? Number(n) : n.toString();
+}
+
+/** Decimal integer nanos. A JS number is accepted only while it is still exact. */
+export function parseIntegerNanos(raw) {
+  if (typeof raw === 'bigint') return raw >= 0n ? raw : null;
+  if (typeof raw === 'number') {
+    if (!Number.isSafeInteger(raw) || raw < 0) return null;
+    return BigInt(raw);
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!/^\d+$/.test(s)) return null;
+    return BigInt(s);
+  }
+  return null;
+}
+
+/**
+ * SHE as a decimal string, or a JS number only when nanos stay inside 2^53.
+ * A number past that is refused. It is not rounded into a nearby integer.
+ */
+export function parseSheToNanos(raw) {
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw) || raw < 0) return null;
+    const legacy = Math.round(raw * Number(SHE_SCALE));
+    if (!Number.isSafeInteger(legacy) || legacy < 0) return null;
+    return BigInt(legacy);
+  }
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return null;
+  const [whole, frac = ''] = s.split('.');
+  if (frac.length > 11 && /[^0]/.test(frac.slice(11))) return null;
+  const frac11 = frac.slice(0, 11).padEnd(11, '0');
+  return BigInt(whole) * SHE_SCALE + BigInt(frac11 || '0');
+}
+
+export function parseSendNanos(body) {
+  if (body && body.nanos != null && body.nanos !== '') {
+    const n = parseIntegerNanos(body.nanos);
+    if (n == null) return { ok: false };
+    return { ok: true, nanos: n };
+  }
+  if (body && body.amount != null && body.amount !== '') {
+    const n = parseSheToNanos(body.amount);
+    if (n == null) return { ok: false };
+    return { ok: true, nanos: n };
+  }
+  return { ok: true, nanos: null };
+}
+
 export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -1322,7 +1379,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     } else if (isFullPaymentCode(rawTo) || isPaymentCode(rawTo)) {
       return { status: 400, json: { ok: false, reason: 'need_dest' } };
     }
-    const amount = Number(body.amount);
+    const parsed = parseSendNanos(body);
+    if (!parsed.ok) return { status: 400, json: { ok: false, reason: 'bad_send' } };
     const kindIn = String(body.kind || 'send');
     const programIn = String(body.programId || '');
     const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
@@ -1340,8 +1398,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if ((!sealedSendEarly && !isDestAddress(from)) || !isDestAddress(to)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    if (!(amount > 0) && !isVote && !sealedSendEarly) {
+    const nanosBi = isVote ? 0n : parsed.nanos;
+    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
+    }
+    if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {
+      return { status: 400, json: { ok: false, reason: 'bad_kind' } };
     }
     const poolPay = isDestAddress(String(poolDest || '')) ? String(poolDest) : '';
     if (poolPay && from === poolPay) {
@@ -1350,8 +1412,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const rec = (sealedSendEarly && !isDestAddress(from))
       ? { spendableNanos: 0 }
       : reconstructOwner(store, from);
-    const hasAmount = Number.isFinite(amount) && amount > 0;
-    const nanos = isVote ? 0 : (hasAmount ? Math.round(amount * NANOS_PER_SHE) : 0);
+    const nanos = nanosBi == null ? 0 : wireNanos(nanosBi);
+    const amount = typeof nanos === 'number' ? nanos / NANOS_PER_SHE : nanos;
     const chainNanos = rec.spendableNanos;
     const multiProofs = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
     const sealedSend = kindIn === 'send'
@@ -1364,17 +1426,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const memoCt = body.memoCt || null;
-    if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {
-      return { status: 400, json: { ok: false, reason: 'bad_kind' } };
-    }
     const kind = isLock ? 'lock' : isVote ? 'vote' : isWithdraw ? 'withdraw' : 'send';
     const programId = (isLock || isVote || isWithdraw) ? RESERVE_PROGRAM : '';
     const taxed = levyTaxed({ kind, programId });
-    const depth = mempoolDepthBytes(store?.mempool || []);
-    const postedFee = Number(body.fee);
-    const fee = (multiProofs && Number.isFinite(postedFee) && postedFee >= 0)
-      ? Math.floor(postedFee)
-      : (taxed ? levyNanos(nanos, { depth }) : 0);
+    const postedFee = (body.fee == null || body.fee === '') ? null : parseIntegerNanos(body.fee);
+    if ((body.fee != null && body.fee !== '') && postedFee == null) {
+      return { status: 400, json: { ok: false, reason: 'bad_send' } };
+    }
+    let fee = postedFee != null
+      ? wireNanos(postedFee)
+      : (taxed ? levyNanos(0) : 0);
     if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
@@ -1434,6 +1495,15 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
+    if (taxed && postedFee == null) bindWeightFee(draft);
+    if (taxed) {
+      const need = levyNeed(draft);
+      const paid = Number(draft.fee);
+      if (!(paid >= need) || paid > LEVY_CAP_NANOS) {
+        return { status: 400, json: { ok: false, reason: 'levy' } };
+      }
+      fee = draft.fee;
+    }
     if (kind === 'send' && dummyCount(draft) < 1) {
       return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
     }
@@ -1492,6 +1562,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         extraMint: extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }),
         ...publicVaultView(vault, now),
         ...portalRewards(vault, dest, now),
+        sums: vortexSums(vault, dest, url.searchParams.get('flow') || 0),
       },
     };
   }

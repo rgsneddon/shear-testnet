@@ -148,7 +148,7 @@ void main() {
     expect(vaultObserveLabel(sealed: false), contains('not book-final'));
     expect(spendableFromVaultObserve(sealed: false, oracleNanos: 9), 0);
     expect(spendableFromVaultObserve(sealed: true, oracleNanos: 9), 0);
-    expect(reserveWithdrawDialogCopy(), contains('local-only'));
+    expect(reserveWithdrawDialogCopy(), isNot(contains('local-only')));
     expect(reserveWithdrawDialogCopy(), contains('Not full custody'));
     final mainSrc = File('lib/main.dart').readAsStringSync();
     expect(mainSrc, contains('vaultObserveLabel(sealed: false)'));
