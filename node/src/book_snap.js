@@ -171,7 +171,7 @@ export function encodeBookSnap(state, key) {
       if (!hash || !Number.isInteger(at) || at < 1) throw new Error('snap_supply');
       parts.push(u32(at), hash);
       const nums = [
-        s.schedulePot, s.carry, s.mintedPot, s.mintedHash, s.mintedLevy,
+        s.schedulePot, s.carry, s.mintedPot, s.mintedHash, s.mintedLevy, s.bLocked,
         s.permittedHashAll, s.acceptedHash, s.dust, s.overflow, s.liveUnit, s.genesisMs,
       ];
       for (const n of nums) {
@@ -397,7 +397,7 @@ export function decodeBookSnap(buf, key, expected = {}) {
       if (!hash) return null;
       o += 32;
       const nums = [];
-      for (let k = 0; k < 11; k += 1) {
+      for (let k = 0; k < 12; k += 1) {
         const n = readU64(payload, o);
         if (!n) return null;
         nums.push(n.v);
@@ -411,12 +411,13 @@ export function decodeBookSnap(buf, key, expected = {}) {
         mintedPot: nums[2],
         mintedHash: nums[3],
         mintedLevy: nums[4],
-        permittedHashAll: nums[5],
-        acceptedHash: nums[6],
-        dust: nums[7],
-        overflow: nums[8],
-        liveUnit: Number(nums[9]),
-        genesisMs: Number(nums[10]),
+        bLocked: nums[5],
+        permittedHashAll: nums[6],
+        acceptedHash: nums[7],
+        dust: nums[8],
+        overflow: nums[9],
+        liveUnit: Number(nums[10]),
+        genesisMs: Number(nums[11]),
       });
     }
     const nanc = readU32(payload, o);

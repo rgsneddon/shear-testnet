@@ -8,6 +8,7 @@ import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } f
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8 } from './note.js';
+import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, v12KindRejected, openingBeforeCarry } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
@@ -79,6 +80,8 @@ export function admitMempool(pool, tx, opts = {}) {
   if (kindGate) return kindGate;
   const open = valueOpenRejected(tx);
   if (open) return open;
+  const leafAsk = bLeafAskRejected(tx);
+  if (leafAsk) return leafAsk;
   const kind = String(tx.kind);
   const clockField = typedClockRejected(tx);
   if (clockField) return clockField;

@@ -387,6 +387,11 @@ export function outputMayCarryValueOpen(tx, o) {
   const top = tx?.kind == null ? '' : String(tx.kind);
   // b-spend is a public mint receipt: the opened sum is the chain leaf.
   if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'pool-withdraw' || top === 'b-spend') return kind === top;
+  // A dummy is publicly zero. That opening is not an amount. Any other value stays hidden.
+  if (kind === 'dummy') {
+    const v = o?.valueProof?.v;
+    return v === 0 || v === 0n;
+  }
   return false;
 }
 

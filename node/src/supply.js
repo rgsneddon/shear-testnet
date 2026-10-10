@@ -16,6 +16,7 @@ import {
   SHARE_FLOOR_BITS,
 } from '../../crypto/asert.js';
 import { verifyMintSum, verifyRange, excessOf } from '../../crypto/note.js';
+import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { isDestAddress } from '../../crypto/address.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import {
@@ -257,6 +258,7 @@ function copySupply(state) {
     mintedPot: state.mintedPot,
     mintedHash: state.mintedHash,
     mintedLevy: state.mintedLevy,
+    bLocked: typeof state.bLocked === 'bigint' ? state.bLocked : 0n,
     permittedHashAll: state.permittedHashAll,
     acceptedHash: state.acceptedHash,
     owedRows: state.owedRows.slice(),
@@ -280,6 +282,7 @@ export function emptySupplyState(genesisMs = 0) {
     mintedPot: 0n,
     mintedHash: 0n,
     mintedLevy: 0n,
+    bLocked: 0n,
     permittedHashAll: 0n,
     acceptedHash: 0n,
     owedRows: [],
@@ -307,6 +310,7 @@ export function supplyFromScalar(scalar, {
     mintedPot: BigInt(scalar.mintedPot || 0),
     mintedHash: BigInt(scalar.mintedHash || 0),
     mintedLevy: BigInt(scalar.mintedLevy || 0),
+    bLocked: BigInt(scalar.bLocked || 0),
     permittedHashAll: BigInt(scalar.permittedHashAll || 0),
     acceptedHash: BigInt(scalar.acceptedHash || 0),
     owedRows: Array.isArray(owedRows) ? owedRows.slice() : [],
@@ -332,6 +336,38 @@ export function supplyLinks(state, block) {
   } catch {
     return false;
   }
+}
+
+/**
+ * B value locked by a debit and not yet drawn by a b-spend.
+ * A published leaf list that is not that debit is b_leaves.
+ * A draw that the commitments do not bind, or that exceeds the lock, is supply.
+ * Returns '' when the term updated.
+ */
+function accountBLocked(state, block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const got = derivedBLeaves(txs);
+  if (!got.ok) return got.reason || 'b_debit';
+  if (Array.isArray(block?.bLeaves) && !sameBLeaves(block.bLeaves, got.leaves)) return 'b_leaves';
+  let created = 0n;
+  for (const leaf of got.leaves) {
+    created += BigInt(leaf.unit);
+    if (created > MAX_SAFE) return 'supply';
+  }
+  let spent = 0n;
+  for (let i = 1; i < txs.length; i += 1) {
+    const tx = txs[i];
+    if (String(tx?.kind || '') !== 'b-spend') continue;
+    const leaf = canonicalBLeaf(tx);
+    if (!leaf) return 'supply';
+    if (!tx.excess || !verifyMintSum(tx.vout || [], leaf.unit, tx.excess)) return 'supply';
+    spent += BigInt(leaf.unit);
+    if (spent > MAX_SAFE) return 'supply';
+  }
+  const prior = typeof state.bLocked === 'bigint' ? state.bLocked : 0n;
+  if (prior + created < spent) return 'supply';
+  state.bLocked = prior + created - spent;
+  return '';
 }
 
 /**
@@ -428,13 +464,16 @@ function accountBlock(prev, block, opts = {}) {
   state.mintedPot += potMinted;
   state.mintedHash += mintedHashHere;
   state.mintedLevy += levy;
+  const bReason = accountBLocked(state, block);
+  if (bReason) return { reason: bReason, state };
   state.liveUnit = unit;
   state.height = blockHeight;
   state.owedKnown = true;
   const hashBytes = opts.blockHash || block?.hash;
   state.blockHash = hashBytes ? Buffer.from(hashBytes) : state.blockHash;
   if (!fitsU64(state.schedulePot) || !fitsU64(state.carry) || !fitsU64(state.mintedPot)
-    || !fitsU64(state.mintedHash) || !fitsU64(state.mintedLevy) || !fitsU64(state.permittedHashAll)
+    || !fitsU64(state.mintedHash) || !fitsU64(state.mintedLevy) || !fitsU64(state.bLocked)
+    || !fitsU64(state.permittedHashAll)
     || !fitsU64(state.acceptedHash) || !fitsU64(state.dust) || !fitsU64(state.overflow)) {
     return { reason: 'supply', state };
   }
@@ -528,6 +567,7 @@ export function auditCirculatingSupply(blocks, {
     hashOwedOverflowNanos: 0,
     extraMintNanos: safeNum(extra) || 0,
     burnedNanos: safeNum(burned) || 0,
+    bLockedNanos: 0,
     differenceNanos: 0,
   };
   if (asNonNeg(extraMintNanos) == null || asNonNeg(burnedNanos) == null) return blank;
@@ -610,6 +650,7 @@ export function auditCirculatingSupply(blocks, {
     hashOwedOverflowNanos: safeNum(overflowState),
     extraMintNanos: safeNum(extra),
     burnedNanos: safeNum(burned),
+    bLockedNanos: safeNum(state.bLocked),
     differenceNanos: safeSigned(difference),
   };
   if (Object.values(nums).some((n) => n == null || !Number.isSafeInteger(n))) {

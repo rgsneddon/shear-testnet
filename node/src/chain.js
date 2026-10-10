@@ -119,7 +119,7 @@ import {
   settleHashOwed,
   writeHashLedger,
 } from '../../crypto/hash_owed.js';
-import { buildDualTree, bindBSpend } from '../../crypto/clearing.js';
+import { buildDualTree, bindBSpend, derivedBLeaves, sameBLeaves, bLeafAskRejected } from '../../crypto/clearing.js';
 import {
   nextBaseFee,
   blockWeight,
@@ -349,37 +349,20 @@ function publishedALeaves(block) {
   });
 }
 
-function publishedBLeaves(block, txs) {
-  if (Array.isArray(block?.bLeaves)) {
-    return block.bLeaves.map((l) => ({
-      dest20: Buffer.from(l.dest20),
-      unit: Number(l.unit || 0),
-      nonce: Number(l.nonce || 0),
-      memoH: l.memoH ? Buffer.from(l.memoH) : Buffer.alloc(32),
-      tag: String(l.tag || ''),
-    }));
-  }
-  return bLeavesOf((txs || []).slice(1), (a) => a);
+function bLeavesOf(txs, _pay) {
+  const got = derivedBLeaves(txs);
+  return got.ok ? got.leaves : [];
 }
 
-function bLeavesOf(txs, pay) {
-  const out = [];
-  for (const tx of txs || []) {
-    if (tx.kind === MEMPOOL_B || tx.kind === 'b-spend') continue;
-    if (!(tx.bExtra || tx.kind === 'b-extra' || tx.bFlag)) continue;
-    const dest = pay(tx.to || tx.vout?.[0]?.address || '');
-    out.push({
-      dest20: dest20Of(dest),
-      unit: Number(tx.unit || tx.nanos || tx.vout?.[0]?.nanos || 0),
-      nonce: Number(tx.nonce || 0),
-      memoH: tx.memoH ? Buffer.from(tx.memoH) : Buffer.alloc(32),
-      tag: String(tx.tag || 'b-extra').slice(0, 8),
-    });
+/** Published leaves must be the debited list. A free list is b_leaves. */
+function boundBLeaves(block, txs) {
+  const got = derivedBLeaves(txs);
+  if (!got.ok) return got;
+  if (Array.isArray(block?.bLeaves) && !sameBLeaves(block.bLeaves, got.leaves)) {
+    return { ok: false, reason: 'b_leaves' };
   }
-  return out;
+  return { ok: true, leaves: got.leaves };
 }
-
-const MEMPOOL_B = 'b-spend';
 
 function ssaOk(addr) {
   return isDestAddress(addr) && bech32Hrp(addr) === DEST_HRP && !isShearAddress(addr);
@@ -1600,9 +1583,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // must not replace that reason. Peer tipHeight does not bury this block.
   // A buried pruned block skips this and uses skipFlow below.
   if (block.samplesPruned && !shouldPruneSamples(height, burialTip)) {
+    const earlyB = boundBLeaves(block, txs);
+    if (!earlyB.ok) return earlyB;
     const dualEarly = buildDualTree({
       aLeaves: publishedALeaves(block),
-      bLeaves: publishedBLeaves(block, txs),
+      bLeaves: earlyB.leaves,
     });
     if (!Buffer.from(dualEarly.continuityRoot).equals(Buffer.from(decoded.continuityRoot))) {
       return { ok: false, reason: 'continuity' };
@@ -1611,7 +1596,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, burialTip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
-  const payAddr = (a) => a;
   const liveUnit = hashBonusUnitNanos(hashBonusNanos);
   let provenUnits = 0;
   let provenByDest = new Map();
@@ -1818,15 +1802,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (have.get(key) !== leaf.count) return { ok: false, reason: 'hash_bonus' };
     }
   }
-  const bLeaves = Array.isArray(block.bLeaves)
-    ? block.bLeaves.map((l) => ({
-      dest20: Buffer.from(l.dest20),
-      unit: Number(l.unit || 0),
-      nonce: Number(l.nonce || 0),
-      memoH: l.memoH ? Buffer.from(l.memoH) : Buffer.alloc(32),
-      tag: String(l.tag || ''),
-    }))
-    : bLeavesOf(txs.slice(1), payAddr);
+  const boundLeaves = boundBLeaves(block, txs);
+  if (!boundLeaves.ok) return boundLeaves;
+  const bLeaves = boundLeaves.leaves;
   if (!skipFlow) {
     const dual = buildDualTree({ aLeaves, bLeaves });
     if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
@@ -1903,6 +1881,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (kindGate) return kindGate;
     const open = valueOpenRejected(tx);
     if (open) return open;
+    const leafAsk = bLeafAskRejected(tx);
+    if (leafAsk) return leafAsk;
     const anchored = checkAdmitAnchor(tx, height);
     if (!anchored.ok) return anchored;
     const clockField = typedClockRejected(tx);

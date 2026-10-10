@@ -56,7 +56,7 @@ import { publicExplorerRow } from '../../crypto/dummy.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
-import { bLeafId, bindBSpend, canonicalBLeaf } from '../../crypto/clearing.js';
+import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from '../../crypto/reserve_vault.js';
@@ -903,6 +903,7 @@ export function createStore(dir, {
         mintedPot: s.mintedPot,
         mintedHash: s.mintedHash,
         mintedLevy: s.mintedLevy,
+        bLocked: s.bLocked,
         permittedHashAll: s.permittedHashAll,
         acceptedHash: s.acceptedHash,
         dust: s.dust,
@@ -2018,6 +2019,8 @@ export function createStore(dir, {
     if (kindGate) return kindGate;
     const open = valueOpenRejected(tx);
     if (open) return open;
+    const leafAsk = bLeafAskRejected(tx);
+    if (leafAsk) return leafAsk;
     if (String(tx.kind || '') === 'b-spend') {
       const tipNow = tip();
       let boundB;
@@ -3813,6 +3816,13 @@ export function createStore(dir, {
         } catch { /* ignore */ }
         continue;
       }
+      const leafAsk = bLeafAskRejected(tx);
+      if (leafAsk) {
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: leafAsk.reason }));
+        } catch { /* ignore */ }
+        continue;
+      }
       if (String(tx.kind || '') === 'b-spend') {
         const carriedProof = unboundMembershipCarry(tx);
         if (!carriedProof.ok) {
@@ -3893,6 +3903,8 @@ export function createStore(dir, {
           reserveDropped = true;
         }
         const permanent = got.reason === 'kind'
+          || got.reason === 'b_debit'
+          || got.reason === 'b_leaves'
           || got.reason === 'commit_sum'
           || got.reason === 'proof'
           || got.reason === 'continuity'

@@ -705,12 +705,48 @@ export function unboundMembershipCarry(tx) {
   return { ok: true };
 }
 
+/** Positive safe integer. '5.0', a bool, and a negative are not a lock. */
+function canonicalLockNanos(v) {
+  if (typeof v === 'boolean' || v == null || v === '') return null;
+  if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v) || v <= 0) return null;
+    return v;
+  }
+  if (typeof v === 'bigint') {
+    if (v <= 0n || v > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(v);
+  }
+  if (typeof v === 'string') {
+    if (!/^[1-9][0-9]*$/.test(v)) return null;
+    const n = Number(v);
+    if (!Number.isSafeInteger(n) || String(n) !== v || n <= 0) return null;
+    return n;
+  }
+  return null;
+}
+
 /**
- * sum(C_out) + fee·G = sum(C̃_in) + W·G + excess·H.
+ * Nanos a tx locks into a B leaf. 0 means this tx is not creating a leaf.
+ * null means it asks for a leaf and the amount is not a positive safe integer.
+ * A b-spend is a draw on a leaf, not a new one.
+ */
+export function flowBLockNanos(tx) {
+  if (!tx || typeof tx !== 'object' || tx.coinbase) return 0;
+  if (String(tx.kind || '') === 'b-spend') return 0;
+  const ask = !!(tx.bFlag || tx.bExtra || String(tx.kind || '') === 'b-extra');
+  if (!ask) return 0;
+  const raw = tx.unit != null && tx.unit !== ''
+    ? tx.unit
+    : (tx.nanos != null && tx.nanos !== '' ? tx.nanos : tx.vout?.[0]?.nanos);
+  return canonicalLockNanos(raw);
+}
+
+/**
+ * sum(C_out) + (fee + B)·G = sum(C̃_in) + W·G + excess·H.
  * W is the vault payout. It is 0 for Flow, lock, and vote. A withdraw
  * passes W equal to the opened receipt, so a hidden change output lets
- * the spent note open to fee + change. The default keeps every Flow
- * caller unchanged.
+ * the spent note open to fee + change. B is the leaf lock from flowBLockNanos.
+ * It is 0 when the tx is not creating a leaf, so a normal Flow caller is unchanged.
  */
 export function verifyFlowConservation(tx, _spentOf, vaultPayout = 0) {
   try {
@@ -726,9 +762,12 @@ export function verifyFlowConservation(tx, _spentOf, vaultPayout = 0) {
     const inC = mintTotal(vins.map((v) => ({ commit: v.commit })));
     if (!outC || !inC) return false;
     if (!tx.excess) return false;
+    const lock = flowBLockNanos(tx);
+    if (lock == null) return false;
     const fee = Math.max(0, Math.floor(Number(tx.fee || 0)));
     const payout = Math.max(0, Math.floor(Number(vaultPayout) || 0));
-    const lhs = fee ? outC.add(mulG(fee)) : outC;
+    const lhsAdd = BigInt(fee) + BigInt(lock);
+    const lhs = lhsAdd !== 0n ? outC.add(mulG(lhsAdd)) : outC;
     let rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
     if (payout) rhs = rhs.add(mulG(payout));
     return lhs.equals(rhs);

@@ -6,7 +6,7 @@
 import { sha256 } from './shear_hash.js';
 import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
 import { packALeafV5, packBLeaf, packDigest } from './pack.js';
-import { noteCommitOfDest20, openedCoinbaseNanos } from './note.js';
+import { noteCommitOfDest20, openedCoinbaseNanos, flowBLockNanos, verifyFlowConservation } from './note.js';
 import { hash20FromAddress } from './address.js';
 import { decodeHeader } from './header.js';
 import { SPENDABLE_CONFIRMATIONS } from './asert.js';
@@ -265,4 +265,84 @@ export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spe
   } catch {
     return { ok: false, reason: 'leaf' };
   }
+}
+
+function leafDest20(tx) {
+  const owned = decodeExact(tx?.dest20, 20);
+  if (owned) return owned;
+  try {
+    const h = hash20FromAddress(tx?.to || tx?.vout?.[0]?.address || '');
+    if (h) return Buffer.from(h);
+  } catch { /* no dest */ }
+  const fromOut = decodeExact(tx?.vout?.[0]?.dest20, 20);
+  return fromOut;
+}
+
+/** The leaf a creating tx asks to lock. null when the fields are not canonical. */
+export function createLeafFromTx(tx) {
+  const lock = flowBLockNanos(tx);
+  if (lock == null || lock <= 0) return null;
+  const dest20 = leafDest20(tx);
+  if (!dest20) return null;
+  return canonicalLeafFields({
+    dest20,
+    unit: lock,
+    nonce: tx?.nonce,
+    memoH: tx?.memoH,
+    tag: tx?.tag == null || tx?.tag === '' ? 'b-extra' : tx.tag,
+  }, 'b-extra');
+}
+
+/**
+ * A tx that asks for a B leaf must lock that unit in the conservation equation
+ * and carry a canonical leaf. A tx that is not asking returns null.
+ */
+export function bLeafAskRejected(tx) {
+  const lock = flowBLockNanos(tx);
+  if (lock === 0) return null;
+  if (lock == null) return { ok: false, reason: 'b_debit' };
+  const leaf = createLeafFromTx(tx);
+  if (!leaf || leaf.unit !== lock) return { ok: false, reason: 'b_debit' };
+  if (!verifyFlowConservation(tx, null, 0)) return { ok: false, reason: 'b_debit' };
+  return null;
+}
+
+/** Leaves implied by the body. A failed ask is b_debit, not an empty list. */
+export function derivedBLeaves(txs) {
+  const leaves = [];
+  for (const tx of txs || []) {
+    if (!tx || tx.coinbase) continue;
+    const lock = flowBLockNanos(tx);
+    if (lock === 0) continue;
+    const bad = bLeafAskRejected(tx);
+    if (bad) return bad;
+    const leaf = createLeafFromTx(tx);
+    if (!leaf) return { ok: false, reason: 'b_debit' };
+    leaves.push(leaf);
+  }
+  return { ok: true, leaves };
+}
+
+function leafRecord(leaf) {
+  if (!leaf) return null;
+  try {
+    return canonicalLeafFields(leaf, leaf.tag == null || leaf.tag === '' ? 'b-extra' : '');
+  } catch {
+    return null;
+  }
+}
+
+/** Same leaves, same order. A non-canonical published leaf does not match. */
+export function sameBLeaves(published, derived) {
+  const a = Array.isArray(published) ? published : [];
+  const b = Array.isArray(derived) ? derived : [];
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = leafRecord(a[i]);
+    const right = leafRecord(b[i]);
+    if (!left || !right) return false;
+    if (left.unit !== right.unit || left.nonce !== right.nonce || left.tag !== right.tag) return false;
+    if (!left.dest20.equals(right.dest20) || !left.memoH.equals(right.memoH)) return false;
+  }
+  return true;
 }
