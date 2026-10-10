@@ -457,4 +457,65 @@ describe('chronoflux prune + collate', () => {
     assert.equal(hashRow.nanos, hashNanos);
     assert.equal(rows.some((r) => r.to === hasher && r.nanos === rest), false);
   });
+
+  it('custody hash rows name each hasher dest20 for any bonus count', () => {
+    const counts = [1, 2 ** 10, 2 ** 20];
+    for (let n = 0; n < counts.length; n += 1) {
+      const poolDest = spendDestOf(newIdentity().spendPub);
+      const hashers = counts.map(() => spendDestOf(newIdentity().spendPub));
+      const rest = NANOS_PER_SHE - Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+      const potVout = sealCoinbaseNote(rest, { dest20: hash20FromAddress(poolDest), kind: 'pot' });
+      const hashVouts = hashers.map((hasher, i) => sealCoinbaseNote(counts[i], {
+        dest20: hash20FromAddress(hasher),
+        kind: 'hash',
+      }));
+      const rows = sealedExplorerRows({
+        height: 4 + n,
+        hash: Buffer.alloc(32, 0x61 + n),
+        miner: poolDest,
+        poolDest,
+        shareBatch: hashers.map((hasher) => ({
+          dest: hasher,
+          dest20: hash20FromAddress(hasher),
+          nonce: 1n,
+          lz: 8,
+        })),
+        aLeaves: hashers.map((hasher, i) => ({
+          noteCommit: noteCommitOfDest20(hash20FromAddress(hasher)),
+          count: counts[i],
+        })),
+        txs: [{ coinbase: true, vout: [potVout, ...hashVouts] }],
+      });
+      const potRow = rows.find((r) => r.kind === 'coinbase');
+      assert.equal(potRow.to, poolDest);
+      assert.equal(potRow.nanos, rest);
+      const hashRows = rows.filter((r) => r.kind === 'hash');
+      assert.equal(hashRows.length, hashers.length);
+      for (let i = 0; i < hashers.length; i += 1) {
+        const row = hashRows.find((r) => r.to === hashers[i]);
+        assert.ok(row, hashers[i]);
+        assert.equal(row.nanos, counts[i]);
+        assert.equal(rows.some((r) => r.to === hashers[i] && r.nanos === rest), false);
+      }
+    }
+    const poolDest = spendDestOf(newIdentity().spendPub);
+    const hasher = spendDestOf(newIdentity().spendPub);
+    const foreign = noteCommitOfDest20(hash20FromAddress(spendDestOf(newIdentity().spendPub)));
+    const mismatched = sealCoinbaseNote(1, {
+      dest20: hash20FromAddress(hasher),
+      noteCommit: foreign,
+      kind: 'hash',
+    });
+    const unlabeled = sealedExplorerRows({
+      height: 11,
+      hash: Buffer.alloc(32, 0x71),
+      miner: poolDest,
+      poolDest,
+      aLeaves: [{ noteCommit: foreign, count: 1 }],
+      txs: [{ coinbase: true, vout: [mismatched] }],
+    });
+    const hashRow = unlabeled.find((r) => r.kind === 'hash');
+    assert.equal(hashRow.nanos, 1);
+    assert.equal(hashRow.to, '');
+  });
 });

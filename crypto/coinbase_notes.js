@@ -310,7 +310,19 @@ export function matchSealedCoinbaseVout(o, pays) {
       if (d20 && nc.length === 32) hit = nc.equals(noteCommitOfDest20(d20));
     }
     if (!hit) continue;
-    if (verifySealedNote(o, p.nanos)) return { address: p.address, nanos: p.nanos, kind };
+    if (!verifySealedNote(o, p.nanos)) continue;
+    let address = p.address || '';
+    if (!address && nc.length === 32) {
+      try {
+        const raw = Buffer.from(asU8(o.dest20));
+        const d20 = raw.length >= 20 ? raw.subarray(0, 20) : null;
+        if (d20 && nc.equals(noteCommitOfDest20(d20))) {
+          const addr = encodeDest(d20);
+          if (addr && isDestAddress(addr)) address = addr;
+        }
+      } catch { /* a pay with no dest stays unlabeled */ }
+    }
+    return { address, nanos: p.nanos, kind };
   }
   // Amount-only match paints pot-after-fee onto whichever hasher prop equals
   // the sealed pot (sole hasher → 0.99 SHE) even though the noteCommit is the pool.
