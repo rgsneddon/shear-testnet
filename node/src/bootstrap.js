@@ -80,7 +80,13 @@ export function shouldPublishBootstrap(tipH, lastCheckpoint) {
   return c >= BOOTSTRAP_FIRST_HEIGHT && c > Number(lastCheckpoint || 0);
 }
 
-/** Pruned prefix only. Overwrites latest.json + latest.bin. Lagged 5 blocks. */
+/**
+ * One image from genesis through the lagged tip. Overwrites latest.json + latest.bin.
+ * Buried blocks may be samplesPruned. The last `depth` blocks stay in the file,
+ * so verifyLoadedChain buries that prefix under this file's own tip.
+ * A samplesPruned block inside that window is not published.
+ * A requested depth below SAMPLE_PRUNE_CONFIRMATIONS does not shrink the window.
+ */
 export function writeLatestBootstrap(dataDir, blocks, {
   magic = MAGIC_TESTNET,
   pruneDepth = SAMPLE_PRUNE_CONFIRMATIONS,
@@ -88,14 +94,29 @@ export function writeLatestBootstrap(dataDir, blocks, {
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   const liveTip = Number(list.at(-1)?.height || 0);
-  const tipH = liveTip - Math.max(0, Number(lag) || 0);
-  if (tipH < pruneDepth + 1) return null;
-  const pruned = list.filter((b) => (
-    Number(b.height) <= tipH
-    && shouldPruneSamples(b.height, tipH, pruneDepth)
-    && b.samplesPruned
-  ));
-  if (!pruned.length) return null;
+  const lagN = Math.max(0, Math.floor(Number(lag) || 0));
+  const tipH = liveTip - lagN;
+  const asked = Math.floor(Number(pruneDepth));
+  const depth = Math.max(
+    SAMPLE_PRUNE_CONFIRMATIONS,
+    Number.isFinite(asked) && asked > 0 ? asked : SAMPLE_PRUNE_CONFIRMATIONS,
+  );
+  if (!Number.isInteger(tipH) || tipH < depth + 1) return null;
+  const byHeight = new Map();
+  for (const b of list) {
+    const h = Number(b?.height);
+    if (!Number.isInteger(h) || h < 1 || h > tipH) continue;
+    if (byHeight.has(h)) return null;
+    byHeight.set(h, b);
+  }
+  if (byHeight.size !== tipH) return null;
+  const pruned = [];
+  for (let h = 1; h <= tipH; h += 1) {
+    const b = byHeight.get(h);
+    if (!b) return null;
+    if (b.samplesPruned && !shouldPruneSamples(h, tipH, depth)) return null;
+    pruned.push(b);
+  }
   const last = pruned[pruned.length - 1];
   const first = pruned[0];
   const paths = latestPaths(dataDir);
@@ -104,7 +125,7 @@ export function writeLatestBootstrap(dataDir, blocks, {
   const manifest = {
     latest: true,
     magic,
-    pruneDepth,
+    pruneDepth: depth,
     height: Number(last.height),
     hash: hexHash(last.hash),
     genesisHash: hexHash(first.hash),

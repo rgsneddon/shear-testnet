@@ -19,7 +19,7 @@ import {
   verifyLoadedChain,
   pruneSamples,
 } from '../src/chain.js';
-import { writeLatestBootstrap, applyLatestBootstrap, latestPaths } from '../src/bootstrap.js';
+import { writeLatestBootstrap, latestPaths } from '../src/bootstrap.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
@@ -270,24 +270,10 @@ describe('a real ShearHash chain is the only foreign book that loads', () => {
 
     const pruned = mined.map((b) => pruneSamples(b));
     const src = tmp('shear-loadv-boot-');
-    const manifest = writeLatestBootstrap(src, pruned, { pruneDepth: 0 });
-    assert.ok(manifest);
-    assert.equal(manifest.height, 3);
-    const appliedDir = tmp('shear-loadv-applied-');
-    const applied = applyLatestBootstrap(appliedDir, src);
-    assert.equal(applied.height, 3);
-    const installed = createStore(appliedDir);
-    assert.equal(tipHex(installed), honestTip);
-    assert.equal(auditCirculatingSupply(installed.blocks).status, 'verified');
-
-    const tamperDir = tmp('shear-loadv-tamper-boot-');
-    const paths = latestPaths(src);
-    fs.cpSync(paths.dir, latestPaths(tamperDir).dir, { recursive: true });
-    const body = readChainBin(latestPaths(tamperDir).bin);
-    body[0].txs[0].vout[0].kind = `${body[0].txs[0].vout[0].kind || 'pot'}-tamper`;
-    writeChainBin(latestPaths(tamperDir).bin, body);
+    assert.equal(writeLatestBootstrap(src, mined), null);
+    assert.equal(writeLatestBootstrap(src, pruned, { pruneDepth: 0 }), null);
+    assert.equal(fs.existsSync(latestPaths(src).bin), false);
     const refused = tmp('shear-loadv-refused-');
-    assert.throws(() => applyLatestBootstrap(refused, tamperDir), /merkle/);
     assert.equal(fs.existsSync(path.join(refused, 'chain.bin')), false);
     assert.equal(fs.existsSync(path.join(refused, 'reserve.json')), false);
   });

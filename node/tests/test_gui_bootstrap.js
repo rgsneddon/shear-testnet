@@ -47,17 +47,18 @@ function prunedBlock(height, hashByte) {
 function snapshotFixture() {
   const src = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-src-'));
   const blocks = [];
-  for (let h = 1; h <= 3; h += 1) blocks.push(prunedBlock(h, h));
-  blocks.push({
-    height: 1008,
-    hash: Buffer.alloc(32, 9),
-    header: Buffer.alloc(128, 9),
-    rootA: Buffer.alloc(32, 1),
-    rootB: Buffer.alloc(32, 2),
-    samplesPruned: false,
-    txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
-    shareBatch: [{ nonce: '1' }],
-  });
+  for (let h = 1; h <= 1001; h += 1) {
+    blocks.push(h === 1 ? prunedBlock(h, h) : {
+      height: h,
+      hash: Buffer.alloc(32, h % 255),
+      header: Buffer.alloc(128, h & 255),
+      rootA: Buffer.alloc(32, 1),
+      rootB: Buffer.alloc(32, 2),
+      samplesPruned: false,
+      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
+      shareBatch: [{ nonce: String(h) }],
+    });
+  }
   const manifest = writeLatestBootstrap(src, blocks);
   assert.ok(manifest, 'fixture snapshot');
   return { src, manifest };
