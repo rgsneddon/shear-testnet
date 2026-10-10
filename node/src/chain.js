@@ -93,6 +93,7 @@ import {
   pointFrom,
   txSpendTags,
   canonicalSpendTag,
+  txIoCap,
 } from '../../crypto/note.js';
 import {
   packTx,
@@ -1533,6 +1534,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const { hash, decoded } = assessed;
   const resolvedGenesisMs = assessed.genesisMs;
   const txs = Array.isArray(block.txs) ? block.txs : [];
+  for (let i = 0; i < txs.length; i += 1) {
+    const capped = txIoCap(txs[i]);
+    if (!capped.ok) return capped;
+  }
   const wantPot = potSubsidyAt({
     nowMs: Number(decoded.timestamp) || Number(nowMs) || 0,
     genesisMs: resolvedGenesisMs,

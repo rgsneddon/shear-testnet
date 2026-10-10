@@ -1599,6 +1599,55 @@ export function adminMinerView(m, now = Date.now()) {
   };
 }
 
+/** Same byte cap as a P2P frame. A larger declared body is refused before it is read. */
+export const HTTP_BODY_MAX = 16 * 1024 * 1024;
+
+export function readCappedBody(req, cap = HTTP_BODY_MAX) {
+  const rawLen = req?.headers?.['content-length'];
+  const lenText = Array.isArray(rawLen) ? rawLen[0] : rawLen;
+  if (lenText != null && lenText !== '') {
+    const declared = Number(lenText);
+    if (!Number.isFinite(declared) || declared < 0 || declared > cap) {
+      const err = new Error('body_cap');
+      err.code = 'body_cap';
+      return Promise.reject(err);
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let got = 0;
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+      fn(value);
+    };
+    const onData = (c) => {
+      const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+      got += buf.length;
+      if (got > cap) {
+        const err = new Error('body_cap');
+        err.code = 'body_cap';
+        try { req.pause(); } catch { /* ignore */ }
+        req.on('error', () => {});
+        finish(reject, err);
+        return;
+      }
+      chunks.push(buf);
+    };
+    const onEnd = () => {
+      finish(resolve, Buffer.concat(chunks).toString('utf8') || '{}');
+    };
+    const onError = (err) => finish(reject, err);
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+  });
+}
+
 export function createPool({
   dataDir,
   stratumPort = 1111,
@@ -5077,12 +5126,22 @@ export function createPool({
     if (url.pathname === '/api/mempool' || url.pathname === '/api/mempoolPressure' || url.pathname === '/api/mempoolpressure' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/') || url.pathname.startsWith('/api/vault/') || url.pathname.startsWith('/api/join/')) {
       let body = {};
       if (req.method === 'POST') {
-        const raw = await new Promise((resolve, reject) => {
-          const chunks = [];
-          req.on('data', (c) => chunks.push(c));
-          req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8') || '{}'));
-          req.on('error', reject);
-        });
+        let raw;
+        try {
+          raw = await readCappedBody(req);
+        } catch (err) {
+          if (!res.headersSent) {
+            const over = err && err.code === 'body_cap';
+            res.statusCode = over ? 413 : 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: false, reason: over ? 'body_cap' : 'bad_body' }), () => {
+              if (over) {
+                try { req.socket.end(); } catch { /* ignore */ }
+              }
+            });
+          }
+          return;
+        }
         try {
           body = JSON.parse(raw);
         } catch (err) {

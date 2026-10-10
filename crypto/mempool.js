@@ -7,7 +7,7 @@ import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAdd
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
-import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8 } from './note.js';
+import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
 import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, v12KindRejected, openingBeforeCarry } from './spend.js';
@@ -70,6 +70,8 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
+  const capped = txIoCap(tx);
+  if (!capped.ok) return capped;
   const earlyOpen = openingBeforeCarry(tx);
   if (earlyOpen) return earlyOpen;
   if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {

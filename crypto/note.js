@@ -3,7 +3,7 @@
  * Range: packed 64-bit OR proofs (RANGE=packed-bit). The wire label is not Bulletproofs+.
  * Coinbase exact-value: Schnorr that C − vG ∈ ⟨H⟩ for v from Tree-A.
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, hash, randomBytes } from 'node:crypto';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { bytesToNumberLE } from '@noble/curves/utils.js';
@@ -518,7 +518,7 @@ export function canonicalSpendTag(proof) {
 function proofIdentity(proof) {
   const blob = proofBlobBytes(proof);
   if (blob && blob.length >= 33 && (blob[0] === 2 || blob[0] === 3)) {
-    return `b:${blob.toString('hex')}`;
+    return `b:${hash('sha256', blob, 'hex')}`;
   }
   const one = canonicalSpendTag(proof);
   if (!one.tag) return null;
@@ -527,6 +527,37 @@ function proofIdentity(proof) {
     if (proof?.cTilde != null) ct = Buffer.from(asU8(proof.cTilde)).toString('hex');
   } catch { ct = ''; }
   return `s:${one.tag.toString('hex')}:${ct}`;
+}
+
+/** Tag bytes for the bound check. A Buffer tag is not copied. */
+function boundProofTag(proof) {
+  const raw = proof?.blob ?? proof?.proof;
+  if (Buffer.isBuffer(raw) && raw.length >= 33 && (raw[0] === 2 || raw[0] === 3)) {
+    const from = raw.subarray(1, 33);
+    const field = proof?.spendTag;
+    if (field != null && field !== '') {
+      let tag = null;
+      if (Buffer.isBuffer(field) && field.length === 32) tag = field;
+      else tag = postedSpendTag(field).tag;
+      if (!tag || !tag.equals(from)) return { ok: false, reason: 'admit_tag' };
+    }
+    return { ok: true, tag: from };
+  }
+  const one = canonicalSpendTag(proof);
+  if (!one.ok || !one.tag) return { ok: false, reason: one.reason || 'admit_membership' };
+  return { ok: true, tag: one.tag };
+}
+
+/** Exact blob bytes for a versioned proof. A shape proof keeps tag and cTilde. */
+function sameBoundProof(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ba = proofBlobBytes(a);
+  const bb = proofBlobBytes(b);
+  const aVer = !!(ba && ba.length >= 33 && (ba[0] === 2 || ba[0] === 3));
+  const bVer = !!(bb && bb.length >= 33 && (bb[0] === 2 || bb[0] === 3));
+  if (aVer || bVer) return aVer && bVer && ba.length === bb.length && ba.equals(bb);
+  return sameSpendProof(a, b);
 }
 
 /** True when both objects are the same proof, including a revived copy. */
@@ -637,55 +668,168 @@ function parseTxSpendTags(tx) {
   return { ok: true, reason: null, tags, proofs };
 }
 
+/** Per-tx shape cap. Coinbase payees are not an 8-output send. */
+export const MAX_TX_INPUTS = 8;
+export const MAX_TX_OUTPUTS = 8;
+
+export function txIsCoinbase(tx) {
+  return !!(tx && (tx.coinbase === true || String(tx.kind || '') === 'coinbase'));
+}
+
+/**
+ * First stateless bound. Over the cap is invalid before any proof parse.
+ * Zero inputs are not this reject: a withdraw vin list is empty.
+ * proofChecked marks the reject so a peer that sent it is scored.
+ */
+export function txIoCap(tx) {
+  const nIn = Array.isArray(tx?.vin) ? tx.vin.length : 0;
+  const nOut = Array.isArray(tx?.vout) ? tx.vout.length : 0;
+  if (nIn > MAX_TX_INPUTS || (!txIsCoinbase(tx) && nOut > MAX_TX_OUTPUTS)) {
+    return { ok: false, reason: 'tx_cap', proofChecked: true };
+  }
+  return { ok: true };
+}
+
+const BIND_SLOW = { slow: true };
+
+function commitSame(posted, want) {
+  let a = posted;
+  let b = want;
+  if (!Buffer.isBuffer(a) || !Buffer.isBuffer(b)) {
+    try {
+      if (!Buffer.isBuffer(a)) a = Buffer.from(asU8(a));
+      if (!Buffer.isBuffer(b)) b = Buffer.from(asU8(b));
+    } catch {
+      return false;
+    }
+  }
+  return a.length === b.length && a.equals(b);
+}
+
+/** Shape proofs and collision storms. One set, so a hostile frame stays linear. */
+function bindListedSlow(vins, proofs) {
+  const seen = new Set();
+  const tagOf = new Array(vins.length);
+  for (let i = 0; i < vins.length; i += 1) {
+    const proof = proofs[i];
+    const parsed = boundProofTag(proof);
+    if (!parsed.ok) return { ok: false, reason: parsed.reason || 'admit_membership' };
+    const tag = parsed.tag;
+    if (!tag || !proof || proof.cTilde == null || !vins[i] || vins[i].commit == null) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+    if (!commitSame(vins[i].commit, proof.cTilde)) return { ok: false, reason: 'admit_membership' };
+    const key = tag.toString('latin1');
+    if (seen.has(key)) return { ok: false, reason: 'admit_link_tag' };
+    seen.add(key);
+    tagOf[i] = tag;
+  }
+  return { ok: true, tagOf };
+}
+
+function versionedHead(proof) {
+  if (!proof) return false;
+  const raw = proof.blob != null ? proof.blob : proof.proof;
+  const field = proof.spendTag;
+  return Buffer.isBuffer(raw) && raw.length >= 33 && (raw[0] === 2 || raw[0] === 3)
+    && Buffer.isBuffer(field) && field.length === 32
+    && Buffer.isBuffer(proof.cTilde);
+}
+
+/**
+ * Versioned buffer proofs only. Shape proofs never enter, so this loop stays
+ * monomorphic. A probe chain longer than the load allows restarts through the set.
+ */
+function bindListedTight(vins, proofs) {
+  const n = vins.length;
+  if (n > 0x10000) return BIND_SLOW;
+  let capN = 2;
+  const need = n << 1;
+  while (capN < need) capN <<= 1;
+  const slot = new Uint32Array(capN);
+  const mask = capN - 1;
+  const tagOf = new Array(n);
+  for (let i = 0; i < n; i += 1) {
+    const proof = proofs[i];
+    const raw = proof.blob != null ? proof.blob : proof.proof;
+    const field = proof.spendTag;
+    const commit = vins[i].commit;
+    const want = proof.cTilde;
+    if (!raw || (raw[0] !== 2 && raw[0] !== 3)) return BIND_SLOW;
+    if (raw.compare(field, 0, 32, 1, 33) !== 0) return { ok: false, reason: 'admit_tag' };
+    if (commit.length !== want.length || !commit.equals(want)) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+    tagOf[i] = field;
+    let h = (field.readUInt32BE(0) ^ field.readUInt32BE(8) ^ field.readUInt32BE(16) ^ field.readUInt32BE(24)) & mask;
+    let steps = 0;
+    while (slot[h] !== 0) {
+      if (tagOf[slot[h] - 1].equals(field)) return { ok: false, reason: 'admit_link_tag' };
+      h = (h + 1) & mask;
+      steps += 1;
+      if (steps > 24) return BIND_SLOW;
+    }
+    slot[h] = i + 1;
+  }
+  return { ok: true, tagOf };
+}
+
 /**
  * Every Flow vin is bound to one Admit proof. cTilde must equal that vin's
  * commit, the spend tag must be present, and an extra vin is not a proof.
  * Call this before verifyFlowConservation so an unbound commit cannot enter the sum.
+ * Tag identity is one pass. A long probe chain restarts through a set so a
+ * hostile frame stays linear when the 8-input cap is bypassed.
  */
 export function flowInputsBound(tx) {
-  const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v);
-  if (!vins.length || vins.some((v) => v.coinbase)) {
+  const rawVins = Array.isArray(tx?.vin) ? tx.vin : [];
+  let vins = rawVins;
+  let shaped = false;
+  for (let i = 0; i < rawVins.length; i += 1) {
+    const v = rawVins[i];
+    if (!v || v.coinbase) { shaped = true; break; }
+  }
+  if (shaped) {
+    vins = rawVins.filter((x) => x);
+    if (!vins.length || vins.some((v) => v.coinbase)) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+  } else if (!vins.length) {
     return { ok: false, reason: 'admit_membership' };
   }
-  const proofs = (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length)
-    ? tx.admit_proofs
+  const listed = tx?.admit_proofs;
+  const proofs = (Array.isArray(listed) && listed.length)
+    ? listed
     : (tx?.admit_proof ? [tx.admit_proof] : []);
   if (proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
-  const tags = [];
-  const seen = new Set();
-  for (let i = 0; i < vins.length; i += 1) {
-    const proof = proofs[i];
-    const one = canonicalSpendTag(proof);
-    if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
-    if (!one.tag || proof?.cTilde == null || vins[i]?.commit == null) {
-      return { ok: false, reason: 'admit_membership' };
-    }
-    const hex = one.tag.toString('hex');
-    if (seen.has(hex)) return { ok: false, reason: 'admit_link_tag' };
-    seen.add(hex);
-    tags.push(one.tag);
-    let posted;
-    let want;
+  let placed;
+  if (versionedHead(proofs[0]) && versionedHead(proofs[proofs.length - 1])) {
     try {
-      posted = Buffer.from(asU8(vins[i].commit));
-      want = Buffer.from(asU8(proof.cTilde));
+      placed = bindListedTight(vins, proofs);
     } catch {
-      return { ok: false, reason: 'admit_membership' };
+      placed = BIND_SLOW;
     }
-    if (posted.length !== want.length || !posted.equals(want)) {
-      return { ok: false, reason: 'admit_membership' };
-    }
+    if (placed === BIND_SLOW || placed.slow) placed = bindListedSlow(vins, proofs);
+  } else {
+    placed = bindListedSlow(vins, proofs);
   }
+  if (!placed.ok) return { ok: false, reason: placed.reason || 'admit_membership' };
   // The bound list is the only spend. A distinct admit_proof beside it is not
   // a second input, and verifying it would mark a note the vin does not spend.
-  const listed = txProofs(tx);
-  for (const proof of listed) {
-    if (!proofs.some((bound) => sameSpendProof(bound, proof))) {
-      return { ok: false, reason: 'admit_membership' };
+  const extra = tx?.admit_proof;
+  if (extra) {
+    let found = false;
+    for (let i = 0; i < proofs.length; i += 1) {
+      if (proofs[i] === extra || sameBoundProof(proofs[i], extra)) {
+        found = true;
+        break;
+      }
     }
+    if (!found) return { ok: false, reason: 'admit_membership' };
   }
+  const tagOf = placed.tagOf;
   const top = postedSpendTag(tx?.spendTag);
-  if (top.present && (!top.tag || !tags[0] || !top.tag.equals(tags[0]))) {
+  if (top.present && (!top.tag || !tagOf[0] || !top.tag.equals(tagOf[0]))) {
     return { ok: false, reason: 'admit_tag' };
   }
   return { ok: true, proofs, vins };

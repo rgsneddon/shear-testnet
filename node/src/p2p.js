@@ -2309,5 +2309,6 @@ export function createP2p({
     originInvSetSize: (id) => Number(originInvSize.get(String(id || '')) || 0),
     get port() { return server?.address()?.port ?? port; },
     get listening() { return Boolean(server?.listening); },
+    ingestRemoteTx,
   };
 }

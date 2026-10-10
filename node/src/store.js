@@ -97,7 +97,7 @@ import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from 
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
-import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag } from '../../crypto/note.js';
+import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { blockWork } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
@@ -2006,6 +2006,8 @@ export function createStore(dir, {
   }
 
   function queueTx(tx, opts = {}) {
+    const capped = txIoCap(tx);
+    if (!capped.ok) return capped;
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
