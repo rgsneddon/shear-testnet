@@ -1,0 +1,10 @@
+Vendored from https://github.com/monero-oxide/monero-oxide
+commit 77788c368145127f2dde2ac3e2ddce919f3ddd01
+trees: crypto/helioselene, crypto/divisors, crypto/generalized-bulletproofs, crypto/fcmps
+
+Each directory keeps its upstream LICENSE. Copyright Luke Parker, years as in that file. Licence MIT.
+
+Not imported: monero-fcmp-plus-plus and monero-fcmp-plus-plus-generators.
+Those are Monero's Ed25519 wrapper and Monero generators. Shear does not use them.
+
+Audit gap, recorded and not closed: helioselene point and encoding code, the ec-divisors library, and the upstream commits after the Veridise gadget audit are not a Shear audit. The audit PDFs are not redistributed. This tree is not wired into shear_admit. The live prover is still the 32-note path.
