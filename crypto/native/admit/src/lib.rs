@@ -547,6 +547,7 @@ pub extern "C" fn shear_range_verify(c: *const u8, proof: *const u8, proof_len: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use group::GroupEncoding;
     use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
     use curve25519_dalek::ristretto::RistrettoPoint;
     use curve25519_dalek::scalar::Scalar;
@@ -937,5 +938,222 @@ mod tests {
         ];
         assert!(!prove::forest_verify(&loose, &jr, &[], &[], 0));
         assert!(admit_verify(&a.1, &jr, &a.0, &proof_spend_tag(&a.1).unwrap(), &[], &[], 0));
+    }
+
+    fn ctx64() -> [u8; 64] {
+        let mut c = [0u8; 64];
+        c[0] = 0x33;
+        c[31] = 0xa1;
+        c[63] = 0x7e;
+        c
+    }
+
+    fn enc_vesta(p: &pasta_curves::vesta::Point) -> [u8; 32] {
+        let e = p.to_bytes();
+        let mut o = [0u8; 32];
+        o.copy_from_slice(e.as_ref());
+        o
+    }
+
+    /// Unblinded dest remainder for one arity-32 bucket. Matches leaf_prove / paired_prove
+    /// before the version-3 blind.
+    fn dest_remainder(children: &[[u8; 32]; 32], slot: usize) -> [u8; 32] {
+        use group::Group;
+        let mut w = pasta_curves::vesta::Point::identity();
+        for k in 0..32 {
+            if k == slot {
+                continue;
+            }
+            w += tree::vesta_mul_g(k, &tree::vesta_x(&children[k]));
+        }
+        enc_vesta(&w)
+    }
+
+    fn leaf_dest_children(dest: &[u8], n: usize, index: usize) -> [[u8; 32]; 32] {
+        let mut xs = [[0u8; 32]; 32];
+        let start = (index / 32) * 32;
+        for i in 0..32 {
+            let at = start + i;
+            if at < n {
+                let mut p = [0u8; 32];
+                p.copy_from_slice(&dest[at * 32..at * 32 + 32]);
+                xs[i] = dest_leaf_fp(&p);
+            }
+        }
+        xs
+    }
+
+    fn slots_matching(children: &[[u8; 32]; 32], published: &[u8; 32]) -> Vec<usize> {
+        (0..32)
+            .filter(|slot| dest_remainder(children, *slot) == *published)
+            .collect()
+    }
+
+    /// One-layer proof: header, then two arity-32 buckets, then the leaf blob.
+    fn one_layer_leaf_w(proof: &[u8]) -> [u8; 32] {
+        assert_eq!(proof[257], 1, "n <= 32 is one layer");
+        let off = 258 + 32 * 32 * 2;
+        proof[off..off + 32].try_into().unwrap()
+    }
+
+    #[test]
+    fn v2_remainder_names_the_spent_slot() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let (_ct, proof) = admit_prove(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("v2");
+        let kids = leaf_dest_children(&dest_blob, n, idx);
+        let hits = slots_matching(&kids, &one_layer_leaf_w(&proof));
+        assert_eq!(hits, vec![idx], "unblinded W identifies the spent slot");
+    }
+
+    #[test]
+    fn v3_remainder_hides_the_slot_and_rejects_a_mint() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let ctx = ctx64();
+        let (ct, proof) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("v3");
+        assert_eq!(proof[0], 3);
+        assert!(proof.len() <= MAX_PROOF_V3);
+        let tag = proof_spend_tag(&proof).expect("v3 tag");
+        assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+        assert!(!admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0), "v3 blob is not v2");
+        let kids = leaf_dest_children(&dest_blob, n, idx);
+        let hits = slots_matching(&kids, &one_layer_leaf_w(&proof));
+        assert!(
+            hits.is_empty(),
+            "blinded W matches no slot, got {hits:?}"
+        );
+        let mut minted = ct;
+        let mut bad = proof.clone();
+        minted[0] ^= 0x5a;
+        bad[33] ^= 0x5a;
+        assert!(!admit_verify_v3(&bad, &jr, &minted, &tag, &ctx), "self-minted C̃");
+        let jr_sub = jroot(&dest_blob[..4 * 32], &c_blob[..4 * 32], 4);
+        assert!(!admit_verify_v3(&proof, &jr_sub, &ct, &tag, &ctx), "subset jroot");
+        let mut ctx_b = ctx;
+        ctx_b[10] ^= 1;
+        assert!(!admit_verify_v3(&proof, &jr, &ct, &tag, &ctx_b), "foreign ctx");
+        let (ct2, proof2) = admit_prove(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("v2");
+        let tag2 = proof_spend_tag(&proof2).unwrap();
+        assert!(!admit_verify_v3(&proof2, &jr, &ct2, &tag2, &ctx), "v2 blob is not v3");
+        let ax = rand_scalar();
+        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
+        assert!(
+            admit_prove_v3(
+                &ax.to_bytes(),
+                &ap,
+                &cs[idx],
+                &t.to_bytes(),
+                idx,
+                &dest_blob,
+                &c_blob,
+                n,
+                &ctx,
+            )
+            .is_none(),
+            "attacker x at a victim index must not prove"
+        );
+    }
+
+    #[test]
+    fn v3_paired_remainder_hides_the_child_slot() {
+        let n = 40usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let idx = 7usize;
+        let t = rand_scalar();
+        let ctx = ctx64();
+        let (dlevels, _) = tree::trees(&dest_blob, &c_blob, n);
+        let dpath = tree::path_from_levels(&dlevels, idx).expect("path");
+        assert!(dpath.len() >= 2, "n=40 has an internal layer");
+        let top = dpath.len() - 1;
+        let mut slot_idx = idx;
+        for _ in 0..top {
+            slot_idx /= 32;
+        }
+        let top_slot = slot_idx % 32;
+        let (ct2, proof2) = admit_prove(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("v2");
+        assert_eq!(proof2[257], dpath.len() as u8);
+        let published2: [u8; 32] = proof2[258..290].try_into().unwrap();
+        assert_eq!(
+            slots_matching(&dpath[top], &published2),
+            vec![top_slot],
+            "v2 internal W names the child"
+        );
+        let (ct, proof) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("v3");
+        let tag = proof_spend_tag(&proof).unwrap();
+        assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+        assert_eq!(proof[257], dpath.len() as u8);
+        let published: [u8; 32] = proof[258..290].try_into().unwrap();
+        assert!(
+            slots_matching(&dpath[top], &published).is_empty(),
+            "v3 internal W matches no child slot"
+        );
+        let mut sib = proof.clone();
+        let leaf_at = sib.len() - crate::select::LEAF_PAIRED_LEN;
+        let c_at = leaf_at - 32 * 32;
+        sib[c_at] ^= 0xff;
+        assert!(
+            !admit_verify_v3(&sib, &jr, &ct, &tag, &ctx),
+            "a swapped C bucket must fail"
+        );
+        let _ = ct2;
     }
 }

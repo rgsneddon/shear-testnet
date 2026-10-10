@@ -1,7 +1,9 @@
 //! D-ary CDS select-and-rerandomize. No slot index on the wire.
 //!
 //! Parent `P = r U + Σ x_j G_j` (Pedersen VC). Selected `Q = x_i G_sel + t U`.
-//! `W = Σ_{j≠i} x_j G_j` is the other-slot remainder (hiding).
+//! `W = Σ_{j≠i} x_j G_j` is the other-slot remainder. A non-empty ctx (version 3)
+//! publishes `W' = W + r_w U` and opens `r - r_w`, so `W'` is not a function of
+//! the spent slot. An empty ctx keeps the unblinded remainder.
 //! Dest (Vesta) and C (ristretto) share one wrap-around so mixed indices fail.
 //! C-tree leaves are ristretto C; C̃ = C_i + t H is a 1-of-D at the leaf.
 //! Dest admitPub P_i is 1-of-D as p_com = P_i + w U at the same slot.
@@ -532,6 +534,16 @@ pub fn paired_prove(
         wd += vesta_mul_g(k, &vesta_x(&dest_ch[k]));
         wc += gc[k] * rsc(&c_ch[k]);
     }
+    // Version 3: blind the remainder. P - W' = (r - r_w) U + x_i G_i.
+    let (rwd, rwc) = if ctx.is_empty() {
+        (vesta::Scalar::ZERO, RScalar::ZERO)
+    } else {
+        let rwd = vs_rand();
+        let rwc = rs_rand();
+        wd += vesta_mul_u(&rwd);
+        wc += uc * rwc;
+        (rwd, rwc)
+    };
     let qd = vesta_mul_gsel(&xd) + vesta_mul_u(t_d);
     let qc = gselc * xc + uc * t_c;
     let pwd = pd - wd;
@@ -610,10 +622,10 @@ pub fn paired_prove(
         j = (j + 1) % ARITY;
     }
     zxd[index] = (kxd + ed * xd).to_repr().into();
-    zrd[index] = (krd + ed * rd).to_repr().into();
+    zrd[index] = (krd + ed * (rd - rwd)).to_repr().into();
     ztd[index] = (ktd + ed * *t_d).to_repr().into();
     zxc[index] = (kxc + ec * xc).to_bytes();
-    zrc[index] = (krc + ec * rc).to_bytes();
+    zrc[index] = (krc + ec * (rc - rwc)).to_bytes();
     ztc[index] = (ktc + ec * *t_c).to_bytes();
 
     let mut seed0 = pair_chal(
@@ -908,6 +920,14 @@ pub fn leaf_prove(
         }
         wd += gd[k] * vesta_x(&dest_ch[k]);
     }
+    // Version 3: same remainder blind as the paired layers. P - W' opens r - r_w.
+    let rwd = if ctx.is_empty() {
+        vesta::Scalar::ZERO
+    } else {
+        let rwd = vs_rand();
+        wd += *ud * rwd;
+        rwd
+    };
     let qd = gseld * xd + *ud * t_d;
     let pwd = pd - wd;
     let wd_b = enc_v(&wd);
@@ -990,7 +1010,7 @@ pub fn leaf_prove(
         j = (j + 1) % ARITY;
     }
     zxd[index] = (kxd + ed * xd).to_repr().into();
-    zrd[index] = (krd + ed * rd).to_repr().into();
+    zrd[index] = (krd + ed * (rd - rwd)).to_repr().into();
     ztd[index] = (ktd + ed * *t_d).to_repr().into();
     zct[index] = (kct + ec * *t_note).to_bytes();
     zpt[index] = (kpt + ec * *w_p).to_bytes();

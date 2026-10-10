@@ -2,7 +2,10 @@
 //! Membership is D-ary CDS select-and-rerandomize. No d0 / nonce / XOR path
 //! / dest_leaf of the spent note on the wire. C-tree leaves are ristretto C;
 //! C̃ is a 1-of-D rerandomization of a tree C. Dest admitPub P is 1-of-D as
-//! p_com = P_j + w U at the same hidden slot (32-anonymity sibling bucket).
+//! p_com = P_j + w U at the same hidden slot. Version 3 blinds every published
+//! remainder so that slot is not a function of W. The arity-32 point bucket
+//! stays: C̃ = C_i + t·H is checked against those points, and the tree commits
+//! to scalar(compress(C)), which is not that linear relation.
 
 use crate::leaf::{jroot_hash, sha512_64};
 use crate::select::{
@@ -188,6 +191,9 @@ pub fn admit_prove_in(
         mem.extend_from_slice(&parent_c);
         mem.extend_from_slice(&t_c_prev?.to_bytes());
     }
+    // Point bucket for C̃ = C_i + t·H and p_com = P_i + w·U. These points are the
+    // witness for that relation; deleting them leaves the scalar tree opening
+    // unbound from C̃ (a member encoding can be paired with a self-minted point).
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     if p_sib[slots[0]] != *p {
         return None;
@@ -282,7 +288,7 @@ pub fn admit_prove_in(
 }
 
 pub fn spend_tag_of(proof: &[u8]) -> Option<[u8; 32]> {
-    if proof.len() < 33 || proof[0] != VERSION {
+    if proof.len() < 33 || (proof[0] != VERSION && proof[0] != VERSION_V3) {
         return None;
     }
     let mut t = [0u8; 32];
