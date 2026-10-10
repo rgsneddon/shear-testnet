@@ -179,4 +179,84 @@ void main() {
     final sealBody = ledger.substring(seal, ledger.indexOf('\n}', seal));
     expect(sealBody.contains('sealFlowOnCaller'), isFalse);
   });
+
+  test('selector spendable is exact nanos minus locked and immature', () {
+    const above = '9007199254740993';
+    const other = '9007199254740995';
+    const huge = '100000000000000000000';
+    final lossyShe = BigInt.parse(above).toDouble() / kUnitsPerShe;
+    Map<String, dynamic> row(
+      String nanos, {
+      bool locked = false,
+      int height = 1,
+      bool lossyAmount = false,
+    }) =>
+        {
+          'address': kPoolFeeDest,
+          'nanos': nanos,
+          if (lossyAmount) 'amount': lossyShe,
+          'height': height,
+          'locked': locked,
+          'spent': false,
+        };
+    final freeSum = (BigInt.parse(above) + BigInt.parse(other)).toString();
+    for (final memo in [false, true]) {
+      for (final n in [1, 3, kMaxInputsPerSend - 1, kMaxInputsPerSend, kMaxInputsPerSend + 1, 2000]) {
+        final plan = selectSpendNotesWire({
+          'notes': [
+            for (var i = 0; i < n; i++)
+              row(i.isEven ? above : other, lossyAmount: i == 0),
+            row(huge, locked: true),
+            row(huge, height: 40),
+          ],
+          'needNanos': '1',
+          'tip': 40,
+          'confs': 9,
+          'memo': memo,
+        });
+        expect(plan['covered'], isTrue, reason: 'n=$n memo=$memo');
+        final batches = (plan['batches'] as List).cast<Map>();
+        for (final b in batches) {
+          expect((b['notes'] as List).length, inInclusiveRange(1, kMaxInputsPerSend));
+          expect(b['payNanos'], '1');
+        }
+        final picked = batches.expand((b) => (b['notes'] as List)).cast<Map>();
+        expect(picked.every((note) => note['nanos'] != huge), isTrue);
+        expect(picked.every((note) => note['nanos'] == above || note['nanos'] == other), isTrue);
+      }
+      final held = selectSpendNotesWire({
+        'notes': [
+          row(above, lossyAmount: true),
+          row(other),
+          row(huge, locked: true),
+          row(huge, height: 40),
+        ],
+        'needNanos': '1',
+        'holdNanos': above,
+        'tip': 40,
+        'confs': 9,
+        'memo': memo,
+      });
+      expect(held['spendableNanos'], other, reason: 'memo=$memo');
+      final heldNotes = (held['batches'] as List)
+          .cast<Map>()
+          .expand((b) => (b['notes'] as List))
+          .cast<Map>();
+      expect(heldNotes.single['nanos'], other);
+    }
+    final open = selectSpendNotesWire({
+      'notes': [
+        row(above, lossyAmount: true),
+        row(other),
+        row(huge, locked: true),
+        row(huge, height: 40),
+      ],
+      'needNanos': '1',
+      'tip': 40,
+      'confs': 9,
+    });
+    expect(open['spendableNanos'], freeSum);
+    final openNotes = (open['batches'] as List).cast<Map>().expand((b) => (b['notes'] as List)).cast<Map>();
+    expect(openNotes.single['nanos'], other);
+  });
 }

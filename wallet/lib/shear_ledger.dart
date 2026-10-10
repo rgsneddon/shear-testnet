@@ -299,7 +299,8 @@ Object? debugLastContinuumSendError;
 ///
 /// Measured 2026-10-06 with `crypto/native_admit.js` `nativeBench` on this
 /// host: one ADMITv2 proof is 170–240 ms and 20482 bytes at |J|≥4096
-/// (14018 bytes below that). A sealed vout is 14433-byte range proof,
+/// (14018 bytes below that). Re-measured 2026-10-10 at |J|=4096: 223.076 ms
+/// prove, 20482 bytes. A sealed vout is 14433-byte range proof,
 /// about 29420 bytes once hex-encoded. Eight proofs are ~1.8 s of background
 /// work, and the hex body (proofs + pay/change/dummy) stays under 0.5 MB.
 /// Cancel is checked between proofs. A ninth proof adds another ~220 ms and
@@ -382,17 +383,84 @@ double? _storedNoteShe(Map<dynamic, dynamic> n) {
   return null;
 }
 
+final BigInt _nanosPerShe = BigInt.from(kUnitsPerShe);
+
+/// A double past this is not an amount. 2^53 - 1.
+const int _kSafeDoubleNanos = 9007199254740991;
+
+BigInt? _positiveDigitNanos(Object? v) {
+  if (v is String && RegExp(r'^\d+$').hasMatch(v)) {
+    final b = BigInt.parse(v);
+    return b > BigInt.zero ? b : null;
+  }
+  if (v is int && v > 0) return BigInt.from(v);
+  if (v is BigInt && v > BigInt.zero) return v;
+  return null;
+}
+
+/// Exact note nanos. A digit string or an int wins over a double amount.
+/// A double is used only while it is an exact integer at or below 2^53-1.
+BigInt? noteNanosExact(Map<dynamic, dynamic> n) {
+  final direct = _positiveDigitNanos(n['nanos']) ?? _positiveDigitNanos(n['verifiedNanos']);
+  if (direct != null) return direct;
+  final amt = n['amount'];
+  if (amt is String) {
+    final parsed = parseSheDecimalToNanos(amt);
+    if (parsed != null) return _positiveDigitNanos(parsed);
+  }
+  if (amt is num && amt > 0 && amt.isFinite) {
+    final scaled = amt.toDouble() * kUnitsPerShe;
+    if (!scaled.isFinite) return null;
+    final rounded = scaled.round();
+    if (rounded <= 0 || rounded > _kSafeDoubleNanos) return null;
+    if ((rounded.toDouble() - scaled).abs() > 1e-4) return null;
+    return BigInt.from(rounded);
+  }
+  return null;
+}
+
+BigInt _nanosFromAmountField(Object? raw) {
+  final direct = _positiveDigitNanos(raw);
+  if (direct != null) return direct;
+  if (raw is String) {
+    final parsed = parseSheDecimalToNanos(raw);
+    if (parsed != null) {
+      final b = BigInt.parse(parsed);
+      return b > BigInt.zero ? b : BigInt.zero;
+    }
+  }
+  if (raw is num && raw > 0 && raw.isFinite) {
+    final scaled = raw.toDouble() * kUnitsPerShe;
+    if (!scaled.isFinite) return BigInt.zero;
+    final rounded = scaled.round();
+    if (rounded <= 0 || rounded > _kSafeDoubleNanos) return BigInt.zero;
+    return BigInt.from(rounded);
+  }
+  return BigInt.zero;
+}
+
+double _sheOfNanos(BigInt nanos) {
+  if (nanos <= BigInt.zero) return 0;
+  final whole = nanos ~/ _nanosPerShe;
+  final frac = nanos.remainder(_nanosPerShe);
+  return whole.toDouble() + frac.toDouble() / kUnitsPerShe;
+}
+
 /// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
 /// No value-proof open, no spend tag, no search beyond one greedy pass.
 /// Production calls this from [Isolate.run].
 Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   final stamp = identityHashCode(Isolate.current).toString();
   final notes = input['notes'] as List? ?? const [];
-  final need = (input['needShe'] as num?)?.toDouble() ?? 0.0;
+  final need = input['needNanos'] != null
+      ? _nanosFromAmountField(input['needNanos'])
+      : _nanosFromAmountField(input['needShe']);
   final cap = (input['cap'] as num?)?.toInt() ?? kMaxInputsPerSend;
   final tip = (input['tip'] as num?)?.toInt() ?? 0;
   final floor = (input['confs'] as num?)?.toInt() ?? 9;
-  final hold = (input['holdShe'] as num?)?.toDouble() ?? 0.0;
+  final hold = input['holdNanos'] != null
+      ? _nanosFromAmountField(input['holdNanos'])
+      : _nanosFromAmountField(input['holdShe']);
   final memo = input['memo'] == true;
   final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
   final dests = <String>{
@@ -411,73 +479,79 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       final height = h.toInt();
       if (tip < height || (tip - height + 1) < floor) continue;
     }
-    final she = _storedNoteShe(n);
-    if (she == null || she <= 0) continue;
-    rows.add({'i': i, 'she': she, 'addr': addr});
+    final nanos = noteNanosExact(n);
+    if (nanos == null || nanos <= BigInt.zero) continue;
+    rows.add({'i': i, 'nanos': nanos, 'addr': addr});
   }
-  rows.sort((a, b) => (a['she'] as double).compareTo(b['she'] as double));
-  var reserved = 0.0;
+  rows.sort((a, b) => (a['nanos'] as BigInt).compareTo(b['nanos'] as BigInt));
+  var reserved = BigInt.zero;
   var start = 0;
-  if (hold > 1e-12) {
-    for (; start < rows.length && reserved + 1e-12 < hold; start++) {
-      reserved += rows[start]['she'] as double;
+  if (hold > BigInt.zero) {
+    for (; start < rows.length && reserved < hold; start++) {
+      reserved += rows[start]['nanos'] as BigInt;
     }
   }
   final free = rows.sublist(start);
-  free.sort((a, b) => (b['she'] as double).compareTo(a['she'] as double));
+  free.sort((a, b) => (b['nanos'] as BigInt).compareTo(a['nanos'] as BigInt));
+  final freeSum = free.fold<BigInt>(BigInt.zero, (s, r) => s + (r['nanos'] as BigInt));
   final batches = <Map<String, dynamic>>[];
   var remaining = need;
   var cursor = 0;
-  var feeSum = 0.0;
-  while (remaining > 1e-12 && cursor < free.length) {
+  var feeSum = BigInt.zero;
+  while (remaining > BigInt.zero && cursor < free.length) {
     final taken = <Map<String, dynamic>>[];
-    var sum = 0.0;
+    var sum = BigInt.zero;
     while (cursor < free.length && taken.length < cap) {
       final row = free[cursor];
       taken.add(row);
-      sum += row['she'] as double;
+      sum += row['nanos'] as BigInt;
       cursor++;
-      final fee = estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo) /
-          kUnitsPerShe;
-      if (sum + 1e-12 >= remaining + fee) break;
+      final fee = BigInt.from(estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo));
+      if (sum >= remaining + fee) break;
     }
-    final fee = estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo) /
-        kUnitsPerShe;
+    final fee = BigInt.from(estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo));
     final room = sum - fee;
-    if (room <= 1e-12) {
+    if (room <= BigInt.zero) {
       return {
         'stamp': stamp,
         'covered': false,
         'empty': false,
         'shortFee': true,
         'batches': batches,
-        'feeShe': feeSum + fee,
+        'feeShe': _sheOfNanos(feeSum + fee),
+        'spendableNanos': freeSum.toString(),
       };
     }
     final pay = room < remaining ? room : remaining;
     batches.add({
-      'pay': pay,
-      'feeShe': fee,
+      'pay': _sheOfNanos(pay),
+      'payNanos': pay.toString(),
+      'feeShe': _sheOfNanos(fee),
       'notes': [
         for (final r in taken)
-          {'index': r['i'], 'dest': r['addr'], 'she': r['she']},
+          {
+            'index': r['i'],
+            'dest': r['addr'],
+            'she': _sheOfNanos(r['nanos'] as BigInt),
+            'nanos': (r['nanos'] as BigInt).toString(),
+          },
       ],
     });
     feeSum += fee;
     remaining -= pay;
   }
-  final freeSum = free.fold<double>(0, (s, r) => s + (r['she'] as double));
-  final covered = remaining <= 1e-12 && batches.isNotEmpty;
+  final covered = remaining <= BigInt.zero && batches.isNotEmpty;
   // Notes can cover the payment and still miss the weight levy. That is a
   // fee failure, not an empty book.
-  final shortFee = !covered && free.isNotEmpty && freeSum + 1e-12 >= need;
+  final shortFee = !covered && free.isNotEmpty && freeSum >= need;
   return {
     'stamp': stamp,
     'covered': covered,
     'empty': rows.isEmpty,
     'shortFee': shortFee,
     'batches': batches,
-    'feeShe': feeSum,
+    'feeShe': _sheOfNanos(feeSum),
+    'spendableNanos': freeSum.toString(),
   };
 }
 
@@ -1577,10 +1651,15 @@ Future<ContinuumSendResult> submitContinuumSend({
       outputs: 3,
       memo: memo != null && memo.isNotEmpty,
     );
+    final exactWire = nanosWire != null && RegExp(r'^\d+$').hasMatch(nanosWire);
+    final fromDouble = BigInt.from((amount * kUnitsPerShe).round());
+    final lossyAmount = exactWire && fromDouble != BigInt.parse(nanosWire!);
     final need = amount + levy / kUnitsPerShe;
-    final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
-    if (painted + 1e-12 < need) {
-      return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+    if (!lossyAmount) {
+      final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
+      if (painted + 1e-12 < need) {
+        return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+      }
     }
     debugLastContinuumSendError = null;
     final mark = ledger.markPaintedBook();
@@ -6289,6 +6368,7 @@ class ShearLedger implements ReadProofSink {
     String? paymentCode,
     double amount, {
     bool memo = false,
+    String? needNanos,
   }) async {
     final dests = <String>{};
     for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
@@ -6316,6 +6396,7 @@ class ShearLedger implements ReadProofSink {
     final raw = await Isolate.run(() => selectSpendNotesWire({
           'notes': snap,
           'needShe': amount,
+          if (needNanos != null && needNanos.isNotEmpty) 'needNanos': needNanos,
           'cap': kMaxInputsPerSend,
           'tip': bookTip,
           'confs': spendableConfirmations,
@@ -6654,8 +6735,8 @@ class ShearLedger implements ReadProofSink {
     String? nanosWire,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
-    Future<ShearTx> once(double pay, String src, {Map<String, dynamic>? note}) {
-      final same = nanosWire != null && (pay - amount).abs() <= 1e-12;
+    Future<ShearTx> once(double pay, String src, {Map<String, dynamic>? note, String? payNanos}) {
+      final wire = (payNanos != null && payNanos.isNotEmpty) ? payNanos : null;
       return send(
         from: src,
         to: to,
@@ -6676,14 +6757,14 @@ class ShearLedger implements ReadProofSink {
         paintedCover: paintedCover,
         progress: progress,
         spendNote: note,
-        nanosWire: same ? nanosWire : null,
+        nanosWire: wire,
       );
     }
     if (sendKind != 'send' || local || paintedCover || restFrame == null) {
-      return once(amount, from);
+      return once(amount, from, payNanos: nanosWire);
     }
     if (spendSeed == null || spendSeed.length != 32 || pool == null) {
-      return once(amount, from);
+      return once(amount, from, payNanos: nanosWire);
     }
     consolidateIncomingRewards(restFrame, paymentCode: paymentCode);
     progress?.bump(phase: 'select', done: 0, total: 1);
@@ -6692,6 +6773,7 @@ class ShearLedger implements ReadProofSink {
       paymentCode,
       amount,
       memo: memo != null && memo.isNotEmpty,
+      needNanos: nanosWire,
     );
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
     final rawBatches = (plan['batches'] as List? ?? const []).whereType<Map>().toList();
@@ -6700,7 +6782,7 @@ class ShearLedger implements ReadProofSink {
       if (plan['empty'] == true) throw StateError(kErrNoSealedNote);
       throw StateError('insufficient');
     }
-    final batches = <({double pay, List<Map<String, dynamic>> notes})>[];
+    final batches = <({double pay, String payNanos, List<Map<String, dynamic>> notes})>[];
     for (final b in rawBatches) {
       final specs = (b['notes'] as List? ?? const []).whereType<Map>().toList();
       final refs = <Map<String, dynamic>>[];
@@ -6710,8 +6792,10 @@ class ShearLedger implements ReadProofSink {
         refs.add(_notes[i.toInt()]);
       }
       final pay = (b['pay'] as num?)?.toDouble() ?? 0;
-      if (refs.isEmpty || pay <= 1e-12) continue;
-      batches.add((pay: pay, notes: refs));
+      final payNanos = b['payNanos']?.toString() ?? '';
+      if (refs.isEmpty) continue;
+      if (payNanos.isEmpty && pay <= 1e-12) continue;
+      batches.add((pay: pay, payNanos: payNanos, notes: refs));
     }
     if (batches.isEmpty) throw StateError('insufficient');
     if (batches.length == 1 && batches.single.notes.length == 1) {
@@ -6721,6 +6805,7 @@ class ShearLedger implements ReadProofSink {
         only.pay,
         (only.notes.single['address'] ?? only.notes.single['dest'])?.toString() ?? from,
         note: only.notes.single,
+        payNanos: only.payNanos,
       );
       progress?.bump(phase: 'broadcast', done: 1, total: 1);
       return tx;
@@ -6736,6 +6821,7 @@ class ShearLedger implements ReadProofSink {
           batch.pay,
           (batch.notes.single['address'] ?? batch.notes.single['dest'])?.toString() ?? from,
           note: batch.notes.single,
+          payNanos: batch.payNanos,
         );
         done += 1;
         progress?.bump(phase: 'prove', done: done, total: totalProofs);
@@ -6903,10 +6989,13 @@ class ShearLedger implements ReadProofSink {
       } catch (_) {}
     }
     final taxed = levyTaxed(sendKind);
-    var nanos = sendKind == 'vote' ? 0 : (amount * kUnitsPerShe).round();
+    var nanos = 0;
     if (sendKind != 'vote' && nanosWire != null && RegExp(r'^\d+$').hasMatch(nanosWire)) {
       final big = BigInt.parse(nanosWire);
       if (big >= BigInt.zero && big.bitLength <= 62) nanos = big.toInt();
+    } else if (sendKind != 'vote') {
+      final rounded = (amount * kUnitsPerShe).round();
+      if (rounded > 0 && rounded <= _kSafeDoubleNanos) nanos = rounded;
     }
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
     final needShe = (sendKind == 'vote' ? 0.0 : amount) + levy / kUnitsPerShe;
