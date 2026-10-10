@@ -80,35 +80,64 @@ export function shouldPublishBootstrap(tipH, lastCheckpoint) {
   return c >= BOOTSTRAP_FIRST_HEIGHT && c > Number(lastCheckpoint || 0);
 }
 
-/** Pruned prefix only. Overwrites latest.json + latest.bin. Lagged 5 blocks. */
+/**
+ * Latest snapshot the loader can accept.
+ * Depth is at least SAMPLE_PRUNE_CONFIRMATIONS. A caller depth of 0 does not
+ * publish a 3-block pruned tip. The file is the contiguous book through the
+ * snapshot tip, pruned blocks included only when that tip buries them.
+ * A pruned-only prefix is not written: its own tip would be samples_pruned.
+ */
 export function writeLatestBootstrap(dataDir, blocks, {
   magic = MAGIC_TESTNET,
   pruneDepth = SAMPLE_PRUNE_CONFIRMATIONS,
   lag = BOOTSTRAP_LAG_BLOCKS,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
-  const liveTip = Number(list.at(-1)?.height || 0);
+  let liveTip = 0;
+  for (const b of list) {
+    const h = Number(b?.height) || 0;
+    if (h > liveTip) liveTip = h;
+  }
   const tipH = liveTip - Math.max(0, Number(lag) || 0);
-  if (tipH < pruneDepth + 1) return null;
-  const pruned = list.filter((b) => (
-    Number(b.height) <= tipH
-    && shouldPruneSamples(b.height, tipH, pruneDepth)
-    && b.samplesPruned
-  ));
-  if (!pruned.length) return null;
-  const last = pruned[pruned.length - 1];
-  const first = pruned[0];
+  const asked = Math.floor(Number(pruneDepth));
+  const depth = Math.max(
+    SAMPLE_PRUNE_CONFIRMATIONS,
+    Number.isFinite(asked) && asked > 0 ? asked : SAMPLE_PRUNE_CONFIRMATIONS,
+  );
+  if (tipH < depth + 1) return null;
+  const byHeight = new Map();
+  for (const b of list) {
+    const h = Number(b?.height);
+    if (!Number.isInteger(h) || h < 1 || h > tipH) continue;
+    if (byHeight.has(h)) return null;
+    byHeight.set(h, b);
+  }
+  if (byHeight.size !== tipH) return null;
+  const published = [];
+  let prunedCount = 0;
+  for (let h = 1; h <= tipH; h += 1) {
+    const b = byHeight.get(h);
+    if (b.samplesPruned === true) {
+      if (!shouldPruneSamples(h, tipH, depth)) return null;
+      prunedCount += 1;
+    }
+    published.push(b);
+  }
+  if (!prunedCount) return null;
+  const last = published[published.length - 1];
+  const first = published[0];
   const paths = latestPaths(dataDir);
   fs.mkdirSync(paths.dir, { recursive: true });
-  writeChainBin(paths.bin, pruned);
+  writeChainBin(paths.bin, published);
   const manifest = {
     latest: true,
     magic,
-    pruneDepth,
+    pruneDepth: depth,
     height: Number(last.height),
     hash: hexHash(last.hash),
     genesisHash: hexHash(first.hash),
-    n: pruned.length,
+    n: published.length,
+    pruned: prunedCount,
     checkpoint: bootstrapCheckpoint(liveTip),
     every: BOOTSTRAP_EVERY_BLOCKS,
     createdAt: Date.now(),

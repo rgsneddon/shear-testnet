@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { writeChainBin } from '../../crypto/chainbin.js';
 import {
   writeLatestBootstrap,
@@ -17,76 +18,81 @@ import {
 } from '../src/bootstrap.js';
 import { publishOnce, bootstrapPublishIntervalMs, BOOTSTRAP_PUBLISH_INTERVAL_MS } from '../src/publish_bootstrap.js';
 
-function prunedBlock(height, hashByte) {
+function bookBlock(height, hashByte, pruned) {
+  const fill = height & 255;
   return {
     height,
-    hash: Buffer.alloc(32, hashByte),
-    header: Buffer.alloc(128, height),
+    hash: Buffer.alloc(32, hashByte & 255),
+    header: Buffer.alloc(128, fill),
     rootA: Buffer.alloc(32, 1),
     rootB: Buffer.alloc(32, 2),
-    samplesPruned: true,
-    bLeavesPruned: true,
+    samplesPruned: pruned,
+    bLeavesPruned: pruned,
     samples: [],
-    shareBatch: [],
+    shareBatch: pruned ? [] : [{ nonce: '1' }],
     bLeaves: [],
     aLeaves: [],
     txs: [{ coinbase: true, height, vout: [{ kind: 'pot' }] }],
   };
 }
 
+function buryingChain(tip = SAMPLE_PRUNE_CONFIRMATIONS + 1) {
+  const blocks = [];
+  for (let h = 1; h <= tip; h += 1) {
+    blocks.push(bookBlock(h, h, shouldPruneSamples(h, tip)));
+  }
+  return blocks;
+}
+
 describe('latest-only prune bootstrap', () => {
   it('overwrites latest.json/bin and refuses a dirty datadir', () => {
     const src = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-src-'));
-    const first = [];
-    for (let h = 1; h <= 3; h += 1) first.push(prunedBlock(h, h));
-    first.push({
-      height: 1008,
-      hash: Buffer.alloc(32, 9),
-      header: Buffer.alloc(128, 9),
-      rootA: Buffer.alloc(32, 1),
-      rootB: Buffer.alloc(32, 2),
-      samplesPruned: false,
-      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
-      shareBatch: [{ nonce: '1' }],
-    });
-    assert.equal(writeLatestBootstrap(src, first.slice(0, 3)), null);
+    const short = [];
+    for (let h = 1; h <= 3; h += 1) short.push(bookBlock(h, h, true));
+    assert.equal(writeLatestBootstrap(src, short), null);
+    assert.equal(writeLatestBootstrap(src, short, { pruneDepth: 0 }), null);
+    const gapped = short.concat([bookBlock(1008, 9, false)]);
+    assert.equal(writeLatestBootstrap(src, gapped), null);
+    const prunedTip = buryingChain().map((b) => bookBlock(b.height, b.height, true));
+    assert.equal(writeLatestBootstrap(src, prunedTip), null);
+
+    const tip = SAMPLE_PRUNE_CONFIRMATIONS + 8;
+    const first = buryingChain(tip);
     const m1 = writeLatestBootstrap(src, first);
     assert.equal(m1.latest, true);
     assert.equal(m1.magic, MAGIC_TESTNET);
-    assert.equal(m1.height, 3);
-    assert.equal(m1.n, 3);
+    assert.equal(m1.height, tip);
+    assert.equal(m1.n, tip);
+    assert.equal(m1.pruneDepth, SAMPLE_PRUNE_CONFIRMATIONS);
+    assert.ok(m1.pruned >= 1);
+    for (const b of first) {
+      if (b.samplesPruned) assert.equal(shouldPruneSamples(b.height, m1.height), true);
+    }
     const p = latestPaths(src);
     assert.equal(fs.existsSync(p.json), true);
     assert.equal(fs.existsSync(p.bin), true);
     const names = fs.readdirSync(p.dir).filter((n) => !n.endsWith('.tmp'));
     assert.deepEqual(names.sort(), ['latest.bin', 'latest.json']);
 
-    const second = first.filter((b) => Number(b.height) !== 1008);
-    second.push(prunedBlock(4, 4));
-    second.push({
-      height: 1009,
-      hash: Buffer.alloc(32, 10),
-      header: Buffer.alloc(128, 10),
-      rootA: Buffer.alloc(32, 1),
-      rootB: Buffer.alloc(32, 2),
-      samplesPruned: false,
-      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
-      shareBatch: [{ nonce: '1' }],
-    });
+    const second = buryingChain(tip + 1);
     const m2 = writeLatestBootstrap(src, second);
-    assert.equal(m2.height, 4);
-    assert.equal(m2.n, 4);
+    assert.equal(m2.height, tip + 1);
+    assert.equal(m2.n, tip + 1);
     const names2 = fs.readdirSync(p.dir).filter((n) => !n.endsWith('.tmp'));
     assert.deepEqual(names2.sort(), ['latest.bin', 'latest.json']);
     const man = JSON.parse(fs.readFileSync(p.json, 'utf8'));
     assert.equal(man.latest, true);
-    assert.equal(man.height, 4);
+    assert.equal(man.height, tip + 1);
 
     const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-dst-'));
-    assert.throws(
-      () => applyLatestBootstrap(dest, src),
-      /prev|pow|merkle|bad_header|coinbase|bits|timestamp|no_header|height/,
-    );
+    let reason = '';
+    try {
+      applyLatestBootstrap(dest, src);
+    } catch (err) {
+      reason = String(err && err.message ? err.message : err);
+    }
+    assert.match(reason, /prev|pow|merkle|bad_header|coinbase|bits|timestamp|no_header|height/);
+    assert.notEqual(reason, 'samples_pruned');
     assert.equal(fs.existsSync(path.join(dest, 'chain.bin')), false);
     const dirty = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-dirty-'));
     fs.writeFileSync(path.join(dirty, 'chain.bin'), Buffer.alloc(0));
@@ -147,24 +153,24 @@ describe('latest-only prune bootstrap', () => {
 
   it('publisher refuses a snapshot whose headers are not this chain', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-fake-'));
-    const blocks = [];
-    for (let h = 1; h <= 3; h += 1) blocks.push(prunedBlock(h, h));
-    blocks.push({
-      height: 1008,
-      hash: Buffer.alloc(32, 9),
-      header: Buffer.alloc(128, 9),
-      rootA: Buffer.alloc(32, 1),
-      rootB: Buffer.alloc(32, 2),
-      samplesPruned: false,
-      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
-      shareBatch: [{ nonce: '1' }],
-    });
+    const blocks = buryingChain();
     writeChainBin(path.join(dir, 'chain.bin'), blocks);
     const out = path.join(dir, 'out');
     const got = publishOnce({ dataDir: dir, publishDir: out });
     assert.equal(got.ok, false);
     assert.match(got.reason, /prev|pow|merkle|bad_header|coinbase|bits|timestamp|no_header|height/);
+    assert.notEqual(got.reason, 'samples_pruned');
     assert.equal(fs.existsSync(path.join(out, 'latest.bin')), false);
+
+    const early = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-short-'));
+    const short = [];
+    for (let h = 1; h <= 3; h += 1) short.push(bookBlock(h, h, true));
+    writeChainBin(path.join(early, 'chain.bin'), short);
+    const earlyOut = path.join(early, 'out');
+    const refused = publishOnce({ dataDir: early, publishDir: earlyOut });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'not_ready');
+    assert.equal(fs.existsSync(path.join(earlyOut, 'latest.bin')), false);
   });
 
   it('publisher leaves the chain alone when chain.bin is absent', () => {

@@ -19,7 +19,7 @@ import {
   verifyLoadedChain,
   pruneSamples,
 } from '../src/chain.js';
-import { writeLatestBootstrap, applyLatestBootstrap, latestPaths } from '../src/bootstrap.js';
+import { writeLatestBootstrap, applyLatestBootstrap } from '../src/bootstrap.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
@@ -269,26 +269,26 @@ describe('a real ShearHash chain is the only foreign book that loads', () => {
     ], /bits/);
 
     const pruned = mined.map((b) => pruneSamples(b));
+    const unburied = verifyLoadedChain(pruned, { nowMs: Date.now() });
+    assert.equal(unburied.ok, false);
+    assert.equal(unburied.reason, 'samples_pruned');
     const src = tmp('shear-loadv-boot-');
     const manifest = writeLatestBootstrap(src, pruned, { pruneDepth: 0 });
-    assert.ok(manifest);
-    assert.equal(manifest.height, 3);
+    assert.equal(manifest, null);
     const appliedDir = tmp('shear-loadv-applied-');
-    const applied = applyLatestBootstrap(appliedDir, src);
-    assert.equal(applied.height, 3);
-    const installed = createStore(appliedDir);
-    assert.equal(tipHex(installed), honestTip);
-    assert.equal(auditCirculatingSupply(installed.blocks).status, 'verified');
+    assert.throws(() => applyLatestBootstrap(appliedDir, src), /bootstrap_missing/);
+    assert.equal(fs.existsSync(path.join(appliedDir, 'chain.bin')), false);
+    assert.equal(fs.existsSync(path.join(appliedDir, 'reserve.json')), false);
 
     const tamperDir = tmp('shear-loadv-tamper-boot-');
-    const paths = latestPaths(src);
-    fs.cpSync(paths.dir, latestPaths(tamperDir).dir, { recursive: true });
-    const body = readChainBin(latestPaths(tamperDir).bin);
-    body[0].txs[0].vout[0].kind = `${body[0].txs[0].vout[0].kind || 'pot'}-tamper`;
-    writeChainBin(latestPaths(tamperDir).bin, body);
-    const refused = tmp('shear-loadv-refused-');
-    assert.throws(() => applyLatestBootstrap(refused, tamperDir), /merkle/);
-    assert.equal(fs.existsSync(path.join(refused, 'chain.bin')), false);
-    assert.equal(fs.existsSync(path.join(refused, 'reserve.json')), false);
+    writeChainBin(path.join(tamperDir, 'chain.bin'), pruned);
+    const foreignPruned = tmp('shear-loadv-pruned-foreign-');
+    writeChainBin(path.join(foreignPruned, 'chain.bin'), pruned);
+    assert.throws(() => createStore(foreignPruned), /samples_pruned/);
+    assert.equal(fs.existsSync(path.join(foreignPruned, 'reserve.json')), false);
+    const tampered = cloneBlocks(mined);
+    tampered[0].txs[0].vout[0].kind = `${tampered[0].txs[0].vout[0].kind || 'pot'}-tamper`;
+    expectForeign(tampered, /merkle/);
+    assert.equal(fs.existsSync(path.join(tamperDir, 'reserve.json')), false);
   });
 });

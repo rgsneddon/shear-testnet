@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { datadirIsEmpty, resolveGuiBootstrap, defaultDataDir } from '../src/node.js';
 import {
   writeLatestBootstrap,
@@ -46,20 +48,19 @@ function prunedBlock(height, hashByte) {
 
 function snapshotFixture() {
   const src = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-src-'));
+  const tip = SAMPLE_PRUNE_CONFIRMATIONS + 1;
   const blocks = [];
-  for (let h = 1; h <= 3; h += 1) blocks.push(prunedBlock(h, h));
-  blocks.push({
-    height: 1008,
-    hash: Buffer.alloc(32, 9),
-    header: Buffer.alloc(128, 9),
-    rootA: Buffer.alloc(32, 1),
-    rootB: Buffer.alloc(32, 2),
-    samplesPruned: false,
-    txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
-    shareBatch: [{ nonce: '1' }],
-  });
+  for (let h = 1; h <= tip; h += 1) {
+    const pruned = shouldPruneSamples(h, tip);
+    const row = prunedBlock(h, h & 255);
+    row.samplesPruned = pruned;
+    row.bLeavesPruned = pruned;
+    row.shareBatch = pruned ? [] : [{ nonce: '1' }];
+    blocks.push(row);
+  }
   const manifest = writeLatestBootstrap(src, blocks);
   assert.ok(manifest, 'fixture snapshot');
+  assert.equal(manifest.height, tip);
   return { src, manifest };
 }
 

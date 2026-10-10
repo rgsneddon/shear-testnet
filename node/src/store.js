@@ -1969,6 +1969,12 @@ export function createStore(dir, {
     } catch { base = 1; }
     const anchored = checkAdmitAnchor(tx, Number(t?.height || 0) + 1);
     if (!anchored.ok) return anchored;
+    // A spend with no signature is unsigned before admit membership. An
+    // unbound or v3-shaped failure must not hide a missing signature.
+    const unsignedDebit = fundedDebit(tx);
+    if (unsignedDebit && flowSendNeedsOpen(tx) && !verifySpendSig(tx)) {
+      return { ok: false, reason: 'unsigned' };
+    }
     const book = emptyMempool();
     book.txs = mempool;
     const id = String(tx?.id || '');

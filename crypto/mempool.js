@@ -47,6 +47,12 @@ export function admitMempool(pool, tx, opts = {}) {
     const link = sealedVinLinkField(v);
     if (link) return { ok: false, reason: 'vin_link' };
   }
+  // Bind every Flow vin before the range check. An unbound commit is
+  // admit_membership. A bound output that has no range proof stays range_proof.
+  if (flowNeedsDummy(tx)) {
+    const boundIns = flowInputsBound(tx);
+    if (!boundIns.ok) return boundIns;
+  }
   if (moneyNeedsRange(tx)) {
     for (const o of (tx.vout || [])) {
       if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
@@ -112,10 +118,6 @@ export function admitMempool(pool, tx, opts = {}) {
     if (!r.ok) return { ok: false, reason: r.reason === 'rest_frame_on_chain' ? 'shear1' : r.reason };
     if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
     if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
-  }
-  if (flowNeedsDummy(tx)) {
-    const boundIns = flowInputsBound(tx);
-    if (!boundIns.ok) return boundIns;
   }
   if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
     return { ok: false, reason: 'dummy_outs' };
