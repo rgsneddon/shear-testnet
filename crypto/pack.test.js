@@ -12,6 +12,7 @@ import {
 import { aLeafBytes, bLeafBytes, buildDualTree, spendB, bProof } from './clearing.js';
 import { encodeHeader } from './header.js';
 import { EMPTY_ROOT } from './merkle.js';
+import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 
 const dest20 = Buffer.alloc(20, 7);
 
@@ -56,18 +57,29 @@ describe('dual continuity_root', () => {
       baseFee: 1n,
     });
     const proof = bProof([leaf], 0);
+    const height = 1;
+    const immatureTip = height + SPENDABLE_CONFIRMATIONS - 2;
+    const matureTip = height + SPENDABLE_CONFIRMATIONS - 1;
+    assert.equal(immatureTip - height + 1, SPENDABLE_CONFIRMATIONS - 1);
+    assert.equal(matureTip - height + 1, SPENDABLE_CONFIRMATIONS);
     const pre = spendB({
-      leaf, proof, header, rootA: tree.rootA, rootB: tree.rootB, height: 1, index: 0, tipHeight: 0, spent: new Set(),
+      leaf, proof, header, rootA: tree.rootA, rootB: tree.rootB, height, index: 0, tipHeight: 0, spent: new Set(),
     });
     assert.equal(pre.ok, false);
     assert.equal(pre.reason, 'pre_seal');
+    const early = spendB({
+      leaf, proof, header, rootA: tree.rootA, rootB: tree.rootB, height, index: 0, tipHeight: immatureTip, spent: new Set(),
+    });
+    assert.equal(early.ok, false);
+    assert.equal(early.reason, 'immature');
     const spent = new Set();
     const ok = spendB({
-      leaf, proof, header, rootA: tree.rootA, rootB: tree.rootB, height: 1, index: 0, tipHeight: 7, spent,
+      leaf, proof, header, rootA: tree.rootA, rootB: tree.rootB, height, index: 0, tipHeight: matureTip, spent,
     });
-    assert.equal(ok.ok, true);
+    assert.equal(ok.ok, true, ok.reason);
+    assert.equal(ok.unit, leaf.unit);
     const twice = spendB({
-      leaf, proof, header, rootA: tree.rootA, rootB: tree.rootB, height: 1, index: 0, tipHeight: 8, spent,
+      leaf, proof, header, rootA: tree.rootA, rootB: tree.rootB, height, index: 0, tipHeight: matureTip, spent,
     });
     assert.equal(twice.ok, false);
     assert.equal(twice.reason, 'double_open');

@@ -421,6 +421,23 @@ export function v12KindRejected(tx) {
   return null;
 }
 
+const HIDDEN_OPEN_TOPS = new Set(['send', 'transfer', 'change', 'dummy']);
+
+/**
+ * Value opening to reject before an unbound carry.
+ * Send and transfer stay `value_open` even when the output label disagrees.
+ * A missing or non-matching public kind stays unset so the caller can
+ * return `kind` after the carry check.
+ */
+export function openingBeforeCarry(tx) {
+  const open = valueOpenRejected(tx);
+  if (!open) return null;
+  const top = tx && !tx.coinbase && tx.kind != null && String(tx.kind) !== '' ? String(tx.kind) : '';
+  if (HIDDEN_OPEN_TOPS.has(top)) return open;
+  if (!v12KindRejected(tx)) return open;
+  return null;
+}
+
 /** The vault clock is the block header. A typed tx cannot carry its own nowMs. */
 export function typedClockRejected(tx) {
   if (!tx || tx.coinbase) return null;
@@ -684,12 +701,14 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
   const seenOwners = new Map();
   const drawn = new Set();
   for (const tx of body || []) {
-    const open = valueOpenRejected(tx);
-    if (open) return open;
+    const earlyOpen = openingBeforeCarry(tx);
+    if (earlyOpen) return earlyOpen;
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
+    const open = valueOpenRejected(tx);
+    if (open) return open;
     const stake = boundReserveWithdraw(tx, reserveState, drawn);
     if (!stake.ok) return stake;
     const kind = reserveKindOf(tx);

@@ -9,7 +9,7 @@ import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8 } from './note.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, v12KindRejected } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, v12KindRejected, openingBeforeCarry } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, typedKindNeedsAdmitV3 } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
@@ -69,14 +69,16 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
-  const open = valueOpenRejected(tx);
-  if (open) return open;
+  const earlyOpen = openingBeforeCarry(tx);
+  if (earlyOpen) return earlyOpen;
   if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
     const carry = unboundMembershipCarry(tx);
     if (!carry.ok) return carry;
   }
   const kindGate = v12KindRejected(tx);
   if (kindGate) return kindGate;
+  const open = valueOpenRejected(tx);
+  if (open) return open;
   const kind = String(tx.kind);
   const clockField = typedClockRejected(tx);
   if (clockField) return clockField;

@@ -69,7 +69,7 @@ import {
 } from '../../crypto/vault_seal.js';
 import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
@@ -2008,14 +2008,16 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
-    const open = valueOpenRejected(tx);
-    if (open) return open;
+    const earlyOpen = openingBeforeCarry(tx);
+    if (earlyOpen) return earlyOpen;
     if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
       const carry = unboundMembershipCarry(tx);
       if (!carry.ok) return carry;
     }
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
+    const open = valueOpenRejected(tx);
+    if (open) return open;
     if (String(tx.kind || '') === 'b-spend') {
       const tipNow = tip();
       let boundB;

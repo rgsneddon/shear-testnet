@@ -73,7 +73,7 @@ import {
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected } from '../../crypto/spend.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
@@ -1883,8 +1883,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     } catch { /* skip */ }
   };
   for (const tx of txs) {
-    const open = valueOpenRejected(tx);
-    if (open) return open;
+    const earlyOpen = openingBeforeCarry(tx);
+    if (earlyOpen) return earlyOpen;
   }
   const coinbaseCarry = (txs[0]?.coinbase || String(txs[0]?.kind || '') === 'coinbase')
     ? unboundMembershipCarry(txs[0])
@@ -1901,6 +1901,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
+    const open = valueOpenRejected(tx);
+    if (open) return open;
     const anchored = checkAdmitAnchor(tx, height);
     if (!anchored.ok) return anchored;
     const clockField = typedClockRejected(tx);
