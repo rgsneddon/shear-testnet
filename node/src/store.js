@@ -384,10 +384,8 @@ export function createStore(dir, {
             acceptedSeries: plan.acceptedSeries,
             owedKnown: true,
           }),
-          anchors: (plan.anchorWindow || []).reduce((at, a) => {
-            at[a.height] = anchorFromSnap(a);
-            return at;
-          }, []),
+          supplyAt: supplyRowsFromPlan(plan),
+          anchors: anchorsFromPlan(plan),
         },
       });
       if (!checked.ok) throw new Error(checked.reason || 'pow');
@@ -937,26 +935,50 @@ export function createStore(dir, {
     return window.length ? window : undefined;
   }
 
-  function installSupplyPlan(plan) {
-    supplyAt = [];
-    anchorAt = [];
-    const series = Array.isArray(plan.acceptedSeries) ? plan.acceptedSeries : [];
+  // Small rows for every height. The frontier blobs stay in anchorWindow.
+  function anchorRootsForSnap() {
+    const tipH = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
+    if (tipH < 1) return undefined;
+    const roots = [];
+    for (let h = 1; h <= tipH; h += 1) {
+      const rec = anchorAt[h];
+      if (!rec?.jroot || rec.jroot.length !== 32) return undefined;
+      const n = Number(rec.n);
+      if (!Number.isInteger(n) || n < 0) return undefined;
+      const zr = rec.zeroRoot?.length === 32 ? rec.zeroRoot : rec.jroot;
+      roots.push({
+        height: h,
+        n,
+        jroot: Buffer.from(rec.jroot),
+        zeroRoot: Buffer.from(zr),
+      });
+    }
+    return roots;
+  }
+
+  function supplyRowsFromPlan(plan) {
+    const rows = [];
+    const series = Array.isArray(plan?.acceptedSeries) ? plan.acceptedSeries : [];
+    const snaps = Array.isArray(plan?.supplySnaps) ? plan.supplySnaps : [];
     const byAt = new Map();
-    for (const c of plan.owedCheckpoints || []) byAt.set(Number(c.at), c);
-    for (let i = 0; i < plan.supplySnaps.length; i += 1) {
-      const tip = i === plan.supplySnaps.length - 1;
+    for (const c of plan?.owedCheckpoints || []) byAt.set(Number(c.at), c);
+    for (let i = 0; i < snaps.length; i += 1) {
+      const tip = i === snaps.length - 1;
       const ck = byAt.get(i);
       const owedKnown = tip || !!ck;
-      supplyAt[i] = supplyFromScalar(plan.supplySnaps[i], {
+      rows[i] = supplyFromScalar(snaps[i], {
         owedRows: owedKnown ? (tip ? plan.owedRows : ck.rows) : [],
         acceptedSeries: owedKnown ? series.slice(0, tip ? series.length : ck.seriesEnd) : [],
         owedKnown,
       });
     }
+    return rows;
+  }
+
+  function installSupplyPlan(plan) {
+    supplyAt = supplyRowsFromPlan(plan);
     supplyTip = supplyAt[supplyAt.length - 1] || null;
-    for (const a of plan.anchorWindow || []) {
-      anchorAt[a.height] = anchorFromSnap(a);
-    }
+    anchorAt = anchorsFromPlan(plan);
     const tipH = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
     retainFrontierBlobs(anchorAt, tipH, haltDepth);
   }
@@ -969,9 +991,56 @@ export function createStore(dir, {
     return rec;
   }
 
+  function anchorsFromPlan(plan) {
+    const at = [];
+    for (const a of plan?.anchorRoots || []) {
+      const h = Number(a?.height);
+      if (!Number.isInteger(h) || h < 1 || !a?.jroot) continue;
+      at[h] = {
+        n: a.n,
+        jroot: Buffer.from(a.jroot),
+        zeroRoot: a.zeroRoot?.length === 32 ? Buffer.from(a.zeroRoot) : null,
+      };
+    }
+    for (const a of plan?.anchorWindow || []) {
+      const h = Number(a?.height);
+      if (!Number.isInteger(h) || h < 1) continue;
+      const prev = at[h];
+      const rec = prev || anchorFromSnap(a);
+      if (a.frontier?.length) rec.frontier = Buffer.from(a.frontier);
+      if (a.zeroFrontier?.length) rec.zeroFrontier = Buffer.from(a.zeroFrontier);
+      if (!rec.zeroRoot && a.zeroRoot?.length === 32) rec.zeroRoot = Buffer.from(a.zeroRoot);
+      if (!rec.jroot && a.jroot) rec.jroot = Buffer.from(a.jroot);
+      at[h] = rec;
+    }
+    return at;
+  }
+
+  function anchorRootsCover(plan) {
+    const roots = plan?.anchorRoots;
+    if (!Array.isArray(roots) || roots.length !== plan.height) return false;
+    for (let h = 1; h <= plan.height; h += 1) {
+      const row = roots[h - 1];
+      if (Number(row?.height) !== h) return false;
+      const n = Number(row?.n);
+      if (!Number.isInteger(n) || n < 0) return false;
+      if (!row?.jroot || row.jroot.length !== 32) return false;
+      if (!row?.zeroRoot || row.zeroRoot.length !== 32) return false;
+    }
+    for (const a of plan.anchorWindow || []) {
+      const h = Number(a?.height);
+      const row = roots[h - 1];
+      if (!row) return false;
+      if (Number(row.n) !== Number(a.n)) return false;
+      if (!Buffer.from(row.jroot).equals(Buffer.from(a.jroot))) return false;
+    }
+    return true;
+  }
+
   function planSupplyLinks(plan) {
     if (!plan || !Array.isArray(plan.supplySnaps) || plan.supplySnaps.length !== plan.height) return false;
     if (!Array.isArray(plan.anchorWindow) || !plan.anchorWindow.length) return false;
+    if (!anchorRootsCover(plan)) return false;
     for (let i = 0; i < plan.supplySnaps.length; i += 1) {
       const row = supplyFromScalar(plan.supplySnaps[i], { owedKnown: true });
       if (!supplyLinks(row, blocks[i])) return false;
@@ -989,6 +1058,8 @@ export function createStore(dir, {
       if (!commit || !gms || tipHash.length !== 32) return;
       const cp = snapExpect.checkpoint || {};
       const cpH = Math.floor(Number(cp.height) || 0);
+      const anchorRoots = anchorRootsForSnap();
+      if (!anchorRoots) return;
       writeBookSnap(snapFile, sealKey, {
         rules: snapExpect.rules,
         genesisPin: snapExpect.genesisPin,
@@ -1014,6 +1085,7 @@ export function createStore(dir, {
         unitAt,
         supplySnaps: supplySnapsForSnap(),
         anchorWindow: anchorWindowForSnap(),
+        anchorRoots,
       });
     } catch { /* leave the previous snap; the next load replays */ }
   }

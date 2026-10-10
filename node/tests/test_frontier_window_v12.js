@@ -217,7 +217,7 @@ describe('v12 frontier retention', () => {
     const loadedView = loaded.anchorView();
     assert.equal(loadedView.tip, tallH);
     assert.equal(loadedView.withFrontier, tallView.withFrontier);
-    assert.equal(loadedView.roots, tallView.withFrontier);
+    assert.equal(loadedView.roots, tallH);
     assert.ok(loadedView.blobBytes <= loadedView.withFrontier * 2 * FRONTIER_MAX);
 
     const near = loaded.blocks.length - 2;

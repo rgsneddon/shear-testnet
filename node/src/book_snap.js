@@ -196,6 +196,20 @@ export function encodeBookSnap(state, key) {
       const zr = bytesOf(a?.zeroRoot, 32);
       parts.push(zr || Buffer.alloc(32));
     }
+    if (Array.isArray(state.anchorRoots)) {
+      const roots = state.anchorRoots;
+      parts.push(u32(roots.length));
+      for (const a of roots) {
+        const root = bytesOf(a?.jroot, 32);
+        const zr = bytesOf(a?.zeroRoot, 32);
+        const at = Number(a?.height);
+        const n = Number(a?.n);
+        if (!root || !zr || !Number.isInteger(at) || at < 1 || !Number.isInteger(n) || n < 0) {
+          throw new Error('snap_supply');
+        }
+        parts.push(u32(at), u32(n), root, zr);
+      }
+    }
   }
   const payload = Buffer.concat(parts);
   const mac = createHmac('sha256', k).update(MAGIC).update(payload).digest();
@@ -384,6 +398,7 @@ export function decodeBookSnap(buf, key, expected = {}) {
   }
   let supplySnaps = null;
   let anchorWindow = null;
+  let anchorRoots = null;
   if (o < payload.length) {
     const nsc = readU32(payload, o);
     if (!nsc) return null;
@@ -455,6 +470,32 @@ export function decodeBookSnap(buf, key, expected = {}) {
         if (fr.v.length) anchorWindow[i].zeroRoot = Buffer.from(zr);
       }
     }
+    if (o < payload.length) {
+      const nr = readU32(payload, o);
+      if (!nr) return null;
+      o = nr.o;
+      anchorRoots = [];
+      for (let i = 0; i < nr.v; i += 1) {
+        const ah = readU32(payload, o);
+        if (!ah || ah.v < 1) return null;
+        o = ah.o;
+        const an = readU32(payload, o);
+        if (!an) return null;
+        o = an.o;
+        const root = take(payload, o, 32);
+        if (!root) return null;
+        o += 32;
+        const zr = take(payload, o, 32);
+        if (!zr) return null;
+        o += 32;
+        anchorRoots.push({
+          height: ah.v,
+          n: an.v,
+          jroot: Buffer.from(root),
+          zeroRoot: Buffer.from(zr),
+        });
+      }
+    }
   }
   if (o !== payload.length) return null;
   const state = {
@@ -478,6 +519,7 @@ export function decodeBookSnap(buf, key, expected = {}) {
     owedCheckpoints,
     supplySnaps,
     anchorWindow,
+    anchorRoots,
   };
   if (expected.rules != null && state.rules !== String(expected.rules)) return null;
   if (expected.genesisPin != null && state.genesisPin !== String(expected.genesisPin)) return null;
