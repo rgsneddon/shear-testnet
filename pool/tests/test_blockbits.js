@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { GENESIS_BITS, GENESIS_BITS_PACKED, LIVE_MIN_BITS, TARGET_BLOCK_INTERVAL_MS, unpackBits } from '../../crypto/asert.js';
+import { GENESIS_BITS, GENESIS_BITS_PACKED, LIVE_MIN_BITS, SHEARK_MINER_VERSION, TARGET_BLOCK_INTERVAL_MS, unpackBits } from '../../crypto/asert.js';
 import { createPool } from '../src/pool.js';
 import { SHARE_BITS_V2_START } from '../src/share_vardiff.js';
 
@@ -51,7 +51,7 @@ describe('testnet blockBits', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest + '.bits', client: 'ShearHash', version: '2.1', threads: 1 },
+          params: { login: dest + '.bits', client: 'ShearHash', version: SHEARK_MINER_VERSION, threads: 1 },
         }) + '\n');
         setTimeout(() => reject(new Error('login_timeout')), 8000);
       });

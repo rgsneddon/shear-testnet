@@ -7,6 +7,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import {
   createPool,
   THIS_POOL_DIRECT_FEE_DEST,
@@ -78,7 +79,7 @@ describe('fee dest, auth pub, certify, public stats', () => {
     const gated = gateStratumLogin({
       login: 'ssa1q8flwjptadua9u7qtpvs7t26aarenstew938zlcgclzvthv5v4e03hsv4j8uf2pr73w8arp0krf0mhry6f5gqff4fl9',
       client: 'ShearHash',
-      version: '2.7',
+      version: SHEARK_MINER_VERSION,
       authPub: pub,
       authSig: '00',
       challenge: 'abc',
@@ -188,7 +189,7 @@ describe('stratum TLS job to share', () => {
           params: {
             login: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.tls',
             client: 'ShearHash',
-            version: '2.7',
+            version: SHEARK_MINER_VERSION,
           },
         })}\n`);
       });
@@ -206,7 +207,7 @@ describe('stratum TLS job to share', () => {
     assert.match(jobLine, /"jobId"/);
     const clear = await new Promise((resolve) => {
       const s = net.connect(bound.stratumPort, '127.0.0.1', () => {
-        s.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.clear', client: 'ShearHash', version: '2.7' } })}\n`);
+        s.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.clear', client: 'ShearHash', version: SHEARK_MINER_VERSION } })}\n`);
       });
       let buf = '';
       s.on('data', (c) => { buf += c.toString(); });

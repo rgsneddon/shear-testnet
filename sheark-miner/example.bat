@@ -1,7 +1,8 @@
 @echo off
-REM ShearK-Miner 2.8 (ShearHash-v3 light) — Windows
-REM Public pool: stratum+ssl://pool.shear.digital:443  (shear-testnet-v4)
-REM Live book is shear-testnet-v10. --print-config still reports magic shear-testnet-v4.
+REM ShearK-Miner 2.9 (ShearHash-v3 light) — Windows
+REM Public pool: stratum+ssl://pool.shear.digital:443
+REM This build is for shear-testnet-v12. The pool refuses ShearK older than 2.9.
+REM YOUR_SSA1.worker is a placeholder. Keep each host's worker name and payout address.
 REM Localhost solo stays cleartext: stratum+tcp://127.0.0.1:1111
 REM
 REM Paid login is an ssa1 dest the wallet exported (Copy dest), then .worker.
@@ -10,22 +11,22 @@ REM
 REM 1) Wallet: Copy dest. Paste it below as YOUR_SSA1.
 REM 2) Change .worker to a unique name for this PC (e.g. .pc1).
 REM 3) Set --threads to this machine's logical CPUs (echo %NUMBER_OF_PROCESSORS%).
-REM 4) Keep the OpenSSL DLLs from ShearK-Miner-2.8-windows.zip beside this exe.
+REM 4) Keep the OpenSSL DLLs from ShearK-Miner-2.9-windows.zip beside this exe.
 
 cd /d "%~dp0"
 
 if not exist "ShearK-Miner.exe" (
-  echo ShearK-Miner.exe missing. Unpack ShearK-Miner-2.8-windows.zip first.
+  echo ShearK-Miner.exe missing. Unpack ShearK-Miner-2.9-windows.zip first.
   pause
   exit /b 1
 )
 if not exist "libssl-3-x64.dll" (
-  echo libssl-3-x64.dll missing. Unpack the full 2.8 zip. The exe alone will not start.
+  echo libssl-3-x64.dll missing. Unpack the full 2.9 zip. The exe alone will not start.
   pause
   exit /b 1
 )
 if not exist "libcrypto-3-x64.dll" (
-  echo libcrypto-3-x64.dll missing. Unpack the full 2.8 zip. The exe alone will not start.
+  echo libcrypto-3-x64.dll missing. Unpack the full 2.9 zip. The exe alone will not start.
   pause
   exit /b 1
 )

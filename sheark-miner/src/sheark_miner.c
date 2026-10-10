@@ -12,6 +12,7 @@
 #endif
 #endif
 #include "shear_hash.h"
+#include "job_bits.h"
 #include "stratum_tls.h"
 #include "../../crypto/share_stamp.h"
 
@@ -619,13 +620,12 @@ static void apply_job(const char *line) {
     json_token(line, "id", job.jobId, sizeof(job.jobId));
   }
   if (!has_header || parse_header_hex(header_hex, job.header) != 0) return;
-  int sb = 8, bb = 16, bits = 0;
-  json_int(line, "shareBits", &sb);
-  json_int(line, "blockBits", &bb);
-  json_int(line, "bits", &bits);
+  int sb = 0, bb = 0, bits = 0;
+  int has_sb = json_int(line, "shareBits", &sb);
+  int has_bb = json_int(line, "blockBits", &bb);
+  int has_bits = json_int(line, "bits", &bits);
   json_int(line, "height", &job.height);
-  job.share_bits = sb > 0 ? sb : 8;
-  job.block_bits = bb > 0 ? bb : (bits > 0 ? bits : 16);
+  if (!shear_job_widths(has_sb, sb, has_bb, bb, has_bits, bits, &job.share_bits, &job.block_bits)) return;
   {
     char bind[16] = "";
     json_token(line, "shareBind", bind, sizeof(bind));
@@ -732,12 +732,19 @@ static void apply_ack(const char *line) {
   json_token(line, "status", status, sizeof(status));
   char err[160] = "";
   json_token(line, "error", err, sizeof(err));
+  char note[200] = "";
+  json_token(line, "message", note, sizeof(note));
   char low[160];
   snprintf(low, sizeof(low), "%s", err[0] ? err : status);
   for (char *p = low; *p; p++) *p = (char)tolower((unsigned char)*p);
   int inflight = atomic_load(&g_inflight);
   /* Login replies with status=OK. Only a submit ACK (in-flight share) counts. */
-  if (msgid == 1 && inflight <= 0) return;
+  if (msgid == 1 && inflight <= 0) {
+    if (err[0] || note[0]) {
+      fprintf(stderr, "pool refused login: %s\n", note[0] ? note : err);
+    }
+    return;
+  }
   if (strstr(low, "ok") && !err[0]) {
     if (inflight > 0) {
       g_accepted++;

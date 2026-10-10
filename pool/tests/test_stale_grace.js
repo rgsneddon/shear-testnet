@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'node:path';
 import net from 'node:net';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   createPool,
@@ -70,7 +71,7 @@ function loginAndSubmit(port, dest, submits) {
       sock.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login: `${dest}.rig`, client: 'ShearHash', name: 'ShearK-Miner', version: '2.1', threads: 1 },
+        params: { login: `${dest}.rig`, client: 'ShearHash', name: 'ShearK-Miner', version: SHEARK_MINER_VERSION, threads: 1 },
       }) + '\n');
     });
     sock.on('data', (c) => {

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   admitClient,
@@ -135,7 +136,7 @@ describe('duplicate shares cannot inflate round work', () => {
       clientHashes: 16_590_151_266_784,
       clientHashesRound0: 0,
     };
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash', name: 'Shear-Miner' }).ok, true);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash', name: 'Shear-Miner' }).ok, true);
     assert.equal(hasherHasValidRoundShare(idle), false);
     assert.equal(roundActualHashes(idle), 0);
     const none = pendingFor(new Map([['idle', idle]]), dest);
@@ -209,7 +210,7 @@ describe('duplicate shares cannot inflate round work', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.old`, client: 'ShearHash', name: 'Shear-Miner', version: '2.1', threads: 8, hashes: 9e12, hashrate: 1e9 },
+      params: { login: `${dest}.old`, client: 'ShearHash', name: 'Shear-Miner', version: SHEARK_MINER_VERSION, threads: 8, hashes: 9e12, hashrate: 1e9 },
     }) + '\n');
     await new Promise((res) => sock.once('data', res));
     const t0 = Date.now();
@@ -532,8 +533,8 @@ describe('folded-row inventory', () => {
     const dest = freshStealthDest(id).dest;
     assert.equal(workerKey(`${dest}.alpha`), `${dest}.alpha`);
     assert.notEqual(workerKey(`${dest}.alpha`), workerKey(`${dest}.beta`));
-    assert.equal(admitClient({ version: '2.1', login: `${dest}.alpha`, client: 'ShearHash' }).workerKey, `${dest}.alpha`);
-    assert.equal(admitClient({ version: '2.1', login: `${dest}.alpha`, client: 'ShearHash' }).login, dest);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: `${dest}.alpha`, client: 'ShearHash' }).workerKey, `${dest}.alpha`);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: `${dest}.alpha`, client: 'ShearHash' }).login, dest);
   });
 
   it('two sockets on one worker sum; dest.other is a separate row', async () => {
@@ -560,7 +561,7 @@ describe('folded-row inventory', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: user, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
+          params: { login: user, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
         }) + '\n');
       });
       sock.once('data', () => resolve(sock));

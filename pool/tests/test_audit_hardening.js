@@ -6,6 +6,7 @@ import path from 'node:path';
 import { generateKeyPairSync, sign as signEd } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
+import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   gateStratumLogin,
@@ -41,7 +42,7 @@ function destOf() {
 describe('A1 stratum auth gate', () => {
   it('auth on rejects dest-only; auth off accepts dest-only', () => {
     const dest = destOf();
-    const params = { login: dest, client: 'ShearHash', version: '2.4' };
+    const params = { login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION };
     const off = gateStratumLogin(params, { requireLoginAuth: false });
     assert.equal(off.ok, true);
     const on = gateStratumLogin(params, { requireLoginAuth: true });
@@ -61,13 +62,13 @@ describe('A1 stratum auth gate', () => {
     const ok = verifyStratumLoginAuth({ dest, challenge: chal, sig: sig.toString('hex'), pub });
     assert.equal(ok, true);
     const unbound = gateStratumLogin({
-      login: dest, client: 'ShearHash', version: '2.4',
+      login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION,
       challenge: chal, authSig: sig.toString('hex'), authPub: pub,
     }, { requireLoginAuth: true });
     assert.equal(unbound.ok, false);
     assert.equal(unbound.reason, 'auth_pub_unbound');
     const gated = gateStratumLogin({
-      login: dest, client: 'ShearHash', version: '2.4',
+      login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION,
       challenge: chal, authSig: sig.toString('hex'), authPub: pub,
     }, { requireLoginAuth: true, boundAuthPub: pub });
     assert.equal(gated.ok, true);

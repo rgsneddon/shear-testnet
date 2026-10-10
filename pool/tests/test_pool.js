@@ -12,6 +12,7 @@ import {
   MAGIC_TESTNET,
   HASH_TX_LIVE,
   SHARE_FLOOR_BITS,
+  SHEARK_MINER_VERSION,
   shareCreditMaxBits,
   MAX_HASH_UNITS_PER_BLOCK,
 } from '../../crypto/asert.js';
@@ -399,28 +400,28 @@ describe('admit', () => {
   it('admits ssa1 dest and she1 silent ID, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash' }).ok, true);
-    const sheOnly = admitClient({ version: '2.1', login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' });
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash' }).ok, true);
+    const sheOnly = admitClient({ version: SHEARK_MINER_VERSION, login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' });
     assert.equal(sheOnly.ok, true);
     assert.equal(sheOnly.payoutDest, '');
     assert.equal(sheOnly.login, id.paymentCode);
-    const sheOwned = admitClient({ version: '2.1', login: id.paymentCode, dest, client: 'ShearHash' });
+    const sheOwned = admitClient({ version: SHEARK_MINER_VERSION, login: id.paymentCode, dest, client: 'ShearHash' });
     assert.equal(sheOwned.payoutDest, dest);
-    assert.equal(admitClient({ version: '2.1', login: id.paymentCode, dest: aliasDestOfSilentId(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash', name: 'ShearK-Miner' }).ok, true);
-    assert.equal(admitClient({ version: '2.1', login: id.address, client: 'ShearHash' }).ok, false);
-    const truncated = admitClient({ version: '2.1', login: 'ssa1qincomplete.ubuntu-noel', client: 'ShearHash' });
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: id.paymentCode, dest: aliasDestOfSilentId(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash', name: 'ShearK-Miner' }).ok, true);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: id.address, client: 'ShearHash' }).ok, false);
+    const truncated = admitClient({ version: SHEARK_MINER_VERSION, login: 'ssa1qincomplete.ubuntu-noel', client: 'ShearHash' });
     assert.equal(truncated.ok, true);
     assert.equal(truncated.payoutDest, '');
     assert.equal(truncated.ramAlias, true);
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'other' }).ok, false);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'other' }).ok, false);
     assert.equal(admitClient({ version: '1.9', login: dest, client: 'ShearHash' }).ok, false);
-    assert.equal(admitClient({ version: '2.0', login: dest, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ version: '2.0', login: dest, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ version: '1.9', login: dest, client: 'ShearHash' }).reason, 'miner_version');
     assert.equal(admitClient({ version: '1.8', login: dest, client: 'ShearHash' }).reason, 'miner_version');
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).reason, 'miner_version');
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash' }).ok, true);
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash' }).ok, true);
     assert.equal(publicMinerLabel(id.paymentCode), publicMinerTag(id.paymentCode));
     assert.match(publicMinerLabel(id.paymentCode), /^m[0-9a-f]{8}$/);
     assert.equal(publicMinerLabel(id.paymentCode).includes(id.paymentCode.slice(4)), false);
@@ -515,7 +516,7 @@ describe('she1 login jobs', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: `${id.paymentCode}.de`, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
+          params: { login: `${id.paymentCode}.de`, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -650,7 +651,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest + '.rig', client: 'ShearHash', name: 'ShearK-Miner', version: '2.1', threads: 1 },
+          params: { login: dest + '.rig', client: 'ShearHash', name: 'ShearK-Miner', version: SHEARK_MINER_VERSION, threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -674,7 +675,7 @@ describe('pool dashboard + stratum', () => {
     });
     assert.match(scored, /OK/);
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok((named.workers || []).some((w) => w.name === 'ShearK-Miner' && w.version === '2.0'));
+    assert.ok((named.workers || []).some((w) => w.name === 'ShearK-Miner' && w.version === SHEARK_MINER_VERSION));
     assert.match(html, /w\.name/);
     } finally {
       pool.close();
@@ -705,7 +706,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
+          params: { login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
         }) + '\n');
       });
       sock.once('data', () => resolve(sock));
@@ -774,7 +775,7 @@ function loginAndShare(port, login, extra = {}, hit = null) {
       sock.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login, client: 'ShearHash', version: '2.1', threads: 1, name: 'ShearK-Miner', ...extra },
+        params: { login, client: 'ShearHash', version: SHEARK_MINER_VERSION, threads: 1, name: 'ShearK-Miner', ...extra },
       }) + '\n');
     });
     let buf = '';
@@ -1057,8 +1058,8 @@ describe('public miner listing', () => {
     assert.equal(uniquePublicLabels(['0.1.7', '0.1.7']), '0.1.7');
     assert.equal(uniquePublicLabels(['a', 'b', 'a']), 'a, b');
     const folded = foldPublicMinerViews([
-      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: '2.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
-      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: '2.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: SHEARK_MINER_VERSION, hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: SHEARK_MINER_VERSION, hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
     ]);
     assert.equal(folded[0].name, 'Shear-Miner');
     assert.equal(folded[0].version, '2.1');

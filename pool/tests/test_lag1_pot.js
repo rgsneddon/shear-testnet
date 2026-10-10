@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
-import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import { createPool, scoreShare } from '../src/pool.js';
 import { coinbaseSplit } from '../../crypto/mint.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout } from '../../crypto/coinbase_notes.js';
@@ -69,7 +69,7 @@ async function login(port, login) {
   send(sock, {
     id: 1,
     method: 'login',
-    params: { login, client: 'ShearHash', version: '2.1', threads: 1 },
+    params: { login, client: 'ShearHash', version: SHEARK_MINER_VERSION, threads: 1 },
   });
   const hello = await lines.readLine();
   assert.equal(hello.result?.status, 'OK');

@@ -531,8 +531,8 @@ export function isCminerFeeLogin() {
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
 export { SHEARK_MINER_VERSION };
 
-/** Major.minor compare. Pre-2.0 ShearK is refused. */
-export function minerVersionAtLeast(version, min = '2.0') {
+/** Major.minor compare. Below the ShearK pin is refused. */
+export function minerVersionAtLeast(version, min = SHEARK_MINER_VERSION) {
   const parse = (s) => {
     const m = String(s || '').trim().match(/^(\d+)\.(\d+)/);
     if (!m) return null;
@@ -551,7 +551,12 @@ export function admitClient(params) {
     return { ok: false, reason: 'client_refused' };
   }
   if (!minerVersionAtLeast(params?.version)) {
-    return { ok: false, reason: 'miner_version' };
+    const got = String(params?.version || '').trim() || 'unversioned';
+    return {
+      ok: false,
+      reason: 'miner_version',
+      message: `ShearK ${SHEARK_MINER_VERSION} or newer is required on ${MAGIC_TESTNET}. This client is ${got}.`,
+    };
   }
   const raw = String(params?.login || params?.user || '').trim();
   const dest = parseLogin(raw);
@@ -4255,7 +4260,9 @@ export function createPool({
             if (isWrongAlgoReject(adm.reason)) {
               rememberInvalid(null, String(params.login || params.user || ''), sock);
             }
-            const extra = adm.reason === 'need_auth' && adm.challenge ? { challenge: adm.challenge } : {};
+            const extra = {};
+            if (adm.reason === 'need_auth' && adm.challenge) extra.challenge = adm.challenge;
+            if (adm.message) extra.message = adm.message;
             replyLine(sock, { id: msg.id, error: adm.reason, ...extra }, { drop: true });
             continue;
           }
