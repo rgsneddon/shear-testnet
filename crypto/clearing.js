@@ -7,7 +7,8 @@ import { sha256 } from './shear_hash.js';
 import { merkleRoot, merkleProof, merkleBound } from './merkle.js';
 import { packALeafV5, packBLeaf, packDigest } from './pack.js';
 import { noteCommitOfDest20, openedCoinbaseNanos, flowBLockNanos, verifyFlowConservation } from './note.js';
-import { hash20FromAddress } from './address.js';
+import { hash20FromAddress, dest20MatchesSpendPub } from './address.js';
+import { spendPubFromTx, verifySpendSig } from './spend.js';
 import { decodeHeader } from './header.js';
 import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 
@@ -241,10 +242,44 @@ export function canonicalBLeaf(tx) {
   }
 }
 
+function noteCommitBytes(raw) {
+  try {
+    if (raw == null || raw === '') return null;
+    const got = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+    return got.length === 32 ? got : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every output pays the leaf dest, and the leaf owner's key signs the body.
+ * Checked before spendB so a rejected spend does not mark the leaf spent.
+ * A foreign dest is owner. A missing or foreign signature is unsigned.
+ */
+function bSpendOwnerRejected(tx, leaf, outs) {
+  let want;
+  try {
+    want = noteCommitOfDest20(leaf.dest20);
+  } catch {
+    return { ok: false, reason: 'owner' };
+  }
+  for (const o of outs) {
+    const got = noteCommitBytes(o?.noteCommit);
+    if (!got || !got.equals(want)) return { ok: false, reason: 'owner' };
+  }
+  const pub = spendPubFromTx(tx);
+  if (!pub || !dest20MatchesSpendPub(leaf.dest20, pub) || !verifySpendSig(tx)) {
+    return { ok: false, reason: 'unsigned' };
+  }
+  return null;
+}
+
 /**
  * Spend a B leaf against the chain block at commitHeight.
  * commitHeader, commitRootA, and commitRootB on the tx are ignored.
- * Every output opens, and the opened sum is the leaf unit.
+ * Every output opens, the opened sum is the leaf unit, every output pays
+ * leaf.dest20, and the leaf owner signs the spend.
  */
 export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spent = null } = {}) {
   try {
@@ -263,6 +298,8 @@ export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spe
       sum += v;
     }
     if (sum !== leaf.unit) return { ok: false, reason: 'commit_sum' };
+    const owned = bSpendOwnerRejected(tx, leaf, outs);
+    if (owned) return owned;
     return spendB({
       leaf,
       proof: tx?.proof || [],

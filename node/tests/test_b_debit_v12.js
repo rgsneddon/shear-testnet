@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { excessOf, openedCoinbaseNanos, verifyMintSum } from '../../crypto/note.js';
+import { signSpendTx } from '../../crypto/spend.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import {
@@ -254,7 +255,7 @@ describe('v12 B leaves are debited', () => {
         const excess = excessOf(outs);
         assert.ok(excess);
         assert.equal(verifyMintSum(outs, amount, excess), true);
-        return {
+        const tx = {
           id: `draw-${amount}`,
           kind: 'b-spend',
           bFlag: 1,
@@ -273,6 +274,8 @@ describe('v12 B leaves are debited', () => {
           vin: [{ address: payer.dest }],
           vout: outs,
         };
+        signSpendTx(tx, payer.key);
+        return tx;
       });
       const tpl = templateOn(book.store, { miner: payer.dest, txs: spends });
       assert.equal((tpl.bLeaves || []).length, 0);

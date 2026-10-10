@@ -13,6 +13,8 @@ import { encodeHeader } from '../../crypto/header.js';
 import { EMPTY_ROOT, merkleVerify } from '../../crypto/merkle.js';
 import { sha256 } from '../../crypto/shear_hash.js';
 import { excessOf, openedCoinbaseNanos, verifyMintSum } from '../../crypto/note.js';
+import { signSpendTx } from '../../crypto/spend.js';
+import { hash20FromAddress } from '../../crypto/address.js';
 import {
   appendTpl,
   asBlock,
@@ -30,9 +32,9 @@ const UNITS = [1, 2 ** 20];
 const FOREIGN = [0, 1, 7, 123456];
 const HEIGHT = 1;
 
-function leafAt(unit, n) {
+function leafAt(dest20, unit, n) {
   return {
-    dest20: Buffer.alloc(20, n + 1),
+    dest20: Buffer.from(dest20),
     unit,
     nonce: n + 1,
     memoH: Buffer.alloc(32, n + 3),
@@ -96,13 +98,14 @@ describe('v12 one B leaf per position', () => {
     assert.equal(SPENDABLE_CONFIRMATIONS >= 1, true);
     assert.ok(COUNTS.includes(1) && COUNTS.includes(3) && COUNTS.includes(5));
     assert.ok(UNITS.some((n) => n > 1));
-    const dest = payerIdentity().dest;
+    const owner = payerIdentity();
+    const dest20 = hash20FromAddress(owner.dest);
     for (const unit of UNITS) {
-      const opened = sealMintOut(unit, dest, 'b-spend');
+      const opened = sealMintOut(unit, owner.dest, 'b-spend');
       assert.equal(openedCoinbaseNanos(opened), unit);
       for (const count of COUNTS) {
         const leaves = [];
-        for (let n = 0; n < count; n += 1) leaves.push(leafAt(unit, n));
+        for (let n = 0; n < count; n += 1) leaves.push(leafAt(dest20, unit, n));
         const tree = buildDualTree({ aLeaves: [{ dest20: leaves[0].dest20, count: 1 }], bLeaves: leaves });
         const block = {
           height: HEIGHT,
@@ -153,14 +156,17 @@ describe('v12 one B leaf per position', () => {
             assert.equal(omitted.reason, 'proof');
           }
           const outs = [opened];
-          const bound = bindBSpend({
+          const boundTx = {
             kind: 'b-spend',
             leaf,
             proof,
             index,
             commitHeight: HEIGHT,
+            vin: [{ address: owner.dest }],
             vout: outs,
-          }, {
+          };
+          signSpendTx(boundTx, owner.key);
+          const bound = bindBSpend(boundTx, {
             history: [block],
             tipHeight: matureTip(HEIGHT),
             spent: new Set(),
@@ -168,14 +174,17 @@ describe('v12 one B leaf per position', () => {
           assert.equal(bound.ok, true, `${unit} ${count} ${index} ${bound.reason}`);
           for (const foreign of [1, 7, 123456]) {
             if (foreign === index) continue;
-            const miss = bindBSpend({
+            const missTx = {
               kind: 'b-spend',
               leaf,
               proof,
               index: foreign,
               commitHeight: HEIGHT,
+              vin: [{ address: owner.dest }],
               vout: outs,
-            }, {
+            };
+            signSpendTx(missTx, owner.key);
+            const miss = bindBSpend(missTx, {
               history: [block],
               tipHeight: matureTip(HEIGHT),
               spent: new Set(),
@@ -250,9 +259,11 @@ describe('v12 one B leaf per position', () => {
         vin: [{ address: payer.dest }],
         vout: outs,
       };
+      const signed = { ...base, id: 'draw-1', index: 0 };
+      signSpendTx(signed, payer.key);
       const foreigners = [1, 7, 123456, '7', true, -1];
       for (const foreign of foreigners) {
-        const tx = { ...base, id: `foreign-${String(foreign)}`, index: foreign };
+        const tx = { ...signed, id: `foreign-${String(foreign)}`, index: foreign };
         const queued = book.store.queueTx(tx);
         assert.equal(queued.ok, false, `${String(foreign)} ${queued.reason || 'queued'}`);
         assert.equal(queued.reason, 'proof', `${String(foreign)} ${queued.reason}`);
@@ -266,7 +277,7 @@ describe('v12 one B leaf per position', () => {
       assert.equal((dirty.tpl.bLeaves || []).length, 0);
       assert.ok(!(dirty.tpl.txs || []).some((row) => row && String(row.id || '').startsWith('foreign-')));
       assert.equal(book.store.mempool.length, 0);
-      const honest = { ...base, id: 'draw-1', index: 0 };
+      const honest = { ...signed, id: 'draw-1', index: 0 };
       const queued = book.store.queueTx(honest);
       assert.equal(queued.ok, true, queued.reason);
       const twin = { ...honest, id: 'draw-1-twin' };
@@ -295,7 +306,7 @@ describe('v12 one B leaf per position', () => {
       })));
       assert.equal(after.ok, false, after.reason);
       assert.equal(after.reason, 'double_open');
-      const foreignAgain = bounced.queueTx({ ...base, id: 'foreign-restart', index: 7 });
+      const foreignAgain = bounced.queueTx({ ...signed, id: 'foreign-restart', index: 7 });
       assert.equal(foreignAgain.ok, false, foreignAgain.reason);
       assert.equal(foreignAgain.reason, 'proof');
       assert.equal(bounced.tip().height, spendTip);

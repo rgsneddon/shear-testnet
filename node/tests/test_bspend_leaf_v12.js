@@ -15,8 +15,9 @@ import { encodeHeader } from '../../crypto/header.js';
 import { EMPTY_ROOT } from '../../crypto/merkle.js';
 import { MAGIC_TESTNET, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { openedCoinbaseNanos, sealNote } from '../../crypto/note.js';
-import { hash20FromAddress, freshStealthDest, newIdentity, ed25519SeedOf, admitBaseFromAddress } from '../../crypto/address.js';
+import { hash20FromAddress, freshStealthDest, newIdentity, ed25519SeedOf, admitBaseFromAddress, stealthKey } from '../../crypto/address.js';
 import { attachAdmitPub } from '../../crypto/admit.js';
+import { signSpendTx } from '../../crypto/spend.js';
 import { createStore } from '../src/store.js';
 import { createP2p } from '../src/p2p.js';
 
@@ -30,7 +31,8 @@ const TIPS = [
 function payDest() {
   const id = newIdentity();
   const pay = freshStealthDest(id);
-  return { dest: pay.dest, spendSeed: id.spendSeed || ed25519SeedOf(id.privateKey) };
+  const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
+  return { dest: pay.dest, spendSeed, key: stealthKey(pay.shared, spendSeed) };
 }
 
 function sealOut(amount, dest) {
@@ -106,7 +108,7 @@ describe('v12 b-spend leaf is canonical', () => {
     assert.ok(new Set(AMOUNTS).size === AMOUNTS.length);
     assert.ok(TIPS.some((t) => t < SPENDABLE_CONFIRMATIONS));
     assert.ok(TIPS.some((t) => t >= SPENDABLE_CONFIRMATIONS));
-    const { dest } = payDest();
+    const { dest, key } = payDest();
     const dest20 = hash20FromAddress(dest);
     assert.equal(Buffer.from(dest20).length, 20);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n58-'));
@@ -129,6 +131,7 @@ describe('v12 b-spend leaf is canonical', () => {
           vin: [{ address: dest }],
           vout: [opened],
         };
+        signSpendTx(honest, key);
         const accepted = bindBSpend(honest, {
           history: [packed.block],
           tipHeight: SPENDABLE_CONFIRMATIONS + amount,

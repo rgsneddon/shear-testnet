@@ -526,7 +526,8 @@ export function compactTx(tx) {
   if (tx.vout) out.vout = (tx.vout || []).map((o) => compactVout(o, tx));
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
-  if ((keepDest || poolWithdraw || reserveTx) && tx.spendPub) out.spendPub = tx.spendPub;
+  // The owner signature is checked on the sealed body. A b-spend keeps spendPub.
+  if ((keepDest || poolWithdraw || reserveTx || kind === 'b-spend') && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
     if (tx.admit_proof.blob || tx.admit_proof.v === 2 || tx.admit_proof.v === 3) {

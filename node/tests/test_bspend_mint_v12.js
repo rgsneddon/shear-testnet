@@ -11,7 +11,7 @@ import { bProof, buildDualTree } from '../../crypto/clearing.js';
 import { GENESIS_BITS_PACKED, SPENDABLE_CONFIRMATIONS, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { excessOf, openedCoinbaseNanos } from '../../crypto/note.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
-import { V12_VALUE_KINDS } from '../../crypto/spend.js';
+import { V12_VALUE_KINDS, signSpendTx } from '../../crypto/spend.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import {
   asBlock,
@@ -206,6 +206,7 @@ describe('v12 b-spend mint is the chain leaf', () => {
           vin: [{ address: dest }],
           vout: [sealMintOut(amount, dest, 'b-spend')],
         };
+        signSpendTx(forged, payer.key);
         const forgedBlock = await probe([forged]);
         assert.equal(forgedBlock.ok, false, `${amount} ${forgedBlock.reason}`);
         assert.ok(
@@ -246,12 +247,14 @@ describe('v12 b-spend mint is the chain leaf', () => {
           : [sealMintOut(amount, dest, 'b-spend')];
         const openedSum = outs.reduce((sum, o) => sum + openedCoinbaseNanos(o), 0);
         assert.equal(openedSum, amount);
-        return spendOf(rec, outs, {
+        const tx = spendOf(rec, outs, {
           id: 'honest',
           commitHeader: Buffer.alloc(128, 3),
           commitRootA: Buffer.alloc(32, 4),
           commitRootB: Buffer.alloc(32, 5),
         });
+        signSpendTx(tx, payer.key);
+        return tx;
       });
       const honestProbe = await probe(honest);
       assert.equal(honestProbe.ok, true, honestProbe.reason);
@@ -286,6 +289,7 @@ describe('v12 b-spend mint is the chain leaf', () => {
         vin: [{ address: dest }],
         vout: [sealMintOut(REJECT[0], dest, 'b-spend')],
       };
+      signSpendTx(parkedForged, payer.key);
       store.mempool.push(parkedForged);
       const parentTs = Number(decodeHeader(Buffer.from(store.tip().header)).timestamp);
       const { tpl } = store.template({ miner: dest, shareBits: 4, now: parentTs + 90_000 });
