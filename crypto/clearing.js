@@ -221,22 +221,15 @@ function positionIndex(v) {
   return null;
 }
 
-/** Exact 20-byte dest, 32-byte memo, safe-integer unit and nonce, ASCII tag of at most 8 bytes. */
+/**
+ * A b-spend leaf is tx.leaf. to, nanos, and an output address are not a leaf:
+ * compactTx strips them, so a derived leaf would disagree with the sealed body.
+ * Exact 20-byte dest, 32-byte memo, safe-integer unit and nonce, ASCII tag of at most 8 bytes.
+ */
 export function canonicalBLeaf(tx) {
   try {
-    if (tx?.leaf && tx.leaf.dest20 != null) return canonicalLeafFields(tx.leaf, '');
-    let dest20 = null;
-    try {
-      const h = hash20FromAddress(tx?.to || tx?.vout?.[0]?.address || '');
-      if (h) dest20 = Buffer.from(h);
-    } catch { /* no dest */ }
-    return canonicalLeafFields({
-      dest20,
-      unit: tx?.unit != null ? tx.unit : tx?.nanos,
-      nonce: tx?.nonce,
-      memoH: tx?.memoH,
-      tag: tx?.tag == null || tx?.tag === '' ? 'b-spend' : tx.tag,
-    }, 'b-spend');
+    if (!tx?.leaf || tx.leaf.dest20 == null) return null;
+    return canonicalLeafFields(tx.leaf, '');
   } catch {
     return null;
   }
