@@ -14,11 +14,12 @@ import {
 } from './eip712.js';
 
 describe('EIP-712 PoolWithdraw', () => {
-  it('chainId 2701; valid seed sig verifies; empty/wrong/unsigned fail; 1 SHE empty L is 0.0002', () => {
+  it('chainId 2701; valid seed sig verifies; empty/wrong/unsigned fail; empty L is the weight floor', () => {
     assert.equal(EIP712_CHAIN_ID, 2701);
     assert.equal(EIP712_NAME, 'ShearPool');
-    assert.equal(levyNanos(NANOS_PER_SHE), 20_000_000);
-    assert.equal(levyNanos(NANOS_PER_SHE) / NANOS_PER_SHE, 0.0002);
+    // LEVY=weight ignores the amount. An empty quote is the floor, not 0.0002 SHE.
+    assert.equal(levyNanos(NANOS_PER_SHE), 100);
+    assert.equal(levyNanos(1), 100);
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const seed = Buffer.alloc(32, 7);

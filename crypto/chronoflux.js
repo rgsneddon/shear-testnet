@@ -22,7 +22,7 @@ import { packShareBatchBytes } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, openedCoinbaseNanos } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
-import { hash20FromAddress } from './address.js';
+import { encodeDest, hash20FromAddress } from './address.js';
 import { canonicalReserveFields } from './reserve_vault.js';
 import { compactHashLedger, packHashCreditBytes } from './hash_owed.js';
 
@@ -180,11 +180,15 @@ export function sealedExplorerRows(block) {
         else if (sealedV > 0 && verifySealedNote(o, sealedV)) nanos = sealedV;
         else nanos = openedCoinbaseNanos(o, potNanos);
       }
+      let recovered = '';
+      if (!hit.address && !o.address && toDest20) {
+        try { recovered = encodeDest(toDest20); } catch { recovered = ''; }
+      }
       rows.push({
         id: `${hid}-${o.kind || 'cb'}-${i}`,
         kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
-        to: hit.address || o.address || '',
+        to: hit.address || o.address || recovered,
         nanos,
         height,
         confirmed: true,

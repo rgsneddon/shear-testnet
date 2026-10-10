@@ -660,9 +660,26 @@ function assignPotPays(rows, pays) {
  * not match. Two notes may share a noteCommit: the work slice and the fee.
  */
 function matchUnfoldedPot(potVouts, leaves, wantPot, mintedPot) {
+  const fees = legalSubsidyFees(wantPot);
+  const candidates = new Set(fees);
+  for (const fee of fees) {
+    const pays = potPaysFromLeaves(leaves, null, fee, mintedPot, 0);
+    for (const pay of pays) candidates.add(pay.nanos);
+  }
   const rows = [];
   for (const o of potVouts) {
-    const v = openedCoinbaseNanos(o);
+    // Published valueProof.v is a hint. A missing or lying v still opens
+    // when the note verifies against a legal subsidy pay.
+    let v = openedCoinbaseNanos(o);
+    if (!Number.isSafeInteger(v) || v <= 0 || !candidates.has(v)) {
+      v = null;
+      for (const n of candidates) {
+        if (n > 0 && verifySealedNote(o, n)) {
+          v = n;
+          break;
+        }
+      }
+    }
     if (!Number.isSafeInteger(v) || v <= 0) return null;
     rows.push({ o, v, nc: ncHex(o.noteCommit) });
   }

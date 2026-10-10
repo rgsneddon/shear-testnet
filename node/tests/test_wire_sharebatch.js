@@ -86,7 +86,14 @@ describe('shareBatch on disk and p2p wire', () => {
     assert.ok(share, 'need floor-8 lag-1 share');
     const second = mineAppend(a, {
       miner: hasher,
-      shareBatch: [{ dest: hasher, dest20: share.dest20, nonce: share.nonce, lz: share.lz }],
+      shareBatch: [{
+        dest: hasher,
+        dest20: share.dest20,
+        nonce: share.nonce,
+        lz: share.lz,
+        shareBits: share.shareBits || share.lz,
+        proofSlot: 0,
+      }],
       poolDest: pool,
       now: t0 + 90_000,
     });
