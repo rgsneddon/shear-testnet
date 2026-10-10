@@ -2,10 +2,13 @@
  * Hash-bonus owed ledger. One rule for every producer.
  *
  * A block may mint at most MAX_HASH_UNITS_PER_BLOCK times the live unit.
- * Parent owed rows are paid first (oldest height, then noteCommit bytes).
- * This block's new credits then share whatever budget remains, pro-rata,
- * the same walk as retainedUnitsByCommit. Anything still unpaid stays on
- * that noteCommit. After every row at or above the dust floor is handled,
+ * HASH_OWED_DRAIN splits that budget. Parent rows at or above the dust
+ * floor take HASH_OWED_DRAIN_NUM/HASH_OWED_DRAIN_DEN, oldest height then
+ * noteCommit. Fresh credits take the rest, pro-rata, the same walk as
+ * retainedUnitsByCommit. An unused parent slice spills to fresh, and an
+ * unused fresh slice spills back to unpaid parent rows. Anything still
+ * unpaid stays on that noteCommit. After every row at or above the dust
+ * floor is handled,
  * spare budget pays parent rows still below the floor, oldest first, even
  * for one nano (HASH_OWED_SUBDUST_V1). A fresh credit below the floor is
  * not spent from that spare in the same settle.
@@ -29,6 +32,8 @@ import { createHash } from 'node:crypto';
 import {
   HASH_BONUS_NANOS,
   HASH_OWED_MAX_ENTRIES,
+  HASH_OWED_DRAIN_DEN,
+  HASH_OWED_DRAIN_NUM,
   HASH_OWED_SCALE_K,
   HASH_OWED_SCALE_WINDOW,
   MAX_HASH_UNITS_PER_BLOCK,
@@ -701,6 +706,31 @@ function addPay(paid, row, nanos) {
 }
 
 /**
+ * Pay `rows` oldest-first up to `budget`. A peel that would leave either
+ * side below `floor` stays on the row. `left` is the unspent budget.
+ */
+function takeFifo(rows, budget, floor) {
+  let left = budget > 0n ? budget : 0n;
+  const paid = [];
+  const unpaid = [];
+  for (const row of rows) {
+    if (left >= row.nanos) {
+      paid.push({ row, nanos: row.nanos });
+      left -= row.nanos;
+      continue;
+    }
+    if (left >= floor && row.nanos - left >= floor) {
+      paid.push({ row, nanos: left });
+      unpaid.push(copyRow(row, row.nanos - left, row.sinceHeight));
+      left = 0n;
+      continue;
+    }
+    unpaid.push(copyRow(row, row.nanos, row.sinceHeight));
+  }
+  return { paid, unpaid, left };
+}
+
+/**
  * Settle one block. `fresh` is full credit, not the retained share.
  * Optional dust, budget, and maxEntries let tests sweep any size.
  * Consensus verify calls this with the fingerprinted defaults.
@@ -793,23 +823,13 @@ export function settleHashOwed({
     + freshRows.reduce((n, row) => n + row.nanos, 0n);
 
   const paid = new Map();
-  let left = limit;
   const still = [];
-  for (const row of parent) {
-    if (left >= row.nanos) {
-      addPay(paid, row, row.nanos);
-      left -= row.nanos;
-      continue;
-    }
-    if (left >= floor && row.nanos - left >= floor) {
-      addPay(paid, row, left);
-      still.push(copyRow(row, row.nanos - left, row.sinceHeight));
-      left = 0n;
-      continue;
-    }
-    // A remainder below the floor stays on this note. Do not peel it into a pot.
-    still.push(copyRow(row, row.nanos, row.sinceHeight));
-  }
+  // Parent slice is the floor fraction. The odd nano stays on the fresh side.
+  const parentSlice = (limit * BigInt(HASH_OWED_DRAIN_NUM)) / BigInt(HASH_OWED_DRAIN_DEN);
+  const freshSlice = limit - parentSlice;
+  const first = takeFifo(parent, parentSlice, floor);
+  for (const part of first.paid) addPay(paid, part.row, part.nanos);
+  const freshBudget = freshSlice + first.left;
 
   const freshBy = new Map();
   for (const row of freshRows) {
@@ -822,7 +842,7 @@ export function settleHashOwed({
     }
   }
   const freshList = [...freshBy.values()];
-  const share = proRataNanos(freshList, left);
+  const share = proRataNanos(freshList, freshBudget);
   let spentFresh = 0n;
   for (const row of freshList) {
     const hex = row.noteCommit.toString('hex');
@@ -837,7 +857,11 @@ export function settleHashOwed({
       still.push(copyRow(row, row.nanos, blockHeight));
     }
   }
-  left -= spentFresh;
+  // Unused fresh budget spills back onto parent rows the first slice did not finish.
+  const spilled = takeFifo(first.unpaid, freshBudget - spentFresh, floor);
+  for (const part of spilled.paid) addPay(paid, part.row, part.nanos);
+  for (const row of spilled.unpaid) still.push(row);
+  let left = spilled.left;
 
   // HASH_OWED_SUBDUST_V1. Spare after the floor walk pays parent rows that
   // are still below the floor. A partial below the floor is a real pay.

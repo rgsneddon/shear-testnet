@@ -435,31 +435,73 @@ describe('v12 hash-bonus owed ledger', () => {
     }
   });
 
-  it('pays older owed before new credit, independent of input order', () => {
+  it('splits a binding backlog on the drain floor and spills an unused half', () => {
     const dust = 1n;
     const older = destRow(1, 50n, 1);
     const newer = destRow(2, 80n, 4);
     const fresh = destRow(3, 40n, 9);
-    const orders = [
-      [older, newer],
-      [newer, older],
-    ];
-    for (const owedIn of orders) {
-      const settled = settleHashOwed({
-        owedIn,
-        fresh: [fresh],
-        budget: 50n,
-        dust,
-        maxEntries: 8,
-        height: 9,
-      });
-      assert.equal(settled.ok, true, settled.reason);
-      assert.equal(settled.pay.length, 1);
-      assert.equal(settled.pay[0].noteCommit.equals(older.noteCommit), true);
-      assert.equal(settled.pay[0].nanos, 50n);
-      assert.equal(settled.owed.some((row) => row.noteCommit.equals(fresh.noteCommit) && row.nanos === 40n), true);
-      conserved(settled, 50n + 80n + 40n);
+    const parentDebt = 50n + 80n;
+    const freshDebt = 40n;
+    const budgets = [1n, 2n, 50n, 51n, 100n, 130n, 170n, 1000n, (1n << 53n) + 100n];
+    const orders = [[older, newer], [newer, older]];
+    for (const budget of budgets) {
+      const parentSlice = budget / 2n;
+      const freshSlice = budget - parentSlice;
+      let first = null;
+      for (const owedIn of orders) {
+        const settled = settleHashOwed({
+          owedIn,
+          fresh: [fresh],
+          budget,
+          dust,
+          maxEntries: 8,
+          height: 9,
+        });
+        assert.equal(settled.ok, true, settled.reason);
+        conserved(settled, parentDebt + freshDebt);
+        const parentPaid = settled.pay
+          .filter((row) => !row.noteCommit.equals(fresh.noteCommit))
+          .reduce((n, row) => n + row.nanos, 0n);
+        const freshPaid = settled.pay
+          .filter((row) => row.noteCommit.equals(fresh.noteCommit))
+          .reduce((n, row) => n + row.nanos, 0n);
+        assert.ok(parentPaid + freshPaid <= budget);
+        assert.equal(parentPaid + freshPaid, settled.minted);
+        if (parentDebt >= parentSlice && freshDebt >= freshSlice) {
+          assert.equal(parentPaid, parentSlice);
+          assert.equal(freshPaid, freshSlice);
+          assert.ok(freshPaid > 0n || freshSlice === 0n);
+        }
+        if (parentDebt <= parentSlice) {
+          assert.equal(parentPaid, parentDebt);
+          const room = freshSlice + (parentSlice - parentDebt);
+          assert.equal(freshPaid, freshDebt < room ? freshDebt : room);
+        }
+        if (freshDebt < freshSlice && parentDebt > parentSlice) {
+          const spill = freshSlice - freshDebt;
+          const room = parentDebt - parentSlice;
+          assert.equal(parentPaid, parentSlice + (spill < room ? spill : room));
+          assert.equal(freshPaid, freshDebt);
+        }
+        const olderPay = settled.pay.find((row) => row.noteCommit.equals(older.noteCommit));
+        const newerPay = settled.pay.find((row) => row.noteCommit.equals(newer.noteCommit));
+        const olderGot = olderPay ? olderPay.nanos : 0n;
+        const newerGot = newerPay ? newerPay.nanos : 0n;
+        if (olderGot < 50n) assert.equal(newerGot, 0n);
+        if (first) {
+          assert.equal(parentPaid, first.parentPaid);
+          assert.equal(freshPaid, first.freshPaid);
+        } else first = { parentPaid, freshPaid };
+      }
     }
+    const starved = settleHashOwed({
+      owedIn: [older],
+      fresh: [],
+      budget: 50n,
+      dust,
+      height: 9,
+    });
+    assert.equal(starved.pay[0].nanos, 50n);
   });
 
   it('keeps a shortfall above 2^53 exact', () => {
@@ -691,16 +733,21 @@ describe('v12 hash-bonus owed ledger', () => {
     const pays3 = potSharesFromBatch([third], feeTo, subsidy, 0);
     const poolB = sealChild([third], c, parent2, firstOrder.verdict.hash, firstOrder.block.header, 3, when3, pays3, [genesisBlock, parent2]);
     assert.equal(poolB.verdict.ok, true, poolB.verdict.reason);
+    const floorUnits = BigInt(unitsForShare(SHARE_FLOOR_BITS));
+    const byCommit = [...owedA].sort((a, b) => Buffer.compare(a.noteCommit, b.noteCommit));
     const owed3 = hashOwedFromTx(poolB.block.txs[0]);
     assert.equal(owed3.length, 1);
-    assert.equal(owed3[0].nanos, BigInt(unitsForShare(SHARE_FLOOR_BITS)));
-    assert.equal(owed3[0].noteCommit.equals(noteCommitOfShare(third)), true);
+    assert.equal(owed3[0].nanos, floorUnits);
+    assert.equal(owed3[0].noteCommit.equals(byCommit[1].noteCommit), true);
     const paidDown = (poolB.block.txs[0].vout || []).filter((o) => o.kind === 'hash');
-    assert.equal(paidDown.length, 2);
-    for (const note of paidDown) {
-      assert.equal(BigInt(note.valueProof.v), BigInt(MAX_HASH_UNITS_PER_BLOCK) / 2n);
-      assert.equal(noteCommitOfShare(third).equals(Buffer.from(note.noteCommit)), false);
-    }
+    const freshPay = paidDown.find((o) => noteCommitOfShare(third).equals(Buffer.from(o.noteCommit)));
+    assert.ok(freshPay);
+    assert.equal(BigInt(freshPay.valueProof.v), floorUnits);
+    const parentPays = paidDown.filter((o) => !noteCommitOfShare(third).equals(Buffer.from(o.noteCommit)));
+    assert.equal(parentPays.length, 2);
+    const parentAmounts = parentPays.map((o) => BigInt(o.valueProof.v)).sort((a, b) => (a < b ? -1 : 1));
+    assert.equal(parentAmounts[0], (BigInt(MAX_HASH_UNITS_PER_BLOCK) / 2n) - floorUnits);
+    assert.equal(parentAmounts[1], BigInt(MAX_HASH_UNITS_PER_BLOCK) / 2n);
 
     const parent3 = { ...poolB.block, hash: poolB.verdict.hash };
     const when4 = when3 + TARGET_BLOCK_INTERVAL_MS;
@@ -711,8 +758,9 @@ describe('v12 hash-bonus owed ledger', () => {
     assert.equal(hashOwedFromTx(soloBlock.block.txs[0]).length, 0);
     const soloHash = (soloBlock.block.txs[0].vout || []).filter((o) => o.kind === 'hash');
     assert.equal(soloHash.length, 1);
-    assert.equal(BigInt(soloHash[0].valueProof.v), BigInt(unitsForShare(SHARE_FLOOR_BITS)));
-    assert.equal(Buffer.from(soloHash[0].noteCommit).equals(noteCommitOfShare(third)), true);
+    assert.equal(BigInt(soloHash[0].valueProof.v), floorUnits);
+    assert.equal(Buffer.from(soloHash[0].noteCommit).equals(byCommit[1].noteCommit), true);
+    assert.equal(Buffer.from(soloHash[0].noteCommit).equals(noteCommitOfShare(third)), false);
 
     const chain = [genesisBlock, parent2, parent3, { ...soloBlock.block, hash: soloBlock.verdict.hash }];
     for (let n = 1; n <= chain.length; n += 1) {

@@ -146,6 +146,13 @@ export const HASH_OWED_MAX_ENTRIES = MAX_SHARES_PER_BLOCK;
 export const HASH_OWED_SCALE_WINDOW = ASERT_TAU_BLOCKS;
 export const HASH_OWED_SCALE_K = 2;
 /**
+ * HASH_OWED_BUDGET_V1. Parent owed rows take this fraction of the block
+ * budget, oldest first. Fresh credits take the rest, pro-rata. An unused
+ * side spills to the other side. The odd nano stays with the fresh side.
+ */
+export const HASH_OWED_DRAIN_NUM = 1;
+export const HASH_OWED_DRAIN_DEN = 2;
+/**
  * Shortfalls smaller than one floor share fold into the public dust pot.
  * The floor share is 2^SHARE_FLOOR_BITS units at the live hash-bonus unit.
  */
@@ -340,6 +347,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'HASH_OWED_OVERFLOW=forbidden',
     `HASH_OWED_INLINE=${HASH_OWED_MAX_ENTRIES}`,
     'HASH_OWED_BUDGET_SCALE=v1',
+    `HASH_OWED_DRAIN=${HASH_OWED_DRAIN_NUM}/${HASH_OWED_DRAIN_DEN}`,
     `HASH_OWED_SCALE_WINDOW=${HASH_OWED_SCALE_WINDOW}`,
     `HASH_OWED_SCALE_K=${HASH_OWED_SCALE_K}`,
     'HASH_OWED_WIRE=root-v1',
