@@ -387,7 +387,12 @@ function accountBlock(prev, block, opts = {}) {
   const state = copySupply(prev);
   const ts = headerMs(block);
   if (!(ts > 0)) return { reason: 'header', state };
-  const genesisMs = Number(state.genesisMs) > 0 ? Number(state.genesisMs) : (Number(opts.genesisMs) || ts);
+  const blockHeight = Number(opts.height) || Number(block?.height) || 0;
+  // Height 1 is the genesis header. assessHeader anchors the pot on that
+  // timestamp, so supply must too. A caller genesisMs must not move it.
+  const genesisMs = blockHeight === 1
+    ? ts
+    : (Number(state.genesisMs) > 0 ? Number(state.genesisMs) : (Number(opts.genesisMs) || ts));
   state.genesisMs = genesisMs;
   const permitted = potSubsidyAt({ nowMs: ts, genesisMs, magic: opts.magic || MAGIC_TESTNET });
   if (!Number.isSafeInteger(permitted) || permitted < 0) return { reason: 'pot_sched', state };
@@ -416,7 +421,6 @@ function accountBlock(prev, block, opts = {}) {
     return { reason: 'hash_bonus', state };
   }
   const unit = hashBonusUnitNanos(opts.unit == null ? state.liveUnit : opts.unit);
-  const blockHeight = Number(opts.height) || Number(block?.height) || 0;
   const tipHeight = Number(opts.tipHeight) > 0 ? Number(opts.tipHeight) : blockHeight;
   const gotFresh = freshForBlock(block, unit, tipHeight);
   if (!gotFresh.ok) {

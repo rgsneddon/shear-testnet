@@ -88,6 +88,28 @@ describe('v12 Flow inputs are bound to Admit proofs', () => {
         assert.equal(parked.ok, false);
         assert.equal(parked.reason, 'admit_membership');
       }
+      const parkedBound = admitMempool(emptyMempool(), matched, { baseFee: 1 });
+      assert.equal(parkedBound.ok, false);
+      assert.equal(parkedBound.reason, 'range_proof');
+      const noMaterial = {
+        kind: 'send',
+        nanos,
+        fee: 0,
+        vin: [{ address: 'ssa1not-a-commit' }],
+        vout: [{ kind: 'send', nanos }],
+      };
+      const parkedBare = admitMempool(emptyMempool(), noMaterial, { baseFee: 1 });
+      assert.equal(parkedBare.ok, false);
+      assert.equal(parkedBare.reason, 'range_proof');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-flow-bare-'));
+      try {
+        const store = createStore(dir);
+        const queued = store.queueTx(noMaterial);
+        assert.equal(queued.ok, false);
+        assert.equal(queued.reason, 'admit_membership');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 

@@ -66,6 +66,24 @@ function rootHexOf(live) {
   }
 }
 
+/**
+ * A Flow send that posts a commit, a coinbase vin, an Admit proof, or a spend
+ * tag has asked to be bound. An address-only vin with none of those is not a
+ * membership attempt: the output still has to pass the range check.
+ */
+function flowPresentsMembership(tx) {
+  const vins = Array.isArray(tx?.vin) ? tx.vin : [];
+  for (let i = 0; i < vins.length; i += 1) {
+    const v = vins[i];
+    if (!v) continue;
+    if (v.coinbase || v.commit) return true;
+  }
+  if (tx?.admit_proof) return true;
+  if (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length > 0) return true;
+  if (tx?.spendTag != null && tx.spendTag !== '') return true;
+  return false;
+}
+
 export function admitMempool(pool, tx, opts = {}) {
   const { baseFee } = opts;
   const book = pool || emptyMempool();
@@ -95,6 +113,13 @@ export function admitMempool(pool, tx, opts = {}) {
   for (const v of tx.vin || []) {
     const link = sealedVinLinkField(v);
     if (link) return { ok: false, reason: 'vin_link' };
+  }
+  // Bind a presented Flow membership before the range check. An unbound
+  // commit or proof is admit_membership. An address-only vin with no proof
+  // still fails range_proof. A bound output with no range proof stays range_proof.
+  if (flowNeedsDummy(tx) && flowPresentsMembership(tx)) {
+    const earlyBound = flowInputsBound(tx);
+    if (!earlyBound.ok) return earlyBound;
   }
   if (moneyNeedsRange(tx)) {
     for (const o of (tx.vout || [])) {

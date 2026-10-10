@@ -95,14 +95,16 @@ function assertPerNote(settled, rows) {
   for (const [hex, nanos] of want) assert.equal(got.get(hex), nanos, hex);
 }
 
-function shareAt(dest, low, bits) {
-  return {
+function shareAt(dest, low, bits, header) {
+  const row = {
     dest,
     nonce: nonceWithShareTarget(low, bits),
     lz: bits,
     shareBits: bits,
     creditedShareBits: bits,
   };
+  if (header) row.verifiedHeader = header;
+  return row;
 }
 
 describe('v12 hash-bonus owed ledger', () => {
@@ -586,7 +588,7 @@ describe('v12 hash-bonus owed ledger', () => {
     assert.equal(hashOwedFromTx(genesisBlock.txs[0]).length, 0);
 
     const bits = shareCreditMaxBits();
-    const batch = [shareAt(a, 4n, bits), shareAt(b, 5n, bits)];
+    const batch = [shareAt(a, 4n, bits, genesis.header), shareAt(b, 5n, bits, genesis.header)];
     clearLiveSharePow();
     for (const row of batch) {
       assert.equal(rememberLiveSharePow(genesis.header, row.nonce, {
@@ -684,7 +686,7 @@ describe('v12 hash-bonus owed ledger', () => {
     assert.equal(hashOverflowFromTx(firstOrder.block.txs[0]), 0n);
 
     const parent2 = { ...firstOrder.block, hash: firstOrder.verdict.hash };
-    const third = shareAt(c, 9n, SHARE_FLOOR_BITS);
+    const third = shareAt(c, 9n, SHARE_FLOOR_BITS, firstOrder.block.header);
     const when3 = childNow + TARGET_BLOCK_INTERVAL_MS;
     const pays3 = potSharesFromBatch([third], feeTo, subsidy, 0);
     const poolB = sealChild([third], c, parent2, firstOrder.verdict.hash, firstOrder.block.header, 3, when3, pays3, [genesisBlock, parent2]);

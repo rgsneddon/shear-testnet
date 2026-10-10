@@ -103,7 +103,23 @@ function asView(parent) {
   };
 }
 
-function check(block, prev, now) {
+function linkedBlock(sealed) {
+  if (!sealed?.res?.hash) return null;
+  return {
+    ...sealed.block,
+    hash: sealed.res.hash,
+    height: sealed.block.height,
+  };
+}
+
+function supplyPrefix(prev) {
+  if (!prev) return [];
+  const self = linkedBlock(prev);
+  const prior = Array.isArray(prev.ancestors) ? prev.ancestors : [];
+  return self ? [...prior, self] : prior.slice();
+}
+
+function check(block, prev, now, supplyParents) {
   seed(prev?.header, block.shareBatch || []);
   return verifyBlock(block, prev, {
     trustedPowHash: easyPowHash(),
@@ -113,6 +129,7 @@ function check(block, prev, now) {
     mtpTimestamps: [now - 1_000],
     poolDest: feeTo,
     magic: MAGIC_TESTNET,
+    ...(Array.isArray(supplyParents) && supplyParents.length ? { supplyParents } : {}),
   });
 }
 
@@ -131,7 +148,12 @@ function seal(tpl, prev, now) {
     weight: tpl.weight,
     height: tpl.height,
   };
-  return { block, res: check(block, asView(prev), now) };
+  const supplyParents = supplyPrefix(prev);
+  return {
+    block,
+    res: check(block, asView(prev), now, supplyParents),
+    ancestors: supplyParents,
+  };
 }
 
 function bitsAfter(parent, childNow, childHeight) {
@@ -219,9 +241,9 @@ function withEnv(on, fn) {
   }
 }
 
-function sameVerdict(block, prev, now) {
-  const off = withEnv(false, () => check(block, prev, now));
-  const on = withEnv(true, () => check(block, prev, now));
+function sameVerdict(block, prev, now, supplyParents) {
+  const off = withEnv(false, () => check(block, prev, now, supplyParents));
+  const on = withEnv(true, () => check(block, prev, now, supplyParents));
   assert.equal(on.ok, off.ok);
   assert.equal(on.reason, off.reason);
   return off;
@@ -418,15 +440,16 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       const leaves = aLeavesFromShares(batch);
       const bonus = leaves.reduce((a, l) => a + l.count * HASH_BONUS_NANOS, 0);
       const moved = retargetHash(tpl, stranger, bonus);
-      const movedRes = sameVerdict(moved, prev, now);
+      const parents = supplyPrefix(parent);
+      const movedRes = sameVerdict(moved, prev, now, parents);
       assert.equal(movedRes.ok, false, `${label} hash`);
       assert.equal(movedRes.reason, 'hash_owed', label);
       const both = retargetHash(whole.block, stranger, bonus);
-      const bothRes = sameVerdict(both, prev, now);
+      const bothRes = sameVerdict(both, prev, now, parents);
       assert.equal(bothRes.ok, false, `${label} both`);
       assert.equal(bothRes.reason, 'hash_owed', `${label} both ${bothRes.reason}`);
 
-      painted.push({ block: honest.block, prev, now, attack: whole.block });
+      painted.push({ block: honest.block, prev, now, attack: whole.block, supplyParents: parents });
       return honest;
     }
 
@@ -452,9 +475,9 @@ describe('v12 consensus rejects a custodial coinbase', () => {
 
     const sample = painted[1];
     for (const mode of ['strip', 'one', 'huge']) {
-      const honestV = sameVerdict(paintV(sample.block, mode), sample.prev, sample.now);
+      const honestV = sameVerdict(paintV(sample.block, mode), sample.prev, sample.now, sample.supplyParents);
       assert.equal(honestV.ok, true, `honest ${mode} ${honestV.reason}`);
-      const attackV = sameVerdict(paintV(sample.attack, mode), sample.prev, sample.now);
+      const attackV = sameVerdict(paintV(sample.attack, mode), sample.prev, sample.now, sample.supplyParents);
       assert.equal(attackV.ok, false, `attack ${mode}`);
       assert.equal(attackV.reason, 'pot_prop', mode);
     }

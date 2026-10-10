@@ -651,24 +651,79 @@ function assignPotPays(rows, pays) {
  * miner, or share address is required. A fee added into a hasher note does
  * not match. Two notes may share a noteCommit: the work slice and the fee.
  */
+function hintOpen(o) {
+  const claimed = Math.floor(Number(o?.valueProof?.v));
+  if (!Number.isSafeInteger(claimed) || claimed <= 0) return null;
+  return verifySealedNote(o, claimed) ? claimed : null;
+}
+
+function opensAt(o, nanos) {
+  return Number.isSafeInteger(nanos) && nanos > 0 && verifySealedNote(o, nanos);
+}
+
+/** Match pays by the commitment. A published v is a hint. A missing or wrong v still opens. */
+function assignOpened(rows, pays) {
+  if (rows.length !== pays.length) return null;
+  const used = new Set();
+  const opened = [];
+  for (const pay of pays) {
+    const want = ncHex(pay.noteCommit);
+    const nanos = pay.nanos;
+    let hit = -1;
+    for (let i = 0; i < rows.length; i += 1) {
+      if (used.has(i)) continue;
+      if (rows[i].nc !== want) continue;
+      if (rows[i].v != null) {
+        if (rows[i].v !== nanos) continue;
+      } else if (!opensAt(rows[i].o, nanos)) continue;
+      hit = i;
+      break;
+    }
+    if (hit < 0) return null;
+    used.add(hit);
+    opened.push({ o: rows[hit].o, v: nanos, nc: rows[hit].nc });
+  }
+  return used.size === rows.length ? opened : null;
+}
+
 function matchUnfoldedPot(potVouts, leaves, wantPot, mintedPot) {
   const rows = [];
   for (const o of potVouts) {
-    const v = openedCoinbaseNanos(o);
-    if (!Number.isSafeInteger(v) || v <= 0) return null;
-    rows.push({ o, v, nc: ncHex(o.noteCommit) });
+    rows.push({ o, v: hintOpen(o), nc: ncHex(o.noteCommit) });
+  }
+  // Every output already opens at its published v. Do not search other amounts.
+  if (rows.every((row) => row.v != null)) {
+    for (const fee of legalSubsidyFees(wantPot)) {
+      const pays = potPaysFromLeaves(leaves, null, fee, mintedPot, 0);
+      if (fee === 0) {
+        if (assignPotPays(rows, pays)) return rows;
+        continue;
+      }
+      for (let i = 0; i < rows.length; i += 1) {
+        if (rows[i].v !== fee) continue;
+        const rest = rows.filter((_, j) => j !== i);
+        if (!assignPotPays(rest, pays)) continue;
+        return rows;
+      }
+    }
+    return null;
   }
   for (const fee of legalSubsidyFees(wantPot)) {
     const pays = potPaysFromLeaves(leaves, null, fee, mintedPot, 0);
     if (fee === 0) {
-      if (assignPotPays(rows, pays)) return rows;
+      const got = assignOpened(rows, pays);
+      if (got) return got;
       continue;
     }
+    if (rows.length !== pays.length + 1) continue;
     for (let i = 0; i < rows.length; i += 1) {
-      if (rows[i].v !== fee) continue;
+      const row = rows[i];
+      if (row.v != null && row.v !== fee) continue;
+      if (row.v == null && !opensAt(row.o, fee)) continue;
       const rest = rows.filter((_, j) => j !== i);
-      if (!assignPotPays(rest, pays)) continue;
-      return rows;
+      const got = assignOpened(rest, pays);
+      if (!got) continue;
+      return got.concat([{ o: row.o, v: fee, nc: row.nc }]);
     }
   }
   return null;
