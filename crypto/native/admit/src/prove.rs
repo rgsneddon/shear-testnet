@@ -2,12 +2,14 @@
 //! Membership is D-ary CDS select-and-rerandomize. No d0 / nonce / XOR path
 //! / dest_leaf of the spent note on the wire. C-tree leaves are ristretto C;
 //! C̃ is a 1-of-D rerandomization of a tree C. Dest admitPub P is 1-of-D as
-//! p_com = P_j + w U at the same hidden slot (32-anonymity sibling bucket).
+//! p_com = P_j + w U at the same hidden slot.
+//! Version 2 still carries the 32-note sibling bucket. Version 3 does not:
+//! the leaf opens the parents, and the remainder is blinded.
 
 use crate::leaf::{jroot_hash, sha512_64};
 use crate::select::{
-    leaf_prove, leaf_qd, leaf_verify, paired_prove, paired_qc_opens, paired_qd_opens, paired_verify,
-    rs_rand, vs_rand, LEAF_PAIRED_LEN, PAIRED_LEN,
+    leaf_prove, leaf_prove_v3, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
+    paired_qd_opens, paired_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN,
 };
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
@@ -23,7 +25,7 @@ use curve25519_dalek::traits::IsIdentity;
 use rand_core::{OsRng, RngCore};
 
 pub const MAX_PROOF: usize = 32768;
-pub const MAX_PROOF_V3: usize = 39874;
+pub const MAX_PROOF_V3: usize = 32768;
 pub const VERSION: u8 = 2;
 pub const VERSION_V3: u8 = 3;
 const HDR: usize = 1 + 32 * 8 + 1; // version, tag, ct, dest_root, c_root, p_com, r_x, z_x, z_w, n_layers
@@ -192,28 +194,46 @@ pub fn admit_prove_in(
     if p_sib[slots[0]] != *p {
         return None;
     }
-    for x in &p_sib {
-        mem.extend_from_slice(x);
-    }
-    for x in &cpath[0] {
-        mem.extend_from_slice(x);
-    }
     let u = note_u();
     let w = chal(&[b"w", x, p]);
     let p_com = p_pt + u * w;
     let td_leaf = vs_rand();
-    let leaf = leaf_prove(
-        &dpath[0],
-        &cpath[0],
-        &p_sib,
-        slots[0],
-        &td_leaf,
-        &ts,
-        &w,
-        &ct_pt,
-        &p_com,
-        ctx,
-    )?;
+    let leaf = if v3 {
+        if dpath[0][slots[0]] != dest_leaf_fp(p) {
+            return None;
+        }
+        leaf_prove_v3(
+            &dpath[0],
+            &cpath[0],
+            &p_sib,
+            slots[0],
+            &td_leaf,
+            &ts,
+            &w,
+            &ct_pt,
+            &p_com,
+            ctx,
+        )?
+    } else {
+        for x in &p_sib {
+            mem.extend_from_slice(x);
+        }
+        for x in &cpath[0] {
+            mem.extend_from_slice(x);
+        }
+        leaf_prove(
+            &dpath[0],
+            &cpath[0],
+            &p_sib,
+            slots[0],
+            &td_leaf,
+            &ts,
+            &w,
+            &ct_pt,
+            &p_com,
+            ctx,
+        )?
+    };
     mem.extend_from_slice(&leaf);
     let nonce_rand = if v3 { os_rand32()? } else { [0u8; 32] };
     let k = if v3 {
@@ -282,7 +302,7 @@ pub fn admit_prove_in(
 }
 
 pub fn spend_tag_of(proof: &[u8]) -> Option<[u8; 32]> {
-    if proof.len() < 33 || proof[0] != VERSION {
+    if proof.len() < 33 || (proof[0] != VERSION && proof[0] != VERSION_V3) {
         return None;
     }
     let mut t = [0u8; 32];
@@ -498,6 +518,40 @@ pub fn admit_verify_in(
         dest_parent = pd;
         c_parent = pc;
     }
+    let ct = match decompress(c_tilde) {
+        Some(p) => p,
+        None => return false,
+    };
+    let p_com = match decompress(&p_com_b) {
+        Some(p) => p,
+        None => return false,
+    };
+    let leaf_len = if v3 { LEAF_V3_LEN } else { LEAF_PAIRED_LEN };
+    if v3 {
+        if proof.len() != off + leaf_len {
+            return false;
+        }
+        let leaf = &proof[off..off + leaf_len];
+        if !leaf_verify_v3(&dest_parent, &c_parent, &ct, &p_com, leaf, ctx) {
+            return false;
+        }
+        let dest_q = match leaf_qd(leaf) {
+            Some(x) => x,
+            None => return false,
+        };
+        return v3_dleq(
+            &dest_q,
+            &p_com,
+            &p_com_b,
+            &r_x_b,
+            &tag,
+            c_tilde,
+            jr,
+            ctx,
+            z_x,
+            z_w,
+        );
+    }
     let (p_sib, off_p) = match parse_c_siblings(proof, off) {
         Some(v) => v,
         None => return false,
@@ -579,6 +633,38 @@ pub fn admit_verify_in(
         return false;
     }
     true
+}
+
+fn v3_dleq(
+    dest_q: &[u8; 32],
+    p_com: &RistrettoPoint,
+    p_com_b: &[u8; 32],
+    r_x_b: &[u8; 32],
+    tag: &[u8; 32],
+    c_tilde: &[u8; 32],
+    jr: &[u8; 32],
+    ctx: &[u8],
+    z_x: Scalar,
+    z_w: Scalar,
+) -> bool {
+    let u = note_u();
+    let r_x = match decompress(r_x_b) {
+        Some(p) => p,
+        None => return false,
+    };
+    let bind = forest_bind_v3(ctx, &[(*tag, *c_tilde)]);
+    let e2 = chal(&[
+        ctx,
+        b"dleq",
+        r_x_b,
+        p_com_b,
+        tag,
+        c_tilde,
+        jr,
+        dest_q,
+        &bind,
+    ]);
+    G * z_x + u * z_w == r_x + *p_com * e2
 }
 
 pub fn admit_verify_batch(

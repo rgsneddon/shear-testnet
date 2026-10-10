@@ -938,4 +938,106 @@ mod tests {
         assert!(!prove::forest_verify(&loose, &jr, &[], &[], 0));
         assert!(admit_verify(&a.1, &jr, &a.0, &proof_spend_tag(&a.1).unwrap(), &[], &[], 0));
     }
+
+    #[test]
+    fn admit_honest_v3_hides_the_note_and_rejects_a_different_set() {
+        use group::{Group, GroupEncoding};
+        let n = 32usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let idx = 4usize;
+        let t = rand_scalar();
+        let mut ctx = [0u8; 64];
+        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
+        let (ct, proof) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("v3");
+        assert_eq!(proof[0], 3);
+        assert!(proof.len() <= MAX_PROOF_V3);
+        assert_eq!(proof.get(257).copied(), Some(1));
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let tag = proof_spend_tag(&proof).expect("tag");
+        assert!(prove::admit_verify_in(
+            &proof, &jr, &ct, &tag, &[], &[], 0, &[0u8; 32], &ctx
+        ));
+        assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+        let dest_l = dest_leaf_fp(&ps[idx]);
+        assert!(!proof.windows(32).any(|w| w == ps[idx].as_slice()));
+        assert!(!proof.windows(32).any(|w| w == cs[idx].as_slice()));
+        assert!(!proof.windows(32).any(|w| w == dest_l.as_slice()));
+        let (_, _, _, d2, c2) = note_set(n);
+        let jr2 = jroot(&d2, &c2, n);
+        assert_ne!(jr, jr2);
+        assert!(!admit_verify_v3(&proof, &jr2, &ct, &tag, &ctx));
+        let mut ct_bad = ct;
+        let mut proof_bad = proof.clone();
+        ct_bad[0] ^= 0x5a;
+        proof_bad[33] ^= 0x5a;
+        assert!(!admit_verify_v3(&proof_bad, &jr, &ct_bad, &tag, &ctx));
+        let ax = rand_scalar();
+        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
+        assert!(admit_prove_v3(
+            &ax.to_bytes(),
+            &ap,
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .is_none());
+        let (ct_x, proof_x) = admit_prove_v3(
+            &ax.to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("attacker x still builds a blob");
+        let tag_x = proof_spend_tag(&proof_x).unwrap();
+        assert!(!admit_verify_v3(&proof_x, &jr, &ct_x, &tag_x, &ctx));
+        let other = 19usize;
+        let t2 = rand_scalar();
+        let (ct_b, proof_b) = admit_prove_v3(
+            &xs[other].to_bytes(),
+            &ps[other],
+            &cs[other],
+            &t2.to_bytes(),
+            other,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("other");
+        let tag_b = proof_spend_tag(&proof_b).unwrap();
+        assert!(admit_verify_v3(&proof_b, &jr, &ct_b, &tag_b, &ctx));
+        let mut swapped = proof.clone();
+        swapped[258..].copy_from_slice(&proof_b[258..]);
+        assert!(!admit_verify_v3(&swapped, &jr, &ct, &tag, &ctx));
+        let mut wd = pasta_curves::vesta::Point::identity();
+        for k in 0..n {
+            if k == idx {
+                continue;
+            }
+            let leaf = dest_leaf_fp(&ps[k]);
+            wd += crate::tree::vesta_mul_g(k, &crate::tree::vesta_x(&leaf));
+        }
+        let enc = wd.to_bytes();
+        assert_ne!(&proof[258..290], enc.as_ref());
+    }
 }

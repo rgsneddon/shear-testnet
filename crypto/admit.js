@@ -210,7 +210,7 @@ export function admitVerifyV3(proof, fluxset, extra = {}) {
     if (!blob) return false;
     const pr = Buffer.from(asU8(blob));
     if (!pr.length || pr[0] !== 3) return false;
-    if (pr.length > 39874) return false;
+    if (pr.length > 32768) return false;
     const context = extra.ctx;
     if (!context || Buffer.from(asU8(context)).length !== 64) return false;
     let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;
