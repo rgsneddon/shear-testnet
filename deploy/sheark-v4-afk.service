@@ -1,0 +1,19 @@
+# Each host keeps its own /etc/default/sheark-v4-afk worker and payout.
+# shear-pool keeps this unit disabled. Do not start it there.
+[Unit]
+Description=ShearK miner (shear-testnet-v12)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shear-v4/sheark-miner
+EnvironmentFile=/etc/default/sheark-v4-afk
+ExecStart=/opt/shear-v4/sheark-miner/run-afk.sh
+Restart=always
+RestartSec=8
+Nice=10
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

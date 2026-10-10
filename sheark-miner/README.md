@@ -7,7 +7,7 @@ Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache). TLS-awar
 - Banner: `ShearK-Miner 2.9 (ShearHash-v3 light)`
 - The v12 pool refuses a ShearK older than 2.9 and names the required version.
 - Difficulty comes from the pool job. A job with no share width or no block width is not mined.
-- `sheark-v4-afk` is not in this tree. Point that unit at this binary. Keep each host's worker name and payout address.
+- `run-afk.sh`, `sheark-v4-afk.default`, and `deploy/sheark-v4-afk.service` are the v12 defaults. The unit reads `SHEARK_USER` from the host file. Keep each host's worker name and payout address. The pool host keeps the unit disabled.
 - Public pool: `stratum+ssl://pool.shear.digital:443` (443 is the reachable edge; the pool process TLS port 1113 does not receive public SYNs)
 - Localhost solo: `stratum+tcp://127.0.0.1:1111` (cleartext only when you ask for it)
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.
