@@ -40,9 +40,8 @@ if (!nativeLoaded()) {
 
 const op = String(req.op || '');
 if (op === 'prove_range') {
-  const v = Number(req.v);
   const r = unhex(req.r);
-  const proof = proveRange(v, r);
+  const proof = proveRange(req.v, r);
   if (!proof || !proof.length || proof[0] !== 2) {
     process.stdout.write(JSON.stringify({ ok: false, reason: 'range_native_required' }));
     process.exit(3);

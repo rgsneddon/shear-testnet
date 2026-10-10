@@ -112,7 +112,7 @@ Map<String, dynamic> nativeSealNote(int v, {Uint8List? dest20, String kind = 'se
   final r = note['r'];
   if (r is! Uint8List) throw StateError('admit_native_required');
   final tmp = File('${Directory.systemTemp.path}/shear-range-${DateTime.now().microsecondsSinceEpoch}.json');
-  tmp.writeAsStringSync(jsonEncode({ 'op': 'prove_range', 'v': v, 'r': _hex(r) }), flush: true);
+  tmp.writeAsStringSync(jsonEncode({ 'op': 'prove_range', 'v': v.toString(), 'r': _hex(r) }), flush: true);
   if (!Platform.isWindows) {
     try { Process.runSync('chmod', ['600', tmp.path]); } catch (_) {}
   }

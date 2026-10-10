@@ -388,6 +388,32 @@ final BigInt _nanosPerShe = BigInt.from(kUnitsPerShe);
 /// A double past this is not an amount. 2^53 - 1.
 const int _kSafeDoubleNanos = 9007199254740991;
 
+/// Send nanos from a decimal string. Any u64. A longer string stays 0.
+int sendNanosFromWire(String? nanosWire) {
+  if (nanosWire == null || !RegExp(r'^\d+$').hasMatch(nanosWire)) return 0;
+  final big = BigInt.parse(nanosWire);
+  if (big < BigInt.zero || big.bitLength > 64) return 0;
+  return big.toInt();
+}
+
+/// One hold for the selector. A pending lock and the portal principal are the
+/// same coins, so the larger one is the hold. Any size, as a decimal string.
+String selectionHoldNanos({
+  required Iterable<BigInt> lockDebits,
+  required Iterable<BigInt> reservePrincipals,
+}) {
+  var lock = BigInt.zero;
+  for (final v in lockDebits) {
+    if (v > BigInt.zero) lock += v;
+  }
+  var reserve = BigInt.zero;
+  for (final v in reservePrincipals) {
+    if (v > reserve) reserve = v;
+  }
+  final hold = lock > reserve ? lock : reserve;
+  return hold.toString();
+}
+
 BigInt? _positiveDigitNanos(Object? v) {
   if (v is String && RegExp(r'^\d+$').hasMatch(v)) {
     final b = BigInt.parse(v);
@@ -434,9 +460,25 @@ BigInt _nanosFromAmountField(Object? raw) {
     if (!scaled.isFinite) return BigInt.zero;
     final rounded = scaled.round();
     if (rounded <= 0 || rounded > _kSafeDoubleNanos) return BigInt.zero;
+    if ((rounded.toDouble() - scaled).abs() > 1e-4) return BigInt.zero;
     return BigInt.from(rounded);
   }
   return BigInt.zero;
+}
+
+/// A SHE field. An int is a whole SHE count, not a nanos count.
+BigInt _sheToNanos(Object? raw) {
+  if (raw is String) {
+    final parsed = parseSheDecimalToNanos(raw);
+    if (parsed == null) return BigInt.zero;
+    final b = BigInt.parse(parsed);
+    return b > BigInt.zero ? b : BigInt.zero;
+  }
+  if (raw is int) {
+    if (raw <= 0) return BigInt.zero;
+    return BigInt.from(raw) * _nanosPerShe;
+  }
+  return _nanosFromAmountField(raw);
 }
 
 double _sheOfNanos(BigInt nanos) {
@@ -454,13 +496,13 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   final notes = input['notes'] as List? ?? const [];
   final need = input['needNanos'] != null
       ? _nanosFromAmountField(input['needNanos'])
-      : _nanosFromAmountField(input['needShe']);
+      : _sheToNanos(input['needShe']);
   final cap = (input['cap'] as num?)?.toInt() ?? kMaxInputsPerSend;
   final tip = (input['tip'] as num?)?.toInt() ?? 0;
   final floor = (input['confs'] as num?)?.toInt() ?? 9;
   final hold = input['holdNanos'] != null
       ? _nanosFromAmountField(input['holdNanos'])
-      : _nanosFromAmountField(input['holdShe']);
+      : _sheToNanos(input['holdShe']);
   final memo = input['memo'] == true;
   final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
   final dests = <String>{
@@ -916,6 +958,13 @@ Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
 }
 
 Future<Map<String, dynamic>> flowPostHexOffUi(Map<String, dynamic> raw) {
+  // flutter_tester's second Isolate.run nulls these closure hooks on the
+  // caller. A neighbouring int static stays, so the library is not reloaded.
+  // The next seal would then run the real range proof on this isolate.
+  // Production leaves the hooks null and still hexes off the UI isolate.
+  if (debugNativeSealNote != null || debugNativeSpendProver != null) {
+    return Future<Map<String, dynamic>>.value(flowPostHex(raw));
+  }
   return Isolate.run(() => flowPostHex(raw));
 }
 
@@ -2417,7 +2466,11 @@ class ShearLedger implements ReadProofSink {
   final Map<String, double> _advisorySpendable = {};
   /// Accepted Reserve locks still sitting in the verified note sum.
   final Map<String, double> _lockDebitShe = {};
+  final Map<String, BigInt> _lockDebitNanos = {};
   final Map<String, double> _reserveHeldShe = {};
+  final Map<String, BigInt> _reserveHeldNanos = {};
+  Future<int>? _payoutConsolidate;
+  int _payoutConsolidateRounds = 0;
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
   /// Opened proofs for this wallet only, keyed by commit|R|z. Not a fee credit.
@@ -4340,7 +4393,13 @@ class ShearLedger implements ReadProofSink {
   void setReserveHeldNanos(String dest, int nanos) {
     final pk = payKey(dest);
     if (!isDestAddress(pk)) return;
-    final she = nanos <= 0 ? 0.0 : nanos / kUnitsPerShe;
+    if (nanos <= 0) {
+      _reserveHeldNanos.remove(pk);
+      _reserveHeldShe[pk] = 0;
+      return;
+    }
+    _reserveHeldNanos[pk] = BigInt.from(nanos);
+    final she = nanos / kUnitsPerShe;
     _reserveHeldShe[pk] = she;
   }
 
@@ -4442,10 +4501,13 @@ class ShearLedger implements ReadProofSink {
     return left <= 1e-12 ? 0 : left;
   }
 
-  void _noteLockDebit(String src, double needShe) {
-    if (needShe <= 1e-12) return;
+  void _noteLockDebit(String src, double needShe, {BigInt? nanos}) {
+    if (needShe <= 1e-12 && (nanos == null || nanos <= BigInt.zero)) return;
     final pk = payKey(src);
-    _lockDebitShe[pk] = (_lockDebitShe[pk] ?? 0) + needShe;
+    if (needShe > 1e-12) _lockDebitShe[pk] = (_lockDebitShe[pk] ?? 0) + needShe;
+    if (nanos != null && nanos > BigInt.zero) {
+      _lockDebitNanos[pk] = (_lockDebitNanos[pk] ?? BigInt.zero) + nanos;
+    }
   }
 
   /// Null cap: the pool figure is not spendable. A confirmRound credit that
@@ -5571,6 +5633,7 @@ class ShearLedger implements ReadProofSink {
     }
     final opened = recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
     _openCollated = true;
+    startPayoutConsolidate(restFrame, paymentCode: paymentCode);
     return opened;
   }
 
@@ -6354,15 +6417,6 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  double _selectionHoldShe() {
-    var pending = 0.0;
-    for (final v in _lockDebitShe.values) {
-      if (v > 0) pending += v;
-    }
-    final reserve = _reserveHoldShe();
-    return reserve > pending ? reserve : pending;
-  }
-
   Future<Map<String, dynamic>> _planSpendOffUi(
     String restFrame,
     String? paymentCode,
@@ -6393,6 +6447,11 @@ class ShearLedger implements ReadProofSink {
           'verifiedNanos': n['verifiedNanos'],
         },
     ];
+    // flutter_tester's later Isolate.run nulls these closure hooks on the
+    // caller. The closures captured here survive that, and selection still
+    // runs off this isolate. Production leaves both hooks null.
+    final savedSeal = debugNativeSealNote;
+    final savedProve = debugNativeSpendProver;
     final raw = await Isolate.run(() => selectSpendNotesWire({
           'notes': snap,
           'needShe': amount,
@@ -6400,11 +6459,16 @@ class ShearLedger implements ReadProofSink {
           'cap': kMaxInputsPerSend,
           'tip': bookTip,
           'confs': spendableConfirmations,
-          'holdShe': _selectionHoldShe(),
+          'holdNanos': selectionHoldNanos(
+            lockDebits: _lockDebitNanos.values,
+            reservePrincipals: _reserveHeldNanos.values,
+          ),
           'memo': memo,
           'dests': dests.toList(),
         }));
     debugSendSelectStamp = raw['stamp']?.toString() ?? '';
+    if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
+    if (debugNativeSpendProver == null && savedProve != null) debugNativeSpendProver = savedProve;
     return raw;
   }
 
@@ -6420,6 +6484,65 @@ class ShearLedger implements ReadProofSink {
     final fee = plan['feeShe'];
     if (fee is num && fee > 0) return (fee.toDouble() * kUnitsPerShe).round();
     return estimateSendLevyUnits(inputs: 1, memo: memo);
+  }
+
+  /// Mature rest-frame notes that a capped merge can spend.
+  int _matureOwnedCount(String restFrame, {String? paymentCode}) {
+    final owned = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      owned.add(d);
+      owned.add(payKey(d));
+    }
+    var n = 0;
+    for (final note in _notes) {
+      if (note['spent'] == true || note['locked'] == true) continue;
+      if (!_noteMature(note)) continue;
+      final addr = (note['address'] ?? note['dest'])?.toString() ?? '';
+      if (addr.isEmpty || !owned.contains(addr)) continue;
+      if (_storedNoteShe(note) == null || (_storedNoteShe(note) ?? 0) <= 0) continue;
+      if (_noteBytes(note['commit']) == null || _noteBytes(note['r']) == null) continue;
+      n++;
+    }
+    return n;
+  }
+
+  /// A payout scan starts one capped merge. Ingest does not. A second scan
+  /// waits until this run finishes, and a failure stays on the future.
+  void startPayoutConsolidate(String restFrame, {String? paymentCode}) {
+    if (_payoutConsolidate != null) return;
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32) return;
+    if (_matureOwnedCount(restFrame, paymentCode: paymentCode) <= kConsolidateAboveCount) return;
+    _payoutConsolidate = _runPayoutConsolidate(restFrame, paymentCode: paymentCode, seed: seed);
+  }
+
+  Future<int> _runPayoutConsolidate(
+    String restFrame, {
+    String? paymentCode,
+    required Uint8List seed,
+  }) async {
+    var n = 0;
+    try {
+      n = await consolidateSpendableNotes(
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        spendSeed: seed,
+      );
+      _payoutConsolidateRounds += n;
+    } catch (_) {
+      n = 0;
+    } finally {
+      _payoutConsolidate = null;
+    }
+    return n;
+  }
+
+  /// Rounds finished by [startPayoutConsolidate], including a run that already ended.
+  Future<int> finishPayoutConsolidate() async {
+    final run = _payoutConsolidate;
+    if (run != null) await run;
+    return _payoutConsolidateRounds;
   }
 
   /// Merge the smallest mature notes until at most [kMaxInputsPerSend] remain.
@@ -6450,22 +6573,36 @@ class ShearLedger implements ReadProofSink {
         if (addr.isEmpty || !owned.contains(addr)) continue;
         final she = _storedNoteShe(n);
         if (she == null || she <= 0) continue;
+        if (noteNanosExact(n) == null) continue;
         if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
         mature.add(n);
       }
       if (mature.length <= kConsolidateAboveCount) break;
       mature.sort((a, b) => (_storedNoteShe(a) ?? 0).compareTo(_storedNoteShe(b) ?? 0));
       final take = mature.sublist(0, kMaxInputsPerSend);
-      final sum = take.fold<double>(0, (s, n) => s + (_storedNoteShe(n) ?? 0));
-      final feeShe = estimateSendLevyUnits(inputs: take.length, outputs: 2) / kUnitsPerShe;
-      if (sum <= feeShe + 1e-12) break;
+      var sumN = BigInt.zero;
+      var sumExact = true;
+      for (final n in take) {
+        final exact = noteNanosExact(n);
+        if (exact == null) {
+          sumExact = false;
+          break;
+        }
+        sumN += exact;
+      }
+      if (!sumExact || sumN <= BigInt.zero) break;
+      final feeQuoted = BigInt.from(estimateSendLevyUnits(inputs: take.length, outputs: 2));
+      if (sumN <= feeQuoted) break;
+      final payN = sumN - feeQuoted;
+      if (payN.bitLength > 64) break;
       final src = (take.first['address'] ?? take.first['dest'])?.toString() ?? '';
       final dest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
       progress?.bump(phase: 'prove', done: 0, total: take.length);
       await _sendManyNotes(
         notes: take,
         to: dest,
-        payShe: sum - feeShe,
+        payShe: _sheOfNanos(payN),
+        payNanosWire: payN.toString(),
         restFrame: restFrame,
         paymentCode: paymentCode,
         spendSeed: spendSeed,
@@ -6489,6 +6626,7 @@ class ShearLedger implements ReadProofSink {
     required List<Map<String, dynamic>> notes,
     required String to,
     required double payShe,
+    String? payNanosWire,
     required String restFrame,
     String? paymentCode,
     required Uint8List spendSeed,
@@ -6522,18 +6660,30 @@ class ShearLedger implements ReadProofSink {
       throw ArgumentError('bad_send');
     }
     if (destTo == src) throw ArgumentError('same_dest');
-    var inputSum = 0;
+    var inputSum = BigInt.zero;
     for (final n in notes) {
-      final she = _storedNoteShe(n);
-      if (she == null) throw StateError(kErrNoSealedNote);
-      inputSum += (she * kUnitsPerShe).round();
+      final exact = noteNanosExact(n);
+      if (exact == null) throw StateError(kErrNoSealedNote);
+      inputSum += exact;
     }
     final memoOn = memo != null && memo.isNotEmpty;
     final feeUnits = estimateSendLevyUnits(inputs: notes.length, outputs: 3, memo: memoOn);
-    var payNanos = (payShe * kUnitsPerShe).round();
-    if (payNanos + feeUnits > inputSum) payNanos = inputSum - feeUnits;
-    if (payNanos <= 0) throw StateError('fee_short');
-    final changeNanos = inputSum - payNanos - feeUnits;
+    final fee = BigInt.from(feeUnits);
+    var payUnits = BigInt.from(sendNanosFromWire(payNanosWire));
+    if (payUnits <= BigInt.zero) {
+      final scaled = payShe * kUnitsPerShe;
+      if (!scaled.isFinite) throw StateError('fee_short');
+      final rounded = scaled.round();
+      if (rounded <= 0 || rounded > _kSafeDoubleNanos) throw StateError('fee_short');
+      if ((rounded.toDouble() - scaled).abs() > 1e-4) throw StateError('fee_short');
+      payUnits = BigInt.from(rounded);
+    }
+    if (payUnits + fee > inputSum) payUnits = inputSum - fee;
+    if (payUnits <= BigInt.zero || payUnits.bitLength > 64) throw StateError('fee_short');
+    final change = inputSum - payUnits - fee;
+    if (change < BigInt.zero || change.bitLength > 64) throw StateError('fee_short');
+    final payNanos = payUnits.toInt();
+    final changeNanos = change.toInt();
     String? changeDest;
     if (changeNanos > 0) {
       changeDest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
@@ -6630,6 +6780,7 @@ class ShearLedger implements ReadProofSink {
       from: src,
       to: destTo,
       amount: payNanos / kUnitsPerShe,
+      nanosWire: payUnits.toString(),
       memoCt: memoCt,
       kind: 'send',
       change: changeDest,
@@ -6667,7 +6818,11 @@ class ShearLedger implements ReadProofSink {
       final o = sealed[i];
       if ((o['kind'] as String?) == 'dummy') continue;
       final addr = o['address'] as String?;
-      if (addr == null || (addr != src && addr != changeDest)) continue;
+      if (addr == null) continue;
+      final ours = addr == src ||
+          addr == changeDest ||
+          isBindable(addr, restFrame: restFrame, paymentCode: paymentCode);
+      if (!ours) continue;
       rememberNote({
         'address': addr,
         'dest': addr,
@@ -6685,6 +6840,13 @@ class ShearLedger implements ReadProofSink {
         if (o['nanos'] != null) 'amount': (o['nanos'] as num) / kUnitsPerShe,
       });
       _proofCheckedDests.add(payKey(addr));
+      if (o['nanos'] is num && addr != changeDest) {
+        final add = (o['nanos'] as num).toDouble() / kUnitsPerShe;
+        if (add > 0) {
+          _spendable[payKey(addr)] = spendable(payKey(addr)) + add;
+          _dests.add(addr);
+        }
+      }
     }
     if (changeDest != null && changeNanos > 0) {
       _spendable[changeDest] = spendable(changeDest) + changeNanos / kUnitsPerShe;
@@ -6830,6 +6992,7 @@ class ShearLedger implements ReadProofSink {
           notes: batch.notes,
           to: to,
           payShe: batch.pay,
+          payNanosWire: batch.payNanos,
           restFrame: restFrame,
           paymentCode: paymentCode,
           spendSeed: spendSeed,
@@ -6990,10 +7153,10 @@ class ShearLedger implements ReadProofSink {
     }
     final taxed = levyTaxed(sendKind);
     var nanos = 0;
-    if (sendKind != 'vote' && nanosWire != null && RegExp(r'^\d+$').hasMatch(nanosWire)) {
-      final big = BigInt.parse(nanosWire);
-      if (big >= BigInt.zero && big.bitLength <= 62) nanos = big.toInt();
-    } else if (sendKind != 'vote') {
+    if (sendKind != 'vote') {
+      nanos = sendNanosFromWire(nanosWire);
+    }
+    if (nanos == 0 && sendKind != 'vote') {
       final rounded = (amount * kUnitsPerShe).round();
       if (rounded > 0 && rounded <= _kSafeDoubleNanos) nanos = rounded;
     }
@@ -7469,7 +7632,7 @@ class ShearLedger implements ReadProofSink {
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
         // The pool balance below is already net. Debit only when Spendable
         // shows the opened-note cap, which is the gross sum.
-        _noteLockDebit(src, needShe);
+        _noteLockDebit(src, needShe, nanos: BigInt.from(nanos) + BigInt.from(levy));
       }
       final echoed = Map<String, dynamic>.from(json['tx'] as Map);
       echoed['amount'] ??= needShe;
@@ -7521,7 +7684,7 @@ class ShearLedger implements ReadProofSink {
         // This book is already net. A confirmRound pot has no opened-note cap,
         // so the assignment above is the only cut. The cap path shows the gross
         // opened sum and needs this debit once so a 0 book cannot paint it back.
-        _noteLockDebit(src, needShe);
+        _noteLockDebit(src, needShe, nanos: BigInt.from(nanos) + BigInt.from(levy));
       }
       _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     }

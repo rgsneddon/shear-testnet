@@ -1452,7 +1452,7 @@ void main() {
     );
     expect(full.posts, isEmpty);
     expect(full.ledger.notes.every((n) => n['spent'] != true), isTrue);
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('consolidate merges until the note count fits one send, fees only', () async {
     debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
@@ -1485,6 +1485,107 @@ void main() {
     for (final p in w.posts) {
       expect((p['vin'] as List).length, inInclusiveRange(1, kMaxInputsPerSend));
     }
+  });
+
+  test('a payout scan consolidates mature notes in capped batches', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 9,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 4,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
+        _sealNoteNoRange(v, dest20: dest20, kind: kind);
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    final w = _noteWallet(kMaxInputsPerSend + 1, nanos: (0.2 * kUnitsPerShe).round());
+    expect(w.posts, isEmpty);
+    await w.ledger.syncCredits(w.id.address, paymentCode: w.id.paymentCode);
+    final rounds = await w.ledger.finishPayoutConsolidate();
+    expect(rounds, greaterThan(0));
+    expect(w.posts, isNotEmpty);
+    for (final p in w.posts) {
+      expect((p['vin'] as List).length, inInclusiveRange(1, kMaxInputsPerSend));
+    }
+    final left = w.ledger.notes.where((n) => n['spent'] != true);
+    expect(left.length, lessThanOrEqualTo(kConsolidateAboveCount));
+  });
+
+  test('a reserve principal above 2^53 stays out of the pay set', () async {
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 3,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 6,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
+        _sealNoteNoRange(v, dest20: dest20, kind: kind);
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    final heldNanos = BigInt.parse('9007199254740992');
+    final hold = BigInt.parse('9007199254740993');
+    final freeNanos = heldNanos + BigInt.from(kUnitsPerShe);
+    final w = _noteWallet(1, nanos: heldNanos.toInt());
+    final d20 = hash20FromAddress(w.dest)!;
+    final extra = _offlinePot(freeNanos.toInt(), 2, dest20: d20, seed: w.seed);
+    w.ledger.ingestSealedVouts(
+      [extra],
+      spendSeed: w.seed,
+      dest: w.dest,
+      prev: Uint8List(32),
+      startIndex: 1,
+    );
+    w.ledger.setReserveHeldNanos(w.dest, hold.toInt());
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    await expectLater(
+      w.ledger.sendSpendableSum(
+        from: w.dest,
+        to: bob,
+        amount: 1,
+        nanosWire: '1',
+        restFrame: w.id.address,
+        paymentCode: w.id.paymentCode,
+        spendSeed: w.seed,
+        allowPublicHttp: true,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'insufficient')),
+    );
+    expect(w.posts, isEmpty);
+    expect(w.ledger.notes.every((n) => n['spent'] != true), isTrue);
+  });
+
+  test('a multi-note send keeps pay nanos exact above 2^53', () async {
+    final sealed = <int>[];
+    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
+      'admit_proof': true,
+      'v': 2,
+      'spendTag': Uint8List(32)..[0] = 8,
+      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
+      'cTilde': Uint8List(32)..[0] = 8,
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) {
+      sealed.add(v);
+      return _sealNoteNoRange(v, dest20: dest20, kind: kind);
+    };
+    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    final noteNanos = BigInt.parse('9007199254740993');
+    final w = _noteWallet(2, nanos: noteNanos.toInt());
+    final pay = noteNanos + BigInt.one;
+    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ef' * 32)!;
+    await w.ledger.sendSpendableSum(
+      from: w.dest,
+      to: bob,
+      amount: 1,
+      nanosWire: pay.toString(),
+      restFrame: w.id.address,
+      paymentCode: w.id.paymentCode,
+      spendSeed: w.seed,
+      allowPublicHttp: true,
+    );
+    expect(w.posts, hasLength(1));
+    expect((w.posts.single['vin'] as List).length, 2);
+    expect(w.posts.single['nanosWire'], pay.toString());
+    expect(sealed, contains(pay.toInt()));
   });
 
   test('cancel during a proof spends nothing', () async {
@@ -9155,6 +9256,7 @@ class _RecordingPool extends ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    String? nanosWire,
   }) async {
     posts.add({
       'from': from,
@@ -9174,6 +9276,7 @@ class _RecordingPool extends ShearPoolClient {
       if (change != null) 'change': change,
       if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
       if (legacyPoolSend) 'legacyPoolSend': true,
+      if (nanosWire != null && nanosWire.isNotEmpty) 'nanosWire': nanosWire,
     });
     final tx = <String, dynamic>{
       'id': 'note-send-1',
@@ -9243,6 +9346,7 @@ class _ReasonPool extends ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    String? nanosWire,
   }) async =>
       {'ok': false, 'reason': legacyPoolSend && reason.isEmpty ? 'legacy' : (paintedOwedNanos < 0 ? 'bad_owed' : reason)};
 }

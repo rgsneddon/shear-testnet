@@ -191,10 +191,26 @@ export function nativeVerifyBatch({ proofs, jroot, cTildes, tags, destLeaves = [
   }
 }
 
+/** A safe integer, or the decimal text of any u64. Never Number() on a big digit string. */
+export function rangeAmountArg(v) {
+  if (typeof v === 'bigint') {
+    if (v < 0n || v > 0xffffffffffffffffn) return null;
+    return v.toString();
+  }
+  if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v) || v < 0) return null;
+    return v;
+  }
+  if (typeof v === 'string' && /^[0-9]+$/.test(v)) return v;
+  return null;
+}
+
 export function nativeProveRange(v, r) {
   if (!native) return null;
+  const arg = rangeAmountArg(v);
+  if (arg == null) return null;
   try {
-    const o = native.proveRange(Number(v), as32(r));
+    const o = native.proveRange(arg, as32(r));
     return o && o.length ? Buffer.from(o) : null;
   } catch {
     return null;

@@ -242,7 +242,7 @@ function bitOrVerify(B, proof) {
 export function proveRange(v, r) {
   const rb = Buffer.from(asU8(typeof r === 'bigint' ? scalarBytes(r) : r));
   if (rb.length !== 32) return Buffer.alloc(0);
-  return nativeProveRange(Number(v), rb) || Buffer.alloc(0);
+  return nativeProveRange(v, rb) || Buffer.alloc(0);
 }
 
 export function verifyRange(Cbytes, proof) {

@@ -52,6 +52,14 @@ void main() {
         'confs': 9,
         'memo': memo,
       });
+      final wholeShe = selectSpendNotesWire({
+        'notes': [for (var i = 0; i < 20; i++) row(i, 0.99)],
+        'needShe': 10,
+        'tip': 40,
+        'confs': 9,
+        'memo': memo,
+      });
+      expect((wholeShe['batches'] as List).length, greaterThan(1), reason: 'memo=$memo');
       final wideBatches = (wide['batches'] as List).cast<Map>();
       expect(wideBatches.length, greaterThan(1));
       for (final b in wideBatches) {
@@ -258,5 +266,55 @@ void main() {
     expect(open['spendableNanos'], freeSum);
     final openNotes = (open['batches'] as List).cast<Map>().expand((b) => (b['notes'] as List)).cast<Map>();
     expect(openNotes.single['nanos'], other);
+  });
+
+  test('send nanos stay exact for any u64 and reject a wider string', () {
+    expect(sendNanosFromWire(null), 0);
+    expect(sendNanosFromWire('0'), 0);
+    expect(sendNanosFromWire('1'), 1);
+    expect(sendNanosFromWire('9007199254740993'), 9007199254740993);
+    expect(sendNanosFromWire((BigInt.one << 62).toString()), (BigInt.one << 62).toInt());
+    expect(sendNanosFromWire((BigInt.one << 63).toString()), (BigInt.one << 63).toInt());
+    final maxU64 = (BigInt.one << 64) - BigInt.one;
+    expect(sendNanosFromWire(maxU64.toString()), maxU64.toInt());
+    expect(sendNanosFromWire((BigInt.one << 64).toString()), 0);
+    expect(sendNanosFromWire('-1'), 0);
+    expect(sendNanosFromWire('1.5'), 0);
+    expect(sendNanosFromWire(' 1'), 0);
+    expect(sendNanosFromWire('1 '), 0);
+  });
+
+  test('one hold is the larger of the lock sum and the reserve principal', () {
+    final one = BigInt.one;
+    final above = BigInt.parse('9007199254740993');
+    final huge = BigInt.parse('100000000000000000000');
+    expect(
+      selectionHoldNanos(lockDebits: [one], reservePrincipals: [one]),
+      '1',
+    );
+    expect(
+      selectionHoldNanos(lockDebits: [above], reservePrincipals: [one]),
+      above.toString(),
+    );
+    expect(
+      selectionHoldNanos(lockDebits: [one], reservePrincipals: [above]),
+      above.toString(),
+    );
+    expect(
+      selectionHoldNanos(lockDebits: [huge], reservePrincipals: [huge]),
+      huge.toString(),
+    );
+    expect(
+      selectionHoldNanos(lockDebits: [huge, above], reservePrincipals: [huge]),
+      (huge + above).toString(),
+    );
+    expect(
+      selectionHoldNanos(lockDebits: [above, above], reservePrincipals: [BigInt.zero]),
+      (above * BigInt.two).toString(),
+    );
+    expect(
+      selectionHoldNanos(lockDebits: [BigInt.from(-5), one], reservePrincipals: const []),
+      '1',
+    );
   });
 }

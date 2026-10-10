@@ -295,13 +295,55 @@ static napi_value verify_fn(napi_env env, napi_callback_info info) {
   return out;
 }
 
+/* Decimal digits only. A JS number above 2^53 is already rounded, so it is refused. */
+static int parse_u64_digits(const char *s, size_t n, uint64_t *out) {
+  uint64_t v = 0;
+  size_t i;
+  if (n == 0 || n > 20) return -1;
+  for (i = 0; i < n; i++) {
+    unsigned d;
+    if (s[i] < '0' || s[i] > '9') return -1;
+    d = (unsigned)(s[i] - '0');
+    if (v > (UINT64_MAX - (uint64_t)d) / 10ull) return -1;
+    v = v * 10ull + (uint64_t)d;
+  }
+  *out = v;
+  return 0;
+}
+
+static int read_range_v(napi_env env, napi_value arg, uint64_t *out) {
+  napi_valuetype t;
+  if (napi_typeof(env, arg, &t) != napi_ok) return -1;
+  if (t == napi_string) {
+    size_t n = 0;
+    char buf[24];
+    size_t copied = 0;
+    if (napi_get_value_string_utf8(env, arg, NULL, 0, &n) != napi_ok) return -1;
+    if (n == 0 || n > 20) return -1;
+    if (napi_get_value_string_utf8(env, arg, buf, sizeof buf, &copied) != napi_ok) return -1;
+    if (copied != n) return -1;
+    return parse_u64_digits(buf, copied, out);
+  }
+  if (t == napi_number) {
+    double d = 0;
+    uint64_t v;
+    if (napi_get_value_double(env, arg, &d) != napi_ok) return -1;
+    if (d < 0 || d > 9007199254740991.0) return -1;
+    v = (uint64_t)d;
+    if ((double)v != d) return -1;
+    *out = v;
+    return 0;
+  }
+  return -1;
+}
+
 static napi_value prove_range_fn(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2];
   napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  int64_t v = 0;
+  uint64_t v = 0;
   uint8_t r[32];
-  if (argc < 2 || napi_get_value_int64(env, argv[0], &v) != napi_ok || v < 0 || buf32(env, argv[1], r)) {
+  if (argc < 2 || read_range_v(env, argv[0], &v) != 0 || buf32(env, argv[1], r)) {
     napi_value f;
     napi_get_boolean(env, 0, &f);
     return f;
@@ -310,7 +352,7 @@ static napi_value prove_range_fn(napi_env env, napi_callback_info info) {
   uint8_t *out = (uint8_t *)malloc(maxp);
   uint32_t olen = 0;
   int32_t ok = 0;
-  if (out) ok = shear_range_prove((uint64_t)v, r, out, &olen);
+  if (out) ok = shear_range_prove(v, r, out, &olen);
   if (!out || ok != 1) {
     free(out);
     napi_value f;
