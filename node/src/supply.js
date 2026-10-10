@@ -16,6 +16,7 @@ import {
   SHARE_FLOOR_BITS,
 } from '../../crypto/asert.js';
 import { verifyMintSum, verifyRange, excessOf } from '../../crypto/note.js';
+import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { isDestAddress } from '../../crypto/address.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
@@ -323,6 +324,12 @@ export function supplyFromScalar(scalar, {
   };
 }
 
+/** Consensus supply for `block` when this state is that block's own account. */
+export function publishedSupply(state, block) {
+  if (!block || !state || state.owedKnown === false || !supplyLinks(state, block)) return null;
+  return copySupply(state);
+}
+
 /** `state` is the supply after `block`, not after its child. */
 export function supplyLinks(state, block) {
   if (!state || !block) return false;
@@ -530,6 +537,83 @@ export function foldSupply(blocks, opts = {}) {
   return { ok: true, reason: '', state };
 }
 
+/** Public numbers for one supply state. No range proof is opened. */
+export function supplyReport(state, {
+  extraMintNanos = 0,
+  burnedNanos = 0,
+  ok = true,
+  reason = '',
+} = {}) {
+  const extra = asNonNeg(extraMintNanos);
+  const burned = asNonNeg(burnedNanos);
+  const blank = {
+    status: 'mismatch',
+    reason: 'supply',
+    circulatingNanos: 0,
+    measuredPotNanos: 0,
+    measuredHashNanos: 0,
+    measuredLevyNanos: 0,
+    schedulePotNanos: 0,
+    carryNanos: 0,
+    hashOwedNanos: 0,
+    hashDustNanos: 0,
+    hashOwedOverflowNanos: 0,
+    extraMintNanos: 0,
+    burnedNanos: 0,
+    bLockedNanos: 0,
+    differenceNanos: 0,
+  };
+  if (extra == null || burned == null || !state) return { ...blank, reason: reason || 'supply' };
+  let reportOk = ok !== false;
+  let reportReason = reason || '';
+  const mintedPot = state.mintedPot;
+  const mintedHash = state.mintedHash;
+  const mintedLevy = state.mintedLevy;
+  const schedulePot = state.schedulePot;
+  const permittedHashAll = state.permittedHashAll;
+  const acceptedHash = state.acceptedHash;
+  const carry = state.carry;
+  const owedState = state.owedRows || [];
+  const dustState = state.dust;
+  const overflowState = state.overflow;
+  let outstanding = dustState + overflowState;
+  for (const row of owedState) outstanding += row.nanos;
+  if (mintedHash + outstanding !== acceptedHash) {
+    reportOk = false;
+    reportReason = reportReason || 'hash_owed';
+  }
+  const circulating = mintedPot + mintedHash + extra - burned;
+  const expected = schedulePot - carry + permittedHashAll + extra - burned;
+  const difference = circulating - expected;
+  if (difference !== 0n) {
+    reportOk = false;
+    reportReason = reportReason || 'supply';
+  }
+  const nums = {
+    circulatingNanos: safeNum(circulating),
+    measuredPotNanos: safeNum(mintedPot),
+    measuredHashNanos: safeNum(mintedHash),
+    measuredLevyNanos: safeNum(mintedLevy),
+    schedulePotNanos: safeNum(schedulePot),
+    carryNanos: safeNum(carry),
+    hashOwedNanos: safeNum(owedState.reduce((n, row) => n + row.nanos, 0n)),
+    hashDustNanos: safeNum(dustState),
+    hashOwedOverflowNanos: safeNum(overflowState),
+    extraMintNanos: safeNum(extra),
+    burnedNanos: safeNum(burned),
+    bLockedNanos: safeNum(state.bLocked),
+    differenceNanos: safeSigned(difference),
+  };
+  if (Object.values(nums).some((n) => n == null || !Number.isSafeInteger(n))) {
+    return { ...blank, reason: reportReason || 'supply' };
+  }
+  return {
+    status: reportOk ? 'verified' : 'mismatch',
+    reason: reportOk ? '' : (reportReason || 'supply'),
+    ...nums,
+  };
+}
+
 /**
  * @returns {{
  *   status: 'verified' | 'mismatch',
@@ -585,6 +669,26 @@ export function auditCirculatingSupply(blocks, {
   }
   const genesisMs = headerMs(list[0]);
   if (!(genesisMs > 0)) return { ...blank, reason: 'genesis_ms' };
+  if (!nativeLoaded()) {
+    return {
+      ...blank,
+      status: 'unverifiable',
+      reason: 'unverifiable',
+      circulatingNanos: null,
+      measuredPotNanos: null,
+      measuredHashNanos: null,
+      measuredLevyNanos: null,
+      schedulePotNanos: null,
+      carryNanos: null,
+      hashOwedNanos: null,
+      hashDustNanos: null,
+      hashOwedOverflowNanos: null,
+      extraMintNanos: null,
+      burnedNanos: null,
+      bLockedNanos: null,
+      differenceNanos: null,
+    };
+  }
 
   let ok = true;
   let reason = '';
@@ -614,51 +718,5 @@ export function auditCirculatingSupply(blocks, {
       reason = reason || next.reason;
     }
   }
-  const mintedPot = state.mintedPot;
-  const mintedHash = state.mintedHash;
-  const mintedLevy = state.mintedLevy;
-  const schedulePot = state.schedulePot;
-  const permittedHashAll = state.permittedHashAll;
-  const acceptedHash = state.acceptedHash;
-  const carry = state.carry;
-  const owedState = state.owedRows;
-  const dustState = state.dust;
-  const overflowState = state.overflow;
-  let outstanding = dustState + overflowState;
-  for (const row of owedState) outstanding += row.nanos;
-  if (mintedHash + outstanding !== acceptedHash) {
-    ok = false;
-    reason = reason || 'hash_owed';
-  }
-
-  const circulating = mintedPot + mintedHash + extra - burned;
-  const expected = schedulePot - carry + permittedHashAll + extra - burned;
-  const difference = circulating - expected;
-  if (difference !== 0n) {
-    ok = false;
-    reason = reason || 'supply';
-  }
-  const nums = {
-    circulatingNanos: safeNum(circulating),
-    measuredPotNanos: safeNum(mintedPot),
-    measuredHashNanos: safeNum(mintedHash),
-    measuredLevyNanos: safeNum(mintedLevy),
-    schedulePotNanos: safeNum(schedulePot),
-    carryNanos: safeNum(carry),
-    hashOwedNanos: safeNum(owedState.reduce((n, row) => n + row.nanos, 0n)),
-    hashDustNanos: safeNum(dustState),
-    hashOwedOverflowNanos: safeNum(overflowState),
-    extraMintNanos: safeNum(extra),
-    burnedNanos: safeNum(burned),
-    bLockedNanos: safeNum(state.bLocked),
-    differenceNanos: safeSigned(difference),
-  };
-  if (Object.values(nums).some((n) => n == null || !Number.isSafeInteger(n))) {
-    return { ...blank, reason: reason || 'supply' };
-  }
-  return {
-    status: ok ? 'verified' : 'mismatch',
-    reason: ok ? '' : (reason || 'supply'),
-    ...nums,
-  };
+  return supplyReport(state, { extraMintNanos, burnedNanos, ok, reason });
 }

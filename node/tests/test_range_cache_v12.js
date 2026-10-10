@@ -3,6 +3,7 @@
  * V8 throws RangeError from Set.add at 2^24 entries. Any output count and any
  * chain length must keep verifying, with the cache at or under its cap.
  * The full-history audit verifies and does not record those keys.
+ * The pool publish does not verify them on the caller.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { excessOf } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
 import { createStore } from '../src/store.js';
-import { networkSupply } from '../../pool/src/wallet_api.js';
+import { networkSupply, networkSupplySettled } from '../../pool/src/wallet_api.js';
 import {
   RANGE_VERIFIED_CAP,
   auditCirculatingSupply,
@@ -128,11 +129,15 @@ describe('v12 range-proof cache stays under the engine limit', () => {
 
     const netInserts = rangeVerifiedInserts();
     const net = networkSupply({ blocks, reserveVault: {} });
-    assert.equal(net.supplyStatus, 'verified', net.supplyReason);
+    assert.equal(net.supplyStatus, 'pending');
     assert.equal(rangeVerifiedInserts(), netInserts);
     assert.equal(rangeVerifiedSize(), size);
     const afterNet = coinbaseRangeVerifies();
-    assert.equal(afterNet - afterAudit, outputs);
+    assert.equal(afterNet - afterAudit, 0);
+    const settled = await networkSupplySettled({ blocks, reserveVault: {} });
+    assert.equal(settled.supplyStatus, 'verified', settled.supplyReason);
+    assert.equal(coinbaseRangeVerifies(), afterNet);
+    assert.equal(rangeVerifiedInserts(), netInserts);
 
     const folded = foldSupply(blocks, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(folded.ok, true, folded.reason);

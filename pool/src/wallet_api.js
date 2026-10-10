@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, checkAddressField, hash20FromAddress } from '../../crypto/address.js';
 import { walletSubmitLog, newConnId, lineJoinsIpToIdentity } from '../../crypto/privacy_net.js';
 import {
@@ -37,7 +38,7 @@ import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmation
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
-import { auditCirculatingSupply } from '../../node/src/supply.js';
+import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -657,10 +658,13 @@ export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
   return minted;
 }
 
-/** All SHE in existence: opened coinbase commitments, not the schedule echo. Staked coin stays out of the sum. */
+/** All SHE in existence: the consensus supply, not a fresh proof walk. Staked coin stays out of the sum. */
 let _supplyAt = '';
 let _supplyVal = null;
-let _supplyBusy = false;
+let supplyWorker = null;
+let supplyJobSeq = 0;
+const supplyWaiters = new Map();
+const supplyJobs = new Map();
 
 function supplyCacheKey(store) {
   const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
@@ -691,47 +695,161 @@ function supplyCacheKey(store) {
   return `${blocks.length}:${h >>> 0}`;
 }
 
-export function networkSupply(store) {
-  const h = supplyCacheKey(store);
-  if (h === _supplyAt && _supplyVal) return _supplyVal;
-  if (_supplyBusy) {
-    return _supplyVal || {
-      circulatingNanos: 0, potNanos: 0, hashNanos: 0, hashOwedNanos: 0, extraMintNanos: 0, burnedNanos: 0, lockedNanos: 0,
-      supplyStatus: 'mismatch', differenceNanos: 0, schedulePotNanos: 0,
-    };
-  }
-  _supplyBusy = true;
+export function supplyStatusWord(status) {
+  if (status === 'verified' || status === 'pending' || status === 'unverifiable') return status;
+  return 'mismatch';
+}
+
+function supplyTipHeight(store) {
   try {
-    const blocks = store?.blocks || [];
-    const audit = auditCirculatingSupply(blocks, { magic: MAGIC_TESTNET });
-    const vault = publicVaultView(store?.reserveVault || {}, Date.now());
-    _supplyVal = {
-      circulatingNanos: audit.circulatingNanos,
-      potNanos: audit.measuredPotNanos,
-      hashNanos: audit.measuredHashNanos,
-      hashOwedNanos: audit.hashOwedNanos,
-      levyNanos: audit.measuredLevyNanos,
-      extraMintNanos: audit.extraMintNanos,
-      burnedNanos: audit.burnedNanos,
-      schedulePotNanos: audit.schedulePotNanos,
-      carryNanos: audit.carryNanos,
-      differenceNanos: audit.differenceNanos,
-      supplyStatus: audit.status,
-      supplyReason: audit.reason,
-      lockedNanos: Math.max(0, Math.floor(Number(vault.totalLockedNanos) || 0)),
-      accruingNanos: Math.max(0, Math.floor(Number(vault.accruingNanos) || 0)),
-      vaultNanos: Math.max(0, Math.floor(Number(vault.vaultNanos) || 0)),
-      reserveMintedNanos: Math.max(0, Math.floor(Number(vault.reserveMintedNanos) || 0)),
-    };
-    _supplyAt = h;
-    return _supplyVal;
-  } finally {
-    _supplyBusy = false;
+    const height = Number(store?.tip?.()?.height);
+    if (Number.isInteger(height) && height >= 0) return height;
+  } catch { /* raw lists */ }
+  const blocks = store?.blocks;
+  return Array.isArray(blocks) ? blocks.length : 0;
+}
+
+function packSupply(audit, store) {
+  const vault = publicVaultView(store?.reserveVault || {}, Date.now());
+  const word = supplyStatusWord(audit?.status);
+  const settled = word === 'verified' || word === 'mismatch';
+  return {
+    circulatingNanos: settled ? audit.circulatingNanos : null,
+    potNanos: settled ? audit.measuredPotNanos : null,
+    hashNanos: settled ? audit.measuredHashNanos : null,
+    hashOwedNanos: settled ? audit.hashOwedNanos : null,
+    levyNanos: settled ? audit.measuredLevyNanos : null,
+    extraMintNanos: settled ? audit.extraMintNanos : null,
+    burnedNanos: settled ? audit.burnedNanos : null,
+    schedulePotNanos: settled ? audit.schedulePotNanos : null,
+    carryNanos: settled ? audit.carryNanos : null,
+    differenceNanos: settled ? audit.differenceNanos : null,
+    supplyStatus: word,
+    supplyReason: audit?.reason || '',
+    asOfHeight: supplyTipHeight(store),
+    lockedNanos: Math.max(0, Math.floor(Number(vault.totalLockedNanos) || 0)),
+    accruingNanos: Math.max(0, Math.floor(Number(vault.accruingNanos) || 0)),
+    vaultNanos: Math.max(0, Math.floor(Number(vault.vaultNanos) || 0)),
+    reserveMintedNanos: Math.max(0, Math.floor(Number(vault.reserveMintedNanos) || 0)),
+  };
+}
+
+function pendingSupply(store) {
+  return packSupply({ status: 'pending', reason: 'pending' }, store);
+}
+
+function holdSupplyWorker() {
+  if (!supplyWorker) return;
+  if (supplyWaiters.size) supplyWorker.ref();
+  else supplyWorker.unref();
+}
+
+function failSupplyWaiters(err) {
+  for (const [id, waiter] of supplyWaiters) {
+    supplyWaiters.delete(id);
+    waiter.reject(err);
   }
+  holdSupplyWorker();
+}
+
+function ensureSupplyWorker() {
+  if (supplyWorker) return supplyWorker;
+  supplyWorker = new Worker(new URL('../../node/src/supply_audit_worker.js', import.meta.url));
+  supplyWorker.on('message', (msg) => {
+    const waiter = supplyWaiters.get(msg?.id);
+    if (!waiter) return;
+    supplyWaiters.delete(msg.id);
+    holdSupplyWorker();
+    if (msg.error) waiter.reject(new Error(msg.error));
+    else waiter.resolve(msg.audit);
+  });
+  supplyWorker.on('error', (err) => {
+    const failed = supplyWorker;
+    supplyWorker = null;
+    failSupplyWaiters(err);
+    try { failed.terminate(); } catch { /* already gone */ }
+  });
+  supplyWorker.on('exit', (code) => {
+    if (supplyWorker) supplyWorker = null;
+    if (code) failSupplyWaiters(new Error(`audit_worker_${code}`));
+    holdSupplyWorker();
+  });
+  holdSupplyWorker();
+  return supplyWorker;
+}
+
+function runSupplyAudit(store, key) {
+  const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
+  const id = supplyJobSeq + 1;
+  supplyJobSeq = id;
+  const promise = new Promise((resolve, reject) => {
+    supplyWaiters.set(id, { key, resolve, reject });
+  });
+  const worker = ensureSupplyWorker();
+  holdSupplyWorker();
+  let index = 0;
+  const pump = () => {
+    const waiter = supplyWaiters.get(id);
+    if (!waiter || waiter.key !== key) return;
+    try {
+      if (index === 0) worker.postMessage({ id, type: 'start', length: blocks.length });
+      if (index >= blocks.length) {
+        worker.postMessage({ id, type: 'end' });
+        return;
+      }
+      worker.postMessage({ id, type: 'block', index, block: blocks[index] });
+      index += 1;
+      setImmediate(pump);
+    } catch (err) {
+      const failed = supplyWaiters.get(id);
+      supplyWaiters.delete(id);
+      holdSupplyWorker();
+      if (failed) failed.reject(err);
+    }
+  };
+  setImmediate(pump);
+  return promise.then((audit) => {
+    supplyJobs.delete(key);
+    const packed = packSupply(audit, store);
+    if (supplyCacheKey(store) === key) {
+      _supplyAt = key;
+      _supplyVal = packed;
+    }
+    return _supplyAt === key ? _supplyVal : packed;
+  }, () => {
+    supplyJobs.delete(key);
+    const packed = packSupply({ status: 'unverifiable', reason: 'audit_worker' }, store);
+    if (supplyCacheKey(store) === key) {
+      _supplyAt = key;
+      _supplyVal = packed;
+    }
+    return packed;
+  });
+}
+
+export function networkSupply(store) {
+  const consensus = typeof store?.supplyState === 'function' ? store.supplyState() : null;
+  if (consensus) return packSupply(supplyReport(consensus), store);
+  const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
+  if (!blocks.length) return packSupply(supplyReport(emptySupplyState(0)), store);
+  const key = supplyCacheKey(store);
+  if (key === _supplyAt && _supplyVal && _supplyVal.supplyStatus !== 'pending') return _supplyVal;
+  if (!supplyJobs.has(key)) supplyJobs.set(key, runSupplyAudit(store, key));
+  return pendingSupply(store);
+}
+
+/** The publish verdict once the off-loop audit has finished. Consensus state resolves now. */
+export function networkSupplySettled(store) {
+  const now = networkSupply(store);
+  if (now.supplyStatus !== 'pending') return Promise.resolve(now);
+  const key = supplyCacheKey(store);
+  return supplyJobs.get(key) || Promise.resolve(now);
 }
 
 export function explorerCirculation(store) {
   const supply = networkSupply(store);
+  const word = supplyStatusWord(supply.supplyStatus);
+  const settled = word === 'verified' || word === 'mismatch';
   let noteCount = 0;
   for (const b of store.blocks || []) {
     for (const tx of b.txs || []) {
@@ -741,16 +859,16 @@ export function explorerCirculation(store) {
     }
   }
   return {
-    proofs: supply.supplyStatus === 'verified',
-    supplyStatus: supply.supplyStatus === 'verified' ? 'verified' : 'mismatch',
-    differenceNanos: Number(supply.differenceNanos) || 0,
-    schedulePotNanos: Number(supply.schedulePotNanos) || 0,
+    proofs: word === 'verified',
+    supplyStatus: word,
+    differenceNanos: settled ? Number(supply.differenceNanos) || 0 : null,
+    schedulePotNanos: settled ? Number(supply.schedulePotNanos) || 0 : null,
     amountHidden: false,
     noteCount,
-    circulatingNanos: supply.circulatingNanos,
-    circulating: nanosToShe(supply.circulatingNanos),
-    emitted: nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos),
-    hashOwedNanos: Number(supply.hashOwedNanos) || 0,
+    circulatingNanos: settled ? supply.circulatingNanos : null,
+    circulating: settled ? nanosToShe(supply.circulatingNanos) : null,
+    emitted: settled ? nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos) : null,
+    hashOwedNanos: settled ? Number(supply.hashOwedNanos) || 0 : null,
     reserveMintedNanos: supply.reserveMintedNanos || 0,
     reserveVaultNanos: supply.vaultNanos || supply.lockedNanos || 0,
     accruingNanos: supply.accruingNanos || 0,

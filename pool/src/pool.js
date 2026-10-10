@@ -85,7 +85,7 @@ import {
   unitsForShare,
 } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
-import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
+import { poolRecentBlockTxs, networkSupply, openRoundHashRows, supplyStatusWord } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
@@ -4446,7 +4446,7 @@ export function createPool({
       accepted: stats.accepted,
       stale: stats.stale,
       circulatingNanos: supply.circulatingNanos,
-      supplyStatus: supply.supplyStatus === 'verified' ? 'verified' : 'mismatch',
+      supplyStatus: supplyStatusWord(supply.supplyStatus),
       supplyDifferenceNanos: Number(supply.differenceNanos) || 0,
       schedulePotNanos: Number(supply.schedulePotNanos) || 0,
       potEmittedNanos: supply.potNanos,

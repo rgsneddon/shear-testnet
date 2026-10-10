@@ -713,8 +713,17 @@
       const q = queryFromForm();
       return q.has('height') || q.has('id') || q.has('from') || q.has('to');
     }
+    function supplyWord(status) {
+      if (status === 'verified' || status === 'pending' || status === 'unverifiable') return status;
+      return 'mismatch';
+    }
+    function supplyPaint(amount, status) {
+      const word = supplyWord(status);
+      if (word === 'pending' || word === 'unverifiable') return word;
+      return amount + ' · ' + word;
+    }
     function paintHolders(circ) {
-      setText('ex-circulating', fmtShe(circ.circulating) + ' SHE · ' + (circ.supplyStatus === 'verified' ? 'verified' : 'mismatch'));
+      setText('ex-circulating', supplyPaint(fmtShe(circ.circulating) + ' SHE', circ.supplyStatus));
       setText('ex-emitted', fmtShe(circ.emitted) + ' SHE');
       setText('ex-note-count', circ.noteCount ?? 0);
     }
@@ -732,7 +741,7 @@
       setText('ex-height', stats.height ?? 0);
       setText('ex-hashrate', fmtHashNanos(ongoingHashbonusHashes(stats), stats && stats.hashBonusNanos) + ' SHE');
       const NANOS = 100000000000;
-      setText('ex-circ-she', fmtShe(Number(stats.circulatingNanos || 0) / NANOS) + ' SHE · ' + (stats.supplyStatus === 'verified' ? 'verified' : 'mismatch'));
+      setText('ex-circ-she', supplyPaint(fmtShe(Number(stats.circulatingNanos || 0) / NANOS) + ' SHE', stats.supplyStatus));
       var avgPot = Number(stats.potEmittedNanos);
       var avgBonus = Number(stats.hashBonusEmittedNanos);
       var avgH = Number(stats.height) || 0;

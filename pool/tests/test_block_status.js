@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
-import { explorerRecentTxs, confirmedBlockTxs, networkSupply, hashBonusEmittedOfBlock } from '../src/wallet_api.js';
+import { explorerRecentTxs, confirmedBlockTxs, networkSupplySettled, hashBonusEmittedOfBlock } from '../src/wallet_api.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
@@ -120,7 +120,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(capped.length, 30);
   });
 
-  it('networkSupply does not echo the pot schedule when coinbase commitments do not open', () => {
+  it('networkSupply does not echo the pot schedule when coinbase commitments do not open', async () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -137,7 +137,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
       });
     }
     const store = { blocks, tip: () => blocks[2], reserveVault: emptyVault() };
-    const supply = networkSupply(store);
+    const supply = await networkSupplySettled(store);
     assert.equal(supply.supplyStatus, 'mismatch');
     assert.equal(supply.potNanos, 0);
     assert.notEqual(supply.circulatingNanos, 3 * NANOS_PER_SHE);
@@ -147,7 +147,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(supply.vaultNanos, 0);
   });
 
-  it('networkSupply does not treat a Tree-A count or a zero hash vout as minted bonus', () => {
+  it('networkSupply does not treat a Tree-A count or a zero hash vout as minted bonus', async () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -184,7 +184,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
       txs: [{ coinbase: true, vout: [{ kind: 'hash', nanos: units, valueProof: { v: 17 } }] }],
     }, HASH_BONUS_NANOS);
     assert.equal(minted, 17);
-    const supply = networkSupply(store);
+    const supply = await networkSupplySettled(store);
     assert.equal(supply.supplyStatus, 'mismatch');
     assert.equal(supply.potNanos, 0);
     assert.equal(supply.hashNanos, 0);
@@ -214,7 +214,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(got, unitsForShare() * HASH_BONUS_NANOS);
   });
 
-  it('networkSupply ignores painted pot nanos, vault mint bank, pull credit, and open-round counts', () => {
+  it('networkSupply ignores painted pot nanos, vault mint bank, pull credit, and open-round counts', async () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -257,7 +257,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
         { kind: 'hash', nanos: pullCredit },
       ],
     };
-    const supply = networkSupply(store);
+    const supply = await networkSupplySettled(store);
     assert.equal(supply.supplyStatus, 'mismatch');
     assert.equal(supply.potNanos, 0);
     assert.equal(supply.hashNanos, 0);

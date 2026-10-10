@@ -104,8 +104,12 @@
     }
     setText('nc-observed', observedText);
     var circNanos = Number(j.circulatingNanos);
-    var supplyWord = j.supplyStatus === 'verified' ? 'verified' : (j.supplyStatus ? 'mismatch' : '');
-    if (j.supplyStatus === 'mismatch') {
+    var supplyWord = j.supplyStatus === 'verified' || j.supplyStatus === 'pending' || j.supplyStatus === 'unverifiable'
+      ? j.supplyStatus
+      : (j.supplyStatus ? 'mismatch' : '');
+    if (supplyWord === 'pending' || supplyWord === 'unverifiable') {
+      setText('nc-integral', supplyWord);
+    } else if (j.supplyStatus === 'mismatch') {
       setText('nc-integral', (Number.isFinite(circNanos) ? fmtCirc(circNanos) : '—') + ' · mismatch');
     } else if (Number.isFinite(circNanos) && circNanos > 0) {
       setText('nc-integral', fmtCirc(circNanos) + (supplyWord ? ' · ' + supplyWord : ''));

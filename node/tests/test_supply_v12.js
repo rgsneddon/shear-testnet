@@ -15,7 +15,7 @@ import { unitsForShare, shareWorkBits, nonceWithShareTarget } from '../../crypto
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
-import { networkSupply, explorerCirculation } from '../../pool/src/wallet_api.js';
+import { networkSupplySettled, explorerCirculation } from '../../pool/src/wallet_api.js';
 
 const GENESIS = 1_700_000_000_000;
 const EPOCH_MS = EPOCH_DAYS_TESTNET * MS_PER_DAY;
@@ -112,7 +112,7 @@ describe('v12 circulating supply is the public mint', () => {
     assert.equal(src.includes('valueProof'), false);
   });
 
-  it('verifies any pot partition and mismatches any other amount', () => {
+  it('verifies any pot partition and mismatches any other amount', async () => {
     const miner = minerDest();
     const epochs = [0, 1, 7, 80, 120];
     const genesisBlock = () => potBlock(GENESIS, miner, [{ nanos: potSubsidyNanos(0), kind: 'pot' }]);
@@ -196,7 +196,7 @@ describe('v12 circulating supply is the public mint', () => {
     assert.equal(all.differenceNanos, 0);
 
     const store = { blocks: chain, tip: () => chain[chain.length - 1], reserveVault: {} };
-    const published = networkSupply(store);
+    const published = await networkSupplySettled(store);
     assert.equal(published.supplyStatus, 'verified');
     assert.equal(published.circulatingNanos, sum);
     assert.equal(published.potNanos, sum);
@@ -214,7 +214,7 @@ describe('v12 circulating supply is the public mint', () => {
       miner,
       [{ nanos: potSubsidyNanos(epochs[2]) + 1, kind: 'pot' }],
     );
-    const drift = networkSupply({ blocks: inflated, tip: () => inflated.at(-1), reserveVault: {} });
+    const drift = await networkSupplySettled({ blocks: inflated, tip: () => inflated.at(-1), reserveVault: {} });
     assert.equal(drift.supplyStatus, 'mismatch');
     assert.notEqual(drift.circulatingNanos, drift.schedulePotNanos);
     assert.equal(explorerCirculation({
@@ -232,7 +232,8 @@ describe('v12 circulating supply is the public mint', () => {
     const poolPage = fs.readFileSync(new URL('../../pool/public/explorer.html', import.meta.url), 'utf8');
     const apexPage = fs.readFileSync(new URL('../../explorer/explorer.html', import.meta.url), 'utf8');
     for (const page of [poolPage, apexPage]) {
-      assert.match(page, /supplyStatus === 'verified' \? 'verified' : 'mismatch'/);
+      assert.match(page, /function supplyWord\(status\)/);
+      assert.match(page, /unverifiable/);
     }
   });
 

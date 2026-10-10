@@ -38,7 +38,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
-import { emptySupplyState, foldSupply, supplyFromScalar, supplyLinks, supplyStep } from './supply.js';
+import { emptySupplyState, foldSupply, supplyFromScalar, supplyLinks, supplyStep, publishedSupply } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
   verifyShareBatch,
@@ -4181,6 +4181,9 @@ export function createStore(dir, {
     reorgHaltDepth: haltDepth,
     headers,
     policyState,
+    supplyState() {
+      return publishedSupply(supplyTip, tip());
+    },
     owedView() {
       return {
         rows: copyOwedRows(owedRows),
