@@ -4,7 +4,7 @@
  * B spends only after the committing block; proof against that header.
  */
 import { sha256 } from './shear_hash.js';
-import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
+import { merkleRoot, merkleProof, merkleBound } from './merkle.js';
 import { packALeafV5, packBLeaf, packDigest } from './pack.js';
 import { noteCommitOfDest20, openedCoinbaseNanos, flowBLockNanos, verifyFlowConservation } from './note.js';
 import { hash20FromAddress } from './address.js';
@@ -95,10 +95,13 @@ export function spendB({
   } catch {
     return { ok: false, reason: 'leaf' };
   }
-  if (!merkleVerify(digest, proof, b)) return { ok: false, reason: 'proof' };
+  const pos = merkleBound(digest, proof, b);
+  if (pos == null) return { ok: false, reason: 'proof' };
+  const claimed = positionIndex(index);
+  if (claimed == null || claimed !== pos) return { ok: false, reason: 'proof' };
   let id;
   try {
-    id = bLeafId(canon, h, index);
+    id = bLeafId(canon, h, pos);
   } catch {
     return { ok: false, reason: 'leaf' };
   }
@@ -208,6 +211,15 @@ function canonicalLeafFields(leaf, fallbackTag) {
   return { dest20, unit, nonce, memoH, tag };
 }
 
+/** Missing index is position 0. Any other shape is not a position. */
+function positionIndex(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'boolean') return null;
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? v : null;
+  if (typeof v === 'bigint' && v >= 0n && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
+  return null;
+}
+
 /** Exact 20-byte dest, 32-byte memo, safe-integer unit and nonce, ASCII tag of at most 8 bytes. */
 export function canonicalBLeaf(tx) {
   try {
@@ -258,7 +270,7 @@ export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spe
       rootA: block.rootA,
       rootB: block.rootB,
       height: commitH,
-      index: Number(tx?.index || 0),
+      index: tx?.index,
       tipHeight,
       spent,
     });
