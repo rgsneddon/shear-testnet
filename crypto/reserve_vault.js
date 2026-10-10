@@ -19,6 +19,8 @@ import {
   freezeEpochBps,
   makeFreezeRecord,
   verifyFreezeRecord,
+  parseCoinbaseObserve,
+  coinbaseObserveRejected,
   GENESIS_BPS,
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
@@ -149,6 +151,7 @@ export function emptyVault() {
     portals: Object.create(null),
     votes: { increase: 0, decrease: 0, hold: 0 },
     oracle: emptyOracle(),
+    sealedObserve: null,
     epochBps: GENESIS_BPS,
     freezes: Object.create(null),
     genesisMs: 0,
@@ -444,6 +447,7 @@ function snapTrial(state) {
     voteHold: Number(votes.hold || 0),
     freeze: state.freeze,
     oracle: state.oracle,
+    sealedObserve: state.sealedObserve,
     portals: state.portals,
     mintedIds: state.mintedIds,
     freezes: state.freezes,
@@ -478,6 +482,7 @@ function restoreTrial(state, snap, frame) {
   }
   state.freeze = snap.freeze;
   state.oracle = snap.oracle;
+  state.sealedObserve = snap.sealedObserve;
   state.portals = snap.portals;
   state.mintedIds = snap.mintedIds;
   state.freezes = snap.freezes;
@@ -521,13 +526,14 @@ function beginEpoch(state, nowMs) {
   const magic = state.magic || MAGIC_TESTNET;
   const days = epochDays(magic);
   const idx = vortexEpochIndex({ nowMs, genesisMs: state.genesisMs, epochDays: days });
+  const sealed = parseCoinbaseObserve({ coinbase: true, observe: state.sealedObserve || null });
+  const reading = sealed.ok && sealed.observe ? sealed.observe : null;
   const rec = makeFreezeRecord({
     epochIndex: idx,
     prevEpochBps: state.epochBps ?? GENESIS_BPS,
-    annualBps: state.oracle?.annualBps,
-    observedAtMs: state.oracle?.observedAtMs,
+    annualBps: reading ? reading.annualBps : undefined,
+    observedAtMs: reading ? reading.observedAtMs : 0,
     nowMs,
-    components: state.oracle?.components,
     magic,
   });
   state.freezes = state.freezes || Object.create(null);
@@ -635,6 +641,7 @@ export function vote({ state, dest, portalId, choice, nowMs }) {
   };
 }
 
+/** Local proposal only. The next freeze reads sealedObserve, which a block writes. */
 export function observeRate({ state, annualBps, nowMs }) {
   if (!state.oracle) state.oracle = emptyOracle({ nowMs });
   return observeOracleRate(state.oracle, { annualBps, nowMs });
@@ -1046,6 +1053,10 @@ function finishReserveApply(results) {
 export function applyReserveBlock({ state, block, nowMs }) {
   if (!state || state.blankFork) return [];
   const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const observeGate = coinbaseObserveRejected(txs);
+  if (observeGate) {
+    return finishReserveApply([{ ok: false, reason: observeGate.reason || 'bad_rate', action: 'observe' }]);
+  }
   const results = [];
   // First block whose time is past the epoch collates votes into the live
   // hash bonus. Winning plurality moves the bonus by ±1. Height is unchanged.
@@ -1103,6 +1114,8 @@ export function applyReserveBlock({ state, block, nowMs }) {
       if (!got.ok) return finishReserveApply(results);
     }
   }
+  const sealed = parseCoinbaseObserve(cb?.coinbase ? cb : null);
+  if (sealed.observe) state.sealedObserve = sealed.observe;
   return finishReserveApply(results);
 }
 

@@ -372,7 +372,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(out.interest, before);
   });
 
-  it('first lock after enact updates epochBps automatically; step > 100 is clamped', () => {
+  it('a local observeRate after enact does not move the next epochBps', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const a = destOf(alice);
@@ -383,10 +383,12 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(state.epochBps, 264);
     enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + RESERVE_EPOCH_MS + 1 }).ok, true);
+    assert.equal(state.oracle.annualBps, 9999);
     deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: t0 + RESERVE_EPOCH_MS + 2 });
     assert.equal(state.currentEpoch, 2);
     assert.equal(state.bonusEnacted, false);
-    assert.equal(state.epochBps, 364);
+    assert.equal(state.epochBps, 264);
+    assert.equal(state.sealedObserve ?? null, null);
   });
 
   it('first vote lands; second same portal same epoch is vote_locked and piles stay', () => {

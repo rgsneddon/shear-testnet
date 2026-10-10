@@ -67,7 +67,6 @@ import {
   reorgBreaksVaultSeal,
   vaultSealBanner,
 } from '../../crypto/vault_seal.js';
-import { emptyOracle } from '../../crypto/reserve_oracle.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
@@ -619,16 +618,6 @@ export function createStore(dir, {
   }
 
   const reserveVault = emptyVault();
-  const loadedOracle = (() => {
-    if (!fs.existsSync(vaultFile)) return emptyOracle();
-    try {
-      const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
-      return raw?.oracle || emptyOracle();
-    } catch {
-      return emptyOracle();
-    }
-  })();
-  reserveVault.oracle = loadedOracle;
 
   function saveReserve() {
     const raw = JSON.parse(JSON.stringify(reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
@@ -752,9 +741,7 @@ export function createStore(dir, {
       saveReserve();
       return;
     }
-    const oracle = reserveVault.oracle || emptyOracle();
     const fresh = emptyVault();
-    fresh.oracle = oracle;
     for (const k of Object.keys(reserveVault)) delete reserveVault[k];
     Object.assign(reserveVault, fresh);
     reserveVault.portals = Object.create(null);
@@ -811,9 +798,6 @@ export function createStore(dir, {
       syncBlankFlag();
       saveReserve();
       return;
-    }
-    if (loaded) {
-      if (!reserveVault.oracle && loaded.oracle) reserveVault.oracle = loaded.oracle;
     }
     replayVault();
   }

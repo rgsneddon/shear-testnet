@@ -75,6 +75,7 @@ import { ANCHOR_WINDOW, checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmi
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
+import { coinbaseObserveRejected, observeDigestSuffix } from '../../crypto/reserve_oracle.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
@@ -273,14 +274,16 @@ export function digestTx(tx) {
   const carry = tx?.coinbase ? canonicalCarry(tx) : 0;
   const owedSuffix = tx?.coinbase ? hashOwedDigestSuffix(tx) : Buffer.alloc(0);
   const slotSuffix = tx?.coinbase ? shareSlotDigestSuffix(tx) : Buffer.alloc(0);
+  const observeSuffix = tx?.coinbase ? observeDigestSuffix(tx) : null;
   if (tx?.coinbase && (owedSuffix == null || slotSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length))) {
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (observeSuffix && observeSuffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
     if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
+    if (observeSuffix && observeSuffix.length) parts.push(observeSuffix);
     return packDigest(Buffer.concat(parts));
   }
   const reserveSuffix = reserveDigestSuffix(tx);
@@ -1688,6 +1691,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const budget = blockBudget(txs);
   if (!budget.ok) return budget;
+  const observeGate = coinbaseObserveRejected(txs);
+  if (observeGate) return observeGate;
   const wantPot = potSubsidyAt({
     nowMs: Number(decoded.timestamp) || Number(nowMs) || 0,
     genesisMs: resolvedGenesisMs,

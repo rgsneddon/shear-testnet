@@ -53,6 +53,52 @@ export function observeRate(oracle, { annualBps, nowMs }) {
   return { ok: true, annualBps: n, observedAtMs: nowMs };
 }
 
+/**
+ * A coinbase observe is one integer bps and one integer time.
+ * Absent is no observation. Anything else is not a rate.
+ */
+export function parseCoinbaseObserve(tx) {
+  if (!tx || tx.observe == null) return { ok: true, observe: null };
+  if (!tx.coinbase) return { ok: false, reason: 'bad_rate' };
+  const raw = tx.observe;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, reason: 'bad_rate' };
+  }
+  const bps = raw.annualBps;
+  const at = raw.observedAtMs;
+  if (typeof bps !== 'number' || !Number.isSafeInteger(bps) || bps < 0 || bps > RESERVE_ORACLE_MAX_BPS) {
+    return { ok: false, reason: 'bad_rate' };
+  }
+  if (typeof at !== 'number' || !Number.isSafeInteger(at) || at < 0) {
+    return { ok: false, reason: 'bad_rate' };
+  }
+  return { ok: true, observe: { annualBps: bps, observedAtMs: at } };
+}
+
+/** Body field, or a non-canonical coinbase field. Null means the block may carry on. */
+export function coinbaseObserveRejected(txs) {
+  const list = Array.isArray(txs) ? txs : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const tx = list[i];
+    if (!tx || tx.observe == null) continue;
+    if (i !== 0 || !tx.coinbase) return { ok: false, reason: 'bad_rate' };
+    const parsed = parseCoinbaseObserve(tx);
+    if (!parsed.ok) return { ok: false, reason: parsed.reason || 'bad_rate' };
+  }
+  return null;
+}
+
+/** Bound into the coinbase digest. A bad field still changes the digest. */
+export function observeDigestSuffix(tx) {
+  if (!tx?.coinbase || tx.observe == null) return null;
+  const parsed = parseCoinbaseObserve(tx);
+  if (!parsed.ok || !parsed.observe) return Buffer.from('observebad1');
+  const b = Buffer.alloc(12);
+  b.writeUInt32LE(parsed.observe.annualBps, 0);
+  b.writeBigUInt64LE(BigInt(parsed.observe.observedAtMs), 4);
+  return Buffer.concat([Buffer.from('observe1'), b]);
+}
+
 function asUnit(n) {
   if (typeof n === 'bigint') return n < 0n ? 0n : n;
   const v = Math.floor(Number(n) || 0);

@@ -8,6 +8,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
 import { reserveAction } from './reserve_vault.js';
+import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
 
 function keccak256(data) {
@@ -303,6 +304,7 @@ export function isEvmValueTx(tx) {
 
 export function blockNeedsEvm(txs) {
   const list = Array.isArray(txs) ? txs : [];
+  if (list[0]?.coinbase && list[0].observe != null) return true;
   return list.some((tx) => isReserveCall(tx) || isEvmValueTx(tx));
 }
 
@@ -384,6 +386,17 @@ export async function executeBlockEvm(session, txs, nowMs) {
     }
     evm.calls += 1;
     evm.valueMoved += Number(got.valueMoved || 0);
+  }
+  const cb = Array.isArray(txs) ? txs[0] : null;
+  if (cb?.observe != null) {
+    const parsed = parseCoinbaseObserve(cb);
+    if (!parsed.ok || !parsed.observe) return { ok: false, reason: 'bad_rate' };
+    const called = await callReserve(
+      session,
+      encodeObserveRate(parsed.observe.annualBps, parsed.observe.observedAtMs),
+    );
+    if (!called.ok) return { ok: false, reason: called.reason || 'bad_rate' };
+    evm.calls += 1;
   }
   const view = decodePublicView(
     (await callReserve(session, encodePublicView(nowMs), { staticCall: true })).returnValue,

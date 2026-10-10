@@ -485,6 +485,12 @@ export function compactTx(tx) {
     };
     if (tx.excess) row.excess = tx.excess;
     if (tx.jroot) row.jroot = tx.jroot;
+    if (tx.observe != null && typeof tx.observe === 'object' && !Array.isArray(tx.observe)) {
+      row.observe = {
+        annualBps: tx.observe.annualBps,
+        observedAtMs: tx.observe.observedAtMs,
+      };
+    }
     const carry = Math.floor(Number(tx.carryNanos) || 0);
     if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;
     compactHashLedger(tx, row);
