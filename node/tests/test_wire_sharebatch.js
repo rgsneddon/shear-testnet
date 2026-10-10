@@ -129,6 +129,8 @@ describe('shareBatch on disk and p2p wire', () => {
     assert.equal(c.append(cloned, { trustedPowHash: Buffer.from(first.block.hash) }).ok, true);
     const rejected = c.append(decodeWireBlock(missing), { trustedPowHash: Buffer.from(second.block.hash) });
     assert.equal(rejected.ok, false);
-    assert.equal(rejected.reason, 'continuity');
+    // The coinbase still commits shareSlotRoot. An empty batch misses that
+    // slot, so the reject is share_slot rather than the tree continuity root.
+    assert.equal(rejected.reason, 'share_slot');
   });
 });
