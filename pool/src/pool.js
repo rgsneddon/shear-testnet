@@ -65,7 +65,7 @@ import {
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
-import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote, templateForFinder, publicJob } from '../../node/src/chain.js';
 import {
   sortShares,
   selectBlockShares,
@@ -3546,6 +3546,8 @@ export function createPool({
         shareBits: sb,
         shareBatch: lag1Shares,
         poolDest: poolPay,
+        feeDest: feeTo,
+        finderDest: '',
         wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
       });
     } finally {
@@ -3577,6 +3579,99 @@ export function createPool({
 
   function line(obj) {
     return `${JSON.stringify(obj)}\n`;
+  }
+
+  function finderJobId(baseId, dest) {
+    const raw = hash20FromAddress(dest);
+    const hex = raw ? Buffer.from(raw).toString('hex').slice(0, 16) : '';
+    return hex ? `${baseId}.${hex}` : '';
+  }
+
+  function isLiveFinderJob(job, live) {
+    const id = String(job?.jobId || '');
+    const base = String(live?.jobId || '');
+    return !!base && id.startsWith(`${base}.`);
+  }
+
+  /** Keep a finder's merkle and move the stamp onto the live base header. */
+  function alignFinderHeader(aimed, baseHeader) {
+    if (!aimed?.header || !baseHeader) return aimed;
+    let base;
+    let cur;
+    try {
+      base = decodeHeader(Buffer.isBuffer(baseHeader) ? Buffer.from(baseHeader) : headerFromHex(baseHeader));
+      cur = decodeHeader(Buffer.isBuffer(aimed.header) ? Buffer.from(aimed.header) : headerFromHex(aimed.header));
+    } catch {
+      return aimed;
+    }
+    if (cur.timestamp === base.timestamp && Number(cur.bits) === Number(base.bits)) return aimed;
+    const header = encodeHeader({
+      version: cur.version,
+      prevBlockHash: cur.prevBlockHash,
+      merkleRoot: cur.merkleRoot,
+      continuityRoot: cur.continuityRoot,
+      timestamp: base.timestamp,
+      bits: base.bits,
+      nonce: 0n,
+      baseFee: cur.baseFee,
+    });
+    return { ...aimed, header, bits: base.bits };
+  }
+
+  /**
+   * Header this connection hashes. The finder-fee note pays `dest`.
+   * The shared job leaves that note off. A fee dest is not given one.
+   */
+  function aimFinderJob(job, dest) {
+    if (!job || !isDestAddress(dest)) return job;
+    const rec = store.jobs.get(String(job.jobId));
+    const tpl = rec?.tpl;
+    if (!tpl?.levyBind?.finderNanos) return job;
+    const aimedTpl = templateForFinder(tpl, dest);
+    if (!aimedTpl) return null;
+    const aligned = alignFinderHeader(aimedTpl, headerFromHex(job.header));
+    const jobId = finderJobId(job.jobId, dest);
+    if (!jobId) return null;
+    const child = publicJob(aligned, { jobId, shareBits: job.shareBits });
+    child.shareBitsPrev = job.shareBitsPrev;
+    child.shareBitsAt = job.shareBitsAt;
+    child.shareBitsHist = job.shareBitsHist;
+    const prev = store.jobs.get(jobId);
+    if (prev?.job?.header && prev.job.header !== child.header) rememberJobHeader(child, prev.job.header);
+    if (Array.isArray(prev?.job?.headerHistory)) {
+      for (const h of prev.job.headerHistory) rememberJobHeader(child, h);
+    }
+    store.jobs.set(jobId, { tpl: aligned, job: child, shareBits: job.shareBits });
+    return child;
+  }
+
+  function alignLiveFinderJobs(base) {
+    if (!base?.jobId || !base.header || !store.jobs?.keys) return;
+    const prefix = `${base.jobId}.`;
+    for (const id of [...store.jobs.keys()]) {
+      if (!String(id).startsWith(prefix)) continue;
+      const rec = store.jobs.get(id);
+      if (!rec?.tpl || !rec.job) continue;
+      const aligned = alignFinderHeader(rec.tpl, headerFromHex(base.header));
+      const prevHeader = rec.job.header;
+      const child = publicJob(aligned, { jobId: id, shareBits: rec.job.shareBits });
+      if (prevHeader && prevHeader !== child.header) rememberJobHeader(child, prevHeader);
+      if (Array.isArray(rec.job.headerHistory)) {
+        for (const h of rec.job.headerHistory) rememberJobHeader(child, h);
+      }
+      child.shareBitsPrev = rec.job.shareBitsPrev;
+      child.shareBitsAt = rec.job.shareBitsAt;
+      child.shareBitsHist = rec.job.shareBitsHist;
+      rec.tpl = { ...aligned, header: headerFromHex(child.header) };
+      rec.job = child;
+    }
+  }
+
+  function jobForSession(job, session) {
+    if (!job || !session) return job;
+    const dest = hasherPayoutDest(session.login, { dest: session.payoutDest });
+    if (!dest) return job;
+    return aimFinderJob(job, dest) || job;
   }
 
   /** Push one round job to every TCP session now. Do this before the finder ACK. */
@@ -3611,8 +3706,9 @@ export function createPool({
           template: job.shareBits,
         }, { blockBits: blockBitsNow(), minBits: liveShareMin() });
         c.shareBits = sb;
-        const payload = wireJob(job, sb);
-        c.job = payload;
+        const aimed = c.shearFeeRoute ? job : jobForSession(job, m);
+        const payload = wireJob(aimed || job, sb);
+        c.job = aimed || job;
         try {
           if (typeof c.sock.setNoDelay === 'function') c.sock.setNoDelay(true);
           c.sock.write(line({ method: 'job', params: payload }));
@@ -3713,6 +3809,7 @@ export function createPool({
       rec.tpl = { ...rec.tpl, header };
       rec.job = lastJob;
     }
+    alignLiveFinderJobs(lastJob);
     return lastJob;
   }
   function maybeRestampJob(now = Date.now()) {
@@ -3770,6 +3867,7 @@ export function createPool({
           rec.tpl = { ...rec.tpl, header, bits: wantBits };
           rec.job = lastJob;
         }
+        alignLiveFinderJobs(lastJob);
         broadcastJob(lastJob);
         return lastJob;
       } catch { /* keep live job */ }
@@ -3780,6 +3878,9 @@ export function createPool({
   function resolveSubmitJob(params, conn) {
     const id = String(params?.jobId || '');
     const byId = id ? store.jobs.get(id)?.job : null;
+    if (byId && isLiveFinderJob(byId, lastJob)) {
+      return { job: byId, closedRound: false, stale: false };
+    }
     const liveId = String(lastJob?.jobId || '');
     if (byId && String(byId.jobId) === liveId) {
       return { job: byId, closedRound: false, stale: false };
@@ -4219,11 +4320,12 @@ export function createPool({
           // Fee socket submits the hasher's current jobId. A new template here
           // superseded lastJob and the main worker painted 0 H/s until the
           // next share on a stale header.
-          const job = conn.shearFeeRoute && lastJob
+          const issued = conn.shearFeeRoute && lastJob
             ? lastJob
             : issueJob(conn.shareBits);
-          conn.job = job;
-          sock.write(line({ id: msg.id, result: { status: 'OK' }, job: wireJob(job, conn.shareBits) }));
+          const job = conn.shearFeeRoute ? issued : jobForSession(issued, session);
+          conn.job = job || issued;
+          sock.write(line({ id: msg.id, result: { status: 'OK' }, job: wireJob(conn.job, conn.shareBits) }));
           continue;
         }
         if (method === 'stats') {

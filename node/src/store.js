@@ -3835,7 +3835,7 @@ export function createStore(dir, {
     };
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null, hashBonusCustodyDest = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
@@ -4029,6 +4029,8 @@ export function createStore(dir, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
       poolDest,
+      feeDest,
+      finderDest,
       parentBlocks: blocks,
       parentFluxset: liveFlux,
       hashOwedIn: owedRows,

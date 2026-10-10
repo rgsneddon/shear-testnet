@@ -10,7 +10,7 @@ import {
   MAGIC_TESTNET,
 } from './asert.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest } from './address.js';
-import { sealCoinbaseNote, verifySealedNote, asU8 } from './note.js';
+import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos } from './note.js';
 import {
   emptyOracle,
   interestNanos,
@@ -23,7 +23,7 @@ import {
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
 import { extraMint } from './mint.js';
-import { splitLevy } from './levy.js';
+import { reserveFeeDest } from './levy.js';
 import { decodeHeader } from './header.js';
 
 export const VOTE_INCREASE = 'increase bonus';
@@ -1004,6 +1004,38 @@ export function bonusUnitsBefore(blocks) {
   return walked.units;
 }
 
+function noteDest20(o) {
+  if (o?.dest20 != null && o.dest20 !== '') {
+    try {
+      const b = Buffer.from(asU8(o.dest20));
+      if (b.length >= 20) return b.subarray(0, 20);
+    } catch { /* address fallback */ }
+  }
+  const addr = String(o?.address || '');
+  if (isDestAddress(addr)) {
+    const h = hash20FromAddress(addr);
+    if (h) return Buffer.from(h);
+  }
+  return null;
+}
+
+/** Opened reserve-fee notes that pay the reserve. A miss is not a credit. */
+function openedReserveFeeNanos(cb) {
+  const want = hash20FromAddress(reserveFeeDest());
+  if (!want) return null;
+  const reserve20 = Buffer.from(want);
+  let sum = 0;
+  for (const o of cb?.vout || []) {
+    if (o?.kind !== 'reserve-fee') continue;
+    const d20 = noteDest20(o);
+    if (!d20 || !d20.equals(reserve20)) return null;
+    const v = openedCoinbaseNanos(o);
+    if (v == null) return null;
+    sum += v;
+  }
+  return sum;
+}
+
 function finishReserveApply(results) {
   const bad = results.find((row) => row && row.ok === false);
   results.ok = !bad;
@@ -1023,11 +1055,8 @@ export function applyReserveBlock({ state, block, nowMs }) {
     if (!did.ok) return finishReserveApply(results);
   }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
-  const userFees = txs.filter((t) => t && !t.coinbase)
-    .reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
-  if ((cb?.vout || []).some((o) => o?.kind === 'reserve-fee')) {
-    creditFeeBank(state, splitLevy(userFees).reserve);
-  }
+  const reservePaid = openedReserveFeeNanos(cb);
+  if (reservePaid > 0) creditFeeBank(state, reservePaid);
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;

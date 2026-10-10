@@ -6,10 +6,11 @@ import path from 'node:path';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { FEE_SPLIT_FINDER_BPS, splitLevy } from '../../crypto/levy.js';
+import { FEE_SPLIT_FINDER_BPS, reserveFeeDest, splitLevy } from '../../crypto/levy.js';
 import { openedCoinbaseNanos } from '../../crypto/note.js';
+import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { createPool, templateHasherDest, configuredFeeIdentity } from '../src/pool.js';
-import { buildTemplate } from '../../node/src/chain.js';
+import { GENESIS_PREV, buildTemplate } from '../../node/src/chain.js';
 
 function minerDest() {
   const id = newIdentity();
@@ -128,35 +129,60 @@ describe('template miner follows proven work', () => {
           }
           if (row.proven.length) {
             const decoded = decodeHeader(Buffer.from(tpl.header));
+            const finders = row.proven.map(([dest]) => dest);
             for (const feeNanos of [2, 7, 1000, 1_048_576]) {
-              const rebuilt = buildTemplate({
-                prev: decoded.prevBlockHash,
-                height: tpl.height,
-                miner: tpl.miner,
-                potShares: [{ address: row.proven[0][0], nanos: 1, kind: 'pot' }],
-                txs: [{ fee: feeNanos }],
-                bits: decoded.bits,
-                now: Number(decoded.timestamp),
-                poolDest: feeTo,
-              });
-              const finderNotes = rebuilt.txs[0].vout.filter((o) => o.kind === 'finder-fee');
-              const want = splitLevy(feeNanos).finder;
-              assert.equal(want, Math.floor(feeNanos * FEE_SPLIT_FINDER_BPS / 10000));
-              if (want <= 0) {
-                assert.equal(finderNotes.length, 0);
-                continue;
-              }
-              assert.equal(finderNotes.length, 1);
-              assert.equal(openedCoinbaseNanos(finderNotes[0]), want);
-              assert.ok(Buffer.from(finderNotes[0].dest20).equals(hash20FromAddress(tpl.miner)));
-              for (const dest of row.idle) {
-                assert.equal(Buffer.from(finderNotes[0].dest20).equals(hash20FromAddress(dest)), false);
+              for (const finder of finders) {
+                const rebuilt = buildTemplate({
+                  prev: decoded.prevBlockHash,
+                  height: tpl.height,
+                  miner: tpl.miner,
+                  finderDest: finder,
+                  potShares: [{ address: row.proven[0][0], nanos: 1, kind: 'pot' }],
+                  txs: [{ fee: feeNanos }],
+                  bits: decoded.bits,
+                  now: Number(decoded.timestamp),
+                  poolDest: feeTo,
+                  feeDest: feeTo,
+                });
+                const finderNotes = rebuilt.txs[0].vout.filter((o) => o.kind === 'finder-fee');
+                const want = splitLevy(feeNanos).finder;
+                assert.equal(want, Math.floor(feeNanos * FEE_SPLIT_FINDER_BPS / 10000));
+                if (want <= 0) {
+                  assert.equal(finderNotes.length, 0);
+                  continue;
+                }
+                assert.equal(finderNotes.length, 1);
+                assert.equal(openedCoinbaseNanos(finderNotes[0]), want);
+                assert.ok(Buffer.from(finderNotes[0].dest20).equals(hash20FromAddress(finder)));
+                assert.equal(Buffer.from(finderNotes[0].dest20).equals(hash20FromAddress(feeTo)), false);
+                assert.equal(Buffer.from(finderNotes[0].dest20).equals(hash20FromAddress(reserveFeeDest())), false);
+                if (finder !== tpl.miner) {
+                  assert.equal(Buffer.from(finderNotes[0].dest20).equals(hash20FromAddress(tpl.miner)), false);
+                }
+                for (const dest of row.idle) {
+                  assert.equal(Buffer.from(finderNotes[0].dest20).equals(hash20FromAddress(dest)), false);
+                }
               }
             }
           }
         }
         if (!row.proven.length) {
           assert.equal(minerSnap, feeTo);
+          const bare = buildTemplate({
+            prev: GENESIS_PREV,
+            height: 1,
+            miner: feeTo,
+            finderDest: '',
+            poolDest: feeTo,
+            feeDest: feeTo,
+            txs: [{ fee: 1000 }],
+            bits: GENESIS_BITS_PACKED,
+            now: 1_700_000_000_000,
+          });
+          assert.equal(bare.txs[0].vout.some((o) => o.kind === 'finder-fee'), false);
+          const reserveNote = bare.txs[0].vout.find((o) => o.kind === 'reserve-fee');
+          assert.equal(openedCoinbaseNanos(reserveNote), splitLevy(1000).reserve);
+          assert.ok(Buffer.from(reserveNote.dest20).equals(hash20FromAddress(reserveFeeDest())));
         }
       }
     } finally {

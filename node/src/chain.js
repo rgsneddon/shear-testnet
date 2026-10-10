@@ -841,6 +841,158 @@ export function coinbaseTx({
   return tx;
 }
 
+function noteDest20(o) {
+  if (o?.dest20 != null && o.dest20 !== '') {
+    try {
+      const b = Buffer.from(asU8(o.dest20));
+      if (b.length >= 20) return b.subarray(0, 20);
+    } catch { /* address fallback */ }
+  }
+  const addr = String(o?.address || '');
+  if (isDestAddress(addr)) {
+    const h = hash20FromAddress(addr);
+    if (h) return Buffer.from(h);
+  }
+  return null;
+}
+
+/** A fee address is not a block finder. The reserve dest is the other half. */
+function forbiddenFinderDest(dest, poolDest, feeDest) {
+  if (!dest || !isDestAddress(dest)) return true;
+  if (dest === reserveFeeDest() || dest === poolFeeDest()) return true;
+  if (poolDest && isDestAddress(poolDest) && dest === poolDest) return true;
+  if (feeDest && isDestAddress(feeDest) && dest === feeDest) return true;
+  return false;
+}
+
+/**
+ * Who the finder-fee note pays. An explicit dest is the miner who hashes
+ * this header. Undefined is the solo miner. '' means the finder is not
+ * known yet, so the note is left off. A fee dest never receives it.
+ */
+function resolveFinderPay(finderDest, miner, poolDest, feeDest, pay) {
+  if (finderDest === '' || finderDest === null) return '';
+  const named = finderDest !== undefined ? String(finderDest) : String(pay(miner) || '');
+  if (forbiddenFinderDest(named, poolDest, feeDest)) return '';
+  return named;
+}
+
+function sealLevyNote(nanos, dest, kind) {
+  const d20 = hash20FromAddress(dest);
+  if (!d20) return { address: dest, nanos, kind };
+  return attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind }), {
+    admitBase: admitBaseFromAddress(dest),
+  });
+}
+
+function levyRootOf(bind, addedPubs) {
+  if (bind?.zeroFrontier) {
+    const root = extendZeroRoot({ zeroFrontier: bind.zeroFrontier }, addedPubs);
+    if (root) return Buffer.from(root);
+  }
+  const pubs = [...(bind?.parentPubs || []), ...addedPubs];
+  if (!pubs.length) return null;
+  return Buffer.from(jrootOf(pubs.map((p) => (typeof p?.toBytes === 'function' ? p : p))));
+}
+
+function pubsJoining(txs) {
+  const added = [];
+  for (const tx of txs || []) {
+    for (const o of tx?.vout || []) {
+      if (outputJoinsAdmitSet(tx, o)) added.push(o.admitPub);
+    }
+  }
+  return added;
+}
+
+/**
+ * Amount and dest of the levy notes. Every finder-fee note pays one dest,
+ * and that dest is not the reserve or the protocol pool fee. Every
+ * reserve-fee note pays the reserve. Sums match splitLevy.
+ */
+export function coinbaseLevyPays(cb, fees) {
+  const split = splitLevy(fees);
+  const rows = (kind) => (cb?.vout || []).filter((v) => v?.kind === kind);
+  const openedSum = (list) => {
+    let sum = 0;
+    for (const o of list) {
+      const v = openedCoinbaseNanos(o);
+      if (v == null) return null;
+      sum += v;
+    }
+    return sum;
+  };
+  const finderRows = rows('finder-fee');
+  const reserveRows = rows('reserve-fee');
+  if (split.finder === 0 ? finderRows.length !== 0 : openedSum(finderRows) !== split.finder) {
+    return { ok: false, reason: 'levy_split' };
+  }
+  if (split.reserve === 0 ? reserveRows.length !== 0 : openedSum(reserveRows) !== split.reserve) {
+    return { ok: false, reason: 'levy_split' };
+  }
+  const reserve20 = Buffer.from(hash20FromAddress(reserveFeeDest()));
+  const pool20 = Buffer.from(hash20FromAddress(poolFeeDest()));
+  let finder20 = null;
+  for (const o of finderRows) {
+    const d20 = noteDest20(o);
+    if (!d20 || d20.equals(reserve20) || d20.equals(pool20)) return { ok: false, reason: 'levy_split' };
+    if (finder20 && !finder20.equals(d20)) return { ok: false, reason: 'levy_split' };
+    finder20 = d20;
+  }
+  for (const o of reserveRows) {
+    const d20 = noteDest20(o);
+    if (!d20 || !d20.equals(reserve20)) return { ok: false, reason: 'levy_split' };
+  }
+  return { ok: true, finder: split.finder, reserve: split.reserve };
+}
+
+/**
+ * One header whose finder-fee pays `finderDest`. The pot notes stay.
+ * The shared template leaves the finder off until the pool knows who is
+ * hashing. A fee dest is refused. The same dest returns the same template.
+ */
+export function templateForFinder(tpl, finderDest) {
+  const bind = tpl?.levyBind;
+  if (!bind || !(bind.finderNanos > 0)) return tpl || null;
+  const dest = String(finderDest || '');
+  if (forbiddenFinderDest(dest, bind.poolDest, bind.feeDest)) return null;
+  const cb = tpl.txs?.[0];
+  if (!cb?.coinbase) return null;
+  const existing = (cb.vout || []).find((o) => o.kind === 'finder-fee');
+  const want = hash20FromAddress(dest);
+  if (existing && want && noteDest20(existing)?.equals(Buffer.from(want))) return tpl;
+  const note = sealLevyNote(bind.finderNanos, dest, 'finder-fee');
+  const vout = (cb.vout || []).filter((o) => o.kind !== 'finder-fee');
+  const reserveAt = vout.findIndex((o) => o.kind === 'reserve-fee');
+  if (reserveAt >= 0) vout.splice(reserveAt, 0, note);
+  else vout.push(note);
+  const nextCb = { ...cb, vout, excess: excessOf(vout) };
+  const txs = [nextCb, ...(tpl.txs || []).slice(1)];
+  const root = levyRootOf(bind, pubsJoining(txs));
+  if (cb.jroot && !root) return null;
+  if (root) nextCb.jroot = root;
+  const merkle = merkleRoot(txs.map(digestTx));
+  const decoded = decodeHeader(Buffer.from(tpl.header));
+  const header = encodeHeader({
+    version: decoded.version,
+    prevBlockHash: decoded.prevBlockHash,
+    merkleRoot: merkle,
+    continuityRoot: decoded.continuityRoot,
+    timestamp: decoded.timestamp,
+    bits: decoded.bits,
+    nonce: 0n,
+    baseFee: decoded.baseFee,
+  });
+  return {
+    ...tpl,
+    header,
+    merkleRoot: merkle,
+    txs,
+    miner: dest,
+    weight: blockWeight(txs, tpl.bLeaves),
+  };
+}
+
 export function buildTemplate({
   prev,
   prevHeader,
@@ -858,6 +1010,8 @@ export function buildTemplate({
   hashBonusNanos = HASH_BONUS_NANOS,
   shareBatch = null,
   poolDest = null,
+  feeDest = null,
+  finderDest,
   hashBonusCustodyDest = null,
   parentFluxset = null,
   parentBlocks = null,
@@ -938,24 +1092,9 @@ export function buildTemplate({
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
-  if (split.finder) {
-    const dest = pay(miner);
-    const d20 = hash20FromAddress(dest);
-    cb.vout.push(d20
-      ? attachAdmitPub(sealCoinbaseNote(split.finder, { dest20: d20, kind: 'finder-fee' }), {
-        admitBase: admitBaseFromAddress(dest),
-      })
-      : { address: dest, nanos: split.finder, kind: 'finder-fee' });
-  }
-  if (split.reserve) {
-    const dest = reserveFeeDest();
-    const d20 = hash20FromAddress(dest);
-    cb.vout.push(d20
-      ? attachAdmitPub(sealCoinbaseNote(split.reserve, { dest20: d20, kind: 'reserve-fee' }), {
-        admitBase: admitBaseFromAddress(dest),
-      })
-      : { address: dest, nanos: split.reserve, kind: 'reserve-fee' });
-  }
+  const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
+  if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
+  if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
   const addedPubs = [];
@@ -1034,6 +1173,14 @@ export function buildTemplate({
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashCredits: freshCreditsFromShares(batch, hashBonusNanos),
+    levyBind: {
+      finderNanos: split.finder,
+      reserveNanos: split.reserve,
+      poolDest: poolDest && isDestAddress(poolDest) ? poolDest : '',
+      feeDest: feeDest && isDestAddress(feeDest) ? feeDest : '',
+      zeroFrontier: parentFlux?.zeroFrontier ? Buffer.from(parentFlux.zeroFrontier) : null,
+      parentPubs: parentPubs.slice(),
+    },
   };
 }
 
@@ -2062,21 +2209,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const funded = verifyFundedBody(body, spendableOf, { seenDigests, reserveState });
     if (!funded.ok) return funded;
   }
-  const split = splitLevy(fees);
-  const levyPaid = (kind, want) => {
-    const rows = txs[0].vout.filter((v) => v.kind === kind);
-    if (want === 0) return rows.length === 0 ? 0 : -1;
-    let sum = 0;
-    for (const o of rows) {
-      const v = openedCoinbaseNanos(o);
-      if (v == null) return -1;
-      sum += v;
-    }
-    return sum === want ? sum : -1;
-  };
-  const finderPaid = levyPaid('finder-fee', split.finder);
-  const reservePaid = levyPaid('reserve-fee', split.reserve);
-  if (finderPaid !== split.finder || reservePaid !== split.reserve) return { ok: false, reason: 'levy_split' };
+  const levyBound = coinbaseLevyPays(txs[0], fees);
+  if (!levyBound.ok) return { ok: false, reason: levyBound.reason || 'levy_split' };
   const addedPubs = [];
   for (const tx of txs) {
     for (const o of tx.vout || []) {
