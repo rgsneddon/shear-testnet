@@ -1,2 +1,3 @@
 node/pack/*.cmd text eol=crlf
 node/pack/*.bat text eol=crlf
+crypto/native/vendor/monero-oxide-77788c3/** -text linguist-vendored
