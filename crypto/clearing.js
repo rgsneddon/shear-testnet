@@ -60,6 +60,13 @@ export function spendB({
   tipHeight,
   spent,
 } = {}) {
+  let canon;
+  try {
+    canon = canonicalLeafFields(leaf, '');
+  } catch {
+    return { ok: false, reason: 'leaf' };
+  }
+  if (!canon) return { ok: false, reason: 'leaf' };
   if (!header) return { ok: false, reason: 'no_header' };
   let decoded;
   try {
@@ -67,8 +74,14 @@ export function spendB({
   } catch {
     return { ok: false, reason: 'bad_header' };
   }
-  const a = Buffer.from(rootA || Buffer.alloc(32));
-  const b = Buffer.from(rootB || Buffer.alloc(32));
+  let a;
+  let b;
+  try {
+    a = Buffer.from(rootA || Buffer.alloc(32));
+    b = Buffer.from(rootB || Buffer.alloc(32));
+  } catch {
+    return { ok: false, reason: 'leaf' };
+  }
   if (!dualContinuityRoot(a, b).equals(decoded.continuityRoot)) {
     return { ok: false, reason: 'continuity' };
   }
@@ -76,13 +89,23 @@ export function spendB({
   const tip = Number(tipHeight) || 0;
   if (!(h >= 1) || tip < h) return { ok: false, reason: 'pre_seal' };
   if (tip - h + 1 < SPENDABLE_CONFIRMATIONS) return { ok: false, reason: 'immature' };
-  const digest = bLeafBytes(leaf);
+  let digest;
+  try {
+    digest = bLeafBytes(canon);
+  } catch {
+    return { ok: false, reason: 'leaf' };
+  }
   if (!merkleVerify(digest, proof, b)) return { ok: false, reason: 'proof' };
-  const id = bLeafId(leaf, h, index);
+  let id;
+  try {
+    id = bLeafId(canon, h, index);
+  } catch {
+    return { ok: false, reason: 'leaf' };
+  }
   const book = spent instanceof Set ? spent : new Set(spent || []);
   if (book.has(id)) return { ok: false, reason: 'double_open' };
   book.add(id);
-  return { ok: true, id, dest20: leaf.dest20, unit: leaf.unit, spent: book };
+  return { ok: true, id, dest20: canon.dest20, unit: canon.unit, spent: book };
 }
 
 export function bProof(bLeaves, index) {
@@ -105,20 +128,105 @@ export function chainBlockAt(height, history, prev) {
   return null;
 }
 
-function leafOf(tx) {
-  if (tx?.leaf && tx.leaf.dest20 != null) return tx.leaf;
-  let dest20 = Buffer.alloc(20);
+function decodeExact(x, n) {
   try {
-    const h = hash20FromAddress(tx?.to || tx?.vout?.[0]?.address || '');
-    if (h) dest20 = Buffer.from(h);
-  } catch { /* zero dest */ }
-  return {
-    dest20,
-    unit: Number(tx?.unit || tx?.nanos || 0),
-    nonce: Number(tx?.nonce || 0),
-    memoH: tx?.memoH || Buffer.alloc(32),
-    tag: tx?.tag || 'b-spend',
-  };
+    if (Buffer.isBuffer(x) || x instanceof Uint8Array) {
+      const b = Buffer.from(x);
+      return b.length === n ? b : null;
+    }
+    if (typeof x === 'string') {
+      if (x.length !== n * 2 || !/^[0-9a-fA-F]+$/.test(x)) return null;
+      return Buffer.from(x, 'hex');
+    }
+    if (x && typeof x === 'object') {
+      if (typeof x.$hex === 'string') return decodeExact(x.$hex, n);
+      if (x.type === 'Buffer' && Array.isArray(x.data)) {
+        if (x.data.length !== n) return null;
+        for (const v of x.data) {
+          if (!Number.isInteger(v) || v < 0 || v > 255) return null;
+        }
+        return Buffer.from(x.data);
+      }
+      if (Array.isArray(x)) {
+        if (x.length !== n) return null;
+        for (const v of x) {
+          if (!Number.isInteger(v) || v < 0 || v > 255) return null;
+        }
+        return Buffer.from(x);
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/** Non-negative safe integer. A missing field is `whenMissing`. '5.0' is not canonical. */
+function canonicalU64(v, whenMissing) {
+  if (v == null || v === '') return whenMissing;
+  if (typeof v === 'boolean') return null;
+  if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v) || v < 0) return null;
+    return v;
+  }
+  if (typeof v === 'bigint') {
+    if (v < 0n || v > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(v);
+  }
+  if (typeof v === 'string') {
+    if (!/^(0|[1-9][0-9]*)$/.test(v)) return null;
+    const n = Number(v);
+    if (!Number.isSafeInteger(n) || String(n) !== v) return null;
+    return n;
+  }
+  return null;
+}
+
+function canonicalTag(tag, fallback) {
+  const s = tag == null || tag === '' ? (fallback == null ? '' : String(fallback)) : String(tag);
+  if (s.length > 8) return null;
+  for (let i = 0; i < s.length; i += 1) {
+    if (s.charCodeAt(i) > 0x7f) return null;
+  }
+  return s;
+}
+
+function canonicalLeafFields(leaf, fallbackTag) {
+  if (!leaf || typeof leaf !== 'object') return null;
+  const dest20 = decodeExact(leaf.dest20, 20);
+  if (!dest20) return null;
+  const memoH = leaf.memoH == null || leaf.memoH === ''
+    ? Buffer.alloc(32)
+    : decodeExact(leaf.memoH, 32);
+  if (!memoH) return null;
+  const unit = canonicalU64(leaf.unit, 0);
+  if (unit == null) return null;
+  const nonce = canonicalU64(leaf.nonce, 0);
+  if (nonce == null) return null;
+  const tag = canonicalTag(leaf.tag, fallbackTag);
+  if (tag == null) return null;
+  return { dest20, unit, nonce, memoH, tag };
+}
+
+/** Exact 20-byte dest, 32-byte memo, safe-integer unit and nonce, ASCII tag of at most 8 bytes. */
+export function canonicalBLeaf(tx) {
+  try {
+    if (tx?.leaf && tx.leaf.dest20 != null) return canonicalLeafFields(tx.leaf, '');
+    let dest20 = null;
+    try {
+      const h = hash20FromAddress(tx?.to || tx?.vout?.[0]?.address || '');
+      if (h) dest20 = Buffer.from(h);
+    } catch { /* no dest */ }
+    return canonicalLeafFields({
+      dest20,
+      unit: tx?.unit != null ? tx.unit : tx?.nanos,
+      nonce: tx?.nonce,
+      memoH: tx?.memoH,
+      tag: tx?.tag == null || tx?.tag === '' ? 'b-spend' : tx.tag,
+    }, 'b-spend');
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -127,32 +235,34 @@ function leafOf(tx) {
  * Every output opens, and the opened sum is the leaf unit.
  */
 export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spent = null } = {}) {
-  const commitH = Number(tx?.commitHeight || 0);
-  const block = chainBlockAt(commitH, history, prev);
-  if (!block?.header) return { ok: false, reason: 'pre_seal' };
-  const leaf = leafOf(tx);
-  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
-  if (!outs.length) return { ok: false, reason: 'commit_sum' };
-  let sum = 0;
-  for (const o of outs) {
-    const v = openedCoinbaseNanos(o);
-    if (!Number.isSafeInteger(v) || v < 0) return { ok: false, reason: 'commit_sum' };
-    if (sum > Number.MAX_SAFE_INTEGER - v) return { ok: false, reason: 'commit_sum' };
-    sum += v;
+  try {
+    const leaf = canonicalBLeaf(tx);
+    if (!leaf) return { ok: false, reason: 'leaf' };
+    const commitH = Number(tx?.commitHeight || 0);
+    const block = chainBlockAt(commitH, history, prev);
+    if (!block?.header) return { ok: false, reason: 'pre_seal' };
+    const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+    if (!outs.length) return { ok: false, reason: 'commit_sum' };
+    let sum = 0;
+    for (const o of outs) {
+      const v = openedCoinbaseNanos(o);
+      if (!Number.isSafeInteger(v) || v < 0) return { ok: false, reason: 'commit_sum' };
+      if (sum > Number.MAX_SAFE_INTEGER - v) return { ok: false, reason: 'commit_sum' };
+      sum += v;
+    }
+    if (sum !== leaf.unit) return { ok: false, reason: 'commit_sum' };
+    return spendB({
+      leaf,
+      proof: tx?.proof || [],
+      header: block.header,
+      rootA: block.rootA,
+      rootB: block.rootB,
+      height: commitH,
+      index: Number(tx?.index || 0),
+      tipHeight,
+      spent,
+    });
+  } catch {
+    return { ok: false, reason: 'leaf' };
   }
-  const unit = Number(leaf.unit);
-  if (!Number.isSafeInteger(unit) || unit < 0 || sum !== unit) {
-    return { ok: false, reason: 'commit_sum' };
-  }
-  return spendB({
-    leaf,
-    proof: tx?.proof || [],
-    header: block.header,
-    rootA: block.rootA,
-    rootB: block.rootB,
-    height: commitH,
-    index: Number(tx?.index || 0),
-    tipHeight,
-    spent,
-  });
 }

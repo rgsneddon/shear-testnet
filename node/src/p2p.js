@@ -2089,7 +2089,16 @@ export function createP2p({
         if (!raw) continue;
         let msg;
         try { msg = JSON.parse(raw); } catch { continue; }
-        handle(sock, msg);
+        try {
+          handle(sock, msg);
+        } catch {
+          const rec = peers.get(sock);
+          if (recordProofFail(rec)) {
+            const until = Date.now() + P2P_BAN_MS;
+            if (rec?.remote) peerBans.set(rec.remote, until);
+            try { sock.destroy(); } catch { /* ignore */ }
+          }
+        }
       }
     });
     sock.on('close', () => drop(sock));

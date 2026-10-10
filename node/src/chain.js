@@ -2053,13 +2053,18 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (!gate.ok) return { ok: false, reason: gate.reason || 'vortice_register' };
     }
     if (tx.kind === 'b-spend') {
-      const got = bindBSpend(tx, {
-        history: evmHistory,
-        prev,
-        tipHeight: parentHeight + 1,
-        spent,
-      });
-      if (!got.ok) return got;
+      let got;
+      try {
+        got = bindBSpend(tx, {
+          history: evmHistory,
+          prev,
+          tipHeight: parentHeight + 1,
+          spent,
+        });
+      } catch {
+        return { ok: false, reason: 'leaf' };
+      }
+      if (!got || !got.ok) return got || { ok: false, reason: 'leaf' };
     }
     if (stake.mintId) drawnWithdraws.add(stake.mintId);
   }

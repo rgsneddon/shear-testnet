@@ -56,7 +56,7 @@ import { publicExplorerRow } from '../../crypto/dummy.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
-import { bLeafId, bindBSpend } from '../../crypto/clearing.js';
+import { bLeafId, bindBSpend, canonicalBLeaf } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
 import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from '../../crypto/reserve_vault.js';
@@ -152,41 +152,8 @@ function txIdOf(tx) {
   return String(tx?.id || '');
 }
 
-function bufExact(x, n) {
-  if (x == null || x === '') return null;
-  let b;
-  try { b = Buffer.from(x); } catch { return null; }
-  return b.length === n ? b : null;
-}
-
 function spendLeafOf(tx) {
-  if (tx?.leaf && typeof tx.leaf === 'object') {
-    const dest20 = bufExact(tx.leaf.dest20, 20);
-    const memoH = tx.leaf.memoH == null || tx.leaf.memoH === ''
-      ? Buffer.alloc(32)
-      : bufExact(tx.leaf.memoH, 32);
-    if (!dest20 || !memoH) return null;
-    return {
-      dest20,
-      unit: Number(tx.leaf.unit || 0),
-      nonce: Number(tx.leaf.nonce || 0),
-      memoH,
-      tag: tx.leaf.tag != null ? String(tx.leaf.tag) : '',
-    };
-  }
-  const dest20 = bufExact(hash20FromAddress(tx?.to || tx?.vout?.[0]?.address || ''), 20);
-  if (!dest20) return null;
-  const memoH = tx?.memoH == null || tx?.memoH === ''
-    ? Buffer.alloc(32)
-    : bufExact(tx.memoH, 32);
-  if (!memoH) return null;
-  return {
-    dest20,
-    unit: Number(tx?.unit || tx?.nanos || 0),
-    nonce: Number(tx?.nonce || 0),
-    memoH,
-    tag: tx?.tag ? String(tx.tag) : 'b-spend',
-  };
+  return canonicalBLeaf(tx);
 }
 
 // Ids the block's own b-spend txs name. No merkle verify. Null fails closed.
@@ -2051,13 +2018,18 @@ export function createStore(dir, {
     if (kindGate) return kindGate;
     if (String(tx.kind || '') === 'b-spend') {
       const tipNow = tip();
-      const boundB = bindBSpend(tx, {
-        history: blocks,
-        prev: tipNow,
-        tipHeight: Number(tipNow?.height || 0) + 1,
-        spent: new Set(spentB),
-      });
-      if (!boundB.ok) return boundB;
+      let boundB;
+      try {
+        boundB = bindBSpend(tx, {
+          history: blocks,
+          prev: tipNow,
+          tipHeight: Number(tipNow?.height || 0) + 1,
+          spent: new Set(spentB),
+        });
+      } catch {
+        return { ok: false, reason: 'leaf' };
+      }
+      if (!boundB || !boundB.ok) return boundB || { ok: false, reason: 'leaf' };
     }
     if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
       return { ok: false, reason: 'paused' };
@@ -3847,12 +3819,17 @@ export function createStore(dir, {
           } catch { /* ignore */ }
           continue;
         }
-        const boundB = bindBSpend(tx, {
-          history: blocks,
-          prev: t,
-          tipHeight: height,
-          spent: bSpent,
-        });
+        let boundB;
+        try {
+          boundB = bindBSpend(tx, {
+            history: blocks,
+            prev: t,
+            tipHeight: height,
+            spent: bSpent,
+          });
+        } catch {
+          boundB = { ok: false, reason: 'leaf' };
+        }
         if (!boundB.ok) {
           try {
             console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: boundB.reason }));
