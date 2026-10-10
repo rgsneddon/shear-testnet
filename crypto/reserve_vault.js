@@ -44,6 +44,10 @@ const openMemo = new Map();
 const OPEN_MEMO_MAX = 8192;
 let reserveApplyCount = 0;
 let reserveOpenMisses = 0;
+// Set only while a carried trial mutates `state` in place. A miss restores
+// the rows this trial touched. Consensus does not set this: it still clones,
+// because that caller passes the live vault and drops the trial.
+let undo = null;
 
 export function reserveTrialStats() {
   return { applies: reserveApplyCount, opens: reserveOpenMisses };
@@ -226,6 +230,7 @@ export function payoutStakeReward({
     }
   }
   vault.feeBankNanos = bank - fromFee;
+  rememberMint(vault, id);
   vault.mintedIds[id] = true;
   if (gap > 0n) vault.mintBankNanos = asBig(vault.mintBankNanos) + gap;
   return {
@@ -348,11 +353,137 @@ export function portalPrincipalNanos(state, dest) {
   return asNum(n);
 }
 
+function copyPortal(row) {
+  return { ...row };
+}
+
+function undoBook(maps, obj) {
+  let book = maps.get(obj);
+  if (!book) {
+    book = new Map();
+    maps.set(obj, book);
+  }
+  return book;
+}
+
+function rememberPortal(state, id) {
+  if (!undo || undo.state !== state || !state.portals) return;
+  const book = undoBook(undo.portals, state.portals);
+  if (book.has(id)) return;
+  const row = state.portals[id];
+  book.set(id, row ? copyPortal(row) : null);
+}
+
+function rememberMint(state, id) {
+  if (!undo || undo.state !== state || !state.mintedIds) return;
+  const book = undoBook(undo.mints, state.mintedIds);
+  if (book.has(id)) return;
+  const map = state.mintedIds;
+  book.set(id, Object.prototype.hasOwnProperty.call(map, id) ? map[id] : undefined);
+}
+
+function rememberFreeze(state, idx) {
+  if (!undo || undo.state !== state || !state.freezes) return;
+  const book = undoBook(undo.freezes, state.freezes);
+  if (book.has(idx)) return;
+  const map = state.freezes;
+  book.set(idx, Object.prototype.hasOwnProperty.call(map, idx) ? map[idx] : undefined);
+}
+
+function snapTrial(state) {
+  const votes = state.votes || { increase: 0, decrease: 0, hold: 0 };
+  return {
+    totalLockedNanos: state.totalLockedNanos,
+    feeBankNanos: state.feeBankNanos,
+    mintBankNanos: state.mintBankNanos,
+    liveHashBonusNanos: state.liveHashBonusNanos,
+    epochBps: state.epochBps,
+    genesisMs: state.genesisMs,
+    magic: state.magic,
+    currentEpoch: state.currentEpoch,
+    epochStartMs: state.epochStartMs,
+    epochIndex: state.epochIndex,
+    bonusEnacted: state.bonusEnacted,
+    enactedUp: state.enactedUp,
+    enactedDown: state.enactedDown,
+    enactedHold: state.enactedHold,
+    enactedDelta: state.enactedDelta,
+    enactedLiveBonus: state.enactedLiveBonus,
+    enactedAtMs: state.enactedAtMs,
+    enactedAtEpoch: state.enactedAtEpoch,
+    blankFork: state.blankFork,
+    votes,
+    voteIncrease: Number(votes.increase || 0),
+    voteDecrease: Number(votes.decrease || 0),
+    voteHold: Number(votes.hold || 0),
+    freeze: state.freeze,
+    oracle: state.oracle,
+    portals: state.portals,
+    mintedIds: state.mintedIds,
+    freezes: state.freezes,
+  };
+}
+
+function restoreTrial(state, snap, frame) {
+  state.totalLockedNanos = snap.totalLockedNanos;
+  state.feeBankNanos = snap.feeBankNanos;
+  state.mintBankNanos = snap.mintBankNanos;
+  state.liveHashBonusNanos = snap.liveHashBonusNanos;
+  state.epochBps = snap.epochBps;
+  state.genesisMs = snap.genesisMs;
+  state.magic = snap.magic;
+  state.currentEpoch = snap.currentEpoch;
+  state.epochStartMs = snap.epochStartMs;
+  state.epochIndex = snap.epochIndex;
+  state.bonusEnacted = snap.bonusEnacted;
+  state.enactedUp = snap.enactedUp;
+  state.enactedDown = snap.enactedDown;
+  state.enactedHold = snap.enactedHold;
+  state.enactedDelta = snap.enactedDelta;
+  state.enactedLiveBonus = snap.enactedLiveBonus;
+  state.enactedAtMs = snap.enactedAtMs;
+  state.enactedAtEpoch = snap.enactedAtEpoch;
+  state.blankFork = snap.blankFork;
+  state.votes = snap.votes;
+  if (state.votes) {
+    state.votes.increase = snap.voteIncrease;
+    state.votes.decrease = snap.voteDecrease;
+    state.votes.hold = snap.voteHold;
+  }
+  state.freeze = snap.freeze;
+  state.oracle = snap.oracle;
+  state.portals = snap.portals;
+  state.mintedIds = snap.mintedIds;
+  state.freezes = snap.freezes;
+  const portals = frame.portals.get(state.portals);
+  if (portals) {
+    for (const [id, prev] of portals) {
+      if (prev == null) delete state.portals[id];
+      else state.portals[id] = prev;
+    }
+  }
+  const mints = state.mintedIds ? frame.mints.get(state.mintedIds) : null;
+  if (mints) {
+    for (const [id, prev] of mints) {
+      if (prev === undefined) delete state.mintedIds[id];
+      else state.mintedIds[id] = prev;
+    }
+  }
+  const freezes = state.freezes ? frame.freezes.get(state.freezes) : null;
+  if (freezes) {
+    for (const [idx, prev] of freezes) {
+      if (prev === undefined) delete state.freezes[idx];
+      else state.freezes[idx] = prev;
+    }
+  }
+}
+
 function portalOf(state, destOrId) {
   const id = portalKey(destOrId);
   if (!id) {
     return { id: '', staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0 };
   }
+  rememberPortal(state, id);
   if (!state.portals[id]) {
     state.portals[id] = { id, staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0 };
   }
@@ -380,6 +511,7 @@ function beginEpoch(state, nowMs) {
     state.epochBps = prior.epochBps;
     state.freeze = prior;
   } else {
+    rememberFreeze(state, idx);
     state.freezes[idx] = rec;
     state.freeze = rec;
     state.epochBps = rec.epochBps;
@@ -912,15 +1044,60 @@ export function applyReserveBlock({ state, block, nowMs }) {
  * No reserve row is success. A reserve row with no vault fails closed.
  * applyReserveBlock's empty return is not success.
  */
-export function trialReserveApply({ state, txs, block, nowMs } = {}) {
+function trialBlock(rows, block) {
+  return block && Array.isArray(block.txs) ? block : { txs: rows };
+}
+
+function trialInPlace(state, rows, block, nowMs) {
+  const snap = snapTrial(state);
+  const frame = {
+    state,
+    portals: new Map(),
+    mints: new Map(),
+    freezes: new Map(),
+  };
+  const prev = undo;
+  undo = frame;
+  let applied;
+  try {
+    applied = applyReserveBlock({
+      state,
+      block: trialBlock(rows, block),
+      nowMs: Number(nowMs) || 0,
+    });
+  } catch (err) {
+    restoreTrial(state, snap, frame);
+    undo = prev;
+    throw err;
+  }
+  if (applied && applied.ok === false) {
+    const reason = applied.reason || 'epoch_open';
+    restoreTrial(state, snap, frame);
+    undo = prev;
+    return { ok: false, reason };
+  }
+  if (!applied || applied.ok !== true) {
+    restoreTrial(state, snap, frame);
+    undo = prev;
+    return { ok: false, reason: 'no_vault' };
+  }
+  undo = prev;
+  return { ok: true, state };
+}
+
+export function trialReserveApply({ state, txs, block, nowMs, inPlace = false } = {}) {
   const rows = Array.isArray(txs) ? txs : (Array.isArray(block?.txs) ? block.txs : []);
   if (!rows.some(txIsReserveAction)) return { ok: true };
   if (!state) return { ok: false, reason: 'no_vault' };
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
+  // The carried vault is already a private copy. Mutate it and undo a miss.
+  // Any other caller, including consensus, still gets one clone so the live
+  // vault cannot change inside a check that discards the trial.
+  if (inPlace) return trialInPlace(state, rows, block, nowMs);
   const trial = cloneVault(state);
   const applied = applyReserveBlock({
     state: trial,
-    block: block && Array.isArray(block.txs) ? block : { txs: rows },
+    block: trialBlock(rows, block),
     nowMs: Number(nowMs) || 0,
   });
   if (applied && applied.ok === false) {
@@ -1021,6 +1198,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     return { ok: false, reason: 'mint_forbidden' };
   } else {
     state.mintedIds = state.mintedIds || Object.create(null);
+    rememberMint(state, mintId);
     state.mintedIds[mintId] = true;
   }
   state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);

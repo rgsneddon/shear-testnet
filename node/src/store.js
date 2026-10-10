@@ -2027,7 +2027,7 @@ export function createStore(dir, {
     for (const row of mempool) {
       if (!txIsReserveAction(row)) continue;
       if (n >= RESERVE_ACTION_CAP) break;
-      const tried = trialReserveApply({ state: carried, txs: [row], nowMs });
+      const tried = trialReserveApply({ state: carried, txs: [row], nowMs, inPlace: true });
       if (!tried.ok) continue;
       carried = tried.state;
       n += 1;
@@ -3805,7 +3805,8 @@ export function createStore(dir, {
     const keep = [];
     const spendSeen = chainSpendView(liveFlux.spendTags);
     const bSpent = new Set(spentB);
-    // One clone of the chain vault. Each accepted reserve tx is applied once.
+    // One clone of the chain vault. Each accepted reserve tx mutates that
+    // clone. A miss undoes itself and does not clone the portal map again.
     let carried = cloneVault(reserveVault);
     let reserveIncluded = 0;
     let reserveDropped = false;
