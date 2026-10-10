@@ -8,6 +8,7 @@ import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } f
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
+import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, v12KindRejected, openingBeforeCarry } from './spend.js';
@@ -72,6 +73,8 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
   const capped = txIoCap(tx);
   if (!capped.ok) return capped;
+  const budget = txBudget(tx);
+  if (!budget.ok) return budget;
   const earlyOpen = openingBeforeCarry(tx);
   if (earlyOpen) return earlyOpen;
   if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {

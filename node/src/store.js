@@ -97,7 +97,9 @@ import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from 
 import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
+import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
+import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
 import { blockWork } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
@@ -2008,6 +2010,8 @@ export function createStore(dir, {
   function queueTx(tx, opts = {}) {
     const capped = txIoCap(tx);
     if (!capped.ok) return capped;
+    const budget = txBudget(tx);
+    if (!budget.ok) return budget;
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
@@ -3792,7 +3796,18 @@ export function createStore(dir, {
     let carried = cloneVault(reserveVault);
     let reserveIncluded = 0;
     let reserveDropped = false;
-    for (const raw of mempool) {
+    const budgetStarted = performance.now();
+    const announced = Array.isArray(shareBatch) ? shareBatch.length
+      : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch.length : 0);
+    const coinbaseWeight = W_PAYEE * (Math.min(payeeCapLive(), announced) + 3);
+    const chosen = new Set(selectBodyIndexes(mempool, { coinbaseWeight }));
+    const walk = [];
+    for (let i = 0; i < mempool.length; i += 1) {
+      if (chosen.has(i)) walk.push(i);
+      else keep.push(mempool[i]);
+    }
+    for (const idx of walk) {
+      const raw = mempool[idx];
       const m = reviveTx(raw);
       const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
       const tx = {
@@ -3884,6 +3899,10 @@ export function createStore(dir, {
         noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       };
       if (txIsReserveAction(tx)) {
+        if (performance.now() - budgetStarted >= TEMPLATE_BUDGET_MS) {
+          keep.push(m);
+          continue;
+        }
         admitOpts.reserveCarried = carried;
         admitOpts.verifiedFund = fundVerdictFor(tx);
       }

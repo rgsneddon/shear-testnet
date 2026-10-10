@@ -95,6 +95,7 @@ import {
   canonicalSpendTag,
   txIoCap,
 } from '../../crypto/note.js';
+import { blockBudget } from '../../crypto/block_budget.js';
 import {
   packTx,
   packDigest,
@@ -1538,6 +1539,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const capped = txIoCap(txs[i]);
     if (!capped.ok) return capped;
   }
+  const budget = blockBudget(txs);
+  if (!budget.ok) return budget;
   const wantPot = potSubsidyAt({
     nowMs: Number(decoded.timestamp) || Number(nowMs) || 0,
     genesisMs: resolvedGenesisMs,
