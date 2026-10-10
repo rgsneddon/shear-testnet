@@ -113,9 +113,12 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
     assert.ok(sendGate < send.indexOf('mempool.push'));
     const storeSrc = fs.readFileSync(new URL('../../node/src/store.js', import.meta.url), 'utf8');
     const qAt = storeSrc.indexOf('function queueTx');
-    const q = storeSrc.slice(qAt, qAt + 1600);
+    const qEnd = storeSrc.indexOf('\n  function ', qAt + 10);
+    const q = storeSrc.slice(qAt, qEnd > qAt ? qEnd : storeSrc.length);
     const qGate = q.indexOf("reason: 'custodial_pull'");
-    assert.ok(qGate >= 0 && qGate < q.indexOf('verifyPoolWithdrawBound'));
+    const qKind = q.indexOf('v12KindRejected');
+    const qVerify = q.indexOf('verifyPoolWithdrawBound');
+    assert.ok(qGate >= 0 && qKind > qGate && qVerify > qGate);
     const api = fs.readFileSync(new URL('../src/wallet_api.js', import.meta.url), 'utf8');
     const live = api.indexOf("if (path === '/api/pool/withdraw' && verb === 'POST')");
     const dead = api.indexOf("if (false && path === '/api/pool/withdraw'");

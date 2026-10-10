@@ -7,10 +7,43 @@ import { attachDummyOuts } from './dummy.js';
 const dest = encodeDest(Buffer.alloc(20, 3));
 
 describe('policy mempool', () => {
-  it('admits ssa1 sends and B-spends; refuses shares and shear1', () => {
+  it('refuses an opened hidden send, admits a bound send and a B-spend, and drops a fee under the levy', () => {
     const book = emptyMempool();
-    const send = admitMempool(book, attachDummyOuts({ kind: 'send', to: dest, fee: 100, vout: [{ address: dest }] }), { baseFee: 1 });
-    assert.equal(send.ok, true);
+    const openedShapes = [
+      attachDummyOuts({ kind: 'send', to: dest, fee: 100, vout: [{ address: dest }] }),
+    ];
+    for (const nanos of [1, 2_000_000_000, 100_000_000_000]) {
+      openedShapes.push(attachDummyOuts({
+        kind: 'send',
+        to: dest,
+        fee: 100,
+        nanos,
+        vout: [{ address: dest, nanos, kind: 'send' }],
+      }));
+    }
+    for (const opened of openedShapes) {
+      const send = admitMempool(book, opened, { baseFee: 1 });
+      assert.equal(send.ok, false);
+      assert.equal(send.reason, 'value_open');
+    }
+    assert.equal(book.txs.length, 0);
+    const commit = Buffer.alloc(32, 7);
+    const tag = Buffer.alloc(32, 9);
+    const bound = attachDummyOuts({
+      kind: 'send',
+      to: dest,
+      fee: 100,
+      nanos: 1,
+      vout: [{ address: dest, nanos: 1, kind: 'send' }],
+    });
+    for (const o of bound.vout) {
+      if (String(o.kind || '') !== 'dummy') delete o.valueProof;
+    }
+    bound.vin = [{ commit }];
+    bound.admit_proof = { cTilde: commit, spendTag: tag };
+    const admitted = admitMempool(book, bound, { baseFee: 1 });
+    assert.equal(admitted.ok, true, admitted.reason);
+    assert.equal(book.txs[0].kind, 'send');
     const share = admitMempool(book, { share: true, to: dest, fee: 10 }, { baseFee: 1 });
     assert.equal(share.ok, false);
     assert.equal(share.reason, 'share_not_mempool');
@@ -32,8 +65,12 @@ describe('policy mempool', () => {
     }, { baseFee: 1 });
     assert.equal(claim.ok, false);
     assert.equal(claim.reason, 'kind');
+    assert.equal(book.txs[0].kind, 'send');
     book.txs[0].fee = 1;
     const drop = retargetMempool(book, 8);
     assert.ok(drop.dropped.length >= 1);
+    assert.equal(drop.dropped.some((t) => t.kind === 'send'), true);
+    assert.equal(book.txs.some((t) => t.kind === 'send'), false);
+    assert.equal(book.txs.some((t) => t.kind === 'b-spend'), true);
   });
 });

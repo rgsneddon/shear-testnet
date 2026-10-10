@@ -2071,6 +2071,14 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
+    // Name a disabled pool-withdraw before the kind gate. That kind is not a
+    // v12 value kind, so the later reject would hide this reason.
+    if (!custodialPullAllowed() && (
+      String(tx?.kind || '') === 'pool-withdraw'
+      || String(tx?.vout?.[0]?.kind || '') === 'pool-withdraw'
+    )) {
+      return { ok: false, reason: 'custodial_pull' };
+    }
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
     if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
@@ -2103,12 +2111,6 @@ export function createStore(dir, {
     }
     if (pause.poolWithdraw && String(tx?.kind || '') === 'pool-withdraw') {
       return { ok: false, reason: 'paused' };
-    }
-    if (!custodialPullAllowed() && (
-      String(tx?.kind || '') === 'pool-withdraw'
-      || String(tx?.vout?.[0]?.kind || '') === 'pool-withdraw'
-    )) {
-      return { ok: false, reason: 'custodial_pull' };
     }
     const bound = verifyPoolWithdrawBound(tx);
     if (!bound.ok) return bound;
