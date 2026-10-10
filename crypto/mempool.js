@@ -11,7 +11,7 @@ import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, cano
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, v12KindRejected, openingBeforeCarry } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, openingBeforeCarry } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, typedKindNeedsAdmitV3 } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
@@ -99,6 +99,9 @@ export function admitMempool(pool, tx, opts = {}) {
     const carry = unboundMembershipCarry(tx);
     if (!carry.ok) return carry;
   }
+  // A commit vin is membership, including kinds the value set refuses.
+  const typedVin = typedCommitRejected(tx);
+  if (typedVin) return typedVin;
   const kindGate = v12KindRejected(tx);
   if (kindGate) return kindGate;
   const open = valueOpenRejected(tx);

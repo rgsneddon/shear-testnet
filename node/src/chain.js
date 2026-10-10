@@ -2092,7 +2092,20 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       const carry = unboundMembershipCarry(tx);
       if (!carry.ok) return carry;
     }
+    // A commit vin is membership, including kinds the value set refuses.
+    const typedVin = typedCommitRejected(tx);
+    if (typedVin) return typedVin;
     const kindGate = v12KindRejected(tx);
+    // A refused kind still proves every money output. A verified proof
+    // then returns kind. Value kinds keep the later range check.
+    if (kindGate && moneyNeedsRange(tx)) {
+      for (const o of (tx.vout || [])) {
+        if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
+          return { ok: false, reason: 'range_proof' };
+        }
+        if (!verifyRange(o.commit, o.rangeProof)) return { ok: false, reason: 'range_proof' };
+      }
+    }
     if (kindGate) return kindGate;
     const open = valueOpenRejected(tx);
     if (open) return open;
