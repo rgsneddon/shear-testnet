@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
@@ -9,6 +10,7 @@ import 'package:shear_wallet/shear_native_prove.dart';
 import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_reserve.dart';
+import 'package:shear_wallet/shear_ristretto.dart';
 
 void main() {
   test('exact SHE text stays a decimal nanos string above 2^53', () {
@@ -652,6 +654,87 @@ void main() {
     }
   });
 
+  test('send keeps change nanos exact for any amount', () async {
+    expect(debugNativeSealNote, isNull);
+    expect(debugNativeSealUnits, isNull);
+    debugNativeSpendProver = ({
+      required Uint8List spendSeed,
+      required Map<String, dynamic> spentNote,
+      required List<Uint8List> pubs,
+      List<Uint8List>? commits,
+    }) =>
+        {
+          'admit_proof': true,
+          'v': 2,
+          'spendTag': Uint8List(32)..[0] = 7,
+          'blob': Uint8List.fromList([2, ...List.filled(8, 1)]),
+          'cTilde': Uint8List(32)..[0] = 9,
+        };
+    addTearDown(() {
+      debugNativeSpendProver = null;
+    });
+    final fee = BigInt.from(levyNanos(0));
+    expect(fee, BigInt.from(levyNanos(1)));
+    expect(fee, greaterThan(BigInt.zero));
+    final scale = BigInt.from(kUnitsPerShe);
+    final above53 = BigInt.parse('9007199254740993');
+    final below53 = above53 - BigInt.two;
+    final above63 = BigInt.one << 63;
+    final cases = <({BigInt pay, BigInt change, String? memo})>[
+      (pay: BigInt.one, change: BigInt.one, memo: null),
+      (pay: scale, change: scale * BigInt.from(50), memo: null),
+      (pay: BigInt.one, change: below53, memo: null),
+      (pay: BigInt.one, change: above53, memo: null),
+      (pay: above53, change: scale, memo: null),
+      (pay: BigInt.one, change: above63, memo: null),
+      (pay: BigInt.one, change: above63 + BigInt.from(4099), memo: null),
+      (pay: BigInt.from(7), change: BigInt.from(11), memo: 'note'),
+      (pay: scale, change: BigInt.zero, memo: null),
+    ];
+    final pool = _RecordChange();
+    for (final c in cases) {
+      final input = c.pay + fee + c.change;
+      expect(input.bitLength, lessThanOrEqualTo(64), reason: 'pay=${c.pay} change=${c.change}');
+      final sw = Stopwatch()..start();
+      final sent = await _sendChange(
+        pool,
+        input: input,
+        pay: c.pay,
+        memo: c.memo,
+      );
+      expect(sw.elapsedMilliseconds, lessThan(180000), reason: 'pay=${c.pay} change=${c.change}');
+      final kinds = (pool.posts.last['kinds'] as List).where((k) => k == 'send').length;
+      if (c.change == BigInt.zero) {
+        expect(sent.tx.change, isNull, reason: 'pay=${c.pay}');
+        expect(sent.ledger.notes, isEmpty, reason: 'pay=${c.pay}');
+        expect(kinds, 1, reason: 'pay=${c.pay}');
+        continue;
+      }
+      expect(sent.tx.change, isNotNull, reason: 'change=${c.change}');
+      final rows = sent.ledger.notes.where((n) => n['address'] == sent.tx.change).toList();
+      expect(rows, hasLength(1), reason: 'change=${c.change}');
+      final note = rows.single;
+      expect(noteNanosExact(note), c.change, reason: 'change=${c.change}');
+      expect(openedSpendDigits(note), c.change.toString(), reason: 'change=${c.change}');
+      if (c.change.bitLength > 63) {
+        expect(note['nanos'], c.change.toString(), reason: 'change=${c.change}');
+        expect(note['nanos'], isA<String>());
+      }
+      final proof = note['rangeProof'];
+      final commit = note['commit'];
+      expect(proof, isA<Uint8List>(), reason: 'change=${c.change}');
+      expect(commit, isA<Uint8List>(), reason: 'change=${c.change}');
+      expect((proof as Uint8List)[0], 2, reason: 'change=${c.change}');
+      expect(_nodeRangeOk(commit as Uint8List, proof), isTrue, reason: 'change=${c.change}');
+      expect(kinds, 2, reason: 'change=${c.change} memo=${c.memo}');
+    }
+    final tooWide = (BigInt.one << 64) + fee + BigInt.one;
+    await expectLater(
+      _sendChange(pool, input: tooWide, pay: BigInt.one),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'fee_short')),
+    );
+  }, timeout: const Timeout(Duration(minutes: 8)));
+
   test('a pool withdraw posts kind withdraw and the exact nanos', () async {
     final pool = _RecordWithdraw();
     final ledger = ShearLedger(pool: pool);
@@ -688,6 +771,116 @@ void main() {
     final slice = src.substring(start, src.indexOf('}) async', start));
     expect(slice.contains('bool local = false'), isTrue);
   }, timeout: const Timeout(Duration(seconds: 45)));
+}
+
+/// One shipped [ShearLedger.send]. The change note is whatever send stored.
+Future<({ShearLedger ledger, ShearTx tx})> _sendChange(
+  _RecordChange pool, {
+  required BigInt input,
+  required BigInt pay,
+  String? memo,
+}) async {
+  final seed = scalarBytes(randomScalar());
+  final alice = createIdentity(seed);
+  final ledger = ShearLedger(pool: pool)..bindIdentity(alice);
+  final from = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
+  ledger.confirmRound(address: from, pot: 2, height: 1);
+  ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+  final commit = scalarBytes(randomScalar());
+  final noteCommit = scalarBytes(randomScalar());
+  final note = <String, dynamic>{
+    'kind': 'pot',
+    'address': from,
+    'dest': from,
+    'commit': commit,
+    'noteCommit': noteCommit,
+    'r': scalarBytes(randomScalar()),
+    'nanos': input.toString(),
+    'spent': false,
+  };
+  pool.pub = pointBytes(admitPub(admitScalarFromSeed(seed, note)));
+  pool.commit = commit;
+  final bob = createIdentity(scalarBytes(randomScalar()));
+  final tx = await ledger.send(
+    from: from,
+    to: memo == null ? kPoolFeeDest : bob.paymentCodeFull,
+    amount: 1,
+    nanosWire: pay.toString(),
+    memo: memo,
+    local: false,
+    restFrame: alice.address,
+    paymentCode: alice.paymentCode,
+    spendSeed: seed,
+    spendNote: note,
+  );
+  return (ledger: ledger, tx: tx);
+}
+
+class _RecordChange extends ShearPoolClient {
+  _RecordChange()
+      : super(
+          baseUrl: 'http://127.0.0.1:9',
+          http: HttpClient()..connectionTimeout = const Duration(milliseconds: 30),
+        );
+
+  Uint8List? pub;
+  Uint8List? commit;
+  final posts = <Map<String, dynamic>>[];
+
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
+
+  @override
+  Future<Map<String, dynamic>> fluxset() async => {
+        'pubs': [pub],
+        'commits': [commit],
+      };
+
+  @override
+  Future<Map<String, dynamic>> send({
+    required String from,
+    required String to,
+    required double amount,
+    Map<String, dynamic>? memoCt,
+    String? open,
+    String? sig,
+    String? portalOpen,
+    String? kind,
+    String? programId,
+    String? choice,
+    int? currentEpoch,
+    int? epochStartMs,
+    String? change,
+    String? spendPub,
+    String? ephPub,
+    List<dynamic>? vin,
+    List<dynamic>? vout,
+    dynamic excess,
+    Map<String, dynamic>? admitProof,
+    List<Map<String, dynamic>>? admitProofs,
+    String? spendTag,
+    int? fee,
+    int paintedOwedNanos = 0,
+    bool legacyPoolSend = false,
+    String? nanosWire,
+  }) async {
+    posts.add({
+      'kinds': [
+        for (final row in vout ?? const [])
+          if (row is Map) row['kind'],
+      ],
+    });
+    return {
+      'ok': true,
+      'tx': {
+        'id': 'chg-${posts.length}',
+        'from': from,
+        'to': to,
+        'amount': amount,
+        'kind': kind ?? 'send',
+      },
+    };
+  }
 }
 
 class _RecordWithdraw extends ShearPoolClient {

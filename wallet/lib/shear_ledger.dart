@@ -488,6 +488,22 @@ BigInt? _positiveDigitNanos(Object? v) {
   return null;
 }
 
+/// Exact nanos behind a send. A note digit string or int wins.
+/// A double balance is used only while it is an exact integer at or below 2^53-1.
+BigInt? fundedSendUnits(Map<dynamic, dynamic>? note, double fundedShe) {
+  if (note != null) {
+    final exact = noteNanosExact(note);
+    if (exact != null) return exact;
+  }
+  if (!fundedShe.isFinite || fundedShe <= 0) return BigInt.zero;
+  final scaled = fundedShe * kUnitsPerShe;
+  if (!scaled.isFinite) return null;
+  final rounded = scaled.round();
+  if (rounded <= 0 || rounded > _kSafeDoubleNanos) return null;
+  if ((rounded.toDouble() - scaled).abs() > 1e-4) return null;
+  return BigInt.from(rounded);
+}
+
 /// Exact note nanos. A digit string or an int wins over a double amount.
 /// A double is used only while it is an exact integer at or below 2^53-1.
 BigInt? noteNanosExact(Map<dynamic, dynamic> n) {
@@ -7150,6 +7166,8 @@ class ShearLedger implements ReadProofSink {
         'index': i,
         'verified': true,
         'prev': Uint8List(32),
+        if (o['valueProof'] != null) 'valueProof': o['valueProof'],
+        if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
         if (o['nanos'] != null) 'nanos': o['nanos'],
         if (tryU64Units(o['nanos']) != null && _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
           'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
@@ -7641,13 +7659,26 @@ class ShearLedger implements ReadProofSink {
       }
     }
     String? changeDest = change;
+    // Change is the note minus the pay minus the weight-floor levy.
+    // A double must not round it or drop it once it no longer fits in 2^53.
+    final feeUnits = BigInt.from(levy < 0 ? 0 : levy);
+    final fundedUnits = sendKind == 'send' ? fundedSendUnits(chosen ?? spendNote, fundedShe) : null;
+    BigInt? changeUnits;
+    if (fundedUnits != null && (chosen != null || spendNote != null) && noteNanosExact((chosen ?? spendNote)!) != null) {
+      final cost = payUnits + feeUnits;
+      if (cost > fundedUnits) throw StateError('insufficient');
+      final next = fundedUnits - cost;
+      if (next.bitLength > 64) throw StateError('fee_short');
+      changeUnits = next;
+    }
     if (sendKind == 'send') {
       String? portal;
       if (restFrame != null && (viewSecret ?? '').isNotEmpty) {
         portal = vaultDest(restFrame, viewKey: viewSecret!);
       }
       final leftover = fundedShe - needShe;
-      if (leftover > 1e-18) {
+      final wantsChange = changeUnits != null ? changeUnits > BigInt.zero : leftover > 1e-18;
+      if (wantsChange) {
         final derive = restFrame ?? src;
         if (paymentCode != null && isFullPaymentCode(paymentCode)) {
           final payChange = silentPay(paymentCode);
@@ -7680,9 +7711,15 @@ class ShearLedger implements ReadProofSink {
       {'address': destTo, 'nanos': u64OnWire(payUnits), 'kind': sendKind},
     ];
     if (sendKind == 'send' && changeDest != null) {
-      final leftoverNanos = ((fundedShe - needShe) * kUnitsPerShe).round();
-      if (leftoverNanos > 0 && leftoverNanos <= _kSafeDoubleNanos) {
-        vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
+      if (changeUnits != null) {
+        if (changeUnits > BigInt.zero) {
+          vouts.add({'address': changeDest, 'nanos': u64OnWire(changeUnits), 'kind': 'send'});
+        }
+      } else {
+        final leftoverNanos = ((fundedShe - needShe) * kUnitsPerShe).round();
+        if (leftoverNanos > 0 && leftoverNanos <= _kSafeDoubleNanos) {
+          vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
+        }
       }
     }
     if (sendKind == 'send' && !vouts.any((o) => o['kind'] == 'dummy')) {
@@ -7745,6 +7782,8 @@ class ShearLedger implements ReadProofSink {
             'admitPub': o['admitPub'],
             'index': i,
             'prev': Uint8List(32),
+            if (o['valueProof'] != null) 'valueProof': o['valueProof'],
+            if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
             if (o['nanos'] != null) 'nanos': o['nanos'],
             if (tryU64Units(o['nanos']) != null && _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
               'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
