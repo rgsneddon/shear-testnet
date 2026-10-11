@@ -1728,15 +1728,17 @@ fn pack_sha_block_wires(b: &mut Builder, wires: &[Wire], vals: &[u8]) -> [Word; 
     words
 }
 
-/// SHA-512 of `DST_C_POINT` and 32 canonical note encodings, reduced mod the
-/// ristretto order onto `V[0]`. Each note is a private point. The hash reads
-/// that point's compress wires. It does not read a free copy of the bytes.
-/// A note that does not decompress returns `None` and builds no circuit.
-/// This is not the hide. The parent sum is not in this circuit, and the raw
-/// bucket is still published beside the proof.
-pub(crate) fn notes_wide_synth(
-    notes: &[[u8; 32]; 32],
-) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
+struct HashedBucket {
+    b: Builder,
+    points: Vec<FeEd>,
+    eds: Vec<Ed>,
+    d: FeW,
+    scalar: [u8; 32],
+}
+
+/// Private notes, their compress wires hashed onto `V[0]`. The points stay
+/// available for the parent sum. A note that does not decompress returns `None`.
+fn hashed_bucket(notes: &[[u8; 32]; 32]) -> Option<HashedBucket> {
     let dst = crate::leaf::DST_C_POINT;
     assert_eq!(dst.len(), 22, "point domain is 22 bytes");
     let mut eds = Vec::with_capacity(32);
@@ -1757,11 +1759,12 @@ pub(crate) fn notes_wide_synth(
     let mut b = Builder::new();
     let d = fe_const(&mut b, edwards_d());
     let mut msg_w = Vec::with_capacity(msg.len());
+    let mut points = Vec::with_capacity(32);
     for byte in dst {
         msg_w.push(pinned_byte(&mut b, *byte));
     }
-    for ed in eds {
-        let start = fe_ed_priv(&mut b, ed);
+    for ed in &eds {
+        let start = fe_ed_priv(&mut b, *ed);
         enforce_twisted(&mut b, d, &start);
         let s = compress_fe(&mut b, start.x, start.y, start.z, start.t);
         let at = msg_w.len();
@@ -1773,6 +1776,7 @@ pub(crate) fn notes_wide_synth(
         for byte in pack_encoding(&mut b, &s) {
             msg_w.push(byte);
         }
+        points.push(start);
     }
     assert_eq!(msg_w.len(), msg.len(), "hash message wires");
     let mut pad_w = msg_w;
@@ -1793,7 +1797,73 @@ pub(crate) fn notes_wide_synth(
     let reduced = reduce_wide_mod_l(&mut b, &x, &dig);
     bind_u32_to_v(&mut b, &reduced, 0);
     let scalar = RScalar::from_bytes_mod_order_wide(&dig).to_bytes();
-    Some((b.l, b.r, b.o, b.cons, scalar))
+    Some(HashedBucket { b, points, eds, d, scalar })
+}
+
+/// SHA-512 of `DST_C_POINT` and 32 canonical note encodings, reduced mod the
+/// ristretto order onto `V[0]`. Each note is a private point. The hash reads
+/// that point's compress wires. It does not read a free copy of the bytes.
+/// A note that does not decompress returns `None` and builds no circuit.
+/// This is not the hide. The parent sum is not in this circuit, and the raw
+/// bucket is still published beside the proof.
+pub(crate) fn notes_wide_synth(
+    notes: &[[u8; 32]; 32],
+) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
+    let h = hashed_bucket(notes)?;
+    Some((h.b.l, h.b.r, h.b.o, h.b.cons, h.scalar))
+}
+
+/// The note hash, then `parent = r·U + Σ notes`, with `parent` a public encoding.
+/// `V[0]` is `r`. The sum uses the same private points the hash compressed.
+/// Constraint coefficients do not depend on the notes. They do depend on `parent`.
+/// A note that does not decompress returns `None` and builds no circuit.
+/// This is not the hide. The raw bucket is still published, and the verifier
+/// still requires it.
+pub(crate) fn notes_parent_synth(
+    notes: &[[u8; 32]; 32],
+    parent: &[u8; 32],
+) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
+    let mut h = hashed_bucket(notes)?;
+    let mut acc = h.points[0];
+    let mut clear = h.eds[0];
+    for i in 1..32 {
+        acc = ed_add(&mut h.b, h.d, acc, h.points[i]);
+        clear = clear.add(h.eds[i]);
+        assert!(fe_w_matches(acc.x, clear.x), "note sum x at {i}");
+        assert!(fe_w_matches(acc.y, clear.y), "note sum y at {i}");
+        assert!(fe_w_matches(acc.z, clear.z), "note sum z at {i}");
+        assert!(fe_w_matches(acc.t, clear.t), "note sum t at {i}");
+    }
+    let windows = u_windows();
+    let scalar = RScalar::from_bytes_mod_order(h.scalar);
+    for i in 0..32 {
+        let digit = h.scalar[i];
+        let sel = one_hot_8(&mut h.b, digit);
+        let q = select_window(&mut h.b, &sel, &windows[i], digit);
+        acc = ed_add(&mut h.b, h.d, acc, q);
+        clear = clear.add(windows[i][digit as usize]);
+        assert!(fe_w_matches(acc.x, clear.x), "parent x at window {i}");
+        assert!(fe_w_matches(acc.y, clear.y), "parent y at window {i}");
+        assert!(fe_w_matches(acc.z, clear.z), "parent z at window {i}");
+        assert!(fe_w_matches(acc.t, clear.t), "parent t at window {i}");
+    }
+    let got = clear.ristretto_compress();
+    let expect = (note_u() * scalar
+        + notes.iter().fold(RistrettoPoint::identity(), |s, n| {
+            s + curve25519_dalek::ristretto::CompressedRistretto(*n)
+                .decompress()
+                .expect("note decompressed above")
+        }))
+    .compress()
+    .to_bytes();
+    assert_eq!(got, expect, "edwards parent left the ristretto sum");
+    let sum = compress_fe(&mut h.b, acc.x, acc.y, acc.z, acc.t);
+    assert_eq!(encoding_bytes_from_limbs(&sum.v), got, "parent compress wires");
+    let claim = Fe::from_bytes(parent).carry_full();
+    for i in 0..5 {
+        h.b.const_eq(sum.w[i], Scalar::from(claim.0[i]));
+    }
+    Some((h.b.l, h.b.r, h.b.o, h.b.cons, h.scalar))
 }
 
 /// `zy·G + zr·H = A + e·Y`. One response opens one committed scalar.
@@ -3708,6 +3778,81 @@ mod tests {
         assert!(
             r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed + Scalar::ONE]).is_err(),
             "a different residue was accepted"
+        );
+    }
+
+    /// Hash and parent sum on one set of note wires. The public parent is the
+    /// point commitment. A second note set with that same parent keeps the
+    /// constraint list and fails the witness. This is not the hide.
+    #[test]
+    fn bind_notes_parent_matches_the_point_commitment() {
+        use crate::tree::commit_ristretto_points;
+        use curve25519_dalek::ristretto::RistrettoPoint;
+        use sha2::Sha256;
+
+        fn cons_fp(cons: &[Vec<(Wire, Scalar)>]) -> [u8; 32] {
+            let mut h = Sha256::new();
+            h.update((cons.len() as u64).to_le_bytes());
+            for c in cons {
+                h.update((c.len() as u32).to_le_bytes());
+                for (w, s) in c {
+                    let (tag, idx): (u8, u64) = match *w {
+                        Wire::L(i) => (0, i as u64),
+                        Wire::R(i) => (1, i as u64),
+                        Wire::O(i) => (2, i as u64),
+                        Wire::One => (3, 0),
+                        Wire::V(i) => (4, i as u64),
+                    };
+                    h.update([tag]);
+                    h.update(idx.to_le_bytes());
+                    h.update(s.to_repr().as_ref());
+                }
+            }
+            let d = h.finalize();
+            let mut o = [0u8; 32];
+            o.copy_from_slice(&d);
+            o
+        }
+
+        let mut bad = [[0u8; 32]; 32];
+        bad[4] = [0xff; 32];
+        assert!(notes_parent_synth(&bad, &[0u8; 32]).is_none(), "a bad note built a circuit");
+
+        let mut live = [[0u8; 32]; 32];
+        for i in 0..32 {
+            let mut seed = [0u8; 64];
+            seed[0] = i as u8;
+            seed[1] = 0x5a;
+            live[i] = RistrettoPoint::from_uniform_bytes(&seed).compress().to_bytes();
+        }
+        let parent = commit_ristretto_points(&live).expect("live point commitment");
+        let (l, r, o, cons, packed) = notes_parent_synth(&live, &parent).expect("live notes");
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("reduced scalar fits");
+        r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).unwrap_or_else(|e| panic!("honest parent: {e}"));
+        assert!(
+            r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed + Scalar::ONE]).is_err(),
+            "a different residue was accepted"
+        );
+        assert_eq!(l.len(), 4_834_259, "notes plus parent sum");
+        assert_eq!(l.len().next_power_of_two(), 1 << 23, "pad");
+        eprintln!(
+            "notes parent gates {} padded {}",
+            l.len(),
+            l.len().next_power_of_two()
+        );
+        let live_fp = cons_fp(&cons);
+        drop(l);
+        drop(r);
+        drop(o);
+        drop(cons);
+
+        let zeros = [[0u8; 32]; 32];
+        let (l, r, o, cons, packed) = notes_parent_synth(&zeros, &parent).expect("dummy notes");
+        assert_eq!(cons_fp(&cons), live_fp, "the notes changed the constraint shape");
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("dummy scalar fits");
+        assert!(
+            r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).is_err(),
+            "identity notes opened the live parent"
         );
     }
 
