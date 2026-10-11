@@ -317,6 +317,27 @@ class SendProgress {
 /// Isolate stamp of the last [selectSpendNotesWire]. Differs from the UI isolate.
 String debugSendSelectStamp = '';
 
+/// Nanos strings the last selection put in a batch. Digit strings, not doubles.
+List<String> debugSendSelectNanos = <String>[];
+
+List<String> _selectedNanos(Map raw) {
+  final found = <String>[];
+  final batches = raw['batches'];
+  if (batches is! List) return found;
+  for (final batch in batches) {
+    if (batch is! Map) continue;
+    final notes = batch['notes'];
+    if (notes is! List) continue;
+    for (final note in notes) {
+      if (note is! Map) continue;
+      final nanos = note['nanos'];
+      if (nanos == null) continue;
+      found.add(nanos.toString());
+    }
+  }
+  return found;
+}
+
 /// Isolate stamps of the last Flow seal, prove, and sign.
 /// Production [Isolate.run] stamps differ from the UI isolate.
 String debugSendSealStamp = '';
@@ -6664,20 +6685,31 @@ class ShearLedger implements ReadProofSink {
     };
     final raw = await Isolate.run(() => selectSpendNotesWire(input));
     debugSendSelectStamp = raw['stamp']?.toString() ?? '';
+    debugSendSelectNanos = _selectedNanos(raw);
     if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
     if (debugNativeSpendProver == null && savedProve != null) debugNativeSpendProver = savedProve;
     return raw;
   }
 
   /// Weight-levy quote for [amount]. Selection runs off the UI isolate.
+  /// [nanosWire] is the exact nanos digit string. It wins over the SHE double
+  /// so an amount above 2^53 is the same integer the selector spends.
   Future<int> quoteSendLevyUnits({
     required String restFrame,
     String? paymentCode,
     required double amount,
     bool memo = false,
+    String? nanosWire,
   }) async {
-    if (amount <= 0) return estimateSendLevyUnits(inputs: 1, memo: memo);
-    final plan = await _planSpendOffUi(restFrame, paymentCode, amount, memo: memo);
+    final exact = nanosWire != null && nanosWire.isNotEmpty;
+    if (!exact && amount <= 0) return estimateSendLevyUnits(inputs: 1, memo: memo);
+    final plan = await _planSpendOffUi(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo,
+      needNanos: exact ? nanosWire : null,
+    );
     final fee = plan['feeShe'];
     if (fee is num && fee > 0) return (fee.toDouble() * kUnitsPerShe).round();
     return estimateSendLevyUnits(inputs: 1, memo: memo);

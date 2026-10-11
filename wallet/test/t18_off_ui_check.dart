@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -41,6 +42,35 @@ Future<void> main() async {
     }
   }
 
+  // Exact nanos above 2^53. The SHE double is not the amount. The selector
+  // must put that digit string in the batch, off this isolate.
+  const above = '9007199254740993';
+  final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
+  ledger.rememberNote(<String, dynamic>{
+    'address': dest,
+    'dest': dest,
+    'nanos': above,
+    'commit': Uint8List(32)..[0] = 11,
+  });
+  ledger.rememberNote(<String, dynamic>{
+    'address': dest,
+    'dest': dest,
+    'nanos': '100000000000',
+    'commit': Uint8List(32)..[1] = 12,
+  });
+  await ledger.quoteSendLevyUnits(
+    restFrame: id.address,
+    paymentCode: id.paymentCode,
+    amount: 1,
+    nanosWire: above,
+  );
+  if (!debugSendSelectNanos.contains(above)) {
+    throw StateError('select nanos $debugSendSelectNanos want $above dest $dest');
+  }
+  if (debugSendSelectStamp.isEmpty || debugSendSelectStamp == ui) {
+    throw StateError('exact select stamp $debugSendSelectStamp ui $ui');
+  }
+
   // An empty output list still runs sealFlowSpendVouts on the worker.
   Object? sealErr;
   final sealed = await sealFlowOffUi(<String, dynamic>{
@@ -60,6 +90,7 @@ Future<void> main() async {
   // One real output. The range blob is the node proof, checked against the
   // commitment. Amounts cross 2^53. Each seal is capped.
   final rangeMs = <int>[];
+  final sealedSends = <Map<String, dynamic>>[];
   for (final nanos in <int>[0, 1, 1000, 9007199254740993]) {
     final sw = Stopwatch()..start();
     final one = await sealFlowOffUi(<String, dynamic>{
@@ -92,6 +123,7 @@ Future<void> main() async {
       throw StateError('range stamp $debugSendSealStamp ui $ui nanos=$nanos');
     }
     await _rangeOpens(commit, proof, nanos);
+    if (nanos != 0) sealedSends.add(note);
     rangeMs.add(sw.elapsedMilliseconds);
   }
 
@@ -119,6 +151,75 @@ Future<void> main() async {
   }
   if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {
     throw StateError('prove stamp $debugSendProveStamp ui $ui err $proveErr');
+  }
+
+  // The sealed send's own admit pub is one fluxset leaf. Membership must
+  // prove, and the node must accept that proof. A missing pub stays the reject above.
+  final proveMs = <int>[];
+  final flowSeed = Uint8List(32)..[0] = 4;
+  for (final note in sealedSends) {
+    final sw = Stopwatch()..start();
+    final pub = note['admitPub'];
+    final commit = note['commit'];
+    final nc = note['noteCommit'];
+    final opening = note['r'];
+    if (pub is! Uint8List || pub.length != 32) {
+      throw StateError('admit pub nanos=${note['nanos']}');
+    }
+    if (commit is! Uint8List || nc is! Uint8List || opening is! Uint8List) {
+      throw StateError('spend fields nanos=${note['nanos']}');
+    }
+    final proved = await proveFlowOffUi(<String, dynamic>{
+      'vin': <Map<String, dynamic>>[
+        {'commit': commit, 'r': opening},
+      ],
+      'vout': <Map<String, dynamic>>[],
+      'spendSeed': flowSeed,
+      'spentNote': <String, dynamic>{
+        'kind': note['kind'],
+        'commit': commit,
+        'noteCommit': nc,
+        'r': opening,
+      },
+      'pubs': <Uint8List>[pub],
+      'commits': <Uint8List>[commit],
+    }).timeout(const Duration(seconds: 30));
+    final proof = proved['admitProof'];
+    if (proof is! Map || proof['v'] != 2 || proof['r'] != null) {
+      throw StateError('spend proof nanos=${note['nanos']} $proof');
+    }
+    final blob = proof['blob'];
+    final tag = proved['spendTag'] ?? proof['spendTag'];
+    final ct = proof['cTilde'];
+    if (blob is! Uint8List || blob.isEmpty || blob[0] != 2) {
+      throw StateError('spend blob nanos=${note['nanos']}');
+    }
+    if (tag is! Uint8List || tag.length != 32) {
+      throw StateError('spend tag nanos=${note['nanos']}');
+    }
+    if (ct is! Uint8List || ct.length != 32) {
+      throw StateError('cTilde nanos=${note['nanos']}');
+    }
+    if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {
+      throw StateError('spend stamp $debugSendProveStamp ui $ui nanos=${note['nanos']}');
+    }
+    await _admitOpens(pub, commit, blob, tag, ct, note['nanos']);
+    final signed = await signSpendOffUi(<String, dynamic>{
+      'spendSeed': Uint8List(32)..[0] = 7,
+      'message': tag,
+    });
+    final sig = signed['sig'];
+    final spub = signed['pub'];
+    if (sig is! Uint8List || spub is! Uint8List || !ed25519Verify(spub, tag, sig)) {
+      throw StateError('spend sign nanos=${note['nanos']}');
+    }
+    if (debugSendSignStamp.isEmpty || debugSendSignStamp == ui) {
+      throw StateError('spend sign stamp $debugSendSignStamp ui $ui');
+    }
+    proveMs.add(sw.elapsedMilliseconds);
+  }
+  if (proveMs.length != sealedSends.length || proveMs.isEmpty) {
+    throw StateError('spend proves ${proveMs.length}');
   }
 
   final seed = Uint8List(32)..[0] = 7;
@@ -173,7 +274,9 @@ Future<void> main() async {
   stdout.writeln(
     'T18_OFF_UI pass select=$debugSendSelectStamp seal=$debugSendSealStamp '
     'prove=$debugSendProveStamp sign=$debugSendSignStamp ui=$ui '
-    'sealErr=$sealErr proveErr=$proveErr rangeMs=${rangeMs.join(',')}',
+    'sealErr=$sealErr proveErr=$proveErr rangeMs=${rangeMs.join(',')} '
+    'proveOk=${proveMs.length} proveMs=${proveMs.join(',')} '
+    'selectNanos=${debugSendSelectNanos.join(',')}',
   );
 }
 
@@ -199,6 +302,48 @@ Future<void> _rangeOpens(Uint8List commit, Uint8List proof, int nanos) async {
     if (result.exitCode != 0 || !out.contains('ok')) {
       throw StateError(
         'range verify nanos=$nanos exit=${result.exitCode} out=$out err=$err',
+      );
+    }
+  } finally {
+    if (tmp.existsSync()) tmp.deleteSync();
+  }
+}
+
+Future<void> _admitOpens(
+  Uint8List pub,
+  Uint8List commit,
+  Uint8List blob,
+  Uint8List tag,
+  Uint8List cTilde,
+  Object? nanos,
+) async {
+  final script = File('test/t18_admit_verify.mjs');
+  if (!script.existsSync()) {
+    throw StateError('missing ${script.absolute.path}');
+  }
+  final tmp = File(
+    '${Directory.systemTemp.path}/t18-admit-${DateTime.now().microsecondsSinceEpoch}.json',
+  );
+  tmp.writeAsStringSync(
+    jsonEncode(<String, String>{
+      'pub': _hex(pub),
+      'commit': _hex(commit),
+      'blob': _hex(blob),
+      'spendTag': _hex(tag),
+      'cTilde': _hex(cTilde),
+    }),
+    flush: true,
+  );
+  try {
+    final result = await Process.run(
+      'node',
+      [script.absolute.path, tmp.absolute.path],
+    );
+    final out = result.stdout.toString();
+    final err = result.stderr.toString();
+    if (result.exitCode != 0 || !out.contains('ok')) {
+      throw StateError(
+        'admit verify nanos=$nanos exit=${result.exitCode} out=$out err=$err',
       );
     }
   } finally {
