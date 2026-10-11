@@ -779,7 +779,7 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
     'destCount': j['destCount'] ?? spec['destCount'],
     'destIndex': j['destIndex'] ?? spec['destIndex'],
     'openedProofs': () {
-      final merged = <String, int>{
+      final merged = <String, String>{
         ...proofCacheMap(j['openedProofs']),
         ...proofCacheMap(spec['openedProofs']),
       };
@@ -1135,21 +1135,65 @@ String? proofCacheKey(Map o) {
   return '${_bytesHex(commit)}|${_bytesHex(r)}|${_bytesHex(z)}';
 }
 
+/// Exact opened nanos, as digits. A digit string stays exact through 2^64-1.
+/// A double is kept only while it is an integer at or below 2^53-1.
+/// Dart's int cannot name every u64, so this does not return an int.
+String? sessionProofNanos(Object? n) {
+  if (n is String && RegExp(r'^\d+$').hasMatch(n)) {
+    final b = BigInt.tryParse(n);
+    if (b == null || b <= BigInt.zero || b.bitLength > 64) return null;
+    return b.toString();
+  }
+  if (n is int) {
+    if (n <= 0) return null;
+    return n.toString();
+  }
+  if (n is double) {
+    if (!n.isFinite || n <= 0 || n > _kSafeDoubleNanos) return null;
+    final rounded = n.round();
+    if (rounded.toDouble() != n) return null;
+    return rounded.toString();
+  }
+  return null;
+}
+
+/// SHE for a proof nanos string. Absent when the count is not an exact double.
+double? _sheOfExactNanos(String digits) {
+  final b = BigInt.parse(digits);
+  if (b > BigInt.from(_kSafeDoubleNanos)) return null;
+  final scaled = b.toDouble() / kUnitsPerShe;
+  if (!scaled.isFinite || scaled <= 0) return null;
+  return scaled;
+}
+
+/// Opened-proof rows kept in the session. `n` is a digit string so a later
+/// JSON load does not round a u64 through a double.
+List<Map<String, dynamic>> sessionOpenedProofRows(Object? raw) {
+  if (raw is! List) return const [];
+  final out = <Map<String, dynamic>>[];
+  for (final row in raw) {
+    if (row is! Map) continue;
+    final k = row['k']?.toString() ?? '';
+    final n = sessionProofNanos(row['n'] ?? row['nanos']);
+    if (k.isEmpty || n == null) continue;
+    out.add({'k': k, 'n': n.toString()});
+  }
+  return out;
+}
+
 /// Session rows `{k, n}` or a map of key to nanos. `{v}`-only has no key.
-Map<String, int> proofCacheMap(Object? raw) {
-  final out = <String, int>{};
+Map<String, String> proofCacheMap(Object? raw) {
+  final out = <String, String>{};
   if (raw is Map) {
     for (final e in raw.entries) {
       final v = e.value;
-      final n = v is Map ? (v['n'] ?? v['nanos']) : v;
-      if (n is num && n > 0) out[e.key.toString()] = n.round();
+      final n = sessionProofNanos(v is Map ? (v['n'] ?? v['nanos']) : v);
+      if (n != null) out[e.key.toString()] = n;
     }
   } else if (raw is List) {
-    for (final row in raw) {
-      if (row is! Map) continue;
-      final k = row['k']?.toString() ?? '';
-      final n = row['n'] ?? row['nanos'];
-      if (k.isNotEmpty && n is num && n > 0) out[k] = n.round();
+    for (final row in sessionOpenedProofRows(raw)) {
+      final n = sessionProofNanos(row['n']);
+      if (n != null) out[row['k'] as String] = n;
     }
   }
   return out;
@@ -1281,11 +1325,10 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     // This proof already opened on a previous read. Do not derive admit or
     // open the value again. The wire kind is the one that was sealed.
     if (cachedEarly != null &&
-        cachedEarly > 0 &&
         kindName != null &&
         kindName.isNotEmpty &&
         kindName != 'pot') {
-      final amtEarly = cachedEarly / kUnitsPerShe;
+      final amtEarly = _sheOfExactNanos(cachedEarly);
       notes.add({
         'address': matched,
         'dest': matched,
@@ -1299,7 +1342,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
         'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
         if (o['height'] != null) 'height': o['height'],
-        'amount': amtEarly,
+        'nanos': cachedEarly,
+        if (amtEarly != null) 'amount': amtEarly,
         'proofKey': proofKeyEarly,
         'verifiedNanos': cachedEarly,
         'proofChecked': true,
@@ -1343,13 +1387,9 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     final cachedNanos = proofKey == null ? null : proofCache[proofKey];
     // A remembered opening is this proof's nanos. A new proof still has to open.
     final openRow = Map<String, dynamic>.from(o)..['kind'] = kind;
-    final verifiedNanos = (cachedNanos != null && cachedNanos > 0)
-        ? cachedNanos
-        : _openedSpendNanos(openRow);
+    final verifiedNanos = cachedNanos ?? sessionProofNanos(_openedSpendNanos(openRow));
     final proofChecked = verifiedNanos != null;
-    final num? amt = (verifiedNanos != null && verifiedNanos > 0)
-        ? verifiedNanos / kUnitsPerShe
-        : null;
+    final amt = verifiedNanos == null ? null : _sheOfExactNanos(verifiedNanos);
     notes.add({
       'address': matched,
       'dest': matched,
@@ -2666,8 +2706,8 @@ class ShearLedger implements ReadProofSink {
   int _payoutConsolidateRounds = 0;
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
-  /// Opened proofs for this wallet only, keyed by commit|R|z. Not a fee credit.
-  final Map<String, int> _openedProofs = {};
+  /// Opened proofs for this wallet only, keyed by commit|R|z. Digit strings.
+  final Map<String, String> _openedProofs = {};
   /// Commit hex already accepted on this device. A follow skips those rows.
   final Set<String> _acceptedCommits = {};
   /// True after a saved book was restored. Spendable can paint before the network.
@@ -2686,7 +2726,7 @@ class ShearLedger implements ReadProofSink {
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
 
   List<Map<String, dynamic>> exportOpenedProofs() => [
-        for (final e in _openedProofs.entries) {'k': e.key, 'n': e.value},
+        for (final e in _openedProofs.entries) {'k': e.key, 'n': e.value.toString()},
       ];
 
   /// Verified notes for the encrypted session. The follow spec does not carry
@@ -2696,7 +2736,14 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['verified'] != true) continue;
       final encoded = _followEncode(n);
-      if (encoded is Map) out.add(Map<String, dynamic>.from(encoded));
+      if (encoded is Map) {
+        final row = Map<String, dynamic>.from(encoded);
+        for (final key in const ['nanos', 'verifiedNanos']) {
+          final v = row[key];
+          if (v is int) row[key] = v.toString();
+        }
+        out.add(row);
+      }
     }
     return out;
   }
@@ -2745,9 +2792,9 @@ class ShearLedger implements ReadProofSink {
 
   void _rememberProofRow(Map<String, dynamic> row) {
     final key = row['proofKey']?.toString() ?? '';
-    final nanos = row['verifiedNanos'];
-    if (key.isEmpty || nanos is! num || nanos <= 0) return;
-    _openedProofs[key] = nanos.round();
+    final nanos = sessionProofNanos(row['verifiedNanos'] ?? row['nanos']);
+    if (key.isEmpty || nanos == null) return;
+    _openedProofs[key] = nanos;
   }
 
   void rememberNote(Map<String, dynamic> note) {

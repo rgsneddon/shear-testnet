@@ -426,11 +426,7 @@ class ShearSession {
     rememberedDestCount = (use['destCount'] as num?)?.toInt() ?? 1;
     rememberedDestIndex = (use['destIndex'] as num?)?.toInt() ?? 0;
     rememberedSealedHeight = (use['sealedHeight'] as num?)?.toInt() ?? 0;
-    rememberedOpenedProofs = ((use['openedProofs'] as List?) ?? const [])
-        .whereType<Map>()
-        .map((e) => Map<String, dynamic>.from(e))
-        .where((e) => (e['k']?.toString().isNotEmpty ?? false) && e['n'] is num && (e['n'] as num) > 0)
-        .toList();
+    rememberedOpenedProofs = sessionOpenedProofRows(use['openedProofs']);
     rememberedNotes = ((use['notes'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Map<String, dynamic>.from(e))

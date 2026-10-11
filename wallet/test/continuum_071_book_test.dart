@@ -307,7 +307,7 @@ void main() {
     final hit = (scan(z)['notes'] as List).cast<Map>();
     expect(hit, isNotEmpty);
     expect(hit.first['verified'], isTrue);
-    expect(hit.first['verifiedNanos'], 2500000000);
+    expect(hit.first['verifiedNanos'].toString(), '2500000000');
     expect(hit.first['amount'], closeTo(2500000000 / kUnitsPerShe, 1e-12));
 
     final miss = (scan(swappedZ)['notes'] as List).cast<Map>();
@@ -377,7 +377,7 @@ void main() {
     });
     final wiredNotes = (wired['notes'] as List).cast<Map>();
     expect(wiredNotes, isNotEmpty);
-    expect(wiredNotes.first['verifiedNanos'], 2500000000);
+    expect(wiredNotes.first['verifiedNanos'].toString(), '2500000000');
   });
 
   test('a saved note paints spendable without opening it again', () {
