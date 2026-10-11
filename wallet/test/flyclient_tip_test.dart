@@ -61,8 +61,8 @@ Future<HttpServer> _serve(_Chain chain, List<String> paths, {bool spoilAbove = f
       req.response.write(jsonEncode({
         'ok': true,
         'height': chain.tip,
-        'magic': 'shear-testnet-v11',
-        'network': 'shear-testnet-v11',
+        'magic': kBookMagic,
+        'network': kBookMagic,
         'header': chain.headers[1],
       }));
     } else if (req.uri.path == '/headers' || req.uri.path == '/api/explorer/headers') {

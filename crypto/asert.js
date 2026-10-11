@@ -19,6 +19,39 @@ export {
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
 import { HISTORICAL_TIP } from './historical_prefix.js';
+import {
+  MAGIC_TESTNET_V1,
+  MAGIC_TESTNET_V2,
+  MAGIC_TESTNET_V3,
+  MAGIC_TESTNET_V4,
+  MAGIC_TESTNET_V5,
+  MAGIC_TESTNET_V6,
+  MAGIC_TESTNET_V7,
+  MAGIC_TESTNET_V8,
+  MAGIC_TESTNET_V9,
+  MAGIC_TESTNET_V10,
+  MAGIC_TESTNET_V11,
+  MAGIC_TESTNET_V12,
+  MAGIC_TESTNET,
+  MAGIC_MAINNET,
+} from './reserve_books.js';
+
+export {
+  MAGIC_TESTNET_V1,
+  MAGIC_TESTNET_V2,
+  MAGIC_TESTNET_V3,
+  MAGIC_TESTNET_V4,
+  MAGIC_TESTNET_V5,
+  MAGIC_TESTNET_V6,
+  MAGIC_TESTNET_V7,
+  MAGIC_TESTNET_V8,
+  MAGIC_TESTNET_V9,
+  MAGIC_TESTNET_V10,
+  MAGIC_TESTNET_V11,
+  MAGIC_TESTNET_V12,
+  MAGIC_TESTNET,
+  MAGIC_MAINNET,
+};
 
 export const TARGET_BLOCK_INTERVAL_MS = 90_000;
 export const MIN_BITS = 1;
@@ -181,29 +214,7 @@ export const INTEREST_LAW = 'epoch-bps-floor';
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
-export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
-export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
-export const MAGIC_TESTNET_V3 = 'shear-testnet-v3';
-export const MAGIC_TESTNET_V4 = 'shear-testnet-v4';
-/** Previous DINS book. Not this magic. */
-export const MAGIC_TESTNET_V5 = 'shear-testnet-v5';
-/** Previous empty-book soak (GENESIS_BITS=12, bang-bang log2 step). Not this magic. */
-export const MAGIC_TESTNET_V6 = 'shear-testnet-v6';
-/** Previous book. Not this magic. */
-export const MAGIC_TESTNET_V7 = 'shear-testnet-v7';
-/** Previous book. Not this magic. */
-export const MAGIC_TESTNET_V8 = 'shear-testnet-v8';
-/** Previous book (median11, harden 6, ease 2). Not this magic. Fail-closed. */
-export const MAGIC_TESTNET_V9 = 'shear-testnet-v9';
-/** Closed soak. τ = 32·T, GENESIS_BITS = 15. Do not retune that book. Not this magic. */
-export const MAGIC_TESTNET_V10 = 'shear-testnet-v10';
-/** Closed book. τ = 16·T, median-11, testnet lid ±1. v11 payloads do not load. */
-export const MAGIC_TESTNET_V11 = 'shear-testnet-v11';
-/** Live book. Fresh genesis. aserti3-2d, T = 90s, τ = 2h. v11 payloads do not load. */
-export const MAGIC_TESTNET_V12 = 'shear-testnet-v12';
-/** ADMITv2 privacy-class book. Empty cut. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V12;
-export const MAGIC_MAINNET = 'shear-v1';
+/** Chain magics are reserve_books.js. This module re-exports them. */
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
 export const GENESIS_MAINNET_MS = Date.parse(GENESIS_MAINNET);

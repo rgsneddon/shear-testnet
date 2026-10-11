@@ -1,6 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import * as asert from './asert.js';
 import { PI_SHE_NANOS, RESERVE_EPOCH_MS, NANOS_PER_SHE, MAGIC_TESTNET, MAGIC_TESTNET_V12, EPOCH_DAYS_TESTNET } from './asert.js';
+import { RESERVE_BOOKS } from './reserve_books.js';
+import {
+  applyReserveBooks,
+  compileReserveSource,
+  renderReserveAllow,
+  renderReserveConstants,
+  reserveSolRegions,
+} from '../contracts/compile_reserve.js';
 import {
   bootReserveEvm,
   reservePinOk,
@@ -71,30 +80,70 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const asertSrc = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
     const walletSrc = fs.readFileSync(new URL('../wallet/lib/shear_identity.dart', import.meta.url), 'utf8');
     const pin = JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8'));
+    const norm = (s) => s.replace(/\r\n/g, '\n');
+    const regions = reserveSolRegions(sol);
+    assert.equal(norm(regions.constants), renderReserveConstants(RESERVE_BOOKS));
+    assert.equal(norm(regions.allow), renderReserveAllow(RESERVE_BOOKS));
+    assert.equal(applyReserveBooks(sol), sol);
+    assert.doesNotMatch(asertSrc, /export const MAGIC_TESTNET_V\d+ = '/);
+    assert.doesNotMatch(asertSrc, /export const MAGIC_MAINNET = '/);
+    assert.match(asertSrc, /from '\.\/reserve_books\.js'/);
+    const magics = new Set();
+    const sols = new Set();
+    for (const row of RESERVE_BOOKS) {
+      assert.equal(asert[row.asert], row.magic, row.asert);
+      assert.equal(magics.has(row.magic), false, row.magic);
+      assert.equal(sols.has(row.sol), false, row.sol);
+      magics.add(row.magic);
+      sols.add(row.sol);
+    }
+    assert.equal(asert.MAGIC_TESTNET, MAGIC_TESTNET_V12);
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
+    assert.equal(magics.has(MAGIC_TESTNET), true);
     const named = sol.match(new RegExp(
       `constant (SHEAR_TESTNET(?:_V\\d+)?) = keccak256\\(bytes\\("${MAGIC_TESTNET}"\\)\\)`,
     ));
     assert.ok(named, `Reserve.sol missing keccak256(bytes("${MAGIC_TESTNET}"))`);
-    assert.match(sol, new RegExp(`magic != ${named[1]}\\b`));
+    assert.match(regions.allow, new RegExp(`magic != ${named[1]}\\b`));
     const code = String(pin.bytecode || '').replace(/^0x/i, '').toLowerCase();
-    const fromAsert = new Set();
-    for (const match of asertSrc.matchAll(/export const (MAGIC_TESTNET_V\d+|MAGIC_MAINNET) = '([^']+)'/g)) {
-      fromAsert.add(match[2]);
-    }
-    const fromSol = new Set();
-    for (const match of sol.matchAll(/constant (SHEAR_[A-Z0-9_]+) = keccak256\(bytes\("([^"]+)"\)\)/g)) {
-      if (match[2] === 'shear-reserve-v1') continue;
-      fromSol.add(match[2]);
-      assert.match(sol, new RegExp(`magic != ${match[1]}\\b`), match[2]);
-    }
-    assert.ok(fromAsert.size >= 2);
-    assert.deepEqual([...fromSol].sort(), [...fromAsert].sort());
-    for (const magic of fromAsert) {
+    const compiled = compileReserveSource(sol);
+    assert.equal(compiled.bytecode, code);
+    assert.equal(compiled.deployedBytecode, String(pin.deployedBytecode || '').replace(/^0x/i, '').toLowerCase());
+    assert.deepEqual(compiled.abi, pin.abi);
+    for (const magic of magics) {
       const hash = Buffer.from(shearMagicBytes(magic)).toString('hex');
-      assert.equal(code.includes(hash), true, `recompile Reserve.json after ${magic}`);
+      assert.equal(code.includes(hash), true, magic);
+      assert.equal(compiled.bytecode.includes(hash), true, magic);
     }
-    assert.equal(code.includes(Buffer.from(shearMagicBytes(MAGIC_TESTNET)).toString('hex')), true);
-    assert.equal(walletSrc.includes("const kBookMagic = 'shear-testnet-v11'"), true);
+    const dropped = RESERVE_BOOKS.slice(0, -1);
+    assert.notEqual(renderReserveAllow(dropped), norm(regions.allow));
+    assert.notEqual(applyReserveBooks(sol, dropped), sol);
+    const extra = RESERVE_BOOKS.concat([
+      Object.freeze({ asert: 'MAGIC_TESTNET_V99', sol: 'SHEAR_TESTNET_V99', magic: 'shear-testnet-v99' }),
+    ]);
+    assert.notEqual(renderReserveAllow(extra), norm(regions.allow));
+    assert.equal(sol.includes(renderReserveConstants(extra)), false);
+    assert.match(walletSrc, /const kBookMagic = 'shear-testnet-v12';/);
+    assert.doesNotMatch(walletSrc, /const kBookMagic = 'shear-testnet-v11'/);
+  });
+
+  it('a hand-edited magic is not the pinned bytecode', () => {
+    const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
+    const pin = JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8'));
+    const code = String(pin.bytecode || '').replace(/^0x/i, '').toLowerCase();
+    const mutated = sol.replace(
+      'keccak256(bytes("shear-testnet-v12"))',
+      'keccak256(bytes("shear-testnet-v99"))',
+    );
+    assert.notEqual(mutated, sol);
+    const bad = compileReserveSource(mutated);
+    const live = Buffer.from(shearMagicBytes('shear-testnet-v12')).toString('hex');
+    const stranger = Buffer.from(shearMagicBytes('shear-testnet-v99')).toString('hex');
+    assert.notEqual(bad.bytecode, code);
+    assert.equal(code.includes(live), true);
+    assert.equal(bad.bytecode.includes(live), false);
+    assert.equal(bad.bytecode.includes(stranger), true);
+    assert.equal(code.includes(stranger), false);
   });
 
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
