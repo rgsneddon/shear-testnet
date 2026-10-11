@@ -1824,6 +1824,38 @@ pub(crate) fn notes_parent_synth(
     parent: &[u8; 32],
 ) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
     let mut h = hashed_bucket(notes)?;
+    bind_parent_sum(&mut h, notes, parent);
+    Some((h.b.l, h.b.r, h.b.o, h.b.cons, h.scalar))
+}
+
+/// The note hash, the parent sum, `Q = notes[index] + ρ·U`, and the public
+/// scalar `Y = from_bytes(notes[index])`. `index` and `ρ` are witnesses.
+/// `parent`, `Q`, and `Y` are public. Constraint coefficients do not depend
+/// on the notes, the index, or `ρ`. They do depend on `parent`, `Q`, and `Y`.
+/// A zero `ρ` returns `None`: publishing `Q = notes[index]` would put that
+/// note on the wire. A note that does not decompress returns `None` and
+/// builds no circuit.
+/// This is not the hide. The raw bucket is still published. The encoding
+/// commitment of those bytes is not in this circuit, and the verifier still
+/// requires the bucket.
+pub(crate) fn notes_slot_synth(
+    notes: &[[u8; 32]; 32],
+    parent: &[u8; 32],
+    index: usize,
+    rho: &RScalar,
+    q: &[u8; 32],
+    y: &[u8; 32],
+) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
+    if index >= 32 || *rho == RScalar::ZERO {
+        return None;
+    }
+    let mut h = hashed_bucket(notes)?;
+    bind_parent_sum(&mut h, notes, parent);
+    bind_slot(&mut h, notes, index, rho, q, y);
+    Some((h.b.l, h.b.r, h.b.o, h.b.cons, h.scalar))
+}
+
+fn bind_parent_sum(h: &mut HashedBucket, notes: &[[u8; 32]; 32], parent: &[u8; 32]) {
     let mut acc = h.points[0];
     let mut clear = h.eds[0];
     for i in 1..32 {
@@ -1863,7 +1895,189 @@ pub(crate) fn notes_parent_synth(
     for i in 0..5 {
         h.b.const_eq(sum.w[i], Scalar::from(claim.0[i]));
     }
-    Some((h.b.l, h.b.r, h.b.o, h.b.cons, h.scalar))
+}
+
+fn bind_slot(
+    h: &mut HashedBucket,
+    notes: &[[u8; 32]; 32],
+    index: usize,
+    rho: &RScalar,
+    q: &[u8; 32],
+    y: &[u8; 32],
+) {
+    let bits = one_hot_32(&mut h.b, index);
+    let mut on = [false; 32];
+    on[index] = true;
+    let sel = select_priv_point(&mut h.b, &bits, &on, &h.points);
+    let mut clear = h.eds[index];
+    assert!(fe_w_matches(sel.x, clear.x), "selected note x");
+    assert!(fe_w_matches(sel.y, clear.y), "selected note y");
+    assert!(fe_w_matches(sel.z, clear.z), "selected note z");
+    assert!(fe_w_matches(sel.t, clear.t), "selected note t");
+    bind_selected_scalar(h, sel, &notes[index], y);
+    let windows = u_windows();
+    let bytes = rho.to_bytes();
+    let mut acc = sel;
+    let mut zero_bits = Vec::with_capacity(32);
+    let mut zero_digits = 0u128;
+    for i in 0..32 {
+        let digit = bytes[i];
+        let hot = one_hot_8(&mut h.b, digit);
+        zero_bits.push(hot[0]);
+        if digit == 0 {
+            zero_digits += 1;
+        }
+        let picked = select_window(&mut h.b, &hot, &windows[i], digit);
+        acc = ed_add(&mut h.b, h.d, acc, picked);
+        clear = clear.add(windows[i][digit as usize]);
+        assert!(fe_w_matches(acc.x, clear.x), "slot x at window {i}");
+        assert!(fe_w_matches(acc.y, clear.y), "slot y at window {i}");
+        assert!(fe_w_matches(acc.z, clear.z), "slot z at window {i}");
+        assert!(fe_w_matches(acc.t, clear.t), "slot t at window {i}");
+    }
+    bind_rho_nonzero(&mut h.b, &zero_bits, zero_digits);
+    let got = clear.ristretto_compress();
+    let spent = curve25519_dalek::ristretto::CompressedRistretto(notes[index])
+        .decompress()
+        .expect("note decompressed above");
+    let expect = (spent + note_u() * rho).compress().to_bytes();
+    assert_eq!(got, expect, "edwards slot left the ristretto opening");
+    let sum = compress_fe(&mut h.b, acc.x, acc.y, acc.z, acc.t);
+    assert_eq!(encoding_bytes_from_limbs(&sum.v), got, "slot compress wires");
+    let claim = Fe::from_bytes(q).carry_full();
+    for i in 0..5 {
+        h.b.const_eq(sum.w[i], Scalar::from(claim.0[i]));
+    }
+}
+
+/// `Y` is the ristretto scalar of the selected note. The reduction reads the
+/// compress wires of that point. It does not read a free copy of the bytes.
+/// `Y` is public, so its limbs are coefficients.
+fn bind_selected_scalar(h: &mut HashedBucket, sel: FeEd, note: &[u8; 32], y: &[u8; 32]) {
+    let sum = compress_fe(&mut h.b, sel.x, sel.y, sel.z, sel.t);
+    assert_eq!(encoding_bytes_from_limbs(&sum.v), *note, "selected compress left the note");
+    let packed = pack_encoding(&mut h.b, &sum);
+    let b = std::mem::replace(&mut h.b, Builder::new());
+    let (mut b, limbs, bts) = order_reduce_into(b, note);
+    for i in 0..32 {
+        b.zero(vec![
+            (bts[i].w, Scalar::ONE),
+            (packed[i], Scalar::ZERO - Scalar::ONE),
+        ]);
+    }
+    let expect = order_limbs(y);
+    for i in 0..5 {
+        b.const_eq(limbs[i].w, sc_u128(expect[i]));
+    }
+    h.b = b;
+}
+
+/// Exactly one of 32 bits is set. The sum constraint does not name the index.
+fn one_hot_32(b: &mut Builder, index: usize) -> [Wire; 32] {
+    assert!(index < 32, "slot index");
+    let mut ws = [Wire::One; 32];
+    let mut terms = Vec::with_capacity(33);
+    terms.push((Wire::One, Scalar::ZERO - Scalar::ONE));
+    for k in 0..32 {
+        ws[k] = b.bit(k == index);
+        terms.push((ws[k], Scalar::ONE));
+    }
+    b.zero(terms);
+    ws
+}
+
+fn select_priv_point(b: &mut Builder, bits: &[Wire; 32], on: &[bool; 32], pts: &[FeEd]) -> FeEd {
+    let mut coords = [FeW { w: [Wire::One; 5], v: [0; 5] }; 4];
+    for ci in 0..4 {
+        coords[ci] = select_priv_fe(b, bits, on, pts, ci);
+    }
+    FeEd { x: coords[0], y: coords[1], z: coords[2], t: coords[3] }
+}
+
+fn point_coord(p: FeEd, ci: usize) -> FeW {
+    match ci {
+        0 => p.x,
+        1 => p.y,
+        2 => p.z,
+        _ => p.t,
+    }
+}
+
+/// `out = Σ bit_i · pts[i]` on one Edwards coordinate. Every product is present.
+fn select_priv_fe(b: &mut Builder, bits: &[Wire; 32], on: &[bool; 32], pts: &[FeEd], ci: usize) -> FeW {
+    let mut w = [Wire::One; 5];
+    let mut v = [0u128; 5];
+    for limb in 0..5 {
+        let (lw, lv) = select_priv_limb(b, bits, on, pts, ci, limb);
+        w[limb] = lw;
+        v[limb] = lv;
+    }
+    FeW { w, v }
+}
+
+fn select_priv_limb(
+    b: &mut Builder,
+    bits: &[Wire; 32],
+    on: &[bool; 32],
+    pts: &[FeEd],
+    ci: usize,
+    limb: usize,
+) -> (Wire, u128) {
+    let mut v = 0u128;
+    let mut prods = Vec::with_capacity(32);
+    for i in 0..32 {
+        let coord = point_coord(pts[i], ci);
+        let lv = coord.v[limb];
+        let prod_v = if on[i] { lv } else { 0 };
+        v += prod_v;
+        let bit_s = if on[i] { Scalar::ONE } else { Scalar::ZERO };
+        let gi = b.mul(bit_s, sc_u128(lv));
+        b.zero(vec![
+            (Wire::L(gi), Scalar::ONE),
+            (bits[i], Scalar::ZERO - Scalar::ONE),
+        ]);
+        b.zero(vec![
+            (Wire::R(gi), Scalar::ONE),
+            (coord.w[limb], Scalar::ZERO - Scalar::ONE),
+        ]);
+        prods.push(Wire::O(gi));
+    }
+    let w = b.range(v, 51);
+    let mut terms = vec![(w, Scalar::ONE)];
+    for pw in prods {
+        terms.push((pw, Scalar::ZERO - Scalar::ONE));
+    }
+    b.zero(terms);
+    (w, v)
+}
+
+/// `ρ` has a nonzero window. The inverse is a witness, not a coefficient,
+/// so the constraint list does not depend on which windows are zero.
+fn bind_rho_nonzero(b: &mut Builder, zero_bits: &[Wire], zero_digits: u128) {
+    assert!(zero_digits < 32, "rho is zero");
+    let zw = b.range(zero_digits, 6);
+    let mut terms = vec![(zw, Scalar::ONE)];
+    for w in zero_bits {
+        terms.push((*w, Scalar::ZERO - Scalar::ONE));
+    }
+    b.zero(terms);
+    let nz = 32 - zero_digits;
+    let nz_w = b.range(nz, 6);
+    b.zero(vec![
+        (nz_w, Scalar::ONE),
+        (zw, Scalar::ONE),
+        (Wire::One, Scalar::ZERO - Scalar::from(32u64)),
+    ]);
+    let inv = Scalar::from(nz as u64).invert().expect("nonzero window count");
+    let gi = b.mul(Scalar::from(nz as u64), inv);
+    b.zero(vec![
+        (Wire::L(gi), Scalar::ONE),
+        (nz_w, Scalar::ZERO - Scalar::ONE),
+    ]);
+    b.zero(vec![
+        (Wire::O(gi), Scalar::ONE),
+        (Wire::One, Scalar::ZERO - Scalar::ONE),
+    ]);
 }
 
 /// `zy·G + zr·H = A + e·Y`. One response opens one committed scalar.
@@ -3853,6 +4067,111 @@ mod tests {
         assert!(
             r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).is_err(),
             "identity notes opened the live parent"
+        );
+    }
+
+    /// One public Q is a rerandomization of one hidden note in the parent, and
+    /// the public scalar Y is that note. A second index with that same Q and Y
+    /// keeps the constraint list and fails the witness. A different Y fails
+    /// the witness. Zero rho builds nothing. This is not the hide.
+    #[test]
+    fn bind_slot_opens_one_note_of_the_parent() {
+        use crate::tree::commit_ristretto_points;
+        use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+        use curve25519_dalek::scalar::Scalar as RScalar;
+        use sha2::Sha256;
+
+        fn cons_fp(cons: &[Vec<(Wire, Scalar)>]) -> [u8; 32] {
+            let mut h = Sha256::new();
+            h.update((cons.len() as u64).to_le_bytes());
+            for c in cons {
+                h.update((c.len() as u32).to_le_bytes());
+                for (w, s) in c {
+                    let (tag, idx): (u8, u64) = match *w {
+                        Wire::L(i) => (0, i as u64),
+                        Wire::R(i) => (1, i as u64),
+                        Wire::O(i) => (2, i as u64),
+                        Wire::One => (3, 0),
+                        Wire::V(i) => (4, i as u64),
+                    };
+                    h.update([tag]);
+                    h.update(idx.to_le_bytes());
+                    h.update(s.to_repr().as_ref());
+                }
+            }
+            let d = h.finalize();
+            let mut o = [0u8; 32];
+            o.copy_from_slice(&d);
+            o
+        }
+
+        let mut live = [[0u8; 32]; 32];
+        for i in 0..32 {
+            let mut seed = [0u8; 64];
+            seed[0] = i as u8;
+            seed[1] = 0x5a;
+            live[i] = RistrettoPoint::from_uniform_bytes(&seed).compress().to_bytes();
+        }
+        let parent = commit_ristretto_points(&live).expect("live point commitment");
+        let index = 4usize;
+        let rho = RScalar::from(0x9a3c_u64);
+        let q = (CompressedRistretto(live[index]).decompress().expect("note") + note_u() * rho)
+            .compress()
+            .to_bytes();
+        let y = RScalar::from_bytes_mod_order(live[index]).to_bytes();
+        let y_other = RScalar::from_bytes_mod_order(live[11]).to_bytes();
+        assert_ne!(y, y_other, "two notes reduced to one scalar");
+        assert!(
+            notes_slot_synth(&live, &parent, index, &RScalar::ZERO, &q, &y).is_none(),
+            "a zero rho built a circuit"
+        );
+        let mut bad = live;
+        bad[7] = [0xff; 32];
+        assert!(
+            notes_slot_synth(&bad, &parent, index, &rho, &q, &y).is_none(),
+            "a bad note built a circuit"
+        );
+        assert!(
+            notes_slot_synth(&live, &parent, 32, &rho, &q, &y).is_none(),
+            "index 32 built a circuit"
+        );
+
+        let (l, r, o, cons, packed) =
+            notes_slot_synth(&live, &parent, index, &rho, &q, &y).expect("honest slot");
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("reduced scalar fits");
+        r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).unwrap_or_else(|e| panic!("honest slot: {e}"));
+        assert!(
+            r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed + Scalar::ONE]).is_err(),
+            "a different residue was accepted"
+        );
+        assert_eq!(l.len(), 5_630_278, "notes plus parent sum plus one slot and its scalar");
+        assert_eq!(l.len().next_power_of_two(), 1 << 23, "pad");
+        eprintln!("notes slot gates {} padded {}", l.len(), l.len().next_power_of_two());
+        let live_fp = cons_fp(&cons);
+        drop(l);
+        drop(r);
+        drop(o);
+        drop(cons);
+
+        let (l, r, o, cons, packed) =
+            notes_slot_synth(&live, &parent, 11, &rho, &q, &y).expect("wrong slot");
+        assert_eq!(cons_fp(&cons), live_fp, "the index changed the constraint shape");
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("wrong slot scalar fits");
+        assert!(
+            r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).is_err(),
+            "a different note opened the same Q"
+        );
+        drop(l);
+        drop(r);
+        drop(o);
+        drop(cons);
+
+        let (l, r, o, cons, packed) =
+            notes_slot_synth(&live, &parent, index, &rho, &q, &y_other).expect("wrong scalar");
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("wrong scalar fits");
+        assert!(
+            r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).is_err(),
+            "a different scalar opened the selected note"
         );
     }
 
