@@ -68,7 +68,7 @@ import {
   vaultSealBanner,
 } from '../../crypto/vault_seal.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
@@ -2090,6 +2090,8 @@ export function createStore(dir, {
     // Lock, vote, and withdraw still fail that vin as admit_membership.
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
+    const explicitKind = explicitTypedKindRejected(tx);
+    if (explicitKind) return explicitKind;
     const typedVin = typedCommitRejected(tx);
     if (typedVin) return typedVin;
     const open = valueOpenRejected(tx);
@@ -3886,6 +3888,13 @@ export function createStore(dir, {
       if (earlyKind) {
         try {
           console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: earlyKind.reason }));
+        } catch { /* ignore */ }
+        continue;
+      }
+      const explicitKind = explicitTypedKindRejected(tx);
+      if (explicitKind) {
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: explicitKind.reason }));
         } catch { /* ignore */ }
         continue;
       }

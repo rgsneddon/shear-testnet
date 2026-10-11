@@ -421,6 +421,23 @@ export function v12KindRejected(tx) {
   return null;
 }
 
+const EXPLICIT_OUTPUT_KINDS = new Set(['lock', 'vote', 'withdraw']);
+
+/**
+ * A lock, vote, or withdraw output names its own kind.
+ * An empty kind is not inherited from the tx.
+ */
+export function explicitTypedKindRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const top = tx.kind == null ? '' : String(tx.kind);
+  if (!EXPLICIT_OUTPUT_KINDS.has(top)) return null;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (!o || o.kind == null || String(o.kind) === '') return { ok: false, reason: 'kind' };
+  }
+  return null;
+}
+
 const HIDDEN_OPEN_TOPS = new Set(['send', 'transfer', 'change', 'dummy']);
 
 /**
@@ -705,6 +722,8 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
     if (earlyOpen) return earlyOpen;
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
+    const explicitKind = explicitTypedKindRejected(tx);
+    if (explicitKind) return explicitKind;
     const typed = typedCommitRejected(tx);
     if (typed) return typed;
     const open = valueOpenRejected(tx);

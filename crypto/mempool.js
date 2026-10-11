@@ -11,7 +11,7 @@ import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, cano
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, openingBeforeCarry } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, explicitTypedKindRejected, openingBeforeCarry } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, typedKindNeedsAdmitV3 } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
@@ -103,6 +103,8 @@ export function admitMempool(pool, tx, opts = {}) {
   // Lock, vote, and withdraw still fail that vin as admit_membership.
   const kindGate = v12KindRejected(tx);
   if (kindGate) return kindGate;
+  const explicitKind = explicitTypedKindRejected(tx);
+  if (explicitKind) return explicitKind;
   const typedVin = typedCommitRejected(tx);
   if (typedVin) return typedVin;
   const open = valueOpenRejected(tx);

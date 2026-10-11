@@ -75,7 +75,7 @@ import {
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { coinbaseObserveRejected, observeDigestSuffix } from '../../crypto/reserve_oracle.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
@@ -2186,6 +2186,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     if (kindGate) return kindGate;
+    const explicitKind = explicitTypedKindRejected(tx);
+    if (explicitKind) return explicitKind;
     const typedVin = typedCommitRejected(tx);
     if (typedVin) return typedVin;
     const open = valueOpenRejected(tx);

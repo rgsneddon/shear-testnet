@@ -106,6 +106,54 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
     }
   });
 
+  it('a lock, vote, or withdraw output must name its own kind', { timeout: 180_000 }, async () => {
+    const box = stealthBox();
+    const dest = box.dest;
+    const d20 = hash20FromAddress(dest);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-explicit-kind-'));
+    const store = createStore(dir);
+    const typed = ['lock', 'vote', 'withdraw'];
+    for (const kind of typed) {
+      for (const nanos of AMOUNTS) {
+        const note = sealNote(nanos, { dest20: d20, kind });
+        const tx = {
+          id: `blank-${kind}-${nanos}`,
+          kind,
+          programId: RESERVE_PROGRAM,
+          from: dest,
+          to: dest,
+          nanos,
+          fee: 0,
+          vin: [{ address: dest }],
+          vout: [
+            { ...note, kind, address: dest },
+            { address: dest, nanos: 1 },
+          ],
+        };
+        const body = verifyFundedBody([tx], () => nanos * 4, {
+          reserveState: { portals: {}, epochBps: 0 },
+        });
+        assert.equal(body.reason, 'kind', `${kind} ${nanos} ${body.reason}`);
+        const queued = store.queueTx(tx);
+        assert.equal(queued.reason, 'kind', `${kind} ${nanos} ${queued.reason}`);
+        const parked = admitMempool(emptyMempool(), tx, { baseFee: 1 });
+        assert.equal(parked.reason, 'kind', `${kind} ${nanos} ${parked.reason}`);
+        const tpl = buildTemplate({
+          prev: GENESIS_PREV,
+          height: 1,
+          miner: dest,
+          bits: GENESIS_BITS_PACKED,
+          now: 1_700_000_000_000,
+          txs: [tx],
+        });
+        const got = await Promise.resolve(verifyBlock(mine(tpl), null, {
+          trustedPowHash: Buffer.alloc(32),
+        }));
+        assert.equal(got.reason, 'kind', `${kind} ${nanos} ${got.reason}`);
+      }
+    }
+  });
+
   it('a lock with no payer is unfunded, and a second vout cannot ride a withdraw', () => {
     const dest = stealthBox().dest;
     for (const nanos of AMOUNTS) {
