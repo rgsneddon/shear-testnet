@@ -134,7 +134,10 @@ pub extern "C" fn shear_admit_jroot_point(
         if out.is_null() {
             return BAD;
         }
-        let root = jroot_point(d, c, n);
+        let root = match jroot_point(d, c, n) {
+            Some(r) => r,
+            None => return BAD,
+        };
         unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), out, 32) };
         OK
     }))
@@ -1053,7 +1056,7 @@ mod tests {
     fn v3_remainder_hides_the_slot_and_rejects_a_mint() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n).expect("point leaves");
         let idx = 3usize;
         let t = rand_scalar();
         let ctx = ctx64();
@@ -1082,7 +1085,7 @@ mod tests {
         minted[0] ^= 0x5a;
         bad[33] ^= 0x5a;
         assert!(!admit_verify_v3(&bad, &jr, &minted, &tag, &ctx), "self-minted C-tilde");
-        let jr_sub = jroot_point(&dest_blob[..4 * 32], &c_blob[..4 * 32], 4);
+        let jr_sub = jroot_point(&dest_blob[..4 * 32], &c_blob[..4 * 32], 4).expect("point leaves");
         assert!(!admit_verify_v3(&proof, &jr_sub, &ct, &tag, &ctx), "subset jroot");
         let mut ctx_b = ctx;
         ctx_b[10] ^= 1;
@@ -1123,7 +1126,7 @@ mod tests {
     fn v3_paired_remainder_hides_the_child_slot() {
         let n = 40usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n).expect("point leaves");
         let idx = 7usize;
         let t = rand_scalar();
         let ctx = ctx64();
@@ -1187,7 +1190,7 @@ mod tests {
     fn seal_v3_opens_the_note_in_the_set() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n).expect("point leaves");
         let idx = 3usize;
         let t = rand_scalar();
         let ctx = ctx64();
@@ -1217,7 +1220,7 @@ mod tests {
     fn v3_fresh_point_outside_the_set_fails() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n).expect("point leaves");
         let idx = 3usize;
         let t = rand_scalar();
         let ctx = ctx64();
@@ -1313,7 +1316,7 @@ mod tests {
         assert!(crate::gadget::slot_opening_verifies(slot_blob, &forged.e_bytes, &forged.s_bytes));
         assert!(crate::gadget::encode_opening_verifies(enc_blob, &forged.kc_b));
         assert!(crate::gadget::kp_opening_verifies(kp_blob, &forged.kp_b, &kp_v));
-        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n).expect("point leaves");
         eprintln!("PHASE attacker-verify");
         assert!(
             !admit_verify_v3(&forged.proof, &jr, &forged.ct, &forged.tag, &ctx),
@@ -1326,7 +1329,7 @@ mod tests {
     fn v3_two_bucket_spent_link_stays_on_the_wire() {
         let n = 64usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n).expect("point leaves");
         let jr_scalar = jroot(&dest_blob, &c_blob, n);
         assert_ne!(jr, jr_scalar, "the point book is not the scalar jroot");
         let ctx = ctx64();
@@ -1357,7 +1360,7 @@ mod tests {
             }
             assert_eq!(
                 parent_c,
-                tree::commit_ristretto_points(&bucket),
+                tree::commit_ristretto_points(&bucket).expect("point bucket"),
                 "the published parent is the point commitment of the spent bucket"
             );
             assert_ne!(

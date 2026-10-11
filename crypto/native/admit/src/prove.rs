@@ -154,7 +154,7 @@ pub fn admit_prove_in(
     }
     let tag = i_pt.compress().to_bytes();
     let (dlevels, clev) = if v3 {
-        trees_point(dest_leaves, c_leaves, n)
+        trees_point(dest_leaves, c_leaves, n)?
     } else {
         trees(dest_leaves, c_leaves, n)
     };
@@ -203,7 +203,7 @@ pub fn admit_prove_in(
         // The glue child is the point commitment of the published bucket.
         // Internal parents above stay scalar encodings.
         let parent_c = if v3 {
-            commit_ristretto_points(&cpath[0])
+            commit_ristretto_points(&cpath[0])?
         } else {
             commit_ristretto_encodings(&cpath[0])
         };
@@ -356,7 +356,7 @@ pub fn forge_fresh_spend_v3(
     if ctx.len() != 64 || n == 0 || index >= n {
         return None;
     }
-    let (dlevels, clev) = trees_point(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = trees_point(dest_leaves, c_leaves, n)?;
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != 1 || cpath.len() != 1 {
@@ -512,7 +512,7 @@ pub fn forge_attacker_dest_v3(
     if ctx.len() != 64 || n == 0 || index >= n {
         return None;
     }
-    let (dlevels, clev) = trees_point(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = trees_point(dest_leaves, c_leaves, n)?;
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != 1 || cpath.len() != 1 {
@@ -894,7 +894,11 @@ pub fn admit_verify_in(
         None => return false,
     };
     if v3 {
-        if commit_ristretto_points(&siblings) != c_parent {
+        let point_parent = match commit_ristretto_points(&siblings) {
+            Some(p) => p,
+            None => return false,
+        };
+        if point_parent != c_parent {
             return false;
         }
         // The tree node is the point commitment. The dest-bind leaf opens the

@@ -311,16 +311,16 @@ fn fold_c(level: &[[u8; 32]]) -> Vec<[u8; 32]> {
 }
 
 /// First fold of the version-3 C tree. Later folds stay `fold_c`.
-fn fold_c_points(level: &[[u8; 32]]) -> Vec<[u8; 32]> {
+fn fold_c_points(level: &[[u8; 32]]) -> Option<Vec<[u8; 32]>> {
     let mut next = Vec::with_capacity(level.len() / ARITY + 1);
     for chunk in level.chunks(ARITY) {
         let mut xs = [[0u8; 32]; ARITY];
         for (i, c) in chunk.iter().enumerate() {
             xs[i] = *c;
         }
-        next.push(commit_ristretto_points(&xs));
+        next.push(commit_ristretto_points(&xs)?);
     }
-    next
+    Some(next)
 }
 
 /// Every D-ary level including the 1-element root. Built once per prove.
@@ -415,7 +415,7 @@ pub fn c_levels(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
 /// Version-3 C levels. The leaf bucket folds as ristretto points.
 /// Every fold above that stays the scalar encoding commitment. Not cached:
 /// `trees` is the v2 book and must not see these levels.
-fn c_levels_point_build(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
+fn c_levels_point_build(c_leaves: &[u8], n: usize) -> Option<Vec<Vec<[u8; 32]>>> {
     let mut level = c_leaf_level(c_leaves, n);
     let mut levels = Vec::new();
     let mut first = true;
@@ -426,7 +426,7 @@ fn c_levels_point_build(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
         }
         let next = if first {
             first = false;
-            fold_c_points(&level)
+            fold_c_points(&level)?
         } else {
             fold_c(&level)
         };
@@ -438,12 +438,19 @@ fn c_levels_point_build(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
         level = next;
         pad_to_arity(&mut level);
     }
-    levels
+    Some(levels)
 }
 
 /// Dest levels are the v2 fold. C levels use the point leaf. Own path, not the v2 cache.
-pub fn trees_point(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> (Vec<Vec<[u8; 32]>>, Vec<Vec<[u8; 32]>>) {
-    (dest_levels_build(dest_leaves, n), c_levels_point_build(c_leaves, n))
+pub fn trees_point(
+    dest_leaves: &[u8],
+    c_leaves: &[u8],
+    n: usize,
+) -> Option<(Vec<Vec<[u8; 32]>>, Vec<Vec<[u8; 32]>>)> {
+    Some((
+        dest_levels_build(dest_leaves, n),
+        c_levels_point_build(c_leaves, n)?,
+    ))
 }
 
 pub fn path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Option<Vec<[[u8; 32]; ARITY]>> {
@@ -538,8 +545,9 @@ pub(crate) fn commit_ristretto_encodings(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
 
 /// Parent of an arity-32 bucket of ristretto points: r·U + Σ C_i.
 /// r is domain-separated by the point bytes in order. This is not
-/// scalar(compress(C)). A pad that does not decompress adds nothing.
-pub fn commit_ristretto_points(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
+/// scalar(compress(C)). A child that does not decompress fails closed.
+/// The all-zero pad is the identity and stays in the sum.
+pub fn commit_ristretto_points(cs: &[[u8; 32]; ARITY]) -> Option<[u8; 32]> {
     let (u, _, _) = ristretto_gens();
     let mut parts: Vec<&[u8]> = vec![DST_C_POINT];
     for c in cs {
@@ -548,11 +556,9 @@ pub fn commit_ristretto_points(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
     let r = RScalar::from_bytes_mod_order_wide(&sha512_64(&parts));
     let mut acc = u * r;
     for c in cs {
-        if let Some(p) = CompressedRistretto(*c).decompress() {
-            acc += p;
-        }
+        acc += CompressedRistretto(*c).decompress()?;
     }
-    acc.compress().to_bytes()
+    Some(acc.compress().to_bytes())
 }
 
 pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
@@ -565,9 +571,9 @@ pub fn jroot(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> [u8; 32] {
 }
 
 /// Version-3 book. Not `jroot`: the C root is the point leaf.
-pub fn jroot_point(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> [u8; 32] {
-    let (d, c) = trees_point(dest_leaves, c_leaves, n);
-    jroot_point_hash(&root_of_levels(&d), &root_of_levels(&c))
+pub fn jroot_point(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> Option<[u8; 32]> {
+    let (d, c) = trees_point(dest_leaves, c_leaves, n)?;
+    Some(jroot_point_hash(&root_of_levels(&d), &root_of_levels(&c)))
 }
 
 pub struct PastaTree {
@@ -953,5 +959,27 @@ mod frontier_tests {
         for n in [0usize, 1, 2, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1023, 1024, 1025] {
             check_n(n);
         }
+    }
+}
+
+#[cfg(test)]
+mod point_commit_tests {
+    use super::{commit_ristretto_points, ARITY};
+
+    #[test]
+    fn commit_ristretto_points_rejects_a_non_point() {
+        let zeros = [[0u8; 32]; ARITY];
+        let honest = commit_ristretto_points(&zeros).expect("identity pad");
+        let mut bad = zeros;
+        let mut rejected = false;
+        for b in 1u8..64 {
+            bad[3] = [b; 32];
+            if commit_ristretto_points(&bad).is_none() {
+                rejected = true;
+                break;
+            }
+        }
+        assert!(rejected, "a non-point child fails closed");
+        assert_eq!(commit_ristretto_points(&zeros).expect("identity pad"), honest);
     }
 }
