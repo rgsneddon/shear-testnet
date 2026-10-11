@@ -1698,6 +1698,104 @@ pub(crate) fn sha512_wide_synth(
     (b.l, b.r, b.o, b.cons, scalar)
 }
 
+/// A byte pinned to a public constant. The prover cannot swap the domain or the padding.
+fn pinned_byte(b: &mut Builder, v: u8) -> Wire {
+    let w = b.range(v as u128, 8);
+    b.const_eq(w, Scalar::from(v as u64));
+    w
+}
+
+/// Pack 16 big-endian words from wires that already exist.
+/// `pack_sha_block` ranges a fresh copy of the bytes. That copy is not the note.
+fn pack_sha_block_wires(b: &mut Builder, wires: &[Wire], vals: &[u8]) -> [Word; 16] {
+    assert_eq!(wires.len(), 128, "sha block width");
+    assert_eq!(vals.len(), 128, "sha block width");
+    let mut words = [Word { w: Wire::One, v: 0 }; 16];
+    for t in 0..16 {
+        let mut acc = 0u64;
+        for j in 0..8 {
+            acc |= (vals[t * 8 + j] as u64) << (56 - 8 * j);
+        }
+        let gi = b.mul(sc_u128(acc as u128), Scalar::ONE);
+        b.zero(vec![(Wire::R(gi), Scalar::ONE), (Wire::One, Scalar::ZERO - Scalar::ONE)]);
+        let mut terms = vec![(Wire::L(gi), Scalar::ZERO - Scalar::ONE)];
+        for j in 0..8 {
+            terms.push((wires[t * 8 + j], sc_u128(1u128 << (56 - 8 * j))));
+        }
+        b.zero(terms);
+        words[t] = Word { w: Wire::L(gi), v: acc };
+    }
+    words
+}
+
+/// SHA-512 of `DST_C_POINT` and 32 canonical note encodings, reduced mod the
+/// ristretto order onto `V[0]`. Each note is a private point. The hash reads
+/// that point's compress wires. It does not read a free copy of the bytes.
+/// A note that does not decompress returns `None` and builds no circuit.
+/// This is not the hide. The parent sum is not in this circuit, and the raw
+/// bucket is still published beside the proof.
+pub(crate) fn notes_wide_synth(
+    notes: &[[u8; 32]; 32],
+) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
+    let dst = crate::leaf::DST_C_POINT;
+    assert_eq!(dst.len(), 22, "point domain is 22 bytes");
+    let mut eds = Vec::with_capacity(32);
+    for note in notes {
+        let ed = canon_ed(ristretto_decompress(note)?);
+        assert_eq!(ed.ristretto_compress(), *note, "decompressed note is not canonical");
+        eds.push(ed);
+    }
+    let mut msg = Vec::with_capacity(dst.len() + 1024);
+    msg.extend_from_slice(dst);
+    for note in notes {
+        msg.extend_from_slice(note);
+    }
+    assert_eq!(msg.len(), 1046, "domain plus 32 notes is 1046 bytes");
+    let padded = sha512_pad(&msg);
+    assert_eq!(padded.len(), 1152, "the bucket hash is 9 SHA-512 blocks");
+
+    let mut b = Builder::new();
+    let d = fe_const(&mut b, edwards_d());
+    let mut msg_w = Vec::with_capacity(msg.len());
+    for byte in dst {
+        msg_w.push(pinned_byte(&mut b, *byte));
+    }
+    for ed in eds {
+        let start = fe_ed_priv(&mut b, ed);
+        enforce_twisted(&mut b, d, &start);
+        let s = compress_fe(&mut b, start.x, start.y, start.z, start.t);
+        let at = msg_w.len();
+        assert_eq!(
+            encoding_bytes_from_limbs(&s.v).as_slice(),
+            &msg[at..at + 32],
+            "compress wires diverged from the note"
+        );
+        for byte in pack_encoding(&mut b, &s) {
+            msg_w.push(byte);
+        }
+    }
+    assert_eq!(msg_w.len(), msg.len(), "hash message wires");
+    let mut pad_w = msg_w;
+    for byte in &padded[msg.len()..] {
+        pad_w.push(pinned_byte(&mut b, *byte));
+    }
+    assert_eq!(pad_w.len(), padded.len(), "padded hash wires");
+
+    let mut state = sha512_iv(&mut b);
+    for (chunk_w, chunk_v) in pad_w.chunks(128).zip(padded.chunks(128)) {
+        let words = pack_sha_block_wires(&mut b, chunk_w, chunk_v);
+        state = sha512_compress_from(&mut b, words, state);
+    }
+    let (dig_w, dig) = digest_bytes_from_state(&mut b, state);
+    let expect = crate::leaf::sha512_64(&[msg.as_slice()]);
+    assert_eq!(dig, expect, "note hash diverged from sha2");
+    let x = wide_limbs_from_bytes(&mut b, &dig_w, &dig);
+    let reduced = reduce_wide_mod_l(&mut b, &x, &dig);
+    bind_u32_to_v(&mut b, &reduced, 0);
+    let scalar = RScalar::from_bytes_mod_order_wide(&dig).to_bytes();
+    Some((b.l, b.r, b.o, b.cons, scalar))
+}
+
 /// `zy·G + zr·H = A + e·Y`. One response opens one committed scalar.
 /// `leaf_verify_v3` does not call this: the encode circuit is not in the transcript,
 /// so the equation alone does not reject a point outside the set.
@@ -3529,6 +3627,87 @@ mod tests {
             "sha512 wide bucket gates {} padded {}",
             l.len(),
             l.len().next_power_of_two()
+        );
+    }
+
+    /// The hash message is the compress wires of the 32 notes. A free copy of
+    /// those bytes is not an input. The constraint list does not depend on the notes.
+    #[test]
+    fn bind_notes_wide_hashes_the_canonical_encodings() {
+        use crate::leaf::{sha512_64, DST_C_POINT};
+        use curve25519_dalek::ristretto::RistrettoPoint;
+        use curve25519_dalek::scalar::Scalar as RScalar;
+        use sha2::Sha256;
+
+        fn bucket_r(notes: &[[u8; 32]; 32]) -> [u8; 32] {
+            let mut parts: Vec<&[u8]> = Vec::with_capacity(33);
+            parts.push(DST_C_POINT);
+            for n in notes {
+                parts.push(n.as_ref());
+            }
+            RScalar::from_bytes_mod_order_wide(&sha512_64(&parts)).to_bytes()
+        }
+
+        fn cons_fp(cons: &[Vec<(Wire, Scalar)>]) -> [u8; 32] {
+            let mut h = Sha256::new();
+            h.update((cons.len() as u64).to_le_bytes());
+            for c in cons {
+                h.update((c.len() as u32).to_le_bytes());
+                for (w, s) in c {
+                    let (tag, idx): (u8, u64) = match *w {
+                        Wire::L(i) => (0, i as u64),
+                        Wire::R(i) => (1, i as u64),
+                        Wire::O(i) => (2, i as u64),
+                        Wire::One => (3, 0),
+                        Wire::V(i) => (4, i as u64),
+                    };
+                    h.update([tag]);
+                    h.update(idx.to_le_bytes());
+                    h.update(s.to_repr().as_ref());
+                }
+            }
+            let d = h.finalize();
+            let mut o = [0u8; 32];
+            o.copy_from_slice(&d);
+            o
+        }
+
+        let mut bad = [[0u8; 32]; 32];
+        bad[7] = [0xff; 32];
+        assert!(
+            notes_wide_synth(&bad).is_none(),
+            "a note that does not decompress was accepted"
+        );
+
+        let zeros = [[0u8; 32]; 32];
+        let (l, r, o, cons, packed) = notes_wide_synth(&zeros).expect("identity notes");
+        assert_eq!(packed, bucket_r(&zeros), "identity bucket scalar");
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("reduced scalar fits");
+        r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed])
+            .unwrap_or_else(|e| panic!("identity notes: {e}"));
+        eprintln!("notes wide gates {} padded {}", l.len(), l.len().next_power_of_two());
+        let zeros_fp = cons_fp(&cons);
+        drop(l);
+        drop(r);
+        drop(o);
+        drop(cons);
+
+        let mut live = [[0u8; 32]; 32];
+        for i in 0..32 {
+            let mut seed = [0u8; 64];
+            seed[0] = i as u8;
+            seed[1] = 0x5a;
+            live[i] = RistrettoPoint::from_uniform_bytes(&seed).compress().to_bytes();
+        }
+        let (l, r, o, cons, packed) = notes_wide_synth(&live).expect("live notes");
+        assert_eq!(cons_fp(&cons), zeros_fp, "the notes changed the constraint shape");
+        assert_eq!(packed, bucket_r(&live), "live bucket scalar");
+        assert_ne!(packed, bucket_r(&zeros), "two buckets hashed to one scalar");
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("live scalar fits");
+        r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).unwrap_or_else(|e| panic!("live notes: {e}"));
+        assert!(
+            r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed + Scalar::ONE]).is_err(),
+            "a different residue was accepted"
         );
     }
 
