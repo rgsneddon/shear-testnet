@@ -33,6 +33,39 @@ What was not re-run here: `seal_v3_opens_the_note_in_the_set` (Build's merge mes
 
 Fingerprint on feat is still `ADMIT=ADMITv2` at `crypto/asert.js`. `kBookMagic` is still `shear-testnet-v11`.
 
+## Open after that check
+
+The numbered list in `docs/v12-HANDOFF.md` on feat labels almost every landed commit as P0. A passed item is not an open one. These are the ones still open on `5a5685a`.
+
+P0, checked in this tree or named uncoded by the handoff and not replaced by a later item:
+
+- Live lock, vote, and withdraw. `noteFromAnchor` returns `{ jroot, n }`. Typed funding returns `admit_anchor_root` before `admitVerifyV3`. Items 36 and 37 stay "not closed".
+- The n > 32 spent C bucket stays on the wire. `v3_two_bucket_spent_link_stays_on_the_wire` requires the raw notes. Item 87 calls that the spent-bucket P0.
+- `commit_ristretto_points` skips a child that does not decompress.
+- Fresh-point, attacker-dest, and the Yx filter were not re-run on the 43490 layout. The n = 64 test and the Node prove for n of 1, 8, and 40 were not re-run here. Build's `seal_v3` claim is n = 8 in 4592.82s.
+- 018e Share Commitment is uncoded. Item 84 says so again.
+- Inbox 021, with 021b and 021c: unbounded JSON nesting and HTTP body size on wallet, stratum, and RPC. Item 12. No depth cap is in the tree.
+- Inbox 012, 015, 018 through 018f, 019, and 022 through 024 are read and uncoded. 024 is CoS vendor outreach.
+- 083 and 086 stay not closed. Continuum does not emit a v3 proof. The fingerprint token stays `ADMIT=ADMITv2`. `test_gate_evm.js` the bits case is still the old failure.
+- Items 16-23. The seven `test_wallet_send` cases stay red. T18 frame timing and Windows-to-Android were not run. B-1 was not started.
+- 070 checkpoint leftovers: lengths 1000 and 2880, burial prune, other hash backends, and the pool regression. The checkpoint code is item 32.
+- 072: the v12 pull gate is item 33. The full pool regression was not run.
+- 079: fleet Ready stays open.
+- D-3, N-6ee-2, N-25, and N-26 stay open. Inbox 088, short ssa1, was not started. Inbox 052, the P2P burial gate, was not implemented. 033b: `test_hash_bonus_cap.js` was not re-run.
+- `kBookMagic` stays `shear-testnet-v11`. Pool `index.html` still says shear-testnet-v11, Continuum 0.71, and ShearK 2.8. Genesis is not cut. Tags are not moved. There is no soak stamp.
+
+P1:
+
+- ShearK admit floor is 2.9 in `admitClient`. Item 8's "admits from 2.0" line is stale. macOS has no pack. The handoff says the live soak binaries still print 2.8 and shear-testnet-v4. Item 36, the vardiff reconnect spread, was not run.
+- Inbox 025: the 16:30 and 16:54 outbox gaps, and the pool page still on v11.
+- Inbox 027: count-cap selection pays by dest count. Read and uncoded.
+
+Item 11, T21 option A, is a design hold. Russell chose blinded per-dest work. No code until that design is in the handoff.
+
+The handoff does not label a priority P2. Do not read "P2P" as P2.
+
+Stale, and not open as written: item 8's admit-from-2.0 sentence, and the early "035 DrainFloor stays open" sentence. Item 19 is the pruned owed replay. Item 84 is the 1/2 drain. Those tests were not re-run in this check.
+
 ## Commits
 
 - `172ef9f` Seal the book fingerprint as `ADMIT=ADMITv3`.
