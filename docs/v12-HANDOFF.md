@@ -4,6 +4,8 @@ Branch: `feat/shear-testnet-v12`
 Base: `c732ff5466cbd9f6e7723a5332f3604217a0355d` (`origin/main` at branch cut)  
 This push is not a deploy. No tags, no release assets, no merge to `main`.
 
+PowerShell Build: read `docs/BUILD-HANDOFF-ADMITV3.md` on branch `cursor/admit-v3-point-root-0bcc` before landing another ADMITv3 prove. Draft PR 55. Do not cut genesis, move tags, flip `kBookMagic`, deploy, or start the soak. CoS is asleep until Tuesday 15:00. Item 87 below is the earlier audit, not the status of that branch.
+
 ## Green
 
 Ran with `node --test` from `C:\Users\rgsne\shear-testnet` on 2026-10-06. τ = 2h (`ASERT_TAU_MS` 7_200_000).
