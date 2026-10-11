@@ -63,17 +63,66 @@ describe('brand pages', () => {
     assert.match(fmtUptime(365 * 86400_000), /^1y /);
   });
 
-  it('pool and explorer fmtRate step 1000 MH/s to GH/s', () => {
-    for (const rel of ['pool/public/index.html', 'pool/public/explorer.html']) {
+  it('pool and explorer fmtRate step 1000 mR/s to gR/s', () => {
+    for (const rel of [
+      'pool/public/index.html',
+      'pool/public/explorer.html',
+      'pool/public/miner.html',
+      'explorer/explorer.html',
+    ]) {
       const page = read(rel);
       const fn = page.match(/function fmtRate\(n\) \{[\s\S]*?\n    \}/);
       assert.ok(fn, `${rel} must ship fmtRate`);
       const fmtRate = new Function(`${fn[0]}; return fmtRate;`)();
-      assert.equal(fmtRate(1000e6), '1.00 GH/s');
-      assert.equal(fmtRate(1.2e9), '1.20 GH/s');
-      assert.equal(fmtRate(1e12), '1.00 TH/s');
-      assert.equal(fmtRate(1e15), '1.00 PH/s');
+      assert.equal(fmtRate(0), '0.0 R/s');
+      assert.equal(fmtRate(1), '1.0 R/s');
+      assert.equal(fmtRate(5210), '5.21 kR/s');
+      assert.equal(fmtRate(1000e6), '1.00 gR/s');
+      assert.equal(fmtRate(1.2e9), '1.20 gR/s');
+      assert.equal(fmtRate(1e12), '1.00 tR/s');
+      assert.equal(fmtRate(1e15), '1.00 pR/s');
+      assert.doesNotMatch(page, /H\/s/);
     }
+  });
+
+  it('names 1 sheath and rho sheathes, and paints rho without renaming wire keys', () => {
+    const paper = read('site/whitepaper/index.html');
+    assert.match(paper, /the rho sheathes of those shares/);
+    assert.match(paper, /The hash bonus is 1 sheath, 10<sup>−11<\/sup> SHE/);
+    assert.doesNotMatch(paper, /hash nanos/);
+    assert.match(paper, /ADMITv2/);
+    const dag = read('site/dag/index.html');
+    assert.match(dag, /plus the rho sheathes, once/);
+    assert.doesNotMatch(dag, /hash nanos/);
+    const wallet = read('wallet/lib/main.dart');
+    assert.match(wallet, /'Network rho'/);
+    assert.match(wallet, /\$\{ledger\.networkHashrate\} R\/s/);
+    assert.match(wallet, /networkHashrate/);
+    const admin = read('pool/admin/index.html');
+    assert.match(admin, />Live R\/s</);
+    assert.match(admin, /1e6/);
+    assert.match(admin, /1e3/);
+    assert.match(admin, /' mR\/s'/);
+    assert.match(admin, /' kR\/s'/);
+    assert.match(admin, /' R\/s'/);
+    assert.doesNotMatch(admin, /H\/s/);
+    const sheark = read('sheark-miner/src/sheark_miner.c');
+    const solo = read('miner/src/shear_miner.c');
+    for (const src of [sheark, solo]) {
+      assert.match(src, /"R\/s", "kR\/s", "mR\/s", "gR\/s", "tR\/s", "pR\/s", "eR\/s", "zR\/s"/);
+      assert.match(src, /0\.0 R\/s/);
+      assert.match(src, /rate=%.0f R\/s/);
+      assert.doesNotMatch(src, /H\/s/);
+    }
+    assert.match(sheark, /hashrate=%s/);
+    assert.match(sheark, /hashrate\\":%.0f/);
+    assert.match(solo, /\\"hashrate\\":%.0f/);
+    const pool = read('pool/public/index.html');
+    assert.match(pool, /id="hashrate"/);
+    assert.match(pool, />Pool rho</);
+    assert.match(pool, />Rho</);
+    assert.match(read('pool/public/miner.html'), />Rho</);
+    assert.match(read('pool/public/explorer.html'), />Pool rho</);
   });
 
   it('site, pool, explorer, and mempool have pack wordmark, favicon, and dark/light swap', () => {

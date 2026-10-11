@@ -563,11 +563,11 @@ static void flush_shares(Conn *mainc) {
 
 static void fmt_hashrate(double hs, char *buf, size_t n) {
   static const char *units[] = {
-    "H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s", "EH/s", "ZH/s",
+    "R/s", "kR/s", "mR/s", "gR/s", "tR/s", "pR/s", "eR/s", "zR/s",
   };
   int i = 0;
   if (!(hs > 0.0)) {
-    snprintf(buf, n, "0.0 H/s");
+    snprintf(buf, n, "0.0 R/s");
     return;
   }
   while (hs >= 1000.0 && i < 7) {
@@ -744,7 +744,7 @@ int main(int argc, char **argv) {
       n += (uint64_t)SHEAR_X8;
     }
     double secs = (double)bench_secs;
-    printf("bench hashes=%llu rate=%.0f H/s backend=%s (%.0fs)\n",
+    printf("bench hashes=%llu rate=%.0f R/s backend=%s (%.0fs)\n",
            (unsigned long long)h, (double)h / secs, shear_hash_backend(), secs);
     return 0;
   }

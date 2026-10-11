@@ -436,7 +436,7 @@
       <article class="panel-card"><div class="label">Network</div><div class="value" id="network">shear-testnet-v11</div></article>
       <article class="panel-card"><div class="label">Proof</div><div class="value" id="proof">PoW</div></article>
       <article class="panel-card"><div class="label">Height</div><div class="value" id="height">0</div></article>
-      <article class="panel-card"><div class="label">Pool hashrate</div><div class="value" id="hashrate">0 H/s</div></article>
+      <article class="panel-card"><div class="label">Pool rho</div><div class="value" id="hashrate">0.0 R/s</div></article>
       <article class="panel-card"><div class="label">Resistance</div>
         <div class="value resist-meter" id="difficulty" role="meter" aria-label="Resistance">
           <div class="resist-track">
@@ -479,7 +479,7 @@
           <tr>
             <th>Miner</th>
             <th>Client</th>
-            <th>Hashrate</th>
+            <th>Rho</th>
             <th>Session finds</th>
             <th>Lifetime seals</th>
             <th title="This round">Round shares</th>
@@ -599,8 +599,8 @@
     });
     function fmtRate(n) {
       const v = Number(n) || 0;
-      if (!Number.isFinite(v) || v <= 0) return '0.0 H/s';
-      const units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s'];
+      if (!Number.isFinite(v) || v <= 0) return '0.0 R/s';
+      const units = ['R/s', 'kR/s', 'mR/s', 'gR/s', 'tR/s', 'pR/s', 'eR/s', 'zR/s'];
       let x = v;
       let i = 0;
       while (x >= 1000 && i < units.length - 1) { x /= 1000; i += 1; }

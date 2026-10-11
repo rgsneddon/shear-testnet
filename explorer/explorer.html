@@ -298,8 +298,8 @@
     }
     function fmtRate(n) {
       const v = Number(n) || 0;
-      if (!Number.isFinite(v) || v <= 0) return '0.0 H/s';
-      const units = ['H/s', 'kH/s', 'MH/s', 'GH/s', 'TH/s', 'PH/s', 'EH/s', 'ZH/s'];
+      if (!Number.isFinite(v) || v <= 0) return '0.0 R/s';
+      const units = ['R/s', 'kR/s', 'mR/s', 'gR/s', 'tR/s', 'pR/s', 'eR/s', 'zR/s'];
       let x = v;
       let i = 0;
       while (x >= 1000 && i < units.length - 1) { x /= 1000; i += 1; }

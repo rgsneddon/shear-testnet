@@ -849,7 +849,7 @@ describe('public miner listing', () => {
     assert.match(miner, /hasPayoutDest/);
     assert.equal(miner.includes('Waiting payout'), false);
     assert.match(miner, /id="workers"/);
-    assert.match(miner, /<th>Worker<\/th>\s*<th>Client<\/th>\s*<th>Hashrate<\/th>\s*<th>Session finds<\/th>\s*<th>Lifetime seals<\/th>\s*<th>Accepted shares<\/th>\s*<th>Hashes reported<\/th>\s*<th>Stale shares<\/th>\s*<th>CPU threads<\/th>/);
+    assert.match(miner, /<th>Worker<\/th>\s*<th>Client<\/th>\s*<th>Rho<\/th>\s*<th>Session finds<\/th>\s*<th>Lifetime seals<\/th>\s*<th>Accepted shares<\/th>\s*<th>Hashes reported<\/th>\s*<th>Stale shares<\/th>\s*<th>CPU threads<\/th>/);
     const workerPaint = miner.slice(miner.indexOf('function paintWorkers'), miner.indexOf('function paint('));
     assert.match(workerPaint, /w\.hashrate/);
     assert.match(workerPaint, /w\.accepted/);
@@ -951,7 +951,7 @@ describe('public miner listing', () => {
     const labels = [...grid[0].matchAll(/class="label">([^<]+)</g)].map((m) => m[1]);
     assert.deepEqual(labels, [
       'Coin', 'Algo', 'Network', 'Proof', 'Height',
-      'Pool hashrate', 'Resistance', 'Miners', 'Workers', 'blockBits', 'shareBits',
+      'Pool rho', 'Resistance', 'Miners', 'Workers', 'blockBits', 'shareBits',
       'Uptime', 'Last Block (pool)',
     ]);
     assert.match(dash, /networkAvgBlockTimeMs/);

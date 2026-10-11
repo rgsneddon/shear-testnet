@@ -2557,8 +2557,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           if (ledger.networkHashrate != null)
             _continuumStatRow(
               context,
-              'Network hashrate',
-              '${ledger.networkHashrate} H/s',
+              'Network rho',
+              '${ledger.networkHashrate} R/s',
             ),
           _continuumStatRow(context, 'Closure quantum', '${formatShe(path1.quantumShe)} SHE'),
           _continuumStatRow(context, 'Target flux', '${formatShe(path1.quantumShe)} SHE / $fluxSec s'),

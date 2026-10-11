@@ -225,7 +225,7 @@ describe('website W-IMPL binds', () => {
 
   it('pool heading is pool-scoped and circulating subtitle does not say spendable people', () => {
     assert.match(pool, /Last Block \(pool\)/);
-    assert.match(pool, /Pool hashrate/);
+    assert.match(pool, /Pool rho/);
     assert.match(explorer, /Circulating supply\. Dest tags are not listed as people\./);
     assert.doesNotMatch(explorer, /Spendable SHE/);
   });
