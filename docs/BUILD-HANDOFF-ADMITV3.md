@@ -13,6 +13,10 @@ CoS is asleep until Tuesday 15:00. This branch does not launch v12. Do not cut g
 
 Do not push `feat/shear-testnet-v12` from this branch. Do not merge this PR. Do not land this branch on top of feat.
 
+## Closeable items moved
+
+The items that could be closed without a new proof, a pin flip, or a cut are on `cursor/close-open-p0-0bcc` at `3ae3bf7`, based on feat `5a5685a`. Read `docs/BUILD-HANDOFF-CLOSE-P0.md` on that branch before changing those items again. Do not land this 42466 branch on top of that one. The prove to read first on this branch is still `4262675`. Do not cut genesis, move tags, flip `kBookMagic`, deploy, or start the soak. Tuesday 15:00 is still CoS's cut, and neither branch starts it.
+
 ## Feat already has Build's prove
 
 Checked 2026-10-11 on a detached checkout of `5a5685ad9b9d9d7c4efca095abb5003264023c3c` (`/tmp/feat-build`). Author of the merge and of `f6efcdf` is Russell Sneddon. Parents are `25e610f` (rho paint) and `f6efcdf` (Wire typed admit funding to the v3 point-leaf root). `f6efcdf` sits on `7611668` (Bind the ADMITv3 bucket to the ristretto points). `node/src/chain.js`, `node/src/store.js`, `crypto/asert.js`, and `wallet/lib/shear_identity.dart` have an empty diff from `25e610f` to `5a5685a`.
