@@ -157,6 +157,17 @@ export function reserveFeeDest() {
   return encodeDest(createHash('sha256').update('shear-reserve-v1-fee').digest().subarray(0, 20));
 }
 
+/**
+ * Shared-template finder half when no miner has aimed a header yet.
+ * A one-sided reserve note fails the 50/50 check. This dest is not a miner,
+ * not the reserve, and not a fee dest. The spend base is the short form, so
+ * the note is not spendable. templateForFinder replaces it for the miner
+ * who hashes that header.
+ */
+export function unclaimedFinderDest() {
+  return encodeDest(createHash('sha256').update('shear-finder-unclaimed-v1').digest().subarray(0, 20));
+}
+
 export function poolFeeDest() {
   return encodeDest(createHash('sha256').update('shear-pool-fee-v1').digest().subarray(0, 20));
 }

@@ -6,11 +6,11 @@ import path from 'node:path';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { FEE_SPLIT_FINDER_BPS, reserveFeeDest, splitLevy } from '../../crypto/levy.js';
+import { FEE_SPLIT_FINDER_BPS, reserveFeeDest, splitLevy, unclaimedFinderDest } from '../../crypto/levy.js';
 import { openedCoinbaseNanos } from '../../crypto/note.js';
 import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { createPool, templateHasherDest, configuredFeeIdentity } from '../src/pool.js';
-import { GENESIS_PREV, buildTemplate } from '../../node/src/chain.js';
+import { GENESIS_PREV, buildTemplate, coinbaseLevyPays } from '../../node/src/chain.js';
 
 function minerDest() {
   const id = newIdentity();
@@ -179,10 +179,16 @@ describe('template miner follows proven work', () => {
             bits: GENESIS_BITS_PACKED,
             now: 1_700_000_000_000,
           });
-          assert.equal(bare.txs[0].vout.some((o) => o.kind === 'finder-fee'), false);
+          const held = bare.txs[0].vout.find((o) => o.kind === 'finder-fee');
+          assert.equal(openedCoinbaseNanos(held), splitLevy(1000).finder);
+          assert.ok(Buffer.from(held.dest20).equals(hash20FromAddress(unclaimedFinderDest())));
+          assert.equal(Buffer.from(held.dest20).equals(hash20FromAddress(feeTo)), false);
+          assert.equal(Buffer.from(held.dest20).equals(hash20FromAddress(reserveFeeDest())), false);
           const reserveNote = bare.txs[0].vout.find((o) => o.kind === 'reserve-fee');
           assert.equal(openedCoinbaseNanos(reserveNote), splitLevy(1000).reserve);
           assert.ok(Buffer.from(reserveNote.dest20).equals(hash20FromAddress(reserveFeeDest())));
+          const bound = coinbaseLevyPays(bare.txs[0], 1000);
+          assert.equal(bound.ok, true, bound.reason);
         }
       }
     } finally {

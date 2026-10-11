@@ -4,7 +4,7 @@ import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { encodeHeader, decodeHeader } from '../../crypto/header.js';
-import { FEE_SPLIT_FINDER_BPS, poolFeeDest, reserveFeeDest, splitLevy } from '../../crypto/levy.js';
+import { FEE_SPLIT_FINDER_BPS, poolFeeDest, reserveFeeDest, splitLevy, unclaimedFinderDest } from '../../crypto/levy.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { openedCoinbaseNanos } from '../../crypto/note.js';
 import { emptyVault, applyReserveBlock } from '../../crypto/reserve_vault.js';
@@ -131,31 +131,71 @@ describe('finder-fee pays the miner who found the block', () => {
         }
       }
     }
-    const withheld = buildTemplate({
-      prev: GENESIS_PREV,
-      height: 1,
-      miner: feeTo,
-      finderDest: '',
-      poolDest: feeTo,
-      feeDest: feeTo,
-      txs: [{ id: 'empty-round', kind: 'send', fee: 100 }],
-      bits: GENESIS_BITS_PACKED,
-      now: NOW,
-    });
-    assert.equal(withheld.txs[0].vout.some((o) => o.kind === 'finder-fee'), false);
-    const reserved = withheld.txs[0].vout.find((o) => o.kind === 'reserve-fee');
-    assert.equal(openedCoinbaseNanos(reserved), splitLevy(100).reserve);
-    assert.equal(same20(reserved, reserveFeeDest()), true);
-    assert.equal(same20(reserved, feeTo), false);
-    const aimed = templateForFinder(withheld, finders[2]);
-    const paid = aimed.txs[0].vout.find((o) => o.kind === 'finder-fee');
-    assert.equal(openedCoinbaseNanos(paid), splitLevy(100).finder);
-    assert.equal(same20(paid, finders[2]), true);
-    assert.equal(same20(paid, feeTo), false);
-    assert.equal(same20(paid, lowest), false);
-    assert.equal(templateForFinder(withheld, feeTo), null);
-    assert.equal(templateForFinder(withheld, poolFeeDest()), null);
-    assert.equal(templateForFinder(withheld, reserveFeeDest()), null);
+    for (const fee of FEES) {
+      const split = splitLevy(fee);
+      const shared = buildTemplate({
+        prev: GENESIS_PREV,
+        height: 1,
+        miner: feeTo,
+        finderDest: '',
+        poolDest: feeTo,
+        feeDest: feeTo,
+        txs: fee ? [{ id: `shared-${fee}`, kind: 'send', fee }] : [],
+        bits: GENESIS_BITS_PACKED,
+        now: NOW,
+      });
+      const body = shared.txs[0];
+      const bound = coinbaseLevyPays(body, fee);
+      assert.equal(bound.ok, true, bound.reason || `shared fee ${fee}`);
+      const finderNotes = body.vout.filter((o) => o.kind === 'finder-fee');
+      const reserveNotes = body.vout.filter((o) => o.kind === 'reserve-fee');
+      if (split.finder <= 0) {
+        assert.equal(finderNotes.length, 0, `shared fee ${fee}`);
+      } else {
+        assert.equal(finderNotes.length, 1, `shared fee ${fee}`);
+        assert.equal(openedCoinbaseNanos(finderNotes[0]), split.finder, `shared fee ${fee}`);
+        assert.equal(same20(finderNotes[0], unclaimedFinderDest()), true, `shared fee ${fee}`);
+        assert.equal(same20(finderNotes[0], feeTo), false);
+        assert.equal(same20(finderNotes[0], poolFeeDest()), false);
+        assert.equal(same20(finderNotes[0], reserveFeeDest()), false);
+        for (const finder of finders) assert.equal(same20(finderNotes[0], finder), false);
+        const droppedFinder = coinbaseLevyPays({
+          ...body,
+          vout: body.vout.filter((o) => o.kind !== 'finder-fee'),
+        }, fee);
+        assert.equal(droppedFinder.ok, false);
+        assert.equal(droppedFinder.reason, 'levy_split');
+      }
+      if (split.reserve <= 0) {
+        assert.equal(reserveNotes.length, 0, `shared fee ${fee}`);
+      } else {
+        assert.equal(reserveNotes.length, 1, `shared fee ${fee}`);
+        assert.equal(openedCoinbaseNanos(reserveNotes[0]), split.reserve);
+        assert.equal(same20(reserveNotes[0], reserveFeeDest()), true);
+        assert.equal(same20(reserveNotes[0], feeTo), false);
+        const droppedReserve = coinbaseLevyPays({
+          ...body,
+          vout: body.vout.filter((o) => o.kind !== 'reserve-fee'),
+        }, fee);
+        assert.equal(droppedReserve.ok, false);
+        assert.equal(droppedReserve.reason, 'levy_split');
+      }
+      const state = emptyVault();
+      applyReserveBlock({ state, block: { txs: shared.txs }, nowMs: NOW });
+      assert.equal(Number(state.feeBankNanos), split.reserve, `shared fee ${fee}`);
+      if (split.finder <= 0) continue;
+      assert.equal(templateForFinder(shared, unclaimedFinderDest()), null);
+      assert.equal(templateForFinder(shared, feeTo), null);
+      assert.equal(templateForFinder(shared, poolFeeDest()), null);
+      assert.equal(templateForFinder(shared, reserveFeeDest()), null);
+      const aimed = templateForFinder(shared, finders[2]);
+      const paid = aimed.txs[0].vout.find((o) => o.kind === 'finder-fee');
+      assert.equal(openedCoinbaseNanos(paid), split.finder, `shared fee ${fee}`);
+      assert.equal(same20(paid, finders[2]), true);
+      assert.equal(same20(paid, unclaimedFinderDest()), false);
+      assert.equal(same20(paid, feeTo), false);
+      assert.equal(same20(paid, lowest), false);
+    }
     const solo = minerDest();
     const soloTpl = buildTemplate({
       prev: GENESIS_PREV,

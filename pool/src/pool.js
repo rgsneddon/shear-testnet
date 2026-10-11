@@ -73,6 +73,7 @@ import {
   bindShareProofSlots,
   splitDeferWindow,
   shareWorkKey,
+  sameWorkRound,
   paidWorkKeys,
   rememberLiveSharePow,
   destOfShare,
@@ -382,6 +383,8 @@ export function shareJobId(header) {
 /**
  * Lag-1 shares must verify against the sealed parent, or against the
  * parent's parent when that header and nonce are not already paid.
+ * A finder-fee header from the same round is that parent. Merkle and nonce
+ * may differ. A timestamp change is a different round.
  * One step only. The same nonce on the other header is a different unit.
  * A restamped share or a bech32-as-dest20 row that fails share_pow/miner_addr
  * must not freeze the next template. The caller counts rows this filter
@@ -399,13 +402,15 @@ export function provenLag1Shares(parentHeader, shares, priorHeader = null, exclu
     if (!id || !parentId) continue;
     let nonce = '';
     try { nonce = BigInt(s?.nonce || 0).toString(); } catch { nonce = ''; }
-    if (id === parentId) {
+    if (id === parentId || sameWorkRound(s?.verifiedHeader, parentHeader)) {
       trusted.push(s);
       continue;
     }
-    const work = shareWorkKey(s?.verifiedHeader || priorHeader, s?.nonce);
+    const work = shareWorkKey(s?.verifiedHeader, s?.nonce);
     const blocked = (nonce && paid.has(nonce)) || (work && paid.has(work));
-    if (priorId && id === priorId && nonce && !blocked) trusted.push(s);
+    if (priorId && (id === priorId || sameWorkRound(s?.verifiedHeader, priorHeader)) && nonce && !blocked) {
+      trusted.push(s);
+    }
   }
   return sortShares(trusted);
 }
@@ -3626,7 +3631,7 @@ export function createPool({
 
   /**
    * Header this connection hashes. The finder-fee note pays `dest`.
-   * The shared job leaves that note off. A fee dest is not given one.
+   * The shared job holds that half at the unclaimed dest. A fee dest is not given one.
    */
   function aimFinderJob(job, dest) {
     if (!job || !isDestAddress(dest)) return job;

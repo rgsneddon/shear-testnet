@@ -129,6 +129,7 @@ import {
   splitLevy,
   txWeight,
   reserveFeeDest,
+  unclaimedFinderDest,
   levyTaxed,
   containsShe1,
   levyNeed,
@@ -914,10 +915,12 @@ function noteDest20(o) {
   return null;
 }
 
-/** A fee address is not a block finder. The reserve dest is the other half. */
+/** A fee address is not a block finder. The reserve dest is the other half.
+ * The unclaimed hold is not a miner either. */
 function forbiddenFinderDest(dest, poolDest, feeDest) {
   if (!dest || !isDestAddress(dest)) return true;
   if (dest === reserveFeeDest() || dest === poolFeeDest()) return true;
+  if (dest === unclaimedFinderDest()) return true;
   if (poolDest && isDestAddress(poolDest) && dest === poolDest) return true;
   if (feeDest && isDestAddress(feeDest) && dest === feeDest) return true;
   return false;
@@ -925,11 +928,12 @@ function forbiddenFinderDest(dest, poolDest, feeDest) {
 
 /**
  * Who the finder-fee note pays. An explicit dest is the miner who hashes
- * this header. Undefined is the solo miner. '' means the finder is not
- * known yet, so the note is left off. A fee dest never receives it.
+ * this header. Undefined is the solo miner. '' or null holds the finder
+ * half at the unclaimed dest so a fee round still has both levy notes.
+ * Aiming at that hold, the reserve, or a fee dest pays nobody.
  */
 function resolveFinderPay(finderDest, miner, poolDest, feeDest, pay) {
-  if (finderDest === '' || finderDest === null) return '';
+  if (finderDest === '' || finderDest === null) return unclaimedFinderDest();
   const named = finderDest !== undefined ? String(finderDest) : String(pay(miner) || '');
   if (forbiddenFinderDest(named, poolDest, feeDest)) return '';
   return named;
@@ -1004,10 +1008,69 @@ export function coinbaseLevyPays(cb, fees) {
   return { ok: true, finder: split.finder, reserve: split.reserve };
 }
 
+/** Memory bound for aimed finder headers. Not a miner-count tuning. */
+const FINDER_AIM_CACHE_BOUND = 4096;
+const finderAimCache = new Map();
+
+/** Timestamp, bits, and nonce are stamped later. The merkle stays in the key. */
+function finderAimKey(header, dest, finderNanos) {
+  try {
+    const buf = Buffer.from(header);
+    if (buf.length !== 128) return '';
+    const stamp = Buffer.from(buf);
+    stamp.fill(0, 100, 112);
+    stamp.fill(0, 112, 120);
+    return `${stamp.toString('hex')}:${dest}:${finderNanos}`;
+  } catch {
+    return '';
+  }
+}
+
+function rememberFinderAim(key, built) {
+  if (!key || !built) return;
+  if (finderAimCache.has(key)) finderAimCache.delete(key);
+  finderAimCache.set(key, built);
+  while (finderAimCache.size > FINDER_AIM_CACHE_BOUND) {
+    const oldest = finderAimCache.keys().next().value;
+    finderAimCache.delete(oldest);
+  }
+}
+
+/** A copy. A restamp keeps the cached merkle and takes the input stamp. */
+function stampAimed(cached, tpl) {
+  const decodedIn = decodeHeader(Buffer.from(tpl.header));
+  const decodedCached = decodeHeader(Buffer.from(cached.header));
+  let header = Buffer.from(cached.header);
+  const merkle = Buffer.from(cached.merkleRoot);
+  if (decodedIn.timestamp !== decodedCached.timestamp || Number(decodedIn.bits) !== Number(decodedCached.bits)) {
+    header = encodeHeader({
+      version: decodedCached.version,
+      prevBlockHash: decodedCached.prevBlockHash,
+      merkleRoot: decodedCached.merkleRoot,
+      continuityRoot: decodedCached.continuityRoot,
+      timestamp: decodedIn.timestamp,
+      bits: decodedIn.bits,
+      nonce: 0n,
+      baseFee: decodedCached.baseFee,
+    });
+  }
+  const cb = cached.txs[0];
+  const vout = (cb.vout || []).map((o) => ({ ...o }));
+  const nextCb = { ...cb, vout };
+  const txs = [nextCb, ...(cached.txs || []).slice(1)];
+  return {
+    ...cached,
+    header,
+    merkleRoot: merkle,
+    txs,
+  };
+}
+
 /**
  * One header whose finder-fee pays `finderDest`. The pot notes stay.
- * The shared template leaves the finder off until the pool knows who is
- * hashing. A fee dest is refused. The same dest returns the same template.
+ * The shared template holds the finder half at the unclaimed dest until a
+ * miner aims. A fee dest, the reserve, and that hold are refused.
+ * A repeat for the same round and dest reuses the sealed note.
  */
 export function templateForFinder(tpl, finderDest) {
   const bind = tpl?.levyBind;
@@ -1019,6 +1082,12 @@ export function templateForFinder(tpl, finderDest) {
   const existing = (cb.vout || []).find((o) => o.kind === 'finder-fee');
   const want = hash20FromAddress(dest);
   if (existing && want && noteDest20(existing)?.equals(Buffer.from(want))) return tpl;
+  const key = finderAimKey(tpl.header, dest, bind.finderNanos);
+  if (key && finderAimCache.has(key)) {
+    const hit = finderAimCache.get(key);
+    rememberFinderAim(key, hit);
+    return stampAimed(hit, tpl);
+  }
   const note = sealLevyNote(bind.finderNanos, dest, 'finder-fee');
   const vout = (cb.vout || []).filter((o) => o.kind !== 'finder-fee');
   const reserveAt = vout.findIndex((o) => o.kind === 'reserve-fee');
@@ -1041,7 +1110,7 @@ export function templateForFinder(tpl, finderDest) {
     nonce: 0n,
     baseFee: decoded.baseFee,
   });
-  return {
+  const built = {
     ...tpl,
     header,
     merkleRoot: merkle,
@@ -1049,6 +1118,8 @@ export function templateForFinder(tpl, finderDest) {
     miner: dest,
     weight: blockWeight(txs, tpl.bLeaves),
   };
+  rememberFinderAim(key, built);
+  return stampAimed(built, tpl);
 }
 
 export function buildTemplate({
