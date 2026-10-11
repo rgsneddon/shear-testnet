@@ -3799,11 +3799,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final stakedShe = formatShe(p.staked / kUnitsPerShe);
     final idleShe = formatShe(p.idle / kUnitsPerShe);
     final totalShe = formatShe(p.nanos / kUnitsPerShe);
-    final programShe = formatShe(reserve.totalLockedNanos / kUnitsPerShe);
+    final programShe = formatSheFromNanos(reserve.totalLockedNanos);
     final vortex = reconstructVortexSums(
       reserve,
       dest,
-      flowNanos: (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) * kUnitsPerShe).round(),
+      flowNanos: ledger.continuumFlowNanos(ident.address, paymentCode: ident.paymentCode),
     );
     final needVoteShe = formatShe(p.remainingToVoteNanos / kUnitsPerShe);
     final rw = dest.isEmpty

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_reserve.dart';
@@ -317,4 +318,182 @@ void main() {
       '1',
     );
   });
+
+  test('any amount quotes the weight floor and a sealed body binds once', () {
+    const amounts = <int>[0, 1, 100, 100000000000, 500000000000, 10000000000000, 9007199254740993];
+    for (final amount in amounts) {
+      expect(levyNanos(amount), kLevyFloorUnits, reason: 'amount=$amount');
+      expect(levyNanos(amount, depth: 1 << 20), kLevyFloorUnits, reason: 'depth amount=$amount');
+      expect(levyBase(amount), kLevyFloorUnits, reason: 'base amount=$amount');
+    }
+    const weights = <int>[0, 1, 2047, 2048, 2049, 204800, 426512, 5000000];
+    for (final weight in weights) {
+      final raw = (weight + kLevyWeightRateDen - 1) ~/ kLevyWeightRateDen;
+      final quote = raw < kLevyFloorUnits ? kLevyFloorUnits : raw;
+      expect(levyFromWeight(weight), quote, reason: 'weight=$weight');
+      expect(levyNanos(9007199254740993, weight: weight), quote, reason: 'named weight=$weight');
+      final body = <String, dynamic>{'kind': 'send', 'fee': 1, 'pad': 'a' * weight};
+      expect(levyNanos(1, tx: body), levyFromWeight(flowWeight(body)), reason: 'tx weight=$weight');
+    }
+    final posted = <String, dynamic>{'kind': 'send', 'fee': 7, 'pad': 'b' * 3000};
+    final before = flowWeight(posted);
+    bindWeightFee(posted);
+    expect(posted['fee'], levyFromWeight(before));
+    expect(posted['maxLevy'], isNull);
+    final withCap = <String, dynamic>{'kind': 'lock', 'fee': 1, 'maxLevy': 1, 'pad': 'c' * 100};
+    final capBefore = flowWeight(withCap);
+    bindWeightFee(withCap);
+    expect(withCap['fee'], levyFromWeight(capBefore));
+    expect(withCap['maxLevy'], withCap['fee']);
+    final withdraw = <String, dynamic>{'kind': 'withdraw', 'fee': 7, 'pad': 'd' * 9000};
+    bindWeightFee(withdraw);
+    expect(withdraw['fee'], 7);
+    for (final reserved in <int>[kLevyFloorUnits, 265, 1000, 50000]) {
+      final light = <String, dynamic>{'kind': 'send', 'pad': 'e' * 64};
+      expect(sealedFeeCovers(reserved, light), isTrue, reason: 'reserved=$reserved');
+      expect(light.containsKey('fee'), isFalse);
+    }
+    final heavy = <String, dynamic>{'kind': 'send', 'pad': 'f' * 500000};
+    expect(sealedFeeCovers(kLevyFloorUnits, heavy), isFalse);
+    expect(heavy.containsKey('fee'), isFalse);
+    expect(voteFailCopy(StateError('levy')), isNot(contains('Not enough Continuum spendable')));
+    expect(voteFailCopy(StateError('insufficient')), isNot(contains('Not enough Continuum spendable')));
+    expect(flowSendAdvisoryOf(StateError('levy')), isNot(contains('Not enough Continuum spendable')));
+    expect(flowSendAdvisoryOf(StateError('fee_short')), kErrFeeShort);
+    const above = 9007199254740993;
+    expect(formatSheFromNanos(above), '90071.99254740993');
+    expect(formatSheFromNanos(above), isNot(formatShe(above / kUnitsPerShe)));
+    expect(formatSheFromNanos(kUnitsPerShe), formatShe(1));
+    expect(
+      vortexFlowNanos(spendableShe: 1, exactNotes: [BigInt.from(above)]),
+      kUnitsPerShe,
+    );
+    expect(
+      vortexFlowNanos(spendableShe: 1e20, exactNotes: [BigInt.from(above), BigInt.one]),
+      above + 1,
+    );
+    expect(vortexFlowNanos(spendableShe: 0, exactNotes: [BigInt.from(above)]), 0);
+    final main = File('lib/main.dart').readAsStringSync();
+    expect(main, contains('continuumFlowNanos('));
+    expect(main, contains('formatSheFromNanos(reserve.totalLockedNanos)'));
+    final ledger = File('lib/shear_ledger.dart').readAsStringSync();
+    expect(ledger, contains('sealedFeeCovers(feeUnits'));
+    expect(ledger, contains('kMaxInputsPerSend = 8'));
+  });
+
+  test('a surplus under the old percent fee still sends', () async {
+    for (final amount in <double>[0.01, 1, 4, 50, 100]) {
+      final alice = createIdentity();
+      final ledger = ShearLedger()..bindIdentity(alice);
+      final from = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
+      final surplus = 1000 / kUnitsPerShe;
+      ledger.confirmRound(address: from, pot: amount + surplus, height: 1);
+      ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+      final tx = await ledger.send(
+        from: from,
+        to: kPoolFeeDest,
+        amount: amount,
+        local: true,
+        restFrame: alice.address,
+        paymentCode: alice.paymentCode,
+      );
+      expect(tx.kind, 'send', reason: 'amount=$amount');
+    }
+  });
+
+  test('a pool withdraw posts kind withdraw and the exact nanos', () async {
+    final pool = _RecordWithdraw();
+    final ledger = ShearLedger(pool: pool);
+    final reserve = ShearReserve();
+    final dest = kPoolFeeDest;
+    const samples = <int>[1, 100000000000, 9007199254740993];
+    for (final principal in samples) {
+      reserve.epochStartMs = 1;
+      reserve.epochBps = 0;
+      reserve.bonusEnacted = false;
+      reserve.portal(dest)
+        ..staked = principal
+        ..idle = 0
+        ..joined = true;
+      reserve.totalLockedNanos = principal;
+      final now = 1 + kReserveEpochMs;
+      final posted = await postReserveWithdraw(
+        ledger,
+        reserve: reserve,
+        dest: dest,
+        payout: dest,
+        nowMs: now,
+      );
+      expect(posted, isNotNull, reason: 'principal=$principal');
+      expect(posted!.tx.kind, 'withdraw');
+      expect(pool.posts, isNotEmpty);
+      final body = pool.posts.last;
+      expect(body['kind'], 'withdraw', reason: 'principal=$principal');
+      expect(body['nanosWire'], principal.toString(), reason: 'principal=$principal');
+      expect(reserve.portal(dest).staked, 0);
+    }
+    final src = File('lib/shear_reserve.dart').readAsStringSync();
+    final start = src.indexOf('postReserveWithdraw(');
+    final slice = src.substring(start, src.indexOf('}) async', start));
+    expect(slice.contains('bool local = false'), isTrue);
+  }, timeout: const Timeout(Duration(seconds: 45)));
+}
+
+class _RecordWithdraw extends ShearPoolClient {
+  _RecordWithdraw()
+      : super(
+          baseUrl: 'http://127.0.0.1:9',
+          http: HttpClient()..connectionTimeout = const Duration(milliseconds: 30),
+        );
+
+  final posts = <Map<String, dynamic>>[];
+
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
+
+  @override
+  Future<Map<String, dynamic>> send({
+    required String from,
+    required String to,
+    required double amount,
+    Map<String, dynamic>? memoCt,
+    String? open,
+    String? sig,
+    String? portalOpen,
+    String? kind,
+    String? programId,
+    String? choice,
+    int? currentEpoch,
+    int? epochStartMs,
+    String? change,
+    String? spendPub,
+    String? ephPub,
+    List<dynamic>? vin,
+    List<dynamic>? vout,
+    dynamic excess,
+    Map<String, dynamic>? admitProof,
+    List<Map<String, dynamic>>? admitProofs,
+    String? spendTag,
+    int? fee,
+    int paintedOwedNanos = 0,
+    bool legacyPoolSend = false,
+    String? nanosWire,
+  }) async {
+    posts.add({
+      'kind': kind,
+      'nanosWire': nanosWire,
+      'from': from,
+      'to': to,
+    });
+    return {
+      'ok': true,
+      'tx': {
+        'id': 'wd-${posts.length}',
+        'from': from,
+        'to': to,
+        'amount': amount,
+        'kind': kind ?? 'send',
+      },
+    };
+  }
 }

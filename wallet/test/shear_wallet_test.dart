@@ -3695,12 +3695,12 @@ void main() {
     expect(formatShe(1e-8), '0.000000010');
     expect(kHashBonusShe, 0.00000000001);
     expect(kShePublicDigits, 9);
-    expect(levyNanos(kUnitsPerShe), 20000000);
-    expect(levyNanos(kUnitsPerShe) / kUnitsPerShe, 0.0002);
-    expect(levyNanos(kUnitsPerShe * 5), 100000000);
-    expect(levyNanos(kUnitsPerShe * 100), 100000000);
-    expect(levyNanos(kUnitsPerShe * 100, depth: 1 << 30), 100000000);
-    expect(levyNanos(kUnitsPerShe * 100) / kUnitsPerShe, 0.001);
+    expect(levyNanos(kUnitsPerShe), kLevyFloorUnits);
+    expect(levyNanos(kUnitsPerShe * 5), kLevyFloorUnits);
+    expect(levyNanos(kUnitsPerShe * 100), kLevyFloorUnits);
+    expect(levyNanos(kUnitsPerShe * 100, depth: 1 << 30), kLevyFloorUnits);
+    expect(levyFromWeight(0), kLevyFloorUnits);
+    expect(levyFromWeight(kLevyWeightRateDen), kLevyFloorUnits);
     expect(formatHashBonusShe(1), '0.00000000001');
     expect(formatHashBonusShe(2), '0.00000000002');
     expect(levyNanos(0), 100);
@@ -6661,7 +6661,7 @@ void main() {
     aliceL.settleTo(1 + ShearLedger.spendableConfirmations);
     expect(aliceL.spendable(from), closeTo(1, 1e-12));
     expect(aliceL.spendableOwned(alice.address, paymentCode: alice.paymentCode), closeTo(1, 1e-12));
-    // Taxed send pays Phase B L on top of the amount (1 SHE empty L = 0.0002).
+    // Taxed send pays the consensus weight floor on top of the amount.
     final tx = await aliceL.send(
       from: from,
       to: bob.paymentCodeFull,

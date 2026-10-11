@@ -1786,6 +1786,43 @@ String formatShe(num she) {
   return s;
 }
 
+/// SHE text from an integer nanos count. Values that fit in a safe double
+/// use [formatShe]. A larger count stays the exact decimal.
+String formatSheFromNanos(int nanos) {
+  if (nanos == 0) return '0';
+  if (nanos > -_kSafeDoubleNanos && nanos < _kSafeDoubleNanos) {
+    return formatShe(nanos / kUnitsPerShe);
+  }
+  final neg = nanos < 0;
+  final v = neg ? -nanos : nanos;
+  final whole = v ~/ kUnitsPerShe;
+  final frac = v % kUnitsPerShe;
+  if (frac == 0) return neg ? '-$whole' : '$whole';
+  var digits = frac.toString().padLeft(11, '0');
+  while (digits.endsWith('0')) {
+    digits = digits.substring(0, digits.length - 1);
+  }
+  final body = '$whole.$digits';
+  return neg ? '-$body' : body;
+}
+
+/// Flow nanos for the Vortex line. A spendable double inside 2^53 is that
+/// book. Above it, the exact note nanos are the figure. The double is not
+/// rounded back into a nanos count.
+int vortexFlowNanos({required double spendableShe, required Iterable<BigInt> exactNotes}) {
+  if (!spendableShe.isFinite || spendableShe <= 0) return 0;
+  final scaled = spendableShe * kUnitsPerShe;
+  if (scaled.isFinite && scaled >= 0 && scaled <= _kSafeDoubleNanos) {
+    return scaled.round();
+  }
+  var sum = BigInt.zero;
+  for (final n in exactNotes) {
+    if (n > BigInt.zero) sum += n;
+  }
+  if (sum.bitLength > 63) return 0;
+  return sum.toInt();
+}
+
 /// Full nano SHE (`*.***********`). Do not use [formatShe] for the hashbonus banner.
 const kErrNoteSpent = 'that note was already spent';
 const kErrRangeProof = 'range proof failed';
@@ -4346,6 +4383,28 @@ class ShearLedger implements ReadProofSink {
     return n;
   }
 
+  /// Vortex Flow figure. One reconstruct input. Exact note nanos win when the
+  /// painted double cannot name the count.
+  int continuumFlowNanos(String restFrame, {String? paymentCode}) {
+    final owned = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      owned.add(payKey(d));
+    }
+    final notes = <BigInt>[];
+    for (final n in _notes) {
+      if (n['spent'] == true || n['locked'] == true) continue;
+      final dest = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (dest.isEmpty || !owned.contains(payKey(dest))) continue;
+      final exact = noteNanosExact(n);
+      if (exact != null) notes.add(exact);
+    }
+    return vortexFlowNanos(
+      spendableShe: spendableOwned(restFrame, paymentCode: paymentCode),
+      exactNotes: notes,
+    );
+  }
+
   /// Open-wallet coin control. Notes parked on the shear1 rest frame join the
   /// spendable dest. Every other owned ssa1 stays one note and is counted in
   /// that same sum. A young note stays unspendable. Does not invent coins.
@@ -6757,6 +6816,7 @@ class ShearLedger implements ReadProofSink {
     final excess = kernelExcess(sealed, vin);
     final postedVin = _postedVin(vin);
     final postedVout = _postedVout(sealed);
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
     if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
       throw StateError('unspendable_dest');
     }
@@ -6776,6 +6836,17 @@ class ShearLedger implements ReadProofSink {
       'admitProof': proofs.first,
       'admitProofs': proofs,
     });
+    // The change output already reserved [feeUnits]. A lighter one-pass fee
+    // must not be written back. A heavier body is fee_short, not a vote error.
+    if (!sealedFeeCovers(feeUnits, <String, dynamic>{
+      'kind': 'send',
+      'vin': wire['vin'],
+      'vout': wire['vout'],
+      if (wire['admitProof'] != null) 'admit_proof': wire['admitProof'],
+      if (wire['admitProofs'] != null) 'admit_proofs': wire['admitProofs'],
+    })) {
+      throw StateError('fee_short');
+    }
     final json = await pool!.send(
       from: src,
       to: destTo,
@@ -7142,9 +7213,9 @@ class ShearLedger implements ReadProofSink {
       }
     }
     var depth = 0;
-    // Painted funding already reserved the levy at the caller's depth. A
-    // mempool-depth surge here asks for more SHE than that reserve and the
-    // pool fee (floor) does not charge it, so the second send looks short.
+    // Mempool depth is recorded for the pressure readout. The consensus levy
+    // ignores amount and depth. The quote is the weight floor unless a sealed
+    // body is passed to levyNanos. A large principal is not a larger fee.
     if (pool != null && !local && !paintedCover) {
       try {
         final pressure = await pool!.mempoolPressure();

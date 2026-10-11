@@ -105,7 +105,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   required String payout,
   required int nowMs,
   Uint8List? spendSeed,
-  bool local = true,
+  bool local = false,
   String? restFrame,
   String? paymentCode,
   bool allowPublicHttp = false,
