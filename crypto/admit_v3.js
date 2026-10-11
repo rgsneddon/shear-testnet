@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
 import { asU8 } from './note.js';
-import { admitVerifyV3, fluxsetFromBlocks } from './admit.js';
+import { admitVerifyV3, fluxsetFromBlocks, jrootPoint } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
 
 export const ANCHOR_QUANTUM = 8;
@@ -195,6 +195,26 @@ export function anchorRootHash(destRoot, cRoot) {
     .subarray(0, 32);
 }
 
+/** Version-3 book. Same truncation as the native point root, different domain. */
+export function anchorPointRootHash(destRoot, cRoot) {
+  return createHash('sha512')
+    .update(Buffer.from('shear-jroot-point-v3'))
+    .update(bytes32(destRoot) || Buffer.alloc(32))
+    .update(bytes32(cRoot) || Buffer.alloc(32))
+    .digest()
+    .subarray(0, 32);
+}
+
+/** Point-leaf root of a fluxset. `live.jroot` stays the v2 book. */
+export function fundingJroot(live) {
+  const pubs = live?.pubs || [];
+  const commits = live?.commits || [];
+  if (!pubs.length || pubs.length !== commits.length) return null;
+  const root = jrootPoint({ pubs, commits });
+  if (!root || root.length !== 32 || root.equals(Buffer.alloc(32))) return null;
+  return root;
+}
+
 /** Shape only. The chain and mempool still verify the proof against J at A. */
 export function typedAdmitStructure(tx) {
   if (!typedKindNeedsAdmitV3(tx)) return { ok: true, skip: true };
@@ -263,7 +283,6 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
   let live = null;
   if (typeof noteAtAnchor === 'function') {
     live = noteAtAnchor(structure.anchor);
-    if (!live || !live.jroot) return { ok: false, reason: 'admit_anchor_root' };
   } else {
     anchorFluxRebuildCount += 1;
     const subset = (blocks || []).filter((b) => {
@@ -273,13 +292,17 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
     live = fluxsetFromBlocks(subset);
   }
   const stated = Number(live?.n);
-  const n = Number.isInteger(stated) && stated >= 1 ? stated : (live?.pubs || []).length;
-  if (n < 1 || !live?.jroot) return { ok: false, reason: 'admit_anchor_root' };
+  const pubs = live?.pubs || [];
+  const n = Number.isInteger(stated) && stated >= 1 ? stated : pubs.length;
+  const pointRoot = fundingJroot(live);
+  if (n < 1 || !pointRoot || (Number.isInteger(stated) && stated >= 1 && stated !== pubs.length)) {
+    return { ok: false, reason: 'admit_anchor_root' };
+  }
   const digest = txDigestV3({ ...tx, anchor: structure.anchor }, magic);
   const ctx = admitV3Context({
     magic,
     anchor: structure.anchor,
-    root: live.jroot,
+    root: pointRoot,
     n,
     digest,
   });
@@ -288,9 +311,8 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
   for (const proof of structure.proofs) {
     const pr = Buffer.from(asU8(proof.blob || proof.proof));
     if (pr.length < 129) return { ok: false, reason: 'admit_membership', proofChecked: true };
-    const got = anchorRootHash(pr.subarray(65, 97), pr.subarray(97, 129));
-    const want = Buffer.from(asU8(live.jroot));
-    if (want.length !== 32 || !Buffer.from(got).equals(want)) {
+    const got = anchorPointRootHash(pr.subarray(65, 97), pr.subarray(97, 129));
+    if (!Buffer.from(got).equals(pointRoot)) {
       return { ok: false, reason: 'admit_anchor_root', proofChecked: true };
     }
     // The tag is the proof bytes. A JSON field that disagrees is not a second tag.
@@ -314,7 +336,7 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
     }
     typedProofVerifies += 1;
     const ok = admitVerifyV3(proof, live, {
-      jroot: live.jroot,
+      jroot: pointRoot,
       cTilde: proof.cTilde,
       spendTag: tag,
       ctx,

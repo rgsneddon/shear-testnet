@@ -15,6 +15,9 @@ import {
   txSpendTags,
   kernelExcess,
   scalarFrom,
+  randomScalar,
+  commit,
+  pointBytes,
 } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { levyNanos } from '../../crypto/levy.js';
@@ -22,6 +25,8 @@ import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
   admitProve,
+  admitProveV3,
+  admitPub,
   admitScalarFromSeed,
   applyBlockToFluxset,
   emptyFluxset,
@@ -29,7 +34,7 @@ import {
   fluxsetIndexOf,
   proveFlowSpend,
 } from '../../crypto/admit.js';
-import { anchorRootHash, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
+import { verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { createStore } from '../src/store.js';
 import { bookSealKeyPath } from '../src/book_seal_key.js';
@@ -250,25 +255,32 @@ describe('v12 spend tags come from the proof bytes', () => {
   });
 
   it('rejects a v3 field that disagrees and a blob tag that is already spent', () => {
+    const x = randomScalar();
+    const pub = admitPub(x);
+    const note = pointBytes(commit(1, randomScalar()));
+    const sealed = admitProveV3({
+      x, index: 0, pubs: [pub], commits: [note], c: note, t: randomScalar(), ctx: Buffer.alloc(64, 3),
+    });
+    assert.ok(sealed, 'header roots come from a point-leaf proof');
     const tag = Buffer.alloc(32, 0xab);
     const blob = Buffer.alloc(129, 0);
     blob[0] = 3;
     tag.copy(blob, 1);
-    const root = Buffer.from(anchorRootHash(blob.subarray(65, 97), blob.subarray(97, 129)));
-    const commit = Buffer.alloc(32, 4);
+    sealed.blob.copy(blob, 65, 65, 129);
+    const commitBytes = Buffer.alloc(32, 4);
     const base = {
       kind: 'lock',
       anchor: 8,
-      vin: [{ commit, anchor: 8 }],
+      vin: [{ commit: commitBytes, anchor: 8 }],
     };
     const opts = {
       height: 24,
       magic: MAGIC_TESTNET,
-      noteAtAnchor: () => ({ jroot: root, n: 1 }),
+      noteAtAnchor: () => ({ pubs: [pub], commits: [note], n: 1, jroot: Buffer.alloc(32, 9) }),
     };
     const omitted = verifyTypedAdmitFunding({
       ...base,
-      admit_proofs: [{ blob, cTilde: commit }],
+      admit_proofs: [{ blob, cTilde: commitBytes }],
     }, { ...opts, spentTags: new Set([tag.toString('hex')]) });
     assert.equal(omitted.ok, false);
     assert.equal(omitted.reason, 'admit_link_tag');
@@ -276,7 +288,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     const lying = verifyTypedAdmitFunding({
       ...base,
       spendTag: Buffer.alloc(32, 1),
-      admit_proofs: [{ blob, cTilde: commit, spendTag: Buffer.alloc(32, 1) }],
+      admit_proofs: [{ blob, cTilde: commitBytes, spendTag: Buffer.alloc(32, 1) }],
     }, { ...opts, spentTags: new Set() });
     assert.equal(lying.ok, false);
     assert.equal(lying.reason, 'admit_tag');

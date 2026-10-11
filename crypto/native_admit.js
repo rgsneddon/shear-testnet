@@ -80,6 +80,17 @@ export function nativeJroot(destLeaves, cLeaves) {
   }
 }
 
+/** Version-3 book. The C root commits the ristretto points, not scalar(compress(C)). */
+export function nativeJrootPoint(destLeaves, cLeaves) {
+  if (!native || typeof native.jrootPoint !== 'function') return null;
+  try {
+    const o = native.jrootPoint(leafList(destLeaves), leafList(cLeaves));
+    return o && o.length === 32 ? Buffer.from(o) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Extend a JF01 frontier. An empty prev starts at zero leaves. Root matches nativeJroot of the whole set. */
 export function nativeFrontierAppend(prev, destLeaves, cLeaves) {
   if (!native || typeof native.frontierAppend !== 'function') return null;

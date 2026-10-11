@@ -19,7 +19,7 @@ pub use prove::{
     admit_prove, admit_prove_v3, admit_verify, admit_verify_v3, admit_verify_batch, forest_prove,
     forest_verify, Proof, MAX_PROOF, MAX_PROOF_V3,
 };
-pub use tree::{c_root, jroot, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
+pub use tree::{c_root, jroot, jroot_point, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -107,6 +107,34 @@ pub extern "C" fn shear_admit_jroot(
             return BAD;
         }
         let root = jroot(d, c, n);
+        unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), out, 32) };
+        OK
+    }))
+    .unwrap_or(BAD)
+}
+
+/// Version-3 book. The C root is the ristretto-point leaf, not `jroot`.
+#[no_mangle]
+pub extern "C" fn shear_admit_jroot_point(
+    dest_leaves: *const u8,
+    c_leaves: *const u8,
+    n: u32,
+    out: *mut u8,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let n = n as usize;
+        let d = match slice(dest_leaves, n.saturating_mul(32)) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        let c = match slice(c_leaves, n.saturating_mul(32)) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        if out.is_null() {
+            return BAD;
+        }
+        let root = jroot_point(d, c, n);
         unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), out, 32) };
         OK
     }))
@@ -551,6 +579,7 @@ pub extern "C" fn shear_range_verify(c: *const u8, proof: *const u8, proof_len: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use group::GroupEncoding;
     use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
     use curve25519_dalek::ristretto::RistrettoPoint;
     use curve25519_dalek::scalar::Scalar;
@@ -943,15 +972,91 @@ mod tests {
         assert!(admit_verify(&a.1, &jr, &a.0, &proof_spend_tag(&a.1).unwrap(), &[], &[], 0));
     }
 
+    fn ctx64() -> [u8; 64] {
+        let mut c = [0u8; 64];
+        c[0] = 0x33;
+        c[31] = 0xa1;
+        c[63] = 0x7e;
+        c
+    }
+
+    fn enc_vesta(p: &pasta_curves::vesta::Point) -> [u8; 32] {
+        let e = p.to_bytes();
+        let mut o = [0u8; 32];
+        o.copy_from_slice(e.as_ref());
+        o
+    }
+
+    /// Unblinded dest remainder for one arity-32 bucket. Matches the version-2 leaf.
+    fn dest_remainder(children: &[[u8; 32]; 32], slot: usize) -> [u8; 32] {
+        use group::Group;
+        let mut w = pasta_curves::vesta::Point::identity();
+        for k in 0..32 {
+            if k == slot {
+                continue;
+            }
+            w += tree::vesta_mul_g(k, &tree::vesta_x(&children[k]));
+        }
+        enc_vesta(&w)
+    }
+
+    fn leaf_dest_children(dest: &[u8], n: usize, index: usize) -> [[u8; 32]; 32] {
+        let mut xs = [[0u8; 32]; 32];
+        let start = (index / 32) * 32;
+        for i in 0..32 {
+            let at = start + i;
+            if at < n {
+                let mut p = [0u8; 32];
+                p.copy_from_slice(&dest[at * 32..at * 32 + 32]);
+                xs[i] = dest_leaf_fp(&p);
+            }
+        }
+        xs
+    }
+
+    fn slots_matching(children: &[[u8; 32]; 32], published: &[u8; 32]) -> Vec<usize> {
+        (0..32)
+            .filter(|slot| dest_remainder(children, *slot) == *published)
+            .collect()
+    }
+
+    /// One-layer proof: header, then two arity-32 buckets, then the leaf blob.
+    fn one_layer_leaf_w(proof: &[u8]) -> [u8; 32] {
+        assert_eq!(proof[257], 1, "n <= 32 is one layer");
+        let off = 258 + 32 * 32 * 2;
+        proof[off..off + 32].try_into().unwrap()
+    }
+
     #[test]
-    fn admit_honest_v3_hides_the_note_and_rejects_a_different_set() {
-        use group::{Group, GroupEncoding};
-        let n = 32usize;
+    fn v2_remainder_names_the_spent_slot() {
+        let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let idx = 4usize;
+        let idx = 3usize;
         let t = rand_scalar();
-        let mut ctx = [0u8; 64];
-        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
+        let (_ct, proof) = admit_prove(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("v2");
+        let kids = leaf_dest_children(&dest_blob, n, idx);
+        let hits = slots_matching(&kids, &one_layer_leaf_w(&proof));
+        assert_eq!(hits, vec![idx], "unblinded W identifies the spent slot");
+    }
+
+    #[test]
+    fn v3_remainder_hides_the_slot_and_rejects_a_mint() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let ctx = ctx64();
         let (ct, proof) = admit_prove_v3(
             &xs[idx].to_bytes(),
             &ps[idx],
@@ -966,99 +1071,23 @@ mod tests {
         .expect("v3");
         assert_eq!(proof[0], 3);
         assert!(proof.len() <= MAX_PROOF_V3);
-        assert_eq!(proof.get(257).copied(), Some(1));
-        let jr = jroot(&dest_blob, &c_blob, n);
-        let tag = proof_spend_tag(&proof).expect("tag");
-        assert!(prove::admit_verify_in(
-            &proof, &jr, &ct, &tag, &[], &[], 0, &[0u8; 32], &ctx
-        ));
+        let tag = proof_spend_tag(&proof).expect("v3 tag");
         assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
-        let dest_l = dest_leaf_fp(&ps[idx]);
-        assert!(!proof.windows(32).any(|w| w == ps[idx].as_slice()));
-        assert!(!proof.windows(32).any(|w| w == cs[idx].as_slice()));
-        assert!(!proof.windows(32).any(|w| w == dest_l.as_slice()));
-        let (_, _, _, d2, c2) = note_set(n);
-        let jr2 = jroot(&d2, &c2, n);
-        assert_ne!(jr, jr2);
-        assert!(!admit_verify_v3(&proof, &jr2, &ct, &tag, &ctx));
-        let mut ct_bad = ct;
-        let mut proof_bad = proof.clone();
-        ct_bad[0] ^= 0x5a;
-        proof_bad[33] ^= 0x5a;
-        assert!(!admit_verify_v3(&proof_bad, &jr, &ct_bad, &tag, &ctx));
-        let ax = rand_scalar();
-        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
-        assert!(admit_prove_v3(
-            &ax.to_bytes(),
-            &ap,
-            &cs[idx],
-            &t.to_bytes(),
-            idx,
-            &dest_blob,
-            &c_blob,
-            n,
-            &ctx,
-        )
-        .is_none());
-        let (ct_x, proof_x) = admit_prove_v3(
-            &ax.to_bytes(),
-            &ps[idx],
-            &cs[idx],
-            &t.to_bytes(),
-            idx,
-            &dest_blob,
-            &c_blob,
-            n,
-            &ctx,
-        )
-        .expect("attacker x still builds a blob");
-        let tag_x = proof_spend_tag(&proof_x).unwrap();
-        assert!(!admit_verify_v3(&proof_x, &jr, &ct_x, &tag_x, &ctx));
-        let other = 19usize;
-        let t2 = rand_scalar();
-        let (ct_b, proof_b) = admit_prove_v3(
-            &xs[other].to_bytes(),
-            &ps[other],
-            &cs[other],
-            &t2.to_bytes(),
-            other,
-            &dest_blob,
-            &c_blob,
-            n,
-            &ctx,
-        )
-        .expect("other");
-        let tag_b = proof_spend_tag(&proof_b).unwrap();
-        assert!(admit_verify_v3(&proof_b, &jr, &ct_b, &tag_b, &ctx));
-        let mut swapped = proof.clone();
-        swapped[258..].copy_from_slice(&proof_b[258..]);
-        assert!(!admit_verify_v3(&swapped, &jr, &ct, &tag, &ctx));
-        let mut wd = pasta_curves::vesta::Point::identity();
-        for k in 0..n {
-            if k == idx {
-                continue;
-            }
-            let leaf = dest_leaf_fp(&ps[k]);
-            wd += crate::tree::vesta_mul_g(k, &crate::tree::vesta_x(&leaf));
-        }
-        let enc = wd.to_bytes();
-        assert_ne!(&proof[258..290], enc.as_ref());
-    }
-
-    /// A hand-built leaf opens a real bucket and spends a fresh point under an
-    /// attacker key. The slot circuit opens the tree scalar and the encode
-    /// circuit opens the fresh point. `admit_verify_v3` must reject that pair
-    /// against the honest jroot. An honest spend of a tree note still verifies.
-    #[test]
-    fn fresh_point_outside_the_set_fails_admit_verify_v3() {
-        let n = 32usize;
-        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let mut ctx = [0u8; 64];
-        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
-        let idx = 4usize;
-        let t = rand_scalar();
-        eprintln!("PHASE honest-prove");
-        let (ct_h, proof_h) = admit_prove_v3(
+        assert!(!admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0), "v3 blob is not v2");
+        let kids = leaf_dest_children(&dest_blob, n, idx);
+        let hits = slots_matching(&kids, &one_layer_leaf_w(&proof));
+        assert!(hits.is_empty(), "blinded W matches no slot, got {hits:?}");
+        let mut minted = ct;
+        let mut bad = proof.clone();
+        minted[0] ^= 0x5a;
+        bad[33] ^= 0x5a;
+        assert!(!admit_verify_v3(&bad, &jr, &minted, &tag, &ctx), "self-minted C-tilde");
+        let jr_sub = jroot_point(&dest_blob[..4 * 32], &c_blob[..4 * 32], 4);
+        assert!(!admit_verify_v3(&proof, &jr_sub, &ct, &tag, &ctx), "subset jroot");
+        let mut ctx_b = ctx;
+        ctx_b[10] ^= 1;
+        assert!(!admit_verify_v3(&proof, &jr, &ct, &tag, &ctx_b), "foreign ctx");
+        let (ct2, proof2) = admit_prove(
             &xs[idx].to_bytes(),
             &ps[idx],
             &cs[idx],
@@ -1067,97 +1096,64 @@ mod tests {
             &dest_blob,
             &c_blob,
             n,
-            &ctx,
         )
-        .expect("honest leaf");
-        let jr = jroot(&dest_blob, &c_blob, n);
-        let tag_h = proof_spend_tag(&proof_h).expect("honest tag");
-        eprintln!("PHASE honest-verify");
+        .expect("v2");
+        let tag2 = proof_spend_tag(&proof2).unwrap();
+        assert!(!admit_verify_v3(&proof2, &jr, &ct2, &tag2, &ctx), "v2 blob is not v3");
+        let ax = rand_scalar();
+        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
         assert!(
-            admit_verify_v3(&proof_h, &jr, &ct_h, &tag_h, &ctx),
-            "honest spend of a tree note must verify"
-        );
-        eprintln!("PHASE forge-build");
-        let forged = prove::forge_fresh_spend_v3(idx, &dest_blob, &c_blob, n, &ctx)
-            .expect("forged transcript");
-        assert_eq!(forged.proof.len(), proof_h.len(), "forge must be a full-length transcript");
-        let leaf = &forged.proof[forged.proof.len() - select::LEAF_V3_LEN..];
-        let (y, slot_v, enc_v) = select::v3_link_openings(leaf).expect("openings");
-        assert_eq!(slot_v, y, "slot proof must open the published Y");
-        assert_ne!(enc_v, y, "encode proof must open the fresh note, not Y");
-        let (yx, kp_v) = select::v3_dest_openings(leaf).expect("dest openings");
-        assert_ne!(kp_v, yx, "dest-bind proof must not open the published Yx");
-        let (slot_blob, enc_blob, kp_blob) = select::v3_proof_blobs(leaf).expect("blobs");
-        eprintln!("PHASE forge-circuits");
-        assert!(
-            gadget::slot_opening_verifies(slot_blob, &forged.e_bytes, &forged.s_bytes),
-            "slot circuit must accept the tree opening"
-        );
-        assert!(
-            gadget::encode_opening_verifies(enc_blob, &forged.kc_b),
-            "encode circuit must accept the fresh kc"
-        );
-        assert!(
-            gadget::kp_opening_verifies(kp_blob, &forged.kp_b, &kp_v),
-            "dest-bind circuit must accept the attacker kp on its own statement"
-        );
-        let mut in_tree = false;
-        for c in &cs {
-            if c == &forged.ct {
-                in_tree = true;
-            }
-        }
-        assert!(!in_tree, "fresh commitment collided with the set");
-        let _ = ps;
-        eprintln!("PHASE forge-verify");
-        assert!(
-            !admit_verify_v3(&forged.proof, &jr, &forged.ct, &forged.tag, &ctx),
-            "verifier accepted a spend of a point that is not in the set"
+            admit_prove_v3(
+                &ax.to_bytes(),
+                &ap,
+                &cs[idx],
+                &t.to_bytes(),
+                idx,
+                &dest_blob,
+                &c_blob,
+                n,
+                &ctx,
+            )
+            .is_none(),
+            "attacker x at a victim index must not prove"
         );
     }
 
-    /// Honest C and an attacker dest. Slot and encode both open Y. The dest-bind
-    /// circuit is valid for the attacker point and commits a different Yx.
-    /// `admit_verify_v3` must reject that transcript.
     #[test]
-    fn honest_c_attacker_p_fails_admit_verify_v3() {
-        let n = 32usize;
-        let (_xs, _ps, _cs, dest_blob, c_blob) = note_set(n);
-        let mut ctx = [0u8; 64];
-        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
-        let idx = 4usize;
-        eprintln!("PHASE attacker-forge");
-        let forged = prove::forge_attacker_dest_v3(idx, &dest_blob, &c_blob, n, &ctx)
-            .expect("attacker dest transcript");
-        let leaf = &forged.proof[forged.proof.len() - select::LEAF_V3_LEN..];
-        let (y, slot_v, enc_v) = select::v3_link_openings(leaf).expect("openings");
-        assert_eq!(slot_v, y, "slot proof must open the published Y");
-        assert_eq!(enc_v, y, "encode proof must open the honest note");
-        let (yx, kp_v) = select::v3_dest_openings(leaf).expect("dest openings");
-        assert_ne!(kp_v, yx, "dest-bind proof must open the attacker fingerprint");
-        let (slot_blob, enc_blob, kp_blob) = select::v3_proof_blobs(leaf).expect("blobs");
-        eprintln!("PHASE attacker-circuits");
-        assert!(gadget::slot_opening_verifies(slot_blob, &forged.e_bytes, &forged.s_bytes));
-        assert!(gadget::encode_opening_verifies(enc_blob, &forged.kc_b));
-        assert!(gadget::kp_opening_verifies(kp_blob, &forged.kp_b, &kp_v));
-        let jr = jroot(&dest_blob, &c_blob, n);
-        eprintln!("PHASE attacker-verify");
-        assert!(
-            !admit_verify_v3(&forged.proof, &jr, &forged.ct, &forged.tag, &ctx),
-            "verifier accepted an attacker dest under an honest note"
-        );
-    }
-
-    /// n = 64 is two buckets. The proof must not publish either bucket commitment.
-    #[test]
-    fn two_bucket_v3_does_not_publish_the_spent_group() {
-        use crate::tree::{commit_ristretto_encodings, commit_vesta};
-        let n = 64usize;
+    fn v3_paired_remainder_hides_the_child_slot() {
+        let n = 40usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let mut ctx = [0u8; 64];
-        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
-        let idx = 3usize;
+        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let idx = 7usize;
         let t = rand_scalar();
+        let ctx = ctx64();
+        let (dlevels, _) = tree::trees(&dest_blob, &c_blob, n);
+        let dpath = tree::path_from_levels(&dlevels, idx).expect("path");
+        assert!(dpath.len() >= 2, "n=40 has an internal layer");
+        let top = dpath.len() - 1;
+        let mut slot_idx = idx;
+        for _ in 0..top {
+            slot_idx /= 32;
+        }
+        let top_slot = slot_idx % 32;
+        let (ct2, proof2) = admit_prove(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+        )
+        .expect("v2");
+        assert_eq!(proof2[257], dpath.len() as u8);
+        let published2: [u8; 32] = proof2[258..290].try_into().unwrap();
+        assert_eq!(
+            slots_matching(&dpath[top], &published2),
+            vec![top_slot],
+            "v2 internal W names the child"
+        );
         let (ct, proof) = admit_prove_v3(
             &xs[idx].to_bytes(),
             &ps[idx],
@@ -1169,40 +1165,248 @@ mod tests {
             n,
             &ctx,
         )
-        .expect("two-bucket proof");
-        assert_eq!(proof.get(257).copied(), Some(2));
-        let jr = jroot(&dest_blob, &c_blob, n);
+        .expect("v3");
+        let tag = proof_spend_tag(&proof).unwrap();
+        assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+        assert_eq!(proof[257], dpath.len() as u8);
+        let published: [u8; 32] = proof[258..290].try_into().unwrap();
+        assert!(
+            slots_matching(&dpath[top], &published).is_empty(),
+            "v3 internal W matches no child slot"
+        );
+        let mut sib = proof.clone();
+        let leaf_at = sib.len() - crate::select::POINT_OPEN_LEN - crate::select::LEAF_V3_LEN;
+        let c_at = leaf_at - 32 * 32;
+        sib[c_at] ^= 0xff;
+        assert!(!admit_verify_v3(&sib, &jr, &ct, &tag, &ctx), "a swapped C bucket must fail");
+        let _ = ct2;
+    }
+
+    /// Honest version-3 seal. C-tilde is C + t H, and the proof verifies on the set that contains C.
+    #[test]
+    fn seal_v3_opens_the_note_in_the_set() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let ctx = ctx64();
+        let (ct, proof) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("seal v3");
+        let expect = tree::rerand_c(&cs[idx], &t.to_bytes()).expect("rerand");
+        assert_eq!(ct, expect, "C-tilde = C + t H");
+        assert_ne!(ct, cs[idx]);
         let tag = proof_spend_tag(&proof).expect("tag");
         assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
-        let mut dest0 = [[0u8; 32]; 32];
-        let mut dest1 = [[0u8; 32]; 32];
-        let mut c0 = [[0u8; 32]; 32];
-        let mut c1 = [[0u8; 32]; 32];
-        for i in 0..32 {
-            dest0[i] = dest_leaf_fp(&ps[i]);
-            dest1[i] = dest_leaf_fp(&ps[32 + i]);
-            c0[i] = cs[i];
-            c1[i] = cs[32 + i];
-        }
-        let spent_d = commit_vesta(&dest0);
-        let other_d = commit_vesta(&dest1);
-        let spent_c = commit_ristretto_encodings(&c0);
-        let other_c = commit_ristretto_encodings(&c1);
+        assert_eq!(proof[0], 3);
+        assert_eq!(proof[257], 1);
+    }
+
+    /// A fresh ristretto point that was never inserted is not a member.
+    #[test]
+    fn v3_fresh_point_outside_the_set_fails() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let ctx = ctx64();
+        let (ct, proof) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("honest");
+        let tag = proof_spend_tag(&proof).unwrap();
+        assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+
+        let ax = rand_scalar();
+        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
+        let h = hash_to_ristretto(b"shear-note-H-v1");
+        let ac = (RISTRETTO_BASEPOINT_POINT * Scalar::from(50_000u64) + h * rand_scalar())
+            .compress()
+            .to_bytes();
+        assert!(ps.iter().all(|p| p != &ap), "fresh P is not in the set");
+        assert!(cs.iter().all(|c| c != &ac), "fresh C is not in the set");
         assert!(
-            proof.windows(32).all(|w| w != spent_d.as_slice()),
-            "spent dest bucket commitment is on the wire"
+            admit_prove_v3(
+                &ax.to_bytes(),
+                &ap,
+                &ac,
+                &t.to_bytes(),
+                0,
+                &dest_blob,
+                &c_blob,
+                n,
+                &ctx,
+            )
+            .is_none(),
+            "prove must refuse a fresh point that is not in the set"
         );
+        let mut d_att = dest_blob.clone();
+        let mut c_att = c_blob.clone();
+        d_att[..32].copy_from_slice(&ap);
+        c_att[..32].copy_from_slice(&ac);
+        let (ct_a, proof_a) = admit_prove_v3(
+            &ax.to_bytes(),
+            &ap,
+            &ac,
+            &t.to_bytes(),
+            0,
+            &d_att,
+            &c_att,
+            n,
+            &ctx,
+        )
+        .expect("the fresh point proves only inside a set that contains it");
+        let tag_a = proof_spend_tag(&proof_a).unwrap();
         assert!(
-            proof.windows(32).all(|w| w != other_d.as_slice()),
-            "other dest bucket commitment is on the wire"
+            !admit_verify_v3(&proof_a, &jr, &ct_a, &tag_a, &ctx),
+            "a fresh point proved in some other set must fail the honest jroot"
         );
+        let mut spliced = proof.clone();
+        let c_slot = 258 + 32 * 32 + idx * 32;
+        spliced[c_slot..c_slot + 32].copy_from_slice(&ac);
         assert!(
-            proof.windows(32).all(|w| w != spent_c.as_slice()),
-            "spent C bucket commitment is on the wire"
-        );
-        assert!(
-            proof.windows(32).all(|w| w != other_c.as_slice()),
-            "other C bucket commitment is on the wire"
+            !admit_verify_v3(&spliced, &jr, &ct, &tag, &ctx),
+            "replacing the spent note with a fresh point must fail"
         );
     }
+
+    /// Honest C and an attacker dest. Slot and encode both open Y. The dest-bind
+    /// circuit is valid for the attacker point and commits a different Yx.
+    #[test]
+    fn honest_c_attacker_p_fails_admit_verify_v3() {
+        let n = 32usize;
+        let (_xs, _ps, _cs, dest_blob, c_blob) = note_set(n);
+        let mut ctx = [0u8; 64];
+        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
+        let idx = 4usize;
+        eprintln!("PHASE attacker-forge");
+        let forged = prove::forge_attacker_dest_v3(idx, &dest_blob, &c_blob, n, &ctx)
+            .expect("attacker dest transcript");
+        let leaf_at = forged.proof.len() - select::POINT_OPEN_LEN - select::LEAF_V3_LEN;
+        let leaf = &forged.proof[leaf_at..leaf_at + select::LEAF_V3_LEN];
+        let (y, slot_v, enc_v) = select::v3_link_openings(leaf).expect("openings");
+        assert_eq!(slot_v, y, "slot proof must open the published Y");
+        assert_eq!(enc_v, y, "encode proof must open the honest note");
+        let (yx, kp_v) = select::v3_dest_openings(leaf).expect("dest openings");
+        assert_ne!(kp_v, yx, "dest-bind proof must open the attacker fingerprint");
+        let (slot_blob, enc_blob, kp_blob) = select::v3_proof_blobs(leaf).expect("blobs");
+        eprintln!("PHASE attacker-circuits");
+        assert!(crate::gadget::slot_opening_verifies(slot_blob, &forged.e_bytes, &forged.s_bytes));
+        assert!(crate::gadget::encode_opening_verifies(enc_blob, &forged.kc_b));
+        assert!(crate::gadget::kp_opening_verifies(kp_blob, &forged.kp_b, &kp_v));
+        let jr = jroot_point(&dest_blob, &c_blob, n);
+        eprintln!("PHASE attacker-verify");
+        assert!(
+            !admit_verify_v3(&forged.proof, &jr, &forged.ct, &forged.tag, &ctx),
+            "verifier accepted an attacker dest under an honest note"
+        );
+    }
+
+    /// n=64 is two arity-32 buckets. Version 3 blinds W and still publishes the spent bucket.
+    #[test]
+    fn v3_two_bucket_spent_link_stays_on_the_wire() {
+        let n = 64usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let jr_scalar = jroot(&dest_blob, &c_blob, n);
+        assert_ne!(jr, jr_scalar, "the point book is not the scalar jroot");
+        let ctx = ctx64();
+        let mut seen = Vec::new();
+        for idx in [3usize, 40usize] {
+            let t = rand_scalar();
+            let (ct, proof) = admit_prove_v3(
+                &xs[idx].to_bytes(),
+                &ps[idx],
+                &cs[idx],
+                &t.to_bytes(),
+                idx,
+                &dest_blob,
+                &c_blob,
+                n,
+                &ctx,
+            )
+            .expect("v3");
+            let tag = proof_spend_tag(&proof).unwrap();
+            assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+            assert_eq!(proof[257], 2, "64 notes are two buckets under one root");
+            let glue = 258 + crate::select::PAIRED_LEN;
+            let parent_c: [u8; 32] = proof[glue + 64..glue + 96].try_into().unwrap();
+            let c_off = glue + 128 + 32 * 32;
+            let mut bucket = [[0u8; 32]; 32];
+            for i in 0..32 {
+                bucket[i].copy_from_slice(&proof[c_off + i * 32..c_off + i * 32 + 32]);
+            }
+            assert_eq!(
+                parent_c,
+                tree::commit_ristretto_points(&bucket),
+                "the published parent is the point commitment of the spent bucket"
+            );
+            assert_ne!(
+                parent_c,
+                tree::commit_ristretto_encodings(&bucket),
+                "the scalar encoding commitment is not the point parent"
+            );
+            let which = idx / 32;
+            for i in 0..32 {
+                assert_eq!(bucket[i], cs[which * 32 + i], "raw C bucket {which} is on the wire");
+            }
+            let other = 1 - which;
+            assert_ne!(bucket[0], cs[other * 32]);
+            let leaf_at = c_off + 32 * 32;
+            assert_eq!(
+                proof.len(),
+                leaf_at + crate::select::LEAF_V3_LEN + crate::select::POINT_OPEN_LEN
+            );
+            let w: [u8; 32] = proof[leaf_at..leaf_at + 32].try_into().unwrap();
+            let kids = leaf_dest_children(&dest_blob, n, idx);
+            assert!(
+                slots_matching(&kids, &w).is_empty(),
+                "blinding W does not name the slot, and it does not remove the bucket"
+            );
+            let q_at = leaf_at + crate::select::LEAF_V3_LEN;
+            let q: [u8; 32] = proof[q_at..q_at + 32].try_into().unwrap();
+            for note in &bucket {
+                assert_ne!(q, *note, "the rerandomized child is not a raw note");
+            }
+            assert!(
+                !admit_verify_v3(&proof, &jr_scalar, &ct, &tag, &ctx),
+                "the scalar jroot must not verify a point-leaf proof"
+            );
+            let mut scalar_parent = proof.clone();
+            let enc = tree::commit_ristretto_encodings(&bucket);
+            scalar_parent[glue + 64..glue + 96].copy_from_slice(&enc);
+            assert!(
+                !admit_verify_v3(&scalar_parent, &jr, &ct, &tag, &ctx),
+                "a scalar parent does not open the point bucket"
+            );
+            let mut forged_q = proof.clone();
+            forged_q[q_at] ^= 0xff;
+            assert!(
+                !admit_verify_v3(&forged_q, &jr, &ct, &tag, &ctx),
+                "a self-minted point opening fails"
+            );
+            seen.push(which);
+        }
+        assert_eq!(seen, vec![0, 1]);
+    }
+
 }

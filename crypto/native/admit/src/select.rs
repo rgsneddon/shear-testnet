@@ -1,7 +1,9 @@
 //! D-ary CDS select-and-rerandomize. No slot index on the wire.
 //!
 //! Parent `P = r U + Σ x_j G_j` (Pedersen VC). Selected `Q = x_i G_sel + t U`.
-//! `W = Σ_{j≠i} x_j G_j` is the other-slot remainder (hiding).
+//! `W = Σ_{j≠i} x_j G_j` is the other-slot remainder. A non-empty ctx (version 3)
+//! publishes `W' = W + r_w U` and opens `r - r_w`, so `W'` is not a function of
+//! the spent slot. An empty ctx keeps the unblinded remainder.
 //! Dest (Vesta) and C (ristretto) share one wrap-around so mixed indices fail.
 //! C-tree leaves are ristretto C; C̃ = C_i + t H is a 1-of-D at the leaf.
 //! Dest admitPub P_i is 1-of-D as p_com = P_i + w U at the same slot.
@@ -32,6 +34,8 @@ pub const LEAF_V3_LEN: usize = LEAF_V3_BODY
     + crate::r1cs::SLOT_LINK_BLOB
     + crate::r1cs::ENCODE_LINK_BLOB
     + crate::r1cs::ENCODE_LINK_BLOB;
+/// Q || challenge seed || one response scalar per slot. Appended after the dest-bind leaf on version 3.
+pub const POINT_OPEN_LEN: usize = 32 + 32 + ARITY * 32;
 
 pub(crate) fn vs_rand() -> vesta::Scalar {
     let mut w = [0u8; 64];
@@ -542,17 +546,18 @@ pub fn paired_prove(
         wd += vesta_mul_g(k, &vesta_x(&dest_ch[k]));
         wc += gc[k] * rsc(&c_ch[k]);
     }
+    // Version 3: blind the remainder. P - W' = (r - r_w) U + x_i G_i.
+    let (rwd, rwc) = if ctx.is_empty() {
+        (vesta::Scalar::ZERO, RScalar::ZERO)
+    } else {
+        let rwd = vs_rand();
+        let rwc = rs_rand();
+        wd += vesta_mul_u(&rwd);
+        wc += uc * rwc;
+        (rwd, rwc)
+    };
     let qd = vesta_mul_gsel(&xd) + vesta_mul_u(t_d);
     let qc = gselc * xc + uc * t_c;
-    // v2 publishes the other-slot sum. v3 adds a fresh U blind so that sum is
-    // not a candidate an observer can recompute from the public fluxset.
-    let (wd, wc, rd_open, rc_open) = if ctx.is_empty() {
-        (wd, wc, rd, rc)
-    } else {
-        let r_wd = vs_rand();
-        let r_wc = rs_rand();
-        (wd + vesta_mul_u(&r_wd), wc + uc * r_wc, rd - r_wd, rc - r_wc)
-    };
     let pwd = pd - wd;
     let pwc = pc - wc;
     let pwd_t = VestaVar::new(pwd);
@@ -629,10 +634,10 @@ pub fn paired_prove(
         j = (j + 1) % ARITY;
     }
     zxd[index] = (kxd + ed * xd).to_repr().into();
-    zrd[index] = (krd + ed * rd_open).to_repr().into();
+    zrd[index] = (krd + ed * (rd - rwd)).to_repr().into();
     ztd[index] = (ktd + ed * *t_d).to_repr().into();
     zxc[index] = (kxc + ec * xc).to_bytes();
-    zrc[index] = (krc + ec * rc_open).to_bytes();
+    zrc[index] = (krc + ec * (rc - rwc)).to_bytes();
     ztc[index] = (ktc + ec * *t_c).to_bytes();
 
     let mut seed0 = pair_chal(
@@ -927,6 +932,14 @@ pub fn leaf_prove(
         }
         wd += gd[k] * vesta_x(&dest_ch[k]);
     }
+    // Version 3: same remainder blind as the paired layers. P - W' opens r - r_w.
+    let rwd = if ctx.is_empty() {
+        vesta::Scalar::ZERO
+    } else {
+        let rwd = vs_rand();
+        wd += *ud * rwd;
+        rwd
+    };
     let qd = gseld * xd + *ud * t_d;
     let pwd = pd - wd;
     let wd_b = enc_v(&wd);
@@ -1009,7 +1022,7 @@ pub fn leaf_prove(
         j = (j + 1) % ARITY;
     }
     zxd[index] = (kxd + ed * xd).to_repr().into();
-    zrd[index] = (krd + ed * rd).to_repr().into();
+    zrd[index] = (krd + ed * (rd - rwd)).to_repr().into();
     ztd[index] = (ktd + ed * *t_d).to_repr().into();
     zct[index] = (kct + ec * *t_note).to_bytes();
     zpt[index] = (kpt + ec * *w_p).to_bytes();
@@ -1188,6 +1201,7 @@ pub fn leaf_verify(
     }
     last == hv0
 }
+
 
 const V3_ZXD: usize = 224;
 const V3_AC: usize = V3_ZXD + ARITY * 32;
@@ -2282,6 +2296,104 @@ pub fn v3_dest_openings(leaf: &[u8]) -> Option<([u8; 32], [u8; 32])> {
     let kp_at = V3_LINKS + crate::r1cs::SLOT_LINK_BLOB + crate::r1cs::ENCODE_LINK_BLOB;
     let kp_v = take32(leaf, kp_at + 11 * 32)?;
     Some((yx, kp_v))
+}
+
+fn point_child(b: &[u8; 32]) -> RistrettoPoint {
+    dec_r(b).unwrap_or_else(RistrettoPoint::identity)
+}
+
+fn point_open_chal(rq: &[u8; 32], q: &[u8; 32], ctx: &[u8], sib: &[u8]) -> RScalar {
+    chal_r(&[rq, q, ctx, sib, b"c-point-open-v3"])
+}
+
+/// Version-3 trailer. Q = C_i + ρ·U, and the CDS response opens that ρ on one
+/// hidden slot of the published bucket. The dest-bind leaf in front of this is
+/// `LEAF_V3_LEN`. Knowledge of ρ is the bind: every ristretto point is some
+/// multiple of U, so a sum check with no Schnorr does not bind the slot.
+pub fn point_open_prove(c_ch: &[[u8; 32]; ARITY], index: usize, ctx: &[u8]) -> Option<Vec<u8>> {
+    if index >= ARITY {
+        return None;
+    }
+    let ci = dec_r(&c_ch[index])?;
+    let (u, _, _) = ristretto_gens();
+    let rho = rs_rand();
+    if rho == RScalar::ZERO {
+        return None;
+    }
+    let q = ci + u * rho;
+    if q.is_identity() || q == ci {
+        return None;
+    }
+    let q_b = enc_r(&q);
+    let mut sib = Vec::with_capacity(ARITY * 32);
+    for c in c_ch {
+        sib.extend_from_slice(c);
+    }
+    let mut z = [[0u8; 32]; ARITY];
+    let k = rs_rand();
+    let ann = u * k;
+    let mut e = point_open_chal(&enc_r(&ann), &q_b, ctx, &sib);
+    let mut j = (index + 1) % ARITY;
+    while j != index {
+        let zj = rs_rand();
+        z[j] = zj.to_bytes();
+        let rq = u * zj - (q - point_child(&c_ch[j])) * e;
+        e = point_open_chal(&enc_r(&rq), &q_b, ctx, &sib);
+        j = (j + 1) % ARITY;
+    }
+    z[index] = (k + e * rho).to_bytes();
+    let mut e0 = point_open_chal(&enc_r(&ann), &q_b, ctx, &sib);
+    let mut jj = (index + 1) % ARITY;
+    while jj != 0 {
+        let zj = rsc(&z[jj]);
+        let rq = u * zj - (q - point_child(&c_ch[jj])) * e0;
+        e0 = point_open_chal(&enc_r(&rq), &q_b, ctx, &sib);
+        jj = (jj + 1) % ARITY;
+    }
+    let mut out = Vec::with_capacity(POINT_OPEN_LEN);
+    out.extend_from_slice(&q_b);
+    out.extend_from_slice(&e0.to_bytes());
+    for slot in &z {
+        out.extend_from_slice(slot);
+    }
+    Some(out)
+}
+
+pub fn point_open_verify(c_ch: &[[u8; 32]; ARITY], proof: &[u8], ctx: &[u8]) -> bool {
+    if proof.len() != POINT_OPEN_LEN {
+        return false;
+    }
+    let q_b = match take32(proof, 0) {
+        Some(x) => x,
+        None => return false,
+    };
+    let seed = match take32(proof, 32) {
+        Some(x) => x,
+        None => return false,
+    };
+    let q = match dec_r(&q_b) {
+        Some(p) => p,
+        None => return false,
+    };
+    if q.is_identity() {
+        return false;
+    }
+    let mut sib = Vec::with_capacity(ARITY * 32);
+    for c in c_ch {
+        sib.extend_from_slice(c);
+    }
+    let (u, _, _) = ristretto_gens();
+    let mut e = rsc(&seed);
+    for j in 0..ARITY {
+        let zj = rsc(&match take32(proof, 64 + j * 32) {
+            Some(x) => x,
+            None => return false,
+        });
+        let rq = u * zj - (q - point_child(&c_ch[j])) * e;
+        e = point_open_chal(&enc_r(&rq), &q_b, ctx, &sib);
+    }
+    e == rsc(&seed)
+
 }
 
 /// Proof bytes contain neither the slot index as a dedicated field nor any raw child 32-byte encoding.

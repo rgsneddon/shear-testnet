@@ -4,7 +4,7 @@
 //! Parent of Fp children is a Vesta Pedersen (Vesta scalar = Pallas base).
 //! Internal Vesta-point x-coords (Fq) are committed on Pallas.
 
-use crate::leaf::{dest_leaf_fp, jroot_hash, sha512_64};
+use crate::leaf::{dest_leaf_fp, jroot_hash, jroot_point_hash, sha512_64, DST_C_POINT};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar as RScalar;
 use ff::{FromUniformBytes, PrimeField};
@@ -310,6 +310,19 @@ fn fold_c(level: &[[u8; 32]]) -> Vec<[u8; 32]> {
     next
 }
 
+/// First fold of the version-3 C tree. Later folds stay `fold_c`.
+fn fold_c_points(level: &[[u8; 32]]) -> Vec<[u8; 32]> {
+    let mut next = Vec::with_capacity(level.len() / ARITY + 1);
+    for chunk in level.chunks(ARITY) {
+        let mut xs = [[0u8; 32]; ARITY];
+        for (i, c) in chunk.iter().enumerate() {
+            xs[i] = *c;
+        }
+        next.push(commit_ristretto_points(&xs));
+    }
+    next
+}
+
 /// Every D-ary level including the 1-element root. Built once per prove.
 struct LevelCache {
     n: usize,
@@ -397,6 +410,40 @@ fn c_levels_build(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
 
 pub fn c_levels(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
     c_levels_build(c_leaves, n)
+}
+
+/// Version-3 C levels. The leaf bucket folds as ristretto points.
+/// Every fold above that stays the scalar encoding commitment. Not cached:
+/// `trees` is the v2 book and must not see these levels.
+fn c_levels_point_build(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
+    let mut level = c_leaf_level(c_leaves, n);
+    let mut levels = Vec::new();
+    let mut first = true;
+    loop {
+        if level.len() == 1 {
+            levels.push(level);
+            break;
+        }
+        let next = if first {
+            first = false;
+            fold_c_points(&level)
+        } else {
+            fold_c(&level)
+        };
+        levels.push(level);
+        if next.len() == 1 {
+            levels.push(next);
+            break;
+        }
+        level = next;
+        pad_to_arity(&mut level);
+    }
+    levels
+}
+
+/// Dest levels are the v2 fold. C levels use the point leaf. Own path, not the v2 cache.
+pub fn trees_point(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> (Vec<Vec<[u8; 32]>>, Vec<Vec<[u8; 32]>>) {
+    (dest_levels_build(dest_leaves, n), c_levels_point_build(c_leaves, n))
 }
 
 pub fn path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Option<Vec<[[u8; 32]; ARITY]>> {
@@ -489,6 +536,25 @@ pub(crate) fn commit_ristretto_encodings(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
     RistrettoPoint::vartime_multiscalar_mul(scalars.iter(), points.iter()).compress().to_bytes()
 }
 
+/// Parent of an arity-32 bucket of ristretto points: r·U + Σ C_i.
+/// r is domain-separated by the point bytes in order. This is not
+/// scalar(compress(C)). A pad that does not decompress adds nothing.
+pub fn commit_ristretto_points(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
+    let (u, _, _) = ristretto_gens();
+    let mut parts: Vec<&[u8]> = vec![DST_C_POINT];
+    for c in cs {
+        parts.push(c.as_ref());
+    }
+    let r = RScalar::from_bytes_mod_order_wide(&sha512_64(&parts));
+    let mut acc = u * r;
+    for c in cs {
+        if let Some(p) = CompressedRistretto(*c).decompress() {
+            acc += p;
+        }
+    }
+    acc.compress().to_bytes()
+}
+
 pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
     root_of_levels(&c_levels(c_leaves, n))
 }
@@ -496,6 +562,12 @@ pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
 pub fn jroot(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> [u8; 32] {
     let (d, c) = trees(dest_leaves, c_leaves, n);
     jroot_hash(&root_of_levels(&d), &root_of_levels(&c))
+}
+
+/// Version-3 book. Not `jroot`: the C root is the point leaf.
+pub fn jroot_point(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> [u8; 32] {
+    let (d, c) = trees_point(dest_leaves, c_leaves, n);
+    jroot_point_hash(&root_of_levels(&d), &root_of_levels(&c))
 }
 
 pub struct PastaTree {

@@ -2,20 +2,25 @@
 //! Membership is D-ary CDS select-and-rerandomize. No d0 / nonce / XOR path
 //! / dest_leaf of the spent note on the wire. C-tree leaves are ristretto C;
 //! C̃ is a 1-of-D rerandomization of a tree C. Dest admitPub P is 1-of-D as
-//! p_com = P_j + w U at the same hidden slot.
-//! Version 2 still carries the 32-note sibling bucket. Version 3 does not:
-//! the leaf opens the parents, and the remainder is blinded.
+//! p_com = P_j + w U at the same hidden slot. Version 3 blinds every published
+//! remainder so that slot is not a function of W. The arity-32 point bucket
+//! stays on the wire. Version 3's first C fold commits those ristretto points
+//! (r·U + Σ C_i). The dest-bind leaf opens the encoding commitment of that
+//! same published bucket, and the trailer opens Q = C_i + ρ·U. The glue in
+//! front of the buckets opens that point-commitment child. Internal paired
+//! layers stay scalar openings. The domains are shear-admit-c-point-v3 and
+//! shear-jroot-point-v3, not a patch on the v2 leaf domains.
 
-use crate::leaf::{jroot_hash, sha512_64};
+use crate::leaf::{jroot_hash, jroot_point_hash, sha512_64};
 use crate::select::{
     leaf_prove, leaf_prove_v3, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
-    paired_qd_opens, paired_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN, V3_Y,
-    V3_YX,
+    paired_qd_opens, paired_verify, point_open_prove, point_open_verify, rs_rand, vs_rand,
+    LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN, POINT_OPEN_LEN, V3_Y, V3_YX,
 };
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
-    commit_ristretto_encodings, commit_vesta, leaf_p_siblings, note_u, path_from_levels, rerand_c,
-    root_of_levels, trees, ARITY,
+    commit_ristretto_encodings, commit_ristretto_points, commit_vesta, leaf_p_siblings, note_u,
+    path_from_levels, rerand_c, root_of_levels, trees, trees_point, ARITY,
 };
 use ff::PrimeField;
 use pasta_curves::vesta;
@@ -26,9 +31,10 @@ use curve25519_dalek::traits::IsIdentity;
 use rand_core::{OsRng, RngCore};
 
 pub const MAX_PROOF: usize = 32768;
-/// Height-4 v3 proof: header + 3 paired layers + the link leaf = 40354.
-/// Height 5 is 46818 and does not fit. The v2 cap stays 32768.
-pub const MAX_PROOF_V3: usize = 40354;
+/// Height-4 v3 proof: header + 3 paired layers + both published buckets
+/// + the dest-bind leaf + the point-open trailer = 43490.
+/// Height 5 does not fit. The v2 cap stays 32768.
+pub const MAX_PROOF_V3: usize = 43490;
 pub const VERSION: u8 = 2;
 pub const VERSION_V3: u8 = 3;
 const HDR: usize = 1 + 32 * 8 + 1; // version, tag, ct, dest_root, c_root, p_com, r_x, z_x, z_w, n_layers
@@ -147,7 +153,11 @@ pub fn admit_prove_in(
         return None;
     }
     let tag = i_pt.compress().to_bytes();
-    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = if v3 {
+        trees_point(dest_leaves, c_leaves, n)
+    } else {
+        trees(dest_leaves, c_leaves, n)
+    };
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != cpath.len() || dpath.is_empty() {
@@ -159,7 +169,11 @@ pub fn admit_prove_in(
     }
     let dest_root = root_of_levels(&dlevels);
     let c_root_b = root_of_levels(&clev);
-    let jr = jroot_hash(&dest_root, &c_root_b);
+    let jr = if v3 {
+        jroot_point_hash(&dest_root, &c_root_b)
+    } else {
+        jroot_hash(&dest_root, &c_root_b)
+    };
     let slots = slots_of(index, n_layers);
     let ct_pt = decompress(&c_tilde)?;
 
@@ -186,13 +200,21 @@ pub fn admit_prove_in(
             t_c_prev = Some(tc);
         }
         let parent_d = commit_vesta(&dpath[0]);
-        let parent_c = commit_ristretto_encodings(&cpath[0]);
+        // The glue child is the point commitment of the published bucket.
+        // Internal parents above stay scalar encodings.
+        let parent_c = if v3 {
+            commit_ristretto_points(&cpath[0])
+        } else {
+            commit_ristretto_encodings(&cpath[0])
+        };
         let td_b: [u8; 32] = t_d_prev?.to_repr().into();
         mem.extend_from_slice(&parent_d);
         mem.extend_from_slice(&td_b);
         mem.extend_from_slice(&parent_c);
         mem.extend_from_slice(&t_c_prev?.to_bytes());
     }
+    // Point bucket for C̃ = C_i + t·H and p_com = P_i + w·U. The bytes stay.
+    // Version 3 binds them by the point commitment, not by deleting them.
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     if p_sib[slots[0]] != *p {
         return None;
@@ -201,6 +223,12 @@ pub fn admit_prove_in(
     let w = chal(&[b"w", x, p]);
     let p_com = p_pt + u * w;
     let td_leaf = vs_rand();
+    for x in &p_sib {
+        mem.extend_from_slice(x);
+    }
+    for x in &cpath[0] {
+        mem.extend_from_slice(x);
+    }
     let leaf = if v3 {
         if dpath[0][slots[0]] != dest_leaf_fp(p) {
             return None;
@@ -218,12 +246,6 @@ pub fn admit_prove_in(
             ctx,
         )?
     } else {
-        for x in &p_sib {
-            mem.extend_from_slice(x);
-        }
-        for x in &cpath[0] {
-            mem.extend_from_slice(x);
-        }
         leaf_prove(
             &dpath[0],
             &cpath[0],
@@ -238,6 +260,10 @@ pub fn admit_prove_in(
         )?
     };
     mem.extend_from_slice(&leaf);
+    if v3 {
+        let open = point_open_prove(&cpath[0], slots[0], ctx)?;
+        mem.extend_from_slice(&open);
+    }
     let nonce_rand = if v3 { os_rand32()? } else { [0u8; 32] };
     let k = if v3 {
         chal(&[b"k", ctx, x, t, &nonce_rand])
@@ -330,7 +356,7 @@ pub fn forge_fresh_spend_v3(
     if ctx.len() != 64 || n == 0 || index >= n {
         return None;
     }
-    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = trees_point(dest_leaves, c_leaves, n);
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != 1 || cpath.len() != 1 {
@@ -340,7 +366,7 @@ pub fn forge_fresh_spend_v3(
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     let dest_root = root_of_levels(&dlevels);
     let c_root_b = root_of_levels(&clev);
-    let jr = jroot_hash(&dest_root, &c_root_b);
+    let jr = jroot_point_hash(&dest_root, &c_root_b);
     let t_fresh = rs_rand();
     let fresh = G * rs_rand();
     let ct_pt = fresh + crate::tree::ristretto_h_note() * t_fresh;
@@ -452,7 +478,15 @@ pub fn forge_fresh_spend_v3(
     proof.extend_from_slice(&z_x.to_bytes());
     proof.extend_from_slice(&z_w.to_bytes());
     proof.push(1u8);
+    for x in &p_sib {
+        proof.extend_from_slice(x);
+    }
+    for x in &cpath[0] {
+        proof.extend_from_slice(x);
+    }
     proof.extend_from_slice(&leaf);
+    let open = point_open_prove(&cpath[0], slots[0], ctx)?;
+    proof.extend_from_slice(&open);
     Some(ForgedSpend { ct, tag, proof, e_bytes, s_bytes, kc_b, kp_b })
 }
 
@@ -478,7 +512,7 @@ pub fn forge_attacker_dest_v3(
     if ctx.len() != 64 || n == 0 || index >= n {
         return None;
     }
-    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = trees_point(dest_leaves, c_leaves, n);
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != 1 || cpath.len() != 1 {
@@ -488,7 +522,7 @@ pub fn forge_attacker_dest_v3(
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     let dest_root = root_of_levels(&dlevels);
     let c_root_b = root_of_levels(&clev);
-    let jr = jroot_hash(&dest_root, &c_root_b);
+    let jr = jroot_point_hash(&dest_root, &c_root_b);
     let c_leaf = cpath[0][slots[0]];
     let ci = CompressedRistretto(c_leaf).decompress()?;
     let t_note = rs_rand();
@@ -596,7 +630,15 @@ pub fn forge_attacker_dest_v3(
     proof.extend_from_slice(&z_x.to_bytes());
     proof.extend_from_slice(&z_w.to_bytes());
     proof.push(1u8);
+    for x in &p_sib {
+        proof.extend_from_slice(x);
+    }
+    for x in &cpath[0] {
+        proof.extend_from_slice(x);
+    }
     proof.extend_from_slice(&leaf);
+    let open = point_open_prove(&cpath[0], slots[0], ctx)?;
+    proof.extend_from_slice(&open);
     Some(ForgedSpend { ct, tag, proof, e_bytes, s_bytes, kc_b, kp_b })
 }
 
@@ -700,7 +742,12 @@ pub fn admit_verify_in(
         Some(x) => x,
         None => return false,
     };
-    if jroot_hash(&dest_root, &c_root_b) != *jr {
+    let rooted = if v3 {
+        jroot_point_hash(&dest_root, &c_root_b) == *jr
+    } else {
+        jroot_hash(&dest_root, &c_root_b) == *jr
+    };
+    if !rooted {
         return false;
     }
     let p_com_b = match read32(proof, 129) {
@@ -817,40 +864,6 @@ pub fn admit_verify_in(
         dest_parent = pd;
         c_parent = pc;
     }
-    let ct = match decompress(c_tilde) {
-        Some(p) => p,
-        None => return false,
-    };
-    let p_com = match decompress(&p_com_b) {
-        Some(p) => p,
-        None => return false,
-    };
-    let leaf_len = if v3 { LEAF_V3_LEN } else { LEAF_PAIRED_LEN };
-    if v3 {
-        if proof.len() != off + leaf_len {
-            return false;
-        }
-        let leaf = &proof[off..off + leaf_len];
-        if !leaf_verify_v3(&dest_parent, &c_parent, &ct, &p_com, leaf, ctx) {
-            return false;
-        }
-        let dest_q = match leaf_qd(leaf) {
-            Some(x) => x,
-            None => return false,
-        };
-        return v3_dleq(
-            &dest_q,
-            &p_com,
-            &p_com_b,
-            &r_x_b,
-            &tag,
-            c_tilde,
-            jr,
-            ctx,
-            z_x,
-            z_w,
-        );
-    }
     let (p_sib, off_p) = match parse_c_siblings(proof, off) {
         Some(v) => v,
         None => return false,
@@ -872,13 +885,6 @@ pub fn admit_verify_in(
         None => return false,
     };
     off = off2;
-    if commit_ristretto_encodings(&siblings) != c_parent {
-        return false;
-    }
-    if proof.len() < off + LEAF_PAIRED_LEN {
-        return false;
-    }
-    let leaf = &proof[off..off + LEAF_PAIRED_LEN];
     let ct = match decompress(c_tilde) {
         Some(p) => p,
         None => return false,
@@ -887,6 +893,49 @@ pub fn admit_verify_in(
         Some(p) => p,
         None => return false,
     };
+    if v3 {
+        if commit_ristretto_points(&siblings) != c_parent {
+            return false;
+        }
+        // The tree node is the point commitment. The dest-bind leaf opens the
+        // encoding commitment of this same published bucket.
+        let enc_parent = commit_ristretto_encodings(&siblings);
+        let leaf_end = off + LEAF_V3_LEN;
+        if proof.len() != leaf_end + POINT_OPEN_LEN {
+            return false;
+        }
+        let leaf = &proof[off..leaf_end];
+        if !leaf_verify_v3(&dest_parent, &enc_parent, &ct, &p_com, leaf, ctx) {
+            return false;
+        }
+        if !point_open_verify(&siblings, &proof[leaf_end..leaf_end + POINT_OPEN_LEN], ctx) {
+            return false;
+        }
+        let dest_q = match leaf_qd(leaf) {
+            Some(x) => x,
+            None => return false,
+        };
+        return v3_dleq(
+            &dest_q,
+            &p_com,
+            &p_com_b,
+            &r_x_b,
+            &tag,
+            c_tilde,
+            jr,
+            ctx,
+            z_x,
+            z_w,
+        );
+    }
+    if commit_ristretto_encodings(&siblings) != c_parent {
+        return false;
+    }
+    let leaf_end = off + LEAF_PAIRED_LEN;
+    if proof.len() < leaf_end {
+        return false;
+    }
+    let leaf = &proof[off..leaf_end];
     if !leaf_verify(&dest_parent, &siblings, &p_sib, &ct, &p_com, leaf, ctx) {
         return false;
     }
@@ -899,35 +948,16 @@ pub fn admit_verify_in(
         Some(p) => p,
         None => return false,
     };
-    let bind = if v3 {
-        forest_bind_v3(ctx, &[(*spend_tag, *c_tilde)])
-    } else {
-        *forest_bind
-    };
-    let e2 = if v3 {
-        chal(&[
-            ctx,
-            b"dleq",
-            &r_x_b,
-            &p_com_b,
-            &tag,
-            c_tilde,
-            jr,
-            &dest_q,
-            &bind,
-        ])
-    } else {
-        chal(&[
-            b"dleq",
-            &r_x_b,
-            &p_com_b,
-            &tag,
-            c_tilde,
-            jr,
-            &dest_q,
-            &bind,
-        ])
-    };
+    let e2 = chal(&[
+        b"dleq",
+        &r_x_b,
+        &p_com_b,
+        &tag,
+        c_tilde,
+        jr,
+        &dest_q,
+        forest_bind,
+    ]);
     if G * z_x + u * z_w != r_x + p_com * e2 {
         return false;
     }
@@ -1092,18 +1122,22 @@ pub fn forest_verify(
 
 #[cfg(test)]
 mod cap_tests {
-    use super::{LEAF_V3_LEN, MAX_PROOF_V3, PAIRED_LEN};
+    use super::MAX_PROOF_V3;
+    use crate::select::{LEAF_V3_LEN, PAIRED_LEN, POINT_OPEN_LEN};
+    use crate::tree::ARITY;
 
     fn v3_proof_len(layers: usize) -> usize {
+        let tail = 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN;
         if layers <= 1 {
-            return super::HDR + LEAF_V3_LEN;
+            return super::HDR + tail;
         }
-        super::HDR + (layers - 1) * (PAIRED_LEN + 128) + LEAF_V3_LEN
+        super::HDR + (layers - 1) * (PAIRED_LEN + 128) + tail
     }
 
     #[test]
     fn v3_cap_fits_height_4_and_rejects_height_5() {
         assert_eq!(v3_proof_len(4), MAX_PROOF_V3);
         assert!(v3_proof_len(5) > MAX_PROOF_V3);
+        assert_eq!(v3_proof_len(1), super::HDR + 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN);
     }
 }

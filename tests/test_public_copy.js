@@ -172,7 +172,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /178\.105\.187\.178/);
     assert.doesNotMatch(joined, /178\.156\.222\.223/);
     const sheark = read('sheark-miner/README.md');
-    assert.match(sheark, /magic `shear-testnet-v4`/);
+    assert.match(sheark, /magic `shear-testnet-v12`/);
+    assert.doesNotMatch(sheark, /magic `shear-testnet-v4`/);
     assert.doesNotMatch(sheark, /magic `shear-testnet-v2`/);
 
     assert.doesNotMatch(joined, /Private dests, public amounts/);

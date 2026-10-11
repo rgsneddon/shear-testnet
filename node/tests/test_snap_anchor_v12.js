@@ -43,7 +43,7 @@ import { lockTx } from '../../crypto/reserve_vault.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { ANCHOR_QUANTUM, ANCHOR_WINDOW } from '../../crypto/admit_v3.js';
-import { txDigestV3, admitV3Context } from '../../crypto/admit_v3.js';
+import { txDigestV3, admitV3Context, fundingJroot } from '../../crypto/admit_v3.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -237,7 +237,7 @@ function proveBalanced(tx, { x, index, flux, note, anchor, noteR, noteV, key }) 
     const ctx = admitV3Context({
       magic: MAGIC_TESTNET,
       anchor,
-      root: flux.jroot,
+      root: fundingJroot(flux),
       n: flux.pubs.length,
       digest,
     });

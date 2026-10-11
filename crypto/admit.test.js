@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { randomScalar, commit, pointBytes, sealCoinbaseNote } from './note.js';
 import { newIdentity } from './address.js';
-import { admitPub, admitProve, admitVerify, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks, attachAdmitPub, proveFlowSpend } from './admit.js';
+import { admitPub, admitProve, admitVerify, admitProveV3, admitVerifyV3, jroot, jrootPoint, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks, attachAdmitPub, proveFlowSpend } from './admit.js';
 import { nativeLoaded, nativeMaxProof, nativeArity } from './native_admit.js';
 
 const SIB = 32 * 32;
@@ -143,8 +143,45 @@ describe('ADMITv2 fluxset membership', () => {
     assert.equal(Buffer.from(folded.jroot).equals(Buffer.from(fromBlocks.jroot)), true);
     const src = fs.readFileSync(fileURLToPath(new URL('./admit.js', import.meta.url)), 'utf8');
     const fn = src.slice(src.indexOf('export function fluxsetFromBlocks'), src.indexOf('export function compactAdmitProof'));
-    assert.match(fn, /jroot\(\{ pubs, commits \}\)/);
+    assert.match(fn, /appendFluxBlock\(live, b\)/);
     assert.equal(fn.includes('applyBlockToFluxset'), false);
+    const install = src.slice(src.indexOf('function installFrontiers'), src.indexOf('export function fluxWithLeaves'));
+    assert.match(install, /jroot\(\{ pubs: dest\.pubs, commits: dest\.commits \}\)/);
+  });
+});
+
+describe('ADMITv3 fresh point', () => {
+  it('seals an honest note and rejects a fresh point that is not in the set', () => {
+    const n = 8;
+    const xs = Array.from({ length: n }, () => randomScalar());
+    const pubs = xs.map(admitPub);
+    const commits = xs.map((_, i) => pointBytes(commit(i + 1, randomScalar())));
+    const index = 3;
+    const t = randomScalar();
+    const ctx = Buffer.alloc(64, 7);
+    ctx[0] = 0x33;
+    const proof = admitProveV3({ x: xs[index], index, pubs, commits, c: commits[index], t, ctx });
+    assert.ok(proof, 'honest v3 seal');
+    assert.equal(proof.v, 3);
+    assert.equal(proof.blob[0], 3);
+    const jr = jrootPoint({ pubs, commits });
+    assert.equal(admitVerifyV3(proof, { pubs, commits }, {
+      jroot: jr, ctx, cTilde: proof.cTilde, spendTag: proof.spendTag,
+    }), true);
+    const ax = randomScalar();
+    const aC = pointBytes(commit(50000, randomScalar()));
+    assert.equal(admitProveV3({
+      x: ax, index: 0, pubs, commits, c: aC, t, ctx,
+    }), null);
+    const aPubs = [admitPub(ax), ...pubs.slice(1)];
+    const aCommits = [aC, ...commits.slice(1)];
+    const outsider = admitProveV3({
+      x: ax, index: 0, pubs: aPubs, commits: aCommits, c: aC, t, ctx,
+    });
+    assert.ok(outsider, 'a fresh point proves only inside a set that contains it');
+    assert.equal(admitVerifyV3(outsider, { pubs, commits }, {
+      jroot: jr, ctx, cTilde: outsider.cTilde, spendTag: outsider.spendTag,
+    }), false);
   });
 });
 

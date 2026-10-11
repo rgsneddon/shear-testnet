@@ -48,6 +48,7 @@ import {
   readyHeight,
   txDigestV3,
   admitV3Context,
+  fundingJroot,
   typedProofVerifyCount,
   resetTypedProofVerifies,
 } from '../../crypto/admit_v3.js';
@@ -194,7 +195,7 @@ function proveLock(tx, { x, index, flux, note, anchor, noteR, noteV }) {
     const ctx = admitV3Context({
       magic: MAGIC_TESTNET,
       anchor,
-      root: flux.jroot,
+      root: fundingJroot(flux),
       n: flux.pubs.length,
       digest,
     });
