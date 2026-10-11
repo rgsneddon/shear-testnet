@@ -49,6 +49,58 @@ export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
 }
 
+/** Public recent window. Not a chain-height tuning. Headers already stop at 2000. */
+export const EXPLORER_RECENT_CAP = 256;
+export const EXPLORER_RANGE_CAP = 2000;
+
+let explorerVisits = 0;
+let explorerSyncs = 0;
+
+export function resetExplorerWalkStats() {
+  explorerVisits = 0;
+  explorerSyncs = 0;
+}
+
+export function explorerWalkStats() {
+  return { visits: explorerVisits, syncs: explorerSyncs };
+}
+
+const explorerBooks = new WeakMap();
+
+function blockHashHex(b) {
+  if (!b) return '';
+  try {
+    if (Buffer.isBuffer(b.hash)) return b.hash.toString('hex').toLowerCase();
+  } catch { /* string hash */ }
+  return String(b.hash || '').toLowerCase();
+}
+
+/** Index one blocks array. A replaced suffix rolls back by object identity. */
+function syncExplorerBook(list) {
+  if (!Array.isArray(list)) return null;
+  let idx = explorerBooks.get(list);
+  if (!idx) {
+    idx = { idents: [], byHeight: new Map(), byHash: new Map() };
+    explorerBooks.set(list, idx);
+  }
+  const idents = idx.idents;
+  while (idents.length > 0 && list[idents.length - 1] !== idents[idents.length - 1].block) {
+    const gone = idents.pop();
+    if (idx.byHeight.get(gone.height) === gone.block) idx.byHeight.delete(gone.height);
+    if (gone.hash && idx.byHash.get(gone.hash) === gone.block) idx.byHash.delete(gone.hash);
+  }
+  while (idents.length < list.length) {
+    const block = list[idents.length];
+    const height = Number(block?.height);
+    const hash = blockHashHex(block);
+    idents.push({ height, hash, block });
+    if (Number.isFinite(height)) idx.byHeight.set(height, block);
+    if (hash) idx.byHash.set(hash, block);
+    explorerSyncs += 1;
+  }
+  return idx;
+}
+
 function publicTxView(t) {
   return {
     id: t.id,
@@ -155,14 +207,15 @@ function rowsToHistory(rows, addresses, tipHeight = 0) {
   return { spendableNanos, spendable: nanosToShe(spendableNanos), txs };
 }
 
-/** Height-indexed when blocks[i].height === i+1 (the live book). O(1), not a chain scan. */
+/** Height-indexed when blocks[i].height === i+1 (the live book). A hole uses the book index, not a scan. */
 export function headerBlockAt(store, height) {
   const h = Math.floor(Number(height) || 0);
   if (h < 1) return null;
   const list = store?.blocks || [];
   const i = h - 1;
   if (i >= 0 && i < list.length && Number(list[i].height) === h) return list[i];
-  return list.find((x) => Number(x.height) === h) || null;
+  const idx = syncExplorerBook(list);
+  return idx?.byHeight.get(h) || null;
 }
 
 export function ownerDests(address) {
@@ -352,15 +405,19 @@ export function mempoolReservePaint(store) {
   return rows.filter((r) => r.id);
 }
 
-export function sealedReservePaint(store) {
+export function sealedReservePaint(store, limit = Infinity) {
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
   const tipH = Number((typeof store?.tip === 'function' ? store.tip()?.height : 0) || list[list.length - 1]?.height || 0);
   const rows = [];
+  const finite = limit !== Infinity;
+  const cap = finite ? Math.max(1, Math.min(10000, Math.floor(Number(limit) || 30))) : Infinity;
   const sealed = Array.isArray(store?.explorer) && store.explorer.length
     ? store.explorer
     : null;
   if (sealed) {
-    for (const r of sealed) {
+    const src = finite ? sealed.slice(Math.max(0, sealed.length - cap)) : sealed;
+    for (const r of src) {
+      if (finite) explorerVisits += 1;
       const kind = String(r.kind || '');
       if (kind !== 'lock' && kind !== 'vote') continue;
       const to = publicPaintDest(r.to);
@@ -385,7 +442,9 @@ export function sealedReservePaint(store) {
     }
     return rows;
   }
-  for (const b of list) {
+  const src = finite ? list.slice(Math.max(0, list.length - cap)) : list;
+  for (const b of src) {
+    if (finite) explorerVisits += 1;
     for (const r of sealedExplorerRows(b) || []) {
       const kind = String(r.kind || '');
       if (kind !== 'lock' && kind !== 'vote') continue;
@@ -466,12 +525,20 @@ export function orderExplorerRecent(txs, limit = 30) {
   return merged.slice(0, n);
 }
 
+function examinedBlocks(store, limit) {
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  if (limit === Infinity) return list.length;
+  const n = Math.max(1, Math.min(10000, Math.floor(Number(limit) || 30)));
+  return Math.min(list.length, n);
+}
+
 /** Explorer recent: mempool lock/vote first, then sealed reserve rows + blocks. Hash-open-round omitted. */
 export function explorerRecentTxs(store, limit = 30) {
   const pending = mempoolReservePaint(store);
-  const sealed = sealedReservePaint(store).slice().reverse();
   const blockLimit = limit === Infinity ? Infinity : Math.max(Number(limit) || 30, 30);
+  const sealed = sealedReservePaint(store, blockLimit).slice().reverse();
   const blocks = confirmedBlockTxs(store, blockLimit);
+  if (limit !== Infinity) explorerVisits += examinedBlocks(store, blockLimit);
   const seen = new Set();
   const out = [];
   for (const t of [...pending, ...sealed, ...blocks]) {
@@ -509,14 +576,16 @@ export function findSealedBlock(store, q) {
   const id = String(q || '').trim();
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
   if (!id) return null;
-  if (/^\d+$/.test(id)) {
-    const h = Number(id);
-    return list.find((b) => Number(b.height) === h) || null;
-  }
+  const idx = syncExplorerBook(list);
+  if (/^\d+$/.test(id)) return idx?.byHeight.get(Number(id)) || null;
   const want = id.toLowerCase();
-  for (const b of list) {
-    const hid = Buffer.isBuffer(b.hash) ? b.hash.toString('hex') : String(b.hash || '');
-    if (hid.toLowerCase() === want || hid.toLowerCase().startsWith(want)) return b;
+  if (want.length === 64 && /^[0-9a-f]+$/.test(want)) return idx?.byHash.get(want) || null;
+  const n = Math.min(list.length, EXPLORER_RECENT_CAP);
+  const start = list.length - n;
+  for (let i = list.length - 1; i >= start; i -= 1) {
+    explorerVisits += 1;
+    const hid = blockHashHex(list[i]);
+    if (hid === want || hid.startsWith(want)) return list[i];
   }
   return null;
 }
@@ -602,6 +671,15 @@ export function publicBlockDetail(store, id) {
   };
 }
 
+function tipHeightOf(store) {
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  return Number(
+    (typeof store?.tip === 'function' ? store.tip()?.height : 0)
+    || list[list.length - 1]?.height
+    || 0,
+  );
+}
+
 export function searchExplorerTxs(store, q = {}) {
   const id = String(q.id || '').trim();
   const height = q.height != null && String(q.height).trim() !== '' ? Number(q.height) : NaN;
@@ -610,17 +688,45 @@ export function searchExplorerTxs(store, q = {}) {
   if (!id && !Number.isFinite(height) && !Number.isFinite(from) && !Number.isFinite(to)) {
     return confirmedBlockTxs(store, 30);
   }
-  let txs = confirmedBlockTxs(store, Infinity);
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  const tipH = tipHeightOf(store);
+  const rowOf = (b) => confirmedBlockRow(b, tipH);
   if (id) {
-    txs = txs.filter((t) => String(t.id) === id || String(t.id).includes(id));
-  } else if (Number.isFinite(height)) {
-    txs = txs.filter((t) => Number(t.height) === height);
-  } else if (Number.isFinite(from) || Number.isFinite(to)) {
-    const lo = Number.isFinite(from) ? from : -Infinity;
-    const hi = Number.isFinite(to) ? to : Infinity;
-    txs = txs.filter((t) => Number(t.height) >= lo && Number(t.height) <= hi);
+    if (/^\d+$/.test(id) || (id.length === 64 && /^[0-9a-fA-F]+$/.test(id))) {
+      const hit = findSealedBlock(store, id);
+      return hit ? [rowOf(hit)] : [];
+    }
+    const n = Math.min(list.length, EXPLORER_RECENT_CAP);
+    const start = list.length - n;
+    const out = [];
+    for (let i = list.length - 1; i >= start; i -= 1) {
+      explorerVisits += 1;
+      const row = rowOf(list[i]);
+      if (String(row.id) === id || String(row.id).includes(id)) out.push(row);
+    }
+    return out;
   }
-  return txs;
+  if (Number.isFinite(height)) {
+    const hit = findSealedBlock(store, String(Math.floor(height)));
+    return hit ? [rowOf(hit)] : [];
+  }
+  let lo = Number.isFinite(from) ? Math.floor(from) : null;
+  let hi = Number.isFinite(to) ? Math.floor(to) : null;
+  if (lo == null) lo = hi;
+  if (hi == null) hi = lo;
+  if (hi < lo) {
+    const swap = lo;
+    lo = hi;
+    hi = swap;
+  }
+  if (hi - lo + 1 > EXPLORER_RANGE_CAP) hi = lo + EXPLORER_RANGE_CAP - 1;
+  const out = [];
+  for (let h = hi; h >= lo; h -= 1) {
+    explorerVisits += 1;
+    const b = headerBlockAt(store, h);
+    if (b) out.push(rowOf(b));
+  }
+  return out;
 }
 
 function confidentialZeroNanos(o) {
@@ -1489,7 +1595,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     return { status: 200, json: { ok: true, coin: 'SHE', ...circ } };
   }
   if (path === '/api/explorer/recent' && verb === 'GET') {
-    const txs = explorerRecentTxs(store, Infinity);
+    const txs = explorerRecentTxs(store, EXPLORER_RECENT_CAP);
     return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
   }
   if (path === '/api/pool/recent-txs' && verb === 'GET') {

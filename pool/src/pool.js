@@ -68,6 +68,7 @@ import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote, templateForFinder, publicJob } from '../../node/src/chain.js';
+import { rememberStoredJob } from '../../node/src/job_cap.js';
 import {
   sortShares,
   selectBlockShares,
@@ -990,21 +991,62 @@ export function openShareFingerprint(job, nonce, hashHex) {
   return shareFingerprint(job, nonce, hashHex);
 }
 
+let openShareRescanCount = 0;
+
+export function resetOpenShareRescans() {
+  openShareRescanCount = 0;
+}
+
+export function openShareRescans() {
+  return openShareRescanCount;
+}
+
+function attachOpenFp(list) {
+  const seen = new Set();
+  for (const s of list) {
+    const id = String(s?.fp || '');
+    if (id) seen.add(id);
+  }
+  Object.defineProperty(list, '_openFp', {
+    value: seen,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+  return list;
+}
+
+/** A new array whose duplicate set matches the kept fingerprints. Not a wire field. */
+export function filterOpenShares(list, pred) {
+  const src = Array.isArray(list) ? list : [];
+  const kept = [];
+  for (const s of src) {
+    if (pred(s)) kept.push(s);
+  }
+  return attachOpenFp(kept);
+}
+
 export function rememberOpenShare(openShares, rec) {
   const list = Array.isArray(openShares) ? openShares : [];
   const fp = rec?.fp || openShareFingerprint(rec, rec?.nonce, rec?.hash);
   if (!fp) return { ok: false, reason: 'bad_share', list };
-  // Same duplicate rule as a full scan. The set is rebuilt when the list
-  // was replaced or edited outside this function, so a cap-sized round stays
-  // linear. The property is not enumerable and is not a wire field.
+  // Same duplicate rule as a full scan. Replacing the array drops the set.
+  // filterOpenShares puts it back, so a later submit does not rescan the round.
+  // The property is not enumerable and is not a wire field.
   let seen = list._openFp;
   if (!(seen instanceof Set) || seen.size !== list.length) {
+    openShareRescanCount += 1;
     seen = new Set();
     for (const s of list) {
       const id = String(s?.fp || '');
       if (id) seen.add(id);
     }
-    Object.defineProperty(list, '_openFp', { value: seen, writable: true, configurable: true });
+    Object.defineProperty(list, '_openFp', {
+      value: seen,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
   }
   if (seen.has(fp)) return { ok: false, reason: 'duplicate_share', list };
   list.push({ ...rec, fp });
@@ -2557,7 +2599,7 @@ export function createPool({
     if (!drop.size) return;
     const pull = (list) => (list || []).filter((s) => !drop.has(shareIdentityKey(s)));
     lag1Shares = pull(lag1Shares);
-    openShares = pull(openShares);
+    openShares = filterOpenShares(openShares, (s) => !drop.has(shareIdentityKey(s)));
     deferredShares = pull(deferredShares);
   }
 
@@ -2621,7 +2663,7 @@ export function createPool({
       return keep;
     };
     lag1Shares = pull(lag1Shares);
-    openShares = pull(openShares);
+    openShares = filterOpenShares(openShares, (s) => !bad.has(s));
     deferredShares = pull(deferredShares);
     const seen = new Set();
     const named = [];
@@ -2724,7 +2766,7 @@ export function createPool({
     }
     lag1Shares = keep;
     if (openShares.length) {
-      openShares = openShares.filter((s) => !bad.has(shareIdentityKey(s)));
+      openShares = filterOpenShares(openShares, (s) => !bad.has(shareIdentityKey(s)));
     }
     if (store.jobs && typeof store.jobs.values === 'function') {
       for (const rec of store.jobs.values()) {
@@ -2787,7 +2829,7 @@ export function createPool({
       if (!k) continue;
       dropCount.set(k, (dropCount.get(k) || 0) + 1);
     }
-    if (openShares.length) openShares = removeShareCopies(openShares, dropCount);
+    if (openShares.length) openShares = filterOpenShares(removeShareCopies(openShares, dropCount), () => true);
     if (store.jobs && typeof store.jobs.values === 'function') {
       for (const rec of store.jobs.values()) {
         if (!Array.isArray(rec?.tpl?.shareBatch)) continue;
@@ -3358,7 +3400,7 @@ export function createPool({
     sealFailBatch = '';
     headerHold = null;
     if (deferredShares.length) {
-      openShares = sortShares(deferredShares.concat(openShares));
+      openShares = filterOpenShares(sortShares(deferredShares.concat(openShares)), () => true);
       deferredShares = [];
     }
   }
@@ -3740,7 +3782,9 @@ export function createPool({
     if (Array.isArray(prev?.job?.headerHistory)) {
       for (const h of prev.job.headerHistory) rememberJobHeader(child, h);
     }
-    store.jobs.set(jobId, { tpl: aligned, job: child, shareBits: job.shareBits });
+    rememberStoredJob(store.jobs, jobId, { tpl: aligned, job: child, shareBits: job.shareBits }, {
+      pin: [String(job.jobId)],
+    });
     return child;
   }
 

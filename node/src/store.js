@@ -56,6 +56,7 @@ import { publicExplorerRow } from '../../crypto/dummy.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { createNoteLedger } from './note_ledger.js';
+import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
@@ -4177,7 +4178,7 @@ export function createStore(dir, {
     const job = publicJob(tpl, { jobId, shareBits });
     const gate = requiredJobFields(job);
     if (!gate.ok) throw new Error(`incomplete_job:${gate.missing.join(',')}`);
-    jobs.set(jobId, { tpl, job, shareBits });
+    rememberStoredJob(jobs, jobId, { tpl, job, shareBits });
     return { tpl, job };
   }
 

@@ -1015,6 +1015,16 @@ export function coinbaseLevyPays(cb, fees) {
 /** Memory bound for aimed finder headers. Not a miner-count tuning. */
 const FINDER_AIM_CACHE_BOUND = 4096;
 const finderAimCache = new Map();
+let finderAimSealCount = 0;
+
+/** How many finder-fee notes templateForFinder has sealed. A cache hit does not count. */
+export function finderAimSeals() {
+  return finderAimSealCount;
+}
+
+export function resetFinderAimSeals() {
+  finderAimSealCount = 0;
+}
 
 /** Timestamp, bits, and nonce are stamped later. The merkle stays in the key. */
 function finderAimKey(header, dest, finderNanos) {
@@ -1092,6 +1102,7 @@ export function templateForFinder(tpl, finderDest) {
     rememberFinderAim(key, hit);
     return stampAimed(hit, tpl);
   }
+  finderAimSealCount += 1;
   const note = sealLevyNote(bind.finderNanos, dest, 'finder-fee');
   const vout = (cb.vout || []).filter((o) => o.kind !== 'finder-fee');
   const reserveAt = vout.findIndex((o) => o.kind === 'reserve-fee');
