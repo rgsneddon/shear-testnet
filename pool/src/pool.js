@@ -56,6 +56,7 @@ import {
   authPubGate,
   intervalCertify,
   narrowPublicStats,
+  CERTIFY_WINDOW,
 } from './posture.js';
 export { THIS_POOL_DIRECT_FEE_DEST, V10_POOL_FEE_DEST, V11_POOL_FEE_DEST, configuredFeeIdentity, feeIdentityCheck, stratumListenPlan, authPubGate, intervalCertify, CERTIFY_WINDOW } from './posture.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
@@ -143,8 +144,13 @@ export const HASHRATE_WINDOW_MS = 180_000;
 export const HASHRATE_EMA_TAU_S = 8;
 /** After the last socket closes, keep the row this long. Still-connected hashers with proven shares stay listed (header bits can put shares >12s apart). */
 export const HASH_PRESENCE_MS = 12_000;
-/** Default is every sealed header. Pass a finite window to clip a test. */
-export const AVG_BLOCK_WINDOW = Infinity;
+/**
+ * Sealed-header paint window, in blocks. Certify needs CERTIFY_WINDOW
+ * intervals, and an interval count is one less than the block count, so the
+ * paint keeps one block more than that floor. A longer chain does not decode
+ * more headers, and the same mean is not decoded twice.
+ */
+export const AVG_BLOCK_WINDOW = CERTIFY_WINDOW + 1;
 /** Re-stamp the live job this often so sealed header time tracks wall clock. */
 export const JOB_RESTAMP_MS = 10_000;
 /** Keep this many prior restamp headers per job so in-flight shares still verify. */
@@ -286,6 +292,18 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   }
   if (!n) return null;
   return sum / n;
+}
+
+/** One decode of the paint window. samples is one less than the blocks in that window. */
+export function sealedIntervalSpan(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  const requested = Number(windowBlocks);
+  const keep = Number.isFinite(requested) && requested > 0
+    ? Math.max(2, Math.floor(requested))
+    : AVG_BLOCK_WINDOW;
+  const meanMs = avgBlockIntervalMs(list, keep);
+  const n = Math.min(list.length, keep);
+  return { meanMs, samples: Math.max(0, n - 1) };
 }
 
 /** PROP of (pot - 100 bps + carry) across hasher dests. Fee is the subsidy only. */
@@ -4567,6 +4585,7 @@ export function createPool({
     const findDts = intervalDeltasMs(stats.findAt);
     const avgMs = ewmaBlockIntervalMs(findDts);
     const medianMs = medianBlockIntervalMs(findDts);
+    const sealed = sealedIntervalSpan(store.blocks);
     const supply = networkSupply(store);
     let genesisMs = Date.now();
     try {
@@ -4699,11 +4718,11 @@ export function createPool({
       shareBits: liveShareBits(),
       lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
-      networkAvgBlockTimeMs: avgBlockIntervalMs(store.blocks),
+      networkAvgBlockTimeMs: sealed.meanMs,
       interval: intervalCertify({
-        sealedSamples: Math.max(0, (Array.isArray(store.blocks) ? store.blocks.length : 0) - 1),
+        sealedSamples: sealed.samples,
         ewmaMs: avgMs,
-        sealedMeanMs: avgBlockIntervalMs(store.blocks),
+        sealedMeanMs: sealed.meanMs,
       }),
       avgBlockTimeMedianMs: medianMs,
       avgBlockWindow: findDts.length,

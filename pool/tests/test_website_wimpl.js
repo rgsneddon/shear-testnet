@@ -44,7 +44,9 @@ describe('website W-IMPL binds', () => {
     assert.equal(withNetwork, 12);
     assert.equal(poolOnly, 0);
     const poolSrc = read('../src/pool.js');
-    assert.match(poolSrc, /networkAvgBlockTimeMs: avgBlockIntervalMs\(store\.blocks\)/);
+    assert.match(poolSrc, /const sealed = sealedIntervalSpan\(store\.blocks\)/);
+    assert.match(poolSrc, /networkAvgBlockTimeMs: sealed\.meanMs/);
+    assert.doesNotMatch(poolSrc, /avgBlockIntervalMs\(store\.blocks\)/);
     assert.doesNotMatch(poolSrc, /networkAvgBlockTimeMs: avgMs/);
     assert.match(poolSrc, /avgBlockTimeMs: avgMs/);
   });
