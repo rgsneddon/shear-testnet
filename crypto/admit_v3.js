@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
 import { asU8 } from './note.js';
-import { admitVerifyV3, fluxsetFromBlocks, jrootPoint } from './admit.js';
+import { admitVerifyV3, fluxsetFromBlocks, jroot, jrootPoint } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
 
 export const ANCHOR_QUANTUM = 8;
@@ -295,6 +295,15 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
   const pubs = live?.pubs || [];
   const n = Number.isInteger(stated) && stated >= 1 ? stated : pubs.length;
   const pointRoot = fundingJroot(live);
+  const stored = bytes32(live?.jroot);
+  const bookPubs = pubs.slice(0, n);
+  const bookCommits = (Array.isArray(live?.commits) ? live.commits : []).slice(0, n);
+  if (stored && bookPubs.length === n && bookCommits.length === n) {
+    const v2 = jroot({ pubs: bookPubs, commits: bookCommits });
+    if (!v2 || v2.length !== 32 || !Buffer.from(v2).equals(stored)) {
+      return { ok: false, reason: 'admit_anchor_root' };
+    }
+  }
   if (n < 1 || !pointRoot || (Number.isInteger(stated) && stated >= 1 && stated !== pubs.length)) {
     return { ok: false, reason: 'admit_anchor_root' };
   }

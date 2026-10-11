@@ -27,6 +27,7 @@ import {
   admitProve,
   admitProveV3,
   admitPub,
+  jroot,
   admitScalarFromSeed,
   applyBlockToFluxset,
   emptyFluxset,
@@ -276,7 +277,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     const opts = {
       height: 24,
       magic: MAGIC_TESTNET,
-      noteAtAnchor: () => ({ pubs: [pub], commits: [note], n: 1, jroot: Buffer.alloc(32, 9) }),
+      noteAtAnchor: () => ({ pubs: [pub], commits: [note], n: 1, jroot: jroot({ pubs: [pub], commits: [note] }) }),
     };
     const omitted = verifyTypedAdmitFunding({
       ...base,

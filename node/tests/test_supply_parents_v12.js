@@ -17,7 +17,8 @@ import { TARGET_BLOCK_INTERVAL_MS, RESERVE_PROGRAM, MAGIC_TESTNET } from '../../
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { auditCirculatingSupply, foldSupply, supplyStep, supplyLinks } from '../src/supply.js';
-import { fluxsetFromBlocks } from '../../crypto/admit.js';
+import { fluxsetFromBlocks, jroot, admitPub } from '../../crypto/admit.js';
+import { commit, pointBytes, randomScalar } from '../../crypto/note.js';
 import {
   verifyTypedAdmitFunding,
   anchorFluxRebuilds,
@@ -392,23 +393,26 @@ describe('v12 supply parents fail closed', () => {
     assert.equal(walked.at, 0);
     assert.equal(walked.units.length, 1);
 
-    const commit = Buffer.alloc(32, 7);
+    const commitBytes = Buffer.alloc(32, 7);
     const blob = Buffer.alloc(40, 3);
     blob[0] = 3;
+    const pub = pointBytes(admitPub(randomScalar()));
+    const note = pointBytes(commit(1, randomScalar()));
+    const book = jroot({ pubs: [pub], commits: [note] });
     let lookups = 0;
     resetAnchorFluxRebuilds();
     const junk = verifyTypedAdmitFunding({
       kind: 'vote',
       anchor: 8,
-      vin: [{ commit, anchor: 8 }],
-      admit_proofs: [{ blob, cTilde: commit, spendTag: Buffer.alloc(32, 1) }],
+      vin: [{ commit: commitBytes, anchor: 8 }],
+      admit_proofs: [{ blob, cTilde: commitBytes, spendTag: Buffer.alloc(32, 1) }],
     }, {
       height: 24,
       magic: MAGIC_TESTNET,
       blocks: [voteBlock, voteBlock, voteBlock],
       noteAtAnchor: () => {
         lookups += 1;
-        return { jroot: Buffer.alloc(32, 9), n: 1 };
+        return { pubs: [pub], commits: [note], n: 1, jroot: book };
       },
     });
     assert.equal(junk.ok, false);
@@ -420,8 +424,8 @@ describe('v12 supply parents fail closed', () => {
     const malformed = verifyTypedAdmitFunding({
       kind: 'lock',
       anchor: 8,
-      vin: [{ commit, anchor: 8 }],
-      admit_proofs: [{ blob: Buffer.from([9]), cTilde: commit }],
+      vin: [{ commit: commitBytes, anchor: 8 }],
+      admit_proofs: [{ blob: Buffer.from([9]), cTilde: commitBytes }],
     }, {
       height: 24,
       magic: MAGIC_TESTNET,
