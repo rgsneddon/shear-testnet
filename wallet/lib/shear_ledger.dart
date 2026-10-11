@@ -317,6 +317,12 @@ class SendProgress {
 /// Isolate stamp of the last [selectSpendNotesWire]. Differs from the UI isolate.
 String debugSendSelectStamp = '';
 
+/// Isolate stamps of the last Flow seal, prove, and sign.
+/// Production [Isolate.run] stamps differ from the UI isolate.
+String debugSendSealStamp = '';
+String debugSendProveStamp = '';
+String debugSendSignStamp = '';
+
 const String kErrSendCancelled = 'Send cancelled';
 const String kErrSendTimeout = 'Send did not reach the node — try again';
 const String kErrFeeShort = 'Not enough spendable to cover this amount and the fee';
@@ -628,12 +634,18 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   };
 }
 
+/// The frame-timing child sets this. flutter test injects FLUTTER_TEST into
+/// every process it spawns, which would take the caller shortcut. Production
+/// never sets the flag.
+bool _flowOffUiForced() => Platform.environment['SHEAR_FLOW_OFF_UI'] == '1';
+
 bool _flowCryptoOnCaller() =>
-    sealFlowOnCaller ||
-    debugFlowCryptoOnCaller ||
-    debugNativeSpendProver != null ||
-    debugNativeSealNote != null ||
-    Platform.environment['FLUTTER_TEST'] == 'true';
+    !_flowOffUiForced() &&
+    (sealFlowOnCaller ||
+        debugFlowCryptoOnCaller ||
+        debugNativeSpendProver != null ||
+        debugNativeSealNote != null ||
+        Platform.environment['FLUTTER_TEST'] == 'true');
 
 /// Counts ledger, sync, and proof work that still runs on the UI isolate.
 int debugUiHeavyCount = 0;
@@ -960,20 +972,112 @@ Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) {
   };
 }
 
+/// Stamp from the worker, including when [sealFlowSpendVouts] throws.
+Map<String, dynamic> _sealFlowStamped(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  try {
+    final out = sealFlowSpendVouts(input);
+    out['stamp'] = stamp;
+    return out;
+  } catch (e) {
+    return {
+      'stamp': stamp,
+      'error': e is StateError ? e.message : e.toString(),
+    };
+  }
+}
+
+/// Stamp from the worker, including when [reproveFlowSpendWire] throws.
+Map<String, dynamic> _proveFlowStamped(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  try {
+    final out = reproveFlowSpendWire(input);
+    out['stamp'] = stamp;
+    return out;
+  } catch (e) {
+    return {
+      'stamp': stamp,
+      'error': e is StateError ? e.message : e.toString(),
+    };
+  }
+}
+
+Map<String, dynamic> _takeOffUi(Map<String, dynamic> out, void Function(String) stamp) {
+  stamp(out['stamp']?.toString() ?? '');
+  final err = out['error'];
+  if (err != null) throw StateError(err.toString());
+  return out;
+}
+
 Future<Map<String, dynamic>> _sealFlowOffUi(Map<String, dynamic> input) {
   if (_flowCryptoOnCaller()) {
     noteUiHeavy('seal');
+    debugSendSealStamp = identityHashCode(Isolate.current).toString();
     return Future<Map<String, dynamic>>.value(sealFlowSpendVouts(input));
   }
-  return Isolate.run(() => sealFlowSpendVouts(input));
+  return Isolate.run(() => _sealFlowStamped(input)).then(
+    (out) => _takeOffUi(out, (s) => debugSendSealStamp = s),
+  );
 }
 
 Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
   if (_flowCryptoOnCaller()) {
     noteUiHeavy('prove');
+    debugSendProveStamp = identityHashCode(Isolate.current).toString();
     return Future<Map<String, dynamic>>.value(reproveFlowSpendWire(input));
   }
-  return Isolate.run(() => reproveFlowSpendWire(input));
+  return Isolate.run(() => _proveFlowStamped(input)).then(
+    (out) => _takeOffUi(out, (s) => debugSendProveStamp = s),
+  );
+}
+
+/// Same hops [_sendManyNotes] uses. A caller-side seal or prove is the test shortcut.
+Future<Map<String, dynamic>> sealFlowOffUi(Map<String, dynamic> input) =>
+    _sealFlowOffUi(input);
+
+Future<Map<String, dynamic>> proveFlowOffUi(Map<String, dynamic> input) =>
+    _proveFlowOffUi(input);
+
+/// Ed25519 or stealth sign of a spend message. Pure. No native prover.
+Map<String, dynamic> signSpendWire(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  final spendSeed = input['spendSeed'] as Uint8List;
+  final msg = input['message'] as Uint8List;
+  final shared = input['shared'] is Uint8List ? input['shared'] as Uint8List : null;
+  final Uint8List sig;
+  final Uint8List pub;
+  if (shared != null) {
+    sig = stealthSign(spendSeed, shared, msg);
+    pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
+  } else {
+    sig = ed25519Sign(spendSeed, msg);
+    pub = ed25519PublicFromSeed(spendSeed);
+  }
+  return {'sig': sig, 'pub': pub, 'stamp': stamp};
+}
+
+/// flutter_tester does not finish [Isolate.run] inside one pumped frame, so
+/// plate tests sign on the caller. Production leaves FLUTTER_TEST unset and
+/// signs off the UI isolate. [SHEAR_FLOW_OFF_UI] forces that production hop.
+/// Signing does not start the native prover.
+bool _signOnCaller() =>
+    !_flowOffUiForced() && Platform.environment['FLUTTER_TEST'] == 'true';
+
+Future<Map<String, dynamic>> signSpendOffUi(Map<String, dynamic> input) {
+  if (_signOnCaller()) {
+    noteUiHeavy('sign');
+    final out = signSpendWire(input);
+    debugSendSignStamp = out['stamp']?.toString() ?? '';
+    return Future<Map<String, dynamic>>.value(out);
+  }
+  final savedSeal = debugNativeSealNote;
+  final savedProve = debugNativeSpendProver;
+  return Isolate.run(() => signSpendWire(input)).then((out) {
+    debugSendSignStamp = out['stamp']?.toString() ?? '';
+    if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
+    if (debugNativeSpendProver == null && savedProve != null) debugNativeSpendProver = savedProve;
+    return out;
+  });
 }
 
 /// Hexify a Flow post body inside the worker. Vin, vout, and the admit proof
@@ -6542,20 +6646,23 @@ class ShearLedger implements ReadProofSink {
     // runs off this isolate. Production leaves both hooks null.
     final savedSeal = debugNativeSealNote;
     final savedProve = debugNativeSpendProver;
-    final raw = await Isolate.run(() => selectSpendNotesWire({
-          'notes': snap,
-          'needShe': amount,
-          if (needNanos != null && needNanos.isNotEmpty) 'needNanos': needNanos,
-          'cap': kMaxInputsPerSend,
-          'tip': bookTip,
-          'confs': spendableConfirmations,
-          'holdNanos': selectionHoldNanos(
-            lockDebits: _lockDebitNanos.values,
-            reservePrincipals: _reserveHeldNanos.values,
-          ),
-          'memo': memo,
-          'dests': dests.toList(),
-        }));
+    // The map is built here. The closure must not capture this ledger: a pool
+    // that holds a Completer cannot cross to the worker.
+    final input = <String, dynamic>{
+      'notes': snap,
+      'needShe': amount,
+      if (needNanos != null && needNanos.isNotEmpty) 'needNanos': needNanos,
+      'cap': kMaxInputsPerSend,
+      'tip': bookTip,
+      'confs': spendableConfirmations,
+      'holdNanos': selectionHoldNanos(
+        lockDebits: _lockDebitNanos.values,
+        reservePrincipals: _reserveHeldNanos.values,
+      ),
+      'memo': memo,
+      'dests': dests.toList(),
+    };
+    final raw = await Isolate.run(() => selectSpendNotesWire(input));
     debugSendSelectStamp = raw['stamp']?.toString() ?? '';
     if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
     if (debugNativeSpendProver == null && savedProve != null) debugNativeSpendProver = savedProve;
@@ -6853,12 +6960,13 @@ class ShearLedger implements ReadProofSink {
     }
     final msg = spendMessage(from: src, vout: postedVout, kind: 'send', vin: postedVin);
     final shared = _stealthShared[src];
-    final sig = shared != null
-        ? stealthSign(spendSeed, shared, msg)
-        : ed25519Sign(spendSeed, msg);
-    final pub = shared != null
-        ? stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared)
-        : ed25519PublicFromSeed(spendSeed);
+    final signed = await signSpendOffUi(<String, dynamic>{
+      'spendSeed': spendSeed,
+      'message': msg,
+      if (shared != null) 'shared': shared,
+    });
+    final sig = signed['sig'] as Uint8List;
+    final pub = signed['pub'] as Uint8List;
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
     progress?.bump(phase: 'broadcast', done: done, total: total);
     final wire = await flowPostHexOffUi(<String, dynamic>{
@@ -7643,15 +7751,13 @@ class ShearLedger implements ReadProofSink {
         // Sign the posted C̃-only vin/vout so spendPackDigest matches the server.
         final msg = spendMessage(from: src, vout: postedVout, kind: sendKind, vin: postedVin);
         final shared = _stealthShared[src];
-        late Uint8List sig;
-        late Uint8List pub;
-        if (shared != null) {
-          sig = stealthSign(spendSeed, shared, msg);
-          pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
-        } else {
-          sig = ed25519Sign(spendSeed, msg);
-          pub = ed25519PublicFromSeed(spendSeed);
-        }
+        final signed = await signSpendOffUi(<String, dynamic>{
+          'spendSeed': spendSeed,
+          'message': msg,
+          if (shared != null) 'shared': shared,
+        });
+        final sig = signed['sig'] as Uint8List;
+        final pub = signed['pub'] as Uint8List;
         sigHex = _bytesHex(sig);
         spendPubHex = _bytesHex(pub);
       }

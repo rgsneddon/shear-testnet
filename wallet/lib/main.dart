@@ -253,6 +253,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   String? _flowSendAdvisory;
   bool _flowSendOk = false;
   bool _flowSending = false;
+
+  /// In-flight Flow send. Plate tests read the Cancel flag from here.
+  bool get debugFlowSending => _flowSending;
+  SendProgress? get debugFlowProgress => _flowProgress;
   String? _flowFeeQuote;
   String? _flowProgressText;
   SendProgress? _flowProgress;
