@@ -10,9 +10,24 @@ Base: `feat/shear-testnet-v12` at `5a5685ad9b9d9d7c4efca095abb5003264023c3c`
 
 This branch starts at Build's merge. It does not replace it. `MAX_PROOF_V3` stays 43490. The raw arity-32 C bucket stays on the wire until the hide proof lands. `v3_two_bucket_spent_link_stays_on_the_wire` still requires those raw notes. Do not flip that test to fake a hide. Do not land `cursor/admit-v3-point-root-0bcc` on top of this branch. That branch is cap 42466 and a different glue. Do not push `feat/shear-testnet-v12`. Do not merge. Do not cut genesis, move tags, flip `kBookMagic`, deploy, SSH, or start the soak.
 
-The n=64 spent-bucket hide is the open proof on this branch. It keeps Build's cap 43490. `cursor/admit-v3-point-root-0bcc` stays at cap 42466. Do not start a second prove of that hide. Do not replay the 42466 glue here.
+The n=64 spent-bucket hide is the open proof on this branch. Cursor is on that proof now. It keeps Build's cap 43490. `cursor/admit-v3-point-root-0bcc` stays at cap 42466. Do not start a second prove of that hide. Do not replay the 42466 glue here.
 
 CoS still holds the Tuesday 15:00 cut. This work does not start it. `scripts/v12-genesis-cut.mjs` is CoS's. `V12_GENESIS_BLOCK_HASH` stays empty. There is no soak stamp.
+
+## Stage
+
+One board for every agent. Update this section in place. Do not start a second handoff. Do not push `feat/shear-testnet-v12`. Do not merge this branch onto feat. Do not cut genesis, move tags, flip `kBookMagic`, deploy, SSH, or start the soak.
+
+Checked 2026-10-11 from Russell's laptop. Newest inbox file is still `161-CLOUD-readonly-checks-6ee12af2.md` (2026-10-09 19:26). Nothing newer in `C:\Users\rgsne\shear-testnet\.cos-inbox\`.
+
+| Lane | Where | Stage |
+| --- | --- | --- |
+| n=64 spent-bucket hide | `cursor/close-open-p0-0bcc` | In progress. Cursor owns it. Do not start a second prove. Raw arity-32 C bucket stays on the wire until that proof lands. Cap stays 43490. |
+| Point-leaf funding prove, set sizes 1, 8, and 40 | Laptop tree `C:\Users\rgsne\shear-admit-fund-land`, branch `cursor/admit-fund-land`, HEAD `5a5685a`, addon built from that commit | Running. Not the hide. `node --test --test-name-pattern "point-leaf proof" crypto/admit_v3.test.js`. Node pid 17608, started 2026-10-11 13:56:33 +0100. At this check CPU was about 7494s and the working set was about 853 MB. The log is still 178 bytes and only the missing `shearhash.node` warning. No pass and no fail. Do not start another release IPA on this 4-core host until that process exits. |
+| `feat/shear-testnet-v12` | `5a5685ad9b9d9d7c4efca095abb5003264023c3c` | Frozen at the admit merge. Do not push. |
+| Yx filter `honest_c_attacker_p` | Laptop only, on the `5a5685a` combined layout | Release pass, 1 passed, 0 failed, 51 filtered, 5088.59s. Not committed on this branch and not on feat. The "not re-run" line below is still true for this branch. |
+| Rho copy and `RHO=1sheath` | Dirty and uncommitted on `shear-admit-fund-land` | Do not land. This branch already sealed `ADMIT=ADMITv3` at `6e2d5f5`. A local paragraph numbered 89 on that tree's `docs/v12-HANDOFF.md` collides with item 89 (the cut gates). Do not push it. |
+| Genesis, tags `0.72` / `v19` / ShearK, book magic, fleet, soak | CoS | Not started. No soak stamp. `kBookMagic` stays `shear-testnet-v11`. |
 
 ## Closed on this branch
 
@@ -42,7 +57,7 @@ Debug, not release. `cargo test --manifest-path crypto/native/admit/Cargo.toml -
 
 `tests/privacy.walk.js` case 11 failed before the fingerprint line. `admitMempool` of the `she` send returned `range_proof`. The assert wanted `silent_id_on_chain`. Line 326. duration_ms 563.09457. That file was not retuned. The fingerprint assert in it was not reached. `node/src/chain.js` and `crypto/admit_v3.js` are not on that path. `crypto/mempool.js` was not edited.
 
-Not re-run, and not claimed: `seal_v3_opens_the_note_in_the_set`, `v3_fresh_point_outside_the_set_fails`, `honest_c_attacker_p_fails_admit_verify_v3`, `v3_two_bucket_spent_link_stays_on_the_wire`, the Yx filter, and `crypto/admit_v3.test.js` for sets of 1, 8, and 40. Those are IPA. Build's `seal_v3` n=8 on `5a5685a` was 4592.82s. Do not start a second full release IPA while another admit suite is already running.
+Not re-run on this branch, and not claimed here: `seal_v3_opens_the_note_in_the_set`, `v3_fresh_point_outside_the_set_fails`, `honest_c_attacker_p_fails_admit_verify_v3`, `v3_two_bucket_spent_link_stays_on_the_wire`, the Yx filter, and `crypto/admit_v3.test.js` for sets of 1, 8, and 40. Those are IPA. Build's `seal_v3` n=8 on `5a5685a` was 4592.82s. The laptop Yx pass and the still-running funding prove are recorded in Stage above. They are not commits on this branch. Do not start a second full release IPA while another admit suite is already running.
 
 ## Still blocked
 
