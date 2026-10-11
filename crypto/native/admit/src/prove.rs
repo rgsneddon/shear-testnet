@@ -1150,8 +1150,9 @@ mod cap_tests {
     /// seed and responses, and keeping Q, makes height 4 43330 bytes.
     /// The live verifier still requires the bucket and the trailer.
     /// `bind_slot_opens_one_note_of_the_parent` builds the note hash, the
-    /// parent sum, one slot, and that note's scalar. It is 5630278 gates,
-    /// inside the 2^23 pad and outside the 2^22 pad.
+    /// parent sum, one slot, and that note's committed scalar. The `r·U`
+    /// windows are the hash remainder. It is 5630566 gates, inside the 2^23
+    /// pad and outside the 2^22 pad.
     #[test]
     fn v3_hide_blob_fits_when_the_point_open_responses_leave() {
         let blob = crate::r1cs::r1cs_blob_len(23);
@@ -1166,7 +1167,7 @@ mod cap_tests {
         let with_open = v3_proof_len(4) - bucket - responses + blob;
         assert_eq!(with_open, 43330);
         assert!(with_open <= MAX_PROOF_V3);
-        let slot_gates = 5_630_278usize;
+        let slot_gates = 5_630_566usize;
         assert!(slot_gates > (1 << 22) && slot_gates <= (1 << 23));
     }
 }

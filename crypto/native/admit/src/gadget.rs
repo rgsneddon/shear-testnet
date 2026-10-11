@@ -1734,11 +1734,13 @@ struct HashedBucket {
     eds: Vec<Ed>,
     d: FeW,
     scalar: [u8; 32],
+    reduced: [W32; 8],
 }
 
-/// Private notes, their compress wires hashed onto `V[0]`. The points stay
-/// available for the parent sum. A note that does not decompress returns `None`.
-fn hashed_bucket(notes: &[[u8; 32]; 32]) -> Option<HashedBucket> {
+/// Private notes, their compress wires hashed. When `commit_r` is set, `V[0]`
+/// is the reduced bucket scalar. The points stay available for the parent sum.
+/// A note that does not decompress returns `None`.
+fn hashed_bucket(notes: &[[u8; 32]; 32], commit_r: bool) -> Option<HashedBucket> {
     let dst = crate::leaf::DST_C_POINT;
     assert_eq!(dst.len(), 22, "point domain is 22 bytes");
     let mut eds = Vec::with_capacity(32);
@@ -1795,9 +1797,11 @@ fn hashed_bucket(notes: &[[u8; 32]; 32]) -> Option<HashedBucket> {
     assert_eq!(dig, expect, "note hash diverged from sha2");
     let x = wide_limbs_from_bytes(&mut b, &dig_w, &dig);
     let reduced = reduce_wide_mod_l(&mut b, &x, &dig);
-    bind_u32_to_v(&mut b, &reduced, 0);
+    if commit_r {
+        bind_u32_to_v(&mut b, &reduced, 0);
+    }
     let scalar = RScalar::from_bytes_mod_order_wide(&dig).to_bytes();
-    Some(HashedBucket { b, points, eds, d, scalar })
+    Some(HashedBucket { b, points, eds, d, scalar, reduced })
 }
 
 /// SHA-512 of `DST_C_POINT` and 32 canonical note encodings, reduced mod the
@@ -1809,7 +1813,7 @@ fn hashed_bucket(notes: &[[u8; 32]; 32]) -> Option<HashedBucket> {
 pub(crate) fn notes_wide_synth(
     notes: &[[u8; 32]; 32],
 ) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
-    let h = hashed_bucket(notes)?;
+    let h = hashed_bucket(notes, true)?;
     Some((h.b.l, h.b.r, h.b.o, h.b.cons, h.scalar))
 }
 
@@ -1823,18 +1827,18 @@ pub(crate) fn notes_parent_synth(
     notes: &[[u8; 32]; 32],
     parent: &[u8; 32],
 ) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
-    let mut h = hashed_bucket(notes)?;
+    let mut h = hashed_bucket(notes, true)?;
     bind_parent_sum(&mut h, notes, parent);
     Some((h.b.l, h.b.r, h.b.o, h.b.cons, h.scalar))
 }
 
-/// The note hash, the parent sum, `Q = notes[index] + ρ·U`, and the public
-/// scalar `Y = from_bytes(notes[index])`. `index` and `ρ` are witnesses.
-/// `parent`, `Q`, and `Y` are public. Constraint coefficients do not depend
-/// on the notes, the index, or `ρ`. They do depend on `parent`, `Q`, and `Y`.
-/// A zero `ρ` returns `None`: publishing `Q = notes[index]` would put that
-/// note on the wire. A note that does not decompress returns `None` and
-/// builds no circuit.
+/// The note hash, the parent sum, and `Q = notes[index] + ρ·U`.
+/// `V[0]` is `Y = from_bytes(notes[index])`, not the bucket scalar. The window
+/// digits of `r·U` are the bytes of the hash remainder, so a different scalar
+/// cannot keep the same parent. `index` and `ρ` are witnesses. `parent` and
+/// `Q` are public. Constraint coefficients do not depend on the notes, the
+/// index, `ρ`, or `Y`. They do depend on `parent` and `Q`. A zero `ρ` returns
+/// `None`. A note that does not decompress returns `None` and builds no circuit.
 /// This is not the hide. The raw bucket is still published. The encoding
 /// commitment of those bytes is not in this circuit, and the verifier still
 /// requires the bucket.
@@ -1844,15 +1848,15 @@ pub(crate) fn notes_slot_synth(
     index: usize,
     rho: &RScalar,
     q: &[u8; 32],
-    y: &[u8; 32],
 ) -> Option<(Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32])> {
     if index >= 32 || *rho == RScalar::ZERO {
         return None;
     }
-    let mut h = hashed_bucket(notes)?;
+    let mut h = hashed_bucket(notes, false)?;
     bind_parent_sum(&mut h, notes, parent);
-    bind_slot(&mut h, notes, index, rho, q, y);
-    Some((h.b.l, h.b.r, h.b.o, h.b.cons, h.scalar))
+    bind_slot(&mut h, notes, index, rho, q);
+    let y = RScalar::from_bytes_mod_order(notes[index]).to_bytes();
+    Some((h.b.l, h.b.r, h.b.o, h.b.cons, y))
 }
 
 fn bind_parent_sum(h: &mut HashedBucket, notes: &[[u8; 32]; 32], parent: &[u8; 32]) {
@@ -1868,9 +1872,12 @@ fn bind_parent_sum(h: &mut HashedBucket, notes: &[[u8; 32]; 32], parent: &[u8; 3
     }
     let windows = u_windows();
     let scalar = RScalar::from_bytes_mod_order(h.scalar);
+    let hash_bytes = le_bytes_of_limbs(&mut h.b, &h.reduced);
     for i in 0..32 {
         let digit = h.scalar[i];
+        assert_eq!(hash_bytes[i].1, digit, "hash byte diverged from the bucket scalar");
         let sel = one_hot_8(&mut h.b, digit);
+        bind_digit(&mut h.b, &sel, hash_bytes[i].0);
         let q = select_window(&mut h.b, &sel, &windows[i], digit);
         acc = ed_add(&mut h.b, h.d, acc, q);
         clear = clear.add(windows[i][digit as usize]);
@@ -1897,14 +1904,7 @@ fn bind_parent_sum(h: &mut HashedBucket, notes: &[[u8; 32]; 32], parent: &[u8; 3
     }
 }
 
-fn bind_slot(
-    h: &mut HashedBucket,
-    notes: &[[u8; 32]; 32],
-    index: usize,
-    rho: &RScalar,
-    q: &[u8; 32],
-    y: &[u8; 32],
-) {
+fn bind_slot(h: &mut HashedBucket, notes: &[[u8; 32]; 32], index: usize, rho: &RScalar, q: &[u8; 32]) {
     let bits = one_hot_32(&mut h.b, index);
     let mut on = [false; 32];
     on[index] = true;
@@ -1914,7 +1914,7 @@ fn bind_slot(
     assert!(fe_w_matches(sel.y, clear.y), "selected note y");
     assert!(fe_w_matches(sel.z, clear.z), "selected note z");
     assert!(fe_w_matches(sel.t, clear.t), "selected note t");
-    bind_selected_scalar(h, sel, &notes[index], y);
+    bind_selected_scalar(h, sel, &notes[index]);
     let windows = u_windows();
     let bytes = rho.to_bytes();
     let mut acc = sel;
@@ -1950,10 +1950,10 @@ fn bind_slot(
     }
 }
 
-/// `Y` is the ristretto scalar of the selected note. The reduction reads the
-/// compress wires of that point. It does not read a free copy of the bytes.
-/// `Y` is public, so its limbs are coefficients.
-fn bind_selected_scalar(h: &mut HashedBucket, sel: FeEd, note: &[u8; 32], y: &[u8; 32]) {
+/// `V[0]` is the ristretto scalar of the selected note. The reduction reads
+/// the compress wires of that point. It does not read a free copy of the bytes.
+/// The scalar is a committed wire, not a public coefficient.
+fn bind_selected_scalar(h: &mut HashedBucket, sel: FeEd, note: &[u8; 32]) {
     let sum = compress_fe(&mut h.b, sel.x, sel.y, sel.z, sel.t);
     assert_eq!(encoding_bytes_from_limbs(&sum.v), *note, "selected compress left the note");
     let packed = pack_encoding(&mut h.b, &sum);
@@ -1965,11 +1965,40 @@ fn bind_selected_scalar(h: &mut HashedBucket, sel: FeEd, note: &[u8; 32], y: &[u
             (packed[i], Scalar::ZERO - Scalar::ONE),
         ]);
     }
-    let expect = order_limbs(y);
-    for i in 0..5 {
-        b.const_eq(limbs[i].w, sc_u128(expect[i]));
-    }
+    bind_packed_to_v(&mut b, &limbs);
     h.b = b;
+}
+
+/// Four little-endian bytes of each 32-bit limb. The sum does not name the bytes.
+fn le_bytes_of_limbs(b: &mut Builder, limbs: &[W32; 8]) -> [(Wire, u8); 32] {
+    let mut out = [(Wire::One, 0u8); 32];
+    let step = Scalar::from(256u64);
+    for i in 0..8 {
+        let mut rest = limbs[i].v;
+        let mut terms = vec![(limbs[i].w, Scalar::ONE)];
+        let mut pow = Scalar::ONE;
+        for j in 0..4 {
+            let v = (rest & 0xff) as u8;
+            rest >>= 8;
+            let w = b.range(v as u128, 8);
+            out[i * 4 + j] = (w, v);
+            terms.push((w, Scalar::ZERO - pow));
+            pow *= step;
+        }
+        assert_eq!(rest, 0, "limb leftover");
+        b.zero(terms);
+    }
+    out
+}
+
+/// The selected window equals this byte. Coefficients are `0..255` for every byte.
+fn bind_digit(b: &mut Builder, sel: &[Wire; 256], byte: Wire) {
+    let mut terms = Vec::with_capacity(257);
+    terms.push((byte, Scalar::ONE));
+    for k in 0..256 {
+        terms.push((sel[k], Scalar::ZERO - Scalar::from(k as u64)));
+    }
+    b.zero(terms);
 }
 
 /// Exactly one of 32 bits is set. The sum constraint does not name the index.
@@ -4047,7 +4076,7 @@ mod tests {
             r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed + Scalar::ONE]).is_err(),
             "a different residue was accepted"
         );
-        assert_eq!(l.len(), 4_834_259, "notes plus parent sum");
+        assert_eq!(l.len(), 4_834_547, "notes plus parent sum, hash bytes tied to r·U");
         assert_eq!(l.len().next_power_of_two(), 1 << 23, "pad");
         eprintln!(
             "notes parent gates {} padded {}",
@@ -4070,10 +4099,10 @@ mod tests {
         );
     }
 
-    /// One public Q is a rerandomization of one hidden note in the parent, and
-    /// the public scalar Y is that note. A second index with that same Q and Y
-    /// keeps the constraint list and fails the witness. A different Y fails
-    /// the witness. Zero rho builds nothing. This is not the hide.
+    /// One public Q is a rerandomization of one hidden note in the parent.
+    /// `V[0]` is that note's scalar. A second index with that same Q keeps the
+    /// constraint list and fails the witness. A different committed scalar fails.
+    /// Zero rho builds nothing. This is not the hide.
     #[test]
     fn bind_slot_opens_one_note_of_the_parent() {
         use crate::tree::commit_ristretto_points;
@@ -4119,32 +4148,28 @@ mod tests {
             .compress()
             .to_bytes();
         let y = RScalar::from_bytes_mod_order(live[index]).to_bytes();
-        let y_other = RScalar::from_bytes_mod_order(live[11]).to_bytes();
-        assert_ne!(y, y_other, "two notes reduced to one scalar");
         assert!(
-            notes_slot_synth(&live, &parent, index, &RScalar::ZERO, &q, &y).is_none(),
+            notes_slot_synth(&live, &parent, index, &RScalar::ZERO, &q).is_none(),
             "a zero rho built a circuit"
         );
         let mut bad = live;
         bad[7] = [0xff; 32];
         assert!(
-            notes_slot_synth(&bad, &parent, index, &rho, &q, &y).is_none(),
+            notes_slot_synth(&bad, &parent, index, &rho, &q).is_none(),
             "a bad note built a circuit"
         );
-        assert!(
-            notes_slot_synth(&live, &parent, 32, &rho, &q, &y).is_none(),
-            "index 32 built a circuit"
-        );
+        assert!(notes_slot_synth(&live, &parent, 32, &rho, &q).is_none(), "index 32 built a circuit");
 
         let (l, r, o, cons, packed) =
-            notes_slot_synth(&live, &parent, index, &rho, &q, &y).expect("honest slot");
+            notes_slot_synth(&live, &parent, index, &rho, &q).expect("honest slot");
+        assert_eq!(packed, y, "V[0] is not the selected note's scalar");
         let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("reduced scalar fits");
         r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).unwrap_or_else(|e| panic!("honest slot: {e}"));
         assert!(
             r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed + Scalar::ONE]).is_err(),
             "a different residue was accepted"
         );
-        assert_eq!(l.len(), 5_630_278, "notes plus parent sum plus one slot and its scalar");
+        assert_eq!(l.len(), 5_630_566, "notes plus parent sum plus one slot and its committed scalar");
         assert_eq!(l.len().next_power_of_two(), 1 << 23, "pad");
         eprintln!("notes slot gates {} padded {}", l.len(), l.len().next_power_of_two());
         let live_fp = cons_fp(&cons);
@@ -4153,25 +4178,13 @@ mod tests {
         drop(o);
         drop(cons);
 
-        let (l, r, o, cons, packed) =
-            notes_slot_synth(&live, &parent, 11, &rho, &q, &y).expect("wrong slot");
+        let (l, r, o, cons, packed) = notes_slot_synth(&live, &parent, 11, &rho, &q).expect("wrong slot");
         assert_eq!(cons_fp(&cons), live_fp, "the index changed the constraint shape");
+        assert_ne!(packed, y, "a different note committed the same scalar");
         let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("wrong slot scalar fits");
         assert!(
             r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).is_err(),
             "a different note opened the same Q"
-        );
-        drop(l);
-        drop(r);
-        drop(o);
-        drop(cons);
-
-        let (l, r, o, cons, packed) =
-            notes_slot_synth(&live, &parent, index, &rho, &q, &y_other).expect("wrong scalar");
-        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("wrong scalar fits");
-        assert!(
-            r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).is_err(),
-            "a different scalar opened the selected note"
         );
     }
 
