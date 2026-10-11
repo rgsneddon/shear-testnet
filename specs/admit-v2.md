@@ -94,7 +94,7 @@ Rebuild J, both trees, and spent tags from the sealed chain. Do not delete spent
 
 ## Fingerprint pins
 
-`ADMIT=ADMITv2`, `RANGE=bpplus`, `LEVY=weight`, `NETWORK=shear-testnet-v8`, `FORK=work-then-lowhash`, cycle `pallas-vesta-pasta`, `ADMIT_ARITY=32`, `ADMIT_K=1`, `ADMIT_LEAF=shear-admit-leaf-v2`.
+`ADMIT=ADMITv3`, `RANGE=bpplus`, `LEVY=weight`, `NETWORK=shear-testnet-v8`, `FORK=work-then-lowhash`, cycle `pallas-vesta-pasta`, `ADMIT_ARITY=32`, `ADMIT_K=1`, `ADMIT_LEAF=shear-admit-leaf-v2`.
 
 ## Performance bar
 

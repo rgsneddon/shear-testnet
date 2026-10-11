@@ -2,7 +2,7 @@
  * ADMITv2 — Anonymous Destination Membership Integer Transactions.
  * Curve Trees on Pasta (Pallas–Vesta). Circuit = membership of leaf only.
  * Native prove/verify. ADMITv1 linear r.length === |J| blobs fail.
- * Fingerprint: ADMIT=ADMITv2.
+ * Fingerprint: ADMIT=ADMITv3.
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
