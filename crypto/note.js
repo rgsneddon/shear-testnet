@@ -318,10 +318,32 @@ export function wrapNoteBlind(vout, admitBase) {
   }
 }
 
+const NOTE_MAX = (1n << BigInt(NOTE_BITS)) - 1n;
+
+/** Canonical integer in 0..2^64-1. A JS number is accepted only while it is exact. */
+export function noteU64(v) {
+  let n;
+  if (typeof v === 'bigint') n = v;
+  else if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v)) return null;
+    n = BigInt(v);
+  } else if (typeof v === 'string' && /^[0-9]+$/.test(v) && !/^0[0-9]/.test(v)) {
+    try { n = BigInt(v); } catch { return null; }
+  } else return null;
+  if (n < 0n || n > NOTE_MAX) return null;
+  return n;
+}
+
+function openedAsCaller(n) {
+  if (n <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(n);
+  return n;
+}
+
 export function verifySealedNote(vout, v) {
   if (!vout?.commit || !vout.valueProof) return false;
-  if (v < 0 || v >= 2 ** NOTE_BITS) return false;
-  if (!verifyValue(vout.commit, v, vout.valueProof)) return false;
+  const n = noteU64(v);
+  if (n == null) return false;
+  if (!verifyValue(vout.commit, n, vout.valueProof)) return false;
   if (vout.rangeProof) {
     const pr = Buffer.isBuffer(vout.rangeProof) ? vout.rangeProof : Buffer.from(asU8(vout.rangeProof));
     if (pr.length && !verifyRange(vout.commit, vout.rangeProof)) return false;
@@ -331,15 +353,15 @@ export function verifySealedNote(vout, v) {
 
 /** Opened non-negative value of one coinbase output. Range proof is required. */
 export function openedCoinbaseNanos(vout) {
-  if (!vout?.commit || !vout.valueProof || vout.valueProof.v == null) return null;
-  const v = typeof vout.valueProof.v === 'bigint' ? Number(vout.valueProof.v) : Number(vout.valueProof.v);
-  if (!Number.isInteger(v) || v < 0) return null;
+  if (!vout?.commit || !vout.valueProof || vout.valueProof.v == null || vout.valueProof.v === '') return null;
+  const n = noteU64(vout.valueProof.v);
+  if (n == null) return null;
   const pr = vout.rangeProof
     ? (Buffer.isBuffer(vout.rangeProof) ? vout.rangeProof : Buffer.from(asU8(vout.rangeProof)))
     : Buffer.alloc(0);
   if (!pr.length || !verifyRange(vout.commit, pr)) return null;
-  if (!verifySealedNote(vout, v)) return null;
-  return v;
+  if (!verifySealedNote(vout, n)) return null;
+  return openedAsCaller(n);
 }
 
 /**
@@ -358,23 +380,26 @@ export function coinbaseVoutsBound(vouts, excess, openedFor = null) {
     }
     return { ok: true, opened: 0, levy: 0, rest: 0 };
   }
-  let opened = 0;
-  let levy = 0;
+  let opened = 0n;
+  let levy = 0n;
   for (const o of rows) {
     if (!o?.commit) return { ok: false, reason: 'coinbase_output' };
     let v = null;
     if (typeof openedFor === 'function') {
       const hinted = openedFor(o);
-      if (hinted != null && verifySealedNote(o, hinted)) v = hinted;
+      if (hinted != null && verifySealedNote(o, hinted)) v = noteU64(hinted);
     }
-    if (v == null) v = openedCoinbaseNanos(o);
+    if (v == null) {
+      const one = openedCoinbaseNanos(o);
+      v = one == null ? null : noteU64(one);
+    }
     if (v == null) return { ok: false, reason: 'coinbase_output' };
     opened += v;
     const kind = String(o.kind || '');
     if (kind === 'finder-fee' || kind === 'reserve-fee') levy += v;
   }
   if (!verifyMintSum(rows, opened, excess)) return { ok: false, reason: 'pot' };
-  return { ok: true, opened, levy, rest: opened - levy };
+  return { ok: true, opened: openedAsCaller(opened), levy: openedAsCaller(levy), rest: openedAsCaller(opened - levy) };
 }
 
 export function mintTotal(vouts) {
