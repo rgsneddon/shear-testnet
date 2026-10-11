@@ -8,7 +8,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, kernelExcess, txSpendTags } from './note.js';
 import { merkleRoot } from './merkle.js';
-import { nativeJroot, nativeFrontierAppend, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
+import { nativeJroot, nativeJrootPoint, nativeFrontierAppend, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -68,6 +68,12 @@ export function jroot(fluxset) {
     return nativeJroot(dest, zeros) || merkleRoot(dest);
   }
   return nativeJroot(destLeaves, cLeaves) || Buffer.alloc(32);
+}
+
+/** Version-3 root. Not `jroot`: that field on a fluxset is the v2 book. */
+export function jrootPoint(fluxset) {
+  const { destLeaves, cLeaves } = leafLists(Array.isArray(fluxset) ? { pubs: fluxset, commits: [] } : fluxset);
+  return nativeJrootPoint(destLeaves, cLeaves) || Buffer.alloc(32);
 }
 
 /**
@@ -213,10 +219,11 @@ export function admitVerifyV3(proof, fluxset, extra = {}) {
     if (pr.length > 39874) return false;
     const context = extra.ctx;
     if (!context || Buffer.from(asU8(context)).length !== 64) return false;
-    let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;
+    // A fluxset.jroot is the v2 book. Recompute the point root unless the caller passed one.
+    let jr = extra.jroot || null;
     if (!jr) {
       const { destLeaves, cLeaves } = leafLists(fluxset);
-      jr = nativeJroot(destLeaves, cLeaves);
+      jr = nativeJrootPoint(destLeaves, cLeaves);
     }
     const tag = extra.spendTag || proof.spendTag;
     const ct = extra.cTilde || extra.c_tilde || proof.cTilde;

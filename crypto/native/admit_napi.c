@@ -8,6 +8,7 @@ int32_t shear_admit_max_proof(void);
 int32_t shear_admit_arity(void);
 int32_t shear_admit_leaf(const uint8_t *p, uint8_t *out);
 int32_t shear_admit_jroot(const uint8_t *dest, const uint8_t *c, uint32_t n, uint8_t *out);
+int32_t shear_admit_jroot_point(const uint8_t *dest, const uint8_t *c, uint32_t n, uint8_t *out);
 int32_t shear_admit_frontier_append(
     const uint8_t *prev, uint32_t prev_len,
     const uint8_t *dest, const uint8_t *c, uint32_t n,
@@ -127,6 +128,29 @@ static napi_value jroot_fn(napi_env env, napi_callback_info info) {
   uint32_t n = nd < nc ? nd : nc;
   uint8_t out[32];
   int32_t ok = shear_admit_jroot(dest, cs, n, out);
+  free(dest);
+  free(cs);
+  if (ok != 1) {
+    napi_value f;
+    napi_get_boolean(env, 0, &f);
+    return f;
+  }
+  return buf_from(env, out, 32);
+}
+
+static napi_value jroot_point_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint8_t *dest = NULL, *cs = NULL;
+  uint32_t nd = 0, nc = 0;
+  if (argc < 2 || concat_32s(env, argv[0], &dest, &nd) != 0 || concat_32s(env, argv[1], &cs, &nc) != 0) {
+    napi_throw_error(env, NULL, "jrootPoint args");
+    return NULL;
+  }
+  uint32_t n = nd < nc ? nd : nc;
+  uint8_t out[32];
+  int32_t ok = shear_admit_jroot_point(dest, cs, n, out);
   free(dest);
   free(cs);
   if (ok != 1) {
@@ -536,6 +560,7 @@ static napi_value init(napi_env env, napi_value exports) {
   EX("arity", arity_fn);
   EX("leaf", leaf_fn);
   EX("jroot", jroot_fn);
+  EX("jrootPoint", jroot_point_fn);
   EX("frontierAppend", frontier_append_fn);
   EX("prove", prove_fn);
   EX("proveV3", prove_v3_fn);

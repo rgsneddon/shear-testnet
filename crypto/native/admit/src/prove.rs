@@ -4,18 +4,21 @@
 //! C̃ is a 1-of-D rerandomization of a tree C. Dest admitPub P is 1-of-D as
 //! p_com = P_j + w U at the same hidden slot. Version 3 blinds every published
 //! remainder so that slot is not a function of W. The arity-32 point bucket
-//! stays: C̃ = C_i + t·H is checked against those points, and the tree commits
-//! to scalar(compress(C)), which is not that linear relation.
+//! stays on the wire. Version 3's first C fold commits those ristretto points
+//! (r·U + Σ C_i). The leaf trailer opens Q = C_i + ρ·U, and the glue in front
+//! of the leaf opens that point-commitment child. Internal paired layers stay
+//! scalar openings. The domains are shear-admit-c-point-v3 and
+//! shear-jroot-point-v3, not a patch on the v2 leaf domains.
 
-use crate::leaf::{jroot_hash, sha512_64};
+use crate::leaf::{jroot_hash, jroot_point_hash, sha512_64};
 use crate::select::{
     leaf_prove, leaf_qd, leaf_verify, paired_prove, paired_qc_opens, paired_qd_opens, paired_verify,
-    rs_rand, vs_rand, LEAF_PAIRED_LEN, PAIRED_LEN,
+    point_open_prove, point_open_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, PAIRED_LEN, POINT_OPEN_LEN,
 };
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
-    commit_ristretto_encodings, commit_vesta, leaf_p_siblings, note_u, path_from_levels, rerand_c,
-    root_of_levels, trees, ARITY,
+    commit_ristretto_encodings, commit_ristretto_points, commit_vesta, leaf_p_siblings, note_u,
+    path_from_levels, rerand_c, root_of_levels, trees, trees_point, ARITY,
 };
 use ff::PrimeField;
 use pasta_curves::vesta;
@@ -145,7 +148,11 @@ pub fn admit_prove_in(
         return None;
     }
     let tag = i_pt.compress().to_bytes();
-    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = if v3 {
+        trees_point(dest_leaves, c_leaves, n)
+    } else {
+        trees(dest_leaves, c_leaves, n)
+    };
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != cpath.len() || dpath.is_empty() {
@@ -157,7 +164,11 @@ pub fn admit_prove_in(
     }
     let dest_root = root_of_levels(&dlevels);
     let c_root_b = root_of_levels(&clev);
-    let jr = jroot_hash(&dest_root, &c_root_b);
+    let jr = if v3 {
+        jroot_point_hash(&dest_root, &c_root_b)
+    } else {
+        jroot_hash(&dest_root, &c_root_b)
+    };
     let slots = slots_of(index, n_layers);
     let ct_pt = decompress(&c_tilde)?;
 
@@ -184,16 +195,21 @@ pub fn admit_prove_in(
             t_c_prev = Some(tc);
         }
         let parent_d = commit_vesta(&dpath[0]);
-        let parent_c = commit_ristretto_encodings(&cpath[0]);
+        // The glue child is the point commitment of the published bucket.
+        // Internal parents above stay scalar encodings.
+        let parent_c = if v3 {
+            commit_ristretto_points(&cpath[0])
+        } else {
+            commit_ristretto_encodings(&cpath[0])
+        };
         let td_b: [u8; 32] = t_d_prev?.to_repr().into();
         mem.extend_from_slice(&parent_d);
         mem.extend_from_slice(&td_b);
         mem.extend_from_slice(&parent_c);
         mem.extend_from_slice(&t_c_prev?.to_bytes());
     }
-    // Point bucket for C̃ = C_i + t·H and p_com = P_i + w·U. These points are the
-    // witness for that relation; deleting them leaves the scalar tree opening
-    // unbound from C̃ (a member encoding can be paired with a self-minted point).
+    // Point bucket for C̃ = C_i + t·H and p_com = P_i + w·U. The bytes stay.
+    // Version 3 binds them by the point commitment, not by deleting them.
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     if p_sib[slots[0]] != *p {
         return None;
@@ -221,6 +237,10 @@ pub fn admit_prove_in(
         ctx,
     )?;
     mem.extend_from_slice(&leaf);
+    if v3 {
+        let open = point_open_prove(&cpath[0], slots[0], ctx)?;
+        mem.extend_from_slice(&open);
+    }
     let nonce_rand = if v3 { os_rand32()? } else { [0u8; 32] };
     let k = if v3 {
         chal(&[b"k", ctx, x, t, &nonce_rand])
@@ -387,7 +407,12 @@ pub fn admit_verify_in(
         Some(x) => x,
         None => return false,
     };
-    if jroot_hash(&dest_root, &c_root_b) != *jr {
+    let rooted = if v3 {
+        jroot_point_hash(&dest_root, &c_root_b) == *jr
+    } else {
+        jroot_hash(&dest_root, &c_root_b) == *jr
+    };
+    if !rooted {
         return false;
     }
     let p_com_b = match read32(proof, 129) {
@@ -525,13 +550,22 @@ pub fn admit_verify_in(
         None => return false,
     };
     off = off2;
-    if commit_ristretto_encodings(&siblings) != c_parent {
+    let bucket_bound = if v3 {
+        commit_ristretto_points(&siblings) == c_parent
+    } else {
+        commit_ristretto_encodings(&siblings) == c_parent
+    };
+    if !bucket_bound {
         return false;
     }
-    if proof.len() < off + LEAF_PAIRED_LEN {
+    let leaf_end = off + LEAF_PAIRED_LEN;
+    if proof.len() < leaf_end {
         return false;
     }
-    let leaf = &proof[off..off + LEAF_PAIRED_LEN];
+    if v3 && proof.len() != leaf_end + POINT_OPEN_LEN {
+        return false;
+    }
+    let leaf = &proof[off..leaf_end];
     let ct = match decompress(c_tilde) {
         Some(p) => p,
         None => return false,
@@ -541,6 +575,9 @@ pub fn admit_verify_in(
         None => return false,
     };
     if !leaf_verify(&dest_parent, &siblings, &p_sib, &ct, &p_com, leaf, ctx) {
+        return false;
+    }
+    if v3 && !point_open_verify(&siblings, &proof[leaf_end..leaf_end + POINT_OPEN_LEN], ctx) {
         return false;
     }
     let dest_q = match leaf_qd(leaf) {

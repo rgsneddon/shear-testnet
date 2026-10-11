@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { randomScalar, commit, pointBytes, sealCoinbaseNote } from './note.js';
 import { newIdentity } from './address.js';
-import { admitPub, admitProve, admitVerify, admitProveV3, admitVerifyV3, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks, attachAdmitPub, proveFlowSpend } from './admit.js';
+import { admitPub, admitProve, admitVerify, admitProveV3, admitVerifyV3, jroot, jrootPoint, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks, attachAdmitPub, proveFlowSpend } from './admit.js';
 import { nativeLoaded, nativeMaxProof, nativeArity } from './native_admit.js';
 
 const SIB = 32 * 32;
@@ -164,7 +164,7 @@ describe('ADMITv3 fresh point', () => {
     assert.ok(proof, 'honest v3 seal');
     assert.equal(proof.v, 3);
     assert.equal(proof.blob[0], 3);
-    const jr = jroot({ pubs, commits });
+    const jr = jrootPoint({ pubs, commits });
     assert.equal(admitVerifyV3(proof, { pubs, commits }, {
       jroot: jr, ctx, cTilde: proof.cTilde, spendTag: proof.spendTag,
     }), true);

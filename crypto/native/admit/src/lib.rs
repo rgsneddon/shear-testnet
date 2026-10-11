@@ -15,7 +15,7 @@ pub use prove::{
     admit_prove, admit_prove_v3, admit_verify, admit_verify_v3, admit_verify_batch, forest_prove,
     forest_verify, Proof, MAX_PROOF, MAX_PROOF_V3,
 };
-pub use tree::{c_root, jroot, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
+pub use tree::{c_root, jroot, jroot_point, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -103,6 +103,34 @@ pub extern "C" fn shear_admit_jroot(
             return BAD;
         }
         let root = jroot(d, c, n);
+        unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), out, 32) };
+        OK
+    }))
+    .unwrap_or(BAD)
+}
+
+/// Version-3 book. The C root is the ristretto-point leaf, not `jroot`.
+#[no_mangle]
+pub extern "C" fn shear_admit_jroot_point(
+    dest_leaves: *const u8,
+    c_leaves: *const u8,
+    n: u32,
+    out: *mut u8,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let n = n as usize;
+        let d = match slice(dest_leaves, n.saturating_mul(32)) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        let c = match slice(c_leaves, n.saturating_mul(32)) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        if out.is_null() {
+            return BAD;
+        }
+        let root = jroot_point(d, c, n);
         unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), out, 32) };
         OK
     }))
@@ -1022,7 +1050,7 @@ mod tests {
     fn v3_remainder_hides_the_slot_and_rejects_a_mint() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
         let idx = 3usize;
         let t = rand_scalar();
         let ctx = ctx64();
@@ -1054,7 +1082,7 @@ mod tests {
         minted[0] ^= 0x5a;
         bad[33] ^= 0x5a;
         assert!(!admit_verify_v3(&bad, &jr, &minted, &tag, &ctx), "self-minted C̃");
-        let jr_sub = jroot(&dest_blob[..4 * 32], &c_blob[..4 * 32], 4);
+        let jr_sub = jroot_point(&dest_blob[..4 * 32], &c_blob[..4 * 32], 4);
         assert!(!admit_verify_v3(&proof, &jr_sub, &ct, &tag, &ctx), "subset jroot");
         let mut ctx_b = ctx;
         ctx_b[10] ^= 1;
@@ -1095,7 +1123,7 @@ mod tests {
     fn v3_paired_remainder_hides_the_child_slot() {
         let n = 40usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
         let idx = 7usize;
         let t = rand_scalar();
         let ctx = ctx64();
@@ -1147,7 +1175,7 @@ mod tests {
             "v3 internal W matches no child slot"
         );
         let mut sib = proof.clone();
-        let leaf_at = sib.len() - crate::select::LEAF_PAIRED_LEN;
+        let leaf_at = sib.len() - crate::select::POINT_OPEN_LEN - crate::select::LEAF_PAIRED_LEN;
         let c_at = leaf_at - 32 * 32;
         sib[c_at] ^= 0xff;
         assert!(
@@ -1162,7 +1190,7 @@ mod tests {
     fn seal_v3_opens_the_note_in_the_set() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
         let idx = 3usize;
         let t = rand_scalar();
         let ctx = ctx64();
@@ -1192,7 +1220,7 @@ mod tests {
     fn v3_fresh_point_outside_the_set_fails() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
         let idx = 3usize;
         let t = rand_scalar();
         let ctx = ctx64();
@@ -1269,7 +1297,9 @@ mod tests {
     fn v3_two_bucket_spent_link_stays_on_the_wire() {
         let n = 64usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_point(&dest_blob, &c_blob, n);
+        let jr_scalar = jroot(&dest_blob, &c_blob, n);
+        assert_ne!(jr, jr_scalar, "the point book is not the scalar jroot");
         let ctx = ctx64();
         let mut seen = Vec::new();
         for idx in [3usize, 40usize] {
@@ -1298,8 +1328,13 @@ mod tests {
             }
             assert_eq!(
                 parent_c,
+                tree::commit_ristretto_points(&bucket),
+                "the published parent is the point commitment of the spent bucket"
+            );
+            assert_ne!(
+                parent_c,
                 tree::commit_ristretto_encodings(&bucket),
-                "the published parent is the spent bucket"
+                "the scalar encoding commitment is not the point parent"
             );
             let which = idx / 32;
             for i in 0..32 {
@@ -1308,12 +1343,37 @@ mod tests {
             let other = 1 - which;
             assert_ne!(bucket[0], cs[other * 32]);
             let leaf_at = c_off + 32 * 32;
-            assert_eq!(proof.len(), leaf_at + crate::select::LEAF_PAIRED_LEN);
+            assert_eq!(
+                proof.len(),
+                leaf_at + crate::select::LEAF_PAIRED_LEN + crate::select::POINT_OPEN_LEN
+            );
             let w: [u8; 32] = proof[leaf_at..leaf_at + 32].try_into().unwrap();
             let kids = leaf_dest_children(&dest_blob, n, idx);
             assert!(
                 slots_matching(&kids, &w).is_empty(),
                 "blinding W does not name the slot, and it does not remove the bucket"
+            );
+            let q_at = leaf_at + crate::select::LEAF_PAIRED_LEN;
+            let q: [u8; 32] = proof[q_at..q_at + 32].try_into().unwrap();
+            for note in &bucket {
+                assert_ne!(q, *note, "the rerandomized child is not a raw note");
+            }
+            assert!(
+                !admit_verify_v3(&proof, &jr_scalar, &ct, &tag, &ctx),
+                "the scalar jroot must not verify a point-leaf proof"
+            );
+            let mut scalar_parent = proof.clone();
+            let enc = tree::commit_ristretto_encodings(&bucket);
+            scalar_parent[glue + 64..glue + 96].copy_from_slice(&enc);
+            assert!(
+                !admit_verify_v3(&scalar_parent, &jr, &ct, &tag, &ctx),
+                "a scalar parent does not open the point bucket"
+            );
+            let mut forged_q = proof.clone();
+            forged_q[q_at] ^= 0xff;
+            assert!(
+                !admit_verify_v3(&forged_q, &jr, &ct, &tag, &ctx),
+                "a self-minted point opening fails"
             );
             seen.push(which);
         }

@@ -24,6 +24,8 @@ use rand_core::{OsRng, RngCore};
 pub const CDS_LEN: usize = 32 + 32 + 32 + ARITY * 32 * 3; // W, Q, c0, z_x/z_r/z_t
 pub const PAIRED_LEN: usize = 32 * 4 + 64 + ARITY * 32 * 6; // Wd Qd Wc Qc hv0 + 6 z per slot
 pub const LEAF_PAIRED_LEN: usize = 32 * 2 + 64 + ARITY * 32 * 5; // Wd Qd hv0 + dest z*3 + c z_t + p z_w
+/// Q || challenge seed || one response scalar per slot. Appended after the leaf on version 3.
+pub const POINT_OPEN_LEN: usize = 32 + 32 + ARITY * 32;
 
 pub(crate) fn vs_rand() -> vesta::Scalar {
     let mut w = [0u8; 64];
@@ -1188,6 +1190,103 @@ pub fn leaf_verify(
         ec = RScalar::from_bytes_mod_order_wide(&hv);
     }
     last == hv0
+}
+
+fn point_child(b: &[u8; 32]) -> RistrettoPoint {
+    dec_r(b).unwrap_or_else(RistrettoPoint::identity)
+}
+
+fn point_open_chal(rq: &[u8; 32], q: &[u8; 32], ctx: &[u8], sib: &[u8]) -> RScalar {
+    chal_r(&[rq, q, ctx, sib, b"c-point-open-v3"])
+}
+
+/// Version-3 trailer. Q = C_i + ρ·U, and the CDS response opens that ρ on one
+/// hidden slot of the published bucket. The leaf blob in front of this stays
+/// `LEAF_PAIRED_LEN`. Knowledge of ρ is the bind: every ristretto point is some
+/// multiple of U, so a sum check with no Schnorr does not bind the slot.
+pub fn point_open_prove(c_ch: &[[u8; 32]; ARITY], index: usize, ctx: &[u8]) -> Option<Vec<u8>> {
+    if index >= ARITY {
+        return None;
+    }
+    let ci = dec_r(&c_ch[index])?;
+    let (u, _, _) = ristretto_gens();
+    let rho = rs_rand();
+    if rho == RScalar::ZERO {
+        return None;
+    }
+    let q = ci + u * rho;
+    if q.is_identity() || q == ci {
+        return None;
+    }
+    let q_b = enc_r(&q);
+    let mut sib = Vec::with_capacity(ARITY * 32);
+    for c in c_ch {
+        sib.extend_from_slice(c);
+    }
+    let mut z = [[0u8; 32]; ARITY];
+    let k = rs_rand();
+    let ann = u * k;
+    let mut e = point_open_chal(&enc_r(&ann), &q_b, ctx, &sib);
+    let mut j = (index + 1) % ARITY;
+    while j != index {
+        let zj = rs_rand();
+        z[j] = zj.to_bytes();
+        let rq = u * zj - (q - point_child(&c_ch[j])) * e;
+        e = point_open_chal(&enc_r(&rq), &q_b, ctx, &sib);
+        j = (j + 1) % ARITY;
+    }
+    z[index] = (k + e * rho).to_bytes();
+    let mut e0 = point_open_chal(&enc_r(&ann), &q_b, ctx, &sib);
+    let mut jj = (index + 1) % ARITY;
+    while jj != 0 {
+        let zj = rsc(&z[jj]);
+        let rq = u * zj - (q - point_child(&c_ch[jj])) * e0;
+        e0 = point_open_chal(&enc_r(&rq), &q_b, ctx, &sib);
+        jj = (jj + 1) % ARITY;
+    }
+    let mut out = Vec::with_capacity(POINT_OPEN_LEN);
+    out.extend_from_slice(&q_b);
+    out.extend_from_slice(&e0.to_bytes());
+    for slot in &z {
+        out.extend_from_slice(slot);
+    }
+    Some(out)
+}
+
+pub fn point_open_verify(c_ch: &[[u8; 32]; ARITY], proof: &[u8], ctx: &[u8]) -> bool {
+    if proof.len() != POINT_OPEN_LEN {
+        return false;
+    }
+    let q_b = match take32(proof, 0) {
+        Some(x) => x,
+        None => return false,
+    };
+    let seed = match take32(proof, 32) {
+        Some(x) => x,
+        None => return false,
+    };
+    let q = match dec_r(&q_b) {
+        Some(p) => p,
+        None => return false,
+    };
+    if q.is_identity() {
+        return false;
+    }
+    let mut sib = Vec::with_capacity(ARITY * 32);
+    for c in c_ch {
+        sib.extend_from_slice(c);
+    }
+    let (u, _, _) = ristretto_gens();
+    let mut e = rsc(&seed);
+    for j in 0..ARITY {
+        let zj = rsc(&match take32(proof, 64 + j * 32) {
+            Some(x) => x,
+            None => return false,
+        });
+        let rq = u * zj - (q - point_child(&c_ch[j])) * e;
+        e = point_open_chal(&enc_r(&rq), &q_b, ctx, &sib);
+    }
+    e == rsc(&seed)
 }
 
 /// Proof bytes contain neither the slot index as a dedicated field nor any raw child 32-byte encoding.
