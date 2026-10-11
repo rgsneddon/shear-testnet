@@ -12,22 +12,22 @@ This branch starts at Build's merge. It does not replace it. `MAX_PROOF_V3` stay
 
 The n=64 spent-bucket hide is the open proof on this branch. Cursor is on that proof now. It keeps Build's cap 43490. `cursor/admit-v3-point-root-0bcc` stays at cap 42466. Do not start a second prove of that hide. Do not replay the 42466 glue here.
 
-CoS still holds the Tuesday 15:00 cut. This work does not start it. `scripts/v12-genesis-cut.mjs` is CoS's. `V12_GENESIS_BLOCK_HASH` stays empty. There is no soak stamp.
+CoS is asleep until Tuesday 2026-10-13 15:00 Europe/London. That clock is still CoS's cut, and this work does not start it. Do not ping CoS before then. Do not cut genesis, deploy, or start the soak while they are out. `scripts/v12-genesis-cut.mjs` is CoS's. `V12_GENESIS_BLOCK_HASH` stays empty. There is no soak stamp.
 
 ## Stage
 
 One board for every agent. Update this section in place. Do not start a second handoff. Do not push `feat/shear-testnet-v12`. Do not merge this branch onto feat. Do not cut genesis, move tags, flip `kBookMagic`, deploy, SSH, or start the soak.
 
-Checked 2026-10-11 from Russell's laptop. Newest inbox file is still `161-CLOUD-readonly-checks-6ee12af2.md` (2026-10-09 19:26). Nothing newer in `C:\Users\rgsne\shear-testnet\.cos-inbox\`.
+Checked 2026-10-11 14:48 +0100 from Russell's laptop. CoS is asleep until Tuesday 2026-10-13 15:00 Europe/London. Agents keep closing local work. They do not cut genesis, move tags, deploy, or start the soak before that. Newest inbox file is still `161-CLOUD-readonly-checks-6ee12af2.md` (2026-10-09 19:26). Nothing newer in `C:\Users\rgsne\shear-testnet\.cos-inbox\`.
 
 | Lane | Where | Stage |
 | --- | --- | --- |
 | n=64 spent-bucket hide | `cursor/close-open-p0-0bcc` | In progress. Cursor owns it. Do not start a second prove. Raw arity-32 C bucket stays on the wire until that proof lands. Cap stays 43490. |
-| Point-leaf funding prove, set sizes 1, 8, and 40 | Laptop tree `C:\Users\rgsne\shear-admit-fund-land`, branch `cursor/admit-fund-land`, HEAD `5a5685a`, addon built from that commit | Running. Not the hide. `node --test --test-name-pattern "point-leaf proof" crypto/admit_v3.test.js`. Node pid 17608, started 2026-10-11 13:56:33 +0100. At this check CPU was about 7494s and the working set was about 853 MB. The log is still 178 bytes and only the missing `shearhash.node` warning. No pass and no fail. Do not start another release IPA on this 4-core host until that process exits. |
+| Point-leaf funding prove, set sizes 1, 8, and 40 | Laptop tree `C:\Users\rgsne\shear-admit-fund-land`, branch `cursor/admit-fund-land`, HEAD `5a5685a`, addon built from that commit | Running. Not the hide. `node --test --test-name-pattern "point-leaf proof" crypto/admit_v3.test.js`. Node pid 17608, started 2026-10-11 13:56:33 +0100. At 14:48 +0100 CPU was about 8486s and the working set was about 1.48 GB. The log is still 178 bytes and only the missing `shearhash.node` warning. No pass and no fail. Do not start another release IPA on this 4-core host until that process exits. |
 | `feat/shear-testnet-v12` | `5a5685ad9b9d9d7c4efca095abb5003264023c3c` | Frozen at the admit merge. Do not push. |
 | Yx filter `honest_c_attacker_p` | Laptop only, on the `5a5685a` combined layout | Release pass, 1 passed, 0 failed, 51 filtered, 5088.59s. Not committed on this branch and not on feat. The "not re-run" line below is still true for this branch. |
 | Rho copy and `RHO=1sheath` | Dirty and uncommitted on `shear-admit-fund-land` | Do not land. This branch already sealed `ADMIT=ADMITv3` at `6e2d5f5`. A local paragraph numbered 89 on that tree's `docs/v12-HANDOFF.md` collides with item 89 (the cut gates). Do not push it. |
-| Genesis, tags `0.72` / `v19` / ShearK, book magic, fleet, soak | CoS | Not started. No soak stamp. `kBookMagic` stays `shear-testnet-v11`. |
+| Genesis, tags `0.72` / `v19` / ShearK, book magic, fleet, soak | CoS, asleep until Tuesday 2026-10-13 15:00 Europe/London | Not started. No soak stamp. Do not cut while CoS is out. `kBookMagic` stays `shear-testnet-v11`. |
 
 ## Closed on this branch
 
@@ -69,4 +69,4 @@ Genesis, tags, deploy, SSH, and the 72h soak stay with CoS. No fleet Ready. No p
 
 `node/tests/test_spend_tags_v12.js` field-less spend and multi-input spend fail `value_open` on this tree and on `25e610f`. That was left as it was.
 
-Tuesday 15:00 is not a start. The chain path can now see the anchor notes. The cut still needs a genesis, one book magic, packs, a fleet match, a live payout, and the gates in `docs/v12-HANDOFF.md` item 89.
+Tuesday 2026-10-13 15:00 Europe/London is not a start by itself. CoS is asleep until then. The chain path can now see the anchor notes. The cut still needs a genesis, one book magic, packs, a fleet match, a live payout, and the gates in `docs/v12-HANDOFF.md` item 89.
