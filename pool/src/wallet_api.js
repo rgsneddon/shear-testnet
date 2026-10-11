@@ -207,17 +207,22 @@ export function reconstructOwner(store, address) {
   const rec = rowsToHistory(rows, dests, tipH);
   const mempool = store?.mempool || [];
   const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-  // One ledger. Opened notes, minus vault principal the hidden lock cannot
-  // mark on the note, then minus mempool debits. One subtraction each.
+  // One ledger. The live store already subtracted vault principal.
+  // A fixture with no index still opens notes, then subtracts principal once.
+  const liveSpendable = typeof store?.spendableNanos === 'function';
   let nanos = 0;
   for (const d of dests) {
-    const noteNanos = noteCommitSpendableNanos(store.blocks || [], d, tipH, {
-      hashBonusNanos: bonus,
-      coinbaseOnly: false,
-    });
-    const opened = reconcileSpendable([], d, tipH, noteNanos);
-    const locked = Math.max(0, Math.floor(Number(portalPrincipalNanos(store?.reserveVault, d)) || 0));
-    nanos += Math.max(0, opened - locked);
+    if (liveSpendable) {
+      nanos += Math.max(0, Math.floor(Number(store.spendableNanos(d)) || 0));
+    } else {
+      const noteNanos = noteCommitSpendableNanos(store.blocks || [], d, tipH, {
+        hashBonusNanos: bonus,
+        coinbaseOnly: false,
+      });
+      const opened = reconcileSpendable([], d, tipH, noteNanos);
+      const locked = Math.max(0, Math.floor(Number(portalPrincipalNanos(store?.reserveVault, d)) || 0));
+      nanos += Math.max(0, opened - locked);
+    }
     nanos -= mempoolDebitNanos(mempool, d);
   }
   if (nanos < 0) nanos = 0;
@@ -1318,12 +1323,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return undefined;
     };
     const notes = [];
-    for (const b of store?.blocks || []) {
-      const prev = hex(b.hash) || hex(b.header && b.header.length >= 32 ? b.hash : null);
-      for (const tx of b.txs || []) {
-        (tx.vout || []).forEach((o, index) => {
+    const pushNote = (b, tx, o, index) => {
           if (!o?.commit || !o?.noteCommit || !want) return;
           if (!Buffer.from(o.noteCommit).equals(want)) return;
+          const prev = hex(b.hash) || hex(b.header && b.header.length >= 32 ? b.hash : null);
           let nanos;
           if (tx.coinbase) {
             const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
@@ -1382,7 +1385,15 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
               valueProof: { R: proofR, z: proofZ, v: nanos },
             } : {}),
           });
-        });
+    };
+    const refs = typeof store?.noteRefs === 'function' ? store.noteRefs(address) : null;
+    if (refs) {
+      for (const ref of refs) pushNote(ref.block, ref.tx, ref.out, ref.index);
+    } else {
+      for (const b of store?.blocks || []) {
+        for (const tx of b.txs || []) {
+          (tx.vout || []).forEach((o, index) => pushNote(b, tx, o, index));
+        }
       }
     }
     return { status: 200, json: { ok: true, notes } };

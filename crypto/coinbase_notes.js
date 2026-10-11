@@ -371,6 +371,17 @@ function sameDest20(field, want) {
   return buf.length === want.length && buf.equals(Buffer.from(want));
 }
 
+let blocksWalked = 0;
+
+/** Blocks the full note walk has visited. The live book does not use this walk. */
+export function noteCommitBlocksWalked() {
+  return blocksWalked;
+}
+
+export function resetNoteCommitBlocksWalked() {
+  blocksWalked = 0;
+}
+
 /** Mature nanos whose commitment opened. A painted nanos field is not a coin. */
 export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   hashBonusNanos = HASH_BONUS_NANOS,
@@ -385,6 +396,7 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   const tip = Number(tipHeight) || 0;
   let nanos = 0;
   for (const b of blocks || []) {
+    blocksWalked += 1;
     const h = Number(b?.height) || 0;
     if (!(h > 0 && (tip - h + 1) >= need)) continue;
     for (const tx of b.txs || []) {

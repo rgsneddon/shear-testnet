@@ -54,8 +54,8 @@ import { isDestAddress } from '../../crypto/address.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { publicExplorerRow } from '../../crypto/dummy.js';
 import { reviveBytes, reviveTx, noteCommitOfDest20 } from '../../crypto/note.js';
-import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
+import { createNoteLedger } from './note_ledger.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
@@ -584,11 +584,16 @@ export function createStore(dir, {
     explorer.length = 0;
     for (const b of blocks) explorer.push(...sealedExplorerRows(b));
     writeExplorer();
+    rebuildHist();
+    noteLedger.sync(blocks);
   }
 
   function indexSealed(block) {
     const rows = sealedExplorerRows(block);
     explorer.push(...rows);
+    for (const r of rows) addHist(r);
+    histN = explorer.length;
+    histAnchor = explorer.length ? explorer[explorer.length - 1] : null;
     if (rows.length) {
       fs.appendFileSync(explorerFile, `${rows.map((r) => JSON.stringify(publicExplorerRow(r))).join('\n')}\n`);
     }
@@ -609,7 +614,131 @@ export function createStore(dir, {
     }
     rebuildExplorer();
   }
+
+  const histTo = new Map();
+  const histFrom = new Map();
+  const histNc = new Map();
+  const histD20 = new Map();
+  let histN = 0;
+  let histAnchor = null;
+  let histQueryRows = 0;
+  let histSyncRows = 0;
+  let spendChecks = 0;
+
+  function histCommitHex(v) {
+    try {
+      const b = Buffer.from(asU8(v));
+      return b.length === 32 ? b.toString('hex') : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function histDestHex(field) {
+    if (!field) return '';
+    try {
+      const raw = field.data || field;
+      const buf = Buffer.from(raw);
+      return buf.length === 20 ? buf.toString('hex') : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function pushHist(map, key, row) {
+    if (!key) return;
+    let arr = map.get(key);
+    if (!arr) {
+      arr = [];
+      map.set(key, arr);
+    }
+    arr.push(row);
+  }
+
+  function addHist(row) {
+    if (!row || typeof row !== 'object') return;
+    if (row.to) pushHist(histTo, String(row.to), row);
+    if (row.from) pushHist(histFrom, String(row.from), row);
+    const nc = histCommitHex(row.noteCommit);
+    if (nc) pushHist(histNc, nc, row);
+    const to20 = histDestHex(row.toDest20);
+    const from20 = histDestHex(row.fromDest20);
+    if (to20) pushHist(histD20, to20, row);
+    if (from20) pushHist(histD20, from20, row);
+  }
+
+  function rebuildHist() {
+    histTo.clear();
+    histFrom.clear();
+    histNc.clear();
+    histD20.clear();
+    for (const row of explorer) addHist(row);
+    histN = explorer.length;
+    histAnchor = explorer.length ? explorer[explorer.length - 1] : null;
+  }
+
+  function syncHist() {
+    if (explorer.length < histN || (histN > 0 && explorer[histN - 1] !== histAnchor)) {
+      const n = explorer.length;
+      rebuildHist();
+      histSyncRows += n;
+      return;
+    }
+    for (let i = histN; i < explorer.length; i += 1) {
+      addHist(explorer[i]);
+      histSyncRows += 1;
+    }
+    histN = explorer.length;
+    histAnchor = explorer.length ? explorer[explorer.length - 1] : null;
+  }
+
+  function histCandidates(addr, h20, wantNc) {
+    const seen = new Set();
+    const out = [];
+    const take = (arr) => {
+      for (const row of arr || []) {
+        if (seen.has(row)) continue;
+        seen.add(row);
+        out.push(row);
+      }
+    };
+    take(histTo.get(addr));
+    take(histFrom.get(addr));
+    if (h20) take(histD20.get(Buffer.from(h20).toString('hex')));
+    if (wantNc) take(histNc.get(Buffer.from(wantNc).toString('hex')));
+    histQueryRows += out.length;
+    return out;
+  }
+
+  function digestsOf(block) {
+    const out = [];
+    for (const tx of (block?.txs || []).slice(1)) {
+      if (flowSendNeedsOpen(tx)) out.push(spendPackDigest(tx).toString('hex'));
+    }
+    return out;
+  }
+
+  const noteLedger = createNoteLedger({ digestsOf });
+  const chainLedgers = new WeakMap();
+
+  function ledgerFor(chain) {
+    const book = chain || blocks;
+    if (book === blocks) return noteLedger;
+    let led = chainLedgers.get(book);
+    if (!led) {
+      led = createNoteLedger({ digestsOf });
+      chainLedgers.set(book, led);
+    }
+    return led;
+  }
+
+  function syncNoteLedger(chain = blocks) {
+    return ledgerFor(chain).sync(chain);
+  }
+
   loadExplorer();
+  if (histN !== explorer.length || (histN > 0 && explorer[histN - 1] !== histAnchor)) rebuildHist();
+  noteLedger.sync(blocks);
   rememberHeaders(blocks, 'active');
 
   let liveFlux = preFlux || fluxsetFromBlocks(blocks);
@@ -813,10 +942,11 @@ export function createStore(dir, {
     // The note walk still holds a pot a v3 lock spent, because that spend
     // hides the leaf. Subtract the vault principal once so the same value
     // is not spendable again. Lock receipts are already omitted by kind.
-    const noteNanos = noteCommitSpendableNanos(chain, addr, tipH, {
-      hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
-      coinbaseOnly: false,
-    });
+    // The live book and a fork book each keep their own suffix index.
+    // A request does not open notes that belong to someone else.
+    if (chain === blocks) spendChecks += 1;
+    syncNoteLedger(chain);
+    const noteNanos = ledgerFor(chain).spendable(addr, tipH, { coinbaseOnly: false });
     const opened = reconcileSpendable([], addr, tipH, noteNanos);
     const locked = Math.max(0, Math.floor(Number(portalPrincipalNanos(reserveVault, addr)) || 0));
     return Math.max(0, opened - locked);
@@ -1963,6 +2093,7 @@ export function createStore(dir, {
     indexSealed(stored);
     applyReserve(stored);
     blocks.push(stored);
+    syncNoteLedger(blocks);
     rememberOwed(blocks.length - 1);
     rememberVault(blocks.length - 1);
     refreshVaultSeal();
@@ -2016,13 +2147,8 @@ export function createStore(dir, {
   }
 
   function sealedSpendDigests() {
-    const seen = new Set();
-    for (const b of blocks) {
-      for (const tx of (b.txs || []).slice(1)) {
-        if (flowSendNeedsOpen(tx)) seen.add(spendPackDigest(tx).toString('hex'));
-      }
-    }
-    return seen;
+    syncNoteLedger(blocks);
+    return new Set(noteLedger.spendDigests());
   }
 
   function rootHex(jroot) {
@@ -3355,6 +3481,8 @@ export function createStore(dir, {
     reorgs.push(...image.reorgs);
     explorer.length = 0;
     explorer.push(...image.explorer);
+    rebuildHist();
+    syncNoteLedger(blocks);
     policyState = image.policy;
     headers.clear();
     for (const [k, v] of image.headers) headers.set(k, v);
@@ -3725,7 +3853,8 @@ export function createStore(dir, {
       if (coinbaseLike(r) && noteCommitAgrees(r.noteCommit, wantNc) === false) return false;
       return true;
     };
-    return explorer.filter((r) => {
+    syncHist();
+    return histCandidates(addr, h20, wantNc).filter((r) => {
       if (toOwns(r) || fromOwns(r)) return true;
       if (h20 && dest20Equals(r.fromDest20, h20)) return true;
       if (toDestOwns(r)) return true;
@@ -4115,6 +4244,25 @@ export function createStore(dir, {
     headerHash,
     historyFor,
     spendableNanos,
+    noteRefs(address) {
+      syncNoteLedger(blocks);
+      return noteLedger.refs(address);
+    },
+    walletWalkStats() {
+      const notes = noteLedger.stats();
+      return {
+        ...notes,
+        histQueryRows,
+        histSyncRows,
+        spendChecks,
+      };
+    },
+    resetWalletWalkStats() {
+      noteLedger.resetQuery();
+      histQueryRows = 0;
+      histSyncRows = 0;
+      spendChecks = 0;
+    },
     sideTipHash,
     sideHashes() {
       return sideBlocks.map((b) => hex32(b.hash).toLowerCase()).filter(Boolean);
