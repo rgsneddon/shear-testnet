@@ -1144,4 +1144,30 @@ mod cap_tests {
         assert!(v3_proof_len(5) > MAX_PROOF_V3);
         assert_eq!(v3_proof_len(1), super::HDR + 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN);
     }
+
+    /// A 23-round one-wire blob is 1920 bytes. Replacing only the raw C bucket
+    /// makes height 4 44386 bytes. Replacing the bucket and the point-open
+    /// seed and responses, and keeping Q, makes height 4 43330 bytes.
+    /// The live verifier still requires the bucket and the trailer. The note
+    /// hash plus the parent sum plus one more windowed mul is 5530514 gates,
+    /// inside the 2^23 pad and outside the 2^22 pad. Those gates are not built
+    /// here. `bind_parent_sum_gate_budget` measured the pieces.
+    #[test]
+    fn v3_hide_blob_fits_when_the_point_open_responses_leave() {
+        let blob = crate::r1cs::r1cs_blob_len(23);
+        assert_eq!(blob, 1920, "one committed wire, 23 rounds");
+        let bucket = ARITY * 32;
+        let responses = POINT_OPEN_LEN - 32;
+        assert_eq!(bucket, 1024);
+        assert_eq!(responses, 1056);
+        let bucket_only = v3_proof_len(4) - bucket + blob;
+        assert_eq!(bucket_only, 44386);
+        assert!(bucket_only > MAX_PROOF_V3);
+        let with_open = v3_proof_len(4) - bucket - responses + blob;
+        assert_eq!(with_open, 43330);
+        assert!(with_open <= MAX_PROOF_V3);
+        let full_gates = 4_802_354usize + 728_160;
+        assert_eq!(full_gates, 5_530_514);
+        assert!(full_gates > (1 << 22) && full_gates <= (1 << 23));
+    }
 }
