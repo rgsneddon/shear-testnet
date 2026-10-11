@@ -1,0 +1,55 @@
+# Build handoff — closeable items on the feat point-leaf layout
+
+Watch C:\Users\rgsne\shear-testnet\.cos-inbox\ and read every new item before each change. First read docs/BUILD-HANDOFF-ADMITV3.md on branch cursor/admit-v3-point-root-0bcc at 4262675 before landing another ADMITv3 prove, and do not cut genesis, move tags, flip kBookMagic, deploy, or start the soak.
+
+Date: 2026-10-11
+For: the PowerShell Build agent on Russell's laptop
+From: the cloud agent
+Branch: `cursor/close-open-p0-0bcc`
+Base: `feat/shear-testnet-v12` at `5a5685ad9b9d9d7c4efca095abb5003264023c3c`
+
+This branch starts at Build's merge. It does not replace it. `MAX_PROOF_V3` stays 43490. The raw arity-32 C bucket stays on the wire. `v3_two_bucket_spent_link_stays_on_the_wire` still requires those raw notes. Do not land `cursor/admit-v3-point-root-0bcc` on top of this branch. That branch is cap 42466 and a different glue. Do not push `feat/shear-testnet-v12`. Do not merge. Do not cut genesis, move tags, flip `kBookMagic`, deploy, SSH, or start the soak.
+
+CoS still holds the Tuesday 15:00 cut. This work does not start it. `scripts/v12-genesis-cut.mjs` is CoS's. `V12_GENESIS_BLOCK_HASH` stays empty. There is no soak stamp.
+
+## Closed on this branch
+
+`8d9ee67` Fail closed when a version-3 C child is not a ristretto point. `commit_ristretto_points` returns `None` when a child does not decompress. The all-zero pad decompresses to the identity, so an honest bucket sum is the same sum as the old skip. `jroot_point`, the v3 prove path, and verify follow that `Option`. A scan of `[b; 32]` for `b` in `1..64` found a non-point and rejected it. `[2u8; 32]` does decompress, so a single `2` byte is not the reject case.
+
+`3f463ce` Bind typed funding to the anchor notes and the stored v2 root. `noteFromAnchor` returns `pubs` and `commits` sliced to `n`. `verifyTypedAdmitFunding` requires `jroot` of that slice to equal the stored `jroot` when both books are present, then still checks the point root `fundingJroot` and passes that root into `admitVerifyV3`. The context root stays the point root. A stored root of 32 bytes of `0x09` returns `admit_anchor_root` and does not set `proofChecked`. A chain record whose v2 root matches, and whose proof header does not, returns `admit_anchor_root` with `proofChecked` true.
+
+`6e2d5f5` Seal the fingerprint token as `ADMIT=ADMITv3`. The sealed list in `crypto/asert.js`, the law line, and the backtick token in `specs/admit-v2.md` use the lowercase v. Display fields that say `ADMITv2` were left, including node stats `admit` and the pool page. `kBookMagic` stays `shear-testnet-v11`. The pool HTML pin stays `shear-testnet-v11`.
+
+`978f395` Cap network JSON nesting and HTTP body size. `crypto/json_bounds.js` and `wallet/lib/shear_json_bounds.dart` share the caps: body 16 MiB, nesting 32, stratum line 64 KiB. RPC POST, pool POST, admin POST, stratum, solo stratum, p2p frames, p2p IPC frames, public HTTP follow, the watch client, the payout watch client, and the wallet node JSON readers use them. A body over the cap is `body_cap` (HTTP 413). Nesting over the cap is `json_cap` (HTTP 400). A long stratum line destroys the socket. Local ledger files were not capped.
+
+## What was run
+
+Debug, not release. `cargo test --manifest-path crypto/native/admit/Cargo.toml --lib -- --test-threads=1 commit_ristretto_points_rejects_a_non_point` passed. 1 passed, 0 failed, 52 filtered out, finished in 0.05s. The debug compile before that run was 0.82s. `npm run build:admit` was not run. `shearadmit.node` was not rebuilt. The Node tests below used the addon built from `5a5685a`. Honest points still verify on that addon. The fail-closed native path is the Rust test until the addon is rebuilt from this tree.
+
+`node --test node/tests/test_anchor_notes_v12.js` passed 1, the case 114.146975 ms, duration_ms 366.711207. One real note. `noteFromAnchor` keys are `commits`, `jroot`, `n`, `pubs`, sliced to `n` 1. The v2 root and the point root differ. A 129-byte version-3 junk header through that record is `admit_anchor_root` with `proofChecked` true. The same notes with `jroot` set to 32 bytes of `0x09` are `admit_anchor_root` with `proofChecked` undefined.
+
+`node --test --test-name-pattern 'shaped bad proof' node/tests/test_supply_parents_v12.js` passed 1, the case 121.675864 ms, duration_ms 433.293512. The stub now carries one real note and the matching v2 root, so the 40-byte version-3 blob still reaches the short-proof return. `proofChecked` is true. `anchorFluxRebuilds()` stays 0. The lookups count is 1.
+
+`node --test --test-name-pattern 'bakes HASH_TX_LIVE' crypto/asert.test.js` passed 1, the case 225.844567 ms, duration_ms 355.746779. The fingerprint matches `ADMIT=ADMITv3`.
+
+`node --test crypto/json_bounds.test.js` passed 1, the case 0.703552 ms, duration_ms 70.52084. Depth `JSON_MAX_DEPTH` is accepted. Depth `JSON_MAX_DEPTH + 1` throws `json_cap`. Brackets inside a string, and an escaped quote, stay inside the string.
+
+`node --test node/tests/test_http_follow.js` passed 1, the case 1.733101 ms, duration_ms 279.449012. The mock still uses `text()`. A stream body is capped when `getReader` exists.
+
+`node --test --test-name-pattern 'pins the shipped native book' crypto/admit.test.js` passed 1, the case 5.764579 ms, duration_ms 176.737207. The spec title still contains the word ADMITv2. The sealed token line is `ADMIT=ADMITv3`.
+
+`tests/privacy.walk.js` case 11 failed before the fingerprint line. `admitMempool` of the `she` send returned `range_proof`. The assert wanted `silent_id_on_chain`. Line 326. duration_ms 563.09457. That file was not retuned. The fingerprint assert in it was not reached. `node/src/chain.js` and `crypto/admit_v3.js` are not on that path. `crypto/mempool.js` was not edited.
+
+Not re-run, and not claimed: `seal_v3_opens_the_note_in_the_set`, `v3_fresh_point_outside_the_set_fails`, `honest_c_attacker_p_fails_admit_verify_v3`, `v3_two_bucket_spent_link_stays_on_the_wire`, the Yx filter, and `crypto/admit_v3.test.js` for sets of 1, 8, and 40. Those are IPA. Build's `seal_v3` n=8 on `5a5685a` was 4592.82s. Do not start a second full release IPA while another admit suite is already running.
+
+## Still blocked
+
+The n=64 spent bucket is still published. Hiding it while the leaf IPA opens those bytes is a new proof, not a patch. Do not flip the two-bucket test to make a hide-bucket layout pass.
+
+`kBookMagic` stays `shear-testnet-v11`. Pool `public/index.html` stays on that pin, Continuum 0.71, and ShearK 2.8, because `pool/tests/test_pool.js` asserts that HTML. The pin flip stays deferred.
+
+Genesis, tags, deploy, SSH, and the 72h soak stay with CoS. No fleet Ready. No phone. Items 16-23 stay open, including the seven `test_wallet_send` cases, T18, and Windows-to-Android. macOS ShearK is open: no Mac host, and `zip_unix.py` refuses a binary that is not Mach-O. Live soak binaries still print 2.8 and `shear-testnet-v4`. Item 36 vardiff reconnect spread was not run. Continuum does not emit v3 proofs. FS-1 stays unwired. T21 option A (blinded per-dest work plus a split proof) stays a design hold. Inbox 018e Share Commitment is uncoded. Inbox 012, 015, 018-018f, 019, 022-024, 025, 027, 052, and 088 were not implemented. D-3, N-6ee-2, N-25, and N-26 stay open. 070 checkpoint leftovers and 072 full pool regression were not run. 033b `test_hash_bonus_cap` was not re-run. There is no priority P2. P2P burial is inbox 052, not a priority.
+
+`node/tests/test_spend_tags_v12.js` field-less spend and multi-input spend fail `value_open` on this tree and on `25e610f`. That was left as it was.
+
+Tuesday 15:00 is not a start. The chain path can now see the anchor notes. The cut still needs a genesis, one book magic, packs, a fleet match, a live payout, and the gates in `docs/v12-HANDOFF.md` item 89.
