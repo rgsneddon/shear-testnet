@@ -11,6 +11,7 @@ import {
   sealCoinbaseNote,
   openedCoinbaseNanos,
   coinbaseVoutsBound,
+  noteU64,
   excessOf,
   addExcess,
 } from '../../crypto/note.js';
@@ -34,19 +35,33 @@ function easyPowHash() {
 
 describe('v12 coinbase outputs are individually bound', () => {
   it('opens any non-negative amount and rejects a missing range proof', () => {
-    for (const amount of [0, 1, 2_000_000_000, 100_000_000_000]) {
+    const amounts = [0n, 1n, 2_000_000_000n, 100_000_000_000n, (1n << 53n) - 1n, (1n << 53n) + 1n, (1n << 64n) - 1n];
+    for (const amount of amounts) {
       const note = sealCoinbaseNote(amount, { kind: 'pot' });
-      assert.equal(openedCoinbaseNanos(note), amount);
+      const opened = openedCoinbaseNanos(note);
+      assert.equal(noteU64(opened), amount);
+      const asText = { ...note, valueProof: { ...note.valueProof, v: amount.toString() } };
+      assert.equal(noteU64(openedCoinbaseNanos(asText)), amount);
       assert.equal(openedCoinbaseNanos({ ...note, rangeProof: Buffer.alloc(0) }), null);
       assert.equal(openedCoinbaseNanos({ ...note, rangeProof: undefined }), null);
+      if (amount > BigInt(Number.MAX_SAFE_INTEGER)) {
+        const rounded = { ...note, valueProof: { ...note.valueProof, v: Number(amount) } };
+        assert.equal(openedCoinbaseNanos(rounded), null);
+      }
     }
+    assert.equal(openedCoinbaseNanos({ commit: Buffer.alloc(32), valueProof: { v: -1n } }), null);
+    assert.equal(openedCoinbaseNanos({ commit: Buffer.alloc(32), valueProof: { v: 1n << 64n } }), null);
+    assert.equal(openedCoinbaseNanos({ commit: Buffer.alloc(32), valueProof: { v: '01' } }), null);
+    assert.equal(openedCoinbaseNanos({ commit: Buffer.alloc(32), valueProof: { v: '1.5' } }), null);
     const a = sealCoinbaseNote(7, { kind: 'pot' });
     const b = sealCoinbaseNote(11, { kind: 'finder-fee' });
-    const bound = coinbaseVoutsBound([a, b], excessOf([a, b]));
+    const wide = (1n << 53n) + 1n;
+    const c = sealCoinbaseNote(wide, { kind: 'reserve-fee' });
+    const bound = coinbaseVoutsBound([a, b, c], excessOf([a, b, c]));
     assert.equal(bound.ok, true);
-    assert.equal(bound.opened, 18);
-    assert.equal(bound.levy, 11);
-    assert.equal(bound.rest, 7);
+    assert.equal(noteU64(bound.opened), 18n + wide);
+    assert.equal(noteU64(bound.levy), 11n + wide);
+    assert.equal(noteU64(bound.rest), 7n);
     const dropped = coinbaseVoutsBound([a, { ...b, rangeProof: Buffer.alloc(0) }], excessOf([a, b]));
     assert.equal(dropped.ok, false);
     assert.equal(dropped.reason, 'coinbase_output');
