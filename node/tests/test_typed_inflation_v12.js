@@ -25,6 +25,7 @@ import {
   portalPrincipalNanos,
 } from '../../crypto/reserve_vault.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
+import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 
 const KINDS = ['lock', 'vote', 'withdraw', 'vortice-register'];
 const AMOUNTS = [1, 1_000_000_000, 50_000_000_000];
@@ -84,6 +85,9 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         const queued = store.queueTx(tx);
         assert.equal(queued.ok, false, `${kind} ${nanos} ${queued.reason}`);
         assert.equal(queued.reason, want, `${kind} ${nanos}`);
+        const parked = admitMempool(emptyMempool(), tx, { baseFee: 1 });
+        assert.equal(parked.ok, false, `${kind} ${nanos} mempool`);
+        assert.equal(parked.reason, want, `${kind} ${nanos} mempool ${parked.reason}`);
         const tpl = buildTemplate({
           prev: GENESIS_PREV,
           height: 1,
