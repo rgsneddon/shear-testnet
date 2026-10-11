@@ -44,7 +44,7 @@ import { signSpendTx, typedCommitSum } from '../../crypto/spend.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { packEpochBlock, unpackEpochBlock } from '../../crypto/chainbin.js';
-import { walletAnchor, readyHeight, txDigestV3, admitV3Context } from '../../crypto/admit_v3.js';
+import { walletAnchor, readyHeight, txDigestV3, admitV3Context, fundingJroot } from '../../crypto/admit_v3.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -177,7 +177,7 @@ function proveLock(tx, { x, index, flux, note, anchor, noteR, noteV }) {
     const ctx = admitV3Context({
       magic: MAGIC_TESTNET,
       anchor,
-      root: flux.jroot,
+      root: fundingJroot(flux),
       n: flux.pubs.length,
       digest,
     });
@@ -254,7 +254,7 @@ function proveVote(tx, { x, index, flux, note, anchor, noteR, noteV, base }) {
     const ctx = admitV3Context({
       magic: MAGIC_TESTNET,
       anchor,
-      root: flux.jroot,
+      root: fundingJroot(flux),
       n: flux.pubs.length,
       digest,
     });

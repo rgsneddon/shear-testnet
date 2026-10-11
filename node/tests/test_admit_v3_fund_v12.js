@@ -48,6 +48,7 @@ import {
   walletAnchor,
   txDigestV3,
   admitV3Context,
+  fundingJroot,
 } from '../../crypto/admit_v3.js';
 
 const KINDS = ['lock', 'vote', 'withdraw'];
@@ -170,7 +171,7 @@ function proveFunded(tx, { x, index, flux, note, anchor, noteR }) {
     const ctx = admitV3Context({
       magic: MAGIC_TESTNET,
       anchor,
-      root: flux.jroot,
+      root: fundingJroot(flux),
       n: flux.pubs.length,
       digest,
     });
@@ -247,7 +248,7 @@ function proveBalanced(tx, { x, index, flux, note, anchor, noteR, noteV }) {
     const ctx = admitV3Context({
       magic: MAGIC_TESTNET,
       anchor,
-      root: flux.jroot,
+      root: fundingJroot(flux),
       n: flux.pubs.length,
       digest,
     });
@@ -389,7 +390,7 @@ function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptN
     const ctx = admitV3Context({
       magic: MAGIC_TESTNET,
       anchor,
-      root: flux.jroot,
+      root: fundingJroot(flux),
       n: flux.pubs.length,
       digest,
     });

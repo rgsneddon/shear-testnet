@@ -48,7 +48,7 @@ import {
   sealNote,
   sealCoinbaseNote,
 } from '../../crypto/note.js';
-import { walletAnchor, readyHeight, txDigestV3, admitV3Context } from '../../crypto/admit_v3.js';
+import { walletAnchor, readyHeight, txDigestV3, admitV3Context, fundingJroot } from '../../crypto/admit_v3.js';
 
 const T0 = 1_700_000_000_000;
 const LOCKS = [PI_SHE_NANOS, PI_SHE_NANOS + 1_000_000];
@@ -187,7 +187,7 @@ function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptN
     const ctx = admitV3Context({
       magic: MAGIC_TESTNET,
       anchor,
-      root: flux.jroot,
+      root: fundingJroot(flux),
       n: flux.pubs.length,
       digest,
     });
