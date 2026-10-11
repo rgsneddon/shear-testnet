@@ -12,13 +12,13 @@ This branch starts at Build's merge. It does not replace it. `MAX_PROOF_V3` stay
 
 The n=64 spent-bucket hide is the open proof on this branch. Cursor is on that proof now. It keeps Build's cap 43490. `cursor/admit-v3-point-root-0bcc` stays at cap 42466. Do not start a second prove of that hide. Do not replay the 42466 glue here.
 
-CoS is asleep until Tuesday 2026-10-13 15:00 Europe/London. That clock is still CoS's cut, and this work does not start it. Do not ping CoS before then. Do not cut genesis, deploy, or start the soak while they are out. `scripts/v12-genesis-cut.mjs` is CoS's. `V12_GENESIS_BLOCK_HASH` stays empty. There is no soak stamp.
+CoS is asleep until Tuesday 2026-10-13 16:30 Europe/London. That clock is still CoS's cut, and this work does not start it. Do not ping CoS before then. Do not cut genesis, deploy, or start the soak while they are out. `scripts/v12-genesis-cut.mjs` is CoS's. `V12_GENESIS_BLOCK_HASH` stays empty. There is no soak stamp.
 
 ## Stage
 
 One board for every agent. Update this section in place. Do not start a second handoff. Do not push `feat/shear-testnet-v12`. Do not merge this branch onto feat. Do not cut genesis, move tags, flip `kBookMagic`, deploy, SSH, or start the soak.
 
-Checked 2026-10-11 14:48 +0100 from Russell's laptop. CoS is asleep until Tuesday 2026-10-13 15:00 Europe/London. Agents keep closing local work. They do not cut genesis, move tags, deploy, or start the soak before that. Newest inbox file is still `161-CLOUD-readonly-checks-6ee12af2.md` (2026-10-09 19:26). Nothing newer in `C:\Users\rgsne\shear-testnet\.cos-inbox\`. Cursor checked this same file at 2026-10-11 14:58 +0100 from the cloud worktree, fast-forwarded onto `9b46db9` before editing, and will refresh this Stage section about every 30 minutes. The laptop inbox path is not readable from the cloud VM.
+Checked 2026-10-11 14:48 +0100 from Russell's laptop. CoS is asleep until Tuesday 2026-10-13 16:30 Europe/London. Agents keep closing local work. They do not cut genesis, move tags, deploy, or start the soak before that. Newest inbox file is still `161-CLOUD-readonly-checks-6ee12af2.md` (2026-10-09 19:26). Nothing newer in `C:\Users\rgsne\shear-testnet\.cos-inbox\`. Cursor checked this same file at 2026-10-11 15:01 +0100 from the cloud worktree. The remote was still `1482101`. The laptop inbox path is not readable from the cloud VM. This Stage section is refreshed about every 30 minutes.
 
 | Lane | Where | Stage |
 | --- | --- | --- |
@@ -27,9 +27,9 @@ Checked 2026-10-11 14:48 +0100 from Russell's laptop. CoS is asleep until Tuesda
 | `feat/shear-testnet-v12` | `5a5685ad9b9d9d7c4efca095abb5003264023c3c` | Frozen at the admit merge. Do not push. |
 | Yx filter `honest_c_attacker_p` | Laptop only, on the `5a5685a` combined layout | Release pass, 1 passed, 0 failed, 51 filtered, 5088.59s. Not committed on this branch and not on feat. The "not re-run" line below is still true for this branch. |
 | Rho copy and `RHO=1sheath` | Dirty and uncommitted on `shear-admit-fund-land` | Do not land. This branch already sealed `ADMIT=ADMITv3` at `6e2d5f5`. A local paragraph numbered 89 on that tree's `docs/v12-HANDOFF.md` collides with item 89 (the cut gates). Do not push it. |
-| Genesis, tags `0.72` / `v19` / ShearK, book magic, fleet, soak | CoS, asleep until Tuesday 2026-10-13 15:00 Europe/London | Not started. No soak stamp. Do not cut while CoS is out. `kBookMagic` stays `shear-testnet-v11`. |
+| Genesis, tags `0.72` / `v19` / ShearK, book magic, fleet, soak | CoS, asleep until Tuesday 2026-10-13 16:30 Europe/London | Not started. No soak stamp. Do not cut while CoS is out. `kBookMagic` stays `shear-testnet-v11`. |
 
-Hide, cloud check 2026-10-11 14:58 +0100. No circuit has been added to this branch. Measured pieces, not a full bucket witness: SHA-512 one block is 214081 gates, ristretto compress is 32945, order reduce is 1780, and `c_bind` is 808917 gates with a peak of about 896 MB. Adding those pieces for 32 notes (32 compresses, 32 on-curve checks, 9 SHA-512 blocks, one windowed mul, 32 point adds) comes to about 4.94 million gates. That pads to 2^23. A 2^23 blob with two committed wires is 64 bytes past the 3264-byte tail, so height 4 would be 43554 bytes. The cap test requires 43490. Dropping the on-curve checks is still about 358k gates over 2^22, and it is not a sound hide. This VM had about 4.4 Gi available. At the measured cost of about 1 KB of constraints per gate, the full witness does not fit until the circuit is smaller or the host has more memory. No IPA was started. `seal_v3`, fresh-point, attacker, and the n=64 test are not claimed.
+Hide, cloud check 2026-10-11 15:01 +0100. Same gate budget as `1482101`. No circuit has been added to this branch. Measured pieces, not a full bucket witness: SHA-512 one block is 214081 gates, ristretto compress is 32945, order reduce is 1780, and `c_bind` is 808917 gates with a peak of about 896 MB. Adding those pieces for 32 notes (32 compresses, 32 on-curve checks, 9 SHA-512 blocks, one windowed mul, 32 point adds) comes to about 4.94 million gates. That pads to 2^23. A 2^23 blob with two committed wires is 64 bytes past the 3264-byte tail, so height 4 would be 43554 bytes. The cap test requires 43490. Dropping the on-curve checks is still about 358k gates over 2^22, and it is not a sound hide. This VM had about 4.4 Gi available. At the measured cost of about 1 KB of constraints per gate, the full witness does not fit until the circuit is smaller or the host has more memory. No IPA was started. `seal_v3`, fresh-point, attacker, and the n=64 test are not claimed.
 
 ## Closed on this branch
 
@@ -71,4 +71,4 @@ Genesis, tags, deploy, SSH, and the 72h soak stay with CoS. No fleet Ready. No p
 
 `node/tests/test_spend_tags_v12.js` field-less spend and multi-input spend fail `value_open` on this tree and on `25e610f`. That was left as it was.
 
-Tuesday 2026-10-13 15:00 Europe/London is not a start by itself. CoS is asleep until then. The chain path can now see the anchor notes. The cut still needs a genesis, one book magic, packs, a fleet match, a live payout, and the gates in `docs/v12-HANDOFF.md` item 89.
+Tuesday 2026-10-13 16:30 Europe/London is not a start by itself. CoS is asleep until then. The chain path can now see the anchor notes. The cut still needs a genesis, one book magic, packs, a fleet match, a live payout, and the gates in `docs/v12-HANDOFF.md` item 89.
