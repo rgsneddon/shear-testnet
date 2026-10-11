@@ -2777,7 +2777,12 @@ export function noteFromAnchor(flux, anchors, anchor) {
   if (!rec || !rec.jroot || !flux || !Array.isArray(flux.pubs)) return null;
   const n = Number(rec.n);
   if (!Number.isInteger(n) || n < 1 || n > flux.pubs.length) return null;
-  return { jroot: rec.jroot, n };
+  return {
+    jroot: rec.jroot,
+    n,
+    pubs: flux.pubs.slice(0, n),
+    commits: Array.isArray(flux.commits) ? flux.commits.slice(0, n) : [],
+  };
 }
 
 /** A prefix view. Load uses this so each height does not copy the chain. */

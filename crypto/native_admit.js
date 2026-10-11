@@ -80,6 +80,17 @@ export function nativeJroot(destLeaves, cLeaves) {
   }
 }
 
+/** Point-leaf book root. The chain fluxset root stays nativeJroot. */
+export function nativeJrootV3(destLeaves, cLeaves) {
+  if (!native || typeof native.jrootV3 !== 'function') return null;
+  try {
+    const o = native.jrootV3(leafList(destLeaves), leafList(cLeaves));
+    return o && o.length === 32 ? Buffer.from(o) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Extend a JF01 frontier. An empty prev starts at zero leaves. Root matches nativeJroot of the whole set. */
 export function nativeFrontierAppend(prev, destLeaves, cLeaves) {
   if (!native || typeof native.frontierAppend !== 'function') return null;

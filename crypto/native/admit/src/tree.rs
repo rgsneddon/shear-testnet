@@ -4,9 +4,10 @@
 //! Parent of Fp children is a Vesta Pedersen (Vesta scalar = Pallas base).
 //! Internal Vesta-point x-coords (Fq) are committed on Pallas.
 
-use crate::leaf::{dest_leaf_fp, jroot_hash, sha512_64};
+use crate::leaf::{dest_leaf_fp, jroot_hash, jroot_hash_point, sha512_64, DST_C_POINT};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar as RScalar;
+use curve25519_dalek::traits::Identity;
 use ff::{FromUniformBytes, PrimeField};
 use group::{Group, GroupEncoding};
 use pasta_curves::{pallas, vesta};
@@ -489,6 +490,110 @@ pub(crate) fn commit_ristretto_encodings(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
     RistrettoPoint::vartime_multiscalar_mul(scalars.iter(), points.iter()).compress().to_bytes()
 }
 
+/// r·U + Σ C_i. Domain `shear-admit-c-point-v3`. A zero child is the identity.
+/// A non-zero child that is not a ristretto point fails closed.
+pub fn commit_ristretto_points(cs: &[[u8; 32]; ARITY]) -> Option<[u8; 32]> {
+    let (u, _, _) = ristretto_gens();
+    let mut parts: Vec<&[u8]> = Vec::with_capacity(ARITY + 1);
+    parts.push(DST_C_POINT);
+    let mut acc = RistrettoPoint::identity();
+    for c in cs {
+        parts.push(c.as_ref());
+        if *c == [0u8; 32] {
+            continue;
+        }
+        acc += CompressedRistretto(*c).decompress()?;
+    }
+    let r = RScalar::from_bytes_mod_order_wide(&sha512_64(&parts));
+    acc += *u * r;
+    Some(acc.compress().to_bytes())
+}
+
+fn fold_c_point(level: &[[u8; 32]]) -> Option<Vec<[u8; 32]>> {
+    let mut next = Vec::with_capacity(level.len() / ARITY + 1);
+    for chunk in level.chunks(ARITY) {
+        let mut xs = [[0u8; 32]; ARITY];
+        for (i, c) in chunk.iter().enumerate() {
+            xs[i] = *c;
+        }
+        next.push(commit_ristretto_points(&xs)?);
+    }
+    Some(next)
+}
+
+/// v3 C levels. The first fold is the point commitment when that fold is not
+/// itself the root. A one-bucket tree (the fold is the root) stays the scalar
+/// commitment, because that root is the leaf statement. Upper folds stay scalar.
+fn c_levels_v3_build(c_leaves: &[u8], n: usize) -> Option<Vec<Vec<[u8; 32]>>> {
+    let mut level = c_leaf_level(c_leaves, n);
+    let mut levels = Vec::new();
+    let mut first = true;
+    loop {
+        if level.len() == 1 {
+            levels.push(level);
+            break;
+        }
+        let next = if first {
+            first = false;
+            let pointed = fold_c_point(&level)?;
+            if pointed.len() == 1 {
+                fold_c(&level)
+            } else {
+                pointed
+            }
+        } else {
+            fold_c(&level)
+        };
+        levels.push(level);
+        if next.len() == 1 {
+            levels.push(next);
+            break;
+        }
+        level = next;
+        pad_to_arity(&mut level);
+    }
+    Some(levels)
+}
+
+struct LevelCacheV3 {
+    n: usize,
+    dest_key: [u8; 32],
+    c_key: [u8; 32],
+    dlevels: Vec<Vec<[u8; 32]>>,
+    clevels: Vec<Vec<[u8; 32]>>,
+}
+
+/// Dest levels stay the v2 Pedersen fold. C levels use the point first fold.
+/// This cache is not `trees`, so a v3 prove cannot poison the v2 jroot.
+pub fn trees_v3(
+    dest_leaves: &[u8],
+    c_leaves: &[u8],
+    n: usize,
+) -> Option<(Vec<Vec<[u8; 32]>>, Vec<Vec<[u8; 32]>>)> {
+    let dk = leaves_key(dest_leaves, n);
+    let ck = leaves_key(c_leaves, n);
+    static CACHE: Mutex<Option<LevelCacheV3>> = Mutex::new(None);
+    {
+        let g = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(c) = g.as_ref() {
+            if c.n == n && c.dest_key == dk && c.c_key == ck {
+                return Some((c.dlevels.clone(), c.clevels.clone()));
+            }
+        }
+    }
+    let dlevels = dest_levels_build(dest_leaves, n);
+    let clevels = c_levels_v3_build(c_leaves, n)?;
+    let mut g = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    *g = Some(LevelCacheV3 {
+        n,
+        dest_key: dk,
+        c_key: ck,
+        dlevels: dlevels.clone(),
+        clevels: clevels.clone(),
+    });
+    Some((dlevels, clevels))
+}
+
 pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
     root_of_levels(&c_levels(c_leaves, n))
 }
@@ -496,6 +601,15 @@ pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
 pub fn jroot(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> [u8; 32] {
     let (d, c) = trees(dest_leaves, c_leaves, n);
     jroot_hash(&root_of_levels(&d), &root_of_levels(&c))
+}
+
+/// Point-leaf book root. Chain fluxset `jroot` stays `jroot`.
+pub fn jroot_v3(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> Option<[u8; 32]> {
+    let (d, c) = trees_v3(dest_leaves, c_leaves, n)?;
+    Some(jroot_hash_point(
+        &root_of_levels(&d),
+        &root_of_levels(&c),
+    ))
 }
 
 pub struct PastaTree {
@@ -881,5 +995,37 @@ mod frontier_tests {
         for n in [0usize, 1, 2, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1023, 1024, 1025] {
             check_n(n);
         }
+    }
+
+    #[test]
+    fn v3_point_root_does_not_move_v2_jroot() {
+        use curve25519_dalek::ristretto::RistrettoPoint;
+        let n = 64usize;
+        let mut d = vec![0u8; n * 32];
+        let mut c = vec![0u8; n * 32];
+        for i in 0..n {
+            let wide = sha512_64(&[b"t-d", &(i as u64).to_le_bytes()]);
+            d[i * 32..i * 32 + 32].copy_from_slice(&wide[..32]);
+            let p = RistrettoPoint::from_uniform_bytes(&sha512_64(&[
+                b"t-c",
+                &(i as u64).to_le_bytes(),
+            ]));
+            let enc = p.compress().to_bytes();
+            c[i * 32..i * 32 + 32].copy_from_slice(&enc);
+        }
+        let v2 = jroot(&d, &c, n);
+        let v3 = jroot_v3(&d, &c, n).expect("v3");
+        assert_ne!(v2, v3);
+        assert_eq!(jroot(&d, &c, n), v2, "v3 cache must not poison v2 jroot");
+        let v2_32 = jroot(&d[..32 * 32], &c[..32 * 32], 32);
+        let v3_32 = jroot_v3(&d[..32 * 32], &c[..32 * 32], 32).expect("v3-32");
+        assert_ne!(v2_32, v3_32);
+        let mut bucket = [[0u8; 32]; ARITY];
+        for i in 0..ARITY {
+            bucket[i].copy_from_slice(&c[i * 32..i * 32 + 32]);
+        }
+        let scalar = commit_ristretto_encodings(&bucket);
+        let point = commit_ristretto_points(&bucket).expect("point");
+        assert_ne!(scalar, point);
     }
 }

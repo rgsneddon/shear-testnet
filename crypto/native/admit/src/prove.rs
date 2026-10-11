@@ -6,16 +6,16 @@
 //! Version 2 still carries the 32-note sibling bucket. Version 3 does not:
 //! the leaf opens the parents, and the remainder is blinded.
 
-use crate::leaf::{jroot_hash, sha512_64};
+use crate::leaf::{jroot_hash, jroot_hash_point, sha512_64};
 use crate::select::{
-    leaf_prove, leaf_prove_v3, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
+    leaf_prove, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
     paired_qd_opens, paired_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN, V3_Y,
     V3_YX,
 };
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
-    commit_ristretto_encodings, commit_vesta, leaf_p_siblings, note_u, path_from_levels, rerand_c,
-    root_of_levels, trees, ARITY,
+    commit_ristretto_encodings, commit_ristretto_points, commit_vesta, leaf_p_siblings, note_u,
+    path_from_levels, rerand_c, ristretto_gens, root_of_levels, trees, trees_v3, ARITY,
 };
 use ff::PrimeField;
 use pasta_curves::vesta;
@@ -26,9 +26,12 @@ use curve25519_dalek::traits::IsIdentity;
 use rand_core::{OsRng, RngCore};
 
 pub const MAX_PROOF: usize = 32768;
-/// Height-4 v3 proof: header + 3 paired layers + the link leaf = 40354.
-/// Height 5 is 46818 and does not fit. The v2 cap stays 32768.
-pub const MAX_PROOF_V3: usize = 40354;
+/// Raw dest bucket, its blind, raw C bucket, its blind, then Q‖A‖zᵤ‖zₕ.
+/// This replaces the 128-byte parent link in front of a v3 leaf when n > 32.
+pub const V3_RAW_LINK: usize = 1024 + 32 + 1024 + 32 + 128;
+/// Height-4 v3 proof. The leaf gap carries the raw 32-note bucket, not the
+/// scalar parent commitments. Height 5 does not fit. The v2 cap stays 32768.
+pub const MAX_PROOF_V3: usize = 42466;
 pub const VERSION: u8 = 2;
 pub const VERSION_V3: u8 = 3;
 const HDR: usize = 1 + 32 * 8 + 1; // version, tag, ct, dest_root, c_root, p_com, r_x, z_x, z_w, n_layers
@@ -46,6 +49,84 @@ fn scalar_in(bytes: [u8; 32], v3: bool) -> Option<Scalar> {
         return Some(Scalar::from_bytes_mod_order(bytes));
     }
     Scalar::from_canonical_bytes(bytes).into()
+}
+
+/// Q = C_i + ρ·U, bound to Kc = C_i + ρ_c·H. Q is not C_i.
+fn v3_note_trailer(
+    ctx: &[u8],
+    ci: &RistrettoPoint,
+    rho_c: &Scalar,
+    kc: &[u8; 32],
+) -> Option<[u8; 128]> {
+    let gens = ristretto_gens();
+    let u = gens.0;
+    let h = gens.2;
+    let mut rho = rs_rand();
+    if rho == Scalar::ZERO {
+        rho = Scalar::from(1u64);
+    }
+    let q = ci + u * rho;
+    let k_u = rs_rand();
+    let k_h = rs_rand();
+    let a = u * k_u - h * k_h;
+    let q_b = q.compress().to_bytes();
+    let a_b = a.compress().to_bytes();
+    let e = Scalar::from_bytes_mod_order_wide(&sha512_64(&[ctx, b"c-point-q", &q_b, &a_b, kc]));
+    let z_u = (k_u + e * rho).to_bytes();
+    let z_h = (k_h + e * rho_c).to_bytes();
+    let mut out = [0u8; 128];
+    out[..32].copy_from_slice(&q_b);
+    out[32..64].copy_from_slice(&a_b);
+    out[64..96].copy_from_slice(&z_u);
+    out[96..].copy_from_slice(&z_h);
+    Some(out)
+}
+
+fn v3_trailer_ok(ctx: &[u8], trailer: &[u8], kc: &[u8; 32]) -> bool {
+    if trailer.len() != 128 || ctx.len() != 64 {
+        return false;
+    }
+    let q_b = match read32(trailer, 0) {
+        Some(x) => x,
+        None => return false,
+    };
+    let a_b = match read32(trailer, 32) {
+        Some(x) => x,
+        None => return false,
+    };
+    let z_u = Scalar::from_bytes_mod_order(match read32(trailer, 64) {
+        Some(x) => x,
+        None => return false,
+    });
+    let z_h = Scalar::from_bytes_mod_order(match read32(trailer, 96) {
+        Some(x) => x,
+        None => return false,
+    });
+    let q = match decompress(&q_b) {
+        Some(p) => p,
+        None => return false,
+    };
+    let a = match decompress(&a_b) {
+        Some(p) => p,
+        None => return false,
+    };
+    let kc_pt = match decompress(kc) {
+        Some(p) => p,
+        None => return false,
+    };
+    let gens = ristretto_gens();
+    let u = gens.0;
+    let h = gens.2;
+    let e = Scalar::from_bytes_mod_order_wide(&sha512_64(&[ctx, b"c-point-q", &q_b, &a_b, kc]));
+    u * z_u - h * z_h == a + (q - kc_pt) * e
+}
+
+fn read_bucket(proof: &[u8], off: usize) -> Option<[[u8; 32]; ARITY]> {
+    let mut xs = [[0u8; 32]; ARITY];
+    for i in 0..ARITY {
+        xs[i] = read32(proof, off + i * 32)?;
+    }
+    Some(xs)
 }
 
 fn os_rand32() -> Option<[u8; 32]> {
@@ -147,7 +228,14 @@ pub fn admit_prove_in(
         return None;
     }
     let tag = i_pt.compress().to_bytes();
-    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = if v3 {
+        match trees_v3(dest_leaves, c_leaves, n) {
+            Some(t) => t,
+            None => return None,
+        }
+    } else {
+        trees(dest_leaves, c_leaves, n)
+    };
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != cpath.len() || dpath.is_empty() {
@@ -159,7 +247,11 @@ pub fn admit_prove_in(
     }
     let dest_root = root_of_levels(&dlevels);
     let c_root_b = root_of_levels(&clev);
-    let jr = jroot_hash(&dest_root, &c_root_b);
+    let jr = if v3 {
+        jroot_hash_point(&dest_root, &c_root_b)
+    } else {
+        jroot_hash(&dest_root, &c_root_b)
+    };
     let slots = slots_of(index, n_layers);
     let ct_pt = decompress(&c_tilde)?;
 
@@ -185,13 +277,27 @@ pub fn admit_prove_in(
             t_d_prev = Some(td);
             t_c_prev = Some(tc);
         }
-        let parent_d = commit_vesta(&dpath[0]);
-        let parent_c = commit_ristretto_encodings(&cpath[0]);
         let td_b: [u8; 32] = t_d_prev?.to_repr().into();
-        mem.extend_from_slice(&parent_d);
-        mem.extend_from_slice(&td_b);
-        mem.extend_from_slice(&parent_c);
-        mem.extend_from_slice(&t_c_prev?.to_bytes());
+        let tc_b = t_c_prev?.to_bytes();
+        if !v3 {
+            let parent_d = commit_vesta(&dpath[0]);
+            let parent_c = commit_ristretto_encodings(&cpath[0]);
+            mem.extend_from_slice(&parent_d);
+            mem.extend_from_slice(&td_b);
+            mem.extend_from_slice(&parent_c);
+            mem.extend_from_slice(&tc_b);
+        } else {
+            // The raw 32-note bucket stays on the wire. The scalar parent
+            // commitments are not. The verifier recomputes both openings.
+            for row in &dpath[0] {
+                mem.extend_from_slice(row);
+            }
+            mem.extend_from_slice(&td_b);
+            for row in &cpath[0] {
+                mem.extend_from_slice(row);
+            }
+            mem.extend_from_slice(&tc_b);
+        }
     }
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     if p_sib[slots[0]] != *p {
@@ -201,11 +307,12 @@ pub fn admit_prove_in(
     let w = chal(&[b"w", x, p]);
     let p_com = p_pt + u * w;
     let td_leaf = vs_rand();
+    let mut v3_trail: Option<[u8; 128]> = None;
     let leaf = if v3 {
         if dpath[0][slots[0]] != dest_leaf_fp(p) {
             return None;
         }
-        leaf_prove_v3(
+        let opened = crate::select::leaf_prove_v3_out(
             &dpath[0],
             &cpath[0],
             &p_sib,
@@ -216,7 +323,11 @@ pub fn admit_prove_in(
             &ct_pt,
             &p_com,
             ctx,
-        )?
+        )?;
+        if n_layers > 1 {
+            v3_trail = Some(v3_note_trailer(ctx, &opened.ci, &opened.rho_c, &opened.kc)?);
+        }
+        opened.proof
     } else {
         for x in &p_sib {
             mem.extend_from_slice(x);
@@ -237,6 +348,9 @@ pub fn admit_prove_in(
             ctx,
         )?
     };
+    if let Some(tr) = v3_trail {
+        mem.extend_from_slice(&tr);
+    }
     mem.extend_from_slice(&leaf);
     let nonce_rand = if v3 { os_rand32()? } else { [0u8; 32] };
     let k = if v3 {
@@ -330,7 +444,7 @@ pub fn forge_fresh_spend_v3(
     if ctx.len() != 64 || n == 0 || index >= n {
         return None;
     }
-    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = trees_v3(dest_leaves, c_leaves, n)?;
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != 1 || cpath.len() != 1 {
@@ -340,7 +454,7 @@ pub fn forge_fresh_spend_v3(
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     let dest_root = root_of_levels(&dlevels);
     let c_root_b = root_of_levels(&clev);
-    let jr = jroot_hash(&dest_root, &c_root_b);
+    let jr = jroot_hash_point(&dest_root, &c_root_b);
     let t_fresh = rs_rand();
     let fresh = G * rs_rand();
     let ct_pt = fresh + crate::tree::ristretto_h_note() * t_fresh;
@@ -478,7 +592,7 @@ pub fn forge_attacker_dest_v3(
     if ctx.len() != 64 || n == 0 || index >= n {
         return None;
     }
-    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let (dlevels, clev) = trees_v3(dest_leaves, c_leaves, n)?;
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != 1 || cpath.len() != 1 {
@@ -488,7 +602,7 @@ pub fn forge_attacker_dest_v3(
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     let dest_root = root_of_levels(&dlevels);
     let c_root_b = root_of_levels(&clev);
-    let jr = jroot_hash(&dest_root, &c_root_b);
+    let jr = jroot_hash_point(&dest_root, &c_root_b);
     let c_leaf = cpath[0][slots[0]];
     let ci = CompressedRistretto(c_leaf).decompress()?;
     let t_note = rs_rand();
@@ -700,7 +814,12 @@ pub fn admit_verify_in(
         Some(x) => x,
         None => return false,
     };
-    if jroot_hash(&dest_root, &c_root_b) != *jr {
+    let rooted = if v3 {
+        jroot_hash_point(&dest_root, &c_root_b) == *jr
+    } else {
+        jroot_hash(&dest_root, &c_root_b) == *jr
+    };
+    if !rooted {
         return false;
     }
     let p_com_b = match read32(proof, 129) {
@@ -783,39 +902,95 @@ pub fn admit_verify_in(
             prev_off = Some(off);
             off += PAIRED_LEN;
         }
-        let pd = match read32(proof, off) {
-            Some(x) => x,
-            None => return false,
-        };
-        let td = match read32(proof, off + 32) {
-            Some(x) => x,
-            None => return false,
-        };
-        let pc = match read32(proof, off + 64) {
-            Some(x) => x,
-            None => return false,
-        };
-        let tc = match read32(proof, off + 96) {
-            Some(x) => x,
-            None => return false,
-        };
-        off += 128;
         let po = match prev_off {
             Some(x) => x,
             None => return false,
         };
         let prev = &proof[po..po + PAIRED_LEN];
-        let tdv = match vesta_t(&td) {
-            Some(x) => x,
-            None => return false,
-        };
-        if !paired_qd_opens(prev, &pd, &tdv)
-            || !paired_qc_opens(prev, &pc, &Scalar::from_bytes_mod_order(tc))
-        {
-            return false;
+        if v3 {
+            if proof.len() < off + V3_RAW_LINK {
+                return false;
+            }
+            let d_bucket = match read_bucket(proof, off) {
+                Some(x) => x,
+                None => return false,
+            };
+            let td = match read32(proof, off + 1024) {
+                Some(x) => x,
+                None => return false,
+            };
+            let c_bucket = match read_bucket(proof, off + 1056) {
+                Some(x) => x,
+                None => return false,
+            };
+            let tc = match read32(proof, off + 2080) {
+                Some(x) => x,
+                None => return false,
+            };
+            let trail_at = off + 2112;
+            let trailer = match proof.get(trail_at..trail_at + 128) {
+                Some(x) => x,
+                None => return false,
+            };
+            off += V3_RAW_LINK;
+            let pd = commit_vesta(&d_bucket);
+            let pc_point = match commit_ristretto_points(&c_bucket) {
+                Some(x) => x,
+                None => return false,
+            };
+            let pc_scalar = commit_ristretto_encodings(&c_bucket);
+            let tdv = match vesta_t(&td) {
+                Some(x) => x,
+                None => return false,
+            };
+            if !paired_qd_opens(prev, &pd, &tdv)
+                || !paired_qc_opens(prev, &pc_point, &Scalar::from_bytes_mod_order(tc))
+            {
+                return false;
+            }
+            let leaf_len = LEAF_V3_LEN;
+            if proof.len() < off + leaf_len {
+                return false;
+            }
+            let kc = match read32(proof, off + 96) {
+                Some(x) => x,
+                None => return false,
+            };
+            if !v3_trailer_ok(ctx, trailer, &kc) {
+                return false;
+            }
+            dest_parent = pd;
+            c_parent = pc_scalar;
+        } else {
+            let pd = match read32(proof, off) {
+                Some(x) => x,
+                None => return false,
+            };
+            let td = match read32(proof, off + 32) {
+                Some(x) => x,
+                None => return false,
+            };
+            let pc = match read32(proof, off + 64) {
+                Some(x) => x,
+                None => return false,
+            };
+            let tc = match read32(proof, off + 96) {
+                Some(x) => x,
+                None => return false,
+            };
+            off += 128;
+            let tdv = match vesta_t(&td) {
+                Some(x) => x,
+                None => return false,
+            };
+            if !paired_qd_opens(prev, &pd, &tdv)
+                || !paired_qc_opens(prev, &pc, &Scalar::from_bytes_mod_order(tc))
+            {
+                return false;
+            }
+            dest_parent = pd;
+            c_parent = pc;
         }
-        dest_parent = pd;
-        c_parent = pc;
     }
     let ct = match decompress(c_tilde) {
         Some(p) => p,
@@ -1098,7 +1273,7 @@ mod cap_tests {
         if layers <= 1 {
             return super::HDR + LEAF_V3_LEN;
         }
-        super::HDR + (layers - 1) * (PAIRED_LEN + 128) + LEAF_V3_LEN
+        super::HDR + (layers - 2) * (PAIRED_LEN + 128) + PAIRED_LEN + super::V3_RAW_LINK + LEAF_V3_LEN
     }
 
     #[test]

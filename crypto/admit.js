@@ -2,13 +2,13 @@
  * ADMITv2 — Anonymous Destination Membership Integer Transactions.
  * Curve Trees on Pasta (Pallas–Vesta). Circuit = membership of leaf only.
  * Native prove/verify. ADMITv1 linear r.length === |J| blobs fail.
- * Fingerprint: ADMIT=ADMITv2.
+ * Fingerprint: ADMIT=ADMITv3.
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, kernelExcess, txSpendTags } from './note.js';
 import { merkleRoot } from './merkle.js';
-import { nativeJroot, nativeFrontierAppend, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
+import { nativeJroot, nativeJrootV3, nativeFrontierAppend, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -68,6 +68,13 @@ export function jroot(fluxset) {
     return nativeJroot(dest, zeros) || merkleRoot(dest);
   }
   return nativeJroot(destLeaves, cLeaves) || Buffer.alloc(32);
+}
+
+/** ADMITv3 book root. Does not replace the chain fluxset jroot. */
+export function jrootV3(fluxset) {
+  const { destLeaves, cLeaves } = leafLists(fluxset);
+  if (!destLeaves.length || destLeaves.length !== cLeaves.length) return null;
+  return nativeJrootV3(destLeaves, cLeaves);
 }
 
 /**
@@ -210,8 +217,8 @@ export function admitVerifyV3(proof, fluxset, extra = {}) {
     if (!blob) return false;
     const pr = Buffer.from(asU8(blob));
     if (!pr.length || pr[0] !== 3) return false;
-    // Height-4 v3 proof is 40354 bytes. Height 5 does not fit. v2 stays 32768.
-    if (pr.length > 40354) return false;
+    // Height-4 v3 proof is 42466 bytes. Height 5 does not fit. v2 stays 32768.
+    if (pr.length > 42466) return false;
     const context = extra.ctx;
     if (!context || Buffer.from(asU8(context)).length !== 64) return false;
     let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;

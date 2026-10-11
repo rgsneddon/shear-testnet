@@ -19,7 +19,7 @@ pub use prove::{
     admit_prove, admit_prove_v3, admit_verify, admit_verify_v3, admit_verify_batch, forest_prove,
     forest_verify, Proof, MAX_PROOF, MAX_PROOF_V3,
 };
-pub use tree::{c_root, jroot, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
+pub use tree::{c_root, jroot, jroot_v3, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -107,6 +107,37 @@ pub extern "C" fn shear_admit_jroot(
             return BAD;
         }
         let root = jroot(d, c, n);
+        unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), out, 32) };
+        OK
+    }))
+    .unwrap_or(BAD)
+}
+
+/// Point-leaf book root. Does not replace `shear_admit_jroot`.
+#[no_mangle]
+pub extern "C" fn shear_admit_jroot_v3(
+    dest_leaves: *const u8,
+    c_leaves: *const u8,
+    n: u32,
+    out: *mut u8,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let n = n as usize;
+        let d = match slice(dest_leaves, n.saturating_mul(32)) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        let c = match slice(c_leaves, n.saturating_mul(32)) {
+            Some(x) => x,
+            None => return BAD,
+        };
+        if out.is_null() {
+            return BAD;
+        }
+        let root = match jroot_v3(d, c, n) {
+            Some(x) => x,
+            None => return BAD,
+        };
         unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), out, 32) };
         OK
     }))
@@ -967,7 +998,7 @@ mod tests {
         assert_eq!(proof[0], 3);
         assert!(proof.len() <= MAX_PROOF_V3);
         assert_eq!(proof.get(257).copied(), Some(1));
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_v3(&dest_blob, &c_blob, n).expect("point root");
         let tag = proof_spend_tag(&proof).expect("tag");
         assert!(prove::admit_verify_in(
             &proof, &jr, &ct, &tag, &[], &[], 0, &[0u8; 32], &ctx
@@ -978,7 +1009,7 @@ mod tests {
         assert!(!proof.windows(32).any(|w| w == cs[idx].as_slice()));
         assert!(!proof.windows(32).any(|w| w == dest_l.as_slice()));
         let (_, _, _, d2, c2) = note_set(n);
-        let jr2 = jroot(&d2, &c2, n);
+        let jr2 = jroot_v3(&d2, &c2, n).expect("other point root");
         assert_ne!(jr, jr2);
         assert!(!admit_verify_v3(&proof, &jr2, &ct, &tag, &ctx));
         let mut ct_bad = ct;
@@ -1070,7 +1101,7 @@ mod tests {
             &ctx,
         )
         .expect("honest leaf");
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_v3(&dest_blob, &c_blob, n).expect("point root");
         let tag_h = proof_spend_tag(&proof_h).expect("honest tag");
         eprintln!("PHASE honest-verify");
         assert!(
@@ -1140,7 +1171,7 @@ mod tests {
         assert!(gadget::slot_opening_verifies(slot_blob, &forged.e_bytes, &forged.s_bytes));
         assert!(gadget::encode_opening_verifies(enc_blob, &forged.kc_b));
         assert!(gadget::kp_opening_verifies(kp_blob, &forged.kp_b, &kp_v));
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_v3(&dest_blob, &c_blob, n).expect("point root");
         eprintln!("PHASE attacker-verify");
         assert!(
             !admit_verify_v3(&forged.proof, &jr, &forged.ct, &forged.tag, &ctx),
@@ -1171,7 +1202,7 @@ mod tests {
         )
         .expect("two-bucket proof");
         assert_eq!(proof.get(257).copied(), Some(2));
-        let jr = jroot(&dest_blob, &c_blob, n);
+        let jr = jroot_v3(&dest_blob, &c_blob, n).expect("point root");
         let tag = proof_spend_tag(&proof).expect("tag");
         assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
         let mut dest0 = [[0u8; 32]; 32];

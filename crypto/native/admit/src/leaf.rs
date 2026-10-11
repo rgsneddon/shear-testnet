@@ -6,6 +6,8 @@ use ff::{FromUniformBytes, PrimeField};
 
 pub const DST_LEAF: &[u8] = b"shear-admit-leaf-v2";
 pub const DST_JROOT: &[u8] = b"shear-jroot-v2";
+pub const DST_JROOT_POINT: &[u8] = b"shear-jroot-point-v3";
+pub const DST_C_POINT: &[u8] = b"shear-admit-c-point-v3";
 pub const DST_C_LEAF: &[u8] = b"shear-admit-c-leaf-v2";
 
 pub fn sha512_64(parts: &[&[u8]]) -> [u8; 64] {
@@ -47,6 +49,15 @@ pub fn vesta_scalar_from_fp_bytes(b: &[u8; 32]) -> Option<vesta::Scalar> {
 
 pub fn jroot_hash(pasta_root: &[u8; 32], c_root: &[u8; 32]) -> [u8; 32] {
     let wide = sha512_64(&[DST_JROOT, pasta_root, c_root]);
+    let mut o = [0u8; 32];
+    o.copy_from_slice(&wide[..32]);
+    o
+}
+
+/// v3 book root. The preimage is the v3 dest root and the v3 C root.
+/// v2 `jroot_hash` stays on `shear-jroot-v2`.
+pub fn jroot_hash_point(pasta_root: &[u8; 32], c_root: &[u8; 32]) -> [u8; 32] {
+    let wide = sha512_64(&[DST_JROOT_POINT, pasta_root, c_root]);
     let mut o = [0u8; 32];
     o.copy_from_slice(&wide[..32]);
     o

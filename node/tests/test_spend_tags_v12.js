@@ -283,6 +283,31 @@ describe('v12 spend tags come from the proof bytes', () => {
     assert.equal(lying.proofChecked, true);
   });
 
+  it('a note set whose v2 root is not the anchor root fails closed', () => {
+    const tag = Buffer.alloc(32, 0xab);
+    const blob = Buffer.alloc(129, 0);
+    blob[0] = 3;
+    tag.copy(blob, 1);
+    const commit = Buffer.alloc(32, 4);
+    const got = verifyTypedAdmitFunding({
+      kind: 'lock',
+      anchor: 8,
+      vin: [{ commit, anchor: 8 }],
+      admit_proofs: [{ blob, cTilde: commit }],
+    }, {
+      height: 24,
+      magic: MAGIC_TESTNET,
+      noteAtAnchor: () => ({
+        jroot: Buffer.alloc(32, 9),
+        n: 1,
+        pubs: [Buffer.alloc(32, 1)],
+        commits: [commit],
+      }),
+    });
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'admit_anchor_root');
+  });
+
   it('a field-less spend cannot be queued twice, reorged back in, or reloaded as unspent', async () => {
     const { dest, spendSeed, key } = identityDest();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-tags-'));

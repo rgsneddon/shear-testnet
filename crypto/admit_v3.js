@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
 import { asU8 } from './note.js';
-import { admitVerifyV3, fluxsetFromBlocks } from './admit.js';
+import { admitVerifyV3, fluxsetFromBlocks, jroot, jrootV3 } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
 
 export const ANCHOR_QUANTUM = 8;
@@ -195,6 +195,38 @@ export function anchorRootHash(destRoot, cRoot) {
     .subarray(0, 32);
 }
 
+/** Header roots under the point-leaf book. Chain fluxset jroot stays shear-jroot-v2. */
+export function anchorRootHashPoint(destRoot, cRoot) {
+  return createHash('sha512')
+    .update(Buffer.from('shear-jroot-point-v3'))
+    .update(bytes32(destRoot) || Buffer.alloc(32))
+    .update(bytes32(cRoot) || Buffer.alloc(32))
+    .digest()
+    .subarray(0, 32);
+}
+
+function same32(a, b) {
+  const left = Buffer.from(asU8(a || []));
+  const right = Buffer.from(asU8(b || []));
+  return left.length === 32 && right.length === 32 && left.equals(right);
+}
+
+/**
+ * Pubs at the anchor open the point-leaf book. The v2 root of those same
+ * notes must still be the stored fluxset root. A record with no note set
+ * stays on shear-jroot-v2 so a short blob can fail the tag check first.
+ */
+function fundingPointRoot(live, n) {
+  const pubs = Array.isArray(live?.pubs) ? live.pubs.slice(0, n) : [];
+  const commits = Array.isArray(live?.commits) ? live.commits.slice(0, n) : [];
+  if (pubs.length !== n || commits.length !== n) return null;
+  const book = { pubs, commits };
+  if (!same32(jroot(book), live.jroot)) return { reject: true };
+  const point = Buffer.from(asU8(jrootV3(book) || []));
+  if (point.length !== 32) return { reject: true };
+  return { point };
+}
+
 /** Shape only. The chain and mempool still verify the proof against J at A. */
 export function typedAdmitStructure(tx) {
   if (!typedKindNeedsAdmitV3(tx)) return { ok: true, skip: true };
@@ -283,13 +315,18 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
     n,
     digest,
   });
+  const book = fundingPointRoot(live, n);
+  if (book && book.reject) return { ok: false, reason: 'admit_anchor_root' };
+  const pointRoot = book ? book.point : null;
   const tags = [];
   const seen = new Set();
   for (const proof of structure.proofs) {
     const pr = Buffer.from(asU8(proof.blob || proof.proof));
     if (pr.length < 129) return { ok: false, reason: 'admit_membership', proofChecked: true };
-    const got = anchorRootHash(pr.subarray(65, 97), pr.subarray(97, 129));
-    const want = Buffer.from(asU8(live.jroot));
+    const got = pointRoot
+      ? anchorRootHashPoint(pr.subarray(65, 97), pr.subarray(97, 129))
+      : anchorRootHash(pr.subarray(65, 97), pr.subarray(97, 129));
+    const want = pointRoot || Buffer.from(asU8(live.jroot));
     if (want.length !== 32 || !Buffer.from(got).equals(want)) {
       return { ok: false, reason: 'admit_anchor_root', proofChecked: true };
     }
@@ -314,7 +351,7 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
     }
     typedProofVerifies += 1;
     const ok = admitVerifyV3(proof, live, {
-      jroot: live.jroot,
+      jroot: pointRoot || live.jroot,
       cTilde: proof.cTilde,
       spendTag: tag,
       ctx,

@@ -1587,6 +1587,13 @@ fn seal_v3(made: V3Made) -> Option<Vec<u8>> {
 /// opening of both parents. Domain is `admit-v3-leaf`.
 /// The trailer proves the slot integer and the note encoding open one Y,
 /// and the dest-bind proof opens the same Yx as the dest Schnorr.
+pub struct V3LeafOut {
+    pub proof: Vec<u8>,
+    pub rho_c: RScalar,
+    pub ci: RistrettoPoint,
+    pub kc: [u8; 32],
+}
+
 pub fn leaf_prove_v3(
     dest_ch: &[[u8; 32]; ARITY],
     c_ch: &[[u8; 32]; ARITY],
@@ -1599,9 +1606,30 @@ pub fn leaf_prove_v3(
     p_com: &RistrettoPoint,
     ctx: &[u8],
 ) -> Option<Vec<u8>> {
-    seal_v3(leaf_prove_v3_inner(
+    Some(leaf_prove_v3_out(dest_ch, c_ch, p_ch, index, t_d, t_note, w_p, c_tilde, p_com, ctx)?.proof)
+}
+
+/// Honest leaf plus the blinding that opens Q = C_i + ρ·U against Kc.
+pub fn leaf_prove_v3_out(
+    dest_ch: &[[u8; 32]; ARITY],
+    c_ch: &[[u8; 32]; ARITY],
+    p_ch: &[[u8; 32]; ARITY],
+    index: usize,
+    t_d: &vesta::Scalar,
+    t_note: &RScalar,
+    w_p: &RScalar,
+    c_tilde: &RistrettoPoint,
+    p_com: &RistrettoPoint,
+    ctx: &[u8],
+) -> Option<V3LeafOut> {
+    let made = leaf_prove_v3_inner(
         dest_ch, c_ch, p_ch, index, t_d, t_note, w_p, c_tilde, p_com, ctx, None,
-    )?)
+    )?;
+    let rho_c = made.rho_c?;
+    let ci = made.ci;
+    let kc = made.kc_b;
+    let proof = seal_v3(made)?;
+    Some(V3LeafOut { proof, rho_c, ci, kc })
 }
 
 /// Hand-built leaf body: open a real arity-32 set, but set `Kc`/`Kp` from the caller.
