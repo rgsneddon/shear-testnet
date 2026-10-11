@@ -2086,11 +2086,12 @@ export function createStore(dir, {
       const carry = unboundMembershipCarry(tx);
       if (!carry.ok) return carry;
     }
-    // A commit vin is membership, including kinds the value set refuses.
-    const typedVin = typedCommitRejected(tx);
-    if (typedVin) return typedVin;
+    // A refused kind returns kind before a commit vin is membership.
+    // Lock, vote, and withdraw still fail that vin as admit_membership.
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
+    const typedVin = typedCommitRejected(tx);
+    if (typedVin) return typedVin;
     const open = valueOpenRejected(tx);
     if (open) return open;
     const leafAsk = bLeafAskRejected(tx);
@@ -3881,17 +3882,17 @@ export function createStore(dir, {
       };
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
-      const typedVin = typedCommitRejected(tx);
-      if (typedVin) {
-        try {
-          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: typedVin.reason }));
-        } catch { /* ignore */ }
-        continue;
-      }
       const earlyKind = v12KindRejected(tx);
       if (earlyKind) {
         try {
           console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: earlyKind.reason }));
+        } catch { /* ignore */ }
+        continue;
+      }
+      const typedVin = typedCommitRejected(tx);
+      if (typedVin) {
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: typedVin.reason }));
         } catch { /* ignore */ }
         continue;
       }

@@ -703,10 +703,10 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
   for (const tx of body || []) {
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
-    const typed = typedCommitRejected(tx);
-    if (typed) return typed;
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
+    const typed = typedCommitRejected(tx);
+    if (typed) return typed;
     const open = valueOpenRejected(tx);
     if (open) return open;
     const stake = boundReserveWithdraw(tx, reserveState, drawn);

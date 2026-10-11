@@ -74,14 +74,16 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         };
         signSpendTx(tx, box.key);
         assert.equal(typedCommitRejected(tx)?.reason, 'admit_membership', `${kind} ${nanos}`);
+        const refused = kind === 'vortice-register';
+        const want = refused ? 'kind' : 'admit_membership';
         const body = verifyFundedBody([tx], () => nanos * 4, {
           reserveState: { portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0, ownerPub: tx.spendPub } }, epochBps: 0 },
         });
         assert.equal(body.ok, false, `${kind} ${nanos}`);
-        assert.equal(body.reason, 'admit_membership', `${kind} ${nanos}`);
+        assert.equal(body.reason, want, `${kind} ${nanos} ${body.reason}`);
         const queued = store.queueTx(tx);
         assert.equal(queued.ok, false, `${kind} ${nanos} ${queued.reason}`);
-        assert.equal(queued.reason, 'admit_membership', `${kind} ${nanos}`);
+        assert.equal(queued.reason, want, `${kind} ${nanos}`);
         const tpl = buildTemplate({
           prev: GENESIS_PREV,
           height: 1,
@@ -95,7 +97,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
           reserveState: { portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0 } }, epochBps: 0 },
         }));
         assert.equal(got.ok, false, `${kind} ${nanos}`);
-        assert.equal(got.reason, 'admit_membership', `${kind} ${nanos} ${got.reason}`);
+        assert.equal(got.reason, want, `${kind} ${nanos} ${got.reason}`);
       }
     }
   });
