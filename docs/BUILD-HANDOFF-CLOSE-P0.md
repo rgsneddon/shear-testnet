@@ -8,7 +8,9 @@ From: the cloud agent
 Branch: `cursor/close-open-p0-0bcc`
 Base: `feat/shear-testnet-v12` at `5a5685ad9b9d9d7c4efca095abb5003264023c3c`
 
-This branch starts at Build's merge. It does not replace it. `MAX_PROOF_V3` stays 43490. The raw arity-32 C bucket stays on the wire. `v3_two_bucket_spent_link_stays_on_the_wire` still requires those raw notes. Do not land `cursor/admit-v3-point-root-0bcc` on top of this branch. That branch is cap 42466 and a different glue. Do not push `feat/shear-testnet-v12`. Do not merge. Do not cut genesis, move tags, flip `kBookMagic`, deploy, SSH, or start the soak.
+This branch starts at Build's merge. It does not replace it. `MAX_PROOF_V3` stays 43490. The raw arity-32 C bucket stays on the wire until the hide proof lands. `v3_two_bucket_spent_link_stays_on_the_wire` still requires those raw notes. Do not flip that test to fake a hide. Do not land `cursor/admit-v3-point-root-0bcc` on top of this branch. That branch is cap 42466 and a different glue. Do not push `feat/shear-testnet-v12`. Do not merge. Do not cut genesis, move tags, flip `kBookMagic`, deploy, SSH, or start the soak.
+
+The n=64 spent-bucket hide is the open proof on this branch. It keeps Build's cap 43490. `cursor/admit-v3-point-root-0bcc` stays at cap 42466. Do not start a second prove of that hide. Do not replay the 42466 glue here.
 
 CoS still holds the Tuesday 15:00 cut. This work does not start it. `scripts/v12-genesis-cut.mjs` is CoS's. `V12_GENESIS_BLOCK_HASH` stays empty. There is no soak stamp.
 
