@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'shear_identity.dart';
+import 'shear_note.dart';
 
 /// Same bytes as crypto/pack.js shear-enc-v1.
 const encMagic = 'shear-enc-v1';
@@ -11,10 +12,21 @@ const encA = 1;
 const encB = 2;
 const encTx = 3;
 
+Uint8List _u64leUnits(BigInt n) {
+  if (n < BigInt.zero || n.bitLength > 64) throw ArgumentError('u64');
+  final b = Uint8List(8);
+  var v = n;
+  final mask = BigInt.from(0xff);
+  for (var i = 0; i < 8; i++) {
+    b[i] = (v & mask).toInt();
+    v >>= 8;
+  }
+  return b;
+}
+
 Uint8List _u64le(int n) {
-  final b = ByteData(8);
-  b.setUint64(0, n, Endian.little);
-  return b.buffer.asUint8List();
+  if (n < 0) throw ArgumentError('u64');
+  return _u64leUnits(BigInt.from(n));
 }
 
 Uint8List packALeaf({required Uint8List dest20, int count = 0}) {
@@ -75,7 +87,7 @@ Uint8List packTx({
     final dest = o['dest20'] as Uint8List;
     if (dest.length != 20) throw ArgumentError('vout');
     out.add(dest);
-    out.add(_u64le((o['nanos'] as int?) ?? 0));
+    out.add(_u64leUnits(tryU64Units(o['nanos']) ?? BigInt.zero));
     out.add([(o['kind'] as int?) ?? 0]);
   }
   final hasMemo = memoH != null && memoH.length == 32;
@@ -122,15 +134,20 @@ Uint8List _as32(dynamic v) {
 }
 
 /// Nanos the pool hashes: valueProof.v when set, otherwise nanos.
-int claimedVoutNanos(Map<String, dynamic> o) {
+BigInt claimedVoutUnits(Map<String, dynamic> o) {
   final vp = o['valueProof'];
   if (vp is Map) {
-    final v = vp['v'];
-    if (v is num) return v.round();
+    final units = tryU64Units(vp['v']);
+    if (units != null) return units;
   }
-  final n = o['nanos'];
-  if (n is num) return n.round();
-  return 0;
+  return tryU64Units(o['nanos']) ?? BigInt.zero;
+}
+
+/// Nanos the pool hashes, when they fit in a Dart int. A wider u64 is not clamped into this view.
+int claimedVoutNanos(Map<String, dynamic> o) {
+  final units = claimedVoutUnits(o);
+  if (units.bitLength > 63) return 0;
+  return units.toInt();
 }
 
 Uint8List spendPackDigest({
@@ -180,7 +197,7 @@ Uint8List spendPackDigest({
     final sealed = o['commit'] != null && !publicNanos;
     vouts.add({
       'dest20': dest20,
-      'nanos': sealed ? 0 : claimedVoutNanos(o),
+      'nanos': sealed ? BigInt.zero : claimedVoutUnits(o),
       'kind': _kindByte((o['kind'] as String?) ?? kind),
     });
   }

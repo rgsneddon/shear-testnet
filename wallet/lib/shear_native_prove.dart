@@ -21,6 +21,10 @@ bool debugFlowCryptoOnCaller = false;
 typedef NativeNoteSealer = Map<String, dynamic> Function(int v, {Uint8List? dest20, String kind});
 NativeNoteSealer? debugNativeSealNote;
 
+/// Test-only override for a u64 that does not fit in a Dart int.
+typedef NativeUnitsSealer = Map<String, dynamic> Function(BigInt v, {Uint8List? dest20, String kind});
+NativeUnitsSealer? debugNativeSealUnits;
+
 String _hex(Uint8List b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
 
 Uint8List? _unhex(dynamic v) {
@@ -98,6 +102,38 @@ Map<String, dynamic>? nativeProveFlowSpend({
     try {
       tmp.deleteSync();
     } catch (_) {}
+  }
+}
+
+/// Seal any u64. Values that fit in a Dart int use [nativeSealNote].
+Map<String, dynamic> nativeSealUnits(BigInt v, {Uint8List? dest20, String kind = 'send'}) {
+  if (v < BigInt.zero || v.bitLength > 64) throw ArgumentError('u64');
+  final unitsOverride = debugNativeSealUnits;
+  if (unitsOverride != null && v.bitLength > 63) {
+    return unitsOverride(v, dest20: dest20, kind: kind);
+  }
+  if (v.bitLength <= 63) return nativeSealNote(v.toInt(), dest20: dest20, kind: kind);
+  final note = sealCoinbaseUnits(v, dest20: dest20, kind: kind);
+  final helper = _helperPath();
+  if (helper == null) throw StateError('admit_native_required');
+  final r = note['r'];
+  if (r is! Uint8List) throw StateError('admit_native_required');
+  final tmp = File('${Directory.systemTemp.path}/shear-range-${DateTime.now().microsecondsSinceEpoch}.json');
+  tmp.writeAsStringSync(jsonEncode({'op': 'prove_range', 'v': v.toString(), 'r': _hex(r)}), flush: true);
+  if (!Platform.isWindows) {
+    try { Process.runSync('chmod', ['600', tmp.path]); } catch (_) {}
+  }
+  try {
+    final out = Process.runSync('node', [helper, tmp.path], runInShell: false);
+    if (out.exitCode != 0) throw StateError('admit_native_required');
+    final got = jsonDecode(out.stdout as String);
+    if (got is! Map || got['ok'] != true || got['v'] != 2) throw StateError('admit_native_required');
+    final blob = _unhex(got['proof']);
+    if (blob == null || blob.isEmpty || blob[0] != 2) throw StateError('admit_native_required');
+    note['rangeProof'] = blob;
+    return note;
+  } finally {
+    try { tmp.deleteSync(); } catch (_) {}
   }
 }
 

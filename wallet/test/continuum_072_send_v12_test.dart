@@ -1,9 +1,13 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
+import 'package:shear_wallet/shear_native_prove.dart';
+import 'package:shear_wallet/shear_note.dart';
+import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 
 void main() {
@@ -287,6 +291,83 @@ void main() {
     expect(sendNanosFromWire('1.5'), 0);
     expect(sendNanosFromWire(' 1'), 0);
     expect(sendNanosFromWire('1 '), 0);
+  });
+
+  test('a pay above 2^63 keeps the u64 in the opening and the seal', () {
+    final wires = <String>[
+      '1',
+      '9007199254740993',
+      (BigInt.one << 63).toString(),
+      ((BigInt.one << 64) - BigInt.one).toString(),
+    ];
+    for (final wire in wires) {
+      final units = sendUnitsFromWire(wire);
+      expect(units, BigInt.parse(wire), reason: wire);
+      final note = sealCoinbaseUnits(units, kind: 'send');
+      expect(openedSpendDigits(note), wire, reason: wire);
+      expect(verifyValueUnits(note['commit'] as Uint8List, units, note['valueProof'] as Map), isTrue, reason: wire);
+      if (units.bitLength > 63) {
+        final clamped = BigInt.from(units.toInt());
+        expect(clamped, isNot(units), reason: wire);
+        expect(
+          verifyValueUnits(note['commit'] as Uint8List, clamped, note['valueProof'] as Map),
+          isFalse,
+          reason: wire,
+        );
+      }
+    }
+    expect(sendUnitsFromWire((BigInt.one << 64).toString()), BigInt.zero);
+
+    final max = (BigInt.one << 64) - BigInt.one;
+    BigInt? seen;
+    var intSeals = 0;
+    debugNativeSealUnits = (v, {dest20, kind = 'send'}) {
+      seen = v;
+      return {'kind': kind, 'nanos': v.toString()};
+    };
+    debugNativeSealNote = (v, {dest20, kind = 'send'}) {
+      intSeals += 1;
+      return {'kind': kind, 'nanos': v};
+    };
+    addTearDown(() {
+      debugNativeSealUnits = null;
+      debugNativeSealNote = null;
+    });
+    final built = sealFlowSpendVouts({
+      'spendSeed': Uint8List(32),
+      'destTo': 'not-an-address',
+      'src': 'not-an-address',
+      'vouts': [
+        {'address': 'not-an-address', 'nanos': max.toString(), 'kind': 'send'},
+      ],
+    });
+    expect(seen, max);
+    expect(intSeals, 0);
+    expect(((built['vouts'] as List).single as Map)['nanos'], max.toString());
+
+    final exact = spendPackDigest(
+      from: 'ssa1q',
+      vout: [
+        {'kind': 'lock', 'nanos': max.toString()},
+      ],
+      kind: 'lock',
+    );
+    final clampedPack = spendPackDigest(
+      from: 'ssa1q',
+      vout: [
+        {'kind': 'lock', 'nanos': max.toInt()},
+      ],
+      kind: 'lock',
+    );
+    expect(exact, isNot(clampedPack));
+    expect(
+      spendPackDigest(from: 'ssa1q', vout: [
+        {'kind': 'lock', 'nanos': '1'},
+      ], kind: 'lock'),
+      spendPackDigest(from: 'ssa1q', vout: [
+        {'kind': 'lock', 'nanos': 1},
+      ], kind: 'lock'),
+    );
   });
 
   test('one hold is the larger of the lock sum and the reserve principal', () {

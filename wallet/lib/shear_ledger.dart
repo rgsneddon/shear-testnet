@@ -444,12 +444,20 @@ final BigInt _nanosPerShe = BigInt.from(kUnitsPerShe);
 /// A double past this is not an amount. 2^53 - 1.
 const int _kSafeDoubleNanos = 9007199254740991;
 
-/// Send nanos from a decimal string. Any u64. A longer string stays 0.
+/// Int view of a send amount. Dart's [BigInt.toInt] clamps 2^63 through
+/// 2^64-1, so this is not the pay path. [sendUnitsFromWire] is.
 int sendNanosFromWire(String? nanosWire) {
   if (nanosWire == null || !RegExp(r'^\d+$').hasMatch(nanosWire)) return 0;
   final big = BigInt.parse(nanosWire);
   if (big < BigInt.zero || big.bitLength > 64) return 0;
   return big.toInt();
+}
+
+/// Exact send nanos. Any u64, including values a Dart int cannot name.
+BigInt sendUnitsFromWire(String? nanosWire) {
+  final units = tryU64Units(nanosWire);
+  if (units == null || units <= BigInt.zero) return BigInt.zero;
+  return units;
 }
 
 /// One hold for the selector. A pending lock and the portal principal are the
@@ -943,9 +951,9 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
       continue;
     }
     final addr = (o['address'] as String?) ?? destTo;
-    final n = (o['nanos'] as int?) ?? 0;
+    final units = tryU64Units(o['nanos']) ?? BigInt.zero;
     final d20 = hash20FromAddress(addr);
-    var note = nativeSealNote(n, dest20: d20, kind: kind);
+    var note = nativeSealUnits(units, dest20: d20, kind: kind);
     if (addr.isNotEmpty) note['address'] = addr;
     final B = admitBaseFromAddress(addr) ??
         ((addr == src || addr == changeDest) ? fallbackBase : null);
@@ -1387,7 +1395,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     final cachedNanos = proofKey == null ? null : proofCache[proofKey];
     // A remembered opening is this proof's nanos. A new proof still has to open.
     final openRow = Map<String, dynamic>.from(o)..['kind'] = kind;
-    final verifiedNanos = cachedNanos ?? sessionProofNanos(_openedSpendNanos(openRow));
+    final verifiedNanos = cachedNanos ?? openedSpendDigits(openRow);
     final proofChecked = verifiedNanos != null;
     final amt = verifiedNanos == null ? null : _sheOfExactNanos(verifiedNanos);
     notes.add({
@@ -1502,6 +1510,21 @@ bool _feeValueHunt(String? kind) {
   return kind == 'pool-fee' || kind == 'pot' || kind == 'coinbase';
 }
 
+/// Digits the sealed commitment opens, through 2^64-1.
+String? openedSpendDigits(Map o) {
+  final commit = _noteBytes(o['commit']);
+  final vp = o['valueProof'];
+  if (commit != null && vp is Map) {
+    final claimed = tryU64Units(vp['v'] ?? o['nanos']);
+    if (claimed != null && claimed > BigInt.zero && verifyValueUnits(commit, claimed, vp)) {
+      return claimed.toString();
+    }
+  }
+  final hunted = _openedSpendNanos(o);
+  if (hunted == null || hunted <= 0) return null;
+  return hunted.toString();
+}
+
 int? _openedSpendNanos(Map o) {
   final commit = _noteBytes(o['commit']);
   final vp = o['valueProof'];
@@ -1608,14 +1631,16 @@ List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
 /// Reserve lock/vote/withdraw out, same seal as pool `sealedReserveVout`.
 /// Public nanos + dest20 + noteCommitOfDest20, with `commit` so wallet_api
 /// keeps this body instead of minting a fresh seal after the spend sig.
-Map<String, dynamic> sealedReserveVout(String to, int nanos, String kind) {
+Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind) {
+  final units = tryU64Units(nanos) ?? BigInt.zero;
+  final shown = u64OnWire(units);
   final d20 = hash20FromAddress(to);
-  if (d20 == null) return {'address': to, 'nanos': nanos, 'kind': kind};
-  final note = sealCoinbaseNote(nanos, dest20: d20, kind: kind);
+  if (d20 == null) return {'address': to, 'nanos': shown, 'kind': kind};
+  final note = sealCoinbaseUnits(units, dest20: d20, kind: kind);
   note['address'] = to;
   final vp = note['valueProof'];
   if (vp is Map) {
-    note['valueProof'] = {...Map<String, dynamic>.from(vp), 'v': nanos};
+    note['valueProof'] = {...Map<String, dynamic>.from(vp), 'v': shown};
   }
   return note;
 }
@@ -1626,7 +1651,7 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   final to = (input['to'] as String?) ?? '';
   final from = (input['from'] as String?) ?? '';
   final kind = (input['kind'] as String?) ?? 'lock';
-  final nanos = (input['nanos'] as int?) ?? 0;
+  final nanosUnits = tryU64Units(input['nanos']) ?? BigInt.zero;
   final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
   final shared = input['shared'] is Uint8List ? input['shared'] as Uint8List : null;
   final spec = <Map<String, dynamic>>[
@@ -1641,7 +1666,7 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     for (final o in spec)
       sealedReserveVout(
         (o['address'] as String?) ?? to,
-        (o['nanos'] as int?) ?? (kind == 'vote' ? 0 : nanos),
+        tryU64Units(o['nanos']) ?? (kind == 'vote' ? BigInt.zero : nanosUnits),
         (o['kind'] as String?) ?? kind,
       ),
   ];
@@ -1686,7 +1711,7 @@ List<Map<String, dynamic>> sealPaintedSpendVouts(List<Map<String, dynamic>> spec
   final out = <Map<String, dynamic>>[];
   for (final o in spec) {
     final kind = (o['kind'] as String?) ?? 'send';
-    final n = (o['nanos'] as int?) ?? 0;
+    final units = tryU64Units(o['nanos']) ?? BigInt.zero;
     final Uint8List d20;
     if (kind == 'dummy') {
       d20 = randomBytes(20);
@@ -1696,7 +1721,7 @@ List<Map<String, dynamic>> sealPaintedSpendVouts(List<Map<String, dynamic>> spec
       if (hashed == null) continue;
       d20 = hashed;
     }
-    final note = sealCoinbaseNote(n, dest20: d20, kind: kind);
+    final note = sealCoinbaseUnits(units, dest20: d20, kind: kind);
     final addr = o['address'];
     if (addr is String && addr.isNotEmpty) note['address'] = addr;
     out.add(note);
@@ -6945,7 +6970,7 @@ class ShearLedger implements ReadProofSink {
     final memoOn = memo != null && memo.isNotEmpty;
     final feeUnits = estimateSendLevyUnits(inputs: notes.length, outputs: 3, memo: memoOn);
     final fee = BigInt.from(feeUnits);
-    var payUnits = BigInt.from(sendNanosFromWire(payNanosWire));
+    var payUnits = sendUnitsFromWire(payNanosWire);
     if (payUnits <= BigInt.zero) {
       final scaled = payShe * kUnitsPerShe;
       if (!scaled.isFinite) throw StateError('fee_short');
@@ -6958,10 +6983,10 @@ class ShearLedger implements ReadProofSink {
     if (payUnits <= BigInt.zero || payUnits.bitLength > 64) throw StateError('fee_short');
     final change = inputSum - payUnits - fee;
     if (change < BigInt.zero || change.bitLength > 64) throw StateError('fee_short');
-    final payNanos = payUnits.toInt();
-    final changeNanos = change.toInt();
+    final payNanos = u64OnWire(payUnits);
+    final changeNanos = u64OnWire(change);
     String? changeDest;
-    if (changeNanos > 0) {
+    if (change > BigInt.zero) {
       changeDest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
       if (changeDest == src || changeDest == destTo) throw ArgumentError('same_dest');
     }
@@ -7068,7 +7093,7 @@ class ShearLedger implements ReadProofSink {
     final json = await pool!.send(
       from: src,
       to: destTo,
-      amount: payNanos / kUnitsPerShe,
+      amount: _sheOfExactNanos(payUnits.toString()) ?? payShe,
       nanosWire: payUnits.toString(),
       memoCt: memoCt,
       kind: 'send',
@@ -7126,23 +7151,26 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'prev': Uint8List(32),
         if (o['nanos'] != null) 'nanos': o['nanos'],
-        if (o['nanos'] != null) 'amount': (o['nanos'] as num) / kUnitsPerShe,
+        if (tryU64Units(o['nanos']) != null && _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
+          'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
       });
       _proofCheckedDests.add(payKey(addr));
-      if (o['nanos'] is num && addr != changeDest) {
-        final add = (o['nanos'] as num).toDouble() / kUnitsPerShe;
-        if (add > 0) {
-          _spendable[payKey(addr)] = spendable(payKey(addr)) + add;
-          _dests.add(addr);
-        }
+      final addUnits = tryU64Units(o['nanos']);
+      final add = addUnits == null ? null : _sheOfExactNanos(addUnits.toString());
+      if (add != null && addr != changeDest) {
+        _spendable[payKey(addr)] = spendable(payKey(addr)) + add;
+        _dests.add(addr);
       }
     }
-    if (changeDest != null && changeNanos > 0) {
-      _spendable[changeDest] = spendable(changeDest) + changeNanos / kUnitsPerShe;
+    if (changeDest != null && change > BigInt.zero) {
+      final changeShe = _sheOfExactNanos(change.toString());
+      if (changeShe != null) {
+        _spendable[changeDest] = spendable(changeDest) + changeShe;
+      }
       _dests.add(changeDest);
     }
     final echoed = Map<String, dynamic>.from(json['tx'] as Map);
-    echoed['amount'] ??= payNanos / kUnitsPerShe;
+    echoed['amount'] ??= _sheOfExactNanos(payUnits.toString()) ?? payShe;
     echoed['from'] ??= src;
     final raw = ShearTx.fromJson(echoed);
     final tx = ShearTx(
@@ -7441,14 +7469,12 @@ class ShearLedger implements ReadProofSink {
       } catch (_) {}
     }
     final taxed = levyTaxed(sendKind);
-    var nanos = 0;
-    if (sendKind != 'vote') {
-      nanos = sendNanosFromWire(nanosWire);
-    }
-    if (nanos == 0 && sendKind != 'vote') {
+    var payUnits = sendKind == 'vote' ? BigInt.zero : sendUnitsFromWire(nanosWire);
+    if (payUnits <= BigInt.zero && sendKind != 'vote') {
       final rounded = (amount * kUnitsPerShe).round();
-      if (rounded > 0 && rounded <= _kSafeDoubleNanos) nanos = rounded;
+      if (rounded > 0 && rounded <= _kSafeDoubleNanos) payUnits = BigInt.from(rounded);
     }
+    final nanos = payUnits.bitLength <= 63 ? payUnits.toInt() : 0;
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
     final needShe = (sendKind == 'vote' ? 0.0 : amount) + levy / kUnitsPerShe;
     if (restFrame != null && (sendKind == 'vote' || sendKind == 'lock')) {
@@ -7651,11 +7677,11 @@ class ShearLedger implements ReadProofSink {
     String? sigHex;
     String? spendPubHex;
     final vouts = <Map<String, dynamic>>[
-      {'address': destTo, 'nanos': nanos, 'kind': sendKind},
+      {'address': destTo, 'nanos': u64OnWire(payUnits), 'kind': sendKind},
     ];
     if (sendKind == 'send' && changeDest != null) {
       final leftoverNanos = ((fundedShe - needShe) * kUnitsPerShe).round();
-      if (leftoverNanos > 0) {
+      if (leftoverNanos > 0 && leftoverNanos <= _kSafeDoubleNanos) {
         vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
       }
     }
@@ -7720,7 +7746,8 @@ class ShearLedger implements ReadProofSink {
             'index': i,
             'prev': Uint8List(32),
             if (o['nanos'] != null) 'nanos': o['nanos'],
-            if (o['nanos'] != null) 'amount': (o['nanos'] as num) / kUnitsPerShe,
+            if (tryU64Units(o['nanos']) != null && _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
+              'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
           });
         }
       }
@@ -7919,7 +7946,7 @@ class ShearLedger implements ReadProofSink {
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
         // The pool balance below is already net. Debit only when Spendable
         // shows the opened-note cap, which is the gross sum.
-        _noteLockDebit(src, needShe, nanos: BigInt.from(nanos) + BigInt.from(levy));
+        _noteLockDebit(src, needShe, nanos: payUnits + BigInt.from(levy));
       }
       final echoed = Map<String, dynamic>.from(json['tx'] as Map);
       echoed['amount'] ??= needShe;
@@ -7971,7 +7998,7 @@ class ShearLedger implements ReadProofSink {
         // This book is already net. A confirmRound pot has no opened-note cap,
         // so the assignment above is the only cut. The cap path shows the gross
         // opened sum and needs this debit once so a 0 book cannot paint it back.
-        _noteLockDebit(src, needShe, nanos: BigInt.from(nanos) + BigInt.from(levy));
+        _noteLockDebit(src, needShe, nanos: payUnits + BigInt.from(levy));
       }
       _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     }
