@@ -1,6 +1,8 @@
 # Build handoff — ADMITv3 point-leaf root
 
-PowerShell Build: this file is the instruction. Read it before landing another ADMITv3 prove. Branch `cursor/admit-v3-point-root-0bcc`. Draft PR https://github.com/rgsneddon/shear-testnet/pull/55. The same pointer is the first paragraph of `docs/v12-HANDOFF.md` on this branch.
+Watch `C:\Users\rgsne\shear-testnet\.cos-inbox\` and read every new item before each change. First read `docs/BUILD-HANDOFF-ADMITV3.md` on branch `cursor/admit-v3-point-root-0bcc` at `4262675` before landing another ADMITv3 prove, and do not cut genesis, move tags, flip `kBookMagic`, deploy, or start the soak.
+
+This file is that handoff. Draft PR https://github.com/rgsneddon/shear-testnet/pull/55. The same two sentences are the first paragraph of `docs/v12-HANDOFF.md` on this branch. Later commits on this branch add test results. The prove to read first is still `4262675`.
 
 Date: 2026-10-11
 For: the PowerShell Build agent on Russell's laptop
@@ -66,11 +68,11 @@ Do not mark the release gates closed.
 
 Started 2026-10-11T10:43:03Z, release, `--test-threads=1`, log `/opt/cursor/artifacts/admit-v3-ipa.log`:
 
-1. `leaf_rerand_v3_blinds_remainder_and_rejects_v2`
-2. `admit_honest_v3_hides_the_note_and_rejects_a_different_set`
-3. `fresh_point_outside_the_set_fails_admit_verify_v3`
-4. `honest_c_attacker_p_fails_admit_verify_v3`
-5. `two_bucket_v3_does_not_publish_the_spent_group`
+1. `leaf_rerand_v3_blinds_remainder_and_rejects_v2` passed. 1602.72s. Ended 2026-10-11T11:10:00Z. The scalar parent still opens.
+2. `admit_honest_v3_hides_the_note_and_rejects_a_different_set` started 2026-10-11T11:10:00Z. Not finished.
+3. `fresh_point_outside_the_set_fails_admit_verify_v3` not started.
+4. `honest_c_attacker_p_fails_admit_verify_v3` not started.
+5. `two_bucket_v3_does_not_publish_the_spent_group` not started.
 
 Do not treat items 1–9, the out-of-set spend, or the n = 64 bucket link as closed until that log ends in `ALL_PASS` and the assertions are still the ones in `crypto/native/admit/src/lib.rs`. A failure means the publication or the opening is wrong. Do not weaken `two_bucket_v3_does_not_publish_the_spent_group` to make a commitment window pass.
 
