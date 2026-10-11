@@ -9,8 +9,7 @@
 use crate::leaf::{jroot_hash, jroot_hash_point, sha512_64};
 use crate::select::{
     leaf_prove, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
-    paired_qd_opens, paired_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN, V3_Y,
-    V3_YX,
+    paired_qd_opens, paired_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN,
 };
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
