@@ -1673,6 +1673,31 @@ pub(crate) fn sha512_msg_synth(
     (b.l, b.r, b.o, b.cons)
 }
 
+/// SHA-512 of `msg`, then `V[0]` is that digest reduced mod the ristretto order.
+/// The digest bytes stay witness wires. They are not pinned to a public hash.
+/// Builds constraints only. It does not run the inner product proof.
+pub(crate) fn sha512_wide_synth(
+    msg: &[u8],
+) -> (Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>, [u8; 32]) {
+    let padded = sha512_pad(msg);
+    let mut b = Builder::new();
+    let mut state = sha512_iv(&mut b);
+    for chunk in padded.chunks(128) {
+        let mut block = [0u8; 128];
+        block.copy_from_slice(chunk);
+        let words = pack_sha_block(&mut b, &block);
+        state = sha512_compress_from(&mut b, words, state);
+    }
+    let (dig_w, dig) = digest_bytes_from_state(&mut b, state);
+    let real = Sha512::digest(msg);
+    assert_eq!(dig.as_slice(), real.as_slice(), "sha512 chain diverged from sha2");
+    let x = wide_limbs_from_bytes(&mut b, &dig_w, &dig);
+    let reduced = reduce_wide_mod_l(&mut b, &x, &dig);
+    bind_u32_to_v(&mut b, &reduced, 0);
+    let scalar = RScalar::from_bytes_mod_order_wide(&dig).to_bytes();
+    (b.l, b.r, b.o, b.cons, scalar)
+}
+
 /// `zy·G + zr·H = A + e·Y`. One response opens one committed scalar.
 /// `leaf_verify_v3` does not call this: the encode circuit is not in the transcript,
 /// so the equation alone does not reject a point outside the set.
@@ -2119,6 +2144,192 @@ fn enforce_lt_l(b: &mut Builder, limbs: &[W32; 8]) {
     }
     b.const_eq(last.expect("borrow"), Scalar::ONE);
     assert_eq!(borrow_v, 1, "scalar is not below L");
+}
+
+/// `n = q·L + r` with `r < L`, for a 64-byte little-endian integer.
+/// `q` fits in 9 limbs because `n < 2^512` and `L > 2^252`.
+fn l_quot_rem(dig: &[u8; 64]) -> ([u128; 9], [u128; 8]) {
+    let mut n = [0u64; 16];
+    for i in 0..16 {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(&dig[i * 4..i * 4 + 4]);
+        n[i] = u32::from_le_bytes(raw) as u64;
+    }
+    let l: [u64; 8] = [
+        L32[0] as u64, L32[1] as u64, L32[2] as u64, L32[3] as u64, L32[4] as u64, L32[5] as u64,
+        L32[6] as u64, L32[7] as u64,
+    ];
+    let mut rem = [0u64; 8];
+    let mut q = [0u128; 9];
+    for bit in (0..512).rev() {
+        let mut carry = 0u64;
+        for i in 0..8 {
+            let v = (rem[i] << 1) | carry;
+            rem[i] = v & 0xffff_ffff;
+            carry = v >> 32;
+        }
+        assert_eq!(carry, 0, "remainder shift overflowed 256 bits");
+        rem[0] |= (n[bit / 32] >> (bit % 32)) & 1;
+        let mut ge = true;
+        for i in (0..8).rev() {
+            if rem[i] != l[i] {
+                ge = rem[i] > l[i];
+                break;
+            }
+        }
+        if !ge {
+            continue;
+        }
+        let mut borrow = 0i128;
+        for i in 0..8 {
+            let diff = rem[i] as i128 - l[i] as i128 - borrow;
+            if diff < 0 {
+                rem[i] = (diff + (1i128 << 32)) as u64;
+                borrow = 1;
+            } else {
+                rem[i] = diff as u64;
+                borrow = 0;
+            }
+        }
+        assert_eq!(borrow, 0, "order subtraction borrowed out");
+        assert!(bit < 288, "order quotient does not fit in 9 limbs at bit {bit}");
+        q[bit / 32] |= 1u128 << (bit % 32);
+    }
+    let r = [
+        rem[0] as u128, rem[1] as u128, rem[2] as u128, rem[3] as u128, rem[4] as u128,
+        rem[5] as u128, rem[6] as u128, rem[7] as u128,
+    ];
+    let mut acc = [0u128; 17];
+    for j in 0..9 {
+        let mut carry = 0u128;
+        for k in 0..8 {
+            let idx = j + k;
+            let sum = acc[idx] + q[j] * L32[k] + carry;
+            acc[idx] = sum & 0xffff_ffff;
+            carry = sum >> 32;
+        }
+        acc[j + 8] += carry;
+    }
+    let mut carry = 0u128;
+    for i in 0..16 {
+        let add = if i < 8 { r[i] } else { 0 };
+        let sum = acc[i] + add + carry;
+        acc[i] = sum & 0xffff_ffff;
+        carry = sum >> 32;
+    }
+    assert_eq!(carry, 0, "q*L + r overflowed");
+    for i in 0..16 {
+        assert_eq!(acc[i] as u64, n[i], "q*L + r diverged at limb {i}");
+    }
+    let expect = RScalar::from_bytes_mod_order_wide(dig).to_bytes();
+    let mut got = [0u8; 32];
+    for i in 0..8 {
+        got[i * 4..i * 4 + 4].copy_from_slice(&(r[i] as u32).to_le_bytes());
+    }
+    assert_eq!(got, expect, "wide remainder is not from_bytes_mod_order_wide");
+    (q, r)
+}
+
+fn digest_bytes_from_state(b: &mut Builder, state: [Word; 8]) -> ([Wire; 64], [u8; 64]) {
+    let mut dig_w = [Wire::One; 64];
+    let mut dig = [0u8; 64];
+    for i in 0..8 {
+        let parts = split_be_word(b, state[i]);
+        for j in 0..8 {
+            dig[i * 8 + j] = parts[j].1 as u8;
+            dig_w[i * 8 + j] = parts[j].0;
+        }
+    }
+    (dig_w, dig)
+}
+
+fn wide_limbs_from_bytes(b: &mut Builder, bytes_w: &[Wire; 64], bytes: &[u8; 64]) -> [W32; 16] {
+    let mut nw = [W32 { w: Wire::One, v: 0 }; 16];
+    for i in 0..16 {
+        let mut v = 0u128;
+        let mut parts = [(Wire::One, 0u128); 4];
+        for j in 0..4 {
+            let bv = bytes[i * 4 + j] as u128;
+            v |= bv << (8 * j);
+            parts[j] = (bytes_w[i * 4 + j], bv);
+        }
+        let w = b.range(v, 32);
+        let mut terms = vec![(w, Scalar::ONE)];
+        let mut pow = Scalar::ONE;
+        let step = Scalar::from(256u64);
+        for j in 0..4 {
+            terms.push((parts[j].0, Scalar::ZERO - pow));
+            pow *= step;
+        }
+        b.zero(terms);
+        nw[i] = W32 { w, v };
+    }
+    nw
+}
+
+fn bind_u32_to_v(b: &mut Builder, limbs: &[W32; 8], idx: usize) {
+    let mut terms = vec![(Wire::V(idx), Scalar::ZERO - Scalar::ONE)];
+    for i in 0..8 {
+        terms.push((limbs[i].w, sc_pow2((32 * i) as u32)));
+    }
+    b.zero(terms);
+}
+
+/// `x = q·L + r` and `r < L`. `r` is `from_bytes_mod_order_wide` of `dig`.
+/// Public coefficients are the limbs of L. The quotient is a witness.
+fn reduce_wide_mod_l(b: &mut Builder, x: &[W32; 16], dig: &[u8; 64]) -> [W32; 8] {
+    let (q, r) = l_quot_rem(dig);
+    let mut qw = [W32 { w: Wire::One, v: 0 }; 9];
+    for i in 0..9 {
+        qw[i] = w32(b, q[i], 32);
+    }
+    let mut rw = [W32 { w: Wire::One, v: 0 }; 8];
+    for i in 0..8 {
+        rw[i] = w32(b, r[i], 32);
+    }
+    enforce_lt_l(b, &rw);
+    let mut carry_w: Option<Wire> = None;
+    let mut carry_v = 0u128;
+    for t in 0..16 {
+        let mut terms = Vec::new();
+        let mut sum = carry_v;
+        if let Some(cw) = carry_w {
+            terms.push((cw, Scalar::ONE));
+        }
+        if t < 8 {
+            sum += rw[t].v;
+            terms.push((rw[t].w, Scalar::ONE));
+        }
+        for j in 0..9 {
+            if j > t {
+                continue;
+            }
+            let k = t - j;
+            if k >= 8 {
+                continue;
+            }
+            let lk = L32[k];
+            sum += lk * qw[j].v;
+            if lk != 0 {
+                terms.push((qw[j].w, sc_u128(lk)));
+            }
+        }
+        let low = sum & (LIMB32 - 1);
+        let cout = sum >> 32;
+        assert!(cout < (1u128 << 40), "order carry {cout} at column {t}");
+        assert_eq!(low, x[t].v, "order limb {t} diverged from the integer");
+        terms.push((x[t].w, Scalar::ZERO - Scalar::ONE));
+        if t + 1 == 16 {
+            assert_eq!(cout, 0, "order product spilled past 512 bits");
+        } else {
+            let cw = b.range(cout, 40);
+            terms.push((cw, Scalar::ZERO - sc_u128(LIMB32)));
+            carry_w = Some(cw);
+            carry_v = cout;
+        }
+        b.zero(terms);
+    }
+    rw
 }
 
 fn enforce_lt_p(b: &mut Builder, limbs: &[W32; 8]) {
@@ -3252,6 +3463,73 @@ mod tests {
             drop(o);
             drop(c);
         }
+    }
+
+    #[test]
+    fn bind_sha512_wide_matches_ristretto_scalar() {
+        use crate::leaf::DST_C_POINT;
+        use curve25519_dalek::scalar::Scalar as RScalar;
+        let mut samples = vec![[0u8; 64], [0xff; 64]];
+        let mut one = [0u8; 64];
+        one[0] = 1;
+        samples.push(one);
+        let mut high = [0u8; 64];
+        high[32] = 1;
+        samples.push(high);
+        let mut top = [0u8; 64];
+        top[63] = 0x80;
+        samples.push(top);
+        let mut mixed = [0u8; 64];
+        for i in 0..64 {
+            mixed[i] = (i as u8).wrapping_mul(9).wrapping_add(3);
+        }
+        samples.push(mixed);
+        let mut ell = [0u8; 64];
+        for i in 0..8 {
+            ell[i * 4..i * 4 + 4].copy_from_slice(&(L32[i] as u32).to_le_bytes());
+        }
+        samples.push(ell);
+        for (n, dig) in samples.iter().enumerate() {
+            let (q, r) = l_quot_rem(dig);
+            let expect = RScalar::from_bytes_mod_order_wide(dig).to_bytes();
+            let mut got = [0u8; 32];
+            for i in 0..8 {
+                got[i * 4..i * 4 + 4].copy_from_slice(&(r[i] as u32).to_le_bytes());
+            }
+            assert_eq!(got, expect, "cleartext sample {n}");
+            let _ = q;
+        }
+
+        let two = vec![0x5au8; 200];
+        let mut other = vec![0x11u8; 200];
+        other[10] = 9;
+        let (l, r, o, cons, packed) = sha512_wide_synth(&two);
+        let (_, _, _, other_cons, _) = sha512_wide_synth(&other);
+        assert!(cons_same(&cons, &other_cons), "a different message changed the constraint shape");
+        drop(other_cons);
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("reduced scalar fits");
+        r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).unwrap_or_else(|e| panic!("honest wide: {e}"));
+        assert!(
+            r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed + Scalar::ONE]).is_err(),
+            "a different residue was accepted"
+        );
+        eprintln!("sha512 wide short gates {} padded {}", l.len(), l.len().next_power_of_two());
+        drop(l);
+        drop(r);
+        drop(o);
+        drop(cons);
+
+        let mut bucket = Vec::with_capacity(DST_C_POINT.len() + 1024);
+        bucket.extend_from_slice(DST_C_POINT);
+        bucket.extend(std::iter::repeat(0u8).take(1024));
+        let (l, r, o, cons, packed) = sha512_wide_synth(&bucket);
+        let committed = Option::<Scalar>::from(Scalar::from_repr(packed.into())).expect("bucket scalar fits");
+        r1cs_witness_holds_v(&l, &r, &o, &cons, &[committed]).unwrap_or_else(|e| panic!("bucket wide: {e}"));
+        eprintln!(
+            "sha512 wide bucket gates {} padded {}",
+            l.len(),
+            l.len().next_power_of_two()
+        );
     }
 
     #[test]
