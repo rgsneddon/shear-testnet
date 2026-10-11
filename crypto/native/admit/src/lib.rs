@@ -1156,4 +1156,167 @@ mod tests {
         );
         let _ = ct2;
     }
+
+    /// Honest version-3 seal: C̃ = C + t·H and the proof verifies against the set that contains C.
+    #[test]
+    fn seal_v3_opens_the_note_in_the_set() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let ctx = ctx64();
+        let (ct, proof) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("seal v3");
+        let expect = tree::rerand_c(&cs[idx], &t.to_bytes()).expect("rerand");
+        assert_eq!(ct, expect, "C̃ = C + t·H");
+        assert_ne!(ct, cs[idx]);
+        let tag = proof_spend_tag(&proof).expect("tag");
+        assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+        assert_eq!(proof[0], 3);
+        assert_eq!(proof[257], 1);
+    }
+
+    /// A fresh ristretto point that was never inserted is not a member.
+    #[test]
+    fn v3_fresh_point_outside_the_set_fails() {
+        let n = 8usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let ctx = ctx64();
+        let (ct, proof) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("honest");
+        let tag = proof_spend_tag(&proof).unwrap();
+        assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+
+        let ax = rand_scalar();
+        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
+        let h = hash_to_ristretto(b"shear-note-H-v1");
+        let ac = (RISTRETTO_BASEPOINT_POINT * Scalar::from(50_000u64) + h * rand_scalar())
+            .compress()
+            .to_bytes();
+        assert!(ps.iter().all(|p| p != &ap), "fresh P is not in the set");
+        assert!(cs.iter().all(|c| c != &ac), "fresh C is not in the set");
+        assert!(
+            admit_prove_v3(
+                &ax.to_bytes(),
+                &ap,
+                &ac,
+                &t.to_bytes(),
+                0,
+                &dest_blob,
+                &c_blob,
+                n,
+                &ctx,
+            )
+            .is_none(),
+            "prove must refuse a fresh point that is not in the set"
+        );
+        let mut d_att = dest_blob.clone();
+        let mut c_att = c_blob.clone();
+        d_att[..32].copy_from_slice(&ap);
+        c_att[..32].copy_from_slice(&ac);
+        let (ct_a, proof_a) = admit_prove_v3(
+            &ax.to_bytes(),
+            &ap,
+            &ac,
+            &t.to_bytes(),
+            0,
+            &d_att,
+            &c_att,
+            n,
+            &ctx,
+        )
+        .expect("the fresh point proves only inside a set that contains it");
+        let tag_a = proof_spend_tag(&proof_a).unwrap();
+        assert!(
+            !admit_verify_v3(&proof_a, &jr, &ct_a, &tag_a, &ctx),
+            "a fresh point proved in some other set must fail the honest jroot"
+        );
+        let mut spliced = proof.clone();
+        let c_slot = 258 + 32 * 32 + idx * 32;
+        spliced[c_slot..c_slot + 32].copy_from_slice(&ac);
+        assert!(
+            !admit_verify_v3(&spliced, &jr, &ct, &tag, &ctx),
+            "replacing the spent note with a fresh point must fail"
+        );
+    }
+
+    /// n=64 is two arity-32 buckets. Version 3 blinds W and still publishes the spent bucket.
+    #[test]
+    fn v3_two_bucket_spent_link_stays_on_the_wire() {
+        let n = 64usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let ctx = ctx64();
+        let mut seen = Vec::new();
+        for idx in [3usize, 40usize] {
+            let t = rand_scalar();
+            let (ct, proof) = admit_prove_v3(
+                &xs[idx].to_bytes(),
+                &ps[idx],
+                &cs[idx],
+                &t.to_bytes(),
+                idx,
+                &dest_blob,
+                &c_blob,
+                n,
+                &ctx,
+            )
+            .expect("v3");
+            let tag = proof_spend_tag(&proof).unwrap();
+            assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+            assert_eq!(proof[257], 2, "64 notes are two buckets under one root");
+            let glue = 258 + crate::select::PAIRED_LEN;
+            let parent_c: [u8; 32] = proof[glue + 64..glue + 96].try_into().unwrap();
+            let c_off = glue + 128 + 32 * 32;
+            let mut bucket = [[0u8; 32]; 32];
+            for i in 0..32 {
+                bucket[i].copy_from_slice(&proof[c_off + i * 32..c_off + i * 32 + 32]);
+            }
+            assert_eq!(
+                parent_c,
+                tree::commit_ristretto_encodings(&bucket),
+                "the published parent is the spent bucket"
+            );
+            let which = idx / 32;
+            for i in 0..32 {
+                assert_eq!(bucket[i], cs[which * 32 + i], "raw C bucket {which} is on the wire");
+            }
+            let other = 1 - which;
+            assert_ne!(bucket[0], cs[other * 32]);
+            let leaf_at = c_off + 32 * 32;
+            assert_eq!(proof.len(), leaf_at + crate::select::LEAF_PAIRED_LEN);
+            let w: [u8; 32] = proof[leaf_at..leaf_at + 32].try_into().unwrap();
+            let kids = leaf_dest_children(&dest_blob, n, idx);
+            assert!(
+                slots_matching(&kids, &w).is_empty(),
+                "blinding W does not name the slot, and it does not remove the bucket"
+            );
+            seen.push(which);
+        }
+        assert_eq!(seen, vec![0, 1]);
+    }
 }
