@@ -10,6 +10,7 @@ import { isInitialBlockDownload } from './status.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
 import { setNonce, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
+import { HTTP_BODY_MAX, STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const SOLO_STRATUM_PORT = 1111;
 export const SOLO_STRATUM_BIND = '127.0.0.1';
@@ -276,13 +277,21 @@ export function createSoloStratum({
     let session = null;
     sock.on('data', (chunk) => {
       buf += chunk.toString('utf8');
+      if (buf.length > HTTP_BODY_MAX) {
+        try { sock.destroy(); } catch { /* ignore */ }
+        return;
+      }
       let idx;
       while ((idx = buf.indexOf('\n')) >= 0) {
         const raw = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!raw) continue;
+        if (raw.length > STRATUM_LINE_MAX) {
+          try { sock.destroy(); } catch { /* ignore */ }
+          return;
+        }
         let msg;
-        try { msg = JSON.parse(raw); } catch { continue; }
+        try { msg = parseBoundedJson(raw); } catch { continue; }
         const method = msg.method || msg.id;
         const params = msg.params || msg;
         const isLogin = method === 'login'

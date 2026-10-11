@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'shear_json_bounds.dart';
+
 /// Accrual-tick guard for Continuum tip polls.
 ///
 /// [tipBusy] must clear on success, throw, timeout, and cancel so a hung RPC
@@ -56,7 +58,9 @@ int? nodeTipHeightFromSse(String frame) {
       tip = line.substring('event:'.length).trim() == 'tip';
     } else if (tip && line.startsWith('data:')) {
       try {
-        final decoded = jsonDecode(line.substring('data:'.length).trim());
+        final data = line.substring('data:'.length).trim();
+        if (!jsonNestingOk(data)) continue;
+        final decoded = jsonDecode(data);
         if (decoded is Map) {
           final h = decoded['height'];
           if (h is num && h > 0) height = h.toInt();

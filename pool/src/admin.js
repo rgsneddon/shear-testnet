@@ -18,6 +18,7 @@ import {
 import { isDestAddress, payoutDest } from '../../crypto/address.js';
 import { configuredFeeIdentity } from './posture.js';
 import { NANOS_PER_SHE, formatShe } from '../../crypto/asert.js';
+import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import {
   levyNanos,
   mempoolDepthBytes,
@@ -670,13 +671,40 @@ export async function handleAdminHttp(req, res, opts) {
   if (apiPath.startsWith('/api/admin')) {
     let body = {};
     if (req.method === 'POST') {
-      const raw = await new Promise((resolve, reject) => {
-        const chunks = [];
-        req.on('data', (c) => chunks.push(c));
-        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8') || '{}'));
-        req.on('error', reject);
-      });
-      try { body = JSON.parse(raw); } catch { body = {}; }
+      let raw = '{}';
+      try {
+        raw = await new Promise((resolve, reject) => {
+          const chunks = [];
+          let got = 0;
+          let settled = false;
+          const finish = (fn, value) => {
+            if (settled) return;
+            settled = true;
+            fn(value);
+          };
+          req.on('data', (c) => {
+            const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+            got += buf.length;
+            if (got > HTTP_BODY_MAX) {
+              const err = new Error('body_cap');
+              err.code = 'body_cap';
+              try { req.pause(); } catch { /* ignore */ }
+              finish(reject, err);
+              return;
+            }
+            chunks.push(buf);
+          });
+          req.on('end', () => finish(resolve, Buffer.concat(chunks).toString('utf8') || '{}'));
+          req.on('error', (err) => finish(reject, err));
+        });
+        body = parseBoundedJson(raw);
+      } catch (err) {
+        res.statusCode = err && err.code === 'body_cap' ? 413 : 400;
+        res.setHeader('content-type', 'application/json');
+        const reason = err && err.code === 'json_cap' ? 'json_cap' : (err && err.code === 'body_cap' ? 'body_cap' : 'bad_json');
+        res.end(JSON.stringify({ ok: false, reason }));
+        return;
+      }
     }
     const apiUrl = new URL(apiPath + (url.search || ''), `https://${ADMIN_HOST}`);
     const out = handleAdminApi(apiUrl, req.method, body, {

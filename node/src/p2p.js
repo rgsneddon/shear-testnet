@@ -7,6 +7,7 @@ import { packHashCreditBytes, unpackHashCreditBytes } from '../../crypto/hash_ow
 import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
+import { parseBoundedJson } from '../../crypto/json_bounds.js';
 
 function reviveDeep(v) {
   if (v == null) return v;
@@ -2088,7 +2089,7 @@ export function createP2p({
         buf = buf.slice(idx + 1);
         if (!raw) continue;
         let msg;
-        try { msg = JSON.parse(raw); } catch { continue; }
+        try { msg = parseBoundedJson(raw); } catch { continue; }
         try {
           handle(sock, msg);
         } catch {

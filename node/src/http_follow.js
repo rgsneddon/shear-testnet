@@ -1,4 +1,5 @@
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { decodeWireBlock } from './p2p.js';
 
 /** Public node HTTP. Port 30303 stays fleet-only; these are the same hosts on 443. */
@@ -12,14 +13,38 @@ function bookMatches(stats, magic) {
   return String(stats?.magic || '') === magic;
 }
 
+async function readCappedText(res) {
+  if (res?.body && typeof res.body.getReader === 'function') {
+    const reader = res.body.getReader();
+    const parts = [];
+    let got = 0;
+    for (;;) {
+      const step = await reader.read();
+      if (step.done) break;
+      const buf = Buffer.from(step.value);
+      got += buf.length;
+      if (got > HTTP_BODY_MAX) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        return null;
+      }
+      parts.push(buf);
+    }
+    return Buffer.concat(parts).toString('utf8');
+  }
+  const text = typeof res?.text === 'function' ? await res.text() : '';
+  if (String(text || '').length > HTTP_BODY_MAX) return null;
+  return String(text || '');
+}
+
 async function readJson(url, signal, fetchImpl) {
   const res = await fetchImpl(url, { signal, headers: { accept: 'application/json' } });
   if (!res?.ok) return null;
-  const text = await res.text();
+  const text = await readCappedText(res);
+  if (text == null) return null;
   const head = String(text || '').trimStart().slice(0, 16).toLowerCase();
   if (head.startsWith('<!doctype') || head.startsWith('<html')) return null;
   try {
-    const body = JSON.parse(text);
+    const body = parseBoundedJson(text);
     return body && typeof body === 'object' ? body : null;
   } catch {
     return null;

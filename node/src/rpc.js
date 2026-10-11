@@ -10,6 +10,7 @@ import { networkReport } from './network_report.js';
 import { oracleView } from './oracle_feed.js';
 import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
+import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -233,13 +234,35 @@ function statsJson(store) {
   };
 }
 
-function readBody(req) {
+function readBody(req, cap = HTTP_BODY_MAX) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8') || ''));
-    req.on('error', reject);
+    let got = 0;
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+    req.on('data', (c) => {
+      const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+      got += buf.length;
+      if (got > cap) {
+        const err = new Error('body_cap');
+        err.code = 'body_cap';
+        try { req.pause(); } catch { /* ignore */ }
+        finish(reject, err);
+        return;
+      }
+      chunks.push(buf);
+    });
+    req.on('end', () => finish(resolve, Buffer.concat(chunks).toString('utf8') || ''));
+    req.on('error', (err) => finish(reject, err));
   });
+}
+
+function postedJson(text) {
+  return parseBoundedJson(text || '{}');
 }
 
 function json(res, status, obj) {
@@ -599,9 +622,10 @@ export function createRpc({
     if (req.method === 'POST' && url.pathname === '/api/wallet/send') {
       let posted = {};
       try {
-        posted = JSON.parse(await readBody(req) || '{}');
-      } catch {
-        json(res, 400, { ok: false, reason: 'bad_json' });
+        posted = postedJson(await readBody(req));
+      } catch (err) {
+        const reason = err?.code === 'body_cap' ? 'body_cap' : (err?.code === 'json_cap' ? 'json_cap' : 'bad_json');
+        json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
         return;
       }
       const clientRaw = Number(posted.paintedOwedNanos);
@@ -634,9 +658,10 @@ export function createRpc({
     if (req.method === 'POST' && (url.pathname === '/queuetx' || url.pathname === '/queueTx')) {
       let posted = {};
       try {
-        posted = JSON.parse(await readBody(req) || '{}');
-      } catch {
-        json(res, 400, { ok: false, reason: 'bad_json' });
+        posted = postedJson(await readBody(req));
+      } catch (err) {
+        const reason = err?.code === 'body_cap' ? 'body_cap' : (err?.code === 'json_cap' ? 'json_cap' : 'bad_json');
+        json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
         return;
       }
       const tx = posted.tx || posted.params?.tx || posted;
@@ -648,9 +673,10 @@ export function createRpc({
     let body = {};
     if (req.method === 'POST') {
       try {
-        body = JSON.parse(await readBody(req) || '{}');
-      } catch {
-        json(res, 400, { ok: false, reason: 'bad_json' });
+        body = postedJson(await readBody(req));
+      } catch (err) {
+        const reason = err?.code === 'body_cap' ? 'body_cap' : (err?.code === 'json_cap' ? 'json_cap' : 'bad_json');
+        json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
         return;
       }
     }

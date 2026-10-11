@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
@@ -4239,13 +4240,21 @@ export function createPool({
     let conn = null;
     sock.on('data', (chunk) => {
       buf += chunk.toString('utf8');
+      if (buf.length > HTTP_BODY_MAX) {
+        try { sock.destroy(); } catch { /* ignore */ }
+        return;
+      }
       let idx;
       while ((idx = buf.indexOf('\n')) >= 0) {
         const raw = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!raw) continue;
+        if (raw.length > STRATUM_LINE_MAX) {
+          try { sock.destroy(); } catch { /* ignore */ }
+          return;
+        }
         let msg;
-        try { msg = JSON.parse(raw); } catch { continue; }
+        try { msg = parseBoundedJson(raw); } catch { continue; }
         const method = msg.method || msg.id;
         const params = msg.params || msg;
         // C miner submit repeats identity (login/threads) inside params.
@@ -5252,11 +5261,12 @@ export function createPool({
           return;
         }
         try {
-          body = JSON.parse(raw);
+          body = parseBoundedJson(raw);
         } catch (err) {
           res.statusCode = 400;
           res.setHeader('content-type', 'application/json');
-          res.end(JSON.stringify({ ok: false, reason: 'bad_json', error: String(err && err.message || err) }));
+          const reason = err && err.code === 'json_cap' ? 'json_cap' : 'bad_json';
+          res.end(JSON.stringify({ ok: false, reason, error: String(err && err.message || err) }));
           return;
         }
         if (url.pathname === '/api/wallet/send') {

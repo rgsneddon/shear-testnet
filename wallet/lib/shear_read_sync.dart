@@ -10,6 +10,7 @@ import 'shear_read_open.dart';
 import 'shear_tip_tick.dart';
 
 import 'shear_identity.dart' show kBookMagic;
+import 'shear_json_bounds.dart';
 export 'shear_identity.dart' show kBookMagic;
 
 /// Wallet default is the local node RPC. Public pool HTTP is an advanced toggle
@@ -273,6 +274,7 @@ Future<int?> probeNodeSeedHeight(String base, {Duration budget = const Duration(
       }
       final body = await utf8.decodeStream(res).timeout(budget);
       if (isHtmlNodeBody(body, contentType: res.headers.contentType?.mimeType)) continue;
+      if (!jsonNestingOk(body)) continue;
       final decoded = jsonDecode(body);
       if (decoded is! Map) continue;
       final stats = Map<String, dynamic>.from(decoded);
@@ -307,6 +309,7 @@ bool isHtmlNodeBody(String body, {String? contentType}) {
 /// Decode a node JSON object. HTML and non-objects are not a tip.
 Map<String, dynamic>? decodeNodeJson(String body, {String? contentType}) {
   if (isHtmlNodeBody(body, contentType: contentType)) return null;
+  if (!jsonNestingOk(body)) return null;
   try {
     final decoded = jsonDecode(body);
     if (decoded is Map<String, dynamic>) return decoded;

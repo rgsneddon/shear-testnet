@@ -11,6 +11,7 @@ import {
   getpolicy,
   poolMerchantNeed,
 } from '../../crypto/confirm_policy.js';
+import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export function seedWatchState(published = {}) {
   const s = emptyPolicyState();
@@ -79,13 +80,31 @@ function getJson(url) {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let got = 0;
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        fn(value);
+      };
+      res.on('data', (c) => {
+        const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+        got += buf.length;
+        if (got > HTTP_BODY_MAX) {
+          const err = new Error('body_cap');
+          err.code = 'body_cap';
+          try { res.destroy(); } catch { /* ignore */ }
+          finish(reject, err);
+          return;
+        }
+        chunks.push(buf);
+      });
       res.on('end', () => {
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
-        catch (e) { reject(e); }
+        try { finish(resolve, parseBoundedJson(Buffer.concat(chunks).toString('utf8') || '{}')); }
+        catch (e) { finish(reject, e); }
       });
     });
-    req.on('error', reject);
+    req.on('error', (err) => reject(err));
   });
 }
 

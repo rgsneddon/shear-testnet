@@ -10,6 +10,7 @@ import { admitWireTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { txWeight } from '../../crypto/levy.js';
 import { reviveBytes } from '../../crypto/note.js';
 import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
+import { parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const P2P_IPC_HOST = '127.0.0.1';
 export const P2P_IPC_PORT = 30313;
@@ -395,7 +396,7 @@ function attachLines(sock, onMsg) {
       buf = buf.slice(idx + 1);
       if (!raw) continue;
       let msg;
-      try { msg = JSON.parse(raw); } catch { continue; }
+      try { msg = parseBoundedJson(raw); } catch { continue; }
       onMsg(stripTrustField(msg));
     }
   });
