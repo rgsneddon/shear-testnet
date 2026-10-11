@@ -42,8 +42,6 @@ Future<void> main() async {
   }
 
   // An empty output list still runs sealFlowSpendVouts on the worker.
-  // A dummy output calls proveRange, which did not return on this host
-  // inside two minutes, so this check does not time that body.
   Object? sealErr;
   final sealed = await sealFlowOffUi(<String, dynamic>{
     'spendSeed': Uint8List(32)..[0] = 3,
@@ -57,6 +55,44 @@ Future<void> main() async {
   }
   if (debugSendSealStamp.isEmpty || debugSendSealStamp == ui) {
     throw StateError('seal stamp $debugSendSealStamp ui $ui err $sealErr');
+  }
+
+  // One real output. The range blob is the node proof, checked against the
+  // commitment. Amounts cross 2^53. Each seal is capped.
+  final rangeMs = <int>[];
+  for (final nanos in <int>[0, 1, 1000, 9007199254740993]) {
+    final sw = Stopwatch()..start();
+    final one = await sealFlowOffUi(<String, dynamic>{
+      'spendSeed': Uint8List(32)..[0] = 4,
+      'destTo': '',
+      'src': '',
+      'vouts': <Map<String, dynamic>>[
+        {
+          'kind': nanos == 0 ? 'dummy' : 'send',
+          'nanos': nanos,
+          'address': '',
+        },
+      ],
+    }).timeout(const Duration(seconds: 30));
+    final outs = one['vouts'];
+    if (outs is! List || outs.length != 1) {
+      throw StateError('range outs nanos=$nanos $outs');
+    }
+    final note = Map<String, dynamic>.from(outs.single as Map);
+    final proof = note['rangeProof'];
+    final commit = note['commit'];
+    if (proof is! Uint8List || proof.length < 2 || proof[0] != 2) {
+      throw StateError('range blob nanos=$nanos');
+    }
+    if (commit is! Uint8List || commit.length != 32) {
+      throw StateError('range commit nanos=$nanos');
+    }
+    if (note['nanos'] != nanos) throw StateError('range nanos field $nanos');
+    if (debugSendSealStamp.isEmpty || debugSendSealStamp == ui) {
+      throw StateError('range stamp $debugSendSealStamp ui $ui nanos=$nanos');
+    }
+    await _rangeOpens(commit, proof, nanos);
+    rangeMs.add(sw.elapsedMilliseconds);
   }
 
   Object? proveErr;
@@ -137,9 +173,41 @@ Future<void> main() async {
   stdout.writeln(
     'T18_OFF_UI pass select=$debugSendSelectStamp seal=$debugSendSealStamp '
     'prove=$debugSendProveStamp sign=$debugSendSignStamp ui=$ui '
-    'sealErr=$sealErr proveErr=$proveErr',
+    'sealErr=$sealErr proveErr=$proveErr rangeMs=${rangeMs.join(',')}',
   );
 }
+
+Future<void> _rangeOpens(Uint8List commit, Uint8List proof, int nanos) async {
+  final script = File('test/t18_range_verify.mjs');
+  if (!script.existsSync()) {
+    throw StateError('missing ${script.absolute.path}');
+  }
+  final tmp = File(
+    '${Directory.systemTemp.path}/t18-range-${DateTime.now().microsecondsSinceEpoch}.json',
+  );
+  tmp.writeAsStringSync(
+    '{"commit":"${_hex(commit)}","proof":"${_hex(proof)}"}',
+    flush: true,
+  );
+  try {
+    final result = await Process.run(
+      'node',
+      [script.absolute.path, tmp.absolute.path],
+    );
+    final out = result.stdout.toString();
+    final err = result.stderr.toString();
+    if (result.exitCode != 0 || !out.contains('ok')) {
+      throw StateError(
+        'range verify nanos=$nanos exit=${result.exitCode} out=$out err=$err',
+      );
+    }
+  } finally {
+    if (tmp.existsSync()) tmp.deleteSync();
+  }
+}
+
+String _hex(Uint8List b) =>
+    b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
 
 bool _same(Uint8List a, Uint8List b) {
   if (a.length != b.length) return false;

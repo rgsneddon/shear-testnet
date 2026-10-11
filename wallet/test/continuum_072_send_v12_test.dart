@@ -86,20 +86,24 @@ void main() {
   });
 
   test('a second beginSend does not start another send', () async {
-    final ledger = ShearLedger();
-    expect(ledger.beginSend(), isTrue);
-    final blocked = await submitContinuumSend(
-      ledger: ledger,
-      restFrame: 'she1rest',
-      startTo: '',
-      enteredTo: kPoolFeeDest,
-      amount: 1,
-    );
-    expect(blocked.posted, isFalse);
-    expect(blocked.remark, 'send_in_flight');
-    ledger.endSend();
-    expect(ledger.beginSend(), isTrue);
-    ledger.endSend();
+    const wires = <String>['1', '1000', '100000000000', '9007199254740993'];
+    for (final wire in wires) {
+      final ledger = ShearLedger();
+      expect(ledger.beginSend(), isTrue, reason: wire);
+      final blocked = await submitContinuumSend(
+        ledger: ledger,
+        restFrame: 'she1rest',
+        startTo: '',
+        enteredTo: kPoolFeeDest,
+        amount: 1,
+        nanosWire: wire,
+      );
+      expect(blocked.posted, isFalse, reason: wire);
+      expect(blocked.remark, 'send_in_flight', reason: wire);
+      ledger.endSend();
+      expect(ledger.beginSend(), isTrue, reason: wire);
+      ledger.endSend();
+    }
   });
 
   test('withdraw posts kind withdraw for any finished-epoch principal', () async {

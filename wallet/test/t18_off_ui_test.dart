@@ -24,7 +24,7 @@ void main() {
       reason: 'stdout:\n${result.stdout}\nstderr:\n${result.stderr}',
     );
     expect(result.stdout.toString(), contains('T18_OFF_UI pass'));
-  }, timeout: const Timeout(Duration(minutes: 2)));
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }
 
 String _dartBin() {

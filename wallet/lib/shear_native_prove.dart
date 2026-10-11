@@ -105,7 +105,10 @@ Map<String, dynamic> nativeSealNote(int v, {Uint8List? dest20, String kind = 'se
   final override = debugNativeSealNote;
   if (override != null) return override(v, dest20: dest20, kind: kind);
   final helper = _helperPath();
-  final note = sealNote(v, dest20: dest20, kind: kind);
+  // The wire range proof is the node blob. sealNote's pure-Dart proveRange is
+  // a different object, and without libsodium it does not return inside a
+  // send. The value opening stays here. The helper fills rangeProof.
+  final note = sealCoinbaseNote(v, dest20: dest20, kind: kind);
   if (helper == null) {
     throw StateError('admit_native_required');
   }
