@@ -211,22 +211,35 @@ describe('v12 PROP pays share work', () => {
       assert.equal(leaf.count, want.get(leaf.noteCommit.toString('hex')));
       assert.ok(leaf.count > 0);
     }
-    const picked = selectBlockShares(
-      [0, 1, 2, 3, 4].flatMap((i) => {
-        const dest = minerDest();
-        return [0, 1, 2, 3].map((k) => {
-          const bits = SHARE_FLOOR_BITS + (i % 3);
-          return {
-            dest,
-            nonce: nonceWithShareTarget(BigInt(i * 10 + k + 1), bits),
-            shareBits: bits,
-          };
-        });
-      }),
-      3,
-    );
+    const batch = [0, 1, 2, 3, 4].flatMap((i) => {
+      const dest = minerDest();
+      return [0, 1, 2, 3].map((k) => {
+        const bits = SHARE_FLOOR_BITS + (i % 3);
+        return {
+          dest,
+          nonce: nonceWithShareTarget(BigInt(i * 10 + k + 1), bits),
+          shareBits: bits,
+        };
+      });
+    });
+    const picked = selectBlockShares(batch, 3);
     assert.equal(picked.length, 3);
-    assert.equal(new Set(picked.map((row) => row.dest)).size, 3);
+    const submitted = new Map();
+    for (const row of batch) {
+      const units = BigInt(unitsForShare(row.shareBits));
+      submitted.set(row.dest, (submitted.get(row.dest) || 0n) + units);
+    }
+    const keptUnits = new Map();
+    for (const row of picked) {
+      const units = BigInt(unitsForShare(row.shareBits));
+      keptUnits.set(row.dest, (keptUnits.get(row.dest) || 0n) + units);
+    }
+    for (const a of submitted.keys()) {
+      for (const b of submitted.keys()) {
+        if (submitted.get(a) <= submitted.get(b)) continue;
+        assert.ok((keptUnits.get(a) || 0n) >= (keptUnits.get(b) || 0n));
+      }
+    }
     clearLiveSharePow();
   });
 

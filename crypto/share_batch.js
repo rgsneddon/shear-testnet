@@ -202,30 +202,95 @@ export function shareInclusionTie(share) {
  * make room for another. A block over the count still fails verify with
  * share_cap when the caller does not select first.
  */
+function shareQuotaKey(share) {
+  const nc = noteCommitOfShare(share);
+  const hex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
+  return hex || `:${String(share?.nonce)}`;
+}
+
+function provenShareUnits(share) {
+  const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: false });
+  if (!credit.ok) return 0n;
+  return BigInt(unitsForShare(credit.bits));
+}
+
+function quotaAhead(a, b) {
+  const left = a.work * BigInt(b.take + 1);
+  const right = b.work * BigInt(a.take + 1);
+  if (left !== right) return left > right;
+  return a.key < b.key;
+}
+
+function heapPush(heap, row) {
+  heap.push(row);
+  let i = heap.length - 1;
+  while (i > 0) {
+    const parent = (i - 1) >> 1;
+    if (quotaAhead(heap[parent], heap[i])) break;
+    const swap = heap[parent];
+    heap[parent] = heap[i];
+    heap[i] = swap;
+    i = parent;
+  }
+}
+
+function heapPop(heap) {
+  const top = heap[0];
+  const last = heap.pop();
+  if (!heap.length || last == null) return top;
+  heap[0] = last;
+  let i = 0;
+  for (;;) {
+    let best = i;
+    const left = i * 2 + 1;
+    const right = left + 1;
+    if (left < heap.length && quotaAhead(heap[left], heap[best])) best = left;
+    if (right < heap.length && quotaAhead(heap[right], heap[best])) best = right;
+    if (best === i) break;
+    const swap = heap[i];
+    heap[i] = heap[best];
+    heap[best] = swap;
+    i = best;
+  }
+  return top;
+}
+
+/**
+ * When the share-count cap binds, seats follow submitted work (D'Hondt).
+ * The next share goes to the noteCommit with the highest work / (kept + 1).
+ * Equal averages break on noteCommit order. Splitting one pile of work across
+ * more noteCommits cannot raise the work that pile keeps. Inside a noteCommit,
+ * the higher-work shares are kept.
+ */
 export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK) {
   const list = sharesAtProvenBits(unpackShareBatch(shares));
   const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  if (limit <= 0) return [];
   if (list.length <= limit) return sortShares(list);
   const groups = new Map();
   for (const s of sortShares(list)) {
-    const nc = noteCommitOfShare(s);
-    const hex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
-    const key = hex || `:${String(s.nonce)}`;
+    const key = shareQuotaKey(s);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
   }
-  const keys = [...groups.keys()].sort();
+  const heap = [];
+  for (const [key, bucket] of groups) {
+    const ranked = bucket.slice().sort((a, b) => {
+      const ua = provenShareUnits(a);
+      const ub = provenShareUnits(b);
+      if (ua !== ub) return ua > ub ? -1 : 1;
+      return 0;
+    });
+    const work = ranked.reduce((n, s) => n + provenShareUnits(s), 0n);
+    heapPush(heap, { key, ranked, work, take: 0 });
+  }
   const kept = [];
-  let progressed = true;
-  while (kept.length < limit && progressed) {
-    progressed = false;
-    for (const key of keys) {
-      const bucket = groups.get(key);
-      if (!bucket.length) continue;
-      kept.push(bucket.shift());
-      progressed = true;
-      if (kept.length >= limit) break;
-    }
+  while (kept.length < limit && heap.length) {
+    const row = heapPop(heap);
+    if (row.take >= row.ranked.length) continue;
+    kept.push(row.ranked[row.take]);
+    row.take += 1;
+    if (row.take < row.ranked.length) heapPush(heap, row);
   }
   return sortShares(kept);
 }

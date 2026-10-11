@@ -34,13 +34,13 @@ function fakeBlock(height) {
 }
 
 describe('v11 65536 lean share path', () => {
-  it('over the count, the first turn is the lower noteCommit, not the heavier share', () => {
+  it('over the count, one slot keeps the heavier share, not the lower noteCommit', () => {
     const weakLow = { noteCommit: Buffer.alloc(32, 1), nonce: nonceWithShareTarget(1n, 8), lz: 8 };
     const strongHigh = { noteCommit: Buffer.alloc(32, 250), nonce: nonceWithShareTarget(1n, 12), lz: 12 };
     const kept = selectBlockShares([strongHigh, weakLow], 1);
     assert.equal(kept.length, 1);
-    assert.equal(kept[0].noteCommit[0], 1);
-    assert.equal(kept[0].lz, 8);
+    assert.equal(kept[0].noteCommit[0], 250);
+    assert.equal(kept[0].lz, 12);
   });
 
   it('breaks a count tie on noteCommit order, not on a share-hash tie', () => {
