@@ -107,7 +107,7 @@ const ipc = await attachPoolIpc({
     pool.noteSidecarTip(tip);
   },
   onApplied() {
-    try { pool.paintStatsSnap(); } catch { /* stats timer retries */ }
+    try { pool.scheduleStatsSnap(); } catch { /* stats timer retries */ }
   },
 });
 const p2pShim = {
@@ -117,7 +117,7 @@ const p2pShim = {
 };
 pool.setP2p(p2pShim);
 pool.store.on('tip', () => {
-  try { pool.paintStatsSnap(); } catch { /* stats timer retries */ }
+  try { pool.scheduleStatsSnap(); } catch { /* the pool paints after the job */ }
 });
 const httpPort = pool.httpServer.address().port;
 const stratumPort = pool.stratum.address().port;

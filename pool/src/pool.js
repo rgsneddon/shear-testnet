@@ -1926,6 +1926,13 @@ export function createPool({
   let headerHold = null;
   let escapePinKeys = null;
   let sealing = false;
+  // Declared before the tip listener. A tip during init must not hit the
+  // temporal dead zone, and a seal holds the paint until the job is out.
+  let statsSnap = { at: 0, json: '{"ok":true,"supplyStatus":"pending","asOfHeight":0}' };
+  let statsTimer = null;
+  let statsImmediate = null;
+  let statsAfterSeal = false;
+  const tipWork = [];
   let proofWarm = null;
   let sealFailStreak = 0;
   let sealFailBatch = '';
@@ -2408,12 +2415,23 @@ export function createPool({
     });
     store.on('tip', (t) => {
       noteStallHeight(Date.now());
-      if (sealing || t?.reorg) return;
+      if (sealing) {
+        statsAfterSeal = true;
+        return;
+      }
+      if (t?.reorg) {
+        scheduleStatsSnap();
+        return;
+      }
       const tipHash = store.tip()
         ? Buffer.from(store.tip().hash).toString('hex')
         : '';
-      if (lastJob && String(lastJob.prevBlockHash) === tipHash) return;
+      if (lastJob && String(lastJob.prevBlockHash) === tipHash) {
+        scheduleStatsSnap();
+        return;
+      }
       resetOpenRound();
+      scheduleStatsSnap();
     });
   }
 
@@ -3462,6 +3480,10 @@ export function createPool({
     return got || { ok: false, reason: 'append' };
     } finally {
       sealing = sealingBefore;
+      if (!sealing && statsAfterSeal) {
+        statsAfterSeal = false;
+        scheduleStatsSnap();
+      }
     }
   }
 
@@ -3751,6 +3773,7 @@ export function createPool({
   function broadcastJob(job, { force = false } = {}) {
     if (!job) return 0;
     if (paused && !force) return 0;
+    noteTipWork('job');
     let n = 0;
     for (const m of miners.values()) {
       for (const c of m.connections || []) {
@@ -4168,6 +4191,10 @@ export function createPool({
         if (typeof store.clearOpenRound === 'function') store.clearOpenRound();
         const base = issueJob(undefined, { force: true });
         broadcastJob(base);
+        if (statsAfterSeal) {
+          statsAfterSeal = false;
+          scheduleStatsSnap();
+        }
         console.log(JSON.stringify({
           event: 'vardiff_carry',
           template: Number(base?.shareBits) || 0,
@@ -4178,6 +4205,10 @@ export function createPool({
       } else {
         sealFailReason = String(got?.reason || 'seal_failed');
         nextJob = true;
+        if (statsAfterSeal) {
+          statsAfterSeal = false;
+          scheduleStatsSnap();
+        }
       }
     }
     try {
@@ -4479,14 +4510,37 @@ export function createPool({
     };
   }
 
-  let statsSnap = { at: 0, json: '{"ok":true}' };
-  let statsTimer = null;
+  function noteTipWork(kind) {
+    tipWork.push(kind);
+    if (tipWork.length > 32) tipWork.shift();
+  }
+  function scheduleStatsSnap() {
+    if (sealing) {
+      statsAfterSeal = true;
+      return;
+    }
+    if (statsImmediate) return;
+    statsImmediate = setImmediate(() => {
+      statsImmediate = null;
+      if (stopped) return;
+      if (sealing) {
+        statsAfterSeal = true;
+        return;
+      }
+      try { paintStatsSnap(); } catch { /* the stats cadence retries */ }
+    });
+  }
   let payoutTimer = null;
   let payoutSweepBusy = false;
   let payoutSweepAgain = false;
   let autoPayoutLastError = null;
   let jobDirty = false;
   function paintStatsSnap() {
+    if (sealing) {
+      statsAfterSeal = true;
+      return;
+    }
+    noteTipWork('stats');
     try {
       const rows = openRoundHashRows(miners, hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos))
         .map((r) => ({ tag: r.tag, count: r.count }));
@@ -4496,6 +4550,12 @@ export function createPool({
     } catch {
       if (!statsSnap.json) statsSnap = { at: Date.now(), json: '{"ok":true}' };
     }
+  }
+  /** A pending or unverifiable supply has no total yet. Zero is a settled total. */
+  function supplyNumber(status, value) {
+    if (status !== 'verified' && status !== 'mismatch') return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
   }
   function publicStats() {
     const now = Date.now();
@@ -4618,11 +4678,12 @@ export function createPool({
       stale: stats.stale,
       circulatingNanos: supply.circulatingNanos,
       supplyStatus: supplyStatusWord(supply.supplyStatus),
-      supplyDifferenceNanos: Number(supply.differenceNanos) || 0,
-      schedulePotNanos: Number(supply.schedulePotNanos) || 0,
+      asOfHeight: Number.isInteger(Number(supply.asOfHeight)) ? Number(supply.asOfHeight) : 0,
+      supplyDifferenceNanos: supplyNumber(supply.supplyStatus, supply.differenceNanos),
+      schedulePotNanos: supplyNumber(supply.supplyStatus, supply.schedulePotNanos),
       potEmittedNanos: supply.potNanos,
       hashBonusEmittedNanos: supply.hashNanos,
-      hashOwedNanos: Number(supply.hashOwedNanos) || 0,
+      hashOwedNanos: supplyNumber(supply.supplyStatus, supply.hashOwedNanos),
       extraMintedNanos: supply.extraMintNanos,
       burnedNanos: supply.burnedNanos,
       reserveMintedNanos: supply.reserveMintedNanos || 0,
@@ -4685,7 +4746,7 @@ export function createPool({
       }),
     });
   }
-  paintStatsSnap();
+  scheduleStatsSnap();
 
   function minerByTag(tag, now = Date.now()) {
     const want = String(tag || '').trim().toLowerCase();
@@ -5529,6 +5590,8 @@ export function createPool({
     httpServer,
     snapshotRound,
     paintStatsSnap,
+    scheduleStatsSnap,
+    tipWork() { return tipWork.slice(); },
     runAutoPayoutSweep,
     sweepAutoPayouts,
     setP2p,

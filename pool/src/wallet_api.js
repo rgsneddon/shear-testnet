@@ -659,40 +659,54 @@ export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
 }
 
 /** All SHE in existence: the consensus supply, not a fresh proof walk. Staked coin stays out of the sum. */
-let _supplyAt = '';
-let _supplyVal = null;
 let supplyWorker = null;
 let supplyJobSeq = 0;
 const supplyWaiters = new Map();
-const supplyJobs = new Map();
+/** One book does not reuse another book's verdict, even when the tip hash collides. */
+const supplyCache = new WeakMap();
+const supplyJobs = new WeakMap();
 
-function supplyCacheKey(store) {
-  const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
-  let h = 2166136261;
-  const mix = (s) => {
-    const str = String(s);
-    for (let i = 0; i < str.length; i += 1) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 16777619);
+function cachedSupply(store, key) {
+  if (!store || typeof store !== 'object') return null;
+  const hit = supplyCache.get(store);
+  if (!hit || hit.key !== key || !hit.val || hit.val.supplyStatus === 'pending') return null;
+  return hit.val;
+}
+
+function rememberSupply(store, key, packed) {
+  if (!store || typeof store !== 'object') return;
+  if (supplyCacheKey(store) !== key) return;
+  supplyCache.set(store, { key, val: packed });
+}
+
+function forgetSupplyJob(store, key) {
+  if (!store || typeof store !== 'object') return;
+  const job = supplyJobs.get(store);
+  if (job && job.key === key) supplyJobs.delete(store);
+}
+
+/** O(1). Same height with a different tip hash is a different book. */
+export function supplyCacheKey(store) {
+  let height = 0;
+  let hash = '';
+  try {
+    const tip = typeof store?.tip === 'function' ? store.tip() : null;
+    if (tip) {
+      const n = Number(tip.height);
+      if (Number.isInteger(n) && n >= 0) height = n;
+      const raw = tip.hash;
+      hash = Buffer.isBuffer(raw) ? raw.toString('hex') : String(raw || '');
     }
-  };
-  mix(blocks.length);
-  for (const block of blocks) {
-    const cb = block?.txs?.[0];
-    const ex = cb?.excess;
-    mix(Buffer.isBuffer(ex) ? ex.toString('hex') : (ex == null ? '' : String(ex)));
-    mix(cb?.carryNanos ?? '');
-    mix(Array.isArray(block?.shareBatch) ? block.shareBatch.length : 0);
-    mix(Array.isArray(cb?.hashOwed) ? cb.hashOwed.length : 0);
-    mix(Array.isArray(cb?.hashOwedRest) ? cb.hashOwedRest.length : 0);
-    const vouts = cb?.vout || [];
-    mix(vouts.length);
-    for (const o of vouts) {
-      mix(o?.rangeProof?.length || 0);
-      mix(o?.kind || '');
-    }
+  } catch { /* a raw list has no tip method */ }
+  if (!hash) {
+    const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
+    const last = blocks.length ? blocks[blocks.length - 1] : null;
+    const n = Number(last?.height);
+    height = Number.isInteger(n) && n >= 0 ? n : blocks.length;
+    const raw = last?.hash;
+    hash = Buffer.isBuffer(raw) ? raw.toString('hex') : String(raw || '');
   }
-  return `${blocks.length}:${h >>> 0}`;
+  return `${height}:${hash}`;
 }
 
 export function supplyStatusWord(status) {
@@ -809,20 +823,14 @@ function runSupplyAudit(store, key) {
   };
   setImmediate(pump);
   return promise.then((audit) => {
-    supplyJobs.delete(key);
+    forgetSupplyJob(store, key);
     const packed = packSupply(audit, store);
-    if (supplyCacheKey(store) === key) {
-      _supplyAt = key;
-      _supplyVal = packed;
-    }
-    return _supplyAt === key ? _supplyVal : packed;
+    rememberSupply(store, key, packed);
+    return packed;
   }, () => {
-    supplyJobs.delete(key);
+    forgetSupplyJob(store, key);
     const packed = packSupply({ status: 'unverifiable', reason: 'audit_worker' }, store);
-    if (supplyCacheKey(store) === key) {
-      _supplyAt = key;
-      _supplyVal = packed;
-    }
+    rememberSupply(store, key, packed);
     return packed;
   });
 }
@@ -833,8 +841,13 @@ export function networkSupply(store) {
   const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
   if (!blocks.length) return packSupply(supplyReport(emptySupplyState(0)), store);
   const key = supplyCacheKey(store);
-  if (key === _supplyAt && _supplyVal && _supplyVal.supplyStatus !== 'pending') return _supplyVal;
-  if (!supplyJobs.has(key)) supplyJobs.set(key, runSupplyAudit(store, key));
+  const hit = cachedSupply(store, key);
+  if (hit) return hit;
+  let job = supplyJobs.get(store);
+  if (!job || job.key !== key) {
+    job = { key, promise: runSupplyAudit(store, key) };
+    supplyJobs.set(store, job);
+  }
   return pendingSupply(store);
 }
 
@@ -842,8 +855,9 @@ export function networkSupply(store) {
 export function networkSupplySettled(store) {
   const now = networkSupply(store);
   if (now.supplyStatus !== 'pending') return Promise.resolve(now);
-  const key = supplyCacheKey(store);
-  return supplyJobs.get(key) || Promise.resolve(now);
+  const job = store && typeof store === 'object' ? supplyJobs.get(store) : null;
+  if (job && job.key === supplyCacheKey(store)) return job.promise;
+  return Promise.resolve(now);
 }
 
 export function explorerCirculation(store) {
