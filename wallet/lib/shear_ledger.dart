@@ -295,25 +295,8 @@ bool sealFlowOnCaller = false;
 /// [flowSendAdvisoryOf] still collapses the remark the user sees.
 Object? debugLastContinuumSendError;
 
-/// Inputs on one Flow spend.
-///
-/// Measured 2026-10-06 with `crypto/native_admit.js` `nativeBench` on this
-/// host: one ADMITv2 proof is 170–240 ms and 20482 bytes at |J|≥4096
-/// (14018 bytes below that). Re-measured 2026-10-10 at |J|=4096: 223.076 ms
-/// prove, 20482 bytes. A sealed vout is 14433-byte range proof,
-/// about 29420 bytes once hex-encoded. Eight proofs are ~1.8 s of background
-/// work, and the hex body (proofs + pay/change/dummy) stays under 0.5 MB.
-/// Cancel is checked between proofs. A ninth proof adds another ~220 ms and
-/// ~42 KB. Consensus levy is unchanged: `levyFromWeight` is
-/// max(100, ceil(jsonBytes/2048)), so the quote rises once the body passes
-/// 204800 bytes and stays far under the 0.001 SHE cap.
-const int kMaxInputsPerSend = 8;
-
-/// Sweep while more spendable notes than [kMaxInputsPerSend] remain.
-/// The marginal consensus levy of one extra proof is about
-/// ceil(42000/2048) = 21 units (dust), so a SHE cutoff would not track the
-/// cost. The cost is proof time and tx bytes, which cap the count.
-const int kConsolidateAboveCount = kMaxInputsPerSend;
+/// Inputs on one Flow spend. The count is [kMaxInputsPerSend]: the tighter
+/// of the prove-time budget and the hex-body budget recorded below.
 
 /// UI progress for a send. [cancel] is checked between proofs, not inside one.
 class SendProgress {
@@ -338,11 +321,57 @@ const String kErrSendCancelled = 'Send cancelled';
 const String kErrSendTimeout = 'Send did not reach the node — try again';
 const String kErrFeeShort = 'Not enough spendable to cover this amount and the fee';
 
-/// Hex-JSON sizes from the measurement above, padded so the posted fee is
-/// not under the sealed body. Wallet quote only. `levy.js` is not modified.
+/// Hex-JSON sizes and one prove, padded so the posted fee is not under the
+/// sealed body. Wallet quote only. `levy.js` is not modified.
+///
+/// 2026-10-10 `crypto/admit_bench_run.js` at |J|=4096: prove 223.076 ms,
+/// proof 20482 bytes. Hex of that proof is 40964 bytes; the pad is 42000.
+/// A sealed vout is a 14433-byte range proof, about 29420 hex bytes; the
+/// pad is 30000. Cancel is checked between proofs. Consensus levy is
+/// unchanged: `levyFromWeight` is max(100, ceil(jsonBytes/2048)).
+const int kMeasuredProveMs = 223;
 const int kMeasuredProofHexBytes = 42000;
 const int kMeasuredOutputHexBytes = 30000;
 const int kMeasuredTxBaseBytes = 512;
+const int kMeasuredMemoHexBytes = 512;
+
+/// Background prove budget for one send. 223 ms times 8 is 1784 ms, inside
+/// this budget. 223 ms times 9 is 2007 ms, outside it.
+const int kSendProveBudgetMs = 2000;
+
+/// Posted hex body budget. A send's measured body stays under 0.5 MB.
+const int kSendHexBudgetBytes = 500000;
+
+/// Inputs that fit [kSendProveBudgetMs] at [kMeasuredProveMs] each.
+const int kSendTimeCap = kSendProveBudgetMs ~/ kMeasuredProveMs;
+
+/// Inputs that fit [kSendHexBudgetBytes] with pay, change, and a dummy.
+const int kSendSizeCap = (kSendHexBudgetBytes -
+        kMeasuredTxBaseBytes -
+        3 * kMeasuredOutputHexBytes) ~/
+    kMeasuredProofHexBytes;
+
+/// Tighter of prove time and tx size. Not a hand-picked count.
+const int kMaxInputsPerSend =
+    kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap;
+
+/// Sweep while more spendable notes than [kMaxInputsPerSend] remain.
+/// The marginal consensus levy of one extra proof is dust next to the
+/// prove time and the hex body, so a SHE cutoff would not track the cost.
+const int kConsolidateAboveCount = kMaxInputsPerSend;
+
+/// Cap for this output count and memo. Time and size both apply. A memo or
+/// an extra output can only shrink the count.
+int measuredInputCap({int outputs = 3, bool memo = false}) {
+  final nOut = outputs < 1 ? 1 : outputs;
+  final fixed = kMeasuredTxBaseBytes +
+      nOut * kMeasuredOutputHexBytes +
+      (memo ? kMeasuredMemoHexBytes : 0);
+  final room = kSendHexBudgetBytes - fixed;
+  final sizeCap = room < kMeasuredProofHexBytes ? 1 : room ~/ kMeasuredProofHexBytes;
+  final cap = kSendTimeCap < sizeCap ? kSendTimeCap : sizeCap;
+  return cap < 1 ? 1 : cap;
+}
 
 /// SHE text as an exact nanos decimal. A non-integer or an extra non-zero
 /// digit past 11 places is refused. The result is never a JS-style round.
@@ -366,7 +395,7 @@ int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = fal
   final weight = kMeasuredTxBaseBytes +
       nIn * kMeasuredProofHexBytes +
       nOut * kMeasuredOutputHexBytes +
-      (memo ? 512 : 0);
+      (memo ? kMeasuredMemoHexBytes : 0);
   final padded = (weight * 5) ~/ 4 + 8192;
   final raw = (padded + 2047) ~/ 2048;
   final fee = raw < kLevyFloorUnits ? kLevyFloorUnits : raw;
@@ -497,14 +526,16 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   final need = input['needNanos'] != null
       ? _nanosFromAmountField(input['needNanos'])
       : _sheToNanos(input['needShe']);
-  final cap = (input['cap'] as num?)?.toInt() ?? kMaxInputsPerSend;
+  final memo = input['memo'] == true;
+  final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
+  final measured = measuredInputCap(outputs: outputs < 1 ? 1 : outputs, memo: memo);
+  final asked = (input['cap'] as num?)?.toInt();
+  final cap = (asked == null || asked < 1 || asked > measured) ? measured : asked;
   final tip = (input['tip'] as num?)?.toInt() ?? 0;
   final floor = (input['confs'] as num?)?.toInt() ?? 9;
   final hold = input['holdNanos'] != null
       ? _nanosFromAmountField(input['holdNanos'])
       : _sheToNanos(input['holdShe']);
-  final memo = input['memo'] == true;
-  final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
   final dests = <String>{
     for (final d in (input['dests'] as List? ?? const [])) d.toString(),
   };

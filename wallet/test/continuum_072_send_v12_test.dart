@@ -378,7 +378,108 @@ void main() {
     expect(main, contains('formatSheFromNanos(reserve.totalLockedNanos)'));
     final ledger = File('lib/shear_ledger.dart').readAsStringSync();
     expect(ledger, contains('sealedFeeCovers(feeUnits'));
-    expect(ledger, contains('kMaxInputsPerSend = 8'));
+    expect(ledger, contains('kSendProveBudgetMs ~/ kMeasuredProveMs'));
+    expect(ledger, contains('kMeasuredProofHexBytes'));
+    expect(ledger, isNot(contains('kMaxInputsPerSend = 8')));
+  });
+
+  test('the input cap is the tighter of prove time and tx size', () {
+    expect(kMaxInputsPerSend, measuredInputCap());
+    expect(kConsolidateAboveCount, kMaxInputsPerSend);
+    expect(kMaxInputsPerSend, greaterThan(1));
+    expect(kSendTimeCap, kSendProveBudgetMs ~/ kMeasuredProveMs);
+    final loose = measuredInputCap(outputs: 1);
+    final tight = measuredInputCap(outputs: 12, memo: true);
+    expect(tight, lessThan(loose));
+    expect(tight, lessThanOrEqualTo(kSendTimeCap));
+    final src = File('lib/shear_ledger.dart').readAsStringSync();
+    expect(src, contains('kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap'));
+    expect(src, isNot(contains('kMaxInputsPerSend = 8')));
+
+    Map<String, dynamic> row(String nanos, {int height = 1}) => {
+          'address': kPoolFeeDest,
+          'nanos': nanos,
+          'height': height,
+          'locked': false,
+          'spent': false,
+        };
+    final amounts = <String>['1000', '100000000000', '9007199254740993'];
+    final counts = <int>[1, 3, kMaxInputsPerSend - 1, kMaxInputsPerSend, kMaxInputsPerSend + 1, 2000];
+    for (final memo in [false, true]) {
+      final cap = measuredInputCap(memo: memo);
+      for (final n in counts) {
+        for (final amt in amounts) {
+          if (n >= 2000 && amt != amounts.first) continue;
+          final notes = <Map<String, dynamic>>[
+            for (var i = 0; i < n; i++) row(i.isEven ? amt : '1'),
+            row('9007199254740995', height: 80),
+          ];
+          final dust = selectSpendNotesWire({
+            'notes': notes,
+            'needNanos': '1',
+            'tip': 40,
+            'confs': 9,
+            'memo': memo,
+            'cap': 100000,
+          });
+          expect(dust['covered'], isTrue, reason: 'dust n=$n amt=$amt memo=$memo');
+          final batches = (dust['batches'] as List).cast<Map>();
+          expect(batches, isNotEmpty);
+          for (final b in batches) {
+            expect((b['notes'] as List).length, inInclusiveRange(1, cap), reason: 'n=$n amt=$amt memo=$memo');
+          }
+        }
+      }
+      final mixed = selectSpendNotesWire({
+        'notes': [for (final amt in amounts) row(amt)],
+        'needNanos': '9007199254740993',
+        'tip': 40,
+        'confs': 9,
+        'memo': memo,
+      });
+      expect(mixed['covered'], isTrue, reason: 'mixed memo=$memo');
+      final mixedNotes = ((mixed['batches'] as List).first as Map)['notes'] as List;
+      expect(mixedNotes.length, lessThanOrEqualTo(cap));
+      expect((mixedNotes.first as Map)['nanos'], '9007199254740993');
+    }
+    for (final nDust in <int>[1, kMaxInputsPerSend, 2000]) {
+      final onlyDust = selectSpendNotesWire({
+        'notes': [for (var i = 0; i < nDust; i++) row('1')],
+        'needNanos': '1',
+        'tip': 40,
+        'confs': 9,
+      });
+      expect(onlyDust['covered'], isFalse, reason: 'dust notes n=$nDust');
+      expect(onlyDust['shortFee'], isTrue, reason: 'dust notes n=$nDust');
+    }
+    final n = kMaxInputsPerSend;
+    final one = BigInt.from(kUnitsPerShe);
+    final fee = BigInt.from(estimateSendLevyUnits(inputs: n));
+    final full = one * BigInt.from(n) - fee;
+    final whole = selectSpendNotesWire({
+      'notes': [for (var i = 0; i < n; i++) row(one.toString())],
+      'needNanos': full.toString(),
+      'tip': 40,
+      'confs': 9,
+    });
+    expect(whole['covered'], isTrue);
+    expect((whole['batches'] as List), hasLength(1));
+    expect(((whole['batches'] as List).first as Map)['payNanos'], full.toString());
+    expect(((whole['batches'] as List).first as Map)['notes'], hasLength(n));
+
+    final over = selectSpendNotesWire({
+      'notes': [for (var i = 0; i < n + 1; i++) row(one.toString())],
+      'needNanos': (one * BigInt.from(n)).toString(),
+      'tip': 40,
+      'confs': 9,
+      'cap': n + 50,
+    });
+    expect(over['covered'], isTrue);
+    final overBatches = (over['batches'] as List).cast<Map>();
+    expect(overBatches.length, greaterThan(1));
+    for (final b in overBatches) {
+      expect((b['notes'] as List).length, inInclusiveRange(1, n));
+    }
   });
 
   test('a surplus under the old percent fee still sends', () async {
