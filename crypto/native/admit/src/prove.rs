@@ -11,6 +11,8 @@ use crate::select::{
     leaf_prove, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
     paired_qd_opens, paired_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN,
 };
+#[cfg(test)]
+use crate::select::{V3_Y, V3_YX};
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
     commit_ristretto_encodings, commit_ristretto_points, commit_vesta, leaf_p_siblings, note_u,
