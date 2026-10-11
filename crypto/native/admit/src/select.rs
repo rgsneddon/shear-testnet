@@ -22,9 +22,16 @@ use rand_core::{OsRng, RngCore};
 pub const CDS_LEN: usize = 32 + 32 + 32 + ARITY * 32 * 3; // W, Q, c0, z_x/z_r/z_t
 pub const PAIRED_LEN: usize = 32 * 4 + 64 + ARITY * 32 * 6; // Wd Qd Wc Qc hv0 + 6 z per slot
 pub const LEAF_PAIRED_LEN: usize = 32 * 2 + 64 + ARITY * 32 * 5; // Wd Qd hv0 + dest z*3 + c z_t + p z_w
-/// W' Q Wc' Kc Kp | A_d zrd A_c zrc | zxd[32] zyc[32] | seed | 9 responses × 32.
-/// 9 = dest (x, r, t) + C (y, r) + slot link (dest, C) + note (t, w).
-pub const LEAF_V3_LEN: usize = 32 * 5 + 32 * 4 + ARITY * 32 * 2 + 64 + ARITY * 32 * 9;
+/// W' Q Wc' Kc Kp | A_d zrd A_c zrc | zxd[32] zyc[32] | seed | 13 responses × 32 | Y Yx
+/// | slot-link proof | encode proof | dest-bind proof.
+/// 13 = dest (x, r, t) + zy + S_lo + S_hi + z_lr + C r + slot links + note (t, w) + zry.
+/// Y opens the spent C-scalar. Yx opens the dest-leaf fingerprint.
+/// The dest-bind proof opens that same Yx: `kp = pi + rho·U` and the fingerprint.
+pub const LEAF_V3_BODY: usize = 32 * 5 + 32 * 4 + ARITY * 32 * 2 + 64 + ARITY * 32 * 13 + 64;
+pub const LEAF_V3_LEN: usize = LEAF_V3_BODY
+    + crate::r1cs::SLOT_LINK_BLOB
+    + crate::r1cs::ENCODE_LINK_BLOB
+    + crate::r1cs::ENCODE_LINK_BLOB;
 
 pub(crate) fn vs_rand() -> vesta::Scalar {
     let mut w = [0u8; 64];
@@ -537,6 +544,15 @@ pub fn paired_prove(
     }
     let qd = vesta_mul_gsel(&xd) + vesta_mul_u(t_d);
     let qc = gselc * xc + uc * t_c;
+    // v2 publishes the other-slot sum. v3 adds a fresh U blind so that sum is
+    // not a candidate an observer can recompute from the public fluxset.
+    let (wd, wc, rd_open, rc_open) = if ctx.is_empty() {
+        (wd, wc, rd, rc)
+    } else {
+        let r_wd = vs_rand();
+        let r_wc = rs_rand();
+        (wd + vesta_mul_u(&r_wd), wc + uc * r_wc, rd - r_wd, rc - r_wc)
+    };
     let pwd = pd - wd;
     let pwc = pc - wc;
     let pwd_t = VestaVar::new(pwd);
@@ -613,10 +629,10 @@ pub fn paired_prove(
         j = (j + 1) % ARITY;
     }
     zxd[index] = (kxd + ed * xd).to_repr().into();
-    zrd[index] = (krd + ed * rd).to_repr().into();
+    zrd[index] = (krd + ed * rd_open).to_repr().into();
     ztd[index] = (ktd + ed * *t_d).to_repr().into();
     zxc[index] = (kxc + ec * xc).to_bytes();
-    zrc[index] = (krc + ec * rc).to_bytes();
+    zrc[index] = (krc + ec * rc_open).to_bytes();
     ztc[index] = (ktc + ec * *t_c).to_bytes();
 
     let mut seed0 = pair_chal(
@@ -1179,7 +1195,113 @@ const V3_ZRC: usize = V3_AC + 32;
 const V3_ZYC: usize = V3_ZRC + 32;
 const V3_SEED: usize = V3_ZYC + ARITY * 32;
 const V3_RESP: usize = V3_SEED + 64;
-const V3_STRIDE: usize = 32 * 9;
+/// zx zr zt zy | S_lo S_hi z_lr | zrc zsd zsc zct zpt zry.
+const V3_STRIDE: usize = 32 * 13;
+pub(crate) const V3_Y: usize = V3_RESP + ARITY * V3_STRIDE;
+pub(crate) const V3_YX: usize = V3_Y + 32;
+const V3_LINKS: usize = V3_YX + 32;
+const _: () = assert!(V3_LINKS == LEAF_V3_BODY);
+const _: () = assert!(
+    V3_LINKS
+        + crate::r1cs::SLOT_LINK_BLOB
+        + crate::r1cs::ENCODE_LINK_BLOB
+        + crate::r1cs::ENCODE_LINK_BLOB
+        == LEAF_V3_LEN
+);
+
+fn limbs4(b: &[u8; 32]) -> [u64; 4] {
+    let mut o = [0u64; 4];
+    for i in 0..4 {
+        let mut limb = [0u8; 8];
+        limb.copy_from_slice(&b[i * 8..i * 8 + 8]);
+        o[i] = u64::from_le_bytes(limb);
+    }
+    o
+}
+
+/// Schoolbook `S = k + e*y` as 64 little-endian bytes.
+/// Each input is a canonical ristretto scalar, so an honest `S` is below 2^507.
+pub(crate) fn mul_add_wide(k: &RScalar, e: &RScalar, y: &RScalar) -> Option<[u8; 64]> {
+    let eu = limbs4(&e.to_bytes());
+    let yu = limbs4(&y.to_bytes());
+    let ku = limbs4(&k.to_bytes());
+    let mut acc = [0u64; 12];
+    for i in 0..4 {
+        let mut carry = 0u128;
+        for j in 0..4 {
+            let idx = i + j;
+            let sum = acc[idx] as u128 + (eu[i] as u128) * (yu[j] as u128) + carry;
+            acc[idx] = sum as u64;
+            carry = sum >> 64;
+        }
+        let mut idx = i + 4;
+        while carry > 0 {
+            if idx >= acc.len() {
+                return None;
+            }
+            let sum = acc[idx] as u128 + carry;
+            acc[idx] = sum as u64;
+            carry = sum >> 64;
+            idx += 1;
+        }
+    }
+    let mut carry = 0u128;
+    for i in 0..4 {
+        let sum = acc[i] as u128 + ku[i] as u128 + carry;
+        acc[i] = sum as u64;
+        carry = sum >> 64;
+    }
+    let mut idx = 4usize;
+    while carry > 0 {
+        if idx >= acc.len() {
+            return None;
+        }
+        let sum = acc[idx] as u128 + carry;
+        acc[idx] = sum as u64;
+        carry = sum >> 64;
+        idx += 1;
+    }
+    if acc[8..].iter().any(|limb| *limb != 0) {
+        return None;
+    }
+    let mut out = [0u8; 64];
+    for i in 0..8 {
+        out[i * 8..i * 8 + 8].copy_from_slice(&acc[i].to_le_bytes());
+    }
+    if out[63] >= 16 {
+        return None;
+    }
+    Some(out)
+}
+
+fn embed_r(s: &RScalar) -> Option<vesta::Scalar> {
+    Option::<vesta::Scalar>::from(vesta::Scalar::from_repr(s.to_bytes().into()))
+}
+
+/// Same generators as the R1CS value commitment, without building the IPA set.
+fn link_bases() -> (vesta::Point, vesta::Point) {
+    use std::sync::OnceLock;
+    static BASES: OnceLock<(vesta::Point, vesta::Point)> = OnceLock::new();
+    *BASES.get_or_init(|| {
+        (
+            crate::ipa::hash_to_vesta(0, b"shear-admit-v3-r1cs-B"),
+            crate::ipa::hash_to_vesta(0, b"shear-admit-v3-r1cs-Bblind"),
+        )
+    })
+}
+
+fn link_commit(y: &RScalar, r: &vesta::Scalar) -> Option<vesta::Point> {
+    let yv = embed_r(y)?;
+    let (b, blind) = link_bases();
+    Some(b * yv + blind * r)
+}
+
+fn s_join(lo: &[u8; 32], hi: &[u8; 32]) -> [u8; 64] {
+    let mut s = [0u8; 64];
+    s[..32].copy_from_slice(lo);
+    s[32..].copy_from_slice(hi);
+    s
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct OrAnn {
@@ -1190,6 +1312,8 @@ struct OrAnn {
     rp: [u8; 32],
     asd: [u8; 32],
     asc: [u8; 32],
+    alk: [u8; 32],
+    ax: [u8; 32],
 }
 
 fn v3_chal(
@@ -1204,6 +1328,8 @@ fn v3_chal(
     kp: &[u8; 32],
     ct: &[u8; 32],
     pcom: &[u8; 32],
+    ycom: &[u8; 32],
+    yx: &[u8; 32],
     e1: &[u8; 64],
     zv: &[u8; 64],
 ) -> [u8; 64] {
@@ -1216,6 +1342,8 @@ fn v3_chal(
         &ann.rp,
         &ann.asd,
         &ann.asc,
+        &ann.alk,
+        &ann.ax,
         dest_parent,
         c_parent,
         wp,
@@ -1225,6 +1353,8 @@ fn v3_chal(
         kp,
         ct,
         pcom,
+        ycom,
+        yx,
         e1,
         zv,
         b"admit-v3-leaf",
@@ -1244,6 +1374,8 @@ fn v3_e1(
     kp: &[u8; 32],
     ad: &[u8; 32],
     ac: &[u8; 32],
+    ycom: &[u8; 32],
+    yx: &[u8; 32],
 ) -> [u8; 64] {
     sha512_64(&[
         ctx,
@@ -1258,6 +1390,8 @@ fn v3_e1(
         kp,
         ad,
         ac,
+        ycom,
+        yx,
         b"admit-v3-leaf",
     ])
 }
@@ -1293,11 +1427,34 @@ struct V3Open<'a> {
     e1c: RScalar,
     zxd: &'a [vesta::Scalar; ARITY],
     zyc: &'a [RScalar; ARITY],
+    ycom: vesta::Point,
+    yx: vesta::Point,
 }
 
-fn v3_ann_eval(j: usize, eh: &[u8; 64], o: &V3Open<'_>, zx: &vesta::Scalar, zr: &vesta::Scalar, zt: &vesta::Scalar, zy: &RScalar, zrc: &RScalar, zsd: &vesta::Scalar, zsc: &RScalar, zct: &RScalar, zpt: &RScalar) -> OrAnn {
+fn v3_ann_eval(
+    j: usize,
+    eh: &[u8; 64],
+    o: &V3Open<'_>,
+    zx: &vesta::Scalar,
+    zr: &vesta::Scalar,
+    zt: &vesta::Scalar,
+    s: &[u8; 64],
+    z_lr: &vesta::Scalar,
+    zrc: &RScalar,
+    zsd: &vesta::Scalar,
+    zsc: &RScalar,
+    zct: &RScalar,
+    zpt: &RScalar,
+    zry: &vesta::Scalar,
+) -> Option<OrAnn> {
+    if s[63] >= 16 {
+        return None;
+    }
     let ed = vesta::Scalar::from_uniform_bytes(eh);
     let ec = RScalar::from_bytes_mod_order_wide(eh);
+    let ev = embed_r(&ec)?;
+    let zy = RScalar::from_bytes_mod_order_wide(s);
+    let zv = vesta::Scalar::from_uniform_bytes(s);
     let (uc, gc, h) = ristretto_gens();
     let rpd = vesta_mul_u(zr) + vesta_mul_g(j, zx) - o.pwd.mul(&ed);
     let rqd = vesta_mul_gsel(zx) + vesta_mul_u(zt) - o.q.mul(&ed);
@@ -1306,7 +1463,10 @@ fn v3_ann_eval(j: usize, eh: &[u8; 64], o: &V3Open<'_>, zx: &vesta::Scalar, zr: 
     let rp = *uc * zpt - (o.pcom - o.kp) * ec;
     let asd = *zsd + o.e1d * zx - ed * o.zxd[j];
     let asc = *zsc + o.e1c * zy - ec * o.zyc[j];
-    OrAnn {
+    let (b, blind) = link_bases();
+    let alk = b * zv + blind * *z_lr - o.ycom * ev;
+    let ax = b * *zx + blind * *zry - o.yx * ed;
+    Some(OrAnn {
         rpd: enc_v(&rpd),
         rqd: enc_v(&rqd),
         rpc: enc_r(&rpc),
@@ -1314,11 +1474,31 @@ fn v3_ann_eval(j: usize, eh: &[u8; 64], o: &V3Open<'_>, zx: &vesta::Scalar, zr: 
         rp: enc_r(&rp),
         asd: asd.to_repr().into(),
         asc: asc.to_bytes(),
-    }
+        alk: enc_v(&alk),
+        ax: enc_v(&ax),
+    })
 }
 
-fn v3_ann_open(j: usize, o: &V3Open<'_>, kx: &vesta::Scalar, kr: &vesta::Scalar, kt: &vesta::Scalar, ky: &RScalar, krc: &RScalar, ksd: &vesta::Scalar, ksc: &RScalar, kct: &RScalar, kpt: &RScalar) -> OrAnn {
+fn v3_ann_open(
+    j: usize,
+    o: &V3Open<'_>,
+    kx: &vesta::Scalar,
+    kr: &vesta::Scalar,
+    kt: &vesta::Scalar,
+    ky: &RScalar,
+    klr: &vesta::Scalar,
+    krc: &RScalar,
+    ksd: &vesta::Scalar,
+    ksc: &RScalar,
+    kct: &RScalar,
+    kpt: &RScalar,
+    krx: &vesta::Scalar,
+) -> Option<OrAnn> {
+    let kv = embed_r(ky)?;
     let (uc, gc, h) = ristretto_gens();
+    let (b, blind) = link_bases();
+    let alk = b * kv + blind * *klr;
+    let ax = b * kx + blind * krx;
     let rpd = vesta_mul_u(kr) + vesta_mul_g(j, kx);
     let rqd = vesta_mul_gsel(kx) + vesta_mul_u(kt);
     let rpc = *uc * krc + gc[j] * ky;
@@ -1326,7 +1506,7 @@ fn v3_ann_open(j: usize, o: &V3Open<'_>, kx: &vesta::Scalar, kr: &vesta::Scalar,
     let rp = *uc * kpt;
     let asd = *ksd + o.e1d * kx;
     let asc = *ksc + o.e1c * ky;
-    OrAnn {
+    Some(OrAnn {
         rpd: enc_v(&rpd),
         rqd: enc_v(&rqd),
         rpc: enc_r(&rpc),
@@ -1334,7 +1514,9 @@ fn v3_ann_open(j: usize, o: &V3Open<'_>, kx: &vesta::Scalar, kr: &vesta::Scalar,
         rp: enc_r(&rp),
         asd: asd.to_repr().into(),
         asc: asc.to_bytes(),
-    }
+        alk: enc_v(&alk),
+        ax: enc_v(&ax),
+    })
 }
 
 fn read_z_bytes(proof: &[u8], off: usize) -> Option<[[u8; 32]; ARITY]> {
@@ -1345,10 +1527,66 @@ fn read_z_bytes(proof: &[u8], off: usize) -> Option<[[u8; 32]; ARITY]> {
     Some(o)
 }
 
+pub(crate) struct V3Made {
+    pub body: Vec<u8>,
+    pub y: RScalar,
+    pub r_y: vesta::Scalar,
+    pub ky: RScalar,
+    pub index: usize,
+    pub e_bytes: [[u8; 32]; ARITY],
+    pub s_bytes: [[u8; 64]; ARITY],
+    pub kc_b: [u8; 32],
+    pub kp_b: [u8; 32],
+    pub ci: RistrettoPoint,
+    pub pi: RistrettoPoint,
+    pub rho_c: Option<RScalar>,
+    pub rho_p: Option<RScalar>,
+    pub x: vesta::Scalar,
+    pub r_x: vesta::Scalar,
+}
+
+fn seal_v3(made: V3Made) -> Option<Vec<u8>> {
+    let rho = made.rho_c?;
+    let rho_p = made.rho_p?;
+    let y_b = take32(&made.body, V3_Y)?;
+    let yx_b = take32(&made.body, V3_YX)?;
+    let slot = crate::gadget::prove_slot_opening(
+        &made.y,
+        &made.r_y,
+        &y_b,
+        &made.ky,
+        &made.e_bytes,
+        &made.s_bytes,
+        made.index,
+    )?;
+    let enc = crate::gadget::prove_encode_opening(&made.ci, &rho, &made.kc_b, &made.y, &made.r_y)?;
+    let kp_blob = crate::gadget::prove_kp_opening(&made.pi, &rho_p, &made.kp_b, &made.x, &made.r_x)?;
+    if slot.len() != crate::r1cs::SLOT_LINK_BLOB
+        || enc.len() != crate::r1cs::ENCODE_LINK_BLOB
+        || kp_blob.len() != crate::r1cs::ENCODE_LINK_BLOB
+    {
+        return None;
+    }
+    let kp_v = take32(&kp_blob, 11 * 32)?;
+    if kp_v != yx_b {
+        return None;
+    }
+    let mut out = made.body;
+    out.extend_from_slice(&slot);
+    out.extend_from_slice(&enc);
+    out.extend_from_slice(&kp_blob);
+    if out.len() != LEAF_V3_LEN {
+        return None;
+    }
+    Some(out)
+}
+
 /// v3 leaf. Children stay witnesses. The blob is a blinded generator CDS:
 /// `W' = W + r_w U`, with `r_w` absorbed into the dest r-response, plus the
 /// same hidden slot on the C parent, the note rerandomizations, and the
 /// opening of both parents. Domain is `admit-v3-leaf`.
+/// The trailer proves the slot integer and the note encoding open one Y,
+/// and the dest-bind proof opens the same Yx as the dest Schnorr.
 pub fn leaf_prove_v3(
     dest_ch: &[[u8; 32]; ARITY],
     c_ch: &[[u8; 32]; ARITY],
@@ -1361,6 +1599,58 @@ pub fn leaf_prove_v3(
     p_com: &RistrettoPoint,
     ctx: &[u8],
 ) -> Option<Vec<u8>> {
+    seal_v3(leaf_prove_v3_inner(
+        dest_ch, c_ch, p_ch, index, t_d, t_note, w_p, c_tilde, p_com, ctx, None,
+    )?)
+}
+
+/// Hand-built leaf body: open a real arity-32 set, but set `Kc`/`Kp` from the caller.
+/// The body has no link trailer. The forge attaches a slot opening of the tree
+/// scalar and an encode opening of the fresh point.
+#[cfg(test)]
+pub fn leaf_prove_v3_unbound(
+    dest_ch: &[[u8; 32]; ARITY],
+    c_ch: &[[u8; 32]; ARITY],
+    p_ch: &[[u8; 32]; ARITY],
+    index: usize,
+    t_d: &vesta::Scalar,
+    c_tilde: &RistrettoPoint,
+    p_com: &RistrettoPoint,
+    ctx: &[u8],
+    kc: RistrettoPoint,
+    kp: RistrettoPoint,
+    delta_c: RScalar,
+    delta_p: RScalar,
+) -> Option<V3Made> {
+    let dummy = RScalar::from(1u64);
+    leaf_prove_v3_inner(
+        dest_ch,
+        c_ch,
+        p_ch,
+        index,
+        t_d,
+        &dummy,
+        &dummy,
+        c_tilde,
+        p_com,
+        ctx,
+        Some((kc, kp, delta_c, delta_p)),
+    )
+}
+
+fn leaf_prove_v3_inner(
+    dest_ch: &[[u8; 32]; ARITY],
+    c_ch: &[[u8; 32]; ARITY],
+    p_ch: &[[u8; 32]; ARITY],
+    index: usize,
+    t_d: &vesta::Scalar,
+    t_note: &RScalar,
+    w_p: &RScalar,
+    c_tilde: &RistrettoPoint,
+    p_com: &RistrettoPoint,
+    ctx: &[u8],
+    forced: Option<(RistrettoPoint, RistrettoPoint, RScalar, RScalar)>,
+) -> Option<V3Made> {
     if index >= ARITY || *t_note == RScalar::ZERO {
         return None;
     }
@@ -1378,9 +1668,23 @@ pub fn leaf_prove_v3(
     }
     let h = ristretto_h_note();
     let (u_r, gc, _) = ristretto_gens();
-    if *c_tilde != ci + h * t_note || *p_com != pi + *u_r * w_p {
-        return None;
-    }
+    let (kc, kp, delta_c, delta_p, rho_c, rho_p) = if let Some(forced) = forced {
+        (forced.0, forced.1, forced.2, forced.3, None, None)
+    } else {
+        if *c_tilde != ci + h * t_note || *p_com != pi + *u_r * w_p {
+            return None;
+        }
+        let rho_c = rs_rand();
+        let rho_p = rs_rand();
+        (
+            ci + h * rho_c,
+            pi + *u_r * rho_p,
+            *t_note - rho_c,
+            *w_p - rho_p,
+            Some(rho_c),
+            Some(rho_p),
+        )
+    };
     let y = rsc(&c_ch[index]);
     if y == RScalar::ZERO {
         return None;
@@ -1415,12 +1719,6 @@ pub fn leaf_prove_v3(
     let wp = wd + vesta_mul_u(&r_w);
     let wcp = wc + *u_r * r_wc;
     let qd = vesta_mul_gsel(&x) + vesta_mul_u(t_d);
-    let rho_c = rs_rand();
-    let rho_p = rs_rand();
-    let kc = ci + h * rho_c;
-    let kp = pi + *u_r * rho_p;
-    let delta_c = *t_note - rho_c;
-    let delta_p = *w_p - rho_p;
     let rd_eff = rd - r_w;
     let rc_eff = rc_full - r_wc;
     let wp_b = enc_v(&wp);
@@ -1430,6 +1728,13 @@ pub fn leaf_prove_v3(
     let kp_b = enc_r(&kp);
     let ct_b = enc_r(c_tilde);
     let pcom_b = enc_r(p_com);
+    let r_y = vs_rand();
+    let ycom = link_commit(&y, &r_y)?;
+    let y_b = enc_v(&ycom);
+    let r_x = vs_rand();
+    let (bx, blind_x) = link_bases();
+    let yx = bx * x + blind_x * r_x;
+    let yx_b = enc_v(&yx);
 
     let s_rd = vs_rand();
     let mut s_xd = [vesta::Scalar::ZERO; ARITY];
@@ -1447,7 +1752,7 @@ pub fn leaf_prove_v3(
     }
     let ad_b = enc_v(&ad);
     let ac_b = enc_r(&ac);
-    let e1 = v3_e1(ctx, &pd_b, &pc_b, &ct_b, &pcom_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ad_b, &ac_b);
+    let e1 = v3_e1(ctx, &pd_b, &pc_b, &ct_b, &pcom_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ad_b, &ac_b, &y_b, &yx_b);
     let e1d = vesta::Scalar::from_uniform_bytes(&e1);
     let e1c = RScalar::from_bytes_mod_order_wide(&e1);
     let zrd = s_rd + e1d * rd;
@@ -1478,33 +1783,48 @@ pub fn leaf_prove_v3(
         e1c,
         zxd: &zxd,
         zyc: &zyc,
+        ycom,
+        yx,
     };
     let kx = vs_rand();
     let kr = vs_rand();
     let kt = vs_rand();
     let ky = rs_rand();
+    let klr = vs_rand();
     let krc = rs_rand();
     let ksd = vs_rand();
     let ksc = rs_rand();
     let kct = rs_rand();
     let kpt = rs_rand();
-    let open_ann = v3_ann_open(index, &open, &kx, &kr, &kt, &ky, &krc, &ksd, &ksc, &kct, &kpt);
+    let krx = vs_rand();
+    let open_ann = v3_ann_open(index, &open, &kx, &kr, &kt, &ky, &klr, &krc, &ksd, &ksc, &kct, &kpt, &krx)?;
     let mut zx_b = [[0u8; 32]; ARITY];
     let mut zr_b = [[0u8; 32]; ARITY];
     let mut zt_b = [[0u8; 32]; ARITY];
     let mut zy_b = [[0u8; 32]; ARITY];
+    let mut slo_b = [[0u8; 32]; ARITY];
+    let mut shi_b = [[0u8; 32]; ARITY];
+    let mut zlr_b = [[0u8; 32]; ARITY];
     let mut zrc_s = [[0u8; 32]; ARITY];
     let mut zsd_b = [[0u8; 32]; ARITY];
     let mut zsc_b = [[0u8; 32]; ARITY];
     let mut zct_b = [[0u8; 32]; ARITY];
     let mut zpt_b = [[0u8; 32]; ARITY];
-    let mut hv = v3_chal(ctx, &open_ann, &pd_b, &pc_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &e1, &zv);
+    let mut zry_b = [[0u8; 32]; ARITY];
+    let mut e_bytes = [[0u8; 32]; ARITY];
+    let mut s_bytes = [[0u8; 64]; ARITY];
+    let mut hv = v3_chal(ctx, &open_ann, &pd_b, &pc_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &y_b, &yx_b, &e1, &zv);
     let mut j = (index + 1) % ARITY;
     while j != index {
         let a = vs_rand();
         let b = vs_rand();
         let c = vs_rand();
-        let d = rs_rand();
+        let mut s = [0u8; 64];
+        OsRng.fill_bytes(&mut s);
+        s[63] = 0;
+        e_bytes[j] = RScalar::from_bytes_mod_order_wide(&hv).to_bytes();
+        s_bytes[j] = s;
+        let zlr = vs_rand();
         let e = rs_rand();
         let f = vs_rand();
         let g = rs_rand();
@@ -1513,28 +1833,50 @@ pub fn leaf_prove_v3(
         zx_b[j] = a.to_repr().into();
         zr_b[j] = b.to_repr().into();
         zt_b[j] = c.to_repr().into();
-        zy_b[j] = d.to_bytes();
+        zy_b[j] = RScalar::from_bytes_mod_order_wide(&s).to_bytes();
+        slo_b[j].copy_from_slice(&s[..32]);
+        shi_b[j].copy_from_slice(&s[32..]);
+        zlr_b[j] = zlr.to_repr().into();
         zrc_s[j] = e.to_bytes();
         zsd_b[j] = f.to_repr().into();
         zsc_b[j] = g.to_bytes();
         zct_b[j] = hc.to_bytes();
         zpt_b[j] = hp.to_bytes();
-        let ann = v3_ann_eval(j, &hv, &open, &a, &b, &c, &d, &e, &f, &g, &hc, &hp);
-        hv = v3_chal(ctx, &ann, &pd_b, &pc_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &e1, &zv);
+        let zry = vs_rand();
+        zry_b[j] = zry.to_repr().into();
+        let ann = v3_ann_eval(j, &hv, &open, &a, &b, &c, &s, &zlr, &e, &f, &g, &hc, &hp, &zry)?;
+        hv = v3_chal(ctx, &ann, &pd_b, &pc_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &y_b, &yx_b, &e1, &zv);
         j = (j + 1) % ARITY;
     }
     let ed = vesta::Scalar::from_uniform_bytes(&hv);
     let ec = RScalar::from_bytes_mod_order_wide(&hv);
+    let ev = embed_r(&ec)?;
+    e_bytes[index] = ec.to_bytes();
+    let s_i = mul_add_wide(&ky, &ec, &y)?;
+    s_bytes[index] = s_i;
+    let zy_i = RScalar::from_bytes_mod_order_wide(&s_i);
+    if zy_i != ky + ec * y {
+        return None;
+    }
+    let zv_i = vesta::Scalar::from_uniform_bytes(&s_i);
+    let kv = embed_r(&ky)?;
+    let yv = embed_r(&y)?;
+    if zv_i != kv + ev * yv {
+        return None;
+    }
     let zx_i = kx + ed * x;
     let zr_i = kr + ed * rd_eff;
     let zt_i = kt + ed * *t_d;
-    let zy_i = ky + ec * y;
+    let zlr_i = klr + ev * r_y;
     let zrc_i = krc + ec * rc_eff;
     let zsd_i = ksd + ed * s_xd[index];
     let zsc_i = ksc + ec * s_yc[index];
     let zct_i = kct + ec * delta_c;
     let zpt_i = kpt + ec * delta_p;
-    let back = v3_ann_eval(index, &hv, &open, &zx_i, &zr_i, &zt_i, &zy_i, &zrc_i, &zsd_i, &zsc_i, &zct_i, &zpt_i);
+    let zry_i = krx + ed * r_x;
+    let back = v3_ann_eval(
+        index, &hv, &open, &zx_i, &zr_i, &zt_i, &s_i, &zlr_i, &zrc_i, &zsd_i, &zsc_i, &zct_i, &zpt_i, &zry_i,
+    )?;
     if back != open_ann {
         return None;
     }
@@ -1542,15 +1884,22 @@ pub fn leaf_prove_v3(
     zr_b[index] = zr_i.to_repr().into();
     zt_b[index] = zt_i.to_repr().into();
     zy_b[index] = zy_i.to_bytes();
+    slo_b[index].copy_from_slice(&s_i[..32]);
+    shi_b[index].copy_from_slice(&s_i[32..]);
+    zlr_b[index] = zlr_i.to_repr().into();
     zrc_s[index] = zrc_i.to_bytes();
     zsd_b[index] = zsd_i.to_repr().into();
     zsc_b[index] = zsc_i.to_bytes();
     zct_b[index] = zct_i.to_bytes();
     zpt_b[index] = zpt_i.to_bytes();
+    zry_b[index] = zry_i.to_repr().into();
 
-    let mut seed0 = v3_chal(ctx, &open_ann, &pd_b, &pc_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &e1, &zv);
+    let mut seed0 = v3_chal(ctx, &open_ann, &pd_b, &pc_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &y_b, &yx_b, &e1, &zv);
     let mut jj = (index + 1) % ARITY;
     while jj != 0 {
+        let s_jj = s_join(&slo_b[jj], &shi_b[jj]);
+        let zlr_jj = vs(&zlr_b[jj]);
+        let zry_jj = vs(&zry_b[jj]);
         let ann = v3_ann_eval(
             jj,
             &seed0,
@@ -1558,17 +1907,19 @@ pub fn leaf_prove_v3(
             &vs(&zx_b[jj]),
             &vs(&zr_b[jj]),
             &vs(&zt_b[jj]),
-            &rsc(&zy_b[jj]),
+            &s_jj,
+            &zlr_jj,
             &rsc(&zrc_s[jj]),
             &vs(&zsd_b[jj]),
             &rsc(&zsc_b[jj]),
             &rsc(&zct_b[jj]),
             &rsc(&zpt_b[jj]),
-        );
-        seed0 = v3_chal(ctx, &ann, &pd_b, &pc_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &e1, &zv);
+            &zry_jj,
+        )?;
+        seed0 = v3_chal(ctx, &ann, &pd_b, &pc_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &y_b, &yx_b, &e1, &zv);
         jj = (jj + 1) % ARITY;
     }
-    let mut out = Vec::with_capacity(LEAF_V3_LEN);
+    let mut out = Vec::with_capacity(LEAF_V3_BODY);
     out.extend_from_slice(&wp_b);
     out.extend_from_slice(&q_b);
     out.extend_from_slice(&wc_b);
@@ -1590,16 +1941,38 @@ pub fn leaf_prove_v3(
         out.extend_from_slice(&zr_b[j]);
         out.extend_from_slice(&zt_b[j]);
         out.extend_from_slice(&zy_b[j]);
+        out.extend_from_slice(&slo_b[j]);
+        out.extend_from_slice(&shi_b[j]);
+        out.extend_from_slice(&zlr_b[j]);
         out.extend_from_slice(&zrc_s[j]);
         out.extend_from_slice(&zsd_b[j]);
         out.extend_from_slice(&zsc_b[j]);
         out.extend_from_slice(&zct_b[j]);
         out.extend_from_slice(&zpt_b[j]);
+        out.extend_from_slice(&zry_b[j]);
     }
-    if out.len() != LEAF_V3_LEN {
+    out.extend_from_slice(&y_b);
+    out.extend_from_slice(&yx_b);
+    if out.len() != LEAF_V3_BODY {
         return None;
     }
-    Some(out)
+    Some(V3Made {
+        body: out,
+        y,
+        r_y,
+        ky,
+        index,
+        e_bytes,
+        s_bytes,
+        kc_b,
+        kp_b,
+        ci,
+        pi,
+        rho_c,
+        rho_p,
+        x,
+        r_x,
+    })
 }
 
 pub fn leaf_verify_v3(
@@ -1700,9 +2073,33 @@ pub fn leaf_verify_v3(
     if bool::from(qd.is_identity()) || c_tilde.is_identity() || p_com.is_identity() || kc.is_identity() || kp.is_identity() {
         return false;
     }
+    let y_b = match take32(proof, V3_Y) {
+        Some(x) => x,
+        None => return false,
+    };
+    let ycom = match dec_v(&y_b) {
+        Some(x) => x,
+        None => return false,
+    };
+    if bool::from(ycom.is_identity()) {
+        return false;
+    }
+    let yx_b = match take32(proof, V3_YX) {
+        Some(x) => x,
+        None => return false,
+    };
+    let yx = match dec_v(&yx_b) {
+        Some(x) => x,
+        None => return false,
+    };
+    if bool::from(yx.is_identity()) {
+        return false;
+    }
     let ct_b = enc_r(c_tilde);
     let pcom_b = enc_r(p_com);
-    let e1 = v3_e1(ctx, dest_parent, c_parent, &ct_b, &pcom_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ad_b, &ac_b);
+    let e1 = v3_e1(
+        ctx, dest_parent, c_parent, &ct_b, &pcom_b, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ad_b, &ac_b, &y_b, &yx_b,
+    );
     let e1d = vesta::Scalar::from_uniform_bytes(&e1);
     let e1c = RScalar::from_bytes_mod_order_wide(&e1);
     let (uc, gc, _) = ristretto_gens();
@@ -1739,12 +2136,16 @@ pub fn leaf_verify_v3(
         e1c,
         zxd: &zxd,
         zyc: &zyc,
+        ycom,
+        yx,
     };
     let mut hv = seed;
     let mut last = seed;
     if proof.len() < V3_RESP + ARITY * V3_STRIDE {
         return false;
     }
+    let mut e_bytes = [[0u8; 32]; ARITY];
+    let mut s_bytes = [[0u8; 64]; ARITY];
     for j in 0..ARITY {
         let off = V3_RESP + j * V3_STRIDE;
         let zx = vs(&match take32(proof, off) {
@@ -1759,35 +2160,128 @@ pub fn leaf_verify_v3(
             Some(x) => x,
             None => return false,
         });
-        let zy = rsc(&match take32(proof, off + 96) {
+        let zy_b = match take32(proof, off + 96) {
+            Some(x) => x,
+            None => return false,
+        };
+        let s_lo = match take32(proof, off + 128) {
+            Some(x) => x,
+            None => return false,
+        };
+        let s_hi = match take32(proof, off + 160) {
+            Some(x) => x,
+            None => return false,
+        };
+        let zlr_b = match take32(proof, off + 192) {
+            Some(x) => x,
+            None => return false,
+        };
+        let zrc = rsc(&match take32(proof, off + 224) {
             Some(x) => x,
             None => return false,
         });
-        let zrc = rsc(&match take32(proof, off + 128) {
+        let zsd = vs(&match take32(proof, off + 256) {
             Some(x) => x,
             None => return false,
         });
-        let zsd = vs(&match take32(proof, off + 160) {
+        let zsc = rsc(&match take32(proof, off + 288) {
             Some(x) => x,
             None => return false,
         });
-        let zsc = rsc(&match take32(proof, off + 192) {
+        let zct = rsc(&match take32(proof, off + 320) {
             Some(x) => x,
             None => return false,
         });
-        let zct = rsc(&match take32(proof, off + 224) {
+        let zpt = rsc(&match take32(proof, off + 352) {
             Some(x) => x,
             None => return false,
         });
-        let zpt = rsc(&match take32(proof, off + 256) {
+        let zry = vs(&match take32(proof, off + 384) {
             Some(x) => x,
             None => return false,
         });
-        let ann = v3_ann_eval(j, &hv, &open, &zx, &zr, &zt, &zy, &zrc, &zsd, &zsc, &zct, &zpt);
-        last = v3_chal(ctx, &ann, dest_parent, c_parent, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &e1, &zv);
+        let s = s_join(&s_lo, &s_hi);
+        if s[63] >= 16 {
+            return false;
+        }
+        e_bytes[j] = RScalar::from_bytes_mod_order_wide(&hv).to_bytes();
+        s_bytes[j] = s;
+        let zy = RScalar::from_bytes_mod_order_wide(&s);
+        if zy_b != zy.to_bytes() {
+            return false;
+        }
+        let zlr = vs(&zlr_b);
+        let ann = match v3_ann_eval(j, &hv, &open, &zx, &zr, &zt, &s, &zlr, &zrc, &zsd, &zsc, &zct, &zpt, &zry) {
+            Some(a) => a,
+            None => return false,
+        };
+        last = v3_chal(ctx, &ann, dest_parent, c_parent, &wp_b, &q_b, &wc_b, &kc_b, &kp_b, &ct_b, &pcom_b, &y_b, &yx_b, &e1, &zv);
         hv = last;
     }
-    last == seed
+    if last != seed {
+        return false;
+    }
+    let slot_at = V3_LINKS;
+    let enc_at = slot_at + crate::r1cs::SLOT_LINK_BLOB;
+    let kp_at = enc_at + crate::r1cs::ENCODE_LINK_BLOB;
+    let slot = match proof.get(slot_at..enc_at) {
+        Some(s) => s,
+        None => return false,
+    };
+    let enc = match proof.get(enc_at..kp_at) {
+        Some(s) => s,
+        None => return false,
+    };
+    let kp_blob = match proof.get(kp_at..LEAF_V3_LEN) {
+        Some(s) => s,
+        None => return false,
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::gadget::verify_shared_y_links(&y_b, &e_bytes, &s_bytes, &kc_b, slot, enc)
+            && crate::gadget::verify_kp_opening(&yx_b, &kp_b, kp_blob)
+    })) {
+        Ok(v) => v,
+        Err(_) => false,
+    }
+}
+
+/// Y, the slot proof's committed wire, and the encode proof's committed wire.
+#[cfg(test)]
+pub fn v3_link_openings(leaf: &[u8]) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
+    if leaf.len() != LEAF_V3_LEN {
+        return None;
+    }
+    let y = take32(leaf, V3_Y)?;
+    let slot_v = take32(leaf, V3_LINKS + 11 * 32)?;
+    let enc_v = take32(leaf, V3_LINKS + crate::r1cs::SLOT_LINK_BLOB + 11 * 32)?;
+    Some((y, slot_v, enc_v))
+}
+
+/// Slot blob, encode blob, then the dest-bind blob. Encode stays second.
+#[cfg(test)]
+pub fn v3_proof_blobs(leaf: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
+    if leaf.len() != LEAF_V3_LEN {
+        return None;
+    }
+    let slot_at = V3_LINKS;
+    let enc_at = slot_at + crate::r1cs::SLOT_LINK_BLOB;
+    let kp_at = enc_at + crate::r1cs::ENCODE_LINK_BLOB;
+    if kp_at + crate::r1cs::ENCODE_LINK_BLOB != leaf.len() {
+        return None;
+    }
+    Some((&leaf[slot_at..enc_at], &leaf[enc_at..kp_at], &leaf[kp_at..]))
+}
+
+/// Published Yx and the dest-bind proof's committed wire.
+#[cfg(test)]
+pub fn v3_dest_openings(leaf: &[u8]) -> Option<([u8; 32], [u8; 32])> {
+    if leaf.len() != LEAF_V3_LEN {
+        return None;
+    }
+    let yx = take32(leaf, V3_YX)?;
+    let kp_at = V3_LINKS + crate::r1cs::SLOT_LINK_BLOB + crate::r1cs::ENCODE_LINK_BLOB;
+    let kp_v = take32(leaf, kp_at + 11 * 32)?;
+    Some((yx, kp_v))
 }
 
 /// Proof bytes contain neither the slot index as a dedicated field nor any raw child 32-byte encoding.
@@ -1873,6 +2367,50 @@ mod tests {
         c2[0][0] ^= 1;
         let pc2 = commit_ristretto_encodings(&c2);
         assert!(!paired_verify(&pd, &pc2, &pr_m, &[]));
+    }
+
+    /// v3 blinds the other-slot sum. v2 still publishes it. The 128-byte child
+    /// link stays: this blind does not remove the spent bucket.
+    #[test]
+    fn v3_paired_blinds_the_other_slot_sum() {
+        let d = kids(3);
+        let mut c = [[0u8; 32]; ARITY];
+        for i in 0..ARITY {
+            c[i] = kids(9)[i];
+            c[i][3] = 2;
+        }
+        let td = vs_rand();
+        let tc = rs_rand();
+        let ctx = [7u8; 64];
+        let pr = paired_prove(&d, &c, 4, &td, &tc, &ctx).expect("v3 pair");
+        assert_eq!(pr.len(), PAIRED_LEN);
+        let pd = commit_vesta(&d);
+        let pc = commit_ristretto_encodings(&c);
+        assert!(paired_verify(&pd, &pc, &pr, &ctx), "blinded v3 proof must verify");
+        assert!(
+            !paired_verify(&pd, &pc, &pr, &[]),
+            "a v3 blind must not verify under an empty context"
+        );
+        let mut wd = pasta_curves::vesta::Point::identity();
+        for k in 0..ARITY {
+            if k == 4 {
+                continue;
+            }
+            wd += crate::tree::vesta_mul_g(k, &crate::tree::vesta_x(&d[k]));
+        }
+        assert_ne!(&pr[..32], super::enc_v(&wd).as_slice(), "v3 published the unblinded dest sum");
+        let (_, gc, _) = ristretto_gens();
+        let mut wc = RistrettoPoint::identity();
+        for k in 0..ARITY {
+            if k == 4 {
+                continue;
+            }
+            wc += gc[k] * rsc(&c[k]);
+        }
+        assert_ne!(&pr[64..96], super::enc_r(&wc).as_slice(), "v3 published the unblinded C sum");
+        let pr2 = paired_prove(&d, &c, 4, &td, &tc, &[]).expect("v2 pair");
+        assert!(paired_verify(&pd, &pc, &pr2, &[]));
+        assert_eq!(&pr2[..32], super::enc_v(&wd).as_slice(), "v2 still opens the unblinded sum");
     }
 
     #[test]
@@ -1969,5 +2507,114 @@ mod tests {
         assert!(!leaf_verify_v3(&pd, &pc, &ct, &pcom, &pr_b, &ctx));
         assert!(!leaf_verify_v3(&pd, &pc, &ct2, &pcom2, &pr, &ctx));
         assert!(leaf_prove_v3(&d, &c, &p_ch, 6, &td, &t, &w, &ct, &(dest_p[1] + u * w), &ctx).is_none());
+        let mut flipped = pr.clone();
+        flipped[V3_Y] ^= 1;
+        assert!(
+            !leaf_verify_v3(&pd, &pc, &ct, &pcom, &flipped, &ctx),
+            "flipping Y must fail verify"
+        );
+    }
+
+    #[test]
+    fn leaf_rerand_wide_s_matches_both_groups() {
+        use ff::FromUniformBytes;
+        for _ in 0..8 {
+            let k = rs_rand();
+            let e = rs_rand();
+            let y = rs_rand();
+            let s = mul_add_wide(&k, &e, &y).expect("wide");
+            assert_eq!(RScalar::from_bytes_mod_order_wide(&s), k + e * y);
+            let zv = pasta_curves::vesta::Scalar::from_uniform_bytes(&s);
+            let kv = embed_r(&k).expect("k");
+            let ev = embed_r(&e).expect("e");
+            let yv = embed_r(&y).expect("y");
+            assert_eq!(zv, kv + ev * yv);
+            assert!(s[63] < 16);
+        }
+    }
+
+    /// Cleartext dest Schnorr: the real slot's response opens Yx, with no IPA.
+    #[test]
+    fn fast_v3_yx_schnorr_matches_the_preimage() {
+        let (b, blind) = link_bases();
+        for _ in 0..8 {
+            let x = vs_rand();
+            let r_x = vs_rand();
+            let kx = vs_rand();
+            let krx = vs_rand();
+            let ed = vs_rand();
+            let yx = b * x + blind * r_x;
+            let ax = b * kx + blind * krx;
+            let zx = kx + ed * x;
+            let zry = krx + ed * r_x;
+            let got = b * zx + blind * zry - yx * ed;
+            assert_eq!(enc_v(&got), enc_v(&ax));
+        }
+    }
+
+    /// The unbound body commits Yx to the tree fingerprint and carries zry.
+    /// No IPA. Indices cover the wrap, including the floor and the last slot.
+    #[test]
+    fn fast_v3_body_commits_yx_to_the_tree_fingerprint() {
+        let g = curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
+        let (u, _, _) = ristretto_gens();
+        let mut c = [[0u8; 32]; ARITY];
+        let mut p_ch = [[0u8; 32]; ARITY];
+        let mut d = [[0u8; 32]; ARITY];
+        let mut pts = Vec::new();
+        let mut dest_p = Vec::new();
+        for i in 0..ARITY {
+            let r = rs_rand();
+            let cp = g * RScalar::from((i as u64) + 1) + ristretto_h_note() * r;
+            pts.push(cp);
+            c[i] = cp.compress().to_bytes();
+            let dp = g * RScalar::from((i as u64) + 11);
+            dest_p.push(dp);
+            p_ch[i] = dp.compress().to_bytes();
+            d[i] = crate::leaf::dest_leaf_fp(&p_ch[i]);
+        }
+        let ctx = [9u8; 64];
+        let h = ristretto_h_note();
+        assert_eq!(V3_Y - V3_RESP, ARITY * V3_STRIDE);
+        assert_eq!(V3_STRIDE, 32 * 13);
+        for index in [0usize, 1, 17, ARITY - 1] {
+            let t = rs_rand();
+            let w = rs_rand();
+            let rho_c = rs_rand();
+            let rho_p = rs_rand();
+            let ct = pts[index] + h * t;
+            let pcom = dest_p[index] + u * w;
+            let kc = pts[index] + h * rho_c;
+            let kp = dest_p[index] + u * rho_p;
+            let made = leaf_prove_v3_unbound(
+                &d,
+                &c,
+                &p_ch,
+                index,
+                &vs_rand(),
+                &ct,
+                &pcom,
+                &ctx,
+                kc,
+                kp,
+                t - rho_c,
+                w - rho_p,
+            )
+            .expect("body");
+            assert_eq!(made.body.len(), LEAF_V3_BODY);
+            assert_eq!(made.x, vesta_x(&d[index]));
+            let yx = {
+                let (b, blind) = link_bases();
+                b * made.x + blind * made.r_x
+            };
+            let yx_b = take32(&made.body, V3_YX).expect("yx");
+            assert_eq!(yx_b, enc_v(&yx));
+            assert_eq!(&made.body[made.body.len() - 32..], yx_b.as_slice());
+            let y_b = take32(&made.body, V3_Y).expect("y");
+            assert_ne!(y_b, yx_b);
+            assert_eq!(made.kp_b, kp.compress().to_bytes());
+            let zry_off = V3_RESP + index * V3_STRIDE + 12 * 32;
+            assert!(take32(&made.body, zry_off).is_some());
+        }
     }
 }

@@ -213,7 +213,8 @@ static napi_value prove_v3_fn(napi_env env, napi_callback_info info) {
   }
   uint32_t n = nd < nc ? nd : nc;
   uint8_t ct[32];
-  uint32_t maxp = 32768;
+  /* Height-4 v3 proof is 40354 bytes. Height 5 does not fit. v2 stays 32768. */
+  uint32_t maxp = 40354;
   uint8_t *proof = (uint8_t *)malloc(maxp);
   uint32_t plen = 0;
   int32_t ok = 0;

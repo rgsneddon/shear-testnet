@@ -9,7 +9,8 @@
 use crate::leaf::{jroot_hash, sha512_64};
 use crate::select::{
     leaf_prove, leaf_prove_v3, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
-    paired_qd_opens, paired_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN,
+    paired_qd_opens, paired_verify, rs_rand, vs_rand, LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN, V3_Y,
+    V3_YX,
 };
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
@@ -25,7 +26,9 @@ use curve25519_dalek::traits::IsIdentity;
 use rand_core::{OsRng, RngCore};
 
 pub const MAX_PROOF: usize = 32768;
-pub const MAX_PROOF_V3: usize = 32768;
+/// Height-4 v3 proof: header + 3 paired layers + the link leaf = 40354.
+/// Height 5 is 46818 and does not fit. The v2 cap stays 32768.
+pub const MAX_PROOF_V3: usize = 40354;
 pub const VERSION: u8 = 2;
 pub const VERSION_V3: u8 = 3;
 const HDR: usize = 1 + 32 * 8 + 1; // version, tag, ct, dest_root, c_root, p_com, r_x, z_x, z_w, n_layers
@@ -299,6 +302,302 @@ pub fn admit_prove_in(
         return None;
     }
     Some((c_tilde, proof))
+}
+
+/// One-bucket attack transcript. Opens the honest parents, then sets C̃ to a
+/// fresh point and p_com to an attacker key. The slot proof opens the tree
+/// scalar. The encode proof opens the fresh point. Consensus must reject it
+/// because those openings are not the same published Y.
+#[cfg(test)]
+pub struct ForgedSpend {
+    pub ct: [u8; 32],
+    pub tag: [u8; 32],
+    pub proof: Vec<u8>,
+    pub e_bytes: [[u8; 32]; ARITY],
+    pub s_bytes: [[u8; 64]; ARITY],
+    pub kc_b: [u8; 32],
+    pub kp_b: [u8; 32],
+}
+
+#[cfg(test)]
+pub fn forge_fresh_spend_v3(
+    index: usize,
+    dest_leaves: &[u8],
+    c_leaves: &[u8],
+    n: usize,
+    ctx: &[u8],
+) -> Option<ForgedSpend> {
+    if ctx.len() != 64 || n == 0 || index >= n {
+        return None;
+    }
+    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let dpath = path_from_levels(&dlevels, index)?;
+    let cpath = path_from_levels(&clev, index)?;
+    if dpath.len() != 1 || cpath.len() != 1 {
+        return None;
+    }
+    let slots = slots_of(index, 1);
+    let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
+    let dest_root = root_of_levels(&dlevels);
+    let c_root_b = root_of_levels(&clev);
+    let jr = jroot_hash(&dest_root, &c_root_b);
+    let t_fresh = rs_rand();
+    let fresh = G * rs_rand();
+    let ct_pt = fresh + crate::tree::ristretto_h_note() * t_fresh;
+    let ax = rs_rand();
+    let attacker_p = G * ax;
+    let x_bytes = ax.to_bytes();
+    let p_bytes = attacker_p.compress().to_bytes();
+    let w = chal(&[b"w", &x_bytes, &p_bytes]);
+    let u = note_u();
+    let p_com = attacker_p + u * w;
+    let delta_c = rs_rand();
+    let delta_p = rs_rand();
+    let h = crate::tree::ristretto_h_note();
+    let kc = ct_pt - h * delta_c;
+    let kp = p_com - u * delta_p;
+    let td = vs_rand();
+    let made = crate::select::leaf_prove_v3_unbound(
+        &dpath[0],
+        &cpath[0],
+        &p_sib,
+        slots[0],
+        &td,
+        &ct_pt,
+        &p_com,
+        ctx,
+        kc,
+        kp,
+        delta_c,
+        delta_p,
+    )?;
+    let y_b = take_at(&made.body, V3_Y)?;
+    let yx_b = take_at(&made.body, V3_YX)?;
+    let rho = t_fresh - delta_c;
+    let kc_b = kc.compress().to_bytes();
+    if kc_b != made.kc_b {
+        return None;
+    }
+    let kp_b = kp.compress().to_bytes();
+    if kp_b != made.kp_b {
+        return None;
+    }
+    let y_fresh = Scalar::from_bytes_mod_order(fresh.compress().to_bytes());
+    if y_fresh == made.y {
+        return None;
+    }
+    let r_fresh = crate::select::vs_rand();
+    eprintln!("PHASE forge-slot-prove");
+    let slot = crate::gadget::prove_slot_opening(
+        &made.y,
+        &made.r_y,
+        &y_b,
+        &made.ky,
+        &made.e_bytes,
+        &made.s_bytes,
+        made.index,
+    )?;
+    eprintln!("PHASE forge-encode-prove");
+    let enc = crate::gadget::prove_encode_opening(&fresh, &rho, &kc_b, &y_fresh, &r_fresh)?;
+    let rho_p = w - delta_p;
+    let x_atk = crate::tree::vesta_x(&dest_leaf_fp(&p_bytes));
+    let r_atk = vs_rand();
+    eprintln!("PHASE forge-kp-prove");
+    let kp_blob = crate::gadget::prove_kp_opening(&attacker_p, &rho_p, &kp_b, &x_atk, &r_atk)?;
+    if slot.len() != crate::r1cs::SLOT_LINK_BLOB
+        || enc.len() != crate::r1cs::ENCODE_LINK_BLOB
+        || kp_blob.len() != crate::r1cs::ENCODE_LINK_BLOB
+    {
+        return None;
+    }
+    let slot_v = &slot[11 * 32..11 * 32 + 32];
+    let enc_v = &enc[11 * 32..11 * 32 + 32];
+    let kp_v = &kp_blob[11 * 32..11 * 32 + 32];
+    if slot_v != y_b.as_slice() || enc_v == y_b.as_slice() || kp_v == yx_b.as_slice() {
+        return None;
+    }
+    let mut leaf = made.body;
+    leaf.extend_from_slice(&slot);
+    leaf.extend_from_slice(&enc);
+    leaf.extend_from_slice(&kp_blob);
+    if leaf.len() != LEAF_V3_LEN {
+        return None;
+    }
+    let e_bytes = made.e_bytes;
+    let s_bytes = made.s_bytes;
+    let ct = ct_pt.compress().to_bytes();
+    let tag = (hp(&attacker_p) * ax).compress().to_bytes();
+    let nonce = os_rand32()?;
+    let t_bytes = t_fresh.to_bytes();
+    let k = chal(&[b"k", ctx, &x_bytes, &t_bytes, &nonce]);
+    let a_w = chal(&[b"aw", ctx, &x_bytes, &t_bytes, &nonce]);
+    let r_x = G * k + u * a_w;
+    let dest_q = leaf_qd(&leaf)?;
+    let bind = forest_bind_v3(ctx, &[(tag, ct)]);
+    let rx_b = r_x.compress().to_bytes();
+    let pc_b = p_com.compress().to_bytes();
+    let e2 = chal(&[
+        ctx, b"dleq", &rx_b, &pc_b, &tag, &ct, &jr, &dest_q, &bind,
+    ]);
+    let z_x = k + e2 * ax;
+    let z_w = a_w + e2 * w;
+    let mut proof = Vec::new();
+    proof.push(VERSION_V3);
+    proof.extend_from_slice(&tag);
+    proof.extend_from_slice(&ct);
+    proof.extend_from_slice(&dest_root);
+    proof.extend_from_slice(&c_root_b);
+    proof.extend_from_slice(&pc_b);
+    proof.extend_from_slice(&rx_b);
+    proof.extend_from_slice(&z_x.to_bytes());
+    proof.extend_from_slice(&z_w.to_bytes());
+    proof.push(1u8);
+    proof.extend_from_slice(&leaf);
+    Some(ForgedSpend { ct, tag, proof, e_bytes, s_bytes, kc_b, kp_b })
+}
+
+#[cfg(test)]
+fn take_at(buf: &[u8], off: usize) -> Option<[u8; 32]> {
+    let end = off.checked_add(32)?;
+    let s = buf.get(off..end)?;
+    let mut o = [0u8; 32];
+    o.copy_from_slice(s);
+    Some(o)
+}
+
+/// Honest note, attacker dest. The slot and encode proofs open the published Y.
+/// The dest-bind proof is valid for the attacker point and opens a different Yx.
+#[cfg(test)]
+pub fn forge_attacker_dest_v3(
+    index: usize,
+    dest_leaves: &[u8],
+    c_leaves: &[u8],
+    n: usize,
+    ctx: &[u8],
+) -> Option<ForgedSpend> {
+    if ctx.len() != 64 || n == 0 || index >= n {
+        return None;
+    }
+    let (dlevels, clev) = trees(dest_leaves, c_leaves, n);
+    let dpath = path_from_levels(&dlevels, index)?;
+    let cpath = path_from_levels(&clev, index)?;
+    if dpath.len() != 1 || cpath.len() != 1 {
+        return None;
+    }
+    let slots = slots_of(index, 1);
+    let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
+    let dest_root = root_of_levels(&dlevels);
+    let c_root_b = root_of_levels(&clev);
+    let jr = jroot_hash(&dest_root, &c_root_b);
+    let c_leaf = cpath[0][slots[0]];
+    let ci = CompressedRistretto(c_leaf).decompress()?;
+    let t_note = rs_rand();
+    let rho_c = rs_rand();
+    let h = crate::tree::ristretto_h_note();
+    let ct_pt = ci + h * t_note;
+    let kc = ci + h * rho_c;
+    let delta_c = t_note - rho_c;
+    let ax = rs_rand();
+    let attacker_p = G * ax;
+    let x_bytes = ax.to_bytes();
+    let p_bytes = attacker_p.compress().to_bytes();
+    let w = chal(&[b"w", &x_bytes, &p_bytes]);
+    let u = note_u();
+    let p_com = attacker_p + u * w;
+    let delta_p = rs_rand();
+    let rho_p = w - delta_p;
+    let kp = attacker_p + u * rho_p;
+    let td = vs_rand();
+    let made = crate::select::leaf_prove_v3_unbound(
+        &dpath[0],
+        &cpath[0],
+        &p_sib,
+        slots[0],
+        &td,
+        &ct_pt,
+        &p_com,
+        ctx,
+        kc,
+        kp,
+        delta_c,
+        delta_p,
+    )?;
+    let y_b = take_at(&made.body, V3_Y)?;
+    let yx_b = take_at(&made.body, V3_YX)?;
+    let kc_b = kc.compress().to_bytes();
+    let kp_b = kp.compress().to_bytes();
+    if kc_b != made.kc_b || kp_b != made.kp_b {
+        return None;
+    }
+    let x_atk = crate::tree::vesta_x(&dest_leaf_fp(&p_bytes));
+    if x_atk == made.x {
+        return None;
+    }
+    eprintln!("PHASE attacker-slot-prove");
+    let slot = crate::gadget::prove_slot_opening(
+        &made.y,
+        &made.r_y,
+        &y_b,
+        &made.ky,
+        &made.e_bytes,
+        &made.s_bytes,
+        made.index,
+    )?;
+    eprintln!("PHASE attacker-encode-prove");
+    let enc = crate::gadget::prove_encode_opening(&ci, &rho_c, &kc_b, &made.y, &made.r_y)?;
+    let r_atk = vs_rand();
+    eprintln!("PHASE attacker-kp-prove");
+    let kp_blob = crate::gadget::prove_kp_opening(&attacker_p, &rho_p, &kp_b, &x_atk, &r_atk)?;
+    if slot.len() != crate::r1cs::SLOT_LINK_BLOB
+        || enc.len() != crate::r1cs::ENCODE_LINK_BLOB
+        || kp_blob.len() != crate::r1cs::ENCODE_LINK_BLOB
+    {
+        return None;
+    }
+    let slot_v = &slot[11 * 32..11 * 32 + 32];
+    let enc_v = &enc[11 * 32..11 * 32 + 32];
+    let kp_v = &kp_blob[11 * 32..11 * 32 + 32];
+    if slot_v != y_b.as_slice() || enc_v != y_b.as_slice() || kp_v == yx_b.as_slice() {
+        return None;
+    }
+    let mut leaf = made.body;
+    leaf.extend_from_slice(&slot);
+    leaf.extend_from_slice(&enc);
+    leaf.extend_from_slice(&kp_blob);
+    if leaf.len() != LEAF_V3_LEN {
+        return None;
+    }
+    let e_bytes = made.e_bytes;
+    let s_bytes = made.s_bytes;
+    let ct = ct_pt.compress().to_bytes();
+    let tag = (hp(&attacker_p) * ax).compress().to_bytes();
+    let nonce = os_rand32()?;
+    let t_bytes = t_note.to_bytes();
+    let k = chal(&[b"k", ctx, &x_bytes, &t_bytes, &nonce]);
+    let a_w = chal(&[b"aw", ctx, &x_bytes, &t_bytes, &nonce]);
+    let r_x = G * k + u * a_w;
+    let dest_q = leaf_qd(&leaf)?;
+    let bind = forest_bind_v3(ctx, &[(tag, ct)]);
+    let rx_b = r_x.compress().to_bytes();
+    let pc_b = p_com.compress().to_bytes();
+    let e2 = chal(&[
+        ctx, b"dleq", &rx_b, &pc_b, &tag, &ct, &jr, &dest_q, &bind,
+    ]);
+    let z_x = k + e2 * ax;
+    let z_w = a_w + e2 * w;
+    let mut proof = Vec::new();
+    proof.push(VERSION_V3);
+    proof.extend_from_slice(&tag);
+    proof.extend_from_slice(&ct);
+    proof.extend_from_slice(&dest_root);
+    proof.extend_from_slice(&c_root_b);
+    proof.extend_from_slice(&pc_b);
+    proof.extend_from_slice(&rx_b);
+    proof.extend_from_slice(&z_x.to_bytes());
+    proof.extend_from_slice(&z_w.to_bytes());
+    proof.push(1u8);
+    proof.extend_from_slice(&leaf);
+    Some(ForgedSpend { ct, tag, proof, e_bytes, s_bytes, kc_b, kp_b })
 }
 
 pub fn spend_tag_of(proof: &[u8]) -> Option<[u8; 32]> {
@@ -789,4 +1088,22 @@ pub fn forest_verify(
         }
     }
     true
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::{LEAF_V3_LEN, MAX_PROOF_V3, PAIRED_LEN};
+
+    fn v3_proof_len(layers: usize) -> usize {
+        if layers <= 1 {
+            return super::HDR + LEAF_V3_LEN;
+        }
+        super::HDR + (layers - 1) * (PAIRED_LEN + 128) + LEAF_V3_LEN
+    }
+
+    #[test]
+    fn v3_cap_fits_height_4_and_rejects_height_5() {
+        assert_eq!(v3_proof_len(4), MAX_PROOF_V3);
+        assert!(v3_proof_len(5) > MAX_PROOF_V3);
+    }
 }

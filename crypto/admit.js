@@ -210,7 +210,8 @@ export function admitVerifyV3(proof, fluxset, extra = {}) {
     if (!blob) return false;
     const pr = Buffer.from(asU8(blob));
     if (!pr.length || pr[0] !== 3) return false;
-    if (pr.length > 32768) return false;
+    // Height-4 v3 proof is 40354 bytes. Height 5 does not fit. v2 stays 32768.
+    if (pr.length > 40354) return false;
     const context = extra.ctx;
     if (!context || Buffer.from(asU8(context)).length !== 64) return false;
     let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;

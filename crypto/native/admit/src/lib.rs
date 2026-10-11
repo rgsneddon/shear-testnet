@@ -4,8 +4,12 @@
 #![allow(non_snake_case)]
 
 mod bpplus;
+mod fe25519;
+mod gadget;
+mod ipa;
 mod leaf;
 mod prove;
+mod r1cs;
 mod select;
 mod tree;
 
@@ -1039,5 +1043,166 @@ mod tests {
         }
         let enc = wd.to_bytes();
         assert_ne!(&proof[258..290], enc.as_ref());
+    }
+
+    /// A hand-built leaf opens a real bucket and spends a fresh point under an
+    /// attacker key. The slot circuit opens the tree scalar and the encode
+    /// circuit opens the fresh point. `admit_verify_v3` must reject that pair
+    /// against the honest jroot. An honest spend of a tree note still verifies.
+    #[test]
+    fn fresh_point_outside_the_set_fails_admit_verify_v3() {
+        let n = 32usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let mut ctx = [0u8; 64];
+        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
+        let idx = 4usize;
+        let t = rand_scalar();
+        eprintln!("PHASE honest-prove");
+        let (ct_h, proof_h) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("honest leaf");
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let tag_h = proof_spend_tag(&proof_h).expect("honest tag");
+        eprintln!("PHASE honest-verify");
+        assert!(
+            admit_verify_v3(&proof_h, &jr, &ct_h, &tag_h, &ctx),
+            "honest spend of a tree note must verify"
+        );
+        eprintln!("PHASE forge-build");
+        let forged = prove::forge_fresh_spend_v3(idx, &dest_blob, &c_blob, n, &ctx)
+            .expect("forged transcript");
+        assert_eq!(forged.proof.len(), proof_h.len(), "forge must be a full-length transcript");
+        let leaf = &forged.proof[forged.proof.len() - select::LEAF_V3_LEN..];
+        let (y, slot_v, enc_v) = select::v3_link_openings(leaf).expect("openings");
+        assert_eq!(slot_v, y, "slot proof must open the published Y");
+        assert_ne!(enc_v, y, "encode proof must open the fresh note, not Y");
+        let (yx, kp_v) = select::v3_dest_openings(leaf).expect("dest openings");
+        assert_ne!(kp_v, yx, "dest-bind proof must not open the published Yx");
+        let (slot_blob, enc_blob, kp_blob) = select::v3_proof_blobs(leaf).expect("blobs");
+        eprintln!("PHASE forge-circuits");
+        assert!(
+            gadget::slot_opening_verifies(slot_blob, &forged.e_bytes, &forged.s_bytes),
+            "slot circuit must accept the tree opening"
+        );
+        assert!(
+            gadget::encode_opening_verifies(enc_blob, &forged.kc_b),
+            "encode circuit must accept the fresh kc"
+        );
+        assert!(
+            gadget::kp_opening_verifies(kp_blob, &forged.kp_b, &kp_v),
+            "dest-bind circuit must accept the attacker kp on its own statement"
+        );
+        let mut in_tree = false;
+        for c in &cs {
+            if c == &forged.ct {
+                in_tree = true;
+            }
+        }
+        assert!(!in_tree, "fresh commitment collided with the set");
+        let _ = ps;
+        eprintln!("PHASE forge-verify");
+        assert!(
+            !admit_verify_v3(&forged.proof, &jr, &forged.ct, &forged.tag, &ctx),
+            "verifier accepted a spend of a point that is not in the set"
+        );
+    }
+
+    /// Honest C and an attacker dest. Slot and encode both open Y. The dest-bind
+    /// circuit is valid for the attacker point and commits a different Yx.
+    /// `admit_verify_v3` must reject that transcript.
+    #[test]
+    fn honest_c_attacker_p_fails_admit_verify_v3() {
+        let n = 32usize;
+        let (_xs, _ps, _cs, dest_blob, c_blob) = note_set(n);
+        let mut ctx = [0u8; 64];
+        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
+        let idx = 4usize;
+        eprintln!("PHASE attacker-forge");
+        let forged = prove::forge_attacker_dest_v3(idx, &dest_blob, &c_blob, n, &ctx)
+            .expect("attacker dest transcript");
+        let leaf = &forged.proof[forged.proof.len() - select::LEAF_V3_LEN..];
+        let (y, slot_v, enc_v) = select::v3_link_openings(leaf).expect("openings");
+        assert_eq!(slot_v, y, "slot proof must open the published Y");
+        assert_eq!(enc_v, y, "encode proof must open the honest note");
+        let (yx, kp_v) = select::v3_dest_openings(leaf).expect("dest openings");
+        assert_ne!(kp_v, yx, "dest-bind proof must open the attacker fingerprint");
+        let (slot_blob, enc_blob, kp_blob) = select::v3_proof_blobs(leaf).expect("blobs");
+        eprintln!("PHASE attacker-circuits");
+        assert!(gadget::slot_opening_verifies(slot_blob, &forged.e_bytes, &forged.s_bytes));
+        assert!(gadget::encode_opening_verifies(enc_blob, &forged.kc_b));
+        assert!(gadget::kp_opening_verifies(kp_blob, &forged.kp_b, &kp_v));
+        let jr = jroot(&dest_blob, &c_blob, n);
+        eprintln!("PHASE attacker-verify");
+        assert!(
+            !admit_verify_v3(&forged.proof, &jr, &forged.ct, &forged.tag, &ctx),
+            "verifier accepted an attacker dest under an honest note"
+        );
+    }
+
+    /// n = 64 is two buckets. The proof must not publish either bucket commitment.
+    #[test]
+    fn two_bucket_v3_does_not_publish_the_spent_group() {
+        use crate::tree::{commit_ristretto_encodings, commit_vesta};
+        let n = 64usize;
+        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
+        let mut ctx = [0u8; 64];
+        rand_core::RngCore::fill_bytes(&mut OsRng, &mut ctx);
+        let idx = 3usize;
+        let t = rand_scalar();
+        let (ct, proof) = admit_prove_v3(
+            &xs[idx].to_bytes(),
+            &ps[idx],
+            &cs[idx],
+            &t.to_bytes(),
+            idx,
+            &dest_blob,
+            &c_blob,
+            n,
+            &ctx,
+        )
+        .expect("two-bucket proof");
+        assert_eq!(proof.get(257).copied(), Some(2));
+        let jr = jroot(&dest_blob, &c_blob, n);
+        let tag = proof_spend_tag(&proof).expect("tag");
+        assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
+        let mut dest0 = [[0u8; 32]; 32];
+        let mut dest1 = [[0u8; 32]; 32];
+        let mut c0 = [[0u8; 32]; 32];
+        let mut c1 = [[0u8; 32]; 32];
+        for i in 0..32 {
+            dest0[i] = dest_leaf_fp(&ps[i]);
+            dest1[i] = dest_leaf_fp(&ps[32 + i]);
+            c0[i] = cs[i];
+            c1[i] = cs[32 + i];
+        }
+        let spent_d = commit_vesta(&dest0);
+        let other_d = commit_vesta(&dest1);
+        let spent_c = commit_ristretto_encodings(&c0);
+        let other_c = commit_ristretto_encodings(&c1);
+        assert!(
+            proof.windows(32).all(|w| w != spent_d.as_slice()),
+            "spent dest bucket commitment is on the wire"
+        );
+        assert!(
+            proof.windows(32).all(|w| w != other_d.as_slice()),
+            "other dest bucket commitment is on the wire"
+        );
+        assert!(
+            proof.windows(32).all(|w| w != spent_c.as_slice()),
+            "spent C bucket commitment is on the wire"
+        );
+        assert!(
+            proof.windows(32).all(|w| w != other_c.as_slice()),
+            "other C bucket commitment is on the wire"
+        );
     }
 }
