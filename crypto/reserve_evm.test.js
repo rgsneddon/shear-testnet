@@ -68,15 +68,33 @@ describe('Reserve bytecode on the Shear EVM', () => {
 
   it('MAGIC_TESTNET, the Reserve.sol allowlist, and Reserve.json move together', () => {
     const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
+    const asertSrc = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
+    const walletSrc = fs.readFileSync(new URL('../wallet/lib/shear_identity.dart', import.meta.url), 'utf8');
     const pin = JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8'));
     const named = sol.match(new RegExp(
       `constant (SHEAR_TESTNET(?:_V\\d+)?) = keccak256\\(bytes\\("${MAGIC_TESTNET}"\\)\\)`,
     ));
     assert.ok(named, `Reserve.sol missing keccak256(bytes("${MAGIC_TESTNET}"))`);
     assert.match(sol, new RegExp(`magic != ${named[1]}\\b`));
-    const hash = Buffer.from(shearMagicBytes(MAGIC_TESTNET)).toString('hex');
     const code = String(pin.bytecode || '').replace(/^0x/i, '').toLowerCase();
-    assert.equal(code.includes(hash), true, 'recompile Reserve.json after the allowlist change');
+    const fromAsert = new Set();
+    for (const match of asertSrc.matchAll(/export const (MAGIC_TESTNET_V\d+|MAGIC_MAINNET) = '([^']+)'/g)) {
+      fromAsert.add(match[2]);
+    }
+    const fromSol = new Set();
+    for (const match of sol.matchAll(/constant (SHEAR_[A-Z0-9_]+) = keccak256\(bytes\("([^"]+)"\)\)/g)) {
+      if (match[2] === 'shear-reserve-v1') continue;
+      fromSol.add(match[2]);
+      assert.match(sol, new RegExp(`magic != ${match[1]}\\b`), match[2]);
+    }
+    assert.ok(fromAsert.size >= 2);
+    assert.deepEqual([...fromSol].sort(), [...fromAsert].sort());
+    for (const magic of fromAsert) {
+      const hash = Buffer.from(shearMagicBytes(magic)).toString('hex');
+      assert.equal(code.includes(hash), true, `recompile Reserve.json after ${magic}`);
+    }
+    assert.equal(code.includes(Buffer.from(shearMagicBytes(MAGIC_TESTNET)).toString('hex')), true);
+    assert.equal(walletSrc.includes("const kBookMagic = 'shear-testnet-v11'"), true);
   });
 
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {

@@ -625,6 +625,7 @@ export function createStore(dir, {
   let histQueryRows = 0;
   let histSyncRows = 0;
   let spendChecks = 0;
+  let forkSpendChecks = 0;
 
   function histCommitHex(v) {
     try {
@@ -946,6 +947,7 @@ export function createStore(dir, {
     // The live book and a fork book each keep their own suffix index.
     // A request does not open notes that belong to someone else.
     if (chain === blocks) spendChecks += 1;
+    else forkSpendChecks += 1;
     syncNoteLedger(chain);
     const noteNanos = ledgerFor(chain).spendable(addr, tipH, { coinbaseOnly: false });
     const opened = reconcileSpendable([], addr, tipH, noteNanos);
@@ -2496,6 +2498,10 @@ export function createStore(dir, {
     const parentH = i === 0 ? 0 : Number(accepted[i - 1].height || i);
     const rows = Array.isArray(verifyOpts.explorerRows) ? verifyOpts.explorerRows : [];
     for (const tx of (fork[i]?.txs || []).slice(1)) {
+      // `accepted` is this fork's prefix, not the live book. The opened sum
+      // is not a verdict. A plaintext row cannot fund the debit.
+      const debit = fundedDebit(tx);
+      if (debit) destSpendableNanos(debit.from, parentH, accepted, rows);
       const clockField = typedClockRejected(tx);
       if (clockField) return clockField;
       const receiptPub = receiptAdmitRejected(tx);
@@ -2527,9 +2533,10 @@ export function createStore(dir, {
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH, accepted, rows)),
       committedBps: Number(vault?.epochBps ?? 264),
       reserveState: vault,
-      offLoopPow: !!verifyOpts.offLoopPow,
-      trustedPowHash: trustedHashFor(fork[i], verifyOpts),
-      skipSharePow: !!verifyOpts.skipSharePow,
+      offLoopPow: verifyOpts.probeBody === true ? false : !!verifyOpts.offLoopPow,
+      trustedPowHash: verifyOpts.probeBody === true ? null : trustedHashFor(fork[i], verifyOpts),
+      skipSharePow: verifyOpts.probeBody === true ? true : !!verifyOpts.skipSharePow,
+      probeBody: verifyOpts.probeBody === true,
       grandparentHeader: grandparentHeader(accepted),
       sealedIntervalsMs: headerGapsMs(accepted),
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
@@ -4256,6 +4263,7 @@ export function createStore(dir, {
         histQueryRows,
         histSyncRows,
         spendChecks,
+        forkSpendChecks,
       };
     },
     resetWalletWalkStats() {
@@ -4263,6 +4271,7 @@ export function createStore(dir, {
       histQueryRows = 0;
       histSyncRows = 0;
       spendChecks = 0;
+      forkSpendChecks = 0;
     },
     sideTipHash,
     sideHashes() {
