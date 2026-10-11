@@ -1509,10 +1509,20 @@ fn bind_be_word(b: &mut Builder, word: Word, expect: &[u8], at: usize) {
     b.zero(terms);
 }
 
-/// One compression of 16 already-packed big-endian words.
-/// The IV wires are pinned to the SHA-512 constants. A free IV would let a
-/// prover open a different function to the same digest wires.
-fn sha512_compress(b: &mut Builder, words16: [Word; 16]) -> [Word; 8] {
+/// Pinned SHA-512 IV. A free IV would let a prover open a different function.
+fn sha512_iv(b: &mut Builder) -> [Word; 8] {
+    let mut st = [Word { w: Wire::One, v: 0 }; 8];
+    for i in 0..8 {
+        st[i] = Word { w: b.range(SHA512_IV[i] as u128, 64), v: SHA512_IV[i] };
+        b.const_eq(st[i].w, sc_u128(SHA512_IV[i] as u128));
+    }
+    st
+}
+
+/// One compression of 16 already-packed big-endian words, starting from `iv`.
+/// Block 0 passes `sha512_iv`. Later blocks pass the previous compression's
+/// output words. Those wires are the chaining value, not a fresh witness.
+fn sha512_compress_from(b: &mut Builder, words16: [Word; 16], iv: [Word; 8]) -> [Word; 8] {
     let mut words = [Word { w: Wire::One, v: 0 }; 80];
     words[..16].copy_from_slice(&words16);
     let zero = Bit { w: b.bit(false), v: false };
@@ -1521,12 +1531,7 @@ fn sha512_compress(b: &mut Builder, words16: [Word; 16]) -> [Word; 8] {
         let s0 = sigma0(b, words[t - 15], zero);
         words[t] = add_wrap(b, &[s1, words[t - 7], s0, words[t - 16]], 0);
     }
-    let mut st = [Word { w: Wire::One, v: 0 }; 8];
-    for i in 0..8 {
-        st[i] = Word { w: b.range(SHA512_IV[i] as u128, 64), v: SHA512_IV[i] };
-        b.const_eq(st[i].w, sc_u128(SHA512_IV[i] as u128));
-    }
-    let iv = st;
+    let mut st = iv;
     for t in 0..80 {
         let s1 = big_sigma1(b, st[4]);
         let chv = ch(b, st[4], st[5], st[6]);
@@ -1549,6 +1554,48 @@ fn sha512_compress(b: &mut Builder, words16: [Word; 16]) -> [Word; 8] {
         st[i] = add_wrap(b, &[st[i], iv[i]], 0);
     }
     st
+}
+
+/// One compression pinned to the SHA-512 IV.
+fn sha512_compress(b: &mut Builder, words16: [Word; 16]) -> [Word; 8] {
+    let iv = sha512_iv(b);
+    sha512_compress_from(b, words16, iv)
+}
+
+fn pack_sha_block(b: &mut Builder, block: &[u8; 128]) -> [Word; 16] {
+    let mut words = [Word { w: Wire::One, v: 0 }; 16];
+    for t in 0..16 {
+        let mut acc = 0u64;
+        let mut terms_b = [Bw { w: Wire::One, v: 0 }; 8];
+        for j in 0..8 {
+            let v = block[t * 8 + j] as u128;
+            let w = b.range(v, 8);
+            terms_b[j] = Bw { w, v };
+            acc |= (v as u64) << (56 - 8 * j);
+        }
+        let gi = b.mul(sc_u128(acc as u128), Scalar::ONE);
+        b.zero(vec![(Wire::R(gi), Scalar::ONE), (Wire::One, Scalar::ZERO - Scalar::ONE)]);
+        let mut terms = vec![(Wire::L(gi), Scalar::ZERO - Scalar::ONE)];
+        for j in 0..8 {
+            terms.push((terms_b[j].w, sc_u128(1u128 << (56 - 8 * j))));
+        }
+        b.zero(terms);
+        words[t] = Word { w: Wire::L(gi), v: acc };
+    }
+    words
+}
+
+/// SHA-512 padding. The length is the only thing that changes the block count.
+fn sha512_pad(msg: &[u8]) -> Vec<u8> {
+    let mut out = msg.to_vec();
+    out.push(0x80);
+    let bits = (msg.len() as u128) * 8;
+    while out.len() % 128 != 112 {
+        out.push(0);
+    }
+    out.extend_from_slice(&bits.to_be_bytes());
+    assert_eq!(out.len() % 128, 0, "sha512 padding is not a whole number of blocks");
+    out
 }
 
 /// One SHA-512 block of `msg` (`msg.len() <= 111`), pinned to `expect`.
@@ -1593,6 +1640,35 @@ pub(crate) fn sha512_one_block_synth(
     assert_eq!(got.as_slice(), real.as_slice(), "sha512 trace diverges from sha2");
     for i in 0..8 {
         bind_be_word(&mut b, st[i], expect, i * 8);
+    }
+    (b.l, b.r, b.o, b.cons)
+}
+
+/// SHA-512 of `msg` at any length. Block 0 is pinned to the SHA-512 IV.
+/// Each later block chains the previous compression's output words.
+/// The trace must match `sha2`. A wrong `expect` fails the witness.
+/// Builds constraints only. It does not run the inner product proof.
+pub(crate) fn sha512_msg_synth(
+    msg: &[u8],
+    expect: &[u8; 64],
+) -> (Vec<Scalar>, Vec<Scalar>, Vec<Scalar>, Vec<Vec<(Wire, Scalar)>>) {
+    let padded = sha512_pad(msg);
+    let mut b = Builder::new();
+    let mut state = sha512_iv(&mut b);
+    for chunk in padded.chunks(128) {
+        let mut block = [0u8; 128];
+        block.copy_from_slice(chunk);
+        let words = pack_sha_block(&mut b, &block);
+        state = sha512_compress_from(&mut b, words, state);
+    }
+    let mut got = [0u8; 64];
+    for i in 0..8 {
+        got[i * 8..i * 8 + 8].copy_from_slice(&state[i].v.to_be_bytes());
+    }
+    let real = Sha512::digest(msg);
+    assert_eq!(got.as_slice(), real.as_slice(), "sha512 chain diverges from sha2");
+    for i in 0..8 {
+        bind_be_word(&mut b, state[i], expect, i * 8);
     }
     (b.l, b.r, b.o, b.cons)
 }
@@ -3131,6 +3207,50 @@ mod tests {
                     "a different digest must fail the witness"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn bind_sha512_chain_matches_sha2() {
+        use crate::leaf::DST_C_POINT;
+        use sha2::{Digest, Sha512};
+        let two = vec![0x5au8; 200];
+        let mut bucket = Vec::with_capacity(DST_C_POINT.len() + 1024);
+        bucket.extend_from_slice(DST_C_POINT);
+        bucket.extend(std::iter::repeat(0u8).take(1024));
+        assert_eq!(DST_C_POINT.len(), 22, "point domain is 22 bytes");
+        assert_eq!(bucket.len(), 1046, "domain plus 32 notes is 1046 bytes");
+        assert_eq!(sha512_pad(&bucket).len() / 128, 9, "the bucket hash is 9 SHA-512 blocks");
+        let samples: [&[u8]; 2] = [two.as_slice(), bucket.as_slice()];
+        for (n, msg) in samples.iter().enumerate() {
+            let dig = Sha512::digest(*msg);
+            let mut expect = [0u8; 64];
+            expect.copy_from_slice(&dig);
+            let (l, r, o, c) = sha512_msg_synth(msg, &expect);
+            r1cs_witness_holds(&l, &r, &o, &c).unwrap_or_else(|e| panic!("sample {n}: {e}"));
+            eprintln!(
+                "sha512 chain sample {n} blocks {} gates {} padded {}",
+                sha512_pad(msg).len() / 128,
+                l.len(),
+                l.len().next_power_of_two()
+            );
+            if n == 0 {
+                let mut bad = expect;
+                bad[0] ^= 1;
+                let (bl, br, bo, bc) = sha512_msg_synth(msg, &bad);
+                assert!(
+                    r1cs_witness_holds(&bl, &br, &bo, &bc).is_err(),
+                    "a different digest must fail the witness"
+                );
+                drop(bl);
+                drop(br);
+                drop(bo);
+                drop(bc);
+            }
+            drop(l);
+            drop(r);
+            drop(o);
+            drop(c);
         }
     }
 
