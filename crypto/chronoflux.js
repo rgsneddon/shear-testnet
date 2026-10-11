@@ -493,6 +493,9 @@ export function compactTx(tx) {
     }
     const carry = Math.floor(Number(tx.carryNanos) || 0);
     if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;
+    if (Array.isArray(tx.issuedJobKeys) && tx.issuedJobKeys.length) {
+      row.issuedJobKeys = tx.issuedJobKeys.map((id) => String(id).toLowerCase());
+    }
     compactHashLedger(tx, row);
     return row;
   }

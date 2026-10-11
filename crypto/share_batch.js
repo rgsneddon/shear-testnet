@@ -391,10 +391,9 @@ function shareJobKey(header) {
 }
 
 /**
- * Same round, not the same merkle. Version, prev, continuity, timestamp,
- * bits, and base fee match. Merkle and nonce may differ. A finder-fee header
- * for another dest is the same round. A restamp, a different parent, or a
- * flipped bit is not.
+ * Version, prev, continuity, timestamp, bits, and base fee match.
+ * Merkle and nonce may differ. This is not a slot. A share slots only on
+ * the exact job key, or on an issued header in the same round family.
  */
 export function sameWorkRound(a, b) {
   const left = asHeaderBuf(a);
@@ -406,15 +405,142 @@ export function sameWorkRound(a, b) {
   return true;
 }
 
-/** Slot 0 is this round's parent. Slot 1 is the prior round. kin keeps the header on the wire. */
-function roundSlot(header, parentHeader, priorHeader) {
+/**
+ * One round family. Version, prev, continuity, and base fee match.
+ * Timestamp, bits, merkle, and nonce may differ. A restamp and a finder
+ * sibling are the same family. A different parent is not.
+ */
+export function sameRoundFamily(a, b) {
+  const left = asHeaderBuf(a);
+  const right = asHeaderBuf(b);
+  if (!left || !right || left.length !== 128 || right.length !== 128) return false;
+  if (!left.subarray(0, 36).equals(right.subarray(0, 36))) return false;
+  if (!left.subarray(68, 100).equals(right.subarray(68, 100))) return false;
+  if (!left.subarray(120, 128).equals(right.subarray(120, 128))) return false;
+  return true;
+}
+
+/** Memory bound for the coinbase issued-header list. Not a miner-count tune. */
+export const ISSUED_HEADER_CAP = 4096;
+
+/** sha256 of the 128-byte header with the nonce zeroed. Empty when the header is short. */
+export function issuedJobId(header) {
+  try {
+    const buf = asHeaderBuf(header);
+    if (!buf || buf.length !== 128) return '';
+    return createHash('sha256').update(setNonce(buf, 0n)).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Issued ids. Null is a malformed list. An absent list is an empty set,
+ * and an empty set does not slot a different merkle or a different timestamp.
+ * A 128-byte header is accepted here so a caller can pass the headers it issued.
+ * The coinbase field itself is only the sorted id list.
+ */
+export function issuedKeySet(list) {
+  if (list == null || list === '') return new Set();
+  if (list instanceof Set) return issuedKeySet([...list]);
+  if (!Array.isArray(list)) return null;
+  if (list.length > ISSUED_HEADER_CAP) return null;
+  const out = new Set();
+  for (const raw of list) {
+    if (typeof raw === 'string' && /^[0-9a-fA-F]{64}$/.test(raw)) {
+      out.add(raw.toLowerCase());
+    } else {
+      const id = issuedJobId(raw);
+      if (!id) return null;
+      out.add(id);
+    }
+    if (out.size > ISSUED_HEADER_CAP) return null;
+  }
+  return out;
+}
+
+/** Sorted unique ids. Headers that are not 128 bytes are skipped. The cap stops the walk. */
+export function canonicalIssuedJobKeys(headers) {
+  const ids = [];
+  const seen = new Set();
+  for (const header of Array.isArray(headers) ? headers : []) {
+    if (seen.size >= ISSUED_HEADER_CAP) break;
+    const id = typeof header === 'string' && /^[0-9a-fA-F]{64}$/.test(header)
+      ? header.toLowerCase()
+      : issuedJobId(header);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  ids.sort();
+  return ids;
+}
+
+/** Ids of explicit headers that sit in the parent or prior round family. */
+export function issuedKeysForParents(headers, parentHeader, priorHeader = null) {
+  const kept = [];
+  for (const header of Array.isArray(headers) ? headers : []) {
+    if (sameRoundFamily(header, parentHeader) || (priorHeader && sameRoundFamily(header, priorHeader))) {
+      kept.push(header);
+    }
+  }
+  return canonicalIssuedJobKeys(kept);
+}
+
+/**
+ * Empty when the coinbase names no issued headers.
+ * Null when the field is present and is not a sorted unique id list.
+ * An empty list omits the suffix so an older coinbase digest stays put.
+ */
+export function issuedJobDigestSuffix(tx) {
+  if (!tx || tx.issuedJobKeys == null || tx.issuedJobKeys === '') return Buffer.alloc(0);
+  if (!Array.isArray(tx.issuedJobKeys)) return null;
+  if (tx.issuedJobKeys.length > ISSUED_HEADER_CAP) return null;
+  const ids = [];
+  for (const raw of tx.issuedJobKeys) {
+    const id = typeof raw === 'string' ? raw.toLowerCase() : '';
+    if (!/^[0-9a-f]{64}$/.test(id)) return null;
+    ids.push(id);
+  }
+  for (let i = 1; i < ids.length; i += 1) {
+    if (ids[i] <= ids[i - 1]) return null;
+  }
+  if (!ids.length) return Buffer.alloc(0);
+  const h = createHash('sha256');
+  h.update(Buffer.from('issuedjob1'));
+  const n = Buffer.alloc(4);
+  n.writeUInt32LE(ids.length);
+  h.update(n);
+  for (const id of ids) h.update(Buffer.from(id, 'hex'));
+  return Buffer.concat([Buffer.from('issuedjob1'), h.digest()]);
+}
+
+/**
+ * exact: the nonce-zeroed header is the slot header.
+ * issued: the header is in the issued set and in that slot's round family.
+ * Anything else, including a same-round merkle nobody issued, is null.
+ */
+export function shareHeaderSlot(header, canonical, issuedJobKeys = null) {
   const id = shareJobKey(header);
-  const parentId = shareJobKey(parentHeader);
-  const priorId = shareJobKey(priorHeader);
-  if (parentId && id === parentId) return { slot: 0, kin: false };
-  if (priorId && id === priorId && id !== parentId) return { slot: 1, kin: false };
-  if (parentHeader && sameWorkRound(header, parentHeader)) return { slot: 0, kin: true };
-  if (priorHeader && sameWorkRound(header, priorHeader)) return { slot: 1, kin: true };
+  const canon = shareJobKey(canonical);
+  if (!id || !canon) return null;
+  if (id === canon) return 'exact';
+  const issued = issuedJobKeys instanceof Set ? issuedJobKeys : issuedKeySet(issuedJobKeys);
+  if (!issued || issued.size === 0) return null;
+  if (!sameRoundFamily(header, canonical)) return null;
+  const key = issuedJobId(header);
+  if (!key || !issued.has(key)) return null;
+  return 'issued';
+}
+
+/** Slot 0 is this round's parent. Slot 1 is the prior round. kin keeps the header on the wire. */
+function roundSlot(header, parentHeader, priorHeader, issuedJobKeys = null) {
+  const parentHit = shareHeaderSlot(header, parentHeader, issuedJobKeys);
+  const priorHit = shareHeaderSlot(header, priorHeader, issuedJobKeys);
+  if (parentHit === 'exact') return { slot: 0, kin: false };
+  if (priorHit === 'exact') return { slot: 1, kin: false };
+  if (parentHit === 'issued') return { slot: 0, kin: true };
+  if (priorHit === 'issued') return { slot: 1, kin: true };
   return null;
 }
 
@@ -476,13 +602,16 @@ function claimedProofSlot(share) {
  * Slot 0 matches this block's parent job. Slot 1 matches that parent's parent.
  * keepClaim leaves an existing 0 or 1 alone so a caller that already bound the
  * slot is not restamped. Otherwise the slot comes only from verifiedHeader.
- * A finder-fee header from this same round is slot 0 and keeps its header.
- * A work row that matches neither round is unslotted and must not be packed.
+ * An exact job key is slot 0 or 1 with kin false. A different merkle or a
+ * restamp slots only when that header is in issuedJobKeys and in the family.
+ * Without that list, a different merkle and a timestamp change stay unslotted.
  * A row with no share bits is not a work frame.
  */
-export function bindShareProofSlots(shares, parentHeader, priorHeader = null, { keepClaim = false } = {}) {
+export function bindShareProofSlots(shares, parentHeader, priorHeader = null, { keepClaim = false, issuedJobKeys = null } = {}) {
   const slotted = [];
   const unslotted = [];
+  const issued = issuedKeySet(issuedJobKeys);
+  const issuedSet = issued == null ? new Set() : issued;
   for (const s of Array.isArray(shares) ? shares : []) {
     if (!s || typeof s !== 'object' || Buffer.isBuffer(s)) {
       if (s) slotted.push(s);
@@ -496,7 +625,7 @@ export function bindShareProofSlots(shares, parentHeader, priorHeader = null, { 
       slotted.push(s);
       continue;
     }
-    const hit = roundSlot(s.verifiedHeader, parentHeader, priorHeader);
+    const hit = roundSlot(s.verifiedHeader, parentHeader, priorHeader, issuedSet);
     if (!hit) {
       unslotted.push(s);
       continue;
@@ -512,14 +641,18 @@ export function bindShareProofSlots(shares, parentHeader, priorHeader = null, { 
  * One sealing window. Expiring rows (prior header) fill the count cap first.
  * Fresh rows fill what remains. Fresh overflow is still eligible on the next
  * block. Expiring overflow is not. Rows on neither header are stale.
+ * issuedJobKeys is optional. Absent, only the exact parent and prior job keys
+ * are fresh or expiring. A restamp the pool did not issue is stale.
  */
-export function splitDeferWindow(shares, parentHeader, priorHeader, cap = MAX_SHARES_PER_BLOCK) {
+export function splitDeferWindow(shares, parentHeader, priorHeader, cap = MAX_SHARES_PER_BLOCK, issuedJobKeys = null) {
   const expiring = [];
   const fresh = [];
   const stale = [];
   const list = Array.isArray(shares) ? shares : [];
+  const issued = issuedKeySet(issuedJobKeys);
+  const issuedSet = issued == null ? new Set() : issued;
   for (const s of list) {
-    const hit = roundSlot(s?.verifiedHeader, parentHeader, priorHeader);
+    const hit = roundSlot(s?.verifiedHeader, parentHeader, priorHeader, issuedSet);
     if (hit?.slot === 0) fresh.push(s);
     else if (hit?.slot === 1) expiring.push(s);
     else stale.push(s);
@@ -693,7 +826,7 @@ export async function reproveSharesOffLoop(parentHeader, shares = []) {
   for (const s of list) {
     const own = asHeaderBuf(s?.verifiedHeader);
     const onPrior = (s?.proofSlot === 1 || s?.proofSlot === '1') && own && own.length === 128;
-    const onKin = own && own.length === 128 && sameWorkRound(own, job);
+    const onKin = own && own.length === 128 && sameRoundFamily(own, job);
     if (onPrior || onKin) {
       if (hasLiveSharePow(own, s?.nonce)) continue;
     } else if (hasLiveSharePow(job, s?.nonce) || hasLiveSharePow(s?.verifiedHeader, s?.nonce)) {
@@ -710,7 +843,7 @@ export async function reproveSharesOffLoop(parentHeader, shares = []) {
     try {
       const own = asHeaderBuf(s?.verifiedHeader);
       const onPrior = (s?.proofSlot === 1 || s?.proofSlot === '1') && own && own.length === 128;
-      const onKin = own && own.length === 128 && sameWorkRound(own, job);
+      const onKin = own && own.length === 128 && sameRoundFamily(own, job);
       const base = onPrior || onKin ? own : job;
       header = setNonce(base, BigInt(s?.nonce || 0));
     } catch {
@@ -750,7 +883,7 @@ export async function reproveSharesOffLoop(parentHeader, shares = []) {
     const lz = leadingZeroBits(bound) & 0xff;
     const own = asHeaderBuf(s?.verifiedHeader);
     const onPrior = (s?.proofSlot === 1 || s?.proofSlot === '1') && own && own.length === 128;
-    const onKin = own && own.length === 128 && sameWorkRound(own, job);
+    const onKin = own && own.length === 128 && sameRoundFamily(own, job);
     const base = onPrior || onKin ? own : job;
     const remembered = rememberLiveSharePow(base, s.nonce, {
       noteCommit: nc,
@@ -856,15 +989,17 @@ function proveShareOn(headerBuf, { nonce, nk, nc, ncHex, claimedBits, skipPow, t
 }
 
 /**
- * Recompute ShearHash-v3 on the frozen parent job header.
+ * Recompute ShearHash-v3 on the header the share names.
  * A work row names its header with proofSlot. 0 is parentHeader. 1 is
- * priorHeader, the parent of that parent, for one step. A finder-fee header
- * from that same round is hashed as the header the share names. A header
- * outside the round is share_slot and is not hashed. A work row with no
- * slot is share_slot and is not tried on both headers. Identity is that
- * header plus the nonce. The same nonce on both headers is two units. The
- * same header and nonce twice is dup_share. excludeNonces may be bare
- * nonces or work keys. Verification does not write the slot back.
+ * priorHeader, the parent of that parent, for one step. An exact job key
+ * uses that slot header. A different merkle or a restamp is hashed only
+ * when issuedJobKeys names that header and the header is in the slot's
+ * round family. Without that list, those rows are share_slot and are not
+ * hashed. A work row with no slot is share_slot and is not tried on both
+ * headers. Identity is that header plus the nonce. The same nonce on both
+ * headers is two units. The same header and nonce twice is dup_share.
+ * excludeNonces may be bare nonces or work keys. Verification does not
+ * write the slot back.
  * Credit is the nonce high byte. A packed claim that disagrees, or a byte
  * outside [floor, B_MAX], is share_target and is not hashed. A dest-bound
  * digest that misses that byte is share_pow. A cache hit at that exact dest
@@ -881,6 +1016,7 @@ export function verifyShareBatch({
   floorBits = SHARE_FLOOR_BITS,
   skipPow = false,
   trustWork = false,
+  issuedJobKeys = null,
 } = {}) {
   const raw = Array.isArray(shares) ? shares : [];
   const linked = [];
@@ -898,6 +1034,8 @@ export function verifyShareBatch({
     return { ok: true, shares: [], units: 0, byDest: new Map(), aLeaves: [] };
   }
   if (!parentHeader) return { ok: false, reason: 'parent_header' };
+  const issued = issuedKeySet(issuedJobKeys);
+  if (issued == null) return { ok: false, reason: 'share_slot' };
   const job = Buffer.from(parentHeader);
   const priorBuf = headerWorkBuf(priorHeader);
   const paid = nonceKeySet(excludeNonces);
@@ -936,19 +1074,18 @@ export function verifyShareBatch({
     if (workRow && wantSlot == null) return { ok: false, reason: 'share_slot' };
     const own = headerWorkBuf(s.verifiedHeader);
     const canonical = wantSlot === 1 ? priorBuf : job;
-    // A stated header that is not this slot's round is not hashed.
-    if (workRow && s.verifiedHeader) {
-      if (!own || !canonical || !sameWorkRound(own, canonical)) {
-        return { ok: false, reason: 'share_slot' };
-      }
-    }
+    // A stated header that this slot did not issue is not hashed.
+    const named = s.verifiedHeader
+      ? (own && canonical && shareHeaderSlot(own, canonical, issued) ? own : null)
+      : canonical;
+    if (workRow && s.verifiedHeader && !named) return { ok: false, reason: 'share_slot' };
     const tries = [];
     if (wantSlot === 1) {
-      const hdr = own && priorBuf && sameWorkRound(own, priorBuf) ? own : priorBuf;
+      const hdr = s.verifiedHeader ? named : priorBuf;
       if (hdr) tries.push([hdr, 1]);
     } else if (wantSlot === 0) {
-      const hdr = own && sameWorkRound(own, job) ? own : job;
-      tries.push([hdr, 0]);
+      const hdr = s.verifiedHeader ? named : job;
+      if (hdr) tries.push([hdr, 0]);
     } else if (!workRow) {
       tries.push([job, 0]);
       if (priorBuf) tries.push([priorBuf, 1]);

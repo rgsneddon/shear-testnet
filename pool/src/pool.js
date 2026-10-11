@@ -73,7 +73,8 @@ import {
   bindShareProofSlots,
   splitDeferWindow,
   shareWorkKey,
-  sameWorkRound,
+  shareHeaderSlot,
+  ISSUED_HEADER_CAP,
   paidWorkKeys,
   rememberLiveSharePow,
   destOfShare,
@@ -383,14 +384,14 @@ export function shareJobId(header) {
 /**
  * Lag-1 shares must verify against the sealed parent, or against the
  * parent's parent when that header and nonce are not already paid.
- * A finder-fee header from the same round is that parent. Merkle and nonce
- * may differ. A timestamp change is a different round.
- * One step only. The same nonce on the other header is a different unit.
- * A restamped share or a bech32-as-dest20 row that fails share_pow/miner_addr
- * must not freeze the next template. The caller counts rows this filter
- * does not keep. An empty batch is still sealable.
+ * An exact job key matches with no issued list. A different merkle or a
+ * restamp matches only when issuedJobKeys names that header and the header
+ * is in the slot's round family. Parent-family rows skip the paid check.
+ * Prior-family rows still use it. One step only. The same nonce on the
+ * other header is a different unit. A row this filter does not keep must
+ * not freeze the next template. An empty batch is still sealable.
  */
-export function provenLag1Shares(parentHeader, shares, priorHeader = null, excludeNonces = null) {
+export function provenLag1Shares(parentHeader, shares, priorHeader = null, excludeNonces = null, issuedJobKeys = null) {
   const list = Array.isArray(shares) ? shares : [];
   if (!list.length || !parentHeader) return [];
   const parentId = shareJobId(parentHeader);
@@ -402,13 +403,13 @@ export function provenLag1Shares(parentHeader, shares, priorHeader = null, exclu
     if (!id || !parentId) continue;
     let nonce = '';
     try { nonce = BigInt(s?.nonce || 0).toString(); } catch { nonce = ''; }
-    if (id === parentId || sameWorkRound(s?.verifiedHeader, parentHeader)) {
+    if (shareHeaderSlot(s?.verifiedHeader, parentHeader, issuedJobKeys)) {
       trusted.push(s);
       continue;
     }
     const work = shareWorkKey(s?.verifiedHeader, s?.nonce);
     const blocked = (nonce && paid.has(nonce)) || (work && paid.has(work));
-    if (priorId && (id === priorId || sameWorkRound(s?.verifiedHeader, priorHeader)) && nonce && !blocked) {
+    if (priorId && shareHeaderSlot(s?.verifiedHeader, priorHeader, issuedJobKeys) && nonce && !blocked) {
       trusted.push(s);
     }
   }
@@ -1088,6 +1089,35 @@ export function rememberJobHeader(job, outgoingHex) {
     if (job.headerHistory.length > JOB_HEADER_HISTORY) job.headerHistory.length = JOB_HEADER_HISTORY;
   }
   return job;
+}
+
+/**
+ * Headers this pool actually issued. Current header, then each job's
+ * history, then any extra the caller still holds. The list is not derived
+ * from share frames. The cap is a memory bound.
+ */
+export function collectIssuedHeaders(jobs, extra = []) {
+  const out = [];
+  const seen = new Set();
+  const push = (header) => {
+    if (out.length >= ISSUED_HEADER_CAP) return;
+    let hex = '';
+    if (Buffer.isBuffer(header) || header instanceof Uint8Array) hex = Buffer.from(header).toString('hex');
+    else hex = String(header || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{256}$/.test(hex) || seen.has(hex)) return;
+    seen.add(hex);
+    out.push(hex);
+  };
+  const visit = (job) => {
+    for (const header of candidateShareHeaders(job)) push(header);
+  };
+  if (jobs && typeof jobs.values === 'function') {
+    for (const rec of jobs.values()) visit(rec?.job || rec);
+  } else if (Array.isArray(jobs)) {
+    for (const job of jobs) visit(job);
+  }
+  for (const header of extra || []) push(header);
+  return out;
 }
 
 /** Current header first, then prior restamps of the same job. */
@@ -1889,6 +1919,7 @@ export function createPool({
   let packedMempoolKey = '';
   let pendingPayout = [];
   let lag1Shares = [];
+  let lag1Issued = [];
   let openShares = [];
   // Honest rows a body fault could not pay this round. Not lost work.
   let deferredShares = [];
@@ -2349,8 +2380,9 @@ export function createPool({
         seen.add(s);
         all.push(s);
       }
+      lag1Issued = snapshotIssuedHeaders();
       const kept = ctx.parentHeader
-        ? provenLag1Shares(ctx.parentHeader, all, ctx.priorHeader, ctx.paid)
+        ? provenLag1Shares(ctx.parentHeader, all, ctx.priorHeader, ctx.paid, lag1Issued)
         : [];
       const keep = new Set(kept);
       const dropped = [];
@@ -2363,7 +2395,7 @@ export function createPool({
       deferredShares = [];
       openShares = [];
       const split = ctx.parentHeader
-        ? splitDeferWindow(kept, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK)
+        ? splitDeferWindow(kept, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK, lag1Issued)
         : { seal: kept, carry: [], owe: [], stale: [] };
       if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
       if (split.carry.length) deferredShares = sortShares(split.carry);
@@ -2595,8 +2627,17 @@ export function createPool({
     if (junk.length) countUnpayableShares(junk, reason, 'parent');
   }
 
-  function stampSealSlots(rows, parentHeader, priorHeader) {
-    const bound = bindShareProofSlots(rows, parentHeader, priorHeader);
+  function snapshotIssuedHeaders() {
+    const extra = [];
+    if (lastJob?.header) extra.push(lastJob.header);
+    if (Array.isArray(lastJob?.headerHistory)) {
+      for (const header of lastJob.headerHistory) extra.push(header);
+    }
+    return collectIssuedHeaders(store.jobs, extra);
+  }
+
+  function stampSealSlots(rows, parentHeader, priorHeader, issued = lag1Issued) {
+    const bound = bindShareProofSlots(rows, parentHeader, priorHeader, { issuedJobKeys: issued });
     if (Array.isArray(rows)) {
       rows.length = 0;
       for (const s of bound.slotted) rows.push(s);
@@ -2611,7 +2652,7 @@ export function createPool({
       return;
     }
     const before = lag1Shares.slice();
-    const trusted = provenLag1Shares(ctx.parentHeader, before, ctx.priorHeader, ctx.paid);
+    const trusted = provenLag1Shares(ctx.parentHeader, before, ctx.priorHeader, ctx.paid, lag1Issued);
     const keep = new Set(trusted);
     const unpayable = [];
     for (const s of before) {
@@ -2622,7 +2663,7 @@ export function createPool({
       if (!work && ctx.paid.has(nonceKeyOf(s))) continue;
       unpayable.push(s);
     }
-    const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK);
+    const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK, lag1Issued);
     if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
     const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
@@ -3233,7 +3274,12 @@ export function createPool({
       if (parent && key && klass !== 'header') {
         const rowBad = [];
         for (const s of lag1Shares) {
-          const one = verifyShareBatch({ parentHeader: parent, shares: [s], skipPow: true });
+          const one = verifyShareBatch({
+            parentHeader: parent,
+            shares: [s],
+            skipPow: true,
+            issuedJobKeys: lag1Issued,
+          });
           if (one.ok) continue;
           // skipPow with no cached digest did not hash the row. That is a
           // cold proof, not a failed share. A cached proof that disagrees,
@@ -3313,9 +3359,10 @@ export function createPool({
   }
 
   function rollOpenRound() {
+    lag1Issued = snapshotIssuedHeaders();
     const ctx = tipShareContext();
     const split = ctx.parentHeader
-      ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK)
+      ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK, lag1Issued)
       : { seal: [], carry: openShares.slice(), owe: [], stale: [] };
     if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
     if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
@@ -3559,6 +3606,7 @@ export function createPool({
         poolDest: poolPay,
         feeDest: feeTo,
         finderDest: '',
+        issuedHeaders: lag1Issued,
         wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
       });
     } finally {

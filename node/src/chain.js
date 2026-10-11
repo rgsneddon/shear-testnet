@@ -52,6 +52,8 @@ import {
   bindShareProofSlots,
   stashSharePow,
   dropSharePowKeys,
+  issuedJobDigestSuffix,
+  issuedKeysForParents,
 } from '../../crypto/share_batch.js';
 import {
   bootReserveEvm,
@@ -275,15 +277,17 @@ export function digestTx(tx) {
   const carry = tx?.coinbase ? canonicalCarry(tx) : 0;
   const owedSuffix = tx?.coinbase ? hashOwedDigestSuffix(tx) : Buffer.alloc(0);
   const slotSuffix = tx?.coinbase ? shareSlotDigestSuffix(tx) : Buffer.alloc(0);
+  const issuedSuffix = tx?.coinbase ? issuedJobDigestSuffix(tx) : Buffer.alloc(0);
   const observeSuffix = tx?.coinbase ? observeDigestSuffix(tx) : null;
-  if (tx?.coinbase && (owedSuffix == null || slotSuffix == null)) {
+  if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (observeSuffix && observeSuffix.length))) {
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
     if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
+    if (issuedSuffix && issuedSuffix.length) parts.push(issuedSuffix);
     if (observeSuffix && observeSuffix.length) parts.push(observeSuffix);
     return packDigest(Buffer.concat(parts));
   }
@@ -1146,6 +1150,7 @@ export function buildTemplate({
   parentBlocks = null,
   hashAcceptedSeries = null,
   hashOwedIn: hashOwedInOpt = null,
+  issuedHeaders = null,
 }) {
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
@@ -1226,6 +1231,8 @@ export function buildTemplate({
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
+  const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
+  if (issuedJobKeys.length) cb.issuedJobKeys = issuedJobKeys;
   const addedPubs = [];
   for (const o of cb.vout || []) {
     if (outputJoinsAdmitSet(cb, o)) addedPubs.push(o.admitPub);
@@ -1427,11 +1434,13 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false, priorHeade
         const slot = s?.proofSlot;
         const workRow = (s?.shareBits != null && s.shareBits !== '')
           || (s?.creditedShareBits != null && s.creditedShareBits !== '');
+        const ownRaw = s?.verifiedHeader ? Buffer.from(s.verifiedHeader) : null;
+        const own = ownRaw && ownRaw.length === 128 ? ownRaw : null;
         if (slot === 1 || slot === '1') {
-          if (prior) shareHeaders.push(setNonce(prior, nonce));
-          else shareHeaders.push(setNonce(parent, nonce));
+          const base = own || prior || parent;
+          shareHeaders.push(setNonce(base, nonce));
         } else if (slot === 0 || slot === '0') {
-          shareHeaders.push(setNonce(parent, nonce));
+          shareHeaders.push(setNonce(own || parent, nonce));
         } else if (!workRow) {
           shareHeaders.push(setNonce(parent, nonce));
           if (prior) shareHeaders.push(setNonce(prior, nonce));
@@ -1907,6 +1916,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       floorBits: SHARE_FLOOR_BITS,
       skipPow: trustWork ? false : !!skipSharePow,
       trustWork,
+      issuedJobKeys: txs[0]?.issuedJobKeys,
     });
     if (!proved.ok) return proved;
     if (!skipFlow) {

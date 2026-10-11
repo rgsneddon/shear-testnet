@@ -1600,6 +1600,7 @@ export function createStore(dir, {
           excludeNonces: paid,
           shares,
           skipPow: shareOpts.skipSharePow,
+          issuedJobKeys: connected[i].txs?.[0]?.issuedJobKeys,
         });
         if (!got.ok) return { ok: false, reason: got.reason || 'share_pow', at: lca + i };
       }
@@ -3824,7 +3825,7 @@ export function createStore(dir, {
     };
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
@@ -4031,6 +4032,7 @@ export function createStore(dir, {
       parentFluxset: liveFlux,
       hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
+      issuedHeaders,
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });
