@@ -3711,6 +3711,116 @@ mod tests {
         );
     }
 
+    /// Gate cost of the missing parent sum: 31 note additions plus `r·U`.
+    /// The note hash is already 3408965 gates. This does not build that circuit
+    /// and it does not hide the bucket.
+    #[test]
+    fn bind_parent_sum_gate_budget() {
+        use curve25519_dalek::ristretto::RistrettoPoint;
+        use curve25519_dalek::scalar::Scalar as RScalar;
+        use curve25519_dalek::traits::Identity;
+
+        let p = RistrettoPoint::from_uniform_bytes(&[3u8; 64]);
+        let q = RistrettoPoint::from_uniform_bytes(&[9u8; 64]);
+        let ep = ed_from_ristretto(&p);
+        let eq = ed_from_ristretto(&q);
+        let mut b = Builder::new();
+        let d = fe_const(&mut b, edwards_d());
+        let pw = fe_ed_priv(&mut b, ep);
+        let qw = fe_ed_priv(&mut b, eq);
+        let before = b.l.len();
+        let sum = ed_add(&mut b, d, pw, qw);
+        let add_gates = b.l.len() - before;
+        let clear = ep.add(eq);
+        assert!(fe_w_matches(sum.x, clear.x), "ed_add x");
+        assert!(fe_w_matches(sum.y, clear.y), "ed_add y");
+        assert!(fe_w_matches(sum.z, clear.z), "ed_add z");
+        assert!(fe_w_matches(sum.t, clear.t), "ed_add t");
+        assert_eq!(
+            clear.ristretto_compress(),
+            (p + q).compress().to_bytes(),
+            "edwards add left the ristretto sum"
+        );
+        r1cs_witness_holds(&b.l, &b.r, &b.o, &b.cons).unwrap_or_else(|e| panic!("ed_add: {e}"));
+        drop(b);
+
+        let mut pts = Vec::with_capacity(32);
+        for i in 0..32u8 {
+            let mut seed = [0u8; 64];
+            seed[0] = i;
+            seed[1] = 7;
+            pts.push(RistrettoPoint::from_uniform_bytes(&seed));
+        }
+        let eds: Vec<Ed> = pts.iter().map(ed_from_ristretto).collect();
+        let mut b = Builder::new();
+        let d = fe_const(&mut b, edwards_d());
+        let ws: Vec<FeEd> = eds.iter().copied().map(|ed| fe_ed_priv(&mut b, ed)).collect();
+        let before = b.l.len();
+        let mut acc_w = ws[0];
+        let mut acc = eds[0];
+        for i in 1..32 {
+            acc_w = ed_add(&mut b, d, acc_w, ws[i]);
+            acc = acc.add(eds[i]);
+        }
+        let sum_gates = b.l.len() - before;
+        assert!(fe_w_matches(acc_w.x, acc.x), "note sum x");
+        assert!(fe_w_matches(acc_w.y, acc.y), "note sum y");
+        let mut rist = pts[0];
+        for pt in pts.iter().skip(1) {
+            rist += *pt;
+        }
+        assert_eq!(acc.ristretto_compress(), rist.compress().to_bytes(), "note sum encoding");
+        r1cs_witness_holds(&b.l, &b.r, &b.o, &b.cons).unwrap_or_else(|e| panic!("note sum: {e}"));
+        drop(b);
+
+        let scalar = RScalar::from(0x1234_5678u64);
+        let mut b = Builder::new();
+        let d = fe_const(&mut b, edwards_d());
+        let mut acc_w = fe_ed_priv(&mut b, ed_from_ristretto(&RistrettoPoint::identity()));
+        let windows = u_windows();
+        let bytes = scalar.to_bytes();
+        let before = b.l.len();
+        let mut acc = ed_from_ristretto(&RistrettoPoint::identity());
+        for i in 0..32 {
+            let digit = bytes[i];
+            let sel = one_hot_8(&mut b, digit);
+            let picked = select_window(&mut b, &sel, &windows[i], digit);
+            acc_w = ed_add(&mut b, d, acc_w, picked);
+            acc = acc.add(windows[i][digit as usize]);
+            assert!(fe_w_matches(acc_w.x, acc.x), "u mul x at {i}");
+            assert!(fe_w_matches(acc_w.y, acc.y), "u mul y at {i}");
+        }
+        let mul_gates = b.l.len() - before;
+        let expect = note_u() * scalar;
+        assert_eq!(
+            acc.ristretto_compress(),
+            expect.compress().to_bytes(),
+            "windowed U left the ristretto product"
+        );
+        r1cs_witness_holds(&b.l, &b.r, &b.o, &b.cons).unwrap_or_else(|e| panic!("u mul: {e}"));
+        let mul_cons = b.cons.len();
+        drop(b);
+
+        assert_eq!(add_gates, 21459, "one Edwards addition");
+        assert_eq!(sum_gates, add_gates * 31, "31 note additions");
+        assert_eq!(mul_gates, 728160, "windowed r·U");
+        let notes_wide = 3_408_965usize;
+        let parent = sum_gates + mul_gates;
+        let combined = notes_wide + parent;
+        assert_eq!(parent, 1_393_389, "parent sum");
+        assert_eq!(combined, 4_802_354, "notes hash plus parent sum");
+        assert!(combined > 4_194_304, "the parent sum fit under 2^22");
+        let blob23 = crate::r1cs::r1cs_blob_len(23);
+        assert_eq!(blob23, 1920, "one committed wire, 23 rounds");
+        let grown = crate::prove::MAX_PROOF_V3 - crate::tree::ARITY * 32 + blob23;
+        assert_eq!(grown, 44386, "height 4 with the C bucket replaced by the 2^23 blob");
+        assert!(grown > crate::prove::MAX_PROOF_V3);
+        eprintln!(
+            "ed_add gates {add_gates} note_sum_31 gates {sum_gates} u_mul gates {mul_gates} u_mul constraints {mul_cons} parent gates {parent} combined {combined} over_2_22 {}",
+            combined - 4_194_304
+        );
+    }
+
     #[test]
     fn bind_challenge_open_rejects_a_different_scalar() {
         use crate::leaf::sha512_64;
