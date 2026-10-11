@@ -11,7 +11,27 @@ Base: `origin/feat/shear-testnet-v12` at `25e610f` (Paint rho per second and nam
 
 CoS is asleep until Tuesday 15:00. This branch does not launch v12. Do not cut genesis, move tags, flip `kBookMagic`, deploy, SSH to the pool, or start the 72 hour soak. When CoS is back, the cut is still theirs: `node scripts/v12-genesis-cut.mjs` into an empty directory outside this repo and outside the v11 datadir. A soak stamp is a real start and a real end after a live block 1 that a second node accepts by hashing ShearHash. The dry-run digest is not that hash. There is no soak stamp in this tree.
 
-`f6efcdf` was not on any remote when this branch was cut. Do not invent it. If that commit appears, replay it onto `25e610f` and do not drop the rho paint or this point-root work. Do not push `feat/shear-testnet-v12` from this branch. Do not merge it yourself.
+Do not push `feat/shear-testnet-v12` from this branch. Do not merge this PR. Do not land this branch on top of feat.
+
+## Feat already has Build's prove
+
+Checked 2026-10-11 on a detached checkout of `5a5685ad9b9d9d7c4efca095abb5003264023c3c` (`/tmp/feat-build`). Author of the merge and of `f6efcdf` is Russell Sneddon. Parents are `25e610f` (rho paint) and `f6efcdf` (Wire typed admit funding to the v3 point-leaf root). `f6efcdf` sits on `7611668` (Bind the ADMITv3 bucket to the ristretto points). `node/src/chain.js`, `node/src/store.js`, `crypto/asert.js`, and `wallet/lib/shear_identity.dart` have an empty diff from `25e610f` to `5a5685a`.
+
+Feat and this branch are different layouts. Feat `MAX_PROOF_V3` is 43490. This branch is 42466. Feat still writes the raw arity-32 C bucket, and `v3_two_bucket_spent_link_stays_on_the_wire` asserts those raw notes are on the wire. This branch's `V3_RAW_LINK` is a different glue. Do not replay one prove onto the other.
+
+What was re-run on `5a5685a`:
+
+- `cargo test --release --lib -- v3_cap_fits_height_4` passed. `v3_proof_len(4) == 43490`. Height 5 does not fit. Log `/opt/cursor/artifacts/feat-v3-cap.log`.
+- `cargo test --release --lib -- v2_remainder_names_the_spent_slot` passed in 0.17s. Log `/opt/cursor/artifacts/feat-v2-remainder.log`.
+- `node --test --test-name-pattern 'v12 pins are node' tests/test_public_copy.js` passed. ShearK copy asserts magic `shear-testnet-v12`.
+- One valid ristretto note: `jroot` `98543ae2…` and `jrootPoint` `e3e8c20a…` are both nonzero and differ. `trees_point` builds its C levels in `c_levels_point_build` and does not write the v2 `CACHE`.
+- `noteFromAnchor(flux, anchors, 8)` with a fluxset that holds that note returns keys `jroot` and `n` only. `fundingJroot` of that record is null. A lock whose `noteAtAnchor` is `noteFromAnchor` returns `{ ok: false, reason: 'admit_anchor_root' }` and does not set `proofChecked`. The same junk proof, when `noteAtAnchor` supplies `pubs` and `commits`, returns `admit_anchor_root` with `proofChecked: true`. `fundingJroot` of those leaves equals `jrootPoint` while the stored `jroot` on that stub is 32 bytes of `0x09`. Probe `/opt/cursor/artifacts/feat-chain-funding.json`.
+
+The live lock, vote, and withdraw path in `chain.js` and `store.js` calls `noteFromAnchor`. Typed funding therefore fails closed before `admitVerifyV3`. The funding tests that reach native verify stub `noteAtAnchor` with `pubs` and `commits`. Funding does not require the recomputed v2 `jroot` to equal the stored fluxset root.
+
+What was not re-run here: `seal_v3_opens_the_note_in_the_set` (Build's merge message says 4592.82s), `v3_fresh_point_outside_the_set_fails`, `honest_c_attacker_p_fails_admit_verify_v3`, `v3_two_bucket_spent_link_stays_on_the_wire`, and the Node funding prove for sets of 1, 8, and 40. Build wrote that the Yx filter on this layout was not run. `commit_ristretto_points` on feat adds a child only when it decompresses. A non-point is omitted from the sum and still enters the blind hash.
+
+Fingerprint on feat is still `ADMIT=ADMITv2` at `crypto/asert.js`. `kBookMagic` is still `shear-testnet-v11`.
 
 ## Commits
 
@@ -69,8 +89,8 @@ Do not mark the release gates closed.
 Started 2026-10-11T10:43:03Z, release, `--test-threads=1`, log `/opt/cursor/artifacts/admit-v3-ipa.log`:
 
 1. `leaf_rerand_v3_blinds_remainder_and_rejects_v2` passed. 1602.72s. Ended 2026-10-11T11:10:00Z. The scalar parent still opens.
-2. `admit_honest_v3_hides_the_note_and_rejects_a_different_set` started 2026-10-11T11:10:00Z. Not finished.
-3. `fresh_point_outside_the_set_fails_admit_verify_v3` not started.
+2. `admit_honest_v3_hides_the_note_and_rejects_a_different_set` started 2026-10-11T11:10:00Z. The process later moved on, and the log file is gone, so this item is not recorded as a pass.
+3. `fresh_point_outside_the_set_fails_admit_verify_v3` was the running test at the feat check (cargo pid 261203, about 18 minutes in). Not finished.
 4. `honest_c_attacker_p_fails_admit_verify_v3` not started.
 5. `two_bucket_v3_does_not_publish_the_spent_group` not started.
 
@@ -80,4 +100,4 @@ Prior timing on the dest-bind leaf: `honest_c_attacker_p --release` was one test
 
 ## Tuesday
 
-If this IPA log is `ALL_PASS` and you have not found a conflicting prove on the laptop, the point-leaf funding gap from item 87 is the part this branch set out to close. The book is still not genesis-ready until CoS cuts it. Tuesday 15:00 is when CoS can start that cut. It is not a licence for this agent or for Build to cut, tag, deploy, or start the soak while they are asleep.
+CoS still holds the cut. Tuesday 15:00 is not a start. Feat `5a5685a` is Build's prove, and the live `noteFromAnchor` path returns `admit_anchor_root` before native verify. This branch's IPA suite is still running and is a different layout. Do not cut genesis, move tags, flip `kBookMagic`, deploy, or start the soak.
