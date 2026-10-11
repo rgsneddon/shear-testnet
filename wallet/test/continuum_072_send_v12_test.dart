@@ -370,6 +370,71 @@ void main() {
     );
   });
 
+  test('nativeSealUnits attaches a node range blob for any u64', () {
+    expect(debugNativeSealUnits, isNull);
+    expect(debugNativeSealNote, isNull);
+    final wires = <String>[
+      '1',
+      '9007199254740993',
+      (BigInt.one << 63).toString(),
+      ((BigInt.one << 64) - BigInt.one).toString(),
+    ];
+    final notes = <Map<String, dynamic>>[];
+    for (final wire in wires) {
+      final units = BigInt.parse(wire);
+      final sw = Stopwatch()..start();
+      final note = nativeSealUnits(units, kind: 'send');
+      expect(sw.elapsedMilliseconds, lessThan(60000), reason: 'bound wire=$wire');
+      final proof = note['rangeProof'];
+      final commit = note['commit'];
+      expect(proof, isA<Uint8List>(), reason: wire);
+      expect(commit, isA<Uint8List>(), reason: wire);
+      final blob = proof as Uint8List;
+      expect(blob.length, greaterThan(1), reason: wire);
+      expect(blob[0], 2, reason: wire);
+      expect(_nodeRangeOk(commit as Uint8List, blob), isTrue, reason: wire);
+      final flipped = Uint8List.fromList(blob);
+      flipped[flipped.length - 1] ^= 1;
+      expect(_nodeRangeOk(commit, flipped), isFalse, reason: 'flip $wire');
+      final trailed = Uint8List(blob.length + 1)..setAll(0, blob);
+      expect(_nodeRangeOk(commit, trailed), isFalse, reason: 'trail $wire');
+      expect(openedSpendDigits(note), wire, reason: wire);
+      if (units.bitLength > 63) {
+        expect(note['nanos'], wire, reason: wire);
+      }
+      notes.add(note);
+    }
+    for (var i = 0; i < notes.length; i++) {
+      for (var j = 0; j < notes.length; j++) {
+        if (i == j) continue;
+        expect(
+          _nodeRangeOk(notes[i]['commit'] as Uint8List, notes[j]['rangeProof'] as Uint8List),
+          isFalse,
+          reason: 'proof $j on commit $i',
+        );
+      }
+    }
+    final max = (BigInt.one << 64) - BigInt.one;
+    final built = sealFlowSpendVouts({
+      'spendSeed': Uint8List(32),
+      'destTo': 'not-an-address',
+      'src': 'not-an-address',
+      'vouts': [
+        {'address': 'not-an-address', 'nanos': max.toString(), 'kind': 'send'},
+      ],
+    });
+    final sent = (built['vouts'] as List).single as Map;
+    final sentProof = sent['rangeProof'];
+    final sentCommit = sent['commit'];
+    expect(sentProof, isA<Uint8List>());
+    expect(sentCommit, isA<Uint8List>());
+    expect((sentProof as Uint8List)[0], 2);
+    expect(_nodeRangeOk(sentCommit as Uint8List, sentProof), isTrue);
+    expect(sent['nanos'], max.toString());
+    expect(debugNativeSealUnits, isNull);
+    expect(debugNativeSealNote, isNull);
+  }, timeout: const Timeout(Duration(minutes: 4)));
+
   test('one hold is the larger of the lock sum and the reserve principal', () {
     final one = BigInt.one;
     final above = BigInt.parse('9007199254740993');
@@ -681,5 +746,27 @@ class _RecordWithdraw extends ShearPoolClient {
         'kind': kind ?? 'send',
       },
     };
+  }
+}
+
+String _rangeHex(Uint8List b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+/// The same node verifier T18 uses. A different commit, a flipped byte, or a
+/// trailing byte must not pass.
+bool _nodeRangeOk(Uint8List commit, Uint8List proof) {
+  final script = File('test/t18_range_verify.mjs');
+  if (!script.existsSync()) return false;
+  final tmp = File(
+    '${Directory.systemTemp.path}/shear-range-verify-${DateTime.now().microsecondsSinceEpoch}.json',
+  );
+  tmp.writeAsStringSync(
+    '{"commit":"${_rangeHex(commit)}","proof":"${_rangeHex(proof)}"}',
+    flush: true,
+  );
+  try {
+    final result = Process.runSync('node', [script.path, tmp.path]);
+    return result.exitCode == 0 && result.stdout.toString().contains('ok');
+  } finally {
+    if (tmp.existsSync()) tmp.deleteSync();
   }
 }
