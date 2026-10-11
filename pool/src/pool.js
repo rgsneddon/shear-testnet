@@ -48,7 +48,7 @@ import {
 } from '../../crypto/asert.js';
 import { poolFeeDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
-import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
+import { handleAdminHttp, createAdmin } from './admin.js';
 import {
   THIS_POOL_DIRECT_FEE_DEST,
   configuredFeeIdentity,
@@ -5136,11 +5136,9 @@ export function createPool({
   };
 
   const httpServer = http.createServer(async (req, res) => {
-    const host = String(req.headers.host || '').split(':')[0].toLowerCase();
     const url = new URL(req.url, 'http://127.0.0.1');
     if (
-      isAdminHost(host)
-      || url.pathname === '/admin'
+      url.pathname === '/admin'
       || url.pathname.startsWith('/admin/')
       || url.pathname.startsWith('/api/admin')
     ) {

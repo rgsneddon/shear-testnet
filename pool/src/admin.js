@@ -27,19 +27,15 @@ import {
 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { reconstructOwner } from './wallet_api.js';
-import { attachDummyOuts } from '../../crypto/dummy.js';
-import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import { qrSvg } from './totp_qr.js';
 
 export const ADMIN_ISSUER = 'shear';
 /** Display-only. Authorization is password + TOTP after setup. */
 export const ADMIN_USER = '';
-const COOKIE = 'shear_admin';
 const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ADMIN_DIR = path.join(__dirname, '../admin');
-const PUBLIC_BRAND = path.join(__dirname, '../public/brand');
 /** Documented generic example. Override with SHEAR_ADMIN_HOST. */
 export const ADMIN_HOST_EXAMPLE = 'mypool.site';
 
@@ -390,367 +386,27 @@ export function appendAdminAudit(dir, rec) {
   return rec;
 }
 
-function cookieToken(cookie) {
-  const raw = String(cookie || '');
-  const m = raw.match(new RegExp(`(?:^|;\\s*)${COOKIE}=([0-9a-f]+)`));
-  return m ? m[1] : '';
-}
-
-function setCookie(token) {
-  return `${COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200`;
-}
-
-function clearCookie() {
-  return `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
-}
-
-function needOps(ops, name) {
-  if (!ops || typeof ops[name] !== 'function') {
-    return { status: 501, json: { ok: false, reason: 'no_ops' } };
-  }
-  return null;
-}
 
 export function handleAdminApi(url, method, body, {
   store, queueSend, cookie, admin, ops, loopback = false, host = '', pendingPulls, poolDest = '', pullBook = null,
 } = {}) {
-  const pathName = url.pathname;
-  const verb = String(method || 'GET').toUpperCase();
-  const token = cookieToken(cookie);
-  if (pathName === '/api/admin/status' && verb === 'GET') {
-    return { status: 200, json: admin.status(), headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive' } };
-  }
-  if (pathName === '/api/admin/setup' && verb === 'POST') {
-    const got = admin.setup({
-      user: body.user,
-      password: body.password,
-      loopback: loopback === true,
-      setupToken: body.setupToken,
-      host,
-      pathname: pathName,
-    });
-    if (!got.ok) return { status: 400, json: got };
-    return {
-      status: 200,
-      json: { ok: true, setup: true, totp: false },
-      headers: { 'Set-Cookie': setCookie(got.token) },
-    };
-  }
-  if (pathName === '/api/admin/login' && verb === 'POST') {
-    const got = admin.login({ user: body.user, password: body.password, code: body.code });
-    if (!got.ok) return { status: 400, json: got };
-    return {
-      status: 200,
-      json: { ok: true, totp: got.totp },
-      headers: { 'Set-Cookie': setCookie(got.token) },
-    };
-  }
-  if (pathName === '/api/admin/logout' && verb === 'POST') {
-    admin.logout(token);
-    return { status: 200, json: { ok: true }, headers: { 'Set-Cookie': clearCookie() } };
-  }
-  if (pathName === '/api/admin/totp/start' && verb === 'POST') {
-    const got = admin.startTotp(token);
-    if (!got.ok) return { status: 401, json: got };
-    return { status: 200, json: got };
-  }
-  if (pathName === '/api/admin/totp/confirm' && verb === 'POST') {
-    const got = admin.confirmTotp(token, body.code);
-    if (!got.ok) return { status: 400, json: got };
-    return { status: 200, json: got };
-  }
-  const rec = admin.sessionOf(token);
-  if (!rec) return { status: 401, json: { ok: false, reason: 'auth' } };
-  if (pathName === '/api/admin/wallet' && verb === 'GET') {
-    const bal = adminWalletBalance(store, poolDest, pullBook);
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        spendable: bal.spendable,
-        spendableNanos: bal.spendableNanos,
-        display: bal.display,
-        minerReserved: bal.minerReserved,
-        minerReservedNanos: bal.minerReservedNanos,
-        minerReservedDisplay: bal.minerReservedDisplay,
-        custodyDisplay: bal.custodyDisplay,
-        totp: !!admin.status().totp,
-      },
-    };
-  }
-  if (pathName === '/api/admin/withdraw' && verb === 'POST') {
-    const from = adminSpendFrom();
-    if (containsShe1(body.to) || containsShe1(body.dest)) {
-      return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
-    }
-    const to = payoutDest(String(body.to || body.dest || '')) || '';
-    const amount = Number(body.amount);
-    const she = String(body.login || body.she1 || '').trim().split('.')[0];
-    if (!isDestAddress(to) || !(amount > 0)) {
-      return { status: 400, json: { ok: false, reason: 'bad_send' } };
-    }
-    const hist = reconstructOwner(store, from);
-    const nanos = Math.round(amount * NANOS_PER_SHE);
-    const depth = mempoolDepthBytes(store?.mempool || []);
-    const fee = levyNanos(nanos, { depth });
-    if (hist.spendableNanos < nanos + fee) {
-      return { status: 400, json: { ok: false, reason: 'insufficient' } };
-    }
-    const pending = {
-      id: `admin-spend-${nanos}`,
-      kind: 'admin-spendable',
-      login: she,
-      dest: to,
-      nanos,
-      fee,
-      chainId: 2701,
-      at: Date.now(),
-    };
-    const sig = body.sig || body.signature;
-    if (!sig) {
-      if (she.startsWith('she1') && pendingPulls && typeof pendingPulls.set === 'function') {
-        pendingPulls.set(she.toLowerCase(), pending);
-      }
-      return { status: 400, json: { ok: false, reason: she.startsWith('she1') ? 'unsigned' : 'need_she1', pending: she.startsWith('she1') ? pending : undefined } };
-    }
-    const off = verifyPoolWithdrawOffchain({
-      login: she,
-      dest: to,
-      nanos,
-      sig,
-      minerShe1: she,
-      payoutSsa1: to,
-      height: body.height,
-      nonce: body.nonce,
-      deadline: body.deadline,
-      nonceStore: withdrawNonces,
-      seenDigests: withdrawDigests,
-      open: body.open,
-      spendSig: body.spendSig,
-      ownerPub: ownerPubFromOpening(body.open),
-      requireOwner: true,
-    });
-    if (!off.ok) return { status: 400, json: { ok: false, ...off } };
-    const tx = attachDummyOuts({
-      kind: 'send',
-      from,
-      to,
-      nanos,
-      amount,
-      fee,
-      maxLevy: fee,
-      open: body.open,
-      spendSig: body.spendSig,
-      vin: [{ address: from }],
-      vout: [{ address: to, nanos, kind: 'send' }],
-    });
-    if (containsShe1(tx)) return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
-    let queued = { ok: true, tx };
-    if (typeof queueSend === 'function') queued = queueSend(tx);
-    if (queued && typeof queued === 'object' && queued.ok === false) {
-      return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed' } };
-    }
-    if (pendingPulls && typeof pendingPulls.delete === 'function' && she) {
-      pendingPulls.delete(she.toLowerCase());
-    }
-    appendAdminAudit(admin?.dir, { action: 'withdraw', dest: to, nanos, amount, fee });
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        levy: fee,
-        spendable: (hist.spendableNanos - nanos - fee) / NANOS_PER_SHE,
-        tx: { id: queued?.id || queued?.tx?.id, to, amount, fee, kind: 'send' },
-        audit: 'admin-audit.jsonl',
-      },
-    };
-  }
-  if (pathName === '/api/admin/health' && verb === 'GET') {
-    const miss = needOps(ops, 'health');
-    if (miss) return miss;
-    return { status: 200, json: { ok: true, ...ops.health() } };
-  }
-  if (pathName === '/api/admin/miners' && verb === 'GET') {
-    const miss = needOps(ops, 'miners');
-    if (miss) return miss;
-    const rows = ops.miners() || [];
-    return { status: 200, json: { ok: true, miners: rows, n: rows.length } };
-  }
-  if (pathName === '/api/admin/pause' && verb === 'POST') {
-    const miss = needOps(ops, 'setPaused');
-    if (miss) return miss;
-    const next = body.pause !== false && body.paused !== false && body.resume !== true;
-    const paused = ops.setPaused(!!next);
-    appendAdminAudit(admin?.dir, { action: 'pause', paused: !!next });
-    return { status: 200, json: { ok: true, ...paused } };
-  }
-  if (pathName === '/api/admin/resume' && verb === 'POST') {
-    const miss = needOps(ops, 'setPaused');
-    if (miss) return miss;
-    appendAdminAudit(admin?.dir, { action: 'resume', paused: false });
-    return { status: 200, json: { ok: true, ...ops.setPaused(false) } };
-  }
-  if (pathName === '/api/admin/restart' && verb === 'POST') {
-    const miss = needOps(ops, 'restart');
-    if (miss) return miss;
-    appendAdminAudit(admin?.dir, { action: 'restart' });
-    return { status: 200, json: { ok: true, ...ops.restart() } };
-  }
-  if (pathName === '/api/admin/restart-hasher' && verb === 'POST') {
-    const miss = needOps(ops, 'restartHasher');
-    if (miss) return miss;
-    appendAdminAudit(admin?.dir, { action: 'restart-hasher' });
-    return { status: 200, json: { ok: true, ...ops.restartHasher() } };
-  }
-  if (pathName === '/api/admin/rebroadcast' && verb === 'POST') {
-    const miss = needOps(ops, 'rebroadcast');
-    if (miss) return miss;
-    return { status: 200, json: { ok: true, ...ops.rebroadcast() } };
-  }
-  if (pathName === '/api/admin/disconnect-all' && verb === 'POST') {
-    const miss = needOps(ops, 'disconnectAll');
-    if (miss) return miss;
-    return { status: 200, json: { ok: true, ...ops.disconnectAll() } };
-  }
-  if (pathName === '/api/admin/kick' && verb === 'POST') {
-    const miss = needOps(ops, 'kick');
-    if (miss) return miss;
-    const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
-    if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
-    appendAdminAudit(admin?.dir, { action: 'kick', miner: want });
-    return { status: 200, json: { ok: true, ...ops.kick(want) } };
-  }
-  if (pathName === '/api/admin/ban' && verb === 'POST') {
-    const miss = needOps(ops, 'ban');
-    if (miss) return miss;
-    const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
-    if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
-    appendAdminAudit(admin?.dir, { action: 'ban', miner: want });
-    return { status: 200, json: { ok: true, ...ops.ban(want) } };
-  }
-  if (pathName === '/api/admin/unban' && verb === 'POST') {
-    const miss = needOps(ops, 'unban');
-    if (miss) return miss;
-    const want = String(body.miner || body.tag || body.workerKey || body.dest || '');
-    if (!want) return { status: 400, json: { ok: false, reason: 'need_miner' } };
-    appendAdminAudit(admin?.dir, { action: 'unban', miner: want });
-    return { status: 200, json: { ok: true, ...ops.unban(want) } };
-  }
-  if (pathName === '/api/admin/clear-stale' && verb === 'POST') {
-    const miss = needOps(ops, 'clearStale');
-    if (miss) return miss;
-    appendAdminAudit(admin?.dir, { action: 'clear-stale' });
-    return { status: 200, json: { ok: true, ...ops.clearStale() } };
-  }
-  return { status: 404, json: { ok: false, reason: 'unknown' } };
+  // The web desk is gone. SSH and the process CLI remain. No path here sets up or spends.
+  void url; void method; void body; void store; void queueSend; void cookie; void admin;
+  void ops; void loopback; void host; void pendingPulls; void poolDest; void pullBook;
+  return {
+    status: 404,
+    json: { ok: false, reason: 'admin_absent' },
+    headers: { 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store' },
+  };
 }
 
-const ROBOTS = 'User-agent: *\nDisallow: /\n';
-const PRIVACY = {
-  'X-Robots-Tag': 'noindex, nofollow, noarchive',
-  'Referrer-Policy': 'no-referrer',
-  'X-Content-Type-Options': 'nosniff',
-  'Cache-Control': 'no-store',
-  'Content-Security-Policy': "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-};
-
 export async function handleAdminHttp(req, res, opts) {
-  const host = String(req.headers.host || '').split(':')[0].toLowerCase();
-  const remote = String(opts.remoteAddress || req.socket?.remoteAddress || '');
-  const loopback = remote === '127.0.0.1' || remote === '::1' || remote.endsWith('127.0.0.1');
-  for (const [k, v] of Object.entries(PRIVACY)) res.setHeader(k, v);
-  const url = new URL(req.url, `https://${ADMIN_HOST}`);
-  if (url.pathname === '/robots.txt' || url.pathname === '/admin/robots.txt') {
-    res.setHeader('content-type', 'text/plain; charset=utf-8');
-    res.end(ROBOTS);
-    return;
-  }
-  const apiPath = url.pathname.startsWith('/admin/api/admin')
-    ? url.pathname.slice('/admin'.length)
-    : url.pathname;
-  if (apiPath.startsWith('/api/admin')) {
-    let body = {};
-    if (req.method === 'POST') {
-      let raw = '{}';
-      try {
-        raw = await new Promise((resolve, reject) => {
-          const chunks = [];
-          let got = 0;
-          let settled = false;
-          const finish = (fn, value) => {
-            if (settled) return;
-            settled = true;
-            fn(value);
-          };
-          req.on('data', (c) => {
-            const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
-            got += buf.length;
-            if (got > HTTP_BODY_MAX) {
-              const err = new Error('body_cap');
-              err.code = 'body_cap';
-              try { req.pause(); } catch { /* ignore */ }
-              finish(reject, err);
-              return;
-            }
-            chunks.push(buf);
-          });
-          req.on('end', () => finish(resolve, Buffer.concat(chunks).toString('utf8') || '{}'));
-          req.on('error', (err) => finish(reject, err));
-        });
-        body = parseBoundedJson(raw);
-      } catch (err) {
-        res.statusCode = err && err.code === 'body_cap' ? 413 : 400;
-        res.setHeader('content-type', 'application/json');
-        const reason = err && err.code === 'json_cap' ? 'json_cap' : (err && err.code === 'body_cap' ? 'body_cap' : 'bad_json');
-        res.end(JSON.stringify({ ok: false, reason }));
-        return;
-      }
-    }
-    const apiUrl = new URL(apiPath + (url.search || ''), `https://${ADMIN_HOST}`);
-    const out = handleAdminApi(apiUrl, req.method, body, {
-      ...opts,
-      cookie: req.headers.cookie,
-      loopback,
-      host,
-    });
-    res.statusCode = out.status;
-    res.setHeader('content-type', 'application/json');
-    if (out.headers) {
-      for (const [k, v] of Object.entries(out.headers)) res.setHeader(k, v);
-    }
-    res.end(JSON.stringify(out.json));
-    return;
-  }
-  let file = url.pathname;
-  if (file === '/admin' || file === '/admin/') file = '/index.html';
-  else if (file.startsWith('/admin/')) file = file.slice('/admin'.length) || '/index.html';
-  if (file === '/' || file === '') file = '/index.html';
-  const brand = file.startsWith('/brand/');
-  const root = brand ? PUBLIC_BRAND : ADMIN_DIR;
-  const rel = brand ? file.slice('/brand'.length) : file;
-  const full = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
-  if (!full.startsWith(root)) {
-    res.statusCode = 403;
-    res.end('no');
-    return;
-  }
-  fs.readFile(full, (err, data) => {
-    if (err) {
-      res.statusCode = 404;
-      res.end('missing');
-      return;
-    }
-    const ext = path.extname(full);
-    const types = {
-      '.html': 'text/html; charset=utf-8',
-      '.txt': 'text/plain; charset=utf-8',
-      '.css': 'text/css; charset=utf-8',
-      '.js': 'application/javascript; charset=utf-8',
-      '.png': 'image/png',
-      '.ico': 'image/x-icon',
-      '.woff2': 'font/woff2',
-    };
-    res.setHeader('content-type', types[ext] || 'application/octet-stream');
-    res.end(data);
-  });
+  void opts;
+  res.statusCode = 404;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  try { req.resume(); } catch { /* the client may already be closed */ }
+  res.end(JSON.stringify({ ok: false, reason: 'admin_absent' }));
+  return;
 }

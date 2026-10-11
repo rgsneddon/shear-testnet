@@ -9,19 +9,14 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { NANOS_PER_SHE, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { sealCoinbaseNote } from '../../crypto/note.js';
 import { reconstructOwner } from '../src/wallet_api.js';
-import { destOpeningFromView } from '../../crypto/address.js';
-import { levyNanos, containsShe1 } from '../../crypto/levy.js';
+import { levyNanos } from '../../crypto/levy.js';
 import { configuredFeeIdentity } from '../src/posture.js';
-import { signPoolWithdraw, poolWithdrawDigest } from '../../crypto/eip712.js';
-import { sign } from 'node:crypto';
-import { withdrawNonces, withdrawDigests } from '../src/withdraw_state.js';
 import {
   ADMIN_HOST_EXAMPLE,
   ADMIN_USER,
   ADMIN_DIR,
   createAdmin,
   handleAdminApi,
-  totpCode,
   isAdminHost,
   adminWalletDests,
   adminWalletBalance,
@@ -33,16 +28,6 @@ const ADMIN_HOST = 'admin.mypool.site';
 
 function url(p) {
   return new URL(`https://${ADMIN_HOST}${p}`);
-}
-
-function cookieOf(headers) {
-  const raw = String(headers?.['Set-Cookie'] || '');
-  const m = raw.match(/shear_admin=([0-9a-f]+)/);
-  return m ? `shear_admin=${m[1]}` : '';
-}
-
-function tokenOf(cookie) {
-  return String(cookie || '').replace(/^shear_admin=/, '');
 }
 
 describe('operator admin fee wallet', () => {
@@ -118,13 +103,17 @@ describe('operator admin fee wallet', () => {
       const admin = createAdmin(dir);
       const setup = handleAdminApi(new URL('https://mypool.site/api/admin/setup'), 'POST', {
         user: 'operator', password: 'aaaaaaaa',
-      }, { admin, host: 'mypool.site' });
+      }, { admin, host: 'mypool.site', loopback: true });
+      assert.equal(setup.status, 404);
       assert.equal(setup.json.ok, false);
-      assert.equal(setup.json.reason, 'setup_forbidden');
+      assert.equal(setup.json.reason, 'admin_absent');
+      assert.equal(admin.status().setup, false);
       const token = handleAdminApi(new URL('https://mypool.site/api/admin/setup'), 'POST', {
-        user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
-      }, { admin, host: 'mypool.site' });
-      assert.equal(token.json.ok, true, token.json.reason);
+        user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken, allowSetup: true,
+      }, { admin, host: 'mypool.site', loopback: true });
+      assert.equal(token.status, 404);
+      assert.equal(token.json.reason, 'admin_absent');
+      assert.equal(admin.status().setup, false);
       const poolSrc = fs.readFileSync(path.join(root, 'pool/src/pool.js'), 'utf8');
       assert.match(poolSrc, /url\.pathname === '\/admin'/);
       const ngx = fs.readFileSync(path.join(root, 'pool/deploy/nginx-mypool.site.conf'), 'utf8');
@@ -165,90 +154,40 @@ describe('operator admin fee wallet', () => {
 
     const prevHost = process.env.SHEAR_ADMIN_HOST;
     process.env.SHEAR_ADMIN_HOST = ADMIN_HOST;
-    assert.equal(admin.status().setup, false);
-    const stranger = run('/api/admin/setup', 'POST', { user: 'not-it', password: 'aaaaaaaa' }, '', { host: 'pool.shear.digital' });
-    assert.equal(stranger.json.ok, false);
-    assert.equal(stranger.json.reason, 'setup_forbidden');
-    assert.equal(admin.status().setup, false);
-
-    const created = run('/api/admin/setup', 'POST', {
-      user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
-    });
-    assert.doesNotMatch(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /if \(!same\(user, ADMIN_USER\)\)/);
-    assert.match(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /issuer=\$\{encodeURIComponent\(iss\)\}/);
-    assert.match(fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8'), /ADMIN_ISSUER = 'shear'/);
-    assert.equal(created.json.ok, true, created.json.reason);
-    const cookie = cookieOf(created.headers);
-    assert.ok(cookie);
-    const again = run('/api/admin/setup', 'POST', { user: ADMIN_USER, password: 'bbbbbbbb' });
-    assert.equal(again.json.reason, 'closed');
-
-    const wallet = run('/api/admin/wallet', 'GET', {}, cookie);
-    assert.equal(wallet.json.ok, true);
-    assert.equal(wallet.json.spendable, 1);
-    assert.ok(adminWalletDests('').includes(from));
-
-    const leak = run('/api/admin/withdraw', 'POST', { to: id.paymentCode, amount }, cookie);
-    assert.equal(leak.json.ok, false);
-    assert.equal(leak.json.reason === 'she1_on_chain' || leak.json.reason === 'she1', true);
-
-    const unsigned = run('/api/admin/withdraw', 'POST', {
-      to: dest, amount, login: id.paymentCode,
-    }, cookie);
-    assert.equal(unsigned.json.ok, false);
-    assert.equal(unsigned.json.reason, 'unsigned');
-    assert.equal(unsigned.json.pending.kind, 'admin-spendable');
-    assert.equal(posted.length, 0);
-
-    withdrawNonces.clear();
-    withdrawDigests.clear();
-    const sig = signPoolWithdraw({
-      seed: id.spendPub,
-      login: id.paymentCode,
-      dest,
-      nanos,
-    });
-    const open = destOpeningFromView(id.viewKey, id.spendPub, 0);
-    const digest = poolWithdrawDigest({
-      login: id.paymentCode, dest, minerShe1: id.paymentCode, payoutSsa1: dest, nanos,
-    });
-    const spendSig = sign(null, digest, id.privateKey).toString('hex');
-    const sent = run('/api/admin/withdraw', 'POST', {
-      to: dest,
-      amount,
-      login: id.paymentCode,
-      sig,
-      open,
-      spendSig,
-    }, cookie);
-    assert.equal(sent.json.ok, true, sent.json.reason);
-    assert.equal(sent.json.levy, fee);
-    assert.equal(posted[0].fee, fee);
-    assert.equal(posted[0].kind, 'send');
-    assert.equal(containsShe1(posted[0]), false);
-    assert.equal(JSON.stringify(posted[0]).includes('she1'), false);
-
-    const start = run('/api/admin/totp/start', 'POST', {}, cookie);
-    assert.equal(start.json.ok, true);
-    const pending = admin.sessionOf(tokenOf(cookie)).totpPending;
-    const code = totpCode(pending);
-    const confirm = run('/api/admin/totp/confirm', 'POST', { code }, cookie);
-    assert.equal(confirm.json.ok, true);
-    assert.equal(admin.status().closed, true);
-    assert.equal(admin.status().totp, true);
-
-    const noCode = run('/api/admin/login', 'POST', { user: 'operator', password: 'aaaaaaaa' });
-    assert.equal(noCode.json.ok, false);
-    const wrongUser = run('/api/admin/login', 'POST', {
-      user: 'not-the-op', password: 'aaaaaaaa', code: totpCode(pending),
-    });
-    assert.equal(wrongUser.json.ok, false);
-    const withCode = run('/api/admin/login', 'POST', {
-      user: 'operator', password: 'aaaaaaaa', code: totpCode(pending),
-    });
-    assert.equal(withCode.json.ok, true);
-    if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
-    else process.env.SHEAR_ADMIN_HOST = prevHost;
+    try {
+      assert.equal(admin.status().setup, false);
+      const adminSrc = fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8');
+      assert.doesNotMatch(adminSrc, /if \(!same\(user, ADMIN_USER\)\)/);
+      assert.match(adminSrc, /issuer=\$\{encodeURIComponent\(iss\)\}/);
+      assert.match(adminSrc, /ADMIN_ISSUER = 'shear'/);
+      assert.ok(adminWalletDests('').includes(from));
+      const routes = [
+        ['/api/admin/setup', 'POST', { user: 'not-it', password: 'aaaaaaaa' }],
+        ['/api/admin/setup', 'POST', { user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken, allowSetup: true }],
+        ['/api/admin/setup', 'POST', { user: ADMIN_USER, password: 'bbbbbbbb' }],
+        ['/api/admin/wallet', 'GET', {}],
+        ['/api/admin/withdraw', 'POST', { to: id.paymentCode, amount }],
+        ['/api/admin/withdraw', 'POST', { to: dest, amount, login: id.paymentCode }],
+        ['/api/admin/totp/start', 'POST', {}],
+        ['/api/admin/totp/confirm', 'POST', { code: '000000' }],
+        ['/api/admin/login', 'POST', { user: 'operator', password: 'aaaaaaaa' }],
+      ];
+      for (const [p, method, body] of routes) {
+        const got = run(p, method, body, 'shear_admin=deadbeef', { host: ADMIN_HOST, loopback: true });
+        assert.equal(got.status, 404, p);
+        assert.equal(got.json.ok, false, p);
+        assert.equal(got.json.reason, 'admin_absent', p);
+        assert.equal(got.json.spendable, undefined, p);
+      }
+      assert.equal(admin.status().setup, false);
+      assert.equal(admin.status().closed, false);
+      assert.equal(posted.length, 0);
+      assert.equal(fee > 0, true);
+      assert.equal(nanos > 0, true);
+    } finally {
+      if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prevHost;
+    }
   });
 
   it('admin spendable reconstructs custody pots on the pool dest, not only the 1% fee dest', () => {
@@ -291,17 +230,19 @@ describe('operator admin fee wallet', () => {
     process.env.SHEAR_ADMIN_HOST = ADMIN_HOST;
     try {
       const created = handleAdminApi(url('/api/admin/setup'), 'POST', {
-        user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
-      }, { store, admin, cookie: '', host: ADMIN_HOST });
-      assert.equal(created.json.ok, true, created.json.reason);
-      const cookie = cookieOf(created.headers);
+        user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken, allowSetup: true,
+      }, { store, admin, cookie: '', host: ADMIN_HOST, loopback: true, poolDest });
+      assert.equal(created.status, 404);
+      assert.equal(created.json.reason, 'admin_absent');
+      assert.equal(admin.status().setup, false);
       const wallet = handleAdminApi(url('/api/admin/wallet'), 'GET', {}, {
-        store, admin, cookie, host: ADMIN_HOST, poolDest,
+        store, admin, cookie: 'shear_admin=deadbeef', host: ADMIN_HOST, loopback: true, poolDest,
       });
-      assert.equal(wallet.json.ok, true);
-      assert.ok(wallet.json.spendableNanos >= 0);
-      assert.equal(wallet.json.spendable < 0.02, true);
-      assert.ok(wallet.json.custodyDisplay);
+      assert.equal(wallet.status, 404);
+      assert.equal(wallet.json.reason, 'admin_absent');
+      assert.equal(wallet.json.spendable, undefined);
+      assert.equal(wallet.json.spendableNanos, undefined);
+      assert.equal(wallet.json.custodyDisplay, undefined);
     } finally {
       if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
       else process.env.SHEAR_ADMIN_HOST = prevHost;

@@ -29,7 +29,7 @@ import {
   SUBMIT_PER_IP_MAX,
   createPool,
 } from '../src/pool.js';
-import { totpKeyUri, createAdmin, handleAdminApi, totpCode, appendAdminAudit } from '../src/admin.js';
+import { totpKeyUri, createAdmin, handleAdminApi, appendAdminAudit } from '../src/admin.js';
 import { qrModules, qrSvg } from '../src/totp_qr.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -334,29 +334,42 @@ describe('A5 + 2FA QR', () => {
     assert.match(text, /"action":"withdraw"/);
   });
 
-  it('totp/start returns otpauth + qrSvg', () => {
+  it('totp routes stay absent even after a local setup', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-totp-qr-'));
     const admin = createAdmin(dir);
     const prev = process.env.SHEAR_ADMIN_HOST;
+    const prevSetup = process.env.SHEAR_ADMIN_SETUP;
     delete process.env.SHEAR_ADMIN_HOST;
-    const setup = admin.setup({ user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken });
-    assert.equal(setup.ok, true);
-    const start = handleAdminApi(new URL('https://mypool.site/api/admin/totp/start'), 'POST', {}, {
-      admin,
-      cookie: `shear_admin=${setup.token}`,
-    });
-    assert.equal(start.json.ok, true);
-    assert.match(start.json.otpauth, /^otpauth:\/\/totp\//);
-    assert.match(start.json.qrSvg, /^<svg /);
-    assert.equal(start.json.secret.length >= 16, true);
-    const code = totpCode(admin.sessionOf(setup.token).totpPending);
-    const confirm = handleAdminApi(new URL('https://mypool.site/api/admin/totp/confirm'), 'POST', { code }, {
-      admin,
-      cookie: `shear_admin=${setup.token}`,
-    });
-    assert.equal(confirm.json.ok, true);
-    if (prev == null) delete process.env.SHEAR_ADMIN_HOST;
-    else process.env.SHEAR_ADMIN_HOST = prev;
+    process.env.SHEAR_ADMIN_SETUP = '1';
+    try {
+      const setup = admin.setup({ user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken });
+      assert.equal(setup.ok, true);
+      const start = handleAdminApi(new URL('https://mypool.site/api/admin/totp/start'), 'POST', {}, {
+        admin,
+        cookie: `shear_admin=${setup.token}`,
+        loopback: true,
+        host: '127.0.0.1',
+      });
+      assert.equal(start.status, 404);
+      assert.equal(start.json.reason, 'admin_absent');
+      assert.equal(start.json.otpauth, undefined);
+      assert.equal(start.json.qrSvg, undefined);
+      const confirm = handleAdminApi(new URL('https://mypool.site/api/admin/totp/confirm'), 'POST', { code: '000000' }, {
+        admin,
+        cookie: `shear_admin=${setup.token}`,
+        loopback: true,
+        host: '127.0.0.1',
+      });
+      assert.equal(confirm.status, 404);
+      assert.equal(confirm.json.reason, 'admin_absent');
+      assert.equal(admin.status().totp, false);
+      assert.equal(admin.status().closed, false);
+    } finally {
+      if (prev == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prev;
+      if (prevSetup == null) delete process.env.SHEAR_ADMIN_SETUP;
+      else process.env.SHEAR_ADMIN_SETUP = prevSetup;
+    }
   });
 });
 

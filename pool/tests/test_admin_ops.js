@@ -8,7 +8,6 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { Readable } from 'node:stream';
 import {
   ADMIN_HOST,
-  ADMIN_USER,
   createAdmin,
   handleAdminApi,
   handleAdminHttp,
@@ -17,12 +16,6 @@ import { createPool, adminMinerView } from '../src/pool.js';
 
 function url(p) {
   return new URL(`https://${ADMIN_HOST}${p}`);
-}
-
-function cookieOf(headers) {
-  const raw = String(headers?.['Set-Cookie'] || '');
-  const m = raw.match(/shear_admin=([0-9a-f]+)/);
-  return m ? `shear_admin=${m[1]}` : '';
 }
 
 describe('operator desk', () => {
@@ -48,8 +41,9 @@ describe('operator desk', () => {
     };
     await handleAdminHttp(req, res, { admin });
     const json = JSON.parse(raw);
+    assert.equal(res.statusCode, 404);
     assert.equal(json.ok, false);
-    assert.equal(json.reason, 'setup_forbidden');
+    assert.equal(json.reason, 'admin_absent');
     assert.equal(admin.status().setup, false);
     if (prev == null) delete process.env.SHEAR_ADMIN_SETUP;
     else process.env.SHEAR_ADMIN_SETUP = prev;
@@ -77,8 +71,9 @@ describe('operator desk', () => {
       const remoteRes = { statusCode: 0, setHeader() {}, end(s) { remoteRaw = String(s || ''); } };
       await handleAdminHttp(remoteReq, remoteRes, { admin });
       const remoteJson = JSON.parse(remoteRaw);
+      assert.equal(remoteRes.statusCode, 404);
       assert.equal(remoteJson.ok, false);
-      assert.equal(remoteJson.reason, 'setup_forbidden');
+      assert.equal(remoteJson.reason, 'admin_absent');
       assert.equal(admin.status().setup, false);
 
       process.env.SHEAR_ADMIN_SETUP = '1';
@@ -93,8 +88,10 @@ describe('operator desk', () => {
       const localRes = { statusCode: 0, setHeader() {}, end(s) { localRaw = String(s || ''); } };
       await handleAdminHttp(localReq, localRes, { admin });
       const localJson = JSON.parse(localRaw);
-      assert.equal(localJson.ok, true, localJson.reason);
-      assert.equal(admin.status().setup, true);
+      assert.equal(localRes.statusCode, 404);
+      assert.equal(localJson.ok, false);
+      assert.equal(localJson.reason, 'admin_absent');
+      assert.equal(admin.status().setup, false);
     } finally {
       if (prev == null) delete process.env.SHEAR_ADMIN_SETUP;
       else process.env.SHEAR_ADMIN_SETUP = prev;
@@ -123,8 +120,9 @@ describe('operator desk', () => {
       const remoteRes = { statusCode: 0, setHeader() {}, end(s) { remoteRaw = String(s || ''); } };
       await handleAdminHttp(remoteReq, remoteRes, { admin });
       const remoteJson = JSON.parse(remoteRaw);
+      assert.equal(remoteRes.statusCode, 404);
       assert.equal(remoteJson.ok, false);
-      assert.equal(remoteJson.reason, 'setup_forbidden');
+      assert.equal(remoteJson.reason, 'admin_absent');
       assert.equal(admin.status().setup, false);
 
       const localReq = Readable.from([Buffer.from(JSON.stringify({
@@ -138,8 +136,10 @@ describe('operator desk', () => {
       const localRes = { statusCode: 0, setHeader() {}, end(s) { localRaw = String(s || ''); } };
       await handleAdminHttp(localReq, localRes, { admin });
       const localJson = JSON.parse(localRaw);
-      assert.equal(localJson.ok, true, localJson.reason);
-      assert.equal(admin.status().setup, true);
+      assert.equal(localRes.statusCode, 404);
+      assert.equal(localJson.ok, false);
+      assert.equal(localJson.reason, 'admin_absent');
+      assert.equal(admin.status().setup, false);
     } finally {
       if (prev == null) delete process.env.SHEAR_ADMIN_SETUP;
       else process.env.SHEAR_ADMIN_SETUP = prev;
@@ -148,7 +148,7 @@ describe('operator desk', () => {
     }
   });
 
-  it('pause, restart hooks, miner table, kick, ban, and clear-stale require a session', () => {
+  it('http cannot pause, restart, ban, or clear stale; the process ops still can', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-ops-'));
     const admin = createAdmin(dir);
     const calls = { pause: [], restart: 0, hasher: 0, kick: [], stale: 0 };
@@ -162,65 +162,71 @@ describe('operator desk', () => {
       rebroadcast: () => ({ n: 2, jobId: 'j1' }),
       disconnectAll: () => ({ dropped: 3 }),
       kick: (w) => { calls.kick.push(w); return { dropped: 1 }; },
-      ban: (w) => ({ banned: true, dropped: 1, miner: w }),
+      ban: (w) => ({ banned: !!w, dropped: w ? 1 : 0, miner: w }),
       unban: () => ({ banned: false }),
       clearStale: () => { calls.stale += 1; return { stale: 0 }; },
     };
     const prevHost = process.env.SHEAR_ADMIN_HOST;
     process.env.SHEAR_ADMIN_HOST = 'admin.mypool.site';
-    const run = (p, method, body, cookie, extra = {}) => handleAdminApi(url(p), method, body, { admin, ops, cookie, ...extra });
+    try {
+      const run = (p, method, body, extra = {}) => handleAdminApi(url(p), method, body, {
+        admin, ops, cookie: 'shear_admin=deadbeef', loopback: true, host: 'admin.mypool.site', ...extra,
+      });
+      const routes = [
+        ['/api/admin/health', 'GET', {}],
+        ['/api/admin/setup', 'POST', { user: 'operator', password: 'aaaaaaaa', allowSetup: true, setupToken: admin.setupToken }],
+        ['/api/admin/miners', 'GET', {}],
+        ['/api/admin/pause', 'POST', { pause: true }],
+        ['/api/admin/resume', 'POST', {}],
+        ['/api/admin/restart', 'POST', {}],
+        ['/api/admin/restart-hasher', 'POST', {}],
+        ['/api/admin/rebroadcast', 'POST', {}],
+        ['/api/admin/disconnect-all', 'POST', {}],
+        ['/api/admin/kick', 'POST', { miner: 'mabcd1234' }],
+        ['/api/admin/clear-stale', 'POST', {}],
+        ['/api/admin/unban', 'POST', { miner: 'mabcd1234' }],
+        ['/api/admin/ban', 'POST', { miner: 'mabcd1234' }],
+        ['/api/admin/ban', 'POST', {}],
+      ];
+      for (const [p, method, body] of routes) {
+        const got = run(p, method, body);
+        assert.equal(got.status, 404, p);
+        assert.equal(got.json.ok, false, p);
+        assert.equal(got.json.reason, 'admin_absent', p);
+      }
+      assert.equal(admin.status().setup, false);
+      assert.deepEqual(calls.pause, []);
+      assert.equal(calls.restart, 0);
+      assert.equal(calls.hasher, 0);
+      assert.equal(calls.stale, 0);
+      assert.deepEqual(calls.kick, []);
+      assert.equal(fs.existsSync(path.join(dir, 'admin-audit.jsonl')), false);
 
-    assert.equal(run('/api/admin/health', 'GET').status, 401);
-    assert.equal(run('/api/admin/restart', 'POST').status, 401);
-
-    const remote = run('/api/admin/setup', 'POST', { user: 'operator', password: 'aaaaaaaa', allowSetup: true }, '', { host: 'pool.shear.digital' });
-    assert.equal(remote.json.ok, false);
-    assert.equal(remote.json.reason, 'setup_forbidden');
-    assert.equal(admin.status().setup, false);
-
-    const created = run('/api/admin/setup', 'POST', {
-      user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
-    });
-    assert.equal(created.json.ok, true, created.json.reason);
-    const cookie = cookieOf(created.headers);
-
-    const health = run('/api/admin/health', 'GET', {}, cookie);
-    assert.equal(health.json.ok, true);
-    assert.equal(health.json.height, 9);
-
-    const list = run('/api/admin/miners', 'GET', {}, cookie);
-    assert.equal(list.json.n, 1);
-    assert.equal(list.json.miners[0].tag, 'mabcd1234');
-
-    assert.equal(run('/api/admin/pause', 'POST', {}, cookie).json.paused, true);
-    assert.equal(run('/api/admin/resume', 'POST', {}, cookie).json.paused, false);
-    assert.deepEqual(calls.pause, [true, false]);
-
-    assert.equal(run('/api/admin/restart', 'POST', {}, cookie).json.scheduled, true);
-    assert.equal(run('/api/admin/restart-hasher', 'POST', {}, cookie).json.scheduled, true);
-    assert.equal(calls.restart, 1);
-    assert.equal(calls.hasher, 1);
-
-    assert.equal(run('/api/admin/rebroadcast', 'POST', {}, cookie).json.n, 2);
-    assert.equal(run('/api/admin/disconnect-all', 'POST', {}, cookie).json.dropped, 3);
-    assert.equal(run('/api/admin/kick', 'POST', { miner: 'mabcd1234' }, cookie).json.dropped, 1);
-    assert.equal(calls.kick[0], 'mabcd1234');
-    assert.equal(run('/api/admin/clear-stale', 'POST', {}, cookie).json.stale, 0);
-    assert.equal(calls.stale, 1);
-    assert.equal(run('/api/admin/unban', 'POST', { miner: 'mabcd1234' }, cookie).json.banned, false);
-    assert.equal(run('/api/admin/ban', 'POST', {}, cookie).status, 400);
-    const audit = fs.readFileSync(path.join(dir, 'admin-audit.jsonl'), 'utf8');
-    assert.match(audit, /"action":"pause"/);
-    assert.match(audit, /"action":"resume"/);
-    assert.match(audit, /"action":"restart"/);
-    assert.match(audit, /"action":"restart-hasher"/);
-    assert.match(audit, /"action":"clear-stale"/);
-    assert.match(audit, /"action":"unban"/);
-    if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
-    else process.env.SHEAR_ADMIN_HOST = prevHost;
+      assert.equal(ops.setPaused(true).paused, true);
+      assert.equal(ops.setPaused(false).paused, false);
+      assert.deepEqual(calls.pause, [true, false]);
+      assert.equal(ops.health().height, 9);
+      assert.equal(ops.miners()[0].tag, 'mabcd1234');
+      assert.equal(ops.restart().scheduled, true);
+      assert.equal(ops.restartHasher().scheduled, true);
+      assert.equal(calls.restart, 1);
+      assert.equal(calls.hasher, 1);
+      assert.equal(ops.rebroadcast().n, 2);
+      assert.equal(ops.disconnectAll().dropped, 3);
+      assert.equal(ops.kick('mabcd1234').dropped, 1);
+      assert.equal(calls.kick[0], 'mabcd1234');
+      assert.equal(ops.clearStale().stale, 0);
+      assert.equal(calls.stale, 1);
+      assert.equal(ops.unban('mabcd1234').banned, false);
+      assert.equal(ops.ban('').banned, false);
+      assert.equal(ops.ban('mabcd1234').banned, true);
+    } finally {
+      if (prevHost == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prevHost;
+    }
   });
 
-  it('paused pool rejects shares without counting stale; restart hook fires; accepted is kept', async () => {
+  it('http pause does not pause the pool; process ops still pause, clear stale, and restart', async () => {
     const dest = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admin-pool-'));
     let restarts = 0;
@@ -237,8 +243,10 @@ describe('operator desk', () => {
     const admin = pool.admin;
     const setup = handleAdminApi(url('/api/admin/setup'), 'POST', {
       user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken,
-    }, { admin, ops: pool.adminOps });
-    const cookie = cookieOf(setup.headers);
+    }, { admin, ops: pool.adminOps, loopback: true, host: '127.0.0.1' });
+    assert.equal(setup.status, 404);
+    assert.equal(setup.json.reason, 'admin_absent');
+    assert.equal(admin.status().setup, false);
     const row = {
       login: dest,
       workerKey: `${dest}.rig`,
@@ -257,26 +265,44 @@ describe('operator desk', () => {
     assert.ok(view.tag.startsWith('m'));
 
     const paused = handleAdminApi(url('/api/admin/pause'), 'POST', { pause: true }, {
-      admin, ops: pool.adminOps, cookie,
+      admin, ops: pool.adminOps, loopback: true, host: '127.0.0.1',
     });
-    assert.equal(paused.json.paused, true);
+    assert.equal(paused.status, 404);
+    assert.equal(paused.json.reason, 'admin_absent');
+    assert.equal(pool.paused, false);
+
+    assert.equal(pool.adminOps.setPaused(true).paused, true);
     assert.equal(pool.paused, true);
+    const health = pool.adminOps.health();
+    assert.equal(health.paused, true);
+    const list = pool.adminOps.miners();
+    assert.ok(list.some((m) => m.accepted === 7));
 
-    const health = handleAdminApi(url('/api/admin/health'), 'GET', {}, { admin, ops: pool.adminOps, cookie });
-    assert.equal(health.json.paused, true);
-    const list = handleAdminApi(url('/api/admin/miners'), 'GET', {}, { admin, ops: pool.adminOps, cookie });
-    assert.ok(list.json.miners.some((m) => m.accepted === 7));
-
-    handleAdminApi(url('/api/admin/clear-stale'), 'POST', {}, { admin, ops: pool.adminOps, cookie });
+    const httpClear = handleAdminApi(url('/api/admin/clear-stale'), 'POST', {}, {
+      admin, ops: pool.adminOps, loopback: true,
+    });
+    assert.equal(httpClear.status, 404);
+    assert.equal(row.stale, 4);
+    pool.adminOps.clearStale();
     assert.equal(pool.stats.stale, 0);
     assert.equal(row.stale, 0);
     assert.equal(row.accepted, 7);
 
-    const rst = handleAdminApi(url('/api/admin/restart'), 'POST', {}, { admin, ops: pool.adminOps, cookie });
-    assert.equal(rst.json.scheduled, true);
+    const httpRestart = handleAdminApi(url('/api/admin/restart'), 'POST', {}, {
+      admin, ops: pool.adminOps, loopback: true,
+    });
+    assert.equal(httpRestart.status, 404);
+    assert.equal(restarts, 0);
+    const rst = pool.adminOps.restart();
+    assert.equal(rst.scheduled, true);
     assert.equal(restarts, 1);
 
-    handleAdminApi(url('/api/admin/resume'), 'POST', {}, { admin, ops: pool.adminOps, cookie });
+    const httpResume = handleAdminApi(url('/api/admin/resume'), 'POST', {}, {
+      admin, ops: pool.adminOps, loopback: true,
+    });
+    assert.equal(httpResume.status, 404);
+    assert.equal(pool.paused, true);
+    pool.adminOps.setPaused(false);
     assert.equal(pool.paused, false);
     pool.close();
   });
