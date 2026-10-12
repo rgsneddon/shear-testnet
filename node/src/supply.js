@@ -14,6 +14,7 @@ import {
   MAX_SHARES_PER_BLOCK,
   MAX_HASH_UNITS_PER_BLOCK,
   SHARE_FLOOR_BITS,
+  RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
 import { verifyMintSum, verifyRange, excessOf } from '../../crypto/note.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
@@ -35,7 +36,14 @@ import {
   sameHashLedger,
   settleHashOwed,
 } from '../../crypto/hash_owed.js';
-import { bonusUnitsBefore } from '../../crypto/reserve_vault.js';
+import {
+  bonusUnitsBefore,
+  blockWithdrawInterest,
+  emptyVault,
+  cloneVault,
+  applyReserveBlock,
+  txIsReserveAction,
+} from '../../crypto/reserve_vault.js';
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const ZERO_32 = Buffer.alloc(32);
@@ -58,6 +66,66 @@ function headerMs(block) {
   } catch {
     return null;
   }
+}
+
+export function blockNeedsReserve(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  for (const tx of txs) {
+    if (!tx || tx.coinbase) continue;
+    if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
+    if (txIsReserveAction(tx)) return true;
+  }
+  return false;
+}
+
+/** Vault after `block`, or null when this block does not touch a vault. */
+export function vaultAfterBlock(vault, block) {
+  if (!vault && !blockNeedsReserve(block)) return { ok: true, vault: null };
+  if (vault && vault.blankFork) return { ok: false, vault: null };
+  const next = vault ? cloneVault(vault) : emptyVault();
+  const applied = applyReserveBlock({
+    state: next,
+    block,
+    nowMs: headerMs(block) || 0,
+  });
+  if (!applied || applied.ok !== true) return { ok: false, vault: null };
+  return { ok: true, vault: next };
+}
+
+/**
+ * Parent vault for `blocks[index]`. Null when the list has no reserve tx.
+ * Null when a prefix apply fails. An empty vault is the parent of the first
+ * reserve block, and is not null.
+ */
+export function vaultBefore(blocks, index) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  let needs = false;
+  for (let i = 0; i < list.length; i += 1) {
+    if (blockNeedsReserve(list[i])) { needs = true; break; }
+  }
+  if (!needs) return null;
+  const end = Math.max(0, Math.min(Number(index) || 0, list.length));
+  let vault = emptyVault();
+  for (let i = 0; i < end; i += 1) {
+    const applied = applyReserveBlock({
+      state: vault,
+      block: list[i],
+      nowMs: headerMs(list[i]) || 0,
+    });
+    if (!applied || applied.ok !== true) return null;
+  }
+  return vault;
+}
+
+/** `{ ok, vault }` so a failed prefix is not the same as a coinbase-only list. */
+export function vaultParent(blocks, index) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  const vault = vaultBefore(list, index);
+  if (vault) return { ok: true, vault };
+  for (let i = 0; i < list.length; i += 1) {
+    if (blockNeedsReserve(list[i])) return { ok: false, vault: null };
+  }
+  return { ok: true, vault: null };
 }
 
 function asNonNeg(v) {
@@ -259,6 +327,8 @@ function copySupply(state) {
     mintedPot: state.mintedPot,
     mintedHash: state.mintedHash,
     mintedLevy: state.mintedLevy,
+    mintedInterest: typeof state.mintedInterest === 'bigint' ? state.mintedInterest : 0n,
+    permittedInterest: typeof state.permittedInterest === 'bigint' ? state.permittedInterest : 0n,
     bLocked: typeof state.bLocked === 'bigint' ? state.bLocked : 0n,
     permittedHashAll: state.permittedHashAll,
     acceptedHash: state.acceptedHash,
@@ -283,6 +353,8 @@ export function emptySupplyState(genesisMs = 0) {
     mintedPot: 0n,
     mintedHash: 0n,
     mintedLevy: 0n,
+    mintedInterest: 0n,
+    permittedInterest: 0n,
     bLocked: 0n,
     permittedHashAll: 0n,
     acceptedHash: 0n,
@@ -311,6 +383,9 @@ export function supplyFromScalar(scalar, {
     mintedPot: BigInt(scalar.mintedPot || 0),
     mintedHash: BigInt(scalar.mintedHash || 0),
     mintedLevy: BigInt(scalar.mintedLevy || 0),
+    // The 12-u64 snap does not carry interest. A walk fills it back in.
+    mintedInterest: 0n,
+    permittedInterest: 0n,
     bLocked: BigInt(scalar.bLocked || 0),
     permittedHashAll: BigInt(scalar.permittedHashAll || 0),
     acceptedHash: BigInt(scalar.acceptedHash || 0),
@@ -472,9 +547,15 @@ function accountBlock(prev, block, opts = {}) {
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
   }
+  const interest = blockWithdrawInterest(opts.vault, block, ts);
+  if (!interest.ok) return { reason: interest.reason || 'supply', state };
+  if (state.mintedInterest + interest.nanos > U64) return { reason: 'supply', state };
+  if (state.permittedInterest + interest.nanos > U64) return { reason: 'supply', state };
   state.mintedPot += potMinted;
   state.mintedHash += mintedHashHere;
   state.mintedLevy += levy;
+  state.mintedInterest += interest.nanos;
+  state.permittedInterest += interest.nanos;
   const bReason = accountBLocked(state, block);
   if (bReason) return { reason: bReason, state };
   state.liveUnit = unit;
@@ -484,6 +565,7 @@ function accountBlock(prev, block, opts = {}) {
   state.blockHash = hashBytes ? Buffer.from(hashBytes) : state.blockHash;
   if (!fitsU64(state.schedulePot) || !fitsU64(state.carry) || !fitsU64(state.mintedPot)
     || !fitsU64(state.mintedHash) || !fitsU64(state.mintedLevy) || !fitsU64(state.bLocked)
+    || !fitsU64(state.mintedInterest) || !fitsU64(state.permittedInterest)
     || !fitsU64(state.permittedHashAll)
     || !fitsU64(state.acceptedHash) || !fitsU64(state.dust) || !fitsU64(state.overflow)) {
     return { reason: 'supply', state };
@@ -503,6 +585,9 @@ export function supplyStep(prev, block, opts = {}) {
   for (const row of next.state.owedRows) outstanding += row.nanos;
   if (next.state.mintedHash + outstanding !== next.state.acceptedHash) {
     return { ok: false, reason: 'hash_owed', state: null };
+  }
+  if (next.state.mintedInterest !== next.state.permittedInterest) {
+    return { ok: false, reason: 'supply', state: null };
   }
   const difference = next.state.mintedPot + next.state.mintedHash
     - next.state.schedulePot + next.state.carry - next.state.permittedHashAll;
@@ -525,6 +610,7 @@ export function foldSupply(blocks, opts = {}) {
   if (!tip) tip = list.length;
   const tipHeight = Number(opts.tipHeight) > 0 ? Number(opts.tipHeight) : tip;
   let state = emptySupplyState(genesisMs);
+  let vault = null;
   for (let i = 0; i < list.length; i += 1) {
     const h = Number(list[i]?.height) || (i + 1);
     const stepped = supplyStep(state, list[i], {
@@ -534,22 +620,26 @@ export function foldSupply(blocks, opts = {}) {
       height: h,
       genesisMs,
       blockHash: list[i]?.hash || null,
+      vault,
     });
     if (!stepped.ok) return stepped;
     state = stepped.state;
+    const advanced = vaultAfterBlock(vault, list[i]);
+    if (!advanced.ok) return { ok: false, reason: 'supply', state: null };
+    vault = advanced.vault;
   }
   return { ok: true, reason: '', state };
 }
 
 /** Public numbers for one supply state. No range proof is opened. */
-export function supplyReport(state, {
-  extraMintNanos = 0,
-  burnedNanos = 0,
-  ok = true,
-  reason = '',
-} = {}) {
-  const extra = asNonNeg(extraMintNanos);
-  const burned = asNonNeg(burnedNanos);
+export function supplyReport(state, opts = {}) {
+  const burnedIn = Object.prototype.hasOwnProperty.call(opts, 'burnedNanos') ? opts.burnedNanos : 0;
+  const claimPresent = Object.prototype.hasOwnProperty.call(opts, 'extraMintNanos');
+  const ok = opts.ok !== false;
+  const reason = opts.reason || '';
+  const burned = asNonNeg(burnedIn);
+  const claim = claimPresent ? asNonNeg(opts.extraMintNanos) : null;
+  const chainExtra = state && typeof state.mintedInterest === 'bigint' ? state.mintedInterest : 0n;
   const blank = {
     status: 'mismatch',
     reason: 'supply',
@@ -567,9 +657,14 @@ export function supplyReport(state, {
     bLockedNanos: 0,
     differenceNanos: 0,
   };
-  if (extra == null || burned == null || !state) return { ...blank, reason: reason || 'supply' };
-  let reportOk = ok !== false;
-  let reportReason = reason || '';
+  if (burned == null || !state) return { ...blank, reason: reason || 'supply' };
+  if (claimPresent && claim == null) return { ...blank, reason: 'supply' };
+  let reportOk = ok;
+  let reportReason = reason;
+  if (claimPresent && claim !== chainExtra) {
+    reportOk = false;
+    reportReason = reportReason || 'supply';
+  }
   const mintedPot = state.mintedPot;
   const mintedHash = state.mintedHash;
   const mintedLevy = state.mintedLevy;
@@ -586,8 +681,8 @@ export function supplyReport(state, {
     reportOk = false;
     reportReason = reportReason || 'hash_owed';
   }
-  const circulating = mintedPot + mintedHash + extra - burned;
-  const expected = schedulePot - carry + permittedHashAll + extra - burned;
+  const circulating = mintedPot + mintedHash + chainExtra - burned;
+  const expected = schedulePot - carry + permittedHashAll + chainExtra - burned;
   const difference = circulating - expected;
   if (difference !== 0n) {
     reportOk = false;
@@ -603,7 +698,7 @@ export function supplyReport(state, {
     hashOwedNanos: safeNum(owedState.reduce((n, row) => n + row.nanos, 0n)),
     hashDustNanos: safeNum(dustState),
     hashOwedOverflowNanos: safeNum(overflowState),
-    extraMintNanos: safeNum(extra),
+    extraMintNanos: safeNum(chainExtra),
     burnedNanos: safeNum(burned),
     bLockedNanos: safeNum(state.bLocked),
     differenceNanos: safeSigned(difference),
@@ -633,14 +728,13 @@ export function supplyReport(state, {
  *   differenceNanos: number,
  * }}
  */
-export function auditCirculatingSupply(blocks, {
-  magic = MAGIC_TESTNET,
-  extraMintNanos = 0,
-  burnedNanos = 0,
-} = {}) {
+export function auditCirculatingSupply(blocks, opts = {}) {
+  const magic = opts.magic == null ? MAGIC_TESTNET : opts.magic;
+  const burnedIn = Object.prototype.hasOwnProperty.call(opts, 'burnedNanos') ? opts.burnedNanos : 0;
+  const claimPresent = Object.prototype.hasOwnProperty.call(opts, 'extraMintNanos');
+  const burned = asNonNeg(burnedIn);
+  const claim = claimPresent ? asNonNeg(opts.extraMintNanos) : 0n;
   const list = Array.isArray(blocks) ? blocks : [];
-  const extra = asNonNeg(extraMintNanos) ?? 0n;
-  const burned = asNonNeg(burnedNanos) ?? 0n;
   const blank = {
     status: 'mismatch',
     reason: 'supply',
@@ -653,14 +747,15 @@ export function auditCirculatingSupply(blocks, {
     hashOwedNanos: 0,
     hashDustNanos: 0,
     hashOwedOverflowNanos: 0,
-    extraMintNanos: safeNum(extra) || 0,
+    extraMintNanos: 0,
     burnedNanos: safeNum(burned) || 0,
     bLockedNanos: 0,
     differenceNanos: 0,
   };
-  if (asNonNeg(extraMintNanos) == null || asNonNeg(burnedNanos) == null) return blank;
+  if (burned == null || (claimPresent && claim == null)) return blank;
   if (!list.length) {
-    const net = extra - burned;
+    if (claimPresent && claim !== 0n) return blank;
+    const net = 0n - burned;
     const shown = safeNum(net);
     if (shown == null) return blank;
     return {
@@ -668,6 +763,7 @@ export function auditCirculatingSupply(blocks, {
       status: 'verified',
       reason: '',
       circulatingNanos: shown,
+      burnedNanos: safeNum(burned) || 0,
       differenceNanos: 0,
     };
   }
@@ -705,6 +801,7 @@ export function auditCirculatingSupply(blocks, {
     if (n > auditTip) auditTip = n;
   }
   let state = emptySupplyState(genesisMs);
+  let vault = null;
   for (let bi = 0; bi < list.length; bi += 1) {
     const h = Number(list[bi]?.height);
     const next = accountBlock(state, list[bi], {
@@ -715,12 +812,29 @@ export function auditCirculatingSupply(blocks, {
       genesisMs,
       blockHash: list[bi]?.hash || null,
       rememberRange: false,
+      vault,
     });
     state = next.state;
     if (next.reason) {
       ok = false;
       reason = reason || next.reason;
+      const broken = emptyVault();
+      broken.blankFork = true;
+      vault = broken;
+    } else {
+      const advanced = vaultAfterBlock(vault, list[bi]);
+      if (!advanced.ok) {
+        ok = false;
+        reason = reason || 'supply';
+        const broken = emptyVault();
+        broken.blankFork = true;
+        vault = broken;
+      } else {
+        vault = advanced.vault;
+      }
     }
   }
-  return supplyReport(state, { extraMintNanos, burnedNanos, ok, reason });
+  const reportOpts = { burnedNanos: burnedIn, ok, reason };
+  if (claimPresent) reportOpts.extraMintNanos = opts.extraMintNanos;
+  return supplyReport(state, reportOpts);
 }

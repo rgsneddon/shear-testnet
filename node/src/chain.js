@@ -2410,6 +2410,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     height,
     genesisMs: resolvedGenesisMs || genesisMs || 0,
     blockHash: hash,
+    vault: reserveState || null,
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
   return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot, supplyState: stepped.state };

@@ -38,7 +38,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
-import { emptySupplyState, foldSupply, supplyFromScalar, supplyLinks, supplyStep, publishedSupply } from './supply.js';
+import { emptySupplyState, foldSupply, supplyFromScalar, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
   verifyShareBatch,
@@ -3159,6 +3159,9 @@ export function createStore(dir, {
     const base = supplyAt[from];
     if (!base || base.owedKnown !== true || !supplyLinks(base, blocks[from])) return null;
     const burial = Number.isInteger(tipH) && tipH >= 0 ? tipH : (Number(blocks[endIdx]?.height) || endIdx + 1);
+    const carriedVault = vaultParent(blocks, from + 1);
+    if (!carriedVault.ok) return null;
+    let vault = carriedVault.vault;
     let state = base;
     for (let i = from + 1; i <= endIdx; i += 1) {
       const block = blocks[i];
@@ -3169,9 +3172,13 @@ export function createStore(dir, {
         genesisMs: state.genesisMs,
         blockHash: block?.hash,
         magic: MAGIC_TESTNET,
+        vault,
       });
       if (!stepped.ok) return null;
       state = stepped.state;
+      const advanced = vaultAfterBlock(vault, block);
+      if (!advanced.ok) return null;
+      vault = advanced.vault;
     }
     return state;
   }
@@ -3242,6 +3249,9 @@ export function createStore(dir, {
           from = prefix;
         }
       }
+      const historyVault = vaultParent(rows, from);
+      if (!historyVault.ok) return { ok: false, reason: 'supply' };
+      let vault = historyVault.vault;
       for (let hi = from; hi < rows.length; hi += 1) {
         const stepped = supplyStep(supply, rows[hi], {
           unit: allUnits[hi],
@@ -3250,9 +3260,13 @@ export function createStore(dir, {
           genesisMs: gms,
           blockHash: rows[hi]?.hash,
           magic: MAGIC_TESTNET,
+          vault,
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
         supply = stepped.state;
+        const advanced = vaultAfterBlock(vault, rows[hi]);
+        if (!advanced.ok) return { ok: false, reason: 'supply' };
+        vault = advanced.vault;
         appendFluxBlock(flux, rows[hi]);
         const hh = Number(rows[hi]?.height) || hi + 1;
         anchors[hh] = anchorRecord(flux, false);
@@ -3649,6 +3663,12 @@ export function createStore(dir, {
         }
         adoptedSupply = supplyAt.slice(0, lca);
         let carriedSupply = prefixSupply;
+        const openedVault = vaultParent(accepted, lca);
+        if (!openedVault.ok) {
+          clearReorgMarkers();
+          return { ok: false, reason: 'supply', tip: tip() };
+        }
+        let carriedVault = openedVault.vault;
         const units = Array.isArray(verified.units) ? verified.units : null;
         const failSupplyAt = Number.isInteger(verifyOpts.failSupplyAt) && verifyOpts.failSupplyAt >= 0
           ? verifyOpts.failSupplyAt
@@ -3663,12 +3683,19 @@ export function createStore(dir, {
             genesisMs: carriedSupply.genesisMs,
             blockHash: block?.hash,
             magic: MAGIC_TESTNET,
+            vault: carriedVault,
           });
           if (!stepped.ok || failSupplyAt === i - lca) {
             clearReorgMarkers();
             return { ok: false, reason: stepped.ok ? 'supply' : (stepped.reason || 'supply'), tip: tip() };
           }
           carriedSupply = stepped.state;
+          const advanced = vaultAfterBlock(carriedVault, block);
+          if (!advanced.ok) {
+            clearReorgMarkers();
+            return { ok: false, reason: 'supply', tip: tip() };
+          }
+          carriedVault = advanced.vault;
           adoptedSupply.push(carriedSupply);
         }
         stagedFlux = stageAdoptFlux(lca, fromBlocks, accepted, connected, keptFlux, adoptedTip);

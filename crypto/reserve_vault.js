@@ -1313,6 +1313,71 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   };
 }
 
+const INTEREST_U64 = 0xffffffffffffffffn;
+
+function exactBi(n) {
+  if (typeof n === 'bigint') return n >= 0n ? n : null;
+  if (typeof n === 'number' && Number.isSafeInteger(n) && n >= 0) return BigInt(n);
+  if (typeof n === 'string' && /^\d+$/.test(n)) {
+    try { return BigInt(n); } catch { return null; }
+  }
+  return null;
+}
+
+function withdrawRowsOf(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const rows = [];
+  for (const tx of txs) {
+    if (!tx || tx.coinbase) continue;
+    if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
+    if (txKind(tx) !== KIND_WITHDRAW) continue;
+    rows.push(tx);
+  }
+  return rows;
+}
+
+/**
+ * Full interest minted by this block's withdraw receipts.
+ * The fee bank may pay part of the reward. The mint that joins the
+ * supply is still the whole interest, and the receipt must be principal
+ * plus that interest. No withdraw is zero and does not need a vault.
+ */
+export function blockWithdrawInterest(vault, block, nowMs) {
+  const rows = withdrawRowsOf(block);
+  if (!rows.length) return { ok: true, nanos: 0n };
+  if (!vault || vault.blankFork) return { ok: false, reason: 'supply' };
+  const trial = cloneVault(vault);
+  const applied = applyReserveBlock({
+    state: trial,
+    block,
+    nowMs: Number(nowMs) || 0,
+  });
+  if (!applied || applied.ok !== true) return { ok: false, reason: 'supply' };
+  const gotRows = [];
+  for (const row of applied) {
+    if (row && row.action === KIND_WITHDRAW && row.ok === true) gotRows.push(row);
+  }
+  if (gotRows.length !== rows.length) return { ok: false, reason: 'supply' };
+  let sum = 0n;
+  for (let i = 0; i < rows.length; i += 1) {
+    const act = reserveAction(rows[i]);
+    const got = gotRows[i];
+    if (!act || act.opened !== true) return { ok: false, reason: 'supply' };
+    const principal = exactBi(got.principal);
+    const interest = exactBi(got.interest);
+    const opened = exactBi(act.nanos);
+    if (principal == null || interest == null || opened == null) return { ok: false, reason: 'supply' };
+    if (opened !== principal + interest) return { ok: false, reason: 'supply' };
+    if (interest > 0n) {
+      const minted = exactBi(got.mint && got.mint.ok === true ? got.mint.nanos : null);
+      if (minted == null || minted !== interest) return { ok: false, reason: 'supply' };
+    }
+    sum += interest;
+    if (sum > INTEREST_U64) return { ok: false, reason: 'supply' };
+  }
+  return { ok: true, nanos: sum };
+}
+
 export function sheFromNanos(n) {
   return asNum(n) / NANOS_PER_SHE;
 }
