@@ -46,7 +46,7 @@ import {
   PRODUCT_VERSION,
   PI_SHE_NANOS,
 } from '../../crypto/asert.js';
-import { poolFeeDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
+import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { handleAdminHttp, createAdmin } from './admin.js';
 import {
@@ -342,10 +342,29 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
   return out.filter((s) => s.nanos > 0);
 }
 
+/** dest20 byte order. The same bytes sort the same on every host. */
+function compareCanonicalDest(a, b) {
+  const ha = hash20FromAddress(a);
+  const hb = hash20FromAddress(b);
+  if (ha && hb) return Buffer.compare(ha, hb);
+  if (ha) return -1;
+  if (hb) return 1;
+  return Buffer.compare(Buffer.from(String(a)), Buffer.from(String(b)));
+}
+
+/** Operator fee, protocol fee sink, and the reserve are not a block finder. */
+function namesFeeSink(dest, feeTo) {
+  if (!isDestAddress(dest)) return false;
+  if (feeTo && dest === feeTo) return true;
+  if (dest === poolFeeDest()) return true;
+  if (dest === reserveFeeDest()) return true;
+  return false;
+}
+
 /**
- * Template miner. Eligible dests are the ones with proven work. Order is
- * payout-address localeCompare, never miner-map insertion order. No proven
- * dest means no hasher: the caller holds the pot on the fee note.
+ * Header hasher when someone has proven work. Order is dest20 bytes, never
+ * localeCompare and never miner-map insertion order. This dest is not the
+ * finder-fee payee. No proven dest means no hasher.
  */
 export function templateHasherDest(rows, provenDests) {
   const proven = new Set();
@@ -363,7 +382,7 @@ export function templateHasherDest(rows, provenDests) {
     seen.add(dest);
     eligible.push(dest);
   }
-  eligible.sort((a, b) => a.localeCompare(b));
+  eligible.sort(compareCanonicalDest);
   return eligible[0] || '';
 }
 
@@ -3662,15 +3681,14 @@ export function createPool({
       if (isDestAddress(row.miner)) provenDests.push(row.miner);
     }
     const hasherPay = templateHasherDest([...miners.values()], provenDests);
-    // she1 login may have no dest yet (dest arrives as owned ssa1). The header
-    // still issues; shareBatch credit stays hasher dests only. An empty proven
-    // round carries the miner pot and pays only this block's fee note.
-    // A connected miner with no proven share is not this header's miner.
-    const payout = hasherPay
-      || potShares.find((s) => s.kind === 'pot')?.address
-      || poolPay
-      || feeTo
-      || poolFeeDest();
+    // The finder-fee is not hasherPay. The shared job passes finderDest ''
+    // and holds that half until aimFinderJob pays the miner who hashes the
+    // header. An empty proven round has no hasher, so the header names the
+    // unclaimed hold. A fee dest is never that name.
+    const provenPay = hasherPay || potShares.find((s) => s.kind === 'pot')?.address || '';
+    const payout = provenPay && !namesFeeSink(provenPay, feeTo)
+      ? provenPay
+      : unclaimedFinderDest();
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     // Block target is consensus next-work for this parent (retarget → nextBits).
