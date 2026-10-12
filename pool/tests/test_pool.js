@@ -11,6 +11,7 @@ import {
   TARGET_BLOCK_INTERVAL_MS,
   MAGIC_TESTNET,
   HASH_TX_LIVE,
+  PRODUCT_VERSION,
   SHARE_FLOOR_BITS,
   SHEARK_MINER_VERSION,
   shareCreditMaxBits,
@@ -566,7 +567,9 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /color:var\(--ink\)|#0d2137/);
     assert.match(html, />SHE</);
     assert.match(html, /ShearHash/);
-    assert.match(html, /:1111/);
+    assert.match(html, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
+    assert.doesNotMatch(html, /pool\.shear\.digital:1111/);
+    assert.doesNotMatch(html, /0\.0\.0\.0:1111/);
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
     assert.match(html, /She is Private/);
@@ -594,10 +597,10 @@ describe('pool dashboard + stratum', () => {
     assert.doesNotMatch(html, />To</);
     assert.doesNotMatch(html, />Amount</);
     assert.doesNotMatch(html, />Asset</);
-    assert.match(html, /function fmtLocalTs/);
-    assert.match(html, /getDate\(\)/);
-    assert.match(html, /getHours\(\)/);
-    assert.match(html, /getSeconds\(\)/);
+    assert.match(html, /not a header-timestamp gap/);
+    assert.match(html, /function poolFindClockOffsetMs/);
+    assert.match(html, /function poolLastBlockAgeMs/);
+    assert.match(html, /function fmtSinceBlock/);
     assert.match(html, /b\.hashrate/);
     assert.match(html, /function shortDest/);
     assert.match(html, /slice\(0, 9\)/);
@@ -637,14 +640,14 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.policy.freeze_banner, '');
     assert.equal(typeof stats.policy.h_ratio, 'number');
     assert.equal(typeof stats.policy.side_lead, 'number');
-    assert.equal(stats.productVersion, '18.0');
+    assert.equal(stats.productVersion, PRODUCT_VERSION);
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 
     const job = pool.issueJob();
     assert.equal(gateJob(job).ok, true);
     assert.equal(job.header.length, 256);
-    const hit = findOkShare(job);
+    const hit = findOkShare(job, 25_000n, dest);
 
     const scored = await new Promise((resolve, reject) => {
       const sock = net.connect(stratumPort, '127.0.0.1', () => {
@@ -751,9 +754,12 @@ describe('session inventory fold', () => {
   });
 });
 
-function findOkShare(job, max = 25_000n) {
-  for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+function findOkShare(job, max = 25_000n, dest = '') {
+  const bits = Number(job?.shareBits);
+  const legal = Number.isInteger(bits) && bits > 0;
+  for (let n = 0n; n < max; n += 1n) {
+    const nonce = legal ? nonceWithShareTarget(n, bits) : n;
+    const s = scoreShare({ job, nonce, dest: dest || undefined });
     if (s.ok) return { nonce, s };
   }
   throw new Error('no_share');

@@ -152,6 +152,25 @@ export function admitMempool(pool, tx, opts = {}) {
     const earlyBound = flowInputsBound(tx);
     if (!earlyBound.ok) return earlyBound;
   }
+  // A forbidden HRP is named before a missing range proof, same as the block
+  // path. An ssa money output with no proof still fails range_proof.
+  const fields = checkTxAddressFields(tx, { coinbase: false });
+  if (!fields.ok) return { ok: false, reason: fields.reason };
+  const dests = [];
+  if (tx.to) dests.push(tx.to);
+  if (tx.from) dests.push(tx.from);
+  for (const o of tx.vout || []) {
+    if (o?.address) dests.push(o.address);
+  }
+  for (const v of tx.vin || []) {
+    if (v?.address) dests.push(v.address);
+  }
+  for (const d of dests) {
+    const r = checkAddressField(d, { allowEmpty: false });
+    if (!r.ok) return { ok: false, reason: r.reason === 'rest_frame_on_chain' ? 'shear1' : r.reason };
+    if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
+    if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
+  }
   if (moneyNeedsRange(tx)) {
     for (const o of (tx.vout || [])) {
       if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
@@ -232,23 +251,6 @@ export function admitMempool(pool, tx, opts = {}) {
   }
   const bound = verifyPoolWithdrawBound(tx);
   if (!bound.ok) return bound;
-  const fields = checkTxAddressFields(tx, { coinbase: false });
-  if (!fields.ok) return { ok: false, reason: fields.reason };
-  const dests = [];
-  if (tx.to) dests.push(tx.to);
-  if (tx.from) dests.push(tx.from);
-  for (const o of tx.vout || []) {
-    if (o?.address) dests.push(o.address);
-  }
-  for (const v of tx.vin || []) {
-    if (v?.address) dests.push(v.address);
-  }
-  for (const d of dests) {
-    const r = checkAddressField(d, { allowEmpty: false });
-    if (!r.ok) return { ok: false, reason: r.reason === 'rest_frame_on_chain' ? 'shear1' : r.reason };
-    if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
-    if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
-  }
   let boundIns = null;
   if (flowNeedsDummy(tx)) {
     boundIns = flowInputsBound(tx);

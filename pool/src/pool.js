@@ -5565,6 +5565,7 @@ export function createPool({
         return;
       }
     }
+    const host = String(req.headers.host || '');
     const file = publicHtmlFile(host, url.pathname);
     const full = path.join(PUBLIC_DIR, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
     if (!full.startsWith(PUBLIC_DIR)) {
