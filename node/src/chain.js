@@ -98,6 +98,7 @@ import {
   canonicalSpendTag,
   txIoCap,
 } from '../../crypto/note.js';
+import { t21CoinbaseGate } from '../../crypto/t21_split.js';
 import { blockBudget } from '../../crypto/block_budget.js';
 import {
   packTx,
@@ -2050,16 +2051,26 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       return { ok: false, reason: 'pot' };
     }
   }
+  let t21Paid = null;
+  if (txs[0] && txs[0].t21Split != null) {
+    const gate = t21CoinbaseGate(txs[0], payablePot, cbVouts, carryOut);
+    if (!gate.ok) return { ok: false, reason: gate.reason };
+    t21Paid = gate.paid;
+  }
   const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, (o) => (
     provenOpen.has(o) ? provenOpen.get(o) : null
-  ));
+  ), t21Paid);
   if (!boundCb.ok) return boundCb;
   let potOpenedSum = 0;
-  for (const o of cbVouts) {
-    if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
-    if (provenOpen.has(o)) potOpenedSum += Number(provenOpen.get(o));
-    else if (o?.valueProof?.v != null && o.valueProof.v !== '') potOpenedSum += Number(o.valueProof.v);
-    else potOpenedSum += Number(o.nanos || 0);
+  if (t21Paid != null) {
+    potOpenedSum = payablePot - carryOut;
+  } else {
+    for (const o of cbVouts) {
+      if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
+      if (provenOpen.has(o)) potOpenedSum += Number(provenOpen.get(o));
+      else if (o?.valueProof?.v != null && o.valueProof.v !== '') potOpenedSum += Number(o.valueProof.v);
+      else potOpenedSum += Number(o.nanos || 0);
+    }
   }
   if (!Number.isSafeInteger(potOpenedSum) || potOpenedSum < 0) return { ok: false, reason: 'pot_sched' };
   // A proven share batch must pay this round, including anything carried in.
@@ -2067,7 +2078,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // that carry is a pool-fee at or under POOL_FEE_MAX_BPS of this subsidy.
   // A pot note, or a fee above that cap, is a skim.
   if (shareBatch.length > 0 && carryOut !== 0) return { ok: false, reason: 'pot_carry' };
-  if (!shareBatch.length && carryOut !== 0 && potOpenedSum !== 0) {
+  if (t21Paid == null && !shareBatch.length && carryOut !== 0 && potOpenedSum !== 0) {
     const feeCap = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
     let feeOpened = 0;
     let feeOnly = true;

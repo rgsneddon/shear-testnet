@@ -192,7 +192,7 @@ export function verifyValue(Cbytes, v, proof) {
   }
 }
 
-function bitOrProve(B, b, s) {
+export function bitOrProve(B, b, s) {
   const P0 = B;
   const P1 = B.subtract(G);
   const real = b ? P1 : P0;
@@ -217,7 +217,7 @@ function bitOrProve(B, b, s) {
   };
 }
 
-function bitOrVerify(B, proof) {
+export function bitOrVerify(B, proof) {
   try {
     const R0 = pointFrom(proof.R0);
     const R1 = pointFrom(proof.R1);
@@ -368,8 +368,35 @@ export function openedCoinbaseNanos(vout) {
  * Every committing coinbase output opens, and the commitment sum equals that
  * opened total. Levy notes are in the sum. A totals-only mint does not pass.
  */
-export function coinbaseVoutsBound(vouts, excess, openedFor = null) {
+const PAYOUT_RANGE_KINDS = new Set(['pot', 'hash', 'finder-fee', 'reserve-fee', 'pool-fee']);
+
+function rangeProofEmpty(o) {
+  if (o?.rangeProof == null) return true;
+  try {
+    const pr = Buffer.isBuffer(o.rangeProof) ? o.rangeProof : Buffer.from(asU8(o.rangeProof));
+    return pr.length === 0;
+  } catch {
+    return true;
+  }
+}
+
+export function coinbaseVoutsBound(vouts, excess, openedFor = null, splitPaid = null) {
   const rows = Array.isArray(vouts) ? vouts : [];
+  if (splitPaid != null) {
+    if (!rows.length) return { ok: false, reason: 'coinbase_output' };
+    const paid = noteU64(splitPaid);
+    if (paid == null) return { ok: false, reason: 'coinbase_output' };
+    for (const o of rows) {
+      if (!o?.commit) return { ok: false, reason: 'coinbase_output' };
+    }
+    if (!verifyMintSum(rows, paid, excess)) return { ok: false, reason: 'pot' };
+    return {
+      ok: true,
+      opened: openedAsCaller(paid),
+      levy: 0,
+      rest: openedAsCaller(paid),
+    };
+  }
   if (!rows.length) {
     // Carry-only coinbase: nothing is minted. Excess must be the zero scalar.
     if (excess != null) {
@@ -387,7 +414,12 @@ export function coinbaseVoutsBound(vouts, excess, openedFor = null) {
     let v = null;
     if (typeof openedFor === 'function') {
       const hinted = openedFor(o);
-      if (hinted != null && verifySealedNote(o, hinted)) v = noteU64(hinted);
+      if (hinted != null && verifySealedNote(o, hinted)) {
+        if (PAYOUT_RANGE_KINDS.has(String(o.kind || '')) && rangeProofEmpty(o)) {
+          return { ok: false, reason: 'range_proof' };
+        }
+        v = noteU64(hinted);
+      }
     }
     if (v == null) {
       const one = openedCoinbaseNanos(o);
