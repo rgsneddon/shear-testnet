@@ -739,6 +739,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
       rowsFor(dense.batch, potSubsidyAt({ nowMs: streaks[2].now, genesisMs, magic: MAGIC_TESTNET }), canonicalCarry(streaks[2].parent.block.txs[0]), 100),
       streaks[2].now,
       dense.miners[0],
+      streaks[2].chain,
     );
     assertSeparate(
       reversed,
