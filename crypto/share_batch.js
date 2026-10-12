@@ -180,21 +180,6 @@ export function sortShares(shares = []) {
   });
 }
 
-/** Extra leading zeros above the floor. Equal floor shares tie; dest order does not decide. */
-export function shareInclusionWeight(share) {
-  const lz = Number(share?.lz) & 0xff;
-  const extra = Math.max(0, lz - SHARE_FLOOR_BITS);
-  return 2 ** Math.min(extra, 20);
-}
-
-/** Tie break for equal weight. Hash of the commit and nonce, not the address. */
-export function shareInclusionTie(share) {
-  const nc = noteCommitOfShare(share);
-  const nonce = Buffer.alloc(8);
-  try { nonce.writeBigUInt64LE(BigInt(share?.nonce || 0)); } catch { /* zero */ }
-  return createHash('sha256').update(nc).update(nonce).digest();
-}
-
 /**
  * Keep at most `cap` shares. Under that count, every share stays. The unit
  * cap scales credit later; it does not drop a share. Over the count, each

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
+import { newIdentity, hash20FromAddress, poolFeeDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { encodeHeader, setNonce } from '../../crypto/header.js';
 import {
@@ -40,7 +40,9 @@ import {
 } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
+import { expectedCoinbasePays } from '../../crypto/coinbase_notes.js';
 import { coinbaseTx } from '../src/chain.js';
+import * as shareBatchApi from '../../crypto/share_batch.js';
 
 function minerDest() {
   const id = newIdentity();
@@ -243,6 +245,213 @@ describe('v12 PROP pays share work', () => {
     clearLiveSharePow();
   });
 
+  it('retained credit follows submitted work when leading zeros point the other way', () => {
+    assert.equal(shareBatchApi.shareInclusionWeight, undefined);
+    assert.equal(shareBatchApi.shareInclusionTie, undefined);
+    const floor = SHARE_FLOOR_BITS;
+    const maxB = shareCreditMaxBits();
+    const feeTo = minerDest();
+    const subsidies = [10_000, 100_000_003, BLOCK_SUBSIDY_NANOS];
+    const carries = [0, 17, 50_000];
+    const caps = [1_000, 50_000, 2 ** 20, MAX_HASH_UNITS_PER_BLOCK];
+
+    function shareRow(dest, nonce, bits, lz) {
+      return {
+        dest,
+        nonce: nonceWithShareTarget(nonce, bits),
+        lz,
+        shareBits: bits,
+        proofSlot: 0,
+      };
+    }
+
+    function withLz(batch, lzOf) {
+      return batch.map((row, i) => ({ ...row, lz: lzOf(row, i) }));
+    }
+
+    function submittedUnits(batch) {
+      const by = new Map();
+      for (const row of batch) {
+        const hex = noteCommitOfShare(row).toString('hex');
+        by.set(hex, (by.get(hex) || 0) + unitsForShare(shareWorkBits(row)));
+      }
+      return by;
+    }
+
+    function assertSameMap(left, right, label) {
+      assert.equal(right.size, left.size, label);
+      for (const [key, value] of left) assert.equal(right.get(key), value, label);
+    }
+
+    function payMap(rows, kind) {
+      const by = new Map();
+      for (const row of rows) {
+        if (row.kind !== kind) continue;
+        by.set(row.address, (by.get(row.address) || 0) + row.nanos);
+      }
+      return by;
+    }
+
+    function seatSig(rows) {
+      return rows.map((row) => `${row.dest}:${row.nonce}`).sort().join('|');
+    }
+
+    const shapes = [];
+    for (const gap of [1, 4, 8]) {
+      if (floor + gap > maxB) continue;
+      for (const copies of [1, 3]) {
+        for (const nDest of [2, 5, 8]) {
+          const dests = Array.from({ length: nDest }, () => minerDest());
+          const batch = [];
+          let nonce = 1n;
+          dests.forEach((dest, i) => {
+            const bits = i === 0 ? floor + gap : floor;
+            for (let c = 0; c < copies; c += 1) {
+              batch.push(shareRow(dest, nonce, bits, bits));
+              nonce += 1n;
+            }
+          });
+          shapes.push({ dests, batch, label: `gap ${gap} copies ${copies} dests ${nDest}` });
+        }
+      }
+    }
+    for (const bits of [floor, floor + 2, floor + 6].filter((b) => b <= maxB)) {
+      for (const copies of [1, 3]) {
+        for (const nDest of [2, 5, 8]) {
+          const dests = Array.from({ length: nDest }, () => minerDest());
+          const batch = [];
+          let nonce = 1n;
+          dests.forEach((dest) => {
+            for (let c = 0; c < copies; c += 1) {
+              batch.push(shareRow(dest, nonce, bits, bits));
+              nonce += 1n;
+            }
+          });
+          shapes.push({
+            dests,
+            batch,
+            label: `equal ${bits} copies ${copies} dests ${nDest}`,
+            equal: true,
+          });
+        }
+      }
+    }
+
+    const lzPlans = [
+      () => 0,
+      () => 255,
+      (row) => row.shareBits,
+      (row, i) => (i % 2 === 0 ? floor : Math.min(255, floor + 16)),
+      (row) => (row.shareBits === floor ? Math.min(255, floor + 16) : floor),
+    ];
+
+    for (const shape of shapes) {
+      const base = shape.batch;
+      const orders = [base, [...base].reverse()];
+      if (base.length > 2) orders.push([...base.slice(1), base[0]]);
+      for (const plan of lzPlans) {
+        const flipped = withLz(base, plan);
+        for (const cap of caps) {
+          assertSameMap(
+            retainedUnitsByCommit(base, cap),
+            retainedUnitsByCommit(flipped, cap),
+            `${shape.label} cap ${cap}`,
+          );
+          const leaves = aLeavesFromShares(base, cap);
+          const flippedLeaves = aLeavesFromShares(flipped, cap);
+          assert.equal(flippedLeaves.length, leaves.length, shape.label);
+          for (let i = 0; i < leaves.length; i += 1) {
+            assert.equal(flippedLeaves[i].count, leaves[i].count, shape.label);
+            assert.equal(
+              flippedLeaves[i].noteCommit.toString('hex'),
+              leaves[i].noteCommit.toString('hex'),
+              shape.label,
+            );
+          }
+          for (const order of orders) {
+            assertSameMap(
+              retainedUnitsByCommit(base, cap),
+              retainedUnitsByCommit(withLz(order, plan), cap),
+              `${shape.label} order cap ${cap}`,
+            );
+          }
+        }
+        for (const countCap of [1, 3, base.length]) {
+          assert.equal(
+            seatSig(selectBlockShares(base, countCap)),
+            seatSig(selectBlockShares(flipped, countCap)),
+            `${shape.label} seats ${countCap}`,
+          );
+        }
+        for (const subsidy of subsidies) {
+          for (const carry of carries) {
+            assertSameMap(
+              payMap(potSharesFromBatch(base, feeTo, subsidy, carry), 'pot'),
+              payMap(potSharesFromBatch(flipped, feeTo, subsidy, carry), 'pot'),
+              `${shape.label} pot ${subsidy} ${carry}`,
+            );
+            assertSameMap(
+              payMap(expectedCoinbasePays(base, { poolDest: feeTo, potNanos: subsidy }), 'hash'),
+              payMap(expectedCoinbasePays(flipped, { poolDest: feeTo, potNanos: subsidy }), 'hash'),
+              `${shape.label} hash ${subsidy}`,
+            );
+          }
+        }
+      }
+
+      const submitted = submittedUnits(base);
+      let raw = 0;
+      for (const units of submitted.values()) raw += units;
+      if (raw <= MAX_HASH_UNITS_PER_BLOCK) {
+        const kept = retainedUnitsByCommit(
+          withLz(base, (row) => (row.shareBits === floor ? 255 : 0)),
+          MAX_HASH_UNITS_PER_BLOCK,
+        );
+        for (const [hex, units] of submitted) {
+          assert.equal(kept.get(hex), units, `${shape.label} under cap`);
+        }
+      }
+      const tight = retainedUnitsByCommit(
+        withLz(base, (row) => (row.shareBits === floor ? 255 : 0)),
+        1_000,
+      );
+      for (const [hexA, workA] of submitted) {
+        for (const [hexB, workB] of submitted) {
+          if (workA < workB * 4) continue;
+          assert.ok(
+            (tight.get(hexA) || 0) > (tight.get(hexB) || 0),
+            `${shape.label} tight ${workA} vs ${workB}`,
+          );
+        }
+      }
+      if (!shape.equal) {
+        const high = shape.dests[0];
+        const inverted = withLz(base, (row) => (row.dest === high ? 0 : 255));
+        const pot = potSharesFromBatch(inverted, feeTo, 10_000, 17);
+        const hashPays = expectedCoinbasePays(inverted, { poolDest: feeTo, potNanos: 10_000 });
+        const highPot = pot.filter((row) => row.address === high && row.kind === 'pot')
+          .reduce((sum, row) => sum + row.nanos, 0);
+        const highHash = hashPays.filter((row) => row.address === high && row.kind === 'hash')
+          .reduce((sum, row) => sum + row.nanos, 0);
+        for (const dest of shape.dests.slice(1)) {
+          const lowPot = pot.filter((row) => row.address === dest && row.kind === 'pot')
+            .reduce((sum, row) => sum + row.nanos, 0);
+          const lowHash = hashPays.filter((row) => row.address === dest && row.kind === 'hash')
+            .reduce((sum, row) => sum + row.nanos, 0);
+          assert.ok(highPot > lowPot, `${shape.label} pot ${highPot} vs ${lowPot}`);
+          assert.ok(highHash > lowHash, `${shape.label} hash ${highHash} vs ${lowHash}`);
+        }
+      }
+      const maxUnits = base.reduce((n, row) => Math.max(n, unitsForShare(row.shareBits)), 0);
+      const keptSeat = selectBlockShares(
+        withLz(base, (row) => (unitsForShare(row.shareBits) === maxUnits ? 0 : 255)),
+        1,
+      );
+      assert.equal(keptSeat.length, 1, shape.label);
+      assert.equal(unitsForShare(shareWorkBits(keptSeat[0])), maxUnits, shape.label);
+    }
+  });
+
   it('rejects credited bits the dest-bound hash does not meet', () => {
     const dest = minerDest();
     const meet = SHARE_FLOOR_BITS + 2;
@@ -292,7 +501,7 @@ describe('v12 PROP pays share work', () => {
   });
 
   it('consensus seals a work split and rejects the same counts', () => {
-    const feeTo = minerDest();
+    const feeTo = poolFeeDest();
     const low = minerDest();
     const high = minerDest();
     const now = 1_700_000_000_000;
