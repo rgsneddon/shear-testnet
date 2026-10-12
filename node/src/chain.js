@@ -2180,13 +2180,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const drawnWithdraws = new Set();
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
-    if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
-      const carry = unboundMembershipCarry(tx);
-      if (!carry.ok) return carry;
-    }
-    // A refused kind returns kind before a commit vin is membership.
-    // The range check still runs first. A verified proof then returns kind.
-    // Value kinds keep the later range check, then the commit-vin reject.
+    // A refused kind returns kind before an unbound proof, tag, or commit vin
+    // is membership. The range check still runs first. A verified proof then
+    // returns kind. Lock, vote, and withdraw keep the commit-vin reject.
     const kindGate = v12KindRejected(tx);
     if (kindGate && moneyNeedsRange(tx)) {
       for (const o of (tx.vout || [])) {
@@ -2197,6 +2193,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     if (kindGate) return kindGate;
+    if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
+      const carry = unboundMembershipCarry(tx);
+      if (!carry.ok) return carry;
+    }
     const explicitKind = explicitTypedKindRejected(tx);
     if (explicitKind) return explicitKind;
     const typedVin = typedCommitRejected(tx);

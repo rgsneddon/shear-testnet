@@ -106,6 +106,102 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
     }
   });
 
+  it('a refused kind returns kind before an unbound proof or tag', { timeout: 180_000 }, async () => {
+    const box = stealthBox();
+    const dest = box.dest;
+    const d20 = hash20FromAddress(dest);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-kind-before-carry-'));
+    const store = createStore(dir);
+    const refused = ['vortice-register', 'evm-value', 'claim', 'user-spend', 'made-up-kind'];
+    const carries = [
+      { admit_proof: { blob: Buffer.alloc(8, 1) } },
+      { admit_proofs: [{ blob: Buffer.alloc(8, 2) }] },
+      { spendTag: Buffer.alloc(32, 3) },
+    ];
+    for (const kind of refused) {
+      for (const nanos of AMOUNTS) {
+        const note = sealNote(nanos, { dest20: d20, kind });
+        for (const carry of carries) {
+          const tx = {
+            id: `${kind}-${nanos}-${Object.keys(carry)[0]}`,
+            kind,
+            from: dest,
+            to: dest,
+            nanos,
+            fee: 0,
+            vin: [{ commit: note.commit, address: dest, dest20: d20 }],
+            vout: [{ ...note, kind, address: dest }],
+            ...carry,
+          };
+          signSpendTx(tx, box.key);
+          const label = `${kind} ${nanos} ${Object.keys(carry)[0]}`;
+          const body = verifyFundedBody([tx], () => nanos * 4, { reserveState: { portals: {}, epochBps: 0 } });
+          assert.equal(body.reason, 'kind', `${label} body ${body.reason}`);
+          const queued = store.queueTx(tx);
+          assert.equal(queued.reason, 'kind', `${label} queue ${queued.reason}`);
+          const parked = admitMempool(emptyMempool(), tx, { baseFee: 1 });
+          assert.equal(parked.reason, 'kind', `${label} mempool ${parked.reason}`);
+          const tpl = buildTemplate({
+            prev: GENESIS_PREV,
+            height: 1,
+            miner: dest,
+            bits: GENESIS_BITS_PACKED,
+            now: 1_700_000_000_000,
+            txs: [tx],
+          });
+          const got = await Promise.resolve(verifyBlock(mine(tpl), null, {
+            trustedPowHash: Buffer.alloc(32),
+          }));
+          assert.equal(got.reason, 'kind', `${label} block ${got.reason}`);
+          const bare = {
+            ...tx,
+            id: `${tx.id}-bare`,
+            vout: [{ ...note, kind, address: dest, rangeProof: null }],
+          };
+          const bareBlock = await Promise.resolve(verifyBlock(mine(buildTemplate({
+            prev: GENESIS_PREV,
+            height: 1,
+            miner: dest,
+            bits: GENESIS_BITS_PACKED,
+            now: 1_700_000_000_000,
+            txs: [bare],
+          })), null, { trustedPowHash: Buffer.alloc(32) }));
+          assert.equal(bareBlock.reason, 'range_proof', `${label} bare ${bareBlock.reason}`);
+          assert.notEqual(store.queueTx(bare).reason, 'admit_membership', `${label} bare queue`);
+          assert.equal(admitMempool(emptyMempool(), bare, { baseFee: 1 }).reason, 'kind', `${label} bare mempool`);
+        }
+      }
+    }
+    for (const nanos of AMOUNTS) {
+      const note = sealNote(nanos, { dest20: d20, kind: 'pool-withdraw' });
+      const tx = {
+        id: `pool-withdraw-${nanos}`,
+        kind: 'pool-withdraw',
+        from: dest,
+        to: dest,
+        nanos,
+        fee: 0,
+        vin: [{ commit: note.commit, address: dest, dest20: d20 }],
+        vout: [{ ...note, kind: 'pool-withdraw', address: dest }],
+        admit_proof: { blob: Buffer.alloc(8, 4) },
+        spendTag: Buffer.alloc(32, 5),
+      };
+      signSpendTx(tx, box.key);
+      assert.equal(store.queueTx(tx).reason, 'custodial_pull', `pool-withdraw ${nanos}`);
+      assert.equal(verifyFundedBody([tx], () => nanos * 4).reason, 'kind', `pool-withdraw ${nanos}`);
+      assert.equal(admitMempool(emptyMempool(), tx, { baseFee: 1 }).reason, 'kind', `pool-withdraw ${nanos}`);
+      const got = await Promise.resolve(verifyBlock(mine(buildTemplate({
+        prev: GENESIS_PREV,
+        height: 1,
+        miner: dest,
+        bits: GENESIS_BITS_PACKED,
+        now: 1_700_000_000_000,
+        txs: [tx],
+      })), null, { trustedPowHash: Buffer.alloc(32) }));
+      assert.equal(got.reason, 'kind', `pool-withdraw ${nanos} ${got.reason}`);
+    }
+  });
+
   it('a lock, vote, or withdraw output must name its own kind', { timeout: 180_000 }, async () => {
     const box = stealthBox();
     const dest = box.dest;

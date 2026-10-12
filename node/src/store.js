@@ -2211,14 +2211,15 @@ export function createStore(dir, {
     }
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
+    // A refused kind returns kind before an unbound proof, tag, or commit vin
+    // is membership. Lock, vote, and withdraw still fail that vin as
+    // admit_membership. The custodial_pull gate above stays first.
+    const kindGate = v12KindRejected(tx);
+    if (kindGate) return kindGate;
     if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
       const carry = unboundMembershipCarry(tx);
       if (!carry.ok) return carry;
     }
-    // A refused kind returns kind before a commit vin is membership.
-    // Lock, vote, and withdraw still fail that vin as admit_membership.
-    const kindGate = v12KindRejected(tx);
-    if (kindGate) return kindGate;
     const explicitKind = explicitTypedKindRejected(tx);
     if (explicitKind) return explicitKind;
     const typedVin = typedCommitRejected(tx);
