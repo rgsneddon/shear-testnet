@@ -1,8 +1,10 @@
+import { spawn } from 'node:child_process';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../crypto/address.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote } from '../../crypto/note.js';
@@ -16,22 +18,24 @@ import { decodeHeader } from '../../crypto/header.js';
 import { createStore } from '../src/store.js';
 import {
   buildTemplate,
-  mineTemplate,
   verifyBlock,
   GENESIS_PREV,
 } from '../src/chain.js';
 
+// Genesis is 17 bits, so a hit is expected after 2^17 hashes. The old 32_768
+// cap was sized for a 12-bit header and misses about three searches in four.
+// Sixteen times the expectation, striped across every CPU, makes a miss rare.
+// The jit check below stays. Verify goes back to the interpreter before return.
+const MINE_TRIES = 2_097_152;
+
 function mine(tpl) {
-  // Interpreter ShearHash-v3 is a few hashes per second. Light JIT is the same
-  // digest, so a 12-bit header finishes inside this cap instead of the old
-  // 3_000_000-try walk. blockOnly ignores share hits. Verify stays on interpreter.
   const backend = setHashBackend('jit');
   if (backend !== 'jit') {
     setHashBackend('interpreter');
     assert.fail(`admit miner needs jit, got ${backend}`);
   }
   try {
-    const found = mineTemplate(tpl, { maxTries: 32_768, blockOnly: true });
+    const found = mineAcrossCpus(tpl);
     assert.ok(found && found.block, 'pow');
     return {
       header: found.header,
@@ -48,6 +52,59 @@ function mine(tpl) {
     };
   } finally {
     setHashBackend('interpreter');
+  }
+}
+
+const sleepFlag = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepMs(ms) {
+  Atomics.wait(sleepFlag, 0, 0, ms);
+}
+
+function mineAcrossCpus(tpl) {
+  const cpus = Math.max(1, os.availableParallelism());
+  const perWorker = Math.ceil(MINE_TRIES / cpus);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-mine-'));
+  const outPath = path.join(dir, 'hit.json');
+  const stopPath = path.join(dir, 'stop');
+  const workerPath = fileURLToPath(new URL('./admit_mine_worker.js', import.meta.url));
+  const headerHex = Buffer.from(tpl.header).toString('hex');
+  const children = [];
+  try {
+    for (let cpu = 0; cpu < cpus; cpu += 1) {
+      children.push(spawn(process.execPath, [
+        workerPath,
+        headerHex,
+        String(tpl.bits),
+        String(cpu),
+        String(cpus),
+        String(perWorker),
+        outPath,
+        stopPath,
+        path.join(dir, `done-${cpu}`),
+      ], { stdio: 'ignore' }));
+    }
+    const hitFile = () => fs.readdirSync(dir).find((name) => name.startsWith('hit.json.'));
+    while (!hitFile()) {
+      const finished = fs.readdirSync(dir).filter((name) => name.startsWith('done-')).length;
+      if (finished >= cpus) break;
+      sleepMs(200);
+    }
+    fs.writeFileSync(stopPath, '1');
+    for (const child of children) {
+      if (child.exitCode == null) child.kill('SIGTERM');
+    }
+    const name = hitFile();
+    if (!name) return null;
+    const hit = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+    if (hit.error) assert.fail(hit.error);
+    return {
+      header: Buffer.from(hit.header, 'hex'),
+      hash: Buffer.from(hit.hash, 'hex'),
+      block: true,
+    };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
