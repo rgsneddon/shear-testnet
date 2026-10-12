@@ -28,6 +28,10 @@ import {
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { applyMinerSelfRate } from '../../pool/src/pool.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
+
+// Same ShearHash-v3 digest as light. Eight difficulty-17 mines need the dataset.
+setHashBackend('jit-full');
 
 function destMiner() {
   const id = newIdentity();
