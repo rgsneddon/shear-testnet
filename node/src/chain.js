@@ -73,7 +73,7 @@ import {
   jroot as jrootOf,
   extendZeroRoot,
 } from '../../crypto/admit.js';
-import { ANCHOR_WINDOW, checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
+import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
@@ -2211,6 +2211,23 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (flowVersion) return flowVersion;
     const anchored = checkAdmitAnchor(tx, height);
     if (!anchored.ok) return anchored;
+    // Byte 3 is verified here, before dummy and range, so a bad proof is not
+    // reported as a missing range proof. The v2 verifier does not run.
+    let flowV3Done = false;
+    if (flowNeedsDummy(tx) && flowPresentsProof(tx)) {
+      const flowProof = verifyFlowAdmitV3(tx, {
+        height,
+        blocks: Array.isArray(evmHistory) ? evmHistory : [],
+        spentTags,
+        magic,
+        noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
+      });
+      if (!flowProof.ok) return flowProof;
+      if (!flowProof.skip) {
+        for (const th of flowProof.tags || []) spentTags.add(th);
+        flowV3Done = true;
+      }
+    }
     const clockField = typedClockRejected(tx);
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
@@ -2269,6 +2286,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       const dummies = (tx.vout || []).filter((o) => String(o.kind || '') === 'dummy');
       if (!dummies.every((o) => verifySealedNote(o, 0))) return { ok: false, reason: 'dummy_outs' };
       if (!verifyFlowConservation(tx)) return { ok: false, reason: 'commit_sum' };
+      if (flowV3Done) {
+        // Tags are already in spentTags. Do not send the blob to admit_verify.
+      } else {
       const parsed = txSpendTags(tx);
       if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
       // Verify the bound list only. tx.admit_proof is not a spend unless it is
@@ -2323,6 +2343,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (seen.has(th) || spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
         seen.add(th);
         spentTags.add(th);
+      }
       }
       }
     }

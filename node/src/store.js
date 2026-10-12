@@ -71,7 +71,7 @@ import {
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
-import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
+import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -94,7 +94,7 @@ import {
 } from './bootstrap.js';
 import { blockWeight, custodialPullAllowed } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
-import { admit_verify, fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
+import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
@@ -1773,19 +1773,15 @@ export function createStore(dir, {
         keep.push(tx);
         continue;
       }
-      let fresh = true;
-      for (const proof of parsed.proofs) {
-        const one = canonicalSpendTag(proof);
-        if (!one.tag || !admit_verify(proof, live, {
-          cTilde: proof.cTilde,
-          spendTag: one.tag,
-          jroot: live.jroot,
-        })) {
-          fresh = false;
-          break;
-        }
-      }
-      if (fresh) keep.push(tx);
+      const tipNow = tip();
+      const proved = verifyFlowAdmitV3(tx, {
+        height: Number(tipNow?.height || 0) + 1,
+        blocks,
+        spentTags: live.spendTags,
+        magic: MAGIC_TESTNET,
+        noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
+      });
+      if (proved.ok && !proved.skip) keep.push(tx);
     }
     if (keep.length !== mempool.length) {
       mempool.length = 0;
@@ -2305,50 +2301,25 @@ export function createStore(dir, {
       const live = liveFlux;
       const rlen = Array.isArray(tx.admit_proof?.r) ? tx.admit_proof.r.length : -1;
       const n = (live.pubs || []).length;
-      const seen = new Set();
-      const boundProofs = boundIns.proofs || [];
-      for (let pi = 0; pi < boundProofs.length; pi += 1) {
-        const extra = boundProofs[pi];
-        const one = canonicalSpendTag(extra);
-        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
-        if (!one.tag) return { ok: false, reason: 'admit_membership' };
-        const th = one.tag.toString('hex');
-        const spent = spentNow.has(th);
-        let verified = false;
-        let verifyErr = '';
+      const flowProof = verifyFlowAdmitV3(tx, {
+        height: Number(t?.height || 0) + 1,
+        blocks,
+        spentTags: spentNow,
+        magic: MAGIC_TESTNET,
+        noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
+      });
+      if (!flowProof.ok) {
         try {
-          verified = !!admit_verify(extra, live, { cTilde: extra.cTilde, spendTag: one.tag, jroot: live.jroot });
-        } catch (e) {
-          verifyErr = String(e && e.message ? e.message : e);
-        }
-        if (!verified) {
-          if (pi === 0) {
-            let pub0 = '';
-            try {
-              const p0 = live.pubs[0];
-              pub0 = Buffer.from(asU8(typeof p0?.toBytes === 'function' ? p0.toBytes() : p0)).toString('hex');
-            } catch { /* ignore */ }
-            console.error(JSON.stringify({
-              event: 'admit_fail',
-              why: verifyErr || 'verify',
-              n,
-              rlen,
-              jroot: Buffer.from(live.jroot || []).toString('hex'),
-              spendTag: th,
-              spent,
-              verifyErr,
-              pub0,
-            }));
-          }
-          return { ok: false, reason: 'admit_membership' };
-        }
-        if (seen.has(th) || spentNow.has(th)) {
-          if (pi === 0) {
-            console.error(JSON.stringify({ event: 'admit_fail', why: 'spent_tag', n, rlen, spendTag: th }));
-          }
-          return { ok: false, reason: 'admit_link_tag' };
-        }
-        seen.add(th);
+          console.error(JSON.stringify({
+            event: 'admit_fail',
+            why: 'flow_v3',
+            reason: String(flowProof.reason || ''),
+            id: String(tx?.id || ''),
+            n,
+            rlen,
+          }));
+        } catch { /* ignore */ }
+        return flowProof;
       }
       if (!parsed.ok) return { ok: false, reason: parsed.reason || 'admit_link_tag' };
       }

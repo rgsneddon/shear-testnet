@@ -13,7 +13,7 @@ import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, explicitTypedKindRejected, openingBeforeCarry } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
-import { verifyTypedAdmitFunding, checkAdmitAnchor, typedKindNeedsAdmitV3, v12FlowVersionRejected } from './admit_v3.js';
+import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -126,6 +126,23 @@ export function admitMempool(pool, tx, opts = {}) {
   // proof still fails vin_link or range_proof on the path above and below.
   const flowVersion = v12FlowVersionRejected(tx);
   if (flowVersion) return flowVersion;
+  // Same v3 verifier as consensus. A bad byte-3 proof is not saved by a
+  // missing range proof, and it never reaches admit_verify.
+  const flowSelf = String(tx?.id || '');
+  const flowSpent = spentView(book, opts, flowSelf);
+  let flowV3Done = false;
+  if (flowNeedsDummy(tx) && flowPresentsProof(tx)) {
+    const flowProof = verifyFlowAdmitV3(tx, {
+      height: Number(opts.height || 0),
+      blocks: opts.blocks || [],
+      spentTags: flowSpent,
+      magic: opts.magic,
+      noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
+      fluxset: opts.fluxset && !Array.isArray(opts.fluxset) ? opts.fluxset : null,
+    });
+    if (!flowProof.ok) return flowProof;
+    if (!flowProof.skip) flowV3Done = true;
+  }
   // Bind a presented Flow membership before the range check. An unbound
   // commit or proof is admit_membership. An address-only vin with no proof
   // still fails range_proof. A bound output with no range proof stays range_proof.
@@ -243,7 +260,7 @@ export function admitMempool(pool, tx, opts = {}) {
     const live = opts.fluxset && !Array.isArray(opts.fluxset)
       ? opts.fluxset
       : { pubs: opts.fluxset || opts.pubs || [], commits: opts.commits || [] };
-    if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold) {
+    if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold && !flowV3Done) {
       const parsed = txSpendTags(tx);
       if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
       const boundProofs = boundIns?.proofs || [];

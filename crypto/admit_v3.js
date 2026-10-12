@@ -4,13 +4,14 @@
  * A presented anchor that fails the window is rejected. Lock, vote, and
  * withdraw require an in-window ADMITv3 input. A flow spend (send or transfer)
  * that presents a proof is admit_version unless every blob is byte 3 and an
- * anchor is present, and that spend does not reach the v2 verifier. A flow
- * spend with no proof is unchanged. v2 prove and verify stay for direct
- * callers. Fingerprint tokens stay off.
+ * anchor is present. verifyFlowAdmitV3 then checks that proof with
+ * admitVerifyV3 against the anchor point root. It does not call the v2
+ * verifier. A flow spend with no proof is unchanged. v2 prove and verify stay
+ * for direct callers. Fingerprint tokens stay off.
  */
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
-import { asU8 } from './note.js';
+import { asU8, flowInputsBound } from './note.js';
 import { flowNeedsDummy } from './dummy.js';
 import { admitVerifyV3, fluxsetFromBlocks, jroot, jrootPoint } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
@@ -62,8 +63,8 @@ function presentedAnchors(tx) {
  * v12 interim: a flow spend that presents proofs must be byte 3 and anchored.
  * Any other byte, a missing blob, a mixed list, or byte 3 with no anchor is
  * admit_version. No proof, and every non-flow kind, stays on the existing path.
- * Byte 3 with an anchor returns null so the later checks still run. This does
- * not verify a v3 flow proof.
+ * Byte 3 with an anchor returns null. verifyFlowAdmitV3 then runs. This gate
+ * does not verify the proof.
  */
 export function v12FlowVersionRejected(tx) {
   if (!flowNeedsDummy(tx)) return null;
@@ -304,6 +305,23 @@ export function resetTypedProofVerifies() {
   typedProofVerifies = 0;
 }
 
+let flowProofVerifies = 0;
+
+/** How many times a flow spend called admitVerifyV3. A root miss does not. */
+export function flowProofVerifyCount() {
+  return flowProofVerifies;
+}
+
+export function resetFlowProofVerifies() {
+  flowProofVerifies = 0;
+}
+
+/** True when the tx carries an Admit proof object. An empty list does not. */
+export function flowPresentsProof(tx) {
+  if (tx?.admit_proof) return true;
+  return Array.isArray(tx?.admit_proofs) && tx.admit_proofs.some(Boolean);
+}
+
 export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic = MAGIC_TESTNET, noteAtAnchor = null } = {}) {
   const structure = typedAdmitStructure(tx);
   if (!structure.ok || structure.skip) return structure;
@@ -384,4 +402,116 @@ export function verifyTypedAdmitFunding(tx, { height, blocks, spentTags, magic =
     tags.push(th);
   }
   return { ok: true, tags, anchor: structure.anchor };
+}
+
+function anchorBook(anchor, { blocks, noteAtAnchor, fluxset }) {
+  if (typeof noteAtAnchor === 'function') return noteAtAnchor(anchor);
+  if (Array.isArray(blocks) && blocks.length) {
+    anchorFluxRebuildCount += 1;
+    const subset = blocks.filter((b) => {
+      const h = Number(b?.height || 0);
+      return h > 0 && h <= anchor;
+    });
+    return fluxsetFromBlocks(subset);
+  }
+  if (fluxset && !Array.isArray(fluxset)) return fluxset;
+  return null;
+}
+
+/**
+ * A byte-3 flow spend is a v3 membership proof. The anchor window is the same
+ * rule as lock, vote, and withdraw. The blob's embedded roots must hash to the
+ * point root at that anchor, and admitVerifyV3 is the only verifier. A short
+ * blob is admit_membership before the book is read. A root miss does not call
+ * the verifier. This does not accept a proof the verifier rejects.
+ */
+export function verifyFlowAdmitV3(tx, {
+  height,
+  blocks,
+  spentTags,
+  magic = MAGIC_TESTNET,
+  noteAtAnchor = null,
+  fluxset = null,
+} = {}) {
+  if (!flowNeedsDummy(tx) || !flowPresentsProof(tx)) return { ok: true, skip: true };
+  const anchored = checkAdmitAnchor(tx, Number(height || 0));
+  if (!anchored.ok) return anchored;
+  const bound = flowInputsBound(tx);
+  if (!bound.ok) return bound;
+  const proofs = bound.proofs || [];
+  if (!proofs.length || proofs.length !== (bound.vins || []).length) {
+    return { ok: false, reason: 'admit_membership' };
+  }
+  const listed = proofsOf(tx);
+  if (listed.length !== proofs.length) return { ok: false, reason: 'admit_membership' };
+  for (const proof of proofs) {
+    const raw = proof?.blob || proof?.proof;
+    let pr = null;
+    try {
+      pr = raw ? Buffer.from(asU8(raw)) : null;
+    } catch {
+      pr = null;
+    }
+    if (!pr || pr[0] !== 3) return { ok: false, reason: 'admit_version' };
+    if (pr.length < 129) return { ok: false, reason: 'admit_membership', proofChecked: true };
+  }
+  const live = anchorBook(anchored.anchor, { blocks, noteAtAnchor, fluxset });
+  const stated = Number(live?.n);
+  const pubs = live?.pubs || [];
+  const n = Number.isInteger(stated) && stated >= 1 ? stated : pubs.length;
+  const pointRoot = fundingJroot(live);
+  const stored = bytes32(live?.jroot);
+  const bookPubs = pubs.slice(0, n);
+  const bookCommits = (Array.isArray(live?.commits) ? live.commits : []).slice(0, n);
+  if (stored && bookPubs.length === n && bookCommits.length === n) {
+    const v2 = jroot({ pubs: bookPubs, commits: bookCommits });
+    if (!v2 || v2.length !== 32 || !Buffer.from(v2).equals(stored)) {
+      return { ok: false, reason: 'admit_anchor_root', proofChecked: true };
+    }
+  }
+  if (n < 1 || !pointRoot || (Number.isInteger(stated) && stated >= 1 && stated !== pubs.length)) {
+    return { ok: false, reason: 'admit_anchor_root', proofChecked: true };
+  }
+  const digest = txDigestV3({ ...tx, anchor: anchored.anchor }, magic);
+  const ctx = admitV3Context({
+    magic,
+    anchor: anchored.anchor,
+    root: pointRoot,
+    n,
+    digest,
+  });
+  const tags = [];
+  const seen = new Set();
+  for (const proof of proofs) {
+    const pr = Buffer.from(asU8(proof.blob || proof.proof));
+    const got = anchorPointRootHash(pr.subarray(65, 97), pr.subarray(97, 129));
+    if (!Buffer.from(got).equals(pointRoot)) {
+      return { ok: false, reason: 'admit_anchor_root', proofChecked: true };
+    }
+    const fromBytes = Buffer.from(pr.subarray(1, 33));
+    const field = bytes32(proof.spendTag);
+    if (proof.spendTag != null && proof.spendTag !== '' && (!field || !field.equals(fromBytes))) {
+      return { ok: false, reason: 'admit_tag', proofChecked: true };
+    }
+    if (tags.length === 0 && tx?.spendTag != null && tx.spendTag !== '') {
+      const top = bytes32(tx.spendTag);
+      if (!top || !top.equals(fromBytes)) return { ok: false, reason: 'admit_tag', proofChecked: true };
+    }
+    const th = Buffer.from(fromBytes).toString('hex');
+    if (!th || seen.has(th)) return { ok: false, reason: 'admit_link_tag', proofChecked: true };
+    if (spentTags && typeof spentTags.has === 'function' && spentTags.has(th)) {
+      return { ok: false, reason: 'admit_link_tag', proofChecked: true };
+    }
+    flowProofVerifies += 1;
+    const ok = admitVerifyV3(proof, live, {
+      jroot: pointRoot,
+      cTilde: proof.cTilde,
+      spendTag: fromBytes,
+      ctx,
+    });
+    if (!ok) return { ok: false, reason: 'admit_membership', proofChecked: true };
+    seen.add(th);
+    tags.push(th);
+  }
+  return { ok: true, tags, anchor: anchored.anchor };
 }
