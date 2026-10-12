@@ -568,6 +568,20 @@ double _sheOfNanos(BigInt nanos) {
   return whole.toDouble() + frac.toDouble() / kUnitsPerShe;
 }
 
+/// Spend material is the sealed commit, the note commit, and the opening.
+/// An amount without those bytes is not a coin, at any size.
+bool noteHasSealedSpendBytes(Map<dynamic, dynamic> n) {
+  final commit = _noteBytes(n['commit']);
+  final noteCommit = _noteBytes(n['noteCommit']);
+  final blind = _noteBytes(n['r']);
+  return commit != null &&
+      commit.isNotEmpty &&
+      noteCommit != null &&
+      noteCommit.isNotEmpty &&
+      blind != null &&
+      blind.isNotEmpty;
+}
+
 /// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
 /// No value-proof open, no spend tag, no search beyond one greedy pass.
 /// Production calls this from [Isolate.run].
@@ -594,6 +608,9 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   for (var i = 0; i < notes.length; i++) {
     final n = notes[i];
     if (n is! Map) continue;
+    // Callers that know the bytes set this. A missing flag stays selectable
+    // so an amount-only quote still plans. false means the note cannot be spent.
+    if (n['sealed'] == false) continue;
     if (n['spent'] == true || n['locked'] == true) continue;
     final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
     if (addr.isEmpty) continue;
@@ -5174,7 +5191,7 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true) continue;
       if (!_noteOnDest(n, dest)) continue;
-      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      if (!noteHasSealedSpendBytes(n)) continue;
       if (!_noteMature(n, ignoreConfs: ignoreConfs)) continue;
       final noteShe = _storedNoteShe(n) ?? _noteSheOf(n, amountFallback);
       if (noteShe + 1e-18 < needShe) continue;
@@ -6738,11 +6755,13 @@ class ShearLedger implements ReadProofSink {
       if (addr.isEmpty) continue;
       if (isBindable(addr, restFrame: restFrame, paymentCode: paymentCode)) dests.add(addr);
     }
+    // Same length and order as [_notes]. The planner's index is the book index.
     final snap = <Map<String, dynamic>>[
       for (final n in _notes)
         {
           'spent': n['spent'] == true,
           'locked': n['locked'] == true,
+          'sealed': noteHasSealedSpendBytes(n),
           'address': (n['address'] ?? n['dest'])?.toString() ?? '',
           'height': n['height'],
           'amount': n['amount'],
@@ -7743,6 +7762,7 @@ class ShearLedger implements ReadProofSink {
       }
       if (chosen != null) {
       final note = chosen!;
+      if (!noteHasSealedSpendBytes(note)) throw StateError('no_note');
       final spentNote = {
         'kind': (note['kind'] as String?) ?? 'pot',
         'commit': _noteBytes(note['commit'])!,

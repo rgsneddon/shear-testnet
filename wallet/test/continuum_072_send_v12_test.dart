@@ -279,6 +279,75 @@ void main() {
     expect(openNotes.single['nanos'], other);
   });
 
+  test('selector skips any unsealed note for any amount and any count', () {
+    final one = Uint8List(32)..[0] = 1;
+    expect(
+      noteHasSealedSpendBytes({'commit': one, 'r': one, 'amount': 4}),
+      isFalse,
+    );
+    expect(
+      noteHasSealedSpendBytes({'commit': Uint8List(0), 'noteCommit': one, 'r': one}),
+      isFalse,
+    );
+    expect(
+      noteHasSealedSpendBytes({'commit': one, 'noteCommit': one, 'r': one}),
+      isTrue,
+    );
+    const amounts = <num>[0.00000000001, 1, 4, 1000000];
+    final counts = <int>[1, 3, kMaxInputsPerSend - 1, kMaxInputsPerSend, kMaxInputsPerSend + 1, 2000];
+    for (final she in amounts) {
+      for (final n in counts) {
+        final plan = selectSpendNotesWire({
+          'notes': [
+            for (var i = 0; i < n; i++)
+              {
+                'address': kPoolFeeDest,
+                'amount': she,
+                'height': 1,
+                'spent': false,
+                'sealed': false,
+              },
+            {
+              'address': kPoolFeeDest,
+              'amount': 0.5,
+              'nanos': '50000000000',
+              'height': 1,
+              'spent': false,
+              'sealed': true,
+            },
+          ],
+          'needShe': 0.1,
+          'tip': 40,
+          'confs': 9,
+        });
+        expect(plan['covered'], isTrue, reason: 'n=$n she=$she');
+        final picked = (plan['batches'] as List)
+            .cast<Map>()
+            .expand((b) => (b['notes'] as List))
+            .cast<Map>();
+        expect(picked.single['nanos'], '50000000000', reason: 'n=$n she=$she');
+      }
+    }
+    final none = selectSpendNotesWire({
+      'notes': [
+        for (final she in amounts)
+          {
+            'address': kPoolFeeDest,
+            'amount': she,
+            'height': 1,
+            'spent': false,
+            'sealed': false,
+          },
+      ],
+      'needShe': 0.1,
+      'tip': 40,
+      'confs': 9,
+    });
+    expect(none['covered'], isFalse);
+    expect(none['empty'], isTrue);
+    expect(none['spendableNanos'], '0');
+  });
+
   test('send nanos stay exact for any u64 and reject a wider string', () {
     expect(sendNanosFromWire(null), 0);
     expect(sendNanosFromWire('0'), 0);
