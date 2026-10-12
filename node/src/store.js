@@ -71,7 +71,7 @@ import {
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
-import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
+import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -1752,9 +1752,9 @@ export function createStore(dir, {
   }
 
   /**
-   * A v2 flow proof is bound to the current root. After the root moves, that
-   * proof can never verify again, but its blob tag would still reserve the note.
-   * Drop those txs so a re-proof can queue. Reserve actions and painted holds stay.
+   * A flow proof that is not byte 3 with an anchor is dropped even when the
+   * v2 verifier would still accept it. A byte-3 proof stays only while it
+   * verifies against the current root. Reserve actions and painted holds stay.
    * Template still keeps an admit_membership miss that has not been swept here.
    */
   function dropStaleFlowSpends() {
@@ -1766,6 +1766,8 @@ export function createStore(dir, {
         keep.push(tx);
         continue;
       }
+      // A non-v3 flow proof must not stay even when it still verifies.
+      if (v12FlowVersionRejected(tx)) continue;
       const parsed = txSpendTags(tx);
       if (!parsed.proofs.length || parsed.reason === 'admit_tag') {
         keep.push(tx);
@@ -2256,6 +2258,10 @@ export function createStore(dir, {
     try {
       if (t?.header) base = Number(decodeHeader(Buffer.from(t.header)).baseFee || 1n);
     } catch { base = 1; }
+    // Same byte rule as verify and the mempool. A lock commit vin already
+    // returned admit_membership above. A refused kind already returned kind.
+    const flowVersion = v12FlowVersionRejected(tx);
+    if (flowVersion) return flowVersion;
     const anchored = checkAdmitAnchor(tx, Number(t?.height || 0) + 1);
     if (!anchored.ok) return anchored;
     const book = emptyMempool();

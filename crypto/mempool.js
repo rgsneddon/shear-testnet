@@ -13,7 +13,7 @@ import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, explicitTypedKindRejected, openingBeforeCarry } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
-import { verifyTypedAdmitFunding, checkAdmitAnchor, typedKindNeedsAdmitV3 } from './admit_v3.js';
+import { verifyTypedAdmitFunding, checkAdmitAnchor, typedKindNeedsAdmitV3, v12FlowVersionRejected } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -121,6 +121,11 @@ export function admitMempool(pool, tx, opts = {}) {
     const link = sealedVinLinkField(v);
     if (link) return { ok: false, reason: 'vin_link' };
   }
+  // A presented flow proof whose byte is not 3, or a byte-3 proof with no
+  // anchor, is admit_version before membership or range. A send with no
+  // proof still fails vin_link or range_proof on the path above and below.
+  const flowVersion = v12FlowVersionRejected(tx);
+  if (flowVersion) return flowVersion;
   // Bind a presented Flow membership before the range check. An unbound
   // commit or proof is admit_membership. An address-only vin with no proof
   // still fails range_proof. A bound output with no range proof stays range_proof.

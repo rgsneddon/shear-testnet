@@ -256,6 +256,7 @@ export async function sealBalanced(store, payer, opts = {}) {
   if (built.need > built.fee) return { ok: false, reason: 'levy', need: built.need, fee: built.fee };
   const tpl = templateOn(store, { miner: payer.dest, txs: [built.wire] });
   const nextPot = retainNote(potOutput(tpl));
+  // A byte-2 flow proof is admit_version. The leaf is not published.
   const got = await appendTpl(store, tpl);
   const tip = got.ok ? store.tip() : null;
   const leaves = tip?.bLeaves || [];

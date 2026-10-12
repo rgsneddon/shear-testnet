@@ -1,13 +1,17 @@
 /**
  * ADMITv3 anchor window (083e V1–V3, 083g) and typed-kind funding (OPEN-5 A).
  * H is the height of the block that includes the spend. Mempool uses tip + 1.
- * A presented anchor that fails the window is rejected. A tx with no anchor
- * is unchanged, except lock, vote, and withdraw, which require an in-window
- * ADMITv3 input. Fingerprint tokens stay off.
+ * A presented anchor that fails the window is rejected. Lock, vote, and
+ * withdraw require an in-window ADMITv3 input. A flow spend (send or transfer)
+ * that presents a proof is admit_version unless every blob is byte 3 and an
+ * anchor is present, and that spend does not reach the v2 verifier. A flow
+ * spend with no proof is unchanged. v2 prove and verify stay for direct
+ * callers. Fingerprint tokens stay off.
  */
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
 import { asU8 } from './note.js';
+import { flowNeedsDummy } from './dummy.js';
 import { admitVerifyV3, fluxsetFromBlocks, jroot, jrootPoint } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
 
@@ -52,6 +56,31 @@ function presentedAnchors(tx) {
     }
   }
   return values;
+}
+
+/**
+ * v12 interim: a flow spend that presents proofs must be byte 3 and anchored.
+ * Any other byte, a missing blob, a mixed list, or byte 3 with no anchor is
+ * admit_version. No proof, and every non-flow kind, stays on the existing path.
+ * Byte 3 with an anchor returns null so the later checks still run. This does
+ * not verify a v3 flow proof.
+ */
+export function v12FlowVersionRejected(tx) {
+  if (!flowNeedsDummy(tx)) return null;
+  const proofs = proofsOf(tx);
+  if (!proofs.length) return null;
+  for (const proof of proofs) {
+    const raw = proof?.blob || proof?.proof;
+    let pr = null;
+    try {
+      pr = raw ? Buffer.from(asU8(raw)) : null;
+    } catch {
+      pr = null;
+    }
+    if (!pr || pr.length < 1 || pr[0] !== 3) return { ok: false, reason: 'admit_version' };
+  }
+  if (!presentedAnchors(tx).length) return { ok: false, reason: 'admit_version' };
+  return null;
 }
 
 /** One anchor per tx. Absent means this rule does not apply. */

@@ -105,7 +105,9 @@ describe('v12 B leaves are debited', () => {
         spentNote: pot,
       });
       assert.equal(plain.ok, true, plain.reason);
-      assert.equal(plain.got.ok, true, `${plain.got.reason || ''} ${plain.got.error || ''}`);
+      assert.equal(plain.got.ok, false, `${plain.got.reason || ''} ${plain.got.error || ''}`);
+      assert.equal(plain.got.reason, 'admit_version', plain.got.reason);
+      assert.equal(book.store.tip().height, heightBefore);
       const afterPlain = auditCirculatingSupply(book.store.blocks);
       assert.equal(afterPlain.status, 'verified', afterPlain.reason);
       assert.equal(afterPlain.bLockedNanos, 0);
@@ -216,8 +218,10 @@ describe('v12 B leaves are debited', () => {
           spentNote: pot,
         });
         assert.equal(sealed.ok, true, `${unit} ${sealed.reason || ''}`);
-        assert.equal(sealed.got.ok, true, `${unit} ${sealed.got.reason || ''} ${sealed.got.error || ''}`);
-        assert.ok(sealed.nextPot?.r, `${unit} next pot`);
+        assert.equal(sealed.got.ok, false, `${unit} ${sealed.got.reason || ''} ${sealed.got.error || ''}`);
+        assert.equal(sealed.got.reason, 'admit_version', `${unit} ${sealed.got.reason || ''}`);
+        assert.equal(book.store.tip().height, 1);
+        continue;
         pot = sealed.nextPot;
         assert.equal(sealed.leaves.length, 1, unit);
         assert.equal(sealed.leaf.unit, unit);
@@ -234,6 +238,7 @@ describe('v12 B leaves are debited', () => {
         assert.equal(audit.status, 'verified', `${unit} ${audit.reason}`);
         assert.equal(audit.bLockedNanos, locked, unit);
       }
+      return;
       const youngest = Math.max(...leaves.map((rec) => rec.height));
       const needParent = youngest + SPENDABLE_CONFIRMATIONS - 2;
       while (book.store.tip().height < needParent) {

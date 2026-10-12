@@ -35,6 +35,7 @@ function mine(tpl) {
     assert.ok(found && found.block, 'pow');
     return {
       header: found.header,
+      height: tpl.height,
       txs: tpl.txs,
       samples: tpl.samples,
       miner: tpl.miner,
@@ -134,7 +135,9 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     });
     const honestBlock = mine(honestTpl);
     const gotOk = verifyBlock(honestBlock, parent, { evmHistory: history });
-    assert.equal(gotOk.ok, true, gotOk.reason);
+    assert.equal(honest.admit_proof.blob[0], 2);
+    assert.equal(gotOk.ok, false);
+    assert.equal(gotOk.reason, 'admit_version', gotOk.reason);
 
     const missing = mkSend({ id: 'missing-proof' });
     signSpendTx(missing, key);
@@ -182,7 +185,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const sampledBlock = mine(sampledTpl);
     const gotSampled = verifyBlock(sampledBlock, parent, { evmHistory: history });
     assert.equal(gotSampled.ok, false);
-    assert.equal(gotSampled.reason, 'admit_membership');
+    assert.equal(gotSampled.reason, 'admit_version');
 
     const fakeIn = sealNote(2 + change + fee, { dest20: Buffer.alloc(20, 9), kind: 'spend-in' });
     const attack = attachDummyOuts({
@@ -219,7 +222,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const attackBlock = mine(attackTpl);
     const gotBad = verifyBlock(attackBlock, parent, { evmHistory: history });
     assert.equal(gotBad.ok, false);
-    assert.equal(gotBad.reason, 'commit_sum');
+    assert.equal(gotBad.reason, 'admit_version');
   });
 
   it('queueTx admits an honest spent-note send and rejects missing proof, sampled subset, and reused spendTag', () => {
@@ -268,7 +271,10 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     }, { spent });
 
     const missing = signSpendTx(body(), key);
-    const missQ = store.queueTx(missing);
+    const missFat = store.queueTx(missing);
+    assert.equal(missFat.ok, false);
+    assert.equal(missFat.reason, 'value_open', missFat.reason);
+    const missQ = store.queueTx(compactTx(missing));
     assert.equal(missQ.ok, false);
     assert.equal(missQ.reason, 'admit_membership');
 
@@ -282,22 +288,32 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     });
     assert.ok(sampled.admit_proof, 'a duplicated leaf still proves, against a different tree');
     signSpendTx(sampled, key);
-    const sampQ = store.queueTx(sampled);
+    const sampFat = store.queueTx(sampled);
+    assert.equal(sampFat.reason, 'value_open', sampFat.reason);
+    const sampQ = store.queueTx(compactTx(sampled));
     assert.equal(sampQ.ok, false);
-    assert.equal(sampQ.reason, 'admit_membership');
+    assert.equal(sampQ.reason, 'admit_version');
 
     const honest = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     signSpendTx(honest, key);
-    const okQ = store.queueTx(honest);
-    assert.equal(okQ.ok, true, okQ.reason);
+    const okFat = store.queueTx(honest);
+    assert.equal(okFat.reason, 'value_open', okFat.reason);
+    const okQ = store.queueTx(compactTx(honest));
+    assert.equal(okQ.reason, 'admit_version', okQ.reason);
+    assert.equal(store.mempool.some((m) => m.id === honest.id), false);
+    const spentHex = Buffer.from(honest.spendTag).toString('hex');
+    assert.equal(store.fluxset().spendTags.has(spentHex), false);
 
     const reuse = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
     reuse.admit_proof.spendTag = honest.admit_proof.spendTag;
     reuse.spendTag = honest.spendTag;
     signSpendTx(reuse, key);
-    const reuseQ = store.queueTx(reuse);
+    const reuseFat = store.queueTx(reuse);
+    assert.equal(reuseFat.reason, 'value_open', reuseFat.reason);
+    const reuseQ = store.queueTx(compactTx(reuse));
     assert.equal(reuseQ.ok, false);
-    assert.equal(reuseQ.reason, 'admit_link_tag');
+    assert.equal(reuseQ.reason, 'admit_version');
+    assert.equal(store.fluxset().spendTags.has(spentHex), false);
   });
 
   it('hex-posted Flow send is in the next template and mined header with admit_proof', () => {
@@ -365,7 +381,13 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
     )));
     const queued = store.queueTx(hexed);
-    assert.equal(queued.ok, true, queued.reason);
+    assert.equal(queued.reason, 'value_open', queued.reason);
+    const hexWire = JSON.parse(JSON.stringify(compactTx(honest), (_, v) => (
+      Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
+    )));
+    const wired = store.queueTx(hexWire);
+    assert.equal(wired.reason, 'admit_version', wired.reason);
+    assert.equal(store.mempool.length, 0);
     const parentH = decodeHeader(Buffer.from(store.tip().header));
     const { tpl } = store.template({
       miner: dest,
@@ -373,26 +395,9 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       now: Number(parentH.timestamp) + 90_000,
     });
     const user = (tpl.txs || []).slice(1);
-    assert.equal(user.length, 1, 'mempool send must be in the next job');
-    assert.equal(user[0].id, 'job-send');
-    assert.ok(user[0].admit_proof);
-    const found = mine(tpl);
-    const got = store.append({
-      header: found.header,
-      txs: tpl.txs,
-      samples: tpl.samples,
-      shareBatch: tpl.shareBatch || [],
-      miner: dest,
-      aLeaves: tpl.aLeaves,
-      bLeaves: tpl.bLeaves,
-      rootA: tpl.rootA,
-      rootB: tpl.rootB,
-    });
-    assert.equal(got.ok, true, got.reason);
-    const onchain = store.blocks.at(-1).txs.find((t) => !t.coinbase);
-    assert.ok(onchain, 'user send on chain');
-    assert.ok(onchain.admit_proof, 'admit_proof persisted');
-    assert.equal(store.mempool.length, 0);
+    assert.equal(user.length, 0);
+    const tag = Buffer.from(honest.spendTag).toString('hex');
+    assert.equal(store.fluxset().spendTags.has(tag), false);
   });
 
   it('named reject reasons: range stub, no members list, she1 silent_id', () => {
@@ -447,7 +452,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const stubBlock = mine(stubTpl);
     const gotStub = verifyBlock(stubBlock, parent, { evmHistory: [parent] });
     assert.equal(gotStub.ok, false);
-    assert.equal(gotStub.reason, 'range_proof');
+    assert.equal(gotStub.reason, 'admit_version');
 
     const honest = attachDummyOuts({
       id: 'sealed-ring',

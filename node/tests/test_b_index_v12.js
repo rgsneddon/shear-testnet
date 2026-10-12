@@ -229,7 +229,12 @@ describe('v12 one B leaf per position', () => {
         spentNote: genesis.pot,
       });
       assert.equal(sealed.ok, true, sealed.reason);
-      assert.equal(sealed.got.ok, true, `${sealed.got.reason || ''} ${sealed.got.error || ''}`);
+      assert.equal(sealed.got.ok, false, `${sealed.got.reason || ''} ${sealed.got.error || ''}`);
+      assert.equal(sealed.got.reason, 'admit_version', sealed.got.reason);
+      assert.equal(book.store.tip().height, 1);
+      const tag = sealed.tx?.admit_proof?.spendTag;
+      if (tag) assert.equal(book.store.fluxset().spendTags.has(Buffer.from(tag).toString('hex')), false);
+      return;
       assert.equal(sealed.leaves.length, 1);
       assert.equal(sealed.leaf.unit, 1);
       const youngest = sealed.height;

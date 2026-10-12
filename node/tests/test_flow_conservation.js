@@ -2,12 +2,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
-import { sealNote } from '../../crypto/note.js';
+import { sealNote, verifyFlowConservation } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
-import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED, nextBits } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED, asertNextBits } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { levyNanos } from '../../crypto/levy.js';
-import { fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
+import { admitVerify, fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -21,6 +21,7 @@ function mine(tpl) {
   powTag += 1;
   return {
     header: tpl.header,
+    height: tpl.height,
     txs: tpl.txs,
     samples: tpl.samples,
     miner: tpl.miner,
@@ -99,7 +100,14 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       header: parent.header,
       height: 1,
     }, trust(honestBlock));
-    assert.equal(gotOk.ok, true, gotOk.reason);
+    assert.equal(honest.admit_proof.blob[0], 2);
+    assert.equal(admitVerify(honest.admit_proof, liveJ, {
+      cTilde: honest.admit_proof.cTilde,
+      spendTag: honest.admit_proof.spendTag,
+    }), true);
+    assert.equal(verifyFlowConservation(honest), true);
+    assert.equal(gotOk.ok, false);
+    assert.equal(gotOk.reason, 'admit_version', gotOk.reason);
 
     const fakeIn = sealNote(2 + change + fee, { dest20: Buffer.alloc(20, 9), kind: 'spend-in' });
     const attack = attachDummyOuts({
@@ -119,14 +127,26 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent: fakeIn });
+    const attackNow = 1_700_000_180_000;
+    const parentTs = Number(decodeHeader(parent.header).timestamp);
+    const attackQuote = asertNextBits({
+      anchorBits: GENESIS_BITS_PACKED,
+      anchorTimeMs: parentTs,
+      anchorHeight: 1,
+      blockTimeMs: attackNow,
+      blockHeight: 2,
+      parentTimeMs: parentTs,
+    });
+    assert.equal(attackQuote.ok, true, attackQuote.reason);
     const attackTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: nextBits(decodeHeader(parent.header).bits, 90_000),
-      now: 1_700_000_180_000,
+      bits: attackQuote.packed,
+      now: attackNow,
       txs: [compactTx(attack)],
+      prevBlock: parent,
     });
     const attackBlock = mine(attackTpl);
     const gotBad = verifyBlock(attackBlock, {

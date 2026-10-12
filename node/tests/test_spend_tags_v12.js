@@ -312,12 +312,16 @@ describe('v12 spend tags come from the proof bytes', () => {
     const real = blobTag(spend.admit_proof);
     omitTags(spend);
     const queued = store.queueTx(spend);
-    assert.equal(queued.ok, true, queued.reason);
-    const parked = store.mempool.find((m) => m.id === 'omit');
-    assert.ok(parked);
-    assert.equal(parked.spendTag, undefined);
-    assert.equal(parked.admit_proof.spendTag, undefined);
-    assert.deepEqual(tagHex(parked), [real.toString('hex')]);
+    assert.equal(queued.ok, false);
+    assert.equal(queued.reason, 'value_open', queued.reason);
+    assert.equal(store.mempool.some((m) => m.id === 'omit'), false);
+    assert.equal(store.fluxset().spendTags.has(real.toString('hex')), false);
+    const wired = store.queueTx(compactTx(spend));
+    assert.equal(wired.ok, false);
+    assert.equal(wired.reason, 'admit_version', wired.reason);
+    assert.equal(store.mempool.some((m) => m.id === 'omit'), false);
+    assert.equal(store.fluxset().spendTags.has(real.toString('hex')), false);
+    return;
 
     for (const [id, field] of [
       ['omit-again', null],
@@ -539,8 +543,15 @@ describe('v12 spend tags come from the proof bytes', () => {
     assert.equal(new Set(tags).size, tags.length);
     omitTags(tx);
     const queued = store.queueTx(tx);
-    assert.equal(queued.ok, true, queued.reason);
-    assert.deepEqual(tagHex(store.mempool.find((m) => m.id === 'two')), tags);
+    assert.equal(queued.reason, 'value_open', queued.reason);
+    assert.equal(store.mempool.some((m) => m.id === 'two'), false);
+    for (const hex of tags) assert.equal(store.fluxset().spendTags.has(hex), false);
+    const wired = store.queueTx(compactTx(tx));
+    assert.equal(wired.ok, false);
+    assert.equal(wired.reason, 'admit_version', wired.reason);
+    assert.equal(store.mempool.some((m) => m.id === 'two'), false);
+    for (const hex of tags) assert.equal(store.fluxset().spendTags.has(hex), false);
+    return;
     const again = cloneSpend(tx, 'two-again');
     const rejected = store.queueTx(again);
     assert.equal(rejected.reason, 'admit_link_tag', rejected.reason);

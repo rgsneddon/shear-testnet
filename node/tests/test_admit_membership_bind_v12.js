@@ -22,7 +22,7 @@ import {
   verifyFlowConservation,
 } from '../../crypto/note.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
-import { leanBlock } from '../../crypto/chronoflux.js';
+import { compactTx, leanBlock } from '../../crypto/chronoflux.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { admitProve, admitScalarFromSeed, fluxsetIndexOf } from '../../crypto/admit.js';
 import { signSpendTx } from '../../crypto/spend.js';
@@ -212,24 +212,27 @@ describe('v12 membership proofs are bound 1:1', () => {
         assert.equal(flowInputsBound(tx).reason, 'admit_membership', tx.id);
         const queued = store.queueTx(tx);
         assert.equal(queued.ok, false, tx.id);
-        assert.equal(queued.reason, 'admit_membership', tx.id);
+        assert.equal(queued.reason, 'value_open', tx.id);
         const book = emptyMempool();
         const parked = admitMempool(book, tx, {
           baseFee: 1,
           fluxset: store.fluxset(),
           spendTags: store.fluxset().spendTags,
         });
-        assert.equal(parked.reason, 'admit_membership', tx.id);
+        assert.equal(parked.reason, 'value_open', tx.id);
         assert.equal(book.txs.length, 0, tx.id);
         const { tpl } = store.template({ miner: dest, shareBits: 4, now: T0 + 4 * 90_000 });
         assert.ok(!(tpl.txs || []).some((row) => row && row.id === tx.id), tx.id);
         const block = withTxs(tpl, tpl.txs.concat([tx]));
         const raw = await probe(block);
         assert.equal(raw.ok, false, tx.id);
-        assert.equal(raw.reason, 'admit_membership', `${tx.id} ${raw.reason}`);
+        assert.equal(raw.reason, 'value_open', `${tx.id} ${raw.reason}`);
         const lean = await probe(withTxs(block, leanBlock(block).txs));
-        assert.equal(lean.ok, raw.ok, tx.id);
-        assert.equal(lean.reason, raw.reason, `${tx.id} lean ${lean.reason}`);
+        assert.equal(lean.ok, false, tx.id);
+        assert.equal(lean.reason, 'admit_version', `${tx.id} lean ${lean.reason}`);
+        const wired = store.queueTx(compactTx(tx));
+        assert.equal(wired.ok, false, tx.id);
+        assert.equal(wired.reason, 'admit_version', `${tx.id} wire ${wired.reason}`);
       }
       assert.equal(store.tip().height, tipBefore);
       assert.equal(store.fluxset().spendTags.has(victim), false);
@@ -249,22 +252,26 @@ describe('v12 membership proofs are bound 1:1', () => {
             ...shapes[s](victimProof),
           };
           if (kind === 'coinbase') tx.coinbase = true;
+          // A refused kind is kind before the carry. b-spend and coinbase still
+          // reject the unbound proof or tag as admit_membership.
+          const want = (kind === 'b-spend' || kind === 'coinbase') ? 'admit_membership' : 'kind';
           const queued = store.queueTx(tx);
-          assert.equal(queued.reason, 'admit_membership', tx.id);
+          assert.equal(queued.reason, want, `${tx.id} ${queued.reason}`);
           const parked = admitMempool(emptyMempool(), tx, {
             baseFee: 1,
             fluxset: store.fluxset(),
           });
-          assert.equal(parked.reason, 'admit_membership', tx.id);
+          assert.equal(parked.reason, want, `${tx.id} ${parked.reason}`);
         }
       }
       for (const kind of ['b-spend', 'vortice-register', 'evm-value']) {
         const tx = { id: `body-${kind}`, kind, admit_proof: victimProof };
         const { tpl } = store.template({ miner: dest, shareBits: 4, now: T0 + 4 * 90_000 });
         const raw = await probe(withTxs(tpl, tpl.txs.concat([tx])));
-        assert.equal(raw.reason, 'admit_membership', `${kind} ${raw.reason}`);
+        const want = kind === 'b-spend' ? 'admit_membership' : 'kind';
+        assert.equal(raw.reason, want, `${kind} ${raw.reason}`);
         const lean = await probe(withTxs(tpl, leanBlock({ ...asBlock(tpl), txs: tpl.txs.concat([tx]) }).txs));
-        assert.equal(lean.reason, raw.reason, kind);
+        assert.equal(lean.reason, raw.reason, `${kind} lean ${lean.reason}`);
       }
       const { tpl: coinTpl } = store.template({ miner: dest, shareBits: 4, now: T0 + 4 * 90_000 });
       assert.equal(coinTpl.txs[0].coinbase, true);
@@ -288,32 +295,28 @@ describe('v12 membership proofs are bound 1:1', () => {
       const verified = new Set();
       for (const tx of honest) {
         const queued = store.queueTx(tx);
-        assert.equal(queued.ok, true, `${tx.id} ${queued.reason || ''}`);
+        assert.equal(queued.reason, 'value_open', `${tx.id} ${queued.reason || ''}`);
+        assert.equal(store.mempool.some((m) => m.id === tx.id), false);
         for (const tag of txSpendTags(tx).tags) verified.add(tag.toString('hex'));
       }
       assert.equal(verified.has(victim), true);
       assert.equal(verified.size, notes.length);
+      for (const tag of verified) assert.equal(store.fluxset().spendTags.has(tag), false, tag);
       const { tpl } = store.template({ miner: dest, shareBits: 4, now: T0 + 5 * 90_000 });
       const ids = new Set((tpl.txs || []).map((tx) => tx && tx.id).filter(Boolean));
-      for (const tx of honest) assert.equal(ids.has(tx.id), true, tx.id);
+      for (const tx of honest) assert.equal(ids.has(tx.id), false, tx.id);
       for (const tx of attacks) assert.equal(ids.has(tx.id), false, tx.id);
-      const honestBlock = asBlock(tpl);
-      const rawOk = await probe(honestBlock);
-      assert.equal(rawOk.ok, true, rawOk.reason);
-      const leanOk = await probe(withTxs(honestBlock, leanBlock(honestBlock).txs));
-      assert.equal(leanOk.ok, true, leanOk.reason || 'lean');
-      const sealed = await Promise.resolve(store.append(honestBlock, {
-        trustedPowHash: easyPowHash(),
-        skipSharePow: true,
-      }));
-      assert.equal(sealed.ok, true, `${sealed.reason || 'append'} ${sealed.error || ''}`);
-      const persisted = store.fluxset().spendTags;
-      assert.equal(persisted.size, verified.size);
-      for (const tag of verified) assert.equal(persisted.has(tag), true, tag);
+      const forced = withTxs(tpl, tpl.txs.concat(honest));
+      const rawOk = await probe(forced);
+      assert.equal(rawOk.reason, 'value_open', rawOk.reason);
+      const leanOk = await probe(withTxs(forced, leanBlock(forced).txs));
+      assert.equal(leanOk.reason, 'admit_version', leanOk.reason || 'lean');
+      const wireOk = store.queueTx(compactTx(honest[0]));
+      assert.equal(wireOk.reason, 'admit_version', wireOk.reason || 'wire');
+      assert.equal(store.mempool.some((m) => m.id === honest[0].id), false);
+      for (const tag of verified) assert.equal(store.fluxset().spendTags.has(tag), false, tag);
       const again = createStore(dir);
-      const reloaded = again.fluxset().spendTags;
-      assert.equal(reloaded.size, verified.size);
-      for (const tag of verified) assert.equal(reloaded.has(tag), true, tag);
+      for (const tag of verified) assert.equal(again.fluxset().spendTags.has(tag), false, tag);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

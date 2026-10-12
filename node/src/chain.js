@@ -73,7 +73,7 @@ import {
   jroot as jrootOf,
   extendZeroRoot,
 } from '../../crypto/admit.js';
-import { ANCHOR_WINDOW, checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
+import { ANCHOR_WINDOW, checkAdmitAnchor, typedKindNeedsAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
@@ -2205,6 +2205,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (open) return open;
     const leafAsk = bLeafAskRejected(tx);
     if (leafAsk) return leafAsk;
+    // Flow byte 0 is classified before the anchor window, so a v2 blob is not
+    // saved by an anchor and does not reach the v2 verifier.
+    const flowVersion = v12FlowVersionRejected(tx);
+    if (flowVersion) return flowVersion;
     const anchored = checkAdmitAnchor(tx, height);
     if (!anchored.ok) return anchored;
     const clockField = typedClockRejected(tx);
