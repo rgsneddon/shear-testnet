@@ -69,7 +69,7 @@ import {
   vaultSealBanner,
 } from '../../crypto/vault_seal.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
@@ -2209,6 +2209,10 @@ export function createStore(dir, {
     }
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
+    // A refused kind that spends a note without a signature is unsigned.
+    // A signed refused kind, and a refused kind with no note, stay kind.
+    const unsignedNote = unsignedRefusedSpend(tx);
+    if (unsignedNote) return unsignedNote;
     // A refused kind returns kind before an unbound proof, tag, or commit vin
     // is membership. Lock, vote, and withdraw still fail that vin as
     // admit_membership. The custodial_pull gate above stays first.

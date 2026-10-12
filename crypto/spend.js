@@ -421,6 +421,20 @@ export function v12KindRejected(tx) {
   return null;
 }
 
+/**
+ * A refused kind that spends a note without a signature is unsigned.
+ * A missing signature is not a permanent kind failure.
+ * A refused kind with no note, or with a valid signature, stays kind.
+ */
+export function unsignedRefusedSpend(tx) {
+  if (!tx || tx.coinbase) return null;
+  if (!v12KindRejected(tx)) return null;
+  if (!vinCarriesNote(tx)) return null;
+  if (!flowSendNeedsOpen(tx)) return null;
+  if (verifySpendSig(tx)) return null;
+  return { ok: false, reason: 'unsigned' };
+}
+
 const EXPLICIT_OUTPUT_KINDS = new Set(['lock', 'vote', 'withdraw']);
 
 /**
