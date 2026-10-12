@@ -46,17 +46,23 @@ Future<void> main() async {
   // must put that digit string in the batch, off this isolate.
   const above = '9007199254740993';
   final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
+  // A coin the selector may spend has a sealed commit, a note commit, and
+  // an opening. An amount with only one of those stays out of the pay set.
   ledger.rememberNote(<String, dynamic>{
     'address': dest,
     'dest': dest,
     'nanos': above,
     'commit': Uint8List(32)..[0] = 11,
+    'noteCommit': Uint8List(32)..[0] = 21,
+    'r': Uint8List(32)..[0] = 31,
   });
   ledger.rememberNote(<String, dynamic>{
     'address': dest,
     'dest': dest,
     'nanos': '100000000000',
     'commit': Uint8List(32)..[1] = 12,
+    'noteCommit': Uint8List(32)..[1] = 22,
+    'r': Uint8List(32)..[1] = 32,
   });
   await ledger.quoteSendLevyUnits(
     restFrame: id.address,
