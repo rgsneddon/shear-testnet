@@ -138,7 +138,7 @@ describe('observed interval', () => {
     assert.match(src, /setInterval\(maybeRestampJob/);
     assert.match(src, /restampJob: restampLiveHeader/);
     const body = src.slice(src.indexOf('function maybeRestampJob'), src.indexOf('function resolveSubmitJob'));
-    assert.match(body, /decoded\.bits === wantBits/);
+    assert.match(body, /Number\(decoded\.bits\) === Number\(wantBits\)/);
     assert.equal(/liveInt === jobInt/.test(body), false);
     assert.equal(/issueJob\(undefined, \{ force: true \}\)/.test(body), false);
     assert.equal(/if \(hashWait\.size > 0\) return lastJob/.test(src), false);
@@ -765,10 +765,13 @@ function findOkShare(job, max = 25_000n, dest = '') {
   throw new Error('no_share');
 }
 
-function findOkShares(job, n, max = 25_000n) {
+function findOkShares(job, n, max = 25_000n, dest = '') {
+  const bits = Number(job?.shareBits);
+  const legal = Number.isInteger(bits) && bits > 0;
   const out = [];
-  for (let nonce = 0n; nonce < max && out.length < n; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+  for (let i = 0n; i < max && out.length < n; i += 1n) {
+    const nonce = legal ? nonceWithShareTarget(i, bits) : i;
+    const s = scoreShare({ job, nonce, dest: dest || undefined });
     if (s.ok) out.push({ nonce, s });
   }
   if (out.length < n) throw new Error('no_share');
@@ -813,7 +816,7 @@ function loginAndShare(port, login, extra = {}, hit = null) {
           job.bits = Number(job.bits || job.blockBits || 16);
           job.blockBits = Number(job.blockBits || job.bits || 16);
           try {
-            const use = hit || findOkShare(job);
+            const use = hit || findOkShare(job, 25_000n, destForLogin(login) || '');
             sock.write(JSON.stringify({
               id: 2,
               method: 'submit',
@@ -1217,7 +1220,7 @@ describe('public miner listing', () => {
     const stratumPort = pool.stratum.address().port;
     try {
     const job = pool.issueJob();
-    const hits = findOkShares(job, 2);
+    const hits = findOkShares(job, 2, 25_000n, dest);
     const a = await loginAndShare(stratumPort, `${dest}.alpha`, {}, hits[0]);
     const b = await loginAndShare(stratumPort, `${dest}.beta`, {}, hits[1]);
     await new Promise((r) => setTimeout(r, STATS_REFRESH_MS + 100));
@@ -1284,7 +1287,7 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const job = pool.issueJob();
-    const hit = findOkShare(job);
+    const hit = findOkShare(job, 25_000n, dest);
     const sock = await loginAndShare(pool.stratum.address().port, `${dest}.rig`, {
       hashes: 16_590_151_266_784,
       hashrate: 1_062_582_824,

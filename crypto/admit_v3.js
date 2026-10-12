@@ -138,6 +138,34 @@ function proofsOf(tx) {
   return out;
 }
 
+/** Bytes of a versioned blob. Null means this object is not a versioned proof. */
+function presentedProofBytes(proof) {
+  if (!proof || typeof proof !== 'object') return null;
+  const raw = proof.blob != null ? proof.blob : proof.proof;
+  if (raw == null || raw === false || raw === '') return null;
+  try {
+    return Buffer.from(asU8(raw));
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+/**
+ * A Flow membership shape binds cTilde and a spend tag and carries no proof
+ * bytes. An empty blob, a bad byte, or a mix with a versioned blob is not one.
+ */
+export function membershipShapeOnly(tx) {
+  if (!flowNeedsDummy(tx)) return false;
+  const proofs = proofsOf(tx);
+  if (!proofs.length) return false;
+  for (const proof of proofs) {
+    if (presentedProofBytes(proof)) return false;
+    if (!proof || proof.cTilde == null) return false;
+    if (proof.spendTag == null || proof.spendTag === '') return false;
+  }
+  return true;
+}
+
 /** SHA-256 digest bound into the v3 transcript. Portal id, program, payout portal, and each output dest20 are included so a relay cannot retarget them. The address string is not sealed, so it is not hashed. */
 export function txDigestV3(tx, magic = MAGIC_TESTNET) {
   const kind = String(tx?.kind || '');

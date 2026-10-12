@@ -13,7 +13,7 @@ import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
-import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected } from './admit_v3.js';
+import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -124,16 +124,20 @@ export function admitMempool(pool, tx, opts = {}) {
     if (link) return { ok: false, reason: 'vin_link' };
   }
   // A presented flow proof whose byte is not 3, or a byte-3 proof with no
-  // anchor, is admit_version before membership or range. A send with no
-  // proof still fails vin_link or range_proof on the path above and below.
+  // anchor, is admit_version before membership or range. A membership shape
+  // (cTilde and a spend tag, no blob) is not a versioned proof: the policy
+  // book binds it and does not call the v3 verifier. Consensus still rejects
+  // that shape as admit_version. A send with no proof still fails vin_link
+  // or range_proof on the path above and below.
+  const shapeOnly = membershipShapeOnly(tx);
   const flowVersion = v12FlowVersionRejected(tx);
-  if (flowVersion) return flowVersion;
+  if (flowVersion && !shapeOnly) return flowVersion;
   // Same v3 verifier as consensus. A bad byte-3 proof is not saved by a
   // missing range proof, and it never reaches admit_verify.
   const flowSelf = String(tx?.id || '');
   const flowSpent = spentView(book, opts, flowSelf);
   let flowV3Done = false;
-  if (flowNeedsDummy(tx) && flowPresentsProof(tx)) {
+  if (flowNeedsDummy(tx) && flowPresentsProof(tx) && !shapeOnly) {
     const flowProof = verifyFlowAdmitV3(tx, {
       height: Number(opts.height || 0),
       blocks: opts.blocks || [],

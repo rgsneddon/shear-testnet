@@ -35,7 +35,7 @@ import {
   HASH_QUEUE_MAX,
   HASH_INFLIGHT_PER_CONN,
 } from '../src/pool.js';
-import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM, HASH_BONUS_NANOS, NANOS_PER_SHE, SHEARK_MINER_VERSION } from '../../crypto/asert.js';
+import { extraMintAllowed, RESERVE_PROGRAM, JOIN_PROGRAM, HASH_BONUS_NANOS, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { pendingFor } from '../src/wallet_api.js';
 import { hasherHasValidRoundShare, clientHashCreditForbidden } from '../src/hash_credit.js';
 import { expectedOneThreadHs, hashesProvenByShare } from '../src/share_vardiff.js';
