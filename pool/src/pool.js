@@ -1056,6 +1056,22 @@ export function rememberOpenShare(openShares, rec) {
   return { ok: true, list };
 }
 
+/**
+ * Keep a scored share only when this header and nonce are unbound, or already
+ * bound to this same note and width. A second dest on that nonce is share_pow
+ * and is not added to the round. Callers must not count a failed result.
+ */
+export function bindAcceptedShare(openShares, rec) {
+  const header = rec?.verifiedHeader || rec?.header;
+  const bound = rememberLiveSharePow(header, rec?.nonce, {
+    noteCommit: noteCommitOfShare(rec),
+    shareBits: rec?.shareBits,
+    lz: rec?.lz,
+  });
+  if (!bound) return { ok: false, reason: 'share_pow', list: openShares };
+  return rememberOpenShare(openShares, rec);
+}
+
 export function makeLoginChallenge() {
   return randomBytes(16).toString('hex');
 }
@@ -3419,13 +3435,8 @@ export function createPool({
   }
 
   function creditAcceptedShare(rec) {
-    const opened = rememberOpenShare(openShares, rec);
+    const opened = bindAcceptedShare(openShares, rec);
     if (opened.ok) {
-      rememberLiveSharePow(rec.verifiedHeader || rec.header, rec.nonce, {
-        noteCommit: noteCommitOfShare(rec),
-        shareBits: rec.shareBits,
-        lz: rec.lz,
-      });
       // One new pin. Rebuilding every open, lag-1, and template key here is
       // quadratic in the round, so a full cap never finishes inside a block.
       const pinned = sharePinKey(rec, store.tip()?.header || rec.verifiedHeader || rec.header || null);
@@ -4178,26 +4189,30 @@ export function createPool({
         return;
       }
     }
+    const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
+    const creditedBits = Number(scored.creditedShareBits) || 0;
+    if (session && isDestAddress(destPay) && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
+      const rec = {
+        dest: destPay,
+        dest20: hash20FromAddress(destPay),
+        nonce: BigInt(params.nonce),
+        hash: String(scored.hash || ''),
+        jobId: String(job?.jobId || ''),
+        lz: Number(scored.bitsMet) & 0xff,
+        shareBits: creditedBits,
+        verifiedHeader: Buffer.isBuffer(scored.header)
+          ? scored.header.toString('hex').toLowerCase()
+          : String(job?.header || '').toLowerCase(),
+      };
+      const opened = creditAcceptedShare(rec);
+      if (!opened.ok) {
+        rejectSubmit(sock, session, msg, opened.reason || 'share_pow');
+        return;
+      }
+    }
     stats.accepted += 1;
     if (session) {
       session.accepted += 1;
-      const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
-      const creditedBits = Number(scored.creditedShareBits) || 0;
-      if (isDestAddress(destPay) && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
-        const rec = {
-          dest: destPay,
-          dest20: hash20FromAddress(destPay),
-          nonce: BigInt(params.nonce),
-          hash: String(scored.hash || ''),
-          jobId: String(job?.jobId || ''),
-          lz: Number(scored.bitsMet) & 0xff,
-          shareBits: creditedBits,
-          verifiedHeader: Buffer.isBuffer(scored.header)
-            ? scored.header.toString('hex').toLowerCase()
-            : String(job?.header || '').toLowerCase(),
-        };
-        creditAcceptedShare(rec);
-      }
       const credited = Number(scored.creditedShareBits || 0);
       const proven = credited > 0 ? hashesProvenByShare(credited) : 0;
       if (!closedRound && proven > 0) {
