@@ -18,13 +18,13 @@ import { roundActualHashes } from '../../pool/src/hash_credit.js';
 import { hashesCreditedForShare } from '../../pool/src/share_vardiff.js';
 import {
   buildTemplate,
-  mineTemplate,
   verifyBlock,
   GENESIS_PREV,
   coinbaseTx,
   digestTx,
   hashBonusByMiner,
 } from '../src/chain.js';
+import { mineHeaderParallel, mineLaneCount } from './hash_bonus_mine_pool.js';
 import { shareSlotRoot } from '../../crypto/pack.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
@@ -45,8 +45,9 @@ function childBits(parent, now) {
 }
 
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
+  // Same 3_000_000 nonce cap, split across the cores on this machine.
+  const found = mineHeaderParallel(tpl.header, tpl.bits, 3_000_000);
+  assert.ok(found && found.block, `pow lanes=${mineLaneCount()}`);
   return {
     header: found.header,
     txs: tpl.txs,
