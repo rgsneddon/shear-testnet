@@ -598,6 +598,12 @@ describe('v12 empty round carries the pot to the next proven round', () => {
 
     function prove(parent, batch, rows, now, miner, parents) {
       const height = parent.block.height + 1;
+      // Work with no parent job is unslotted. Verify then sees an empty
+      // batch and does not apply the subsidy-fee check.
+      const onJob = (batch || []).map((row) => ({
+        ...row,
+        verifiedHeader: Buffer.from(parent.block.header),
+      }));
       const tpl = buildTemplate({
         prev: parent.res.hash,
         prevHeader: parent.block.header,
@@ -607,7 +613,7 @@ describe('v12 empty round carries the pot to the next proven round', () => {
         bits: bitsAfter(parent, now, height),
         now,
         potShares: rows,
-        shareBatch: batch,
+        shareBatch: onJob,
         poolDest: feeTo,
       });
       return sealTpl(tpl, { ...parent.block, hash: parent.res.hash }, now, parents);
