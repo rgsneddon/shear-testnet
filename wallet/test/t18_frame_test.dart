@@ -59,7 +59,8 @@ void main() {
     ledger.viewSecret = ident.viewKey;
     ledger.confirmRound(address: ident.address, pot: 2, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations);
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final bobId = createIdentity();
+    final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(bobId.address, paymentCode: bobId.paymentCode);
 
     await tester.pumpWidget(ShearWalletApp(
       session: session,
@@ -178,7 +179,8 @@ void main() {
       final idleMax = idle.reduce((a, b) => a > b ? a : b);
       final budgetUs = idleMax + kSendFrameSlack.inMicroseconds;
 
-      final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+      final bobId = createIdentity();
+      final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(bobId.address, paymentCode: bobId.paymentCode);
       await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), bob);
       final typed = Stopwatch()..start();
       await tester.enterText(find.byKey(const Key('flow-amount')), '0.2');

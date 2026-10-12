@@ -662,6 +662,10 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
   final to = flags['to'];
   final amtRaw = flags['amount'];
   if (to == null || to.isEmpty) throw const FormatException('send needs --to she1… or ssa1… or shear1…');
+  if (isUnpayableSsa1(to)) {
+    err.writeln(kErrShortSsa1);
+    return 2;
+  }
   if (amtRaw == null) throw const FormatException('send needs --amount');
   final amount = double.parse(amtRaw);
   final session = _session(flags);

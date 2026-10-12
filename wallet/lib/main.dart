@@ -2153,6 +2153,20 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       return;
     }
     if (raw == null || raw.isEmpty) return;
+    if (isUnpayableSsa1(raw)) {
+      var shown = raw.trim();
+      if (shown.startsWith('shear:')) shown = shown.substring(6).trim();
+      if (shown.startsWith('shear1:')) shown = shown.substring(7).trim();
+      flowTo.text = shown;
+      _noteFlowTo(shown);
+      if (mounted) setState(() {});
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(kErrShortSsa1)),
+        );
+      }
+      return;
+    }
     final got = parseReceiveQr(raw);
     if (got == null) {
       if (context.mounted) {
@@ -2850,6 +2864,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         decoration: const InputDecoration(labelText: 'To (she1, ssa1, or shear1)'),
         onChanged: (v) => setState(() => _noteFlowTo(v)),
       ),
+      if (isUnpayableSsa1(flowTo.text)) ...[
+        const SizedBox(height: 8),
+        const Text(kErrShortSsa1, key: Key('flow-short-ssa1')),
+      ],
       if (_spentDestWarn != null) ...[
         const SizedBox(height: 8),
         Text(_spentDestWarn!, key: const Key('spent-dest-warn')),
@@ -2866,6 +2884,21 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onPressed: () async {
           final data = await Clipboard.getData('text/plain');
           final raw = data?.text ?? '';
+          if (isUnpayableSsa1(raw)) {
+            var shown = raw.trim();
+            if (shown.startsWith('shear:')) shown = shown.substring(6).trim();
+            if (shown.startsWith('shear1:')) shown = shown.substring(7).trim();
+            setState(() {
+              flowTo.text = shown;
+              _noteFlowTo(shown);
+            });
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text(kErrShortSsa1)),
+              );
+            }
+            return;
+          }
           final next = applyReceiveQrTo(flowTo.text, raw);
           if (next == flowTo.text) {
             final copy = receiveQrFailCopy(raw);
@@ -2902,7 +2935,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         Text(_flowProgressText!, key: const Key('flow-send-progress')),
       FilledButton(
         key: const Key('flow-send'),
-        onPressed: _flowSending
+        onPressed: _flowSending || isUnpayableSsa1(flowTo.text)
             ? null
             : () async {
           if (sidecar.sendBlocked && !walletAtTip(_syncLabel)) {

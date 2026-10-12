@@ -984,12 +984,18 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
       continue;
     }
     final addr = (o['address'] as String?) ?? destTo;
+    final self = addr.isNotEmpty && (addr == src || (changeDest != null && addr == changeDest));
+    if (!self && !isPayableDest(addr)) {
+      throw StateError(kErrShortSsa1);
+    }
     final units = tryU64Units(o['nanos']) ?? BigInt.zero;
     final d20 = hash20FromAddress(addr);
     var note = nativeSealUnits(units, dest20: d20, kind: kind);
     if (addr.isNotEmpty) note['address'] = addr;
-    final B = admitBaseFromAddress(addr) ??
-        ((addr == src || addr == changeDest) ? fallbackBase : null);
+    final opened = admitBaseFromAddress(addr);
+    final baseOk = opened != null && opened.length == 32 && isPayableDest(addr);
+    final B = baseOk ? opened : (self ? fallbackBase : null);
+    if (!self && B == null) throw StateError(kErrShortSsa1);
     note = attachAdmitPub(
       note,
       admitBase: B != null ? pointFrom(B) : null,
@@ -1914,7 +1920,7 @@ class PaintedBookMark {
 
 bool continuumPayable(String raw) {
   final s = raw.trim();
-  return isFullPaymentCode(s) || isDestAddress(s);
+  return isFullPaymentCode(s) || isPayableDest(s);
 }
 
 /// Flow send from its start state. A fingerprint or other short address is
@@ -1938,7 +1944,8 @@ Future<ContinuumSendResult> submitContinuumSend({
 }) async {
   final candidate = enteredTo.trim();
   if (!continuumPayable(candidate)) {
-    return ContinuumSendResult(posted: false, to: startTo, remark: kErrShortShe1);
+    final remark = isUnpayableSsa1(candidate) ? kErrShortSsa1 : kErrShortShe1;
+    return ContinuumSendResult(posted: false, to: startTo, remark: remark);
   }
   if (amount <= 0 && (nanosWire == null || nanosWire.isEmpty)) {
     return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
@@ -2161,6 +2168,9 @@ String flowSendAdvisoryOf(Object error) {
   }
   if (msg.contains(kErrPayIdentity) || msg.contains('pay this identity')) {
     return kErrPayIdentity;
+  }
+  if (msg.contains(kErrShortSsa1) || msg.contains('old short form')) {
+    return kErrShortSsa1;
   }
   if (msg.contains(kErrShortShe1) ||
       msg.contains('not fingerprint') ||

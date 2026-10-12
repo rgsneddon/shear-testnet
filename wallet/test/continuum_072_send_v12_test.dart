@@ -100,7 +100,10 @@ void main() {
         ledger: ledger,
         restFrame: 'she1rest',
         startTo: '',
-        enteredTo: kPoolFeeDest,
+        enteredTo: encodeDestAddress(
+          Uint8List.fromList(List.filled(20, 4)),
+          admitBaseBytes(Uint8List.fromList(List.generate(32, (i) => i + 1))),
+        ),
         amount: 1,
         nanosWire: wire,
       );

@@ -15,7 +15,7 @@ import {
   stealthSign,
 } from './stealth_ed25519.js';
 import { admitBasePub } from './admit.js';
-import { pointBytes } from './note.js';
+import { pointBytes, pointFrom } from './note.js';
 
 export { destCommitFromSpendPub, stealthSpendPubFrom, isStealthKey, stealthSign, stealthKey };
 
@@ -162,6 +162,24 @@ export function isDestAddress(s) {
   if (isShearAddress(t)) return false;
   if (bech32Hrp(t) === 'she') return false;
   return bech32Hrp(t) === 'ssa' && bech32BodyOk(t);
+}
+
+/**
+ * Payee that can open a spendable note: ssa, checksum, payload exactly dest20||B,
+ * and B a canonical ristretto element. A short dest stays an address for watch
+ * uses. Consensus does not use this to reject the pool fee dest.
+ */
+export function isPayableDest(s) {
+  const t = String(s || '').trim();
+  if (bech32Hrp(t) !== HRP_DEST) return false;
+  const bytes = decodeBech32Payload(t);
+  if (!bytes || bytes.length !== 52) return false;
+  try {
+    pointFrom(bytes.subarray(20, 52));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Login identity: dest or silent ID, worker suffix stripped. */

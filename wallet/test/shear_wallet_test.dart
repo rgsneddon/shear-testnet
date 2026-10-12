@@ -1388,7 +1388,7 @@ void main() {
     Future<void> sendOf(_NoteWallet w, double amount, {String? memo}) async {
       final bob = createIdentity();
       final to = memo == null
-          ? destForLogin(bob.address, height: 1, viewKey: 'ab' * 32)!
+          ? (ShearLedger()..bindIdentity(bob)).homeDest(bob.address, paymentCode: bob.paymentCode)
           : bob.paymentCodeFull;
       w.posts.clear();
       final before = identityHashCode(Isolate.current).toString();
@@ -2444,8 +2444,13 @@ void main() {
     expect(parseReceiveQr(id.paymentCode), isNull);
     final dest = destForLogin(id.address, height: 1, viewKey: id.viewKey)!;
     expect(dest.startsWith('ssa1'), isTrue);
-    expect(parseReceiveQr(dest), dest);
-    expect(parseReceiveQr('shear:$dest'), dest);
+    expect(isPayableDest(dest), isFalse);
+    expect(parseReceiveQr(dest), isNull);
+    expect(receiveQrFailCopy(dest), kErrShortSsa1);
+    final longId = createIdentity();
+    final long = (ShearLedger()..bindIdentity(longId)).homeDest(longId.address, paymentCode: longId.paymentCode);
+    expect(parseReceiveQr(long), long);
+    expect(parseReceiveQr('shear:$long'), long);
     expect(parseReceiveQr('not-a-qr'), isNull);
     expect(parseReceiveQr(id.address), id.address);
     expect(parseReceiveQr(''), isNull);
@@ -2461,19 +2466,25 @@ void main() {
     final pub = ed25519PublicFromSeed(seed);
     final home = encodeDestAddress(destCommitFromSpendPub(pub));
     expect(isDestAddress(home), isTrue);
-    expect(payableChainDest(home), home);
+    expect(isPayableDest(home), isFalse);
+    expect(payableChainDest(home), isNull);
+    final longHome = encodeDestAddress(destCommitFromSpendPub(pub), admitBaseBytes(seed));
+    expect(isPayableDest(longHome), isTrue);
+    expect(payableChainDest(longHome), longHome);
     final silent = payableChainDest(alice.paymentCodeFull);
     expect(silent, isNotNull);
     expect(isDestAddress(silent!), isTrue);
     expect(silent.startsWith('ssa1'), isTrue);
-    expect(payableChainDest(alice.address, spendPub: pub), home);
+    expect(payableChainDest(alice.address, spendPub: pub), isNull);
+    expect(payableChainDest(alice.address, spendPub: pub, admitBase: admitBaseBytes(seed)), longHome);
     expect(payableChainDest(bob.address), isNull);
     expect(isShearAddress(home), isFalse);
 
     final ledger = ShearLedger()..bindIdentity(alice);
     final mailbox = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
     final fromDest = ledger.newDest(alice.address, paymentCode: alice.paymentCode);
-    ledger.rememberSpendable(fromDest, 2);
+    ledger.confirmRound(address: fromDest, pot: 2, height: 1);
+    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
     final tx = await ledger.send(
       from: fromDest,
       to: alice.address,
@@ -4605,7 +4616,8 @@ void main() {
     final ledger = ShearLedger()..viewSecret = ident.viewKey;
     ledger.confirmRound(address: ident.address, pot: 2, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations);
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final bobId = createIdentity();
+    final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(bobId.address, paymentCode: bobId.paymentCode);
     await tester.pumpWidget(ShearWalletApp(session: session, ledger: ledger, startUnlocked: true, skipPoolSync: true));
     await tester.pump();
     await tester.pump();
