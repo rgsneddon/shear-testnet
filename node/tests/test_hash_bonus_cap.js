@@ -13,7 +13,7 @@ import {
   GENESIS_BITS_PACKED,
   bitsForBlock,
 } from '../../crypto/asert.js';
-import { unitsForShare, findShare, dest20OfShare, verifyShareBatch } from '../../crypto/share_batch.js';
+import { unitsForShare, findShare, dest20OfShare, verifyShareBatch, nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { roundActualHashes } from '../../pool/src/hash_credit.js';
 import { hashesCreditedForShare } from '../../pool/src/share_vardiff.js';
 import {
@@ -62,10 +62,12 @@ describe('hash bonus unit never zero', () => {
   it('hashBonusByMiner never applies a zero unit', () => {
     const dest = destMiner();
     const unit = 2 ** SHARE_FLOOR_BITS;
-    const zero = hashBonusByMiner([], 0, [{ dest, nonce: 1n, lz: SHARE_FLOOR_BITS }]);
+    // Credit reads the nonce high byte. A bare nonce 1 has byte 0 and is dropped.
+    const nonce = nonceWithShareTarget(1n, SHARE_FLOOR_BITS);
+    const zero = hashBonusByMiner([], 0, [{ dest, nonce, lz: SHARE_FLOOR_BITS }]);
     assert.equal(zero.get(dest), unit * HASH_BONUS_NANOS_FLOOR);
     assert.ok(zero.get(dest) > 0);
-    const neg = hashBonusByMiner([], -9, [{ dest, nonce: 1n, lz: SHARE_FLOOR_BITS }]);
+    const neg = hashBonusByMiner([], -9, [{ dest, nonce, lz: SHARE_FLOOR_BITS }]);
     assert.equal(neg.get(dest), unit * HASH_BONUS_NANOS_FLOOR);
   });
 });
