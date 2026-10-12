@@ -15,7 +15,7 @@ import {
   stealthSign,
 } from './stealth_ed25519.js';
 import { admitBasePub } from './admit.js';
-import { pointBytes, pointFrom } from './note.js';
+import { asU8, pointBytes, pointFrom, scalarFrom } from './note.js';
 
 export { destCommitFromSpendPub, stealthSpendPubFrom, isStealthKey, stealthSign, stealthKey };
 
@@ -164,10 +164,15 @@ export function isDestAddress(s) {
   return bech32Hrp(t) === 'ssa' && bech32BodyOk(t);
 }
 
+/** Canonical short pool-fee sink. Not a spendable payee. */
+export function poolFeeDest() {
+  return encodeDest(createHash('sha256').update('shear-pool-fee-v1').digest().subarray(0, 20));
+}
+
 /**
  * Payee that can open a spendable note: ssa, checksum, payload exactly dest20||B,
  * and B a canonical ristretto element. A short dest stays an address for watch
- * uses. Consensus does not use this to reject the pool fee dest.
+ * uses. checkAddressField does not use this to reject the pool fee sink.
  */
 export function isPayableDest(s) {
   const t = String(s || '').trim();
@@ -514,6 +519,74 @@ export function checkAddressField(addr, { allowEmpty = false } = {}) {
   return { ok: true };
 }
 
+function exactDest20(field) {
+  if (field == null || field === '') return null;
+  let raw;
+  try { raw = Buffer.from(asU8(field)); } catch { return false; }
+  if (raw.length !== 20) return false;
+  return raw;
+}
+
+function sameDest20(a, b) {
+  return !!a && !!b && a.length === 20 && b.length === 20 && a.equals(b);
+}
+
+function canonicalWrap(output) {
+  let eph;
+  let ct;
+  try {
+    eph = Buffer.from(asU8(output?.rEph));
+    ct = Buffer.from(asU8(output?.rCt));
+  } catch {
+    return false;
+  }
+  if (eph.length !== 32 || ct.length !== 32) return false;
+  try {
+    pointFrom(eph);
+    scalarFrom(ct);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A pool-fee note may pay the canonical short sink, or a payable dest whose
+ * wrap is on the note. Any other kind that pays the sink is rejected.
+ * Amount is not an input. Other short sinks stay valid on their own kinds.
+ */
+export function poolFeeNoteBound(output) {
+  const o = output && typeof output === 'object' ? output : {};
+  const kind = String(o.kind || '');
+  const addr = String(o.address || '').trim();
+  const sink = poolFeeDest();
+  const sink20 = hash20FromAddress(sink);
+  const parsed = exactDest20(o.dest20);
+  if (parsed === false && (kind === 'pool-fee' || addr === sink)) {
+    return { ok: false, reason: 'pool_fee_dest' };
+  }
+  const d20 = parsed || null;
+  const addr20 = addr ? hash20FromAddress(addr) : null;
+  if (addr && d20 && addr20 && !sameDest20(Buffer.from(addr20), d20)) {
+    return { ok: false, reason: 'pool_fee_dest' };
+  }
+  const destIsSink = sameDest20(d20, sink20 ? Buffer.from(sink20) : null);
+  const addrIsSink = addr === sink;
+  const paysSink = addrIsSink || destIsSink;
+  if (kind === 'pool-fee') {
+    if (addr && !addrIsSink && !isPayableDest(addr)) return { ok: false, reason: 'pool_fee_dest' };
+    if (addr && isPayableDest(addr)) {
+      if (!canonicalWrap(o)) return { ok: false, reason: 'pool_fee_dest' };
+      return { ok: true };
+    }
+    if (paysSink && (addrIsSink || !addr)) return { ok: true };
+    if (!addr && d20 && !destIsSink && canonicalWrap(o)) return { ok: true };
+    return { ok: false, reason: 'pool_fee_dest' };
+  }
+  if (paysSink) return { ok: false, reason: 'pool_fee_dest' };
+  return { ok: true };
+}
+
 export function checkTxAddressFields(tx, { coinbase = false } = {}) {
   const kind = String(tx?.kind || '');
   const emptyOk = coinbase || kind === 'burn' || kind === 'levy' || kind === 'coinbase';
@@ -539,6 +612,21 @@ export function checkTxAddressFields(tx, { coinbase = false } = {}) {
   for (const a of fields) {
     const r = checkAddressField(a, { allowEmpty: emptyOk && !String(a || '').trim() });
     if (!r.ok) return r;
+  }
+  const txKind = String(tx?.kind || '');
+  if (tx?.to) {
+    const pay = poolFeeNoteBound({ kind: txKind || 'send', address: tx.to });
+    if (!pay.ok) return pay;
+  }
+  for (const o of tx?.vout || []) {
+    const pay = poolFeeNoteBound({
+      kind: String(o?.kind || txKind || ''),
+      address: o?.address,
+      dest20: o?.dest20,
+      rEph: o?.rEph,
+      rCt: o?.rCt,
+    });
+    if (!pay.ok) return pay;
   }
   return { ok: true };
 }

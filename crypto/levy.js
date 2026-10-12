@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { createPublicKey, verify } from 'node:crypto';
-import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX, aliasDestOfSilentId } from './address.js';
+import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX, aliasDestOfSilentId, poolFeeDest } from './address.js';
 import { NANOS_PER_SHE, MAGIC_TESTNET } from './asert.js';
 import {
   verifyPoolWithdrawSig,
@@ -15,6 +15,8 @@ import {
   poolWithdrawDigest,
   POOL_WITHDRAW_DEADLINE_MS,
 } from './eip712.js';
+
+export { poolFeeDest };
 
 export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
@@ -166,10 +168,6 @@ export function reserveFeeDest() {
  */
 export function unclaimedFinderDest() {
   return encodeDest(createHash('sha256').update('shear-finder-unclaimed-v1').digest().subarray(0, 20));
-}
-
-export function poolFeeDest() {
-  return encodeDest(createHash('sha256').update('shear-pool-fee-v1').digest().subarray(0, 20));
 }
 
 export function poolPayoutDest() {

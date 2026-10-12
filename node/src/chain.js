@@ -2116,6 +2116,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const dual = buildDualTree({ aLeaves, bLeaves });
     if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
   }
+  const feeBound = checkTxAddressFields({ vout: txs[0].vout || [] }, { coinbase: true });
+  if (!feeBound.ok && feeBound.reason === 'pool_fee_dest') return feeBound;
   for (const o of txs[0].vout) {
     if (o.commit && o.noteCommit && !o.address) continue;
     const r = checkAddressField(o.address, { allowEmpty: false });
