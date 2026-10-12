@@ -25,6 +25,7 @@ import {
   digestTx,
   hashBonusByMiner,
 } from '../src/chain.js';
+import { shareSlotRoot } from '../../crypto/pack.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { applyMinerSelfRate } from '../../pool/src/pool.js';
@@ -199,6 +200,12 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   });
 
   it('rejects a share that misses SHARE_FLOOR_BITS', () => {
+    const bad = onJob({
+      dest20: dest20OfShare({ dest }),
+      dest,
+      nonce: 0n,
+      lz: 0,
+    });
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -209,14 +216,16 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       now: 1_700_000_090_000,
       shareBatch: [],
     });
+    // Select drops a high byte under the floor. The slot root is checked
+    // before credit, so the frame has to be committed before the mine.
+    childTpl.shareBatch = [bad];
+    childTpl.txs[0].shareSlotRoot = shareSlotRoot(childTpl.shareBatch);
+    const decoded = decodeHeader(childTpl.header);
+    childTpl.header = encodeHeader({
+      ...decoded,
+      merkleRoot: merkleRoot(childTpl.txs.map(digestTx)),
+    });
     const child = mine(childTpl);
-    // Select drops a high byte under the floor. A block that still carries it is share_target.
-    child.shareBatch = [onJob({
-      dest20: dest20OfShare({ dest }),
-      dest,
-      nonce: 0n,
-      lz: 0,
-    })];
     const got = verifyBlock(child, parentView());
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'share_target');
