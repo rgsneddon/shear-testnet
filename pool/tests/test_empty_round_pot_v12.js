@@ -599,7 +599,10 @@ describe('v12 empty round carries the pot to the next proven round', () => {
     function prove(parent, batch, rows, now, miner, parents) {
       const height = parent.block.height + 1;
       // Work with no parent job is unslotted. Verify then sees an empty
-      // batch and does not apply the subsidy-fee check.
+      // batch and does not apply the subsidy-fee check. The live proof
+      // cache is process-local. A prior batch on this header must not
+      // drop a new dest that reused a low nonce.
+      clearLiveSharePow();
       const onJob = (batch || []).map((row) => ({
         ...row,
         verifiedHeader: Buffer.from(parent.block.header),
