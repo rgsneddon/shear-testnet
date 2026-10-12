@@ -69,7 +69,7 @@ import {
   vaultSealBanner,
 } from '../../crypto/vault_seal.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
@@ -2222,6 +2222,8 @@ export function createStore(dir, {
       const carry = unboundMembershipCarry(tx);
       if (!carry.ok) return carry;
     }
+    const userCb = userCoinbaseRejected(tx);
+    if (userCb) return userCb;
     const explicitKind = explicitTypedKindRejected(tx);
     if (explicitKind) return explicitKind;
     const typedVin = typedCommitRejected(tx);
@@ -4030,6 +4032,13 @@ export function createStore(dir, {
       };
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
+      const userCb = userCoinbaseRejected(tx);
+      if (userCb) {
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: userCb.reason }));
+        } catch { /* ignore */ }
+        continue;
+      }
       const earlyKind = v12KindRejected(tx);
       if (earlyKind) {
         try {

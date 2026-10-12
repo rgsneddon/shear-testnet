@@ -422,6 +422,17 @@ export function v12KindRejected(tx) {
 }
 
 /**
+ * Only the block's first tx is the coinbase. A later tx that wears the flag
+ * skips kind, range, flow, and the levy, so a fee on it mints finder-fee and
+ * reserve-fee notes. Any truthy flag is that skip. A proof or spend tag on
+ * the same tx is still admit_membership, from the carry check that runs first.
+ */
+export function userCoinbaseRejected(tx) {
+  if (!tx || !tx.coinbase) return null;
+  return { ok: false, reason: 'coinbase' };
+}
+
+/**
  * A refused kind that spends a note without a signature is unsigned.
  * A missing signature is not a permanent kind failure.
  * A refused kind with no note, or with a valid signature, stays kind.

@@ -11,7 +11,7 @@ import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, cano
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, explicitTypedKindRejected, openingBeforeCarry } from './spend.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
@@ -104,6 +104,8 @@ export function admitMempool(pool, tx, opts = {}) {
     const carry = unboundMembershipCarry(tx);
     if (!carry.ok) return carry;
   }
+  const userCb = userCoinbaseRejected(tx);
+  if (userCb) return userCb;
   const explicitKind = explicitTypedKindRejected(tx);
   if (explicitKind) return explicitKind;
   const typedVin = typedCommitRejected(tx);
