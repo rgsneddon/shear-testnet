@@ -66,7 +66,9 @@ import {
 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
+import { epochMs } from '../../crypto/pot_sched.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
+import { txIsReserveAction } from '../../crypto/reserve_vault.js';
 import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote, templateForFinder, publicJob } from '../../node/src/chain.js';
 import { rememberStoredJob } from '../../node/src/job_cap.js';
 import {
@@ -3899,10 +3901,36 @@ export function createPool({
    * Every JOB_RESTAMP_MS, advance the live header timestamp on the same jobId.
    * Bits stay on the parent solve interval. A short in-progress stamp must not
    * retarget. rememberJobHeader keeps the previous header so in-flight shares
-   * still count.
+   * still count. A stamp that crosses the open epoch, or a body that already
+   * holds a reserve row, is rebuilt so the vault trials that stamp.
    */
   let lastEaseAt = Date.now();
   let restampTimer = null;
+  function jobHoldsReserveRow(job) {
+    const rec = job?.jobId ? store.jobs?.get?.(String(job.jobId)) : null;
+    const txs = rec?.tpl?.txs;
+    if (!Array.isArray(txs)) return false;
+    return txs.some((tx) => tx && !tx.coinbase && txIsReserveAction(tx));
+  }
+  function stampsStraddleEpoch(oldMs, newMs) {
+    const vault = store.reserveVault;
+    const start = Number(vault?.epochStartMs || 0);
+    if (!(start > 0)) return false;
+    const end = start + epochMs(vault?.magic);
+    const a = Number(oldMs);
+    const b = Number(newMs);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(end)) return false;
+    const lo = a < b ? a : b;
+    const hi = a < b ? b : a;
+    return lo < end && hi >= end;
+  }
+  function restampMustRebuild(oldMs, newMs) {
+    return jobHoldsReserveRow(lastJob) || stampsStraddleEpoch(oldMs, newMs);
+  }
+  function rebuildLiveTemplate() {
+    rememberJobHeader(lastJob, lastJob?.header);
+    return issueJob(undefined, { force: true });
+  }
   function restampLiveHeader(now = Date.now()) {
     if (sidecarAhead()) {
       logJobHold();
@@ -3931,6 +3959,9 @@ export function createPool({
     }
     if (stamp > wall && !overMtp) return lastJob;
     if (stamp <= Number(decoded.timestamp) && !overMtp) return lastJob;
+    if (restampMustRebuild(decoded.timestamp, stamp)) {
+      return rebuildLiveTemplate() || lastJob;
+    }
     const header = encodeHeader({
       version: decoded.version,
       prevBlockHash: decoded.prevBlockHash,
@@ -3998,6 +4029,11 @@ export function createPool({
           nonce: 0n,
           baseFee: decoded.baseFee,
         });
+        if (restampMustRebuild(liveTs, stamp)) {
+          const rebuilt = rebuildLiveTemplate();
+          if (rebuilt) broadcastJob(rebuilt);
+          return rebuilt || lastJob;
+        }
         rememberJobHeader(lastJob, lastJob.header);
         lastJob = {
           ...lastJob,
