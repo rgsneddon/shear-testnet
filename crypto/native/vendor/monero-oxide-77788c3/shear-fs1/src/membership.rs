@@ -1,22 +1,28 @@
-//! Fixed-depth membership proofs.
+//! Fixed-depth membership proofs over a real curve tree.
 //!
 //! Depth is 7. The serialised proof length is `Fcmp::proof_size(inputs, 7)`.
-//! Leaf index, note age, set size, note type, and the anchor sit in a
-//! fixed-width statement. They do not change that length.
+//! The private witness (leaf index, note age, set size, note type, anchor) is
+//! never part of [`Proved`]. It must never be published.
+//!
+//! Every tree node is full width. A slot past the last real child holds the
+//! empty value for that level, so every path has the same shape and the
+//! vendored prover never takes its partial-path branch.
 //!
 //! Secret scalars go through `multiexp::multiexp` 0.5.2 inside the vendored
 //! prover. Layer hashes in this crate use the same constant-time multiexp.
-//! The upstream `tree::hash_grow` helper is not called: it multiplies public
-//! scalars with a variable-time multiexp. The batch check inside
-//! `Generators::verify` is the verifier's public check.
+//! The upstream `tree::hash_grow` helper is not called: it uses a
+//! variable-time multiexp. The batch check inside `Generators::verify` is the
+//! verifier's public check.
 //!
-//! `insecure_test_generators` builds the curve parameters. Those parameters
-//! are for this unwired crate. They are not consensus generators.
+//! [`Fs1Params::open`] builds the curve parameters from the upstream insecure
+//! test generators. It exists only under `cfg(test)` or the
+//! `insecure-test-generators` feature. Those parameters are not consensus
+//! generators.
 
 use ciphersuite::{
   group::{
     ff::{Field, PrimeField, PrimeFieldBits},
-    Group,
+    Group, GroupEncoding,
   },
   Ciphersuite,
 };
@@ -26,13 +32,13 @@ use full_chain_membership_proofs::{
   BranchBlind, Branches, CBlind, Fcmp, FcmpCurves, FcmpError, FcmpParams, IBlind, IBlindBlind,
   Input, OBlind, Output, OutputBlinds, Path, TreeRoot, LAYER_ONE_LEN, LAYER_TWO_LEN,
 };
-use generalized_bulletproofs::{tests::insecure_test_generators, Generators};
+use generalized_bulletproofs::Generators;
 use generalized_bulletproofs_ec_gadgets::DiscreteLogParameter;
 use generic_array::typenum::U;
 use helioselene::{Helios, Selene};
 use multiexp::multiexp;
 use rand_core::{CryptoRng, OsRng, RngCore};
-use subtle::{ConditionallySelectable, ConstantTimeEq};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeLess};
 use zeroize::Zeroize;
 
 use crate::rulings::consensus_accepts;
@@ -45,35 +51,35 @@ pub const NOTE_PAYMENT: u8 = 0x02;
 /// Change note type.
 pub const NOTE_CHANGE: u8 = 0x03;
 
-/// Bytes in one note's statement: leaf index, age, set size, type, anchor.
-pub const STATEMENT_LEN: usize = 8 + 8 + 8 + 1 + 32;
-
-/// How many layer slots a full-scan select always touches on the first layer.
+/// How many slots a full-scan select always touches on the first layer.
 pub const LEAF_SCAN: usize = LAYER_ONE_LEN;
 
-type EdG = <Ed25519 as Ciphersuite>::G;
-type SeleneF = <Selene as Ciphersuite>::F;
-type HeliosF = <Helios as Ciphersuite>::F;
+pub(crate) type EdG = <Ed25519 as Ciphersuite>::G;
+pub(crate) type EdF = <Ed25519 as Ciphersuite>::F;
+pub(crate) type SeleneF = <Selene as Ciphersuite>::F;
+pub(crate) type HeliosF = <Helios as Ciphersuite>::F;
+type SeleneG = <Selene as Ciphersuite>::G;
+type HeliosG = <Helios as Ciphersuite>::G;
 
-struct EdBits;
+pub(crate) struct EdBits;
 impl DiscreteLogParameter for EdBits {
   #[allow(clippy::cast_possible_truncation)]
   type ScalarBits = U<{ <<Ed25519 as Ciphersuite>::F as PrimeField>::NUM_BITS as usize }>;
 }
 
-struct SeleneBits;
+pub(crate) struct SeleneBits;
 impl DiscreteLogParameter for SeleneBits {
   #[allow(clippy::cast_possible_truncation)]
   type ScalarBits = U<{ <<Selene as Ciphersuite>::F as PrimeField>::NUM_BITS as usize }>;
 }
 
-struct HeliosBits;
+pub(crate) struct HeliosBits;
 impl DiscreteLogParameter for HeliosBits {
   #[allow(clippy::cast_possible_truncation)]
   type ScalarBits = U<{ <<Helios as Ciphersuite>::F as PrimeField>::NUM_BITS as usize }>;
 }
 
-struct ShearCurves;
+pub(crate) struct ShearCurves;
 impl FcmpCurves for ShearCurves {
   type OC = Ed25519;
   type OcParameters = EdBits;
@@ -84,9 +90,12 @@ impl FcmpCurves for ShearCurves {
 }
 
 /// One note opened by the wallet that already holds it.
+///
+/// This is the private statement. None of it is copied into [`Proved`], and
+/// it must never be published or sent to a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenNote {
-  /// Position of the note in the set. The proof length does not depend on it.
+  /// Position of the note in the tree. The proof length does not depend on it.
   pub leaf_index: u64,
   /// Blocks since the note was created. The proof length does not depend on it.
   pub note_age: u64,
@@ -98,10 +107,15 @@ pub struct OpenNote {
   pub anchor: [u8; 32],
 }
 
+/// Bytes in one note's private statement.
+#[cfg(test)]
+pub(crate) const WITNESS_LEN: usize = 8 + 8 + 8 + 1 + 32;
+
+#[cfg(test)]
 impl OpenNote {
-  /// Fixed-width encoding. Every accepted note occupies [`STATEMENT_LEN`] bytes.
-  pub fn encode(self) -> [u8; STATEMENT_LEN] {
-    let mut out = [0u8; STATEMENT_LEN];
+  /// Fixed-width private encoding. Used only inside the prover's process.
+  pub(crate) fn witness_bytes(self) -> [u8; WITNESS_LEN] {
+    let mut out = [0u8; WITNESS_LEN];
     out[.. 8].copy_from_slice(&self.leaf_index.to_le_bytes());
     out[8 .. 16].copy_from_slice(&self.note_age.to_le_bytes());
     out[16 .. 24].copy_from_slice(&self.set_size.to_le_bytes());
@@ -111,30 +125,50 @@ impl OpenNote {
   }
 }
 
-/// A membership proof plus the public inputs a verifier needs.
+/// A membership proof plus the public inputs a verifier needs. Nothing else.
 pub struct Proved {
   /// Serialised FCMP. Its length is [`proof_len`] for this input count and depth.
   pub bytes: Vec<u8>,
   /// Re-randomised input tuples. Fresh blinds make these differ across proves.
   pub inputs: Vec<Input<SeleneF>>,
+  /// Compressed `O~ || I~ || R || C~` for each input, in the order of `inputs`.
+  pub input_bytes: Vec<[u8; 128]>,
   /// Tree root the proof opens.
   pub root: TreeRoot<Selene, Helios>,
   /// Layer count used to build the proof.
   pub layers: usize,
-  /// Concatenated fixed-width statements, one per input.
-  pub statement: Vec<u8>,
 }
 
-/// Test parameters. Not a consensus generator set.
+impl Proved {
+  /// Everything this proof would put on the wire: proof, inputs, and root.
+  pub fn public_bytes(&self) -> Vec<u8> {
+    let mut out = self.bytes.clone();
+    for input in &self.input_bytes {
+      out.extend_from_slice(input);
+    }
+    out.extend_from_slice(&root_bytes(&self.root));
+    out
+  }
+}
+
+/// Compressed root point.
+pub fn root_bytes(root: &TreeRoot<Selene, Helios>) -> [u8; 32] {
+  match root {
+    TreeRoot::C1(point) => point.to_bytes(),
+    TreeRoot::C2(point) => point.to_bytes(),
+  }
+}
+
+/// Curve parameters. Not a consensus generator set.
 pub struct Fs1Params {
-  g: EdG,
-  t: EdG,
-  u: EdG,
-  v: EdG,
-  c1: Generators<Selene>,
-  c2: Generators<Helios>,
-  c1_init: <Selene as Ciphersuite>::G,
-  c2_init: <Helios as Ciphersuite>::G,
+  pub(crate) g: EdG,
+  pub(crate) t: EdG,
+  pub(crate) u: EdG,
+  pub(crate) v: EdG,
+  pub(crate) c1: Generators<Selene>,
+  pub(crate) c2: Generators<Helios>,
+  pub(crate) c1_init: SeleneG,
+  pub(crate) c2_init: HeliosG,
   fcmp: FcmpParams<ShearCurves>,
 }
 
@@ -147,27 +181,29 @@ pub enum Fs1Error {
   NoteType,
   /// A blind or a point was unusable.
   Blind,
-  /// The paths did not share one tree.
+  /// A leaf index is outside the tree, or the tree does not have this depth.
   Path,
+  /// The tree is larger than this depth can hold, or is empty.
+  TreeSize,
   /// The vendored prover rejected the witness.
   Prove(FcmpError),
   /// The vendored verifier rejected the proof.
   Verify(FcmpError),
-  /// The public batch check on the test generators failed.
+  /// The public batch check failed.
   Batch,
   /// Reading or writing the proof failed.
   Io,
 }
 
-struct BlindScalars {
-  o: <Ed25519 as Ciphersuite>::F,
-  i: <Ed25519 as Ciphersuite>::F,
-  ib: <Ed25519 as Ciphersuite>::F,
-  c: <Ed25519 as Ciphersuite>::F,
+pub(crate) struct BlindScalars {
+  pub(crate) o: EdF,
+  pub(crate) i: EdF,
+  pub(crate) ib: EdF,
+  pub(crate) c: EdF,
 }
 
-impl Drop for BlindScalars {
-  fn drop(&mut self) {
+impl BlindScalars {
+  pub(crate) fn wipe(&mut self) {
     self.o.zeroize();
     self.i.zeroize();
     self.ib.zeroize();
@@ -175,12 +211,21 @@ impl Drop for BlindScalars {
   }
 }
 
+impl Drop for BlindScalars {
+  fn drop(&mut self) {
+    self.wipe();
+  }
+}
+
+#[cfg(any(test, feature = "insecure-test-generators"))]
 impl Fs1Params {
-  /// Build test parameters that can prove up to `input_limit` inputs.
+  /// Test parameters that can prove up to `input_limit` inputs, from the
+  /// upstream insecure test generators.
   ///
   /// The generator counts follow the upstream test harness:
   /// `2 * input_limit * 256` on the first curve and `2 * input_limit * 128` on the second.
   pub fn open(input_limit: usize) -> Result<Self, Fs1Error> {
+    use generalized_bulletproofs::tests::insecure_test_generators;
     if !consensus_accepts(input_limit) {
       return Err(Fs1Error::InputCount);
     }
@@ -193,22 +238,14 @@ impl Fs1Params {
       .map_err(|_| Fs1Error::Blind)?;
     let c2 = insecure_test_generators::<_, Helios>(&mut rng, 2 * input_limit * 128)
       .map_err(|_| Fs1Error::Blind)?;
-    let c1_init = <Selene as Ciphersuite>::G::random(&mut rng);
-    let c2_init = <Helios as Ciphersuite>::G::random(&mut rng);
-    let fcmp = FcmpParams::<ShearCurves>::new(
-      c1.clone(),
-      c2.clone(),
-      c1_init,
-      c2_init,
-      g,
-      t,
-      u,
-      v,
-    );
+    let c1_init = SeleneG::random(&mut rng);
+    let c2_init = HeliosG::random(&mut rng);
+    let fcmp = FcmpParams::<ShearCurves>::new(c1.clone(), c2.clone(), c1_init, c2_init, g, t, u, v);
     Ok(Self { g, t, u, v, c1, c2, c1_init, c2_init, fcmp })
   }
 }
 
+#[cfg(any(test, feature = "insecure-test-generators"))]
 fn nonzero_point(rng: &mut OsRng) -> EdG {
   let mut point = EdG::identity();
   for _ in 0 .. 8 {
@@ -224,73 +261,318 @@ pub fn proof_len(inputs: usize, layers: usize) -> usize {
   Fcmp::<ShearCurves>::proof_size(inputs, layers)
 }
 
-/// Prove membership of `notes` at `layers`.
+/// Branch widths above the leaves, bottom up. Odd positions are Helios layers.
+fn branch_width(level: usize) -> usize {
+  if level % 2 == 1 {
+    LAYER_TWO_LEN
+  } else {
+    LAYER_ONE_LEN
+  }
+}
+
+/// Leaves a tree of this depth can hold.
+pub fn tree_capacity(layers: usize) -> u128 {
+  let mut cap = LAYER_ONE_LEN as u128;
+  for level in 1 .. layers {
+    cap *= branch_width(level) as u128;
+  }
+  cap
+}
+
+/// A full-width curve tree.
+///
+/// Leaf `i` is the public output `((i+1)·A, (i+1)·B, (i+1)·D)` for fixed
+/// points A, B, D. The leaves are not stored; a chunk is regenerated when a
+/// path is opened. Each stored level holds the x coordinate of every node hash.
+pub struct Tree {
+  len: u64,
+  layers: usize,
+  bases: [EdG; 3],
+  empty_leaf: Output<EdG>,
+  /// `helios_levels[k]` holds level `2k + 1`: x coordinates of Selene hashes.
+  helios_levels: Vec<Vec<HeliosF>>,
+  /// `selene_levels[k]` holds level `2k + 2`: x coordinates of Helios hashes.
+  selene_levels: Vec<Vec<SeleneF>>,
+  empty_helios: Vec<HeliosF>,
+  empty_selene: Vec<SeleneF>,
+  root: TreeRoot<Selene, Helios>,
+}
+
+fn fixed_point(tag: &[u8]) -> EdG {
+  Ed25519::generator() * Ed25519::hash_to_F(b"shear-fs1-tree", tag)
+}
+
+fn chunk_hash_x(params: &Fs1Params, chunk: &[Output<EdG>]) -> Result<HeliosF, Fs1Error> {
+  let hash = hash_layer(&params.c1, params.c1_init, &leaf_scalars(chunk)?);
+  Ok(SeleneG::to_xy(hash).ok_or(Fs1Error::Blind)?.0)
+}
+
+impl Tree {
+  /// Build a tree of `len` leaves at `layers` depth.
+  pub fn build(params: &Fs1Params, len: u64, layers: usize) -> Result<Self, Fs1Error> {
+    if len == 0 || layers == 0 || u128::from(len) > tree_capacity(layers) {
+      return Err(Fs1Error::TreeSize);
+    }
+    let bases = [fixed_point(b"leaf-O"), fixed_point(b"leaf-I"), fixed_point(b"leaf-C")];
+    let empty_leaf =
+      Output::new(fixed_point(b"empty-O"), fixed_point(b"empty-I"), fixed_point(b"empty-C"))
+        .map_err(|_| Fs1Error::Blind)?;
+    let mut tree = Tree {
+      len,
+      layers,
+      bases,
+      empty_leaf,
+      helios_levels: Vec::new(),
+      selene_levels: Vec::new(),
+      empty_helios: Vec::new(),
+      empty_selene: Vec::new(),
+      root: TreeRoot::C1(SeleneG::identity()),
+    };
+
+    let chunks = len.div_ceil(LAYER_ONE_LEN as u64);
+    let empty_chunk = vec![empty_leaf; LAYER_ONE_LEN];
+    let empty1 = chunk_hash_x(params, &empty_chunk)?;
+    if layers == 1 {
+      let hash = hash_layer(&params.c1, params.c1_init, &leaf_scalars(&tree.chunk(0)?)?);
+      tree.root = TreeRoot::C1(hash);
+      return Ok(tree);
+    }
+    let mut level1 = Vec::with_capacity(usize::try_from(chunks).map_err(|_| Fs1Error::TreeSize)?);
+    for k in 0 .. chunks {
+      level1.push(chunk_hash_x(params, &tree.chunk(k)?)?);
+    }
+    tree.helios_levels.push(level1);
+    tree.empty_helios.push(empty1);
+
+    // Level `level` holds the hashes of groups of `branch_width(level)` children from level - 1.
+    for level in 1 .. layers {
+      let width = branch_width(level);
+      let top = level == layers - 1;
+      if level % 2 == 1 {
+        let below = tree.helios_levels.last().ok_or(Fs1Error::Path)?;
+        let empty = *tree.empty_helios.last().ok_or(Fs1Error::Path)?;
+        let groups = below.len().div_ceil(width);
+        if top && groups != 1 {
+          return Err(Fs1Error::TreeSize);
+        }
+        let mut next = Vec::with_capacity(groups);
+        let mut root = None;
+        for g in 0 .. groups {
+          let group = full_group(below, g, width, empty);
+          let hash = hash_layer(&params.c2, params.c2_init, &group);
+          root = Some(hash);
+          next.push(HeliosG::to_xy(hash).ok_or(Fs1Error::Blind)?.0);
+        }
+        let empty_group = vec![empty; width];
+        let empty_hash = hash_layer(&params.c2, params.c2_init, &empty_group);
+        if top {
+          tree.root = TreeRoot::C2(root.ok_or(Fs1Error::Path)?);
+        } else {
+          tree.selene_levels.push(next);
+          tree.empty_selene.push(HeliosG::to_xy(empty_hash).ok_or(Fs1Error::Blind)?.0);
+        }
+      } else {
+        let below = tree.selene_levels.last().ok_or(Fs1Error::Path)?;
+        let empty = *tree.empty_selene.last().ok_or(Fs1Error::Path)?;
+        let groups = below.len().div_ceil(width);
+        if top && groups != 1 {
+          return Err(Fs1Error::TreeSize);
+        }
+        let mut next = Vec::with_capacity(groups);
+        let mut root = None;
+        for g in 0 .. groups {
+          let group = full_group(below, g, width, empty);
+          let hash = hash_layer(&params.c1, params.c1_init, &group);
+          root = Some(hash);
+          next.push(SeleneG::to_xy(hash).ok_or(Fs1Error::Blind)?.0);
+        }
+        let empty_group = vec![empty; width];
+        let empty_hash = hash_layer(&params.c1, params.c1_init, &empty_group);
+        if top {
+          tree.root = TreeRoot::C1(root.ok_or(Fs1Error::Path)?);
+        } else {
+          tree.helios_levels.push(next);
+          tree.empty_helios.push(SeleneG::to_xy(empty_hash).ok_or(Fs1Error::Blind)?.0);
+        }
+      }
+    }
+    Ok(tree)
+  }
+
+  /// Real leaves in this tree.
+  pub fn len(&self) -> u64 {
+    self.len
+  }
+
+  /// Always false. A tree is built with at least one leaf.
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+
+  /// Depth of this tree.
+  pub fn layers(&self) -> usize {
+    self.layers
+  }
+
+  /// Root every path in this tree opens.
+  pub fn root(&self) -> TreeRoot<Selene, Helios> {
+    self.root
+  }
+
+  /// The public output at leaf `index`.
+  pub fn leaf(&self, index: u64) -> Result<Output<EdG>, Fs1Error> {
+    if index >= self.len {
+      return Err(Fs1Error::Path);
+    }
+    let k = EdF::from(index + 1);
+    Output::new(self.bases[0] * k, self.bases[1] * k, self.bases[2] * k).map_err(|_| Fs1Error::Blind)
+  }
+
+  /// Leaf chunk `k`, full width. Slots past the last leaf hold the empty leaf.
+  fn chunk(&self, k: u64) -> Result<Vec<Output<EdG>>, Fs1Error> {
+    let start = k * LAYER_ONE_LEN as u64;
+    let first = EdF::from(start + 1);
+    let mut points = [self.bases[0] * first, self.bases[1] * first, self.bases[2] * first];
+    let mut out = Vec::with_capacity(LAYER_ONE_LEN);
+    for j in 0 .. LAYER_ONE_LEN as u64 {
+      let real = (start + j).ct_lt(&self.len);
+      let o = EdG::conditional_select(&self.empty_leaf.O(), &points[0], real);
+      let i = EdG::conditional_select(&self.empty_leaf.I(), &points[1], real);
+      let c = EdG::conditional_select(&self.empty_leaf.C(), &points[2], real);
+      out.push(Output::new(o, i, c).map_err(|_| Fs1Error::Blind)?);
+      for (point, base) in points.iter_mut().zip(self.bases.iter()) {
+        *point += *base;
+      }
+    }
+    Ok(out)
+  }
+
+  #[cfg(test)]
+  pub(crate) fn path_for_test(&self, index: u64) -> Result<Path<ShearCurves>, Fs1Error> {
+    self.path(index)
+  }
+
+  #[cfg(test)]
+  pub(crate) fn empty_leaf_for_test(&self) -> Output<EdG> {
+    self.empty_leaf
+  }
+
+  /// The path from leaf `index` to the root.
+  fn path(&self, index: u64) -> Result<Path<ShearCurves>, Fs1Error> {
+    let output = self.leaf(index)?;
+    let k = index / LAYER_ONE_LEN as u64;
+    let leaves = self.chunk(k)?;
+    let mut curve_2_layers = Vec::new();
+    let mut curve_1_layers = Vec::new();
+    let mut at = usize::try_from(k).map_err(|_| Fs1Error::Path)?;
+    for level in 1 .. self.layers {
+      if level % 2 == 1 {
+        let group = at / LAYER_TWO_LEN;
+        let below = &self.helios_levels[(level - 1) / 2];
+        curve_2_layers.push(ct_group(below, group, LAYER_TWO_LEN, self.empty_helios[(level - 1) / 2]));
+        at = group;
+      } else {
+        let group = at / LAYER_ONE_LEN;
+        let below = &self.selene_levels[(level - 2) / 2];
+        curve_1_layers.push(ct_group(below, group, LAYER_ONE_LEN, self.empty_selene[(level - 2) / 2]));
+        at = group;
+      }
+    }
+    Ok(Path { output, leaves, curve_2_layers, curve_1_layers })
+  }
+}
+
+/// Group `g` of `width` children from `level`. Slots past the end hold `empty`.
+/// Used while building the public tree, where `g` is public.
+pub(crate) fn full_group<F: Copy>(level: &[F], g: usize, width: usize, empty: F) -> Vec<F> {
+  let start = g * width;
+  let mut out = vec![empty; width];
+  let have = level.len().saturating_sub(start).min(width);
+  out[.. have].copy_from_slice(&level[start .. start + have]);
+  out
+}
+
+/// Group `g` of `width` children from `level`, where `g` comes from a secret
+/// leaf index. Every element of the level is read and passed through one
+/// conditional select, whatever `g` is. Slots past the end hold `empty`.
+pub(crate) fn ct_group<F: ConditionallySelectable + Copy>(
+  level: &[F],
+  g: usize,
+  width: usize,
+  empty: F,
+) -> Vec<F> {
+  let mut out = vec![empty; width];
+  let groups = level.len().div_ceil(width).max(1);
+  let want = u64::try_from(g).unwrap_or(u64::MAX);
+  for gi in 0 .. groups {
+    let hit = u64::try_from(gi).unwrap_or(u64::MAX).ct_eq(&want);
+    for (j, slot) in out.iter_mut().enumerate() {
+      let child = level.get(gi * width + j).copied().unwrap_or(empty);
+      *slot = F::conditional_select(slot, &child, hit);
+    }
+  }
+  out
+}
+
+/// Prove membership of `notes` in `tree`.
 ///
 /// Blinds come from the operating system's RNG. The same notes proved twice
 /// differ in bytes and match in length.
-pub fn prove(params: &Fs1Params, notes: &[OpenNote], layers: usize) -> Result<Proved, Fs1Error> {
-  if !consensus_accepts(notes.len()) || layers == 0 {
+pub fn prove(params: &Fs1Params, tree: &Tree, notes: &[OpenNote]) -> Result<Proved, Fs1Error> {
+  if !consensus_accepts(notes.len()) || tree.layers == 0 {
     return Err(Fs1Error::InputCount);
   }
+  let mut types_ok = Choice::from(1);
   for note in notes {
-    if note.note_type != NOTE_PAYMENT && note.note_type != NOTE_CHANGE {
-      return Err(Fs1Error::NoteType);
-    }
+    types_ok &= note.note_type.ct_eq(&NOTE_PAYMENT) | note.note_type.ct_eq(&NOTE_CHANGE);
+  }
+  if !bool::from(types_ok) {
+    return Err(Fs1Error::NoteType);
   }
 
   let mut rng = OsRng;
   let mut paths = Vec::with_capacity(notes.len());
-  for (i, note) in notes.iter().enumerate() {
-    let slot = if layers == 1 {
-      u32::try_from(i).unwrap_or(0)
-    } else {
-      u32::try_from(note.leaf_index % u64::try_from(LAYER_ONE_LEN).unwrap_or(1)).unwrap_or(0)
-    };
-    paths.push(one_path(&mut rng, params, note, layers, slot)?);
+  for note in notes {
+    paths.push(tree.path(note.leaf_index)?);
   }
-  let root = unify(params, &mut paths, layers)?;
   let outputs: Vec<Output<EdG>> = paths.iter().map(|path| path.output).collect();
   let branches = Branches::new(paths).ok_or(Fs1Error::Path)?;
 
   let mut output_blinds = Vec::with_capacity(notes.len());
   let mut opened = Vec::with_capacity(notes.len());
+  let mut input_bytes = Vec::with_capacity(notes.len());
   for output in &outputs {
     let (blinds, scalars) = fresh_output_blinds(&mut rng, params);
-    opened.push(open_input(output, &scalars, params)?);
+    let points = open_input_points(output, &scalars, params);
+    opened.push(Input::new(points[0], points[1], points[2], points[3]).map_err(|_| Fs1Error::Blind)?);
+    let mut encoded = [0u8; 128];
+    for (slot, point) in encoded.chunks_mut(32).zip(points.iter()) {
+      slot.copy_from_slice(&point.to_bytes());
+    }
+    input_bytes.push(encoded);
     output_blinds.push(blinds);
   }
 
   let mut c1_blinds = Vec::with_capacity(branches.necessary_c1_blinds());
   for _ in 0 .. branches.necessary_c1_blinds() {
-    c1_blinds.push(BranchBlind::<<Selene as Ciphersuite>::G>::new(
-      params.c1.h(),
-      nonzero_decomposition(&mut rng),
-    ));
+    c1_blinds.push(BranchBlind::<SeleneG>::new(params.c1.h(), nonzero_decomposition(&mut rng)));
   }
   let mut c2_blinds = Vec::with_capacity(branches.necessary_c2_blinds());
   for _ in 0 .. branches.necessary_c2_blinds() {
-    c2_blinds.push(BranchBlind::<<Helios as Ciphersuite>::G>::new(
-      params.c2.h(),
-      nonzero_decomposition(&mut rng),
-    ));
+    c2_blinds.push(BranchBlind::<HeliosG>::new(params.c2.h(), nonzero_decomposition(&mut rng)));
   }
 
   let blinded = branches.blind(output_blinds, c1_blinds, c2_blinds).map_err(Fs1Error::Prove)?;
   let proof = Fcmp::<ShearCurves>::prove(&mut rng, &params.fcmp, blinded).map_err(Fs1Error::Prove)?;
   let mut bytes = Vec::new();
   proof.write(&mut bytes).map_err(|_| Fs1Error::Io)?;
-  if bytes.len() != proof_len(notes.len(), layers) {
+  if bytes.len() != proof_len(notes.len(), tree.layers) {
     return Err(Fs1Error::Io);
   }
-
-  let mut statement = Vec::with_capacity(notes.len() * STATEMENT_LEN);
-  for note in notes {
-    statement.extend_from_slice(&note.encode());
-  }
-  Ok(Proved { bytes, inputs: opened, root, layers, statement })
+  Ok(Proved { bytes, inputs: opened, input_bytes, root: tree.root, layers: tree.layers })
 }
 
-/// Verify a proof produced by [`prove`] against the same test parameters.
+/// Verify a proof produced by [`prove`] against the same parameters.
 pub fn verify(params: &Fs1Params, proved: &Proved) -> Result<(), Fs1Error> {
   if proved.bytes.len() != proof_len(proved.inputs.len(), proved.layers) {
     return Err(Fs1Error::Io);
@@ -316,191 +598,26 @@ pub fn verify(params: &Fs1Params, proved: &Proved) -> Result<(), Fs1Error> {
   Ok(())
 }
 
-fn one_path(
-  rng: &mut OsRng,
-  params: &Fs1Params,
-  note: &OpenNote,
-  layers: usize,
-  slot: u32,
-) -> Result<Path<ShearCurves>, Fs1Error> {
-  let output = note_output(note)?;
-  let mut leaves = Vec::with_capacity(LAYER_ONE_LEN);
-  for _ in 0 .. LAYER_ONE_LEN {
-    leaves.push(random_output(rng)?);
-  }
-  place_output(&mut leaves, output, slot);
-
-  let mut selene_hash = Some(hash_layer(&params.c1, params.c1_init, &leaf_scalars(&leaves)));
-  let mut curve_2_layers = Vec::new();
-  let mut curve_1_layers = Vec::new();
-
-  while 1 + curve_1_layers.len() + curve_2_layers.len() < layers {
-    let mut layer = Vec::with_capacity(LAYER_TWO_LEN);
-    for _ in 0 .. LAYER_TWO_LEN {
-      layer.push(HeliosF::random(&mut *rng));
-    }
-    let child = <Selene as Ciphersuite>::G::to_xy(selene_hash.take().ok_or(Fs1Error::Path)?)
-      .ok_or(Fs1Error::Blind)?
-      .0;
-    place_field(&mut layer, child, 0);
-    let helios_hash = hash_layer(&params.c2, params.c2_init, &layer);
-    curve_2_layers.push(layer);
-
-    if 1 + curve_1_layers.len() + curve_2_layers.len() < layers {
-      let mut layer = Vec::with_capacity(LAYER_ONE_LEN);
-      for _ in 0 .. LAYER_ONE_LEN {
-        layer.push(SeleneF::random(&mut *rng));
-      }
-      let child = <Helios as Ciphersuite>::G::to_xy(helios_hash).ok_or(Fs1Error::Blind)?.0;
-      place_field(&mut layer, child, 0);
-      selene_hash = Some(hash_layer(&params.c1, params.c1_init, &layer));
-      curve_1_layers.push(layer);
-    }
-  }
-
-  Ok(Path { output, leaves, curve_2_layers, curve_1_layers })
-}
-
-fn unify(
-  params: &Fs1Params,
-  paths: &mut [Path<ShearCurves>],
-  layers: usize,
-) -> Result<TreeRoot<Selene, Helios>, Fs1Error> {
-  if paths.len() == 1 {
-    return fold_root(params, &paths[0]);
-  }
-  if layers == 1 {
-    let mut leaves = paths[0].leaves.clone();
-    for (i, path) in paths.iter().enumerate() {
-      place_output(&mut leaves, path.output, u32::try_from(i).unwrap_or(0));
-    }
-    for path in paths.iter_mut() {
-      path.leaves.clone_from(&leaves);
-    }
-    return fold_root(params, &paths[0]);
-  }
-  if layers % 2 == 0 {
-    let mut children = Vec::with_capacity(paths.len());
-    for path in paths.iter() {
-      let hash = if let Some(layer) = path.curve_1_layers.last() {
-        hash_layer(&params.c1, params.c1_init, layer)
-      } else {
-        hash_layer(&params.c1, params.c1_init, &leaf_scalars(&path.leaves))
-      };
-      children.push(<Selene as Ciphersuite>::G::to_xy(hash).ok_or(Fs1Error::Blind)?.0);
-    }
-    let mut shared = Vec::with_capacity(LAYER_TWO_LEN);
-    for _ in 0 .. LAYER_TWO_LEN {
-      shared.push(HeliosF::random(&mut OsRng));
-    }
-    for (i, child) in children.iter().enumerate() {
-      place_field(&mut shared, *child, u32::try_from(i).unwrap_or(0));
-    }
-    for path in paths.iter_mut() {
-      *path.curve_2_layers.last_mut().ok_or(Fs1Error::Path)? = shared.clone();
-    }
-    Ok(TreeRoot::C2(hash_layer(&params.c2, params.c2_init, &shared)))
-  } else {
-    let mut children = Vec::with_capacity(paths.len());
-    for path in paths.iter() {
-      let layer = path.curve_2_layers.last().ok_or(Fs1Error::Path)?;
-      let hash = hash_layer(&params.c2, params.c2_init, layer);
-      children.push(<Helios as Ciphersuite>::G::to_xy(hash).ok_or(Fs1Error::Blind)?.0);
-    }
-    let mut shared = Vec::with_capacity(LAYER_ONE_LEN);
-    for _ in 0 .. LAYER_ONE_LEN {
-      shared.push(SeleneF::random(&mut OsRng));
-    }
-    for (i, child) in children.iter().enumerate() {
-      place_field(&mut shared, *child, u32::try_from(i).unwrap_or(0));
-    }
-    for path in paths.iter_mut() {
-      *path.curve_1_layers.last_mut().ok_or(Fs1Error::Path)? = shared.clone();
-    }
-    Ok(TreeRoot::C1(hash_layer(&params.c1, params.c1_init, &shared)))
-  }
-}
-
-fn fold_root(
-  params: &Fs1Params,
-  path: &Path<ShearCurves>,
-) -> Result<TreeRoot<Selene, Helios>, Fs1Error> {
-  let mut selene = Some(hash_layer(&params.c1, params.c1_init, &leaf_scalars(&path.leaves)));
-  let mut helios = None;
-  let rounds = path.curve_1_layers.len().max(path.curve_2_layers.len());
-  for i in 0 .. rounds {
-    if i < path.curve_2_layers.len() {
-      helios = Some(hash_layer(&params.c2, params.c2_init, &path.curve_2_layers[i]));
-      selene = None;
-    }
-    if i < path.curve_1_layers.len() {
-      selene = Some(hash_layer(&params.c1, params.c1_init, &path.curve_1_layers[i]));
-      helios = None;
-    }
-  }
-  if let Some(point) = selene {
-    Ok(TreeRoot::C1(point))
-  } else {
-    Ok(TreeRoot::C2(helios.ok_or(Fs1Error::Path)?))
-  }
-}
-
-fn note_output(note: &OpenNote) -> Result<Output<EdG>, Fs1Error> {
-  let msg = note.encode();
-  let o = Ed25519::generator() * Ed25519::hash_to_F(b"shear-fs1-O", &msg);
-  let i = Ed25519::generator() * Ed25519::hash_to_F(b"shear-fs1-I", &msg);
-  let c = Ed25519::generator() * Ed25519::hash_to_F(b"shear-fs1-C", &msg);
-  Output::new(o, i, c).map_err(|_| Fs1Error::Blind)
-}
-
-fn random_output(rng: &mut OsRng) -> Result<Output<EdG>, Fs1Error> {
-  Output::new(EdG::random(&mut *rng), EdG::random(&mut *rng), EdG::random(&mut *rng))
-    .map_err(|_| Fs1Error::Blind)
-}
-
-fn leaf_scalars(leaves: &[Output<EdG>]) -> Vec<SeleneF> {
+pub(crate) fn leaf_scalars(leaves: &[Output<EdG>]) -> Result<Vec<SeleneF>, Fs1Error> {
   let mut out = Vec::with_capacity(leaves.len() * 6);
   for leaf in leaves {
-    let (ox, oy) = EdG::to_xy(leaf.O()).expect("leaf point is not identity");
-    let (ix, iy) = EdG::to_xy(leaf.I()).expect("leaf point is not identity");
-    let (cx, cy) = EdG::to_xy(leaf.C()).expect("leaf point is not identity");
+    let (ox, oy) = EdG::to_xy(leaf.O()).ok_or(Fs1Error::Blind)?;
+    let (ix, iy) = EdG::to_xy(leaf.I()).ok_or(Fs1Error::Blind)?;
+    let (cx, cy) = EdG::to_xy(leaf.C()).ok_or(Fs1Error::Blind)?;
     out.extend([ox, oy, ix, iy, cx, cy]);
   }
-  out
+  Ok(out)
 }
 
 /// Public layer hash. Every child is included. The scalar list length is public.
-fn hash_layer<C: Ciphersuite>(generators: &Generators<C>, init: C::G, children: &[C::F]) -> C::G
+pub(crate) fn hash_layer<C: Ciphersuite>(generators: &Generators<C>, init: C::G, children: &[C::F]) -> C::G
 where
   C::G: zeroize::Zeroize + ConditionallySelectable,
   C::F: zeroize::Zeroize + PrimeFieldBits,
 {
-  let pairs: Vec<(C::F, C::G)> = children
-    .iter()
-    .copied()
-    .zip(generators.g_bold_slice().iter().copied())
-    .map(|(scalar, point)| (scalar, point))
-    .collect();
+  let pairs: Vec<(C::F, C::G)> =
+    children.iter().copied().zip(generators.g_bold_slice().iter().copied()).collect();
   init + multiexp(&pairs)
-}
-
-/// Full-scan select. Every slot is visited. There is no early return.
-fn place_output(leaves: &mut [Output<EdG>], spent: Output<EdG>, slot: u32) {
-  debug_assert_eq!(leaves.len(), LEAF_SCAN);
-  for (i, leaf) in leaves.iter_mut().enumerate() {
-    let pick = u32::ct_eq(&(i as u32), &slot);
-    let o = EdG::conditional_select(&leaf.O(), &spent.O(), pick);
-    let image = EdG::conditional_select(&leaf.I(), &spent.I(), pick);
-    let c = EdG::conditional_select(&leaf.C(), &spent.C(), pick);
-    *leaf = Output::new(o, image, c).expect("selected leaf stayed on curve");
-  }
-}
-
-fn place_field<F: ConditionallySelectable + Copy>(layer: &mut [F], child: F, slot: u32) {
-  for (i, item) in layer.iter_mut().enumerate() {
-    let pick = u32::ct_eq(&(i as u32), &slot);
-    *item = F::conditional_select(item, &child, pick);
-  }
 }
 
 fn nonzero_decomposition<F>(rng: &mut (impl RngCore + CryptoRng)) -> ScalarDecomposition<F>
@@ -517,7 +634,7 @@ where
   ScalarDecomposition::new(scalar).expect("a fresh scalar was zero eight times")
 }
 
-fn fresh_output_blinds(
+pub(crate) fn fresh_output_blinds(
   rng: &mut OsRng,
   params: &Fs1Params,
 ) -> (OutputBlinds<EdG>, BlindScalars) {
@@ -534,104 +651,180 @@ fn fresh_output_blinds(
   (blinds, BlindScalars { o, i, ib, c })
 }
 
-fn nonzero_scalar(rng: &mut OsRng) -> <Ed25519 as Ciphersuite>::F {
-  let mut scalar = <Ed25519 as Ciphersuite>::F::ZERO;
+fn nonzero_scalar(rng: &mut OsRng) -> EdF {
+  let mut scalar = EdF::ZERO;
   for _ in 0 .. 8 {
-    let next = <Ed25519 as Ciphersuite>::F::random(&mut *rng);
+    let next = EdF::random(&mut *rng);
     let keep = scalar.is_zero();
-    scalar = <Ed25519 as Ciphersuite>::F::conditional_select(&scalar, &next, keep);
+    scalar = EdF::conditional_select(&scalar, &next, keep);
   }
   scalar
 }
 
-fn open_input(
-  output: &Output<EdG>,
-  blinds: &BlindScalars,
-  params: &Fs1Params,
-) -> Result<Input<SeleneF>, Fs1Error> {
-  // input = output - blind, so the circuit can add the blind back.
-  // R is I's blind-of-a-blind minus I's V blind. Same formula for every note.
-  let o_tilde = output.O() - (params.t * blinds.o);
-  let i_tilde = output.I() - (params.u * blinds.i);
-  let c_tilde = output.C() - (params.g * blinds.c);
-  let r = (params.t * blinds.ib) - (params.v * blinds.i);
-  Input::new(o_tilde, i_tilde, r, c_tilde).map_err(|_| Fs1Error::Blind)
+/// `[O~, I~, R, C~]` for one output.
+///
+/// input = output - blind, so the circuit can add the blind back.
+/// R is I's blind-of-a-blind minus I's V blind. Same formula for every note.
+pub(crate) fn open_input_points(output: &Output<EdG>, blinds: &BlindScalars, params: &Fs1Params) -> [EdG; 4] {
+  [
+    output.O() - (params.t * blinds.o),
+    output.I() - (params.u * blinds.i),
+    (params.t * blinds.ib) - (params.v * blinds.i),
+    output.C() - (params.g * blinds.c),
+  ]
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
   use super::*;
+  use std::sync::OnceLock;
 
-  fn note(leaf: u64, age: u64, set_size: u64, note_type: u8) -> OpenNote {
+  pub(crate) fn note(leaf: u64, age: u64, set_size: u64, note_type: u8) -> OpenNote {
     OpenNote { leaf_index: leaf, note_age: age, set_size, note_type, anchor: [7; 32] }
   }
 
-  #[test]
-  fn statement_width_ignores_leaf_age_set_and_type() {
-    let samples = [
-      note(0, 0, 1, NOTE_PAYMENT),
-      note(19, 0, 1, NOTE_PAYMENT),
-      note(u64::from(u32::MAX), 0, 1, NOTE_CHANGE),
-      note(0, 0, 1, NOTE_PAYMENT),
-      note(0, 100_000, 1, NOTE_PAYMENT),
-      note(0, 0, 1, NOTE_PAYMENT),
-      note(0, 0, 1 << 10, NOTE_PAYMENT),
-      note(0, 0, 1 << 20, NOTE_CHANGE),
-      note(4, 3, 9, 0x02),
-      note(4, 3, 9, 0x03),
-    ];
-    let lens: Vec<usize> = samples.iter().map(|n| n.encode().len()).collect();
-    assert!(lens.iter().all(|len| *len == STATEMENT_LEN));
-    assert_ne!(samples[0].encode(), samples[2].encode());
-    assert_ne!(samples[8].encode(), samples[9].encode());
+  pub(crate) fn params_8() -> &'static Fs1Params {
+    static CELL: OnceLock<Fs1Params> = OnceLock::new();
+    CELL.get_or_init(|| Fs1Params::open(8).expect("params"))
+  }
+
+  pub(crate) fn tree_1() -> &'static Tree {
+    static CELL: OnceLock<Tree> = OnceLock::new();
+    CELL.get_or_init(|| Tree::build(params_8(), 30, 1).expect("tree"))
+  }
+
+  pub(crate) fn tree_2_10() -> &'static Tree {
+    static CELL: OnceLock<Tree> = OnceLock::new();
+    CELL.get_or_init(|| Tree::build(params_8(), 1 << 10, DEPTH).expect("tree"))
+  }
+
+  pub(crate) fn tree_2_20() -> &'static Tree {
+    static CELL: OnceLock<Tree> = OnceLock::new();
+    CELL.get_or_init(|| Tree::build(params_8(), 1 << 20, DEPTH).expect("tree"))
+  }
+
+  fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
   }
 
   #[test]
   fn proof_length_depends_only_on_input_count_at_depth_7() {
-    for inputs in 1 ..= 8 {
-      let len = proof_len(inputs, DEPTH);
-      assert_eq!(proof_len(inputs, DEPTH), len);
-      assert!(len > 64, "{inputs} {len}");
+    let lens: Vec<usize> = (1 ..= 8).map(|n| proof_len(n, DEPTH)).collect();
+    for pair in lens.windows(2) {
+      assert!(pair[0] < pair[1], "{lens:?}");
     }
-    assert_ne!(proof_len(1, DEPTH), proof_len(2, DEPTH));
-    assert_ne!(proof_len(2, DEPTH), proof_len(4, DEPTH));
-    assert_ne!(proof_len(4, DEPTH), proof_len(8, DEPTH));
-  }
-
-  fn params_1() -> &'static Fs1Params {
-    use std::sync::OnceLock;
-    static CELL: OnceLock<Fs1Params> = OnceLock::new();
-    CELL.get_or_init(|| Fs1Params::open(1).expect("params"))
+    assert!(lens[0] > 64);
   }
 
   #[test]
-  fn rejected_note_type_and_input_count() {
-    let params = params_1();
-    let bad = note(0, 0, 1, 0x01);
-    assert!(matches!(prove(params, &[bad], 1), Err(Fs1Error::NoteType)));
-    assert!(matches!(prove(params, &[], 1), Err(Fs1Error::InputCount)));
+  fn rejected_note_type_input_count_and_leaf() {
+    let params = params_8();
+    let tree = tree_1();
+    assert!(matches!(prove(params, tree, &[note(0, 0, 1, 0x01)]), Err(Fs1Error::NoteType)));
+    assert!(matches!(prove(params, tree, &[]), Err(Fs1Error::InputCount)));
     let nine = vec![note(0, 0, 1, NOTE_PAYMENT); 9];
     assert!(matches!(Fs1Params::open(9), Err(Fs1Error::InputCount)));
-    assert!(matches!(prove(params, &nine, 1), Err(Fs1Error::InputCount)));
-    assert!(matches!(prove(params, &nine[.. 1], 0), Err(Fs1Error::InputCount)));
+    assert!(matches!(prove(params, tree, &nine), Err(Fs1Error::InputCount)));
+    assert!(matches!(prove(params, tree, &[note(30, 0, 1, NOTE_PAYMENT)]), Err(Fs1Error::Path)));
+    assert!(matches!(Tree::build(params, 0, DEPTH), Err(Fs1Error::TreeSize)));
+    assert!(matches!(Tree::build(params, 39, 1), Err(Fs1Error::TreeSize)));
   }
 
   #[test]
-  fn one_layer_length_is_stable_across_the_statement_matrix() {
-    let params = params_1();
-    let variants = [
-      note(0, 0, 1, NOTE_PAYMENT),
-      note(18, 7, 1 << 10, NOTE_CHANGE),
-      note(u64::from(u32::MAX), 100_000, 1 << 20, NOTE_PAYMENT),
-    ];
+  fn proved_carries_no_private_statement() {
+    let params = params_8();
+    let tree = tree_1();
+    let secret = OpenNote {
+      leaf_index: 29,
+      note_age: 0x5eed_c0de_1234_5678,
+      set_size: 0x0bad_f00d_8765_4321,
+      note_type: NOTE_CHANGE,
+      anchor: [0xa5; 32],
+    };
+    let proved = prove(params, tree, &[secret]).expect("prove");
+    verify(params, &proved).expect("verify");
+    let wire = proved.public_bytes();
+    let witness = secret.witness_bytes();
+    assert!(!contains(&wire, &witness));
+    assert!(!contains(&wire, &secret.note_age.to_le_bytes()));
+    assert!(!contains(&wire, &secret.set_size.to_le_bytes()));
+    assert!(!contains(&wire, &secret.anchor[.. 16]));
+    assert_eq!(wire.len(), proved.bytes.len() + 128 + 32);
+  }
+
+  #[test]
+  fn one_layer_tree_proves_every_leaf_at_one_length() {
+    let params = params_8();
+    let tree = tree_1();
     let mut lengths = Vec::new();
-    for variant in variants {
-      let proved = prove(params, &[variant], 1).expect("prove");
+    for (leaf, age, ty) in [(0, 0, NOTE_PAYMENT), (18, 7, NOTE_CHANGE), (29, 100_000, NOTE_PAYMENT)] {
+      let proved = prove(params, tree, &[note(leaf, age, 30, ty)]).expect("prove");
       verify(params, &proved).expect("verify");
-      assert_eq!(proved.statement.len(), STATEMENT_LEN);
       lengths.push(proved.bytes.len());
     }
-    assert!(lengths.iter().all(|len| *len == lengths[0]));
-    assert_eq!(lengths[0], proof_len(1, 1));
+    assert!(lengths.iter().all(|len| *len == proof_len(1, 1)), "{lengths:?}");
+  }
+
+  #[test]
+  fn a_proof_does_not_verify_against_another_tree() {
+    let params = params_8();
+    let mut proved = prove(params, tree_1(), &[note(3, 0, 30, NOTE_PAYMENT)]).expect("prove");
+    let other = Tree::build(params, 31, 1).expect("tree");
+    assert_ne!(root_bytes(&other.root()), root_bytes(&proved.root));
+    proved.root = other.root();
+    assert!(verify(params, &proved).is_err());
+  }
+
+  #[test]
+  fn tree_capacity_holds_2_20_at_depth_7() {
+    assert!(tree_capacity(DEPTH) > 1u128 << 20);
+    assert_eq!(tree_capacity(1), 38);
+    assert_eq!(tree_capacity(2), 38 * 18);
+  }
+
+  #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
+  fn depth_7_length_is_constant_for_1_to_8_inputs_across_leaf_and_age() {
+    let params = params_8();
+    let tree = tree_2_10();
+    assert_eq!(tree.len(), 1 << 10);
+    let size = tree.len();
+    for inputs in 1 ..= 8usize {
+      let mut lengths = Vec::new();
+      for variant in 0 .. 2u64 {
+        let notes: Vec<OpenNote> = (0 .. inputs as u64)
+          .map(|i| {
+            let leaf = if variant == 0 { i } else { size - 1 - i * 97 };
+            let age = if variant == 0 { 0 } else { 100_000 + i };
+            note(leaf, age, size, if i % 2 == 0 { NOTE_PAYMENT } else { NOTE_CHANGE })
+          })
+          .collect();
+        let proved = prove(params, tree, &notes).expect("prove");
+        verify(params, &proved).expect("verify");
+        lengths.push(proved.bytes.len());
+      }
+      assert!(lengths.iter().all(|len| *len == proof_len(inputs, DEPTH)), "{inputs} {lengths:?}");
+    }
+  }
+
+  #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
+  fn a_2_20_tree_proves_its_first_middle_and_last_leaf() {
+    let params = params_8();
+    let tree = tree_2_20();
+    assert_eq!(tree.len(), 1 << 20);
+    let small = tree_2_10();
+    assert_ne!(root_bytes(&tree.root()), root_bytes(&small.root()));
+    let last = tree.len() - 1;
+    let notes = [note(0, 0, 1 << 20, NOTE_PAYMENT), note(1 << 19, 9, 1 << 20, NOTE_CHANGE), note(last, 99, 1 << 20, NOTE_PAYMENT)];
+    for one in notes {
+      let proved = prove(params, tree, &[one]).expect("prove");
+      verify(params, &proved).expect("verify");
+      assert_eq!(proved.bytes.len(), proof_len(1, DEPTH));
+    }
+    let proved = prove(params, tree, &notes).expect("prove");
+    verify(params, &proved).expect("verify");
+    assert_eq!(proved.bytes.len(), proof_len(3, DEPTH));
+    assert!(matches!(prove(params, tree, &[note(1 << 20, 0, 1 << 20, NOTE_PAYMENT)]), Err(Fs1Error::Path)));
   }
 }
