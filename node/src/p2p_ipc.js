@@ -200,8 +200,12 @@ export function applyVerifiedIpcBlock(store, msg) {
   if (block && Object.prototype.hasOwnProperty.call(block, 'trustedPowHash')) delete block.trustedPowHash;
   let tipH = 0;
   try { tipH = Number(store.tip()?.height || 0); } catch { tipH = 0; }
-  const h = Number(block.height || (tipH + 1));
-  if (block.samplesPruned && !shouldPruneSamples(h, tipH)) {
+  // The next block is this tip plus one. A peer height field is not burial.
+  const structuralH = tipH + 1;
+  if (block.height != null && block.height !== '' && Number(block.height) !== structuralH) {
+    return { ok: false, reason: 'height' };
+  }
+  if (block.samplesPruned && !shouldPruneSamples(structuralH, tipH)) {
     return { ok: false, reason: 'samples_pruned' };
   }
   return store.append(block, {});

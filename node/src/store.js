@@ -1970,14 +1970,11 @@ export function createStore(dir, {
     const prev = tip();
     const parentH = prev ? prev.height : 0;
     const tipHeight = parentH;
-    const incomingH = Number(block?.height || (prev ? prev.height + 1 : 1));
-    const shareN = Array.isArray(block?.shareBatch) ? block.shareBatch.length : 0;
     const probe = extra.probeBody === true;
     // A peer-advertised height must not prune or skip validation.
-    // Burial uses only the parent already on this chain.
-    const toVerify = (!probe && !shareN && shouldPruneSamples(incomingH, tipHeight))
-      ? { ...block, samplesPruned: true }
-      : block;
+    // Burial uses only the parent already on this chain. The next block
+    // is that parent plus one, so this path does not set samplesPruned.
+    const toVerify = block;
     const spentBefore = new Set(spentB);
     const check = verifyBlock(toVerify, prev ? {
       hash: prev.hash,
@@ -3139,14 +3136,12 @@ export function createStore(dir, {
   }
 
   /**
-   * Burial for a from-genesis fork. The store tip is the chain that already
-   * pruned history. The candidate length is this fork's own height, not a
-   * height field a peer wrote on a decoy block.
+   * Burial for a from-genesis fork. The tip is this fork's own length.
+   * The local store tip does not bury a shorter chain. A height field on
+   * a block is not this number.
    */
   function forkBurial(fork) {
-    const storeTip = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
-    const candidate = Array.isArray(fork) ? fork.length : 0;
-    return Math.max(storeTip, candidate);
+    return Array.isArray(fork) ? fork.length : 0;
   }
 
   function supplyCarriedTo(endIdx, tipH) {
@@ -3204,12 +3199,15 @@ export function createStore(dir, {
     const rows = Array.isArray(history) ? history : [];
     const tipAt = rows.length + fork.length - 1;
     // Candidate height is the linked length, not the largest height field.
-    // The store tip covers history this node already pruned. A peer tipHeight
+    // Prefix blocks this node already pruned stay buried under the local tip.
+    // A new block is buried only by the candidate chain. A peer tipHeight
     // is not part of this.
     const storeTip = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
     const baseH = rows.length ? (Number(rows[rows.length - 1]?.height) || rows.length) : 0;
-    const tipH = Math.max(storeTip, baseH + fork.length);
-    const seeded = seedHistory(rows, tipAt, tipH);
+    const candidateTip = baseH + fork.length;
+    const prefixTip = Math.max(storeTip, candidateTip);
+    const tipH = candidateTip;
+    const seeded = seedHistory(rows, tipAt, prefixTip);
     if (!seeded.ok) return { ok: false, reason: seeded.reason || 'hash_owed' };
     const allUnitsWalk = unitsAlong(rows, fork);
     if (!allUnitsWalk.ok || !allUnitsWalk.units) {
@@ -3228,7 +3226,7 @@ export function createStore(dir, {
       anchors = [];
     } else if (canonical) {
       const endIdx = rows.length - 1;
-      supply = supplyCarriedTo(endIdx, tipH);
+      supply = supplyCarriedTo(endIdx, prefixTip);
       flux = fluxCarriedTo(endIdx);
       if (supply && flux) anchors = anchorAt.slice();
     }
@@ -3239,7 +3237,7 @@ export function createStore(dir, {
       flux = emptyFluxset();
       anchors = [];
       if (prefix > 0) {
-        const carried = supplyCarriedTo(prefix - 1, tipH);
+        const carried = supplyCarriedTo(prefix - 1, prefixTip);
         const restored = fluxThroughIndex(blocks, prefix - 1);
         if (carried && restored?.frontier) {
           supply = carried;
@@ -3255,7 +3253,7 @@ export function createStore(dir, {
         const stepped = supplyStep(supply, rows[hi], {
           unit: allUnits[hi],
           height: Number(rows[hi]?.height) || hi + 1,
-          tipHeight: tipH,
+          tipHeight: prefixTip,
           genesisMs: gms,
           blockHash: rows[hi]?.hash,
           magic: MAGIC_TESTNET,
@@ -3644,17 +3642,21 @@ export function createStore(dir, {
         clearReorgMarkers();
         return { ok: false, reason: 'adopt_aborted', tip: tip() };
       }
-      const burialTip = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
-        ? verified.burialTip
-        : (Number(accepted[accepted.length - 1]?.height) || accepted.length);
+      const oldTip = fromBlocks.length
+        ? (Number(fromBlocks[fromBlocks.length - 1]?.height) || fromBlocks.length)
+        : 0;
       const adoptedTip = Number(accepted[accepted.length - 1]?.height) || accepted.length;
+      // Common history may already be pruned under the chain being left.
+      // Blocks this adopt adds are buried only by the chain being adopted.
+      const prefixBurial = Math.max(oldTip, adoptedTip);
+      const suffixBurial = adoptedTip;
       let adoptedSupply;
       let stagedFlux;
       let stagedVault;
       try {
         const keptFlux = fluxKeptThrough(lca, fromBlocks);
         const prefixSupply = lca > 0
-          ? supplyCarriedTo(lca - 1, burialTip)
+          ? supplyCarriedTo(lca - 1, prefixBurial)
           : emptySupplyState(genesisHeaderMs(accepted) || 0);
         if (!prefixSupply) {
           clearReorgMarkers();
@@ -3678,7 +3680,7 @@ export function createStore(dir, {
           const stepped = supplyStep(carriedSupply, block, {
             unit: units && units[i] != null ? units[i] : undefined,
             height: Number(block?.height) || i + 1,
-            tipHeight: burialTip,
+            tipHeight: suffixBurial,
             genesisMs: carriedSupply.genesisMs,
             blockHash: block?.hash,
             magic: MAGIC_TESTNET,

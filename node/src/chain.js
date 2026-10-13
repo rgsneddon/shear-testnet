@@ -1729,10 +1729,17 @@ export function assessHeader(block, prev, opts = {}) {
   if (decoded.version !== VERSION) return finish({ ok: false, reason: 'version' });
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return finish({ ok: false, reason: 'prev' });
+  // P2P burial gate. Structural height is the parent already accepted, plus one.
+  // A peer height field is not that number. Reject it before slot burial,
+  // ASERT, or skipFlow can read it.
+  const structuralH = (Number(prev?.height) || 0) + 1;
+  if (block.height != null && block.height !== '' && Number(block.height) !== structuralH) {
+    return finish({ ok: false, reason: 'height' });
+  }
   // The slot byte is consensus. Check it before header work so a flipped
   // trailer is share_slot and does not depend on proof-of-work. An unburied
   // pruned block keeps the samples_pruned reason from the later check.
-  const slotHeight = Number(block.height || (Number(prev?.height || 0) + 1));
+  const slotHeight = structuralH;
   const slotParent = Number(prev?.height || 0);
   // burialTip is the caller's own tip (load, fork, or suffix). A peer
   // tipHeight does not bury. Live append leaves burialTip unset.
@@ -1796,7 +1803,7 @@ export function assessHeader(block, prev, opts = {}) {
     if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
       return finish({ ok: false, reason: 'genesis_ms' });
     }
-    const heightNow = Number(block.height || (Number(prev.height) || 0) + 1);
+    const heightNow = structuralH;
     const quote = asertNextBits({
       anchorBits: parentIsGenesis ? parent.bits : GENESIS_BITS_PACKED,
       anchorTimeMs: resolvedGenesisMs,
@@ -1963,11 +1970,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const hashVouts = cbVouts.filter((o) => o.kind === 'hash');
   let potNanos = 0;
   let bonusNanos = 0;
-  const height = Number(block.height || (prev?.height || 0) + 1);
-  // Burial on the live path is only the parent this caller already accepted.
+  // Structural height. assessHeader already rejected a peer height field.
   // opts.tipHeight is a peer advertisement and must not open skipFlow.
   // loadReplay is this book's own tip, used only while checking a loaded chain.
   const parentHeight = Number(prev?.height || 0);
+  const height = parentHeight + 1;
   // Live burial is the parent this caller already accepted. A peer tipHeight
   // does not open it. loadReplay is this book's own tip. Fork and suffix
   // pass burialTip, the tip of the chain they are validating, and that
