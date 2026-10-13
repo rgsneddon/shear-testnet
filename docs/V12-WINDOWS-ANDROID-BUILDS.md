@@ -260,3 +260,104 @@ Artifact: `wallet/build/app/outputs/flutter-apk/app-debug.apk`
 - Signer DN `C=US, O=Android, CN=Android Debug`, certificate SHA-256 `686f70155278e2ff0263e11e4fda1a37edc757d72f5094e5152fd24cd59c1aa4`
 
 This is a debug-signed fat APK from `wallet/android`. It is not the Continuum release APK. It was not installed on a device. `wallet/build/` is gitignored.
+
+## Windows test box setup
+
+A clean Windows Server clone with Node 22 and git, and without Rust or MSVC, fails the pool suite on a missing `crypto/native/shearhash.node`. Range proofs are not a third addon. `proveRange` and `verifyRange` are exports of `crypto/native/shearadmit.node`, the same addon as admit. Both files are gitignored. Build them on that machine. These steps were not run on the Linux VM above.
+
+`crypto/native/Makefile` on Windows calls `gcc` and `dlltool`, then links `libshear_admit.a`. It does not call `cl.exe`. An MSVC staticlib (`shear_admit.lib` from `x86_64-pc-windows-msvc`) will not satisfy that link. rustup is therefore installed as `x86_64-pc-windows-gnu`. VS Build Tools is installed because this box has no MSVC yet. The addon compile still uses the MSYS2 gcc at `C:\msys64\mingw64\bin`, which is the MinGW this tree already points at (`C:/msys64/mingw64` in the ShearK makefile). Put that directory first on `PATH`. An earlier `libgcc` (the one rustup ships) loads and then fails with "The specified procedure could not be found" (error 127). Do not put `C:\msys64\usr\bin` on `PATH`. CMake's MinGW Makefiles generator refuses to run when that `sh.exe` is visible.
+
+Run the block in an elevated PowerShell. `$Repo` is the clone. Stable rustc is required. 1.83 cannot build zeroize 1.9 (edition 2024).
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$Repo = 'C:\path\to\shear-testnet'
+Set-Location $Repo
+
+# Visual Studio 2022 Build Tools, silent. 0 is success. 3010 means success and a reboot is required.
+# A rerun after that reboot skips this step.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$hasMsvc = $false
+if (Test-Path $vswhere) {
+  $found = & $vswhere -products Microsoft.VisualStudio.Product.BuildTools -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+  if ($found) { $hasMsvc = $true }
+}
+if (-not $hasMsvc) {
+  $vs = Join-Path $env:TEMP 'vs_BuildTools.exe'
+  Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $vs
+  $vsProc = Start-Process -FilePath $vs -Wait -PassThru -ArgumentList @(
+    '--quiet', '--wait', '--norestart', '--nocache',
+    '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+    '--add', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+    '--includeRecommended'
+  )
+  if ($vsProc.ExitCode -eq 3010) {
+    Write-Host 'VS Build Tools installed. Reboot, then run this script again.'
+    exit 3010
+  }
+  if ($vsProc.ExitCode -ne 0) { throw "vs_BuildTools.exe exited $($vsProc.ExitCode)" }
+}
+
+# rustup, silent. Host is gnu so cargo writes libshear_admit.a.
+$rustup = Join-Path $env:TEMP 'rustup-init.exe'
+Invoke-WebRequest -Uri 'https://win.rustup.rs/x86_64' -OutFile $rustup
+& $rustup -y --default-toolchain stable --default-host x86_64-pc-windows-gnu --profile minimal
+if ($LASTEXITCODE -ne 0) { throw "rustup-init exited $LASTEXITCODE" }
+
+# MSYS2 at C:\msys64. gcc, dlltool, mingw32-make, cmake.
+if (-not (Test-Path 'C:\msys64\usr\bin\bash.exe')) {
+  $msys = Join-Path $env:TEMP 'msys2-x86_64-latest.exe'
+  Invoke-WebRequest -Uri 'https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-x86_64-latest.exe' -OutFile $msys
+  $msysProc = Start-Process -FilePath $msys -Wait -PassThru -ArgumentList @(
+    'in', '--confirm-command', '--accept-messages', '--root', 'C:/msys64'
+  )
+  if ($msysProc.ExitCode -ne 0) { throw "msys2 installer exited $($msysProc.ExitCode)" }
+}
+if (-not (Test-Path 'C:\msys64\mingw64\bin\gcc.exe')) {
+  $bash = 'C:\msys64\usr\bin\bash.exe'
+  & $bash -lc 'pacman -Syu --noconfirm'
+  & $bash -lc 'pacman -Syu --noconfirm'
+  & $bash -lc 'pacman -S --noconfirm --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-make mingw-w64-x86_64-cmake'
+  if ($LASTEXITCODE -ne 0) { throw "pacman exited $LASTEXITCODE" }
+}
+
+$env:Path = "C:\msys64\mingw64\bin;$env:USERPROFILE\.cargo\bin;" + $env:Path
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = 'C:\msys64\mingw64\bin\gcc.exe'
+$gcc = (where.exe gcc | Select-Object -First 1).Trim()
+if ($gcc -ne 'C:\msys64\mingw64\bin\gcc.exe') { throw "gcc is $gcc, want C:\msys64\mingw64\bin\gcc.exe" }
+rustc -vV
+if ($LASTEXITCODE -ne 0) { throw 'rustc missing' }
+
+# Node 22 headers. The makefile looks beside node.exe. If the installer omitted them, take include\node from the official win-x64 zip of this same version.
+$nodeInc = & node -e "const fs=require('fs');const path=require('path');const d=path.join(path.dirname(process.execPath),'include','node');process.stdout.write(fs.existsSync(path.join(d,'node_api.h'))?d:'')"
+if (-not $nodeInc) {
+  $ver = (& node -p 'process.version').Trim()
+  $zip = Join-Path $env:TEMP "node-$ver-win-x64.zip"
+  Invoke-WebRequest -Uri "https://nodejs.org/dist/$ver/node-$ver-win-x64.zip" -OutFile $zip
+  $stage = Join-Path $env:TEMP "node-$ver-win-x64"
+  if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+  Expand-Archive -Path $zip -DestinationPath $env:TEMP
+  $nodeInc = Join-Path $stage 'include\node'
+  if (-not (Test-Path (Join-Path $nodeInc 'node_api.h'))) { throw "no node_api.h in $nodeInc" }
+}
+
+if (-not (Test-Path (Join-Path $Repo 'node_modules'))) { npm ci }
+
+# RandomX static lib. ARCH=default, not -march=native. MinGW Makefiles, so the archive is librandomx.a.
+cmake -S crypto\randomx -B crypto\randomx\build -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DARCH=default
+if ($LASTEXITCODE -ne 0) { throw "cmake configure exited $LASTEXITCODE" }
+cmake --build crypto\randomx\build -j
+if ($LASTEXITCODE -ne 0) { throw "randomx build exited $LASTEXITCODE" }
+
+# shearhash.node and shearadmit.node (admit and range proofs).
+mingw32-make -C crypto\native "NODE_INC=$nodeInc"
+if ($LASTEXITCODE -ne 0) { throw "mingw32-make exited $LASTEXITCODE" }
+
+node -e "const h=require('./crypto/native/shearhash.node'); const a=require('./crypto/native/shearadmit.node'); if (typeof h.hash!=='function') throw new Error('shearhash.node has no hash'); if (typeof a.prove!=='function') throw new Error('shearadmit.node has no prove'); if (typeof a.proveRange!=='function') throw new Error('shearadmit.node has no proveRange'); console.log('addons ok');"
+
+# Node 22's default --test globs do not match tests\test_*.js (the directory is tests, not test).
+Set-Location (Join-Path $Repo 'pool')
+node --test "tests/test_*.js"
+```
+
+`where.exe gcc` must print `C:\msys64\mingw64\bin\gcc.exe` first. `rustc -vV` must show `host: x86_64-pc-windows-gnu`. `addons ok` is the load check for hash, admit, and range proof. A bare `node --test` with no glob, run in `pool\`, reports tests 0 on Node 22. `node --test "tests/test_*.js"` from `pool\` is the suite.
