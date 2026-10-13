@@ -4,7 +4,7 @@
  * Shares are not in the mempool.
  */
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
-import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
+import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, asU8, txIoCap } from './note.js';
 import { txBudget } from './block_budget.js';
@@ -94,6 +94,8 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!capped.ok) return capped;
   const budget = txBudget(tx);
   if (!budget.ok) return budget;
+  const pull = custodialPullRejected(tx);
+  if (pull) return pull;
   const earlyOpen = openingBeforeCarry(tx);
   if (earlyOpen) return earlyOpen;
   // A refused kind returns kind before an unbound proof, tag, or commit vin

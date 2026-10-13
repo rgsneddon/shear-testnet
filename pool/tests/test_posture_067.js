@@ -109,8 +109,8 @@ describe('fee dest, auth pub, certify, public stats', () => {
     assert.equal(stats.interval.soaking, true);
     assert.equal(stats.interval.certified90s, false);
     assert.equal(stats.productVersion, '19.0');
-    assert.equal(stats.feeDest, THIS_POOL_DIRECT_FEE_DEST);
-    assert.equal(body.includes(THIS_POOL_DIRECT_FEE_DEST), true);
+    assert.equal(stats.feeDest, undefined);
+    assert.equal(body.includes(THIS_POOL_DIRECT_FEE_DEST), false);
     assert.equal(stats.feeNanos, undefined);
     assert.equal(stats.poolFeeNanos, undefined);
     assert.equal(stats.fluxset, undefined);

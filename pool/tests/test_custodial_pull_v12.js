@@ -107,7 +107,7 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
     assert.ok(sweepGate >= 0 && sweepGate < sweepBuild);
     const sendAt = poolSrc.indexOf('function queueSend');
     const send = poolSrc.slice(sendAt, sendAt + 900);
-    const sendGate = send.indexOf("reason: 'custodial_pull'");
+    const sendGate = send.indexOf('custodialPullRejected');
     assert.ok(sendGate >= 0);
     assert.ok(sendGate < send.indexOf('store.queueTx'));
     assert.ok(sendGate < send.indexOf('mempool.push'));
@@ -115,7 +115,7 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
     const qAt = storeSrc.indexOf('function queueTx');
     const qEnd = storeSrc.indexOf('\n  function ', qAt + 10);
     const q = storeSrc.slice(qAt, qEnd > qAt ? qEnd : storeSrc.length);
-    const qGate = q.indexOf("reason: 'custodial_pull'");
+    const qGate = q.indexOf('custodialPullRejected');
     const qKind = q.indexOf('v12KindRejected');
     const qVerify = q.indexOf('verifyPoolWithdrawBound');
     assert.ok(qGate >= 0 && qKind > qGate && qVerify > qGate);

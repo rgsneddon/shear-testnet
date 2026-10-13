@@ -241,6 +241,22 @@ export function custodialPullAllowed(magic = MAGIC_TESTNET) {
   return String(magic || '') !== String(MAGIC_TESTNET);
 }
 
+/**
+ * Disabled pool-withdraw on this magic. The same reason on queue, mempool,
+ * funded body, and verify. A later kind gate would hide it.
+ */
+export function custodialPullRejected(tx) {
+  if (custodialPullAllowed()) return null;
+  if (!tx || tx.coinbase) return null;
+  if (
+    String(tx.kind || '') === 'pool-withdraw'
+    || String(tx.vout?.[0]?.kind || '') === 'pool-withdraw'
+  ) {
+    return { ok: false, reason: 'custodial_pull' };
+  }
+  return null;
+}
+
 export function poolWithdrawTx({ from, to, nanos, fee, id } = {}) {
   const L = Math.max(0, Math.floor(Number(fee) || 0));
   // One pool wallet: miner pots and the pull levy both sit on `from`.

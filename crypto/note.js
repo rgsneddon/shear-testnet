@@ -871,20 +871,27 @@ export function flowInputsBound(tx) {
     placed = bindListedSlow(vins, proofs);
   }
   if (!placed.ok) return { ok: false, reason: placed.reason || 'admit_membership' };
+  const tagOf = placed.tagOf;
   // The bound list is the only spend. A distinct admit_proof beside it is not
-  // a second input, and verifying it would mark a note the vin does not spend.
+  // a second input. Match it by the 32-byte tag already bound above. A full
+  // blob compare runs only on a tag hit, so a hostile extra proof cannot
+  // rescan every blob.
   const extra = tx?.admit_proof;
-  if (extra) {
+  if (extra && proofs.indexOf(extra) < 0) {
+    const extraTag = boundProofTag(extra);
     let found = false;
-    for (let i = 0; i < proofs.length; i += 1) {
-      if (proofs[i] === extra || sameBoundProof(proofs[i], extra)) {
-        found = true;
-        break;
+    if (extraTag.ok && extraTag.tag) {
+      for (let i = 0; i < proofs.length; i += 1) {
+        const tag = tagOf[i];
+        if (!tag || tag.length !== extraTag.tag.length || !tag.equals(extraTag.tag)) continue;
+        if (sameBoundProof(proofs[i], extra)) {
+          found = true;
+          break;
+        }
       }
     }
     if (!found) return { ok: false, reason: 'admit_membership' };
   }
-  const tagOf = placed.tagOf;
   const top = postedSpendTag(tx?.spendTag);
   if (top.present && (!top.tag || !tagOf[0] || !top.tag.equals(tagOf[0]))) {
     return { ok: false, reason: 'admit_tag' };

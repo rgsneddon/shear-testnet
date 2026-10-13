@@ -129,13 +129,13 @@ export function intervalCertify({
   };
 }
 
-/** Public stats: the pool fee address is published. Amounts, worker dests, and the fluxset are not. */
+/** Public stats publish the fee tail. The full address stays on the pool page. Amounts, worker dests, and the fluxset are not published. */
 export function narrowPublicStats(stats) {
   const src = stats && typeof stats === 'object' ? { ...stats } : {};
   const full = String(src.feeDest || '');
   if (full) {
-    src.feeDest = full;
-    src.feeDestTail = full.slice(-4);
+    src.feeDestTail = src.feeDestTail || full.slice(-4);
+    delete src.feeDest;
   }
   delete src.feeNanos;
   delete src.poolFeeNanos;

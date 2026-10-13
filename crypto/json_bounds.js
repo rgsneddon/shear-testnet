@@ -1,5 +1,11 @@
 /** Network JSON bounds. A body past the cap is refused before it is kept. Nesting past the cap is refused before JSON.parse. */
 export const HTTP_BODY_MAX = 16 * 1024 * 1024;
+/**
+ * Unauthenticated tx and wallet bodies. A block submit may still use
+ * HTTP_BODY_MAX, which matches the 16 MiB P2P frame. This cap is what a
+ * stranger can make the node buffer before a proof check.
+ */
+export const HTTP_TX_BODY_MAX = 1 * 1024 * 1024;
 export const JSON_MAX_DEPTH = 32;
 export const STRATUM_LINE_MAX = 64 * 1024;
 
