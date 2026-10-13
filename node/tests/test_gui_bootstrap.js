@@ -185,7 +185,7 @@ describe('wallet node bootstrap', () => {
     assert.equal(fs.readFileSync(path.join(jsonlOnly, 'chain.jsonl'), 'utf8'), '{"height":12}\n');
   });
 
-  it('defaultDataDir is Roaming Shear/testnet-v11 on Windows and ~/.shear/testnet-v11 on Unix', () => {
+  it('defaultDataDir is Roaming Shear/testnet-v12 on Windows and ~/.shear/testnet-v12 on Unix', () => {
     assert.equal(
       defaultDataDir({ env: { SHEAR_DATA: 'D:\\book' }, platform: 'win32', homedir: 'C:\\Users\\x' }),
       'D:\\book',
@@ -196,21 +196,21 @@ describe('wallet node bootstrap', () => {
       platform: 'win32',
       exists: () => false,
     });
-    assert.equal(win, path.join('C:\\Users\\x\\AppData\\Roaming', 'Shear', 'testnet-v11'));
+    assert.equal(win, path.join('C:\\Users\\x\\AppData\\Roaming', 'Shear', 'testnet-v12'));
     const posix = defaultDataDir({
       env: {},
       homedir: '/home/x',
       platform: 'linux',
       exists: () => false,
     });
-    assert.equal(posix, path.join('/home/x', '.shear', 'testnet-v11'));
+    assert.equal(posix, path.join('/home/x', '.shear', 'testnet-v12'));
     const legacy = defaultDataDir({
       env: { APPDATA: 'C:\\Users\\x\\AppData\\Roaming' },
       homedir: 'C:\\Users\\x',
       platform: 'win32',
-      exists: (p) => String(p).includes(`${path.sep}.shear${path.sep}testnet-v11`) && String(p).endsWith('chain.bin'),
+      exists: (p) => String(p).includes(`${path.sep}.shear${path.sep}testnet-v12`) && String(p).endsWith('chain.bin'),
     });
-    assert.equal(legacy, path.join('C:\\Users\\x', '.shear', 'testnet-v11'));
+    assert.equal(legacy, path.join('C:\\Users\\x', '.shear', 'testnet-v12'));
   });
 
   it('pullPublishedBootstrap stores a pair an empty datadir can apply', async () => {

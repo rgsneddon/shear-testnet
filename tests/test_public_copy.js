@@ -111,9 +111,10 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(paper, /hasher dest that produced proven work/);
 
     const readme = read('README.md');
-    assert.match(readme, /Wallet pin: \*\*0\.71\*\*/);
+    assert.match(readme, /Wallet pin: \*\*0\.72\*\*/);
+    assert.match(readme, /Shear Sentinel v19/);
     assert.match(readme, /Shear Sentinel v18/);
-    assert.match(readme, /\(product 18\.0\)/);
+    assert.match(readme, /\(product 19\.0\)/);
     assert.match(readme, /releases\/tag\/0\.71/);
     assert.match(readme, /Git tag `v16` stays on the same commit as tag `0\.66`/);
     assert.match(readme, /releases\/download\/v18\/shear-node-v18-windows\.zip/);
@@ -153,7 +154,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(walletReadme, /releases\/tag\/0\.39/);
     assert.match(readme, /Copy dest/);
     assert.match(readme, /own hash bonus on the next sealed block/);
-    assert.match(readme, /shear-testnet-v11/);
+    assert.match(readme, /shear-testnet-v12/);
+    assert.doesNotMatch(readme, /Chain: `shear-testnet-v11`/);
     assert.doesNotMatch(joined, /shear-testnet-v6/);
     assert.doesNotMatch(joined, /testnet-v6/);
     assert.doesNotMatch(readme, /shear-testnet-v4/);
@@ -172,7 +174,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /178\.105\.187\.178/);
     assert.doesNotMatch(joined, /178\.156\.222\.223/);
     const sheark = read('sheark-miner/README.md');
-    assert.match(sheark, /magic `shear-testnet-v4`/);
+    assert.match(sheark, /magic `shear-testnet-v12`/);
+    assert.match(sheark, /ShearK-Miner 2\.9/);
+    assert.doesNotMatch(sheark, /magic `shear-testnet-v4`/);
     assert.doesNotMatch(sheark, /magic `shear-testnet-v2`/);
 
     assert.doesNotMatch(joined, /Private dests, public amounts/);
@@ -183,8 +187,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /ADMITv2/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
-    assert.match(main, /ShearK 2\.8/);
-    assert.match(main, /Continuum 0\.71/);
+    assert.match(main, /ShearK 2\.9/);
+    assert.match(main, /Continuum 0\.72/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.doesNotMatch(main, /Continuum 0\.53/);
     assert.doesNotMatch(main, /Continuum 0\.52/);
@@ -200,7 +204,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /Continuum GUI <strong>0\.40<\/strong>/);
     assert.doesNotMatch(main, /Continuum GUI 0\.40/);
     const help = read('node/src/help.js');
-    assert.match(help, /Continuum 0\.71/);
+    assert.match(help, /Continuum 0\.72/);
+    assert.doesNotMatch(help, /Continuum 0\.71/);
     assert.doesNotMatch(help, /Continuum 0\.48/);
     assert.doesNotMatch(help, /Continuum 0\.40/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);

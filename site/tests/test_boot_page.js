@@ -21,8 +21,8 @@ describe('boot.shear.digital page', () => {
     assert.match(boot, /href="\/latest\.bin"/);
     assert.match(boot, /id="dl-json"/);
     assert.match(boot, /id="dl-bin"/);
-    assert.match(boot, /shear-testnet-v11/);
-    assert.match(boot, /Continuum 0\.71/);
+    assert.match(boot, /shear-testnet-v12/);
+    assert.match(boot, /Continuum 0\.72/);
     assert.doesNotMatch(boot, /Continuum 0\.66/);
     assert.doesNotMatch(boot, /shear-testnet-v6/);
     assert.doesNotMatch(boot, /testnet-v6/);
@@ -45,9 +45,9 @@ describe('shear.digital/node page', () => {
     assert.match(node, /--solo/);
     assert.doesNotMatch(node, /export SHEAR_BOOTSTRAP=1/);
     assert.match(node, /boot\.shear\.digital/);
-    assert.match(node, /Shear Sentinel v18/);
-    assert.match(node, /18\.0/);
-    assert.match(node, /release <strong>v18<\/strong>/);
+    assert.match(node, /Shear Sentinel v19/);
+    assert.match(node, /19\.0/);
+    assert.match(node, /Source pin <strong>v19<\/strong>/);
     assert.doesNotMatch(node, /release <strong>v16<\/strong>/);
     assert.doesNotMatch(node, /release <strong>v17<\/strong>/);
     assert.doesNotMatch(node, /node 10\.0|version":"10\.0"|pin <strong>10\.0/);

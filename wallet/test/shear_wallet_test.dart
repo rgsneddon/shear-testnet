@@ -2721,7 +2721,7 @@ void main() {
     expect(sync.seeds.contains(kPublicPoolHttp), isFalse);
     expect(sync.seeds.contains(kLocalPoolHttp), isFalse);
     expect(sync.seeds.contains('https://p2p.shear.digital'), isTrue);
-    expect(kBookMagic, 'shear-testnet-v11');
+    expect(kBookMagic, 'shear-testnet-v12');
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
@@ -7391,7 +7391,7 @@ void main() {
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
     final v3 = _PoolLive(headerHex: hex, height: 2306, magic: 'shear-testnet-v3');
-    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v11');
+    final v4 = _PoolLive(headerHex: hex, height: 16, magic: 'shear-testnet-v12');
     final v3s = await _fakePool(live: v3);
     final v4s = await _fakePool(live: v4);
     addTearDown(() => v3s.close(force: true));
@@ -7400,7 +7400,9 @@ void main() {
     expect(isLiveBookStats({'magic': 'shear-testnet-v6'}), isFalse);
     expect(isLiveBookStats({'magic': 'shear-testnet-v7'}), isFalse);
     expect(isLiveBookStats({'magic': 'shear-testnet-v8'}), isFalse);
-    expect(isLiveBookStats({'magic': 'shear-testnet-v11'}), isTrue);
+    expect(isLiveBookStats({'magic': 'shear-testnet-v10'}), isFalse);
+    expect(isLiveBookStats({'magic': 'shear-testnet-v11'}), isFalse);
+    expect(isLiveBookStats({'magic': 'shear-testnet-v12'}), isTrue);
     final sync = ShearReadSync(
       seeds: ['http://127.0.0.1:${v3s.port}', 'http://127.0.0.1:${v4s.port}'],
       http: _realHttp(),
@@ -7419,7 +7421,7 @@ void main() {
     );
     final reset = ShearIdentity.fromJson(v3, reset: true);
     expect(reset.address, id.address);
-    expect(id.toJson()['network'], 'shear-testnet-v11');
+    expect(id.toJson()['network'], 'shear-testnet-v12');
   });
 
   test('upgraded wallet drops leftover pre-reset txs; live history is the book', () async {
@@ -7629,7 +7631,7 @@ void main() {
     final liveUrl = 'http://127.0.0.1:${liveServer.port}';
     expect(isUsableTipStats(const <String, dynamic>{}), isFalse);
     expect(isUsableTipStats({'height': 0, 'header': ''}), isFalse);
-    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v11'}), isTrue);
+    expect(isUsableTipStats({'height': 40, 'magic': 'shear-testnet-v12'}), isTrue);
     final sync = ShearReadSync(
       seeds: [emptyUrl, liveUrl],
       http: _realHttp(),
@@ -7686,7 +7688,7 @@ void main() {
       seeds: ['http://127.0.0.1:${server.port}'],
       http: _realHttp(),
     );
-    expect(report, contains('magic=shear-testnet-v11'));
+    expect(report, contains('magic=shear-testnet-v12'));
     expect(report, contains('followTip.sampledTip=53'));
     expect(report, contains('displayHeight=53'));
     expect(report, contains('sealedHeight=53'));
@@ -9460,7 +9462,7 @@ class _PoolLive {
     this.balance = 10,
     this.pending = 0,
     this.avgBlockTimeMs = 90000,
-    this.magic = 'shear-testnet-v11',
+    this.magic = 'shear-testnet-v12',
     this.owner,
     List<Map<String, dynamic>>? incoming,
     List<Map<String, dynamic>>? history,

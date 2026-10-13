@@ -81,7 +81,7 @@ export function printConfig() {
 
 export { createP2p, P2P_PORT, createStore, createRpc, RPC_PORT, mintVorticeDeployKey, parseVorticeKey };
 
-const BOOK_LEAF = 'testnet-v11';
+const BOOK_LEAF = 'testnet-v12';
 
 function bookPresent(dir, exists) {
   return exists(path.join(dir, 'chain.bin'))
@@ -89,7 +89,7 @@ function bookPresent(dir, exists) {
     || exists(path.join(dir, 'segments', 'seg-000000.bin'));
 }
 
-/** This book is testnet-v11 for Shear Sentinel v18 and Continuum 0.71. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming). A testnet-v10 directory is not this book. */
+/** This book is testnet-v12 for Shear Sentinel v19 and Continuum 0.72. Windows: %APPDATA%\\Shear\\testnet-v12 (Roaming). A testnet-v11 directory is not this book. */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),
@@ -360,14 +360,14 @@ async function main() {
     return;
   }
   if (argv.includes('--status')) {
-    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
+    const dataDir = defaultDataDir();
     const store = createStore(dataDir, {
       fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
     });
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
   }
-  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
+  const dataDirForBoot = defaultDataDir();
   const emptyDatadir = datadirIsEmpty(dataDirForBoot);
   const boot = await resolveGuiBootstrap({
     argv,

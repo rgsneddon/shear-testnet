@@ -183,7 +183,7 @@ bool _bookNameAt(String blob, String name) {
   return false;
 }
 
-/// True only for the live ADMITv2 book. A leftover v3/v2 node is dropped.
+/// True only for the live book. A leftover v11 node is dropped.
 bool isLiveBookStats(Map<String, dynamic> stats) {
   final blob = [
     stats['magic'],
@@ -196,6 +196,10 @@ bool isLiveBookStats(Map<String, dynamic> stats) {
     'shear-testnet-v3',
     'shear-testnet-v6',
     'shear-testnet-v7',
+    'shear-testnet-v8',
+    'shear-testnet-v9',
+    'shear-testnet-v10',
+    'shear-testnet-v11',
   ];
   for (final name in retired) {
     if (_bookNameAt(blob, name)) return false;

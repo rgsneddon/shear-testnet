@@ -16,7 +16,7 @@ void main() {
   test('Continuum 0.72 build number comes from pubspec +N and is not 49', () {
     expect(kWalletVersion, '0.72');
     expect(kCliVersion, '0.72');
-    expect(kBookMagic, 'shear-testnet-v11');
+    expect(kBookMagic, 'shear-testnet-v12');
     final pubspec = File('pubspec.yaml').readAsStringSync();
     expect(pubspec, contains('version: 0.72.0+97'));
     final plus = RegExp(r'version:\s*0\.72\.0\+(\d+)').firstMatch(pubspec);
@@ -74,7 +74,7 @@ void main() {
     json.listen((req) async {
       req.response.statusCode = 200;
       req.response.headers.contentType = ContentType.json;
-      req.response.write('{"height":4,"header":"aa","magic":"shear-testnet-v11"}');
+      req.response.write('{"height":4,"header":"aa","magic":"shear-testnet-v12"}');
       await req.response.close();
     });
     final live = ShearReadSync(
@@ -119,7 +119,7 @@ void main() {
     await side.apply();
     expect(side.seekerTip, 0);
     expect(side.committed, ClosureSendMode.connectBare);
-    side.adoptBookPin(genesis: 'aa', magic: 'shear-testnet-v11', trustedTip: 40);
+    side.adoptBookPin(genesis: 'aa', magic: 'shear-testnet-v12', trustedTip: 40);
     await side.apply();
     expect(side.seekerTip, 40);
     expect(side.rescanFromGenesis, isFalse);
@@ -140,7 +140,7 @@ void main() {
     final again = ShearSession(store: store);
     await again.unlock('correct horse battery staple');
     expect(again.identity!.paymentCode, she1);
-    expect(kBookMagic, 'shear-testnet-v11');
+    expect(kBookMagic, 'shear-testnet-v12');
   });
 
   test('unsealed vault observe does not mint Spendable and Sign is local-only', () {

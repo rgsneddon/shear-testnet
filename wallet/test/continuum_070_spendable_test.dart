@@ -505,8 +505,8 @@ void main() {
         req.response.write(jsonEncode({
           'ok': true,
           'height': tip,
-          'magic': 'shear-testnet-v11',
-          'network': 'shear-testnet-v11',
+          'magic': 'shear-testnet-v12',
+          'network': 'shear-testnet-v12',
         }));
       } else if (path == '/api/wallet/balance' || path == '/balance') {
         req.response.write(jsonEncode({'ok': true, 'balance': 40}));
@@ -586,8 +586,8 @@ void main() {
         req.response.write(jsonEncode({
           'ok': true,
           'height': tip,
-          'magic': 'shear-testnet-v11',
-          'network': 'shear-testnet-v11',
+          'magic': 'shear-testnet-v12',
+          'network': 'shear-testnet-v12',
         }));
       } else if (path == '/api/wallet/balance' || path == '/balance') {
         req.response.write(jsonEncode({'ok': true, 'balance': 40}));
@@ -759,8 +759,8 @@ void main() {
         req.response.write(jsonEncode({
           'ok': true,
           'height': 20,
-          'magic': 'shear-testnet-v11',
-          'network': 'shear-testnet-v11',
+          'magic': 'shear-testnet-v12',
+          'network': 'shear-testnet-v12',
         }));
       } else if (path == '/api/wallet/balance' || path == '/balance') {
         req.response.write(jsonEncode({'ok': true, 'balance': 40, 'address': addr}));
@@ -837,8 +837,8 @@ void main() {
         req.response.write(jsonEncode({
           'ok': true,
           'height': tip,
-          'magic': 'shear-testnet-v11',
-          'network': 'shear-testnet-v11',
+          'magic': 'shear-testnet-v12',
+          'network': 'shear-testnet-v12',
         }));
       } else if (path == '/api/wallet/balance' || path == '/balance') {
         req.response.write(jsonEncode({'ok': true, 'balance': 40, 'address': addr}));

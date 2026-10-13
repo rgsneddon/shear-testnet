@@ -35,7 +35,7 @@ void main() {
     expect(kWalletVersion, '0.72');
     expect(kCliVersion, '0.72');
     expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.72.0+97'));
-    expect(kBookMagic, 'shear-testnet-v11');
+    expect(kBookMagic, 'shear-testnet-v12');
     final sync = ShearReadSync(jitter: Duration.zero);
     expect(sync.seeds.first, kLocalNodeRpc);
     expect(sync.seeds.contains(kPublicPoolHttp), isFalse);

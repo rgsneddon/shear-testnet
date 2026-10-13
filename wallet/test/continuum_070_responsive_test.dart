@@ -92,8 +92,8 @@ void main() {
     await tester.pump();
     final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
     final lines = <String>[
-      'status height=6 peers=1 ibd=false magic=shear-testnet-v11',
-      'status height=7 peers=0 ibd=false magic=shear-testnet-v11',
+      'status height=6 peers=1 ibd=false magic=shear-testnet-v12',
+      'status height=7 peers=0 ibd=false magic=shear-testnet-v12',
     ];
     var logFrame = false;
     final follow = tester.runAsync(() => state.followNodeLog(lines));
@@ -171,7 +171,7 @@ void main() {
           req.response.write('{"ok":true,"balance":0}');
         } else {
           req.response.write(
-            '{"ok":true,"height":4,"magic":"shear-testnet-v11","network":"shear-testnet-v11"}',
+            '{"ok":true,"height":4,"magic":"shear-testnet-v12","network":"shear-testnet-v12"}',
           );
         }
         await req.response.close();
@@ -295,7 +295,7 @@ void main() {
             req.response.write('{"ok":true,"balance":40}');
           } else {
             req.response.write(
-              '{"ok":true,"height":387,"magic":"shear-testnet-v11","network":"shear-testnet-v11","balance":9,"owedPi":3}',
+              '{"ok":true,"height":387,"magic":"shear-testnet-v12","network":"shear-testnet-v12","balance":9,"owedPi":3}',
             );
           }
           await req.response.close();
@@ -467,7 +467,7 @@ void main() {
             req.response.write('{"ok":true,"balance":40}');
           } else {
             req.response.write(
-              '{"ok":true,"height":387,"magic":"shear-testnet-v11","network":"shear-testnet-v11","balance":9,"owedPi":3}',
+              '{"ok":true,"height":387,"magic":"shear-testnet-v12","network":"shear-testnet-v12","balance":9,"owedPi":3}',
             );
           }
           await req.response.close();

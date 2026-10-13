@@ -379,18 +379,18 @@ PackagedNode? resolvePackagedNode({String? override, String? besideDir}) {
   return PackagedNode(binary: legacy, workDir: besideDir);
 }
 
-/// Shared with Shear Sentinel v16. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming).
+/// Shared with Shear Sentinel v19. Windows: %APPDATA%\\Shear\\testnet-v12 (Roaming).
 String defaultShearBookDir() {
   final data = Platform.environment['SHEAR_DATA'];
   if (data != null && data.isNotEmpty) return data;
   if (Platform.isWindows) {
     final app = Platform.environment['APPDATA'];
     if (app != null && app.isNotEmpty) {
-      return '$app${Platform.pathSeparator}Shear${Platform.pathSeparator}testnet-v11';
+      return '$app${Platform.pathSeparator}Shear${Platform.pathSeparator}testnet-v12';
     }
   }
   final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
-  return '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v11';
+  return '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v12';
 }
 
 String closureNodeDataDir({String? override, required String besideDir}) {
@@ -401,7 +401,7 @@ String closureNodeDataDir({String? override, required String besideDir}) {
     return legacyBeside;
   }
   final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
-  final posix = '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v11';
+  final posix = '$home${Platform.pathSeparator}.shear${Platform.pathSeparator}testnet-v12';
   if (Platform.isWindows &&
       shared != posix &&
       closureDatadirEmpty(shared) &&

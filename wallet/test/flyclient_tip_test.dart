@@ -61,8 +61,8 @@ Future<HttpServer> _serve(_Chain chain, List<String> paths, {bool spoilAbove = f
       req.response.write(jsonEncode({
         'ok': true,
         'height': chain.tip,
-        'magic': 'shear-testnet-v11',
-        'network': 'shear-testnet-v11',
+        'magic': 'shear-testnet-v12',
+        'network': 'shear-testnet-v12',
         'header': chain.headers[1],
       }));
     } else if (req.uri.path == '/headers' || req.uri.path == '/api/explorer/headers') {
@@ -252,7 +252,7 @@ void main() {
       emptyDatadir: false,
       startProcess: (binary, env, args) async {},
     );
-    side.adoptBookPin(genesis: 'aa', magic: 'shear-testnet-v11', trustedTip: 40);
+    side.adoptBookPin(genesis: 'aa', magic: 'shear-testnet-v12', trustedTip: 40);
     side.select(ClosureSendMode.localNode);
     await side.apply();
     expect(side.committed, ClosureSendMode.localNode);
@@ -264,22 +264,22 @@ void main() {
     expect(side.running, isFalse);
     expect(side.seekerTip, 40);
     expect(side.rescanFromGenesis, isFalse);
-    side.adoptBookPin(genesis: 'bb', magic: 'shear-testnet-v11', trustedTip: 40);
+    side.adoptBookPin(genesis: 'bb', magic: 'shear-testnet-v12', trustedTip: 40);
     expect(side.rescanFromGenesis, isTrue);
     expect(side.seekerTip, 0);
     final kept = modeHandoff(
       trustedTip: 40,
       fromGenesis: 'aa',
       toGenesis: 'aa',
-      fromMagic: 'shear-testnet-v11',
-      toMagic: 'shear-testnet-v11',
+      fromMagic: 'shear-testnet-v12',
+      toMagic: 'shear-testnet-v12',
     );
     expect(kept.rescanFromGenesis, isFalse);
     expect(kept.tip, 40);
     final changed = modeHandoff(
       trustedTip: 40,
       fromMagic: 'shear-testnet-v10',
-      toMagic: 'shear-testnet-v11',
+      toMagic: 'shear-testnet-v12',
     );
     expect(changed.rescanFromGenesis, isTrue);
     expect(changed.tip, 0);

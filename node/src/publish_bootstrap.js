@@ -24,7 +24,7 @@ function log(obj) {
 }
 
 export function publishOnce({
-  dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v11',
+  dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v12',
   publishDir = process.env.SHEAR_BOOT_PUBLISH || path.join(dataDir, 'bootstrap'),
 } = {}) {
   const chain = path.join(dataDir, 'chain.bin');
@@ -90,7 +90,7 @@ function invokedDirectly() {
 }
 
 if (invokedDirectly()) {
-  const dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v11';
+  const dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v12';
   const publishDir = process.env.SHEAR_BOOT_PUBLISH || path.join(dataDir, 'bootstrap');
   const intervalMs = bootstrapPublishIntervalMs(process.env);
   publishOnce({ dataDir, publishDir });

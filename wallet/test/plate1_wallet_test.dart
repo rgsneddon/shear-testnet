@@ -252,7 +252,7 @@ void main() {
     expect(resolveSharedNodeBinary(besideDir: dir.path), bin.path);
     expect(resolveSharedNodeBinary(override: 'from-env', besideDir: dir.path), 'from-env');
     final data = closureNodeDataDir(besideDir: dir.path);
-    expect(data.contains('testnet-v11'), isTrue);
+    expect(data.contains('testnet-v12'), isTrue);
     expect(closureDatadirEmpty(data), isTrue);
     final legacy = '${dir.path}${Platform.pathSeparator}shear-node-data';
     Directory(legacy).createSync(recursive: true);
