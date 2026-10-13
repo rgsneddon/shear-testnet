@@ -38,7 +38,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
-import { emptySupplyState, foldSupply, supplyFromScalar, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
+import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
   verifyShareBatch,
@@ -370,11 +370,12 @@ export function createStore(dir, {
     const trustStoredHash = got.length > 0 && got === want;
     const plan = trustStoredHash ? acceptBookSnap(readBookSnap(snapFile, sealKey, snapExpect)) : null;
     const planOk = plan && planSupplyLinks(plan);
-    if (planOk && plan.height === blocks.length) {
+    const snapRows = planOk ? supplyRowsFromPlan(plan) : null;
+    if (snapRows && plan.height === blocks.length) {
       applySnap(plan, plan.height);
-      installSupplyPlan(plan);
+      installSupplyPlan(plan, snapRows);
       loadMode = 'snap';
-    } else if (planOk) {
+    } else if (snapRows) {
       const priorFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
       const checked = verifyLoadedChain(blocks, {
         trustStoredHash: true,
@@ -388,12 +389,8 @@ export function createStore(dir, {
           acceptedSeries: plan.acceptedSeries.slice(),
           spentIds: plan.spentIds,
           flux: priorFlux,
-          supply: supplyFromScalar(plan.supplySnaps[plan.height - 1], {
-            owedRows: plan.owedRows,
-            acceptedSeries: plan.acceptedSeries,
-            owedKnown: true,
-          }),
-          supplyAt: supplyRowsFromPlan(plan),
+          supply: snapRows[plan.height - 1],
+          supplyAt: snapRows,
           anchors: anchorsFromPlan(plan),
         },
       });
@@ -1098,15 +1095,21 @@ export function createStore(dir, {
         owedKnown,
       });
     }
+    if (!rows.length) return rows;
+    const walked = fillSnapInterest(rows, blocks.slice(0, rows.length));
+    if (!walked.ok) return null;
     return rows;
   }
 
-  function installSupplyPlan(plan) {
-    supplyAt = supplyRowsFromPlan(plan);
+  function installSupplyPlan(plan, rows = null) {
+    const got = rows || supplyRowsFromPlan(plan);
+    if (!got) return false;
+    supplyAt = got;
     supplyTip = supplyAt[supplyAt.length - 1] || null;
     anchorAt = anchorsFromPlan(plan);
     const tipH = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
     retainFrontierBlobs(anchorAt, tipH, haltDepth);
+    return true;
   }
 
   function anchorFromSnap(a) {
