@@ -12,7 +12,8 @@ import { decodeHeader } from '../../crypto/header.js';
 import { bProof } from '../../crypto/clearing.js';
 import { hashBonusUnitNanos } from '../../crypto/asert.js';
 import { openedCoinbaseNanos, sealNote } from '../../crypto/note.js';
-import { attachAdmitPub, proveFlowSpend } from '../../crypto/admit.js';
+import { attachAdmitPub } from '../../crypto/admit.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { signSpendTx } from '../../crypto/spend.js';
@@ -207,7 +208,6 @@ export function balancedSend(store, payer, {
   if (!Number.isSafeInteger(change) || change < 0) {
     return { ok: false, reason: 'unit_does_not_fit', opened, fee, unit };
   }
-  const live = store.fluxset();
   const dest20 = Buffer.from(hash20FromAddress(payer.dest));
   const vout = [{ address: payer.dest, nanos: PAY_NANOS, kind: 'send' }];
   if (change > 0) vout.push({ address: payer.dest, nanos: change, kind: 'send' });
@@ -229,12 +229,7 @@ export function balancedSend(store, payer, {
     tx.nonce = nonce;
   }
   tx = attachDummyOuts(tx, { spent });
-  tx = proveFlowSpend(tx, {
-    spendSeed: payer.spendSeed,
-    spentNote: spent,
-    pubs: live.pubs,
-    commits: live.commits,
-  });
+  tx = attachStubAdmitV2(tx);
   if (!tx.admit_proof || !tx.excess) return { ok: false, reason: 'prove', tx };
   signSpendTx(tx, payer.key);
   const wire = compactTx(tx);

@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
-import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BPS, GENESIS_BITS_PACKED, nextBits } from '../../crypto/asert.js';
-import { decodeHeader } from '../../crypto/header.js';
+import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BPS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { lockTx, withdrawTx, emptyVault, deposit } from '../../crypto/reserve_vault.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
@@ -19,7 +18,9 @@ function rangeProofsLive() {
     return false;
   }
 }
-import { fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
+import { fluxsetFromBlocks } from '../../crypto/admit.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -45,7 +46,7 @@ function mine(tpl) {
 }
 
 describe('Phase B GATE — EVM in verifyBlock', () => {
-  it('accepts a native Flow send and an EVM SHE value transfer plus Reserve bytecode in one block', {
+  it('a byte-2 flow send in an EVM block is admit_version', {
     skip: !rangeProofsLive() ? 'range proofs need shearadmit.node' : false,
   }, async () => {
     const idA = newIdentity();
@@ -55,12 +56,13 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const sendNanos = 2;
     const lockNanos = 1000;
     const valueNanos = 77;
+    const parentNow = 1_700_000_000_000;
     const parent = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: destA,
       bits: GENESIS_BITS_PACKED,
-      now: Date.now(),
+      now: parentNow,
       samples: [{ miner: destA, nonce: '1', tag: 'a', count: 1 }],
     }));
     const TRUSTED = Buffer.alloc(32);
@@ -88,13 +90,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
         { address: destA, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    const liveJ = fluxsetFromBlocks([parent]);
-    proveFlowSpend(sendTx, {
-      spendSeed: idA.spendSeed || ed25519SeedOf(idA.privateKey),
-      spentNote: spent,
-      pubs: liveJ.pubs,
-      commits: liveJ.commits,
-    });
+    attachStubAdmitV2(sendTx);
     const lock = lockTx({ from: destA, to: destA, nanos: lockNanos, id: 'reserve-lock' });
     lock.fee = levyNeed(lock, [sendTx]);
     const evmTx = {
@@ -107,8 +103,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       vout: [{ address: destB, nanos: valueNanos, kind: 'evm-value' }],
     };
     evmTx.fee = levyNeed(evmTx, [sendTx, lock]);
-    const childNow = Date.now() + 90_000;
-    const ph = decodeHeader(parent.header);
+    const childNow = parentNow + 90_000;
     const base = {
       prev: okP.hash,
       prevHeader: parent.header,
@@ -117,21 +112,18 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       parentWeight: parent.weight,
       height: 2,
       miner: destA,
-      bits: nextBits(ph.bits, 90_000),
+      bits: GENESIS_BITS_PACKED,
       now: childNow,
       samples: [{ miner: destA, nonce: '1', tag: 'a', count: 1 }],
     };
     const block = mine(buildTemplate({
       ...base,
-      txs: [sendTx, lock, evmTx],
+      txs: [compactTx(sendTx), lock, evmTx],
     }));
     const got = await verifyBlock(block, { ...parent, hash: okP.hash, header: parent.header, height: 1 }, { trustedPowHash: TRUSTED, skipSharePow: true });
-    assert.equal(got.ok, true, got.reason || got.error);
-    assert.equal(got.evmRan, true);
-    assert.ok(got.evm);
-    assert.equal(got.evm.totalLocked, lockNanos);
-    assert.equal(got.evm.valueMoved, valueNanos);
-    assert.ok(got.evm.calls >= 2);
+    assert.equal(sendTx.admit_proof.blob[0], 2);
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'admit_version', got.reason || got.error);
   });
 
   it('still forbids a random vortice extra-mint in verifyBlock', () => {

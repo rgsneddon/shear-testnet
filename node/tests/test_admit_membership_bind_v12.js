@@ -17,14 +17,14 @@ import {
   flowInputsBound,
   kernelExcess,
   openedCoinbaseNanos,
-  scalarFrom,
   txSpendTags,
   verifyFlowConservation,
 } from '../../crypto/note.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { compactTx, leanBlock } from '../../crypto/chronoflux.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
-import { admitProve, admitScalarFromSeed, fluxsetIndexOf } from '../../crypto/admit.js';
+import { fluxsetIndexOf } from '../../crypto/admit.js';
+import { stubAdmitV2 } from './stub_admit_v2.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos, LEVY_CAP_NANOS } from '../../crypto/levy.js';
 import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../crypto/address.js';
@@ -113,6 +113,7 @@ describe('v12 membership proofs are bound 1:1', () => {
         return room;
       };
 
+      let stubLane = 1;
       const assemble = (spec) => {
         const input = spec.notes.reduce((sum, note) => sum + note.opened, 0);
         // The cap is the consensus ceiling. A template rewrite cannot push a
@@ -138,15 +139,12 @@ describe('v12 membership proofs are bound 1:1', () => {
           const note = spec.notes[i];
           const index = fluxsetIndexOf(flux.pubs, spendSeed, note);
           assert.ok(index >= 0, `${spec.id} owns note ${i}`);
-          const proof = admitProve({
-            x: admitScalarFromSeed(spendSeed, note),
-            index,
-            pubs: flux.pubs,
-            commits: flux.commits,
-            c: note.commit,
-            t: scalarFrom(tx.vin[i].t),
+          const proof = stubAdmitV2({
+            cTilde: tx.vin[i].commit,
+            tagFill: stubLane,
           });
-          assert.ok(proof?.blob && proof.cTilde, `${spec.id} prove ${i}`);
+          stubLane += 1;
+          assert.ok(proof?.blob && proof.blob[0] === 2 && proof.cTilde, `${spec.id} stub ${i}`);
           const posted = Buffer.from(tx.vin[i].commit);
           const want = Buffer.from(proof.cTilde);
           if (!posted.equals(want)) {

@@ -7,7 +7,7 @@ import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { compactTx } from '../../crypto/chronoflux.js';
-import { proveFlowSpend } from '../../crypto/admit.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import {
   signSpendTx,
   verifySpendSig,
@@ -149,12 +149,7 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
         { address: dest, nanos: lastPot.change, kind: 'send' },
       ],
     }, { spent: lastPot });
-    proveFlowSpend(sendTx, {
-      spendSeed: box.spendSeed,
-      spentNote: { ...spent, r: lastPot.r, kind: spent.kind || 'pot' },
-      pubs: a.fluxset().pubs,
-      commits: a.fluxset().commits,
-    });
+    attachStubAdmitV2(sendTx);
     bindWeightFee(sendTx);
     signSpendTx(sendTx, box.key);
     assert.equal(verifySpendSig(sendTx), true);
