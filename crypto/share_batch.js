@@ -662,6 +662,34 @@ export function splitDeferWindow(shares, parentHeader, priorHeader, cap = MAX_SH
 }
 
 /**
+ * Rows the defer window can still pay: slot 0 or slot 1.
+ * A stale header is not eligible. The number is a count, not a miner.
+ * issuedJobKeys uses the same rule as splitDeferWindow.
+ */
+export function eligibleShareCount(shares, parentHeader, priorHeader = null, issuedJobKeys = null) {
+  const list = Array.isArray(shares) ? shares : [];
+  const issued = issuedKeySet(issuedJobKeys);
+  const issuedSet = issued == null ? new Set() : issued;
+  let n = 0;
+  for (const s of list) {
+    const hit = roundSlot(s?.verifiedHeader, parentHeader, priorHeader, issuedSet);
+    if (hit && (hit.slot === 0 || hit.slot === 1)) n += 1;
+  }
+  return n;
+}
+
+/**
+ * The share-count cap binds when eligible rows exceed it.
+ * A zero cap binds only when the eligible count is positive.
+ * Negative and non-numeric inputs clamp to zero before the compare.
+ */
+export function shareCountCapBinds(eligible, cap = MAX_SHARES_PER_BLOCK) {
+  const n = Math.max(0, Math.floor(Number(eligible) || 0));
+  const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  return n > limit;
+}
+
+/**
  * Process-local proofs for shares this process already hashed.
  * Keyed by job and nonce. The value binds noteCommit and the proven bit
  * width. A hit cannot be restamped onto another dest or a higher width.

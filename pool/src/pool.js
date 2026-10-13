@@ -90,6 +90,8 @@ import {
   reproveSharesOffLoop,
   liveSharePowMetrics,
   unitsForShare,
+  eligibleShareCount,
+  shareCountCapBinds,
 } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
 import { poolRecentBlockTxs, networkSupply, openRoundHashRows, supplyStatusWord } from './wallet_api.js';
@@ -934,11 +936,14 @@ export function statsAlerts({
   shareBlock = ALERT_SHARE_BLOCK,
   stratumBind,
   requireLoginAuth,
+  eligibleShares = 0,
+  shareCountCap = MAX_SHARES_PER_BLOCK,
 } = {}) {
   return {
     concentration: Number(pct) >= Number(concentration),
     shareBlock: Number(ratio) >= Number(shareBlock),
     stratumDrift: stratumDriftAlert({ bind: stratumBind, requireLoginAuth }),
+    shareCountCap: shareCountCapBinds(eligibleShares, shareCountCap),
   };
 }
 
@@ -2618,6 +2623,23 @@ export function createPool({
       priorHeader: prior?.header || null,
       paid: paidWorkKeys(tip?.shareBatch, prior?.header || null),
     };
+  }
+
+  /**
+   * Eligible open-round rows for the count-cap alert.
+   * A live job that is not the sealed tip is the header this round pays on,
+   * including the genesis job when the chain is empty. The sealed tip is then
+   * the prior header. Lag-1 was already selected under the cap and is not counted.
+   * Deferred rows join the open list before the next roll, so they count now.
+   */
+  function openRoundEligibleCount() {
+    const ctx = tipShareContext();
+    const jobHeader = lastJob?.header || null;
+    const jobIsNew = !!jobHeader && shareHeaderSlot(jobHeader, ctx.parentHeader) !== 'exact';
+    const parentHeader = jobIsNew ? jobHeader : (ctx.parentHeader || jobHeader || null);
+    const priorHeader = jobIsNew ? (ctx.parentHeader || null) : (ctx.priorHeader || null);
+    const rows = deferredShares.length ? openShares.concat(deferredShares) : openShares;
+    return eligibleShareCount(rows, parentHeader, priorHeader, snapshotIssuedHeaders());
   }
 
   function refreshWindowOwedStats() {
@@ -4759,6 +4781,7 @@ export function createPool({
             : 0,
           stratumBind,
           requireLoginAuth,
+          eligibleShares: openRoundEligibleCount(),
         }),
         tipStall: !!tipStallAlert,
         tipStallReason: tipStallAlert?.reason || '',
