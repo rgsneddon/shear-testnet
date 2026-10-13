@@ -12,7 +12,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ristretto255_hasher } from '@noble/curves/ed25519.js';
-import { Fs1TreeFollower, fs1NotesFromBlock, fs1Leaf, openFs1TreeEngine } from '../src/fs1_tree.js';
+import {
+  FS1_TREE_BIN_DEFAULT,
+  Fs1TreeFollower,
+  fs1NotesFromBlock,
+  fs1Leaf,
+  fs1TreeBinSha256,
+  openFs1TreeEngine,
+} from '../src/fs1_tree.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const crate = path.join(here, '../../crypto/native/vendor/monero-oxide-77788c3/shear-fs1');
@@ -56,8 +63,10 @@ async function main() {
   const [a3, a4] = forkBlocks(w2.hash);
   fs.writeFileSync(path.join(fixtures, 'fs1-tree-fork-blocks.json'), `${JSON.stringify({ blocks: [a3, a4] }, null, 1)}\n`);
 
-  const engine = openFs1TreeEngine();
-  if (!engine) throw new Error('build fs1_tree first');
+  const bin = process.env.SHEAR_FS1_TREE_BIN || FS1_TREE_BIN_DEFAULT;
+  if (!fs.existsSync(bin)) throw new Error('build fs1_tree first');
+  // The binary this script's operator just built is the one it pins.
+  const engine = openFs1TreeEngine({ bin, sha256: process.env.SHEAR_FS1_TREE_SHA256 || fs1TreeBinSha256(bin) });
   const follower = new Fs1TreeFollower({ engine });
   const labels = new Map([[w1, 'w1'], [w2, 'w2'], [w3, 'w3'], [a3, 'a3'], [a4, 'a4']]);
   const rows = [

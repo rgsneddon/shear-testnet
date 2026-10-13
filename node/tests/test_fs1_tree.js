@@ -3,11 +3,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 import {
+  FS1_TREE_BIN_DEFAULT,
+  FS1_TREE_MAX_BLOCK_NOTES,
+  FS1_TREE_MAX_LINE,
   FS1_TREE_WIRED,
   Fs1TreeFollower,
   fs1Leaf,
   fs1NotesFromBlock,
+  fs1TreeBinSha256,
   openFs1TreeEngine,
 } from '../src/fs1_tree.js';
 import { forkBlocks } from '../scripts/fs1_tree_vectors.js';
@@ -97,13 +102,189 @@ describe('FS-1 tree follower', () => {
   });
 });
 
+const BIN = process.env.SHEAR_FS1_TREE_BIN || FS1_TREE_BIN_DEFAULT;
+const BUILT = fs.existsSync(BIN);
+// CI passes the hash it computed after the build; a local run pins the binary it finds.
+const BIN_SHA = process.env.SHEAR_FS1_TREE_SHA256 || (BUILT ? fs1TreeBinSha256(BIN) : null);
+const openReal = () => openFs1TreeEngine({ bin: BIN, sha256: BIN_SHA });
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fs1-tree-'));
+let scripts = 0;
+function script(body, mode = 0o755) {
+  scripts += 1;
+  const file = path.join(tmp, `engine-${scripts}.sh`);
+  fs.writeFileSync(file, `#!/bin/sh\n${body}\n`);
+  fs.chmodSync(file, mode);
+  return file;
+}
+const pinned = (file) => openFs1TreeEngine({ bin: file, sha256: fs1TreeBinSha256(file) });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+describe('FS-1 tree tool pinning', () => {
+  it('refuses a tool with no pin, the wrong hash, loose permissions, or a directory', () => {
+    const file = script('exit 0');
+    assert.throws(() => openFs1TreeEngine({ bin: file, sha256: '' }), /fs1_tree_bin_unpinned/);
+    assert.throws(() => openFs1TreeEngine({ bin: file, sha256: 'zz' }), /fs1_tree_bin_unpinned/);
+    assert.throws(() => openFs1TreeEngine({ bin: file, sha256: '0'.repeat(64) }), /fs1_tree_bin_hash/);
+    const loose = script('exit 0', 0o777);
+    fs.chmodSync(loose, 0o777);
+    assert.throws(() => pinned(loose), /fs1_tree_bin_writable/);
+    assert.throws(() => openFs1TreeEngine({ bin: tmp, sha256: '0'.repeat(64) }), /fs1_tree_bin_not_file/);
+    assert.equal(openFs1TreeEngine({ bin: path.join(tmp, 'missing'), sha256: '0'.repeat(64) }), null);
+  });
+
+  it('a symlink is checked by what it points at', () => {
+    const file = script('exit 0');
+    const link = path.join(tmp, 'link');
+    fs.symlinkSync(file, link);
+    assert.throws(() => openFs1TreeEngine({ bin: link, sha256: '1'.repeat(64) }), /fs1_tree_bin_hash/);
+    pinned(link).close();
+  });
+});
+
+describe('FS-1 tree tool failures reject pending calls', () => {
+  it('a tool that exits rejects the call in flight and every later one', async () => {
+    const engine = pinned(script('read x\nexit 3'));
+    await assert.rejects(engine.root(), /fs1_tree_engine_exit/);
+    assert.equal(engine.failed, 'fs1_tree_engine_exit');
+    await assert.rejects(engine.root(), /fs1_tree_engine_exit/);
+    const gone = pinned(script('exit 0'));
+    await assert.rejects(Promise.all([gone.root(), gone.root()]), /fs1_tree_engine_exit/);
+  });
+
+  it('a reply line over the cap kills the tool and rejects the call', async () => {
+    const engine = pinned(script(`read x\nhead -c ${FS1_TREE_MAX_LINE + 10} /dev/zero | tr '\\000' a\nexec sleep 30`));
+    await assert.rejects(engine.root(), /fs1_tree_engine_line/);
+    const newline = pinned(script(`read x\nhead -c ${FS1_TREE_MAX_LINE + 10} /dev/zero | tr '\\000' a\necho\nexec sleep 30`));
+    await assert.rejects(newline.root(), /fs1_tree_engine_line/);
+  });
+
+  it('a line nobody asked for, or a malformed root, fails the tool', async () => {
+    const chatty = pinned(script('echo hello\nexec sleep 30'));
+    await sleep(300);
+    assert.equal(chatty.failed, 'fs1_tree_engine_unsolicited');
+    await assert.rejects(chatty.root(), /fs1_tree_engine_unsolicited/);
+    const bad = pinned(script('read x\necho "root nothex 0"\nexec sleep 30'));
+    await assert.rejects(bad.root(), /fs1_tree_engine_reply/);
+    bad.close();
+  });
+
+  it('close rejects what is pending', async () => {
+    const quiet = pinned(script('exec sleep 30'));
+    const pending = quiet.root();
+    quiet.close();
+    await assert.rejects(pending, /fs1_tree_engine_closed/);
+    await assert.rejects(quiet.root(), /fs1_tree_engine_closed/);
+  });
+});
+
+/** A tool stand-in. It agrees with the follower unless an override says otherwise. */
+function fakeEngine(over = {}) {
+  const stack = [];
+  let count = 0;
+  const root = () => String(count).padStart(64, '0');
+  const engine = {
+    calls: [],
+    async connect(height, id, parent, notes) {
+      engine.calls.push('connect');
+      await sleep(1);
+      if (over.connect) return over.connect(notes, { stack, set: (n) => { count = n; } });
+      const leaves = notes.map(fs1Leaf);
+      stack.push(count);
+      count += leaves.filter(Boolean).length;
+      return { leaves, count, root: root() };
+    },
+    async disconnect() {
+      engine.calls.push('disconnect');
+      if (over.disconnect) return over.disconnect();
+      count = stack.pop();
+      return { count, root: root() };
+    },
+  };
+  return engine;
+}
+
+describe('FS-1 tree follower changes state only after the tool acks', () => {
+  it('ops run one at a time, in call order', async () => {
+    const f = new Fs1TreeFollower({ engine: fakeEngine() });
+    await Promise.all([f.connect(real[0]), f.connect(real[1]), f.connect(real[2])]);
+    assert.equal(f.leafCount, 7);
+    await Promise.all([f.disconnect(real[2]), f.disconnect(real[1])]);
+    assert.equal(f.leafCount, 1);
+  });
+
+  it('a leaf mismatch is undone in the tool and leaves the follower as it was', async () => {
+    const engine = fakeEngine({ connect: (notes, s) => { s.stack.push(0); s.set(9); return { leaves: notes.map(() => null), count: 9, root: '9'.repeat(64) }; } });
+    engine.disconnect = async () => ({ count: 0, root: '0'.repeat(64) });
+    const f = new Fs1TreeFollower({ engine });
+    await assert.rejects(f.connect(real[0]), /fs1_tree_leaf_mismatch/);
+    assert.deepEqual([f.leafCount, f.tip, f.root, f.broken], [0, null, null, false]);
+    const right = new Fs1TreeFollower({ engine: fakeEngine() });
+    await right.connect(real[0]);
+    const wrongCount = fakeEngine({ connect: (notes) => ({ leaves: notes.map(fs1Leaf), count: 5, root: '5'.repeat(64) }) });
+    wrongCount.disconnect = async () => ({ count: 0, root: '0'.repeat(64) });
+    const g = new Fs1TreeFollower({ engine: wrongCount });
+    await assert.rejects(g.connect(real[0]), /fs1_tree_leaf_mismatch/);
+    assert.equal(g.leafCount, 0);
+  });
+
+  it('a mismatch the tool cannot undo marks the follower desynced until it is rebuilt', async () => {
+    const engine = fakeEngine({ connect: (notes) => ({ leaves: notes.map(() => null), count: 0, root: '0'.repeat(64) }) });
+    engine.disconnect = async () => { throw new Error('fs1_tree_link'); };
+    const f = new Fs1TreeFollower({ engine });
+    await assert.rejects(f.connect(real[0]), /fs1_tree_desync/);
+    assert.equal(f.broken, true);
+    assert.equal(f.leafCount, 0);
+    await assert.rejects(f.connect(real[0]), /fs1_tree_desync/);
+    await assert.rejects(f.disconnect(real[0]), /fs1_tree_desync/);
+    const rebuilt = await Fs1TreeFollower.rebuild({ engine: fakeEngine(), blocks: real });
+    assert.equal(rebuilt.leafCount, 7);
+  });
+
+  it('a dead tool or a link refusal desyncs; a clean refusal does not', async () => {
+    for (const why of ['fs1_tree_engine_exit', 'fs1_tree_link', 'fs1_tree_engine_reply']) {
+      const f = new Fs1TreeFollower({ engine: fakeEngine({ connect: () => { throw new Error(why); } }) });
+      await assert.rejects(f.connect(real[0]), /fs1_tree_desync/, why);
+      assert.equal(f.leafCount, 0, why);
+    }
+    for (const why of ['fs1_tree_full', 'fs1_tree_tree']) {
+      const f = new Fs1TreeFollower({ engine: fakeEngine({ connect: () => { throw new Error(why); } }) });
+      await assert.rejects(f.connect(real[0]), new RegExp(why));
+      assert.deepEqual([f.leafCount, f.broken], [0, false], why);
+    }
+  });
+
+  it('a disconnect the tool refuses or miscounts keeps the tip and desyncs', async () => {
+    for (const disconnect of [async () => { throw new Error('fs1_tree_engine_exit'); }, async () => ({ count: 3, root: '3'.repeat(64) })]) {
+      const engine = fakeEngine();
+      const f = new Fs1TreeFollower({ engine });
+      await f.connect(real[0]);
+      engine.disconnect = disconnect;
+      await assert.rejects(f.disconnect(real[0]), /fs1_tree_desync/);
+      assert.deepEqual([f.leafCount, f.tip.height], [1, 1]);
+    }
+  });
+
+  it('a block over the note cap is refused before the tool sees it', async () => {
+    const engine = fakeEngine();
+    const f = new Fs1TreeFollower({ engine });
+    const one = real[0].txs.flatMap((tx) => tx.vout.map((o) => ({ tx, o }))).find(({ tx, o }) => o.admitPub && fs1NotesFromBlock({ txs: [{ ...tx, vout: [o] }] }).length);
+    const big = { ...real[0], txs: [{ ...one.tx, vout: Array(FS1_TREE_MAX_BLOCK_NOTES + 1).fill(one.o) }] };
+    await assert.rejects(f.connect(big), /fs1_tree_count_cap/);
+    assert.deepEqual([engine.calls, f.broken], [[], false]);
+  });
+});
+
 describe('FS-1 tree roots from the crate tool', () => {
   let engine = null;
   before(() => {
-    engine = openFs1TreeEngine();
-    if (REQUIRED) assert.ok(engine, 'fs1_tree is not built; set SHEAR_FS1_TREE_BIN');
+    if (REQUIRED) assert.ok(BUILT, 'fs1_tree is not built; set SHEAR_FS1_TREE_BIN');
+    engine = BUILT ? openReal() : null;
   });
-  after(() => engine?.close());
+  after(() => {
+    engine?.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
 
   it('roots match the shared vector through a reorg and back', async (t) => {
     if (!engine) return t.skip('fs1_tree not built');
@@ -120,14 +301,19 @@ describe('FS-1 tree roots from the crate tool', () => {
     assert.equal(final[6], firstW3[6]);
   });
 
-  it('the tool refuses an unlinked block', async (t) => {
+  it('the tool refuses an unlinked block and a count over the cap, then keeps serving', async (t) => {
     if (!engine) return t.skip('fs1_tree not built');
-    const fresh = openFs1TreeEngine();
+    const fresh = openReal();
     try {
       const f = new Fs1TreeFollower({ engine: fresh });
       await f.connect(real[0]);
       const id = Buffer.alloc(32, 7);
       await assert.rejects(fresh.connect(5, id, id, []), /fs1_tree_link/);
+      const note = fs1NotesFromBlock(real[0])[0];
+      await assert.rejects(fresh.connect(2, id, f.tip.id, Array(FS1_TREE_MAX_BLOCK_NOTES + 1).fill(note)), /fs1_tree_count_cap/);
+      assert.deepEqual([(await fresh.root()).count, fresh.failed], [1, null]);
+      await f.connect(real[1]);
+      assert.equal(f.root, ops.find((r) => r[0] === 'connect' && r[1] === 'w2')[6]);
     } finally {
       fresh.close();
     }
