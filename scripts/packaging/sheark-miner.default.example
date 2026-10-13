@@ -1,0 +1,7 @@
+# Copy to /etc/default/sheark-miner on a p2p soak host (mode 0600).
+# SHEARK_USER is that host's existing worker login. Fill it on the host.
+# Do not commit the filled file. Do not install this unit on the pool.
+SHEARK_POOL=stratum+ssl://pool.shear.digital:443
+SHEARK_USER=
+SHEARK_THREADS=1
+SHEARK_BACKEND=jit

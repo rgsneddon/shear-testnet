@@ -1,0 +1,20 @@
+# Fedora 44 (current stable; 45 is still pre-release as of 2026-10-13).
+FROM fedora:44
+
+ENV SHEAR_DISTRO=fedora \
+    SHEAR_PACK_DESKTOP=1 \
+    SOURCE_DATE_EPOCH=1700000000 \
+    PATH="/opt/shear-v12/bin:${PATH}"
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      binutils ca-certificates clang cmake curl findutils gcc gcc-c++ git gzip \
+      gtk3-devel jsoncpp-devel libblkid-devel libsecret-devel libsodium-devel \
+      make ninja-build openssl-devel passwd patchelf pkgconf-pkg-config \
+      python3 shadow-utils tar unzip which xz xz-devel \
+    && dnf clean all
+
+COPY . /src
+WORKDIR /src
+RUN chmod 755 /src/scripts/packaging/build-inside.sh /src/scripts/packaging/smoke.sh /src/scripts/packaging/shear-node /src/scripts/packaging/sheark-run \
+    && bash /src/scripts/packaging/build-inside.sh
+ENTRYPOINT ["/src/scripts/packaging/smoke.sh"]

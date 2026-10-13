@@ -1,0 +1,25 @@
+# Build context for scripts/packaging/Dockerfile.*.
+# Keep source. Drop caches, packs, and secrets.
+.git
+**/.git
+**/node_modules
+**/target
+crypto/randomx/build
+crypto/randomx/build-win
+crypto/randomx/build-mingw
+wallet/build
+wallet/.dart_tool
+wallet/dist
+wallet/dist-cli
+dist
+scripts/packaging/out
+**/*.o
+**/*.node
+**/*.a
+sheark-miner/ShearK-Miner
+sheark-miner/ShearK-Miner.exe
+**/*.log
+**/*pool-spend.seed
+**/.env
+**/.env.*
+deploy/*secrets*

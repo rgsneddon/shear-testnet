@@ -1,0 +1,21 @@
+# openSUSE Leap 16.1.
+FROM opensuse/leap:16.1
+
+ENV SHEAR_DISTRO=opensuse \
+    SHEAR_PACK_DESKTOP=1 \
+    SOURCE_DATE_EPOCH=1700000000 \
+    PATH="/opt/shear-v12/bin:${PATH}"
+
+RUN zypper --non-interactive refresh \
+    && zypper --non-interactive install --no-recommends \
+      awk ca-certificates clang cmake curl findutils gcc gcc-c++ git-core gzip \
+      gtk3-devel jsoncpp-devel libblkid-devel libopenssl-devel libsecret-devel \
+      libsodium-devel make ninja patchelf pkg-config python3 shadow tar unzip which xz \
+      xz-devel \
+    && zypper clean -a
+
+COPY . /src
+WORKDIR /src
+RUN chmod 755 /src/scripts/packaging/build-inside.sh /src/scripts/packaging/smoke.sh /src/scripts/packaging/shear-node /src/scripts/packaging/sheark-run \
+    && bash /src/scripts/packaging/build-inside.sh
+ENTRYPOINT ["/src/scripts/packaging/smoke.sh"]

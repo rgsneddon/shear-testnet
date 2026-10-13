@@ -1,0 +1,18 @@
+# P2P soak hosts only. Leave this unit disabled on the pool. The pool does not mine.
+[Unit]
+Description=ShearK 2.9 miner (shear-testnet-v12)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/shear-v12
+EnvironmentFile=/etc/default/sheark-miner
+ExecStart=/opt/shear-v12/bin/sheark-run
+Restart=always
+RestartSec=8
+Nice=10
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
