@@ -179,7 +179,7 @@ async function live() {
   const fp = await getJson('/fingerprint');
   const jr = await getJson('/jroot');
   assert.equal(stats.magic, MAGIC_TESTNET);
-  assert.equal(stats.admit, 'ADMITv2');
+  assert.equal(stats.admit, 'ADMITv3');
   assert.match(String(fp.fingerprint || ''), /ADMIT=ADMITv3/);
   assert.match(String(fp.fingerprint || ''), /RANGE=bpplus/);
   assert.match(String(fp.fingerprint || ''), /LEVY=weight/);

@@ -71,7 +71,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /ssa1/);
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
-    assert.match(main, /ADMITv2/);
+    assert.match(main, /ADMITv3/);
     assert.match(main, /Continuum 0\.71/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
@@ -181,7 +181,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(docs, /explorer reports amounts, dests/);
     assert.match(docs, /no dest, no amount/);
     assert.match(joined, /confidential amounts/);
-    assert.match(joined, /ADMITv2/);
+    assert.match(joined, /ADMITv3/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK 2\.8/);

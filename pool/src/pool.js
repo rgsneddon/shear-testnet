@@ -4919,7 +4919,7 @@ export function createPool({
       epochRemainMs: ev.remainMs,
       hashBonusNanos: hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos),
       hashTxLive: HASH_TX_LIVE,
-      admit: 'ADMITv2',
+      admit: 'ADMITv3',
       bookLawFingerprint: consensusFingerprint(),
       ...consensusLaw(),
       policy: typeof store.getpolicy === 'function' ? store.getpolicy() : undefined,
@@ -5602,7 +5602,7 @@ export function createPool({
       res.end(JSON.stringify({
         ok: true,
         fingerprint: fp,
-        admit: 'ADMITv2',
+        admit: 'ADMITv3',
         hashTxLive: Number(store.hashTxLive ?? HASH_TX_LIVE),
         magic: MAGIC_TESTNET,
       }));

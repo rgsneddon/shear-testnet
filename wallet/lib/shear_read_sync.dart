@@ -184,7 +184,7 @@ bool _bookNameAt(String blob, String name) {
   return false;
 }
 
-/// True only for the live ADMITv2 book. A leftover v3/v2 node is dropped.
+/// True only for the live book. A leftover v3/v2 node is dropped.
 bool isLiveBookStats(Map<String, dynamic> stats) {
   final blob = [
     stats['magic'],

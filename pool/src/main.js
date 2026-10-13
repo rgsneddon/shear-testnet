@@ -133,7 +133,7 @@ console.log(JSON.stringify({
   magic: MAGIC_TESTNET,
   hashBackend: hashBackendKind() || 'missing',
   height: pool.store.tip()?.height || 0,
-  admit: 'ADMITv2',
+  admit: 'ADMITv3',
 }));
 watchNodeStatus({
   store: pool.store,
