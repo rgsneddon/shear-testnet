@@ -402,7 +402,8 @@ describe('chronoflux prune + collate', () => {
     };
     const got = verifyBlock(block, null, { trustedPowHash: Buffer.alloc(32) });
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'vin_link');
+    // A v12 send with no proof is refused before any vin check.
+    assert.equal(got.reason, 'send_unavailable');
   });
 
   it('compact hash vout keeps dest20, noteCommit, wrap, and valueProof.v', () => {
