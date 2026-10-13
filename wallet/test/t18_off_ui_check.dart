@@ -98,15 +98,17 @@ Future<void> main() async {
   final sealedSends = <Map<String, dynamic>>[];
   for (final nanos in <int>[0, 1, 1000, 9007199254740993]) {
     final sw = Stopwatch()..start();
+    // A send to an empty address is a short ssa1 and is refused before the
+    // range proof. Seal to this wallet's own dest, the change path.
     final one = await sealFlowOffUi(<String, dynamic>{
       'spendSeed': Uint8List(32)..[0] = 4,
       'destTo': '',
-      'src': '',
+      'src': dest,
       'vouts': <Map<String, dynamic>>[
         {
           'kind': nanos == 0 ? 'dummy' : 'send',
           'nanos': nanos,
-          'address': '',
+          'address': nanos == 0 ? '' : dest,
         },
       ],
     }).timeout(const Duration(seconds: 30));

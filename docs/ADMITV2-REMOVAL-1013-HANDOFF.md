@@ -133,7 +133,7 @@ Fast tests after those fixes:
 - `node/tests/test_ibd_sequential.js` **7 pass**, `node/tests/test_pruned_flag_v12.js` **1 pass**. Both read `decodeWireBlock`. `test_hash_owed_recover_v12.js` (1 pass, 4 fail) and `test_lose_block_keeps_fetching.js` (2 pass, 1 fail) fail the same way with the pre-fix `p2p.js`, so the decode change did not cause them.
 
 Cargo stack: `.cargo/config.toml` at the repo root sets `RUST_MIN_STACK=67108864` for every `cargo test`. A debug `fast_v3_body_commits_yx_to_the_tree_fingerprint` with nothing exported aborts with a stack overflow (SIGABRT, exit 101) without that file, and passes with it (1 pass, 11.6s). Release `cargo test --lib -- --test-threads=1` with `RUST_MIN_STACK` unset, skipping only the retired v3 prove tests (`leaf_rerand*`, `tests::v3_*`, `tests::seal_v3*`, `tests::honest_c_attacker*`): **40 passed, 0 failed, 12 filtered out**, 131.93s, exit 0.
-- `wallet/test/t18_off_ui_test.dart`: **0 pass, 1 fail**. The child `t18_off_ui_check.dart` exited 255 with the ssa1 short-form `StateError` before it reached `admit_v2_closed`. That is the same pre-existing failure, not a v3 prove.
+- `wallet/test/t18_off_ui_test.dart`: **1 pass, 0 fail**. `t18_off_ui_check.dart` used to seal `send` outputs to an empty address, which `sealFlowSpendVouts` refuses as a short ssa1 before the range proof. It now seals them to the wallet's own current dest. The check's pass line shows `proveErr=admit_v2_closed` and `proveClosed=3`: the decoy prove and all three sealed sends fail closed before a prover.
 
 Skipped because the v3 group-of-32 send is retired, not because they failed an assertion:
 
