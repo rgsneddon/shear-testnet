@@ -1,5 +1,17 @@
 # shear-testnet-v12 handoff
 
+## Review record 2026-10-13 (PR 71)
+
+Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak.
+
+- PR 71 (`cursor/v12-windows-android-builds-bdb9`, head `b85c51d02a63e7f2f6b0139d1a44808aa46233b5`) was not merged. The log is `docs/V12-WINDOWS-ANDROID-BUILDS.md`, built from `8735e620`.
+- Windows node was built: `dist/shear-node-v19-windows.zip`, 49118485 bytes, sha256 `e5022919f402416368c61b761e6b4b6c86626c711d9e35c0fb69c6eb2683be2f`. Command `python3 node/pack/zip_node.py windows`. Under wine, `node.exe --version` printed `v22.23.3` and the two addons loaded.
+- Windows miner was built: `dist/ShearK-Miner-2.9-windows.zip`, sha256 `38f40cb5538422973ac0bf50c2b82d46eaaaac387eab6388e1a146e843cb7d80`. Wine self-test `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b` `backend=jit-full`, exit 0.
+- Windows wallet was not built. `flutter build windows` exited 1 because that command only runs on a Windows host. No `shear_wallet.exe` and no zip. That is the open item.
+- Android debug APK was built: `app-debug.apk`, 186808910 bytes, sha256 `6c1a33d196e3f1fa0791f6a4cd17e601d0a171ffac5c5932e697d064e424bd30`, native-code includes `arm64-v8a`. The release APK failed on a missing `wallet/android/key.properties`. It was not installed on a device.
+- The log says Russell waived Android node and miner on 2026-10-13. That waiver is not in the inbox. The tree still has no Android node target and no Android miner target, and none was added. Gap: `.cos-inbox/BUILD-windows-android-pr71-short-1013.md`.
+- PR 65 is still `43f05edf`. PR 69 is still `1c5f505e`. PR 67 and PR 68 are unchanged. Those four stay unmerged. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
+
 ## Review record 2026-10-13 (after 8735e620)
 
 Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak. Nothing new was merged onto feat.
