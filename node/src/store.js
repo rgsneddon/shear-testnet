@@ -28,6 +28,7 @@ import {
   V12_GENESIS_BLOCK_HASH,
   V12_BOOTSTRAP_CHECKPOINT,
   assessHeader,
+  headerLinkReason,
   discardPreparedHeader,
   noteFromAnchor,
   OWED_CHECKPOINT_SPACING,
@@ -94,6 +95,7 @@ import {
   CHECKPOINT_FIRST_HEIGHT,
   CHECKPOINT_EVERY_BLOCKS,
 } from './bootstrap.js';
+import { createBurialHold, createBurialProof, settledHeight } from './burial_hold.js';
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
 import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
@@ -241,6 +243,9 @@ function grandparentHeader(chain) {
 }
 
 const loadResumeToken = Symbol('shear-load-resume');
+/** Three peer headers pages. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
+export const OFFERED_HEADER_CAP = 6000;
+const PROOF_HASH_BATCH = 16;
 
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
@@ -306,8 +311,8 @@ export function createStore(dir, {
   let prefixHeight = 0;
   let frameHash = null;
   let frameCovered = 0;
-  // Share batches pruned at depth 1000. A reorg that lifts the block puts them back.
-  const heldBodies = new Map();
+  // Archive copies of pruned bodies, on disk only, until the reorg floor settles them.
+  const burialHold = createBurialHold({ dir, write: !archiveFast, checkpoints: checkpointOpts });
 
   const segLoaded = readChainSegments(segDir);
   if (segLoaded) {
@@ -339,7 +344,7 @@ export function createStore(dir, {
       blocks.push(b);
     }
   }
-  loadHeldBodies();
+  burialHold.load(Number(blocks[blocks.length - 1]?.height) || blocks.length);
   {
     const diskMagic = fs.existsSync(magicFile)
       ? fs.readFileSync(magicFile, 'utf8').trim()
@@ -353,6 +358,8 @@ export function createStore(dir, {
   // book.snap skips the body prefix only when that same key verifies it and
   // the snap binds this chain. A miss replays. A foreign book never uses it.
   const sealKey = bookSealKeyFor(dir);
+  const burialProof = createBurialProof({ dir, key: sealKey, checkpoints: checkpointOpts });
+  burialProof.load();
   loadMode = blocks.length ? 'full' : 'empty';
   const snapExpect = {
     rules: consensusFingerprint(MAGIC_TESTNET),
@@ -387,6 +394,7 @@ export function createStore(dir, {
         genesisHash,
         checkpoint,
         reorgHaltDepth: haltDepth,
+        burialOf: provenTipOf,
         fromIndex: plan.height,
         prior: {
           owedRows: plan.owedRows,
@@ -422,6 +430,7 @@ export function createStore(dir, {
         genesisHash,
         checkpoint,
         reorgHaltDepth: haltDepth,
+        burialOf: provenTipOf,
         onProgress: onLoadProgress,
       }).then((checked) => {
         if (!checked.ok) throw new Error(checked.reason || 'pow');
@@ -450,6 +459,7 @@ export function createStore(dir, {
         genesisHash,
         checkpoint,
         reorgHaltDepth: haltDepth,
+        burialOf: provenTipOf,
       });
       if (!checked.ok) throw new Error(checked.reason || 'pow');
       if (!checked.supply) throw new Error('supply_state');
@@ -460,10 +470,11 @@ export function createStore(dir, {
     }
   } else if (resumed) {
     writeLoadSeal(blocks);
-    const folded = foldSupply(blocks);
+    const folded = foldSupply(blocks, { burialOf: provenTipOf });
     if (!folded.ok) throw new Error(folded.reason || 'supply');
     supplyTip = folded.state;
   }
+  if (blocks.length) noteBurial(Number(blocks[blocks.length - 1].height) || blocks.length);
   if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
 
   function chainDiskDigest() {
@@ -1248,38 +1259,24 @@ export function createStore(dir, {
     };
   }
 
-  // A pruned block keeps its share batch here. A later tip that no longer
-  // buries it puts that batch back. Fast-sync does not write the file.
-  function rememberPrunedBody(block) {
-    const key = blockHex(block);
-    if (!key || heldBodies.has(key)) return;
-    heldBodies.set(key, holdFromBlock(block));
-    if (archiveFast) return;
-    try {
-      const folder = path.join(dir, 'burial-hold');
-      fs.mkdirSync(folder, { recursive: true });
-      const dest = path.join(folder, key);
-      if (!fs.existsSync(dest)) fs.writeFileSync(dest, packEpochBlock(block));
-    } catch { /* this process still has the body in memory */ }
-  }
-
-  function loadHeldBodies() {
-    const folder = path.join(dir, 'burial-hold');
-    if (!fs.existsSync(folder)) return;
-    let names = [];
-    try { names = fs.readdirSync(folder); } catch { return; }
-    for (const name of names) {
-      if (!/^[0-9a-f]{64}$/.test(name) || heldBodies.has(name)) continue;
-      try {
-        heldBodies.set(name, holdFromBlock(unpackEpochBlock(fs.readFileSync(path.join(folder, name)))));
-      } catch { /* a torn hold cannot lift that block */ }
-    }
+  // Archive only, and only until the reorg floor settles the block. A later
+  // tip that no longer buries it serves the full block again.
+  function rememberPrunedBody(block, tipH) {
+    burialHold.remember(blockHex(block), Number(block?.height), () => packEpochBlock(block), tipH);
   }
 
   function liftPrunedBlock(block) {
     const key = blockHex(block);
-    const held = key ? heldBodies.get(key) : null;
-    if (!held) return null;
+    const bytes = key ? burialHold.read(key) : null;
+    if (!bytes) return null;
+    let held;
+    try {
+      const body = unpackEpochBlock(bytes);
+      if (!body?.hash || !Buffer.from(body.hash).equals(Buffer.from(block.hash))) return null;
+      held = holdFromBlock(body);
+    } catch {
+      return null;
+    }
     const txs = (block.txs || []).map((tx, i) => {
       if (!tx?.coinbase || held.txSamples[i] == null) return tx;
       return { ...tx, samples: held.txSamples[i] };
@@ -1298,14 +1295,38 @@ export function createStore(dir, {
     return next;
   }
 
-  // Buried under this tip: the pruned block. Not buried: the share batch
-  // comes back. A missing body fails closed.
+  function provenTipOf(block) {
+    if (!block || block.samplesPruned !== true) return null;
+    return burialProof.tipOf(blockHex(block), Number(block.height));
+  }
+
+  /**
+   * The pruned block and the tip that buries it. Buried under this tip, or
+   * under a proven-work header chain this store validated: the sealed credit
+   * root stands for the share batch. Archive and fast-sync answer the same,
+   * because the archive hold is never read here. Neither fails closed.
+   */
   function blockForTip(block, tipH) {
-    if (!block || block.samplesPruned !== true) return { ok: true, block };
-    if (shouldPruneSamples(Number(block.height) || 0, tipH)) return { ok: true, block };
-    const lifted = liftPrunedBlock(block);
-    if (!lifted) return { ok: false, block: null };
-    return { ok: true, block: lifted };
+    if (!block || block.samplesPruned !== true) return { ok: true, block, tip: tipH };
+    const h = Number(block.height) || 0;
+    if (shouldPruneSamples(h, tipH)) return { ok: true, block, tip: tipH };
+    const proven = provenTipOf(block);
+    if (proven != null && shouldPruneSamples(h, proven)) return { ok: true, block, tip: proven };
+    return { ok: false, block: null, tip: tipH };
+  }
+
+  function noteBurial(tipH) {
+    const settled = settledHeight(tipH, checkpointOpts);
+    for (let i = blocks.length - 1; i >= 0; i -= 1) {
+      const b = blocks[i];
+      const h = Number(b?.height) || i + 1;
+      if (h <= settled) break;
+      if (b?.samplesPruned !== true || !shouldPruneSamples(h, tipH)) continue;
+      if (provenTipOf(b) == null) burialProof.note(blockHex(b), h, tipH);
+    }
+    burialProof.evict(tipH);
+    burialHold.evict(tipH);
+    burialProof.save();
   }
 
   function persist(block) {
@@ -1369,7 +1390,7 @@ export function createStore(dir, {
       if (!shouldPruneSamples(b.height, tipH, pruneDepth)) continue;
       const nTx = (b.txs || []).length;
       const nVout = (b.txs?.[0]?.vout || []).length;
-      rememberPrunedBody(b);
+      rememberPrunedBody(b, tipH);
       const next = pruneSamples(b);
       if ((next.txs || []).length !== nTx) throw new Error('prune_dropped_txs');
       if ((next.txs?.[0]?.vout || []).length !== nVout) throw new Error('prune_dropped_coinbase');
@@ -1396,6 +1417,7 @@ export function createStore(dir, {
       resetFrameHash();
       try { persistBookSnap(); } catch { /* the next load replays if the snap is stale */ }
     }
+    noteBurial(tipH);
     return dirtySegs.size > 0;
   }
 
@@ -1543,13 +1565,15 @@ export function createStore(dir, {
     const units = unitWalk.units;
     const tipH = Number(list[tipAt]?.height || tipAt + 1);
     for (let i = fromAt; i <= tipAt; i += 1) {
+      const viewed = blockForTip(list[i], tipH);
+      if (!viewed.ok) return null;
       const next = advanceHashOwed({
         owedIn: rows,
         acceptedSeries: series,
-        block: list[i],
+        block: viewed.block,
         unit: units[i],
         height: Number(list[i]?.height) || i + 1,
-        tipHeight: tipH,
+        tipHeight: viewed.tip,
       });
       if (!next.ok) return null;
       rows = next.rows;
@@ -1743,11 +1767,10 @@ export function createStore(dir, {
       } catch { trustedPowHash = null; }
       if (!trustedPowHash) return { ok: false, reason: 'share_credit_bind', at: i };
       const chainTip = Number(accepted[accepted.length - 1]?.height || 0);
-      // The adopted tip, not the tip this block was pruned under. A block
-      // that tip lifts has to present the share batch it kept.
+      // The adopted tip, or the proven-work tip that buried this pruned block.
       const viewed = blockForTip(b, chainTip);
       if (!viewed.ok) return { ok: false, reason: 'samples_pruned', at: i };
-      const bound = shareCreditBound(viewed.block, chainTip);
+      const bound = shareCreditBound(viewed.block, viewed.tip);
       if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind', at: i };
     }
     const dropIds = [];
@@ -2107,6 +2130,7 @@ export function createStore(dir, {
       parentSpendTags: liveFlux.spendTags,
       ...(blocks.length && supplyTip ? { parentSupply: supplyTip } : {}),
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
+      ...(Number.isInteger(extra.burialTip) ? { burialTip: extra.burialTip } : {}),
       poolDest: extra.poolDest
         || block?.poolDest
         || (block?.miner && isDestAddress(block.miner) ? block.miner : null),
@@ -2132,6 +2156,158 @@ export function createStore(dir, {
     return finish(check);
   }
 
+  // Peer headers ahead of this tip, unproven until a pruned block needs them.
+  const offeredByHash = new Map();
+  const offeredKids = new Map();
+  const provenHeaders = new Map();
+
+  function forgetOffered(hex) {
+    const row = offeredByHash.get(hex);
+    if (!row) return;
+    offeredByHash.delete(hex);
+    const kids = offeredKids.get(row.prevHex);
+    if (kids) {
+      kids.delete(hex);
+      if (!kids.size) offeredKids.delete(row.prevHex);
+    }
+  }
+
+  /**
+   * Keep a peer headers page so a pruned block can show its burial. Nothing
+   * here is proven: proveBurial hashes each header and checks its link.
+   */
+  function offerHeaders(list) {
+    let n = 0;
+    for (const row of Array.isArray(list) ? list : []) {
+      let header;
+      let hash;
+      try {
+        header = Buffer.isBuffer(row?.header) ? Buffer.from(row.header) : Buffer.from(String(row?.header || ''), 'hex');
+        hash = Buffer.isBuffer(row?.hash) ? Buffer.from(row.hash) : Buffer.from(String(row?.hash || ''), 'hex');
+      } catch { continue; }
+      if (header.length !== 128 || hash.length !== 32) continue;
+      const hex = hash.toString('hex');
+      if (offeredByHash.has(hex)) continue;
+      let prevHex;
+      try { prevHex = decodeHeader(header).prevBlockHash.toString('hex'); } catch { continue; }
+      offeredByHash.set(hex, { header, hash, prevHex });
+      if (!offeredKids.has(prevHex)) offeredKids.set(prevHex, new Set());
+      offeredKids.get(prevHex).add(hex);
+      n += 1;
+    }
+    while (offeredByHash.size > OFFERED_HEADER_CAP) forgetOffered(offeredByHash.keys().next().value);
+    return n;
+  }
+
+  // A path of PRUNE offered headers above `fromHex`, by claimed links only.
+  function offeredPath(fromHex) {
+    const stack = [[fromHex, 0]];
+    const trail = [];
+    const seen = new Set([fromHex]);
+    while (stack.length) {
+      const [hex, depth] = stack.pop();
+      trail.length = Math.max(0, depth - 1);
+      if (depth > 0) trail.push(hex);
+      if (trail.length >= SAMPLE_PRUNE_CONFIRMATIONS) return trail.slice();
+      const kids = offeredKids.get(hex);
+      if (!kids) continue;
+      for (const k of kids) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        stack.push([k, depth + 1]);
+      }
+    }
+    return null;
+  }
+
+  function rememberProvenHeader(hex) {
+    provenHeaders.delete(hex);
+    provenHeaders.set(hex, true);
+    while (provenHeaders.size > OFFERED_HEADER_CAP) provenHeaders.delete(provenHeaders.keys().next().value);
+  }
+
+  /**
+   * A pruned block extending this tip needs SAMPLE_PRUNE_CONFIRMATIONS
+   * proven-work headers above it before its sealed credits stand for the
+   * share batch. Returns { ok, top, claimed }. `top` is the burial tip
+   * verify and the owed step both use. Fewer headers, or one bad link, is
+   * not burial.
+   */
+  function proveBurial(block, verifyOpts = {}) {
+    const parent = tip();
+    const h = (Number(parent?.height) || 0) + 1;
+    const fail = { ok: false, reason: 'samples_pruned' };
+    let claimed;
+    let own;
+    try {
+      claimed = Buffer.from(block.hash);
+      own = decodeHeader(Buffer.from(block.header));
+    } catch { return fail; }
+    if (claimed.length !== 32) return fail;
+    const genesisMs = blocks.length ? blockTimeMs(blocks[0]) : Number(own.timestamp);
+    const mtp = blocks.slice(-(MTP_WINDOW - 1)).map(blockTimeMs).concat([Number(own.timestamp)]);
+    const nowMs = verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now();
+    const trust = verifyOpts.trustBlockHash === true;
+    const attempt = (tries) => {
+      const pathHex = offeredPath(claimed.toString('hex'));
+      if (!pathHex) return fail;
+      const rows = pathHex.map((hex) => offeredByHash.get(hex));
+      const known = (row) => trust || provenHeaders.has(row.hash.toString('hex'));
+      let up = { header: Buffer.from(block.header), hash: claimed, height: h };
+      const window = mtp.slice();
+      // One header at a time (or one small off-loop batch), so a bad run
+      // stops at its first bad header.
+      const link = (i, ready) => {
+        const got = Buffer.from(ready || []);
+        const linked = got.equals(rows[i].hash)
+          ? headerLinkReason(rows[i].header, got, up, { genesisMs, mtpTimestamps: window, nowMs })
+          : { ok: false };
+        if (!linked.ok) {
+          forgetOffered(rows[i].hash.toString('hex'));
+          return false;
+        }
+        if (!trust) rememberProvenHeader(rows[i].hash.toString('hex'));
+        window.push(Number(linked.decoded.timestamp));
+        if (window.length > MTP_WINDOW) window.shift();
+        up = { header: rows[i].header, hash: rows[i].hash, height: h + i + 1 };
+        return true;
+      };
+      const proven = { ok: true, top: h + rows.length, claimed };
+      const retry = () => (tries > 0 ? attempt(tries - 1) : fail);
+      if (!verifyOpts.offLoopPow || rows.every(known)) {
+        for (let i = 0; i < rows.length; i += 1) {
+          if (!link(i, known(rows[i]) ? rows[i].hash : headerHash(rows[i].header))) return retry();
+        }
+        return proven;
+      }
+      const batch = async () => {
+        for (let i = 0; i < rows.length; i += PROOF_HASH_BATCH) {
+          const part = rows.slice(i, i + PROOF_HASH_BATCH);
+          const hashes = await Promise.all(part.map((row) => (known(row) ? row.hash : hashHeaderOffLoop(row.header))));
+          for (let j = 0; j < part.length; j += 1) {
+            if (!link(i + j, hashes[j])) return retry();
+          }
+        }
+        return proven;
+      };
+      return batch().catch(() => fail);
+    };
+    return attempt(3);
+  }
+
+  /**
+   * The block this store serves for getblock. A held body comes back whole.
+   * A pruned block this tip does not bury, with no held body, is not served:
+   * the asking peer could not bury it either.
+   */
+  function servableBlock(block) {
+    if (!block || block.samplesPruned !== true) return block || null;
+    const lifted = liftPrunedBlock(block);
+    if (lifted) return lifted;
+    const tipH = Number(tip()?.height) || 0;
+    return shouldPruneSamples(Number(block.height) || 0, tipH) ? block : null;
+  }
+
   function append(block, verifyOpts = {}) {
     const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
     if (incoming && incoming.length === 32) {
@@ -2141,11 +2317,30 @@ export function createStore(dir, {
         }
       }
     }
+    if (block?.samplesPruned === true) {
+      const proved = proveBurial(block, verifyOpts);
+      // No proven run is samples_pruned before any header hash. A height field
+      // that is not this tip plus one still answers height first.
+      const structuralH = (Number(tip()?.height) || 0) + 1;
+      const liedHeight = block.height != null && block.height !== '' && Number(block.height) !== structuralH;
+      const go = (p) => {
+        if (p.ok) return appendVerified(block, verifyOpts, p);
+        if (liedHeight) return appendVerified(block, verifyOpts, null);
+        return { ok: false, reason: 'samples_pruned', tip: tip() };
+      };
+      if (proved && typeof proved.then === 'function') return proved.then(go);
+      return go(proved);
+    }
+    return appendVerified(block, verifyOpts, null);
+  }
+
+  function appendVerified(block, verifyOpts, burial) {
     const { check, spentBefore } = verifyAgainstTip(block, {
       trustedPowHash: trustedHashFor(block, verifyOpts),
       skipSharePow: !!verifyOpts.skipSharePow,
       offLoopPow: !!verifyOpts.offLoopPow,
       poolDest: verifyOpts.poolDest,
+      ...(burial ? { burialTip: burial.top } : {}),
     });
     const after = (c) => {
       // A failed consensus check keeps its own reason. The vault clock is a
@@ -2153,6 +2348,11 @@ export function createStore(dir, {
       if (!c?.ok) {
         rollbackSpent(spentB, spentBefore);
         return c;
+      }
+      // The proven header run hangs off the claimed hash. Verify hashed the header.
+      if (burial && !(c.hash && Buffer.from(c.hash).equals(burial.claimed))) {
+        rollbackSpent(spentB, spentBefore);
+        return { ok: false, reason: 'pow', tip: tip() };
       }
       const vaultClock = blockTimeMs(block);
       for (const tx of (block.txs || []).slice(1)) {
@@ -2163,13 +2363,13 @@ export function createStore(dir, {
         }
       }
       block.bSpendIds = spentDelta(spentBefore, spentB);
-      return settleCheck(c, (okCheck) => completeAppend(okCheck, block));
+      return settleCheck(c, (okCheck) => completeAppend(okCheck, block, burial));
     };
     if (check && typeof check.then === 'function') return check.then(after);
     return after(check);
   }
 
-  function completeAppend(check, block) {
+  function completeAppend(check, block, burial = null) {
     if (!check.ok) return check;
     if (!check.supplyState) return { ok: false, reason: 'supply_state' };
     const prev = tip();
@@ -2188,7 +2388,8 @@ export function createStore(dir, {
       acceptedSeries,
       block: stored,
       unit: unitNow,
-      tipHeight: full.height,
+      // Verify buried a pruned block under the proven header run. Commit uses that same tip.
+      tipHeight: burial ? burial.top : full.height,
     });
     if (!owedNext.ok) throw new Error(owedNext.reason || 'hash_owed');
     owedRows = owedNext.rows;
@@ -2198,6 +2399,11 @@ export function createStore(dir, {
     indexSealed(stored);
     applyReserve(stored);
     blocks.push(stored);
+    if (burial) {
+      // Saved before the block is, so a restart never loads it without its burial.
+      burialProof.note(blockHex(stored), stored.height, burial.top);
+      burialProof.save();
+    }
     syncNoteLedger(blocks);
     rememberOwed(blocks.length - 1);
     rememberVault(blocks.length - 1);
@@ -3059,14 +3265,14 @@ export function createStore(dir, {
         block: viewed.block,
         unit: units[i],
         height: Number(list[i]?.height) || i + 1,
-        tipHeight: tipH,
+        tipHeight: viewed.tip,
       });
       if (!next.ok) {
         // A rewritten share on a block this node already accepted is the
         // share-credit bind, not a new owed ledger. The suffix check still
         // runs only after this prefix agrees.
         if (i < n) {
-          const bound = shareCreditBound(viewed.block, tipH);
+          const bound = shareCreditBound(viewed.block, viewed.tip);
           if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind' };
         }
         return { ok: false, reason: next.reason || 'hash_owed' };
@@ -3249,7 +3455,7 @@ export function createStore(dir, {
       const stepped = supplyStep(state, block, {
         unit: unitAt[i] == null ? undefined : unitAt[i],
         height: Number(block?.height) || i + 1,
-        tipHeight: burial,
+        tipHeight: viewed.tip,
         genesisMs: state.genesisMs,
         blockHash: block?.hash,
         magic: MAGIC_TESTNET,
@@ -3338,7 +3544,7 @@ export function createStore(dir, {
         const stepped = supplyStep(supply, viewed.block, {
           unit: allUnits[hi],
           height: Number(rows[hi]?.height) || hi + 1,
-          tipHeight: candidateTip,
+          tipHeight: viewed.tip,
           genesisMs: gms,
           blockHash: rows[hi]?.hash,
           magic: MAGIC_TESTNET,
@@ -4444,6 +4650,25 @@ export function createStore(dir, {
       if (!Number.isInteger(end) || end < 0) return null;
       const flux = fluxThroughIndex(blocks, end);
       return flux ? detachFlux(flux) : null;
+    },
+    offerHeaders,
+    servableBlock,
+    burialView() {
+      const tipH = Number(tip()?.height) || 0;
+      return {
+        tip: tipH,
+        settled: settledHeight(tipH, checkpointOpts),
+        held: burialHold.count(),
+        heldHeights: burialHold.heights(),
+        heldBytes: burialHold.diskBytes(),
+        proven: burialProof.count(),
+        provenHeights: burialProof.heights(),
+        offered: offeredByHash.size,
+        provenHeaders: provenHeaders.size,
+      };
+    },
+    provenBurialTip(block) {
+      return provenTipOf(block);
     },
     anchorNote(anchor) {
       return noteFromAnchor(liveFlux, anchorAt, Number(anchor));

@@ -1849,6 +1849,57 @@ export function assessHeader(block, prev, opts = {}) {
   return finish({ ok: true, hash, decoded, genesisMs: resolvedGenesisMs });
 }
 
+/**
+ * One header above a parent header, without its body: version, prev link,
+ * proof-of-work under its own bits, genesis-anchored ASERT bits, the packed
+ * range, and the timestamp rules. The base fee and the merkle root need the
+ * body, so a header run does not prove them. `hash` is the header's proven
+ * ShearHash. `parent` is { header, hash, height }.
+ */
+export function headerLinkReason(header, hash, parent, { genesisMs = 0, mtpTimestamps = null, nowMs = null } = {}) {
+  let decoded;
+  let up;
+  try {
+    decoded = decodeHeader(Buffer.from(header));
+    up = decodeHeader(Buffer.from(parent.header));
+  } catch {
+    return { ok: false, reason: 'bad_header' };
+  }
+  if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
+  if (!decoded.prevBlockHash.equals(Buffer.from(parent.hash))) return { ok: false, reason: 'prev' };
+  const pow = Buffer.from(hash || []);
+  if (pow.length !== 32 || !meetsTarget(pow, decoded.bits)) return { ok: false, reason: 'pow' };
+  const ts = Number(decoded.timestamp);
+  const parentTs = Number(up.timestamp);
+  if (!(ts > parentTs)) return { ok: false, reason: 'timestamp' };
+  const parentIsGenesis = up.prevBlockHash.equals(GENESIS_PREV);
+  const anchorMs = parentIsGenesis ? parentTs : Number(genesisMs);
+  if (!Number.isFinite(anchorMs) || anchorMs <= 0) return { ok: false, reason: 'genesis_ms' };
+  const quote = asertNextBits({
+    anchorBits: parentIsGenesis ? up.bits : GENESIS_BITS_PACKED,
+    anchorTimeMs: anchorMs,
+    anchorHeight: parentIsGenesis ? Number(parent.height || 1) : 1,
+    blockTimeMs: ts,
+    blockHeight: Number(parent.height) + 1,
+    parentTimeMs: parentTs,
+  });
+  if (!quote.ok || !bitsAcceptAsert(decoded.bits, quote) || !isPackedBits(decoded.bits)) {
+    return { ok: false, reason: 'bits' };
+  }
+  const fp = unpackBits(decoded.bits);
+  if (fp < LIVE_MIN_BITS || fp > MAX_BITS) return { ok: false, reason: 'bits' };
+  const window = Array.isArray(mtpTimestamps) && mtpTimestamps.length
+    ? mtpTimestamps.slice(-MTP_WINDOW)
+    : [parentTs];
+  if (ts > medianTimePast(window) + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
+  if (nowMs != null && Number.isFinite(Number(nowMs))) {
+    if (ts > Number(nowMs) + HEADER_AHEAD_MS || ts > Number(nowMs) + MTP_FUTURE_MS) {
+      return { ok: false, reason: 'timestamp' };
+    }
+  }
+  return { ok: true, decoded };
+}
+
 // Parent tags stay in the live set. Copying them once per block grows with
 // chain history. The overlay is only the tags this block accepts.
 function parentSpendView(chain) {
@@ -2737,6 +2788,7 @@ function beginLoaded(blocks, {
   fromIndex = 0,
   prior = null,
   reorgHaltDepth = 0,
+  burialOf = null,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true, empty: true };
@@ -2831,6 +2883,7 @@ function beginLoaded(blocks, {
       trustStoredHash: trustStoredHash === true,
       trustShareWork: trustStoredHash === true && trustShareWork !== false,
       reorgHaltDepth: Math.max(0, Math.floor(Number(reorgHaltDepth) || 0)),
+      burialOf: typeof burialOf === 'function' ? burialOf : null,
     },
   };
 }
@@ -2936,6 +2989,10 @@ function stepLoaded(state, list, i) {
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
   const prevBlock = i === 0 ? null : list[i - 1];
+  // A pruned block a proven-work header chain buried keeps that tip for
+  // verify and for the owed step. Every other block is buried by this load.
+  const own = state.burialOf ? state.burialOf(block) : null;
+  const burial = Number.isInteger(own) && own > state.loadTip ? own : state.loadTip;
   const body = verifyBlockConsensus(block, prevBlock, {
     trustedPowHash: link,
     loadReplay: true,
@@ -2943,7 +3000,7 @@ function stepLoaded(state, list, i) {
     // hash on an own-keyed load, which is how the load test reaches it
     // without a second header search. createStore does not pass it.
     trustShareWork: state.trustShareWork,
-    tipHeight: state.loadTip,
+    tipHeight: burial,
     genesisMs: state.genesisMs,
     mtpTimestamps: state.mtp.slice(),
     owedIn: state.owedIn,
@@ -2976,7 +3033,7 @@ function stepLoaded(state, list, i) {
     acceptedSeries: state.acceptedSeries,
     block,
     unit: HASH_BONUS_NANOS,
-    tipHeight: state.loadTip,
+    tipHeight: burial,
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'hash_owed' };
   state.owedIn = stepped.rows;
