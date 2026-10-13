@@ -1,0 +1,53 @@
+[package]
+name = "shear-fs1"
+version = "0.1.0"
+description = "Unwired Shear adaptation of the vendored monero-oxide FCMP++ membership prover"
+license = "MIT"
+edition = "2021"
+rust-version = "1.81"
+publish = false
+autobins = false
+autotests = false
+
+[features]
+default = []
+# Builds Fs1Params from the upstream insecure test generators. Never a consensus set.
+# A normal build, and every crate that depends on this one without the feature,
+# does not compile those generators.
+insecure-test-generators = ["generalized-bulletproofs/tests"]
+# The timing bench. Off in every normal and release build.
+bench = ["insecure-test-generators"]
+
+[dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }
+subtle = { version = "2", default-features = false }
+zeroize = { version = "1.5", default-features = false, features = ["alloc"] }
+generic-array = { version = "1", default-features = false }
+
+ciphersuite = { version = "0.4", features = ["alloc"] }
+dalek-ff-group = "0.5"
+# Exact pin. The vendored fcmps and GBP crates accept any 0.5 line; this forces 0.5.2.
+multiexp = { version = "=0.5.2", default-features = false, features = ["std", "batch"] }
+
+helioselene = { path = "../helioselene" }
+ec-divisors = { path = "../divisors", features = ["ed25519", "std"] }
+generalized-bulletproofs = { path = "../generalized-bulletproofs" }
+generalized-bulletproofs-ec-gadgets = { path = "../fcmps/ec-gadgets" }
+full-chain-membership-proofs = { path = "../fcmps" }
+
+[dev-dependencies]
+# Unit tests only. Resolver 2 does not carry dev-dependency features into a normal build.
+generalized-bulletproofs = { path = "../generalized-bulletproofs", features = ["tests"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "fs1_bench"
+path = "src/bin/fs1_bench.rs"
+required-features = ["bench"]
+
+[[test]]
+name = "ct7_threads"
+path = "tests/ct7_threads.rs"
+required-features = ["insecure-test-generators"]

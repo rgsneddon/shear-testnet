@@ -58,6 +58,30 @@ test('the FS-1 vendor matches the monero-oxide pin and is not wired', () => {
   const present = new Set(walk(vendor).map((abs) => path.relative(vendor, abs).split(path.sep).join('/')));
   for (const rel of rels) assert.equal(present.has(rel), true);
   assert.equal(present.has('THIRD_PARTY_NOTICES.txt'), true);
+  const notice = readFileSync(path.join(vendor, 'THIRD_PARTY_NOTICES.md'), 'utf8');
+  for (const name of [
+    'helioselene',
+    'ec-divisors',
+    'generalized-bulletproofs',
+    'full-chain-membership-proofs',
+    'generalized-bulletproofs-circuit-abstraction',
+    'generalized-bulletproofs-ec-gadgets',
+  ]) {
+    assert.equal(notice.includes(name), true, name);
+  }
+  assert.match(notice, /MIT/);
+  assert.match(notice, /Luke Parker/);
+  assert.match(notice, /monero-oxide Developers/);
+  assert.match(notice, /2022-2025/);
+  assert.match(notice, /2023-2025/);
+  assert.match(notice, /2021-2025/);
+  assert.match(notice, /2024-2025/);
+  assert.equal(readFileSync(path.join(vendor, 'helioselene', 'LICENSE'), 'utf8').includes('Copyright (c) 2022-2025 Luke Parker'), true);
+  assert.equal(readFileSync(path.join(vendor, 'divisors', 'LICENSE'), 'utf8').includes('Copyright (c) 2023-2025 Luke Parker'), true);
+  assert.equal(readFileSync(path.join(vendor, 'generalized-bulletproofs', 'LICENSE'), 'utf8').includes('Copyright (c) 2025 monero-oxide Developers'), true);
+  assert.equal(readFileSync(path.join(vendor, 'fcmps', 'LICENSE'), 'utf8').includes('Copyright (c) 2024-2025 Luke Parker'), true);
+  assert.equal(readFileSync(path.join(vendor, 'fcmps', 'circuit-abstraction', 'LICENSE'), 'utf8').includes('Copyright (c) 2024-2025 Luke Parker'), true);
+  assert.equal(readFileSync(path.join(vendor, 'fcmps', 'ec-gadgets', 'LICENSE'), 'utf8').includes('Copyright (c) 2024-2025 Luke Parker'), true);
   const admitToml = readFileSync(path.join(here, 'native', 'admit', 'Cargo.toml'), 'utf8');
   const deny = readFileSync(path.join(here, 'native', 'deny.toml'), 'utf8');
   for (const banned of ['helioselene', 'generalized-bulletproofs', 'full-chain-membership-proofs', 'ec-divisors', 'monero-fcmp-plus-plus']) {
