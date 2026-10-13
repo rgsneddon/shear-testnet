@@ -14,7 +14,6 @@ import {
   flowInputsBound,
   txSpendTags,
   kernelExcess,
-  scalarFrom,
   randomScalar,
   commit,
   pointBytes,
@@ -24,17 +23,15 @@ import { levyNanos } from '../../crypto/levy.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
-  admitProve,
   admitProveV3,
   admitPub,
   jroot,
-  admitScalarFromSeed,
   applyBlockToFluxset,
   emptyFluxset,
   fluxsetFromBlocks,
   fluxsetIndexOf,
-  proveFlowSpend,
 } from '../../crypto/admit.js';
+import { attachStubAdmitV2, stubAdmitV2 } from './stub_admit_v2.js';
 import { verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { createStore } from '../src/store.js';
@@ -297,17 +294,16 @@ describe('v12 spend tags come from the proof bytes', () => {
   });
 
   it('a field-less spend cannot be queued twice, reorged back in, or reloaded as unspent', async () => {
-    const { dest, spendSeed, key } = identityDest();
+    const { dest, key } = identityDest();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-tags-'));
     const store = createStore(dir);
     const genesis = await appendBuilt(store, dest);
     assert.equal(genesis.got.ok, true, genesis.got.reason);
     const pot = potOf(genesis.tpl);
     const { pay, fee, change } = payOf(pot);
-    const live = store.fluxset();
     const spend = sendBody({ id: 'omit', dest, notes: [pot], pay, fee, change });
-    proveFlowSpend(spend, { spendSeed, spentNote: pot, pubs: live.pubs, commits: live.commits });
-    assert.ok(spend.admit_proof?.blob, 'prove');
+    attachStubAdmitV2(spend);
+    assert.equal(spend.admit_proof.blob[0], 2);
     signSpendTx(spend, key);
     const real = blobTag(spend.admit_proof);
     omitTags(spend);
@@ -416,12 +412,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     assert.equal(loaded.fluxset().spendTags.has(real.toString('hex')), true);
     const againLive = loaded.fluxset();
     const respent = sendBody({ id: 'respent', dest, notes: [pot], pay, fee, change });
-    proveFlowSpend(respent, {
-      spendSeed,
-      spentNote: pot,
-      pubs: againLive.pubs,
-      commits: againLive.commits,
-    });
+    attachStubAdmitV2(respent, { tagFill: 3 });
     signSpendTx(respent, key);
     omitTags(respent);
     const againQ = loaded.queueTx(respent);
@@ -477,12 +468,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     assert.equal(store.fluxset().spendTags.has(real.toString('hex')), false);
     const fresh = store.fluxset();
     const restored = sendBody({ id: 'restored', dest, notes: [pot], pay, fee, change });
-    proveFlowSpend(restored, {
-      spendSeed,
-      spentNote: pot,
-      pubs: fresh.pubs,
-      commits: fresh.commits,
-    });
+    attachStubAdmitV2(restored, { tagFill: 4 });
     signSpendTx(restored, key);
     omitTags(restored);
     const restoredQ = store.queueTx(restored);
@@ -516,17 +502,12 @@ describe('v12 spend tags come from the proof bytes', () => {
       for (let i = 0; i < pots.length; i += 1) {
         const index = fluxsetIndexOf(live.pubs, spendSeed, pots[i]);
         assert.ok(index >= 0, `index ${i}`);
-        const proof = admitProve({
-          x: admitScalarFromSeed(spendSeed, pots[i]),
-          index,
-          pubs: live.pubs,
-          commits: live.commits,
-          c: pots[i].commit,
-          t: tx.vin[i]?.t != null ? scalarFrom(tx.vin[i].t) : undefined,
+        const proof = stubAdmitV2({
+          cTilde: tx.vin[i]?.commit || pots[i].commit,
+          tagFill: i + 1,
         });
-        assert.ok(proof, `proof ${i}`);
+        assert.equal(proof.blob[0], 2, `stub ${i}`);
         proofs.push(proof);
-        tx.vin[i] = { commit: proof.cTilde, t: proof.t, r: pots[i].r };
       }
       tx.admit_proof = proofs[0];
       tx.admit_proofs = proofs;

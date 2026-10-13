@@ -14,10 +14,6 @@ int32_t shear_admit_frontier_append(
     const uint8_t *dest, const uint8_t *c, uint32_t n,
     uint8_t *out_frontier, uint32_t out_cap, uint32_t *out_len,
     uint8_t *out_root);
-int32_t shear_admit_prove(
-    const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
-    uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
-    uint8_t *c_tilde_out, uint8_t *proof_out, uint32_t *proof_len);
 int32_t shear_admit_prove_v3(
     const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
     uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
@@ -27,17 +23,8 @@ int32_t shear_admit_verify_v3(
     const uint8_t *proof, uint32_t proof_len, const uint8_t *jroot,
     const uint8_t *c_tilde, const uint8_t *spend_tag,
     const uint8_t *ctx, uint32_t ctx_len);
-int32_t shear_admit_verify(
-    const uint8_t *proof, uint32_t proof_len, const uint8_t *jroot,
-    const uint8_t *c_tilde, const uint8_t *spend_tag,
-    const uint8_t *dest, const uint8_t *cs, uint32_t n);
 int32_t shear_range_prove(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t *out_len);
 int32_t shear_range_verify(const uint8_t *c, const uint8_t *proof, uint32_t proof_len);
-int32_t shear_admit_verify_batch(
-    const uint8_t *proofs, const uint32_t *lens, uint32_t count,
-    const uint8_t *jroot, const uint8_t *c_tildes, const uint8_t *tags,
-    const uint8_t *dest, const uint8_t *cs, uint32_t n);
-int32_t shear_admit_bench(uint32_t n, uint64_t *prove_us, uint64_t *verify_us, uint32_t *proof_len);
 
 static int buf32(napi_env env, napi_value v, uint8_t out[32]) {
   void *data = NULL;
@@ -161,50 +148,6 @@ static napi_value jroot_point_fn(napi_env env, napi_callback_info info) {
   return buf_from(env, out, 32);
 }
 
-static napi_value prove_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 7;
-  napi_value argv[7];
-  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  uint8_t x[32], p[32], c[32], t[32];
-  uint32_t index = 0;
-  if (argc < 7
-      || buf32(env, argv[0], x) || buf32(env, argv[1], p) || buf32(env, argv[2], c) || buf32(env, argv[3], t)) {
-    napi_throw_error(env, NULL, "prove scalars");
-    return NULL;
-  }
-  napi_get_value_uint32(env, argv[4], &index);
-  uint8_t *dest = NULL, *cs = NULL;
-  uint32_t nd = 0, nc = 0;
-  if (concat_32s(env, argv[5], &dest, &nd) || concat_32s(env, argv[6], &cs, &nc)) {
-    free(dest);
-    free(cs);
-    napi_throw_error(env, NULL, "prove leaves");
-    return NULL;
-  }
-  uint32_t n = nd < nc ? nd : nc;
-  uint8_t ct[32];
-  uint32_t maxp = (uint32_t)shear_admit_max_proof();
-  uint8_t *proof = (uint8_t *)malloc(maxp);
-  uint32_t plen = 0;
-  int32_t ok = 0;
-  if (proof) ok = shear_admit_prove(x, p, c, t, index, dest, cs, n, ct, proof, &plen);
-  free(dest);
-  free(cs);
-  if (!proof || ok != 1) {
-    free(proof);
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  napi_value obj, ct_v, pr_v;
-  napi_create_object(env, &obj);
-  ct_v = buf_from(env, ct, 32);
-  pr_v = buf_from(env, proof, plen);
-  free(proof);
-  napi_set_named_property(env, obj, "cTilde", ct_v);
-  napi_set_named_property(env, obj, "proof", pr_v);
-  return obj;
-}
 
 static napi_value prove_v3_fn(napi_env env, napi_callback_info info) {
   size_t argc = 8;
@@ -291,34 +234,6 @@ static napi_value verify_v3_fn(napi_env env, napi_callback_info info) {
   return out;
 }
 
-static napi_value verify_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 6;
-  napi_value argv[6];
-  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  void *pr = NULL;
-  size_t prlen = 0;
-  uint8_t jr[32], ct[32], tag[32];
-  if (argc < 4
-      || napi_get_buffer_info(env, argv[0], &pr, &prlen) != napi_ok
-      || buf32(env, argv[1], jr) || buf32(env, argv[2], ct) || buf32(env, argv[3], tag)) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  uint8_t *dest = NULL, *cs = NULL;
-  uint32_t nd = 0, nc = 0, n = 0;
-  if (argc >= 6) {
-    concat_32s(env, argv[4], &dest, &nd);
-    concat_32s(env, argv[5], &cs, &nc);
-    n = nd < nc ? nd : nc;
-  }
-  int32_t ok = shear_admit_verify((const uint8_t *)pr, (uint32_t)prlen, jr, ct, tag, dest, cs, n);
-  free(dest);
-  free(cs);
-  napi_value out;
-  napi_get_boolean(env, ok == 1, &out);
-  return out;
-}
 
 /* Decimal digits only. A JS number above 2^53 is already rounded, so it is refused. */
 static int parse_u64_digits(const char *s, size_t n, uint64_t *out) {
@@ -407,105 +322,7 @@ static napi_value verify_range_fn(napi_env env, napi_callback_info info) {
   return out;
 }
 
-static napi_value verify_batch_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 6;
-  napi_value argv[6];
-  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  bool is_arr = 0;
-  if (argc < 4 || napi_is_array(env, argv[0], &is_arr) != napi_ok || !is_arr) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  uint32_t count = 0;
-  napi_get_array_length(env, argv[0], &count);
-  uint8_t jr[32];
-  if (buf32(env, argv[1], jr)) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  size_t total = 0;
-  uint32_t *lens = (uint32_t *)calloc(count, sizeof(uint32_t));
-  if (!lens && count) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  for (uint32_t i = 0; i < count; i++) {
-    napi_value el;
-    napi_get_element(env, argv[0], i, &el);
-    void *data = NULL;
-    size_t len = 0;
-    napi_get_buffer_info(env, el, &data, &len);
-    lens[i] = (uint32_t)len;
-    total += len;
-  }
-  uint8_t *blob = (uint8_t *)malloc(total ? total : 1);
-  size_t off = 0;
-  for (uint32_t i = 0; i < count; i++) {
-    napi_value el;
-    napi_get_element(env, argv[0], i, &el);
-    void *data = NULL;
-    size_t len = 0;
-    napi_get_buffer_info(env, el, &data, &len);
-    memcpy(blob + off, data, len);
-    off += len;
-  }
-  uint8_t *cts = NULL, *tags = NULL;
-  uint32_t nct = 0, ntg = 0;
-  concat_32s(env, argv[2], &cts, &nct);
-  concat_32s(env, argv[3], &tags, &ntg);
-  uint8_t *dest = NULL, *cs = NULL;
-  uint32_t nd = 0, nc = 0, n = 0;
-  if (argc >= 6) {
-    concat_32s(env, argv[4], &dest, &nd);
-    concat_32s(env, argv[5], &cs, &nc);
-    n = nd < nc ? nd : nc;
-  }
-  int32_t ok = 0;
-  if (nct == count && ntg == count) {
-    ok = shear_admit_verify_batch(blob, lens, count, jr, cts, tags, dest, cs, n);
-  }
-  free(lens);
-  free(blob);
-  free(cts);
-  free(tags);
-  free(dest);
-  free(cs);
-  napi_value out;
-  napi_get_boolean(env, ok == 1, &out);
-  return out;
-}
 
-static napi_value bench_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1];
-  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  uint32_t n = 0;
-  if (argc < 1 || napi_get_value_uint32(env, argv[0], &n) != napi_ok || n == 0) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  uint64_t prove_us = 0, verify_us = 0;
-  uint32_t plen = 0;
-  int32_t ok = shear_admit_bench(n, &prove_us, &verify_us, &plen);
-  if (ok != 1) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  napi_value obj, p_v, v_v, l_v;
-  napi_create_object(env, &obj);
-  napi_create_double(env, (double)prove_us, &p_v);
-  napi_create_double(env, (double)verify_us, &v_v);
-  napi_create_uint32(env, plen, &l_v);
-  napi_set_named_property(env, obj, "proveUs", p_v);
-  napi_set_named_property(env, obj, "verifyUs", v_v);
-  napi_set_named_property(env, obj, "proofLen", l_v);
-  return obj;
-}
 
 static napi_value frontier_append_fn(napi_env env, napi_callback_info info) {
   size_t argc = 3;
@@ -563,14 +380,10 @@ static napi_value init(napi_env env, napi_value exports) {
   EX("jroot", jroot_fn);
   EX("jrootPoint", jroot_point_fn);
   EX("frontierAppend", frontier_append_fn);
-  EX("prove", prove_fn);
   EX("proveV3", prove_v3_fn);
-  EX("verify", verify_fn);
   EX("verifyV3", verify_v3_fn);
   EX("proveRange", prove_range_fn);
   EX("verifyRange", verify_range_fn);
-  EX("verifyBatch", verify_batch_fn);
-  EX("bench", bench_fn);
 #undef EX
   return exports;
 }

@@ -1,6 +1,6 @@
 # Shear consensus
 
-Network magic (testnet, ADMITv2 book): `shear-testnet-v12`  
+Network magic (testnet, ADMITv3 book): `shear-testnet-v12`  
 Frozen previous books: `shear-testnet-v11`, `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`. A v11, v9, or v8 payload does not load on this book (no soft-merge). Quarantine v8/v9-wrong packs and git head `6054186`.  
 Mainnet magic (`shear-v1`) genesis is `2026-09-18T21:00:00+01:00`. Do not merge v3 into frozen v2 or into v1 until the operator cuts over.
 
@@ -47,11 +47,11 @@ Scale (90 s, opt-in B + prune): see [scale.md](scale.md). Tree A is O(miners) pe
 
 Consensus spendable is **9 confirmations** (the minimum; ~9 min at 90 s). That depth is in `consensusFingerprint()`. `min_confirms` default **12** is third-party/merchant policy only (~18 min), not a consensus floor. B-spends wait for the same 9-conf consensus depth. 0-conf is merchant policy.
 
-## ADMITv2 membership
+## ADMITv3 membership
 
-ADMITv2 is Curve Trees membership of `H_to_field("shear-admit-leaf-v2" || P)` on the Pasta 2-cycle (arity 32). There is no `RING_SIZE` in the fingerprint. See [admit-v2.md](admit-v2.md).
+A flow spend on this book presents a byte-3 blob and one anchor. A presented flow blob whose first byte is not 3, or byte 3 with no anchor, is `admit_version`. Byte 3 with an anchor is checked by `admitVerifyV3`. The dest leaf is still `H_to_field("shear-admit-leaf-v2" || P)` on the Pasta 2-cycle (arity 32). There is no `RING_SIZE` in the fingerprint. The retired byte-2 statement is [admit-v2.md](admit-v2.md).
 
-Live verifier: native `admit_verify` against jroot of dest leaves + C tree. A sampled subset fails (`admit_membership`). ADMITv1 linear `r.length === |J|` blobs fail. Reused `spendTag` fails (`admit_link_tag`). Sealed vin must not name the spent note (`prev`/`index`/`noteCommit`/`dest20`/`address`/original C).
+Live verifier: native `admitVerifyV3` against the point root, after the stored scalar `jroot` matches. A sampled subset fails (`admit_membership`). A flow that presents no proof stays `admit_membership`. Reused `spendTag` fails (`admit_link_tag`). Sealed vin must not name the spent note (`prev`/`index`/`noteCommit`/`dest20`/`address`/original C).
 
 Notes that enter `J`: coinbase hash / pot / levy, Flow pays, dummy value-0 notes, and Reserve money notes that carry `admitPub`. Spent notes stay in `J`; double-spend is a repeated spend-tag.
 

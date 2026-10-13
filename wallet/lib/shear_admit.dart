@@ -105,6 +105,8 @@ Map<String, dynamic> proveFlowSpend(
   required List<Uint8List> pubs,
   List<Uint8List>? commits,
 }) {
+  // The v2 prover is closed. Do not spawn prove_spend, and do not call admitProveV3.
+  if (debugNativeSpendProver == null) throw StateError('admit_v2_closed');
   final index = fluxsetIndexOf(pubs, spendSeed, spentNote);
   if (index < 0) throw StateError('not_in_fluxset');
   final cs = commits ?? const <Uint8List>[];

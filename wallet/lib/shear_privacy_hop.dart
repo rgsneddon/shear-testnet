@@ -49,7 +49,7 @@ const kUnprivateConfirmHelper =
 
 /// Standing Reserve note. Connect bare is already covered by the fluxset.
 const kReserveIpDisclaimer =
-    'Connect bare is private. DINS-DAG and the ADMITv2 fluxset cover this deposit. A tunnel is not required.';
+    'Connect bare is private. DINS-DAG and the ADMITv3 fluxset cover this deposit. A tunnel is not required.';
 
 const kReserveHopWaitCopy =
     'Confirm you use a VPN, or accept the node seeing your IP, before Send.';

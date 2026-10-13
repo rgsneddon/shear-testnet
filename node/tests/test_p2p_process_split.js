@@ -149,7 +149,7 @@ function assertStats(sample) {
   assert.equal(sample.status, 200);
   assert.equal(sample.body.ok, true);
   assert.equal(Number.isFinite(Number(sample.body.height)), true);
-  assert.equal(sample.body.admit, 'ADMITv2');
+  assert.equal(sample.body.admit, 'ADMITv3');
 }
 
 describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
@@ -210,7 +210,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         const poolBoot = await pool.boot;
         assert.equal(poolBoot.role, 'pool');
         assert.equal(poolBoot.p2p, 0);
-        assert.equal(poolBoot.admit, 'ADMITv2');
+        assert.equal(poolBoot.admit, 'ADMITv3');
         assert.ok(poolBoot.http > 0);
         assert.ok(poolBoot.ipc > 0);
 
