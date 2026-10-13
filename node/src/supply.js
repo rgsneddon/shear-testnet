@@ -380,8 +380,7 @@ function carriedInterest(scalar, key) {
 
 /**
  * Replay withdraw interest onto snap rows. The 12-u64 snap does not store it.
- * `rows[i]` is the supply after `blocks[i]`. A miss leaves the rows unchanged
- * and the caller must not publish them.
+ * `rows[i]` is the supply after `blocks[i]`. A miss is not published.
  */
 export function fillSnapInterest(rows, blocks) {
   const list = Array.isArray(blocks) ? blocks : [];
