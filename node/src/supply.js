@@ -16,16 +16,13 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf } from '../../crypto/note.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20 } from '../../crypto/note.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
-import { isDestAddress } from '../../crypto/address.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import {
   unitsForShare,
-  destOfShare,
-  noteCommitOfShare,
-  retainedUnitsByCommit,
+  accountShareUnits,
   creditBitsForShare,
 } from '../../crypto/share_batch.js';
 import { canonicalCarry } from './chain.js';
@@ -46,7 +43,6 @@ import {
 } from '../../crypto/reserve_vault.js';
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
-const ZERO_32 = Buffer.alloc(32);
 
 function safeNum(n) {
   if (typeof n !== 'bigint' || n < 0n || n > MAX_SAFE) return null;
@@ -153,27 +149,31 @@ function publicLevy(block) {
   return n;
 }
 
-function shareCounts(share) {
+function leafHex(leaf) {
   try {
-    const dest = destOfShare(share);
-    if (dest && isDestAddress(dest)) return true;
-  } catch { /* not a dest */ }
+    if (leaf?.noteCommit) {
+      const b = Buffer.from(leaf.noteCommit);
+      if (b.length === 32 && !b.equals(Buffer.alloc(32))) return b.toString('hex');
+    }
+  } catch { /* dest20 below */ }
   try {
-    const nc = noteCommitOfShare(share);
-    return !!(nc && nc.length === 32 && !Buffer.from(nc).equals(ZERO_32));
-  } catch {
-    return false;
-  }
+    if (leaf?.dest20) {
+      const d = Buffer.from(leaf.dest20);
+      if (d.length === 20) return noteCommitOfDest20(d).toString('hex');
+    }
+  } catch { /* no commit */ }
+  return '';
 }
 
 /**
  * Consensus hash bonus for one block, without opening a note.
- * A non-empty batch credits retainedUnitsByCommit. Under the unit cap that
- * is 2^bits per share. Over the cap it is the pro-rata share of the cap.
- * An empty batch is not a finder-floor shortcut: a later block pays every
- * parent row the settlement names, and a pruned batch has no shares to sum.
+ * A non-empty batch uses accountShareUnits. Rows with no noteCommit occupy
+ * the cap and are not leaves. Bound rows keep the room that occupancy leaves.
+ * Under that room the credit is 2^bits per share. Over it, the credit is the
+ * pro-rata share of the room. An empty batch is not a finder-floor shortcut.
  * The idle one-output finder floor is applied by the audit, which can see
  * the owed ledger. Missing bits on a present share are rejected.
+ * Occupancy above the cap is hash_bonus.
  */
 function permittedHash(block) {
   const unit = BigInt(hashBonusUnitNanos(HASH_BONUS_NANOS));
@@ -189,7 +189,6 @@ function permittedHash(block) {
   }
   const seen = new Set();
   for (const share of shares) {
-    if (!shareCounts(share)) return { ok: false, reason: 'hash_bonus', nanos: 0n };
     let nonce;
     try { nonce = BigInt(share?.nonce || 0).toString(); } catch {
       return { ok: false, reason: 'hash_bonus', nanos: 0n };
@@ -199,12 +198,9 @@ function permittedHash(block) {
     const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true });
     if (!credit.ok) return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }
-  let units = 0n;
-  for (const u of retainedUnitsByCommit(shares).values()) units += BigInt(u);
-  if (units > BigInt(MAX_HASH_UNITS_PER_BLOCK)) {
-    return { ok: false, reason: 'hash_bonus', nanos: 0n };
-  }
-  return { ok: true, nanos: units * unit };
+  const account = accountShareUnits(shares);
+  if (!account.ok) return { ok: false, reason: 'hash_bonus', nanos: 0n };
+  return { ok: true, nanos: BigInt(account.units) * unit, account };
 }
 
 /**
@@ -496,6 +492,25 @@ function accountBlock(prev, block, opts = {}) {
     return { reason: 'hash_bonus', state };
   }
   const unit = hashBonusUnitNanos(opts.unit == null ? state.liveUnit : opts.unit);
+  if (shares.length && hash.account && Array.isArray(block?.aLeaves) && block.aLeaves.length) {
+    const seen = new Set();
+    for (const leaf of block.aLeaves) {
+      const count = Math.floor(Number(leaf?.count) || 0);
+      if (count <= 0) continue;
+      const hex = leafHex(leaf);
+      if (!hex || (hash.account.retained.get(hex) || 0) !== count) {
+        state.carry = carryOut;
+        return { reason: 'hash_bonus', state };
+      }
+      seen.add(hex);
+    }
+    for (const [hex, kept] of hash.account.retained) {
+      if (kept > 0 && !seen.has(hex)) {
+        state.carry = carryOut;
+        return { reason: 'hash_bonus', state };
+      }
+    }
+  }
   const tipHeight = Number(opts.tipHeight) > 0 ? Number(opts.tipHeight) : blockHeight;
   const gotFresh = freshForBlock(block, unit, tipHeight);
   if (!gotFresh.ok) {

@@ -333,8 +333,8 @@ export function retainedUnitsByCommit(shares = [], cap = MAX_HASH_UNITS_PER_BLOC
   return out;
 }
 
-export function collateShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
-  const retained = retainedUnitsByCommit(shares, cap);
+export function collateShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK, retained = null) {
+  const kept = retained || retainedUnitsByCommit(shares, cap);
   const by = new Map();
   const seen = new Set();
   for (const s of unpackShareBatch(shares)) {
@@ -344,15 +344,15 @@ export function collateShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
     const hex = Buffer.from(nc).toString('hex');
     if (seen.has(hex)) continue;
     seen.add(hex);
-    const units = retained.get(hex) || 0;
+    const units = kept.get(hex) || 0;
     if (units > 0) by.set(dest, (by.get(dest) || 0) + units);
   }
   return by;
 }
 
-export function aLeavesFromShares(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
-  const retained = retainedUnitsByCommit(shares, cap);
-  return [...retained.entries()]
+export function aLeavesFromShares(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK, retained = null) {
+  const kept = retained || retainedUnitsByCommit(shares, cap);
+  return [...kept.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([hex, count]) => ({ noteCommit: Buffer.from(hex, 'hex'), count }));
 }
@@ -941,6 +941,50 @@ function paidBlocks(paid, headerBuf, nk) {
   return !!(key && paid.has(key));
 }
 
+function boundNote(share) {
+  let nc;
+  try { nc = noteCommitOfShare(share); } catch { return null; }
+  if (!nc || nc.length !== 32 || Buffer.from(nc).equals(Buffer.alloc(32))) return null;
+  return Buffer.from(nc);
+}
+
+/**
+ * One retained-units result for a share list.
+ * Rows with no noteCommit occupy the cap and are not leaves.
+ * Bound rows keep retainedUnitsByCommit of the room that occupancy leaves.
+ * units is the sum of that map. The same map is aLeaves and byDest.
+ * Occupancy above the cap is hash_units. A bound total above the room scales.
+ */
+export function accountShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
+  const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  const list = Array.isArray(shares) ? shares : [];
+  let unbound = 0;
+  const bound = [];
+  for (const share of list) {
+    const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true });
+    if (!credit.ok) continue;
+    const units = unitsForShare(credit.bits);
+    if (!boundNote(share)) unbound += units;
+    else bound.push(share);
+  }
+  if (unbound > limit) {
+    return {
+      ok: false,
+      reason: 'hash_units',
+      units: 0,
+      retained: new Map(),
+      unbound,
+      room: 0,
+      bound,
+    };
+  }
+  const room = limit - unbound;
+  const retained = retainedUnitsByCommit(bound, room);
+  let units = 0;
+  for (const u of retained.values()) units += u;
+  return { ok: true, reason: '', units, retained, unbound, room, bound };
+}
+
 /**
  * Proof of one share against one header. A cache hit that names another dest
  * or width is a contradiction and is not re-hashed. skipPow with no cache
@@ -1120,22 +1164,14 @@ export function verifyShareBatch({
       bound: !!(nc && nc.length === 32),
     });
   }
-  const bound = proven.filter((s) => s.bound);
-  const unbound = proven.filter((s) => !s.bound).reduce((n, s) => n + s.units, 0);
-  const room = Math.max(0, MAX_HASH_UNITS_PER_BLOCK - unbound);
-  const retained = retainedUnitsByCommit(bound, room);
-  let boundUnits = 0;
-  for (const u of retained.values()) boundUnits += u;
-  const units = boundUnits + unbound;
-  if (units > MAX_HASH_UNITS_PER_BLOCK) {
-    return { ok: false, reason: 'hash_units' };
-  }
+  const account = accountShareUnits(proven);
+  if (!account.ok) return { ok: false, reason: account.reason || 'hash_units' };
   return {
     ok: true,
     shares: proven,
-    units,
-    byDest: collateShareUnits(bound),
-    aLeaves: aLeavesFromShares(bound),
+    units: account.units,
+    byDest: collateShareUnits(account.bound, account.room, account.retained),
+    aLeaves: aLeavesFromShares(account.bound, account.room, account.retained),
   };
 }
 

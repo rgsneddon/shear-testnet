@@ -47,7 +47,7 @@ import {
   destOfShare,
   dest20OfShare,
   noteCommitOfShare,
-  retainedUnitsByCommit,
+  accountShareUnits,
   selectBlockShares,
   bindShareProofSlots,
   stashSharePow,
@@ -1548,7 +1548,9 @@ export function shareCreditBound(block, tipHeight = null) {
   else if (block?.hash instanceof Uint8Array && block.hash.length === 32) id = block.hash;
   if (!id) return { ok: false, reason: 'share_credit_bind' };
   if (shares.length === 0 && !positive) return { ok: true, reason: '' };
-  const retained = retainedUnitsByCommit(shares);
+  const account = accountShareUnits(shares);
+  if (!account.ok) return { ok: false, reason: 'share_credit_bind' };
+  const retained = account.retained;
   const seen = new Set();
   for (const leaf of leaves) {
     const count = Math.floor(Number(leaf?.count) || 0);
@@ -1948,7 +1950,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (confidential) {
       // Proven leaves win. Disk aLeaves keep dest20 and drop noteCommit, so a
       // batch that did not produce leaves falls back to the share batch.
-      const leaves = (shareLeaves && shareLeaves.length)
+      const leaves = Array.isArray(shareLeaves)
         ? shareLeaves
         : aLeavesFromShares(shareBatch);
       const hasherNcs = new Set(leaves.map((l) => ncHex(l.noteCommit)));
@@ -2099,7 +2101,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (!skipFlow && Array.isArray(shareLeaves) && Array.isArray(block.aLeaves) && block.aLeaves.length) {
     if (!sameLeafCounts(shareLeaves, block.aLeaves)) return { ok: false, reason: 'hash_bonus' };
   }
-  const aLeaves = (shareLeaves && shareLeaves.length)
+  const aLeaves = Array.isArray(shareLeaves)
     ? shareLeaves
     : (shareBatch.length && Array.isArray(block.aLeaves) && block.aLeaves.length
       ? block.aLeaves.map((l) => {
