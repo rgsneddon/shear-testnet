@@ -1,5 +1,15 @@
 # shear-testnet-v12 handoff
 
+## Merge record 2026-10-13
+
+Laptop review-and-merge only. No new feature, no genesis cut, no tag, no deploy, no soak.
+
+- PR 63 (`cursor/cloud-p0-sweep-1013`) landed. Head `bb238e803301ac326e6e6d8eef5a88bf6113e410`. Merge commit `ce76474cbd760dd0a4e70082887c8f46b28cc9bd`. The failure at `pool/tests/test_pool.js:684` was already there and did not block. The GitHub PR stays open: its base is `cursor/close-open-p0-0bcc`, and merging it there would not be this feat landing.
+- PR 64 (`cursor/v12-distro-packs-1013`) landed. Head `478232e9cb33de7e40f1a6ecfd3f292268925b7e`. Merge commit `1b7e8f93d3900dc2b9c82c1c4602cc191cdd9b5f`. Pack docs and scripts only. Do not enable `shear-sentinel.service` while `V12_GENESIS_BLOCK_HASH` is empty.
+- PR 65 (`cursor/admitv2-removal-1013`, head `43f05edf3a1338775ce9144102042469ccc8db30`) was not merged. It waits for `cursor/wallet-v12-send-1013`. 018e, 052, 035, and wallet items 16–23 were not taken.
+
+Those two merge commits are the parents of this note. `0.70`, `0.71`, and `v18` were not moved.
+
 Branch: `feat/shear-testnet-v12`  
 Base: `c732ff5466cbd9f6e7723a5332f3604217a0355d` (`origin/main` at branch cut)  
 This push is not a deploy. No tags, no release assets, no merge to `main`.
