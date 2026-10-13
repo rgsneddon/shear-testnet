@@ -887,7 +887,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       );
     }
     if (session.rememberedReserve != null) {
-      reserve.applyLocalSnapshot(session.rememberedReserve!);
+      reserve.installRemembered(ledger, session.rememberedReserve!);
     }
     if (!widget.skipPoolSync) {
       // _finishUnlockSync paints the shell before its credit await.

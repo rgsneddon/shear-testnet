@@ -554,7 +554,7 @@ ShearIdentity importShewall(
     }
     final snap = archive['reserve'];
     if (reserve != null && snap is Map) {
-      reserve.applyLocalSnapshot(Map<String, dynamic>.from(snap));
+      reserve.installRemembered(ledger, Map<String, dynamic>.from(snap));
     }
     return id;
   }
@@ -634,7 +634,7 @@ Future<ShearIdentity> importEncryptedShewall({
   }
   final snap = archive['reserve'];
   if (reserve != null && snap is Map) {
-    reserve.applyLocalSnapshot(Map<String, dynamic>.from(snap));
+    reserve.installRemembered(ledger, Map<String, dynamic>.from(snap));
   }
   return id;
 }

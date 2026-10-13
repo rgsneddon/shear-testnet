@@ -4405,7 +4405,7 @@ class ShearLedger implements ReadProofSink {
     if (vaultSealAncestry && !blankFork) {
       vaultSealBanner = '';
     }
-    if (blankFork) vaultLockedNanos = 0;
+    if (blankFork) _clearReserveHold();
   }
 
   /// Disconnect orphaned heights; rows bounce to pending.
@@ -4551,7 +4551,7 @@ class ShearLedger implements ReadProofSink {
       take('extraMintedNanos', (n) => extraMintedNanos = n);
       take('mintBankNanos', (n) => extraMintedNanos = n);
       if (blankFork) {
-        vaultLockedNanos = 0;
+        _clearReserveHold();
       } else {
         take('lockedNanos', (n) => vaultLockedNanos = n);
         if (json['reserveVaultNanos'] is num) {
@@ -4773,16 +4773,57 @@ class ShearLedger implements ReadProofSink {
   /// Confirmed Reserve principal is not Continuum spendable. A pending lock
   /// debit and that principal are the same hold, so the larger one applies.
   void setReserveHeldNanos(String dest, int nanos) {
+    setReserveHeldUnits(dest, BigInt.from(nanos));
+  }
+
+  /// Exact portal principal. Any size, including a count a double cannot name.
+  /// Public stats `lockedNanos` is the reserve total, not this wallet, so it
+  /// does not call this. A blank fork clears the hold instead.
+  void setReserveHeldUnits(String dest, BigInt nanos) {
     final pk = payKey(dest);
     if (!isDestAddress(pk)) return;
-    if (nanos <= 0) {
+    if (nanos <= BigInt.zero) {
       _reserveHeldNanos.remove(pk);
       _reserveHeldShe[pk] = 0;
       return;
     }
-    _reserveHeldNanos[pk] = BigInt.from(nanos);
-    final she = nanos / kUnitsPerShe;
-    _reserveHeldShe[pk] = she;
+    _reserveHeldNanos[pk] = nanos;
+    final asDouble = nanos.toDouble();
+    _reserveHeldShe[pk] = asDouble.isFinite ? asDouble / kUnitsPerShe : double.infinity;
+  }
+
+  /// Snapshot principal for the selector, before a live portal read.
+  /// Replaces any previous principal for [dest]. It does not add.
+  void bindSnapshotHold(String dest, int nanos) {
+    if (blankFork) {
+      _clearReserveHold();
+      return;
+    }
+    setReserveHeldNanos(dest, nanos < 0 ? 0 : nanos);
+  }
+
+  void _clearReserveHold() {
+    vaultLockedNanos = 0;
+    _reserveHeldNanos.clear();
+    _reserveHeldShe.clear();
+  }
+
+  void _installFollowReserveHold(Map<String, dynamic> spec) {
+    if (spec.containsKey('reserveHeld')) {
+      _reserveHeldNanos.clear();
+      _reserveHeldShe.clear();
+      final raw = spec['reserveHeld'];
+      if (raw is Map) {
+        for (final e in raw.entries) {
+          final digits = e.value?.toString() ?? '';
+          if (!RegExp(r'^\d+$').hasMatch(digits)) continue;
+          final big = BigInt.tryParse(digits);
+          if (big == null) continue;
+          setReserveHeldUnits(e.key.toString(), big);
+        }
+      }
+    }
+    if (blankFork) _clearReserveHold();
   }
 
   double _grossShown(String key) {
@@ -5514,6 +5555,9 @@ class ShearLedger implements ReadProofSink {
       'advisory': _followEncode(_advisorySpendable),
       'externalShe': _followEncode(_externalShe),
       'lockDebit': _followEncode(_lockDebitShe),
+      'reserveHeld': <String, String>{
+        for (final e in _reserveHeldNanos.entries) e.key: e.value.toString(),
+      },
       'settledNodeShe': _followEncode(_settledNodeShe),
       'proofChecked': _proofCheckedDests.toList(),
       'unverifiedExternal': _unverifiedExternal.toList(),
@@ -5610,6 +5654,7 @@ class ShearLedger implements ReadProofSink {
     takeDoubles(_advisorySpendable, spec['advisory']);
     takeDoubles(_externalShe, spec['externalShe']);
     takeDoubles(_lockDebitShe, spec['lockDebit']);
+    _installFollowReserveHold(spec);
     takeDoubles(_settledNodeShe, spec['settledNodeShe']);
     _proofCheckedDests
       ..clear()
@@ -5815,6 +5860,11 @@ class ShearLedger implements ReadProofSink {
       // Money dests the UI already accepts. The session file does not carry
       // stealth shared secrets, and a recomputed set drops the mining mailbox.
       'uiDests': syncDests(restFrame, paymentCode: paymentCode).toList(),
+      // The worker installs this before it exports. A follow that omits it
+      // would put an empty map back and the selector would spend the vault.
+      'reserveHeld': <String, String>{
+        for (final e in _reserveHeldNanos.entries) e.key: e.value.toString(),
+      },
     };
     // A sealed session is already on disk. The worker opens it. Encoding the
     // in-memory book here is what froze Verifying on 0.68 (Windows and Android).
@@ -5835,6 +5885,7 @@ class ShearLedger implements ReadProofSink {
         'advisory',
         'externalShe',
         'lockDebit',
+        'reserveHeld',
         'settledNodeShe',
         'proofChecked',
         'unverifiedExternal',

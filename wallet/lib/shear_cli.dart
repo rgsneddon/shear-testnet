@@ -844,7 +844,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
   _bindLedger(ledger, id, session);
   final reserve = ShearReserve();
   if (session.rememberedReserve != null) {
-    reserve.applyLocalSnapshot(session.rememberedReserve!);
+    reserve.installRemembered(ledger, session.rememberedReserve!);
   }
   final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
   final now = DateTime.now().millisecondsSinceEpoch;
@@ -1001,7 +1001,9 @@ Future<int> _rewards(IOSink out, IOSink err, _Flags flags, Map<String, String> e
   final ledger = ShearLedger();
   _bindLedger(ledger, id, session);
   final reserve = ShearReserve();
-  if (session.rememberedReserve != null) reserve.applyLocalSnapshot(session.rememberedReserve!);
+  if (session.rememberedReserve != null) {
+    reserve.installRemembered(ledger, session.rememberedReserve!);
+  }
   final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
   final now = DateTime.now().millisecondsSinceEpoch;
   if (flags['claim'] == '1' || flags.rest.contains('claim')) {
