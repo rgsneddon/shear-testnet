@@ -1604,7 +1604,7 @@ export function createStore(dir, {
             : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
           if (!unitWalk.ok) throw new Error(unitWalk.reason || 'epoch_open');
           const units = unitWalk.units;
-          const got = replayHashOwed(list, { units });
+          const got = replayHashOwed(list, { units, burialOf: provenTipOf });
           if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
           owedRows = got.rows;
           acceptedSeries = got.accepted;
@@ -1634,7 +1634,7 @@ export function createStore(dir, {
       : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
     if (!unitWalk.ok) throw new Error(unitWalk.reason || 'epoch_open');
     const units = unitWalk.units;
-    const got = replayHashOwed(list, { units });
+    const got = replayHashOwed(list, { units, burialOf: provenTipOf });
     if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
     owedRows = got.rows;
     acceptedSeries = got.accepted;
