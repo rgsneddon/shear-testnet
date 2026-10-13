@@ -24,7 +24,7 @@ import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags } from './note.js';
 import { hash20FromAddress } from './address.js';
 import { canonicalReserveFields } from './reserve_vault.js';
-import { compactHashLedger, packHashCreditBytes } from './hash_owed.js';
+import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -97,15 +97,23 @@ export function pruneSamples(block) {
     }
     return rest;
   });
-  return {
+  const spillCredits = Array.isArray(block.hashSpillCredits)
+    ? block.hashSpillCredits
+    : (Array.isArray(block.hashSpill) && block.hashSpill.length
+      ? freshCreditsFromShares(block.hashSpill)
+      : null);
+  const next = {
     ...block,
     samples: [],
     shareBatch: [],
+    hashSpill: [],
     bLeaves: [],
     samplesPruned: true,
     bLeavesPruned: true,
     txs: nextTxs,
   };
+  if (spillCredits && spillCredits.length) next.hashSpillCredits = spillCredits;
+  return next;
 }
 
 /**
@@ -642,6 +650,12 @@ export function compactChainBlock(block) {
     txs: (block.txs || []).map(compactTx),
     sharePacked: packShareBatchBytes(block.shareBatch || []).toString('hex'),
   };
+  if (Array.isArray(block.hashSpill) && block.hashSpill.length) {
+    row.hashSpillPacked = packShareBatchBytes(block.hashSpill).toString('hex');
+  }
+  if (Array.isArray(block.hashSpillCredits) && block.hashSpillCredits.length) {
+    row.hashSpillCreditPacked = packHashCreditBytes(block.hashSpillCredits).toString('hex');
+  }
   if (Array.isArray(block.hashCredits)) {
     row.hashCreditPacked = packHashCreditBytes(block.hashCredits).toString('hex');
   }

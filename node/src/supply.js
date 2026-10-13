@@ -28,6 +28,7 @@ import {
 import { canonicalCarry } from './chain.js';
 import {
   freshForBlock,
+  spillForBlock,
   hashBudgetNanos,
   hashLedgerIdle,
   sameHashLedger,
@@ -517,6 +518,11 @@ function accountBlock(prev, block, opts = {}) {
     state.carry = carryOut;
     return { reason: 'hash_owed', state };
   }
+  const gotSpill = spillForBlock(block, unit, tipHeight);
+  if (!gotSpill.ok) {
+    state.carry = carryOut;
+    return { reason: 'hash_owed', state };
+  }
   const fresh = gotFresh.fresh;
   const budget = hashBudgetNanos(state.acceptedSeries, unit);
   if (budget == null) {
@@ -528,6 +534,7 @@ function accountBlock(prev, block, opts = {}) {
     dustIn: state.dust,
     overflowIn: state.overflow,
     fresh,
+    spill: gotSpill.fresh,
     height: Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : 0,
     unit,
     budget,
@@ -550,7 +557,11 @@ function accountBlock(prev, block, opts = {}) {
     }
   }
   const freshNanos = fresh.reduce((n, row) => n + row.nanos, 0n);
-  state.acceptedHash += freshNanos + (mintedHashHere - settled.minted);
+  const spillNanos = (gotSpill.fresh || []).reduce((n, row) => n + row.nanos, 0n);
+  // Spill is proven work entering the owed map on this block. It stays out of
+  // acceptedUnits, so the hash budget does not move. Minted plus still-owed
+  // has to equal accepted hash, so the witness is ingress.
+  state.acceptedHash += freshNanos + spillNanos + (mintedHashHere - settled.minted);
   state.permittedHashAll += mintedHashHere;
   state.owedRows = rowsOut.slice();
   state.acceptedSeries.push(settled.acceptedUnits == null ? 0n : settled.acceptedUnits);

@@ -50,6 +50,7 @@ import {
   accountShareUnits,
   selectBlockShares,
   bindShareProofSlots,
+  shareWorkKey,
   stashSharePow,
   dropSharePowKeys,
   issuedJobDigestSuffix,
@@ -112,6 +113,7 @@ import {
 import {
   freshCreditsFromShares,
   freshForBlock,
+  spillForBlock,
   sealedCreditsBuried,
   hashBudgetNanos,
   hashDustFromTx,
@@ -817,6 +819,7 @@ export function coinbaseTx({
   hashDustIn = null,
   hashOverflowIn = null,
   hashAcceptedSeries = null,
+  hashSpill = null,
 }) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
@@ -851,6 +854,7 @@ export function coinbaseTx({
   // first-seen dest order. An empty batch with an empty ledger mints no
   // hash note here. A later producer pays parent rows the same way.
   const fresh = freshCreditsFromShares(shareBatch || [], hashBonusNanos);
+  const spill = freshCreditsFromShares(hashSpill || [], hashBonusNanos);
   const budget = hashAcceptedSeries == null ? null : hashBudgetNanos(hashAcceptedSeries, hashBonusNanos);
   if (hashAcceptedSeries != null && budget == null) throw new Error('hash_owed');
   const settled = settleHashOwed({
@@ -858,6 +862,7 @@ export function coinbaseTx({
     dustIn: hashDustIn || 0n,
     overflowIn: hashOverflowIn || 0n,
     fresh,
+    spill,
     height,
     unit: hashBonusNanos,
     budget,
@@ -1163,6 +1168,7 @@ export function buildTemplate({
   hashAcceptedSeries = null,
   hashOwedIn: hashOwedInOpt = null,
   issuedHeaders = null,
+  hashSpill = null,
 }) {
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
@@ -1171,6 +1177,10 @@ export function buildTemplate({
   const batch = bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
     keepClaim: true,
   }).slotted;
+  const spillIn = Array.isArray(hashSpill) ? hashSpill.slice(0, MAX_SHARES_PER_BLOCK) : [];
+  const spillBatch = bindShareProofSlots(spillIn, prevHeader, priorBlock?.header || null, {
+    keepClaim: false,
+  }).slotted.filter((s) => s?.proofSlot === 1 || s?.proofSlot === '1');
   const fromBatch = batch.length
     ? [...collateShareUnits(batch)].map(([minerAddr, count]) => ({
       miner: minerAddr,
@@ -1235,6 +1245,7 @@ export function buildTemplate({
     hashDustIn,
     hashOverflowIn,
     hashAcceptedSeries: series,
+    hashSpill: spillBatch,
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
@@ -1317,6 +1328,7 @@ export function buildTemplate({
     txs: bodyTxs,
     samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
     shareBatch: batch,
+    hashSpill: spillBatch,
     miner,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
@@ -1425,12 +1437,15 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false, priorHeade
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return { ok: false, reason: 'prev' };
   const shareHeaders = [];
-  if (!skipSharePow && prev?.header && Array.isArray(block.shareBatch) && block.shareBatch.length) {
+  const shareLists = [];
+  if (Array.isArray(block.shareBatch) && block.shareBatch.length) shareLists.push(block.shareBatch);
+  if (Array.isArray(block.hashSpill) && block.hashSpill.length) shareLists.push(block.hashSpill);
+  if (!skipSharePow && prev?.header && shareLists.length) {
     let rows = [];
-    try {
-      rows = unpackShareBatch(block.shareBatch);
-    } catch {
-      rows = [];
+    for (const list of shareLists) {
+      try {
+        rows = rows.concat(unpackShareBatch(list));
+      } catch { /* the sync verifier reports the bad row */ }
     }
     const parent = Buffer.from(prev.header);
     let prior = null;
@@ -1575,6 +1590,51 @@ export function shareCreditBound(block, tipHeight = null) {
   return { ok: true, reason: '' };
 }
 
+function spillWorkKeys(shares, fallbackHeader) {
+  const out = [];
+  for (const s of shares || []) {
+    const hdr = s?.verifiedHeader || fallbackHeader;
+    const key = shareWorkKey(hdr, s?.nonce);
+    if (key) out.push(key);
+  }
+  return out;
+}
+
+/**
+ * Expiring overflow only. Slot 0 is still eligible and must stay in the
+ * payable batch. A witness longer than the seat cap, or one that repeats
+ * a seated work key, is not a credit. Buried blocks keep the credit record
+ * and no longer carry the share bodies.
+ */
+function spillSharesRejected(block, prev, opts = {}) {
+  const spill = Array.isArray(block?.hashSpill) ? block.hashSpill : [];
+  if (!spill.length) {
+    const recorded = block?.hashSpillCredits;
+    if (Array.isArray(recorded) && recorded.length && !sealedCreditsBuried(block, opts.burialTip)) {
+      return 'hash_spill';
+    }
+    return '';
+  }
+  if (spill.length > MAX_SHARES_PER_BLOCK) return 'hash_spill';
+  if (!prev?.header) return 'hash_spill';
+  const exclude = spillWorkKeys(block.shareBatch, prev.header);
+  const proved = verifyShareBatch({
+    parentHeader: prev.header,
+    priorHeader: opts.grandparentHeader || null,
+    excludeNonces: exclude,
+    shares: spill,
+    floorBits: SHARE_FLOOR_BITS,
+    skipPow: !!opts.skipSharePow,
+    trustWork: !!opts.trustWork,
+    issuedJobKeys: block.txs?.[0]?.issuedJobKeys,
+  });
+  if (!proved.ok || proved.shares.length !== spill.length) return 'hash_spill';
+  for (const row of proved.shares) {
+    if (row.proofSlot !== 1) return 'hash_spill';
+  }
+  return '';
+}
+
 function settlementFor(prev, height, block, unit, extra = {}) {
   const shareBatch = Array.isArray(block?.shareBatch) ? block.shareBatch : (Array.isArray(block) ? block : []);
   const creditBlock = block && !Array.isArray(block) ? block : { shareBatch };
@@ -1596,12 +1656,15 @@ function settlementFor(prev, height, block, unit, extra = {}) {
   if (series != null && budget == null) return { ok: false, reason: 'hash_owed' };
   const gotFresh = freshForBlock(creditBlock, unit, extra.tipHeight);
   if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
+  const gotSpill = spillForBlock(creditBlock, unit, extra.tipHeight);
+  if (!gotSpill.ok) return { ok: false, reason: 'hash_owed' };
   const fresh = gotFresh.fresh;
   const settled = settleHashOwed({
     owedIn,
     dustIn,
     overflowIn,
     fresh,
+    spill: gotSpill.fresh,
     height,
     unit,
     budget,
@@ -1939,6 +2002,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       shareLeaves = proved.aLeaves;
     }
   }
+  const spillReason = spillSharesRejected(block, prev, {
+    grandparentHeader: opts.grandparentHeader || null,
+    skipSharePow: trustWork ? false : !!skipSharePow,
+    trustWork,
+    burialTip,
+  });
+  if (spillReason) return { ok: false, reason: spillReason };
   if (!skipFlow) {
     const settlement = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,

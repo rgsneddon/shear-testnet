@@ -22,7 +22,12 @@
  * samplesPruned flag alone is not burial. The hash-bonus unit
  * is the one live at that height (HASH_OWED_UNIT_HISTORY=per-height).
  * hashAcceptedUnits is required and must match settlement
- * (HASH_ACCEPTED_UNITS=validated). HASH_OWED_BUDGET_SCALE_V1 sets this block's
+ * (HASH_ACCEPTED_UNITS=validated). Slot-1 expiring shares that missed a seat,
+ * up to one batch of MAX_SHARES_PER_BLOCK, are hashSpill
+ * (HASH_OWED_SPILL=witness-v1). Their full credit is owed at this height and
+ * is not spent from this block's budget, so seated pay does not change. Owe
+ * past that batch is lostWork. A row that is not slot 1 stays off the
+ * template. A pool file is not an input. HASH_OWED_BUDGET_SCALE_V1 sets this block's
  * mint capacity to max(MAX_HASH_UNITS, k * lowerMedian) over the
  * fingerprinted window of sealed accepted units, and never below the floor.
  * Pot splits and the pool fee do not read this ledger. Amounts stay BigInt
@@ -50,7 +55,7 @@ import {
   noteCommitOfShare,
   unitsForShare,
 } from './share_batch.js';
-import { unpackShareBatch } from './pack.js';
+import { packShareBatchBytes, unpackShareBatch, unpackShareBatchBytes } from './pack.js';
 import { admitBaseFromAddress } from './address.js';
 
 const MAX_U64 = (1n << 64n) - 1n;
@@ -125,6 +130,8 @@ function cmpOwed(a, b) {
 const ROOT_PREFIX = Buffer.from('hashowed-root-v1');
 const CREDIT_PREFIX = Buffer.from('hashowed-credits-v1');
 const CREDIT_MAGIC = Buffer.from('hcrd1');
+const SPILL_MAGIC = Buffer.from('hspw1');
+const SPILL_CREDIT_MAGIC = Buffer.from('hspc1');
 const CREDIT_ROW = 32 + 20 + 32 + 8;
 
 function rootBytes(v) {
@@ -263,6 +270,35 @@ export function unpackHashCreditBytes(buf) {
     });
   }
   return rows;
+}
+
+/** Share bodies of a window-spill witness. Empty input is an empty pack. */
+export function packSpillBytes(shares) {
+  return Buffer.concat([SPILL_MAGIC, packShareBatchBytes(shares || [])]);
+}
+
+export function unpackSpillBytes(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  if (b.length < SPILL_MAGIC.length) return null;
+  if (!b.subarray(0, SPILL_MAGIC.length).equals(SPILL_MAGIC)) return null;
+  try {
+    const rows = unpackShareBatchBytes(b.subarray(SPILL_MAGIC.length));
+    return Array.isArray(rows) ? rows : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Credit rows for a spill witness after the share bodies are pruned. */
+export function packSpillCreditBytes(rows) {
+  return Buffer.concat([SPILL_CREDIT_MAGIC, packHashCreditBytes(rows || [])]);
+}
+
+export function unpackSpillCreditBytes(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  if (b.length < SPILL_CREDIT_MAGIC.length) return null;
+  if (!b.subarray(0, SPILL_CREDIT_MAGIC.length).equals(SPILL_CREDIT_MAGIC)) return null;
+  return unpackHashCreditBytes(b.subarray(SPILL_CREDIT_MAGIC.length));
 }
 
 function parseCreditList(raw) {
@@ -427,6 +463,33 @@ export function freshForBlock(block, unit = HASH_BONUS_NANOS, tipHeight = null) 
   const root = rootBytes(coinbaseTx(block)?.hashCreditRoot);
   if (recorded.length && !root) return { ok: false, fresh: [] };
   if (root && !root.equals(hashCreditRoot(recorded))) return { ok: false, fresh: [] };
+  if (shares.length) {
+    if (!shareWitnessAgrees(shares, recorded, unit)) return { ok: false, fresh: [] };
+    if (fromShares.length && !creditsEqual(recorded, fromShares)) return { ok: false, fresh: [] };
+  } else if (recorded.length && !sealedCreditsBuried(block, tipHeight)) {
+    return { ok: false, fresh: [] };
+  }
+  return { ok: true, fresh: recorded };
+}
+
+/**
+ * Window-spill credits. Share bodies witness noteCommit and nanos. The packed
+ * frame does not carry dest, so dest is the sealed credit record. An empty
+ * body is not a source unless this tip has buried the block. A pool file is
+ * not read here.
+ */
+export function spillForBlock(block, unit = HASH_BONUS_NANOS, tipHeight = null) {
+  let shares = [];
+  try {
+    shares = unpackShareBatch(block?.hashSpill || []);
+  } catch {
+    return { ok: false, fresh: [] };
+  }
+  const fromShares = freshCreditsFromShares(shares, unit);
+  const hasField = block != null && Object.prototype.hasOwnProperty.call(block, 'hashSpillCredits');
+  if (!hasField) return { ok: true, fresh: fromShares };
+  const recorded = parseCreditList(block.hashSpillCredits);
+  if (recorded == null) return { ok: false, fresh: [] };
   if (shares.length) {
     if (!shareWitnessAgrees(shares, recorded, unit)) return { ok: false, fresh: [] };
     if (fromShares.length && !creditsEqual(recorded, fromShares)) return { ok: false, fresh: [] };
@@ -740,6 +803,7 @@ export function settleHashOwed({
   dustIn = 0n,
   overflowIn = 0n,
   fresh = [],
+  spill = [],
   budget = null,
   dust = null,
   maxEntries = HASH_OWED_MAX_ENTRIES,
@@ -818,9 +882,36 @@ export function settleHashOwed({
     });
   }
 
+  // Spill is owed at this height. It does not enter the fresh pay walk.
+  const spillRows = [];
+  for (const row of spill || []) {
+    const nanos = asBi(row?.nanos);
+    const noteCommit = buf32(row?.noteCommit);
+    const dest20 = buf20(row?.dest20);
+    if (nanos == null || !noteCommit || !dest20) return fail();
+    if (nanos === 0n) continue;
+    if (nanos > MAX_U64) return fail();
+    let expect;
+    try {
+      expect = noteCommitOfDest20(dest20);
+    } catch {
+      return fail();
+    }
+    if (!expect.equals(noteCommit)) return fail();
+    spillRows.push({
+      noteCommit,
+      dest20,
+      nanos,
+      sinceHeight: blockHeight,
+      admitBase: buf32(row.admitBase),
+      address: typeof row.address === 'string' ? row.address : '',
+    });
+  }
+
   const inSum = parent.reduce((n, row) => n + row.nanos, 0n)
     + carriedLow.reduce((n, row) => n + row.nanos, 0n)
-    + freshRows.reduce((n, row) => n + row.nanos, 0n);
+    + freshRows.reduce((n, row) => n + row.nanos, 0n)
+    + spillRows.reduce((n, row) => n + row.nanos, 0n);
 
   const paid = new Map();
   const still = [];
@@ -886,6 +977,9 @@ export function settleHashOwed({
 
   const merged = new Map();
   for (const row of unpaidLow) still.push(row);
+  for (const row of spillRows) {
+    if (row.nanos > 0n) still.push(copyRow(row, row.nanos, blockHeight));
+  }
   for (const row of still) {
     const hex = row.noteCommit.toString('hex');
     const prev = merged.get(hex);
@@ -922,7 +1016,8 @@ export function settleHashOwed({
   if (minted + carried !== inSum) return fail();
   if (owed.length > cap) return fail();
   const freshNanos = freshRows.reduce((n, row) => n + row.nanos, 0n);
-  if (unitBi <= 0n || freshNanos % unitBi !== 0n) return fail();
+  const spillNanos = spillRows.reduce((n, row) => n + row.nanos, 0n);
+  if (unitBi <= 0n || freshNanos % unitBi !== 0n || spillNanos % unitBi !== 0n) return fail();
   const acceptedUnits = freshNanos / unitBi;
   return {
     ok: true,
@@ -1000,12 +1095,15 @@ export function advanceHashOwed({
   const h = height == null ? Number(block?.height || 0) : Number(height);
   const gotFresh = freshForBlock(block, unit, tipHeight);
   if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
+  const gotSpill = spillForBlock(block, unit, tipHeight);
+  if (!gotSpill.ok) return { ok: false, reason: 'hash_owed' };
   const fresh = gotFresh.fresh;
   const budget = hashBudgetNanos(acceptedSeries, unit);
   if (budget == null) return { ok: false, reason: 'hash_owed' };
   const settled = settleHashOwed({
     owedIn,
     fresh,
+    spill: gotSpill.fresh,
     height: Number.isInteger(h) && h >= 0 ? h : 0,
     unit,
     budget,

@@ -662,6 +662,25 @@ export function splitDeferWindow(shares, parentHeader, priorHeader, cap = MAX_SH
 }
 
 /**
+ * One witness batch of expiring overflow. `cap` is the witness size, which
+ * consensus keeps at MAX_SHARES_PER_BLOCK. Rows past that batch are not a
+ * second unpaid file. The caller counts them lost.
+ */
+export function partitionSpillRows(rows, { pending = 0, cap = MAX_SHARES_PER_BLOCK } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const room = Math.max(0, Math.floor(Number(cap) || 0) - Math.max(0, Math.floor(Number(pending) || 0)));
+  const witness = room > 0 ? selectBlockShares(list, room) : [];
+  const ids = new Set(witness.map((s) => shareWorkKey(s?.verifiedHeader, s?.nonce)).filter(Boolean));
+  const rest = [];
+  for (const s of list) {
+    const key = shareWorkKey(s?.verifiedHeader, s?.nonce);
+    if (key && ids.has(key)) continue;
+    rest.push(s);
+  }
+  return { witness, rest };
+}
+
+/**
  * Rows the defer window can still pay: slot 0 or slot 1.
  * A stale header is not eligible. The number is a count, not a miner.
  * issuedJobKeys uses the same rule as splitDeferWindow.

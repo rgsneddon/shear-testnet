@@ -7,7 +7,14 @@ import { encodeHeader, decodeHeader } from './header.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from './pack.js';
 import { compactTx } from './chronoflux.js';
 import { reviveBytes } from './note.js';
-import { packHashCreditBytes, unpackHashCreditBytes } from './hash_owed.js';
+import {
+  packHashCreditBytes,
+  packSpillBytes,
+  packSpillCreditBytes,
+  unpackHashCreditBytes,
+  unpackSpillBytes,
+  unpackSpillCreditBytes,
+} from './hash_owed.js';
 
 const MAGIC = Buffer.from('shear-chn-v1\0\0\0');
 
@@ -70,6 +77,18 @@ export function packEpochBlock(block) {
     n.writeUInt32LE(body.length, 0);
     chunks.push(n, body);
   }
+  if (Array.isArray(block.hashSpill) && block.hashSpill.length) {
+    const body = packSpillBytes(block.hashSpill);
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
+  if (Array.isArray(block.hashSpillCredits) && block.hashSpillCredits.length) {
+    const body = packSpillCreditBytes(block.hashSpillCredits);
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -97,6 +116,10 @@ export function unpackEpochBlock(buf) {
   let sawSpendIds = false;
   let hashCredits;
   let sawCredits = false;
+  let hashSpill;
+  let sawSpill = false;
+  let hashSpillCredits;
+  let sawSpillCredits = false;
   if (o + 4 <= b.length) {
     const sLen = b.readUInt32LE(o);
     o += 4;
@@ -113,6 +136,20 @@ export function unpackEpochBlock(buf) {
         if (credits) {
           hashCredits = credits;
           sawCredits = true;
+          o += 4 + nLen;
+          continue;
+        }
+        const spill = unpackSpillBytes(body);
+        if (spill) {
+          hashSpill = spill;
+          sawSpill = true;
+          o += 4 + nLen;
+          continue;
+        }
+        const spillCredits = unpackSpillCreditBytes(body);
+        if (spillCredits) {
+          hashSpillCredits = spillCredits;
+          sawSpillCredits = true;
           o += 4 + nLen;
           continue;
         }
@@ -146,6 +183,8 @@ export function unpackEpochBlock(buf) {
   };
   if (sawSpendIds) block.bSpendIds = bSpendIds;
   if (sawCredits) block.hashCredits = hashCredits;
+  if (sawSpill) block.hashSpill = hashSpill;
+  if (sawSpillCredits) block.hashSpillCredits = hashSpillCredits;
   return block;
 }
 

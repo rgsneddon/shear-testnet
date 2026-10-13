@@ -363,6 +363,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `HASH_OWED_SCALE_K=${HASH_OWED_SCALE_K}`,
     'HASH_OWED_WIRE=root-v1',
     'HASH_OWED_RECOVER=sealed-credits-v1',
+    'HASH_OWED_SPILL=witness-v1',
     'HASH_OWED_UNIT_HISTORY=per-height',
     'HASH_ACCEPTED_UNITS=validated',
     'DANDELIONPP=1',

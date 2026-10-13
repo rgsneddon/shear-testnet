@@ -48,6 +48,7 @@ import {
   sharePowCounters,
 } from '../../crypto/share_batch.js';
 import { advanceHashOwed, freshCreditsFromShares, replayHashOwed, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
+import { unpackShareBatchBytes } from '../../crypto/pack.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { isDestAddress } from '../../crypto/address.js';
@@ -323,6 +324,14 @@ export function createStore(dir, {
       if (typeof b.hashCreditPacked === 'string' && b.hashCreditPacked) {
         const credits = unpackHashCreditBytes(Buffer.from(b.hashCreditPacked, 'hex'));
         if (credits) b.hashCredits = credits;
+      }
+      if (typeof b.hashSpillPacked === 'string' && b.hashSpillPacked) {
+        const spill = unpackShareBatchBytes(Buffer.from(b.hashSpillPacked, 'hex'));
+        if (Array.isArray(spill)) b.hashSpill = spill;
+      }
+      if (typeof b.hashSpillCreditPacked === 'string' && b.hashSpillCreditPacked) {
+        const spillCredits = unpackHashCreditBytes(Buffer.from(b.hashSpillCreditPacked, 'hex'));
+        if (spillCredits) b.hashSpillCredits = spillCredits;
       }
       blocks.push(b);
     }
@@ -1389,9 +1398,15 @@ export function createStore(dir, {
   }
 
   function stampCredits(block, unit) {
-    if (!block || Object.prototype.hasOwnProperty.call(block, 'hashCredits')) return;
-    if (block.samplesPruned === true && !(block.shareBatch || []).length) return;
-    block.hashCredits = freshCreditsFromShares(block.shareBatch || [], unit);
+    if (!block) return;
+    const haveCredits = Object.prototype.hasOwnProperty.call(block, 'hashCredits');
+    if (!haveCredits && !(block.samplesPruned === true && !(block.shareBatch || []).length)) {
+      block.hashCredits = freshCreditsFromShares(block.shareBatch || [], unit);
+    }
+    if (Object.prototype.hasOwnProperty.call(block, 'hashSpillCredits')) return;
+    const spill = Array.isArray(block.hashSpill) ? block.hashSpill : [];
+    if (!spill.length) return;
+    block.hashSpillCredits = freshCreditsFromShares(spill, unit);
   }
 
   function keepOwedIndex(at, tipAt) {
@@ -3976,7 +3991,7 @@ export function createStore(dir, {
     };
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
@@ -4190,6 +4205,7 @@ export function createStore(dir, {
       bits,
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
+      hashSpill: Array.isArray(hashSpill) ? hashSpill : [],
       poolDest,
       feeDest,
       finderDest,
@@ -4216,6 +4232,7 @@ export function createStore(dir, {
       txs: rec.tpl.txs,
       samples: rec.tpl.samples,
       shareBatch: rec.tpl.shareBatch || [],
+      hashSpill: Array.isArray(rec.tpl.hashSpill) ? rec.tpl.hashSpill : [],
       miner: destForLogin(miner) || miner || rec.tpl.miner,
       poolDest: rec.tpl.poolDest || rec.tpl.miner || '',
       aLeaves: rec.tpl.aLeaves,

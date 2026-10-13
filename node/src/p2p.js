@@ -3,7 +3,14 @@ import { randomBytes } from 'node:crypto';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
-import { packHashCreditBytes, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
+import {
+  packHashCreditBytes,
+  unpackHashCreditBytes,
+  packSpillBytes,
+  unpackSpillBytes,
+  packSpillCreditBytes,
+  unpackSpillCreditBytes,
+} from '../../crypto/hash_owed.js';
 import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
@@ -512,6 +519,12 @@ export function encodeWireBlock(b) {
     miner: b.miner,
     sharePacked: packShareBatchBytes(b.shareBatch || []).toString('hex'),
     hashCreditPacked: Array.isArray(b.hashCredits) ? packHashCreditBytes(b.hashCredits).toString('hex') : '',
+    ...(Array.isArray(b.hashSpill) && b.hashSpill.length
+      ? { hashSpillPacked: packSpillBytes(b.hashSpill).toString('hex') }
+      : {}),
+    ...(Array.isArray(b.hashSpillCredits) && b.hashSpillCredits.length
+      ? { hashSpillCreditPacked: packSpillCreditBytes(b.hashSpillCredits).toString('hex') }
+      : {}),
     aLeaves: b.aLeaves,
     bLeaves: b.bLeaves,
     rootA: b.rootA,
@@ -535,6 +548,12 @@ export function decodeWireBlock(w) {
     hashCredits: w.hashCreditPacked
       ? unpackHashCreditBytes(Buffer.from(String(w.hashCreditPacked), 'hex'))
       : (Array.isArray(w.hashCredits) ? w.hashCredits : undefined),
+    hashSpill: w.hashSpillPacked
+      ? (unpackSpillBytes(Buffer.from(String(w.hashSpillPacked), 'hex')) || [])
+      : (Array.isArray(w.hashSpill) ? w.hashSpill : []),
+    hashSpillCredits: w.hashSpillCreditPacked
+      ? unpackSpillCreditBytes(Buffer.from(String(w.hashSpillCreditPacked), 'hex'))
+      : (Array.isArray(w.hashSpillCredits) ? w.hashSpillCredits : undefined),
     aLeaves: reviveDeep(w.aLeaves),
     bLeaves: reviveDeep(w.bLeaves),
     rootA: reviveDeep(w.rootA),

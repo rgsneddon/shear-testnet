@@ -76,6 +76,7 @@ import {
   selectBlockShares,
   bindShareProofSlots,
   splitDeferWindow,
+  partitionSpillRows,
   shareWorkKey,
   shareHeaderSlot,
   ISSUED_HEADER_CAP,
@@ -1814,6 +1815,7 @@ export function createPool({
   onRestart = null,
   onRestartHasher = null,
   noValidShareMs = NO_VALID_SHARE_MS,
+  shareCap = null,
 } = {}) {
   const store = createStore(dataDir);
   const admin = createAdmin(dataDir);
@@ -2097,6 +2099,13 @@ export function createPool({
   const owedPath = path.join(dataDir, 'window-owed.json');
   const owedByNote = new Map();
   const owedWork = new Set();
+  const owedWorkUnits = new Map();
+  let pendingSpill = [];
+  const seatCap = (() => {
+    const n = Math.floor(Number(shareCap));
+    if (!Number.isInteger(n) || n <= 0) return MAX_SHARES_PER_BLOCK;
+    return Math.min(MAX_SHARES_PER_BLOCK, n);
+  })();
   function loadWindowOwed() {
     try {
       const j = JSON.parse(fs.readFileSync(owedPath, 'utf8'));
@@ -2504,9 +2513,9 @@ export function createPool({
       deferredShares = [];
       openShares = [];
       const split = ctx.parentHeader
-        ? splitDeferWindow(kept, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK, lag1Issued)
+        ? splitDeferWindow(kept, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued)
         : { seal: kept, carry: [], owe: [], stale: [] };
-      if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
+      if (split.owe.length) admitWindowSpill(split.owe);
       if (split.carry.length) deferredShares = sortShares(split.carry);
       if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
       const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
@@ -2662,9 +2671,9 @@ export function createPool({
     deferredShares = pull(deferredShares);
   }
 
-  // Proven units that cannot seal in this window. Counted on noteCommit.
-  // Not lostWork, and not a consensus mint: the hash-owed root still comes
-  // only from shares that sealed into a block.
+  // Pre-seal queue keyed by noteCommit. Not a mint input.
+  // share_cap rows reach this only after admitWindowSpill keeps a witness
+  // batch for hashSpill. Rows outside that window stay here and are not minted.
   function creditUnsealedOwed(refs, reason) {
     const list = Array.isArray(refs) ? refs : [];
     const credited = [];
@@ -2681,6 +2690,7 @@ export function createPool({
       if (units <= 0n) continue;
       keys.add(id);
       owedWork.add(id);
+      owedWorkUnits.set(id, units);
       const prev = owedByNote.get(hex);
       if (!prev) owedByNote.set(hex, { units, works: [id] });
       else {
@@ -2706,6 +2716,62 @@ export function createPool({
       dests,
     }));
     return credited;
+  }
+
+  // Expiring overflow only. One witness batch is sealed as hashSpill.
+  // Anything past that batch is lost. Stale and unslotted rows never enter here.
+  function admitWindowSpill(rows) {
+    const { witness, rest } = partitionSpillRows(rows, {
+      pending: pendingSpill.length,
+      cap: MAX_SHARES_PER_BLOCK,
+    });
+    const credited = creditUnsealedOwed(witness, 'share_cap');
+    for (const s of credited) pendingSpill.push(s);
+    if (rest.length) countUnpayableShares(rest, 'spill_cap', 'witness');
+  }
+
+  function releaseSpillWorks(keys) {
+    const drop = new Set();
+    for (const id of keys || []) {
+      if (id) drop.add(String(id));
+    }
+    if (!drop.size) return;
+    pendingSpill = pendingSpill.filter((s) => !drop.has(shareIdentityKey(s)));
+    let changed = false;
+    for (const id of drop) {
+      const units = owedWorkUnits.get(id);
+      owedWorkUnits.delete(id);
+      owedWork.delete(id);
+      if (units == null) continue;
+      for (const [hex, row] of owedByNote) {
+        const idx = row.works.indexOf(id);
+        if (idx < 0) continue;
+        row.works.splice(idx, 1);
+        row.units -= units;
+        if (row.units <= 0n || row.works.length === 0) owedByNote.delete(hex);
+        changed = true;
+        break;
+      }
+    }
+    if (changed) {
+      refreshWindowOwedStats();
+      saveWindowOwed();
+    }
+  }
+
+  // A parent move cannot still prove as slot 1. Drop those rows from the file.
+  function retainReadySpill() {
+    const prior = tipShareContext().priorHeader;
+    const keep = [];
+    const drop = [];
+    for (const s of pendingSpill) {
+      if (prior && shareHeaderSlot(s?.verifiedHeader, prior) === 'exact') keep.push(s);
+      else drop.push(s);
+    }
+    pendingSpill = keep;
+    if (!drop.length) return;
+    countUnpayableShares(drop, 'spill_cap', 'parent');
+    releaseSpillWorks(drop.map((s) => shareIdentityKey(s)));
   }
 
   // A proven row that cannot be sealed on this parent or its parent.
@@ -2800,8 +2866,8 @@ export function createPool({
       if (!work && ctx.paid.has(nonceKeyOf(s))) continue;
       unpayable.push(s);
     }
-    const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK, lag1Issued);
-    if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
+    const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued);
+    if (split.owe.length) admitWindowSpill(split.owe);
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
     const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
     lag1Shares = split.seal;
@@ -3458,6 +3524,15 @@ export function createPool({
     sealFailStreak = 0;
     sealFailBatch = '';
     headerHold = null;
+    const sealed = store.tip()?.hashSpill;
+    if (Array.isArray(sealed) && sealed.length) {
+      const keys = [];
+      for (const s of sealed) {
+        const id = shareIdentityKey(s);
+        if (id) keys.push(id);
+      }
+      releaseSpillWorks(keys);
+    }
     if (deferredShares.length) {
       openShares = filterOpenShares(sortShares(deferredShares.concat(openShares)), () => true);
       deferredShares = [];
@@ -3494,9 +3569,9 @@ export function createPool({
     lag1Issued = snapshotIssuedHeaders();
     const ctx = tipShareContext();
     const split = ctx.parentHeader
-      ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, MAX_SHARES_PER_BLOCK, lag1Issued)
+      ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued)
       : { seal: [], carry: openShares.slice(), owe: [], stale: [] };
-    if (split.owe.length) creditUnsealedOwed(split.owe, 'share_cap');
+    if (split.owe.length) admitWindowSpill(split.owe);
     if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
     const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
@@ -3660,6 +3735,7 @@ export function createPool({
     const poolPay = payoutDest(miner);
     const tipHdr = store.tip()?.header || null;
     bindLag1ToTip();
+    retainReadySpill();
     const coldLag1 = lag1MissingProof(tipHdr, lag1Shares);
     if (coldLag1.length && !proofPending) {
       if (!probe && !proofWarm) ensureCachedShareProofs();
@@ -3738,6 +3814,7 @@ export function createPool({
         potShares,
         shareBits: sb,
         shareBatch: lag1Shares,
+        hashSpill: pendingSpill.slice(),
         poolDest: poolPay,
         feeDest: feeTo,
         finderDest: '',
