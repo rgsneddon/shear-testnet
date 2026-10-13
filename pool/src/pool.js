@@ -3502,9 +3502,11 @@ export function createPool({
       const parent = store.tip()?.header || null;
       if (parent && key && klass !== 'header') {
         const rowBad = [];
+        const priorHeader = tipShareContext().priorHeader;
         for (const s of lag1Shares) {
           const one = structuralShareVerdict({
             parentHeader: parent,
+            priorHeader,
             shares: [s],
             issuedJobKeys: lag1Issued,
           });

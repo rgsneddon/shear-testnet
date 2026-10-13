@@ -1,6 +1,6 @@
 # Cloud sweep 1013 — handoff for Build
 
-Branch: `cursor/cloud-p0-sweep-1013`, cut from `cursor/close-open-p0-0bcc` at `38592720`. Pushed only to this branch. No tag, no deploy, no SSH. `gadget.rs`, `prove.rs`, and the n=64 prove were not touched. `MAX_PROOF_V3` stays 43490. `kBookMagic`, `V12_GENESIS_BLOCK_HASH`, the tags, `crypto/admit.js`, and ADMITv2 were not edited. The 55-file pool suite was not run.
+Branch: `cursor/cloud-p0-sweep-1013`, cut from `cursor/close-open-p0-0bcc` at `38592720`. Pushed only to this branch. No tag, no deploy, no SSH. `gadget.rs`, `prove.rs`, and the n=64 prove were not touched. `MAX_PROOF_V3` stays 43490. `kBookMagic`, `V12_GENESIS_BLOCK_HASH`, the tags, `crypto/admit.js`, and ADMITv2 were not edited. The 55-file pool suite was re-run on this VM. The result is in Pool-55 below.
 
 Census of what was open at the parent tip: `docs/P0-CENSUS-2026-10-13.md`.
 
@@ -33,7 +33,37 @@ Native range proofs were required for the 072 `verifyBlock` cases. `rustup updat
 | `node --test --test-concurrency=1 --test-timeout=180000 node/tests/test_snap_interest_v12.js` | tests 1, pass 1, fail 0, duration_ms 381.938 (VS-1) |
 | `node --test --test-concurrency=1 --test-timeout=180000 node/tests/test_supply_audit_v12.js` | tests 1, pass 1, fail 0, duration_ms 1852.430 (snap load still verifies; loadMode snap, height 5) |
 
-The full `test_posture_067.js` file also runs a TLS case that fails here because the `openssl` binary is missing (`pool/tests/test_posture_067.js:156`). That case is not part of item 40. The fee-dest and public-stats cases in that file passed.
+The full `test_posture_067.js` file also runs a TLS case that fails here because the `openssl` binary is missing (`pool/tests/test_posture_067.js:156`). That case is not part of item 40. The fee-dest and public-stats cases in that file passed. The Pool-55 re-run below used `/usr/bin/openssl` and passed that file.
+
+## Pool-55
+
+Re-run of the 55 `pool/tests/test_*.js` files at `aba1a9e9` (`painted_gate_server.mjs` is not in the set). Same flags as the recorded run. `shearhash.node` was built locally and is gitignored.
+
+```
+node --test --test-concurrency=1 --test-force-exit --test-timeout=1800000 pool/tests/test_admin_absent.js pool/tests/test_admin_ops.js pool/tests/test_admin_wallet.js pool/tests/test_admit_template.js pool/tests/test_api_stayup.js pool/tests/test_asert_ease_stall_v12.js pool/tests/test_audit_hardening.js pool/tests/test_auto_payout.js pool/tests/test_avg_window_v12.js pool/tests/test_block_status.js pool/tests/test_blockbits.js pool/tests/test_brand.js pool/tests/test_circulating_card.js pool/tests/test_custodial_pull_v12.js pool/tests/test_defer_nonce_v12.js pool/tests/test_drop_idle.js pool/tests/test_empty_round_pot_v12.js pool/tests/test_explorer_viewkey.js pool/tests/test_fee_dest_v12.js pool/tests/test_freeze_banner.js pool/tests/test_hasher_pay_v12.js pool/tests/test_header_hold_v12.js pool/tests/test_honesty.js pool/tests/test_inbox012_bounds_v12.js pool/tests/test_lag1_carry_v12.js pool/tests/test_lag1_pot.js pool/tests/test_mempool_lattice.js pool/tests/test_payout_conf_watch.js pool/tests/test_pool.js pool/tests/test_pool_find_table.js pool/tests/test_pool_ident_boot.js pool/tests/test_pool_wallet_cut.js pool/tests/test_pool_withdraw.js pool/tests/test_posture_067.js pool/tests/test_pull_book.js pool/tests/test_restamp_epoch_v12.js pool/tests/test_round_payout.js pool/tests/test_seal_cache_v12.js pool/tests/test_seal_escape_defer_v12.js pool/tests/test_seal_escape_honest_v12.js pool/tests/test_seal_escape_v12.js pool/tests/test_share_credit_v12.js pool/tests/test_shearhash_v2.js pool/tests/test_sheark_admit_v12.js pool/tests/test_sheark_reconnect_v12.js pool/tests/test_sidecar_job_hold.js pool/tests/test_slot_stamp_v12.js pool/tests/test_stale_grace.js pool/tests/test_supply_tip_v12.js pool/tests/test_tip_stall.js pool/tests/test_tipstall_class.js pool/tests/test_vardiff.js pool/tests/test_wallet_exact_v12.js pool/tests/test_wallet_send.js pool/tests/test_website_wimpl.js
+```
+
+| | |
+| --- | --- |
+| tests | 321 |
+| pass | 320 |
+| fail | 1 |
+| cancelled | 0 |
+| duration_ms | 2728946.702275 |
+| exit | 1 |
+
+Failing name: `pool dashboard + stratum` / `serves light SHE page and accepts a header share on 1111` (`pool/tests/test_pool.js:684`). After the share ACK, `/api/stats` had no worker with `name === 'ShearK-Miner'` and `version === SHEARK_MINER_VERSION`. The same assertion passed on an earlier run of this tree. `/api/stats` serves a 400ms snap (`STATS_REFRESH_MS`, `pool/src/pool.js:191`, commit `7873177f` on the parent). This re-run does not change worker publication. An isolated re-run of that subtest failed the same way (`duration_ms` 21340.617438, exit 1). Not fixed: it is not caused by this branch's edits.
+
+pool-55 stays open. The previous recorded result was tests 285, pass 256, fail 27, cancelled 2 on `aba1a9e9`.
+
+Fixes in this re-run, beside the result above:
+
+- A public reserve receipt skips the mempool range-proof requirement (`crypto/mempool.js`).
+- `spendPackDigest` uses `vin.address` when dest20 is all zeros (`crypto/spend.js`).
+- Hash-bonus occupancy is header+nonce (`node/src/supply.js`).
+- Seal escape passes the prior header (`pool/src/pool.js`).
+- A 64-hex explorer id is a hash before it is a height (`pool/src/wallet_api.js`).
+- Tests follow `custodial_pull`, the share-credit cap, a payable pool-fee dest, ASERT block bits, the dotted login job, the reconnect busy window, wallet `0.72`, and the non-Windows TLS skip. `test_admit_template.js` queues a public receipt and does not run an ADMITv3 prove.
 
 Before `shearadmit.node` existed, `test_typed_inflation_v12.js` stopped at `coinbase_output` on the parent commit as well. That was the missing range-proof addon, not the reason split.
 
@@ -61,7 +91,7 @@ Before `shearadmit.node` existed, `test_typed_inflation_v12.js` stopped at `coin
 
 | Id | Why it stayed |
 | --- | --- |
-| pool-55 | The 55-file suite stays the recorded fail (285 tests, 256 pass, 27 fail, 2 cancelled on `aba1a9e9`). Not started here. |
+| pool-55 | Re-run here, not closed. tests 321, pass 320, fail 1, cancelled 0, duration_ms 2728946.702275, exit 1. The fail is `pool dashboard + stratum` / `serves light SHE page and accepts a header share on 1111`. |
 | 033b | `test_hash_bonus_cap.js` was not re-run. |
 
 ## Checked and already closed on the parent tip

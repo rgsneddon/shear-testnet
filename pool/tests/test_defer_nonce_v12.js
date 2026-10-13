@@ -210,7 +210,7 @@ describe('v12 defer-window identity', () => {
       skipPow: true,
     });
     assert.equal(lie.ok, false);
-    assert.equal(lie.reason, 'share_pow');
+    assert.equal(lie.reason, 'share_slot');
     const lieBack = verifyShareBatch({
       parentHeader: parent,
       priorHeader: prior,
@@ -218,7 +218,7 @@ describe('v12 defer-window identity', () => {
       skipPow: true,
     });
     assert.equal(lieBack.ok, false);
-    assert.equal(lieBack.reason, 'share_pow');
+    assert.equal(lieBack.reason, 'share_slot');
 
     const dup = verifyShareBatch({
       parentHeader: parent,

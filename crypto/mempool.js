@@ -5,7 +5,7 @@
  */
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceipt } from './dummy.js';
 import { admit_verify } from './admit.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
 import { txBudget } from './block_budget.js';
@@ -179,7 +179,7 @@ export function admitMempool(pool, tx, opts = {}) {
     if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
     if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
   }
-  if (moneyNeedsRange(tx)) {
+  if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
     for (const o of (tx.vout || [])) {
       if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
         return { ok: false, reason: 'range_proof' };

@@ -97,18 +97,43 @@ function login(pool, dest) {
       clearTimeout(timer);
       reject(err);
     });
+    let first = null;
+    let grace = null;
+    const take = (msg) => {
+      const job = msg.method === 'job' ? msg.params : (msg.job || msg.result?.job || null);
+      return { sock, job, error: msg.error || '' };
+    };
     sock.on('data', (chunk) => {
       buf += chunk;
-      const nl = buf.indexOf('\n');
-      if (nl < 0) return;
-      clearTimeout(timer);
-      let msg;
-      try { msg = JSON.parse(buf.slice(0, nl)); } catch (err) {
-        sock.destroy();
-        reject(err);
-        return;
+      while (true) {
+        const nl = buf.indexOf('\n');
+        if (nl < 0) break;
+        const raw = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        let msg;
+        try { msg = JSON.parse(raw); } catch (err) {
+          clearTimeout(timer);
+          if (grace) clearTimeout(grace);
+          sock.destroy();
+          reject(err);
+          return;
+        }
+        const got = take(msg);
+        const id = String(got.job?.jobId || '');
+        if (id.includes('.')) {
+          clearTimeout(timer);
+          if (grace) clearTimeout(grace);
+          resolve(got);
+          return;
+        }
+        if (!first && got.job) {
+          first = got;
+          grace = setTimeout(() => {
+            clearTimeout(timer);
+            resolve(first);
+          }, 1500);
+        }
       }
-      resolve({ sock, job: msg.job || msg.result?.job || null, error: msg.error || '' });
     });
     sock.write(`${JSON.stringify({
       id: 1,

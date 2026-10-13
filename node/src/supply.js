@@ -24,6 +24,7 @@ import {
   unitsForShare,
   accountShareUnits,
   creditBitsForShare,
+  shareWorkKey,
 } from '../../crypto/share_batch.js';
 import { canonicalCarry } from './chain.js';
 import {
@@ -194,8 +195,18 @@ function permittedHash(block) {
     try { nonce = BigInt(share?.nonce || 0).toString(); } catch {
       return { ok: false, reason: 'hash_bonus', nanos: 0n };
     }
-    if (seen.has(nonce)) return { ok: false, reason: 'hash_bonus', nanos: 0n };
-    seen.add(nonce);
+    // The same nonce on two headers is two units. A repeat of one header is not.
+    let id = '';
+    if (share?.verifiedHeader) id = shareWorkKey(share.verifiedHeader, share.nonce);
+    if (!id) {
+      const slot = share?.proofSlot === 0 || share?.proofSlot === 1
+        || share?.proofSlot === '0' || share?.proofSlot === '1'
+        ? String(Number(share.proofSlot))
+        : '';
+      id = `${slot}:${nonce}`;
+    }
+    if (seen.has(id)) return { ok: false, reason: 'hash_bonus', nanos: 0n };
+    seen.add(id);
     const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true });
     if (!credit.ok) return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }

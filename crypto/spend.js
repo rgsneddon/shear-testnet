@@ -70,10 +70,15 @@ export function spendPackDigest(tx) {
   const vins = (tx?.vin || []).map((v, i) => {
     const nc = asU8(v.noteCommit);
     const prev = asU8(v.prev);
+    let d20 = nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Field(v.dest20);
+    if (d20.every((b) => b === 0)) {
+      const h = hash20FromAddress(v.address || '');
+      if (h) d20 = Buffer.from(h);
+    }
     return {
       prev: prev.length === 32 ? Buffer.from(prev) : Buffer.alloc(32),
       index: Number(v.index || i),
-      dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Field(v.dest20),
+      dest20: d20,
     };
   });
   const vouts = (tx?.vout || []).map((o) => {
