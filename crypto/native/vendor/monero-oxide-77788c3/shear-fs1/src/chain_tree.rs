@@ -128,20 +128,42 @@ impl<G: DivisorCurve> Level<G> {
   }
 }
 
-/// Add `Σ delta · g_bold[slot]` to each named node. `deltas` is `(node, slot, delta)`,
-/// sorted by node. Returns `(node, new x − old x)` for every touched node.
+/// New values for the nodes one level's deltas touch: `(node, point, x)`.
+type Writes<G> = Vec<(usize, G, <G as DivisorCurve>::FieldElement)>;
+
+/// Every node write one append or truncate makes, by level.
+struct Plan {
+  selene: Vec<Writes<SeleneG>>,
+  helios: Vec<Writes<HeliosG>>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+  /// Test builds only: the level at which the next propagate fails.
+  static FAIL_AT_LEVEL: core::cell::Cell<Option<usize>> = const { core::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_propagate_at(level: usize) {
+  FAIL_AT_LEVEL.with(|c| c.set(Some(level)));
+}
+
+/// Plan `Σ delta · g_bold[slot]` onto each named node without writing it. `deltas`
+/// is `(node, slot, delta)`, sorted by node. Returns the writes and `(node, new x − old x)`.
+#[allow(clippy::type_complexity)]
 fn bump<C>(
   generators: &Generators<C>,
-  level: &mut Level<C::G>,
+  level: &Level<C::G>,
   empty: (C::G, <C::G as DivisorCurve>::FieldElement),
   deltas: &[(usize, usize, C::F)],
-) -> Result<Vec<(usize, <C::G as DivisorCurve>::FieldElement)>, Fs1Error>
+) -> Result<(Writes<C::G>, Vec<(usize, <C::G as DivisorCurve>::FieldElement)>), Fs1Error>
 where
   C: Ciphersuite,
   C::G: DivisorCurve + Zeroize + ConditionallySelectable,
   C::F: Zeroize + PrimeFieldBits,
 {
   let g_bold = generators.g_bold_slice();
+  let mut writes = Vec::new();
   let mut out = Vec::new();
   let mut i = 0;
   while i < deltas.len() {
@@ -151,17 +173,27 @@ where
       pairs.push((deltas[i].2, *g_bold.get(deltas[i].1).ok_or(Fs1Error::Path)?));
       i += 1;
     }
+    let (old_point, old_x) = match (level.nodes.get(node), level.xs.get(node)) {
+      (Some(p), Some(x)) => (*p, *x),
+      _ => empty,
+    };
+    let point = old_point + multiexp(&pairs);
+    let x = x_of(point)?;
+    writes.push((node, point, x));
+    out.push((node, x - old_x));
+  }
+  Ok((writes, out))
+}
+
+fn write<G: DivisorCurve>(level: &mut Level<G>, empty: (G, G::FieldElement), writes: Writes<G>) {
+  for (node, point, x) in writes {
     while level.nodes.len() <= node {
       level.nodes.push(empty.0);
       level.xs.push(empty.1);
     }
-    let old = level.xs[node];
-    level.nodes[node] += multiexp(&pairs);
-    let new = x_of(level.nodes[node])?;
-    level.xs[node] = new;
-    out.push((node, new - old));
+    level.nodes[node] = point;
+    level.xs[node] = x;
   }
-  Ok(out)
 }
 
 /// One connected block.
@@ -292,24 +324,29 @@ impl ChainTree {
     if u128::from(new_len) > tree_capacity(self.layers) {
       return Err(Fs1Error::TreeSize);
     }
+    let first = usize::try_from(self.len).map_err(|_| Fs1Error::TreeSize)?;
     let mut deltas = Vec::with_capacity(leaves.len() * LEAF_SCALARS);
+    let mut words = Vec::with_capacity(leaves.len() * LEAF_WORDS);
     for (offset, leaf) in leaves.iter().enumerate() {
-      let index = usize::try_from(self.len).map_err(|_| Fs1Error::TreeSize)? + offset;
-      if index % LAYER_ONE_LEN == 0 {
-        for _ in 0 .. LAYER_ONE_LEN {
-          self.words.extend_from_slice(&self.empty.leaf_words);
-        }
-      }
-      let at = index * LEAF_WORDS;
-      self.words[at .. at + LEAF_WORDS].copy_from_slice(&words_of(&leaf_bytes(leaf)));
+      let index = first + offset;
+      words.extend_from_slice(&words_of(&leaf_bytes(leaf)));
       let scalars = leaf_scalars(&[*leaf])?;
       let base = (index % LAYER_ONE_LEN) * LEAF_SCALARS;
       for (t, (new, empty)) in scalars.iter().zip(self.empty.leaf_scalars.iter()).enumerate() {
         deltas.push((index / LAYER_ONE_LEN, base + t, *new - *empty));
       }
     }
+    let plan = self.plan(params, deltas)?;
+    let end = (first + leaves.len()) * LEAF_WORDS;
+    while self.words.len() < end {
+      for _ in 0 .. LAYER_ONE_LEN {
+        self.words.extend_from_slice(&self.empty.leaf_words);
+      }
+    }
+    self.words[first * LEAF_WORDS .. end].copy_from_slice(&words);
     self.len = new_len;
-    self.propagate(params, deltas)
+    self.apply(plan);
+    Ok(())
   }
 
   /// Drop every leaf from `len` on.
@@ -328,36 +365,68 @@ impl ChainTree {
       for (t, (old, empty)) in scalars.iter().zip(self.empty.leaf_scalars.iter()).enumerate() {
         deltas.push((index / LAYER_ONE_LEN, base + t, *empty - *old));
       }
+    }
+    let plan = self.plan(params, deltas)?;
+    for index in from .. to {
+      let at = index * LEAF_WORDS;
       self.words[at .. at + LEAF_WORDS].copy_from_slice(&self.empty.leaf_words);
     }
     self.len = len;
     self.words.truncate(from.div_ceil(LAYER_ONE_LEN) * CHUNK_WORDS);
-    self.propagate(params, deltas)
+    self.apply(plan);
+    Ok(())
   }
 
-  /// T-3. Push leaf-slot deltas up every level, then drop nodes past the tree's end.
-  fn propagate(&mut self, params: &Fs1Params, leaf_deltas: Vec<(usize, usize, SeleneF)>) -> Result<(), Fs1Error> {
+  /// T-3. Every node write that pushing these leaf-slot deltas up every level makes.
+  /// Reads the tree and writes nothing, so a failure leaves the tree as it was.
+  fn plan(&self, params: &Fs1Params, leaf_deltas: Vec<(usize, usize, SeleneF)>) -> Result<Plan, Fs1Error> {
+    let mut plan = Plan {
+      selene: (0 .. self.selene.len()).map(|_| Vec::new()).collect(),
+      helios: (0 .. self.helios.len()).map(|_| Vec::new()).collect(),
+    };
     let mut selene_deltas = leaf_deltas;
     let mut level = 0;
     loop {
+      #[cfg(test)]
+      if FAIL_AT_LEVEL.with(|c| c.get()) == Some(level) {
+        FAIL_AT_LEVEL.with(|c| c.set(None));
+        return Err(Fs1Error::Blind);
+      }
       let k = level / 2;
-      let changed = bump(&params.c1, &mut self.selene[k], self.empty.selene[k], &selene_deltas)?;
+      let (writes, changed) = bump(&params.c1, &self.selene[k], self.empty.selene[k], &selene_deltas)?;
+      plan.selene[k] = writes;
       if level == self.layers - 1 {
         break;
       }
       level += 1;
+      #[cfg(test)]
+      if FAIL_AT_LEVEL.with(|c| c.get()) == Some(level) {
+        FAIL_AT_LEVEL.with(|c| c.set(None));
+        return Err(Fs1Error::Blind);
+      }
       let helios_deltas: Vec<(usize, usize, HeliosF)> =
         changed.into_iter().map(|(n, dx)| (n / LAYER_TWO_LEN, n % LAYER_TWO_LEN, dx)).collect();
       let k = level / 2;
-      let changed = bump(&params.c2, &mut self.helios[k], self.empty.helios[k], &helios_deltas)?;
+      let (writes, changed) = bump(&params.c2, &self.helios[k], self.empty.helios[k], &helios_deltas)?;
+      plan.helios[k] = writes;
       if level == self.layers - 1 {
         break;
       }
       level += 1;
       selene_deltas = changed.into_iter().map(|(n, dx)| (n / LAYER_ONE_LEN, n % LAYER_ONE_LEN, dx)).collect();
     }
+    Ok(plan)
+  }
+
+  /// Write a plan, then drop nodes past the tree's end. Cannot fail.
+  fn apply(&mut self, plan: Plan) {
+    for (k, writes) in plan.selene.into_iter().enumerate() {
+      write(&mut self.selene[k], self.empty.selene[k], writes);
+    }
+    for (k, writes) in plan.helios.into_iter().enumerate() {
+      write(&mut self.helios[k], self.empty.helios[k], writes);
+    }
     self.trim();
-    Ok(())
   }
 
   /// Keep exactly the nodes a tree of `len` leaves has. The top level always has one.
@@ -678,6 +747,39 @@ pub(crate) mod tests {
       }
       assert_eq!(chain.root_bytes(), crate::root_bytes(&synthetic.root()), "{len} {layers}");
     }
+  }
+
+  fn assert_same(a: &ChainTree, b: &ChainTree, what: &str) {
+    assert_eq!(a.len, b.len, "{what}");
+    assert_eq!(a.words, b.words, "{what}");
+    assert_eq!(a.blocks, b.blocks, "{what}");
+    for (x, y) in a.selene.iter().zip(&b.selene) {
+      assert!(x.nodes == y.nodes && x.xs == y.xs, "{what}");
+    }
+    for (x, y) in a.helios.iter().zip(&b.helios) {
+      assert!(x.nodes == y.nodes && x.xs == y.xs, "{what}");
+    }
+  }
+
+  #[test]
+  fn a_failed_propagate_at_any_level_leaves_the_tree_unchanged() {
+    let params = params_8();
+    let block = |h: u64, n: u64| (0 .. n).map(|i| chain_note(h * 100 + i)).collect::<Vec<_>>();
+    let mut tree = fresh(params, &[(1, block(1, 37))]);
+    let tip = id(1000 + 37);
+    for level in 0 .. tree.layers {
+      let before = tree.clone();
+      fail_next_propagate_at(level);
+      assert!(matches!(tree.connect(params, 2, id(2), tip, &block(2, 41)), Err(Fs1Error::Blind)));
+      assert_same(&tree, &before, &format!("connect, level {level}"));
+      fail_next_propagate_at(level);
+      assert!(matches!(tree.disconnect(params, tip), Err(Fs1Error::Blind)));
+      assert_same(&tree, &before, &format!("disconnect, level {level}"));
+    }
+    tree.connect(params, 2, id(2), tip, &block(2, 41)).expect("connect");
+    assert_eq!(tree.root_bytes(), fresh(params, &[(1, block(1, 37)), (2, block(2, 41))]).root_bytes());
+    tree.disconnect(params, id(2)).expect("disconnect");
+    assert_eq!(tree.root_bytes(), fresh(params, &[(1, block(1, 37))]).root_bytes());
   }
 
   #[test]
