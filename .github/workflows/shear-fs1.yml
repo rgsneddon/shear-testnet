@@ -12,29 +12,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
       - name: Normal dependencies do not enable the insecure generators
         run: |
-          if cargo tree -p shear-fs1 -e normal,features | grep -E 'generalized-bulletproofs feature "tests"'; then
-            echo 'generalized-bulletproofs/tests reached a normal build'
-            exit 1
-          fi
-          cargo tree -p shear-fs1 -e normal,features --features insecure-test-generators \
-            | grep -q -E 'generalized-bulletproofs feature "tests"'
-      - name: Release build has no bench binary
+          gbp() { cargo tree --color never -p shear-fs1 -e normal --prefix none -f '{p} {f}' "$@" | grep '^generalized-bulletproofs v'; }
+          for features in "" "--features=bench" "--features=tree-cli"; do
+            gbp $features
+            if gbp $features | grep -E '[ ,]tests(,|$| )'; then
+              echo "generalized-bulletproofs/tests reached a normal build ($features)"
+              exit 1
+            fi
+          done
+          gbp --features=insecure-test-generators | grep -E '[ ,]tests(,|$| )'
+      - name: Release build has no bench or tree binary
         run: |
-          rm -f target/release/fs1_bench
+          rm -f target/release/fs1_bench target/release/fs1_tree
           cargo build --release -p shear-fs1 --bins
           test ! -e target/release/fs1_bench
+          test ! -e target/release/fs1_tree
+      - name: 64-bit Android type-checks
+        run: cargo check --release -p shear-fs1 --target aarch64-linux-android
       - name: Debug tests
         run: cargo test -p shear-fs1
-      - name: Release tests, depth 7 and 2^20 trees, dudect timing
+      - name: Release tests, depth 7 and 2^20 trees, chain tree vector, dudect timing
         run: cargo test -p shear-fs1 --release --features insecure-test-generators
   node-routes:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
       - run: npm ci --ignore-scripts
+      - name: Build the fs1_tree tool
+        working-directory: crypto/native/vendor/monero-oxide-77788c3
+        run: cargo build --release -p shear-fs1 --features tree-cli --bin fs1_tree
       - run: node --test node/tests/test_fs1_sync_routes.js
+      - name: FS-1 tree follower, roots against the shared vector
+        env:
+          FS1_TREE_REQUIRED: '1'
+          SHEAR_FS1_TREE_BIN: ${{ github.workspace }}/crypto/native/vendor/monero-oxide-77788c3/target/release/fs1_tree
+        run: node --test node/tests/test_fs1_tree.js
+      - run: node --test crypto/fs1_pin.test.js
