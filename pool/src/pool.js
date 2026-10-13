@@ -4535,7 +4535,6 @@ export function createPool({
             varShares: 0,
             varWindowAt: Date.now(),
             seen: Date.now(),
-            authedAt: Date.now(),
           };
           session.connections = (session.connections || []).filter((c) => c.sock && c.sock !== sock);
           session.connections.push(conn);
@@ -4556,6 +4555,9 @@ export function createPool({
             : issueJob(conn.shareBits);
           const job = conn.shearFeeRoute ? issued : jobForSession(issued, session);
           conn.job = job || issued;
+          // Idle starts when the job is on the wire. Template build is server
+          // time: the hasher cannot submit a header it has not been sent.
+          conn.authedAt = Date.now();
           sock.write(line({ id: msg.id, result: { status: 'OK' }, job: wireJob(conn.job, conn.shareBits) }));
           continue;
         }

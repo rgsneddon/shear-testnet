@@ -310,7 +310,17 @@ export function matchSealedCoinbaseVout(o, pays) {
       if (d20 && nc.length === 32) hit = nc.equals(noteCommitOfDest20(d20));
     }
     if (!hit) continue;
-    if (!verifySealedNote(o, p.nanos)) continue;
+    let nanos = 0;
+    if (verifySealedNote(o, p.nanos)) nanos = p.nanos;
+    else if (kind === 'pot') {
+      // The noteCommit already names this pay. A legal fee comes off this
+      // pay, and a carried miner pot is added. The opening is the sealed
+      // amount, which is at least the pay minus that fee cap.
+      const opened = Math.floor(Number(o?.valueProof?.v));
+      const floor = Number(p.nanos) - Math.floor(Number(p.nanos) * POOL_FEE_MAX_BPS / 10000);
+      if (opened >= floor && opened > 0 && verifySealedNote(o, opened)) nanos = opened;
+    }
+    if (!(nanos > 0)) continue;
     let address = p.address || '';
     if (!address && nc.length === 32) {
       try {
@@ -322,7 +332,7 @@ export function matchSealedCoinbaseVout(o, pays) {
         }
       } catch { /* a pay with no dest stays unlabeled */ }
     }
-    return { address, nanos: p.nanos, kind };
+    return { address, nanos, kind };
   }
   // Amount-only match paints pot-after-fee onto whichever hasher prop equals
   // the sealed pot (sole hasher → 0.99 SHE) even though the noteCommit is the pool.

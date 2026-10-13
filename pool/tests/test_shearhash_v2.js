@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { scoreShare } from '../src/pool.js';
+import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { shearHash, shearHashV1, hashHex, V1_SELFTEST, V2_SELFTEST, V3_SELFTEST, HEADER_LEN } from '../../crypto/shear_hash.js';
 import { EMPTY_ROOT } from '../../crypto/merkle.js';
@@ -22,7 +24,7 @@ describe('pool ShearHash-v3 share gate', () => {
       height: 1,
       version: 1,
       header: header.toString('hex'),
-      shareBits: 1,
+      shareBits: SHARE_FLOOR_BITS,
       blockBits: 32,
       bits: 32,
       nonce: '0',
@@ -34,19 +36,22 @@ describe('pool ShearHash-v3 share gate', () => {
     };
     let hit = null;
     for (let n = 0n; n < 4096n; n += 1n) {
-      const s = scoreShare({ job, nonce: n });
+      const s = scoreShare({ job, nonce: nonceWithShareTarget(n, SHARE_FLOOR_BITS) });
       if (s.ok) {
         hit = s;
         break;
       }
     }
-    assert.ok(hit, 'expected a shareBits=1 v2 hit');
+    assert.ok(hit, 'expected a floor-bits share hit');
     assert.equal(hit.hash.length, 64);
     assert.notEqual(hit.hash, V1_SELFTEST);
 
-    const miss = scoreShare({ job: { ...job, shareBits: 32 }, nonce: 0n });
+    const miss = scoreShare({
+      job,
+      nonce: nonceWithShareTarget(0n, SHARE_FLOOR_BITS + 1),
+    });
     assert.equal(miss.ok, false);
-    assert.equal(miss.reason, 'low_diff');
+    assert.equal(miss.reason, 'share_target');
   });
 
   it('v1 selftest header is not a v2 digest', () => {

@@ -6,6 +6,7 @@ import { EMPTY_ROOT } from '../../crypto/merkle.js';
 import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { extraMintAllowed, extraMint, coinbaseSplit, coinbaseTx } from '../../crypto/mint.js';
 
 describe('header size', () => {
@@ -33,8 +34,8 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
     const nA = 16;
     const nB = 4;
     const batch = [
-      ...Array.from({ length: nA }, (_, i) => ({ dest: destA, nonce: BigInt(i + 1), lz: 8 })),
-      ...Array.from({ length: nB }, (_, i) => ({ dest: destB, nonce: BigInt(100 + i), lz: 8 })),
+      ...Array.from({ length: nA }, (_, i) => ({ dest: destA, nonce: nonceWithShareTarget(i + 1, 8), lz: 8 })),
+      ...Array.from({ length: nB }, (_, i) => ({ dest: destB, nonce: nonceWithShareTarget(100 + i, 8), lz: 8 })),
     ];
     const cb = coinbaseTx({ height: 3, miner: destA, shareBatch: batch });
     const split = coinbaseSplit(cb, { shareBatch: batch, miner: destA });
@@ -61,7 +62,7 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
     const unit = 2 ** 8;
     const batch = [];
     for (let i = 0; i < n; i += 1) {
-      batch.push({ dest, nonce: BigInt(i + 1), lz: 8 });
+      batch.push({ dest, nonce: nonceWithShareTarget(i + 1, 8), lz: 8 });
     }
     const cb = coinbaseTx({ height: 3, miner: dest, shareBatch: batch });
     const split = coinbaseSplit(cb, { shareBatch: batch, miner: dest });
@@ -84,13 +85,17 @@ describe('coinbase: 1 SHE pot + per-hasher nanos', () => {
 describe('extra mint allowlist', () => {
   it('accepts The Reserve and rejects any other program', () => {
     const id = newIdentity();
+    const dest = freshStealthDest(id).dest;
     assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }), true);
     assert.equal(extraMintAllowed('shear-vault-v1'), false);
     assert.equal(extraMintAllowed(''), false);
-    const ok = extraMint({ programId: RESERVE_PROGRAM, to: id.address, nanos: 10 });
+    const shear = extraMint({ programId: RESERVE_PROGRAM, to: id.address, nanos: 10 });
+    assert.equal(shear.ok, false);
+    assert.equal(shear.reason, 'shear1');
+    const ok = extraMint({ programId: RESERVE_PROGRAM, to: dest, nanos: 10 });
     assert.equal(ok.ok, true);
     assert.equal(ok.kind, 'withdraw');
-    const no = extraMint({ programId: 'third-party-stake', to: id.address, nanos: 10 });
+    const no = extraMint({ programId: 'third-party-stake', to: dest, nanos: 10 });
     assert.equal(no.ok, false);
     assert.equal(no.reason, 'mint_forbidden');
   });
