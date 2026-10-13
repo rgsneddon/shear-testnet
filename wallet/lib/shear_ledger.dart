@@ -429,6 +429,19 @@ int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = fal
   return fee > kLevyCapNanos ? kLevyCapNanos : fee;
 }
 
+/// [spendableShe] covers a consensus levy of [levyUnits].
+/// Equality passes. A gap of 1e-12 SHE is float dust under one nano (1e-11 SHE).
+/// Any levy size. A negative levy does not pass.
+bool spendableCoversLevy(double spendableShe, int levyUnits) {
+  if (levyUnits < 0) return false;
+  if (!spendableShe.isFinite) return false;
+  final needShe = levyUnits / kUnitsPerShe;
+  return spendableShe + 1e-12 >= needShe;
+}
+
+/// A second submit while one is [held] must not start another post.
+bool claimSingleSubmit({required bool held}) => !held;
+
 double? _storedNoteShe(Map<dynamic, dynamic> n) {
   final amt = n['amount'];
   if (amt is num && amt > 0) return amt.toDouble();

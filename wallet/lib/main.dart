@@ -253,6 +253,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   String? _flowSendAdvisory;
   bool _flowSendOk = false;
   bool _flowSending = false;
+  bool _reserveVoteBusy = false;
 
   /// In-flight Flow send. Plate tests read the Cancel flag from here.
   bool get debugFlowSending => _flowSending;
@@ -2938,6 +2939,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onPressed: _flowSending || isUnpayableSsa1(flowTo.text)
             ? null
             : () async {
+          if (!claimSingleSubmit(held: _flowSending)) return;
           if (sidecar.sendBlocked && !walletAtTip(_syncLabel)) {
             setState(() {
               _flowSendAdvisory = sidecar.sendBlockedCopy;
@@ -3008,6 +3010,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onPressed: _flowSending
             ? null
             : () async {
+          if (!claimSingleSubmit(held: _flowSending)) return;
           final who = id;
           if (who == null) return;
           final progress = SendProgress();
@@ -3718,6 +3721,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Future<void> _reserveVote(BuildContext context, ShearIdentity ident, String choice) async {
+    if (!claimSingleSubmit(held: _reserveVoteBusy)) return;
+    _reserveVoteBusy = true;
+    if (mounted) setState(() {});
+    try {
+      await _reserveVoteBody(context, ident, choice);
+    } finally {
+      _reserveVoteBusy = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _reserveVoteBody(BuildContext context, ShearIdentity ident, String choice) async {
     final dest = _reserveDestOf(ident);
     if (dest == null || dest.isEmpty) return;
     final gate = reserveVoteGate(ledger, reserve, dest);
@@ -3740,7 +3755,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
     var depth = await _mempoolDepthNow();
     var voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
-    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
+    if (!spendableCoversLevy(
+      ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+      voteL,
+    )) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE'),
@@ -3758,7 +3776,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (sealed != true || !mounted) return;
     depth = await _mempoolDepthNow();
     voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
-    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
+    if (!spendableCoversLevy(
+      ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+      voteL,
+    )) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE'),
@@ -4086,7 +4107,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ));
       voteKids.add(FilledButton(
         key: const Key('reserve-vote-submit'),
-        onPressed: draft == null ? null : () => _reserveVote(context, ident, draft),
+        onPressed: draft == null || _reserveVoteBusy
+            ? null
+            : () => _reserveVote(context, ident, draft),
         child: const Text('Cast vote'),
       ));
     }
