@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PRODUCT_VERSION } from '../../crypto/asert.js';
+import { NODE_DISPLAY } from '../src/product.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -38,7 +39,9 @@ describe('portable node packs', () => {
     assert.match(cmd, /pause/i);
     assert.match(cmd, /SHEAR_NODE_NOPAUSE/);
     assert.match(cmd, /Shear node stopped/);
-    assert.match(cmd, /Shear Sentinel v18/);
+    const major = PRODUCT_VERSION.split('.')[0];
+    assert.match(cmd, new RegExp(`Shear Sentinel v${major}`));
+    assert.match(cmd, new RegExp(NODE_DISPLAY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.match(cmd, /crypto\\native/);
     assert.match(cmd, /libgcc_s_seh-1\.dll|PATH=%ROOT%runtime/);
     assert.doesNotMatch(cmd, /SHEAR_BOOTSTRAP=1/);
@@ -46,9 +49,9 @@ describe('portable node packs', () => {
     assert.match(py, /FLAVORS = \("windows", "linux", "archlinux", "fedora", "opensuse", "macos"\)/);
     assert.match(py, /write_crlf_launcher/);
     assert.match(mac, /zip_node\.py macos/);
-    assert.match(mac, /LABEL=v18/);
-    assert.match(mac, /want 18\.0/);
-    assert.match(mac, /!= "18\.0"/);
+    assert.match(mac, new RegExp(`LABEL=v${major}`));
+    assert.match(mac, new RegExp(`want ${major}\\.0`));
+    assert.match(mac, new RegExp(`!= "${major}\\.0"`));
     assert.doesNotMatch(mac, /!= "16\.0"/);
     assert.doesNotMatch(mac, /gh release upload v16 /);
     assert.doesNotMatch(mac, /gh release upload 0\.68 /);
@@ -57,7 +60,9 @@ describe('portable node packs', () => {
     assert.doesNotMatch(mac, /gh release upload v15 /);
     assert.match(mac, /PRODUCT_VERSION/);
     assert.match(mac, /npm ci/);
-    assert.match(mac, /shear-testnet-v11/);
+    assert.match(mac, /export const MAGIC_TESTNET = MAGIC_TESTNET_V12/);
+    assert.match(mac, /testnet-v11/);
+    assert.doesNotMatch(mac, /shear-testnet-v11/);
     assert.doesNotMatch(mac, /LABEL=v9/);
     assert.doesNotMatch(mac, /shear-node-v9-macos/);
     assert.match(handoff, /shear-wallet-0\.70-macos\.dmg/);
@@ -69,20 +74,21 @@ describe('portable node packs', () => {
     assert.doesNotMatch(handoff, /node\/pack\/pack_macos\.sh/);
     assert.doesNotMatch(handoff, /gh release upload v17 /);
     assert.doesNotMatch(handoff, /gh release upload 0\.68 /);
-    assert.equal(PRODUCT_VERSION, '18.0');
+    assert.equal(PRODUCT_VERSION, '19.0');
+    assert.equal(NODE_DISPLAY, `Shear Sentinel v${major}`);
     assert.match(py, /shear-node-\{pack_label\}-\{flavor\}\.zip/);
     assert.match(cmd, /pause/i);
     const bat = fs.readFileSync(path.join(root, 'node/pack/shear-node.bat'), 'utf8');
     assert.match(bat, /pause/i);
     assert.match(bat, /SHEAR_NODE_NOPAUSE/);
-    assert.match(bat, /Shear Sentinel v18/);
+    assert.match(bat, new RegExp(`Shear Sentinel v${major}`));
     assert.match(bat, /node\\src\\node\.js/);
   });
 
   it('zip_node.py writes a windows zip that contains the launcher and node entry', () => {
     const r = runPython(['node/pack/zip_node.py', 'windows']);
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-    const zipPath = path.join(root, 'dist', 'shear-node-v18-windows.zip');
+    const zipPath = path.join(root, 'dist', `shear-node-v${PRODUCT_VERSION.split('.')[0]}-windows.zip`);
     assert.equal(fs.existsSync(zipPath), true, zipPath);
     const listed = runPython([
       '-c',
@@ -122,7 +128,7 @@ describe('portable node packs', () => {
       + 'cmd=z.read("shear-node.cmd"); bat=z.read("shear-node.bat");\n'
       + 'assert cmd.count(b"\\n")==cmd.count(b"\\r\\n") and cmd.count(b"\\r\\n")>0;\n'
       + 'assert bat.count(b"\\n")==bat.count(b"\\r\\n") and bat.count(b"\\r\\n")>0;\n'
-      + 'assert b"Shear Sentinel v18" in cmd and b"pause" in cmd.lower();\n'
+      + `assert b"Shear Sentinel v${PRODUCT_VERSION.split('.')[0]}" in cmd and b"pause" in cmd.lower();\n`
       + 'print("crlf-ok")',
       zipPath,
     ]);
