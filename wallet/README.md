@@ -1,6 +1,6 @@
 # Shear wallet 0.71
 
-GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v11`.
+GUI (Flutter) and CLI. Same identity, same encrypted `shewall.bin`, same book magic `shear-testnet-v12`.
 
 Tabs: Continuum, Flow, Resistance, Vortex, Shearview, Closure. The Reserve lives under Vortex.
 
@@ -8,9 +8,9 @@ Backup file: encrypted `shewall.bin`. Offer `she1` when someone pays you. Incomi
 
 Mine with **Copy dest**: the Continuum `ssa1` shown on screen (Copy dest copies that mailbox; it does not mint a new one). Log ShearK in as `ssa1.worker`. A found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to that `ssa1`.
 
-Pool: public `stratum+ssl://pool.shear.digital:443`. Cleartext migrate `pool.shear.digital:1111` (cleartext TCP). Localhost solo stays cleartext TCP. Magic: `shear-testnet-v11`.
+Pool: public `stratum+ssl://pool.shear.digital:443`. Cleartext migrate `pool.shear.digital:1111` (cleartext TCP). Localhost solo stays cleartext TCP. Magic: `shear-testnet-v12`.
 
-Continuum is spendable, pending transfers until nine confirmations, and Copy ID. It reads a node at `127.0.0.1:18332`, or Connect Bare when no node is on this device. The node returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hash bonus and the pot share sit in the blockfound row. The pool does not hold them for a later send. This wallet does not mine. Public pool HTTP submit is an advanced toggle. `shear restore` opens the password-sealed `shewall.bin`. Node pack: Shear Sentinel v18 (product 18.0). Wallet packs stay at https://github.com/rgsneddon/shear-testnet/releases/tag/0.71. Git tag `v16` stays on the same commit as tag `0.66`. How-to: https://shear.digital/docs/#/surfaces
+Continuum is spendable, pending transfers until nine confirmations, and Copy ID. It reads a node at `127.0.0.1:18332`, or Connect Bare when no node is on this device. The node returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. Open-round hashes stay pending until the next sealed block. Shearview lists your landings (height, from/to, date, amount, snippet); tap a row for full Resistance detail. Hash bonus and the pot share sit in the blockfound row. The pool does not hold them for a later send. This wallet does not mine. Public pool HTTP submit is an advanced toggle. `shear restore` opens the password-sealed `shewall.bin`. Node pack: Shear Sentinel v19 (product 19.0). Wallet packs stay at https://github.com/rgsneddon/shear-testnet/releases/tag/0.71. Git tag `v16` stays on the same commit as tag `0.66`. How-to: https://shear.digital/docs/#/surfaces
 
 Windows, Linux, Arch, Fedora, and Android packs: https://github.com/rgsneddon/shear-testnet/releases/download/0.71/shear-wallet-0.71-windows.zip and the matching linux, archlinux, fedora, and android names on that release. This cut has no macOS disk image. Do not invent or upload one from Windows.
 

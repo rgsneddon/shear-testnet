@@ -111,9 +111,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(paper, /hasher dest that produced proven work/);
 
     const readme = read('README.md');
-    assert.match(readme, /Wallet pin: \*\*0\.71\*\*/);
-    assert.match(readme, /Shear Sentinel v18/);
-    assert.match(readme, /\(product 18\.0\)/);
+    assert.match(readme, /Wallet pin: \*\*0\.72\*\*/);
+    assert.match(readme, /Shear Sentinel v19/);
+    assert.match(readme, /\(product 19\.0\)/);
     assert.match(readme, /releases\/tag\/0\.71/);
     assert.match(readme, /Git tag `v16` stays on the same commit as tag `0\.66`/);
     assert.match(readme, /releases\/download\/v18\/shear-node-v18-windows\.zip/);
@@ -184,8 +184,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(joined, /ADMITv2/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
-    assert.match(main, /ShearK 2\.8/);
-    assert.match(main, /Continuum 0\.71/);
+    assert.match(main, /ShearK 2\.9/);
+    assert.match(main, /Continuum 0\.72/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.doesNotMatch(main, /Continuum 0\.53/);
     assert.doesNotMatch(main, /Continuum 0\.52/);
@@ -201,7 +201,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /Continuum GUI <strong>0\.40<\/strong>/);
     assert.doesNotMatch(main, /Continuum GUI 0\.40/);
     const help = read('node/src/help.js');
-    assert.match(help, /Continuum 0\.71/);
+    assert.match(help, /Continuum 0\.72/);
+    assert.match(help, /Shear Sentinel v19/);
+    assert.match(help, /ShearK-Miner 2\.9/);
     assert.doesNotMatch(help, /Continuum 0\.48/);
     assert.doesNotMatch(help, /Continuum 0\.40/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);

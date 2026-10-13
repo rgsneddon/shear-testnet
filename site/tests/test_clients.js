@@ -10,7 +10,7 @@ const html = fs.readFileSync(
 );
 
 describe('shear.digital client buttons', () => {
-  it('home stays on the SaaS dark theme and pins Continuum 0.71', () => {
+  it('home stays on the SaaS dark theme and pins Continuum 0.72', () => {
     assert.match(html, /data-theme="dark"/);
     assert.match(html, /Domain=\.shear\.digital/);
     assert.match(html, /css\/saas-dark\.css/);
@@ -18,13 +18,13 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-active="MAIN"/);
     assert.match(html, /She Is Private/);
     assert.match(html, /ADMITv2/);
-    assert.match(html, /Continuum 0\.71/);
-    assert.match(html, /shear-testnet-v11/);
+    assert.match(html, /Continuum 0\.72/);
+    assert.match(html, /shear-testnet-v12/);
     assert.doesNotMatch(html, /shear-testnet-v6/);
     assert.doesNotMatch(html, /testnet-v6/);
     assert.doesNotMatch(html, /Continuum 0\.55/);
-    assert.match(html, /cui-ver">0\.71</);
-    assert.match(html, /ShearK 2\.8/);
+    assert.match(html, /cui-ver">0\.72</);
+    assert.match(html, /ShearK 2\.9/);
     assert.match(html, /href="\/wallet\/"/);
     assert.doesNotMatch(html, /releases\/download\/0\.71\/shear-wallet-0\.71-macos\.dmg/);
     assert.doesNotMatch(html, /shear-wallet-0\.71-macos\.dmg/);
@@ -207,7 +207,7 @@ describe('shear.digital client buttons', () => {
     assert.match(admin, /How to mine/);
     assert.match(admin, /The Reserve/);
     assert.match(admin, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
-    assert.match(admin, /ShearK-Miner 2\.8/);
+    assert.match(admin, /ShearK-Miner 2\.9/);
     assert.match(admin, /A typed suffix is optional/);
     assert.doesNotMatch(admin, /YOUR_SSA1\.solo/);
     assert.match(admin, /shear-wallet-0\.71-windows\.zip/);

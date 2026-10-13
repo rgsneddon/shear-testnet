@@ -584,7 +584,9 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /YOUR_SSA1/);
     assert.equal(/--user shear1/.test(html), false);
     assert.equal(html.includes('YOUR_SHEAR1'), false);
-    assert.match(html, /shear-testnet-v11/);
+    assert.match(html, /shear-testnet-v12/);
+    assert.match(html, /Continuum 0\.72/);
+    assert.match(html, /ShearK 2\.9/);
     assert.doesNotMatch(html, /shear-testnet-v4/);
     assert.match(html, /Pool explorer · last 10 blocks/);
     assert.match(html, />Id</);
@@ -1002,7 +1004,7 @@ describe('public miner listing', () => {
     assert.doesNotMatch(popSrc, /hashrate|accepted|fmtRate|SHE/);
     assert.doesNotMatch(dash, /Algo: ShearHash-v3 · Coin: SHE · Network: shear-testnet-v7/);
     assert.match(dash, /id="coin">SHE</);
-    assert.match(dash, /id="network">shear-testnet-v11</);
+    assert.match(dash, /id="network">shear-testnet-v12</);
     assert.match(dash, /\|\| 9\)/);
     assert.doesNotMatch(dash, /\|\| 6\)/);
     assert.doesNotMatch(dash, /Pool: <a href="https:\/\/pool\.shear\.digital"/);
