@@ -15,6 +15,7 @@ import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRej
 import { receiptAdmitRejected } from './admit.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
+import { v3BucketProofRejected } from './fs1_send_gate.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -89,6 +90,8 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
+  const bucket = v3BucketProofRejected(tx);
+  if (bucket) return bucket;
   const unsignedField = unsignedBodyField(tx);
   if (unsignedField) return unsignedField;
   const capped = txIoCap(tx);

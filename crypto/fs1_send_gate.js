@@ -1,12 +1,13 @@
 /**
- * Stage 0 send gate (Russell R-3).
+ * Stage 0 send and vault gate (Russell R-3).
  *
- * Flow sends (send and transfer) that carry a byte-3 bucket proof are
- * rejected before any membership check. The prover stays in the tree until
- * Stage 7. This module does not add a proof-size cap or a hide bound to
- * consensus constants, and its reason text does not call the bucket proof ADMIT.
+ * Flow sends (send and transfer) and vault kinds (lock, vote, withdraw) that
+ * carry a byte-3 bucket proof are rejected before any proof work. No
+ * consensus path calls the bucket verifier, so its proof-size cap and its
+ * circuit pad are not consensus rules. The prover stays in the tree until
+ * Stage 7. The reason text does not call the bucket proof ADMIT.
  *
- * Named state: sends disabled.
+ * Named states: sends disabled, vaults disabled.
  */
 import { flowNeedsDummy } from './dummy.js';
 import { asU8 } from './note.js';
@@ -14,6 +15,11 @@ import { asU8 } from './note.js';
 export const FS1_SEND_STATE = 'sends disabled';
 export const FS1_SEND_ERROR = 'send unavailable until FS-1';
 export const FS1_SEND_REASON = 'send_unavailable';
+export const FS1_VAULT_STATE = 'vaults disabled';
+export const FS1_VAULT_ERROR = 'vault unavailable until FS-1';
+export const FS1_VAULT_REASON = 'vault_unavailable';
+
+const VAULT_KINDS = new Set(['lock', 'vote', 'withdraw']);
 
 function proofBytes(proof) {
   if (!proof || typeof proof !== 'object') return null;
@@ -45,25 +51,59 @@ function presentedProofs(tx) {
   return out;
 }
 
+function presentsV3Bucket(tx) {
+  return presentedProofs(tx).some(proofIsV3Bucket);
+}
+
+/** Lock, vote, or withdraw by the tx kind or the first output kind. */
+export function vaultKindOf(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  return VAULT_KINDS.has(kind) ? kind : '';
+}
+
 /**
  * A flow send or transfer that presents a v3 bucket proof.
  * Null means this rule does not apply. The caller rejects before proof work.
  */
 export function v3BucketSendRejected(tx) {
   if (!flowNeedsDummy(tx)) return null;
-  for (const proof of presentedProofs(tx)) {
-    if (proofIsV3Bucket(proof)) {
-      return { ok: false, reason: FS1_SEND_REASON, state: FS1_SEND_STATE };
-    }
-  }
-  return null;
+  if (!presentsV3Bucket(tx)) return null;
+  return { ok: false, reason: FS1_SEND_REASON, state: FS1_SEND_STATE };
 }
 
-/** Any block in the list. Used on load and on the snap fast path. */
-export function chainV3BucketSendRejected(blocks) {
+/** A lock, vote, or withdraw that presents a v3 bucket proof. */
+export function v3BucketVaultRejected(tx) {
+  if (!vaultKindOf(tx)) return null;
+  if (!presentsV3Bucket(tx)) return null;
+  return { ok: false, reason: FS1_VAULT_REASON, state: FS1_VAULT_STATE };
+}
+
+/** Either gate. Consensus entry points call this before any proof work. */
+export function v3BucketProofRejected(tx) {
+  return v3BucketSendRejected(tx) || v3BucketVaultRejected(tx);
+}
+
+/**
+ * A v12 send or transfer with no proof object. Consensus never funds one: a
+ * flow spend is only ever funded by a membership proof, and Stage 0 accepts
+ * none. The mempool may still hold a painted spend; a block may not carry it.
+ */
+export function prooflessSendRejected(tx) {
+  if (!flowNeedsDummy(tx)) return null;
+  if (presentedProofs(tx).length) return null;
+  return { ok: false, reason: FS1_SEND_REASON, state: FS1_SEND_STATE };
+}
+
+/** Block body rule for Stage 0. */
+export function stage0TxRejected(tx) {
+  return v3BucketProofRejected(tx) || prooflessSendRejected(tx);
+}
+
+/** Any tx in any block. Used on block verify, load, fork replay, and the snap fast path. */
+export function chainStage0Rejected(blocks) {
   for (const block of blocks || []) {
     for (const tx of block?.txs || []) {
-      const hit = v3BucketSendRejected(tx);
+      const hit = stage0TxRejected(tx);
       if (hit) return hit;
     }
   }
