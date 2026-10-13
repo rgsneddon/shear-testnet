@@ -2964,38 +2964,57 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             _flowProgress = progress;
             _flowProgressText = 'Selecting notes…';
           });
-          final result = await submitContinuumSend(
-            ledger: ledger,
-            restFrame: ident.address,
-            paymentCode: ident.paymentCode,
-            startTo: _flowAcceptedTo,
-            enteredTo: flowTo.text,
-            amount: amount,
-            nanosWire: nanosWire,
-            memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
-            spendSeed: hexToBytes(ident.seedHex),
-            local: false,
-            allowPublicHttp: bare,
-            depth: _mempoolDepth,
-            progress: progress,
-          );
-          if (!mounted) return;
-          setState(() {
-            _flowSending = false;
-            _flowProgress = null;
-            _flowProgressText = null;
-            flowTo.text = result.to;
-            if (result.posted && result.tx != null) {
-              _flowAcceptedTo = result.to;
-              _ingestTx(ident, result.tx!);
-              _focusedTxId = result.tx!.id;
-              _flowSendAdvisory = 'sent';
-              _flowSendOk = true;
-            } else {
-              _flowSendAdvisory = result.remark.isEmpty ? kErrSendGeneric : result.remark;
+          try {
+            final result = await submitContinuumSend(
+              ledger: ledger,
+              restFrame: ident.address,
+              paymentCode: ident.paymentCode,
+              startTo: _flowAcceptedTo,
+              enteredTo: flowTo.text,
+              amount: amount,
+              nanosWire: nanosWire,
+              memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
+              spendSeed: hexToBytes(ident.seedHex),
+              local: false,
+              allowPublicHttp: bare,
+              depth: _mempoolDepth,
+              progress: progress,
+            );
+            if (!mounted) return;
+            setState(() {
+              _flowSending = false;
+              _flowProgress = null;
+              _flowProgressText = null;
+              flowTo.text = result.to;
+              if (result.posted && result.tx != null) {
+                _flowAcceptedTo = result.to;
+                _ingestTx(ident, result.tx!);
+                _focusedTxId = result.tx!.id;
+                _flowSendAdvisory = 'sent';
+                _flowSendOk = true;
+              } else {
+                _flowSendAdvisory = result.remark.isEmpty ? kErrSendGeneric : result.remark;
+                _flowSendOk = false;
+              }
+            });
+          } catch (e) {
+            if (!mounted) return;
+            setState(() {
+              _flowSending = false;
+              _flowProgress = null;
+              _flowProgressText = null;
+              _flowSendAdvisory = flowSendAdvisoryOf(e);
               _flowSendOk = false;
+            });
+          } finally {
+            if (mounted && _flowSending) {
+              setState(() {
+                _flowSending = false;
+                _flowProgress = null;
+                _flowProgressText = null;
+              });
             }
-          });
+          }
         },
         child: const Text('Send'),
       ),
