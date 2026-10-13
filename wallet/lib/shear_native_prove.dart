@@ -4,16 +4,6 @@ import 'dart:typed_data';
 
 import 'shear_note.dart';
 
-/// Test-only override. Production send fails closed before prove_spend.
-typedef NativeSpendProver = Map<String, dynamic>? Function({
-  required Uint8List spendSeed,
-  required Map<String, dynamic> spentNote,
-  required List<Uint8List> pubs,
-  List<Uint8List>? commits,
-});
-
-NativeSpendProver? debugNativeSpendProver;
-
 /// Tests set this so Flow seal runs on the caller. flutter_tester deadlocks
 /// on [Isolate.run] around the native prover.
 bool debugFlowCryptoOnCaller = false;
@@ -82,20 +72,6 @@ String? _helperPath() {
   for (final f in candidates) {
     if (f.existsSync()) return f.path;
   }
-  return null;
-}
-
-Map<String, dynamic>? nativeProveFlowSpend({
-  required Uint8List spendSeed,
-  required Map<String, dynamic> spentNote,
-  required List<Uint8List> pubs,
-  List<Uint8List>? commits,
-}) {
-  final override = debugNativeSpendProver;
-  if (override != null) {
-    return override(spendSeed: spendSeed, spentNote: spentNote, pubs: pubs, commits: commits);
-  }
-  // Closed before prove_spend. A test double above is the only remaining return.
   return null;
 }
 

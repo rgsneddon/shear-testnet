@@ -395,13 +395,7 @@ void main() {
     expect(id.address.startsWith('shear1'), isTrue);
   });
 
-  test('nativeProveFlowSpend leaves no durable shear-admit-*.json', () {
-    final prev = debugNativeSpendProver;
-    debugNativeSpendProver = null;
-    final helperWallet = File('${Directory.current.path}/../crypto/wallet_native_prove.mjs');
-    final helperRoot = File('${Directory.current.path}/crypto/wallet_native_prove.mjs');
-    expect(helperWallet.existsSync() || helperRoot.existsSync(), isTrue,
-        reason: 'real native prove helper must exist so the temp-write path runs');
+  test('proveFlowSpend fails closed and leaves no shear-admit-*.json', () {
     Set<String> admitTemps() {
       return Directory.systemTemp
           .listSync()
@@ -414,8 +408,10 @@ void main() {
           .toSet();
     }
     final before = admitTemps();
-    try {
-      nativeProveFlowSpend(
+    final tx = <String, dynamic>{'kind': 'send'};
+    expect(
+      () => proveFlowSpend(
+        tx,
         spendSeed: Uint8List(32),
         spentNote: {
           'kind': 'send',
@@ -423,12 +419,12 @@ void main() {
           'noteCommit': Uint8List(32),
         },
         pubs: [Uint8List(32)],
-      );
-    } finally {
-      debugNativeSpendProver = prev;
-    }
-    final leftover = admitTemps().difference(before);
-    expect(leftover, isEmpty, reason: 'shear-admit-*.json must be wiped in finally: $leftover');
+        commits: [Uint8List(32)],
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'admit_v2_closed')),
+    );
+    expect(tx.containsKey('admit_proof'), isFalse);
+    expect(admitTemps().difference(before), isEmpty);
   });
 
   test('HTTP helpers never put viewKey in a query string', () {
@@ -602,17 +598,11 @@ void main() {
     final src = File('lib/shear_admit.dart').readAsStringSync();
     expect(src.contains('shear-admit-v1'), isFalse);
     expect(src.contains('admitProve'), isFalse);
-    expect(src.contains('nativeProveFlowSpend'), isTrue);
+    expect(src.contains('nativeProveFlowSpend'), isFalse);
+    expect(src.contains("throw StateError('admit_v2_closed')"), isTrue);
   });
 
   test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 1,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 2,
-    };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) {
       final r = randomScalar();
       final value = proveValue(v, r);
@@ -628,7 +618,7 @@ void main() {
         if (dest20 != null) 'dest20': dest20,
       };
     };
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     expect(kTabs, ['Continuum', 'Flow', 'Resistance', 'Vortex', 'Shearview', 'Closure']);
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
@@ -1151,16 +1141,9 @@ void main() {
   });
 
   test('send skips notes whose spendTag is already in the live fluxset', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 1,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 2,
-    };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final probe = ShearLedger()..bindIdentity(id);
@@ -1202,17 +1185,10 @@ void main() {
     expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
   });
 
-  test('hop fee collates a sealed note when spendable covers but the book was empty', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 1,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 2,
-    };
+  test('hop fee collates a sealed note when the book was empty, then the closed prover refuses', () async {
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final probe = ShearLedger()..bindIdentity(id);
@@ -1234,20 +1210,22 @@ void main() {
       greaterThanOrEqualTo(0.001),
     );
     final bob = payableChainDest(createIdentity().paymentCodeFull)!;
-    await ledger.send(
-      from: dest,
-      to: bob,
-      amount: 0.001,
-      restFrame: id.address,
-      paymentCode: id.paymentCode,
-      spendSeed: seed,
-      allowPublicHttp: true,
+    await expectLater(
+      ledger.send(
+        from: dest,
+        to: bob,
+        amount: 0.001,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: seed,
+        allowPublicHttp: true,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'admit_v2_closed')),
     );
     expect(pool.notesHits, greaterThan(0));
-    expect(posts, isNotEmpty);
-    expect(posts.single['to'], kPrivacyHopFeeDest == bob ? bob : bob);
-    expect(posts.single['amount'], 0.001);
+    expect(posts, isEmpty);
     expect(ledger.notes, isNotEmpty);
+    expect(ledger.notes.every((n) => n['spent'] != true), isTrue);
   });
 
   test('empty note inventory stops spendable from claiming a hop-fee cover', () async {
@@ -1284,16 +1262,9 @@ void main() {
   });
 
   test('send spends the rest-frame sum when no single note covers', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 1,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 2,
-    };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final probe = ShearLedger()..bindIdentity(id);
@@ -1341,17 +1312,10 @@ void main() {
     expect(tx.to, bob);
   });
 
-  test('sends of any size stay responsive and split only past the input cap', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = spentNote['commit'] is Uint8List ? (spentNote['commit'] as Uint8List)[0] : 1,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 2,
-    };
+  test('sends of any size select fast, split only past the input cap, and fail closed', () async {
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
 
     final wideNotes = <Map<String, dynamic>>[
       for (var i = 0; i < 3000; i++)
@@ -1403,30 +1367,21 @@ void main() {
           ? (ShearLedger()..bindIdentity(bob)).homeDest(bob.address, paymentCode: bob.paymentCode)
           : bob.paymentCodeFull;
       w.posts.clear();
-      final before = identityHashCode(Isolate.current).toString();
-      final tx = await w.ledger.sendSpendableSum(
-        from: w.dest,
-        to: to,
-        amount: amount,
-        memo: memo,
-        restFrame: w.id.address,
-        paymentCode: w.id.paymentCode,
-        spendSeed: w.seed,
-        allowPublicHttp: true,
+      await expectLater(
+        w.ledger.sendSpendableSum(
+          from: w.dest,
+          to: to,
+          amount: amount,
+          memo: memo,
+          restFrame: w.id.address,
+          paymentCode: w.id.paymentCode,
+          spendSeed: w.seed,
+          allowPublicHttp: true,
+        ),
+        throwsA(isA<StateError>().having((e) => e.message, 'msg', 'admit_v2_closed')),
       );
-      expect(debugSendSelectStamp, isNot(before));
-      expect(w.posts, isNotEmpty);
-      expect(tx.to, isNotEmpty);
-      for (final p in w.posts) {
-        expect((p['vin'] as List).length, inInclusiveRange(1, kMaxInputsPerSend));
-      }
-      final paid = w.posts.fold<double>(0, (s, p) => s + (p['amount'] as num).toDouble());
-      expect(paid, closeTo(amount, 1e-6));
-      if (memo != null) {
-        expect(w.posts.first['memoCt'], isNotNull);
-      } else {
-        expect(w.posts.first['memoCt'], isNull);
-      }
+      expect(w.posts, isEmpty);
+      expect(w.ledger.notes.every((n) => n['spent'] != true), isTrue);
     }
 
     final tiny = _noteWallet(3, nanos: kUnitsPerShe);
@@ -1435,18 +1390,11 @@ void main() {
       closeTo(3, 1e-9),
     );
     await sendOf(tiny, 1e-6);
-    expect(tiny.posts.length, 1);
     await sendOf(_noteWallet(3, nanos: kUnitsPerShe), 0.4);
     await sendOf(_noteWallet(4, nanos: kUnitsPerShe), 2.5, memo: 'ten memo test');
-
-    final over = _noteWallet(9, nanos: kUnitsPerShe ~/ 5);
-    await sendOf(over, 1.7);
-    expect(over.posts.length, greaterThan(1));
-
+    await sendOf(_noteWallet(9, nanos: kUnitsPerShe ~/ 5), 1.7);
     final nearFee = estimateSendLevyUnits(inputs: 4);
-    final near = _noteWallet(4, nanos: kUnitsPerShe);
-    await sendOf(near, 4 - nearFee / kUnitsPerShe);
-    expect(near.posts.length, 1);
+    await sendOf(_noteWallet(4, nanos: kUnitsPerShe), 4 - nearFee / kUnitsPerShe);
 
     final full = _noteWallet(4, nanos: kUnitsPerShe);
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
@@ -1467,16 +1415,9 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('consolidate merges until the note count fits one send, fees only', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 9,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 4,
-    };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final w = _noteWallet(10, nanos: (0.25 * kUnitsPerShe).round());
     final before = w.ledger.notes.where((n) => n['spent'] != true).fold<double>(
       0,
@@ -1500,16 +1441,9 @@ void main() {
   });
 
   test('a payout scan consolidates mature notes in capped batches', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 9,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 4,
-    };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final w = _noteWallet(kMaxInputsPerSend + 1, nanos: (0.2 * kUnitsPerShe).round());
     expect(w.posts, isEmpty);
     await w.ledger.syncCredits(w.id.address, paymentCode: w.id.paymentCode);
@@ -1524,16 +1458,9 @@ void main() {
   });
 
   test('a reserve principal above 2^53 stays out of the pay set', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 3,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 6,
-    };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final heldNanos = BigInt.parse('9007199254740992');
     final hold = BigInt.parse('9007199254740993');
     final freeNanos = heldNanos + BigInt.from(kUnitsPerShe);
@@ -1568,18 +1495,11 @@ void main() {
 
   test('a multi-note send keeps pay nanos exact above 2^53', () async {
     final sealed = <int>[];
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 8,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 8,
-    };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) {
       sealed.add(v);
       return _sealNoteNoRange(v, dest20: dest20, kind: kind);
     };
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final noteNanos = BigInt.parse('9007199254740993');
     final w = _noteWallet(2, nanos: noteNanos.toInt());
     final pay = noteNanos + BigInt.one;
@@ -1602,22 +1522,10 @@ void main() {
 
   test('cancel during a proof spends nothing', () async {
     final w = _noteWallet(9, nanos: kUnitsPerShe ~/ 10);
-    final progress = SendProgress();
-    var calls = 0;
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) {
-      calls++;
-      progress.cancel();
-      return {
-        'admit_proof': true,
-        'v': 2,
-        'spendTag': Uint8List(32)..[0] = calls,
-        'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-        'cTilde': Uint8List(32)..[0] = 5,
-      };
-    };
+    final progress = SendProgress()..cancel();
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'cd' * 32)!;
     await expectLater(
       w.ledger.sendSpendableSum(
@@ -1713,16 +1621,9 @@ void main() {
   });
 
   test('unlock recheck consolidates confirmed notes and a send draws that sum', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 1,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 2,
-    };
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final probe = ShearLedger()..bindIdentity(id);
@@ -1900,17 +1801,10 @@ void main() {
     expect(posted.single['sig'], isNotEmpty);
   });
 
-  test('sealed send change is the spent note leftover, not dest-balance of extra notes', () async {
-    debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': Uint8List(32)..[0] = 1,
-      'blob': Uint8List.fromList([2, ...List.filled(64, 3)]),
-      'cTilde': Uint8List(32)..[0] = 2,
-    };
+  test('a sealed send with extra dest notes fails closed and spends nothing', () async {
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
-    addTearDown(() { debugNativeSpendProver = null; debugNativeSealNote = null; });
+    addTearDown(() { debugNativeSealNote = null; });
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final probe = ShearLedger()..bindIdentity(id);
@@ -1944,24 +1838,19 @@ void main() {
       prev: Uint8List(32),
     );
     final bob = payableChainDest(createIdentity().paymentCodeFull)!;
-    const sendAmt = 0.25;
-    await ledger.send(
-      from: dest,
-      to: bob,
-      amount: sendAmt,
-      restFrame: id.address,
-      paymentCode: id.paymentCode,
-      spendSeed: seed,
+    await expectLater(
+      ledger.send(
+        from: dest,
+        to: bob,
+        amount: 0.25,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: seed,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'admit_v2_closed')),
     );
-    final changeNote = ledger.notes.firstWhere(
-      (n) => n['kind'] == 'send' && n['r'] != null && n['spent'] != true,
-    );
-    final levy = levyNanos((sendAmt * kUnitsPerShe).round());
-    final wantNanos = ((1 - sendAmt) * kUnitsPerShe).round() - levy;
-    final gotNanos = changeNote['nanos'] as int? ??
-        ((changeNote['amount'] as num) * kUnitsPerShe).round();
-    expect(gotNanos, wantNanos);
-    expect(gotNanos, isNot(((1 + 512 / kUnitsPerShe - sendAmt) * kUnitsPerShe).round() - levy));
+    expect(posts, isEmpty);
+    expect(ledger.notes.every((n) => n['spent'] != true), isTrue);
   });
 
   test('live pending hashes and receives become spendable on block-found', () {

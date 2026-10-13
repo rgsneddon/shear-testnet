@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 
-import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 

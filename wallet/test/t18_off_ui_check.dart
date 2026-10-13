@@ -17,7 +17,7 @@ Future<void> main() async {
   if (Platform.environment['FLUTTER_TEST'] == 'true' && !forceOff) {
     throw StateError('FLUTTER_TEST is set; this is the caller shortcut');
   }
-  if (debugNativeSealNote != null || debugNativeSpendProver != null) {
+  if (debugNativeSealNote != null) {
     throw StateError('debug prover hooks are set');
   }
   if (sealFlowOnCaller || debugFlowCryptoOnCaller) {
