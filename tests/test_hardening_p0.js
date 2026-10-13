@@ -41,7 +41,8 @@ describe('P0 hardening + short addresses', () => {
     assert.match(admit, /nativeProveFlowSpend/);
     assert.match(admit, /admit_native_required/);
     const helper = fs.readFileSync(path.join(root, 'crypto/wallet_native_prove.mjs'), 'utf8');
-    assert.match(helper, /admitProve/);
+    assert.doesNotMatch(helper, /admitProve/);
+    assert.match(helper, /send unavailable until FS-1/);
     assert.match(helper, /proveRange/);
   });
 
