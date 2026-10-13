@@ -16,7 +16,7 @@ Laptop review only. No product edit in this pass. No genesis cut, no tag, no dep
 
 - PR 67 (`cursor/p0-052-burial-gate-0f14`, head `edcb2be99487b5b74ea790ef50ded6ebcfe9ed5c`) was not merged. Tests 2, pass 2, duration_ms 310.426288. The second test matches source text. A lied height is `height`. A pruned next block is still `samples_pruned`. No gap spread, no two-node ShearHash case, no Protocol Assailant or Pool Share Auditor sign-off. 052 stays open. Gap: `.cos-inbox/BUILD-052-pr67-short-1013.md`.
 - `cursor/wallet-v12-send-1013` is not on origin. PR 65 stays off feat until that branch exists and the named failures in `.cos-inbox/BUILD-pr65-failures-1013.md` are gone. The two land together. Brief: `.cos-inbox/BUILD-wallet-v12-send-1013.md`.
-- 018e is uncoded. Brief: `.cos-inbox/BUILD-018e-cloud-1013.md`.
+- 018e is still open. PR 68 (`cursor/share-commit-018e-d0ad`, head `31e1fdde9fb10b03546379812f63eac7e2312865`) was not merged. Its Timely is a parent-to-block clock, Prod sums `2^b`, and an overflow carries to the next producer. That is not the inbox seal. Gap: `.cos-inbox/BUILD-018e-pr68-short-1013.md`. Brief: `.cos-inbox/BUILD-018e-cloud-1013.md`.
 - Ubuntu, Debian, Fedora, and openSUSE stay the PR 64 `SMOKE OK` lines in `docs/V12-DISTRO-PACKS.md`. Windows and Android build logs are absent. Brief: `.cos-inbox/BUILD-windows-android-builds-1013.md`.
 - Still open: 018e, 052, wallet items 16–23, 035, Windows and Android build evidence. Pool-55 remains tests 321, pass 320, fail 1, `pool/tests/test_pool.js` dashboard/stratum. That fail is not this pass. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
 
