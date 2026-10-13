@@ -13,6 +13,22 @@ pub const DUDECT_T_MAX: f64 = 10.0;
 /// Multiexp version required on secret-scalar paths.
 pub const MULTIEXP_PIN: &str = "0.5.2";
 
+#[cfg(test)]
+std::thread_local! {
+  static SPAWNS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// Counts prover threads started from the calling thread. Test builds only.
+#[cfg(test)]
+pub(crate) fn note_spawn() {
+  SPAWNS.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+pub(crate) fn take_spawns() -> usize {
+  SPAWNS.with(|c| c.replace(0))
+}
+
 /// Welch's t over two timing samples, after dropping the slowest tenth of each.
 pub fn welch_t(a: &[f64], b: &[f64]) -> f64 {
   fn cropped(v: &[f64]) -> Vec<f64> {
