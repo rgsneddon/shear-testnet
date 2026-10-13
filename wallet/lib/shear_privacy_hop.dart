@@ -47,9 +47,9 @@ const kUnprivateConfirmLabel = 'I already use a VPN / I accept exposing my IP';
 const kUnprivateConfirmHelper =
     'Skip Shear privacy hop. If you are not already on a VPN, the public node may see your device IP.';
 
-/// Standing Reserve note. Connect bare is already covered by the fluxset.
+/// Standing Reserve note on Connect bare.
 const kReserveIpDisclaimer =
-    'Connect bare is private. DINS-DAG and the ADMITv2 fluxset cover this deposit. A tunnel is not required.';
+    'Connect bare sends this deposit to the public node directly. A tunnel is not required.';
 
 const kReserveHopWaitCopy =
     'Confirm you use a VPN, or accept the node seeing your IP, before Send.';
