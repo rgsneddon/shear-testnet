@@ -122,6 +122,23 @@ export function nativeProve({ x, p, c, t, index, destLeaves, cLeaves }) {
   }
 }
 
+/** Native C̃ and spend tag. The membership proof is not built. */
+export function nativeBindInput({ x, p, c, t }) {
+  if (!native || typeof native.bindInput !== 'function') return null;
+  try {
+    const xb = as32(x);
+    const pb = as32(p);
+    const cb = as32(c);
+    const tb = as32(t);
+    if (!xb || !pb || !cb || !tb) return null;
+    const got = native.bindInput(xb, pb, cb, tb);
+    if (!got || got === false || !got.cTilde || !got.spendTag) return null;
+    return { cTilde: Buffer.from(got.cTilde), spendTag: Buffer.from(got.spendTag) };
+  } catch {
+    return null;
+  }
+}
+
 export function nativeProveV3({ x, p, c, t, index, destLeaves, cLeaves, ctx }) {
   if (!native || typeof native.proveV3 !== 'function') return null;
   try {

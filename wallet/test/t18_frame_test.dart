@@ -365,6 +365,7 @@ class _HoldSendPool extends ShearPoolClient {
     Map<String, dynamic>? admitProof,
     List<Map<String, dynamic>>? admitProofs,
     String? spendTag,
+    int? anchor,
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,

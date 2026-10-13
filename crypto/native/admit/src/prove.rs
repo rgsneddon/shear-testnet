@@ -101,6 +101,32 @@ fn hp(p: &RistrettoPoint) -> RistrettoPoint {
     RistrettoPoint::from_uniform_bytes(&w)
 }
 
+/// C̃ and the spend tag for one input. The membership proof is not built.
+/// The tag is the native x·Hp(P). FS-1 keeps this bind and replaces the
+/// statement the prover consumes.
+pub fn bind_input(
+    x: &[u8; 32],
+    p: &[u8; 32],
+    c: &[u8; 32],
+    t: &[u8; 32],
+) -> Option<([u8; 32], [u8; 32])> {
+    let ts = scalar_in(*t, true)?;
+    if ts == Scalar::ZERO {
+        return None;
+    }
+    let xs = scalar_in(*x, true)?;
+    if xs == Scalar::ZERO {
+        return None;
+    }
+    let c_tilde = rerand_c(c, t)?;
+    let p_pt = decompress(p)?;
+    let i_pt = hp(&p_pt) * xs;
+    if i_pt.is_identity() {
+        return None;
+    }
+    Some((c_tilde, i_pt.compress().to_bytes()))
+}
+
 fn decompress(b: &[u8; 32]) -> Option<RistrettoPoint> {
     CompressedRistretto(*b).decompress()
 }

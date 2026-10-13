@@ -18,6 +18,9 @@ int32_t shear_admit_prove(
     const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
     uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
     uint8_t *c_tilde_out, uint8_t *proof_out, uint32_t *proof_len);
+int32_t shear_admit_bind_input(
+    const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
+    uint8_t *c_tilde_out, uint8_t *tag_out);
 int32_t shear_admit_prove_v3(
     const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
     uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
@@ -203,6 +206,32 @@ static napi_value prove_fn(napi_env env, napi_callback_info info) {
   free(proof);
   napi_set_named_property(env, obj, "cTilde", ct_v);
   napi_set_named_property(env, obj, "proof", pr_v);
+  return obj;
+}
+
+static napi_value bind_input_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value argv[4];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint8_t x[32], p[32], c[32], t[32], ct[32], tag[32];
+  if (argc < 4
+      || buf32(env, argv[0], x) || buf32(env, argv[1], p)
+      || buf32(env, argv[2], c) || buf32(env, argv[3], t)) {
+    napi_value f;
+    napi_get_boolean(env, 0, &f);
+    return f;
+  }
+  if (shear_admit_bind_input(x, p, c, t, ct, tag) != 1) {
+    napi_value f;
+    napi_get_boolean(env, 0, &f);
+    return f;
+  }
+  napi_value obj, ct_v, tag_v;
+  napi_create_object(env, &obj);
+  ct_v = buf_from(env, ct, 32);
+  tag_v = buf_from(env, tag, 32);
+  napi_set_named_property(env, obj, "cTilde", ct_v);
+  napi_set_named_property(env, obj, "spendTag", tag_v);
   return obj;
 }
 
@@ -564,6 +593,7 @@ static napi_value init(napi_env env, napi_value exports) {
   EX("jrootPoint", jroot_point_fn);
   EX("frontierAppend", frontier_append_fn);
   EX("prove", prove_fn);
+  EX("bindInput", bind_input_fn);
   EX("proveV3", prove_v3_fn);
   EX("verify", verify_fn);
   EX("verifyV3", verify_v3_fn);

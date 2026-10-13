@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * Wallet ADMITv2 + BP+ prove helper. Same native blobs the node verifies.
+ * Wallet prove helper. Range blobs stay byte 2.
+ * prove_membership is the interim testnet membership proof pending FS-1
+ * (byte 3 plus a statement). prove_spend remains the byte-2 helper.
  * Stdin JSON { op, ... } → stdout JSON. Fail closed if shearadmit.node is missing.
  */
 import fs from 'node:fs';
 import { admitProve, admitScalarFromSeed, fluxsetIndexOf } from './admit.js';
+import { proveMembershipSpend } from './flow_membership.js';
 import { proveRange, verifyRange, randomScalar, scalarFrom, asU8 } from './note.js';
 import { nativeLoaded } from './native_admit.js';
 
@@ -62,6 +65,43 @@ if (op === 'verify_ranges') {
     }
   });
   process.stdout.write(JSON.stringify({ ok: true, v: 2, verified }));
+  process.exit(0);
+}
+
+if (op === 'prove_membership') {
+  const x = scalarFrom(unhex(req.x));
+  const index = Number(req.index);
+  const t = scalarFrom(unhex(req.t));
+  const statement = unhex(req.statement);
+  const pubs = (req.pubs || []).map(unhex).filter(Boolean);
+  const commits = (req.commits || []).map(unhex).filter(Boolean);
+  const spentNote = {
+    commit: unhex(req.spentNote?.commit),
+  };
+  if (!pubs.length || commits.length !== pubs.length || !Number.isInteger(index)) {
+    process.stdout.write(JSON.stringify({ ok: false, reason: 'membership_native_required' }));
+    process.exit(4);
+  }
+  const proof = proveMembershipSpend({
+    x,
+    index,
+    pubs,
+    commits,
+    c: spentNote.commit,
+    t,
+    statement,
+  });
+  if (!proof || proof.v !== 3 || proof.r || !proof.blob || proof.blob[0] !== 3) {
+    process.stdout.write(JSON.stringify({ ok: false, reason: 'membership_native_required' }));
+    process.exit(4);
+  }
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    v: 3,
+    spendTag: hex(proof.spendTag),
+    blob: hex(proof.blob),
+    cTilde: hex(proof.cTilde),
+  }));
   process.exit(0);
 }
 

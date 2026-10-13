@@ -11,6 +11,7 @@ import { oracleView } from './oracle_feed.js';
 import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
+import { walletAnchor } from '../../crypto/admit_v3.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -345,6 +346,14 @@ export function createRpc({
       const live = typeof store.fluxset === 'function' ? store.fluxset() : { pubs: [], spendTags: new Set(), jroot: null, commits: [] };
       const pubs = (live.pubs || []).map((p) => Buffer.from(typeof p.toBytes === 'function' ? p.toBytes() : p).toString('hex'));
       const commits = (live.commits || []).map((c) => Buffer.from(c).toString('hex'));
+      const tipH = Number(store?.tip?.()?.height || 0);
+      const anchor = walletAnchor(tipH + 1);
+      let anchorN = null;
+      if (anchor != null && typeof store.anchorNote === 'function') {
+        const book = store.anchorNote(anchor);
+        const n = Number(book?.n);
+        if (Number.isInteger(n) && n >= 1) anchorN = n;
+      }
       return {
         ok: true,
         jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
@@ -352,6 +361,8 @@ export function createRpc({
         commits,
         fluxset: pubs,
         spendTags: [...(live.spendTags || [])],
+        ...(anchor != null ? { anchor } : {}),
+        ...(anchorN != null ? { anchorN } : {}),
         admit: 'ADMITv2',
         hashTxLive: store.hashTxLive,
       };

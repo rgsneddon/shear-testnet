@@ -189,15 +189,18 @@ Future<void> main() async {
       },
       'pubs': <Uint8List>[pub],
       'commits': <Uint8List>[commit],
-    }).timeout(const Duration(seconds: 30));
+      'anchor': 8,
+      'fee': 0,
+      'kind': 'send',
+    }).timeout(const Duration(seconds: 120));
     final proof = proved['admitProof'];
-    if (proof is! Map || proof['v'] != 2 || proof['r'] != null) {
+    if (proof is! Map || proof['v'] != 3 || proof['r'] != null) {
       throw StateError('spend proof nanos=${note['nanos']} $proof');
     }
     final blob = proof['blob'];
     final tag = proved['spendTag'] ?? proof['spendTag'];
     final ct = proof['cTilde'];
-    if (blob is! Uint8List || blob.isEmpty || blob[0] != 2) {
+    if (blob is! Uint8List || blob.length < 33 || blob[0] != 3) {
       throw StateError('spend blob nanos=${note['nanos']}');
     }
     if (tag is! Uint8List || tag.length != 32) {

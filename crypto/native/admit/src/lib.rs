@@ -16,8 +16,8 @@ mod tree;
 pub use bpplus::{prove_range, verify_range, RANGE_BITS};
 pub use leaf::{c_leaf_scalar, dest_leaf_fp, DST_LEAF};
 pub use prove::{
-    admit_prove, admit_prove_v3, admit_verify, admit_verify_v3, admit_verify_batch, forest_prove,
-    forest_verify, Proof, MAX_PROOF, MAX_PROOF_V3,
+    admit_prove, admit_prove_v3, admit_verify, admit_verify_v3, admit_verify_batch, bind_input,
+    forest_prove, forest_verify, Proof, MAX_PROOF, MAX_PROOF_V3,
 };
 pub use tree::{c_root, jroot, jroot_point, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
@@ -247,6 +247,50 @@ pub extern "C" fn shear_admit_prove(
                     std::ptr::copy_nonoverlapping(ct.as_ptr(), c_tilde_out, 32);
                     std::ptr::copy_nonoverlapping(proof.as_ptr(), proof_out, proof.len());
                     *proof_len = proof.len() as u32;
+                }
+                OK
+            }
+            None => BAD,
+        }
+    }))
+    .unwrap_or(BAD)
+}
+
+/// C̃ and the native spend tag. Does not build the membership proof.
+#[no_mangle]
+pub extern "C" fn shear_admit_bind_input(
+    x: *const u8,
+    p: *const u8,
+    c: *const u8,
+    t: *const u8,
+    c_tilde_out: *mut u8,
+    tag_out: *mut u8,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let x = match b32(x) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let p = match b32(p) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let c = match b32(c) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        let t = match b32(t) {
+            Some(v) => v,
+            None => return BAD,
+        };
+        if c_tilde_out.is_null() || tag_out.is_null() {
+            return BAD;
+        }
+        match bind_input(&x, &p, &c, &t) {
+            Some((ct, tag)) => {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ct.as_ptr(), c_tilde_out, 32);
+                    std::ptr::copy_nonoverlapping(tag.as_ptr(), tag_out, 32);
                 }
                 OK
             }
@@ -557,6 +601,26 @@ pub extern "C" fn shear_range_prove(v: u64, r: *const u8, out: *mut u8, out_len:
         }
     }))
     .unwrap_or(BAD)
+}
+
+/// Same range blob as [shear_range_prove]. `v_le` is the amount as 8 little-endian
+/// bytes so a caller can pass any u64 without a language-level uint64.
+#[no_mangle]
+pub extern "C" fn shear_range_prove_le(
+    v_le: *const u8,
+    r: *const u8,
+    out: *mut u8,
+    out_len: *mut u32,
+) -> i32 {
+    let v = match slice(v_le, 8) {
+        Some(b) => {
+            let mut le = [0u8; 8];
+            le.copy_from_slice(b);
+            u64::from_le_bytes(le)
+        }
+        None => return BAD,
+    };
+    shear_range_prove(v, r, out, out_len)
 }
 
 #[no_mangle]

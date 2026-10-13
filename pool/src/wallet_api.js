@@ -38,6 +38,7 @@ import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmation
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
+import { walletAnchor } from '../../crypto/admit_v3.js';
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -1375,6 +1376,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const spendTags = [...(live.spendTags || [])];
     // J is the pair (admit pub, note commit) in one order. A count with no
     // commit column cannot be proved.
+    const tipH = Number(store?.tip?.()?.height || 0);
+    const anchor = walletAnchor(tipH + 1);
+    let anchorN = null;
+    if (anchor != null && typeof store.anchorNote === 'function') {
+      const book = store.anchorNote(anchor);
+      const n = Number(book?.n);
+      if (Number.isInteger(n) && n >= 1 && n <= pubs.length) anchorN = n;
+    }
     return {
       status: 200,
       json: {
@@ -1384,6 +1393,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         spendTagCount: spendTags.length,
         pubs,
         commits,
+        ...(anchor != null ? { anchor } : {}),
+        ...(anchorN != null ? { anchorN } : {}),
       },
     };
   }
@@ -1660,12 +1671,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const parsed = parseSendNanos(body);
     if (!parsed.ok) return { status: 400, json: { ok: false, reason: 'bad_send' } };
     const kindIn = String(body.kind || 'send');
+    const isTransfer = kindIn === 'transfer';
     const programIn = String(body.programId || '');
     const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
     const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
     const isWithdraw = kindIn === 'withdraw' && programIn === RESERVE_PROGRAM;
     const multiProofsEarly = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
-    const sealedSendEarly = kindIn === 'send'
+    const sealedSendEarly = (kindIn === 'send' || isTransfer)
       && (body.admit_proof || multiProofsEarly)
       && Array.isArray(body.vin) && body.vin.length
       && Array.isArray(body.vout) && body.vout.length
@@ -1678,7 +1690,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {
+    if (kindIn !== 'send' && !isTransfer && !isLock && !isVote && !isWithdraw) {
       return { status: 400, json: { ok: false, reason: 'bad_kind' } };
     }
     const poolPay = isDestAddress(String(poolDest || '')) ? String(poolDest) : '';
@@ -1692,7 +1704,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const amount = typeof nanos === 'number' ? nanos / NANOS_PER_SHE : nanos;
     const chainNanos = rec.spendableNanos;
     const multiProofs = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
-    const sealedSend = kindIn === 'send'
+    const sealedSend = (kindIn === 'send' || isTransfer)
       && (body.admit_proof || multiProofs)
       && Array.isArray(body.vin) && body.vin.length
       && Array.isArray(body.vout) && body.vout.length
@@ -1709,7 +1721,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
     if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
     const memoCt = body.memoCt || null;
-    const kind = isLock ? 'lock' : isVote ? 'vote' : isWithdraw ? 'withdraw' : 'send';
+    const kind = isLock ? 'lock' : isVote ? 'vote' : isWithdraw ? 'withdraw' : (isTransfer ? 'transfer' : 'send');
     const programId = (isLock || isVote || isWithdraw) ? RESERVE_PROGRAM : '';
     const taxed = levyTaxed({ kind, programId });
     const postedFee = (body.fee == null || body.fee === '') ? null : parseIntegerNanos(body.fee);
@@ -1774,8 +1786,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           vin: Array.isArray(body.vin) && body.vin.length ? body.vin : [{ address: from }],
           vout,
           ...(body.excess ? { excess: body.excess } : {}),
+          ...(Number.isInteger(body.anchor) ? { anchor: body.anchor } : {}),
           ...(body.admit_proof ? { admit_proof: body.admit_proof, spendTag: body.spendTag || body.admit_proof.spendTag } : {}),
           ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
+          ...(!body.admit_proof && body.spendTag ? { spendTag: body.spendTag } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
     if (taxed && postedFee == null) bindWeightFee(draft);
@@ -1787,16 +1801,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       }
       fee = draft.fee;
     }
-    if (kind === 'send' && dummyCount(draft) < 1) {
+    if ((kind === 'send' || kind === 'transfer') && dummyCount(draft) < 1) {
       return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
     }
-    if (kind === 'send' && multiProofs) {
+    if ((kind === 'send' || kind === 'transfer') && multiProofs) {
       const need = levyNeed(draft);
       if (!(fee >= need) || fee > LEVY_CAP_NANOS) {
         return { status: 400, json: { ok: false, reason: 'levy' } };
       }
     }
-    if (kind === 'send' && !draft.admit_proof && !multiProofs) {
+    if ((kind === 'send' || kind === 'transfer') && !draft.admit_proof && !multiProofs) {
       const chainCovers = chainNanos >= nanos + fee;
       if (!(chainCovers && verifySpendSig(draft))) {
         return { status: 400, json: { ok: false, reason: 'admit_membership' } };
