@@ -34,6 +34,7 @@ for (const note of spec.notes || []) {
     rCt: buf(note.rCt),
     admitPub: buf(note.admitPub),
     dest20: buf(note.dest20),
+    rangeProof: buf(note.rangeProof),
   });
 }
 

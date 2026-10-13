@@ -113,6 +113,7 @@ function notesForAddress(store, address) {
           index,
           height: b.height,
           coinbase: !!tx.coinbase,
+          ...(o.rangeProof && o.rangeProof !== true ? { rangeProof: o.rangeProof } : {}),
         }));
       });
     }

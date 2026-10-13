@@ -104,7 +104,7 @@ _NoteWallet _noteWallet(int count, {required int nanos}) {
 }
 
 Map<String, dynamic> _offlinePot(int nanos, int height, {required Uint8List dest20, required Uint8List seed}) {
-  var note = _sealNoteNoRange(nanos, dest20: dest20, kind: 'pot');
+  var note = _sealPayout(nanos, dest20: dest20, kind: 'pot');
   note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
   note = compactSealedVout(note);
   note['height'] = height;
@@ -148,6 +148,7 @@ Map<String, dynamic> _wireOfflineNote(Map<String, dynamic> n) {
     'rCt': _offlineHex(n['rCt']),
     if (n['admitPub'] != null) 'admitPub': _offlineHex(n['admitPub']),
     if (n['dest20'] != null) 'dest20': _offlineHex(n['dest20']),
+    if (n['rangeProof'] != null) 'rangeProof': _offlineHex(n['rangeProof']),
     'valueProof': {
       'R': _offlineHex(vp['R']),
       'z': _offlineHex(vp['z']),
@@ -182,7 +183,18 @@ void _expectOfflineCatchup(ShearLedger ledger, ShearIdentity id, {required doubl
   expect(spend, isNot(closeTo(reportedBalance, 1e-6)));
 }
 
-/// Fake seal without the 64-bit Dart range proof (minutes on Windows).
+/// Node range blob. A 65-byte stand-in is not a payout range proof.
+/// Ignores [debugNativeSealNote] so a send stub does not erase the payout proof.
+Map<String, dynamic> _sealPayout(int v, {Uint8List? dest20, String kind = 'pot'}) {
+  final previous = debugNativeSealNote;
+  debugNativeSealNote = null;
+  try {
+    return nativeSealNote(v, dest20: dest20, kind: kind);
+  } finally {
+    debugNativeSealNote = previous;
+  }
+}
+
 Map<String, dynamic> _sealNoteNoRange(int v, {Uint8List? dest20, String kind = 'send'}) {
   final r = randomScalar();
   final value = proveValue(v, r);
@@ -1154,7 +1166,7 @@ void main() {
     final probe = ShearLedger()..bindIdentity(id);
     final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
     final d20 = hash20FromAddress(dest)!;
-    var spent = _sealNoteNoRange(kUnitsPerShe, dest20: d20, kind: 'pot');
+    var spent = _sealPayout(kUnitsPerShe, dest20: d20, kind: 'pot');
     spent['address'] = dest;
     spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseBytes(seed)));
     final x = admitScalarFromSeed(seed, spent);
@@ -1206,7 +1218,7 @@ void main() {
     final probe = ShearLedger()..bindIdentity(id);
     final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
     final d20 = hash20FromAddress(dest)!;
-    var pot = _sealNoteNoRange(kUnitsPerShe, dest20: d20, kind: 'pot');
+    var pot = _sealPayout(kUnitsPerShe, dest20: d20, kind: 'pot');
     pot['address'] = dest;
     pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseBytes(seed)));
     final x = admitScalarFromSeed(seed, pot);
@@ -1221,7 +1233,7 @@ void main() {
       ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
       greaterThanOrEqualTo(0.001),
     );
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final bob = payableChainDest(createIdentity().paymentCodeFull)!;
     await ledger.send(
       from: dest,
       to: bob,
@@ -1904,7 +1916,7 @@ void main() {
     final probe = ShearLedger()..bindIdentity(id);
     final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
     final d20 = hash20FromAddress(dest)!;
-    var pot = _sealNoteNoRange(kUnitsPerShe, dest20: d20, kind: 'pot');
+    var pot = _sealPayout(kUnitsPerShe, dest20: d20, kind: 'pot');
     pot['address'] = dest;
     pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseBytes(seed)));
     final potRow = compactSealedVout(pot)..['nanos'] = kUnitsPerShe;
@@ -1931,7 +1943,7 @@ void main() {
       dest: dest,
       prev: Uint8List(32),
     );
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final bob = payableChainDest(createIdentity().paymentCodeFull)!;
     const sendAmt = 0.25;
     await ledger.send(
       from: dest,
@@ -5094,7 +5106,7 @@ void main() {
     final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     final d20 = hash20FromAddress(dest)!;
     const nanos = 620544;
-    var note = _sealNoteNoRange(nanos, dest20: d20, kind: 'hash');
+    var note = _sealPayout(nanos, dest20: d20, kind: 'hash');
     note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
     final compacted = compactSealedVout(note);
     compacted['height'] = 1;
@@ -5180,7 +5192,7 @@ void main() {
     final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     final d20 = hash20FromAddress(dest)!;
     const nanos = 620544;
-    var note = _sealNoteNoRange(nanos, dest20: d20, kind: 'hash');
+    var note = _sealPayout(nanos, dest20: d20, kind: 'hash');
     note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
     final compacted = compactSealedVout(note);
     compacted.remove('nanos');
@@ -5233,7 +5245,7 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
 
     Map<String, dynamic> seal(int v, int height) {
-      var note = _sealNoteNoRange(v, dest20: d20, kind: 'hash');
+      var note = _sealPayout(v, dest20: d20, kind: 'hash');
       note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
       final row = compactSealedVout(note);
       row.remove('nanos');
@@ -5316,7 +5328,7 @@ void main() {
       tipSealed: 0,
     );
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
-    var note = _sealNoteNoRange(goodNanos, dest20: d20, kind: 'hash');
+    var note = _sealPayout(goodNanos, dest20: d20, kind: 'hash');
     note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
     final row = compactSealedVout(note);
     row.remove('nanos');
@@ -8614,7 +8626,7 @@ void main() {
     final live = _PoolLive(headerHex: hex, height: 20, balance: poolBalance, owner: dest);
     final d20 = hash20FromAddress(dest);
     expect(d20, isNotNull);
-    final note = _sealNoteNoRange((poolBalance * kUnitsPerShe).round(), dest20: d20, kind: 'pot');
+    final note = _sealPayout((poolBalance * kUnitsPerShe).round(), dest20: d20, kind: 'pot');
     note['height'] = 2;
     live.notes = [note];
     final server = await _fakePool(live: live);
@@ -8649,7 +8661,7 @@ void main() {
     final live = _PoolLive(headerHex: hex, height: 20, balance: poolBalance, owner: dest);
     final d20 = hash20FromAddress(dest);
     expect(d20, isNotNull);
-    final note = _sealNoteNoRange((noteShe * kUnitsPerShe).round(), dest20: d20, kind: 'pot');
+    final note = _sealPayout((noteShe * kUnitsPerShe).round(), dest20: d20, kind: 'pot');
     note['height'] = 2;
     live.notes = [note];
     final server = await _fakePool(live: live);

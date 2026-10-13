@@ -27,6 +27,39 @@ NativeUnitsSealer? debugNativeSealUnits;
 
 String _hex(Uint8List b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
 
+/// One node process. A missing helper or a short row is a reject.
+/// Inbox 030: Continuum does not treat a stand-in blob as a range proof.
+List<bool> nativeVerifyRanges(List<Uint8List> commits, List<Uint8List> proofs) {
+  if (commits.length != proofs.length) return List<bool>.filled(commits.length, false);
+  if (commits.isEmpty) return const [];
+  final helper = _helperPath();
+  if (helper == null) return List<bool>.filled(commits.length, false);
+  final tmp = File('${Directory.systemTemp.path}/shear-range-verify-${DateTime.now().microsecondsSinceEpoch}.json');
+  tmp.writeAsStringSync(jsonEncode({
+    'op': 'verify_ranges',
+    'rows': [
+      for (var i = 0; i < commits.length; i++) {'commit': _hex(commits[i]), 'proof': _hex(proofs[i])},
+    ],
+  }), flush: true);
+  if (!Platform.isWindows) {
+    try { Process.runSync('chmod', ['600', tmp.path]); } catch (_) {}
+  }
+  try {
+    final out = Process.runSync('node', [helper, tmp.path], runInShell: false);
+    if (out.exitCode != 0) return List<bool>.filled(commits.length, false);
+    final got = jsonDecode(out.stdout as String);
+    final verified = got is Map ? got['verified'] : null;
+    if (got is! Map || got['ok'] != true || verified is! List || verified.length != commits.length) {
+      return List<bool>.filled(commits.length, false);
+    }
+    return [for (final row in verified) row == true];
+  } catch (_) {
+    return List<bool>.filled(commits.length, false);
+  } finally {
+    try { tmp.deleteSync(); } catch (_) {}
+  }
+}
+
 Uint8List? _unhex(dynamic v) {
   if (v is Uint8List) return v;
   if (v is String && v.length >= 2 && v.length % 2 == 0) {

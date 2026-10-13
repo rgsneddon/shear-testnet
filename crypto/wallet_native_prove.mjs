@@ -5,7 +5,7 @@
  */
 import fs from 'node:fs';
 import { admitProve, admitScalarFromSeed, fluxsetIndexOf } from './admit.js';
-import { proveRange, randomScalar, scalarFrom, asU8 } from './note.js';
+import { proveRange, verifyRange, randomScalar, scalarFrom, asU8 } from './note.js';
 import { nativeLoaded } from './native_admit.js';
 
 function hex(b) {
@@ -47,6 +47,21 @@ if (op === 'prove_range') {
     process.exit(3);
   }
   process.stdout.write(JSON.stringify({ ok: true, v: 2, proof: hex(proof) }));
+  process.exit(0);
+}
+
+if (op === 'verify_ranges') {
+  const rows = Array.isArray(req.rows) ? req.rows : [];
+  const verified = rows.map((row) => {
+    try {
+      const commit = unhex(row?.commit);
+      const proof = unhex(row?.proof);
+      return commit.length === 32 && proof.length > 0 && verifyRange(commit, proof);
+    } catch {
+      return false;
+    }
+  });
+  process.stdout.write(JSON.stringify({ ok: true, v: 2, verified }));
   process.exit(0);
 }
 

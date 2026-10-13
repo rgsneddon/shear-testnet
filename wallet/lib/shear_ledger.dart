@@ -1319,6 +1319,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
   final proofCache = proofCacheMap(input['openedProofs']);
   final notes = <Map<String, dynamic>>[];
   final hashFolds = <Map<String, dynamic>>[];
+  final payoutRangeAt = <int, Uint8List?>{};
+  final hashFoldAt = <int, Map<String, dynamic>>{};
   var unopenedProofs = 0;
   for (var i = 0; i < vouts.length; i++) {
     final raw = vouts[i];
@@ -1396,6 +1398,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         'proofChecked': true,
         'verified': true,
       });
+      _rememberPayoutRange(payoutRangeAt, notes.length - 1, kindName, o);
       seenHex.add(commitHex);
       continue;
     }
@@ -1457,18 +1460,67 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       if (verifiedNanos != null) 'verified': true,
     });
     seenHex.add(commitHex);
+    _rememberPayoutRange(payoutRangeAt, notes.length - 1, kind, o);
     if (kind == 'hash' && amt != null && !seenCommit) {
-      hashFolds.add({
+      hashFoldAt[notes.length - 1] = {
         'matched': matched,
         'she': amt.toDouble(),
         'height': (o['height'] as num?)?.toInt() ?? 0,
-      });
+      };
     }
     // R and z were present (proofKey) but the commitment did not open.
     // That is not a verified zero.
     if (proofKey != null && verifiedNanos == null) unopenedProofs++;
   }
+  unopenedProofs += _gatePayoutRanges(notes, payoutRangeAt);
+  for (final e in hashFoldAt.entries) {
+    if (notes[e.key]['verified'] == true) hashFolds.add(e.value);
+  }
   return {'notes': notes, 'hashFolds': hashFolds, 'unopenedProofs': unopenedProofs};
+}
+
+const _payoutRangeKinds = {'pot', 'hash', 'finder-fee', 'reserve-fee', 'pool-fee'};
+
+void _rememberPayoutRange(Map<int, Uint8List?> at, int index, String? kind, Map o) {
+  if (kind == null || !_payoutRangeKinds.contains(kind)) return;
+  at[index] = _noteBytes(o['rangeProof']);
+}
+
+int _gatePayoutRanges(List<Map<String, dynamic>> notes, Map<int, Uint8List?> at) {
+  final jobs = <int>[];
+  final commits = <Uint8List>[];
+  final proofs = <Uint8List>[];
+  var dropped = 0;
+  for (final e in at.entries) {
+    final note = notes[e.key];
+    if (note['verified'] != true) continue;
+    final commit = note['commit'];
+    final proof = e.value;
+    if (commit is! Uint8List || commit.length != 32 || proof == null || proof.isEmpty) {
+      _dropOpenedPayout(note);
+      dropped++;
+      continue;
+    }
+    jobs.add(e.key);
+    commits.add(commit);
+    proofs.add(proof);
+  }
+  final oks = nativeVerifyRanges(commits, proofs);
+  for (var i = 0; i < jobs.length; i++) {
+    if (i >= oks.length || !oks[i]) {
+      _dropOpenedPayout(notes[jobs[i]]);
+      dropped++;
+    }
+  }
+  return dropped;
+}
+
+void _dropOpenedPayout(Map<String, dynamic> note) {
+  note.remove('verified');
+  note.remove('verifiedNanos');
+  note.remove('proofChecked');
+  note.remove('amount');
+  note.remove('nanos');
 }
 
 /// Pure history-row parse + optional memoOpen. Full-sync via [Isolate.run].

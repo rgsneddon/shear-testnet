@@ -1470,6 +1470,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           }
           const proofR = proofHex(o.valueProof?.R);
           const proofZ = proofHex(o.valueProof?.z);
+          const rangeHex = proofHex(o.rangeProof);
           notes.push({
             kind: o.kind || (tx.coinbase ? 'pot' : 'send'),
             noteCommit: hex(o.noteCommit),
@@ -1490,6 +1491,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
             ...(proofR && proofZ && nanos != null ? {
               valueProof: { R: proofR, z: proofZ, v: nanos },
             } : {}),
+            ...(rangeHex ? { rangeProof: rangeHex } : {}),
           });
     };
     const refs = typeof store?.noteRefs === 'function' ? store.noteRefs(address) : null;
