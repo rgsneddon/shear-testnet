@@ -157,3 +157,25 @@ body.team-page {
 @media (max-width: 640px) {
   .assist-grid > .card { flex-basis: 100%; width: 100%; }
 }
+
+/* Light mode: light plates with readable text */
+html[data-theme="light"] {
+  --panel: #ffffff; --panel-2: #f3f7fb;
+  --text: #0d2137; --muted: #4a6178;
+  --accent: #0f766e; --accent-2: #6d28d9;
+  --line: rgba(13, 33, 55, 0.14);
+  --shadow: 0 10px 30px rgba(13, 33, 55, .10);
+}
+@media (prefers-color-scheme: light) {
+  html:not([data-theme="dark"]) {
+    --panel: #ffffff; --panel-2: #f3f7fb;
+    --text: #0d2137; --muted: #4a6178;
+    --accent: #0f766e; --accent-2: #6d28d9;
+    --line: rgba(13, 33, 55, 0.14);
+    --shadow: 0 10px 30px rgba(13, 33, 55, .10);
+  }
+}
+html[data-theme="light"] .card-body h3,
+html[data-theme="light"] .card h3 { color: var(--text); }
+html[data-theme="light"] .card-build { border-color: rgba(13,33,55,.18); }
+html[data-theme="light"] .avatar { border-color: rgba(13,33,55,.12); }
