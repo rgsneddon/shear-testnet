@@ -32,9 +32,13 @@ function listen(pool) {
   });
 }
 
-function login(pool, dest) {
+function login(pool, dest, localAddress = '127.0.0.1') {
   return new Promise((resolve, reject) => {
-    const sock = net.connect(pool.stratum.address().port, '127.0.0.1');
+    const sock = net.connect({
+      port: pool.stratum.address().port,
+      host: '127.0.0.1',
+      localAddress,
+    });
     sock.setEncoding('utf8');
     let buf = '';
     const timer = setTimeout(() => {
@@ -104,8 +108,12 @@ describe('finder-fee on the job the finder hashes', () => {
         const dests = [];
         for (let i = 0; i < row.count; i += 1) dests.push(minerDest());
         const jobs = [];
-        for (const dest of dests) {
-          const got = await login(pool, dest);
+        for (let i = 0; i < dests.length; i += 1) {
+          const dest = dests[i];
+          // This test exercises finder aiming, not the per-IP login cap.
+          // Keep each loopback source within the production cap of four.
+          const source = `127.0.0.${Math.floor(i / 4) + 1}`;
+          const got = await login(pool, dest, source);
           socks.push(got.sock);
           assert.equal(got.error, '', `login ${row.fee} ${got.error}`);
           assert.ok(got.job?.jobId, `job ${row.fee}`);

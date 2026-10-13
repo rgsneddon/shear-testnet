@@ -133,6 +133,7 @@ describe('PSA-5a56-3 login cap and one finder seal per turn', () => {
 
   it('a fresh login past the per-IP cap is busy and does not join', async () => {
     const pool = openPool();
+    const sockets = [];
     try {
       await new Promise((resolve, reject) => {
         pool.stratum.listen(0, '127.0.0.1', resolve);
@@ -150,13 +151,14 @@ describe('PSA-5a56-3 login cap and one finder seal per turn', () => {
         assert.equal(got.msg.result?.status, 'OK', got.msg.error || 'login');
         assert.equal(got.msg.job?.jobId, pool.lastJob.jobId);
         known.push({ dest: d, sock: got.sock });
-        got.sock.end();
+        sockets.push(got.sock);
       }
       assert.equal(pool.miners.size, LOGIN_PER_IP_MAX);
       const extra = dest();
       const before = pool.miners.size;
       const seals = finderAimSeals();
       const refused = await login(port, extra);
+      sockets.push(refused.sock);
       assert.equal(refused.msg.error, 'busy');
       assert.equal(pool.miners.has(extra), false);
       assert.equal(pool.miners.size, before);
@@ -164,10 +166,13 @@ describe('PSA-5a56-3 login cap and one finder seal per turn', () => {
       await turn();
       assert.equal(finderAimSeals(), seals, 'a refused login does not seal');
       const again = await login(port, known[0].dest);
+      sockets.push(again.sock);
       assert.equal(again.msg.result?.status, 'OK');
       assert.equal(pool.miners.size, before);
-      again.sock.end();
     } finally {
+      for (const sock of sockets) {
+        try { sock.destroy(); } catch { /* closed */ }
+      }
       pool.close();
     }
   });

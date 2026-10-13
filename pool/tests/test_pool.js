@@ -562,6 +562,7 @@ describe('pool dashboard + stratum', () => {
       });
       pool.stratum.on('error', reject);
     });
+    let minerSock;
     try {
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
@@ -654,6 +655,7 @@ describe('pool dashboard + stratum', () => {
 
     const scored = await new Promise((resolve, reject) => {
       const sock = net.connect(stratumPort, '127.0.0.1', () => {
+        minerSock = sock;
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
@@ -673,17 +675,18 @@ describe('pool dashboard + stratum', () => {
           }) + '\n');
         }
         if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
-          sock.end();
           resolve(buf);
         }
       });
       sock.on('error', reject);
     });
     assert.match(scored, /OK/);
+    await new Promise((r) => setTimeout(r, STATS_REFRESH_MS + 100));
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.ok((named.workers || []).some((w) => w.name === 'ShearK-Miner' && w.version === SHEARK_MINER_VERSION));
     assert.match(html, /w\.name/);
     } finally {
+      try { minerSock?.destroy(); } catch { /* closed */ }
       pool.close();
     }
   });
