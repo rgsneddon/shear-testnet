@@ -129,7 +129,9 @@ mod tests {
     let (mut fixed, mut random) = (Vec::new(), Vec::new());
     let mut sink = HeliosF::ZERO;
     for class in order(4_000) {
-      let g = if class { 0 } else { usize::try_from(OsRng.next_u64() % groups as u64).unwrap() };
+      // Both classes draw from the RNG, so only the index differs before the timed call.
+      let r = OsRng.next_u64();
+      let g = if class { 0 } else { usize::try_from(r % groups as u64).unwrap() };
       let started = Instant::now();
       let out = ct_group(&level, g, 18, HeliosF::ZERO);
       let took = started.elapsed().as_nanos() as f64;
@@ -311,12 +313,13 @@ mod tests {
     let (mut fixed, mut random) = (Vec::new(), Vec::new());
     let (mut snap_fixed, mut snap_random) = (Vec::new(), Vec::new());
     for class in order(1_000) {
-      let index = if class { 0 } else { OsRng.next_u64() % size };
+      let (r, s) = (OsRng.next_u64(), OsRng.next_u64());
+      let index = if class { 0 } else { r % size };
       let started = Instant::now();
       let path = Fs1Tree::path(tree, index).expect("path");
       let took = started.elapsed().as_nanos() as f64;
       assert_eq!(path.leaves.len(), LEAF_SCAN);
-      let index = if class { 0 } else { in_held(OsRng.next_u64()) };
+      let index = if class { 0 } else { in_held(s) };
       let started = Instant::now();
       let snap = Fs1Tree::path(&snapshot, index).expect("snapshot path");
       let snap_took = started.elapsed().as_nanos() as f64;
