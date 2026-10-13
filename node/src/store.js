@@ -73,6 +73,7 @@ import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
+import { chainV3BucketSendRejected } from '../../crypto/fs1_send_gate.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -361,6 +362,10 @@ export function createStore(dir, {
   }
   const resumed = !!(resume && resume.token === loadResumeToken && resume.verified === true
     && resume.height === blocks.length && tipBuf(blocks).equals(Buffer.from(resume.tipHash || [])));
+  if (blocks.length) {
+    const gatedSend = chainV3BucketSendRejected(blocks);
+    if (gatedSend) throw new Error(gatedSend.reason);
+  }
   if (blocks.length && !resumed) {
     const want = chainLoadSeal(blocks, sealKey);
     let got = '';

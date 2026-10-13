@@ -66,6 +66,8 @@ if (op === 'verify_ranges') {
 }
 
 if (op === 'prove_spend') {
+  process.stdout.write(JSON.stringify({ ok: false, reason: 'send unavailable until FS-1' }));
+  process.exit(4);
   const spendSeed = unhex(req.spendSeed);
   const spentNote = {
     kind: req.spentNote?.kind,

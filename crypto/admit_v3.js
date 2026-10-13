@@ -4,10 +4,10 @@
  * A presented anchor that fails the window is rejected. Lock, vote, and
  * withdraw require an in-window ADMITv3 input. A flow spend (send or transfer)
  * that presents a proof is admit_version unless every blob is byte 3 and an
- * anchor is present. verifyFlowAdmitV3 then checks that proof with
- * admitVerifyV3 against the anchor point root. It does not call the v2
- * verifier. A flow spend with no proof is unchanged. v2 prove and verify stay
- * for direct callers. Fingerprint tokens stay off.
+ * anchor is present. A byte-3 bucket proof is send_unavailable before
+ * admitVerifyV3. It does not call the v2 verifier. A flow spend with no proof
+ * is unchanged. v2 prove and verify stay for direct callers. Fingerprint
+ * tokens stay off.
  */
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
@@ -15,6 +15,7 @@ import { asU8, flowInputsBound } from './note.js';
 import { flowNeedsDummy, publicReserveReceipt } from './dummy.js';
 import { admitVerifyV3, fluxsetFromBlocks, jroot, jrootPoint } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
+import { v3BucketSendRejected } from './fs1_send_gate.js';
 
 export const ANCHOR_QUANTUM = 8;
 export const ANCHOR_WINDOW = 64;
@@ -63,11 +64,13 @@ function presentedAnchors(tx) {
  * v12 interim: a flow spend that presents proofs must be byte 3 and anchored.
  * Any other byte, a missing blob, a mixed list, or byte 3 with no anchor is
  * admit_version. No proof, and every non-flow kind, stays on the existing path.
- * Byte 3 with an anchor returns null. verifyFlowAdmitV3 then runs. This gate
- * does not verify the proof.
+ * A byte-3 bucket proof is send_unavailable before that check. Stage 0 does
+ * not verify it. This gate does not verify the proof.
  */
 export function v12FlowVersionRejected(tx) {
   if (!flowNeedsDummy(tx)) return null;
+  const gated = v3BucketSendRejected(tx);
+  if (gated) return gated;
   const proofs = proofsOf(tx);
   if (!proofs.length) return null;
   for (const proof of proofs) {
@@ -462,6 +465,8 @@ export function verifyFlowAdmitV3(tx, {
   noteAtAnchor = null,
   fluxset = null,
 } = {}) {
+  const gated = v3BucketSendRejected(tx);
+  if (gated) return gated;
   if (!flowNeedsDummy(tx) || !flowPresentsProof(tx)) return { ok: true, skip: true };
   const anchored = checkAdmitAnchor(tx, Number(height || 0));
   if (!anchored.ok) return anchored;

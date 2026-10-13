@@ -75,6 +75,7 @@ import {
   extendZeroRoot,
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
+import { chainV3BucketSendRejected } from '../../crypto/fs1_send_gate.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
@@ -2733,6 +2734,8 @@ function beginLoaded(blocks, {
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true, empty: true };
+  const gated = chainV3BucketSendRejected(list);
+  if (gated) return gated;
   const givenClock = Number(nowMs);
   const clock = Number.isFinite(givenClock) && givenClock > 0 ? givenClock : Date.now();
   const pinned = normGenesisPin(genesisHash);
