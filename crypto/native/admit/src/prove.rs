@@ -576,7 +576,7 @@ pub fn forge_attacker_dest_v3(
 }
 
 pub fn spend_tag_of(proof: &[u8]) -> Option<[u8; 32]> {
-    if proof.len() < 33 || (proof[0] != VERSION && proof[0] != VERSION_V3) {
+    if proof.len() < 33 || proof[0] != VERSION_V3 {
         return None;
     }
     let mut t = [0u8; 32];

@@ -166,7 +166,7 @@ function userTxs(tpl) {
 
 describe('v12 spend tags come from the proof bytes', () => {
   it('reads every proof, rejects a lying field, and keeps a shape proof', () => {
-    for (const ver of [2, 3]) {
+    for (const ver of [3]) {
       for (const count of [1, 3]) {
         const proofs = [];
         for (let i = 0; i < count; i += 1) {
@@ -182,8 +182,13 @@ describe('v12 spend tags come from the proof bytes', () => {
         }
       }
     }
+    const closed = txSpendTags({ admit_proof: { blob: versionedBlob(2, Buffer.alloc(32, 7)) } });
+    assert.equal(closed.ok, false);
+    assert.equal(closed.reason, 'admit_membership');
+    const notRead = fluxsetFromBlocks([{ txs: [{ admit_proof: { blob: versionedBlob(2, Buffer.alloc(32, 7)) } }] }]);
+    assert.equal(notRead.spendTags.has(Buffer.alloc(32, 7).toString('hex')), false);
     const tag = Buffer.alloc(32, 4);
-    const blob = versionedBlob(2, tag);
+    const blob = versionedBlob(3, tag);
     const lie = Buffer.alloc(32, 9);
     const mismatch = txSpendTags({
       spendTag: lie,
@@ -206,7 +211,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     });
     assert.equal(dup.reason, 'admit_link_tag');
     const commit = Buffer.alloc(32, 8);
-    const other = versionedBlob(2, Buffer.alloc(32, 5));
+    const other = versionedBlob(3, Buffer.alloc(32, 5));
     const alias = txSpendTags({
       admit_proof: { blob, cTilde: commit },
       admit_proofs: [
@@ -217,7 +222,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     assert.equal(alias.ok, true, alias.reason);
     assert.equal(alias.tags.length, 2);
     const extraProof = txSpendTags({
-      admit_proof: { blob: versionedBlob(2, Buffer.alloc(32, 6)) },
+      admit_proof: { blob: versionedBlob(3, Buffer.alloc(32, 6)) },
       admit_proofs: [{ blob, cTilde: commit }],
     });
     assert.equal(extraProof.ok, true, extraProof.reason);
