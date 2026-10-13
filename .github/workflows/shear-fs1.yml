@@ -49,7 +49,9 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Build the fs1_tree tool
         working-directory: crypto/native/vendor/monero-oxide-77788c3
-        run: cargo build --release -p shear-fs1 --features tree-cli --bin fs1_tree
+        run: |
+          cargo build --release -p shear-fs1 --features tree-cli --bin fs1_tree
+          echo "SHEAR_FS1_TREE_SHA256=$(sha256sum target/release/fs1_tree | cut -d' ' -f1)" >> "$GITHUB_ENV"
       - run: node --test node/tests/test_fs1_sync_routes.js
       - name: FS-1 tree follower, roots against the shared vector
         env:
