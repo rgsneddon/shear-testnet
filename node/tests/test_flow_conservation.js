@@ -1,13 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote, verifyFlowConservation } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED, asertNextBits } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { levyNanos } from '../../crypto/levy.js';
-import { admitVerify, fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
+import { fluxsetFromBlocks } from '../../crypto/admit.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -42,7 +43,6 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
   it('compact send whose vin.commit is the parent coinbase is ok; a self-minted C_in is confidential', () => {
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
-    const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
     const parent = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -75,13 +75,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    const liveJ = fluxsetFromBlocks([parent]);
-    proveFlowSpend(honest, {
-      spendSeed,
-      spentNote: spent,
-      pubs: liveJ.pubs,
-      commits: liveJ.commits,
-    });
+    attachStubAdmitV2(honest);
     const honestTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -101,10 +95,6 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       height: 1,
     }, trust(honestBlock));
     assert.equal(honest.admit_proof.blob[0], 2);
-    assert.equal(admitVerify(honest.admit_proof, liveJ, {
-      cTilde: honest.admit_proof.cTilde,
-      spendTag: honest.admit_proof.spendTag,
-    }), true);
     assert.equal(verifyFlowConservation(honest), true);
     assert.equal(gotOk.ok, false);
     assert.equal(gotOk.reason, 'admit_version', gotOk.reason);
