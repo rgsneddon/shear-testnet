@@ -36,6 +36,8 @@ wallet/**/local.properties
 wallet/**/Flutter/ephemeral/
 wallet/**/ephemeral/
 crypto/native/admit/target/
+# Distro pack tarballs, checksums, and smoke logs. Do not commit.
+scripts/packaging/out/
 # Operator admin vhost lives on the box only (SHEAR_ADMIN_HOST).
 deploy/nginx-kyrusfables.shear.digital.conf
 deploy/nginx-*-secrets.conf

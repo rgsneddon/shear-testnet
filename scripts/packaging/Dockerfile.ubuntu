@@ -1,0 +1,21 @@
+# Ubuntu 26.04 LTS (Resolute). Builds Shear Sentinel v19, ShearK 2.9, and the wallet.
+FROM ubuntu:26.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    SHEAR_DISTRO=ubuntu \
+    SHEAR_PACK_DESKTOP=1 \
+    SOURCE_DATE_EPOCH=1700000000 \
+    PATH="/opt/shear-v12/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates clang cmake curl git gzip \
+      libblkid-dev libgtk-3-dev libjsoncpp-dev liblzma-dev \
+      libsecret-1-dev libsodium-dev libssl-dev \
+      ninja-build passwd pkg-config patchelf python3 tar unzip xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . /src
+WORKDIR /src
+RUN chmod 755 /src/scripts/packaging/build-inside.sh /src/scripts/packaging/smoke.sh /src/scripts/packaging/shear-node /src/scripts/packaging/sheark-run \
+    && bash /src/scripts/packaging/build-inside.sh
+ENTRYPOINT ["/src/scripts/packaging/smoke.sh"]
