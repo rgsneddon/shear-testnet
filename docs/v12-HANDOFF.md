@@ -8,7 +8,7 @@ Laptop review-and-merge only. No new feature, no genesis cut, no tag, no deploy,
 - PR 64 (`cursor/v12-distro-packs-1013`) landed. Head `478232e9cb33de7e40f1a6ecfd3f292268925b7e`. Merge commit `1b7e8f93d3900dc2b9c82c1c4602cc191cdd9b5f`. Pack docs and scripts only. Do not enable `shear-sentinel.service` while `V12_GENESIS_BLOCK_HASH` is empty.
 - PR 65 (`cursor/admitv2-removal-1013`, head `43f05edf3a1338775ce9144102042469ccc8db30`) was not merged. It waits for `cursor/wallet-v12-send-1013`. 018e, 052, 035, and wallet items 16–23 were not taken.
 
-Those two merge commits are the parents of this note. `0.70`, `0.71`, and `v18` were not moved.
+Both merge commits are ancestors of this note. `0.70`, `0.71`, and `v18` were not moved.
 
 Branch: `feat/shear-testnet-v12`  
 Base: `c732ff5466cbd9f6e7723a5332f3604217a0355d` (`origin/main` at branch cut)  
