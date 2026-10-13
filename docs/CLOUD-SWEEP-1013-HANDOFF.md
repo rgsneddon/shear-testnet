@@ -17,6 +17,7 @@ Census of what was open at the parent tip: `docs/P0-CENSUS-2026-10-13.md`.
 | `c140d9196748376e82f3a059fd9dd2cc4230661f` | 40 | `narrowPublicStats` (`pool/src/posture.js:137`) publishes `feeDestTail` (last 4 chars) and deletes `feeDest`. The pool page and `configuredFeeIdentity().feeDest` still hold the full address for the copy button and coinbase notes. |
 | `18fbc9b12b346eea94b3fd9ffd199e908fb4b9a1` | VS-1 | `fillSnapInterest` (`node/src/supply.js:385`) walks the vault in fold order and writes `mintedInterest` and `permittedInterest` onto snap rows. The 12-u64 book snap is not extended. `supplyFromScalar` keeps interest only when the field is already on the object (`carriedInterest`, `node/src/supply.js:369`). A walk miss returns null and the snap is not installed. |
 | `89bf995d612edd8c5d2e05b76e67e7e0e02fe6d1` | VS-1 note | The walk can stamp prefix rows before a miss. Callers drop those rows. A miss is not published. |
+| `32e0a680f63281fccf705c8d23a713c0a3ad0bc5` | pool-55 re-run | Suite fixes for the failures this branch caused, and the recorded 321/320/1/0 result. The remaining fail is named in Pool-55. |
 
 ## Tests
 
