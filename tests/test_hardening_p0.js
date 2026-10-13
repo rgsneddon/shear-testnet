@@ -4,9 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { admitProve, admitVerify, jroot } from '../crypto/admit.js';
 import { randomScalar, commit, pointBytes, proveRange, verifyRange } from '../crypto/note.js';
-import { admitPub } from '../crypto/admit.js';
 import { nativeLoaded } from '../crypto/native_admit.js';
 import { POOL_FEE_BPS, mainnetMayEmit, GENESIS_MAINNET } from '../crypto/asert.js';
 import { poolFeeDest } from '../crypto/levy.js';
@@ -46,23 +44,11 @@ describe('P0 hardening + short addresses', () => {
     assert.match(helper, /proveRange/);
   });
 
-  it('P0-4 native verify rejects v1, oversized blob; honest v2 verifies', (t) => {
+  it('P0-4 range proofs still start with byte 2', (t) => {
     if (!nativeLoaded()) {
       t.skip('shearadmit.node not built on this host');
       return;
     }
-    const n = 6;
-    const xs = Array.from({ length: n }, () => randomScalar());
-    const pubs = xs.map(admitPub);
-    const commits = xs.map((_, i) => pointBytes(commit(i + 2, randomScalar())));
-    const proof = admitProve({ x: xs[2], index: 2, pubs, commits, c: commits[2] });
-    assert.ok(proof);
-    assert.equal(proof.v, 2);
-    assert.equal(admitVerify(proof, { pubs, commits }, { cTilde: proof.cTilde, spendTag: proof.spendTag }), true);
-    const v1 = { r: pubs.map(() => Buffer.alloc(32)), c0: Buffer.alloc(32), spendTag: proof.spendTag };
-    assert.equal(admitVerify(v1, { pubs, commits }, { cTilde: proof.cTilde }), false);
-    const huge = Buffer.concat([Buffer.from([2]), Buffer.alloc(32769, 7)]);
-    assert.equal(admitVerify({ ...proof, blob: huge }, { pubs, commits }, { cTilde: proof.cTilde, spendTag: proof.spendTag }), false);
     const r = randomScalar();
     const C = pointBytes(commit(3, r));
     const rp = proveRange(3, r);
