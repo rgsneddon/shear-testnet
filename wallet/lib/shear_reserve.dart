@@ -340,6 +340,15 @@ class ShearReserve {
     p.voteEpoch = (json['voteEpoch'] as num?)?.toInt() ?? p.voteEpoch;
   }
 
+  /// Cold unlock, shewall import, and the CLI. The selector holds this
+  /// portal's principal before a live read. A later portal read replaces it.
+  void installRemembered(ShearLedger ledger, Map<String, dynamic> snapshot) {
+    applyLocalSnapshot(snapshot);
+    final dest = snapshot['dest']?.toString() ?? '';
+    final nanos = dest.isEmpty ? 0 : portal(dest).nanos;
+    ledger.bindSnapshotHold(dest, nanos);
+  }
+
   /// Absolute principal. A second apply of the same credit does not add.
   void _assignPrincipal(ReservePortal p, int principal) {
     if (principal < 0) principal = 0;
