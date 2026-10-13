@@ -4,7 +4,7 @@
 
 Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak.
 
-- PR 71 (`cursor/v12-windows-android-builds-bdb9`, head `b85c51d02a63e7f2f6b0139d1a44808aa46233b5`) was not merged. The log is `docs/V12-WINDOWS-ANDROID-BUILDS.md`, built from `8735e620`.
+- PR 71 (`cursor/v12-windows-android-builds-bdb9`, head `7ac0d47e5e3e5ec907355d38013878115d3f3a26`) was not merged. The log is `docs/V12-WINDOWS-ANDROID-BUILDS.md`, built from `8735e620`. The later commit `7ac0d47e` adds a Windows test-box recipe for `shearhash.node` and `shearadmit.node`. That recipe was not run. It does not build the Windows wallet.
 - Windows node was built: `dist/shear-node-v19-windows.zip`, 49118485 bytes, sha256 `e5022919f402416368c61b761e6b4b6c86626c711d9e35c0fb69c6eb2683be2f`. Command `python3 node/pack/zip_node.py windows`. Under wine, `node.exe --version` printed `v22.23.3` and the two addons loaded.
 - Windows miner was built: `dist/ShearK-Miner-2.9-windows.zip`, sha256 `38f40cb5538422973ac0bf50c2b82d46eaaaac387eab6388e1a146e843cb7d80`. Wine self-test `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b` `backend=jit-full`, exit 0.
 - Windows wallet was not built. `flutter build windows` exited 1 because that command only runs on a Windows host. No `shear_wallet.exe` and no zip. That is the open item.
