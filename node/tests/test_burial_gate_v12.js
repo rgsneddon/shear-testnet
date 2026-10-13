@@ -52,7 +52,7 @@ function genesisBody(store, dest) {
 }
 
 describe('v12 P2P burial gate', () => {
-  it('rejects a peer height before it can open burial', () => {
+  it('rejects a peer height before it can open burial', async () => {
     const dest = minerDest();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-burial-gate-'));
     const store = createStore(dir);
@@ -115,7 +115,9 @@ describe('v12 P2P burial gate', () => {
     const wired = decodeWireBlock(encodeWireBlock({ ...body, height: 1, hash: easyPow(7) }));
     assert.equal(wired.samplesPruned, true);
     assert.equal(wired.height, 1);
-    const viaIpcPruned = applyVerifiedIpcBlock(store, {
+    // No ipc_headers run: the store finds no proven burial. Pruned IPC
+    // blocks verify off the loop, so this answer is a Promise.
+    const viaIpcPruned = await applyVerifiedIpcBlock(store, {
       type: 'ipc_block',
       block: encodeWireBlock({ ...body, height: 1, hash: easyPow(7) }),
       powHash: easyPow(7).toString('hex'),

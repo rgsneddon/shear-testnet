@@ -285,14 +285,20 @@ describe('v12 burial tip', () => {
     assert.equal(disk.tip().height, PRUNE + 2);
     assert.equal(disk.blocks[creditHeight - 1].samplesPruned, true, 'a reloaded hold does not lift until the tip does');
 
-    fs.rmSync(path.join(dir, 'burial-hold'), { recursive: true, force: true });
+    // No held body: the proven burial still answers, as on a fast-sync node.
+    const holdDir = path.join(dir, 'burial-hold');
+    fs.renameSync(holdDir, `${holdDir}.off`);
     const bare = createStore(dir);
     assert.equal(bare.blocks[creditHeight - 1].samplesPruned, true);
+    assert.equal(bare.burialView().held, 0);
+    assert.ok(bare.provenBurialTip(bare.blocks[creditHeight - 1]) >= creditHeight + PRUNE);
     const bareFork = forkOne(bare, dest, lowParent, { late: true });
-    const refused = await Promise.resolve(ingest(bare, bareFork.block));
-    assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'samples_pruned', refused.reason || 'missing body');
+    const bareHeld = await Promise.resolve(ingest(bare, bareFork.block));
+    assert.equal(bareHeld.ok, false);
+    assert.equal(bareHeld.reason, 'side_hold', bareHeld.reason || 'missing body');
     assert.equal(bare.tip().height, PRUNE + 2);
+    fs.rmSync(holdDir, { recursive: true, force: true });
+    fs.renameSync(`${holdDir}.off`, holdDir);
 
     const parentIndex = PRUNE - 1;
     assert.equal(disk.blocks[parentIndex].height, PRUNE);
