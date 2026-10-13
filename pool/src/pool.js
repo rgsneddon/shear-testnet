@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
+import { STRATUM_LINE_MAX, parseBoundedJson, HTTP_TX_BODY_MAX } from '../../crypto/json_bounds.js';
 import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
@@ -1763,8 +1763,8 @@ export function adminMinerView(m, now = Date.now()) {
   };
 }
 
-/** Same byte cap as a P2P frame. A larger declared body is refused before it is read. */
-export const HTTP_BODY_MAX = 16 * 1024 * 1024;
+/** Wallet and stratum bodies. A block still fits the 16 MiB P2P frame. A larger declared body is refused before it is read. */
+export const HTTP_BODY_MAX = HTTP_TX_BODY_MAX;
 
 export function readCappedBody(req, cap = HTTP_BODY_MAX) {
   const rawLen = req?.headers?.['content-length'];

@@ -10,7 +10,7 @@ import { networkReport } from './network_report.js';
 import { oracleView } from './oracle_feed.js';
 import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
-import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
+import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -236,6 +236,16 @@ function statsJson(store) {
 }
 
 function readBody(req, cap = HTTP_BODY_MAX) {
+  const rawLen = req?.headers?.['content-length'];
+  const lenText = Array.isArray(rawLen) ? rawLen[0] : rawLen;
+  if (lenText != null && lenText !== '') {
+    const declared = Number(lenText);
+    if (!Number.isFinite(declared) || declared < 0 || declared > cap) {
+      const err = new Error('body_cap');
+      err.code = 'body_cap';
+      return Promise.reject(err);
+    }
+  }
   return new Promise((resolve, reject) => {
     const chunks = [];
     let got = 0;
@@ -623,7 +633,7 @@ export function createRpc({
     if (req.method === 'POST' && url.pathname === '/api/wallet/send') {
       let posted = {};
       try {
-        posted = postedJson(await readBody(req));
+        posted = postedJson(await readBody(req, HTTP_TX_BODY_MAX));
       } catch (err) {
         const reason = err?.code === 'body_cap' ? 'body_cap' : (err?.code === 'json_cap' ? 'json_cap' : 'bad_json');
         json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
@@ -659,7 +669,7 @@ export function createRpc({
     if (req.method === 'POST' && (url.pathname === '/queuetx' || url.pathname === '/queueTx')) {
       let posted = {};
       try {
-        posted = postedJson(await readBody(req));
+        posted = postedJson(await readBody(req, HTTP_TX_BODY_MAX));
       } catch (err) {
         const reason = err?.code === 'body_cap' ? 'body_cap' : (err?.code === 'json_cap' ? 'json_cap' : 'bad_json');
         json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
