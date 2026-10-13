@@ -77,7 +77,7 @@ import {
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { coinbaseObserveRejected, observeDigestSuffix } from '../../crypto/reserve_oracle.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
@@ -1840,6 +1840,11 @@ function parentSpendView(chain) {
 }
 
 function verifyBlockConsensus(block, prev, opts = {}) {
+  const bodyTxs = Array.isArray(block?.txs) ? block.txs : [];
+  for (let i = 0; i < bodyTxs.length; i += 1) {
+    const unsignedField = unsignedBodyField(bodyTxs[i]);
+    if (unsignedField) return unsignedField;
+  }
   if (opts.offLoopPow && !opts.trustedPowHash) {
     return prepareOffLoopPow(block, prev, {
       skipSharePow: !!opts.skipSharePow,
