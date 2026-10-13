@@ -1,5 +1,18 @@
 # shear-testnet-v12 handoff
 
+## Review record 2026-10-13 (after 8735e620)
+
+Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak. Nothing new was merged onto feat.
+
+- PR 69 (`cursor/wallet-v12-send-1013`, head `1c5f505e617b7d3c1db65bb8d4b297683205a68f`) is an open draft against feat. It was not merged. The branch is cut from `38592720`, not from this feat tip. Its commits include the n=64 hide, and that hide edits `gadget.rs` and `prove.rs`. A merge would keep the packs already on feat and would also bring those prover edits. The send brief does not edit those files.
+- The send log on that branch: a 1-input send and a 1-input transfer, each a byte-3 blob of 23938 bytes, accepted by mempool and `verifyBlock`. The 8-input seal was stopped after the first proof. `queueTx` and block append did not run. `flutter test` in `wallet/` was 386 passed, 49 failed, exit 1. No arm64 phone library was built, and no APK. A debug stand-in can still return a byte-2 mock. Items 16–23 stay open. Phones are not shown sending. Gap: `.cos-inbox/BUILD-wallet-pr69-short-1013.md`.
+- PR 65 head is still `43f05edf3a1338775ce9144102042469ccc8db30`. The named failures are not cleared. PR 65 and the wallet send still land together, and not as PR 69 stands.
+- 052 stays open. An agent is extending `cursor/p0-052-burial-gate-0f14` for P0 070 and PSA-c2a-1. That is not the inbox spread, and it is not a new branch from this feat tip. PR 67 stays unmerged.
+- 018e stays open. PR 68 stays unmerged. No replacement branch is on origin. This machine can read and follow up cloud agents, and `StartBackgroundComposerFromSnapshot` still returns `invalid_argument`. The Windows agent and PR 69 were started by the other launcher. Brief: `.cos-inbox/BUILD-018e-cloud-1013.md`.
+- The Windows and Android build agent is running on feat and has not pushed a branch. The four distro `SMOKE OK` lines are unchanged. Windows and Android logs are still absent.
+- Another session started an FS-1 prover agent on feat. Step 7 stays undone. Build queued a stop. No FS-1 branch was on origin at this note. Note: `.cos-inbox/BUILD-fs1-stop-1013.md`.
+- Still open: 018e, 052, wallet items 16–23, 035, Windows and Android build evidence. Pool-55 remains tests 321, pass 320, fail 1, `pool/tests/test_pool.js` dashboard/stratum. That fail is not this pass. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
+
 ## Merge record 2026-10-13
 
 Laptop review-and-merge only. No new feature, no genesis cut, no tag, no deploy, no soak.
