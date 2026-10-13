@@ -31,15 +31,15 @@ import { SHORT_ADDR_MAX, encodeDest, newIdentity } from '../crypto/address.js';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('P0 hardening + short addresses', () => {
-  it('P0-1 production wallet send uses native ADMITv2, not Dart v1 / bit-OR', () => {
+  it('P0-1 production wallet send fails closed before prove_spend', () => {
     const ledger = fs.readFileSync(path.join(root, 'wallet/lib/shear_ledger.dart'), 'utf8');
     const admit = fs.readFileSync(path.join(root, 'wallet/lib/shear_admit.dart'), 'utf8');
     assert.match(ledger, /proveFlowSpend\(/);
     assert.match(ledger, /nativeSealNote\(/);
     assert.equal(ledger.includes('var note = sealNote('), false);
     assert.equal(ledger.includes('viewKey='), false);
+    assert.match(admit, /kErrSendUnavailable/);
     assert.match(admit, /nativeProveFlowSpend/);
-    assert.match(admit, /admit_native_required/);
     const helper = fs.readFileSync(path.join(root, 'crypto/wallet_native_prove.mjs'), 'utf8');
     assert.doesNotMatch(helper, /admitProve/);
     assert.match(helper, /send unavailable until FS-1/);
