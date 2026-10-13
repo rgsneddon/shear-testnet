@@ -83,7 +83,7 @@ import {
   paidWorkKeys,
   rememberLiveSharePow,
   destOfShare,
-  verifyShareBatch,
+  structuralShareVerdict,
   pinLiveSharePow,
   pinOneLiveSharePow,
   liveSharePowKey,
@@ -120,29 +120,49 @@ export { hasherHasValidRoundShare, roundActualHashes };
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 const REPO_ROOT = path.join(__dirname, '../..');
+const gitHeadCache = new Map();
+
+function gitDirOf(cwd) {
+  const gitPath = path.join(cwd, '.git');
+  const st = fs.statSync(gitPath);
+  if (st.isDirectory()) return gitPath;
+  const txt = fs.readFileSync(gitPath, 'utf8').trim();
+  const m = txt.match(/^gitdir:\s*(.+)$/i);
+  if (!m) return null;
+  return path.resolve(cwd, m[1].trim());
+}
 
 export function gitHeadOf(cwd = REPO_ROOT) {
   // The advertised head is this tree. SHEAR_GIT_HEAD must not label another book.
+  // One read per directory. A worktree .git file is a pointer, and spawnSync
+  // on every stats paint stalls /api/stats.
   void process.env.SHEAR_GIT_HEAD;
+  if (gitHeadCache.has(cwd)) return gitHeadCache.get(cwd);
+  let head = '';
   try {
-    const gitDir = path.join(cwd, '.git');
-    let head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
-    if (/^ref:/.test(head)) {
-      head = fs.readFileSync(path.join(gitDir, head.slice(4).trim()), 'utf8').trim();
+    const gitDir = gitDirOf(cwd);
+    if (gitDir) {
+      let text = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (/^ref:/.test(text)) {
+        text = fs.readFileSync(path.join(gitDir, text.slice(4).trim()), 'utf8').trim();
+      }
+      if (/^[0-9a-f]{7,40}$/i.test(text)) head = text.toLowerCase();
     }
-    if (/^[0-9a-f]{7,40}$/i.test(head)) return head.toLowerCase();
   } catch { /* packed-refs or missing */ }
-  try {
-    const r = spawnSync('git', ['rev-parse', 'HEAD'], {
-      cwd,
-      encoding: 'utf8',
-      timeout: 2000,
-      windowsHide: true,
-    });
-    const h = String(r.stdout || '').trim();
-    if (/^[0-9a-f]{7,40}$/i.test(h)) return h.toLowerCase();
-  } catch { /* not a git checkout */ }
-  return '';
+  if (!head) {
+    try {
+      const r = spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd,
+        encoding: 'utf8',
+        timeout: 2000,
+        windowsHide: true,
+      });
+      const h = String(r.stdout || '').trim();
+      if (/^[0-9a-f]{7,40}$/i.test(h)) head = h.toLowerCase();
+    } catch { /* not a git checkout */ }
+  }
+  gitHeadCache.set(cwd, head);
+  return head;
 }
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
 export const HASHRATE_WINDOW_MS = 180_000;
@@ -3477,10 +3497,9 @@ export function createPool({
       if (parent && key && klass !== 'header') {
         const rowBad = [];
         for (const s of lag1Shares) {
-          const one = verifyShareBatch({
+          const one = structuralShareVerdict({
             parentHeader: parent,
             shares: [s],
-            skipPow: true,
             issuedJobKeys: lag1Issued,
           });
           if (one.ok) continue;
@@ -5811,6 +5830,10 @@ export function createPool({
     try { httpServer.closeAllConnections?.(); } catch { /* ignore */ }
     try { httpServer.close(); } catch { /* ignore */ }
   }
+
+  // The first /api/stats read is the snap. A listen-time setImmediate is too
+  // late for a request that arrives in the same turn as listen.
+  try { paintStatsSnap(); } catch { /* the listening refresh retries */ }
 
   return {
     store,

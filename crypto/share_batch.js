@@ -1222,6 +1222,22 @@ export function verifyShareBatch({
   };
 }
 
+/** Seal-escape row check. skipPow is fixed so the pool thread never hashes. */
+export function structuralShareVerdict({
+  parentHeader,
+  priorHeader = null,
+  shares = [],
+  issuedJobKeys = null,
+} = {}) {
+  return verifyShareBatch({
+    parentHeader,
+    priorHeader,
+    shares,
+    issuedJobKeys,
+    skipPow: true,
+  });
+}
+
 export function findShare(header, {
   dest,
   dest20,

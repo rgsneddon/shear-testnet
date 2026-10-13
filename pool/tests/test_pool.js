@@ -64,8 +64,8 @@ describe('stratum wire job', () => {
     assert.equal(j.shareBits, 9);
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /export function wireJob/);
-    assert.match(src, /payload = wireJob\(job, sb\)/);
-    assert.match(src, /job: wireJob\(job, conn\.shareBits\)/);
+    assert.match(src, /payload = wireJob\(aimed \|\| job, sb\)/);
+    assert.match(src, /job: wireJob\(conn\.job, conn\.shareBits\)/);
     assert.match(src, /params: wireJob\(live, next\)/);
   });
 
@@ -366,20 +366,23 @@ describe('HTTP stats cannot stall', () => {
       queueCalls += 1;
       return inner(tx);
     };
-    await new Promise((resolve, reject) => {
-      pool.stratum.listen(0, '127.0.0.1', () => {
-        pool.httpServer.listen(0, '127.0.0.1', resolve);
+    try {
+      await new Promise((resolve, reject) => {
+        pool.stratum.listen(0, '127.0.0.1', () => {
+          pool.httpServer.listen(0, '127.0.0.1', resolve);
+        });
+        pool.stratum.on('error', reject);
       });
-      pool.stratum.on('error', reject);
-    });
-    pool.paintStatsSnap();
-    assert.equal(queueCalls, 0, 'stats paint must not queueTx; slow mock would be HTTP-only, never an admit_verify stub');
-    const httpPort = pool.httpServer.address().port;
-    const t0 = Date.now();
-    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok(Date.now() - t0 < 200);
-    assert.equal(stats.ok, true);
-    pool.close();
+      pool.paintStatsSnap();
+      assert.equal(queueCalls, 0, 'stats paint must not queueTx; slow mock would be HTTP-only, never an admit_verify stub');
+      const httpPort = pool.httpServer.address().port;
+      const t0 = Date.now();
+      const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+      assert.ok(Date.now() - t0 < 200);
+      assert.equal(stats.ok, true);
+    } finally {
+      pool.close();
+    }
   });
 });
 
@@ -982,7 +985,7 @@ describe('public miner listing', () => {
     assert.match(dash, /<h1>Shear<\/h1>/);
     assert.match(dash, /\.cmd-row \{ display:flex; flex-direction:row;/);
     assert.match(dash, /\.cmd-row pre \{[^}]*overflow-wrap:anywhere/);
-    assert.match(dash, /\.cmd-row button \{ flex:0 0 auto;/);
+    assert.match(dash, /\.cmd-row button[^{]*\{[^}]*flex:\s*0\s+0\s+auto;/);
     assert.match(dash, /<pre id="mine-cmd">[\s\S]*<\/pre>\s*<button type="submit" id="copy-cmd">/);
     assert.match(dash, /Shear is a private cryptocurrency\./);
     assert.doesNotMatch(dash, /fully fledged blockchain/);
@@ -1071,7 +1074,7 @@ describe('public miner listing', () => {
       { miner: 'maaaaaaaa', name: 'Shear-Miner', version: SHEARK_MINER_VERSION, hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
     ]);
     assert.equal(folded[0].name, 'Shear-Miner');
-    assert.equal(folded[0].version, '2.1');
+    assert.equal(folded[0].version, SHEARK_MINER_VERSION);
   });
 
   it('replaces rude miner software names with flower names; worker names stay raw', () => {
@@ -1132,13 +1135,15 @@ describe('public miner listing', () => {
       shareBits: 8,
       bits: 16,
     });
+    let sock;
+    try {
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
         pool.httpServer.listen(0, '127.0.0.1', resolve);
       });
       pool.stratum.on('error', reject);
     });
-    const sock = await new Promise((resolve, reject) => {
+    sock = await new Promise((resolve, reject) => {
       const s = net.connect(pool.stratum.address().port, '127.0.0.1', () => {
         s.write(JSON.stringify({
           id: 1,
@@ -1147,6 +1152,7 @@ describe('public miner listing', () => {
             login: `${dest}.rig`,
             client: 'ShearHash',
             name: 'ShearK-Miner',
+            version: SHEARK_MINER_VERSION,
             threads: 2,
             hashes: 4200,
             hashrate: 55,
@@ -1173,7 +1179,10 @@ describe('public miner listing', () => {
     await new Promise((r) => setTimeout(r, 50));
     const gone = pool.publicStats();
     assert.equal((gone.workers || []).some((x) => x.miner === tag), false);
-    pool.close();
+    } finally {
+      try { sock?.destroy(); } catch { /* already closed */ }
+      pool.close();
+    }
   });
 
   it('foldPublicMinerViews keeps one row per opaque miner tag and sums device stats', () => {
