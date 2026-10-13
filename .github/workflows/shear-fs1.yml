@@ -1,0 +1,40 @@
+name: shear-fs1
+on:
+  push:
+  pull_request:
+jobs:
+  crate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: crypto/native/vendor/monero-oxide-77788c3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Normal dependencies do not enable the insecure generators
+        run: |
+          if cargo tree -p shear-fs1 -e normal,features | grep -E 'generalized-bulletproofs feature "tests"'; then
+            echo 'generalized-bulletproofs/tests reached a normal build'
+            exit 1
+          fi
+          cargo tree -p shear-fs1 -e normal,features --features insecure-test-generators \
+            | grep -q -E 'generalized-bulletproofs feature "tests"'
+      - name: Release build has no bench binary
+        run: |
+          rm -f target/release/fs1_bench
+          cargo build --release -p shear-fs1 --bins
+          test ! -e target/release/fs1_bench
+      - name: Debug tests
+        run: cargo test -p shear-fs1
+      - name: Release tests, depth 7 and 2^20 trees, dudect timing
+        run: cargo test -p shear-fs1 --release --features insecure-test-generators
+  node-routes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: node --test node/tests/test_fs1_sync_routes.js
