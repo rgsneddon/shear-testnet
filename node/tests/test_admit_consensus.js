@@ -147,6 +147,11 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
     const history = [genesis, parent];
+    // A grandchild is not its own anchor. Pass the genesis stamp, and keep
+    // the height-3 time on the 90s grid so ASERT still accepts GENESIS_BITS_PACKED.
+    const genesisMs = Number(decodeHeader(Buffer.from(genesis.header)).timestamp);
+    const height3Now = genesisMs + 180_000;
+    const height3Opts = { evmHistory: history, genesisMs };
     const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
     assert.ok(spent?.commit && spent.admitPub, 'coinbase note enters J');
     const idx = parent.txs[0].vout.indexOf(spent);
@@ -184,14 +189,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 3,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_000_180_000,
+      now: height3Now,
       txs: [compactTx(honest)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
     const honestBlock = mine(honestTpl);
-    const gotOk = verifyBlock(honestBlock, parent, { evmHistory: history });
+    const gotOk = verifyBlock(honestBlock, parent, height3Opts);
     assert.equal(honest.admit_proof.blob[0], 2);
     assert.equal(gotOk.ok, false);
     assert.equal(gotOk.reason, 'admit_version', gotOk.reason);
@@ -204,14 +209,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 3,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_000_270_000,
+      now: height3Now,
       txs: [compactTx(missing)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
     const missingBlock = mine(missingTpl);
-    const gotMissing = verifyBlock(missingBlock, parent, { evmHistory: history });
+    const gotMissing = verifyBlock(missingBlock, parent, height3Opts);
     assert.equal(gotMissing.ok, false);
     assert.equal(gotMissing.reason, 'admit_membership');
 
@@ -233,14 +238,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 3,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_000_360_000,
+      now: height3Now,
       txs: [compactTx(sampled)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
     const sampledBlock = mine(sampledTpl);
-    const gotSampled = verifyBlock(sampledBlock, parent, { evmHistory: history });
+    const gotSampled = verifyBlock(sampledBlock, parent, height3Opts);
     assert.equal(gotSampled.ok, false);
     assert.equal(gotSampled.reason, 'admit_version');
 
@@ -270,14 +275,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 3,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_000_450_000,
+      now: height3Now,
       txs: [compactTx(attack)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
     const attackBlock = mine(attackTpl);
-    const gotBad = verifyBlock(attackBlock, parent, { evmHistory: history });
+    const gotBad = verifyBlock(attackBlock, parent, height3Opts);
     assert.equal(gotBad.ok, false);
     assert.equal(gotBad.reason, 'admit_version');
   });
@@ -621,7 +626,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 2,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_004_135_000,
+      now: 1_700_004_090_000,
       txs: [openSealed],
       prevBlock: parent,
       parentBlocks: [parent],
@@ -638,7 +643,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 2,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_004_180_000,
+      now: 1_700_004_090_000,
       txs: [stub],
       prevBlock: parent,
       parentBlocks: [parent],
