@@ -49,10 +49,38 @@ const PUBLIC = [
   'site/b2b/index.html',
 ];
 
+// ADMIT names a full-set hide, which the live bucket proof is not, and
+// amounts are not hidden on every path.
+const PRIVACY_CLAIMS = [
+  /ADMITv\d/,
+  /\bshe is private\b/i,
+  /\bis private\b/i,
+  /\bprivate (cryptocurrency|ledger|notes?|dests?|<code>ssa1)/i,
+  /confidential amounts?/i,
+  /amounts are confidential/i,
+  /full live fluxset/i,
+  /without naming which/i,
+];
+
+const CLAIM_SURFACES = [
+  ...PUBLIC,
+  'explorer/explorer.html',
+  'site/wallet/index.html',
+  'site/node/index.html',
+  'site/network.html',
+  'site/boot/index.html',
+  'site/admin/index.html',
+  'wallet/lib/main.dart',
+  'wallet/lib/shear_closure.dart',
+  'wallet/lib/shear_privacy_hop.dart',
+  'wallet/lib/shear_cli.dart',
+  'node/src/help.js',
+];
+
 describe('public copy: dest privacy and per-hasher hash bonus', () => {
-  it('states dest privacy, Copy dest mining, per-hasher bonus; keeps She is Private; omits this is not and worthy coin', () => {
+  it('states dest privacy, Copy dest mining, per-hasher bonus; claims no privacy or ADMIT version; omits this is not and worthy coin', () => {
     const joined = PUBLIC.map((rel) => read(rel)).join('\n');
-    assert.match(joined, /She is Private/);
+    for (const banned of PRIVACY_CLAIMS) assert.doesNotMatch(joined, banned);
     assert.match(joined, /she1/);
     assert.match(joined, /ssa1/);
     assert.match(joined, /Copy dest/);
@@ -71,7 +99,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /ssa1/);
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
-    assert.match(main, /ADMITv3/);
+    assert.match(main, /not a full-set hide/);
     assert.match(main, /Continuum 0\.71/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
@@ -180,8 +208,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /amounts stay public/);
     assert.doesNotMatch(docs, /explorer reports amounts, dests/);
     assert.match(docs, /no dest, no amount/);
-    assert.match(joined, /confidential amounts/);
-    assert.match(joined, /ADMITv3/);
+    assert.match(joined, /It does not hide the spent note among every note\./);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK 2\.8/);
@@ -256,6 +283,13 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
     assert.match(readme, /30th October 2026 at 1400hrs UK time/);
     assert.match(readme, /does not emit/);
+  });
+
+  it('no surface claims privacy, confidential amounts, or an ADMIT version', () => {
+    for (const rel of CLAIM_SURFACES) {
+      const text = read(rel);
+      for (const banned of PRIVACY_CLAIMS) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
+    }
   });
 
   it('clone and operator handoff stay on merged main, not feat/admit-v2', () => {

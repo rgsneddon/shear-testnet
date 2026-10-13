@@ -1,5 +1,5 @@
 /**
- * Mine one ADMITv3 block into SHEAR_DATA. Used on the soak VPS so peer-1
+ * Mine one block into SHEAR_DATA. Used on the soak VPS so peer-1
  * leaves height 0; peer-2 then syncs the same post-genesis jroot.
  *
  *   SHEAR_DATA=/var/lib/shear/testnet-v4 node node/mine_one.js
@@ -46,6 +46,6 @@ console.log(JSON.stringify({
   prevHeight: before?.height || 0,
   jroot: jr ? Buffer.from(jr).toString('hex') : '',
   magic: MAGIC_TESTNET,
-  admit: 'ADMITv3',
+  admit: 'membership',
 }));
 if (!got?.ok) process.exit(1);

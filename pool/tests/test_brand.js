@@ -90,7 +90,8 @@ describe('brand pages', () => {
     assert.match(paper, /the rho sheathes of those shares/);
     assert.match(paper, /The hash bonus is 1 sheath, 10<sup>−11<\/sup> SHE/);
     assert.doesNotMatch(paper, /hash nanos/);
-    assert.match(paper, /ADMITv3/);
+    assert.match(paper, /does not hide the spent note among every note/);
+    assert.doesNotMatch(paper, /ADMITv\d/);
     const dag = read('site/dag/index.html');
     assert.match(dag, /plus the rho sheathes, once/);
     assert.doesNotMatch(dag, /hash nanos/);
@@ -134,7 +135,7 @@ describe('brand pages', () => {
     assert.match(home, /05c-wordmark-nevia-light-transparent\.png/);
     assert.match(home, /05d-wordmark-nevia-dark-transparent\.png/);
     assert.match(home, /favicon/);
-    assert.match(home, /She Is Private/);
+    assert.match(home, /Shear testnet/);
     assert.doesNotMatch(home, /--bg: #eef3f8/);
     const pages = [
       read('pool/public/explorer.html'),
@@ -154,7 +155,8 @@ describe('brand pages', () => {
         assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
       }
     }
-    assert.match(poolPage, /[Ss]he is [Pp]rivate/);
+    assert.match(poolPage, /Shear testnet/);
+    assert.equal(/[Ss]he is [Pp]rivate/.test(poolPage), false);
     assert.equal(/she is quiet/.test(poolPage), false);
     const chromeSrc = read('site/shared/shear-chrome.js');
     assert.equal(chromeSrc, read('pool/public/shared/shear-chrome.js'));
@@ -198,7 +200,8 @@ describe('brand pages', () => {
       if (!p.includes('id="shear-hero"')) {
         assert.equal(/GNFP|gnfp|feeless/i.test(p), false);
       }
-      assert.match(p, /[Ss]he is [Pp]rivate/);
+      assert.match(p, /Shear testnet/);
+      assert.equal(/[Ss]he is [Pp]rivate/.test(p), false);
       assert.equal(/she is quiet/.test(p), false);
       assert.equal(/--user shear1/.test(p), false);
       const banner = bannerBlock(p);
@@ -300,8 +303,9 @@ describe('brand pages', () => {
     assert.match(poolHtml, /Great Vibes/);
     assert.match(poolHtml, /grid-template-columns:\s*1fr 2fr/);
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
-    assert.match(poolHtml, /class="she-private-lockup">She is Private</);
-    assert.match(poolHtml, /ADMITv3 membership/);
+    assert.match(poolHtml, /class="she-private-lockup">Shear testnet</);
+    assert.match(poolHtml, /membership proof over a bucket/);
+    assert.doesNotMatch(poolHtml, /ADMITv\d|onfidential amounts/);
     assert.match(poolHtml, /DINS-DAG/);
     assert.match(poolHtml, /blue set/);
     assert.match(poolHtml, /spine pot plus the hash nanos, once/);
@@ -339,7 +343,7 @@ describe('brand pages', () => {
     assert.doesNotMatch(poolHtml, /shewall\.json/);
     assert.match(explorerHtml, /Shear explorer · ShearHash-v3/);
     assert.match(explorerHtml, /Great Vibes/);
-    assert.match(explorerHtml, /class="she-private-lockup">She is Private</);
+    assert.match(explorerHtml, /class="she-private-lockup">Shear testnet</);
     assert.match(read('pool/public/miner.html'), /Shear miner · ShearHash-v3/);
     assert.match(siteHtml, /ShearHash-v3/);
     assert.match(css, /input,\s*select,\s*button\s*\{\s*background:\s*var\(--input\)/);

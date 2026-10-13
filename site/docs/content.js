@@ -8,8 +8,8 @@ window.SHEAR_DOCS = {
     ]},
     { title: 'Addresses', children: [
       { id: 'names', title: 'shear1, she1, ssa1' },
-      { id: 'privacy', title: 'She is private' },
-      { id: 'admit', title: 'ADMITv3' },
+      { id: 'privacy', title: 'What is public' },
+      { id: 'admit', title: 'Membership proof' },
       { id: 'dins-dag', title: 'DINS-DAG' }
     ]},
     { title: 'Wallet', children: [
@@ -75,7 +75,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / overview',
     html:
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
-      '<p>ADMITv3 membership over this book\'s notes, with confidential amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v11</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
+      '<p>Spends carry a membership proof over a bucket of this book\'s notes. It does not hide the spent note among every note. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v11</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>1.00 SHE in epoch 0, then −0.01 SHE/epoch to a 0.20 SHE floor (4d testnet / 400d mainnet)</td></tr>' +
@@ -121,7 +121,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>Version 2.0 of the project note: ADMITv3, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.71. Live magic <code>shear-testnet-v11</code>.</p>' +
+      '<p>Version 2.0 of the project note: membership proofs, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.71. Live magic <code>shear-testnet-v11</code>.</p>' +
       '<p><a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar. Typed whitepaper.shear.digital may fail TLS (apex SAN).</p>'
   };
 
@@ -136,11 +136,11 @@ window.SHEAR_DOCS = {
   };
 
   P.privacy = {
-    title: 'She is private',
+    title: 'What is public',
     crumb: 'addresses / privacy',
     html:
       '<p>The public explorer shows height, time, status, and type — no dest, no amount. Ciphertext and rest-frame strings stay off that page. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
-      '<p>Amounts are confidential. Dests are stealth. Stratum login is Copy dest (a bare <code>ssa1</code>). A typed suffix is optional. Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry. While this book has fewer than 10,000 notes the membership set is thin.</p>'
+      '<p>Dests revolve. Stratum login is Copy dest (a bare <code>ssa1</code>). A typed suffix is optional. Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry. While this book has fewer than 10,000 notes the membership set is thin.</p>'
   };
 
   P.wallet = {
@@ -164,7 +164,7 @@ window.SHEAR_DOCS = {
       '<ol><li>On a Mac, open the disk image, drag Shear into Applications, eject, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip and open the app. On Android, install the APK.</li>' +
       '<li>Choose a password of at least eight characters, type it again, tap <strong>Set password</strong>. That creates the wallet.</li>' +
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
-      '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
+      '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a revolving <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password. <code>shear restore</code> imports that sealed file. It does not import a raw spend seed.</li>' +
       '<li>Leave the session on Connect bare, or start a local node from Closure. Either way the wallet asks the node for notes sealed to your dest. Mining is ShearK, from the miner page, not from Continuum.</li></ol>' +
       '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.71">the Continuum 0.71 release</a>. 0.70 is the previous public pack pin. 0.71 is this Continuum wallet. Debug-signed 0.65 and 0.66 need one export, uninstall, then the 0.71 release-signed APK. Later bumps stay in place. There is no version phone-home. Git tag v16 stays on the same commit as tag 0.66. Pack names: ' +
@@ -291,7 +291,7 @@ window.SHEAR_DOCS = {
     crumb: 'mining / sheark',
     html:
       '<p>ShearK-Miner is the official hasher. Pin <strong>2.8</strong> (bare <code>ssa1</code>, abort on restamp, verify claimed digest). Do not recut 2.5. Default <code>--backend jit-full</code> is the 2 GiB dataset (same digest as light). Always run <code>--selftest</code> once on a new machine. Packs: ShearK-Miner-2.8-windows.zip, ShearK-Miner-2.8-linux.zip, ShearK-Miner-2.8-archlinux.zip, ShearK-Miner-2.8-fedora.zip, ShearK-Miner-2.8-opensuse.zip, and ShearK-Miner-2.8-macos.zip. Every pack includes <code>example.bat</code> and <code>example.sh</code>. Release: <a href="https://github.com/rgsneddon/ShearK/releases/tag/2.8">ShearK 2.8</a>.</p>' +
-      '<p>One login. No miner-fee dual-login. Keep any extra fee yourself if you run a private stratum.</p>'
+      '<p>One login. No miner-fee dual-login. Keep any extra fee yourself if you run your own stratum.</p>'
   };
 
   P.shares = {
@@ -421,7 +421,7 @@ window.SHEAR_DOCS = {
     title: 'Consensus',
     crumb: 'network / consensus',
     html:
-      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v11</code> on release 0.71. ADMITv3 membership over this book\'s notes, with confidential amounts. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
+      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v11</code> on release 0.71. Spends carry a membership proof over a bucket of this book\'s notes. It does not hide the spent note among every note. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
   };
 
   P.header = {
@@ -477,10 +477,10 @@ window.SHEAR_DOCS = {
   };
 
   P.admit = {
-    title: 'ADMITv3',
+    title: 'Membership proof',
     crumb: 'addresses / admit',
     html:
-      '<p>Membership is the full live fluxset of every <code>admitPub</code> on this book, in appearance order. A spend proves it belongs in that set. A sampled subset is the wrong set and fails <code>admit_membership</code>. A reused spend tag fails <code>admit_link_tag</code>. A flow spend is a byte-3 proof, not a ring of N. While this book has fewer than 10,000 notes the set is thin.</p>'
+      '<p>A flow spend proves its note is in one bucket of the <code>admitPub</code> tree on this book. It does not hide the spent note among every note. A sampled subset is the wrong set and fails <code>admit_membership</code>. A reused spend tag fails <code>admit_link_tag</code>. A flow spend is a byte-3 proof, not a ring of N. While this book has fewer than 10,000 notes the set is thin.</p>'
   };
 
   P['dins-dag'] = {

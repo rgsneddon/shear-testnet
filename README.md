@@ -1,12 +1,12 @@
 # Shear
 
-**She is Private.** ADMITv3 membership over this book's notes, with confidential amounts. Proof of work elects the tip. Continuity-settled.
+Spends carry a membership proof over a bucket of this book's notes. It does not hide the spent note among every note. Proof of work elects the tip. Continuity-settled.
 
 This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs, wallet source, pool source, site, tests. Official miner pin lives in a **separate** repo:
 
 | Repo | What |
 |------|------|
-| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv3 (`shear-testnet-v11`) |
+| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, membership proofs (`shear-testnet-v11`) |
 | [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
 
 Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts only the Continuum 0.70 disk image: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
@@ -38,7 +38,7 @@ One proven floor share mints hash-bonus units onto the dest that hashed. User tr
 
 | Path | What |
 |------|------|
-| `specs/` | Header, validation, pool jobs, emissions, ADMITv3 |
+| `specs/` | Header, validation, pool jobs, emissions, membership proofs |
 | `crypto/` | ShearHash, header codec, Merkle, addresses, native ADMIT + BP+ |
 | `node/` | Validating daemon, P2P `:30303`, RPC `:18332` |
 | `wallet/` | GUI (Flutter) + CLI (`bin/shear.dart`) |
@@ -56,7 +56,7 @@ sudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl
 # Node 20+
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
-# Rust (native ADMITv3 / BP+)
+# Rust (native membership and BP+ provers)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
 
@@ -88,7 +88,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"18.0"`, `"magic":"shear-testnet-v11"`, `"admit":"ADMITv3"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"18.0"`, `"magic":"shear-testnet-v11"`, `"admit":"membership"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 
@@ -139,7 +139,7 @@ Optional public pool (not solo):
 ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user ssa1YOURDEST.worker --threads 4
 ```
 
-`ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
+`ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Reuse that mining mailbox so blocks stay linked.
 
 Continuum **0.71** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
 

@@ -2,7 +2,7 @@
 
 Open-source Shear pool: stratum on `:1111`, HTTP dashboard on loopback `:8088`, optional P2P.
 
-This cut speaks **shear-testnet-v11** (ADMITv3, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
+This cut speaks **shear-testnet-v11** (byte-3 membership proofs, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
 
 Public site example in this repo is **https://mypool.site**. Operator admin is **https://mypool.site/admin**. Point those names at your box. Prod examples require `SHEAR_ADMIN_HOST` (generic example `mypool.site`); do not commit a real operator subdomain. First-run is deny-by-default when that env is unset.
 
@@ -38,7 +38,7 @@ npm install
 make -C crypto/native
 ```
 
-If `shearadmit.node` / `shearhash.node` fail to build, the pool cannot verify ADMITv3 or ShearHash. `npm run pool` exits if ShearHash-v3 cannot verify; shares would otherwise come back `native_missing`. Build RandomX then `make -C crypto/native shearhash.node` before mining. Do not copy a Darwin `.node` onto Linux.
+If `shearadmit.node` / `shearhash.node` fail to build, the pool cannot verify membership proofs or ShearHash. `npm run pool` exits if ShearHash-v3 cannot verify; shares would otherwise come back `native_missing`. Build RandomX then `make -C crypto/native shearhash.node` before mining. Do not copy a Darwin `.node` onto Linux.
 
 ## Datadir
 

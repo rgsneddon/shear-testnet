@@ -28,7 +28,7 @@
     });
   });
 
-  /* Continuity / ADMITv3 cards from /api/stats + /api/wallet/fluxset. */
+  /* Continuity / membership cards from /api/stats + /api/wallet/fluxset. */
   var NANOS = 100000000000;
 
   function setText(id, text) {
@@ -126,7 +126,7 @@
 
   function paintFluxset(j) {
     if (!j || j.ok === false) return;
-    /* Sealed notes: live ADMITv3 membership / usable outputs. */
+    /* Sealed notes: live membership set / usable outputs. */
     if (j.noteCount != null) {
       setText('nc-notes', fmtCount(j.noteCount));
     }

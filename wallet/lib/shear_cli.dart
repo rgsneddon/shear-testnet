@@ -74,7 +74,7 @@ const kCliSignSubs = ['flow', 'pull', 'vote', 'lock'];
 const kCliHelp = '''
 Shear wallet CLI $kCliVersion  (GUI pin $kCliVersion)
 Book magic: $kBookMagic
-ADMIT = Anonymous Destination Membership Integer Transactions (ADMITv3)
+Flow spends carry a bucket membership proof. It does not hide the spent note among every note.
 
 Every GUI function has a command. Nested --help prints that command only.
 Password never belongs on argv (it shows in ps). Use --password-file or
@@ -330,7 +330,7 @@ shear unlock — open a sealed session
     case 'dest':
       return 'shear dest — print the stable mining mailbox (homeDest / Copy dest). ShearK login is ssa1.worker\n';
     case 'balance':
-      return 'shear balance — spendable and pending SHE (confidential amounts)\n';
+      return 'shear balance — spendable and pending SHE\n';
     case 'receive':
       return 'shear receive — the one spendable address (not the mining mailbox)\n';
     case 'send':
@@ -353,7 +353,7 @@ Signs with the spend key (same as GUI Send).
 shear sign — sign with the spend key (never prints the key)
 
   shear sign flow --to she1…|ssa1… --amount SHE [--memo TEXT]
-      Same as `shear send`: ADMITv3 + BP+ Flow, spend-sig on the compact body.
+      Same as `shear send`: membership proof + BP+ Flow, spend-sig on the compact body.
   shear sign pull --dest ssa1… --amount SHE
       EIP-712 pool-withdraw signature, then post (miner pull).
   shear sign vote --choice increase|decrease|hold
@@ -431,7 +431,7 @@ int _version(IOSink out, bool json) {
     'ok': true,
     'pin': kCliVersion,
     'magic': kBookMagic,
-    'admit': 'ADMITv3',
+    'admit': 'membership',
     'gui': true,
     'cli': true,
     'platforms': ['macos', 'windows', 'linux', 'archlinux', 'android'],
@@ -444,7 +444,7 @@ int _version(IOSink out, bool json) {
     },
     'mainnet': false,
   };
-  out.writeln(json ? jsonEncode(body) : 'Shear wallet $kCliVersion  magic $kBookMagic  ADMITv3  GUI+CLI');
+  out.writeln(json ? jsonEncode(body) : 'Shear wallet $kCliVersion  magic $kBookMagic  GUI+CLI');
   return 0;
 }
 

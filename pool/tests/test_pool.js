@@ -302,7 +302,7 @@ describe('HTTP stats cannot stall', () => {
       assert.equal(stats.coin, 'SHE');
       const fp = await fetch(`http://127.0.0.1:${httpPort}/fingerprint`).then((r) => r.json());
       assert.equal(fp.ok, true);
-      assert.equal(fp.admit, 'ADMITv3');
+      assert.equal(fp.admit, 'membership');
       assert.equal(fp.hashTxLive, 1);
       assert.equal(fp.magic, MAGIC_TESTNET);
       assert.ok(String(fp.fingerprint || '').length > 8);
@@ -576,7 +576,7 @@ describe('pool dashboard + stratum', () => {
     assert.doesNotMatch(html, /0\.0\.0\.0:1111/);
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
-    assert.match(html, /She is Private/);
+    assert.match(html, /Shear testnet/);
     assert.match(html, /SmartScreen/);
     assert.match(html, /Authenticode/);
     assert.match(html, /win-smartscreen/);
@@ -983,14 +983,14 @@ describe('public miner listing', () => {
     assert.doesNotMatch(dash, /class="repo-btn"/);
     assert.doesNotMatch(dash, /class="repo-btns"/);
     assert.match(dash, /grid-template-columns:\s*1fr 2fr/);
-    assert.match(dash, /class="she-private-lockup">She is Private</);
+    assert.match(dash, /class="she-private-lockup">Shear testnet</);
     assert.match(dash, /Great Vibes/);
     assert.match(dash, /<h1>Shear<\/h1>/);
     assert.match(dash, /\.cmd-row \{ display:flex; flex-direction:row;/);
     assert.match(dash, /\.cmd-row pre \{[^}]*overflow-wrap:anywhere/);
     assert.match(dash, /\.cmd-row button[^{]*\{[^}]*flex:\s*0\s+0\s+auto;/);
     assert.match(dash, /<pre id="mine-cmd">[\s\S]*<\/pre>\s*<button type="submit" id="copy-cmd">/);
-    assert.match(dash, /Shear is a private cryptocurrency\./);
+    assert.match(dash, /Shear is a cryptocurrency\./);
     assert.doesNotMatch(dash, /fully fledged blockchain/);
     assert.match(dash, /class="miner-pop"/);
     assert.match(dash, /workerNames/);
