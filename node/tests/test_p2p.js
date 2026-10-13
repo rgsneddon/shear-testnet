@@ -393,7 +393,7 @@ describe('p2p gossip', () => {
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);
-    assert.equal(cfg.admit, 'membership');
+    assert.equal(cfg.admit, 'ADMITv3');
     assert.equal(cfg.hashTxLive, 1);
     assert.equal(cfg.archival, true);
     assert.equal(cfg.fastSync, false);

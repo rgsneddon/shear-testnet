@@ -229,7 +229,7 @@ function statsJson(store) {
     header: raw.toString('hex'),
     hash: t?.hash ? Buffer.from(t.hash).toString('hex') : '',
     magic: MAGIC_TESTNET,
-    admit: 'membership',
+    admit: 'ADMITv3',
     hashTxLive: HASH_TX_LIVE,
     jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
     bookLawFingerprint: consensusFingerprint(),
@@ -384,19 +384,19 @@ export function createRpc({
         commits,
         fluxset: pubs,
         spendTags: [...(live.spendTags || [])],
-        admit: 'membership',
+        admit: 'ADMITv3',
         hashTxLive: store.hashTxLive,
       };
     }
     if (m === 'getjroot' || m === 'jroot') {
       const root = typeof store.jroot === 'function' ? store.jroot() : null;
-      return { ok: true, jroot: root ? Buffer.from(root).toString('hex') : '', admit: 'membership' };
+      return { ok: true, jroot: root ? Buffer.from(root).toString('hex') : '', admit: 'ADMITv3' };
     }
     if (m === 'getfingerprint' || m === 'fingerprint') {
       const fp = typeof store.consensusFingerprint === 'function'
         ? store.consensusFingerprint()
         : '';
-      return { ok: true, fingerprint: fp, admit: 'membership', hashTxLive: store.hashTxLive };
+      return { ok: true, fingerprint: fp, admit: 'ADMITv3', hashTxLive: store.hashTxLive };
     }
     if (m === 'queuetx' || m === 'queueTx') {
       const wrapped = !!(params && params.tx && typeof params.tx === 'object');
@@ -426,7 +426,7 @@ export function createRpc({
         bits: tpl.bits,
         height: tpl.height,
         miner,
-        admit: 'membership',
+        admit: 'ADMITv3',
         magic: MAGIC_TESTNET,
       };
     }

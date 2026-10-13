@@ -70,7 +70,7 @@ export function printConfig() {
     extraMintThirdParty: extraMintAllowed('third-party-vortice'),
     mainnet: false,
     hashTxLive: HASH_TX_LIVE,
-    admit: 'membership',
+    admit: 'ADMITv3',
     archival: String(process.env.SHEAR_FAST_SYNC || '').trim() !== '1',
     fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
     genesisMainnet: GENESIS_MAINNET,
@@ -106,7 +106,7 @@ export function defaultDataDir({
   return roaming;
 }
 
-/** Soak tip. Hostnames only — never a raw IP. DNS + static names (not DNS-only). */
+/** ADMITv3 soak tip. Hostnames only — never a raw IP. DNS + static names (not DNS-only). */
 export const DEFAULT_SEEDS = [
   'p2p.shear.digital:30303',
   'r2r.shear.digital:30303',
@@ -408,7 +408,7 @@ async function main() {
         reason: 'clock_wait',
         genesis: started.genesis,
         hashTxLive: HASH_TX_LIVE,
-        admit: 'membership',
+        admit: 'ADMITv3',
         mainnet: true,
         p2p: 0,
         stratum: null,
@@ -442,7 +442,7 @@ async function main() {
       mainnet: false,
       emit: true,
       hashTxLive: HASH_TX_LIVE,
-      admit: 'membership',
+      admit: 'ADMITv3',
       jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
       hashBackend,
     }));
@@ -467,7 +467,7 @@ async function main() {
       reason: 'clock_wait',
       genesis: started.genesis,
       hashTxLive: HASH_TX_LIVE,
-      admit: 'membership',
+      admit: 'ADMITv3',
       mainnet: true,
     }));
     return;
@@ -495,7 +495,7 @@ async function main() {
     mainnet: false,
     emit: true,
     hashTxLive: HASH_TX_LIVE,
-    admit: 'membership',
+    admit: 'ADMITv3',
     jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
     hashBackend,
   }));

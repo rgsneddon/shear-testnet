@@ -153,7 +153,7 @@ def main() -> None:
         [
             "PoW elects the tip. Coin comes from hashing, not from an allocation, an auction, or a snapshot of some other book.",
             "CPU only. ShearHash-v3 is RandomX light.",
-            "Revolving dests. A spend carries a membership proof over a bucket of this book’s notes. It does not hide the spent note among every note. Rest-frame shear1 stays in Closure. Holders offer she1. Settled dests are ssa1.",
+            "Revolving dests. ADMITv3 membership over this book’s notes. Rest-frame shear1 stays in Closure. Holders offer she1. Settled dests are ssa1.",
             "The pot starts at 1.00 SHE and steps down 0.01 SHE each epoch to a 0.20 SHE floor. Votes do not move it. The Reserve oracle does not move it. Testnet epochs are 4 days. Mainnet epochs would be 400 days. Mainnet is not live.",
             "Each hasher dest keeps its own bonus. Finding the block leaves every other dest’s hashes with that dest.",
             "Programmes may move coin you already have. They may not print SHE, other than The Reserve’s interest.",
@@ -331,7 +331,7 @@ def main() -> None:
     pdf.set_title("Shear: Continuity-settled Proof of Work")
     pdf.set_author("Shear")
     pdf.set_subject("Testnet whitepaper. Continuum 0.69. ShearK-Miner 2.8. Public stratum stratum+ssl://pool.shear.digital:443.")
-    pdf.set_keywords("shear-testnet-v10 wallet-0.69 ShearK-2.8 DINS-DAG ShearHash-v3 Vortex vort1 The Reserve")
+    pdf.set_keywords("shear-testnet-v10 ADMITv3 wallet-0.69 ShearK-2.8 DINS-DAG ShearHash-v3 Vortex vort1 The Reserve")
     pdf.set_creator("Shear whitepaper builder")
     OUT.write_bytes(pdf.output())
     print("wrote", OUT, OUT.stat().st_size)

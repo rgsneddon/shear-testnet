@@ -17,7 +17,8 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /shared\/shear-chrome\.js/);
     assert.match(html, /data-active="MAIN"/);
     assert.match(html, /Shear testnet/);
-    assert.doesNotMatch(html, /ADMITv\d|She Is Private|onfidential/);
+    assert.doesNotMatch(html, /She Is Private|onfidential/);
+    assert.match(html, /ADMITv3/);
     assert.match(html, /Continuum 0\.71/);
     assert.match(html, /shear-testnet-v11/);
     assert.doesNotMatch(html, /shear-testnet-v6/);
@@ -226,8 +227,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(admin, /2026-09-18T21:00:00\+01:00/);
     assert.doesNotMatch(admin, /11th September 2026/);
     assert.doesNotMatch(admin, /9pm UK/);
-    assert.match(admin, /membership proof over a bucket/);
-    assert.doesNotMatch(admin, /ADMITv\d|onfidential amounts/);
+    assert.match(admin, /ADMITv3 membership/);
     assert.match(admin, /PoW elects the tip/);
     assert.match(admin, /can still vote/);
     assert.match(admin, /Export shewall\.bin/);

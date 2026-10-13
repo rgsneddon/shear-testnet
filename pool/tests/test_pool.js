@@ -302,7 +302,7 @@ describe('HTTP stats cannot stall', () => {
       assert.equal(stats.coin, 'SHE');
       const fp = await fetch(`http://127.0.0.1:${httpPort}/fingerprint`).then((r) => r.json());
       assert.equal(fp.ok, true);
-      assert.equal(fp.admit, 'membership');
+      assert.equal(fp.admit, 'ADMITv3');
       assert.equal(fp.hashTxLive, 1);
       assert.equal(fp.magic, MAGIC_TESTNET);
       assert.ok(String(fp.fingerprint || '').length > 8);

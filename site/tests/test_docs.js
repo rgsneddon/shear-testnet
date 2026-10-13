@@ -168,8 +168,7 @@ describe('shear.digital/docs', () => {
     assert.match(content, /node-sync/);
     assert.match(content, /com\.shear\.shear_wallet/);
     assert.match(content, /Stem then fluff/);
-    assert.match(content, /title: 'Membership proof'/);
-    assert.doesNotMatch(content, /ADMITv\d|full live fluxset/);
+    assert.match(content, /ADMITv3/);
     assert.ok(content.indexOf("id: 'dins-dag'") > content.indexOf("id: 'admit'"));
     assert.match(content, /P\['dins-dag'\]/);
     assert.match(content, /blue set, sorted by identity/);

@@ -151,7 +151,7 @@ console.log(JSON.stringify({
   event: 'mine_loop_start',
   rpc,
   dest,
-  admit: 'membership',
+  admit: 'ADMITv3',
   at: new Date().toISOString(),
 }));
 
