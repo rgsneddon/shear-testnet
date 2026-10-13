@@ -2,7 +2,8 @@
  * N-49: 8-in/8-out is the first stateless check, the bound-proof identity
  * check is linear, an oversize tx scores the peer, and a wallet POST is
  * capped before the body is buffered. Coinbase keeps its payee outputs.
- * Any amount, any count above the cap, any declared body up to the frame.
+ * Any amount, any count above the cap. A wallet body may be HTTP_TX_BODY_MAX.
+ * A declared P2P frame is too big for that unauthenticated path.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,7 +30,8 @@ import {
   P2P_MAX_FRAME_DEFAULT,
   P2P_FAIL_DISCONNECT,
 } from '../src/p2p.js';
-import { createPool, judgeShare } from '../../pool/src/pool.js';
+import { createPool, judgeShare, HTTP_BODY_MAX } from '../../pool/src/pool.js';
+import { HTTP_TX_BODY_MAX } from '../../crypto/json_bounds.js';
 
 const AMOUNTS = [1, 100_000_000_000];
 const UNDER_IN = [1, 2, 4, 8];
@@ -111,7 +113,7 @@ function flowOf(proofs, admit) {
   };
 }
 
-function boundAt(p) {
+function boundAt(p, extraBytes = 0) {
   const vins = new Array(p);
   const proofs = new Array(p);
   for (let i = 0; i < p; i += 1) {
@@ -125,6 +127,13 @@ function boundAt(p) {
     proofs[i] = { blob, cTilde: c, spendTag: tag };
   }
   const tx = { kind: 'send', vin: vins, admit_proofs: proofs, vout: [{ kind: 'send' }] };
+  if (extraBytes > 0) {
+    const blob = Buffer.alloc(Math.max(33, extraBytes));
+    blob[0] = 2;
+    blob.writeUInt32BE(0xffffffff, 1);
+    const tag = Buffer.from(blob.subarray(1, 33));
+    tx.admit_proof = { blob, cTilde: Buffer.alloc(32, 9), spendTag: tag };
+  }
   const t0 = performance.now();
   const got = flowInputsBound(tx);
   return { ms: performance.now() - t0, reason: got.reason || (got.ok ? 'ok' : 'fail') };
@@ -474,6 +483,11 @@ describe('v12 tx input and output cap', { concurrency: 1 }, () => {
     assert.ok(compiled.ms < 400, `frame compile P=${FRAME_P} ${compiled.ms.toFixed(3)} ms`);
     assert.ok(frame.ms < 50, `frame P=${FRAME_P} ${frame.ms.toFixed(3)} ms ${frame.reason}`);
     assert.equal(frame.reason, 'ok');
+    // A distinct extra proof used to copy every blob. Tag identity stays under the same budget.
+    const hostile = boundAt(FRAME_P, 64 * 1024);
+    console.log(`flowInputsBound extra P=${FRAME_P} ${hostile.ms.toFixed(3)} ms ${hostile.reason}`);
+    assert.equal(hostile.reason, 'admit_membership');
+    assert.ok(hostile.ms < 50, `extra P=${FRAME_P} ${hostile.ms.toFixed(3)} ms`);
   });
 
   it('scores a replayed oversize tx on the p2p ingest path', () => {
@@ -546,14 +560,20 @@ describe('v12 tx input and output cap', { concurrency: 1 }, () => {
       if (!stop) setImmediate(pulse);
     };
     try {
+      assert.equal(HTTP_BODY_MAX, HTTP_TX_BODY_MAX);
+      assert.ok(HTTP_BODY_MAX < P2P_MAX_FRAME_DEFAULT, `wallet cap ${HTTP_BODY_MAX}`);
       for (const n of [1024, 4096, 64 * 1024]) {
         const code = await postBytes(port, n);
         assert.notEqual(code, 413, `small ${n} -> ${code}`);
         assert.notEqual(code, 0, `small ${n} hung`);
       }
-      const atCap = await headersOnly(port, P2P_MAX_FRAME_DEFAULT, 250);
-      assert.notEqual(atCap, 413, `exact frame declared ${atCap}`);
-      const chunked = await postChunked(port, P2P_MAX_FRAME_DEFAULT);
+      const atCap = await headersOnly(port, HTTP_BODY_MAX, 250);
+      assert.notEqual(atCap, 413, `exact wallet cap declared ${atCap}`);
+      const overCap = await headersOnly(port, HTTP_BODY_MAX + 1, 250);
+      assert.equal(overCap, 413, `wallet cap + 1 declared ${overCap}`);
+      const frameDeclared = await headersOnly(port, P2P_MAX_FRAME_DEFAULT, 250);
+      assert.equal(frameDeclared, 413, `frame declared ${frameDeclared}`);
+      const chunked = await postChunked(port, HTTP_BODY_MAX);
       last = performance.now();
       gaps.length = 0;
       pulse();
@@ -566,7 +586,7 @@ describe('v12 tx input and output cap', { concurrency: 1 }, () => {
       const shareP99 = p99(gaps);
       console.log(`chunked status ${chunked.status} sent ${chunked.sent} | oversize ${codes[0]} n ${codes.length} shareP99 ${shareP99.toFixed(3)} gaps ${gaps.length}`);
       assert.equal(chunked.status, 413, `chunked ${chunked.status} sent ${chunked.sent}`);
-      assert.ok(chunked.sent < P2P_MAX_FRAME_DEFAULT + (2 * 1024 * 1024), `chunked buffered ${chunked.sent}`);
+      assert.ok(chunked.sent < HTTP_BODY_MAX + (2 * 256 * 1024), `chunked buffered ${chunked.sent}`);
       assert.ok(codes.every((c) => c === 413), `oversize ${codes[0]}`);
       assert.ok(shareP99 < 100, `share p99 ${shareP99.toFixed(3)} ms`);
     } finally {

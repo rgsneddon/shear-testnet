@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
+import { newIdentity, hash20FromAddress, encodeDest } from '../../crypto/address.js';
 import { GENESIS_BITS_PACKED, MAGIC_TESTNET, POOL_FEE_BPS, POOL_FEE_MAX_BPS, SHARE_FLOOR_BITS, TARGET_BLOCK_INTERVAL_MS, asertNextBits } from '../../crypto/asert.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
@@ -16,7 +15,7 @@ import { GENESIS_PREV, buildTemplate, canonicalCarry, custodyPotShares, digestTx
 
 function minerDest() {
   const id = newIdentity();
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+  return encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
 }
 
 function destsOf(vouts) {

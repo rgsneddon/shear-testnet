@@ -76,7 +76,8 @@ import {
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
+import { publicReserveReceipt } from '../../crypto/dummy.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { coinbaseObserveRejected, observeDigestSuffix } from '../../crypto/reserve_oracle.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
@@ -140,6 +141,7 @@ import {
   levyNeed,
   LEVY_CAP_NANOS,
   poolFeeDest,
+  custodialPullRejected,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from '../../crypto/dummy.js';
@@ -1087,27 +1089,47 @@ function stampAimed(cached, tpl) {
 }
 
 /**
+ * Look up an aimed header without sealing. `miss` means a later
+ * templateForFinder call would seal a new finder-fee note.
+ */
+function finderAimPeek(tpl, finderDest) {
+  const bind = tpl?.levyBind;
+  if (!bind || !(bind.finderNanos > 0)) return { state: 'plain', tpl: tpl || null };
+  const dest = String(finderDest || '');
+  if (forbiddenFinderDest(dest, bind.poolDest, bind.feeDest)) return { state: 'refuse' };
+  const cb = tpl.txs?.[0];
+  if (!cb?.coinbase) return { state: 'refuse' };
+  const existing = (cb.vout || []).find((o) => o.kind === 'finder-fee');
+  const want = hash20FromAddress(dest);
+  if (existing && want && noteDest20(existing)?.equals(Buffer.from(want))) return { state: 'plain', tpl };
+  const key = finderAimKey(tpl.header, dest, bind.finderNanos);
+  if (key && finderAimCache.has(key)) {
+    const hit = finderAimCache.get(key);
+    rememberFinderAim(key, hit);
+    return { state: 'hit', tpl: stampAimed(hit, tpl) };
+  }
+  return { state: 'miss', bind, dest, cb, key };
+}
+
+/** Cache peek for the pool handler. A miss does not seal. */
+export function cachedFinderTemplate(tpl, finderDest) {
+  const peek = finderAimPeek(tpl, finderDest);
+  if (peek.state === 'refuse') return { ok: false };
+  if (peek.state === 'miss') return { ok: true, miss: true };
+  return { ok: true, tpl: peek.tpl };
+}
+
+/**
  * One header whose finder-fee pays `finderDest`. The pot notes stay.
  * The shared template holds the finder half at the unclaimed dest until a
  * miner aims. A fee dest, the reserve, and that hold are refused.
  * A repeat for the same round and dest reuses the sealed note.
  */
 export function templateForFinder(tpl, finderDest) {
-  const bind = tpl?.levyBind;
-  if (!bind || !(bind.finderNanos > 0)) return tpl || null;
-  const dest = String(finderDest || '');
-  if (forbiddenFinderDest(dest, bind.poolDest, bind.feeDest)) return null;
-  const cb = tpl.txs?.[0];
-  if (!cb?.coinbase) return null;
-  const existing = (cb.vout || []).find((o) => o.kind === 'finder-fee');
-  const want = hash20FromAddress(dest);
-  if (existing && want && noteDest20(existing)?.equals(Buffer.from(want))) return tpl;
-  const key = finderAimKey(tpl.header, dest, bind.finderNanos);
-  if (key && finderAimCache.has(key)) {
-    const hit = finderAimCache.get(key);
-    rememberFinderAim(key, hit);
-    return stampAimed(hit, tpl);
-  }
+  const peek = finderAimPeek(tpl, finderDest);
+  if (peek.state === 'refuse') return null;
+  if (peek.state === 'plain' || peek.state === 'hit') return peek.tpl;
+  const { bind, dest, cb, key } = peek;
   finderAimSealCount += 1;
   const note = sealLevyNote(bind.finderNanos, dest, 'finder-fee');
   const vout = (cb.vout || []).filter((o) => o.kind !== 'finder-fee');
@@ -1839,6 +1861,11 @@ function parentSpendView(chain) {
 }
 
 function verifyBlockConsensus(block, prev, opts = {}) {
+  const bodyTxs = Array.isArray(block?.txs) ? block.txs : [];
+  for (let i = 0; i < bodyTxs.length; i += 1) {
+    const unsignedField = unsignedBodyField(bodyTxs[i]);
+    if (unsignedField) return unsignedField;
+  }
   if (opts.offLoopPow && !opts.trustedPowHash) {
     return prepareOffLoopPow(block, prev, {
       skipSharePow: !!opts.skipSharePow,
@@ -2265,6 +2292,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const drawnWithdraws = new Set();
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
+    // A disabled pool-withdraw is custodial_pull before range or kind.
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
     // A refused kind returns kind before an unbound proof, tag, or commit vin
     // is membership. The range check still runs first. A verified proof then
     // returns kind. Lock, vote, and withdraw keep the commit-vin reject.
@@ -2359,7 +2389,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
       return { ok: false, reason: 'dummy_outs' };
     }
-    if (moneyNeedsRange(tx)) {
+    if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
       for (const o of (tx.vout || [])) {
         if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
           return { ok: false, reason: 'range_proof' };
@@ -2507,8 +2537,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
     return { ok: false, reason: 'admit_membership' };
   }
+  // The store passes the live vault. A public receipt on a block that has
+  // no carried vault is the first lock, so the trial starts from empty.
+  // A sealed reserve row with no vault still fails closed.
+  const vaultForTrial = reserveState || (txs.some((tx) => publicReserveReceipt(tx)) ? emptyVault() : null);
   const vaultTry = trialReserveApply({
-    state: reserveState,
+    state: vaultForTrial,
     block,
     nowMs: Number(decoded.timestamp),
   });

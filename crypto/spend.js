@@ -5,12 +5,12 @@
  */
 import { createHash, createPublicKey, sign, verify } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM } from './asert.js';
-import { levyTaxed, txAmountNanos } from './levy.js';
+import { levyTaxed, txAmountNanos, custodialPullRejected } from './levy.js';
 import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
-import { claimedVoutNanos, flowNeedsDummy } from './dummy.js';
+import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
 import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
@@ -70,10 +70,15 @@ export function spendPackDigest(tx) {
   const vins = (tx?.vin || []).map((v, i) => {
     const nc = asU8(v.noteCommit);
     const prev = asU8(v.prev);
+    let d20 = nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Field(v.dest20);
+    if (d20.every((b) => b === 0)) {
+      const h = hash20FromAddress(v.address || '');
+      if (h) d20 = Buffer.from(h);
+    }
     return {
       prev: prev.length === 32 ? Buffer.from(prev) : Buffer.alloc(32),
       index: Number(v.index || i),
-      dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Field(v.dest20),
+      dest20: d20,
     };
   });
   const vouts = (tx?.vout || []).map((o) => {
@@ -446,6 +451,126 @@ export function unsignedRefusedSpend(tx) {
   return { ok: false, reason: 'unsigned' };
 }
 
+// Openings and wire secrets. compactTx strips them. They are not an extra field.
+const BODY_SECRET_KEYS = new Set([
+  'open',
+  'portalOpen',
+  'viewKey',
+  'view',
+  'V',
+  'C',
+  'closure',
+  'closureCommit',
+  'paymentCode',
+  'scanPub',
+  'spendHash20',
+  'seed',
+  'seedHex',
+  'privateKey',
+  'ip',
+  'remoteAddress',
+  'peerIp',
+  'userAgent',
+  'user-agent',
+  'ua',
+  'memoPlain',
+  'login',
+  'spendPub',
+  'r',
+  't',
+  '_origCommit',
+  '_origNoteCommit',
+]);
+
+const BODY_KEYS = new Set([
+  'id', 'kind', 'from', 'to', 'nanos', 'fee', 'vin', 'vout', 'sig', 'signature',
+  'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
+  'portalId', 'payoutPortalId', 'programId', 'choice',
+  'admit_proof', 'admit_proofs', 'spendTag', 'members',
+  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
+  'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
+  'coinbase', 'carryNanos', 'share',
+  'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
+  'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
+  'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
+  'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
+]);
+
+const VIN_KEYS = new Set([
+  'coinbase', 'height', 'address', 'commit', 'noteCommit', 'dest20',
+  'prev', 'index', 'cTilde', 'pseudo', 'spendTag', 'portalId',
+]);
+
+const VOUT_KEYS = new Set([
+  'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
+  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt',
+  'portalId', 'memo', 'memoCt',
+]);
+
+const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);
+
+const OBSERVE_KEYS = new Set(['annualBps', 'observedAtMs']);
+
+const PROOF_KEYS = new Set([
+  'admit_proof', 'v', 'version', 'spendTag', 'blob', 'cTilde', 'c0',
+  'proof', 'members', 'anchor', 'root', 'n', 'pseudo', 'commit', 'tag',
+]);
+
+const LEDGER_ROW_KEYS = new Set([
+  'noteCommit', 'dest20', 'nanos', 'sinceHeight', 'admitBase', 'address',
+]);
+
+const LEAF_KEYS = new Set(['dest20', 'unit', 'nonce', 'memoH', 'tag']);
+
+const MERKLE_PROOF_KEYS = new Set(['side', 'hash']);
+
+function uncoveredKey(obj, allow) {
+  if (!obj || typeof obj !== 'object' || Buffer.isBuffer(obj) || Array.isArray(obj)) return null;
+  for (const key of Object.keys(obj)) {
+    if (BODY_SECRET_KEYS.has(key)) continue;
+    if (!allow.has(key)) return key;
+  }
+  return null;
+}
+
+function uncoveredList(list, allow) {
+  if (!Array.isArray(list)) return null;
+  for (const row of list) {
+    if (uncoveredKey(row, allow)) return row;
+  }
+  return null;
+}
+
+/**
+ * A field the spend signature does not cover. Known consensus keys stay.
+ * Any other key, at any amount, is unsigned on queue, mempool, and verify.
+ */
+export function unsignedBodyField(tx) {
+  if (!tx || typeof tx !== 'object' || Buffer.isBuffer(tx) || Array.isArray(tx)) return null;
+  if (uncoveredKey(tx, BODY_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredKey(tx.leaf, LEAF_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.proof, MERKLE_PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.vin, VIN_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (Array.isArray(tx.vout)) {
+    for (const o of tx.vout) {
+      if (uncoveredKey(o, VOUT_KEYS)) return { ok: false, reason: 'unsigned' };
+      if (o && typeof o.valueProof === 'object' && !Buffer.isBuffer(o.valueProof) && !Array.isArray(o.valueProof)) {
+        if (uncoveredKey(o.valueProof, VALUE_PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
+      }
+    }
+  }
+  if (uncoveredKey(tx.observe, OBSERVE_KEYS)) return { ok: false, reason: 'unsigned' };
+  const proofs = [];
+  if (tx.admit_proof && typeof tx.admit_proof === 'object') proofs.push(tx.admit_proof);
+  if (Array.isArray(tx.admit_proofs)) proofs.push(...tx.admit_proofs);
+  if (uncoveredList(proofs, PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.hashOwed, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.hashOwedRest, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.hashOwedLocal, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.hashCredits, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
+  return null;
+}
+
 const EXPLICIT_OUTPUT_KINDS = new Set(['lock', 'vote', 'withdraw']);
 
 /**
@@ -515,6 +640,7 @@ export function typedCommitRejected(tx) {
  */
 export function typedCommitSum(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (publicReserveReceipt(tx)) return { ok: true, skip: true };
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
@@ -586,6 +712,9 @@ function voutDest20(o) {
  */
 export function reserveAuth(tx, reserveState = null, seenOwners = null) {
   if (!reserveNeedsPortalOpen(tx)) return { ok: true };
+  // A public dest20 receipt has no spendPub. The opened v is the body.
+  // A sealed note still needs the owner signature, and a missing one is unsigned.
+  if (publicReserveReceipt(tx)) return { ok: true };
   if (!verifyReservePortalOpen(tx)) {
     return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
   }
@@ -745,6 +874,8 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
   for (const tx of body || []) {
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
     const explicitKind = explicitTypedKindRejected(tx);

@@ -75,6 +75,53 @@ Map<String, dynamic> bindWeightFee(Map<String, dynamic> tx) {
   return tx;
 }
 
+const int _kSigHexLen = 128;
+const int _kSpendPubHexLen = 64;
+
+Map<String, dynamic> _weightCopy(Map<String, dynamic> source) {
+  final draft = <String, dynamic>{};
+  source.forEach((key, value) {
+    if (key == 'fee' || key == 'maxLevy' || key == 'sig' || key == 'spendPub') return;
+    draft[key] = value;
+  });
+  return draft;
+}
+
+void _attachFee(Map<String, dynamic> draft, int fee, {required bool maxLevy}) {
+  draft['fee'] = fee;
+  if (maxLevy) draft['maxLevy'] = fee;
+  draft['sig'] = '0' * _kSigHexLen;
+  draft['spendPub'] = '0' * _kSpendPubHexLen;
+}
+
+/// One-pass weight fee, then raised until it still covers the body after the
+/// signature is attached. The fee never moves down. Any body size.
+/// A body whose levy is above [kLevyCapNanos] returns the cap; [weightFeeCovers] is then false.
+int bindStableWeightFee(Map<String, dynamic> source, {bool maxLevy = false}) {
+  final draft = _weightCopy(source);
+  var fee = levyFromWeight(flowWeight(draft));
+  if (fee > kLevyCapNanos) fee = kLevyCapNanos;
+  _attachFee(draft, fee, maxLevy: maxLevy);
+  for (var step = 0; step < 8; step++) {
+    final need = levyFromWeight(flowWeight(draft));
+    if (need <= fee) return fee;
+    if (need > kLevyCapNanos) return fee;
+    fee = need;
+    draft['fee'] = fee;
+    if (maxLevy) draft['maxLevy'] = fee;
+  }
+  return fee;
+}
+
+/// True when [fee] is inside the cap and covers the signed body. Does not write [source].
+bool weightFeeCovers(int fee, Map<String, dynamic> source, {bool maxLevy = false}) {
+  if (fee < 0 || fee > kLevyCapNanos) return false;
+  final draft = _weightCopy(source);
+  _attachFee(draft, fee, maxLevy: maxLevy);
+  final need = levyFromWeight(flowWeight(draft));
+  return fee >= need;
+}
+
 /// The reserved fee already sealed into outputs covers the one-pass weight
 /// fee of [posted]. Does not write a smaller fee back onto [posted].
 bool sealedFeeCovers(int reserved, Map<String, dynamic> posted) {

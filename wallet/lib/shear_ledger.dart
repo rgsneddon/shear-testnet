@@ -429,6 +429,19 @@ int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = fal
   return fee > kLevyCapNanos ? kLevyCapNanos : fee;
 }
 
+/// [spendableShe] covers a consensus levy of [levyUnits].
+/// Equality passes. A gap of 1e-12 SHE is float dust under one nano (1e-11 SHE).
+/// Any levy size. A negative levy does not pass.
+bool spendableCoversLevy(double spendableShe, int levyUnits) {
+  if (levyUnits < 0) return false;
+  if (!spendableShe.isFinite) return false;
+  final needShe = levyUnits / kUnitsPerShe;
+  return spendableShe + 1e-12 >= needShe;
+}
+
+/// A second submit while one is [held] must not start another post.
+bool claimSingleSubmit({required bool held}) => !held;
+
 double? _storedNoteShe(Map<dynamic, dynamic> n) {
   final amt = n['amount'];
   if (amt is num && amt > 0) return amt.toDouble();
@@ -1749,10 +1762,6 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     for (final raw in (input['vouts'] as List? ?? const []))
       if (raw is Map) Map<String, dynamic>.from(raw),
   ];
-  final vinIn = <Map<String, dynamic>>[
-    for (final raw in (input['vin'] as List? ?? const []))
-      if (raw is Map) Map<String, dynamic>.from(raw),
-  ];
   final sealed = <Map<String, dynamic>>[
     for (final o in spec)
       sealedReserveVout(
@@ -1761,12 +1770,54 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
         (o['kind'] as String?) ?? kind,
       ),
   ];
-  final postedVin = _postedVin(vinIn);
   final postedVout = _postedVout(sealed);
+  final wire = flowPostHex(<String, dynamic>{'vin': const <Map<String, dynamic>>[], 'vout': postedVout});
+  final hexVout = List<dynamic>.from(wire['vout'] as List? ?? const []);
+  final choice = (input['choice'] as String?) ?? '';
+  final taxed = kind == 'vote' || kind == 'lock';
+  final maxLevy = kind == 'vote';
+  final d20 = hash20FromAddress(from) ?? Uint8List(20);
+  final signVin = kind == 'withdraw'
+      ? <Map<String, dynamic>>[
+          {'dest20': Uint8List(20)},
+        ]
+      : <Map<String, dynamic>>[
+          {'address': from, 'dest20': d20},
+        ];
+  final shownNanos = sealed.isNotEmpty ? sealed.first['nanos'] : 0;
+  final draft = _reservePoolDraft(
+    kind: kind,
+    from: from,
+    to: to,
+    choice: choice,
+    vout: hexVout,
+    nanos: shownNanos is int ? shownNanos : jsSafeInt(shownNanos),
+  );
+  final fee = taxed ? bindStableWeightFee(draft, maxLevy: maxLevy) : 0;
+  if (taxed && !weightFeeCovers(fee, draft, maxLevy: maxLevy)) {
+    throw StateError('fee_short');
+  }
+  final portalId = kind == 'withdraw' ? reservePortalId(from) : reservePortalId(to);
+  final payoutPortalId = kind == 'withdraw' ? reservePortalId(to) : reservePortalId(from);
+  final commit = sealed.isNotEmpty ? _noteBytes(sealed.first['commit']) : null;
+  final vp = sealed.isNotEmpty ? sealed.first['valueProof'] : null;
+  final suffixNanos = jsSafeInt(vp is Map ? vp['v'] : shownNanos);
   Uint8List? sig;
   Uint8List? pub;
   if (spendSeed != null && spendSeed.length == 32) {
-    final msg = spendMessage(from: from, vout: postedVout, kind: kind, vin: postedVin);
+    final msg = reserveSpendMessage(
+      from: from,
+      vout: postedVout,
+      vin: signVin,
+      kind: kind,
+      portalId: portalId,
+      payoutPortalId: payoutPortalId,
+      programId: 'shear-reserve-v1',
+      choice: choice,
+      fee: fee,
+      suffixNanos: suffixNanos,
+      commit: commit,
+    );
     if (shared != null) {
       sig = stealthSign(spendSeed, shared, msg);
       pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
@@ -1775,14 +1826,95 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
       pub = ed25519PublicFromSeed(spendSeed);
     }
   }
+  final postedVin = List<dynamic>.from(_hexify(signVin) as List? ?? const []);
   return {
     'vouts': sealed,
     'postedVin': postedVin,
-    'postedVout': postedVout,
+    'postedVout': hexVout,
     'sig': sig,
     'pub': pub,
+    'fee': taxed ? fee : 0,
+    'portalId': portalId,
+    'payoutPortalId': payoutPortalId,
     'isolateStamp': reserveIsolateStamp,
   };
+}
+
+/// JSON the pool's vote/lock/withdraw draft stringifies for [levyNeed].
+/// `id` is the same width as `vote-${Date.now()}`. Buffer fields use Node's
+/// `{"type":"Buffer","data":[...]}` form. The signature is not in this map.
+Map<String, dynamic> _reservePoolDraft({
+  required String kind,
+  required String from,
+  required String to,
+  required String choice,
+  required List<dynamic> vout,
+  required int nanos,
+}) {
+  final stamp = DateTime.now().millisecondsSinceEpoch.toString();
+  final portalTo = reservePortalId(to);
+  final portalFrom = reservePortalId(from);
+  final d20 = hash20FromAddress(from) ?? Uint8List(20);
+  final vinBuf = <String, dynamic>{
+    'address': from,
+    'dest20': <String, dynamic>{
+      'type': 'Buffer',
+      'data': [for (final b in d20) b],
+    },
+  };
+  if (kind == 'vote') {
+    return <String, dynamic>{
+      'id': 'vote-$stamp',
+      'programId': 'shear-reserve-v1',
+      'kind': 'vote',
+      'from': from,
+      'to': to,
+      'choice': choice,
+      'portalId': portalTo,
+      'payoutPortalId': portalFrom,
+      'vin': [vinBuf],
+      'vout': vout,
+      'payer': from,
+    };
+  }
+  if (kind == 'withdraw') {
+    return <String, dynamic>{
+      'id': 'withdraw-$stamp',
+      'programId': 'shear-reserve-v1',
+      'mint': true,
+      'kind': 'withdraw',
+      'from': from,
+      'to': to,
+      'nanos': nanos,
+      'portalId': portalFrom,
+      'payoutPortalId': portalTo,
+      'vin': <Map<String, dynamic>>[],
+      'vout': vout,
+      'amount': _jsSheAmount(nanos),
+    };
+  }
+  return <String, dynamic>{
+    'id': 'lock-$stamp',
+    'programId': 'shear-reserve-v1',
+    'kind': 'lock',
+    'from': from,
+    'to': to,
+    'nanos': nanos,
+    'portalId': portalTo,
+    'payoutPortalId': portalFrom,
+    'vin': [vinBuf],
+    'vout': vout,
+    'memoCt': null,
+    'amount': _jsSheAmount(nanos),
+  };
+}
+
+/// Whole SHE stays an int so the JSON length matches `JSON.stringify(n / 1e11)`.
+Object _jsSheAmount(int nanos) {
+  const scale = 100000000000;
+  if (scale == 0) return 0;
+  if (nanos % scale == 0) return nanos ~/ scale;
+  return nanos / scale;
 }
 
 /// Reserve lock, vote, and withdraw seal. Always [Isolate.run]. A caller-side
@@ -7979,6 +8111,7 @@ class ShearLedger implements ReadProofSink {
     }
     final List<Map<String, dynamic>> postedVin;
     final List<Map<String, dynamic>> postedVout;
+    int? reserveFee;
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
       if (spendSeed != null && spendSeed.length == 32) {
         if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
@@ -7999,6 +8132,8 @@ class ShearLedger implements ReadProofSink {
         'vin': <Map<String, dynamic>>[
           for (final o in vin) Map<String, dynamic>.from(o),
         ],
+        'choice': choice ?? '',
+        'programId': programId ?? '',
       });
       final sealed = <Map<String, dynamic>>[
         for (final raw in (built['vouts'] as List))
@@ -8019,6 +8154,8 @@ class ShearLedger implements ReadProofSink {
       final pub = built['pub'];
       if (sig is Uint8List) sigHex = _bytesHex(sig);
       if (pub is Uint8List) spendPubHex = _bytesHex(pub);
+      final boundFee = built['fee'];
+      if (boundFee is int && boundFee > 0) reserveFee = boundFee;
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
@@ -8071,6 +8208,7 @@ class ShearLedger implements ReadProofSink {
               : admitProof?['spendTag']?.toString(),
           paintedOwedNanos: paintedCover ? _paintedFundOwedNanos : 0,
           nanosWire: nanosWire,
+          fee: reserveFee,
         );
       }
 

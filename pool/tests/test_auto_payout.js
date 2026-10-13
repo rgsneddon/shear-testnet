@@ -191,7 +191,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
     });
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
-    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'range_proof');
+    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'custodial_pull');
   });
 
   it('v12 does not credit a custodial pot or hash leg', () => {
@@ -232,7 +232,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
     });
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
-    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'range_proof');
+    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'custodial_pull');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-auto-sweep-'));
     const pool = createPool({
       dataDir: dir,
@@ -264,7 +264,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
     pool.close();
   });
 
-  it('a compact signed pool-withdraw still binds, and v12 admits it as range_proof', () => {
+  it('a compact signed pool-withdraw still binds, and v12 admits it as custodial_pull', () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
     const built = buildAutoPayoutTx({
@@ -291,11 +291,11 @@ describe('auto payout at π SHE to miner ssa1', () => {
     assert.ok(sealed.vin[0].dest20);
     assert.ok(sealed.spendPub);
     assert.equal(verifyPoolWithdrawBound(sealed).ok, true, 'sealed operator bind');
-    assert.equal(admitMempool(emptyMempool(), sealed).reason, 'range_proof');
+    assert.equal(admitMempool(emptyMempool(), sealed).reason, 'custodial_pull');
     const stolen = { ...sealed, spendPub: undefined, sig: undefined, vin: sealed.vin.map((v) => ({ ...v })) };
     signSpendTx(stolen, spendBox(newIdentity()).key);
     assert.equal(verifyPoolWithdrawBound(stolen).ok, false);
-    assert.equal(admitMempool(emptyMempool(), stolen).reason, 'range_proof');
+    assert.equal(admitMempool(emptyMempool(), stolen).reason, 'custodial_pull');
   });
 
   it('bootPoolOperator writes a matching spend seed and signs auto-pay', () => {

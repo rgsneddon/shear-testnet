@@ -24,6 +24,7 @@ import {
   unitsForShare,
   accountShareUnits,
   creditBitsForShare,
+  shareWorkKey,
 } from '../../crypto/share_batch.js';
 import { canonicalCarry } from './chain.js';
 import {
@@ -194,8 +195,18 @@ function permittedHash(block) {
     try { nonce = BigInt(share?.nonce || 0).toString(); } catch {
       return { ok: false, reason: 'hash_bonus', nanos: 0n };
     }
-    if (seen.has(nonce)) return { ok: false, reason: 'hash_bonus', nanos: 0n };
-    seen.add(nonce);
+    // The same nonce on two headers is two units. A repeat of one header is not.
+    let id = '';
+    if (share?.verifiedHeader) id = shareWorkKey(share.verifiedHeader, share.nonce);
+    if (!id) {
+      const slot = share?.proofSlot === 0 || share?.proofSlot === 1
+        || share?.proofSlot === '0' || share?.proofSlot === '1'
+        ? String(Number(share.proofSlot))
+        : '';
+      id = `${slot}:${nonce}`;
+    }
+    if (seen.has(id)) return { ok: false, reason: 'hash_bonus', nanos: 0n };
+    seen.add(id);
     const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true });
     if (!credit.ok) return { ok: false, reason: 'hash_bonus', nanos: 0n };
   }
@@ -365,6 +376,47 @@ export function emptySupplyState(genesisMs = 0) {
   };
 }
 
+/** Interest already on a live state. A 12-u64 snap omits both fields. */
+function carriedInterest(scalar, key) {
+  if (!scalar || !Object.prototype.hasOwnProperty.call(scalar, key)) return 0n;
+  const raw = scalar[key];
+  if (raw == null || raw === '') return 0n;
+  try {
+    const n = typeof raw === 'bigint' ? raw : BigInt(raw);
+    return n >= 0n && n <= U64 ? n : 0n;
+  } catch {
+    return 0n;
+  }
+}
+
+/**
+ * Replay withdraw interest onto snap rows. The 12-u64 snap does not store it.
+ * `rows[i]` is the supply after `blocks[i]`. A miss is not published.
+ */
+export function fillSnapInterest(rows, blocks) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  const snaps = Array.isArray(rows) ? rows : [];
+  if (!snaps.length || snaps.length !== list.length) return { ok: false, reason: 'supply_state' };
+  let vault = null;
+  let interest = 0n;
+  for (let i = 0; i < list.length; i += 1) {
+    const row = snaps[i];
+    if (!row) return { ok: false, reason: 'supply_state' };
+    const ts = headerMs(list[i]);
+    if (!(ts > 0)) return { ok: false, reason: 'header' };
+    const got = blockWithdrawInterest(vault, list[i], ts);
+    if (!got.ok) return { ok: false, reason: got.reason || 'supply' };
+    interest += got.nanos;
+    if (interest > U64) return { ok: false, reason: 'supply' };
+    row.mintedInterest = interest;
+    row.permittedInterest = interest;
+    const advanced = vaultAfterBlock(vault, list[i]);
+    if (!advanced.ok) return { ok: false, reason: 'supply' };
+    vault = advanced.vault;
+  }
+  return { ok: true, reason: '' };
+}
+
 /** Scalar snap plus the owed rows the caller still has. */
 export function supplyFromScalar(scalar, {
   owedRows = [],
@@ -380,9 +432,8 @@ export function supplyFromScalar(scalar, {
     mintedPot: BigInt(scalar.mintedPot || 0),
     mintedHash: BigInt(scalar.mintedHash || 0),
     mintedLevy: BigInt(scalar.mintedLevy || 0),
-    // The 12-u64 snap does not carry interest. A walk fills it back in.
-    mintedInterest: 0n,
-    permittedInterest: 0n,
+    mintedInterest: carriedInterest(scalar, 'mintedInterest'),
+    permittedInterest: carriedInterest(scalar, 'permittedInterest'),
     bLocked: BigInt(scalar.bLocked || 0),
     permittedHashAll: BigInt(scalar.permittedHashAll || 0),
     acceptedHash: BigInt(scalar.acceptedHash || 0),

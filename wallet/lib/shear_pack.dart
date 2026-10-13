@@ -169,7 +169,7 @@ Uint8List spendPackDigest({
       } else if (nc is String && nc.length == 64) {
         dest20 = _as32(nc).sublist(0, 20);
       } else {
-        dest20 = Uint8List(20);
+        dest20 = _dest20Bytes(v['dest20']);
       }
       vins.add({
         'prev': _as32(v['prev']),
@@ -212,5 +212,115 @@ Uint8List spendMessage({
   List<Map<String, dynamic>>? vin,
 }) {
   final digest = spendPackDigest(from: from, vout: vout, height: height, kind: kind, vin: vin);
+  return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
+}
+
+/// Same portal id `crypto/reserve_vault.js` puts on a lock, vote, or withdraw.
+String reservePortalId(String dest) {
+  return sha256.convert([...utf8.encode('shear-portal-v1'), ...utf8.encode(dest)]).toString();
+}
+
+Uint8List _dest20Bytes(dynamic v) {
+  if (v is Uint8List && v.length >= 20) return Uint8List.sublistView(v, 0, 20);
+  if (v is List && v.length >= 20) {
+    final out = Uint8List(20);
+    for (var i = 0; i < 20; i++) {
+      final n = v[i];
+      out[i] = n is int ? (n & 0xff) : 0;
+    }
+    return out;
+  }
+  if (v is String) {
+    final hex = v.startsWith('0x') || v.startsWith('0X') ? v.substring(2) : v;
+    if (hex.length >= 40) {
+      final out = Uint8List(20);
+      for (var i = 0; i < 20; i++) {
+        out[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+      }
+      return out;
+    }
+  }
+  return Uint8List(20);
+}
+
+Uint8List _u32le(int n) {
+  final b = Uint8List(4);
+  ByteData.sublistView(b).setUint32(0, n & 0xffffffff, Endian.little);
+  return b;
+}
+
+Uint8List _i64le(int n) {
+  final b = Uint8List(8);
+  ByteData.sublistView(b).setInt64(0, n, Endian.little);
+  return b;
+}
+
+Uint8List _lenPrefUtf8(String s) {
+  final body = utf8.encode(s);
+  return Uint8List.fromList([..._u32le(body.length), ...body]);
+}
+
+/// JS `canonicalFee`: 8-byte LE, or eight zeros when the fee is not a positive safe integer.
+Uint8List _canonicalFee(int fee) {
+  final v = fee > 0 && fee <= 9007199254740991 ? fee : 0;
+  return _u64le(v);
+}
+
+/// JS `Math.floor(Number(raw))` when it is a safe integer. Otherwise 0, matching `i64le`.
+int jsSafeInt(Object? raw) {
+  if (raw is int) {
+    if (raw > 9007199254740991 || raw < -9007199254740991) return 0;
+    return raw;
+  }
+  if (raw is String) {
+    final n = int.tryParse(raw.trim());
+    if (n == null || n > 9007199254740991 || n < 0) return 0;
+    return n;
+  }
+  if (raw is num) {
+    if (!raw.isFinite) return 0;
+    final n = raw.floor();
+    if (n > 9007199254740991 || n < -9007199254740991) return 0;
+    return n;
+  }
+  return 0;
+}
+
+/// Spend message the pool's `verifySpendSig` checks for a lock, vote, or withdraw.
+/// Flow sends stay on [spendMessage]. This adds the portal, fee, and reserve suffix.
+Uint8List reserveSpendMessage({
+  required String from,
+  required List<Map<String, dynamic>> vout,
+  required List<Map<String, dynamic>> vin,
+  required String kind,
+  required String portalId,
+  required String payoutPortalId,
+  required String programId,
+  required String choice,
+  required int fee,
+  required int suffixNanos,
+  Uint8List? commit,
+}) {
+  final packed = spendPackDigest(from: from, vout: vout, kind: kind, vin: vin);
+  final portal = portalId.toLowerCase();
+  final payout = payoutPortalId.toLowerCase();
+  final commitBytes = (commit != null && commit.length == 32) ? commit : Uint8List(0);
+  final choiceBytes = kind == 'vote' ? choice : '';
+  final chunks = <int>[
+    ...packed,
+    ...utf8.encode(portal),
+    ...utf8.encode(payout),
+    ..._canonicalFee(fee),
+    ..._u32le(0),
+    ...utf8.encode('reserveact1'),
+    ..._lenPrefUtf8(kind),
+    ..._lenPrefUtf8(portal),
+    ..._lenPrefUtf8(payout),
+    ..._lenPrefUtf8(programId),
+    ..._lenPrefUtf8(choiceBytes),
+    ..._i64le(suffixNanos),
+    ...commitBytes,
+  ];
+  final digest = Uint8List.fromList(sha256.convert(chunks).bytes);
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }

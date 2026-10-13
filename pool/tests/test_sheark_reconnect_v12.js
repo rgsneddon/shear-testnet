@@ -26,6 +26,7 @@ import {
   createPool,
   destShareBitsKey,
   loadDestShareBitsMap,
+  LOGIN_PER_IP_WINDOW_MS,
   persistDestShareBitsMap,
   rememberDestShareBits,
   SHARE_BITS_FILE,
@@ -196,12 +197,24 @@ function dialFor(mode) {
   return hold(state).bits;
 }
 
+async function loginWhenReady(pool, user) {
+  let sock;
+  let msg;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    ({ sock, msg } = await login(pool, user));
+    if (msg.error !== 'busy') return { sock, msg };
+    sock.destroy();
+    await new Promise((resolve) => setTimeout(resolve, LOGIN_PER_IP_WINDOW_MS + 250));
+  }
+  return { sock, msg };
+}
+
 async function assertCarried(pool, rows) {
   const jobs = [];
   for (const row of rows) {
     for (const worker of ['a', 'b']) {
       const user = `${row.dest}.${worker}`;
-      const { sock, msg } = await login(pool, user);
+      const { sock, msg } = await loginWhenReady(pool, user);
       try {
         assert.equal(msg.error, undefined, JSON.stringify(msg));
         const job = msg.job || msg.result?.job;
@@ -329,14 +342,18 @@ describe('v12 ShearK reconnect', () => {
       const first = await boot(dir, feeTo);
       try {
         await assertCarried(first, rows);
+        const job = first.issueJob(undefined, { force: true });
+        assert.ok(job?.header);
         const opened = first.creditAcceptedShare({
-          jobId: 'open-round',
+          jobId: job.jobId,
+          header: Buffer.from(job.header, 'hex'),
           nonce: nonceWithShareTarget(1n, rows[0].bits).toString(),
           hash: 'pre-bounce',
           dest: rows[0].dest,
           shareBits: rows[0].bits,
+          lz: rows[0].bits,
         });
-        assert.equal(opened.ok, true);
+        assert.equal(opened.ok, true, opened.reason);
         assert.ok(first.openShares.length >= 1);
       } finally {
         first.close();

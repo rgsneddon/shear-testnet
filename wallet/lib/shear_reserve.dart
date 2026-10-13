@@ -820,7 +820,10 @@ Future<ReserveVoteResult> commandReserveVote({
   depth;
   final voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
   final needShe = voteL / kUnitsPerShe;
-  if (ledger.spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 < needShe) {
+  if (!spendableCoversLevy(
+    ledger.spendableOwned(restFrame, paymentCode: paymentCode),
+    voteL,
+  )) {
     return ReserveVoteResult(
       enacted: false,
       remark: 'Not enough Continuum spendable for vote tx fee ${formatShe(needShe)} SHE',

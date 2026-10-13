@@ -577,9 +577,11 @@ export function findSealedBlock(store, q) {
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
   if (!id) return null;
   const idx = syncExplorerBook(list);
-  if (/^\d+$/.test(id)) return idx?.byHeight.get(Number(id)) || null;
   const want = id.toLowerCase();
+  // A 64-digit hash is still a hash. Number("...0002") is 2, so height must
+  // not win on a full block id.
   if (want.length === 64 && /^[0-9a-f]+$/.test(want)) return idx?.byHash.get(want) || null;
+  if (/^\d+$/.test(id)) return idx?.byHeight.get(Number(id)) || null;
   const n = Math.min(list.length, EXPLORER_RECENT_CAP);
   const start = list.length - n;
   for (let i = list.length - 1; i >= start; i -= 1) {

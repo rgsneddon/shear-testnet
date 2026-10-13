@@ -11,8 +11,8 @@ import { handleWalletApi, searchExplorerTxs, explorerCirculation, networkSupply,
 import { createPullBook } from '../src/pull_book.js';
 import { publicMinerTag } from '../src/pool.js';
 import { potCreditNanos } from '../src/pull_book.js';
-import { HASH_BONUS_NANOS, NANOS_PER_SHE, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
-import { nextBits, TARGET_BLOCK_INTERVAL_MS, templateStampMs } from '../../crypto/asert.js';
+import { HASH_BONUS_NANOS, NANOS_PER_SHE, GENESIS_BITS_PACKED, asertNextBits } from '../../crypto/asert.js';
+import { TARGET_BLOCK_INTERVAL_MS, templateStampMs } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 
 let powTag = 1;
@@ -151,7 +151,16 @@ describe('explorer dests', () => {
     const parent = store.tip();
     const parentH = decodeHeader(Buffer.from(parent.header));
     const t2 = templateStampMs(Number(parentH.timestamp));
-    const bits2 = nextBits(parentH.bits, TARGET_BLOCK_INTERVAL_MS);
+    const quote2 = asertNextBits({
+      anchorBits: GENESIS_BITS_PACKED,
+      anchorTimeMs: Number(parentH.timestamp),
+      anchorHeight: 1,
+      blockTimeMs: t2,
+      blockHeight: 2,
+      parentTimeMs: Number(parentH.timestamp),
+    });
+    assert.equal(quote2.ok, true, 'asert');
+    const bits2 = quote2.packed;
     const b2 = buildTemplate({
       prev: parent.hash,
       prevHeader: parent.header,

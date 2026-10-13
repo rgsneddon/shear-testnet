@@ -89,7 +89,7 @@ function bookPresent(dir, exists) {
     || exists(path.join(dir, 'segments', 'seg-000000.bin'));
 }
 
-/** This book is testnet-v11 for Shear Sentinel v18 and Continuum 0.71. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming). A testnet-v10 directory is not this book. */
+/** Datadir folder stays testnet-v11. Display is Shear Sentinel v19. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming). A testnet-v10 directory is not this book. */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),

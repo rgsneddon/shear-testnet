@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
 import { asU8, flowInputsBound } from './note.js';
-import { flowNeedsDummy } from './dummy.js';
+import { flowNeedsDummy, publicReserveReceipt } from './dummy.js';
 import { admitVerifyV3, fluxsetFromBlocks, jroot, jrootPoint } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
 
@@ -100,6 +100,7 @@ export function checkAdmitAnchor(tx, H) {
 const TYPED_ADMIT_KINDS = new Set(['lock', 'vote', 'withdraw']);
 
 export function typedKindNeedsAdmitV3(tx) {
+  if (publicReserveReceipt(tx)) return false;
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   return TYPED_ADMIT_KINDS.has(kind);
 }

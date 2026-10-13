@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
+import { STRATUM_LINE_MAX, parseBoundedJson, HTTP_TX_BODY_MAX } from '../../crypto/json_bounds.js';
 import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
@@ -46,7 +46,7 @@ import {
   PRODUCT_VERSION,
   PI_SHE_NANOS,
 } from '../../crypto/asert.js';
-import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
+import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, custodialPullRejected, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { handleAdminHttp, createAdmin } from './admin.js';
 import {
@@ -69,7 +69,7 @@ import { createStore } from '../../node/src/store.js';
 import { epochMs } from '../../crypto/pot_sched.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { txIsReserveAction } from '../../crypto/reserve_vault.js';
-import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote, templateForFinder, publicJob } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote, templateForFinder, cachedFinderTemplate, publicJob } from '../../node/src/chain.js';
 import { rememberStoredJob } from '../../node/src/job_cap.js';
 import {
   sortShares,
@@ -83,7 +83,7 @@ import {
   paidWorkKeys,
   rememberLiveSharePow,
   destOfShare,
-  verifyShareBatch,
+  structuralShareVerdict,
   pinLiveSharePow,
   pinOneLiveSharePow,
   liveSharePowKey,
@@ -120,29 +120,49 @@ export { hasherHasValidRoundShare, roundActualHashes };
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 const REPO_ROOT = path.join(__dirname, '../..');
+const gitHeadCache = new Map();
+
+function gitDirOf(cwd) {
+  const gitPath = path.join(cwd, '.git');
+  const st = fs.statSync(gitPath);
+  if (st.isDirectory()) return gitPath;
+  const txt = fs.readFileSync(gitPath, 'utf8').trim();
+  const m = txt.match(/^gitdir:\s*(.+)$/i);
+  if (!m) return null;
+  return path.resolve(cwd, m[1].trim());
+}
 
 export function gitHeadOf(cwd = REPO_ROOT) {
   // The advertised head is this tree. SHEAR_GIT_HEAD must not label another book.
+  // One read per directory. A worktree .git file is a pointer, and spawnSync
+  // on every stats paint stalls /api/stats.
   void process.env.SHEAR_GIT_HEAD;
+  if (gitHeadCache.has(cwd)) return gitHeadCache.get(cwd);
+  let head = '';
   try {
-    const gitDir = path.join(cwd, '.git');
-    let head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
-    if (/^ref:/.test(head)) {
-      head = fs.readFileSync(path.join(gitDir, head.slice(4).trim()), 'utf8').trim();
+    const gitDir = gitDirOf(cwd);
+    if (gitDir) {
+      let text = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (/^ref:/.test(text)) {
+        text = fs.readFileSync(path.join(gitDir, text.slice(4).trim()), 'utf8').trim();
+      }
+      if (/^[0-9a-f]{7,40}$/i.test(text)) head = text.toLowerCase();
     }
-    if (/^[0-9a-f]{7,40}$/i.test(head)) return head.toLowerCase();
   } catch { /* packed-refs or missing */ }
-  try {
-    const r = spawnSync('git', ['rev-parse', 'HEAD'], {
-      cwd,
-      encoding: 'utf8',
-      timeout: 2000,
-      windowsHide: true,
-    });
-    const h = String(r.stdout || '').trim();
-    if (/^[0-9a-f]{7,40}$/i.test(h)) return h.toLowerCase();
-  } catch { /* not a git checkout */ }
-  return '';
+  if (!head) {
+    try {
+      const r = spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd,
+        encoding: 'utf8',
+        timeout: 2000,
+        windowsHide: true,
+      });
+      const h = String(r.stdout || '').trim();
+      if (/^[0-9a-f]{7,40}$/i.test(h)) head = h.toLowerCase();
+    } catch { /* not a git checkout */ }
+  }
+  gitHeadCache.set(cwd, head);
+  return head;
 }
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
 export const HASHRATE_WINDOW_MS = 180_000;
@@ -929,6 +949,9 @@ export const ALERT_CONCENTRATION = Number(process.env.SHEAR_ALERT_CONCENTRATION 
 export const ALERT_SHARE_BLOCK = Number(process.env.SHEAR_ALERT_SHARE_BLOCK || 10_000) || 10_000;
 export const SUBMIT_PER_IP_MAX = Math.max(4, Number(process.env.SHEAR_SUBMIT_PER_IP_MAX || 32) || 32);
 export const SUBMIT_PER_IP_WINDOW_MS = Math.max(200, Number(process.env.SHEAR_SUBMIT_PER_IP_WINDOW_MS || 1000) || 1000);
+/** Fresh stratum logins per IP. A reconnect of a known worker is not counted. */
+export const LOGIN_PER_IP_MAX = Math.max(1, Number(process.env.SHEAR_LOGIN_PER_IP_MAX || 4) || 4);
+export const LOGIN_PER_IP_WINDOW_MS = Math.max(1000, Number(process.env.SHEAR_LOGIN_PER_IP_WINDOW_MS || 10_000) || 10_000);
 
 export function statsAlerts({
   topDestSharePct: pct,
@@ -1195,11 +1218,11 @@ export function rememberJobHeader(job, outgoingHex) {
 }
 
 /**
- * Headers this pool actually issued. Current header, then each job's
- * history, then any extra the caller still holds. The list is not derived
- * from share frames. The cap is a memory bound.
+ * Headers this pool actually issued. The live job is pinned first, then
+ * jobs from newest to oldest, then any extra the caller still holds.
+ * The list is not derived from share frames. The cap is a memory bound.
  */
-export function collectIssuedHeaders(jobs, extra = []) {
+export function collectIssuedHeaders(jobs, extra = [], liveJob = null) {
   const out = [];
   const seen = new Set();
   const push = (header) => {
@@ -1214,11 +1237,14 @@ export function collectIssuedHeaders(jobs, extra = []) {
   const visit = (job) => {
     for (const header of candidateShareHeaders(job)) push(header);
   };
+  if (liveJob) visit(liveJob);
+  const rows = [];
   if (jobs && typeof jobs.values === 'function') {
-    for (const rec of jobs.values()) visit(rec?.job || rec);
+    for (const rec of jobs.values()) rows.push(rec?.job || rec);
   } else if (Array.isArray(jobs)) {
-    for (const job of jobs) visit(job);
+    for (const job of jobs) rows.push(job);
   }
+  for (let i = rows.length - 1; i >= 0; i -= 1) visit(rows[i]);
   for (const header of extra || []) push(header);
   return out;
 }
@@ -1743,8 +1769,8 @@ export function adminMinerView(m, now = Date.now()) {
   };
 }
 
-/** Same byte cap as a P2P frame. A larger declared body is refused before it is read. */
-export const HTTP_BODY_MAX = 16 * 1024 * 1024;
+/** Wallet and stratum bodies. A block still fits the 16 MiB P2P frame. A larger declared body is refused before it is read. */
+export const HTTP_BODY_MAX = HTTP_TX_BODY_MAX;
 
 export function readCappedBody(req, cap = HTTP_BODY_MAX) {
   const rawLen = req?.headers?.['content-length'];
@@ -1851,6 +1877,7 @@ export function createPool({
     }
   }
   const ipSubmitAt = new Map();
+  const ipLoginAt = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
   let hashSeq = 0;
@@ -2832,11 +2859,10 @@ export function createPool({
 
   function snapshotIssuedHeaders() {
     const extra = [];
-    if (lastJob?.header) extra.push(lastJob.header);
     if (Array.isArray(lastJob?.headerHistory)) {
       for (const header of lastJob.headerHistory) extra.push(header);
     }
-    return collectIssuedHeaders(store.jobs, extra);
+    return collectIssuedHeaders(store.jobs, extra, lastJob);
   }
 
   function stampSealSlots(rows, parentHeader, priorHeader, issued = lag1Issued) {
@@ -3476,11 +3502,12 @@ export function createPool({
       const parent = store.tip()?.header || null;
       if (parent && key && klass !== 'header') {
         const rowBad = [];
+        const priorHeader = tipShareContext().priorHeader;
         for (const s of lag1Shares) {
-          const one = verifyShareBatch({
+          const one = structuralShareVerdict({
             parentHeader: parent,
+            priorHeader,
             shares: [s],
-            skipPow: true,
             issuedJobKeys: lag1Issued,
           });
           if (one.ok) continue;
@@ -3892,14 +3919,67 @@ export function createPool({
   /**
    * Header this connection hashes. The finder-fee note pays `dest`.
    * The shared job holds that half at the unclaimed dest. A fee dest is not given one.
+   * A cache miss returns the shared job and seals at most one new dest
+   * on a later turn. `seal` is that later turn.
    */
-  function aimFinderJob(job, dest) {
+  let finderSealArmed = false;
+  const finderSealWait = [];
+
+  function deliverAimedJob(dest, aimed) {
+    if (!aimed?.header) return;
+    for (const m of miners.values()) {
+      const payout = hasherPayoutDest(m.login, { dest: m.payoutDest });
+      if (payout !== dest) continue;
+      for (const c of m.connections || []) {
+        if (!c?.sock || c.shearFeeRoute) continue;
+        c.job = aimed;
+        try {
+          c.sock.write(line({ method: 'job', params: wireJob(aimed, c.shareBits) }));
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
+  function runFinderSeal() {
+    finderSealArmed = false;
+    const next = finderSealWait.shift();
+    if (!next) return;
+    let aimed = null;
+    try {
+      aimed = aimFinderJob(next.job, next.dest, { seal: true });
+    } catch { /* a failed seal stays on the shared job */ }
+    if (aimed && aimed.jobId && aimed.jobId !== next.job.jobId) deliverAimedJob(next.dest, aimed);
+    if (finderSealWait.length && !finderSealArmed) {
+      finderSealArmed = true;
+      setImmediate(runFinderSeal);
+    }
+  }
+
+  function scheduleFinderAim(job, dest) {
+    const id = `${job?.jobId || ''}\0${dest}`;
+    if (finderSealWait.some((row) => row.id === id)) return;
+    finderSealWait.push({ id, job, dest });
+    if (finderSealArmed) return;
+    finderSealArmed = true;
+    setImmediate(runFinderSeal);
+  }
+
+  function aimFinderJob(job, dest, { seal = false } = {}) {
     if (!job || !isDestAddress(dest)) return job;
     const rec = store.jobs.get(String(job.jobId));
     const tpl = rec?.tpl;
     if (!tpl?.levyBind?.finderNanos) return job;
-    const aimedTpl = templateForFinder(tpl, dest);
-    if (!aimedTpl) return null;
+    const peek = cachedFinderTemplate(tpl, dest);
+    if (!peek.ok) return null;
+    let aimedTpl = peek.tpl;
+    if (peek.miss) {
+      if (!seal) {
+        scheduleFinderAim(job, dest);
+        return job;
+      }
+      aimedTpl = templateForFinder(tpl, dest);
+      if (!aimedTpl) return null;
+    }
     const aligned = alignFinderHeader(aimedTpl, headerFromHex(job.header));
     const jobId = finderJobId(job.jobId, dest);
     if (!jobId) return null;
@@ -4594,6 +4674,16 @@ export function createPool({
             continue;
           }
           const key = adm.workerKey;
+          if (!miners.has(key)) {
+            const ipBudget = noteIpSubmit(ipLoginAt, sockIp(sock), Date.now(), {
+              max: LOGIN_PER_IP_MAX,
+              windowMs: LOGIN_PER_IP_WINDOW_MS,
+            });
+            if (!ipBudget.ok) {
+              replyLine(sock, { id: msg.id, error: 'busy' }, { drop: true });
+              continue;
+            }
+          }
           session = miners.get(key) || {
             login: adm.login,
             workerKey: key,
@@ -5285,12 +5375,8 @@ export function createPool({
   function queueSend(t, meta) {
     const id = t.id || `send-${Date.now()}`;
     const tx = { id, ...t };
-    if (!custodialPullAllowed() && (
-      String(tx.kind || '') === 'pool-withdraw'
-      || String(tx.vout?.[0]?.kind || '') === 'pool-withdraw'
-    )) {
-      return { ok: false, reason: 'custodial_pull' };
-    }
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
     const owedRaw = Number(meta && meta.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     if (typeof store.queueTx === 'function') {
@@ -5811,6 +5897,10 @@ export function createPool({
     try { httpServer.closeAllConnections?.(); } catch { /* ignore */ }
     try { httpServer.close(); } catch { /* ignore */ }
   }
+
+  // The first /api/stats read is the snap. A listen-time setImmediate is too
+  // late for a request that arrives in the same turn as listen.
+  try { paintStatsSnap(); } catch { /* the listening refresh retries */ }
 
   return {
     store,

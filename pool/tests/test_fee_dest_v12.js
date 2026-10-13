@@ -11,7 +11,7 @@ import { POOL_FEE_BPS } from '../../crypto/asert.js';
 const FEE = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
 
 describe('v12 pool fee address', () => {
-  it('the page, /api/stats and the pool config hold the identical address', async () => {
+  it('the page and the pool config hold the address, and stats publish the tail', async () => {
     assert.equal(isDestAddress(FEE), true);
     assert.equal(THIS_POOL_DIRECT_FEE_DEST, FEE);
     const ident = configuredFeeIdentity({ env: {} });
@@ -39,9 +39,10 @@ describe('v12 pool fee address', () => {
       pool.paintStatsSnap();
       const stats = await fetch(`http://127.0.0.1:${heard.httpPort}/api/stats`).then((r) => r.json());
       assert.equal(stats.ok, true);
-      assert.equal(stats.feeDest, FEE);
-      assert.equal(stats.feeDest, code);
-      assert.equal(stats.feeDest, THIS_POOL_DIRECT_FEE_DEST);
+      assert.equal(stats.feeDest, undefined);
+      assert.equal(JSON.stringify(stats).includes(FEE), false);
+      assert.equal(stats.feeDestTail, FEE.slice(-4));
+      assert.equal(stats.feeDestTail, code.slice(-4));
       assert.equal(stats.feeNanos, undefined);
       assert.equal(stats.poolFeeNanos, undefined);
       assert.equal(stats.fluxset, undefined);

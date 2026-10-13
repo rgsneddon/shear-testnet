@@ -221,8 +221,13 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.equal(gotMissing.reason, 'admit_membership');
 
     const sampled = mkSend({ id: 'sampled' });
-    const subset = live.pubs.slice(0, 1);
-    const subsetC = live.commits.slice(0, 1);
+    const spentCommit = Buffer.from(spent.commit);
+    const at = live.commits.findIndex((c) => {
+      try { return Buffer.from(c).equals(spentCommit); } catch { return false; }
+    });
+    assert.ok(at >= 0, 'spent note is in the fluxset');
+    const subset = [live.pubs[at]];
+    const subsetC = [live.commits[at]];
     sampled.admit_proof = admitProve({
       x: admitScalarFromSeed(spendSeed, spent),
       index: 0,
