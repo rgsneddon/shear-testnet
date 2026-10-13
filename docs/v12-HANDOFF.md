@@ -1,5 +1,15 @@
 # shear-testnet-v12 handoff
 
+## Review record 2026-10-13 (PR 69 and PR 71, second pass)
+
+Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak. Neither pull request was merged.
+
+- PR 69 (`cursor/wallet-v12-send-1013`, head `1c5f505e617b7d3c1db65bb8d4b297683205a68f`) is still an open draft. GitHub reports it conflicting with feat `f91e496c`. The branch is cut from `38592720` and still contains `a197192f`, which edits `crypto/native/admit/src/gadget.rs` and `prove.rs`. Those prover edits stay off feat.
+- Day-1 send is still open on that head. The 1-input send and the 1-input transfer are byte-3 blobs of 23938 bytes, and mempool and `verifyBlock` accepted them. The 8-input seal stopped after the first proof. `queueTx` and block append did not run. `flutter test` was 386 passed and 49 failed. No arm64 phone library was built, and no phone sent.
+- The Dart proof map still carries the blind `t`. `wallet/lib/shear_native_prove.dart` returns `t: blindT`, `flowPostHex` hexifies that map, and `ShearPoolClient.send` posts it as `admit_proof` to `/api/wallet/send`. The JS seal in `crypto/flow_membership.js` does not put `t` on the proof it posts. A debug stand-in can still return early. Gaps: `.cos-inbox/BUILD-wallet-pr69-short-1013.md` and `.cos-inbox/109-wh-pr69-wallet-send.md`.
+- PR 71 (`cursor/v12-windows-android-builds-bdb9`, head `7ac0d47e5e3e5ec907355d38013878115d3f3a26`) is an open draft. GitHub reports it mergeable. It was not merged. The diff against feat is only `docs/V12-WINDOWS-ANDROID-BUILDS.md`. Windows node and Windows miner logs stand. The Windows wallet was not built. The Android debug APK was not installed. The log's claim that Android node and miner are waived is not in the inbox. Gap: `.cos-inbox/BUILD-windows-android-pr71-short-1013.md`.
+- PR 65 is still `43f05edf`. The burial agent has no branch. FS-1 finished with no branch. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
+
 ## Review record 2026-10-13 (PR 71)
 
 Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak.
