@@ -125,8 +125,8 @@ export function admitVerifyV3(proof, fluxset, extra = {}) {
     if (!blob) return false;
     const pr = Buffer.from(asU8(blob));
     if (!pr.length || pr[0] !== 3) return false;
-    // Height-4 v3 proof is 40354 bytes. Height 5 does not fit. v2 stays 32768.
-    if (pr.length > 40354) return false;
+    // Height-4 v3 proof fits in MAX_PROOF_V3. Height 5 does not. v2 stays 32768.
+    if (pr.length > 43490) return false;
     const context = extra.ctx;
     if (!context || Buffer.from(asU8(context)).length !== 64) return false;
     // A fluxset.jroot is the v2 book. Recompute the point root unless the caller passed one.

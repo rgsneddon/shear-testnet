@@ -4,17 +4,16 @@ Russell signed off at 12:03 BST. Steps 1–6 are on `cursor/admitv2-removal-1013
 
 Parent of step 1: `ff92ba54` (Write the FS-1 gate. The live prover stays the 43490 two-bucket path.).
 
-Toolchain: `rustup update stable` left rustc 1.99.0 (b940084d7 2026-09-28). Native addons were built with `NODE_INC=/home/ubuntu/.nvm/versions/node/v22.23.3/include/node`. The test runner is Node v22.14.0. Dart and Flutter are not installed (`command -v dart` and `command -v flutter` are empty). `wallet/pubspec.yaml` wants `sdk: ^3.12.2` and the Flutter SDK, so every wallet Dart test was skipped.
+Toolchain: `rustup update stable` left rustc 1.99.0 (b940084d7 2026-09-28). Native addons were built with `NODE_INC=/home/ubuntu/.nvm/versions/node/v22.23.3/include/node`. The test runner is Node v22.14.0. Flutter 3.47.7 (stable, revision abaf9c5237) and Dart 3.13.5 are installed under `/home/ubuntu/sdk/flutter`. That satisfies `wallet/pubspec.yaml` `sdk: ^3.12.2`.
 
-## Cap mismatch (not fixed)
+## Cap
 
-The JS v3 verify cap and the Rust cap disagree.
+JS, N-API, and Rust now agree on **43490**. `prove.rs` was not edited. `MAX_PROOF_V3` stays 43490.
 
-- JS, `crypto/admit.js`: a proof longer than **40354** bytes fails `admitVerifyV3`. The comment still says a height-4 v3 proof is 40354 bytes and that v2 stays 32768.
-- Rust, `crypto/native/admit/src/prove.rs`: `MAX_PROOF_V3` is **43490**. The cap test still asserts 43490.
-- The N-API v3 prove buffer is also allocated at 40354.
-
-That was left as it is.
+- `crypto/admit.js`: `admitVerifyV3` rejects a proof longer than 43490. v2 stays 32768.
+- `crypto/native/admit_napi.c`: the v3 prove buffer is 43490.
+- `crypto/native/admit/src/prove.rs`: `MAX_PROOF_V3` is still 43490. The cap test still asserts 43490. Height 5 still does not fit.
+- `node/tests/test_finder_levy_accept_v12.js`: `PROOF_CAP` is 43490. That file mines, so it was not re-run.
 
 ## What stayed
 
@@ -112,10 +111,38 @@ Tests:
 - Wallet Dart: skipped, no Flutter SDK.
 - Rust and C did not change. Addon not rebuilt. Cargo not restarted.
 
-## Skipped, with the reason
+## Follow-up the same evening
 
-- Every wallet Dart test, all six steps: Dart and Flutter are not on this machine.
-- Step 2 mining files (`test_admit_consensus.js`, `test_ibd_unsigned.js`, `test_levy_verify.js`): 600s file timeout. Genesis difficulty is 17 bits and Jit ShearHash on this VM was about 48 H/s. Difficulty was not lowered.
-- `admitProveV3` / the fresh-point JS case, and the release `leaf_rerand_v3` (and the lib.rs v3 prove tests behind it): not finished. One n=1 prove was killed after about 563s. The release suite was still inside the first `leaf_prove_v3` test when this note was written.
+Russell retired the v3 group-of-32 send (FS-1 only). The long proving runs were stopped and were not restarted. Those stops are skips, not test failures. Step 7 stays undone. `V12_GENESIS_BLOCK_HASH` is still `''`. No tag, no merge, no genesis cut. `gadget.rs` and `prove.rs` were not edited. Base stays `cursor/close-open-p0-0bcc`.
+
+Fixes that stayed:
+
+- Extra-mint with an empty vin returns `mint_forbidden` instead of `range_proof`. An unvaulted reserve withdraw with no non-coinbase vin returns `insufficient` when the vault says so, before `admit_version`.
+- `tests/test_public_copy.js` follows the shipped Continuum **0.72** pin in `node/src/help.js`. The site copy that still says 0.71 was left alone.
+- `node/tests/test_rpc.js` expects `shear-testnet-v12`.
+- JS `admitVerifyV3` and the N-API v3 prove buffer are 43490. Rust `MAX_PROOF_V3` stays 43490.
+- `decodeWireBlock` omits `hashCredits` and `hashSpillCredits` when the wire did not carry them. An own-property set to `undefined` was making `freshForBlock` / `spillForBlock` return `hash_owed`.
+
+Fast tests after those fixes:
+
+- `node/tests/test_gate_evm.js`, `node/tests/test_money_range_v12.js`, `node/tests/test_rpc.js`, `node/tests/test_verify_mint.js`, and `tests/test_public_copy.js` together: **14 pass, 0 fail**.
+- `crypto/admit.test.js` without the fresh-point prove: **2 pass, 0 fail**. The fresh-point case calls `admitProveV3` and was not run.
+- Dart, `shear_wallet_test.dart` “libsodium ristretto matches dart Element; v4 send is native ADMITv2 only”: **1 pass, 0 fail**. `lib/shear_admit.dart` does not contain `admitProve`. `proveFlowSpend` still throws `admit_v2_closed` before any prover when the debug hook is null, and a hook result still has to be version 2.
+- An earlier full `flutter test` in `wallet/`, before this scope change, finished **384 pass, 49 fail**. Those failures were already in the tree (ssa1 short form, connection refused, spendable amounts, timeouts). They were not re-run as a full suite after the comment edit.
+- `wallet/test/t18_off_ui_test.dart`: **0 pass, 1 fail**. The child `t18_off_ui_check.dart` exited 255 with the ssa1 short-form `StateError` before it reached `admit_v2_closed`. That is the same pre-existing failure, not a v3 prove.
+
+Skipped because the v3 group-of-32 send is retired, not because they failed an assertion:
+
+- The Dart send test that called `admitProveV3` through `wallet_native_prove.mjs`. The node process was killed while that test was still inside the prove. The test wiring was removed so a later `flutter test` does not start it again.
+- Release `cargo test` (`RUST_MIN_STACK=67108864`, `--lib`, `--test-threads=1`). **47 tests had already printed `ok`**, including `fast_v3_body_commits_yx_to_the_tree_fingerprint` and `leaf_rerand_v3_blinds_remainder_and_rejects_v2`. The process was then killed inside `tests::v3_paired_remainder_hides_the_child_slot` (n=40). The log line is `signal: 9, SIGKILL` and cargo exit 101. That is the stop, not an assertion failure. `v3_two_bucket_hides_the_spent_notes` (n=64) had not started. The suite was not restarted.
+- Mining files that need hours at genesis 17 bits (`GENESIS_BITS_PACKED` unchanged): `node/tests/test_admit_consensus.js`, `node/tests/test_ibd_unsigned.js`, `node/tests/test_levy_verify.js`. They were killed while still hashing. No passing TAP line. An earlier IBD run, before the wire-credit fix, had finished **2 pass, 1 fail** (`hash_owed` on the wired genesis). The re-run after the decode fix was the one that was stopped. Difficulty was not lowered.
+
+Still out of scope: step 7 (FS-1), a tag, a genesis cut, and a merge onto `feat/shear-testnet-v12`.
+
+## Skipped during steps 1–6, with the reason
+
+- Every wallet Dart test, all six steps: Flutter was not on the machine yet. The follow-up above is the run that happened after it was installed.
+- Step 2 mining files at a 600s file timeout. The follow-up stopped the long 17-bit runs on purpose.
+- `admitProveV3` and the release suite: not finished in steps 1–6. The follow-up stopped them because the group-of-32 send is retired.
 - Step 5 parser edit: no genesis-to-tip book, so byte 2 remains a versioned tag.
 - Step 7: out of scope.

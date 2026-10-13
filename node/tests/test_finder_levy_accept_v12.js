@@ -64,7 +64,7 @@ import {
 } from '../../crypto/admit_v3.js';
 
 const T0 = 1_700_000_000_000;
-const PROOF_CAP = 40354;
+const PROOF_CAP = 43490;
 const PROGRESS = path.join(os.tmpdir(), 'shear-finder-levy-accept-progress.txt');
 
 function progress(row) {
