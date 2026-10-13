@@ -4,6 +4,7 @@
  * for any extra field and any amount. A signed refused kind with
  * no extra field stays kind. A clean coinbase stays coinbase.
  * verifyBlock of a clean body is not unsigned.
+ * A b-spend keeps its consensus fields. An extra field on that body is unsigned.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -43,8 +44,39 @@ function coinbaseTx() {
   };
 }
 
-function cloneBody(tx) {
+function bSpendTx(dest) {
   return {
+    id: 'unsigned-bspend',
+    kind: 'b-spend',
+    from: dest,
+    to: dest,
+    nanos: 1,
+    fee: 0,
+    bFlag: 1,
+    unit: 1,
+    nonce: 1,
+    dest20: Buffer.alloc(20, 7),
+    commitHeight: 1,
+    index: 0,
+    commitHeader: Buffer.alloc(128, 3),
+    commitRootA: Buffer.alloc(32, 4),
+    commitRootB: Buffer.alloc(32, 5),
+    leaf: {
+      dest20: Buffer.alloc(20, 7),
+      unit: 1,
+      nonce: 1,
+      memoH: Buffer.alloc(32, 6),
+      tag: 'b',
+    },
+    proof: [{ side: 'L', hash: Buffer.alloc(32, 8).toString('hex') }],
+    excess: Buffer.alloc(32, 9),
+    vin: [{ address: dest }],
+    vout: [{ address: dest, nanos: 1, kind: 'b-spend' }],
+  };
+}
+
+function cloneBody(tx) {
+  const next = {
     ...tx,
     vin: (tx.vin || []).map((v) => ({ ...v })),
     vout: (tx.vout || []).map((o) => ({
@@ -52,6 +84,13 @@ function cloneBody(tx) {
       ...(o.valueProof && typeof o.valueProof === 'object' ? { valueProof: { ...o.valueProof } } : {}),
     })),
   };
+  if (tx.leaf && typeof tx.leaf === 'object' && !Buffer.isBuffer(tx.leaf)) next.leaf = { ...tx.leaf };
+  if (Array.isArray(tx.proof)) {
+    next.proof = tx.proof.map((step) => (
+      step && typeof step === 'object' && !Buffer.isBuffer(step) ? { ...step } : step
+    ));
+  }
+  return next;
 }
 
 function plant(tx, where, name, amount) {
@@ -59,6 +98,8 @@ function plant(tx, where, name, amount) {
   if (where === 'top') next[name] = amount;
   else if (where === 'vin') next.vin[0][name] = amount;
   else if (where === 'vout') next.vout[0][name] = amount;
+  else if (where === 'leaf') next.leaf[name] = amount;
+  else if (where === 'proof') next.proof = [{ ...next.proof[0], [name]: amount }];
   else next.vout[0].valueProof = { v: 0, [name]: amount };
   return next;
 }
@@ -95,6 +136,17 @@ describe('unsigned body field', () => {
       const verifiedCb = await Promise.resolve(verifyBlock({ txs: [coinbaseTx()] }));
       assert.equal(verifiedCb.ok, false);
       assert.notEqual(verifiedCb.reason, 'unsigned', `clean coinbase verify ${verifiedCb.reason}`);
+
+      const bspend = signSpendTx(bSpendTx(box.dest), box.key);
+      const queuedB = store.queueTx(cloneBody(bspend));
+      assert.equal(queuedB.ok, false);
+      assert.notEqual(queuedB.reason, 'unsigned', `clean b-spend queue ${queuedB.reason}`);
+      const pooledB = admitMempool(book, cloneBody(bspend));
+      assert.equal(pooledB.ok, false);
+      assert.notEqual(pooledB.reason, 'unsigned', `clean b-spend mempool ${pooledB.reason}`);
+      const verifiedB = await Promise.resolve(verifyBlock(blockWith(cloneBody(bspend))));
+      assert.equal(verifiedB.ok, false);
+      assert.notEqual(verifiedB.reason, 'unsigned', `clean b-spend verify ${verifiedB.reason}`);
 
       for (const name of FIELD_NAMES) {
         for (const amount of AMOUNTS) {
@@ -137,6 +189,23 @@ describe('unsigned body field', () => {
           }));
           assert.equal(vv.ok, false, `verify ${vinLabel}`);
           assert.equal(vv.reason, 'unsigned', `verify ${vinLabel} ${vv.reason}`);
+        }
+      }
+      for (const name of FIELD_NAMES) {
+        for (const amount of AMOUNTS) {
+          for (const where of ['top', 'leaf', 'proof']) {
+            const tx = plant(bspend, where, name, amount);
+            const label = `b-spend ${where} ${name} ${amount}`;
+            const q = store.queueTx(tx);
+            assert.equal(q.ok, false, `queue ${label}`);
+            assert.equal(q.reason, 'unsigned', `queue ${label} ${q.reason}`);
+            const a = admitMempool(book, plant(bspend, where, name, amount));
+            assert.equal(a.ok, false, `mempool ${label}`);
+            assert.equal(a.reason, 'unsigned', `mempool ${label} ${a.reason}`);
+            const v = await Promise.resolve(verifyBlock(blockWith(plant(bspend, where, name, amount))));
+            assert.equal(v.ok, false, `verify ${label}`);
+            assert.equal(v.reason, 'unsigned', `verify ${label} ${v.reason}`);
+          }
         }
       }
     } finally {
