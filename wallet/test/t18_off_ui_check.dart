@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_ed25519.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
@@ -154,7 +155,7 @@ Future<void> main() async {
     throw StateError('prove accepted a pub that is not the note');
   } on StateError catch (e) {
     proveErr = e.message;
-    if (e.message != 'admit_v2_closed') rethrow;
+    if (e.message != kErrSendUnavailable) rethrow;
   }
   if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {
     throw StateError('prove stamp $debugSendProveStamp ui $ui err $proveErr');
@@ -192,7 +193,7 @@ Future<void> main() async {
       }).timeout(const Duration(seconds: 30));
       throw StateError('spend proved nanos=${note['nanos']}');
     } on StateError catch (e) {
-      if (e.message != 'admit_v2_closed') rethrow;
+      if (e.message != kErrSendUnavailable) rethrow;
       closed += 1;
     }
     if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {

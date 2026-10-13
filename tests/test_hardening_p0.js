@@ -37,7 +37,7 @@ describe('P0 hardening + short addresses', () => {
     assert.equal(ledger.includes('var note = sealNote('), false);
     assert.equal(ledger.includes('viewKey='), false);
     assert.match(admit, /kErrSendUnavailable/);
-    assert.match(admit, /nativeProveFlowSpend/);
+    assert.doesNotMatch(admit, /nativeProveFlowSpend/);
     const helper = fs.readFileSync(path.join(root, 'crypto/wallet_native_prove.mjs'), 'utf8');
     assert.doesNotMatch(helper, /admitProve/);
     assert.match(helper, /send unavailable until FS-1/);

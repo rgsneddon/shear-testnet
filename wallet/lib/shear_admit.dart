@@ -100,7 +100,7 @@ bool _eq(Uint8List a, Uint8List b) {
   return true;
 }
 
-/// Closed until FS-1. Does not call [nativeProveFlowSpend].
+/// Closed until FS-1. The wallet has no spend prover to call.
 /// A missing helper used to surface as admit_native_required.
 Map<String, dynamic> proveFlowSpend(
   Map<String, dynamic> tx, {

@@ -421,7 +421,7 @@ void main() {
         pubs: [Uint8List(32)],
         commits: [Uint8List(32)],
       ),
-      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'admit_v2_closed')),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', kErrSendUnavailable)),
     );
     expect(tx.containsKey('admit_proof'), isFalse);
     expect(admitTemps().difference(before), isEmpty);
@@ -599,7 +599,7 @@ void main() {
     expect(src.contains('shear-admit-v1'), isFalse);
     expect(src.contains('admitProve'), isFalse);
     expect(src.contains('nativeProveFlowSpend'), isFalse);
-    expect(src.contains("throw StateError('admit_v2_closed')"), isTrue);
+    expect(src.contains('throw StateError(kErrSendUnavailable)'), isTrue);
   });
 
   test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
@@ -1220,7 +1220,7 @@ void main() {
         spendSeed: seed,
         allowPublicHttp: true,
       ),
-      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'admit_v2_closed')),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', kErrSendUnavailable)),
     );
     expect(pool.notesHits, greaterThan(0));
     expect(posts, isEmpty);
@@ -1378,7 +1378,7 @@ void main() {
           spendSeed: w.seed,
           allowPublicHttp: true,
         ),
-        throwsA(isA<StateError>().having((e) => e.message, 'msg', 'admit_v2_closed')),
+        throwsA(isA<StateError>().having((e) => e.message, 'msg', kErrSendUnavailable)),
       );
       expect(w.posts, isEmpty);
       expect(w.ledger.notes.every((n) => n['spent'] != true), isTrue);
@@ -1847,7 +1847,7 @@ void main() {
         paymentCode: id.paymentCode,
         spendSeed: seed,
       ),
-      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'admit_v2_closed')),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', kErrSendUnavailable)),
     );
     expect(posts, isEmpty);
     expect(ledger.notes.every((n) => n['spent'] != true), isTrue);

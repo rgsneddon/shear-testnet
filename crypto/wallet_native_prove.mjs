@@ -34,7 +34,7 @@ try {
 
 const op = String(req.op || '');
 if (op === 'prove_spend') {
-  process.stdout.write(JSON.stringify({ ok: false, reason: 'admit_v2_closed' }));
+  process.stdout.write(JSON.stringify({ ok: false, reason: 'send unavailable until FS-1' }));
   process.exit(4);
 }
 
@@ -67,11 +67,6 @@ if (op === 'verify_ranges') {
   });
   process.stdout.write(JSON.stringify({ ok: true, v: 2, verified }));
   process.exit(0);
-}
-
-if (op === 'prove_spend') {
-  process.stdout.write(JSON.stringify({ ok: false, reason: 'send unavailable until FS-1' }));
-  process.exit(4);
 }
 
 process.stdout.write(JSON.stringify({ ok: false, reason: 'unknown_op' }));
