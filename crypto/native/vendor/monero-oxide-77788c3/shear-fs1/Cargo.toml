@@ -1,0 +1,33 @@
+[package]
+name = "shear-fs1"
+version = "0.1.0"
+description = "Unwired Shear adaptation of the vendored monero-oxide FCMP++ membership prover"
+license = "MIT"
+edition = "2021"
+rust-version = "1.81"
+publish = false
+
+[dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }
+subtle = { version = "2", default-features = false }
+zeroize = { version = "1.5", default-features = false, features = ["alloc"] }
+generic-array = { version = "1", default-features = false }
+
+ciphersuite = { version = "0.4", features = ["alloc"] }
+dalek-ff-group = "0.5"
+# Exact pin. The vendored fcmps and GBP crates accept any 0.5 line; this forces 0.5.2.
+multiexp = { version = "=0.5.2", default-features = false, features = ["std", "batch"] }
+
+helioselene = { path = "../helioselene" }
+ec-divisors = { path = "../divisors", features = ["ed25519", "std"] }
+# `tests` exposes insecure_test_generators. Those generators are test parameters only.
+generalized-bulletproofs = { path = "../generalized-bulletproofs", features = ["tests"] }
+generalized-bulletproofs-ec-gadgets = { path = "../fcmps/ec-gadgets" }
+full-chain-membership-proofs = { path = "../fcmps" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "fs1_bench"
+path = "src/bin/fs1_bench.rs"
