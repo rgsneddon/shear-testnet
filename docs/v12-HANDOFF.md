@@ -1,5 +1,7 @@
 # shear-testnet-v12 handoff
 
+PR 72 `7167c7ff` (FS-1 send gate) was not merged. PR 65 is still `43f05edf`; its failure follow-up is re-queued and still pending. Burial has no branch. Wallet send, 052, 018e, and the Windows wallet stay open. Genesis was not cut.
+
 ## Review record 2026-10-13 (PR 69 and PR 71, second pass)
 
 Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak. Neither pull request was merged.
