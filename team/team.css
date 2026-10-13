@@ -140,3 +140,20 @@ body.team-page {
   .skeptic-circle { width: 152px; height: 152px; }
   .skeptic-face { width: 60px; height: 60px; }
 }
+
+/* Centre partial last rows in every group (desktop + mobile) */
+.assist-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem;
+}
+.assist-grid > .card {
+  flex: 0 1 320px;
+  width: 320px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+@media (max-width: 640px) {
+  .assist-grid > .card { flex-basis: 100%; width: 100%; }
+}
