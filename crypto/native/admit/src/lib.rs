@@ -1023,10 +1023,12 @@ mod tests {
             .collect()
     }
 
-    /// One-layer proof: header, then two arity-32 buckets, then the leaf blob.
+    /// One-layer proof. Version 2 publishes both buckets. Version 3 publishes
+    /// the dest bucket only; the C notes are not on the wire.
     fn one_layer_leaf_w(proof: &[u8]) -> [u8; 32] {
         assert_eq!(proof[257], 1, "n <= 32 is one layer");
-        let off = 258 + 32 * 32 * 2;
+        let buckets = if proof[0] == 3 { 1 } else { 2 };
+        let off = 258 + 32 * 32 * buckets;
         proof[off..off + 32].try_into().unwrap()
     }
 
@@ -1178,10 +1180,10 @@ mod tests {
             "v3 internal W matches no child slot"
         );
         let mut sib = proof.clone();
-        let leaf_at = sib.len() - crate::select::POINT_OPEN_LEN - crate::select::LEAF_V3_LEN;
-        let c_at = leaf_at - 32 * 32;
-        sib[c_at] ^= 0xff;
-        assert!(!admit_verify_v3(&sib, &jr, &ct, &tag, &ctx), "a swapped C bucket must fail");
+        let leaf_at = sib.len() - crate::select::HIDE_TAIL_LEN - crate::select::LEAF_V3_LEN;
+        let q_at = leaf_at + crate::select::LEAF_V3_LEN;
+        sib[q_at] ^= 0xff;
+        assert!(!admit_verify_v3(&sib, &jr, &ct, &tag, &ctx), "a forged Q must fail");
         let _ = ct2;
     }
 
@@ -1284,11 +1286,11 @@ mod tests {
             "a fresh point proved in some other set must fail the honest jroot"
         );
         let mut spliced = proof.clone();
-        let c_slot = 258 + 32 * 32 + idx * 32;
-        spliced[c_slot..c_slot + 32].copy_from_slice(&ac);
+        let blob_at = spliced.len() - crate::r1cs::HIDE_BLOB_LEN;
+        spliced[blob_at] ^= 0xff;
         assert!(
             !admit_verify_v3(&spliced, &jr, &ct, &tag, &ctx),
-            "replacing the spent note with a fresh point must fail"
+            "a forged hide blob must fail"
         );
     }
 
@@ -1304,7 +1306,7 @@ mod tests {
         eprintln!("PHASE attacker-forge");
         let forged = prove::forge_attacker_dest_v3(idx, &dest_blob, &c_blob, n, &ctx)
             .expect("attacker dest transcript");
-        let leaf_at = forged.proof.len() - select::POINT_OPEN_LEN - select::LEAF_V3_LEN;
+        let leaf_at = forged.proof.len() - select::HIDE_TAIL_LEN - select::LEAF_V3_LEN;
         let leaf = &forged.proof[leaf_at..leaf_at + select::LEAF_V3_LEN];
         let (y, slot_v, enc_v) = select::v3_link_openings(leaf).expect("openings");
         assert_eq!(slot_v, y, "slot proof must open the published Y");
@@ -1324,9 +1326,11 @@ mod tests {
         );
     }
 
-    /// n=64 is two arity-32 buckets. Version 3 blinds W and still publishes the spent bucket.
+    /// n=64 is two arity-32 buckets. The raw C bucket and its encoding
+    /// commitment are absent. Honest proofs verify. A forged Q, a forged hide
+    /// blob, a scalar parent, and the scalar jroot do not.
     #[test]
-    fn v3_two_bucket_spent_link_stays_on_the_wire() {
+    fn v3_two_bucket_hides_the_spent_notes() {
         let n = 64usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
         let jr = jroot_point(&dest_blob, &c_blob, n).expect("point leaves");
@@ -1351,39 +1355,43 @@ mod tests {
             let tag = proof_spend_tag(&proof).unwrap();
             assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
             assert_eq!(proof[257], 2, "64 notes are two buckets under one root");
+            assert!(proof.len() <= MAX_PROOF_V3);
             let glue = 258 + crate::select::PAIRED_LEN;
             let parent_c: [u8; 32] = proof[glue + 64..glue + 96].try_into().unwrap();
-            let c_off = glue + 128 + 32 * 32;
+            let which = idx / 32;
             let mut bucket = [[0u8; 32]; 32];
             for i in 0..32 {
-                bucket[i].copy_from_slice(&proof[c_off + i * 32..c_off + i * 32 + 32]);
+                bucket[i] = cs[which * 32 + i];
             }
             assert_eq!(
                 parent_c,
                 tree::commit_ristretto_points(&bucket).expect("point bucket"),
-                "the published parent is the point commitment of the spent bucket"
+                "the glue parent is the point commitment of the off-wire bucket"
             );
-            assert_ne!(
-                parent_c,
-                tree::commit_ristretto_encodings(&bucket),
-                "the scalar encoding commitment is not the point parent"
-            );
-            let which = idx / 32;
+            let enc = tree::commit_ristretto_encodings(&bucket);
+            assert_ne!(parent_c, enc, "the encoding commitment is not the point parent");
+            let mut raw = [0u8; 1024];
             for i in 0..32 {
-                assert_eq!(bucket[i], cs[which * 32 + i], "raw C bucket {which} is on the wire");
+                raw[i * 32..i * 32 + 32].copy_from_slice(&bucket[i]);
             }
-            let other = 1 - which;
-            assert_ne!(bucket[0], cs[other * 32]);
-            let leaf_at = c_off + 32 * 32;
+            assert!(
+                !proof.windows(1024).any(|w| w == raw),
+                "the raw C bucket is a contiguous window"
+            );
+            assert!(
+                !proof.windows(32).any(|w| w == enc),
+                "the encoding commitment is on the wire"
+            );
+            let leaf_at = glue + 128 + 32 * 32;
             assert_eq!(
                 proof.len(),
-                leaf_at + crate::select::LEAF_V3_LEN + crate::select::POINT_OPEN_LEN
+                leaf_at + crate::select::LEAF_V3_LEN + crate::select::HIDE_TAIL_LEN
             );
             let w: [u8; 32] = proof[leaf_at..leaf_at + 32].try_into().unwrap();
             let kids = leaf_dest_children(&dest_blob, n, idx);
             assert!(
                 slots_matching(&kids, &w).is_empty(),
-                "blinding W does not name the slot, and it does not remove the bucket"
+                "blinding W does not name the slot"
             );
             let q_at = leaf_at + crate::select::LEAF_V3_LEN;
             let q: [u8; 32] = proof[q_at..q_at + 32].try_into().unwrap();
@@ -1395,7 +1403,6 @@ mod tests {
                 "the scalar jroot must not verify a point-leaf proof"
             );
             let mut scalar_parent = proof.clone();
-            let enc = tree::commit_ristretto_encodings(&bucket);
             scalar_parent[glue + 64..glue + 96].copy_from_slice(&enc);
             assert!(
                 !admit_verify_v3(&scalar_parent, &jr, &ct, &tag, &ctx),
@@ -1405,7 +1412,13 @@ mod tests {
             forged_q[q_at] ^= 0xff;
             assert!(
                 !admit_verify_v3(&forged_q, &jr, &ct, &tag, &ctx),
-                "a self-minted point opening fails"
+                "a forged Q fails"
+            );
+            let mut forged_blob = proof.clone();
+            forged_blob[q_at + 32] ^= 0xff;
+            assert!(
+                !admit_verify_v3(&forged_blob, &jr, &ct, &tag, &ctx),
+                "a forged hide blob fails"
             );
             seen.push(which);
         }

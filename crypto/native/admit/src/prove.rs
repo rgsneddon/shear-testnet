@@ -3,19 +3,20 @@
 //! / dest_leaf of the spent note on the wire. C-tree leaves are ristretto C;
 //! C̃ is a 1-of-D rerandomization of a tree C. Dest admitPub P is 1-of-D as
 //! p_com = P_j + w U at the same hidden slot. Version 3 blinds every published
-//! remainder so that slot is not a function of W. The arity-32 point bucket
-//! stays on the wire. Version 3's first C fold commits those ristretto points
-//! (r·U + Σ C_i). The dest-bind leaf opens the encoding commitment of that
-//! same published bucket, and the trailer opens Q = C_i + ρ·U. The glue in
-//! front of the buckets opens that point-commitment child. Internal paired
-//! layers stay scalar openings. The domains are shear-admit-c-point-v3 and
+//! remainder so that slot is not a function of W. Version 3 does not publish
+//! the arity-32 C bucket or the encoding commitment of those notes. The first
+//! C fold commits the ristretto points (r·U + Σ C_i). The leaf transcript
+//! absorbs that point parent. The trailer is Q and a 23-round proof that one
+//! note of that parent opens onto the leaf's Y. The glue in front of the dest
+//! bucket opens that point-commitment child. Internal paired layers stay
+//! scalar openings. The domains are shear-admit-c-point-v3 and
 //! shear-jroot-point-v3, not a patch on the v2 leaf domains.
 
 use crate::leaf::{jroot_hash, jroot_point_hash, sha512_64};
 use crate::select::{
-    leaf_prove, leaf_prove_v3, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
-    paired_qd_opens, paired_verify, point_open_prove, point_open_verify, rs_rand, vs_rand,
-    LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN, POINT_OPEN_LEN, V3_Y, V3_YX,
+    leaf_prove, leaf_prove_v3_parts, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove,
+    paired_qc_opens, paired_qd_opens, paired_verify, rs_rand, vs_rand, HIDE_TAIL_LEN,
+    LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN, V3_Y, V3_YX,
 };
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
@@ -31,9 +32,9 @@ use curve25519_dalek::traits::IsIdentity;
 use rand_core::{OsRng, RngCore};
 
 pub const MAX_PROOF: usize = 32768;
-/// Height-4 v3 proof: header + 3 paired layers + both published buckets
-/// + the dest-bind leaf + the point-open trailer = 43490.
-/// Height 5 does not fit. The v2 cap stays 32768.
+/// Height 4 stays at most this many bytes. The live layout is 43330:
+/// header + 3 paired layers + the dest bucket + the dest-bind leaf + Q and
+/// the 23-round hide blob. Height 5 does not fit. The v2 cap stays 32768.
 pub const MAX_PROOF_V3: usize = 43490;
 pub const VERSION: u8 = 2;
 pub const VERSION_V3: u8 = 3;
@@ -52,6 +53,37 @@ fn scalar_in(bytes: [u8; 32], v3: bool) -> Option<Scalar> {
         return Some(Scalar::from_bytes_mod_order(bytes));
     }
     Scalar::from_canonical_bytes(bytes).into()
+}
+
+/// Q and the hide blob. The notes stay off the wire. `Q = C_i + ρ·U` with `ρ ≠ 0`.
+fn append_c_hide(
+    mem: &mut Vec<u8>,
+    notes: &[[u8; 32]; ARITY],
+    index: usize,
+    y: &Scalar,
+    r_y: &vesta::Scalar,
+) -> Option<()> {
+    if index >= ARITY {
+        return None;
+    }
+    let parent = commit_ristretto_points(notes)?;
+    let ci = CompressedRistretto(notes[index]).decompress()?;
+    let mut rho = rs_rand();
+    if rho == Scalar::ZERO {
+        rho = Scalar::from(1u64);
+    }
+    let q_pt = ci + note_u() * rho;
+    if q_pt.is_identity() || q_pt == ci {
+        return None;
+    }
+    let q_b = q_pt.compress().to_bytes();
+    let blob = crate::gadget::prove_bucket_hide(notes, &parent, index, &rho, &q_b, y, r_y)?;
+    if blob.len() + 32 != HIDE_TAIL_LEN {
+        return None;
+    }
+    mem.extend_from_slice(&q_b);
+    mem.extend_from_slice(&blob);
+    Some(())
 }
 
 fn os_rand32() -> Option<[u8; 32]> {
@@ -200,8 +232,9 @@ pub fn admit_prove_in(
             t_c_prev = Some(tc);
         }
         let parent_d = commit_vesta(&dpath[0]);
-        // The glue child is the point commitment of the published bucket.
-        // Internal parents above stay scalar encodings.
+        // The glue child is the point commitment of the spent bucket.
+        // The notes themselves stay off the wire. Internal parents above
+        // stay scalar encodings.
         let parent_c = if v3 {
             commit_ristretto_points(&cpath[0])?
         } else {
@@ -213,8 +246,7 @@ pub fn admit_prove_in(
         mem.extend_from_slice(&parent_c);
         mem.extend_from_slice(&t_c_prev?.to_bytes());
     }
-    // Point bucket for C̃ = C_i + t·H and p_com = P_i + w·U. The bytes stay.
-    // Version 3 binds them by the point commitment, not by deleting them.
+    // Dest siblings stay. Version 3 does not publish the C bucket.
     let p_sib = leaf_p_siblings(dest_leaves, n, index)?;
     if p_sib[slots[0]] != *p {
         return None;
@@ -226,14 +258,17 @@ pub fn admit_prove_in(
     for x in &p_sib {
         mem.extend_from_slice(x);
     }
-    for x in &cpath[0] {
-        mem.extend_from_slice(x);
+    if !v3 {
+        for x in &cpath[0] {
+            mem.extend_from_slice(x);
+        }
     }
+    let mut spent: Option<(Scalar, vesta::Scalar)> = None;
     let leaf = if v3 {
         if dpath[0][slots[0]] != dest_leaf_fp(p) {
             return None;
         }
-        leaf_prove_v3(
+        let parts = leaf_prove_v3_parts(
             &dpath[0],
             &cpath[0],
             &p_sib,
@@ -244,7 +279,9 @@ pub fn admit_prove_in(
             &ct_pt,
             &p_com,
             ctx,
-        )?
+        )?;
+        spent = Some((parts.y, parts.r_y));
+        parts.body
     } else {
         leaf_prove(
             &dpath[0],
@@ -260,9 +297,8 @@ pub fn admit_prove_in(
         )?
     };
     mem.extend_from_slice(&leaf);
-    if v3 {
-        let open = point_open_prove(&cpath[0], slots[0], ctx)?;
-        mem.extend_from_slice(&open);
+    if let Some((y, r_y)) = spent {
+        append_c_hide(&mut mem, &cpath[0], slots[0], &y, &r_y)?;
     }
     let nonce_rand = if v3 { os_rand32()? } else { [0u8; 32] };
     let k = if v3 {
@@ -481,12 +517,8 @@ pub fn forge_fresh_spend_v3(
     for x in &p_sib {
         proof.extend_from_slice(x);
     }
-    for x in &cpath[0] {
-        proof.extend_from_slice(x);
-    }
     proof.extend_from_slice(&leaf);
-    let open = point_open_prove(&cpath[0], slots[0], ctx)?;
-    proof.extend_from_slice(&open);
+    append_c_hide(&mut proof, &cpath[0], slots[0], &made.y, &made.r_y)?;
     Some(ForgedSpend { ct, tag, proof, e_bytes, s_bytes, kc_b, kp_b })
 }
 
@@ -633,12 +665,8 @@ pub fn forge_attacker_dest_v3(
     for x in &p_sib {
         proof.extend_from_slice(x);
     }
-    for x in &cpath[0] {
-        proof.extend_from_slice(x);
-    }
     proof.extend_from_slice(&leaf);
-    let open = point_open_prove(&cpath[0], slots[0], ctx)?;
-    proof.extend_from_slice(&open);
+    append_c_hide(&mut proof, &cpath[0], slots[0], &made.y, &made.r_y)?;
     Some(ForgedSpend { ct, tag, proof, e_bytes, s_bytes, kc_b, kp_b })
 }
 
@@ -880,11 +908,6 @@ pub fn admit_verify_in(
     if commit_vesta(&dest_from_p) != dest_parent {
         return false;
     }
-    let (siblings, off2) = match parse_c_siblings(proof, off) {
-        Some(v) => v,
-        None => return false,
-    };
-    off = off2;
     let ct = match decompress(c_tilde) {
         Some(p) => p,
         None => return false,
@@ -894,25 +917,31 @@ pub fn admit_verify_in(
         None => return false,
     };
     if v3 {
-        let point_parent = match commit_ristretto_points(&siblings) {
-            Some(p) => p,
-            None => return false,
-        };
-        if point_parent != c_parent {
-            return false;
-        }
-        // The tree node is the point commitment. The dest-bind leaf opens the
-        // encoding commitment of this same published bucket.
-        let enc_parent = commit_ristretto_encodings(&siblings);
         let leaf_end = off + LEAF_V3_LEN;
-        if proof.len() != leaf_end + POINT_OPEN_LEN {
+        let tail_end = leaf_end + HIDE_TAIL_LEN;
+        if proof.len() != tail_end {
             return false;
         }
         let leaf = &proof[off..leaf_end];
-        if !leaf_verify_v3(&dest_parent, &enc_parent, &ct, &p_com, leaf, ctx) {
+        if !leaf_verify_v3(&dest_parent, &c_parent, &ct, &p_com, leaf, ctx) {
             return false;
         }
-        if !point_open_verify(&siblings, &proof[leaf_end..leaf_end + POINT_OPEN_LEN], ctx) {
+        let q_b = match read32(proof, leaf_end) {
+            Some(x) => x,
+            None => return false,
+        };
+        let q_pt = match decompress(&q_b) {
+            Some(p) => p,
+            None => return false,
+        };
+        if q_pt.is_identity() {
+            return false;
+        }
+        let y_b = match read32(leaf, V3_Y) {
+            Some(x) => x,
+            None => return false,
+        };
+        if !crate::gadget::verify_bucket_hide(&c_parent, &q_b, &y_b, &proof[leaf_end + 32..tail_end]) {
             return false;
         }
         let dest_q = match leaf_qd(leaf) {
@@ -932,6 +961,11 @@ pub fn admit_verify_in(
             z_w,
         );
     }
+    let (siblings, off2) = match parse_c_siblings(proof, off) {
+        Some(v) => v,
+        None => return false,
+    };
+    off = off2;
     if commit_ristretto_encodings(&siblings) != c_parent {
         return false;
     }
@@ -1127,11 +1161,11 @@ pub fn forest_verify(
 #[cfg(test)]
 mod cap_tests {
     use super::MAX_PROOF_V3;
-    use crate::select::{LEAF_V3_LEN, PAIRED_LEN, POINT_OPEN_LEN};
+    use crate::select::{HIDE_TAIL_LEN, LEAF_V3_LEN, PAIRED_LEN, POINT_OPEN_LEN};
     use crate::tree::ARITY;
 
     fn v3_proof_len(layers: usize) -> usize {
-        let tail = 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN;
+        let tail = ARITY * 32 + LEAF_V3_LEN + HIDE_TAIL_LEN;
         if layers <= 1 {
             return super::HDR + tail;
         }
@@ -1140,33 +1174,35 @@ mod cap_tests {
 
     #[test]
     fn v3_cap_fits_height_4_and_rejects_height_5() {
-        assert_eq!(v3_proof_len(4), MAX_PROOF_V3);
+        assert_eq!(v3_proof_len(4), 43330);
+        assert!(v3_proof_len(4) <= MAX_PROOF_V3);
+        assert_eq!(MAX_PROOF_V3, 43490);
         assert!(v3_proof_len(5) > MAX_PROOF_V3);
-        assert_eq!(v3_proof_len(1), super::HDR + 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN);
+        assert_eq!(v3_proof_len(1), super::HDR + ARITY * 32 + LEAF_V3_LEN + HIDE_TAIL_LEN);
     }
 
-    /// A 23-round one-wire blob is 1920 bytes. Replacing only the raw C bucket
-    /// makes height 4 44386 bytes. Replacing the bucket and the point-open
-    /// seed and responses, and keeping Q, makes height 4 43330 bytes.
-    /// The live verifier still requires the bucket and the trailer.
-    /// `bind_slot_opens_one_note_of_the_parent` builds the note hash, the
-    /// parent sum, one slot, and that note's committed scalar. The `r·U`
-    /// windows are the hash remainder. It is 5630566 gates, inside the 2^23
-    /// pad and outside the 2^22 pad.
+    /// A 23-round one-wire blob is 1920 bytes. The live height-4 proof drops
+    /// the raw C bucket and the point-open responses, keeps Q, and is 43330
+    /// bytes. Replacing only the bucket would be 44386 and over the cap.
+    /// The slot circuit is 5630566 gates, inside the 2^23 pad.
     #[test]
     fn v3_hide_blob_fits_when_the_point_open_responses_leave() {
         let blob = crate::r1cs::r1cs_blob_len(23);
         assert_eq!(blob, 1920, "one committed wire, 23 rounds");
+        assert_eq!(crate::r1cs::HIDE_BLOB_LEN, blob);
+        assert_eq!(HIDE_TAIL_LEN, 32 + blob);
         let bucket = ARITY * 32;
         let responses = POINT_OPEN_LEN - 32;
         assert_eq!(bucket, 1024);
         assert_eq!(responses, 1056);
-        let bucket_only = v3_proof_len(4) - bucket + blob;
+        let old_tail = 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN;
+        let old_h4 = super::HDR + 3 * (PAIRED_LEN + 128) + old_tail;
+        assert_eq!(old_h4, 43490);
+        let bucket_only = old_h4 - bucket + blob;
         assert_eq!(bucket_only, 44386);
         assert!(bucket_only > MAX_PROOF_V3);
-        let with_open = v3_proof_len(4) - bucket - responses + blob;
-        assert_eq!(with_open, 43330);
-        assert!(with_open <= MAX_PROOF_V3);
+        assert_eq!(v3_proof_len(4), old_h4 - bucket - responses + blob);
+        assert_eq!(v3_proof_len(4), 43330);
         let slot_gates = 5_630_566usize;
         assert!(slot_gates > (1 << 22) && slot_gates <= (1 << 23));
     }

@@ -10,7 +10,8 @@
 
 use crate::leaf::{dest_leaf_fp, sha512_64};
 use crate::tree::{
-    commit_ristretto_encodings, commit_vesta, ristretto_gens, ristretto_gsel, ristretto_h_note,
+    commit_ristretto_encodings, commit_ristretto_points, commit_vesta, ristretto_gens, ristretto_gsel,
+    ristretto_h_note,
     vesta_gens, vesta_gsel, vesta_mul_g, vesta_mul_gsel, vesta_mul_u, vesta_x, VestaVar, ARITY,
 };
 use curve25519_dalek::ristretto::RistrettoPoint;
@@ -34,8 +35,10 @@ pub const LEAF_V3_LEN: usize = LEAF_V3_BODY
     + crate::r1cs::SLOT_LINK_BLOB
     + crate::r1cs::ENCODE_LINK_BLOB
     + crate::r1cs::ENCODE_LINK_BLOB;
-/// Q || challenge seed || one response scalar per slot. Appended after the dest-bind leaf on version 3.
+/// Q || challenge seed || one response scalar per slot. The v3 admit proof no longer appends this.
 pub const POINT_OPEN_LEN: usize = 32 + 32 + ARITY * 32;
+/// Q and the 23-round hide blob. This replaces the raw C bucket and the point-open trailer.
+pub const HIDE_TAIL_LEN: usize = 32 + crate::r1cs::HIDE_BLOB_LEN;
 
 pub(crate) fn vs_rand() -> vesta::Scalar {
     let mut w = [0u8; 64];
@@ -1469,10 +1472,14 @@ fn v3_ann_eval(
     let ev = embed_r(&ec)?;
     let zy = RScalar::from_bytes_mod_order_wide(s);
     let zv = vesta::Scalar::from_uniform_bytes(s);
-    let (uc, gc, h) = ristretto_gens();
+    let (uc, _, h) = ristretto_gens();
     let rpd = vesta_mul_u(zr) + vesta_mul_g(j, zx) - o.pwd.mul(&ed);
     let rqd = vesta_mul_gsel(zx) + vesta_mul_u(zt) - o.q.mul(&ed);
-    let rpc = *uc * zrc + gc[j] * zy - (o.pc - o.wc) * ec;
+    // The C parent is the ristretto point commitment, not a Pedersen of the
+    // note scalars. This announcement does not subtract `pc - Wc`. The hide
+    // trailer binds the spent note to that parent.
+    let _ = (o.pc, o.wc);
+    let rpc = *uc * *zrc;
     let rc = *h * zct - (o.ct - o.kc) * ec;
     let rp = *uc * zpt - (o.pcom - o.kp) * ec;
     let asd = *zsd + o.e1d * zx - ed * o.zxd[j];
@@ -1515,7 +1522,8 @@ fn v3_ann_open(
     let ax = b * kx + blind * krx;
     let rpd = vesta_mul_u(kr) + vesta_mul_g(j, kx);
     let rqd = vesta_mul_gsel(kx) + vesta_mul_u(kt);
-    let rpc = *uc * krc + gc[j] * ky;
+    let _ = gc[j];
+    let rpc = *uc * krc;
     let rc = *h * kct;
     let rp = *uc * kpt;
     let asd = *ksd + o.e1d * kx;
@@ -1601,6 +1609,12 @@ fn seal_v3(made: V3Made) -> Option<Vec<u8>> {
 /// opening of both parents. Domain is `admit-v3-leaf`.
 /// The trailer proves the slot integer and the note encoding open one Y,
 /// and the dest-bind proof opens the same Yx as the dest Schnorr.
+pub(crate) struct V3Parts {
+    pub body: Vec<u8>,
+    pub y: RScalar,
+    pub r_y: vesta::Scalar,
+}
+
 pub fn leaf_prove_v3(
     dest_ch: &[[u8; 32]; ARITY],
     c_ch: &[[u8; 32]; ARITY],
@@ -1613,9 +1627,30 @@ pub fn leaf_prove_v3(
     p_com: &RistrettoPoint,
     ctx: &[u8],
 ) -> Option<Vec<u8>> {
-    seal_v3(leaf_prove_v3_inner(
+    Some(leaf_prove_v3_parts(dest_ch, c_ch, p_ch, index, t_d, t_note, w_p, c_tilde, p_com, ctx)?.body)
+}
+
+/// Same leaf as `leaf_prove_v3`, plus the spent scalar and the blind that
+/// commits it. The hide trailer must commit that same pair.
+pub(crate) fn leaf_prove_v3_parts(
+    dest_ch: &[[u8; 32]; ARITY],
+    c_ch: &[[u8; 32]; ARITY],
+    p_ch: &[[u8; 32]; ARITY],
+    index: usize,
+    t_d: &vesta::Scalar,
+    t_note: &RScalar,
+    w_p: &RScalar,
+    c_tilde: &RistrettoPoint,
+    p_com: &RistrettoPoint,
+    ctx: &[u8],
+) -> Option<V3Parts> {
+    let made = leaf_prove_v3_inner(
         dest_ch, c_ch, p_ch, index, t_d, t_note, w_p, c_tilde, p_com, ctx, None,
-    )?)
+    )?;
+    let y = made.y;
+    let r_y = made.r_y;
+    let body = seal_v3(made)?;
+    Some(V3Parts { body, y, r_y })
 }
 
 /// Hand-built leaf body: open a real arity-32 set, but set `Kc`/`Kp` from the caller.
@@ -1704,7 +1739,9 @@ fn leaf_prove_v3_inner(
         return None;
     }
     let pd_b = commit_vesta(dest_ch);
-    let pc_b = commit_ristretto_encodings(c_ch);
+    // The verifier has this point parent and not the notes. The encoding
+    // commitment stays off the wire.
+    let pc_b = commit_ristretto_points(c_ch)?;
     let pd = dec_v(&pd_b)?;
     let pc = dec_r(&pc_b)?;
     let rd = crate::tree::blind_fp(dest_ch);
@@ -1734,7 +1771,6 @@ fn leaf_prove_v3_inner(
     let wcp = wc + *u_r * r_wc;
     let qd = vesta_mul_gsel(&x) + vesta_mul_u(t_d);
     let rd_eff = rd - r_w;
-    let rc_eff = rc_full - r_wc;
     let wp_b = enc_v(&wp);
     let q_b = enc_v(&qd);
     let wc_b = enc_r(&wcp);
@@ -1882,7 +1918,8 @@ fn leaf_prove_v3_inner(
     let zr_i = kr + ed * rd_eff;
     let zt_i = kt + ed * *t_d;
     let zlr_i = klr + ev * r_y;
-    let zrc_i = krc + ec * rc_eff;
+    // Matches the announcement, which does not open the point parent.
+    let zrc_i = krc;
     let zsd_i = ksd + ed * s_xd[index];
     let zsc_i = ksc + ec * s_yc[index];
     let zct_i = kct + ec * delta_c;
@@ -2080,10 +2117,9 @@ pub fn leaf_verify_v3(
         Some(x) => x,
         None => return false,
     };
-    let ac = match dec_r(&ac_b) {
-        Some(x) => x,
-        None => return false,
-    };
+    if dec_r(&ac_b).is_none() {
+        return false;
+    }
     if bool::from(qd.is_identity()) || c_tilde.is_identity() || p_com.is_identity() || kc.is_identity() || kp.is_identity() {
         return false;
     }
@@ -2116,7 +2152,6 @@ pub fn leaf_verify_v3(
     );
     let e1d = vesta::Scalar::from_uniform_bytes(&e1);
     let e1c = RScalar::from_bytes_mod_order_wide(&e1);
-    let (uc, gc, _) = ristretto_gens();
     let mut lhs_d = vesta_mul_u(&vs(&zrd_b));
     let mut zxd = [vesta::Scalar::ZERO; ARITY];
     for k in 0..ARITY {
@@ -2127,14 +2162,12 @@ pub fn leaf_verify_v3(
     if lhs_d != ad + pd_e.mul(&e1d) {
         return false;
     }
-    let mut lhs_c = *uc * rsc(&zrc_b);
+    // The C parent is the point commitment. `lhs_c == ac + pc·e` does not
+    // hold for it, and the notes are not on the wire. The hide trailer binds
+    // the spent note. The dest opening above still has to hold.
     let mut zyc = [RScalar::ZERO; ARITY];
     for k in 0..ARITY {
         zyc[k] = rsc(&zyc_b[k]);
-        lhs_c += gc[k] * zyc[k];
-    }
-    if lhs_c != ac + pc * e1c {
-        return false;
     }
     let zv = v3_zdigest(&zrd_b, &zxd_b, &zrc_b, &zyc_b);
     let open = V3Open {
@@ -2594,7 +2627,7 @@ mod tests {
         let pr = leaf_prove_v3(&d, &c, &p_ch, 6, &td, &t, &w, &ct, &pcom, &ctx).expect("v3");
         assert_eq!(pr.len(), LEAF_V3_LEN);
         let pd = commit_vesta(&d);
-        let pc = crate::tree::commit_ristretto_encodings(&c);
+        let pc = crate::tree::commit_ristretto_points(&c).expect("point parent");
         assert!(leaf_verify_v3(&pd, &pc, &ct, &pcom, &pr, &ctx));
         assert!(!leaf_verify_v3(&pd, &pc, &ct, &pcom, &pr, &[3u8; 64]));
         let fake = ct + ristretto_h_note() * rs_rand();

@@ -7,7 +7,7 @@
 use crate::fe25519::{edwards_d, ristretto_decompress, sqrt_m1, Ed, Fe};
 use crate::r1cs::{
     r1cs_prove, r1cs_read, r1cs_verify, r1cs_write, R1csProof, Wire, ENCODE_IPA_ROUNDS,
-    SLOT_IPA_ROUNDS,
+    HIDE_IPA_ROUNDS, SLOT_IPA_ROUNDS,
 };
 use crate::tree::{note_u, ristretto_h_note};
 use curve25519_dalek::ristretto::RistrettoPoint;
@@ -1839,9 +1839,8 @@ pub(crate) fn notes_parent_synth(
 /// `Q` are public. Constraint coefficients do not depend on the notes, the
 /// index, `ρ`, or `Y`. They do depend on `parent` and `Q`. A zero `ρ` returns
 /// `None`. A note that does not decompress returns `None` and builds no circuit.
-/// This is not the hide. The raw bucket is still published. The encoding
-/// commitment of those bytes is not in this circuit, and the verifier still
-/// requires the bucket.
+/// The admit trailer proves this statement. The encoding commitment of the
+/// notes is not in this circuit.
 pub(crate) fn notes_slot_synth(
     notes: &[[u8; 32]; 32],
     parent: &[u8; 32],
@@ -3274,6 +3273,65 @@ fn prove_one(
         return None;
     }
     r1cs_write(&proof, rounds)
+}
+
+/// Hide trailer. `V[0]` is `Commit(y, r_y)` for the spent note, and the
+/// constraints bind that note into `parent` and the published `Q`.
+pub(crate) fn prove_bucket_hide(
+    notes: &[[u8; 32]; 32],
+    parent: &[u8; 32],
+    index: usize,
+    rho: &RScalar,
+    q: &[u8; 32],
+    y: &RScalar,
+    r_y: &vesta::Scalar,
+) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    eprintln!("PHASE hide-prove-start");
+    let (l, r, o, cons, y_bytes) = notes_slot_synth(notes, parent, index, rho, q)?;
+    if y_bytes != y.to_bytes() {
+        return None;
+    }
+    let blob = prove_one(&l, &r, &o, &cons, y, r_y, HIDE_IPA_ROUNDS, 1 << HIDE_IPA_ROUNDS)?;
+    if blob.len() != crate::r1cs::HIDE_BLOB_LEN {
+        return None;
+    }
+    #[cfg(test)]
+    eprintln!("PHASE hide-prove-done");
+    Some(blob)
+}
+
+fn verify_bucket_hide_inner(parent: &[u8; 32], q: &[u8; 32], y_point: &[u8; 32], blob: &[u8]) -> bool {
+    let proof = match r1cs_read(blob, HIDE_IPA_ROUNDS) {
+        Some(p) => p,
+        None => return false,
+    };
+    if proof.v.len() != 1 || proof.v[0] != *y_point {
+        return false;
+    }
+    // Coefficients depend on the public parent and Q. Identity notes keep the
+    // same constraint list and do not put the spent bucket on the wire.
+    let zeros = [[0u8; 32]; 32];
+    let (l, _, _, cons, _) = match notes_slot_synth(&zeros, parent, 0, &RScalar::ONE, q) {
+        Some(v) => v,
+        None => return false,
+    };
+    if l.len().next_power_of_two() != 1 << HIDE_IPA_ROUNDS {
+        return false;
+    }
+    r1cs_verify(&proof, l.len(), &cons)
+}
+
+pub(crate) fn verify_bucket_hide(parent: &[u8; 32], q: &[u8; 32], y_point: &[u8; 32], blob: &[u8]) -> bool {
+    #[cfg(test)]
+    eprintln!("PHASE hide-verify-start");
+    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        verify_bucket_hide_inner(parent, q, y_point, blob)
+    }))
+    .unwrap_or(false);
+    #[cfg(test)]
+    eprintln!("PHASE hide-verify-done {ok}");
+    ok
 }
 
 /// Slot proof whose committed wire is `Y = Commit(y, r_y)`.

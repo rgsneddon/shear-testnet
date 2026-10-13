@@ -14,6 +14,7 @@ use std::sync::Arc;
 /// Slot-link IPA is 2^16. Encode IPA is 2^20. Both are one committed wire.
 pub(crate) const SLOT_IPA_ROUNDS: usize = 16;
 pub(crate) const ENCODE_IPA_ROUNDS: usize = 20;
+pub(crate) const HIDE_IPA_ROUNDS: usize = 23;
 
 pub(crate) const fn r1cs_blob_len(rounds: usize) -> usize {
     12 * 32 + rounds * 64 + 64
@@ -21,6 +22,7 @@ pub(crate) const fn r1cs_blob_len(rounds: usize) -> usize {
 
 pub(crate) const SLOT_LINK_BLOB: usize = r1cs_blob_len(SLOT_IPA_ROUNDS);
 pub(crate) const ENCODE_LINK_BLOB: usize = r1cs_blob_len(ENCODE_IPA_ROUNDS);
+pub const HIDE_BLOB_LEN: usize = r1cs_blob_len(HIDE_IPA_ROUNDS);
 
 const _: () = assert!(SLOT_LINK_BLOB == 1472);
 const _: () = assert!(ENCODE_LINK_BLOB == 1728);
