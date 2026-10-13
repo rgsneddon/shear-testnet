@@ -8,12 +8,13 @@ Toolchain: `rustup update stable` left rustc 1.99.0 (b940084d7 2026-09-28). Nati
 
 ## Cap
 
-JS, N-API, and Rust now agree on **43490**. `prove.rs` was not edited. `MAX_PROOF_V3` stays 43490.
+The JS and N-API caps are back at the base value, **40354**. Russell ruled that the 43,490 cap must not be in consensus, and a v3 cap change is outside steps 1–6. The raise in `8c64b230` was reverted.
 
-- `crypto/admit.js`: `admitVerifyV3` rejects a proof longer than 43490. v2 stays 32768.
-- `crypto/native/admit_napi.c`: the v3 prove buffer is 43490.
-- `crypto/native/admit/src/prove.rs`: `MAX_PROOF_V3` is still 43490. The cap test still asserts 43490. Height 5 still does not fit.
-- `node/tests/test_finder_levy_accept_v12.js`: `PROOF_CAP` is 43490. That file mines, so it was not re-run.
+- `crypto/admit.js:129`: `admitVerifyV3` rejects a proof longer than 40354. v2 stays 32768.
+- `crypto/native/admit_napi.c:184`: the v3 prove buffer is 40354.
+- `node/tests/test_finder_levy_accept_v12.js:68`: `PROOF_CAP` is 40354.
+
+Left as on the base, for FS-1 Stage 0 to settle: `crypto/native/admit/src/prove.rs:38` `MAX_PROOF_V3 = 43490`, and the length checks against it at `prove.rs:293` and `prove.rs:655`. The cap test still asserts 43490. So JS/N-API (40354) and Rust (43490) still disagree on this branch.
 
 ## What stayed
 
@@ -117,7 +118,7 @@ Russell retired the v3 group-of-32 send (FS-1 only). The long proving runs were 
 
 Fixes that stayed:
 
-- Extra-mint with an empty vin returns `mint_forbidden` instead of `range_proof`. An unvaulted reserve withdraw with no non-coinbase vin returns `insufficient` when the vault says so, before `admit_version`.
+- The `chain.js` reason changes from `8c64b230` were taken back out (see "Follow-up: extra-mint and vault reasons"). `test_gate_evm.js` now asserts the base reasons: extra-mint is `range_proof`, and the unvaulted and over-cap withdraws are `admit_version`.
 - `tests/test_public_copy.js` follows the shipped Continuum **0.72** pin in `node/src/help.js`. The site copy that still says 0.71 was left alone.
 - `node/tests/test_rpc.js` expects `shear-testnet-v12`.
 - JS `admitVerifyV3` and the N-API v3 prove buffer are 43490. Rust `MAX_PROOF_V3` stays 43490.
@@ -125,7 +126,7 @@ Fixes that stayed:
 
 Fast tests after those fixes:
 
-- `node/tests/test_gate_evm.js`, `node/tests/test_money_range_v12.js`, `node/tests/test_rpc.js`, `node/tests/test_verify_mint.js`, and `tests/test_public_copy.js` together: **14 pass, 0 fail**.
+- With those `chain.js` edits in place: `node/tests/test_gate_evm.js`, `node/tests/test_money_range_v12.js`, `node/tests/test_rpc.js`, `node/tests/test_verify_mint.js`, and `tests/test_public_copy.js` together were **14 pass, 0 fail**. After the base `chain.js` came back, see the follow-up section for the current counts.
 - `crypto/admit.test.js` without the fresh-point prove: **2 pass, 0 fail**. The fresh-point case calls `admitProveV3` and was not run.
 - Dart, `shear_wallet_test.dart` “libsodium ristretto matches dart Element; v4 send is native ADMITv2 only”: **1 pass, 0 fail**. `lib/shear_admit.dart` does not contain `admitProve`. `proveFlowSpend` still throws `admit_v2_closed` before any prover when the debug hook is null, and a hook result still has to be version 2.
 - Full `flutter test` in `wallet/` (Flutter 3.47.7, Dart 3.13.5) after the comment edit: **385 pass, 48 fail** in 34m31s. The run before the edit was 384 pass, 49 fail. The one that moved is the `admitProve` source check. No failure mentions `admit_v2_closed` or `admit_native_required`. The 48 are `Isolate.run` source checks, `fee_short`, the old ssa1 short form, `no_note`, timeouts, and refused connections. They were already in the tree and are not part of this removal.
@@ -149,3 +150,18 @@ Still out of scope: step 7 (FS-1), a tag, a genesis cut, and a merge onto `feat/
 - `admitProveV3` and the release suite: not finished in steps 1–6. The follow-up stopped them because the group-of-32 send is retired.
 - Step 5 parser edit: no genesis-to-tip book, so byte 2 remains a versioned tag.
 - Step 7: out of scope.
+
+## Follow-up: extra-mint and vault reasons (not in this PR)
+
+These consensus edits were made in `8c64b230` and taken back out because they are outside steps 1–6. `node/src/chain.js` is the base version again. They should go in as their own PR.
+
+1. Refused-kind range gate (`chain.js` around 2272, `verifyBlockConsensus`). Today a tx with no known kind and a missing or bad output range proof returns `range_proof`, before the mint check. Proposed: when that range check fails and the tx is unfunded (`vin` empty or `tx.mint`) and `extraMintAllowed(tx.programId, { kind: tx.kind })` is false, return `mint_forbidden`. A refused kind that spends a note, or passes range, keeps today's order (`range_proof`, then `kind`).
+2. Reserve vault pre-check (`chain.js` just before `verifyTypedAdmitFunding`). Today `typedAdmitStructure` returns `admit_version` for a withdraw that names `from`, before `boundReserveWithdraw` runs. Proposed: for `kind: withdraw`, `tx.mint`, `programId === RESERVE_PROGRAM`, and no non-coinbase vin, call `boundReserveWithdraw(tx, reserveState, drawnWithdraws)` first and return it only when the reason is `insufficient`. A covered draw still falls through to `admit_version`. This needs `RESERVE_PROGRAM` imported from `crypto/asert.js`.
+
+With both edits, `test_gate_evm.js` expected `mint_forbidden` / `insufficient` / `insufficient` / `admit_version`, and `test_verify_mint.js` lines 73 and 76 expected `insufficient`. That version of `test_gate_evm.js` passed 4/4, `test_verify_mint.js` 1/1, and `test_money_range_v12.js` 2/2.
+
+On this branch now (base `chain.js`):
+
+- `node/tests/test_gate_evm.js`: **4 pass, 0 fail**, asserting `range_proof` for the extra-mint and `admit_version` for the unvaulted and over-cap withdraws.
+- `node/tests/test_verify_mint.js`: **0 pass, 1 fail**. It is the base file. It expects `mint_forbidden` for the empty-vin thief and gets `range_proof`. That is the same failure as on the base, and follow-up item 1 fixes it.
+- `node/tests/test_money_range_v12.js`: **2 pass, 0 fail**.

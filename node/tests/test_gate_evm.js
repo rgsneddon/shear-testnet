@@ -126,7 +126,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     assert.equal(got.reason, 'admit_version', got.reason || got.error);
   });
 
-  it('still forbids a random vortice extra-mint in verifyBlock', () => {
+  it('refuses a random vortice extra-mint in verifyBlock at the range gate', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const thief = {
@@ -145,7 +145,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     }));
     const denied = verifyBlock(stolen, null, { trustedPowHash: Buffer.alloc(32) });
     assert.equal(denied.ok, false);
-    assert.equal(denied.reason, 'mint_forbidden');
+    assert.equal(denied.reason, 'range_proof');
   });
 
   it('persists EVM session: lock then withdraw against shipped verifyBlock', async () => {
@@ -187,7 +187,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     }));
     const empty = await verifyBlock(b2, null, { trustedPowHash: TRUSTED });
     assert.equal(empty.ok, false);
-    assert.equal(empty.reason, 'insufficient');
+    assert.equal(empty.reason, 'admit_version');
     const unbound = withdrawTx({ from: dest, to: dest, nanos: want + 1, id: 'wd-over' });
     unbound.fee = 0;
     const over = mine(buildTemplate({
@@ -200,7 +200,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     }));
     const overGot = await verifyBlock(over, null, { evmSession: v1.evmSession, nowMs: t1, reserveState: state, trustedPowHash: TRUSTED });
     assert.equal(overGot.ok, false);
-    assert.equal(overGot.reason, 'insufficient');
+    assert.equal(overGot.reason, 'admit_version');
     const v2 = await verifyBlock(b2, null, { nowMs: t1, reserveState: state, trustedPowHash: TRUSTED });
     assert.equal(v2.ok, false);
     assert.equal(v2.reason, 'admit_version');

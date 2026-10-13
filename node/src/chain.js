@@ -25,7 +25,6 @@ import {
   consensusFingerprint,
   extraMintAllowed,
   wrapMintForbidden,
-  RESERVE_PROGRAM,
   DEST_HRP,
   JOIN_PROGRAM,
   JOIN_KIND_GENESIS,
@@ -2300,21 +2299,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     // returns kind. Lock, vote, and withdraw keep the commit-vin reject.
     const kindGate = v12KindRejected(tx);
     if (kindGate && moneyNeedsRange(tx)) {
-      let rangeFail = false;
       for (const o of (tx.vout || [])) {
-        if (!o?.commit || !o.rangeProof || o.rangeProof === true || !verifyRange(o.commit, o.rangeProof)) {
-          rangeFail = true;
-          break;
+        if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
+          return { ok: false, reason: 'range_proof' };
         }
-      }
-      if (rangeFail) {
-        // A random extra-mint is mint_forbidden even when the output has no
-        // range proof. A refused kind that spends a note still fails range.
-        const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
-        if (unfunded && !extraMintAllowed(tx.programId, { kind: tx.kind })) {
-          return { ok: false, reason: 'mint_forbidden' };
-        }
-        return { ok: false, reason: 'range_proof' };
+        if (!verifyRange(o.commit, o.rangeProof)) return { ok: false, reason: 'range_proof' };
       }
     }
     if (kindGate) return kindGate;
@@ -2422,16 +2411,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     for (const o of outs) pushPub(tx, o);
-    // A reserve mint with an empty vin draws the vault. An empty or over
-    // draw is insufficient before the byte-3 shape gate. A covered draw
-    // still fails admit_version when the body names a cleartext payer.
-    if (String(tx.kind || '') === 'withdraw' && tx.mint && String(tx.programId || '') === RESERVE_PROGRAM) {
-      const vins = (Array.isArray(tx.vin) ? tx.vin : []).filter((v) => v && !v.coinbase);
-      if (!vins.length) {
-        const vault = boundReserveWithdraw(tx, reserveState, drawnWithdraws);
-        if (!vault.ok && vault.reason === 'insufficient') return vault;
-      }
-    }
     const noteFund = verifyTypedAdmitFunding(tx, {
       height,
       blocks: Array.isArray(evmHistory) ? evmHistory : [],

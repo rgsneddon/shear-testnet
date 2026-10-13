@@ -70,10 +70,10 @@ describe('verifyBlock extra mint', () => {
     const reserved = mine(buildTemplate({ ...base, txs: [reserveTx] }));
     const allowed = await Promise.resolve(verifyBlock(reserved, null, trust(reserved)));
     assert.equal(allowed.ok, false);
-    assert.equal(allowed.reason, 'insufficient');
+    assert.equal(allowed.reason, 'mint_amount');
     const stored = await Promise.resolve(store.append(reserved, trust(reserved)));
     assert.equal(stored.ok, false);
-    assert.equal(stored.reason, 'insufficient');
+    assert.equal(stored.reason, 'mint_amount');
     assert.equal(wrapMintForbidden({ kind: 'wrap', programId: 'wrap-she-v1', ticker: 'wSHE' }), true);
     assert.equal(wrapMintForbidden({ programId: 'vort1.random-printer', mint: true }), false);
     assert.equal(extraMintAllowed('vort1.random-printer', { kind: 'mint' }), false);
