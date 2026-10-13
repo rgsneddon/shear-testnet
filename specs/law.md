@@ -135,7 +135,7 @@ Coinbase `kind:pot` is PROP across dest20 in `shareBatch`. Hasher dests receive 
 
 - One proven share-hash mints units; user txs are signed Flow.
 - Full nodes validate shareBatch until prune-1000; money vouts forever.
-- Private dests, confidential amounts. ADMITv2 membership over this book's notes.
+- Private dests, confidential amounts. ADMITv3 membership over this book's notes.
 - PoW elects the tip. Pot is 1 SHE PROP. Hash units are proven PoW. Reserve interest is the only other mint, amount-bound.
 - GPU/ASIC refuse is pool share-gate only, not consensus.
 - Admin is TOTP + password. Host header is not authorization.

@@ -102,7 +102,7 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
 
   it('encodeWireBlock of a signed Flow block still ingests on a second store', async (t) => {
     if (!nativeLoaded()) {
-      t.skip('ADMITv2 native required to seal a funded Flow send');
+      t.skip('native addon required to seal a funded Flow send');
       return;
     }
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-a-'));
