@@ -6,7 +6,6 @@
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceipt } from './dummy.js';
-import { admit_verify } from './admit.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
@@ -140,7 +139,8 @@ export function admitMempool(pool, tx, opts = {}) {
   const flowVersion = v12FlowVersionRejected(tx);
   if (flowVersion && !shapeOnly) return flowVersion;
   // Same v3 verifier as consensus. A bad byte-3 proof is not saved by a
-  // missing range proof, and it never reaches admit_verify.
+  // missing range proof. A flow that did not finish that check does not
+  // reach admit_verify.
   const flowSelf = String(tx?.id || '');
   const flowSpent = spentView(book, opts, flowSelf);
   let flowV3Done = false;
@@ -276,24 +276,10 @@ export function admitMempool(pool, tx, opts = {}) {
       ? opts.fluxset
       : { pubs: opts.fluxset || opts.pubs || [], commits: opts.commits || [] };
     if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold && !flowV3Done) {
-      const parsed = txSpendTags(tx);
-      if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
-      const boundProofs = boundIns?.proofs || [];
-      if (!boundProofs.length) return { ok: false, reason: 'admit_membership' };
-      const seen = new Set();
-      for (let pi = 0; pi < boundProofs.length; pi += 1) {
-        const proof = boundProofs[pi];
-        const one = canonicalSpendTag(proof);
-        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
-        if (!one.tag) return { ok: false, reason: 'admit_membership' };
-        if (!admit_verify(proof, live, { cTilde: proof.cTilde, spendTag: one.tag, jroot: live.jroot })) {
-          return { ok: false, reason: 'admit_membership' };
-        }
-        const th = one.tag.toString('hex');
-        if (seen.has(th) || runningTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
-        seen.add(th);
-      }
-      if (!parsed.ok) return { ok: false, reason: parsed.reason || 'admit_link_tag' };
+      // A flow that did not finish verifyFlowAdmitV3 is not a member.
+      // The v2 verifier is not called. An empty live set and a painted hold
+      // stay on the path above.
+      return { ok: false, reason: 'admit_membership' };
     }
   }
   const need = levyTaxed({ ...tx, kind }) ? levyNanos(0, { tx }) : 0;
