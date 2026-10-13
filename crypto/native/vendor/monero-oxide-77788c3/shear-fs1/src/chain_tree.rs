@@ -585,6 +585,22 @@ pub(crate) mod tests {
     ChainNote { admit_pub: p.compress().to_bytes(), commit: c.compress().to_bytes() }
   }
 
+  /// 1,024 notes at depth 7, connected in blocks of 64.
+  pub(crate) fn chain_tree_1024() -> &'static ChainTree {
+    static CELL: std::sync::OnceLock<ChainTree> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| {
+      let params = params_8();
+      let mut tree = ChainTree::new(params).expect("tree");
+      let mut parent = [0u8; 32];
+      for height in 1 ..= 16u64 {
+        let notes: Vec<ChainNote> = (0 .. 64).map(|i| chain_note(height * 64 + i)).collect();
+        tree.connect(params, height, id(height), parent, &notes).expect("connect");
+        parent = id(height);
+      }
+      tree
+    })
+  }
+
   fn id(n: u64) -> [u8; 32] {
     let mut out = [0u8; 32];
     out[.. 8].copy_from_slice(&n.to_le_bytes());
@@ -679,6 +695,7 @@ pub(crate) mod tests {
   }
 
   #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
   fn full_set_one_root_every_leaf_proves_and_any_change_moves_the_root() {
     let params = params_8();
     let notes: Vec<ChainNote> = (0 .. 80).map(chain_note).collect();
@@ -696,6 +713,7 @@ pub(crate) mod tests {
   }
 
   #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
   fn snapshot_proves_its_held_chunks_with_bounded_data() {
     let params = params_8();
     let notes: Vec<ChainNote> = (0 .. 200).map(chain_note).collect();
