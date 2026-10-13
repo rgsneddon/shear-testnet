@@ -69,7 +69,7 @@ import { createStore } from '../../node/src/store.js';
 import { epochMs } from '../../crypto/pot_sched.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { txIsReserveAction } from '../../crypto/reserve_vault.js';
-import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote, templateForFinder, publicJob } from '../../node/src/chain.js';
+import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote, templateForFinder, cachedFinderTemplate, publicJob } from '../../node/src/chain.js';
 import { rememberStoredJob } from '../../node/src/job_cap.js';
 import {
   sortShares,
@@ -949,6 +949,9 @@ export const ALERT_CONCENTRATION = Number(process.env.SHEAR_ALERT_CONCENTRATION 
 export const ALERT_SHARE_BLOCK = Number(process.env.SHEAR_ALERT_SHARE_BLOCK || 10_000) || 10_000;
 export const SUBMIT_PER_IP_MAX = Math.max(4, Number(process.env.SHEAR_SUBMIT_PER_IP_MAX || 32) || 32);
 export const SUBMIT_PER_IP_WINDOW_MS = Math.max(200, Number(process.env.SHEAR_SUBMIT_PER_IP_WINDOW_MS || 1000) || 1000);
+/** Fresh stratum logins per IP. A reconnect of a known worker is not counted. */
+export const LOGIN_PER_IP_MAX = Math.max(1, Number(process.env.SHEAR_LOGIN_PER_IP_MAX || 4) || 4);
+export const LOGIN_PER_IP_WINDOW_MS = Math.max(1000, Number(process.env.SHEAR_LOGIN_PER_IP_WINDOW_MS || 10_000) || 10_000);
 
 export function statsAlerts({
   topDestSharePct: pct,
@@ -1871,6 +1874,7 @@ export function createPool({
     }
   }
   const ipSubmitAt = new Map();
+  const ipLoginAt = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
   let hashSeq = 0;
@@ -3911,14 +3915,67 @@ export function createPool({
   /**
    * Header this connection hashes. The finder-fee note pays `dest`.
    * The shared job holds that half at the unclaimed dest. A fee dest is not given one.
+   * A cache miss returns the shared job and seals at most one new dest
+   * on a later turn. `seal` is that later turn.
    */
-  function aimFinderJob(job, dest) {
+  let finderSealArmed = false;
+  const finderSealWait = [];
+
+  function deliverAimedJob(dest, aimed) {
+    if (!aimed?.header) return;
+    for (const m of miners.values()) {
+      const payout = hasherPayoutDest(m.login, { dest: m.payoutDest });
+      if (payout !== dest) continue;
+      for (const c of m.connections || []) {
+        if (!c?.sock || c.shearFeeRoute) continue;
+        c.job = aimed;
+        try {
+          c.sock.write(line({ method: 'job', params: wireJob(aimed, c.shareBits) }));
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
+  function runFinderSeal() {
+    finderSealArmed = false;
+    const next = finderSealWait.shift();
+    if (!next) return;
+    let aimed = null;
+    try {
+      aimed = aimFinderJob(next.job, next.dest, { seal: true });
+    } catch { /* a failed seal stays on the shared job */ }
+    if (aimed && aimed.jobId && aimed.jobId !== next.job.jobId) deliverAimedJob(next.dest, aimed);
+    if (finderSealWait.length && !finderSealArmed) {
+      finderSealArmed = true;
+      setImmediate(runFinderSeal);
+    }
+  }
+
+  function scheduleFinderAim(job, dest) {
+    const id = `${job?.jobId || ''}\0${dest}`;
+    if (finderSealWait.some((row) => row.id === id)) return;
+    finderSealWait.push({ id, job, dest });
+    if (finderSealArmed) return;
+    finderSealArmed = true;
+    setImmediate(runFinderSeal);
+  }
+
+  function aimFinderJob(job, dest, { seal = false } = {}) {
     if (!job || !isDestAddress(dest)) return job;
     const rec = store.jobs.get(String(job.jobId));
     const tpl = rec?.tpl;
     if (!tpl?.levyBind?.finderNanos) return job;
-    const aimedTpl = templateForFinder(tpl, dest);
-    if (!aimedTpl) return null;
+    const peek = cachedFinderTemplate(tpl, dest);
+    if (!peek.ok) return null;
+    let aimedTpl = peek.tpl;
+    if (peek.miss) {
+      if (!seal) {
+        scheduleFinderAim(job, dest);
+        return job;
+      }
+      aimedTpl = templateForFinder(tpl, dest);
+      if (!aimedTpl) return null;
+    }
     const aligned = alignFinderHeader(aimedTpl, headerFromHex(job.header));
     const jobId = finderJobId(job.jobId, dest);
     if (!jobId) return null;
@@ -4613,6 +4670,16 @@ export function createPool({
             continue;
           }
           const key = adm.workerKey;
+          if (!miners.has(key)) {
+            const ipBudget = noteIpSubmit(ipLoginAt, sockIp(sock), Date.now(), {
+              max: LOGIN_PER_IP_MAX,
+              windowMs: LOGIN_PER_IP_WINDOW_MS,
+            });
+            if (!ipBudget.ok) {
+              replyLine(sock, { id: msg.id, error: 'busy' }, { drop: true });
+              continue;
+            }
+          }
           session = miners.get(key) || {
             login: adm.login,
             workerKey: key,

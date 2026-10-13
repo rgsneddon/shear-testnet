@@ -1089,27 +1089,47 @@ function stampAimed(cached, tpl) {
 }
 
 /**
+ * Look up an aimed header without sealing. `miss` means a later
+ * templateForFinder call would seal a new finder-fee note.
+ */
+function finderAimPeek(tpl, finderDest) {
+  const bind = tpl?.levyBind;
+  if (!bind || !(bind.finderNanos > 0)) return { state: 'plain', tpl: tpl || null };
+  const dest = String(finderDest || '');
+  if (forbiddenFinderDest(dest, bind.poolDest, bind.feeDest)) return { state: 'refuse' };
+  const cb = tpl.txs?.[0];
+  if (!cb?.coinbase) return { state: 'refuse' };
+  const existing = (cb.vout || []).find((o) => o.kind === 'finder-fee');
+  const want = hash20FromAddress(dest);
+  if (existing && want && noteDest20(existing)?.equals(Buffer.from(want))) return { state: 'plain', tpl };
+  const key = finderAimKey(tpl.header, dest, bind.finderNanos);
+  if (key && finderAimCache.has(key)) {
+    const hit = finderAimCache.get(key);
+    rememberFinderAim(key, hit);
+    return { state: 'hit', tpl: stampAimed(hit, tpl) };
+  }
+  return { state: 'miss', bind, dest, cb, key };
+}
+
+/** Cache peek for the pool handler. A miss does not seal. */
+export function cachedFinderTemplate(tpl, finderDest) {
+  const peek = finderAimPeek(tpl, finderDest);
+  if (peek.state === 'refuse') return { ok: false };
+  if (peek.state === 'miss') return { ok: true, miss: true };
+  return { ok: true, tpl: peek.tpl };
+}
+
+/**
  * One header whose finder-fee pays `finderDest`. The pot notes stay.
  * The shared template holds the finder half at the unclaimed dest until a
  * miner aims. A fee dest, the reserve, and that hold are refused.
  * A repeat for the same round and dest reuses the sealed note.
  */
 export function templateForFinder(tpl, finderDest) {
-  const bind = tpl?.levyBind;
-  if (!bind || !(bind.finderNanos > 0)) return tpl || null;
-  const dest = String(finderDest || '');
-  if (forbiddenFinderDest(dest, bind.poolDest, bind.feeDest)) return null;
-  const cb = tpl.txs?.[0];
-  if (!cb?.coinbase) return null;
-  const existing = (cb.vout || []).find((o) => o.kind === 'finder-fee');
-  const want = hash20FromAddress(dest);
-  if (existing && want && noteDest20(existing)?.equals(Buffer.from(want))) return tpl;
-  const key = finderAimKey(tpl.header, dest, bind.finderNanos);
-  if (key && finderAimCache.has(key)) {
-    const hit = finderAimCache.get(key);
-    rememberFinderAim(key, hit);
-    return stampAimed(hit, tpl);
-  }
+  const peek = finderAimPeek(tpl, finderDest);
+  if (peek.state === 'refuse') return null;
+  if (peek.state === 'plain' || peek.state === 'hit') return peek.tpl;
+  const { bind, dest, cb, key } = peek;
   finderAimSealCount += 1;
   const note = sealLevyNote(bind.finderNanos, dest, 'finder-fee');
   const vout = (cb.vout || []).filter((o) => o.kind !== 'finder-fee');
