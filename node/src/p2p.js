@@ -545,15 +545,17 @@ export function decodeWireBlock(w) {
     shareBatch: w.sharePacked
       ? unpackShareBatchBytes(Buffer.from(String(w.sharePacked), 'hex'))
       : (Array.isArray(w.shareBatch) ? w.shareBatch : []),
-    hashCredits: w.hashCreditPacked
-      ? unpackHashCreditBytes(Buffer.from(String(w.hashCreditPacked), 'hex'))
-      : (Array.isArray(w.hashCredits) ? w.hashCredits : undefined),
+    // An absent credit record stays absent. A present field that does not
+    // parse is hash_owed, so an empty wire field must not become one.
+    ...(w.hashCreditPacked
+      ? { hashCredits: unpackHashCreditBytes(Buffer.from(String(w.hashCreditPacked), 'hex')) }
+      : (Array.isArray(w.hashCredits) ? { hashCredits: w.hashCredits } : {})),
     hashSpill: w.hashSpillPacked
       ? (unpackSpillBytes(Buffer.from(String(w.hashSpillPacked), 'hex')) || [])
       : (Array.isArray(w.hashSpill) ? w.hashSpill : []),
-    hashSpillCredits: w.hashSpillCreditPacked
-      ? unpackSpillCreditBytes(Buffer.from(String(w.hashSpillCreditPacked), 'hex'))
-      : (Array.isArray(w.hashSpillCredits) ? w.hashSpillCredits : undefined),
+    ...(w.hashSpillCreditPacked
+      ? { hashSpillCredits: unpackSpillCreditBytes(Buffer.from(String(w.hashSpillCreditPacked), 'hex')) }
+      : (Array.isArray(w.hashSpillCredits) ? { hashSpillCredits: w.hashSpillCredits } : {})),
     aLeaves: reviveDeep(w.aLeaves),
     bLeaves: reviveDeep(w.bLeaves),
     rootA: reviveDeep(w.rootA),
@@ -1520,7 +1522,13 @@ export function createP2p({
       const job = getblockServeQ.shift();
       n += 1;
       if (!job?.sock || job.sock.destroyed) continue;
-      send(job.sock, { type: 'block', magic, block: encodeWireBlock(job.block) });
+      // A held body goes out whole. A pruned block this tip does not bury is a miss.
+      const served = typeof store.servableBlock === 'function' ? store.servableBlock(job.block) : job.block;
+      if (!served) {
+        send(job.sock, { type: 'getblock_nak', magic, hash: hexHash(job.block?.hash) });
+        continue;
+      }
+      send(job.sock, { type: 'block', magic, block: encodeWireBlock(served) });
       if (job.key) recentGetblockServe.set(job.key, Date.now());
       getblockServeSent += 1;
     }
@@ -1734,6 +1742,8 @@ export function createP2p({
       const have = seenHashes();
       const page = msg.headers || [];
       rec.page = page;
+      // A pruned body served next needs these headers to show its burial.
+      if (typeof store.offerHeaders === 'function') store.offerHeaders(page);
       const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
       const blocked = activeFailSet(rec);
       // A probe-ahead tip has not served a body, so its winning block is not

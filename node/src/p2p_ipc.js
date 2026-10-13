@@ -5,8 +5,8 @@
  * This encoding has no `trustedPowHash` field.
  */
 import net from 'node:net';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { admitWireTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
+import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { admitWireTx } from '../../crypto/chronoflux.js';
 import { txWeight } from '../../crypto/levy.js';
 import { reviveBytes } from '../../crypto/note.js';
 import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
@@ -205,22 +205,67 @@ export function applyVerifiedIpcBlock(store, msg) {
   if (block.height != null && block.height !== '' && Number(block.height) !== structuralH) {
     return { ok: false, reason: 'height' };
   }
-  if (block.samplesPruned && !shouldPruneSamples(structuralH, tipH)) {
-    return { ok: false, reason: 'samples_pruned' };
-  }
-  return store.append(block, {});
+  // A pruned block is buried only by the proven header run the store holds
+  // from ipc_headers. The store hashes those headers off the loop. No run,
+  // or a short one, is samples_pruned there.
+  return store.append(block, block.samplesPruned === true ? { offLoopPow: true } : {});
 }
 
-function forwardBlock(send, block) {
+function blockFrame(block) {
   const powHash = powHexOf(block);
-  if (!/^[0-9a-f]{64}$/.test(powHash)) return false;
+  if (!/^[0-9a-f]{64}$/.test(powHash)) return null;
   let wire;
   try {
     wire = encodeWireBlock(block);
   } catch {
-    return false;
+    return null;
   }
-  return send({ type: 'ipc_block', magic: MAGIC_TESTNET, block: wire, powHash });
+  return { type: 'ipc_block', magic: MAGIC_TESTNET, block: wire, powHash };
+}
+
+/**
+ * IPC frames for these rows, oldest first. A held body goes out whole. A
+ * pruned row is preceded by the headers above it, up to its burial depth,
+ * so the receiver proves that burial instead of reading a flag. A pruned
+ * row this store neither buries nor holds is not sent.
+ */
+export function ipcBlockFrames(store, rows) {
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  const frames = [];
+  let headersTo = 0;
+  for (const raw of Array.isArray(rows) ? rows : []) {
+    const block = typeof store?.servableBlock === 'function' ? store.servableBlock(raw) : raw;
+    if (!block) continue;
+    const h = Number(block.height) || 0;
+    if (block.samplesPruned === true && h + SAMPLE_PRUNE_CONFIRMATIONS > headersTo) {
+      const from = h > headersTo ? h : headersTo;
+      const to = h + SAMPLE_PRUNE_CONFIRMATIONS;
+      const headers = list.slice(from, to).map((b) => ({
+        header: Buffer.from(b.header).toString('hex'),
+        hash: powHexOf(b),
+        height: b.height,
+      }));
+      if (headers.length) frames.push({ type: 'ipc_headers', magic: MAGIC_TESTNET, headers });
+      headersTo = to;
+    }
+    const frame = blockFrame(block);
+    if (frame) frames.push(frame);
+  }
+  return frames;
+}
+
+function forwardBlock(send, block) {
+  const frame = blockFrame(block);
+  return frame ? send(frame) : false;
+}
+
+function forwardRows(store, send, rows) {
+  for (const frame of ipcBlockFrames(store, rows)) send(frame);
+}
+
+function acceptIpcHeaders(store, msg) {
+  if (msg.magic && msg.magic !== MAGIC_TESTNET) return;
+  if (typeof store?.offerHeaders === 'function') store.offerHeaders(msg.headers || []);
 }
 
 function paceBackfill(store, send, afterHeight) {
@@ -261,7 +306,7 @@ function paceBackfill(store, send, afterHeight) {
     const chunk = chunks[i];
     i += 1;
     if (!chunk) return;
-    for (const block of chunk) forwardBlock(send, block);
+    forwardRows(store, send, chunk);
     if (i < chunks.length) setImmediate(step);
   };
   setImmediate(step);
@@ -289,7 +334,7 @@ function serveIpcGetblock(store, send, msg) {
     } catch { /* ignore */ }
     return;
   }
-  for (const block of rows) forwardBlock(send, block);
+  forwardRows(store, send, rows);
   try {
     console.error(JSON.stringify({
       event: 'ipc_getblock',
@@ -517,6 +562,10 @@ export function attachPoolIpc({
         acceptIpcTx(store, msg);
         return;
       }
+      if (msg.type === 'ipc_headers') {
+        acceptIpcHeaders(store, msg);
+        return;
+      }
       if (msg.type === 'ipc_block') enqueue(msg);
     });
     sock.on('close', () => {
@@ -611,6 +660,10 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
       }
       if (msg.type === 'ipc_tx') {
         acceptIpcTx(store, msg);
+        return;
+      }
+      if (msg.type === 'ipc_headers') {
+        acceptIpcHeaders(store, msg);
         return;
       }
       if (msg.type === 'ipc_block') enqueue(msg);
