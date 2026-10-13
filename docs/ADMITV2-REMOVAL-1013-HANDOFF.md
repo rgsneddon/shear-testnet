@@ -18,7 +18,7 @@ Left as on the base, for FS-1 Stage 0 to settle: `crypto/native/admit/src/prove.
 
 ## What stayed
 
-v3 consensus, `admitProveV3`, `admitVerifyV3`, the 64-byte `admit_prove_in` / `admit_verify_in` path, `trees_point`, `dest_leaf_fp`, `ARITY`, `outputJoinsAdmitSet`, `receiptAdmitRejected`, the scalar `jroot` and the frontier (`trees()` still serves both), `ADMIT_ARITY=32`, `ADMIT_LEAF=shear-admit-leaf-v2`, `MAX_PROOF` 32768, `MAX_PROOF_V3` 43490, `kBookMagic`, `V12_GENESIS_BLOCK_HASH` (still empty), and range-proof byte 2 (BP+). `gadget.rs` was not edited. `spend_tag_of` still accepts byte 2 or byte 3, because step 5 did not prove the book is free of sealed byte-2 blobs.
+v3 consensus, `admitProveV3`, `admitVerifyV3`, the 64-byte `admit_prove_in` / `admit_verify_in` path, `trees_point`, `dest_leaf_fp`, `ARITY`, `outputJoinsAdmitSet`, `receiptAdmitRejected`, the scalar `jroot` and the frontier (`trees()` still serves both), `ADMIT_ARITY=32`, `ADMIT_LEAF=shear-admit-leaf-v2`, `MAX_PROOF` 32768, `MAX_PROOF_V3` 43490, `kBookMagic`, `V12_GENESIS_BLOCK_HASH` (still empty), and range-proof byte 2 (BP+). `gadget.rs` was not edited. `prove.rs` was edited twice: step 4 (`e8e9f95a`) deleted the v2 prover functions, and `340c1561` made `spend_tag_of` (`prove.rs:604`) accept byte 3 only. `MAX_PROOF_V3` and its checks in `prove.rs` were not touched.
 
 ## Commits
 
@@ -53,7 +53,7 @@ Tests:
 
 ### 3. `6e7de5388b1356c889225dbe021b35c059c5d389`
 
-`proveFlowSpend` throws `StateError('admit_v2_closed')` before `prove_spend`. It does not call `admitProveV3`. The JS helper exits 4 with `{ ok: false, reason: 'admit_v2_closed' }` before the addon check. Range proofs still start with byte 2. The debug hook `debugNativeSpendProver` still injects a fake proof so existing wallet pipeline tests can run.
+`proveFlowSpend` throws `StateError('admit_v2_closed')` before `prove_spend`. It does not call `admitProveV3`. The JS helper exits 4 with `{ ok: false, reason: 'admit_v2_closed' }` before the addon check. Range proofs still start with byte 2. The debug hook `debugNativeSpendProver` still injected a fake proof at this step. `05decf83` deleted it.
 
 Tests:
 
@@ -94,13 +94,13 @@ Walk on this machine:
 - `/home/ubuntu/.shear/testnet-v11`: exit 2, `missing`
 - `--self-check`: exit 0 (in-memory and a synthetic `chain.bin`, not a network book)
 
-`V12_GENESIS_BLOCK_HASH` is still `''`. There is no sealed genesis-to-tip book here to prove that no byte-2 admit blob was sealed. A snap written by an older binary can still carry a tag even though current consensus refuses a new byte-2 flow. `versionedSpendTag` in `crypto/note.js` and `spend_tag_of` in `prove.rs` still accept byte 2.
+`V12_GENESIS_BLOCK_HASH` is still `''`. There is no sealed genesis-to-tip book here to prove that no byte-2 admit blob was sealed. A snap written by an older binary can still carry a tag even though current consensus refuses a new byte-2 flow. At this step `versionedSpendTag` and `spend_tag_of` still accepted byte 2. `340c1561` narrowed them, and `d9b36510` extended this walk to snaps.
 
 Tests: `tests/test_audit_admit_byte2.js` **1 pass, 0 fail**. Rust and C did not change, so the addon was not rebuilt and cargo was not started again. The step 4 release suite was still using `target/release`.
 
 ### 6. `f6228cf49a3830bbc558513728e4f8f8d42b2c38`
 
-Display copy that said ADMITv2 now says ADMITv3 (node, pool, RPC, help, site, wallet CLI and UI, README). `specs/consensus.md` describes the byte-3 gate: a presented flow blob whose first byte is not 3, or byte 3 with no anchor, is `admit_version`; byte 3 with an anchor is `admitVerifyV3`. The dest leaf domain in that section is still `shear-admit-leaf-v2`. `specs/law.md` line 69 is still `ADMIT=ADMITv3`. Line 138 now says ADMITv3. `specs/admit-v2.md` was not rewritten. `ADMIT_ARITY=32` and `ADMIT_LEAF=shear-admit-leaf-v2` were not edited. The docs sentence that called the statement full-chain membership now says a flow spend is a byte-3 proof, not a ring of N.
+Display copy that said ADMITv2 now says ADMITv3 (node, pool, RPC, help, site, wallet CLI and UI, README). The Privacy Auditor failed this rename (M65-1). Russell then ruled that the full-set FS-1 proof is branded ADMITv3, so the name stays. Only privacy claims and bucket wording came out. See the auditor round below. `specs/consensus.md` describes the byte-3 gate: a presented flow blob whose first byte is not 3, or byte 3 with no anchor, is `admit_version`; byte 3 with an anchor is `admitVerifyV3`. The dest leaf domain in that section is still `shear-admit-leaf-v2`. `specs/law.md` line 69 is still `ADMIT=ADMITv3`. Line 138 now says ADMITv3. `specs/admit-v2.md` was not rewritten. `ADMIT_ARITY=32` and `ADMIT_LEAF=shear-admit-leaf-v2` were not edited. The docs sentence that called the statement full-chain membership now says a flow spend is a byte-3 proof, not a ring of N.
 
 Tests:
 
@@ -114,14 +114,14 @@ Tests:
 
 ## Follow-up the same evening
 
-Russell retired the v3 group-of-32 send (FS-1 only). The long proving runs were stopped and were not restarted. Those stops are skips, not test failures. Step 7 stays undone. `V12_GENESIS_BLOCK_HASH` is still `''`. No tag, no merge, no genesis cut. `gadget.rs` and `prove.rs` were not edited. Base stays `cursor/close-open-p0-0bcc`.
+Russell retired the v3 group-of-32 send (FS-1 only). The long proving runs were stopped and were not restarted. Those stops are skips, not test failures. Step 7 stays undone. `V12_GENESIS_BLOCK_HASH` is still `''`. No tag, no merge, no genesis cut. `gadget.rs` was not edited. `prove.rs` was edited in step 4 (`e8e9f95a`) and in `340c1561`, as listed under "What stayed". Base stays `cursor/close-open-p0-0bcc`.
 
 Fixes that stayed:
 
 - The `chain.js` reason changes from `8c64b230` were taken back out (see "Follow-up: extra-mint and vault reasons"). `test_gate_evm.js` now asserts the base reasons: extra-mint is `range_proof`, and the unvaulted and over-cap withdraws are `admit_version`.
 - `tests/test_public_copy.js` follows the shipped Continuum **0.72** pin in `node/src/help.js`. The site copy that still says 0.71 was left alone.
 - `node/tests/test_rpc.js` expects `shear-testnet-v12`.
-- JS `admitVerifyV3` and the N-API v3 prove buffer are 43490. Rust `MAX_PROOF_V3` stays 43490.
+- JS `admitVerifyV3` and the N-API v3 prove buffer were raised to 43490 in `8c64b230`. `cdfeb2ed` put both back to 40354 (see "Cap"). Rust `MAX_PROOF_V3` stays 43490.
 - `decodeWireBlock` omits `hashCredits` and `hashSpillCredits` when the wire did not carry them. An own-property set to `undefined` was making `freshForBlock` / `spillForBlock` return `hash_owed`.
 
 Fast tests after those fixes:
@@ -165,3 +165,25 @@ On this branch now (base `chain.js`):
 - `node/tests/test_gate_evm.js`: **4 pass, 0 fail**, asserting `range_proof` for the extra-mint and `admit_version` for the unvaulted and over-cap withdraws.
 - `node/tests/test_verify_mint.js`: **0 pass, 1 fail**. It is the base file. It expects `mint_forbidden` for the empty-vin thief and gets `range_proof`. That is the same failure as on the base, and follow-up item 1 fixes it.
 - `node/tests/test_money_range_v12.js`: **2 pass, 0 fail**.
+
+## Auditor round (Codebase Auditor and Privacy Auditor, 2026-10-13 evening)
+
+Both auditors failed PR 65 at `a1312a88`. Each fix below is its own commit on `cursor/admitv2-removal-1013`. Nothing was merged, tagged, or cut. PR 72 (the FS-1 Stage 0 gate) must land before PR 65 merges.
+
+- `cdfeb2ed`: CA blocker 1 / PA M65-3. JS `admitVerifyV3` cap and the N-API v3 buffer are back at **40354**. Rust `prove.rs:38/293/655` stays at 43490 for FS-1 Stage 0.
+- `8d8e0088`: CA blocker 2. `chain.js` is the base version. `test_gate_evm.js` asserts the base reasons. The proposed change is under "Follow-up: extra-mint and vault reasons".
+- `40976539`: CA blocker 3. `t18_off_ui_check.dart` seals to a payable dest, so it reaches the `admit_v2_closed` check (`proveClosed=3`).
+- `340c1561`: CA SHOULD / PA nit. Spend tags are read only from byte-3 blobs: `versionedSpendTag`, `proofIdentity`, `boundProofTag`, `sameBoundProof`, `versionedHead`, and `bindListedTight` in `crypto/note.js`, `spend_tag_of` in `prove.rs:604`, and the `compactTx` admit label in `crypto/chronoflux.js` (now taken from the blob's first byte, with no default of 2). A byte-2 blob with no posted field is `admit_membership`, and its tag does not enter the fluxset. `test_spend_tags_v12.js` reads byte-3 blobs and asserts that.
+- `05decf83`: CA SHOULD / PA nit. `debugNativeSpendProver`, its typedef, and `nativeProveFlowSpend` are deleted. `proveFlowSpend` always throws `admit_v2_closed`, so no hook can supply a v2 (or any) proof. Thirteen wallet tests stopped installing the hook. Three that only passed because of a fake byte-2 proof now assert that the send fails closed, posts nothing, and spends no note. The temp-file test now checks `proveFlowSpend` directly.
+- `d9b36510`: PA nit. `scripts/audit_admit_byte2.js` also walks a datadir's snaps. `bootstrap/latest.bin` is walked as a book. `book.snap` passes only when its frame digest matches this book's prefix and every spend tag in it comes from a byte-3 blob or a blob-less shape proof in that prefix. Without the install's seal key (or `--snap-key FILE`) it exits 2 (`snap_unkeyed`).
+- `0a49aba5` then `efc0a3d1`: PA M65-1 / M65-2. `0a49aba5` replaced ADMITv3 with neutral wording. Russell then ruled (23:27 BST) that the full-set FS-1 proof is branded ADMITv3, so `efc0a3d1` puts every ADMITv3 mention back, including the `admit: 'ADMITv3'` RPC and config field. What stays removed is every "She is Private", "private cryptocurrency/ledger/notes/dest", "confidential amounts", and "amounts are confidential" claim on the public pages, README, specs (`law.md`, `flow.md`), and wallet (`main.dart:1589`, `shear_cli.dart` balance help, `shear_closure.dart:198`, `shear_privacy_hop.dart:52`, including "Connect bare is private"). Sends are off until FS-1 ships. `shear_cli.dart:77` now says "ADMITv3 is the full-set send proof. Flow sends are off until it ships." `shear_cli.dart:356` keeps "ADMITv3 + BP+ Flow". No public copy described a bucket or group-of-32 set. `tests/test_public_copy.js` now bans the privacy claims and bucket / group-of-32 / 32-anonymity wording on the public pages and the wallet strings, and still requires ADMITv3.
+
+Not changed, and needing a ruling: the consensus fingerprint tokens `ADMIT=ADMITv3` and `AMOUNT=confidential` (`crypto/asert.js`, mirrored in `specs/law.md`). Changing them changes the fingerprint.
+
+Tests in this round:
+
+- Node, against the rebuilt addon: `test_audit_admit_byte2` 1/0, `test_admit_byte_v12` 2/0, `crypto/mempool.test.js` 1/0, `test_hardening_p0` 10/0, `test_gate_evm` 4/0, `test_money_range_v12` 2/0, and the `test_spend_tags_v12` stub pattern 3/0.
+- Wider sweep (41 `crypto/*.test.js` files and 20 admit/spend/mempool node files): 13 files fail, and all 13 fail the same way with the byte-3 change stashed (asert, eip712, reserve_evm, shear_hash, spend, the anchor/bspend/flow-vin/mempool-parse/tag-copy/spend-sig node files). Five files hit the 300s timeout on a real prove or mine: `admit.test.js`, `admit_v3.test.js`, `test_admit_consensus`, `test_admit_v3_fund_v12`, `test_lock_tag_respend_v12`, and the full `test_spend_tags_v12`.
+- Release cargo, fast subset (`--test-threads=1`, skipping the retired v3 proves): **40 passed, 0 failed, 12 filtered**.
+- Copy: `test_public_copy` 5/0, `site/tests/test_clients` 4/0, `site/tests/test_docs` 4/0, `pool/tests/test_brand` 11/0. With the neutral wording, `pool/tests/test_pool` was 33/0 and `node/tests/test_rpc` 3/0. `forbid_foreign_names` (1/1) and `test_p2p_process_split` (1/1) fail identically on the base.
+- Dart: the 8 hook-related tests by name 8/0. `t18_off_ui_test.dart` 1/0. `shear_wallet_test.dart` plus `continuum_072_send_v12_test.dart`: **225 pass, 26 fail**. No failure mentions `admit_v2_closed` or the deleted hook. 7 of the 26 used the hook and also failed at `40976539` with the hook in place. The other 19 are UI, timeout, sync, and `Isolate.run` source checks.
