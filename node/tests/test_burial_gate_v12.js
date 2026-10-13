@@ -136,6 +136,8 @@ describe('v12 P2P burial gate', () => {
     assert.doesNotMatch(storeSrc, /shouldPruneSamples\(incomingH/);
     assert.match(storeSrc, /candidateTip/);
     assert.match(storeSrc, /suffixBurial/);
+    assert.doesNotMatch(storeSrc, /Math\.max\(storeTip/);
+    assert.doesNotMatch(storeSrc, /Math\.max\(oldTip/);
     assert.match(storeSrc, /peer-advertised height must not prune/);
     const chainSrc = fs.readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
     assert.match(chainSrc, /reason: 'height'/);

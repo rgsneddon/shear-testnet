@@ -84,6 +84,7 @@ import {
   segmentFileName,
   CHAIN_SEGMENT_BLOCKS,
   packEpochBlock,
+  unpackEpochBlock,
 } from '../../crypto/chainbin.js';
 import {
   writeLatestBootstrap,
@@ -305,6 +306,8 @@ export function createStore(dir, {
   let prefixHeight = 0;
   let frameHash = null;
   let frameCovered = 0;
+  // Share batches pruned at depth 1000. A reorg that lifts the block puts them back.
+  const heldBodies = new Map();
 
   const segLoaded = readChainSegments(segDir);
   if (segLoaded) {
@@ -336,6 +339,7 @@ export function createStore(dir, {
       blocks.push(b);
     }
   }
+  loadHeldBodies();
   {
     const diskMagic = fs.existsSync(magicFile)
       ? fs.readFileSync(magicFile, 'utf8').trim()
@@ -1233,10 +1237,83 @@ export function createStore(dir, {
     writeLoadSeal(diskBlocks);
   }
 
+  function holdFromBlock(block) {
+    return {
+      shareBatch: block.shareBatch || [],
+      samples: Array.isArray(block.samples) ? block.samples : [],
+      hashSpill: Array.isArray(block.hashSpill) ? block.hashSpill : [],
+      hashSpillCredits: block.hashSpillCredits,
+      bLeaves: Array.isArray(block.bLeaves) ? block.bLeaves : [],
+      txSamples: (block.txs || []).map((tx) => (tx && tx.coinbase ? (tx.samples || []) : null)),
+    };
+  }
+
+  // A pruned block keeps its share batch here. A later tip that no longer
+  // buries it puts that batch back. Fast-sync does not write the file.
+  function rememberPrunedBody(block) {
+    const key = blockHex(block);
+    if (!key || heldBodies.has(key)) return;
+    heldBodies.set(key, holdFromBlock(block));
+    if (archiveFast) return;
+    try {
+      const folder = path.join(dir, 'burial-hold');
+      fs.mkdirSync(folder, { recursive: true });
+      const dest = path.join(folder, key);
+      if (!fs.existsSync(dest)) fs.writeFileSync(dest, packEpochBlock(block));
+    } catch { /* this process still has the body in memory */ }
+  }
+
+  function loadHeldBodies() {
+    const folder = path.join(dir, 'burial-hold');
+    if (!fs.existsSync(folder)) return;
+    let names = [];
+    try { names = fs.readdirSync(folder); } catch { return; }
+    for (const name of names) {
+      if (!/^[0-9a-f]{64}$/.test(name) || heldBodies.has(name)) continue;
+      try {
+        heldBodies.set(name, holdFromBlock(unpackEpochBlock(fs.readFileSync(path.join(folder, name)))));
+      } catch { /* a torn hold cannot lift that block */ }
+    }
+  }
+
+  function liftPrunedBlock(block) {
+    const key = blockHex(block);
+    const held = key ? heldBodies.get(key) : null;
+    if (!held) return null;
+    const txs = (block.txs || []).map((tx, i) => {
+      if (!tx?.coinbase || held.txSamples[i] == null) return tx;
+      return { ...tx, samples: held.txSamples[i] };
+    });
+    const next = {
+      ...block,
+      shareBatch: held.shareBatch || [],
+      samples: held.samples || [],
+      hashSpill: held.hashSpill || [],
+      bLeaves: held.bLeaves || [],
+      samplesPruned: false,
+      bLeavesPruned: false,
+      txs,
+    };
+    if (held.hashSpillCredits) next.hashSpillCredits = held.hashSpillCredits;
+    return next;
+  }
+
+  // Buried under this tip: the pruned block. Not buried: the share batch
+  // comes back. A missing body fails closed.
+  function blockForTip(block, tipH) {
+    if (!block || block.samplesPruned !== true) return { ok: true, block };
+    if (shouldPruneSamples(Number(block.height) || 0, tipH)) return { ok: true, block };
+    const lifted = liftPrunedBlock(block);
+    if (!lifted) return { ok: false, block: null };
+    return { ok: true, block: lifted };
+  }
+
   function persist(block) {
     fs.writeFileSync(magicFile, MAGIC_TESTNET);
     const tipH = Number(block?.height || 0);
     // The block being written is the tip. Fast-sync must not mark it pruned.
+    // pruneBuried puts a share batch back when a later tip lifts the block
+    // above the depth-1000 line.
     const row = archiveFast && shouldPruneSamples(tipH, tipH)
       ? pruneSamples(block)
       : block;
@@ -1281,10 +1358,18 @@ export function createStore(dir, {
     const dirtySegs = new Set();
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
+      if (b.samplesPruned === true && !shouldPruneSamples(b.height, tipH, pruneDepth)) {
+        const lifted = liftPrunedBlock(b);
+        if (!lifted) continue;
+        blocks[i] = lifted;
+        dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
+        continue;
+      }
       if (b.samplesPruned) continue;
       if (!shouldPruneSamples(b.height, tipH, pruneDepth)) continue;
       const nTx = (b.txs || []).length;
       const nVout = (b.txs?.[0]?.vout || []).length;
+      rememberPrunedBody(b);
       const next = pruneSamples(b);
       if ((next.txs || []).length !== nTx) throw new Error('prune_dropped_txs');
       if ((next.txs?.[0]?.vout || []).length !== nVout) throw new Error('prune_dropped_coinbase');
@@ -1658,7 +1743,11 @@ export function createStore(dir, {
       } catch { trustedPowHash = null; }
       if (!trustedPowHash) return { ok: false, reason: 'share_credit_bind', at: i };
       const chainTip = Number(accepted[accepted.length - 1]?.height || 0);
-      const bound = shareCreditBound(b, chainTip);
+      // The adopted tip, not the tip this block was pruned under. A block
+      // that tip lifts has to present the share batch it kept.
+      const viewed = blockForTip(b, chainTip);
+      if (!viewed.ok) return { ok: false, reason: 'samples_pruned', at: i };
+      const bound = shareCreditBound(viewed.block, chainTip);
       if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind', at: i };
     }
     const dropIds = [];
@@ -2842,15 +2931,6 @@ export function createStore(dir, {
     try { return hex32(block?.hash).toLowerCase(); } catch { return ''; }
   }
 
-  function listTipHeight(list) {
-    let tipH = 0;
-    for (const b of list || []) {
-      const h = Number(b?.height);
-      if (Number.isInteger(h) && h > tipH) tipH = h;
-    }
-    return tipH;
-  }
-
   function nearestOwedCheckpoint(at) {
     let best = null;
     for (const c of owedCkpt) {
@@ -2925,7 +3005,10 @@ export function createStore(dir, {
     const list = Array.isArray(history) ? history : [];
     let n = 0;
     while (n < list.length && n < blocks.length && blockHex(list[n]) && blockHex(list[n]) === blockHex(blocks[n])) n += 1;
-    const tipH = candidateTipHeight != null ? Number(candidateTipHeight) : listTipHeight(list);
+    // The chain being validated. A height field and the local tip are not this.
+    const tipH = candidateTipHeight != null && Number.isFinite(Number(candidateTipHeight))
+      ? Number(candidateTipHeight)
+      : list.length;
     const tipAt = candidateTipAt != null ? Number(candidateTipAt) : Math.max(0, list.length - 1);
     const anchorHash = n > 0 ? blockHex(blocks[n - 1]) : '';
     const key = `${n}|${blocks.length}|${tipH}|${tipAt}|${anchorHash}|${list.length}`;
@@ -2968,10 +3051,12 @@ export function createStore(dir, {
     const units = walked.units;
     const from = n > 0 ? (nearestOwedCheckpoint(n - 1).at + 1) : 0;
     for (let i = from; i < list.length; i += 1) {
+      const viewed = blockForTip(list[i], tipH);
+      if (!viewed.ok) return { ok: false, reason: 'samples_pruned' };
       const next = advanceHashOwed({
         owedIn: rows,
         acceptedSeries: series,
-        block: list[i],
+        block: viewed.block,
         unit: units[i],
         height: Number(list[i]?.height) || i + 1,
         tipHeight: tipH,
@@ -2981,7 +3066,7 @@ export function createStore(dir, {
         // share-credit bind, not a new owed ledger. The suffix check still
         // runs only after this prefix agrees.
         if (i < n) {
-          const bound = shareCreditBound(list[i], tipH);
+          const bound = shareCreditBound(viewed.block, tipH);
           if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind' };
         }
         return { ok: false, reason: next.reason || 'hash_owed' };
@@ -3158,7 +3243,9 @@ export function createStore(dir, {
     let vault = carriedVault.vault;
     let state = base;
     for (let i = from + 1; i <= endIdx; i += 1) {
-      const block = blocks[i];
+      const viewed = blockForTip(blocks[i], burial);
+      if (!viewed.ok) return null;
+      const block = viewed.block;
       const stepped = supplyStep(state, block, {
         unit: unitAt[i] == null ? undefined : unitAt[i],
         height: Number(block?.height) || i + 1,
@@ -3198,16 +3285,12 @@ export function createStore(dir, {
     const trialSpent = new Set();
     const rows = Array.isArray(history) ? history : [];
     const tipAt = rows.length + fork.length - 1;
-    // Candidate height is the linked length, not the largest height field.
-    // Prefix blocks this node already pruned stay buried under the local tip.
-    // A new block is buried only by the candidate chain. A peer tipHeight
-    // is not part of this.
-    const storeTip = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
+    // One burial tip: the chain being validated. Linked length, not a height
+    // field and not max(local tip, fork length). Commit uses this same tip.
     const baseH = rows.length ? (Number(rows[rows.length - 1]?.height) || rows.length) : 0;
     const candidateTip = baseH + fork.length;
-    const prefixTip = Math.max(storeTip, candidateTip);
     const tipH = candidateTip;
-    const seeded = seedHistory(rows, tipAt, prefixTip);
+    const seeded = seedHistory(rows, tipAt, candidateTip);
     if (!seeded.ok) return { ok: false, reason: seeded.reason || 'hash_owed' };
     const allUnitsWalk = unitsAlong(rows, fork);
     if (!allUnitsWalk.ok || !allUnitsWalk.units) {
@@ -3226,7 +3309,7 @@ export function createStore(dir, {
       anchors = [];
     } else if (canonical) {
       const endIdx = rows.length - 1;
-      supply = supplyCarriedTo(endIdx, prefixTip);
+      supply = supplyCarriedTo(endIdx, candidateTip);
       flux = fluxCarriedTo(endIdx);
       if (supply && flux) anchors = anchorAt.slice();
     }
@@ -3237,7 +3320,7 @@ export function createStore(dir, {
       flux = emptyFluxset();
       anchors = [];
       if (prefix > 0) {
-        const carried = supplyCarriedTo(prefix - 1, prefixTip);
+        const carried = supplyCarriedTo(prefix - 1, candidateTip);
         const restored = fluxThroughIndex(blocks, prefix - 1);
         if (carried && restored?.frontier) {
           supply = carried;
@@ -3250,10 +3333,12 @@ export function createStore(dir, {
       if (!historyVault.ok) return { ok: false, reason: 'supply' };
       let vault = historyVault.vault;
       for (let hi = from; hi < rows.length; hi += 1) {
-        const stepped = supplyStep(supply, rows[hi], {
+        const viewed = blockForTip(rows[hi], candidateTip);
+        if (!viewed.ok) return { ok: false, reason: 'samples_pruned' };
+        const stepped = supplyStep(supply, viewed.block, {
           unit: allUnits[hi],
           height: Number(rows[hi]?.height) || hi + 1,
-          tipHeight: prefixTip,
+          tipHeight: candidateTip,
           genesisMs: gms,
           blockHash: rows[hi]?.hash,
           magic: MAGIC_TESTNET,
@@ -3261,7 +3346,7 @@ export function createStore(dir, {
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
         supply = stepped.state;
-        const advanced = vaultAfterBlock(vault, rows[hi]);
+        const advanced = vaultAfterBlock(vault, viewed.block);
         if (!advanced.ok) return { ok: false, reason: 'supply' };
         vault = advanced.vault;
         appendFluxBlock(flux, rows[hi]);
@@ -3642,21 +3727,19 @@ export function createStore(dir, {
         clearReorgMarkers();
         return { ok: false, reason: 'adopt_aborted', tip: tip() };
       }
-      const oldTip = fromBlocks.length
-        ? (Number(fromBlocks[fromBlocks.length - 1]?.height) || fromBlocks.length)
-        : 0;
       const adoptedTip = Number(accepted[accepted.length - 1]?.height) || accepted.length;
-      // Common history may already be pruned under the chain being left.
-      // Blocks this adopt adds are buried only by the chain being adopted.
-      const prefixBurial = Math.max(oldTip, adoptedTip);
-      const suffixBurial = adoptedTip;
+      // One burial tip for the prefix and the suffix: the chain being adopted.
+      // Verify already returned this height. The local tip does not raise it.
+      const suffixBurial = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
+        ? verified.burialTip
+        : adoptedTip;
       let adoptedSupply;
       let stagedFlux;
       let stagedVault;
       try {
         const keptFlux = fluxKeptThrough(lca, fromBlocks);
         const prefixSupply = lca > 0
-          ? supplyCarriedTo(lca - 1, prefixBurial)
+          ? supplyCarriedTo(lca - 1, suffixBurial)
           : emptySupplyState(genesisHeaderMs(accepted) || 0);
         if (!prefixSupply) {
           clearReorgMarkers();
@@ -4354,6 +4437,14 @@ export function createStore(dir, {
       spendTags: new Set(liveFlux.spendTags),
       jroot: liveFlux.jroot,
     }),
+    // Flux through blocks[index], frontiers included. A fork template extends
+    // this instead of rebuilding J from genesis.
+    fluxThrough(index) {
+      const end = Number(index);
+      if (!Number.isInteger(end) || end < 0) return null;
+      const flux = fluxThroughIndex(blocks, end);
+      return flux ? detachFlux(flux) : null;
+    },
     anchorNote(anchor) {
       return noteFromAnchor(liveFlux, anchorAt, Number(anchor));
     },
