@@ -141,6 +141,7 @@ import {
   levyNeed,
   LEVY_CAP_NANOS,
   poolFeeDest,
+  custodialPullRejected,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange } from '../../crypto/dummy.js';
@@ -2271,6 +2272,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const drawnWithdraws = new Set();
   for (let i = 0; i < body.length; i += 1) {
     const tx = body[i];
+    // A disabled pool-withdraw is custodial_pull before range or kind.
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
     // A refused kind returns kind before an unbound proof, tag, or commit vin
     // is membership. The range check still runs first. A verified proof then
     // returns kind. Lock, vote, and withdraw keep the commit-vin reject.

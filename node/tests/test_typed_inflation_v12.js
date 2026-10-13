@@ -188,8 +188,8 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
       };
       signSpendTx(tx, box.key);
       assert.equal(store.queueTx(tx).reason, 'custodial_pull', `pool-withdraw ${nanos}`);
-      assert.equal(verifyFundedBody([tx], () => nanos * 4).reason, 'kind', `pool-withdraw ${nanos}`);
-      assert.equal(admitMempool(emptyMempool(), tx, { baseFee: 1 }).reason, 'kind', `pool-withdraw ${nanos}`);
+      assert.equal(verifyFundedBody([tx], () => nanos * 4).reason, 'custodial_pull', `pool-withdraw ${nanos}`);
+      assert.equal(admitMempool(emptyMempool(), tx, { baseFee: 1 }).reason, 'custodial_pull', `pool-withdraw ${nanos}`);
       const got = await Promise.resolve(verifyBlock(mine(buildTemplate({
         prev: GENESIS_PREV,
         height: 1,
@@ -198,7 +198,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         now: 1_700_000_000_000,
         txs: [tx],
       })), null, { trustedPowHash: Buffer.alloc(32) }));
-      assert.equal(got.reason, 'kind', `pool-withdraw ${nanos} ${got.reason}`);
+      assert.equal(got.reason, 'custodial_pull', `pool-withdraw ${nanos} ${got.reason}`);
     }
   });
 

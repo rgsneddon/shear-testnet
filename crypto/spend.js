@@ -5,7 +5,7 @@
  */
 import { createHash, createPublicKey, sign, verify } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM } from './asert.js';
-import { levyTaxed, txAmountNanos } from './levy.js';
+import { levyTaxed, txAmountNanos, custodialPullRejected } from './levy.js';
 import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
@@ -869,6 +869,8 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
   for (const tx of body || []) {
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
     const kindGate = v12KindRejected(tx);
     if (kindGate) return kindGate;
     const explicitKind = explicitTypedKindRejected(tx);

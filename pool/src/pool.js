@@ -46,7 +46,7 @@ import {
   PRODUCT_VERSION,
   PI_SHE_NANOS,
 } from '../../crypto/asert.js';
-import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
+import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, custodialPullRejected, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { handleAdminHttp, createAdmin } from './admin.js';
 import {
@@ -5304,12 +5304,8 @@ export function createPool({
   function queueSend(t, meta) {
     const id = t.id || `send-${Date.now()}`;
     const tx = { id, ...t };
-    if (!custodialPullAllowed() && (
-      String(tx.kind || '') === 'pool-withdraw'
-      || String(tx.vout?.[0]?.kind || '') === 'pool-withdraw'
-    )) {
-      return { ok: false, reason: 'custodial_pull' };
-    }
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
     const owedRaw = Number(meta && meta.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     if (typeof store.queueTx === 'function') {

@@ -93,7 +93,7 @@ import {
   CHECKPOINT_FIRST_HEIGHT,
   CHECKPOINT_EVERY_BLOCKS,
 } from './bootstrap.js';
-import { blockWeight, custodialPullAllowed } from '../../crypto/levy.js';
+import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
 import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
@@ -2218,12 +2218,8 @@ export function createStore(dir, {
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a
     // v12 value kind, so the later reject would hide this reason.
-    if (!custodialPullAllowed() && (
-      String(tx?.kind || '') === 'pool-withdraw'
-      || String(tx?.vout?.[0]?.kind || '') === 'pool-withdraw'
-    )) {
-      return { ok: false, reason: 'custodial_pull' };
-    }
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
     // A refused kind that spends a note without a signature is unsigned.
