@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
- * Wallet ADMITv2 + BP+ prove helper. Same native blobs the node verifies.
- * Stdin JSON { op, ... } → stdout JSON. Fail closed if shearadmit.node is missing.
+ * Wallet range helper. prove_spend fails closed with admit_v2_closed.
+ * Range proofs still start with byte 2. Fail closed if shearadmit.node is missing.
  */
 import fs from 'node:fs';
-import { admitProve, admitScalarFromSeed, fluxsetIndexOf } from './admit.js';
-import { proveRange, verifyRange, randomScalar, scalarFrom, asU8 } from './note.js';
+import { proveRange, verifyRange, asU8 } from './note.js';
 import { nativeLoaded } from './native_admit.js';
 
 function hex(b) {
@@ -33,12 +32,17 @@ try {
   process.exit(1);
 }
 
+const op = String(req.op || '');
+if (op === 'prove_spend') {
+  process.stdout.write(JSON.stringify({ ok: false, reason: 'admit_v2_closed' }));
+  process.exit(4);
+}
+
 if (!nativeLoaded()) {
   process.stdout.write(JSON.stringify({ ok: false, reason: 'admit_native_required' }));
   process.exit(2);
 }
 
-const op = String(req.op || '');
 if (op === 'prove_range') {
   const r = unhex(req.r);
   const proof = proveRange(req.v, r);
@@ -62,46 +66,6 @@ if (op === 'verify_ranges') {
     }
   });
   process.stdout.write(JSON.stringify({ ok: true, v: 2, verified }));
-  process.exit(0);
-}
-
-if (op === 'prove_spend') {
-  const spendSeed = unhex(req.spendSeed);
-  const spentNote = {
-    kind: req.spentNote?.kind,
-    commit: unhex(req.spentNote?.commit),
-    noteCommit: unhex(req.spentNote?.noteCommit),
-    r: req.spentNote?.r ? unhex(req.spentNote.r) : undefined,
-  };
-  const pubs = (req.pubs || []).map(unhex).filter(Boolean);
-  const commits = (req.commits || []).map(unhex).filter(Boolean);
-  if (!pubs.length || commits.length !== pubs.length) {
-    process.stdout.write(JSON.stringify({ ok: false, reason: 'admit_commits' }));
-    process.exit(4);
-  }
-  const x = admitScalarFromSeed(spendSeed, spentNote);
-  const index = Number.isInteger(req.index) ? req.index : fluxsetIndexOf(pubs, spendSeed, spentNote);
-  const proof = admitProve({
-    x,
-    index,
-    pubs,
-    commits,
-    c: spentNote.commit,
-    t: req.t != null ? scalarFrom(unhex(req.t)) : randomScalar(),
-  });
-  if (!proof || proof.v !== 2 || proof.r) {
-    process.stdout.write(JSON.stringify({ ok: false, reason: 'admit_native_required' }));
-    process.exit(4);
-  }
-  process.stdout.write(JSON.stringify({
-    ok: true,
-    admit_proof: true,
-    v: 2,
-    spendTag: hex(proof.spendTag),
-    blob: hex(proof.blob),
-    cTilde: hex(proof.cTilde),
-    t: proof.t ? hex(proof.t) : undefined,
-  }));
   process.exit(0);
 }
 
