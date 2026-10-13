@@ -32,6 +32,14 @@
  * fingerprinted window of sealed accepted units, and never below the floor.
  * Pot splits and the pool fee do not read this ledger. Amounts stay BigInt
  * so a value above 2^53 is not rounded.
+ *
+ * Share Commitment (018e, SHARE_COMMIT=timely-omit-v1) is not this ledger.
+ * Timely is the open interval after the parent header time through this
+ * block's header time. Prod is the sum of 2^b units on the due set.
+ * CapUnits_prod is that sum capped at MAX_HASH_UNITS_PER_BLOCK. A timely
+ * commit that fits the cap must be in shareBatch; omitting it is
+ * share_commit. A parent carry that fits is fresh hash-bonus credit on
+ * this block, paid beside shareBatch, not instead of it.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -42,6 +50,7 @@ import {
   HASH_OWED_SCALE_K,
   HASH_OWED_SCALE_WINDOW,
   MAX_HASH_UNITS_PER_BLOCK,
+  MAX_SHARES_PER_BLOCK,
   SAMPLE_PRUNE_CONFIRMATIONS,
   SHARE_FLOOR_BITS,
   hashBonusUnitNanos,
@@ -453,20 +462,39 @@ export function freshForBlock(block, unit = HASH_BONUS_NANOS, tipHeight = null) 
     return { ok: false, fresh: [] };
   }
   const fromShares = freshCreditsFromShares(shares, unit);
+  const payRows = commitPayOfBlock(block);
+  if (payRows == null) return { ok: false, fresh: [] };
+  const expect = mergeCreditRows(fromShares, payRows);
+  if (expect == null) return { ok: false, fresh: [] };
   const hasField = block != null && Object.prototype.hasOwnProperty.call(block, 'hashCredits');
   if (!hasField) {
-    if (block?.samplesPruned === true && shares.length === 0) return { ok: false, fresh: [] };
-    return { ok: true, fresh: fromShares };
+    if (payRows.length === 0) {
+      if (block?.samplesPruned === true && shares.length === 0) return { ok: false, fresh: [] };
+      return { ok: true, fresh: fromShares };
+    }
+    if (block?.samplesPruned === true && shares.length === 0 && !sealedCreditsBuried(block, tipHeight)) {
+      return { ok: false, fresh: [] };
+    }
+    return { ok: true, fresh: expect };
   }
   const recorded = parseCreditList(block.hashCredits);
   if (recorded == null) return { ok: false, fresh: [] };
   const root = rootBytes(coinbaseTx(block)?.hashCreditRoot);
   if (recorded.length && !root) return { ok: false, fresh: [] };
   if (root && !root.equals(hashCreditRoot(recorded))) return { ok: false, fresh: [] };
+  if (payRows.length === 0) {
+    if (shares.length) {
+      if (!shareWitnessAgrees(shares, recorded, unit)) return { ok: false, fresh: [] };
+      if (fromShares.length && !creditsEqual(recorded, fromShares)) return { ok: false, fresh: [] };
+    } else if (recorded.length && !sealedCreditsBuried(block, tipHeight)) {
+      return { ok: false, fresh: [] };
+    }
+    return { ok: true, fresh: recorded };
+  }
+  if (!creditsEqual(recorded, expect)) return { ok: false, fresh: [] };
   if (shares.length) {
-    if (!shareWitnessAgrees(shares, recorded, unit)) return { ok: false, fresh: [] };
-    if (fromShares.length && !creditsEqual(recorded, fromShares)) return { ok: false, fresh: [] };
-  } else if (recorded.length && !sealedCreditsBuried(block, tipHeight)) {
+    if (!shareWitnessAgrees(shares, fromShares, unit)) return { ok: false, fresh: [] };
+  } else if (expect.length && !sealedCreditsBuried(block, tipHeight)) {
     return { ok: false, fresh: [] };
   }
   return { ok: true, fresh: recorded };
@@ -1176,12 +1204,446 @@ export function hashLedgerIdle(settled, freshCount = 0) {
     && settled.minted === 0n;
 }
 
+const COMMIT_SHARE_MAGIC = Buffer.from('hscm1');
+const COMMIT_LIST_MAGIC = Buffer.from('hscn1');
+const COMMIT_PAY_MAGIC = Buffer.from('hscp1');
+const COMMIT_SHARE_ROW = 32 + 8 + 4 + 8 + 20;
+const COMMIT_ROOT_PREFIX = Buffer.from('sharecommit1');
+
+function asTime(v) {
+  if (typeof v === 'bigint') return v >= 0n && v <= MAX_U64 ? v : null;
+  const n = asBi(v);
+  if (n == null || n > MAX_U64) return null;
+  return n;
+}
+
+/**
+ * True when commitMs is after the parent header time and at or before
+ * this block's header time. A missing or non-integer time is not timely.
+ */
+export function Timely(commitMs, parentMs, blockMs) {
+  const t = asTime(commitMs);
+  const p = asTime(parentMs);
+  const b = asTime(blockMs);
+  if (t == null || p == null || b == null) return false;
+  return t > p && t <= b;
+}
+
+function shareKeyOf(share) {
+  let nc;
+  try { nc = noteCommitOfShare(share); } catch { return null; }
+  if (!nc || nc.length !== 32 || nc.equals(Buffer.alloc(32))) return null;
+  let nonce;
+  try { nonce = BigInt(share?.nonce); } catch { return null; }
+  if (nonce < 0n || nonce > MAX_U64) return null;
+  return { key: `${Buffer.from(nc).toString('hex')}:${nonce.toString()}`, nc: Buffer.from(nc), nonce };
+}
+
+function shareUnitsOf(share) {
+  const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true });
+  if (!credit.ok) return null;
+  return { units: BigInt(unitsForShare(credit.bits)), bits: credit.bits };
+}
+
+function normalizeCommitShare(share, { timeDefault = null } = {}) {
+  const id = shareKeyOf(share);
+  const sized = shareUnitsOf(share);
+  if (!id || !sized) return null;
+  let dest20;
+  try { dest20 = dest20OfShare(share); } catch { return null; }
+  if (!dest20 || dest20.length !== 20 || dest20.equals(Buffer.alloc(20))) return null;
+  let expect;
+  try { expect = noteCommitOfDest20(dest20); } catch { return null; }
+  if (!expect.equals(id.nc)) return null;
+  let time = asTime(share?.commitMs);
+  if (time == null) time = timeDefault;
+  if (time == null) return null;
+  return {
+    key: id.key,
+    nc: id.nc,
+    nonce: id.nonce,
+    units: sized.units,
+    bits: sized.bits,
+    time,
+    dest20: Buffer.from(dest20),
+    share,
+  };
+}
+
+/**
+ * Sum of credited units. An illegal width fails closed (null).
+ * An empty list is zero production.
+ */
+export function Prod(shares) {
+  const list = Array.isArray(shares) ? shares : [];
+  let n = 0n;
+  for (const share of list) {
+    const sized = shareUnitsOf(share);
+    if (!sized) return null;
+    n += sized.units;
+  }
+  return n;
+}
+
+/**
+ * Inclusion cap for one producer. Prod below the block unit cap is the
+ * cap. Prod above it stops at MAX_HASH_UNITS_PER_BLOCK. Zero production
+ * caps at zero.
+ */
+export function CapUnits_prod(prod, maxUnits = MAX_HASH_UNITS_PER_BLOCK) {
+  const p = typeof prod === 'bigint' ? prod : asBi(prod);
+  const m = typeof maxUnits === 'bigint' ? maxUnits : asBi(maxUnits);
+  if (p == null || m == null || p < 0n || m < 0n) return null;
+  if (p === 0n || m === 0n) return 0n;
+  return p < m ? p : m;
+}
+
+function cmpCommitRow(a, b) {
+  if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+  const c = cmpNoteCommit(a.nc, b.nc);
+  if (c) return c;
+  if (a.nonce !== b.nonce) return a.nonce < b.nonce ? -1 : 1;
+  return 0;
+}
+
+/**
+ * Invalidate-omit. Parent carry is due ahead of new timely commits.
+ * A row that fits under CapUnits_prod is mandatory: a new commit must be
+ * in `included`, and a parent carry is fresh credit. A row that does not
+ * fit is the next carry. shareBatch pay is not cleared.
+ * `maxUnits` is the block cap. Callers on the consensus path leave it at
+ * MAX_HASH_UNITS_PER_BLOCK.
+ */
+export function shareCommitAccount({
+  carryIn = [],
+  commits = [],
+  included = [],
+  parentMs = null,
+  blockMs = null,
+  maxUnits = MAX_HASH_UNITS_PER_BLOCK,
+  maxShares = MAX_SHARES_PER_BLOCK,
+} = {}) {
+  const fail = (bad = true) => ({
+    ok: false,
+    bad,
+    reason: 'share_commit',
+    prod: 0n,
+    cap: 0n,
+    mandatory: [],
+    carry: [],
+    fresh: [],
+  });
+  const seats = Math.floor(Number(maxShares));
+  if (!Number.isInteger(seats) || seats < 0) return fail(true);
+  const carryRows = [];
+  for (const share of Array.isArray(carryIn) ? carryIn : []) {
+    const row = normalizeCommitShare(share, { timeDefault: 0n });
+    if (!row) return fail(true);
+    row.due = true;
+    carryRows.push(row);
+  }
+  const commitRows = [];
+  for (const share of Array.isArray(commits) ? commits : []) {
+    const time = asTime(share?.commitMs);
+    if (!Timely(time, parentMs, blockMs)) continue;
+    const row = normalizeCommitShare(share, { timeDefault: null });
+    if (!row) return fail(true);
+    row.due = false;
+    commitRows.push(row);
+  }
+  const seen = new Set();
+  const ordered = [];
+  for (const row of carryRows) {
+    if (seen.has(row.key)) continue;
+    seen.add(row.key);
+    ordered.push(row);
+  }
+  for (const row of commitRows) {
+    if (seen.has(row.key)) continue;
+    seen.add(row.key);
+    ordered.push(row);
+  }
+  ordered.sort(cmpCommitRow);
+  let prod = 0n;
+  for (const row of ordered) prod += row.units;
+  const cap = CapUnits_prod(prod, maxUnits);
+  if (cap == null) return fail(true);
+  let remaining = cap;
+  let usedSeats = 0;
+  const mandatory = [];
+  const carry = [];
+  const payShares = [];
+  for (const row of ordered) {
+    const fits = row.units <= remaining;
+    if (row.due) {
+      if (fits) {
+        payShares.push(row.share);
+        remaining -= row.units;
+      } else {
+        carry.push(row.share);
+      }
+    } else if (fits && usedSeats < seats) {
+      mandatory.push(row.share);
+      remaining -= row.units;
+      usedSeats += 1;
+    } else {
+      carry.push(row.share);
+    }
+  }
+  const have = new Set();
+  for (const share of Array.isArray(included) ? included : []) {
+    const id = shareKeyOf(share);
+    if (id) have.add(id.key);
+  }
+  let omitted = false;
+  for (const share of mandatory) {
+    const id = shareKeyOf(share);
+    if (!id || !have.has(id.key)) omitted = true;
+  }
+  const fresh = freshCreditsFromShares(payShares);
+  return {
+    ok: !omitted,
+    bad: false,
+    reason: omitted ? 'share_commit' : '',
+    prod,
+    cap,
+    mandatory,
+    carry,
+    fresh,
+  };
+}
+
+export function shareCommitMissing(included, mandatory) {
+  const have = new Set();
+  for (const share of Array.isArray(included) ? included : []) {
+    const id = shareKeyOf(share);
+    if (id) have.add(id.key);
+  }
+  const out = [];
+  for (const share of Array.isArray(mandatory) ? mandatory : []) {
+    const id = shareKeyOf(share);
+    if (id && !have.has(id.key)) out.push(share);
+  }
+  return out;
+}
+
+function commitShareBytes(share) {
+  const row = normalizeCommitShare(share, { timeDefault: 0n });
+  if (!row) return null;
+  const out = Buffer.alloc(COMMIT_SHARE_ROW);
+  row.nc.copy(out, 0);
+  out.writeBigUInt64LE(row.nonce, 32);
+  out.writeUInt32LE(row.bits >>> 0, 40);
+  out.writeBigUInt64LE(row.time, 44);
+  row.dest20.copy(out, 52);
+  return out;
+}
+
+function packCommitShares(magic, shares) {
+  const list = Array.isArray(shares) ? shares : [];
+  const body = Buffer.alloc(magic.length + 4 + list.length * COMMIT_SHARE_ROW);
+  magic.copy(body, 0);
+  body.writeUInt32LE(list.length, magic.length);
+  let o = magic.length + 4;
+  for (const share of list) {
+    const row = commitShareBytes(share);
+    if (!row) return null;
+    row.copy(body, o);
+    o += COMMIT_SHARE_ROW;
+  }
+  return body;
+}
+
+function unpackCommitShares(magic, buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  if (b.length < magic.length + 4) return null;
+  if (!b.subarray(0, magic.length).equals(magic)) return null;
+  const n = b.readUInt32LE(magic.length);
+  if (b.length !== magic.length + 4 + n * COMMIT_SHARE_ROW) return null;
+  const shares = [];
+  let o = magic.length + 4;
+  for (let i = 0; i < n; i += 1) {
+    const noteCommit = Buffer.from(b.subarray(o, o + 32));
+    const nonce = b.readBigUInt64LE(o + 32);
+    const bits = b.readUInt32LE(o + 40);
+    const commitMs = b.readBigUInt64LE(o + 44);
+    const dest20 = Buffer.from(b.subarray(o + 52, o + 72));
+    o += COMMIT_SHARE_ROW;
+    const share = {
+      noteCommit,
+      dest20,
+      nonce,
+      creditedShareBits: bits,
+      shareBits: bits,
+      commitMs,
+    };
+    const row = normalizeCommitShare(share, { timeDefault: 0n });
+    if (!row || row.bits !== bits || row.time !== commitMs) return null;
+    shares.push(share);
+  }
+  return shares;
+}
+
+export function packShareCommitCarryBytes(shares) {
+  return packCommitShares(COMMIT_SHARE_MAGIC, shares);
+}
+
+export function unpackShareCommitCarryBytes(buf) {
+  return unpackCommitShares(COMMIT_SHARE_MAGIC, buf);
+}
+
+export function packShareCommitListBytes(shares) {
+  return packCommitShares(COMMIT_LIST_MAGIC, shares);
+}
+
+export function unpackShareCommitListBytes(buf) {
+  return unpackCommitShares(COMMIT_LIST_MAGIC, buf);
+}
+
+export function packShareCommitPayBytes(rows) {
+  const packed = packHashCreditBytes(rows || []);
+  return Buffer.concat([COMMIT_PAY_MAGIC, packed]);
+}
+
+export function unpackShareCommitPayBytes(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+  if (b.length < COMMIT_PAY_MAGIC.length) return null;
+  if (!b.subarray(0, COMMIT_PAY_MAGIC.length).equals(COMMIT_PAY_MAGIC)) return null;
+  return unpackHashCreditBytes(b.subarray(COMMIT_PAY_MAGIC.length));
+}
+
+/** True when the coinbase root matches the carry. Both absent agrees. */
+export function shareCommitRootAgrees(root, shares) {
+  const list = Array.isArray(shares) ? shares : [];
+  const expect = shareCommitRoot(list);
+  const got = rootBytes(root);
+  if (!expect) return false;
+  if (!got) return list.length === 0 && (root == null || root === '');
+  return got.equals(expect);
+}
+
+/** Canonical root over the carry, in the account's order. Empty has a root. */
+export function shareCommitRoot(shares) {
+  const list = Array.isArray(shares) ? shares : [];
+  const parts = [COMMIT_ROOT_PREFIX];
+  for (const share of list) {
+    const row = commitShareBytes(share);
+    if (!row) return null;
+    parts.push(row);
+  }
+  return createHash('sha256').update(Buffer.concat(parts)).digest();
+}
+
+export function shareCommitDigestSuffix(tx) {
+  if (!tx || tx.shareCommitRoot == null || tx.shareCommitRoot === '') return Buffer.alloc(0);
+  const root = rootBytes(tx.shareCommitRoot);
+  if (!root) return null;
+  return Buffer.concat([Buffer.from('sharecommit1'), root]);
+}
+
+function commitPayOfBlock(block) {
+  if (!block || !Object.prototype.hasOwnProperty.call(block, 'shareCommitPay')) return [];
+  return parseCreditList(block.shareCommitPay);
+}
+
+/** Share-batch credits, then parent-carry credits. An empty extra list is the original rows. */
+export function mergeCreditRows(left, right) {
+  const extra = Array.isArray(right) ? right : [];
+  if (!extra.length) return Array.isArray(left) ? left : [];
+  const base = Array.isArray(left) ? left : [];
+  if (!base.length) return extra.slice();
+  const by = new Map();
+  const order = [];
+  const take = (row) => {
+    const noteCommit = buf32(row?.noteCommit);
+    const dest20 = buf20(row?.dest20);
+    const nanos = asBi(row?.nanos);
+    if (!noteCommit || !dest20 || nanos == null) return false;
+    const hex = noteCommit.toString('hex');
+    const prev = by.get(hex);
+    if (!prev) {
+      by.set(hex, {
+        noteCommit,
+        dest20,
+        nanos,
+        sinceHeight: 0,
+        admitBase: buf32(row.admitBase),
+        address: typeof row.address === 'string' ? row.address : '',
+      });
+      order.push(hex);
+      return true;
+    }
+    if (!prev.dest20.equals(dest20)) return false;
+    prev.nanos += nanos;
+    if (!prev.admitBase && row.admitBase) prev.admitBase = buf32(row.admitBase);
+    if (!prev.address && row.address) prev.address = row.address;
+    return true;
+  };
+  for (const row of base) {
+    if (!take(row)) return null;
+  }
+  for (const row of extra) {
+    if (!take(row)) return null;
+  }
+  return order.map((hex) => by.get(hex));
+}
+
+function carriesMatch(stored, want) {
+  const left = Array.isArray(stored) ? stored : [];
+  const right = Array.isArray(want) ? want : [];
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    const a = normalizeCommitShare(left[i], { timeDefault: 0n });
+    const b = normalizeCommitShare(right[i], { timeDefault: 0n });
+    if (!a || !b || a.key !== b.key || a.units !== b.units || a.time !== b.time) return false;
+  }
+  return true;
+}
+
+/**
+ * Block rule. A parent carry must match its coinbase root. This block's
+ * carry and shareCommitPay must match the account. Omitting a timely
+ * commit that fits the cap is share_commit.
+ */
+export function shareCommitOfBlock(block, prev, { parentMs = null, blockMs = null } = {}) {
+  const fail = () => ({ ok: false, reason: 'share_commit', fresh: [], carry: [], mandatory: [] });
+  const parentCarry = Array.isArray(prev?.shareCommitCarry) ? prev.shareCommitCarry : [];
+  const parentCb = Array.isArray(prev?.txs) ? prev.txs.find((tx) => tx && tx.coinbase) || prev.txs[0] : null;
+  const parentRoot = rootBytes(parentCb?.shareCommitRoot);
+  if (parentCarry.length || parentRoot) {
+    const expect = shareCommitRoot(parentCarry);
+    if (!expect || !parentRoot || !parentRoot.equals(expect)) return fail();
+  }
+  const account = shareCommitAccount({
+    carryIn: parentCarry,
+    commits: Array.isArray(block?.shareCommits) ? block.shareCommits : [],
+    included: Array.isArray(block?.shareBatch) ? block.shareBatch : [],
+    parentMs,
+    blockMs,
+  });
+  if (!account.ok) return fail();
+  const storedCarry = Array.isArray(block?.shareCommitCarry) ? block.shareCommitCarry : [];
+  if (!carriesMatch(storedCarry, account.carry)) return fail();
+  const cb = Array.isArray(block?.txs) ? block.txs.find((tx) => tx && tx.coinbase) || block.txs[0] : null;
+  const root = rootBytes(cb?.shareCommitRoot);
+  if (account.carry.length || root) {
+    const expect = shareCommitRoot(account.carry);
+    if (!expect || !root || !root.equals(expect)) return fail();
+  }
+  const pay = commitPayOfBlock(block || {});
+  if (pay == null || !creditsEqual(pay, account.fresh)) return fail();
+  return account;
+}
+
 /** Copy the root onto a compacted coinbase. Rows stay off the wire. */
 export function compactHashLedger(tx, row) {
   if (!tx || !row) return row;
   const slotRoot = rootBytes(tx.shareSlotRoot);
   if (slotRoot) row.shareSlotRoot = slotRoot;
   else delete row.shareSlotRoot;
+  const commitRoot = rootBytes(tx.shareCommitRoot);
+  if (commitRoot) row.shareCommitRoot = commitRoot;
+  else delete row.shareCommitRoot;
   delete row.hashOwed;
   delete row.hashOwedRest;
   delete row.hashOwedLocal;

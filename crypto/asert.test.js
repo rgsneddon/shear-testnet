@@ -491,6 +491,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_OWED_SPILL=witness-v1/);
     assert.match(fp, /HASH_OWED_UNIT_HISTORY=per-height/);
     assert.match(fp, /HASH_ACCEPTED_UNITS=validated/);
+    assert.match(fp, /SHARE_COMMIT=timely-omit-v1/);
     assert.doesNotMatch(fp, /HASH_OWED_MAX=/);
     assert.equal(shareCreditMaxBits(), 28);
     assert.doesNotMatch(fp, /:ENC_SHARE=v5:/);

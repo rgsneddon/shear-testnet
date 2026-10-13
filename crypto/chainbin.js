@@ -11,9 +11,15 @@ import {
   packHashCreditBytes,
   packSpillBytes,
   packSpillCreditBytes,
+  packShareCommitCarryBytes,
+  packShareCommitListBytes,
+  packShareCommitPayBytes,
   unpackHashCreditBytes,
   unpackSpillBytes,
   unpackSpillCreditBytes,
+  unpackShareCommitCarryBytes,
+  unpackShareCommitListBytes,
+  unpackShareCommitPayBytes,
 } from './hash_owed.js';
 
 const MAGIC = Buffer.from('shear-chn-v1\0\0\0');
@@ -89,6 +95,26 @@ export function packEpochBlock(block) {
     n.writeUInt32LE(body.length, 0);
     chunks.push(n, body);
   }
+  if (Array.isArray(block.shareCommitCarry) && block.shareCommitCarry.length) {
+    const body = packShareCommitCarryBytes(block.shareCommitCarry);
+    if (!body) throw new Error('share_commit');
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
+  if (Array.isArray(block.shareCommits) && block.shareCommits.length) {
+    const body = packShareCommitListBytes(block.shareCommits);
+    if (!body) throw new Error('share_commit');
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
+  if (Array.isArray(block.shareCommitPay) && block.shareCommitPay.length) {
+    const body = packShareCommitPayBytes(block.shareCommitPay);
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -120,6 +146,12 @@ export function unpackEpochBlock(buf) {
   let sawSpill = false;
   let hashSpillCredits;
   let sawSpillCredits = false;
+  let shareCommitCarry;
+  let sawCommitCarry = false;
+  let shareCommits;
+  let sawCommitList = false;
+  let shareCommitPay;
+  let sawCommitPay = false;
   if (o + 4 <= b.length) {
     const sLen = b.readUInt32LE(o);
     o += 4;
@@ -150,6 +182,27 @@ export function unpackEpochBlock(buf) {
         if (spillCredits) {
           hashSpillCredits = spillCredits;
           sawSpillCredits = true;
+          o += 4 + nLen;
+          continue;
+        }
+        const commitCarry = unpackShareCommitCarryBytes(body);
+        if (commitCarry) {
+          shareCommitCarry = commitCarry;
+          sawCommitCarry = true;
+          o += 4 + nLen;
+          continue;
+        }
+        const commitList = unpackShareCommitListBytes(body);
+        if (commitList) {
+          shareCommits = commitList;
+          sawCommitList = true;
+          o += 4 + nLen;
+          continue;
+        }
+        const commitPay = unpackShareCommitPayBytes(body);
+        if (commitPay) {
+          shareCommitPay = commitPay;
+          sawCommitPay = true;
           o += 4 + nLen;
           continue;
         }
@@ -185,6 +238,9 @@ export function unpackEpochBlock(buf) {
   if (sawCredits) block.hashCredits = hashCredits;
   if (sawSpill) block.hashSpill = hashSpill;
   if (sawSpillCredits) block.hashSpillCredits = hashSpillCredits;
+  if (sawCommitCarry) block.shareCommitCarry = shareCommitCarry;
+  if (sawCommitList) block.shareCommits = shareCommits;
+  if (sawCommitPay) block.shareCommitPay = shareCommitPay;
   return block;
 }
 

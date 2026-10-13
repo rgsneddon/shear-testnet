@@ -366,6 +366,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'HASH_OWED_SPILL=witness-v1',
     'HASH_OWED_UNIT_HISTORY=per-height',
     'HASH_ACCEPTED_UNITS=validated',
+    'SHARE_COMMIT=timely-omit-v1',
     'DANDELIONPP=1',
     'VIEW_TAG=1',
     'KDF=argon2id-shewall',

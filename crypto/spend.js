@@ -492,7 +492,7 @@ const BODY_KEYS = new Set([
   'coinbase', 'carryNanos', 'share',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
-  'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
+  'hashCredits', 'shareSlotRoot', 'shareCommitRoot', 'issuedJobKeys', 'observe',
   'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
 ]);
 

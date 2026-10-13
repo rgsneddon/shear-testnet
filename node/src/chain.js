@@ -49,6 +49,7 @@ import {
   noteCommitOfShare,
   accountShareUnits,
   selectBlockShares,
+  sortShares,
   bindShareProofSlots,
   shareWorkKey,
   stashSharePow,
@@ -127,6 +128,13 @@ import {
   sameHashLedger,
   settleHashOwed,
   writeHashLedger,
+  mergeCreditRows,
+  shareCommitAccount,
+  shareCommitMissing,
+  shareCommitOfBlock,
+  shareCommitRoot,
+  shareCommitRootAgrees,
+  shareCommitDigestSuffix,
 } from '../../crypto/hash_owed.js';
 import { buildDualTree, bindBSpend, derivedBLeaves, sameBLeaves, bLeafAskRejected } from '../../crypto/clearing.js';
 import {
@@ -284,16 +292,18 @@ export function digestTx(tx) {
   const slotSuffix = tx?.coinbase ? shareSlotDigestSuffix(tx) : Buffer.alloc(0);
   const issuedSuffix = tx?.coinbase ? issuedJobDigestSuffix(tx) : Buffer.alloc(0);
   const observeSuffix = tx?.coinbase ? observeDigestSuffix(tx) : null;
-  if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null)) {
+  const commitSuffix = tx?.coinbase ? shareCommitDigestSuffix(tx) : Buffer.alloc(0);
+  if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null || commitSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length))) {
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length) || (commitSuffix && commitSuffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
     if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
     if (issuedSuffix && issuedSuffix.length) parts.push(issuedSuffix);
     if (observeSuffix && observeSuffix.length) parts.push(observeSuffix);
+    if (commitSuffix && commitSuffix.length) parts.push(commitSuffix);
     return packDigest(Buffer.concat(parts));
   }
   const reserveSuffix = reserveDigestSuffix(tx);
@@ -822,6 +832,7 @@ export function coinbaseTx({
   hashOverflowIn = null,
   hashAcceptedSeries = null,
   hashSpill = null,
+  shareCommitFresh = null,
 }) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
@@ -855,7 +866,9 @@ export function coinbaseTx({
   // owed, that is the retained share and the vout order matches the
   // first-seen dest order. An empty batch with an empty ledger mints no
   // hash note here. A later producer pays parent rows the same way.
-  const fresh = freshCreditsFromShares(shareBatch || [], hashBonusNanos);
+  const fromBatch = freshCreditsFromShares(shareBatch || [], hashBonusNanos);
+  const fresh = mergeCreditRows(fromBatch, shareCommitFresh || []);
+  if (fresh == null) throw new Error('share_commit');
   const spill = freshCreditsFromShares(hashSpill || [], hashBonusNanos);
   const budget = hashAcceptedSeries == null ? null : hashBudgetNanos(hashAcceptedSeries, hashBonusNanos);
   if (hashAcceptedSeries != null && budget == null) throw new Error('hash_owed');
@@ -1191,14 +1204,52 @@ export function buildTemplate({
   hashOwedIn: hashOwedInOpt = null,
   issuedHeaders = null,
   hashSpill = null,
+  shareCommits = null,
 }) {
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
     : null;
-  const batch = bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
+  const commits = Array.isArray(shareCommits) ? shareCommits : [];
+  const parentShareCarry = Array.isArray(prevBlock?.shareCommitCarry) ? prevBlock.shareCommitCarry : [];
+  if (!shareCommitRootAgrees(prevBlock?.txs?.[0]?.shareCommitRoot, parentShareCarry)) {
+    throw new Error('share_commit');
+  }
+  let parentMs = null;
+  let blockMs = null;
+  let batchSource = selected;
+  if (commits.length || parentShareCarry.length) {
+    if (prevHeader) {
+      try { parentMs = decodeHeader(Buffer.from(prevHeader)).timestamp; } catch { parentMs = null; }
+    }
+    blockMs = BigInt(now);
+    const preview = shareCommitAccount({
+      carryIn: parentShareCarry,
+      commits,
+      included: selected,
+      parentMs,
+      blockMs,
+    });
+    if (!preview.ok && preview.bad) throw new Error('share_commit');
+    const missing = shareCommitMissing(selected, preview.mandatory);
+    if (missing.length) batchSource = sortShares(selected.concat(missing));
+  }
+  const batch = bindShareProofSlots(batchSource, prevHeader, priorBlock?.header || null, {
     keepClaim: true,
   }).slotted;
+  let commitPlan = {
+    ok: true, fresh: [], carry: [], mandatory: [],
+  };
+  if (commits.length || parentShareCarry.length) {
+    commitPlan = shareCommitAccount({
+      carryIn: parentShareCarry,
+      commits,
+      included: batch,
+      parentMs,
+      blockMs,
+    });
+    if (!commitPlan.ok) throw new Error('share_commit');
+  }
   const spillIn = Array.isArray(hashSpill) ? hashSpill.slice(0, MAX_SHARES_PER_BLOCK) : [];
   const spillBatch = bindShareProofSlots(spillIn, prevHeader, priorBlock?.header || null, {
     keepClaim: false,
@@ -1268,6 +1319,7 @@ export function buildTemplate({
     hashOverflowIn,
     hashAcceptedSeries: series,
     hashSpill: spillBatch,
+    shareCommitFresh: commitPlan.fresh,
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
@@ -1276,6 +1328,13 @@ export function buildTemplate({
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
+  if (commitPlan.carry.length) {
+    const commitRoot = shareCommitRoot(commitPlan.carry);
+    if (!commitRoot) throw new Error('share_commit');
+    cb.shareCommitRoot = commitRoot;
+  } else {
+    delete cb.shareCommitRoot;
+  }
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
   if (issuedJobKeys.length) cb.issuedJobKeys = issuedJobKeys;
   const addedPubs = [];
@@ -1351,10 +1410,13 @@ export function buildTemplate({
     samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
     shareBatch: batch,
     hashSpill: spillBatch,
+    ...(commits.length ? { shareCommits: commits } : {}),
+    ...(commitPlan.carry.length ? { shareCommitCarry: commitPlan.carry } : {}),
+    ...(commitPlan.fresh.length ? { shareCommitPay: commitPlan.fresh } : {}),
     miner,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
-    hashCredits: freshCreditsFromShares(batch, hashBonusNanos),
+    hashCredits: mergeCreditRows(freshCreditsFromShares(batch, hashBonusNanos), commitPlan.fresh) || [],
     levyBind: {
       finderNanos: split.finder,
       reserveNanos: split.reserve,
@@ -2036,6 +2098,55 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     burialTip,
   });
   if (spillReason) return { ok: false, reason: spillReason };
+  const commitList = Array.isArray(block.shareCommits) ? block.shareCommits : [];
+  if (commitList.length && !skipFlow) {
+    const seated = new Set();
+    for (const s of shareBatch) {
+      let nc;
+      try { nc = noteCommitOfShare(s); } catch { nc = null; }
+      if (!nc || nc.length !== 32) continue;
+      let nonce;
+      try { nonce = BigInt(s.nonce); } catch { continue; }
+      seated.add(`${Buffer.from(nc).toString('hex')}:${nonce.toString()}`);
+    }
+    const extra = [];
+    for (const s of commitList) {
+      let nc;
+      try { nc = noteCommitOfShare(s); } catch { nc = null; }
+      if (!nc || nc.length !== 32) {
+        extra.push(s);
+        continue;
+      }
+      let nonce;
+      try { nonce = BigInt(s.nonce); } catch { extra.push(s); continue; }
+      const key = `${Buffer.from(nc).toString('hex')}:${nonce.toString()}`;
+      if (!seated.has(key)) extra.push(s);
+    }
+    if (extra.length) {
+      if (!prev?.header) return { ok: false, reason: 'share_commit' };
+      const provedExtra = verifyShareBatch({
+        parentHeader: prev.header,
+        priorHeader: opts.grandparentHeader || null,
+        shares: extra,
+        floorBits: SHARE_FLOOR_BITS,
+        skipPow: trustWork ? false : !!skipSharePow,
+        trustWork,
+        issuedJobKeys: txs[0]?.issuedJobKeys,
+      });
+      if (!provedExtra.ok || provedExtra.shares.length !== extra.length) {
+        return { ok: false, reason: 'share_commit' };
+      }
+    }
+  }
+  let parentCommitMs = null;
+  if (prev?.header) {
+    try { parentCommitMs = decodeHeader(Buffer.from(prev.header)).timestamp; } catch { parentCommitMs = null; }
+  }
+  const commitGate = shareCommitOfBlock(block, prev, {
+    parentMs: parentCommitMs,
+    blockMs: decoded.timestamp,
+  });
+  if (!commitGate.ok) return { ok: false, reason: 'share_commit' };
   if (!skipFlow) {
     const settlement = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,

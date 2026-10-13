@@ -47,7 +47,7 @@ import {
   hasLiveSharePow,
   sharePowCounters,
 } from '../../crypto/share_batch.js';
-import { advanceHashOwed, freshCreditsFromShares, replayHashOwed, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
+import { advanceHashOwed, freshCreditsFromShares, mergeCreditRows, replayHashOwed, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
 import { unpackShareBatchBytes } from '../../crypto/pack.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -1404,7 +1404,10 @@ export function createStore(dir, {
     if (!block) return;
     const haveCredits = Object.prototype.hasOwnProperty.call(block, 'hashCredits');
     if (!haveCredits && !(block.samplesPruned === true && !(block.shareBatch || []).length)) {
-      block.hashCredits = freshCreditsFromShares(block.shareBatch || [], unit);
+      const fromShares = freshCreditsFromShares(block.shareBatch || [], unit);
+      const pay = Array.isArray(block.shareCommitPay) ? block.shareCommitPay : [];
+      const merged = mergeCreditRows(fromShares, pay);
+      block.hashCredits = merged || fromShares;
     }
     if (Object.prototype.hasOwnProperty.call(block, 'hashSpillCredits')) return;
     const spill = Array.isArray(block.hashSpill) ? block.hashSpill : [];
@@ -1989,6 +1992,7 @@ export function createStore(dir, {
       bLeaves: prev.bLeaves,
       weight: prev.weight,
       shareBatch: prev.shareBatch,
+      shareCommitCarry: prev.shareCommitCarry,
     } : null, {
       spentB,
       tipHeight,
@@ -2494,6 +2498,7 @@ export function createStore(dir, {
       bLeaves: accepted[i - 1].bLeaves,
       weight: accepted[i - 1].weight,
       shareBatch: accepted[i - 1].shareBatch,
+      shareCommitCarry: accepted[i - 1].shareCommitCarry,
     };
     const parentH = i === 0 ? 0 : Number(accepted[i - 1].height || i);
     const rows = Array.isArray(verifyOpts.explorerRows) ? verifyOpts.explorerRows : [];
@@ -2828,6 +2833,7 @@ export function createStore(dir, {
       bLeaves: block.bLeaves,
       weight: block.weight,
       shareBatch: block.shareBatch,
+      shareCommitCarry: block.shareCommitCarry,
     };
   }
 
@@ -2873,6 +2879,7 @@ export function createStore(dir, {
       bLeaves: block.bLeaves,
       weight: block.weight,
       shareBatch: block.shareBatch,
+      shareCommitCarry: block.shareCommitCarry,
     };
   }
 
@@ -3992,7 +3999,7 @@ export function createStore(dir, {
     };
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, shareCommits = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
@@ -4207,6 +4214,7 @@ export function createStore(dir, {
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
       hashSpill: Array.isArray(hashSpill) ? hashSpill : [],
+      shareCommits: Array.isArray(shareCommits) ? shareCommits : [],
       poolDest,
       feeDest,
       finderDest,
@@ -4234,6 +4242,10 @@ export function createStore(dir, {
       samples: rec.tpl.samples,
       shareBatch: rec.tpl.shareBatch || [],
       hashSpill: Array.isArray(rec.tpl.hashSpill) ? rec.tpl.hashSpill : [],
+      ...(Array.isArray(rec.tpl.shareCommits) ? { shareCommits: rec.tpl.shareCommits } : {}),
+      ...(Array.isArray(rec.tpl.shareCommitCarry) ? { shareCommitCarry: rec.tpl.shareCommitCarry } : {}),
+      ...(Array.isArray(rec.tpl.shareCommitPay) ? { shareCommitPay: rec.tpl.shareCommitPay } : {}),
+      ...(Object.prototype.hasOwnProperty.call(rec.tpl, 'hashCredits') ? { hashCredits: rec.tpl.hashCredits } : {}),
       miner: destForLogin(miner) || miner || rec.tpl.miner,
       poolDest: rec.tpl.poolDest || rec.tpl.miner || '',
       aLeaves: rec.tpl.aLeaves,

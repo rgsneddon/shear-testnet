@@ -10,6 +10,12 @@ import {
   unpackSpillBytes,
   packSpillCreditBytes,
   unpackSpillCreditBytes,
+  packShareCommitCarryBytes,
+  packShareCommitListBytes,
+  packShareCommitPayBytes,
+  unpackShareCommitCarryBytes,
+  unpackShareCommitListBytes,
+  unpackShareCommitPayBytes,
 } from '../../crypto/hash_owed.js';
 import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
@@ -525,6 +531,15 @@ export function encodeWireBlock(b) {
     ...(Array.isArray(b.hashSpillCredits) && b.hashSpillCredits.length
       ? { hashSpillCreditPacked: packSpillCreditBytes(b.hashSpillCredits).toString('hex') }
       : {}),
+    ...(Array.isArray(b.shareCommitCarry) && b.shareCommitCarry.length
+      ? { shareCommitCarryPacked: packShareCommitCarryBytes(b.shareCommitCarry).toString('hex') }
+      : {}),
+    ...(Array.isArray(b.shareCommits) && b.shareCommits.length
+      ? { shareCommitListPacked: packShareCommitListBytes(b.shareCommits).toString('hex') }
+      : {}),
+    ...(Array.isArray(b.shareCommitPay) && b.shareCommitPay.length
+      ? { shareCommitPayPacked: packShareCommitPayBytes(b.shareCommitPay).toString('hex') }
+      : {}),
     aLeaves: b.aLeaves,
     bLeaves: b.bLeaves,
     rootA: b.rootA,
@@ -554,6 +569,15 @@ export function decodeWireBlock(w) {
     hashSpillCredits: w.hashSpillCreditPacked
       ? unpackSpillCreditBytes(Buffer.from(String(w.hashSpillCreditPacked), 'hex'))
       : (Array.isArray(w.hashSpillCredits) ? w.hashSpillCredits : undefined),
+    ...(w.shareCommitCarryPacked
+      ? { shareCommitCarry: unpackShareCommitCarryBytes(Buffer.from(String(w.shareCommitCarryPacked), 'hex')) || [] }
+      : (Array.isArray(w.shareCommitCarry) ? { shareCommitCarry: w.shareCommitCarry } : {})),
+    ...(w.shareCommitListPacked
+      ? { shareCommits: unpackShareCommitListBytes(Buffer.from(String(w.shareCommitListPacked), 'hex')) || [] }
+      : (Array.isArray(w.shareCommits) ? { shareCommits: w.shareCommits } : {})),
+    ...(w.shareCommitPayPacked
+      ? { shareCommitPay: unpackShareCommitPayBytes(Buffer.from(String(w.shareCommitPayPacked), 'hex')) || [] }
+      : (Array.isArray(w.shareCommitPay) ? { shareCommitPay: w.shareCommitPay } : {})),
     aLeaves: reviveDeep(w.aLeaves),
     bLeaves: reviveDeep(w.bLeaves),
     rootA: reviveDeep(w.rootA),
