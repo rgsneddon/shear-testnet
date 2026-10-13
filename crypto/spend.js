@@ -479,7 +479,7 @@ const BODY_SECRET_KEYS = new Set([
 
 const BODY_KEYS = new Set([
   'id', 'kind', 'from', 'to', 'nanos', 'fee', 'vin', 'vout', 'sig', 'signature',
-  'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag',
+  'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
   'portalId', 'payoutPortalId', 'programId', 'choice',
   'admit_proof', 'admit_proofs', 'spendTag', 'members',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
@@ -488,6 +488,7 @@ const BODY_KEYS = new Set([
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
+  'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
 ]);
 
 const VIN_KEYS = new Set([
@@ -514,6 +515,10 @@ const LEDGER_ROW_KEYS = new Set([
   'noteCommit', 'dest20', 'nanos', 'sinceHeight', 'admitBase', 'address',
 ]);
 
+const LEAF_KEYS = new Set(['dest20', 'unit', 'nonce', 'memoH', 'tag']);
+
+const MERKLE_PROOF_KEYS = new Set(['side', 'hash']);
+
 function uncoveredKey(obj, allow) {
   if (!obj || typeof obj !== 'object' || Buffer.isBuffer(obj) || Array.isArray(obj)) return null;
   for (const key of Object.keys(obj)) {
@@ -538,6 +543,8 @@ function uncoveredList(list, allow) {
 export function unsignedBodyField(tx) {
   if (!tx || typeof tx !== 'object' || Buffer.isBuffer(tx) || Array.isArray(tx)) return null;
   if (uncoveredKey(tx, BODY_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredKey(tx.leaf, LEAF_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.proof, MERKLE_PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.vin, VIN_KEYS)) return { ok: false, reason: 'unsigned' };
   if (Array.isArray(tx.vout)) {
     for (const o of tx.vout) {
