@@ -10,13 +10,22 @@
  * Exit 2: the walk cannot prove absence (no book, empty book, or not genesis-to-tip).
  *
  * A clean exit is the only result that shows no sealed byte-2 admit blob.
- * Snaps and older binaries are outside this walk.
+ *
+ * A datadir also has its snaps walked. bootstrap/latest.bin is a book and is
+ * walked the same way. book.snap carries no blobs, only spend tags and a frame
+ * digest, so it is clean only when its frames are this book's prefix and every
+ * tag it carries comes from a byte-3 blob or a blob-less shape proof in that
+ * prefix. book.snap is HMAC-keyed per install. Without the key
+ * (--snap-key FILE, or this install's own seal key) it cannot be read, and the
+ * walk exits 2. Older binaries are outside this walk.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readChainBin, readChainSegments, writeChainBin } from '../crypto/chainbin.js';
 import { reviveBytes } from '../crypto/note.js';
+import { frameDigest, readBookSnap, writeBookSnap } from '../node/src/book_snap.js';
+import { bookSealKeyPath } from '../node/src/book_seal_key.js';
 
 function blobBytes(raw) {
   if (raw == null || raw === '') return null;
@@ -160,7 +169,105 @@ export function loadBook(target) {
   return { blocks: [], source: abs, reason: 'no_chain' };
 }
 
-export function auditPath(target) {
+function tagHex(raw) {
+  const b = blobBytes(raw);
+  return b && b.length === 32 ? b.toString('hex') : null;
+}
+
+/** Spend tags a clean prefix may put in a snap, and the ones only byte 2 could. */
+function prefixTags(blocks) {
+  const clean = new Set();
+  const byte2 = new Set();
+  for (const block of blocks) {
+    for (const tx of Array.isArray(block?.txs) ? block.txs : []) {
+      const proofs = [];
+      if (tx?.admit_proof) proofs.push(tx.admit_proof);
+      if (Array.isArray(tx?.admit_proofs)) proofs.push(...tx.admit_proofs);
+      for (const proof of proofs) {
+        if (!proof || typeof proof !== 'object') continue;
+        const blob = proofBlob(proof);
+        const posted = tagHex(proof.spendTag);
+        if (!blob) {
+          if (posted) clean.add(posted);
+          continue;
+        }
+        const own = blob.length >= 33 ? blob.subarray(1, 33).toString('hex') : null;
+        const into = blob[0] === 3 ? clean : blob[0] === 2 ? byte2 : null;
+        if (!into) continue;
+        if (own) into.add(own);
+        if (posted) into.add(posted);
+      }
+    }
+  }
+  return { clean, byte2 };
+}
+
+/** One decoded book.snap against the book it claims to be a prefix of. */
+export function auditBookSnap(snap, blocks) {
+  if (!snap) return { proved: false, reason: 'snap_unreadable', height: null, tags: 0, byte2Tags: 0, unaccounted: 0, hits: [] };
+  const height = Number(snap.height) || 0;
+  const rows = (Array.isArray(blocks) ? blocks : [])
+    .slice()
+    .sort((a, b) => (Number(a?.height) || 0) - (Number(b?.height) || 0));
+  const prefix = rows.slice(0, height);
+  const base = { height, tags: 0, byte2Tags: 0, unaccounted: 0, hits: [] };
+  if (prefix.length !== height || Number(prefix.at(-1)?.height) !== height) {
+    return { ...base, proved: false, reason: 'snap_past_book' };
+  }
+  let frame = null;
+  try { frame = frameDigest(prefix); } catch { frame = null; }
+  if (!frame || frame !== snap.frameDigest) return { ...base, proved: false, reason: 'snap_frame_mismatch' };
+  const { clean, byte2 } = prefixTags(prefix);
+  const tags = Array.isArray(snap.spendTags) ? snap.spendTags.map((t) => String(t).toLowerCase()) : [];
+  const hits = [];
+  let byte2Tags = 0;
+  let unaccounted = 0;
+  for (const tag of tags) {
+    if (byte2.has(tag) && !clean.has(tag)) {
+      byte2Tags += 1;
+      hits.push({ tag, why: 'byte2' });
+    } else if (!clean.has(tag)) {
+      unaccounted += 1;
+      hits.push({ tag, why: 'unaccounted' });
+    }
+  }
+  let reason = null;
+  if (byte2Tags) reason = 'snap_byte2_tag';
+  else if (unaccounted) reason = 'snap_tag_unaccounted';
+  return { height, tags: tags.length, byte2Tags, unaccounted, hits, proved: !reason, reason };
+}
+
+function readKey(file) {
+  try {
+    if (!file || !fs.existsSync(file)) return null;
+    const k = fs.readFileSync(file);
+    return k.length === 32 ? k : null;
+  } catch {
+    return null;
+  }
+}
+
+/** bootstrap/latest.bin and book.snap under a datadir. A plain file has no snaps. */
+function auditSnaps(dir, blocks, { snapKey = null } = {}) {
+  const out = [];
+  const latest = path.join(dir, 'bootstrap', 'latest.bin');
+  if (fs.existsSync(latest)) {
+    const boot = auditBlocks(readChainBin(latest));
+    out.push({ kind: 'bootstrap', source: latest, ...boot });
+  }
+  const snapFile = path.join(dir, 'book.snap');
+  if (fs.existsSync(snapFile)) {
+    const key = snapKey || readKey(bookSealKeyPath(dir));
+    if (!key) {
+      out.push({ kind: 'book.snap', source: snapFile, proved: false, reason: 'snap_unkeyed', hits: [] });
+    } else {
+      out.push({ kind: 'book.snap', source: snapFile, ...auditBookSnap(readBookSnap(snapFile, key), blocks) });
+    }
+  }
+  return out;
+}
+
+export function auditPath(target, { snapKey = null } = {}) {
   const loaded = loadBook(target);
   if (!loaded.blocks.length) {
     return {
@@ -176,16 +283,29 @@ export function auditPath(target) {
       byte3: 0,
       other: 0,
       hits: [],
+      snaps: [],
     };
   }
   const report = auditBlocks(loaded.blocks);
   report.source = loaded.source;
+  const abs = path.resolve(target);
+  report.snaps = fs.statSync(abs).isDirectory() ? auditSnaps(abs, loaded.blocks, { snapKey }) : [];
+  const bad = report.snaps.find((s) => !s.proved);
+  if (report.proved && bad) {
+    report.proved = false;
+    report.ok = false;
+    report.reason = bad.kind === 'bootstrap' && bad.reason === 'byte2_present'
+      ? 'snap_byte2_present'
+      : bad.reason;
+  }
   return report;
 }
 
+const DIRTY = new Set(['byte2_present', 'snap_byte2_present', 'snap_byte2_tag', 'snap_tag_unaccounted']);
+
 export function exitCode(report) {
   if (report.proved) return 0;
-  if (report.reason === 'byte2_present') return 1;
+  if (DIRTY.has(report.reason)) return 1;
   return 2;
 }
 
@@ -230,6 +350,7 @@ export function selfCheck() {
     ]);
     const round = auditPath(bin);
     if (!round.proved || round.byte2 !== 0 || round.byte3 !== 1) failures.push(`roundtrip:${JSON.stringify(round)}`);
+    failures.push(...snapChecks({ range, byte2, byte3 }));
     const stubDir = fs.mkdtempSync(path.join('/tmp', 'admit-byte2-empty-'));
     const empty = auditPath(stubDir);
     if (empty.proved || empty.reason !== 'no_chain') failures.push('empty');
@@ -238,6 +359,78 @@ export function selfCheck() {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   return { ok: failures.length === 0, failures };
+}
+
+function snapState(blocks, spendTags) {
+  const height = blocks.length;
+  return {
+    rules: 'audit-self-check',
+    height,
+    tipHash: Buffer.alloc(32, height & 0xff),
+    diskDigest: '11'.repeat(32),
+    frameDigest: frameDigest(blocks),
+    vaultCommitment: '22'.repeat(32),
+    genesisMs: 1_700_000_000_000,
+    acceptedSeries: blocks.map(() => 0),
+    unitAt: blocks.map(() => 0),
+    spendTags,
+  };
+}
+
+function snapChecks({ range, byte2, byte3 }) {
+  const failures = [];
+  const dir = fs.mkdtempSync(path.join('/tmp', 'admit-byte2-snaps-'));
+  try {
+    const key = Buffer.alloc(32, 5);
+    const clean = [
+      fakeEpoch(1, [{ id: 'cb', coinbase: true, height: 1, vout: [{ rangeProof: range }] }]),
+      fakeEpoch(2, [{ id: 'flow', admit_proof: { v: 3, blob: byte3, cTilde: Buffer.alloc(32, 4) } }]),
+    ];
+    const tag3 = byte3.subarray(1, 33).toString('hex');
+    const tag2 = Buffer.from(byte2.subarray(1, 33));
+    tag2[0] ^= 0xff;
+    const dirtyTag = tag2.toString('hex');
+    writeChainBin(path.join(dir, 'chain.bin'), clean);
+    const loaded = readChainBin(path.join(dir, 'chain.bin'));
+    const snapFile = path.join(dir, 'book.snap');
+
+    writeBookSnap(snapFile, key, snapState(loaded, [tag3]));
+    const ok = auditPath(dir, { snapKey: key });
+    if (!ok.proved || ok.snaps.length !== 1 || !ok.snaps[0].proved) failures.push(`snap_clean:${JSON.stringify(ok.snaps)}`);
+
+    const unkeyed = auditPath(dir, { snapKey: null });
+    if (unkeyed.proved || unkeyed.reason !== 'snap_unkeyed' || exitCode(unkeyed) !== 2) failures.push('snap_unkeyed');
+
+    writeBookSnap(snapFile, key, snapState(loaded, [tag3, dirtyTag]));
+    const extra = auditPath(dir, { snapKey: key });
+    if (extra.proved || extra.reason !== 'snap_tag_unaccounted' || exitCode(extra) !== 1) failures.push('snap_extra');
+
+    const withByte2 = [
+      ...clean,
+      fakeEpoch(3, [{ id: 'old', admit_proof: { blob: Buffer.concat([Buffer.from([2]), tag2, Buffer.alloc(7)]) } }]),
+    ];
+    writeBookSnap(snapFile, key, snapState(withByte2, [tag3, dirtyTag]));
+    writeChainBin(path.join(dir, 'chain.bin'), withByte2);
+    const tagged = auditBookSnap(readBookSnap(snapFile, key), withByte2);
+    if (tagged.proved || tagged.reason !== 'snap_byte2_tag' || tagged.byte2Tags !== 1) failures.push('snap_byte2_tag');
+
+    writeChainBin(path.join(dir, 'chain.bin'), clean);
+    writeBookSnap(snapFile, key, snapState(withByte2.slice(0, 2), [tag3]));
+    const other = [clean[0], fakeEpoch(2, [{ id: 'flow2', admit_proof: { v: 3, blob: byte3, cTilde: Buffer.alloc(32, 9) } }])];
+    const moved = auditBookSnap(readBookSnap(snapFile, key), other);
+    if (moved.proved || moved.reason !== 'snap_frame_mismatch') failures.push('snap_frame');
+
+    fs.rmSync(snapFile);
+    fs.mkdirSync(path.join(dir, 'bootstrap'));
+    writeChainBin(path.join(dir, 'bootstrap', 'latest.bin'), withByte2);
+    const boot = auditPath(dir);
+    if (boot.proved || boot.reason !== 'snap_byte2_present' || exitCode(boot) !== 1) failures.push(`bootstrap:${boot.reason}`);
+  } catch (err) {
+    failures.push(`snap_checks:${err?.message || err}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  return failures;
 }
 
 function fakeEpoch(height, txs) {
@@ -260,8 +453,15 @@ function runCli(argv) {
     console.log(JSON.stringify(got));
     return got.ok ? 0 : 1;
   }
-  const target = argv.find((a) => a && !a.startsWith('-'));
-  const report = auditPath(target);
+  const at = argv.indexOf('--snap-key');
+  const keyFile = at >= 0 ? argv[at + 1] : null;
+  const target = argv.find((a, i) => a && !a.startsWith('-') && !(at >= 0 && i === at + 1));
+  const snapKey = keyFile ? readKey(keyFile) : null;
+  if (keyFile && !snapKey) {
+    console.log(JSON.stringify({ ok: false, proved: false, reason: 'snap_key' }));
+    return 2;
+  }
+  const report = auditPath(target, { snapKey });
   console.log(JSON.stringify(report));
   return exitCode(report);
 }
