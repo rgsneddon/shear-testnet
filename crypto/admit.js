@@ -6,9 +6,9 @@
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
-import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, kernelExcess, txSpendTags } from './note.js';
+import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, txSpendTags } from './note.js';
 import { merkleRoot } from './merkle.js';
-import { nativeJroot, nativeJrootPoint, nativeFrontierAppend, nativeProve, nativeProveV3, nativeVerify, nativeVerifyV3, nativeVerifyBatch, noteH } from './native_admit.js';
+import { nativeJroot, nativeJrootPoint, nativeFrontierAppend, nativeProveV3, nativeVerifyV3, noteH } from './native_admit.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -75,97 +75,6 @@ export function jrootPoint(fluxset) {
   const { destLeaves, cLeaves } = leafLists(Array.isArray(fluxset) ? { pubs: fluxset, commits: [] } : fluxset);
   return nativeJrootPoint(destLeaves, cLeaves) || Buffer.alloc(32);
 }
-
-/**
- * admit_prove. index is the real spend in J.
- * Native Curve Tree. t rerandomizes C → C̃.
- */
-export function admitProve({ x, index, pubs, commits, c, t }) {
-  const destLeaves = (pubs || []).map(pubBytes).filter(Boolean);
-  const cLeaves = (commits || []).map(commitBytes).filter((b) => b && b.length === 32);
-  const n = destLeaves.length;
-  if (!n || n !== cLeaves.length) return null;
-  if (index < 0 || index >= n) return null;
-  if (cLeaves[index].length !== 32 || destLeaves[index].length !== 32) return null;
-  const ts = t != null ? t : randomScalar();
-  const P = destLeaves[index];
-  const C = c || cLeaves[index];
-  const got = nativeProve({
-    x: scalarBytes(x),
-    p: P,
-    c: Buffer.from(asU8(C)),
-    t: scalarBytes(ts),
-    index,
-    destLeaves,
-    cLeaves,
-  });
-  if (!got) {
-    return null;
-  }
-  return {
-    admit_proof: true,
-    v: 2,
-    spendTag: got.proof.length >= 33 ? Buffer.from(got.proof.subarray(1, 33)) : pointBytes(spendTag(x, pointFrom(P))),
-    blob: got.proof,
-    cTilde: got.cTilde,
-    t: scalarBytes(ts),
-  };
-}
-
-/** admit_verify against J. ADMITv1 linear r[] returns false. Never throws. */
-export function admitVerify(proof, fluxset, extra = {}) {
-  try {
-    if (proof?.r && Array.isArray(proof.r)) return false;
-    const blob = proof?.blob || proof?.proof;
-    if (!blob) return false;
-    const pr = Buffer.from(asU8(blob));
-    if (!pr.length || pr[0] !== 2) return false;
-    if (pr.length > 32768) return false;
-    let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;
-    if (!jr) {
-      const { destLeaves, cLeaves } = leafLists(fluxset);
-      jr = nativeJroot(destLeaves, cLeaves);
-    }
-    const tag = extra.spendTag || proof.spendTag;
-    const ct = extra.cTilde || extra.c_tilde || proof.cTilde;
-    if (!jr || !tag || !ct) return false;
-    // Consensus verify is log-time against jroot. Do not copy full J into native.
-    return nativeVerify({
-      proof: pr,
-      jroot: jr,
-      cTilde: Buffer.from(asU8(ct)),
-      spendTag: Buffer.from(asU8(tag)),
-      destLeaves: [],
-      cLeaves: [],
-    });
-  } catch {
-    return false;
-  }
-}
-
-export function admitVerifyBatch(items, fluxset, extra = {}) {
-  try {
-    let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;
-    if (!jr) {
-      const { destLeaves, cLeaves } = leafLists(fluxset);
-      jr = nativeJroot(destLeaves, cLeaves);
-    }
-    if (!jr || !items?.length) return false;
-    return nativeVerifyBatch({
-      proofs: items.map((it) => it.proof || it.blob),
-      jroot: jr,
-      cTildes: items.map((it) => it.cTilde),
-      tags: items.map((it) => it.spendTag),
-      destLeaves: [],
-      cLeaves: [],
-    });
-  } catch {
-    return false;
-  }
-}
-
-export const admit_prove = admitProve;
-export const admit_verify = admitVerify;
 
 /** C̃ = C + t·H. t is a fresh scalar the caller just drew. */
 export function blindCommit(c, t) {
@@ -543,25 +452,6 @@ export function fluxsetFromBlocks(blocks) {
   return live;
 }
 
-export function compactAdmitProof(proof) {
-  if (!proof) return proof;
-  if (proof.blob || proof.v === 2) {
-    return {
-      admit_proof: true,
-      v: 2,
-      spendTag: proof.spendTag,
-      blob: proof.blob,
-      cTilde: proof.cTilde,
-    };
-  }
-  return {
-    admit_proof: true,
-    spendTag: proof.spendTag,
-    c0: proof.c0,
-    r: proof.r,
-  };
-}
-
 export function fluxsetIndexOf(pubs, spendSeed, note) {
   const P = admitPub(admitScalarFromSeed(spendSeed, note));
   const want = Buffer.from(pointBytes(P));
@@ -573,39 +463,4 @@ export function fluxsetIndexOf(pubs, spendSeed, note) {
       return false;
     }
   });
-}
-
-export function proveFlowSpend(tx, { spendSeed, spentNote, pubs, commits }) {
-  const x = admitScalarFromSeed(spendSeed, spentNote);
-  const index = fluxsetIndexOf(pubs, spendSeed, spentNote);
-  if (index < 0) return tx;
-  const ps = Array.isArray(pubs) ? pubs : [];
-  const cs = Array.isArray(commits) ? commits : [];
-  // J is the pair (P_i, C_i). Copying the spent commit onto every leaf
-  // proves a different tree than the one the node verifies.
-  if (cs.length !== ps.length || cs.length === 0) return tx;
-  const tReuse = tx.vin?.[0]?.t != null ? scalarFrom(tx.vin[0].t) : undefined;
-  const proof = admitProve({
-    x,
-    index,
-    pubs: ps,
-    commits: cs,
-    c: spentNote.commit,
-    t: tReuse,
-  });
-  if (!proof) return tx;
-  tx.admit_proof = proof;
-  tx.spendTag = proof.spendTag;
-  if (Array.isArray(tx.vin) && tx.vin[0] && proof.cTilde) {
-    tx.vin[0] = {
-      commit: proof.cTilde,
-      t: proof.t,
-      r: tx.vin[0].r || spentNote.r,
-    };
-    if (tx.vout?.every((o) => o?.r) && tx.vin[0].r) {
-      const excess = kernelExcess(tx.vout, tx.vin);
-      if (excess) tx.excess = excess;
-    }
-  }
-  return tx;
 }

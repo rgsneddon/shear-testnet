@@ -15,10 +15,7 @@ mod tree;
 
 pub use bpplus::{prove_range, verify_range, RANGE_BITS};
 pub use leaf::{c_leaf_scalar, dest_leaf_fp, DST_LEAF};
-pub use prove::{
-    admit_prove, admit_prove_v3, admit_verify, admit_verify_v3, admit_verify_batch, forest_prove,
-    forest_verify, Proof, MAX_PROOF, MAX_PROOF_V3,
-};
+pub use prove::{admit_prove_v3, admit_verify_v3, MAX_PROOF, MAX_PROOF_V3};
 pub use tree::{c_root, jroot, jroot_point, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -194,68 +191,6 @@ pub extern "C" fn shear_admit_frontier_append(
     .unwrap_or(BAD)
 }
 
-/// prove: returns proof length, or 0 on failure. `out` must hold MAX_PROOF bytes.
-#[no_mangle]
-pub extern "C" fn shear_admit_prove(
-    x: *const u8,
-    p: *const u8,
-    c: *const u8,
-    t: *const u8,
-    index: u32,
-    dest_leaves: *const u8,
-    c_leaves: *const u8,
-    n: u32,
-    c_tilde_out: *mut u8,
-    proof_out: *mut u8,
-    proof_len: *mut u32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        let n = n as usize;
-        let x = match b32(x) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let p = match b32(p) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let c = match b32(c) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let t = match b32(t) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let dest = match slice(dest_leaves, n.saturating_mul(32)) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let cs = match slice(c_leaves, n.saturating_mul(32)) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        if c_tilde_out.is_null() || proof_out.is_null() || proof_len.is_null() {
-            return BAD;
-        }
-        match admit_prove(&x, &p, &c, &t, index as usize, dest, cs, n) {
-            Some((ct, proof)) => {
-                if proof.len() > MAX_PROOF {
-                    return BAD;
-                }
-                unsafe {
-                    std::ptr::copy_nonoverlapping(ct.as_ptr(), c_tilde_out, 32);
-                    std::ptr::copy_nonoverlapping(proof.as_ptr(), proof_out, proof.len());
-                    *proof_len = proof.len() as u32;
-                }
-                OK
-            }
-            None => BAD,
-        }
-    }))
-    .unwrap_or(BAD)
-}
-
 /// v3 prove. `ctx` is 64 bytes. Returns proof length, or 0. `out` holds MAX_PROOF_V3.
 #[no_mangle]
 pub extern "C" fn shear_admit_prove_v3(
@@ -365,177 +300,6 @@ pub extern "C" fn shear_admit_verify_v3(
 }
 
 #[no_mangle]
-pub extern "C" fn shear_admit_verify(
-    proof: *const u8,
-    proof_len: u32,
-    jroot_bytes: *const u8,
-    c_tilde: *const u8,
-    spend_tag: *const u8,
-    dest_leaves: *const u8,
-    c_leaves: *const u8,
-    n: u32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        let n = n as usize;
-        let pr = match slice(proof, proof_len as usize) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let jr = match b32(jroot_bytes) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let ct = match b32(c_tilde) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let tag = match b32(spend_tag) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        // Membership is log-time against jroot. Leaf lists are ignored.
-        let dest = slice(dest_leaves, n.saturating_mul(32)).unwrap_or(&[]);
-        let cs = slice(c_leaves, n.saturating_mul(32)).unwrap_or(&[]);
-        if admit_verify(pr, &jr, &ct, &tag, dest, cs, n) {
-            OK
-        } else {
-            BAD
-        }
-    }))
-    .unwrap_or(BAD)
-}
-
-#[no_mangle]
-pub extern "C" fn shear_admit_verify_batch(
-    proofs: *const u8,
-    lens: *const u32,
-    count: u32,
-    jroot_bytes: *const u8,
-    c_tildes: *const u8,
-    tags: *const u8,
-    dest_leaves: *const u8,
-    c_leaves: *const u8,
-    n: u32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        let count = count as usize;
-        let n = n as usize;
-        if proofs.is_null() || lens.is_null() || jroot_bytes.is_null() {
-            return BAD;
-        }
-        let lens_s = unsafe { std::slice::from_raw_parts(lens, count) };
-        let total: usize = lens_s.iter().map(|x| *x as usize).sum();
-        let blob = match slice(proofs, total) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let jr = match b32(jroot_bytes) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let cts = match slice(c_tildes, count.saturating_mul(32)) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let tgs = match slice(tags, count.saturating_mul(32)) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let dest = slice(dest_leaves, n.saturating_mul(32)).unwrap_or(&[]);
-        let cs = slice(c_leaves, n.saturating_mul(32)).unwrap_or(&[]);
-        let mut offset = 0usize;
-        let mut items = Vec::with_capacity(count);
-        for i in 0..count {
-            let ln = lens_s[i] as usize;
-            if offset + ln > blob.len() {
-                return BAD;
-            }
-            let mut ct = [0u8; 32];
-            let mut tg = [0u8; 32];
-            ct.copy_from_slice(&cts[i * 32..i * 32 + 32]);
-            tg.copy_from_slice(&tgs[i * 32..i * 32 + 32]);
-            items.push((&blob[offset..offset + ln], ct, tg));
-            offset += ln;
-        }
-        if admit_verify_batch(&items, &jr, dest, cs, n) {
-            OK
-        } else {
-            BAD
-        }
-    }))
-    .unwrap_or(BAD)
-}
-
-/// Native 1k/10k/100k bench. Times prove + jroot-only verify. `n==0` is BAD.
-#[no_mangle]
-pub extern "C" fn shear_admit_bench(
-    n: u32,
-    prove_us: *mut u64,
-    verify_us: *mut u64,
-    proof_len: *mut u32,
-) -> i32 {
-    catch_unwind(AssertUnwindSafe(|| {
-        if prove_us.is_null() || verify_us.is_null() || proof_len.is_null() {
-            return BAD;
-        }
-        let n = n as usize;
-        if n == 0 || n > 1_048_576 {
-            return BAD;
-        }
-        use crate::leaf::sha512_64;
-        use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
-        use curve25519_dalek::scalar::Scalar;
-        use std::time::Instant;
-
-        let h = bpplus::h_note();
-        let x = Scalar::from(7u64);
-        let p = (G * x).compress().to_bytes();
-        let r = Scalar::from(9u64);
-        let c = (G * Scalar::from(1u64) + h * r).compress().to_bytes();
-        let t = Scalar::from(11u64);
-        let idx = 7.min(n - 1);
-        let mut dest = vec![0u8; n * 32];
-        let mut cs = vec![0u8; n * 32];
-        for i in 0..n {
-            let wd = sha512_64(&[b"shear-bench-d", &(i as u64).to_le_bytes()]);
-            dest[i * 32..i * 32 + 32].copy_from_slice(&wd[..32]);
-            let wc = sha512_64(&[b"shear-bench-c", &(i as u64).to_le_bytes()]);
-            cs[i * 32..i * 32 + 32].copy_from_slice(&wc[..32]);
-        }
-        dest[idx * 32..idx * 32 + 32].copy_from_slice(&p);
-        cs[idx * 32..idx * 32 + 32].copy_from_slice(&c);
-
-        // Warm generators + memoize dest/C levels (wallet already has jroot before send).
-        let jr = jroot(&dest, &cs, n);
-
-        let t0 = Instant::now();
-        let (ct, proof) = match admit_prove(&x.to_bytes(), &p, &c, &t.to_bytes(), idx, &dest, &cs, n)
-        {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let prove = t0.elapsed().as_micros() as u64;
-        let tag = match prove::spend_tag_of(&proof) {
-            Some(t) => t,
-            None => return BAD,
-        };
-        let t1 = Instant::now();
-        let ok = admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0);
-        let verify = t1.elapsed().as_micros() as u64;
-        if !ok {
-            return BAD;
-        }
-        unsafe {
-            *prove_us = prove;
-            *verify_us = verify;
-            *proof_len = proof.len() as u32;
-        }
-        OK
-    }))
-    .unwrap_or(BAD)
-}
-
-#[no_mangle]
 pub extern "C" fn shear_range_prove(v: u64, r: *const u8, out: *mut u8, out_len: *mut u32) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         let r = match b32(r) {
@@ -625,70 +389,6 @@ mod tests {
         assert!(!verify_range(&point_bytes(&c2), &proof));
     }
 
-    #[test]
-    fn admit_honest_and_subset_and_v1_fail() {
-        let n = 8usize;
-        let mut xs = Vec::new();
-        let mut ps = Vec::new();
-        let mut cs = Vec::new();
-        let h = hash_to_ristretto(b"shear-note-H-v1");
-        for i in 0..n {
-            let x = rand_scalar();
-            let p = RISTRETTO_BASEPOINT_POINT * x;
-            let r = rand_scalar();
-            let c = RISTRETTO_BASEPOINT_POINT * Scalar::from((i as u64) + 1) + h * r;
-            xs.push(x);
-            ps.push(point_bytes(&p));
-            cs.push(point_bytes(&c));
-        }
-        let mut dest_blob = Vec::new();
-        let mut c_blob = Vec::new();
-        for i in 0..n {
-            dest_blob.extend_from_slice(&ps[i]);
-            c_blob.extend_from_slice(&cs[i]);
-        }
-        let idx = 3usize;
-        let t = rand_scalar();
-        let (ct, proof) = admit_prove(
-            &xs[idx].to_bytes(),
-            &ps[idx],
-            &cs[idx],
-            &t.to_bytes(),
-            idx,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("prove");
-        assert!(proof.len() <= MAX_PROOF);
-        assert_ne!(ct, cs[idx]); // rerandomized — not the original C
-        let jr = jroot(&dest_blob, &c_blob, n);
-        let tag = {
-            // spendTag is inside the proof; verify extracts it. Recompute via prove path.
-            proof_spend_tag(&proof).expect("tag")
-        };
-        assert!(admit_verify(&proof, &jr, &ct, &tag, &dest_blob, &c_blob, n));
-        // log-time: empty leaf lists, jroot only
-        assert!(admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0));
-        // subset J → different jroot
-        let jr_sub = jroot(&dest_blob[..4 * 32], &c_blob[..4 * 32], 4);
-        assert!(!admit_verify(
-            &proof, &jr_sub, &ct, &tag, &dest_blob[..4 * 32], &c_blob[..4 * 32], 4
-        ));
-        assert!(!admit_verify(&proof, &jr_sub, &ct, &tag, &[], &[], 0));
-        // ADMITv1-shaped blob
-        let mut v1 = vec![1u8, 0, 0, 0];
-        v1.extend_from_slice(&[0u8; 64]);
-        v1.extend(vec![0u8; n * 32]); // r.length === |J|
-        assert!(!admit_verify(&v1, &jr, &ct, &tag, &dest_blob, &c_blob, n));
-        // fake C̃
-        let mut ct_bad = ct;
-        ct_bad[0] ^= 1;
-        assert!(!admit_verify(
-            &proof, &jr, &ct_bad, &tag, &dest_blob, &c_blob, n
-        ));
-    }
-
     fn proof_spend_tag(proof: &[u8]) -> Option<[u8; 32]> {
         prove::spend_tag_of(proof)
     }
@@ -742,237 +442,6 @@ mod tests {
             c_blob.extend_from_slice(&cs[i]);
         }
         (xs, ps, cs, dest_blob, c_blob)
-    }
-
-    #[test]
-    fn proof_blob_does_not_name_p_or_c_or_dest_leaf() {
-        let n = 8usize;
-        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let idx = 3usize;
-        let t = rand_scalar();
-        let (_ct, proof) = admit_prove(
-            &xs[idx].to_bytes(),
-            &ps[idx],
-            &cs[idx],
-            &t.to_bytes(),
-            idx,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("prove");
-        let dest_l = crate::leaf::dest_leaf_fp(&ps[idx]);
-        assert!(
-            !proof[1..(1 + 32 * 8 + 1)].windows(32).any(|w| *w == ps[idx]),
-            "header must not name P"
-        );
-        assert!(
-            !proof.windows(32).any(|w| w == dest_l),
-            "blob must not contain dest_leaf of the spent note"
-        );
-        // Original C may appear in the arity-32 sibling bucket (anonymity 32),
-        // never as a unique named field and never equal to C̃.
-        assert_ne!(_ct, cs[idx]);
-        assert_ne!(proof.get(257).copied().unwrap_or(0), idx as u8);
-    }
-
-    #[test]
-    fn from_scratch_non_member_fails_admit_verify() {
-        let n = 8usize;
-        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
-        let ax = rand_scalar();
-        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
-        let h = hash_to_ristretto(b"shear-note-H-v1");
-        let ac = (RISTRETTO_BASEPOINT_POINT * Scalar::from(99u64) + h * rand_scalar()).compress().to_bytes();
-        let t = rand_scalar();
-        assert!(
-            admit_prove(&ax.to_bytes(), &ap, &ac, &t.to_bytes(), 0, &dest_blob, &c_blob, n).is_none(),
-            "prove must refuse attacker P not at the claimed index"
-        );
-        let mut d_att = ap.to_vec();
-        d_att.extend_from_slice(&dest_blob[32..]);
-        let mut c_att = ac.to_vec();
-        c_att.extend_from_slice(&c_blob[32..]);
-        let (ct_a, proof_a) = admit_prove(
-            &ax.to_bytes(),
-            &ap,
-            &ac,
-            &t.to_bytes(),
-            0,
-            &d_att,
-            &c_att,
-            n,
-        )
-        .expect("attacker can prove against a J that contains them");
-        let tag_a = proof_spend_tag(&proof_a).unwrap();
-        assert!(
-            !admit_verify(&proof_a, &jr, &ct_a, &tag_a, &[], &[], 0),
-            "from-scratch attacker-x + self-minted C̃ against honest jroot must fail"
-        );
-        let _ = (xs, ps, cs);
-    }
-
-    #[test]
-    fn attacker_x_cannot_spend_victim_index() {
-        let n = 8usize;
-        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
-        let ax = rand_scalar();
-        let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
-        let t = rand_scalar();
-        assert!(
-            admit_prove(
-                &ax.to_bytes(),
-                &ap,
-                &cs[3],
-                &t.to_bytes(),
-                3,
-                &dest_blob,
-                &c_blob,
-                n,
-            )
-            .is_none(),
-            "attacker x + victim dest/C index must not prove"
-        );
-        let (ct, proof) = admit_prove(
-            &xs[3].to_bytes(),
-            &ps[3],
-            &cs[3],
-            &t.to_bytes(),
-            3,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("honest");
-        let tag = proof_spend_tag(&proof).unwrap();
-        assert!(admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0));
-    }
-
-    #[test]
-    fn admit_rejects_self_minted_c_tilde() {
-        let n = 8usize;
-        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
-        let t = rand_scalar();
-        let (mut ct, mut proof) = admit_prove(
-            &xs[3].to_bytes(),
-            &ps[3],
-            &cs[3],
-            &t.to_bytes(),
-            3,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("honest");
-        let tag = proof_spend_tag(&proof).unwrap();
-        ct[0] ^= 0x5a;
-        proof[33] ^= 0x5a;
-        assert!(
-            !admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0),
-            "self-minted C̃ must fail"
-        );
-    }
-
-    #[test]
-    fn admit_rejects_mixed_dest_c_indices() {
-        let n = 40usize;
-        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
-        let t = rand_scalar();
-        let (ct_a, mut proof_a) = admit_prove(
-            &xs[7].to_bytes(),
-            &ps[7],
-            &cs[7],
-            &t.to_bytes(),
-            7,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("idx7");
-        let t2 = rand_scalar();
-        let (_ct_b, proof_b) = admit_prove(
-            &xs[39].to_bytes(),
-            &ps[39],
-            &cs[39],
-            &t2.to_bytes(),
-            39,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("idx39");
-        let tag_a = proof_spend_tag(&proof_a).unwrap();
-        let nlay_a = proof_a[257];
-        let nlay_b = proof_b[257];
-        assert_eq!(nlay_a, nlay_b);
-        // Swap C siblings (32×32 at the leaf) from 39 into 7's blob.
-        let sib_len = 32 * 32;
-        assert!(proof_a.len() > sib_len + 64);
-        assert!(proof_b.len() > sib_len + 64);
-        let off_a = proof_a.len() - crate::select::LEAF_PAIRED_LEN - sib_len;
-        let off_b = proof_b.len() - crate::select::LEAF_PAIRED_LEN - sib_len;
-        let sib_b = proof_b[off_b..off_b + sib_len].to_vec();
-        proof_a[off_a..off_a + sib_len].copy_from_slice(&sib_b);
-        assert!(
-            !admit_verify(&proof_a, &jr, &ct_a, &tag_a, &[], &[], 0),
-            "mixed dest/C indices must fail"
-        );
-    }
-
-    #[test]
-    fn forest_shares_one_path_bit_commitment() {
-        let n = 8usize;
-        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let jr = jroot(&dest_blob, &c_blob, n);
-        let t0 = rand_scalar();
-        let t1 = rand_scalar();
-        let spends = [
-            (xs[1].to_bytes(), ps[1], cs[1], t0.to_bytes(), 1usize),
-            (xs[4].to_bytes(), ps[4], cs[4], t1.to_bytes(), 4usize),
-        ];
-        let got = prove::forest_prove(&spends, &dest_blob, &c_blob, n).expect("forest");
-        assert_eq!(got.len(), 2);
-        let items: Vec<(&[u8], [u8; 32], [u8; 32])> = got
-            .iter()
-            .map(|(ct, pr)| {
-                let tag = proof_spend_tag(pr).unwrap();
-                (pr.as_slice(), *ct, tag)
-            })
-            .collect();
-        assert!(prove::forest_verify(&items, &jr, &[], &[], 0));
-        // Independent single-input proofs do not share the forest bind.
-        let a = admit_prove(
-            &xs[1].to_bytes(),
-            &ps[1],
-            &cs[1],
-            &t0.to_bytes(),
-            1,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .unwrap();
-        let b = admit_prove(
-            &xs[4].to_bytes(),
-            &ps[4],
-            &cs[4],
-            &t1.to_bytes(),
-            4,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .unwrap();
-        let loose = [
-            (a.1.as_slice(), a.0, proof_spend_tag(&a.1).unwrap()),
-            (b.1.as_slice(), b.0, proof_spend_tag(&b.1).unwrap()),
-        ];
-        assert!(!prove::forest_verify(&loose, &jr, &[], &[], 0));
-        assert!(admit_verify(&a.1, &jr, &a.0, &proof_spend_tag(&a.1).unwrap(), &[], &[], 0));
     }
 
     fn ctx64() -> [u8; 64] {
@@ -1033,28 +502,6 @@ mod tests {
     }
 
     #[test]
-    fn v2_remainder_names_the_spent_slot() {
-        let n = 8usize;
-        let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
-        let idx = 3usize;
-        let t = rand_scalar();
-        let (_ct, proof) = admit_prove(
-            &xs[idx].to_bytes(),
-            &ps[idx],
-            &cs[idx],
-            &t.to_bytes(),
-            idx,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("v2");
-        let kids = leaf_dest_children(&dest_blob, n, idx);
-        let hits = slots_matching(&kids, &one_layer_leaf_w(&proof));
-        assert_eq!(hits, vec![idx], "unblinded W identifies the spent slot");
-    }
-
-    #[test]
     fn v3_remainder_hides_the_slot_and_rejects_a_mint() {
         let n = 8usize;
         let (xs, ps, cs, dest_blob, c_blob) = note_set(n);
@@ -1078,7 +525,6 @@ mod tests {
         assert!(proof.len() <= MAX_PROOF_V3);
         let tag = proof_spend_tag(&proof).expect("v3 tag");
         assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
-        assert!(!admit_verify(&proof, &jr, &ct, &tag, &[], &[], 0), "v3 blob is not v2");
         let kids = leaf_dest_children(&dest_blob, n, idx);
         let hits = slots_matching(&kids, &one_layer_leaf_w(&proof));
         assert!(hits.is_empty(), "blinded W matches no slot, got {hits:?}");
@@ -1092,19 +538,6 @@ mod tests {
         let mut ctx_b = ctx;
         ctx_b[10] ^= 1;
         assert!(!admit_verify_v3(&proof, &jr, &ct, &tag, &ctx_b), "foreign ctx");
-        let (ct2, proof2) = admit_prove(
-            &xs[idx].to_bytes(),
-            &ps[idx],
-            &cs[idx],
-            &t.to_bytes(),
-            idx,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("v2");
-        let tag2 = proof_spend_tag(&proof2).unwrap();
-        assert!(!admit_verify_v3(&proof2, &jr, &ct2, &tag2, &ctx), "v2 blob is not v3");
         let ax = rand_scalar();
         let ap = (RISTRETTO_BASEPOINT_POINT * ax).compress().to_bytes();
         assert!(
@@ -1136,29 +569,6 @@ mod tests {
         let dpath = tree::path_from_levels(&dlevels, idx).expect("path");
         assert!(dpath.len() >= 2, "n=40 has an internal layer");
         let top = dpath.len() - 1;
-        let mut slot_idx = idx;
-        for _ in 0..top {
-            slot_idx /= 32;
-        }
-        let top_slot = slot_idx % 32;
-        let (ct2, proof2) = admit_prove(
-            &xs[idx].to_bytes(),
-            &ps[idx],
-            &cs[idx],
-            &t.to_bytes(),
-            idx,
-            &dest_blob,
-            &c_blob,
-            n,
-        )
-        .expect("v2");
-        assert_eq!(proof2[257], dpath.len() as u8);
-        let published2: [u8; 32] = proof2[258..290].try_into().unwrap();
-        assert_eq!(
-            slots_matching(&dpath[top], &published2),
-            vec![top_slot],
-            "v2 internal W names the child"
-        );
         let (ct, proof) = admit_prove_v3(
             &xs[idx].to_bytes(),
             &ps[idx],
@@ -1184,7 +594,6 @@ mod tests {
         let q_at = leaf_at + crate::select::LEAF_V3_LEN;
         sib[q_at] ^= 0xff;
         assert!(!admit_verify_v3(&sib, &jr, &ct, &tag, &ctx), "a forged Q must fail");
-        let _ = ct2;
     }
 
     /// Honest version-3 seal. C-tilde is C + t H, and the proof verifies on the set that contains C.

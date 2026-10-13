@@ -7,8 +7,6 @@ import { createStore } from '../src/store.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
-import { admitProve, admitVerify, admitPub, jroot } from '../../crypto/admit.js';
-import { randomScalar, commit, pointBytes } from '../../crypto/note.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
 
 const KINDS = ['send', 'transfer'];
@@ -178,49 +176,4 @@ describe('v12 flow spends reject a non-v3 byte before the v2 verifier', () => {
     }
   });
 
-  it('the v2 verifier still accepts a real proof, and consensus does not', { timeout: 180_000 }, () => {
-    const n = 4;
-    const xs = Array.from({ length: n }, () => randomScalar());
-    const pubs = xs.map(admitPub);
-    const commits = xs.map((_, i) => pointBytes(commit(i + 1, randomScalar())));
-    const proof = admitProve({ x: xs[1], index: 1, pubs, commits, c: commits[1] });
-    assert.equal(proof.blob[0], 2);
-    assert.equal(admitVerify(proof, { pubs, commits }, { cTilde: proof.cTilde, spendTag: proof.spendTag }), true);
-    const jr = jroot({ pubs, commits });
-    assert.equal(admitVerify(proof, { pubs: [], commits: [] }, {
-      jroot: jr, cTilde: proof.cTilde, spendTag: proof.spendTag,
-    }), true);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-byte-v2-'));
-    const store = createStore(dir);
-    try {
-      for (const amount of AMOUNTS) {
-        const kind = amount === AMOUNTS[0] ? 'send' : 'transfer';
-        const tx = {
-          id: `real-${amount}`,
-          kind,
-          nanos: amount,
-          fee: 0,
-          vin: [{ commit: proof.cTilde }],
-          vout: [{ kind, nanos: amount }],
-          admit_proof: proof,
-        };
-        assert.equal(store.queueTx(tx).reason, 'admit_version', String(amount));
-        assert.equal(admitMempool(emptyMempool(), tx, {
-          fluxset: { pubs, commits, jroot: jr },
-        }).reason, 'admit_version', String(amount));
-      }
-      const got = blockVerdict({
-        id: 'real-block',
-        kind: 'send',
-        nanos: AMOUNTS[1],
-        fee: 0,
-        vin: [{ commit: proof.cTilde }],
-        vout: [{ kind: 'send', nanos: AMOUNTS[1] }],
-        admit_proof: proof,
-      }, 1, null);
-      assert.equal(got.reason, 'admit_version', got.reason);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });
