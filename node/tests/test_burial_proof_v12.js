@@ -51,7 +51,8 @@ import { createStore } from '../src/store.js';
 
 const PRUNE = SAMPLE_PRUNE_CONFIRMATIONS;
 const STEP = TARGET_BLOCK_INTERVAL_MS;
-const LATE = ASERT_EMERGENCY_GAP_FACTOR * STEP * 4;
+// The 11-block median lags the tip by six gaps, and six must fit inside MTP_FUTURE_MS.
+const LATE = Math.floor(ASERT_EMERGENCY_GAP_FACTOR * STEP * 1.5);
 const FLOOR = 1400;
 const OLD_TIP = 1448;
 const FORK = 16;
@@ -464,15 +465,20 @@ describe('v12 proven burial', () => {
     const pool = createStore(tmp('ipc'), { fastSync: true });
     const got = [];
     for (const f of frames.slice(0, 2)) {
-      if (f.type === 'ipc_headers') pool.offerHeaders(f.headers);
-      else got.push(await applyVerifiedIpcBlock(pool, JSON.parse(JSON.stringify(f))));
+      if (f.type === 'ipc_headers') {
+        pool.offerHeaders(f.headers);
+        assert.equal(pool.burialView().offered, PRUNE);
+      } else {
+        got.push(await applyVerifiedIpcBlock(pool, JSON.parse(JSON.stringify(f))));
+      }
     }
-    assert.equal(pool.burialView().offered, PRUNE);
     // IPC never trusts a hash. These test headers are not ShearHash work, so
-    // the store refuses the burial instead of the old flag check.
+    // the store refuses the burial instead of the old flag check, and drops
+    // the header that failed.
     assert.equal(got[0].ok, false);
     assert.equal(got[0].reason, 'samples_pruned');
     assert.equal(pool.tip(), null);
+    assert.ok(pool.burialView().offered < PRUNE);
 
     const src = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
     assert.doesNotMatch(src, /shouldPruneSamples\(structuralH/);
