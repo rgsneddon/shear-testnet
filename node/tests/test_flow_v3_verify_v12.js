@@ -111,8 +111,8 @@ function blockVerdict(store, dest, tx) {
   });
 }
 
-describe('v12 flow byte 3 is verified, not handed to the v2 verifier', () => {
-  it('a short blob is admit_membership and a root miss is admit_anchor_root on queue, mempool, and verify', { timeout: 180_000 }, async () => {
+describe('v12 flow byte 3 is rejected before the verifier', () => {
+  it('a byte-3 flow proof is send_unavailable on queue, mempool, and verify', { timeout: 180_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-flow-v3-'));
     const store = createStore(dir);
     const dest = minerDest();
@@ -140,10 +140,10 @@ describe('v12 flow byte 3 is verified, not handed to the v2 verifier', () => {
               });
               const queued = store.queueTx(tx);
               assert.equal(queued.ok, false, queued.reason);
-              assert.equal(queued.reason, 'admit_membership', `${tx.id} queue ${queued.reason}`);
+              assert.equal(queued.reason, 'send_unavailable', `${tx.id} queue ${queued.reason}`);
               assert.equal(store.mempool.some((m) => m.id === tx.id), false);
               const parked = admitMempool(emptyMempool(), tx, opts);
-              assert.equal(parked.reason, 'admit_membership', `${tx.id} mempool ${parked.reason}`);
+              assert.equal(parked.reason, 'send_unavailable', `${tx.id} mempool ${parked.reason}`);
             }
           }
           for (const length of LONG) {
@@ -157,17 +157,17 @@ describe('v12 flow byte 3 is verified, not handed to the v2 verifier', () => {
             });
             const queued = store.queueTx(tx);
             assert.equal(queued.ok, false, queued.reason);
-            assert.equal(queued.reason, 'admit_anchor_root', `${tx.id} queue ${queued.reason}`);
+            assert.equal(queued.reason, 'send_unavailable', `${tx.id} queue ${queued.reason}`);
             const parked = admitMempool(emptyMempool(), tx, opts);
-            assert.equal(parked.reason, 'admit_anchor_root', `${tx.id} mempool ${parked.reason}`);
+            assert.equal(parked.reason, 'send_unavailable', `${tx.id} mempool ${parked.reason}`);
           }
         }
       }
       const blockSpread = [
-        { kind: 'send', amount: AMOUNTS[0], length: SHORT[0], reason: 'admit_membership' },
-        { kind: 'transfer', amount: AMOUNTS[1], length: SHORT[2], reason: 'admit_membership' },
-        { kind: 'send', amount: AMOUNTS[2], length: LONG[0], reason: 'admit_anchor_root' },
-        { kind: 'transfer', amount: AMOUNTS[0], length: LONG[2], reason: 'admit_anchor_root' },
+        { kind: 'send', amount: AMOUNTS[0], length: SHORT[0], reason: 'send_unavailable' },
+        { kind: 'transfer', amount: AMOUNTS[1], length: SHORT[2], reason: 'send_unavailable' },
+        { kind: 'send', amount: AMOUNTS[2], length: LONG[0], reason: 'send_unavailable' },
+        { kind: 'transfer', amount: AMOUNTS[0], length: LONG[2], reason: 'send_unavailable' },
       ];
       for (const spec of blockSpread) {
         const tx = flowTx({
@@ -190,9 +190,9 @@ describe('v12 flow byte 3 is verified, not handed to the v2 verifier', () => {
         anchor: 16,
         id: 'anchor-late',
       });
-      assert.equal(store.queueTx(late).reason, 'admit_anchor_window');
-      assert.equal(admitMempool(emptyMempool(), late, opts).reason, 'admit_anchor_window');
-      assert.equal(blockVerdict(store, dest, late).reason, 'admit_anchor_window');
+      assert.equal(store.queueTx(late).reason, 'send_unavailable');
+      assert.equal(admitMempool(emptyMempool(), late, opts).reason, 'send_unavailable');
+      assert.equal(blockVerdict(store, dest, late).reason, 'send_unavailable');
       const v2 = flowTx({
         kind: 'transfer',
         amount: AMOUNTS[2],

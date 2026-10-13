@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'shear_admit.dart';
 import 'shear_ctf.dart';
 import 'shear_eip712.dart';
 import 'shear_identity.dart';
@@ -676,16 +677,25 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
   );
   _bindLedger(ledger, id, session);
   final from = ledger.currentDest(id.address, paymentCode: id.paymentCode);
-  final tx = await ledger.sendSpendableSum(
-    from: from,
-    to: to,
-    amount: amount,
-    memo: flags['memo'],
-    local: dry,
-    restFrame: id.address,
-    paymentCode: id.paymentCode,
-    spendSeed: hexToBytes(id.seedHex),
-  );
+  final ShearTx tx;
+  try {
+    tx = await ledger.sendSpendableSum(
+      from: from,
+      to: to,
+      amount: amount,
+      memo: flags['memo'],
+      local: dry,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: hexToBytes(id.seedHex),
+    );
+  } on StateError catch (e) {
+    if (e.message == kErrSendUnavailable) {
+      err.writeln(e.message);
+      return 2;
+    }
+    rethrow;
+  }
   final body = {
     'ok': true,
     'id': tx.id,

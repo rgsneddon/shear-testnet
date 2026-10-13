@@ -171,8 +171,10 @@ describe('spend paths use the note index', { concurrency: 1 }, () => {
       const verdict = store.verifyFork([block], { probeBody: true, skipSharePow: true });
       assert.equal(typeof verdict.then, 'undefined');
       assert.equal(verdict.ok, false, verdict.reason);
+      // Stage 0 refuses a fork carrying a proofless send before any spend check or walk.
+      assert.equal(verdict.reason, 'send_unavailable');
       const forkStats = store.walletWalkStats();
-      assert.ok(forkStats.forkSpendChecks >= 1, `fork checks ${forkStats.forkSpendChecks} reason ${verdict.reason} at ${verdict.at}`);
+      assert.equal(forkStats.forkSpendChecks, 0, `fork checks ${forkStats.forkSpendChecks} reason ${verdict.reason}`);
       assert.equal(forkStats.spendChecks, 0);
       assert.equal(noteCommitBlocksWalked(), 0);
       assert.equal(store.spendableNanos(dest), before);

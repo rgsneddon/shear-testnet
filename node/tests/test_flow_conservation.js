@@ -156,6 +156,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       height: 1,
     }, trust(attackBlock));
     assert.equal(gotBad.ok, false);
-    assert.equal(gotBad.reason, 'admit_membership');
+    // Stage 0 refuses a v12 send that carries no proof before membership is judged.
+    assert.equal(gotBad.reason, 'send_unavailable');
   });
 });

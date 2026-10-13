@@ -28,19 +28,21 @@ describe('anchor notes fund the point book', () => {
       vin: [{ commit: posted, anchor: 8 }],
       admit_proofs: [{ blob, cTilde: posted }],
     };
+    // Until FS-1 a vault bucket proof is refused before any anchor or proof work.
+    let anchorReads = 0;
     const chain = verifyTypedAdmitFunding(tx, {
       height: 24,
-      noteAtAnchor: (a) => noteFromAnchor(flux, { 8: { jroot: v2, n: 1 } }, a),
+      noteAtAnchor: (a) => { anchorReads += 1; return noteFromAnchor(flux, { 8: { jroot: v2, n: 1 } }, a); },
     });
     assert.equal(chain.ok, false);
-    assert.equal(chain.reason, 'admit_anchor_root');
-    assert.equal(chain.proofChecked, true);
+    assert.equal(chain.reason, 'vault_unavailable');
+    assert.equal(chain.proofChecked, undefined);
     const lie = verifyTypedAdmitFunding(tx, {
       height: 24,
-      noteAtAnchor: () => ({ pubs: [pub], commits: [note], n: 1, jroot: Buffer.alloc(32, 9) }),
+      noteAtAnchor: () => { anchorReads += 1; return { pubs: [pub], commits: [note], n: 1, jroot: Buffer.alloc(32, 9) }; },
     });
     assert.equal(lie.ok, false);
-    assert.equal(lie.reason, 'admit_anchor_root');
-    assert.equal(lie.proofChecked, undefined);
+    assert.equal(lie.reason, 'vault_unavailable');
+    assert.equal(anchorReads, 0);
   });
 });

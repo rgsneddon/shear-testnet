@@ -2379,6 +2379,7 @@ String flowSendAdvisoryOf(Object error) {
   if (msg.contains('fee_short') || msg.contains(kErrFeeShort)) {
     return kErrFeeShort;
   }
+  if (msg.contains(kErrSendUnavailable)) return kErrSendUnavailable;
   return kErrSendGeneric;
 }
 
@@ -7202,7 +7203,7 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// One Flow tx. A batch spends every note in [notes]. Notes are marked spent
-  /// only after the node accepts the tx.
+  /// only after the node accepts the tx. Closed until FS-1.
   Future<ShearTx> _sendManyNotes({
     required List<Map<String, dynamic>> notes,
     required String to,

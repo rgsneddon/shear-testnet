@@ -4,6 +4,9 @@ import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
+/// Shown when a send is attempted. Bucket-32 prove stays off until FS-1.
+const String kErrSendUnavailable = 'send unavailable until FS-1';
+
 final admitXDst = utf8Bytes('shear-admit-x-v1');
 final admitHpDst = utf8Bytes('shear-admit-Hp');
 
@@ -98,6 +101,8 @@ bool _eq(Uint8List a, Uint8List b) {
   return true;
 }
 
+/// Closed until FS-1. Does not call [nativeProveFlowSpend].
+/// A missing helper used to surface as admit_native_required.
 Map<String, dynamic> proveFlowSpend(
   Map<String, dynamic> tx, {
   required Uint8List spendSeed,
@@ -105,20 +110,5 @@ Map<String, dynamic> proveFlowSpend(
   required List<Uint8List> pubs,
   List<Uint8List>? commits,
 }) {
-  final index = fluxsetIndexOf(pubs, spendSeed, spentNote);
-  if (index < 0) throw StateError('not_in_fluxset');
-  final cs = commits ?? const <Uint8List>[];
-  if (cs.length != pubs.length) throw StateError('admit_native_required');
-  final proof = nativeProveFlowSpend(
-    spendSeed: spendSeed,
-    spentNote: spentNote,
-    pubs: pubs,
-    commits: cs,
-  );
-  if (proof == null || proof['v'] != 2 || proof['r'] != null) {
-    throw StateError('admit_native_required');
-  }
-  tx['admit_proof'] = proof;
-  tx['spendTag'] = proof['spendTag'];
-  return tx;
+  throw StateError(kErrSendUnavailable);
 }

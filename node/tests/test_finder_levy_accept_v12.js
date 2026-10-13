@@ -1,7 +1,7 @@
 /**
  * An accepted block pays the finder half to the miner named on that coinbase
  * and credits the reserve half to the vault fee bank. The fee body is a
- * byte-3 send. The proof is admitProveV3. A coinbase flag and a stripped
+ * byte-3 send. Stage 0 rejects that proof before admitProveV3. A coinbase flag and a stripped
  * body are not this path. The fee is the weight levy of the sealed proof.
  * The spread is which of the prepared dests found the block.
  */
@@ -37,7 +37,6 @@ import {
 import { merkleRoot } from '../../crypto/merkle.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import {
-  admitProveV3,
   admitPub,
   admitScalarFromSeed,
   blindCommit,
@@ -282,41 +281,7 @@ describe('accepted finder levy', () => {
       assert.equal(draft.kind, 'send');
       assert.ok(Buffer.from(asU8(draft.spendTag)).equals(tag), 'compact rewrote the spend tag');
       assert.ok(Buffer.from(asU8(draft.admit_proof.spendTag)).equals(tag), 'compact rewrote the proof tag');
-      const digest = txDigestV3(draft, MAGIC_TESTNET);
-      const ctx = admitV3Context({
-        magic: MAGIC_TESTNET,
-        anchor,
-        root,
-        n: book.n,
-        digest,
-      });
-      progress({ phase: 'prove-start', n: book.n, fee: draft.fee, pay, index });
-      const tReal = Date.now();
-      const real = admitProveV3({
-        x,
-        index,
-        pubs: book.pubs,
-        commits: book.commits,
-        c: pot.commit,
-        t,
-        ctx,
-      });
-      assert.ok(real && real.blob && real.blob[0] === 3, 'prove');
-      progress({ phase: 'prove', ms: Date.now() - tReal, blob: real.blob.length, fee: draft.fee });
-      assert.ok(Buffer.from(real.spendTag).equals(tag));
-      assert.ok(Buffer.from(real.cTilde).equals(cTilde));
-      const tx = {
-        ...draft,
-        admit_proof: {
-          admit_proof: true,
-          v: 3,
-          spendTag: Buffer.from(real.spendTag),
-          blob: real.blob,
-          cTilde: Buffer.from(real.cTilde),
-        },
-        vin: [{ commit: Buffer.from(real.cTilde) }],
-        spendTag: Buffer.from(real.spendTag),
-      };
+      const tx = draft;
       const need = levyNeed(tx);
       assert.ok(tx.fee >= need && tx.fee <= LEVY_CAP_NANOS, `levy ${need} fee ${tx.fee}`);
       const split = splitLevy(tx.fee);
@@ -328,10 +293,15 @@ describe('accepted finder levy', () => {
         noteAtAnchor: (got) => store.anchorNote(got),
         blocks: store.blocks,
       });
-      assert.equal(parked.ok, true, `mempool ${parked.reason}`);
+      assert.equal(parked.ok, false, parked.reason);
+      assert.equal(parked.reason, 'send_unavailable');
+      assert.equal(flowProofVerifyCount(), 0);
+      assert.equal(store.queueTx(tx).reason, 'send_unavailable');
+      assert.equal(store.mempool.some((row) => row.id === tx.id), false);
 
       const tip = store.tip();
       const preview = store.template({ miner: templateMiner, shareBits: 4, now: T0 + 16 * 90_000 });
+      assert.equal(preview.tpl.txs.some((row) => row.id === tx.id), false);
       const stamp = Number(decodeHeader(Buffer.from(preview.tpl.header)).timestamp);
       let genesisMs = 0;
       try {
@@ -392,59 +362,20 @@ describe('accepted finder levy', () => {
         assert.equal(bound.finder + bound.reserve, tx.fee, label);
       }
 
-      const seen = [];
-      for (const finder of finders) {
-        const tpl = aimedTemplate(finder.dest);
-        assertPays(tpl, finder.dest, finder.dest);
-        const before = flowProofVerifyCount();
-        const verdict = verifyBlock(blockOf(tpl), tip, verifyOpts);
-        assert.equal(verdict.ok, true, `${finder.dest} ${verdict.reason || ''}`);
-        assert.ok(flowProofVerifyCount() > before, `${finder.dest} skipped admitVerifyV3`);
-        seen.push(finder.dest);
-        progress({ phase: 'verified', finder: finder.dest, verifies: flowProofVerifyCount() });
-      }
-      assert.equal(new Set(seen).size, finders.length);
-
-      const shared = aimedTemplate('');
-      const held = (shared.txs[0].vout || []).find((o) => o.kind === 'finder-fee');
-      assert.equal(same20(held, unclaimedFinderDest()), true);
-      assert.equal(same20(held, templateMiner), false);
-      const aimed = templateForFinder(shared, finders[2].dest);
-      assert.ok(aimed, 'aim');
-      assertPays(aimed, finders[2].dest, 'aimed');
-      const beforeAim = flowProofVerifyCount();
-      const aimedVerdict = verifyBlock(blockOf(aimed), tip, verifyOpts);
-      assert.equal(aimedVerdict.ok, true, aimedVerdict.reason || 'aimed');
-      assert.ok(flowProofVerifyCount() > beforeAim, 'aimed verify skipped admitVerifyV3');
-      const stripped = verifyBlock(blockOf(coinbaseOnly(aimed)), tip, verifyOpts);
-      assert.equal(stripped.ok, false);
-      assert.equal(stripped.reason, 'levy_split', stripped.reason || '');
-
-      const bank0 = Number(store.reserveVault.feeBankNanos);
-      const beforeAppend = flowProofVerifyCount();
+      const aimed = aimedTemplate(finders[0].dest);
+      const verdict = verifyBlock(blockOf(aimed), tip, verifyOpts);
+      assert.equal(verdict.ok, false, verdict.reason);
+      assert.equal(verdict.reason, 'send_unavailable');
+      assert.equal(flowProofVerifyCount(), 0);
       const appended = await Promise.resolve(store.append(blockOf(aimed), {
         trustedPowHash: Buffer.alloc(32),
         skipSharePow: true,
       }));
-      assert.equal(appended.ok, true, `append ${appended.reason || ''}`);
-      assert.ok(flowProofVerifyCount() > beforeAppend, 'append skipped admitVerifyV3');
-      const bank1 = Number(store.reserveVault.feeBankNanos);
-      assert.equal(bank1 - bank0, split.reserve, `bank ${bank0} ${bank1}`);
-      const sealed = store.tip();
-      assert.equal(sealed.height, height);
-      const body = sealed.txs.find((row) => row.id === tx.id);
-      assert.ok(body, 'spend is not in the block');
-      assert.equal(body.coinbase, undefined);
-      assertPays(sealed, finders[2].dest, 'sealed');
-      progress({
-        phase: 'sealed',
-        height: sealed.height,
-        fee: tx.fee,
-        finder: split.finder,
-        reserve: split.reserve,
-        bank: bank1,
-        verifies: flowProofVerifyCount(),
-      });
+      assert.equal(appended.ok, false, appended.reason);
+      assert.equal(appended.reason, 'send_unavailable');
+      assert.equal(store.tip().height, height - 1);
+      assert.equal(flowProofVerifyCount(), 0);
+      progress({ phase: 'gated', fee: tx.fee, finder: split.finder, reserve: split.reserve });
     } finally {
       try { store.close?.(); } catch { /* temp dir */ }
       fs.rmSync(dir, { recursive: true, force: true });
