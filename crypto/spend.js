@@ -10,7 +10,7 @@ import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
-import { claimedVoutNanos, flowNeedsDummy } from './dummy.js';
+import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
 import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
@@ -515,6 +515,7 @@ export function typedCommitRejected(tx) {
  */
 export function typedCommitSum(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (publicReserveReceipt(tx)) return { ok: true, skip: true };
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
@@ -586,6 +587,9 @@ function voutDest20(o) {
  */
 export function reserveAuth(tx, reserveState = null, seenOwners = null) {
   if (!reserveNeedsPortalOpen(tx)) return { ok: true };
+  // A public dest20 receipt has no spendPub. The opened v is the body.
+  // A sealed note still needs the owner signature, and a missing one is unsigned.
+  if (publicReserveReceipt(tx)) return { ok: true };
   if (!verifyReservePortalOpen(tx)) {
     return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
   }

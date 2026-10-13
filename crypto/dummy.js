@@ -39,6 +39,37 @@ export function reserveDest20Open(_o) {
   return false;
 }
 
+function dest20Len(value) {
+  try {
+    return Buffer.from(value || []).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * A compact lock, vote, or withdraw names dest20 and an opened v.
+ * It has no hidden note, so it is not an ADMITv3 spend and it has no range proof.
+ */
+export function publicReserveReceipt(tx) {
+  const kind = String(tx?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return false;
+  if (tx?.admit_proof) return false;
+  if (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length) return false;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v && !v.coinbase);
+  if (!outs.length || !vins.length) return false;
+  const opened = (o) => {
+    if (!o || o.commit || o.rangeProof) return false;
+    if (dest20Len(o.dest20) !== 20) return false;
+    const raw = o.valueProof?.v;
+    const n = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
+    return Number.isInteger(n) && n >= 0;
+  };
+  if (!outs.every((o) => String(o?.kind || kind) === kind && opened(o))) return false;
+  return vins.every((v) => !v.commit && !v.cTilde && !v.address && dest20Len(v.dest20) === 20);
+}
+
 export function dummyCount(tx) {
   return (tx?.vout || []).filter((o) => String(o.kind || '') === DUMMY_KIND).length;
 }

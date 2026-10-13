@@ -76,6 +76,7 @@ import {
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
+import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { coinbaseObserveRejected, observeDigestSuffix } from '../../crypto/reserve_oracle.js';
@@ -2359,7 +2360,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
       return { ok: false, reason: 'dummy_outs' };
     }
-    if (moneyNeedsRange(tx)) {
+    if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
       for (const o of (tx.vout || [])) {
         if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
           return { ok: false, reason: 'range_proof' };
@@ -2507,8 +2508,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
     return { ok: false, reason: 'admit_membership' };
   }
+  // The store passes the live vault. A public receipt on a block that has
+  // no carried vault is the first lock, so the trial starts from empty.
+  // A sealed reserve row with no vault still fails closed.
+  const vaultForTrial = reserveState || (txs.some((tx) => publicReserveReceipt(tx)) ? emptyVault() : null);
   const vaultTry = trialReserveApply({
-    state: reserveState,
+    state: vaultForTrial,
     block,
     nowMs: Number(decoded.timestamp),
   });
