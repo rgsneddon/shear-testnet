@@ -1218,11 +1218,11 @@ export function rememberJobHeader(job, outgoingHex) {
 }
 
 /**
- * Headers this pool actually issued. Current header, then each job's
- * history, then any extra the caller still holds. The list is not derived
- * from share frames. The cap is a memory bound.
+ * Headers this pool actually issued. The live job is pinned first, then
+ * jobs from newest to oldest, then any extra the caller still holds.
+ * The list is not derived from share frames. The cap is a memory bound.
  */
-export function collectIssuedHeaders(jobs, extra = []) {
+export function collectIssuedHeaders(jobs, extra = [], liveJob = null) {
   const out = [];
   const seen = new Set();
   const push = (header) => {
@@ -1237,11 +1237,14 @@ export function collectIssuedHeaders(jobs, extra = []) {
   const visit = (job) => {
     for (const header of candidateShareHeaders(job)) push(header);
   };
+  if (liveJob) visit(liveJob);
+  const rows = [];
   if (jobs && typeof jobs.values === 'function') {
-    for (const rec of jobs.values()) visit(rec?.job || rec);
+    for (const rec of jobs.values()) rows.push(rec?.job || rec);
   } else if (Array.isArray(jobs)) {
-    for (const job of jobs) visit(job);
+    for (const job of jobs) rows.push(job);
   }
+  for (let i = rows.length - 1; i >= 0; i -= 1) visit(rows[i]);
   for (const header of extra || []) push(header);
   return out;
 }
@@ -2856,11 +2859,10 @@ export function createPool({
 
   function snapshotIssuedHeaders() {
     const extra = [];
-    if (lastJob?.header) extra.push(lastJob.header);
     if (Array.isArray(lastJob?.headerHistory)) {
       for (const header of lastJob.headerHistory) extra.push(header);
     }
-    return collectIssuedHeaders(store.jobs, extra);
+    return collectIssuedHeaders(store.jobs, extra, lastJob);
   }
 
   function stampSealSlots(rows, parentHeader, priorHeader, issued = lag1Issued) {
