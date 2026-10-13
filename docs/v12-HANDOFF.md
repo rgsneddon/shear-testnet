@@ -10,6 +10,16 @@ Laptop review-and-merge only. No new feature, no genesis cut, no tag, no deploy,
 
 Both merge commits are ancestors of this note. `0.70`, `0.71`, and `v18` were not moved.
 
+## Review record 2026-10-13 (after 690d35a7)
+
+Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak. GitHub drafts 63 and 64 stay open on `cursor/close-open-p0-0bcc`.
+
+- PR 67 (`cursor/p0-052-burial-gate-0f14`, head `edcb2be99487b5b74ea790ef50ded6ebcfe9ed5c`) was not merged. Tests 2, pass 2, duration_ms 310.426288. The second test matches source text. A lied height is `height`. A pruned next block is still `samples_pruned`. No gap spread, no two-node ShearHash case, no Protocol Assailant or Pool Share Auditor sign-off. 052 stays open. Gap: `.cos-inbox/BUILD-052-pr67-short-1013.md`.
+- `cursor/wallet-v12-send-1013` is not on origin. PR 65 stays off feat until that branch exists and the named failures in `.cos-inbox/BUILD-pr65-failures-1013.md` are gone. The two land together. Brief: `.cos-inbox/BUILD-wallet-v12-send-1013.md`.
+- 018e is uncoded. Brief: `.cos-inbox/BUILD-018e-cloud-1013.md`.
+- Ubuntu, Debian, Fedora, and openSUSE stay the PR 64 `SMOKE OK` lines in `docs/V12-DISTRO-PACKS.md`. Windows and Android build logs are absent. Brief: `.cos-inbox/BUILD-windows-android-builds-1013.md`.
+- Still open: 018e, 052, wallet items 16–23, 035, Windows and Android build evidence. Pool-55 remains tests 321, pass 320, fail 1, `pool/tests/test_pool.js` dashboard/stratum. That fail is not this pass. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
+
 Branch: `feat/shear-testnet-v12`  
 Base: `c732ff5466cbd9f6e7723a5332f3604217a0355d` (`origin/main` at branch cut)  
 This push is not a deploy. No tags, no release assets, no merge to `main`.
