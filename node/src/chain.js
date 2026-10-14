@@ -580,13 +580,14 @@ export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null,
     noteCommit: Buffer.from(l.noteCommit || []),
     count: Number(l.count) || 0,
   })).filter((l) => l.noteCommit.length === 32 && l.count > 0);
-  const total = list.reduce((a, l) => a + l.count, 0);
+  const total = list.reduce((a, l) => a + BigInt(l.count), 0n);
   const out = [];
   if (!total) return out;
   let paid = 0;
   const sorted = [...list].sort((a, b) => ncHex(a.noteCommit).localeCompare(ncHex(b.noteCommit)));
+  // rest · count passes 2^53 once units are 2^bits, so the floor is taken in bigint.
   for (let i = 0; i < sorted.length; i += 1) {
-    const nanos = i === sorted.length - 1 ? rest - paid : Math.floor(rest * sorted[i].count / total);
+    const nanos = i === sorted.length - 1 ? rest - paid : Number(BigInt(rest) * BigInt(sorted[i].count) / total);
     paid += nanos;
     if (nanos > 0) out.push({ noteCommit: sorted[i].noteCommit, nanos, kind: 'pot' });
   }

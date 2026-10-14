@@ -356,7 +356,7 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
   const dests = [...by.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   for (let i = 0; i < dests.length; i += 1) {
     const [addr, n] = dests[i];
-    const nanos = i === dests.length - 1 ? rest - paid : Math.floor(rest * n / total);
+    const nanos = i === dests.length - 1 ? rest - paid : Number(BigInt(rest) * BigInt(n) / BigInt(total));
     paid += nanos;
     if (nanos > 0) out.push({ address: addr, nanos, kind: 'pot' });
   }
