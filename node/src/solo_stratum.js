@@ -16,6 +16,8 @@ import { HTTP_BODY_MAX, STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/
 export const SOLO_STRATUM_PORT = 1111;
 export const SOLO_STRATUM_BIND = '127.0.0.1';
 export const SOLO_JOB_RESTAMP_MS = 10_000;
+/** Logins accepted on one solo socket. The next one is refused before the leaf probe. */
+export const SOLO_LOGINS_PER_SOCKET = Math.max(1, Number(process.env.SHEAR_SOLO_LOGINS_PER_SOCKET || 4) || 4);
 
 function line(obj) {
   return `${JSON.stringify(obj)}\n`;
@@ -279,7 +281,10 @@ export function createSoloStratum({
     sockets.add(sock);
     let buf = '';
     let session = null;
+    let logins = 0;
+    let refused = false;
     sock.on('data', (chunk) => {
+      if (refused) return;
       buf += chunk.toString('utf8');
       if (buf.length > HTTP_BODY_MAX) {
         try { sock.destroy(); } catch { /* ignore */ }
@@ -302,11 +307,20 @@ export function createSoloStratum({
           || (params.login && method !== 'submit' && method !== 'job' && method !== 'stats'
             && method !== 2 && method !== '2');
         if (isLogin) {
+          if (logins >= SOLO_LOGINS_PER_SOCKET) {
+            refused = true;
+            buf = '';
+            try { sock.write(line({ id: msg.id, error: 'busy' })); } catch { /* ignore */ }
+            try { sock.destroy(); } catch { /* ignore */ }
+            return;
+          }
+          logins += 1;
           const adm = parseSoloLogin(params.login || params.user || '');
           if (!adm.ok) {
+            refused = true;
+            buf = '';
             try { sock.write(line({ id: msg.id, error: adm.reason })); } catch { /* ignore */ }
             try { sock.destroy(); } catch { /* ignore */ }
-            buf = '';
             return;
           }
           session = { dest: adm.dest, worker: adm.worker, login: adm.login };
