@@ -90,7 +90,6 @@ import {
   blockWeight,
   splitLevy,
   txWeight,
-  reserveFeeDest,
   levyTaxed,
   containsShe1,
   levyNeed,
@@ -334,6 +333,53 @@ export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null,
     else out.push({ noteCommit: noteCommitOfDest20(hash20FromAddress(pool)), nanos: fee, kind: 'pool-fee' });
   }
   return out.filter((s) => s.nanos > 0);
+}
+
+/**
+ * Transaction fees for one block. An empty round pays the whole fee as one
+ * public finder-fee note to the block miner. A round with shares splits that
+ * same fee by share work (the pot PROP weights, last leaf takes the remainder
+ * so the notes sum to the fee). The pool is not a payee unless it holds shares.
+ * There is no vault share.
+ */
+export function finderFeePays(shareBatch = [], feeNanos = 0, minerDest = '') {
+  const fee = Math.max(0, Math.floor(Number(feeNanos) || 0));
+  if (!fee) return [];
+  const leaves = aLeavesFromShares(shareBatch);
+  const total = leaves.reduce((a, l) => a + (Number(l.count) || 0), 0);
+  if (!total) {
+    const dest = minerDest && isDestAddress(minerDest) ? minerDest : String(minerDest || '');
+    const d20 = dest && isDestAddress(dest) ? hash20FromAddress(dest) : null;
+    return [{
+      address: dest,
+      nanos: fee,
+      kind: 'finder-fee',
+      noteCommit: d20 ? noteCommitOfDest20(d20) : null,
+    }];
+  }
+  const destByNc = new Map();
+  for (const s of shareBatch || []) {
+    const dest = destOfShare(s);
+    const nc = ncHex(noteCommitOfShare(s));
+    if (dest && nc) destByNc.set(nc, dest);
+  }
+  let paid = 0;
+  const out = [];
+  for (let i = 0; i < leaves.length; i += 1) {
+    const nanos = i === leaves.length - 1
+      ? fee - paid
+      : Math.floor(fee * leaves[i].count / total);
+    paid += nanos;
+    if (!(nanos > 0)) continue;
+    const nc = leaves[i].noteCommit;
+    out.push({
+      noteCommit: nc,
+      address: destByNc.get(ncHex(nc)) || '',
+      nanos,
+      kind: 'finder-fee',
+    });
+  }
+  return out;
 }
 
 /** PROP of (pot - pool fee) across dest20 in shareBatch. Pool dest gets only the fee. */
@@ -625,23 +671,16 @@ export function buildTemplate({
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
-  if (split.finder) {
-    const dest = pay(miner);
-    const d20 = hash20FromAddress(dest);
+  for (const row of finderFeePays(batch, split.finder, pay(miner))) {
+    const dest = row.address;
+    const d20 = dest && isDestAddress(dest) ? hash20FromAddress(dest) : null;
     cb.vout.push(d20
-      ? attachAdmitPub(sealCoinbaseNote(split.finder, { dest20: d20, kind: 'finder-fee' }), {
-        admitBase: admitBaseFromAddress(dest),
-      })
-      : { address: dest, nanos: split.finder, kind: 'finder-fee' });
-  }
-  if (split.reserve) {
-    const dest = reserveFeeDest();
-    const d20 = hash20FromAddress(dest);
-    cb.vout.push(d20
-      ? attachAdmitPub(sealCoinbaseNote(split.reserve, { dest20: d20, kind: 'reserve-fee' }), {
-        admitBase: admitBaseFromAddress(dest),
-      })
-      : { address: dest, nanos: split.reserve, kind: 'reserve-fee' });
+      ? attachAdmitPub(sealCoinbaseNote(row.nanos, {
+        dest20: d20,
+        noteCommit: row.noteCommit || undefined,
+        kind: 'finder-fee',
+      }), { admitBase: admitBaseFromAddress(dest) })
+      : { address: dest, nanos: row.nanos, kind: 'finder-fee' });
   }
   const parentPubs = Array.isArray(parentFluxset)
     ? parentFluxset
@@ -1410,16 +1449,26 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!funded.ok) return funded;
   }
   const split = splitLevy(fees);
-  const levyNote = (kind, want) => {
-    const o = txs[0].vout.find((v) => v.kind === kind);
-    if (want === 0 && !o) return 0;
-    if (!o) return -1;
-    if (o.commit) return verifySealedNote(o, want) ? want : -1;
-    return Number(o.nanos || 0);
-  };
-  const finderPaid = levyNote('finder-fee', split.finder);
-  const reservePaid = levyNote('reserve-fee', split.reserve);
-  if (finderPaid !== split.finder || reservePaid !== split.reserve) return { ok: false, reason: 'levy_split' };
+  if ((txs[0].vout || []).some((v) => v.kind === 'reserve-fee')) {
+    return { ok: false, reason: 'levy_split' };
+  }
+  const minerDest = block.miner && isDestAddress(block.miner) ? block.miner : String(block.miner || '');
+  const wantFinder = finderFeePays(shareBatch, split.finder, minerDest);
+  const finderNotes = (txs[0].vout || []).filter((v) => v.kind === 'finder-fee');
+  if (finderNotes.length !== wantFinder.length) return { ok: false, reason: 'levy_split' };
+  const usedFinder = new Set();
+  for (const row of wantFinder) {
+    const hit = finderNotes.findIndex((o, i) => {
+      if (usedFinder.has(i)) return false;
+      const opened = o.commit ? verifySealedNote(o, row.nanos) : Number(o.nanos || 0) === row.nanos;
+      if (!opened) return false;
+      if (row.noteCommit && o.noteCommit) return ncHex(o.noteCommit) === ncHex(row.noteCommit);
+      if (row.address && o.address) return o.address === row.address;
+      return true;
+    });
+    if (hit < 0) return { ok: false, reason: 'levy_split' };
+    usedFinder.add(hit);
+  }
   const finalPubs = live.pubs.slice();
   for (const tx of txs) {
     for (const o of tx.vout || []) {

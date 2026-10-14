@@ -82,7 +82,7 @@ fee    ≤ CAP
 | `RATE_DEN` | `2048` (1 unit per 2048 weight-bytes) |
 | `CAP` | `100_000_000` = `0.001 SHE` |
 
-Same weight ⇒ same required fee for amounts 1 and `10^9`. A spend that sets fee from 2 bps of `v` is invalid. Default wallet feerate = this RATE (relay minimum). Paid levy splits 50/50 finder / Reserve vault. Mempool orders by `fee / weight`.
+Same weight ⇒ same required fee for amounts 1 and `10^9`. A spend that sets fee from 2 bps of `v` is invalid. Default wallet feerate = this RATE (relay minimum). Paid levy goes in full to that block's miners (by work when the round has shares, one public finder-fee note when it does not). Mempool orders by `fee / weight`.
 
 ## Reject reasons
 

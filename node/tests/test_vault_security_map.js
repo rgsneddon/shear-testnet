@@ -493,7 +493,10 @@ describe('Vault Security test map', () => {
     }
   });
 
-  it('P3-a reserve-fee notes do not fund the reward', () => {
+  it('P3-a transaction fees are not a vault balance or a reward', () => {
+    const dirty = emptyVault();
+    dirty.feeBankNanos = 1n;
+    assert.equal(supplyIdentity(dirty).reason, 'supply');
     const portals = [1, 3, 17];
     for (const n of portals) {
       const state = emptyVault();
@@ -509,24 +512,30 @@ describe('Vault Security test map', () => {
       const banks = [0, Math.max(0, reward - 1), reward, reward + 1, reward * 10];
       for (const bank of banks) {
         const trial = cloneVault(state);
-        if (bank > 0) creditFeeBank(trial, bank);
+        trial.feeBankNanos = BigInt(bank);
+        assert.equal(creditFeeBank(trial, bank), 0);
         applyReserveBlock({
           state: trial,
-          block: { txs: [{ coinbase: true, vout: [{ kind: 'reserve-fee', nanos: bank }] }] },
+          block: { txs: [{ coinbase: true, vout: [{ kind: 'reserve-fee', nanos: bank }, { kind: 'finder-fee', nanos: bank }] }] },
           nowMs: T0 + 10,
         });
-        const before = Number(trial.feeBankNanos);
+        assert.equal(Number(trial.feeBankNanos), 0);
         for (const who of people) {
           const paid = withdraw({ state: trial, dest: who.dest, nowMs: END });
           assert.equal(paid.ok, true, `${n} ${bank} ${paid.reason}`);
           assert.equal(paid.reward, reward);
           assert.equal(paid.rewardSource, 'coinbase');
         }
-        assert.equal(Number(trial.feeBankNanos), before);
+        assert.equal(Number(trial.feeBankNanos), 0);
+        const idn = supplyIdentity(trial);
+        assert.equal(idn.ok, true, idn.reason);
+        assert.equal(idn.feeBankRewardNanos, 0);
+        assert.equal(idn.mintedReward, reward * n);
         const minted = payoutStakeReward({ state: emptyVault(), reward, id: `fee-${n}-${bank}` });
         assert.equal(minted.fromFee, 0);
         assert.equal(minted.minted, reward);
         assert.equal(minted.source, 'coinbase');
+        assert.equal(minted.feeBank, 0);
       }
     }
   });

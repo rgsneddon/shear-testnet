@@ -222,8 +222,9 @@ export const HASH_TX_LIVE = 1;
 export const DEST_HRP = 'ssa';
 export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
-export const FEE_SPLIT_FINDER_BPS = 5000;
-export const FEE_SPLIT_RESERVE_BPS = 5000;
+/** Every transaction-fee unit is paid to that block's miners. None is reserved. */
+export const FEE_SPLIT_FINDER_BPS = 10000;
+export const FEE_SPLIT_RESERVE_BPS = 0;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
@@ -315,7 +316,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',
     'LEVY_CAP=0.001-SHE',
-    'LEVY_SPLIT=50-50-finder-reserve',
+    'LEVY_SPLIT=100-finder-work,empty=public-finder-note',
     'LEVY=weight',
     'ADMIT=ADMITv2',
     'RANGE=bpplus',

@@ -71,10 +71,12 @@ describe('shear.digital/docs', () => {
     assert.match(content, /shewall\.bin/);
     assert.match(content, /Continuum/);
     assert.match(content, /0\.001 SHE/);
-    assert.match(content, /split 50\/50/);
+    assert.match(content, /all of <code>L<\/code> is paid to that block/);
     assert.match(content, /finder-fee/);
-    assert.match(content, /reserve-fee/);
-    assert.match(content, /The Reserve vault fee bank/);
+    assert.match(content, /splits <code>L<\/code> by work/);
+    assert.match(content, /one public finder-fee note/);
+    assert.doesNotMatch(content, /reserve-fee/);
+    assert.doesNotMatch(content, /vault fee bank/);
     assert.match(content, /not sent - try again/);
     assert.match(content, /https:\/\/shear\.digital\/whitepaper\//);
     assert.doesNotMatch(content, /href="https:\/\/whitepaper\.shear\.digital"/);

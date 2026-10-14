@@ -477,7 +477,8 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /VORTEX=vort1-pin/);
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
-    assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
+    assert.match(fp, /LEVY_SPLIT=100-finder-work,empty=public-finder-note/);
+    assert.doesNotMatch(fp, /LEVY_SPLIT=50-50-finder-reserve/);
     assert.match(fp, /ADMIT=ADMITv2/);
     assert.match(fp, /RANGE=bpplus/);
     assert.match(fp, /LEVY=weight/);

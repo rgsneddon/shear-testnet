@@ -26,6 +26,7 @@ import {
   verifyReservePayout,
   creditFeeBank,
   payoutStakeReward,
+  supplyIdentity,
   canJoin,
   canVote,
   publicVaultView,
@@ -54,16 +55,16 @@ function destOf(id) {
 }
 
 describe('Reserve vault protocol', () => {
-  it('stake rewards are minted in full; the fee bank is not a source', () => {
+  it('stake rewards are minted in full; the fee bank is not a balance', () => {
     const state = emptyVault();
-    creditFeeBank(state, 10);
+    assert.equal(creditFeeBank(state, 10), 0);
     const paid = payoutStakeReward({ state, reward: 15, id: 'r1' });
     assert.equal(paid.ok, true);
     assert.equal(paid.fromFee, 0);
     assert.equal(paid.minted, 15);
     assert.equal(paid.source, 'coinbase');
-    assert.equal(paid.feeBank, 10);
-    assert.equal(Number(state.feeBankNanos), 10);
+    assert.equal(paid.feeBank, 0);
+    assert.equal(Number(state.feeBankNanos), 0);
     const twice = payoutStakeReward({ state, reward: 1, id: 'r1' });
     assert.equal(twice.ok, false);
     assert.equal(twice.reason, 'double_mint');
@@ -71,12 +72,16 @@ describe('Reserve vault protocol', () => {
     assert.equal(wait.ok, false);
     assert.equal(wait.reason, 'gate_wait');
     const bank = emptyVault();
+    bank.feeBankNanos = 20n;
     creditFeeBank(bank, 20);
     const covered = payoutStakeReward({ state: bank, reward: 7, id: 'r3' });
     assert.equal(covered.ok, true);
     assert.equal(covered.fromFee, 0);
     assert.equal(covered.minted, 7);
-    assert.equal(Number(bank.feeBankNanos), 20);
+    assert.equal(Number(bank.feeBankNanos), 0);
+    const idn = supplyIdentity(bank);
+    assert.equal(idn.ok, true);
+    assert.equal(idn.feeBankRewardNanos, 0);
   });
 
   it('extra mint is only shear-reserve-v1', () => {

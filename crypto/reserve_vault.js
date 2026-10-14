@@ -117,7 +117,7 @@ export function cloneVault(state) {
   out.liveHashBonusNanos = asBig(out.liveHashBonusNanos);
   out.totalLockedNanos = asBig(out.totalLockedNanos);
   out.programCustodyNanos = 0n;
-  out.feeBankNanos = asBig(out.feeBankNanos);
+  out.feeBankNanos = 0n;
   out.mintBankNanos = asBig(out.mintBankNanos);
   out.rewardCapNanos = asBig(out.rewardCapNanos);
   out.blankFork = !!src.blankFork;
@@ -125,15 +125,15 @@ export function cloneVault(state) {
   return out;
 }
 
-export function creditFeeBank(state, nanos) {
-  const n = asBig(nanos);
-  state.feeBankNanos = asBig(state.feeBankNanos) + n;
-  return asNum(state.feeBankNanos);
+/** The vault does not keep a fee share. A credit does not raise a balance. */
+export function creditFeeBank(state, _nanos) {
+  if (state) state.feeBankNanos = 0n;
+  return 0;
 }
 
 /**
- * Reserve reward is minted in full by consensus. The fee bank is not read
- * and is not a reward source.
+ * Reserve reward is minted in full by consensus. Transaction fees are not
+ * a vault balance and are not a reward source.
  */
 export function payoutStakeReward({
   state,
@@ -351,7 +351,8 @@ export function permittedRewardNanos(state) {
   return asNum(n);
 }
 
-/** Supply identity: user notes hold principal; minted reward ≤ permitted reward. */
+/** Supply identity: user notes hold principal; minted reward ≤ permitted reward.
+ *  Transaction fees are not a vault balance and are not a reward term. */
 export function supplyIdentity(state) {
   const vault = state || emptyVault();
   let noteNanos = 0n;
@@ -367,9 +368,11 @@ export function supplyIdentity(state) {
   const mintedReward = asBig(vault.mintBankNanos);
   const permittedReward = asBig(vault.rewardCapNanos);
   const custody = asBig(vault.programCustodyNanos);
+  const feeBank = asBig(vault.feeBankNanos);
   const ok = noteNanos === indexed
     && asBig(vault.totalLockedNanos) === indexed
     && custody === 0n
+    && feeBank === 0n
     && mintedReward <= permittedReward;
   return {
     ok,

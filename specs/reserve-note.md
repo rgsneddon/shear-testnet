@@ -10,5 +10,5 @@ The Reserve stays a complete product surface. Privacy-class may wrap the vault a
 - Live fetches of central-bank websites are not consensus. Nodes cannot be required to observe the same page. A new official rate enters only when a consensus release replaces the attested integers and the fingerprint root.
 - Wrong amount = `mint_amount`. Vote cannot set `liveHashBonusNanos < 1`. The 1 SHE pot is not on the ballot.
 - Portal check at admit. Openings local-only; stripped before chain.bin / P2P / public RPC.
-- EVM `Reserve.sol` + gate remain. Levy cap 0.001 SHE, 50/50 finder / Reserve vault.
+- EVM `Reserve.sol` + gate remain. Levy cap 0.001 SHE. All of a block's transaction fees go to that block's miners. None is a vault fee share.
 - Wallet Vortex hosts The Reserve. APIs `/api/vault/reserve` stay.

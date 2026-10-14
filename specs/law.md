@@ -31,7 +31,7 @@ Network: `shear-testnet-v12` (privacy-class). Previous book `shear-testnet-v11`.
 | Extra mint | `shear-reserve-v1` withdraw only, amount-bound |
 | Pool fee | 100 bps of the 1 SHE pot; rest PROP to hasher dests |
 | MTP | last 11 timestamps + 2 hours future |
-| Levy cap | 0.001 SHE, 50/50 finder/Reserve |
+| Levy cap | 0.001 SHE, 100% to that block's miners (work split when the round has shares; one public finder-fee note when it does not). No vault fee share. |
 | Premine | none |
 | `setTip` | forbidden |
 | `HASH_TX_LIVE` | `1` (forbidden to flip to 0) |
@@ -66,7 +66,7 @@ RESERVE_RATE=epoch-bundle:quorum=14:genesis=264:step=100
 VORTEX=vort1-pin
 VORTICE_NO_MINT=1
 LEVY_CAP=0.001-SHE
-LEVY_SPLIT=50-50-finder-reserve
+LEVY_SPLIT=100-finder-work,empty=public-finder-note
 ADMIT=ADMITv2
 BITS=q16.16
 ASERT_TAU_MS=1440000
@@ -118,7 +118,7 @@ Miner login is `ssa1.worker`. `she1` login is RAM-only and must resolve to an ow
 
 ## Reserve
 
-`vout.nanos = principal + floor(active * epochBps / 10000)`. Idle adds 0 reward. Epoch ended. Bonus enacted first. `epochBps` is the bundled 14-bank average, written only when the epoch opens. A vote does not set it. `observeRate`, a coinbase field, `SHEAR_ORACLE_BPS`, and `dataDir/oracle-snapshot.json` do not set it. `verifyBlock` does not read `reserve/latest.json`. This book's bundle freezes at 264 bps. A later bundle may move at most 100 bps from the previous freeze. Wrong nanos = `mint_amount`. `wrapMintForbidden` stays. Third-party vortice cannot mint. `gateVorticeRegister` `ok: false` fails the block. The reward is coinbase-minted. The fee bank is not a reward source. Principal stays in the user's time-locked note.
+`vout.nanos = principal + floor(active * epochBps / 10000)`. Idle adds 0 reward. Epoch ended. Bonus enacted first. `epochBps` is the bundled 14-bank average, written only when the epoch opens. A vote does not set it. `observeRate`, a coinbase field, `SHEAR_ORACLE_BPS`, and `dataDir/oracle-snapshot.json` do not set it. `verifyBlock` does not read `reserve/latest.json`. This book's bundle freezes at 264 bps. A later bundle may move at most 100 bps from the previous freeze. Wrong nanos = `mint_amount`. `wrapMintForbidden` stays. Third-party vortice cannot mint. `gateVorticeRegister` `ok: false` fails the block. The reward is coinbase-minted. Transaction fees are not a vault balance and are not a reward source. Principal stays in the user's time-locked note.
 
 Vector: staked = 1 SHE, bps = 425, interest = `4_250_000_000`.
 

@@ -253,7 +253,7 @@ window.SHEAR_DOCS = {
     html:
       '<p>Flow send, Reserve lock, and Reserve vote each pay one levy <code>L</code> quoted from mempool depth at that step. Withdraw of Reserve principal is not taxed. Hash bonus and the block pot are not taxed.</p>' +
       '<p><code>L_base</code> is the greater of 100 units and two basis points of the amount. Surge rises with waiting bytes. Empty-mempool floor is 100 units. <strong>L never exceeds 0.001 SHE</strong>, even on a large send or a crowded mempool. Continuum spendable pays <code>L</code>. Lock and vote quote separately — they can differ if the mempool moved between the two.</p>' +
-      '<p>When the block that includes the taxed send seals, <code>L</code> is split 50/50. Half is paid to the block finder as <code>finder-fee</code> on the coinbase (that miner’s dest). The other half is <code>reserve-fee</code>, credited to The Reserve vault fee bank. If <code>L</code> is an odd number of units, the finder gets the floor of half and the vault gets the remainder.</p>'
+      '<p>When the block that includes the taxed send seals, all of <code>L</code> is paid to that block’s miners as <code>finder-fee</code> on the coinbase. A round with shares splits <code>L</code> by work. A round with no shares pays <code>L</code> as one public finder-fee note to the block miner. None of <code>L</code> is credited to The Reserve.</p>'
   };
 
   P.mine = {
