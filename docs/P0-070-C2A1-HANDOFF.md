@@ -55,8 +55,42 @@ The burial predicates (`sealedCreditsBuried`, `freshForBlock`, `spillForBlock`, 
   - anything else gets a `getblock_nak`, and the peer fails over to the next peer.
 - **Wire decode fix.** `decodeWireBlock` set `hashCredits` and `hashSpillCredits` to `undefined` when they were absent. That broke `hash_owed` on every wire ingest of a block without a spill. The keys are now set only when present. The base branch fails `test_fee_fold_v12` on this.
 
+## PSA-pr74b-1 (P1): junk header offers cannot stall catch-up
+
+The old offer cache was one 6000-entry FIFO with no work check. Junk could push out the honest run and force up to about 4000 RandomX hashes per pruned block. Consensus is unchanged: the same headers prove the same burial.
+
+- **Cheap work check before caching.** `offerHeaders(list, { peer })` caches a header only if:
+  - its parent is a local block, a cached header or a proven header;
+  - it passes `headerLinkReason` under its claimed hash: version, link, ASERT bits from genesis, the packed range, a timestamp after the parent, and a claimed hash that meets its own bits;
+  - a root header passes `rootHeaderReason` (genesis prev, `GENESIS_BITS_PACKED`, claimed hash under the bits), and only when this store is empty.
+
+  No ShearHash runs at offer time. A header with an unknown parent, or one more than `HEADER_AHEAD_MS` past this clock, is ignored without a strike.
+- **Per-peer limits.**
+  - Each peer has its own FIFO bucket of `OFFER_PEER_CAP` (4000) headers.
+  - At most `OFFER_PEER_SLOTS` (8) peers are tracked. When a new peer needs a slot, the peer with the fewest proven headers, then the smallest bucket, then the stalest is evicted.
+  - A header offered by several peers stays cached while any of them still holds it.
+- **Drop on a bad link.**
+  - A header that fails the cheap check, or reuses a cached hash with different bytes, drops the sending peer. So does a header that fails its real ShearHash inside `proveBurial`; there, every peer that offered it is dropped.
+  - A dropped peer's unproven headers are purged, and its offers are refused for `OFFER_DROP_MS` (10 min).
+  - P2P disconnects a dropped peer. IPC offers come from peer `ipc`.
+- **Proven paths first.** A header that passes its hash keeps its bytes in a separate proven pool of `PROVEN_HEADER_CAP` (6000), which junk cannot evict. `offeredPath` tries proven headers first, then headers from peers whose headers have proven out.
+- **Bounded hashing.**
+  - Each failed attempt drops at least one peer, so `proveBurial` retries at most `OFFER_PEER_SLOTS + 1` times.
+  - The off-loop path starts with a batch of 2 and doubles up to 16, so a bad run costs at most 2 hashes (1 on the sync path) before its peer is dropped.
+- **IPC.** `ipcBlockFrames` now starts each header run at the pruned block's own header, so every header in the run links to one the receiver has.
+
 ## Tests
 
+- **`node/tests/test_burial_offers_v12.js`** (new).
+  - Unit checks, with no hashing at offer time:
+    - garbage, a claimed hash that misses its bits, bits off ASERT, a rewound timestamp, and a reused hash with other bytes each drop the peer, and its later offers are refused;
+    - an orphan, and a header ahead of the clock, are ignored without a strike;
+    - a 6000-row flood stays at 4000 rows, and the honest run is untouched;
+    - ten sybils do not take the honest slot;
+    - the flood's forged run fails its first real hash, its peer is dropped, and the honest run proves.
+  - Matrix: junk ratio {0, 50%, 99%} × {1, 4} honest peers × hash mode. The jit-full and light modes each run in a child process with `SHEAR_HASH_BACKEND`, and the lanes report `jit-full` and `jit`. The light child also runs the in-process sync path.
+    - Junk is the expensive kind: full-length forged runs that pass the cheap check and fail only a real ShearHash. They are offered after the honest run, with fresh attacker ids for every block.
+    - Honest headers are the test chain's stand-ins, passed in `trustedHeaderHashes`. Every junk header is hashed for real.
 - **`node/tests/test_burial_hold_v12.js`** (new). It checks the settled height at the floor edges. It runs shares per block {1, 1000, 8000, 65,536} × pruned chain length {1000, 3000, 10,000} through a real hold, and asserts that:
   - held blocks equal `tip - 1000 - settled` and never exceed 399;
   - the proof row count stays at or below 399;
@@ -81,14 +115,30 @@ The same machine was used throughout, with 4 cores and other runs going at the s
 
 | Command | Result |
 | --- | --- |
-| `node --test --test-concurrency=1 --test-timeout=7200000 node/tests/test_owed_seed_v12.js` | tests 2, pass 2, fail 0, 1171.7 s |
-| `node --test --test-concurrency=1 --test-timeout=9000000 node/tests/test_burial_proof_v12.js` | tests 6, pass 6, fail 0, 2770.7 s |
+| `node --test --test-concurrency=1 --test-timeout=7200000 node/tests/test_owed_seed_v12.js` at `b93d77b8` | tests 2, pass 2, fail 0, 1140.8 s |
+| `node --test --test-concurrency=1 --test-timeout=9000000 node/tests/test_burial_proof_v12.js` at `394ffa6f` (the conditional clean run) | tests 6, pass 6, fail 0, 2683.7 s; 1416 gaps, 416 pruned, 32 NAKs |
+| the same at `b93d77b8` | tests 6, pass 6, fail 0, 2784.2 s; 1416 gaps, 416 pruned, 32 NAKs |
+| `node --test --test-concurrency=1 --test-timeout=7200000 node/tests/test_burial_offers_v12.js` | tests 3, pass 3, fail 0 (children: jit-full 6/6, light 12/12) |
 | `node --test node/tests/test_burial_hold_v12.js` | tests 14, pass 14, fail 0, 32.6 s |
 | `node --test node/tests/test_burial_tip_v12.js` | pass 2, fail 0, 198.2 s |
 | `node --test node/tests/test_burial_gate_v12.js` | pass 2, fail 0 |
 | `test_load_body_v12`, `test_load_snap_v12`, `test_pruned_flag_v12`, `test_bootstrap`, `test_bootstrap_image_v12`, `test_fork_choice`, `test_frontier_window_v12`, `test_getblock_nak_failover`, `test_getblock_serve_pace`, `test_getblock_taller`, `test_hash_spill_v12`, `test_ibd_peer_height_v12`, `test_ibd_sequential`, `test_ibd_status`, `test_snap_interest_v12` | all pass |
 
-Owed-seed losing walls, in ms: 20 → 137.5, 48 → 131.5, 96 → 160.9, 1000 → 128.2, 2880 → 187.5. Advances were 18, 15, 31, 7 and 31, each within one checkpoint spacing of 32. Length 1000 extended past the frozen block, and length 2880 reorged the tip.
+Header offers, hashes per pruned block (blocks 1 to 4), junk rows offered for the 4 blocks, and the most headers cached. Results match across jit-full off-loop, light off-loop and light sync, except that the sync path hashes half as much:
+
+| Junk | Honest peers | Junk rows | Hashed (off-loop) | Hashed (sync) | Max cached |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 1 / 4 | 0 | 0, 0, 0, 0 | 0, 0, 0, 0 | 1004 |
+| 50% | 1 | 4000 | 2, 0, 0, 0 | 1, 0, 0, 0 | 4004 |
+| 50% | 4 | 16,000 | 8, 0, 0, 0 | 4, 0, 0, 0 | 5004 |
+| 99% | 1 | 396,000 | 2, 0, 0, 0 | 1, 0, 0, 0 | 13,004 |
+| 99% | 4 | 1,592,000 | 8, 0, 0, 0 | 4, 0, 0, 0 | 17,004 |
+
+Each attacker costs at most 2 hashes off-loop and 1 on the sync path, and is then dropped. Later blocks take the proven run and hash nothing. The old cache could force about 4000 per block. The longest cell (99% junk, 4 peers, 1.6M junk rows) took 31 s, almost all of it the cheap check. Fresh attacker ids that are never hashed stay cached, at most 4000 each within the 8 slots.
+
+Limit: a peer that has not yet proven anything can be evicted from its slot by 8 or more sybil peers with full buckets before its first proof. Hashing stays bounded, at 2 per sybil. Once a peer has proven headers, it keeps its slot.
+
+At `b93d77b8` the slowest losing wall was 205.1 ms (2880) and length 1000 took 125.9 ms. Earlier run, owed-seed losing walls, in ms: 20 → 137.5, 48 → 131.5, 96 → 160.9, 1000 → 128.2, 2880 → 187.5. Advances were 18, 15, 31, 7 and 31, each within one checkpoint spacing of 32. Length 1000 extended past the frozen block, and length 2880 reorged the tip.
 
 Bounded hold, 65,536 shares per block (3.8 MB per body):
 
