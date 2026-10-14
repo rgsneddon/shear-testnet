@@ -5,7 +5,6 @@ import {
   GENESIS_BPS,
   ORACLE_MAX_AGE_MS,
   ORACLE_QUORUM,
-  EPOCH_BPS_MAX_STEP,
   RESERVE_ORACLE_ID,
   averagePolicyBps,
   epochRateBps,
@@ -54,7 +53,7 @@ export function loadOracleSnapshot({ dataDir = '', bundled = BUNDLED } = {}) {
 
 /**
  * Staking oracle view. Mint uses the sealed epochBps.
- * `wouldFreezeBps` is the bundled quorum stepped from that seal.
+ * `wouldFreezeBps` is the bundled quorum. There is no per-epoch step.
  * A snapshot argument is not an input to either number.
  */
 export function oracleView(vault, snapshot, nowMs = Date.now()) {
@@ -74,7 +73,7 @@ export function oracleView(vault, snapshot, nowMs = Date.now()) {
     epochIndex: Math.floor(Number(vault?.epochIndex || 0)),
     observationRoot: bundleObservationRoot(),
     sourceCount: ORACLE_QUORUM,
-    maxStep: EPOCH_BPS_MAX_STEP,
+    floorBps: 0,
     mintUses: 'epochBps',
     snapshotIgnored: true,
     observeCall: Buffer.from(encodeObserveRate(wouldFreezeBps, Math.floor(Number(nowMs) / 1000))).toString('hex'),

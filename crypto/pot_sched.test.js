@@ -32,9 +32,8 @@ import {
   freezeEpochBps,
   makeFreezeRecord,
   verifyFreezeRecord,
-  clampBpsStep,
+  adoptObservedBps,
   GENESIS_BPS,
-  EPOCH_BPS_MAX_STEP,
   RESERVE_ORACLE_MAX_BPS,
 } from './reserve_oracle.js';
 
@@ -137,8 +136,9 @@ describe('I2 three 4-day rollovers', () => {
 });
 
 describe('I3 oracle anti-game', () => {
-  it('step/max/stale/equivocation; freeze cannot move pot', () => {
-    assert.equal(clampBpsStep(264, 9999), 264 + EPOCH_BPS_MAX_STEP);
+  it('sanity ceiling, stale feed, and equivocation; freeze cannot move pot', () => {
+    assert.equal(adoptObservedBps(264, 9999), 9999);
+    assert.equal(adoptObservedBps(264, RESERVE_ORACLE_MAX_BPS + 1), 264);
     assert.equal(freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 9999,

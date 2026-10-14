@@ -14,8 +14,9 @@ pragma solidity ^0.8.20;
  * of the attested 14-bank policy tenths (FED 3625, BOE 3750, ECB 2075,
  * BOJ 500, BOC 2750, RBA 3600, RBNZ 3000, SNB 0, RIKSBANK 2000, NORGES 4000,
  * DNBANK 1600, BOK 2500, BOI 4000, CNB 3500): 36900 tenths → 2636 → 264 bps.
- * It is written only when an epoch opens, and a step from the previous
- * freeze is at most 100 bps. The 1 SHE pot never moves. The reserve reward
+ * It is written only when an epoch opens. There is no per-epoch step:
+ * the freeze is that average, and a rate below 0% is floored at 0 so a
+ * lock never reduces principal. The 1 SHE pot never moves. The reserve reward
  * is minted by consensus on release, only for this program id, only on the
  * active lock. Principal stays in the user's own time-locked note. This
  * contract refuses well-known foreign chain ids. The Reserve oracle is the
@@ -65,7 +66,6 @@ contract Reserve {
     uint256 public constant MAX_BPS = 10_000;
     uint256 public constant GENESIS_BONUS = 1;
     uint256 public constant GENESIS_BPS = 264;
-    uint256 public constant BPS_STEP = 100;
     uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
     uint256 public constant REWARD_DENOM_DAYS = 400;
 
@@ -183,22 +183,11 @@ contract Reserve {
         return (tenthsMean + 5) / 10;
     }
 
-    function _clampStep(uint256 prev, uint256 proposal) internal pure returns (uint256) {
-        if (proposal > prev) {
-            uint256 d = proposal - prev;
-            if (d > BPS_STEP) return prev + BPS_STEP;
-            return proposal;
-        }
-        uint256 d = prev - proposal;
-        if (d > BPS_STEP) return prev - BPS_STEP;
-        return proposal;
-    }
-
     function _applyEpochRate() internal {
         uint256 proposal = _bundledEpochBps();
-        uint256 next = _clampStep(epochBps, proposal);
-        epochBps = next;
-        nextEpochBps = next;
+        if (proposal > MAX_BPS) return;
+        epochBps = proposal;
+        nextEpochBps = proposal;
         annualBps = proposal;
     }
 

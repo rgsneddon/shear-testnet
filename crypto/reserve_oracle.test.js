@@ -5,7 +5,6 @@ import {
   RESERVE_ORACLE_DEFAULT_BPS,
   GENESIS_BPS,
   INTEREST_DENOM_DAYS,
-  EPOCH_BPS_MAX_STEP,
   ORACLE_QUORUM,
   POLICY_BANK_IDS,
   BUNDLED_POLICY_TENTHS,
@@ -15,7 +14,8 @@ import {
   accruedNanos,
   averagePolicyBps,
   freezeEpochBps,
-  clampBpsStep,
+  adoptObservedBps,
+  issuanceBps,
   bundledEpochBps,
   quorumEpochBps,
   bundledComponents,
@@ -78,10 +78,7 @@ describe('Reserve oracle', () => {
     assert.notEqual(RESERVE_ORACLE_DEFAULT_BPS, 425);
   });
 
-  it('|bps step| > 100 is clamped; a caller observe cannot move the freeze', () => {
-    assert.equal(clampBpsStep(264, 9999), 364);
-    assert.equal(clampBpsStep(264, 0), 164);
-    assert.equal(EPOCH_BPS_MAX_STEP, 100);
+  it('a caller observe cannot move the freeze; the bundle is adopted in full', () => {
     const t0 = 1_700_000_000_000;
     assert.equal(freezeEpochBps({
       prevEpochBps: 264,
@@ -102,8 +99,35 @@ describe('Reserve oracle', () => {
       nowMs: t0,
       magic: MAGIC_MAINNET,
     }), 264);
-    assert.equal(epochRateBps(0), 100);
-    assert.equal(epochRateBps(364), 264);
+    assert.equal(epochRateBps(0), 264);
+    assert.equal(epochRateBps(10000), 264);
+    assert.equal(epochRateBps(50), 264);
+  });
+
+  it('the observed average has no per-epoch step; only implausible data is refused', () => {
+    assert.equal(adoptObservedBps(264, 900), 900);
+    assert.equal(adoptObservedBps(264, 0), 0);
+    assert.equal(adoptObservedBps(0, 5000), 5000);
+    assert.equal(adoptObservedBps(10000, 1), 1);
+    assert.equal(adoptObservedBps(264, 10001), 264);
+    assert.equal(adoptObservedBps(264, 1.5), 264);
+    assert.equal(adoptObservedBps(264, Number.NaN), 264);
+    assert.equal(adoptObservedBps(500, -40), 0);
+    assert.equal(issuanceBps(-40), 0);
+    assert.equal(issuanceBps(10001), 10000);
+  });
+
+  it('the lock issuance rate is floored at 0% so principal is not reduced', () => {
+    const active = PI_SHE_NANOS;
+    assert.equal(interestNanos(active, -100), 0);
+    assert.equal(interestNanos(active, -1), 0);
+    assert.equal(interestNanos(active, 0), 0);
+    assert.equal(accruedNanos(active, -50, 86_400_000), 0);
+    for (const bps of [-10000, -1, 0, 264, 10000]) {
+      const reward = interestNanos(active, bps);
+      assert.ok(reward >= 0, String(bps));
+      assert.ok(active + reward >= active, String(bps));
+    }
   });
 
   it('quorum is the 14 attested banks; a partial or substituted basket is not a rate', () => {

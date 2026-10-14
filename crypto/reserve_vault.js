@@ -939,6 +939,7 @@ export function verifyReservePayout(state, tx, blockTimeMs) {
   const p = state.portals?.[act.portalId];
   const principal = asNum(activeOf(p) + asBig(p.idle));
   const interest = reserveInterestNanos(activeOf(p), state.epochBps);
+  if (interest < 0 || act.nanos < principal) return { ok: false, reason: 'principal' };
   if (act.nanos > principal + interest) return { ok: false, reason: 'over_mint' };
   const mintId = withdrawMintId(p.id || act.portalId, state.currentEpoch);
   if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };

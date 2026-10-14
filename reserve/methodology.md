@@ -84,7 +84,7 @@ Averaging, in integers:
 2. Half-up mean of tenths: `(sum + 7) / 14` = 2636.
 3. Half-up to whole basis points: `(2636 + 5) / 10` = 264.
 
-The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. The step from the previous freeze to a new bundle is at most 100 bps.
+The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. There is no per-epoch step: the freeze is the observed average. The rate is floored at 0% so a lock never reduces principal. A non-integer observation, or one above 10000 bps, is implausible and leaves the previous freeze in place.
 
 A new official print enters consensus only when a software release replaces the attested integers and the fingerprint root `RESERVE_RATE=epoch-bundle:...`. Until that release every epoch freezes 264 bps.
 

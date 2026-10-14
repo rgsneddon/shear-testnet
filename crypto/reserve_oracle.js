@@ -17,7 +17,6 @@ export const GENESIS_BPS = 264;
 export const RESERVE_ORACLE_MAX_BPS = 10_000;
 export const REWARD_DENOM_DAYS = 400;
 export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;
-export const EPOCH_BPS_MAX_STEP = 100;
 export const ORACLE_MAX_AGE_MS = 14 * 86_400_000;
 export const ORACLE_QUORUM = 14;
 export const ORACLE_MIN_SOURCES = 8;
@@ -96,16 +95,39 @@ export function bundleObservationRoot() {
 }
 
 /**
- * Epoch rate from the previous freeze and the bundled quorum only.
- * A failed quorum keeps `prev`. The ±100 bps step applies when a later
- * consensus release changes the bundle.
+ * Basis points used to pay a lock. Negative and non-numeric rates are 0.
+ * Above the sanity ceiling the rate is the ceiling, so a lock cannot
+ * reduce principal and a corrupt figure cannot mint without bound.
+ */
+export function issuanceBps(n) {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v) || v < 0) return 0;
+  if (v > RESERVE_ORACLE_MAX_BPS) return RESERVE_ORACLE_MAX_BPS;
+  return v;
+}
+
+/**
+ * Adopt an observed average with no per-epoch step.
+ * A non-integer or a rate above the sanity ceiling is implausible and
+ * leaves `prev` in place. A negative observation is floored at 0%.
+ */
+export function adoptObservedBps(prev, observed) {
+  const prior = issuanceBps(prev);
+  if (typeof observed !== 'number' || !Number.isInteger(observed)) return prior;
+  if (observed > RESERVE_ORACLE_MAX_BPS) return prior;
+  if (observed < 0) return 0;
+  return observed;
+}
+
+/**
+ * Epoch rate from the bundled quorum only. A failed quorum keeps `prev`.
+ * There is no per-epoch step: a later bundle is adopted in full.
  */
 export function epochRateBps(prevEpochBps = GENESIS_BPS) {
-  const prev = Math.floor(Number(prevEpochBps));
-  const base = Number.isFinite(prev) && prev >= 0 ? prev : GENESIS_BPS;
+  const prev = issuanceBps(prevEpochBps);
   const proposal = bundledEpochBps();
-  if (proposal == null) return base;
-  return clampBpsStep(base, proposal);
+  if (proposal == null) return prev;
+  return adoptObservedBps(prev, proposal);
 }
 
 /** Display helper for the published JSON. Not a consensus freeze. */
@@ -156,8 +178,8 @@ function asUnit(n) {
 export function reserveRewardNanos(activeNanos, epochBps, days = REWARD_DENOM_DAYS) {
   void days;
   const p = asUnit(activeNanos);
-  const bps = asUnit(epochBps);
-  if (p <= 0n) return 0;
+  const bps = BigInt(issuanceBps(epochBps));
+  if (p <= 0n || bps <= 0n) return 0;
   return Number((p * bps) / 10000n);
 }
 
@@ -170,23 +192,12 @@ const MS_PER_DAY = 86_400_000n;
 /** Ongoing accrual on staked SHE. Idle SHE is not passed in. Caps at this book's epoch. */
 export function accruedNanos(stakedNanos, epochBps, elapsedMs, magic) {
   const p = asUnit(stakedNanos);
-  const bps = asUnit(epochBps);
+  const bps = BigInt(issuanceBps(epochBps));
   let ms = asUnit(elapsedMs);
   const cap = BigInt(epochMs(magic));
   if (ms > cap) ms = cap;
   if (p <= 0n || ms <= 0n || cap <= 0n) return 0;
   return Number((p * bps * ms) / (10000n * cap));
-}
-
-export function clampBpsStep(prev, next, cap = EPOCH_BPS_MAX_STEP) {
-  const p = Math.floor(Number(prev) || 0);
-  let n = Math.floor(Number(next) || 0);
-  const step = Math.floor(Number(cap) || EPOCH_BPS_MAX_STEP);
-  if (n > p + step) n = p + step;
-  if (n < p - step) n = p - step;
-  if (n < 0) n = 0;
-  if (n > RESERVE_ORACLE_MAX_BPS) n = RESERVE_ORACLE_MAX_BPS;
-  return n;
 }
 
 /**
@@ -308,7 +319,6 @@ export function verifyFreezeRecord(rec, {
     return { ok: false, reason: 'freeze_bps' };
   }
   const prev = Math.floor(Number(rec.prevEpochBps ?? prevFreeze?.epochBps ?? GENESIS_BPS));
-  if (Math.abs(bps - prev) > EPOCH_BPS_MAX_STEP) return { ok: false, reason: 'freeze_step' };
   if (prevFreeze && Number(prevFreeze.epochIndex) === Number(rec.epochIndex)) {
     if (Number(prevFreeze.epochBps) !== bps
       || String(prevFreeze.observationRoot || '') !== String(rec.observationRoot || '')) {

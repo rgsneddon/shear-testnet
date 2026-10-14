@@ -671,6 +671,43 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.ok(view.vaultNanos >= view.totalLockedNanos);
     assert.equal(view.accruingNanos, rw.accrued);
   });
+
+  it('a rate far from the previous freeze is adopted in full when an epoch opens', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const state = emptyVault();
+    state.epochBps = 0;
+    const opened = deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: 1_700_000_000_000 });
+    assert.equal(opened.ok, true, opened.reason);
+    assert.equal(state.epochBps, 264);
+    assert.notEqual(state.epochBps, 100);
+  });
+
+  it('a negative lock issuance rate returns principal in full', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const t0 = 1_700_000_000_000;
+    const end = t0 + RESERVE_EPOCH_MS;
+    const state = emptyVault();
+    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    state.epochBps = -250;
+    const short = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS - 1, id: 'short' });
+    const refused = verifyReservePayout(state, short, end);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'principal');
+    const paid = withdraw({ state, dest: a, nowMs: end });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.reward, 0);
+    assert.equal(paid.interest, 0);
+    assert.equal(paid.principal, PI_SHE_NANOS);
+    assert.equal(paid.payout, paid.principal);
+    const zero = emptyVault();
+    assert.equal(deposit({ state: zero, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    zero.epochBps = 0;
+    const flat = withdraw({ state: zero, dest: a, nowMs: end });
+    assert.equal(flat.ok, true, flat.reason);
+    assert.equal(flat.payout, flat.principal);
+  });
 });
 
 function asNumSafe(n) {
