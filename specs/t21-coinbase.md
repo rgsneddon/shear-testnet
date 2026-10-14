@@ -43,7 +43,9 @@ The pool fee is a hidden note to the pool's voucher. Its law row has `W_i = 0` a
 
 ## Vault rows
 
-A 0x23 row pays the owner's key `B`, with `P = B + δ·G`, and must be an FS-1 leaf. Its blind is `H_s("shear-kt10-0x23-r-v1" ‖ mintId ‖ height ‖ parent id ‖ ctr)`, fixed before the block is built. The amount is public portal state.
+A 0x23 row pays the owner's key `B`, with `P = B + δ·G`, and must be an FS-1 leaf. The amount is public portal state.
+
+Its blind is `r = H_s("shear-kt10-0x23-r-v1" ‖ mintId ‖ u64le(height) ‖ parentId ‖ u8 ctr)`, with `ctr` the first value from 0 that gives a non-zero `r`. `parentId = SHA-256("shear-t21-parent-v1" ‖ parent header)` is the same parent id the payout key `δ` uses. This deviates from design 087q T6, which names this block's own hash `blockHash_h`. That hash covers the coinbase, and the coinbase contains `C = v·G + r·H`, so `r` cannot depend on it. The parent id is fixed before the block is built and still makes `r` unique per (mintId, height, branch).
 
 ## Template
 
