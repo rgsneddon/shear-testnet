@@ -48,9 +48,10 @@ function spec(over = {}) {
     prevHash,
     seed: Buffer.alloc(32, 0x5e),
     dummySecret: Buffer.alloc(32, 9),
+    phi: 5_000n,
     fee: { voucher: publicVoucher(vfee) },
     payees: [
-      { voucher: publicVoucher(va), shares: [fixedShare(va, 70_000, 1), fixedShare(va, 1_234, 2)], fin: 5_000n },
+      { voucher: publicVoucher(va), shares: [fixedShare(va, 70_000, 1), fixedShare(va, 1_234, 2)] },
       { voucher: publicVoucher(vb), shares: [fixedShare(vb, 90_001, 3)] },
       { voucher: publicVoucher(vc), shares: [fixedShare(vc, 3, 4)] },
     ],
@@ -70,6 +71,7 @@ function expectFor(tx) {
     prevEs: new Set(),
     vaults: [],
     hashBudget: BigInt(tx.t21.u) * W_HASH_MAX,
+    phi: 5_000n,
   };
 }
 

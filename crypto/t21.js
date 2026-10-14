@@ -10,9 +10,12 @@
  * proven share in the block's share batch: the share's PoW commits to
  * t21ShareNc(magic, E_s), so a producer cannot add or re-weight a share.
  *
- * Law per row: W·v_i = (R + W·u)·W_i − ρ_i + W·fin_i, 0 ≤ ρ_i < W,
- * R = S + c_in − f. The pool fee is a hidden note that opens to the public f.
- * Mint: Σ C_i = (S + c_in − c_out + u·W + Φ)·G + excess·H.
+ * Law per row: W·v_i = (R + Φ + W·u)·W_i − ρ_i, 0 ≤ ρ_i < W, when the round
+ * has shares. R = S + c_in − f and Φ is the levy's finder half, split by the
+ * same weights. A public fin would redirect that half, so fin is 0. A round
+ * with no shares pays Φ as one opened finder-fee note and does not fold it.
+ * The pool fee is a hidden note that opens to the public f.
+ * Mint: Σ C_i = (S + c_in − c_out − escrowPot + u·W_paid + Φ + settleV)·G + excess·H.
  *
  * Range: one aggregated range proof per row over 32 16-bit values
  * (20 VE limbs of v and r, three limbs of ρ, three of W−1−ρ, six zero pads).
@@ -28,7 +31,7 @@ import {
   randomScalar, scalarBytes, scalarFrom, wrapBlind,
 } from './note.js';
 import { feeOf, lawDust, scalarOk, splitLaw, t21Big } from './t21_law.js';
-import { composeOwed, priceWeights, quotaExceeded, weightPay } from './t21_escrow.js';
+import { composeOwed, owedCapExceeded, priceWeights, settleDuty, weightPay } from './t21_escrow.js';
 import { voucherAt, voucherKeysOk, voucherLambda } from './t21_voucher.js';
 import { bpProve, bpVerifyTerms } from './t21_bp.js';
 import { t21ProverEngine } from './t21_native.js';
@@ -686,6 +689,12 @@ function planPay(spec, payees, escrowPayees = []) {
   }
   const W = Wpaid + Wesc;
   if (W >= W_MAX) throw fail('split_cap');
+  // The finder half is split by weight with the pot. A fin on one voucher would
+  // redirect it, so a working round rejects that. An empty round has no weights.
+  const phiFold = W > 0n ? scalarOk(spec.phi || 0) : 0n;
+  if (phiFold == null) throw fail('levy_split');
+  if (W > 0n && groups.some((g) => g.fin > 0n)) throw fail('finder_row');
+  const Rlaw = R + phiFold;
   if (W === 0n) {
     let phi = 0n;
     const rows = groups.map((g) => {
@@ -697,17 +706,15 @@ function planPay(spec, payees, escrowPayees = []) {
   const weights = [];
   for (const g of groups) if (g.Wi > 0n) weights.push(g.Wi);
   for (const g of escrow) weights.push(g.Wi);
-  const priced = priceWeights(R, u, weights);
+  const priced = priceWeights(Rlaw, u, weights);
   if (!priced || priced.dust == null || priced.W !== W) throw fail('pot_sched');
-  let phi = 0n;
   let pricedAt = 0;
   const rows = groups.map((g) => {
-    phi += g.fin;
     if (g.Wi === 0n) return { ...g, v: g.fin, rho: 0n };
-    const law = splitLaw({ R, W, Wi: g.Wi, u, fin: g.fin });
+    const law = splitLaw({ R: Rlaw, W, Wi: g.Wi, u, fin: 0n });
     if (!law) throw fail('pot_sched');
     pricedAt += 1;
-    return { ...g, v: law.v, rho: law.rho };
+    return { ...g, v: law.v, rho: law.rho, fin: 0n };
   });
   // Escrow pot is the reference floor, with no finder fin on an overflow row.
   const escrowRows = escrow.map((g) => {
@@ -724,7 +731,7 @@ function planPay(spec, payees, escrowPayees = []) {
     escrowHash += g.hash;
   }
   return {
-    S, cin, f, bps, u, R, W, Wpaid, rate: R + W * u, phi, rows, escrow: escrowRows, dust, escrowPot, escrowHash,
+    S, cin, f, bps, u, R, W, Wpaid, rate: Rlaw + W * u, phi: phiFold, rows, escrow: escrowRows, dust, escrowPot, escrowHash,
   };
 }
 
@@ -1068,7 +1075,7 @@ export function t21EconomicCarry(tx) {
 }
 
 function quotaOk(rows) {
-  return !quotaExceeded(rows, (o) => hex32(o.by));
+  return !owedCapExceeded(rows, (o) => hex32(o.by));
 }
 
 function listingFor(spec, fresh, settleRows) {
@@ -1418,8 +1425,8 @@ export function buildT21Coinbase(spec) {
   // Overflow payees are sealed whole. They are not a second leftover list.
   // A finder row with no shares stays in the block; it is not escrow.
   const cap = Math.min(payeeCapLive(), Math.max(0, Math.floor(Number(spec.payeeMax ?? Infinity))));
-  const settleN = Array.isArray(spec.settle) ? spec.settle.length : 0;
-  const roomPayees = Math.max(0, cap - settleN - pinned.length);
+  // Settle rows are outside the payee cap. They pay a sealed row; they are not a new payee.
+  const roomPayees = Math.max(0, cap - pinned.length);
   for (const p of ranked.splice(roomPayees)) escrow.push(p);
   const kept = pinned.concat(ranked);
   const room = Math.min(CB_SHARE_MAX, Math.max(0, Math.floor(Number(spec.shareMax ?? CB_SHARE_MAX))));
@@ -1474,7 +1481,8 @@ function sameBytes(a, b) {
  *   prevEs: E_s hex set of the parent coinbase (carry window),
  *   owedIn: the parent coinbase's t21.owed [{E, w, since}] (deferred rows),
  *   vaults: pending pinned withdraws [{ mintId, vaultNanos, B }].
- * Returns paid = S + c_in − c_out + u·W + Φ, Φ, and the finder row's B*.
+ * Returns paid = S + c_in − c_out − escrowPot + u·W_paid + Φ + settleV.
+ * On a working round Φ is expect.phi (the levy finder half) and finB is null.
  */
 export function verifyT21Coinbase(input) {
   const tx = input?.tx;
@@ -1499,6 +1507,7 @@ export function verifyT21Coinbase(input) {
     // Public levy rows; coinbaseLevyPays opens them. The finder half is public only with no shares.
     if (o.kind === 'reserve-fee' && !hasKey(o, 'kindCode')) continue;
     if (o.kind === 'finder-fee' && !hasKey(o, 'kindCode')) {
+      // Option B is only a round with no new work. Shares or deferred payees fold Φ.
       if (shares.length || defer.length) return no('levy_split');
       continue;
     }
@@ -1513,7 +1522,7 @@ export function verifyT21Coinbase(input) {
     if (!vault && Number(o.kindCode) !== PAYOUT_KIND_CODE) return no('cb_form');
   }
   const payout = payoutRows(tx);
-  const payees = payout.filter((o) => o.kind !== 'pool-fee');
+  const payees = payout.filter((o) => o.kind !== 'pool-fee' && o.kind !== 'settle');
   // The same cap blockBudget counts (pot rows, dummies included; not the fee row).
   if (payees.length > payeeCapLive()) return no('payee_cap');
   const S = scalarOk(t21.S);
@@ -1539,9 +1548,6 @@ export function verifyT21Coinbase(input) {
   const vaultPaid = checkVaults(tx, expect);
   if (!vaultPaid.ok) return vaultPaid;
   const settling = payout.some((o) => o.kind === 'settle');
-  if ((settling || defer.length) && vout.some((o) => o.kind === 'finder-fee' && !hasKey(o, 'kindCode'))) {
-    return no('levy_split');
-  }
   const hasWork = shares.length > 0 || defer.length > 0;
   if (!hasWork && !settling) {
     if (payout.length) return no('pot_carry');
@@ -1650,8 +1656,12 @@ export function verifyT21Coinbase(input) {
     if (!rowIsLeaf(o)) return no('admit_note_point');
     parsed.push({ o, B, Y, C, CW, lamS, rhoK, delK, fin, index: vout.indexOf(o) });
   }
-  if (fins > 1) return no('finder_row');
-  const owedOk = checkOwed(tx, shares, defer, expect, finB);
+  if (fins > 1 || phi !== 0n) return no('finder_row');
+  const phiChain = scalarOk(expect.phi || 0);
+  if (phiChain == null) return no('levy_split');
+  // A working round folds Φ into the pot. The public fin stays 0, so one voucher cannot take it.
+  const phiMint = hasWork ? phiChain : 0n;
+  const owedOk = checkOwed(tx, shares, defer, expect, finB, phiMint);
   if (!owedOk.ok) return owedOk;
   const wall = W + owedOk.wEsc;
   if (wall >= W_MAX) return no('split_cap');
@@ -1672,8 +1682,8 @@ export function verifyT21Coinbase(input) {
   const stmt = statementOf(tx);
   if (!sameBytes(t21.stmt, stmt)) return no('split_law');
   const lawW = wall > 0n ? wall : 1n;
-  const mintG = S + cin - potOut - owedOk.escrowPot + u * W + phi + owedOk.settleV;
-  const rate = R + lawW * u;
+  const mintG = S + cin - potOut - owedOk.escrowPot + u * W + phiMint + owedOk.settleV;
+  const rate = R + phiMint + lawW * u;
   const checks = buildChecks({ tx, parsed, shares, lawW, tallyW: W, rate, f, mintG, stmt });
   if (!checks.ok) return checks;
   const weighted = [];
@@ -1685,7 +1695,7 @@ export function verifyT21Coinbase(input) {
     return no('split_law');
   }
   return {
-    ok: true, reason: null, paid: mintG, phi, W, f, finB,
+    ok: true, reason: null, paid: mintG, phi: phiMint, W, f, finB,
     escrowPot: owedOk.escrowPot, settleV: owedOk.settleV, back: owedOk.back,
     vaultPaid: vaultPaid.paid,
   };
@@ -1712,11 +1722,11 @@ function sameRow(got, want) {
 /**
  * Escrow listing. expect.owedIn is the parent list. Settlement is a settle
  * row bound to the anchor, not a replay of the share. Fresh rows are priced
- * from this round (floor(R·w/W_all) + u·w) and bound to expect.producer, or
- * to the finder row when the block pays one. Quota is per producer.
+ * from this round (floor((R+Φ)·w/W_all) + u·w) and bound to expect.producer.
+ * Quota is per producer, and the whole list has a global cap.
  * Expired value is back, returned to the pot.
  */
-function checkOwed(tx, shares, defer, expect, finB) {
+function checkOwed(tx, shares, defer, expect, finB, phiMint = 0n) {
   const t21 = tx.t21 || {};
   const owedIn = Array.isArray(expect.owedIn) ? expect.owedIn : [];
   const height = BigInt(expect.height);
@@ -1756,6 +1766,14 @@ function checkOwed(tx, shares, defer, expect, finB) {
   }
   const backPub = t21.back != null && t21.back !== '' ? t21Big(t21.back) : 0n;
   if (backPub == null || backPub !== listed.back) return no('owed_list');
+  const duty = settleDuty({
+    owedIn: owedIn.map((o) => ({ ...o, id: t21Anchor(o) })),
+    paid: paidE,
+    height: expect.height,
+    freshPayees: shares.length > 0 || defer.length > 0,
+    fit: payeeCapLive(),
+  });
+  if (!duty.ok) return no(duty.reason);
   const S = scalarOk(t21.S);
   const cin = scalarOk(t21.cin);
   const u = scalarOk(t21.u || 0);
@@ -1793,7 +1811,7 @@ function checkOwed(tx, shares, defer, expect, finB) {
     for (const row of fresh) {
       let w = 0n;
       for (const s of rowShares(row)) w += BigInt(s.w);
-      const pay = weightPay(R, wall, w, u);
+      const pay = weightPay(R + phiMint, wall, w, u);
       if (!pay || pay.pot !== BigInt(row.pot) || pay.hash !== BigInt(row.hash)) return no('pot_sched');
       escrowPot += pay.pot;
     }

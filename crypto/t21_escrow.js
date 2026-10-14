@@ -6,7 +6,7 @@
  * pot. The hash cap is not a deferral: W >= 2^48 is refused.
  */
 import { lawDust, splitLaw } from './t21_law.js';
-import { T21_OWED_MAX, T21_OWED_TTL, W_MAX } from './t21_params.js';
+import { T21_OWED_GLOBAL, T21_OWED_MAX, T21_OWED_TTL, T21_SETTLE_WINDOW, W_MAX } from './t21_params.js';
 
 export function weightPay(R, W, w, u) {
   const law = splitLaw({ R, W, Wi: w, u, fin: 0n });
@@ -62,6 +62,54 @@ export function composeOwed({ owedIn = [], paid = new Set(), fresh = [], height,
   if (settled.size) return { ok: false, reason: 'owed_list' };
   for (const row of fresh) owed.push(row);
   return { ok: true, owed, backPot, backHash, back: backPot + backHash };
+}
+
+/** Per-producer quota, or the whole list past the global cap. */
+export function owedCapExceeded(rows, byOf, { max = T21_OWED_MAX, globalMax = T21_OWED_GLOBAL } = {}) {
+  if ((rows || []).length > globalMax) return true;
+  return quotaExceeded(rows, byOf, max);
+}
+
+/**
+ * A row is due when it is still payable and inside the settle window of TTL.
+ * Age is height − since. Expiry is the next height, so age == TTL is still due.
+ */
+export function rowDue(since, height, { ttl = T21_OWED_TTL, window = T21_SETTLE_WINDOW } = {}) {
+  const age = BigInt(height) - BigInt(since);
+  return age >= BigInt(ttl - window) && age <= BigInt(ttl);
+}
+
+/**
+ * Settlement duty. Due rows are oldest first. A block settles a prefix of
+ * them, at least min(due, fit) of them, before it admits a fresh payee.
+ * A younger row is not settled while an older due row is still open.
+ * fit is how many full rows the frame can carry (the payee cap).
+ */
+export function settleDuty({
+  owedIn = [], paid = new Set(), height, freshPayees = false,
+  window = T21_SETTLE_WINDOW, ttl = T21_OWED_TTL, fit,
+} = {}) {
+  const h = BigInt(height);
+  const openAt = BigInt(ttl - window);
+  const limit = BigInt(ttl);
+  const due = owedIn.filter((o) => {
+    const age = h - BigInt(o.since);
+    return age >= openAt && age <= limit;
+  }).sort((a, b) => (Number(a.since) - Number(b.since)) || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0));
+  const dueIds = new Set(due.map((o) => o.id));
+  let prefix = 0;
+  for (const o of due) {
+    if (!paid.has(o.id)) break;
+    prefix += 1;
+  }
+  for (const id of paid) {
+    if (!dueIds.has(id) && prefix < due.length) return { ok: false, reason: 'owed_due', due: due.length, settled: prefix };
+  }
+  const room = Math.max(0, Math.floor(Number(fit == null ? due.length : fit)));
+  const need = Math.min(due.length, room);
+  if (prefix < need) return { ok: false, reason: 'owed_due', due: due.length, settled: prefix };
+  if (prefix < due.length && freshPayees) return { ok: false, reason: 'owed_due', due: due.length, settled: prefix };
+  return { ok: true, due: due.length, settled: prefix };
 }
 
 /** True when some producer key has more than `max` rows. */

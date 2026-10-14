@@ -13,7 +13,9 @@ import {
   buildT21Coinbase, poolShareLabel, t21Anchor, t21OwedLive, t21ShareNc,
 } from '../../crypto/t21.js';
 import { publicVoucher, voucherAt, voucherKeysOk } from '../../crypto/t21_voucher.js';
-import { CB_SHARE_MAX, T21_OWED_MAX, W_HASH_MAX, W_MAX } from '../../crypto/t21_params.js';
+import {
+  CB_SHARE_MAX, T21_OWED_GLOBAL, T21_OWED_MAX, T21_OWED_TTL, T21_SETTLE_WINDOW, W_HASH_MAX, W_MAX,
+} from '../../crypto/t21_params.js';
 import { payeeCapLive } from '../../crypto/block_budget.js';
 import {
   T21_SHARE_MAX_BITS, creditBitsForShare, noteCommitOfShare, structuralShareVerdict, t21ShareCredit, unitsForShare,
@@ -107,7 +109,8 @@ function labelledShares(batch, labelOf) {
   for (const s of batch) {
     const nc = noteCommitOfShare(s);
     const lab = nc && nc.length === 32 ? labelOf(nc.toString('hex')) : null;
-    (lab ? keep : drop).push(s);
+    if (lab) keep.push(s);
+    else drop.push({ ...s, deferReason: 'unlabelled' });
   }
   return { keep, drop };
 }
@@ -155,9 +158,11 @@ function rejectPlan(reason) {
 }
 
 /**
- * One row per payee. Slots fill largest-units first, after owed rows (oldest
- * first). Overflow payees are defer (escrow). Hash cap, hash budget, and the
- * share cap reject the round: nothing is moved to a second leftover list.
+ * One row per payee. Fresh slots fill largest-units first. Due owed rows are
+ * settled first, outside that cap, and block every fresh payee until the due
+ * prefix fits. Overflow payees are defer (escrow). Past the producer quota or
+ * the global list they are `later` (`owed_cap`), not a rejected round. Hash
+ * cap, hash budget, and the share cap still reject the round.
  * owedRoom is how many new payees this producer may still seal.
  */
 export function planT21Round({
@@ -173,6 +178,8 @@ export function planT21Round({
   finderPayee = null,
   unpayable = new Set(),
   producer = null,
+  height = null,
+  settleFit = null,
 } = {}) {
   const groups = new Map();
   for (const l of labels) {
@@ -205,54 +212,91 @@ export function planT21Round({
   if (totalU >= BigInt(unitMax) || totalU >= W_HASH_MAX || totalU > cap) return rejectPlan('hash_units');
   if (budget != null && totalU > budget) return rejectPlan('hash_budget');
   if (totalC > maxShares || entries > maxEntries) return rejectPlan('share_cap');
-  const admitted = new Set(finderPayee ? [finderPayee] : []);
+  const admitted = new Set();
   const maxPayees = Math.max(0, Math.floor(Number(payeeMax)));
   const pay = [];
   const kept = [];
   const owedSorted = [...owed].sort((a, b) => (Number(a.since) - Number(b.since)) || cmpHex(a.nc, b.nc));
+  const dueOf = (o) => {
+    if (height == null || o.since == null || o.since === '') return false;
+    const age = BigInt(height) - BigInt(o.since);
+    return age >= BigInt(T21_OWED_TTL - T21_SETTLE_WINDOW) && age <= BigInt(T21_OWED_TTL);
+  };
+  const open = [];
   for (const o of owedSorted) {
-    if (unpayable.has(o.nc)) {
-      kept.push({ ...o, reason: 'unpayable' });
-      continue;
-    }
-    if (!admitted.has(o.payee) && admitted.size >= maxPayees) {
-      kept.push({ ...o, reason: 'payee_cap' });
-      continue;
-    }
-    admitted.add(o.payee);
-    pay.push(o);
+    if (unpayable.has(o.nc)) kept.push({ ...o, reason: 'unpayable' });
+    else open.push(o);
   }
+  // Due rows are settled before any new payee, and no settle row spends a payee slot.
+  // The frame fits `settleFit` full rows, so a larger due list is a prefix this block.
+  const fit = Math.max(0, Math.floor(Number(settleFit == null ? payeeCapLive() : settleFit)));
+  const due = open.filter(dueOf);
+  const young = open.filter((o) => !dueOf(o));
+  const duePay = due.slice(0, fit);
+  const dueWait = due.slice(fit);
+  const youngRoom = dueWait.length ? 0 : Math.max(0, fit - duePay.length);
+  const youngPay = young.slice(0, youngRoom);
+  const youngWait = young.slice(youngPay.length);
+  for (const o of [...duePay, ...youngPay]) pay.push(o);
+  for (const o of [...dueWait, ...youngWait]) kept.push({ ...o, reason: 'owed_wait' });
+  const admitFresh = dueWait.length === 0;
   const defer = [];
-  for (const g of ranked) {
-    if (!admitted.has(g.payee) && admitted.size >= maxPayees) {
-      for (const l of g.labels) defer.push({ ...l, reason: 'payee_cap' });
-      continue;
+  const later = [];
+  if (!admitFresh) {
+    for (const g of ranked) for (const l of g.labels) later.push({ ...l, reason: 'owed_due' });
+  } else {
+    for (const g of ranked) {
+      if (!admitted.has(g.payee) && admitted.size >= maxPayees) {
+        for (const l of g.labels) defer.push({ ...l, reason: 'payee_cap' });
+        continue;
+      }
+      admitted.add(g.payee);
+      for (const l of g.labels) pay.push(l);
     }
-    admitted.add(g.payee);
-    for (const l of g.labels) pay.push(l);
   }
-  const deferPayees = new Set(defer.map((l) => l.payee));
+  // No fresh slot: the labels are not sealed. A produced block still settles owed rows.
+  if (maxPayees === 0 && admitFresh) {
+    return {
+      reject: null, batch: [], pay, defer: [], kept, later, unplaced: defer,
+      units: 0n, shares: 0, payees: 0,
+    };
+  }
+  const paidOwed = new Set(pay.filter((p) => p.owed).map((p) => p.nc));
+  const staying = owedSorted.filter((o) => !paidOwed.has(o.nc));
   let room = Math.max(0, Math.floor(Number(owedRoom)));
-  if (producer) {
-    const mine = kept.filter((o) => o.by === producer).length;
-    room = Math.min(room, Math.max(0, T21_OWED_MAX - mine));
+  const mine = producer ? staying.filter((o) => o.by === producer).length : 0;
+  room = Math.min(room, Math.max(0, T21_OWED_MAX - mine), Math.max(0, T21_OWED_GLOBAL - staying.length));
+  const byPayee = new Map();
+  const order = [];
+  for (const l of defer) {
+    if (!byPayee.has(l.payee)) {
+      byPayee.set(l.payee, []);
+      order.push(l.payee);
+    }
+    byPayee.get(l.payee).push(l);
   }
-  if (deferPayees.size > room) return rejectPlan('owed_cap');
+  const sealed = order.slice(0, room).flatMap((p) => byPayee.get(p));
+  for (const p of order.slice(room)) {
+    for (const l of byPayee.get(p)) later.push({ ...l, reason: 'owed_cap' });
+  }
+  defer.length = 0;
+  for (const l of sealed) defer.push(l);
   if (!pay.length) {
     return {
-      reject: null, batch: [], pay: [], defer: [], kept, later: [], unplaced: defer,
+      reject: null, batch: [], pay: [], defer: [], kept, later, unplaced: defer,
       units: 0n, shares: 0, payees: admitted.size,
     };
   }
   let units = 0n;
   for (const p of pay) if (!p.owed) units += p.units;
+  const laterNc = new Set(later.map((l) => l.nc));
   return {
     reject: null,
-    batch: ranked.flatMap((g) => g.labels),
+    batch: ranked.flatMap((g) => g.labels).filter((l) => !laterNc.has(l.nc)),
     pay,
     defer,
     kept,
-    later: [],
+    later,
     unplaced: [],
     units,
     shares: pay.filter((p) => !p.owed).length,
@@ -323,8 +367,8 @@ function proofHeaderOf(share, ctx) {
 /**
  * Build the cb-v3 coinbase for a template.
  * `u` is the live unit and `hashBudget` is B_h. `phi` is the levy's finder
- * half, paid to `finder` (the block miner's voucher), or in a round with no
- * shares as `finderNote`, an opened finder-fee row. `owedIn` is the parent
+ * half. A round with shares splits it across payees by weight. A round with
+ * no shares pays it as `finderNote`, an opened finder-fee row. `owedIn` is the parent
  * coinbase's owed list; rows whose label this pool's book holds are its own.
  * planT21Round picks the batch, what is paid and what is deferred; a label
  * the builder still cannot pay (an N-1 miss, a bad voucher) is deferred
@@ -382,7 +426,6 @@ export function t21TemplateCoinbase({
   const ctx = { prevHeader, priorHeader, issuedJobKeys, credit };
   const unit = BigInt(u);
   const want = BigInt(phi);
-  if (want > 0n && !finder && !finderNote) throw new Error('finder_row');
   const unitBudget = unit > 0n ? BigInt(hashBudget) / unit : null;
 
   const live = t21OwedLive(owedIn, height);
@@ -409,7 +452,7 @@ export function t21TemplateCoinbase({
       nc: t21Anchor(o), units, payee: hexOf(o.B), since: o.since, owed: true, by: hexOf(o.by), row: o,
     });
   }
-  const producerBuf = want > 0n && finder ? finder.B : producer;
+  const producerBuf = producer;
   // Labels the builder could not pay. They are deferred (batch) or stay owed in later passes.
   const unpayable = new Map();
   for (let pass = 0; pass <= REBUILDS; pass += 1) {
@@ -422,8 +465,8 @@ export function t21TemplateCoinbase({
       unitMax: unitCap,
       unitBudget,
       owedRoom: owedCap,
-      finderPayee: want > 0n && finder ? hexOf(finder.B) : null,
       producer: producerBuf ? hexOf(producerBuf) : null,
+      height,
       unpayable,
     });
     if (plan.reject) {
@@ -434,12 +477,13 @@ export function t21TemplateCoinbase({
     assertNotEmptyHeld(plan, { payeeMax: slots, shareMax: room, unitBudget, unpayable });
     const inBatch = new Set(plan.batch.map((l) => l.nc));
     const unplaced = new Set((plan.unplaced || []).map((l) => l.nc));
+    const laterReason = new Map((plan.later || []).map((l) => [l.nc, l.reason || 'share_cap']));
     const kept = [];
     const later = [];
     for (const s of held) {
       const nc = hexOf(noteCommitOfShare(s));
       if (inBatch.has(nc)) kept.push(s);
-      else if (!unplaced.has(nc)) later.push({ ...s, deferReason: 'share_cap' });
+      else if (!unplaced.has(nc)) later.push({ ...s, deferReason: laterReason.get(nc) || 'share_cap' });
     }
     const leaves = leavesOf(kept, ctx);
     const units = new Map(leaves.map((l) => [hexOf(l.noteCommit), BigInt(l.count)]));
@@ -448,19 +492,17 @@ export function t21TemplateCoinbase({
     const settling = plan.pay.filter((it) => it.owed);
     const paidItems = freshPay.map((it) => ({ nc: it.nc, w: units.get(it.nc) }));
     const escrowItems = plan.defer.map((l) => ({ nc: l.nc, w: units.get(l.nc) }));
-    let payees = paidItems.length ? payeesOf(paidItems, labelOf, finder, want) : [];
+    const payees = paidItems.length ? payeesOf(paidItems, labelOf, null, 0n) : [];
     const working = freshPay.length > 0 || escrowItems.length > 0;
-    const noteFinder = want > 0n && !working && settling.length === 0;
-    if (want > 0n && !payees.some((p) => BigInt(p.fin || 0) > 0n) && (working || settling.length) && finder) {
-      payees = [...payees, { voucher: finder, shares: [], fin: want }];
-    }
-    const escrowPayees = escrowItems.length ? payeesOf(escrowItems, labelOf, finder, 0n) : [];
-    if (want > 0n && !(working || settling.length ? finder : finderNote)) throw new Error('finder_row');
+    const noteFinder = want > 0n && !working;
+    const escrowPayees = escrowItems.length ? payeesOf(escrowItems, labelOf, null, 0n) : [];
+    if (want > 0n && !working && !finderNote) throw new Error('finder_row');
     const built = buildT21Coinbase({
       S: BigInt(S),
       cin: BigInt(cin),
       u: working ? unit : 0n,
       bps: working ? bps : 0,
+      phi: working ? want : 0n,
       fee,
       height,
       magic,
@@ -484,7 +526,7 @@ export function t21TemplateCoinbase({
       }
     }
     if (!more) {
-      if (BigInt(built.phi || 0n) !== (noteFinder ? 0n : want)) throw new Error('finder_row');
+      if (BigInt(built.phi || 0n) !== (working ? want : 0n)) throw new Error('finder_row');
       const flags = held.length && !freshPay.length && !settling.length ? ['empty_batch_held'] : [];
       return {
         ...built,

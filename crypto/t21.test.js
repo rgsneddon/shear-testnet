@@ -8,8 +8,9 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { G, H, pointBytes, scalarBytes } from './note.js';
 import { feeOf, lawDust, splitLaw } from './t21_law.js';
+import { priceWeights } from './t21_escrow.js';
 import {
-  CB_SHARE_MAX, GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_OWED_MAX, T21_OWED_TTL, T21_REQUIRE_ALL_COINBASES, VOUCHER_GAP,
+  CB_SHARE_MAX, GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_OWED_GLOBAL, T21_OWED_MAX, T21_OWED_TTL, T21_REQUIRE_ALL_COINBASES, T21_SETTLE_WINDOW, VOUCHER_GAP,
   W_HASH_MAX,
 } from './t21_params.js';
 import {
@@ -274,29 +275,49 @@ describe('T21 cb-v3 coinbase', { timeout: 600_000 }, () => {
   let built;
   let expect;
 
-  it('builds and verifies four payees, a finder, and a fee note (B3, must-fix 3, 7)', () => {
+  it('builds and verifies four payees, the finder half split by weight, and a fee note', () => {
     built = buildT21Coinbase({
       S,
       cin: 3n,
       bps: 100,
       u: 0n,
+      phi: fin,
       height: 9,
       magic,
       prevHash,
       dummySecret,
       fee: { voucher: publicVoucher(feeVoucher) },
-      payees: [payee(0, [25n, 3n], { fin }), payee(1, [26n]), payee(2, [27n, 1n]), payee(3, [28n])],
+      payees: [payee(0, [25n, 3n]), payee(1, [26n]), payee(2, [27n, 1n]), payee(3, [28n])],
     });
-    expect = expectFor(built.tx);
+    expect = expectFor(built.tx, { phi: fin });
     const gate = verifyT21Coinbase({ tx: built.tx, expect });
     assert.equal(gate.ok, true, gate.reason);
     assert.equal(gate.phi, fin);
-    assert.equal(Buffer.from(gate.finB).toString('hex'), publicVoucher(voucher(0)).B.toString('hex'));
+    assert.equal(gate.finB, null);
+    assert.ok(built.tx.vout.every((o) => o.fin == null || BigInt(o.fin) === 0n));
     assert.equal(gate.f, 50_000_000n);
-    assert.equal(gate.paid, S + 3n - BigInt(built.tx.carryNanos) + fin);
+    const dust = BigInt(built.tx.carryNanos || 0) + BigInt(built.tx.t21.potCarry || 0);
+    assert.equal(gate.paid, S + 3n - dust + fin);
+    const R = S + 3n - feeOf(S, 100n);
+    const priced = priceWeights(R + fin, 0n, [28n, 26n, 28n, 28n]);
+    const pots = built.secrets.filter((s) => s.kind === 'pot' && s.v > 0n).map((s) => s.v);
+    const want = priced.rows.map((r) => r.v);
+    const byValue = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    assert.deepEqual(pots.sort(byValue), want.sort(byValue));
+    assert.equal(pots.reduce((a, v) => a + v, 0n) + priced.dust, R + fin);
     const supply = supplyIdentities(built);
     assert.equal(supply.ok, true);
     assert.equal(supply.paid, gate.paid);
+    const redirected = clone(built.tx);
+    redirected.vout.find((o) => o.kind === 'pot').fin = fin.toString();
+    assert.equal(verifyT21Coinbase({ tx: redirected, expect }).reason, 'finder_row');
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: { ...expect, phi: 0n } }).reason, 'split_law');
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: { ...expect, phi: fin - 1n } }).reason, 'split_law');
+    assert.throws(() => buildT21Coinbase({
+      S, cin: 3n, bps: 100, u: 0n, phi: fin, height: 9, magic, prevHash, dummySecret,
+      fee: { voucher: publicVoucher(feeVoucher) },
+      payees: [payee(0, [25n, 3n], { fin }), payee(1, [26n]), payee(2, [27n, 1n]), payee(3, [28n])],
+    }), (err) => err.reason === 'finder_row');
     const feeRows = built.tx.vout.filter((o) => o.kind === 'pool-fee');
     assert.equal(feeRows.length, 1);
     const index = built.tx.vout.indexOf(feeRows[0]);
@@ -351,7 +372,7 @@ describe('T21 cb-v3 coinbase', { timeout: 600_000 }, () => {
     shifted.t21.shares[0].w = String(BigInt(shifted.t21.shares[0].w) + 1n);
     shifted.t21.shares[1].w = String(BigInt(shifted.t21.shares[1].w) - 1n);
     restate(shifted);
-    assert.equal(verifyT21Coinbase({ tx: shifted, expect: expectFor(shifted) }).reason, 'split_tally');
+    assert.equal(verifyT21Coinbase({ tx: shifted, expect: expectFor(shifted, { phi: fin }) }).reason, 'split_tally');
   });
 
   it('P0-1: a pool cannot pay a miner\'s shares to its own keys', () => {
@@ -590,39 +611,50 @@ describe('T21 chain rules (must-fix 3, 5)', { timeout: 600_000 }, () => {
   const finVoucher = voucher(0);
   let levyTx;
 
-  it('verifies a finder row beside the public reserve-fee row', () => {
+  it('folds the finder half into the payee split beside the public reserve-fee row', () => {
     const built = buildT21Coinbase({
-      S: 100_000n, cin: 0n, height: 2, magic, prevHash, dummySecret,
-      payees: [payee(0, [5n], { fin: phi })],
+      S: 100_000n, cin: 0n, height: 2, magic, prevHash, dummySecret, phi,
+      payees: [payee(0, [5n])],
       publicRows: [sealLevyNote(splitLevy(fees).reserve, reserveFeeDest(), 'reserve-fee')],
     });
     levyTx = built.tx;
-    assert.equal(verifyT21Coinbase({ tx: levyTx, expect: expectFor(levyTx) }).ok, true);
+    assert.equal(verifyT21Coinbase({ tx: levyTx, expect: expectFor(levyTx, { phi }) }).ok, true);
+    assert.equal(built.phi, phi);
+    const priced = priceWeights(100_000n + phi, 0n, [5n]);
+    const pot = built.secrets.find((s) => s.kind === 'pot' && s.v > 0n);
+    assert.equal(pot.v, priced.rows[0].v);
+    assert.equal(pot.v + priced.dust, 100_000n + phi);
   });
 
   // Opening the reserve-fee note checks its range proof, which only the native addon verifies.
   const noNative = nativeLoaded() ? false : 'needs crypto/native/shearadmit.node (npm run build:admit)';
-  it('binds the finder fin to the levy finder half and the block miner', { skip: noNative }, () => {
+  it('does not bind the finder half to the block miner', () => {
     const tx = levyTx;
     const miner = encodeDest(Buffer.alloc(20, 5), publicVoucher(finVoucher).B);
     const other = encodeDest(Buffer.alloc(20, 5), publicVoucher(voucher(1)).B);
-    assert.equal(coinbaseLevyPays(tx, fees, miner).ok, true);
-    assert.equal(coinbaseLevyPays(tx, fees, other).reason, 'finder_row');
-    assert.equal(coinbaseLevyPays(tx, fees * 2, miner).reason, 'finder_row');
-    assert.equal(coinbaseLevyPays(tx, fees, '').reason, 'finder_row');
+    // The success path opens the reserve-fee note, which needs the native addon.
+    if (nativeLoaded()) {
+      assert.equal(coinbaseLevyPays(tx, fees, miner).ok, true);
+      assert.equal(coinbaseLevyPays(tx, fees, other).ok, true);
+      assert.equal(coinbaseLevyPays(tx, fees, '').ok, true);
+    }
+    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { phi: phi + 1n }) }).reason, 'split_law');
     const withRow = { ...tx, vout: tx.vout.concat([{ kind: 'finder-fee', nanos: Number(phi) }]) };
     assert.equal(coinbaseLevyPays(withRow, fees, miner).reason, 'levy_split');
+    const planted = clone(tx);
+    planted.vout.find((o) => o.kind === 'pot').fin = phi.toString();
+    assert.equal(coinbaseLevyPays(planted, fees, miner).reason, 'finder_row');
   });
 
   it('refuses a public finder-fee row beside shares', () => {
     const miner = encodeDest(Buffer.alloc(20, 5), publicVoucher(finVoucher).B);
     const withRow = { ...levyTx, vout: levyTx.vout.concat([sealLevyNote(Number(phi), miner, 'finder-fee')]) };
-    assert.equal(verifyT21Coinbase({ tx: withRow, expect: expectFor(levyTx) }).reason, 'levy_split');
+    assert.equal(verifyT21Coinbase({ tx: withRow, expect: expectFor(levyTx, { phi }) }).reason, 'levy_split');
     assert.throws(() => buildT21Coinbase({
-      S: 100_000n, cin: 0n, height: 2, magic, prevHash, dummySecret,
+      S: 100_000n, cin: 0n, height: 2, magic, prevHash, dummySecret, phi,
       payees: [payee(0, [5n], { fin: phi })],
       publicRows: [sealLevyNote(Number(phi), miner, 'finder-fee')],
-    }), (e) => e.reason === 'cb_form');
+    }), (e) => e.reason === 'finder_row');
   });
 
   it('an empty round pays the finder half as one public finder-fee note to the block miner', { skip: noNative }, () => {
@@ -657,9 +689,10 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
   const paid = [payee(0, [5n]), payee(1, [7n]), payee(2, [3n]), payee(3, [2n])];
   let blockH;
 
-  it('seals one escrow row for the overflow payee, priced on this round', () => {
+  it('seals one escrow row for the overflow payee, priced on this round including the finder half', () => {
+    const phi = 1_000n;
     blockH = buildT21Coinbase({
-      S: 1_000_000n, cin: 0n, u, height: H, magic, prevHash, dummySecret, producer,
+      S: 1_000_000n, cin: 0n, u, phi, height: H, magic, prevHash, dummySecret, producer,
       payees: paid, escrowPayees: [late],
     });
     const tx = blockH.tx;
@@ -667,22 +700,26 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
     assert.equal(tx.t21.owed[0].shares.length, 2);
     assert.equal(tx.t21.owed[0].since, H);
     assert.equal(tx.t21.defer.length, 2);
-    const W = 5n + 7n + 3n + 2n + 40n + 9n;
-    assert.equal(BigInt(tx.t21.owed[0].hash), u * 49n);
-    assert.equal(BigInt(tx.t21.owed[0].pot), (1_000_000n * 49n) / W);
+    const priced = priceWeights(1_000_000n + phi, u, [5n, 7n, 3n, 2n, 49n]);
+    assert.equal(BigInt(tx.t21.owed[0].hash), priced.rows[4].hash);
+    assert.equal(BigInt(tx.t21.owed[0].pot), priced.rows[4].pot);
+    assert.equal(priced.rows.reduce((a, r) => a + r.pot, 0n) + priced.dust, 1_000_000n + phi);
+    assert.equal(supplyIdentities(blockH).ok, true);
     const leaves = [...paid, late].flatMap((p) => p.shares.map(leafOf));
-    const ok = verifyT21Coinbase({ tx, expect: expectFor(tx, { shares: leaves, owedIn: [], producer }) });
+    const seen = { shares: leaves, owedIn: [], producer, phi };
+    const ok = verifyT21Coinbase({ tx, expect: expectFor(tx, seen) });
     assert.equal(ok.ok, true, ok.reason);
     assert.equal(ok.W, 17n);
+    assert.equal(ok.phi, phi);
     assert.equal(ok.escrowPot, BigInt(tx.t21.owed[0].pot));
-    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { shares: leaves, owedIn: [], producer: other }) }).reason, 'owed_list');
+    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { ...seen, producer: other }) }).reason, 'owed_list');
     const relabel = structuredClone(tx);
     relabel.t21.owed[0].B = pointBytes(G.multiply(9n));
-    assert.equal(verifyT21Coinbase({ tx: relabel, expect: expectFor(relabel, { shares: leaves, owedIn: [], producer }) }).reason, 'share_label');
+    assert.equal(verifyT21Coinbase({ tx: relabel, expect: expectFor(relabel, seen) }).reason, 'share_label');
     const dropped = structuredClone(tx);
     dropped.t21.owed = [];
     delete dropped.t21.defer;
-    assert.equal(verifyT21Coinbase({ tx: dropped, expect: expectFor(dropped, { shares: leaves, owedIn: [], producer }) }).reason, 'share_bind');
+    assert.equal(verifyT21Coinbase({ tx: dropped, expect: expectFor(dropped, seen) }).reason, 'share_bind');
   });
 
   it('a later producer settles the sealed value, and the row cannot be redirected', () => {
@@ -736,6 +773,20 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
     assert.equal(t21EconomicCarry(empty.tx), 5n + drop.back);
     const ex = expectFor(empty.tx, { shares: [], owedIn, hashBudget: 0n, height: far });
     assert.equal(verifyT21Coinbase({ tx: empty.tx, expect: ex }).ok, true);
+    const dueH = H + T21_OWED_TTL - T21_SETTLE_WINDOW;
+    const dueEmpty = buildT21Coinbase({ S: 3n, cin: 2n, height: dueH, magic, prevHash, payees: [], owedIn });
+    assert.equal(verifyT21Coinbase({
+      tx: dueEmpty.tx, expect: expectFor(dueEmpty.tx, { shares: [], owedIn, hashBudget: 0n, height: dueH }),
+    }).reason, 'owed_due');
+    const dueSettle = buildT21Coinbase({
+      S: 3n, cin: 2n, height: dueH, magic, prevHash, dummySecret, payees: [], settle: owedIn, owedIn,
+    });
+    const dueOk = verifyT21Coinbase({
+      tx: dueSettle.tx, expect: expectFor(dueSettle.tx, { shares: [], owedIn, hashBudget: 0n, height: dueH }),
+    });
+    assert.equal(dueOk.ok, true, dueOk.reason);
+    assert.equal(dueOk.settleV, BigInt(owedIn[0].pot) + BigInt(owedIn[0].hash));
+    assert.equal(dueSettle.tx.t21.owed, undefined);
     assert.throws(() => buildT21Coinbase({
       S: 3n, cin: 2n, u, height: far, magic, prevHash, dummySecret, producer,
       payees: paid, settle: owedIn, owedIn,
@@ -769,6 +820,31 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
     tx.t21.owed = under;
     assert.notEqual(verifyT21Coinbase({
       tx, expect: expectFor(tx, { shares: [], owedIn: under, hashBudget: 0n }),
+    }).reason, 'owed_cap');
+  });
+
+  it('a list past the global cap is owed_cap even when every producer is under quota', () => {
+    const empty = buildT21Coinbase({ S: 3n, cin: 2n, height: 5, magic, prevHash, payees: [] });
+    const row = (i) => {
+      const E = Buffer.alloc(32);
+      E.writeUInt32BE(i + 1, 28);
+      const by = Buffer.alloc(32);
+      by.writeUInt32BE(Math.floor(i / T21_OWED_MAX) + 1, 28);
+      return {
+        since: 1, by, B: Buffer.alloc(32, 2), Y: Buffer.alloc(32, 3), lambda: Buffer.alloc(32, 4),
+        pot: '1', hash: '1', shares: [{ w: '1', E }],
+      };
+    };
+    const tx = empty.tx;
+    const under = Array.from({ length: T21_OWED_GLOBAL }, (_, i) => row(i));
+    tx.t21.owed = under;
+    assert.notEqual(verifyT21Coinbase({
+      tx, expect: expectFor(tx, { shares: [], owedIn: under, hashBudget: 0n }),
+    }).reason, 'owed_cap');
+    const over = under.concat([row(T21_OWED_GLOBAL)]);
+    tx.t21.owed = over;
+    assert.equal(verifyT21Coinbase({
+      tx, expect: expectFor(tx, { shares: [], owedIn: over, hashBudget: 0n }),
     }).reason, 'owed_cap');
   });
 });

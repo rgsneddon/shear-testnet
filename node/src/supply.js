@@ -18,9 +18,11 @@ import {
 } from '../../crypto/asert.js';
 import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, openedCoinbaseNanos } from '../../crypto/note.js';
 import { splitLevy } from '../../crypto/levy.js';
+import { payeeCapLive } from '../../crypto/block_budget.js';
+import { feeOf } from '../../crypto/t21_law.js';
 import { CB_FORM, PAYOUT_KIND_CODE, W_HASH_MAX } from '../../crypto/t21_params.js';
 import { t21Anchor, t21DustCarry } from '../../crypto/t21.js';
-import { composeOwed, escrowBooks, quotaExceeded } from '../../crypto/t21_escrow.js';
+import { composeOwed, escrowBooks, owedCapExceeded, settleDuty, weightPay } from '../../crypto/t21_escrow.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
@@ -707,8 +709,10 @@ export function escrowPublished(tx) {
 
 /**
  * cb-v3. Payout notes open to the pot that left the schedule, minus pot
- * locked in escrow, plus u·W of the shares paid now, plus Φ, plus escrow
- * settled this block. Fresh escrow weight joins the accepted series. TTL
+ * locked in escrow, plus u·W of the shares paid now, plus the finder half
+ * when this round has shares, plus escrow settled this block. A round with
+ * shares folds that half into the payee split; an empty round pays it as an
+ * opened note and does not mint it. Fresh escrow is priced on R+Φ. TTL
  * sends the sealed value back to the pot. 0x23 rows are not counted here.
  */
 function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blockHeight, opts }) {
@@ -720,27 +724,25 @@ function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blo
   if (potMinted < 0n) return { reason: 'pot_sched', state };
   const vout = Array.isArray(cb.vout) ? cb.vout : [];
   const payout = vout.filter((o) => Number(o?.kindCode) === PAYOUT_KIND_CODE);
-  let phi = 0n;
+  let phiPub = 0n;
   for (const o of payout) {
     const fin = asNonNeg(o?.fin == null ? 0 : o.fin);
     if (fin == null) return { reason: 'finder_row', state };
-    phi += fin;
+    phiPub += fin;
   }
   const split = splitLevy(Number(levy));
   const finderRows = vout.filter((row) => row?.kind === 'finder-fee');
-  if (finderRows.length && payout.length) return { reason: 'levy_split', state };
   let pubFinder = 0n;
   for (const row of finderRows) {
     const v = openedCoinbaseNanos(row);
     if (v == null) return { reason: 'levy_split', state };
     pubFinder += BigInt(v);
   }
-  if (phi + pubFinder !== BigInt(split.finder)) return { reason: 'levy_split', state };
   if (split.reserve > 0 && !vout.some((row) => row?.kind === 'reserve-fee')) return { reason: 'levy_split', state };
 
   const published = escrowPublished(cb);
   if (!published) return { reason: 'owed_list', state };
-  if (quotaExceeded(published.rows, (row) => row.by)) return { reason: 'owed_cap', state };
+  if (owedCapExceeded(published.rows, (row) => row.by)) return { reason: 'owed_cap', state };
   const paid = new Set();
   for (const o of payout) {
     if (o.kind !== 'settle') continue;
@@ -793,6 +795,40 @@ function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blo
   if (wall >= W_HASH_MAX) return { reason: 'hash_units', state };
   const budget = hashBudgetNanos(state.acceptedSeries, unit);
   if (budget == null || u * wall > budget) return { reason: 'hash_budget', state };
+  let folded = 0n;
+  if (working) {
+    if (phiPub !== 0n) return { reason: 'finder_row', state };
+    if (finderRows.length || pubFinder !== 0n) return { reason: 'levy_split', state };
+    folded = BigInt(split.finder);
+  } else if (phiPub + pubFinder !== BigInt(split.finder)) {
+    return { reason: 'levy_split', state };
+  }
+  if (wEsc > 0n) {
+    const S = u64Of(t21.S);
+    const cin = u64Of(t21.cin);
+    const f = S == null ? null : feeOf(S, t21.bps || 0);
+    if (S == null || cin == null || f == null || S + cin < f || wall <= 0n) return { reason: 'pot_sched', state };
+    const Rphi = S + cin - f + folded;
+    for (const o of t21.owed || []) {
+      if (Number(o.since) !== blockHeight) continue;
+      let w = 0n;
+      for (const s of o.shares || []) w += u64Of(s?.w);
+      const priced = weightPay(Rphi, wall, w, u);
+      const pot = u64Of(o.pot);
+      const hash = u64Of(o.hash);
+      if (!priced || pot == null || hash == null || priced.pot !== pot || priced.hash !== hash) {
+        return { reason: 'pot_sched', state };
+      }
+    }
+  }
+  const duty = settleDuty({
+    owedIn: parent,
+    paid,
+    height: blockHeight,
+    freshPayees: working,
+    fit: payeeCapLive(),
+  });
+  if (!duty.ok) return { reason: duty.reason || 'owed_due', state };
 
   let settlePot = 0n;
   let settleHash = 0n;
@@ -805,7 +841,7 @@ function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blo
   const hashPaid = u * Wpaid;
   const hashAll = u * wall;
   const settleV = settlePot + settleHash;
-  const mintTotal = potMinted - escrowPot + hashPaid + phi + settleV;
+  const mintTotal = potMinted - escrowPot + hashPaid + (working ? folded : 0n) + settleV;
   if (mintTotal < 0n) return { reason: 'supply', state };
   if (!payout.length && mintTotal !== 0n) return { reason: 'supply', state };
   if (payout.length && (!cb.excess || !verifyMintSum(payout, mintTotal, cb.excess))) {

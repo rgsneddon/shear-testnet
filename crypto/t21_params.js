@@ -29,14 +29,22 @@ export const W_S_MAX = W_HASH_MAX;
 export const T21_SHARES_PER_BLOCK = 85;
 /**
  * Payee-cap escrow. Overflow payees are sealed into t21.owed at defer time.
- * T21_OWED_MAX is per producer, T21_OWED_TTL bounds the listing: on expiry
- * the sealed value returns to the pot. Neither drops a row unpaid.
- * Russell's ruling (2026-10-14) fixes both values.
+ * T21_OWED_MAX is per producer. T21_OWED_GLOBAL bounds the whole list so a
+ * rotated voucher key cannot grow it without limit; one producer's quota
+ * cannot fill it. T21_OWED_TTL bounds the listing: on expiry the sealed
+ * value returns to the pot. Rows inside T21_SETTLE_WINDOW of that TTL are
+ * settled before any new payee. Russell's ruling (2026-10-14) fixes the
+ * TTL and the per-producer cap.
  */
 export const T21_OWED_MAX = 1_024;
+export const T21_OWED_GLOBAL = T21_OWED_MAX * 8;
 export const T21_OWED_TTL = 960;
+/** Blocks before TTL at which a row must be settled ahead of any new payee. One ASERT half-life. */
+export const T21_SETTLE_WINDOW = 80;
 /** A round with no shares pays the levy's finder half as one opened finder-fee note to the block miner. */
 export const T21_EMPTY_FINDER = 'public-finder-note';
+/** A round with shares splits that half across payees by weight. The pool is not finder of record. */
+export const T21_FINDER_WORK = 'pro-rata-W';
 export const SCALAR_MAX = 1n << 64n;
 export const OUTPUT_MAX = 65536;
 export const PAYOUT_KIND_CODE = 0x20;
@@ -103,8 +111,9 @@ export const T21_FINGERPRINT_TOKENS = Object.freeze([
   `SHARE_BIND=${SHARE_BIND_DOM}`,
   `T21_HASH=full-units,W<=2^${HASH_CAP_BITS},uW<=Bh`,
   `T21_SHARE_FLOOR=ceil-log2-work/${T21_SHARES_PER_BLOCK},proof-header`,
-  `T21_DEFER=escrow-payee-cap,max=${T21_OWED_MAX}/producer,ttl=${T21_OWED_TTL}-to-pot`,
+  `T21_DEFER=escrow-payee-cap,max=${T21_OWED_MAX}/producer,global=${T21_OWED_GLOBAL},ttl=${T21_OWED_TTL}-to-pot,settle=${T21_SETTLE_WINDOW}`,
   `T21_EMPTY_FEE=${T21_EMPTY_FINDER},miner-dest`,
+  `T21_FINDER=${T21_FINDER_WORK},empty=${T21_EMPTY_FINDER}`,
   `K_MIN=${K_MIN}`,
   `FEE=f1-bps-${FEE_BPS_MAX}`,
   `PAYOUT_KEY=${DOM_CB}`,

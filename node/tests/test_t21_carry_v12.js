@@ -8,6 +8,8 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { VERSION, decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS, asertNextBits } from '../../crypto/asert.js';
 import { nonceWithShareTarget, noteCommitOfShare, rememberLiveSharePow, shareWorkKey } from '../../crypto/share_batch.js';
+import { payeeCapLive } from '../../crypto/block_budget.js';
+import { T21_OWED_GLOBAL, T21_OWED_TTL, T21_SETTLE_WINDOW } from '../../crypto/t21_params.js';
 import { t21ShareNc } from '../../crypto/t21.js';
 import { GENESIS_PREV, buildTemplate, verifyBlock } from '../src/chain.js';
 import { assertNotEmptyHeld, planT21Round, t21LabelBook, t21LoginVoucher } from '../src/t21_template.js';
@@ -81,35 +83,87 @@ describe('T21 carry: planT21Round fills slots by units, defers in-block, and nev
     assert.deepEqual(got.later, []);
   });
 
-  it('the finder payee holds a slot before any share payee', () => {
+  it('a finder label does not reserve a payee slot', () => {
     const got = planT21Round({ labels: [lab('a', 'A', 5), lab('b', 'B', 4)], payeeMax: 2, finderPayee: 'F' });
-    assert.deepEqual(ncsOf(got.pay), ['a']);
+    assert.deepEqual(ncsOf(got.pay).sort(), ['a', 'b']);
     const own = planT21Round({ labels: [lab('a', 'A', 5), lab('f', 'F', 1)], payeeMax: 2, finderPayee: 'F' });
     assert.deepEqual(ncsOf(own.pay).sort(), ['a', 'f']);
   });
 
-  it('owed rows are paid first, oldest first, ahead of larger fresh labels (Russell 2026-10-14)', () => {
+  it('owed rows settle outside the payee cap, oldest first', () => {
     const owed = [owedRow('o1', 'O', 3, 10), owedRow('o2', 'P', 2, 11)];
     const got = planT21Round({ labels: [lab('a', 'A', 1000), lab('b', 'B', 900)], owed, payeeMax: 3 });
-    assert.deepEqual(ncsOf(got.pay), ['o1', 'o2', 'a']);
-    assert.deepEqual(got.defer.map((l) => [l.nc, l.reason]), [['b', 'payee_cap']]);
-    // An owed row that does not fit stays owed; it is not a defer row again.
+    assert.deepEqual(ncsOf(got.pay), ['o1', 'o2', 'a', 'b']);
+    assert.equal(got.defer.length, 0);
     const tight = planT21Round({ labels: [lab('a', 'A', 1000)], owed, payeeMax: 1 });
-    assert.deepEqual(ncsOf(tight.pay), ['o1']);
-    assert.deepEqual(tight.kept.map((l) => [l.nc, l.reason]), [['o2', 'payee_cap']]);
-    assert.deepEqual(ncsOf(tight.defer), ['a']);
+    assert.deepEqual(ncsOf(tight.pay), ['o1', 'o2', 'a']);
+    assert.equal(tight.kept.length, 0);
+    assert.equal(tight.defer.length, 0);
   });
 
-  it('defer payees past this producer quota reject the round', () => {
+  it('defer payees past the quota or the global cap wait one block instead of rejecting the round', () => {
     const labels = [lab('a', 'A', 9), lab('b', 'B', 8), lab('c', 'C', 7)];
     const got = planT21Round({ labels, payeeMax: 1, owedRoom: 1 });
-    assert.equal(got.reject, 'owed_cap');
-    assert.deepEqual(got.later, []);
-    assert.equal(got.pay.length, 0);
+    assert.equal(got.reject, null);
+    assert.deepEqual(ncsOf(got.pay), ['a']);
+    assert.deepEqual(ncsOf(got.defer), ['b']);
+    assert.deepEqual(got.later.map((l) => [l.nc, l.reason]), [['c', 'owed_cap']]);
     const one = planT21Round({ labels, payeeMax: 1, owedRoom: 2 });
     assert.equal(one.reject, null);
     assert.deepEqual(ncsOf(one.pay), ['a']);
     assert.deepEqual(ncsOf(one.defer), ['b', 'c']);
+    assert.equal(one.later.length, 0);
+    const full = Array.from({ length: T21_OWED_GLOBAL }, (_, i) => owedRow(`k${String(i).padStart(5, '0')}`, `K${i}`, 1, 1));
+    const capped = planT21Round({
+      labels: [lab('a', 'A', 9), lab('b', 'B', 8)], owed: full, payeeMax: 1, height: 2, settleFit: 0, owedRoom: T21_OWED_GLOBAL,
+    });
+    assert.equal(capped.reject, null);
+    assert.equal(capped.defer.length, 0);
+    assert.deepEqual(capped.later.map((l) => [l.nc, l.reason]), [['b', 'owed_cap']]);
+  });
+
+  it('due rows are paid before any fresh payee and are gone before TTL when blocks are produced', () => {
+    const fit = payeeCapLive();
+    const since = 10;
+    const start = since + (T21_OWED_TTL - T21_SETTLE_WINDOW);
+    const dueRows = (n, tag) => Array.from({ length: n }, (_, i) => owedRow(`${tag}${String(i).padStart(5, '0')}`, `P${i % 7}`, 1, since));
+    for (const n of [0, 1, 1024, 1024 * 8]) {
+      let left = dueRows(n, 'd');
+      let height = start;
+      let steps = 0;
+      if (n === 0) {
+        const open = planT21Round({
+          labels: [lab('a', 'A', 10)], owed: [], payeeMax: 2, height: start, settleFit: fit,
+        });
+        assert.deepEqual(ncsOf(open.pay), ['a']);
+      }
+      while (left.length) {
+        const plan = planT21Round({
+          labels: [lab('a', 'A', 10), lab('b', 'B', 9)],
+          owed: left,
+          payeeMax: 2,
+          height,
+          settleFit: fit,
+        });
+        assert.equal(plan.reject, null);
+        const settled = plan.pay.filter((p) => p.owed);
+        assert.equal(settled.length, Math.min(fit, left.length));
+        if (left.length > fit) {
+          assert.equal(plan.pay.some((p) => !p.owed), false);
+          assert.ok(plan.later.every((l) => l.reason === 'owed_due'));
+        }
+        const paid = new Set(settled.map((p) => p.nc));
+        left = left.filter((o) => !paid.has(o.nc));
+        height += 1;
+        steps += 1;
+        assert.ok(steps <= T21_SETTLE_WINDOW);
+      }
+      assert.equal(left.length, 0);
+      assert.ok(height <= since + T21_OWED_TTL + 1);
+    }
+    const idle = dueRows(1, 'z');
+    const atTtl = planT21Round({ labels: [], owed: idle, height: since + T21_OWED_TTL, settleFit: fit });
+    assert.equal(atTtl.pay.filter((p) => p.owed).length, 1);
   });
 
   it('a round that can pay nothing defers nothing; a payable one never publishes empty (MF-4)', () => {
