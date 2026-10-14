@@ -359,7 +359,7 @@ export function unwrapBlind(rEph, rCt, xBase, extra) {
 }
 
 /** Owner-only: v from amtCt. Not checked against C; openNoteAmount does that. */
-export function unwrapAmount(rEph, amtCt, xBase, extra) {
+function unwrapAmount(rEph, amtCt, xBase, extra) {
   const ct = Buffer.from(asU8(amtCt));
   if (ct.length !== AMOUNT_CT_BYTES) return null;
   const x = typeof xBase === 'bigint' ? xBase : scalarFrom(xBase);
