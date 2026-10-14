@@ -187,3 +187,22 @@ Tests in this round:
 - Release cargo, fast subset (`--test-threads=1`, skipping the retired v3 proves): **40 passed, 0 failed, 12 filtered**.
 - Copy: `test_public_copy` 5/0, `site/tests/test_clients` 4/0, `site/tests/test_docs` 4/0, `pool/tests/test_brand` 11/0. With the neutral wording, `pool/tests/test_pool` was 33/0 and `node/tests/test_rpc` 3/0. `forbid_foreign_names` (1/1) and `test_p2p_process_split` (1/1) fail identically on the base.
 - Dart: the 8 hook-related tests by name 8/0. `t18_off_ui_test.dart` 1/0. `shear_wallet_test.dart` plus `continuum_072_send_v12_test.dart`: **225 pass, 26 fail**. No failure mentions `admit_v2_closed` or the deleted hook. 7 of the 26 used the hook and also failed at `40976539` with the hook in place. The other 19 are UI, timeout, sync, and `Isolate.run` source checks.
+
+## Rebase onto feat/shear-testnet-v12 after PR 71, and the PA ADMITv3 refinement
+
+The branch was rebased onto `origin/feat/shear-testnet-v12` at `18432cd7` (PR 71 merged). The PR base stays `cursor/close-open-p0-0bcc`. The pre-rebase head `eedffd05` is kept locally as `admitv2-removal-backup-pre-rebase`. Feat's FS-1 send gate (`7167c7ff`) runs before `admit_version`, so the closed wallet send now throws feat's `kErrSendUnavailable` ("send unavailable until FS-1") instead of `admit_v2_closed`, and the native helper's `prove_spend` reports the same reason.
+
+- `381b289f`: the wallet send, helper, and their tests use the FS-1 gate error.
+- `bd768753`: `docs/V12-WINDOWS-ANDROID-BUILDS.md` lists the post-removal addon exports (`noteH, maxProof, arity, leaf, jroot, jrootPoint, frontierAppend, proveV3, verifyV3, proveRange, verifyRange`) and the Windows setup check tests `proveV3` and `verifyV3` instead of `prove`.
+- `e6f2a056`: `node/tests/test_fs1_send_gate_v12.js` no longer bans the ADMITv3 name (Russell's 23:27 ruling). It still bans bucket wording in any sentence that names ADMIT.
+- `0fdb703f`: PA refinement (b). Every page that describes the running `shear-testnet-v11` book (or the v10 whitepaper) says ADMITv2 again: README, pool README, pool index and explorer, explorer, site index, admin, boot, docs, network, node, wallet, whitepaper and its PDF builder, the p2p/r2r/b2b peers, team pages, and the node `--help` banner. Feat had no ADMITv3 in any of them. The M65-2 removals stay.
+- `1fa55550`: PA refinement (a) and (c). v12 copy names ADMITv3 only as the proof that has not shipped: `specs/law.md`, the `specs/consensus.md` ADMITv3 section (a byte-3 send is `send_unavailable` until FS-1), `shear_cli.dart:356` ("Off until the ADMITv3 full-set proof ships"), and the `main.dart:694` reset message (now "Reset the wallet for $kBookMagic"). The group-of-32 award line, the "32-anonymity" spec note, and the "Bucket-32" comment are gone. `tests/test_public_copy.js` checks that v11 pages carry no ADMITv3, that v12 ADMITv3 sentences make no live hide claim unless they say the proof is off or unshipped, and that team pages and specs carry no group or 32-anonymity wording.
+
+The M65-3 cap is still 40354 in `crypto/admit.js:129` and `crypto/native/admit_napi.c:184`.
+
+Tests after the rebase:
+
+- Node: `test_fs1_send_gate_v12` 11/0, `test_public_copy` 6/0, `site/tests/test_clients` 4/0, `site/tests/test_docs` 4/0, `pool/tests/test_brand` 11/0, `pool/tests/test_pool` 33/0, `node/tests/test_rpc` 3/0, `test_admit_v1_grep` 2/0, `test_hardening_p0` 10/0, the admit spec pin 1/0, plus the earlier post-rebase sweep (mempool, gate_evm, fs1 sync routes, flow v3 verify and accept, finder levy, membership bind, spend tags subset, audit_byte2).
+- Fail on feat itself, unchanged by this PR: `test_admit_byte_v12` case 1 (`send_unavailable` where it expects `admit_version`) and both `test_money_range_v12` cases (`custodial_pull` and `coinbase_output`). The second `test_admit_byte_v12` case fails on feat only because the rebuilt addon has no v2 `prove`. On this branch it is the byte-2 stub case and passes.
+- Dart: `shear_wallet_test.dart` plus `continuum_072_send_v12_test.dart` plus t18: **226 pass, 26 fail**, the same 26 names as before the rebase. `dart analyze lib` reports 0 errors.
+- Not run to the end: `node/tests/test_p2p.js` mines and was stopped after 27 minutes at 17-bit difficulty with no subtest finished. `crypto/admit.test.js` in full hits a 300s timeout on a real prove.
