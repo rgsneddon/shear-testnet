@@ -472,8 +472,10 @@ export function unsignedRefusedSpend(tx) {
   return { ok: false, reason: 'unsigned' };
 }
 
-// Openings and wire secrets. compactTx strips them. They are not an extra field.
-const BODY_SECRET_KEYS = new Set([
+// Openings and wire secrets. compactTx strips them. They are not an extra field
+// on the tx body. A membership row does not get that skip: those names are
+// unsigned there.
+export const BODY_SECRET_KEYS = new Set([
   'open',
   'portalOpen',
   'viewKey',
@@ -566,6 +568,25 @@ function uncoveredList(list, allow) {
 }
 
 /**
+ * `members` must be an array of public rows. A non-array value is unsigned.
+ * A key outside MEMBER_KEYS is unsigned, including BODY_SECRET_KEYS. Those
+ * names are not skipped on a membership row.
+ */
+function membersFieldRejected(holder) {
+  if (!holder || typeof holder !== 'object' || Buffer.isBuffer(holder) || Array.isArray(holder)) return null;
+  if (!Object.prototype.hasOwnProperty.call(holder, 'members')) return null;
+  const list = holder.members;
+  if (!Array.isArray(list)) return { ok: false, reason: 'unsigned' };
+  for (const row of list) {
+    if (!row || typeof row !== 'object' || Buffer.isBuffer(row) || Array.isArray(row)) continue;
+    for (const key of Object.keys(row)) {
+      if (!MEMBER_KEYS.has(key)) return { ok: false, reason: 'unsigned' };
+    }
+  }
+  return null;
+}
+
+/**
  * A field the spend signature does not cover. Known consensus keys stay.
  * Any other key, at any amount, is unsigned on queue, mempool, and verify.
  */
@@ -589,9 +610,11 @@ export function unsignedBodyField(tx) {
   if (Array.isArray(tx.admit_proofs)) proofs.push(...tx.admit_proofs);
   if (uncoveredList(proofs, PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
   for (const proof of proofs) {
-    if (uncoveredList(proof && proof.members, MEMBER_KEYS)) return { ok: false, reason: 'unsigned' };
+    const member = membersFieldRejected(proof);
+    if (member) return member;
   }
-  if (uncoveredList(tx.members, MEMBER_KEYS)) return { ok: false, reason: 'unsigned' };
+  const topMembers = membersFieldRejected(tx);
+  if (topMembers) return topMembers;
   if (uncoveredList(tx.hashOwed, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.hashOwedRest, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.hashOwedLocal, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
