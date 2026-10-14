@@ -141,6 +141,16 @@ describe('T21 vouchers (must-fix 12)', () => {
     assert.equal(found[0].ctr, 4);
   });
 
+  it('matches crypto/vectors/t21_voucher.txt (shared with shear-fs1)', () => {
+    const rows = readFileSync(new URL('./vectors/t21_voucher.txt', import.meta.url), 'utf8')
+      .split('\n').filter((l) => l && !l.startsWith('#')).map((l) => l.split('\t'));
+    assert.ok(rows.length >= 11);
+    for (const [name, B, Y, lambda, , , want] of rows) {
+      const pub = { B: Buffer.from(B, 'hex'), Y: Buffer.from(Y, 'hex'), lambda: Buffer.from(lambda, 'hex') };
+      assert.equal(voucherKeysOk(pub), want === 'ok', name);
+    }
+  });
+
   it('accepts a wallet voucher and refuses bad B*, Y, or lambda', () => {
     const pub = publicVoucher(voucher(0));
     assert.equal(voucherKeysOk(pub), true);
