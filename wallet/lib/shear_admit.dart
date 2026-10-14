@@ -66,6 +66,7 @@ Map<String, dynamic> attachAdmitPub(
   Map<String, dynamic> vout, {
   Uint8List? spendSeed,
   Element? admitBase,
+  BigInt? v,
 }) {
   if (vout['commit'] is! Uint8List) return vout;
   var out = Map<String, dynamic>.from(vout);
@@ -79,7 +80,7 @@ Map<String, dynamic> attachAdmitPub(
       out['admitPub'] = pointBytes(admitPub(randomScalar()));
     }
   }
-  if (admitBase != null) out = wrapNoteBlind(out, admitBase);
+  if (admitBase != null) out = wrapNoteBlind(out, admitBase, v: v);
   return out;
 }
 

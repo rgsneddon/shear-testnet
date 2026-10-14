@@ -1006,13 +1006,10 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
     if (addr.isNotEmpty) note['address'] = addr;
     final opened = admitBaseFromAddress(addr);
     final baseOk = opened != null && opened.length == 32 && isPayableDest(addr);
-    final B = baseOk ? opened : (self ? fallbackBase : null);
-    if (!self && B == null) throw StateError(kErrShortSsa1);
-    note = attachAdmitPub(
-      note,
-      admitBase: B != null ? pointFrom(B) : null,
-      spendSeed: B == null ? spendSeed : null,
-    );
+    // Consensus needs rEph/rCt/amtCt on every hidden output, change included.
+    final B = baseOk ? opened : (self ? (fallbackBase ?? admitBaseBytes(spendSeed)) : null);
+    if (B == null) throw StateError(kErrShortSsa1);
+    note = attachAdmitPub(note, admitBase: pointFrom(B), v: units);
     sealed.add(note);
   }
   return {'vouts': sealed};
@@ -1447,7 +1444,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     final cachedNanos = proofKey == null ? null : proofCache[proofKey];
     // A remembered opening is this proof's nanos. A new proof still has to open.
     final openRow = Map<String, dynamic>.from(o)..['kind'] = kind;
-    final verifiedNanos = cachedNanos ?? openedSpendDigits(openRow);
+    final verifiedNanos = cachedNanos ?? openedSpendDigits(openRow) ?? _amtCtDigits(o, xBase);
     final proofChecked = verifiedNanos != null;
     final amt = verifiedNanos == null ? null : _sheOfExactNanos(verifiedNanos);
     notes.add({
@@ -1624,6 +1621,12 @@ String? openedSpendDigits(Map o) {
   final hunted = _openedSpendNanos(o);
   if (hunted == null || hunted <= 0) return null;
   return hunted.toString();
+}
+
+String? _amtCtDigits(Map o, Scalar xBase) {
+  final v = openNoteAmount(o, xBase)?['v'];
+  if (v is! BigInt || v <= BigInt.zero) return null;
+  return v.toString();
 }
 
 int? _openedSpendNanos(Map o) {

@@ -422,13 +422,6 @@ Uint8List? hash20FromAddress(String address) {
   return Uint8List.fromList(p.sublist(0, 20));
 }
 
-/// Same as crypto/address.js: the 32 bytes after dest20, or null when the address carries no admit base.
-Uint8List? admitBaseFromAddress(String address) {
-  final p = decodeBech32Payload(address);
-  if (p == null || p.length < 52) return null;
-  return Uint8List.fromList(p.sublist(20, 52));
-}
-
 Uint8List? spendHashFromAddress(String address) {
   if (!isShearAddress(address)) return null;
   return hash20FromAddress(address);

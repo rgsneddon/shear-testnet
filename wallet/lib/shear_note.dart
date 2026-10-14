@@ -387,6 +387,7 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
   if (o['admitPub'] != null) row['admitPub'] = o['admitPub'];
   if (o['rEph'] != null) row['rEph'] = o['rEph'];
   if (o['rCt'] != null) row['rCt'] = o['rCt'];
+  if (o['amtCt'] != null) row['amtCt'] = o['amtCt'];
   if (o['dest20'] != null) row['dest20'] = o['dest20'];
   if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'vortice-register') {
     final addr = o['address'];
