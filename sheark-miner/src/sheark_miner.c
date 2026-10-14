@@ -14,6 +14,7 @@
 #include "shear_hash.h"
 #include "job_bits.h"
 #include "stratum_tls.h"
+#include "t21_label.h"
 #include "../../crypto/share_stamp.h"
 
 #include <ctype.h>
@@ -60,6 +61,7 @@ static char g_login[320];
 static char g_dest[256];
 /* T21 voucher B || Y || lambda, 192 lowercase hex. Sent at login; the pool then labels each job. */
 static char g_voucher[193];
+static const char *g_magic = T21_MAGIC_DEFAULT;
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
@@ -658,6 +660,19 @@ static void apply_job(const char *line) {
       char nc[80] = "";
       if (!json_token(line, "noteCommit", nc, sizeof(nc)) || parse_hex32(nc, job.note) != 0) {
         fprintf(stderr, "job without a 32-byte noteCommit for shareBind=note; ignored\n");
+        return;
+      }
+      /* Mine a pool-issued label only when it opens to this miner's own voucher. */
+      char eh[80] = "", bh[80] = "";
+      unsigned char E[32], beta[32], lambda[32];
+      if (!g_voucher[0] || parse_hex32(g_voucher + 128, lambda) != 0) {
+        fprintf(stderr, "shareBind=note job without --voucher; ignored\n");
+        return;
+      }
+      if (!json_token(line, "labelE", eh, sizeof(eh)) || parse_hex32(eh, E) != 0
+          || !json_token(line, "labelBeta", bh, sizeof(bh)) || parse_hex32(bh, beta) != 0
+          || !t21_label_ok(lambda, beta, E, job.note, g_magic)) {
+        fprintf(stderr, "pool label does not open to this voucher; job ignored\n");
         return;
       }
       job.bind = 2;
@@ -1335,6 +1350,14 @@ int main(int argc, char **argv) {
       }
       for (size_t k = 0; k < vn; k++) g_voucher[k] = (char)tolower((unsigned char)v[k]);
       g_voucher[vn] = 0;
+    } else if (strcmp(argv[i], "--magic") == 0 && i + 1 < argc) {
+      g_magic = argv[++i];
+    } else if (strcmp(argv[i], "--t21-label-check") == 0 && i + 4 < argc) {
+      unsigned char l[32], b[32], e[32], n[32];
+      if (parse_hex32(argv[i + 1], l) || parse_hex32(argv[i + 2], b) || parse_hex32(argv[i + 3], e) || parse_hex32(argv[i + 4], n)) return 2;
+      int ok = t21_label_ok(l, b, e, n, i + 5 < argc ? argv[i + 5] : g_magic);
+      puts(ok ? "label ok" : "label bad");
+      return ok ? 0 : 1;
     } else if (strcmp(argv[i], "--dest") == 0 && i + 1 < argc) {
       snprintf(g_dest, sizeof(g_dest), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
