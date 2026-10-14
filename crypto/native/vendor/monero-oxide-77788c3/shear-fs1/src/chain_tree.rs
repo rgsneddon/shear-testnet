@@ -315,6 +315,28 @@ impl ChainTree {
     Ok(tip)
   }
 
+  /// Append admit-set notes in chain order with no block marks. Under N-1 every
+  /// admit-set note is a leaf, so a note that L-3 rejects is an error here, not
+  /// a skipped slot, and the tree is left as it was.
+  pub fn append_notes(&mut self, params: &Fs1Params, notes: &[ChainNote]) -> Result<(), Fs1Error> {
+    if !self.blocks.is_empty() {
+      return Err(Fs1Error::Link);
+    }
+    let mut leaves = Vec::with_capacity(notes.len());
+    for note in notes {
+      leaves.push(leaf_of(note).ok_or(Fs1Error::Path)?);
+    }
+    self.append(params, &leaves)
+  }
+
+  /// Keep the first `len` leaves of a tree built by [`ChainTree::append_notes`].
+  pub fn truncate_notes(&mut self, params: &Fs1Params, len: u64) -> Result<(), Fs1Error> {
+    if !self.blocks.is_empty() {
+      return Err(Fs1Error::Link);
+    }
+    self.truncate(params, len)
+  }
+
   /// Append leaves that are not tied to a block. Used by the synthetic checks.
   pub(crate) fn append(&mut self, params: &Fs1Params, leaves: &[Output<EdG>]) -> Result<(), Fs1Error> {
     if leaves.is_empty() {

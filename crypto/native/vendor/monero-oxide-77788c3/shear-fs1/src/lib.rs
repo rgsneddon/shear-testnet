@@ -15,6 +15,7 @@ pub mod generators;
 pub mod leaf;
 pub mod membership;
 pub mod rulings;
+pub mod spend;
 pub mod tree_cli;
 pub mod vectors;
 pub mod witness;
@@ -30,6 +31,10 @@ pub use membership::{
 pub use rulings::{
   consensus_accepts, reserve_wu, verify_weight, wallet_pad, INPUT_MAX, INPUT_MIN, PREFERRED_INPUTS,
   RESERVE_WU, W_FS1_BASE, W_FS1_PER_INPUT, W_OUT, W_TX,
+};
+pub use spend::{
+  prove_spend, spend_blob_len, spend_params, spend_root, tree_of_notes, verify_spend, SpendIn, SpendOut,
+  RECORD_BYTES, SAL_BYTES, SPEND_HEAD, SPEND_WIRE,
 };
 pub use witness::{
   keyed_fetch_rejected, ClientIntent, SyncClient, SyncRange, SyncReject, SyncRequest, SyncServer,

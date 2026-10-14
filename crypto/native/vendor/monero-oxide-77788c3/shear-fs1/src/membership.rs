@@ -763,9 +763,21 @@ pub fn prove_prepared(
   params: &Fs1Params,
   tree: &impl Fs1Tree,
   notes: &[OpenNote],
-  mut blinds: PreparedBlinds,
+  blinds: PreparedBlinds,
   threads: usize,
 ) -> Result<Proved, Fs1Error> {
+  prove_prepared_scalars(params, tree, notes, blinds, threads).map(|(proved, _)| proved)
+}
+
+/// [`prove_prepared`], also returning each input's blind scalars in input order.
+/// The spend proof needs them; they are wiped when dropped.
+pub(crate) fn prove_prepared_scalars(
+  params: &Fs1Params,
+  tree: &impl Fs1Tree,
+  notes: &[OpenNote],
+  mut blinds: PreparedBlinds,
+  threads: usize,
+) -> Result<(Proved, Vec<BlindScalars>), Fs1Error> {
   check_notes(tree, notes)?;
   let n = notes.len();
   if blinds.layers != tree.layers() || blinds.inputs() < n {
@@ -783,6 +795,7 @@ pub fn prove_prepared(
   let mut output_blinds = Vec::with_capacity(n);
   let mut opened = Vec::with_capacity(n);
   let mut input_bytes = Vec::with_capacity(n);
+  let mut kept = Vec::with_capacity(n);
   for (output, (blinds, scalars)) in outputs.iter().zip(blinds.outputs.drain(.. n)) {
     let points = open_input_points(output, &scalars, params);
     opened.push(Input::new(points[0], points[1], points[2], points[3]).map_err(|_| Fs1Error::Blind)?);
@@ -792,6 +805,7 @@ pub fn prove_prepared(
     }
     input_bytes.push(encoded);
     output_blinds.push(blinds);
+    kept.push(scalars);
   }
   let c1_blinds: Vec<_> = blinds.c1.drain(.. per_c1 * n).collect();
   let c2_blinds: Vec<_> = blinds.c2.drain(.. per_c2 * n).collect();
@@ -805,7 +819,7 @@ pub fn prove_prepared(
   if bytes.len() != proof_len(n, tree.layers()) {
     return Err(Fs1Error::Io);
   }
-  Ok(Proved { bytes, inputs: opened, input_bytes, root: tree.root(), layers: tree.layers() })
+  Ok((Proved { bytes, inputs: opened, input_bytes, root: tree.root(), layers: tree.layers() }, kept))
 }
 
 /// Verify a proof produced by [`prove`] against the same parameters.
