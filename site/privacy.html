@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Privacy policy — Shear</title>
+  <meta name="description" content="What Shear's wallet, node, pool and website collect: no accounts, no tracking, keys stay on your device." />
+  <link rel="icon" href="brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="css/site.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css?v=20261014nav" />
+  <link rel="stylesheet" href="css/saas-dark.css" />
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn is-on active" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="shared/shear-chrome.js?v=20261014nav"></script>
+
+<div class="banner" role="status">
+    <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
+  </div>
+
+  <main>
+    <div class="wrap page-hero">
+      <p class="section-label">Privacy</p>
+      <h1>Privacy policy</h1>
+      <p class="lede">Short version: Shear has no accounts, no ads and no tracking. Your keys never leave your device. Servers you connect to see your IP address, and what you put on the blockchain is public and permanent.</p>
+      <p class="card-kicker">Last updated: 2026-10-14 · Applies to shear.digital and its subdomains, the Continuum wallet, the ShearK miner and the Shear node.</p>
+    </div>
+
+    <section class="wrap section">
+      <div class="panel">
+        <h3>Who we are</h3>
+        <p>Shear is run by Russell Gray Sneddon, who is the data controller. Questions or requests: <a href="mailto:russell.gray.sneddon@gmail.com">russell.gray.sneddon@gmail.com</a>. Shear is currently a testnet; mainnet is not live.</p>
+
+        <h3>Wallet (Continuum: Windows, Linux, Android, CLI)</h3>
+        <ul>
+          <li>No sign-up, no account, no email, and no analytics or crash-reporting SDKs.</li>
+          <li>Your seed phrase and private keys are created and stored on your device only. We never receive them and cannot recover them.</li>
+          <li>The wallet keeps its settings, transaction history and a copy of the chain on your device. Deleting the app or its data folder removes them; back up your seed first.</li>
+          <li>Desktop and CLI wallets talk to a node on your own machine by default. The phone wallet talks to public Shear nodes we run (p2p.shear.digital, r2r.shear.digital, b2b.shear.digital), and on first sync can download a chain snapshot from boot.shear.digital. If you turn it on, an advanced setting uses pool.shear.digital instead. Whichever server you use sees your IP address and what you request or send.</li>
+          <li>Android permissions: internet (to reach the network); camera (only when you scan a QR code; images are not stored or sent); biometrics (to unlock on the device, handled by Android, we never see the data); and notifications, a foreground service and wake lock (to keep syncing and show status).</li>
+        </ul>
+
+        <h3>Node and peer-to-peer network</h3>
+        <p>A Shear node stores the chain, a list of peers and its own logs on your machine. It connects to other nodes, and every peer you connect to (including nodes we operate) sees your IP address and the blocks and transactions you relay. Peers may temporarily ban addresses that misbehave. We are reviewing exactly what our nodes and the pool's stratum server keep, with the aim of keeping IP addresses only while they are needed to run the connection and block abuse. This section will be updated. Our public nodes are in Finland, Germany and the United States.</p>
+
+        <h3>Mining pool (pool.shear.digital)</h3>
+        <ul>
+          <li>No pool account. To mine you give a payout address and, optionally, a worker name.</li>
+          <li>The pool sees your IP address, payout address, worker name and the shares you submit, and uses them to credit and pay your work and to block abuse.</li>
+          <li>Share records are kept only as long as they are needed to credit and pay miners. We are reviewing exactly what our nodes and the pool's stratum server keep, with the aim of keeping IP addresses only while they are needed to run the connection and block abuse. This section will be updated.</li>
+        </ul>
+
+        <h3>What is public on the blockchain</h3>
+        <p>Blocks are public and permanent, and every node holds a copy, so nobody (including us) can delete them. Some transaction types reveal less than others; assume anything on chain may be visible. The explorer (explorer.shear.digital) and mempool view only display what is already public on the network.</p>
+
+        <h3>Website (shear.digital and subdomains)</h3>
+        <ul>
+          <li>No analytics, no advertising, no tracking.</li>
+          <li>One preference cookie and localStorage entry, <code>shear-theme</code> (light/dark), set on .shear.digital for 1 year so it applies across our subdomains. It is strictly functional and is not logged or used for tracking.</li>
+          <li>Our web servers keep access logs: IP address, time, page requested, status, bytes sent, referrer and browser user-agent. On shear.digital, pool, explorer and our public node hosts (p2p, r2r) the page is logged without the query string (the part of a link after "?"); our other subdomains (such as team, mempool, dag, boot and vortices) log the full link including it. Separate error logs record the IP address and full request when something fails. Logs are rotated daily and deleted after 14 days (up to about 15 days for the oldest entries). They are not used for tracking or shared.</li>
+          <li>When you open a page, your browser asks GitHub (api.github.com) for the latest release details, so GitHub receives your IP address.</li>
+          <li>Downloads and source code are hosted on GitHub.</li>
+        </ul>
+
+        <h3>Third parties and transfers</h3>
+        <p>We do not sell or share personal data. Services involved: Hetzner, which hosts our servers in Finland, Germany and the United States; Namecheap, our domain registrar and DNS provider; and GitHub (code, downloads and release details). GitHub is a US company, so the data it receives (mainly your IP address) may be processed in the United States under their own privacy policies and transfer safeguards. If you install from an app store (Google Play, later Apple's App Store), its policy applies too. We may disclose data if the law requires it.</p>
+
+        <h3>Your rights</h3>
+        <p>If UK or EU data-protection law applies to you, you can ask to see, correct or delete personal data we hold (in practice, server logs), or object to its use. We rely on legitimate interests (running and securing the services). Contact us at the address above and we will reply within one month. You can also complain to the UK Information Commissioner's Office (ico.org.uk). Data on the blockchain cannot be deleted by anyone.</p>
+
+        <h3>Children</h3>
+        <p>Shear is not aimed at children under 16 and we do not knowingly collect their data.</p>
+
+        <h3>Changes</h3>
+        <p>We will post changes on this page and update the date above.</p>
+      </div>
+    </section>
+  </main>
+
+
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.70" data-network-fallback="shear-testnet-v10">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="index.html">Home</a>
+        <a href="network.html">Network</a>
+        <a href="docs/index.html">Docs</a>
+        <a href="privacy.html">Privacy</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="js/site.js"></script>
+  <script src="shared/site-identity.js"></script>
+</body>
+</html>

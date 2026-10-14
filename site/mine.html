@@ -46,16 +46,48 @@
     })();
   </script>
   <title>Mine — Shear</title>
-  <meta name="description" content="Shear mining: pool stratum path vs solo node. ShearK on shear-testnet-v11." />
+  <meta name="description" content="Shear mining: pool stratum path vs solo node. ShearK on shear-testnet-v10." />
   <link rel="icon" href="brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="css/site.css" />
-  <link rel="stylesheet" href="shared/shear-chrome.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css?v=20261014nav" />
   <link rel="stylesheet" href="css/saas-dark.css" />
 </head>
 <body>
-  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="brand/"></div>
-  <script src="shared/shear-chrome.js"></script>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn is-on active" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="shared/shear-chrome.js?v=20261014nav"></script>
 
 <div class="banner" role="status">
     <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
@@ -67,7 +99,7 @@
     <div class="wrap page-hero">
       <p class="section-label">Hashpower</p>
       <h1>Mine</h1>
-      <p class="lede">Choose pool or solo. Miner binary is <strong>ShearK 2.8</strong> — separate from Continuum 0.71. The node (Shear Sentinel v18) is what the wallet reads. Downloads live on the wallet, node, and miner hubs. How-to: https://shear.digital/docs/#/surfaces.</p>
+      <p class="lede">Choose pool or solo. Miner binary is <strong>ShearK 2.8</strong> — separate from Continuum 0.70. The node (Shear Sentinel v17) is what the wallet reads. Downloads live on the wallet, node, and miner hubs. How-to: https://shear.digital/docs/#/surfaces.</p>
     </div>
 
     <section class="wrap section">
@@ -93,7 +125,7 @@
           <p>Run a synced node, then solo mine. More ops, same algo.</p>
           <div class="code-line">npm run solo</div>
           <ol class="steps">
-            <li>Install Shear Sentinel v18 or build from the node page. Sync shear-testnet-v11 until ibd=false.</li>
+            <li>Install Shear Sentinel v17 or build from the node page. Sync shear-testnet-v10 until ibd=false.</li>
             <li>Run npm run solo so stratum listens on 127.0.0.1:1111. Do not use npm run pool.</li>
             <li>Point ShearK at that port with Copy dest (<code>--user YOUR_SSA1</code>). A typed suffix is optional.</li>
           </ol>
@@ -109,15 +141,17 @@
     <section class="wrap section-sm">
       <div class="panel">
         <h3>Tip pins</h3>
-        <p style="margin:0">Algo <strong>ShearHash-v3</strong> · network <strong data-shear-network>shear-testnet-v11</strong> · wallet Continuum <strong>0.71</strong> · stratum <strong>stratum+ssl://pool.shear.digital:443</strong></p>
+        <p style="margin:0">Algo <strong>ShearHash-v3</strong> · network <strong data-shear-network>shear-testnet-v10</strong> · wallet Continuum <strong>0.70</strong> · stratum <strong>stratum+ssl://pool.shear.digital:443</strong></p>
       </div>
     </section>
   </main>
 
   <footer class="footer">
     <div class="wrap footer-inner">
-      <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <div data-shear-foot data-wallet-fallback="0.70" data-network-fallback="shear-testnet-v10">Shear · … · Continuum … · …</div>
+      <div class="shear-legal">Shear is experimental open-source software on testnet. Nothing here is financial advice or an offer of investment. Use it lawfully.</div>
       <nav>
+        <a href="/privacy.html">Privacy</a>
         <a href="index.html">Home</a>
         <a href="get-started.html">Wallet</a>
         <a href="https://pool.shear.digital" rel="noopener">Pool</a>
