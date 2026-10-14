@@ -6982,6 +6982,12 @@ void main() {
     expect(dart.contains('a year'), isFalse);
     expect(File('lib/main.dart').readAsStringSync().contains('central bank'), isFalse);
     expect(File('lib/main.dart').readAsStringSync().contains('Lock issuance rate'), isTrue);
+    expect(
+      File('lib/main.dart').readAsStringSync().contains(
+        "Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.",
+      ),
+      isTrue,
+    );
     expect(File('lib/main.dart').readAsStringSync().toLowerCase().contains('apr'), isFalse);
   });
 

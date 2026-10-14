@@ -3694,6 +3694,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               'The winning vote then moves the hash bonus by one unit.',
             ),
             const SizedBox(height: 8),
+            const Text(
+              "Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.",
+            ),
+            const SizedBox(height: 8),
             _glowBanner(
               context,
               key: const Key('reserve-hashbonus-per-u'),

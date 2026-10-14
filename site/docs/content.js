@@ -367,7 +367,8 @@ window.SHEAR_DOCS = {
     title: 'Stake, idle, lock',
     crumb: 'reserve / stake',
     html:
-      '<p>An active lock earns the lock issuance rate for the full epoch (4 days testnet / 400 days mainnet). The rate is frozen when the epoch opens. Idle coin earns no Reserve reward. Locked is active plus idle. The Reserve reward is minted on withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
+      '<p>An active lock earns the lock issuance rate for the full epoch (4 days testnet / 400 days mainnet). The rate is frozen when the epoch opens. Idle coin earns no Reserve reward. Locked is active plus idle. The Reserve reward is paid on withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>' +
+      '<p>Reserve rewards are newly minted by the protocol in each block\'s coinbase at the lock issuance rate. They don\'t come from any pool or pot of existing Shear, and nobody holds your coins.</p>'
   };
 
   P.votes = {
@@ -383,7 +384,8 @@ window.SHEAR_DOCS = {
     title: 'Lock issuance rate',
     crumb: 'reserve / lock issuance rate',
     html:
-      '<p>The lock issuance rate is frozen for the epoch (4 days testnet / 400 days mainnet). It changes only when an epoch opens. A vote, a miner, an admin, and a local snapshot cannot set a different rate. The amount paid on withdraw is the Reserve reward. The rate does not move the pot or the hash-bonus pile.</p>'
+      '<p>The lock issuance rate is frozen for the epoch (4 days testnet / 400 days mainnet). It changes only when an epoch opens. A vote, a miner, an admin, and a local snapshot cannot set a different rate. The amount paid on withdraw is the Reserve reward. The rate does not move the pot or the hash-bonus pile.</p>' +
+      '<p>Reserve rewards are newly minted by the protocol in each block\'s coinbase at the lock issuance rate. They don\'t come from any pool or pot of existing Shear, and nobody holds your coins.</p>'
   };
 
   P.withdraw = {
@@ -444,6 +446,7 @@ window.SHEAR_DOCS = {
       '<table><tr><th>Block pot</th><td>1 SHE, every found block</td></tr>' +
       '<tr><th>Hash bonus</th><td>10<sup>−11</sup> SHE per proven floor share, paid to that hasher dest on the next sealed block</td></tr>' +
       '<tr><th>The Reserve</th><td>Reserve reward on locked SHE at the lock issuance rate — the only dapp mint</td></tr></table>' +
+      '<p>Reserve rewards are newly minted by the protocol in each block\'s coinbase at the lock issuance rate. They don\'t come from any pool or pot of existing Shear, and nobody holds your coins.</p>' +
       '<p>Third-party vortices must top up rewards from coin already in circulation.</p>'
   };
 

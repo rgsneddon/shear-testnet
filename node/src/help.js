@@ -69,6 +69,7 @@ function sectionRpc() {
     'Reserve lock, epoch vote, and withdraw are sealed transactions. This node applies them.',
     'The vote moves the hash-bonus unit only. The lock issuance rate is frozen at epoch open.',
     'The lock issuance rate cannot move the pot or the hash-bonus pile. The amount paid on withdraw is the Reserve reward.',
+    "Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.",
     '',
     'Do not bind RPC to the public internet.',
   ];

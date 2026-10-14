@@ -89,6 +89,12 @@ describe('shear.digital/docs', () => {
     assert.match(content, /Your deposits/);
     assert.match(content, /lock issuance rate/);
     assert.match(content, /Reserve reward/);
+    const minted = /Reserve rewards are newly minted by the protocol in each block\\?'s coinbase at the lock issuance rate\. They don\\?'t come from any pool or pot of existing Shear, and nobody holds your coins\./;
+    assert.match(content, minted);
+    const gov = fs.readFileSync(path.join(here, '../governance.html'), 'utf8');
+    const admin = fs.readFileSync(path.join(here, '../admin/index.html'), 'utf8');
+    assert.match(gov, minted);
+    assert.match(admin, minted);
     assert.doesNotMatch(content, /central-bank/);
     assert.doesNotMatch(content, /base rate/);
     assert.doesNotMatch(content, /APR/);

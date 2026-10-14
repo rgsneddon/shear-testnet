@@ -380,6 +380,7 @@ shear rewards — staked + accrued Reserve rewards
   shear reserve withdraw        same settlement (GUI unlock)
 
 Lock issuance rate, frozen for the epoch. Extra mint is the Reserve reward only.
+Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.
 ''';
     case 'history':
       return 'shear history — Shearview rows (id, kind/type, height, confirmed)\n';
