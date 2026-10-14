@@ -247,7 +247,9 @@ export function bpVerifyTerms(V, proof, n, seed, weight = 1n, Vbytes = null) {
   const ds = (b) => {
     const buf = Buffer.from(b);
     if (buf.length !== 32) throw new Error('bp_scalar');
-    return Fn.fromBytes(Uint8Array.from(buf));
+    const s = bytesToNumberLE(buf);
+    if (s >= Fn.ORDER) throw new Error('bp_scalar');
+    return s;
   };
   const tr = new Transcript(seed);
   V.forEach((P, j) => tr.point(Vbytes ? raw(Vbytes[j]) : P));

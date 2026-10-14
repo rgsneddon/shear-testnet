@@ -108,13 +108,9 @@ export function voucherKeysOk(pub) {
   if (!B || !Y || B.equals(Y)) return false;
   const lam = Buffer.from(pub?.lambda || []);
   if (lam.length !== 32) return false;
-  let l;
-  try {
-    l = Fn.fromBytes(Uint8Array.from(lam));
-  } catch {
-    return false;
-  }
-  if (Fn.is0(l)) return false;
+  let l = 0n;
+  for (let i = 31; i >= 0; i -= 1) l = (l << 8n) | BigInt(lam[i]);
+  if (l === 0n || l >= Fn.ORDER) return false;
   const probeC = Point.hashToCurve(createHash('sha512').update(VCH_PROBE_DOM).update(Buffer.from(pub.B)).digest());
   const delta = hashToScalar(Buffer.from(VCH_PROBE_DOM), Buffer.from(pub.B), Buffer.from(probeC.toBytes()));
   const P = B.add(G.multiply(delta));

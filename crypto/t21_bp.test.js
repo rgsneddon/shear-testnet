@@ -39,6 +39,21 @@ describe('t21 aggregated range proof', () => {
     assert.equal(bpVerify(V, bad, n, seed), false);
   });
 
+  it('refuses a non-canonical scalar (a + L)', () => {
+    let a = 0n;
+    const ab = Buffer.from(proof.a);
+    for (let i = 31; i >= 0; i -= 1) a = (a << 8n) | BigInt(ab[i]);
+    const big = a + Point.Fn.ORDER;
+    if (big >= 1n << 256n) return;
+    const out = Buffer.alloc(32);
+    let x = big;
+    for (let i = 0; i < 32; i += 1) {
+      out[i] = Number(x & 0xffn);
+      x >>= 8n;
+    }
+    assert.equal(bpVerify(V, { ...proof, a: out }, n, seed), false);
+  });
+
   it('does not prove a value at 2^16', () => {
     const vals = values.slice();
     vals[3] = 1n << 16n;
