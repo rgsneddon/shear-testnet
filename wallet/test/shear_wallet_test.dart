@@ -1304,9 +1304,9 @@ void main() {
       allowPublicHttp: true,
     );
     expect(posts.length, 1);
-    final paid = posts.fold<double>(0, (sum, p) => sum + (p['amount'] as num).toDouble());
-    expect(paid, closeTo(0.7, 1e-9));
-    expect(posts.every((p) => p['to'] == bob), isTrue);
+    for (final k in ['from', 'to', 'amount', 'nanos', 'change']) {
+      expect(posts.single.containsKey(k), isFalse, reason: k);
+    }
     expect((posts.first['vin'] as List).length, 2);
     expect((posts.first['vin'] as List).length, lessThanOrEqualTo(kMaxInputsPerSend));
     expect(tx.to, bob);
@@ -1699,8 +1699,8 @@ void main() {
       allowPublicHttp: true,
     );
     expect(posts, isNotEmpty);
-    expect(posts.single.containsKey('change'), isTrue);
-    expect(posts.every((p) => p['to'] == bob), isTrue);
+    expect(posts.single.containsKey('change'), isFalse);
+    expect(posts.single.containsKey('to'), isFalse);
     final after = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
     final unsent = ledger.notes
         .where((n) => n['spent'] != true && n['verified'] == true)
@@ -6555,7 +6555,7 @@ void main() {
     expect(find.text('Add more SHE to the vault'), findsNothing);
   });
 
-  test('send posts ssa1 from + memoCt; sender and recipient dests open plaintext, other dest does not', () async {
+  test('send posts memoCt with no plaintext from/to; sender and recipient dests open plaintext, other dest does not', () async {
     final posted = <Map<String, dynamic>>[];
     final header = Uint8List(128);
     final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
@@ -6592,9 +6592,8 @@ void main() {
     expect(tx.to, isNot(to));
     expect(tx.memoPlain, 'secret-flow');
     expect(posted, isNotEmpty);
-    expect(posted.last['from'], from);
-    expect(posted.last['to'], tx.to);
-    expect(posted.last['from'].toString().startsWith('shear1'), isFalse);
+    expect(posted.last.containsKey('from'), isFalse);
+    expect(posted.last.containsKey('to'), isFalse);
     expect(posted.last['memoCt'], isNotNull);
     expect(await memoOpen(tx.to, tx.memoCt), isNull);
     expect(
@@ -6636,9 +6635,8 @@ void main() {
       paymentCode: alice.paymentCode,
     );
     expect(tx.from, home);
-    expect(posted.single['from'], home);
-    expect(posted.single['from'], isNot(indexed));
-    expect(posted.single['to'], to);
+    expect(posted.single.containsKey('from'), isFalse);
+    expect(posted.single.containsKey('to'), isFalse);
     final fee = levyNanos((0.4 * kUnitsPerShe).round()) / kUnitsPerShe;
     expect(
       aliceL.spendableOwned(alice.address, paymentCode: alice.paymentCode),
@@ -6674,11 +6672,11 @@ void main() {
       paymentCode: alice.paymentCode,
     );
     expect(posted, isNotEmpty);
-    expect(posted.single['to'], to);
-    expect(posted.single['change'], isNotNull);
-    expect(posted.single['change'], isNot(from));
-    expect(posted.single['change'], isNot(to));
-    expect(tx.change, posted.single['change']);
+    expect(posted.single.containsKey('to'), isFalse);
+    expect(posted.single.containsKey('change'), isFalse);
+    expect(tx.change, isNotNull);
+    expect(tx.change, isNot(from));
+    expect(tx.change, isNot(to));
     final fee = levyNanos((0.4 * kUnitsPerShe).round()) / kUnitsPerShe;
     final leftover = 1.0 - 0.4 - fee;
     expect(ledger.spendable(from), closeTo(0, 1e-9));
@@ -6914,8 +6912,8 @@ void main() {
       paymentCode: alice.paymentCode,
     );
     expect(posted.single.containsKey('open'), isFalse);
-    expect(posted.single['from'], home);
-    expect(posted.single['to'], to);
+    expect(posted.single.containsKey('from'), isFalse);
+    expect(posted.single.containsKey('to'), isFalse);
   });
 
   test('third-party vortice cannot mint SHE or impersonate Reserve/Join/pool-unlock; UI has no password or join1', () {
