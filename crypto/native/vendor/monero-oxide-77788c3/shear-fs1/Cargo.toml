@@ -53,6 +53,11 @@ path = "src/bin/fs1_bench.rs"
 required-features = ["bench"]
 
 [[bin]]
+name = "fs1_spend_bench"
+path = "src/bin/fs1_spend_bench.rs"
+required-features = ["bench"]
+
+[[bin]]
 name = "fs1_tree"
 path = "src/bin/fs1_tree.rs"
 required-features = ["tree-cli"]
