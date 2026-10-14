@@ -47,6 +47,14 @@ Scale (90 s, opt-in B + prune): see [scale.md](scale.md). Tree A is O(miners) pe
 
 Consensus spendable is **9 confirmations** (the minimum; ~9 min at 90 s). That depth is in `consensusFingerprint()`. `min_confirms` default **12** is third-party/merchant policy only (~18 min), not a consensus floor. B-spends wait for the same 9-conf consensus depth. 0-conf is merchant policy.
 
+## Block budget
+
+Counts and byte sizes are the public transaction. Applying these caps does not open a proof.
+
+The normal per-block payee cap is **470** (T21 hidden payout). `floor(8,388,608 / 17,400)` is 482 and is not the cap. A larger row can only lower 470. Below `FRAME_MIN` (19,764,360) the live cap is the smaller of 470 and the hex-frame fallback. Today's IPC frame is 8 MiB, so `payeeCapLive()` stays **171**. The 16 MiB P2P fallback is also under 470, so that frame's live cap is unchanged. On the 8 MiB frame a coinbase output bound of live payees + 3 notes + 8 vault-withdraw rows is 182.
+
+The 16-send FS-1 reserve is **2,336** weight units. Verify weight is `25 + 25n` weight units for `n` inputs. The reserve prices the 2-input send: `16 × (75 + 3×23 + 2) = 2,336`. The headroom under the 36,000 weight-unit block cap, after that reserve and the 528 vault-withdraw reserve, is 33,136. `2 × W_IN` (40 wu) is not this reserve.
+
 ## ADMITv3 membership
 
 ADMITv3 names the full-set FS-1 send proof. It has not shipped. Until it does, a send or transfer with a byte-3 blob is `send_unavailable` before any proof work, and no full-set hide is live on this book. The rules below are the wire checks that stay in place.

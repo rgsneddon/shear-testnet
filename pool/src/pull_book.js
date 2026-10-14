@@ -8,6 +8,7 @@ import path from 'node:path';
 import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS, HASH_BONUS_NANOS } from '../../crypto/asert.js';
 import { isSpendableHeight } from '../../crypto/chronoflux.js';
 import { hash20FromAddress, encodeDest } from '../../crypto/address.js';
+import { payeeFs1Ok } from '../../crypto/n1.js';
 import { asU8 } from '../../crypto/note.js';
 import {
   AUTO_PAYOUT_MIN_NANOS,
@@ -167,6 +168,8 @@ export function createPullBook(dir) {
 
   /** Record payout dest on login so miner pages show ssa1**** before the next found block. */
   function bindDest(tag, dest) {
+    const raw = String(dest || '').trim().split('.')[0];
+    if (raw && !payeeFs1Ok(raw)) return false;
     const d20 = rememberDest(tag, dest);
     if (d20) save();
     return !!d20;

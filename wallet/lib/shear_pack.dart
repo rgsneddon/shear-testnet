@@ -201,7 +201,34 @@ Uint8List spendPackDigest({
       'kind': _kindByte((o['kind'] as String?) ?? kind),
     });
   }
-  return packDigest(packTx(vins: vins, vouts: vouts));
+  final packed = packDigest(packTx(vins: vins, vouts: vouts));
+  final top = kind ?? (vout.isNotEmpty ? vout.first['kind'] as String? : null) ?? '';
+  if (top == 'lock' || top == 'vote' || top == 'withdraw') return packed;
+  return flowAmtDigest(packed, [for (final o in vout) _amtCtBytes(o['amtCt'])]);
+}
+
+final spendAmtDst = utf8.encode('shear-spend-amt-v1');
+
+/// Same bytes as crypto/spend.js flowAmtDigest: every output's amtCt, empty when absent.
+Uint8List flowAmtDigest(Uint8List packed, List<Uint8List> amtCts) {
+  final b = BytesBuilder()
+    ..add(spendAmtDst)
+    ..add(packed)
+    ..add(_u32le(amtCts.length));
+  for (final ct in amtCts) {
+    b.add(_u32le(ct.length));
+    b.add(ct);
+  }
+  return Uint8List.fromList(sha256.convert(b.toBytes()).bytes);
+}
+
+Uint8List _amtCtBytes(Object? v) {
+  if (v is Uint8List) return v;
+  if (v is List<int>) return Uint8List.fromList(v);
+  if (v is String && v.length.isEven && RegExp(r'^[0-9a-fA-F]+$').hasMatch(v)) {
+    return Uint8List.fromList([for (var i = 0; i < v.length; i += 2) int.parse(v.substring(i, i + 2), radix: 16)]);
+  }
+  return Uint8List(0);
 }
 
 Uint8List spendMessage({
@@ -288,6 +315,7 @@ int jsSafeInt(Object? raw) {
 
 /// Spend message the pool's `verifySpendSig` checks for a lock, vote, or withdraw.
 /// Flow sends stay on [spendMessage]. This adds the portal, fee, and reserve suffix.
+/// A withdraw also signs [id] and the 32-byte [withdrawNonce] directly.
 Uint8List reserveSpendMessage({
   required String from,
   required List<Map<String, dynamic>> vout,
@@ -300,6 +328,8 @@ Uint8List reserveSpendMessage({
   required int fee,
   required int suffixNanos,
   Uint8List? commit,
+  String id = '',
+  Uint8List? withdrawNonce,
 }) {
   final packed = spendPackDigest(from: from, vout: vout, kind: kind, vin: vin);
   final portal = portalId.toLowerCase();
@@ -321,6 +351,13 @@ Uint8List reserveSpendMessage({
     ..._i64le(suffixNanos),
     ...commitBytes,
   ];
+  if (kind == 'withdraw') {
+    final nonce = (withdrawNonce != null && withdrawNonce.length == 32)
+        ? withdrawNonce
+        : Uint8List(32);
+    chunks.addAll(_lenPrefUtf8(id));
+    chunks.addAll(nonce);
+  }
   final digest = Uint8List.fromList(sha256.convert(chunks).bytes);
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   RESERVE_PROGRAM,
   PI_SHE_NANOS,
@@ -10,7 +10,7 @@ import {
   MAGIC_TESTNET,
 } from './asert.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest } from './address.js';
-import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos } from './note.js';
+import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos, hashToScalar, scalarBytes } from './note.js';
 import {
   emptyOracle,
   interestNanos,
@@ -696,12 +696,57 @@ export function previewWithdraw(state, dest) {
   };
 }
 
-function sealedReserveVout(to, n, kind) {
+const KT10_R_DST = Buffer.from('shear-kt10-withdraw-r-v1');
+const ZERO_SCALAR = Buffer.alloc(32);
+
+function positiveUnits(n) {
+  if (typeof n === 'bigint') return n > 0n;
+  if (typeof n === 'string' && /^\d+$/.test(n)) {
+    try { return BigInt(n) > 0n; } catch { return false; }
+  }
+  return Number(n) > 0;
+}
+
+/** 32-byte withdraw nonce. Hex or raw bytes. The same bytes recompute the same r. */
+export function withdrawNonceBytes(nonce) {
+  if (typeof nonce === 'string' && /^[0-9a-f]{64}$/i.test(nonce)) return Buffer.from(nonce, 'hex');
+  if (Buffer.isBuffer(nonce) && nonce.length === 32) return Buffer.from(nonce);
+  if (nonce instanceof Uint8Array && nonce.length === 32) return Buffer.from(nonce);
+  throw new Error('kt10_nonce');
+}
+
+function freshWithdrawId() {
+  return `wd-${randomBytes(16).toString('hex')}`;
+}
+
+/**
+ * KT-10. Blind for a vault withdrawal. Hash-derived, and not the zero scalar,
+ * so v·G + r·H is not the identity when v is positive.
+ * nonce is a stored 32-byte input. The same (to, nanos, id, nonce) is the same r.
+ * A blank id is not a valid input here: withdrawTx mints a unique one.
+ */
+export function kt10WithdrawBlind(to, nanos, id = '', nonce) {
+  const n = Buffer.alloc(8);
+  n.writeBigUInt64LE(BigInt(nanos));
+  const dest = Buffer.from(String(to));
+  const ident = Buffer.from(String(id || ''));
+  const extra = withdrawNonceBytes(nonce);
+  for (let i = 0; i < 8; i += 1) {
+    const r = hashToScalar(KT10_R_DST, Buffer.from([i]), dest, n, ident, extra);
+    if (!scalarBytes(r).equals(ZERO_SCALAR)) return r;
+  }
+  throw new Error('kt10_blind');
+}
+
+function sealedReserveVout(to, n, kind, r) {
   const d20 = hash20FromAddress(to);
   if (!d20) return { address: to, nanos: n, kind };
+  if (kind === KIND_WITHDRAW && !positiveUnits(n)) {
+    return { address: to, nanos: n, kind };
+  }
   // Reserve lock/vote/withdraw amounts are public (valueProof.v stays on the
   // wire). Exact-value Schnorr, not BP+ range — same as coinbase notes.
-  const note = sealCoinbaseNote(n, { dest20: d20, kind });
+  const note = sealCoinbaseNote(n, { dest20: d20, kind, r });
   if (note.valueProof && typeof note.valueProof === 'object') {
     note.valueProof = { ...note.valueProof, v: n };
   }
@@ -744,10 +789,15 @@ export function lockTx({ from, to, nanos, id }) {
   };
 }
 
-export function withdrawTx({ from, to, nanos, id }) {
+export function withdrawTx({ from, to, nanos, id, nonce } = {}) {
   const n = exactFloorNanos(nanos);
-  return {
-    id,
+  const ident = id == null || String(id) === '' ? freshWithdrawId() : String(id);
+  const blindNonce = positiveUnits(n)
+    ? (nonce == null ? randomBytes(32) : withdrawNonceBytes(nonce))
+    : null;
+  const blind = blindNonce ? kt10WithdrawBlind(to, n, ident, blindNonce) : null;
+  const tx = {
+    id: ident,
     programId: RESERVE_PROGRAM,
     mint: true,
     kind: KIND_WITHDRAW,
@@ -757,8 +807,10 @@ export function withdrawTx({ from, to, nanos, id }) {
     portalId: portalIdFromDest(from),
     payoutPortalId: portalIdFromDest(to),
     vin: [],
-    vout: [sealedReserveVout(to, n, KIND_WITHDRAW)],
+    vout: [sealedReserveVout(to, n, KIND_WITHDRAW, blind)],
   };
+  if (blindNonce) tx.withdrawNonce = Buffer.from(blindNonce).toString('hex');
+  return tx;
 }
 
 export function voteTx({ from, dest, choice, id }) {
@@ -945,11 +997,21 @@ export function canonicalReserveFields(tx) {
   };
 }
 
-/** Merkle, owner, and v3 transcript suffix for a lock, vote, or withdraw. */
+function withdrawNonceSigned(tx) {
+  if (tx?.withdrawNonce == null || tx.withdrawNonce === '') return Buffer.alloc(32);
+  try {
+    return withdrawNonceBytes(tx.withdrawNonce);
+  } catch {
+    return Buffer.alloc(32);
+  }
+}
+
+/** Merkle, owner, and v3 transcript suffix for a lock, vote, or withdraw.
+ * A withdraw also signs its id and its 32-byte nonce. Lock and vote do not. */
 export function reserveDigestSuffix(tx) {
   const fields = canonicalReserveFields(tx);
   if (!fields) return null;
-  return Buffer.concat([
+  const parts = [
     Buffer.from('reserveact1'),
     lenPrefUtf8(fields.kind),
     lenPrefUtf8(fields.portalId),
@@ -958,7 +1020,12 @@ export function reserveDigestSuffix(tx) {
     lenPrefUtf8(fields.choice),
     i64le(fields.nanos),
     fields.commit,
-  ]);
+  ];
+  if (fields.kind === KIND_WITHDRAW) {
+    parts.push(lenPrefUtf8(String(tx?.id || '')));
+    parts.push(withdrawNonceSigned(tx));
+  }
+  return Buffer.concat(parts);
 }
 
 export function txIsReserveAction(tx) {

@@ -1006,13 +1006,10 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
     if (addr.isNotEmpty) note['address'] = addr;
     final opened = admitBaseFromAddress(addr);
     final baseOk = opened != null && opened.length == 32 && isPayableDest(addr);
-    final B = baseOk ? opened : (self ? fallbackBase : null);
-    if (!self && B == null) throw StateError(kErrShortSsa1);
-    note = attachAdmitPub(
-      note,
-      admitBase: B != null ? pointFrom(B) : null,
-      spendSeed: B == null ? spendSeed : null,
-    );
+    // Consensus needs rEph/rCt/amtCt on every hidden output, change included.
+    final B = baseOk ? opened : (self ? (fallbackBase ?? admitBaseBytes(spendSeed)) : null);
+    if (B == null) throw StateError(kErrShortSsa1);
+    note = attachAdmitPub(note, admitBase: pointFrom(B), v: units);
     sealed.add(note);
   }
   return {'vouts': sealed};
@@ -1387,6 +1384,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         kindName != null &&
         kindName.isNotEmpty &&
         kindName != 'pot') {
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), commit)) continue;
       final amtEarly = _sheOfExactNanos(cachedEarly);
       notes.add({
         'address': matched,
@@ -1447,9 +1445,10 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     final cachedNanos = proofKey == null ? null : proofCache[proofKey];
     // A remembered opening is this proof's nanos. A new proof still has to open.
     final openRow = Map<String, dynamic>.from(o)..['kind'] = kind;
-    final verifiedNanos = cachedNanos ?? openedSpendDigits(openRow);
+    final verifiedNanos = cachedNanos ?? openedSpendDigits(openRow) ?? _amtCtDigits(o, xBase);
     final proofChecked = verifiedNanos != null;
     final amt = verifiedNanos == null ? null : _sheOfExactNanos(verifiedNanos);
+    if (!noteIsFs1Leaf(admit, commit)) continue;
     notes.add({
       'address': matched,
       'dest': matched,
@@ -1626,6 +1625,12 @@ String? openedSpendDigits(Map o) {
   return hunted.toString();
 }
 
+String? _amtCtDigits(Map o, Scalar xBase) {
+  final v = openNoteAmount(o, xBase)?['v'];
+  if (v is! BigInt || v <= BigInt.zero) return null;
+  return v.toString();
+}
+
 int? _openedSpendNanos(Map o) {
   final commit = _noteBytes(o['commit']);
   final vp = o['valueProof'];
@@ -1729,15 +1734,61 @@ List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
   return vouts.map(compactSealedVout).toList();
 }
 
+/// KT-10. Same bytes as `kt10WithdrawBlind` in crypto/reserve_vault.js.
+/// `nonce` is 32 bytes. The same (to, nanos, id, nonce) is the same scalar.
+Scalar kt10WithdrawBlind(String to, BigInt nanos, String id, Uint8List nonce) {
+  if (nonce.length != 32) throw StateError('kt10_nonce');
+  final dst = utf8Bytes('shear-kt10-withdraw-r-v1');
+  final n = Uint8List(8);
+  var v = nanos;
+  final mask = BigInt.from(0xff);
+  for (var i = 0; i < 8; i++) {
+    n[i] = (v & mask).toInt();
+    v >>= 8;
+  }
+  final dest = utf8Bytes(to);
+  final ident = utf8Bytes(id);
+  for (var i = 0; i < 8; i++) {
+    final r = hashToScalar([dst, Uint8List.fromList([i]), dest, n, ident, nonce]);
+    if (!scalarEq(r, scalarZero())) return r;
+  }
+  throw StateError('kt10_blind');
+}
+
+String _freshWithdrawId() {
+  final b = randomBytes(16);
+  final hex = b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+  return 'wd-$hex';
+}
+
+Uint8List _withdrawNonce(Uint8List? nonce) {
+  if (nonce == null) return randomBytes(32);
+  if (nonce.length != 32) throw StateError('kt10_nonce');
+  return nonce;
+}
+
 /// Reserve lock/vote/withdraw out, same seal as pool `sealedReserveVout`.
 /// Public nanos + dest20 + noteCommitOfDest20, with `commit` so wallet_api
 /// keeps this body instead of minting a fresh seal after the spend sig.
-Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind) {
+/// A withdraw uses a hash-derived non-zero r. Value 0 is not a withdrawal.
+Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {String id = '', Uint8List? nonce}) {
   final units = tryU64Units(nanos) ?? BigInt.zero;
   final shown = u64OnWire(units);
   final d20 = hash20FromAddress(to);
   if (d20 == null) return {'address': to, 'nanos': shown, 'kind': kind};
-  final note = sealCoinbaseUnits(units, dest20: d20, kind: kind);
+  if (kind == 'withdraw' && units <= BigInt.zero) {
+    return {'address': to, 'nanos': shown, 'kind': kind};
+  }
+  final blindId = kind == 'withdraw' ? (id.isEmpty ? _freshWithdrawId() : id) : '';
+  final blindNonce = kind == 'withdraw' ? _withdrawNonce(nonce) : null;
+  final blind = kind == 'withdraw'
+      ? kt10WithdrawBlind(to, units, blindId, blindNonce!)
+      : null;
+  final note = sealCoinbaseUnits(units, dest20: d20, kind: kind, r: blind);
+  if (kind == 'withdraw') {
+    note['id'] = blindId;
+    note['withdrawNonce'] = blindNonce;
+  }
   note['address'] = to;
   final vp = note['valueProof'];
   if (vp is Map) {
@@ -1765,8 +1816,24 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
         (o['address'] as String?) ?? to,
         tryU64Units(o['nanos']) ?? (kind == 'vote' ? BigInt.zero : nanosUnits),
         (o['kind'] as String?) ?? kind,
+        id: (input['id'] as String?) ?? '',
+        nonce: input['withdrawNonce'] is Uint8List ? input['withdrawNonce'] as Uint8List : null,
       ),
   ];
+  String? withdrawId;
+  String? withdrawNonceHex;
+  Uint8List? withdrawNonceRaw;
+  if (kind == 'withdraw') {
+    for (final o in sealed) {
+      final ident = o.remove('id');
+      final rawNonce = o.remove('withdrawNonce');
+      if (ident is String && ident.isNotEmpty) withdrawId = ident;
+      if (rawNonce is Uint8List && rawNonce.length == 32) {
+        withdrawNonceRaw = rawNonce;
+        withdrawNonceHex = rawNonce.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      }
+    }
+  }
   final postedVout = _postedVout(sealed);
   final wire = flowPostHex(<String, dynamic>{'vin': const <Map<String, dynamic>>[], 'vout': postedVout});
   final hexVout = List<dynamic>.from(wire['vout'] as List? ?? const []);
@@ -1789,6 +1856,8 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     choice: choice,
     vout: hexVout,
     nanos: shownNanos is int ? shownNanos : jsSafeInt(shownNanos),
+    id: withdrawId,
+    withdrawNonce: withdrawNonceHex,
   );
   final fee = taxed ? bindStableWeightFee(draft, maxLevy: maxLevy) : 0;
   if (taxed && !weightFeeCovers(fee, draft, maxLevy: maxLevy)) {
@@ -1814,6 +1883,8 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
       fee: fee,
       suffixNanos: suffixNanos,
       commit: commit,
+      id: withdrawId ?? '',
+      withdrawNonce: withdrawNonceRaw,
     );
     if (shared != null) {
       sig = stealthSign(spendSeed, shared, msg);
@@ -1834,6 +1905,8 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     'portalId': portalId,
     'payoutPortalId': payoutPortalId,
     'isolateStamp': reserveIsolateStamp,
+    if (withdrawId != null) 'id': withdrawId,
+    if (withdrawNonceHex != null) 'withdrawNonce': withdrawNonceHex,
   };
 }
 
@@ -1847,6 +1920,8 @@ Map<String, dynamic> _reservePoolDraft({
   required String choice,
   required List<dynamic> vout,
   required int nanos,
+  String? id,
+  String? withdrawNonce,
 }) {
   final stamp = DateTime.now().millisecondsSinceEpoch.toString();
   final portalTo = reservePortalId(to);
@@ -1876,13 +1951,14 @@ Map<String, dynamic> _reservePoolDraft({
   }
   if (kind == 'withdraw') {
     return <String, dynamic>{
-      'id': 'withdraw-$stamp',
+      'id': (id != null && id.isNotEmpty) ? id : 'withdraw-$stamp',
       'programId': 'shear-reserve-v1',
       'mint': true,
       'kind': 'withdraw',
       'from': from,
       'to': to,
       'nanos': nanos,
+      if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
       'portalId': portalFrom,
       'payoutPortalId': portalTo,
       'vin': <Map<String, dynamic>>[],
@@ -3093,6 +3169,7 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'spent': false,
       };
+      if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
       _creditNoteToShearview(row);
       rememberDest(tagged);
@@ -3225,6 +3302,7 @@ class ShearLedger implements ReadProofSink {
       for (final n in notes) {
         if (n is Map) {
           final row = Map<String, dynamic>.from(n);
+          if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
           rememberNote(row);
           _rememberProofRow(row);
           if (row['proofChecked'] == true) {
@@ -3295,6 +3373,7 @@ class ShearLedger implements ReadProofSink {
   /// does not wait for a later history/incoming delta. Hash folds stay in
   /// [_applySealedScan]. Existing dest+height rows are filled, not duplicated.
   void _creditNoteToShearview(Map<String, dynamic> note) {
+    if (!noteIsFs1Leaf(_noteBytes(note['admitPub']), _noteBytes(note['commit']))) return;
     final dest = (note['dest'] ?? note['address'])?.toString() ?? '';
     if (dest.isEmpty) return;
     final kind = (note['kind'] as String?) ?? 'receive';
@@ -5937,6 +6016,7 @@ class ShearLedger implements ReadProofSink {
       if (raw is! Map) continue;
       final row = Map<String, dynamic>.from(raw);
       if (row['verified'] != true) continue;
+      if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
       _rememberProofRow(row);
       _creditNoteToShearview(row);
@@ -7413,6 +7493,7 @@ class ShearLedger implements ReadProofSink {
           addr == changeDest ||
           isBindable(addr, restFrame: restFrame, paymentCode: paymentCode);
       if (!ours) continue;
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
       rememberNote({
         'address': addr,
         'dest': addr,
@@ -8031,6 +8112,7 @@ class ShearLedger implements ReadProofSink {
         final addr = o['address'] as String?;
         if (addr == null || addr.isEmpty) continue;
         if (addr == src || addr == changeDest) {
+          if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
           rememberNote({
             'address': addr,
             'dest': addr,
@@ -8108,6 +8190,8 @@ class ShearLedger implements ReadProofSink {
     final List<Map<String, dynamic>> postedVin;
     final List<Map<String, dynamic>> postedVout;
     int? reserveFee;
+    String? postedWithdrawId;
+    String? postedWithdrawNonce;
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
       if (spendSeed != null && spendSeed.length == 32) {
         if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
@@ -8152,6 +8236,8 @@ class ShearLedger implements ReadProofSink {
       if (pub is Uint8List) spendPubHex = _bytesHex(pub);
       final boundFee = built['fee'];
       if (boundFee is int && boundFee > 0) reserveFee = boundFee;
+      if (built['id'] is String) postedWithdrawId = built['id'] as String;
+      if (built['withdrawNonce'] is String) postedWithdrawNonce = built['withdrawNonce'] as String;
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
@@ -8205,6 +8291,8 @@ class ShearLedger implements ReadProofSink {
           paintedOwedNanos: paintedCover ? _paintedFundOwedNanos : 0,
           nanosWire: nanosWire,
           fee: reserveFee,
+          id: postedWithdrawId,
+          withdrawNonce: postedWithdrawNonce,
         );
       }
 
@@ -8802,43 +8890,37 @@ class ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
   }) {
-    final sealedSend = (kind == null || kind.isEmpty || kind == 'send') &&
-        sig != null &&
-        sig.isNotEmpty &&
-        spendPub != null &&
-        spendPub.isNotEmpty &&
-        vin != null &&
-        vin.isNotEmpty &&
-        vout != null &&
-        vout.isNotEmpty &&
-        (admitProof != null || (admitProofs != null && admitProofs.isNotEmpty));
-    return _post('/api/wallet/send', {
-        if (!sealedSend) 'from': from,
-        'to': to,
-        if (nanosWire != null && nanosWire.isNotEmpty) 'nanos': nanosWire,
-        if (!sealedSend && (nanosWire == null || nanosWire.isEmpty)) 'amount': amount,
-        if (fee != null) 'fee': fee,
-        if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
-        if (memoCt != null) 'memoCt': memoCt,
-        if (open != null && open.isNotEmpty) 'open': open,
-        if (sig != null && sig.isNotEmpty) 'sig': sig,
-        if (spendPub != null && spendPub.isNotEmpty) 'spendPub': spendPub,
-        if (ephPub != null && ephPub.isNotEmpty) 'ephPub': ephPub,
-        if (portalOpen != null && portalOpen.isNotEmpty) 'portalOpen': portalOpen,
-        if (kind != null && kind.isNotEmpty) 'kind': kind,
-        if (programId != null && programId.isNotEmpty) 'programId': programId,
-        if (choice != null && choice.isNotEmpty) 'choice': choice,
-        if (currentEpoch != null) 'currentEpoch': currentEpoch,
-        if (epochStartMs != null) 'epochStartMs': epochStartMs,
-        if (!sealedSend && change != null && change.isNotEmpty) 'change': change,
-        if (vin != null) 'vin': vin,
-        if (vout != null) 'vout': vout,
-        if (excess != null) 'excess': excess,
-        if (admitProof != null) 'admit_proof': admitProof,
-        if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
-        if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
-      }, legacyPoolSend: legacyPoolSend);
+    return _post('/api/wallet/send', walletSendBody(
+      from: from,
+      to: to,
+      amount: amount,
+      memoCt: memoCt,
+      open: open,
+      sig: sig,
+      portalOpen: portalOpen,
+      kind: kind,
+      programId: programId,
+      choice: choice,
+      currentEpoch: currentEpoch,
+      epochStartMs: epochStartMs,
+      change: change,
+      spendPub: spendPub,
+      ephPub: ephPub,
+      vin: vin,
+      vout: vout,
+      excess: excess,
+      admitProof: admitProof,
+      admitProofs: admitProofs,
+      spendTag: spendTag,
+      fee: fee,
+      paintedOwedNanos: paintedOwedNanos,
+      nanosWire: nanosWire,
+      id: id,
+      withdrawNonce: withdrawNonce,
+    ), legacyPoolSend: legacyPoolSend);
   }
 
   Future<Map<String, dynamic>> fluxset() async {
@@ -8923,4 +9005,99 @@ Future<String> continuumTipReport({List<String>? seeds, HttpClient? http}) async
     'displayHeight=${ledger.displayHeight}',
     'tipHeight=${ledger.tipHeight}',
   ].join('\n');
+}
+
+/// Body for POST /api/wallet/send. A flow send (kind send) posts the sealed tx only:
+/// no from, to, amount, nanos, change, open, or painted owed (AL-3). Its recipient must
+/// carry an admit base, or there is no key to encrypt amtCt to (AL-7). Lock, vote, and
+/// withdraw keep their public-amount body.
+Map<String, dynamic> walletSendBody({
+  required String from,
+  required String to,
+  required double amount,
+  Map<String, dynamic>? memoCt,
+  String? open,
+  String? sig,
+  String? portalOpen,
+  String? kind,
+  String? programId,
+  String? choice,
+  int? currentEpoch,
+  int? epochStartMs,
+  String? change,
+  String? spendPub,
+  String? ephPub,
+  List<dynamic>? vin,
+  List<dynamic>? vout,
+  dynamic excess,
+  Map<String, dynamic>? admitProof,
+  List<Map<String, dynamic>>? admitProofs,
+  String? spendTag,
+  int? fee,
+  int paintedOwedNanos = 0,
+  String? nanosWire,
+  String? id,
+  String? withdrawNonce,
+}) {
+  final flow = kind == null || kind.isEmpty || kind == 'send';
+  if (flow) {
+    if (admitBaseFromAddress(to) == null) throw StateError('send_dest_no_admit_base');
+    final sealed = sig != null &&
+        sig.isNotEmpty &&
+        spendPub != null &&
+        spendPub.isNotEmpty &&
+        vin != null &&
+        vin.isNotEmpty &&
+        vout != null &&
+        vout.isNotEmpty &&
+        (admitProof != null || (admitProofs != null && admitProofs.isNotEmpty));
+    if (!sealed) throw StateError('send_not_sealed');
+    for (final o in vout) {
+      if (o is Map && o['kind'] != 'dummy' && (o['amtCt'] == null || o['rEph'] == null || o['rCt'] == null)) {
+        throw StateError('send_vout_not_wrapped');
+      }
+    }
+    return {
+      if (fee != null) 'fee': fee,
+      if (memoCt != null) 'memoCt': memoCt,
+      'sig': sig,
+      'spendPub': spendPub,
+      'vin': vin,
+      'vout': vout,
+      if (excess != null) 'excess': excess,
+      if (admitProof != null) 'admit_proof': admitProof,
+      if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+      if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+      if (id != null && id.isNotEmpty) 'id': id,
+      if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+    };
+  }
+  return {
+    'from': from,
+    'to': to,
+    if (nanosWire != null && nanosWire.isNotEmpty) 'nanos': nanosWire,
+    if (nanosWire == null || nanosWire.isEmpty) 'amount': amount,
+    if (fee != null) 'fee': fee,
+    if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
+    if (memoCt != null) 'memoCt': memoCt,
+    if (open != null && open.isNotEmpty) 'open': open,
+    if (sig != null && sig.isNotEmpty) 'sig': sig,
+    if (spendPub != null && spendPub.isNotEmpty) 'spendPub': spendPub,
+    if (ephPub != null && ephPub.isNotEmpty) 'ephPub': ephPub,
+    if (portalOpen != null && portalOpen.isNotEmpty) 'portalOpen': portalOpen,
+    'kind': kind,
+    if (programId != null && programId.isNotEmpty) 'programId': programId,
+    if (choice != null && choice.isNotEmpty) 'choice': choice,
+    if (currentEpoch != null) 'currentEpoch': currentEpoch,
+    if (epochStartMs != null) 'epochStartMs': epochStartMs,
+    if (change != null && change.isNotEmpty) 'change': change,
+    if (vin != null) 'vin': vin,
+    if (vout != null) 'vout': vout,
+    if (excess != null) 'excess': excess,
+    if (admitProof != null) 'admit_proof': admitProof,
+    if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+    if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+    if (id != null && id.isNotEmpty) 'id': id,
+    if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+  };
 }

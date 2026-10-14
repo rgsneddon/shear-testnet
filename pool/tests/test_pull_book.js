@@ -134,7 +134,7 @@ describe('pool pull book', () => {
     assert.equal(taken.reason, 'none_confirmed');
   });
 
-  it('viewByDest and GET /api/wallet/balance emit zero owedPi on v12', () => {
+  it('viewByDest emits zero owedPi on v12; no balance route serves it', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-owed-'));
     const book = createPullBook(dir);
     const id = newIdentity();
@@ -149,24 +149,15 @@ describe('pool pull book', () => {
     assert.equal(byTag.pendingNanos, 0);
     assert.equal(byDest.unconfirmedNanos, 0);
     const store = { tip: () => ({ height: 2 }), getpolicy: () => ({ operational: { pool_merchant: 30 } }) };
-    const bareUrl = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}`);
-    const bare = handleWalletApi(bareUrl, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
-    assert.equal(bare.status, 401);
-    assert.equal(bare.json.reason, 'dest_hold');
-    assert.equal(bare.json.balance, undefined);
-    assert.equal(bare.json.owedPi, undefined);
     const open = destOpeningFromView(id.viewKey, id.spendPub);
-    const url = new URL(`http://127.0.0.1/api/wallet/balance?address=${dest}&open=${open}`);
-    const a = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
-    const b = handleWalletApi(url, 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
-    assert.equal(a.status, 200);
-    assert.equal(b.status, 200);
+    for (const q of [`?address=${dest}`, `?address=${dest}&open=${open}`]) {
+      const got = handleWalletApi(new URL(`http://127.0.0.1/api/wallet/balance${q}`), 'GET', {}, { store, miners: new Map(), pullBook: book, queueSend: () => ({}) });
+      assert.equal(got.status, 404);
+      assert.equal(got.json.balance, undefined);
+      assert.equal(got.json.owedPi, undefined);
+    }
     const fields = owedPiFromPullBook(book, dest, { tipHeight: 2, need: 30 });
     assert.equal(fields.owedPi, 0);
     assert.equal(fields.confirmingPot, 0);
-    assert.equal(a.json.owedPi, 0);
-    assert.equal(a.json.confirmingPot, 0);
-    assert.equal(b.json.owedPi, 0);
-    assert.equal(b.json.confirmingPot, 0);
   });
 });

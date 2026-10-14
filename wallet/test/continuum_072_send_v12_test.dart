@@ -919,6 +919,8 @@ class _RecordChange extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
   }) async {
     posts.add({
       'kinds': [
@@ -978,6 +980,8 @@ class _RecordWithdraw extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
   }) async {
     posts.add({
       'kind': kind,

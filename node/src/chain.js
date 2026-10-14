@@ -63,6 +63,7 @@ import {
 } from '../../crypto/reserve_evm.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields, admitBaseFromAddress, encodeDest } from '../../crypto/address.js';
 import {
+  admitDelta,
   attachAdmitPub,
   fluxsetFromBlocks,
   appendFluxBlock,
@@ -74,6 +75,8 @@ import {
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
+import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
+import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
@@ -95,6 +98,8 @@ import {
   noteCommitOfDest20,
   asU8,
   pointFrom,
+  pointBytes,
+  G,
   txIoCap,
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
@@ -1162,6 +1167,165 @@ export function templateForFinder(tpl, finderDest) {
   return stampAimed(built, tpl);
 }
 
+function droppedPotNanos(o) {
+  const kind = String(o?.kind || '');
+  // Hash and levy notes are not pot. Folding them into the carry would mint
+  // the wrong supply. Refuse the template instead of publishing that block.
+  if (kind === 'hash' || kind === 'finder-fee' || kind === 'reserve-fee') {
+    throw new Error('admit_note_point');
+  }
+  const opened = openedNoteNanos(o);
+  if (opened == null) throw new Error('admit_note_point');
+  return opened;
+}
+
+function openedNoteNanos(o) {
+  const opened = o?.valueProof && o.valueProof.v != null && o.valueProof.v !== ''
+    ? Number(o.valueProof.v)
+    : Number(o?.nanos || 0);
+  if (!Number.isSafeInteger(opened) || opened < 0) return null;
+  return opened;
+}
+
+/** B from a kept pot note, so the reseal still pays that dest. */
+function admitBaseOfKeptPot(o) {
+  const named = o?.address ? admitBaseFromAddress(o.address) : null;
+  if (named && named.length === 32) return named;
+  const P = pointFrom(o.admitPub);
+  return pointBytes(P.subtract(G.multiply(admitDelta(o))));
+}
+
+function resealPotPayee(o, nanos) {
+  const dest20 = noteDest20(o);
+  if (!dest20) throw new Error('admit_note_point');
+  return attachAdmitPub(sealCoinbaseNote(nanos, { dest20, kind: 'pot' }), {
+    admitBase: admitBaseOfKeptPot(o),
+  });
+}
+
+/**
+ * Drop a coinbase payee that is not an FS-1 leaf.
+ * With no share batch, a dropped pot share is split again over the pot
+ * payees that remain, by the same last-remainder rule as potPaysFromLeaves.
+ * Their notes are resealed at the new amounts. If none remain, the whole
+ * pot is carried and no pot note is left beside that carry.
+ * A share batch already fixed those pays. Re-splitting them misses
+ * pot_prop, and carrying them misses pot_carry, so this throws.
+ * buildTemplate catches that, drops every share of the broken payee,
+ * and builds again. A hash or levy note has no pot to rejoin, so that
+ * drop throws either way.
+ */
+export function dropBrokenCoinbaseNotes(cb, { shares = false } = {}) {
+  if (!(cb && typeof cb === 'object')) return cb;
+  const kept = [];
+  const dropped = [];
+  for (const o of cb.vout || []) {
+    if (outputJoinsAdmitSet(cb, o) && !fs1LeafFor(o)) {
+      const n = droppedPotNanos(o);
+      const kind = String(o?.kind || cb?.kind || '');
+      dropped.push({ kind, nanos: n });
+      console.error(JSON.stringify({
+        event: 'coinbase_note_drop',
+        reason: 'admit_note_point',
+        kind,
+        nanos: n,
+      }));
+      continue;
+    }
+    kept.push(o);
+  }
+  if (shares && dropped.length) throw new Error('admit_note_point');
+  cb.vout = kept;
+  if (!dropped.length) return cb;
+  let droppedNanos = 0;
+  for (const row of dropped) {
+    if (!Number.isSafeInteger(droppedNanos + row.nanos)) throw new Error('admit_note_point');
+    droppedNanos += row.nanos;
+  }
+  const pots = kept.filter((o) => String(o?.kind || '') === 'pot');
+  if (!pots.length || droppedNanos === 0) {
+    if (!pots.length && droppedNanos > 0) {
+      const carry = canonicalCarry(cb);
+      if (carry == null || !Number.isSafeInteger(carry + droppedNanos)) throw new Error('admit_note_point');
+      cb.carryNanos = carry + droppedNanos;
+    }
+    const excess = excessOf(kept);
+    if (!excess) throw new Error('admit_note_point');
+    cb.excess = excess;
+    return cb;
+  }
+  const carry = canonicalCarry(cb);
+  if (carry == null) throw new Error('admit_note_point');
+  // Consensus rejects a carry beside a pot note. The amount re-split is the
+  // pot still opened, the dropped share, and any carry already on this tx.
+  let potSum = droppedNanos + carry;
+  const leaves = [];
+  for (const o of pots) {
+    const n = openedNoteNanos(o);
+    if (n == null || !Number.isSafeInteger(potSum + n)) throw new Error('admit_note_point');
+    potSum += n;
+    const dest20 = noteDest20(o);
+    if (!dest20) throw new Error('admit_note_point');
+    leaves.push({
+      output: o,
+      noteCommit: noteCommitOfDest20(dest20),
+      count: n > 0 ? n : 1,
+    });
+  }
+  const pays = potPaysFromLeaves(
+    leaves.map((leaf) => ({ noteCommit: leaf.noteCommit, count: leaf.count })),
+    null,
+    0,
+    potSum,
+    0,
+  );
+  const used = new Set();
+  const resealed = [];
+  for (const pay of pays) {
+    const src = leaves.find((leaf) => !used.has(leaf) && ncHex(leaf.noteCommit) === ncHex(pay.noteCommit));
+    if (!src) throw new Error('admit_note_point');
+    used.add(src);
+    resealed.push(resealPotPayee(src.output, pay.nanos));
+  }
+  if (!resealed.length) throw new Error('admit_note_point');
+  const next = [];
+  let placed = false;
+  for (const o of kept) {
+    if (String(o?.kind || '') === 'pot') {
+      if (!placed) {
+        next.push(...resealed);
+        placed = true;
+      }
+      continue;
+    }
+    next.push(o);
+  }
+  const excess = excessOf(next);
+  if (!excess) throw new Error('admit_note_point');
+  cb.vout = next;
+  cb.excess = excess;
+  if (carry > 0) cb.carryNanos = 0;
+  return cb;
+}
+
+function brokenPayeeHexes(cb) {
+  const bad = new Set();
+  for (const o of cb?.vout || []) {
+    if (!outputJoinsAdmitSet(cb, o) || fs1LeafFor(o)) continue;
+    const d20 = noteDest20(o);
+    if (d20 && d20.length >= 20) bad.add(Buffer.from(d20.subarray(0, 20)).toString('hex'));
+  }
+  return bad;
+}
+
+function shareHitsBrokenPayee(share, bad) {
+  if (!bad.size) return false;
+  let d20 = null;
+  try { d20 = dest20OfShare(share); } catch { d20 = null; }
+  if (!d20 || d20.length < 20) return false;
+  return bad.has(Buffer.from(d20.subarray(0, 20)).toString('hex'));
+}
+
 export function buildTemplate({
   prev,
   prevHeader,
@@ -1188,7 +1352,9 @@ export function buildTemplate({
   hashOwedIn: hashOwedInOpt = null,
   issuedHeaders = null,
   hashSpill = null,
+  prepareCoinbase = null,
 }) {
+  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !txNoteRuleRejected(tx));
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
@@ -1271,6 +1437,51 @@ export function buildTemplate({
   const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
   if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
+  if (typeof prepareCoinbase === 'function') prepareCoinbase(cb);
+  try {
+    dropBrokenCoinbaseNotes(cb, { shares: batch.length > 0 });
+  } catch (err) {
+    if (!batch.length || err?.message !== 'admit_note_point') throw err;
+    const bad = brokenPayeeHexes(cb);
+    const source = Array.isArray(shareBatch) ? shareBatch : [];
+    const nextShares = source.filter((s) => !shareHitsBrokenPayee(s, bad));
+    if (!bad.size || nextShares.length === source.length) throw err;
+    console.error(JSON.stringify({
+      event: 'coinbase_share_evict',
+      reason: 'admit_note_point',
+      payees: bad.size,
+      shares: source.length - nextShares.length,
+    }));
+    return buildTemplate({
+      prev,
+      prevHeader,
+      prevBlock,
+      parentWeight: parentWeightIn,
+      height,
+      miner,
+      samples,
+      txs,
+      bLeaves: bLeavesIn,
+      now,
+      bits,
+      destOf,
+      potShares: null,
+      hashBonusNanos,
+      shareBatch: nextShares,
+      poolDest,
+      feeDest,
+      finderDest,
+      hashBonusCustodyDest,
+      parentFluxset,
+      parentBlocks,
+      hashAcceptedSeries,
+      hashOwedIn: hashOwedInOpt,
+      issuedHeaders,
+      hashSpill: Array.isArray(hashSpill)
+        ? hashSpill.filter((s) => !shareHitsBrokenPayee(s, bad))
+        : hashSpill,
+    });
+  }
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
@@ -2003,6 +2214,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const budget = blockBudget(txs);
   if (!budget.ok) return budget;
+  const noteRule = chainNoteRuleRejected([block]);
+  if (noteRule) return noteRule;
   const observeGate = coinbaseObserveRejected(txs);
   if (observeGate) return observeGate;
   const wantPot = potSubsidyAt({
@@ -2346,11 +2559,16 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const commits = (live.commits || []).slice();
   const spentTags = parentSpendView(live.spendTags);
   const pushPub = (tx, o) => {
-    if (!outputJoinsAdmitSet(tx, o) || !o?.commit) return;
+    if (!outputJoinsAdmitSet(tx, o)) return null;
+    const note = fs1OutputNote(o);
+    if (!fs1LeafFor(o)) return { ok: false, reason: 'admit_note_point' };
     try {
-      pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
-      commits.push(Buffer.from(asU8(o.commit)));
-    } catch { /* skip */ }
+      pubs.push(pointFrom(note.admitPub));
+      commits.push(Buffer.from(note.commit));
+    } catch {
+      return { ok: false, reason: 'admit_note_point' };
+    }
+    return null;
   };
   for (const tx of txs) {
     const earlyOpen = openingBeforeCarry(tx);
@@ -2484,7 +2702,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         return { ok: false, reason: 'admit_membership' };
       }
     }
-    for (const o of outs) pushPub(tx, o);
+    for (const o of outs) {
+      const pushed = pushPub(tx, o);
+      if (pushed) return pushed;
+    }
     const noteFund = verifyTypedAdmitFunding(tx, {
       height,
       blocks: Array.isArray(evmHistory) ? evmHistory : [],
@@ -2544,9 +2765,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   for (const tx of txs) {
     for (const o of tx.vout || []) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
+      const note = fs1OutputNote(o);
+      if (!fs1LeafFor(o)) return { ok: false, reason: 'admit_note_point' };
       try {
-        addedPubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
-      } catch { /* skip */ }
+        addedPubs.push(pointFrom(note.admitPub));
+      } catch {
+        return { ok: false, reason: 'admit_note_point' };
+      }
     }
   }
   const extended = live.zeroFrontier ? extendZeroRoot(live, addedPubs) : null;
@@ -2669,8 +2894,12 @@ function asBuf(v) {
   try { return Buffer.from(v); } catch { return Buffer.alloc(0); }
 }
 
-/** Domain for book.seal. A seal without it was written before the body snapshot and is not trusted. */
-export const BOOK_SEAL_DOMAIN = 'bookseal1';
+/**
+ * Domain for book.seal. bookseal1 predates N-1. A seal under that tag, or
+ * under a fingerprint that does not name N-1, is not this book's seal.
+ * The load discards it and checks the notes.
+ */
+export const BOOK_SEAL_DOMAIN = 'bookseal2';
 
 /** Keyed sha256 over the rules id, the genesis pin, the checkpoint, and each header and stored hash.
  *  The key is the per-install secret kept outside the datadir.
@@ -2756,6 +2985,8 @@ function beginLoaded(blocks, {
   if (!list.length) return { ok: true, empty: true };
   const gated = chainStage0Rejected(list);
   if (gated) return gated;
+  // N-1 runs inside each block, after the header and the budget. A load
+  // does not walk leaves before proof-of-work.
   const givenClock = Number(nowMs);
   const clock = Number.isFinite(givenClock) && givenClock > 0 ? givenClock : Date.now();
   const pinned = normGenesisPin(genesisHash);

@@ -12,6 +12,7 @@ import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
+import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
@@ -19,6 +20,37 @@ import { v3BucketProofRejected } from './fs1_send_gate.js';
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
 export const MEMPOOL_KIND_B_SPEND = 'b-spend';
+
+/**
+ * Openings and blinds a held tx never keeps. With r or t, C names its amount
+ * by trial; the wire form already drops them, and the pool row matches it.
+ */
+export const MEMPOOL_SECRET_KEYS = Object.freeze([
+  'r', 't', 'open', 'destOpen', 'viewKey', 'view', 'seed', 'seedHex', 'privateKey',
+  'memoPlain', '_origCommit', '_origNoteCommit', 'ip', 'remoteAddress', 'peerIp',
+  'userAgent', 'user-agent', 'ua', 'login', 'paintedOwedNanos',
+]);
+
+function withoutSecrets(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row) || Buffer.isBuffer(row) || row instanceof Uint8Array) return row;
+  const out = { ...row };
+  for (const k of MEMPOOL_SECRET_KEYS) delete out[k];
+  if (out.valueProof && typeof out.valueProof === 'object') {
+    const vp = { ...out.valueProof };
+    delete vp.r;
+    delete vp.t;
+    out.valueProof = vp;
+  }
+  return out;
+}
+
+/** AL-6. The held row: the admitted body less openings, blinds, and client hints. */
+export function mempoolRow(tx, fee, kind) {
+  const out = withoutSecrets({ ...tx, fee, kind });
+  if (Array.isArray(tx.vin)) out.vin = tx.vin.map(withoutSecrets);
+  if (Array.isArray(tx.vout)) out.vout = tx.vout.map(withoutSecrets);
+  return out;
+}
 
 export function emptyMempool() {
   return { txs: [], baseFee: 1, max: MEMPOOL_MAX, tagIndex: new Map() };
@@ -97,6 +129,8 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!capped.ok) return capped;
   const budget = txBudget(tx);
   if (!budget.ok) return budget;
+  const noteRule = txNoteRuleRejected(tx);
+  if (noteRule) return noteRule;
   const pull = custodialPullRejected(tx);
   if (pull) return pull;
   const earlyOpen = openingBeforeCarry(tx);
@@ -289,7 +323,7 @@ export function admitMempool(pool, tx, opts = {}) {
     return { ok: false, reason: 'max_levy', need };
   }
   if ((book.txs || []).length >= (book.max || MEMPOOL_MAX)) return { ok: false, reason: 'full' };
-  book.txs.push({ ...tx, fee: paid, kind });
+  book.txs.push(mempoolRow(tx, paid, kind));
   const accepted = book.txs[book.txs.length - 1];
   const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));
   if (!book.tagIndex) book.tagIndex = new Map();

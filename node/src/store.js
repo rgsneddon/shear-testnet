@@ -76,6 +76,7 @@ import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, 
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
+import { txNoteRuleRejected } from '../../crypto/n1.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -382,17 +383,23 @@ export function createStore(dir, {
   }
   const resumed = !!(resume && resume.token === loadResumeToken && resume.verified === true
     && resume.height === blocks.length && tipBuf(blocks).equals(Buffer.from(resume.tipHash || [])));
-  if (blocks.length) {
-    const gated = chainStage0Rejected(blocks);
-    if (gated) throw new Error(gated.reason);
-  }
+  let trustStoredHash = false;
   if (blocks.length && !resumed) {
     const want = chainLoadSeal(blocks, sealKey);
     let got = '';
     if (fs.existsSync(sealFile)) {
       try { got = fs.readFileSync(sealFile, 'utf8').trim(); } catch { got = ''; }
     }
-    const trustStoredHash = got.length > 0 && got === want;
+    trustStoredHash = got.length > 0 && got === want;
+  }
+  if (blocks.length) {
+    const gated = chainStage0Rejected(blocks);
+    if (gated) throw new Error(gated.reason);
+    // N-1 runs inside verifyLoadedChain, after the header, the coinbase
+    // cap, and the block budget. A matching bookseal2 seal may skip that
+    // rescan. An in-process resume already checked.
+  }
+  if (blocks.length && !resumed) {
     const plan = trustStoredHash ? acceptBookSnap(readBookSnap(snapFile, sealKey, snapExpect)) : null;
     const planOk = plan && planSupplyLinks(plan);
     const snapRows = planOk ? supplyRowsFromPlan(plan) : null;
@@ -401,7 +408,7 @@ export function createStore(dir, {
       installSupplyPlan(plan, snapRows);
       loadMode = 'snap';
     } else if (snapRows) {
-      const priorFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
+      const priorFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags, { trust: true });
       const checked = verifyLoadedChain(blocks, {
         trustStoredHash: true,
         nowMs: loadNowMs,
@@ -567,7 +574,7 @@ export function createStore(dir, {
     adoptPlanCheckpoints(plan);
     spentB.clear();
     for (const id of plan.spentIds) spentB.add(String(id));
-    preFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
+    preFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags, { trust: true });
     unitAt = plan.unitAt.slice();
     prefixHeight = height;
   }
@@ -2828,6 +2835,8 @@ export function createStore(dir, {
     tx = reviveTx(tx);
     const bucket = v3BucketProofRejected(tx);
     if (bucket) return bucket;
+    const noteRule = txNoteRuleRejected(tx);
+    if (noteRule) return noteRule;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a

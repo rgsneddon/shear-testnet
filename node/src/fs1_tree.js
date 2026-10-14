@@ -1,17 +1,16 @@
-// FS-1 tree follower. Mirrors shear-fs1 src/leaf.rs and src/chain_tree.rs;
-// shear-fs1/vectors/tree_chain.txt is checked against both.
-//
-// Not wired: no consensus, mempool or store path imports this module.
+// FS-1 tree follower. Mirrors shear-fs1 src/chain_tree.rs.
+// The leaf map lives in crypto/fs1_leaf.js, the same predicate as src/leaf.rs,
+// and consensus (N-1) calls that predicate. This module is still not on the
+// accept path: no mempool or store import follows the Selene root.
 //
 // T-1. The leaf set is every output that joins the admit set (outputJoinsAdmitSet),
-//      in block, transaction and output order. A missing commit reads as 32 zero
-//      bytes, as crypto/admit.js records it, and a field that is not 32 bytes does
-//      too. L-3 then drops it.
+//      in block, transaction and output order. A missing or short field reads as
+//      32 zero bytes. L-3 then drops it.
 // L-1. O = E(admitPub), C = E(commit). E decodes Ristretto255 and keeps the
 //      prime-order part of the Edwards representative: E(P) = 8^-1 * (8 * P).
 // L-2. I = E(Hp(admitPub)), Hp = ristretto255 hash-to-curve with DST shear-admit-Hp.
-// L-3. A note whose admitPub or commit does not decode, or decodes to the identity,
-//      takes no slot.
+// L-3. A note whose admitPub, commit, or Hp(admitPub) does not decode, or decodes
+//      to the identity, takes no slot.
 // L-4. A leaf is O || I || C, 96 bytes of compressed Ed25519 points.
 // T-4. A block connects only on the tip (height + 1, parent = tip id). Only the
 //      tip disconnects.
@@ -24,51 +23,23 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RistrettoPoint, ristretto255_hasher, ed25519 } from '@noble/curves/ed25519.js';
 import { outputJoinsAdmitSet } from '../../crypto/admit.js';
+import {
+  FS1_HP_DST,
+  FS1_LEAF_BYTES,
+  bytesOf,
+  fs1Leaf,
+  fs1OutputNote,
+  ristrettoToEd,
+} from '../../crypto/fs1_leaf.js';
 
 export const FS1_TREE_WIRED = false;
-export const FS1_LEAF_BYTES = 96;
-export const FS1_HP_DST = 'shear-admit-Hp';
+export { FS1_HP_DST, FS1_LEAF_BYTES, bytesOf, fs1Leaf, fs1OutputNote, ristrettoToEd };
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FS1_TREE_BIN_DEFAULT = path.join(
   here, '../../crypto/native/vendor/monero-oxide-77788c3/target/release/fs1_tree',
 );
-
-const ORDER = ed25519.CURVE.n;
-const ZERO32 = Buffer.alloc(32);
-
-function modPow(b, e, m) {
-  let r = 1n;
-  let x = b % m;
-  let k = e;
-  while (k > 0n) {
-    if (k & 1n) r = (r * x) % m;
-    x = (x * x) % m;
-    k >>= 1n;
-  }
-  return r;
-}
-
-const INV8 = modPow(8n, ORDER - 2n, ORDER);
-
-/** Any of the chain's byte encodings: Buffer, Uint8Array, {$hex}, hex string, or a point. */
-export function bytesOf(v) {
-  if (v == null) return null;
-  if (Buffer.isBuffer(v)) return v;
-  if (v instanceof Uint8Array) return Buffer.from(v);
-  if (typeof v === 'string') return /^([0-9a-f]{2})*$/i.test(v) ? Buffer.from(v, 'hex') : null;
-  if (typeof v.$hex === 'string') return bytesOf(v.$hex);
-  if (typeof v.toBytes === 'function') return Buffer.from(v.toBytes());
-  if (typeof v.toRawBytes === 'function') return Buffer.from(v.toRawBytes());
-  return null;
-}
-
-function field32(v) {
-  const b = bytesOf(v);
-  return b && b.length === 32 ? Buffer.from(b) : Buffer.from(ZERO32);
-}
 
 /** T-1. The notes one block adds, in admit-set order. */
 export function fs1NotesFromBlock(block) {
@@ -76,33 +47,10 @@ export function fs1NotesFromBlock(block) {
   for (const tx of block?.txs || []) {
     for (const o of tx?.vout || []) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
-      notes.push({ admitPub: field32(o.admitPub), commit: field32(o.commit) });
+      notes.push(fs1OutputNote(o));
     }
   }
   return notes;
-}
-
-/** L-1. E, or null when the bytes are not a canonical Ristretto255 encoding. */
-export function ristrettoToEd(bytes) {
-  let p;
-  try {
-    p = RistrettoPoint.fromHex(Buffer.from(bytes).toString('hex'));
-  } catch {
-    return null;
-  }
-  if (p.equals(RistrettoPoint.ZERO)) return ed25519.Point.ZERO;
-  return p.ep.multiply(8n).multiply(INV8);
-}
-
-/** L-1 to L-4. The 96-byte leaf for one note, or null when L-3 drops it. */
-export function fs1Leaf(note) {
-  const o = ristrettoToEd(note.admitPub);
-  const c = ristrettoToEd(note.commit);
-  if (!o || !c || o.is0() || c.is0()) return null;
-  const hp = ristretto255_hasher.hashToCurve(new Uint8Array(note.admitPub), { DST: FS1_HP_DST });
-  const i = ristrettoToEd(hp.toRawBytes());
-  if (!i || i.is0()) return null;
-  return Buffer.concat([o.toRawBytes(), i.toRawBytes(), c.toRawBytes()]);
 }
 
 function blockId(block) {
