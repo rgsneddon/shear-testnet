@@ -4,16 +4,6 @@ import 'dart:typed_data';
 
 import 'shear_note.dart';
 
-/// Test-only override. Production send uses the native node helper.
-typedef NativeSpendProver = Map<String, dynamic>? Function({
-  required Uint8List spendSeed,
-  required Map<String, dynamic> spentNote,
-  required List<Uint8List> pubs,
-  List<Uint8List>? commits,
-});
-
-NativeSpendProver? debugNativeSpendProver;
-
 /// Tests set this so Flow seal runs on the caller. flutter_tester deadlocks
 /// on [Isolate.run] around the native prover.
 bool debugFlowCryptoOnCaller = false;
@@ -83,59 +73,6 @@ String? _helperPath() {
     if (f.existsSync()) return f.path;
   }
   return null;
-}
-
-Map<String, dynamic>? nativeProveFlowSpend({
-  required Uint8List spendSeed,
-  required Map<String, dynamic> spentNote,
-  required List<Uint8List> pubs,
-  List<Uint8List>? commits,
-}) {
-  final override = debugNativeSpendProver;
-  if (override != null) {
-    return override(spendSeed: spendSeed, spentNote: spentNote, pubs: pubs);
-  }
-  final helper = _helperPath();
-  if (helper == null) return null;
-  final tmp = File('${Directory.systemTemp.path}/shear-admit-${DateTime.now().microsecondsSinceEpoch}.json');
-  tmp.writeAsStringSync(jsonEncode({
-    'op': 'prove_spend',
-    'spendSeed': _hex(spendSeed),
-    'spentNote': {
-      'kind': spentNote['kind'],
-      'commit': spentNote['commit'] is Uint8List ? _hex(spentNote['commit'] as Uint8List) : spentNote['commit'],
-      'noteCommit': spentNote['noteCommit'] is Uint8List
-          ? _hex(spentNote['noteCommit'] as Uint8List)
-          : spentNote['noteCommit'],
-    },
-    'pubs': pubs.map(_hex).toList(),
-    'commits': (commits ?? const <Uint8List>[]).map(_hex).toList(),
-  }), flush: true);
-  if (!Platform.isWindows) {
-    try { Process.runSync('chmod', ['600', tmp.path]); } catch (_) {}
-  }
-  try {
-    final r = Process.runSync('node', [helper, tmp.path], runInShell: false);
-    if (r.exitCode != 0) return null;
-    final got = jsonDecode(r.stdout as String);
-    if (got is! Map || got['ok'] != true || got['v'] != 2) return null;
-    if (got['r'] != null) return null;
-    final blind = _unhex(got['t']);
-    return {
-      'admit_proof': true,
-      'v': 2,
-      'spendTag': _unhex(got['spendTag']),
-      'blob': _unhex(got['blob']),
-      'cTilde': _unhex(got['cTilde']),
-      if (blind != null) 't': blind,
-    };
-  } catch (_) {
-    return null;
-  } finally {
-    try {
-      tmp.deleteSync();
-    } catch (_) {}
-  }
 }
 
 /// Seal any u64. Values that fit in a Dart int use [nativeSealNote].

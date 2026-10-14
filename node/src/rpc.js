@@ -11,6 +11,7 @@ import { oracleView } from './oracle_feed.js';
 import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
+import { keyedFetchRejected, syncVerdict, witnessRouteBanned } from './fs1_sync.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -228,7 +229,7 @@ function statsJson(store) {
     header: raw.toString('hex'),
     hash: t?.hash ? Buffer.from(t.hash).toString('hex') : '',
     magic: MAGIC_TESTNET,
-    admit: 'ADMITv2',
+    admit: 'ADMITv3 (sends off)',
     hashTxLive: HASH_TX_LIVE,
     jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
     bookLawFingerprint: consensusFingerprint(),
@@ -297,6 +298,26 @@ export function createRpc({
   }
   const sse = new Set();
 
+  // S-8: the prefix is the window and the header hash at its last height, then the window's headers.
+  function syncWindow(searchParams) {
+    const v = syncVerdict('/sync', searchParams);
+    if (!v.ok) return v;
+    const byHeight = new Map();
+    for (const b of store.blocks || []) {
+      const h = Number(b.height);
+      if (h >= v.from && h < v.to) byHeight.set(h, b);
+    }
+    const last = byHeight.get(v.to - 1);
+    if (!last) return { ok: false, reason: 'unknown' };
+    const headers = [];
+    for (let h = Math.max(1, v.from); h < v.to; h += 1) {
+      const b = byHeight.get(h);
+      if (!b) return { ok: false, reason: 'unknown' };
+      headers.push(headerJson(b, h));
+    }
+    return { ok: true, from: v.from, to: v.to, headerRoot: Buffer.from(last.hash).toString('hex'), headers };
+  }
+
   function pushEvent(ev, payload) {
     const line = `event: ${ev}\ndata: ${JSON.stringify(payload)}\n\n`;
     for (const res of sse) {
@@ -352,6 +373,7 @@ export function createRpc({
       return { ok: false, reason: 'setTip_forbidden' };
     }
     if (m === 'getfluxset' || m === 'fluxset') {
+      if (keyedFetchRejected(params)) return { ok: false, reason: 'keyed_fetch' };
       const live = typeof store.fluxset === 'function' ? store.fluxset() : { pubs: [], spendTags: new Set(), jroot: null, commits: [] };
       const pubs = (live.pubs || []).map((p) => Buffer.from(typeof p.toBytes === 'function' ? p.toBytes() : p).toString('hex'));
       const commits = (live.commits || []).map((c) => Buffer.from(c).toString('hex'));
@@ -362,19 +384,19 @@ export function createRpc({
         commits,
         fluxset: pubs,
         spendTags: [...(live.spendTags || [])],
-        admit: 'ADMITv2',
+        admit: 'ADMITv3',
         hashTxLive: store.hashTxLive,
       };
     }
     if (m === 'getjroot' || m === 'jroot') {
       const root = typeof store.jroot === 'function' ? store.jroot() : null;
-      return { ok: true, jroot: root ? Buffer.from(root).toString('hex') : '', admit: 'ADMITv2' };
+      return { ok: true, jroot: root ? Buffer.from(root).toString('hex') : '', admit: 'ADMITv3' };
     }
     if (m === 'getfingerprint' || m === 'fingerprint') {
       const fp = typeof store.consensusFingerprint === 'function'
         ? store.consensusFingerprint()
         : '';
-      return { ok: true, fingerprint: fp, admit: 'ADMITv2', hashTxLive: store.hashTxLive };
+      return { ok: true, fingerprint: fp, admit: 'ADMITv3', hashTxLive: store.hashTxLive };
     }
     if (m === 'queuetx' || m === 'queueTx') {
       const wrapped = !!(params && params.tx && typeof params.tx === 'object');
@@ -404,7 +426,7 @@ export function createRpc({
         bits: tpl.bits,
         height: tpl.height,
         miner,
-        admit: 'ADMITv2',
+        admit: 'ADMITv3',
         magic: MAGIC_TESTNET,
       };
     }
@@ -561,8 +583,18 @@ export function createRpc({
       json(res, 200, dispatch('mempoolPressure'));
       return;
     }
+    if (witnessRouteBanned(url.pathname)) {
+      json(res, 404, { ok: false, reason: 'route' });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/sync') {
+      const out = syncWindow(url.searchParams);
+      json(res, out.ok ? 200 : (out.reason === 'unknown' ? 404 : 400), out);
+      return;
+    }
     if (req.method === 'GET' && (url.pathname === '/fluxset' || url.pathname === '/getfluxset')) {
-      json(res, 200, dispatch('getfluxset'));
+      const out = dispatch('getfluxset', Object.fromEntries(url.searchParams));
+      json(res, out?.ok === false ? 400 : 200, out);
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/jroot' || url.pathname === '/getjroot')) {
@@ -600,7 +632,8 @@ export function createRpc({
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/api/wallet/fluxset' || url.pathname === '/api/wallet/jroot')) {
-      json(res, 200, dispatch(url.pathname.endsWith('jroot') ? 'getjroot' : 'getfluxset'));
+      const out = dispatch(url.pathname.endsWith('jroot') ? 'getjroot' : 'getfluxset', Object.fromEntries(url.searchParams));
+      json(res, out?.ok === false ? 400 : 200, out);
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/notes' || url.pathname === '/getnotes' || url.pathname === '/api/wallet/notes')) {

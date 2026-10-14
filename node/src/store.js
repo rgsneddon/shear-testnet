@@ -75,6 +75,7 @@ import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
+import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -381,6 +382,10 @@ export function createStore(dir, {
   }
   const resumed = !!(resume && resume.token === loadResumeToken && resume.verified === true
     && resume.height === blocks.length && tipBuf(blocks).equals(Buffer.from(resume.tipHash || [])));
+  if (blocks.length) {
+    const gated = chainStage0Rejected(blocks);
+    if (gated) throw new Error(gated.reason);
+  }
   if (blocks.length && !resumed) {
     const want = chainLoadSeal(blocks, sealKey);
     let got = '';
@@ -2821,6 +2826,8 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
+    const bucket = v3BucketProofRejected(tx);
+    if (bucket) return bucket;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a
@@ -3263,6 +3270,8 @@ export function createStore(dir, {
   }
 
   function verifyFork(fork, verifyOpts = {}) {
+    const stage0 = chainStage0Rejected(fork || []);
+    if (stage0) return stage0;
     const needs = (fork || []).some((b) => blockNeedsEvm(b?.txs || []));
     if (needs) return verifyForkAsync(fork, verifyOpts);
     if (!verifyOpts.headerGate) {
@@ -3325,6 +3334,8 @@ export function createStore(dir, {
   }
 
   async function verifyForkAsync(fork, verifyOpts = {}) {
+    const stage0 = chainStage0Rejected(fork || []);
+    if (stage0) return stage0;
     const gated = await Promise.resolve(gateForkChain(fork, verifyOpts));
     if (!gated.ok) return prefixBodyFault(fork, gated, verifyOpts);
     const accepted = [];
@@ -4392,6 +4403,8 @@ export function createStore(dir, {
 
   function ingestInner(fork, verifyOpts = {}) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+    const stage0 = chainStage0Rejected(fork);
+    if (stage0) return stage0;
     const t = tip();
     let decoded;
     try {
@@ -4651,6 +4664,13 @@ export function createStore(dir, {
       };
       if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
+      const bucket = v3BucketProofRejected(tx);
+      if (bucket) {
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: bucket.reason }));
+        } catch { /* ignore */ }
+        continue;
+      }
       const userCb = userCoinbaseRejected(tx);
       if (userCb) {
         try {

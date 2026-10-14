@@ -416,8 +416,10 @@ describe('v12 supply parents fail closed', () => {
       },
     });
     assert.equal(junk.ok, false);
-    assert.equal(junk.proofChecked, true);
-    assert.equal(lookups, 1);
+    // Stage 0 refuses a vault bucket proof before the anchor read or any proof work.
+    assert.equal(junk.reason, 'vault_unavailable');
+    assert.notEqual(junk.proofChecked, true);
+    assert.equal(lookups, 0);
     assert.equal(anchorFluxRebuilds(), 0);
 
     resetAnchorFluxRebuilds();

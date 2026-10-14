@@ -104,24 +104,6 @@ export function nativeFrontierAppend(prev, destLeaves, cLeaves) {
   }
 }
 
-export function nativeProve({ x, p, c, t, index, destLeaves, cLeaves }) {
-  if (!native) return null;
-  try {
-    const xb = as32(x);
-    const pb = as32(p);
-    const cb = as32(c);
-    const tb = as32(t);
-    if (!xb || !pb || !cb || !tb) return null;
-    const dest = leafList(destLeaves);
-    const cs = leafList(cLeaves);
-    const got = native.prove(xb, pb, cb, tb, index >>> 0, dest, cs);
-    if (!got || got === false || !got.proof || !got.cTilde) return null;
-    return { cTilde: Buffer.from(got.cTilde), proof: Buffer.from(got.proof) };
-  } catch {
-    return null;
-  }
-}
-
 export function nativeProveV3({ x, p, c, t, index, destLeaves, cLeaves, ctx }) {
   if (!native || typeof native.proveV3 !== 'function') return null;
   try {
@@ -148,55 +130,6 @@ export function nativeVerifyV3({ proof, jroot, cTilde, spendTag, ctx }) {
     const context = Buffer.from(ctx || []);
     if (context.length !== 64) return false;
     return !!native.verifyV3(pr, as32(jroot), as32(cTilde), as32(spendTag), context);
-  } catch {
-    return false;
-  }
-}
-
-export function nativeVerify({ proof, jroot, cTilde, spendTag, destLeaves = [], cLeaves = [] }) {
-  if (!native) return false;
-  try {
-    const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
-    return !!native.verify(
-      pr,
-      as32(jroot),
-      as32(cTilde),
-      as32(spendTag),
-      leafList(destLeaves),
-      leafList(cLeaves),
-    );
-  } catch {
-    return false;
-  }
-}
-
-/** Native prove+jroot-only verify for |J|=n. Returns {proveUs, verifyUs, proofLen} or null. */
-export function nativeBench(n) {
-  if (!native || typeof native.bench !== 'function') return null;
-  try {
-    const o = native.bench(n >>> 0);
-    if (!o || o === false) return null;
-    return {
-      proveUs: Number(o.proveUs),
-      verifyUs: Number(o.verifyUs),
-      proofLen: Number(o.proofLen),
-    };
-  } catch {
-    return null;
-  }
-}
-
-export function nativeVerifyBatch({ proofs, jroot, cTildes, tags, destLeaves = [], cLeaves = [] }) {
-  if (!native) return false;
-  try {
-    return !!native.verifyBatch(
-      (proofs || []).map((p) => (Buffer.isBuffer(p) ? p : Buffer.from(p))),
-      as32(jroot),
-      leafList(cTildes),
-      leafList(tags),
-      leafList(destLeaves),
-      leafList(cLeaves),
-    );
   } catch {
     return false;
   }

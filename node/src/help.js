@@ -152,7 +152,7 @@ export function helpTopics() {
 export function printHelp(topic) {
   const t = String(topic || '').replace(/^-+/, '').toLowerCase();
   const head = [
-    `${NODE_DISPLAY} — validating full node (ADMITv2)`,
+    `${NODE_DISPLAY} — validating full node (ADMITv3, sends off)`,
     `Book magic: ${MAGIC_TESTNET}`,
     '',
   ];

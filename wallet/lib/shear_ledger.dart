@@ -718,7 +718,6 @@ bool _flowCryptoOnCaller() =>
     !_flowOffUiForced() &&
     (sealFlowOnCaller ||
         debugFlowCryptoOnCaller ||
-        debugNativeSpendProver != null ||
         debugNativeSealNote != null ||
         Platform.environment['FLUTTER_TEST'] == 'true');
 
@@ -1152,11 +1151,9 @@ Future<Map<String, dynamic>> signSpendOffUi(Map<String, dynamic> input) {
     return Future<Map<String, dynamic>>.value(out);
   }
   final savedSeal = debugNativeSealNote;
-  final savedProve = debugNativeSpendProver;
   return Isolate.run(() => signSpendWire(input)).then((out) {
     debugSendSignStamp = out['stamp']?.toString() ?? '';
     if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
-    if (debugNativeSpendProver == null && savedProve != null) debugNativeSpendProver = savedProve;
     return out;
   });
 }
@@ -1178,7 +1175,7 @@ Future<Map<String, dynamic>> flowPostHexOffUi(Map<String, dynamic> raw) {
   // caller. A neighbouring int static stays, so the library is not reloaded.
   // The next seal would then run the real range proof on this isolate.
   // Production leaves the hooks null and still hexes off the UI isolate.
-  if (debugNativeSealNote != null || debugNativeSpendProver != null) {
+  if (debugNativeSealNote != null) {
     return Future<Map<String, dynamic>>.value(flowPostHex(raw));
   }
   return Isolate.run(() => flowPostHex(raw));
@@ -2379,6 +2376,7 @@ String flowSendAdvisoryOf(Object error) {
   if (msg.contains('fee_short') || msg.contains(kErrFeeShort)) {
     return kErrFeeShort;
   }
+  if (msg.contains(kErrSendUnavailable)) return kErrSendUnavailable;
   return kErrSendGeneric;
 }
 
@@ -7014,11 +7012,10 @@ class ShearLedger implements ReadProofSink {
           'verifiedNanos': n['verifiedNanos'],
         },
     ];
-    // flutter_tester's later Isolate.run nulls these closure hooks on the
-    // caller. The closures captured here survive that, and selection still
-    // runs off this isolate. Production leaves both hooks null.
+    // flutter_tester's later Isolate.run nulls this closure hook on the
+    // caller. The closure captured here survives that, and selection still
+    // runs off this isolate. Production leaves the hook null.
     final savedSeal = debugNativeSealNote;
-    final savedProve = debugNativeSpendProver;
     // The map is built here. The closure must not capture this ledger: a pool
     // that holds a Completer cannot cross to the worker.
     final input = <String, dynamic>{
@@ -7039,7 +7036,6 @@ class ShearLedger implements ReadProofSink {
     debugSendSelectStamp = raw['stamp']?.toString() ?? '';
     debugSendSelectNanos = _selectedNanos(raw);
     if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
-    if (debugNativeSpendProver == null && savedProve != null) debugNativeSpendProver = savedProve;
     return raw;
   }
 
@@ -7202,7 +7198,7 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// One Flow tx. A batch spends every note in [notes]. Notes are marked spent
-  /// only after the node accepts the tx.
+  /// only after the node accepts the tx. Closed until FS-1.
   Future<ShearTx> _sendManyNotes({
     required List<Map<String, dynamic>> notes,
     required String to,

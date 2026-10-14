@@ -1,5 +1,42 @@
 # shear-testnet-v12 handoff
 
+PR 72 `7167c7ff` (FS-1 send gate) was not merged. PR 65 is still `43f05edf`; its failure follow-up is re-queued and still pending. Burial has no branch. Wallet send, 052, 018e, and the Windows wallet stay open. Genesis was not cut.
+
+## Review record 2026-10-13 (PR 69 and PR 71, second pass)
+
+Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak. Neither pull request was merged.
+
+- PR 69 (`cursor/wallet-v12-send-1013`, head `1c5f505e617b7d3c1db65bb8d4b297683205a68f`) is still an open draft. GitHub reports it conflicting with feat `f91e496c`. The branch is cut from `38592720` and still contains `a197192f`, which edits `crypto/native/admit/src/gadget.rs` and `prove.rs`. Those prover edits stay off feat.
+- Day-1 send is still open on that head. The 1-input send and the 1-input transfer are byte-3 blobs of 23938 bytes, and mempool and `verifyBlock` accepted them. The 8-input seal stopped after the first proof. `queueTx` and block append did not run. `flutter test` was 386 passed and 49 failed. No arm64 phone library was built, and no phone sent.
+- The Dart proof map still carries the blind `t`. `wallet/lib/shear_native_prove.dart` returns `t: blindT`, `flowPostHex` hexifies that map, and `ShearPoolClient.send` posts it as `admit_proof` to `/api/wallet/send`. The JS seal in `crypto/flow_membership.js` does not put `t` on the proof it posts. A debug stand-in can still return early. Gaps: `.cos-inbox/BUILD-wallet-pr69-short-1013.md` and `.cos-inbox/109-wh-pr69-wallet-send.md`.
+- PR 71 (`cursor/v12-windows-android-builds-bdb9`, head `7ac0d47e5e3e5ec907355d38013878115d3f3a26`) is an open draft. GitHub reports it mergeable. It was not merged. The diff against feat is only `docs/V12-WINDOWS-ANDROID-BUILDS.md`. Windows node and Windows miner logs stand. The Windows wallet was not built. The Android debug APK was not installed. The log's claim that Android node and miner are waived is not in the inbox. Gap: `.cos-inbox/BUILD-windows-android-pr71-short-1013.md`.
+- PR 65 is still `43f05edf`. The burial agent has no branch. FS-1 finished with no branch. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
+
+## Review record 2026-10-13 (PR 71)
+
+Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak.
+
+- PR 71 (`cursor/v12-windows-android-builds-bdb9`, head `7ac0d47e5e3e5ec907355d38013878115d3f3a26`) was not merged. The log is `docs/V12-WINDOWS-ANDROID-BUILDS.md`, built from `8735e620`. The later commit `7ac0d47e` adds a Windows test-box recipe for `shearhash.node` and `shearadmit.node`. That recipe was not run. It does not build the Windows wallet.
+- Windows node was built: `dist/shear-node-v19-windows.zip`, 49118485 bytes, sha256 `e5022919f402416368c61b761e6b4b6c86626c711d9e35c0fb69c6eb2683be2f`. Command `python3 node/pack/zip_node.py windows`. Under wine, `node.exe --version` printed `v22.23.3` and the two addons loaded.
+- Windows miner was built: `dist/ShearK-Miner-2.9-windows.zip`, sha256 `38f40cb5538422973ac0bf50c2b82d46eaaaac387eab6388e1a146e843cb7d80`. Wine self-test `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b` `backend=jit-full`, exit 0.
+- Windows wallet was not built. `flutter build windows` exited 1 because that command only runs on a Windows host. No `shear_wallet.exe` and no zip. That is the open item.
+- Android debug APK was built: `app-debug.apk`, 186808910 bytes, sha256 `6c1a33d196e3f1fa0791f6a4cd17e601d0a171ffac5c5932e697d064e424bd30`, native-code includes `arm64-v8a`. The release APK failed on a missing `wallet/android/key.properties`. It was not installed on a device.
+- The log says Russell waived Android node and miner on 2026-10-13. That waiver is not in the inbox. The tree still has no Android node target and no Android miner target, and none was added. Gap: `.cos-inbox/BUILD-windows-android-pr71-short-1013.md`.
+- PR 65 is still `43f05edf`. PR 69 is still `1c5f505e`. PR 67 and PR 68 are unchanged. Those four stay unmerged. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
+
+## Review record 2026-10-13 (after 8735e620)
+
+Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak. Nothing new was merged onto feat.
+
+- PR 69 (`cursor/wallet-v12-send-1013`, head `1c5f505e617b7d3c1db65bb8d4b297683205a68f`) is an open draft against feat. It was not merged. The branch is cut from `38592720`, not from this feat tip. Its commits include the n=64 hide, and that hide edits `gadget.rs` and `prove.rs`. A merge would keep the packs already on feat and would also bring those prover edits. The send brief does not edit those files.
+- The send log on that branch: a 1-input send and a 1-input transfer, each a byte-3 blob of 23938 bytes, accepted by mempool and `verifyBlock`. The 8-input seal was stopped after the first proof. `queueTx` and block append did not run. `flutter test` in `wallet/` was 386 passed, 49 failed, exit 1. No arm64 phone library was built, and no APK. A debug stand-in can still return a byte-2 mock. Items 16–23 stay open. Phones are not shown sending. Gap: `.cos-inbox/BUILD-wallet-pr69-short-1013.md`.
+- PR 65 head is still `43f05edf3a1338775ce9144102042469ccc8db30`. The named failures are not cleared. PR 65 and the wallet send still land together, and not as PR 69 stands.
+- 052 stays open. An agent is extending `cursor/p0-052-burial-gate-0f14` for P0 070 and PSA-c2a-1. That is not the inbox spread, and it is not a new branch from this feat tip. PR 67 stays unmerged.
+- 018e stays open. PR 68 stays unmerged. No replacement branch is on origin. This machine can read and follow up cloud agents, and `StartBackgroundComposerFromSnapshot` still returns `invalid_argument`. The Windows agent and PR 69 were started by the other launcher. Brief: `.cos-inbox/BUILD-018e-cloud-1013.md`.
+- The Windows and Android build agent is running on feat and has not pushed a branch. The four distro `SMOKE OK` lines are unchanged. Windows and Android logs are still absent.
+- Another session started an FS-1 prover agent on feat. Step 7 stays undone. Build queued a stop. No FS-1 branch was on origin at this note. Note: `.cos-inbox/BUILD-fs1-stop-1013.md`.
+- Still open: 018e, 052, wallet items 16–23, 035, Windows and Android build evidence. Pool-55 remains tests 321, pass 320, fail 1, `pool/tests/test_pool.js` dashboard/stratum. That fail is not this pass. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
+
 ## Merge record 2026-10-13
 
 Laptop review-and-merge only. No new feature, no genesis cut, no tag, no deploy, no soak.
@@ -9,6 +46,16 @@ Laptop review-and-merge only. No new feature, no genesis cut, no tag, no deploy,
 - PR 65 (`cursor/admitv2-removal-1013`, head `43f05edf3a1338775ce9144102042469ccc8db30`) was not merged. It waits for `cursor/wallet-v12-send-1013`. 018e, 052, 035, and wallet items 16–23 were not taken.
 
 Both merge commits are ancestors of this note. `0.70`, `0.71`, and `v18` were not moved.
+
+## Review record 2026-10-13 (after 690d35a7)
+
+Laptop review only. No product edit in this pass. No genesis cut, no tag, no deploy, no soak. GitHub drafts 63 and 64 stay open on `cursor/close-open-p0-0bcc`.
+
+- PR 67 (`cursor/p0-052-burial-gate-0f14`, head `edcb2be99487b5b74ea790ef50ded6ebcfe9ed5c`) was not merged. Tests 2, pass 2, duration_ms 310.426288. The second test matches source text. A lied height is `height`. A pruned next block is still `samples_pruned`. No gap spread, no two-node ShearHash case, no Protocol Assailant or Pool Share Auditor sign-off. 052 stays open. Gap: `.cos-inbox/BUILD-052-pr67-short-1013.md`.
+- `cursor/wallet-v12-send-1013` is not on origin. PR 65 stays off feat until that branch exists and the named failures in `.cos-inbox/BUILD-pr65-failures-1013.md` are gone. The two land together. Brief: `.cos-inbox/BUILD-wallet-v12-send-1013.md`.
+- 018e is still open. PR 68 (`cursor/share-commit-018e-d0ad`, head `31e1fdde9fb10b03546379812f63eac7e2312865`) was not merged. Its Timely is a parent-to-block clock, Prod sums `2^b`, and an overflow carries to the next producer. That is not the inbox seal. Gap: `.cos-inbox/BUILD-018e-pr68-short-1013.md`. Brief: `.cos-inbox/BUILD-018e-cloud-1013.md`.
+- Ubuntu, Debian, Fedora, and openSUSE stay the PR 64 `SMOKE OK` lines in `docs/V12-DISTRO-PACKS.md`. Windows and Android build logs are absent. Brief: `.cos-inbox/BUILD-windows-android-builds-1013.md`.
+- Still open: 018e, 052, wallet items 16–23, 035, Windows and Android build evidence. Pool-55 remains tests 321, pass 320, fail 1, `pool/tests/test_pool.js` dashboard/stratum. That fail is not this pass. `V12_GENESIS_BLOCK_HASH` is empty. Tags `0.70`, `0.71`, and `v18` were not moved. No `0.72`, `v19`, or ShearK tag.
 
 Branch: `feat/shear-testnet-v12`  
 Base: `c732ff5466cbd9f6e7723a5332f3604217a0355d` (`origin/main` at branch cut)  

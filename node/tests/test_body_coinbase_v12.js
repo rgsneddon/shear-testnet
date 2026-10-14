@@ -14,6 +14,8 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { V12_VALUE_KINDS } from '../../crypto/spend.js';
+import { flowNeedsDummy } from '../../crypto/dummy.js';
+import { FS1_SEND_REASON } from '../../crypto/fs1_send_gate.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { coinbaseLevyPays, GENESIS_PREV, buildTemplate, verifyBlock } from '../src/chain.js';
 import { createStore } from '../src/store.js';
@@ -77,7 +79,9 @@ describe('a body coinbase cannot mint the levy', () => {
             const tpl = template(who, [tx]);
             const verdict = verifyBlock(blockOf(tpl), null, { probeBody: true });
             assert.equal(verdict.ok, false, `${kind} ${fee} ${flag}`);
-            assert.equal(verdict.reason, 'coinbase', `${kind} ${fee} ${flag} ${verdict.reason}`);
+            // Stage 0: a block never carries a proofless send, whatever its flag.
+            const want = flowNeedsDummy(tx) ? FS1_SEND_REASON : 'coinbase';
+            assert.equal(verdict.reason, want, `${kind} ${fee} ${flag} ${verdict.reason}`);
             if (fee > 0) {
               const bound = coinbaseLevyPays(tpl.txs[0], fee);
               assert.equal(bound.ok, true, `${kind} ${fee} ${bound.reason || ''}`);
@@ -105,13 +109,15 @@ describe('a body coinbase cannot mint the levy', () => {
             vout: [],
             admit_proof: { blob: Buffer.from([3, fee & 255, kind.length]) },
           };
+          // A bucket proof on a send is the Stage 0 gate; on other kinds it stays admit_membership.
+          const want = flowNeedsDummy(tx) ? FS1_SEND_REASON : 'admit_membership';
           const queued = store.queueTx(tx);
-          assert.equal(queued.reason, 'admit_membership', `queue proof ${kind} ${fee} ${queued.reason}`);
+          assert.equal(queued.reason, want, `queue proof ${kind} ${fee} ${queued.reason}`);
           const parked = admitMempool(emptyMempool(), tx, { baseFee: 1 });
-          assert.equal(parked.reason, 'admit_membership', `admit proof ${kind} ${fee} ${parked.reason}`);
+          assert.equal(parked.reason, want, `admit proof ${kind} ${fee} ${parked.reason}`);
           const verdict = verifyBlock(blockOf(template(who, [tx])), null, { probeBody: true });
           assert.equal(verdict.ok, false);
-          assert.equal(verdict.reason, 'admit_membership', `verify proof ${kind} ${fee} ${verdict.reason}`);
+          assert.equal(verdict.reason, want, `verify proof ${kind} ${fee} ${verdict.reason}`);
         }
       }
 
@@ -128,11 +134,11 @@ describe('a body coinbase cannot mint the levy', () => {
       assert.equal(send.ok, false);
       assert.notEqual(send.reason, 'coinbase', send.reason);
 
-      // The flagged tx is judged first. A later unproven send would be
-      // admit_membership only if the flag were skipped.
+      // The flagged tx is judged first. A later send with a non-bucket proof
+      // passes Stage 0 and would be admit_membership only if the flag were skipped.
       const two = verifyBlock(blockOf(template(who, [
         { id: 'flagged', kind: 'withdraw', fee: 2, coinbase: true, vin: [{ address: who }], vout: [] },
-        { id: 'later', kind: 'send', fee: 2, vin: [{ address: who }], vout: [] },
+        { id: 'later', kind: 'send', fee: 2, vin: [{ address: who }], vout: [], admit_proof: { blob: Buffer.from([2, 1]) } },
       ])), null, { probeBody: true });
       assert.equal(two.ok, false);
       assert.equal(two.reason, 'coinbase', two.reason);

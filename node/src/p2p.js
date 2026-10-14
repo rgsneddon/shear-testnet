@@ -561,7 +561,7 @@ export function encodeWireBlock(b) {
 }
 
 export function decodeWireBlock(w) {
-  return {
+  const block = {
     header: wireBytes(w.header),
     hash: w.hash != null ? wireBytes(w.hash) : undefined,
     height: w.height,
@@ -571,17 +571,9 @@ export function decodeWireBlock(w) {
     shareBatch: w.sharePacked
       ? unpackShareBatchBytes(Buffer.from(String(w.sharePacked), 'hex'))
       : (Array.isArray(w.shareBatch) ? w.shareBatch : []),
-    // An absent credit record stays absent. A present field that does not
-    // parse is hash_owed, so an empty wire field must not become one.
-    ...(w.hashCreditPacked
-      ? { hashCredits: unpackHashCreditBytes(Buffer.from(String(w.hashCreditPacked), 'hex')) }
-      : (Array.isArray(w.hashCredits) ? { hashCredits: w.hashCredits } : {})),
     hashSpill: w.hashSpillPacked
       ? (unpackSpillBytes(Buffer.from(String(w.hashSpillPacked), 'hex')) || [])
       : (Array.isArray(w.hashSpill) ? w.hashSpill : []),
-    ...(w.hashSpillCreditPacked
-      ? { hashSpillCredits: unpackSpillCreditBytes(Buffer.from(String(w.hashSpillCreditPacked), 'hex')) }
-      : (Array.isArray(w.hashSpillCredits) ? { hashSpillCredits: w.hashSpillCredits } : {})),
     aLeaves: reviveDeep(w.aLeaves),
     bLeaves: reviveDeep(w.bLeaves),
     rootA: reviveDeep(w.rootA),
@@ -589,6 +581,19 @@ export function decodeWireBlock(w) {
     samplesPruned: !!w.samplesPruned,
     bLeavesPruned: !!w.bLeavesPruned,
   };
+  // A missing credit column is not a record. An own-property set to undefined
+  // makes freshForBlock / spillForBlock reject the block as hash_owed.
+  if (w.hashCreditPacked) {
+    block.hashCredits = unpackHashCreditBytes(Buffer.from(String(w.hashCreditPacked), 'hex'));
+  } else if (Array.isArray(w.hashCredits)) {
+    block.hashCredits = w.hashCredits;
+  }
+  if (w.hashSpillCreditPacked) {
+    block.hashSpillCredits = unpackSpillCreditBytes(Buffer.from(String(w.hashSpillCreditPacked), 'hex'));
+  } else if (Array.isArray(w.hashSpillCredits)) {
+    block.hashSpillCredits = w.hashSpillCredits;
+  }
+  return block;
 }
 
 /**

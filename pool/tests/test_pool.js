@@ -302,7 +302,7 @@ describe('HTTP stats cannot stall', () => {
       assert.equal(stats.coin, 'SHE');
       const fp = await fetch(`http://127.0.0.1:${httpPort}/fingerprint`).then((r) => r.json());
       assert.equal(fp.ok, true);
-      assert.equal(fp.admit, 'ADMITv2');
+      assert.equal(fp.admit, 'ADMITv3');
       assert.equal(fp.hashTxLive, 1);
       assert.equal(fp.magic, MAGIC_TESTNET);
       assert.ok(String(fp.fingerprint || '').length > 8);
@@ -562,6 +562,7 @@ describe('pool dashboard + stratum', () => {
       });
       pool.stratum.on('error', reject);
     });
+    let minerSock;
     try {
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
@@ -575,7 +576,7 @@ describe('pool dashboard + stratum', () => {
     assert.doesNotMatch(html, /0\.0\.0\.0:1111/);
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
-    assert.match(html, /She is Private/);
+    assert.match(html, /Shear testnet/);
     assert.match(html, /SmartScreen/);
     assert.match(html, /Authenticode/);
     assert.match(html, /win-smartscreen/);
@@ -654,6 +655,7 @@ describe('pool dashboard + stratum', () => {
 
     const scored = await new Promise((resolve, reject) => {
       const sock = net.connect(stratumPort, '127.0.0.1', () => {
+        minerSock = sock;
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
@@ -673,17 +675,18 @@ describe('pool dashboard + stratum', () => {
           }) + '\n');
         }
         if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
-          sock.end();
           resolve(buf);
         }
       });
       sock.on('error', reject);
     });
     assert.match(scored, /OK/);
+    await new Promise((r) => setTimeout(r, STATS_REFRESH_MS + 100));
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.ok((named.workers || []).some((w) => w.name === 'ShearK-Miner' && w.version === SHEARK_MINER_VERSION));
     assert.match(html, /w\.name/);
     } finally {
+      try { minerSock?.destroy(); } catch { /* closed */ }
       pool.close();
     }
   });
@@ -980,14 +983,14 @@ describe('public miner listing', () => {
     assert.doesNotMatch(dash, /class="repo-btn"/);
     assert.doesNotMatch(dash, /class="repo-btns"/);
     assert.match(dash, /grid-template-columns:\s*1fr 2fr/);
-    assert.match(dash, /class="she-private-lockup">She is Private</);
+    assert.match(dash, /class="she-private-lockup">Shear testnet</);
     assert.match(dash, /Great Vibes/);
     assert.match(dash, /<h1>Shear<\/h1>/);
     assert.match(dash, /\.cmd-row \{ display:flex; flex-direction:row;/);
     assert.match(dash, /\.cmd-row pre \{[^}]*overflow-wrap:anywhere/);
     assert.match(dash, /\.cmd-row button[^{]*\{[^}]*flex:\s*0\s+0\s+auto;/);
     assert.match(dash, /<pre id="mine-cmd">[\s\S]*<\/pre>\s*<button type="submit" id="copy-cmd">/);
-    assert.match(dash, /Shear is a private cryptocurrency\./);
+    assert.match(dash, /Shear is a cryptocurrency\./);
     assert.doesNotMatch(dash, /fully fledged blockchain/);
     assert.match(dash, /class="miner-pop"/);
     assert.match(dash, /workerNames/);

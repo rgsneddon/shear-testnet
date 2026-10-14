@@ -1,5 +1,5 @@
 import { freshStealthDest, ed25519SeedOf } from '../crypto/address.js';
-import { fluxsetFromBlocks, proveFlowSpend } from '../crypto/admit.js';
+import { attachStubAdmitV2 } from '../node/tests/stub_admit_v2.js';
 
 /** One-time mailbox + stealth spend key. destCommit(spendPub) is not money. */
 export function spendBox(id) {
@@ -11,13 +11,7 @@ export function spendBox(id) {
   };
 }
 
-export function admitSend(tx, { id, spent, blocks, fluxset }) {
-  const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
-  const live = fluxset || fluxsetFromBlocks(blocks || []);
-  return proveFlowSpend(tx, {
-    spendSeed,
-    spentNote: spent,
-    pubs: live.pubs,
-    commits: live.commits,
-  });
+/** Byte-2 stub. The v2 prover is gone, and consensus rejects the byte. */
+export function admitSend(tx) {
+  return attachStubAdmitV2(tx);
 }
