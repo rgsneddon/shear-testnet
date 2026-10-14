@@ -434,7 +434,7 @@ describe('v12 proven burial', () => {
       const parent = decodeHeader(Buffer.from(page.find((p) => p.height === 500).header, 'hex'));
       return { ...r, header: encodeHeader({ ...d, timestamp: parent.timestamp }).toString('hex') };
     });
-    rewound.offerHeaders(bent);
+    assert.equal(rewound.offerHeaders(bent).dropped, true, 'a rewound link drops the peer at offer time');
     const bentGot = await ingest(rewound, first);
     assert.equal(bentGot.reason, 'samples_pruned', 'a rewound header breaks the run');
 
@@ -452,9 +452,9 @@ describe('v12 proven burial', () => {
     const { A, B } = net;
     const frames = ipcBlockFrames(B, [B.blocks[0], B.blocks[1]]);
     assert.deepEqual(frames.map((f) => f.type), ['ipc_headers', 'ipc_block', 'ipc_headers', 'ipc_block']);
-    assert.equal(frames[0].headers.length, PRUNE);
-    assert.equal(frames[0].headers[0].height, 2);
-    assert.equal(frames[0].headers[PRUNE - 1].height, PRUNE + 1);
+    assert.equal(frames[0].headers.length, PRUNE + 1, 'the run starts at the pruned block itself');
+    assert.equal(frames[0].headers[0].height, 1);
+    assert.equal(frames[0].headers[PRUNE].height, PRUNE + 1);
     assert.equal(frames[2].headers.length, 1, 'the next run only adds what is missing');
     assert.equal(frames[2].headers[0].height, PRUNE + 2);
     assert.deepEqual(ipcBlockFrames(B, [B.blocks[416]]), [], 'fast-sync does not send an unburied pruned block');
@@ -466,19 +466,20 @@ describe('v12 proven burial', () => {
     const got = [];
     for (const f of frames.slice(0, 2)) {
       if (f.type === 'ipc_headers') {
-        pool.offerHeaders(f.headers);
-        assert.equal(pool.burialView().offered, PRUNE);
+        assert.equal(pool.offerHeaders(f.headers, { peer: 'ipc' }).accepted, PRUNE + 1);
+        assert.equal(pool.burialView().offered, PRUNE + 1);
       } else {
         got.push(await applyVerifiedIpcBlock(pool, JSON.parse(JSON.stringify(f))));
       }
     }
     // IPC never trusts a hash. These test headers are not ShearHash work, so
     // the store refuses the burial instead of the old flag check, and drops
-    // the header that failed.
+    // the peer that sent the bad link.
     assert.equal(got[0].ok, false);
     assert.equal(got[0].reason, 'samples_pruned');
     assert.equal(pool.tip(), null);
-    assert.ok(pool.burialView().offered < PRUNE);
+    assert.equal(pool.burialView().offered, 0);
+    assert.equal(pool.offerPeerDropped('ipc'), true);
 
     const src = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
     assert.doesNotMatch(src, /shouldPruneSamples\(structuralH/);
