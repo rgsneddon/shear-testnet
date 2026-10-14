@@ -37,11 +37,17 @@ export function reserveSolRegions(source) {
   return { constants: constants[0], allow: allow[0] };
 }
 
+function assertNoCr(source) {
+  if (String(source).includes('\r')) {
+    throw new Error('Reserve.sol source contains a CR byte');
+  }
+}
+
 /** Splice the book list into a Reserve.sol source. Does not write. */
 export function applyReserveBooks(source, books = RESERVE_BOOKS) {
+  assertNoCr(source);
   const regions = reserveSolRegions(source);
-  const newline = regions.constants.includes('\r\n') ? '\r\n' : '\n';
-  const constants = renderReserveConstants(books, newline);
+  const constants = renderReserveConstants(books);
   const allow = renderReserveAllow(books);
   if (!source.includes(regions.constants) || !source.includes(regions.allow)) {
     throw new Error('Reserve.sol magic regions missing');
@@ -50,6 +56,7 @@ export function applyReserveBooks(source, books = RESERVE_BOOKS) {
 }
 
 export function compileReserveSource(source) {
+  assertNoCr(source);
   const input = {
     language: 'Solidity',
     sources: { 'Reserve.sol': { content: source } },
