@@ -150,3 +150,15 @@ Backup: encrypted `shewall.bin` (same file in GUI and CLI; v1 files still open a
 ## Secrets
 
 Never commit `SHEAR_DATA`, `admin.enc`, PEMs, or a live admin hostname. Pool admin host is `SHEAR_ADMIN_HOST` on the box only. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`, `b2b.shear.digital:30303`) — never a raw IP in public copy.
+
+## Licence and credits
+
+Shear is released under the MIT License ([LICENSE](LICENSE)), copyright (c) 2026 Shear.
+
+The Shear concept was inspired by Roy D Herbert, and the Chronoflux Principia.
+
+That line is an attribution. It is not a licence grant.
+
+Shear includes third-party code under its own licences: RandomX (BSD-3-Clause), the monero-oxide FCMP++ crates (MIT), Rust crates, npm packages, Dart packages, Android libraries and bundled runtimes such as Node.js, OpenSSL and libsodium. [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) carries every licence text and copyright line, [LICENSES/](LICENSES/) holds the full licence texts, and every release pack ships both. The wallet shows the same notices under Closure → About and licences. [docs/licensing-audit.md](docs/licensing-audit.md) lists each component and the decisions still open.
+
+The MIT License does not cover the Nevia and Urema typefaces under `brand/` and the web folders, or the RandomX audit reports under `crypto/randomx/audits/`. Those belong to their owners.
