@@ -16,15 +16,23 @@ describe('posted admit proof', () => {
     assert.doesNotMatch(ledger, /admitProof\['t'\]/);
     assert.doesNotMatch(ledger, /'t': blind/);
     assert.match(ledger, /postedAdmitProofKeys/);
+    assert.match(ledger, /postedValueProofKeys/);
+    assert.match(ledger, /postedMemberKeys/);
+    assert.match(ledger, /postedVoutKeys/);
     assert.match(ledger, /postedFlowBody/);
+    assert.match(ledger, /workerAdmitProof/);
     assert.match(ledger, /function postedAdmitProof|Map<String, dynamic> postedAdmitProof/);
-    const keys = ledger.slice(ledger.indexOf('postedAdmitProofKeys'), ledger.indexOf('_secretProofKeys'));
-    for (const secret of ['t', 'r', 'opening', 'seed']) {
+    assert.doesNotMatch(ledger, /_stripSecretKeys|_wipeSecret|_secretProofKeys/);
+    const keys = ledger.slice(
+      ledger.indexOf('postedAdmitProofKeys'),
+      ledger.indexOf('postedValueProofKeys'),
+    );
+    for (const secret of ['t', 'r', 'opening', 'seed', 'blind', 'alpha', 'gamma']) {
       assert.doesNotMatch(keys, new RegExp(`'${secret}'`));
     }
     assert.match(keys, /'spendTag'/);
     assert.match(keys, /'cTilde'/);
-    assert.match(ledger, /_secretProofKeys = <String>\{'t', 'r', 'opening', 'seed'/);
+    assert.match(ledger, /postedValueProofKeys = <String>\{'v', 'R', 'z'\}/);
   });
 
   it('the 1, 2, 4 and 8 input walker is present and not skipped', () => {
@@ -32,6 +40,11 @@ describe('posted admit proof', () => {
     assert.match(test, /\[1, 2, 4, 8\]/);
     assert.match(test, /admit_proof/);
     assert.match(test, /admit_proofs/);
+    assert.match(test, /blind/);
+    assert.match(test, /alpha/);
+    assert.match(test, /gamma/);
+    assert.match(test, /shared spendSeed/);
+    assert.match(test, /_hasRun/);
     assert.doesNotMatch(test, /\bskip\s*:/);
     assert.doesNotMatch(test, /markTestSkipped|skip:\s*true/);
   });

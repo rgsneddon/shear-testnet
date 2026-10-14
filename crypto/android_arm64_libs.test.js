@@ -99,7 +99,8 @@ describe('android native libs', () => {
       assert.equal(rel.includes('/x86'), false, rel);
       const bytes = fs.readFileSync(so);
       assert.equal(elfArm64Page16k(bytes), true, rel);
-      if (so.endsWith('libshear_admit.so') && fs.existsSync(so + '.sha256')) {
+      if (so.endsWith('libshear_admit.so')) {
+        assert.equal(fs.existsSync(so + '.sha256'), true, `${so}.sha256 missing`);
         const want = fs.readFileSync(so + '.sha256', 'utf8').trim();
         const got = crypto.createHash('sha256').update(bytes).digest('hex');
         assert.equal(got, want, rel);

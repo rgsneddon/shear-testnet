@@ -86,9 +86,10 @@ void main() {
       expect(rel.contains('/armeabi'), isFalse, reason: rel);
       expect(rel.contains('/x86'), isFalse, reason: rel);
       expect(elfArm64Page16k(so.readAsBytesSync()), isTrue, reason: rel);
-      final pin = File('${so.path}.sha256');
-      if (so.path.endsWith('libshear_admit.so') && pin.existsSync()) {
-        expect(pin.readAsStringSync().trim(), _sha256(so.readAsBytesSync()));
+      if (so.path.endsWith('libshear_admit.so')) {
+        final pin = File('${so.path}.sha256');
+        expect(pin.existsSync(), isTrue, reason: '${so.path}.sha256 missing');
+        expect(pin.readAsStringSync().trim(), _sha256(so.readAsBytesSync()), reason: so.path);
       }
     }
     if (found.isNotEmpty) {

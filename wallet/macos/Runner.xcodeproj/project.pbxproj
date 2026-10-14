@@ -347,7 +347,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nADMIT=\"$PROJECT_DIR/../../crypto/native/admit\"\ncd \"$ADMIT\"\ncargo build --release --lib\nDYLIB=\"$ADMIT/target/release/libshear_admit.dylib\"\nDEST=\"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app/Contents/Frameworks\"\nmkdir -p \"$DEST\"\ncp \"$DYLIB\" \"$DEST/libshear_admit.dylib\"\nif command -v codesign >/dev/null 2>&1; then codesign --force --sign - \"$DEST/libshear_admit.dylib\"; fi\npython3 \"$PROJECT_DIR/../../crypto/native/stamp_admit_pin.py\" --dart \"$DEST/libshear_admit.dylib\"\n";
+			shellScript = "set -eu\nADMIT=\"$PROJECT_DIR/../../crypto/native/admit\"\ncd \"$ADMIT\"\ncargo build --release --lib\nDYLIB=\"$ADMIT/target/release/libshear_admit.dylib\"\nDEST=\"$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app/Contents/Frameworks\"\nmkdir -p \"$DEST\"\ncp \"$DYLIB\" \"$DEST/libshear_admit.dylib\"\nif command -v codesign >/dev/null 2>&1; then codesign --force --sign - \"$DEST/libshear_admit.dylib\"; fi\npython3 \"$PROJECT_DIR/../../crypto/native/stamp_admit_pin.py\" \"$DEST/libshear_admit.dylib\"\n";
 		};
 		3399D490228B24CF009A79C7 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;

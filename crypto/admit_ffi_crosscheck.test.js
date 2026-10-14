@@ -74,7 +74,8 @@ describe('in-process range FFI matches the node range oracle', () => {
     assert.match(ffi, /zeroize/);
     assert.match(ffi, /rangeCap/);
     assert.match(ffi, /admitPinFailure/);
-    assert.match(ffi, /kReleaseMode/);
+    assert.match(ffi, /!kDebugMode/);
+    assert.doesNotMatch(ffi, /kReleaseMode/);
     assert.doesNotMatch(ffi, /shear_admit_prove/);
     assert.doesNotMatch(ffi, /writeAsString|systemTemp/);
     assert.match(helper, /send unavailable until FS-1/);

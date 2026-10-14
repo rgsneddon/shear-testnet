@@ -28,30 +28,28 @@ void main() {
 
     final spreads = <int>[];
     for (final n in <int>[1, 2, 4, 8]) {
-      final result = await tester.runAsync(() async {
-        final port = ReceivePort();
-        Object? msg;
+      final port = ReceivePort();
+      Object? msg;
+      await tester.runAsync(() async {
         port.listen((event) {
           msg = event;
         });
-        final gaps = <int>[];
-        final clock = Stopwatch()..start();
-        var last = clock.elapsedMicroseconds;
         await Isolate.spawn(rangeOffUiWorker, <Object>[n, port.sendPort]);
-        var frames = 0;
-        while (frames < 4 || msg == null) {
-          await Future<void>.delayed(const Duration(milliseconds: 16));
-          final now = clock.elapsedMicroseconds;
-          gaps.add(now - last);
-          last = now;
-          frames++;
-          if (frames > 40) break;
-        }
-        port.close();
-        return <Object?>[msg, gaps];
       });
-      final msg = result![0];
-      final gaps = (result[1] as List).cast<int>();
+      final gaps = <int>[];
+      final clock = Stopwatch()..start();
+      var last = clock.elapsedMicroseconds;
+      var frames = 0;
+      while (frames < 4 || msg == null) {
+        await tester.pump(const Duration(milliseconds: 16));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 16)));
+        final now = clock.elapsedMicroseconds;
+        gaps.add(now - last);
+        last = now;
+        frames++;
+        if (frames > 40) break;
+      }
+      port.close();
       expect(msg, n, reason: 'n=$n gaps=$gaps');
       expect(gaps.length, greaterThan(1), reason: 'n=$n');
       final minGap = gaps.reduce((a, b) => a < b ? a : b);
@@ -59,7 +57,6 @@ void main() {
       final spread = maxGap - minGap;
       spreads.add(spread);
       expect(spread, inInclusiveRange(0, 250000), reason: 'n=$n spread ${spread}us gaps=$gaps');
-      await tester.pump(const Duration(milliseconds: 16));
     }
     expect(spreads, hasLength(4));
   }, timeout: const Timeout(Duration(seconds: 20)));

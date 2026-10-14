@@ -129,19 +129,13 @@ class AdmitNative {
         throw StateError('admit_lib_load: libshear_admit.so: $e');
       }
     }
-    if (kReleaseMode) {
-      final path = bundledAdmitLibrary(operatingSystem: _osName(), exeDir: _exeDir());
-      final pin = admitPinFailure(File(path).readAsBytesSync(), kShearAdmitSha256);
-      if (pin != null) throw StateError('admit_lib_load: $path: $pin');
-      try {
-        return DynamicLibrary.open(path);
-      } catch (e) {
-        throw StateError('admit_lib_load: $path: $e');
-      }
+    // Profile and release. Debug (kDebugMode) is the only unpinned path.
+    if (!kDebugMode) {
+      return _openPinned();
     }
     Object? last;
     for (final name in admitLibraryCandidates(
-      releaseMode: false,
+      pinned: false,
       exeDir: _exeDir(),
       envPath: Platform.environment['SHEAR_ADMIT_LIB'],
       cwd: Directory.current.path,
@@ -155,19 +149,58 @@ class AdmitNative {
     }
     throw StateError('admit_lib_load: no debug library ($last)');
   }
+
+  static DynamicLibrary _openPinned() {
+    final path = bundledAdmitLibrary(operatingSystem: _osName(), exeDir: _exeDir());
+    final file = File(path);
+    if (!file.existsSync()) {
+      throw StateError('admit_lib_load: $path: missing bundled library');
+    }
+    final bytes = file.readAsBytesSync();
+    final failure = admitBundledLoadFailure(
+      bytes: bytes,
+      operatingSystem: _osName(),
+      pinHex: _osName() == 'macos' ? _sidecarHex(path) : kShearAdmitSha256,
+      codesignText: _osName() == 'macos' ? _codesignText(path) : '',
+      signId: kShearAdmitSignId,
+    );
+    if (failure != null) throw StateError('admit_lib_load: $path: $failure');
+    try {
+      return DynamicLibrary.open(path);
+    } catch (e) {
+      throw StateError('admit_lib_load: $path: $e');
+    }
+  }
 }
 
-/// Release loads one absolute bundled path. Debug may also use the env var and cwd.
+String _sidecarHex(String libraryPath) {
+  final side = File('$libraryPath.sha256');
+  if (!side.existsSync()) return '';
+  return side.readAsStringSync();
+}
+
+String _codesignText(String libraryPath) {
+  if (!Platform.isMacOS) return '';
+  final r = Process.runSync('codesign', ['-dv', '--verbose=4', libraryPath]);
+  return '${r.stdout}\n${r.stderr}';
+}
+
+/// True for profile and release. Debug keeps the env and cwd candidates.
+@visibleForTesting
+bool admitPinnedLoad({required bool debugMode}) => !debugMode;
+
+/// Profile and release load one absolute bundled path. Debug may also use
+/// the env var and cwd.
 @visibleForTesting
 List<String> admitLibraryCandidates({
-  required bool releaseMode,
+  required bool pinned,
   required String exeDir,
   String? envPath,
   String? cwd,
   required String operatingSystem,
 }) {
   final bundled = bundledAdmitLibrary(operatingSystem: operatingSystem, exeDir: exeDir);
-  if (releaseMode) return <String>[bundled];
+  if (pinned) return <String>[bundled];
   final names = <String>[];
   if (envPath != null && envPath.isNotEmpty) names.add(envPath);
   names.add(bundled);
@@ -212,6 +245,36 @@ String? admitPinFailure(List<int> bytes, String expectedHex) {
   if (want.isEmpty) return 'missing sha256 pin';
   final got = sha256.convert(bytes).toString();
   if (got != want) return 'sha256 mismatch';
+  return null;
+}
+
+/// Null when [codesignText] is a Developer ID seal for [expectedIdentity].
+/// `Signature=adhoc` fails closed.
+@visibleForTesting
+String? admitMacSignFailure(String codesignText, String expectedIdentity) {
+  final id = expectedIdentity.trim();
+  if (id.isEmpty) return 'missing sign identity';
+  if (RegExp(r'Signature=adhoc').hasMatch(codesignText)) return 'adhoc signature';
+  final authority = RegExp(r'^Authority=(.*)$', multiLine: true).firstMatch(codesignText);
+  final got = authority?.group(1)?.trim() ?? '';
+  if (got != id) return 'sign identity mismatch';
+  return null;
+}
+
+/// Pin check that runs before [DynamicLibrary.open] on a profile or release
+/// desktop build. macOS uses the post-sign sidecar and the signature identity.
+/// Linux and Windows use the `--dart-define` hash only.
+@visibleForTesting
+String? admitBundledLoadFailure({
+  required List<int> bytes,
+  required String operatingSystem,
+  required String pinHex,
+  required String codesignText,
+  required String signId,
+}) {
+  final pin = admitPinFailure(bytes, pinHex);
+  if (pin != null) return pin;
+  if (operatingSystem == 'macos') return admitMacSignFailure(codesignText, signId);
   return null;
 }
 

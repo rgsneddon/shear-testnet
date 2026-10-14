@@ -16,7 +16,7 @@ if [[ -z "${ANDROID_SDK_ROOT:-}" && -n "${ANDROID_HOME:-}" ]]; then
   ANDROID_SDK_ROOT="$ANDROID_HOME"
 fi
 if [[ -z "${ANDROID_SDK_ROOT:-}" && -f "$ROOT/wallet/android/local.properties" ]]; then
-  ANDROID_SDK_ROOT="$(grep '^sdk.dir=' "$ROOT/wallet/android/local.properties" | head -1 | cut -d= -f2- | tr -d '\r')"
+  ANDROID_SDK_ROOT="$(grep '^sdk.dir=' "$ROOT/wallet/android/local.properties" | head -1 | cut -d= -f2- | tr -d '\r' || true)"
 fi
 if [[ -z "${ANDROID_NDK_HOME:-}" && -n "${ANDROID_SDK_ROOT:-}" && -d "$ANDROID_SDK_ROOT/ndk" ]]; then
   ANDROID_NDK_HOME="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -1)"

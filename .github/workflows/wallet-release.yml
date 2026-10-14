@@ -36,7 +36,9 @@ jobs:
           $env:CL = "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
           flutter config --enable-windows-desktop
           flutter pub get
-          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+          cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
+          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define
           New-Item -ItemType Directory -Force -Path dist-cli | Out-Null
           cmd /c "dart compile exe bin/shear.dart -o dist-cli/shear.exe & exit /b 0"
       - name: Zip GUI
@@ -66,7 +68,9 @@ jobs:
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev
           flutter config --enable-linux-desktop
           flutter pub get
-          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+          cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
+          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
           mkdir -p dist-cli
           dart compile exe bin/shear.dart -o dist-cli/shear || true
       - name: Continuum release signing
@@ -141,7 +145,7 @@ jobs:
         run: |
           flutter config --enable-macos-desktop
           flutter pub get
-          flutter build macos --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }}
+          flutter build macos --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} --dart-define=SHEAR_ADMIT_SIGN_ID="Developer ID Application: Russell Sneddon (SFCBP95595)"
           dart compile exe bin/shear.dart -o dist-cli/shear
           mkdir -p ../dist
           ditto -c -k --keepParent build/macos/Build/Products/Release/Shear.app ../dist/shear-wallet-${{ inputs.pin }}-macos.zip

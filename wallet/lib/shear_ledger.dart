@@ -1046,8 +1046,9 @@ Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) {
     pubs: pubs,
     commits: commits,
   );
+  final proof = body['admit_proof'];
   return {
-    'admitProof': body['admit_proof'],
+    'admitProof': proof is Map ? workerAdmitProof(Map<String, dynamic>.from(proof)) : proof,
     'spendTag': body['spendTag'],
   };
 }
@@ -1072,6 +1073,10 @@ Map<String, dynamic> _proveFlowStamped(Map<String, dynamic> input) {
   final stamp = identityHashCode(Isolate.current).toString();
   try {
     final out = reproveFlowSpendWire(input);
+    final proof = out['admitProof'];
+    if (proof is Map) {
+      out['admitProof'] = workerAdmitProof(Map<String, dynamic>.from(proof));
+    }
     out['stamp'] = stamp;
     return out;
   } catch (e) {
@@ -1738,59 +1743,128 @@ dynamic _hexify(dynamic v) {
 List<Map<String, dynamic>> _postedVin(List<Map<String, dynamic>> vin) {
   return vin.map((v) {
     final row = <String, dynamic>{};
-    if (v['commit'] != null) row['commit'] = _stripSecretKeys(v['commit']);
+    final commit = _allowChild('commit', v['commit']);
+    if (commit is! _Omit && v.containsKey('commit')) row['commit'] = commit;
     return row;
   }).toList();
 }
 
-/// Public wire fields. Same set as crypto/spend.js PROOF_KEYS. The blind `t`,
-/// the opening `r`, and any seed are not in this list.
+/// Public wire fields. Same set as crypto/spend.js PROOF_KEYS.
 const postedAdmitProofKeys = <String>{
   'admit_proof', 'v', 'version', 'spendTag', 'blob', 'cTilde', 'c0',
   'proof', 'members', 'anchor', 'root', 'n', 'pseudo', 'commit', 'tag',
 };
 
-const _secretProofKeys = <String>{'t', 'r', 'opening', 'seed', 'spendSeed', 'rngSeed', 'x'};
+/// crypto/spend.js VALUE_PROOF_KEYS. `R` is public.
+const postedValueProofKeys = <String>{'v', 'R', 'z'};
 
-void _wipeSecret(dynamic v) {
-  if (v is Uint8List) {
-    for (var i = 0; i < v.length; i++) {
-      v[i] = 0;
-    }
+/// One membership row. Not a recursive copy of unknown nested names.
+const postedMemberKeys = <String>{'commit', 'hash', 'side', 'anchor', 'root'};
+
+/// crypto/spend.js MERKLE_PROOF_KEYS.
+const postedMerkleKeys = <String>{'side', 'hash'};
+
+/// crypto/spend.js VOUT_KEYS.
+const postedVoutKeys = <String>{
+  'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
+  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt',
+  'portalId', 'memo', 'memoCt',
+};
+
+/// Sentinel for a nested value the allow-list refuses.
+class _Omit {
+  const _Omit();
+}
+
+const _omit = _Omit();
+
+Map<String, dynamic> _allowMap(Map<dynamic, dynamic> raw, Set<String> keys) {
+  final out = <String, dynamic>{};
+  for (final key in keys) {
+    if (!raw.containsKey(key)) continue;
+    final taken = _allowChild(key, raw[key]);
+    if (taken is _Omit) continue;
+    out[key] = taken;
+  }
+  return out;
+}
+
+dynamic _allowChild(String key, dynamic v) {
+  switch (key) {
+    case 'admit_proof':
+      if (v is Map) return _allowMap(v, postedAdmitProofKeys);
+      return _publicLeaf(v);
+    case 'proof':
+      if (v is Map) return _allowMap(v, postedMerkleKeys);
+      if (v is List && v is! Uint8List && v.any((item) => item is Map)) {
+        return <dynamic>[
+          for (final item in v)
+            if (item is Map) _allowMap(item, postedMerkleKeys) else item,
+        ];
+      }
+      return _publicLeaf(v);
+    case 'members':
+      if (v is List && v is! Uint8List) {
+        return <dynamic>[
+          for (final item in v)
+            if (item is Map) _allowMap(item, postedMemberKeys) else if (_publicLeaf(item) is! _Omit) item,
+        ];
+      }
+      if (v is Map) return _allowMap(v, postedMemberKeys);
+      return _publicLeaf(v);
+    case 'valueProof':
+      if (v is Map) return _allowMap(v, postedValueProofKeys);
+      return _publicLeaf(v);
+    default:
+      return _publicLeaf(v);
   }
 }
 
-dynamic _stripSecretKeys(dynamic v) {
-  if (v is Map) {
-    final out = <String, dynamic>{};
-    for (final e in v.entries) {
-      final key = e.key.toString();
-      if (_secretProofKeys.contains(key)) {
-        // `r` may alias the note opening. Drop it from the wire and leave
-        // the caller's bytes. The blind `t` and the seeds are wiped.
-        if (key != 'r') _wipeSecret(e.value);
-        continue;
-      }
-      out[key] = _stripSecretKeys(e.value);
+/// Byte lists and scalars stay. A map under a leaf key is dropped so an
+/// unknown name such as `blind` cannot ride inside `anchor` or `commit`.
+dynamic _publicLeaf(dynamic v) {
+  if (v is Map) return _omit;
+  if (v is List && v is! Uint8List) {
+    for (final item in v) {
+      if (item is Map) return _omit;
     }
-    return out;
   }
-  if (v is List) return [for (final item in v) _stripSecretKeys(item)];
   return v;
 }
 
-/// Posted admit proof. Allow-list only. The blind is wiped and dropped.
+/// Posted admit proof. Copies allow-listed fields and does not mutate [raw].
 Map<String, dynamic> postedAdmitProof(Map<String, dynamic> raw) {
-  final out = <String, dynamic>{};
-  for (final key in postedAdmitProofKeys) {
-    if (!raw.containsKey(key)) continue;
-    out[key] = _stripSecretKeys(raw[key]);
+  return _allowMap(raw, postedAdmitProofKeys);
+}
+
+/// Drop `t` from the map that [Isolate.run] will copy back. Wipes that blind
+/// only when the buffer is the worker's own and not the caller's spend seed.
+Map<String, dynamic> workerAdmitProof(Map<String, dynamic> raw) {
+  final copied = _dropBlind(raw, raw['spendSeed']);
+  return Map<String, dynamic>.from(copied as Map);
+}
+
+dynamic _dropBlind(dynamic v, Object? seed) {
+  if (v is Map) {
+    final out = <String, dynamic>{};
+    for (final e in v.entries) {
+      if (e.key.toString() == 't') {
+        final t = e.value;
+        if (t is Uint8List && !identical(t, seed)) {
+          for (var i = 0; i < t.length; i++) {
+            t[i] = 0;
+          }
+        }
+        continue;
+      }
+      out[e.key.toString()] = _dropBlind(e.value, seed);
+    }
+    return out;
   }
-  for (final key in _secretProofKeys) {
-    if (key == 'r') continue;
-    if (raw.containsKey(key)) _wipeSecret(raw[key]);
+  if (v is List && v is! Uint8List) {
+    return <dynamic>[for (final item in v) _dropBlind(item, seed)];
   }
-  return out;
+  return v;
 }
 
 /// The body [flowPostHex] sends. Vin is C̃-only, vout is the sealed compact
@@ -1811,8 +1885,7 @@ Map<String, dynamic> postedFlowBody({
 
 List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
   return [
-    for (final row in vouts.map(compactSealedVout))
-      Map<String, dynamic>.from(_stripSecretKeys(row) as Map),
+    for (final row in vouts.map(compactSealedVout)) _allowMap(row, postedVoutKeys),
   ];
 }
 
