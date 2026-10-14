@@ -149,6 +149,25 @@ class ReleaseNoticesTest(unittest.TestCase):
         head[pe + 24 + len(opt):pe + 24 + len(opt) + 40] = section
         return bytes(head) + body
 
+    def test_linux_packs_refuse_the_gcc_runtime(self):
+        self.assertTrue(release_notices.is_gcc_runtime("lib/libstdc++.so.6"))
+        self.assertTrue(release_notices.is_gcc_runtime("libgcc_s.so.1"))
+        self.assertFalse(release_notices.is_gcc_runtime("libgcc_s_seh-1.dll"))
+        release_notices.assert_ships_no_gcc_runtime(["runtime/node", "runtime/libnode.so.127"])
+        with self.assertRaises(SystemExit) as caught:
+            release_notices.assert_ships_no_gcc_runtime(["runtime/libstdc++.so.6", "libgcc_s.so.1"])
+        self.assertIn("libgcc_s.so.1", str(caught.exception))
+        needed = release_notices.elf_needed("/usr/bin/ls")
+        self.assertIn("libc.so.6", needed)
+        with tempfile.TemporaryDirectory() as d:
+            kept = os.path.join(d, "shearhash.node")
+            open(kept, "wb").write(open("/usr/bin/ls", "rb").read())
+            release_notices.assert_no_gcc_runtime([kept])
+            shipped = os.path.join(d, "libstdc++.so.6")
+            open(shipped, "wb").write(b"")
+            with self.assertRaises(SystemExit):
+                release_notices.assert_linux_tree_clean(d)
+
     def test_pe_imports_and_static_runtime_check(self):
         with tempfile.TemporaryDirectory() as d:
             static = os.path.join(d, "shearhash.node")

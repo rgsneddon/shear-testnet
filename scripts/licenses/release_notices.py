@@ -301,6 +301,148 @@ def assert_no_mingw_runtime(binaries: list[str]) -> None:
         )
 
 
+# Linux binaries Shear builds link libgcc and libstdc++ statically, and no
+# pack ships libstdc++.so.6 or libgcc_s.so.1 (GPL object code). A prebuilt
+# third-party binary (node, libnode) may still load them from the user's own
+# system; every glibc distro installs both.
+GCC_RUNTIME_SONAMES = ("libstdc++.so", "libgcc_s.so")
+
+
+def is_gcc_runtime(name: str) -> bool:
+    return re.split(r"[\\/]", name)[-1].startswith(GCC_RUNTIME_SONAMES)
+
+
+def is_elf(path: str) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def elf_needed(path: str) -> list[str]:
+    """DT_NEEDED entries of an ELF file (any class and byte order)."""
+    import struct
+
+    data = open(path, "rb").read()
+    if data[:4] != b"\x7fELF":
+        raise SystemExit(f"{path} is not an ELF file")
+    wide = data[4] == 2
+    end = "<" if data[5] == 1 else ">"
+    if wide:
+        phoff, = struct.unpack_from(end + "Q", data, 0x20)
+        phentsize, phnum = struct.unpack_from(end + "HH", data, 0x36)
+        ph_fmt, dyn_fmt = end + "II6Q", end + "qQ"
+    else:
+        phoff, = struct.unpack_from(end + "I", data, 0x1C)
+        phentsize, phnum = struct.unpack_from(end + "HH", data, 0x2A)
+        ph_fmt, dyn_fmt = end + "8I", end + "iI"
+    loads, dynamic = [], None
+    for i in range(phnum):
+        f = struct.unpack_from(ph_fmt, data, phoff + i * phentsize)
+        if wide:
+            p_type, _flags, p_offset, p_vaddr, _paddr, p_filesz = f[:6]
+        else:
+            p_type, p_offset, p_vaddr, _paddr, p_filesz = f[:5]
+        if p_type == 1:
+            loads.append((p_vaddr, p_offset, p_filesz))
+        elif p_type == 2:
+            dynamic = (p_offset, p_filesz)
+    if dynamic is None:
+        return []
+    entsize = struct.calcsize(dyn_fmt)
+    needed, strtab = [], None
+    for off in range(dynamic[0], dynamic[0] + dynamic[1], entsize):
+        tag, val = struct.unpack_from(dyn_fmt, data, off)
+        if tag == 0:
+            break
+        if tag == 1:
+            needed.append(val)
+        elif tag == 5:
+            strtab = val
+    if strtab is None:
+        return []
+    for vaddr, offset, size in loads:
+        if vaddr <= strtab < vaddr + size:
+            base = strtab - vaddr + offset
+            break
+    else:
+        raise SystemExit(f"{path}: DT_STRTAB {strtab:#x} outside every PT_LOAD segment")
+    return [data[base + n:data.index(b"\0", base + n)].decode("utf-8", "replace") for n in needed]
+
+
+def assert_no_gcc_runtime(binaries: list[str]) -> None:
+    """Fail if an ELF binary Shear builds still needs the shared libstdc++ or libgcc_s."""
+    bad = []
+    for b in binaries:
+        hits = [n for n in elf_needed(b) if is_gcc_runtime(n)]
+        if hits:
+            bad.append(f"{b} needs {', '.join(hits)}")
+    if bad:
+        raise SystemExit(
+            "; ".join(bad)
+            + ". Link with -static-libgcc -static-libstdc++ (see crypto/native/Makefile)"
+        )
+
+
+def assert_ships_no_gcc_runtime(names) -> None:
+    """Fail if a Linux pack would ship libstdc++.so* or libgcc_s.so*."""
+    shipped = sorted({n for n in names if is_gcc_runtime(n)})
+    if shipped:
+        raise SystemExit(
+            "Linux packs must not ship the GCC runtime (" + ", ".join(shipped)
+            + "); Shear's binaries link it statically and node uses the system copy"
+        )
+
+
+def assert_linux_tree_clean(root: str, exempt=()) -> None:
+    """Check a staged Linux pack: no shipped GCC runtime, and no ELF file under
+    root needs one. exempt: fnmatch patterns (relative to root) for prebuilt
+    third-party binaries, such as node, that load the system copy."""
+    import fnmatch
+
+    names, elves = [], []
+    for dp, _dns, fns in os.walk(root):
+        for fn in fns:
+            p = os.path.join(dp, fn)
+            rel = os.path.relpath(p, root).replace(os.sep, "/")
+            names.append(rel)
+            if os.path.islink(p) or not is_elf(p) or any(fnmatch.fnmatch(rel, pat) for pat in exempt):
+                continue
+            elves.append(p)
+    assert_ships_no_gcc_runtime(names)
+    assert_no_gcc_runtime(elves)
+
+
+def assert_linux_zip_clean(path: str, exempt=()) -> None:
+    """assert_linux_tree_clean for a finished zip; exempt matches member names."""
+    import fnmatch
+    import tempfile
+    import zipfile
+
+    with zipfile.ZipFile(path) as z, tempfile.TemporaryDirectory(prefix="shear-elf-") as tmp:
+        names = z.namelist()
+        assert_ships_no_gcc_runtime(names)
+        bad = []
+        for i, name in enumerate(names):
+            if name.endswith("/") or any(fnmatch.fnmatch(name, pat) for pat in exempt):
+                continue
+            data = z.read(name)
+            if data[:4] != b"\x7fELF":
+                continue
+            staged = os.path.join(tmp, str(i))
+            with open(staged, "wb") as fh:
+                fh.write(data)
+            hits = [n for n in elf_needed(staged) if is_gcc_runtime(n)]
+            if hits:
+                bad.append(f"{name} needs {', '.join(hits)}")
+    if bad:
+        raise SystemExit(
+            f"{path}: " + "; ".join(bad)
+            + ". Link with -static-libgcc -static-libstdc++ (see crypto/native/Makefile)"
+        )
+
+
 def assert_windows_dlls_covered(dlls: list[str]) -> None:
     """Every DLL a Windows pack ships must have its licence in LICENSES/ (see THIRD_PARTY_NOTICES.txt)."""
     names = {re.split(r"[\\/]", d)[-1] for d in dlls}
@@ -440,7 +582,22 @@ def main(argv: list[str]) -> int:
         assert_no_mingw_runtime(argv[1:])
         print("no MinGW runtime imports:", " ".join(os.path.basename(a) for a in argv[1:]))
         return 0
-    raise SystemExit("usage: release_notices.py no-mingw-runtime PE_FILE... | versions BINARY...")
+    if len(argv) >= 2 and argv[0] == "no-gcc-runtime":
+        assert_no_gcc_runtime(argv[1:])
+        print("no shared GCC runtime needed:", " ".join(os.path.basename(a) for a in argv[1:]))
+        return 0
+    if len(argv) >= 2 and argv[0] == "linux-tree":
+        root, rest = argv[1], argv[2:]
+        exempt = [rest[i + 1] for i in range(0, len(rest) - 1, 2) if rest[i] == "--exempt"]
+        if len(rest) != 2 * len(exempt):
+            raise SystemExit("usage: release_notices.py linux-tree ROOT [--exempt PATTERN]...")
+        assert_linux_tree_clean(root, exempt)
+        print("no GCC runtime shipped or needed under", root)
+        return 0
+    raise SystemExit(
+        "usage: release_notices.py no-mingw-runtime PE_FILE... | no-gcc-runtime ELF_FILE..."
+        " | linux-tree ROOT [--exempt PATTERN]... | versions BINARY..."
+    )
 
 
 if __name__ == "__main__":

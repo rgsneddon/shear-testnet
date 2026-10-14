@@ -11,6 +11,11 @@ else
   BIN := Shear-Miner
   LIBS ?= -pthread -lm
   WIN_STATIC_RT :=
+  ifeq ($(UNAME_S),Linux)
+    # Static libgcc: no libgcc_s.so.1 ships (docs/licensing-audit.md decision 4).
+    LINUX_STATIC_RT := -static-libgcc
+    GCC_RT_CHECK := python3 ../scripts/licenses/release_notices.py no-gcc-runtime
+  endif
 endif
 
 SCALAR_OBJS := src/shear_miner.o src/shear_hash.o src/sha256.o src/sha256_dispatch.o
@@ -37,7 +42,10 @@ src/sha256_avx2.o: src/sha256_avx2.c src/sha256.h
 	$(CC) $(CFLAGS) -mavx2 -DSHEAR_ALLOW_AVX2 -c -o $@ src/sha256_avx2.c
 
 $(BIN): $(SCALAR_OBJS) $(ISA_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(SCALAR_OBJS) $(ISA_OBJS) $(LIBS) $(WIN_STATIC_RT)
+	$(CC) $(CFLAGS) -o $@ $(SCALAR_OBJS) $(ISA_OBJS) $(LIBS) $(WIN_STATIC_RT) $(LINUX_STATIC_RT)
+ifdef GCC_RT_CHECK
+	$(GCC_RT_CHECK) $@
+endif
 
 selftest: $(BIN)
 	./$(BIN) --selftest

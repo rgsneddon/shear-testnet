@@ -65,7 +65,7 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
         for fn in fns:
             if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
                 continue
-            if fn.lower() in release_notices.MINGW_RUNTIME_DLLS:
+            if fn.lower() in release_notices.MINGW_RUNTIME_DLLS or release_notices.is_gcc_runtime(fn):
                 continue
             if fn.endswith(".node"):
                 host_win = sys.platform.startswith("win")
@@ -263,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     shipped_runtime = [n for n in names if n.rsplit("/", 1)[-1].lower() in release_notices.MINGW_RUNTIME_DLLS]
     if shipped_runtime:
         sys.exit(f"node zip must not ship the MinGW runtime: {', '.join(shipped_runtime)}")
+    # runtime/ holds the prebuilt node (and Fedora's libnode), which loads the system libstdc++.
+    release_notices.assert_linux_zip_clean(out, exempt=("runtime/*",))
     if any(n.startswith("node_modules/solc/") for n in names):
         sys.exit("node zip must not ship the development-only solc compiler")
     release_notices.assert_has_notices(names, REPO)

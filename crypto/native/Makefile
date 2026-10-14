@@ -26,10 +26,16 @@ else ifeq ($(UNAME_S),Darwin)
   LIBSTDCXX := -pthread -lstdc++
   ADMITSYS := -lpthread
 else
-  LINKFLAGS := -shared -Wl,-z,noexecstack
+  # libgcc and libstdc++ are linked statically, so no pack ships
+  # libstdc++.so.6 or libgcc_s.so.1 (docs/licensing-audit.md decision 4).
+  # --exclude-libs hides the archived runtime inside the addon, so it never
+  # binds to the libstdc++ that node itself loads. Fedora needs the
+  # libstdc++-static package.
+  LINKFLAGS := -shared -Wl,-z,noexecstack -Wl,--exclude-libs,ALL
   NODE_IMPORT :=
-  LIBSTDCXX := -pthread -lstdc++
-  ADMITSYS := -lpthread -ldl -lm
+  LIBSTDCXX := -pthread -static-libgcc -Wl,-Bstatic -lstdc++ -Wl,-Bdynamic
+  ADMITSYS := -lpthread -ldl -lm -static-libgcc
+  GCC_RT_CHECK := python3 ../../scripts/licenses/release_notices.py no-gcc-runtime
 endif
 
 ADMIT_DIR := $(abspath admit)
@@ -52,6 +58,9 @@ shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MI
 ifeq ($(OS),Windows_NT)
 	python ../../scripts/licenses/release_notices.py no-mingw-runtime $@
 endif
+ifdef GCC_RT_CHECK
+	$(GCC_RT_CHECK) $@
+endif
 
 admitlib:
 	cargo build --release $(ADMIT_FEATURES) --target-dir $(ADMIT_TARGET) --manifest-path $(ADMIT_DIR)/Cargo.toml
@@ -73,6 +82,9 @@ shearadmit.node: admit_napi.c admitlib $(NODE_IMPORT)
 	  -o $@ admit_napi.c $(ADMITLIB) $(NODE_IMPORT) $(ADMITSYS)
 ifeq ($(OS),Windows_NT)
 	python ../../scripts/licenses/release_notices.py no-mingw-runtime $@
+endif
+ifdef GCC_RT_CHECK
+	$(GCC_RT_CHECK) $@
 endif
 
 clean:

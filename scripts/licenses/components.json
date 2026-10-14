@@ -315,7 +315,7 @@
   {
    "kind": "runtime",
    "name": "GCC runtime (libgcc, libstdc++; MinGW-w64)",
-   "version": "static libgcc and libstdc++ from the MSYS2 UCRT64 MinGW toolchain that builds the Windows binaries",
+   "version": "static libgcc and libstdc++ from the toolchain that builds the binary (MSYS2 UCRT64 MinGW on Windows, the host GCC on Linux)",
    "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
    "holders": [
     "Copyright (C) 1989-2026 Free Software Foundation, Inc. (libgcc)",
@@ -325,9 +325,9 @@
     "LICENSES/GPL-3.0-or-later.txt",
     "LICENSES/GCC-exception-3.1.txt"
    ],
-   "shipped": "statically linked into the Windows shearhash.node, shearadmit.node, ShearK-Miner.exe and Shear-Miner.exe (-static-libgcc -static-libstdc++); libgcc_s_seh-1.dll and libstdc++-6.dll are no longer shipped",
+   "shipped": "statically linked into shearhash.node, shearadmit.node, ShearK-Miner, Shear-Miner, libshear_admit.so and the Linux wallet runner and plugins (-static-libgcc -static-libstdc++, and static winpthread on Windows). libgcc_s_seh-1.dll, libstdc++-6.dll, libstdc++.so.6 and libgcc_s.so.1 are not shipped. The prebuilt Node.js binary still loads the system libstdc++",
    "obligation": "none beyond Shear's own terms: the GCC Runtime Library Exception 3.1 lets the statically linked target code be distributed under any licence; the GPL and exception texts are kept as a courtesy",
-   "status": "DECIDED (decision 4): static link; every Windows packer and the crypto/native Makefile fail if a binary imports libgcc_s_seh-1.dll, libstdc++-6.dll or libwinpthread-1.dll"
+   "status": "DECIDED (decision 4, Linux included 2026-10-14 17:37 BST): static link; packers fail if a Linux archive ships libstdc++.so* or libgcc_s.so*, or if a Shear-built ELF needs them, and if a Windows binary imports libgcc_s_seh-1.dll, libstdc++-6.dll or libwinpthread-1.dll"
   },
   {
    "kind": "runtime",

@@ -214,6 +214,9 @@ def install_prefix() -> None:
             link.symlink_to(sodium.name)
         os.chmod(dest / "shear_wallet", 0o755)
     install_runtime_licenses(licensed)
+    # bin/node is the official Node.js build, which loads the distro libstdc++.
+    # Everything else Shear builds is linked with -static-libgcc -static-libstdc++.
+    release_notices.assert_linux_tree_clean(str(PREFIX), exempt=("bin/node",))
 
 
 def add_path(tar: tarfile.TarFile, abs_path: Path, arcname: str) -> None:

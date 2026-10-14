@@ -242,7 +242,9 @@ def copy_linked_libs(binary: str, dest_dir: str) -> list[str]:
     """Copy non-glibc shared libraries next to a distro node binary.
 
     Fedora's /usr/bin/node is a small PIE that needs libnode.so.127. A zip
-    that copies only that 27KB file does not start. libc stays on the OS.
+    that copies only that 27KB file does not start. libc stays on the OS, and
+    so do libstdc++.so.6 and libgcc_s.so.1: they are GPL object code, every
+    glibc distro installs them, and no pack ships them.
     """
     import shutil
     import subprocess
@@ -250,7 +252,7 @@ def copy_linked_libs(binary: str, dest_dir: str) -> list[str]:
         out = subprocess.check_output(["ldd", binary], text=True, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.CalledProcessError):
         return []
-    skip = ("libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "libresolv.so", "ld-linux", "linux-vdso")
+    skip = ("libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "libresolv.so", "ld-linux", "linux-vdso") + release_notices.GCC_RUNTIME_SONAMES
     copied: list[str] = []
     for line in out.splitlines():
         if "=>" not in line:
@@ -312,7 +314,7 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux", extra_runtime=())
             for fn in fns:
                 if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
                     continue
-                if fn.lower() in release_notices.MINGW_RUNTIME_DLLS:
+                if fn.lower() in release_notices.MINGW_RUNTIME_DLLS or release_notices.is_gcc_runtime(fn):
                     continue
                 p = os.path.join(dp, fn)
                 if not os.path.isfile(p):
@@ -369,8 +371,13 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux", extra_runtime=())
     for src, arc in release_notices.runtime_license_members(licensed, "runtime/licenses", repo):
         z.write(src, arc)
     z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(licensed + list(extra_runtime)))
+    release_notices.assert_ships_no_gcc_runtime(z.namelist())
+    native = os.path.join(repo, "crypto", "native")
+    if flavor != "windows":
+        release_notices.assert_no_gcc_runtime(
+            [p for p in (os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node")) if release_notices.is_elf(p)]
+        )
     if flavor == "windows":
-        native = os.path.join(repo, "crypto", "native")
         release_notices.assert_no_mingw_runtime(
             [os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node") if os.path.isfile(os.path.join(native, n))]
         )

@@ -41,7 +41,7 @@ flutter config --enable-linux-desktop --no-analytics >/dev/null
 flutter pub get
 REPO="$(cd "$WALLET/.." && pwd)"
 ADMIT="$REPO/crypto/native/admit"
-cargo build --release --manifest-path "$ADMIT/Cargo.toml"
+bash "$REPO/crypto/native/build-linux-admit-so.sh"
 DEFINE="$(python3 "$REPO/crypto/native/stamp_admit_pin.py" --define "$ADMIT/target/release/libshear_admit.so")"
 flutter build linux --release --build-name="$FLUTTER_NAME" --build-number="$BUILD_NUMBER" $DEFINE
 BUNDLE="$WALLET/build/linux/x64/release/bundle"
@@ -162,6 +162,8 @@ for name in outs:
     if any(n.startswith("node_modules/solc/") for n in names):
         sys.exit(f"wallet zip must not ship the development-only solc compiler: {name}")
     release_notices.assert_has_notices(names, repo)
+    # runtime/ is the prebuilt node (and Fedora's libnode). It loads the system libstdc++.
+    release_notices.assert_linux_zip_clean(name, exempt=("runtime/*",))
     assert_zip_has_modules(names, repo)
 print("ok")
 PY

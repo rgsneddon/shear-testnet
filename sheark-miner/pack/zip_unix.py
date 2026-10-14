@@ -214,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
             zipped.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(SOURCES))
         names = zipfile.ZipFile(out).namelist()
     release_notices.assert_has_notices(names, REPO)
+    release_notices.assert_ships_no_gcc_runtime(names)
+    if expect == "elf":
+        release_notices.assert_no_gcc_runtime([BIN])
     for need in ("ShearK-Miner", "example.bat", "example.sh"):
         if need not in names:
             sys.exit(f"{out} missing {need}: {names}")

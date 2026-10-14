@@ -195,7 +195,7 @@ jobs:
               pacman -S --noconfirm --needed base-devel cmake nodejs npm rust python git file patchelf
               ;;
             fedora)
-              dnf -y install gcc gcc-c++ make cmake nodejs nodejs-devel rust cargo python3 git zip findutils file pkgconf-pkg-config patchelf
+              dnf -y install gcc gcc-c++ make cmake nodejs nodejs-devel rust cargo python3 git zip findutils file pkgconf-pkg-config patchelf libstdc++-static
               ;;
             opensuse)
               zypper -n refresh

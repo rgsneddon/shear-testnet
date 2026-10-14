@@ -65,10 +65,12 @@ jobs:
         working-directory: wallet
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev g++ libsecret-1-dev
+          gcc_major="$(clang++ -print-file-name=libstdc++.so | sed -n 's|.*/\([0-9][0-9]*\)/libstdc++.so|\1|p')"
+          sudo apt-get install -y "libstdc++-${gcc_major}-dev"
           flutter config --enable-linux-desktop
           flutter pub get
-          cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          bash ../crypto/native/build-linux-admit-so.sh
           DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
           flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
           mkdir -p dist-cli
@@ -135,6 +137,7 @@ jobs:
               release_notices.write_notices(z, ".")
           for path in (linux, arch):
               release_notices.assert_has_notices(zipfile.ZipFile(path).namelist(), ".")
+              release_notices.assert_linux_zip_clean(path)
           apk = "wallet/build/app/outputs/flutter-apk/app-release.apk"
           shutil.copy(apk, os.path.join(dist, f"shear-wallet-{pin}-android.apk"))
           PY
