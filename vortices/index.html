@@ -17,7 +17,7 @@
     })();
   </script>
   <link rel="stylesheet" href="https://shear.digital/css/site.css" />
-  <link rel="stylesheet" href="https://shear.digital/shared/shear-chrome.css" />
+  <link rel="stylesheet" href="https://shear.digital/shared/shear-chrome.css?v=20261014nav" />
   <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
 <style>
     body { margin: 0; background: var(--bg, #071422); color: var(--ink, #e8eef6); font: 15px/1.45 "Segoe UI", system-ui, sans-serif; }
@@ -40,13 +40,45 @@
   </style>
 </head>
 <body>
-  <div id="shear-chrome-root" data-active="VORTICES" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"></div>
-  <script src="https://shear.digital/shared/shear-chrome.js"></script>
+  <div id="shear-chrome-root" data-active="VORTICES" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn is-on active" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="https://shear.digital/shared/shear-chrome.js?v=20261014nav"></script>
 
   <div class="wrap">
     <h1>Vortices</h1>
-    <p class="lead">Name, what it does, and one vort1 link. Paste that link into Continuum. No account. Install Continuum 0.71 from https://shear.digital/wallet/, open Vortex, and paste the link. The node records the programme call. Shear Sentinel v18 is at https://shear.digital/node/. How-to: https://shear.digital/docs/#/surfaces.</p>
-    <p class="netline" id="netline" aria-live="polite">Network · <code id="netmagic">shear-testnet-v11</code></p>
+    <p class="lead">Name, what it does, and one vort1 link. Paste that link into Continuum. No account. Install Continuum 0.67 from https://shear.digital/wallet/, open Vortex, and paste the link. The node records the programme call. Shear Sentinel v16 is at https://shear.digital/node/. How-to: https://shear.digital/docs/#/surfaces.</p>
+    <p class="netline" id="netline" aria-live="polite">Network · <code id="netmagic">shear-testnet-v10</code></p>
     <div id="list"></div>
     <article>
       <h2>Upload a vortex</h2>
@@ -67,7 +99,7 @@
     (function bindNetworkMagic() {
       var el = document.getElementById('netmagic');
       if (!el) return;
-      var FALLBACK = 'shear-testnet-v11';
+      var FALLBACK = 'shear-testnet-v10';
       fetch('https://pool.shear.digital/api/stats', { cache: 'no-store' })
         .then(function (r) { if (!r.ok) throw new Error('stats'); return r.json(); })
         .then(function (s) {

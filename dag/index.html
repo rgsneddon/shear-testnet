@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="description" content="DINS-DAG settlement for shear-testnet-v11. Blue-set shares, one pot-plus-hash mint, no second hash leg."/>
+  <meta name="description" content="DINS-DAG settlement for shear-testnet-v10. Blue-set shares, one pot-plus-hash mint, no second hash leg."/>
   <script>
     (function () {
       var KEY = 'shear-theme';
@@ -46,11 +46,11 @@
       }
     })();
   </script>
-  <title>DINS-DAG · shear-testnet-v11</title>
+  <title>DINS-DAG · shear-testnet-v10</title>
   <link rel="icon" href="https://shear.digital/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="https://shear.digital/brand/favicon.ico"/>
   <link rel="stylesheet" href="https://shear.digital/css/site.css"/>
-  <link rel="stylesheet" href="https://shear.digital/shared/shear-chrome.css"/>
+  <link rel="stylesheet" href="https://shear.digital/shared/shear-chrome.css?v=20261014nav"/>
   <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css"/>
   <style>
     * { box-sizing: border-box; }
@@ -104,36 +104,45 @@
   </style>
 </head>
 <body>
-  <header class="top-banner">
-    <div class="banner-brand">
-      <a href="https://shear.digital/" aria-label="Shear home">
-        <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
-          src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
-          data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
-          data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
-        <img class="banner-wordmark theme-img-dark" alt=""
-          src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
-      </a>
-    </div>
-    <nav class="nav" id="shear-nav" aria-label="Product">
+  <div id="shear-chrome-root" data-active="DAG" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
       <a class="nav-btn" href="https://shear.digital/">MAIN</a>
       <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
-      <a class="nav-btn is-on" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn is-on active" href="https://dag.shear.digital/">DAG</a>
       <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
       <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
       <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
       <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
-    </nav>
-    <div class="banner-tools"></div>
-  </header>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="https://shear.digital/shared/shear-chrome.js?v=20261014nav"></script>
   <div class="stage">
     <canvas id="dag" aria-label="Live DINS-DAG lattice and node globe"></canvas>
     <div class="overlay">
       <h1>DINS-DAG</h1>
-      <p class="lede">Eligible shares are the blue set, sorted by identity. The mint is the spine pot plus the hash nanos, once. That work is not paid a second time from a pull-book hash leg. Continuum 0.71. ShearK 2.8. Book <code>shear-testnet-v11</code>. DAG is a link in the client navbar. This page is the open round, not your balance: sealed pays are on the node, and Continuum lists them in Shearview after you open the wallet. Wallet download: https://shear.digital/wallet/ (Continuum 0.71). Node download: https://shear.digital/node/ (Shear Sentinel v18). How-to: https://shear.digital/docs/#/surfaces. <a href="https://shear.digital/docs/#/dins-dag">DINS-DAG docs</a> · <a href="https://shear.digital/whitepaper/">whitepaper</a>.</p>
+      <p class="lede">Eligible shares are the blue set, sorted by identity. The mint is the spine pot plus the hash nanos, once. That work is not paid a second time from a pull-book hash leg. Continuum 0.67. ShearK 2.7. Book <code>shear-testnet-v10</code>. DAG is a link in the client navbar. This page is the open round, not your balance: sealed pays are on the node, and Continuum lists them in Shearview after you open the wallet. Wallet download: https://shear.digital/wallet/ (Continuum 0.67). Node download: https://shear.digital/node/ (Shear Sentinel v16). How-to: https://shear.digital/docs/#/surfaces. <a href="https://shear.digital/docs/#/dins-dag">DINS-DAG docs</a> · <a href="https://shear.digital/whitepaper/">whitepaper</a>.</p>
       <div class="frames">
         <article class="frame"><span class="k">Book height</span><span class="v" id="f-height">—</span></article>
         <article class="frame"><span class="k">Network tip</span><span class="v" id="f-tip">—</span></article>
@@ -142,7 +151,7 @@
         <article class="frame"><span class="k">Blue shares</span><span class="v" id="f-blue">—</span></article>
       </div>
       <p class="legend"><span class="sw" style="background:#ffd24a"></span>sealed lattice r = ln(1 + n) <span class="sw" style="background:#c46bff"></span>confirming <span class="sw" style="background:#39ff6a"></span>tip <span class="sw" style="background:#4fd8e8"></span>pool workers <span class="sw diamond" style="background:#3d7bff"></span>blue shares</p>
-      <p id="live-line">connecting · shear-testnet-v11</p>
+      <p id="live-line">connecting · shear-testnet-v10</p>
     </div>
   </div>
   <script type="module">
@@ -150,7 +159,7 @@
     var canvas = document.getElementById('dag');
     var ctx = canvas.getContext('2d');
     var motion = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    var view = { height: 0, blocks: [], workers: 0, nodes: 0, magic: 'shear-testnet-v11', tipAt: 0, tipId: '', ok: false, flash: 0, blueTotal: 0, blueIdentities: 0, blueGlyphs: [], orbit: [], blueFlash: 0 };
+    var view = { height: 0, blocks: [], workers: 0, nodes: 0, magic: 'shear-testnet-v10', tipAt: 0, tipId: '', ok: false, flash: 0, blueTotal: 0, blueIdentities: 0, blueGlyphs: [], orbit: [], blueFlash: 0 };
     function headerTipMs(hex) {
       var s = String(hex || '');
       if (s.length < 216) return 0;
@@ -203,7 +212,7 @@
       if (!line) return;
       line.textContent = view.ok
         ? ('live · ' + view.magic + ' · #' + view.height + ' · ' + view.nodes + ' nodes · ' + view.blueTotal + ' blue shares')
-        : ('offline · retrying · ' + (view.magic || 'shear-testnet-v11'));
+        : ('offline · retrying · ' + (view.magic || 'shear-testnet-v10'));
     }
     function fit() {
       var rect = canvas.getBoundingClientRect();
@@ -431,7 +440,7 @@
           blocks: blocks,
           workers: gossip.filter(function (w) { return w && w.connected; }).length,
           nodes: Math.max(0, Math.floor(Number(stats.nodesOnline) || 0)),
-          magic: stats.magic || stats.network || 'shear-testnet-v11',
+          magic: stats.magic || stats.network || 'shear-testnet-v10',
           tipAt: headerTipMs(stats.header),
           tipId: tipId,
           ok: true,
