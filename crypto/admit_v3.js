@@ -475,7 +475,6 @@ export function verifyFlowAdmitFs1(tx, {
   if (n < 1 || n > FS1_INPUT_MAX || n !== (bound.vins || []).length) {
     return { ok: false, reason: 'admit_membership' };
   }
-  if (proofsOf(tx).length !== n) return { ok: false, reason: 'admit_membership' };
   const records = fs1Records(proofs);
   if (!records) return { ok: false, reason: 'admit_version' };
   const fs1 = fs1BlobOf(tx);
