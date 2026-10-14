@@ -1,6 +1,8 @@
 # Shear licensing audit
 
-Audited on `feat/shear-testnet-v12` at `ebba8ccd`, 2026-10-14. Licences and copyright lines come from the files each component ships (crate and npm package directories, the pub cache, Maven POMs, upstream repositories at the pinned commit). Where a component states no holder, the table says so; nothing is filled in by guesswork.
+Audited on `feat/shear-testnet-v12` at `ebba8ccd`, 2026-10-14. Licences and copyright lines come from the files each component ships (crate and npm package directories, the pub cache, Maven POMs, CocoaPods specs, upstream repositories at the pinned commit). Where a component states no holder, the table says so; nothing is filled in by guesswork.
+
+Russell ruled on all 12 open decisions on 2026-10-14, between 16:45 and 16:52 BST. Each ruling and what was done about it is under [Decisions](#decisions). One step is prepared but deliberately not run: removing the font files from git history waits for Russell's GO.
 
 ## Attribution
 
@@ -10,31 +12,36 @@ This is an attribution. It is not a licence grant and adds no terms to any compo
 
 ## Shear's own licence
 
-Shear is released under the MIT License ([LICENSE](../LICENSE)): `Copyright (c) 2026 Shear`. The same licence is declared in `package.json` (`"license": "MIT"`), in both Shear crates (`shear_admit`, `shear-fs1`: `license = "MIT"`), and in `contracts/Reserve.sol` (`SPDX-License-Identifier: MIT`). The Windows and macOS wallet runners said `Copyright (C) 2026 com.shear. All rights reserved.`, which names a bundle ID rather than the licensor and reads as a proprietary claim. They now say `Copyright (C) 2026 Shear. MIT License.`
+Shear is released under the MIT License ([LICENSE](../LICENSE)): `Copyright (c) 2026 Shear contributors` (decision 8). The same licence is declared in `package.json` (`"license": "MIT"`), in both Shear crates (`shear_admit`, `shear-fs1`: `license = "MIT"`), and in `contracts/Reserve.sol` (`SPDX-License-Identifier: MIT`). The Windows and macOS wallet runners said `Copyright (C) 2026 com.shear. All rights reserved.`, which names a bundle ID rather than the licensor and reads as a proprietary claim. They now say `Copyright (C) 2026 Shear contributors. MIT License.`, and so do the wallet's About screen and the README.
+
+Contributions are made under the [Developer Certificate of Origin 1.1](../CONTRIBUTING.md): every commit carries a `Signed-off-by:` line from its author, and the `dco` workflow checks it on pull requests.
 
 **Consistency.** Every third-party component that ships in a release is under a licence that permits redistribution inside an MIT project, as long as its notices travel with it:
 
 - MIT, ISC, BSD-1/2/3-Clause, Zlib, Unicode-3.0, CC0-1.0, MIT-0 and Unlicense are permissive and only require keeping the notice.
-- Apache-2.0 (OpenSSL, AndroidX, Kotlin, Tink, many crates' second option) needs its licence text and any NOTICE shipped. No shipped Apache component carries a NOTICE file except ZXing, whose NOTICE is now carried.
+- Apache-2.0 (OpenSSL, AndroidX, Kotlin, Tink, many crates' second option) needs its licence text and any NOTICE shipped. No shipped Apache component carries a NOTICE file except ZXing, whose NOTICE is carried.
 - MPL-2.0 (`@ethereumjs/evm`, `mpt`, `rlp`, `statemanager`, `util`) is file-level copyleft. Shear ships those files unmodified, as JavaScript source in `node_modules`, so the source is available by construction. Shear's own files that call them stay MIT (an MPL "Larger Work"). If anyone patches those files, the patches are MPL-2.0.
-- GPL-3.0: the Solidity compiler inside `solc` (`soljson.js`) is GPL-3.0. It is only used to compile `contracts/Reserve.sol` and by one test. It was a runtime dependency, so every node zip, wallet sidecar and distro pack shipped it. It is now a devDependency and every packer leaves development-only npm packages out (fixed, see below).
-- GPL-3.0 with the GCC Runtime Library Exception: the MinGW `libgcc_s_seh-1.dll` and `libstdc++-6.dll` beside Windows binaries. The exception keeps Shear's own code MIT. Shipping the DLLs themselves is open decision 4.
+- GPL-3.0: the Solidity compiler inside `solc` (`soljson.js`) is GPL-3.0. It is only used to compile `contracts/Reserve.sol` and by one test. It was a runtime dependency, so every node zip, wallet sidecar and distro pack shipped it. It is now a devDependency and every packer leaves development-only npm packages out.
+- GPL-3.0 with the GCC Runtime Library Exception: on Windows, `shearhash.node`, `shearadmit.node`, ShearK-Miner and the legacy miner now link libgcc, libstdc++ and winpthreads statically (decision 4), so only the exception applies and no GCC DLL ships. On Linux, see [Still open](#still-open).
 
-Not covered by Shear's MIT licence, and not relicensable by it: the commercial Nevia and Urema typefaces (decision 1), the RandomX audit reports (decision 2), and Google's ML Kit and Play services binaries inside the Android APK (decision 3).
+Not covered by Shear's MIT licence, and not relicensable by it: the commercial Nevia and Urema typefaces (no longer in the repository tree, decision 1), the RandomX audit reports (no longer in the repository, decision 2), and Google's ML Kit and Play services binaries inside the Android APK (shipped under Google's terms, decision 3).
 
 ## Where the notices ship
 
 | Artifact | Built by | Notices |
 |---|---|---|
-| Node zips (Windows, Linux, Arch, Fedora, openSUSE, macOS) | `node/pack/zip_node.py`, `node/pack/pack_macos.sh` | `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSES/` at the zip root; `runtime/licenses/<binary>/` holds the host Node.js licence and the licence of every shared library copied beside it |
-| Wallet Windows zip | `wallet/pack/zip_windows.py` | root notices; `runtime/licenses/node.exe/` |
-| Wallet Linux, Arch, Fedora zips | `wallet/pack/pack_linux_de.sh`, `.github/workflows/wallet-linux.yml`, `.github/workflows/wallet-release.yml` | root notices; `lib/licenses/<libsodium>/` from the distro package; the sidecar's `runtime/licenses/` |
-| Wallet macOS sidecar | `wallet/pack/stage_macos_sidecar.py` | notices and `runtime/licenses/node/` inside the sidecar folder |
-| Distro tarballs (node, miner, CLI, desktop) | `scripts/packaging/stage_packs.py` | `share/doc/shear/` in every tarball, with `share/doc/shear/runtime/<binary>/` for Node.js, OpenSSL and libsodium |
-| ShearK-Miner zips | `sheark-miner/pack/zip_windows.py`, `sheark-miner/pack/zip_unix.py` | root notices; `openssl-licenses/` (Unix) from the host. A Windows DLL with no licence on record stops the pack |
-| Wallet apps: Android, iOS, macOS, Linux, Windows | Flutter | Closure → About and licences opens Flutter's licence page. Flutter adds its own NOTICES (engine, Dart runtime, every Dart package's LICENSE). `wallet/assets/licenses/THIRD_PARTY_NOTICES.txt` adds everything else: the attribution, Shear's licence, the Rust crates and Rust standard library in `libshear_admit`, libsodium, RandomX, Node.js and the npm packages of the desktop sidecar, the Android libraries, the iOS pods, and Dart licence files Flutter does not collect (pointycastle's `licenses/`, `LICENSE-other.md` in image and archive, ZXing) |
+| Node zips (Windows, Linux, Arch, Fedora, openSUSE, macOS) | `node/pack/zip_node.py`, `node/pack/pack_macos.sh` | `LICENSE`, `THIRD_PARTY_NOTICES.txt`, `LICENSES/` and `RUNTIME-VERSIONS.txt` at the zip root; `runtime/licenses/<binary>/` holds the host Node.js licence and the licence of every shared library copied beside it |
+| Wallet Windows zip | `wallet/pack/zip_windows.py` | root notices and `RUNTIME-VERSIONS.txt`; `runtime/licenses/node.exe/` |
+| Wallet Linux, Arch, Fedora zips | `wallet/pack/pack_linux_de.sh`, `.github/workflows/wallet-linux.yml`, `.github/workflows/wallet-release.yml` | root notices and `RUNTIME-VERSIONS.txt`; `lib/licenses/<libsodium>/` from the distro package; the sidecar's `runtime/licenses/` |
+| Wallet macOS sidecar | `wallet/pack/stage_macos_sidecar.py` | notices, `RUNTIME-VERSIONS.txt` and `runtime/licenses/node/` inside the sidecar folder |
+| Wallet Android APK | Flutter, `crypto/native/build-android-libsodium.sh` | the licence screen (below); the libsodium version comes from `wallet/android/libsodium.lock.json` |
+| Distro tarballs (node, miner, CLI, desktop) | `scripts/packaging/stage_packs.py` | `share/doc/shear/` in every tarball, with `share/doc/shear/runtime/<binary>/` for Node.js, OpenSSL and libsodium, and `share/doc/shear/RUNTIME-VERSIONS.txt` |
+| ShearK-Miner zips | `sheark-miner/pack/zip_windows.py`, `sheark-miner/pack/zip_unix.py` | root notices and `RUNTIME-VERSIONS.txt`; `openssl-licenses/` (Unix) from the host. A Windows DLL with no licence on record, or any MinGW runtime DLL, stops the pack |
+| Wallet apps: Android, iOS, macOS, Linux, Windows | Flutter | Closure → About and licences opens Flutter's licence page. Flutter adds its own NOTICES (engine, Dart runtime, every Dart package's LICENSE). `wallet/assets/licenses/THIRD_PARTY_NOTICES.txt` adds everything else: the attribution, Shear's licence, the Rust crates and Rust standard library in `libshear_admit`, libsodium, RandomX, Node.js and the npm packages of the desktop sidecar, the Android libraries with the ML Kit and Google APIs terms, the iOS pods at their `Podfile.lock` versions, and Dart licence files Flutter does not collect (pointycastle's `licenses/`, `LICENSE-other.md` in image and archive, ZXing) |
 
 Each packer refuses to finish if a notice is missing, and refuses `node_modules/solc/`. A host binary whose licence cannot be found also stops the pack. Set `SHEAR_RUNTIME_LICENSE_<NAME>` to point at it, or rely on the copies under `LICENSES/third-party/` for Node.js, libsodium and OpenSSL.
+
+**Runtime versions (decision 6).** Every pack that copies Node.js, OpenSSL or libsodium from the build host writes `RUNTIME-VERSIONS.txt`, made by `scripts/licenses/release_notices.py`. The version comes from the binary itself (`node --version`, Node's embedded OpenSSL, the version string inside `libcrypto` and `libsodium`) or the owning distro package (rpm, dpkg, pacman). If neither yields a version, the pack stops; `SHEAR_RUNTIME_VERSION_<BASENAME>` overrides it. `scripts/licenses/release_notes_versions.py ASSET...` turns those files, and the Android lock file for an APK, into a "Bundled runtime versions" section. The `release-notes` job in `wallet-release.yml` and the release step in `node-v17.yml` append it to each release's notes, and it fails if an asset bundles a runtime without `RUNTIME-VERSIONS.txt`.
 
 `wallet/pack/zip_linux.sh` still writes 0.30 zips from a hard-coded tree and was not updated. Nothing in CI calls it. Retire it or route it through `release_notices` before it is used again.
 
@@ -43,20 +50,26 @@ Each packer refuses to finish if a notice is missing, and refuses `node_modules/
 `.github/workflows/licenses.yml` runs on every push and pull request:
 
 1. **cargo-deny** (`deny.toml`) on both Rust workspaces. Only MIT, MIT-0, Apache-2.0 (also with the LLVM exception), BSD-1/2/3-Clause, ISC, Zlib, Unicode-3.0, CC0-1.0 and Unlicense pass. Any copyleft or unrecognised licence fails.
-2. **`scripts/licenses/notices.py check`**, the npm, Dart and Android licence checker and notice verifier. It fails when:
+2. **`scripts/licenses/notices.py check`**, the npm, Dart, Android and iOS licence checker and notice verifier. It fails when:
    - an npm, crate or Dart package declares a licence outside that allow list. MPL-2.0 is allowed only for `@ethereumjs/*`, and GPL only for development-only npm packages;
    - a shipped component has no licence text;
    - a Dart licence text is not recognised;
+   - `wallet/ios/Podfile.lock` lists a pod, or a pod version, that the reviewed iOS components do not;
    - `THIRD_PARTY_NOTICES.txt`, the wallet copy, or the inventory below is stale;
    - a vendored LICENSE changed (SHA-256 pinned in `scripts/licenses/components.json`) or a RandomX file lost its upstream copyright header (81 files tracked);
    - the attribution is missing or altered in any of its places, or the misspelt wording appears anywhere.
-3. **Packaging helpers**: `scripts/licenses/test_notices.py`.
+3. **Packaging helpers**: `scripts/licenses/test_notices.py`, including the PE import check that keeps MinGW runtime DLLs out of Windows packs and the runtime version probes.
 4. **Wallet licence screen**: `wallet/test/licenses_test.dart`.
 5. **Android dependencies**: Gradle resolves `releaseRuntimeClasspath`, and the job fails if it no longer matches `scripts/licenses/android-runtime-deps.json`, so a new Android library cannot ship without its licence being reviewed.
 
-To refresh after a dependency change: `npm ci`, `cargo fetch` for both workspaces, `flutter pub get` in `wallet/`, then `python3 scripts/licenses/notices.py generate`. For Android, run `python3 scripts/licenses/notices.py android-sync <gradle dependencies output>` first.
+Also:
 
-## Findings fixed in this change
+- `.github/workflows/android-admit.yml` builds `libsodium.so` with `crypto/native/build-android-libsodium.sh` and runs `wallet/pack/test_check_android_release.py`. `wallet/pack/check_android_release.py` rejects an APK whose `libsodium.so` is missing, does not report the pinned version, or does not match the pinned NDK build's SHA-256.
+- `.github/workflows/dco.yml` runs `scripts/dco_check.py` on pull requests: every commit must carry a `Signed-off-by:` line with its author's email. Commits made before the check existed are exempt.
+
+To refresh after a dependency change: `npm ci`, `cargo fetch` for both workspaces, `flutter pub get` in `wallet/` (and `pod install` in `wallet/ios/` if a plugin changed), then `python3 scripts/licenses/notices.py generate`. For Android, run `python3 scripts/licenses/notices.py android-sync <gradle dependencies output>` first.
+
+## Findings fixed
 
 1. **GPL-3.0 compiler shipped in every release.** `solc` (wrapper MIT, `soljson.js` GPL-3.0) was a runtime dependency, and the packers copied all of `node_modules`. It is now a devDependency, and the packers drop every package `package-lock.json` marks `dev`.
 2. **No third-party notices in any release artifact.** No zip, tarball or app carried the BSD, MIT, ISC or Apache texts that RandomX, curve25519-dalek, subtle, libsodium, OpenSSL, Node.js, the npm packages and the crates require in binary redistributions. They are all in `THIRD_PARTY_NOTICES.txt` now, and every packer ships it with `LICENSES/`.
@@ -73,29 +86,62 @@ Other facts checked:
 - No Zcash-derived code is vendored. `pasta_curves` (MIT OR Apache-2.0, `Copyright (c) 2020-2021 The Electric Coin Company`) is a crates.io dependency and is listed.
 - `sheark-miner/src/sha256.c` and `sha512.c` and `pool/src/totp_qr.js` are written for Shear and carry no third-party code.
 - iOS does not link libsodium, despite a comment in `wallet/lib/shear_sodium.dart`. Only `libshear_admit.a` is linked. The macOS app does not bundle libsodium either: it uses a system or Homebrew copy if one is present.
+- iOS does not use ML Kit: `mobile_scanner` uses Apple's Vision framework there, and `wallet/ios/Podfile.lock` has no ML Kit pod.
 - No Android runtime artifact embeds a NOTICE file. `androidx.camera:camera-core`'s `image_processing_util_jni` links libyuv (BSD-3-Clause), and libyuv's licence is carried.
 - The NDK C++ runtime does not ship: `libshear_admit` is Rust with no C++ dependency.
 
-## Open decisions
+## Decisions
 
-These need a human, and in places a lawyer. None is papered over in the notices.
+Ruled by Russell on 2026-10-14, 16:45–16:52 BST.
 
-1. **Commercial typefaces in a public MIT repository.** Nevia (name table: "Sentavio January 2024", designer Dmytro Poliakh, OS/2 fsType 4 "preview & print") and Urema Variable ("Typeface © Zafira Type 2026. All Rights Reserved") are committed as `.otf`, `.ttf` and `.woff2` under `brand/`, `site/`, `site/boot/`, `explorer/`, `mempool/`, `pool/public/` and `team/`. A public repository redistributes the font files to anyone who clones it, which most desktop and webfont licences forbid. Someone needs to confirm what the purchased licences allow. If they do not allow it, the font files should come out of the repository and its history, with self-hosting kept to the deployed sites under the webfont terms. They are not in the wallet, node or miner packs.
-2. **RandomX audit reports.** `crypto/randomx/audits/*.pdf` (Kudelski Security: "COPYRIGHT (C) AGRAVISION SA 2019, ALL RIGHTS RESERVED"; "© 2019 Trail of Bits"; Quarkslab SAS; X41 D-Sec GmbH, whose report is marked "Public") carry no licence. Upstream RandomX keeps them in its repository but marks `audits export-ignore`, so they are not in its source archives. Shear's copy is byte-identical and is not in any release pack. Decide whether to keep them (as upstream does) or replace them with links.
-3. **Google ML Kit and Play services in the Android APK.** `mobile_scanner` 7.4.2 brings ML Kit barcode scanning with the bundled model (`com.google.mlkit:barcode-scanning` 17.3.0, `barcode-scanning-common`, `vision-common`, `common`, `vision-interfaces`, `play-services-mlkit-barcode-scanning`). These are under the ML Kit Terms of Service, and `play-services-basement`, `base`, `tasks` and `com.google.android.odml:image` are under the Android SDK License. They are proprietary. Shipping them is allowed under Google's terms, and those terms bind Shear as developer, including Google's data-use and attribution rules. The notices point to the terms rather than reproduce them. Decide whether to accept that, or move the Android QR scanner to a scanner built only on open-source libraries.
-4. **GCC runtime DLLs on Windows.** The Windows node zip, wallet zip and possibly the miner ship `libgcc_s_seh-1.dll` and `libstdc++-6.dll` (GPL-3.0-or-later with the GCC Runtime Library Exception 3.1) and `libwinpthread-1.dll` (MIT and BSD-3-Clause). The exception covers Shear's code. The DLLs themselves are GPL object code, so GPL-3.0 §6 asks for corresponding source (the MSYS2 package source) or a written offer. Options: link `shearhash.node` and ShearK-Miner with `-static-libgcc -static-libstdc++`, which makes the exception alone sufficient, or publish the matching MSYS2 source next to each release.
-5. **Android `libsodium.so` provenance.** `wallet/lib/shear_sodium.dart` loads `libsodium.so` from the APK's jniLibs on Android. `wallet/android/app/src/main/jniLibs/**/*.so` is gitignored and no script in the repository builds or downloads it. So which libsodium version an APK carries, and from where, cannot be shown from the source. libsodium is ISC and its notice is in the APK, but the binary should come from a pinned, scripted build (or be dropped if the Dart fallback suffices).
-6. **Unpinned bundled versions.** These come from whatever the packing host has: libsodium (`.so.23` or `.so.26`), OpenSSL 3, Node.js 22, and on iOS SDWebImage and SwiftyGif (no `wallet/ios/Podfile.lock` is committed). The licences are stable across those versions, but exact versions per release are not recorded. Decide whether to pin them (commit `Podfile.lock`, record the host versions in each release's notes).
-7. **zxing2's licence.** `zxing2` 0.2.4 is a Dart port of ZXing (Apache-2.0, `Copyright 2008 ZXing authors`), but it ships an unfilled BSD-3-Clause template (`Copyright (c) 2023, zxing-dart`, with `<organization>` placeholders). A port of Apache code cannot drop the Apache terms. The notices carry both, plus ZXing's NOTICE. Raising it upstream, or replacing the package, is a call for the maintainers.
-8. **Who "Shear" is.** `LICENSE` names "Shear" as copyright holder. It is not clear that "Shear" is a legal person who holds the contributors' copyrights. There is no CLA or DCO, and the history has several authors. MIT still works (each contributor licenses their part under MIT by contributing), but the copyright line should name an entity, or read "Shear contributors", with a decision on whether to add a DCO.
-9. **`@ethereumjs/mpt` 10.1.3 ships without a LICENSE file.** Its `package.json` says MPL-2.0, and the canonical MPL-2.0 text is used in the notices. This is low risk, but the gap is upstream's to close.
-10. **Brand-word policy against legal notices.** `tests/forbid_foreign_names.js` bans names such as "Monero" and "ethereum". Licence notices cannot honour that, because holder names and package names must appear as written. This change exempts the notice files and the vendored tree. Confirm that exemption is acceptable. The same test still fails on text this change did not touch (`crypto/asert.js` line 206, `team/index.html`, `team/creative/find.html`). Those hits are content questions for the site and code owners.
-11. **ISRG root certificates.** `sheark-miner/src/roots/*.pem` (ISRG Root X1 and X2) are compiled into ShearK-Miner. Root certificates are published for exactly this use and state no licence. Low risk; recorded here for completeness.
-12. **`solc`'s MIT file names no holder** (`Copyright (c) 2016`), and neither does `@ethereumjs/common`'s (`Copyright (c) 2015`). Both are reproduced as shipped. `solc` is development-only now.
+1. **Commercial typefaces in a public MIT repository.** Nevia (name table: "Sentavio January 2024", designer Dmytro Poliakh, OS/2 fsType 4 "preview & print") and Urema Variable ("Typeface © Zafira Type 2026. All Rights Reserved") were committed as 56 `.otf`, `.ttf` and `.woff2` files under `brand/`, `site/`, `site/boot/`, `explorer/`, `mempool/`, `pool/public/` and `team/`.
+   **Decision:** remove every font file from the repository; prepare history removal as a separate, documented step that waits for Russell's GO; deployed sites keep self-hosting under the webfont terms, copied in at deploy time and kept out of git.
+   **Done:** all 56 files are deleted from the tree, and `.gitignore` refuses `*.otf`, `*.ttf`, `*.woff`, `*.woff2`, `*.eot` and `**/brand/fonts/`. The CSS and the wordmark PNGs are unchanged. `deploy/install_fonts.sh` copies the licensed WOFF2 files from `$SHEAR_FONTS_DIR` (outside the repository) into each site's `brand/fonts/` at deploy time, and refuses to run if any font is tracked; `deploy/rsync_de.sh` calls it when `SHEAR_FONTS_DIR` is set. **Pending Russell's GO:** the history rewrite. [docs/font-history-removal.md](font-history-removal.md) has the procedure and its effects, and `scripts/licenses/purge_font_history.sh` prepares the rewrite in a scratch mirror and verifies it, without pushing. Nothing has been force-pushed and no history has been rewritten.
+2. **RandomX audit reports.** `crypto/randomx/audits/*.pdf` (Kudelski Security: "COPYRIGHT (C) AGRAVISION SA 2019, ALL RIGHTS RESERVED"; "© 2019 Trail of Bits"; Quarkslab SAS; X41 D-Sec GmbH) carry no licence.
+   **Decision:** remove the PDFs and replace them with a README of links.
+   **Done:** the PDFs are deleted. `crypto/randomx/audits/README.md` links each report in upstream RandomX at commit `12f2c2ffe2108d6cf54c391fee33c8bc3646cdab` and records its SHA-256, which matches the removed copy byte for byte.
+3. **Google ML Kit and Play services in the Android APK.** `mobile_scanner` 7.4.2 brings ML Kit barcode scanning with the bundled model (`com.google.mlkit:barcode-scanning` 17.3.0, `barcode-scanning-common`, `vision-common`, `common`, `vision-interfaces`, `play-services-mlkit-barcode-scanning`) under the ML Kit Terms of Service, and `play-services-basement`, `base`, `tasks` and `com.google.android.odml:image` under the Android SDK License. They are proprietary.
+   **Decision:** accept Google's terms and keep `mobile_scanner`; the notices must reference the terms, including the attribution and data-use rules.
+   **Done:** the ML Kit notice (`scripts/licenses/texts/mlkit-terms.txt`, carried in both notice files) records the acceptance and links the ML Kit Terms (last modified May 14, 2025) and the Google APIs Terms. It sets out the reverse-engineering ban, the attribution rules (Google APIs Terms §6(b) and §6(c); the barcode-scanning documentation required no further attribution when checked on 2026-10-14), and the data-use rules: images are processed on the device, and ML Kit sends Google the metrics listed in Google's Android data disclosure, so Shear must tell users and have a privacy policy (§3(d)). The Android SDK License notice records the acceptance too. **Follow-up this creates:** the wallet has no privacy policy or Play data safety text describing those metrics yet (see [Still open](#still-open)).
+4. **GCC runtime DLLs on Windows.** The Windows node zip and wallet zip shipped `libgcc_s_seh-1.dll` and `libstdc++-6.dll` (GPL-3.0-or-later with the GCC Runtime Library Exception 3.1) and `libwinpthread-1.dll`.
+   **Decision:** link `shearhash.node`, ShearK-Miner and any other Windows binaries with `-static-libgcc -static-libstdc++` (and static winpthread where feasible), stop shipping the two DLLs, and update the pack scripts and notices.
+   **Done:** `crypto/native/Makefile` (`shearhash.node`, `shearadmit.node`), `sheark-miner/Makefile` and `miner/Makefile` link libgcc, libstdc++ and winpthreads statically on Windows. winpthreads needs `--whole-archive`, because the GCC driver adds a dynamic `-lpthread` after the user's flags. `crypto/native/copy-mingw-runtime.js` is gone. The `crypto/native` build checks the PE import table of each `.node` it links, and every Windows packer (`zip_node.py`, `bundle_modules.py`, the wallet and miner `zip_windows.py`) refuses to ship `libgcc_s_seh-1.dll`, `libstdc++-6.dll` or `libwinpthread-1.dll`, or a binary that imports them. The GCC and winpthreads entries in the notices now say the code is linked statically. Verified by cross-compiling `shearhash.node` with MinGW-w64: it imports only `ADVAPI32`, `KERNEL32`, `msvcrt` and `node.exe`, and under Wine with Windows Node.js 22.12.0 it gives the same key and hash as the Linux build.
+5. **Android `libsodium.so` provenance.** Nothing in the repository built or downloaded the APK's `libsodium.so`.
+   **Decision:** a pinned, scripted, checksum-verified build or fetch, with the version recorded.
+   **Done:** `wallet/android/libsodium.lock.json` pins libsodium 1.0.22: tarball SHA-256 `adbdd8f1…3349`, minisign key `RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3`, Android API 29 and NDK r27d. `crypto/native/build-android-libsodium.sh` downloads that tarball, refuses it unless the SHA-256 matches (and the minisign signature, which release CI requires), builds `arm64-v8a/libsodium.so` with 16 KB pages, checks the version string, and writes a SHA-256 record. With NDK r27d the output is reproducible (`12a0a3c9…d063`), and the script enforces that hash. Gradle runs it before every build. `check_android_release.py` rejects an APK whose `libsodium.so` is not that build, and `release_notes_versions.py` reports the version for APKs.
+6. **Unpinned bundled versions.** libsodium, OpenSSL and Node.js came from whatever the packing host had, and no `wallet/ios/Podfile.lock` was committed.
+   **Decision:** commit `Podfile.lock`; the pack scripts record the exact libsodium, OpenSSL and Node.js versions in each release's notes.
+   **Done:** `wallet/ios/Podfile.lock` is committed (CocoaPods 1.17.0, Flutter 3.44.6). It pins 10 pods, including DKImagePickerController 4.3.9, DKPhotoGallery 0.0.19, SDWebImage 5.21.7 and SwiftyGif 5.4.5. The iOS components in the notices carry those versions, and `notices.py check` fails if the lock and the reviewed list disagree. Versions are recorded as described under [Runtime versions](#where-the-notices-ship).
+7. **zxing2's licence.** `zxing2` 0.2.4 is a Dart port of ZXing (Apache-2.0, `Copyright 2008 ZXing authors`) but ships an unfilled BSD-3-Clause template.
+   **Decision:** keep it; the notices carry Apache-2.0 and BSD plus ZXing's NOTICE; no upstream report.
+   **Done:** as shipped; the inventory records the ruling.
+8. **Who "Shear" is.** `LICENSE` named "Shear" as copyright holder, with no CLA or DCO and several authors in the history.
+   **Decision:** change the copyright line to "Shear contributors" and add a DCO (a CONTRIBUTING note, plus a sign-off check if simple).
+   **Done:** `LICENSE`, the README, the wallet About screen and the Windows and macOS runners say `Copyright (c) 2026 Shear contributors`. [CONTRIBUTING.md](../CONTRIBUTING.md) adopts DCO 1.1 and explains `git commit -s`. `.github/workflows/dco.yml` runs `scripts/dco_check.py` on pull requests; commits from before the check are exempt, so no history needs rewriting.
+9. **`@ethereumjs/mpt` 10.1.3 ships without a LICENSE file.** Its `package.json` says MPL-2.0.
+   **Decision:** accept the canonical MPL-2.0 text.
+   **Done:** as shipped; the inventory records the ruling.
+10. **Brand-word policy against legal notices.** `tests/forbid_foreign_names.js` bans names that holder and package names must use.
+    **Decision:** approved: exempt the notice files and the vendored tree; leave the other hits alone.
+    **Done:** the exemption stands. The test still reports `crypto/asert.js` line 206, `team/index.html` line 282 and `team/creative/find.html` lines 72 and 74, which are left as they are.
+11. **ISRG root certificates.** `sheark-miner/src/roots/*.pem` (ISRG Root X1 and X2) are compiled into ShearK-Miner and state no licence.
+    **Decision:** accept.
+12. **Holderless MIT files.** `solc`'s MIT file reads `Copyright (c) 2016` and `@ethereumjs/common`'s reads `Copyright (c) 2015`, with no holder.
+    **Decision:** accept as shipped. `solc` is development-only.
+
+## Still open
+
+These came up while implementing the rulings and are not covered by them.
+
+- **GCC runtime in Linux node zips.** `node/pack/bundle_modules.py` copies every shared library the host `node` links except glibc's, so Linux node zips (and the wallet's Linux sidecar) carry the host's `libstdc++.so.6` and `libgcc_s.so.1`. That is the same GPL-3.0 §6 question as decision 4. Options: leave them out (every supported distro has them), or publish the matching distro source.
+- **Privacy policy for ML Kit.** Decision 3 binds Shear to tell Android users about the metrics ML Kit sends Google and to have a privacy policy that covers it (Google APIs Terms §3(d)), including the Play Console data safety form. The wallet has neither yet.
+- **Stale macOS `Podfile.lock`.** `wallet/macos/Podfile.lock` lists 1 plugin pod; the app has 6. It was not regenerated here.
+- **`wallet/pack/zip_linux.sh`.** It still writes 0.30 zips from a hard-coded tree with no notices or version record. Nothing in CI calls it.
+- **Not built in this environment.** A real Windows link of ShearK-Miner and `shearadmit.node` (no MinGW OpenSSL or windows-gnu Rust here), the Docker distro packs (`stage_packs.py`), and a Gradle APK build. CI covers them.
 
 ## Inventory
 
-Generated from `Cargo.lock` (both workspaces), `package-lock.json`, `wallet/pubspec.lock`, `scripts/licenses/android-runtime-deps.json` and `scripts/licenses/components.json`. Licence is the component's declared SPDX expression, or for Dart packages the licence recognised in its files. Where a choice is offered, Shear takes MIT, then Apache-2.0. Android holders come from each POM's organisation and developers, because Apache-licensed artifacts state no copyright line.
+Generated from `Cargo.lock` (both workspaces), `package-lock.json`, `wallet/pubspec.lock`, `wallet/ios/Podfile.lock`, `scripts/licenses/android-runtime-deps.json` and `scripts/licenses/components.json`. Licence is the component's declared SPDX expression, or for Dart packages the licence recognised in its files. Where a choice is offered, Shear takes MIT, then Apache-2.0. Android holders come from each POM's organisation and developers, because Apache-licensed artifacts state no copyright line.
 
 <!-- inventory:begin (generated by scripts/licenses/notices.py; do not edit) -->
 
