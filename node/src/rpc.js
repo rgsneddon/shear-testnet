@@ -345,7 +345,7 @@ export function createRpc({
       if (typeof p2p.isRoutablePeerAddr === 'function' ? !p2p.isRoutablePeerAddr(hostP) : false) {
         return { ok: false, reason: 'bad_addr' };
       }
-      return p2p.connect(hostP, portP).then(() => ({ ok: true, host: hostP, port: portP }))
+      return p2p.connect(hostP, portP, { pinned: true }).then(() => ({ ok: true, host: hostP, port: portP }))
         .catch((e) => ({ ok: false, reason: String(e?.message || e) }));
     }
     if (m === 'setTip' || m === 'settip') {

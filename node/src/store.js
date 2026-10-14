@@ -249,6 +249,9 @@ export const OFFER_PEER_CAP = 4000;
 export const OFFER_PEER_SLOTS = 8;
 export const PROVEN_HEADER_CAP = 6000;
 export const OFFER_DROP_MS = 10 * 60_000;
+/** Rows an inbound or outbound slot may hand the cheap check at once, and its refill. */
+export const OFFER_RATE_BURST = 4000;
+export const OFFER_RATE_PER_SEC = 2000;
 const OFFER_DROPPED_CAP = 1024;
 const LOCAL_HEADER_INDEX = 4096;
 const PROOF_HASH_BATCH = 16;
@@ -2162,15 +2165,17 @@ export function createStore(dir, {
     return finish(check);
   }
 
-  // Peer headers ahead of this tip, cached per peer and unproven until a
-  // pruned block needs them. A proven header keeps its bytes in its own pool,
-  // so junk from any peer cannot push out a run this store already hashed.
+  // Peer headers ahead of this tip, cached per slot and unproven until a
+  // pruned block needs them. Inbound peers share a slot per network group
+  // (/24, /64); outbound, pinned and local callers have their own pool that
+  // inbound peers cannot take. A proven header keeps its bytes in its own
+  // pool, so junk from any slot cannot push out a run this store hashed.
   const offeredRows = new Map();
   const provenRows = new Map();
   const headerKids = new Map();
-  const offerPeers = new Map();
+  const offerSlots = new Map();
   const droppedPeers = new Map();
-  const offerStats = { hashed: 0, rejected: 0, orphaned: 0, dropped: 0 };
+  const offerStats = { hashed: 0, rejected: 0, orphaned: 0, dropped: 0, limited: 0, refused: 0 };
   let offerSeq = 0;
   let localIndex = { len: -1, tipHex: '', map: new Map() };
 
@@ -2191,57 +2196,135 @@ export function createStore(dir, {
     headerKids.get(row.prevHex).add(row.hex);
   }
 
-  function releaseOffered(hex, peer) {
+  function releaseOffered(hex, slotKey) {
     const row = offeredRows.get(hex);
     if (!row) return;
-    row.peers.delete(peer);
-    if (row.peers.size) return;
+    row.slots.delete(slotKey);
+    if (row.slots.size) return;
     offeredRows.delete(hex);
     unlinkHeaderRow(hex, row.prevHex);
   }
 
-  function evictOfferPeer(peer) {
-    const slot = offerPeers.get(peer);
+  function evictOfferSlot(slotKey) {
+    const slot = offerSlots.get(slotKey);
     if (!slot) return;
-    offerPeers.delete(peer);
-    for (const hex of slot.rows.keys()) releaseOffered(hex, peer);
+    offerSlots.delete(slotKey);
+    for (const hex of slot.rows.keys()) releaseOffered(hex, slotKey);
   }
 
-  /** Drop a peer that sent a bad link: its unproven headers go, and its offers are refused for a while. */
-  function dropOfferPeer(peer, nowMs = Date.now()) {
-    evictOfferPeer(peer);
-    droppedPeers.delete(peer);
-    droppedPeers.set(peer, nowMs + OFFER_DROP_MS);
+  function banOfferKey(key, nowMs) {
+    droppedPeers.delete(key);
+    droppedPeers.set(key, nowMs + OFFER_DROP_MS);
     while (droppedPeers.size > OFFER_DROPPED_CAP) droppedPeers.delete(droppedPeers.keys().next().value);
+  }
+
+  /**
+   * Drop a peer that sent a bad link: its slot's unproven headers go, and the
+   * peer is refused for a while. A shared group slot is refused with it, so a
+   * /24 or /64 cannot come straight back under the next address.
+   */
+  function dropOfferPeer(peer, slotKey, nowMs = Date.now()) {
+    const slot = offerSlots.get(slotKey);
+    evictOfferSlot(slotKey);
+    banOfferKey(peer, nowMs);
+    if (slot && slot.tier !== 'pinned' && slot.tier !== 'local') banOfferKey(slotKey, nowMs);
     offerStats.dropped += 1;
   }
 
-  function offerPeerDropped(peer, nowMs = Date.now()) {
-    const until = droppedPeers.get(peer);
+  function offerKeyDropped(key, nowMs) {
+    const until = droppedPeers.get(key);
     if (until == null) return false;
     if (until > nowMs) return true;
-    droppedPeers.delete(peer);
+    droppedPeers.delete(key);
     return false;
   }
 
-  function offerSlot(peer) {
-    let slot = offerPeers.get(peer);
-    if (!slot) {
-      if (offerPeers.size >= OFFER_PEER_SLOTS) {
-        // Keep the peers whose headers have proven out, then the longest
-        // runs; drop the smallest, stalest bucket of the rest.
-        let worst = null;
-        const below = (x, y) => x.proven - y.proven || x.rows.size - y.rows.size || x.last - y.last;
-        for (const [p, s] of offerPeers) {
-          if (!worst || below(s, worst[1]) < 0) worst = [p, s];
-        }
-        evictOfferPeer(worst[0]);
+  function offerPeerDropped(peer, nowMs = Date.now()) {
+    return offerKeyDropped(String(peer), nowMs);
+  }
+
+  const TIER_RANK = { local: 2, pinned: 2, outbound: 1, inbound: 0 };
+
+  function slotKeyOf(peer, tier, group) {
+    if (tier === 'inbound' || tier === 'outbound') return `${tier === 'inbound' ? 'in' : 'out'}:${group || peer}`;
+    return peer;
+  }
+
+  function poolOf(tier) {
+    return tier === 'inbound' ? 'inbound' : 'reserved';
+  }
+
+  /** The best cached run above this tip, as deep as a burial proof needs. */
+  function pathFromTip() {
+    const t = tip();
+    const from = t?.hash ? blockHex(t) : GENESIS_PREV.toString('hex');
+    return bestPath(from, SAMPLE_PRUNE_CONFIRMATIONS + 1).rows;
+  }
+
+  /**
+   * The fewest slots that still hold the whole best path: the slot holding
+   * the most of it first, then the higher tier, then the oldest. A slot that
+   * only replays part of that path is not kept for it.
+   */
+  function protectedSlots() {
+    const keep = new Set();
+    let left = pathFromTip().map((row) => row && offeredRows.get(row.hex)).filter(Boolean);
+    while (left.length) {
+      const held = new Map();
+      for (const row of left) for (const k of row.slots) held.set(k, (held.get(k) || 0) + 1);
+      let pick = null;
+      for (const [k, n] of held) {
+        const s = offerSlots.get(k);
+        if (!s) continue;
+        const better = !pick || n > pick.n
+          || (n === pick.n && (TIER_RANK[s.tier] > TIER_RANK[pick.s.tier]
+            || (TIER_RANK[s.tier] === TIER_RANK[pick.s.tier] && s.born < pick.s.born)));
+        if (better) pick = { k, n, s };
       }
-      slot = { rows: new Map(), proven: 0, last: 0 };
-      offerPeers.set(peer, slot);
+      if (!pick) break;
+      keep.add(pick.k);
+      left = left.filter((row) => !row.slots.has(pick.k));
+    }
+    return keep;
+  }
+
+  /**
+   * A slot for this caller, or null when every slot it may take holds the
+   * proof path or outranks it. Within a pool the slot with the fewest proven
+   * headers, then the smallest bucket, then the stalest is evicted.
+   */
+  function offerSlot(slotKey, tier) {
+    let slot = offerSlots.get(slotKey);
+    if (!slot) {
+      const pool = poolOf(tier);
+      const mates = [...offerSlots].filter(([, s]) => poolOf(s.tier) === pool);
+      if (mates.length >= OFFER_PEER_SLOTS) {
+        const keep = protectedSlots();
+        const below = (x, y) => TIER_RANK[x.tier] - TIER_RANK[y.tier]
+          || x.proven - y.proven || x.rows.size - y.rows.size || x.last - y.last;
+        let worst = null;
+        for (const [k, s] of mates) {
+          if (keep.has(k) || TIER_RANK[s.tier] > TIER_RANK[tier]) continue;
+          if (!worst || below(s, worst[1]) < 0) worst = [k, s];
+        }
+        if (!worst) return null;
+        evictOfferSlot(worst[0]);
+      }
+      slot = { tier, rows: new Map(), proven: 0, last: 0, born: (offerSeq += 1), tokens: OFFER_RATE_BURST, tokAt: null };
+      offerSlots.set(slotKey, slot);
     }
     slot.last = (offerSeq += 1);
     return slot;
+  }
+
+  function offerBudget(slot, nowMs) {
+    if (slot.tier !== 'inbound' && slot.tier !== 'outbound') return Infinity;
+    if (slot.tokAt != null) {
+      const add = Math.max(0, nowMs - slot.tokAt) * (OFFER_RATE_PER_SEC / 1000);
+      slot.tokens = Math.min(OFFER_RATE_BURST, slot.tokens + add);
+    }
+    slot.tokAt = nowMs;
+    return Math.floor(slot.tokens);
   }
 
   function localBlockByHex(hex) {
@@ -2267,16 +2350,35 @@ export function createStore(dir, {
    * meets its own bits. No ShearHash runs here; proveBurial hashes the run
    * it uses. A bad link drops the peer. An unknown parent or a header ahead
    * of this clock is ignored.
+   *
+   * `tier` is 'inbound', 'outbound', 'pinned' or 'local' (the default, also
+   * IPC). `group` is the inbound or outbound peer's /24 or /64. Inbound and
+   * outbound slots read at most OFFER_RATE_BURST rows at once, refilled at
+   * OFFER_RATE_PER_SEC; rows past that are skipped unread.
    */
-  function offerHeaders(list, { peer = 'local', nowMs = Date.now() } = {}) {
-    const out = { accepted: 0, rejected: 0, dropped: false };
+  function offerHeaders(list, { peer = 'local', tier = 'local', group = '', nowMs = Date.now() } = {}) {
+    const out = { accepted: 0, rejected: 0, limited: 0, dropped: false, refused: false };
     const key = String(peer || 'local');
-    if (offerPeerDropped(key, nowMs)) {
+    const kind = Object.prototype.hasOwnProperty.call(TIER_RANK, tier) ? tier : 'inbound';
+    const slotKey = slotKeyOf(key, kind, String(group || ''));
+    if (offerKeyDropped(key, nowMs) || offerKeyDropped(slotKey, nowMs)) {
       out.dropped = true;
       return out;
     }
-    const slot = offerSlot(key);
-    for (const raw of Array.isArray(list) ? list : []) {
+    const slot = offerSlot(slotKey, kind);
+    if (!slot) {
+      out.refused = true;
+      offerStats.refused += 1;
+      return out;
+    }
+    const rows = Array.isArray(list) ? list : [];
+    const budget = offerBudget(slot, nowMs);
+    const take = Math.min(rows.length, budget);
+    if (budget !== Infinity) slot.tokens -= take;
+    out.limited = rows.length - take;
+    offerStats.limited += out.limited;
+    for (let r = 0; r < take; r += 1) {
+      const raw = rows[r];
       let header;
       let hash;
       try {
@@ -2289,7 +2391,7 @@ export function createStore(dir, {
       const known = offeredRows.get(hex);
       if (known) {
         if (!known.header.equals(header)) { out.dropped = true; break; }
-        known.peers.add(key);
+        known.slots.add(slotKey);
         slot.rows.delete(hex);
         slot.rows.set(hex, true);
         continue;
@@ -2327,7 +2429,9 @@ export function createStore(dir, {
         prevHex,
         height: parent ? Number(parent.height) + 1 : 1,
         rootMs,
-        peers: new Set([key]),
+        seq: (offerSeq += 1),
+        slots: new Set([slotKey]),
+        senders: new Set([key]),
       };
       offeredRows.set(hex, row);
       linkHeaderRow(row);
@@ -2336,12 +2440,12 @@ export function createStore(dir, {
       while (slot.rows.size > OFFER_PEER_CAP) {
         const old = slot.rows.keys().next().value;
         slot.rows.delete(old);
-        releaseOffered(old, key);
+        releaseOffered(old, slotKey);
       }
     }
     if (out.dropped) {
       offerStats.rejected += 1;
-      dropOfferPeer(key, nowMs);
+      dropOfferPeer(key, slotKey, nowMs);
     }
     return out;
   }
@@ -2351,8 +2455,8 @@ export function createStore(dir, {
     provenRows.delete(row.hex);
     provenRows.set(row.hex, kept);
     linkHeaderRow(kept);
-    for (const p of row.peers || []) {
-      const slot = offerPeers.get(p);
+    for (const s of row.slots || []) {
+      const slot = offerSlots.get(s);
       if (slot) slot.proven += 1;
     }
     while (provenRows.size > PROVEN_HEADER_CAP) {
@@ -2362,35 +2466,57 @@ export function createStore(dir, {
     }
   }
 
-  function kidScore(hex) {
-    if (provenRows.has(hex)) return Number.MAX_SAFE_INTEGER;
+  // Proven first, then the highest tier that offered it, then slots whose
+  // headers proved out, then the first seen. A count of offering groups is
+  // not a rank: sybils can always bring more groups than honest peers.
+  function kidRank(hex) {
+    if (provenRows.has(hex)) return [3, 0, 0];
     const row = offeredRows.get(hex);
-    let best = 0;
-    for (const p of row?.peers || []) best = Math.max(best, offerPeers.get(p)?.proven || 0);
-    return best;
+    let rank = -1;
+    let proven = 0;
+    for (const s of row?.slots || []) {
+      const slot = offerSlots.get(s);
+      if (!slot) continue;
+      rank = Math.max(rank, TIER_RANK[slot.tier]);
+      proven = Math.max(proven, slot.proven);
+    }
+    return [rank, proven, -(row?.seq || 0)];
   }
 
-  // A run of PRUNE cached headers above `fromHex`, by claimed links only.
-  // Proven headers come first, then those from peers whose headers proved out.
-  function offeredPath(fromHex) {
+  function rankOrder(a, b) {
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+    return 0;
+  }
+
+  /** The deepest cached run above `fromHex`, up to `want` headers, by claimed links only. */
+  function bestPath(fromHex, want) {
     const stack = [[fromHex, 0]];
     const trail = [];
+    let best = [];
     const seen = new Set([fromHex]);
     while (stack.length) {
       const [hex, depth] = stack.pop();
       trail.length = Math.max(0, depth - 1);
       if (depth > 0) trail.push(hex);
-      if (trail.length >= SAMPLE_PRUNE_CONFIRMATIONS) return trail.map(headerRowOf);
+      if (trail.length > best.length) best = trail.slice();
+      if (trail.length >= want) break;
       const kids = headerKids.get(hex);
       if (!kids) continue;
       const next = [...kids].filter((k) => !seen.has(k) && headerRowOf(k));
-      next.sort((a, b) => kidScore(a) - kidScore(b));
+      const ranks = new Map(next.map((k) => [k, kidRank(k)]));
+      next.sort((a, b) => rankOrder(ranks.get(a), ranks.get(b)));
       for (const k of next) {
         seen.add(k);
         stack.push([k, depth + 1]);
       }
     }
-    return null;
+    return { rows: best.map(headerRowOf) };
+  }
+
+  // A run of PRUNE cached headers above `fromHex`.
+  function offeredPath(fromHex) {
+    const { rows } = bestPath(fromHex, SAMPLE_PRUNE_CONFIRMATIONS);
+    return rows.length >= SAMPLE_PRUNE_CONFIRMATIONS ? rows.slice(0, SAMPLE_PRUNE_CONFIRMATIONS) : null;
   }
 
   /**
@@ -2430,7 +2556,11 @@ export function createStore(dir, {
           : { ok: false };
         if (!linked.ok) {
           const bad = offeredRows.get(rows[i].hex);
-          for (const p of [...(bad?.peers || [])]) dropOfferPeer(p, nowMs);
+          const senders = [...(bad?.senders || [])];
+          for (const slotKey of [...(bad?.slots || [])]) {
+            for (const p of senders) dropOfferPeer(p, slotKey, nowMs);
+            if (!senders.length) evictOfferSlot(slotKey);
+          }
           if (provenRows.has(rows[i].hex)) {
             provenRows.delete(rows[i].hex);
             unlinkHeaderRow(rows[i].hex, rows[i].prevHex);
@@ -2474,7 +2604,7 @@ export function createStore(dir, {
       };
       return batch().catch(() => fail);
     };
-    return attempt(OFFER_PEER_SLOTS + 1);
+    return attempt(2 * OFFER_PEER_SLOTS + 1);
   }
 
   /**
@@ -4848,8 +4978,9 @@ export function createStore(dir, {
         provenHeights: burialProof.heights(),
         offered: offeredRows.size,
         provenHeaders: provenRows.size,
-        offerPeers: offerPeers.size,
-        offerPeerRows: Object.fromEntries([...offerPeers].map(([p, slot]) => [p, slot.rows.size])),
+        offerPeers: offerSlots.size,
+        offerPeerRows: Object.fromEntries([...offerSlots].map(([p, slot]) => [p, slot.rows.size])),
+        offerSlotTiers: Object.fromEntries([...offerSlots].map(([p, slot]) => [p, slot.tier])),
         droppedPeers: [...droppedPeers.keys()],
         ...offerStats,
       };
