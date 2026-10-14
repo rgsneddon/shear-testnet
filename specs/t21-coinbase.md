@@ -57,6 +57,10 @@ A voucher that fails `voucherKeysOk` is deferred before proving. A payout row th
 
 There is one payee cap, `payeeCapLive()` in `block_budget.js`, and both `blockBudget` and the cb-v3 verifier apply it. It counts pot rows, dummies included, and not the fee, reserve-fee, or 0x23 rows. On today's 8 MiB hex frame it is 171 (the byte fallback with the 17,400-byte row estimate). The 470 normal cap applies only once frames reach `FRAME_MIN`. Payees past the cap are deferred.
 
+`buildTemplate({ t21 })` builds the node's cb-v3 coinbase. The pool supplies `labelOf` (note commit to `{voucher, E, ℓ, β}`), the finder voucher and the fee voucher. A label is `E = λG + βH` from the payee's public voucher, and the job's note commit is `t21ShareNc(magic, E)`. A share is mined against that note commit and carries no dest. Only labelled shares stay in the batch. The A leaves are the structural share verdict's, the same leaves consensus recomputes. Shares past `min(CB_SHARE_MAX, shareMax)`, past `u·W ≤ B_h`, or of a deferred payee leave the batch for the next round, so coinbase shares and A leaves stay one to one. An empty batch cannot carry the finder half, so fee-paying transactions wait for a round with shares. The parent vault's pending withdraws become the 0x23 rows. The template prices the coinbase at the cb-v3 weights.
+
+The supply step accounts a cb-v3 block without opening a note. The payout rows' commitments must sum to `(S + c_in − c_out + u·W + Φ)·G + excess·H`. `Φ` is the public `fin` and must be the levy's finder half. `W` joins the accepted hash series, and the owed ledger must be empty. 0x23 rows are not counted again: the withdraw that queued them already counted its interest.
+
 ## Residuals
 
 - **Solo payout.** A solo block has one real payee and three zero dummies. The producer is also the finder, so that block shows the solo amount. `K_MIN=4` does not hide a one-person round.
@@ -72,4 +76,4 @@ A send's verify weight is `25 + 25n` weight units for `1 ≤ n ≤ 8`. A 9-input
 
 ## Not in this cut
 
-`V12_GENESIS_BLOCK_HASH` stays empty. No node or pool template calls the cb-v3 builder yet, and the ShearK v6 share preimage is not updated. Dart wallet recovery, the reference-box full-cap timing, and a faster prover are open. The dalek R1CS encoding of the LogUp relation is the mainnet review item; this verifier checks that same identity with inverse product Schnorrs.
+`V12_GENESIS_BLOCK_HASH` stays empty. The node template builds cb-v3 when given a label source, but the pool does not issue labels to sessions yet: the stratum job still binds shares to the miner's dest, and ShearK does not take a job note commit. Dart wallet recovery, the reference-box full-cap timing, and a faster prover are open. The dalek R1CS encoding of the LogUp relation is the mainnet review item; this verifier checks that same identity with inverse product Schnorrs.
