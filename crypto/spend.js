@@ -65,6 +65,27 @@ function proofBlob(proof) {
   }
 }
 
+export const SPEND_AMT_DST = Buffer.from('shear-spend-amt-v1');
+
+/** Flow sends sign every output's amtCt, empty when absent, beside the packed body. */
+function flowAmtDigest(packed, vout) {
+  const outs = Array.isArray(vout) ? vout : [];
+  const h = createHash('sha256').update(SPEND_AMT_DST).update(packed);
+  const count = Buffer.alloc(4);
+  count.writeUInt32LE(outs.length >>> 0);
+  h.update(count);
+  for (const o of outs) h.update(lenPref(voutAmtCt(o)));
+  return h.digest();
+}
+
+function voutAmtCt(o) {
+  try {
+    return Buffer.from(asU8(o?.amtCt || []));
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
 /** Pack digest of the spend body. sig and open are not hashed. */
 export function spendPackDigest(tx) {
   const vins = (tx?.vin || []).map((v, i) => {
@@ -102,7 +123,7 @@ export function spendPackDigest(tx) {
     bFlag: tx?.bFlag || tx?.kind === 'b-spend' ? 1 : 0,
   }));
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return packed;
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return flowAmtDigest(packed, tx?.vout);
   // Portal, fee, and the admit blob are signed. A stolen sig cannot be
   // retargeted, repriced, or pointed at a different proof. Flow sends stay
   // on the packed body alone.

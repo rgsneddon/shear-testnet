@@ -8,6 +8,7 @@ import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
+import { sealHiddenNote } from '../../crypto/note.js';
 
 const KINDS = ['send', 'transfer'];
 const VERSIONS = [0, 1, 2, 4, 255];
@@ -29,15 +30,26 @@ function oneProof(version, lane) {
   return { tag, cTilde, proof: { blob, spendTag: tag, cTilde } };
 }
 
+const hiddenByAmount = new Map();
+const FIXTURE_ADMIT_BASE = newIdentity().admitBase;
+/** The amount rides as C and a range proof. A plaintext nanos is amount_field. */
+function hiddenOut(kind, amount) {
+  if (!hiddenByAmount.has(amount)) {
+    const note = sealHiddenNote(amount, { dest20: Buffer.alloc(20, 6), admitBase: FIXTURE_ADMIT_BASE });
+    delete note.r;
+    hiddenByAmount.set(amount, note);
+  }
+  return { ...hiddenByAmount.get(amount), kind };
+}
+
 function flowTx({ kind, amount, version, anchor = undefined, proofs = null, id }) {
   const built = proofs || [oneProof(version, 1)];
   const tx = {
     id: id || `${kind}-${amount}-${version}-${anchor == null ? 'na' : anchor}`,
     kind,
-    nanos: amount,
     fee: 0,
     vin: built.map((row) => ({ commit: row.cTilde })),
-    vout: [{ kind, nanos: amount }],
+    vout: [hiddenOut(kind, amount)],
     admit_proof: built.length === 1 ? built[0].proof : undefined,
     admit_proofs: built.length === 1 ? undefined : built.map((row) => row.proof),
   };

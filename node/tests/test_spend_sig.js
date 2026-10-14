@@ -142,10 +142,10 @@ describe('wallet send path', () => {
 
     const unsigned = run({ from, to: from, amount: 0.4, open });
     assert.equal(unsigned.status, 400);
-    assert.equal(unsigned.json.reason, 'dummy_outs');
+    assert.equal(unsigned.json.reason, 'send_hint');
 
     const ok = run({
-      from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub,
+      fee: tx.fee, sig: tx.sig, spendPub: tx.spendPub,
       vout: tx.vout, vin: tx.vin, excess: tx.excess, admit_proof: tx.admit_proof,
     });
     assert.equal(ok.status, 200, ok.json.reason);
