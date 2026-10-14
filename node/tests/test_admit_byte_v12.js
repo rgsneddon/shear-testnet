@@ -75,7 +75,7 @@ function blockVerdict(tx, height, prev) {
 }
 
 describe('v12 flow spends reject a non-v3 byte before the v2 verifier', () => {
-  it('any other version byte, a missing anchor, or a mixed list is admit_version on queue, mempool, and verify', { timeout: 180_000 }, () => {
+  it('any other version byte is admit_version, and a byte-3 send with or without an anchor is send_unavailable, on queue, mempool, and verify', { timeout: 180_000 }, () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-byte-'));
     const store = createStore(dir);
     const who = freshStealthDest(newIdentity()).dest;
@@ -127,18 +127,18 @@ describe('v12 flow spends reject a non-v3 byte before the v2 verifier', () => {
         id: 'mixed',
         proofs: [oneProof(2, 1), oneProof(3, 2)],
       });
-      assert.equal(store.queueTx(mixed).reason, 'admit_version');
-      assert.equal(admitMempool(emptyMempool(), mixed).reason, 'admit_version');
-      assert.equal(blockVerdict(mixed, 1, null).reason, 'admit_version');
+      assert.equal(store.queueTx(mixed).reason, 'send_unavailable');
+      assert.equal(admitMempool(emptyMempool(), mixed).reason, 'send_unavailable');
+      assert.equal(blockVerdict(mixed, 1, null).reason, 'send_unavailable');
       const noAnchor = flowTx({ kind: 'transfer', amount: 1, version: 3, id: 'v3-open' });
-      assert.equal(store.queueTx(noAnchor).reason, 'admit_version');
-      assert.equal(admitMempool(emptyMempool(), noAnchor).reason, 'admit_version');
-      assert.equal(blockVerdict(noAnchor, 1, null).reason, 'admit_version');
+      assert.equal(store.queueTx(noAnchor).reason, 'send_unavailable');
+      assert.equal(admitMempool(emptyMempool(), noAnchor).reason, 'send_unavailable');
+      assert.equal(blockVerdict(noAnchor, 1, null).reason, 'send_unavailable');
       const anchored = flowTx({ kind: 'send', amount: AMOUNTS[1], version: 2, anchor: 8, id: 'anchored-v2' });
       assert.equal(store.queueTx(anchored).reason, 'admit_version', 'a v2 byte is not saved by an anchor');
       const v3anchor = flowTx({ kind: 'send', amount: 1, version: 3, anchor: 8, id: 'v3-anchor' });
       const v3q = store.queueTx(v3anchor);
-      assert.notEqual(v3q.reason, 'admit_version');
+      assert.equal(v3q.reason, 'send_unavailable');
       assert.equal(v3q.ok, false);
       const refused = flowTx({ kind: 'vortice-register', amount: 1, version: 2, id: 'refused' });
       assert.equal(store.queueTx(refused).reason, 'kind');
