@@ -439,9 +439,23 @@ def pub_components(manifest: dict) -> list[Component]:
         uri = p["rootUri"]
         if uri.startswith("file://"):
             directory = uri[len("file://"):]
+            # file:///C:/... is a Windows path. file:///home/... stays absolute.
+            if re.match(r"^/[A-Za-z]:", directory):
+                directory = directory[1:]
         else:
             directory = os.path.normpath(os.path.join(os.path.dirname(cfg_path), uri))
-        subdirs = tuple(d for d in ("licenses", "LICENSES") if os.path.isdir(os.path.join(directory, d)))
+        subdirs = []
+        seen_dirs = set()
+        for d in ("licenses", "LICENSES"):
+            candidate = os.path.join(directory, d)
+            if not os.path.isdir(candidate):
+                continue
+            key = os.path.normcase(os.path.realpath(candidate))
+            if key in seen_dirs:
+                continue
+            seen_dirs.add(key)
+            subdirs.append(d)
+        subdirs = tuple(subdirs)
         files = license_files(directory, subdirs)
         if not files:
             raise SystemExit(f"pub package {name} has no licence file in {directory}")
