@@ -3710,7 +3710,7 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 PACKAGES: DKImagePickerController; DKPhotoGallery
-COMPONENTS: DKImagePickerController 4.3.9 (via file_picker) (iOS pod); DKPhotoGallery 0.0.19 (via DKImagePickerController) (iOS pod)
+COMPONENTS: DKImagePickerController 4.3.9 (via file_picker; pinned by wallet/ios/Podfile.lock) (iOS pod); DKPhotoGallery 0.0.19 (via DKImagePickerController; pinned by wallet/ios/Podfile.lock) (iOS pod)
 LICENSE: MIT
 FILE: LICENSES/third-party/ios-pods/DKImagePickerController-LICENSE; LICENSES/third-party/ios-pods/DKPhotoGallery-LICENSE
 --------------------------------------------------------------------------------
@@ -3738,7 +3738,7 @@ SOFTWARE.
 
 ================================================================================
 PACKAGES: SDWebImage
-COMPONENTS: SDWebImage unpinned (no ios/Podfile.lock committed) (iOS pod)
+COMPONENTS: SDWebImage 5.21.7 (via DKPhotoGallery; pinned by wallet/ios/Podfile.lock) (iOS pod)
 LICENSE: MIT
 FILE: LICENSES/third-party/ios-pods/SDWebImage-LICENSE
 --------------------------------------------------------------------------------
@@ -3764,7 +3764,7 @@ THE SOFTWARE.
 
 ================================================================================
 PACKAGES: SwiftyGif
-COMPONENTS: SwiftyGif unpinned (no ios/Podfile.lock committed) (iOS pod)
+COMPONENTS: SwiftyGif 5.4.5 (via DKPhotoGallery; pinned by wallet/ios/Podfile.lock) (iOS pod)
 LICENSE: MIT
 FILE: LICENSES/third-party/ios-pods/SwiftyGif-LICENSE
 --------------------------------------------------------------------------------

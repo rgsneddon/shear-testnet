@@ -392,7 +392,7 @@
   {
    "kind": "ios",
    "name": "DKImagePickerController",
-   "version": "4.3.9 (via file_picker)",
+   "version": "4.3.9 (via file_picker; pinned by wallet/ios/Podfile.lock)",
    "license": "MIT",
    "holders": [
     "Copyright (c) 2014 Bannings"
@@ -402,12 +402,12 @@
    ],
    "shipped": "iOS app",
    "obligation": "keep the copyright and licence text in source and binary copies",
-   "status": "OK: notice in THIRD_PARTY_NOTICES.txt"
+   "status": "OK: version pinned by wallet/ios/Podfile.lock; notice in THIRD_PARTY_NOTICES.txt"
   },
   {
    "kind": "ios",
    "name": "DKPhotoGallery",
-   "version": "0.0.19 (via DKImagePickerController)",
+   "version": "0.0.19 (via DKImagePickerController; pinned by wallet/ios/Podfile.lock)",
    "license": "MIT",
    "holders": [
     "Copyright (c) 2014 Bannings"
@@ -417,12 +417,12 @@
    ],
    "shipped": "iOS app",
    "obligation": "keep the copyright and licence text in source and binary copies",
-   "status": "OK: notice in THIRD_PARTY_NOTICES.txt"
+   "status": "OK: version pinned by wallet/ios/Podfile.lock; notice in THIRD_PARTY_NOTICES.txt"
   },
   {
    "kind": "ios",
    "name": "SDWebImage",
-   "version": "unpinned (no ios/Podfile.lock committed)",
+   "version": "5.21.7 (via DKPhotoGallery; pinned by wallet/ios/Podfile.lock)",
    "license": "MIT",
    "holders": [
     "Copyright (c) 2009-2020 Olivier Poitrey rs@dailymotion.com"
@@ -432,12 +432,12 @@
    ],
    "shipped": "iOS app",
    "obligation": "keep the copyright and licence text in source and binary copies",
-   "status": "OK for the licence; OPEN for the version pin: decision 6"
+   "status": "OK: version pinned by wallet/ios/Podfile.lock (decision 6); licence file identical to the 5.21.7 pod; notice in THIRD_PARTY_NOTICES.txt"
   },
   {
    "kind": "ios",
    "name": "SwiftyGif",
-   "version": "unpinned (no ios/Podfile.lock committed)",
+   "version": "5.4.5 (via DKPhotoGallery; pinned by wallet/ios/Podfile.lock)",
    "license": "MIT",
    "holders": [
     "Copyright (c) 2016 Alexis Creuzot"
@@ -447,7 +447,7 @@
    ],
    "shipped": "iOS app",
    "obligation": "keep the copyright and licence text in source and binary copies",
-   "status": "OK for the licence; OPEN for the version pin: decision 6"
+   "status": "OK: version pinned by wallet/ios/Podfile.lock (decision 6); licence file identical to the 5.4.5 pod; notice in THIRD_PARTY_NOTICES.txt"
   },
   {
    "kind": "asset",

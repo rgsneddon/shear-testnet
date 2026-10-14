@@ -622,6 +622,33 @@ def pinned_checks(manifest: dict) -> list[str]:
     return errors
 
 
+PODFILE_LOCK = os.path.join(REPO, "wallet", "ios", "Podfile.lock")
+
+
+def podfile_lock_trunk_pods(text: str) -> dict[str, str]:
+    """{pod: version} for the third-party (trunk) pods in a Podfile.lock."""
+    versions: dict[str, str] = {}
+    for name, version in re.findall(r"^  - ([^\s(]+) \(([^)]+)\):?$", text, re.M):
+        versions.setdefault(name.split("/")[0], version)
+    m = re.search(r"^SPEC REPOS:\n  trunk:\n((?:    - .+\n)+)", text, re.M)
+    trunk = re.findall(r"^    - (\S+)$", m.group(1), re.M) if m else []
+    return {name: versions.get(name, "") for name in trunk}
+
+
+def ios_pod_checks(manifest: dict) -> list[str]:
+    """Every trunk pod in wallet/ios/Podfile.lock needs a reviewed component at that exact version."""
+    if not os.path.isfile(PODFILE_LOCK):
+        return ["wallet/ios/Podfile.lock is missing; iOS pod versions must be pinned (decision 6)"]
+    reviewed = {c["name"]: c["version"].split()[0] for c in manifest["components"] if c["kind"] == "ios"}
+    errors = []
+    for pod, version in podfile_lock_trunk_pods(read(PODFILE_LOCK)).items():
+        if pod not in reviewed:
+            errors.append(f"iOS pod {pod} {version} is in Podfile.lock but not in scripts/licenses/components.json")
+        elif reviewed[pod] != version:
+            errors.append(f"iOS pod {pod}: Podfile.lock has {version}, components.json reviewed {reviewed[pod]}")
+    return errors
+
+
 def attribution_checks() -> list[str]:
     errors = []
     places = {
@@ -760,6 +787,7 @@ def build() -> tuple[dict[str, str], list[str]]:
     comps = collect(manifest)
     errors = policy(comps, manifest)
     errors += pinned_checks(manifest)
+    errors += ios_pod_checks(manifest)
     outputs = {
         OUT: render_notices(comps, for_wallet=False),
         WALLET_OUT: render_notices(comps, for_wallet=True),

@@ -69,6 +69,24 @@ class TextTest(unittest.TestCase):
         self.assertEqual(notices.holders_in(text), ["Copyright (c) 2018 Jack O'Connor"])
 
 
+class PodfileLockTest(unittest.TestCase):
+    LOCK = (
+        "PODS:\n  - DKImagePickerController/Core (4.3.9):\n    - DKImagePickerController/Resource\n"
+        "  - Flutter (1.0.0)\n  - SDWebImage (5.21.7):\n    - SDWebImage/Core (= 5.21.7)\n"
+        "  - SDWebImage/Core (5.21.7)\n\nDEPENDENCIES:\n  - Flutter (from `Flutter`)\n\n"
+        "SPEC REPOS:\n  trunk:\n    - DKImagePickerController\n    - SDWebImage\n\nEXTERNAL SOURCES:\n"
+    )
+
+    def test_trunk_pods_with_versions(self):
+        self.assertEqual(
+            notices.podfile_lock_trunk_pods(self.LOCK), {"DKImagePickerController": "4.3.9", "SDWebImage": "5.21.7"}
+        )
+
+    def test_committed_lock_matches_the_reviewed_pods(self):
+        manifest = __import__("json").load(open(notices.MANIFEST))
+        self.assertEqual(notices.ios_pod_checks(manifest), [])
+
+
 class ReleaseNoticesTest(unittest.TestCase):
     def test_zip_gets_every_notice(self):
         buf = io.BytesIO()
