@@ -1,0 +1,64 @@
+# Third-party licence compliance. Fails on a copyleft or unknown licence, a
+# shipped component with no licence text, a stale THIRD_PARTY_NOTICES.txt, a
+# changed vendored LICENSE or RandomX header, or a missing attribution.
+name: licenses
+on:
+  push:
+  pull_request:
+jobs:
+  notices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Rust crate licences (cargo-deny)
+        run: |
+          for manifest in crypto/native/admit/Cargo.toml crypto/native/vendor/monero-oxide-77788c3/Cargo.toml; do
+            cargo deny --config deny.toml --manifest-path "$manifest" check licenses
+          done
+      - name: Fetch every licence file
+        run: |
+          npm ci --ignore-scripts
+          cargo fetch --locked --manifest-path crypto/native/admit/Cargo.toml
+          cargo fetch --locked --manifest-path crypto/native/vendor/monero-oxide-77788c3/Cargo.toml
+          (cd wallet && flutter pub get --enforce-lockfile)
+      - name: Notices, npm and Dart licence policy, vendored headers, attribution
+        run: python3 scripts/licenses/notices.py check
+      - name: Packaging helpers
+        run: python3 scripts/licenses/test_notices.py
+      - name: Wallet licence screen
+        working-directory: wallet
+        run: flutter test test/licenses_test.dart
+  android-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Android runtime libraries match android-runtime-deps.json
+        run: |
+          (cd wallet && flutter pub get --enforce-lockfile)
+          (cd wallet/android && ./gradlew --no-daemon -q :app:dependencies --configuration releaseRuntimeClasspath) > /tmp/gradle-deps.txt
+          python3 scripts/licenses/notices.py android-sync /tmp/gradle-deps.txt
+          git diff --exit-code scripts/licenses/android-runtime-deps.json || {
+            echo "Android dependencies changed. Run android-sync, regenerate the notices and review the new licences."
+            exit 1
+          }
