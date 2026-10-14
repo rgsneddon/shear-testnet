@@ -92,6 +92,30 @@ describe('T21 splitLaw, fee and params', () => {
     for (const token of T21_FINGERPRINT_TOKENS) assert.equal(parts.includes(token), true, token);
   });
 
+  it('must-fix 9: fingerprint keys are unique and T21 tokens are built from constants', async () => {
+    const parts = consensusFingerprint().split(':');
+    const keys = parts.filter((t) => t.includes('=')).map((t) => t.split('=')[0]);
+    assert.equal(new Set(keys).size, keys.length, keys.filter((k, i) => keys.indexOf(k) !== i).join());
+    assert.equal(parts.filter((t) => t.startsWith('RANGE=')).length, 1);
+    for (const t of ['CB_ONLY=cb-v3-at-genesis-pin', 'CB_RANGE=bp-agg-16x32+0x02',
+      'SPLIT_TALLY=logup-inv-schnorr+shear-logup-x-v1', 'SEND_WEIGHT=25+25n,n<=8,R2336', 'DEPTH=7', 'INPUT_MAX=8']) {
+      assert.ok(parts.includes(t), t);
+    }
+    const src = readFileSync(new URL('./t21_params.js', import.meta.url), 'utf8');
+    const block = src.slice(src.indexOf('T21_FINGERPRINT_TOKENS = Object.freeze(['));
+    const lines = block.slice(0, block.indexOf(']);')).split('\n').slice(1).map((l) => l.trim()).filter(Boolean);
+    assert.equal(lines.length, T21_FINGERPRINT_TOKENS.length);
+    for (const l of lines) assert.match(l, /^`[A-Z0-9_]+=.*\$\{.+\}.*`,$/);
+    const params = await import('./t21_params.js');
+    const budget = await import('./block_budget.js');
+    const note = await import('./note.js');
+    assert.equal(params.SEND_W_BASE, budget.W_FS1_BASE);
+    assert.equal(params.SEND_W_PER_INPUT, budget.W_FS1_PER_INPUT);
+    assert.equal(params.SEND_R_WEIGHT, budget.R_WEIGHT);
+    assert.equal(budget.fs1VerifyWeight(params.SEND_INPUT_MAX + 1), null);
+    assert.equal(params.AMT_CT_DOM, note.AMOUNT_CT_DST.toString());
+  });
+
   it('keeps the remainder off the last payee: odd pots carry one nano', () => {
     const odd = [splitLaw({ R: 11n, W: 2n, Wi: 1n }), splitLaw({ R: 11n, W: 2n, Wi: 1n })];
     assert.equal(odd[0].v, odd[1].v);

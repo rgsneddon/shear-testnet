@@ -8,36 +8,6 @@ export const CB_FORM = 'cb-v3';
 export const AMOUNT_LAW = 'hidden for every output except reserve-program rows';
 export const GEN_H = 'feea2914bda937d74acc1efa93bf1094f65ae709628a7aad9d1b913b6c80c301';
 
-export const T21_TOKEN = 'T21=split-v1';
-export const CB_FORM_TOKEN = 'CB_FORM=cb-v3';
-export const CB_WRAP_TOKEN = 'CB_WRAP=ve-tegamal16+amtct-v1';
-export const SPLIT_TALLY_TOKEN = 'SPLIT_TALLY=logup-r1cs-v1';
-export const SPLIT_LAW_TOKEN = 'SPLIT_LAW=prop-full-units+L1-L10';
-export const SHARE_BIND_TOKEN = 'SHARE_BIND=shear-share-bind-v1';
-export const K_MIN_TOKEN = 'K_MIN=4';
-export const FEE_TOKEN = 'FEE=f1-bps-200';
-export const PAYOUT_KEY_TOKEN = 'PAYOUT_KEY=dom_cb-v1';
-export const AMT_CT_TOKEN = 'AMT_CT=shear-amt-v1';
-export const RANGE_TOKEN = 'RANGE=packed-bit+0x02';
-export const VAULT_R_TOKEN = 'VAULT_R=kt10-0x23-v1';
-export const GEN_H_TOKEN = 'GEN_H=feea2914bda937d74acc1efa93bf1094f65ae709628a7aad9d1b913b6c80c301';
-
-export const T21_FINGERPRINT_TOKENS = Object.freeze([
-  T21_TOKEN,
-  CB_FORM_TOKEN,
-  CB_WRAP_TOKEN,
-  SPLIT_TALLY_TOKEN,
-  SPLIT_LAW_TOKEN,
-  SHARE_BIND_TOKEN,
-  K_MIN_TOKEN,
-  FEE_TOKEN,
-  PAYOUT_KEY_TOKEN,
-  AMT_CT_TOKEN,
-  RANGE_TOKEN,
-  VAULT_R_TOKEN,
-  GEN_H_TOKEN,
-]);
-
 export const K_MIN = 4;
 export const FEE_BPS_MAX = 200;
 export const VOUCHER_GAP = 256;
@@ -58,7 +28,13 @@ export const RHO_LIMBS = 3;
 export const BP_N = 16;
 export const BP_M = 32;
 
-/** Legacy coinbases stay valid until the genesis cut. cb-v3 is enforced when present. */
+/** FS-1 send weight 25 + 25n wu, n ≤ 8; reserve of 16 two-input sends. Mirrors block_budget.js. */
+export const SEND_W_BASE = 25;
+export const SEND_W_PER_INPUT = 25;
+export const SEND_INPUT_MAX = 8;
+export const SEND_R_WEIGHT = 2_336;
+
+/** Legacy coinbases stay valid until the genesis hash is pinned; then cb-v3 is the only form. */
 export const T21_REQUIRE_ALL_COINBASES = false;
 
 export const DOM_CB = 'dom_cb-v1';
@@ -69,9 +45,32 @@ export const VCH_Y_DOM = 'shear-vch-y-v1';
 export const VCH_LAM_DOM = 'shear-vch-lam-v1';
 export const VCH_PROBE_DOM = 'shear-vch-probe-v1';
 export const LOGUP_DOM = 'shear-logup-x-v1';
-export const BATCH_DOM = 'shear-t21-batch-v1';
+export const AMT_CT_DOM = 'shear-amt-v1';
 
 export const PAYOUT_KINDS = new Set(['pot', 'hash', 'dummy', 'escrow', 'settle', 'pool-fee']);
 export const RESERVE_PUBLIC_KINDS = new Set(['lock', 'vote', 'withdraw', 'vault-withdraw-pinned']);
 
 export const AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'v', 'value']);
+
+/**
+ * Fingerprint tokens, built from the constants above. Each names what the
+ * code implements. RANGE (the send range proof) is not repeated here; the
+ * coinbase range proof is CB_RANGE.
+ */
+export const T21_FINGERPRINT_TOKENS = Object.freeze([
+  `T21=${T21_VERSION}`,
+  `CB_FORM=${CB_FORM}`,
+  `CB_ONLY=${CB_FORM}-at-genesis-pin`,
+  `CB_WRAP=ve-elgamal-${CHUNK_BITS}x${VE_CHUNKS}+agg-schnorr+${AMT_CT_DOM}`,
+  `CB_RANGE=bp-agg-${BP_N}x${BP_M}+0x${RANGE_TAG.toString(16).padStart(2, '0')}`,
+  `SPLIT_TALLY=logup-inv-schnorr+${LOGUP_DOM}`,
+  `SPLIT_LAW=floor-schnorr+rho-${RHO_LIMBS}x${CHUNK_BITS}-two-sided`,
+  `SHARE_BIND=${SHARE_BIND_DOM}`,
+  `K_MIN=${K_MIN}`,
+  `FEE=f1-bps-${FEE_BPS_MAX}`,
+  `PAYOUT_KEY=${DOM_CB}`,
+  `AMT_CT=${AMT_CT_DOM}`,
+  `VAULT_R=${VAULT_R_DOM}+parent`,
+  `SEND_WEIGHT=${SEND_W_BASE}+${SEND_W_PER_INPUT}n,n<=${SEND_INPUT_MAX},R${SEND_R_WEIGHT}`,
+  `GEN_H=${GEN_H}`,
+]);
