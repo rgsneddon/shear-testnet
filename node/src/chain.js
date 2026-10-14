@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import { potSubsidyAt, chainGenesisMs as genesisMsOf } from '../../crypto/pot_sched.js';
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
@@ -3307,33 +3308,98 @@ export function verifyLoadedChain(blocks, opts = {}) {
   const begun = beginLoaded(blocks, opts);
   if (!begun.ok || begun.empty) return finishLoaded(begun);
   const { list, state } = begun;
+  const report = typeof opts.onBlock === 'function';
+  const total = list.length;
+  const stride = report ? Math.max(1, Math.ceil((total - state.start) / 8)) : 0;
   for (let i = state.start; i < list.length; i += 1) {
+    if (report) {
+      const n = i + 1;
+      let line = null;
+      if (!opts.quiet && (i === state.start || n === total || (n - state.start) % stride === 0)) {
+        line = `book-replay ${n}/${total}\n`;
+      }
+      opts.onBlock({ height: n, total, line });
+    }
     const stop = stepLoaded(state, list, i);
     if (stop) return stop;
   }
   return finishLoaded(begun);
 }
 
-/** Same load rules as verifyLoadedChain. Yields once per block so the event loop can log progress and serve timers. */
-export async function verifyLoadedChainAsync(blocks, opts = {}) {
-  const begun = beginLoaded(blocks, opts);
-  if (!begun.ok || begun.empty) return finishLoaded(begun);
-  const { list, state } = begun;
-  const total = list.length;
-  const stride = Math.max(1, Math.ceil((total - state.start) / 8));
-  for (let i = state.start; i < total; i += 1) {
-    await new Promise((resolve) => { setImmediate(resolve); });
-    if (!opts.quiet) {
-      const n = i + 1;
-      if (i === state.start || n === total || (n - state.start) % stride === 0) {
-        process.stderr.write(`book-replay ${n}/${total}\n`);
-      }
-    }
-    if (typeof opts.onProgress === 'function') opts.onProgress({ height: i + 1, total });
-    const stop = stepLoaded(state, list, i);
-    if (stop) return stop;
+/** Clock captured on the parent. The worker must not sample Date.now() later. */
+function bootVerifyNowMs(opts) {
+  const given = Number(opts?.nowMs);
+  if (Number.isFinite(given) && given > 0) return given;
+  return Date.now();
+}
+
+/**
+ * burialOf runs on the parent. The worker only receives the integer tips,
+ * keyed by height, because stepLoaded calls it after height === i + 1.
+ */
+function bootBurialTips(list, burialOf) {
+  if (typeof burialOf !== 'function') return null;
+  const tips = new Array(list.length);
+  for (let i = 0; i < list.length; i += 1) {
+    const tip = burialOf(list[i]);
+    tips[i] = Number.isInteger(tip) ? tip : null;
   }
-  return finishLoaded(begun);
+  return tips;
+}
+
+function bootVerifyPayload(list, opts) {
+  const payload = {
+    blocks: list,
+    trustStoredHash: opts.trustStoredHash === true,
+    nowMs: bootVerifyNowMs(opts),
+    quiet: opts.quiet === true,
+    burialTips: bootBurialTips(list, opts.burialOf),
+  };
+  if ('trustShareWork' in opts) payload.trustShareWork = opts.trustShareWork;
+  if ('genesisHash' in opts) payload.genesisHash = opts.genesisHash;
+  if ('checkpoint' in opts) payload.checkpoint = opts.checkpoint;
+  if ('fromIndex' in opts) payload.fromIndex = opts.fromIndex;
+  if ('prior' in opts) payload.prior = opts.prior;
+  if ('reorgHaltDepth' in opts) payload.reorgHaltDepth = opts.reorgHaltDepth;
+  return payload;
+}
+
+function runBootVerifyWorker(payload, opts) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./boot_verify_worker.js', import.meta.url), { workerData: payload });
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      worker.terminate().catch(() => {});
+      fn(value);
+    };
+    worker.on('message', (msg) => {
+      if (settled || !msg) return;
+      if (msg.type === 'block') {
+        try {
+          if (msg.line) process.stderr.write(msg.line);
+          if (typeof opts.onProgress === 'function') opts.onProgress({ height: msg.height, total: msg.total });
+        } catch (err) {
+          finish(reject, err);
+        }
+        return;
+      }
+      if (msg.type === 'result') finish(resolve, msg.result);
+      else if (msg.type === 'error') finish(reject, new Error(msg.message || 'boot_verify'));
+    });
+    worker.on('error', (err) => finish(reject, err));
+    worker.on('exit', (code) => {
+      if (!settled) finish(reject, new Error(`boot_verify_exit_${code}`));
+    });
+  });
+}
+
+/** Same load rules as verifyLoadedChain. stepLoaded runs in a worker, not on this event loop. */
+export async function verifyLoadedChainAsync(blocks, opts = {}) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  if (!list.length) return verifyLoadedChain(blocks, opts);
+  return runBootVerifyWorker(bootVerifyPayload(list, opts), opts || {});
 }
 
 /**
