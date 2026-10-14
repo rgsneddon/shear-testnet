@@ -763,7 +763,7 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return { ok: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
-  const receipts = outs.filter((row) => String(row?.kind || kind) === 'withdraw');
+  const receipts = outs.filter((row) => String(row?.kind || '') === 'withdraw');
   if (receipts.length !== 1) return { ok: false, reason: 'mint_amount' };
   const o = receipts[0];
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);

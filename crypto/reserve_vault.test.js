@@ -660,6 +660,42 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(ok.opened, true);
     assert.equal(ok.nanos, honest);
   });
+
+  it('a sealed withdraw is one note, and a missing note or a missing kind does not open', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const n = PI_SHE_NANOS + 7;
+    const tx = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-one' });
+    assert.equal(tx.vout.length, 1);
+    assert.equal(String(tx.vout[0].kind), 'withdraw');
+    assert.equal(tx.vout[0].valueProof.v, n);
+    assert.ok(tx.vout[0].commit);
+    assert.equal(verifySealedNote(tx.vout[0], n), true);
+    assert.equal(Buffer.from(tx.vout[0].r).equals(Buffer.alloc(32)), false);
+    const act = reserveAction(tx);
+    assert.equal(act.opened, true);
+    assert.equal(act.nanos, n);
+    const zero = withdrawTx({ from: a, to: a, nanos: 0, id: 'kt10-zero' });
+    assert.equal(zero.vout[0].commit, undefined);
+    assert.equal(reserveAction(zero).opened, false);
+    const multi = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-multi' });
+    multi.vout.push(withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-multi-2' }).vout[0]);
+    assert.equal(reserveAction(multi).opened, false);
+    const bare = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-bare' });
+    delete bare.vout[0].commit;
+    delete bare.vout[0].valueProof;
+    assert.equal(reserveAction(bare).opened, false);
+    const hidden = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-kind' });
+    const stripped = { ...hidden.vout[0] };
+    delete stripped.kind;
+    hidden.vout = [stripped];
+    assert.equal(reserveAction(hidden).opened, false);
+    const beside = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-beside' });
+    beside.vout.push({ commit: beside.vout[0].commit });
+    const kept = reserveAction(beside);
+    assert.equal(kept.opened, true);
+    assert.equal(kept.nanos, n);
+  });
 });
 
 function asNumSafe(n) {

@@ -868,12 +868,13 @@ function publicActionNanos(tx, o) {
 
 /**
  * Withdraw notes must each open to the public action amount.
- * A commitment that opens to more than that amount is not this action.
+ * A sealed v12 withdraw has exactly one note whose kind is withdraw.
+ * A row with no kind is not that note (a hidden output does not inherit it).
+ * A withdraw with no committed note does not open.
  */
 function withdrawNotesOpen(outs, pub) {
-  const notes = outs.filter((row) => String(row?.kind || KIND_WITHDRAW) === KIND_WITHDRAW);
+  const notes = outs.filter((row) => String(row?.kind || '') === KIND_WITHDRAW);
   const committed = notes.filter((row) => row?.commit && row?.valueProof);
-  if (!committed.length) return { opened: true, nanos: pub == null ? 0 : pub };
   if (pub == null || notes.length !== 1 || committed.length !== 1) {
     return { opened: false, nanos: pub == null ? 0 : pub };
   }
@@ -1454,86 +1455,114 @@ function withdrawRowsOf(block) {
   return rows;
 }
 
+function isWithdrawTx(tx) {
+  if (!tx || tx.coinbase) return false;
+  if (String(tx.programId || '') !== RESERVE_PROGRAM) return false;
+  return txKind(tx) === KIND_WITHDRAW;
+}
+
 /**
- * Interest the withdraw receipts open to: opened nanos minus principal.
- * The fee bank may pay part of the reward. The receipt still carries the
- * whole interest. Schedule allowance is blockPermittedInterest. No withdraw
- * is zero and does not need a vault.
+ * One forward pass over the block. Each withdraw is checked on the vault
+ * after the earlier txs, before that withdraw clears the stake.
+ * Opened must be principal + permitted. The vault's own interest must be
+ * that permitted amount, and the mint must be that interest.
+ * Locked-in (start plus locks in this block) must equal principal out plus
+ * what is still locked. Offsetting receipts cannot cancel across the block.
+ */
+function walkWithdrawInterest(vault, block, nowMs) {
+  const rows = withdrawRowsOf(block);
+  if (!rows.length) return { ok: true, minted: 0n, permitted: 0n };
+  if (!vault || vault.blankFork) return { ok: false, reason: 'supply' };
+  const state = cloneVault(vault);
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const clock = Number(nowMs) || 0;
+  const startLocked = asBig(state.totalLockedNanos);
+  let locksIn = 0n;
+  let principalOut = 0n;
+  let minted = 0n;
+  let permittedSum = 0n;
+  let from = 0;
+  let counted = 0;
+  const fail = () => ({ ok: false, reason: 'supply' });
+  const applySlice = (slice) => {
+    if (!slice.length) return true;
+    const before = asBig(state.totalLockedNanos);
+    const applied = applyReserveBlock({
+      state,
+      block: { txs: slice },
+      nowMs: clock,
+    });
+    if (!applied || applied.ok !== true) return false;
+    const after = asBig(state.totalLockedNanos);
+    if (after < before) return false;
+    locksIn += after - before;
+    return true;
+  };
+  for (let i = 0; i < txs.length; i += 1) {
+    if (!isWithdrawTx(txs[i])) continue;
+    if (!applySlice(txs.slice(from, i))) return fail();
+    from = i + 1;
+    const act = reserveAction(txs[i]);
+    if (!act || act.opened !== true) return fail();
+    const portal = act.portalId ? state.portals?.[act.portalId] : null;
+    const staked = portal?.staked ?? 0n;
+    const idle = portal?.idle ?? 0n;
+    const principal = exactBi(asNum(asBig(staked) + asBig(idle)));
+    const bps = state.epochBps ?? GENESIS_BPS;
+    const permitted = exactBi(reserveInterestNanos(staked, bps));
+    const opened = exactBi(act.nanos);
+    if (principal == null || permitted == null || opened == null) return fail();
+    if (opened !== principal + permitted) return fail();
+    const applied = applyReserveBlock({
+      state,
+      block: { txs: [txs[i]] },
+      nowMs: clock,
+    });
+    if (!applied || applied.ok !== true) return fail();
+    const got = [];
+    for (const row of applied) {
+      if (row && row.action === KIND_WITHDRAW && row.ok === true) got.push(row);
+    }
+    if (got.length !== 1) return fail();
+    const interest = exactBi(got[0].interest);
+    const vaultPrincipal = exactBi(got[0].principal);
+    if (interest == null || vaultPrincipal == null) return fail();
+    if (interest !== permitted || vaultPrincipal !== principal) return fail();
+    const mintedHere = got[0].mint && got[0].mint.ok === true ? exactBi(got[0].mint.nanos) : 0n;
+    if (mintedHere == null || mintedHere !== interest) return fail();
+    minted += opened - principal;
+    permittedSum += permitted;
+    principalOut += principal;
+    if (minted > INTEREST_U64 || permittedSum > INTEREST_U64) return fail();
+    counted += 1;
+  }
+  if (!applySlice(txs.slice(from))) return fail();
+  if (counted !== rows.length) return fail();
+  const endLocked = asBig(state.totalLockedNanos);
+  if (startLocked + locksIn !== endLocked + principalOut) return fail();
+  if (minted !== permittedSum) return fail();
+  return { ok: true, minted, permitted: permittedSum };
+}
+
+/**
+ * Interest the withdraw receipts open to. Each one is principal + the bps
+ * schedule on the pre-withdraw vault, and the mint equals that interest.
+ * No withdraw is zero and does not need a vault.
  */
 export function blockWithdrawInterest(vault, block, nowMs) {
-  const rows = withdrawRowsOf(block);
-  if (!rows.length) return { ok: true, nanos: 0n };
-  if (!vault || vault.blankFork) return { ok: false, reason: 'supply' };
-  const trial = cloneVault(vault);
-  const applied = applyReserveBlock({
-    state: trial,
-    block,
-    nowMs: Number(nowMs) || 0,
-  });
-  if (!applied || applied.ok !== true) return { ok: false, reason: 'supply' };
-  const gotRows = [];
-  for (const row of applied) {
-    if (row && row.action === KIND_WITHDRAW && row.ok === true) gotRows.push(row);
-  }
-  if (gotRows.length !== rows.length) return { ok: false, reason: 'supply' };
-  let sum = 0n;
-  for (let i = 0; i < rows.length; i += 1) {
-    const act = reserveAction(rows[i]);
-    const got = gotRows[i];
-    if (!act || act.opened !== true) return { ok: false, reason: 'supply' };
-    const principal = exactBi(got.principal);
-    const interest = exactBi(got.interest);
-    const opened = exactBi(act.nanos);
-    if (principal == null || interest == null || opened == null) return { ok: false, reason: 'supply' };
-    if (opened < principal) return { ok: false, reason: 'supply' };
-    if (interest > 0n) {
-      const minted = exactBi(got.mint && got.mint.ok === true ? got.mint.nanos : null);
-      if (minted == null || minted !== interest) return { ok: false, reason: 'supply' };
-    }
-    sum += opened - principal;
-    if (sum > INTEREST_U64) return { ok: false, reason: 'supply' };
-  }
-  return { ok: true, nanos: sum };
+  const walked = walkWithdrawInterest(vault, block, nowMs);
+  if (!walked.ok) return { ok: false, reason: walked.reason || 'supply' };
+  return { ok: true, nanos: walked.minted };
 }
 
 /**
  * Interest the bps schedule allows for this block's withdraws.
- * Each one is staked × epochBps for that epoch, from reserveInterestNanos,
- * read on the vault before that withdraw clears the stake.
+ * One forward pass, the same pre-withdraw vault blockWithdrawInterest uses.
  */
 export function blockPermittedInterest(vault, block, nowMs) {
-  const rows = withdrawRowsOf(block);
-  if (!rows.length) return { ok: true, nanos: 0n };
-  if (!vault || vault.blankFork) return { ok: false, reason: 'supply' };
-  const txs = Array.isArray(block?.txs) ? block.txs : [];
-  const clock = Number(nowMs) || 0;
-  let sum = 0n;
-  let counted = 0;
-  for (let i = 0; i < txs.length; i += 1) {
-    const tx = txs[i];
-    if (!tx || tx.coinbase) continue;
-    if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
-    if (txKind(tx) !== KIND_WITHDRAW) continue;
-    const prior = cloneVault(vault);
-    const stepped = applyReserveBlock({
-      state: prior,
-      block: { txs: txs.slice(0, i) },
-      nowMs: clock,
-    });
-    if (!stepped || stepped.ok !== true) return { ok: false, reason: 'supply' };
-    const act = reserveAction(tx);
-    if (!act || act.opened !== true) return { ok: false, reason: 'supply' };
-    const portal = act.portalId ? prior.portals?.[act.portalId] : null;
-    const staked = portal?.staked ?? 0n;
-    const bps = prior.epochBps ?? GENESIS_BPS;
-    const one = exactBi(reserveInterestNanos(staked, bps));
-    if (one == null) return { ok: false, reason: 'supply' };
-    sum += one;
-    if (sum > INTEREST_U64) return { ok: false, reason: 'supply' };
-    counted += 1;
-  }
-  if (counted !== rows.length) return { ok: false, reason: 'supply' };
-  return { ok: true, nanos: sum };
+  const walked = walkWithdrawInterest(vault, block, nowMs);
+  if (!walked.ok) return { ok: false, reason: walked.reason || 'supply' };
+  return { ok: true, nanos: walked.permitted };
 }
 
 export function sheFromNanos(n) {
