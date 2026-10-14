@@ -618,6 +618,38 @@ describe('T21 chain rules (must-fix 3, 5)', { timeout: 600_000 }, () => {
     const withRow = { ...tx, vout: tx.vout.concat([{ kind: 'finder-fee', nanos: Number(phi) }]) };
     assert.equal(coinbaseLevyPays(withRow, fees, miner).reason, 'levy_split');
   });
+
+  it('refuses a public finder-fee row beside shares', () => {
+    const miner = encodeDest(Buffer.alloc(20, 5), publicVoucher(finVoucher).B);
+    const withRow = { ...levyTx, vout: levyTx.vout.concat([sealLevyNote(Number(phi), miner, 'finder-fee')]) };
+    assert.equal(verifyT21Coinbase({ tx: withRow, expect: expectFor(levyTx) }).reason, 'levy_split');
+    assert.throws(() => buildT21Coinbase({
+      S: 100_000n, cin: 0n, height: 2, magic, prevHash, dummySecret,
+      payees: [payee(0, [5n], { fin: phi })],
+      publicRows: [sealLevyNote(Number(phi), miner, 'finder-fee')],
+    }), (e) => e.reason === 'cb_form');
+  });
+
+  it('an empty round pays the finder half as one public finder-fee note to the block miner', { skip: noNative }, () => {
+    const miner = encodeDest(Buffer.alloc(20, 5), publicVoucher(finVoucher).B);
+    const other = encodeDest(Buffer.alloc(20, 6), publicVoucher(voucher(1)).B);
+    const { reserve, finder } = splitLevy(fees);
+    const reserveRow = sealLevyNote(reserve, reserveFeeDest(), 'reserve-fee');
+    const build = (rows) => buildT21Coinbase({ S: 100_000n, cin: 7n, height: 2, magic, prevHash, payees: [], publicRows: rows }).tx;
+    const tx = build([reserveRow, sealLevyNote(finder, miner, 'finder-fee')]);
+    assert.equal(tx.t21.shares.length, 0);
+    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { hashBudget: 0n }) }).ok, true);
+    assert.equal(coinbaseLevyPays(tx, fees, miner).ok, true);
+    assert.equal(coinbaseLevyPays(tx, fees, other).reason, 'finder_row');
+    assert.equal(coinbaseLevyPays(tx, fees, '').reason, 'finder_row');
+    assert.equal(coinbaseLevyPays(tx, fees * 2, miner).reason, 'levy_split');
+    assert.equal(coinbaseLevyPays(build([reserveRow]), fees, miner).reason, 'finder_row');
+    assert.equal(coinbaseLevyPays(build([reserveRow, sealLevyNote(finder, other, 'finder-fee')]), fees, miner).reason, 'finder_row');
+    const two = build([reserveRow, sealLevyNote(finder - 1, miner, 'finder-fee'), sealLevyNote(1, miner, 'finder-fee')]);
+    assert.equal(coinbaseLevyPays(two, fees, miner).reason, 'finder_row');
+    assert.equal(coinbaseLevyPays(build([]), 0, miner).ok, true);
+    assert.equal(coinbaseLevyPays(build([sealLevyNote(5, miner, 'finder-fee')]), 0, miner).reason, 'levy_split');
+  });
 });
 
 describe('T21 deferred rows (MF-2: 0 hash bonus lost past the payee cap)', { timeout: 600_000 }, () => {

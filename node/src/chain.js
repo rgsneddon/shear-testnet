@@ -401,10 +401,11 @@ export function t21PendingVaults(vault) {
 /**
  * The template's cb-v3 coinbase. `t21` is the pool's side: { labelOf, finder,
  * fee, bps, vault, shareMax, payeeMax, owedMax, perBlock, magic, seed }.
- * `owedIn` is the parent coinbase's owed list. An empty batch cannot carry the
- * finder half, so fee-paying txs then wait for a round with shares.
+ * `owedIn` is the parent coinbase's owed list. An empty batch pays the finder
+ * half as an opened finder-fee note to `miner`; with no miner dest, fee-paying
+ * txs wait for a round with shares.
  */
-function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKeys, height, subsidy, carryIn, hashBonusNanos, hashAcceptedSeries, owedIn }) {
+function t21CoinbaseFor({ t21, miner, batch, txs, prevHeader, priorHeader, issuedJobKeys, height, subsidy, carryIn, hashBonusNanos, hashAcceptedSeries, owedIn }) {
   if (!prevHeader) throw new Error('cb_form');
   const feeOfTx = (t) => Math.max(0, Math.floor(Number(t.fee || 0)));
   const run = (body) => {
@@ -427,6 +428,7 @@ function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKey
       fee: t21.fee || null,
       finder: t21.finder || null,
       phi: BigInt(split.finder),
+      finderNote: split.finder && miner && isDestAddress(miner) ? sealLevyNote(split.finder, miner, 'finder-fee') : null,
       vaults: t21PendingVaults(t21.vault),
       publicRows: split.reserve ? [sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee')] : [],
       owedIn,
@@ -1108,7 +1110,18 @@ function pubsJoining(txs) {
 export function coinbaseLevyPays(cb, fees, miner = '') {
   const split = splitLevy(fees);
   const rows = (kind) => (cb?.vout || []).filter((v) => v?.kind === kind);
-  if (isT21Coinbase(cb)) {
+  // cb-v3 with no shares has no payout row to hide the finder half in, so it
+  // pays it as one opened finder-fee note to the block miner's dest.
+  const t21Empty = isT21Coinbase(cb) && !(Array.isArray(cb.t21?.shares) && cb.t21.shares.length);
+  if (t21Empty) {
+    const found = t21FinderOf(cb);
+    if (!found || found.phi !== 0n) return { ok: false, reason: 'finder_row' };
+    if (split.finder > 0) {
+      const m20 = miner && isDestAddress(miner) ? hash20FromAddress(miner) : null;
+      const f = rows('finder-fee');
+      if (!m20 || f.length !== 1 || !noteDest20(f[0])?.equals(Buffer.from(m20))) return { ok: false, reason: 'finder_row' };
+    }
+  } else if (isT21Coinbase(cb)) {
     // cb-v3: the finder half is the hidden fin of one payout row, paid to
     // the block miner's admit base. Only the reserve half is a public row.
     if (rows('finder-fee').length) return { ok: false, reason: 'levy_split' };
@@ -1130,7 +1143,7 @@ export function coinbaseLevyPays(cb, fees, miner = '') {
   };
   const finderRows = rows('finder-fee');
   const reserveRows = rows('reserve-fee');
-  if (!isT21Coinbase(cb) && (split.finder === 0 ? finderRows.length !== 0 : openedSum(finderRows) !== split.finder)) {
+  if ((!isT21Coinbase(cb) || t21Empty) && (split.finder === 0 ? finderRows.length !== 0 : openedSum(finderRows) !== split.finder)) {
     return { ok: false, reason: 'levy_split' };
   }
   if (split.reserve === 0 ? reserveRows.length !== 0 : openedSum(reserveRows) !== split.reserve) {
@@ -1560,6 +1573,7 @@ export function buildTemplate({
   if (t21) {
     const made = t21CoinbaseFor({
       t21,
+      miner,
       batch,
       txs,
       prevHeader,

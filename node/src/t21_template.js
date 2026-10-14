@@ -347,7 +347,8 @@ function proofHeaderOf(share, ctx) {
 /**
  * Build the cb-v3 coinbase for a template.
  * `u` is the live unit and `hashBudget` is B_h. `phi` is the levy's finder
- * half, paid to `finder` (the block miner's voucher). `owedIn` is the parent
+ * half, paid to `finder` (the block miner's voucher), or in a round with no
+ * shares as `finderNote`, an opened finder-fee row. `owedIn` is the parent
  * coinbase's owed list; rows whose label this pool's book holds are its own.
  * planT21Round picks the batch, what is paid and what is deferred; a label
  * the builder still cannot pay (an N-1 miss, a bad voucher) is deferred
@@ -382,6 +383,7 @@ export function t21TemplateCoinbase({
   fee = null,
   finder = null,
   phi = 0n,
+  finderNote = null,
   vaults = [],
   publicRows = [],
   owedIn = [],
@@ -403,7 +405,7 @@ export function t21TemplateCoinbase({
   const ctx = { prevHeader, priorHeader, issuedJobKeys, credit };
   const unit = BigInt(u);
   const want = BigInt(phi);
-  if (want > 0n && !finder) throw new Error('finder_row');
+  if (want > 0n && !finder && !finderNote) throw new Error('finder_row');
   const unitBudget = unit > 0n ? BigInt(hashBudget) / unit : null;
 
   const live = t21OwedLive(owedIn, height);
@@ -437,7 +439,7 @@ export function t21TemplateCoinbase({
       unitMax: unitCap,
       unitBudget,
       owedRoom: owedCap - live.length,
-      finderPayee: want > 0n ? hexOf(finder.B) : null,
+      finderPayee: want > 0n && finder ? hexOf(finder.B) : null,
       unpayable,
     });
     assertNotEmptyHeld(plan, { payeeMax: slots, shareMax: room, unitBudget, unpayable });
@@ -461,6 +463,7 @@ export function t21TemplateCoinbase({
     });
     const paidE = new Set(plan.pay.filter((it) => it.owed).map((it) => hexOf(labelOf(it.nc).E)));
     const owed = t21OwedNext({ owedIn: live, paidE, defer, height });
+    if (want > 0n && !(plan.pay.length ? finder : finderNote)) throw new Error('finder_row');
     const built = buildT21Coinbase({
       S: BigInt(S),
       cin: BigInt(cin),
@@ -470,11 +473,11 @@ export function t21TemplateCoinbase({
       height,
       magic,
       prevHash,
-      payees: plan.pay.length ? payeesOf(paidItems, labelOf, finder, want) : (want > 0n ? payeesOf([], labelOf, finder, want) : []),
+      payees: plan.pay.length ? payeesOf(paidItems, labelOf, finder, want) : [],
       defer: plan.pay.length ? defer : [],
       owed,
       vaults,
-      publicRows,
+      publicRows: !plan.pay.length && want > 0n ? [...publicRows, finderNote] : publicRows,
       shareMax: room - defer.length,
       payeeMax: slots,
       seed,
@@ -487,7 +490,7 @@ export function t21TemplateCoinbase({
       }
     }
     if (!more) {
-      if (BigInt(built.phi || 0n) !== want) throw new Error('finder_row');
+      if (BigInt(built.phi || 0n) !== (plan.pay.length ? want : 0n)) throw new Error('finder_row');
       const flags = held.length && !plan.pay.length ? ['empty_batch_held'] : [];
       return {
         ...built,

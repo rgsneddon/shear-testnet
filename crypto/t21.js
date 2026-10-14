@@ -833,10 +833,14 @@ function planVaults(ctx, pending, start) {
   return rows;
 }
 
-/** Public levy rows (the reserve half) go last, inside the statement. */
-function publicRows(spec) {
+/**
+ * Public levy rows go last, inside the statement: the reserve half, and in a
+ * round with no shares the finder half as one opened finder-fee note.
+ */
+function publicRows(spec, empty = false) {
   const rows = spec.publicRows || [];
-  for (const r of rows) if (r?.kind !== 'reserve-fee' || hasKey(r, 'kindCode')) throw fail('cb_form');
+  const ok = (r) => (r?.kind === 'reserve-fee' || (empty && r?.kind === 'finder-fee')) && !hasKey(r, 'kindCode');
+  for (const r of rows) if (!ok(r)) throw fail('cb_form');
   return rows;
 }
 
@@ -893,7 +897,7 @@ function emptyCoinbase(spec, deferred) {
   const cin = scalarOk(spec.cin);
   if (S == null || cin == null) throw fail('pot_sched');
   const ctx = { magic: spec.magic, height: spec.height, prevHash: spec.prevHash };
-  const vaults = planVaults(ctx, spec.vaults, 0).concat(publicRows(spec));
+  const vaults = planVaults(ctx, spec.vaults, 0).concat(publicRows(spec, true));
   const tx = {
     coinbase: true,
     cbForm: CB_FORM,
@@ -1224,8 +1228,12 @@ export function verifyT21Coinbase(input) {
   }
   for (const o of vout) {
     if (!o || typeof o !== 'object') return no('cb_form');
-    // The reserve half of the levy is a public row; coinbaseLevyPays opens it.
+    // Public levy rows; coinbaseLevyPays opens them. The finder half is public only with no shares.
     if (o.kind === 'reserve-fee' && !hasKey(o, 'kindCode')) continue;
+    if (o.kind === 'finder-fee' && !hasKey(o, 'kindCode')) {
+      if (shares.length) return no('levy_split');
+      continue;
+    }
     if (hasKey(o, 'amtCt') && Buffer.from(asU8(o.amtCt)).length !== 8) return no('amount_ct');
     const vault = Number(o.kindCode) === VAULT_KIND_CODE || o.kind === 'vault-withdraw-pinned';
     if (!vault) {

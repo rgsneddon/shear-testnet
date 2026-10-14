@@ -16,7 +16,7 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20 } from '../../crypto/note.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, openedCoinbaseNanos } from '../../crypto/note.js';
 import { splitLevy } from '../../crypto/levy.js';
 import { CB_FORM, PAYOUT_KIND_CODE, W_HASH_MAX } from '../../crypto/t21_params.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
@@ -693,7 +693,16 @@ function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blo
     phi += fin;
   }
   const split = splitLevy(Number(levy));
-  if (phi !== BigInt(split.finder)) return { reason: 'levy_split', state };
+  // With no payout rows the finder half is one opened finder-fee note.
+  const finderRows = vout.filter((row) => row?.kind === 'finder-fee');
+  if (finderRows.length && payout.length) return { reason: 'levy_split', state };
+  let pubFinder = 0n;
+  for (const row of finderRows) {
+    const v = openedCoinbaseNanos(row);
+    if (v == null) return { reason: 'levy_split', state };
+    pubFinder += BigInt(v);
+  }
+  if (phi + pubFinder !== BigInt(split.finder)) return { reason: 'levy_split', state };
   if (split.reserve > 0 && !vout.some((row) => row?.kind === 'reserve-fee')) return { reason: 'levy_split', state };
   const hashMinted = u * W;
   if (!payout.length && potMinted + hashMinted + phi !== 0n) return { reason: 'supply', state };

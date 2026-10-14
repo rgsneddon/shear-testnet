@@ -31,14 +31,12 @@ export const T21_SHARES_PER_BLOCK = 85;
  * Deferred rows. A proven label a block does not pay is published in
  * t21.defer and joins t21.owed, the list every later coinbase restates.
  * A later block pays it at its deferred w; past T21_OWED_TTL blocks it
- * drops.
- *
- * PLACEHOLDER: T21_OWED_MAX 1,024 and T21_OWED_TTL 960 are testnet values
- * pending Russell's escrow ruling. Both feed the params fingerprint, so a
- * change is a consensus change.
+ * drops. Russell's ruling (2026-10-14) fixes both values.
  */
-export const T21_OWED_MAX = 1_024; // PLACEHOLDER pending Russell
-export const T21_OWED_TTL = 960; // PLACEHOLDER pending Russell
+export const T21_OWED_MAX = 1_024;
+export const T21_OWED_TTL = 960;
+/** A round with no shares pays the levy's finder half as one opened finder-fee note to the block miner. */
+export const T21_EMPTY_FINDER = 'public-finder-note';
 export const SCALAR_MAX = 1n << 64n;
 export const OUTPUT_MAX = 65536;
 export const PAYOUT_KIND_CODE = 0x20;
@@ -106,6 +104,7 @@ export const T21_FINGERPRINT_TOKENS = Object.freeze([
   `T21_HASH=full-units,W<=2^${HASH_CAP_BITS},uW<=Bh`,
   `T21_SHARE_FLOOR=ceil-log2-work/${T21_SHARES_PER_BLOCK},proof-header`,
   `T21_DEFER=owed-restated,max=${T21_OWED_MAX},ttl=${T21_OWED_TTL}`,
+  `T21_EMPTY_FEE=${T21_EMPTY_FINDER},miner-dest`,
   `K_MIN=${K_MIN}`,
   `FEE=f1-bps-${FEE_BPS_MAX}`,
   `PAYOUT_KEY=${DOM_CB}`,
