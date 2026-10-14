@@ -11,6 +11,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "licenses"))
+import release_notices  # noqa: E402
 
 SPEC_RE = re.compile(
     r"""(?:\bfrom\s+|import\s*\(\s*|require\(\s*|import\s+)['"]([^'"]+)['"]"""
@@ -294,11 +298,13 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
     repo = os.path.abspath(repo)
     skip_crypto = {"target", "randomx", "node_modules", ".git"}
 
-    def add_tree(root: str, arc_prefix: str, skip_dirs: set[str]) -> None:
+    def add_tree(root: str, arc_prefix: str, skip_dirs: set[str], keep_dir=None) -> None:
         if not os.path.isdir(root):
             raise SystemExit(f"release sidecar missing {root}")
         for dp, dns, fns in os.walk(root):
             dns[:] = [d for d in dns if d not in skip_dirs and not d.startswith(".")]
+            if keep_dir is not None:
+                dns[:] = [d for d in dns if keep_dir(os.path.relpath(os.path.join(dp, d), repo))]
             for fn in fns:
                 if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
                     continue
@@ -326,7 +332,8 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
     modules = os.path.join(repo, "node_modules")
     if not os.path.isdir(modules):
         raise SystemExit("release sidecar missing node_modules — run npm ci before packing")
-    add_tree(modules, "node_modules", {".git"})
+    add_tree(modules, "node_modules", {".git"}, release_notices.npm_dir_filter(repo))
+    release_notices.write_notices(z, repo)
     runtime_name = "node.exe" if flavor == "windows" else "node"
     runtime_src = shutil.which("node")
     if flavor == "windows":
@@ -337,6 +344,7 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
         raise SystemExit("release sidecar needs a node binary on PATH")
     if flavor == "windows":
         z.write(runtime_src, f"runtime/{runtime_name}")
+        licensed = [runtime_src]
     else:
         import tempfile
         stage = tempfile.mkdtemp(prefix="shear-wallet-runtime-")
@@ -351,6 +359,9 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
                 z.write(os.path.join(stage, base), f"runtime/{base}")
         finally:
             shutil.rmtree(stage, ignore_errors=True)
+        licensed = [runtime_src] + release_notices.linked_system_libs(runtime_src, libs)
+    for src, arc in release_notices.runtime_license_members(licensed, "runtime/licenses", repo):
+        z.write(src, arc)
     if flavor == "windows":
         gcc = shutil.which("gcc")
         bindir = os.path.dirname(os.path.abspath(gcc)) if gcc else ""

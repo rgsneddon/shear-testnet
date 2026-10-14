@@ -24,6 +24,9 @@ from bundle_modules import (
     write_missing_required,
 )
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "licenses"))
+import release_notices  # noqa: E402
+
 FLAVORS = ("windows", "linux", "archlinux", "fedora", "opensuse", "macos")
 SKIP_DIR_NAMES = {
     "node_modules",
@@ -53,10 +56,12 @@ def product_version() -> str:
     return os.environ.get("SHEAR_NODE_PIN", "9.0")
 
 
-def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=None) -> None:
+def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=None, keep_dir=None) -> None:
     skip = SKIP_DIR_NAMES if skip_dirs is None else skip_dirs
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d not in skip and not d.startswith(".")]
+        if keep_dir is not None:
+            dns[:] = [d for d in dns if keep_dir(os.path.relpath(os.path.join(dp, d), REPO))]
         for fn in fns:
             if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
                 continue
@@ -191,13 +196,18 @@ def main(argv: list[str] | None = None) -> int:
         nm = os.path.join(REPO, "node_modules")
         if not os.path.isdir(nm):
             sys.exit("missing node_modules — run npm ci before packing")
-        add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"})
+        add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"}, keep_dir=release_notices.npm_dir_filter(REPO))
+        release_notices.write_notices(z, REPO)
         if flavor == "windows":
             runtime = os.path.join(REPO, "runtime")
             if not os.path.isdir(runtime):
                 copy_runtime(REPO, flavor)
             if os.path.isdir(runtime):
                 add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
+            node_exe = os.path.join(runtime, "node.exe")
+            if os.path.isfile(node_exe):
+                for src, arc in release_notices.runtime_license_members([node_exe], "runtime/licenses", REPO):
+                    z.write(src, arc)
             write_mingw_runtime(z)
         else:
             # A Windows checkout keeps runtime/node.exe. Do not ship that PE
@@ -214,6 +224,10 @@ def main(argv: list[str] | None = None) -> int:
                 if linked:
                     rpath_origin(copied, linked)
                 add_filtered_tree(z, os.path.join(stage, "runtime"), "runtime", skip_dirs={".git"})
+                host_node = resolve_real_node(shutil.which("node"))
+                licensed = [host_node] + release_notices.linked_system_libs(host_node, linked)
+                for src, arc in release_notices.runtime_license_members(licensed, "runtime/licenses", REPO):
+                    z.write(src, arc)
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
         readme = (
@@ -257,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
         for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
             if dll not in names:
                 sys.exit(f"missing {dll}")
+    if any(n.startswith("node_modules/solc/") for n in names):
+        sys.exit("node zip must not ship the development-only solc compiler")
+    release_notices.assert_has_notices(names, REPO)
     assert_zip_has_modules(names, REPO)
     print("ok", name, "pin", pin, "flavor", flavor, "modules", len(names))
     return 0

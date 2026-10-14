@@ -26,6 +26,9 @@ BAT = os.path.join(MINER, "example.bat")
 SH = os.path.join(MINER, "example.sh")
 DIST = os.path.join(REPO, "dist")
 
+sys.path.insert(0, os.path.join(REPO, "scripts", "licenses"))
+import release_notices  # noqa: E402
+
 FLAVORS = {
     "linux": "elf",
     "archlinux": "elf",
@@ -77,6 +80,9 @@ def run(cmd: list[str]) -> str:
     return result.stdout
 
 
+SOURCES: list[str] = []
+
+
 def bundle_elf(binary: str, stage: str) -> list[str]:
     if not shutil.which("patchelf") or not shutil.which("ldd"):
         sys.exit("patchelf and ldd are required to pack a linux-family zip")
@@ -91,6 +97,7 @@ def bundle_elf(binary: str, stage: str) -> list[str]:
         found[name] = path
     if not any(name.startswith("libssl") for name in found):
         sys.exit("binary does not link libssl; refusing a cleartext pack")
+    SOURCES.extend(os.path.realpath(p) for _n, p in sorted(found.items()))
     if not any(name.startswith("libcrypto") for name in found):
         sys.exit("binary does not link libcrypto; refusing a cleartext pack")
     staged = os.path.join(stage, "ShearK-Miner")
@@ -127,6 +134,7 @@ def bundle_macho(binary: str, stage: str) -> list[str]:
             if not os.path.isfile(src):
                 sys.exit(f"missing {src}")
             want.append((src, base))
+            SOURCES.append(os.path.realpath(src))
     if not any(base.startswith("libssl") for _, base in want):
         sys.exit("macOS binary does not link libssl; refusing a cleartext pack")
     if not any(base.startswith("libcrypto") for _, base in want):
@@ -196,9 +204,14 @@ def main(argv: list[str] | None = None) -> int:
                 "Localhost solo: stratum+tcp://127.0.0.1:1111\n"
                 "Do not pass --tls-pin. There is no --tls-insecure.\n"
                 "Use the zip built for this operating system.\n"
+                "Licences: LICENSE, THIRD_PARTY_NOTICES.txt, LICENSES/, and openssl-licenses/ for the bundled OpenSSL.\n"
             )
             zipped.writestr("README.txt", note)
+            release_notices.write_notices(zipped, REPO)
+            for src, arc in release_notices.runtime_license_members(SOURCES, "openssl-licenses", REPO):
+                zipped.write(src, arc)
         names = zipfile.ZipFile(out).namelist()
+    release_notices.assert_has_notices(names, REPO)
     for need in ("ShearK-Miner", "example.bat", "example.sh"):
         if need not in names:
             sys.exit(f"{out} missing {need}: {names}")

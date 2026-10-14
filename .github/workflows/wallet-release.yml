@@ -98,7 +98,9 @@ jobs:
       - name: Zip
         run: |
           python3 - <<'PY'
-          import os, zipfile, shutil
+          import os, sys, zipfile, shutil
+          sys.path.insert(0, "scripts/licenses")
+          import release_notices
           pin = os.environ["PIN"]
           bundle = "wallet/build/linux/x64/release/bundle"
           dist = "dist"
@@ -111,10 +113,14 @@ jobs:
           linux = os.path.join(dist, f"shear-wallet-{pin}-linux.zip")
           with zipfile.ZipFile(linux, "w", zipfile.ZIP_DEFLATED) as z:
               add_tree(z, bundle)
+              release_notices.write_notices(z, ".")
           arch = os.path.join(dist, f"shear-wallet-{pin}-archlinux.zip")
           with zipfile.ZipFile(arch, "w", zipfile.ZIP_DEFLATED) as z:
               z.write("wallet/pack/archlinux/PKGBUILD", "PKGBUILD")
               add_tree(z, bundle)
+              release_notices.write_notices(z, ".")
+          for path in (linux, arch):
+              release_notices.assert_has_notices(zipfile.ZipFile(path).namelist(), ".")
           apk = "wallet/build/app/outputs/flutter-apk/app-release.apk"
           shutil.copy(apk, os.path.join(dist, f"shear-wallet-{pin}-android.apk"))
           PY

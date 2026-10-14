@@ -13,7 +13,9 @@ import zipfile
 
 _PACK_DIR = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(_PACK_DIR, "..", "..", "node", "pack")))
+sys.path.insert(0, os.path.abspath(os.path.join(_PACK_DIR, "..", "..", "scripts", "licenses")))
 from bundle_modules import assert_zip_has_modules, write_missing_required  # noqa: E402
+import release_notices  # noqa: E402
 
 _PACK = os.path.abspath(os.path.dirname(__file__))
 _WALLET_ROOT = os.path.abspath(os.path.join(_PACK, ".."))
@@ -156,8 +158,9 @@ def main() -> int:
             if not os.path.isdir(nm):
                 sys.exit("Continuum sidecar missing node_modules — run npm ci before packing")
             bundled = 0
+            keep = release_notices.npm_dir_filter(node_root)
             for dp, dns, fns in os.walk(nm):
-                dns[:] = [d for d in dns if d not in {".git"}]
+                dns[:] = [d for d in dns if d not in {".git"} and keep(os.path.relpath(os.path.join(dp, d), node_root))]
                 for fn in fns:
                     p = os.path.join(dp, fn)
                     rel = os.path.relpath(p, node_root).replace("\\", "/")
@@ -167,6 +170,9 @@ def main() -> int:
             node_exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe")
             if os.path.isfile(node_exe):
                 z.write(node_exe, "runtime/node.exe")
+                for src, arc in release_notices.runtime_license_members([node_exe], "runtime/licenses", node_root):
+                    z.write(src, arc)
+            release_notices.write_notices(z, node_root)
             gcc = shutil.which("gcc")
             mingw = os.path.dirname(os.path.abspath(gcc)) if gcc else ""
             for dll in ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"):
@@ -219,6 +225,9 @@ def main() -> int:
     for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
         if dll not in names:
             sys.exit(f"Continuum zip must include {dll}")
+    if any(n.startswith("node_modules/solc/") for n in names):
+        sys.exit("wallet zip must not ship the development-only solc compiler")
+    release_notices.assert_has_notices(names, node_root)
     assert_zip_has_modules(names, node_root)
     banned = []
     for n in names:

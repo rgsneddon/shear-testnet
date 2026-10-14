@@ -43,6 +43,8 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, shutil, sys, zipfile
+          sys.path.insert(0, "scripts/licenses")
+          import release_notices
           pin = os.environ["PIN"]
           bundle = "wallet/build/linux/x64/release/bundle"
           exe = os.path.join(bundle, "shear_wallet")
@@ -66,9 +68,13 @@ jobs:
                   shutil.copy2(p, dest, follow_symlinks=True)
                   os.symlink(os.path.basename(p), os.path.join(libdir, "libsodium.so"))
                   copied = dest
+                  for src, arc in release_notices.runtime_license_members([os.path.realpath(p)], "lib/licenses", "."):
+                      os.makedirs(os.path.dirname(os.path.join(bundle, arc)), exist_ok=True)
+                      shutil.copy2(src, os.path.join(bundle, arc))
                   break
           if copied is None:
               sys.exit("libsodium.so.26/23 not found")
+          release_notices.copy_notices(bundle, ".")
           dist = "dist"
           os.makedirs(dist, exist_ok=True)
           pkgbuild = "wallet/pack/archlinux/PKGBUILD"
@@ -96,6 +102,9 @@ jobs:
                       sys.exit(f"miner/PE inside wallet zip: {n}")
               if not any("libsodium.so" in n for n in names):
                   sys.exit(f"libsodium missing in {path}")
+              if not any(n.startswith("lib/licenses/libsodium") for n in names):
+                  sys.exit(f"libsodium licence missing in {path}")
+              release_notices.assert_has_notices(names, ".")
               if arch:
                   if "PKGBUILD" not in names:
                       sys.exit(f"missing PKGBUILD in {path}")
