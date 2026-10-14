@@ -23,6 +23,7 @@ import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
 import { accountShareUnits, aLeavesFromShares } from './share_batch.js';
 import { buildDualTree } from './clearing.js';
 import { payeeCapLive } from './block_budget.js';
+import { nativeLoaded } from './native_admit.js';
 import { encodeDest } from './address.js';
 import { reserveFeeDest, splitLevy } from './levy.js';
 import {
@@ -483,17 +484,25 @@ describe('T21 chain rules (must-fix 3, 5)', { timeout: 600_000 }, () => {
     assert.equal(t21HashLedgerOk(null, { ...v3, hashAcceptedUnits: '3' }), false);
   });
 
-  it('binds the finder fin to the levy finder half and the block miner', () => {
-    const fees = 1_000_000;
-    const phi = BigInt(splitLevy(fees).finder);
-    const finVoucher = voucher(0);
+  const fees = 1_000_000;
+  const phi = BigInt(splitLevy(fees).finder);
+  const finVoucher = voucher(0);
+  let levyTx;
+
+  it('verifies a finder row beside the public reserve-fee row', () => {
     const built = buildT21Coinbase({
       S: 100_000n, cin: 0n, height: 2, magic, prevHash, dummySecret,
       payees: [payee(0, [5n], { fin: phi })],
       publicRows: [sealLevyNote(splitLevy(fees).reserve, reserveFeeDest(), 'reserve-fee')],
     });
-    const tx = built.tx;
-    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx) }).ok, true);
+    levyTx = built.tx;
+    assert.equal(verifyT21Coinbase({ tx: levyTx, expect: expectFor(levyTx) }).ok, true);
+  });
+
+  // Opening the reserve-fee note checks its range proof, which only the native addon verifies.
+  const noNative = nativeLoaded() ? false : 'needs crypto/native/shearadmit.node (npm run build:admit)';
+  it('binds the finder fin to the levy finder half and the block miner', { skip: noNative }, () => {
+    const tx = levyTx;
     const miner = encodeDest(Buffer.alloc(20, 5), publicVoucher(finVoucher).B);
     const other = encodeDest(Buffer.alloc(20, 5), publicVoucher(voucher(1)).B);
     assert.equal(coinbaseLevyPays(tx, fees, miner).ok, true);
