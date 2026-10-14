@@ -1,9 +1,10 @@
 //! Local-witness rules S-1 through S-9 and the keyed-fetch ban.
 //!
-//! Witnesses are built from leaves the wallet already holds. Restore reads a
-//! public upper-tree snapshot and an aligned epoch delta. A request never
-//! carries a leaf index, path, chunk, tag, note commitment, address, or
-//! owned-note id.
+//! Witnesses are built from leaves the wallet already holds. Restore reads the
+//! public upper tree levels and an aligned epoch delta through unkeyed `/sync`
+//! reads. A request never carries a leaf index, path, chunk, chunk list,
+//! snapshot, tag, note commitment, address, or owned-note id, and the wallet's
+//! [`crate::TreeSnapshot`] is built locally from what those reads returned.
 //!
 //! [`SyncServer::handle`] is the only way a node answers a sync read, and
 //! [`SyncClient`] is the only way a wallet builds one or accepts the answer.
@@ -69,13 +70,16 @@ pub enum SyncReject {
 /// Routes the sync channel serves. There is no path, witness, leaf, or bucket route.
 pub const ROUTES: &[&str] = &["/sync", "/tx"];
 
-/// Witness lookup routes. Always refused.
-pub const BANNED_ROUTES: &[&str] = &["/path", "/witness", "/leaf", "/bucket"];
+/// Witness and wallet-snapshot lookup routes. Always refused.
+///
+/// A [`crate::TreeSnapshot`] names the leaf chunks a wallet holds, so it is
+/// built only inside the wallet; no node serves one.
+pub const BANNED_ROUTES: &[&str] = &["/path", "/witness", "/leaf", "/bucket", "/snapshot", "/chunk", "/chunks"];
 
 /// Query names that would key a fetch to one note. Shared with `node/src/fs1_sync.js`.
 pub const KEYED_PARAMS: &[&str] = &[
   "leaf", "index", "chunk", "path", "tag", "spendtag", "commit", "notecommit", "address", "owned",
-  "note", "send", "scanhit", "clear",
+  "note", "send", "scanhit", "clear", "snapshot", "chunks", "chunkids", "held",
 ];
 
 /// Most epochs one sync read may span. Shared with `node/src/fs1_sync.js`.
@@ -159,7 +163,7 @@ pub fn parse_query(query: &str) -> SyncRequest {
       "from" => from = number,
       "to" => to = number,
       "leaf" | "index" => request.leaf_index = Some(number.unwrap_or(u64::MAX)),
-      "chunk" => request.chunk = Some(number.unwrap_or(u64::MAX)),
+      "chunk" | "chunks" | "chunkids" | "snapshot" | "held" => request.chunk = Some(number.unwrap_or(u64::MAX)),
       "path" => request.path = Some(value.as_bytes().to_vec()),
       "tag" | "spendtag" => request.tag = Some(value.as_bytes().to_vec()),
       "commit" | "notecommit" => request.note_commit = Some(value.as_bytes().to_vec()),
