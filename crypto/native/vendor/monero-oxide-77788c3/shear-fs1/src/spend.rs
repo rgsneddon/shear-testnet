@@ -19,9 +19,9 @@
 //! the FCMP commitment blind must run along `E(H)`, not `G`. Then
 //! `C~ = E(C − c·H)`, the wallet publishes `C̃ = C − c·H` on the vin, and
 //! conservation `Σ C_out + fee·G = Σ C̃_in + excess·H` holds with `t = −c`.
-//! [`spend_params`] is the fixed generator proposal with that one role
-//! assignment; the proposal's points and digest are unchanged. Neither is a
-//! ratified consensus set.
+//! [`spend_params`] is the fixed generator set with that one role assignment.
+//! The points and digest are unchanged. Status: pending PA+CA ratification.
+//! It is not a ratified consensus set.
 
 use std::sync::OnceLock;
 
@@ -380,6 +380,18 @@ pub fn spend_blob_len(n: usize) -> Option<usize> {
   consensus_accepts(n).then(|| SPEND_HEAD + proof_len(n, DEPTH))
 }
 
+/// True when `fs1` is the exact consensus blob for `n` inputs.
+///
+/// Length is [`spend_blob_len`], the first byte is [`SPEND_WIRE`], the depth
+/// byte is [`DEPTH`], and the count byte is `n`. An 8-input blob is the
+/// maximum. One extra byte, or `n` outside 1..=8, does not fit.
+pub fn spend_blob_fits(fs1: &[u8], n: usize) -> bool {
+  let Some(len) = spend_blob_len(n) else { return false };
+  let Ok(n_byte) = u8::try_from(n) else { return false };
+  let Ok(depth) = u8::try_from(DEPTH) else { return false };
+  fs1.len() == len && fs1.first() == Some(&SPEND_WIRE) && fs1.get(1) == Some(&depth) && fs1.get(2) == Some(&n_byte)
+}
+
 /// The root a spend blob names. `None` when the head is malformed.
 pub fn spend_root(fs1: &[u8]) -> Option<[u8; 32]> {
   if fs1.len() < SPEND_HEAD || fs1[0] != SPEND_WIRE {
@@ -402,10 +414,10 @@ pub fn verify_spend(
 ) -> Result<(), Fs1Error> {
   let params = spend_params()?;
   let n = records.len();
-  if !consensus_accepts(n) || fs1.len() < SPEND_HEAD || fs1[0] != SPEND_WIRE {
+  if !consensus_accepts(n) || fs1.len() < SPEND_HEAD || fs1.first() != Some(&SPEND_WIRE) {
     return Err(Fs1Error::InputCount);
   }
-  if usize::from(fs1[1]) != DEPTH || usize::from(fs1[2]) != n || fs1.len() != SPEND_HEAD + proof_len(n, DEPTH) {
+  if !spend_blob_fits(fs1, n) {
     return Err(Fs1Error::Io);
   }
   if fs1[3 .. SPEND_HEAD] != root[..] {
@@ -480,6 +492,42 @@ mod tests {
       keys.push((x, r));
     }
     (notes, keys)
+  }
+
+  #[test]
+  fn max_blob_fits_and_oversize_is_rejected() {
+    use crate::membership::{proof_len, Fs1Error, DEPTH};
+    use crate::rulings::INPUT_MAX;
+    let max = spend_blob_len(INPUT_MAX).expect("8 inputs");
+    assert_eq!(max, SPEND_HEAD + proof_len(INPUT_MAX, DEPTH));
+    let mut prev = 0usize;
+    for n in 1 ..= INPUT_MAX {
+      let len = spend_blob_len(n).expect("in range");
+      assert!(len > prev && len <= max, "n={n} len={len}");
+      prev = len;
+      let mut blob = vec![0u8; len];
+      blob[0] = SPEND_WIRE;
+      blob[1] = u8::try_from(DEPTH).unwrap();
+      blob[2] = u8::try_from(n).unwrap();
+      blob[3] = 1;
+      assert!(spend_blob_fits(&blob, n));
+      let records = vec![[0u8; RECORD_BYTES]; n];
+      let err = verify_spend(&blob, &records, &[9u8; 32], &[0u8; 32], 1).expect_err("size accepted, root differs");
+      assert!(matches!(err, Fs1Error::Path), "exact n={n} passed the size gate: {err:?}");
+      let mut over = blob.clone();
+      over.push(1);
+      assert!(!spend_blob_fits(&over, n));
+      let err = verify_spend(&over, &records, &[9u8; 32], &[0u8; 32], 1).expect_err("oversize");
+      assert!(matches!(err, Fs1Error::Io), "oversize n={n}: {err:?}");
+    }
+    assert!(spend_blob_len(INPUT_MAX + 1).is_none());
+    assert!(!spend_blob_fits(&vec![0u8; max + 1], INPUT_MAX));
+    let mut bad_wire = vec![0u8; max];
+    bad_wire[1] = u8::try_from(DEPTH).unwrap();
+    bad_wire[2] = u8::try_from(INPUT_MAX).unwrap();
+    let records = vec![[0u8; RECORD_BYTES]; INPUT_MAX];
+    let err = verify_spend(&bad_wire, &records, &[9u8; 32], &[0u8; 32], 1).expect_err("wire");
+    assert!(matches!(err, Fs1Error::InputCount));
   }
 
   #[test]

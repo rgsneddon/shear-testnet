@@ -1,7 +1,7 @@
 [package]
 name = "shear-fs1"
 version = "0.1.0"
-description = "Unwired Shear adaptation of the vendored monero-oxide FCMP++ membership prover"
+description = "Shear adaptation of the vendored monero-oxide FCMP++ membership prover. Generators pending PA+CA ratification."
 license = "MIT"
 edition = "2021"
 rust-version = "1.81"
@@ -61,6 +61,10 @@ required-features = ["bench"]
 name = "fs1_tree"
 path = "src/bin/fs1_tree.rs"
 required-features = ["tree-cli"]
+
+[[bin]]
+name = "fs1_generators"
+path = "src/bin/fs1_generators.rs"
 
 [[test]]
 name = "ct7_threads"

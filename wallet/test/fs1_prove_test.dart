@@ -99,4 +99,16 @@ void main() {
     );
     lib.treeFree(next.handle);
   }, skip: lib == null ? 'libshear_admit with shear_fs1_* is not built' : false);
+
+  test('the eight-input blob is the maximum and a ninth is rejected', () {
+    final max = lib!.blobCap(8);
+    expect(max, greaterThan(0));
+    for (var n = 1; n < 8; n++) {
+      final len = lib.blobCap(n);
+      expect(len, greaterThan(0));
+      expect(max, greaterThan(len));
+    }
+    expect(lib.blobCap(0), 0);
+    expect(lib.blobCap(9), 0);
+  }, skip: lib == null ? 'libshear_admit with shear_fs1_* is not built' : false);
 }

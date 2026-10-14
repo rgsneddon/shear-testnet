@@ -85,6 +85,18 @@ export function fs1BlobLen(n) {
   return fs1BlobCap(n);
 }
 
+/**
+ * True when `blob` is the exact consensus spend for `n` inputs.
+ * The cap is `fs1BlobLen(8)`, the 8-input proof at the fixed tree depth.
+ * One extra byte, a wrong wire, depth, or count, or `n` outside 1..=8, does not fit.
+ */
+export function fs1BlobFits(blob, n) {
+  const cap = fs1BlobLen(FS1_INPUT_MAX);
+  const want = fs1BlobLen(n);
+  if (!blob || !cap || !want || blob.length !== want || blob.length > cap) return false;
+  return blob[0] === FS1_WIRE && blob[1] === FS1_DEPTH && blob[2] === n;
+}
+
 function lenPref(value) {
   const b = Buffer.isBuffer(value) ? value : Buffer.from(value || []);
   const n = Buffer.alloc(4);

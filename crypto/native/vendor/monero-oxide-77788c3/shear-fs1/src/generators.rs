@@ -17,7 +17,7 @@
 //!
 //! No discrete log between any two of these points is known to anyone.
 //! The set is pinned by [`generators_digest`] and `vectors/generators.txt`.
-//! It is a proposal for Stage 3. It is not a ratified consensus set.
+//! Status: pending PA+CA ratification. It is not a ratified consensus set.
 
 use blake2::{Blake2b512, Digest};
 use ciphersuite::{
@@ -33,6 +33,7 @@ use helioselene::{Helios, Selene};
 
 use crate::membership::{EdG, ShearCurves, DEPTH};
 use crate::rulings::INPUT_MAX;
+use crate::vectors::hex;
 
 /// Domain separator for every FS-1 generator.
 pub const GENERATOR_DST: &[u8] = b"shear-fs1-generators-v1";
@@ -163,6 +164,86 @@ pub fn generators_digest(params: &crate::Fs1Params) -> [u8; 64] {
   out
 }
 
+fn vector_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+  text.lines().find_map(|line| {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+      return None;
+    }
+    let (k, v) = line.split_once('\t')?;
+    (k == key).then_some(v)
+  })
+}
+
+fn expect_point(got: &[u8], want: &str, label: &str) -> Result<(), String> {
+  let got = hex(got);
+  if got != want {
+    return Err(format!("{label}: {got} != {want}"));
+  }
+  Ok(())
+}
+
+/// Recompute every generator from its domain-separated label and compare it
+/// to `params`, then check the pinned rows in `vectors/generators.txt`.
+///
+/// `Ok` is the Blake2b-512 digest of the set. The set is pending PA+CA
+/// ratification. It is not a ratified consensus set.
+pub fn generators_match_derivation(params: &crate::Fs1Params) -> Result<[u8; 64], String> {
+  let (rows1, rows2) = generator_rows();
+  if params.c1.g_bold_slice().len() != rows1 || params.c1.h_bold_slice().len() != rows1 {
+    return Err(format!("selene rows {} != {rows1}", params.c1.g_bold_slice().len()));
+  }
+  if params.c2.g_bold_slice().len() != rows2 || params.c2.h_bold_slice().len() != rows2 {
+    return Err(format!("helios rows {} != {rows2}", params.c2.g_bold_slice().len()));
+  }
+  if params.g != <EdG as Group>::generator() {
+    return Err("G is not the Ed25519 basepoint".into());
+  }
+  if params.t != ed25519_point(b"T") || params.u != ed25519_point(b"U") || params.v != ed25519_point(b"V") {
+    return Err("Ed25519 T, U, or V".into());
+  }
+  if params.c1.g() != cycle_point::<Selene>(b"selene", b"g", 0)
+    || params.c1.h() != cycle_point::<Selene>(b"selene", b"h", 0)
+    || params.c1_init != cycle_point::<Selene>(b"selene", b"init", 0)
+  {
+    return Err("Selene g, h, or init".into());
+  }
+  if params.c2.g() != cycle_point::<Helios>(b"helios", b"g", 0)
+    || params.c2.h() != cycle_point::<Helios>(b"helios", b"h", 0)
+    || params.c2_init != cycle_point::<Helios>(b"helios", b"init", 0)
+  {
+    return Err("Helios g, h, or init".into());
+  }
+  for i in 0 .. rows1 {
+    let idx = u32::try_from(i).map_err(|_| "selene index".to_string())?;
+    if params.c1.g_bold_slice()[i] != cycle_point::<Selene>(b"selene", b"g_bold", idx) {
+      return Err(format!("selene g_bold {i}"));
+    }
+    if params.c1.h_bold_slice()[i] != cycle_point::<Selene>(b"selene", b"h_bold", idx) {
+      return Err(format!("selene h_bold {i}"));
+    }
+  }
+  for i in 0 .. rows2 {
+    let idx = u32::try_from(i).map_err(|_| "helios index".to_string())?;
+    if params.c2.g_bold_slice()[i] != cycle_point::<Helios>(b"helios", b"g_bold", idx) {
+      return Err(format!("helios g_bold {i}"));
+    }
+    if params.c2.h_bold_slice()[i] != cycle_point::<Helios>(b"helios", b"h_bold", idx) {
+      return Err(format!("helios h_bold {i}"));
+    }
+  }
+  let digest = generators_digest(params);
+  let vectors = include_str!("../vectors/generators.txt");
+  let row = |key: &str| vector_value(vectors, key).ok_or_else(|| format!("no {key} vector"));
+  expect_point(&digest, row("digest")?, "digest")?;
+  expect_point(&params.t.to_bytes(), row("T")?, "T")?;
+  expect_point(&params.u.to_bytes(), row("U")?, "U")?;
+  expect_point(&params.v.to_bytes(), row("V")?, "V")?;
+  expect_point(&params.c1_init.to_bytes(), row("selene_init")?, "selene_init")?;
+  expect_point(&params.c2_init.to_bytes(), row("helios_init")?, "helios_init")?;
+  Ok(digest)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -182,17 +263,13 @@ mod tests {
   }
 
   #[test]
-  fn fixed_set_is_deterministic_and_matches_the_pinned_digest() {
+  fn every_generator_recomputes_to_the_pinned_set() {
     let params = params_8();
     let (rows1, rows2) = generator_rows();
     assert_eq!((rows1, rows2), (2048, 1024));
-    assert_eq!(params.c1.g_bold_slice().len(), rows1);
-    assert_eq!(params.c2.g_bold_slice().len(), rows2);
-    assert_eq!(params.t, ed25519_point(b"T"));
-    assert_eq!(params.c1.g_bold_slice()[7], cycle_point::<Selene>(b"selene", b"g_bold", 7));
-    assert_eq!(params.c2.h_bold_slice()[1023], cycle_point::<Helios>(b"helios", b"h_bold", 1023));
+    let digest = generators_match_derivation(params).expect("pending PA+CA ratification");
     let vectors = Vectors::generators();
-    assert_eq!(hex(&generators_digest(params)), vectors.get("digest"));
+    assert_eq!(hex(&digest), vectors.get("digest"));
     assert_eq!(hex(&params.t.to_bytes()), vectors.get("T"));
     assert_eq!(hex(&params.u.to_bytes()), vectors.get("U"));
     assert_eq!(hex(&params.v.to_bytes()), vectors.get("V"));

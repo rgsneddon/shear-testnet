@@ -15,9 +15,11 @@
 //! verifier's public check.
 //!
 //! [`Fs1Params::fixed`] builds the curve parameters from the fixed derivation
-//! in [`crate::generators`]. [`Fs1Params::open`] builds them from the upstream
+//! in [`crate::generators`]. Status: pending PA+CA ratification. It is not a
+//! ratified consensus set. [`Fs1Params::open`] builds them from the upstream
 //! insecure test generators and exists only under `cfg(test)` or the
-//! `insecure-test-generators` feature. Neither is a ratified consensus set.
+//! `insecure-test-generators` feature. Those test generators are never a
+//! consensus set.
 //!
 //! [`prove`] runs on the calling thread. [`prove_threaded`] and
 //! [`prove_prepared`] spread the paths and the blind divisors over a fixed

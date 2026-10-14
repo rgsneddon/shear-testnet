@@ -8,8 +8,13 @@ import { admitPub, admitScalarFromSeed, attachAdmitPub } from './admit.js';
 import { pointBytes, sealCoinbaseNote } from './note.js';
 import { proofIsV3Bucket } from './fs1_send_gate.js';
 import { fs1NativeLoaded, fs1Verify } from './native_admit.js';
+import { verifyFlowAdmitFs1 } from './admit_v3.js';
 import {
+  FS1_DEPTH,
+  FS1_INPUT_MAX,
   FS1_RECORD_BYTES,
+  FS1_WIRE,
+  fs1BlobFits,
   fs1BlobLen,
   fs1ProveSpend,
   fs1RootAt,
@@ -74,6 +79,50 @@ describe('FS-1 records are not bucket proofs', () => {
     bucket[0] = 3;
     assert.equal(proofIsV3Bucket({ v: 3, blob: bucket }), true);
     assert.equal(proofIsV3Bucket({ v: 3 }), true);
+  });
+});
+
+describe('FS-1 size bound', { skip: !fs1NativeLoaded() && 'addon not built' }, () => {
+  it('an 8-input blob fits and one extra byte is rejected', () => {
+    const n = FS1_INPUT_MAX;
+    const max = fs1BlobLen(n);
+    assert.ok(max > 35);
+    for (let k = 1; k < n; k += 1) {
+      const len = fs1BlobLen(k);
+      assert.ok(len > 0 && len < max, `n=${k} len=${len}`);
+    }
+    assert.equal(fs1BlobLen(0), 0);
+    assert.equal(fs1BlobLen(n + 1), 0);
+
+    const proofs = [];
+    const vin = [];
+    for (let i = 0; i < n; i += 1) {
+      const blob = Buffer.alloc(FS1_RECORD_BYTES);
+      blob[0] = FS1_WIRE;
+      blob[1] = i + 1;
+      blob[33] = 0x10 + i;
+      const spendTag = Buffer.from(blob.subarray(1, 33));
+      const cTilde = Buffer.from(blob.subarray(33, 65));
+      proofs.push({ blob, spendTag, cTilde });
+      vin.push({ commit: cTilde });
+    }
+    const fs1 = Buffer.alloc(max);
+    fs1[0] = FS1_WIRE;
+    fs1[1] = FS1_DEPTH;
+    fs1[2] = n;
+    const tx = { kind: 'send', anchor: 64, vin, admit_proofs: proofs, fs1, spendTag: proofs[0].spendTag };
+    assert.equal(fs1BlobFits(fs1, n), true);
+    const fit = verifyFlowAdmitFs1(tx, { height: 80, noteAtAnchor: null });
+    assert.equal(fit.ok, false);
+    assert.equal(fit.reason, 'admit_anchor_root');
+    assert.equal(fit.proofChecked, undefined);
+
+    const over = Buffer.concat([fs1, Buffer.from([0])]);
+    assert.equal(fs1BlobFits(over, n), false);
+    const bad = verifyFlowAdmitFs1({ ...tx, fs1: over }, { height: 80, noteAtAnchor: null });
+    assert.equal(bad.ok, false);
+    assert.equal(bad.reason, 'admit_membership');
+    assert.equal(bad.proofChecked, true);
   });
 });
 

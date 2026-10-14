@@ -29,8 +29,7 @@ import {
 } from './fs1_send_gate.js';
 import {
   FS1_INPUT_MAX,
-  FS1_WIRE,
-  fs1BlobLen,
+  fs1BlobFits,
   fs1BlobOf,
   fs1Records,
   fs1RootAt,
@@ -478,8 +477,7 @@ export function verifyFlowAdmitFs1(tx, {
   const records = fs1Records(proofs);
   if (!records) return { ok: false, reason: 'admit_version' };
   const fs1 = fs1BlobOf(tx);
-  const want = fs1BlobLen(n);
-  if (!fs1 || fs1[0] !== FS1_WIRE || fs1[2] !== n || !want || fs1.length !== want) {
+  if (!fs1BlobFits(fs1, n)) {
     return { ok: false, reason: 'admit_membership', proofChecked: true };
   }
   const tags = [];

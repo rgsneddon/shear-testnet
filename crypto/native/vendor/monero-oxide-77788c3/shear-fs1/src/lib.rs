@@ -1,10 +1,9 @@
 //! Shear adaptation of the vendored full-chain membership prover.
 //!
-//! This crate is not wired into consensus, the wallet, or `shear_admit`.
-//! [`Fs1Params::fixed`] uses the generator derivation in [`generators`], which
-//! is a Stage 3 proposal and not a ratified consensus set. The upstream
-//! insecure test generators stay behind `cfg(test)` or the
-//! `insecure-test-generators` feature.
+//! [`Fs1Params::fixed`] uses the generator derivation in [`generators`].
+//! Status: pending PA+CA ratification. It is not a ratified consensus set.
+//! The upstream insecure test generators stay behind `cfg(test)` or the
+//! `insecure-test-generators` feature and are never a consensus set.
 
 #![allow(non_snake_case)]
 #![forbid(unsafe_code)]
@@ -21,7 +20,7 @@ pub mod vectors;
 pub mod witness;
 
 pub use chain_tree::{BlockMark, ChainTree, TreeSnapshot};
-pub use generators::{generators_digest, GENERATOR_DST};
+pub use generators::{generators_digest, generators_match_derivation, GENERATOR_DST};
 pub use leaf::{leaf_bytes, leaf_from_bytes, leaf_of, ChainNote, LEAF_BYTES};
 pub use membership::{
   branch_blinds_per_input, empty_leaf, proof_len, prove, prove_prepared, prove_threaded, root_bytes,
@@ -33,7 +32,8 @@ pub use rulings::{
   RESERVE_WU, W_FS1_BASE, W_FS1_PER_INPUT, W_OUT, W_TX,
 };
 pub use spend::{
-  prove_spend, spend_blob_len, spend_params, spend_root, tree_of_notes, verify_spend, SpendIn, SpendOut,
+  prove_spend, spend_blob_fits, spend_blob_len, spend_params, spend_root, tree_of_notes, verify_spend, SpendIn,
+  SpendOut,
   RECORD_BYTES, SAL_BYTES, SPEND_HEAD, SPEND_WIRE,
 };
 pub use witness::{
