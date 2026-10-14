@@ -17,7 +17,7 @@
 //! - L-4. Leaf bytes are `O || I || C`, each a compressed Ed25519 point.
 //!
 //! `node/src/fs1_tree.js` implements the same map with `@noble/curves`.
-//! `vectors/tree_chain.txt` is checked against both.
+//! `vectors/tree_chain.txt` and `vectors/n1_leaf.txt` are checked against both.
 
 use ciphersuite::group::{
   ff::{Field, PrimeField},
@@ -228,6 +228,26 @@ mod tests {
     let mut torsioned = leaf_bytes(&leaf);
     torsioned[.. 32].copy_from_slice(&(ED25519_BASEPOINT_POINT * Scalar::from(5u8) + EIGHT_TORSION_1).compress().to_bytes());
     assert!(leaf_from_bytes(&torsioned).is_none());
+  }
+
+  /// `vectors/n1_leaf.txt`. The same rows `crypto/fs1_leaf.js` checks, including I = E(Hp(admitPub)).
+  #[test]
+  fn n1_leaf_vector_matches_the_js_predicate() {
+    let text = include_str!("../vectors/n1_leaf.txt");
+    let mut rows = 0;
+    for line in text.lines() {
+      if line.is_empty() || line.starts_with('#') {
+        continue;
+      }
+      let cols: Vec<&str> = line.split('\t').collect();
+      assert_eq!(cols.len(), 4, "{line}");
+      let note = ChainNote { admit_pub: crate::vectors::unhex32(cols[1]), commit: crate::vectors::unhex32(cols[2]) };
+      let got = leaf_of(&note).map(|leaf| crate::vectors::hex(&leaf_bytes(&leaf)));
+      let want = if cols[3] == "skip" { None } else { Some(cols[3].to_string()) };
+      assert_eq!(got.as_deref(), want.as_deref(), "{}", cols[0]);
+      rows += 1;
+    }
+    assert!(rows >= 8, "{rows}");
   }
 
   const EIGHT_TORSION_1: curve25519_dalek::EdwardsPoint = curve25519_dalek::constants::EIGHT_TORSION[1];

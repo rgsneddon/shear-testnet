@@ -7,6 +7,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, txSpendTags } from './note.js';
+import { fs1Leaf, fs1OutputNote } from './fs1_leaf.js';
 import { merkleRoot } from './merkle.js';
 import { nativeJroot, nativeJrootPoint, nativeFrontierAppend, nativeProveV3, nativeVerifyV3, noteH } from './native_admit.js';
 
@@ -334,12 +335,10 @@ function absorbFluxBlock(pubs, commits, spendTags, block) {
     }
     for (const o of tx.vout || []) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
-      try {
-        pubs.push(pubFromAdmit(o.admitPub));
-        commits.push(o.commit ? Buffer.from(asU8(o.commit)) : Buffer.alloc(32));
-      } catch {
-        /* skip unreadable */
-      }
+      const note = fs1OutputNote(o);
+      if (!fs1Leaf(note)) continue;
+      pubs.push(pubFromAdmit(note.admitPub));
+      commits.push(Buffer.from(note.commit));
     }
   }
 }
@@ -413,14 +412,30 @@ function installFrontiers(dest, addedDest, addedCs) {
  * A fluxset whose leaves are already the snap's note list.
  * One frontier pass, so the next append does not recompute the whole root.
  */
+/** True when every stored (admitPub, commit) pair is an FS-1 leaf. */
+export function fluxLeavesAreFs1(pubs, commits) {
+  const pn = pubs?.length || 0;
+  const cn = commits?.length || 0;
+  if (pn !== cn) return false;
+  for (let i = 0; i < pn; i += 1) {
+    if (!fs1Leaf(fs1OutputNote({ admitPub: pubs[i], commit: commits[i] }))) return false;
+  }
+  return true;
+}
+
 export function fluxWithLeaves(pubs, commits, spendTags) {
   const dest = [];
   const cs = [];
   const n = Math.min(pubs?.length || 0, commits?.length || 0);
+  if ((pubs?.length || 0) !== n || (commits?.length || 0) !== n) {
+    throw new Error('admit_note_point');
+  }
   for (let i = 0; i < n; i += 1) {
-    const d = pubBytes(pubs[i]);
-    const c = commitBytes(commits[i]);
-    if (!d || !c || c.length !== 32) continue;
+    const note = fs1OutputNote({ admitPub: pubs[i], commit: commits[i] });
+    if (!fs1Leaf(note)) throw new Error('admit_note_point');
+    const d = pubBytes(note.admitPub);
+    const c = commitBytes(note.commit);
+    if (!d || !c || c.length !== 32) throw new Error('admit_note_point');
     dest.push(d);
     cs.push(c);
   }

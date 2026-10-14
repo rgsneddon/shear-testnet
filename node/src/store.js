@@ -74,6 +74,7 @@ import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, 
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
+import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -96,7 +97,7 @@ import {
 } from './bootstrap.js';
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
-import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
+import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, fluxLeavesAreFs1, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
@@ -365,6 +366,8 @@ export function createStore(dir, {
   if (blocks.length) {
     const gated = chainStage0Rejected(blocks);
     if (gated) throw new Error(gated.reason);
+    const notes = chainNoteRuleRejected(blocks);
+    if (notes) throw new Error(notes.reason);
   }
   if (blocks.length && !resumed) {
     const want = chainLoadSeal(blocks, sealKey);
@@ -374,7 +377,7 @@ export function createStore(dir, {
     }
     const trustStoredHash = got.length > 0 && got === want;
     const plan = trustStoredHash ? acceptBookSnap(readBookSnap(snapFile, sealKey, snapExpect)) : null;
-    const planOk = plan && planSupplyLinks(plan);
+    const planOk = plan && planSupplyLinks(plan) && fluxLeavesAreFs1(plan.pubs, plan.commits);
     const snapRows = planOk ? supplyRowsFromPlan(plan) : null;
     if (snapRows && plan.height === blocks.length) {
       applySnap(plan, plan.height);
@@ -2224,6 +2227,8 @@ export function createStore(dir, {
     tx = reviveTx(tx);
     const bucket = v3BucketProofRejected(tx);
     if (bucket) return bucket;
+    const noteRule = txNoteRuleRejected(tx);
+    if (noteRule) return noteRule;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a
@@ -2668,6 +2673,8 @@ export function createStore(dir, {
   function verifyFork(fork, verifyOpts = {}) {
     const stage0 = chainStage0Rejected(fork || []);
     if (stage0) return stage0;
+    const notes = chainNoteRuleRejected(fork || []);
+    if (notes) return notes;
     const needs = (fork || []).some((b) => blockNeedsEvm(b?.txs || []));
     if (needs) return verifyForkAsync(fork, verifyOpts);
     if (!verifyOpts.headerGate) {
@@ -2732,6 +2739,8 @@ export function createStore(dir, {
   async function verifyForkAsync(fork, verifyOpts = {}) {
     const stage0 = chainStage0Rejected(fork || []);
     if (stage0) return stage0;
+    const notes = chainNoteRuleRejected(fork || []);
+    if (notes) return notes;
     const gated = await Promise.resolve(gateForkChain(fork, verifyOpts));
     if (!gated.ok) return prefixBodyFault(fork, gated, verifyOpts);
     const accepted = [];
@@ -3199,6 +3208,8 @@ export function createStore(dir, {
 
   /** Verify only the new suffix. Header rules run before any owed replay. */
   function verifySuffix(fork, parent, history, verifyOpts) {
+    const notes = chainNoteRuleRejected(fork);
+    if (notes) return notes;
     const gated = gateForkHeaders(fork, parent, history, verifyOpts);
     const go = () => verifySuffixBody(fork, parent, history, verifyOpts);
     if (gated && typeof gated.then === 'function') {
@@ -3802,6 +3813,8 @@ export function createStore(dir, {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const stage0 = chainStage0Rejected(fork);
     if (stage0) return stage0;
+    const notes = chainNoteRuleRejected(fork);
+    if (notes) return notes;
     const t = tip();
     let decoded;
     try {

@@ -74,6 +74,8 @@ import {
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
+import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
+import { fs1Leaf, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
@@ -1189,6 +1191,7 @@ export function buildTemplate({
   issuedHeaders = null,
   hashSpill = null,
 }) {
+  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !txNoteRuleRejected(tx));
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
@@ -1271,6 +1274,8 @@ export function buildTemplate({
   const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
   if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
+  const coinbaseRule = txNoteRuleRejected(cb);
+  if (coinbaseRule) throw new Error(coinbaseRule.reason);
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
@@ -1860,6 +1865,8 @@ function parentSpendView(chain) {
 function verifyBlockConsensus(block, prev, opts = {}) {
   const gated = chainStage0Rejected([block]);
   if (gated) return gated;
+  const noteRule = chainNoteRuleRejected([block]);
+  if (noteRule) return noteRule;
   const bodyTxs = Array.isArray(block?.txs) ? block.txs : [];
   for (let i = 0; i < bodyTxs.length; i += 1) {
     const unsignedField = unsignedBodyField(bodyTxs[i]);
@@ -2272,11 +2279,16 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const commits = (live.commits || []).slice();
   const spentTags = parentSpendView(live.spendTags);
   const pushPub = (tx, o) => {
-    if (!outputJoinsAdmitSet(tx, o) || !o?.commit) return;
+    if (!outputJoinsAdmitSet(tx, o)) return null;
+    const note = fs1OutputNote(o);
+    if (!fs1Leaf(note)) return { ok: false, reason: 'admit_note_point' };
     try {
-      pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
-      commits.push(Buffer.from(asU8(o.commit)));
-    } catch { /* skip */ }
+      pubs.push(pointFrom(note.admitPub));
+      commits.push(Buffer.from(note.commit));
+    } catch {
+      return { ok: false, reason: 'admit_note_point' };
+    }
+    return null;
   };
   for (const tx of txs) {
     const earlyOpen = openingBeforeCarry(tx);
@@ -2410,7 +2422,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         return { ok: false, reason: 'admit_membership' };
       }
     }
-    for (const o of outs) pushPub(tx, o);
+    for (const o of outs) {
+      const pushed = pushPub(tx, o);
+      if (pushed) return pushed;
+    }
     const noteFund = verifyTypedAdmitFunding(tx, {
       height,
       blocks: Array.isArray(evmHistory) ? evmHistory : [],
@@ -2470,9 +2485,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   for (const tx of txs) {
     for (const o of tx.vout || []) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
+      const note = fs1OutputNote(o);
+      if (!fs1Leaf(note)) return { ok: false, reason: 'admit_note_point' };
       try {
-        addedPubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
-      } catch { /* skip */ }
+        addedPubs.push(pointFrom(note.admitPub));
+      } catch {
+        return { ok: false, reason: 'admit_note_point' };
+      }
     }
   }
   const extended = live.zeroFrontier ? extendZeroRoot(live, addedPubs) : null;
@@ -2681,6 +2700,8 @@ function beginLoaded(blocks, {
   if (!list.length) return { ok: true, empty: true };
   const gated = chainStage0Rejected(list);
   if (gated) return gated;
+  const notes = chainNoteRuleRejected(list);
+  if (notes) return notes;
   const givenClock = Number(nowMs);
   const clock = Number.isFinite(givenClock) && givenClock > 0 ? givenClock : Date.now();
   const pinned = normGenesisPin(genesisHash);

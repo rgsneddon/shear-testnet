@@ -10,6 +10,7 @@ import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { verifyLoadedChain, chainLoadSeal, chainWorkOf } from './chain.js';
+import { chainNoteRuleRejected } from '../../crypto/n1.js';
 import { bookSealKeyFor } from './book_seal_key.js';
 
 function hexHash(h) {
@@ -160,6 +161,8 @@ export function readLatestBootstrap(fromDir) {
       throw new Error('bootstrap_dropped_txs');
     }
   }
+  const notes = chainNoteRuleRejected(blocks);
+  if (notes) throw new Error(notes.reason);
   const checked = verifyLoadedChain(blocks, { nowMs: Date.now() });
   if (!checked.ok) throw new Error(checked.reason || 'pow');
   const install = bootstrapMayInstall([], blocks);

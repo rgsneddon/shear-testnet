@@ -257,19 +257,19 @@ export function verifyRange(Cbytes, proof) {
 }
 
 /** Coinbase / Tree-A: v is public from collated units. Exact-value proof, no painted nanos. */
-export function sealCoinbaseNote(v, { dest20, noteCommit, kind } = {}) {
-  const r = randomScalar();
-  const value = proveValue(v, r);
+export function sealCoinbaseNote(v, { dest20, noteCommit, kind, r } = {}) {
+  const blind = r == null ? randomScalar() : r;
+  const value = proveValue(v, blind);
   const nc = noteCommit
     ? Buffer.from(noteCommit)
     : (dest20 ? noteCommitOfDest20(dest20) : Buffer.alloc(32));
-  const rangeProof = proveRange(v, r);
+  const rangeProof = proveRange(v, blind);
   const row = {
     kind: kind || 'hash',
     noteCommit: nc,
     commit: value.C,
     valueProof: { R: value.R, z: value.z, v },
-    r: scalarBytes(r),
+    r: scalarBytes(blind),
     rangeProof: rangeProof && rangeProof.length ? rangeProof : Buffer.alloc(0),
   };
   if (dest20) {

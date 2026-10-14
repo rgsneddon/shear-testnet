@@ -10,7 +10,7 @@ import {
   MAGIC_TESTNET,
 } from './asert.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest } from './address.js';
-import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos } from './note.js';
+import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos, hashToScalar, scalarBytes } from './note.js';
 import {
   emptyOracle,
   interestNanos,
@@ -695,12 +695,42 @@ export function previewWithdraw(state, dest) {
   };
 }
 
-function sealedReserveVout(to, n, kind) {
+const KT10_R_DST = Buffer.from('shear-kt10-withdraw-r-v1');
+const ZERO_SCALAR = Buffer.alloc(32);
+
+function positiveUnits(n) {
+  if (typeof n === 'bigint') return n > 0n;
+  if (typeof n === 'string' && /^\d+$/.test(n)) {
+    try { return BigInt(n) > 0n; } catch { return false; }
+  }
+  return Number(n) > 0;
+}
+
+/**
+ * KT-10. Blind for a vault withdrawal. Hash-derived, and not the zero scalar,
+ * so v·G + r·H is not the identity when v is positive.
+ */
+export function kt10WithdrawBlind(to, nanos, id = '') {
+  const n = Buffer.alloc(8);
+  n.writeBigUInt64LE(BigInt(nanos));
+  const dest = Buffer.from(String(to));
+  const ident = Buffer.from(String(id || ''));
+  for (let i = 0; i < 8; i += 1) {
+    const r = hashToScalar(KT10_R_DST, Buffer.from([i]), dest, n, ident);
+    if (!scalarBytes(r).equals(ZERO_SCALAR)) return r;
+  }
+  throw new Error('kt10_blind');
+}
+
+function sealedReserveVout(to, n, kind, r) {
   const d20 = hash20FromAddress(to);
   if (!d20) return { address: to, nanos: n, kind };
+  if (kind === KIND_WITHDRAW && !positiveUnits(n)) {
+    return { address: to, nanos: n, kind };
+  }
   // Reserve lock/vote/withdraw amounts are public (valueProof.v stays on the
   // wire). Exact-value Schnorr, not BP+ range — same as coinbase notes.
-  const note = sealCoinbaseNote(n, { dest20: d20, kind });
+  const note = sealCoinbaseNote(n, { dest20: d20, kind, r });
   if (note.valueProof && typeof note.valueProof === 'object') {
     note.valueProof = { ...note.valueProof, v: n };
   }
@@ -745,6 +775,7 @@ export function lockTx({ from, to, nanos, id }) {
 
 export function withdrawTx({ from, to, nanos, id }) {
   const n = exactFloorNanos(nanos);
+  const blind = positiveUnits(n) ? kt10WithdrawBlind(to, n, id || '') : null;
   return {
     id,
     programId: RESERVE_PROGRAM,
@@ -756,7 +787,7 @@ export function withdrawTx({ from, to, nanos, id }) {
     portalId: portalIdFromDest(from),
     payoutPortalId: portalIdFromDest(to),
     vin: [],
-    vout: [sealedReserveVout(to, n, KIND_WITHDRAW)],
+    vout: [sealedReserveVout(to, n, KIND_WITHDRAW, blind)],
   };
 }
 
