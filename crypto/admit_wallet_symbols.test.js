@@ -36,8 +36,15 @@ describe('wallet artifacts omit admit v3 exports', () => {
     const ios = make.slice(make.indexOf('ios-staticlib:'));
     assert.doesNotMatch(ios.slice(0, 240), /admit-v3/);
     const mac = read('wallet/macos/Runner.xcodeproj/project.pbxproj');
-    assert.match(mac, /codesign --force --sign -/);
+    assert.match(mac, /\/usr\/bin\/codesign --force --sign -/);
+    assert.doesNotMatch(mac, /command -v codesign/);
     assert.doesNotMatch(mac, /\|\| true/);
+    const ffi = read('wallet/lib/shear_admit_ffi.dart');
+    assert.match(ffi, /\/usr\/bin\/codesign/);
+    assert.match(ffi, /--verify/);
+    assert.match(ffi, /--strict/);
+    assert.match(ffi, /subject\.OU/);
+    assert.doesNotMatch(ffi, /runSync\(\s*'codesign'/);
     assert.match(mac, /stamp_admit_pin\.py/);
     assert.doesNotMatch(mac, /--dart/);
     const signAt = mac.indexOf('codesign --force --sign -');

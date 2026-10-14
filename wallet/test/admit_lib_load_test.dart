@@ -72,6 +72,16 @@ void main() {
     const digest = '9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a';
     const id = 'Developer ID Application: Russell Sneddon (SFCBP95595)';
     expect(kShearAdmitSignId, id);
+    expect(kShearAdmitTeamId, 'SFCBP95595');
+    expect(kCodesignBin, '/usr/bin/codesign');
+    final verifyArgs = admitMacVerifyArgs(
+      '/App/Contents/Frameworks/libshear_admit.dylib',
+      kShearAdmitTeamId,
+    );
+    expect(verifyArgs, contains('--verify'));
+    expect(verifyArgs, contains('--strict'));
+    expect(verifyArgs, contains('certificate leaf[subject.OU] = "SFCBP95595"'));
+    expect(verifyArgs.last, '/App/Contents/Frameworks/libshear_admit.dylib');
     expect(
       admitBundledLoadFailure(
         bytes: bytes,
@@ -98,7 +108,9 @@ void main() {
         operatingSystem: 'macos',
         pinHex: digest,
         codesignText: 'Signature=adhoc\n',
+        codesignExit: 1,
         signId: id,
+        teamId: kShearAdmitTeamId,
       ),
       'adhoc signature',
     );
@@ -107,8 +119,10 @@ void main() {
         bytes: bytes,
         operatingSystem: 'macos',
         pinHex: digest,
-        codesignText: 'Authority=$id\n',
+        codesignText: 'TeamIdentifier=${kShearAdmitTeamId}\nAuthority=$id\nvalid on disk\n',
+        codesignExit: 0,
         signId: id,
+        teamId: kShearAdmitTeamId,
       ),
       isNull,
     );
@@ -117,10 +131,24 @@ void main() {
         bytes: bytes,
         operatingSystem: 'macos',
         pinHex: digest,
-        codesignText: 'Authority=Developer ID Application: Other (XXXX)\n',
+        codesignText: 'TeamIdentifier=XXXXXXXXXX\nvalid on disk\n',
+        codesignExit: 0,
         signId: id,
+        teamId: kShearAdmitTeamId,
       ),
       'sign identity mismatch',
+    );
+    expect(
+      admitBundledLoadFailure(
+        bytes: bytes,
+        operatingSystem: 'macos',
+        pinHex: digest,
+        codesignText: 'valid on disk\n',
+        codesignExit: 1,
+        signId: id,
+        teamId: kShearAdmitTeamId,
+      ),
+      'codesign verify failed',
     );
 
     final dir = Directory.systemTemp.createTempSync('admit-pin-smoke');

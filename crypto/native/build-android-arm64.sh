@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Cross-compile libshear_admit.so for Android arm64-v8a and stage it where
-# the Flutter Gradle build packages jniLibs. No secrets are written.
+# the Flutter Gradle build packages jniLibs. The .so and its .sha256 sidecar
+# are gitignored. CI (.github/workflows/android-admit.yml) builds them with
+# NDK r27c. Android integrity rests on the APK signature from Russell's
+# offline Continuum key (wallet/android/release-cert-sha256.txt), not on a
+# Dart hash of the packaged soname. No secrets are written.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,6 +24,18 @@ if [[ -z "${ANDROID_SDK_ROOT:-}" && -f "$ROOT/wallet/android/local.properties" ]
 fi
 if [[ -z "${ANDROID_NDK_HOME:-}" && -n "${ANDROID_SDK_ROOT:-}" && -d "$ANDROID_SDK_ROOT/ndk" ]]; then
   ANDROID_NDK_HOME="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -1)"
+fi
+
+if [[ -n "${SHEAR_NDK_PIN:-}" ]]; then
+  if [[ ! -f "${ANDROID_NDK_HOME:-}/source.properties" ]]; then
+    echo "NDK pin is ${SHEAR_NDK_PIN}, source.properties missing under ${ANDROID_NDK_HOME:-unset}" >&2
+    exit 1
+  fi
+  NDK_REL="$(awk '/^Pkg.ReleaseName/{print $3}' "$ANDROID_NDK_HOME/source.properties")"
+  if [[ "$NDK_REL" != "$SHEAR_NDK_PIN" ]]; then
+    echo "NDK pin is ${SHEAR_NDK_PIN}, found ${NDK_REL:-unknown} at $ANDROID_NDK_HOME" >&2
+    exit 1
+  fi
 fi
 
 if [[ -z "${ANDROID_NDK_HOME:-}" || ! -d "$ANDROID_NDK_HOME" ]]; then
