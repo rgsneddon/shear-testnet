@@ -288,6 +288,7 @@ int jsSafeInt(Object? raw) {
 
 /// Spend message the pool's `verifySpendSig` checks for a lock, vote, or withdraw.
 /// Flow sends stay on [spendMessage]. This adds the portal, fee, and reserve suffix.
+/// A withdraw also signs [id] and the 32-byte [withdrawNonce] directly.
 Uint8List reserveSpendMessage({
   required String from,
   required List<Map<String, dynamic>> vout,
@@ -300,6 +301,8 @@ Uint8List reserveSpendMessage({
   required int fee,
   required int suffixNanos,
   Uint8List? commit,
+  String id = '',
+  Uint8List? withdrawNonce,
 }) {
   final packed = spendPackDigest(from: from, vout: vout, kind: kind, vin: vin);
   final portal = portalId.toLowerCase();
@@ -321,6 +324,13 @@ Uint8List reserveSpendMessage({
     ..._i64le(suffixNanos),
     ...commitBytes,
   ];
+  if (kind == 'withdraw') {
+    final nonce = (withdrawNonce != null && withdrawNonce.length == 32)
+        ? withdrawNonce
+        : Uint8List(32);
+    chunks.addAll(_lenPrefUtf8(id));
+    chunks.addAll(nonce);
+  }
   final digest = Uint8List.fromList(sha256.convert(chunks).bytes);
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }

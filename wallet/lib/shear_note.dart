@@ -207,10 +207,10 @@ Object u64OnWire(BigInt v) {
 }
 
 /// Public-nanos seal for any u64. Same shape as `sealCoinbaseNote` in crypto/note.js.
-Map<String, dynamic> sealCoinbaseUnits(BigInt v, {Uint8List? dest20, Uint8List? noteCommit, String kind = 'hash'}) {
+Map<String, dynamic> sealCoinbaseUnits(BigInt v, {Uint8List? dest20, Uint8List? noteCommit, String kind = 'hash', Scalar? r}) {
   if (v < BigInt.zero || v.bitLength > noteBits) throw ArgumentError('u64');
-  final r = randomScalar();
-  final value = proveValueUnits(v, r);
+  final blind = r ?? randomScalar();
+  final value = proveValueUnits(v, blind);
   final nc = noteCommit ??
       (dest20 != null ? noteCommitOfDest20(dest20) : Uint8List(32));
   final shown = u64OnWire(v);
@@ -219,7 +219,7 @@ Map<String, dynamic> sealCoinbaseUnits(BigInt v, {Uint8List? dest20, Uint8List? 
     'noteCommit': nc,
     'commit': value['C'],
     'valueProof': {'R': value['R'], 'z': value['z'], 'v': shown},
-    'r': scalarBytes(r),
+    'r': scalarBytes(blind),
     'nanos': shown,
     if (dest20 != null) 'dest20': dest20,
   };

@@ -113,6 +113,17 @@ export function payeeCapFallback({
 }
 
 /**
+ * Outputs one coinbase may carry. Live payees, the three notes beside them,
+ * and the vw rows. On the 8 MiB frame that is 171 + 3 + 8 = 182, inside
+ * the 36,000 weight-unit budget.
+ */
+export function coinbaseOutputCap(frame = FALLBACK_IPC_FRAME) {
+  const byPayee = payeeCapLive(frame) + COINBASE_EXTRA_NOTES + K_VW;
+  const byWeight = Math.floor(MAX_BLOCK_VERIFY_WEIGHT / W_PAYEE) + K_VW;
+  return Math.min(byPayee, byWeight);
+}
+
+/**
  * At or above FRAME_MIN the normal cap is the one a block can travel.
  * Below that, the live cap is the smaller of the T21 cap and the hex-frame
  * fallback. The 8 MiB IPC frame and the 16 MiB P2P frame both fall under 470,

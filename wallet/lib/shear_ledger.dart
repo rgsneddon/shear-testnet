@@ -1387,6 +1387,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         kindName != null &&
         kindName.isNotEmpty &&
         kindName != 'pot') {
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), commit)) continue;
       final amtEarly = _sheOfExactNanos(cachedEarly);
       notes.add({
         'address': matched,
@@ -1450,6 +1451,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     final verifiedNanos = cachedNanos ?? openedSpendDigits(openRow);
     final proofChecked = verifiedNanos != null;
     final amt = verifiedNanos == null ? null : _sheOfExactNanos(verifiedNanos);
+    if (!noteIsFs1Leaf(admit, commit)) continue;
     notes.add({
       'address': matched,
       'dest': matched,
@@ -1729,15 +1731,61 @@ List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
   return vouts.map(compactSealedVout).toList();
 }
 
+/// KT-10. Same bytes as `kt10WithdrawBlind` in crypto/reserve_vault.js.
+/// `nonce` is 32 bytes. The same (to, nanos, id, nonce) is the same scalar.
+Scalar kt10WithdrawBlind(String to, BigInt nanos, String id, Uint8List nonce) {
+  if (nonce.length != 32) throw StateError('kt10_nonce');
+  final dst = utf8Bytes('shear-kt10-withdraw-r-v1');
+  final n = Uint8List(8);
+  var v = nanos;
+  final mask = BigInt.from(0xff);
+  for (var i = 0; i < 8; i++) {
+    n[i] = (v & mask).toInt();
+    v >>= 8;
+  }
+  final dest = utf8Bytes(to);
+  final ident = utf8Bytes(id);
+  for (var i = 0; i < 8; i++) {
+    final r = hashToScalar([dst, Uint8List.fromList([i]), dest, n, ident, nonce]);
+    if (!scalarEq(r, scalarZero())) return r;
+  }
+  throw StateError('kt10_blind');
+}
+
+String _freshWithdrawId() {
+  final b = randomBytes(16);
+  final hex = b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+  return 'wd-$hex';
+}
+
+Uint8List _withdrawNonce(Uint8List? nonce) {
+  if (nonce == null) return randomBytes(32);
+  if (nonce.length != 32) throw StateError('kt10_nonce');
+  return nonce;
+}
+
 /// Reserve lock/vote/withdraw out, same seal as pool `sealedReserveVout`.
 /// Public nanos + dest20 + noteCommitOfDest20, with `commit` so wallet_api
 /// keeps this body instead of minting a fresh seal after the spend sig.
-Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind) {
+/// A withdraw uses a hash-derived non-zero r. Value 0 is not a withdrawal.
+Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {String id = '', Uint8List? nonce}) {
   final units = tryU64Units(nanos) ?? BigInt.zero;
   final shown = u64OnWire(units);
   final d20 = hash20FromAddress(to);
   if (d20 == null) return {'address': to, 'nanos': shown, 'kind': kind};
-  final note = sealCoinbaseUnits(units, dest20: d20, kind: kind);
+  if (kind == 'withdraw' && units <= BigInt.zero) {
+    return {'address': to, 'nanos': shown, 'kind': kind};
+  }
+  final blindId = kind == 'withdraw' ? (id.isEmpty ? _freshWithdrawId() : id) : '';
+  final blindNonce = kind == 'withdraw' ? _withdrawNonce(nonce) : null;
+  final blind = kind == 'withdraw'
+      ? kt10WithdrawBlind(to, units, blindId, blindNonce!)
+      : null;
+  final note = sealCoinbaseUnits(units, dest20: d20, kind: kind, r: blind);
+  if (kind == 'withdraw') {
+    note['id'] = blindId;
+    note['withdrawNonce'] = blindNonce;
+  }
   note['address'] = to;
   final vp = note['valueProof'];
   if (vp is Map) {
@@ -1765,8 +1813,24 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
         (o['address'] as String?) ?? to,
         tryU64Units(o['nanos']) ?? (kind == 'vote' ? BigInt.zero : nanosUnits),
         (o['kind'] as String?) ?? kind,
+        id: (input['id'] as String?) ?? '',
+        nonce: input['withdrawNonce'] is Uint8List ? input['withdrawNonce'] as Uint8List : null,
       ),
   ];
+  String? withdrawId;
+  String? withdrawNonceHex;
+  Uint8List? withdrawNonceRaw;
+  if (kind == 'withdraw') {
+    for (final o in sealed) {
+      final ident = o.remove('id');
+      final rawNonce = o.remove('withdrawNonce');
+      if (ident is String && ident.isNotEmpty) withdrawId = ident;
+      if (rawNonce is Uint8List && rawNonce.length == 32) {
+        withdrawNonceRaw = rawNonce;
+        withdrawNonceHex = rawNonce.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      }
+    }
+  }
   final postedVout = _postedVout(sealed);
   final wire = flowPostHex(<String, dynamic>{'vin': const <Map<String, dynamic>>[], 'vout': postedVout});
   final hexVout = List<dynamic>.from(wire['vout'] as List? ?? const []);
@@ -1789,6 +1853,8 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     choice: choice,
     vout: hexVout,
     nanos: shownNanos is int ? shownNanos : jsSafeInt(shownNanos),
+    id: withdrawId,
+    withdrawNonce: withdrawNonceHex,
   );
   final fee = taxed ? bindStableWeightFee(draft, maxLevy: maxLevy) : 0;
   if (taxed && !weightFeeCovers(fee, draft, maxLevy: maxLevy)) {
@@ -1814,6 +1880,8 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
       fee: fee,
       suffixNanos: suffixNanos,
       commit: commit,
+      id: withdrawId ?? '',
+      withdrawNonce: withdrawNonceRaw,
     );
     if (shared != null) {
       sig = stealthSign(spendSeed, shared, msg);
@@ -1834,6 +1902,8 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     'portalId': portalId,
     'payoutPortalId': payoutPortalId,
     'isolateStamp': reserveIsolateStamp,
+    if (withdrawId != null) 'id': withdrawId,
+    if (withdrawNonceHex != null) 'withdrawNonce': withdrawNonceHex,
   };
 }
 
@@ -1847,6 +1917,8 @@ Map<String, dynamic> _reservePoolDraft({
   required String choice,
   required List<dynamic> vout,
   required int nanos,
+  String? id,
+  String? withdrawNonce,
 }) {
   final stamp = DateTime.now().millisecondsSinceEpoch.toString();
   final portalTo = reservePortalId(to);
@@ -1876,13 +1948,14 @@ Map<String, dynamic> _reservePoolDraft({
   }
   if (kind == 'withdraw') {
     return <String, dynamic>{
-      'id': 'withdraw-$stamp',
+      'id': (id != null && id.isNotEmpty) ? id : 'withdraw-$stamp',
       'programId': 'shear-reserve-v1',
       'mint': true,
       'kind': 'withdraw',
       'from': from,
       'to': to,
       'nanos': nanos,
+      if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
       'portalId': portalFrom,
       'payoutPortalId': portalTo,
       'vin': <Map<String, dynamic>>[],
@@ -3093,6 +3166,7 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'spent': false,
       };
+      if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
       _creditNoteToShearview(row);
       rememberDest(tagged);
@@ -3225,6 +3299,7 @@ class ShearLedger implements ReadProofSink {
       for (final n in notes) {
         if (n is Map) {
           final row = Map<String, dynamic>.from(n);
+          if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
           rememberNote(row);
           _rememberProofRow(row);
           if (row['proofChecked'] == true) {
@@ -3295,6 +3370,7 @@ class ShearLedger implements ReadProofSink {
   /// does not wait for a later history/incoming delta. Hash folds stay in
   /// [_applySealedScan]. Existing dest+height rows are filled, not duplicated.
   void _creditNoteToShearview(Map<String, dynamic> note) {
+    if (!noteIsFs1Leaf(_noteBytes(note['admitPub']), _noteBytes(note['commit']))) return;
     final dest = (note['dest'] ?? note['address'])?.toString() ?? '';
     if (dest.isEmpty) return;
     final kind = (note['kind'] as String?) ?? 'receive';
@@ -5937,6 +6013,7 @@ class ShearLedger implements ReadProofSink {
       if (raw is! Map) continue;
       final row = Map<String, dynamic>.from(raw);
       if (row['verified'] != true) continue;
+      if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
       _rememberProofRow(row);
       _creditNoteToShearview(row);
@@ -7413,6 +7490,7 @@ class ShearLedger implements ReadProofSink {
           addr == changeDest ||
           isBindable(addr, restFrame: restFrame, paymentCode: paymentCode);
       if (!ours) continue;
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
       rememberNote({
         'address': addr,
         'dest': addr,
@@ -8031,6 +8109,7 @@ class ShearLedger implements ReadProofSink {
         final addr = o['address'] as String?;
         if (addr == null || addr.isEmpty) continue;
         if (addr == src || addr == changeDest) {
+          if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
           rememberNote({
             'address': addr,
             'dest': addr,
@@ -8108,6 +8187,8 @@ class ShearLedger implements ReadProofSink {
     final List<Map<String, dynamic>> postedVin;
     final List<Map<String, dynamic>> postedVout;
     int? reserveFee;
+    String? postedWithdrawId;
+    String? postedWithdrawNonce;
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
       if (spendSeed != null && spendSeed.length == 32) {
         if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
@@ -8152,6 +8233,8 @@ class ShearLedger implements ReadProofSink {
       if (pub is Uint8List) spendPubHex = _bytesHex(pub);
       final boundFee = built['fee'];
       if (boundFee is int && boundFee > 0) reserveFee = boundFee;
+      if (built['id'] is String) postedWithdrawId = built['id'] as String;
+      if (built['withdrawNonce'] is String) postedWithdrawNonce = built['withdrawNonce'] as String;
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
@@ -8205,6 +8288,8 @@ class ShearLedger implements ReadProofSink {
           paintedOwedNanos: paintedCover ? _paintedFundOwedNanos : 0,
           nanosWire: nanosWire,
           fee: reserveFee,
+          id: postedWithdrawId,
+          withdrawNonce: postedWithdrawNonce,
         );
       }
 
@@ -8802,6 +8887,8 @@ class ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
   }) {
     final sealedSend = (kind == null || kind.isEmpty || kind == 'send') &&
         sig != null &&
@@ -8838,6 +8925,8 @@ class ShearPoolClient {
         if (admitProof != null) 'admit_proof': admitProof,
         if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
         if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+        if (id != null && id.isNotEmpty) 'id': id,
+        if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
       }, legacyPoolSend: legacyPoolSend);
   }
 

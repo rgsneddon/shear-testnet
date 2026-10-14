@@ -378,6 +378,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'LEVY_SPLIT=50-50-finder-reserve',
     'LEVY=weight',
     'ADMIT=ADMITv3',
+    'N1=admit-note-point',
     'RANGE=packed-bit',
     'ADMIT_CYCLE=pallas-vesta-pasta',
     'ADMIT_ARITY=32',

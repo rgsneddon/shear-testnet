@@ -62,6 +62,34 @@ Element admitPubFromBase(Element B, Map<String, dynamic> note) {
 Uint8List admitBaseBytes(Uint8List spendSeed) =>
     pointBytes(admitPub(admitBaseScalar(spendSeed)));
 
+/// Canonical non-identity Ristretto255 point, or null.
+Element? canonicalNonIdentity(Uint8List? raw) {
+  if (raw == null || raw.length != 32) return null;
+  try {
+    final p = Element.newElement();
+    p.setCanonicalBytes(raw);
+    final back = pointBytes(p);
+    if (back.length != 32) return null;
+    for (var i = 0; i < 32; i++) {
+      if (back[i] != raw[i]) return null;
+    }
+    if (elementEq(p, ristrettoZero())) return null;
+    return p;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// N-1. The shear-fs1 leaf predicate: admitPub, commit, and Hp(admitPub)
+/// each decode to a non-identity point. A wallet credits a note only after this.
+bool noteIsFs1Leaf(Uint8List? admitPub, Uint8List? commit) {
+  if (canonicalNonIdentity(admitPub) == null) return false;
+  if (canonicalNonIdentity(commit) == null) return false;
+  if (admitPub == null) return false;
+  final hp = hashToRistretto(admitPub, admitHpDst);
+  return !elementEq(hp, ristrettoZero());
+}
+
 Map<String, dynamic> attachAdmitPub(
   Map<String, dynamic> vout, {
   Uint8List? spendSeed,
