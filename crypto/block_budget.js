@@ -158,6 +158,12 @@ export function cbShareRoom(payees = payeeCapLive()) {
   return Math.floor((MAX_BLOCK_VERIFY_WEIGHT - R_WEIGHT - R_VW_WEIGHT - payout) / CB_SHARE_W);
 }
 
+/** Template estimate: a cb-v3 coinbase for `shares` announced shares, at most one payee per share. */
+export function cbV3WeightFor(shares) {
+  const s = Math.min(CB_SHARE_MAX, Math.max(0, Math.floor(Number(shares) || 0)));
+  return CB_FIXED_W + (Math.min(payeeCapLive(), s) + CB_EXTRA_ROWS) * CB_ROW_W + CB_SHARE_W * s;
+}
+
 export function isVwOutput(out) {
   if (!out || typeof out !== 'object') return false;
   if (String(out.kind || '') === VW_KIND) return true;

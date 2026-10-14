@@ -289,6 +289,13 @@ export function minerShare(vch, w) {
   return { w: BigInt(w), E: pointBytes(E), ell: vch.lambda, beta };
 }
 
+/** Pool side: the same label from a public voucher. λ is public, so the pool can issue E per job. */
+export function poolShareLabel(vchPub) {
+  const lam = bytesToNumberLE(Uint8Array.from(asU8(vchPub.lambda)));
+  if (lam <= 0n || lam >= Fn.ORDER) return null;
+  return minerShare({ lambda: lam }, 1n);
+}
+
 /* ---------- verifiable encryption (R-A′) ---------- */
 
 function limbsOf(n, count) {

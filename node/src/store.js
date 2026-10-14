@@ -106,7 +106,7 @@ import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
-import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
+import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive, cbV3WeightFor } from '../../crypto/block_budget.js';
 import { blockWork, HEADER_AHEAD_MS } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
@@ -4617,7 +4617,7 @@ export function createStore(dir, {
     };
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null, t21 = null } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
@@ -4653,7 +4653,7 @@ export function createStore(dir, {
     const budgetStarted = performance.now();
     const announced = Array.isArray(shareBatch) ? shareBatch.length
       : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch.length : 0);
-    const coinbaseWeight = W_PAYEE * (Math.min(payeeCapLive(), announced) + 3);
+    const coinbaseWeight = t21 ? cbV3WeightFor(announced) : W_PAYEE * (Math.min(payeeCapLive(), announced) + 3);
     const chosen = new Set(selectBodyIndexes(mempool, { coinbaseWeight }));
     const walk = [];
     for (let i = 0; i < mempool.length; i += 1) {
@@ -4847,6 +4847,7 @@ export function createStore(dir, {
       hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
+      t21: t21 ? { ...t21, vault: reserveVault } : null,
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });
