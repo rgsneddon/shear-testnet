@@ -88,6 +88,8 @@ def stage_app_sidecar(dest: str, repo: str) -> None:
         target = os.path.join(dest, *arc.split("/"))
         os.makedirs(os.path.dirname(target), exist_ok=True)
         shutil.copy2(src, target)
+    with open(os.path.join(dest, release_notices.RUNTIME_VERSIONS), "w", encoding="utf-8") as f:
+        f.write(release_notices.runtime_versions_text([real]))
     for name in ("shear-miner", "Shear-Miner"):
         if os.path.exists(os.path.join(dest, name)):
             raise SystemExit("wallet app must not include Shear-Miner")

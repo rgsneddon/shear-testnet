@@ -374,6 +374,7 @@ jobs:
               "- shear-node-v17-macos.zip\n"
           )
           PY
+          { echo; python3 scripts/licenses/release_notes_versions.py dist/shear-node-v17-*.zip; } >> /tmp/v17-notes.md
           gh release create v17 \
             --repo rgsneddon/shear-testnet \
             --target "${GITHUB_SHA}" \

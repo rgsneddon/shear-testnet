@@ -149,6 +149,27 @@ jobs:
           gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-android.apk --repo ${{ inputs.repo }}
           if [ -f wallet/dist-cli/shear ]; then gh release upload ${{ inputs.pin }} wallet/dist-cli/shear --repo ${{ inputs.repo }}; fi
 
+  release-notes:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record the bundled runtime versions in the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/assets
+          gh release download ${{ inputs.pin }} --repo ${{ inputs.repo }} --dir /tmp/assets \
+            --pattern 'shear-wallet-${{ inputs.pin }}-*.zip' --pattern 'shear-wallet-${{ inputs.pin }}-*.apk'
+          python3 scripts/licenses/release_notes_versions.py /tmp/assets/* > /tmp/versions.md
+          cat /tmp/versions.md
+          gh release view ${{ inputs.pin }} --repo ${{ inputs.repo }} --json body -q .body > /tmp/notes.md
+          { echo; cat /tmp/versions.md; } >> /tmp/notes.md
+          gh release edit ${{ inputs.pin }} --repo ${{ inputs.repo }} --notes-file /tmp/notes.md
+
   macos:
     if: false
     runs-on: macos-latest

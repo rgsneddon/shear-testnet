@@ -205,11 +205,13 @@ def main(argv: list[str] | None = None) -> int:
                 "Do not pass --tls-pin. There is no --tls-insecure.\n"
                 "Use the zip built for this operating system.\n"
                 "Licences: LICENSE, THIRD_PARTY_NOTICES.txt, LICENSES/, and openssl-licenses/ for the bundled OpenSSL.\n"
+                "Exact OpenSSL version: RUNTIME-VERSIONS.txt.\n"
             )
             zipped.writestr("README.txt", note)
             release_notices.write_notices(zipped, REPO)
             for src, arc in release_notices.runtime_license_members(SOURCES, "openssl-licenses", REPO):
                 zipped.write(src, arc)
+            zipped.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(SOURCES))
         names = zipfile.ZipFile(out).namelist()
     release_notices.assert_has_notices(names, REPO)
     for need in ("ShearK-Miner", "example.bat", "example.sh"):

@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 NOTICE_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.txt")
 NOTICE_DIRS = ("LICENSES",)
@@ -330,15 +331,117 @@ def runtime_license_members(binaries: list[str], arc_dir: str, repo: str | None 
     return out
 
 
+RUNTIME_VERSIONS = "RUNTIME-VERSIONS.txt"
+
+OPENSSL_TEXT = rb"OpenSSL (\d+\.\d+\.\d+[a-z]?)(?:[-+][\w.]+)? +\d{1,2} [A-Z][a-z]{2} \d{4}"
+# (component, basename pattern, version patterns searched in the binary)
+VERSION_PROBES = (
+    ("Node.js", re.compile(r"^node(\.exe)?$"), (rb"nodejs\.org/download/release/v(\d+\.\d+\.\d+)/", rb"\bnode/v(\d+\.\d+\.\d+)\b")),
+    ("libsodium", re.compile(r"^libsodium[.-]"), (rb"\x00(1\.0\.\d+)\x00",)),
+    ("OpenSSL", re.compile(r"^lib(ssl|crypto)[.-]"), (OPENSSL_TEXT,)),
+)
+
+
+def _search(data: bytes, patterns) -> str:
+    for pat in patterns:
+        m = re.search(pat, data)
+        if m:
+            return m.group(1).decode("ascii")
+    return ""
+
+
+def _package_version(path: str) -> str:
+    """'<package> <version>' of the distro package that owns path, if any."""
+    queries = (
+        ["rpm", "-qf", "--qf", "%{NAME} %{VERSION}-%{RELEASE}\n", path],
+        ["dpkg", "-S", path],
+        ["pacman", "-Qo", path],
+    )
+    for cmd in queries:
+        if not shutil.which(cmd[0]):
+            continue
+        try:
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip().splitlines()[0]
+        except (OSError, subprocess.CalledProcessError, IndexError):
+            continue
+        if cmd[0] == "rpm":
+            return out
+        if cmd[0] == "pacman":
+            m = re.search(r"is owned by (\S+) (\S+)", out)
+            return f"{m.group(1)} {m.group(2)}" if m else ""
+        pkg = out.split(":")[0].strip()
+        try:
+            ver = subprocess.check_output(["dpkg-query", "-W", "-f=${Version}", pkg], text=True, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.CalledProcessError):
+            ver = ""
+        return f"{pkg} {ver}".strip()
+    return ""
+
+
+def runtime_versions(binaries: list[str]) -> list[tuple[str, str, str]]:
+    """(component, exact version, where it came from) for each bundled Node.js, libsodium and OpenSSL.
+
+    The version is read from the binary itself, then from the owning distro
+    package; SHEAR_RUNTIME_VERSION_<BASENAME> overrides both. Raises
+    SystemExit when no exact version can be established.
+    """
+    rows: list[tuple[str, str, str]] = []
+    for binary in binaries:
+        base = os.path.basename(binary)
+        probe = next((p for p in VERSION_PROBES if p[1].match(base)), None)
+        if probe is None:
+            continue
+        component, _pattern, patterns = probe
+        real = os.path.realpath(binary)
+        env = "SHEAR_RUNTIME_VERSION_" + re.sub(r"[^A-Za-z0-9]", "_", base).upper()
+        data = open(real, "rb").read()
+        version = os.environ.get(env) or _search(data, patterns)
+        if not version and component == "OpenSSL":
+            # libssl carries no version text; the libcrypto beside it does.
+            for sibling in sorted(glob.glob(os.path.join(os.path.dirname(binary), "libcrypto*"))):
+                version = _search(open(os.path.realpath(sibling), "rb").read(), patterns)
+                if version:
+                    break
+        package = _package_version(real)
+        if not version and package:
+            version = package.split()[-1]
+        if not version:
+            raise SystemExit(f"cannot establish the exact {component} version of {binary}; set {env}")
+        source = base + (f" (package {package})" if package else "")
+        rows.append((component, version, source))
+        if component == "Node.js":
+            embedded = _search(data, (OPENSSL_TEXT,))
+            if embedded:
+                rows.append(("OpenSSL (built into Node.js)", embedded, base))
+    return list(dict.fromkeys(rows))
+
+
+def runtime_versions_text(binaries: list[str], extra: list[tuple[str, str, str]] | None = None) -> str:
+    rows = runtime_versions(binaries) + list(extra or [])
+    lines = [
+        "Exact versions of the third-party runtimes bundled in this release.",
+        "Their licences are in THIRD_PARTY_NOTICES.txt and LICENSES/.",
+        "",
+    ]
+    lines += [f"{c}: {v} [{s}]" for c, v, s in rows]
+    return "\n".join(lines) + "\n"
+
+
+def android_libsodium_row(repo: str) -> tuple[str, str, str]:
+    lock = json.load(open(os.path.join(repo, "wallet", "android", "libsodium.lock.json"), encoding="utf-8"))
+    return ("libsodium (Android)", lock["version"], f"libsodium-{lock['version']}.tar.gz sha256 {lock['sha256']}, NDK {lock['ndk']}")
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) >= 2 and argv[0] == "versions":
+        sys.stdout.write(runtime_versions_text(argv[1:]))
+        return 0
     if len(argv) >= 2 and argv[0] == "no-mingw-runtime":
         assert_no_mingw_runtime(argv[1:])
         print("no MinGW runtime imports:", " ".join(os.path.basename(a) for a in argv[1:]))
         return 0
-    raise SystemExit("usage: release_notices.py no-mingw-runtime PE_FILE...")
+    raise SystemExit("usage: release_notices.py no-mingw-runtime PE_FILE... | versions BINARY...")
 
 
 if __name__ == "__main__":
-    import sys
-
     raise SystemExit(main(sys.argv[1:]))

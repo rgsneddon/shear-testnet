@@ -290,8 +290,12 @@ def rpath_origin(binary: str, libs: list[str] | None = None) -> None:
         subprocess.check_call(["patchelf", "--set-rpath", "$ORIGIN", target])
 
 
-def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
-    """Put the node, its imports, and node_modules beside a release executable."""
+def write_release_sidecar(z, repo: str, flavor: str = "linux", extra_runtime=()) -> None:
+    """Put the node, its imports, and node_modules beside a release executable.
+
+    extra_runtime: other bundled libraries (libsodium) whose exact versions
+    go into RUNTIME-VERSIONS.txt with the node's.
+    """
     import shutil
     import sys
 
@@ -364,6 +368,7 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
         licensed = [runtime_src] + release_notices.linked_system_libs(runtime_src, libs)
     for src, arc in release_notices.runtime_license_members(licensed, "runtime/licenses", repo):
         z.write(src, arc)
+    z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(licensed + list(extra_runtime)))
     if flavor == "windows":
         native = os.path.join(repo, "crypto", "native")
         release_notices.assert_no_mingw_runtime(

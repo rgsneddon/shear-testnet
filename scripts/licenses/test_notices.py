@@ -161,6 +161,55 @@ class ReleaseNoticesTest(unittest.TestCase):
                 release_notices.assert_no_mingw_runtime([static, shared])
             self.assertIn("libstdc++-6.dll, libgcc_s_seh-1.dll", str(caught.exception))
 
+    def test_runtime_versions_are_read_from_the_binaries(self):
+        with tempfile.TemporaryDirectory() as d:
+            files = {
+                "node": b"\0https://nodejs.org/download/release/v22.12.0/node-v22.12.0-headers.tar.gz\0OpenSSL 3.0.15+quic 3 Sep 2024\0",
+                "libsodium.so.23": b"\0\0\x001.0.18\x00stable\0",
+                "libcrypto.so.3": b"\0OpenSSL 3.0.13 30 Jan 2024\0",
+                "libssl.so.3": b"\0no version text here\0",
+            }
+            for name, data in files.items():
+                open(os.path.join(d, name), "wb").write(data)
+            rows = release_notices.runtime_versions([os.path.join(d, n) for n in files])
+            got = {(c, v) for c, v, _s in rows}
+            self.assertEqual(
+                got,
+                {("Node.js", "22.12.0"), ("OpenSSL (built into Node.js)", "3.0.15"), ("libsodium", "1.0.18"), ("OpenSSL", "3.0.13")},
+            )
+            text = release_notices.runtime_versions_text([os.path.join(d, "node")])
+            self.assertIn("Node.js: 22.12.0 [node]", text)
+
+    def test_runtime_version_must_be_known(self):
+        with tempfile.TemporaryDirectory() as d:
+            lib = os.path.join(d, "libsodium.so.26")
+            open(lib, "wb").write(b"no version")
+            with self.assertRaises(SystemExit):
+                release_notices.runtime_versions([lib])
+            os.environ["SHEAR_RUNTIME_VERSION_LIBSODIUM_SO_26"] = "1.0.20"
+            try:
+                self.assertEqual(release_notices.runtime_versions([lib])[0][1], "1.0.20")
+            finally:
+                del os.environ["SHEAR_RUNTIME_VERSION_LIBSODIUM_SO_26"]
+
+    def test_release_notes_need_recorded_versions(self):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import release_notes_versions
+
+        with tempfile.TemporaryDirectory() as d:
+            good, bad, plain = (os.path.join(d, n) for n in ("good.zip", "bad.zip", "plain.zip"))
+            with zipfile.ZipFile(good, "w") as z:
+                z.writestr("runtime/node", b"")
+                z.writestr("RUNTIME-VERSIONS.txt", "header\n\nNode.js: 22.12.0 [node]\n")
+            with zipfile.ZipFile(bad, "w") as z:
+                z.writestr("lib/libsodium.so.23", b"")
+            with zipfile.ZipFile(plain, "w") as z:
+                z.writestr("shear_wallet", b"")
+            self.assertIn("Node.js: 22.12.0 [node]", release_notes_versions.section(good))
+            self.assertIn("No bundled", release_notes_versions.section(plain))
+            with self.assertRaises(SystemExit):
+                release_notes_versions.section(bad)
+
     def test_attribution_wording(self):
         self.assertEqual(
             release_notices.ATTRIBUTION,

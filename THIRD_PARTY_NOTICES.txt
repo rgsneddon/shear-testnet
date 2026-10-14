@@ -360,7 +360,7 @@ FILE: LICENSES/third-party/libsodium/LICENSE
 
 ================================================================================
 PACKAGES: Node.js
-COMPONENTS: Node.js 22.x (CI node-version '22'; the packing host's binary) (bundled runtime)
+COMPONENTS: Node.js 22.x from the packing host; the exact version (and the OpenSSL built into it) is recorded in each pack's RUNTIME-VERSIONS.txt and in the release notes (bundled runtime)
 LICENSE: MIT AND others (see LICENSE)
 FILE: LICENSES/third-party/nodejs/LICENSE
 --------------------------------------------------------------------------------
@@ -3099,7 +3099,7 @@ The externally maintained libraries used by Node.js are:
 
 ================================================================================
 PACKAGES: OpenSSL
-COMPONENTS: OpenSSL 3.x (MSYS2 on Windows, host libssl/libcrypto on Linux and macOS; unpinned) (bundled runtime)
+COMPONENTS: OpenSSL 3.x (MSYS2 on Windows, host libssl/libcrypto on Linux and macOS); the exact version is recorded in each pack's RUNTIME-VERSIONS.txt and in the release notes (bundled runtime)
 LICENSE: Apache-2.0
 FILE: LICENSES/third-party/openssl/LICENSE.txt
 --------------------------------------------------------------------------------
@@ -3282,7 +3282,7 @@ FILE: LICENSES/third-party/openssl/LICENSE.txt
 
 ================================================================================
 PACKAGES: OpenSSL
-COMPONENTS: OpenSSL 3.x (MSYS2 on Windows, host libssl/libcrypto on Linux and macOS; unpinned) (bundled runtime)
+COMPONENTS: OpenSSL 3.x (MSYS2 on Windows, host libssl/libcrypto on Linux and macOS); the exact version is recorded in each pack's RUNTIME-VERSIONS.txt and in the release notes (bundled runtime)
 LICENSE: Apache-2.0
 FILE: LICENSES/third-party/openssl/COPYRIGHT
 --------------------------------------------------------------------------------

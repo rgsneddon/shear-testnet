@@ -173,6 +173,7 @@ def main() -> int:
                 z.write(node_exe, "runtime/node.exe")
                 for src, arc in release_notices.runtime_license_members([node_exe], "runtime/licenses", node_root):
                     z.write(src, arc)
+                z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text([node_exe]))
             release_notices.write_notices(z, node_root)
             native = os.path.join(node_root, "crypto", "native")
             release_notices.assert_no_mingw_runtime(
@@ -220,6 +221,8 @@ def main() -> int:
     ):
         if req not in names:
             sys.exit(f"Continuum zip must include {req}")
+    if release_notices.RUNTIME_VERSIONS not in names:
+        sys.exit(f"Continuum zip must record the bundled runtime versions in {release_notices.RUNTIME_VERSIONS}")
     shipped_runtime = [n for n in names if n.rsplit("/", 1)[-1].lower() in release_notices.MINGW_RUNTIME_DLLS]
     if shipped_runtime:
         sys.exit(f"Continuum zip must not ship the MinGW runtime: {', '.join(shipped_runtime)}")

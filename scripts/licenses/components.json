@@ -281,7 +281,7 @@
   {
    "kind": "runtime",
    "name": "Node.js",
-   "version": "22.x (CI node-version '22'; the packing host's binary)",
+   "version": "22.x from the packing host; the exact version (and the OpenSSL built into it) is recorded in each pack's RUNTIME-VERSIONS.txt and in the release notes",
    "license": "MIT AND others (see LICENSE)",
    "holders": [
     "Copyright Node.js contributors",
@@ -298,7 +298,7 @@
   {
    "kind": "runtime",
    "name": "OpenSSL",
-   "version": "3.x (MSYS2 on Windows, host libssl/libcrypto on Linux and macOS; unpinned)",
+   "version": "3.x (MSYS2 on Windows, host libssl/libcrypto on Linux and macOS); the exact version is recorded in each pack's RUNTIME-VERSIONS.txt and in the release notes",
    "license": "Apache-2.0",
    "holders": [
     "Copyright (c) 1998-2026 The OpenSSL Project Authors",

@@ -196,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             if os.path.isfile(node_exe):
                 for src, arc in release_notices.runtime_license_members([node_exe], "runtime/licenses", REPO):
                     z.write(src, arc)
+                z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text([node_exe]))
             release_notices.assert_no_mingw_runtime(windows_addons(REPO))
         else:
             # A Windows checkout keeps runtime/node.exe. Do not ship that PE
@@ -216,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                 licensed = [host_node] + release_notices.linked_system_libs(host_node, linked)
                 for src, arc in release_notices.runtime_license_members(licensed, "runtime/licenses", REPO):
                     z.write(src, arc)
+                z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(licensed))
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
         readme = (
@@ -255,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     ):
         if req not in names:
             sys.exit(f"missing {req}")
+    if release_notices.RUNTIME_VERSIONS not in names:
+        sys.exit(f"node zip must record the bundled runtime versions in {release_notices.RUNTIME_VERSIONS}")
     shipped_runtime = [n for n in names if n.rsplit("/", 1)[-1].lower() in release_notices.MINGW_RUNTIME_DLLS]
     if shipped_runtime:
         sys.exit(f"node zip must not ship the MinGW runtime: {', '.join(shipped_runtime)}")

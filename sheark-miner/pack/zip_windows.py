@@ -235,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         for src in dlls:
             z.write(src, os.path.basename(src))
         release_notices.write_notices(z, REPO)
+        z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(dlls).replace("\n", "\r\n"))
         note = (
             f"ShearK-Miner {ver}\n"
             "Keep every DLL in this zip next to ShearK-Miner.exe.\n"
@@ -244,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             "Localhost solo: stratum+tcp://127.0.0.1:1111\n"
             "Do not pass --tls-pin. There is no --tls-insecure.\n"
             "Licences: LICENSE, THIRD_PARTY_NOTICES.txt and LICENSES/.\n"
+            "Exact OpenSSL version: RUNTIME-VERSIONS.txt.\n"
         )
         z.writestr("README.txt", note.replace("\n", "\r\n"))
     listed = zipfile.ZipFile(out).namelist()

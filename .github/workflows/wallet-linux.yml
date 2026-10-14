@@ -75,6 +75,8 @@ jobs:
           if copied is None:
               sys.exit("libsodium.so.26/23 not found")
           release_notices.copy_notices(bundle, ".")
+          with open(os.path.join(bundle, release_notices.RUNTIME_VERSIONS), "w", encoding="utf-8") as f:
+              f.write(release_notices.runtime_versions_text([os.path.realpath(p)]))
           dist = "dist"
           os.makedirs(dist, exist_ok=True)
           pkgbuild = "wallet/pack/archlinux/PKGBUILD"
@@ -104,6 +106,8 @@ jobs:
                   sys.exit(f"libsodium missing in {path}")
               if not any(n.startswith("lib/licenses/libsodium") for n in names):
                   sys.exit(f"libsodium licence missing in {path}")
+              if release_notices.RUNTIME_VERSIONS not in names:
+                  sys.exit(f"{release_notices.RUNTIME_VERSIONS} missing in {path}")
               release_notices.assert_has_notices(names, ".")
               if arch:
                   if "PKGBUILD" not in names:

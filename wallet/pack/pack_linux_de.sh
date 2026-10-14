@@ -77,17 +77,20 @@ from bundle_modules import assert_zip_has_modules, write_missing_required, write
 import glob
 import release_notices
 
-def sodium_licenses():
+def sodium_system_libs():
     out = []
     for so in sorted(glob.glob(os.path.join(bundle, "lib", "libsodium.so.*"))):
         base = os.path.basename(so)
         for d in ("/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/local/lib"):
             if os.path.isfile(os.path.join(d, base)):
-                out += release_notices.runtime_license_members([os.path.join(d, base)], "lib/licenses", repo)
+                out.append(os.path.join(d, base))
                 break
         else:
             sys.exit(f"cannot find the system {base} to copy its licence")
     return out
+
+def sodium_licenses():
+    return release_notices.runtime_license_members(sodium_system_libs(), "lib/licenses", repo)
 
 def add_tree(z, root):
     for dp, _dns, fns in os.walk(root):
@@ -104,7 +107,7 @@ def pack(path, arch=False):
         add_tree(z, bundle)
         for src, arc in sodium_licenses():
             z.write(src, arc)
-        write_release_sidecar(z, repo, flavor="linux")
+        write_release_sidecar(z, repo, flavor="linux", extra_runtime=sodium_system_libs())
         write_missing_required(z, repo)
     print("wrote", path, os.path.getsize(path))
     return path

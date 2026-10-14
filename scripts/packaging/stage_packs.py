@@ -93,6 +93,10 @@ def install_runtime_licenses(binaries: list[Path]) -> None:
     """Licences for the host binaries copied into the prefix, under share/doc/shear/runtime/."""
     for src, arc in release_notices.runtime_license_members([str(b) for b in binaries], "runtime", str(SRC)):
         copy_file(Path(src), PREFIX / DOC / arc, 0o644)
+    versions = PREFIX / DOC / release_notices.RUNTIME_VERSIONS
+    versions.parent.mkdir(parents=True, exist_ok=True)
+    versions.write_text(release_notices.runtime_versions_text([str(b) for b in binaries]), encoding="utf-8")
+    versions.chmod(0o644)
 
 
 def bundle_openssl(binary: Path, dest_bin: Path, dest_lib: Path) -> list[Path]:
