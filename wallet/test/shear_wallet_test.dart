@@ -76,6 +76,12 @@ class _NoteWallet {
   final Uint8List seed;
 }
 
+/// A dest a Flow spend can pay. Short destForLogin addresses have no admit base.
+String _payablePayee() {
+  final id = createIdentity();
+  return (ShearLedger()..bindIdentity(id)).homeDest(id.address, paymentCode: id.paymentCode);
+}
+
 _NoteWallet _noteWallet(int count, {required int nanos}) {
   final id = createIdentity();
   final seed = hexToBytes(id.seedHex);
@@ -845,7 +851,7 @@ void main() {
       pool.close();
       await server.close(force: true);
     });
-    final got = await pool.send(from: 'ssa1from', to: 'ssa1to', amount: 0.01);
+    final got = await pool.send(from: 'ssa1from', to: 'ssa1to', amount: 0.01, kind: 'lock');
     expect(got['ok'], isTrue);
     expect(hits, ['POST /api/wallet/send']);
     expect(base.contains('pool.shear.digital'), isFalse);
@@ -1286,12 +1292,14 @@ void main() {
     final a = _offlinePot(kUnitsPerShe * 2 ~/ 5, 2, dest20: d20, seed: seed);
     final b = _offlinePot(kUnitsPerShe * 9 ~/ 20, 2, dest20: d20, seed: seed);
     final pubs = <Uint8List>[];
+    final commits = <Uint8List>[];
     for (final n in [a, b]) {
       final x = admitScalarFromSeed(seed, n);
       pubs.add(pointBytes(admitPub(x)));
+      commits.add(n['commit'] as Uint8List);
     }
     final posts = <Map<String, dynamic>>[];
-    final pool = _RecordingPool(posts, pubs: pubs);
+    final pool = _RecordingPool(posts, pubs: pubs, commits: commits);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.ingestSealedVouts(
       [a, b],
@@ -1306,7 +1314,7 @@ void main() {
       ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
       closeTo(0.85, 1e-9),
     );
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final bob = _payablePayee();
     final tx = await ledger.sendSpendableSum(
       from: dest,
       to: bob,
@@ -1518,7 +1526,7 @@ void main() {
     final noteNanos = BigInt.parse('9007199254740993');
     final w = _noteWallet(2, nanos: noteNanos.toInt());
     final pay = noteNanos + BigInt.one;
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ef' * 32)!;
+    final bob = _payablePayee();
     await w.ledger.sendSpendableSum(
       from: w.dest,
       to: bob,
@@ -1531,7 +1539,7 @@ void main() {
     );
     expect(w.posts, hasLength(1));
     expect((w.posts.single['vin'] as List).length, 2);
-    expect(w.posts.single['nanosWire'], pay.toString());
+    expect(w.posts.single.containsKey('nanos'), isFalse);
     expect(sealed, contains(pay.toInt()));
   });
 
@@ -1647,12 +1655,14 @@ void main() {
     final a = _offlinePot(kUnitsPerShe * 2 ~/ 5, 2, dest20: d20, seed: seed);
     final b = _offlinePot(kUnitsPerShe * 9 ~/ 20, 2, dest20: d20, seed: seed);
     final pubs = <Uint8List>[];
+    final commits = <Uint8List>[];
     for (final n in [a, b]) {
       final x = admitScalarFromSeed(seed, n);
       pubs.add(pointBytes(admitPub(x)));
+      commits.add(n['commit'] as Uint8List);
     }
     final posts = <Map<String, dynamic>>[];
-    final pool = _RecordingPool(posts, pubs: pubs);
+    final pool = _RecordingPool(posts, pubs: pubs, commits: commits);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.ingestSealedVouts(
       [a, b],
@@ -1701,7 +1711,7 @@ void main() {
       throwsA(isA<StateError>().having((e) => flowSendAdvisoryOf(e), 'advisory', kErrPayIdentity)),
     );
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(0.85, 1e-9));
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final bob = _payablePayee();
     final before = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
     pool.reconstructedNanos = (before * kUnitsPerShe).round();
     await ledger.sendSpendableSum(
@@ -9202,28 +9212,38 @@ class _RecordingPool extends ShearPoolClient {
     String? fs1,
     int? anchor,
   }) async {
-    posts.add({
-      'from': from,
-      'to': to,
-      'amount': amount,
-      'kind': kind ?? 'send',
-      'vin': vin,
-      'vout': vout,
-      'excess': excess,
-      'admit_proof': admitProof,
-      if (admitProofs != null) 'admit_proofs': admitProofs,
-      if (memoCt != null) 'memoCt': memoCt,
-      if (fee != null) 'postedFee': fee,
-      'sig': sig,
-      'spendPub': spendPub,
-      'programId': programId,
-      if (change != null) 'change': change,
-      if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
-      if (legacyPoolSend) 'legacyPoolSend': true,
-      if (nanosWire != null && nanosWire.isNotEmpty) 'nanosWire': nanosWire,
-      if (fs1 != null) 'fs1': fs1,
-      if (anchor != null) 'anchor': anchor,
-    });
+    final body = walletSendBody(
+      from: from,
+      to: to,
+      amount: amount,
+      memoCt: memoCt,
+      open: open,
+      sig: sig,
+      portalOpen: portalOpen,
+      kind: kind,
+      programId: programId,
+      choice: choice,
+      currentEpoch: currentEpoch,
+      epochStartMs: epochStartMs,
+      change: change,
+      spendPub: spendPub,
+      ephPub: ephPub,
+      vin: vin,
+      vout: vout,
+      excess: excess,
+      admitProof: admitProof,
+      admitProofs: admitProofs,
+      spendTag: spendTag,
+      fee: fee,
+      paintedOwedNanos: paintedOwedNanos,
+      nanosWire: nanosWire,
+      id: id,
+      withdrawNonce: withdrawNonce,
+      fs1: fs1,
+      anchor: anchor,
+    );
+    if (fee != null) body['postedFee'] = fee;
+    posts.add(body);
     final tx = <String, dynamic>{
       'id': 'note-send-1',
       'from': from,

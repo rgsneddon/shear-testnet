@@ -6631,7 +6631,10 @@ class ShearLedger implements ReadProofSink {
     final pub = spendPub;
     final v = viewSecret;
     if (pub != null && pub.length == 32 && v != null && v.isNotEmpty) {
-      return paymentCodeAtIndex(v, pub, 0);
+      // Change and consolidate pay the wallet's own stealth dest. A fingerprint
+      // has no admit base, so the sealed output could not carry amtCt or join
+      // the FS-1 set. The full code embeds this wallet's base.
+      return paymentCodeAtIndex(v, pub, 0, _admitBaseOf(paymentCode));
     }
     return null;
   }
