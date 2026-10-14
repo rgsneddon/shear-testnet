@@ -1210,10 +1210,10 @@ function resealPotPayee(o, nanos) {
  * Their notes are resealed at the new amounts. If none remain, the whole
  * pot is carried and no pot note is left beside that carry.
  * A share batch already fixed those pays. Re-splitting them misses
- * pot_prop, and carrying them misses pot_carry. The template throws and
- * does not publish that block. The payee is refused when it enters the
- * batch, so this throw is the backstop. A hash or levy note has no pot
- * to rejoin, so that drop throws either way.
+ * pot_prop, and carrying them misses pot_carry, so this throws.
+ * buildTemplate catches that, drops every share of the broken payee,
+ * and builds again. A hash or levy note has no pot to rejoin, so that
+ * drop throws either way.
  */
 export function dropBrokenCoinbaseNotes(cb, { shares = false } = {}) {
   if (!(cb && typeof cb === 'object')) return cb;
@@ -1308,6 +1308,24 @@ export function dropBrokenCoinbaseNotes(cb, { shares = false } = {}) {
   return cb;
 }
 
+function brokenPayeeHexes(cb) {
+  const bad = new Set();
+  for (const o of cb?.vout || []) {
+    if (!outputJoinsAdmitSet(cb, o) || fs1LeafFor(o)) continue;
+    const d20 = noteDest20(o);
+    if (d20 && d20.length >= 20) bad.add(Buffer.from(d20.subarray(0, 20)).toString('hex'));
+  }
+  return bad;
+}
+
+function shareHitsBrokenPayee(share, bad) {
+  if (!bad.size) return false;
+  let d20 = null;
+  try { d20 = dest20OfShare(share); } catch { d20 = null; }
+  if (!d20 || d20.length < 20) return false;
+  return bad.has(Buffer.from(d20.subarray(0, 20)).toString('hex'));
+}
+
 export function buildTemplate({
   prev,
   prevHeader,
@@ -1334,6 +1352,7 @@ export function buildTemplate({
   hashOwedIn: hashOwedInOpt = null,
   issuedHeaders = null,
   hashSpill = null,
+  prepareCoinbase = null,
 }) {
   txs = (Array.isArray(txs) ? txs : []).filter((tx) => !txNoteRuleRejected(tx));
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
@@ -1418,7 +1437,51 @@ export function buildTemplate({
   const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
   if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
-  dropBrokenCoinbaseNotes(cb, { shares: batch.length > 0 });
+  if (typeof prepareCoinbase === 'function') prepareCoinbase(cb);
+  try {
+    dropBrokenCoinbaseNotes(cb, { shares: batch.length > 0 });
+  } catch (err) {
+    if (!batch.length || err?.message !== 'admit_note_point') throw err;
+    const bad = brokenPayeeHexes(cb);
+    const source = Array.isArray(shareBatch) ? shareBatch : [];
+    const nextShares = source.filter((s) => !shareHitsBrokenPayee(s, bad));
+    if (!bad.size || nextShares.length === source.length) throw err;
+    console.error(JSON.stringify({
+      event: 'coinbase_share_evict',
+      reason: 'admit_note_point',
+      payees: bad.size,
+      shares: source.length - nextShares.length,
+    }));
+    return buildTemplate({
+      prev,
+      prevHeader,
+      prevBlock,
+      parentWeight: parentWeightIn,
+      height,
+      miner,
+      samples,
+      txs,
+      bLeaves: bLeavesIn,
+      now,
+      bits,
+      destOf,
+      potShares: null,
+      hashBonusNanos,
+      shareBatch: nextShares,
+      poolDest,
+      feeDest,
+      finderDest,
+      hashBonusCustodyDest,
+      parentFluxset,
+      parentBlocks,
+      hashAcceptedSeries,
+      hashOwedIn: hashOwedInOpt,
+      issuedHeaders,
+      hashSpill: Array.isArray(hashSpill)
+        ? hashSpill.filter((s) => !shareHitsBrokenPayee(s, bad))
+        : hashSpill,
+    });
+  }
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);

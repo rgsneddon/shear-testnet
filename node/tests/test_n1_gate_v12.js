@@ -419,6 +419,66 @@ describe('N-1 gate order', () => {
     assert.equal(cb.vout.some((o) => Buffer.from(o.admitPub).equals(Buffer.alloc(32, 0xab))), true);
   });
 
+  it('evicts a broken share payee and rebuilds a template that verifies', () => {
+    const who = minerDest();
+    const other = minerDest();
+    const parentTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: who,
+      bits: GENESIS_BITS_PACKED,
+      now: T0,
+    });
+    const parent = viewOf(parentTpl);
+    const okParent = verifyBlock(parent, null, { probeBody: true });
+    assert.equal(okParent.ok, true, okParent.reason || '');
+    const now = T0 + 90_000;
+    const ph = decodeHeader(parent.header);
+    const row = (dest, low) => ({
+      dest,
+      dest20: dest20OfShare({ dest }),
+      nonce: nonceWithShareTarget(low, SHARE_FLOOR_BITS),
+      lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
+      proofSlot: 0,
+    });
+    const broken = row(other, 2n);
+    const bad20 = Buffer.from(broken.dest20).toString('hex');
+    const tpl = buildTemplate({
+      prev: okParent.hash,
+      prevHeader: parent.header,
+      prevBlock: parent,
+      parentWeight: parent.weight,
+      height: 2,
+      miner: who,
+      bits: bitsForBlock(ph.bits, ph.timestamp, now),
+      now,
+      shareBatch: [row(who, 1n), broken],
+      prepareCoinbase(cb) {
+        const victim = (cb.vout || []).find((o) => (
+          o.kind === 'pot' && Buffer.from(o.dest20).toString('hex') === bad20
+        ));
+        assert.ok(victim);
+        victim.admitPub = Buffer.alloc(32, 0xab);
+      },
+    });
+    assert.equal(tpl.shareBatch.length, 1);
+    assert.equal(Buffer.from(dest20OfShare(tpl.shareBatch[0])).toString('hex'), Buffer.from(dest20OfShare({ dest: who })).toString('hex'));
+    assert.equal(tpl.txs[0].vout.some((o) => Buffer.from(o.admitPub || Buffer.alloc(0)).equals(Buffer.alloc(32, 0xab))), false);
+    clearLiveSharePow();
+    const kept = tpl.shareBatch[0];
+    assert.equal(rememberLiveSharePow(parent.header, kept.nonce, {
+      noteCommit: noteCommitOfShare(kept),
+      shareBits: SHARE_FLOOR_BITS,
+      lz: SHARE_FLOOR_BITS,
+    }), true);
+    const got = verifyBlock(viewOf(tpl), { ...parent, hash: okParent.hash, height: 1 }, {
+      probeBody: true,
+      skipSharePow: true,
+    });
+    assert.equal(got.ok, true, got.reason || '');
+  });
+
   it('refuses a pre-N-1 seal and a pre-N-1 snap', () => {
     assert.equal(BOOK_SEAL_DOMAIN, 'bookseal2');
     const rules = consensusFingerprint();
