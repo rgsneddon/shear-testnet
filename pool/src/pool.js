@@ -11,7 +11,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
-import { payeeFs1Ok } from '../../crypto/n1.js';
+import { payeeDecodeOk, payeeFs1Ok } from '../../crypto/n1.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { destBoundShareHash, noteCommitOfShare, shareTargetByte } from '../../crypto/share_batch.js';
 import {
@@ -616,7 +616,12 @@ export function minerVersionAtLeast(version, min = SHEARK_MINER_VERSION) {
   return got.minor >= need.minor;
 }
 
-export function admitClient(params) {
+/**
+ * leaf: false decodes the payout dest only (payeeDecodeOk). The caller must
+ * then run payeeFs1Ok(payoutDest) itself, after its ban and budget checks.
+ */
+export function admitClient(params, { leaf = true } = {}) {
+  const payeeOk = leaf ? payeeFs1Ok : payeeDecodeOk;
   const client = String(params?.client || params?.algo || '');
   if (client !== CLIENT && client !== ALGO) {
     return { ok: false, reason: 'client_refused' };
@@ -640,7 +645,7 @@ export function admitClient(params) {
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
   if (isPaymentCode(dest)) {
     if (!payout) return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
-    if (!payeeFs1Ok(payout)) return { ok: false, reason: 'admit_note_point' };
+    if (!payeeOk(payout)) return { ok: false, reason: 'admit_note_point' };
     return {
       ok: true,
       login: payout,
@@ -650,7 +655,7 @@ export function admitClient(params) {
     };
   }
   const payee = payout || (isDestAddress(dest) ? dest : '');
-  if (payee && !payeeFs1Ok(payee)) return { ok: false, reason: 'admit_note_point' };
+  if (payee && !payeeOk(payee)) return { ok: false, reason: 'admit_note_point' };
   return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payee };
 }
 
@@ -848,8 +853,8 @@ export function publicHtmlFile(host, pathname) {
   return p;
 }
 
-export function gateStratumLogin(params, { requireLoginAuth = false, boundAuthPub = '' } = {}) {
-  const adm = admitClient(params);
+export function gateStratumLogin(params, { requireLoginAuth = false, boundAuthPub = '', leaf = true } = {}) {
+  const adm = admitClient(params, { leaf });
   if (!adm.ok) return adm;
   if (!requireLoginAuth) return { ok: true, ...adm };
   const presented = String(params?.authPub || params?.spendPub || '');
@@ -4640,7 +4645,16 @@ export function createPool({
     let buf = '';
     let session = null;
     let conn = null;
+    // A refused login ends the socket. Lines already buffered or still in
+    // flight are not parsed: each one could cost a decode or a leaf probe.
+    let refused = false;
+    const refuse = (obj) => {
+      refused = true;
+      buf = '';
+      replyLine(sock, obj, { drop: true });
+    };
     sock.on('data', (chunk) => {
+      if (refused) return;
       buf += chunk.toString('utf8');
       if (buf.length > HTTP_BODY_MAX) {
         try { sock.destroy(); } catch { /* ignore */ }
@@ -4666,7 +4680,13 @@ export function createPool({
           || (params.login && method !== 'submit' && method !== 'job' && method !== 'stats'
             && method !== 2 && method !== '2');
         if (isLogin) {
-          const adm = gateStratumLogin(params, { requireLoginAuth, boundAuthPub });
+          // PSA-920-1. IP deny, then decode only, then dest ban and the
+          // per-IP budget. The FS-1 leaf probe (~12 ms cold) runs last.
+          if (isIpDenied(sock)) {
+            refuse({ id: msg.id, error: 'banned' });
+            return;
+          }
+          const adm = gateStratumLogin(params, { requireLoginAuth, boundAuthPub, leaf: false });
           if (!adm.ok) {
             if (isWrongAlgoReject(adm.reason)) {
               rememberInvalid(null, String(params.login || params.user || ''), sock);
@@ -4674,12 +4694,12 @@ export function createPool({
             const extra = {};
             if (adm.reason === 'need_auth' && adm.challenge) extra.challenge = adm.challenge;
             if (adm.message) extra.message = adm.message;
-            replyLine(sock, { id: msg.id, error: adm.reason, ...extra }, { drop: true });
-            continue;
+            refuse({ id: msg.id, error: adm.reason, ...extra });
+            return;
           }
-          if (isIpDenied(sock) || isBanned(adm.workerKey) || isBanned(adm.login)) {
-            replyLine(sock, { id: msg.id, error: 'banned' }, { drop: true });
-            continue;
+          if (isBanned(adm.workerKey) || isBanned(adm.login)) {
+            refuse({ id: msg.id, error: 'banned' });
+            return;
           }
           const key = adm.workerKey;
           if (!miners.has(key)) {
@@ -4688,9 +4708,13 @@ export function createPool({
               windowMs: LOGIN_PER_IP_WINDOW_MS,
             });
             if (!ipBudget.ok) {
-              replyLine(sock, { id: msg.id, error: 'busy' }, { drop: true });
-              continue;
+              refuse({ id: msg.id, error: 'busy' });
+              return;
             }
+          }
+          if (adm.payoutDest && !payeeFs1Ok(adm.payoutDest)) {
+            refuse({ id: msg.id, error: 'admit_note_point' });
+            return;
           }
           session = miners.get(key) || {
             login: adm.login,

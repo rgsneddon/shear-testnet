@@ -15,6 +15,12 @@ export const ADMIT_NOTE_POINT = 'admit_note_point';
 const PAYEE_LEAF_DST = 'shear-payee-leaf-v1';
 const PAYEE_OK_MAX = 4096;
 const payeeOkByDest = new Map();
+let payeeProbes = 0;
+
+/** Cold payeeFs1Ok leaf probes. Cache hits and decode refusals do not count. */
+export function payeeProbeCount() {
+  return payeeProbes;
+}
 
 function rememberPayeeOk(addr, ok) {
   if (payeeOkByDest.has(addr)) payeeOkByDest.delete(addr);
@@ -27,12 +33,34 @@ function rememberPayeeOk(addr, ok) {
 }
 
 /**
+ * Decode only: about 0.1 ms on a cold long dest, no leaf derive.
+ * False when B or dest20 does not decode, or when payeeFs1Ok already cached
+ * a miss for this dest. True does not mean the dest is a leaf.
+ * Stratum runs this before the IP ban and login budget, and payeeFs1Ok after.
+ */
+export function payeeDecodeOk(dest) {
+  const addr = String(dest || '').trim();
+  if (!isDestAddress(addr)) return true;
+  const base = admitBaseFromAddress(addr);
+  if (!base) return true;
+  if (payeeOkByDest.get(addr) === false) return false;
+  try {
+    pointFrom(base);
+  } catch {
+    return rememberPayeeOk(addr, false);
+  }
+  const d20 = hash20FromAddress(addr);
+  if (!d20 || d20.length !== 20) return rememberPayeeOk(addr, false);
+  return true;
+}
+
+/**
  * A payout dest can open an FS-1 leaf. Not a consensus check.
  * A non-dest is not a payee. A short dest has no admit base; the template
  * draws a fresh point, which is a leaf, so the pool-fee sink stays allowed.
  * A long dest must decode B, then a deterministic value-proof probe (no
- * range proof) must be a leaf. The answer is cached on the dest string.
- * The leaf itself is cached on the public bytes.
+ * range proof) must be a leaf. A cold probe is about 12 ms. The answer is
+ * cached on the dest string. The leaf itself is cached on the public bytes.
  */
 export function payeeFs1Ok(dest) {
   const addr = String(dest || '').trim();
@@ -45,13 +73,9 @@ export function payeeFs1Ok(dest) {
     payeeOkByDest.set(addr, hit);
     return hit;
   }
-  try {
-    pointFrom(base);
-  } catch {
-    return rememberPayeeOk(addr, false);
-  }
+  if (!payeeDecodeOk(addr)) return false;
   const d20 = hash20FromAddress(addr);
-  if (!d20 || d20.length !== 20) return rememberPayeeOk(addr, false);
+  payeeProbes += 1;
   try {
     const r = hashToScalar(Buffer.from(PAYEE_LEAF_DST), Buffer.from(addr, 'utf8'));
     const value = proveValue(1, r);

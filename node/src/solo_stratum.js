@@ -306,7 +306,8 @@ export function createSoloStratum({
           if (!adm.ok) {
             try { sock.write(line({ id: msg.id, error: adm.reason })); } catch { /* ignore */ }
             try { sock.destroy(); } catch { /* ignore */ }
-            continue;
+            buf = '';
+            return;
           }
           session = { dest: adm.dest, worker: adm.worker, login: adm.login };
           const shareBits = Number(params.shareBits) || SHARE_FLOOR_BITS;
