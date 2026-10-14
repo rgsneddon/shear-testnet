@@ -17,7 +17,7 @@ jobs:
       - name: Normal dependencies do not enable the insecure generators
         run: |
           gbp() { cargo tree --color never -p shear-fs1 -e normal --prefix none -f '{p} {f}' "$@" | grep '^generalized-bulletproofs v'; }
-          for features in "" "--features=bench" "--features=tree-cli"; do
+          for features in "" "--features=bench" "--features=tree-cli" "--features=t21-prove"; do
             gbp $features
             if gbp $features | grep -E '[ ,]tests(,|$| )'; then
               echo "generalized-bulletproofs/tests reached a normal build ($features)"
@@ -25,12 +25,13 @@ jobs:
             fi
           done
           gbp --features=insecure-test-generators | grep -E '[ ,]tests(,|$| )'
-      - name: Release build has no bench or tree binary
+      - name: Release build has no bench, tree or T21 prover binary
         run: |
-          rm -f target/release/fs1_bench target/release/fs1_tree
+          rm -f target/release/fs1_bench target/release/fs1_tree target/release/t21_prove
           cargo build --release -p shear-fs1 --bins
           test ! -e target/release/fs1_bench
           test ! -e target/release/fs1_tree
+          test ! -e target/release/t21_prove
       - name: 64-bit Android type-checks
         run: cargo check --release -p shear-fs1 --target aarch64-linux-android
       - name: Debug tests
@@ -61,6 +62,17 @@ jobs:
         run: node --test node/tests/test_fs1_admit_divergence.js
       - name: T21 coinbase, template and carry, with shearadmit
         run: node --test --test-concurrency=1 --test-timeout=1800000 crypto/t21.test.js node/tests/test_t21_template_v12.js node/tests/test_t21_carry_v12.js
+      - name: Build the T21 row prover
+        working-directory: crypto/native/vendor/monero-oxide-77788c3
+        run: |
+          cargo build --release -p shear-fs1 --features t21-prove --bin t21_prove
+          echo "SHEAR_T21_PROVE_SHA256=$(sha256sum target/release/t21_prove | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: T21 native prover, byte for byte against the JS prover, and timings
+        env:
+          SHEAR_T21_PROVE_REQUIRE: '1'
+        run: |
+          node --test --test-concurrency=1 --test-timeout=1800000 crypto/t21_native.test.js
+          node scripts/t21_prove_bench.mjs --rows 5,49,171 --verify --raw 5,49,171,470
       - name: Build the fs1_tree tool
         working-directory: crypto/native/vendor/monero-oxide-77788c3
         run: |
