@@ -19,7 +19,9 @@ Consensus checks a cb-v3 coinbase against values it derives itself:
 - the subsidy `S` at this height and the parent carry `c_in`;
 - the live hash bonus unit `u`;
 - height, network magic, and the parent id `SHA-256("shear-t21-parent-v1" ‖ parent header)`;
-- the proven share batch: each share's PoW commits to `t21ShareNc(magic, E) = SHA-256("shear-share-bind-v1" ‖ magic ‖ E)` as its note commit, and the coinbase shares must match the block's retained units per note commit (its A leaves) one to one. Retained units are `2^bits` scaled into `MAX_HASH_UNITS_PER_BLOCK = 2^28`, so `W ≤ 2^28` (`hash_units`);
+- the proven share batch: each share's PoW commits to `t21ShareNc(magic, E) = SHA-256("shear-share-bind-v1" ‖ magic ‖ E)` as its note commit. Every A leaf (full units per note commit) is either paid by one coinbase share or deferred by one `t21.defer` row, at the same weight (`share_bind`). Units are the full `2^bits`, never scaled: a batch over `W_HASH_MAX = 2^48` is `hash_units`, and a share may claim up to 47 bits so one share stays below `W_MAX`;
+- the share floor (G5): a share proved on header `h` must claim at least `ceil(log2(blockWork(h.bits) / 85))` bits, and never fewer than `SHARE_FLOOR_BITS` (`share_target`);
+- the parent coinbase's owed list `t21.owed` (deferred rows, below);
 - a buried pruned block has no batch to prove. Its published A leaves must rebuild the header's continuity root with the block's B leaves (`continuity`), and they are the share units. No path skips the share binding;
 - the hash budget `B_h = hashBudgetNanos(accepted series)`, and `u·W ≤ B_h` (`hash_budget`);
 - the parent coinbase's `E` set, so a share label is not reused across the carry window;
@@ -27,11 +29,25 @@ Consensus checks a cb-v3 coinbase against values it derives itself:
 
 It then requires `paid = S + c_in − c_out + u·W + Φ` and checks that `Φ` equals the levy's finder half and that the finder row's `B*` is the block miner's admit base.
 
-cb-v3 pays the hash bonus in the block as `u·W`, capped by `W ≤ 2^28` and `u·W ≤ B_h`. Shares past the cap are scaled, not escrowed. It does not settle the legacy hash-owed ledger, so the parent must leave an empty ledger and the coinbase carries none.
+cb-v3 pays the hash bonus in the block as `u·W`, with `W < W_MAX = 2^48` and `u·W ≤ B_h`, where `W` sums every paid share, owed rows included. Nothing is scaled pro rata and there is no noteCommit round-robin (ME G6): those stay on the legacy path only. It does not settle the legacy hash-owed ledger, so the parent must leave an empty ledger and the coinbase carries none.
 
 Once `V12_GENESIS_BLOCK_HASH` is set, cb-v3 is the only coinbase form (`CB_ONLY`). The legacy coinbase, and its last-payee re-split, is then refused with `cb_form`.
 
-## Carry
+## Share floor
+
+Russell's ruling (2026-10-14): the floor targets 85 shares per block on every network, keyed to the block target. The floor is in whole difficulty bits, so the expected count is `blockWork / 2^floor`, which lands in `(42.5, 85]`: between about 43 and 85 floor shares per block, not exactly 85. The target is the bits of the header the share proves on, which the miner knows while mining and which a one-block carry does not change. `T21_SHARES_PER_BLOCK = 85` is a parameter and a fingerprint token.
+
+## Deferred rows and carry
+
+A proven label is paid in full or not paid in this block; it is never cut. At 85 shares per block the payee cap (171) binds in about 13% of blocks (ME), so labels must wait without losing their hash bonus:
+
+- **Deferred rows.** A label in the batch that this block does not pay (payee cap, `u·W ≤ B_h`, `W < W_MAX`, or a voucher the builder cannot use) is published as `t21.defer: {w, E}`, bound to its A leaf. Each cb-v3 coinbase restates the whole owed list `t21.owed: [{E, w, since}]`. Consensus requires `owed = (parent owed − rows paid here − rows older than T21_OWED_TTL)`, oldest first, followed by this block's defer rows at `since = height` (`owed_list`), and at most `T21_OWED_MAX` rows (`owed_cap`). A later block pays a row with a coinbase share of the same `E` and `w` (`share_bind` otherwise), and `u·w` is minted then. An owed `E` cannot be deferred again or reused by a new A leaf (`share_label`), and a row past the TTL cannot be paid (`owed_ttl`). State is the parent coinbase only, so reorg and load need nothing else. Shares plus defer rows count against `CB_SHARE_MAX`.
+- **Who pays.** Only the pool that issued a label knows its `β`, so only that pool can pay its owed rows. Its template pays its own rows first, oldest first, then the labels in the batch. Other producers must restate those rows, but consensus cannot make them pay. ME measured that at 85 shares a deferred row waits at most two of the issuing pool's blocks.
+- **One-block carry.** A share's PoW binds the parent header (proof slot 0) or the header before it (slot 1), so a share the batch cannot hold (raw count past `CB_SHARE_MAX`, units past `W_HASH_MAX`, or the owed list full) can wait one block. The node keeps a carry book keyed by block hash: the carry for tip `T` is the shares offered on `T`'s parent that `T` did not pay, recomputed after a reorg and reloaded from `t21-carry.json` after a restart. The next template puts that carry first.
+- **What cannot carry.** A slot-1 share that the next block also leaves out has expired. So has a share mined on an orphaned header, and a share on a label that is already paid or owed (the pool must issue one label per job header). The node counts expired carry and logs `t21_share_expired`. Holding work longer than that is escrow, which is Russell's ruling and is not built. `T21_OWED_TTL = 960` and `T21_OWED_MAX = 1,024` are testnet values pending that ruling.
+- **Empty batch.** A template that holds payable shares never publishes an empty batch: it throws `t21_empty_batch`. When every held label is individually unpayable (no payee slot, or `u·w > B_h`), the batch is empty and the template flags `empty_batch_held`. The carry book counts such tips and logs `t21_empty_batch_held`. An empty coinbase cannot defer, because it has no A leaves.
+
+## Pot carry
 
 The whole pot is carried only when the share batch is empty and the coinbase has no payout note. A non-empty batch carries only the law remainder `(Σ ρ_i) / W`, which is below the payout row count.
 
@@ -53,11 +69,13 @@ The next coinbases pay that list. The rows follow the pot, fee and reserve-fee r
 
 ## Template
 
-A voucher that fails `voucherKeysOk` is deferred before proving. A payout row that is not an FS-1 leaf after eight blinds throws `admit_note_point`. That payee and its shares are deferred to the next round, not deleted, and the template rebuilds once.
+A voucher that fails `voucherKeysOk` is deferred before proving. A payout row that is not an FS-1 leaf after eight blinds throws `admit_note_point`. That payee and its shares are deferred, not deleted, and the template rebuilds. In the node template those labels become defer rows.
 
-There is one payee cap, `payeeCapLive()` in `block_budget.js`, and both `blockBudget` and the cb-v3 verifier apply it. It counts pot rows, dummies included, and not the fee, reserve-fee, or 0x23 rows. On today's 8 MiB hex frame it is 171 (the byte fallback with the 17,400-byte row estimate). The 470 normal cap applies only once frames reach `FRAME_MIN`. Payees past the cap are deferred.
+There is one payee cap, `payeeCapLive()` in `block_budget.js`, and both `blockBudget` and the cb-v3 verifier apply it. It counts pot rows, dummies included, and not the fee, reserve-fee, or 0x23 rows. On today's 8 MiB hex frame it is 171 (the byte fallback with the 17,400-byte row estimate). The 470 normal cap applies only once frames reach `FRAME_MIN`. Payee slots are filled by units, largest first, with the finder's slot held first (MF-3), so many small vouchers cannot take them from the hashers. Payees past the cap are deferred.
 
-`buildTemplate({ t21 })` builds the node's cb-v3 coinbase. The pool supplies `labelOf` (note commit to `{voucher, E, ℓ, β}`), the finder voucher and the fee voucher. A label is `E = λG + βH` from the payee's public voucher, and the job's note commit is `t21ShareNc(magic, E)`. A share is mined against that note commit and carries no dest. Only labelled shares stay in the batch. The A leaves are the structural share verdict's, the same leaves consensus recomputes. Shares past `min(CB_SHARE_MAX, shareMax)`, past `u·W ≤ B_h`, or of a deferred payee leave the batch for the next round, so coinbase shares and A leaves stay one to one. An empty batch cannot carry the finder half, so fee-paying transactions wait for a round with shares. The parent vault's pending withdraws become the 0x23 rows. The template prices the coinbase at the cb-v3 weights.
+`buildTemplate({ t21 })` builds the node's cb-v3 coinbase. The pool supplies `labelOf` (note commit to `{voucher, E, ℓ, β}`), the finder voucher and the fee voucher. A label is `E = λG + βH` from the payee's public voucher, and the job's note commit is `t21ShareNc(magic, E)`. A share is mined against that note commit and carries no dest. Only labelled shares at or above the floor stay in the batch. The A leaves are the structural share verdict's, the same leaves consensus recomputes. `planT21Round` admits labels to the batch whole (carry first, then payees by units), pays owed rows and then batch labels, and defers the rest in-block. Rounding is not ordered by the template: the law floors every row and carries `Σρ_i/W` in `c_out`, so there is no remainder to hand out largest-first. An empty batch cannot carry the finder half, so fee-paying transactions wait for a round with shares. The parent vault's pending withdraws become the 0x23 rows. The template prices the coinbase at the cb-v3 weights.
+
+The pot split of the legacy coinbase, the pool, and `coinbase_notes.js` takes `floor(rest · count / total)` in bigint, since `rest · count` passes 2^53 once units are `2^bits`.
 
 The supply step accounts a cb-v3 block without opening a note. The payout rows' commitments must sum to `(S + c_in − c_out + u·W + Φ)·G + excess·H`. `Φ` is the public `fin` and must be the levy's finder half. `W` joins the accepted hash series, and the owed ledger must be empty. 0x23 rows are not counted again: the withdraw that queued them already counted its interest.
 
@@ -76,4 +94,4 @@ A send's verify weight is `25 + 25n` weight units for `1 ≤ n ≤ 8`. A 9-input
 
 ## Not in this cut
 
-`V12_GENESIS_BLOCK_HASH` stays empty. The node template builds cb-v3 when given a label source, but the pool does not issue labels to sessions yet: the stratum job still binds shares to the miner's dest, and ShearK does not take a job note commit. Dart wallet recovery, the reference-box full-cap timing, and a faster prover are open. The dalek R1CS encoding of the LogUp relation is the mainnet review item; this verifier checks that same identity with inverse product Schnorrs.
+`V12_GENESIS_BLOCK_HASH` stays empty. Share labelling is genesis gate item 12. The node template builds cb-v3 when given a label source, but the pool does not issue labels to sessions yet: the stratum job still binds shares to the miner's dest, and ShearK does not take a job note commit. Dart wallet recovery, the reference-box full-cap timing, and a faster prover are open. The dalek R1CS encoding of the LogUp relation is the mainnet review item; this verifier checks that same identity with inverse product Schnorrs.
