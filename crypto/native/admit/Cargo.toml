@@ -13,6 +13,12 @@ name = "shear_admit"
 # iOS is wallet-only: no node addon and no miner. CI does not sign that target.
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[features]
+default = []
+# Node addon only. Wallet cdylib, iOS staticlib, and Android .so leave this off
+# so shear_admit_prove_v3 / shear_admit_verify_v3 are not exported.
+admit-v3 = []
+
 [package.metadata.shear]
 ios = { target = "aarch64-apple-ios", crate-type = "staticlib", sign_ci = false }
 android = { target = "aarch64-linux-android", crate-type = "cdylib", abi = "arm64-v8a" }

@@ -23,7 +23,7 @@ int32_t shear_admit_verify_v3(
     const uint8_t *proof, uint32_t proof_len, const uint8_t *jroot,
     const uint8_t *c_tilde, const uint8_t *spend_tag,
     const uint8_t *ctx, uint32_t ctx_len);
-int32_t shear_range_prove(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t *out_len);
+int32_t shear_range_prove(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t out_cap, uint32_t *out_len);
 int32_t shear_range_verify(const uint8_t *c, const uint8_t *proof, uint32_t proof_len);
 
 static int buf32(napi_env env, napi_value v, uint8_t out[32]) {
@@ -292,7 +292,9 @@ static napi_value prove_range_fn(napi_env env, napi_callback_info info) {
   uint8_t *out = (uint8_t *)malloc(maxp);
   uint32_t olen = 0;
   int32_t ok = 0;
-  if (out) ok = shear_range_prove(v, r, out, &olen);
+  if (out) ok = shear_range_prove(v, r, out, maxp, &olen);
+  volatile uint8_t *wipe = r;
+  for (size_t i = 0; i < sizeof r; i++) wipe[i] = 0;
   if (!out || ok != 1) {
     free(out);
     napi_value f;

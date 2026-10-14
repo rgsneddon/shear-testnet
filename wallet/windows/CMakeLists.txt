@@ -62,9 +62,10 @@ set(SHEAR_ADMIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/admit")
 set(SHEAR_ADMIT_DLL "${SHEAR_ADMIT_DIR}/target/release/shear_admit.dll")
 add_custom_target(shear_admit_cdylib
   COMMAND cargo build --release --manifest-path "${SHEAR_ADMIT_DIR}/Cargo.toml"
+  COMMAND python "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/stamp_admit_pin.py" --dart "${SHEAR_ADMIT_DLL}"
   BYPRODUCTS "${SHEAR_ADMIT_DLL}"
   WORKING_DIRECTORY "${SHEAR_ADMIT_DIR}"
-  COMMENT "Building shear_admit.dll"
+  COMMENT "Building shear_admit.dll without admit-v3"
   VERBATIM
 )
 add_dependencies(${BINARY_NAME} shear_admit_cdylib)

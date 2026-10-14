@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef int32_t (*range_fn)(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t *out_len);
+typedef int32_t (*range_fn)(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t out_cap, uint32_t *out_len);
 
 static int hex_nibble(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
   }
   uint8_t *out = (uint8_t *)malloc(65536);
   uint32_t olen = 0;
-  int32_t ok = out ? fn((uint64_t)v, r, out, &olen) : 0;
+  int32_t ok = out ? fn((uint64_t)v, r, out, 65536, &olen) : 0;
   wipe(r, rn);
   free(r);
   if (!out || ok != 1 || olen == 0 || olen > 65536) {

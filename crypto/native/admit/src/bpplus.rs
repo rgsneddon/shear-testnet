@@ -6,6 +6,26 @@ use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
 use sha2::{Digest, Sha512};
+use zeroize::Zeroize;
+
+/// Named secret. Drop wipes it on every return path, including panic.
+struct SecretScalar(Scalar);
+
+impl Drop for SecretScalar {
+    fn drop(&mut self) {
+        wipe_scalar(&mut self.0);
+    }
+}
+
+impl SecretScalar {
+    fn from_scalar(s: Scalar) -> Self {
+        Self(s)
+    }
+
+    fn as_scalar(&self) -> Scalar {
+        self.0
+    }
+}
 
 fn wipe_scalar(s: &mut Scalar) {
     unsafe {
@@ -66,20 +86,21 @@ fn nonce(tag: &[u8], r: &[u8; 32], i: u64) -> Scalar {
 
 /// Prove C = v·G + r·H and each bit of v is 0 or 1, packed (not v3 bit-OR).
 pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
-    let mut r = Scalar::from_bytes_mod_order(*r_bytes);
+    let r = SecretScalar::from_scalar(Scalar::from_bytes_mod_order(*r_bytes));
     let h = h_note();
-    let c = G * Scalar::from(v) + h * r;
+    let c = G * Scalar::from(v) + h * r.as_scalar();
     let c_b = compress(&c);
 
     let mut bits = [0u8; RANGE_BITS];
-    let mut s = vec![Scalar::ZERO; RANGE_BITS];
+    let mut s = Vec::with_capacity(RANGE_BITS);
     let mut b_pts = vec![RistrettoPoint::identity(); RANGE_BITS];
     let mut n = v;
     for i in 0..RANGE_BITS {
         bits[i] = (n & 1) as u8;
         n >>= 1;
-        s[i] = nonce(b"sbit", r_bytes, i as u64);
-        b_pts[i] = G * Scalar::from(bits[i] as u64) + h * s[i];
+        let si = SecretScalar::from_scalar(nonce(b"sbit", r_bytes, i as u64));
+        b_pts[i] = G * Scalar::from(bits[i] as u64) + h * si.as_scalar();
+        s.push(si);
     }
 
     let mut out = Vec::with_capacity(2 + 32 + RANGE_BITS * 192 + 64);
@@ -98,21 +119,21 @@ pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
     }
     let e_all = chal(&chal_parts);
 
-    let mut s_sum = Scalar::ZERO;
+    let mut s_sum = SecretScalar::from_scalar(Scalar::ZERO);
     let mut two = Scalar::ONE;
     for i in 0..RANGE_BITS {
         let b = bits[i] == 1;
         let bi = b_pts[i];
-        let si = s[i];
+        let si = s[i].as_scalar();
         let p0 = bi;
         let p1 = bi - G;
         let real = if b { p1 } else { p0 };
         let fake = if b { p0 } else { p1 };
-        let e_fake = nonce(b"efake", r_bytes, i as u64);
-        let z_fake = nonce(b"zfake", r_bytes, i as u64);
-        let r_fake = h * z_fake - fake * e_fake;
-        let k = nonce(b"kbit", r_bytes, i as u64);
-        let r_real = h * k;
+        let e_fake = SecretScalar::from_scalar(nonce(b"efake", r_bytes, i as u64));
+        let z_fake = SecretScalar::from_scalar(nonce(b"zfake", r_bytes, i as u64));
+        let r_fake = h * z_fake.as_scalar() - fake * e_fake.as_scalar();
+        let k = SecretScalar::from_scalar(nonce(b"kbit", r_bytes, i as u64));
+        let r_real = h * k.as_scalar();
         let r0 = if b { r_fake } else { r_real };
         let r1 = if b { r_real } else { r_fake };
         let e = chal(&[
@@ -122,22 +143,22 @@ pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
             &compress(&r1),
             &e_all.to_bytes(),
         ]);
-        let e_real = e - e_fake;
-        let z_real = k + e_real * si;
-        let e0 = if b { e_fake } else { e_real };
-        let e1 = if b { e_real } else { e_fake };
-        let z0 = if b { z_fake } else { z_real };
-        let z1 = if b { z_real } else { z_fake };
+        let e_real = SecretScalar::from_scalar(e - e_fake.as_scalar());
+        let z_real = SecretScalar::from_scalar(k.as_scalar() + e_real.as_scalar() * si);
+        let e0 = if b { e_fake.as_scalar() } else { e_real.as_scalar() };
+        let e1 = if b { e_real.as_scalar() } else { e_fake.as_scalar() };
+        let z0 = if b { z_fake.as_scalar() } else { z_real.as_scalar() };
+        let z1 = if b { z_real.as_scalar() } else { z_fake.as_scalar() };
         out.extend_from_slice(&compress(&r0));
         out.extend_from_slice(&compress(&r1));
         out.extend_from_slice(&e0.to_bytes());
         out.extend_from_slice(&e1.to_bytes());
         out.extend_from_slice(&z0.to_bytes());
         out.extend_from_slice(&z1.to_bytes());
-        s_sum += two * si;
+        s_sum = SecretScalar::from_scalar(s_sum.as_scalar() + two * si);
         two += two;
     }
-    let r_delta = r - s_sum;
+    let r_delta = SecretScalar::from_scalar(r.as_scalar() - s_sum.as_scalar());
     let acc = {
         let mut a = RistrettoPoint::identity();
         let mut two = Scalar::ONE;
@@ -148,13 +169,13 @@ pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
         a
     };
     let p = c - acc;
-    let k = nonce(b"cons", r_bytes, 0);
-    let r_pt = h * k;
+    let k = SecretScalar::from_scalar(nonce(b"cons", r_bytes, 0));
+    let r_pt = h * k.as_scalar();
     let e = chal(&[b"cons", &c_b, &compress(&p), &compress(&r_pt)]);
-    let z = k + e * r_delta;
+    let z = SecretScalar::from_scalar(k.as_scalar() + e * r_delta.as_scalar());
     out.extend_from_slice(&compress(&r_pt));
-    out.extend_from_slice(&z.to_bytes());
-    wipe_scalar(&mut r);
+    out.extend_from_slice(&z.as_scalar().to_bytes());
+    bits.zeroize();
     Some(out)
 }
 

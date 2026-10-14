@@ -29,7 +29,10 @@ else
 endif
 
 ADMIT_DIR := $(abspath admit)
-ADMITLIB := $(ADMIT_DIR)/target/release/libshear_admit.a
+# Node addon only. Wallet targets do not pass admit-v3.
+ADMIT_FEATURES := --features admit-v3
+ADMIT_TARGET := $(ADMIT_DIR)/target/node
+ADMITLIB := $(ADMIT_TARGET)/release/libshear_admit.a
 
 .PHONY: all clean admitlib ios-staticlib android-arm64
 
@@ -47,9 +50,9 @@ ifeq ($(OS),Windows_NT)
 endif
 
 admitlib:
-	cargo build --release --manifest-path $(ADMIT_DIR)/Cargo.toml
+	cargo build --release $(ADMIT_FEATURES) --target-dir $(ADMIT_TARGET) --manifest-path $(ADMIT_DIR)/Cargo.toml
 
-# iOS wallet staticlib. No codesign. Requires a macOS host with the iOS SDK.
+# iOS wallet staticlib. No codesign. admit-v3 stays off.
 ios-staticlib:
 	cargo rustc --release --target aarch64-apple-ios --crate-type staticlib --manifest-path $(ADMIT_DIR)/Cargo.toml
 

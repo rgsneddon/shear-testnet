@@ -7,7 +7,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ADMIT="$HERE/admit"
 OUT="$ROOT/wallet/android/app/src/main/jniLibs/arm64-v8a"
-API="${SHEAR_ANDROID_API:-21}"
+API="${SHEAR_ANDROID_API:-29}"
 
 if [[ -z "${ANDROID_NDK_HOME:-}" && -n "${ANDROID_NDK_ROOT:-}" ]]; then
   ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
@@ -47,7 +47,9 @@ if command -v rustup >/dev/null 2>&1; then
   rustup target add aarch64-linux-android
 fi
 
+# admit-v3 stays off. The wallet .so must not export shear_admit_prove_v3.
 cargo build --release --target aarch64-linux-android --manifest-path "$ADMIT/Cargo.toml"
 mkdir -p "$OUT"
 cp "$ADMIT/target/aarch64-linux-android/release/libshear_admit.so" "$OUT/libshear_admit.so"
+python3 "$HERE/stamp_admit_pin.py" "$OUT/libshear_admit.so"
 echo "staged $OUT/libshear_admit.so"
