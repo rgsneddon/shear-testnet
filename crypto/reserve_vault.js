@@ -1046,6 +1046,23 @@ export function verifyReservePayout(state, tx, clockMs) {
     return { ok: true };
   }
   if (act.kind !== KIND_WITHDRAW) return { ok: true };
+  return verifyReserveWithdraw(state, tx, clockMs);
+}
+
+/**
+ * The withdraw rule (PSA-fd28-1). Block accept and fork verify reach it
+ * through verifyReservePayout; mempool admission and template selection call
+ * it from admitMempool. `state` is the vault before the block and `clockMs`
+ * is the header time. The amount is the public action amount: tx.nanos, then
+ * the receipt label, then valueProof.v. The one withdraw note must open to
+ * it, its proof value must equal it, and it must be exactly principal plus
+ * this epoch's interest. A tx that is not a withdraw passes.
+ */
+export function verifyReserveWithdraw(state, tx, clockMs) {
+  const act = reserveAction(tx);
+  if (!act || act.kind !== KIND_WITHDRAW) return { ok: true };
+  if (!state) return { ok: false, reason: 'no_vault' };
+  if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   if (String(tx?.programId || '') !== RESERVE_PROGRAM) {
     return { ok: false, reason: 'mint_forbidden' };
   }
