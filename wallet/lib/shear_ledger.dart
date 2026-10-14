@@ -8803,42 +8803,32 @@ class ShearPoolClient {
     bool legacyPoolSend = false,
     String? nanosWire,
   }) {
-    final sealedSend = (kind == null || kind.isEmpty || kind == 'send') &&
-        sig != null &&
-        sig.isNotEmpty &&
-        spendPub != null &&
-        spendPub.isNotEmpty &&
-        vin != null &&
-        vin.isNotEmpty &&
-        vout != null &&
-        vout.isNotEmpty &&
-        (admitProof != null || (admitProofs != null && admitProofs.isNotEmpty));
-    return _post('/api/wallet/send', {
-        if (!sealedSend) 'from': from,
-        'to': to,
-        if (nanosWire != null && nanosWire.isNotEmpty) 'nanos': nanosWire,
-        if (!sealedSend && (nanosWire == null || nanosWire.isEmpty)) 'amount': amount,
-        if (fee != null) 'fee': fee,
-        if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
-        if (memoCt != null) 'memoCt': memoCt,
-        if (open != null && open.isNotEmpty) 'open': open,
-        if (sig != null && sig.isNotEmpty) 'sig': sig,
-        if (spendPub != null && spendPub.isNotEmpty) 'spendPub': spendPub,
-        if (ephPub != null && ephPub.isNotEmpty) 'ephPub': ephPub,
-        if (portalOpen != null && portalOpen.isNotEmpty) 'portalOpen': portalOpen,
-        if (kind != null && kind.isNotEmpty) 'kind': kind,
-        if (programId != null && programId.isNotEmpty) 'programId': programId,
-        if (choice != null && choice.isNotEmpty) 'choice': choice,
-        if (currentEpoch != null) 'currentEpoch': currentEpoch,
-        if (epochStartMs != null) 'epochStartMs': epochStartMs,
-        if (!sealedSend && change != null && change.isNotEmpty) 'change': change,
-        if (vin != null) 'vin': vin,
-        if (vout != null) 'vout': vout,
-        if (excess != null) 'excess': excess,
-        if (admitProof != null) 'admit_proof': admitProof,
-        if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
-        if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
-      }, legacyPoolSend: legacyPoolSend);
+    return _post('/api/wallet/send', walletSendBody(
+      from: from,
+      to: to,
+      amount: amount,
+      memoCt: memoCt,
+      open: open,
+      sig: sig,
+      portalOpen: portalOpen,
+      kind: kind,
+      programId: programId,
+      choice: choice,
+      currentEpoch: currentEpoch,
+      epochStartMs: epochStartMs,
+      change: change,
+      spendPub: spendPub,
+      ephPub: ephPub,
+      vin: vin,
+      vout: vout,
+      excess: excess,
+      admitProof: admitProof,
+      admitProofs: admitProofs,
+      spendTag: spendTag,
+      fee: fee,
+      paintedOwedNanos: paintedOwedNanos,
+      nanosWire: nanosWire,
+    ), legacyPoolSend: legacyPoolSend);
   }
 
   Future<Map<String, dynamic>> fluxset() async {
@@ -8923,4 +8913,93 @@ Future<String> continuumTipReport({List<String>? seeds, HttpClient? http}) async
     'displayHeight=${ledger.displayHeight}',
     'tipHeight=${ledger.tipHeight}',
   ].join('\n');
+}
+
+/// Body for POST /api/wallet/send. A flow send (kind send) posts the sealed tx only:
+/// no from, to, amount, nanos, change, open, or painted owed (AL-3). Its recipient must
+/// carry an admit base, or there is no key to encrypt amtCt to (AL-7). Lock, vote, and
+/// withdraw keep their public-amount body.
+Map<String, dynamic> walletSendBody({
+  required String from,
+  required String to,
+  required double amount,
+  Map<String, dynamic>? memoCt,
+  String? open,
+  String? sig,
+  String? portalOpen,
+  String? kind,
+  String? programId,
+  String? choice,
+  int? currentEpoch,
+  int? epochStartMs,
+  String? change,
+  String? spendPub,
+  String? ephPub,
+  List<dynamic>? vin,
+  List<dynamic>? vout,
+  dynamic excess,
+  Map<String, dynamic>? admitProof,
+  List<Map<String, dynamic>>? admitProofs,
+  String? spendTag,
+  int? fee,
+  int paintedOwedNanos = 0,
+  String? nanosWire,
+}) {
+  final flow = kind == null || kind.isEmpty || kind == 'send';
+  if (flow) {
+    if (admitBaseFromAddress(to) == null) throw StateError('send_dest_no_admit_base');
+    final sealed = sig != null &&
+        sig.isNotEmpty &&
+        spendPub != null &&
+        spendPub.isNotEmpty &&
+        vin != null &&
+        vin.isNotEmpty &&
+        vout != null &&
+        vout.isNotEmpty &&
+        (admitProof != null || (admitProofs != null && admitProofs.isNotEmpty));
+    if (!sealed) throw StateError('send_not_sealed');
+    for (final o in vout) {
+      if (o is Map && o['kind'] != 'dummy' && (o['amtCt'] == null || o['rEph'] == null || o['rCt'] == null)) {
+        throw StateError('send_vout_not_wrapped');
+      }
+    }
+    return {
+      if (fee != null) 'fee': fee,
+      if (memoCt != null) 'memoCt': memoCt,
+      'sig': sig,
+      'spendPub': spendPub,
+      'vin': vin,
+      'vout': vout,
+      if (excess != null) 'excess': excess,
+      if (admitProof != null) 'admit_proof': admitProof,
+      if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+      if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+    };
+  }
+  return {
+    'from': from,
+    'to': to,
+    if (nanosWire != null && nanosWire.isNotEmpty) 'nanos': nanosWire,
+    if (nanosWire == null || nanosWire.isEmpty) 'amount': amount,
+    if (fee != null) 'fee': fee,
+    if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
+    if (memoCt != null) 'memoCt': memoCt,
+    if (open != null && open.isNotEmpty) 'open': open,
+    if (sig != null && sig.isNotEmpty) 'sig': sig,
+    if (spendPub != null && spendPub.isNotEmpty) 'spendPub': spendPub,
+    if (ephPub != null && ephPub.isNotEmpty) 'ephPub': ephPub,
+    if (portalOpen != null && portalOpen.isNotEmpty) 'portalOpen': portalOpen,
+    'kind': kind,
+    if (programId != null && programId.isNotEmpty) 'programId': programId,
+    if (choice != null && choice.isNotEmpty) 'choice': choice,
+    if (currentEpoch != null) 'currentEpoch': currentEpoch,
+    if (epochStartMs != null) 'epochStartMs': epochStartMs,
+    if (change != null && change.isNotEmpty) 'change': change,
+    if (vin != null) 'vin': vin,
+    if (vout != null) 'vout': vout,
+    if (excess != null) 'excess': excess,
+    if (admitProof != null) 'admit_proof': admitProof,
+    if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+    if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+  };
 }
