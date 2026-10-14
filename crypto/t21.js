@@ -35,6 +35,7 @@ import {
   AMOUNT_KEYS, BP_M, BP_N, CB_FORM, DOM_CB, FEE_BPS_MAX, GEN_H,
   CB_SHARE_MAX, K_MIN, LOGUP_DOM, OUTPUT_MAX, PAYOUT_KIND_CODE, PAYOUT_KINDS,
   RANGE_TAG, RHO_LIMBS, R_CHUNKS, SCALAR_MAX, SHARE_BIND_DOM, T21_REQUIRE_ALL_COINBASES,
+  T21_OWED_MAX, T21_OWED_TTL,
   V_CHUNKS, VAULT_KIND_CODE, VAULT_R_DOM, VE_CHUNKS, W_HASH_MAX, W_MAX, W_S_MAX,
 } from './t21_params.js';
 
@@ -561,7 +562,17 @@ export function statementOf(tx) {
     w: String(s.w),
     E: bytes32(s.E) || Buffer.alloc(0),
   }));
+  // Deferred rows join T_stmt only when present, so a coinbase without them keeps its vector bytes.
+  const defer = Array.isArray(t21.defer) ? t21.defer : [];
+  const owed = Array.isArray(t21.owed) ? t21.owed : [];
+  const rowsOwed = defer.length || owed.length
+    ? {
+        defer: defer.map((d) => ({ w: String(d.w), E: bytes32(d.E) || Buffer.alloc(0) })),
+        owed: owed.map((o) => ({ w: String(o.w), E: bytes32(o.E) || Buffer.alloc(0), since: String(o.since) })),
+      }
+    : {};
   return sha(stable({
+    ...rowsOwed,
     cbForm: tx?.cbForm,
     S: String(t21.S),
     cin: String(t21.cin),
@@ -825,6 +836,54 @@ function publicRows(spec) {
   return rows;
 }
 
+/**
+ * Deferred rows on the wire: t21.defer [{w, E}] are this block's proven
+ * labels it does not pay; t21.owed [{E, w, since}] is the whole owed list
+ * after this block. Both are omitted when empty. An empty round can restate
+ * the owed list but cannot defer: it has no A leaves.
+ */
+function owedFields(spec, empty) {
+  const defer = empty ? [] : (spec.defer || []).map((d) => ({ w: BigInt(d.w).toString(), E: Buffer.from(asU8(d.E)) }));
+  if (empty && (spec.defer || []).length) throw fail('share_bind');
+  const owed = (spec.owed || []).map((o) => ({ E: Buffer.from(asU8(o.E)), w: BigInt(o.w).toString(), since: Number(o.since) }));
+  const out = {};
+  if (defer.length) out.defer = defer;
+  if (owed.length) out.owed = owed;
+  return out;
+}
+
+/**
+ * The owed list a coinbase must publish: owedIn minus what it paid and what
+ * passed T21_OWED_TTL, oldest first, then its own defer at this height.
+ * `paidE` is a set of E hex. Pure, so the template and the verifier agree.
+ */
+export function t21OwedNext({ owedIn = [], paidE = new Set(), defer = [], height }) {
+  const h = BigInt(height);
+  const out = [];
+  for (const o of owedIn) {
+    const e = Buffer.from(asU8(o.E)).toString('hex');
+    if (paidE.has(e)) continue;
+    if (h - BigInt(o.since) > BigInt(T21_OWED_TTL)) continue;
+    out.push({ E: Buffer.from(asU8(o.E)), w: BigInt(o.w).toString(), since: Number(o.since) });
+  }
+  for (const d of defer) out.push({ E: Buffer.from(asU8(d.E)), w: BigInt(d.w).toString(), since: Number(height) });
+  return out;
+}
+
+/** Entries of owedIn still payable at `height` (not past the TTL). */
+export function t21OwedLive(owedIn, height) {
+  const h = BigInt(height);
+  return (owedIn || []).filter((o) => h - BigInt(o.since) <= BigInt(T21_OWED_TTL));
+}
+
+/** The owed list a cb-v3 coinbase published, as the next block's owedIn. Not cb-v3: none. */
+export function t21OwedOf(tx) {
+  if (!isT21Coinbase(tx)) return [];
+  return (Array.isArray(tx.t21?.owed) ? tx.t21.owed : []).map((o) => ({
+    E: Buffer.from(asU8(o.E)), w: BigInt(o.w), since: Number(o.since),
+  }));
+}
+
 function emptyCoinbase(spec, deferred) {
   const S = scalarOk(spec.S);
   const cin = scalarOk(spec.cin);
@@ -847,6 +906,7 @@ function emptyCoinbase(spec, deferred) {
       magic: spec.magic,
       prevHash: Buffer.from(asU8(spec.prevHash)),
       shares: [],
+      ...owedFields(spec, true),
     },
   };
   tx.t21.stmt = statementOf(tx);
@@ -900,6 +960,7 @@ function buildOnce(spec, payees, deferred, seed) {
       magic: spec.magic,
       prevHash: Buffer.from(asU8(spec.prevHash)),
       shares: shares.map((s) => ({ w: s.w.toString(), E: s.E })),
+      ...owedFields(spec, false),
     },
   };
   const stmt = statementOf(skel);
@@ -1042,6 +1103,7 @@ function sameBytes(a, b) {
  *     (the proven batch, or the header-bound aLeaves of a buried pruned block),
  *   hashBudget: B_h in nanos; u·W must not exceed it,
  *   prevEs: E_s hex set of the parent coinbase (carry window),
+ *   owedIn: the parent coinbase's t21.owed [{E, w, since}] (deferred rows),
  *   vaults: pending pinned withdraws [{ mintId, vaultNanos, B }].
  * Returns paid = S + c_in − c_out + u·W + Φ, Φ, and the finder row's B*.
  */
@@ -1055,8 +1117,11 @@ export function verifyT21Coinbase(input) {
   if (vout.length > OUTPUT_MAX) return no('tx_cap');
   const t21 = tx.t21 || {};
   const shares = Array.isArray(t21.shares) ? t21.shares : [];
-  if (shares.length > CB_SHARE_MAX) return no('share_cap');
-  for (const s of shares) {
+  const defer = Array.isArray(t21.defer) ? t21.defer : [];
+  if (t21.defer != null && !Array.isArray(t21.defer)) return no('owed_list');
+  if (t21.owed != null && !Array.isArray(t21.owed)) return no('owed_list');
+  if (shares.length + defer.length > CB_SHARE_MAX) return no('share_cap');
+  for (const s of shares.concat(defer)) {
     const w = scalarOk(s?.w);
     if (w == null || w <= 0n || w > W_S_MAX) return no('split_cap');
   }
@@ -1100,7 +1165,9 @@ export function verifyT21Coinbase(input) {
     if (payout.length) return no('pot_carry');
     if (cout !== cin + S) return no('pot_sched');
     if (f !== 0n || u !== 0n) return no('fee_sched');
-    if (!Array.isArray(expect.shares) || expect.shares.length) return no('share_bind');
+    if (!Array.isArray(expect.shares) || expect.shares.length || defer.length) return no('share_bind');
+    const owedOk = checkOwed(t21, [], [], expect);
+    if (!owedOk.ok) return owedOk;
     if (!sameBytes(t21.stmt, statementOf(tx))) return no('split_law');
     return { ok: true, reason: null, paid: 0n, phi: 0n, W: 0n, f: 0n, finB: null, vaultPaid: vaultPaid.paid };
   }
@@ -1111,18 +1178,19 @@ export function verifyT21Coinbase(input) {
   for (const o of payout) {
     if (!PAYOUT_KINDS.has(String(o.kind || ''))) return no('cb_form');
   }
-  // B4: one proven batch share per published share, same weight.
+  // B4: every proven A leaf is paid by one published share or deferred by one
+  // defer row, same weight; a share may instead pay an owed row at its w.
   let W = 0n;
   const seenE = new Set();
-  for (const s of shares) {
+  for (const s of shares.concat(defer)) {
     if (Object.keys(s).some((k) => k !== 'w' && k !== 'E')) return no('share_label');
     if (!pointOk(s.E)) return no('share_label');
     const hex = Buffer.from(asU8(s.E)).toString('hex');
     if (seenE.has(hex)) return no('share_label');
     if (expect.prevEs && expect.prevEs.has(hex)) return no('share_label');
     seenE.add(hex);
-    W += BigInt(s.w);
   }
+  for (const s of shares) W += BigInt(s.w);
   if (W <= 0n || W >= W_MAX) return no('split_cap');
   if (W > W_HASH_MAX) return no('hash_units');
   let Bh;
@@ -1132,13 +1200,15 @@ export function verifyT21Coinbase(input) {
     return no('hash_budget');
   }
   if (Bh < 0n || u * W > Bh) return no('hash_budget');
-  if (!Array.isArray(expect.shares) || expect.shares.length !== shares.length) return no('share_bind');
+  const owedOk = checkOwed(t21, shares, defer, expect);
+  if (!owedOk.ok) return owedOk;
+  if (!Array.isArray(expect.shares) || expect.shares.length !== owedOk.own.length + defer.length) return no('share_bind');
   const pool = new Map();
   for (const p of expect.shares) {
     const k = `${Buffer.from(asU8(p.nc)).toString('hex')}:${String(p.units)}`;
     pool.set(k, (pool.get(k) || 0) + 1);
   }
-  for (const s of shares) {
+  for (const s of owedOk.own.concat(defer)) {
     const k = `${t21ShareNc(t21.magic, s.E).toString('hex')}:${String(s.w)}`;
     const n = pool.get(k) || 0;
     if (!n) return no('share_bind');
@@ -1216,6 +1286,46 @@ export function verifyT21Coinbase(input) {
   return {
     ok: true, reason: null, paid: mintG, phi, W, f, finB, vaultPaid: vaultPaid.paid,
   };
+}
+
+/**
+ * Deferred rows. expect.owedIn is the parent coinbase's t21.owed (none for a
+ * legacy parent). A share whose E is owed pays that row and must carry its w;
+ * a row past T21_OWED_TTL cannot be paid. A defer row may not re-defer an
+ * owed E. t21.owed must equal t21OwedNext exactly, at most T21_OWED_MAX rows.
+ * Returns the shares that are this block's own (bound to A leaves).
+ */
+function checkOwed(t21, shares, defer, expect) {
+  const owedIn = Array.isArray(expect.owedIn) ? expect.owedIn : [];
+  const height = BigInt(expect.height);
+  const byE = new Map();
+  for (const o of owedIn) byE.set(Buffer.from(asU8(o.E)).toString('hex'), o);
+  const own = [];
+  const paidE = new Set();
+  for (const s of shares) {
+    const hex = Buffer.from(asU8(s.E)).toString('hex');
+    const row = byE.get(hex);
+    if (!row) {
+      own.push(s);
+      continue;
+    }
+    if (height - BigInt(row.since) > BigInt(T21_OWED_TTL)) return no('owed_ttl');
+    if (BigInt(s.w) !== BigInt(row.w)) return no('share_bind');
+    paidE.add(hex);
+  }
+  for (const d of defer) {
+    if (byE.has(Buffer.from(asU8(d.E)).toString('hex'))) return no('share_label');
+  }
+  const want = t21OwedNext({ owedIn, paidE, defer, height: expect.height });
+  if (want.length > T21_OWED_MAX) return no('owed_cap');
+  const got = Array.isArray(t21.owed) ? t21.owed : [];
+  if (got.length !== want.length) return no('owed_list');
+  for (let i = 0; i < want.length; i += 1) {
+    const g = got[i];
+    if (!g || typeof g !== 'object' || Object.keys(g).some((k) => k !== 'E' && k !== 'w' && k !== 'since')) return no('owed_list');
+    if (!sameBytes(g.E, want[i].E) || String(g.w) !== want[i].w || Number(g.since) !== want[i].since) return no('owed_list');
+  }
+  return { ok: true, own };
 }
 
 /** The 0x23 rows must be exactly planVaults over chain state, right after the payout rows. */
@@ -1478,6 +1588,7 @@ export const GENESIS_GATE = Object.freeze([
   { n: 9, item: 'Residuals documented', ok: true, note: 'specs/t21-coinbase.md' },
   { n: 10, item: 'PA, CA, ME, and PSA sign-off on S8', ok: false, note: 'CA review of the LogUp, R-A′ and range composition is required.' },
   { n: 11, item: 'cb-v3 is the only coinbase form once the genesis hash is set', ok: true, note: 't21CbOnly() is true whenever V12_GENESIS_BLOCK_HASH is set; verifyBlockConsensus rejects a legacy coinbase with cb_form.' },
+  { n: 12, item: 'Pool and miner share labelling', ok: false, note: 'Stratum shares must bind a pool-issued T21 label (one label per job header), ShearK jobs must carry its note commit, and pool share records must drop the dest. The node template pays labelled shares; the pool and miner side is not wired.' },
 ]);
 
 export function genesisGateStatus() {

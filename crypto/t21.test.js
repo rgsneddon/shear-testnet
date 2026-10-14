@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto';
 import { G, H, pointBytes } from './note.js';
 import { feeOf, lawDust, splitLaw } from './t21_law.js';
 import {
-  CB_SHARE_MAX, GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_REQUIRE_ALL_COINBASES, VOUCHER_GAP, W_HASH_MAX,
+  CB_SHARE_MAX, GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_OWED_MAX, T21_OWED_TTL, T21_REQUIRE_ALL_COINBASES, VOUCHER_GAP,
+  W_HASH_MAX,
 } from './t21_params.js';
 import {
   publicVoucher, voucherAt, voucherKeysOk, vouchersFromShewall, walletSecretBytes,
@@ -17,10 +18,10 @@ import {
 import { packShewall, sealShewallBin } from './shewall_bin.js';
 import {
   AGG_KEYS, CHUNK_KEYS, buildT21Coinbase, genesisGateStatus, minerShare, observerView, openOutput, payoutDelta,
-  statementOf, supplyIdentities, t21CbOnly, t21ShareNc, vaultCommit, verifyT21Coinbase,
+  statementOf, supplyIdentities, t21CbOnly, t21OwedNext, t21OwedOf, t21ShareNc, vaultCommit, verifyT21Coinbase,
 } from './t21.js';
 import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
-import { accountShareUnits, aLeavesFromShares } from './share_batch.js';
+import { accountShareUnits, aLeavesFromShares, t21ShareCredit } from './share_batch.js';
 import { buildDualTree } from './clearing.js';
 import {
   K_VW, MAX_BLOCK_VERIFY_WEIGHT, R_VW_WEIGHT, R_WEIGHT, W_ROW_0X23, blockBudget, payeeCapLive, txBudget, txVerifyWeight,
@@ -444,12 +445,13 @@ describe('T21 cb-v3 coinbase', { timeout: 600_000 }, () => {
 describe('T21 hash bonus budget (P0-2, P1-1)', { timeout: 600_000 }, () => {
   const u = 1000n;
   const base = { S: 5_000_000n, cin: 0n, u, height: 9, magic, prevHash, dummySecret };
-  const fill = (top) => [payee(0, [1n << 27n, top]), payee(1, [1n]), payee(2, [1n]), payee(3, [1n])];
+  const fill = (top) => [payee(0, [1n << 47n, top]), payee(1, [1n]), payee(2, [1n]), payee(3, [1n])];
 
-  it('caps W at the retained 2^28 and u·W at B_h', () => {
-    assert.equal(W_HASH_MAX, BigInt(MAX_HASH_UNITS_PER_BLOCK));
-    const at = buildT21Coinbase({ ...base, payees: fill((1n << 27n) - 3n) });
-    assert.equal(at.W, W_HASH_MAX);
+  it('caps W below 2^48 and u·W at B_h', () => {
+    assert.equal(W_HASH_MAX, 1n << 48n);
+    assert.ok(W_HASH_MAX > BigInt(MAX_HASH_UNITS_PER_BLOCK));
+    const at = buildT21Coinbase({ ...base, payees: fill((1n << 47n) - 4n) });
+    assert.equal(at.W, W_HASH_MAX - 1n);
     const demand = u * at.W;
     const ex = expectFor(at.tx);
     for (const [Bh, want] of [[2n * demand, true], [demand, true], [demand / 2n, false], [demand / 10n, false]]) {
@@ -463,23 +465,38 @@ describe('T21 hash bonus budget (P0-2, P1-1)', { timeout: 600_000 }, () => {
     assert.equal(verifyT21Coinbase({ tx: empty.tx, expect: expectFor(empty.tx, { shares: [], hashBudget: 0n }) }).ok, true);
   });
 
-  it('refuses W one unit over the cap even with an unlimited budget', () => {
-    const over = buildT21Coinbase({ ...base, payees: fill((1n << 27n) - 2n) });
-    assert.equal(over.W, W_HASH_MAX + 1n);
-    const got = verifyT21Coinbase({ tx: over.tx, expect: expectFor(over.tx, { hashBudget: 1n << 60n }) });
-    assert.equal(got.reason, 'hash_units');
+  it('refuses W at 2^48 even with an unlimited budget', () => {
+    assert.throws(() => buildT21Coinbase({ ...base, payees: fill((1n << 47n) - 3n) }), (e) => e.reason === 'split_cap');
+    const at = buildT21Coinbase({ ...base, payees: fill((1n << 47n) - 4n) });
+    const tx = structuredClone(at.tx);
+    const top = tx.t21.shares.find((s) => BigInt(s.w) === (1n << 47n) - 4n);
+    top.w = String((1n << 47n) - 3n);
+    const got = verifyT21Coinbase({ tx, expect: expectFor(tx, { hashBudget: 1n << 62n }) });
+    assert.equal(got.reason, 'split_cap');
   });
 
-  it('feeds retained units, not 2^bits, so eight 2^28 shares still sum to 2^28', () => {
+  it('credits every share its full 2^bits: no pro-rata cut, no round-robin (ME G6)', () => {
     const rows = [...Array(8)].map((_, i) => ({
       noteCommit: t21ShareNc(magic, pointBytes(G.multiply(BigInt(i + 2)))), nonce: (28n << 56n) | BigInt(i), shareBits: 28,
     }));
-    const acc = accountShareUnits(rows);
+    const credit = t21ShareCredit();
+    const acc = accountShareUnits(rows, credit.unitCap, credit);
+    assert.equal(acc.ok, true);
     const leaves = aLeavesFromShares(acc.bound, acc.room, acc.retained);
     assert.equal(leaves.length, 8);
-    assert.equal(leaves.reduce((n, l) => n + BigInt(l.count), 0n), W_HASH_MAX);
+    assert.ok(leaves.every((l) => l.count === 2 ** 28));
     const shares = t21ShareUnits({}, [], leaves, false, null).shares;
-    assert.equal(shares.reduce((n, l) => n + l.units, 0n), W_HASH_MAX);
+    assert.equal(shares.reduce((n, l) => n + l.units, 0n), 8n << 28n);
+    // Over the cap the whole batch is hash_units; nothing is scaled down.
+    assert.equal(accountShareUnits(rows, 7n << 28n, credit).reason, 'hash_units');
+    // A share past the cb-v3 width is share_target, wider than the legacy 28.
+    const wide = { ...rows[0], nonce: (40n << 56n) | 1n, shareBits: 40 };
+    assert.equal(accountShareUnits([wide], credit.unitCap, credit).units, 2 ** 40);
+    const tooWide = { ...rows[0], nonce: (48n << 56n) | 1n, shareBits: 48 };
+    assert.equal(accountShareUnits([tooWide], credit.unitCap, credit).units, 0);
+    // The legacy coinbase still retains 2^28 across the same eight.
+    const legacy = accountShareUnits(rows);
+    assert.equal(legacy.units, MAX_HASH_UNITS_PER_BLOCK);
   });
 
   it('binds a buried pruned block\'s W to the header through its aLeaves', () => {
@@ -603,13 +620,124 @@ describe('T21 chain rules (must-fix 3, 5)', { timeout: 600_000 }, () => {
   });
 });
 
+describe('T21 deferred rows (MF-2: 0 hash bonus lost past the payee cap)', { timeout: 600_000 }, () => {
+  const u = 10n;
+  const H = 20;
+  const leafOf = (s) => ({ nc: t21ShareNc(magic, s.E), units: BigInt(s.w) });
+  const bare = (s) => ({ w: BigInt(s.w), E: s.E });
+  // Two labels of payee 4 did not fit (payee cap); they are proven A leaves of block H.
+  const late = [minerShare(voucher(4), 40n), minerShare(voucher(4, 1), 9n)];
+  const paid = [payee(0, [5n]), payee(1, [7n]), payee(2, [3n]), payee(3, [2n])];
+  let blockH;
+
+  it('a block defers the labels it does not pay, and publishes them in its owed list', () => {
+    const defer = late.map(bare);
+    const owed = t21OwedNext({ owedIn: [], defer, height: H });
+    blockH = buildT21Coinbase({ S: 1_000_000n, cin: 0n, u, height: H, magic, prevHash, dummySecret, payees: paid, defer, owed });
+    const tx = blockH.tx;
+    assert.equal(tx.t21.defer.length, 2);
+    assert.deepEqual(tx.t21.owed.map((o) => [o.w, o.since]), [['40', H], ['9', H]]);
+    const leaves = [...tx.t21.shares.map(leafOf), ...late.map(leafOf)];
+    const ok = verifyT21Coinbase({ tx, expect: expectFor(tx, { shares: leaves, owedIn: [] }) });
+    assert.equal(ok.ok, true, ok.reason);
+    assert.equal(ok.W, 17n);
+    // A proven leaf with neither a share nor a defer row.
+    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { shares: [...leaves, leafOf(minerShare(voucher(4, 2), 1n))], owedIn: [] }) }).reason, 'share_bind');
+    // A defer row with no leaf, or at another weight.
+    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { shares: leaves.slice(0, -1), owedIn: [] }) }).reason, 'share_bind');
+    const heavier = structuredClone(tx);
+    heavier.t21.defer[0].w = '41';
+    heavier.t21.owed[0].w = '41';
+    assert.equal(verifyT21Coinbase({ tx: heavier, expect: expectFor(heavier, { shares: leaves, owedIn: [] }) }).reason, 'share_bind');
+    // The owed list is exactly owedIn − paid − expired, then this block's defer.
+    const dropped = structuredClone(tx);
+    dropped.t21.owed = dropped.t21.owed.slice(1);
+    assert.equal(verifyT21Coinbase({ tx: dropped, expect: expectFor(dropped, { shares: leaves, owedIn: [] }) }).reason, 'owed_list');
+    const older = structuredClone(tx);
+    older.t21.owed[1].since = H - 1;
+    assert.equal(verifyT21Coinbase({ tx: older, expect: expectFor(older, { shares: leaves, owedIn: [] }) }).reason, 'owed_list');
+    // Deferring counts against the share cap.
+    const fat = structuredClone(tx);
+    fat.t21.defer = [...Array(CB_SHARE_MAX)].map(() => fat.t21.defer[0]);
+    assert.equal(verifyT21Coinbase({ tx: fat, expect: expectFor(fat, { owedIn: [] }) }).reason, 'share_cap');
+  });
+
+  it('the next block pays an owed row oldest-first at its deferred w, by its own E', () => {
+    const owedIn = t21OwedOf(blockH.tx);
+    assert.equal(owedIn.length, 2);
+    // Payee 4 is paid its 40-unit row (a share with no A leaf in this block); the 9-unit row stays owed.
+    const v4 = voucher(4);
+    const p4 = { voucher: publicVoucher(v4), shares: [late[0]] };
+    const fresh = [payee(0, [6n]), payee(1, [1n]), payee(2, [2n])];
+    const owed = t21OwedNext({ owedIn, paidE: new Set([late[0].E.toString('hex')]), defer: [], height: H + 1 });
+    const next = buildT21Coinbase({ S: 1_000_000n, cin: 0n, u, height: H + 1, magic, prevHash, dummySecret, payees: [...fresh, p4], owed });
+    const tx = next.tx;
+    assert.equal(tx.t21.defer, undefined);
+    assert.deepEqual(tx.t21.owed.map((o) => [o.w, o.since]), [['9', H]]);
+    const ownLeaves = tx.t21.shares.filter((s) => !Buffer.from(s.E).equals(late[0].E)).map(leafOf);
+    const ex = expectFor(tx, { shares: ownLeaves, owedIn });
+    const ok = verifyT21Coinbase({ tx, expect: ex });
+    assert.equal(ok.ok, true, ok.reason);
+    // u·w of the owed row is paid now: W includes it.
+    assert.equal(ok.W, 9n + 40n);
+    // Paying it again from a leaf of this block too would need the same E twice.
+    assert.equal(verifyT21Coinbase({ tx, expect: { ...ex, shares: [...ownLeaves, leafOf(late[0])] } }).reason, 'share_bind');
+    // At another weight it is not that row.
+    const bent = structuredClone(tx);
+    bent.t21.shares.find((s) => Buffer.from(s.E).equals(late[0].E)).w = '39';
+    assert.equal(verifyT21Coinbase({ tx: bent, expect: { ...ex } }).reason, 'share_bind');
+    // A block that does not pay a row must restate it.
+    const lost = structuredClone(tx);
+    lost.t21.owed = [];
+    assert.equal(verifyT21Coinbase({ tx: lost, expect: ex }).reason, 'owed_list');
+    // An owed E cannot be deferred again.
+    const again = structuredClone(tx);
+    again.t21.defer = [{ w: '9', E: late[1].E }];
+    assert.equal(verifyT21Coinbase({ tx: again, expect: { ...ex, shares: [...ownLeaves, leafOf(late[1])] } }).reason, 'share_label');
+  });
+
+  it('a row past the TTL drops and cannot be paid; an empty round restates the rest', () => {
+    const owedIn = t21OwedOf(blockH.tx);
+    const far = H + T21_OWED_TTL + 1;
+    assert.deepEqual(t21OwedNext({ owedIn, height: far }), []);
+    assert.equal(t21OwedNext({ owedIn, height: far - 1 }).length, 2);
+    const empty = buildT21Coinbase({ S: 3n, cin: 2n, height: H + 1, magic, prevHash, payees: [], owed: t21OwedNext({ owedIn, height: H + 1 }) });
+    assert.equal(empty.tx.t21.owed.length, 2);
+    const ex = expectFor(empty.tx, { shares: [], owedIn, hashBudget: 0n });
+    assert.equal(verifyT21Coinbase({ tx: empty.tx, expect: ex }).ok, true);
+    const forgot = structuredClone(empty.tx);
+    delete forgot.t21.owed;
+    assert.equal(verifyT21Coinbase({ tx: forgot, expect: ex }).reason, 'owed_list');
+    assert.throws(() => buildT21Coinbase({ S: 3n, cin: 2n, height: H + 1, magic, prevHash, payees: [], defer: [bare(late[0])] }), (e) => e.reason === 'share_bind');
+    // Late payment of an expired row.
+    const tx = structuredClone(blockH.tx);
+    tx.t21.height = far;
+    tx.t21.shares = [{ w: '40', E: late[0].E }];
+    delete tx.t21.defer;
+    delete tx.t21.owed;
+    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { shares: [], owedIn, height: far }) }).reason, 'owed_ttl');
+  });
+
+  it('caps the owed list at T21_OWED_MAX', () => {
+    const owedIn = [...Array(T21_OWED_MAX)].map((_, i) => ({ E: pointBytes(G.multiply(BigInt(i + 100))), w: 1n, since: H }));
+    const defer = [bare(late[1])];
+    const owed = t21OwedNext({ owedIn, defer, height: H + 1 });
+    const tx = structuredClone(blockH.tx);
+    tx.t21.height = H + 1;
+    tx.t21.defer = [{ w: '9', E: late[1].E }];
+    tx.t21.owed = owed;
+    const leaves = [...tx.t21.shares.map(leafOf), leafOf(late[1])];
+    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { shares: leaves, owedIn, height: H + 1 }) }).reason, 'owed_cap');
+  });
+});
+
 describe('T21 genesis gate', () => {
   it('lists the open items and does not cut genesis', async () => {
     const { V12_GENESIS_BLOCK_HASH } = await import('../node/src/chain.js');
     assert.equal(V12_GENESIS_BLOCK_HASH, '');
     const status = genesisGateStatus();
     assert.equal(status.requireAllCoinbases, false);
-    assert.deepEqual(status.open, [1, 2, 4, 5, 6, 7, 10]);
+    assert.deepEqual(status.open, [1, 2, 4, 5, 6, 7, 10, 12]);
     assert.equal(fs.existsSync(new URL('../specs/t21-coinbase.md', import.meta.url)), true);
   });
 });
