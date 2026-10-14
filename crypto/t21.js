@@ -30,6 +30,7 @@ import {
 import { feeOf, lawDust, scalarOk, splitLaw, t21Big } from './t21_law.js';
 import { voucherAt, voucherKeysOk, voucherLambda } from './t21_voucher.js';
 import { bpProve, bpVerifyTerms } from './t21_bp.js';
+import { t21ProverEngine } from './t21_native.js';
 import { K_VW, payeeCapLive } from './block_budget.js';
 import {
   AMOUNT_KEYS, BP_M, BP_N, CB_FORM, DOM_CB, FEE_BPS_MAX, GEN_H,
@@ -793,6 +794,9 @@ function proveTally(items, shares, W, stmt, nonce) {
   };
 }
 
+/** The JS prover steps, for scripts/t21_prover_vectors.mjs, which writes the native prover's vectors. */
+export const t21ProverJs = Object.freeze({ commitRow, proveRow, proveTally });
+
 function vaultRow(ctx, vrow, index) {
   const B = pointOk(vrow.B);
   const v = scalarOk(vrow.vaultNanos);
@@ -913,7 +917,87 @@ function emptyCoinbase(spec, deferred) {
   return { tx, deferred, batch: [], secrets: [], W: 0n, f: 0n, phi: 0n, dust: cin + S };
 }
 
-function buildOnce(spec, payees, deferred, seed) {
+/** Phase one on the native prover. The wrap stays in JS; r is re-derived from the leaf try. */
+function commitRowsNative(engine, ctx, rows, seed) {
+  let got;
+  try {
+    got = engine.commit({
+      seed, magic: ctx.magic, height: ctx.height, prevHash: ctx.prevHash, W: ctx.W,
+      rows: rows.map((row) => ({ noLeaf: row.noLeaf, v: row.v, Wi: row.Wi, rho: row.rho, B: pointBytes(row.vch.B), Y: pointBytes(row.vch.Y) })),
+    });
+  } catch (err) {
+    if (err.nativeReason === 'admit_note_point' && err.index != null) {
+      throw fail('admit_note_point', { payee: rows[err.index]?.payee });
+    }
+    throw err;
+  }
+  return got.map((c, index) => {
+    const row = rows[index];
+    const r = ctx.nonce('r', index, c.n);
+    const noteCommit = sha(Buffer.from('shear-t21-nc-v1'), row.vch.lambdaBytes, u32le(index));
+    const sealed = sealWrap(r, row.vch.B, noteCommit, c.C, row.v, ctx.nonce('wrap', index));
+    const pub = {
+      kind: row.kind,
+      kindCode: PAYOUT_KIND_CODE,
+      noteCommit,
+      commit: c.C,
+      admitPub: c.P,
+      B: pointBytes(row.vch.B),
+      Y: pointBytes(row.vch.Y),
+      lambda: Buffer.from(row.vch.lambdaBytes),
+      rEph: sealed.rEph,
+      rCt: sealed.rCt,
+      amtCt: sealed.amtCt,
+      cw: c.cw,
+      rhoK: c.rhoK,
+      delK: c.delK,
+      fin: row.finPub === 0n ? 0 : row.finPub.toString(),
+      ra: { chunks: c.chunks },
+    };
+    return { row, index, r, n: c.n, C: pointFrom(c.C), pub };
+  });
+}
+
+/** Phase two and the tally on the native prover. */
+function proveNative(engine, ctx, items, shares, stmt, seed) {
+  let got;
+  try {
+    got = engine.prove({
+      seed, stmt, W: ctx.W, rate: ctx.rate, shares,
+      rows: items.map((it) => ({
+        n: it.n, v: it.row.v, Wi: it.row.Wi, rho: it.row.rho, finEff: it.row.finEff,
+        Y: it.pub.Y, lambda: it.pub.lambda, chunks: it.pub.ra.chunks,
+      })),
+    });
+  } catch (err) {
+    if (err.nativeReason === 'split_tally') throw fail('split_tally');
+    throw err;
+  }
+  const proved = items.map((it, i) => {
+    const p = got.proved[i];
+    return { ...it.pub, ra: { chunks: p.chunks, agg: p.agg }, law: p.law, rangeProof: { tag: RANGE_TAG, bp: p.bp } };
+  });
+  return { proved, tally: got.tally };
+}
+
+let nativeWarned = false;
+
+function buildOnce(spec, payees, deferred, seed, engine = null) {
+  if (engine) {
+    try {
+      return buildOnceWith(spec, payees, deferred, seed, engine);
+    } catch (err) {
+      if (!err.engine || spec.prover === 'native') throw err;
+      if (!nativeWarned) {
+        nativeWarned = true;
+        console.error(JSON.stringify({ event: 't21_prover_native', ok: false, reason: err.message }));
+      }
+    }
+  }
+  return buildOnceWith(spec, payees, deferred, seed, null);
+}
+
+function buildOnceWith(spec, payees, deferred, seed, engine) {
   const planned = planPay(spec, payees);
   if (planned.W === 0n) return emptyCoinbase(spec, deferred);
   const nonce = (label, i = 0, j = 0, bind = NO_BIND) => t21Nonce(seed, label, i, j, bind);
@@ -940,7 +1024,7 @@ function buildOnce(spec, payees, deferred, seed) {
     const j = Number(bytesToNumberLE(sha(seed, Buffer.from('shuffle'), u32le(i)).subarray(0, 8)) % BigInt(i + 1));
     [rows[i], rows[j]] = [rows[j], rows[i]];
   }
-  const items = rows.map((row, i) => commitRow(ctx, row, i));
+  const items = engine ? commitRowsNative(engine, ctx, rows, seed) : rows.map((row, i) => commitRow(ctx, row, i));
   const vaults = planVaults(ctx, spec.vaults, items.length).concat(publicRows(spec));
   const shares = [];
   for (const p of payees) {
@@ -964,8 +1048,9 @@ function buildOnce(spec, payees, deferred, seed) {
     },
   };
   const stmt = statementOf(skel);
-  const proved = items.map((it) => proveRow(ctx, it, stmt));
-  const tally = proveTally(items, shares, planned.W, stmt, nonce);
+  const { proved, tally } = engine
+    ? proveNative(engine, ctx, items, shares, stmt, seed)
+    : { proved: items.map((it) => proveRow(ctx, it, stmt)), tally: proveTally(items, shares, planned.W, stmt, nonce) };
   const mintG = planned.S + planned.cin - planned.dust + planned.u * planned.W + planned.phi;
   let sumC = Point.ZERO;
   let h = 0n;
@@ -1019,6 +1104,17 @@ function rankPayees(live) {
 }
 
 /**
+ * spec.prover: 'js' proves in JS; 'native' requires the pinned native prover;
+ * unset uses the native prover when one is pinned (crypto/t21_native.js).
+ */
+function proverEngine(spec) {
+  if (spec.prover === 'js') return null;
+  const engine = t21ProverEngine();
+  if (!engine && spec.prover === 'native') throw fail('t21_prover_native');
+  return engine;
+}
+
+/**
  * Template builder. A payee is { voucher: {B, Y, lambda}, fin?, shares: [{w, E, ell, beta}] },
  * with lambda = voucherLambda(B, Y).
  * A voucher that fails voucherKeysOk is deferred before proving. A payee whose
@@ -1065,15 +1161,16 @@ export function buildT21Coinbase(spec) {
   const withIndex = (list) => list.map((p, i) => ({ ...p, _index: i }));
   let payees = withIndex(live);
   if (!payees.length) return emptyCoinbase(spec, deferred);
+  const engine = proverEngine(spec);
   try {
-    return buildOnce(spec, payees, deferred, seed);
+    return buildOnce(spec, payees, deferred, seed, engine);
   } catch (err) {
     if (err.reason !== 'admit_note_point' || err.payee == null) throw err;
     const bad = payees[err.payee];
     deferred.push({ voucher: bad.voucher, shares: bad.shares || [], reason: 'admit_note_point' });
     payees = withIndex(payees.filter((_, i) => i !== err.payee).map(({ _index, ...rest }) => rest));
     if (!payees.length) return emptyCoinbase(spec, deferred);
-    return buildOnce(spec, payees, deferred, seed);
+    return buildOnce(spec, payees, deferred, seed, engine);
   }
 }
 
