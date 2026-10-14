@@ -484,7 +484,7 @@ describe('v12 proven burial', () => {
     const src = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
     assert.doesNotMatch(src, /shouldPruneSamples\(structuralH/);
     const p2pSrc = fs.readFileSync(new URL('../src/p2p.js', import.meta.url), 'utf8');
-    assert.match(p2pSrc, /store\.offerHeaders\(page\)/);
+    assert.match(p2pSrc, /store\.offerHeaders\(page, \{ peer: /);
     assert.match(p2pSrc, /store\.servableBlock\(job\.block\)/);
   });
 });
