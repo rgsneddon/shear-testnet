@@ -322,7 +322,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.equal(PRODUCT_VERSION, '18.0');
     assert.equal(SHEARK_MINER_VERSION, '2.8');
     assert.equal(MAGIC_TESTNET_V10, 'shear-testnet-v10');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
     assert.equal(GENESIS_BITS, 17);
     assert.equal(ASERT_HALFLIFE_MS, 1_440_000);
     assert.equal(ASERT_CURVE_WINDOW, 11);
@@ -335,7 +335,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.equal(fp.includes('0.70'), false);
     assert.equal(fp.includes('18.0'), false);
     assert.equal(fp.includes('17.0'), false);
-    assert.match(fp, /NETWORK=shear-testnet-v11/);
+    assert.match(fp, /NETWORK=shear-testnet-v12/);
     assert.match(fp, /ASERT_TAU_MS=1440000/);
     assert.match(fp, /:4:17:/);
     assert.match(fp, /ASERT_STEP=median11/);

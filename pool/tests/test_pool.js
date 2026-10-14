@@ -297,7 +297,7 @@ describe('HTTP stats cannot stall', () => {
     assert.equal(fp.ok, true);
     assert.equal(fp.admit, 'ADMITv2');
     assert.equal(fp.hashTxLive, 1);
-    assert.equal(fp.magic, 'shear-testnet-v11');
+    assert.equal(fp.magic, 'shear-testnet-v12');
     assert.ok(String(fp.fingerprint || '').length > 8);
     const shePage = await fetch(`http://127.0.0.1:${httpPort}/miner/she1ccbe79d6`);
     assert.equal(shePage.status, 404);
@@ -548,7 +548,7 @@ describe('pool dashboard + stratum', () => {
     const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
     assert.equal(stats.nodesOnline, 1);
     assert.equal(stats.magic, MAGIC_TESTNET);
-    assert.equal(stats.magic, 'shear-testnet-v11');
+    assert.equal(stats.magic, 'shear-testnet-v12');
     assert.equal(stats.network, MAGIC_TESTNET);
     assert.equal(stats.personalisation, 'ShearHash-v3');
     assert.equal(stats.rxMode, 'light');

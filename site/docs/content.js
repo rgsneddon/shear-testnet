@@ -360,21 +360,21 @@ window.SHEAR_DOCS = {
     title: 'Epochs',
     crumb: 'reserve / epochs',
     html:
-      '<p>An epoch is 4 days on this testnet (400 days on mainnet). The first qualifying π deposit opens the inaugural epoch — not genesis, not an operator clock. Last 1 testnet day / 99 mainnet days: new deposits still lock and may vote, but they sit idle (no stake interest). Vote changes are only before that idle window.</p>'
+      '<p>An epoch is 4 days on this testnet (400 days on mainnet). The first qualifying π lock opens the inaugural epoch — not genesis, not an operator clock. Last 1 testnet day / 99 mainnet days: new locks still lock and may vote, but they sit idle (no reserve reward). The vote is the hash-bonus unit only, and only before that idle window.</p>'
   };
 
   P.stake = {
     title: 'Stake, idle, lock',
     crumb: 'reserve / stake',
     html:
-      '<p>Staked principal earns the oracle APR for the full epoch (4 days testnet / 400 days mainnet). Idle coin earns nothing. Locked is staked plus idle. Daily credits sit in the portal until you withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
+      '<p>An active lock earns the bundled reserve rate for the full epoch (4 days testnet / 400 days mainnet). That rate is the average of the 14 developed-economy central-bank base rates, frozen when the epoch opens. Idle coin earns nothing. Locked is active plus idle. The reward is minted on withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
   };
 
   P.votes = {
     title: 'Votes',
     crumb: 'reserve / votes',
     html:
-      '<p>A vote may raise the hash bonus by one unit, lower it by one unit, or leave it. The 1 SHE pot does not change. Each portal votes once. After you seal, the Vortex pane keeps the chosen row with a green check; the other boxes and Cast vote go away.</p>' +
+      '<p>A vote may raise the hash bonus by one unit, lower it by one unit, or leave it. It does not set the reserve rate. The 1 SHE pot does not change. Each portal votes once. After you seal, the Vortex pane keeps the chosen row with a green check; the other boxes and Cast vote go away.</p>' +
       '<p>Ownership of a vote is the dest-opening of the portal dest. A second vote in the same epoch is <code>vote_locked</code>. Public tallies show the three piles. They do not name who voted. At epoch end the unique plurality moves the live bonus, or a tie leaves it.</p>' +
       '<p>One fee to vote, quoted from mempool depth at that step.</p>'
   };
@@ -383,15 +383,15 @@ window.SHEAR_DOCS = {
     title: 'The Reserve oracle',
     crumb: 'reserve / oracle',
     html:
-      '<p>The staking rate is an epoch APR observed by <code>shear-reserve-oracle-v1</code> (4-day testnet / 400-day mainnet), coded into every node. Freeze is bounded and fail-closed. A bad rate cannot reorg blocks or steal the pot. The wallet paints live observations as observational until freeze; mint uses frozen <code>epochBps</code> only.</p>' +
-      '<p>Shear Sentinel v18 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. The basket is the observation. Mint uses the frozen epoch rate. A stale basket leaves that freeze in place. The step between epochs is at most 100 bps. Lock, epoch vote, and withdraw are sealed transactions. The node applies them. The oracle cannot move the pot or the hash-bonus pile.</p>'
+      '<p>The reserve rate is the unweighted average of 14 developed-economy central-bank base rates, attested in every node as <code>shear-reserve-oracle-v1</code>. The banks are the Fed, Bank of England, ECB, Bank of Japan, Bank of Canada, Reserve Bank of Australia, Reserve Bank of New Zealand, Swiss National Bank, Sveriges Riksbank, Norges Bank, Danmarks Nationalbank, Bank of Korea, Bank of Israel, and the Czech National Bank. Fed uses the target-range median. ECB uses the median of the deposit facility and the main refinancing rate. The mean is half-up, in tenths of a basis point, then half-up to whole basis points. This bundle is 264 bps. It changes only when an epoch opens.</p>' +
+      '<p>A vote, a miner, an admin, and a local snapshot cannot set a different rate. Fetching those banks\' websites is not consensus: nodes would not see the same page. A new print waits for a software release that replaces the attested integers. Shear Sentinel v18 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. Mint uses frozen <code>epochBps</code> only. The step between a previous freeze and a new bundle is at most 100 bps. Lock, the hash-bonus vote, and withdraw are sealed transactions. The oracle cannot move the pot or the hash-bonus pile.</p>'
   };
 
   P.withdraw = {
     title: 'Withdraw',
     crumb: 'reserve / withdraw',
     html:
-      '<p>After epoch end (and bonus enact), principal plus minted interest on staked SHE return to Continuum on a signed Withdraw. Miss that window and previous-epoch rewards stay claimable; a new epoch does not confiscate them. Withdraw is not levied.</p>'
+      '<p>After epoch end (and bonus enact), principal plus the coinbase-minted reward on the active lock return to Continuum on a signed Withdraw. The payout dest is the one sealed on the lock. Miss that window and previous-epoch rewards stay claimable; a new epoch does not confiscate them. Withdraw is not levied.</p>'
   };
 
   P.node = {
@@ -402,7 +402,7 @@ window.SHEAR_DOCS = {
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\ngit checkout 0.71\nnpm ci\n' +
       'export SHEAR_DATA="$HOME/.shear/testnet-v11"\n' +
-      'export SHEAR_NETWORK=shear-testnet-v11\n' +
+      'export SHEAR_NETWORK=shear-testnet-v12\n' +
       'export SHEAR_BOOTSTRAP=1\n' +
       'export SHEAR_REORG_HALT_DEPTH=0\n' +
       'export SHEAR_P2P_PORT=30303\n' +
@@ -411,7 +411,7 @@ window.SHEAR_DOCS = {
       'export SHEAR_RPC_BIND=127.0.0.1\n' +
       'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303\n' +
       'node node/src/node.js</pre>' +
-      '<p>Magic <code>shear-testnet-v11</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
+      '<p>Magic <code>shear-testnet-v12</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
       '<p>Windows, same release, in PowerShell from the repo root: <code>git checkout 0.71</code>, <code>npm ci</code>, then set <code>$env:SHEAR_DATA</code>, <code>$env:SHEAR_NETWORK</code>, <code>$env:SHEAR_BOOTSTRAP="1"</code>, <code>$env:SHEAR_SEEDS</code> to the same list, and run <code>node node/src/node.js</code>. Arch uses the same shell as Linux.</p>' +
       '<p>Default sync is full archival IBD from those peers. Reorg checkpoints are height 1000, then every 400. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
       '<p>Tree: <a href="https://shear.digital/node/">shear.digital/node</a>.</p>'

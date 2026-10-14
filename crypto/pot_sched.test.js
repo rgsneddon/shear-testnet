@@ -144,7 +144,7 @@ describe('I3 oracle anti-game', () => {
       annualBps: 9999,
       observedAtMs: 1,
       nowMs: 1,
-    }) <= 264 + EPOCH_BPS_MAX_STEP, true);
+    }), 264);
     const stale = freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 9000,

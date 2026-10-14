@@ -345,7 +345,7 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(formatShe(1e-9), '0.00000000');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
     assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
@@ -451,7 +451,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
-    assert.match(fp, /NETWORK=shear-testnet-v11/);
+    assert.match(fp, /NETWORK=shear-testnet-v12/);
+    assert.match(fp, /RESERVE_RATE=epoch-bundle:quorum=14:genesis=264:step=100:root=/);
+    assert.doesNotMatch(fp, /RESERVE_RATE=epoch-vote/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v7/);
     assert.match(fp, /:4:17:/);

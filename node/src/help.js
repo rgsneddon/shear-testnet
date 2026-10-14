@@ -26,9 +26,9 @@ function sectionRun() {
 function sectionEnv() {
   return [
     'Env:',
-    '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v11 (Roaming). Unix ~/.shear/testnet-v11.',
-    '                      Same path for Shear Sentinel v18 and Continuum 0.71.',
-    '  SHEAR_NETWORK       shear-testnet-v11 (this book). shear-v1 waits for genesis.',
+    '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v12 (Roaming). Unix ~/.shear/testnet-v12.',
+    '                      Same path for Shear Sentinel v18 and Continuum 0.71. Do not reuse a v11 datadir.',
+    '  SHEAR_NETWORK       shear-testnet-v12 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
     '  SHEAR_P2P_IPC       pool-to-sidecar localhost TCP (default 127.0.0.1:30313). Not a peer port.',
@@ -62,11 +62,12 @@ function sectionRpc() {
     '  GET /blocks?from=&to=       compact window',
     '  GET /chaintips /reorgs /policy /jroot /fingerprint /fluxset',
     '  GET /notes /api/wallet/notes /api/wallet/balance /api/wallet/history',
-    '  GET /api/oracle | /oracle   staking basket. Mint uses frozen epochBps. A stale basket does not move it.',
+    '  GET /api/oracle | /oracle   bundled 14-bank rate. Mint uses frozen epochBps. A local snapshot does not move it.',
     '  GET /api/reserve?address=   one portal: staked, idle, vote, accrued. Public vote counts. No other dests.',
     '  POST /api/wallet/send | /queuetx',
     '',
     'Reserve lock, epoch vote, and withdraw are sealed transactions. This node applies them.',
+    'The vote moves the hash-bonus unit only. The reserve rate is the bundled 14-bank average, frozen at epoch open.',
     'The staking oracle is shear-reserve-oracle-v1. It cannot move the pot or the hash-bonus pile.',
     '',
     'Do not bind RPC to the public internet.',
@@ -81,7 +82,7 @@ function sectionSolo() {
     '       cmake --build crypto/randomx/build -j"$(nproc)"',
     '       make -C crypto/native',
     '  2. Validating node + thin local stratum (NOT npm run pool):',
-    '       export SHEAR_NETWORK=shear-testnet-v11',
+    '       export SHEAR_NETWORK=shear-testnet-v12',
     '       export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303',
     '       export SHEAR_RPC_BIND=127.0.0.1',
     '       npm run solo',
@@ -118,7 +119,7 @@ function sectionP2p() {
     '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
     '  p2p_ingest reason=unsigned on a sealed compact block retries after a short TTL. It is not a permanent fail. Pull tip and rebuild native; do not wipe.',
     '  Do not wipe a mid-IBD datadir unless CoS says so after a fix.',
-    '  Magic stays shear-testnet-v11. Do not start sheark-v4-afk.',
+    '  Magic stays shear-testnet-v12. Do not start sheark-v4-afk.',
   ];
 }
 
@@ -127,7 +128,7 @@ function sectionBootstrap() {
     'Bootstrap:',
     '  Default start does not pull or apply a snapshot. Sync is sequential from the local tip (genesis if empty).',
     '  Optional manual import: SHEAR_BOOTSTRAP=1 or --bootstrap=https://boot.shear.digital on an empty datadir.',
-    '  latest.json + latest.bin from boot.shear.digital. Magic shear-testnet-v11. Empty datadir only.',
+    '  latest.json + latest.bin from boot.shear.digital. Magic shear-testnet-v12. Empty datadir only.',
     '  A datadir that already holds chain.bin or chain.jsonl resumes from that tip.',
     '  SHEAR_FAST_SYNC=1 skips archival bodies on this node only.',
   ];

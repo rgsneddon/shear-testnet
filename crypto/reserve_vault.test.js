@@ -54,14 +54,16 @@ function destOf(id) {
 }
 
 describe('Reserve vault protocol', () => {
-  it('stake rewards pay fee bank first and mint only the gap', () => {
+  it('stake rewards are minted in full; the fee bank is not a source', () => {
     const state = emptyVault();
     creditFeeBank(state, 10);
     const paid = payoutStakeReward({ state, reward: 15, id: 'r1' });
     assert.equal(paid.ok, true);
-    assert.equal(paid.fromFee, 10);
-    assert.equal(paid.minted, 5);
-    assert.equal(paid.feeBank, 0);
+    assert.equal(paid.fromFee, 0);
+    assert.equal(paid.minted, 15);
+    assert.equal(paid.source, 'coinbase');
+    assert.equal(paid.feeBank, 10);
+    assert.equal(Number(state.feeBankNanos), 10);
     const twice = payoutStakeReward({ state, reward: 1, id: 'r1' });
     assert.equal(twice.ok, false);
     assert.equal(twice.reason, 'double_mint');
@@ -72,8 +74,9 @@ describe('Reserve vault protocol', () => {
     creditFeeBank(bank, 20);
     const covered = payoutStakeReward({ state: bank, reward: 7, id: 'r3' });
     assert.equal(covered.ok, true);
-    assert.equal(covered.fromFee, 7);
-    assert.equal(covered.minted, 0);
+    assert.equal(covered.fromFee, 0);
+    assert.equal(covered.minted, 7);
+    assert.equal(Number(bank.feeBankNanos), 20);
   });
 
   it('extra mint is only shear-reserve-v1', () => {
@@ -328,7 +331,10 @@ describe('Reserve oracle', () => {
     assert.equal(mid.interest, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS, 400));
     const again = emptyVault();
     deposit({ state: again, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    assert.equal(observeRate({ state: again, annualBps: 0, nowMs: t0 + 1 }).ok, true);
+    const refused = observeRate({ state: again, annualBps: 0, nowMs: t0 + 1 });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'rate_bundled');
+    assert.equal(again.oracle.annualBps, RESERVE_ORACLE_DEFAULT_BPS);
     const frozen = withdraw({ state: again, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(frozen.ok, true);
     assert.equal(frozen.interest, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS));
@@ -337,7 +343,7 @@ describe('Reserve oracle', () => {
 });
 
 describe('Reserve freeze, vote-once, dest bind', () => {
-  it('two vaults with different annualBps mint the same withdraw nanos when epochBps matches', () => {
+  it('two vaults ignore caller rates and mint the same bundled withdraw', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
@@ -345,16 +351,18 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const two = emptyVault();
     deposit({ state: one, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     deposit({ state: two, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    assert.equal(observeRate({ state: one, annualBps: 100, nowMs: t0 + 1 }).ok, true);
-    assert.equal(observeRate({ state: two, annualBps: 9000, nowMs: t0 + 1 }).ok, true);
-    assert.notEqual(one.oracle.annualBps, two.oracle.annualBps);
+    assert.equal(observeRate({ state: one, annualBps: 100, nowMs: t0 + 1 }).ok, false);
+    assert.equal(observeRate({ state: two, annualBps: 9000, nowMs: t0 + 1 }).ok, false);
+    one.oracle.annualBps = 100;
+    two.oracle.annualBps = 9000;
     assert.equal(one.epochBps, two.epochBps);
+    assert.equal(one.epochBps, 264);
     const w1 = withdraw({ state: one, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     const w2 = withdraw({ state: two, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(w1.ok, true);
     assert.equal(w2.ok, true);
     assert.equal(w1.interest, w2.interest);
-    assert.equal(w1.interest, interestNanos(PI_SHE_NANOS, one.epochBps));
+    assert.equal(w1.interest, interestNanos(PI_SHE_NANOS, 264));
   });
 
   it('mid-epoch observeRate(9999) does not change withdraw or preview interest', () => {
@@ -364,14 +372,19 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const state = emptyVault();
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const before = previewWithdraw(state, a).interest;
-    assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + 10 * DAY }).ok, true);
-    assert.equal(state.oracle.annualBps, 9999);
+    const saw = observeRate({ state, annualBps: 9999, nowMs: t0 + 10 * DAY });
+    assert.equal(saw.ok, false);
+    assert.equal(state.oracle.annualBps, 264);
+    state.oracle.annualBps = 9999;
+    assert.equal(state.epochBps, 264);
     assert.equal(previewWithdraw(state, a).interest, before);
+    assert.equal(publicVaultView(state, t0 + 10 * DAY).oracleBps, 264);
     const out = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(out.interest, before);
+    assert.equal(state.epochBps, 264);
   });
 
-  it('first lock after enact updates epochBps automatically; step > 100 is clamped', () => {
+  it('a vote enacts the hash bonus only; the next epoch stays on the bundle', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const a = destOf(alice);
@@ -380,12 +393,20 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const state = emptyVault();
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     assert.equal(state.epochBps, 264);
-    enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
-    assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + RESERVE_EPOCH_MS + 1 }).ok, true);
+    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).ok, true);
+    const enacted = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(enacted.ok, true);
+    assert.equal(enacted.delta, 1);
+    assert.equal(state.epochBps, 264);
+    assert.equal(state.nextEpochBps, 264);
+    assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + RESERVE_EPOCH_MS + 1 }).ok, false);
+    state.oracle.annualBps = 9999;
     deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: t0 + RESERVE_EPOCH_MS + 2 });
     assert.equal(state.currentEpoch, 2);
     assert.equal(state.bonusEnacted, false);
-    assert.equal(state.epochBps, 364);
+    assert.equal(state.epochBps, 264);
+    assert.equal(state.freeze.source, 'bundle-quorum-14');
+    assert.equal(state.freeze.sourceCount, 14);
   });
 
   it('first vote lands; second same portal same epoch is vote_locked and piles stay', () => {

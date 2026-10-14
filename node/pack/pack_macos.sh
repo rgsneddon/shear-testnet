@@ -54,8 +54,8 @@ macho = {
 if magic not in macho:
     sys.exit("shearhash.node is not Mach-O: " + magic.hex())
 text = z.read("crypto/asert.js").decode()
-if "PRODUCT_VERSION = '18.0'" not in text or "shear-testnet-v11" not in text:
-    sys.exit("packed asert.js is not Sentinel 18.0 on shear-testnet-v11")
+if "PRODUCT_VERSION = '18.0'" not in text or "MAGIC_TESTNET = MAGIC_TESTNET_V12" not in text:
+    sys.exit("packed asert.js is not Sentinel 18.0 on shear-testnet-v12")
 if "pool/src/posture.js" not in names:
     sys.exit("missing pool/src/posture.js")
 print("darwin-ok", len(names))

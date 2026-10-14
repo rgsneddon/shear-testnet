@@ -1,7 +1,7 @@
 # Shear consensus
 
-Network magic (testnet, ADMITv2 book): `shear-testnet-v11`  
-Frozen previous books: `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`. A v9 or v8 payload does not load on this book (no soft-merge). Quarantine v8/v9-wrong packs and git head `6054186`.  
+Network magic (testnet, ADMITv2 book): `shear-testnet-v12`  
+Previous book: `shear-testnet-v11`. Frozen previous books: `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`. A v9 or v8 payload does not load on this book (no soft-merge). Quarantine v8/v9-wrong packs and git head `6054186`.  
 Mainnet magic (`shear-v1`) genesis is `2026-09-18T21:00:00+01:00`. Do not merge v3 into frozen v2 or into v1 until the operator cuts over.
 
 Difficulty is network-wide. Every node sets the next header's bits from the same sealed-header median. A pool, a solo miner, shareBits vardiff, or `SHEAR_BITS` cannot publish a private target. Hashrate fluctuates. It is not a constant and it is not linear. Ongoing tempo is sealed-header `median11(log2(T/seen))*(T/tau)` with `T=90000` and `τ=16T` (`ASERT_TAU_MS=1440000`). `GENESIS_BITS=17` is a day-0 seed only (v10 seeded 15), not a lasting equilibrium and not `log2(H×90)`. After genesis, bits follow real sealed gaps. 288 blocks is not a Ready bar. This cut does not relax invent-must-not-return.
@@ -35,7 +35,7 @@ Coinbase is the only source of new SHE.
 - Per-hash bonus: **1 unit = 0.00000000001 SHE** per proven share-unit, paid **to each miner who produced that share on the parent job header**. A floor-meeting share is worth `2^SHARE_FLOOR_BITS` units (`SHARE_FLOOR_BITS=8`). A block includes at most `MAX_SHARES_PER_BLOCK=65536` of those shares (`MAX_HASH_UNITS_PER_BLOCK=16777216`). The closed v10 book capped shares at 8192. The 32768 rung is cancelled. `HASH_BONUS_NANOS` stays 1. Votes move that bonus by **1 unit** (±10⁻¹¹ SHE). Public amounts show eight fractional digits; sealed coinbase still includes the 10⁻¹¹ dust. The 1 SHE pot is not reduced by that bonus. Hash notes are extra. Every dest in the share batch is paid its own hash bonus in the sealing block, including when a different pool or solo miner found it. The block finder does **not** scoop other miners’ hash bonuses.
 - Samples under `continuity_root` are the audit trail for those hashes (`nonce`, recipient tag, units from `shareBatch`). They are collated **per hasher** (one leaf per miner per round, never one JSON object per hash). After 1000 confirmations the sample **bodies** may be pruned from storage. The header `continuity_root`, `merkle_root`, coinbase `vout`, and every user tx stay sealed. Explorer reconstructs history from those sealed txs forever. On-disk `chain.jsonl` stores compact rows only (header hex, collated samples until prune, sealed txs). Nodes do not keep template objects or per-hash JSON. Full nodes validate `shareBatch` until prune-1000; money vouts forever.
 - Official miner uses a single login.
-- Extra emission: **The Reserve only** (`shear-reserve-v1`) may mint interest at the **frozen `epochBps`** for that epoch. Any other dapp mint is invalid. Oracle observations are display-only until freeze.
+- Extra emission: **The Reserve only** (`shear-reserve-v1`) may mint the reserve reward at the **frozen `epochBps`** for that epoch. Any other dapp mint is invalid. The rate is the attested 14-bank average, fixed when the epoch opens. A vote, a miner observation, and a local snapshot do not set it. See [reserve-note.md](reserve-note.md).
 
 ## Resistance
 

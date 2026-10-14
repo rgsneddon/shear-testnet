@@ -1,23 +1,114 @@
 import { createHash } from 'node:crypto';
 import { epochMs, MAGIC_MAINNET } from './pot_sched.js';
 
-/** The Reserve oracle — observed basket; freeze is consensus-checked. Cannot move pot. */
+/**
+ * The Reserve oracle. The epoch rate is the attested 14-bank bundle below.
+ * Live fetches of central-bank sites are not consensus: two nodes cannot
+ * be required to see the same page at the same time. Disk JSON, a coinbase
+ * field, an admin, and a miner observation are not inputs.
+ */
 export const RESERVE_ORACLE_ID = 'shear-reserve-oracle-v1';
 /**
- * Unweighted arithmetic mean of all observed first-world policy rates in
- * `reserve/latest.json` (14 banks, half-up). 2.636% → 264 bps.
- * Not a median. Not a single-bank print.
+ * Unweighted arithmetic mean of the bundled developed-economy policy rates
+ * (14 banks, half-up). 2.636% → 264 bps. Not a median. Not a single-bank print.
  */
 export const RESERVE_ORACLE_DEFAULT_BPS = 264;
 export const GENESIS_BPS = 264;
 export const RESERVE_ORACLE_MAX_BPS = 10_000;
-export const INTEREST_DENOM_DAYS = 400;
+export const REWARD_DENOM_DAYS = 400;
+export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;
 export const EPOCH_BPS_MAX_STEP = 100;
 export const ORACLE_MAX_AGE_MS = 14 * 86_400_000;
 export const ORACLE_QUORUM = 14;
 export const ORACLE_MIN_SOURCES = 8;
 
-/** Average of every listed bank's policy rate in bps (half-up). */
+/**
+ * Developed-economy (first-world) central banks, display order.
+ * The observation root sorts `id:tenths`. Adding or removing a name is a
+ * different book.
+ */
+export const POLICY_BANK_IDS = Object.freeze([
+  'FED', 'BOE', 'ECB', 'BOJ', 'BOC', 'RBA', 'RBNZ', 'SNB',
+  'RIKSBANK', 'NORGES', 'DNBANK', 'BOK', 'BOI', 'CNB',
+]);
+
+/**
+ * Attested policy rates in tenths of a basis point, as of 2026-08-01.
+ * These constants are the consensus observation. `reserve/latest.json`
+ * documents the same integers; a node does not read that file to freeze.
+ * Fed is the target-range median. ECB is median(deposit facility, MRO).
+ */
+export const BUNDLED_POLICY_TENTHS = Object.freeze({
+  FED: 3625,
+  BOE: 3750,
+  ECB: 2075,
+  BOJ: 500,
+  BOC: 2750,
+  RBA: 3600,
+  RBNZ: 3000,
+  SNB: 0,
+  RIKSBANK: 2000,
+  NORGES: 4000,
+  DNBANK: 1600,
+  BOK: 2500,
+  BOI: 4000,
+  CNB: 3500,
+});
+
+export function bundledComponents() {
+  return POLICY_BANK_IDS.map((id) => ({ id, tenths: BUNDLED_POLICY_TENTHS[id] }));
+}
+
+/**
+ * Whole bps from a component list. Null unless the list is exactly the 14
+ * canonical ids, once each, with the attested non-negative tenths.
+ * A shorter basket, a duplicate, an unknown id, or a substituted tenth
+ * is not a quorum — the caller keeps the previous epoch rate.
+ */
+export function quorumEpochBps(components) {
+  const list = Array.isArray(components) ? components : [];
+  if (list.length !== ORACLE_QUORUM) return null;
+  const seen = new Set();
+  let sum = 0;
+  for (const c of list) {
+    const id = String(c?.id || '').trim();
+    if (!Object.prototype.hasOwnProperty.call(BUNDLED_POLICY_TENTHS, id) || seen.has(id)) return null;
+    const tenths = Math.floor(Number(c?.tenths));
+    if (!Number.isInteger(tenths) || tenths < 0) return null;
+    if (tenths !== BUNDLED_POLICY_TENTHS[id]) return null;
+    seen.add(id);
+    sum += tenths;
+  }
+  if (seen.size !== ORACLE_QUORUM) return null;
+  const tenthsMean = Math.floor((sum + Math.floor(ORACLE_QUORUM / 2)) / ORACLE_QUORUM);
+  return Math.floor((tenthsMean + 5) / 10);
+}
+
+/** Consensus proposal for this software version. Null if the constants fail quorum. */
+export function bundledEpochBps() {
+  return quorumEpochBps(bundledComponents());
+}
+
+/** sha256 of sorted `id:tenths` rows. Pinned in the consensus fingerprint. */
+export function bundleObservationRoot() {
+  const rows = POLICY_BANK_IDS.map((id) => `${id}:${BUNDLED_POLICY_TENTHS[id]}`).sort();
+  return createHash('sha256').update(rows.join('|')).digest('hex');
+}
+
+/**
+ * Epoch rate from the previous freeze and the bundled quorum only.
+ * A failed quorum keeps `prev`. The ±100 bps step applies when a later
+ * consensus release changes the bundle.
+ */
+export function epochRateBps(prevEpochBps = GENESIS_BPS) {
+  const prev = Math.floor(Number(prevEpochBps));
+  const base = Number.isFinite(prev) && prev >= 0 ? prev : GENESIS_BPS;
+  const proposal = bundledEpochBps();
+  if (proposal == null) return base;
+  return clampBpsStep(base, proposal);
+}
+
+/** Display helper for the published JSON. Not a consensus freeze. */
 export function averagePolicyBps(components = []) {
   const rates = [];
   for (const c of components || []) {
@@ -43,14 +134,12 @@ export function emptyOracle({ annualBps = RESERVE_ORACLE_DEFAULT_BPS, nowMs = 0 
   };
 }
 
-export function observeRate(oracle, { annualBps, nowMs }) {
-  const n = Math.floor(Number(annualBps));
-  if (!Number.isFinite(n) || n < 0 || n > RESERVE_ORACLE_MAX_BPS) {
-    return { ok: false, reason: 'bad_rate' };
-  }
-  oracle.annualBps = n;
-  oracle.observedAtMs = nowMs;
-  return { ok: true, annualBps: n, observedAtMs: nowMs };
+/** A passed rate does not become the oracle. The bundle is the only observation. */
+export function observeRate(oracle, { annualBps, nowMs } = {}) {
+  void annualBps;
+  void nowMs;
+  void oracle;
+  return { ok: false, reason: 'rate_bundled' };
 }
 
 function asUnit(n) {
@@ -61,15 +150,19 @@ function asUnit(n) {
 }
 
 /**
- * Full-epoch interest: floor(stakedNanos * epochBps / 10000).
+ * Full-epoch reserve reward: floor(activeNanos * epochBps / 10000).
  * `days` is ignored. do not use 365.
  */
-export function interestNanos(stakedNanos, epochBps, days = INTEREST_DENOM_DAYS) {
+export function reserveRewardNanos(activeNanos, epochBps, days = REWARD_DENOM_DAYS) {
   void days;
-  const p = asUnit(stakedNanos);
+  const p = asUnit(activeNanos);
   const bps = asUnit(epochBps);
   if (p <= 0n) return 0;
   return Number((p * bps) / 10000n);
+}
+
+export function interestNanos(activeNanos, epochBps, days = REWARD_DENOM_DAYS) {
+  return reserveRewardNanos(activeNanos, epochBps, days);
 }
 
 const MS_PER_DAY = 86_400_000n;
@@ -96,7 +189,10 @@ export function clampBpsStep(prev, next, cap = EPOCH_BPS_MAX_STEP) {
   return n;
 }
 
-/** Freeze used to mint. Stale proposal (>14d) reuses previous epochBps. */
+/**
+ * Freeze used to mint. Caller `annualBps`, `observedAtMs`, and env
+ * `SHEAR_ORACLE_BPS` are ignored. Mainnet and testnet use the same bundle.
+ */
 export function freezeEpochBps({
   prevEpochBps = GENESIS_BPS,
   annualBps,
@@ -104,16 +200,13 @@ export function freezeEpochBps({
   nowMs = 0,
   magic,
 } = {}) {
+  void annualBps;
+  void observedAtMs;
+  void nowMs;
   if (String(magic) === MAGIC_MAINNET) {
     void process.env.SHEAR_ORACLE_BPS;
   }
-  const prev = Math.floor(Number(prevEpochBps));
-  const base = Number.isFinite(prev) && prev >= 0 ? prev : GENESIS_BPS;
-  const asOf = Number(observedAtMs) || 0;
-  const now = Number(nowMs) || 0;
-  const stale = !(asOf > 0) || (now > 0 && now - asOf > ORACLE_MAX_AGE_MS);
-  if (stale) return base;
-  return clampBpsStep(base, annualBps);
+  return epochRateBps(prevEpochBps);
 }
 
 export function observationRoot(components = []) {
@@ -133,25 +226,23 @@ export function makeFreezeRecord({
   components,
   magic,
 } = {}) {
+  void annualBps;
+  void observedAtMs;
+  void components;
   const idx = Math.max(0, Math.floor(Number(epochIndex) || 0));
   const prev = Math.floor(Number(prevEpochBps) || GENESIS_BPS);
-  const epochBps = freezeEpochBps({
-    prevEpochBps: prev,
-    annualBps,
-    observedAtMs,
-    nowMs,
-    magic,
-  });
-  const n = Array.isArray(components) ? components.length : 0;
+  const epochBps = freezeEpochBps({ prevEpochBps: prev, magic });
+  const quorum = bundledEpochBps();
   return {
-    ok: true,
+    ok: quorum != null,
     epochIndex: idx,
     epochBps,
     prevEpochBps: prev,
-    observationRoot: observationRoot(components || []),
+    observationRoot: bundleObservationRoot(),
     frozenAtMs: Number(nowMs) || 0,
-    sourceCount: n,
-    thin: n > 0 && n < ORACLE_MIN_SOURCES,
+    sourceCount: quorum == null ? 0 : ORACLE_QUORUM,
+    source: 'bundle-quorum-14',
+    thin: false,
   };
 }
 
@@ -173,6 +264,11 @@ export function verifyFreezeRecord(rec, {
       || String(prevFreeze.observationRoot || '') !== String(rec.observationRoot || '')) {
       return { ok: false, reason: 'freeze_equivocation' };
     }
+  }
+  const expected = epochRateBps(prev);
+  if (bps !== expected) return { ok: false, reason: 'freeze_bundle' };
+  if (String(rec.observationRoot || '') !== bundleObservationRoot()) {
+    return { ok: false, reason: 'freeze_root' };
   }
   void magic;
   return { ok: true };

@@ -4,11 +4,13 @@ import { fileURLToPath } from 'node:url';
 import {
   GENESIS_BPS,
   ORACLE_MAX_AGE_MS,
+  ORACLE_QUORUM,
   EPOCH_BPS_MAX_STEP,
   RESERVE_ORACLE_ID,
   averagePolicyBps,
-  freezeEpochBps,
-  observationRoot,
+  epochRateBps,
+  bundledEpochBps,
+  bundleObservationRoot,
 } from '../../crypto/reserve_oracle.js';
 import { encodeObserveRate } from '../../crypto/reserve_evm.js';
 
@@ -40,36 +42,28 @@ export function readOracleSnapshot(file) {
   }
 }
 
-/** Operator file wins. Otherwise the basket shipped beside the node. Neither writes the vault. */
+/**
+ * The shipped basket is documentation of the attested integers.
+ * `dataDir/oracle-snapshot.json` is not read. It cannot name the next rate.
+ */
 export function loadOracleSnapshot({ dataDir = '', bundled = BUNDLED } = {}) {
-  const local = dataDir ? path.join(dataDir, 'oracle-snapshot.json') : '';
-  if (local && fs.existsSync(local)) {
-    const parsed = readOracleSnapshot(local);
-    if (bpsFromSnapshot(parsed)) return parsed;
-  }
+  void dataDir;
   if (bundled && fs.existsSync(bundled)) return readOracleSnapshot(bundled);
   return null;
 }
 
 /**
  * Staking oracle view. Mint uses the sealed epochBps.
- * A fresh basket only names the bps the next freeze may adopt.
- * This does not call observeRate and does not move the vault.
+ * `wouldFreezeBps` is the bundled quorum stepped from that seal.
+ * A snapshot argument is not an input to either number.
  */
 export function oracleView(vault, snapshot, nowMs = Date.now()) {
   const parsed = bpsFromSnapshot(snapshot);
   const epochBps = Math.floor(Number(vault?.epochBps ?? GENESIS_BPS));
-  const annualBps = parsed ? parsed.annualBps : GENESIS_BPS;
+  const annualBps = bundledEpochBps() ?? GENESIS_BPS;
   const observedAtMs = parsed ? parsed.observedAtMs : 0;
   const stale = !(observedAtMs > 0) || (Number(nowMs) - observedAtMs > ORACLE_MAX_AGE_MS);
-  const wouldFreezeBps = freezeEpochBps({
-    prevEpochBps: epochBps,
-    annualBps,
-    observedAtMs,
-    nowMs,
-    magic: vault?.magic,
-  });
-  const components = parsed?.components || [];
+  const wouldFreezeBps = epochRateBps(epochBps);
   return {
     id: RESERVE_ORACLE_ID,
     annualBps,
@@ -78,10 +72,11 @@ export function oracleView(vault, snapshot, nowMs = Date.now()) {
     epochBps,
     wouldFreezeBps,
     epochIndex: Math.floor(Number(vault?.epochIndex || 0)),
-    observationRoot: observationRoot(components),
-    sourceCount: components.length,
+    observationRoot: bundleObservationRoot(),
+    sourceCount: ORACLE_QUORUM,
     maxStep: EPOCH_BPS_MAX_STEP,
     mintUses: 'epochBps',
+    snapshotIgnored: true,
     observeCall: Buffer.from(encodeObserveRate(wouldFreezeBps, Math.floor(Number(nowMs) / 1000))).toString('hex'),
   };
 }

@@ -18,6 +18,7 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
+import { bundleObservationRoot } from './reserve_oracle.js';
 import { HISTORICAL_TIP } from './historical_prefix.js';
 
 export const TARGET_BLOCK_INTERVAL_MS = 90_000;
@@ -137,7 +138,10 @@ export const MTP_WINDOW = 11;
 export const MTP_FUTURE_MS = 2 * 60 * 60_000;
 export const SPEND_SIG_DOMAIN = 'shear-spend-v1';
 export const SPEND_SIG = 'ed25519-shear-spend-v1';
-export const INTEREST_LAW = 'epoch-bps-floor';
+/** Epoch reward rate: floor(active lock × bundled bps / 10000). */
+export const REWARD_LAW = 'epoch-bps-floor';
+export const INTEREST_LAW = REWARD_LAW;
+/** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
@@ -157,10 +161,15 @@ export const MAGIC_TESTNET_V8 = 'shear-testnet-v8';
 export const MAGIC_TESTNET_V9 = 'shear-testnet-v9';
 /** Closed soak. τ = 32·T, GENESIS_BITS = 15. Do not retune that book. Not this magic. */
 export const MAGIC_TESTNET_V10 = 'shear-testnet-v10';
-/** Live book. τ = 16·T, GENESIS_BITS = 17, median-11, testnet lid ±1. v10 payloads do not load. */
+/** Previous book. τ = 16·T, GENESIS_BITS = 17. Not this magic. */
 export const MAGIC_TESTNET_V11 = 'shear-testnet-v11';
+/**
+ * Live book. User lock notes, coinbase reserve reward, bundled epoch rate.
+ * v11 payloads do not load.
+ */
+export const MAGIC_TESTNET_V12 = 'shear-testnet-v12';
 /** ADMITv2 privacy-class book. Empty cut. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V11;
+export const MAGIC_TESTNET = MAGIC_TESTNET_V12;
 export const MAGIC_MAINNET = 'shear-v1';
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
@@ -219,7 +228,7 @@ export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
  * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
- * In the fingerprint. shear-testnet-v11 book.
+ * In the fingerprint. shear-testnet-v12 book.
  */
 export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */
@@ -227,7 +236,8 @@ export const SAMPLE_PRUNE_CONFIRMATIONS = 1000;
 const SAMPLE_PRUNE_PIN = SAMPLE_PRUNE_CONFIRMATIONS;
 /** Third-party/merchant wait (~18 min). Not consensus. Not fingerprint. */
 export const MIN_CONFIRMS_POLICY = 12;
-export const RESERVE_FEE_FIRST = 1;
+/** Reserve reward is minted in full. The fee bank is not a reward source. */
+export const RESERVE_FEE_FIRST = 0;
 
 /** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
 export function consensusFingerprint(magic = MAGIC_TESTNET) {
@@ -278,13 +288,16 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `DEST_HRP_SSA_ONLY=1`,
     `SPEND_SIG_ONLY=1`,
     `MEMO_NOT_DEST_KEYED=1`,
-    `INTEREST=${INTEREST_LAW}`,
+    `RESERVE_REWARD=${REWARD_LAW}`,
     `ORACLE=${ORACLE_LAW}`,
     `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
     `POT_PROP=${POT_PROP}`,
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
-    `RESERVE_ORACLE=shear-reserve-oracle-v1:maxBps=10000:maxStep=100:maxAgeMs=${ORACLE_MAX_AGE_MS}:quorum=14`,
+    `RESERVE_ORACLE=bundle-quorum-14:maxBps=10000:maxStep=100`,
+    `RESERVE_RATE=epoch-bundle:quorum=14:genesis=264:step=100:root=${bundleObservationRoot()}`,
+    `INTEREST=${INTEREST_LAW}`,
+    `RESERVE_INTEREST=${days}d-bps-floor`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${network}`,
     'FORK=work-then-lowhash',
@@ -298,7 +311,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'KDF=argon2id-shewall',
     `RESERVE=${RESERVE_PROGRAM}`,
     'RESERVE_EVM=1',
-    `RESERVE_INTEREST=${days}d-bps-floor`,
+    `RESERVE_REWARD=${days}d-bps-floor`,
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',
     'LEVY_CAP=0.001-SHE',
@@ -382,7 +395,7 @@ export function consensusLaw() {
     mainnetFingerprint: mainnetFingerprint(),
   };
 }
-/** Reserve may mint interest. Extra mint is Reserve-only. */
+/** Reserve may mint the reserve reward. Extra mint is Reserve-only. */
 export const RESERVE_PROGRAM = 'shear-reserve-v1';
 /** Dead program id. extraMintAllowed is always false. */
 export const JOIN_PROGRAM = 'shear-join-v1';
@@ -396,7 +409,8 @@ export const PI_SHE_NANOS = 314159265358; // floor(π × 10^11) SHE in protocol 
 /** Default book is testnet (4-day epochs). Mainnet fingerprint uses 400. */
 export const RESERVE_EPOCH_DAYS = EPOCH_DAYS_TESTNET;
 export const RESERVE_JOIN_CUTOFF_DAYS = 1;
-export const INTEREST_DENOM_DAYS = EPOCH_DAYS_MAINNET;
+export const REWARD_DENOM_DAYS = EPOCH_DAYS_MAINNET;
+export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;
 export const GENESIS_BPS = 264;
 export const EPOCH_BPS_MAX_STEP = 100;
 export const ORACLE_MAX_AGE_MS = 14 * 86_400_000;
@@ -433,18 +447,13 @@ export function wrapMintForbidden(tx) {
 export function extraMintAllowed(programId, opts = {}) {
   const id = String(programId || '');
   const kind = String(opts.kind || '');
-  // The Reserve is the only vortice that extra-mints ongoing SHE (oracle APR, per portal).
+  // The Reserve is the only vortice that extra-mints SHE (reserve reward, per lock).
   if (id === RESERVE_PROGRAM) {
     if (opts.alreadyMinted || opts.preMint) return false;
     if (kind === 'lock' || kind === 'vote' || kind === 'claim') return false;
-    if (opts.feeFirst) {
-      if (opts.gateOk === false) return false;
-      const gap = Math.max(0, Number(opts.reward || 0) - Number(opts.feeBank || 0));
-      if (gap <= 0) return false;
-      if (opts.amount != null && Number(opts.amount) > gap) return false;
-      return true;
-    }
-    if (kind !== 'withdraw') return false;
+    // Fee-bank shortfall is not a reward. A feeFirst request never mints.
+    if (opts.feeFirst) return false;
+    if (kind !== 'withdraw' && kind !== 'reserve-reward') return false;
     return true;
   }
   return false;

@@ -28,7 +28,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
     assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET \}/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
   });
 
   it('CREATE with shear-testnet-v11 succeeds and an unknown magic reverts', async () => {
@@ -94,6 +94,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(en.ok, true, en.reason);
     const view = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(view.liveHashBonusNanos, 2);
+    assert.equal(view.oracleBps, 264);
     assert.equal(view.bonusEnacted, true);
     const w = await callReserve(s, encodeWithdraw(destB, end));
     assert.equal(w.ok, true, w.reason);
@@ -118,7 +119,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal((await callReserve(s, encodeVote(destA, 1, t0 + 2))).ok, true);
     const locked = await callReserve(s, encodeVote(destA, 3, t0 + 3));
     assert.equal(locked.ok, false);
-    assert.equal((await callReserve(s, encodeObserveRate(9999, t0 + 4))).ok, true);
+    assert.equal((await callReserve(s, encodeObserveRate(9999, t0 + 4))).ok, false);
     const end = t0 + RESERVE_EPOCH_MS;
     assert.equal((await callReserve(s, encodeEnact(end))).ok, true);
     const w = await callReserve(s, encodeWithdraw(destA, end));

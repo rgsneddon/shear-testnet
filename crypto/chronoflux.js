@@ -462,6 +462,9 @@ export function compactTx(tx) {
     delete out.payer;
     delete out.sponsor;
   }
+  delete out.owner;
+  delete out.payout;
+  delete out.address;
   if (tx.vin) {
     out.vin = (tx.vin || []).map((v) => {
       if (v?.coinbase) return compactValue({ coinbase: true, height: v.height });

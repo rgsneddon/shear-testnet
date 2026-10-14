@@ -15,15 +15,15 @@ import {
   emptyOracle,
   interestNanos,
   accruedNanos,
-  observeRate as observeOracleRate,
-  freezeEpochBps,
-  makeFreezeRecord,
-  verifyFreezeRecord,
   GENESIS_BPS,
+  RESERVE_ORACLE_MAX_BPS,
+  epochRateBps,
+  bundleObservationRoot,
+  bundledEpochBps,
+  ORACLE_QUORUM,
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
 import { extraMint } from './mint.js';
-import { splitLevy } from './levy.js';
 
 export const VOTE_INCREASE = 'increase bonus';
 export const VOTE_DECREASE = 'decrease bonus';
@@ -76,6 +76,7 @@ export function emptyVault() {
     bonusEnacted: false,
     liveHashBonusNanos: BigInt(HASH_BONUS_NANOS_FLOOR),
     totalLockedNanos: 0n,
+    programCustodyNanos: 0n,
     feeBankNanos: 0n,
     mintBankNanos: 0n,
     mintedIds: Object.create(null),
@@ -83,6 +84,7 @@ export function emptyVault() {
     votes: { increase: 0, decrease: 0, hold: 0 },
     oracle: emptyOracle(),
     epochBps: GENESIS_BPS,
+    nextEpochBps: GENESIS_BPS,
     freezes: Object.create(null),
     genesisMs: 0,
     magic: MAGIC_TESTNET,
@@ -113,6 +115,7 @@ export function cloneVault(state) {
   Object.assign(out.freezes, raw.freezes || {});
   out.liveHashBonusNanos = asBig(out.liveHashBonusNanos);
   out.totalLockedNanos = asBig(out.totalLockedNanos);
+  out.programCustodyNanos = 0n;
   out.feeBankNanos = asBig(out.feeBankNanos);
   out.mintBankNanos = asBig(out.mintBankNanos);
   out.blankFork = !!src.blankFork;
@@ -126,7 +129,10 @@ export function creditFeeBank(state, nanos) {
   return asNum(state.feeBankNanos);
 }
 
-/** Stake rewards pay from the fee bank first; mint only the shortfall. */
+/**
+ * Reserve reward is minted in full by consensus. The fee bank is not read
+ * and is not a reward source.
+ */
 export function payoutStakeReward({
   state,
   reward = 0,
@@ -136,42 +142,33 @@ export function payoutStakeReward({
 } = {}) {
   const vault = state || emptyVault();
   vault.mintedIds = vault.mintedIds || Object.create(null);
-  if (!gateOk) return { ok: false, reason: 'gate_wait', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
-  if (vault.mintedIds[id]) return { ok: false, reason: 'double_mint', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+  vault.programCustodyNanos = 0n;
+  const bank = asNum(vault.feeBankNanos);
+  if (!gateOk) return { ok: false, reason: 'gate_wait', paid: 0, minted: 0, fromFee: 0, feeBank: bank };
+  if (vault.mintedIds[id]) return { ok: false, reason: 'double_mint', paid: 0, minted: 0, fromFee: 0, feeBank: bank };
   const need = asBig(reward);
   if (need <= 0n) {
-    return { ok: false, reason: 'bad_reward', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+    return { ok: false, reason: 'bad_reward', paid: 0, minted: 0, fromFee: 0, feeBank: bank };
   }
   if (maxReward != null && need > asBig(maxReward)) {
-    return { ok: false, reason: 'over_mint', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+    return { ok: false, reason: 'over_mint', paid: 0, minted: 0, fromFee: 0, feeBank: bank };
   }
   if (!id) {
-    return { ok: false, reason: 'need_id', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
+    return { ok: false, reason: 'need_id', paid: 0, minted: 0, fromFee: 0, feeBank: bank };
   }
-  const bank = asBig(vault.feeBankNanos);
-  const fromFee = need < bank ? need : bank;
-  const gap = need - fromFee;
-  if (gap > 0n) {
-    if (!extraMintAllowed(RESERVE_PROGRAM, {
-      feeFirst: true,
-      gateOk: true,
-      reward: asNum(need),
-      feeBank: asNum(bank),
-      amount: asNum(gap),
-    })) {
-      return { ok: false, reason: 'mint_forbidden', paid: 0, minted: 0, feeBank: asNum(bank) };
-    }
+  if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw', reward: asNum(need), amount: asNum(need) })) {
+    return { ok: false, reason: 'mint_forbidden', paid: 0, minted: 0, fromFee: 0, feeBank: bank };
   }
-  vault.feeBankNanos = bank - fromFee;
   vault.mintedIds[id] = true;
-  if (gap > 0n) vault.mintBankNanos = asBig(vault.mintBankNanos) + gap;
+  vault.mintBankNanos = asBig(vault.mintBankNanos) + need;
   return {
     ok: true,
     paid: asNum(need),
-    fromFee: asNum(fromFee),
-    minted: asNum(gap),
+    fromFee: 0,
+    minted: asNum(need),
     feeBank: asNum(vault.feeBankNanos),
     id,
+    source: 'coinbase',
   };
 }
 
@@ -232,10 +229,14 @@ export function publicVaultView(state, nowMs) {
     accruingNanos: asNum(totalAccrued),
     vaultNanos: blank ? 0 : asNum(asBig(state.totalLockedNanos) + totalAccrued),
     reserveMintedNanos: blank ? 0 : asNum(asBig(state.mintBankNanos) + totalClaimable),
-    feeBankNanos: blank ? 0 : asNum(state.feeBankNanos),
+    feeBankNanos: 0,
+    programCustodyNanos: 0,
+    nextEpochBps: Number(state.nextEpochBps ?? state.epochBps ?? GENESIS_BPS),
+    permittedRewardNanos: blank ? 0 : permittedRewardNanos(state),
+    mintedRewardNanos: blank ? 0 : asNum(state.mintBankNanos),
     mintBankNanos: blank ? 0 : asNum(state.mintBankNanos),
     votes: blank ? { increase: 0, decrease: 0, hold: 0 } : votesView(state),
-    oracleBps: state.oracle?.annualBps ?? 0,
+    oracleBps: bundledEpochBps() ?? GENESIS_BPS,
     oracleObserved: true,
     epochBps: Number(state.epochBps ?? GENESIS_BPS),
     epochIndex: Number(state.epochIndex || 0),
@@ -254,8 +255,103 @@ export function publicVaultView(state, nowMs) {
   };
 }
 
+function activeOf(p) {
+  return asBig(p?.active ?? p?.staked);
+}
+
+function setActive(p, n) {
+  const v = asBig(n);
+  p.active = v;
+  p.staked = v;
+}
+
 function portalStakeNanos(p) {
-  return asBig(p?.staked) + asBig(p?.idle);
+  return activeOf(p) + asBig(p?.idle);
+}
+
+function lockOwner(payout, dest) {
+  if (payout && isDestAddress(payout) && !isShearAddress(payout)) return payout;
+  if (dest && isDestAddress(dest) && !isShearAddress(dest)) return dest;
+  return '';
+}
+
+function pushLockNote(p, { nanos, owner, qualifying, unlockMs }) {
+  const id = createHash('sha256')
+    .update('shear-lock-note-v1')
+    .update(String(p.id || ''))
+    .update(String(asNum(nanos)))
+    .update(String(owner || ''))
+    .update(String((p.locks || []).length))
+    .digest('hex');
+  const note = {
+    id,
+    owner,
+    payout: p.payout || owner,
+    nanos: asNum(nanos),
+    active: !!qualifying,
+    unlockMs: Math.max(0, Math.floor(Number(unlockMs) || 0)),
+    spent: false,
+  };
+  p.locks = p.locks || [];
+  p.locks.push(note);
+  return note;
+}
+
+function stampUnlock(state) {
+  const end = Number(state.epochStartMs || 0) + epochMs(state.magic);
+  for (const p of Object.values(state.portals || {})) {
+    for (const note of p.locks || []) {
+      if (!note.spent && !(Number(note.unlockMs) > 0)) note.unlockMs = end;
+    }
+  }
+}
+
+function unspentLockNanos(p) {
+  let n = 0n;
+  for (const note of p?.locks || []) {
+    if (!note.spent) n += asBig(note.nanos);
+  }
+  return n;
+}
+
+export function permittedRewardNanos(state) {
+  const bps = asBig(state?.epochBps ?? GENESIS_BPS);
+  let n = 0n;
+  for (const p of Object.values(state?.portals || {})) {
+    n += (activeOf(p) * bps) / 10000n;
+  }
+  return asNum(n);
+}
+
+/** Supply identity: user notes hold principal; minted reward ≤ permitted reward. */
+export function supplyIdentity(state) {
+  const vault = state || emptyVault();
+  let noteNanos = 0n;
+  let indexed = 0n;
+  for (const p of Object.values(vault.portals || {})) {
+    indexed += portalStakeNanos(p);
+    noteNanos += unspentLockNanos(p);
+    for (const note of p.locks || []) {
+      if (note.spent) continue;
+      if (!note.owner) return { ok: false, reason: 'lock_owner' };
+    }
+  }
+  const mintedReward = asBig(vault.mintBankNanos);
+  const permittedReward = asBig(permittedRewardNanos(vault));
+  const custody = asBig(vault.programCustodyNanos);
+  const ok = noteNanos === indexed
+    && asBig(vault.totalLockedNanos) === indexed
+    && custody === 0n
+    && mintedReward <= permittedReward;
+  return {
+    ok,
+    lockedNanos: asNum(indexed),
+    noteNanos: asNum(noteNanos),
+    programCustodyNanos: 0,
+    permittedReward: asNum(permittedReward),
+    mintedReward: asNum(mintedReward),
+    feeBankRewardNanos: 0,
+  };
 }
 
 /** Confirmed lock principal this dest cannot spend.
@@ -282,12 +378,21 @@ export function portalPrincipalNanos(state, dest) {
 function portalOf(state, destOrId) {
   const id = portalKey(destOrId);
   if (!id) {
-    return { id: '', staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0 };
+    return { id: '', active: 0n, staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0, locks: [] };
   }
   if (!state.portals[id]) {
-    state.portals[id] = { id, staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0 };
+    state.portals[id] = {
+      id, active: 0n, staked: 0n, idle: 0n, vote: null, joined: false, voteEpoch: 0, locks: [],
+    };
   }
   return state.portals[id];
+}
+
+function clampBps(n) {
+  let b = Math.floor(Number(n) || 0);
+  if (b < 0) b = 0;
+  if (b > RESERVE_ORACLE_MAX_BPS) b = RESERVE_ORACLE_MAX_BPS;
+  return b;
 }
 
 function beginEpoch(state, nowMs) {
@@ -295,41 +400,53 @@ function beginEpoch(state, nowMs) {
   const magic = state.magic || MAGIC_TESTNET;
   const days = epochDays(magic);
   const idx = vortexEpochIndex({ nowMs, genesisMs: state.genesisMs, epochDays: days });
-  const rec = makeFreezeRecord({
-    epochIndex: idx,
-    prevEpochBps: state.epochBps ?? GENESIS_BPS,
-    annualBps: state.oracle?.annualBps,
-    observedAtMs: state.oracle?.observedAtMs,
-    nowMs,
-    components: state.oracle?.components,
-    magic,
-  });
+  const prev = clampBps(state.epochBps ?? GENESIS_BPS);
+  const proposed = epochRateBps(prev);
+  const root = bundleObservationRoot();
   state.freezes = state.freezes || Object.create(null);
   const prior = state.freezes[idx];
-  const check = verifyFreezeRecord(rec, { epochIndex: idx, prevFreeze: prior, magic });
-  if (prior && (!check.ok || prior.epochBps !== rec.epochBps)) {
-    state.epochBps = prior.epochBps;
-    state.freeze = prior;
-  } else {
-    state.freezes[idx] = rec;
-    state.freeze = rec;
-    state.epochBps = rec.epochBps;
+  let bps = proposed;
+  if (prior && Number.isFinite(Number(prior.epochBps))) bps = clampBps(prior.epochBps);
+  state.epochBps = bps;
+  state.nextEpochBps = bps;
+  if (!prior) {
+    state.freezes[idx] = {
+      ok: true,
+      epochIndex: idx,
+      epochBps: bps,
+      prevEpochBps: prev,
+      observationRoot: root,
+      source: 'bundle-quorum-14',
+      sourceCount: ORACLE_QUORUM,
+      frozenAtMs: Number(nowMs) || 0,
+    };
   }
+  state.freeze = state.freezes[idx];
   state.epochIndex = idx;
   state.epochStartMs = nowMs;
   state.bonusEnacted = false;
-  void freezeEpochBps;
+  stampUnlock(state);
+  void days;
   void MAGIC_MAINNET;
 }
 
 function portalPublic(p) {
+  const active = asNum(activeOf(p));
   return {
     id: p.id,
-    staked: asNum(p.staked),
+    active,
+    staked: active,
     idle: asNum(p.idle),
-    nanos: asNum(asBig(p.staked) + asBig(p.idle)),
+    nanos: asNum(activeOf(p) + asBig(p.idle)),
     joined: p.joined,
     vote: p.vote,
+    payout: p.payout || null,
+    locks: (p.locks || []).filter((n) => !n.spent).map((n) => ({
+      id: n.id,
+      owner: n.owner,
+      nanos: n.nanos,
+      unlockMs: n.unlockMs,
+    })),
   };
 }
 
@@ -341,21 +458,28 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
   }
   const n = asBig(nanos);
   if (n <= 0n) return { ok: false, reason: 'bad_amount' };
+  const owner = lockOwner(payout, isDestAddress(dest) ? dest : '');
+  if (!owner && !(payoutPortalId && isPortalId(payoutPortalId))) {
+    return { ok: false, reason: 'need_payout' };
+  }
   const p = portalOf(state, id);
+  if (!p.payout) {
+    if (owner) p.payout = owner;
+    else if (payout && isDestAddress(payout) && !isShearAddress(payout)) p.payout = payout;
+  }
+  if (p.payout && !p.payoutPortalId) p.payoutPortalId = portalIdFromDest(p.payout);
   if (payoutPortalId && isPortalId(payoutPortalId) && !p.payoutPortalId) {
     p.payoutPortalId = String(payoutPortalId).toLowerCase();
   }
-  if (payout && isDestAddress(payout) && !isShearAddress(payout)) {
-    if (!p.payout) p.payout = payout;
-    if (!p.payoutPortalId) p.payoutPortalId = portalIdFromDest(payout);
-  }
+  if (!p.payout && !p.payoutPortalId) return { ok: false, reason: 'need_payout' };
   if (state.epochStartMs && !state.bonusEnacted && remainingMs(state, nowMs) === 0) {
     return { ok: false, reason: 'need_enact' };
   }
   const staking = canJoin(state, nowMs);
-  if (staking) p.staked = asBig(p.staked) + n;
+  if (staking) setActive(p, activeOf(p) + n);
   else p.idle = asBig(p.idle) + n;
   state.totalLockedNanos = asBig(state.totalLockedNanos) + n;
+  state.programCustodyNanos = 0n;
   if (!p.joined && (asBig(p.staked) + asBig(p.idle)) >= BigInt(PI_SHE_NANOS)) {
     p.joined = true;
     if (!state.epochStartMs) {
@@ -367,12 +491,22 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
       beginEpoch(state, nowMs);
     }
   }
+  const unlockMs = state.epochStartMs ? state.epochStartMs + epochMs(state.magic) : 0;
+  const note = pushLockNote(p, {
+    nanos: n,
+    owner: p.payout || owner || dest,
+    qualifying: staking,
+    unlockMs,
+  });
   return {
     ok: true,
     idle: !staking,
+    note,
     portal: portalPublic(p),
   };
 }
+
+export const lock = deposit;
 
 export function vote({ state, dest, portalId, choice, nowMs }) {
   nowMs;
@@ -382,7 +516,7 @@ export function vote({ state, dest, portalId, choice, nowMs }) {
     return { ok: false, reason: 'bad_dest' };
   }
   const p = portalOf(state, id);
-  if (!p.joined || !canVote(p.staked, p.idle)) return { ok: false, reason: 'not_voter' };
+  if (!p.joined || !canVote(activeOf(p), p.idle)) return { ok: false, reason: 'not_voter' };
   if (!state.epochStartMs) return { ok: false, reason: 'not_voter' };
   if (state.bonusEnacted) return { ok: false, reason: 'epoch_closed' };
   const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
@@ -403,15 +537,18 @@ export function vote({ state, dest, portalId, choice, nowMs }) {
   };
 }
 
-export function observeRate({ state, annualBps, nowMs }) {
-  if (!state.oracle) state.oracle = emptyOracle({ nowMs });
-  return observeOracleRate(state.oracle, { annualBps, nowMs });
+/** Miner, admin, vote, and snapshot observations do not move the consensus rate. */
+export function observeRate({ state, annualBps, nowMs } = {}) {
+  void annualBps;
+  void nowMs;
+  void state;
+  return { ok: false, reason: 'rate_bundled' };
 }
 
 export function reserveInterestNanos(stakedNanos, oracleOrBps) {
   const bps = typeof oracleOrBps === 'number' || typeof oracleOrBps === 'bigint'
     ? oracleOrBps
-    : (oracleOrBps?.epochBps ?? oracleOrBps?.annualBps ?? 0);
+    : (oracleOrBps?.epochBps ?? GENESIS_BPS);
   return interestNanos(stakedNanos, bps);
 }
 
@@ -425,10 +562,12 @@ export function portalRewards(state, dest, nowMs) {
   const p = portalOf(state, dest);
   const bps = Number(state.epochBps ?? GENESIS_BPS);
   const elapsed = elapsedMs(state, nowMs);
+  const active = asNum(activeOf(p));
   return {
-    accrued: accruedNanos(p.staked, bps, elapsed, state.magic),
-    projected: reserveInterestNanos(p.staked, bps),
-    staked: asNum(p.staked),
+    accrued: accruedNanos(active, bps, elapsed, state.magic),
+    projected: reserveInterestNanos(active, bps),
+    active,
+    staked: active,
     idle: asNum(p.idle),
     oracleBps: bps,
     epochBps: bps,
@@ -444,21 +583,24 @@ function continuumOf(p, payout, dest) {
 
 export function previewWithdraw(state, dest) {
   const p = portalOf(state, dest);
-  const principal = asNum(asBig(p.staked) + asBig(p.idle));
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  const active = asNum(activeOf(p));
+  const principal = asNum(activeOf(p) + asBig(p.idle));
+  const interest = reserveInterestNanos(active, state.epochBps);
   return {
     principal,
-    staked: asNum(p.staked),
+    active,
+    staked: active,
     idle: asNum(p.idle),
     interest,
+    reward: interest,
     payout: principal + interest,
     to: continuumOf(p, null, dest),
   };
 }
 
-function sealedReserveVout(to, n, kind) {
+function sealedReserveVout(to, n, kind, portalId) {
   const d20 = hash20FromAddress(to);
-  if (!d20) return { address: to, nanos: n, kind };
+  if (!d20) return { address: to, nanos: n, kind, portalId: portalId || '' };
   // Reserve lock/vote/withdraw amounts are public (valueProof.v stays on the
   // wire). Exact-value Schnorr, not BP+ range — same as coinbase notes.
   const note = sealCoinbaseNote(n, { dest20: d20, kind });
@@ -466,7 +608,7 @@ function sealedReserveVout(to, n, kind) {
     note.valueProof = { ...note.valueProof, v: n };
   }
   note.dest20 = d20;
-  note.portalId = portalIdFromDest(to);
+  note.portalId = portalId || portalIdFromDest(to);
   return { ...note, address: to };
 }
 
@@ -475,8 +617,13 @@ function vinDest20(from) {
   return d20 ? { address: from, dest20: d20 } : { address: from };
 }
 
-export function lockTx({ from, to, nanos, id }) {
+export function lockTx({ from, to, nanos, id, payout, unlockMs }) {
   const n = Math.floor(Number(nanos));
+  const owner = payout && isDestAddress(payout) ? payout : from;
+  const portal = portalIdFromDest(to);
+  const out = sealedReserveVout(owner, n, KIND_LOCK, portal);
+  out.owner = owner;
+  out.unlockMs = Math.max(0, Math.floor(Number(unlockMs) || 0));
   return {
     id,
     programId: RESERVE_PROGRAM,
@@ -484,27 +631,42 @@ export function lockTx({ from, to, nanos, id }) {
     from,
     to,
     nanos: n,
-    portalId: portalIdFromDest(to),
-    payoutPortalId: portalIdFromDest(from),
+    owner,
+    payout: owner,
+    portalId: portal,
+    payoutPortalId: portalIdFromDest(owner),
     vin: [vinDest20(from)],
-    vout: [sealedReserveVout(to, n, KIND_LOCK)],
+    vout: [out],
   };
 }
 
-export function withdrawTx({ from, to, nanos, id }) {
-  const n = Math.floor(Number(nanos));
+export function withdrawTx({ from, to, nanos, id, principal, reward }) {
+  const total = Math.floor(Number(nanos) || 0);
+  const rewardN = reward != null ? Math.floor(Number(reward) || 0) : 0;
+  const principalN = principal != null ? Math.floor(Number(principal) || 0) : (reward != null ? total - rewardN : total);
+  const portal = portalIdFromDest(from);
+  const release = sealedReserveVout(to, principalN, 'lock-release', portal);
+  const vout = [release];
+  if (rewardN > 0) {
+    const minted = sealedReserveVout(to, rewardN, 'reserve-reward', portal);
+    minted.mint = true;
+    vout.push(minted);
+  }
   return {
     id,
     programId: RESERVE_PROGRAM,
-    mint: true,
+    mint: false,
+    spendsLock: true,
     kind: KIND_WITHDRAW,
     from,
     to,
-    nanos: n,
-    portalId: portalIdFromDest(from),
+    nanos: principalN + rewardN,
+    principalNanos: principalN,
+    rewardNanos: rewardN,
+    portalId: portal,
     payoutPortalId: portalIdFromDest(to),
-    vin: [],
-    vout: [sealedReserveVout(to, n, KIND_WITHDRAW)],
+    vin: [{ ...vinDest20(to), kind: KIND_LOCK }],
+    vout,
   };
 }
 
@@ -582,12 +744,14 @@ export function verifyReservePayout(state, tx) {
   }
   if (act.kind !== KIND_WITHDRAW) return { ok: true };
   const p = act.portalId ? state?.portals?.[act.portalId] : null;
-  if (act.payoutPortalId && p?.payoutPortalId && act.payoutPortalId !== p.payoutPortalId) {
+  if (!p?.payout && !p?.payoutPortalId) return { ok: false, reason: 'need_payout' };
+  if (p?.payoutPortalId && act.payoutPortalId && act.payoutPortalId !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
   }
   if (p?.payout && act.payout && isDestAddress(act.payout) && act.payout !== p.payout) {
     return { ok: false, reason: 'payout_mismatch' };
   }
+  if (p?.payout && !act.payout) return { ok: false, reason: 'payout_mismatch' };
   if (act.payout && (isShearAddress(act.payout) || !isDestAddress(act.payout))) {
     return { ok: false, reason: 'shear1' };
   }
@@ -597,8 +761,8 @@ export function verifyReservePayout(state, tx) {
     return { ok: false, reason: 'epoch_open' };
   }
   if (!p) return { ok: false, reason: 'empty' };
-  const principal = asNum(asBig(p.staked) + asBig(p.idle));
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  const principal = asNum(activeOf(p) + asBig(p.idle));
+  const interest = reserveInterestNanos(activeOf(p), state.epochBps);
   if (act.nanos > principal + interest) return { ok: false, reason: 'over_mint' };
   const mintId = withdrawMintId(p.id || act.portalId, state.currentEpoch);
   if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
@@ -614,12 +778,6 @@ export function applyReserveBlock({ state, block, nowMs }) {
   // hash bonus. Winning plurality moves the bonus by ±1. Height is unchanged.
   if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     results.push({ action: 'enact', ...enact({ state, nowMs }) });
-  }
-  const cb = txs.find((t) => t?.coinbase) || txs[0];
-  const userFees = txs.filter((t) => t && !t.coinbase)
-    .reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
-  if ((cb?.vout || []).some((o) => o?.kind === 'reserve-fee')) {
-    creditFeeBank(state, splitLevy(userFees).reserve);
   }
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
@@ -696,6 +854,7 @@ export function enact({ state, nowMs } = {}) {
   }
   live = hashBonusUnitNanos(live);
   state.liveHashBonusNanos = BigInt(live);
+  state.nextEpochBps = clampBps(state.epochBps ?? GENESIS_BPS);
   state.bonusEnacted = true;
   state.enactedUp = up;
   state.enactedDown = down;
@@ -711,6 +870,7 @@ export function enact({ state, nowMs } = {}) {
     enactedUp: up,
     enactedDown: down,
     enactedHold: hold,
+    nextEpochBps: state.nextEpochBps,
   };
 }
 
@@ -730,18 +890,20 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!did.ok) return did;
   }
   const p = portalOf(state, id);
+  if (!p.payout && !p.payoutPortalId) return { ok: false, reason: 'need_payout' };
   if (payoutPortalId && p.payoutPortalId && String(payoutPortalId).toLowerCase() !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
   }
   if (p.payout && payout && isDestAddress(payout) && payout !== p.payout) {
     return { ok: false, reason: 'payout_mismatch' };
   }
-  const staked = asNum(p.staked);
+  const staked = asNum(activeOf(p));
   const idle = asNum(p.idle);
   const principal = staked + idle;
   if (principal <= 0) return { ok: false, reason: 'empty' };
-  const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  const to = continuumOf(p, null, isDestAddress(dest) ? dest : '');
+  if (p.payout && to !== p.payout) return { ok: false, reason: 'payout_mismatch' };
+  const interest = reserveInterestNanos(staked, state.epochBps);
   let mint = null;
   if (interest > 0) {
     const mintId = withdrawMintId(p.id, state.currentEpoch);
@@ -760,6 +922,10 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   }
   state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
+  state.programCustodyNanos = 0n;
+  for (const note of p.locks || []) {
+    if (!note.spent) note.spent = true;
+  }
   if (Number(p.voteEpoch || 0) === Number(state.currentEpoch || 0)) {
     if (p.vote === VOTE_INCREASE && Number(state.votes.increase) > 0) state.votes.increase -= 1;
     if (p.vote === VOTE_DECREASE && Number(state.votes.decrease) > 0) state.votes.decrease -= 1;
@@ -768,7 +934,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (Number(state.votes.increase) < 0) state.votes.increase = 0;
   if (Number(state.votes.decrease) < 0) state.votes.decrease = 0;
   if (Number(state.votes.hold) < 0) state.votes.hold = 0;
-  p.staked = 0n;
+  setActive(p, 0n);
   p.idle = 0n;
   p.joined = false;
   p.vote = null;
@@ -780,7 +946,10 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     staked,
     idle,
     interest,
+    reward: interest,
     payout: principal + interest,
+    principalSpent: true,
+    rewardSource: interest > 0 ? 'coinbase' : 'none',
     to,
     mint,
     programId: RESERVE_PROGRAM,

@@ -31,10 +31,10 @@ describe('portable node packs', () => {
     const handoff = fs.readFileSync(path.join(root, 'NODE-MACBOOK-HANDOFF.md'), 'utf8');
     assert.match(cmd, /node\\src\\node\.js/);
     assert.match(sh, /node\/src\/node\.js/);
-    assert.match(cmd, /SHEAR_NETWORK=shear-testnet-v11/);
-    assert.match(cmd, /APPDATA%\\Shear\\testnet-v11/);
-    assert.match(sh, /HOME\/\.shear\/testnet-v11/);
-    assert.match(sh, /SHEAR_NETWORK:-shear-testnet-v11/);
+    assert.match(cmd, /SHEAR_NETWORK=shear-testnet-v12/);
+    assert.match(cmd, /APPDATA%\\Shear\\testnet-v12/);
+    assert.match(sh, /HOME\/\.shear\/testnet-v12/);
+    assert.match(sh, /SHEAR_NETWORK:-shear-testnet-v12/);
     assert.match(cmd, /pause/i);
     assert.match(cmd, /SHEAR_NODE_NOPAUSE/);
     assert.match(cmd, /Shear node stopped/);
@@ -57,7 +57,7 @@ describe('portable node packs', () => {
     assert.doesNotMatch(mac, /gh release upload v15 /);
     assert.match(mac, /PRODUCT_VERSION/);
     assert.match(mac, /npm ci/);
-    assert.match(mac, /shear-testnet-v11/);
+    assert.match(mac, /shear-testnet-v12/);
     assert.doesNotMatch(mac, /LABEL=v9/);
     assert.doesNotMatch(mac, /shear-node-v9-macos/);
     assert.match(handoff, /shear-wallet-0\.70-macos\.dmg/);

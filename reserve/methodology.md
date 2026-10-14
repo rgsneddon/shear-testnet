@@ -70,6 +70,24 @@ Between official changes: repeat the last average, last component vector, and la
 
 Do **not** ingest SOFR, SONIA, €STR, TONA, CORRA, SARON, AONIA, effective federal funds, or any other market overnight print into this series.
 
+## Consensus rate
+
+The chain does not fetch the URLs above. A live read of a central-bank website is not deterministic: pages, clocks, and intermediaries differ, so two nodes are not required to observe the same bytes. That fetch is not a consensus input.
+
+Every node freezes the same epoch rate from the attested tenths hardcoded in `crypto/reserve_oracle.js` (`BUNDLED_POLICY_TENTHS`). Those integers match `normalisedInteger` in `latest.json` as of 2026-08-01. The file is documentation. A node does not read it, `dataDir/oracle-snapshot.json`, a coinbase field, or `SHEAR_ORACLE_BPS` to choose the rate.
+
+Quorum is exactly the 14 ids above, once each, with those tenths. A shorter list, a duplicate, an unknown id, or a different tenth is not a quorum and leaves the previous epoch's bps in place.
+
+Averaging, in integers:
+
+1. Sum the 14 tenths (this bundle: 36900).
+2. Half-up mean of tenths: `(sum + 7) / 14` = 2636.
+3. Half-up to whole basis points: `(2636 + 5) / 10` = 264.
+
+The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. The step from the previous freeze to a new bundle is at most 100 bps.
+
+A new official print enters consensus only when a software release replaces the attested integers and the fingerprint root `RESERVE_RATE=epoch-bundle:...`. Until that release every epoch freezes 264 bps.
+
 ## Example (fixture `snapshot_a`)
 
 Fed 3.50–3.75 → 3.625. Fourteen tenths-bp values sum to 36900; half-up mean `36900 / 14` = **2636** tenths-bp = **2.636%**.

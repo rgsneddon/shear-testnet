@@ -73,7 +73,7 @@ export function encodeBytes(data) {
 export function encodeDeposit(dest, nanos, nowTs) {
   const body = encodeBytes(dest);
   return concat(
-    selector('deposit(bytes,uint256,uint256)'),
+    selector('lock(bytes,uint256,uint256)'),
     pad32(96),
     pad32(nanos),
     pad32(nowTs),

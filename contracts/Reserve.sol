@@ -4,18 +4,24 @@ pragma solidity ^0.8.20;
 /**
  * The Reserve — Shear's first Vortex program. Nodes execute this bytecode.
  *
- * Deposit is legal any time an epoch is open. Coin locked in the first 301
- * days is staked (interest, vote). Coin locked in the last 99 days is idle
- * (no interest) but still unlocks a vote if the portal holds ≥ π, even on a
- * first-ever deposit. A portal votes once per epoch; a second cast reverts
- * VoteLocked(). At epoch end the unique plurality of {increase, decrease, hold}
- * enacts ±1 protocol unit on the live hash bonus. The 1 SHE pot never
- * moves. Interest is minted by the Shear node on withdraw, only for this
- * program id, only on staked principal. Nodes do not fetch HTTP; they
- * CALL observeRate with the Reserve oracle reading. This contract refuses
- * well-known foreign chain ids.
+ * Lock is legal any time an epoch is open. Coin locked in the first 301
+ * days is an active lock (reserve reward, vote). Coin locked in the last 99
+ * days is idle (no reserve reward) but still unlocks a vote if the portal
+ * holds ≥ π, even on a first-ever lock. A portal votes once per epoch; a
+ * second cast reverts VoteLocked(). At epoch end the unique plurality of
+ * {increase, decrease, hold} enacts ±1 protocol unit on the live hash bonus.
+ * It does not set the reserve rate. The rate is the unweighted half-up mean
+ * of the attested 14-bank policy tenths (FED 3625, BOE 3750, ECB 2075,
+ * BOJ 500, BOC 2750, RBA 3600, RBNZ 3000, SNB 0, RIKSBANK 2000, NORGES 4000,
+ * DNBANK 1600, BOK 2500, BOI 4000, CNB 3500): 36900 tenths → 2636 → 264 bps.
+ * It is written only when an epoch opens, and a step from the previous
+ * freeze is at most 100 bps. The 1 SHE pot never moves. The reserve reward
+ * is minted by consensus on release, only for this program id, only on the
+ * active lock. Principal stays in the user's own time-locked note. This
+ * contract refuses well-known foreign chain ids. The Reserve oracle is the
+ * bundled quorum. observeRate does not move the rate.
  *
- * Interest: floor(staked * epochBps / 10000). do not use 365.
+ * Reserve reward: floor(active * epochBps / 10000). do not use 365.
  */
 error NotShear();
 error BelowPi();
@@ -29,6 +35,8 @@ error BadRate();
 error AlreadyEnacted();
 error NeedEnact();
 error UnitFloor();
+error RateBundled();
+error NeedPayout();
 
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
@@ -42,6 +50,7 @@ contract Reserve {
     bytes32 public constant SHEAR_TESTNET_V9 = keccak256(bytes("shear-testnet-v9"));
     bytes32 public constant SHEAR_TESTNET_V10 = keccak256(bytes("shear-testnet-v10"));
     bytes32 public constant SHEAR_TESTNET_V11 = keccak256(bytes("shear-testnet-v11"));
+    bytes32 public constant SHEAR_TESTNET_V12 = keccak256(bytes("shear-testnet-v12"));
     bytes32 public constant SHEAR_MAINNET = keccak256(bytes("shear-v1"));
     bytes32 public constant PROGRAM_ID = keccak256(bytes("shear-reserve-v1"));
 
@@ -58,7 +67,7 @@ contract Reserve {
     uint256 public constant GENESIS_BPS = 264;
     uint256 public constant BPS_STEP = 100;
     uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
-    uint256 public constant INTEREST_DENOM_DAYS = 400;
+    uint256 public constant REWARD_DENOM_DAYS = 400;
 
     enum Vote {
         None,
@@ -68,7 +77,7 @@ contract Reserve {
     }
 
     struct Portal {
-        uint256 staked;
+        uint256 active;
         uint256 idle;
         Vote vote;
         bool joined;
@@ -87,6 +96,7 @@ contract Reserve {
     uint256 public votesHold;
     uint256 public annualBps;
     uint256 public epochBps;
+    uint256 public nextEpochBps;
     uint256 public oracleAsOfMs;
     uint256 public enactedUp;
     uint256 public enactedDown;
@@ -105,6 +115,7 @@ contract Reserve {
         magic = shearMagic;
         annualBps = GENESIS_BPS;
         epochBps = GENESIS_BPS;
+        nextEpochBps = GENESIS_BPS;
         liveHashBonusNanos = GENESIS_BONUS;
         _assertShear();
     }
@@ -117,7 +128,7 @@ contract Reserve {
         if (id == 1 || id == 56 || id == 137 || id == 10 || id == 42161 || id == 43114 || id == 8453) {
             revert NotShear();
         }
-        if (magic != SHEAR_TESTNET && magic != SHEAR_TESTNET_V3 && magic != SHEAR_TESTNET_V4 && magic != SHEAR_TESTNET_V5 && magic != SHEAR_TESTNET_V1 && magic != SHEAR_TESTNET_V6 && magic != SHEAR_TESTNET_V7 && magic != SHEAR_TESTNET_V8 && magic != SHEAR_TESTNET_V9 && magic != SHEAR_TESTNET_V10 && magic != SHEAR_TESTNET_V11 && magic != SHEAR_MAINNET) revert NotShear();
+        if (magic != SHEAR_TESTNET && magic != SHEAR_TESTNET_V3 && magic != SHEAR_TESTNET_V4 && magic != SHEAR_TESTNET_V5 && magic != SHEAR_TESTNET_V1 && magic != SHEAR_TESTNET_V6 && magic != SHEAR_TESTNET_V7 && magic != SHEAR_TESTNET_V8 && magic != SHEAR_TESTNET_V9 && magic != SHEAR_TESTNET_V10 && magic != SHEAR_TESTNET_V11 && magic != SHEAR_TESTNET_V12 && magic != SHEAR_MAINNET) revert NotShear();
     }
 
     function epochDaysOf() public view returns (uint256) {
@@ -158,10 +169,18 @@ contract Reserve {
         return keccak256(abi.encodePacked("shear-portal-v1", dest));
     }
 
-    function observeRate(uint256 bps, uint256 nowTs) external onlyShear {
-        if (bps > MAX_BPS) revert BadRate();
-        annualBps = bps;
-        oracleAsOfMs = nowTs;
+    function observeRate(uint256 bps, uint256 nowTs) external view onlyShear {
+        bps;
+        nowTs;
+        revert RateBundled();
+    }
+
+    /// Attested tenths of a basis point. Same integers as the JS bundle.
+    function _bundledEpochBps() internal pure returns (uint256) {
+        uint256 sum = 3625 + 3750 + 2075 + 500 + 2750 + 3600 + 3000
+            + 0 + 2000 + 4000 + 1600 + 2500 + 4000 + 3500;
+        uint256 tenthsMean = (sum + 7) / 14;
+        return (tenthsMean + 5) / 10;
     }
 
     function _clampStep(uint256 prev, uint256 proposal) internal pure returns (uint256) {
@@ -175,11 +194,12 @@ contract Reserve {
         return proposal;
     }
 
-    function _freeze(uint256 nowTs) internal view returns (uint256) {
-        uint256 prev = epochBps;
-        if (oracleAsOfMs == 0) return prev;
-        if (nowTs > oracleAsOfMs && (nowTs - oracleAsOfMs) > ORACLE_MAX_AGE_MS) return prev;
-        return _clampStep(prev, annualBps);
+    function _applyEpochRate() internal {
+        uint256 proposal = _bundledEpochBps();
+        uint256 next = _clampStep(epochBps, proposal);
+        epochBps = next;
+        nextEpochBps = next;
+        annualBps = proposal;
     }
 
     function _maybeOpenEpoch(uint256 nowTs) internal {
@@ -187,7 +207,7 @@ contract Reserve {
             currentEpoch = 1;
             epochStart = nowTs;
             bonusEnacted = false;
-            epochBps = _freeze(nowTs);
+            _applyEpochRate();
             return;
         }
         if (bonusEnacted) {
@@ -197,35 +217,35 @@ contract Reserve {
             votesIncrease = 0;
             votesDecrease = 0;
             votesHold = 0;
-            epochBps = _freeze(nowTs);
+            _applyEpochRate();
         }
     }
 
-    function deposit(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
+    function lock(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
         if (nanos == 0) revert BadAmount();
         if (dest.length == 0) revert BadDest();
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
         bool staking = canJoin(nowTs);
-        if (staking) p.staked += nanos;
+        if (staking) p.active += nanos;
         else p.idle += nanos;
         totalLocked += nanos;
-        if (!p.joined && (p.staked + p.idle) >= PI_NANOS) {
+        if (!p.joined && (p.active + p.idle) >= PI_NANOS) {
             p.joined = true;
             _maybeOpenEpoch(nowTs);
         }
     }
 
     function addMore(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
-        this.deposit(dest, nanos, nowTs);
+        this.lock(dest, nanos, nowTs);
     }
 
     function vote(bytes calldata dest, Vote choice, uint256 nowTs) external onlyShear {
         nowTs;
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
-        if (!p.joined || (p.staked + p.idle) < PI_NANOS) revert NotVoter();
+        if (!p.joined || (p.active + p.idle) < PI_NANOS) revert NotVoter();
         if (choice == Vote.None) revert NotVoter();
         if (epochStart == 0) revert NotVoter();
         if (bonusEnacted) revert EpochClosed();
@@ -259,6 +279,7 @@ contract Reserve {
             if (liveHashBonusNanos <= GENESIS_BONUS) delta = 0;
             else liveHashBonusNanos -= 1;
         }
+        nextEpochBps = epochBps;
         bonusEnacted = true;
         enactedUp = up;
         enactedDown = down;
@@ -269,24 +290,24 @@ contract Reserve {
         enactedAtEpoch = currentEpoch;
     }
 
-    function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 interest) {
+    function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
         if (epochStart == 0 || nowTs < epochStart + epochLengthMs()) revert EpochNotEnded();
         if (!bonusEnacted) revert NeedEnact();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
-        uint256 staked = p.staked;
+        uint256 active = p.active;
         uint256 idle = p.idle;
-        principal = staked + idle;
+        principal = active + idle;
         if (principal == 0) revert BadAmount();
-        // Interest: floor(staked * epochBps / 10000). do not use 365.
-        interest = (staked * epochBps) / 10000;
+        // Reserve reward: floor(active * epochBps / 10000). do not use 365.
+        reward = (active * epochBps) / 10000;
         totalLocked -= principal;
         if (p.voteEpoch == currentEpoch) {
             if (p.vote == Vote.IncreaseBonus && votesIncrease > 0) votesIncrease -= 1;
             if (p.vote == Vote.DecreaseBonus && votesDecrease > 0) votesDecrease -= 1;
             if (p.vote == Vote.LeaveBonusAsIs && votesHold > 0) votesHold -= 1;
         }
-        p.staked = 0;
+        p.active = 0;
         p.idle = 0;
         p.joined = false;
         p.vote = Vote.None;
@@ -319,7 +340,7 @@ contract Reserve {
             showUp,
             showDown,
             showHold,
-            annualBps,
+            epochBps,
             liveHashBonusNanos,
             bonusEnacted,
             currentEpoch
@@ -329,9 +350,9 @@ contract Reserve {
     function portalOf(bytes calldata dest)
         external
         view
-        returns (uint256 staked, uint256 idle, Vote vote, bool joined, uint256 voteEpoch)
+        returns (uint256 active, uint256 idle, Vote vote, bool joined, uint256 voteEpoch)
     {
         Portal storage p = portals[portalId(dest)];
-        return (p.staked, p.idle, p.vote, p.joined, p.voteEpoch);
+        return (p.active, p.idle, p.vote, p.joined, p.voteEpoch);
     }
 }
