@@ -946,11 +946,21 @@ export function canonicalReserveFields(tx) {
   };
 }
 
-/** Merkle, owner, and v3 transcript suffix for a lock, vote, or withdraw. */
+function withdrawNonceSigned(tx) {
+  if (tx?.withdrawNonce == null || tx.withdrawNonce === '') return Buffer.alloc(32);
+  try {
+    return withdrawNonceBytes(tx.withdrawNonce);
+  } catch {
+    return Buffer.alloc(32);
+  }
+}
+
+/** Merkle, owner, and v3 transcript suffix for a lock, vote, or withdraw.
+ * A withdraw also signs its id and its 32-byte nonce. Lock and vote do not. */
 export function reserveDigestSuffix(tx) {
   const fields = canonicalReserveFields(tx);
   if (!fields) return null;
-  return Buffer.concat([
+  const parts = [
     Buffer.from('reserveact1'),
     lenPrefUtf8(fields.kind),
     lenPrefUtf8(fields.portalId),
@@ -959,7 +969,12 @@ export function reserveDigestSuffix(tx) {
     lenPrefUtf8(fields.choice),
     i64le(fields.nanos),
     fields.commit,
-  ]);
+  ];
+  if (fields.kind === KIND_WITHDRAW) {
+    parts.push(lenPrefUtf8(String(tx?.id || '')));
+    parts.push(withdrawNonceSigned(tx));
+  }
+  return Buffer.concat(parts);
 }
 
 export function txIsReserveAction(tx) {

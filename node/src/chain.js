@@ -63,6 +63,7 @@ import {
 } from '../../crypto/reserve_evm.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields, admitBaseFromAddress, encodeDest } from '../../crypto/address.js';
 import {
+  admitDelta,
   attachAdmitPub,
   fluxsetFromBlocks,
   appendFluxBlock,
@@ -97,6 +98,8 @@ import {
   noteCommitOfDest20,
   asU8,
   pointFrom,
+  pointBytes,
+  G,
   txIoCap,
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
@@ -1171,46 +1174,131 @@ function droppedPotNanos(o) {
   if (kind === 'hash' || kind === 'finder-fee' || kind === 'reserve-fee') {
     throw new Error('admit_note_point');
   }
-  const opened = o?.valueProof && o.valueProof.v != null && o.valueProof.v !== ''
-    ? Number(o.valueProof.v)
-    : Number(o?.nanos || 0);
-  if (!Number.isSafeInteger(opened) || opened < 0) throw new Error('admit_note_point');
+  const opened = openedNoteNanos(o);
+  if (opened == null) throw new Error('admit_note_point');
   return opened;
 }
 
+function openedNoteNanos(o) {
+  const opened = o?.valueProof && o.valueProof.v != null && o.valueProof.v !== ''
+    ? Number(o.valueProof.v)
+    : Number(o?.nanos || 0);
+  if (!Number.isSafeInteger(opened) || opened < 0) return null;
+  return opened;
+}
+
+/** B from a kept pot note, so the reseal still pays that dest. */
+function admitBaseOfKeptPot(o) {
+  const named = o?.address ? admitBaseFromAddress(o.address) : null;
+  if (named && named.length === 32) return named;
+  const P = pointFrom(o.admitPub);
+  return pointBytes(P.subtract(G.multiply(admitDelta(o))));
+}
+
+function resealPotPayee(o, nanos) {
+  const dest20 = noteDest20(o);
+  if (!dest20) throw new Error('admit_note_point');
+  return attachAdmitPub(sealCoinbaseNote(nanos, { dest20, kind: 'pot' }), {
+    admitBase: admitBaseOfKeptPot(o),
+  });
+}
+
 /**
- * Drop a coinbase payee that is not an FS-1 leaf. Its opened amount goes
- * back to the carry, and the excess is the sum of the notes that remain.
- * A hash or levy note has no pot carry to join, so that drop throws.
+ * Drop a coinbase payee that is not an FS-1 leaf. A dropped pot share is
+ * split again over the pot payees that remain, by the same last-remainder
+ * rule as potPaysFromLeaves. Their notes are resealed at the new amounts.
+ * If none remain, the whole pot is carried and no pot note is left beside
+ * that carry. A hash or levy note has no pot to rejoin, so that drop throws.
  */
 export function dropBrokenCoinbaseNotes(cb) {
+  if (!(cb && typeof cb === 'object')) return cb;
   const kept = [];
-  let dropped = 0;
-  for (const o of cb?.vout || []) {
+  const dropped = [];
+  for (const o of cb.vout || []) {
     if (outputJoinsAdmitSet(cb, o) && !fs1LeafFor(o)) {
       const n = droppedPotNanos(o);
-      if (!Number.isSafeInteger(dropped + n)) throw new Error('admit_note_point');
-      dropped += n;
+      const kind = String(o?.kind || cb?.kind || '');
+      dropped.push({ kind, nanos: n });
       console.error(JSON.stringify({
         event: 'coinbase_note_drop',
         reason: 'admit_note_point',
-        kind: String(o?.kind || cb?.kind || ''),
+        kind,
         nanos: n,
       }));
       continue;
     }
     kept.push(o);
   }
-  if (!(cb && typeof cb === 'object')) return cb;
-  if (dropped > 0) {
-    const carry = canonicalCarry(cb);
-    if (carry == null || !Number.isSafeInteger(carry + dropped)) throw new Error('admit_note_point');
+  cb.vout = kept;
+  if (!dropped.length) return cb;
+  let droppedNanos = 0;
+  for (const row of dropped) {
+    if (!Number.isSafeInteger(droppedNanos + row.nanos)) throw new Error('admit_note_point');
+    droppedNanos += row.nanos;
+  }
+  const pots = kept.filter((o) => String(o?.kind || '') === 'pot');
+  if (!pots.length || droppedNanos === 0) {
+    if (!pots.length && droppedNanos > 0) {
+      const carry = canonicalCarry(cb);
+      if (carry == null || !Number.isSafeInteger(carry + droppedNanos)) throw new Error('admit_note_point');
+      cb.carryNanos = carry + droppedNanos;
+    }
     const excess = excessOf(kept);
     if (!excess) throw new Error('admit_note_point');
-    cb.carryNanos = carry + dropped;
     cb.excess = excess;
+    return cb;
   }
-  cb.vout = kept;
+  const carry = canonicalCarry(cb);
+  if (carry == null) throw new Error('admit_note_point');
+  // Consensus rejects a carry beside a pot note. The amount re-split is the
+  // pot still opened, the dropped share, and any carry already on this tx.
+  let potSum = droppedNanos + carry;
+  const leaves = [];
+  for (const o of pots) {
+    const n = openedNoteNanos(o);
+    if (n == null || !Number.isSafeInteger(potSum + n)) throw new Error('admit_note_point');
+    potSum += n;
+    const dest20 = noteDest20(o);
+    if (!dest20) throw new Error('admit_note_point');
+    leaves.push({
+      output: o,
+      noteCommit: noteCommitOfDest20(dest20),
+      count: n > 0 ? n : 1,
+    });
+  }
+  const pays = potPaysFromLeaves(
+    leaves.map((leaf) => ({ noteCommit: leaf.noteCommit, count: leaf.count })),
+    null,
+    0,
+    potSum,
+    0,
+  );
+  const used = new Set();
+  const resealed = [];
+  for (const pay of pays) {
+    const src = leaves.find((leaf) => !used.has(leaf) && ncHex(leaf.noteCommit) === ncHex(pay.noteCommit));
+    if (!src) throw new Error('admit_note_point');
+    used.add(src);
+    resealed.push(resealPotPayee(src.output, pay.nanos));
+  }
+  if (!resealed.length) throw new Error('admit_note_point');
+  const next = [];
+  let placed = false;
+  for (const o of kept) {
+    if (String(o?.kind || '') === 'pot') {
+      if (!placed) {
+        next.push(...resealed);
+        placed = true;
+      }
+      continue;
+    }
+    next.push(o);
+  }
+  const excess = excessOf(next);
+  if (!excess) throw new Error('admit_note_point');
+  cb.vout = next;
+  cb.excess = excess;
+  if (carry > 0) cb.carryNanos = 0;
   return cb;
 }
 

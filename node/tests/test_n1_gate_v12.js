@@ -14,7 +14,8 @@ import { writeChainBin } from '../../crypto/chainbin.js';
 import { encodeHeader, decodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
-import { fs1LeafDeriveCount, resetFs1LeafDerives } from '../../crypto/fs1_leaf.js';
+import { fs1LeafDeriveCount, fs1LeafFor, resetFs1LeafDerives } from '../../crypto/fs1_leaf.js';
+import { jroot as jrootOf, outputJoinsAdmitSet } from '../../crypto/admit.js';
 import { MAX_TX_OUTPUTS } from '../../crypto/note.js';
 import { coinbaseOutputCap, payeeCapLive, COINBASE_EXTRA_NOTES, K_VW } from '../../crypto/block_budget.js';
 import { bookSealKeyFor } from '../src/book_seal_key.js';
@@ -33,6 +34,7 @@ import {
   verifyBlock,
 } from '../src/chain.js';
 import { createStore } from '../src/store.js';
+import { emptySupplyState, supplyStep } from '../src/supply.js';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 
@@ -179,7 +181,7 @@ describe('N-1 gate order', () => {
     assert.ok(lines.some((line) => line.includes('coinbase_note_drop') && line.includes('admit_note_point')));
   });
 
-  it('puts a dropped pot back in the carry, and verifyBlock accepts that block', () => {
+  it('re-splits a dropped pot over the payees that remain, and verifyBlock accepts that template', () => {
     const who = minerDest();
     const other = minerDest();
     const solo = buildTemplate({
@@ -193,6 +195,8 @@ describe('N-1 gate order', () => {
     const subsidy = Number(solo.txs[0].vout.find((o) => o.kind === 'pot')?.valueProof?.v || 0);
     const drop = 1000;
     assert.ok(subsidy > drop);
+    const honest = supplyOf(solo);
+    assert.equal(honest.ok, true, honest.reason);
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -209,39 +213,60 @@ describe('N-1 gate order', () => {
     assert.equal(canonicalCarry(cb), 0);
     const victim = cb.vout.find((o) => o.kind === 'pot' && Number(o.valueProof?.v) === drop);
     assert.ok(victim);
+    const survivorBefore = cb.vout.find((o) => o.kind === 'pot' && o !== victim);
+    assert.ok(survivorBefore);
+    const survivorCommit = Buffer.from(survivorBefore.commit);
     victim.admitPub = Buffer.alloc(32, 0xab);
     const broken = verifyBlock(viewOf(tpl), null, { probeBody: true });
     assert.equal(broken.reason, 'admit_note_point');
     dropBrokenCoinbaseNotes(cb);
-    assert.equal(cb.vout.filter((o) => o.kind === 'pot').length, 1);
-    assert.equal(canonicalCarry(cb), drop);
-    // Public nanos, no commitment. verifyBlock's pot check then reads the carry
-    // without a range proof. The dropped amount is what keeps that sum whole.
+    finishTemplate(tpl);
+    const pots = cb.vout.filter((o) => o.kind === 'pot');
+    assert.equal(pots.length, 1);
+    assert.equal(Number(pots[0].valueProof.v), subsidy);
+    assert.equal(canonicalCarry(cb), 0);
+    assert.equal(Buffer.from(pots[0].commit).equals(survivorCommit), false);
     for (const o of cb.vout) {
-      o.nanos = Number(o.valueProof?.v || 0);
-      delete o.commit;
-      delete o.admitPub;
+      assert.equal(Buffer.from(o.commit).length, 32);
+      assert.equal(Buffer.from(o.admitPub).length, 32);
+      assert.ok(fs1LeafFor(o));
     }
-    const reseal = () => {
-      delete cb.jroot;
-      const decoded = decodeHeader(Buffer.from(tpl.header));
-      tpl.header = encodeHeader({
-        version: decoded.version,
-        prevBlockHash: decoded.prevBlockHash,
-        merkleRoot: merkleRoot(tpl.txs.map(digestTx)),
-        continuityRoot: decoded.continuityRoot,
-        timestamp: decoded.timestamp,
-        bits: decoded.bits,
-        nonce: 0n,
-        baseFee: decoded.baseFee,
-      });
-    };
-    reseal();
     const kept = verifyBlock(viewOf(tpl), null, { probeBody: true });
-    assert.notEqual(kept.reason, 'pot_sched', kept.reason || '');
-    cb.carryNanos = 0;
-    reseal();
-    assert.equal(verifyBlock(viewOf(tpl), null, { probeBody: true }).reason, 'pot_sched');
+    assert.equal(kept.ok, true, kept.reason || '');
+    const repaired = supplyOf(tpl);
+    assert.equal(repaired.ok, true, repaired.reason);
+    assert.equal(repaired.state.mintedPot, honest.state.mintedPot);
+    assert.equal(repaired.state.carry, honest.state.carry);
+
+    const both = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: who,
+      finderDest: who,
+      now: T0,
+      bits: GENESIS_BITS_PACKED,
+      potShares: [
+        { address: who, nanos: subsidy - drop, kind: 'pot' },
+        { address: other, nanos: drop, kind: 'pot' },
+      ],
+    });
+    for (const o of both.txs[0].vout) {
+      if (o.kind === 'pot') o.admitPub = Buffer.alloc(32, 0xac);
+    }
+    dropBrokenCoinbaseNotes(both.txs[0]);
+    finishTemplate(both);
+    assert.equal(both.txs[0].vout.filter((o) => o.kind === 'pot').length, 0);
+    assert.equal(canonicalCarry(both.txs[0]), subsidy);
+    const carried = verifyBlock(viewOf(both), null, { probeBody: true });
+    assert.equal(carried.ok, true, carried.reason || '');
+    const carriedSupply = supplyOf(both);
+    assert.equal(carriedSupply.ok, true, carriedSupply.reason);
+    assert.equal(carriedSupply.state.mintedPot, 0n);
+    assert.equal(carriedSupply.state.carry, honest.state.mintedPot + honest.state.carry);
+    assert.equal(
+      carriedSupply.state.mintedPot + carriedSupply.state.carry,
+      honest.state.mintedPot + honest.state.carry,
+    );
 
     const hashNote = coinbaseTx({
       height: 1,
@@ -370,6 +395,42 @@ describe('N-1 gate order', () => {
     }
   });
 });
+
+function finishTemplate(tpl) {
+  const cb = tpl.txs[0];
+  const pubs = [];
+  for (const tx of tpl.txs) {
+    for (const o of tx.vout || []) {
+      if (outputJoinsAdmitSet(tx, o)) pubs.push(o.admitPub);
+    }
+  }
+  if (pubs.length) cb.jroot = Buffer.from(jrootOf(pubs));
+  else delete cb.jroot;
+  const decoded = decodeHeader(Buffer.from(tpl.header));
+  const merkle = merkleRoot(tpl.txs.map(digestTx));
+  tpl.merkleRoot = merkle;
+  tpl.header = encodeHeader({
+    version: decoded.version,
+    prevBlockHash: decoded.prevBlockHash,
+    merkleRoot: merkle,
+    continuityRoot: decoded.continuityRoot,
+    timestamp: decoded.timestamp,
+    bits: decoded.bits,
+    nonce: 0n,
+    baseFee: decoded.baseFee,
+  });
+  return tpl;
+}
+
+function supplyOf(tpl) {
+  return supplyStep(emptySupplyState(T0), viewOf(tpl), {
+    height: 1,
+    genesisMs: T0,
+    magic: MAGIC_TESTNET,
+    tipHeight: 1,
+    blockHash: Buffer.alloc(32),
+  });
+}
 
 function viewOf(tpl) {
   return {

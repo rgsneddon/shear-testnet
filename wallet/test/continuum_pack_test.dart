@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_ctf.dart';
+import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
@@ -200,5 +203,35 @@ void main() {
       closeTo(after, 1e-9),
     );
     expect(reserve.totalLockedNanos, lockNanos);
+  });
+
+  test('withdraw spend message signs the id and nonce, and a lock does not', () {
+    final commit = Uint8List(32)..fillRange(0, 32, 3);
+    final noteCommit = Uint8List(32)..fillRange(0, 32, 4);
+    Uint8List message(String kind, String id, int nonceByte) {
+      return reserveSpendMessage(
+        from: 'ssa1q',
+        vout: [
+          {'kind': kind, 'commit': commit, 'noteCommit': noteCommit, 'valueProof': {'v': 1000}},
+        ],
+        vin: [
+          {'dest20': Uint8List(20), 'noteCommit': noteCommit},
+        ],
+        kind: kind,
+        portalId: 'aa',
+        payoutPortalId: 'bb',
+        programId: 'shear-reserve-v1',
+        choice: '',
+        fee: 0,
+        suffixNanos: 1000,
+        commit: commit,
+        id: id,
+        withdrawNonce: Uint8List(32)..fillRange(0, 32, nonceByte),
+      );
+    }
+
+    expect(message('withdraw', 'wd-1', 1), isNot(equals(message('withdraw', 'wd-2', 1))));
+    expect(message('withdraw', 'wd-1', 1), isNot(equals(message('withdraw', 'wd-1', 2))));
+    expect(message('lock', 'lock-a', 1), equals(message('lock', 'lock-b', 9)));
   });
 }

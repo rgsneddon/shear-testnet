@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { admitBaseFromAddress, hash20FromAddress, newIdentity } from '../../crypto/address.js';
+import { admitBaseFromAddress, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { attachAdmitPub, outputJoinsAdmitSet } from '../../crypto/admit.js';
 import { writeChainBin } from '../../crypto/chainbin.js';
@@ -21,8 +21,8 @@ import { fs1Leaf, fs1LeafDeriveCount, fs1OutputNote, resetFs1LeafDerives } from 
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
 import { chainNoteRuleRejected, txNoteRuleRejected, zeroWithdrawRejected } from '../../crypto/n1.js';
 import { scalarBytes, sealCoinbaseNote } from '../../crypto/note.js';
-import { kt10WithdrawBlind, withdrawTx } from '../../crypto/reserve_vault.js';
-import { boundReserveWithdraw } from '../../crypto/spend.js';
+import { kt10WithdrawBlind, lockTx, reserveDigestSuffix, withdrawTx } from '../../crypto/reserve_vault.js';
+import { boundReserveWithdraw, signSpendTx, verifySpendSig } from '../../crypto/spend.js';
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
 import { readLatestBootstrap } from '../src/bootstrap.js';
 import {
@@ -260,5 +260,20 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
     assert.equal(a.vout[0].r.equals(scalarBytes(kt10WithdrawBlind(dest, 1000, 'w', nonce))), true);
     const joined = attachAdmitPub(a.vout[0], { admitBase: admitBaseFromAddress(dest) });
     assert.equal(fs1Leaf(fs1OutputNote(joined))?.length, 96);
+
+    const spendDest = spendDestOf(id.spendPub);
+    const signed = withdrawTx({ from: spendDest, to: spendDest, nanos: 1000, id: 'w', nonce });
+    signSpendTx(signed, id.privateKey);
+    assert.equal(verifySpendSig(signed), true);
+    assert.equal(verifySpendSig({ ...signed, id: 'w-other' }), false);
+    const otherNonce = Buffer.alloc(32, 8).toString('hex');
+    assert.equal(verifySpendSig({ ...signed, withdrawNonce: otherNonce }), false);
+    const bare = reserveDigestSuffix(signed);
+    const moved = reserveDigestSuffix({ ...signed, id: 'w-other' });
+    assert.equal(bare.equals(moved), false);
+    const lock = lockTx({ from: spendDest, to: spendDest, nanos: 1000, id: 'lock-a' });
+    assert.equal(reserveDigestSuffix(lock).equals(reserveDigestSuffix({ ...lock, id: 'lock-b' })), true);
+    signSpendTx(lock, id.privateKey);
+    assert.equal(verifySpendSig({ ...lock, id: 'lock-b' }), true);
   });
 });

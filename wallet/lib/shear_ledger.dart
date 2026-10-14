@@ -1819,12 +1819,14 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   ];
   String? withdrawId;
   String? withdrawNonceHex;
+  Uint8List? withdrawNonceRaw;
   if (kind == 'withdraw') {
     for (final o in sealed) {
       final ident = o.remove('id');
       final rawNonce = o.remove('withdrawNonce');
       if (ident is String && ident.isNotEmpty) withdrawId = ident;
       if (rawNonce is Uint8List && rawNonce.length == 32) {
+        withdrawNonceRaw = rawNonce;
         withdrawNonceHex = rawNonce.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
       }
     }
@@ -1878,6 +1880,8 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
       fee: fee,
       suffixNanos: suffixNanos,
       commit: commit,
+      id: withdrawId ?? '',
+      withdrawNonce: withdrawNonceRaw,
     );
     if (shared != null) {
       sig = stealthSign(spendSeed, shared, msg);
