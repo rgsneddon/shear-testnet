@@ -17,6 +17,8 @@ import {
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
 import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20 } from '../../crypto/note.js';
+import { splitLevy } from '../../crypto/levy.js';
+import { CB_FORM, PAYOUT_KIND_CODE, W_HASH_MAX } from '../../crypto/t21_params.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
@@ -544,6 +546,9 @@ function accountBlock(prev, block, opts = {}) {
     return { reason: 'hash_bonus', state };
   }
   const unit = hashBonusUnitNanos(opts.unit == null ? state.liveUnit : opts.unit);
+  if (cb?.cbForm === CB_FORM) {
+    return accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blockHeight, opts });
+  }
   if (shares.length && hash.account && Array.isArray(block?.aLeaves) && block.aLeaves.length) {
     const seen = new Set();
     for (const leaf of block.aLeaves) {
@@ -624,12 +629,17 @@ function accountBlock(prev, block, opts = {}) {
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
   }
+  return finishAccount(state, block, opts, { ts, potMinted, hashMinted: mintedHashHere, levy, unit, blockHeight });
+}
+
+/** Interest, B lock, and the running totals once the coinbase itself balanced. */
+function finishAccount(state, block, opts, { ts, potMinted, hashMinted, levy, unit, blockHeight }) {
   const interest = blockWithdrawInterest(opts.vault, block, ts);
   if (!interest.ok) return { reason: interest.reason || 'supply', state };
   if (state.mintedInterest + interest.nanos > U64) return { reason: 'supply', state };
   if (state.permittedInterest + interest.nanos > U64) return { reason: 'supply', state };
   state.mintedPot += potMinted;
-  state.mintedHash += mintedHashHere;
+  state.mintedHash += hashMinted;
   state.mintedLevy += levy;
   state.mintedInterest += interest.nanos;
   state.permittedInterest += interest.nanos;
@@ -648,6 +658,52 @@ function accountBlock(prev, block, opts = {}) {
     return { reason: 'supply', state };
   }
   return { reason: '', state };
+}
+
+/**
+ * cb-v3: the payout rows open to S + c_in − c_out + u·W + Φ through the
+ * coinbase excess, Φ being the public fin of the finder row and the levy's
+ * finder half. The reserve half's row amount is consensus's check, not this one. There is no owed
+ * ledger; W joins the accepted series. 0x23 rows are not counted here: the
+ * withdraw that queued them already counted its interest.
+ */
+function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blockHeight, opts }) {
+  state.carry = carryOut;
+  const t21 = cb.t21 || {};
+  const u = asNonNeg(t21.u);
+  const empty = !Array.isArray(t21.shares) || t21.shares.length === 0;
+  // An empty round states u = 0, as verifyT21Coinbase requires.
+  if (u == null || u !== (empty ? 0n : BigInt(unit))) return { reason: 'hash_bonus', state };
+  if (state.owedRows.length || state.dust !== 0n || state.overflow !== 0n) return { reason: 'hash_owed', state };
+  let W = 0n;
+  for (const sh of Array.isArray(t21.shares) ? t21.shares : []) {
+    const w = asNonNeg(sh?.w);
+    if (w == null || w === 0n) return { reason: 'hash_units', state };
+    W += w;
+  }
+  if (W > W_HASH_MAX) return { reason: 'hash_units', state };
+  const budget = hashBudgetNanos(state.acceptedSeries, unit);
+  if (budget == null || u * W > budget) return { reason: 'hash_budget', state };
+  const vout = Array.isArray(cb.vout) ? cb.vout : [];
+  const payout = vout.filter((o) => Number(o?.kindCode) === PAYOUT_KIND_CODE);
+  let phi = 0n;
+  for (const o of payout) {
+    const fin = asNonNeg(o?.fin == null ? 0 : o.fin);
+    if (fin == null) return { reason: 'finder_row', state };
+    phi += fin;
+  }
+  const split = splitLevy(Number(levy));
+  if (phi !== BigInt(split.finder)) return { reason: 'levy_split', state };
+  if (split.reserve > 0 && !vout.some((row) => row?.kind === 'reserve-fee')) return { reason: 'levy_split', state };
+  const hashMinted = u * W;
+  if (!payout.length && potMinted + hashMinted + phi !== 0n) return { reason: 'supply', state };
+  if (payout.length && (!cb.excess || !verifyMintSum(payout, potMinted + hashMinted + phi, cb.excess))) {
+    return { reason: 'supply', state };
+  }
+  state.acceptedHash += hashMinted;
+  state.permittedHashAll += hashMinted;
+  state.acceptedSeries.push(W);
+  return finishAccount(state, block, opts, { ts, potMinted, hashMinted, levy, unit, blockHeight });
 }
 
 /**

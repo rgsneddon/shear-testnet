@@ -57,6 +57,7 @@ import {
 } from './share_batch.js';
 import { packShareBatchBytes, unpackShareBatch, unpackShareBatchBytes } from './pack.js';
 import { admitBaseFromAddress } from './address.js';
+import { CB_FORM } from './t21_params.js';
 
 const MAX_U64 = (1n << 64n) - 1n;
 const MAX_U32 = 0xffffffff;
@@ -1095,6 +1096,8 @@ export function advanceHashOwed({
   tipHeight = null,
 } = {}) {
   const h = height == null ? Number(block?.height || 0) : Number(height);
+  const cb0 = Array.isArray(block?.txs) ? block.txs[0] : null;
+  if (cb0?.cbForm === CB_FORM) return advanceT21(owedIn, acceptedSeries, cb0);
   const gotFresh = freshForBlock(block, unit, tipHeight);
   if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
   const gotSpill = spillForBlock(block, unit, tipHeight);
@@ -1124,6 +1127,24 @@ export function advanceHashOwed({
     acceptedSeries: series,
     settled,
   };
+}
+
+/**
+ * cb-v3 pays u·W in the block and keeps no owed ledger, so it needs an empty
+ * one in. Its retained units W enter the accepted series like a legacy block's.
+ */
+function advanceT21(owedIn, acceptedSeries, cb) {
+  if ((owedIn || []).length) return { ok: false, reason: 'hash_owed' };
+  let W = 0n;
+  for (const s of cb.t21?.shares || []) {
+    const w = asBi(s?.w);
+    if (w == null || w <= 0n) return { ok: false, reason: 'hash_units' };
+    W += w;
+  }
+  if (W > BigInt(MAX_HASH_UNITS_PER_BLOCK)) return { ok: false, reason: 'hash_units' };
+  const series = Array.isArray(acceptedSeries) ? acceptedSeries : [];
+  series.push(W);
+  return { ok: true, reason: '', rows: [], acceptedUnits: W, acceptedSeries: series, settled: null };
 }
 
 function rowsEqual(a, b) {
