@@ -23,7 +23,15 @@ def _font_pair():
         )
     if (win / "times.ttf").exists():
         return (win / "times.ttf", win / "timesbd.ttf", win / "timesi.ttf", win / "timesbi.ttf")
-    raise FileNotFoundError("Times New Roman not found (macOS Supplemental or Windows Fonts)")
+    lib = Path("/usr/share/fonts/truetype/liberation")
+    if (lib / "LiberationSerif-Regular.ttf").exists():
+        return (
+            lib / "LiberationSerif-Regular.ttf",
+            lib / "LiberationSerif-Bold.ttf",
+            lib / "LiberationSerif-Italic.ttf",
+            lib / "LiberationSerif-BoldItalic.ttf",
+        )
+    raise FileNotFoundError("Times New Roman not found (macOS Supplemental or Windows Fonts), and no Liberation Serif")
 
 
 FONT, FONT_B, FONT_I, FONT_BI = _font_pair()
@@ -124,8 +132,8 @@ def main() -> None:
     italic(
         pdf,
         "Shear is a CPU-mined ledger whose coin, SHE, is created when a block is found and not before. "
-        "There is no premine and no sale of SHE by the developers. Privacy is the default: the rest-frame "
-        "identity never appears on the book; holders offer a silent ID and the chain writes revolving dests. "
+        "There is no premine and no sale of SHE by the developers. The rest-frame identity never appears on "
+        "the book; holders offer a silent ID and the chain writes revolving dests. "
         "Proof of work is ShearHash-v3, a RandomX light-mode parameterisation. A found block pays the epoch pot "
         "plus a per-dest hash bonus. DINS-DAG is that settlement: one mint, the spine pot plus hash nanos, once per "
         "eligible share. The only programme allowed to mint extra SHE is The Reserve. On this testnet a Reserve epoch "
