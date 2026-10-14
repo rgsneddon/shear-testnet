@@ -1754,7 +1754,8 @@ export function buildTemplate({
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashCredits: freshCreditsFromShares(batch, hashBonusNanos),
     levyBind: {
-      finderNanos: split.finder,
+      // cb-v3 proves the finder into the coinbase, so its header cannot be re-aimed.
+      finderNanos: t21 ? 0 : split.finder,
       reserveNanos: split.reserve,
       poolDest: poolDest && isDestAddress(poolDest) ? poolDest : '',
       feeDest: feeDest && isDestAddress(feeDest) ? feeDest : '',

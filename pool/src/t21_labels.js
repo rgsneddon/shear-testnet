@@ -16,6 +16,9 @@
  */
 import { t21LabelBook } from '../../node/src/t21_template.js';
 import { voucherKeysOk } from '../../crypto/t21_voucher.js';
+import { encodeDest, hash20FromAddress, isDestAddress } from '../../crypto/address.js';
+import { scalarBytes } from '../../crypto/note.js';
+import { FEE_BPS_MAX } from '../../crypto/t21_params.js';
 
 export const T21_LABELS_PER_CONN = 64;
 
@@ -42,6 +45,39 @@ export function loginVoucher(params) {
   } catch {
     return null;
   }
+}
+
+/** A voucher as 192 hex characters B ‖ Y ‖ λ (ShearK --voucher), or null when not acceptable. */
+export function voucherFromHex(hex) {
+  const s = String(hex || '').toLowerCase();
+  if (!/^[0-9a-f]{192}$/.test(s)) return null;
+  return loginVoucher({ voucher: { B: s.slice(0, 64), Y: s.slice(64, 128), lambda: s.slice(128) } });
+}
+
+/**
+ * What the pool hands the cb-v3 template: its label book, the finder voucher
+ * (the pool is the block's finder of record) and, when it charges a fee, the
+ * fee voucher and rate. `minerFor(payout)` is the block miner: the payout's
+ * spend hash with the finder voucher's B as admit base, so consensus binds
+ * the finder half to that voucher. Null when the vouchers are not usable.
+ */
+export function t21TemplateSpec({ labels, magic, finder, fee = null, bps = 0 } = {}) {
+  const rate = Math.floor(Number(bps) || 0);
+  if (!labels || typeof labels.labelOf !== 'function' || !finder) return null;
+  if (rate < 0 || rate > FEE_BPS_MAX || (rate > 0 && !fee)) return null;
+  try {
+    if (!voucherKeysOk(finder) || (fee && !voucherKeysOk(fee))) return null;
+  } catch {
+    return null;
+  }
+  return {
+    t21: { magic, labelOf: labels.labelOf, finder, fee: fee && rate > 0 ? { voucher: fee } : null, bps: rate },
+    minerFor(payout) {
+      if (!isDestAddress(payout)) return null;
+      const h20 = hash20FromAddress(payout);
+      return h20 ? encodeDest(h20, finder.B) : null;
+    },
+  };
 }
 
 /**
@@ -95,7 +131,16 @@ export function createT21Labels({ magic, file = null, keep = 4096, book = null }
         conn.t21Labels.set(key, nc);
         while (conn.t21Labels.size > T21_LABELS_PER_CONN) conn.t21Labels.delete(conn.t21Labels.keys().next().value);
       }
-      return { ...job, shareBind: 'note', noteCommit: nc };
+      // E and β let the miner check E = λG + βH against its own voucher before mining the label.
+      const lab = labels.labelOf(nc);
+      if (!lab) return job;
+      return {
+        ...job,
+        shareBind: 'note',
+        noteCommit: nc,
+        labelE: Buffer.from(lab.E).toString('hex'),
+        labelBeta: Buffer.from(scalarBytes(lab.beta)).toString('hex'),
+      };
     },
     /** The note commit this connection was given for `header`, or null. */
     noteFor(conn, header) {

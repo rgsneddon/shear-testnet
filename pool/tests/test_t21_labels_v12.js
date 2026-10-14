@@ -18,8 +18,12 @@ import { t21ShareNc } from '../../crypto/t21.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { t21LabelBook, t21LoginVoucher } from '../../node/src/t21_template.js';
 import {
-  T21_LABELS_PER_CONN, createT21Labels, isLabelShare, labelShareRecord, loginVoucher,
+  T21_LABELS_PER_CONN, createT21Labels, isLabelShare, labelShareRecord, loginVoucher, t21TemplateSpec, voucherFromHex,
 } from '../src/t21_labels.js';
+import { spawnSync } from 'node:child_process';
+import { admitBaseFromAddress, hash20FromAddress } from '../../crypto/address.js';
+import { G, H, scalarBytes } from '../../crypto/note.js';
+import { isT21Coinbase } from '../../crypto/t21.js';
 import {
   bindAcceptedShare, configuredFeeIdentity, createPool, judgeShare, wireJob,
 } from '../src/pool.js';
@@ -196,6 +200,95 @@ describe('T21 labels: stratum login', () => {
       assert.equal(plain.error, '');
       assert.equal(plain.job.shareBind, 'dest');
       assert.equal('noteCommit' in plain.job, false);
+    } finally {
+      pool.close();
+    }
+  });
+});
+
+const leScalar = (b) => BigInt(`0x${Buffer.from(b).reverse().toString('hex')}`);
+const vhex = (v) => hex(v.B) + hex(v.Y) + hex(v.lambda);
+const MINER_BIN = path.join(path.dirname(new URL(import.meta.url).pathname), '../../sheark-miner/ShearK-Miner');
+
+describe('T21 labels: the miner can open its label', () => {
+  it('a labelled job carries E and β with E = λG + βH and noteCommit = share bind of E', () => {
+    const t21 = labels();
+    const v = t21LoginVoucher(Buffer.alloc(32, 0x51));
+    const conn = {};
+    t21.bind(conn, v);
+    const job = t21.jobFor(conn, { jobId: 'j', header: header(7) });
+    const E = Buffer.from(job.labelE, 'hex');
+    const want = G.multiply(leScalar(v.lambda)).add(H.multiply(leScalar(Buffer.from(job.labelBeta, 'hex'))));
+    assert.equal(hex(want.toBytes()), job.labelE);
+    assert.equal(hex(t21ShareNc(magic, E)), job.noteCommit);
+  });
+
+  it('ShearK accepts its own label and refuses another voucher\'s', { skip: fs.existsSync(MINER_BIN) ? false : 'ShearK not built' }, () => {
+    const t21 = labels();
+    const v = t21LoginVoucher(Buffer.alloc(32, 0x52));
+    const other = t21LoginVoucher(Buffer.alloc(32, 0x53));
+    const conn = {};
+    t21.bind(conn, v);
+    const job = t21.jobFor(conn, { jobId: 'j', header: header(8) });
+    const check = (lam) => spawnSync(MINER_BIN, ['--t21-label-check', hex(lam), job.labelBeta, job.labelE, job.noteCommit, magic]).status;
+    assert.equal(check(v.lambda), 0);
+    assert.equal(check(other.lambda), 1);
+  });
+});
+
+describe('T21 labels: template spec', () => {
+  const finder = t21LoginVoucher(Buffer.alloc(32, 0x61));
+  const fee = t21LoginVoucher(Buffer.alloc(32, 0x62));
+
+  it('parses ShearK-style voucher hex and refuses a bad one', () => {
+    assert.equal(hex(voucherFromHex(vhex(finder)).B), hex(finder.B));
+    assert.equal(voucherFromHex(vhex(finder).slice(2)), null);
+    assert.equal(voucherFromHex(vhex(finder).slice(0, 128) + '22'.repeat(32)), null);
+  });
+
+  it('hands the template the label book, finder and fee vouchers, and names the finder-of-record miner', () => {
+    const t21 = labels();
+    const spec = t21TemplateSpec({ labels: t21, magic, finder, fee, bps: 50 });
+    assert.equal(spec.t21.labelOf, t21.labelOf);
+    assert.equal(spec.t21.finder, finder);
+    assert.equal(spec.t21.fee.voucher, fee);
+    assert.equal(spec.t21.bps, 50);
+    const payout = freshStealthDest(newIdentity()).dest;
+    const miner = spec.minerFor(payout);
+    assert.equal(hex(hash20FromAddress(miner)), hex(hash20FromAddress(payout)));
+    assert.equal(hex(admitBaseFromAddress(miner)), hex(finder.B));
+    assert.equal(t21TemplateSpec({ labels: t21, magic, finder, bps: 50 }), null);
+    assert.equal(t21TemplateSpec({ labels: t21, magic, finder, fee, bps: 10_000 }), null);
+    assert.equal(t21TemplateSpec({ labels: t21, magic, finder: { ...finder, lambda: Buffer.alloc(32, 2) } }), null);
+    assert.equal(t21TemplateSpec({ labels: t21, magic, finder }).t21.fee, null);
+  });
+
+  it('the pool issues a cb-v3 job past genesis, with labelled jobs on it, and the store seals it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-t21-tpl-'));
+    const feeId = configuredFeeIdentity();
+    const t21 = labels();
+    const pool = createPool({
+      dataDir: dir, stratumPort: 0, httpPort: 0, miner: feeId.feeDest, t21Labels: t21, t21Template: { finder },
+    });
+    try {
+      await new Promise((resolve) => pool.stratum.listen(0, '127.0.0.1', resolve));
+      const port = pool.stratum.address().port;
+      const first = await login(port, { login: `${freshStealthDest(newIdentity()).dest}.g` });
+      const g = pool.store.jobs.get(String(first.job.jobId));
+      assert.equal(isT21Coinbase(g.tpl.txs[0]), false);
+      const sealedG = await pool.store.submitHeader({ jobId: first.job.jobId, nonce: 0n, miner: '', powHash: '00000001'.padEnd(64, '0') }, { trusted: true });
+      assert.equal(sealedG.ok, true, sealedG.reason);
+      pool.issueJob(undefined, { force: true });
+      const v = t21LoginVoucher(Buffer.alloc(32, 0x63));
+      const got = await login(port, { login: `${freshStealthDest(newIdentity()).dest}.v3`, voucher: voucherHex(v) });
+      assert.equal(got.job.shareBind, 'note');
+      const rec = pool.store.jobs.get(String(got.job.jobId));
+      assert.equal(isT21Coinbase(rec.tpl.txs[0]), true);
+      assert.equal(hex(admitBaseFromAddress(rec.tpl.miner)), hex(finder.B));
+      assert.equal(hex(t21.labelOf(got.job.noteCommit).voucher.B), hex(v.B));
+      const sealed = await pool.store.submitHeader({ jobId: got.job.jobId, nonce: 0n, miner: '', powHash: '00000002'.padEnd(64, '0') }, { trusted: true });
+      assert.equal(sealed.ok, true, sealed.reason);
+      assert.equal(isT21Coinbase(pool.store.tip().txs[0]), true);
     } finally {
       pool.close();
     }

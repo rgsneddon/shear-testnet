@@ -50,7 +50,8 @@ import {
 import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, custodialPullRejected, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { handleAdminHttp, createAdmin } from './admin.js';
-import { createT21Labels, isLabelShare, labelShareRecord, loginVoucher } from './t21_labels.js';
+import { createT21Labels, isLabelShare, labelShareRecord, loginVoucher, t21TemplateSpec, voucherFromHex } from './t21_labels.js';
+import { isT21Coinbase } from '../../crypto/t21.js';
 import {
   THIS_POOL_DIRECT_FEE_DEST,
   configuredFeeIdentity,
@@ -1859,6 +1860,14 @@ export function createPool({
   shareCap = null,
   // T21 share labels: true for a book under dataDir, or a createT21Labels() instance. Off by default.
   t21Labels = String(process.env.SHEAR_POOL_T21_LABELS || '') === '1',
+  // cb-v3 templates from the label book: { finder, fee, bps } vouchers. Needs t21Labels.
+  t21Template = process.env.SHEAR_POOL_T21_FINDER_VOUCHER
+    ? {
+      finder: voucherFromHex(process.env.SHEAR_POOL_T21_FINDER_VOUCHER),
+      fee: voucherFromHex(process.env.SHEAR_POOL_T21_FEE_VOUCHER),
+      bps: Number(process.env.SHEAR_POOL_T21_FEE_BPS || 0),
+    }
+    : null,
 } = {}) {
   const store = createStore(dataDir);
   const t21 = t21Labels && typeof t21Labels.jobFor === 'function'
@@ -1866,6 +1875,8 @@ export function createPool({
     : (t21Labels === true ? createT21Labels({ magic: MAGIC_TESTNET, file: path.join(dataDir, 't21-labels.jsonl') }) : null);
   /** The job a connection is sent: its own labelled copy when it is label-bound. */
   const jobForConn = (c, job) => (t21 && job ? t21.jobFor(c, job) : job);
+  const t21Tpl = t21 && t21Template ? t21TemplateSpec({ labels: t21, magic: MAGIC_TESTNET, ...t21Template }) : null;
+  if (t21 && t21Template && !t21Tpl) console.error(JSON.stringify({ event: 't21_template', ok: false, reason: 'voucher' }));
   const admin = createAdmin(dataDir);
   const pullBook = createPullBook(dataDir);
   const miners = new Map();
@@ -3701,10 +3712,12 @@ export function createPool({
         }
       }
     }
+    // A cb-v3 coinbase binds the finder to the template's miner, not the submitting hasher.
+    const cbV3 = isT21Coinbase(store.jobs.get(String(jid))?.tpl?.txs?.[0]);
     const got = await Promise.resolve(store.submitHeader({
       jobId: jid,
       nonce,
-      miner,
+      miner: cbV3 ? '' : miner,
       powHash,
     }, { trusted: true }));
     if (got?.ok) {
@@ -3856,10 +3869,12 @@ export function createPool({
       store.mempool.length = 0;
       store.mempool.push(...stay);
     }
+    // cb-v3 needs a parent header and a finder-of-record dest; otherwise the legacy coinbase.
+    const t21Miner = t21Tpl && store.tip() ? t21Tpl.minerFor(payout) : null;
     let built;
     try {
       built = store.template({
-        miner: payout,
+        miner: t21Miner || payout,
         samples,
         potShares,
         shareBits: sb,
@@ -3870,6 +3885,7 @@ export function createPool({
         finderDest: '',
         issuedHeaders: lag1Issued,
         wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
+        t21: t21Miner ? t21Tpl.t21 : null,
       });
     } finally {
       if (stashed && stashed.length && Array.isArray(store.mempool)) {
