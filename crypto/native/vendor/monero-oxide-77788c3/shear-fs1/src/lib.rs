@@ -1,7 +1,9 @@
 //! Shear adaptation of the vendored full-chain membership prover.
 //!
 //! [`Fs1Params::fixed`] uses the generator derivation in [`generators`].
-//! Status: pending PA+CA ratification. It is not a ratified consensus set.
+//! The pinned digest is [`spend_params`]: `E(H)`, the auth basepoint `B`,
+//! and the same `T`/`U`/`V` and curve points. Status: pending PA+CA
+//! ratification. It is not a ratified consensus set.
 //! The upstream insecure test generators stay behind `cfg(test)` or the
 //! `insecure-test-generators` feature and are never a consensus set.
 

@@ -7,20 +7,21 @@
 //!   root the node holds for the anchor height. The tree is every admit-set note
 //!   on the chain (T-1): there are no buckets and no groups.
 //! - **SA+L.** Per input, a Schnorr proof over Ed25519 of `x, o, a, b` with
-//!   `O~ = x·G − o·T`, `L = x·I~ + a·U`, and `0 = x·R − b·T + a·V`. With the
-//!   FCMP relations `O = O~ + o'·T`, `I = I~ + i'·U`, `R = ib'·T − i'·V`, and no
-//!   known discrete log between `G, T, U, V`, this gives `L = x·I` for the
-//!   leaf's `I = E(Hp(admitPub))`, so `L = E(spendTag)` and one note has one tag.
+//!   `O~ = x·B − o·T`, `L = x·I~ + a·U`, and `0 = x·R − b·T + a·V`. `B` is the
+//!   Ed25519 basepoint. With the FCMP relations `O = O~ + o'·T`,
+//!   `I = I~ + i'·U`, `R = ib'·T − i'·V`, and no known discrete log among
+//!   `{B, E(H), T, U, V}`, this gives `L = x·I` for the leaf's
+//!   `I = E(Hp(admitPub))`, so `L = E(spendTag)` and one note has one tag.
 //!   `L` is not the identity, which rules out `x = 0`.
 //! - **Binding.** Every SA+L challenge hashes the body digest, the anchor, the
 //!   root, every input's public points and tag, and the FCMP bytes.
 //!
-//! Shear commits are `C = v·G + r·H` with `H` the note blinding generator, so
-//! the FCMP commitment blind must run along `E(H)`, not `G`. Then
-//! `C~ = E(C − c·H)`, the wallet publishes `C̃ = C − c·H` on the vin, and
+//! Shear commits are `C = v·G + r·H` with `H` the note blinding generator. The
+//! FCMP commitment blind is `E(H)`. Spend auth uses the Ed25519 basepoint `B`.
+//! Then `C~ = E(C − c·H)`, the wallet publishes `C̃ = C − c·H` on the vin, and
 //! conservation `Σ C_out + fee·G = Σ C̃_in + excess·H` holds with `t = −c`.
-//! [`spend_params`] is the fixed generator set with that one role assignment.
-//! The points and digest are unchanged. Status: pending PA+CA ratification.
+//! [`spend_params`] assigns the proof's `G` to `E(H)` and keeps Blake2b `T`,
+//! `U`, and `V`. Those points are unchanged. Status: pending PA+CA ratification.
 //! It is not a ratified consensus set.
 
 use std::sync::OnceLock;
@@ -72,13 +73,19 @@ pub fn note_h() -> RistrettoPoint {
   RistrettoPoint::from_uniform_bytes(&wide)
 }
 
+/// `E(H)`: the note blinding generator mapped onto Ed25519. This is the FCMP
+/// commitment blind. Spend auth uses the Ed25519 basepoint, not this point.
+pub fn commitment_blind() -> Option<EdG> {
+  ristretto_to_ed(&note_h().compress().to_bytes())
+}
+
 /// The fixed proposal with the commitment blind on `E(H)`.
 pub fn spend_params() -> Result<&'static Fs1Params, Fs1Error> {
   static CELL: OnceLock<Option<Fs1Params>> = OnceLock::new();
   CELL
     .get_or_init(|| {
       let set = fixed_set()?;
-      let h = ristretto_to_ed(&note_h().compress().to_bytes())?;
+      let h = commitment_blind()?;
       let fcmp = FcmpParams::<ShearCurves>::new(
         set.c1.clone(),
         set.c2.clone(),
@@ -372,6 +379,11 @@ pub fn prove_spend(
   fs1.push(u8::try_from(n).map_err(|_| Fs1Error::InputCount)?);
   fs1.extend_from_slice(&root);
   fs1.extend_from_slice(&proved.bytes);
+  // The depth byte is the tree's layer count. Consensus blobs are exactly
+  // [`spend_blob_len`] at [`DEPTH`]. A shorter tree must not leave the prover.
+  if !spend_blob_fits(&fs1, n) {
+    return Err(Fs1Error::Io);
+  }
   Ok(SpendOut { fs1, records, t: ts })
 }
 

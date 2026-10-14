@@ -1,10 +1,17 @@
 //! Fixed FS-1 generators, derived by try-and-increment from public labels.
 //!
-//! Derivation `shear-fs1-generators-v1`:
+//! Derivation `shear-fs1-generators-v1` (version-bound; the same points on
+//! every network):
 //!
-//! - `G` is the Ed25519 basepoint. A Shear `admitPub = x·G` on Ristretto maps
-//!   to `x·G` here (see [`crate::leaf`]).
-//! - Every other point is `point(curve, label, index)`. For `ctr = 0, 1, ...`,
+//! - The spend proof's `G` is `E(H)`, Shear's note blinding generator mapped
+//!   onto Ed25519. `H` is Ristretto `from_uniform_bytes(SHA-512("shear-bpplus-v2"
+//!   || "shear-note-H-v1"))`. `E` is [`crate::leaf::ristretto_to_ed`]. `G`
+//!   blinds the FCMP commitment. Spend auth uses `B`, the Ed25519 basepoint.
+//! - `T`, `U`, and `V` are Blake2b try-and-increment on Ed25519. That
+//!   derivation is unchanged. Spec 100c §1.5.1 still names a different
+//!   SHA-512 derivation; amending it is pending Russell's ruling.
+//! - Every try-and-increment point is `point(curve, label, index)`. For
+//!   `ctr = 0, 1, ...`,
 //!   `h = Blake2b-512(DST || 0x00 || curve || 0x00 || label || u32le(index) || u32le(ctr))`
 //!   and `h[..32]` is read as a compressed point on `curve`. The first `ctr`
 //!   that decodes to a non-identity point wins. On Ed25519 the decoded point
@@ -15,9 +22,12 @@
 //!   `h_bold` at indices `0 .. rows`. Rows are `Fcmp::ipa_rows(8, 7)`:
 //!   2,048 on Selene and 1,024 on Helios.
 //!
-//! No discrete log between any two of these points is known to anyone.
-//! The set is pinned by [`generators_digest`] and `vectors/generators.txt`.
-//! Status: pending PA+CA ratification. It is not a ratified consensus set.
+//! [`crate::Fs1Params::fixed`] still stores the basepoint in its `g` field.
+//! The pinned set is [`crate::spend_params`]: that field is `E(H)`, and the
+//! digest also covers `B`. No discrete log between any two of `{B, E(H), T, U, V}`
+//! is known to anyone. The set is pinned by [`generators_digest`] and
+//! `vectors/generators.txt`. Status: pending PA+CA ratification. It is not a
+//! ratified consensus set.
 
 use blake2::{Blake2b512, Digest};
 use ciphersuite::{
@@ -137,14 +147,18 @@ pub(crate) fn fixed_set() -> Option<FixedSet> {
   })
 }
 
-/// Blake2b-512 over every generator in a fixed order, compressed.
+/// Blake2b-512 over the spend generator set, compressed.
 ///
-/// Order: G, T, U, V, then for Selene and then Helios: g, h, init, every
-/// `g_bold`, every `h_bold`.
+/// Order: `E(H)` (`params.g` on [`crate::spend_params`]), `B` (the Ed25519
+/// basepoint, spend auth), `T`, `U`, `V`, then for Selene and then Helios:
+/// g, h, init, every `g_bold`, every `h_bold`.
+///
+/// The digest matches `vectors/generators.txt` when `params` is the spend set.
 pub fn generators_digest(params: &crate::Fs1Params) -> [u8; 64] {
   let mut hasher = Blake2b512::new();
   hasher.update(GENERATOR_DST);
-  for point in [params.g, params.t, params.u, params.v] {
+  let b = <EdG as Group>::generator();
+  for point in [params.g, b, params.t, params.u, params.v] {
     hasher.update(point.to_bytes());
   }
   hasher.update(params.c1.g().to_bytes());
@@ -183,8 +197,11 @@ fn expect_point(got: &[u8], want: &str, label: &str) -> Result<(), String> {
   Ok(())
 }
 
-/// Recompute every generator from its domain-separated label and compare it
-/// to `params`, then check the pinned rows in `vectors/generators.txt`.
+/// Recompute every spend generator and compare it to `params`, then check
+/// the pinned rows in `vectors/generators.txt`.
+///
+/// `params` is the spend set: `g` is `E(H)`. `B` is the Ed25519 basepoint
+/// and is hashed beside it. `T`, `U`, and `V` stay Blake2b try-and-increment.
 ///
 /// `Ok` is the Blake2b-512 digest of the set. The set is pending PA+CA
 /// ratification. It is not a ratified consensus set.
@@ -196,8 +213,13 @@ pub fn generators_match_derivation(params: &crate::Fs1Params) -> Result<[u8; 64]
   if params.c2.g_bold_slice().len() != rows2 || params.c2.h_bold_slice().len() != rows2 {
     return Err(format!("helios rows {} != {rows2}", params.c2.g_bold_slice().len()));
   }
-  if params.g != <EdG as Group>::generator() {
-    return Err("G is not the Ed25519 basepoint".into());
+  let blind = crate::spend::commitment_blind().ok_or("E(H)")?;
+  let b = <EdG as Group>::generator();
+  if params.g != blind {
+    return Err(format!("G is not E(H): {}", hex(&params.g.to_bytes())));
+  }
+  if params.g == b {
+    return Err("G and B are the same point".into());
   }
   if params.t != ed25519_point(b"T") || params.u != ed25519_point(b"U") || params.v != ed25519_point(b"V") {
     return Err("Ed25519 T, U, or V".into());
@@ -236,6 +258,8 @@ pub fn generators_match_derivation(params: &crate::Fs1Params) -> Result<[u8; 64]
   let vectors = include_str!("../vectors/generators.txt");
   let row = |key: &str| vector_value(vectors, key).ok_or_else(|| format!("no {key} vector"));
   expect_point(&digest, row("digest")?, "digest")?;
+  expect_point(&params.g.to_bytes(), row("G")?, "G")?;
+  expect_point(&b.to_bytes(), row("B")?, "B")?;
   expect_point(&params.t.to_bytes(), row("T")?, "T")?;
   expect_point(&params.u.to_bytes(), row("U")?, "U")?;
   expect_point(&params.v.to_bytes(), row("V")?, "V")?;
@@ -247,29 +271,66 @@ pub fn generators_match_derivation(params: &crate::Fs1Params) -> Result<[u8; 64]
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::membership::tests::params_8;
+  use crate::leaf::ristretto_to_ed;
+  use crate::spend::{commitment_blind, spend_params, NOTE_H_DST, NOTE_H_LABEL};
   use crate::vectors::{hex, Vectors};
+  use curve25519_dalek::ristretto::RistrettoPoint;
+  use sha2::{Digest, Sha512};
 
   #[test]
   fn ed25519_points_have_prime_order_and_differ() {
-    let points = [ed25519_point(b"T"), ed25519_point(b"U"), ed25519_point(b"V")];
+    let blind = commitment_blind().expect("E(H)");
+    let points = [blind, ed25519_point(b"T"), ed25519_point(b"U"), ed25519_point(b"V")];
+    let b = <EdG as Group>::generator();
     for p in points {
       assert!(p.0.is_torsion_free());
       assert!(!bool::from(p.is_identity()));
-      assert_ne!(p, <EdG as Group>::generator());
+      assert_ne!(p, b);
     }
     assert_ne!(points[0], points[1]);
     assert_ne!(points[1], points[2]);
+    assert_ne!(points[2], points[3]);
+  }
+
+  /// `E(H)` from the public label, without [`commitment_blind`] or [`crate::spend::note_h`].
+  fn derive_commitment_blind() -> EdG {
+    let mut wide = [0u8; 64];
+    wide.copy_from_slice(&Sha512::new().chain_update(b"shear-bpplus-v2").chain_update(b"shear-note-H-v1").finalize());
+    let h = RistrettoPoint::from_uniform_bytes(&wide);
+    ristretto_to_ed(&h.compress().to_bytes()).expect("E(H)")
+  }
+
+  #[test]
+  fn commitment_blind_recomputes_independently() {
+    assert_eq!(NOTE_H_DST, b"shear-bpplus-v2");
+    assert_eq!(NOTE_H_LABEL, b"shear-note-H-v1");
+    let derived = derive_commitment_blind();
+    let live = spend_params().expect("spend generators").g;
+    assert_eq!(derived, live);
+    assert_eq!(derived, commitment_blind().expect("E(H)"));
+    let got = hex(&derived.to_bytes());
+    assert!(got.starts_with("132ba4e1"), "E(H) {got}");
+    assert!(derived.0.is_torsion_free());
+    assert_ne!(derived, <EdG as Group>::generator());
+    let vectors = Vectors::generators();
+    assert_eq!(got, vectors.get("G"));
+    assert_eq!(
+      hex(&<EdG as Group>::generator().to_bytes()),
+      "5866666666666666666666666666666666666666666666666666666666666666"
+    );
   }
 
   #[test]
   fn every_generator_recomputes_to_the_pinned_set() {
-    let params = params_8();
+    let params = spend_params().expect("spend generators");
     let (rows1, rows2) = generator_rows();
     assert_eq!((rows1, rows2), (2048, 1024));
     let digest = generators_match_derivation(params).expect("pending PA+CA ratification");
     let vectors = Vectors::generators();
     assert_eq!(hex(&digest), vectors.get("digest"));
+    assert_eq!(hex(&params.g.to_bytes()), vectors.get("G"));
+    assert!(vectors.get("G").starts_with("132ba4e1"));
+    assert_eq!(hex(&<EdG as Group>::generator().to_bytes()), vectors.get("B"));
     assert_eq!(hex(&params.t.to_bytes()), vectors.get("T"));
     assert_eq!(hex(&params.u.to_bytes()), vectors.get("U"));
     assert_eq!(hex(&params.v.to_bytes()), vectors.get("V"));
