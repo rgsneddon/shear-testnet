@@ -16,7 +16,7 @@ import {
 } from './t21_voucher.js';
 import { packShewall, sealShewallBin } from './shewall_bin.js';
 import {
-  AGG_KEYS, CHUNK_KEYS, buildT21Coinbase, genesisGateStatus, minerShare, observerView, openOutput,
+  AGG_KEYS, CHUNK_KEYS, buildT21Coinbase, genesisGateStatus, minerShare, observerView, openOutput, payoutDelta,
   statementOf, supplyIdentities, t21CbOnly, t21ShareNc, vaultCommit, verifyT21Coinbase,
 } from './t21.js';
 import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
@@ -201,6 +201,47 @@ describe('T21 vault rows (must-fix 6, KT-10)', () => {
     assert.equal(verifyT21Coinbase({ tx: built.tx, expect: otherOwner }).reason, 'vault_pin');
     const moved = { ...listed, prevHash: Buffer.alloc(32, 2) };
     assert.equal(verifyT21Coinbase({ tx: built.tx, expect: moved }).reason, 'cb_form');
+  });
+
+  const pend = (k, B = owner) => ({ mintId: Buffer.from(`mint-${k}`), vaultNanos: BigInt(10 + k), B });
+  const vaultBuild = (vaults) => buildT21Coinbase({ S: 1000n, cin: 0n, height: 7, magic, prevHash, payees: [], vaults });
+  const mintsOf = (tx) => tx.vout.filter((o) => o.kindCode === 0x23).map((o) => Buffer.from(o.mintId).toString());
+
+  it('pays the pending list in order and refuses a reorder or a missing row', () => {
+    const list = [pend(1), pend(2), pend(3)];
+    const built = vaultBuild(list);
+    assert.deepEqual(mintsOf(built.tx), ['mint-1', 'mint-2', 'mint-3']);
+    const ok = verifyT21Coinbase({ tx: built.tx, expect: expectFor(built.tx, { shares: [], vaults: list }) });
+    assert.equal(ok.ok, true, ok.reason);
+    assert.equal(ok.vaultPaid, 11n + 12n + 13n);
+    const swapped = expectFor(built.tx, { shares: [], vaults: [list[1], list[0], list[2]] });
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: swapped }).reason, 'vault_pin');
+    const short = vaultBuild(list.slice(0, 2));
+    assert.equal(verifyT21Coinbase({ tx: short.tx, expect: expectFor(short.tx, { shares: [], vaults: list }) }).reason, 'vault_pin');
+  });
+
+  it('pays at most K_VW rows per block, oldest first', () => {
+    const list = [...Array(K_VW + 2)].map((_, k) => pend(k));
+    const built = vaultBuild(list);
+    assert.deepEqual(mintsOf(built.tx), list.slice(0, K_VW).map((p) => p.mintId.toString()));
+    const ok = verifyT21Coinbase({ tx: built.tx, expect: expectFor(built.tx, { shares: [], vaults: list }) });
+    assert.equal(ok.ok, true, ok.reason);
+  });
+
+  it('skips an entry whose row is not a leaf, so a fixed blind cannot stall the chain', () => {
+    const p = pend(9);
+    const { commit: C } = vaultCommit(p.vaultNanos, p.mintId, 7, prevHash);
+    const d = payoutDelta({ magic, height: 7, prevHash, index: 0, commit: C });
+    const stuck = { ...p, B: pointBytes(G.multiply(d).negate()) };
+    const list = [stuck, pend(1)];
+    const built = vaultBuild(list);
+    assert.deepEqual(mintsOf(built.tx), ['mint-1']);
+    const ok = verifyT21Coinbase({ tx: built.tx, expect: expectFor(built.tx, { shares: [], vaults: list }) });
+    assert.equal(ok.ok, true, ok.reason);
+    assert.equal(ok.vaultPaid, 11n);
+    const bad = clone(built.tx);
+    bad.vout[0] = { ...bad.vout[0], mintId: stuck.mintId };
+    assert.equal(verifyT21Coinbase({ tx: bad, expect: expectFor(built.tx, { shares: [], vaults: list }) }).reason, 'vault_pin');
   });
 });
 

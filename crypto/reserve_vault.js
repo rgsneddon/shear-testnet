@@ -27,6 +27,7 @@ import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } fro
 import { extraMint } from './mint.js';
 import { reserveFeeDest } from './levy.js';
 import { decodeHeader } from './header.js';
+import { K_VW } from './block_budget.js';
 
 export const VOTE_INCREASE = 'increase bonus';
 export const VOTE_DECREASE = 'decrease bonus';
@@ -149,6 +150,7 @@ export function emptyVault() {
     mintBankNanos: 0n,
     mintedIds: Object.create(null),
     portals: Object.create(null),
+    pendingWithdraws: [],
     votes: { increase: 0, decrease: 0, hold: 0 },
     oracle: emptyOracle(),
     sealedObserve: null,
@@ -181,6 +183,7 @@ export function cloneVault(state) {
   Object.assign(out.mintedIds, raw.mintedIds || {});
   out.freezes = Object.create(null);
   Object.assign(out.freezes, raw.freezes || {});
+  out.pendingWithdraws = (Array.isArray(raw.pendingWithdraws) ? raw.pendingWithdraws : []).map((p) => ({ ...p }));
   out.liveHashBonusNanos = asBig(out.liveHashBonusNanos);
   out.totalLockedNanos = asBig(out.totalLockedNanos);
   out.feeBankNanos = asBig(out.feeBankNanos);
@@ -451,6 +454,7 @@ function snapTrial(state) {
     portals: state.portals,
     mintedIds: state.mintedIds,
     freezes: state.freezes,
+    pendingWithdraws: Array.isArray(state.pendingWithdraws) ? state.pendingWithdraws.slice() : [],
   };
 }
 
@@ -486,6 +490,7 @@ function restoreTrial(state, snap, frame) {
   state.portals = snap.portals;
   state.mintedIds = snap.mintedIds;
   state.freezes = snap.freezes;
+  state.pendingWithdraws = snap.pendingWithdraws;
   const portals = frame.portals.get(state.portals);
   if (portals) {
     for (const [id, prev] of portals) {
@@ -788,9 +793,71 @@ export function lockTx({ from, to, nanos, id }) {
   };
 }
 
-export function withdrawTx({ from, to, nanos, id, nonce } = {}) {
+/**
+ * KT-10 pinned receipt: the withdraw names the owner key B and is paid by a
+ * 0x23 coinbase row in a later block. The row is public (vault amounts are
+ * portal state) and has no commitment, so nothing is minted in the body.
+ */
+export const PINNED_KIND_CODE = 0x23;
+
+export function pinnedReceipt(tx) {
+  if (txKind(tx) !== KIND_WITHDRAW) return null;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const rows = outs.filter((o) => String(o?.kind || KIND_WITHDRAW) === KIND_WITHDRAW && Number(o?.kindCode) === PINNED_KIND_CODE);
+  if (!rows.length) return null;
+  const o = rows[0];
+  let B = null;
+  try {
+    B = Buffer.from(asU8(o.B));
+  } catch {
+    B = null;
+  }
+  const n = Math.floor(Number(o.nanos));
+  const ok = rows.length === 1 && !o.commit && !o.valueProof && !o.rangeProof
+    && !!B && B.length === 32 && Number.isSafeInteger(n) && n > 0;
+  return { ok, row: o, B, nanos: ok ? n : 0 };
+}
+
+/** Pinned withdraws still owed, oldest first: [{ mintId, vaultNanos, B }]. */
+export function pendingWithdrawsOf(state) {
+  return Array.isArray(state?.pendingWithdraws) ? state.pendingWithdraws : [];
+}
+
+function vaultRowsOfCoinbase(cb) {
+  return (cb?.vout || []).filter((o) => Number(o?.kindCode) === PINNED_KIND_CODE || o?.kind === 'vault-withdraw-pinned');
+}
+
+function samePending(p, o) {
+  try {
+    return String(p.mintId).toLowerCase() === Buffer.from(asU8(o.mintId)).toString('hex')
+      && String(p.vaultNanos) === String(o.vaultNanos)
+      && String(p.B).toLowerCase() === Buffer.from(asU8(o.B)).toString('hex');
+  } catch {
+    return false;
+  }
+}
+
+export function withdrawTx({ from, to, nanos, id, nonce, pinB } = {}) {
   const n = exactFloorNanos(nanos);
   const ident = id == null || String(id) === '' ? freshWithdrawId() : String(id);
+  if (pinB != null) {
+    const d20 = hash20FromAddress(to);
+    return {
+      id: ident,
+      programId: RESERVE_PROGRAM,
+      mint: true,
+      kind: KIND_WITHDRAW,
+      from,
+      to,
+      nanos: n,
+      portalId: portalIdFromDest(from),
+      payoutPortalId: portalIdFromDest(to),
+      vin: [],
+      vout: [{
+        kind: KIND_WITHDRAW, kindCode: PINNED_KIND_CODE, nanos: n, B: Buffer.from(asU8(pinB)), ...(d20 ? { dest20: d20 } : {}),
+      }],
+    };
+  }
   const blindNonce = positiveUnits(n)
     ? (nonce == null ? randomBytes(32) : withdrawNonceBytes(nonce))
     : null;
@@ -973,6 +1040,12 @@ export function reserveDigestSuffix(tx) {
   if (fields.kind === KIND_WITHDRAW) {
     parts.push(lenPrefUtf8(String(tx?.id || '')));
     parts.push(withdrawNonceSigned(tx));
+    // Only a pinned withdraw appends, so a legacy withdraw's digest is unchanged.
+    const pin = pinnedReceipt(tx);
+    if (pin) {
+      parts.push(Buffer.from('pin23'));
+      parts.push(pin.B && pin.B.length === 32 ? pin.B : Buffer.alloc(32));
+    }
   }
   return Buffer.concat(parts);
 }
@@ -1135,6 +1208,23 @@ export function applyReserveBlock({ state, block, nowMs }) {
   const cb = txs.find((t) => t?.coinbase) || txs[0];
   const reservePaid = openedReserveFeeNanos(cb);
   if (reservePaid > 0) creditFeeBank(state, reservePaid);
+  // 0x23 rows pay an ordered subsequence of the parent's oldest K_VW pending
+  // entries; entries the planner skipped (non-leaf row) stay queued in place.
+  const paidRows = cb?.coinbase ? vaultRowsOfCoinbase(cb) : [];
+  if (paidRows.length) {
+    const pending = pendingWithdrawsOf(state);
+    const window = Math.min(pending.length, K_VW);
+    const keep = [];
+    let j = 0;
+    for (let i = 0; i < pending.length; i += 1) {
+      if (i < window && j < paidRows.length && samePending(pending[i], paidRows[j])) j += 1;
+      else keep.push(pending[i]);
+    }
+    if (j !== paidRows.length) {
+      return finishReserveApply([{ ok: false, reason: 'vault_pin', action: 'vault' }]);
+    }
+    state.pendingWithdraws = keep;
+  }
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
@@ -1179,6 +1269,15 @@ export function applyReserveBlock({ state, block, nowMs }) {
       });
       results.push({ action: KIND_WITHDRAW, ...got });
       if (!got.ok) return finishReserveApply(results);
+      const pin = pinnedReceipt(tx);
+      if (pin) {
+        if (!pin.ok || pin.nanos !== Number(got.payout)) {
+          return finishReserveApply([...results, { ok: false, reason: 'vault_pin', action: KIND_WITHDRAW }]);
+        }
+        state.pendingWithdraws = [...pendingWithdrawsOf(state), {
+          mintId: got.mintId, vaultNanos: String(got.payout), B: pin.B.toString('hex'),
+        }];
+      }
     }
   }
   const sealed = parseCoinbaseObserve(cb?.coinbase ? cb : null);
@@ -1375,6 +1474,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     payout: principal + interest,
     to,
     mint,
+    mintId,
     programId: RESERVE_PROGRAM,
     kind: KIND_WITHDRAW,
   };

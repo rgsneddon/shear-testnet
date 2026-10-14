@@ -23,7 +23,7 @@ Consensus checks a cb-v3 coinbase against values it derives itself:
 - a buried pruned block has no batch to prove. Its published A leaves must rebuild the header's continuity root with the block's B leaves (`continuity`), and they are the share units. No path skips the share binding;
 - the hash budget `B_h = hashBudgetNanos(accepted series)`, and `u·W ≤ B_h` (`hash_budget`);
 - the parent coinbase's `E` set, so a share label is not reused across the carry window;
-- the pending pinned vault withdraws (none are wired yet, so a vault row is refused).
+- the parent vault's pending pinned withdraws (`t21PendingVaults`), which fix the 0x23 rows exactly.
 
 It then requires `paid = S + c_in − c_out + u·W + Φ` and checks that `Φ` equals the levy's finder half and that the finder row's `B*` is the block miner's admit base.
 
@@ -46,6 +46,10 @@ The pool fee is a hidden note to the pool's voucher. Its law row has `W_i = 0` a
 A 0x23 row pays the owner's key `B`, with `P = B + δ·G`, and must be an FS-1 leaf. The amount is public portal state.
 
 Its blind is `r = H_s("shear-kt10-0x23-r-v1" ‖ mintId ‖ u64le(height) ‖ parentId ‖ u8 ctr)`, with `ctr` the first value from 0 that gives a non-zero `r`. `parentId = SHA-256("shear-t21-parent-v1" ‖ parent header)` is the same parent id the payout key `δ` uses. This deviates from design 087q T6, which names this block's own hash `blockHash_h`. That hash covers the coinbase, and the coinbase contains `C = v·G + r·H`, so `r` cannot depend on it. The parent id is fixed before the block is built and still makes `r` unique per (mintId, height, branch).
+
+A withdraw opts into this by carrying one pinned receipt `{kind: withdraw, kindCode: 0x23, nanos, B}` with no commitment. Its `nanos` must equal the vault's payout (principal plus interest) and, when the portal names a payout address, `B` must be that address's admit base. The body then balances with `W = 0`: the spent note opens to the fee plus hidden change. Applying the block appends `{mintId, vaultNanos, B}` to the vault's pending list, and the reserve digest covers `B`.
+
+The next coinbases pay that list. The rows follow the pot, fee and reserve-fee rows. Consensus walks the oldest `K_VW = 8` entries in order: an entry whose row at the next index is an FS-1 leaf must be paid there, and an entry whose row is not a leaf is skipped and stays queued. A non-leaf row needs `P` or `Hp(P)` to be the identity, so the skip only stops a fixed blind from stalling the chain. Any other set, order or field is `vault_pin`. Applying the block removes the paid entries as an ordered subsequence of that window.
 
 ## Template
 

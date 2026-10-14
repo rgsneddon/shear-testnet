@@ -30,7 +30,7 @@ import {
 import { feeOf, lawDust, scalarOk, splitLaw, t21Big } from './t21_law.js';
 import { voucherAt, voucherKeysOk, voucherLambda } from './t21_voucher.js';
 import { bpProve, bpVerifyTerms } from './t21_bp.js';
-import { payeeCapLive } from './block_budget.js';
+import { K_VW, payeeCapLive } from './block_budget.js';
 import {
   AMOUNT_KEYS, BP_M, BP_N, CB_FORM, DOM_CB, FEE_BPS_MAX, GEN_H,
   CB_SHARE_MAX, K_MIN, LOGUP_DOM, OUTPUT_MAX, PAYOUT_KIND_CODE, PAYOUT_KINDS,
@@ -766,7 +766,7 @@ function vaultRow(ctx, vrow, index) {
   if (!built) throw fail('vault_pin');
   const delta = payoutDelta({ magic: ctx.magic, height: ctx.height, prevHash: ctx.prevHash, index, commit: built.commit });
   const P = B.add(G.multiply(delta));
-  if (!rowIsLeaf({ admitPub: pointBytes(P), commit: built.commit })) throw fail('vault_pin');
+  if (!rowIsLeaf({ admitPub: pointBytes(P), commit: built.commit })) return null;
   return {
     kind: 'vault-withdraw-pinned',
     kindCode: VAULT_KIND_CODE,
@@ -777,6 +777,21 @@ function vaultRow(ctx, vrow, index) {
     admitPub: pointBytes(P),
     noteCommit: sha(Buffer.from('shear-t21-vault-v1'), Buffer.from(asU8(vrow.mintId)), pointBytes(B)),
   };
+}
+
+/**
+ * KT-10 0x23 rows, starting at vout index `start`. Walks the oldest K_VW
+ * pending withdraws in order. One whose row is an FS-1 leaf at the next
+ * index must be paid there; one whose row is not is skipped and stays
+ * pending (the blind is fixed, so only height and parent can change it).
+ */
+function planVaults(ctx, pending, start) {
+  const rows = [];
+  for (const p of (pending || []).slice(0, K_VW)) {
+    const row = vaultRow(ctx, p, start + rows.length);
+    if (row) rows.push(row);
+  }
+  return rows;
 }
 
 /** Public levy rows (the reserve half) go last, inside the statement. */
@@ -791,7 +806,7 @@ function emptyCoinbase(spec, deferred) {
   const cin = scalarOk(spec.cin);
   if (S == null || cin == null) throw fail('pot_sched');
   const ctx = { magic: spec.magic, height: spec.height, prevHash: spec.prevHash };
-  const vaults = (spec.vaults || []).map((v, i) => vaultRow(ctx, v, i)).concat(publicRows(spec));
+  const vaults = planVaults(ctx, spec.vaults, 0).concat(publicRows(spec));
   const tx = {
     coinbase: true,
     cbForm: CB_FORM,
@@ -842,7 +857,7 @@ function buildOnce(spec, payees, deferred) {
     [rows[i], rows[j]] = [rows[j], rows[i]];
   }
   const items = rows.map((row, i) => commitRow(ctx, row, i));
-  const vaults = (spec.vaults || []).map((v, i) => vaultRow(ctx, v, items.length + i)).concat(publicRows(spec));
+  const vaults = planVaults(ctx, spec.vaults, items.length).concat(publicRows(spec));
   const shares = [];
   for (const p of payees) {
     for (const s of p.shares || []) shares.push({ w: BigInt(s.w), E: Buffer.from(asU8(s.E)), ell: s.ell, beta: s.beta });
@@ -1150,24 +1165,25 @@ export function verifyT21Coinbase(input) {
   };
 }
 
+/** The 0x23 rows must be exactly planVaults over chain state, right after the payout rows. */
 function checkVaults(tx, expect) {
   const rows = vaultRows(tx);
-  const pending = Array.isArray(expect.vaults) ? expect.vaults.slice() : [];
+  const start = payoutRows(tx).length;
+  let want;
+  try {
+    want = planVaults({ magic: expect.magic, height: expect.height, prevHash: expect.prevHash }, expect.vaults, start);
+  } catch {
+    return no('vault_pin');
+  }
+  if (rows.length !== want.length) return no('vault_pin');
   let paid = 0n;
-  for (const vrow of rows) {
-    const i = pending.findIndex((p) => sameBytes(p.mintId, vrow.mintId)
-      && String(p.vaultNanos) === String(vrow.vaultNanos) && sameBytes(p.B, vrow.B));
-    if (i < 0) return no('vault_pin');
-    pending.splice(i, 1);
-    const B = pointOk(vrow.B);
-    const want = vaultCommit(vrow.vaultNanos, vrow.mintId, expect.height, expect.prevHash);
-    if (!B || !want || !sameBytes(vrow.commit, want.commit)) return no('vault_pin');
-    const delta = payoutDelta({
-      magic: expect.magic, height: expect.height, prevHash: expect.prevHash, index: tx.vout.indexOf(vrow), commit: vrow.commit,
-    });
-    if (!B.add(G.multiply(delta)).equals(pointOk(vrow.admitPub) || Point.ZERO)) return no('vault_pin');
-    if (!rowIsLeaf(vrow)) return no('admit_note_point');
-    paid += BigInt(vrow.vaultNanos);
+  for (let i = 0; i < want.length; i += 1) {
+    const got = tx.vout[start + i];
+    if (!got || Number(got.kindCode) !== VAULT_KIND_CODE) return no('vault_pin');
+    for (const k of ['vaultNanos', 'mintId', 'B', 'commit', 'admitPub', 'noteCommit']) {
+      if (k === 'vaultNanos' ? String(got[k]) !== want[i][k] : !sameBytes(got[k], want[i][k])) return no('vault_pin');
+    }
+    paid += BigInt(want[i].vaultNanos);
   }
   return { ok: true, paid };
 }

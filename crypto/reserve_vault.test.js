@@ -39,6 +39,9 @@ import {
   VOTE_INCREASE,
   VOTE_DECREASE,
   VOTE_HOLD,
+  PINNED_KIND_CODE,
+  pendingWithdrawsOf,
+  pinnedReceipt,
 } from './reserve_vault.js';
 import { compactTx } from './chronoflux.js';
 import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
@@ -546,6 +549,53 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     });
     assert.equal(peer.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(peer));
     assert.equal(Number(wireState.totalLockedNanos), PI_SHE_NANOS);
+  });
+
+  it('a pinned withdraw queues a pending row that a coinbase 0x23 row pays', () => {
+    const alice = newIdentity();
+    const vault = destOf(alice);
+    const continuum = destForLogin(alice.address, { viewKey: alice.viewKey });
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    const B = Buffer.alloc(32, 7);
+    applyReserveBlock({
+      state,
+      block: { txs: [{ coinbase: true, vout: [] }, lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-p' })] },
+      nowMs: t0,
+    });
+    const owed = previewWithdraw(state, vault).payout;
+    const under = cloneVault(state);
+    const short = withdrawTx({ from: vault, to: continuum, nanos: PI_SHE_NANOS, id: 'wd-s', pinB: B });
+    const shortRes = applyReserveBlock({ state: under, block: { txs: [{ coinbase: true, vout: [] }, short] }, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(shortRes.some((r) => r.reason === 'vault_pin'), true, JSON.stringify(shortRes));
+    const wd = withdrawTx({ from: vault, to: continuum, nanos: owed, id: 'wd-p', pinB: B });
+    assert.equal(pinnedReceipt(wd).ok, true);
+    const got = applyReserveBlock({ state, block: { txs: [{ coinbase: true, vout: [] }, wd] }, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(got.some((r) => r.action === 'withdraw' && r.ok === true), true, JSON.stringify(got));
+    const pending = pendingWithdrawsOf(state);
+    assert.equal(pending.length, 1, JSON.stringify(got));
+    assert.equal(pending[0].B, B.toString('hex'));
+    assert.equal(pending[0].vaultNanos, String(owed));
+    assert.deepEqual(pendingWithdrawsOf(cloneVault(state)), pending);
+
+    const row = { kind: 'vault-withdraw-pinned', kindCode: PINNED_KIND_CODE, mintId: Buffer.from(pending[0].mintId, 'hex'), vaultNanos: pending[0].vaultNanos, B };
+    const wrong = cloneVault(state);
+    const refused = applyReserveBlock({ state: wrong, block: { txs: [{ coinbase: true, vout: [{ ...row, vaultNanos: '1' }] }] }, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
+    assert.equal(refused.some((r) => r.reason === 'vault_pin'), true, JSON.stringify(refused));
+    applyReserveBlock({ state, block: { txs: [{ coinbase: true, vout: [row] }] }, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
+    assert.equal(pendingWithdrawsOf(state).length, 0);
+  });
+
+  it('a 0x23 row may skip an older pending entry, which stays queued', () => {
+    const state = emptyVault();
+    const B = Buffer.alloc(32, 7);
+    const entry = (k) => ({ mintId: Buffer.from(`m${k}`).toString('hex'), vaultNanos: String(k), B: B.toString('hex') });
+    state.pendingWithdraws = [entry(1), entry(2), entry(3)];
+    const rowOf = (p) => ({ kindCode: PINNED_KIND_CODE, mintId: Buffer.from(p.mintId, 'hex'), vaultNanos: p.vaultNanos, B });
+    applyReserveBlock({ state, block: { txs: [{ coinbase: true, vout: [rowOf(entry(2))] }] }, nowMs: 1 });
+    assert.deepEqual(pendingWithdrawsOf(state).map((p) => p.vaultNanos), ['1', '3']);
+    const r = applyReserveBlock({ state, block: { txs: [{ coinbase: true, vout: [rowOf(entry(3)), rowOf(entry(1))] }] }, nowMs: 2 });
+    assert.equal(r.some((x) => x.reason === 'vault_pin'), true);
   });
 
   it('compactTx of an address-only lock still credits applyReserveBlock from dest20 and valueProof.v', () => {

@@ -80,7 +80,7 @@ import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, pendingWithdrawsOf, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { coinbaseObserveRejected, observeDigestSuffix } from '../../crypto/reserve_oracle.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
@@ -384,6 +384,15 @@ function aLeavesOf(collated, pay) {
       count: Number(s.count) > 0 ? Number(s.count) : unitsForShare(),
     };
   });
+}
+
+/** The parent vault's pinned withdraws, oldest first, as verifyT21Coinbase reads them. */
+export function t21PendingVaults(vault) {
+  return pendingWithdrawsOf(vault).map((p) => ({
+    mintId: Buffer.from(String(p.mintId), 'hex'),
+    vaultNanos: BigInt(p.vaultNanos),
+    B: Buffer.from(String(p.B), 'hex'),
+  }));
 }
 
 /**
@@ -2537,7 +2546,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         shares: t21Shares.shares,
         hashBudget,
         prevEs,
-        vaults: [],
+        vaults: t21PendingVaults(reserveState),
       },
     });
     if (!gate.ok) return { ok: false, reason: gate.reason };
