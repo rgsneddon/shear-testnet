@@ -257,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     ):
         if req not in names:
             sys.exit(f"missing {req}")
-    if release_notices.RUNTIME_VERSIONS not in names:
+    bundles_runtime = any(n in ("runtime/node", "runtime/node.exe") for n in names)
+    if bundles_runtime and release_notices.RUNTIME_VERSIONS not in names:
         sys.exit(f"node zip must record the bundled runtime versions in {release_notices.RUNTIME_VERSIONS}")
     shipped_runtime = [n for n in names if n.rsplit("/", 1)[-1].lower() in release_notices.MINGW_RUNTIME_DLLS]
     if shipped_runtime:
