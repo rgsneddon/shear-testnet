@@ -23,6 +23,7 @@ import {
   SHEARK_MINER_VERSION,
   consensusFingerprint,
 } from '../crypto/asert.js';
+import { pdfText } from './pdf_text.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -65,20 +66,39 @@ const COPY_BANNED = [
   /\b(one|1)[- ]of[- ]32\b/i,
 ];
 
-const CLAIM_SURFACES = [
+const TEXT_EXT = new Set(['.html', '.js', '.mjs', '.md', '.py', '.txt', '.json']);
+
+function walk(dir, skip = []) {
+  const out = [];
+  for (const ent of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+    const rel = `${dir}/${ent.name}`;
+    if (skip.includes(rel)) continue;
+    if (ent.isDirectory()) out.push(...walk(rel, skip));
+    else if (TEXT_EXT.has(path.extname(ent.name))) out.push(rel);
+  }
+  return out.sort();
+}
+
+const PDFS = ['site/whitepaper/shear-whitepaper.pdf'];
+
+const CLAIM_SURFACES = [...new Set([
   ...PUBLIC,
+  ...walk('site', ['site/tests']),
   'explorer/explorer.html',
-  'site/wallet/index.html',
-  'site/node/index.html',
-  'site/network.html',
-  'site/boot/index.html',
-  'site/admin/index.html',
   'wallet/lib/main.dart',
   'wallet/lib/shear_closure.dart',
   'wallet/lib/shear_privacy_hop.dart',
   'wallet/lib/shear_cli.dart',
   'node/src/help.js',
-];
+])];
+
+// Handoffs in docs/ describe the gated bucket proof itself, so the bare word is
+// allowed there. The privacy and group anonymity bans still apply.
+const DOCS_BANNED = COPY_BANNED.filter((re) => !/bucket/.test(re.source));
+
+function copyText(rel) {
+  return rel.endsWith('.pdf') ? pdfText(path.join(root, rel)) : read(rel);
+}
 
 describe('public copy: dest privacy and per-hasher hash bonus', () => {
   it('states dest privacy, Copy dest mining, per-hasher bonus; no privacy or bucket claims; omits this is not and worthy coin', () => {
@@ -289,16 +309,23 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
   });
 
   it('no surface claims privacy, confidential amounts, or a bucket anonymity set', () => {
-    for (const rel of CLAIM_SURFACES) {
-      const text = read(rel);
+    assert.ok(CLAIM_SURFACES.length > 40, `walked ${CLAIM_SURFACES.length} files`);
+    for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
+      const text = copyText(rel);
       for (const banned of COPY_BANNED) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
+    }
+    assert.doesNotMatch(read('site/whitepaper/build_pdf.py'), /privacy is the default/i);
+    assert.doesNotMatch(pdfText(path.join(root, PDFS[0])), /privacy is the default/i);
+    assert.match(pdfText(path.join(root, PDFS[0])), /Revolving dests/);
+    for (const rel of walk('docs')) {
+      for (const banned of DOCS_BANNED) assert.doesNotMatch(read(rel), banned, `${rel} ${banned}`);
     }
     assert.match(read('wallet/lib/shear_closure.dart'), /ADMITv3 full-set proof/);
   });
 
   it('v11 pages keep ADMITv2, and v12 copy does not call the ADMITv3 hide live', () => {
-    for (const rel of CLAIM_SURFACES) {
-      const text = read(rel);
+    for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
+      const text = copyText(rel);
       if (!/shear-testnet-v1[01]\b|Continuum 0\.71/.test(text)) continue;
       assert.doesNotMatch(text, /ADMITv3/, `${rel} is a v11 page`);
     }
