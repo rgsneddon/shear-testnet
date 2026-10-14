@@ -1043,8 +1043,9 @@ Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) {
     pubs: pubs,
     commits: commits,
   );
+  final proof = body['admit_proof'];
   return {
-    'admitProof': body['admit_proof'],
+    'admitProof': proof is Map ? workerAdmitProof(Map<String, dynamic>.from(proof)) : proof,
     'spendTag': body['spendTag'],
   };
 }
@@ -1069,6 +1070,10 @@ Map<String, dynamic> _proveFlowStamped(Map<String, dynamic> input) {
   final stamp = identityHashCode(Isolate.current).toString();
   try {
     final out = reproveFlowSpendWire(input);
+    final proof = out['admitProof'];
+    if (proof is Map) {
+      out['admitProof'] = workerAdmitProof(Map<String, dynamic>.from(proof));
+    }
     out['stamp'] = stamp;
     return out;
   } catch (e) {
@@ -1157,13 +1162,31 @@ Future<Map<String, dynamic>> signSpendOffUi(Map<String, dynamic> input) {
 
 /// Hexify a Flow post body inside the worker. Vin, vout, and the admit proof
 /// are byte-heavy; the UI isolate only sends them and posts the result.
+List<Map<String, dynamic>> _flowRows(dynamic raw) {
+  if (raw is! List) return const [];
+  return [
+    for (final row in raw)
+      if (row is Map) Map<String, dynamic>.from(row),
+  ];
+}
+
 Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
-  final proof = raw['admitProof'];
+  final proofs = raw['admitProofs'];
+  final listed = proofs is List
+      ? _flowRows(proofs)
+      : <Map<String, dynamic>>[
+          if (raw['admitProof'] is Map) Map<String, dynamic>.from(raw['admitProof'] as Map),
+        ];
+  final body = postedFlowBody(
+    vin: _flowRows(raw['vin']),
+    vout: _flowRows(raw['vout']),
+    proofs: listed,
+  );
   return <String, dynamic>{
-    'vin': List<dynamic>.from(_hexify(raw['vin']) as List? ?? const []),
-    'vout': List<dynamic>.from(_hexify(raw['vout']) as List? ?? const []),
-    'admitProof': proof == null ? null : Map<String, dynamic>.from(_hexify(proof) as Map),
-    if (raw['admitProofs'] != null) 'admitProofs': _hexify(raw['admitProofs']),
+    'vin': List<dynamic>.from(_hexify(body['vin']) as List? ?? const []),
+    'vout': List<dynamic>.from(_hexify(body['vout']) as List? ?? const []),
+    'admitProof': body['admitProof'] is Map ? _hexify(body['admitProof']) : null,
+    if (proofs is List) 'admitProofs': _hexify(body['admitProofs'] ?? const <Map<String, dynamic>>[]),
   };
 }
 
@@ -1725,13 +1748,150 @@ dynamic _hexify(dynamic v) {
 List<Map<String, dynamic>> _postedVin(List<Map<String, dynamic>> vin) {
   return vin.map((v) {
     final row = <String, dynamic>{};
-    if (v['commit'] != null) row['commit'] = v['commit'];
+    final commit = _allowChild('commit', v['commit']);
+    if (commit is! _Omit && v.containsKey('commit')) row['commit'] = commit;
     return row;
   }).toList();
 }
 
+/// Public wire fields. Same set as crypto/spend.js PROOF_KEYS.
+const postedAdmitProofKeys = <String>{
+  'admit_proof', 'v', 'version', 'spendTag', 'blob', 'cTilde', 'c0',
+  'proof', 'members', 'anchor', 'root', 'n', 'pseudo', 'commit', 'tag',
+};
+
+/// crypto/spend.js VALUE_PROOF_KEYS. `R` is public.
+const postedValueProofKeys = <String>{'v', 'R', 'z'};
+
+/// One membership row. Not a recursive copy of unknown nested names.
+const postedMemberKeys = <String>{'commit', 'hash', 'side', 'anchor', 'root'};
+
+/// crypto/spend.js MERKLE_PROOF_KEYS.
+const postedMerkleKeys = <String>{'side', 'hash'};
+
+/// crypto/spend.js VOUT_KEYS.
+const postedVoutKeys = <String>{
+  'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
+  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt',
+  'portalId', 'memo', 'memoCt',
+};
+
+/// Sentinel for a nested value the allow-list refuses.
+class _Omit {
+  const _Omit();
+}
+
+const _omit = _Omit();
+
+Map<String, dynamic> _allowMap(Map<dynamic, dynamic> raw, Set<String> keys) {
+  final out = <String, dynamic>{};
+  for (final key in keys) {
+    if (!raw.containsKey(key)) continue;
+    final taken = _allowChild(key, raw[key]);
+    if (taken is _Omit) continue;
+    out[key] = taken;
+  }
+  return out;
+}
+
+dynamic _allowChild(String key, dynamic v) {
+  switch (key) {
+    case 'admit_proof':
+      if (v is Map) return _allowMap(v, postedAdmitProofKeys);
+      return _publicLeaf(v);
+    case 'proof':
+      if (v is Map) return _allowMap(v, postedMerkleKeys);
+      if (v is List && v is! Uint8List && v.any((item) => item is Map)) {
+        return <dynamic>[
+          for (final item in v)
+            if (item is Map) _allowMap(item, postedMerkleKeys) else item,
+        ];
+      }
+      return _publicLeaf(v);
+    case 'members':
+      if (v is List && v is! Uint8List) {
+        return <dynamic>[
+          for (final item in v)
+            if (item is Map) _allowMap(item, postedMemberKeys) else if (_publicLeaf(item) is! _Omit) item,
+        ];
+      }
+      if (v is Map) return _allowMap(v, postedMemberKeys);
+      return _publicLeaf(v);
+    case 'valueProof':
+      if (v is Map) return _allowMap(v, postedValueProofKeys);
+      return _publicLeaf(v);
+    default:
+      return _publicLeaf(v);
+  }
+}
+
+/// Byte lists and scalars stay. A map under a leaf key is dropped so an
+/// unknown name such as `blind` cannot ride inside `anchor` or `commit`.
+dynamic _publicLeaf(dynamic v) {
+  if (v is Map) return _omit;
+  if (v is List && v is! Uint8List) {
+    for (final item in v) {
+      if (item is Map) return _omit;
+    }
+  }
+  return v;
+}
+
+/// Posted admit proof. Copies allow-listed fields and does not mutate [raw].
+Map<String, dynamic> postedAdmitProof(Map<String, dynamic> raw) {
+  return _allowMap(raw, postedAdmitProofKeys);
+}
+
+/// Drop `t` from the map that [Isolate.run] will copy back. Wipes that blind
+/// only when the buffer is the worker's own and not the caller's spend seed.
+Map<String, dynamic> workerAdmitProof(Map<String, dynamic> raw) {
+  final copied = _dropBlind(raw, raw['spendSeed']);
+  return Map<String, dynamic>.from(copied as Map);
+}
+
+dynamic _dropBlind(dynamic v, Object? seed) {
+  if (v is Map) {
+    final out = <String, dynamic>{};
+    for (final e in v.entries) {
+      if (e.key.toString() == 't') {
+        final t = e.value;
+        if (t is Uint8List && !identical(t, seed)) {
+          for (var i = 0; i < t.length; i++) {
+            t[i] = 0;
+          }
+        }
+        continue;
+      }
+      out[e.key.toString()] = _dropBlind(e.value, seed);
+    }
+    return out;
+  }
+  if (v is List && v is! Uint8List) {
+    return <dynamic>[for (final item in v) _dropBlind(item, seed)];
+  }
+  return v;
+}
+
+/// The body [flowPostHex] sends. Vin is C̃-only, vout is the sealed compact
+/// row, and every proof has been through [postedAdmitProof].
+Map<String, dynamic> postedFlowBody({
+  required List<Map<String, dynamic>> vin,
+  required List<Map<String, dynamic>> vout,
+  required List<Map<String, dynamic>> proofs,
+}) {
+  final posted = <Map<String, dynamic>>[for (final proof in proofs) postedAdmitProof(proof)];
+  return <String, dynamic>{
+    'vin': _postedVin(vin),
+    'vout': _postedVout(vout),
+    if (posted.isNotEmpty) 'admitProof': posted.first,
+    if (posted.isNotEmpty) 'admitProofs': posted,
+  };
+}
+
 List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
-  return vouts.map(compactSealedVout).toList();
+  return [
+    for (final row in vouts.map(compactSealedVout)) _allowMap(row, postedVoutKeys),
+  ];
 }
 
 /// KT-10. Same bytes as `kt10WithdrawBlind` in crypto/reserve_vault.js.
@@ -7399,25 +7559,28 @@ class ShearLedger implements ReadProofSink {
       } on TimeoutException {
         throw StateError('send_timeout');
       }
-      final proof = Map<String, dynamic>.from(proved['admitProof'] as Map);
+      final proof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
       final ct = proof['cTilde'];
-      final blind = proof['t'];
       vin.add({
         'commit': ct is Uint8List ? ct : spentNote['commit'],
         'r': spentNote['r'],
-        if (blind is Uint8List) 't': blind,
       });
       proofs.add(proof);
       done++;
       progress?.bump(phase: 'prove', done: done, total: total);
     }
     final excess = kernelExcess(sealed, vin);
-    final postedVin = _postedVin(vin);
-    final postedVout = _postedVout(sealed);
+    final posted = postedFlowBody(vin: vin, vout: sealed, proofs: proofs);
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
     if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
       throw StateError('unspendable_dest');
     }
+    final postedVin = List<Map<String, dynamic>>.from(
+      (posted['vin'] as List).whereType<Map>().map((v) => Map<String, dynamic>.from(v)),
+    );
+    final postedVout = List<Map<String, dynamic>>.from(
+      (posted['vout'] as List).whereType<Map>().map((v) => Map<String, dynamic>.from(v)),
+    );
     final msg = spendMessage(from: src, vout: postedVout, kind: 'send', vin: postedVin);
     final shared = _stealthShared[src];
     final signed = await signSpendOffUi(<String, dynamic>{
@@ -7429,12 +7592,7 @@ class ShearLedger implements ReadProofSink {
     final pub = signed['pub'] as Uint8List;
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
     progress?.bump(phase: 'broadcast', done: done, total: total);
-    final wire = await flowPostHexOffUi(<String, dynamic>{
-      'vin': postedVin,
-      'vout': postedVout,
-      'admitProof': proofs.first,
-      'admitProofs': proofs,
-    });
+    final wire = await flowPostHexOffUi(posted);
     // The change output already reserved [feeUnits]. A lighter one-pass fee
     // must not be written back. A heavier body is fee_short, not a vote error.
     if (!sealedFeeCovers(feeUnits, <String, dynamic>{
@@ -8173,14 +8331,12 @@ class ShearLedger implements ReadProofSink {
       } on TimeoutException {
         throw StateError('send_timeout');
       }
-      admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
+      admitProof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
       final ct = admitProof['cTilde'];
-      final blind = admitProof['t'];
       if (ct is Uint8List) {
         vin[0] = {
           'commit': ct,
           'r': vin[0]['r'] ?? spentNote['r'],
-          if (blind is Uint8List) 't': blind,
         };
         excess = kernelExcess(vouts, vin);
       }
@@ -8319,7 +8475,7 @@ class ShearLedger implements ReadProofSink {
             'pubs': pubs,
             'commits': commits,
           });
-          admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
+          admitProof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
         }
         json = await postOnce();
         if (json['ok'] == true && json['tx'] is Map) break;
