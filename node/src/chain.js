@@ -103,6 +103,7 @@ import {
   txIoCap,
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
+import { isT21Coinbase, t21DigestSuffix, verifyT21Coinbase } from '../../crypto/t21.js';
 import { blockBudget } from '../../crypto/block_budget.js';
 import {
   packTx,
@@ -286,16 +287,18 @@ export function digestTx(tx) {
   const slotSuffix = tx?.coinbase ? shareSlotDigestSuffix(tx) : Buffer.alloc(0);
   const issuedSuffix = tx?.coinbase ? issuedJobDigestSuffix(tx) : Buffer.alloc(0);
   const observeSuffix = tx?.coinbase ? observeDigestSuffix(tx) : null;
+  const t21Suffix = tx?.coinbase ? t21DigestSuffix(tx) : null;
   if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length))) {
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length) || (t21Suffix && t21Suffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
     if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
     if (issuedSuffix && issuedSuffix.length) parts.push(issuedSuffix);
     if (observeSuffix && observeSuffix.length) parts.push(observeSuffix);
+    if (t21Suffix && t21Suffix.length) parts.push(t21Suffix);
     return packDigest(Buffer.concat(parts));
   }
   const reserveSuffix = reserveDigestSuffix(tx);
@@ -2245,6 +2248,17 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const cbVouts = txs[0].vout || [];
   const confidential = cbVouts.some((o) => o.commit);
+  let t21Paid = null;
+  let t21Ok = false;
+  if (isT21Coinbase(txs[0])) {
+    const gate = verifyT21Coinbase({
+      tx: txs[0],
+      blockHash: hash,
+    });
+    if (!gate.ok) return { ok: false, reason: gate.reason };
+    t21Paid = gate.paid;
+    t21Ok = true;
+  }
   const potVouts = cbVouts.filter((o) => o.kind !== 'hash' && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
   const hashVouts = cbVouts.filter((o) => o.kind === 'hash');
   let potNanos = 0;
@@ -2330,7 +2344,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     });
     if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
-    if (confidential) {
+    if (confidential && !t21Ok) {
       // Proven leaves win. Disk aLeaves keep dest20 and drop noteCommit, so a
       // batch that did not produce leaves falls back to the share batch.
       const leaves = Array.isArray(shareLeaves)
@@ -2390,7 +2404,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       potNanos = mintedPot;
       }
-    } else {
+    } else if (!t21Ok) {
       potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
       if (potNanos + carryOut !== payablePot) return { ok: false, reason: 'pot_sched' };
       if (settlement.idle && !shareBatch.length) {
@@ -2436,16 +2450,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       return { ok: false, reason: 'pot' };
     }
   }
-  let t21Paid = null;
-  if (txs[0] && txs[0].t21Split != null) {
+  if (!t21Ok && txs[0] && txs[0].t21Split != null) {
     const gate = t21CoinbaseGate(txs[0], payablePot, cbVouts, carryOut);
     if (!gate.ok) return { ok: false, reason: gate.reason };
     t21Paid = gate.paid;
   }
-  const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, (o) => (
-    provenOpen.has(o) ? provenOpen.get(o) : null
-  ), t21Paid);
-  if (!boundCb.ok) return boundCb;
+  // cb-v3 already opened the mint inside verifyT21Coinbase. The legacy
+  // mint sum uses a different total and rejects an empty carry coinbase.
+  if (!t21Ok) {
+    const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, (o) => (
+      provenOpen.has(o) ? provenOpen.get(o) : null
+    ), t21Paid);
+    if (!boundCb.ok) return boundCb;
+  }
   let potOpenedSum = 0;
   if (t21Paid != null) {
     potOpenedSum = payablePot - carryOut;
@@ -2462,8 +2479,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // An empty batch may carry the miner pot. The only note that may sit beside
   // that carry is a pool-fee at or under POOL_FEE_MAX_BPS of this subsidy.
   // A pot note, or a fee above that cap, is a skim.
-  if (shareBatch.length > 0 && carryOut !== 0) return { ok: false, reason: 'pot_carry' };
-  if (t21Paid == null && !shareBatch.length && carryOut !== 0 && potOpenedSum !== 0) {
+  if (!t21Ok && shareBatch.length > 0 && carryOut !== 0) return { ok: false, reason: 'pot_carry' };
+  if (!t21Ok && t21Paid == null && !shareBatch.length && carryOut !== 0 && potOpenedSum !== 0) {
     const feeCap = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
     let feeOpened = 0;
     let feeOnly = true;

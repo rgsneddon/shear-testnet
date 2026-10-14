@@ -7,7 +7,6 @@ import { performance } from 'node:perf_hooks';
 import { txIsCoinbase } from './note.js';
 import { txIsReserveAction } from './reserve_vault.js';
 
-export const W_IN = 40;
 export const W_OUT = 23;
 export const W_TX = 2;
 export const W_ROW_0X23 = 1;
@@ -18,13 +17,19 @@ export const R_SENDS = 16;
 export const R_BYTES = 854_592;
 /**
  * FS-1 verify weight of one send: 25 + 25 wu per input.
- * The 16-send reserve prices the preferred 2-input shape, not 2 × W_IN.
+ * The 16-send reserve prices the preferred 2-input shape.
  * 16 × (25 + 25×2 + 3×23 + 2) = 2,336.
+ * A flat 40 wu per input is not this table.
  */
 export const W_FS1_BASE = 25;
 export const W_FS1_PER_INPUT = 25;
 export const R_SEND_INPUTS = 2;
 export const R_WEIGHT = 2_336;
+/**
+ * Vault-withdraw input term. 8 × (40 + 23 + 1 + 2) = 528.
+ * This is the pinned 0x23 row, not the FS-1 send weight.
+ */
+export const W_VW_IN = 40;
 export const K_VW = 8;
 export const R_VW_BYTES = 181_864;
 export const R_VW_WEIGHT = 528;
@@ -70,7 +75,7 @@ function assertTable() {
   if (two == null || R_SENDS * (two + 3 * W_OUT + W_TX) !== R_WEIGHT) {
     throw new Error('block_budget R_WEIGHT');
   }
-  if (K_VW * (W_IN + W_OUT + W_ROW_0X23 + W_TX) !== R_VW_WEIGHT) {
+  if (K_VW * (W_VW_IN + W_OUT + W_ROW_0X23 + W_TX) !== R_VW_WEIGHT) {
     throw new Error('block_budget R_VW_WEIGHT');
   }
   if (C_MAX + R_BYTES + R_VW_BYTES !== B_MAX) {
@@ -178,7 +183,8 @@ export function txVerifyWeight(tx) {
   }
   const nIn = Array.isArray(tx.vin) ? tx.vin.length : 0;
   const nOut = Array.isArray(tx.vout) ? tx.vout.length : 0;
-  let w = W_TX + W_IN * nIn + W_OUT * nOut;
+  const inW = nIn > 0 ? (W_FS1_BASE + W_FS1_PER_INPUT * nIn) : 0;
+  let w = W_TX + inW + W_OUT * nOut;
   if (txIsReserveAction(tx)) w += W_SEAL;
   return w;
 }

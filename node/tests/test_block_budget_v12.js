@@ -184,6 +184,10 @@ describe('v12 block budget', { concurrency: 1 }, () => {
     assert.equal(fs1VerifyWeight(9), null);
     assert.equal(R_WEIGHT, 2_336);
     assert.equal(R_SENDS * (fs1VerifyWeight(2) + 3 * W_OUT + W_TX), R_WEIGHT);
+    assert.equal(txVerifyWeight(bodyTx(2, 3, 'm', 1)), W_TX + fs1VerifyWeight(2) + 3 * W_OUT);
+    assert.equal(txVerifyWeight(bodyTx(1, 1, 'm', 1)), W_TX + fs1VerifyWeight(1) + W_OUT);
+    assert.equal(txVerifyWeight(bodyTx(8, 0, 'm', 1)), W_TX + fs1VerifyWeight(8));
+    assert.equal(txVerifyWeight(bodyTx(9, 0, 'm', 1)), W_TX + 25 + 25 * 9);
     assert.equal(fallback, 171);
     assert.equal(fallback, live);
     assert.equal(payeeCapLive(FALLBACK_IPC_FRAME), 171);

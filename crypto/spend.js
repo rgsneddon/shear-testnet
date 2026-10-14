@@ -493,6 +493,7 @@ const BODY_KEYS = new Set([
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
+  'cbForm', 't21',
   'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
 ]);
 
@@ -503,8 +504,9 @@ const VIN_KEYS = new Set([
 
 const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
-  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt',
+  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
   'portalId', 'memo', 'memoCt',
+  'lambda', 'B', 'Y', 'cw', 'rhoC', 'rhoDelta', 'rhoRange', 've', 'ra', 'law', 'fin', 'kindCode', 'vaultNanos',
 ]);
 
 const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);
