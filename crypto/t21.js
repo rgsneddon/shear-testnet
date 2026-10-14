@@ -954,8 +954,8 @@ function sameBytes(a, b) {
  * Consensus verify. `expect` is chain state, never the coinbase:
  *   S (subsidy at this height), cin (parent carry), u (hash-bonus unit),
  *   height, magic, prevHash,
- *   shares: [{ nc, units }], the block's retained share units per note commit,
- *     or 'buried' for a pruned block,
+ *   shares: [{ nc, units }], the block's retained share units per note commit
+ *     (the proven batch, or the header-bound aLeaves of a buried pruned block),
  *   hashBudget: B_h in nanos; u·W must not exceed it,
  *   prevEs: E_s hex set of the parent coinbase (carry window),
  *   vaults: pending pinned withdraws [{ mintId, vaultNanos, B }].
@@ -1015,7 +1015,7 @@ export function verifyT21Coinbase(input) {
     if (payout.length) return no('pot_carry');
     if (cout !== cin + S) return no('pot_sched');
     if (f !== 0n || u !== 0n) return no('fee_sched');
-    if (expect.shares !== 'buried' && Array.isArray(expect.shares) && expect.shares.length) return no('share_bind');
+    if (!Array.isArray(expect.shares) || expect.shares.length) return no('share_bind');
     if (!sameBytes(t21.stmt, statementOf(tx))) return no('split_law');
     return { ok: true, reason: null, paid: 0n, phi: 0n, W: 0n, f: 0n, finB: null, vaultPaid: vaultPaid.paid };
   }
@@ -1047,19 +1047,17 @@ export function verifyT21Coinbase(input) {
     return no('hash_budget');
   }
   if (Bh < 0n || u * W > Bh) return no('hash_budget');
-  if (expect.shares !== 'buried') {
-    if (!Array.isArray(expect.shares) || expect.shares.length !== shares.length) return no('share_bind');
-    const pool = new Map();
-    for (const p of expect.shares) {
-      const k = `${Buffer.from(asU8(p.nc)).toString('hex')}:${String(p.units)}`;
-      pool.set(k, (pool.get(k) || 0) + 1);
-    }
-    for (const s of shares) {
-      const k = `${t21ShareNc(t21.magic, s.E).toString('hex')}:${String(s.w)}`;
-      const n = pool.get(k) || 0;
-      if (!n) return no('share_bind');
-      pool.set(k, n - 1);
-    }
+  if (!Array.isArray(expect.shares) || expect.shares.length !== shares.length) return no('share_bind');
+  const pool = new Map();
+  for (const p of expect.shares) {
+    const k = `${Buffer.from(asU8(p.nc)).toString('hex')}:${String(p.units)}`;
+    pool.set(k, (pool.get(k) || 0) + 1);
+  }
+  for (const s of shares) {
+    const k = `${t21ShareNc(t21.magic, s.E).toString('hex')}:${String(s.w)}`;
+    const n = pool.get(k) || 0;
+    if (!n) return no('share_bind');
+    pool.set(k, n - 1);
   }
   let fins = 0;
   let phi = 0n;

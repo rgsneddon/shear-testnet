@@ -20,6 +20,7 @@ Consensus checks a cb-v3 coinbase against values it derives itself:
 - the live hash bonus unit `u`;
 - height, network magic, and the parent id `SHA-256("shear-t21-parent-v1" ‖ parent header)`;
 - the proven share batch: each share's PoW commits to `t21ShareNc(magic, E) = SHA-256("shear-share-bind-v1" ‖ magic ‖ E)` as its note commit, and the coinbase shares must match the block's retained units per note commit (its A leaves) one to one. Retained units are `2^bits` scaled into `MAX_HASH_UNITS_PER_BLOCK = 2^28`, so `W ≤ 2^28` (`hash_units`);
+- a buried pruned block has no batch to prove. Its published A leaves must rebuild the header's continuity root with the block's B leaves (`continuity`), and they are the share units. No path skips the share binding;
 - the hash budget `B_h = hashBudgetNanos(accepted series)`, and `u·W ≤ B_h` (`hash_budget`);
 - the parent coinbase's `E` set, so a share label is not reused across the carry window;
 - the pending pinned vault withdraws (none are wired yet, so a vault row is refused).

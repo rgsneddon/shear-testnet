@@ -385,11 +385,29 @@ function aLeavesOf(collated, pay) {
   });
 }
 
-/** cb-v3 share units: the retained units per note commit (the aLeaves), so Σw stays under MAX_HASH_UNITS_PER_BLOCK. */
-export function t21ShareUnits(block, txs, provedLeaves, skipFlow) {
+/**
+ * cb-v3 share units: the retained units per note commit (the aLeaves), so Σw
+ * stays under MAX_HASH_UNITS_PER_BLOCK. A buried pruned block has no batch;
+ * its published aLeaves must rebuild the header's continuity root with the
+ * block's B leaves, so W stays bound to the PoW header.
+ */
+export function t21ShareUnits(block, txs, provedLeaves, skipFlow, decoded) {
   const toShares = (leaves) => leaves.map((l) => ({ nc: Buffer.from(l.noteCommit), units: BigInt(l.count) }));
   if (provedLeaves) return { ok: true, shares: toShares(provedLeaves) };
-  return { ok: true, shares: skipFlow ? 'buried' : [] };
+  if (!skipFlow) return { ok: true, shares: [] };
+  const raw = Array.isArray(block?.aLeaves) ? block.aLeaves : [];
+  const leaves = [];
+  for (const l of raw) {
+    const nc = l?.noteCommit ? Buffer.from(asU8(l.noteCommit)) : null;
+    const count = Number(l?.count);
+    if (!nc || nc.length !== 32 || !Number.isSafeInteger(count) || count <= 0) return { ok: false, reason: 'hash_bonus' };
+    leaves.push({ noteCommit: nc, count });
+  }
+  const b = boundBLeaves(block, txs);
+  if (!b.ok) return b;
+  const dual = buildDualTree({ aLeaves: leaves, bLeaves: b.leaves });
+  if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
+  return { ok: true, shares: toShares(leaves) };
 }
 
 function publishedALeaves(block) {

@@ -21,6 +21,7 @@ import {
 } from './t21.js';
 import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
 import { accountShareUnits, aLeavesFromShares } from './share_batch.js';
+import { buildDualTree } from './clearing.js';
 import { encodeDest } from './address.js';
 import { reserveFeeDest, splitLevy } from './levy.js';
 import {
@@ -432,8 +433,22 @@ describe('T21 hash bonus budget (P0-2, P1-1)', { timeout: 600_000 }, () => {
     const leaves = aLeavesFromShares(acc.bound, acc.room, acc.retained);
     assert.equal(leaves.length, 8);
     assert.equal(leaves.reduce((n, l) => n + BigInt(l.count), 0n), W_HASH_MAX);
-    const shares = t21ShareUnits({}, [], leaves, false).shares;
+    const shares = t21ShareUnits({}, [], leaves, false, null).shares;
     assert.equal(shares.reduce((n, l) => n + l.units, 0n), W_HASH_MAX);
+  });
+
+  it('binds a buried pruned block\'s W to the header through its aLeaves', () => {
+    const leaves = [{ noteCommit: Buffer.alloc(32, 3), count: 40 }, { noteCommit: Buffer.alloc(32, 4), count: 2 }];
+    const decoded = { continuityRoot: buildDualTree({ aLeaves: leaves, bLeaves: [] }).continuityRoot };
+    const got = t21ShareUnits({ aLeaves: leaves }, [], null, true, decoded);
+    assert.equal(got.ok, true, got.reason);
+    assert.deepEqual(got.shares.map((s) => s.units), [40n, 2n]);
+    const inflated = leaves.map((l, i) => (i ? l : { ...l, count: 1 << 27 }));
+    assert.equal(t21ShareUnits({ aLeaves: inflated }, [], null, true, decoded).reason, 'continuity');
+    assert.equal(t21ShareUnits({ aLeaves: [{ count: 5 }] }, [], null, true, decoded).reason, 'hash_bonus');
+    assert.deepEqual(t21ShareUnits({ aLeaves: leaves }, [], null, false, decoded).shares, []);
+    const built = buildT21Coinbase({ S: 3n, cin: 2n, height: 1, magic, prevHash, payees: [] });
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: expectFor(built.tx, { shares: 'buried' }) }).reason, 'share_bind');
   });
 });
 
