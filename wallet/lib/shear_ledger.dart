@@ -1763,7 +1763,7 @@ const postedAdmitProofKeys = <String>{
 /// crypto/spend.js VALUE_PROOF_KEYS. `R` is public.
 const postedValueProofKeys = <String>{'v', 'R', 'z'};
 
-/// One membership row. Not a recursive copy of unknown nested names.
+/// One FS-1 membership row. The same set as crypto/member_keys.js MEMBER_KEYS.
 const postedMemberKeys = <String>{'commit', 'hash', 'side', 'anchor', 'root'};
 
 /// crypto/spend.js MERKLE_PROOF_KEYS.
