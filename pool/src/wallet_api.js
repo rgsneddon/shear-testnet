@@ -25,17 +25,16 @@ import {
   mempoolPressure,
   mempoolDepthBytes,
   poolPayoutDest,
-  poolFeeDest,
   poolWithdrawTx,
   custodialPullAllowed,
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
+import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
@@ -44,6 +43,7 @@ import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
+import { v3BucketSendRejected } from '../../crypto/fs1_send_gate.js';
 
 export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
@@ -1243,6 +1243,72 @@ function stripHiddenValueOpen(kind, vout) {
   });
 }
 
+/**
+ * AL-5. Address-keyed routes that answered with per-note amounts. A wallet
+ * recovers its own amounts from amtCt over the public block sync.
+ */
+export const AMOUNT_ROUTES = new Set(['/api/wallet/notes', '/api/wallet/balance', '/api/wallet/history']);
+
+/** AL-3. A send request is the sealed tx only. None of these may be present, even empty. */
+export const SEND_HINT_KEYS = Object.freeze([
+  'amount', 'nanos', 'from', 'to', 'change', 'changeNanos', 'paintedOwedNanos', 'open', 'destOpen',
+]);
+
+/**
+ * The wallet built every output. The server reads no amount, address, change,
+ * or opening, and queues the posted body. The FS-1 gate still answers first.
+ */
+function sealedSendOnly(body, { queueSend }) {
+  const gate = v3BucketSendRejected({ ...body, kind: 'send' });
+  if (gate) return { status: 400, json: { ok: false, reason: gate.reason, state: gate.state } };
+  for (const k of SEND_HINT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(body, k) && body[k] !== undefined) {
+      return { status: 400, json: { ok: false, reason: 'send_hint', field: k } };
+    }
+  }
+  const proofs = Array.isArray(body.admit_proofs) ? body.admit_proofs.filter(Boolean) : [];
+  const sealed = !!(body.admit_proof || proofs.length)
+    && Array.isArray(body.vin) && body.vin.length > 0
+    && Array.isArray(body.vout) && body.vout.length > 0;
+  if (!sealed) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  if (!(body.sig || body.signature) || !body.spendPub) {
+    return { status: 403, json: { ok: false, reason: 'unsigned' } };
+  }
+  const fee = parseIntegerNanos(body.fee);
+  if (fee == null) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const draft = {
+    kind: 'send',
+    fee: wireNanos(fee),
+    maxLevy: body.maxLevy != null ? body.maxLevy : wireNanos(fee),
+    vin: body.vin,
+    vout: body.vout,
+    sig: body.sig || body.signature,
+    spendPub: body.spendPub,
+    ...(body.memoCt ? { memoCt: body.memoCt } : {}),
+    ...(body.excess ? { excess: body.excess } : {}),
+    ...(body.admit_proof ? { admit_proof: body.admit_proof } : {}),
+    ...(body.spendTag != null ? { spendTag: body.spendTag } : {}),
+    ...(proofs.length ? { admit_proofs: proofs } : {}),
+  };
+  const open = valueOpenRejected(draft);
+  if (open) return { status: 400, json: { ok: false, reason: open.reason } };
+  if (dummyCount(draft) < 1) return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
+  const need = levyNeed(draft);
+  if (!(Number(fee) >= need) || Number(fee) > LEVY_CAP_NANOS) {
+    return { status: 400, json: { ok: false, reason: 'levy' } };
+  }
+  const tx = typeof queueSend === 'function' ? queueSend(draft, { paintedOwedNanos: 0 }) : null;
+  if (!tx || (typeof tx === 'object' && tx.ok === false)) {
+    return { status: 400, json: { ok: false, reason: tx?.reason || 'queue_failed' } };
+  }
+  const submitLine = walletSubmitLog({ connId: newConnId(), ok: true });
+  if (lineJoinsIpToIdentity(submitLine)) return { status: 500, json: { ok: false, reason: 'log' } };
+  return {
+    status: 200,
+    json: { ok: true, tx: { id: tx.id, kind: 'send', confirmed: false, memo: !!body.memoCt }, log: submitLine },
+  };
+}
+
 /** The client attached a spend body. A from/to/amount quote is not one. */
 function clientPostedSpendBody(body) {
   if (!body || typeof body !== 'object') return false;
@@ -1254,22 +1320,6 @@ function clientPostedSpendBody(body) {
 
 function clientHasSpendSig(body) {
   return !!(body && (body.sig || body.signature) && body.spendPub);
-}
-
-function requestDestOpen(url, body) {
-  const q = url && url.searchParams
-    ? (url.searchParams.get('open') || url.searchParams.get('destOpen') || '')
-    : '';
-  const posted = body && typeof body === 'object' ? (body.open || body.destOpen || '') : '';
-  return String(q || posted || '');
-}
-
-/** Bare address is not a view. No balance, notes, txs, or amounts in the body. */
-function destHoldResponse(address, open) {
-  if (!verifyDestOpening(String(address || ''), String(open || ''))) {
-    return { status: 401, json: { ok: false, reason: 'dest_hold' } };
-  }
-  return null;
 }
 
 const SHE_SCALE = 100_000_000_000n;
@@ -1389,155 +1439,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       },
     };
   }
-  if (path === '/api/wallet/notes' && verb === 'GET') {
-    const address = url.searchParams.get('address') || '';
-    if (!isDestAddress(address)) {
-      return { status: 400, json: { ok: false, reason: 'bad_address' } };
-    }
-    const notesHeld = destHoldResponse(address, requestDestOpen(url, body));
-    if (notesHeld) return notesHeld;
-    const d20 = hash20FromAddress(address);
-    const want = d20 ? noteCommitOfDest20(d20) : null;
-    const hex = (x) => {
-      try {
-        if (x == null) return undefined;
-        return Buffer.from(typeof x?.toBytes === 'function' ? x.toBytes() : x).toString('hex');
-      } catch {
-        return undefined;
-      }
-    };
-    // R and z stay on the note. A bare {v} is not a value proof, so it is not
-    // forwarded as one. Hex strings are already encoded; Buffer.from(utf8) would
-    // corrupt them and the wallet would never open the proof.
-    const proofHex = (x) => {
-      if (x == null) return undefined;
-      try {
-        if (typeof x === 'string') {
-          const s = x.trim().toLowerCase();
-          if (/^[0-9a-f]+$/.test(s) && s.length >= 64 && s.length % 2 === 0) return s;
-          return undefined;
-        }
-        if (typeof x?.toBytes === 'function') return Buffer.from(x.toBytes()).toString('hex');
-        if (x && typeof x === 'object' && x.type === 'Buffer' && Array.isArray(x.data)) {
-          return Buffer.from(x.data).toString('hex');
-        }
-        if (Buffer.isBuffer(x) || x instanceof Uint8Array) {
-          const b = Buffer.from(x);
-          return b.length ? b.toString('hex') : undefined;
-        }
-      } catch {
-        return undefined;
-      }
-      return undefined;
-    };
-    const notes = [];
-    const pushNote = (b, tx, o, index) => {
-          if (!o?.commit || !o?.noteCommit || !want) return;
-          if (!Buffer.from(o.noteCommit).equals(want)) return;
-          const prev = hex(b.hash) || hex(b.header && b.header.length >= 32 ? b.hash : null);
-          let nanos;
-          if (tx.coinbase) {
-            const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-            const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-            const custodyDest = custodyPoolDestOf(b, potNanos);
-            const custodialPot = !!custodyDest;
-            const pays = expectedCoinbasePays(b.shareBatch || [], custodialPot ? {
-              miner: b.miner,
-              poolDest: custodyDest,
-              hashBonusNanos: bonus,
-              potNanos,
-              custodialPot: true,
-              feeDest: poolFeeDest(),
-            } : {
-              miner: b.miner,
-              poolDest,
-              hashBonusNanos: bonus,
-              potNanos: Number(b.blockSubsidyNanos) || undefined,
-            });
-            nanos = matchSealedCoinbaseVout(o, pays).nanos || undefined;
-            if (nanos == null) {
-              nanos = matchSealedCoinbaseVout(o, paysFromALeaves(b.aLeaves || [], {
-                hashBonusNanos: bonus,
-                custodialPot,
-              })).nanos || undefined;
-            }
-          }
-          if (nanos == null && o.valueProof?.v != null) {
-            const v = Math.floor(Number(o.valueProof.v));
-            if (Number.isFinite(v) && v > 0) nanos = v;
-          }
-          if (!(nanos > 0) && tx.coinbase) {
-            const opened = openedCoinbaseNanos(o, Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS);
-            if (opened > 0) nanos = opened;
-          }
-          const proofR = proofHex(o.valueProof?.R);
-          const proofZ = proofHex(o.valueProof?.z);
-          const rangeHex = proofHex(o.rangeProof);
-          notes.push({
-            kind: o.kind || (tx.coinbase ? 'pot' : 'send'),
-            noteCommit: hex(o.noteCommit),
-            commit: hex(o.commit),
-            rEph: hex(o.rEph),
-            rCt: hex(o.rCt),
-            admitPub: hex(o.admitPub),
-            viewTag: hex(o.viewTag),
-            dest20: hex(o.dest20),
-            prev,
-            index,
-            height: b.height,
-            coinbase: !!tx.coinbase,
-            ...(nanos != null ? {
-              nanos,
-              amount: nanosToShe(nanos),
-            } : {}),
-            ...(proofR && proofZ && nanos != null ? {
-              valueProof: { R: proofR, z: proofZ, v: nanos },
-            } : {}),
-            ...(rangeHex ? { rangeProof: rangeHex } : {}),
-          });
-    };
-    const refs = typeof store?.noteRefs === 'function' ? store.noteRefs(address) : null;
-    if (refs) {
-      for (const ref of refs) pushNote(ref.block, ref.tx, ref.out, ref.index);
-    } else {
-      for (const b of store?.blocks || []) {
-        for (const tx of b.txs || []) {
-          (tx.vout || []).forEach((o, index) => pushNote(b, tx, o, index));
-        }
-      }
-    }
-    return { status: 200, json: { ok: true, notes } };
-  }
-  if (path === '/api/wallet/balance' && verb === 'GET') {
-    const address = url.searchParams.get('address') || '';
-    if (!isDestAddress(address) && !isPaymentCode(address)) {
-      return { status: 400, json: { ok: false, reason: 'bad_address' } };
-    }
-    const balanceHeld = destHoldResponse(address, requestDestOpen(url, body));
-    if (balanceHeld) return balanceHeld;
-    const rec = reconstructOwner(store, address);
-    const pending = pendingFor(miners, address);
-    const incoming = mempoolIncoming(store, address);
-    const tipH = store.tip?.()?.height || 0;
-    const need = typeof store.getpolicy === 'function'
-      ? (store.getpolicy().operational?.pool_merchant || 30)
-      : 30;
-    const owed = owedPiFromPullBook(pullBook, address, { tipHeight: tipH, need });
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        coin: 'SHE',
-        address,
-        balance: rec.spendable,
-        pending: pending.amount,
-        incoming,
-        reconstructed: rec.spendable,
-        height: tipH,
-        owedPi: owed.owedPi,
-        confirmingPot: owed.confirmingPot,
-      },
-    };
+  if (AMOUNT_ROUTES.has(path)) {
+    return { status: 404, json: { ok: false, reason: 'route' } };
   }
   if (path === '/api/wallet/register' && verb === 'POST') {
     return { status: 404, json: { ok: false, reason: 'register_disabled' } };
@@ -1606,23 +1509,6 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const txs = explorerRecentTxs(store, 30);
     return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
   }
-  if (path === '/api/wallet/history' && (verb === 'GET' || verb === 'POST')) {
-    if (url.searchParams.get('viewKey')) {
-      return { status: 400, json: { ok: false, reason: 'viewKey_query_forbidden' } };
-    }
-    const address = url.searchParams.get('address') || body.address || '';
-    if (!isDestAddress(address) && !isPaymentCode(address)) {
-      return { status: 400, json: { ok: false, reason: 'bad_address' } };
-    }
-    const historyHeld = destHoldResponse(address, requestDestOpen(url, body));
-    if (historyHeld) return historyHeld;
-    const rec = reconstructOwner(store, address);
-    const rolled = rollupDestTxs(rec.txs, { revealDest: true });
-    return {
-      status: 200,
-      json: { ok: true, coin: 'SHE', txs: rolled, amountsOnly: false, destProof: true, rolled: true },
-    };
-  }
   if (path === '/api/vortex/mint' && verb === 'POST') {
     if (typeof store?.mintVorticeDeployKey !== 'function') {
       return { status: 503, json: { ok: false, reason: 'no_vortice' } };
@@ -1649,6 +1535,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     if (isShearAddress(body.from) || isShearAddress(body.to)) {
       return { status: 400, json: { ok: false, reason: 'rest_frame' } };
+    }
+    if (String(body.kind || 'send') === 'send') {
+      return sealedSendOnly(body, { queueSend });
     }
     const from = isDestAddress(String(body.from || '')) ? String(body.from).trim() : '';
     const rawTo = String(body.to || '').trim();
