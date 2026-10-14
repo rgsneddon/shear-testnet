@@ -1,15 +1,15 @@
 /**
- * The wallet's FS-1 membership-row allow-list. Node acceptance of unknown
- * members[] keys is not decided here.
+ * The wallet's FS-1 membership-row allow-list stays equal to spend.js
+ * MEMBER_KEYS. That export is the single source for the public names.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MEMBER_KEYS } from './spend.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const postedMemberKeys = new Set(['commit', 'hash', 'side', 'anchor', 'root']);
 
 function dartMemberKeys() {
   const ledger = fs.readFileSync(path.join(root, 'wallet/lib/shear_ledger.dart'), 'utf8');
@@ -19,10 +19,10 @@ function dartMemberKeys() {
 }
 
 describe('FS-1 member keys', () => {
-  it('wallet postedMemberKeys is the public membership allow-list', () => {
-    assert.deepEqual(dartMemberKeys(), postedMemberKeys);
+  it('wallet postedMemberKeys matches spend.js MEMBER_KEYS', () => {
+    assert.deepEqual(dartMemberKeys(), MEMBER_KEYS);
     for (const secret of ['t', 'r', 'opening', 'seed', 'spendSeed', 'blind', 'alpha', 'gamma']) {
-      assert.equal(dartMemberKeys().has(secret), false, secret);
+      assert.equal(MEMBER_KEYS.has(secret), false, secret);
     }
   });
 });

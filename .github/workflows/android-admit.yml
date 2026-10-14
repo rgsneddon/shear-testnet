@@ -16,9 +16,11 @@ on:
       - 'crypto/native/**'
       - 'crypto/android_arm64_libs.test.js'
       - 'crypto/admit_wallet_symbols.test.js'
+      - 'crypto/fs1_member_keys.test.js'
       - 'wallet/android/**'
       - 'wallet/lib/shear_admit_ffi.dart'
       - 'wallet/lib/shear_admit_pin.dart'
+      - 'wallet/lib/shear_ledger.dart'
       - 'wallet/test/android_apk_test.dart'
       - 'wallet/test/admit_lib_load_test.dart'
   pull_request:
@@ -27,9 +29,11 @@ on:
       - 'crypto/native/**'
       - 'crypto/android_arm64_libs.test.js'
       - 'crypto/admit_wallet_symbols.test.js'
+      - 'crypto/fs1_member_keys.test.js'
       - 'wallet/android/**'
       - 'wallet/lib/shear_admit_ffi.dart'
       - 'wallet/lib/shear_admit_pin.dart'
+      - 'wallet/lib/shear_ledger.dart'
       - 'wallet/test/android_apk_test.dart'
       - 'wallet/test/admit_lib_load_test.dart'
 permissions:
