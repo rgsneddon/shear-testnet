@@ -61,7 +61,7 @@ function sectionRpc() {
     '  GET /block?height=N         compact block',
     '  GET /blocks?from=&to=       compact window',
     '  GET /chaintips /reorgs /policy /jroot /fingerprint /fluxset',
-    '  GET /notes /api/wallet/notes /api/wallet/balance /api/wallet/history',
+    '  Notes, balance, and history are owner-side: scan /blocks, open amtCt. No route returns an amount.',
     '  GET /api/oracle | /oracle   staking basket. Mint uses frozen epochBps. A stale basket does not move it.',
     '  GET /api/reserve?address=   one portal: staked, idle, vote, accrued. Public vote counts. No other dests.',
     '  POST /api/wallet/send | /queuetx',

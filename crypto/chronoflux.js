@@ -21,7 +21,7 @@ import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, 
 import { packShareBatchBytes } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, openedCoinbaseNanos } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
-import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags } from './note.js';
+import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES } from './note.js';
 import { hash20FromAddress } from './address.js';
 import { canonicalReserveFields } from './reserve_vault.js';
 import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
@@ -343,6 +343,21 @@ function compactValue(v) {
 
 const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw']);
 
+/**
+ * Top-level keys a sealed body tx may carry, from the signed body list in
+ * spend.js. Anything else, including nanos, amount, and changeNanos, is not
+ * copied. A key outside the signed list is already `unsigned` at admission.
+ */
+export const COMPACT_TX_KEYS = Object.freeze([
+  'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
+  'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
+  'portalId', 'payoutPortalId', 'programId', 'choice',
+  'admit_proof', 'admit_proofs', 'spendTag', 'members',
+  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
+  'weight', 'payer', 'sponsor',
+  'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
+]);
+
 function dest20Buf(x) {
   if (x == null || x === '') return null;
   try {
@@ -410,7 +425,70 @@ function carriesValueOpen(o) {
   return Object.keys(vp).length > 0;
 }
 
-/** Hidden outputs reject a valueProof. The range proof stays. Reason value_open. */
+/**
+ * Plaintext amount keys. A hidden output carries none of them, present or
+ * empty. The amount is C, the range proof, and amtCt to the dest.
+ */
+export const OUTPUT_AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'v', 'value']);
+/** Top-level amount hints. A hidden-kind tx carries none of them. */
+export const TX_AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'changeNanos']);
+/** Kinds whose outputs are hidden. Reserve, pool-withdraw, b-spend, and coinbase are public-amount by design. */
+const HIDDEN_TX_KINDS = new Set(['', 'send', 'transfer', 'change', 'dummy']);
+export const HIDDEN_WRAP_KEYS = Object.freeze(['rEph', 'rCt', 'amtCt']);
+/** Dummies go to a random dest with no admit base; they stay publicly zero instead. */
+const WRAPPED_OUTPUT_KINDS = new Set(['', 'send', 'transfer', 'change']);
+
+function hasKey(o, k) {
+  return !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined;
+}
+
+function hiddenAmountTx(tx) {
+  if (!tx || tx.coinbase || String(tx.kind || '') === 'coinbase') return false;
+  const kind = tx.kind == null ? String(tx.vout?.[0]?.kind || '') : String(tx.kind);
+  return HIDDEN_TX_KINDS.has(kind);
+}
+
+/**
+ * AL-1. A hidden output, or a hidden-kind tx, that names its amount in clear
+ * is amount_field. A coinbase output with a commitment carries no nanos or
+ * amount beside it. amtCt, when present, is exactly AMOUNT_CT_BYTES.
+ */
+export function amountFieldRejected(tx) {
+  if (!tx || typeof tx !== 'object') return null;
+  const coinbase = !!(tx.coinbase || String(tx.kind || '') === 'coinbase');
+  if (!coinbase && hiddenAmountTx(tx)) {
+    for (const k of TX_AMOUNT_KEYS) {
+      if (hasKey(tx, k)) return { ok: false, reason: 'amount_field' };
+    }
+  }
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (!o || typeof o !== 'object') continue;
+    if (hasKey(o, 'amtCt')) {
+      let n = -1;
+      try { n = Buffer.from(asU8(o.amtCt)).length; } catch { n = -1; }
+      if (n !== AMOUNT_CT_BYTES) return { ok: false, reason: 'amount_ct' };
+    }
+    if (coinbase) {
+      if (o.commit && (hasKey(o, 'nanos') || hasKey(o, 'amount'))) return { ok: false, reason: 'amount_field' };
+      continue;
+    }
+    if (outputMayCarryValueOpen(tx, o)) continue;
+    if (!hiddenAmountTx(tx) && !o.commit) continue;
+    for (const k of OUTPUT_AMOUNT_KEYS) {
+      if (hasKey(o, k)) return { ok: false, reason: 'amount_field' };
+    }
+    // A hidden output is spendable and readable only by its dest: rEph, rCt, and amtCt are required.
+    if (hiddenAmountTx(tx) && o.commit && WRAPPED_OUTPUT_KINDS.has(String(o.kind || ''))) {
+      for (const k of HIDDEN_WRAP_KEYS) {
+        if (!hasKey(o, k) || o[k] === '') return { ok: false, reason: 'amount_ct', field: k };
+      }
+    }
+  }
+  return null;
+}
+
+/** Hidden outputs reject a valueProof (value_open) and any plaintext amount field (amount_field). */
 export function valueOpenRejected(tx) {
   if (!tx || typeof tx !== 'object') return null;
   const outs = Array.isArray(tx.vout) ? tx.vout : [];
@@ -419,7 +497,7 @@ export function valueOpenRejected(tx) {
     if (outputMayCarryValueOpen(tx, o)) continue;
     return { ok: false, reason: 'value_open' };
   }
-  return null;
+  return amountFieldRejected(tx);
 }
 
 function compactVout(o, tx) {
@@ -442,6 +520,7 @@ function compactVout(o, tx) {
     if (o.admitPub) row.admitPub = o.admitPub;
     if (o.rEph) row.rEph = o.rEph;
     if (o.rCt) row.rCt = o.rCt;
+    if (o.amtCt) row.amtCt = o.amtCt;
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
     if (reserveKind || coinbaseMoney) {
@@ -507,16 +586,15 @@ export function compactTx(tx) {
     compactHashLedger(tx, row);
     return row;
   }
-  const out = compactValue(tx);
-  delete out.samples;
+  const out = {};
+  for (const k of COMPACT_TX_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(tx, k) && tx[k] !== undefined) out[k] = compactValue(tx[k]);
+  }
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
   const keepDest = kind === 'vortice-register';
   const reserveTx = RESERVE_TX_KINDS.has(kind);
   const reserveFields = reserveTx ? canonicalReserveFields(tx) : null;
   const poolWithdraw = kind === 'pool-withdraw';
-  delete out.nanos;
-  delete out.changeNanos;
-  delete out.amount;
   if (!keepDest) {
     delete out.from;
     delete out.to;
