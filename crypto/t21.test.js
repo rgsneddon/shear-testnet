@@ -22,6 +22,7 @@ import {
 import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
 import { accountShareUnits, aLeavesFromShares } from './share_batch.js';
 import { buildDualTree } from './clearing.js';
+import { payeeCapLive } from './block_budget.js';
 import { encodeDest } from './address.js';
 import { reserveFeeDest, splitLevy } from './levy.js';
 import {
@@ -449,6 +450,18 @@ describe('T21 hash bonus budget (P0-2, P1-1)', { timeout: 600_000 }, () => {
     assert.deepEqual(t21ShareUnits({ aLeaves: leaves }, [], null, false, decoded).shares, []);
     const built = buildT21Coinbase({ S: 3n, cin: 2n, height: 1, magic, prevHash, payees: [] });
     assert.equal(verifyT21Coinbase({ tx: built.tx, expect: expectFor(built.tx, { shares: 'buried' }) }).reason, 'share_bind');
+  });
+});
+
+describe('T21 payee cap (P1-3)', () => {
+  it('uses the block budget\'s live cap: 171 pot rows on today\'s frame', () => {
+    assert.equal(payeeCapLive(), 171);
+    const rows = (n) => [...Array(n)].map(() => ({ kind: 'pot', kindCode: 0x20 }));
+    const tx = (n) => ({
+      coinbase: true, cbForm: 'cb-v3', vout: [...rows(n), { kind: 'pool-fee', kindCode: 0x20 }], t21: { shares: [] },
+    });
+    assert.equal(verifyT21Coinbase({ tx: tx(172), expect: {} }).reason, 'payee_cap');
+    assert.notEqual(verifyT21Coinbase({ tx: tx(171), expect: {} }).reason, 'payee_cap');
   });
 });
 

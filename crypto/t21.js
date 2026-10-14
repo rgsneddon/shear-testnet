@@ -30,9 +30,10 @@ import {
 import { feeOf, lawDust, scalarOk, splitLaw, t21Big } from './t21_law.js';
 import { voucherAt, voucherKeysOk, voucherLambda } from './t21_voucher.js';
 import { bpProve, bpVerifyTerms } from './t21_bp.js';
+import { payeeCapLive } from './block_budget.js';
 import {
   AMOUNT_KEYS, BP_M, BP_N, CB_FORM, DOM_CB, FEE_BPS_MAX, GEN_H,
-  K_MIN, L_MAX, LOGUP_DOM, N_MAX, OUTPUT_MAX, PAYOUT_KIND_CODE, PAYOUT_KINDS,
+  K_MIN, LOGUP_DOM, N_MAX, OUTPUT_MAX, PAYOUT_KIND_CODE, PAYOUT_KINDS,
   RANGE_TAG, RHO_LIMBS, R_CHUNKS, SCALAR_MAX, SHARE_BIND_DOM, T21_REQUIRE_ALL_COINBASES,
   V_CHUNKS, VAULT_KIND_CODE, VAULT_R_DOM, VE_CHUNKS, W_HASH_MAX, W_MAX, W_S_MAX,
 } from './t21_params.js';
@@ -901,8 +902,8 @@ function buildOnce(spec, payees, deferred) {
  * with lambda = voucherLambda(B, Y).
  * A voucher that fails voucherKeysOk is deferred before proving. A payee whose
  * row cannot be made an FS-1 leaf throws admit_note_point; that payee and its
- * shares are evicted to `deferred` and the coinbase is rebuilt once. There is
- * no last-payee re-split.
+ * shares are evicted to `deferred` and the coinbase is rebuilt once. Payees
+ * past payeeCapLive() are deferred too. There is no last-payee re-split.
  */
 export function buildT21Coinbase(spec) {
   const deferred = [];
@@ -917,6 +918,9 @@ export function buildT21Coinbase(spec) {
     }
     live.push({ ...p, _vch: vch });
   });
+  // Dummies only pad a short round, so the cap needs no room for them.
+  const cap = payeeCapLive();
+  for (const p of live.splice(cap)) deferred.push({ voucher: p.voucher, shares: p.shares || [], reason: 'payee_cap' });
   const withIndex = (list) => list.map((p, i) => ({ ...p, _index: i }));
   let payees = withIndex(live);
   if (!payees.length) return emptyCoinbase(spec, deferred);
@@ -992,7 +996,8 @@ export function verifyT21Coinbase(input) {
   }
   const payout = payoutRows(tx);
   const payees = payout.filter((o) => o.kind !== 'pool-fee');
-  if (payees.length > L_MAX) return no('payee_cap');
+  // The same cap blockBudget counts (pot rows, dummies included; not the fee row).
+  if (payees.length > payeeCapLive()) return no('payee_cap');
   const S = scalarOk(t21.S);
   const cin = scalarOk(t21.cin);
   const u = scalarOk(t21.u || 0);

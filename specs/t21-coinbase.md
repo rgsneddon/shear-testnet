@@ -49,6 +49,8 @@ A 0x23 row pays the owner's key `B`, with `P = B + δ·G`, and must be an FS-1 l
 
 A voucher that fails `voucherKeysOk` is deferred before proving. A payout row that is not an FS-1 leaf after eight blinds throws `admit_note_point`. That payee and its shares are deferred to the next round, not deleted, and the template rebuilds once.
 
+There is one payee cap, `payeeCapLive()` in `block_budget.js`, and both `blockBudget` and the cb-v3 verifier apply it. It counts pot rows, dummies included, and not the fee, reserve-fee, or 0x23 rows. On today's 8 MiB hex frame it is 171 (the byte fallback with the 17,400-byte row estimate). The 470 normal cap applies only once frames reach `FRAME_MIN`. Payees past the cap are deferred.
+
 ## Residuals
 
 - **Solo payout.** A solo block has one real payee and three zero dummies. The producer is also the finder, so that block shows the solo amount. `K_MIN=4` does not hide a one-person round.

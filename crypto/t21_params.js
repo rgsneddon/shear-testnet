@@ -19,7 +19,6 @@ export const HASH_CAP_BITS = 28;
 export const W_HASH_MAX = 1n << BigInt(HASH_CAP_BITS);
 export const SCALAR_MAX = 1n << 64n;
 export const OUTPUT_MAX = 65536;
-export const L_MAX = 470;
 export const PAYOUT_KIND_CODE = 0x20;
 export const VAULT_KIND_CODE = 0x23;
 export const RANGE_TAG = 0x02;
