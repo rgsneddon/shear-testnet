@@ -7,6 +7,16 @@ use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
 use sha2::{Digest, Sha512};
 
+fn wipe_scalar(s: &mut Scalar) {
+    unsafe {
+        let p = s as *mut Scalar as *mut u8;
+        for i in 0..core::mem::size_of::<Scalar>() {
+            core::ptr::write_volatile(p.add(i), 0);
+        }
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+}
+
 pub const RANGE_BITS: usize = 64;
 const DST: &[u8] = b"shear-bpplus-v2";
 
@@ -56,7 +66,7 @@ fn nonce(tag: &[u8], r: &[u8; 32], i: u64) -> Scalar {
 
 /// Prove C = v·G + r·H and each bit of v is 0 or 1, packed (not v3 bit-OR).
 pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
-    let r = Scalar::from_bytes_mod_order(*r_bytes);
+    let mut r = Scalar::from_bytes_mod_order(*r_bytes);
     let h = h_note();
     let c = G * Scalar::from(v) + h * r;
     let c_b = compress(&c);
@@ -144,6 +154,7 @@ pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
     let z = k + e * r_delta;
     out.extend_from_slice(&compress(&r_pt));
     out.extend_from_slice(&z.to_bytes());
+    wipe_scalar(&mut r);
     Some(out)
 }
 
@@ -282,6 +293,8 @@ mod tests {
         for v in [0u64, 1, 255, (1u64 << 32) + 9] {
             let c = G * Scalar::from(v) + h * r;
             let p = prove_range(v, &r.to_bytes()).unwrap();
+            let again = prove_range(v, &r.to_bytes()).unwrap();
+            assert_eq!(p, again, "range bytes are a function of v and r");
             assert!(verify_range(&c.compress().to_bytes(), &p), "v={v}");
         }
         let c = G * Scalar::from(3u64) + h * r;

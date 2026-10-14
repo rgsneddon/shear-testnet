@@ -31,7 +31,7 @@ endif
 ADMIT_DIR := $(abspath admit)
 ADMITLIB := $(ADMIT_DIR)/target/release/libshear_admit.a
 
-.PHONY: all clean admitlib
+.PHONY: all clean admitlib ios-staticlib android-arm64
 
 all: shearhash.node shearadmit.node
 
@@ -48,6 +48,14 @@ endif
 
 admitlib:
 	cargo build --release --manifest-path $(ADMIT_DIR)/Cargo.toml
+
+# iOS wallet staticlib. No codesign. Requires a macOS host with the iOS SDK.
+ios-staticlib:
+	cargo rustc --release --target aarch64-apple-ios --crate-type staticlib --manifest-path $(ADMIT_DIR)/Cargo.toml
+
+# Android arm64-v8a cdylib into the Flutter jniLibs tree.
+android-arm64:
+	bash $(abspath build-android-arm64.sh)
 
 win_node_import.a: win_node_import.def
 	dlltool -d $< -l $@ -D node.exe

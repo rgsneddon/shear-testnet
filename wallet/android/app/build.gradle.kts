@@ -32,6 +32,10 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        ndk {
+            abiFilters.clear()
+            abiFilters.add("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -76,6 +80,20 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+// Packages libshear_admit.so for arm64-v8a. The script cross-compiles the
+// cdylib; jniLibs is the Android linker input. iOS uses a staticlib instead.
+val buildShearAdmitSo = tasks.register<Exec>("buildShearAdmitSo") {
+    group = "shear"
+    description = "Cross-compile libshear_admit.so into jniLibs/arm64-v8a"
+    val script = rootProject.file("../../crypto/native/build-android-arm64.sh")
+    commandLine("bash", script.absolutePath)
+    workingDir = rootProject.projectDir
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(buildShearAdmitSo)
 }
 
 dependencies {

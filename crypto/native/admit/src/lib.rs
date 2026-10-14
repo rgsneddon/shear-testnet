@@ -19,6 +19,22 @@ pub use prove::{admit_prove_v3, admit_verify_v3, MAX_PROOF, MAX_PROOF_V3};
 pub use tree::{c_root, jroot, jroot_point, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use zeroize::Zeroize;
+
+/// Owned 32-byte secret. Drop zeroizes the copy. The caller buffer is left intact.
+struct Wipe32([u8; 32]);
+
+impl Drop for Wipe32 {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl Wipe32 {
+    fn copy_from(ptr: *const u8) -> Option<Self> {
+        b32(ptr).map(Wipe32)
+    }
+}
 
 const OK: i32 = 1;
 const BAD: i32 = 0;
@@ -302,15 +318,19 @@ pub extern "C" fn shear_admit_verify_v3(
 #[no_mangle]
 pub extern "C" fn shear_range_prove(v: u64, r: *const u8, out: *mut u8, out_len: *mut u32) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
-        let r = match b32(r) {
+        let r = match Wipe32::copy_from(r) {
             Some(x) => x,
             None => return BAD,
         };
         if out.is_null() || out_len.is_null() {
             return BAD;
         }
-        match prove_range(v, &r) {
+        match prove_range(v, &r.0) {
             Some(p) => {
+                // Wallet and the cross-check harness allocate 64KiB. Current proofs are 14433 bytes.
+                if p.len() > 65536 {
+                    return BAD;
+                }
                 unsafe {
                     std::ptr::copy_nonoverlapping(p.as_ptr(), out, p.len());
                     *out_len = p.len() as u32;

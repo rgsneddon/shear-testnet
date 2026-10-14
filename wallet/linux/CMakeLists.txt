@@ -80,6 +80,18 @@ set_target_properties(${BINARY_NAME}
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# In-process range prover. The wallet dlopens lib/libshear_admit.so.
+set(SHEAR_ADMIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/admit")
+set(SHEAR_ADMIT_SO "${SHEAR_ADMIT_DIR}/target/release/libshear_admit.so")
+add_custom_target(shear_admit_cdylib
+  COMMAND cargo build --release --manifest-path "${SHEAR_ADMIT_DIR}/Cargo.toml"
+  BYPRODUCTS "${SHEAR_ADMIT_SO}"
+  WORKING_DIRECTORY "${SHEAR_ADMIT_DIR}"
+  COMMENT "Building libshear_admit.so"
+  VERBATIM
+)
+add_dependencies(${BINARY_NAME} shear_admit_cdylib)
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build
@@ -106,6 +118,9 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/app_icon.png"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+
+install(FILES "${SHEAR_ADMIT_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 foreach(bundled_library ${PLUGIN_BUNDLED_LIBRARIES})

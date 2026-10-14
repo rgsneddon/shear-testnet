@@ -37,6 +37,8 @@ wallet/**/Flutter/ephemeral/
 wallet/**/ephemeral/
 crypto/native/admit/target/
 crypto/native/vendor/monero-oxide-77788c3/target/
+crypto/native/prove_ffi_harness
+wallet/android/app/src/main/jniLibs/**/*.so
 # Distro pack tarballs, checksums, and smoke logs. Do not commit.
 scripts/packaging/out/
 # Operator admin vhost lives on the box only (SHEAR_ADMIN_HOST).

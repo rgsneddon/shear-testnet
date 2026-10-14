@@ -8,7 +8,14 @@ publish = false
 
 [lib]
 name = "shear_admit"
+# cdylib: Android arm64-v8a and desktop dart:ffi.
+# staticlib: iOS wallet (`cargo ios-staticlib`, target aarch64-apple-ios).
+# iOS is wallet-only: no node addon and no miner. CI does not sign that target.
 crate-type = ["cdylib", "staticlib", "rlib"]
+
+[package.metadata.shear]
+ios = { target = "aarch64-apple-ios", crate-type = "staticlib", sign_ci = false }
+android = { target = "aarch64-linux-android", crate-type = "cdylib", abi = "arm64-v8a" }
 
 [dependencies]
 pasta_curves = "0.5"

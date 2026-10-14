@@ -25,6 +25,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
@@ -53,6 +54,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
@@ -88,7 +90,7 @@ jobs:
           } > key.properties
       - name: Build release APK
         working-directory: wallet
-        run: flutter build apk --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+        run: flutter build apk --release --target-platform android-arm64 --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
       - name: Zip
         run: |
           python3 - <<'PY'
