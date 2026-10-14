@@ -1,13 +1,14 @@
 /**
- * The wallet's FS-1 membership-row allow-list stays equal to spend.js
- * MEMBER_KEYS. That export is the single source for the public names.
+ * The wallet's FS-1 membership-row allow-list stays equal to MEMBER_KEYS.
+ * crypto/member_keys.js is the single source. spend.js re-exports that
+ * binding. This test does not import spend.js.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MEMBER_KEYS } from './spend.js';
+import { MEMBER_KEYS } from './member_keys.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -19,7 +20,7 @@ function dartMemberKeys() {
 }
 
 describe('FS-1 member keys', () => {
-  it('wallet postedMemberKeys matches spend.js MEMBER_KEYS', () => {
+  it('wallet postedMemberKeys matches member_keys.js MEMBER_KEYS', () => {
     assert.deepEqual(dartMemberKeys(), MEMBER_KEYS);
     for (const secret of ['t', 'r', 'opening', 'seed', 'spendSeed', 'blind', 'alpha', 'gamma']) {
       assert.equal(MEMBER_KEYS.has(secret), false, secret);

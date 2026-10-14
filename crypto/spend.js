@@ -15,6 +15,9 @@ import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
 import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
+import { MEMBER_KEYS } from './member_keys.js';
+
+export { MEMBER_KEYS };
 
 function dest20Of(addr) {
   const h = hash20FromAddress(addr);
@@ -547,9 +550,6 @@ const LEAF_KEYS = new Set(['dest20', 'unit', 'nonce', 'memoH', 'tag']);
 
 const MERKLE_PROOF_KEYS = new Set(['side', 'hash']);
 
-/** Public fields of one FS-1 membership row. wallet postedMemberKeys must match. */
-export const MEMBER_KEYS = new Set(['commit', 'hash', 'side', 'anchor', 'root']);
-
 function uncoveredKey(obj, allow) {
   if (!obj || typeof obj !== 'object' || Buffer.isBuffer(obj) || Array.isArray(obj)) return null;
   for (const key of Object.keys(obj)) {
@@ -568,7 +568,8 @@ function uncoveredList(list, allow) {
 }
 
 /**
- * `members` must be an array of public rows. A non-array value is unsigned.
+ * `members` must be an array of plain objects. A non-array value is unsigned.
+ * A string, a nested array, null, or any other non-object item is unsigned.
  * A key outside MEMBER_KEYS is unsigned, including BODY_SECRET_KEYS. Those
  * names are not skipped on a membership row.
  */
@@ -578,7 +579,9 @@ function membersFieldRejected(holder) {
   const list = holder.members;
   if (!Array.isArray(list)) return { ok: false, reason: 'unsigned' };
   for (const row of list) {
-    if (!row || typeof row !== 'object' || Buffer.isBuffer(row) || Array.isArray(row)) continue;
+    if (row === null || typeof row !== 'object' || Array.isArray(row) || Buffer.isBuffer(row)) {
+      return { ok: false, reason: 'unsigned' };
+    }
     for (const key of Object.keys(row)) {
       if (!MEMBER_KEYS.has(key)) return { ok: false, reason: 'unsigned' };
     }

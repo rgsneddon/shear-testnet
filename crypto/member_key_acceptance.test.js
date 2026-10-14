@@ -16,7 +16,8 @@ import { merkleRoot } from './merkle.js';
 import { emptyMempool, admitMempool } from './mempool.js';
 import { BODY_SECRET_KEYS, MEMBER_KEYS, unsignedBodyField } from './spend.js';
 import { createStore } from '../node/src/store.js';
-import { GENESIS_PREV, digestTx, verifyBlock, verifyLoadedChain } from '../node/src/chain.js';
+import { bookSealKeyFor, bookSealKeyPath } from '../node/src/book_seal_key.js';
+import { GENESIS_PREV, chainLoadSeal, digestTx, verifyBlock, verifyLoadedChain } from '../node/src/chain.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WHEN = 1_700_000_000_000;
@@ -67,6 +68,20 @@ function reloadBlock(tx) {
     hash: Buffer.alloc(32, 1),
     txs,
   };
+}
+
+function writeSealedBook(dir, block) {
+  fs.mkdirSync(dir, { recursive: true });
+  const header = Buffer.from(block.header);
+  const hash = Buffer.from(block.hash);
+  fs.writeFileSync(path.join(dir, 'chain.jsonl'), `${JSON.stringify({
+    height: block.height,
+    header: header.toString('hex'),
+    hash: hash.toString('hex'),
+    txs: block.txs,
+  })}\n`);
+  const key = bookSealKeyFor(dir);
+  fs.writeFileSync(path.join(dir, 'book.seal'), `${chainLoadSeal([{ ...block, header, hash }], key)}\n`);
 }
 
 describe('FS-1 member key acceptance', () => {
@@ -142,16 +157,30 @@ describe('FS-1 member key acceptance', () => {
     }
   });
 
+  it('a non-object item inside members[] is unsigned', () => {
+    for (const item of ['str', null, ['nested'], 4, true]) {
+      assert.equal(unsignedBodyField({ members: [row(), item] })?.reason, 'unsigned', String(item));
+      assert.equal(unsignedBodyField({
+        admit_proof: { v: 1, members: [item] },
+      })?.reason, 'unsigned', `admit_proof ${String(item)}`);
+      assert.equal(unsignedBodyField({
+        admit_proofs: [{ v: 1, members: [row()] }, { v: 1, members: [item] }],
+      })?.reason, 'unsigned', `admit_proofs ${String(item)}`);
+    }
+    assert.equal(unsignedBodyField({ members: [row(), row()] }), null);
+  });
+
   it('mempool, block, and reload reject the member faults, and Stage 0 still rejects first', () => {
     const secretRow = { members: [{ ...row(), seed: 'leaked', privateKey: 'k', V: 1, C: 2 }] };
     const notArray = { members: { seed: 'leaked' } };
+    const notObject = { members: [row(), 'str', null, ['nested']] };
     const listed = {
       admit_proofs: [
         { v: 1, members: [row()] },
         { v: 1, members: [{ commit: 'aa', seed: 'leaked' }] },
       ],
     };
-    for (const tx of [secretRow, notArray, listed]) {
+    for (const tx of [secretRow, notArray, notObject, listed]) {
       assert.equal(admitMempool(emptyMempool(), tx).reason, 'unsigned');
       assert.equal(verifyBlock({ txs: [tx] }, null).reason, 'unsigned');
       assert.equal(verifyLoadedChain([reloadBlock(tx)], {
@@ -189,6 +218,16 @@ describe('FS-1 member key acceptance', () => {
       assert.throws(() => createStore(book), /send_unavailable/);
     } finally {
       fs.rmSync(book, { recursive: true, force: true });
+    }
+
+    const unsignedBook = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-member-book-unsigned-'));
+    const keyFile = bookSealKeyPath(unsignedBook);
+    try {
+      writeSealedBook(unsignedBook, reloadBlock(notObject));
+      assert.throws(() => createStore(unsignedBook, { loadNowMs: WHEN }), /unsigned/);
+    } finally {
+      fs.rmSync(unsignedBook, { recursive: true, force: true });
+      fs.rmSync(keyFile, { force: true });
     }
   });
 });
