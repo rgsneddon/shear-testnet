@@ -70,16 +70,21 @@ void main() {
     expect(elfArm64Page16k(_elfFixture(machine: 183, align: 4096)), isFalse);
   });
 
-  test('staged android libs are arm64 when a pack or jniLibs tree is present', () {
-    final found = <File>[];
+  test('the APK native library is present, arm64, and pin-matched', () {
+    final so = File('android/app/src/main/jniLibs/arm64-v8a/libshear_admit.so');
+    expect(
+      so.existsSync(),
+      isTrue,
+      reason: 'libshear_admit.so is gitignored. android-admit CI builds it with NDK r27c.',
+    );
+    final found = <File>[so];
     final jni = Directory('android/app/src/main/jniLibs');
     if (jni.existsSync()) {
       for (final ent in jni.listSync(recursive: true)) {
-        if (ent is File && ent.path.endsWith('.so')) found.add(ent);
+        if (ent is File && ent.path.endsWith('.so') && ent.path != so.path) found.add(ent);
       }
     }
     final apk = _apk();
-    if (found.isEmpty && !apk.existsSync()) return;
     for (final so in found) {
       final rel = so.path.replaceAll('\\', '/');
       expect(rel.contains('/arm64-v8a/'), isTrue, reason: rel);

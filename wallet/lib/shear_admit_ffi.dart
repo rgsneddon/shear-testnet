@@ -123,6 +123,8 @@ class AdmitNative {
       throw StateError('admit_lib_load: iOS process image has no shear_range_prove ($last)');
     }
     if (Platform.isAndroid) {
+      // The packaged soname has no Dart hash. Integrity is the APK signature
+      // from Russell's offline Continuum key.
       try {
         return DynamicLibrary.open('libshear_admit.so');
       } catch (e) {
@@ -157,12 +159,15 @@ class AdmitNative {
       throw StateError('admit_lib_load: $path: missing bundled library');
     }
     final bytes = file.readAsBytesSync();
+    final sign = _osName() == 'macos' ? _codesignVerify(path) : null;
     final failure = admitBundledLoadFailure(
       bytes: bytes,
       operatingSystem: _osName(),
       pinHex: _osName() == 'macos' ? _sidecarHex(path) : kShearAdmitSha256,
-      codesignText: _osName() == 'macos' ? _codesignText(path) : '',
+      codesignText: sign?.text ?? '',
+      codesignExit: sign?.exitCode ?? 0,
       signId: kShearAdmitSignId,
+      teamId: kShearAdmitTeamId,
     );
     if (failure != null) throw StateError('admit_lib_load: $path: $failure');
     try {
@@ -179,10 +184,16 @@ String _sidecarHex(String libraryPath) {
   return side.readAsStringSync();
 }
 
-String _codesignText(String libraryPath) {
-  if (!Platform.isMacOS) return '';
-  final r = Process.runSync('codesign', ['-dv', '--verbose=4', libraryPath]);
-  return '${r.stdout}\n${r.stderr}';
+class _SignCheck {
+  const _SignCheck(this.exitCode, this.text);
+  final int exitCode;
+  final String text;
+}
+
+_SignCheck _codesignVerify(String libraryPath) {
+  if (!Platform.isMacOS) return const _SignCheck(1, '');
+  final r = Process.runSync(kCodesignBin, admitMacVerifyArgs(libraryPath, kShearAdmitTeamId));
+  return _SignCheck(r.exitCode, '${r.stdout}\n${r.stderr}');
 }
 
 /// True for profile and release. Debug keeps the env and cwd candidates.
@@ -248,16 +259,43 @@ String? admitPinFailure(List<int> bytes, String expectedHex) {
   return null;
 }
 
-/// Null when [codesignText] is a Developer ID seal for [expectedIdentity].
-/// `Signature=adhoc` fails closed.
+/// Absolute codesign. A PATH lookup is not used.
+const String kCodesignBin = '/usr/bin/codesign';
+
+/// Arguments for `/usr/bin/codesign --verify --strict` plus the Team ID requirement.
 @visibleForTesting
-String? admitMacSignFailure(String codesignText, String expectedIdentity) {
+List<String> admitMacVerifyArgs(String libraryPath, String teamId) {
+  return <String>[
+    '--verify',
+    '--strict',
+    '--verbose=4',
+    '-R',
+    'certificate leaf[subject.OU] = "$teamId"',
+    libraryPath,
+  ];
+}
+
+/// Null when [exitCode] is 0 and the text is a Developer ID seal for [teamId].
+/// `Signature=adhoc` fails closed. The Team ID check is the `-R` requirement
+/// on [kCodesignBin]; a printed TeamIdentifier that disagrees also fails.
+@visibleForTesting
+String? admitMacSignFailure(
+  String codesignText,
+  String expectedIdentity, {
+  required int exitCode,
+  required String teamId,
+}) {
   final id = expectedIdentity.trim();
+  final team = teamId.trim();
   if (id.isEmpty) return 'missing sign identity';
+  if (team.isEmpty) return 'missing team id';
   if (RegExp(r'Signature=adhoc').hasMatch(codesignText)) return 'adhoc signature';
+  if (exitCode != 0) return 'codesign verify failed';
+  final printed = RegExp(r'^TeamIdentifier=(.*)$', multiLine: true).firstMatch(codesignText);
+  if (printed != null && printed.group(1)!.trim() != team) return 'sign identity mismatch';
   final authority = RegExp(r'^Authority=(.*)$', multiLine: true).firstMatch(codesignText);
-  final got = authority?.group(1)?.trim() ?? '';
-  if (got != id) return 'sign identity mismatch';
+  if (authority != null && authority.group(1)!.trim() != id) return 'sign identity mismatch';
+  if (printed == null && !codesignText.contains('valid on disk')) return 'sign identity mismatch';
   return null;
 }
 
@@ -271,10 +309,19 @@ String? admitBundledLoadFailure({
   required String pinHex,
   required String codesignText,
   required String signId,
+  int codesignExit = 0,
+  String teamId = '',
 }) {
   final pin = admitPinFailure(bytes, pinHex);
   if (pin != null) return pin;
-  if (operatingSystem == 'macos') return admitMacSignFailure(codesignText, signId);
+  if (operatingSystem == 'macos') {
+    return admitMacSignFailure(
+      codesignText,
+      signId,
+      exitCode: codesignExit,
+      teamId: teamId,
+    );
+  }
   return null;
 }
 

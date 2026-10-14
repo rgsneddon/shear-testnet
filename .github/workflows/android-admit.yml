@@ -1,0 +1,47 @@
+# Builds the gitignored arm64 libshear_admit.so with NDK r27c and fails if
+# that library is missing. The .so is not committed. Android integrity rests
+# on the APK signature from Russell's offline Continuum key.
+name: android-admit
+on:
+  push:
+  pull_request:
+jobs:
+  arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pin NDK r27c
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /opt
+          if [[ ! -f /opt/android-ndk-r27c/source.properties ]]; then
+            curl -fsSL -o /tmp/android-ndk-r27c-linux.zip https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+            echo "59c2f6dc96743b5daf5d1626684640b20a6bd2b1d85b13156b90333741bad5cc  /tmp/android-ndk-r27c-linux.zip" | sha256sum -c
+            sudo unzip -q /tmp/android-ndk-r27c-linux.zip -d /opt
+          fi
+          grep -q 'Pkg.ReleaseName = r27c' /opt/android-ndk-r27c/source.properties
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-r27c" >> "$GITHUB_ENV"
+          echo "SHEAR_NDK_PIN=r27c" >> "$GITHUB_ENV"
+      - name: Build arm64 libshear_admit.so
+        run: bash crypto/native/build-android-arm64.sh
+      - name: APK native library must exist and omit v3 symbols
+        run: |
+          test -f wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_admit.so
+          test -f wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_admit.so.sha256
+          node --test crypto/android_arm64_libs.test.js crypto/fs1_member_keys.test.js crypto/admit_wallet_symbols.test.js
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Flutter APK test fails when the .so is missing
+        working-directory: wallet
+        run: |
+          flutter pub get
+          flutter test test/android_apk_test.dart

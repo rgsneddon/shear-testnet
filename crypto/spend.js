@@ -545,6 +545,9 @@ const LEAF_KEYS = new Set(['dest20', 'unit', 'nonce', 'memoH', 'tag']);
 
 const MERKLE_PROOF_KEYS = new Set(['side', 'hash']);
 
+/** Public fields of one FS-1 membership row. wallet postedMemberKeys must match. */
+export const MEMBER_KEYS = new Set(['commit', 'hash', 'side', 'anchor', 'root']);
+
 function uncoveredKey(obj, allow) {
   if (!obj || typeof obj !== 'object' || Buffer.isBuffer(obj) || Array.isArray(obj)) return null;
   for (const key of Object.keys(obj)) {
@@ -585,6 +588,10 @@ export function unsignedBodyField(tx) {
   if (tx.admit_proof && typeof tx.admit_proof === 'object') proofs.push(tx.admit_proof);
   if (Array.isArray(tx.admit_proofs)) proofs.push(...tx.admit_proofs);
   if (uncoveredList(proofs, PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
+  for (const proof of proofs) {
+    if (uncoveredList(proof && proof.members, MEMBER_KEYS)) return { ok: false, reason: 'unsigned' };
+  }
+  if (uncoveredList(tx.members, MEMBER_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.hashOwed, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.hashOwedRest, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.hashOwedLocal, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
