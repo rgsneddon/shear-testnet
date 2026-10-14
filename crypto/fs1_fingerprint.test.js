@@ -33,6 +33,12 @@ function rustConst(src, name) {
   return m[1].trim();
 }
 
+function rustStr(src, name) {
+  const m = rustConst(src, name).match(/^"([^"]*)"$/);
+  assert.ok(m, name);
+  return m[1];
+}
+
 function tokens(fp) {
   return fp.split(':');
 }
@@ -99,9 +105,14 @@ test('the FS-1 fingerprint parameters match the tree crate', () => {
   assert.match(tree, /helios/);
   assert.match(membership, /type C1 = Selene;/);
   assert.match(membership, /type C2 = Helios;/);
-  assert.equal(FS1_CYCLE_C1, 'selene');
-  assert.equal(FS1_CYCLE_C2, 'helios');
-  assert.equal(ADMIT_CYCLE_ID, `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`);
+  const c1 = rustStr(membership, 'CYCLE_C1');
+  const c2 = rustStr(membership, 'CYCLE_C2');
+  const cycle = rustStr(membership, 'ADMIT_CYCLE');
+  assert.equal(cycle, `fs1-${c1}-${c2}`);
+  assert.equal(FS1_CYCLE_C1, c1);
+  assert.equal(FS1_CYCLE_C2, c2);
+  assert.equal(ADMIT_CYCLE_ID, cycle);
+  assert.equal(tokenValue(consensusFingerprint(), 'ADMIT_CYCLE'), cycle);
 });
 
 test('the FS-1 fingerprint leaf is the N-1 predicate', () => {

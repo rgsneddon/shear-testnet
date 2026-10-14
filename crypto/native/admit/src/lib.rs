@@ -1,4 +1,6 @@
-//! ADMITv2 native: Pasta Curve Trees membership + ristretto C select-and-rerandomize + BP+.
+//! Legacy Pasta admit crate: Curve Trees on Pallas–Vesta, leaf `shear-admit-leaf-v2`, arity 32,
+//! plus ristretto C select-and-rerandomize and BP+.
+//! The live fingerprint is FS-1 Selene/Helios (`ADMIT_CYCLE` in shear-fs1). Removal is a follow-up.
 //! Verify returns 0/1, never panics across the C ABI.
 
 #![allow(non_snake_case)]

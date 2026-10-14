@@ -88,6 +88,13 @@ impl DiscreteLogParameter for HeliosBits {
   type ScalarBits = U<{ <<Helios as Ciphersuite>::F as PrimeField>::NUM_BITS as usize }>;
 }
 
+/// Layer-one curve name in the consensus fingerprint.
+pub const CYCLE_C1: &str = "selene";
+/// Layer-two curve name in the consensus fingerprint.
+pub const CYCLE_C2: &str = "helios";
+/// Consensus fingerprint `ADMIT_CYCLE`: `fs1-` || [`CYCLE_C1`] || `-` || [`CYCLE_C2`].
+pub const ADMIT_CYCLE: &str = "fs1-selene-helios";
+
 /// The curve cycle: Ed25519 outputs, Selene and Helios layers.
 pub struct ShearCurves;
 impl FcmpCurves for ShearCurves {

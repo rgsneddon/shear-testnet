@@ -120,6 +120,10 @@ export function admitProveV3({ x, index, pubs, commits, c, t, ctx }) {
   };
 }
 
+/**
+ * Legacy Pasta verifier: `shear-admit-leaf-v2` on the Pallas–Vesta cycle, arity 32.
+ * The live fingerprint leaf is FS-1 Selene/Helios. Removal is a follow-up.
+ */
 export function admitVerifyV3(proof, fluxset, extra = {}) {
   try {
     const blob = proof?.blob || proof?.proof;
