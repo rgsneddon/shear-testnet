@@ -79,6 +79,32 @@ The old offer cache was one 6000-entry FIFO with no work check. Junk could push 
   - The off-loop path starts with a batch of 2 and doubles up to 16, so a bad run costs at most 2 hashes (1 on the sync path) before its peer is dropped.
 - **IPC.** `ipcBlockFrames` now starts each header run at the pruned block's own header, so every header in the run links to one the receiver has.
 
+## PSA-pr74c-1 (P1): sybils cannot evict an honest peer's headers before its first proof
+
+Before this round, a peer that had not yet proven anything could lose its slot to 8 or more sybil peers, and one IPv6 /64 was enough to produce them. Consensus and the burial path are unchanged: `proveBurial`, `headerLinkReason`, the 1000-header depth and the proven pool all stay as they were. Only the choice of which offered headers stay cached is new.
+
+- **Slots by network group.** `offerHeaders(list, { peer, tier, group })` keys each P2P slot by group, not by peer. `p2p.peerNetGroup` maps IPv4 (including `::ffff:` mapped addresses) to its /24 and IPv6 (expanded, zone ignored) to its /64. Every address in one /24 or /64 shares one slot, one 4000-row bucket and one rate budget.
+- **Reserved slots by tier.** `p2p.offerTierOf(rec)` names the tier.
+
+  | Tier | Who | Slot key | Pool |
+  | --- | --- | --- | --- |
+  | `pinned` | seeds (`dialSeeds`) and RPC `connect` | the peer | reserved |
+  | `outbound` | dials learned from addr gossip | `out:<group>` | 8 outbound slots |
+  | `inbound` | accepted sockets | `in:<group>` | 8 inbound slots |
+  | `local` | IPC (`ipc`) and in-process callers | the peer | reserved |
+
+  Inbound peers can never take an outbound, pinned or local slot. A newcomer only evicts within its own pool, and never a slot of a higher tier.
+- **The proof path is never evicted.** `pathFromTip()` walks the best header path up from the local tip, or from genesis on an empty store, to the prune depth plus one. `protectedSlots()` picks the smallest set of slots that covers that path: greedily, the slot holding the most path rows, then the higher tier, then the oldest. Taking a minimal cover, rather than every slot that holds a path row, means sybils that replay honest rows do not protect themselves. Eviction skips protected slots. If every candidate is protected, the newcomer is refused (`refused`) and nothing is evicted. Otherwise the order is lowest tier, then fewest proven, then smallest bucket, then stalest.
+- **Path choice cannot be bought with more groups.** `kidRank` prefers a proven row, then the highest tier holding the row, then the most proven slot, then the first seen. The number of groups offering a row no longer counts, because sybils can always bring more groups.
+- **Drops.** A bad link bans the peer key and evicts its slot. For an inbound or outbound slot it also bans the group key, so other addresses in the same /24 or /64 are refused for `OFFER_DROP_MS`. In `proveBurial`, every sender of a row that fails its real ShearHash is dropped. The retry bound becomes `2 * OFFER_PEER_SLOTS + 1`.
+- **Limit.** If honest peers are inbound only and sybils fill the inbound pool first, the honest slot is not guaranteed to survive. Hashing stays bounded either way. The guarantee comes from outbound and pinned slots, which inbound sybils cannot reach, and from proof-path protection once an honest slot holds the path.
+
+## P2: per-slot rate limit for header offers
+
+Checking 1.6M junk rows took 40 to 75 s on the main event loop. Each inbound or outbound slot now has a token bucket of `OFFER_RATE_BURST` (4000 rows), refilled at `OFFER_RATE_PER_SEC` (2000 rows/s). Each offered row costs one token whether or not it is cached. Rows past the budget are skipped unread and counted in `limited`. Local, IPC and pinned callers are not limited. Since the budget belongs to the slot, it is shared by a whole /24 or /64.
+
+`burialView()` now also reports `offerSlotTiers`, `refused` and `limited`. `offerPeerRows` is keyed by slot.
+
 ## Tests
 
 - **`node/tests/test_burial_offers_v12.js`** (new).
@@ -91,6 +117,16 @@ The old offer cache was one 6000-entry FIFO with no work check. Junk could push 
   - Matrix: junk ratio {0, 50%, 99%} × {1, 4} honest peers × hash mode. The jit-full and light modes each run in a child process with `SHEAR_HASH_BACKEND`, and the lanes report `jit-full` and `jit`. The light child also runs the in-process sync path.
     - Junk is the expensive kind: full-length forged runs that pass the cheap check and fail only a real ShearHash. They are offered after the honest run, with fresh attacker ids for every block.
     - Honest headers are the test chain's stand-ins, passed in `trustedHeaderHashes`. Every junk header is hashed for real.
+  - PSA-pr74c-1 updates: the flood and the matrix junk are offered before the honest run, and a separate root peer offers the first header. The maximum cached rows bound is `2 * OFFER_PEER_SLOTS * OFFER_PEER_CAP`.
+- **`node/tests/test_burial_sybil_v12.js`** (new). It builds a 1004-block fast-sync source with 4 pruned blocks.
+  - Units: `peerNetGroup` handles /24, /64, `::`, mapped IPv4 and zones; `offerTierOf` names the tiers; and the source pins seeds and RPC `connect`, and marks attached dials as pinned.
+  - Matrix: four layouts × {1, 4} honest peers × {8, 32, 256} sybils. Each case runs three waves, so 24, 96 or 768 sybil peers in total, each offering full-length forged runs that pass the cheap check and fail a real ShearHash. The layouts are:
+    - inbound sybils on distinct /24s vs outbound honest;
+    - sybils on one IPv6 /64 vs inbound honest (the /64 must be one slot);
+    - outbound sybils from addr gossip vs pinned honest;
+    - inbound honest offered first, holding the proof path, vs inbound sybils.
+  - Each case asserts that the honest slots are kept (in the last layout, at least one), that each pool has at most 8 slots and each bucket at most 4000 rows, that all 4 pruned blocks prove, that block 1 hashes at most 8 and later blocks hash 0.
+  - Rate: 1.6M rows over 4 inbound slots read at most 16,000 rows in under 5 s. One second refills 2000 rows. IPC is not limited.
 - **`node/tests/test_burial_hold_v12.js`** (new). It checks the settled height at the floor edges. It runs shares per block {1, 1000, 8000, 65,536} × pruned chain length {1000, 3000, 10,000} through a real hold, and asserts that:
   - held blocks equal `tip - 1000 - settled` and never exceed 399;
   - the proof row count stays at or below 399;
@@ -136,7 +172,32 @@ Header offers, hashes per pruned block (blocks 1 to 4), junk rows offered for th
 
 Each attacker costs at most 2 hashes off-loop and 1 on the sync path, and is then dropped. Later blocks take the proven run and hash nothing. The old cache could force about 4000 per block. The longest cell (99% junk, 4 peers, 1.6M junk rows) took 31 s, almost all of it the cheap check. Fresh attacker ids that are never hashed stay cached, at most 4000 each within the 8 slots.
 
-Limit: a peer that has not yet proven anything can be evicted from its slot by 8 or more sybil peers with full buckets before its first proof. Hashing stays bounded, at 2 per sybil. Once a peer has proven headers, it keeps its slot.
+At `8322d90d` a peer that had not yet proven anything could lose its slot to 8 or more sybils before its first proof. That is PSA-pr74c-1, fixed below.
+
+### PSA-pr74c-1 and P2 (this round)
+
+| Command | Result |
+| --- | --- |
+| `node --test --test-timeout=9000000 node/tests/test_burial_sybil_v12.js` | tests 26, pass 26, fail 0, 211.7 s |
+| `node --test --test-timeout=9000000 node/tests/test_burial_offers_v12.js` | tests 3, pass 3, fail 0, 276.7 s |
+| PROOF_RUN_ROW |
+| `test_burial_gate_v12` 2/2, `test_burial_tip_v12` 2/2 (207 s), `test_burial_hold_v12` 14/14, `test_pruned_flag_v12`, `test_bootstrap`, `test_bootstrap_image_v12`, `test_fork_choice`, `test_getblock_nak_failover`, `test_getblock_serve_pace`, `test_getblock_taller`, `test_ibd_peer_height_v12`, `test_ibd_sequential`, `test_ibd_status` | all pass |
+| `test_ipc_backfill` (4), `test_p2p_wedge` (3 to 7), `test_p2p_process_split` (2) | the same failures as base, listed below |
+
+Sybil matrix, hashes per pruned block (blocks 1 to 4). "Sybils" is the total over three waves. Offer time is the wall time of all offers in the case, on the main thread.
+
+| Layout | Honest | Sybils | Hashed | Slots kept | Rows limited | Offer time |
+| --- | --- | --- | --- | --- | --- | --- |
+| inbound /24 sybils vs outbound honest | 1 / 4 | 24 | 0, 0, 0, 0 | honest kept | 0 | 0.4 s |
+| | 1 / 4 | 96 | 0, 0, 0, 0 | honest kept | 0 | 1.3 s |
+| | 1 / 4 | 768 | 0, 0, 0, 0 | honest kept | 0 | 7.0 s |
+| one IPv6 /64 vs inbound honest | 1 / 4 | 24 | 1, 0, 0, 0 | /64 is one slot, dropped once | 19.6k | 0.2 s |
+| | 1 / 4 | 96 | 1, 0, 0, 0 | same | 91k | 0.5 s |
+| | 1 / 4 | 768 | 1, 0, 0, 0 | same | 764k | 0.6 s |
+| outbound sybils vs pinned honest | 1 / 4 | 24, 96, 768 | 0, 0, 0, 0 | pinned kept | 0 | 0.4 to 6.8 s |
+| inbound honest on the proof path vs inbound sybils | 1 / 4 | 24, 96, 768 | 0, 0, 0, 0 | path slot kept | 0 | 0.4 to 7.2 s |
+
+Rate limit: 1.6M junk rows over 4 inbound slots read 16,000 and skip 1,584,000, in 44 ms. Unlimited, that took 40 to 75 s.
 
 At `b93d77b8` the slowest losing wall was 205.1 ms (2880) and length 1000 took 125.9 ms. Earlier run, owed-seed losing walls, in ms: 20 → 137.5, 48 → 131.5, 96 → 160.9, 1000 → 128.2, 2880 → 187.5. Advances were 18, 15, 31, 7 and 31, each within one checkpoint spacing of 32. Length 1000 extended past the frozen block, and length 2880 reorged the tip.
 
