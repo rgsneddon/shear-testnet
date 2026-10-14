@@ -282,6 +282,22 @@ const SAMPLE_PRUNE_PIN = SAMPLE_PRUNE_CONFIRMATIONS;
 export const MIN_CONFIRMS_POLICY = 12;
 export const RESERVE_FEE_FIRST = 1;
 
+/**
+ * FS-1 tree and leaf, as the shear-fs1 crate and N-1 use them. Layer one is
+ * Selene, 38 wide (fcmps LAYER_ONE_LEN); layer two is Helios, 18 wide
+ * (LAYER_TWO_LEN); DEPTH layers. The leaf is O || I || C on Ed25519,
+ * FS1_LEAF_BYTES long, with I = E(Hp(admitPub)) under FS1_HP_DST
+ * (crypto/fs1_leaf.js, shear-fs1 src/leaf.rs). The bucket arity 32 and
+ * shear-admit-leaf-v2 are retired from the fingerprint.
+ */
+export const FS1_LAYER_ONE_LEN = 38;
+export const FS1_LAYER_TWO_LEN = 18;
+export const FS1_DEPTH = 7;
+export const FS1_LEAF_LEN = 96;
+export const FS1_LEAF_HP_DST = 'shear-admit-Hp';
+export const ADMIT_ARITY_ID = `fs1-selene${FS1_LAYER_ONE_LEN}-helios${FS1_LAYER_TWO_LEN}-d${FS1_DEPTH}`;
+export const ADMIT_LEAF_ID = `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DST}`;
+
 /** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
 export function consensusFingerprint(magic = MAGIC_TESTNET) {
   const days = epochDays(magic);
@@ -381,9 +397,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'N1=admit-note-point',
     'RANGE=packed-bit',
     'ADMIT_CYCLE=pallas-vesta-pasta',
-    'ADMIT_ARITY=32',
+    `ADMIT_ARITY=${ADMIT_ARITY_ID}`,
     'ADMIT_K=1',
-    'ADMIT_LEAF=shear-admit-leaf-v2',
+    `ADMIT_LEAF=${ADMIT_LEAF_ID}`,
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
