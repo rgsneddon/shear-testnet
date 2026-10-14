@@ -89,6 +89,16 @@ export function payeeCapFallback({
   return Math.floor(room / row) - COINBASE_EXTRA_NOTES;
 }
 
+/**
+ * Outputs one coinbase may carry. Live payees, the three notes beside them,
+ * and the vw rows. That count is inside the 36,000 weight-unit budget.
+ */
+export function coinbaseOutputCap(frame = FALLBACK_IPC_FRAME) {
+  const byPayee = payeeCapLive(frame) + COINBASE_EXTRA_NOTES + K_VW;
+  const byWeight = Math.floor(MAX_BLOCK_VERIFY_WEIGHT / W_PAYEE) + K_VW;
+  return Math.min(byPayee, byWeight);
+}
+
 /** While the relay frame is below FRAME_MIN, the fallback cap is the one a block can travel. */
 export function payeeCapLive(frame = FALLBACK_IPC_FRAME) {
   const normal = payeeCapNormal();

@@ -1164,21 +1164,53 @@ export function templateForFinder(tpl, finderDest) {
   return stampAimed(built, tpl);
 }
 
-/** Drop a coinbase payee that is not an FS-1 leaf. Template build logs it and continues. */
+function droppedPotNanos(o) {
+  const kind = String(o?.kind || '');
+  // Hash and levy notes are not pot. Folding them into the carry would mint
+  // the wrong supply. Refuse the template instead of publishing that block.
+  if (kind === 'hash' || kind === 'finder-fee' || kind === 'reserve-fee') {
+    throw new Error('admit_note_point');
+  }
+  const opened = o?.valueProof && o.valueProof.v != null && o.valueProof.v !== ''
+    ? Number(o.valueProof.v)
+    : Number(o?.nanos || 0);
+  if (!Number.isSafeInteger(opened) || opened < 0) throw new Error('admit_note_point');
+  return opened;
+}
+
+/**
+ * Drop a coinbase payee that is not an FS-1 leaf. Its opened amount goes
+ * back to the carry, and the excess is the sum of the notes that remain.
+ * A hash or levy note has no pot carry to join, so that drop throws.
+ */
 export function dropBrokenCoinbaseNotes(cb) {
   const kept = [];
+  let dropped = 0;
   for (const o of cb?.vout || []) {
     if (outputJoinsAdmitSet(cb, o) && !fs1LeafFor(o)) {
+      const n = droppedPotNanos(o);
+      if (!Number.isSafeInteger(dropped + n)) throw new Error('admit_note_point');
+      dropped += n;
       console.error(JSON.stringify({
         event: 'coinbase_note_drop',
         reason: 'admit_note_point',
         kind: String(o?.kind || cb?.kind || ''),
+        nanos: n,
       }));
       continue;
     }
     kept.push(o);
   }
-  if (cb && typeof cb === 'object') cb.vout = kept;
+  if (!(cb && typeof cb === 'object')) return cb;
+  if (dropped > 0) {
+    const carry = canonicalCarry(cb);
+    if (carry == null || !Number.isSafeInteger(carry + dropped)) throw new Error('admit_note_point');
+    const excess = excessOf(kept);
+    if (!excess) throw new Error('admit_note_point');
+    cb.carryNanos = carry + dropped;
+    cb.excess = excess;
+  }
+  cb.vout = kept;
   return cb;
 }
 
@@ -2705,8 +2737,12 @@ function asBuf(v) {
   try { return Buffer.from(v); } catch { return Buffer.alloc(0); }
 }
 
-/** Domain for book.seal. A seal without it was written before the body snapshot and is not trusted. */
-export const BOOK_SEAL_DOMAIN = 'bookseal1';
+/**
+ * Domain for book.seal. bookseal1 predates N-1. A seal under that tag, or
+ * under a fingerprint that does not name N-1, is not this book's seal.
+ * The load discards it and checks the notes.
+ */
+export const BOOK_SEAL_DOMAIN = 'bookseal2';
 
 /** Keyed sha256 over the rules id, the genesis pin, the checkpoint, and each header and stored hash.
  *  The key is the per-install secret kept outside the datadir.
@@ -2792,12 +2828,8 @@ function beginLoaded(blocks, {
   if (!list.length) return { ok: true, empty: true };
   const gated = chainStage0Rejected(list);
   if (gated) return gated;
-  // A matching book.seal already covered these leaves. stepLoaded still
-  // checks a suffix after the header. An unsealed book is checked here.
-  if (!trustStoredHash) {
-    const notes = chainNoteRuleRejected(list);
-    if (notes) return notes;
-  }
+  // N-1 runs inside each block, after the header and the budget. A load
+  // does not walk leaves before proof-of-work.
   const givenClock = Number(nowMs);
   const clock = Number.isFinite(givenClock) && givenClock > 0 ? givenClock : Date.now();
   const pinned = normGenesisPin(genesisHash);

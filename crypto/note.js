@@ -8,6 +8,7 @@ import { sha512 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { bytesToNumberLE } from '@noble/curves/utils.js';
 import { nativeLoaded, noteH, nativeProveRange, nativeVerifyRange } from './native_admit.js';
+import { coinbaseOutputCap } from './block_budget.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -725,7 +726,7 @@ function parseTxSpendTags(tx) {
   return { ok: true, reason: null, tags, proofs };
 }
 
-/** Per-tx shape cap. Coinbase payees are not an 8-output send. */
+/** Per-tx shape cap. A coinbase stops at the live payee cap, inside the 36,000 weight-unit budget. */
 export const MAX_TX_INPUTS = 8;
 export const MAX_TX_OUTPUTS = 8;
 
@@ -741,9 +742,9 @@ export function txIsCoinbase(tx) {
 export function txIoCap(tx) {
   const nIn = Array.isArray(tx?.vin) ? tx.vin.length : 0;
   const nOut = Array.isArray(tx?.vout) ? tx.vout.length : 0;
-  if (nIn > MAX_TX_INPUTS || (!txIsCoinbase(tx) && nOut > MAX_TX_OUTPUTS)) {
-    return { ok: false, reason: 'tx_cap', proofChecked: true };
-  }
+  if (nIn > MAX_TX_INPUTS) return { ok: false, reason: 'tx_cap', proofChecked: true };
+  const outCap = txIsCoinbase(tx) ? coinbaseOutputCap() : MAX_TX_OUTPUTS;
+  if (nOut > outCap) return { ok: false, reason: 'tx_cap', proofChecked: true };
   return { ok: true };
 }
 

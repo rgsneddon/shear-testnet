@@ -395,8 +395,8 @@ export function createStore(dir, {
   if (blocks.length) {
     const gated = chainStage0Rejected(blocks);
     if (gated) throw new Error(gated.reason);
-    // A matching book.seal means this install wrote the leaves. Skip the
-    // restart rescan. An in-process resume already verified them.
+    // bookseal2 bound to the N-1 fingerprint. An older seal does not match,
+    // so this load checks the notes. An in-process resume already did.
     if (!trustStoredHash && !resumed) {
       const notes = chainNoteRuleRejected(blocks);
       if (notes) throw new Error(notes.reason);
@@ -3293,8 +3293,6 @@ export function createStore(dir, {
       }
       if (!gated.ok) return prefixBodyFault(fork, gated, verifyOpts);
     }
-    const notes = chainNoteRuleRejected(fork || []);
-    if (notes) return notes;
     const accepted = [];
     const trialSpent = new Set();
     const walkedUnits = unitsAlongChain({ fork, timeOf: (block) => blockTimeMs(block) });
@@ -3352,8 +3350,6 @@ export function createStore(dir, {
     if (stage0) return stage0;
     const gated = await Promise.resolve(gateForkChain(fork, verifyOpts));
     if (!gated.ok) return prefixBodyFault(fork, gated, verifyOpts);
-    const notes = chainNoteRuleRejected(fork || []);
-    if (notes) return notes;
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
@@ -3816,11 +3812,7 @@ export function createStore(dir, {
   /** Verify only the new suffix. Header rules run before any owed replay. */
   function verifySuffix(fork, parent, history, verifyOpts) {
     const gated = gateForkHeaders(fork, parent, history, verifyOpts);
-    const go = () => {
-      const notes = chainNoteRuleRejected(fork);
-      if (notes) return notes;
-      return verifySuffixBody(fork, parent, history, verifyOpts);
-    };
+    const go = () => verifySuffixBody(fork, parent, history, verifyOpts);
     if (gated && typeof gated.then === 'function') {
       return gated.then((g) => (g.ok ? go() : { ok: false, reason: g.reason || 'pow', at: g.at }));
     }

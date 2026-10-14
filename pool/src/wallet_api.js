@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1742,6 +1742,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       for (const o of postedVout) vout.push(o);
     }
     const parked = kind === 'send' && changeDest && leftover > 0;
+    let withdrawNonce;
+    if (isWithdraw && body.withdrawNonce != null && body.withdrawNonce !== '') {
+      try {
+        withdrawNonce = withdrawNonceBytes(body.withdrawNonce);
+      } catch {
+        return { status: 400, json: { ok: false, reason: 'kt10_nonce' } };
+      }
+    }
     const draft = isLock
       ? {
         ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
@@ -1764,7 +1772,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         }
         : isWithdraw
         ? {
-          ...withdrawTx({ from, to, nanos, id: `withdraw-${Date.now()}` }),
+          ...withdrawTx({
+            from,
+            to,
+            nanos,
+            id: typeof body.id === 'string' && body.id ? body.id : `withdraw-${Date.now()}`,
+            nonce: withdrawNonce,
+          }),
           fee,
           sig: body.sig || body.signature,
           spendPub: body.spendPub,

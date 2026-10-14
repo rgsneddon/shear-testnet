@@ -85,18 +85,33 @@ export function resetFs1LeafDerives() {
   leafDerives = 0;
 }
 
-const leafByOutput = new WeakMap();
+/** Byte key, not object identity. A copied output with the same admitPub and commit reuses the leaf. */
+const LEAF_CACHE_MAX = 4096;
+const leafByBytes = new Map();
+
+function leafCacheKey(note) {
+  return Buffer.concat([Buffer.from(note.admitPub), Buffer.from(note.commit)]).toString('hex');
+}
 
 /**
- * The leaf for this output object. The first call derives it. Later calls
- * on the same object, including the other accept-path checks, reuse it.
- * A miss is null and is cached too.
+ * The leaf for these public bytes. The first call derives it. Later calls
+ * on the same admitPub and commit, including another object, reuse it.
+ * A miss is null and is cached too. The map stays bounded.
  */
 export function fs1LeafFor(output) {
-  if (output && typeof output === 'object' && leafByOutput.has(output)) {
-    return leafByOutput.get(output);
+  const note = fs1OutputNote(output);
+  const key = leafCacheKey(note);
+  if (leafByBytes.has(key)) {
+    const hit = leafByBytes.get(key);
+    leafByBytes.delete(key);
+    leafByBytes.set(key, hit);
+    return hit;
   }
-  const leaf = fs1Leaf(fs1OutputNote(output));
-  if (output && typeof output === 'object') leafByOutput.set(output, leaf);
+  const leaf = fs1Leaf(note);
+  leafByBytes.set(key, leaf);
+  if (leafByBytes.size > LEAF_CACHE_MAX) {
+    const oldest = leafByBytes.keys().next().value;
+    leafByBytes.delete(oldest);
+  }
   return leaf;
 }

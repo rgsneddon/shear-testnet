@@ -138,7 +138,8 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
         resetFs1LeafDerives();
         assert.equal(verifyBlock(block, null).reason, 'height', `${kind} verify`);
         assert.equal(fs1LeafDeriveCount(), 0, `${kind} verify derives`);
-        assert.equal(verifyLoadedChain([block]).reason, 'admit_note_point', `${kind} load`);
+        assert.equal(verifyLoadedChain([block]).reason, 'height', `${kind} load`);
+        assert.equal(fs1LeafDeriveCount(), 0, `${kind} load derives`);
         assert.equal(chainNoteRuleRejected([block]).reason, 'admit_note_point', `${kind} height`);
         resetFs1LeafDerives();
         assert.notEqual(store.verifyFork([block]).reason, 'admit_note_point', `${kind} fork`);
@@ -160,7 +161,7 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
 
       const bootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-boot-'));
       const bootBlock = {
-        header: tpl.header,
+        header: Buffer.alloc(128, 1),
         hash: Buffer.alloc(32, 9),
         height: 1,
         rootA: tpl.rootA,
@@ -177,7 +178,9 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
         hash: bootBlock.hash.toString('hex'),
         genesisHash: bootBlock.hash.toString('hex'),
       })}\n`);
-      assert.throws(() => readLatestBootstrap(bootDir), /admit_note_point/);
+      resetFs1LeafDerives();
+      assert.throws(() => readLatestBootstrap(bootDir), /prev/);
+      assert.equal(fs1LeafDeriveCount(), 0);
       fs.rmSync(bootDir, { recursive: true, force: true });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
