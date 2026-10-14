@@ -6,6 +6,7 @@ use curve25519_dalek::{
 };
 use shear_fs1::{
   t21::{encrypt_limb, pedersen, split_law, t21_nonce, vault_blind, voucher_keys_ok, voucher_lambda, voucher_probe},
+  t21_prove::{note_h, serve},
   vectors::{hex, unhex_n},
 };
 
@@ -107,4 +108,56 @@ fn prover_primitives_match_the_js_prover() {
     }
   }
   assert!(nonces >= 72 && vaults >= 3 && limbs >= 4, "{nonces} {vaults} {limbs}");
+}
+
+const PROVE_ROWS: &str = include_str!("../../../../../vectors/t21_prove_rows.txt");
+
+fn section(name: &str) -> String {
+  let mut out = String::new();
+  let mut on = false;
+  for line in PROVE_ROWS.lines().filter(|l| !l.starts_with('#')) {
+    if let Some(tag) = line.strip_prefix('@') {
+      on = tag == name;
+      continue;
+    }
+    if on {
+      out.push_str(line);
+      out.push('\n');
+    }
+  }
+  assert!(!out.is_empty(), "{name}");
+  out
+}
+
+#[test]
+fn native_prover_replies_match_the_js_prover() {
+  for threads in [1, 4] {
+    let commit = serve(&section("commit-request"), threads);
+    assert_eq!(commit, section("commit-reply"), "commit, {threads} threads");
+    let prove = serve(&section("prove-request"), threads);
+    assert_eq!(prove, section("prove-reply"), "prove, {threads} threads");
+  }
+  assert_eq!(hex(&note_h().compress().to_bytes()), section("commit-request").split(' ').nth(1).unwrap());
+}
+
+#[test]
+fn native_prover_refuses_what_the_js_prover_refuses() {
+  let req = section("commit-request");
+  let mut lines: Vec<String> = req.lines().map(String::from).collect();
+  let mut row: Vec<String> = lines[2].split(' ').map(String::from).collect();
+  row[1] = "1".into();
+  lines[2] = row.join(" ");
+  assert_eq!(serve(&lines.join("\n"), 2), "error admit_note_point 1\n");
+  let wrong_h = req.replacen("feea29", "feea2a", 1);
+  assert_eq!(serve(&wrong_h, 2), "error gen_h -\n");
+  let swapped = {
+    let mut l: Vec<&str> = req.lines().collect();
+    l.swap(1, 2);
+    l.join("\n")
+  };
+  assert_eq!(serve(&swapped, 2), "error row_order 0\n");
+  assert_eq!(serve("", 2), "error request -\n");
+  assert_eq!(serve(&format!("{req} extra"), 2), "error request -\n");
+  let huge = req.replacen(" 4\n", " 70000\n", 1);
+  assert_eq!(serve(&huge, 2), "error count_cap -\n");
 }
