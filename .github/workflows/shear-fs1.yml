@@ -62,8 +62,12 @@ jobs:
         run: node --test node/tests/test_fs1_admit_divergence.js
       - name: T21 coinbase, template and carry, with shearadmit
         run: node --test --test-concurrency=1 --test-timeout=1800000 crypto/t21.test.js node/tests/test_t21_template_v12.js node/tests/test_t21_carry_v12.js
-      - name: T21 stratum labels
-        run: node --test pool/tests/test_t21_labels_v12.js
+      - name: Build ShearK
+        run: make -C sheark-miner CC=gcc CXX=g++
+      - name: T21 stratum labels, and ShearK's label check
+        run: |
+          node --test pool/tests/test_t21_labels_v12.js
+          node --test --test-name-pattern="shareBind=note|pool label" sheark-miner/tests/test_miner.js
       - name: Build the T21 row prover
         working-directory: crypto/native/vendor/monero-oxide-77788c3
         run: |

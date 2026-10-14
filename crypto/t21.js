@@ -1693,7 +1693,7 @@ export const GENESIS_GATE = Object.freeze([
   { n: 9, item: 'Residuals documented', ok: true, note: 'specs/t21-coinbase.md' },
   { n: 10, item: 'PA, CA, ME, and PSA sign-off on S8', ok: false, note: 'CA review of the LogUp, R-A′ and range composition is required.' },
   { n: 11, item: 'cb-v3 is the only coinbase form once the genesis hash is set', ok: true, note: 't21CbOnly() is true whenever V12_GENESIS_BLOCK_HASH is set; verifyBlockConsensus rejects a legacy coinbase with cb_form.' },
-  { n: 12, item: 'Pool and miner share labelling', ok: false, note: 'Stratum shares must bind a pool-issued T21 label (one label per job header), ShearK jobs must carry its note commit, and pool share records must drop the dest. The node template pays labelled shares. Behind SHEAR_POOL_T21_LABELS=1 the stratum issues labels (pool/src/t21_labels.js), ShearK binds shares to the job noteCommit (shareBind=note), and share records carry no dest; the pool template does not yet hand its label book to the cb-v3 builder, and the flag is off by default.' },
+  { n: 12, item: 'Pool and miner share labelling', ok: true, note: 'pool/src/t21_labels.js (SHEAR_POOL_T21_LABELS=1): one pool-issued label per job header, shareBind=note with its noteCommit, E and beta on the wire, dest-free share records; with SHEAR_POOL_T21_FINDER_VOUCHER the pool template builds cb-v3 from its label book and finder/fee vouchers. ShearK binds shares to the noteCommit and mines a label only when E = lambda*G + beta*H for its own voucher.' },
 ]);
 
 export function genesisGateStatus() {

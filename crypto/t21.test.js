@@ -769,7 +769,7 @@ describe('T21 genesis gate', () => {
     assert.equal(V12_GENESIS_BLOCK_HASH, '');
     const status = genesisGateStatus();
     assert.equal(status.requireAllCoinbases, false);
-    assert.deepEqual(status.open, [1, 2, 4, 5, 6, 7, 10, 12]);
+    assert.deepEqual(status.open, [1, 2, 4, 5, 6, 7, 10]);
     assert.equal(fs.existsSync(new URL('../specs/t21-coinbase.md', import.meta.url)), true);
   });
 });
