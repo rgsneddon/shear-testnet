@@ -79,3 +79,54 @@ pub fn voucher_keys_ok(b: &[u8; 32], y: &[u8; 32], lambda: &[u8; 32]) -> bool {
   let Some((probe_c, p)) = voucher_probe(b) else { return false };
   leaf_of(&ChainNote { admit_pub: p, commit: probe_c }).is_some()
 }
+
+/* ---------- prover primitives shared with crypto/t21.js ---------- */
+
+/// Domain of every prover nonce and blind.
+pub const NONCE_DOM: &[u8] = b"shear-t21-nonce-v1";
+/// Domain of the KT-10 0x23 blind.
+pub const VAULT_R_DOM: &[u8] = b"shear-kt10-0x23-r-v1";
+
+fn wide_scalar(parts: &[&[u8]]) -> Scalar {
+  let mut h = Sha512::new();
+  for p in parts {
+    h.update(p);
+  }
+  let mut wide = [0u8; 64];
+  wide.copy_from_slice(&h.finalize());
+  Scalar::from_bytes_mod_order_wide(&wide)
+}
+
+/// `H_s(dom ‖ seed ‖ bind ‖ len ‖ label ‖ u32le(i) ‖ u32le(j))`, with zero mapped to one.
+/// `t21Nonce` in JS. Labels are at most 255 bytes.
+pub fn t21_nonce(seed: &[u8], label: &[u8], i: u32, j: u32, bind: &[u8]) -> Scalar {
+  assert!(label.len() <= 255, "nonce label");
+  let s = wide_scalar(&[NONCE_DOM, seed, bind, &[label.len() as u8], label, &i.to_le_bytes(), &j.to_le_bytes()]);
+  if s == Scalar::ZERO {
+    Scalar::ONE
+  } else {
+    s
+  }
+}
+
+/// `vaultBlind`: the first non-zero `H_s(dom ‖ mintId ‖ u64le(height) ‖ parentId ‖ u8 ctr)`.
+pub fn vault_blind(mint_id: &[u8], height: u64, parent_id: &[u8; 32]) -> Option<Scalar> {
+  (0 ..= 255u8)
+    .map(|n| wide_scalar(&[VAULT_R_DOM, mint_id, &height.to_le_bytes(), parent_id, &[n]]))
+    .find(|r| *r != Scalar::ZERO)
+}
+
+/// `v·G + r·H`.
+pub fn pedersen(v: Scalar, r: Scalar, h: &RistrettoPoint) -> RistrettoPoint {
+  RISTRETTO_BASEPOINT_POINT * v + h * r
+}
+
+/// One VE limb: `(t·G, t·Y + m·G, m·G + s·H)`, `encryptLimb` in JS.
+pub fn encrypt_limb(m: u64, y: &RistrettoPoint, t: Scalar, s: Scalar, h: &RistrettoPoint) -> [[u8; 32]; 3] {
+  let ms = Scalar::from(m);
+  [
+    (RISTRETTO_BASEPOINT_POINT * t).compress().to_bytes(),
+    (y * t + RISTRETTO_BASEPOINT_POINT * ms).compress().to_bytes(),
+    pedersen(ms, s, h).compress().to_bytes(),
+  ]
+}
