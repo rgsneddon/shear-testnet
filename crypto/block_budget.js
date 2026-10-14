@@ -183,7 +183,9 @@ export function txVerifyWeight(tx) {
   }
   const nIn = Array.isArray(tx.vin) ? tx.vin.length : 0;
   const nOut = Array.isArray(tx.vout) ? tx.vout.length : 0;
-  const inW = nIn > 0 ? (W_FS1_BASE + W_FS1_PER_INPUT * nIn) : 0;
+  const inW = nIn > 0 ? fs1VerifyWeight(nIn) : 0;
+  // More than 8 inputs is not a priced send; the block budget refuses it.
+  if (inW == null) return Infinity;
   let w = W_TX + inW + W_OUT * nOut;
   if (txIsReserveAction(tx)) w += W_SEAL;
   return w;
