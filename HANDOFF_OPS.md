@@ -37,7 +37,7 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 | Wallet | **0.72** (`wallet/pubspec.yaml` `0.72.0+97`, `kWalletVersion`) |
 | Miner | **ShearK 2.9**. Tag 2.8 stays. Packs for 2.9 are not claimed here. |
 | Stratum | public `stratum+ssl://pool.shear.digital:443`; localhost solo `stratum+tcp://127.0.0.1:1111` |
-| SHARE_BIND | `rx+noteCommit` |
+| SHARE_BIND | `shear-share-bind-v1` (cb-v3). The ShearK preimage is unchanged until that miner update. |
 | Mainnet | **blocked**. Do **not** set `SHEAR_MAINNET_EMIT=1`. Do not rotate the live fee-payout ssa1 from this file. |
 
 Wallet pin in this tree is **0.72** (`0.72.0+97`). Tag **0.71** stays at https://github.com/rgsneddon/shear-testnet/releases/tag/0.71. Node tag `v18` stays. Tag **0.68** stays. Do not pass `--clobber`. Git tag `v17` stays. Do not claim a 0.72 or v19 release asset until it is uploaded.  

@@ -20,6 +20,7 @@ import {
   vaultCommit, verifyT21Coinbase, genesisGateStatus,
 } from './t21.js';
 import { hashToScalar } from './note.js';
+import { consensusFingerprint } from './asert.js';
 
 const secret = Buffer.alloc(32, 4);
 const dummySecret = Buffer.alloc(32, 9);
@@ -57,6 +58,12 @@ describe('T21 S0 splitLaw and tokens', () => {
     assert.equal(feeOf(10_000n, 201n), null);
     assert.equal(pointBytes(H).toString('hex'), GEN_H);
     assert.equal(T21_FINGERPRINT_TOKENS[T21_FINGERPRINT_TOKENS.length - 1], `GEN_H=${GEN_H}`);
+    const parts = consensusFingerprint().split(':');
+    assert.equal(parts.includes('AMOUNT=confidential'), true);
+    assert.equal(parts.includes('RANGE=packed-bit'), true);
+    assert.equal(parts.includes('RANGE=packed-bit+0x02'), true);
+    assert.equal(parts.includes('SHARE_BIND=rx+noteCommit'), false);
+    for (const token of T21_FINGERPRINT_TOKENS) assert.equal(parts.includes(token), true);
     assert.equal(T21_REQUIRE_ALL_COINBASES, false);
     assert.equal(K_MIN, 4);
     for (const token of T21_FINGERPRINT_TOKENS) {

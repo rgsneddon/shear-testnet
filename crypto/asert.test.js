@@ -466,7 +466,7 @@ describe('hash-tx consensus law', () => {
     assert.equal(LIVE_MIN_BITS, 4);
     assert.equal(TARGET_BLOCK_INTERVAL_MS, 90000);
     assert.match(fp, /HASH_TX_LIVE=1/);
-    assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
+    assert.match(fp, /SHARE_BIND=shear-share-bind-v1/);
     assert.match(fp, /POOL_FEE_MAX_BPS=200/);
     assert.doesNotMatch(fp, /POOL_FEE_BPS=100/);
     assert.match(fp, /AMOUNT=confidential/);
@@ -494,7 +494,7 @@ describe('hash-tx consensus law', () => {
     assert.doesNotMatch(fp, /HASH_OWED_MAX=/);
     assert.equal(shareCreditMaxBits(), 28);
     assert.doesNotMatch(fp, /:ENC_SHARE=v5:/);
-    assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
+    assert.match(fp, /SHARE_BIND=shear-share-bind-v1/);
     assert.match(fp, /DANDELIONPP=1/);
     assert.match(fp, /VIEW_TAG=1/);
     assert.match(fp, /KDF=argon2id-shewall/);
@@ -509,7 +509,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /N1=admit-note-point/);
     assert.match(fp, /RANGE=packed-bit/);
     assert.match(fp, /LEVY=weight/);
-    assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
+    assert.match(fp, /SHARE_BIND=shear-share-bind-v1/);
     assert.match(fp, /BITS=q16\.16/);
     assert.match(fp, /ASERT_HARDEN=0/);
     assert.match(fp, /ASERT_EASE=0/);

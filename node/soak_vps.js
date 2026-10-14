@@ -183,7 +183,7 @@ async function live() {
   assert.match(String(fp.fingerprint || ''), /ADMIT=ADMITv3/);
   assert.match(String(fp.fingerprint || ''), /RANGE=bpplus/);
   assert.match(String(fp.fingerprint || ''), /LEVY=weight/);
-  assert.match(String(fp.fingerprint || ''), /SHARE_BIND=rx\+noteCommit/);
+  assert.match(String(fp.fingerprint || ''), /SHARE_BIND=shear-share-bind-v1/);
   console.log(JSON.stringify({ step: 'live', stats, jroot: jr.jroot, fingerprint: fp.fingerprint }));
   return stats;
 }

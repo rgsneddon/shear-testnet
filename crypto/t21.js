@@ -1344,7 +1344,7 @@ export const GENESIS_GATE = Object.freeze([
   { n: 2, item: 'Vectors on JS, Dart, and Rust', ok: false, note: 'JS consumes crypto/vectors/t21_splitlaw.json. Dart and Rust consumers are a follow-up.' },
   { n: 3, item: 'Observer harness', ok: true, note: 'observerView recovers no per-payee amount for a cb-v3 payout.' },
   { n: 4, item: 'Full-cap block inside 36,000 wu on the reference box', ok: false, note: 'Not measured on the reference box. No number is invented here.' },
-  { n: 5, item: 'O-1 and O-3 resolved; fingerprint frozen in one commit', ok: false, note: 'O-1 weight is 25+25n and reserve 2,336. Fingerprint tokens freeze in one commit. O-3 generator review stays open.' },
+  { n: 5, item: 'O-1 and O-3 resolved; fingerprint frozen in one commit', ok: false, note: 'O-1 weight is 25+25n and reserve 2,336. T21 tokens are in consensusFingerprint(). O-3 generator review stays open.' },
   { n: 6, item: 'AL-1..7 including Dart', ok: false, note: 'amtCt and the txDigestV3 bind are cherry-picked from PR 81. Dart amtCt is a follow-up. PR 81 stays open.' },
   { n: 7, item: 'SUP-V and KT-10/14/17; VP-0', ok: false, note: '0x23 r derivation is in this branch. Portal flow and the rest of KT stay open.' },
   { n: 8, item: 'No plaintext amount on non-reserve outputs', ok: true, note: 'cb-v3 payout rows reject nanos, amount, v, value, and valueProof.' },

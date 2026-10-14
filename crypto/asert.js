@@ -18,6 +18,7 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
+import { T21_FINGERPRINT_TOKENS } from './t21_params.js';
 import { HISTORICAL_TIP } from './historical_prefix.js';
 import {
   MAGIC_TESTNET_V1,
@@ -348,7 +349,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ENC_SHARE=v5+work7',
     'SHARE_SLOT=bound-v1',
     'SHARE_UNITS=2^bits',
-    'SHARE_BIND=rx+noteCommit',
+    ...T21_FINGERPRINT_TOKENS,
     'SHARE_CREDIT=nonce-hi-le',
     `SHARE_BMAX=${shareCreditMaxBits()}`,
     'HASH_OWED=noteCommit-carry',
