@@ -201,7 +201,34 @@ Uint8List spendPackDigest({
       'kind': _kindByte((o['kind'] as String?) ?? kind),
     });
   }
-  return packDigest(packTx(vins: vins, vouts: vouts));
+  final packed = packDigest(packTx(vins: vins, vouts: vouts));
+  final top = kind ?? (vout.isNotEmpty ? vout.first['kind'] as String? : null) ?? '';
+  if (top == 'lock' || top == 'vote' || top == 'withdraw') return packed;
+  return flowAmtDigest(packed, [for (final o in vout) _amtCtBytes(o['amtCt'])]);
+}
+
+final spendAmtDst = utf8.encode('shear-spend-amt-v1');
+
+/// Same bytes as crypto/spend.js flowAmtDigest: every output's amtCt, empty when absent.
+Uint8List flowAmtDigest(Uint8List packed, List<Uint8List> amtCts) {
+  final b = BytesBuilder()
+    ..add(spendAmtDst)
+    ..add(packed)
+    ..add(_u32le(amtCts.length));
+  for (final ct in amtCts) {
+    b.add(_u32le(ct.length));
+    b.add(ct);
+  }
+  return Uint8List.fromList(sha256.convert(b.toBytes()).bytes);
+}
+
+Uint8List _amtCtBytes(Object? v) {
+  if (v is Uint8List) return v;
+  if (v is List<int>) return Uint8List.fromList(v);
+  if (v is String && v.length.isEven && RegExp(r'^[0-9a-fA-F]+$').hasMatch(v)) {
+    return Uint8List.fromList([for (var i = 0; i < v.length; i += 2) int.parse(v.substring(i, i + 2), radix: 16)]);
+  }
+  return Uint8List(0);
 }
 
 Uint8List spendMessage({
