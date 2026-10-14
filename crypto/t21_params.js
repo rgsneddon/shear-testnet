@@ -31,10 +31,14 @@ export const T21_SHARES_PER_BLOCK = 85;
  * Deferred rows. A proven label a block does not pay is published in
  * t21.defer and joins t21.owed, the list every later coinbase restates.
  * A later block pays it at its deferred w; past T21_OWED_TTL blocks it
- * drops. TTL and cap are testnet values pending Russell's escrow ruling.
+ * drops.
+ *
+ * PLACEHOLDER: T21_OWED_MAX 1,024 and T21_OWED_TTL 960 are testnet values
+ * pending Russell's escrow ruling. Both feed the params fingerprint, so a
+ * change is a consensus change.
  */
-export const T21_OWED_MAX = 1_024;
-export const T21_OWED_TTL = 960;
+export const T21_OWED_MAX = 1_024; // PLACEHOLDER pending Russell
+export const T21_OWED_TTL = 960; // PLACEHOLDER pending Russell
 export const SCALAR_MAX = 1n << 64n;
 export const OUTPUT_MAX = 65536;
 export const PAYOUT_KIND_CODE = 0x20;
