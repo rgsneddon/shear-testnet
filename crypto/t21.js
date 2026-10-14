@@ -937,12 +937,34 @@ function buildOnce(spec, payees, deferred, seed) {
 }
 
 /**
+ * Payee slot order (MF-3): the finder payee first (Φ must be paid), then by
+ * W_i largest first, so many small vouchers cannot take the slots from the
+ * hashers that did the work, then by B* bytes. Sorts in place.
+ */
+function rankPayees(live) {
+  const key = (p) => ({
+    fin: (scalarOk(p.fin || 0) ?? 0n) > 0n,
+    Wi: (p.shares || []).reduce((a, s) => a + (scalarOk(s.w) ?? 0n), 0n),
+    B: Buffer.from(asU8(p.voucher?.B || [])).toString('hex'),
+  });
+  const keys = new Map(live.map((p) => [p, key(p)]));
+  live.sort((a, b) => {
+    const x = keys.get(a);
+    const y = keys.get(b);
+    if (x.fin !== y.fin) return x.fin ? -1 : 1;
+    if (x.Wi !== y.Wi) return x.Wi > y.Wi ? -1 : 1;
+    return x.B < y.B ? -1 : x.B > y.B ? 1 : 0;
+  });
+}
+
+/**
  * Template builder. A payee is { voucher: {B, Y, lambda}, fin?, shares: [{w, E, ell, beta}] },
  * with lambda = voucherLambda(B, Y).
  * A voucher that fails voucherKeysOk is deferred before proving. A payee whose
  * row cannot be made an FS-1 leaf throws admit_note_point; that payee and its
  * shares are evicted to `deferred` and the coinbase is rebuilt once. Payees
- * past payeeCapLive() are deferred too. There is no last-payee re-split.
+ * past payeeCapLive() (or a lower spec.payeeMax), in rankPayees order, are
+ * deferred too. There is no last-payee re-split.
  */
 export function buildT21Coinbase(spec) {
   // Every nonce and blind derives from this seed, so a given seed builds the same bytes.
@@ -959,18 +981,23 @@ export function buildT21Coinbase(spec) {
     }
     live.push({ ...p, _vch: vch });
   });
+  rankPayees(live);
   // Dummies only pad a short round, so the cap needs no room for them.
-  const cap = payeeCapLive();
+  const cap = Math.min(payeeCapLive(), Math.max(0, Math.floor(Number(spec.payeeMax ?? Infinity))));
   for (const p of live.splice(cap)) deferred.push({ voucher: p.voucher, shares: p.shares || [], reason: 'payee_cap' });
   // Shares past CB_SHARE_MAX (or a lower spec.shareMax) wait for the next round; a payee left with none is deferred whole.
   let room = Math.min(CB_SHARE_MAX, Math.max(0, Math.floor(Number(spec.shareMax ?? CB_SHARE_MAX))));
   for (let i = 0; i < live.length; i += 1) {
-    const all = live[i].shares || [];
+    const all = (live[i].shares || []).slice().sort((a, b) => {
+      const wa = BigInt(a.w);
+      const wb = BigInt(b.w);
+      return wa === wb ? 0 : wa > wb ? -1 : 1;
+    });
     const keep = all.slice(0, room);
     room -= keep.length;
     if (keep.length < all.length) {
       deferred.push({ voucher: live[i].voucher, shares: all.slice(keep.length), reason: 'share_cap' });
-      live[i] = keep.length ? { ...live[i], shares: keep } : null;
+      live[i] = keep.length || (scalarOk(live[i].fin || 0) ?? 0n) > 0n ? { ...live[i], shares: keep } : null;
     }
   }
   for (let i = live.length - 1; i >= 0; i -= 1) if (!live[i]) live.splice(i, 1);

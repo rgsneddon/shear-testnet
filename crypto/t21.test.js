@@ -549,7 +549,8 @@ describe('T21 verify weight and share cap', () => {
     });
     assert.equal(built.tx.t21.shares.length, 3);
     const d = built.deferred.filter((x) => x.reason === 'share_cap');
-    assert.deepEqual(d.map((x) => x.shares.length), [1, 1]);
+    // Equal W_i: ranked by B; the payees ranked first fill the cap with their largest shares.
+    assert.deepEqual(d.map((x) => x.shares.length), [2]);
     assert.equal(verifyT21Coinbase({ tx: built.tx, expect: expectFor(built.tx) }).ok, true);
   });
 });
