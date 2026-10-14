@@ -23,7 +23,7 @@ import {
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { isPinnedProgram, listPublicVortices, mintVorticeDeployKey } from '../../crypto/vortex.js';
 import { handleWalletApi, paintedSpendableNanos, reconstructOwner } from '../src/wallet_api.js';
-import { sealedExplorerRows } from '../../crypto/chronoflux.js';
+import { sealedExplorerRows, compactChainBlock } from '../../crypto/chronoflux.js';
 import { writeChainBin } from '../../crypto/chainbin.js';
 import { createStore } from '../../node/src/store.js';
 
@@ -110,7 +110,7 @@ describe('wallet fluxset RPC', () => {
     assert.equal(jr.json.jroot, got.json.jroot);
   });
 
-  it('serves compacted notes matching dest noteCommit without viewKey', () => {
+  it('serves no notes route; the compact block carries the owner note without r (AL-5)', () => {
     const alice = newIdentity();
     const dest = spendDestOf(alice.spendPub);
     const nc = Buffer.alloc(32, 9);
@@ -135,21 +135,18 @@ describe('wallet fluxset RPC', () => {
         }],
       }],
     }];
-    const bare = handleWalletApi(url(`/api/wallet/notes?address=${dest}`), 'GET', {}, { store });
-    assert.equal(bare.status, 401);
-    assert.equal(bare.json.reason, 'dest_hold');
-    assert.equal(bare.json.notes, undefined);
-    assert.equal(bare.json.balance, undefined);
     const open = destOpeningFromView(alice.viewKey, alice.spendPub);
-    const got = handleWalletApi(url(`/api/wallet/notes?address=${dest}&open=${open}`), 'GET', {}, { store });
-    assert.equal(got.status, 200);
-    assert.equal(got.json.ok, true);
-    assert.equal(got.json.notes.length, 1);
-    assert.equal(got.json.notes[0].rEph, Buffer.alloc(32, 5).toString('hex'));
-    assert.equal(got.json.notes[0].index, 0);
-    assert.equal(got.json.notes[0].prev, Buffer.alloc(32, 3).toString('hex'));
-    assert.equal(got.json.notes[0].r, undefined);
-    assert.equal(JSON.stringify(got.json).includes('viewKey'), false);
+    for (const q of [`?address=${dest}`, `?address=${dest}&open=${open}`]) {
+      const got = handleWalletApi(url(`/api/wallet/notes${q}`), 'GET', {}, { store });
+      assert.equal(got.status, 404);
+      assert.equal(got.json.notes, undefined);
+    }
+    // The owner reads the compact block and matches its noteCommit.
+    const row = compactChainBlock(store.blocks[0]);
+    const mine = row.txs[0].vout.filter((o) => Buffer.from(o.noteCommit).equals(want));
+    assert.equal(mine.length, 1);
+    assert.ok(Buffer.from(mine[0].rEph).equals(Buffer.alloc(32, 5)));
+    assert.equal(mine[0].r, undefined);
   });
 
   it('reconstructOwner recovers dest spendable from noteCommit when explorer to is empty', () => {
@@ -504,8 +501,9 @@ describe('pool send reconstruct and Join vault', () => {
       amount: 0.4,
       open,
     }, { store, miners: new Map(), queueSend: (t) => posted.push(t) && t });
+    // AL-3: a send names no from, to, or amount. The server builds nothing.
     assert.equal(deny.status, 400);
-    assert.equal(deny.json.reason, 'insufficient');
+    assert.equal(deny.json.reason, 'send_hint');
 
     const pasted = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
@@ -513,7 +511,7 @@ describe('pool send reconstruct and Join vault', () => {
       amount: 0.4,
     }, { store, miners: new Map(), queueSend: () => ({ id: 'nope' }) });
     assert.equal(pasted.status, 400);
-    assert.equal(pasted.json.reason, 'need_dest');
+    assert.equal(pasted.json.reason, 'send_hint');
 
     const unsignedDraft = attachDummyOuts({
       kind: 'send',
@@ -524,9 +522,6 @@ describe('pool send reconstruct and Join vault', () => {
       vout: [{ address: bob, nanos: Math.round(0.4 * NANOS_PER_SHE) }],
     });
     const unsigned = handleWalletApi(url('/api/wallet/send'), 'POST', {
-      from: silent,
-      to: bob,
-      amount: 0.4,
       vout: unsignedDraft.vout,
       vin: unsignedDraft.vin,
       admit_proof: {
@@ -541,9 +536,7 @@ describe('pool send reconstruct and Join vault', () => {
 
     const signed = spendSig({ from: silent, to: bob, amount: 0.4, identity: alice });
     const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
-      from: silent,
-      to: bob,
-      amount: 0.4,
+      fee: levyNanos(Math.round(0.4 * NANOS_PER_SHE), { depth: 0 }),
       sig: signed.sig,
       spendPub: signed.spendPub,
       vout: signed.vout,
@@ -555,10 +548,12 @@ describe('pool send reconstruct and Join vault', () => {
       posted.push(tx);
       return tx;
     } });
-    assert.equal(ok.status, 200);
+    assert.equal(ok.status, 200, ok.json.reason);
     assert.equal(ok.json.ok, true);
-    assert.equal(ok.json.tx.from, silent);
-    assert.ok(ok.json.fromBalance < 1.5);
+    assert.equal(ok.json.tx.from, undefined);
+    assert.equal(ok.json.fromBalance, undefined);
+    const queued = posted.at(-1);
+    for (const k of ['from', 'to', 'nanos', 'amount', 'changeNanos']) assert.equal(queued[k], undefined, k);
     assert.equal(SPENDABLE_CONFIRMATIONS, 9);
   });
 
@@ -582,7 +577,7 @@ describe('pool send reconstruct and Join vault', () => {
       amount: 1,
     }, { store, miners: new Map(), pullBook, queueSend: () => ({ id: 'nope' }) });
     assert.equal(deny.status, 400);
-    assert.equal(deny.json.reason, 'insufficient');
+    assert.equal(deny.json.reason, 'send_hint');
   });
 
   it('Reserve lock spends spendable Continuum and refuses when spendable is short', () => {
@@ -696,7 +691,7 @@ describe('pool send reconstruct and Join vault', () => {
       vin: shortSend.vin,
     }, { store, miners: new Map(), queueSend, pullBook: thinBook });
     assert.equal(denySend.status, 400);
-    assert.equal(denySend.json.reason, 'insufficient');
+    assert.equal(denySend.json.reason, 'send_hint');
     assert.equal(posted.length, 0);
 
     const pullBook = {
@@ -739,7 +734,7 @@ describe('pool send reconstruct and Join vault', () => {
       excess: signed.excess,
     }, ctx);
     assert.equal(send.status, 400, send.json.reason);
-    assert.equal(send.json.reason, 'insufficient');
+    assert.equal(send.json.reason, 'send_hint');
     assert.equal(posted.length, 0);
   });
 
@@ -793,7 +788,6 @@ describe('pool send reconstruct and Join vault', () => {
       kind: 'send',
       from: silent,
       to: bob,
-      nanos: boundNanos,
       fee: levyNanos(boundNanos),
       vin: [{ address: silent, commit: Buffer.alloc(32, 4) }],
       vout: [
@@ -847,7 +841,7 @@ describe('pool send reconstruct and Join vault', () => {
       vout: sendBody.vout,
     }, ctx);
     assert.equal(send.status, 400, send.json.reason);
-    assert.equal(send.json.reason, 'insufficient');
+    assert.equal(send.json.reason, 'send_hint');
     assert.equal(chain.mempool.filter((m) => m.kind === 'send').length, 0);
 
     const { tpl } = chain.template({ miner: silent });
