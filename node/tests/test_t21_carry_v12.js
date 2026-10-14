@@ -534,16 +534,25 @@ describe('T21 payee-cap escrow: sealed value is paid by any producer, including 
     const escrowNc = noteCommitOfShare(small).toString('hex');
     const escrowE = Buffer.from(labels.labelOf(escrowNc).E);
 
+    const payeeB = Buffer.from(labels.labelOf(escrowNc).voucher.B);
     const b2 = mineChild({ parent: g, grand: null, carry, labels, fresh: [...large, small], t21: { payeeMax: 2 } });
     const owed = b2.block.txs[0].t21.owed;
+    const deferred = b2.block.txs[0].t21.defer;
     assert.equal(owed.length, 1);
-    assert.equal(owed[0].shares.length, 1);
+    assert.equal(owed[0].shares, undefined);
+    assert.equal(owed[0].pot, undefined);
+    assert.equal(owed[0].hash, undefined);
+    assert.equal(owed[0].B, undefined);
     assert.equal(owed[0].since, 2);
-    assert.ok(Buffer.from(owed[0].shares[0].E).equals(escrowE));
-    assert.equal(BigInt(owed[0].hash), unitsOf(small));
+    assert.ok(owed[0].Cpot && owed[0].Chash && owed[0].claim);
+    assert.equal(JSON.stringify(owed[0]).includes(payeeB.toString('hex')), false);
+    assert.equal(deferred.length, 1);
+    assert.ok(Buffer.from(deferred[0].E).equals(escrowE));
+    assert.equal(BigInt(deferred[0].w), unitsOf(small));
     assert.equal(b2.tpl.t21Later.length, 0);
     assert.ok(b2.block.supply.escrow > 0n);
-    assert.equal(b2.block.supply.escrow, BigInt(owed[0].pot) + BigInt(owed[0].hash));
+    const sealed = BigInt(b2.block.txs[0].t21.escrowTotal);
+    assert.equal(b2.block.supply.escrow, sealed);
 
     labels.issue(t21LoginVoucher(Buffer.alloc(32, 99)));
     assert.equal(labels.labelOf(escrowNc), null);
@@ -554,14 +563,17 @@ describe('T21 payee-cap escrow: sealed value is paid by any producer, including 
     assert.equal(b3.tpl.t21OwedPaid.length, 1);
     const settle = b3.block.txs[0].vout.find((o) => o.kind === 'settle');
     assert.ok(settle);
-    assert.ok(Buffer.from(settle.B).equals(Buffer.from(owed[0].B)));
+    assert.ok(Buffer.from(settle.B).equals(payeeB));
+    assert.notEqual(Buffer.from(settle.commit).toString('hex'), Buffer.from(owed[0].Cpot).toString('hex'));
     assert.equal(b3.block.supply.escrow, 0n);
-    assert.equal(b3.block.supply.mintedPot - b2.block.supply.mintedPot, BigInt(owed[0].pot));
-    assert.equal(b3.block.supply.mintedHash - b2.block.supply.mintedHash, BigInt(owed[0].hash));
+    assert.equal(b3.block.supply.escrowHash, 0n);
+    assert.equal(b3.block.supply.mintedPot - b2.block.supply.mintedPot, sealed);
+    assert.equal(b3.block.supply.mintedHash - b2.block.supply.mintedHash, 0n);
 
     const b3r = mineChild({ parent: b2.block, grand: g, carry, labels, fresh: [], t21: { payeeMax: 2 }, n: 5 });
     assert.equal(b3r.block.supply.escrow, 0n);
-    assert.equal(b3r.block.supply.mintedHash - b2.block.supply.mintedHash, BigInt(owed[0].hash));
+    assert.equal(b3r.block.supply.escrowHash, 0n);
+    assert.equal(b3r.block.supply.mintedPot - b2.block.supply.mintedPot, sealed);
     assert.notEqual(b3r.block.hash.toString('hex'), b3.block.hash.toString('hex'));
   });
 

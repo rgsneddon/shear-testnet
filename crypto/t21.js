@@ -16,6 +16,10 @@
  * with no shares pays Φ as one opened finder-fee note and does not fold it.
  * The pool fee is a hidden note that opens to the public f.
  * Mint: Σ C_i = (S + c_in − c_out − escrowPot + u·W_paid + Φ + settleV)·G + excess·H.
+ * Escrow rows commit pot and hash (C = v·G + r·H) with a 64-bit range proof.
+ * The block publishes the new escrow total, not each row. Σ C_escrow joins
+ * that total in the mint. A settle note uses a fresh blind and proves it
+ * holds the same value; the payee voucher is not on the row.
  *
  * Range: one aggregated range proof per row over 32 16-bit values
  * (20 VE limbs of v and r, three limbs of ρ, three of W−1−ρ, six zero pads).
@@ -143,6 +147,80 @@ function sha(...parts) {
   const h = createHash('sha256');
   for (const p of parts) h.update(Buffer.from(asU8(p)));
   return h.digest();
+}
+
+const ESCROW_BP_N = 64;
+
+/** Hash of the destination voucher. since and by make a reused voucher a new claim. */
+export function escrowClaim(dest, since, by) {
+  return sha(
+    Buffer.from('shear-t21-escrow-claim-v1'),
+    Buffer.from(asU8(dest.B)),
+    Buffer.from(asU8(dest.Y)),
+    Buffer.from(asU8(dest.lambda)),
+    u64le(since),
+    Buffer.from(asU8(by)),
+  );
+}
+
+function escrowIdOf(claim) {
+  return sha(Buffer.from('shear-t21-escrow-id-v1'), Buffer.from(asU8(claim)));
+}
+
+function escrowBpSeed(id, which, C) {
+  return sha(Buffer.from('shear-t21-escrow-bp-v1'), Buffer.from(asU8(id)), Buffer.from(which), Buffer.from(asU8(C)));
+}
+
+function proveValueBp(v, r, seed, rand) {
+  return { tag: RANGE_TAG, bp: bpProve([BigInt(v)], [r], ESCROW_BP_N, seed, rand) };
+}
+
+/** W·(Cpot+Chash) − rate·cw + Cρ = blind·H, and ρ + (W−1−ρ) = W−1. */
+function escrowLawParts({ C, w, rho, W, rate, rC, rw, rr, rd }) {
+  const cw = commit(w, rw);
+  const cr = commit(rho, rr);
+  const cd = commit(W - 1n - rho, rd);
+  const P = mulP(C, W).subtract(mulP(cw, rate)).add(cr);
+  const blind = mod(W * rC - rate * rw + rr);
+  const sumP = cr.add(cd).subtract(mulP(G, W - 1n));
+  const sumBlind = mod(rr + rd);
+  return { cw: pointBytes(cw), cr: pointBytes(cr), cd: pointBytes(cd), P, blind, sumP, sumBlind };
+}
+
+function escrowLawTerms(row, C, W, rate, stmt) {
+  const cw = pointOk(row.cw);
+  const cr = pointOk(row.cr);
+  const cd = pointOk(row.cd);
+  if (!cw || !cr || !cd || !row.law || !row.rhoSum || !row.rhoBp || !row.delBp) return null;
+  if (row.rhoBp.tag !== RANGE_TAG || row.delBp.tag !== RANGE_TAG) return null;
+  const P = mulP(C, W).subtract(mulP(cw, rate)).add(cr);
+  const sumP = cr.add(cd).subtract(mulP(G, W - 1n));
+  const lt = hTerms(P, row.law, stmt);
+  const st = hTerms(sumP, row.rhoSum, stmt);
+  let rhoT = null;
+  let delT = null;
+  try {
+    const id = t21Anchor(row);
+    rhoT = bpVerifyTerms([cr], row.rhoBp.bp, ESCROW_BP_N, escrowBpSeed(id, 'rho', row.cr));
+    delT = bpVerifyTerms([cd], row.delBp.bp, ESCROW_BP_N, escrowBpSeed(id, 'del', row.cd));
+  } catch {
+    return null;
+  }
+  if (!lt || !st || !rhoT || !delT) return null;
+  return { cw, terms: [lt, st, rhoT, delT] };
+}
+
+function secretsBook(spec) {
+  const book = new Map();
+  for (const rec of spec?.escrowOpen || []) {
+    if (!rec?.id) continue;
+    book.set(String(rec.id).toLowerCase(), rec);
+  }
+  return book;
+}
+
+function scalarBuf(s) {
+  return Buffer.from(scalarBytes(s));
 }
 
 function hasKey(o, k) {
@@ -533,18 +611,18 @@ function stable(value) {
 
 const pts = (list) => (Array.isArray(list) ? list.map((p) => bytes32(p) || Buffer.alloc(0)) : []);
 
-/** Owed rows bind the voucher, the producer, the sealed value, and each share. The open proof is not in T_stmt. */
+/**
+ * Owed rows bind the producer, the claim, and the pot/hash commitments.
+ * Amounts, blinds, and the payee voucher are not in T_stmt. Range proofs are not either.
+ */
 function owedStmt(o) {
-  const shares = Array.isArray(o?.shares) ? o.shares : [];
   return {
     since: String(o.since),
     by: bytes32(o.by) || Buffer.alloc(0),
-    B: bytes32(o.B) || Buffer.alloc(0),
-    Y: bytes32(o.Y) || Buffer.alloc(0),
-    lambda: bytes32(o.lambda) || Buffer.alloc(0),
-    pot: String(o.pot),
-    hash: String(o.hash),
-    shares: shares.map((s) => ({ w: String(s.w), E: bytes32(s.E) || Buffer.alloc(0) })),
+    id: bytes32(o.id) || Buffer.alloc(0),
+    claim: bytes32(o.claim) || Buffer.alloc(0),
+    Cpot: bytes32(o.Cpot) || Buffer.alloc(0),
+    Chash: bytes32(o.Chash) || Buffer.alloc(0),
   };
 }
 
@@ -592,6 +670,8 @@ export function statementOf(tx) {
         defer: defer.map((d) => ({ w: String(d.w), E: bytes32(d.E) || Buffer.alloc(0) })),
         owed: owed.map(owedStmt),
         ...(t21.back != null && t21.back !== '' && String(t21.back) !== '0' ? { back: String(t21.back) } : {}),
+        ...(t21.escrowTotal != null && t21.escrowTotal !== '' && String(t21.escrowTotal) !== '0' ? { escrowTotal: String(t21.escrowTotal) } : {}),
+        ...(t21.settleTotal != null && t21.settleTotal !== '' && String(t21.settleTotal) !== '0' ? { settleTotal: String(t21.settleTotal) } : {}),
         ...(t21.potCarry != null && t21.potCarry !== '' && String(t21.potCarry) !== '0' ? { potCarry: String(t21.potCarry) } : {}),
       }
     : {};
@@ -612,9 +692,15 @@ export function statementOf(tx) {
 }
 
 function proofView(tx) {
+  const owedProofs = Array.isArray(tx?.t21?.owed) && tx.t21.owed.some((o) => o?.potBp || o?.hashBp)
+    ? tx.t21.owed.map((o) => ({ potBp: o.potBp || null, hashBp: o.hashBp || null }))
+    : null;
   return {
     tally: tx?.t21?.tally || null,
     mint: tx?.t21?.mint || null,
+    ...(tx?.t21?.escrowMint ? { escrowMint: tx.t21.escrowMint } : {}),
+    ...(tx?.t21?.backOpen ? { backOpen: tx.t21.backOpen } : {}),
+    ...(owedProofs ? { owed: owedProofs } : {}),
     excess: bytes32(tx?.excess) || null,
     rows: (tx?.vout || []).map((o) => ({
       law: o.law || null,
@@ -973,19 +1059,36 @@ function copyOwedShare(s) {
 }
 
 function cloneOwed(o) {
+  const id = idBytes(o.id);
+  const claim = bytes32(o.claim);
+  const hidden = !!(bytes32(o.Cpot) || claim);
+  const folded = (o.shares || []).some((s) => s.pot0 != null && s.pot0 !== '');
   const out = {
     since: Number(o.since),
     by: Buffer.from(asU8(o.by)),
-    B: Buffer.from(asU8(o.B)),
-    Y: Buffer.from(asU8(o.Y)),
-    lambda: Buffer.from(asU8(o.lambda)),
-    pot: BigInt(o.pot).toString(),
-    hash: BigInt(o.hash).toString(),
-    shares: (o.shares || []).map(copyOwedShare),
   };
-  const id = idBytes(o.id);
-  const folded = (o.shares || []).some((s) => s.pot0 != null && s.pot0 !== '');
+  if (hidden) {
+    if (id) out.id = Buffer.from(id);
+    if (claim) out.claim = Buffer.from(claim);
+    if (bytes32(o.Cpot)) {
+      out.Cpot = Buffer.from(bytes32(o.Cpot));
+      out.Chash = Buffer.from(bytes32(o.Chash));
+    }
+    if (o.potBp) {
+      out.potBp = o.potBp;
+      out.hashBp = o.hashBp;
+    }
+    return out;
+  }
   if (id && folded) out.id = Buffer.from(id);
+  out.pot = BigInt(o.pot).toString();
+  out.hash = BigInt(o.hash).toString();
+  out.shares = (o.shares || []).map(copyOwedShare);
+  if (bytes32(o.B)) {
+    out.B = Buffer.from(asU8(o.B));
+    out.Y = Buffer.from(asU8(o.Y));
+    out.lambda = Buffer.from(asU8(o.lambda));
+  }
   return out;
 }
 
@@ -1045,9 +1148,13 @@ function carryFields(parts) {
  * t21.owed is the sealed list. back is escrow value returned to the pot.
  * An empty round can restate owed and return expired value; it cannot defer.
  */
-function owedFields({ defer = [], owed = [], back = 0n, potCarry = 0n } = {}, empty = false) {
+function owedFields({
+  defer = [], owed = [], back = 0n, potCarry = 0n, escrowTotal = 0n, settleTotal = 0n,
+} = {}, empty = false) {
   if (empty && defer.length) throw fail('share_bind');
   const out = { ...carryFields({ potCarry, back }) };
+  if (escrowTotal > 0n) out.escrowTotal = escrowTotal.toString();
+  if (settleTotal > 0n) out.settleTotal = settleTotal.toString();
   if (!empty && defer.length) out.defer = defer.map((d) => ({ w: BigInt(d.w).toString(), E: Buffer.from(asU8(d.E)) }));
   if (owed.length) out.owed = owed.map(cloneOwed);
   return out;
@@ -1076,6 +1183,7 @@ export function t21OwedNext({ owedIn = [], paidE = new Set(), fresh = [], folds 
     backPot: got.backPot,
     backHash: got.backHash,
     back: got.back,
+    hiddenBack: !!got.hiddenBack,
   };
 }
 
@@ -1137,6 +1245,21 @@ function emptyCoinbase(spec, deferred) {
   const ctx = { magic: spec.magic, height: spec.height, prevHash: spec.prevHash };
   const vaults = planVaults(ctx, spec.vaults, 0).concat(publicRows(spec, true));
   const listed = listingFor(spec, [], []);
+  const book = secretsBook(spec);
+  const keepIds = new Set(listed.owed.map((row) => t21Anchor(row)));
+  const expired = (spec.owedIn || []).filter((o) => {
+    const id = t21Anchor(o);
+    return id && !keepIds.has(id);
+  });
+  let back = listed.back;
+  if (listed.hiddenBack || expired.some((o) => o.Cpot)) {
+    back = 0n;
+    for (const o of expired) {
+      const rec = book.get(t21Anchor(o).toLowerCase());
+      if (!rec) throw fail('owed_list');
+      back += BigInt(rec.pot) + BigInt(rec.hash);
+    }
+  }
   const pot = splitCarry(cin + S);
   const tx = {
     coinbase: true,
@@ -1154,13 +1277,30 @@ function emptyCoinbase(spec, deferred) {
       magic: spec.magic,
       prevHash: Buffer.from(asU8(spec.prevHash)),
       shares: [],
-      ...owedFields({ owed: listed.owed, back: listed.back, potCarry: pot.potCarry }, true),
+      ...owedFields({ owed: listed.owed, back, potCarry: pot.potCarry }, true),
     },
   };
   tx.t21.stmt = statementOf(tx);
+  if (back > 0n && expired.some((o) => o.Cpot)) {
+    const seed = spec.seed ? Buffer.from(asU8(spec.seed)) : sha(Buffer.from(asU8(spec.prevHash)), u64le(spec.height));
+    const nonce = (label, i = 0, j = 0, bind = NO_BIND) => t21Nonce(seed, label, i, j, bind);
+    let sumBack = Point.ZERO;
+    let rBack = 0n;
+    for (const o of expired) {
+      const rec = book.get(t21Anchor(o).toLowerCase());
+      sumBack = sumBack.add(pointOk(rec.Cpot)).add(pointOk(rec.Chash));
+      rBack = mod(rBack + scalarFrom(rec.rp) + scalarFrom(rec.rh));
+    }
+    tx.t21.backOpen = proveH(sumBack.subtract(mulP(G, back)), rBack, tx.t21.stmt, nonce('back-open', 0, 0, tx.t21.stmt));
+  }
+  const escrowOpen = [];
+  for (const row of tx.t21.owed || []) {
+    const rec = book.get(String(t21Anchor(row)).toLowerCase());
+    if (rec) escrowOpen.push(rec);
+  }
   return {
     tx, deferred, batch: [], secrets: [], W: 0n, f: 0n, phi: 0n, dust: cin + S,
-    escrowPot: 0n, settleV: 0n, back: listed.back,
+    escrowPot: 0n, settleV: 0n, back, escrowOpen,
   };
 }
 
@@ -1244,21 +1384,38 @@ function buildOnce(spec, payees, deferred, seed, engine = null) {
   return buildOnceWith(spec, payees, deferred, seed, null);
 }
 
-function freshEscrow(spec, priced) {
+function freshEscrow(spec, priced, nonce) {
   const producer = bytes32(spec.producer);
   if (priced.length && !producer) throw fail('owed_list');
-  return priced.map((g) => ({
-    since: Number(spec.height),
-    by: Buffer.from(producer),
-    B: pointBytes(g._vch.B),
-    Y: pointBytes(g._vch.Y),
-    lambda: Buffer.from(g._vch.lambdaBytes),
-    pot: g.pot.toString(),
-    hash: g.hash.toString(),
-    shares: (g.shares || []).map((s) => ({
-      w: BigInt(s.w).toString(), E: Buffer.from(asU8(s.E)), beta: s.beta,
-    })),
-  }));
+  return priced.map((g, i) => {
+    const dest = {
+      B: pointBytes(g._vch.B),
+      Y: pointBytes(g._vch.Y),
+      lambda: Buffer.from(g._vch.lambdaBytes),
+    };
+    const claim = escrowClaim(dest, spec.height, producer);
+    const id = escrowIdOf(claim);
+    const rp = nonce('escrow-rp', i);
+    const rh = nonce('escrow-rh', i);
+    return {
+      since: Number(spec.height),
+      by: Buffer.from(producer),
+      id,
+      claim,
+      pot: g.pot,
+      hash: g.hash,
+      rho: g.rho,
+      w: g.Wi,
+      rp,
+      rh,
+      Cpot: pointBytes(commit(g.pot, rp)),
+      Chash: pointBytes(commit(g.hash, rh)),
+      dest,
+      shares: (g.shares || []).map((s) => ({
+        w: BigInt(s.w).toString(), E: Buffer.from(asU8(s.E)), beta: s.beta,
+      })),
+    };
+  });
 }
 
 function buildOnceWith(spec, payees, deferred, seed, engine) {
@@ -1278,6 +1435,7 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
   if (engine && lawW !== tallyW && spec.prover === 'native') throw fail('t21_prover_native');
   const useEngine = engine && lawW === tallyW ? engine : null;
   const nonce = (label, i = 0, j = 0, bind = NO_BIND) => t21Nonce(seed, label, i, j, bind);
+  const book = secretsBook(spec);
   const ctx = {
     magic: spec.magic, height: spec.height, prevHash: spec.prevHash, nonce, W: lawW, rate,
   };
@@ -1292,18 +1450,27 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
   let settlePot = 0n;
   let settleHash = 0n;
   for (const s of settleRows) {
-    const pot = t21Big(s.pot);
-    const hash = t21Big(s.hash);
-    if (pot == null || hash == null) throw fail('owed_list');
+    const anchor = t21Anchor(s);
+    if (!anchor) throw fail('owed_list');
+    const rec = book.get(String(anchor).toLowerCase());
+    const pot = rec ? BigInt(rec.pot) : t21Big(s.pot);
+    const hash = rec ? BigInt(rec.hash) : t21Big(s.hash);
+    const dest = rec?.dest || s.dest;
+    if (pot == null || hash == null || !dest) throw fail('owed_list');
     const v = pot + hash;
     settlePot += pot;
     settleHash += hash;
-    const vch = voucherPoints({ B: s.B, Y: s.Y, lambda: s.lambda });
-    if (!vch || vch.lambda !== voucherLambda(s.B, s.Y)) throw fail('split_label');
-    const anchor = t21Anchor(s);
-    if (!anchor) throw fail('owed_list');
+    const vch = voucherPoints(dest);
+    if (!vch || vch.lambda !== voucherLambda(dest.B, dest.Y)) throw fail('split_label');
+    const Cpot = pointOk(rec?.Cpot || s.Cpot);
+    const Chash = pointOk(rec?.Chash || s.Chash);
+    const rp = rec?.rp != null ? scalarFrom(rec.rp) : null;
+    const rh = rec?.rh != null ? scalarFrom(rec.rh) : null;
+    if (!Cpot || !Chash || rp == null || rh == null) throw fail('owed_list');
     rows.push({
-      kind: 'settle', vch, v, Wi: 0n, rho: 0n, finEff: v, finPub: 0n, escrowE: Buffer.from(anchor, 'hex'),
+      kind: 'settle', vch, v, Wi: 0n, rho: 0n, finEff: v, finPub: 0n,
+      escrowE: Buffer.from(anchor, 'hex'),
+      Cpot, Chash, rEsc: mod(rp + rh),
     });
   }
   const dummySecret = spec.dummySecret || sha(seed, Buffer.from('dummy'));
@@ -1326,38 +1493,65 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
   for (const p of payees) {
     for (const s of p.shares || []) shares.push({ w: BigInt(s.w), E: Buffer.from(asU8(s.E)), ell: s.ell, beta: s.beta });
   }
-  const fresh = settleOnly ? [] : freshEscrow(spec, planned.escrow);
+  const fresh = settleOnly ? [] : freshEscrow(spec, planned.escrow, nonce);
   const foldApplies = [];
+  const owedById = new Map((spec.owedIn || []).map((o) => [t21Anchor(o), o]));
   if (!settleOnly) {
-    const owedById = new Map((spec.owedIn || []).map((o) => [t21Anchor(o), o]));
     for (const g of planned.folds) {
       const id = String(g.id);
       const parent = owedById.get(id);
-      if (!parent) throw fail('owed_list');
+      const rec = book.get(id.toLowerCase());
+      if (!parent || !rec) throw fail('owed_list');
       if (hex32(parent.by) !== hex32(spec.producer)) throw fail('owed_list');
+      const rp = mod(scalarFrom(rec.rp) + nonce('fold-rp', foldApplies.length));
+      const rh = mod(scalarFrom(rec.rh) + nonce('fold-rh', foldApplies.length));
+      const potN = BigInt(rec.pot) + g.pot;
+      const hashN = BigInt(rec.hash) + g.hash;
       foldApplies.push({
         id,
+        pot: potN,
+        hash: hashN,
         addPot: g.pot,
         addHash: g.hash,
+        rho: g.rho,
+        w: g.Wi,
+        rp,
+        rh,
+        Cpot: pointBytes(commit(potN, rp)),
+        Chash: pointBytes(commit(hashN, rh)),
         shares: (g.shares || []).map((s) => ({ w: BigInt(s.w).toString(), E: Buffer.from(asU8(s.E)), beta: s.beta })),
       });
     }
   }
   const listed = listingFor(spec, fresh, settleRows, foldApplies);
-  const defer = [];
-  const freshIds = new Set(fresh.map((row) => t21Anchor(row)));
-  const priorCount = new Map((spec.owedIn || []).map((o) => [t21Anchor(o), (o.shares || []).length]));
-  const foldIds = new Map(foldApplies.map((f) => [f.id, priorCount.get(f.id) || 0]));
-  for (const row of listed.owed) {
-    const id = t21Anchor(row);
-    if (freshIds.has(id)) {
-      for (const s of row.shares) defer.push({ w: s.w, E: Buffer.from(asU8(s.E)) });
-    } else if (foldIds.has(id)) {
-      const nOld = foldIds.get(id);
-      for (const s of row.shares.slice(nOld)) defer.push({ w: s.w, E: Buffer.from(asU8(s.E)) });
+  const paidIds = new Set(settleRows.map((s) => t21Anchor(s)).filter(Boolean));
+  const keepIds = new Set(listed.owed.map((row) => t21Anchor(row)));
+  const expired = (spec.owedIn || []).filter((o) => {
+    const id = t21Anchor(o);
+    return id && !keepIds.has(id) && !paidIds.has(id);
+  });
+  let back = listed.back;
+  if (listed.hiddenBack || expired.some((o) => o.Cpot)) {
+    back = 0n;
+    for (const o of expired) {
+      const rec = book.get(t21Anchor(o).toLowerCase());
+      if (!rec) throw fail('owed_list');
+      back += BigInt(rec.pot) + BigInt(rec.hash);
     }
   }
+  const defer = [];
+  const freshById = new Map(fresh.map((row) => [t21Anchor(row), row]));
+  const foldById = new Map(foldApplies.map((f) => [f.id, f]));
+  for (const row of listed.owed) {
+    const id = t21Anchor(row);
+    const born = freshById.get(id);
+    const grown = foldById.get(id);
+    const sharesOf = born ? born.shares : (grown ? grown.shares : []);
+    for (const s of sharesOf) defer.push({ w: s.w, E: Buffer.from(asU8(s.E)) });
+  }
   const pot = splitCarry(dustCarry);
+  const escrowTotal = escrowPot + escrowHash;
+  const settleV = settlePot + settleHash;
   const skel = {
     coinbase: true,
     cbForm: CB_FORM,
@@ -1372,26 +1566,113 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
       magic: spec.magic,
       prevHash: Buffer.from(asU8(spec.prevHash)),
       shares: shares.map((s) => ({ w: s.w.toString(), E: s.E })),
-      ...owedFields({ defer, owed: listed.owed, back: listed.back, potCarry: pot.potCarry }, false),
+      ...owedFields({
+        defer, owed: listed.owed, back, potCarry: pot.potCarry, escrowTotal, settleTotal: settleV,
+      }, false),
     },
   };
   const stmt = statementOf(skel);
-  const betaOf = new Map();
-  for (const g of fresh) for (const s of g.shares) betaOf.set(hex32(s.E), s.beta);
-  for (const g of foldApplies) for (const s of g.shares) betaOf.set(hex32(s.E), s.beta);
+  const bpRand = (label, k = 0) => nonce(`escrow-bp-${label}`, k, 0, stmt);
+  let weightCommit = Point.ZERO;
+  let weightBlind = 0n;
+  let lawN = 0;
   for (const row of skel.t21.owed || []) {
-    row.shares.forEach((s, i) => {
-      if (s.open) return;
-      const beta = betaOf.get(hex32(s.E));
-      if (!beta) throw fail('owed_list');
-      const label = Number(row.since) === Number(spec.height) ? 'escrow-open' : 'escrow-fold';
-      s.open = proveOpen(row, { ...s, beta }, nonce(label, i, row.shares.length, stmt));
+    const id = t21Anchor(row);
+    const born = freshById.get(id);
+    const grown = foldById.get(id);
+    const src = born || grown;
+    if (!src) continue;
+    const fullPot = src.Cpot;
+    const fullHash = src.Chash;
+    row.potBp = proveValueBp(src.pot, src.rp, escrowBpSeed(id, 'pot', fullPot), bpRand);
+    row.hashBp = proveValueBp(src.hash, src.rh, escrowBpSeed(id, 'hash', fullHash), (label, k = 0) => nonce(`escrow-bp-h-${label}`, k, 0, stmt));
+    const rw = nonce('escrow-rw', lawN, 0, stmt);
+    const rr = nonce('escrow-rr', lawN, 0, stmt);
+    const rd = nonce('escrow-rd', lawN, 0, stmt);
+    lawN += 1;
+    let C;
+    let rC;
+    if (born) {
+      C = pointOk(born.Cpot).add(pointOk(born.Chash));
+      rC = mod(sb(born.rp) + sb(born.rh));
+    } else {
+      const prev = book.get(id.toLowerCase());
+      const parent = owedById.get(id);
+      C = pointOk(grown.Cpot).add(pointOk(grown.Chash)).subtract(pointOk(parent.Cpot)).subtract(pointOk(parent.Chash));
+      rC = mod(sb(grown.rp) + sb(grown.rh) - scalarFrom(prev.rp) - scalarFrom(prev.rh));
+    }
+    const parts = escrowLawParts({
+      C, w: src.w, rho: src.rho, W: lawW, rate, rC, rw, rr, rd,
     });
+    row.cw = parts.cw;
+    row.cr = parts.cr;
+    row.cd = parts.cd;
+    row.law = proveH(parts.P, parts.blind, stmt, nonce('escrow-law', lawN, 0, stmt));
+    row.rhoSum = proveH(parts.sumP, parts.sumBlind, stmt, nonce('escrow-rho', lawN, 0, stmt));
+    row.rhoBp = proveValueBp(src.rho, rr, escrowBpSeed(id, 'rho', parts.cr), (label, k = 0) => nonce(`escrow-bp-r-${label}`, k, 0, stmt));
+    row.delBp = proveValueBp(lawW - 1n - src.rho, rd, escrowBpSeed(id, 'del', parts.cd), (label, k = 0) => nonce(`escrow-bp-d-${label}`, k, 0, stmt));
+    weightCommit = weightCommit.add(pointOk(parts.cw));
+    weightBlind = mod(weightBlind + sb(rw));
+  }
+  const escrowWt = weightCommit.equals(Point.ZERO) ? null : proveH(
+    weightCommit.subtract(mulP(G, defer.reduce((a, s) => a + BigInt(s.w), 0n))),
+    weightBlind,
+    stmt,
+    nonce('escrow-wt', 0, 0, stmt),
+  );
+  let sumEsc = Point.ZERO;
+  let rEscrow = 0n;
+  for (const row of fresh) {
+    sumEsc = sumEsc.add(pointOk(row.Cpot)).add(pointOk(row.Chash));
+    rEscrow = mod(rEscrow + sb(row.rp) + sb(row.rh));
+  }
+  for (const fold of foldApplies) {
+    const parent = owedById.get(fold.id);
+    const rec = book.get(fold.id.toLowerCase());
+    sumEsc = sumEsc.add(pointOk(fold.Cpot)).add(pointOk(fold.Chash))
+      .subtract(pointOk(parent.Cpot)).subtract(pointOk(parent.Chash));
+    rEscrow = mod(rEscrow + sb(fold.rp) + sb(fold.rh) - scalarFrom(rec.rp) - scalarFrom(rec.rh));
+  }
+  let sumHashC = Point.ZERO;
+  let rHash = 0n;
+  for (const row of fresh) {
+    sumHashC = sumHashC.add(pointOk(row.Chash));
+    rHash = mod(rHash + sb(row.rh));
+  }
+  for (const fold of foldApplies) {
+    const parent = owedById.get(fold.id);
+    const rec = book.get(fold.id.toLowerCase());
+    sumHashC = sumHashC.add(pointOk(fold.Chash)).subtract(pointOk(parent.Chash));
+    rHash = mod(rHash + sb(fold.rh) - scalarFrom(rec.rh));
+  }
+  const hashAllEsc = uPub * defer.reduce((a, s) => a + BigInt(s.w), 0n);
+  const escrowMint = escrowTotal > 0n
+    ? proveH(sumEsc.subtract(mulP(G, escrowTotal)), rEscrow, stmt, nonce('escrow-mint', 0, 0, stmt))
+    : null;
+  const escrowHashProof = escrowTotal > 0n
+    ? proveH(sumHashC.subtract(mulP(G, hashAllEsc)), rHash, stmt, nonce('escrow-hash', 0, 0, stmt))
+    : null;
+  let backOpen = null;
+  if (back > 0n) {
+    let sumBack = Point.ZERO;
+    let rBack = 0n;
+    for (const o of expired) {
+      const rec = book.get(t21Anchor(o).toLowerCase());
+      sumBack = sumBack.add(pointOk(rec.Cpot)).add(pointOk(rec.Chash));
+      rBack = mod(rBack + scalarFrom(rec.rp) + scalarFrom(rec.rh));
+    }
+    backOpen = proveH(sumBack.subtract(mulP(G, back)), rBack, stmt, nonce('back-open', 0, 0, stmt));
   }
   const { proved, tally } = useEngine
     ? proveNative(useEngine, ctx, items, shares, stmt, seed)
     : { proved: items.map((it) => proveRow(ctx, it, stmt)), tally: proveTally(items, shares, tallyW, stmt, nonce) };
-  const settleV = settlePot + settleHash;
+  proved.forEach((pub, i) => {
+    const row = items[i].row;
+    if (row.kind !== 'settle') return;
+    const P = items[i].C.subtract(row.Cpot).subtract(row.Chash);
+    const s = mod(sb(items[i].r) - row.rEsc);
+    pub.law = proveH(P, s, stmt, nonce('settle-eq', i, 0, stmt));
+  });
   const mintG = planned.S + planned.cin - dustCarry - escrowPot + uPub * tallyW + planned.phi + settleV;
   let sumC = Point.ZERO;
   let h = 0n;
@@ -1408,8 +1689,37 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
     vout: proved.concat(vaults),
     carryNanos: pot.carryNanos,
     excess: scalarBytes(h),
-    t21: { ...skel.t21, tally, mint, stmt },
+    t21: {
+      ...skel.t21, tally, mint, stmt,
+      ...(escrowMint ? { escrowMint } : {}),
+      ...(escrowHashProof ? { escrowHashOpen: escrowHashProof } : {}),
+      ...(escrowWt ? { escrowWt } : {}),
+      ...(backOpen ? { backOpen } : {}),
+    },
   };
+  const escrowOpen = [];
+  for (const row of tx.t21.owed || []) {
+    const id = t21Anchor(row);
+    const born = freshById.get(id);
+    const grown = foldById.get(id);
+    if (born) {
+      escrowOpen.push({
+        id, pot: born.pot.toString(), hash: born.hash.toString(),
+        rp: scalarBuf(born.rp), rh: scalarBuf(born.rh), Cpot: born.Cpot, Chash: born.Chash, dest: born.dest,
+        shares: born.shares,
+      });
+    } else if (grown) {
+      const prev = book.get(id.toLowerCase());
+      escrowOpen.push({
+        id, pot: grown.pot.toString(), hash: grown.hash.toString(),
+        rp: scalarBuf(grown.rp), rh: scalarBuf(grown.rh), Cpot: grown.Cpot, Chash: grown.Chash, dest: prev.dest,
+        shares: (prev.shares || []).concat(grown.shares),
+      });
+    } else {
+      const rec = book.get(String(id).toLowerCase());
+      if (rec) escrowOpen.push(rec);
+    }
+  }
   return {
     tx,
     deferred,
@@ -1423,18 +1733,19 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
     escrowPot,
     escrowHash,
     settleV,
-    back: listed.back,
+    back,
+    escrowOpen,
   };
 }
 
 /**
- * Payee slot order (MF-3): the finder payee first (Φ must be paid), then by
- * W_i largest first, so many small vouchers cannot take the slots from the
- * hashers that did the work, then by B* bytes. Sorts in place.
+ * Payee slot order (MF-3): by W_i largest first, so many small vouchers cannot
+ * take the slots from the hashers that did the work, then by B* bytes.
+ * A finder flag is not a key. A finder row with no shares is pinned later.
+ * Sorts in place.
  */
 function rankPayees(live) {
   const key = (p) => ({
-    fin: (scalarOk(p.fin || 0) ?? 0n) > 0n,
     Wi: (p.shares || []).reduce((a, s) => a + (scalarOk(s.w) ?? 0n), 0n),
     B: Buffer.from(asU8(p.voucher?.B || [])).toString('hex'),
   });
@@ -1442,7 +1753,6 @@ function rankPayees(live) {
   live.sort((a, b) => {
     const x = keys.get(a);
     const y = keys.get(b);
-    if (x.fin !== y.fin) return x.fin ? -1 : 1;
     if (x.Wi !== y.Wi) return x.Wi > y.Wi ? -1 : 1;
     return x.B < y.B ? -1 : x.B > y.B ? 1 : 0;
   });
@@ -1662,6 +1972,7 @@ export function verifyT21Coinbase(input) {
     const hex = Buffer.from(asU8(s.E)).toString('hex');
     if (seenE.has(hex)) return no('share_label');
     if (expect.prevEs && expect.prevEs.has(hex)) return no('share_label');
+    if (expect.escrowEs && expect.escrowEs.has(hex)) return no('share_label');
     seenE.add(hex);
   }
   for (const s of shares) W += BigInt(s.w);
@@ -1748,7 +2059,16 @@ export function verifyT21Coinbase(input) {
   for (const p of parsed) {
     if (p.o.kind !== 'settle') continue;
     const row = owedOk.settleById.get(hex32(p.o.escrowE));
-    if (!row || hex32(p.o.B) !== hex32(row.B) || hex32(p.o.Y) !== hex32(row.Y)
+    if (!row) return no('owed_list');
+    if (row.claim) {
+      if (!sameBytes(escrowClaim(p.o, row.since, row.by), row.claim)) return no('owed_list');
+      const Cpot = pointOk(row.Cpot);
+      const Chash = pointOk(row.Chash);
+      if (!Cpot || !Chash) return no('owed_list');
+      p.escrowC = { Cpot, Chash };
+      continue;
+    }
+    if (hex32(p.o.B) !== hex32(row.B) || hex32(p.o.Y) !== hex32(row.Y)
       || hex32(p.o.lambda) !== hex32(row.lambda)) {
       return no('owed_list');
     }
@@ -1792,8 +2112,12 @@ function sharePin(s, key) {
 
 function sameRow(got, want) {
   if (Number(got.since) !== Number(want.since)) return false;
-  if (!sameBytes(got.by, want.by) || !sameBytes(got.B, want.B) || !sameBytes(got.Y, want.Y)
-    || !sameBytes(got.lambda, want.lambda)) return false;
+  if (!sameBytes(got.by, want.by)) return false;
+  if (got.Cpot || want.Cpot || got.claim || want.claim) {
+    return sameBytes(got.id, want.id) && sameBytes(got.claim, want.claim)
+      && sameBytes(got.Cpot, want.Cpot) && sameBytes(got.Chash, want.Chash);
+  }
+  if (!sameBytes(got.B, want.B) || !sameBytes(got.Y, want.Y) || !sameBytes(got.lambda, want.lambda)) return false;
   if (String(got.pot) !== String(want.pot) || String(got.hash) !== String(want.hash)) return false;
   const gid = idBytes(got.id);
   const wid = idBytes(want.id);
@@ -1846,6 +2170,16 @@ function checkOwed(tx, shares, defer, expect, finB, phiMint = 0n) {
     const id = t21Anchor(row);
     const parent = byId.get(id);
     if (!parent || BigInt(row.since) === height) continue;
+    if (row.Cpot || parent.Cpot) {
+      if (sameBytes(row.Cpot, parent.Cpot) && sameBytes(row.Chash, parent.Chash)
+        && sameBytes(row.claim, parent.claim)) continue;
+      if (!sameBytes(row.claim, parent.claim) || Number(row.since) !== Number(parent.since)
+        || !sameBytes(row.by, parent.by)) return no('owed_list');
+      foldIntents.push({
+        id, row, parent, hidden: true, Cpot: row.Cpot, Chash: row.Chash, potBp: row.potBp, hashBp: row.hashBp,
+      });
+      continue;
+    }
     const old = rowShares(parent);
     const now = rowShares(row);
     const untouched = now.length === old.length
@@ -1867,7 +2201,9 @@ function checkOwed(tx, shares, defer, expect, finB, phiMint = 0n) {
   try {
     listed = t21OwedNext({
       owedIn, paidE, fresh, height: expect.height,
-      folds: foldIntents.map((f) => ({ id: f.id, addPot: f.addPot, addHash: f.addHash, shares: f.shares })),
+      folds: foldIntents.map((f) => (f.hidden
+        ? { id: f.id, Cpot: f.Cpot, Chash: f.Chash, potBp: f.potBp, hashBp: f.hashBp }
+        : { id: f.id, addPot: f.addPot, addHash: f.addHash, shares: f.shares })),
     });
   } catch (err) {
     return no(err.reason || 'owed_list');
@@ -1877,11 +2213,15 @@ function checkOwed(tx, shares, defer, expect, finB, phiMint = 0n) {
     if (!sameRow(got[i], listed.owed[i])) return no('owed_list');
   }
   if (!quotaOk(got)) return no('owed_cap');
-  for (let i = 0; i < got.length; i += 1) {
-    if (!rowShares(got[i]).every((s) => openHolds(got[i], s))) return no('share_label');
+  const hidden = got.some((r) => r.Cpot) || owedIn.some((r) => r.Cpot) || listed.hiddenBack;
+  if (!hidden) {
+    for (let i = 0; i < got.length; i += 1) {
+      if (!rowShares(got[i]).every((s) => openHolds(got[i], s))) return no('share_label');
+    }
   }
   const backPub = t21.back != null && t21.back !== '' ? t21Big(t21.back) : 0n;
-  if (backPub == null || backPub !== listed.back) return no('owed_list');
+  if (backPub == null) return no('owed_list');
+  if (!hidden && backPub !== listed.back) return no('owed_list');
   const duty = settleDuty({
     owedIn: owedIn.map((o) => ({ ...o, id: t21Anchor(o) })),
     paid: paidE,
@@ -1915,53 +2255,154 @@ function checkOwed(tx, shares, defer, expect, finB, phiMint = 0n) {
     return null;
   };
   const foldById = new Map(foldIntents.map((f) => [f.id, f]));
-  for (const row of fresh) {
-    if (!who || hex32(row.by) !== who) return no('owed_list');
-    if (scalarOkBytes(row.lambda) !== voucherLambda(row.B, row.Y)) return no('split_label');
-    let w = 0n;
-    for (const s of rowShares(row)) w += BigInt(s.w);
-    wEsc += w;
-  }
-  for (const fold of foldIntents) {
-    if (!who || hex32(fold.row.by) !== who) return no('owed_list');
-    if (Number(fold.row.since) !== Number(fold.parent.since)) return no('owed_list');
-    if (hex32(fold.row.by) !== hex32(fold.parent.by) || hex32(fold.row.B) !== hex32(fold.parent.B)
-      || hex32(fold.row.Y) !== hex32(fold.parent.Y) || hex32(fold.row.lambda) !== hex32(fold.parent.lambda)) {
-      return no('owed_list');
-    }
-    wEsc += fold.w;
-  }
-  for (const row of got) {
-    const id = t21Anchor(row);
-    const sharesOf = BigInt(row.since) === height ? rowShares(row) : (foldById.get(id)?.shares || []);
-    for (const s of sharesOf) {
-      const bad = noteShare(s);
-      if (bad) return bad;
-    }
-  }
-  if (flat.length !== defer.length) return no('owed_list');
-  for (let i = 0; i < flat.length; i += 1) {
-    if (String(flat[i].w) !== String(defer[i].w) || !sameBytes(flat[i].E, defer[i].E)) return no('owed_list');
-  }
-  const wall = wPaid + wEsc;
-  if (wEsc > 0n) {
-    if (wall <= 0n || wall >= W_MAX) return no('split_cap');
+    if (hidden) {
     for (const row of fresh) {
-      let w = 0n;
-      for (const s of rowShares(row)) w += BigInt(s.w);
-      const pay = weightPay(R + phiMint, wall, w, u);
-      if (!pay || pay.pot !== BigInt(row.pot) || pay.hash !== BigInt(row.hash)) return no('pot_sched');
-      escrowPot += pay.pot;
+      if (!who || hex32(row.by) !== who) return no('owed_list');
+      if (!bytes32(row.claim) || !sameBytes(bytes32(row.id), escrowIdOf(row.claim))) return no('owed_list');
     }
     for (const fold of foldIntents) {
-      const pay = weightPay(R + phiMint, wall, fold.w, u);
-      if (!pay || pay.pot !== fold.addPot || pay.hash !== fold.addHash) return no('pot_sched');
-      escrowPot += pay.pot;
+      if (!fold.hidden) continue;
+      if (!who || hex32(fold.row.by) !== who) return no('owed_list');
+    }
+    for (const s of defer) {
+      const bad = noteShare(s);
+      if (bad) return bad;
+      wEsc += BigInt(s.w);
+    }
+  } else {
+    for (const row of fresh) {
+      if (!who || hex32(row.by) !== who) return no('owed_list');
+      if (scalarOkBytes(row.lambda) !== voucherLambda(row.B, row.Y)) return no('split_label');
+      let w = 0n;
+      for (const s of rowShares(row)) w += BigInt(s.w);
+      wEsc += w;
+    }
+    for (const fold of foldIntents) {
+      if (!who || hex32(fold.row.by) !== who) return no('owed_list');
+      if (Number(fold.row.since) !== Number(fold.parent.since)) return no('owed_list');
+      if (hex32(fold.row.by) !== hex32(fold.parent.by) || hex32(fold.row.B) !== hex32(fold.parent.B)
+        || hex32(fold.row.Y) !== hex32(fold.parent.Y) || hex32(fold.row.lambda) !== hex32(fold.parent.lambda)) {
+        return no('owed_list');
+      }
+      wEsc += fold.w;
+    }
+    for (const row of got) {
+      const id = t21Anchor(row);
+      const sharesOf = BigInt(row.since) === height ? rowShares(row) : (foldById.get(id)?.shares || []);
+      for (const s of sharesOf) {
+        const bad = noteShare(s);
+        if (bad) return bad;
+      }
+    }
+    if (flat.length !== defer.length) return no('owed_list');
+    for (let i = 0; i < flat.length; i += 1) {
+      if (String(flat[i].w) !== String(defer[i].w) || !sameBytes(flat[i].E, defer[i].E)) return no('owed_list');
     }
   }
+  const wall = wPaid + wEsc;
+  const escrowTotalPub = t21.escrowTotal != null && t21.escrowTotal !== '' ? t21Big(t21.escrowTotal) : 0n;
+  if (escrowTotalPub == null) return no('pot_sched');
+  if (wEsc > 0n) {
+    if (wall <= 0n || wall >= W_MAX) return no('split_cap');
+    if (hidden) {
+      const hashIn = u * wEsc;
+      if (escrowTotalPub < hashIn) return no('pot_sched');
+      escrowPot = escrowTotalPub - hashIn;
+    } else {
+      for (const row of fresh) {
+        let w = 0n;
+        for (const s of rowShares(row)) w += BigInt(s.w);
+        const pay = weightPay(R + phiMint, wall, w, u);
+        if (!pay || pay.pot !== BigInt(row.pot) || pay.hash !== BigInt(row.hash)) return no('pot_sched');
+        escrowPot += pay.pot;
+      }
+      for (const fold of foldIntents) {
+        const pay = weightPay(R + phiMint, wall, fold.w, u);
+        if (!pay || pay.pot !== fold.addPot || pay.hash !== fold.addHash) return no('pot_sched');
+        escrowPot += pay.pot;
+      }
+    }
+  } else if (hidden && escrowTotalPub !== 0n) return no('pot_sched');
   let settleV = 0n;
-  for (const row of settleById.values()) settleV += BigInt(row.pot) + BigInt(row.hash);
-  return { ok: true, wEsc, escrowPot, settleV, back: listed.back, settleById };
+  if (hidden && settleById.size) {
+    settleV = t21.settleTotal != null && t21.settleTotal !== '' ? t21Big(t21.settleTotal) : 0n;
+    if (settleV == null) return no('owed_list');
+  } else {
+    for (const row of settleById.values()) settleV += BigInt(row.pot) + BigInt(row.hash);
+  }
+  if (hidden) {
+    const stmt = statementOf(tx);
+    const range = [];
+    for (const row of got) {
+      if (!row.potBp || row.potBp.tag !== RANGE_TAG || !row.hashBp || row.hashBp.tag !== RANGE_TAG) return no('range_proof');
+      const id = t21Anchor(row);
+      let potT = null;
+      let hashT = null;
+      try {
+        potT = bpVerifyTerms([pointOk(row.Cpot)], row.potBp.bp, ESCROW_BP_N, escrowBpSeed(id, 'pot', row.Cpot));
+        hashT = bpVerifyTerms([pointOk(row.Chash)], row.hashBp.bp, ESCROW_BP_N, escrowBpSeed(id, 'hash', row.Chash));
+      } catch {
+        potT = null;
+        hashT = null;
+      }
+      if (!potT || !hashT) return no('range_proof');
+      range.push(potT, hashT);
+    }
+    if (range.length && !msmZero(range.map((t) => [t, weight128()]))) return no('range_proof');
+    const lawRate = R + phiMint + wall * u;
+    let sumW = Point.ZERO;
+    const lawTerms = [];
+    for (const row of fresh) {
+      const gotLaw = escrowLawTerms(row, pointOk(row.Cpot).add(pointOk(row.Chash)), wall, lawRate, stmt);
+      if (!gotLaw) return no('split_law');
+      sumW = sumW.add(gotLaw.cw);
+      lawTerms.push(...gotLaw.terms);
+    }
+    for (const fold of foldIntents) {
+      if (!fold.hidden) continue;
+      const C = pointOk(fold.row.Cpot).add(pointOk(fold.row.Chash))
+        .subtract(pointOk(fold.parent.Cpot)).subtract(pointOk(fold.parent.Chash));
+      const gotLaw = escrowLawTerms(fold.row, C, wall, lawRate, stmt);
+      if (!gotLaw) return no('split_law');
+      sumW = sumW.add(gotLaw.cw);
+      lawTerms.push(...gotLaw.terms);
+    }
+    if (lawTerms.length && !msmZero(lawTerms.map((t) => [t, weight128()]))) return no('split_law');
+    if (wEsc > 0n) {
+      const wt = hTerms(sumW.subtract(mulP(G, wEsc)), t21.escrowWt, stmt);
+      if (!wt || !msmZero([[wt, 1n]])) return no('split_tally');
+    }
+    if (escrowTotalPub > 0n) {
+      let sumEsc = Point.ZERO;
+      for (const row of fresh) sumEsc = sumEsc.add(pointOk(row.Cpot)).add(pointOk(row.Chash));
+      for (const fold of foldIntents) {
+        if (!fold.hidden) continue;
+        sumEsc = sumEsc.add(pointOk(fold.row.Cpot)).add(pointOk(fold.row.Chash))
+          .subtract(pointOk(fold.parent.Cpot)).subtract(pointOk(fold.parent.Chash));
+      }
+      const bind = hTerms(sumEsc.subtract(mulP(G, escrowTotalPub)), t21.escrowMint, stmt);
+      if (!bind || !msmZero([[bind, 1n]])) return no('split_mint');
+      let sumHash = Point.ZERO;
+      for (const row of fresh) sumHash = sumHash.add(pointOk(row.Chash));
+      for (const fold of foldIntents) {
+        if (!fold.hidden) continue;
+        sumHash = sumHash.add(pointOk(fold.row.Chash)).subtract(pointOk(fold.parent.Chash));
+      }
+      const hashBind = hTerms(sumHash.subtract(mulP(G, u * wEsc)), t21.escrowHashOpen, stmt);
+      if (!hashBind || !msmZero([[hashBind, 1n]])) return no('split_mint');
+    }
+    const expired = owedIn.filter((o) => {
+      const id = t21Anchor(o);
+      return id && !got.some((row) => t21Anchor(row) === id) && !paidE.has(id);
+    });
+    if (backPub > 0n) {
+      let sumBack = Point.ZERO;
+      for (const o of expired) sumBack = sumBack.add(pointOk(o.Cpot)).add(pointOk(o.Chash));
+      const opened = hTerms(sumBack.subtract(mulP(G, backPub)), t21.backOpen, stmt);
+      if (!opened || !msmZero([[opened, 1n]])) return no('owed_list');
+    } else if (expired.length) return no('owed_list');
+  }
+  return { ok: true, wEsc, escrowPot, settleV, back: hidden ? backPub : listed.back, settleById };
 }
 
 /** The 0x23 rows must be exactly planVaults over chain state, right after the payout rows. */
@@ -2026,6 +2467,19 @@ function buildChecks({ tx, parsed, shares, lawW, tallyW, rate, f, mintG, stmt })
   // T-9 law and the two-sided ρ range identity.
   const lawTerms = [];
   for (const p of parsed) {
+    if (p.escrowC) {
+      const P = p.C.subtract(p.escrowC.Cpot).subtract(p.escrowC.Chash);
+      const lt = hTerms(P, p.o.law, stmt);
+      if (!lt) return no('split_law');
+      lawTerms.push(lt);
+      const sum = new Terms().add(G, -(lawW - 1n));
+      for (let i = 0; i < RHO_LIMBS; i += 1) {
+        sum.add(p.rhoK[i], 1n << (16n * BigInt(i)));
+        sum.add(p.delK[i], 1n << (16n * BigInt(i)));
+      }
+      lawTerms.push(sum);
+      continue;
+    }
     const finEff = p.o.kind === 'pool-fee' ? f : (p.finEff != null ? p.finEff : p.fin);
     let rhoC = Point.ZERO;
     for (let i = 0; i < RHO_LIMBS; i += 1) rhoC = rhoC.add(mulP(p.rhoK[i], 1n << (16n * BigInt(i))));
@@ -2184,7 +2638,7 @@ export function observerView(tx, { truth = [] } = {}) {
     walk(tx, (x, path, isKey) => {
       if (isKey) return;
       if (typeof x === 'bigint' || typeof x === 'number' || typeof x === 'string') {
-        if (String(x) === v.toString() && !['S', 'cin', 'carryNanos', 'cout'].includes(path[path.length - 1])) {
+        if (String(x) === v.toString() && !['S', 'cin', 'carryNanos', 'cout', 'escrowTotal', 'settleTotal', 'back', 'potCarry'].includes(path[path.length - 1])) {
           leaks.push({ amount: v.toString(), key: path.join('.') });
         }
       } else if (Buffer.isBuffer(x)) {

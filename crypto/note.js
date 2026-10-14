@@ -240,10 +240,161 @@ export function bitOrVerify(B, proof) {
   }
 }
 
+const RANGE_BITS = 64;
+const RANGE_DST = Buffer.from('shear-bpplus-v2');
+const RANGE_PROOF_LEN = 1 + 32 + RANGE_BITS * 32 + RANGE_BITS * 192 + 64;
+
+function rangeWide(parts) {
+  return Fn.create(bytesToNumberLE(sha512(Buffer.concat([RANGE_DST, ...parts.map((p) => Buffer.from(asU8(p)))]))));
+}
+
+function u64leLocal(n) {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(BigInt(n));
+  return b;
+}
+
+/** Packed 64-bit OR proof. Same wire as the native prover: marker 0x02, exact length. */
+function jsProveRange(v, rBytes) {
+  const n = noteU64(v);
+  if (n == null) return Buffer.alloc(0);
+  const r = scalarFrom(rBytes);
+  const C = commit(n, r);
+  const cB = pointBytes(C);
+  const bits = [];
+  const s = [];
+  const bPts = [];
+  const bBytes = [];
+  let x = n;
+  for (let i = 0; i < RANGE_BITS; i += 1) {
+    const bit = x & 1n;
+    x >>= 1n;
+    bits.push(bit);
+    const si = rangeWide([Buffer.from('sbit'), rBytes, u64leLocal(i)]);
+    const Bi = (bit === 1n ? G : Point.ZERO).add(Fn.is0(si) ? Point.ZERO : H.multiply(si));
+    bits[i] = bit;
+    s.push(si);
+    bPts.push(Bi);
+    bBytes.push(pointBytes(Bi));
+  }
+  const eAll = rangeWide([Buffer.from('bits'), cB, ...bBytes]);
+  const out = [Buffer.from([2]), cB];
+  for (const b of bBytes) out.push(b);
+  let sSum = 0n;
+  let two = 1n;
+  for (let i = 0; i < RANGE_BITS; i += 1) {
+    const bit = bits[i] === 1n;
+    const eFake = rangeWide([Buffer.from('efake'), rBytes, u64leLocal(i)]);
+    const zFake = rangeWide([Buffer.from('zfake'), rBytes, u64leLocal(i)]);
+    const k = rangeWide([Buffer.from('kbit'), rBytes, u64leLocal(i)]);
+    const fake = bit ? bPts[i] : bPts[i].subtract(G);
+    const Rf = H.multiply(zFake).subtract(fake.multiply(eFake));
+    const Rr = H.multiply(k);
+    const R0 = bit ? Rf : Rr;
+    const R1 = bit ? Rr : Rf;
+    const r0 = pointBytes(R0);
+    const r1 = pointBytes(R1);
+    const e = rangeWide([Buffer.from('bit'), bBytes[i], r0, r1, scalarBytes(eAll)]);
+    const eReal = Fn.sub(e, eFake);
+    const zReal = Fn.add(k, Fn.mul(eReal, s[i]));
+    const e0 = bit ? eFake : eReal;
+    const e1 = bit ? eReal : eFake;
+    const z0 = bit ? zFake : zReal;
+    const z1 = bit ? zReal : zFake;
+    out.push(r0, r1, scalarBytes(e0), scalarBytes(e1), scalarBytes(z0), scalarBytes(z1));
+    sSum = Fn.add(sSum, Fn.mul(two, s[i]));
+    two = Fn.add(two, two);
+  }
+  const rDelta = Fn.sub(r, sSum);
+  let acc = Point.ZERO;
+  two = 1n;
+  for (let i = 0; i < RANGE_BITS; i += 1) {
+    acc = acc.add(bPts[i].multiply(two));
+    two = Fn.add(two, two);
+  }
+  const P = C.subtract(acc);
+  const k = rangeWide([Buffer.from('cons'), rBytes, u64leLocal(0)]);
+  const Rp = H.multiply(k);
+  const e = rangeWide([Buffer.from('cons'), cB, pointBytes(P), pointBytes(Rp)]);
+  const z = Fn.add(k, Fn.mul(e, rDelta));
+  out.push(pointBytes(Rp), scalarBytes(z));
+  return Buffer.concat(out);
+}
+
+function jsVerifyRange(Cbytes, proof) {
+  const pr = Buffer.from(asU8(proof));
+  if (pr.length !== RANGE_PROOF_LEN || pr[0] !== 2) return false;
+  const want = Buffer.from(asU8(Cbytes));
+  if (want.length !== 32 || !want.equals(pr.subarray(1, 33))) return false;
+  let C;
+  try { C = pointFrom(want); } catch { return false; }
+  let off = 33;
+  const bPts = [];
+  const bBytes = [];
+  for (let i = 0; i < RANGE_BITS; i += 1) {
+    const raw = Buffer.from(pr.subarray(off, off + 32));
+    let P;
+    try { P = pointFrom(raw); } catch { return false; }
+    bBytes.push(raw);
+    bPts.push(P);
+    off += 32;
+  }
+  const eAll = rangeWide([Buffer.from('bits'), pr.subarray(1, 33), ...bBytes]);
+  if (Fn.is0(eAll)) return false;
+  for (let i = 0; i < RANGE_BITS; i += 1) {
+    const r0b = pr.subarray(off, off + 32);
+    const r1b = pr.subarray(off + 32, off + 64);
+    let R0;
+    let R1;
+    let e0;
+    let e1;
+    let z0;
+    let z1;
+    try {
+      R0 = pointFrom(r0b);
+      R1 = pointFrom(r1b);
+      e0 = Fn.fromBytes(pr.subarray(off + 64, off + 96));
+      e1 = Fn.fromBytes(pr.subarray(off + 96, off + 128));
+      z0 = Fn.fromBytes(pr.subarray(off + 128, off + 160));
+      z1 = Fn.fromBytes(pr.subarray(off + 160, off + 192));
+    } catch {
+      return false;
+    }
+    const e = rangeWide([
+      Buffer.from('bit'), bBytes[i], r0b, r1b, scalarBytes(eAll),
+    ]);
+    if (Fn.is0(e) || !Fn.eql(Fn.add(e0, e1), e)) return false;
+    if (!H.multiply(z0).equals(R0.add(bPts[i].multiply(e0)))) return false;
+    if (!H.multiply(z1).equals(R1.add(bPts[i].subtract(G).multiply(e1)))) return false;
+    off += 192;
+  }
+  let acc = Point.ZERO;
+  let two = 1n;
+  for (let i = 0; i < RANGE_BITS; i += 1) {
+    acc = acc.add(bPts[i].multiply(two));
+    two = Fn.add(two, two);
+  }
+  const P = C.subtract(acc);
+  let Rp;
+  let z;
+  try {
+    Rp = pointFrom(pr.subarray(off, off + 32));
+    z = Fn.fromBytes(pr.subarray(off + 32, off + 64));
+  } catch {
+    return false;
+  }
+  const e = rangeWide([Buffer.from('cons'), pr.subarray(1, 33), pointBytes(P), pr.subarray(off, off + 32)]);
+  if (Fn.is0(e)) return false;
+  return H.multiply(z).equals(Rp.add(P.multiply(e)));
+}
+
 export function proveRange(v, r) {
   const rb = Buffer.from(asU8(typeof r === 'bigint' ? scalarBytes(r) : r));
   if (rb.length !== 32) return Buffer.alloc(0);
-  return nativeProveRange(v, rb) || Buffer.alloc(0);
+  const nativeProof = nativeProveRange(v, rb);
+  if (nativeProof && nativeProof.length) return nativeProof;
+  if (nativeLoaded()) return Buffer.alloc(0);
+  return jsProveRange(v, rb);
 }
 
 export function verifyRange(Cbytes, proof) {
@@ -251,7 +402,8 @@ export function verifyRange(Cbytes, proof) {
     if (proof && typeof proof === 'object' && !Buffer.isBuffer(proof) && proof.bits) return false;
     const c = Buffer.from(asU8(Cbytes));
     const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
-    return nativeVerifyRange(c, pr);
+    if (nativeLoaded()) return nativeVerifyRange(c, pr);
+    return jsVerifyRange(c, pr);
   } catch {
     return false;
   }

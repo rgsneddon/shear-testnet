@@ -4,8 +4,10 @@
  * as A leaves, and buildT21Coinbase over those leaves.
  *
  * Every A leaf is either paid in t21.shares or sealed in t21.owed as escrow.
- * Escrow is payee-cap overflow only, priced from this round, and any producer
- * can settle it. Hash cap, share cap, and the hash budget reject the round.
+ * Escrow is payee-cap overflow only, priced from this round. The row publishes
+ * commitments, not the amount or the share list. This process keeps the
+ * opening, and a later block settles from that opening. Hash cap, share cap,
+ * and the hash budget reject the round.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,6 +28,31 @@ const REBUILDS = 4;
 
 function hexOf(b) {
   return Buffer.from(asU8(b)).toString('hex');
+}
+
+// Openings stay in this process. The wire row does not carry the blind or the payee.
+const escrowOpens = new Map();
+
+function noteEscrowOpen(list) {
+  for (const rec of list || []) {
+    const id = t21Anchor({ id: rec?.id });
+    if (!id) continue;
+    const cur = escrowOpens.get(id) || [];
+    cur.push(rec);
+    escrowOpens.set(id, cur);
+  }
+}
+
+function escrowOpenFor(row) {
+  const id = t21Anchor(row);
+  if (!id) return null;
+  const cur = escrowOpens.get(id) || [];
+  const want = row?.Cpot ? hexOf(row.Cpot) : '';
+  for (let i = cur.length - 1; i >= 0; i -= 1) {
+    const got = cur[i]?.Cpot ? hexOf(cur[i].Cpot) : '';
+    if (got === want) return cur[i];
+  }
+  return null;
 }
 
 /**
@@ -460,6 +487,7 @@ export function t21TemplateCoinbase({
   vaults = [],
   publicRows = [],
   owedIn = [],
+  escrowEs = null,
   producer = null,
   shareMax = CB_SHARE_MAX,
   payeeMax = null,
@@ -483,8 +511,41 @@ export function t21TemplateCoinbase({
 
   const live = t21OwedLive(owedIn, height);
   const owedNc = new Set();
+  const addEscrowE = (e) => {
+    try { owedNc.add(t21ShareNc(magic, e).toString('hex')); } catch { /* not a label point */ }
+  };
+  for (const e of escrowEs || []) addEscrowE(typeof e === 'string' ? Buffer.from(e, 'hex') : e);
+  const opens = [];
+  const ownOwed = [];
+  const unpayable = new Map();
   for (const o of live) {
-    for (const s of o.shares || []) owedNc.add(t21ShareNc(magic, s.E).toString('hex'));
+    const id = t21Anchor(o);
+    const rec = escrowOpenFor(o);
+    if (rec) {
+      opens.push(rec);
+      let units = 0n;
+      for (const s of rec.shares || []) {
+        units += BigInt(s.w);
+        addEscrowE(s.E);
+      }
+      ownOwed.push({
+        nc: id, units, payee: rec.dest?.B ? hexOf(rec.dest.B) : '', since: o.since, owed: true, by: hexOf(o.by), row: o,
+      });
+    } else if (o.shares || o.B) {
+      let units = 0n;
+      for (const s of o.shares || []) {
+        units += BigInt(s.w);
+        addEscrowE(s.E);
+      }
+      ownOwed.push({
+        nc: id, units, payee: hexOf(o.B), since: o.since, owed: true, by: hexOf(o.by), row: o,
+      });
+    } else {
+      unpayable.set(id, 'escrow_open');
+      ownOwed.push({
+        nc: id, units: 0n, payee: '', since: o.since, owed: true, by: hexOf(o.by), row: o,
+      });
+    }
   }
   const split = labelledShares(Array.isArray(batch) ? batch : [], labelOf);
   const refused = [];
@@ -497,17 +558,8 @@ export function t21TemplateCoinbase({
     else if (owedNc.has(hexOf(noteCommitOfShare(s)))) refused.push({ ...s, deferReason: 'label_owed' });
     else held.push(s);
   }
-  const ownOwed = [];
-  for (const o of live) {
-    let units = 0n;
-    for (const s of o.shares || []) units += BigInt(s.w);
-    ownOwed.push({
-      nc: t21Anchor(o), units, payee: hexOf(o.B), since: o.since, owed: true, by: hexOf(o.by), row: o,
-    });
-  }
   const producerBuf = producer;
   // Labels the builder could not pay. They are deferred (batch) or stay owed in later passes.
-  const unpayable = new Map();
   for (let pass = 0; pass <= REBUILDS; pass += 1) {
     const plan = planT21Round({
       labels: labelsOf(held, labelOf),
@@ -568,6 +620,7 @@ export function t21TemplateCoinbase({
       folds: foldsOf(foldItems, labelOf),
       settle: settling.map((it) => it.row),
       owedIn: live,
+      escrowOpen: opens,
       producer: producerBuf,
       vaults,
       publicRows: noteFinder ? [...publicRows, finderNote] : publicRows,
@@ -583,6 +636,7 @@ export function t21TemplateCoinbase({
       }
     }
     if (!more) {
+      noteEscrowOpen(built.escrowOpen);
       if (BigInt(built.phi || 0n) !== (working ? want : 0n)) throw new Error('finder_row');
       const flags = held.length && !freshPay.length && !settling.length ? ['empty_batch_held'] : [];
       return {

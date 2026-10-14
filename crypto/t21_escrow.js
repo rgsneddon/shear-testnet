@@ -39,8 +39,10 @@ export function priceWeights(R, u, weights) {
 /**
  * owedIn rows carry `id`, `pot`, `hash`, `since`. `paid` is a set of ids.
  * Fresh rows are appended in order. `folds` add shares to an existing row:
- * `{id, addPot, addHash, shares}`. The row keeps `since`. Expired value is
- * `back`, not a payment to the producer.
+ * `{id, addPot, addHash, shares}`. A hidden row has Cpot/Chash instead of
+ * pot/hash; a fold then carries the new commitments. The row keeps `since`.
+ * Expired value is `back`, not a payment to the producer. Hidden rows do not
+ * add their amount into `back` (that total is opened once per block).
  */
 export function composeOwed({
   owedIn = [], paid = new Set(), fresh = [], folds = [], height, ttl = T21_OWED_TTL,
@@ -49,6 +51,7 @@ export function composeOwed({
   const owed = [];
   let backPot = 0n;
   let backHash = 0n;
+  let hiddenBack = false;
   const settled = new Set(paid);
   const foldById = new Map();
   for (const f of folds) {
@@ -60,8 +63,11 @@ export function composeOwed({
     const id = String(o.id);
     if (h - BigInt(o.since) > BigInt(ttl)) {
       if (foldById.has(id)) return { ok: false, reason: 'owed_list' };
-      backPot += BigInt(o.pot);
-      backHash += BigInt(o.hash);
+      if (o.Cpot || o.Chash || o.pot == null || o.pot === '') hiddenBack = true;
+      else {
+        backPot += BigInt(o.pot);
+        backHash += BigInt(o.hash);
+      }
       continue;
     }
     if (settled.has(o.id)) {
@@ -75,6 +81,18 @@ export function composeOwed({
       continue;
     }
     foldById.delete(id);
+    if (o.Cpot || o.Chash) {
+      if (!fold.Cpot || !fold.Chash) return { ok: false, reason: 'owed_list' };
+      foldById.delete(id);
+      owed.push({
+        ...o,
+        Cpot: fold.Cpot,
+        Chash: fold.Chash,
+        potBp: fold.potBp,
+        hashBp: fold.hashBp,
+      });
+      continue;
+    }
     const addPot = BigInt(fold.addPot);
     const addHash = BigInt(fold.addHash);
     if (addPot < 0n || addHash < 0n) return { ok: false, reason: 'owed_list' };
@@ -93,7 +111,7 @@ export function composeOwed({
   }
   if (settled.size || foldById.size) return { ok: false, reason: 'owed_list' };
   for (const row of fresh) owed.push(row);
-  return { ok: true, owed, backPot, backHash, back: backPot + backHash };
+  return { ok: true, owed, backPot, backHash, back: backPot + backHash, hiddenBack };
 }
 
 /**

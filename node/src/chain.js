@@ -84,7 +84,7 @@ import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, pendingWithdrawsOf, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { coinbaseObserveRejected, observeDigestSuffix } from '../../crypto/reserve_oracle.js';
-import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
+import { emptySupplyState, escrowLockedEs, foldSupply, supplyLinks, supplyStep } from './supply.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -405,7 +405,7 @@ export function t21PendingVaults(vault) {
  * finder half into the payee split. A round with no shares pays it as an
  * opened finder-fee note to `miner`; with no miner dest, fee-paying txs wait.
  */
-function t21CoinbaseFor({ t21, miner, batch, txs, prevHeader, priorHeader, issuedJobKeys, height, subsidy, carryIn, hashBonusNanos, hashAcceptedSeries, owedIn }) {
+function t21CoinbaseFor({ t21, miner, batch, txs, prevHeader, priorHeader, issuedJobKeys, height, subsidy, carryIn, hashBonusNanos, hashAcceptedSeries, owedIn, escrowEs }) {
   if (!prevHeader) throw new Error('cb_form');
   const feeOfTx = (t) => Math.max(0, Math.floor(Number(t.fee || 0)));
   const run = (body) => {
@@ -432,6 +432,7 @@ function t21CoinbaseFor({ t21, miner, batch, txs, prevHeader, priorHeader, issue
       vaults: t21PendingVaults(t21.vault),
       publicRows: split.reserve ? [sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee')] : [],
       owedIn,
+      escrowEs,
       producer: miner && isDestAddress(miner) ? admitBaseFromAddress(miner) : null,
       shareMax: t21.shareMax ?? CB_SHARE_MAX,
       payeeMax: t21.payeeMax ?? null,
@@ -1584,6 +1585,7 @@ export function buildTemplate({
       hashBonusNanos,
       hashAcceptedSeries: series,
       owedIn: t21OwedOf(parentCb),
+      escrowEs: escrowLockedEs(prevBlock?.supply),
     });
     cb = made.tx;
     batch = made.batch;
@@ -2669,6 +2671,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         hashBudget,
         prevEs,
         owedIn: t21OwedOf(prevCb),
+        escrowEs: escrowLockedEs(opts.parentSupply),
         producer: block.miner && isDestAddress(block.miner) ? admitBaseFromAddress(block.miner) : null,
         vaults: t21PendingVaults(reserveState),
         phi: BigInt(splitLevy(bodyFees).finder),

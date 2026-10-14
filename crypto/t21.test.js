@@ -18,7 +18,7 @@ import {
 } from './t21_voucher.js';
 import { packShewall, sealShewallBin } from './shewall_bin.js';
 import {
-  AGG_KEYS, CHUNK_KEYS, buildT21Coinbase, genesisGateStatus, minerShare, observerView, openOutput, payoutDelta,
+  AGG_KEYS, CHUNK_KEYS,   buildT21Coinbase, escrowClaim, genesisGateStatus, minerShare, observerView, openOutput, payoutDelta,
   statementOf, supplyIdentities, t21Anchor, t21CbOnly, t21EconomicCarry, t21OwedNext, t21OwedOf, t21ShareNc, vaultCommit, verifyT21Coinbase,
 } from './t21.js';
 import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
@@ -706,6 +706,15 @@ describe('T21 chain rules (must-fix 3, 5)', { timeout: 600_000 }, () => {
 });
 
 describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeout: 600_000 }, () => {
+  it('a reused voucher is a different claim on a later block', () => {
+    const dest = { B: Buffer.alloc(32, 2), Y: Buffer.alloc(32, 3), lambda: Buffer.alloc(32, 4) };
+    const by = Buffer.alloc(32, 5);
+    const first = escrowClaim(dest, 10, by);
+    const later = escrowClaim(dest, 11, by);
+    assert.notEqual(first.toString('hex'), later.toString('hex'));
+    assert.equal(escrowClaim(dest, 10, by).toString('hex'), first.toString('hex'));
+  });
+
   const u = 10n;
   const H = 20;
   const producer = Buffer.alloc(32, 4);
@@ -715,6 +724,20 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
   const paid = [payee(0, [5n]), payee(1, [7n]), payee(2, [3n]), payee(3, [2n])];
   let blockH;
 
+  it('keeps the heavier hasher when a single slot is left', () => {
+    const light = payee(0, [1n]);
+    const heavy = payee(1, [40n]);
+    const built = buildT21Coinbase({
+      S: 10_000n, cin: 0n, u: 1n, height: 4, magic, prevHash, dummySecret, producer,
+      payees: [light, heavy], payeeMax: 1,
+    });
+    assert.equal(built.tx.t21.shares.length, 1);
+    assert.equal(BigInt(built.tx.t21.shares[0].w), 40n);
+    assert.equal(built.tx.t21.owed.length, 1);
+    assert.equal(built.tx.t21.owed[0].pot, undefined);
+    assert.equal(built.tx.t21.owed[0].shares, undefined);
+  });
+
   it('seals one escrow row for the overflow payee, priced on this round including the finder half', () => {
     const phi = 1_000n;
     blockH = buildT21Coinbase({
@@ -722,22 +745,34 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
       payees: paid, escrowPayees: [late],
     });
     const tx = blockH.tx;
+    const sealed = tx.t21.owed[0];
     assert.equal(tx.t21.owed.length, 1);
-    assert.equal(tx.t21.owed[0].shares.length, 2);
-    assert.equal(tx.t21.owed[0].since, H);
+    assert.equal(sealed.shares, undefined);
+    assert.equal(sealed.pot, undefined);
+    assert.equal(sealed.hash, undefined);
+    assert.equal(sealed.B, undefined);
+    assert.equal(sealed.since, H);
+    assert.ok(sealed.Cpot && sealed.Chash && sealed.potBp && sealed.hashBp && sealed.claim);
     assert.equal(tx.t21.defer.length, 2);
     const priced = priceWeights(1_000_000n + phi, u, [5n, 7n, 3n, 2n, 49n]);
-    assert.equal(BigInt(tx.t21.owed[0].hash), priced.rows[4].hash);
-    assert.equal(BigInt(tx.t21.owed[0].pot), priced.rows[4].pot);
+    assert.equal(BigInt(tx.t21.escrowTotal), priced.rows[4].v);
+    assert.equal(JSON.stringify(sealed).includes(Buffer.from(late.voucher.B).toString('hex')), false);
+    assert.equal(JSON.stringify(sealed).includes(Buffer.from(late.shares[0].E).toString('hex')), false);
+    const viewed = observerView(tx, { truth: [{ v: priced.rows[4].pot }, { v: priced.rows[4].v }] });
+    assert.deepEqual(viewed.leaks, []);
     assert.equal(priced.rows.reduce((a, r) => a + r.pot, 0n) + priced.dust, 1_000_000n + phi);
     assert.equal(supplyIdentities(blockH).ok, true);
     const leaves = [...paid, late].flatMap((p) => p.shares.map(leafOf));
     const seen = { shares: leaves, owedIn: [], producer, phi };
     const ok = verifyT21Coinbase({ tx, expect: expectFor(tx, seen) });
     assert.equal(ok.ok, true, ok.reason);
+    const lockedE = new Set(tx.t21.defer.map((s) => Buffer.from(s.E).toString('hex')));
+    assert.equal(verifyT21Coinbase({
+      tx, expect: expectFor(tx, { ...seen, escrowEs: lockedE }),
+    }).reason, 'share_label');
     assert.equal(ok.W, 17n);
     assert.equal(ok.phi, phi);
-    assert.equal(ok.escrowPot, BigInt(tx.t21.owed[0].pot));
+    assert.equal(ok.escrowPot, priced.rows[4].pot);
     assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { ...seen, producer: other }) }).reason, 'owed_list');
     const again = payee(4, [4n]);
     const paidNow = [payee(0, [6n]), payee(1, [1n]), payee(2, [2n])];
@@ -747,16 +782,17 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
       payees: paidNow,
       folds: [{ id: t21Anchor(owedIn[0]), shares: again.shares }],
       owedIn,
+      escrowOpen: blockH.escrowOpen,
     });
     const grown = folded.tx.t21.owed[0];
     assert.equal(folded.tx.t21.owed.length, 1);
-    assert.equal(grown.shares.length, 3);
+    assert.equal(grown.shares, undefined);
     assert.equal(grown.since, H);
     assert.equal(t21Anchor(grown), t21Anchor(owedIn[0]));
     assert.equal(folded.tx.t21.defer.length, 1);
     const delta = weightPay(1_000_000n, 6n + 1n + 2n + 4n, 4n, u);
-    assert.equal(BigInt(grown.pot), BigInt(owedIn[0].pot) + delta.pot);
-    assert.equal(BigInt(grown.hash), BigInt(owedIn[0].hash) + delta.hash);
+    assert.equal(BigInt(folded.tx.t21.escrowTotal), delta.v);
+    assert.notEqual(Buffer.from(grown.Cpot).toString('hex'), Buffer.from(owedIn[0].Cpot).toString('hex'));
     const foldLeaves = [...paidNow, again].flatMap((p) => p.shares.map(leafOf));
     const foldOk = verifyT21Coinbase({
       tx: folded.tx,
@@ -765,8 +801,8 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
     assert.equal(foldOk.ok, true, foldOk.reason);
     assert.equal(foldOk.escrowPot, delta.pot);
     const relabel = structuredClone(tx);
-    relabel.t21.owed[0].B = pointBytes(G.multiply(9n));
-    assert.equal(verifyT21Coinbase({ tx: relabel, expect: expectFor(relabel, seen) }).reason, 'share_label');
+    relabel.t21.owed[0].claim = pointBytes(G.multiply(9n));
+    assert.equal(verifyT21Coinbase({ tx: relabel, expect: expectFor(relabel, seen) }).reason, 'owed_list');
     const dropped = structuredClone(tx);
     dropped.t21.owed = [];
     delete dropped.t21.defer;
@@ -779,12 +815,17 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
     const fresh = [payee(0, [6n]), payee(1, [1n]), payee(2, [2n])];
     const next = buildT21Coinbase({
       S: 1_000_000n, cin: 0n, u, height: H + 1, magic, prevHash, dummySecret,
-      payees: fresh, settle: [row], owedIn, producer: other,
+      payees: fresh, settle: [row], owedIn, producer: other, escrowOpen: blockH.escrowOpen,
     });
     const tx = next.tx;
+    const settleOut = tx.vout.find((o) => o.kind === 'settle');
     assert.equal(tx.t21.owed, undefined);
     assert.equal(tx.t21.defer, undefined);
-    assert.equal(next.settleV, BigInt(row.pot) + BigInt(row.hash));
+    assert.equal(next.settleV, BigInt(blockH.escrowOpen[0].pot) + BigInt(blockH.escrowOpen[0].hash));
+    assert.equal(BigInt(tx.t21.settleTotal), next.settleV);
+    assert.equal(row.B, undefined);
+    assert.equal(Buffer.from(settleOut.B).equals(Buffer.from(late.voucher.B)), true);
+    assert.notEqual(Buffer.from(settleOut.commit).toString('hex'), Buffer.from(row.Cpot).toString('hex'));
     const ex = expectFor(tx, { owedIn, producer: other });
     const ok = verifyT21Coinbase({ tx, expect: ex });
     assert.equal(ok.ok, true, ok.reason);
@@ -794,17 +835,17 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
     lost.t21.owed = owedIn;
     assert.equal(verifyT21Coinbase({ tx: lost, expect: ex }).reason, 'owed_list');
     const redirect = structuredClone(tx);
-    const settleOut = redirect.vout.find((o) => o.kind === 'settle');
-    const index = redirect.vout.indexOf(settleOut);
-    settleOut.B = pointBytes(G.multiply(3n));
+    const moved = redirect.vout.find((o) => o.kind === 'settle');
+    const index = redirect.vout.indexOf(moved);
+    moved.B = pointBytes(G.multiply(3n));
     assert.equal(verifyT21Coinbase({ tx: redirect, expect: ex }).reason, 'split_label');
     const B = G.multiply(3n);
     const delta = payoutDelta({
-      magic: redirect.t21.magic, height: redirect.t21.height, prevHash: redirect.t21.prevHash, index, commit: settleOut.commit,
+      magic: redirect.t21.magic, height: redirect.t21.height, prevHash: redirect.t21.prevHash, index, commit: moved.commit,
     });
-    settleOut.B = pointBytes(B);
-    settleOut.admitPub = pointBytes(B.add(G.multiply(delta)));
-    settleOut.lambda = Buffer.from(scalarBytes(voucherLambda(settleOut.B, settleOut.Y)));
+    moved.B = pointBytes(B);
+    moved.admitPub = pointBytes(B.add(G.multiply(delta)));
+    moved.lambda = Buffer.from(scalarBytes(voucherLambda(moved.B, moved.Y)));
     assert.equal(verifyT21Coinbase({ tx: redirect, expect: ex }).reason, 'owed_list');
   });
 
@@ -816,31 +857,37 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
     const far = H + T21_OWED_TTL + 1;
     const drop = t21OwedNext({ owedIn, height: far });
     assert.equal(drop.owed.length, 0);
-    assert.equal(drop.back, BigInt(owedIn[0].pot) + BigInt(owedIn[0].hash));
-    assert.equal(drop.backHash, BigInt(owedIn[0].hash));
-    const empty = buildT21Coinbase({ S: 3n, cin: 2n, height: far, magic, prevHash, payees: [], owedIn });
+    const opened = BigInt(blockH.escrowOpen[0].pot) + BigInt(blockH.escrowOpen[0].hash);
+    assert.equal(drop.back, 0n);
+    const empty = buildT21Coinbase({
+      S: 3n, cin: 2n, height: far, magic, prevHash, payees: [], owedIn, escrowOpen: blockH.escrowOpen,
+    });
     assert.equal(empty.tx.t21.owed, undefined);
-    assert.equal(BigInt(empty.tx.t21.back), drop.back);
-    assert.equal(t21EconomicCarry(empty.tx), 5n + drop.back);
+    assert.equal(BigInt(empty.tx.t21.back), opened);
+    assert.equal(empty.tx.t21.owed, undefined);
+    assert.equal(t21EconomicCarry(empty.tx), 5n + opened);
     const ex = expectFor(empty.tx, { shares: [], owedIn, hashBudget: 0n, height: far });
     assert.equal(verifyT21Coinbase({ tx: empty.tx, expect: ex }).ok, true);
     const dueH = H + T21_OWED_TTL - T21_SETTLE_WINDOW;
-    const dueEmpty = buildT21Coinbase({ S: 3n, cin: 2n, height: dueH, magic, prevHash, payees: [], owedIn });
+    const dueEmpty = buildT21Coinbase({
+      S: 3n, cin: 2n, height: dueH, magic, prevHash, payees: [], owedIn, escrowOpen: blockH.escrowOpen,
+    });
     assert.equal(verifyT21Coinbase({
       tx: dueEmpty.tx, expect: expectFor(dueEmpty.tx, { shares: [], owedIn, hashBudget: 0n, height: dueH }),
     }).reason, 'owed_due');
     const dueSettle = buildT21Coinbase({
       S: 3n, cin: 2n, height: dueH, magic, prevHash, dummySecret, payees: [], settle: owedIn, owedIn,
+      escrowOpen: blockH.escrowOpen,
     });
     const dueOk = verifyT21Coinbase({
       tx: dueSettle.tx, expect: expectFor(dueSettle.tx, { shares: [], owedIn, hashBudget: 0n, height: dueH }),
     });
     assert.equal(dueOk.ok, true, dueOk.reason);
-    assert.equal(dueOk.settleV, BigInt(owedIn[0].pot) + BigInt(owedIn[0].hash));
+    assert.equal(dueOk.settleV, BigInt(blockH.escrowOpen[0].pot) + BigInt(blockH.escrowOpen[0].hash));
     assert.equal(dueSettle.tx.t21.owed, undefined);
     assert.throws(() => buildT21Coinbase({
       S: 3n, cin: 2n, u, height: far, magic, prevHash, dummySecret, producer,
-      payees: paid, settle: owedIn, owedIn,
+      payees: paid, settle: owedIn, owedIn, escrowOpen: blockH.escrowOpen,
     }), (err) => err.reason === 'owed_list' || err.reason === 'owed_ttl');
   });
 
