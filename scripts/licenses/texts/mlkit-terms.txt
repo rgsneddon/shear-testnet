@@ -1,0 +1,13 @@
+Google ML Kit (barcode scanning, vision common, common, vision interfaces and
+play-services-mlkit-barcode-scanning) is not open source. Google distributes it
+under the ML Kit Terms of Service:
+
+  https://developers.google.com/ml-kit/terms
+
+Use of ML Kit is also subject to the Google APIs Terms of Service:
+
+  https://developers.google.com/terms
+
+The wallet's QR scanner (mobile_scanner) links these libraries on Android. The
+ML Kit Terms are Google's terms, not a licence Shear grants, and they bind
+Shear as the app developer. See docs/licensing-audit.md, decision 3.

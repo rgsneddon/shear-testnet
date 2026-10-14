@@ -1,0 +1,596 @@
+{
+ "policy": {
+  "mpl_allowed": [
+   "@ethereumjs/*"
+  ],
+  "license_refs_allowed": [
+   "LicenseRef-MLKit-Terms",
+   "LicenseRef-Android-SDK-License",
+   "LicenseRef-Flutter-Engine"
+  ],
+  "missing_license_file_allowed": [
+   "npm:@ethereumjs/mpt"
+  ]
+ },
+ "pinned_files": {
+  "crypto/randomx/LICENSE": "7d85758a95990168395d0940b2a103b6be0c2eba3995f00cbb59d23a86c2214e",
+  "crypto/native/vendor/monero-oxide-77788c3/divisors/LICENSE": "ba72d9bcc9de4a36c02e68dbae63076407302e612f1b2e54e5bcad6973f3c5db",
+  "crypto/native/vendor/monero-oxide-77788c3/fcmps/LICENSE": "7c330e1be19cb097d61d72d6e6a03da8102222b2cb3ff7cd36edae05af5ceefc",
+  "crypto/native/vendor/monero-oxide-77788c3/fcmps/circuit-abstraction/LICENSE": "7c330e1be19cb097d61d72d6e6a03da8102222b2cb3ff7cd36edae05af5ceefc",
+  "crypto/native/vendor/monero-oxide-77788c3/fcmps/ec-gadgets/LICENSE": "7c330e1be19cb097d61d72d6e6a03da8102222b2cb3ff7cd36edae05af5ceefc",
+  "crypto/native/vendor/monero-oxide-77788c3/generalized-bulletproofs/LICENSE": "8992ba57de8910017b1b14de7ec8164648e6f67e758ae41004afee0ab3a38955",
+  "crypto/native/vendor/monero-oxide-77788c3/helioselene/LICENSE": "ee5bb025ab8b192a12317a5bc18c934f363d9675a6c6b7d4aa0e872f56c468a8"
+ },
+ "upstream_headers": {
+  "note": "RandomX files that carry an upstream copyright header. check fails if a header is removed.",
+  "files": [
+   "crypto/randomx/CMakeLists.txt",
+   "crypto/randomx/LICENSE",
+   "crypto/randomx/src/aes_hash.cpp",
+   "crypto/randomx/src/aes_hash.hpp",
+   "crypto/randomx/src/allocator.cpp",
+   "crypto/randomx/src/allocator.hpp",
+   "crypto/randomx/src/argon2.h",
+   "crypto/randomx/src/argon2_avx2.c",
+   "crypto/randomx/src/argon2_core.c",
+   "crypto/randomx/src/argon2_core.h",
+   "crypto/randomx/src/argon2_ref.c",
+   "crypto/randomx/src/argon2_ssse3.c",
+   "crypto/randomx/src/assembly_generator_x86.cpp",
+   "crypto/randomx/src/assembly_generator_x86.hpp",
+   "crypto/randomx/src/blake2/blake2-impl.h",
+   "crypto/randomx/src/blake2/blake2.h",
+   "crypto/randomx/src/blake2/blake2b.c",
+   "crypto/randomx/src/blake2/blamka-round-avx2.h",
+   "crypto/randomx/src/blake2/blamka-round-ref.h",
+   "crypto/randomx/src/blake2/blamka-round-ssse3.h",
+   "crypto/randomx/src/blake2_generator.cpp",
+   "crypto/randomx/src/blake2_generator.hpp",
+   "crypto/randomx/src/bytecode_machine.cpp",
+   "crypto/randomx/src/bytecode_machine.hpp",
+   "crypto/randomx/src/common.hpp",
+   "crypto/randomx/src/configuration.h",
+   "crypto/randomx/src/configuration.upstream.h",
+   "crypto/randomx/src/cpu.cpp",
+   "crypto/randomx/src/cpu.hpp",
+   "crypto/randomx/src/dataset.cpp",
+   "crypto/randomx/src/dataset.hpp",
+   "crypto/randomx/src/instruction.cpp",
+   "crypto/randomx/src/instruction.hpp",
+   "crypto/randomx/src/instruction_weights.hpp",
+   "crypto/randomx/src/instructions_portable.cpp",
+   "crypto/randomx/src/intrin_portable.h",
+   "crypto/randomx/src/jit_compiler.hpp",
+   "crypto/randomx/src/jit_compiler_a64.cpp",
+   "crypto/randomx/src/jit_compiler_a64.hpp",
+   "crypto/randomx/src/jit_compiler_a64_static.S",
+   "crypto/randomx/src/jit_compiler_a64_static.hpp",
+   "crypto/randomx/src/jit_compiler_fallback.hpp",
+   "crypto/randomx/src/jit_compiler_rv64.cpp",
+   "crypto/randomx/src/jit_compiler_rv64.hpp",
+   "crypto/randomx/src/jit_compiler_rv64_static.S",
+   "crypto/randomx/src/jit_compiler_rv64_static.hpp",
+   "crypto/randomx/src/jit_compiler_x86.cpp",
+   "crypto/randomx/src/jit_compiler_x86.hpp",
+   "crypto/randomx/src/jit_compiler_x86_static.S",
+   "crypto/randomx/src/jit_compiler_x86_static.asm",
+   "crypto/randomx/src/jit_compiler_x86_static.hpp",
+   "crypto/randomx/src/program.hpp",
+   "crypto/randomx/src/randomx.cpp",
+   "crypto/randomx/src/randomx.h",
+   "crypto/randomx/src/reciprocal.c",
+   "crypto/randomx/src/reciprocal.h",
+   "crypto/randomx/src/soft_aes.cpp",
+   "crypto/randomx/src/soft_aes.h",
+   "crypto/randomx/src/superscalar.cpp",
+   "crypto/randomx/src/superscalar.hpp",
+   "crypto/randomx/src/superscalar_program.hpp",
+   "crypto/randomx/src/tests/affinity.cpp",
+   "crypto/randomx/src/tests/affinity.hpp",
+   "crypto/randomx/src/tests/benchmark.cpp",
+   "crypto/randomx/src/tests/code-generator.cpp",
+   "crypto/randomx/src/tests/perf-simulation.cpp",
+   "crypto/randomx/src/tests/stopwatch.hpp",
+   "crypto/randomx/src/tests/utility.hpp",
+   "crypto/randomx/src/virtual_machine.cpp",
+   "crypto/randomx/src/virtual_machine.hpp",
+   "crypto/randomx/src/virtual_memory.c",
+   "crypto/randomx/src/virtual_memory.h",
+   "crypto/randomx/src/vm_compiled.cpp",
+   "crypto/randomx/src/vm_compiled.hpp",
+   "crypto/randomx/src/vm_compiled_light.cpp",
+   "crypto/randomx/src/vm_compiled_light.hpp",
+   "crypto/randomx/src/vm_interpreted.cpp",
+   "crypto/randomx/src/vm_interpreted.hpp",
+   "crypto/randomx/src/vm_interpreted_light.cpp",
+   "crypto/randomx/src/vm_interpreted_light.hpp",
+   "crypto/randomx/vcxproj/h2inc.ps1"
+  ]
+ },
+ "components": [
+  {
+   "kind": "vendored",
+   "name": "RandomX",
+   "version": "12f2c2ffe2108d6cf54c391fee33c8bc3646cdab",
+   "license": "BSD-3-Clause",
+   "holders": [
+    "Copyright (c) 2018-2019, tevador <tevador@gmail.com>",
+    "Copyright (c) 2014-2019, The Monero Project",
+    "Copyright (c) 2019, SChernykh <https://github.com/SChernykh>",
+    "Copyright (c) 2023 tevador <tevador@gmail.com>",
+    "Copyright (c) 2019, jtgrassie"
+   ],
+   "texts": [
+    "crypto/randomx/LICENSE"
+   ],
+   "shipped": "statically linked into shearhash.node (node zips, wallet desktop sidecar, distro packs) and ShearK-Miner",
+   "obligation": "keep the copyright and licence text in source and binary copies; no endorsement using the holders' names",
+   "status": "OK: headers kept; src/configuration.h is the one modified file and configuration.upstream.h keeps the original; notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "vendored",
+   "name": "Argon2 reference code (in RandomX)",
+   "version": "as in RandomX 12f2c2ff",
+   "license": "CC0-1.0",
+   "holders": [
+    "Copyright 2015 Daniel Dinu, Dmitry Khovratovich, Jean-Philippe Aumasson, and Samuel Neves"
+   ],
+   "text": "crypto/randomx/src/argon2*.{c,h} and crypto/randomx/src/blake2/* carry this header:\n\n  Original code from Argon2 reference source code package used under CC0 Licence\n  https://github.com/P-H-C/phc-winner-argon2\n  Copyright 2015\n  Daniel Dinu, Dmitry Khovratovich, Jean-Philippe Aumasson, and Samuel Neves\n\nThe CC0 1.0 text is in LICENSES/CC0-1.0.txt.",
+   "shipped": "inside RandomX (shearhash.node, ShearK-Miner)",
+   "obligation": "none (CC0); header kept as a courtesy",
+   "status": "OK: headers kept; notice in THIRD_PARTY_NOTICES.txt",
+   "texts": [
+    "LICENSES/CC0-1.0.txt"
+   ]
+  },
+  {
+   "kind": "asset",
+   "name": "RandomX audit reports (crypto/randomx/audits/*.pdf)",
+   "version": "2019",
+   "license": "LicenseRef-All-Rights-Reserved",
+   "holders": [
+    "COPYRIGHT (C) AGRAVISION SA 2019, ALL RIGHTS RESERVED (Kudelski Security)",
+    "© 2019 Trail of Bits",
+    "Quarkslab SAS",
+    "X41 D-Sec GmbH (PDF author; the report is marked Public)"
+   ],
+   "in_notices": false,
+   "shipped": "repository only; not in any release pack",
+   "obligation": "none granted: the reports carry no licence. Upstream RandomX marks audits/ export-ignore",
+   "status": "OPEN: decision 2"
+  },
+  {
+   "kind": "vendored",
+   "name": "helioselene",
+   "version": "0.1.0 (monero-oxide 77788c3)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2022-2025 Luke Parker"
+   ],
+   "texts": [
+    "crypto/native/vendor/monero-oxide-77788c3/helioselene/LICENSE"
+   ],
+   "shipped": "source only: crypto/native/vendor, which the node zip and wallet desktop sidecar copy with crypto/; not linked into a release binary",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK: upstream LICENSE kept byte-identical (pinned below); notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "vendored",
+   "name": "ec-divisors",
+   "version": "0.1.0 (monero-oxide 77788c3)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2023-2025 Luke Parker"
+   ],
+   "texts": [
+    "crypto/native/vendor/monero-oxide-77788c3/divisors/LICENSE"
+   ],
+   "shipped": "source only: crypto/native/vendor, which the node zip and wallet desktop sidecar copy with crypto/; not linked into a release binary",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK: upstream LICENSE kept byte-identical (pinned below); notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "vendored",
+   "name": "generalized-bulletproofs",
+   "version": "0.1.0 (monero-oxide 77788c3)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2021-2025 Luke Parker",
+    "Copyright (c) 2025 monero-oxide Developers"
+   ],
+   "texts": [
+    "crypto/native/vendor/monero-oxide-77788c3/generalized-bulletproofs/LICENSE"
+   ],
+   "shipped": "source only: crypto/native/vendor, which the node zip and wallet desktop sidecar copy with crypto/; not linked into a release binary",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK: upstream LICENSE kept byte-identical (pinned below); notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "vendored",
+   "name": "generalized-bulletproofs-circuit-abstraction",
+   "version": "0.1.0 (monero-oxide 77788c3)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2024-2025 Luke Parker"
+   ],
+   "texts": [
+    "crypto/native/vendor/monero-oxide-77788c3/fcmps/circuit-abstraction/LICENSE"
+   ],
+   "shipped": "source only: crypto/native/vendor, which the node zip and wallet desktop sidecar copy with crypto/; not linked into a release binary",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK: upstream LICENSE kept byte-identical (pinned below); notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "vendored",
+   "name": "generalized-bulletproofs-ec-gadgets",
+   "version": "0.1.0 (monero-oxide 77788c3)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2024-2025 Luke Parker"
+   ],
+   "texts": [
+    "crypto/native/vendor/monero-oxide-77788c3/fcmps/ec-gadgets/LICENSE"
+   ],
+   "shipped": "source only: crypto/native/vendor, which the node zip and wallet desktop sidecar copy with crypto/; not linked into a release binary",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK: upstream LICENSE kept byte-identical (pinned below); notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "vendored",
+   "name": "full-chain-membership-proofs",
+   "version": "0.1.0 (monero-oxide 77788c3)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2024-2025 Luke Parker"
+   ],
+   "texts": [
+    "crypto/native/vendor/monero-oxide-77788c3/fcmps/LICENSE"
+   ],
+   "shipped": "source only: crypto/native/vendor, which the node zip and wallet desktop sidecar copy with crypto/; not linked into a release binary",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK: upstream LICENSE kept byte-identical (pinned below); notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "vendored",
+   "name": "fe25519 carry chain (crypto/native/admit/src/fe25519.rs)",
+   "version": "-",
+   "license": "BSD-3-Clause",
+   "holders": [
+    "curve25519-dalek authors (see the curve25519-dalek 4.1.3 notice)"
+   ],
+   "in_notices": false,
+   "shipped": "shearadmit.node and libshear_admit",
+   "obligation": "keep the curve25519-dalek BSD-3-Clause notice",
+   "status": "OK: Shear code; 9 of its 167 lines match the ref10/donna freeze carry chain curve25519-dalek also uses, so it is credited under the curve25519-dalek 4.1.3 notice, which ships anyway"
+  },
+  {
+   "kind": "runtime",
+   "name": "libsodium",
+   "version": "system libsodium.so.23 or .so.26 (unpinned); Android libsodium.so of unknown origin",
+   "license": "ISC",
+   "holders": [
+    "Copyright (c) 2013-2026 Frank Denis <j at pureftpd dot org>"
+   ],
+   "texts": [
+    "LICENSES/third-party/libsodium/LICENSE"
+   ],
+   "shipped": "Linux wallet zips and distro desktop packs (lib/); Android APK jniLibs when present",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK for Linux (host copyright file copied to lib/licenses/); OPEN for Android: decision 5"
+  },
+  {
+   "kind": "runtime",
+   "name": "Node.js",
+   "version": "22.x (CI node-version '22'; the packing host's binary)",
+   "license": "MIT AND others (see LICENSE)",
+   "holders": [
+    "Copyright Node.js contributors",
+    "Copyright Joyent, Inc. and other Node contributors",
+    "+ the bundled dependencies listed in Node.js LICENSE"
+   ],
+   "texts": [
+    "LICENSES/third-party/nodejs/LICENSE"
+   ],
+   "shipped": "runtime/node in node zips and the wallet desktop sidecar; bin/node in distro packs",
+   "obligation": "ship Node.js LICENSE, which covers V8, ICU, OpenSSL, libuv and the rest it bundles",
+   "status": "OK: packs copy the host install's LICENSE to runtime/licenses/ (fallback: this v22 copy); notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "runtime",
+   "name": "OpenSSL",
+   "version": "3.x (MSYS2 on Windows, host libssl/libcrypto on Linux and macOS; unpinned)",
+   "license": "Apache-2.0",
+   "holders": [
+    "Copyright (c) 1998-2026 The OpenSSL Project Authors",
+    "Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson"
+   ],
+   "texts": [
+    "LICENSES/third-party/openssl/LICENSE.txt",
+    "LICENSES/third-party/openssl/COPYRIGHT"
+   ],
+   "shipped": "ShearK-Miner zips and distro miner packs",
+   "obligation": "ship the Apache-2.0 text and any NOTICE; mark modified files",
+   "status": "OK: notice in THIRD_PARTY_NOTICES.txt; Unix packs also copy the host's licence files"
+  },
+  {
+   "kind": "runtime",
+   "name": "GCC runtime (libgcc_s_seh-1.dll, libstdc++-6.dll, MinGW-w64)",
+   "version": "from the MSYS2 MinGW toolchain on the packing host",
+   "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+   "holders": [
+    "Copyright (C) 1989-2026 Free Software Foundation, Inc. (libgcc)",
+    "Copyright (C) 2001-2026 Free Software Foundation, Inc. (libstdc++)"
+   ],
+   "texts": [
+    "LICENSES/GPL-3.0-or-later.txt",
+    "LICENSES/GCC-exception-3.1.txt"
+   ],
+   "shipped": "runtime/ in Windows node zips and the Windows wallet zip; beside ShearK-Miner.exe when it imports them",
+   "obligation": "the Runtime Library Exception lets Shear's own code stay MIT; the DLLs themselves are GPL-3.0 object code",
+   "status": "OPEN: decision 4"
+  },
+  {
+   "kind": "runtime",
+   "name": "mingw-w64 winpthreads (libwinpthread-1.dll)",
+   "version": "from the MSYS2 MinGW toolchain on the packing host",
+   "license": "MIT AND BSD-3-Clause",
+   "holders": [
+    "Copyright (c) 2011 mingw-w64 project",
+    "(C) 2010 Lockless Inc."
+   ],
+   "texts": [
+    "LICENSES/third-party/mingw-w64-winpthreads/COPYING"
+   ],
+   "shipped": "runtime/ in Windows node zips and the Windows wallet zip; beside ShearK-Miner.exe",
+   "obligation": "keep the copyright and licence text in source and binary copies; no endorsement using the holders' names",
+   "status": "OK: notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "runtime",
+   "name": "Rust standard library",
+   "version": "stable toolchain used to build crypto/native/admit",
+   "license": "MIT OR Apache-2.0",
+   "holders": [
+    "Copyright (c) The Rust Project Contributors"
+   ],
+   "texts": [
+    "LICENSES/third-party/rust-std/COPYRIGHT",
+    "LICENSES/third-party/rust-std/LICENSE-MIT"
+   ],
+   "shipped": "compiled into shearadmit.node and libshear_admit",
+   "obligation": "keep the copyright and licence text in source and binary copies (MIT elected)",
+   "status": "OK: notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "pointer",
+   "name": "Flutter engine, Dart runtime and Material icons",
+   "version": "Flutter 3.44.6",
+   "license": "BSD-3-Clause AND others (Flutter NOTICES)",
+   "holders": [
+    "Copyright 2014 The Flutter Authors",
+    "Copyright 2012 the Dart project authors",
+    "+ the engine's third-party list"
+   ],
+   "in_notices": false,
+   "shipped": "every wallet build",
+   "obligation": "ship Flutter's NOTICES",
+   "status": "OK: Flutter bundles NOTICES and adds it to the in-app licence page itself"
+  },
+  {
+   "kind": "pointer",
+   "name": "Android NDK C++ runtime",
+   "version": "NDK r27d / 28.2",
+   "license": "Apache-2.0 WITH LLVM-exception",
+   "holders": [
+    "LLVM project"
+   ],
+   "in_notices": false,
+   "shipped": "nothing: libshear_admit is Rust with no C++ dependency, so no libc++_shared.so ships",
+   "obligation": "none while nothing ships",
+   "status": "OK: not distributed"
+  },
+  {
+   "kind": "ios",
+   "name": "DKImagePickerController",
+   "version": "4.3.9 (via file_picker)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2014 Bannings"
+   ],
+   "texts": [
+    "LICENSES/third-party/ios-pods/DKImagePickerController-LICENSE"
+   ],
+   "shipped": "iOS app",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK: notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "ios",
+   "name": "DKPhotoGallery",
+   "version": "0.0.19 (via DKImagePickerController)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2014 Bannings"
+   ],
+   "texts": [
+    "LICENSES/third-party/ios-pods/DKPhotoGallery-LICENSE"
+   ],
+   "shipped": "iOS app",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK: notice in THIRD_PARTY_NOTICES.txt"
+  },
+  {
+   "kind": "ios",
+   "name": "SDWebImage",
+   "version": "unpinned (no ios/Podfile.lock committed)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2009-2020 Olivier Poitrey rs@dailymotion.com"
+   ],
+   "texts": [
+    "LICENSES/third-party/ios-pods/SDWebImage-LICENSE"
+   ],
+   "shipped": "iOS app",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK for the licence; OPEN for the version pin: decision 6"
+  },
+  {
+   "kind": "ios",
+   "name": "SwiftyGif",
+   "version": "unpinned (no ios/Podfile.lock committed)",
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2016 Alexis Creuzot"
+   ],
+   "texts": [
+    "LICENSES/third-party/ios-pods/SwiftyGif-LICENSE"
+   ],
+   "shipped": "iOS app",
+   "obligation": "keep the copyright and licence text in source and binary copies",
+   "status": "OK for the licence; OPEN for the version pin: decision 6"
+  },
+  {
+   "kind": "asset",
+   "name": "Nevia typeface",
+   "version": "Sentavio, January 2024",
+   "license": "LicenseRef-Commercial-Font",
+   "holders": [
+    "Sentavio (designer Dmytro Poliakh)"
+   ],
+   "in_notices": false,
+   "shipped": "brand/, site/, site/boot/, explorer/, mempool/, pool/public/, team/ (web pages); not in the wallet, node or miner",
+   "obligation": "whatever the purchased font licence says; MIT does not cover it",
+   "status": "OPEN: decision 1"
+  },
+  {
+   "kind": "asset",
+   "name": "Urema Variable typeface",
+   "version": "2026",
+   "license": "LicenseRef-Commercial-Font",
+   "holders": [
+    "Typeface © Zafira Type 2026. All Rights Reserved"
+   ],
+   "in_notices": false,
+   "shipped": "brand/, site/, site/boot/, explorer/, mempool/, pool/public/, team/ (web pages); not in the wallet, node or miner",
+   "obligation": "whatever the purchased font licence says; MIT does not cover it",
+   "status": "OPEN: decision 1"
+  },
+  {
+   "kind": "asset",
+   "name": "ISRG Root X1 and X2 certificates (sheark-miner/src/roots)",
+   "version": "-",
+   "license": "LicenseRef-Public-Trust-Anchor",
+   "holders": [
+    "Internet Security Research Group"
+   ],
+   "in_notices": false,
+   "shipped": "compiled into ShearK-Miner (tls_roots.h)",
+   "obligation": "none stated; public root certificates published for distribution",
+   "status": "OPEN (low): decision 11"
+  }
+ ],
+ "npm_overrides": {
+  "solc": {
+   "license": "MIT AND GPL-3.0-or-later",
+   "notes": "soljson.js is the Emscripten build of the Solidity compiler (GPL-3.0). The wrapper's MIT LICENSE names no holder. Used only by contracts/compile_reserve.js and crypto/reserve_evm.test.js.",
+   "obligation": "none while it stays a devDependency; GPL-3.0 source and licence obligations if soljson.js is ever redistributed"
+  }
+ },
+ "pub_overrides": {
+  "zxing2": {
+   "license": "Apache-2.0 AND BSD-3-Clause",
+   "holders": [
+    "Copyright 2008 ZXing authors"
+   ],
+   "extra_texts": [
+    "LICENSES/third-party/zxing/LICENSE",
+    "LICENSES/third-party/zxing/NOTICE"
+   ],
+   "notes": "Port of ZXing (Apache-2.0). The package's own LICENSE is an unfilled BSD-3 template; the ZXing Apache-2.0 text and NOTICE are carried too. See decision 7."
+  }
+ },
+ "android_overrides": {
+  "org.bouncycastle:bcprov-jdk18on": {
+   "license": "MIT",
+   "holders": [
+    "Copyright (c) 2000-2023 The Legion of the Bouncy Castle Inc. (https://www.bouncycastle.org)"
+   ],
+   "texts": [
+    "LICENSES/third-party/bouncycastle/LICENSE.txt"
+   ],
+   "notes": "Bouncy Castle Licence, an MIT licence."
+  },
+  "androidx.camera:camera-core": {
+   "license": "Apache-2.0 AND BSD-3-Clause",
+   "holders": [
+    "The Android Open Source Project",
+    "Copyright 2011 The LibYuv Project Authors"
+   ],
+   "texts": [
+    "LICENSES/Apache-2.0.txt",
+    "LICENSES/third-party/libyuv/LICENSE"
+   ],
+   "notes": "Its image_processing_util_jni library links libyuv (BSD-3-Clause)."
+  },
+  "io.flutter:*": {
+   "license": "LicenseRef-Flutter-Engine",
+   "in_notices": false,
+   "notes": "Flutter engine; covered by Flutter's NOTICES."
+  },
+  "com.google.mlkit:*": {
+   "license": "LicenseRef-MLKit-Terms",
+   "holders": [
+    "Google LLC"
+   ],
+   "texts": [
+    "scripts/licenses/texts/mlkit-terms.txt"
+   ],
+   "status": "OPEN: decision 3",
+   "obligation": "Google's terms (linked in the notice) bind Shear as developer; not open source"
+  },
+  "com.google.android.gms:play-services-mlkit-barcode-scanning": {
+   "license": "LicenseRef-MLKit-Terms",
+   "holders": [
+    "Google LLC"
+   ],
+   "texts": [
+    "scripts/licenses/texts/mlkit-terms.txt"
+   ],
+   "status": "OPEN: decision 3",
+   "obligation": "Google's terms (linked in the notice) bind Shear as developer; not open source"
+  },
+  "com.google.android.gms:*": {
+   "license": "LicenseRef-Android-SDK-License",
+   "holders": [
+    "Google LLC"
+   ],
+   "texts": [
+    "scripts/licenses/texts/android-sdk-license.txt"
+   ],
+   "status": "OPEN: decision 3",
+   "obligation": "Google's terms (linked in the notice) bind Shear as developer; not open source"
+  },
+  "com.google.android.odml:*": {
+   "license": "LicenseRef-Android-SDK-License",
+   "holders": [
+    "Google LLC"
+   ],
+   "texts": [
+    "scripts/licenses/texts/android-sdk-license.txt"
+   ],
+   "status": "OPEN: decision 3",
+   "obligation": "Google's terms (linked in the notice) bind Shear as developer; not open source"
+  }
+ },
+ "cargo_overrides": {
+  "blake2b_simd": {
+   "extra_texts": [
+    "LICENSES/third-party/blake2b_simd/LICENSE"
+   ],
+   "holders": [
+    "Copyright (c) 2018 Jack O'Connor"
+   ],
+   "notes": "The crate ships no licence file; the LICENSE is taken from the upstream repository at tag 1.0.5."
+  }
+ }
+}
