@@ -127,6 +127,18 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.doesNotMatch(walletSrc, /const kBookMagic = 'shear-testnet-v11'/);
   });
 
+  it('refuses a Reserve.sol source that contains a CR byte', () => {
+    const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
+    assert.equal(sol.includes('\r'), false);
+    const crlf = sol.replace(/\n/g, '\r\n');
+    assert.throws(() => applyReserveBooks(crlf), /CR byte/);
+    assert.throws(() => compileReserveSource(crlf), /CR byte/);
+    const lone = sol.replace('pragma', 'pra\rgma');
+    assert.notEqual(lone, sol);
+    assert.throws(() => applyReserveBooks(lone), /CR byte/);
+    assert.throws(() => compileReserveSource(lone), /CR byte/);
+  });
+
   it('a hand-edited magic is not the pinned bytecode', () => {
     const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
     const pin = JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8'));
