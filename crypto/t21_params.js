@@ -12,7 +12,6 @@ export const K_MIN = 4;
 export const FEE_BPS_MAX = 200;
 export const VOUCHER_GAP = 256;
 export const W_S_MAX = 1n << 28n;
-export const N_MAX = 65536;
 export const W_MAX = 1n << 48n;
 /** Σw is retained share units, at most MAX_HASH_UNITS_PER_BLOCK (asert.js); u·W ≤ B_h on every path. */
 export const HASH_CAP_BITS = 28;
@@ -35,6 +34,18 @@ export const SEND_W_BASE = 25;
 export const SEND_W_PER_INPUT = 25;
 export const SEND_INPUT_MAX = 8;
 export const SEND_R_WEIGHT = 2_336;
+
+/**
+ * cb-v3 verify weight (1 wu ≈ 1 ms of JS verify on the build box): a fixed
+ * term, each non-0x23 row, and each share. CB_SHARE_MAX is what a full payout
+ * leaves: 171 pot + fee + reserve-fee rows is 300 + 173·60 = 10,680 wu, and
+ * (36,000 − 10,680 − 2,336 − 528) / 3 = 7,485. block_budget.js asserts it.
+ */
+export const CB_FIXED_W = 300;
+export const CB_ROW_W = 60;
+export const CB_SHARE_W = 3;
+export const CB_EXTRA_ROWS = 2;
+export const CB_SHARE_MAX = 7_485;
 
 /** Legacy coinbases stay valid until the genesis hash is pinned; then cb-v3 is the only form. */
 export const T21_REQUIRE_ALL_COINBASES = false;
@@ -75,6 +86,7 @@ export const T21_FINGERPRINT_TOKENS = Object.freeze([
   `PAYOUT_KEY=${DOM_CB}`,
   `AMT_CT=${AMT_CT_DOM}`,
   `VAULT_R=${VAULT_R_DOM}+parent`,
+  `CB_WEIGHT=${CB_FIXED_W}+${CB_ROW_W}r+${CB_SHARE_W}s,s<=${CB_SHARE_MAX}`,
   `SEND_WEIGHT=${SEND_W_BASE}+${SEND_W_PER_INPUT}n,n<=${SEND_INPUT_MAX},R${SEND_R_WEIGHT}`,
   `GEN_H=${GEN_H}`,
 ]);

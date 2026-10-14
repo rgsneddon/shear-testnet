@@ -91,6 +91,7 @@ FEE=f1-bps-200
 PAYOUT_KEY=dom_cb-v1
 AMT_CT=shear-amt-v1
 VAULT_R=shear-kt10-0x23-r-v1+parent
+CB_WEIGHT=300+60r+3s,s<=7485
 SEND_WEIGHT=25+25n,n<=8,R2336
 GEN_H=feea2914bda937d74acc1efa93bf1094f65ae709628a7aad9d1b913b6c80c301
 BITS=q16.16

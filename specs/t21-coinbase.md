@@ -62,6 +62,8 @@ There is one payee cap, `payeeCapLive()` in `block_budget.js`, and both `blockBu
 
 ## Weight
 
+A cb-v3 coinbase weighs `300 + 60` per row (0x23 rows stay 1) `+ 3` per share, from measured JS verify (about 31–40 ms per row, 1.05 ms per share, 150 ms fixed on the build box; 1 wu ≈ 1 ms). A full payout of 171 pot rows plus the fee and reserve-fee rows is 10,680 wu. The shares that still fit beside both reserves set `CB_SHARE_MAX = (36,000 − 10,680 − 2,336 − 528) / 3 = 7,485`. Consensus refuses more coinbase shares, or more batch shares in a cb-v3 block, with `share_cap`. The template defers the excess to the next round. The legacy coinbase keeps 35 wu per row.
+
 A send's verify weight is `25 + 25n` weight units for `1 ≤ n ≤ 8`. A 9-input send has no weight and the block budget refuses it. The 16-send reserve is 2,336. The vault-withdraw reserve stays 528.
 
 ## Not in this cut

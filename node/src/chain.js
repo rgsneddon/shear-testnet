@@ -133,6 +133,7 @@ import {
   settleHashOwed,
   writeHashLedger,
 } from '../../crypto/hash_owed.js';
+import { CB_SHARE_MAX } from '../../crypto/t21_params.js';
 import { buildDualTree, bindBSpend, derivedBLeaves, sameBLeaves, bLeafAskRejected } from '../../crypto/clearing.js';
 import {
   nextBaseFee,
@@ -2372,6 +2373,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const trustWork = opts.loadReplay === true && opts.trustShareWork === true;
   if (shareBatch.length) {
     if (shareBatch.length > MAX_SHARES_PER_BLOCK) return { ok: false, reason: 'share_cap' };
+    if (t21Ok && shareBatch.length > CB_SHARE_MAX) return { ok: false, reason: 'share_cap' };
     if (!prev?.header) return { ok: false, reason: 'share_batch' };
     const proved = verifyShareBatch({
       parentHeader: prev.header,

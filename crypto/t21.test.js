@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { G, H, pointBytes } from './note.js';
 import { feeOf, lawDust, splitLaw } from './t21_law.js';
 import {
-  GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_REQUIRE_ALL_COINBASES, VOUCHER_GAP, W_HASH_MAX,
+  CB_SHARE_MAX, GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_REQUIRE_ALL_COINBASES, VOUCHER_GAP, W_HASH_MAX,
 } from './t21_params.js';
 import {
   publicVoucher, voucherAt, voucherKeysOk, vouchersFromShewall, walletSecretBytes,
@@ -22,7 +22,9 @@ import {
 import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
 import { accountShareUnits, aLeavesFromShares } from './share_batch.js';
 import { buildDualTree } from './clearing.js';
-import { payeeCapLive } from './block_budget.js';
+import {
+  K_VW, MAX_BLOCK_VERIFY_WEIGHT, R_VW_WEIGHT, R_WEIGHT, W_ROW_0X23, blockBudget, payeeCapLive, txBudget, txVerifyWeight,
+} from './block_budget.js';
 import { nativeLoaded } from './native_admit.js';
 import { encodeDest } from './address.js';
 import { reserveFeeDest, splitLevy } from './levy.js';
@@ -463,6 +465,51 @@ describe('T21 payee cap (P1-3)', () => {
     });
     assert.equal(verifyT21Coinbase({ tx: tx(172), expect: {} }).reason, 'payee_cap');
     assert.notEqual(verifyT21Coinbase({ tx: tx(171), expect: {} }).reason, 'payee_cap');
+  });
+});
+
+describe('T21 verify weight and share cap', () => {
+  const cb = ({ shares = 0, vw = 0 } = {}) => ({
+    coinbase: true,
+    cbForm: 'cb-v3',
+    vout: [
+      ...[...Array(payeeCapLive())].map(() => ({ kind: 'pot', kindCode: 0x20 })),
+      { kind: 'pool-fee', kindCode: 0x20 },
+      { kind: 'reserve-fee' },
+      ...[...Array(vw)].map(() => ({ kind: 'vault-withdraw-pinned', kindCode: 0x23 })),
+    ],
+    t21: { shares: [...Array(shares)].map(() => ({ w: '1', E: Buffer.alloc(32) })) },
+  });
+
+  it('prices a full payout at 10,680 wu and fits 7,485 shares beside both reserves', () => {
+    assert.equal(txVerifyWeight(cb()), 10_680);
+    assert.equal(CB_SHARE_MAX, 7_485);
+    const full = cb({ shares: CB_SHARE_MAX, vw: K_VW });
+    // The 0x23 rows' 1 wu is already inside R_VW_WEIGHT.
+    const block = txVerifyWeight(full) + R_WEIGHT + R_VW_WEIGHT - K_VW * W_ROW_0X23;
+    assert.ok(block <= MAX_BLOCK_VERIFY_WEIGHT, String(block));
+    assert.ok(block + 3 > MAX_BLOCK_VERIFY_WEIGHT, String(block));
+    assert.equal(txBudget(full).ok, true);
+    assert.equal(blockBudget([full]).ok, true);
+  });
+
+  it('refuses one share over the cap in the budget and in consensus', () => {
+    const over = cb({ shares: CB_SHARE_MAX + 1 });
+    assert.equal(txBudget(over).reason, 'share_cap');
+    assert.equal(blockBudget([over]).reason, 'share_cap');
+    assert.equal(verifyT21Coinbase({ tx: over, expect: {} }).reason, 'share_cap');
+    assert.notEqual(verifyT21Coinbase({ tx: cb({ shares: CB_SHARE_MAX }), expect: {} }).reason, 'share_cap');
+  });
+
+  it('defers shares past the template cap, and a payee left with none', () => {
+    const built = buildT21Coinbase({
+      S: 50_000n, cin: 0n, height: 4, magic, prevHash, dummySecret, shareMax: 3,
+      payees: [payee(0, [2n, 2n]), payee(1, [3n, 1n]), payee(2, [4n])],
+    });
+    assert.equal(built.tx.t21.shares.length, 3);
+    const d = built.deferred.filter((x) => x.reason === 'share_cap');
+    assert.deepEqual(d.map((x) => x.shares.length), [1, 1]);
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: expectFor(built.tx) }).ok, true);
   });
 });
 

@@ -6,6 +6,9 @@
 import { performance } from 'node:perf_hooks';
 import { txIsCoinbase } from './note.js';
 import { txIsReserveAction } from './reserve_vault.js';
+import {
+  CB_EXTRA_ROWS, CB_FIXED_W, CB_FORM, CB_ROW_W, CB_SHARE_MAX, CB_SHARE_W,
+} from './t21_params.js';
 
 export const W_OUT = 23;
 export const W_TX = 2;
@@ -83,6 +86,7 @@ function assertTable() {
   }
   const coinbaseRoom = MAX_BLOCK_VERIFY_WEIGHT - R_WEIGHT - R_VW_WEIGHT;
   if (coinbaseRoom !== 33_136) throw new Error('block_budget V-W3');
+  if (cbShareRoom() !== CB_SHARE_MAX) throw new Error('block_budget CB_SHARE_MAX');
   for (const cap of [payeeCapNormal(), payeeCapFallback()]) {
     if (W_PAYEE * (cap + COINBASE_EXTRA_NOTES) + R_WEIGHT + R_VW_WEIGHT > MAX_BLOCK_VERIFY_WEIGHT) {
       throw new Error('block_budget payee weight');
@@ -140,6 +144,20 @@ export function payeeCapLive(frame = FALLBACK_IPC_FRAME) {
   return Math.min(normal, payeeCapFallback({ frame }));
 }
 
+export function isCbV3(tx) {
+  return !!tx && typeof tx === 'object' && tx.cbForm === CB_FORM;
+}
+
+export function cbShareCount(tx) {
+  return isCbV3(tx) && Array.isArray(tx.t21?.shares) ? tx.t21.shares.length : 0;
+}
+
+/** Shares that fit beside a full cb-v3 payout (live cap + fee + reserve-fee rows) and both reserves. */
+export function cbShareRoom(payees = payeeCapLive()) {
+  const payout = CB_FIXED_W + (payees + CB_EXTRA_ROWS) * CB_ROW_W;
+  return Math.floor((MAX_BLOCK_VERIFY_WEIGHT - R_WEIGHT - R_VW_WEIGHT - payout) / CB_SHARE_W);
+}
+
 export function isVwOutput(out) {
   if (!out || typeof out !== 'object') return false;
   if (String(out.kind || '') === VW_KIND) return true;
@@ -174,10 +192,12 @@ export function countVw(tx) {
 export function txVerifyWeight(tx) {
   if (!tx || typeof tx !== 'object') return 0;
   if (txIsCoinbase(tx)) {
-    let w = 0;
+    const v3 = isCbV3(tx);
+    let w = v3 ? CB_FIXED_W + CB_SHARE_W * cbShareCount(tx) : 0;
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
     for (let i = 0; i < outs.length; i += 1) {
-      w += isVwOutput(outs[i]) ? W_ROW_0X23 : W_PAYEE;
+      if (isVwOutput(outs[i])) w += W_ROW_0X23;
+      else w += v3 ? CB_ROW_W : W_PAYEE;
     }
     return w;
   }
@@ -251,6 +271,7 @@ export function txBudget(tx) {
   if (txIsCoinbase(tx)) {
     if (countPayees(tx) > payeeCapLive()) return reject('payee_cap');
     if (countVw(tx) > K_VW) return reject('k_vw');
+    if (cbShareCount(tx) > CB_SHARE_MAX) return reject('share_cap');
     if (publicBytes(tx) > C_MAX) return reject('coinbase_bytes');
   }
   if (publicBytes(tx) > B_MAX) return reject('block_bytes');
@@ -275,6 +296,7 @@ export function blockBudget(txs) {
       coinbase += n;
       payees += countPayees(tx);
       vw += countVw(tx);
+      if (cbShareCount(tx) > CB_SHARE_MAX) return reject('share_cap');
     } else if (txIsReserveAction(tx)) {
       reserve += 1;
     }

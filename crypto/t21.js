@@ -33,7 +33,7 @@ import { bpProve, bpVerifyTerms } from './t21_bp.js';
 import { payeeCapLive } from './block_budget.js';
 import {
   AMOUNT_KEYS, BP_M, BP_N, CB_FORM, DOM_CB, FEE_BPS_MAX, GEN_H,
-  K_MIN, LOGUP_DOM, N_MAX, OUTPUT_MAX, PAYOUT_KIND_CODE, PAYOUT_KINDS,
+  CB_SHARE_MAX, K_MIN, LOGUP_DOM, OUTPUT_MAX, PAYOUT_KIND_CODE, PAYOUT_KINDS,
   RANGE_TAG, RHO_LIMBS, R_CHUNKS, SCALAR_MAX, SHARE_BIND_DOM, T21_REQUIRE_ALL_COINBASES,
   V_CHUNKS, VAULT_KIND_CODE, VAULT_R_DOM, VE_CHUNKS, W_HASH_MAX, W_MAX, W_S_MAX,
 } from './t21_params.js';
@@ -921,6 +921,18 @@ export function buildT21Coinbase(spec) {
   // Dummies only pad a short round, so the cap needs no room for them.
   const cap = payeeCapLive();
   for (const p of live.splice(cap)) deferred.push({ voucher: p.voucher, shares: p.shares || [], reason: 'payee_cap' });
+  // Shares past CB_SHARE_MAX (or a lower spec.shareMax) wait for the next round; a payee left with none is deferred whole.
+  let room = Math.min(CB_SHARE_MAX, Math.max(0, Math.floor(Number(spec.shareMax ?? CB_SHARE_MAX))));
+  for (let i = 0; i < live.length; i += 1) {
+    const all = live[i].shares || [];
+    const keep = all.slice(0, room);
+    room -= keep.length;
+    if (keep.length < all.length) {
+      deferred.push({ voucher: live[i].voucher, shares: all.slice(keep.length), reason: 'share_cap' });
+      live[i] = keep.length ? { ...live[i], shares: keep } : null;
+    }
+  }
+  for (let i = live.length - 1; i >= 0; i -= 1) if (!live[i]) live.splice(i, 1);
   const withIndex = (list) => list.map((p, i) => ({ ...p, _index: i }));
   let payees = withIndex(live);
   if (!payees.length) return emptyCoinbase(spec, deferred);
@@ -975,7 +987,7 @@ export function verifyT21Coinbase(input) {
   if (vout.length > OUTPUT_MAX) return no('tx_cap');
   const t21 = tx.t21 || {};
   const shares = Array.isArray(t21.shares) ? t21.shares : [];
-  if (shares.length > N_MAX) return no('split_cap');
+  if (shares.length > CB_SHARE_MAX) return no('share_cap');
   for (const s of shares) {
     const w = scalarOk(s?.w);
     if (w == null || w <= 0n || w > W_S_MAX) return no('split_cap');
