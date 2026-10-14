@@ -16,7 +16,13 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20 } from '../../crypto/note.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, openedCoinbaseNanos } from '../../crypto/note.js';
+import { splitLevy } from '../../crypto/levy.js';
+import { payeeCapLive } from '../../crypto/block_budget.js';
+import { feeOf } from '../../crypto/t21_law.js';
+import { CB_FORM, PAYOUT_KIND_CODE, W_HASH_MAX } from '../../crypto/t21_params.js';
+import { t21Anchor, t21DustCarry } from '../../crypto/t21.js';
+import { composeOwed, escrowBooks, owedCapExceeded, settleDuty, weightPay } from '../../crypto/t21_escrow.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
@@ -341,6 +347,10 @@ function copySupply(state) {
     bLocked: typeof state.bLocked === 'bigint' ? state.bLocked : 0n,
     permittedHashAll: state.permittedHashAll,
     acceptedHash: state.acceptedHash,
+    escrow: typeof state.escrow === 'bigint' ? state.escrow : 0n,
+    escrowHash: typeof state.escrowHash === 'bigint' ? state.escrowHash : 0n,
+    escrowRows: Array.isArray(state.escrowRows) ? state.escrowRows.map((r) => ({ ...r })) : [],
+    escrowLocks: copyEscrowLocks(state.escrowLocks),
     owedRows: state.owedRows.slice(),
     dust: state.dust,
     overflow: state.overflow,
@@ -367,6 +377,10 @@ export function emptySupplyState(genesisMs = 0) {
     bLocked: 0n,
     permittedHashAll: 0n,
     acceptedHash: 0n,
+    escrow: 0n,
+    escrowHash: 0n,
+    escrowRows: [],
+    escrowLocks: [],
     owedRows: [],
     dust: 0n,
     overflow: 0n,
@@ -443,6 +457,10 @@ export function supplyFromScalar(scalar, {
     bLocked: BigInt(scalar.bLocked || 0),
     permittedHashAll: BigInt(scalar.permittedHashAll || 0),
     acceptedHash: BigInt(scalar.acceptedHash || 0),
+    escrow: BigInt(scalar.escrow || 0),
+    escrowHash: BigInt(scalar.escrowHash || 0),
+    escrowRows: Array.isArray(scalar.escrowRows) ? scalar.escrowRows.map((r) => ({ ...r })) : [],
+    escrowLocks: copyEscrowLocks(scalar.escrowLocks),
     owedRows: Array.isArray(owedRows) ? owedRows.slice() : [],
     dust: BigInt(scalar.dust || 0),
     overflow: BigInt(scalar.overflow || 0),
@@ -531,7 +549,10 @@ function accountBlock(prev, block, opts = {}) {
   const carryOutN = canonicalCarry(cb);
   if (carryOutN == null) return { reason: 'pot_sched', state };
   const carryOut = BigInt(carryOutN);
-  const potMinted = permittedBi + state.carry - carryOut;
+  const t21Cb = cb?.cbForm === CB_FORM;
+  const dustOut = t21Cb ? t21DustCarry(cb) : carryOut;
+  if (dustOut == null) return { reason: 'pot_sched', state };
+  const potMinted = permittedBi + state.carry - dustOut;
   if (potMinted < 0n) return { reason: 'pot_sched', state };
   const hash = permittedHash(block);
   const levy = publicLevy(block);
@@ -550,6 +571,9 @@ function accountBlock(prev, block, opts = {}) {
     return { reason: 'hash_bonus', state };
   }
   const unit = hashBonusUnitNanos(opts.unit == null ? state.liveUnit : opts.unit);
+  if (cb?.cbForm === CB_FORM) {
+    return accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blockHeight, opts });
+  }
   if (shares.length && hash.account && Array.isArray(block?.aLeaves) && block.aLeaves.length) {
     const seen = new Set();
     for (const leaf of block.aLeaves) {
@@ -630,6 +654,11 @@ function accountBlock(prev, block, opts = {}) {
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
   }
+  return finishAccount(state, block, opts, { ts, potMinted, hashMinted: mintedHashHere, levy, unit, blockHeight });
+}
+
+/** Interest, B lock, and the running totals once the coinbase itself balanced. */
+function finishAccount(state, block, opts, { ts, potMinted, hashMinted, levy, unit, blockHeight }) {
   const interest = blockWithdrawInterest(opts.vault, block, ts);
   if (!interest.ok) return { reason: interest.reason || 'supply', state };
   // Schedule allowance is staked × epochBps per epoch, not a copy of the receipt.
@@ -638,7 +667,7 @@ function accountBlock(prev, block, opts = {}) {
   if (state.mintedInterest + interest.nanos > U64) return { reason: 'supply', state };
   if (state.permittedInterest + allowed.nanos > U64) return { reason: 'supply', state };
   state.mintedPot += potMinted;
-  state.mintedHash += mintedHashHere;
+  state.mintedHash += hashMinted;
   state.mintedLevy += levy;
   state.mintedInterest += interest.nanos;
   state.permittedInterest += allowed.nanos;
@@ -652,11 +681,386 @@ function accountBlock(prev, block, opts = {}) {
   if (!fitsU64(state.schedulePot) || !fitsU64(state.carry) || !fitsU64(state.mintedPot)
     || !fitsU64(state.mintedHash) || !fitsU64(state.mintedLevy) || !fitsU64(state.bLocked)
     || !fitsU64(state.mintedInterest) || !fitsU64(state.permittedInterest)
-    || !fitsU64(state.permittedHashAll)
+    || !fitsU64(state.permittedHashAll) || !fitsU64(state.escrow) || !fitsU64(state.escrowHash)
     || !fitsU64(state.acceptedHash) || !fitsU64(state.dust) || !fitsU64(state.overflow)) {
     return { reason: 'supply', state };
   }
   return { reason: '', state };
+}
+
+function u64Of(v) {
+  let n;
+  try {
+    n = typeof v === 'bigint' ? v : BigInt(v);
+  } catch {
+    return null;
+  }
+  return n >= 0n && n <= U64 ? n : null;
+}
+
+/** Escrow locked by the coinbase's published owed list. Not cb-v3: none. */
+export function escrowPublished(tx) {
+  if (tx?.cbForm !== CB_FORM) return { rows: [], escrow: 0n, escrowHash: 0n };
+  const rows = [];
+  let escrow = 0n;
+  let escrowHash = 0n;
+  const hidden = (tx.t21?.owed || []).some((o) => o?.Cpot);
+  for (const o of tx.t21?.owed || []) {
+    const id = t21Anchor(o);
+    const since = Number(o?.since);
+    if (!id || !Number.isInteger(since) || since < 0) return null;
+    let by = '';
+    try { by = Buffer.from(o.by).toString('hex'); } catch { return null; }
+    if (hidden) {
+      if (!o.Cpot || !o.Chash || !o.claim) return null;
+      rows.push({
+        id, since, by, claim: Buffer.from(o.claim).toString('hex'),
+        Cpot: Buffer.from(o.Cpot).toString('hex'), Chash: Buffer.from(o.Chash).toString('hex'),
+      });
+      continue;
+    }
+    const pot = u64Of(o?.pot);
+    const hash = u64Of(o?.hash);
+    if (pot == null || hash == null) return null;
+    let w = 0n;
+    for (const s of o.shares || []) {
+      const sw = u64Of(s?.w);
+      if (sw == null || sw <= 0n) return null;
+      w += sw;
+    }
+    rows.push({ id, pot, hash, since, by, w });
+    escrow += pot + hash;
+    escrowHash += hash;
+  }
+  if (hidden) {
+    const total = tx.t21?.escrowTotal != null && tx.t21.escrowTotal !== '' ? u64Of(tx.t21.escrowTotal) : 0n;
+    return { rows, escrow: total, escrowHash: null, hidden: true };
+  }
+  return { rows, escrow, escrowHash };
+}
+
+function copyEscrowLocks(locks) {
+  if (!Array.isArray(locks)) return [];
+  return locks.map((lock) => ({
+    rows: Array.isArray(lock?.rows) ? lock.rows.map((id) => String(id)) : [],
+    es: Array.isArray(lock?.es) ? lock.es.map((e) => String(e)) : [],
+  }));
+}
+
+/** Share anchors still sealed in open escrow. Hex of E, not the note commit. */
+export function escrowLockedEs(state) {
+  const set = new Set();
+  for (const lock of state?.escrowLocks || []) {
+    for (const e of lock.es || []) set.add(String(e));
+  }
+  return set;
+}
+
+/**
+ * Drop locks whose rows are gone, then record this block's flat defer.
+ * A lock stays while any of its rows is still open, so a settle of one
+ * sibling does not free the other's anchors. deferEs is empty when this
+ * block did not seal new shares.
+ */
+export function nextEscrowLocks(prevLocks, { liveIds = [], deferEs = [], touchedIds = [] } = {}) {
+  const live = new Set(liveIds);
+  const locks = [];
+  for (const lock of prevLocks || []) {
+    if ((lock.rows || []).some((id) => live.has(String(id)))) {
+      locks.push({
+        rows: lock.rows.map((id) => String(id)),
+        es: lock.es.map((e) => String(e)),
+      });
+    }
+  }
+  if (deferEs.length) locks.push({ rows: touchedIds.map((id) => String(id)), es: deferEs.map((e) => String(e)) });
+  return locks;
+}
+
+/** Locks after each block, from the published coinbases. Snaps do not store them. */
+export function escrowLockSeries(blocks) {
+  const series = [];
+  let locks = [];
+  let prev = new Map();
+  for (const block of blocks || []) {
+    const tx = block?.txs?.[0];
+    const published = escrowPublished(tx);
+    if (!published) {
+      locks = [];
+      prev = new Map();
+      series.push(locks);
+      continue;
+    }
+    const liveIds = published.rows.map((row) => row.id);
+    let deferEs = [];
+    let touchedIds = [];
+    if (published.hidden) {
+      const height = Number(tx?.t21?.height);
+      for (const row of published.rows) {
+        const old = prev.get(row.id);
+        if (!old || old.Cpot !== row.Cpot || row.since === height) touchedIds.push(row.id);
+      }
+      for (const d of tx?.t21?.defer || []) {
+        try { deferEs.push(Buffer.from(d.E).toString('hex')); } catch { deferEs = []; break; }
+      }
+      if (deferEs.length && !touchedIds.length) touchedIds = liveIds.slice();
+    }
+    locks = nextEscrowLocks(locks, { liveIds, deferEs, touchedIds });
+    prev = new Map(published.rows.map((row) => [row.id, row]));
+    series.push(locks);
+  }
+  return series;
+}
+
+/**
+ * cb-v3. Payout notes open to the pot that left the schedule, minus pot
+ * locked in escrow, plus u·W of the shares paid now, plus the finder half
+ * when this round has shares, plus escrow settled this block. A round with
+ * shares folds that half into the payee split; an empty round pays it as an
+ * opened note and does not mint it. Fresh escrow is priced on R+Φ. TTL
+ * sends the sealed value back to the pot. 0x23 rows are not counted here.
+ */
+function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blockHeight, opts }) {
+  void carryOut;
+  const t21 = cb.t21 || {};
+  const u = asNonNeg(t21.u);
+  if (u == null) return { reason: 'hash_bonus', state };
+  if (state.owedRows.length || state.dust !== 0n || state.overflow !== 0n) return { reason: 'hash_owed', state };
+  if (potMinted < 0n) return { reason: 'pot_sched', state };
+  const vout = Array.isArray(cb.vout) ? cb.vout : [];
+  const payout = vout.filter((o) => Number(o?.kindCode) === PAYOUT_KIND_CODE);
+  let phiPub = 0n;
+  for (const o of payout) {
+    const fin = asNonNeg(o?.fin == null ? 0 : o.fin);
+    if (fin == null) return { reason: 'finder_row', state };
+    phiPub += fin;
+  }
+  const split = splitLevy(Number(levy));
+  const finderRows = vout.filter((row) => row?.kind === 'finder-fee');
+  let pubFinder = 0n;
+  for (const row of finderRows) {
+    const v = openedCoinbaseNanos(row);
+    if (v == null) return { reason: 'levy_split', state };
+    pubFinder += BigInt(v);
+  }
+  if (split.reserve > 0 && !vout.some((row) => row?.kind === 'reserve-fee')) return { reason: 'levy_split', state };
+
+  const published = escrowPublished(cb);
+  if (!published) return { reason: 'owed_list', state };
+  if (owedCapExceeded(published.rows, (row) => row.by)) return { reason: 'owed_cap', state };
+  const paid = new Set();
+  for (const o of payout) {
+    if (o.kind !== 'settle') continue;
+    let id = '';
+    try { id = Buffer.from(o.escrowE).toString('hex'); } catch { return { reason: 'owed_list', state }; }
+    if (!id || paid.has(id)) return { reason: 'owed_list', state };
+    paid.add(id);
+  }
+  const parent = Array.isArray(state.escrowRows) ? state.escrowRows : [];
+  const fresh = published.rows.filter((row) => row.since === blockHeight);
+  const parentById = new Map(parent.map((row) => [row.id, row]));
+  const hidden = !!published.hidden || parent.some((row) => row?.Cpot);
+  const folds = [];
+  if (hidden) {
+    for (const row of published.rows) {
+      const prev = parentById.get(row.id);
+      if (!prev || prev.Cpot === row.Cpot) continue;
+      folds.push({ id: row.id, Cpot: row.Cpot, Chash: row.Chash });
+    }
+  } else {
+    for (const row of published.rows) {
+      const prev = parentById.get(row.id);
+      if (!prev || (row.pot === prev.pot && row.hash === prev.hash)) continue;
+      if (prev.w == null || row.w == null || row.w < prev.w) return { reason: 'owed_list', state };
+      const w = row.w - prev.w;
+      const addPot = row.pot - prev.pot;
+      const addHash = row.hash - prev.hash;
+      if (w <= 0n || addPot < 0n || addHash < 0n) return { reason: 'owed_list', state };
+      folds.push({ id: row.id, addPot, addHash, w });
+    }
+  }
+  const listed = composeOwed({ owedIn: parent, paid, fresh, folds, height: blockHeight });
+  if (!listed.ok || listed.owed.length !== published.rows.length) return { reason: 'owed_list', state };
+  for (let i = 0; i < published.rows.length; i += 1) {
+    const got = published.rows[i];
+    const want = listed.owed[i];
+    if (got.id !== want.id || got.since !== Number(want.since)) return { reason: 'owed_list', state };
+    if (hidden) {
+      if (got.Cpot !== want.Cpot || got.Chash !== want.Chash) return { reason: 'owed_list', state };
+    } else if (got.pot !== BigInt(want.pot) || got.hash !== BigInt(want.hash)) {
+      return { reason: 'owed_list', state };
+    }
+  }
+  const backPub = t21.back != null && t21.back !== '' ? u64Of(t21.back) : 0n;
+  if (backPub == null || (!listed.hiddenBack && backPub !== listed.back)) return { reason: 'owed_list', state };
+
+  let Wpaid = 0n;
+  for (const sh of Array.isArray(t21.shares) ? t21.shares : []) {
+    const w = u64Of(sh?.w);
+    if (w == null || w === 0n) return { reason: 'hash_units', state };
+    Wpaid += w;
+  }
+  let wEsc = 0n;
+  let escrowPot = 0n;
+  let escrowHashIn = 0n;
+  if (hidden) {
+    for (const d of t21.defer || []) {
+      const sw = u64Of(d?.w);
+      if (sw == null || sw <= 0n) return { reason: 'hash_units', state };
+      wEsc += sw;
+    }
+    const escrowTotal = t21.escrowTotal != null && t21.escrowTotal !== '' ? u64Of(t21.escrowTotal) : 0n;
+    if (escrowTotal == null || (wEsc === 0n && escrowTotal !== 0n)) return { reason: 'pot_sched', state };
+    escrowHashIn = u * wEsc;
+    if (escrowTotal < escrowHashIn) return { reason: 'pot_sched', state };
+    escrowPot = escrowTotal - escrowHashIn;
+  }
+  for (const o of hidden ? [] : (t21.owed || [])) {
+    if (Number(o.since) !== blockHeight) continue;
+    let w = 0n;
+    for (const s of o.shares || []) {
+      const sw = u64Of(s?.w);
+      if (sw == null || sw <= 0n) return { reason: 'hash_units', state };
+      w += sw;
+    }
+    const pot = u64Of(o.pot);
+    const hash = u64Of(o.hash);
+    if (pot == null || hash == null || hash !== u * w) return { reason: 'pot_sched', state };
+    wEsc += w;
+    escrowPot += pot;
+    escrowHashIn += hash;
+  }
+  for (const fold of folds) {
+    if (fold.addHash !== u * fold.w) return { reason: 'pot_sched', state };
+    wEsc += fold.w;
+    escrowPot += fold.addPot;
+    escrowHashIn += fold.addHash;
+  }
+  const wall = Wpaid + wEsc;
+  const working = Wpaid > 0n || wEsc > 0n;
+  if (u !== (working ? BigInt(unit) : 0n)) return { reason: 'hash_bonus', state };
+  if (wall >= W_HASH_MAX) return { reason: 'hash_units', state };
+  const budget = hashBudgetNanos(state.acceptedSeries, unit);
+  if (budget == null || u * wall > budget) return { reason: 'hash_budget', state };
+  let folded = 0n;
+  if (working) {
+    if (phiPub !== 0n) return { reason: 'finder_row', state };
+    if (finderRows.length || pubFinder !== 0n) return { reason: 'levy_split', state };
+    folded = BigInt(split.finder);
+  } else if (phiPub + pubFinder !== BigInt(split.finder)) {
+    return { reason: 'levy_split', state };
+  }
+  if (wEsc > 0n && !hidden) {
+    const S = u64Of(t21.S);
+    const cin = u64Of(t21.cin);
+    const f = S == null ? null : feeOf(S, t21.bps || 0);
+    if (S == null || cin == null || f == null || S + cin < f || wall <= 0n) return { reason: 'pot_sched', state };
+    const Rphi = S + cin - f + folded;
+    for (const o of t21.owed || []) {
+      if (Number(o.since) !== blockHeight) continue;
+      let w = 0n;
+      for (const s of o.shares || []) w += u64Of(s?.w);
+      const priced = weightPay(Rphi, wall, w, u);
+      const pot = u64Of(o.pot);
+      const hash = u64Of(o.hash);
+      if (!priced || pot == null || hash == null || priced.pot !== pot || priced.hash !== hash) {
+        return { reason: 'pot_sched', state };
+      }
+    }
+    for (const fold of folds) {
+      const priced = weightPay(Rphi, wall, fold.w, u);
+      if (!priced || priced.pot !== fold.addPot || priced.hash !== fold.addHash) {
+        return { reason: 'pot_sched', state };
+      }
+    }
+  }
+  const duty = settleDuty({
+    owedIn: parent,
+    paid,
+    height: blockHeight,
+    freshPayees: working,
+    fit: payeeCapLive(),
+  });
+  if (!duty.ok) return { reason: duty.reason || 'owed_due', state };
+
+  let settlePot = 0n;
+  let settleHash = 0n;
+  if (hidden) {
+    const settleTotal = t21.settleTotal != null && t21.settleTotal !== '' ? u64Of(t21.settleTotal) : 0n;
+    if (settleTotal == null || (settleTotal === 0n) !== (paid.size === 0)) return { reason: 'owed_list', state };
+    settlePot = settleTotal;
+  } else {
+    for (const id of paid) {
+      const row = parent.find((r) => r.id === id);
+      if (!row) return { reason: 'owed_list', state };
+      settlePot += row.pot;
+      settleHash += row.hash;
+    }
+  }
+  const hashPaid = u * Wpaid;
+  const hashAll = u * wall;
+  const settleV = settlePot + settleHash;
+  const mintTotal = potMinted - escrowPot + hashPaid + (working ? folded : 0n) + settleV;
+  if (mintTotal < 0n) return { reason: 'supply', state };
+  if (!payout.length && mintTotal !== 0n) return { reason: 'supply', state };
+  if (payout.length && (!cb.excess || !verifyMintSum(payout, mintTotal, cb.excess))) {
+    return { reason: 'supply', state };
+  }
+  const dust = t21DustCarry(cb);
+  if (dust == null) return { reason: 'pot_sched', state };
+  const lockedEs = escrowLockedEs(state);
+  for (const s of [...(t21.shares || []), ...(t21.defer || [])]) {
+    let hex = '';
+    try { hex = Buffer.from(s.E).toString('hex'); } catch { return { reason: 'share_label', state }; }
+    if (lockedEs.has(hex)) return { reason: 'share_label', state };
+  }
+  const books = escrowBooks(state, {
+    potMinted,
+    escrowPot,
+    escrowHash: escrowHashIn,
+    settlePot,
+    settleHash,
+    backPot: hidden ? backPub : listed.backPot,
+    backHash: hidden ? 0n : listed.backHash,
+    hashPaid,
+    hashAll,
+    dust,
+  });
+  state.escrow = books.escrow;
+  state.escrowHash = books.escrowHash;
+  state.acceptedHash = books.acceptedHash;
+  state.permittedHashAll = books.permittedHashAll;
+  state.carry = books.carry;
+  state.escrowRows = published.rows.map((r) => ({ ...r }));
+  const liveIds = published.rows.map((row) => row.id);
+  let touchedIds = [];
+  let deferEs = [];
+  if (hidden) {
+    for (const row of published.rows) {
+      if (row.since === blockHeight) touchedIds.push(row.id);
+    }
+    for (const fold of folds) {
+      if (!touchedIds.includes(fold.id)) touchedIds.push(fold.id);
+    }
+    for (const d of t21.defer || []) deferEs.push(Buffer.from(d.E).toString('hex'));
+  }
+  state.escrowLocks = nextEscrowLocks(state.escrowLocks, { liveIds, deferEs, touchedIds });
+  state.acceptedSeries.push(wall);
+  if (hidden && state.escrow === 0n && state.escrowHash !== 0n) {
+    state.acceptedHash -= state.escrowHash;
+    state.escrowHash = 0n;
+  }
+  if (!hidden && (state.escrow !== published.escrow || state.escrowHash !== published.escrowHash)) {
+    return { reason: 'supply', state };
+  }
+  return finishAccount(state, block, opts, {
+    ts,
+    potMinted: potMinted - escrowPot + settlePot,
+    hashMinted: hashPaid + settleHash,
+    levy,
+    unit,
+    blockHeight,
+  });
 }
 
 /**
@@ -669,14 +1073,16 @@ export function supplyStep(prev, block, opts = {}) {
   if (next.reason) return { ok: false, reason: next.reason, state: null };
   let outstanding = next.state.dust + next.state.overflow;
   for (const row of next.state.owedRows) outstanding += row.nanos;
-  if (next.state.mintedHash + outstanding !== next.state.acceptedHash) {
+  const escrow = next.state.escrow || 0n;
+  const escrowHash = next.state.escrowHash || 0n;
+  if (next.state.mintedHash + escrowHash + outstanding !== next.state.acceptedHash) {
     return { ok: false, reason: 'hash_owed', state: null };
   }
   // Minted is the receipt. Permitted is the bps schedule. They are not the same sum.
   if (next.state.mintedInterest !== next.state.permittedInterest) {
     return { ok: false, reason: 'supply', state: null };
   }
-  const difference = next.state.mintedPot + next.state.mintedHash
+  const difference = next.state.mintedPot + next.state.mintedHash + escrow
     - next.state.schedulePot + next.state.carry - next.state.permittedHashAll;
   if (difference !== 0n) return { ok: false, reason: 'supply', state: null };
   return { ok: true, reason: '', state: next.state };
@@ -761,17 +1167,19 @@ export function supplyReport(state, opts = {}) {
   const permittedHashAll = state.permittedHashAll;
   const acceptedHash = state.acceptedHash;
   const carry = state.carry;
+  const escrow = state.escrow || 0n;
+  const escrowHash = state.escrowHash || 0n;
   const owedState = state.owedRows || [];
   const dustState = state.dust;
   const overflowState = state.overflow;
   let outstanding = dustState + overflowState;
   for (const row of owedState) outstanding += row.nanos;
-  if (mintedHash + outstanding !== acceptedHash) {
+  if (mintedHash + escrowHash + outstanding !== acceptedHash) {
     reportOk = false;
     reportReason = reportReason || 'hash_owed';
   }
   const circulating = mintedPot + mintedHash + chainExtra - burned;
-  const expected = schedulePot - carry + permittedHashAll + chainExtra - burned;
+  const expected = schedulePot - carry - escrow + permittedHashAll + chainExtra - burned;
   const difference = circulating - expected;
   if (difference !== 0n) {
     reportOk = false;

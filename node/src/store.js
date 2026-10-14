@@ -40,7 +40,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
-import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
+import { emptySupplyState, escrowLockSeries, escrowPublished, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
   verifyShareBatch,
@@ -106,7 +106,8 @@ import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
-import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
+import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive, cbV3WeightFor } from '../../crypto/block_budget.js';
+import { t21CarryBook, withCarry } from './t21_carry.js';
 import { blockWork, HEADER_AHEAD_MS } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
@@ -277,6 +278,7 @@ export function createStore(dir, {
   let segmented = false;
   const explorerFile = path.join(dir, 'explorer.jsonl');
   const vaultFile = path.join(dir, 'reserve.json');
+  const t21Carry = t21CarryBook({ file: path.join(dir, 't21-carry.json') });
   const magicFile = path.join(dir, 'book.magic');
   const sealFile = path.join(dir, 'book.seal');
   const snapFile = path.join(dir, 'book.snap');
@@ -1065,6 +1067,8 @@ export function createStore(dir, {
         bLocked: s.bLocked,
         permittedHashAll: s.permittedHashAll,
         acceptedHash: s.acceptedHash,
+        escrow: s.escrow || 0n,
+        escrowHash: s.escrowHash || 0n,
         dust: s.dust,
         overflow: s.overflow,
         liveUnit: s.liveUnit,
@@ -1130,6 +1134,18 @@ export function createStore(dir, {
         acceptedSeries: owedKnown ? series.slice(0, tip ? series.length : ck.seriesEnd) : [],
         owedKnown,
       });
+      const published = escrowPublished(blocks[i]?.txs?.[0]);
+      if (rows[i] && published) {
+        if (!published.hidden && published.escrowHash != null) {
+          rows[i].escrow = published.escrow;
+          rows[i].escrowHash = published.escrowHash;
+        }
+        rows[i].escrowRows = published.rows;
+      }
+    }
+    const lockSeries = escrowLockSeries(blocks);
+    for (let i = 0; i < rows.length; i += 1) {
+      if (rows[i]) rows[i].escrowLocks = lockSeries[i] || [];
     }
     if (!rows.length) return rows;
     const walked = fillSnapInterest(rows, blocks.slice(0, rows.length));
@@ -4617,7 +4633,7 @@ export function createStore(dir, {
     };
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null, t21 = null } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
@@ -4651,9 +4667,14 @@ export function createStore(dir, {
     let reserveIncluded = 0;
     let reserveDropped = false;
     const budgetStarted = performance.now();
-    const announced = Array.isArray(shareBatch) ? shareBatch.length
-      : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch.length : 0);
-    const coinbaseWeight = W_PAYEE * (Math.min(payeeCapLive(), announced) + 3);
+    let offered = Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []);
+    const t21Magic = t21 ? (t21.magic || MAGIC_TESTNET) : null;
+    if (t21 && t) {
+      t21Carry.settleTip(t, blocks.length >= 2 ? blocks[blocks.length - 2] : null, t21Magic);
+      offered = withCarry(t21Carry.carryFor(t, t21Magic), offered);
+    }
+    const announced = offered.length;
+    const coinbaseWeight = t21 ? cbV3WeightFor(announced) : W_PAYEE * (Math.min(payeeCapLive(), announced) + 3);
     const chosen = new Set(selectBodyIndexes(mempool, { coinbaseWeight }));
     const walk = [];
     for (let i = 0; i < mempool.length; i += 1) {
@@ -4837,7 +4858,7 @@ export function createStore(dir, {
       now,
       bits,
       hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
-      shareBatch: Array.isArray(shareBatch) ? shareBatch : (Array.isArray(t?.nextShareBatch) ? t.nextShareBatch : []),
+      shareBatch: offered,
       hashSpill: Array.isArray(hashSpill) ? hashSpill : [],
       poolDest,
       feeDest,
@@ -4847,7 +4868,12 @@ export function createStore(dir, {
       hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
+      t21: t21 ? { ...t21, vault: reserveVault } : null,
     });
+    if (t21 && t) {
+      const fresh = [...(tpl.shareBatch || []), ...(tpl.t21Later || [])].filter((s) => s?.proofSlot === 0);
+      t21Carry.noteRound(t, fresh);
+    }
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });
     const gate = requiredJobFields(job);
@@ -4904,6 +4930,7 @@ export function createStore(dir, {
     adopt,
     ingest,
     template,
+    t21CarryStats: () => t21Carry.stats(),
     submitHeader,
     probeBlock,
     jobs,

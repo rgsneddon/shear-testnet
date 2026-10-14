@@ -53,7 +53,7 @@ Counts and byte sizes are the public transaction. Applying these caps does not o
 
 The normal per-block payee cap is **470** (T21 hidden payout). `floor(8,388,608 / 17,400)` is 482 and is not the cap. A larger row can only lower 470. Below `FRAME_MIN` (19,764,360) the live cap is the smaller of 470 and the hex-frame fallback. Today's IPC frame is 8 MiB, so `payeeCapLive()` stays **171**. The 16 MiB P2P fallback is also under 470, so that frame's live cap is unchanged. On the 8 MiB frame a coinbase output bound of live payees + 3 notes + 8 vault-withdraw rows is 182.
 
-The 16-send FS-1 reserve is **2,336** weight units. Verify weight is `25 + 25n` weight units for `n` inputs. The reserve prices the 2-input send: `16 × (75 + 3×23 + 2) = 2,336`. The headroom under the 36,000 weight-unit block cap, after that reserve and the 528 vault-withdraw reserve, is 33,136. `2 × W_IN` (40 wu) is not this reserve.
+The 16-send FS-1 reserve is **2,336** weight units. A send's verify weight is `25 + 25n` weight units for `n` inputs (`txVerifyWeight`). The reserve prices the 2-input send: `16 × (75 + 3×23 + 2) = 2,336`. The headroom under the 36,000 weight-unit block cap, after that reserve and the 528 vault-withdraw reserve, is 33,136. The vault-withdraw reserve stays `8 × (40 + 23 + 1 + 2) = 528`.
 
 ## ADMITv3 membership
 

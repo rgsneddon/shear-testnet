@@ -7,13 +7,13 @@ import { createHash, createPublicKey, sign, verify } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM } from './asert.js';
 import { levyTaxed, txAmountNanos, custodialPullRejected } from './levy.js';
 import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
-import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
+import { admitBaseFromAddress, paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
-import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
+import { pinnedReceipt, portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -519,6 +519,7 @@ const BODY_KEYS = new Set([
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
+  'cbForm', 't21',
   'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
 ]);
 
@@ -531,6 +532,7 @@ const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
   'portalId', 'memo', 'memoCt',
+  'lambda', 'B', 'Y', 'cw', 'rhoK', 'delK', 'ra', 'law', 'fin', 'kindCode', 'vaultNanos', 'mintId', 'escrowE',
 ]);
 
 const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);
@@ -698,6 +700,21 @@ export function typedCommitSum(tx) {
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
+  // A pinned receipt is paid by a later 0x23 coinbase row, so W here is 0
+  // and the spent note opens to the fee plus the hidden change.
+  const pin = kind === 'withdraw' ? pinnedReceipt(tx) : null;
+  if (pin) {
+    if (!pin.ok) return { ok: false, reason: 'commit_sum' };
+    for (const o of outs) {
+      if (o === pin.row) continue;
+      if (String(o?.kind || kind) === kind || !o?.commit || !o?.rangeProof || o.rangeProof === true) {
+        return { ok: false, reason: 'commit_sum' };
+      }
+    }
+    const committed = outs.filter((o) => o !== pin.row);
+    if (!verifyFlowConservation({ ...tx, vout: committed }, null, 0)) return { ok: false, reason: 'commit_sum' };
+    return { ok: true };
+  }
   let payout = 0;
   let opened = 0;
   for (const o of outs) {
@@ -799,6 +816,8 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   const receipts = outs.filter((row) => String(row?.kind || '') === 'withdraw');
   if (receipts.length !== 1) return { ok: false, reason: 'mint_amount' };
   const o = receipts[0];
+  const pin = pinnedReceipt(tx);
+  if (pin && !pin.ok) return { ok: false, reason: 'mint_amount' };
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
   const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
   if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };
@@ -820,6 +839,10 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
     const got = voutDest20(o);
     if (!want || !got || !Buffer.from(want).equals(got)) {
       return { ok: false, reason: 'payout_mismatch' };
+    }
+    if (pin) {
+      const base = admitBaseFromAddress(portal.payout);
+      if (!base || !Buffer.from(asU8(base)).equals(pin.B)) return { ok: false, reason: 'payout_mismatch' };
     }
   }
   if (portal?.payoutPortalId) {

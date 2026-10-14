@@ -15,6 +15,8 @@ pub mod generators;
 pub mod leaf;
 pub mod membership;
 pub mod rulings;
+pub mod t21;
+pub mod t21_prove;
 pub mod tree_cli;
 pub mod vectors;
 pub mod witness;

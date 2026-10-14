@@ -18,6 +18,7 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
+import { T21_FINGERPRINT_TOKENS } from './t21_params.js';
 import { HISTORICAL_TIP } from './historical_prefix.js';
 import {
   MAGIC_TESTNET_V1,
@@ -348,7 +349,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ENC_SHARE=v5+work7',
     'SHARE_SLOT=bound-v1',
     'SHARE_UNITS=2^bits',
-    'SHARE_BIND=rx+noteCommit',
+    ...T21_FINGERPRINT_TOKENS,
     'SHARE_CREDIT=nonce-hi-le',
     `SHARE_BMAX=${shareCreditMaxBits()}`,
     'HASH_OWED=noteCommit-carry',
@@ -381,9 +382,16 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'N1=admit-note-point',
     'RANGE=packed-bit',
     'ADMIT_CYCLE=pallas-vesta-pasta',
-    'ADMIT_ARITY=32',
     'ADMIT_K=1',
-    'ADMIT_LEAF=shear-admit-leaf-v2',
+    'DEPTH=7',
+    'LAYER_ONE_LEN=38',
+    'LAYER_TWO_LEN=18',
+    'LEAF=O||I||C',
+    'LEAF_BYTES=96',
+    'HP_DST=shear-admit-Hp',
+    'GENERATOR_DST=shear-fs1-generators-v1',
+    'INPUT_MIN=1',
+    'INPUT_MAX=8',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,

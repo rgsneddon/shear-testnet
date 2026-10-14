@@ -50,6 +50,8 @@ import {
 import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, custodialPullRejected, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { handleAdminHttp, createAdmin } from './admin.js';
+import { createT21Labels, isLabelShare, labelShareRecord, loginVoucher, t21TemplateSpec, voucherFromHex } from './t21_labels.js';
+import { isT21Coinbase } from '../../crypto/t21.js';
 import {
   THIS_POOL_DIRECT_FEE_DEST,
   configuredFeeIdentity,
@@ -356,7 +358,7 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
   const dests = [...by.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   for (let i = 0; i < dests.length; i += 1) {
     const [addr, n] = dests[i];
-    const nanos = i === dests.length - 1 ? rest - paid : Math.floor(rest * n / total);
+    const nanos = i === dests.length - 1 ? rest - paid : Number(BigInt(rest) * BigInt(n) / BigInt(total));
     paid += nanos;
     if (nanos > 0) out.push({ address: addr, nanos, kind: 'pot' });
   }
@@ -1115,7 +1117,8 @@ export function rememberOpenShare(openShares, rec) {
  */
 export function bindAcceptedShare(openShares, rec) {
   const payee = String(rec?.dest || rec?.address || rec?.miner || destOfShare(rec) || '');
-  if (!payeeFs1Ok(payee)) {
+  // A label share has no payee here; its voucher passed voucherKeysOk at login.
+  if (!isLabelShare(rec) && !payeeFs1Ok(payee)) {
     return { ok: false, reason: 'admit_note_point', list: openShares };
   }
   const header = rec?.verifiedHeader || rec?.header;
@@ -1193,7 +1196,8 @@ export function wireJob(job, shareBits) {
   void shareBitsHist;
   const out = { ...rest };
   if (shareBits != null) out.shareBits = shareBits;
-  out.shareBind = 'dest';
+  // A T21 label-bound job (pool/src/t21_labels.js) binds the share to its note commit.
+  out.shareBind = out.noteCommit ? 'note' : 'dest';
   const sealed = headerWorkBits(out.header);
   if (sealed != null) {
     out.bits = sealed;
@@ -1301,7 +1305,7 @@ function nonceHiFromShareHeader(header) {
   }
 }
 
-export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
+export function judgeShare({ job, header, hash, dest, shareBits, noteCommit = null } = {}) {
   const current = Number(shareBits ?? job?.shareBits);
   const prev = Number(job.shareBitsPrev);
   const prevAt = Number(job.shareBitsAt) || 0;
@@ -1313,7 +1317,10 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
   const blockOk = meetsTarget(hash, blockTarget);
   const pay = String(dest || job?.dest || '').trim();
   let shareHash = hash;
-  if (pay) {
+  const label = /^[0-9a-f]{64}$/.test(String(noteCommit || '')) ? String(noteCommit) : '';
+  if (label) {
+    shareHash = destBoundShareHash(hash, Buffer.from(label, 'hex'));
+  } else if (pay) {
     const nc = noteCommitOfShare({ dest: pay });
     if (!nc || nc.length !== 32) {
       return { ok: false, reason: 'miner_addr', hash: hash.toString('hex') };
@@ -1348,6 +1355,7 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
       header,
       bitsMet: leadingZeroBits(shareHash),
       creditedShareBits: hi,
+      ...(label ? { noteCommit: label } : {}),
     };
   }
   /* A raw hash that meets the sealed block target is always a block candidate.
@@ -1369,7 +1377,7 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
 }
 
 /** Sync path for tests. Live submits use the RandomX worker so HTTP cannot stall. */
-export function scoreShare({ job, nonce, claimed, dest } = {}) {
+export function scoreShare({ job, nonce, claimed, dest, noteFor = null } = {}) {
   const want = claimed ? String(claimed).toLowerCase() : '';
   const headers = candidateShareHeaders(job);
   const list = headers.length ? headers : [job?.header];
@@ -1388,7 +1396,7 @@ export function scoreShare({ job, nonce, claimed, dest } = {}) {
       }
       continue;
     }
-    const judged = judgeShare({ job, header: prep.header, hash, dest });
+    const judged = judgeShare({ job, header: prep.header, hash, dest, noteCommit: noteFor ? noteFor(headerHex) : null });
     if (judged.ok) return judged;
     last = judged;
     /* Claimed digest matched this header. Later restamp candidates are a
@@ -1850,8 +1858,25 @@ export function createPool({
   onRestartHasher = null,
   noValidShareMs = NO_VALID_SHARE_MS,
   shareCap = null,
+  // T21 share labels: true for a book under dataDir, or a createT21Labels() instance. Off by default.
+  t21Labels = String(process.env.SHEAR_POOL_T21_LABELS || '') === '1',
+  // cb-v3 templates from the label book: { finder, fee, bps } vouchers. Needs t21Labels.
+  t21Template = process.env.SHEAR_POOL_T21_FINDER_VOUCHER
+    ? {
+      finder: voucherFromHex(process.env.SHEAR_POOL_T21_FINDER_VOUCHER),
+      fee: voucherFromHex(process.env.SHEAR_POOL_T21_FEE_VOUCHER),
+      bps: Number(process.env.SHEAR_POOL_T21_FEE_BPS || 0),
+    }
+    : null,
 } = {}) {
   const store = createStore(dataDir);
+  const t21 = t21Labels && typeof t21Labels.jobFor === 'function'
+    ? t21Labels
+    : (t21Labels === true ? createT21Labels({ magic: MAGIC_TESTNET, file: path.join(dataDir, 't21-labels.jsonl') }) : null);
+  /** The job a connection is sent: its own labelled copy when it is label-bound. */
+  const jobForConn = (c, job) => (t21 && job ? t21.jobFor(c, job) : job);
+  const t21Tpl = t21 && t21Template ? t21TemplateSpec({ labels: t21, magic: MAGIC_TESTNET, ...t21Template }) : null;
+  if (t21 && t21Template && !t21Tpl) console.error(JSON.stringify({ event: 't21_template', ok: false, reason: 'voucher' }));
   const admin = createAdmin(dataDir);
   const pullBook = createPullBook(dataDir);
   const miners = new Map();
@@ -1877,7 +1902,7 @@ export function createPool({
       for (const c of m.connections || []) {
         if (!c || c.shearFeeRoute) continue;
         c.shareBits = next;
-        const live = lastJob || c.job;
+        const live = jobForConn(c, lastJob || c.job);
         if (!live || !c.sock) continue;
         c.job = live;
         try { c.sock.write(line({ method: 'job', params: wireJob(live, next) })); } catch { /* ignore */ }
@@ -2001,6 +2026,7 @@ export function createPool({
         hash,
         dest,
         shareBits: conn?.shareBits ?? job?.shareBits,
+        noteCommit: t21 ? t21.noteFor(conn, headerHex) : null,
       });
       if (judged.ok) return judged;
       last = judged;
@@ -3686,10 +3712,12 @@ export function createPool({
         }
       }
     }
+    // A cb-v3 coinbase binds the finder to the template's miner, not the submitting hasher.
+    const cbV3 = isT21Coinbase(store.jobs.get(String(jid))?.tpl?.txs?.[0]);
     const got = await Promise.resolve(store.submitHeader({
       jobId: jid,
       nonce,
-      miner,
+      miner: cbV3 ? '' : miner,
       powHash,
     }, { trusted: true }));
     if (got?.ok) {
@@ -3841,10 +3869,12 @@ export function createPool({
       store.mempool.length = 0;
       store.mempool.push(...stay);
     }
+    // cb-v3 needs a parent header and a finder-of-record dest; otherwise the legacy coinbase.
+    const t21Miner = t21Tpl && store.tip() ? t21Tpl.minerFor(payout) : null;
     let built;
     try {
       built = store.template({
-        miner: payout,
+        miner: t21Miner || payout,
         samples,
         potShares,
         shareBits: sb,
@@ -3855,6 +3885,7 @@ export function createPool({
         finderDest: '',
         issuedHeaders: lag1Issued,
         wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
+        t21: t21Miner ? t21Tpl.t21 : null,
       });
     } finally {
       if (stashed && stashed.length && Array.isArray(store.mempool)) {
@@ -3940,9 +3971,9 @@ export function createPool({
       if (payout !== dest) continue;
       for (const c of m.connections || []) {
         if (!c?.sock || c.shearFeeRoute) continue;
-        c.job = aimed;
+        c.job = jobForConn(c, aimed);
         try {
-          c.sock.write(line({ method: 'job', params: wireJob(aimed, c.shareBits) }));
+          c.sock.write(line({ method: 'job', params: wireJob(c.job, c.shareBits) }));
         } catch { /* ignore */ }
       }
     }
@@ -4041,7 +4072,7 @@ export function createPool({
     for (const m of miners.values()) {
       for (const c of m.connections || []) {
         if (c && c.sock === sock) {
-          c.job = job;
+          c.job = jobForConn(c, job);
           // Do not copy the template shareBits onto the connection.
           // That value is the opening floor on a fresh job and slapped
           // stepped miners back to 8.
@@ -4068,7 +4099,7 @@ export function createPool({
           template: job.shareBits,
         }, { blockBits: blockBitsNow(), minBits: liveShareMin() });
         c.shareBits = sb;
-        const aimed = c.shearFeeRoute ? job : jobForSession(job, m);
+        const aimed = jobForConn(c, (c.shearFeeRoute ? job : jobForSession(job, m)) || job);
         const payload = wireJob(aimed || job, sb);
         c.job = aimed || job;
         try {
@@ -4396,7 +4427,25 @@ export function createPool({
     }
     const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
     const creditedBits = Number(scored.creditedShareBits) || 0;
-    if (session && isDestAddress(destPay) && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
+    const verifiedHeader = Buffer.isBuffer(scored.header)
+      ? scored.header.toString('hex').toLowerCase()
+      : String(job?.header || '').toLowerCase();
+    if (session && scored.noteCommit && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
+      const rec = labelShareRecord({
+        noteCommit: scored.noteCommit,
+        nonce: params.nonce,
+        hash: scored.hash,
+        jobId: job?.jobId,
+        lz: scored.bitsMet,
+        shareBits: creditedBits,
+        verifiedHeader,
+      });
+      const opened = creditAcceptedShare(rec);
+      if (!opened.ok) {
+        rejectSubmit(sock, session, msg, opened.reason || 'share_pow');
+        return;
+      }
+    } else if (session && isDestAddress(destPay) && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
       const rec = {
         dest: destPay,
         dest20: hash20FromAddress(destPay),
@@ -4681,6 +4730,12 @@ export function createPool({
             replyLine(sock, { id: msg.id, error: 'banned' }, { drop: true });
             continue;
           }
+          // A voucher that fails the check is refused, not silently mined dest-bound.
+          const t21Voucher = t21 && params.voucher != null ? loginVoucher(params) : null;
+          if (t21 && params.voucher != null && !t21Voucher) {
+            replyLine(sock, { id: msg.id, error: 'voucher_key' }, { drop: true });
+            continue;
+          }
           const key = adm.workerKey;
           if (!miners.has(key)) {
             const ipBudget = noteIpSubmit(ipLoginAt, sockIp(sock), Date.now(), {
@@ -4751,7 +4806,8 @@ export function createPool({
             ? lastJob
             : issueJob(conn.shareBits);
           const job = conn.shearFeeRoute ? issued : jobForSession(issued, session);
-          conn.job = job || issued;
+          if (t21 && !conn.shearFeeRoute) t21.bind(conn, t21Voucher);
+          conn.job = jobForConn(conn, job || issued);
           // Idle starts when the job is on the wire. Template build is server
           // time: the hasher cannot submit a header it has not been sent.
           conn.authedAt = Date.now();

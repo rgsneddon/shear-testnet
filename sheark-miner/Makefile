@@ -58,7 +58,7 @@ ifneq ($(OPENSSL_PREFIX),)
   LIBS += -L$(OPENSSL_PREFIX)/lib
 endif
 
-OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o
+OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o src/t21_label.o
 
 .PHONY: all clean selftest randomx
 
@@ -71,7 +71,7 @@ $(RXLIB):
 	cd $(RXBUILD) && cmake $(CMAKE_GEN) -DCMAKE_BUILD_TYPE=Release -DARCH=$(RX_ARCH) $(RX)
 	$(MAKE) -C $(RXBUILD) -j4
 
-src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h
+src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h src/t21_label.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(RXLIB) $(OBJS)

@@ -229,7 +229,7 @@ export function expectedCoinbasePays(shareBatch, {
   });
   for (let i = 0; i < sorted.length; i += 1) {
     const leaf = sorted[i];
-    const nanos = i === sorted.length - 1 ? rest - paid : Math.floor(rest * leaf.count / total);
+    const nanos = i === sorted.length - 1 ? rest - paid : Number(BigInt(rest) * BigInt(leaf.count) / BigInt(total));
     paid += nanos;
     if (nanos > 0) {
       out.push({
@@ -279,7 +279,7 @@ export function paysFromALeaves(aLeaves, {
   for (let i = 0; i < sorted.length; i += 1) {
     const c = Number(sorted[i].count) || 0;
     if (!total || !c) continue;
-    const nanos = i === sorted.length - 1 ? rest - paid : Math.floor(rest * c / total);
+    const nanos = i === sorted.length - 1 ? rest - paid : Number(BigInt(rest) * BigInt(c) / BigInt(total));
     paid += nanos;
     if (nanos > 0) {
       out.push({

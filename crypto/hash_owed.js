@@ -57,6 +57,7 @@ import {
 } from './share_batch.js';
 import { packShareBatchBytes, unpackShareBatch, unpackShareBatchBytes } from './pack.js';
 import { admitBaseFromAddress } from './address.js';
+import { CB_FORM, W_HASH_MAX } from './t21_params.js';
 
 const MAX_U64 = (1n << 64n) - 1n;
 const MAX_U32 = 0xffffffff;
@@ -1095,6 +1096,8 @@ export function advanceHashOwed({
   tipHeight = null,
 } = {}) {
   const h = height == null ? Number(block?.height || 0) : Number(height);
+  const cb0 = Array.isArray(block?.txs) ? block.txs[0] : null;
+  if (cb0?.cbForm === CB_FORM) return advanceT21(owedIn, acceptedSeries, cb0);
   const gotFresh = freshForBlock(block, unit, tipHeight);
   if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
   const gotSpill = spillForBlock(block, unit, tipHeight);
@@ -1124,6 +1127,36 @@ export function advanceHashOwed({
     acceptedSeries: series,
     settled,
   };
+}
+
+/**
+ * cb-v3 keeps no legacy owed ledger, so it needs an empty one in. Paid shares
+ * and this block's fresh escrow both enter the accepted series. W >= 2^48
+ * rejects the block; the cap is not a silent drop.
+ */
+function advanceT21(owedIn, acceptedSeries, cb) {
+  if ((owedIn || []).length) return { ok: false, reason: 'hash_owed' };
+  let W = 0n;
+  const add = (raw) => {
+    const w = asBi(raw);
+    if (w == null || w <= 0n) return false;
+    W += w;
+    return true;
+  };
+  for (const s of cb.t21?.shares || []) {
+    if (!add(s?.w)) return { ok: false, reason: 'hash_units' };
+  }
+  const height = Number(cb.t21?.height ?? cb.height);
+  for (const row of cb.t21?.owed || []) {
+    if (Number(row?.since) !== height) continue;
+    for (const s of row.shares || []) {
+      if (!add(s?.w)) return { ok: false, reason: 'hash_units' };
+    }
+  }
+  if (W >= W_HASH_MAX) return { ok: false, reason: 'hash_units' };
+  const series = Array.isArray(acceptedSeries) ? acceptedSeries : [];
+  series.push(W);
+  return { ok: true, reason: '', rows: [], acceptedUnits: W, acceptedSeries: series, settled: null };
 }
 
 function rowsEqual(a, b) {

@@ -19,6 +19,8 @@ insecure-test-generators = ["generalized-bulletproofs/tests"]
 bench = []
 # The `fs1_tree` line tool the node drives to build the tree. Off by default.
 tree-cli = []
+# The `t21_prove` row prover `crypto/t21_native.js` drives. Off by default.
+t21-prove = []
 
 [dependencies]
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -57,6 +59,15 @@ name = "fs1_tree"
 path = "src/bin/fs1_tree.rs"
 required-features = ["tree-cli"]
 
+[[bin]]
+name = "t21_prove"
+path = "src/bin/t21_prove.rs"
+required-features = ["t21-prove"]
+
 [[test]]
 name = "ct7_threads"
 path = "tests/ct7_threads.rs"
+
+[[test]]
+name = "t21_vectors"
+path = "tests/t21_vectors.rs"

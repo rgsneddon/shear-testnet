@@ -521,6 +521,18 @@ function compactVout(o, tx) {
     if (o.rEph) row.rEph = o.rEph;
     if (o.rCt) row.rCt = o.rCt;
     if (o.amtCt) row.amtCt = o.amtCt;
+    if (o.lambda) row.lambda = o.lambda;
+    if (o.B) row.B = o.B;
+    if (o.Y) row.Y = o.Y;
+    if (o.cw) row.cw = o.cw;
+    if (o.rhoK) row.rhoK = o.rhoK;
+    if (o.delK) row.delK = o.delK;
+    if (o.mintId) row.mintId = o.mintId;
+    if (o.ra) row.ra = o.ra;
+    if (o.law) row.law = o.law;
+    if (o.fin != null && o.fin !== '') row.fin = o.fin;
+    if (o.kindCode != null) row.kindCode = o.kindCode;
+    if (o.vaultNanos != null && o.vaultNanos !== '') row.vaultNanos = o.vaultNanos;
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
     if (reserveKind || coinbaseMoney) {
@@ -583,6 +595,8 @@ export function compactTx(tx) {
     if (Array.isArray(tx.issuedJobKeys) && tx.issuedJobKeys.length) {
       row.issuedJobKeys = tx.issuedJobKeys.map((id) => String(id).toLowerCase());
     }
+    if (tx.cbForm) row.cbForm = tx.cbForm;
+    if (tx.t21) row.t21 = compactValue(tx.t21);
     compactHashLedger(tx, row);
     return row;
   }

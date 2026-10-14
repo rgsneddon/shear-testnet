@@ -67,6 +67,33 @@ VORTICE_NO_MINT=1
 LEVY_CAP=0.001-SHE
 LEVY_SPLIT=50-50-finder-reserve
 ADMIT=ADMITv3
+DEPTH=7
+LAYER_ONE_LEN=38
+LAYER_TWO_LEN=18
+LEAF=O||I||C
+LEAF_BYTES=96
+HP_DST=shear-admit-Hp
+GENERATOR_DST=shear-fs1-generators-v1
+INPUT_MIN=1
+INPUT_MAX=8
+T21=split-v1
+CB_FORM=cb-v3
+CB_ONLY=cb-v3-at-genesis-pin
+CB_WRAP=ve-elgamal-16x20+agg-schnorr+shear-amt-v1
+CB_RANGE=bp-agg-16x32+0x02
+VOUCHER_LABEL=shear-vch-lam-v2+B+Y
+SPLIT_TALLY=logup-inv-schnorr+shear-logup-x-v1
+SPLIT_LAW=floor-schnorr+rho-3x16-two-sided
+SHARE_BIND=shear-share-bind-v1
+T21_HASH=retained-units,W<=2^28,uW<=Bh
+K_MIN=4
+FEE=f1-bps-200
+PAYOUT_KEY=dom_cb-v1
+AMT_CT=shear-amt-v1
+VAULT_R=shear-kt10-0x23-r-v1+parent
+CB_WEIGHT=300+60r+3s,s<=7485
+SEND_WEIGHT=25+25n,n<=8,R2336
+GEN_H=feea2914bda937d74acc1efa93bf1094f65ae709628a7aad9d1b913b6c80c301
 BITS=q16.16
 ASERT_TAU_MS=1440000
 ASERT_STEP=median11(log2(T/seen))*(T/tau)
@@ -78,6 +105,8 @@ MAX_SHARES_PER_BLOCK=65536
 SPEND_SIG=ed25519-shear-spend-v1
 POOL_WITHDRAW=eip712-spend-bound
 ```
+
+`ADMIT` stays `ADMITv3`. `AMOUNT` stays `confidential`. Those admit lines are the FS-1 tree in `shear-fs1`: depth 7, branch widths 38 and 18, leaf `O || I || C` (96 bytes) under domain `shear-admit-Hp`, generator set `shear-fs1-generators-v1`, and input counts 1 through 8. `ADMIT_ARITY=32` and `shear-admit-leaf-v2` are not fingerprint tokens.
 
 v12 consensus caps a pool fee at `POOL_FEE_MAX_BPS` (200) of that block's subsidy. Carried pot is not part of the fee base. This public pool still constructs at 100 bps.
 

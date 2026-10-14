@@ -49,6 +49,8 @@ import {
   noteCommitOfShare,
   accountShareUnits,
   selectBlockShares,
+  t21ShareCredit,
+  T21_SHARE_MAX_BITS,
   bindShareProofSlots,
   shareWorkKey,
   stashSharePow,
@@ -80,9 +82,9 @@ import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, pendingWithdrawsOf, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
 import { coinbaseObserveRejected, observeDigestSuffix } from '../../crypto/reserve_oracle.js';
-import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
+import { emptySupplyState, escrowLockedEs, foldSupply, supplyLinks, supplyStep } from './supply.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -103,6 +105,9 @@ import {
   txIoCap,
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
+import {
+  isT21Coinbase, t21CbOnly, t21DigestSuffix, t21DustCarry, t21EconomicCarry, t21FinderOf, t21OwedOf, t21ParentId, verifyT21Coinbase,
+} from '../../crypto/t21.js';
 import { blockBudget } from '../../crypto/block_budget.js';
 import {
   packTx,
@@ -130,6 +135,8 @@ import {
   settleHashOwed,
   writeHashLedger,
 } from '../../crypto/hash_owed.js';
+import { CB_SHARE_MAX, T21_OWED_MAX, W_HASH_MAX } from '../../crypto/t21_params.js';
+import { t21TemplateCoinbase } from './t21_template.js';
 import { buildDualTree, bindBSpend, derivedBLeaves, sameBLeaves, bLeafAskRejected } from '../../crypto/clearing.js';
 import {
   nextBaseFee,
@@ -237,6 +244,31 @@ function lookupSpentVout(vin, block, prev, bodyIndex, history) {
   return null;
 }
 
+/**
+ * Once the genesis hash is pinned, cb-v3 is the only coinbase form. The
+ * legacy coinbase, and with it the last-payee re-split, is then refused.
+ */
+export function coinbaseFormRejected(tx, genesisHash = V12_GENESIS_BLOCK_HASH) {
+  if (t21CbOnly(genesisHash) && !isT21Coinbase(tx)) return { ok: false, reason: 'cb_form' };
+  return null;
+}
+
+const T21_LEDGER_KEYS = Object.freeze([
+  'hashOwedRoot', 'hashOwedLocal', 'hashOwedRest', 'hashDustNanos', 'hashOwedOverflowNanos',
+  'hashCreditRoot', 'hashAcceptedUnits', 'hashOwed', 'hashPaid',
+]);
+
+/**
+ * cb-v3 pays the hash bonus in-block as u·W. It does not settle the legacy
+ * hash-owed ledger, so the parent must leave none and the coinbase carries none.
+ */
+export function t21HashLedgerOk(parentCb, cb) {
+  const owedIn = hashOwedFromTx(parentCb);
+  if (!Array.isArray(owedIn) || owedIn.length) return false;
+  if (hashDustFromTx(parentCb) !== 0n || hashOverflowFromTx(parentCb) !== 0n) return false;
+  return T21_LEDGER_KEYS.every((k) => cb?.[k] == null);
+}
+
 /** Non-negative safe-integer carry, 0 when absent. Null is not a carry. */
 export function canonicalCarry(tx) {
   if (tx == null || tx.carryNanos == null || tx.carryNanos === '') return 0;
@@ -286,16 +318,18 @@ export function digestTx(tx) {
   const slotSuffix = tx?.coinbase ? shareSlotDigestSuffix(tx) : Buffer.alloc(0);
   const issuedSuffix = tx?.coinbase ? issuedJobDigestSuffix(tx) : Buffer.alloc(0);
   const observeSuffix = tx?.coinbase ? observeDigestSuffix(tx) : null;
+  const t21Suffix = tx?.coinbase ? t21DigestSuffix(tx) : null;
   if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length))) {
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length) || (t21Suffix && t21Suffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
     if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
     if (issuedSuffix && issuedSuffix.length) parts.push(issuedSuffix);
     if (observeSuffix && observeSuffix.length) parts.push(observeSuffix);
+    if (t21Suffix && t21Suffix.length) parts.push(t21Suffix);
     return packDigest(Buffer.concat(parts));
   }
   const reserveSuffix = reserveDigestSuffix(tx);
@@ -353,6 +387,94 @@ function aLeavesOf(collated, pay) {
       count: Number(s.count) > 0 ? Number(s.count) : unitsForShare(),
     };
   });
+}
+
+/** The parent vault's pinned withdraws, oldest first, as verifyT21Coinbase reads them. */
+export function t21PendingVaults(vault) {
+  return pendingWithdrawsOf(vault).map((p) => ({
+    mintId: Buffer.from(String(p.mintId), 'hex'),
+    vaultNanos: BigInt(p.vaultNanos),
+    B: Buffer.from(String(p.B), 'hex'),
+  }));
+}
+
+/**
+ * The template's cb-v3 coinbase. `t21` is the pool's side: { labelOf, finder,
+ * fee, bps, vault, shareMax, payeeMax, owedMax, perBlock, magic, seed }.
+ * `owedIn` is the parent coinbase's owed list. A round with shares folds the
+ * finder half into the payee split. A round with no shares pays it as an
+ * opened finder-fee note to `miner`; with no miner dest, fee-paying txs wait.
+ */
+function t21CoinbaseFor({ t21, miner, batch, txs, prevHeader, priorHeader, issuedJobKeys, height, subsidy, carryIn, hashBonusNanos, hashAcceptedSeries, owedIn, escrowEs }) {
+  if (!prevHeader) throw new Error('cb_form');
+  const feeOfTx = (t) => Math.max(0, Math.floor(Number(t.fee || 0)));
+  const run = (body) => {
+    const fees = body.reduce((a, t) => a + feeOfTx(t), 0);
+    const split = splitLevy(fees);
+    const made = t21TemplateCoinbase({
+      batch,
+      labelOf: t21.labelOf,
+      prevHeader,
+      priorHeader,
+      issuedJobKeys,
+      magic: t21.magic || MAGIC_TESTNET,
+      height,
+      prevHash: t21ParentId(prevHeader),
+      S: subsidy,
+      cin: carryIn,
+      u: hashBonusUnitNanos(hashBonusNanos),
+      hashBudget: hashBudgetNanos(hashAcceptedSeries, hashBonusNanos),
+      bps: t21.bps || 0,
+      fee: t21.fee || null,
+      finder: t21.finder || null,
+      phi: BigInt(split.finder),
+      finderNote: split.finder && miner && isDestAddress(miner) ? sealLevyNote(split.finder, miner, 'finder-fee') : null,
+      vaults: t21PendingVaults(t21.vault),
+      publicRows: split.reserve ? [sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee')] : [],
+      owedIn,
+      escrowEs,
+      producer: miner && isDestAddress(miner) ? admitBaseFromAddress(miner) : null,
+      shareMax: t21.shareMax ?? CB_SHARE_MAX,
+      payeeMax: t21.payeeMax ?? null,
+      unitMax: t21.unitMax ?? W_HASH_MAX,
+      owedMax: t21.owedMax ?? T21_OWED_MAX,
+      perBlock: t21.perBlock,
+      seed: t21.seed,
+    });
+    return { ...made, txs: body, fees };
+  };
+  try {
+    return run(txs);
+  } catch (err) {
+    if (err?.message !== 'finder_row') throw err;
+    return run(txs.filter((t) => feeOfTx(t) === 0));
+  }
+}
+
+/**
+ * cb-v3 share units: the full units per note commit (the aLeaves), so Σw
+ * stays at most W_HASH_MAX. A buried pruned block has no batch;
+ * its published aLeaves must rebuild the header's continuity root with the
+ * block's B leaves, so W stays bound to the PoW header.
+ */
+export function t21ShareUnits(block, txs, provedLeaves, skipFlow, decoded) {
+  const toShares = (leaves) => leaves.map((l) => ({ nc: Buffer.from(l.noteCommit), units: BigInt(l.count) }));
+  if (provedLeaves) return { ok: true, shares: toShares(provedLeaves) };
+  if (!skipFlow) return { ok: true, shares: [] };
+  const raw = Array.isArray(block?.aLeaves) ? block.aLeaves : [];
+  const leaves = [];
+  for (const l of raw) {
+    const nc = l?.noteCommit ? Buffer.from(asU8(l.noteCommit)) : null;
+    const count = Number(l?.count);
+    if (!nc || nc.length !== 32 || !Number.isSafeInteger(count) || count <= 0) return { ok: false, reason: 'hash_bonus' };
+    leaves.push({ noteCommit: nc, count });
+  }
+  // Pruning empties block.bLeaves; the txs still derive them.
+  const b = derivedBLeaves(txs);
+  if (!b.ok) return b;
+  const dual = buildDualTree({ aLeaves: leaves, bLeaves: b.leaves });
+  if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };
+  return { ok: true, shares: toShares(leaves) };
 }
 
 function publishedALeaves(block) {
@@ -467,13 +589,14 @@ export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null,
     noteCommit: Buffer.from(l.noteCommit || []),
     count: Number(l.count) || 0,
   })).filter((l) => l.noteCommit.length === 32 && l.count > 0);
-  const total = list.reduce((a, l) => a + l.count, 0);
+  const total = list.reduce((a, l) => a + BigInt(l.count), 0n);
   const out = [];
   if (!total) return out;
   let paid = 0;
   const sorted = [...list].sort((a, b) => ncHex(a.noteCommit).localeCompare(ncHex(b.noteCommit)));
+  // rest · count passes 2^53 once units are 2^bits, so the floor is taken in bigint.
   for (let i = 0; i < sorted.length; i += 1) {
-    const nanos = i === sorted.length - 1 ? rest - paid : Math.floor(rest * sorted[i].count / total);
+    const nanos = i === sorted.length - 1 ? rest - paid : Number(BigInt(rest) * BigInt(sorted[i].count) / total);
     paid += nanos;
     if (nanos > 0) out.push({ noteCommit: sorted[i].noteCommit, nanos, kind: 'pot' });
   }
@@ -953,7 +1076,7 @@ function resolveFinderPay(finderDest, miner, poolDest, feeDest, pay) {
   return named;
 }
 
-function sealLevyNote(nanos, dest, kind) {
+export function sealLevyNote(nanos, dest, kind) {
   const d20 = hash20FromAddress(dest);
   if (!d20) return { address: dest, nanos, kind };
   return attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind }), {
@@ -986,9 +1109,28 @@ function pubsJoining(txs) {
  * and that dest is not the reserve or the protocol pool fee. Every
  * reserve-fee note pays the reserve. Sums match splitLevy.
  */
-export function coinbaseLevyPays(cb, fees) {
+export function coinbaseLevyPays(cb, fees, miner = '') {
   const split = splitLevy(fees);
   const rows = (kind) => (cb?.vout || []).filter((v) => v?.kind === kind);
+  const t21Shares = Array.isArray(cb?.t21?.shares) ? cb.t21.shares : [];
+  const t21Defer = Array.isArray(cb?.t21?.defer) ? cb.t21.defer : [];
+  // Shares, including payees sealed this round, fold the finder half into the
+  // weight split. A round with no new work keeps one public finder-fee note.
+  const t21Work = isT21Coinbase(cb) && (t21Shares.length > 0 || t21Defer.length > 0);
+  if (isT21Coinbase(cb) && !t21Work) {
+    const found = t21FinderOf(cb);
+    if (!found || found.phi !== 0n) return { ok: false, reason: 'finder_row' };
+    if (split.finder > 0) {
+      const m20 = miner && isDestAddress(miner) ? hash20FromAddress(miner) : null;
+      const f = rows('finder-fee');
+      if (!m20 || f.length !== 1 || !noteDest20(f[0])?.equals(Buffer.from(m20))) return { ok: false, reason: 'finder_row' };
+    }
+  } else if (t21Work) {
+    // The pool is not finder of record. A public fin or a finder-fee note redirects the half.
+    if (rows('finder-fee').length) return { ok: false, reason: 'levy_split' };
+    const found = t21FinderOf(cb);
+    if (!found || found.phi !== 0n) return { ok: false, reason: 'finder_row' };
+  }
   const openedSum = (list) => {
     let sum = 0;
     for (const o of list) {
@@ -1000,7 +1142,7 @@ export function coinbaseLevyPays(cb, fees) {
   };
   const finderRows = rows('finder-fee');
   const reserveRows = rows('reserve-fee');
-  if (split.finder === 0 ? finderRows.length !== 0 : openedSum(finderRows) !== split.finder) {
+  if ((!isT21Coinbase(cb) || !t21Work) && (split.finder === 0 ? finderRows.length !== 0 : openedSum(finderRows) !== split.finder)) {
     return { ok: false, reason: 'levy_split' };
   }
   if (split.reserve === 0 ? reserveRows.length !== 0 : openedSum(reserveRows) !== split.reserve) {
@@ -1353,17 +1495,24 @@ export function buildTemplate({
   issuedHeaders = null,
   hashSpill = null,
   prepareCoinbase = null,
+  t21 = null,
 }) {
   txs = (Array.isArray(txs) ? txs : []).filter((tx) => !txNoteRuleRejected(tx));
-  const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
+  // cb-v3 caps the batch in planT21Round, label by label, and reports what waits.
+  // selectBlockShares would trim it here without a trace.
+  const selected = Array.isArray(shareBatch)
+    ? (t21
+      ? selectBlockShares(shareBatch, Number.MAX_SAFE_INTEGER, { maxBits: T21_SHARE_MAX_BITS })
+      : selectBlockShares(shareBatch, MAX_SHARES_PER_BLOCK))
+    : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
     : null;
-  const batch = bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
+  let batch = bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
     keepClaim: true,
   }).slotted;
   const spillIn = Array.isArray(hashSpill) ? hashSpill.slice(0, MAX_SHARES_PER_BLOCK) : [];
-  const spillBatch = bindShareProofSlots(spillIn, prevHeader, priorBlock?.header || null, {
+  let spillBatch = bindShareProofSlots(spillIn, prevHeader, priorBlock?.header || null, {
     keepClaim: false,
   }).slotted.filter((s) => s?.proofSlot === 1 || s?.proofSlot === '1');
   const fromBatch = batch.length
@@ -1395,6 +1544,7 @@ export function buildTemplate({
   // Anything still unpaid, including an empty list, stays carried. Solo
   // (null shares) pays the miner the subsidy plus that carry and carries nothing.
   const carryIn = canonicalCarry(prevBlock?.txs?.[0]) || 0;
+  const carryInT21 = t21EconomicCarry(prevBlock?.txs?.[0]) ?? BigInt(carryIn);
   const parentCb = prevBlock?.txs?.[0] || null;
   let series = Array.isArray(hashAcceptedSeries) ? hashAcceptedSeries : null;
   // Maintained owed state. A lean parent root is not a reason to walk the chain.
@@ -1414,77 +1564,109 @@ export function buildTemplate({
     for (const s of potShares) minted += Math.max(0, Math.floor(Number(s.nanos) || 0));
   }
   const carryOut = explicit ? payable - minted : 0;
-  const cb = coinbaseTx({
-    height,
-    miner,
-    samples: collated,
-    potShares: explicit ? potShares : null,
-    destOf: pay,
-    hashBonusNanos,
-    shareBatch: batch,
-    poolDest,
-    potNanos: explicit ? Math.max(subsidy, minted) : payable,
-    carryNanos: carryOut > 0 ? carryOut : 0,
-    hashBonusCustodyDest,
-    hashOwedIn,
-    hashDustIn,
-    hashOverflowIn,
-    hashAcceptedSeries: series,
-    hashSpill: spillBatch,
-  });
-  const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
-  const split = splitLevy(fees);
-  const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
-  if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
-  if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
-  if (typeof prepareCoinbase === 'function') prepareCoinbase(cb);
-  try {
-    dropBrokenCoinbaseNotes(cb, { shares: batch.length > 0 });
-  } catch (err) {
-    if (!batch.length || err?.message !== 'admit_note_point') throw err;
-    const bad = brokenPayeeHexes(cb);
-    const source = Array.isArray(shareBatch) ? shareBatch : [];
-    const nextShares = source.filter((s) => !shareHitsBrokenPayee(s, bad));
-    if (!bad.size || nextShares.length === source.length) throw err;
-    console.error(JSON.stringify({
-      event: 'coinbase_share_evict',
-      reason: 'admit_note_point',
-      payees: bad.size,
-      shares: source.length - nextShares.length,
-    }));
-    return buildTemplate({
-      prev,
+  const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
+  let t21Leaves = null;
+  let t21Left = null;
+  let fees = 0;
+  let split = splitLevy(0);
+  let cb;
+  if (t21) {
+    const made = t21CoinbaseFor({
+      t21,
+      miner,
+      batch,
+      txs,
       prevHeader,
-      prevBlock,
-      parentWeight: parentWeightIn,
+      priorHeader: priorBlock?.header || null,
+      issuedJobKeys,
+      height,
+      subsidy,
+      carryIn: carryInT21,
+      hashBonusNanos,
+      hashAcceptedSeries: series,
+      owedIn: t21OwedOf(parentCb),
+      escrowEs: escrowLockedEs(prevBlock?.supply),
+    });
+    cb = made.tx;
+    batch = made.batch;
+    txs = made.txs;
+    t21Leaves = made.aLeaves;
+    t21Left = made;
+    spillBatch = [];
+    fees = made.fees;
+    split = splitLevy(fees);
+  } else {
+    fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
+    split = splitLevy(fees);
+    cb = coinbaseTx({
       height,
       miner,
-      samples,
-      txs,
-      bLeaves: bLeavesIn,
-      now,
-      bits,
-      destOf,
-      potShares: null,
+      samples: collated,
+      potShares: explicit ? potShares : null,
+      destOf: pay,
       hashBonusNanos,
-      shareBatch: nextShares,
+      shareBatch: batch,
       poolDest,
-      feeDest,
-      finderDest,
+      potNanos: explicit ? Math.max(subsidy, minted) : payable,
+      carryNanos: carryOut > 0 ? carryOut : 0,
       hashBonusCustodyDest,
-      parentFluxset,
-      parentBlocks,
-      hashAcceptedSeries,
-      hashOwedIn: hashOwedInOpt,
-      issuedHeaders,
-      hashSpill: Array.isArray(hashSpill)
-        ? hashSpill.filter((s) => !shareHitsBrokenPayee(s, bad))
-        : hashSpill,
+      hashOwedIn,
+      hashDustIn,
+      hashOverflowIn,
+      hashAcceptedSeries: series,
+      hashSpill: spillBatch,
     });
+    const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
+    if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
+    if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
+    if (typeof prepareCoinbase === 'function') prepareCoinbase(cb);
+    try {
+      dropBrokenCoinbaseNotes(cb, { shares: batch.length > 0 });
+    } catch (err) {
+      if (!batch.length || err?.message !== 'admit_note_point') throw err;
+      const bad = brokenPayeeHexes(cb);
+      const source = Array.isArray(shareBatch) ? shareBatch : [];
+      const nextShares = source.filter((s) => !shareHitsBrokenPayee(s, bad));
+      if (!bad.size || nextShares.length === source.length) throw err;
+      console.error(JSON.stringify({
+        event: 'coinbase_share_evict',
+        reason: 'admit_note_point',
+        payees: bad.size,
+        shares: source.length - nextShares.length,
+      }));
+      return buildTemplate({
+        prev,
+        prevHeader,
+        prevBlock,
+        parentWeight: parentWeightIn,
+        height,
+        miner,
+        samples,
+        txs,
+        bLeaves: bLeavesIn,
+        now,
+        bits,
+        destOf,
+        potShares: null,
+        hashBonusNanos,
+        shareBatch: nextShares,
+        poolDest,
+        feeDest,
+        finderDest,
+        hashBonusCustodyDest,
+        parentFluxset,
+        parentBlocks,
+        hashAcceptedSeries,
+        hashOwedIn: hashOwedInOpt,
+        issuedHeaders,
+        hashSpill: Array.isArray(hashSpill)
+          ? hashSpill.filter((s) => !shareHitsBrokenPayee(s, bad))
+          : hashSpill,
+      });
+    }
+    cb.excess = excessOf(cb.vout);
   }
-  cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
-  const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
   if (issuedJobKeys.length) cb.issuedJobKeys = issuedJobKeys;
   const addedPubs = [];
   for (const o of cb.vout || []) {
@@ -1516,7 +1698,7 @@ export function buildTemplate({
   }
   const bodyTxs = [cb, ...txs];
   const merkle = merkleRoot(bodyTxs.map(digestTx));
-  const aLeaves = aLeavesOf(collated, pay);
+  const aLeaves = t21Leaves || aLeavesOf(collated, pay);
   const bLeaves = Array.isArray(bLeavesIn) ? bLeavesIn : bLeavesOf(txs, pay);
   const dual = buildDualTree({ aLeaves, bLeaves });
   let parentBase = 1;
@@ -1559,12 +1741,22 @@ export function buildTemplate({
     samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
     shareBatch: batch,
     hashSpill: spillBatch,
+    ...(t21Left ? {
+      t21Later: t21Left.later,
+      t21Expired: t21Left.expired,
+      t21Unlabelled: t21Left.unlabelled,
+      t21Refused: t21Left.refused,
+      t21Deferred: t21Left.deferRows,
+      t21OwedPaid: t21Left.owedPaid,
+      t21Flags: t21Left.flags,
+    } : {}),
     miner,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashCredits: freshCreditsFromShares(batch, hashBonusNanos),
     levyBind: {
-      finderNanos: split.finder,
+      // cb-v3 proves the finder into the coinbase, so its header cannot be re-aimed.
+      finderNanos: t21 ? 0 : split.finder,
       reserveNanos: split.reserve,
       poolDest: poolDest && isDestAddress(poolDest) ? poolDest : '',
       feeDest: feeDest && isDestAddress(feeDest) ? feeDest : '',
@@ -2245,6 +2437,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const cbVouts = txs[0].vout || [];
   const confidential = cbVouts.some((o) => o.commit);
+  let t21Paid = null;
+  const cbForm = coinbaseFormRejected(txs[0]);
+  if (cbForm) return cbForm;
+  // cb-v3 is verified below, after the share batch is proven.
+  const t21Ok = isT21Coinbase(txs[0]);
+  if (t21Ok && !t21HashLedgerOk(prev?.txs?.[0] || null, txs[0])) return { ok: false, reason: 'hash_owed' };
   const potVouts = cbVouts.filter((o) => o.kind !== 'hash' && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
   const hashVouts = cbVouts.filter((o) => o.kind === 'hash');
   let potNanos = 0;
@@ -2285,6 +2483,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   let provenUnits = 0;
   let provenByDest = new Map();
   let shareLeaves = null;
+  let provedShares = null;
+  let provedLeaves = null;
   // Amounts the coinbase rule already opened. A published valueProof.v
   // that is missing or wrong does not replace these.
   const provenOpen = new Map();
@@ -2297,6 +2497,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const trustWork = opts.loadReplay === true && opts.trustShareWork === true;
   if (shareBatch.length) {
     if (shareBatch.length > MAX_SHARES_PER_BLOCK) return { ok: false, reason: 'share_cap' };
+    if (t21Ok && shareBatch.length > CB_SHARE_MAX) return { ok: false, reason: 'share_cap' };
     if (!prev?.header) return { ok: false, reason: 'share_batch' };
     const proved = verifyShareBatch({
       parentHeader: prev.header,
@@ -2307,8 +2508,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       skipPow: trustWork ? false : !!skipSharePow,
       trustWork,
       issuedJobKeys: txs[0]?.issuedJobKeys,
+      credit: t21Ok ? t21ShareCredit() : null,
     });
     if (!proved.ok) return proved;
+    provedShares = proved.shares;
+    provedLeaves = proved.aLeaves;
     if (!skipFlow) {
       provenUnits = proved.units;
       provenByDest = proved.byDest;
@@ -2322,7 +2526,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     burialTip,
   });
   if (spillReason) return { ok: false, reason: spillReason };
-  if (!skipFlow) {
+  if (!skipFlow && !t21Ok) {
     const settlement = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
@@ -2330,7 +2534,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     });
     if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
     if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
-    if (confidential) {
+    if (confidential && !t21Ok) {
       // Proven leaves win. Disk aLeaves keep dest20 and drop noteCommit, so a
       // batch that did not produce leaves falls back to the share batch.
       const leaves = Array.isArray(shareLeaves)
@@ -2390,7 +2594,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
       potNanos = mintedPot;
       }
-    } else {
+    } else if (!t21Ok) {
       potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
       if (potNanos + carryOut !== payablePot) return { ok: false, reason: 'pot_sched' };
       if (settlement.idle && !shareBatch.length) {
@@ -2415,7 +2619,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
   }
-  if (skipFlow) {
+  if (skipFlow && !t21Ok) {
     const buriedSettle = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
@@ -2436,16 +2640,61 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       return { ok: false, reason: 'pot' };
     }
   }
-  let t21Paid = null;
-  if (txs[0] && txs[0].t21Split != null) {
+  if (t21Ok) {
+    if (!prev?.header) return { ok: false, reason: 'cb_form' };
+    const prevCb = prev.txs?.[0];
+    const prevEs = new Set(isT21Coinbase(prevCb)
+      ? (prevCb.t21?.shares || []).map((s) => Buffer.from(asU8(s.E)).toString('hex'))
+      : []);
+    const t21Shares = t21ShareUnits(block, txs, provedShares ? provedLeaves : null, skipFlow, decoded);
+    if (!t21Shares.ok) return t21Shares;
+    const hashBudget = hashBudgetNanos(opts.hashAcceptedSeries, hashBonusNanos);
+    if (hashBudget == null) return { ok: false, reason: 'hash_owed' };
+    const cinEco = t21EconomicCarry(prevCb);
+    const dustOut = t21DustCarry(txs[0]);
+    if (cinEco == null || dustOut == null) return { ok: false, reason: 'pot_sched' };
+    let bodyFees = 0;
+    for (const tx of txs.slice(1)) {
+      const paid = Math.floor(Number(tx?.fee || 0));
+      if (Number.isSafeInteger(paid) && paid > 0) bodyFees += paid;
+    }
+    const gate = verifyT21Coinbase({
+      tx: txs[0],
+      expect: {
+        S: BigInt(wantPot),
+        cin: cinEco,
+        u: BigInt(liveUnit),
+        height,
+        magic,
+        prevHash: t21ParentId(prev.header),
+        shares: t21Shares.shares,
+        hashBudget,
+        prevEs,
+        owedIn: t21OwedOf(prevCb),
+        escrowEs: escrowLockedEs(opts.parentSupply),
+        producer: block.miner && isDestAddress(block.miner) ? admitBaseFromAddress(block.miner) : null,
+        vaults: t21PendingVaults(reserveState),
+        phi: BigInt(splitLevy(bodyFees).finder),
+      },
+    });
+    if (!gate.ok) return { ok: false, reason: gate.reason };
+    const scheduled = BigInt(wantPot) + cinEco - dustOut - gate.escrowPot + BigInt(liveUnit) * gate.W + gate.phi + gate.settleV;
+    if (gate.paid !== scheduled) return { ok: false, reason: 'pot_sched' };
+    t21Paid = gate.paid;
+  }
+  if (!t21Ok && txs[0] && txs[0].t21Split != null) {
     const gate = t21CoinbaseGate(txs[0], payablePot, cbVouts, carryOut);
     if (!gate.ok) return { ok: false, reason: gate.reason };
     t21Paid = gate.paid;
   }
-  const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, (o) => (
-    provenOpen.has(o) ? provenOpen.get(o) : null
-  ), t21Paid);
-  if (!boundCb.ok) return boundCb;
+  // cb-v3 already opened the mint inside verifyT21Coinbase. The legacy
+  // mint sum uses a different total and rejects an empty carry coinbase.
+  if (!t21Ok) {
+    const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, (o) => (
+      provenOpen.has(o) ? provenOpen.get(o) : null
+    ), t21Paid);
+    if (!boundCb.ok) return boundCb;
+  }
   let potOpenedSum = 0;
   if (t21Paid != null) {
     potOpenedSum = payablePot - carryOut;
@@ -2462,8 +2711,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // An empty batch may carry the miner pot. The only note that may sit beside
   // that carry is a pool-fee at or under POOL_FEE_MAX_BPS of this subsidy.
   // A pot note, or a fee above that cap, is a skim.
-  if (shareBatch.length > 0 && carryOut !== 0) return { ok: false, reason: 'pot_carry' };
-  if (t21Paid == null && !shareBatch.length && carryOut !== 0 && potOpenedSum !== 0) {
+  if (!t21Ok && shareBatch.length > 0 && carryOut !== 0) return { ok: false, reason: 'pot_carry' };
+  if (!t21Ok && t21Paid == null && !shareBatch.length && carryOut !== 0 && potOpenedSum !== 0) {
     const feeCap = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
     let feeOpened = 0;
     let feeOnly = true;
@@ -2759,7 +3008,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const funded = verifyFundedBody(body, spendableOf, { seenDigests, reserveState });
     if (!funded.ok) return funded;
   }
-  const levyBound = coinbaseLevyPays(txs[0], fees);
+  const levyBound = coinbaseLevyPays(txs[0], fees, block.miner || '');
   if (!levyBound.ok) return { ok: false, reason: levyBound.reason || 'levy_split' };
   const addedPubs = [];
   for (const tx of txs) {

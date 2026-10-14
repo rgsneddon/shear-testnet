@@ -430,4 +430,22 @@ describe('funded spend / no double-spend', () => {
       assert.equal(short.reason, 'commit_sum');
     }
   });
+
+  it('a pinned withdraw balances with W=0 and refuses a committed or doubled receipt', () => {
+    const d20 = Buffer.alloc(20, 4);
+    const noteV = 1_000_000;
+    const fee = 10;
+    const note = sealCoinbaseNote(noteV, { dest20: d20, kind: 'pot' });
+    const tb = scalarBytes(randomScalar());
+    const vin = [{ commit: Buffer.from(blindCommit(note.commit, tb)), r: note.r, t: tb }];
+    const pin = { kind: 'withdraw', kindCode: 0x23, nanos: 5_000, B: Buffer.alloc(32, 7) };
+    const change = sealNote(noteV - fee, { dest20: d20, kind: 'send' });
+    const tx = { kind: 'withdraw', fee, vin: [{ commit: vin[0].commit }], vout: [pin, change], excess: kernelExcess([change], vin) };
+    const ok = typedCommitSum(tx);
+    assert.equal(ok.ok, true, ok.reason);
+    assert.equal(typedCommitSum({ ...tx, fee: fee + 1 }).reason, 'commit_sum');
+    assert.equal(typedCommitSum({ ...tx, vout: [{ ...pin, commit: change.commit }, change] }).reason, 'commit_sum');
+    assert.equal(typedCommitSum({ ...tx, vout: [pin, pin, change] }).reason, 'commit_sum');
+    assert.equal(typedCommitSum({ ...tx, vout: [{ ...pin, B: Buffer.alloc(31) }, change] }).reason, 'commit_sum');
+  });
 });

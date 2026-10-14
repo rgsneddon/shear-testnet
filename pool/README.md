@@ -99,7 +99,7 @@ Unauthenticated stratum login is dest-format only (no ownership proof). Soft-den
 
 ## Solo / second pool
 
-`SHARE_BIND=rx+noteCommit` is book law, so a third-party pool or solo template can validate the same shares. Run a second `shear-pool` with its own `SHEAR_DATA` and `SHEAR_SEEDS` pointing at `p2p.shear.digital:30303` (plus `r2r` / `b2b`). Do not claim multi-party mining security until a second path is live.
+`SHARE_BIND=shear-share-bind-v1` is the cb-v3 book pin, so a third-party pool or solo template can validate the same share bind. The ShearK preimage update is a follow-up. Run a second `shear-pool` with its own `SHEAR_DATA` and `SHEAR_SEEDS` pointing at `p2p.shear.digital:30303` (plus `r2r` / `b2b`). Do not claim multi-party mining security until a second path is live.
 
 ## Admin desk (first run)
 
