@@ -1849,6 +1849,22 @@ export function assessHeader(block, prev, opts = {}) {
   return finish({ ok: true, hash, decoded, genesisMs: resolvedGenesisMs });
 }
 
+/** A genesis header without its body, under a claimed hash. */
+export function rootHeaderReason(header, hash) {
+  let decoded;
+  try {
+    decoded = decodeHeader(Buffer.from(header));
+  } catch {
+    return { ok: false, reason: 'bad_header' };
+  }
+  if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
+  if (!decoded.prevBlockHash.equals(GENESIS_PREV)) return { ok: false, reason: 'prev' };
+  if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) return { ok: false, reason: 'bits' };
+  const pow = Buffer.from(hash || []);
+  if (pow.length !== 32 || !meetsTarget(pow, decoded.bits)) return { ok: false, reason: 'pow' };
+  return { ok: true, decoded };
+}
+
 /**
  * One header above a parent header, without its body: version, prev link,
  * proof-of-work under its own bits, genesis-anchored ASERT bits, the packed

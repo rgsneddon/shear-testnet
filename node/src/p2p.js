@@ -1743,7 +1743,13 @@ export function createP2p({
       const page = msg.headers || [];
       rec.page = page;
       // A pruned body served next needs these headers to show its burial.
-      if (typeof store.offerHeaders === 'function') store.offerHeaders(page);
+      if (typeof store.offerHeaders === 'function') {
+        const offered = store.offerHeaders(page, { peer: `p2p:${rec.remote || rec.id}` });
+        if (offered?.dropped) {
+          try { sock.destroy(); } catch { /* ignore */ }
+          return;
+        }
+      }
       const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
       const blocked = activeFailSet(rec);
       // A probe-ahead tip has not served a body, so its winning block is not

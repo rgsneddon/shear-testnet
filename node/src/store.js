@@ -29,6 +29,7 @@ import {
   V12_BOOTSTRAP_CHECKPOINT,
   assessHeader,
   headerLinkReason,
+  rootHeaderReason,
   discardPreparedHeader,
   noteFromAnchor,
   OWED_CHECKPOINT_SPACING,
@@ -104,7 +105,7 @@ import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
-import { blockWork } from '../../crypto/asert.js';
+import { blockWork, HEADER_AHEAD_MS } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
   recordReorg,
@@ -243,8 +244,13 @@ function grandparentHeader(chain) {
 }
 
 const loadResumeToken = Symbol('shear-load-resume');
-/** Three peer headers pages. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
-export const OFFERED_HEADER_CAP = 6000;
+/** Two headers pages per peer. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
+export const OFFER_PEER_CAP = 4000;
+export const OFFER_PEER_SLOTS = 8;
+export const PROVEN_HEADER_CAP = 6000;
+export const OFFER_DROP_MS = 10 * 60_000;
+const OFFER_DROPPED_CAP = 1024;
+const LOCAL_HEADER_INDEX = 4096;
 const PROOF_HASH_BATCH = 16;
 
 export function createStore(dir, {
@@ -2156,50 +2162,216 @@ export function createStore(dir, {
     return finish(check);
   }
 
-  // Peer headers ahead of this tip, unproven until a pruned block needs them.
-  const offeredByHash = new Map();
-  const offeredKids = new Map();
-  const provenHeaders = new Map();
+  // Peer headers ahead of this tip, cached per peer and unproven until a
+  // pruned block needs them. A proven header keeps its bytes in its own pool,
+  // so junk from any peer cannot push out a run this store already hashed.
+  const offeredRows = new Map();
+  const provenRows = new Map();
+  const headerKids = new Map();
+  const offerPeers = new Map();
+  const droppedPeers = new Map();
+  const offerStats = { hashed: 0, rejected: 0, orphaned: 0, dropped: 0 };
+  let offerSeq = 0;
+  let localIndex = { len: -1, tipHex: '', map: new Map() };
 
-  function forgetOffered(hex) {
-    const row = offeredByHash.get(hex);
+  function headerRowOf(hex) {
+    return provenRows.get(hex) || offeredRows.get(hex) || null;
+  }
+
+  function unlinkHeaderRow(hex, prevHex) {
+    if (provenRows.has(hex) || offeredRows.has(hex)) return;
+    const kids = headerKids.get(prevHex);
+    if (!kids) return;
+    kids.delete(hex);
+    if (!kids.size) headerKids.delete(prevHex);
+  }
+
+  function linkHeaderRow(row) {
+    if (!headerKids.has(row.prevHex)) headerKids.set(row.prevHex, new Set());
+    headerKids.get(row.prevHex).add(row.hex);
+  }
+
+  function releaseOffered(hex, peer) {
+    const row = offeredRows.get(hex);
     if (!row) return;
-    offeredByHash.delete(hex);
-    const kids = offeredKids.get(row.prevHex);
-    if (kids) {
-      kids.delete(hex);
-      if (!kids.size) offeredKids.delete(row.prevHex);
+    row.peers.delete(peer);
+    if (row.peers.size) return;
+    offeredRows.delete(hex);
+    unlinkHeaderRow(hex, row.prevHex);
+  }
+
+  function evictOfferPeer(peer) {
+    const slot = offerPeers.get(peer);
+    if (!slot) return;
+    offerPeers.delete(peer);
+    for (const hex of slot.rows.keys()) releaseOffered(hex, peer);
+  }
+
+  /** Drop a peer that sent a bad link: its unproven headers go, and its offers are refused for a while. */
+  function dropOfferPeer(peer, nowMs = Date.now()) {
+    evictOfferPeer(peer);
+    droppedPeers.delete(peer);
+    droppedPeers.set(peer, nowMs + OFFER_DROP_MS);
+    while (droppedPeers.size > OFFER_DROPPED_CAP) droppedPeers.delete(droppedPeers.keys().next().value);
+    offerStats.dropped += 1;
+  }
+
+  function offerPeerDropped(peer, nowMs = Date.now()) {
+    const until = droppedPeers.get(peer);
+    if (until == null) return false;
+    if (until > nowMs) return true;
+    droppedPeers.delete(peer);
+    return false;
+  }
+
+  function offerSlot(peer) {
+    let slot = offerPeers.get(peer);
+    if (!slot) {
+      if (offerPeers.size >= OFFER_PEER_SLOTS) {
+        // Keep the peers whose headers have proven out, then the longest
+        // runs; drop the smallest, stalest bucket of the rest.
+        let worst = null;
+        const below = (x, y) => x.proven - y.proven || x.rows.size - y.rows.size || x.last - y.last;
+        for (const [p, s] of offerPeers) {
+          if (!worst || below(s, worst[1]) < 0) worst = [p, s];
+        }
+        evictOfferPeer(worst[0]);
+      }
+      slot = { rows: new Map(), proven: 0, last: 0 };
+      offerPeers.set(peer, slot);
     }
+    slot.last = (offerSeq += 1);
+    return slot;
+  }
+
+  function localBlockByHex(hex) {
+    const t = tip();
+    const tipHex = t?.hash ? blockHex(t) : '';
+    if (localIndex.len !== blocks.length || localIndex.tipHex !== tipHex) {
+      const map = new Map();
+      for (let i = Math.max(0, blocks.length - LOCAL_HEADER_INDEX); i < blocks.length; i += 1) {
+        map.set(blockHex(blocks[i]), blocks[i]);
+      }
+      localIndex = { len: blocks.length, tipHex, map };
+    }
+    return localIndex.map.get(hex) || null;
+  }
+
+  function localGenesisMs() {
+    return blocks.length ? blockTimeMs(blocks[0]) : null;
   }
 
   /**
-   * Keep a peer headers page so a pruned block can show its burial. Nothing
-   * here is proven: proveBurial hashes each header and checks its link.
+   * Cheap work check before a header is cached: it links to a known parent,
+   * its ASERT bits and timestamp follow that parent, and its claimed hash
+   * meets its own bits. No ShearHash runs here; proveBurial hashes the run
+   * it uses. A bad link drops the peer. An unknown parent or a header ahead
+   * of this clock is ignored.
    */
-  function offerHeaders(list) {
-    let n = 0;
-    for (const row of Array.isArray(list) ? list : []) {
+  function offerHeaders(list, { peer = 'local', nowMs = Date.now() } = {}) {
+    const out = { accepted: 0, rejected: 0, dropped: false };
+    const key = String(peer || 'local');
+    if (offerPeerDropped(key, nowMs)) {
+      out.dropped = true;
+      return out;
+    }
+    const slot = offerSlot(key);
+    for (const raw of Array.isArray(list) ? list : []) {
       let header;
       let hash;
       try {
-        header = Buffer.isBuffer(row?.header) ? Buffer.from(row.header) : Buffer.from(String(row?.header || ''), 'hex');
-        hash = Buffer.isBuffer(row?.hash) ? Buffer.from(row.hash) : Buffer.from(String(row?.hash || ''), 'hex');
-      } catch { continue; }
-      if (header.length !== 128 || hash.length !== 32) continue;
+        header = Buffer.isBuffer(raw?.header) ? Buffer.from(raw.header) : Buffer.from(String(raw?.header || ''), 'hex');
+        hash = Buffer.isBuffer(raw?.hash) ? Buffer.from(raw.hash) : Buffer.from(String(raw?.hash || ''), 'hex');
+      } catch { out.rejected += 1; continue; }
+      if (header.length !== 128 || hash.length !== 32) { out.rejected += 1; continue; }
       const hex = hash.toString('hex');
-      if (offeredByHash.has(hex)) continue;
-      let prevHex;
-      try { prevHex = decodeHeader(header).prevBlockHash.toString('hex'); } catch { continue; }
-      offeredByHash.set(hex, { header, hash, prevHex });
-      if (!offeredKids.has(prevHex)) offeredKids.set(prevHex, new Set());
-      offeredKids.get(prevHex).add(hex);
-      n += 1;
+      if (localBlockByHex(hex) || provenRows.has(hex)) continue;
+      const known = offeredRows.get(hex);
+      if (known) {
+        if (!known.header.equals(header)) { out.dropped = true; break; }
+        known.peers.add(key);
+        slot.rows.delete(hex);
+        slot.rows.set(hex, true);
+        continue;
+      }
+      let decoded;
+      try { decoded = decodeHeader(header); } catch { out.dropped = true; break; }
+      if (Number(decoded.timestamp) > nowMs + HEADER_AHEAD_MS) { offerStats.orphaned += 1; continue; }
+      const prevHex = decoded.prevBlockHash.toString('hex');
+      let parent = null;
+      let rootMs = localGenesisMs();
+      let checked;
+      if (decoded.prevBlockHash.equals(GENESIS_PREV)) {
+        if (blocks.length) { offerStats.orphaned += 1; continue; }
+        checked = rootHeaderReason(header, hash);
+        rootMs = Number(decoded.timestamp);
+      } else {
+        const local = localBlockByHex(prevHex);
+        if (local) {
+          parent = { header: Buffer.from(local.header), hash: Buffer.from(local.hash), height: Number(local.height) };
+        } else {
+          const up = headerRowOf(prevHex);
+          if (up) {
+            parent = up;
+            if (rootMs == null) rootMs = up.rootMs;
+          }
+        }
+        if (!parent) { offerStats.orphaned += 1; continue; }
+        checked = headerLinkReason(header, hash, parent, { genesisMs: rootMs || 0 });
+      }
+      if (!checked.ok) { out.dropped = true; break; }
+      const row = {
+        hex,
+        header,
+        hash,
+        prevHex,
+        height: parent ? Number(parent.height) + 1 : 1,
+        rootMs,
+        peers: new Set([key]),
+      };
+      offeredRows.set(hex, row);
+      linkHeaderRow(row);
+      slot.rows.set(hex, true);
+      out.accepted += 1;
+      while (slot.rows.size > OFFER_PEER_CAP) {
+        const old = slot.rows.keys().next().value;
+        slot.rows.delete(old);
+        releaseOffered(old, key);
+      }
     }
-    while (offeredByHash.size > OFFERED_HEADER_CAP) forgetOffered(offeredByHash.keys().next().value);
-    return n;
+    if (out.dropped) {
+      offerStats.rejected += 1;
+      dropOfferPeer(key, nowMs);
+    }
+    return out;
   }
 
-  // A path of PRUNE offered headers above `fromHex`, by claimed links only.
+  function rememberProvenRow(row) {
+    const kept = { hex: row.hex, header: row.header, hash: row.hash, prevHex: row.prevHex, height: row.height, rootMs: row.rootMs };
+    provenRows.delete(row.hex);
+    provenRows.set(row.hex, kept);
+    linkHeaderRow(kept);
+    for (const p of row.peers || []) {
+      const slot = offerPeers.get(p);
+      if (slot) slot.proven += 1;
+    }
+    while (provenRows.size > PROVEN_HEADER_CAP) {
+      const old = provenRows.values().next().value;
+      provenRows.delete(old.hex);
+      unlinkHeaderRow(old.hex, old.prevHex);
+    }
+  }
+
+  function kidScore(hex) {
+    if (provenRows.has(hex)) return Number.MAX_SAFE_INTEGER;
+    const row = offeredRows.get(hex);
+    let best = 0;
+    for (const p of row?.peers || []) best = Math.max(best, offerPeers.get(p)?.proven || 0);
+    return best;
+  }
+
+  // A run of PRUNE cached headers above `fromHex`, by claimed links only.
+  // Proven headers come first, then those from peers whose headers proved out.
   function offeredPath(fromHex) {
     const stack = [[fromHex, 0]];
     const trail = [];
@@ -2208,11 +2380,12 @@ export function createStore(dir, {
       const [hex, depth] = stack.pop();
       trail.length = Math.max(0, depth - 1);
       if (depth > 0) trail.push(hex);
-      if (trail.length >= SAMPLE_PRUNE_CONFIRMATIONS) return trail.slice();
-      const kids = offeredKids.get(hex);
+      if (trail.length >= SAMPLE_PRUNE_CONFIRMATIONS) return trail.map(headerRowOf);
+      const kids = headerKids.get(hex);
       if (!kids) continue;
-      for (const k of kids) {
-        if (seen.has(k)) continue;
+      const next = [...kids].filter((k) => !seen.has(k) && headerRowOf(k));
+      next.sort((a, b) => kidScore(a) - kidScore(b));
+      for (const k of next) {
         seen.add(k);
         stack.push([k, depth + 1]);
       }
@@ -2220,18 +2393,13 @@ export function createStore(dir, {
     return null;
   }
 
-  function rememberProvenHeader(hex) {
-    provenHeaders.delete(hex);
-    provenHeaders.set(hex, true);
-    while (provenHeaders.size > OFFERED_HEADER_CAP) provenHeaders.delete(provenHeaders.keys().next().value);
-  }
-
   /**
    * A pruned block extending this tip needs SAMPLE_PRUNE_CONFIRMATIONS
    * proven-work headers above it before its sealed credits stand for the
    * share batch. Returns { ok, top, claimed }. `top` is the burial tip
    * verify and the owed step both use. Fewer headers, or one bad link, is
-   * not burial.
+   * not burial. Each bad link drops the peers that offered it, so a retry
+   * costs at most one hash batch per bad peer.
    */
   function proveBurial(block, verifyOpts = {}) {
     const parent = tip();
@@ -2248,25 +2416,28 @@ export function createStore(dir, {
     const mtp = blocks.slice(-(MTP_WINDOW - 1)).map(blockTimeMs).concat([Number(own.timestamp)]);
     const nowMs = verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now();
     const trust = verifyOpts.trustBlockHash === true;
+    const standIn = verifyOpts.trustedHeaderHashes instanceof Set ? verifyOpts.trustedHeaderHashes : null;
+    const known = (row) => trust || provenRows.has(row.hex) || !!standIn?.has(row.hex);
     const attempt = (tries) => {
-      const pathHex = offeredPath(claimed.toString('hex'));
-      if (!pathHex) return fail;
-      const rows = pathHex.map((hex) => offeredByHash.get(hex));
-      const known = (row) => trust || provenHeaders.has(row.hash.toString('hex'));
+      const rows = offeredPath(claimed.toString('hex'));
+      if (!rows) return fail;
       let up = { header: Buffer.from(block.header), hash: claimed, height: h };
       const window = mtp.slice();
-      // One header at a time (or one small off-loop batch), so a bad run
-      // stops at its first bad header.
       const link = (i, ready) => {
         const got = Buffer.from(ready || []);
         const linked = got.equals(rows[i].hash)
           ? headerLinkReason(rows[i].header, got, up, { genesisMs, mtpTimestamps: window, nowMs })
           : { ok: false };
         if (!linked.ok) {
-          forgetOffered(rows[i].hash.toString('hex'));
+          const bad = offeredRows.get(rows[i].hex);
+          for (const p of [...(bad?.peers || [])]) dropOfferPeer(p, nowMs);
+          if (provenRows.has(rows[i].hex)) {
+            provenRows.delete(rows[i].hex);
+            unlinkHeaderRow(rows[i].hex, rows[i].prevHex);
+          }
           return false;
         }
-        if (!trust) rememberProvenHeader(rows[i].hash.toString('hex'));
+        if (!trust) rememberProvenRow(offeredRows.get(rows[i].hex) || rows[i]);
         window.push(Number(linked.decoded.timestamp));
         if (window.length > MTP_WINDOW) window.shift();
         up = { header: rows[i].header, hash: rows[i].hash, height: h + i + 1 };
@@ -2276,14 +2447,25 @@ export function createStore(dir, {
       const retry = () => (tries > 0 ? attempt(tries - 1) : fail);
       if (!verifyOpts.offLoopPow || rows.every(known)) {
         for (let i = 0; i < rows.length; i += 1) {
-          if (!link(i, known(rows[i]) ? rows[i].hash : headerHash(rows[i].header))) return retry();
+          let got = rows[i].hash;
+          if (!known(rows[i])) {
+            got = headerHash(rows[i].header);
+            offerStats.hashed += 1;
+          }
+          if (!link(i, got)) return retry();
         }
         return proven;
       }
       const batch = async () => {
-        for (let i = 0; i < rows.length; i += PROOF_HASH_BATCH) {
-          const part = rows.slice(i, i + PROOF_HASH_BATCH);
-          const hashes = await Promise.all(part.map((row) => (known(row) ? row.hash : hashHeaderOffLoop(row.header))));
+        // Start small and grow, so a bad run costs a couple of hashes, not a full batch.
+        let size = 2;
+        for (let i = 0; i < rows.length; i += size, size = Math.min(PROOF_HASH_BATCH, size * 2)) {
+          const part = rows.slice(i, i + size);
+          const hashes = await Promise.all(part.map((row) => {
+            if (known(row)) return row.hash;
+            offerStats.hashed += 1;
+            return hashHeaderOffLoop(row.header);
+          }));
           for (let j = 0; j < part.length; j += 1) {
             if (!link(i + j, hashes[j])) return retry();
           }
@@ -2292,7 +2474,7 @@ export function createStore(dir, {
       };
       return batch().catch(() => fail);
     };
-    return attempt(3);
+    return attempt(OFFER_PEER_SLOTS + 1);
   }
 
   /**
@@ -4652,6 +4834,7 @@ export function createStore(dir, {
       return flux ? detachFlux(flux) : null;
     },
     offerHeaders,
+    offerPeerDropped,
     servableBlock,
     burialView() {
       const tipH = Number(tip()?.height) || 0;
@@ -4663,8 +4846,12 @@ export function createStore(dir, {
         heldBytes: burialHold.diskBytes(),
         proven: burialProof.count(),
         provenHeights: burialProof.heights(),
-        offered: offeredByHash.size,
-        provenHeaders: provenHeaders.size,
+        offered: offeredRows.size,
+        provenHeaders: provenRows.size,
+        offerPeers: offerPeers.size,
+        offerPeerRows: Object.fromEntries([...offerPeers].map(([p, slot]) => [p, slot.rows.size])),
+        droppedPeers: [...droppedPeers.keys()],
+        ...offerStats,
       };
     },
     provenBurialTip(block) {

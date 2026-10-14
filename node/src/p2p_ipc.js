@@ -238,7 +238,9 @@ export function ipcBlockFrames(store, rows) {
     if (!block) continue;
     const h = Number(block.height) || 0;
     if (block.samplesPruned === true && h + SAMPLE_PRUNE_CONFIRMATIONS > headersTo) {
-      const from = h > headersTo ? h : headersTo;
+      // The run starts at the pruned block's own header, so every header
+      // in it links to one the receiver already has.
+      const from = h > headersTo ? h - 1 : headersTo;
       const to = h + SAMPLE_PRUNE_CONFIRMATIONS;
       const headers = list.slice(from, to).map((b) => ({
         header: Buffer.from(b.header).toString('hex'),
@@ -265,7 +267,7 @@ function forwardRows(store, send, rows) {
 
 function acceptIpcHeaders(store, msg) {
   if (msg.magic && msg.magic !== MAGIC_TESTNET) return;
-  if (typeof store?.offerHeaders === 'function') store.offerHeaders(msg.headers || []);
+  if (typeof store?.offerHeaders === 'function') store.offerHeaders(msg.headers || [], { peer: 'ipc' });
 }
 
 function paceBackfill(store, send, afterHeight) {
