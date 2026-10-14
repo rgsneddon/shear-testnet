@@ -1,8 +1,9 @@
 /**
  * PSA-1f69-1. N-1 rejects a payout whose output joins the admit set and is
  * not an FS-1 leaf. The reason is admit_note_point, from height 0, on
- * mempool, queueTx, the block template, block verify, load, fork replay,
- * P2P, and snap/bootstrap. An honest coinbase or pool payout of each kind
+ * mempool, queueTx, the block template, block verify, fork replay, and
+ * P2P. A stored header that fails before the leaf is not admit_note_point.
+ * An honest coinbase or pool payout of each kind
  * is still a leaf. A vault withdrawal of value 0 is mint_amount. A positive
  * withdrawal is sealed with a hash-derived non-zero r. The Stage 0 send
  * gate still wins, and the genesis pin stays empty.
@@ -157,7 +158,9 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
         height: 1,
         txs: [cases[0].tx],
       })}\n`);
-      assert.throws(() => createStore(snapDir), /admit_note_point/);
+      resetFs1LeafDerives();
+      assert.throws(() => createStore(snapDir), /bad_header/);
+      assert.equal(fs1LeafDeriveCount(), 0);
       fs.rmSync(snapDir, { recursive: true, force: true });
 
       const bootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-boot-'));

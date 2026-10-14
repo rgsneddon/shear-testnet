@@ -76,7 +76,7 @@ import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, 
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
-import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
+import { txNoteRuleRejected } from '../../crypto/n1.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -395,12 +395,9 @@ export function createStore(dir, {
   if (blocks.length) {
     const gated = chainStage0Rejected(blocks);
     if (gated) throw new Error(gated.reason);
-    // bookseal2 bound to the N-1 fingerprint. An older seal does not match,
-    // so this load checks the notes. An in-process resume already did.
-    if (!trustStoredHash && !resumed) {
-      const notes = chainNoteRuleRejected(blocks);
-      if (notes) throw new Error(notes.reason);
-    }
+    // N-1 runs inside verifyLoadedChain, after the header, the coinbase
+    // cap, and the block budget. A matching bookseal2 seal may skip that
+    // rescan. An in-process resume already checked.
   }
   if (blocks.length && !resumed) {
     const plan = trustStoredHash ? acceptBookSnap(readBookSnap(snapFile, sealKey, snapExpect)) : null;

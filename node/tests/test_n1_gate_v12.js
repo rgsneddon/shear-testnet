@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { bitsForBlock, consensusFingerprint, GENESIS_BITS_PACKED, MAGIC_TESTNET, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { meetsTarget } from '../../crypto/shear_hash.js';
 import { writeChainBin } from '../../crypto/chainbin.js';
 import { encodeHeader, decodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
@@ -131,7 +132,7 @@ describe('N-1 gate order', () => {
     }
   });
 
-  it('skips the leaf rescan when book.seal matches, and still scans an unsealed book', () => {
+  it('skips the leaf rescan when book.seal matches, and does not scan a bad header', () => {
     const tx = { id: 'bad-load', kind: 'pot', vout: [badOut(0x21)] };
     const header = Buffer.alloc(80, 1);
     const hash = Buffer.alloc(32, 2);
@@ -153,8 +154,8 @@ describe('N-1 gate order', () => {
     const open = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-open-'));
     writeBook(open, false);
     resetFs1LeafDerives();
-    assert.throws(() => createStore(open), /admit_note_point/);
-    assert.ok(fs1LeafDeriveCount() > 0);
+    assert.throws(() => createStore(open), /bad_header/);
+    assert.equal(fs1LeafDeriveCount(), 0);
     fs.rmSync(open, { recursive: true, force: true });
 
     const sealed = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-seal-'));
@@ -506,8 +507,8 @@ describe('N-1 gate order', () => {
         txs: [tx],
       })}\n`);
       resetFs1LeafDerives();
-      assert.throws(() => createStore(dir), /admit_note_point/);
-      assert.ok(fs1LeafDeriveCount() > 0);
+      assert.throws(() => createStore(dir), /bad_header/);
+      assert.equal(fs1LeafDeriveCount(), 0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -557,6 +558,60 @@ describe('N-1 gate order', () => {
       resetFs1LeafDerives();
       assert.equal(store.queueTx(heavy.txs[0]).reason, 'payee_cap');
       assert.equal(fs1LeafDeriveCount(), 0);
+      resetFs1LeafDerives();
+      assert.equal(admitMempool(emptyMempool(), heavy.txs[0]).reason, 'payee_cap');
+      assert.equal(fs1LeafDeriveCount(), 0);
+
+      const one = { id: 'one-bad-after-budget', kind: 'pay', vout: [badOut(0x45)] };
+      resetFs1LeafDerives();
+      assert.equal(admitMempool(emptyMempool(), one).reason, 'admit_note_point');
+      assert.ok(fs1LeafDeriveCount() > 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unsealed 183-output coinbase before any leaf', () => {
+    const n = coinbaseOutputCap() + 1;
+    assert.equal(n, 183);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-183-'));
+    try {
+      const block = coinbaseBlock(n);
+      fs.writeFileSync(path.join(dir, 'chain.jsonl'), `${JSON.stringify({
+        header: Buffer.from(block.header).toString('hex'),
+        hash: Buffer.from(block.hash).toString('hex'),
+        height: 1,
+        txs: block.txs,
+      })}\n`);
+      resetFs1LeafDerives();
+      assert.throws(() => createStore(dir), (err) => {
+        assert.notEqual(err.message, 'admit_note_point');
+        return true;
+      });
+      assert.equal(fs1LeafDeriveCount(), 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects a bad leaf on load after the header, the cap, and the budget', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-leaf-load-'));
+    try {
+      const block = badCoinbaseBlock(0x71);
+      assert.equal(block.txs[0].vout.length <= coinbaseOutputCap(), true);
+      assert.equal(meetsTarget(Buffer.from(block.hash), GENESIS_BITS_PACKED), true);
+      fs.mkdirSync(dir, { recursive: true });
+      const key = bookSealKeyFor(dir);
+      fs.writeFileSync(path.join(dir, 'book.seal'), chainLoadSeal([block], key));
+      fs.writeFileSync(path.join(dir, 'chain.jsonl'), `${JSON.stringify({
+        header: Buffer.from(block.header).toString('hex'),
+        hash: Buffer.from(block.hash).toString('hex'),
+        height: 1,
+        txs: block.txs,
+      })}\n`);
+      resetFs1LeafDerives();
+      assert.throws(() => createStore(dir), /admit_note_point/);
+      assert.ok(fs1LeafDeriveCount() > 0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

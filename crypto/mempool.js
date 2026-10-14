@@ -96,10 +96,10 @@ export function admitMempool(pool, tx, opts = {}) {
   if (unsignedField) return unsignedField;
   const capped = txIoCap(tx);
   if (!capped.ok) return capped;
-  const noteRule = txNoteRuleRejected(tx);
-  if (noteRule) return noteRule;
   const budget = txBudget(tx);
   if (!budget.ok) return budget;
+  const noteRule = txNoteRuleRejected(tx);
+  if (noteRule) return noteRule;
   const pull = custodialPullRejected(tx);
   if (pull) return pull;
   const earlyOpen = openingBeforeCarry(tx);
