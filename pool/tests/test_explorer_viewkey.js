@@ -300,6 +300,9 @@ describe('explorer dests', () => {
     assert.match(page, /VAULT · staked/);
     assert.match(page, /id="ex-circ-she"/);
     assert.match(page, /id="ex-reserve-vault"/);
+    assert.match(page, /Reserve minted \(on-chain\)/);
+    assert.match(page, /id="ex-reserve-minted"/);
+    assert.doesNotMatch(page, /Reserve minted \(on-chain\)[^<]*nanos/);
     assert.match(page, /stats\.circulatingNanos/);
     assert.match(page, /stats\.reserveVaultNanos/);
     assert.doesNotMatch(page, /circ\.proofs \? 'proofs'/);
