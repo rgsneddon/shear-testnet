@@ -113,7 +113,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / testnet',
     html:
       '<p>This is testnet. Balances can vanish. Treat them as a practice run before mainnet.</p>' +
-      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v11</code>). Mainnet <code>shear-v1</code> is not live. The public countdown is 30th October 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
+      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v11</code>). Mainnet <code>shear-v1</code> is not live. The public countdown is 16th November 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
       '<p>Install clients only from the buttons on <a href="https://shear.digital">shear.digital</a> or the official GitHub tags. Windows SmartScreen may warn that ShearK-Miner.exe is unrecognized; this testnet build is not Authenticode-signed.</p>'
   };
 
@@ -233,11 +233,10 @@ window.SHEAR_DOCS = {
       '<p>Closure holds the rest-frame <code>shear1</code> and the public <code>she1</code>. Rest-frame never goes on the book. Confirmed SHE settles here. Chain dests are <code>ssa1</code> mailboxes derived from this identity; they do not need to be kept after prune. The <code>she1</code> line on this card is a fingerprint, not a payable address. Receive uses the full <code>she1</code>.</p>' +
       '<p>Settings: unlock with biometrics on this device. Password still encrypts <code>shewall.bin</code>. Export of that file is on this card.</p>' +
       '<p>Continuum 0.71 send path is chosen here, then <strong>Apply</strong>. It applies to every Continuum send. A new 0.71 session opens on <strong>Connect bare</strong>. A session that already applied a path keeps that path until you change it.</p>' +
-      '<table><tr><th>Connect bare</th><td>Default. Does not look for Shear Privacy VPN and does not start a node. Does not claim the IP is masked. Flow and Reserve do not wait on the hop.</td></tr>' +
-      '<tr><th>Shear Privacy VPN</th><td>Light wallet. The hop is there to mask the Continuum IP from the public node. Zero VPN fee. The 0.71 default is Connect bare.</td></tr>' +
+      '<table><tr><th>Connect bare</th><td>Default. Does not start a node. Flow and Reserve do not wait on a network path.</td></tr>' +
       '<tr><th>Local node (no stratum)</th><td>Runs the node beside Continuum. Syncs from peers. An empty book applies the snapshot once; a recorded tip resumes and does not pull. No solo-mining stratum. The light seeker stays on the live tip until the local node matches that tip.</td></tr>' +
       '<tr><th>Local node (full)</th><td>Desktop solo. Same peer sync, plus stratum at <code>127.0.0.1:1111</code>. Android does not show this control and does not start a phone node: that pack has no node runtime. The light seeker still follows the live tip.</td></tr></table>' +
-      '<p>On the Resistance heading, <strong>Start</strong> applies local node (full) on desktop: the node plus stratum <code>127.0.0.1:1111</code>, and it does not arm a second node if one is already running. <strong>Stop</strong> applies Shear Privacy VPN. Those buttons stay on the heading after Stop. Android Start does not arm stratum.</p>'
+      '<p>On the Resistance heading, <strong>Start</strong> applies local node (full) on desktop: the node plus stratum <code>127.0.0.1:1111</code>, and it does not arm a second node if one is already running. <strong>Stop</strong> applies Connect bare. Those buttons stay on the heading after Stop. Android Start does not arm stratum.</p>'
   };
 
   P.backup = {
@@ -367,7 +366,7 @@ window.SHEAR_DOCS = {
     title: 'Lock and idle',
     crumb: 'reserve / lock',
     html:
-      '<p>Locked principal receives the oracle's variable epoch reward rate for the full epoch (4 days testnet / 400 days mainnet). Idle coin receives no reserve reward. Locked is active plus idle. Daily credits sit in the portal until you withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
+      '<p>Locked principal receives the lock issuance rate, recalculated by consensus at each epoch end, for the full epoch (4 days testnet / 400 days mainnet). Reserve rewards are newly minted by the protocol in each block’s coinbase at the lock issuance rate. They don’t come from any pool or pot of existing Shear, and nobody holds your coins. Idle coin receives no reserve reward. Locked is active plus idle. Daily credits sit in the portal until you withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
   };
 
   P.votes = {
@@ -383,8 +382,8 @@ window.SHEAR_DOCS = {
     title: 'The Reserve oracle',
     crumb: 'reserve / oracle',
     html:
-      '<p>The lock rate is a variable epoch reward rate observed by <code>shear-reserve-oracle-v1</code> (4-day testnet / 400-day mainnet), coded into every node. Freeze is bounded and fail-closed. A bad rate cannot reorg blocks or steal the pot. The wallet paints live observations as observational until freeze; mint uses frozen <code>epochBps</code> only.</p>' +
-      '<p>Shear Sentinel v18 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. The basket is the observation. Mint uses the frozen epoch rate. A stale basket leaves that freeze in place. The step between epochs is at most 100 bps. Lock, epoch vote, and withdraw are sealed transactions. The node applies them. The oracle cannot move the pot or the hash-bonus pile.</p>'
+      '<p>The lock issuance rate, recalculated by consensus at each epoch end, is set from observations by <code>shear-reserve-oracle-v1</code> (4-day testnet / 400-day mainnet), coded into every node. Reserve rewards are newly minted by the protocol in each block’s coinbase at the lock issuance rate. They don’t come from any pool or pot of existing Shear, and nobody holds your coins. Freeze is bounded and fail-closed. A bad rate cannot reorg blocks or steal the pot. The wallet paints live observations as observational until freeze; mint uses frozen <code>epochBps</code> only.</p>' +
+      '<p>Shear Sentinel v18 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. The basket is the observation. Mint uses the frozen lock issuance rate. A stale basket leaves that freeze in place. The step between epochs is at most 100 bps. Lock, epoch vote, and withdraw are sealed transactions. The node applies them. The oracle cannot move the pot or the hash-bonus pile.</p>'
   };
 
   P.withdraw = {
@@ -444,7 +443,7 @@ window.SHEAR_DOCS = {
     html:
       '<table><tr><th>Block pot</th><td>1 SHE, every found block</td></tr>' +
       '<tr><th>Hash bonus</th><td>10<sup>−11</sup> SHE per proven floor share, paid to that hasher dest on the next sealed block</td></tr>' +
-      '<tr><th>The Reserve</th><td>Oracle reserve reward on locked SHE — the only dapp mint</td></tr></table>' +
+      '<tr><th>The Reserve</th><td>Reserve reward on locked SHE at the lock issuance rate — the only dapp mint</td></tr></table>' +
       '<p>Third-party vortices must top up rewards from coin already in circulation.</p>'
   };
 
