@@ -40,6 +40,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
+import { ensureDatadir } from './datadir_acl.js';
 import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
@@ -270,7 +271,7 @@ export function createStore(dir, {
   yieldForeign = false,
   onLoadProgress = null,
 } = {}, resume = null) {
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDatadir(dir);
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
   const segDir = path.join(dir, 'segments');

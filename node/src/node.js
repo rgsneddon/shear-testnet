@@ -25,6 +25,7 @@ import { extraMintAllowed } from '../../crypto/mint.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
+import { ensureDatadir } from './datadir_acl.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
 import { startHttpFollow } from './http_follow.js';
 import { attachSidecarIpc } from './p2p_ipc.js';
@@ -161,7 +162,7 @@ export async function startNode({
       hashTxLive: HASH_TX_LIVE,
     };
   }
-  fs.mkdirSync(dataDir, { recursive: true });
+  ensureDatadir(dataDir);
   const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true });
   store.reserveVault = store.reserveVault || emptyVault();
   store.oracleSnapshot = loadOracleSnapshot({ dataDir });
