@@ -73,18 +73,30 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(byH[3].confirmations, 1);
     assert.equal(byH[1].pending, true);
     assert.equal(byH[1].confirmations, 3);
+    const early = [];
+    for (let h = 1; h <= 6; h += 1) early.push(block(h, h));
+    const store6 = { blocks: early, tip: () => early[early.length - 1] };
+    const at6 = confirmedBlockTxs(store6, 10);
+    const young = at6.find((t) => t.height === 1);
+    const tip6 = at6.find((t) => t.height === 6);
+    assert.equal(young.status, 'pending');
+    assert.equal(young.pending, true);
+    assert.equal(young.confirmations, 6);
+    assert.equal(tip6.status, 'pending');
+    assert.equal(tip6.pending, true);
+    assert.equal(tip6.confirmations, 1);
     const deep = [];
-    for (let h = 1; h <= 6; h += 1) deep.push(block(h, h));
-    const store6 = { blocks: deep, tip: () => deep[deep.length - 1] };
-    const later = confirmedBlockTxs(store6, 10);
+    for (let h = 1; h <= 9; h += 1) deep.push(block(h, h));
+    const store9 = { blocks: deep, tip: () => deep[deep.length - 1] };
+    const later = confirmedBlockTxs(store9, 10);
     const h1 = later.find((t) => t.height === 1);
-    const h6 = later.find((t) => t.height === 6);
+    const h9 = later.find((t) => t.height === 9);
     assert.equal(h1.status, 'confirmed');
     assert.equal(h1.pending, false);
-    assert.equal(h1.confirmations, 6);
-    assert.equal(h6.status, 'pending');
-    assert.equal(h6.pending, true);
-    assert.equal(h6.confirmations, 1);
+    assert.equal(h1.confirmations, 9);
+    assert.equal(h9.status, 'pending');
+    assert.equal(h9.pending, true);
+    assert.equal(h9.confirmations, 1);
   });
 
   it('explorer recent Infinity returns every sealed block', () => {

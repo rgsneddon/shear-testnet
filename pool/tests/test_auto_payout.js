@@ -544,7 +544,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
 
   it('miner page does not publish sealed amounts in the three boxes', () => {
     const html = fs.readFileSync(new URL('../public/miner.html', import.meta.url), 'utf8');
-    assert.equal(html.split('Shear Privacy').length - 1, 6);
+    assert.equal(html.split('Shear Privacy').length - 1, 7);
     assert.equal(html.includes('Waiting payout'), false);
     assert.equal(html.includes('id="m-payout-error"'), false);
     assert.equal(html.includes('autoPayoutLastError'), false);

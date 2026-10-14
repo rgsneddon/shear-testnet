@@ -68,7 +68,7 @@ function attachLines(sock) {
 function findNonces(job, n) {
   const out = [];
   for (let nonce = 0n; nonce < 2_000_000n && out.length < n; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest: job && job.dest });
     if (!s.ok) continue;
     if (s.block) continue;
     out.push({ nonce, hash: s.hash });

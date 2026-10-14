@@ -14,7 +14,7 @@ import {
 } from '../../crypto/asert.js';
 import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { payoutDest, newIdentity, encodeHrp, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
+import { destForLogin, hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, ewmaBlockIntervalMs, medianBlockIntervalMs, intervalDeltasMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, PAYOUT_SWEEP_MS, wireJob, hashWorkerRejectReason } from '../src/pool.js';
 import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
@@ -505,7 +505,7 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /color:var\(--ink\)|#0d2137/);
     assert.match(html, />SHE</);
     assert.match(html, /ShearHash/);
-    assert.match(html, /:1111/);
+    assert.match(html, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
     assert.match(html, /She is Private/);
@@ -584,7 +584,7 @@ describe('pool dashboard + stratum', () => {
     const job = pool.issueJob();
     assert.equal(gateJob(job).ok, true);
     assert.equal(job.header.length, 256);
-    const hit = findOkShare(job);
+    const hit = findOkShare(job, dest);
 
     const scored = await new Promise((resolve, reject) => {
       const sock = net.connect(stratumPort, '127.0.0.1', () => {
@@ -691,18 +691,18 @@ describe('session inventory fold', () => {
   });
 });
 
-function findOkShare(job, max = 25_000n) {
+function findOkShare(job, dest, max = 25_000n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (s.ok) return { nonce, s };
   }
   throw new Error('no_share');
 }
 
-function findOkShares(job, n, max = 25_000n) {
+function findOkShares(job, n, dest, max = 25_000n) {
   const out = [];
   for (let nonce = 0n; nonce < max && out.length < n; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (s.ok) out.push({ nonce, s });
   }
   if (out.length < n) throw new Error('no_share');
@@ -747,7 +747,7 @@ function loginAndShare(port, login, extra = {}, hit = null) {
           job.bits = Number(job.bits || job.blockBits || 16);
           job.blockBits = Number(job.blockBits || job.bits || 16);
           try {
-            const use = hit || findOkShare(job);
+            const use = hit || findOkShare(job, hasherPayoutDest(login));
             sock.write(JSON.stringify({
               id: 2,
               method: 'submit',
@@ -1151,7 +1151,7 @@ describe('public miner listing', () => {
     const stratumPort = pool.stratum.address().port;
     try {
     const job = pool.issueJob();
-    const hits = findOkShares(job, 2);
+    const hits = findOkShares(job, 2, dest);
     const a = await loginAndShare(stratumPort, `${dest}.alpha`, {}, hits[0]);
     const b = await loginAndShare(stratumPort, `${dest}.beta`, {}, hits[1]);
     await new Promise((r) => setTimeout(r, STATS_REFRESH_MS + 100));
@@ -1218,7 +1218,7 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const job = pool.issueJob();
-    const hit = findOkShare(job);
+    const hit = findOkShare(job, dest);
     const sock = await loginAndShare(pool.stratum.address().port, `${dest}.rig`, {
       hashes: 16_590_151_266_784,
       hashrate: 1_062_582_824,

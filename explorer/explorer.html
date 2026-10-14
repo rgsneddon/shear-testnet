@@ -645,9 +645,6 @@
       var live = Math.floor(Number(stats && stats.lastFoundAt) || 0);
       // The live find stamp is the tip's. An older row still holding it was pinned early.
       if (live > 0 && remembered === live && h !== tip) return 0;
-      if (tip >= 1 && h > tip) return 0;
-      var own = chainAt(stats, h);
-      if (own > 0 && remembered <= own) return 0;
       return remembered;
     }
     function chainAt(stats, height) {
@@ -664,8 +661,6 @@
       if (extra && Math.floor(Number(extra[want] || extra[String(want)]) || 0) > 0) {
         return Math.floor(Number(extra[want] || extra[String(want)]) || 0);
       }
-      var stamped = Math.floor(Number(headerAtBook[want]) || 0);
-      if (stamped > 0) return stamped;
       return 0;
     }
     function wallFoundMs(row, stats, ledger) {
