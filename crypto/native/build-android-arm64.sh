@@ -2,7 +2,7 @@
 # Cross-compile libshear_admit.so for Android arm64-v8a and stage it where
 # the Flutter Gradle build packages jniLibs. The .so and its .sha256 sidecar
 # are gitignored. CI (.github/workflows/android-admit.yml) builds them with
-# NDK r27c. Android integrity rests on the APK signature from Russell's
+# NDK r27d. Android integrity rests on the APK signature from Russell's
 # offline Continuum key (wallet/android/release-cert-sha256.txt), not on a
 # Dart hash of the packaged soname. No secrets are written.
 set -euo pipefail

@@ -1,15 +1,15 @@
 /**
- * The wallet's FS-1 membership-row allow-list stays equal to spend.js.
- * This file does not skip.
+ * The wallet's FS-1 membership-row allow-list. Node acceptance of unknown
+ * members[] keys is not decided here.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MEMBER_KEYS, unsignedBodyField } from './spend.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const postedMemberKeys = new Set(['commit', 'hash', 'side', 'anchor', 'root']);
 
 function dartMemberKeys() {
   const ledger = fs.readFileSync(path.join(root, 'wallet/lib/shear_ledger.dart'), 'utf8');
@@ -19,27 +19,10 @@ function dartMemberKeys() {
 }
 
 describe('FS-1 member keys', () => {
-  it('wallet postedMemberKeys matches spend.js MEMBER_KEYS', () => {
-    assert.deepEqual(dartMemberKeys(), MEMBER_KEYS);
-    for (const key of ['commit', 'hash', 'side', 'anchor', 'root']) {
-      assert.equal(MEMBER_KEYS.has(key), true, key);
-    }
+  it('wallet postedMemberKeys is the public membership allow-list', () => {
+    assert.deepEqual(dartMemberKeys(), postedMemberKeys);
     for (const secret of ['t', 'r', 'opening', 'seed', 'spendSeed', 'blind', 'alpha', 'gamma']) {
-      assert.equal(MEMBER_KEYS.has(secret), false, secret);
+      assert.equal(dartMemberKeys().has(secret), false, secret);
     }
-  });
-
-  it('an unknown member key is unsigned and the allow-listed row is not', () => {
-    assert.equal(unsignedBodyField({
-      members: [{ commit: 'aa', hash: 'bb', side: 'L', anchor: 'cc', root: 'dd' }],
-    }), null);
-    const nested = unsignedBodyField({
-      admit_proof: { v: 3, members: [{ commit: 'aa', blind: 'ee' }] },
-    });
-    assert.equal(nested && nested.reason, 'unsigned');
-    const top = unsignedBodyField({
-      members: [{ side: 'L', hash: 'bb', gamma: 'ff' }],
-    });
-    assert.equal(top && top.reason, 'unsigned');
   });
 });

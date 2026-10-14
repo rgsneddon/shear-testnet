@@ -19,6 +19,9 @@ DEFAULT_APP = ROOT / "build" / "macos" / "Build" / "Products" / "Release" / "She
 DEFAULT_IDENTITY = "Developer ID Application: Russell Sneddon (SFCBP95595)"
 CODESIGN = "/usr/bin/codesign"
 TEAM_ID = "SFCBP95595"
+# Developer ID Certification Authority (intermediate) and Developer ID Application (leaf).
+DEV_ID_INTERMEDIATE_OID = "1.2.840.113635.100.6.2.6"
+DEV_ID_LEAF_OID = "1.2.840.113635.100.6.1.13"
 DEFAULT_KEY_DIR = Path.home() / "Library/Developer/perccent-codesign"
 ENTITLEMENTS = ROOT / "macos" / "Runner" / "Release.entitlements"
 PIN = "0.30"
@@ -110,6 +113,19 @@ def _seal_admit_pin(app: Path, identity: str) -> None:
     raise RuntimeError("libshear_admit.dylib hash changed after the app seal")
 
 
+def admit_mac_requirement(team_id: str = TEAM_ID) -> str:
+    """Same requirement as wallet/lib/shear_admit_ffi.dart admitMacRequirement.
+
+    OU alone accepts a self-signed certificate that copies the team id.
+    """
+    return (
+        "anchor apple generic"
+        f" and certificate 1[field.{DEV_ID_INTERMEDIATE_OID}] /* exists */"
+        f" and certificate leaf[field.{DEV_ID_LEAF_OID}] /* exists */"
+        f' and certificate leaf[subject.OU] = "{team_id}"'
+    )
+
+
 def _verify_team(path: Path) -> None:
     run([
         CODESIGN,
@@ -117,7 +133,7 @@ def _verify_team(path: Path) -> None:
         "--strict",
         "--verbose=4",
         "-R",
-        f'certificate leaf[subject.OU] = "{TEAM_ID}"',
+        admit_mac_requirement(),
         str(path),
     ])
 

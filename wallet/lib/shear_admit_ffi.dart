@@ -262,7 +262,44 @@ String? admitPinFailure(List<int> bytes, String expectedHex) {
 /// Absolute codesign. A PATH lookup is not used.
 const String kCodesignBin = '/usr/bin/codesign';
 
-/// Arguments for `/usr/bin/codesign --verify --strict` plus the Team ID requirement.
+/// Developer ID Certification Authority. The intermediate, `certificate 1`.
+const String kDevIdIntermediateOid = '1.2.840.113635.100.6.2.6';
+
+/// Developer ID Application. The leaf.
+const String kDevIdLeafOid = '1.2.840.113635.100.6.1.13';
+
+/// codesign `-R` requirement. The OU check is not sufficient: a self-signed
+/// certificate can copy it. `anchor apple generic` plus both Developer ID
+/// OIDs are required as well.
+@visibleForTesting
+String admitMacRequirement(String teamId) {
+  final team = teamId.trim();
+  return 'anchor apple generic'
+      ' and certificate 1[field.$kDevIdIntermediateOid] /* exists */'
+      ' and certificate leaf[field.$kDevIdLeafOid] /* exists */'
+      ' and certificate leaf[subject.OU] = "$team"';
+}
+
+/// Null when every clause of [admitMacRequirement] holds.
+/// A self-signed certificate that only copies [teamId] into the OU fails
+/// `anchor apple generic` and both OID clauses.
+@visibleForTesting
+String? admitMacRequirementFailure({
+  required bool anchorAppleGeneric,
+  required bool developerIdIntermediate,
+  required bool developerIdLeaf,
+  required String leafOu,
+  required String teamId,
+}) {
+  final team = teamId.trim();
+  if (team.isEmpty) return 'missing team id';
+  if (!anchorAppleGeneric) return 'self-signed';
+  if (!developerIdIntermediate || !developerIdLeaf) return 'not developer id';
+  if (leafOu.trim() != team) return 'sign identity mismatch';
+  return null;
+}
+
+/// Arguments for `/usr/bin/codesign --verify --strict` plus [admitMacRequirement].
 @visibleForTesting
 List<String> admitMacVerifyArgs(String libraryPath, String teamId) {
   return <String>[
@@ -270,14 +307,15 @@ List<String> admitMacVerifyArgs(String libraryPath, String teamId) {
     '--strict',
     '--verbose=4',
     '-R',
-    'certificate leaf[subject.OU] = "$teamId"',
+    admitMacRequirement(teamId),
     libraryPath,
   ];
 }
 
 /// Null when [exitCode] is 0 and the text is a Developer ID seal for [teamId].
-/// `Signature=adhoc` fails closed. The Team ID check is the `-R` requirement
-/// on [kCodesignBin]; a printed TeamIdentifier that disagrees also fails.
+/// `Signature=adhoc` and `Authority=self-signed` fail closed. The `-R`
+/// requirement on [kCodesignBin] is [admitMacRequirement]; a printed
+/// TeamIdentifier that disagrees also fails.
 @visibleForTesting
 String? admitMacSignFailure(
   String codesignText,
@@ -290,6 +328,9 @@ String? admitMacSignFailure(
   if (id.isEmpty) return 'missing sign identity';
   if (team.isEmpty) return 'missing team id';
   if (RegExp(r'Signature=adhoc').hasMatch(codesignText)) return 'adhoc signature';
+  if (RegExp(r'Authority=self-signed\b', caseSensitive: false).hasMatch(codesignText)) {
+    return 'self-signed';
+  }
   if (exitCode != 0) return 'codesign verify failed';
   final printed = RegExp(r'^TeamIdentifier=(.*)$', multiLine: true).firstMatch(codesignText);
   if (printed != null && printed.group(1)!.trim() != team) return 'sign identity mismatch';

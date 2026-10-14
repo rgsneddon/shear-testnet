@@ -43,8 +43,17 @@ describe('wallet artifacts omit admit v3 exports', () => {
     assert.match(ffi, /\/usr\/bin\/codesign/);
     assert.match(ffi, /--verify/);
     assert.match(ffi, /--strict/);
+    assert.match(ffi, /anchor apple generic/);
+    assert.match(ffi, /1\.2\.840\.113635\.100\.6\.2\.6/);
+    assert.match(ffi, /1\.2\.840\.113635\.100\.6\.1\.13/);
     assert.match(ffi, /subject\.OU/);
     assert.doesNotMatch(ffi, /runSync\(\s*'codesign'/);
+    const sign = read('wallet/pack/sign_and_notarize.py');
+    assert.match(sign, /anchor apple generic/);
+    assert.match(sign, /1\.2\.840\.113635\.100\.6\.2\.6/);
+    assert.match(sign, /1\.2\.840\.113635\.100\.6\.1\.13/);
+    assert.match(sign, /subject\.OU/);
+    assert.equal(sign.includes("CODESIGN = \"/usr/bin/codesign\""), true);
     assert.match(mac, /stamp_admit_pin\.py/);
     assert.doesNotMatch(mac, /--dart/);
     const signAt = mac.indexOf('codesign --force --sign -');
