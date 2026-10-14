@@ -700,7 +700,13 @@ export function escrowPublished(tx) {
     if (!id || pot == null || hash == null || !Number.isInteger(since) || since < 0) return null;
     let by = '';
     try { by = Buffer.from(o.by).toString('hex'); } catch { return null; }
-    rows.push({ id, pot, hash, since, by });
+    let w = 0n;
+    for (const s of o.shares || []) {
+      const sw = u64Of(s?.w);
+      if (sw == null || sw <= 0n) return null;
+      w += sw;
+    }
+    rows.push({ id, pot, hash, since, by, w });
     escrow += pot + hash;
     escrowHash += hash;
   }
@@ -753,7 +759,19 @@ function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blo
   }
   const parent = Array.isArray(state.escrowRows) ? state.escrowRows : [];
   const fresh = published.rows.filter((row) => row.since === blockHeight);
-  const listed = composeOwed({ owedIn: parent, paid, fresh, height: blockHeight });
+  const parentById = new Map(parent.map((row) => [row.id, row]));
+  const folds = [];
+  for (const row of published.rows) {
+    const prev = parentById.get(row.id);
+    if (!prev || (row.pot === prev.pot && row.hash === prev.hash)) continue;
+    if (prev.w == null || row.w == null || row.w < prev.w) return { reason: 'owed_list', state };
+    const w = row.w - prev.w;
+    const addPot = row.pot - prev.pot;
+    const addHash = row.hash - prev.hash;
+    if (w <= 0n || addPot < 0n || addHash < 0n) return { reason: 'owed_list', state };
+    folds.push({ id: row.id, addPot, addHash, w });
+  }
+  const listed = composeOwed({ owedIn: parent, paid, fresh, folds, height: blockHeight });
   if (!listed.ok || listed.owed.length !== published.rows.length) return { reason: 'owed_list', state };
   for (let i = 0; i < published.rows.length; i += 1) {
     const got = published.rows[i];
@@ -789,6 +807,12 @@ function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blo
     escrowPot += pot;
     escrowHashIn += hash;
   }
+  for (const fold of folds) {
+    if (fold.addHash !== u * fold.w) return { reason: 'pot_sched', state };
+    wEsc += fold.w;
+    escrowPot += fold.addPot;
+    escrowHashIn += fold.addHash;
+  }
   const wall = Wpaid + wEsc;
   const working = Wpaid > 0n || wEsc > 0n;
   if (u !== (working ? BigInt(unit) : 0n)) return { reason: 'hash_bonus', state };
@@ -817,6 +841,12 @@ function accountT21(state, block, cb, { ts, potMinted, carryOut, levy, unit, blo
       const pot = u64Of(o.pot);
       const hash = u64Of(o.hash);
       if (!priced || pot == null || hash == null || priced.pot !== pot || priced.hash !== hash) {
+        return { reason: 'pot_sched', state };
+      }
+    }
+    for (const fold of folds) {
+      const priced = weightPay(Rphi, wall, fold.w, u);
+      if (!priced || priced.pot !== fold.addPot || priced.hash !== fold.addHash) {
         return { reason: 'pot_sched', state };
       }
     }

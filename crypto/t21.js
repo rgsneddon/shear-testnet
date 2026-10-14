@@ -659,7 +659,7 @@ function weightOf(p) {
   return Wi;
 }
 
-function planPay(spec, payees, escrowPayees = []) {
+function planPay(spec, payees, escrowPayees = [], foldPayees = []) {
   const S = scalarOk(spec.S);
   const cin = scalarOk(spec.cin);
   const bps = t21Big(spec.bps || 0);
@@ -687,7 +687,15 @@ function planPay(spec, payees, escrowPayees = []) {
     Wesc += Wi;
     escrow.push({ ...p, Wi, fin: 0n });
   }
-  const W = Wpaid + Wesc;
+  const folding = [];
+  let Wfold = 0n;
+  for (const p of foldPayees) {
+    const Wi = weightOf(p);
+    if (Wi <= 0n) throw fail('split_cap');
+    Wfold += Wi;
+    folding.push({ ...p, Wi, fin: 0n });
+  }
+  const W = Wpaid + Wesc + Wfold;
   if (W >= W_MAX) throw fail('split_cap');
   // The finder half is split by weight with the pot. A fin on one voucher would
   // redirect it, so a working round rejects that. An empty round has no weights.
@@ -701,11 +709,14 @@ function planPay(spec, payees, escrowPayees = []) {
       phi += g.fin;
       return { ...g, v: g.fin, rho: 0n };
     });
-    return { S, cin, f, bps, u, R, W, Wpaid, rate: 0n, phi, rows, escrow: [], dust: 0n, escrowPot: 0n, escrowHash: 0n };
+    return {
+      S, cin, f, bps, u, R, W, Wpaid, rate: 0n, phi, rows, escrow: [], folds: [], dust: 0n, escrowPot: 0n, escrowHash: 0n,
+    };
   }
   const weights = [];
   for (const g of groups) if (g.Wi > 0n) weights.push(g.Wi);
   for (const g of escrow) weights.push(g.Wi);
+  for (const g of folding) weights.push(g.Wi);
   const priced = priceWeights(Rlaw, u, weights);
   if (!priced || priced.dust == null || priced.W !== W) throw fail('pot_sched');
   let pricedAt = 0;
@@ -722,7 +733,14 @@ function planPay(spec, payees, escrowPayees = []) {
     pricedAt += 1;
     return { ...g, pot: pay.pot, hash: pay.hash, v: pay.v, rho: pay.rho };
   });
-  const dust = lawDust([...rows.map((r) => r.rho), ...escrowRows.map((r) => r.rho)], W);
+  const foldRows = folding.map((g) => {
+    const pay = priced.rows[pricedAt];
+    pricedAt += 1;
+    return { ...g, pot: pay.pot, hash: pay.hash, v: pay.v, rho: pay.rho };
+  });
+  const dust = lawDust([
+    ...rows.map((r) => r.rho), ...escrowRows.map((r) => r.rho), ...foldRows.map((r) => r.rho),
+  ], W);
   if (dust == null || dust !== priced.dust) throw fail('pot_sched');
   let escrowPot = 0n;
   let escrowHash = 0n;
@@ -730,8 +748,13 @@ function planPay(spec, payees, escrowPayees = []) {
     escrowPot += g.pot;
     escrowHash += g.hash;
   }
+  for (const g of foldRows) {
+    escrowPot += g.pot;
+    escrowHash += g.hash;
+  }
   return {
-    S, cin, f, bps, u, R, W, Wpaid, rate: Rlaw + W * u, phi: phiFold, rows, escrow: escrowRows, dust, escrowPot, escrowHash,
+    S, cin, f, bps, u, R, W, Wpaid, rate: Rlaw + W * u, phi: phiFold,
+    rows, escrow: escrowRows, folds: foldRows, dust, escrowPot, escrowHash,
   };
 }
 
@@ -919,8 +942,18 @@ function hex32(b) {
   return x ? Buffer.from(x).toString('hex') : '';
 }
 
-/** The row id is its least share commitment, so a later block cannot retarget it. */
+function idBytes(value) {
+  const b = bytes32(value);
+  if (b) return b;
+  if (typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value)) return Buffer.from(value, 'hex');
+  return null;
+}
+
+/** The row id is its least share commitment, so a later block cannot retarget it.
+ *  A folded row pins that id: adding a share must not move the anchor. */
 export function t21Anchor(row) {
+  const pinned = idBytes(row?.id);
+  if (pinned) return Buffer.from(pinned).toString('hex');
   const shares = Array.isArray(row?.shares) ? row.shares : [];
   let best = null;
   for (const s of shares) {
@@ -931,8 +964,16 @@ export function t21Anchor(row) {
   return best || hex32(row?.E);
 }
 
+function copyOwedShare(s) {
+  const out = { w: BigInt(s.w).toString(), E: Buffer.from(asU8(s.E)) };
+  if (s.open) out.open = { Rpt: Buffer.from(asU8(s.open.Rpt)), z: Buffer.from(asU8(s.open.z)) };
+  if (s.pot0 != null && s.pot0 !== '') out.pot0 = BigInt(s.pot0).toString();
+  if (s.hash0 != null && s.hash0 !== '') out.hash0 = BigInt(s.hash0).toString();
+  return out;
+}
+
 function cloneOwed(o) {
-  return {
+  const out = {
     since: Number(o.since),
     by: Buffer.from(asU8(o.by)),
     B: Buffer.from(asU8(o.B)),
@@ -940,12 +981,18 @@ function cloneOwed(o) {
     lambda: Buffer.from(asU8(o.lambda)),
     pot: BigInt(o.pot).toString(),
     hash: BigInt(o.hash).toString(),
-    shares: (o.shares || []).map((s) => {
-      const out = { w: BigInt(s.w).toString(), E: Buffer.from(asU8(s.E)) };
-      if (s.open) out.open = { Rpt: Buffer.from(asU8(s.open.Rpt)), z: Buffer.from(asU8(s.open.z)) };
-      return out;
-    }),
+    shares: (o.shares || []).map(copyOwedShare),
   };
+  const id = idBytes(o.id);
+  const folded = (o.shares || []).some((s) => s.pot0 != null && s.pot0 !== '');
+  if (id && folded) out.id = Buffer.from(id);
+  return out;
+}
+
+function boundText(share, row, key) {
+  const pinned = share && share[`${key}0`];
+  if (pinned != null && pinned !== '') return String(pinned);
+  return String(row[key]);
 }
 
 function openBind(row, share) {
@@ -958,8 +1005,8 @@ function openBind(row, share) {
     Buffer.from(asU8(row.B)),
     Buffer.from(asU8(row.Y)),
     Buffer.from(asU8(row.lambda)),
-    Buffer.from(String(row.pot)),
-    Buffer.from(String(row.hash)),
+    Buffer.from(boundText(share, row, 'pot')),
+    Buffer.from(boundText(share, row, 'hash')),
   );
 }
 
@@ -1011,12 +1058,13 @@ function owedFields({ defer = [], owed = [], back = 0n, potCarry = 0n } = {}, em
  * T21_OWED_TTL, then this block's fresh escrow. `paidE` is a set of anchors.
  * Expired value is `back` (pot + hash), returned to the pot.
  */
-export function t21OwedNext({ owedIn = [], paidE = new Set(), fresh = [], height }) {
+export function t21OwedNext({ owedIn = [], paidE = new Set(), fresh = [], folds = [], height }) {
   const tagged = (owedIn || []).map((o) => ({ ...o, id: t21Anchor(o) }));
   const got = composeOwed({
     owedIn: tagged,
     paid: paidE,
     fresh: fresh.map((o) => ({ ...o, id: t21Anchor(o) })),
+    folds,
     height,
   });
   if (!got.ok) {
@@ -1024,10 +1072,7 @@ export function t21OwedNext({ owedIn = [], paidE = new Set(), fresh = [], height
     throw err;
   }
   return {
-    owed: got.owed.map((o) => {
-      const { id, ...rest } = o;
-      return cloneOwed(rest);
-    }),
+    owed: got.owed.map((o) => cloneOwed(o)),
     backPot: got.backPot,
     backHash: got.backHash,
     back: got.back,
@@ -1078,9 +1123,9 @@ function quotaOk(rows) {
   return !owedCapExceeded(rows, (o) => hex32(o.by));
 }
 
-function listingFor(spec, fresh, settleRows) {
+function listingFor(spec, fresh, settleRows, folds = []) {
   const paidE = new Set((settleRows || []).map((r) => t21Anchor(r)).filter(Boolean));
-  const listed = t21OwedNext({ owedIn: spec.owedIn || [], paidE, fresh, height: spec.height });
+  const listed = t21OwedNext({ owedIn: spec.owedIn || [], paidE, fresh, folds, height: spec.height });
   if (!quotaOk(listed.owed)) throw fail('owed_cap');
   return listed;
 }
@@ -1218,8 +1263,9 @@ function freshEscrow(spec, priced) {
 
 function buildOnceWith(spec, payees, deferred, seed, engine) {
   const escrowIn = spec.escrowPayees || [];
+  const foldIn = Array.isArray(spec.folds) ? spec.folds : [];
   const settleRows = Array.isArray(spec.settle) ? spec.settle : [];
-  const planned = planPay(spec, payees, escrowIn);
+  const planned = planPay(spec, payees, escrowIn, foldIn);
   const settleOnly = planned.W === 0n && settleRows.length > 0;
   if (planned.W === 0n && !settleOnly) return emptyCoinbase(spec, deferred);
   const lawW = settleOnly ? 1n : planned.W;
@@ -1281,9 +1327,36 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
     for (const s of p.shares || []) shares.push({ w: BigInt(s.w), E: Buffer.from(asU8(s.E)), ell: s.ell, beta: s.beta });
   }
   const fresh = settleOnly ? [] : freshEscrow(spec, planned.escrow);
+  const foldApplies = [];
+  if (!settleOnly) {
+    const owedById = new Map((spec.owedIn || []).map((o) => [t21Anchor(o), o]));
+    for (const g of planned.folds) {
+      const id = String(g.id);
+      const parent = owedById.get(id);
+      if (!parent) throw fail('owed_list');
+      if (hex32(parent.by) !== hex32(spec.producer)) throw fail('owed_list');
+      foldApplies.push({
+        id,
+        addPot: g.pot,
+        addHash: g.hash,
+        shares: (g.shares || []).map((s) => ({ w: BigInt(s.w).toString(), E: Buffer.from(asU8(s.E)), beta: s.beta })),
+      });
+    }
+  }
+  const listed = listingFor(spec, fresh, settleRows, foldApplies);
   const defer = [];
-  for (const g of fresh) for (const s of g.shares) defer.push({ w: s.w, E: s.E });
-  const listed = listingFor(spec, fresh, settleRows);
+  const freshIds = new Set(fresh.map((row) => t21Anchor(row)));
+  const priorCount = new Map((spec.owedIn || []).map((o) => [t21Anchor(o), (o.shares || []).length]));
+  const foldIds = new Map(foldApplies.map((f) => [f.id, priorCount.get(f.id) || 0]));
+  for (const row of listed.owed) {
+    const id = t21Anchor(row);
+    if (freshIds.has(id)) {
+      for (const s of row.shares) defer.push({ w: s.w, E: Buffer.from(asU8(s.E)) });
+    } else if (foldIds.has(id)) {
+      const nOld = foldIds.get(id);
+      for (const s of row.shares.slice(nOld)) defer.push({ w: s.w, E: Buffer.from(asU8(s.E)) });
+    }
+  }
   const pot = splitCarry(dustCarry);
   const skel = {
     coinbase: true,
@@ -1303,12 +1376,16 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
     },
   };
   const stmt = statementOf(skel);
+  const betaOf = new Map();
+  for (const g of fresh) for (const s of g.shares) betaOf.set(hex32(s.E), s.beta);
+  for (const g of foldApplies) for (const s of g.shares) betaOf.set(hex32(s.E), s.beta);
   for (const row of skel.t21.owed || []) {
-    if (Number(row.since) !== Number(spec.height)) continue;
-    const src = fresh.find((f) => t21Anchor(f) === t21Anchor(row));
-    if (!src) throw fail('owed_list');
     row.shares.forEach((s, i) => {
-      s.open = proveOpen(row, { ...s, beta: src.shares[i].beta }, nonce('escrow-open', i, row.shares.length, stmt));
+      if (s.open) return;
+      const beta = betaOf.get(hex32(s.E));
+      if (!beta) throw fail('owed_list');
+      const label = Number(row.since) === Number(spec.height) ? 'escrow-open' : 'escrow-fold';
+      s.open = proveOpen(row, { ...s, beta }, nonce(label, i, row.shares.length, stmt));
     });
   }
   const { proved, tally } = useEngine
@@ -1437,7 +1514,9 @@ export function buildT21Coinbase(spec) {
   const withIndex = (list) => list.map((p, i) => ({ ...p, _index: i }));
   let payees = withIndex(kept);
   const specRound = { ...spec, escrowPayees: escrow };
-  if (!payees.length && !escrow.length && !(spec.settle || []).length) return emptyCoinbase(specRound, deferred);
+  if (!payees.length && !escrow.length && !(spec.folds || []).length && !(spec.settle || []).length) {
+    return emptyCoinbase(specRound, deferred);
+  }
   const engine = proverEngine(spec);
   try {
     return buildOnce(specRound, payees, deferred, seed, engine);
@@ -1446,7 +1525,7 @@ export function buildT21Coinbase(spec) {
     const bad = payees[err.payee];
     deferred.push({ voucher: bad.voucher, shares: bad.shares || [], reason: 'admit_note_point' });
     payees = withIndex(payees.filter((_, i) => i !== err.payee).map(({ _index, ...rest }) => rest));
-    if (!payees.length && !(specRound.escrowPayees || []).length && !(spec.settle || []).length) {
+    if (!payees.length && !(specRound.escrowPayees || []).length && !(spec.folds || []).length && !(spec.settle || []).length) {
       return emptyCoinbase(specRound, deferred);
     }
     return buildOnce(specRound, payees, deferred, seed, engine);
@@ -1705,16 +1784,28 @@ function rowShares(row) {
   return Array.isArray(row?.shares) ? row.shares : [];
 }
 
+function sharePin(s, key) {
+  const v = s && s[key];
+  if (v == null || v === '') return '';
+  return String(BigInt(v));
+}
+
 function sameRow(got, want) {
   if (Number(got.since) !== Number(want.since)) return false;
   if (!sameBytes(got.by, want.by) || !sameBytes(got.B, want.B) || !sameBytes(got.Y, want.Y)
     || !sameBytes(got.lambda, want.lambda)) return false;
   if (String(got.pot) !== String(want.pot) || String(got.hash) !== String(want.hash)) return false;
+  const gid = idBytes(got.id);
+  const wid = idBytes(want.id);
+  if ((gid == null) !== (wid == null)) return false;
+  if (gid && !sameBytes(gid, wid)) return false;
   const gs = rowShares(got);
   const ws = rowShares(want);
   if (gs.length !== ws.length) return false;
   for (let i = 0; i < gs.length; i += 1) {
     if (String(gs[i].w) !== String(ws[i].w) || !sameBytes(gs[i].E, ws[i].E)) return false;
+    if (sharePin(gs[i], 'pot0') !== sharePin(ws[i], 'pot0')) return false;
+    if (sharePin(gs[i], 'hash0') !== sharePin(ws[i], 'hash0')) return false;
   }
   return true;
 }
@@ -1750,9 +1841,34 @@ function checkOwed(tx, shares, defer, expect, finB, phiMint = 0n) {
   }
   const got = Array.isArray(t21.owed) ? t21.owed : [];
   const fresh = got.filter((o) => BigInt(o.since) === height);
+  const foldIntents = [];
+  for (const row of got) {
+    const id = t21Anchor(row);
+    const parent = byId.get(id);
+    if (!parent || BigInt(row.since) === height) continue;
+    const old = rowShares(parent);
+    const now = rowShares(row);
+    const untouched = now.length === old.length
+      && String(row.pot) === String(parent.pot) && String(row.hash) === String(parent.hash);
+    if (untouched) continue;
+    if (now.length <= old.length) return no('owed_list');
+    for (let i = 0; i < old.length; i += 1) {
+      if (String(now[i].w) !== String(old[i].w) || hex32(now[i].E) !== hex32(old[i].E)) return no('owed_list');
+    }
+    const added = now.slice(old.length);
+    let w = 0n;
+    for (const s of added) w += BigInt(s.w);
+    const addPot = BigInt(row.pot) - BigInt(parent.pot);
+    const addHash = BigInt(row.hash) - BigInt(parent.hash);
+    if (w <= 0n || addPot < 0n || addHash < 0n) return no('owed_list');
+    foldIntents.push({ id, addPot, addHash, shares: added, w, row, parent });
+  }
   let listed;
   try {
-    listed = t21OwedNext({ owedIn, paidE, fresh, height: expect.height });
+    listed = t21OwedNext({
+      owedIn, paidE, fresh, height: expect.height,
+      folds: foldIntents.map((f) => ({ id: f.id, addPot: f.addPot, addHash: f.addHash, shares: f.shares })),
+    });
   } catch (err) {
     return no(err.reason || 'owed_list');
   }
@@ -1787,19 +1903,41 @@ function checkOwed(tx, shares, defer, expect, finB, phiMint = 0n) {
   let escrowPot = 0n;
   const flat = [];
   const who = finB ? hex32(finB) : hex32(expect.producer);
+  const seenEscrowE = new Set();
+  const noteShare = (s) => {
+    const id = hex32(s.E);
+    if (!id || seenEscrowE.has(id)) return no('share_label');
+    seenEscrowE.add(id);
+    if ([...byId.values()].some((prev) => rowShares(prev).some((ps) => hex32(ps.E) === id) || t21Anchor(prev) === id)) {
+      return no('share_label');
+    }
+    flat.push(s);
+    return null;
+  };
+  const foldById = new Map(foldIntents.map((f) => [f.id, f]));
   for (const row of fresh) {
     if (!who || hex32(row.by) !== who) return no('owed_list');
     if (scalarOkBytes(row.lambda) !== voucherLambda(row.B, row.Y)) return no('split_label');
     let w = 0n;
-    for (const s of rowShares(row)) {
-      w += BigInt(s.w);
-      flat.push(s);
-      const id = hex32(s.E);
-      if ([...byId.values()].some((prev) => rowShares(prev).some((ps) => hex32(ps.E) === id) || t21Anchor(prev) === id)) {
-        return no('share_label');
-      }
-    }
+    for (const s of rowShares(row)) w += BigInt(s.w);
     wEsc += w;
+  }
+  for (const fold of foldIntents) {
+    if (!who || hex32(fold.row.by) !== who) return no('owed_list');
+    if (Number(fold.row.since) !== Number(fold.parent.since)) return no('owed_list');
+    if (hex32(fold.row.by) !== hex32(fold.parent.by) || hex32(fold.row.B) !== hex32(fold.parent.B)
+      || hex32(fold.row.Y) !== hex32(fold.parent.Y) || hex32(fold.row.lambda) !== hex32(fold.parent.lambda)) {
+      return no('owed_list');
+    }
+    wEsc += fold.w;
+  }
+  for (const row of got) {
+    const id = t21Anchor(row);
+    const sharesOf = BigInt(row.since) === height ? rowShares(row) : (foldById.get(id)?.shares || []);
+    for (const s of sharesOf) {
+      const bad = noteShare(s);
+      if (bad) return bad;
+    }
   }
   if (flat.length !== defer.length) return no('owed_list');
   for (let i = 0; i < flat.length; i += 1) {
@@ -1813,6 +1951,11 @@ function checkOwed(tx, shares, defer, expect, finB, phiMint = 0n) {
       for (const s of rowShares(row)) w += BigInt(s.w);
       const pay = weightPay(R + phiMint, wall, w, u);
       if (!pay || pay.pot !== BigInt(row.pot) || pay.hash !== BigInt(row.hash)) return no('pot_sched');
+      escrowPot += pay.pot;
+    }
+    for (const fold of foldIntents) {
+      const pay = weightPay(R + phiMint, wall, fold.w, u);
+      if (!pay || pay.pot !== fold.addPot || pay.hash !== fold.addHash) return no('pot_sched');
       escrowPot += pay.pot;
     }
   }

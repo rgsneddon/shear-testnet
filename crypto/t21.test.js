@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { G, H, pointBytes, scalarBytes } from './note.js';
 import { feeOf, lawDust, splitLaw } from './t21_law.js';
-import { priceWeights } from './t21_escrow.js';
+import { priceWeights, weightPay } from './t21_escrow.js';
 import {
   CB_SHARE_MAX, GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_OWED_GLOBAL, T21_OWED_MAX, T21_OWED_TTL, T21_REQUIRE_ALL_COINBASES, T21_SETTLE_WINDOW, VOUCHER_GAP,
   W_HASH_MAX,
@@ -19,13 +19,14 @@ import {
 import { packShewall, sealShewallBin } from './shewall_bin.js';
 import {
   AGG_KEYS, CHUNK_KEYS, buildT21Coinbase, genesisGateStatus, minerShare, observerView, openOutput, payoutDelta,
-  statementOf, supplyIdentities, t21CbOnly, t21EconomicCarry, t21OwedNext, t21OwedOf, t21ShareNc, vaultCommit, verifyT21Coinbase,
+  statementOf, supplyIdentities, t21Anchor, t21CbOnly, t21EconomicCarry, t21OwedNext, t21OwedOf, t21ShareNc, vaultCommit, verifyT21Coinbase,
 } from './t21.js';
 import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
 import { accountShareUnits, aLeavesFromShares, t21ShareCredit } from './share_batch.js';
 import { buildDualTree } from './clearing.js';
 import {
-  K_VW, MAX_BLOCK_VERIFY_WEIGHT, R_VW_WEIGHT, R_WEIGHT, W_ROW_0X23, blockBudget, payeeCapLive, txBudget, txVerifyWeight,
+  C_MAX, K_VW, MAX_BLOCK_VERIFY_WEIGHT, PAYEE_ROW_BYTES, R_VW_WEIGHT, R_WEIGHT, W_ROW_0X23,
+  blockBudget, countPayees, payeeCapLive, publicBytes, txBudget, txVerifyWeight,
 } from './block_budget.js';
 import { nativeLoaded } from './native_admit.js';
 import { encodeDest } from './address.js';
@@ -560,6 +561,31 @@ describe('T21 verify weight and share cap', () => {
     t21: { shares: [...Array(shares)].map(() => ({ w: '1', E: Buffer.alloc(32) })) },
   });
 
+  it('fits 171 settle rows beside 171 payees in the block byte and weight budget', () => {
+    const n = payeeCapLive();
+    assert.equal(n, 171);
+    const heavy = (kind) => ({ kind, kindCode: 0x20, commit: Buffer.alloc(PAYEE_ROW_BYTES) });
+    const tx = {
+      coinbase: true,
+      cbForm: 'cb-v3',
+      vout: [
+        ...Array.from({ length: n }, () => heavy('pot')),
+        ...Array.from({ length: n }, () => heavy('settle')),
+        heavy('pool-fee'),
+        { kind: 'reserve-fee', commit: Buffer.alloc(PAYEE_ROW_BYTES) },
+      ],
+      t21: { shares: [] },
+    };
+    assert.equal(countPayees(tx), n);
+    const weight = txVerifyWeight(tx);
+    assert.equal(weight, 300 + (n + n + 2) * 60);
+    assert.ok(weight + R_WEIGHT + R_VW_WEIGHT <= MAX_BLOCK_VERIFY_WEIGHT);
+    assert.ok(publicBytes(tx) <= C_MAX);
+    const budget = blockBudget([tx]);
+    assert.equal(budget.ok, true, budget.reason);
+    assert.equal(budget.payees, n);
+  });
+
   it('prices a full payout at 10,680 wu and fits 7,485 shares beside both reserves', () => {
     assert.equal(txVerifyWeight(cb()), 10_680);
     assert.equal(CB_SHARE_MAX, 7_485);
@@ -713,6 +739,31 @@ describe('T21 payee-cap escrow (sealed at defer, paid by any producer)', { timeo
     assert.equal(ok.phi, phi);
     assert.equal(ok.escrowPot, BigInt(tx.t21.owed[0].pot));
     assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx, { ...seen, producer: other }) }).reason, 'owed_list');
+    const again = payee(4, [4n]);
+    const paidNow = [payee(0, [6n]), payee(1, [1n]), payee(2, [2n])];
+    const owedIn = t21OwedOf(tx);
+    const folded = buildT21Coinbase({
+      S: 1_000_000n, cin: 0n, u, height: H + 1, magic, prevHash, dummySecret, producer,
+      payees: paidNow,
+      folds: [{ id: t21Anchor(owedIn[0]), shares: again.shares }],
+      owedIn,
+    });
+    const grown = folded.tx.t21.owed[0];
+    assert.equal(folded.tx.t21.owed.length, 1);
+    assert.equal(grown.shares.length, 3);
+    assert.equal(grown.since, H);
+    assert.equal(t21Anchor(grown), t21Anchor(owedIn[0]));
+    assert.equal(folded.tx.t21.defer.length, 1);
+    const delta = weightPay(1_000_000n, 6n + 1n + 2n + 4n, 4n, u);
+    assert.equal(BigInt(grown.pot), BigInt(owedIn[0].pot) + delta.pot);
+    assert.equal(BigInt(grown.hash), BigInt(owedIn[0].hash) + delta.hash);
+    const foldLeaves = [...paidNow, again].flatMap((p) => p.shares.map(leafOf));
+    const foldOk = verifyT21Coinbase({
+      tx: folded.tx,
+      expect: expectFor(folded.tx, { shares: foldLeaves, owedIn, producer, height: H + 1 }),
+    });
+    assert.equal(foldOk.ok, true, foldOk.reason);
+    assert.equal(foldOk.escrowPot, delta.pot);
     const relabel = structuredClone(tx);
     relabel.t21.owed[0].B = pointBytes(G.multiply(9n));
     assert.equal(verifyT21Coinbase({ tx: relabel, expect: expectFor(relabel, seen) }).reason, 'share_label');

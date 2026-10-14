@@ -159,11 +159,14 @@ function rejectPlan(reason) {
 
 /**
  * One row per payee. Fresh slots fill largest-units first. Due owed rows are
- * settled first, outside that cap, and block every fresh payee until the due
- * prefix fits. Overflow payees are defer (escrow). Past the producer quota or
- * the global list they are `later` (`owed_cap`), not a rejected round. Hash
- * cap, hash budget, and the share cap still reject the round.
- * owedRoom is how many new payees this producer may still seal.
+ * settled outside that cap, and the same block still admits fresh payees.
+ * Overflow folds into the producer's existing row for that payee, or is sealed
+ * as a new row while the producer is under its quota and holds one of the
+ * eight seats. A payee that cannot be sealed is paid in this round. Fresh
+ * labels are never left on the node-local `later` list because settles are
+ * due or the global list is full. Hash cap, hash budget, and the share cap
+ * still reject the round. owedRoom is how many new payees this producer may
+ * still seal.
  */
 export function planT21Round({
   labels = [],
@@ -227,8 +230,8 @@ export function planT21Round({
     if (unpayable.has(o.nc)) kept.push({ ...o, reason: 'unpayable' });
     else open.push(o);
   }
-  // Due rows are settled before any new payee, and no settle row spends a payee slot.
-  // The frame fits `settleFit` full rows, so a larger due list is a prefix this block.
+  // Due rows are a prefix, outside the payee cap. The frame fits `settleFit`
+  // full rows. Young owed rows wait while any due row is still open.
   const fit = Math.max(0, Math.floor(Number(settleFit == null ? payeeCapLive() : settleFit)));
   const due = open.filter(dueOf);
   const young = open.filter((o) => !dueOf(o));
@@ -239,51 +242,89 @@ export function planT21Round({
   const youngWait = young.slice(youngPay.length);
   for (const o of [...duePay, ...youngPay]) pay.push(o);
   for (const o of [...dueWait, ...youngWait]) kept.push({ ...o, reason: 'owed_wait' });
-  const admitFresh = dueWait.length === 0;
   const defer = [];
   const later = [];
-  if (!admitFresh) {
-    for (const g of ranked) for (const l of g.labels) later.push({ ...l, reason: 'owed_due' });
-  } else {
-    for (const g of ranked) {
-      if (!admitted.has(g.payee) && admitted.size >= maxPayees) {
-        for (const l of g.labels) defer.push({ ...l, reason: 'payee_cap' });
-        continue;
-      }
-      admitted.add(g.payee);
-      for (const l of g.labels) pay.push(l);
-    }
-  }
+  const folds = [];
   // No fresh slot: the labels are not sealed. A produced block still settles owed rows.
-  if (maxPayees === 0 && admitFresh) {
+  if (maxPayees === 0) {
+    const unplaced = [];
+    for (const g of ranked) for (const l of g.labels) unplaced.push({ ...l, reason: 'payee_cap' });
     return {
-      reject: null, batch: [], pay, defer: [], kept, later, unplaced: defer,
+      reject: null, batch: [], pay, defer, kept, later, folds, unplaced,
       units: 0n, shares: 0, payees: 0,
     };
   }
   const paidOwed = new Set(pay.filter((p) => p.owed).map((p) => p.nc));
   const staying = owedSorted.filter((o) => !paidOwed.has(o.nc));
+  const seats = new Set();
+  for (const o of staying) if (o.by) seats.add(o.by);
+  const seatCap = T21_OWED_GLOBAL / T21_OWED_MAX;
   let room = Math.max(0, Math.floor(Number(owedRoom)));
-  const mine = producer ? staying.filter((o) => o.by === producer).length : 0;
-  room = Math.min(room, Math.max(0, T21_OWED_MAX - mine), Math.max(0, T21_OWED_GLOBAL - staying.length));
-  const byPayee = new Map();
-  const order = [];
-  for (const l of defer) {
-    if (!byPayee.has(l.payee)) {
-      byPayee.set(l.payee, []);
-      order.push(l.payee);
+  if (producer) {
+    const mine = staying.filter((o) => o.by === producer).length;
+    const globalLeft = Math.max(0, T21_OWED_GLOBAL - staying.length);
+    if (!seats.has(producer) && seats.size >= seatCap) room = 0;
+    else room = Math.min(room, Math.max(0, T21_OWED_MAX - mine), globalLeft);
+  } else {
+    room = Math.min(room, Math.max(0, T21_OWED_GLOBAL - staying.length));
+  }
+  const existing = (payee) => (
+    producer ? staying.find((o) => o.by === producer && o.payee === payee) || null : null
+  );
+  const payGroups = [];
+  const overflow = [];
+  for (const g of ranked) {
+    if (payGroups.length < maxPayees) payGroups.push(g);
+    else overflow.push(g);
+  }
+  const sealedGroups = [];
+  const foldedGroups = [];
+  const round = [];
+  for (const g of overflow) {
+    const row = existing(g.payee);
+    if (row) {
+      foldedGroups.push({ g, row });
+      continue;
     }
-    byPayee.get(l.payee).push(l);
+    if (sealedGroups.length < room) {
+      sealedGroups.push(g);
+      continue;
+    }
+    round.push(g);
   }
-  const sealed = order.slice(0, room).flatMap((p) => byPayee.get(p));
-  for (const p of order.slice(room)) {
-    for (const l of byPayee.get(p)) later.push({ ...l, reason: 'owed_cap' });
+  // A payee with nowhere to seal takes a slot from one that can, and is paid now.
+  for (const g of round) {
+    let idx = -1;
+    for (let i = payGroups.length - 1; i >= 0; i -= 1) {
+      const held = payGroups[i];
+      if (existing(held.payee) || sealedGroups.length < room) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx >= 0) {
+      const displaced = payGroups.splice(idx, 1)[0];
+      const row = existing(displaced.payee);
+      if (row) foldedGroups.push({ g: displaced, row });
+      else sealedGroups.push(displaced);
+      payGroups.push(g);
+    } else {
+      payGroups.push(g);
+    }
   }
-  defer.length = 0;
-  for (const l of sealed) defer.push(l);
-  if (!pay.length) {
+  for (const g of payGroups) {
+    admitted.add(g.payee);
+    for (const l of g.labels) pay.push(l);
+  }
+  for (const g of sealedGroups) {
+    for (const l of g.labels) defer.push({ ...l, reason: 'payee_cap' });
+  }
+  for (const { g, row } of foldedGroups) {
+    for (const l of g.labels) folds.push({ ...l, into: row.nc, reason: 'fold' });
+  }
+  if (!pay.length && !defer.length && !folds.length) {
     return {
-      reject: null, batch: [], pay: [], defer: [], kept, later, unplaced: defer,
+      reject: null, batch: [], pay: [], defer: [], folds: [], kept, later, unplaced: [],
       units: 0n, shares: 0, payees: admitted.size,
     };
   }
@@ -295,6 +336,7 @@ export function planT21Round({
     batch: ranked.flatMap((g) => g.labels).filter((l) => !laterNc.has(l.nc)),
     pay,
     defer,
+    folds,
     kept,
     later,
     unplaced: [],
@@ -337,6 +379,17 @@ function leavesOf(batch, ctx) {
     throw err;
   }
   return got.aLeaves;
+}
+
+/** Folded labels join the producer's existing owed row. One entry per row id. */
+function foldsOf(items, labelOf) {
+  const byId = new Map();
+  for (const it of items) {
+    const lab = labelOf(it.nc);
+    if (!byId.has(it.into)) byId.set(it.into, []);
+    byId.get(it.into).push({ w: BigInt(it.w), E: lab.E, ell: lab.ell, beta: lab.beta });
+  }
+  return [...byId.entries()].map(([id, shares]) => ({ id, shares }));
 }
 
 /** Payees from paid items: batch labels at their leaf count, owed rows at their deferred w. */
@@ -492,8 +545,11 @@ export function t21TemplateCoinbase({
     const settling = plan.pay.filter((it) => it.owed);
     const paidItems = freshPay.map((it) => ({ nc: it.nc, w: units.get(it.nc) }));
     const escrowItems = plan.defer.map((l) => ({ nc: l.nc, w: units.get(l.nc) }));
+    const foldItems = (plan.folds || []).map((l) => ({ nc: l.nc, w: units.get(l.nc), into: l.into }));
     const payees = paidItems.length ? payeesOf(paidItems, labelOf, null, 0n) : [];
-    const working = freshPay.length > 0 || escrowItems.length > 0;
+    const payeeN = payees.length;
+    const buildSlots = Math.min(payeeCapLive(), Math.max(slots, payeeN));
+    const working = freshPay.length > 0 || escrowItems.length > 0 || foldItems.length > 0;
     const noteFinder = want > 0n && !working;
     const escrowPayees = escrowItems.length ? payeesOf(escrowItems, labelOf, null, 0n) : [];
     if (want > 0n && !working && !finderNote) throw new Error('finder_row');
@@ -509,13 +565,14 @@ export function t21TemplateCoinbase({
       prevHash,
       payees,
       escrowPayees,
+      folds: foldsOf(foldItems, labelOf),
       settle: settling.map((it) => it.row),
       owedIn: live,
       producer: producerBuf,
       vaults,
       publicRows: noteFinder ? [...publicRows, finderNote] : publicRows,
       shareMax: room,
-      payeeMax: slots,
+      payeeMax: buildSlots,
       seed,
     });
     let more = false;

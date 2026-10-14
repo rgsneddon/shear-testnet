@@ -150,9 +150,11 @@ describe('payee-cap escrow pricing and supply', () => {
     assert.equal(owedCapExceeded(one(T21_OWED_GLOBAL, 'spread').map((r, i) => ({ ...r, by: `p${Math.floor(i / T21_OWED_MAX)}` })), (r) => r.by), false);
     assert.equal(owedCapExceeded(one(T21_OWED_GLOBAL + 1, 'spread').map((r, i) => ({ ...r, by: `p${Math.floor(i / T21_OWED_MAX)}` })), (r) => r.by), true);
     assert.equal(owedCapExceeded(one(T21_OWED_MAX + 1, 'pool'), (r) => r.by), true);
+    assert.equal(owedCapExceeded(Array.from({ length: 8 }, (_, i) => ({ by: `p${i}` })), (r) => r.by), false);
+    assert.equal(owedCapExceeded(Array.from({ length: 9 }, (_, i) => ({ by: `p${i}` })), (r) => r.by), true);
   });
 
-  it('settles a prefix of due rows before any fresh payee, and clears 0, 1, 1024, and 1024×N inside the window', () => {
+  it('settles a prefix of due rows and still admits fresh payees, clearing 0, 1, 1024, and 1024×N inside the window', () => {
     const fit = payeeCapLive();
     const since = 10;
     const openAt = since + (T21_OWED_TTL - T21_SETTLE_WINDOW);
@@ -175,11 +177,11 @@ describe('payee-cap escrow pricing and supply', () => {
           owedIn: left, paid: new Set([due[0].id]), height, freshPayees: false, fit,
         });
         if (due.length > 1 && fit > 1) assert.equal(partial.ok, false);
-        const ok = settleDuty({ owedIn: left, paid, height, freshPayees: false, fit });
+        const ok = settleDuty({ owedIn: left, paid, height, freshPayees: true, fit });
         assert.equal(ok.ok, true, `${n} at ${height}`);
         if (paid.size < due.length) {
-          const early = settleDuty({ owedIn: left, paid, height, freshPayees: true, fit });
-          assert.equal(early.reason, 'owed_due');
+          const beside = settleDuty({ owedIn: left, paid, height, freshPayees: true, fit });
+          assert.equal(beside.ok, true);
         }
         left = left.filter((o) => !paid.has(o.id));
         height += 1;

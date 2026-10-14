@@ -29,11 +29,13 @@ export const W_S_MAX = W_HASH_MAX;
 export const T21_SHARES_PER_BLOCK = 85;
 /**
  * Payee-cap escrow. Overflow payees are sealed into t21.owed at defer time.
- * T21_OWED_MAX is per producer. T21_OWED_GLOBAL bounds the whole list so a
- * rotated voucher key cannot grow it without limit; one producer's quota
- * cannot fill it. T21_OWED_TTL bounds the listing: on expiry the sealed
- * value returns to the pot. Rows inside T21_SETTLE_WINDOW of that TTL are
- * settled before any new payee. Russell's ruling (2026-10-14) fixes the
+ * T21_OWED_MAX is per producer. T21_OWED_GLOBAL is eight of those seats, so a
+ * rotated voucher key cannot open a ninth seat and fill the list. A producer
+ * under its quota keeps a row slot. Overflow for a payee it already escrowed
+ * folds into that row; a payee with no row is paid in the same block.
+ * T21_OWED_TTL bounds the listing: on expiry the sealed value returns to the
+ * pot. Rows inside T21_SETTLE_WINDOW of that TTL are settled, and the same
+ * block still admits fresh payees. Russell's ruling (2026-10-14) fixes the
  * TTL and the per-producer cap.
  */
 export const T21_OWED_MAX = 1_024;

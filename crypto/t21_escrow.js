@@ -38,36 +38,76 @@ export function priceWeights(R, u, weights) {
 
 /**
  * owedIn rows carry `id`, `pot`, `hash`, `since`. `paid` is a set of ids.
- * Fresh rows are appended in order. Expired value is `back`, not a payment
- * to the producer.
+ * Fresh rows are appended in order. `folds` add shares to an existing row:
+ * `{id, addPot, addHash, shares}`. The row keeps `since`. Expired value is
+ * `back`, not a payment to the producer.
  */
-export function composeOwed({ owedIn = [], paid = new Set(), fresh = [], height, ttl = T21_OWED_TTL } = {}) {
+export function composeOwed({
+  owedIn = [], paid = new Set(), fresh = [], folds = [], height, ttl = T21_OWED_TTL,
+} = {}) {
   const h = BigInt(height);
   const owed = [];
   let backPot = 0n;
   let backHash = 0n;
   const settled = new Set(paid);
+  const foldById = new Map();
+  for (const f of folds) {
+    const id = String(f.id);
+    if (!id || foldById.has(id)) return { ok: false, reason: 'owed_list' };
+    foldById.set(id, f);
+  }
   for (const o of owedIn) {
+    const id = String(o.id);
     if (h - BigInt(o.since) > BigInt(ttl)) {
+      if (foldById.has(id)) return { ok: false, reason: 'owed_list' };
       backPot += BigInt(o.pot);
       backHash += BigInt(o.hash);
       continue;
     }
     if (settled.has(o.id)) {
+      if (foldById.has(id)) return { ok: false, reason: 'owed_list' };
       settled.delete(o.id);
       continue;
     }
-    owed.push(o);
+    const fold = foldById.get(id);
+    if (!fold) {
+      owed.push(o);
+      continue;
+    }
+    foldById.delete(id);
+    const addPot = BigInt(fold.addPot);
+    const addHash = BigInt(fold.addHash);
+    if (addPot < 0n || addHash < 0n) return { ok: false, reason: 'owed_list' };
+    const prior = Array.isArray(o.shares) ? o.shares : null;
+    const frozen = prior ? prior.map((s) => (
+      s.pot0 != null && s.pot0 !== '' ? s : { ...s, pot0: String(BigInt(o.pot)), hash0: String(BigInt(o.hash)) }
+    )) : null;
+    const added = Array.isArray(fold.shares) ? fold.shares : [];
+    const next = {
+      ...o,
+      pot: BigInt(o.pot) + addPot,
+      hash: BigInt(o.hash) + addHash,
+    };
+    if (frozen) next.shares = frozen.concat(added);
+    owed.push(next);
   }
-  if (settled.size) return { ok: false, reason: 'owed_list' };
+  if (settled.size || foldById.size) return { ok: false, reason: 'owed_list' };
   for (const row of fresh) owed.push(row);
   return { ok: true, owed, backPot, backHash, back: backPot + backHash };
 }
 
-/** Per-producer quota, or the whole list past the global cap. */
+/**
+ * Per-producer quota, more than eight producer seats, or the whole list past
+ * the global cap. Eight seats are the global list: a ninth key cannot open
+ * another quota and fill it.
+ */
 export function owedCapExceeded(rows, byOf, { max = T21_OWED_MAX, globalMax = T21_OWED_GLOBAL } = {}) {
-  if ((rows || []).length > globalMax) return true;
-  return quotaExceeded(rows, byOf, max);
+  const list = rows || [];
+  if (list.length > globalMax) return true;
+  const seats = new Set();
+  for (const row of list) seats.add(byOf(row));
+  if (seats.size > globalMax / max) return true;
+  return quotaExceeded(list, byOf, max);
 }
 
 /**
@@ -81,12 +121,13 @@ export function rowDue(since, height, { ttl = T21_OWED_TTL, window = T21_SETTLE_
 
 /**
  * Settlement duty. Due rows are oldest first. A block settles a prefix of
- * them, at least min(due, fit) of them, before it admits a fresh payee.
- * A younger row is not settled while an older due row is still open.
- * fit is how many full rows the frame can carry (the payee cap).
+ * them, at least min(due, fit) of them. Settle rows sit outside the payee
+ * cap, so the same block still admits fresh payees. A younger row is not
+ * settled while an older due row is still open. fit is how many full rows
+ * the frame can carry (the payee cap).
  */
 export function settleDuty({
-  owedIn = [], paid = new Set(), height, freshPayees = false,
+  owedIn = [], paid = new Set(), height,
   window = T21_SETTLE_WINDOW, ttl = T21_OWED_TTL, fit,
 } = {}) {
   const h = BigInt(height);
@@ -108,7 +149,6 @@ export function settleDuty({
   const room = Math.max(0, Math.floor(Number(fit == null ? due.length : fit)));
   const need = Math.min(due.length, room);
   if (prefix < need) return { ok: false, reason: 'owed_due', due: due.length, settled: prefix };
-  if (prefix < due.length && freshPayees) return { ok: false, reason: 'owed_due', due: due.length, settled: prefix };
   return { ok: true, due: due.length, settled: prefix };
 }
 
