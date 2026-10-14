@@ -857,7 +857,8 @@ function packSupply(audit, store) {
     lockedNanos: Math.max(0, Math.floor(Number(vault.totalLockedNanos) || 0)),
     accruingNanos: Math.max(0, Math.floor(Number(vault.accruingNanos) || 0)),
     vaultNanos: Math.max(0, Math.floor(Number(vault.vaultNanos) || 0)),
-    reserveMintedNanos: Math.max(0, Math.floor(Number(vault.reserveMintedNanos) || 0)),
+    reserveClaimableNanos: Math.max(0, Math.floor(Number(vault.reserveClaimableNanos) || 0)),
+    reserveMintedNanos: settled ? Math.max(0, Math.floor(Number(audit.extraMintNanos) || 0)) : null,
   };
 }
 
@@ -996,7 +997,7 @@ export function explorerCirculation(store) {
     circulating: settled ? nanosToShe(supply.circulatingNanos) : null,
     emitted: settled ? nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos) : null,
     hashOwedNanos: settled ? Number(supply.hashOwedNanos) || 0 : null,
-    reserveMintedNanos: supply.reserveMintedNanos || 0,
+    reserveMintedNanos: settled ? Math.max(0, Math.floor(Number(supply.extraMintNanos) || 0)) : null,
     reserveVaultNanos: supply.vaultNanos || supply.lockedNanos || 0,
     accruingNanos: supply.accruingNanos || 0,
     holderCount: 0,

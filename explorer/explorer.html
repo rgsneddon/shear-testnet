@@ -260,6 +260,7 @@
         <article class="panel-card"><div class="label">Coins in circulation</div><div class="value" id="ex-circulating">—</div></article>
         <article class="panel-card"><div class="label">Emitted</div><div class="value" id="ex-emitted">—</div></article>
         <article class="panel-card"><div class="label">Sealed notes</div><div class="value" id="ex-note-count">—</div></article>
+        <article class="panel-card"><div class="label">Reserve minted (on-chain)</div><div class="value" id="ex-reserve-minted">—</div></article>
       </div>
     </section>
   </div>
@@ -726,6 +727,13 @@
       setText('ex-circulating', supplyPaint(fmtShe(circ.circulating) + ' SHE', circ.supplyStatus));
       setText('ex-emitted', fmtShe(circ.emitted) + ' SHE');
       setText('ex-note-count', circ.noteCount ?? 0);
+      var minted = circ && circ.reserveMintedNanos;
+      var mintedWord = circ && circ.supplyStatus;
+      if (minted == null || mintedWord === 'pending' || mintedWord === 'unverifiable') {
+        setText('ex-reserve-minted', '—');
+      } else {
+        setText('ex-reserve-minted', supplyPaint(fmtShe(Number(minted) / 100000000000) + ' SHE', mintedWord));
+      }
     }
     async function loadRecent() {
       const stats = await fetchJson('/stats');

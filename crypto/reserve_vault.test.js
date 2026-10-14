@@ -36,6 +36,7 @@ import {
   lockTx,
   voteTx,
   withdrawTx,
+  reserveAction,
   VOTE_INCREASE,
   VOTE_DECREASE,
   VOTE_HOLD,
@@ -45,6 +46,7 @@ import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, interestNanos } from './reserve_oracle.js';
 import { extraMint } from './mint.js';
+import { verifySealedNote } from './note.js';
 
 const DAY = 86_400_000;
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -636,6 +638,27 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const view = publicVaultView(state, t0 + DAY);
     assert.ok(view.vaultNanos >= view.totalLockedNanos);
     assert.equal(view.accruingNanos, rw.accrued);
+    assert.equal(view.reserveMintedNanos, undefined);
+    assert.equal(view.reserveClaimableNanos, due);
+  });
+
+  it('a withdraw note that opens to more than the public amount is rejected', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const honest = PI_SHE_NANOS + 10;
+    const tx = withdrawTx({ from: a, to: a, nanos: honest, id: 'open-more' });
+    const fat = withdrawTx({ from: a, to: a, nanos: honest + 1, id: 'open-more-note' });
+    tx.vout = fat.vout;
+    tx.nanos = honest;
+    const act = reserveAction(tx);
+    assert.equal(act.kind, 'withdraw');
+    assert.equal(act.nanos, honest);
+    assert.equal(act.opened, false);
+    assert.equal(verifySealedNote(tx.vout[0], honest + 1), true);
+    assert.equal(verifySealedNote(tx.vout[0], act.nanos), false);
+    const ok = reserveAction(withdrawTx({ from: a, to: a, nanos: honest, id: 'open-ok' }));
+    assert.equal(ok.opened, true);
+    assert.equal(ok.nanos, honest);
   });
 });
 
