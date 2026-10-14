@@ -323,7 +323,8 @@ describe('privacy.walk', () => {
     const restTx = { kind: 'send', from: dest, to: alice.address, vin: [{ address: dest }], vout: [{ address: alice.address, nanos: 1 }] };
     assert.equal(checkTxAddressFields(restTx).reason, 'rest_frame_on_chain');
     const pool = emptyMempool();
-    assert.equal(admitMempool(pool, sheTx).reason, 'silent_id_on_chain');
+    // No plaintext amount on the probe, or amount_field answers first.
+    assert.equal(admitMempool(pool, { ...sheTx, vout: [{ address: alice.paymentCode }] }).reason, 'silent_id_on_chain');
     assert.equal(HASH_TX_LIVE, 1);
     const fp = consensusFingerprint();
     assert.match(fp, /DEST_HRP_SSA_ONLY=1/);

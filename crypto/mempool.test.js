@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { admitMempool, emptyMempool, retargetMempool } from './mempool.js';
 import { encodeDest, encodeAddress } from './address.js';
 import { attachDummyOuts } from './dummy.js';
+import { sealNote } from './note.js';
 
 const dest = encodeDest(Buffer.alloc(20, 3));
 
@@ -20,6 +21,10 @@ describe('policy mempool', () => {
         nanos,
         vout: [{ address: dest, nanos, kind: 'send' }],
       }));
+    }
+    for (const shape of openedShapes) {
+      const send = shape.vout.find((o) => o.kind === 'send') || shape.vout[0];
+      send.valueProof = sealNote(1, { dest20: Buffer.alloc(20, 3) }).valueProof;
     }
     for (const opened of openedShapes) {
       const send = admitMempool(book, opened, { baseFee: 1 });
