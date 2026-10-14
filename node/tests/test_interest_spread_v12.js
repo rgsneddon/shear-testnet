@@ -1,10 +1,13 @@
 /**
  * Per-withdraw interest: opened must be principal + the bps schedule on the
  * pre-withdraw vault. Snap fill and the supply step both reject a miss.
- * verifyBlock rejects the same bodies.
+ * verifyBlock does not reach that check until vault funding lands.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { encodeHeader, decodeHeader } from '../../crypto/header.js';
@@ -22,7 +25,6 @@ import {
   HASH_BONUS_NANOS,
   HASH_BONUS_NANOS_FLOOR,
   EPOCH_BPS_MAX_STEP,
-  GENESIS_BITS_PACKED,
 } from '../../crypto/asert.js';
 import { interestNanos, clampBpsStep } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
@@ -40,13 +42,9 @@ import {
 } from '../../crypto/reserve_vault.js';
 import { explicitTypedKindRejected, boundReserveWithdraw } from '../../crypto/spend.js';
 import { compactTx } from '../../crypto/chronoflux.js';
-import {
-  coinbaseTx,
-  buildTemplate,
-  verifyBlock,
-  digestTx,
-  GENESIS_PREV,
-} from '../src/chain.js';
+import { walletAnchor, checkAdmitAnchor } from '../../crypto/admit_v3.js';
+import { coinbaseTx, verifyBlock, digestTx } from '../src/chain.js';
+import { createStore } from '../src/store.js';
 import {
   auditCirculatingSupply,
   fillSnapInterest,
@@ -413,7 +411,8 @@ describe('per-withdraw interest spread', () => {
     assert.equal(honest.ok, true, honest.reason);
     assert.equal(honest.nanos, BigInt(interest));
 
-    // Withdraw clamps totalLockedNanos at 0, so a short book cannot balance.
+    // No lock tx in this block, so locked-in is 0. The withdraw clamps a short
+    // book at 0 and principal out is left uncovered.
     const short = cloneVault(parent.vault);
     short.totalLockedNanos = 0n;
     const tripped = blockWithdrawInterest(short, draw, DRAW);
@@ -475,43 +474,46 @@ describe('per-withdraw interest spread', () => {
     assert.equal(bound.ok, true, bound.reason);
   });
 
-  it('verifyBlock rejects the same deviations snap fill rejects', async () => {
-    const miner = minerDest();
-    const portal = portalDest();
+  it('verifyBlock does not reach supply until vault funding lands', async () => {
+    // Stage 0 does not fund a vault tx. A sealed withdraw with an in-window
+    // anchor gets past admit_anchor_window and stops at admit_version.
+    // The byte-3 funding shape stops at vault_unavailable. supplyStep does
+    // not run, so plus, minus, an offsetting pair, and an honest withdraw
+    // share those reason codes. Snap fill still tells them apart.
+    const chainMiner = minerDest();
+    const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-vb-anchor-')));
+    for (let i = 0; i < 16; i += 1) {
+      const { job } = store.template({ miner: chainMiner, now: GENESIS + i * 90_000 });
+      const sealed = await store.submitHeader({
+        jobId: job.jobId,
+        nonce: 0n,
+        miner: chainMiner,
+        powHash: `${'00'.repeat(31)}${(0x20 + i).toString(16).padStart(2, '0')}`,
+      }, { trusted: true });
+      assert.equal(sealed.ok, true, sealed.reason);
+    }
+    const parent = store.tip();
+    const height = parent.height + 1;
+    const anchor = walletAnchor(height);
+    assert.equal(checkAdmitAnchor({ anchor }, height).ok, true);
+    const parentTs = Number(decodeHeader(Buffer.from(parent.header)).timestamp);
+
     const interest = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
     const payout = PI_SHE_NANOS + interest;
-    const lock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'vb-lock')]);
-    const parent = vaultAfterBlock(null, lock);
-    assert.equal(parent.ok, true);
-    const cases = [
-      { name: 'plus', tx: drawOf(portal, miner, payout + 1, 'vb-plus') },
-      { name: 'minus', tx: drawOf(portal, miner, payout - 1, 'vb-minus') },
-      { name: 'multi', tx: (() => {
-        const tx = drawOf(portal, miner, payout, 'vb-multi');
-        tx.vout.push(drawOf(portal, miner, payout, 'vb-multi-2').vout[0]);
-        return tx;
-      })() },
-      { name: 'bare', tx: (() => {
-        const tx = drawOf(portal, miner, payout, 'vb-bare');
-        delete tx.vout[0].commit;
-        delete tx.vout[0].valueProof;
-        return tx;
-      })() },
-    ];
-    for (const row of cases) {
-      const chain = [lock, potBlock(DRAW, miner, [row.tx])];
-      expectSupplyReject(chain, `vb-${row.name}`);
-      const tpl = buildTemplate({
-        prev: GENESIS_PREV,
-        height: 1,
-        miner,
-        bits: GENESIS_BITS_PACKED,
-        now: DRAW,
-        txs: [compactTx(row.tx)],
-      });
+    const portal = portalDest();
+    const other = portalDest();
+    const lock = potBlock(GENESIS, chainMiner, [
+      lockOf(chainMiner, portal, PI_SHE_NANOS, 'vb-lock'),
+      lockOf(chainMiner, other, PI_SHE_NANOS, 'vb-lock-b'),
+    ]);
+    const vault = vaultAfterBlock(null, lock);
+    assert.equal(vault.ok, true, vault.reason);
+
+    async function verdictFor(rows) {
+      const { tpl } = store.template({ miner: chainMiner, now: parentTs + 90_000 });
       const decoded = decodeHeader(Buffer.from(tpl.header));
-      const txs = [tpl.txs[0], compactTx(row.tx)];
-      const headerBytes = encodeHeader({
+      const txs = [tpl.txs[0], ...rows.map((tx) => compactTx(tx))];
+      const header = encodeHeader({
         version: decoded.version,
         prevBlockHash: decoded.prevBlockHash,
         merkleRoot: merkleRoot(txs.map((tx) => digestTx(tx))),
@@ -521,8 +523,8 @@ describe('per-withdraw interest spread', () => {
         nonce: 0n,
         baseFee: decoded.baseFee,
       });
-      const verdict = await verifyBlock({
-        header: headerBytes,
+      return verifyBlock({
+        header,
         txs,
         samples: tpl.samples,
         shareBatch: tpl.shareBatch || [],
@@ -530,14 +532,63 @@ describe('per-withdraw interest spread', () => {
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         weight: tpl.weight,
-        height: 1,
-      }, null, {
+        height,
+      }, parent, {
         probeBody: true,
         genesisMs: GENESIS,
         magic: MAGIC_TESTNET,
-        reserveState: parent.vault,
+        reserveState: vault.vault,
       });
-      assert.equal(verdict.ok, false, `${row.name} ${verdict.reason}`);
     }
+
+    function atAnchor(tx) {
+      tx.anchor = anchor;
+      return tx;
+    }
+
+    const honest = atAnchor(drawOf(portal, chainMiner, payout, 'vb-honest'));
+    const plus = atAnchor(drawOf(portal, chainMiner, payout + 1, 'vb-plus'));
+    const minus = atAnchor(drawOf(portal, chainMiner, payout - 1, 'vb-minus'));
+    const high = atAnchor(drawOf(portal, chainMiner, payout + 5, 'vb-off-high'));
+    const low = atAnchor(drawOf(other, chainMiner, payout - 5, 'vb-off-low'));
+    expectVerified([lock, potBlock(DRAW, chainMiner, [honest])], interest, 'vb-honest');
+    expectSupplyReject([lock, potBlock(DRAW, chainMiner, [plus])], 'vb-plus');
+    expectSupplyReject([lock, potBlock(DRAW, chainMiner, [minus])], 'vb-minus');
+    expectSupplyReject([lock, potBlock(DRAW, chainMiner, [high, low])], 'vb-offset');
+
+    for (const row of [
+      { name: 'honest', txs: [honest] },
+      { name: 'plus', txs: [plus] },
+      { name: 'minus', txs: [minus] },
+      { name: 'offset', txs: [high, low] },
+    ]) {
+      const got = await verdictFor(row.txs);
+      assert.equal(got.ok, false, row.name);
+      assert.equal(got.reason, 'admit_version', `${row.name} ${got.reason}`);
+    }
+
+    const unanchored = drawOf(portal, chainMiner, payout, 'vb-window');
+    const windowed = await verdictFor([unanchored]);
+    assert.equal(windowed.ok, false);
+    assert.equal(windowed.reason, 'admit_anchor_window', windowed.reason);
+
+    const funded = drawOf(portal, chainMiner, payout, 'vb-fund');
+    const ct = Buffer.alloc(32, 7);
+    funded.anchor = anchor;
+    funded.vin = [{ commit: ct }];
+    funded.admit_proof = {
+      blob: Buffer.concat([Buffer.from([3]), Buffer.alloc(40, 1)]),
+      cTilde: ct,
+    };
+    const stage0 = await verdictFor([funded]);
+    assert.equal(stage0.ok, false);
+    assert.equal(stage0.reason, 'vault_unavailable', stage0.reason);
+
+    const bare = atAnchor(drawOf(portal, chainMiner, payout, 'vb-bare'));
+    delete bare.vout[0].commit;
+    delete bare.vout[0].valueProof;
+    const noteLess = await verdictFor([bare]);
+    assert.equal(noteLess.ok, false);
+    assert.equal(noteLess.reason, 'mint_amount', noteLess.reason);
   });
 });

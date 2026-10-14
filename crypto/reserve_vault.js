@@ -1461,12 +1461,27 @@ function isWithdrawTx(tx) {
   return txKind(tx) === KIND_WITHDRAW;
 }
 
+function isLockTx(tx) {
+  if (!tx || tx.coinbase) return false;
+  if (String(tx.programId || '') !== RESERVE_PROGRAM) return false;
+  return txKind(tx) === KIND_LOCK;
+}
+
+/** Nanos an opened lock tx adds. Null means the amount cannot be read. */
+function declaredLockNanos(tx) {
+  if (!isLockTx(tx)) return 0n;
+  const act = reserveAction(tx);
+  if (!act || act.opened !== true) return 0n;
+  return exactBi(act.nanos);
+}
+
 /**
  * One forward pass over the block. Each withdraw is checked on the vault
  * after the earlier txs, before that withdraw clears the stake.
  * Opened must be principal + permitted. The vault's own interest must be
  * that permitted amount, and the mint must be that interest.
- * Locked-in (start plus locks in this block) must equal principal out plus
+ * Locked-in is the sum of the lock txs in this block, not the change in the
+ * vault's own total. Start plus those amounts must equal principal out plus
  * what is still locked. Offsetting receipts cannot cancel across the block.
  */
 function walkWithdrawInterest(vault, block, nowMs) {
@@ -1486,6 +1501,12 @@ function walkWithdrawInterest(vault, block, nowMs) {
   const fail = () => ({ ok: false, reason: 'supply' });
   const applySlice = (slice) => {
     if (!slice.length) return true;
+    let declared = 0n;
+    for (const tx of slice) {
+      const n = declaredLockNanos(tx);
+      if (n == null) return false;
+      declared += n;
+    }
     const before = asBig(state.totalLockedNanos);
     const applied = applyReserveBlock({
       state,
@@ -1495,7 +1516,7 @@ function walkWithdrawInterest(vault, block, nowMs) {
     if (!applied || applied.ok !== true) return false;
     const after = asBig(state.totalLockedNanos);
     if (after < before) return false;
-    locksIn += after - before;
+    locksIn += declared;
     return true;
   };
   for (let i = 0; i < txs.length; i += 1) {
