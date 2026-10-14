@@ -22,6 +22,18 @@ export function payeeProbeCount() {
   return payeeProbes;
 }
 
+/**
+ * True when payeeFs1Ok would run a cold leaf probe for this dest.
+ * A non-dest, a short dest, a cached answer, and a decode miss do not.
+ */
+export function payeeWillProbe(dest) {
+  const addr = String(dest || '').trim();
+  if (!isDestAddress(addr)) return false;
+  if (!admitBaseFromAddress(addr)) return false;
+  if (payeeOkByDest.has(addr)) return false;
+  return payeeDecodeOk(addr);
+}
+
 function rememberPayeeOk(addr, ok) {
   if (payeeOkByDest.has(addr)) payeeOkByDest.delete(addr);
   payeeOkByDest.set(addr, ok);
