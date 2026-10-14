@@ -106,9 +106,7 @@ describe('portable node packs', () => {
     assert.match(listed.stdout, /pool\/src\/withdraw_state\.js/);
     assert.match(listed.stdout, /contracts\/Reserve\.json/);
     assert.match(listed.stdout, /crypto\/native\/shearhash\.node/);
-    assert.match(listed.stdout, /runtime\/libgcc_s_seh-1\.dll/);
-    assert.match(listed.stdout, /runtime\/libstdc\+\+-6\.dll/);
-    assert.match(listed.stdout, /runtime\/libwinpthread-1\.dll/);
+    assert.doesNotMatch(listed.stdout, /libgcc_s_seh-1\.dll|libstdc\+\+-6\.dll|libwinpthread-1\.dll/);
     assert.match(listed.stdout, /node_modules\/@noble\/curves\/ed25519\.js/);
     assert.match(listed.stdout, /node_modules\/@noble\/curves\/secp256k1\.js/);
     assert.match(listed.stdout, /node_modules\/@noble\/hashes\/sha2\.js/);

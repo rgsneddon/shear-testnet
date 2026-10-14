@@ -65,6 +65,8 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
         for fn in fns:
             if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
                 continue
+            if fn.lower() in release_notices.MINGW_RUNTIME_DLLS:
+                continue
             if fn.endswith(".node"):
                 host_win = sys.platform.startswith("win")
                 flavor = os.environ.get("SHEAR_NODE_FLAVOR", "")
@@ -79,28 +81,14 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
             z.write(p, f"{arc_prefix}/{rel}")
 
 
-def mingw_bin_dir() -> str:
-    gcc = shutil.which("gcc")
-    if gcc:
-        return os.path.dirname(os.path.abspath(gcc))
-    return ""
-
-
-def write_mingw_runtime(z: zipfile.ZipFile) -> None:
-    """shearhash.node is a MinGW N-API addon. Those DLLs must sit next to node.exe."""
-    bindir = mingw_bin_dir()
-    needed = ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")
-    missing = [n for n in needed if not os.path.isfile(os.path.join(bindir, n))] if bindir else list(needed)
-    if missing:
-        sys.exit(
-            "Windows node zip needs MinGW runtime "
-            + ", ".join(needed)
-            + " beside gcc (PATH gcc="
-            + (shutil.which("gcc") or "missing")
-            + ")"
-        )
-    for name in needed:
-        z.write(os.path.join(bindir, name), f"runtime/{name}")
+def windows_addons(repo: str) -> list[str]:
+    native = os.path.join(repo, "crypto", "native")
+    out = []
+    for n in ("shearhash.node", "shearadmit.node"):
+        p = os.path.join(native, n)
+        if os.path.isfile(p) and open(p, "rb").read(2) == b"MZ":
+            out.append(p)
+    return out
 
 
 def write_crlf_launcher(z: zipfile.ZipFile, src: str, arcname: str) -> None:
@@ -208,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             if os.path.isfile(node_exe):
                 for src, arc in release_notices.runtime_license_members([node_exe], "runtime/licenses", REPO):
                     z.write(src, arc)
-            write_mingw_runtime(z)
+            release_notices.assert_no_mingw_runtime(windows_addons(REPO))
         else:
             # A Windows checkout keeps runtime/node.exe. Do not ship that PE
             # binary inside a Linux, Fedora, Arch, OpenSUSE, or macOS zip.
@@ -267,10 +255,9 @@ def main(argv: list[str] | None = None) -> int:
     ):
         if req not in names:
             sys.exit(f"missing {req}")
-    if flavor == "windows":
-        for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
-            if dll not in names:
-                sys.exit(f"missing {dll}")
+    shipped_runtime = [n for n in names if n.rsplit("/", 1)[-1].lower() in release_notices.MINGW_RUNTIME_DLLS]
+    if shipped_runtime:
+        sys.exit(f"node zip must not ship the MinGW runtime: {', '.join(shipped_runtime)}")
     if any(n.startswith("node_modules/solc/") for n in names):
         sys.exit("node zip must not ship the development-only solc compiler")
     release_notices.assert_has_notices(names, REPO)

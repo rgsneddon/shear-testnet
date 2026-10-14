@@ -237,15 +237,78 @@ def license_files_for(binary: str, repo: str | None) -> list[str]:
 COVERED_WINDOWS_DLLS = {
     "libssl-3-x64.dll": "LICENSES/third-party/openssl",
     "libcrypto-3-x64.dll": "LICENSES/third-party/openssl",
-    "libgcc_s_seh-1.dll": "LICENSES/GPL-3.0-or-later.txt, LICENSES/GCC-exception-3.1.txt",
-    "libstdc++-6.dll": "LICENSES/GPL-3.0-or-later.txt, LICENSES/GCC-exception-3.1.txt",
-    "libwinpthread-1.dll": "LICENSES/third-party/mingw-w64-winpthreads",
 }
+
+# Windows binaries link the GCC runtime and winpthreads statically
+# (-static-libgcc -static-libstdc++, whole-archive libwinpthread), so these
+# DLLs are never shipped and no binary may import them.
+MINGW_RUNTIME_DLLS = ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")
+
+
+def pe_imports(path: str) -> list[str]:
+    """DLL names in the import directory of a PE32/PE32+ file."""
+    import struct
+
+    data = open(path, "rb").read()
+    if data[:2] != b"MZ":
+        raise SystemExit(f"{path} is not a PE file")
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        raise SystemExit(f"{path} has no PE header")
+    nsect, opt_size = struct.unpack_from("<H12xH", data, pe + 6)
+    opt = pe + 24
+    magic = struct.unpack_from("<H", data, opt)[0]
+    dirs = opt + (112 if magic == 0x20B else 96)
+    imp_rva = struct.unpack_from("<I", data, dirs + 8)[0]
+    if not imp_rva:
+        return []
+    sections = []
+    for i in range(nsect):
+        s = opt + opt_size + 40 * i
+        vsize, va, rsize, raw = struct.unpack_from("<IIII", data, s + 8)
+        sections.append((va, max(vsize, rsize), raw))
+
+    def off(rva: int) -> int:
+        for va, size, raw in sections:
+            if va <= rva < va + size:
+                return rva - va + raw
+        raise SystemExit(f"{path}: RVA {rva:#x} outside every section")
+
+    names = []
+    d = off(imp_rva)
+    while True:
+        name_rva = struct.unpack_from("<I", data, d + 12)[0]
+        if not name_rva:
+            break
+        n = off(name_rva)
+        names.append(data[n:data.index(b"\0", n)].decode("ascii"))
+        d += 20
+    return names
+
+
+def assert_no_mingw_runtime(binaries: list[str]) -> None:
+    """Fail if a Windows binary still imports the shared GCC runtime or winpthreads."""
+    bad = []
+    for b in binaries:
+        hits = [n for n in pe_imports(b) if n.lower() in MINGW_RUNTIME_DLLS]
+        if hits:
+            bad.append(f"{b} imports {', '.join(hits)}")
+    if bad:
+        raise SystemExit(
+            "; ".join(bad)
+            + ". Link with -static-libgcc -static-libstdc++ and static winpthread (see crypto/native/Makefile)"
+        )
 
 
 def assert_windows_dlls_covered(dlls: list[str]) -> None:
     """Every DLL a Windows pack ships must have its licence in LICENSES/ (see THIRD_PARTY_NOTICES.txt)."""
     names = {re.split(r"[\\/]", d)[-1] for d in dlls}
+    runtime = sorted(n for n in names if n.lower() in MINGW_RUNTIME_DLLS)
+    if runtime:
+        raise SystemExit(
+            "Windows packs must not ship the MinGW runtime (" + ", ".join(runtime)
+            + "); link it statically instead"
+        )
     unknown = sorted(n for n in names if n.lower() not in COVERED_WINDOWS_DLLS)
     if unknown:
         raise SystemExit(
@@ -265,3 +328,17 @@ def runtime_license_members(binaries: list[str], arc_dir: str, repo: str | None 
         for lic in license_files_for(binary, repo):
             out.append((lic, f"{arc_dir}/{base}/{os.path.basename(lic)}"))
     return out
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) >= 2 and argv[0] == "no-mingw-runtime":
+        assert_no_mingw_runtime(argv[1:])
+        print("no MinGW runtime imports:", " ".join(os.path.basename(a) for a in argv[1:]))
+        return 0
+    raise SystemExit("usage: release_notices.py no-mingw-runtime PE_FILE...")
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))

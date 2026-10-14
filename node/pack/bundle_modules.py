@@ -308,6 +308,8 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
             for fn in fns:
                 if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
                     continue
+                if fn.lower() in release_notices.MINGW_RUNTIME_DLLS:
+                    continue
                 p = os.path.join(dp, fn)
                 if not os.path.isfile(p):
                     continue
@@ -363,13 +365,10 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
     for src, arc in release_notices.runtime_license_members(licensed, "runtime/licenses", repo):
         z.write(src, arc)
     if flavor == "windows":
-        gcc = shutil.which("gcc")
-        bindir = os.path.dirname(os.path.abspath(gcc)) if gcc else ""
-        for dll in ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"):
-            src = os.path.join(bindir, dll)
-            if not os.path.isfile(src):
-                raise SystemExit(f"release sidecar needs MinGW {dll}")
-            z.write(src, f"runtime/{dll}")
+        native = os.path.join(repo, "crypto", "native")
+        release_notices.assert_no_mingw_runtime(
+            [os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node") if os.path.isfile(os.path.join(native, n))]
+        )
     if sys.platform.startswith("win") and flavor != "windows":
         raise SystemExit("pack the linux release on linux so native addons match that OS")
 

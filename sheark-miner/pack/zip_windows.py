@@ -2,7 +2,8 @@
 """Bundle ShearK-Miner.exe with the DLLs it actually imports.
 
 The Windows link is dynamic OpenSSL (libssl-3-x64.dll, libcrypto-3-x64.dll)
-plus any further non-system DLL those import. A zip of the exe alone does
+plus any further non-system DLL those import. The GCC runtime and winpthreads
+are static (see the Makefile), and the pack refuses an exe that imports them. A zip of the exe alone does
 not start. --stage copies that runtime beside the exe. The default writes
 dist/ShearK-Miner-<version>-windows.zip at the repo root.
 """
@@ -214,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     for required in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
         if required not in names:
             sys.exit(f"ShearK TLS build did not import {required}; refusing a cleartext-only pack")
+    release_notices.assert_no_mingw_runtime([EXE] + dlls)
     release_notices.assert_windows_dlls_covered(dlls)
     stage(EXE, dlls)
     if args == ["--stage"]:

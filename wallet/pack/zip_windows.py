@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import zipfile
 
@@ -128,6 +127,8 @@ def main() -> int:
                     for fn in fns:
                         if fn.endswith((".obj", ".o", ".pdb")):
                             continue
+                        if fn.lower() in release_notices.MINGW_RUNTIME_DLLS:
+                            continue
                         p = os.path.join(dp, fn)
                         rel = os.path.relpath(p, node_root).replace("\\", "/")
                         z.write(p, rel)
@@ -173,13 +174,10 @@ def main() -> int:
                 for src, arc in release_notices.runtime_license_members([node_exe], "runtime/licenses", node_root):
                     z.write(src, arc)
             release_notices.write_notices(z, node_root)
-            gcc = shutil.which("gcc")
-            mingw = os.path.dirname(os.path.abspath(gcc)) if gcc else ""
-            for dll in ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"):
-                src = os.path.join(mingw, dll)
-                if not os.path.isfile(src):
-                    sys.exit(f"Continuum sidecar needs MinGW {dll} beside gcc")
-                z.write(src, f"runtime/{dll}")
+            native = os.path.join(node_root, "crypto", "native")
+            release_notices.assert_no_mingw_runtime(
+                [os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node") if os.path.isfile(os.path.join(native, n))]
+            )
             write_missing_required(z, node_root)
             print("bundled Shear Sentinel v18 beside Continuum")
 
@@ -222,9 +220,9 @@ def main() -> int:
     ):
         if req not in names:
             sys.exit(f"Continuum zip must include {req}")
-    for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
-        if dll not in names:
-            sys.exit(f"Continuum zip must include {dll}")
+    shipped_runtime = [n for n in names if n.rsplit("/", 1)[-1].lower() in release_notices.MINGW_RUNTIME_DLLS]
+    if shipped_runtime:
+        sys.exit(f"Continuum zip must not ship the MinGW runtime: {', '.join(shipped_runtime)}")
     if any(n.startswith("node_modules/solc/") for n in names):
         sys.exit("wallet zip must not ship the development-only solc compiler")
     release_notices.assert_has_notices(names, node_root)

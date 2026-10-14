@@ -96,9 +96,52 @@ class ReleaseNoticesTest(unittest.TestCase):
         self.assertEqual(files, [os.path.join(REPO, "LICENSES", "third-party", "nodejs", "LICENSE")])
 
     def test_unknown_windows_dll_stops_the_pack(self):
-        release_notices.assert_windows_dlls_covered([r"C:\msys64\mingw64\bin\libssl-3-x64.dll", "LIBWINPTHREAD-1.dll"])
+        release_notices.assert_windows_dlls_covered([r"C:\msys64\mingw64\bin\libssl-3-x64.dll", "LIBCRYPTO-3-x64.dll"])
         with self.assertRaises(SystemExit):
             release_notices.assert_windows_dlls_covered(["zlib1.dll"])
+
+    def test_mingw_runtime_dlls_are_never_shipped(self):
+        for dll in ("libgcc_s_seh-1.dll", "libstdc++-6.dll", r"runtime\LIBWINPTHREAD-1.dll"):
+            with self.assertRaises(SystemExit):
+                release_notices.assert_windows_dlls_covered([dll])
+
+    @staticmethod
+    def minimal_pe(dlls):
+        """A PE32+ image with one section holding an import directory for dlls."""
+        import struct
+
+        sect_rva, sect_raw = 0x1000, 0x200
+        desc = 20 * (len(dlls) + 1)
+        names, blob = [], b""
+        for d in dlls:
+            names.append(sect_rva + desc + len(blob))
+            blob += d.encode() + b"\0"
+        body = b"".join(struct.pack("<IIIII", 0, 0, 0, n, 0) for n in names) + b"\0" * 20 + blob
+        opt = bytearray(240)
+        struct.pack_into("<H", opt, 0, 0x20B)
+        struct.pack_into("<II", opt, 112 + 8, sect_rva, desc)
+        section = b".idata\0\0" + struct.pack("<IIII", len(body), sect_rva, len(body), sect_raw) + b"\0" * 16
+        pe = 0x40
+        head = bytearray(sect_raw)
+        head[:2] = b"MZ"
+        struct.pack_into("<I", head, 0x3C, pe)
+        head[pe:pe + 4] = b"PE\0\0"
+        struct.pack_into("<HHIIIHH", head, pe + 4, 0x8664, 1, 0, 0, 0, len(opt), 0x2022)
+        head[pe + 24:pe + 24 + len(opt)] = opt
+        head[pe + 24 + len(opt):pe + 24 + len(opt) + 40] = section
+        return bytes(head) + body
+
+    def test_pe_imports_and_static_runtime_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            static = os.path.join(d, "shearhash.node")
+            shared = os.path.join(d, "ShearK-Miner.exe")
+            open(static, "wb").write(self.minimal_pe(["KERNEL32.dll", "msvcrt.dll", "node.exe"]))
+            open(shared, "wb").write(self.minimal_pe(["KERNEL32.dll", "libstdc++-6.dll", "libgcc_s_seh-1.dll"]))
+            self.assertEqual(release_notices.pe_imports(static), ["KERNEL32.dll", "msvcrt.dll", "node.exe"])
+            release_notices.assert_no_mingw_runtime([static])
+            with self.assertRaises(SystemExit) as caught:
+                release_notices.assert_no_mingw_runtime([static, shared])
+            self.assertIn("libstdc++-6.dll, libgcc_s_seh-1.dll", str(caught.exception))
 
     def test_attribution_wording(self):
         self.assertEqual(

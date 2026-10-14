@@ -3293,8 +3293,8 @@ Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson
 All rights reserved.
 
 ================================================================================
-PACKAGES: GCC runtime (libgcc_s_seh-1.dll, libstdc++-6.dll, MinGW-w64)
-COMPONENTS: GCC runtime (libgcc_s_seh-1.dll, libstdc++-6.dll, MinGW-w64) from the MSYS2 MinGW toolchain on the packing host (bundled runtime)
+PACKAGES: GCC runtime (libgcc, libstdc++; MinGW-w64)
+COMPONENTS: GCC runtime (libgcc, libstdc++; MinGW-w64) static libgcc and libstdc++ from the MSYS2 UCRT64 MinGW toolchain that builds the Windows binaries (bundled runtime)
 LICENSE: GPL-3.0-or-later WITH GCC-exception-3.1
 FILE: LICENSES/GPL-3.0-or-later.txt
 --------------------------------------------------------------------------------
@@ -3532,8 +3532,8 @@ You should also get your employer (if you work as a programmer) or school, if an
 The GNU General Public License does not permit incorporating your program into proprietary programs. If your program is a subroutine library, you may consider it more useful to permit linking proprietary applications with the library. If this is what you want to do, use the GNU Lesser General Public License instead of this License. But first, please read <https://www.gnu.org/philosophy/why-not-lgpl.html>.
 
 ================================================================================
-PACKAGES: GCC runtime (libgcc_s_seh-1.dll, libstdc++-6.dll, MinGW-w64)
-COMPONENTS: GCC runtime (libgcc_s_seh-1.dll, libstdc++-6.dll, MinGW-w64) from the MSYS2 MinGW toolchain on the packing host (bundled runtime)
+PACKAGES: GCC runtime (libgcc, libstdc++; MinGW-w64)
+COMPONENTS: GCC runtime (libgcc, libstdc++; MinGW-w64) static libgcc and libstdc++ from the MSYS2 UCRT64 MinGW toolchain that builds the Windows binaries (bundled runtime)
 LICENSE: GPL-3.0-or-later WITH GCC-exception-3.1
 FILE: LICENSES/GCC-exception-3.1.txt
 --------------------------------------------------------------------------------
@@ -3572,8 +3572,8 @@ You have permission to propagate a work of Target Code formed by combining the R
 The availability of this Exception does not imply any general presumption that third-party software is unaffected by the copyleft requirements of the license of GCC.
 
 ================================================================================
-PACKAGES: mingw-w64 winpthreads (libwinpthread-1.dll)
-COMPONENTS: mingw-w64 winpthreads (libwinpthread-1.dll) from the MSYS2 MinGW toolchain on the packing host (bundled runtime)
+PACKAGES: mingw-w64 winpthreads
+COMPONENTS: mingw-w64 winpthreads static libwinpthread.a from the MSYS2 UCRT64 MinGW toolchain (bundled runtime)
 LICENSE: MIT AND BSD-3-Clause
 FILE: LICENSES/third-party/mingw-w64-winpthreads/COPYING
 --------------------------------------------------------------------------------

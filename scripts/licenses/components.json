@@ -314,8 +314,8 @@
   },
   {
    "kind": "runtime",
-   "name": "GCC runtime (libgcc_s_seh-1.dll, libstdc++-6.dll, MinGW-w64)",
-   "version": "from the MSYS2 MinGW toolchain on the packing host",
+   "name": "GCC runtime (libgcc, libstdc++; MinGW-w64)",
+   "version": "static libgcc and libstdc++ from the MSYS2 UCRT64 MinGW toolchain that builds the Windows binaries",
    "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
    "holders": [
     "Copyright (C) 1989-2026 Free Software Foundation, Inc. (libgcc)",
@@ -325,14 +325,14 @@
     "LICENSES/GPL-3.0-or-later.txt",
     "LICENSES/GCC-exception-3.1.txt"
    ],
-   "shipped": "runtime/ in Windows node zips and the Windows wallet zip; beside ShearK-Miner.exe when it imports them",
-   "obligation": "the Runtime Library Exception lets Shear's own code stay MIT; the DLLs themselves are GPL-3.0 object code",
-   "status": "OPEN: decision 4"
+   "shipped": "statically linked into the Windows shearhash.node, shearadmit.node, ShearK-Miner.exe and Shear-Miner.exe (-static-libgcc -static-libstdc++); libgcc_s_seh-1.dll and libstdc++-6.dll are no longer shipped",
+   "obligation": "none beyond Shear's own terms: the GCC Runtime Library Exception 3.1 lets the statically linked target code be distributed under any licence; the GPL and exception texts are kept as a courtesy",
+   "status": "DECIDED (decision 4): static link; every Windows packer and the crypto/native Makefile fail if a binary imports libgcc_s_seh-1.dll, libstdc++-6.dll or libwinpthread-1.dll"
   },
   {
    "kind": "runtime",
-   "name": "mingw-w64 winpthreads (libwinpthread-1.dll)",
-   "version": "from the MSYS2 MinGW toolchain on the packing host",
+   "name": "mingw-w64 winpthreads",
+   "version": "static libwinpthread.a from the MSYS2 UCRT64 MinGW toolchain",
    "license": "MIT AND BSD-3-Clause",
    "holders": [
     "Copyright (c) 2011 mingw-w64 project",
@@ -341,9 +341,9 @@
    "texts": [
     "LICENSES/third-party/mingw-w64-winpthreads/COPYING"
    ],
-   "shipped": "runtime/ in Windows node zips and the Windows wallet zip; beside ShearK-Miner.exe",
-   "obligation": "keep the copyright and licence text in source and binary copies; no endorsement using the holders' names",
-   "status": "OK: notice in THIRD_PARTY_NOTICES.txt"
+   "shipped": "statically linked (whole-archive) into the Windows shearhash.node, shearadmit.node, ShearK-Miner.exe and Shear-Miner.exe; libwinpthread-1.dll is no longer shipped",
+   "obligation": "keep the copyright and licence text in binary copies (still required when statically linked); no endorsement using the holders' names",
+   "status": "OK: static (decision 4); notice in THIRD_PARTY_NOTICES.txt, which every Windows pack ships"
   },
   {
    "kind": "runtime",

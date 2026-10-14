@@ -9,13 +9,17 @@ ifeq ($(OS),Windows_NT)
   # Command-line CC= still wins. Plain `cc` is not this MinGW gcc.
   CC := gcc
   # N-API lives in node.exe. dlltool builds an import lib; do not link node.lib.
-  # This WinLibs build has no libstdc++.a. The shared runtime must be the
-  # same MinGW that linked the addon: an earlier libgcc on PATH (Rust, Android
-  # SDK) loads and then fails with "procedure could not be found" (error 127).
+  # The GCC runtime and winpthreads are linked statically, so no
+  # libgcc_s_seh-1.dll, libstdc++-6.dll or libwinpthread-1.dll ships (GPL
+  # object code; see docs/licensing-audit.md decision 4). This needs a MinGW
+  # with libstdc++.a and libwinpthread.a (MSYS2 UCRT64 has both). The gcc
+  # driver ignores -static-libstdc++, hence -Bstatic around -lstdc++.
+  # --whole-archive: the driver appends a dynamic -lpthread after our flags.
   LINKFLAGS := -shared
   NODE_IMPORT := win_node_import.a
-  LIBSTDCXX := -pthread -lstdc++
-  ADMITSYS := -lws2_32 -luserenv -lbcrypt -lntdll -pthread
+  WIN_STATIC_RT := -static-libgcc -Wl,-Bstatic -lstdc++ -Wl,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic
+  LIBSTDCXX := -pthread $(WIN_STATIC_RT)
+  ADMITSYS := -lws2_32 -luserenv -lbcrypt -lntdll -pthread -static-libgcc -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic
 else ifeq ($(UNAME_S),Darwin)
   LINKFLAGS := -bundle -undefined dynamic_lookup
   NODE_IMPORT :=
@@ -46,7 +50,7 @@ shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MI
 	  -o $@ shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB) \
 	  $(NODE_IMPORT) $(LIBSTDCXX)
 ifeq ($(OS),Windows_NT)
-	node copy-mingw-runtime.js $(CC)
+	python ../../scripts/licenses/release_notices.py no-mingw-runtime $@
 endif
 
 admitlib:
@@ -67,6 +71,9 @@ shearadmit.node: admit_napi.c admitlib $(NODE_IMPORT)
 	$(CC) $(CFLAGS) $(LINKFLAGS) \
 	  -I$(NODE_INC) \
 	  -o $@ admit_napi.c $(ADMITLIB) $(NODE_IMPORT) $(ADMITSYS)
+ifeq ($(OS),Windows_NT)
+	python ../../scripts/licenses/release_notices.py no-mingw-runtime $@
+endif
 
 clean:
 	rm -f shearhash.node shearadmit.node win_node_import.a
