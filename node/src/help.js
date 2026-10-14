@@ -159,7 +159,7 @@ export function printHelp(topic) {
   const tail = [
     '',
     'RPC is loopback. Do not bind RPC to the public internet.',
-    'Mainnet shear-v1 is not live. The public countdown is 30th October 2026 at 1400hrs UK time. That countdown is a display date and does not emit. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET.',
+    'Mainnet shear-v1 is not live. The public countdown is 16th November 2026 at 1400hrs UK time. That countdown is a display date and does not emit. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET.',
     'Build native addons on this box: cmake randomx, then make -C crypto/native',
   ];
   const body = {

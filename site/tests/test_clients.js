@@ -221,7 +221,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(admin, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(admin, /macOS — coming soon/);
     assert.match(admin, /Mainnet shear-v1 is not live/);
-    assert.match(admin, /The public countdown is 30th October 2026 at 1400hrs UK time/);
+    assert.match(admin, /The public countdown is 16th November 2026 at 1400hrs UK time/);
     assert.doesNotMatch(admin, /A launch date is not decided/);
     assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
     assert.doesNotMatch(admin, /2026-09-18T21:00:00\+01:00/);
