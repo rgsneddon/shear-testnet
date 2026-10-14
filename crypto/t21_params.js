@@ -54,6 +54,9 @@ export const CHUNK_BITS = 16;
 export const V_CHUNKS = 4;
 export const R_CHUNKS = 16;
 export const VE_CHUNKS = V_CHUNKS + R_CHUNKS;
+export const RHO_LIMBS = 3;
+export const BP_N = 16;
+export const BP_M = 32;
 
 /** Legacy coinbases stay valid until the genesis cut. cb-v3 is enforced when present. */
 export const T21_REQUIRE_ALL_COINBASES = false;
@@ -64,6 +67,7 @@ export const VAULT_R_DOM = 'shear-kt10-0x23-r-v1';
 export const VCH_B_DOM = 'shear-vch-b-v1';
 export const VCH_Y_DOM = 'shear-vch-y-v1';
 export const VCH_LAM_DOM = 'shear-vch-lam-v1';
+export const VCH_PROBE_DOM = 'shear-vch-probe-v1';
 export const LOGUP_DOM = 'shear-logup-x-v1';
 export const BATCH_DOM = 'shear-t21-batch-v1';
 

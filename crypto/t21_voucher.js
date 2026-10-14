@@ -2,11 +2,13 @@
  * Payout vouchers. Deterministic from the wallet secret and a counter.
  * The secret is 32 bytes from shewall.bin. A seed phrase is refused.
  */
+import { createHash } from 'node:crypto';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
+import { fs1Leaf } from './fs1_leaf.js';
 import { G, hashToScalar, scalarBytes } from './note.js';
 import { openShewallBin, unpackShewall } from './shewall_bin.js';
 import {
-  VOUCHER_GAP, VCH_B_DOM, VCH_Y_DOM, VCH_LAM_DOM,
+  VOUCHER_GAP, VCH_B_DOM, VCH_Y_DOM, VCH_LAM_DOM, VCH_PROBE_DOM,
 } from './t21_params.js';
 
 const Point = RistrettoPoint;
@@ -74,6 +76,49 @@ export function scanVouchers(secret, match, { start = 0, gap = VOUCHER_GAP, max 
     }
   }
   return found;
+}
+
+/** The public half a miner hands to the pool. */
+export function publicVoucher(v) {
+  return { B: Buffer.from(v.B.toBytes()), Y: Buffer.from(v.Y.toBytes()), lambda: Buffer.from(v.lambdaBytes) };
+}
+
+function canonicalPoint(bytes) {
+  const b = Buffer.from(bytes || []);
+  if (b.length !== 32) return null;
+  try {
+    const P = Point.fromBytes(Uint8Array.from(b));
+    if (P.equals(Point.ZERO)) return null;
+    if (!Buffer.from(P.toBytes()).equals(b)) return null;
+    return P;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Voucher acceptance (payeeFs1Ok for a voucher). B* and Y are canonical,
+ * non-identity, and distinct. λ is a canonical non-zero scalar. A probe
+ * note P = B* + δ·G over a fixed commitment must be an FS-1 leaf, so the
+ * admit point Hp(P) decodes. A pool refuses a voucher that fails this.
+ */
+export function voucherKeysOk(pub) {
+  const B = canonicalPoint(pub?.B);
+  const Y = canonicalPoint(pub?.Y);
+  if (!B || !Y || B.equals(Y)) return false;
+  const lam = Buffer.from(pub?.lambda || []);
+  if (lam.length !== 32) return false;
+  let l;
+  try {
+    l = Fn.fromBytes(Uint8Array.from(lam));
+  } catch {
+    return false;
+  }
+  if (Fn.is0(l)) return false;
+  const probeC = Point.hashToCurve(createHash('sha512').update(VCH_PROBE_DOM).update(Buffer.from(pub.B)).digest());
+  const delta = hashToScalar(Buffer.from(VCH_PROBE_DOM), Buffer.from(pub.B), Buffer.from(probeC.toBytes()));
+  const P = B.add(G.multiply(delta));
+  return !!fs1Leaf({ admitPub: Buffer.from(P.toBytes()), commit: Buffer.from(probeC.toBytes()) });
 }
 
 /** Restore: open shewall.bin with the password, then scan. No seed phrase. */
