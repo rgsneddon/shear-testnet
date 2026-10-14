@@ -11,11 +11,12 @@
  */
 import { createHash } from 'node:crypto';
 import { MAGIC_TESTNET } from './asert.js';
-import { asU8, pointBytes } from './note.js';
+import { asU8, pointBytes, scalarBytes } from './note.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
 import {
   fs1BlobCap,
   fs1NativeLoaded,
+  fs1Prove,
   fs1TreeAppend,
   fs1TreeNew,
   fs1TreeRoot,
@@ -227,12 +228,24 @@ export function fs1RootAt(live) {
   if (!Number.isSafeInteger(n) || n < 1 || pubs.length < n || commits.length < n) return null;
   const key = cacheKey(n, live?.jroot);
   if (key && rootCache.has(key)) return rootCache.get(key);
-  if (!fs1NativeLoaded()) return null;
+  if (!syncTree(n, pubs, commits)) return null;
+  const root = fs1TreeRoot(tree.handle);
+  if (!root) return null;
+  if (key) {
+    if (rootCache.size >= ROOT_CACHE_MAX) rootCache.delete(rootCache.keys().next().value);
+    rootCache.set(key, root);
+  }
+  return root;
+}
+
+/** Bring the shared tree to exactly the first `n` notes. */
+function syncTree(n, pubs, commits) {
+  if (!fs1NativeLoaded()) return false;
   if (!tree.handle) {
     tree.handle = fs1TreeNew();
     tree.pubs = [];
     tree.commits = [];
-    if (!tree.handle) return null;
+    if (!tree.handle) return false;
   }
   let k = 0;
   const lim = Math.min(tree.pubs.length, n);
@@ -240,7 +253,7 @@ export function fs1RootAt(live) {
   if (k < tree.pubs.length) {
     if (!fs1TreeTruncate(tree.handle, k)) {
       tree.handle = null;
-      return null;
+      return false;
     }
     tree.pubs.length = k;
     tree.commits.length = k;
@@ -250,24 +263,52 @@ export function fs1RootAt(live) {
     for (let i = k; i < n; i += 1) {
       const p = pubBuf(pubs[i]);
       const c = bytes32(commits[i]);
-      if (!p || !c) return null;
+      if (!p || !c) return false;
       p.copy(buf, (i - k) * 64);
       c.copy(buf, (i - k) * 64 + 32);
     }
-    if (!fs1TreeAppend(tree.handle, buf)) return null;
+    if (!fs1TreeAppend(tree.handle, buf)) return false;
     treeAppends += 1;
     for (let i = k; i < n; i += 1) {
       tree.pubs.push(pubs[i]);
       tree.commits.push(commits[i]);
     }
   }
-  const root = fs1TreeRoot(tree.handle);
-  if (!root) return null;
-  if (key) {
-    if (rootCache.size >= ROOT_CACHE_MAX) rootCache.delete(rootCache.keys().next().value);
-    rootCache.set(key, root);
+  return true;
+}
+
+/**
+ * Prove one FS-1 spend of `indices` in the anchor row `live`. `xs` are the
+ * admit scalars of those notes. `tx` must already carry its final fee and
+ * outputs: the body digest is taken here. Returns the aggregate blob, one
+ * bound proof per input ({ admit_proof, v, spendTag, blob, cTilde }), and
+ * each input's commitment blind `t` (C̃ = C + t·H) for the kernel excess.
+ */
+export function fs1ProveSpend({ live, anchor, indices, xs, tx, magic = MAGIC_TESTNET, threads = 0 }) {
+  const n = Number(live?.n);
+  if (!Number.isSafeInteger(n) || n < 1) return null;
+  if (!Array.isArray(indices) || !indices.length || indices.length > FS1_INPUT_MAX) return null;
+  if (!Array.isArray(xs) || xs.length !== indices.length) return null;
+  if (indices.some((i) => !Number.isSafeInteger(i) || i < 0 || i >= n)) return null;
+  if (!syncTree(n, live.pubs || [], live.commits || [])) return null;
+  const digest = txBodyDigestFs1({ ...tx, anchor }, magic);
+  const xb = xs.map((x) => (typeof x === 'bigint' ? scalarBytes(x) : x));
+  const out = fs1Prove(tree.handle, { indices, xs: xb, digest, anchor, threads });
+  if (!out) return null;
+  const proofs = [];
+  const ts = [];
+  for (let i = 0; i < indices.length; i += 1) {
+    const blob = out.records.subarray(i * FS1_RECORD_BYTES, (i + 1) * FS1_RECORD_BYTES);
+    proofs.push({
+      admit_proof: true,
+      v: 3,
+      spendTag: Buffer.from(blob.subarray(1, 33)),
+      blob: Buffer.from(blob),
+      cTilde: Buffer.from(blob.subarray(33, 65)),
+    });
+    ts.push(Buffer.from(out.t.subarray(i * 32, (i + 1) * 32)));
   }
-  return root;
+  return { fs1: out.fs1, proofs, t: ts, digest };
 }
 
 const verifyCache = new Set();
