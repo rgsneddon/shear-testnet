@@ -145,7 +145,7 @@
   },
   {
    "kind": "asset",
-   "name": "RandomX audit reports (crypto/randomx/audits/*.pdf)",
+   "name": "RandomX audit reports (formerly crypto/randomx/audits/*.pdf)",
    "version": "2019",
    "license": "LicenseRef-All-Rights-Reserved",
    "holders": [
@@ -155,9 +155,9 @@
     "X41 D-Sec GmbH (PDF author; the report is marked Public)"
    ],
    "in_notices": false,
-   "shipped": "repository only; not in any release pack",
+   "shipped": "not in the repository or any pack: crypto/randomx/audits/README.md links the upstream copies at RandomX 12f2c2ff with their sha256",
    "obligation": "none granted: the reports carry no licence. Upstream RandomX marks audits/ export-ignore",
-   "status": "OPEN: decision 2"
+   "status": "DECIDED (decision 2): PDFs removed and replaced with links"
   },
   {
    "kind": "vendored",
@@ -458,9 +458,9 @@
     "Sentavio (designer Dmytro Poliakh)"
    ],
    "in_notices": false,
-   "shipped": "brand/, site/, site/boot/, explorer/, mempool/, pool/public/, team/ (web pages); not in the wallet, node or miner",
-   "obligation": "whatever the purchased font licence says; MIT does not cover it",
-   "status": "OPEN: decision 1"
+   "shipped": "not in git: deploy/install_fonts.sh copies the WOFF2 webfonts into each site's brand/fonts/ at deploy time (git-ignored); not in the wallet, node or miner",
+   "obligation": "the purchased webfont licence (self-hosting on Shear's own sites); MIT does not cover it",
+   "status": "DECIDED (decision 1): font files removed from the tree; history removal prepared in docs/font-history-removal.md, waiting for Russell's GO"
   },
   {
    "kind": "asset",
@@ -471,9 +471,9 @@
     "Typeface © Zafira Type 2026. All Rights Reserved"
    ],
    "in_notices": false,
-   "shipped": "brand/, site/, site/boot/, explorer/, mempool/, pool/public/, team/ (web pages); not in the wallet, node or miner",
-   "obligation": "whatever the purchased font licence says; MIT does not cover it",
-   "status": "OPEN: decision 1"
+   "shipped": "not in git: deploy/install_fonts.sh copies the WOFF2 webfonts into each site's brand/fonts/ at deploy time (git-ignored); not in the wallet, node or miner",
+   "obligation": "the purchased webfont licence (self-hosting on Shear's own sites); MIT does not cover it",
+   "status": "DECIDED (decision 1): font files removed from the tree; history removal prepared in docs/font-history-removal.md, waiting for Russell's GO"
   },
   {
    "kind": "asset",
@@ -486,14 +486,21 @@
    "in_notices": false,
    "shipped": "compiled into ShearK-Miner (tls_roots.h)",
    "obligation": "none stated; public root certificates published for distribution",
-   "status": "OPEN (low): decision 11"
+   "status": "OK: accepted (decision 11)"
   }
  ],
  "npm_overrides": {
   "solc": {
    "license": "MIT AND GPL-3.0-or-later",
    "notes": "soljson.js is the Emscripten build of the Solidity compiler (GPL-3.0). The wrapper's MIT LICENSE names no holder. Used only by contracts/compile_reserve.js and crypto/reserve_evm.test.js.",
-   "obligation": "none while it stays a devDependency; GPL-3.0 source and licence obligations if soljson.js is ever redistributed"
+   "obligation": "none while it stays a devDependency; GPL-3.0 source and licence obligations if soljson.js is ever redistributed",
+   "status": "OK: development only, not distributed; holderless MIT file accepted as shipped (decision 12)"
+  },
+  "@ethereumjs/mpt": {
+   "status": "OK: accepted (decision 9): package.json declares MPL-2.0 and the package ships no LICENSE file, so the canonical MPL-2.0 text is used"
+  },
+  "@ethereumjs/common": {
+   "status": "OK: accepted as shipped (decision 12): its MIT file reads \"Copyright (c) 2015\" with no holder"
   }
  },
  "pub_overrides": {
@@ -506,7 +513,8 @@
     "LICENSES/third-party/zxing/LICENSE",
     "LICENSES/third-party/zxing/NOTICE"
    ],
-   "notes": "Port of ZXing (Apache-2.0). The package's own LICENSE is an unfilled BSD-3 template; the ZXing Apache-2.0 text and NOTICE are carried too. See decision 7."
+   "notes": "Port of ZXing (Apache-2.0). The package's own LICENSE is an unfilled BSD-3 template; the ZXing Apache-2.0 text and NOTICE are carried too.",
+   "status": "OK: kept (decision 7): the notices carry Apache-2.0, BSD-3-Clause and ZXing's NOTICE; no upstream report"
   }
  },
  "android_overrides": {
@@ -545,8 +553,8 @@
    "texts": [
     "scripts/licenses/texts/mlkit-terms.txt"
    ],
-   "status": "OPEN: decision 3",
-   "obligation": "Google's terms (linked in the notice) bind Shear as developer; not open source"
+   "status": "DECIDED (decision 3): Google's terms accepted; the notice links the ML Kit and Google APIs Terms and sets out their attribution and data-use rules",
+   "obligation": "ML Kit Terms and Google APIs Terms: no reverse engineering; display any attribution Google requires; no implied endorsement; tell users about ML Kit's metrics and describe them in a privacy policy"
   },
   "com.google.android.gms:play-services-mlkit-barcode-scanning": {
    "license": "LicenseRef-MLKit-Terms",
@@ -556,8 +564,8 @@
    "texts": [
     "scripts/licenses/texts/mlkit-terms.txt"
    ],
-   "status": "OPEN: decision 3",
-   "obligation": "Google's terms (linked in the notice) bind Shear as developer; not open source"
+   "status": "DECIDED (decision 3): Google's terms accepted; the notice links the ML Kit and Google APIs Terms and sets out their attribution and data-use rules",
+   "obligation": "ML Kit Terms and Google APIs Terms: no reverse engineering; display any attribution Google requires; no implied endorsement; tell users about ML Kit's metrics and describe them in a privacy policy"
   },
   "com.google.android.gms:*": {
    "license": "LicenseRef-Android-SDK-License",
@@ -567,8 +575,8 @@
    "texts": [
     "scripts/licenses/texts/android-sdk-license.txt"
    ],
-   "status": "OPEN: decision 3",
-   "obligation": "Google's terms (linked in the notice) bind Shear as developer; not open source"
+   "status": "DECIDED (decision 3): Android SDK License Agreement accepted with the ML Kit Terms; notice links it",
+   "obligation": "Android SDK License Agreement (linked in the notice); not open source"
   },
   "com.google.android.odml:*": {
    "license": "LicenseRef-Android-SDK-License",
@@ -578,8 +586,8 @@
    "texts": [
     "scripts/licenses/texts/android-sdk-license.txt"
    ],
-   "status": "OPEN: decision 3",
-   "obligation": "Google's terms (linked in the notice) bind Shear as developer; not open source"
+   "status": "DECIDED (decision 3): Android SDK License Agreement accepted with the ML Kit Terms; notice links it",
+   "obligation": "Android SDK License Agreement (linked in the notice); not open source"
   }
  },
  "cargo_overrides": {

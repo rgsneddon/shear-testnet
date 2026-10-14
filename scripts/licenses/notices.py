@@ -391,6 +391,7 @@ def npm_components(manifest: dict) -> list[Component]:
             c.license = ov.get("license", c.license)
             c.notes = ov.get("notes", "")
             c.obligation = ov.get("obligation", "")
+            c.status = ov.get("status", "")
             for rel in ov.get("extra_texts", []):
                 c.texts.append(Text(rel, norm(read(os.path.join(REPO, rel)))))
             c.holders += [h for h in ov.get("holders", []) if h not in c.holders]
@@ -458,6 +459,7 @@ def pub_components(manifest: dict) -> list[Component]:
         if ov:
             c.license = ov.get("license", c.license)
             c.notes = ov.get("notes", "")
+            c.status = ov.get("status", "")
             for rel in ov.get("extra_texts", []):
                 c.texts.append(Text(rel, norm(read(os.path.join(REPO, rel)))))
             c.holders += [h for h in ov.get("holders", []) if h not in c.holders]

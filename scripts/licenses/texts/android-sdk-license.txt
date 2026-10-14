@@ -4,5 +4,7 @@ Development Kit License Agreement:
 
   https://developer.android.com/studio/terms
 
-They arrive in the Android build as dependencies of ML Kit. See
-docs/licensing-audit.md, decision 3.
+They arrive in the Android build as dependencies of ML Kit. Shear accepted
+these terms with the ML Kit Terms on 2026-10-14 (docs/licensing-audit.md,
+decision 3). The ML Kit notice covers the attribution and data-use rules
+that apply to the scanner.
