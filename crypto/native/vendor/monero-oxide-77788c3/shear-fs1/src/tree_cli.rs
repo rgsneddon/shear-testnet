@@ -273,6 +273,14 @@ mod tests {
   }
 
   #[test]
+  fn the_tool_serves_no_snapshot_chunk_or_path_request() {
+    let input = "snapshot 0 3 6\nchunks 0\nchunk 0\npath 5\nleaf 5\nwitness 5\nroot\n";
+    let (lines, _) = run(input.as_bytes());
+    assert_eq!(&lines[.. 6], &["error request"; 6]);
+    assert_eq!(lines[6], empty_root());
+  }
+
+  #[test]
   fn end_of_input_inside_a_connect_ends_the_session() {
     let input = format!("connect 1 {} {} 3\n{}", hex(&[1; 32]), hex(&[0; 32]), note_line(1));
     let (lines, tree) = run(input.as_bytes());

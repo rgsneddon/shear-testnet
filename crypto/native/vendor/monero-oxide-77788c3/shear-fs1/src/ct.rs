@@ -308,7 +308,8 @@ mod tests {
     let tree = chain_tree_1024();
     let size = tree.len();
     let held: Vec<u64> = (0 .. 8).map(|k| k * 3).collect();
-    let snapshot = tree.snapshot(&held);
+    let owned: Vec<u64> = held.iter().map(|k| k * 38 + 5).collect();
+    let snapshot = tree.wallet_snapshot(&owned);
     let in_held = |r: u64| held[usize::try_from(r % held.len() as u64).unwrap()] * 38 + r % 38;
     let (mut fixed, mut random) = (Vec::new(), Vec::new());
     let (mut snap_fixed, mut snap_random) = (Vec::new(), Vec::new());

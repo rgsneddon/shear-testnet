@@ -455,15 +455,25 @@ impl ChainTree {
   }
 
   /// The leaf-chunk ids holding these leaf indices, sorted and deduplicated.
-  pub fn chunks_of(indices: &[u64]) -> Vec<u64> {
+  fn chunks_of(indices: &[u64]) -> Vec<u64> {
     let mut chunks: Vec<u64> = indices.iter().map(|i| i / LAYER_ONE_LEN as u64).collect();
     chunks.sort_unstable();
     chunks.dedup();
     chunks
   }
 
-  /// A prover-side copy of this tree that holds every level but only the named leaf chunks.
-  pub fn snapshot(&self, chunks: &[u64]) -> TreeSnapshot {
+  /// Wallet only. A prover-side copy of this tree that holds every level but
+  /// only the leaf chunks of the wallet's own notes at `owned` leaf indices.
+  ///
+  /// The held chunk ids name the wallet's notes. They are derived here, inside
+  /// the wallet, from a tree it built from unkeyed `/sync` reads, and they never
+  /// leave it: no request carries them and no node route serves a snapshot
+  /// (`witness::BANNED_ROUTES`, `witness::KEYED_PARAMS`).
+  pub fn wallet_snapshot(&self, owned: &[u64]) -> TreeSnapshot {
+    self.snapshot_of_chunks(&Self::chunks_of(owned))
+  }
+
+  fn snapshot_of_chunks(&self, chunks: &[u64]) -> TreeSnapshot {
     let held = chunks
       .iter()
       .filter_map(|&k| {
@@ -821,7 +831,7 @@ pub(crate) mod tests {
     let notes: Vec<ChainNote> = (0 .. 200).map(chain_note).collect();
     let tree = fresh(params, &[(1, notes)]);
     let owned = [5u64, 150, 199];
-    let snap = tree.snapshot(&ChainTree::chunks_of(&owned));
+    let snap = tree.wallet_snapshot(&owned);
     assert_eq!(crate::root_bytes(&snap.root()), tree.root_bytes());
     for index in owned {
       assert_eq!(snap.path(index).unwrap().leaves, tree.path(index).unwrap().leaves);
