@@ -87,6 +87,12 @@ describe('shear.digital/docs', () => {
     assert.match(content, /https:\/\/pool\.shear\.digital/);
     assert.match(content, /pool HUD is not spendable/);
     assert.match(content, /Your deposits/);
+    assert.match(content, /lock issuance rate/);
+    assert.match(content, /Reserve reward/);
+    assert.doesNotMatch(content, /central-bank/);
+    assert.doesNotMatch(content, /base rate/);
+    assert.doesNotMatch(content, /APR/);
+    assert.doesNotMatch(content, /Bank of England/);
     assert.match(content, /two rows/);
     assert.doesNotMatch(content, /twenty rows/);
     assert.match(app, /hashchange/);

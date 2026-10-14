@@ -28,7 +28,7 @@ const kVoteDecrease = 'decrease bonus';
 const kVoteHold = 'leave bonus as-is';
 const kReserveCutoffDisclaimer =
     'Fewer than $kReserveJoinCutoffDays days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
-const kReserveAccruedLabel = 'Accrued rewards';
+const kReserveAccruedLabel = 'Reserve reward';
 const kVoteConfirmWait = 'Vote is waiting on 9 confirmations of the reserve lock.';
 
 /// Vote attempt while this portal's own deposits are still under π.
@@ -54,7 +54,7 @@ String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
 
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
-    'Return principal and $days-day APR interest to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
+    'Return principal and the Reserve reward for this $days-day epoch to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
 
 /// Unsealed oracle observe is advisory. It never mints Spendable.
 String vaultObserveLabel({required bool sealed}) => sealed

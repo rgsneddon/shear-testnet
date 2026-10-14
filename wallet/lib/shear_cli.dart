@@ -375,11 +375,11 @@ One vote per portal per epoch. GUI: Vortex → The Reserve → Cast vote.
 shear rewards — staked + accrued Reserve rewards
 
   shear rewards                 print staked, idle, accrued, projected, claimable
-  shear rewards --claim         settle principal + extra-minted interest onto Copy dest
+  shear rewards --claim         settle principal and the Reserve reward onto Copy dest
   shear reserve claim           same as --claim
   shear reserve withdraw        same settlement (GUI unlock)
 
-400-day floor APR, oracle default 264 bps. Extra mint is Reserve-only.
+Lock issuance rate, frozen for the epoch. Extra mint is the Reserve reward only.
 ''';
     case 'history':
       return 'shear history — Shearview rows (id, kind/type, height, confirmed)\n';
@@ -977,9 +977,11 @@ Future<int> _claimRewards(
   session.rememberedReserve = _portalSnap(reserve, dest, now);
   await session.persist();
   final she = (got['payout'] ?? 0) / kUnitsPerShe;
+  final shown = Map<String, Object?>.from(got);
+  shown['reserveReward'] = shown.remove('interest');
   out.writeln(flags.json
-      ? jsonEncode({'ok': true, 'payoutDest': payout, ...got, 'payoutShe': formatShe(she)})
-      : 'claimed  principal=${got['principal']}  interest=${got['interest']}  onto $payout');
+      ? jsonEncode({'ok': true, 'payoutDest': payout, ...shown, 'payoutShe': formatShe(she)})
+      : 'claimed  principal=${shown['principal']}  reserveReward=${shown['reserveReward']}  onto $payout');
   return 0;
 }
 

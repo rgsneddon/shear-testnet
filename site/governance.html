@@ -74,7 +74,7 @@
           <div class="card-kicker">What happens</div>
           <h3>Epochs, then enact</h3>
           <p>Time on the Reserve runs in epochs (4 days on this testnet; 400 days planned for mainnet). The first qualifying π lock opens the inaugural epoch — not genesis, and not an operator clock.</p>
-          <p>Through most of the epoch, locked holders can cast a vote. Near the end, new locks may still sit idle for interest, but vote changes stop. When the epoch closes, the tallied choice moves the live hashbonus (or a tie leaves it), then principal and earned interest become withdrawable.</p>
+          <p>Through most of the epoch, locked holders can cast a vote. Near the end, new locks may still sit idle with no Reserve reward, but vote changes stop. When the epoch closes, the tallied choice moves the live hashbonus (or a tie leaves it), then principal and the Reserve reward become withdrawable.</p>
         </div>
         <div class="panel">
           <div class="card-kicker">How you take part</div>
@@ -89,7 +89,7 @@
             <li><strong>Hashbonus unit</strong> — raise by one, lower by one, or leave it. That unit is the extra mint per proven floor share (base is 10<sup>−11</sup> SHE). Plurality at epoch end enacts the move.</li>
           </ul>
           <div class="note"><strong>Not on the ballot:</strong> the <strong>1 SHE</strong> block pot. Epoch pot issuance is protocol schedule, not a vote outcome. Third-party Vortex programmes cannot mint SHE or move the pot.</div>
-          <p style="margin-top:0.85rem">The Reserve <strong>oracle</strong> publishes an observed staking APR for the epoch. Nodes freeze it fail-closed for interest mint. That rate is attested input, not something the ballot invents in the wallet UI.</p>
+          <p style="margin-top:0.85rem">The <strong>lock issuance rate</strong> is frozen for the epoch. It is not on the ballot. The amount paid on withdraw is the Reserve reward.</p>
         </div>
       </div>
       <div class="cta-row" style="margin-top:1.5rem">
