@@ -403,7 +403,8 @@ export function t21ShareUnits(block, txs, provedLeaves, skipFlow, decoded) {
     if (!nc || nc.length !== 32 || !Number.isSafeInteger(count) || count <= 0) return { ok: false, reason: 'hash_bonus' };
     leaves.push({ noteCommit: nc, count });
   }
-  const b = boundBLeaves(block, txs);
+  // Pruning empties block.bLeaves; the txs still derive them.
+  const b = derivedBLeaves(txs);
   if (!b.ok) return b;
   const dual = buildDualTree({ aLeaves: leaves, bLeaves: b.leaves });
   if (!dual.continuityRoot.equals(decoded.continuityRoot)) return { ok: false, reason: 'continuity' };

@@ -440,7 +440,7 @@ describe('T21 hash bonus budget (P0-2, P1-1)', { timeout: 600_000 }, () => {
   it('binds a buried pruned block\'s W to the header through its aLeaves', () => {
     const leaves = [{ noteCommit: Buffer.alloc(32, 3), count: 40 }, { noteCommit: Buffer.alloc(32, 4), count: 2 }];
     const decoded = { continuityRoot: buildDualTree({ aLeaves: leaves, bLeaves: [] }).continuityRoot };
-    const got = t21ShareUnits({ aLeaves: leaves }, [], null, true, decoded);
+    const got = t21ShareUnits({ aLeaves: leaves, bLeaves: [], bLeavesPruned: true }, [], null, true, decoded);
     assert.equal(got.ok, true, got.reason);
     assert.deepEqual(got.shares.map((s) => s.units), [40n, 2n]);
     const inflated = leaves.map((l, i) => (i ? l : { ...l, count: 1 << 27 }));
