@@ -32,6 +32,7 @@ import {
   withdrawTx,
   voteTx,
   reserveAction,
+  cloneVault,
   VOTE_HOLD,
   VOTE_DECREASE,
   blockWithdrawInterest,
@@ -398,6 +399,47 @@ describe('per-withdraw interest spread', () => {
     assert.equal(rows[1].permittedInterest, 0n);
     const kept = fillSnapInterest([{}, {}], [lock, draw]);
     assert.equal(kept.ok, true);
+  });
+
+  it('trips lock conservation when locked-in is short of principal out', () => {
+    const miner = minerDest();
+    const portal = portalDest();
+    const interest = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
+    const lock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'cons-lock')]);
+    const draw = potBlock(DRAW, miner, [drawOf(portal, miner, PI_SHE_NANOS + interest, 'cons-draw')]);
+    const parent = vaultAfterBlock(null, lock);
+    assert.equal(parent.ok, true, parent.reason);
+    const honest = blockWithdrawInterest(parent.vault, draw, DRAW);
+    assert.equal(honest.ok, true, honest.reason);
+    assert.equal(honest.nanos, BigInt(interest));
+
+    // Withdraw clamps totalLockedNanos at 0, so a short book cannot balance.
+    const short = cloneVault(parent.vault);
+    short.totalLockedNanos = 0n;
+    const tripped = blockWithdrawInterest(short, draw, DRAW);
+    assert.equal(tripped.ok, false);
+    assert.equal(tripped.reason, 'supply');
+    const trippedAllowed = blockPermittedInterest(short, draw, DRAW);
+    assert.equal(trippedAllowed.ok, false);
+    assert.equal(trippedAllowed.reason, 'supply');
+    const folded = foldSupply([lock], foldOpts());
+    assert.equal(folded.ok, true, folded.reason);
+    const stepped = supplyStep(folded.state, draw, {
+      magic: MAGIC_TESTNET,
+      unit: HASH_BONUS_NANOS,
+      tipHeight: 2,
+      height: 2,
+      genesisMs: GENESIS,
+      vault: short,
+    });
+    assert.equal(stepped.ok, false);
+    assert.equal(stepped.reason, 'supply');
+
+    const over = cloneVault(parent.vault);
+    over.totalLockedNanos = BigInt(PI_SHE_NANOS) + 5n;
+    const still = blockWithdrawInterest(over, draw, DRAW);
+    assert.equal(still.ok, true, still.reason);
+    assert.equal(still.nanos, BigInt(interest));
   });
 
   it('rejects a multi-note withdraw, a note-less withdraw, and a kindless note', () => {
