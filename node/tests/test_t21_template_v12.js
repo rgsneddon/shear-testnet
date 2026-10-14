@@ -78,7 +78,7 @@ describe('T21 template: buildTemplate builds a cb-v3 coinbase consensus accepts'
     const book = t21LabelBook({ magic });
     const alice = t21LoginVoucher(Buffer.alloc(32, 1));
     const bob = t21LoginVoucher(Buffer.alloc(32, 2));
-    const bits = shareCreditMaxBits();
+    const bits = shareCreditMaxBits() - 4;
     const stray = { ...labelledShare(book, alice, 9n, bits, parent.header), noteCommit: Buffer.alloc(32, 5) };
     const shareBatch = [
       labelledShare(book, alice, 4n, bits, parent.header),
@@ -101,7 +101,7 @@ describe('T21 template: buildTemplate builds a cb-v3 coinbase consensus accepts'
     const parent = sealGenesis(now);
     const book = t21LabelBook({ magic });
     const v = t21LoginVoucher(Buffer.alloc(32, 3));
-    const bits = shareCreditMaxBits();
+    const bits = shareCreditMaxBits() - 4;
     const shareBatch = [1n, 2n, 3n, 4n].map((n) => labelledShare(book, v, n, bits, parent.header));
     const { tpl, block, verdict } = childOf(parent, now, {
       shareBatch, miner: minerDest(), t21: { magic, labelOf: book.labelOf, shareMax: 2 },

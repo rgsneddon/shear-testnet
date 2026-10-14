@@ -30,6 +30,7 @@ import {
   JOIN_KIND_GENESIS,
   SHARE_FLOOR_BITS,
   MAX_SHARES_PER_BLOCK,
+  MAX_HASH_UNITS_PER_BLOCK,
   POOL_FEE_BPS,
   POOL_FEE_MAX_BPS,
   MTP_WINDOW,
@@ -427,6 +428,8 @@ function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKey
       vaults: t21PendingVaults(t21.vault),
       publicRows: split.reserve ? [sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee')] : [],
       shareMax: t21.shareMax ?? CB_SHARE_MAX,
+      payeeMax: t21.payeeMax ?? null,
+      unitMax: t21.unitMax ?? MAX_HASH_UNITS_PER_BLOCK,
       seed: t21.seed,
     });
     return { ...made, txs: body, fees };
@@ -1477,7 +1480,11 @@ export function buildTemplate({
   t21 = null,
 }) {
   txs = (Array.isArray(txs) ? txs : []).filter((tx) => !txNoteRuleRejected(tx));
-  const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
+  // cb-v3 caps the batch in planT21Round, label by label, and reports what waits.
+  // selectBlockShares would trim it here without a trace.
+  const selected = Array.isArray(shareBatch)
+    ? selectBlockShares(shareBatch, t21 ? Number.MAX_SAFE_INTEGER : MAX_SHARES_PER_BLOCK)
+    : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
     : null;
@@ -1538,6 +1545,7 @@ export function buildTemplate({
   const carryOut = explicit ? payable - minted : 0;
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
   let t21Leaves = null;
+  let t21Left = null;
   let fees = 0;
   let split = splitLevy(0);
   let cb;
@@ -1559,6 +1567,7 @@ export function buildTemplate({
     batch = made.batch;
     txs = made.txs;
     t21Leaves = made.aLeaves;
+    t21Left = { later: made.later, expired: made.expired, unlabelled: made.unlabelled, flags: made.flags };
     spillBatch = [];
     fees = made.fees;
     split = splitLevy(fees);
@@ -1708,6 +1717,7 @@ export function buildTemplate({
     samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
     shareBatch: batch,
     hashSpill: spillBatch,
+    ...(t21Left ? { t21Later: t21Left.later, t21Expired: t21Left.expired, t21Unlabelled: t21Left.unlabelled, t21Flags: t21Left.flags } : {}),
     miner,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
