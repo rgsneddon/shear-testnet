@@ -5,6 +5,7 @@
 
 mod bpplus;
 mod fe25519;
+pub mod fs1;
 mod gadget;
 mod ipa;
 mod leaf;
