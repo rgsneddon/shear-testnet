@@ -1,8 +1,7 @@
 /**
  * After a snap load, a fork replays owed from the checkpoint at or below
  * the anchor. It does not replay from genesis. Header rules run first.
- * Lengths 1000 and 2880 are not built here. The projection is printed
- * from the lengths this process actually ran.
+ * Lengths 1000 and 2880 are built here, with the shorter lengths.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,6 +19,7 @@ import {
   noteCommitOfShare,
   rememberLiveSharePow,
 } from '../../crypto/share_batch.js';
+import { CHECKPOINT_EVERY_BLOCKS, CHECKPOINT_FIRST_HEIGHT } from '../src/bootstrap.js';
 import { decodeBookSnap, writeBookSnap } from '../src/book_snap.js';
 import { bookSealKeyFor } from '../src/book_seal_key.js';
 import { createStore, OWED_CHECKPOINT_SPACING } from '../src/store.js';
@@ -203,6 +203,7 @@ function forkBlock(store, dest, parentIndex, pow, shares = []) {
     bits,
     shareBatch: shares,
     parentBlocks: prefix,
+    parentFluxset: store.fluxThrough(parentIndex),
   });
   const headerBits = decodeHeader(Buffer.from(tpl.header)).bits;
   assert.equal(meetsTarget(pow, headerBits), true);
@@ -280,8 +281,8 @@ function heavier(store, dest, parentIndex, count, tagBase) {
   return out;
 }
 
-describe('v12 snap fork owed seed', () => {
-  it('a snapped prefix does not replay owed from genesis', { timeout: 300_000 }, async () => {
+describe('v12 snap fork owed seed', { concurrency: false }, () => {
+  it('a snapped prefix does not replay owed from genesis', { timeout: 3_600_000 }, async () => {
     const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.doesNotMatch(src, /function snapsFromReplay/);
     assert.doesNotMatch(src, /function seriesOfSnap/);
@@ -295,7 +296,7 @@ describe('v12 snap fork owed seed', () => {
     const seed = src.split('function seedHistory(')[1].split('function snapsCoverTip')[0];
     assert.doesNotMatch(seed, /replayHashOwed/);
 
-    const lengths = [20, 48, 96];
+    const lengths = [20, 48, 96, 1000, 2880];
     const measured = [];
     for (const n of lengths) {
       const dest = minerDest();
@@ -339,8 +340,14 @@ describe('v12 snap fork owed seed', () => {
       });
       assert.equal(canon(store.owedView()), owedAfterLose);
 
+      // Height 1000, then every 400, is frozen. Replacing that block is
+      // reorg_checkpoint. A heavier chain extends and keeps the frozen hash.
+      const tipH = Number(store.tip()?.height) || 0;
+      const frozenTip = tipH >= CHECKPOINT_FIRST_HEIGHT
+        && (tipH - CHECKPOINT_FIRST_HEIGHT) % CHECKPOINT_EVERY_BLOCKS === 0;
+      const winParent = frozenTip ? store.blocks.length - 1 : parent;
       const win = await timed(() => store.ingest(
-        [forkBlock(store, dest, parent, Buffer.alloc(32))],
+        [forkBlock(store, dest, winParent, Buffer.alloc(32))],
         { trustBlockHash: true },
       ));
       assert.equal(win.result.ok, true, win.result.reason);
@@ -348,7 +355,14 @@ describe('v12 snap fork owed seed', () => {
       const candidate = store.blocks;
       assert.equal(shouldAdopt(candidate, candidate), false);
       fullParity(store.dir, store);
-      console.log(JSON.stringify({ event: 'owed_seed_length', n, ...measured[measured.length - 1], winWall: win.wall, winLag: win.maxLag }));
+      console.log(JSON.stringify({
+        event: 'owed_seed_length',
+        n,
+        ...measured[measured.length - 1],
+        win: frozenTip ? 'extend' : 'reorg',
+        winWall: win.wall,
+        winLag: win.maxLag,
+      }));
     }
     const walls = measured.map((row) => row.loseWall);
     const maxWall = Math.max(...walls);
@@ -365,10 +379,10 @@ describe('v12 snap fork owed seed', () => {
     console.log(JSON.stringify({
       event: 'owed_seed_projection',
       built: lengths,
-      notBuilt: [1000, 2000, 2880],
+      notBuilt: [],
       maxLoseWallMs: maxWall,
-      projectedLoseWallMs: { 1000: maxWall, 2000: maxWall, 2880: maxWall },
-      reason: 'gap is one checkpoint spacing, so the measured ceiling is the projection',
+      measuredLoseWallMs: Object.fromEntries(measured.map((row) => [row.n, row.loseWall])),
+      reason: 'lengths 1000 and 2880 ran; the replay gap is one checkpoint spacing',
     }));
 
     const deep = freshStore('shear-owed-deep-');

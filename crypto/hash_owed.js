@@ -1054,7 +1054,7 @@ export function acceptedUnitsOfBlock(block, unit = HASH_BONUS_NANOS, tipHeight =
  * Replay the owed map from sealed per-block credits. Share batches are not
  * the source. `units[i]` is the hash-bonus unit live at that block.
  */
-export function replayHashOwed(blocks, { unit = null, units = null } = {}) {
+export function replayHashOwed(blocks, { unit = null, units = null, burialOf = null } = {}) {
   let rows = [];
   const accepted = [];
   const snaps = [];
@@ -1068,13 +1068,15 @@ export function replayHashOwed(blocks, { unit = null, units = null } = {}) {
   for (let i = 0; i < list.length; i += 1) {
     const block = list[i];
     const u = Array.isArray(units) ? units[i] : (unit == null ? HASH_BONUS_NANOS : unit);
+    // A pruned block proven buried by a chain this tip replaced keeps that burial.
+    const own = typeof burialOf === 'function' ? burialOf(block) : null;
     const next = advanceHashOwed({
       owedIn: rows,
       acceptedSeries: accepted,
       block,
       unit: u,
       height: Number.isInteger(Number(block?.height)) ? Number(block.height) : i + 1,
-      tipHeight: tipH,
+      tipHeight: Number.isInteger(own) && own > tipH ? own : tipH,
     });
     if (!next.ok) return { ok: false, reason: next.reason || 'hash_owed', rows: [], accepted: [], snaps: [] };
     rows = next.rows;

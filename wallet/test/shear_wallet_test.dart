@@ -9173,6 +9173,8 @@ class _RecordingPool extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
   }) async {
     posts.add({
       'from': from,
@@ -9263,6 +9265,8 @@ class _ReasonPool extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
   }) async =>
       {'ok': false, 'reason': legacyPoolSend && reason.isEmpty ? 'legacy' : (paintedOwedNanos < 0 ? 'bad_owed' : reason)};
 }

@@ -510,7 +510,7 @@ const BODY_KEYS = new Set([
   'admit_proof', 'admit_proofs', 'spendTag', 'members',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
-  'coinbase', 'carryNanos', 'share',
+  'coinbase', 'carryNanos', 'share', 'withdrawNonce',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -769,6 +769,7 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
   const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
   if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };
+  if (claimed === 0) return { ok: false, reason: 'mint_amount' };
   const ref = reservePortalRef(tx);
   if (!ref.ok) return ref;
   const portals = reserveState?.portals || {};

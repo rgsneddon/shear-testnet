@@ -121,6 +121,8 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
         programId: RESERVE_PROGRAM,
         amount: sheString(n),
         nanos: n.toString(),
+        id: draft.id,
+        withdrawNonce: draft.withdrawNonce,
         sig: draft.sig,
         spendPub: draft.spendPub,
         vout: draft.vout,
@@ -134,6 +136,35 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
       assert.equal(String(posted[0].vout[0].valueProof.v), n.toString());
       assert.notEqual(posted[0].kind, 'send');
     }
+  });
+
+  it('keeps a posted withdraw id and nonce on the queued tx', () => {
+    const alice = newIdentity();
+    const from = spendDestOf(alice.spendPub);
+    const to = spendDestOf(newIdentity().spendPub);
+    const nonce = Buffer.alloc(32, 9);
+    const ident = 'wd-posted-nonce';
+    const draft = withdrawTx({ from, to, nanos: '1000', id: ident, nonce });
+    signSpendTx(draft, alice.privateKey);
+    const { posted, queueSend } = queue();
+    const got = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      from,
+      to,
+      kind: 'withdraw',
+      programId: RESERVE_PROGRAM,
+      amount: sheString(1000n),
+      nanos: '1000',
+      id: ident,
+      withdrawNonce: nonce.toString('hex'),
+      sig: draft.sig,
+      spendPub: draft.spendPub,
+      vout: draft.vout,
+      vin: draft.vin,
+    }, { store: store(), miners: new Map(), queueSend });
+    assert.equal(got.status, 200, got.json && got.json.reason);
+    assert.equal(posted[0].id, ident);
+    assert.equal(posted[0].withdrawNonce, nonce.toString('hex'));
+    assert.equal(posted[0].vout[0].commit.toString('hex'), draft.vout[0].commit.toString('hex'));
   });
 
   it('binds a vote fee to the sealed weight and does not rename other errors', () => {

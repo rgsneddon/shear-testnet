@@ -12,6 +12,7 @@ import { bLeafAskRejected } from './clearing.js';
 import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
+import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
@@ -128,6 +129,8 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!capped.ok) return capped;
   const budget = txBudget(tx);
   if (!budget.ok) return budget;
+  const noteRule = txNoteRuleRejected(tx);
+  if (noteRule) return noteRule;
   const pull = custodialPullRejected(tx);
   if (pull) return pull;
   const earlyOpen = openingBeforeCarry(tx);

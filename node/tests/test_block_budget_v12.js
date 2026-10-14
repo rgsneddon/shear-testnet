@@ -30,16 +30,21 @@ import {
   K_VW,
   MAX_BLOCK_RESERVE_TXS,
   MAX_BLOCK_VERIFY_WEIGHT,
+  PAYEE_CAP_NORMAL,
   PAYEE_ROW_BYTES,
   R_BYTES,
+  R_SENDS,
   R_VW_BYTES,
   R_VW_WEIGHT,
   R_WEIGHT,
   TEMPLATE_BUDGET_MS,
   VW_KIND,
+  W_OUT,
   W_PAYEE,
+  W_TX,
   blockBudget,
   blockVerifyWeight,
+  fs1VerifyWeight,
   payeeCapFallback,
   payeeCapLive,
   payeeCapNormal,
@@ -160,13 +165,44 @@ async function blockResult(store, txs, t0) {
 }
 
 describe('v12 block budget', { concurrency: 1 }, () => {
-  it('rejects a block over the signed caps before a proof, and keeps a block at the cap', async () => {
+  it('signs the T21 payee cap and the 16-send FS-1 reserve', () => {
     assert.equal(C_MAX + R_BYTES + R_VW_BYTES, B_MAX);
-    assert.equal(MAX_BLOCK_VERIFY_WEIGHT - R_WEIGHT - R_VW_WEIGHT, 33_056);
+    assert.equal(MAX_BLOCK_VERIFY_WEIGHT - R_WEIGHT - R_VW_WEIGHT, 33_136);
     const normal = payeeCapNormal();
     const fallback = payeeCapFallback();
     const live = payeeCapLive();
-    assert.equal(normal, Math.floor(C_MAX / PAYEE_ROW_BYTES));
+    assert.equal(PAYEE_CAP_NORMAL, 470);
+    assert.equal(normal, 470);
+    assert.equal(Math.floor(C_MAX / PAYEE_ROW_BYTES), 482);
+    assert.equal(normal, Math.min(PAYEE_CAP_NORMAL, Math.floor(C_MAX / PAYEE_ROW_BYTES)));
+    assert.equal(payeeCapNormal(PAYEE_ROW_BYTES - 1), 470);
+    assert.ok(payeeCapNormal(20_000) < 470);
+    assert.equal(fs1VerifyWeight(1), 50);
+    assert.equal(fs1VerifyWeight(2), 75);
+    assert.equal(fs1VerifyWeight(8), 225);
+    assert.equal(fs1VerifyWeight(0), null);
+    assert.equal(fs1VerifyWeight(9), null);
+    assert.equal(R_WEIGHT, 2_336);
+    assert.equal(R_SENDS * (fs1VerifyWeight(2) + 3 * W_OUT + W_TX), R_WEIGHT);
+    assert.equal(fallback, 171);
+    assert.equal(fallback, live);
+    assert.equal(payeeCapLive(FALLBACK_IPC_FRAME), 171);
+    const p2pFallback = payeeCapFallback({ frame: 16 * 1024 * 1024 });
+    assert.ok(p2pFallback < PAYEE_CAP_NORMAL);
+    assert.equal(payeeCapLive(16 * 1024 * 1024), p2pFallback);
+    assert.equal(payeeCapLive(FRAME_MIN), normal);
+    assert.equal(live + COINBASE_EXTRA_NOTES + K_VW, 182);
+    assert.ok(W_PAYEE * (live + COINBASE_EXTRA_NOTES) + R_WEIGHT + R_VW_WEIGHT <= MAX_BLOCK_VERIFY_WEIGHT);
+    assert.ok(W_PAYEE * (normal + COINBASE_EXTRA_NOTES) + R_WEIGHT + R_VW_WEIGHT <= MAX_BLOCK_VERIFY_WEIGHT);
+  });
+
+  it('rejects a block over the signed caps before a proof, and keeps a block at the cap', async () => {
+    assert.equal(C_MAX + R_BYTES + R_VW_BYTES, B_MAX);
+    assert.equal(MAX_BLOCK_VERIFY_WEIGHT - R_WEIGHT - R_VW_WEIGHT, 33_136);
+    const normal = payeeCapNormal();
+    const fallback = payeeCapFallback();
+    const live = payeeCapLive();
+    assert.equal(normal, 470);
     assert.equal(fallback, live);
     assert.ok(live >= 1);
     assert.ok(W_PAYEE * (live + COINBASE_EXTRA_NOTES) + R_WEIGHT + R_VW_WEIGHT <= MAX_BLOCK_VERIFY_WEIGHT);
