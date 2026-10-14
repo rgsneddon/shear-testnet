@@ -36,7 +36,12 @@ function classify(block) {
   const out = [];
   block.txs.forEach((tx, t) => (tx.vout || []).forEach((o, v) => {
     if (!outputJoinsAdmitSet(tx, o)) return;
-    const consensus = fluxsetFromBlocks([{ ...block, txs: [{ ...tx, vout: [o] }] }]).pubs.length === 1;
+    let consensus = false;
+    try {
+      consensus = fluxsetFromBlocks([{ ...block, txs: [{ ...tx, vout: [o] }] }]).pubs.length === 1;
+    } catch (err) {
+      if (String(err?.message) !== 'admit_note_point') throw err;
+    }
     const [note] = fs1NotesFromBlock({ txs: [{ ...tx, vout: [o] }] });
     const leaf = fs1Leaf(note);
     out.push({ at: `tx${t}.vout${v}`, consensus, leaf: leaf ? hexOf(leaf) : null });
@@ -70,24 +75,27 @@ describe('consensus admit set equals the FS-1 leaf set', () => {
     assert.deepEqual(a3.filter((row) => !row.leaf).map((row) => row.at), ['tx3.vout0', 'tx3.vout1', 'tx3.vout3']);
   });
 
-  it('whole chains keep the vector counts, on the real chain and on the fork', () => {
+  it('whole chains keep the vector counts, and a skipped note aborts the absorb', () => {
     const main = fluxsetFromBlocks(real).pubs.length;
     assert.equal(main, 7);
     assert.equal(main, vectorCount('connect', 'w3'));
-    const side = fluxsetFromBlocks([real[0], real[1], ...fork]).pubs.length;
-    assert.equal(side, vectorCount('connect', 'a4'));
+    assert.throws(() => fluxsetFromBlocks([real[0], real[1], ...fork]), /admit_note_point/);
   });
 
   it('n1_leaf.txt: JS and the file agree, skips included', () => {
-    assert.ok(n1Rows.length >= 8);
+    assert.ok(n1Rows.length >= 12);
     for (const line of n1Rows) {
       const [name, admit, commit, want] = line.split('\t');
       const leaf = fs1Leaf(fs1OutputNote({ admitPub: admit, commit }));
       assert.equal(leaf ? hexOf(leaf) : 'skip', want, name);
-      const kept = fluxsetFromBlocks([{
+      const block = {
         txs: [{ vout: [{ kind: 'pot', admitPub: { $hex: admit }, commit: { $hex: commit } }] }],
-      }]).pubs.length;
-      assert.equal(kept, want === 'skip' ? 0 : 1, name);
+      };
+      if (want === 'skip') {
+        assert.throws(() => fluxsetFromBlocks([block]), /admit_note_point/, name);
+      } else {
+        assert.equal(fluxsetFromBlocks([block]).pubs.length, 1, name);
+      }
     }
   });
 });

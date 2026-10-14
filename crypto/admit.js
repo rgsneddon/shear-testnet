@@ -7,7 +7,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, txSpendTags } from './note.js';
-import { fs1Leaf, fs1OutputNote } from './fs1_leaf.js';
+import { fs1Leaf, fs1LeafFor, fs1OutputNote } from './fs1_leaf.js';
 import { merkleRoot } from './merkle.js';
 import { nativeJroot, nativeJrootPoint, nativeFrontierAppend, nativeProveV3, nativeVerifyV3, noteH } from './native_admit.js';
 
@@ -336,7 +336,7 @@ function absorbFluxBlock(pubs, commits, spendTags, block) {
     for (const o of tx.vout || []) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
       const note = fs1OutputNote(o);
-      if (!fs1Leaf(note)) continue;
+      if (!fs1LeafFor(o)) throw new Error('admit_note_point');
       pubs.push(pubFromAdmit(note.admitPub));
       commits.push(Buffer.from(note.commit));
     }
@@ -423,7 +423,8 @@ export function fluxLeavesAreFs1(pubs, commits) {
   return true;
 }
 
-export function fluxWithLeaves(pubs, commits, spendTags) {
+export function fluxWithLeaves(pubs, commits, spendTags, opts = {}) {
+  const trust = opts?.trust === true;
   const dest = [];
   const cs = [];
   const n = Math.min(pubs?.length || 0, commits?.length || 0);
@@ -432,7 +433,7 @@ export function fluxWithLeaves(pubs, commits, spendTags) {
   }
   for (let i = 0; i < n; i += 1) {
     const note = fs1OutputNote({ admitPub: pubs[i], commit: commits[i] });
-    if (!fs1Leaf(note)) throw new Error('admit_note_point');
+    if (!trust && !fs1Leaf(note)) throw new Error('admit_note_point');
     const d = pubBytes(note.admitPub);
     const c = commitBytes(note.commit);
     if (!d || !c || c.length !== 32) throw new Error('admit_note_point');

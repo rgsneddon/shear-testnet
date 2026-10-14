@@ -1732,7 +1732,9 @@ List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
 }
 
 /// KT-10. Same bytes as `kt10WithdrawBlind` in crypto/reserve_vault.js.
-Scalar kt10WithdrawBlind(String to, BigInt nanos, String id) {
+/// `nonce` is 32 bytes. The same (to, nanos, id, nonce) is the same scalar.
+Scalar kt10WithdrawBlind(String to, BigInt nanos, String id, Uint8List nonce) {
+  if (nonce.length != 32) throw StateError('kt10_nonce');
   final dst = utf8Bytes('shear-kt10-withdraw-r-v1');
   final n = Uint8List(8);
   var v = nanos;
@@ -1744,17 +1746,29 @@ Scalar kt10WithdrawBlind(String to, BigInt nanos, String id) {
   final dest = utf8Bytes(to);
   final ident = utf8Bytes(id);
   for (var i = 0; i < 8; i++) {
-    final r = hashToScalar([dst, Uint8List.fromList([i]), dest, n, ident]);
+    final r = hashToScalar([dst, Uint8List.fromList([i]), dest, n, ident, nonce]);
     if (!scalarEq(r, scalarZero())) return r;
   }
   throw StateError('kt10_blind');
+}
+
+String _freshWithdrawId() {
+  final b = randomBytes(16);
+  final hex = b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+  return 'wd-$hex';
+}
+
+Uint8List _withdrawNonce(Uint8List? nonce) {
+  if (nonce == null) return randomBytes(32);
+  if (nonce.length != 32) throw StateError('kt10_nonce');
+  return nonce;
 }
 
 /// Reserve lock/vote/withdraw out, same seal as pool `sealedReserveVout`.
 /// Public nanos + dest20 + noteCommitOfDest20, with `commit` so wallet_api
 /// keeps this body instead of minting a fresh seal after the spend sig.
 /// A withdraw uses a hash-derived non-zero r. Value 0 is not a withdrawal.
-Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {String id = ''}) {
+Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {String id = '', Uint8List? nonce}) {
   final units = tryU64Units(nanos) ?? BigInt.zero;
   final shown = u64OnWire(units);
   final d20 = hash20FromAddress(to);
@@ -1762,7 +1776,9 @@ Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {St
   if (kind == 'withdraw' && units <= BigInt.zero) {
     return {'address': to, 'nanos': shown, 'kind': kind};
   }
-  final blind = kind == 'withdraw' ? kt10WithdrawBlind(to, units, id) : null;
+  final blind = kind == 'withdraw'
+      ? kt10WithdrawBlind(to, units, id.isEmpty ? _freshWithdrawId() : id, _withdrawNonce(nonce))
+      : null;
   final note = sealCoinbaseUnits(units, dest20: d20, kind: kind, r: blind);
   note['address'] = to;
   final vp = note['valueProof'];

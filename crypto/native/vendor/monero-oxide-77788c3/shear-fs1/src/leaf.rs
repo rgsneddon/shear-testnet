@@ -247,7 +247,7 @@ mod tests {
       assert_eq!(got.as_deref(), want.as_deref(), "{}", cols[0]);
       rows += 1;
     }
-    assert!(rows >= 8, "{rows}");
+    assert!(rows >= 12, "{rows}");
   }
 
   const EIGHT_TORSION_1: curve25519_dalek::EdwardsPoint = curve25519_dalek::constants::EIGHT_TORSION[1];

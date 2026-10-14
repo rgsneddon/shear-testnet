@@ -17,7 +17,7 @@ import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { attachAdmitPub, outputJoinsAdmitSet } from '../../crypto/admit.js';
 import { writeChainBin } from '../../crypto/chainbin.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { fs1Leaf, fs1OutputNote } from '../../crypto/fs1_leaf.js';
+import { fs1Leaf, fs1LeafDeriveCount, fs1OutputNote, resetFs1LeafDerives } from '../../crypto/fs1_leaf.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
 import { chainNoteRuleRejected, txNoteRuleRejected, zeroWithdrawRejected } from '../../crypto/n1.js';
 import { scalarBytes, sealCoinbaseNote } from '../../crypto/note.js';
@@ -135,11 +135,17 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
           hash: Buffer.alloc(32, 3),
           txs: [tx],
         };
-        assert.equal(verifyBlock(block, null).reason, 'admit_note_point', `${kind} verify`);
+        resetFs1LeafDerives();
+        assert.equal(verifyBlock(block, null).reason, 'height', `${kind} verify`);
+        assert.equal(fs1LeafDeriveCount(), 0, `${kind} verify derives`);
         assert.equal(verifyLoadedChain([block]).reason, 'admit_note_point', `${kind} load`);
         assert.equal(chainNoteRuleRejected([block]).reason, 'admit_note_point', `${kind} height`);
-        assert.equal(store.verifyFork([block]).reason, 'admit_note_point', `${kind} fork`);
-        assert.equal(store.ingest([block]).reason, 'admit_note_point', `${kind} replay`);
+        resetFs1LeafDerives();
+        assert.notEqual(store.verifyFork([block]).reason, 'admit_note_point', `${kind} fork`);
+        assert.equal(fs1LeafDeriveCount(), 0, `${kind} fork derives`);
+        resetFs1LeafDerives();
+        assert.notEqual(store.ingest([block]).reason, 'admit_note_point', `${kind} replay`);
+        assert.equal(fs1LeafDeriveCount(), 0, `${kind} replay derives`);
       }
 
       const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-snap-'));
@@ -232,14 +238,23 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
 
-    const a = withdrawTx({ from: dest, to: dest, nanos: 1000, id: 'w' });
-    const b = withdrawTx({ from: dest, to: dest, nanos: 1000, id: 'w' });
-    const other = withdrawTx({ from: dest, to: dest, nanos: 1000, id: 'other' });
+    const nonce = Buffer.alloc(32, 7);
+    const a = withdrawTx({ from: dest, to: dest, nanos: 1000, id: 'w', nonce });
+    const b = withdrawTx({ from: dest, to: dest, nanos: 1000, id: 'w', nonce });
+    const other = withdrawTx({ from: dest, to: dest, nanos: 1000, id: 'other', nonce });
+    const fresh = withdrawTx({ from: dest, to: dest, nanos: 1000, id: 'w' });
+    const noId = withdrawTx({ from: dest, to: dest, nanos: 1000 });
+    const noId2 = withdrawTx({ from: dest, to: dest, nanos: 1000 });
     assert.ok(Buffer.isBuffer(a.vout[0].r));
     assert.equal(a.vout[0].r.equals(b.vout[0].r), true);
     assert.equal(a.vout[0].r.equals(Buffer.alloc(32)), false);
     assert.equal(a.vout[0].r.equals(other.vout[0].r), false);
-    assert.equal(a.vout[0].r.equals(scalarBytes(kt10WithdrawBlind(dest, 1000, 'w'))), true);
+    assert.equal(a.vout[0].r.equals(fresh.vout[0].r), false);
+    assert.notEqual(noId.id, '');
+    assert.notEqual(noId.id, noId2.id);
+    assert.notEqual(noId.withdrawNonce, noId2.withdrawNonce);
+    assert.equal(a.withdrawNonce, nonce.toString('hex'));
+    assert.equal(a.vout[0].r.equals(scalarBytes(kt10WithdrawBlind(dest, 1000, 'w', nonce))), true);
     const joined = attachAdmitPub(a.vout[0], { admitBase: admitBaseFromAddress(dest) });
     assert.equal(fs1Leaf(fs1OutputNote(joined))?.length, 96);
   });

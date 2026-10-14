@@ -5,7 +5,7 @@
 // KT-10. A vault withdraw of value 0 is mint_amount. A positive withdraw is
 // sealed with a hash-derived non-zero r in reserve_vault.js.
 
-import { fs1Leaf, fs1OutputNote } from './fs1_leaf.js';
+import { fs1LeafFor } from './fs1_leaf.js';
 import { outputJoinsAdmitSet } from './admit.js';
 
 export const ADMIT_NOTE_POINT = 'admit_note_point';
@@ -15,12 +15,17 @@ export function admitNotePointRejected(tx) {
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   for (const o of outs) {
     if (!outputJoinsAdmitSet(tx, o)) continue;
-    if (!fs1Leaf(fs1OutputNote(o))) return { ok: false, reason: ADMIT_NOTE_POINT };
+    if (!fs1LeafFor(o)) return { ok: false, reason: ADMIT_NOTE_POINT };
   }
   return null;
 }
 
-/** A withdraw whose opened value is not a positive integer. */
+/**
+ * A withdraw whose opened value is not a positive integer.
+ * The opened value is valueProof.v, then the output nanos, then the tx nanos.
+ * AL-1 (T21 public-v) changes that public value field. This reader has to
+ * change with it. Leave valueProof.v in place until that lands.
+ */
 export function zeroWithdrawRejected(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return null;

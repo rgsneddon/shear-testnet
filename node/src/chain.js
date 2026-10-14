@@ -75,7 +75,7 @@ import {
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
 import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
-import { fs1Leaf, fs1OutputNote } from '../../crypto/fs1_leaf.js';
+import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
@@ -1164,6 +1164,24 @@ export function templateForFinder(tpl, finderDest) {
   return stampAimed(built, tpl);
 }
 
+/** Drop a coinbase payee that is not an FS-1 leaf. Template build logs it and continues. */
+export function dropBrokenCoinbaseNotes(cb) {
+  const kept = [];
+  for (const o of cb?.vout || []) {
+    if (outputJoinsAdmitSet(cb, o) && !fs1LeafFor(o)) {
+      console.error(JSON.stringify({
+        event: 'coinbase_note_drop',
+        reason: 'admit_note_point',
+        kind: String(o?.kind || cb?.kind || ''),
+      }));
+      continue;
+    }
+    kept.push(o);
+  }
+  if (cb && typeof cb === 'object') cb.vout = kept;
+  return cb;
+}
+
 export function buildTemplate({
   prev,
   prevHeader,
@@ -1274,8 +1292,7 @@ export function buildTemplate({
   const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
   if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
-  const coinbaseRule = txNoteRuleRejected(cb);
-  if (coinbaseRule) throw new Error(coinbaseRule.reason);
+  dropBrokenCoinbaseNotes(cb);
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
@@ -1939,8 +1956,6 @@ function parentSpendView(chain) {
 function verifyBlockConsensus(block, prev, opts = {}) {
   const gated = chainStage0Rejected([block]);
   if (gated) return gated;
-  const noteRule = chainNoteRuleRejected([block]);
-  if (noteRule) return noteRule;
   const bodyTxs = Array.isArray(block?.txs) ? block.txs : [];
   for (let i = 0; i < bodyTxs.length; i += 1) {
     const unsignedField = unsignedBodyField(bodyTxs[i]);
@@ -2010,6 +2025,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const budget = blockBudget(txs);
   if (!budget.ok) return budget;
+  const noteRule = chainNoteRuleRejected([block]);
+  if (noteRule) return noteRule;
   const observeGate = coinbaseObserveRejected(txs);
   if (observeGate) return observeGate;
   const wantPot = potSubsidyAt({
@@ -2355,7 +2372,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const pushPub = (tx, o) => {
     if (!outputJoinsAdmitSet(tx, o)) return null;
     const note = fs1OutputNote(o);
-    if (!fs1Leaf(note)) return { ok: false, reason: 'admit_note_point' };
+    if (!fs1LeafFor(o)) return { ok: false, reason: 'admit_note_point' };
     try {
       pubs.push(pointFrom(note.admitPub));
       commits.push(Buffer.from(note.commit));
@@ -2560,7 +2577,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     for (const o of tx.vout || []) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
       const note = fs1OutputNote(o);
-      if (!fs1Leaf(note)) return { ok: false, reason: 'admit_note_point' };
+      if (!fs1LeafFor(o)) return { ok: false, reason: 'admit_note_point' };
       try {
         addedPubs.push(pointFrom(note.admitPub));
       } catch {
@@ -2775,8 +2792,12 @@ function beginLoaded(blocks, {
   if (!list.length) return { ok: true, empty: true };
   const gated = chainStage0Rejected(list);
   if (gated) return gated;
-  const notes = chainNoteRuleRejected(list);
-  if (notes) return notes;
+  // A matching book.seal already covered these leaves. stepLoaded still
+  // checks a suffix after the header. An unsealed book is checked here.
+  if (!trustStoredHash) {
+    const notes = chainNoteRuleRejected(list);
+    if (notes) return notes;
+  }
   const givenClock = Number(nowMs);
   const clock = Number.isFinite(givenClock) && givenClock > 0 ? givenClock : Date.now();
   const pinned = normGenesisPin(genesisHash);

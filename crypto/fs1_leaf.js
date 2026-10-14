@@ -46,7 +46,8 @@ export function fs1OutputNote(o) {
   return { admitPub: field32(o?.admitPub), commit: field32(o?.commit) };
 }
 
-/** L-1. E, or null when the bytes are not a canonical Ristretto255 encoding. */
+/** L-1. E, or null when the bytes are not a canonical Ristretto255 encoding.
+ *  admitPub and commit are public chain data, so the cofactor clear is variable-time. */
 export function ristrettoToEd(bytes) {
   let p;
   try {
@@ -55,7 +56,7 @@ export function ristrettoToEd(bytes) {
     return null;
   }
   if (p.equals(RistrettoPoint.ZERO)) return ed25519.Point.ZERO;
-  return p.ep.multiply(8n).multiply(INV8);
+  return p.ep.multiplyUnsafe(8n).multiplyUnsafe(INV8);
 }
 
 /**
@@ -63,6 +64,7 @@ export function ristrettoToEd(bytes) {
  * O and C must decode to non-identity points, and so must I = E(Hp(admitPub)).
  */
 export function fs1Leaf(note) {
+  leafDerives += 1;
   const o = ristrettoToEd(note.admitPub);
   const c = ristrettoToEd(note.commit);
   if (!o || !c || o.is0() || c.is0()) return null;
@@ -70,4 +72,31 @@ export function fs1Leaf(note) {
   const i = ristrettoToEd(hp.toRawBytes());
   if (!i || i.is0()) return null;
   return Buffer.concat([o.toRawBytes(), i.toRawBytes(), c.toRawBytes()]);
+}
+
+let leafDerives = 0;
+
+/** How many times the predicate actually ran. Cache hits do not count. */
+export function fs1LeafDeriveCount() {
+  return leafDerives;
+}
+
+export function resetFs1LeafDerives() {
+  leafDerives = 0;
+}
+
+const leafByOutput = new WeakMap();
+
+/**
+ * The leaf for this output object. The first call derives it. Later calls
+ * on the same object, including the other accept-path checks, reuse it.
+ * A miss is null and is cached too.
+ */
+export function fs1LeafFor(output) {
+  if (output && typeof output === 'object' && leafByOutput.has(output)) {
+    return leafByOutput.get(output);
+  }
+  const leaf = fs1Leaf(fs1OutputNote(output));
+  if (output && typeof output === 'object') leafByOutput.set(output, leaf);
+  return leaf;
 }

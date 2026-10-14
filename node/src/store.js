@@ -101,7 +101,7 @@ import {
 import { createBurialHold, createBurialProof, settledHeight } from './burial_hold.js';
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
-import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, fluxLeavesAreFs1, receiptAdmitRejected } from '../../crypto/admit.js';
+import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
@@ -383,28 +383,35 @@ export function createStore(dir, {
   }
   const resumed = !!(resume && resume.token === loadResumeToken && resume.verified === true
     && resume.height === blocks.length && tipBuf(blocks).equals(Buffer.from(resume.tipHash || [])));
-  if (blocks.length) {
-    const gated = chainStage0Rejected(blocks);
-    if (gated) throw new Error(gated.reason);
-    const notes = chainNoteRuleRejected(blocks);
-    if (notes) throw new Error(notes.reason);
-  }
+  let trustStoredHash = false;
   if (blocks.length && !resumed) {
     const want = chainLoadSeal(blocks, sealKey);
     let got = '';
     if (fs.existsSync(sealFile)) {
       try { got = fs.readFileSync(sealFile, 'utf8').trim(); } catch { got = ''; }
     }
-    const trustStoredHash = got.length > 0 && got === want;
+    trustStoredHash = got.length > 0 && got === want;
+  }
+  if (blocks.length) {
+    const gated = chainStage0Rejected(blocks);
+    if (gated) throw new Error(gated.reason);
+    // A matching book.seal means this install wrote the leaves. Skip the
+    // restart rescan. An in-process resume already verified them.
+    if (!trustStoredHash && !resumed) {
+      const notes = chainNoteRuleRejected(blocks);
+      if (notes) throw new Error(notes.reason);
+    }
+  }
+  if (blocks.length && !resumed) {
     const plan = trustStoredHash ? acceptBookSnap(readBookSnap(snapFile, sealKey, snapExpect)) : null;
-    const planOk = plan && planSupplyLinks(plan) && fluxLeavesAreFs1(plan.pubs, plan.commits);
+    const planOk = plan && planSupplyLinks(plan);
     const snapRows = planOk ? supplyRowsFromPlan(plan) : null;
     if (snapRows && plan.height === blocks.length) {
       applySnap(plan, plan.height);
       installSupplyPlan(plan, snapRows);
       loadMode = 'snap';
     } else if (snapRows) {
-      const priorFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
+      const priorFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags, { trust: true });
       const checked = verifyLoadedChain(blocks, {
         trustStoredHash: true,
         nowMs: loadNowMs,
@@ -570,7 +577,7 @@ export function createStore(dir, {
     adoptPlanCheckpoints(plan);
     spentB.clear();
     for (const id of plan.spentIds) spentB.add(String(id));
-    preFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
+    preFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags, { trust: true });
     unitAt = plan.unitAt.slice();
     prefixHeight = height;
   }
@@ -3277,8 +3284,6 @@ export function createStore(dir, {
   function verifyFork(fork, verifyOpts = {}) {
     const stage0 = chainStage0Rejected(fork || []);
     if (stage0) return stage0;
-    const notes = chainNoteRuleRejected(fork || []);
-    if (notes) return notes;
     const needs = (fork || []).some((b) => blockNeedsEvm(b?.txs || []));
     if (needs) return verifyForkAsync(fork, verifyOpts);
     if (!verifyOpts.headerGate) {
@@ -3288,6 +3293,8 @@ export function createStore(dir, {
       }
       if (!gated.ok) return prefixBodyFault(fork, gated, verifyOpts);
     }
+    const notes = chainNoteRuleRejected(fork || []);
+    if (notes) return notes;
     const accepted = [];
     const trialSpent = new Set();
     const walkedUnits = unitsAlongChain({ fork, timeOf: (block) => blockTimeMs(block) });
@@ -3343,10 +3350,10 @@ export function createStore(dir, {
   async function verifyForkAsync(fork, verifyOpts = {}) {
     const stage0 = chainStage0Rejected(fork || []);
     if (stage0) return stage0;
-    const notes = chainNoteRuleRejected(fork || []);
-    if (notes) return notes;
     const gated = await Promise.resolve(gateForkChain(fork, verifyOpts));
     if (!gated.ok) return prefixBodyFault(fork, gated, verifyOpts);
+    const notes = chainNoteRuleRejected(fork || []);
+    if (notes) return notes;
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
@@ -3808,10 +3815,12 @@ export function createStore(dir, {
 
   /** Verify only the new suffix. Header rules run before any owed replay. */
   function verifySuffix(fork, parent, history, verifyOpts) {
-    const notes = chainNoteRuleRejected(fork);
-    if (notes) return notes;
     const gated = gateForkHeaders(fork, parent, history, verifyOpts);
-    const go = () => verifySuffixBody(fork, parent, history, verifyOpts);
+    const go = () => {
+      const notes = chainNoteRuleRejected(fork);
+      if (notes) return notes;
+      return verifySuffixBody(fork, parent, history, verifyOpts);
+    };
     if (gated && typeof gated.then === 'function') {
       return gated.then((g) => (g.ok ? go() : { ok: false, reason: g.reason || 'pow', at: g.at }));
     }
@@ -4416,8 +4425,6 @@ export function createStore(dir, {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const stage0 = chainStage0Rejected(fork);
     if (stage0) return stage0;
-    const notes = chainNoteRuleRejected(fork);
-    if (notes) return notes;
     const t = tip();
     let decoded;
     try {

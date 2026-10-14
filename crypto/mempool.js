@@ -92,12 +92,12 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
   const bucket = v3BucketProofRejected(tx);
   if (bucket) return bucket;
-  const noteRule = txNoteRuleRejected(tx);
-  if (noteRule) return noteRule;
   const unsignedField = unsignedBodyField(tx);
   if (unsignedField) return unsignedField;
   const capped = txIoCap(tx);
   if (!capped.ok) return capped;
+  const noteRule = txNoteRuleRejected(tx);
+  if (noteRule) return noteRule;
   const budget = txBudget(tx);
   if (!budget.ok) return budget;
   const pull = custodialPullRejected(tx);

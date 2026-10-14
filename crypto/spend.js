@@ -489,7 +489,7 @@ const BODY_KEYS = new Set([
   'admit_proof', 'admit_proofs', 'spendTag', 'members',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
-  'coinbase', 'carryNanos', 'share',
+  'coinbase', 'carryNanos', 'share', 'withdrawNonce',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
