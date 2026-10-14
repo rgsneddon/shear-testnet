@@ -149,7 +149,7 @@ function resealReceipt(tx, nanos, kind) {
   };
 }
 
-function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptNanos, base }) {
+function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptNanos, base, publicNanos = receiptNanos }) {
   let fee = 0;
   let settled = null;
   const kind = String(tx.kind);
@@ -165,7 +165,7 @@ function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptN
     change.kind = 'send';
     change.dest20 = d20;
     tx.vout = [receipt, change];
-    tx.nanos = receiptNanos;
+    tx.nanos = publicNanos;
     tx.fee = fee;
     tx.anchor = anchor;
     const t = randomScalar();
@@ -247,7 +247,8 @@ function proveVote(store, who, opening, id, choice) {
   return tx;
 }
 
-function proveWithdraw(store, who, opening, id) {
+/** `publicNanos` sets the amount field. The receipt note still opens to the payout. */
+function proveWithdraw(store, who, opening, id, { publicNanos } = {}) {
   const anchor = walletAnchor(tipHeight(store) + 1);
   const flux = anchorFlux(store.blocks, anchor);
   const pot = (store.blocks.find((b) => Number(b.height) === opening.height)?.txs?.[0]?.vout || [])
@@ -271,6 +272,7 @@ function proveWithdraw(store, who, opening, id) {
     noteR: opening.r,
     noteV: opening.v,
     receiptNanos: preview.payout,
+    publicNanos: publicNanos ?? preview.payout,
     base: admitBaseFromAddress(who.dest),
   });
   signSpendTx(tx, who.key);
@@ -500,6 +502,18 @@ describe('vault parity', () => {
       assert.equal(openings[7].dest, portalA.dest);
       const again = proveWithdraw(store, portalA, openings[7], 'parity-withdraw-again');
       await sameVerdict(store, again, 'double_mint', wall);
+
+      // PSA-fd28-1. An owner-signed withdraw whose amount field is not its
+      // note. The block refuses it, so queue, mempool and template must too.
+      assert.equal(openings[6].dest, portalB.dest);
+      const payoutB = previewWithdraw(store.reserveVault, portalB.dest).payout;
+      for (const skew of [1, -1]) {
+        const skewed = proveWithdraw(store, portalB, openings[6], `parity-withdraw-skew${skew}`, {
+          publicNanos: payoutB + skew,
+        });
+        assert.equal(Number(skewed.vout[0].valueProof.v), payoutB);
+        await sameVerdict(store, skewed, 'mint_amount', wall);
+      }
 
       store.reserveVault.epochStartMs = savedStart;
       store.reserveVault.bonusEnacted = savedEnacted;
