@@ -1,0 +1,14 @@
+# Withdraw signed message. JS spendMessage and Dart reserveSpendMessage.
+# from ssa1q
+# kind withdraw
+# commit 32 bytes of 0x03
+# noteCommit 32 bytes of 0x04
+# vin dest20 20 zero bytes, noteCommit as above
+# portalId aa repeated to 64 hex
+# payoutPortalId bb repeated to 64 hex
+# programId shear-reserve-v1
+# nanos 1000
+# fee 0
+# id wd-1
+# withdrawNonce 32 bytes of 0x01
+5972b25c866f6bfe1646b09cf6d9e8a0bd1275ff0cb0a22fba7e65c3fba41512

@@ -121,6 +121,8 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
         programId: RESERVE_PROGRAM,
         amount: sheString(n),
         nanos: n.toString(),
+        id: draft.id,
+        withdrawNonce: draft.withdrawNonce,
         sig: draft.sig,
         spendPub: draft.spendPub,
         vout: draft.vout,

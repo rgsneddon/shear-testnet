@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -208,6 +209,8 @@ void main() {
   test('withdraw spend message signs the id and nonce, and a lock does not', () {
     final commit = Uint8List(32)..fillRange(0, 32, 3);
     final noteCommit = Uint8List(32)..fillRange(0, 32, 4);
+    final portal = 'aa' * 32;
+    final payout = 'bb' * 32;
     Uint8List message(String kind, String id, int nonceByte) {
       return reserveSpendMessage(
         from: 'ssa1q',
@@ -218,8 +221,8 @@ void main() {
           {'dest20': Uint8List(20), 'noteCommit': noteCommit},
         ],
         kind: kind,
-        portalId: 'aa',
-        payoutPortalId: 'bb',
+        portalId: portal,
+        payoutPortalId: payout,
         programId: 'shear-reserve-v1',
         choice: '',
         fee: 0,
@@ -230,6 +233,15 @@ void main() {
       );
     }
 
+    String hex(Uint8List b) => b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+    final repo = Directory.current.path.replaceAll('\\', '/').endsWith('/wallet')
+        ? Directory.current.parent.path
+        : Directory.current.path;
+    final want = File('$repo/crypto/vectors/withdraw_spend_msg.txt')
+        .readAsLinesSync()
+        .map((line) => line.trim())
+        .firstWhere((line) => line.isNotEmpty && !line.startsWith('#'));
+    expect(hex(message('withdraw', 'wd-1', 1)), want);
     expect(message('withdraw', 'wd-1', 1), isNot(equals(message('withdraw', 'wd-2', 1))));
     expect(message('withdraw', 'wd-1', 1), isNot(equals(message('withdraw', 'wd-1', 2))));
     expect(message('lock', 'lock-a', 1), equals(message('lock', 'lock-b', 9)));

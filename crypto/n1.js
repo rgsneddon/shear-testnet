@@ -5,10 +5,68 @@
 // KT-10. A vault withdraw of value 0 is mint_amount. A positive withdraw is
 // sealed with a hash-derived non-zero r in reserve_vault.js.
 
+import { isDestAddress, admitBaseFromAddress, hash20FromAddress } from './address.js';
+import { attachAdmitPub, outputJoinsAdmitSet } from './admit.js';
 import { fs1LeafFor } from './fs1_leaf.js';
-import { outputJoinsAdmitSet } from './admit.js';
+import { hashToScalar, noteCommitOfDest20, pointFrom, proveValue, scalarBytes } from './note.js';
 
 export const ADMIT_NOTE_POINT = 'admit_note_point';
+
+const PAYEE_LEAF_DST = 'shear-payee-leaf-v1';
+const PAYEE_OK_MAX = 4096;
+const payeeOkByDest = new Map();
+
+function rememberPayeeOk(addr, ok) {
+  if (payeeOkByDest.has(addr)) payeeOkByDest.delete(addr);
+  payeeOkByDest.set(addr, ok);
+  if (payeeOkByDest.size > PAYEE_OK_MAX) {
+    const oldest = payeeOkByDest.keys().next().value;
+    payeeOkByDest.delete(oldest);
+  }
+  return ok;
+}
+
+/**
+ * A payout dest can open an FS-1 leaf. Not a consensus check.
+ * A non-dest is not a payee. A short dest has no admit base; the template
+ * draws a fresh point, which is a leaf, so the pool-fee sink stays allowed.
+ * A long dest must decode B, then a deterministic value-proof probe (no
+ * range proof) must be a leaf. The answer is cached on the dest string.
+ * The leaf itself is cached on the public bytes.
+ */
+export function payeeFs1Ok(dest) {
+  const addr = String(dest || '').trim();
+  if (!isDestAddress(addr)) return true;
+  const base = admitBaseFromAddress(addr);
+  if (!base) return true;
+  if (payeeOkByDest.has(addr)) {
+    const hit = payeeOkByDest.get(addr);
+    payeeOkByDest.delete(addr);
+    payeeOkByDest.set(addr, hit);
+    return hit;
+  }
+  try {
+    pointFrom(base);
+  } catch {
+    return rememberPayeeOk(addr, false);
+  }
+  const d20 = hash20FromAddress(addr);
+  if (!d20 || d20.length !== 20) return rememberPayeeOk(addr, false);
+  try {
+    const r = hashToScalar(Buffer.from(PAYEE_LEAF_DST), Buffer.from(addr, 'utf8'));
+    const value = proveValue(1, r);
+    const note = attachAdmitPub({
+      kind: 'pot',
+      noteCommit: noteCommitOfDest20(d20),
+      commit: value.C,
+      valueProof: { R: value.R, z: value.z, v: 1 },
+      r: scalarBytes(r),
+    }, { admitBase: base });
+    return rememberPayeeOk(addr, !!fs1LeafFor(note));
+  } catch {
+    return rememberPayeeOk(addr, false);
+  }
+}
 
 /** Null when every joining output is an FS-1 leaf. */
 export function admitNotePointRejected(tx) {

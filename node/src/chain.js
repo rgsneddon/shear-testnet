@@ -1204,13 +1204,18 @@ function resealPotPayee(o, nanos) {
 }
 
 /**
- * Drop a coinbase payee that is not an FS-1 leaf. A dropped pot share is
- * split again over the pot payees that remain, by the same last-remainder
- * rule as potPaysFromLeaves. Their notes are resealed at the new amounts.
- * If none remain, the whole pot is carried and no pot note is left beside
- * that carry. A hash or levy note has no pot to rejoin, so that drop throws.
+ * Drop a coinbase payee that is not an FS-1 leaf.
+ * With no share batch, a dropped pot share is split again over the pot
+ * payees that remain, by the same last-remainder rule as potPaysFromLeaves.
+ * Their notes are resealed at the new amounts. If none remain, the whole
+ * pot is carried and no pot note is left beside that carry.
+ * A share batch already fixed those pays. Re-splitting them misses
+ * pot_prop, and carrying them misses pot_carry. The template throws and
+ * does not publish that block. The payee is refused when it enters the
+ * batch, so this throw is the backstop. A hash or levy note has no pot
+ * to rejoin, so that drop throws either way.
  */
-export function dropBrokenCoinbaseNotes(cb) {
+export function dropBrokenCoinbaseNotes(cb, { shares = false } = {}) {
   if (!(cb && typeof cb === 'object')) return cb;
   const kept = [];
   const dropped = [];
@@ -1229,6 +1234,7 @@ export function dropBrokenCoinbaseNotes(cb) {
     }
     kept.push(o);
   }
+  if (shares && dropped.length) throw new Error('admit_note_point');
   cb.vout = kept;
   if (!dropped.length) return cb;
   let droppedNanos = 0;
@@ -1412,7 +1418,7 @@ export function buildTemplate({
   const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
   if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
-  dropBrokenCoinbaseNotes(cb);
+  dropBrokenCoinbaseNotes(cb, { shares: batch.length > 0 });
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);

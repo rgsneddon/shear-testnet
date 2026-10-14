@@ -9,7 +9,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { consensusFingerprint, GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
+import { bitsForBlock, consensusFingerprint, GENESIS_BITS_PACKED, MAGIC_TESTNET, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { writeChainBin } from '../../crypto/chainbin.js';
 import { encodeHeader, decodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
@@ -35,8 +35,19 @@ import {
 } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 import { emptySupplyState, supplyStep } from '../src/supply.js';
-import { newIdentity } from '../../crypto/address.js';
+import { encodeDest, hash20FromAddress, newIdentity, poolFeeDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { payeeFs1Ok } from '../../crypto/n1.js';
+import {
+  clearLiveSharePow,
+  dest20OfShare,
+  nonceWithShareTarget,
+  noteCommitOfShare,
+  rememberLiveSharePow,
+} from '../../crypto/share_batch.js';
+import { admitClient, bindAcceptedShare, SHEARK_MINER_VERSION } from '../../pool/src/pool.js';
+import { createPullBook } from '../../pool/src/pull_book.js';
+import { evaluateSoloSubmit, parseSoloLogin } from '../src/solo_stratum.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -283,6 +294,129 @@ describe('N-1 gate order', () => {
     });
     assert.throws(() => dropBrokenCoinbaseNotes(hashNote), /admit_note_point/);
     assert.equal(hashNote.vout.length, 2);
+  });
+
+  it('refuses a bad payee at share entry, and an honest share template verifies', () => {
+    const who = minerDest();
+    const bad = encodeDest(hash20FromAddress(who), Buffer.alloc(32, 0xff));
+    const login = {
+      version: SHEARK_MINER_VERSION,
+      client: 'ShearHash',
+    };
+    assert.equal(payeeFs1Ok(who), true);
+    assert.equal(payeeFs1Ok(poolFeeDest()), true);
+    assert.equal(payeeFs1Ok(encodeDest(Buffer.alloc(20, 5))), true);
+    assert.equal(payeeFs1Ok(bad), false);
+    const refusedLogin = admitClient({ ...login, login: bad });
+    assert.equal(refusedLogin.ok, false);
+    assert.equal(refusedLogin.reason, 'admit_note_point');
+    assert.equal(admitClient({ ...login, login: who }).ok, true);
+    const id = newIdentity();
+    const refusedPayout = admitClient({
+      ...login,
+      login: id.paymentCode,
+      dest: bad,
+    });
+    assert.equal(refusedPayout.ok, false);
+    assert.equal(refusedPayout.reason, 'admit_note_point');
+    const solo = parseSoloLogin(bad);
+    assert.equal(solo.ok, false);
+    assert.equal(solo.reason, 'admit_note_point');
+    assert.equal(parseSoloLogin(who).ok, true);
+    const soloShare = evaluateSoloSubmit({
+      store: { jobs: new Map() },
+      jobId: 'missing',
+      nonce: 1n,
+      dest: bad,
+    });
+    assert.equal(soloShare.ok, false);
+    assert.equal(soloShare.reason, 'admit_note_point');
+    const bookDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-payee-'));
+    try {
+      const book = createPullBook(bookDir);
+      assert.equal(book.bindDest('miner', bad), false);
+      assert.equal(book.bindDest('miner', who), true);
+    } finally {
+      fs.rmSync(bookDir, { recursive: true, force: true });
+    }
+
+    const nonce = nonceWithShareTarget(1n, SHARE_FLOOR_BITS);
+    const refusedShare = bindAcceptedShare([], {
+      dest: bad,
+      nonce,
+      shareBits: SHARE_FLOOR_BITS,
+      header: Buffer.alloc(80, 1),
+    });
+    assert.equal(refusedShare.ok, false);
+    assert.equal(refusedShare.reason, 'admit_note_point');
+    assert.equal(refusedShare.list.length, 0);
+
+    const parentTpl = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: who,
+      bits: GENESIS_BITS_PACKED,
+      now: T0,
+    });
+    const parent = viewOf(parentTpl);
+    const okParent = verifyBlock(parent, null, { probeBody: true });
+    assert.equal(okParent.ok, true, okParent.reason || '');
+    clearLiveSharePow();
+    const accepted = bindAcceptedShare([], {
+      dest: who,
+      nonce,
+      shareBits: SHARE_FLOOR_BITS,
+      lz: SHARE_FLOOR_BITS,
+      verifiedHeader: parent.header,
+      hash: 'ab'.repeat(32),
+    });
+    assert.equal(accepted.ok, true, accepted.reason || '');
+    assert.equal(accepted.list.length, 1);
+    assert.equal(accepted.list[0].dest, who);
+
+    const now = T0 + 90_000;
+    const ph = decodeHeader(parent.header);
+    const row = {
+      dest: who,
+      dest20: dest20OfShare({ dest: who }),
+      nonce,
+      lz: SHARE_FLOOR_BITS,
+      shareBits: SHARE_FLOOR_BITS,
+      proofSlot: 0,
+    };
+    const childTpl = buildTemplate({
+      prev: okParent.hash,
+      prevHeader: parent.header,
+      prevBlock: parent,
+      parentWeight: parent.weight,
+      height: 2,
+      miner: who,
+      bits: bitsForBlock(ph.bits, ph.timestamp, now),
+      now,
+      shareBatch: [row],
+    });
+    assert.ok(childTpl.shareBatch.length > 0);
+    clearLiveSharePow();
+    assert.equal(rememberLiveSharePow(parent.header, nonce, {
+      noteCommit: noteCommitOfShare(row),
+      shareBits: SHARE_FLOOR_BITS,
+      lz: SHARE_FLOOR_BITS,
+    }), true);
+    const child = viewOf(childTpl);
+    const got = verifyBlock(child, { ...parent, hash: okParent.hash, height: 1 }, {
+      probeBody: true,
+      skipSharePow: true,
+    });
+    assert.equal(got.ok, true, got.reason || '');
+
+    const cb = childTpl.txs[0];
+    const pot = cb.vout.find((o) => o.kind === 'pot');
+    assert.ok(pot);
+    const carryBefore = canonicalCarry(cb);
+    pot.admitPub = Buffer.alloc(32, 0xab);
+    assert.throws(() => dropBrokenCoinbaseNotes(cb, { shares: true }), /admit_note_point/);
+    assert.equal(canonicalCarry(cb), carryBefore);
+    assert.equal(cb.vout.some((o) => Buffer.from(o.admitPub).equals(Buffer.alloc(32, 0xab))), true);
   });
 
   it('refuses a pre-N-1 seal and a pre-N-1 snap', () => {

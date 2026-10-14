@@ -4,6 +4,7 @@
  */
 import net from 'node:net';
 import { isDestAddress } from '../../crypto/address.js';
+import { payeeFs1Ok } from '../../crypto/n1.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { isInitialBlockDownload } from './status.js';
@@ -25,6 +26,7 @@ export function parseSoloLogin(login) {
   const dest = s.split('.')[0];
   const worker = s.includes('.') ? s.split('.').slice(1).join('.') : '';
   if (!isDestAddress(dest)) return { ok: false, reason: 'need_dest' };
+  if (!payeeFs1Ok(dest)) return { ok: false, reason: 'admit_note_point' };
   return { ok: true, dest, worker, login: s };
 }
 
@@ -53,6 +55,8 @@ function claimedDigest(claimed) {
 
 /** Recompute header hash, then dest-bound share vs block bits. Never appends. */
 export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) {
+  const payEarly = String(dest || '').trim();
+  if (payEarly && !payeeFs1Ok(payEarly)) return { ok: false, reason: 'admit_note_point' };
   const rec = store?.jobs?.get(String(jobId || ''));
   if (!rec) return { ok: false, reason: 'stale_job' };
   let header;

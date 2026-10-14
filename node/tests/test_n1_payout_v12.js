@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { admitBaseFromAddress, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { attachAdmitPub, outputJoinsAdmitSet } from '../../crypto/admit.js';
@@ -22,7 +23,7 @@ import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
 import { chainNoteRuleRejected, txNoteRuleRejected, zeroWithdrawRejected } from '../../crypto/n1.js';
 import { scalarBytes, sealCoinbaseNote } from '../../crypto/note.js';
 import { kt10WithdrawBlind, lockTx, reserveDigestSuffix, withdrawTx } from '../../crypto/reserve_vault.js';
-import { boundReserveWithdraw, signSpendTx, verifySpendSig } from '../../crypto/spend.js';
+import { boundReserveWithdraw, signSpendTx, spendMessage, verifySpendSig } from '../../crypto/spend.js';
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
 import { readLatestBootstrap } from '../src/bootstrap.js';
 import {
@@ -275,5 +276,30 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
     assert.equal(reserveDigestSuffix(lock).equals(reserveDigestSuffix({ ...lock, id: 'lock-b' })), true);
     signSpendTx(lock, id.privateKey);
     assert.equal(verifySpendSig({ ...lock, id: 'lock-b' }), true);
+  });
+
+  it('matches the shared withdraw signed-message vector', () => {
+    const commit = Buffer.alloc(32, 3);
+    const noteCommit = Buffer.alloc(32, 4);
+    const tx = {
+      id: 'wd-1',
+      kind: 'withdraw',
+      from: 'ssa1q',
+      portalId: 'aa'.repeat(32),
+      payoutPortalId: 'bb'.repeat(32),
+      programId: 'shear-reserve-v1',
+      nanos: 1000,
+      fee: 0,
+      withdrawNonce: Buffer.alloc(32, 1).toString('hex'),
+      vin: [{ dest20: Buffer.alloc(20), noteCommit }],
+      vout: [{ kind: 'withdraw', commit, noteCommit, valueProof: { v: 1000 } }],
+    };
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const file = path.join(here, '../../crypto/vectors/withdraw_spend_msg.txt');
+    const want = fs.readFileSync(file, 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith('#'));
+    assert.equal(spendMessage(tx).toString('hex'), want);
   });
 });
