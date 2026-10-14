@@ -53,7 +53,7 @@ The burial predicates (`sealedCreditsBuried`, `freshForBlock`, `spillForBlock`, 
   - a held block whole;
   - a pruned block only when the local tip buries it;
   - anything else gets a `getblock_nak`, and the peer fails over to the next peer.
-- **Wire decode fix.** `decodeWireBlock` set `hashCredits` and `hashSpillCredits` to `undefined` when they were absent. That broke `hash_owed` on every wire ingest of a block without a spill. The keys are now set only when present. The base branch fails `test_fee_fold_v12` on this.
+- **Wire decode fix.** `decodeWireBlock` set `hashCredits` and `hashSpillCredits` to `undefined` when they were absent. That broke `hash_owed` on every wire ingest of a block without a spill. The keys are now set only when present. The base branch fails `test_fee_fold_v12` on this. Feat made the same fix in `639cc075`, and the merge of feat at `36296798` (PR 65) keeps feat's version, so this branch no longer changes `decodeWireBlock`.
 
 ## PSA-pr74b-1 (P1): junk header offers cannot stall catch-up
 
@@ -180,7 +180,7 @@ At `8322d90d` a peer that had not yet proven anything could lose its slot to 8 o
 | --- | --- |
 | `node --test --test-timeout=9000000 node/tests/test_burial_sybil_v12.js` | tests 26, pass 26, fail 0, 211.7 s |
 | `node --test --test-timeout=9000000 node/tests/test_burial_offers_v12.js` | tests 3, pass 3, fail 0, 276.7 s |
-| PROOF_RUN_ROW |
+| `node --test --test-concurrency=1 --test-timeout=9000000 node/tests/test_burial_proof_v12.js` at `a527207c` | tests 6, pass 6, fail 0, 2694.6 s; 1416 gaps, 416 pruned, 32 NAKs |
 | `test_burial_gate_v12` 2/2, `test_burial_tip_v12` 2/2 (207 s), `test_burial_hold_v12` 14/14, `test_pruned_flag_v12`, `test_bootstrap`, `test_bootstrap_image_v12`, `test_fork_choice`, `test_getblock_nak_failover`, `test_getblock_serve_pace`, `test_getblock_taller`, `test_ibd_peer_height_v12`, `test_ibd_sequential`, `test_ibd_status` | all pass |
 | `test_ipc_backfill` (4), `test_p2p_wedge` (3 to 7), `test_p2p_process_split` (2) | the same failures as base, listed below |
 
