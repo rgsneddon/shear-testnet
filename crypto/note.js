@@ -58,7 +58,7 @@ export function reviveBytes(_key, v) {
 }
 
 const TX_BYTE_KEYS = new Set([
-  'prev', 'commit', 'noteCommit', 'rEph', 'rCt', 'admitPub', 'viewTag',
+  'prev', 'commit', 'noteCommit', 'rEph', 'rCt', 'amtCt', 'admitPub', 'viewTag',
   'excess', 'c0', 'spendTag',
 ]);
 
@@ -285,17 +285,70 @@ export function sealNote(v, { dest20, noteCommit, kind } = {}) {
   return sealed;
 }
 
+/**
+ * A hidden output: C, a range proof, and the amount encrypted to the dest.
+ * No shear-note-val-v1 proof and no v, so a reader cannot test a guessed amount.
+ * r stays local and is dropped by compactTx.
+ */
+export function sealHiddenNote(v, { dest20, noteCommit, kind, admitBase } = {}) {
+  const n = noteU64(v);
+  if (n == null) throw new Error('amount');
+  const r = randomScalar();
+  const nc = noteCommit
+    ? Buffer.from(noteCommit)
+    : (dest20 ? noteCommitOfDest20(dest20) : Buffer.alloc(32));
+  const rangeProof = proveRange(n, r);
+  let row = {
+    kind: kind || 'send',
+    noteCommit: nc,
+    commit: pointBytes(commit(n, r)),
+    r: scalarBytes(r),
+    rangeProof: rangeProof && rangeProof.length ? rangeProof : Buffer.alloc(0),
+  };
+  if (dest20) {
+    const d = Buffer.from(dest20);
+    if (d.length === 20) row.dest20 = d;
+  }
+  if (admitBase) row = wrapNoteBlind(row, admitBase, n);
+  return row;
+}
+
 /** ECDH wrap of Pedersen r to dest admit-base B = x_base·G. compactTx keeps rEph/rCt and drops r. */
 export const RWRAP_DST = Buffer.from('shear-r-wrap-v1');
+/** amtCt = u64le(v) XOR SHA-512(AMOUNT_CT_DST ‖ e·B ‖ extra)[0..8], under the same e as rCt. */
+export const AMOUNT_CT_DST = Buffer.from('shear-amt-v1');
+export const AMOUNT_CT_BYTES = 8;
 
-export function wrapBlind(r, admitBase, extra) {
+function amountMask(shared, extra) {
+  return Buffer.from(sha512(concat(AMOUNT_CT_DST, pointBytes(shared), extra || Buffer.alloc(0)))).subarray(0, AMOUNT_CT_BYTES);
+}
+
+function u64leBytes(n) {
+  const b = Buffer.alloc(AMOUNT_CT_BYTES);
+  b.writeBigUInt64LE(BigInt(n));
+  return b;
+}
+
+function xorBytes(a, b) {
+  const out = Buffer.alloc(a.length);
+  for (let i = 0; i < a.length; i += 1) out[i] = a[i] ^ b[i];
+  return out;
+}
+
+export function wrapBlind(r, admitBase, extra, v = null) {
   const e = randomScalar();
   const B = typeof admitBase?.toBytes === 'function' ? admitBase : pointFrom(asU8(admitBase));
   const rEphP = G.multiply(e);
   const shared = B.multiply(e);
   const mask = hashToScalar(RWRAP_DST, pointBytes(shared), extra || Buffer.alloc(0));
   const rs = typeof r === 'bigint' ? r : scalarFrom(r);
-  return { rEph: pointBytes(rEphP), rCt: scalarBytes(Fn.add(rs, mask)) };
+  const out = { rEph: pointBytes(rEphP), rCt: scalarBytes(Fn.add(rs, mask)) };
+  if (v != null) {
+    const n = noteU64(v);
+    if (n == null) throw new Error('amount');
+    out.amtCt = xorBytes(u64leBytes(n), amountMask(shared, extra));
+  }
+  return out;
 }
 
 export function unwrapBlind(rEph, rCt, xBase, extra) {
@@ -305,14 +358,47 @@ export function unwrapBlind(rEph, rCt, xBase, extra) {
   return scalarBytes(Fn.sub(scalarFrom(rCt), mask));
 }
 
-/** Attach rEph/rCt so a compacted mining/Flow note is spendable by the dest owner. */
-export function wrapNoteBlind(vout, admitBase) {
+/** Owner-only: v from amtCt. Not checked against C; openNoteAmount does that. */
+export function unwrapAmount(rEph, amtCt, xBase, extra) {
+  const ct = Buffer.from(asU8(amtCt));
+  if (ct.length !== AMOUNT_CT_BYTES) return null;
+  const x = typeof xBase === 'bigint' ? xBase : scalarFrom(xBase);
+  const shared = pointFrom(asU8(rEph)).multiply(x);
+  return xorBytes(ct, amountMask(shared, extra)).readBigUInt64LE(0);
+}
+
+/**
+ * Owner recovery of (v, r) from a sealed output's rEph, rCt, and amtCt.
+ * Null unless v·G + r·H equals the output commitment, so a swapped or
+ * corrupted ciphertext never yields a wrong amount.
+ */
+export function openNoteAmount(vout, xBase) {
+  try {
+    if (!vout?.rEph || !vout?.rCt || !vout?.amtCt || !vout?.commit) return null;
+    const extra = concat(asU8(vout.noteCommit), asU8(vout.commit));
+    const v = unwrapAmount(vout.rEph, vout.amtCt, xBase, extra);
+    if (v == null) return null;
+    const r = unwrapBlind(vout.rEph, vout.rCt, xBase, extra);
+    if (!commit(v, scalarFrom(r)).equals(pointFrom(vout.commit))) return null;
+    return { v, r };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Attach rEph/rCt so a compacted mining/Flow note is spendable by the dest owner.
+ * With v, amtCt carries the amount to that owner under the same ephemeral key.
+ */
+export function wrapNoteBlind(vout, admitBase, v = null) {
   if (!vout?.r || !admitBase) return vout;
-  if (vout.rEph && vout.rCt) return vout;
+  if (vout.rEph && vout.rCt && (v == null || vout.amtCt)) return vout;
   try {
     const extra = concat(asU8(vout.noteCommit), asU8(vout.commit));
-    const wrap = wrapBlind(vout.r, admitBase, extra);
-    return { ...vout, rEph: wrap.rEph, rCt: wrap.rCt };
+    const wrap = wrapBlind(vout.r, admitBase, extra, v);
+    const out = { ...vout, rEph: wrap.rEph, rCt: wrap.rCt };
+    if (wrap.amtCt) out.amtCt = wrap.amtCt;
+    return out;
   } catch {
     return vout;
   }
