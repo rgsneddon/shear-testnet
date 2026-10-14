@@ -481,6 +481,13 @@ Future<ShearIdentity> _needId(ShearSession session, _Flags flags, Map<String, St
 void _bindLedger(ShearLedger ledger, ShearIdentity id, [ShearSession? session]) {
   ledger.bindIdentity(id);
   if (session == null) return;
+  ledger.restoreAutoSendDelay(session.rememberedAutoSendDelay);
+  if (session.rememberedAutoSendDelay != null) {
+    ledger.restoreSealedTip(
+      session.rememberedSealedHeight,
+      genesis: session.rememberedChainGenesis,
+    );
+  }
   if (session.rememberedDests.isEmpty && session.rememberedTxs.isEmpty) return;
   applyUserArchive(ledger, {
     'dests': session.rememberedDests,
@@ -817,11 +824,16 @@ Future<int> _sync(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
   final ledger = ShearLedger(pool: client);
   _bindLedger(ledger, id, session);
   try {
+    await ledger.syncTip(proveChain: false);
     await ledger.syncHistory(id.address);
   } catch (e) {
     err.writeln('sync failed ($rpc): $e');
     return 1;
   }
+  ledger.armAutomaticSends();
+  session.rememberedAutoSendDelay = ledger.exportAutoSendDelay();
+  session.rememberedSealedHeight = ledger.sealedHeight;
+  await session.persist();
   out.writeln(flags.json
       ? jsonEncode({'ok': true, 'rpc': rpc, 'height': ledger.tipHeight, 'live': client.nodeLive})
       : 'sync  rpc=$rpc  height=${ledger.tipHeight}  live=${client.nodeLive}');

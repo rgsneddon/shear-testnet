@@ -856,6 +856,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       session.rememberedSealedHeight,
       genesis: session.rememberedChainGenesis,
     );
+    ledger.restoreAutoSendDelay(session.rememberedAutoSendDelay);
     ledger.restoreOpenedProofs(session.rememberedOpenedProofs);
     if (session.rememberedTxs.isNotEmpty) {
       await applyUserArchiveOffUi(ledger, {
@@ -1658,6 +1659,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     session.rememberedNotes = ledger.exportNotesForSession();
     session.rememberedNotesCovered = ledger.notesCovered;
     session.rememberedChainGenesis = ledger.chainGenesis;
+    session.rememberedAutoSendDelay = ledger.exportAutoSendDelay();
     session.rememberedTxs = [
       for (final t in ledger.transactions)
         if (t.kind != 'sample') t.toJson(),

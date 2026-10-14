@@ -241,6 +241,8 @@ class ShearSession {
   int rememberedNotesCovered = 0;
   String? rememberedChainGenesis;
   Map<String, dynamic>? rememberedReserve;
+  /// Automatic-send hold. `{v, epochBase, epochs, releaseEpoch}`.
+  Map<String, dynamic>? rememberedAutoSendDelay;
   List<Vortice> deployedVortices = const [];
   bool sealed = false;
   Map<String, dynamic>? _envelope;
@@ -385,6 +387,7 @@ class ShearSession {
           'chainGenesis': rememberedChainGenesis,
         'txs': rememberedTxs,
         if (rememberedReserve != null) 'reserve': rememberedReserve,
+        if (rememberedAutoSendDelay != null) 'autoSendDelay': rememberedAutoSendDelay,
         'vortices': deployedVortices.map((v) => v.toJson()).toList(),
       };
 
@@ -401,6 +404,7 @@ class ShearSession {
     rememberedNotesCovered = 0;
     rememberedChainGenesis = null;
     rememberedReserve = null;
+    rememberedAutoSendDelay = null;
     deployedVortices = const [];
     final pw = password ?? _password;
     if (pw != null && pw.isNotEmpty) {
@@ -442,6 +446,9 @@ class ShearSession {
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
     rememberedReserve = use['reserve'] is Map ? Map<String, dynamic>.from(use['reserve'] as Map) : null;
+    rememberedAutoSendDelay = use['autoSendDelay'] is Map
+        ? Map<String, dynamic>.from(use['autoSendDelay'] as Map)
+        : null;
     deployedVortices = ((use['vortices'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Vortice.fromJson(Map<String, dynamic>.from(e)))

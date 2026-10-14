@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'shear_auto_send_delay.dart';
 import 'shear_ctf.dart';
 import 'shear_identity.dart';
 import 'shear_eip712.dart';
@@ -2532,6 +2533,8 @@ class ShearLedger implements ReadProofSink {
   /// Selected dest index (0 .. destCount-1).
   int destIndex = 0;
   int _sealedHeight = 0;
+  /// One hold for miner payout sweeps and auto-consolidation.
+  AutoSendHold? _autoSendHold;
   /// Last height whose open-round pending was settled. Display [sealedHeight]
   /// can run ahead (1s tip poll); settlement uses this so confirmRound still
   /// fires after syncTip.
@@ -5263,6 +5266,9 @@ class ShearLedger implements ReadProofSink {
     }
     final opened = recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
     _openCollated = true;
+    // Payout scan. The same hold covers auto-consolidation. A miss on the
+    // CSPRNG stores nothing and still returns the opened sum.
+    armAutomaticSends();
     return opened;
   }
 
@@ -6141,6 +6147,40 @@ class ShearLedger implements ReadProofSink {
     return out;
   }
 
+  /// Draw once if no hold is stored. A later queue reuses that hold.
+  void queueMinerPayoutSweep({int? byte}) => _queueAutomatic(byte: byte);
+
+  /// Same hold as [queueMinerPayoutSweep]. Not a second draw.
+  void queueAutoConsolidate({int? byte}) => _queueAutomatic(byte: byte);
+
+  void _queueAutomatic({int? byte}) {
+    if (_autoSendHold != null) return;
+    final b = byte ?? autoSendCsprngByte();
+    _autoSendHold = AutoSendHold.draw(sealedTip: sealedHeight, byte: b);
+  }
+
+  Map<String, dynamic>? exportAutoSendDelay() => _autoSendHold?.toJson();
+
+  void restoreAutoSendDelay(Object? raw) {
+    final parsed = AutoSendHold.tryParse(raw);
+    if (parsed != null) _autoSendHold = parsed;
+  }
+
+  bool automaticBroadcastAllowed() {
+    final hold = _autoSendHold;
+    return hold != null && hold.ready(sealedHeight);
+  }
+
+  /// Start the shared hold. RNG failure stores nothing.
+  void armAutomaticSends() {
+    try {
+      queueMinerPayoutSweep();
+      queueAutoConsolidate();
+    } on StateError catch (e) {
+      if (e.message != 'rng_unavailable') rethrow;
+    }
+  }
+
   Future<ShearTx> send({
     required String from,
     required String to,
@@ -6159,7 +6199,15 @@ class ShearLedger implements ReadProofSink {
     bool privacyHopUp = false,
     bool allowPublicHttp = false,
     bool paintedCover = false,
+    bool automatic = false,
   }) async {
+    if (automatic) {
+      queueMinerPayoutSweep();
+      final hold = _autoSendHold;
+      if (hold == null || !hold.ready(sealedHeight)) {
+        throw StateError('auto_send_waiting');
+      }
+    }
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
     if (isShearAddress(from)) {
@@ -6712,6 +6760,7 @@ class ShearLedger implements ReadProofSink {
         change: changeDest,
       );
       _txs.add(tx);
+      if (automatic) _autoSendHold = null;
       return tx;
     }
     final netBook = spendable(src) - needShe;
@@ -6736,6 +6785,7 @@ class ShearLedger implements ReadProofSink {
       change: changeDest,
     );
     _txs.add(tx);
+    if (automatic) _autoSendHold = null;
     return tx;
   }
 
