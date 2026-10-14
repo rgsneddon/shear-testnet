@@ -1370,10 +1370,10 @@ export function supplyIdentities(built) {
 
 export const GENESIS_GATE = Object.freeze([
   { n: 1, item: 'S0–S8 code', ok: false, note: 'JS consensus path, builder, wallet open, observer harness. No node or pool template calls buildT21Coinbase yet; no ShearK v6 share preimage.' },
-  { n: 2, item: 'Vectors on JS, Dart, and Rust', ok: false, note: 'JS and Rust consume crypto/vectors/t21_splitlaw.json. Dart is a follow-up.' },
+  { n: 2, item: 'Vectors on JS, Dart, and Rust', ok: false, note: 'JS and Rust (shear-fs1 tests/t21_vectors.rs) check t21_splitlaw.json and t21_voucher.txt. Dart is a follow-up.' },
   { n: 3, item: 'Observer harness', ok: true, note: 'observerView on a multi-payee block finds no amount, limb, or share-to-row link.' },
-  { n: 4, item: 'Full-cap block inside 36,000 wu on the reference box', ok: false, note: 'Not measured on the reference box. JS verify is about 0.2 s per row on the build box.' },
-  { n: 5, item: 'O-1 and O-3 resolved; fingerprint frozen in one commit', ok: false, note: 'O-1 weight is 25+25n, reserve 2,336. O-3 / M78-1 generator set is open; GEN_H pins note.js H.' },
+  { n: 4, item: 'Full-cap block inside 36,000 wu on the reference box', ok: false, note: 'Not measured on the reference box. Build box, JS: 6.1 KB and about 46 ms verify per row at 17 rows; prove about 3.4 s per row.' },
+  { n: 5, item: 'O-1 and O-3 resolved; fingerprint frozen in one commit', ok: false, note: 'O-1: SEND_WEIGHT=25+25n, n<=8, reserve 2,336. FS-1 tree tokens from PR 78 are in. O-3 / M78-1 generator set is open; GEN_H pins note.js H.' },
   { n: 6, item: 'AL-1..7 including Dart', ok: false, note: 'amtCt and the txDigestV3 bind are cherry-picked from PR 81. Dart is a follow-up.' },
   { n: 7, item: 'SUP-V and KT-10/14/17; VP-0', ok: false, note: '0x23 rows need a chain pending-withdraw list; none is wired, so cb-v3 vault rows are refused.' },
   { n: 8, item: 'No plaintext amount on non-reserve outputs', ok: true, note: 'cb-v3 rows refuse nanos, amount, v, value, valueProof, and limb keys.' },
