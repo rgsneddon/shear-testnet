@@ -26,6 +26,13 @@ const kStaleObserveMs = 14 * 86400000;
 const kVoteIncrease = 'increase bonus';
 const kVoteDecrease = 'decrease bonus';
 const kVoteHold = 'leave bonus as-is';
+/// Connect bare already covers a deposit. The wallet does not open a tunnel.
+const kReserveIpDisclaimer =
+    'Connect bare is private. DINS-DAG and the ADMITv2 fluxset cover this deposit. A tunnel is not required.';
+
+/// Any finite positive SHE amount. No magnitude ceiling.
+bool reserveDepositAmountOk(double she) => she.isFinite && she > 0;
+
 const kReserveCutoffDisclaimer =
     'Fewer than $kReserveJoinCutoffDays days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
 const kReserveAccruedLabel = 'Accrued rewards';
@@ -714,7 +721,6 @@ Future<ReserveVoteResult> commandReserveVote({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
-  bool privacyHopUp = false,
   int? nowMs,
 }) async {
   final gate = reserveVoteGate(ledger, reserve, dest);
@@ -749,7 +755,6 @@ Future<ReserveVoteResult> commandReserveVote({
       local: local,
       kind: 'vote',
       programId: kReserveProgram,
-      privacyHopUp: privacyHopUp,
       allowPublicHttp: true,
       restFrame: restFrame,
       paymentCode: paymentCode,
