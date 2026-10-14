@@ -11,16 +11,16 @@
 //! layers stay scalar openings. The domains are shear-admit-c-point-v3 and
 //! shear-jroot-point-v3, not a patch on the v2 leaf domains.
 
-use crate::leaf::{jroot_hash, jroot_point_hash, sha512_64};
+use crate::leaf::{jroot_point_hash, sha512_64};
 use crate::select::{
-    leaf_prove, leaf_prove_v3, leaf_qd, leaf_verify, leaf_verify_v3, paired_prove, paired_qc_opens,
-    paired_qd_opens, paired_verify, point_open_prove, point_open_verify, rs_rand, vs_rand,
-    LEAF_PAIRED_LEN, LEAF_V3_LEN, PAIRED_LEN, POINT_OPEN_LEN, V3_Y, V3_YX,
+    leaf_prove_v3, leaf_qd, leaf_verify_v3, paired_prove, paired_qc_opens, paired_qd_opens,
+    paired_verify, point_open_prove, point_open_verify, rs_rand, vs_rand, LEAF_V3_LEN, PAIRED_LEN,
+    POINT_OPEN_LEN, V3_Y, V3_YX,
 };
 use crate::leaf::dest_leaf_fp;
 use crate::tree::{
     commit_ristretto_encodings, commit_ristretto_points, commit_vesta, leaf_p_siblings, note_u,
-    path_from_levels, rerand_c, root_of_levels, trees, trees_point, ARITY,
+    path_from_levels, rerand_c, root_of_levels, trees_point, ARITY,
 };
 use ff::PrimeField;
 use pasta_curves::vesta;
@@ -89,19 +89,6 @@ fn slots_of(index: usize, n_layers: usize) -> Vec<usize> {
 
 const ZERO_BIND: [u8; 32] = [0u8; 32];
 
-pub fn admit_prove(
-    x: &[u8; 32],
-    p: &[u8; 32],
-    c: &[u8; 32],
-    t: &[u8; 32],
-    index: usize,
-    dest_leaves: &[u8],
-    c_leaves: &[u8],
-    n: usize,
-) -> Option<([u8; 32], Vec<u8>)> {
-    admit_prove_in(x, p, c, t, index, dest_leaves, c_leaves, n, &ZERO_BIND, &[])
-}
-
 pub fn admit_prove_v3(
     x: &[u8; 32],
     p: &[u8; 32],
@@ -134,10 +121,10 @@ pub fn admit_prove_in(
     if n == 0 || index >= n {
         return None;
     }
-    let v3 = !ctx.is_empty();
-    if v3 && ctx.len() != 64 {
+    if ctx.len() != 64 {
         return None;
     }
+    let v3 = true;
     let ts = scalar_in(*t, v3)?;
     if ts == Scalar::ZERO {
         return None;
@@ -153,11 +140,7 @@ pub fn admit_prove_in(
         return None;
     }
     let tag = i_pt.compress().to_bytes();
-    let (dlevels, clev) = if v3 {
-        trees_point(dest_leaves, c_leaves, n)?
-    } else {
-        trees(dest_leaves, c_leaves, n)
-    };
+    let (dlevels, clev) = trees_point(dest_leaves, c_leaves, n)?;
     let dpath = path_from_levels(&dlevels, index)?;
     let cpath = path_from_levels(&clev, index)?;
     if dpath.len() != cpath.len() || dpath.is_empty() {
@@ -169,11 +152,7 @@ pub fn admit_prove_in(
     }
     let dest_root = root_of_levels(&dlevels);
     let c_root_b = root_of_levels(&clev);
-    let jr = if v3 {
-        jroot_point_hash(&dest_root, &c_root_b)
-    } else {
-        jroot_hash(&dest_root, &c_root_b)
-    };
+    let jr = jroot_point_hash(&dest_root, &c_root_b);
     let slots = slots_of(index, n_layers);
     let ct_pt = decompress(&c_tilde)?;
 
@@ -202,11 +181,7 @@ pub fn admit_prove_in(
         let parent_d = commit_vesta(&dpath[0]);
         // The glue child is the point commitment of the published bucket.
         // Internal parents above stay scalar encodings.
-        let parent_c = if v3 {
-            commit_ristretto_points(&cpath[0])?
-        } else {
-            commit_ristretto_encodings(&cpath[0])
-        };
+        let parent_c = commit_ristretto_points(&cpath[0])?;
         let td_b: [u8; 32] = t_d_prev?.to_repr().into();
         mem.extend_from_slice(&parent_d);
         mem.extend_from_slice(&td_b);
@@ -229,90 +204,49 @@ pub fn admit_prove_in(
     for x in &cpath[0] {
         mem.extend_from_slice(x);
     }
-    let leaf = if v3 {
-        if dpath[0][slots[0]] != dest_leaf_fp(p) {
-            return None;
-        }
-        leaf_prove_v3(
-            &dpath[0],
-            &cpath[0],
-            &p_sib,
-            slots[0],
-            &td_leaf,
-            &ts,
-            &w,
-            &ct_pt,
-            &p_com,
-            ctx,
-        )?
-    } else {
-        leaf_prove(
-            &dpath[0],
-            &cpath[0],
-            &p_sib,
-            slots[0],
-            &td_leaf,
-            &ts,
-            &w,
-            &ct_pt,
-            &p_com,
-            ctx,
-        )?
-    };
-    mem.extend_from_slice(&leaf);
-    if v3 {
-        let open = point_open_prove(&cpath[0], slots[0], ctx)?;
-        mem.extend_from_slice(&open);
+    if dpath[0][slots[0]] != dest_leaf_fp(p) {
+        return None;
     }
-    let nonce_rand = if v3 { os_rand32()? } else { [0u8; 32] };
-    let k = if v3 {
-        chal(&[b"k", ctx, x, t, &nonce_rand])
-    } else {
-        chal(&[b"k", x, t])
-    };
-    let a_w = if v3 {
-        chal(&[b"aw", ctx, x, t, &nonce_rand])
-    } else {
-        chal(&[b"aw", x, t])
-    };
+    let leaf = leaf_prove_v3(
+        &dpath[0],
+        &cpath[0],
+        &p_sib,
+        slots[0],
+        &td_leaf,
+        &ts,
+        &w,
+        &ct_pt,
+        &p_com,
+        ctx,
+    )?;
+    mem.extend_from_slice(&leaf);
+    let open = point_open_prove(&cpath[0], slots[0], ctx)?;
+    mem.extend_from_slice(&open);
+    let nonce_rand = os_rand32()?;
+    let k = chal(&[b"k", ctx, x, t, &nonce_rand]);
+    let a_w = chal(&[b"aw", ctx, x, t, &nonce_rand]);
     let r_x = G * k + u * a_w;
     let dest_q = leaf_qd(&leaf)?;
-    let bind = if v3 {
-        forest_bind_v3(ctx, &[(tag, c_tilde)])
-    } else {
-        *forest_bind
-    };
+    let bind = forest_bind_v3(ctx, &[(tag, c_tilde)]);
+    let _ = forest_bind;
     let rx_b = r_x.compress().to_bytes();
     let pc_b = p_com.compress().to_bytes();
-    let e2 = if v3 {
-        chal(&[
-            ctx,
-            b"dleq",
-            &rx_b,
-            &pc_b,
-            &tag,
-            &c_tilde,
-            &jr,
-            &dest_q,
-            &bind,
-        ])
-    } else {
-        chal(&[
-            b"dleq",
-            &rx_b,
-            &pc_b,
-            &tag,
-            &c_tilde,
-            &jr,
-            &dest_q,
-            &bind,
-        ])
-    };
+    let e2 = chal(&[
+        ctx,
+        b"dleq",
+        &rx_b,
+        &pc_b,
+        &tag,
+        &c_tilde,
+        &jr,
+        &dest_q,
+        &bind,
+    ]);
     let z_x = k + e2 * xs;
     let z_w = a_w + e2 * w;
 
     let mut proof = Vec::new();
-    proof.push(if v3 { VERSION_V3 } else { VERSION });
+    proof.push(VERSION_V3);
     proof.extend_from_slice(&tag);
     proof.extend_from_slice(&c_tilde);
     proof.extend_from_slice(&dest_root);
@@ -323,8 +257,7 @@ pub fn admit_prove_in(
     proof.extend_from_slice(&z_w.to_bytes());
     proof.push(n_layers as u8);
     proof.extend_from_slice(&mem);
-    let cap = if v3 { MAX_PROOF_V3 } else { MAX_PROOF };
-    if proof.len() > cap {
+    if proof.len() > MAX_PROOF_V3 {
         return None;
     }
     Some((c_tilde, proof))
@@ -643,7 +576,7 @@ pub fn forge_attacker_dest_v3(
 }
 
 pub fn spend_tag_of(proof: &[u8]) -> Option<[u8; 32]> {
-    if proof.len() < 33 || (proof[0] != VERSION && proof[0] != VERSION_V3) {
+    if proof.len() < 33 || proof[0] != VERSION_V3 {
         return None;
     }
     let mut t = [0u8; 32];
@@ -660,18 +593,6 @@ fn parse_c_siblings(p: &[u8], off: usize) -> Option<([[u8; 32]; ARITY], usize)> 
         xs[i].copy_from_slice(&p[off + i * 32..off + i * 32 + 32]);
     }
     Some((xs, off + ARITY * 32))
-}
-
-pub fn admit_verify(
-    proof: &[u8],
-    jr: &[u8; 32],
-    c_tilde: &[u8; 32],
-    spend_tag: &[u8; 32],
-    dest_leaves: &[u8],
-    c_leaves: &[u8],
-    n: usize,
-) -> bool {
-    admit_verify_in(proof, jr, c_tilde, spend_tag, dest_leaves, c_leaves, n, &ZERO_BIND, &[])
 }
 
 pub fn admit_verify_v3(
@@ -698,17 +619,15 @@ pub fn admit_verify_in(
     forest_bind: &[u8; 32],
     ctx: &[u8],
 ) -> bool {
-    let _ = (dest_leaves, c_leaves, n);
-    let v3 = !ctx.is_empty();
-    if v3 && ctx.len() != 64 {
+    let _ = (dest_leaves, c_leaves, n, forest_bind);
+    if ctx.len() != 64 {
         return false;
     }
-    let want_ver = if v3 { VERSION_V3 } else { VERSION };
-    if proof.is_empty() || proof[0] != want_ver {
+    let v3 = true;
+    if proof.is_empty() || proof[0] != VERSION_V3 {
         return false;
     }
-    let cap = if v3 { MAX_PROOF_V3 } else { MAX_PROOF };
-    if proof.len() > cap {
+    if proof.len() > MAX_PROOF_V3 {
         return false;
     }
     if n > 0 && proof.len() == 4 + 64 + n * 32 {
@@ -742,11 +661,7 @@ pub fn admit_verify_in(
         Some(x) => x,
         None => return false,
     };
-    let rooted = if v3 {
-        jroot_point_hash(&dest_root, &c_root_b) == *jr
-    } else {
-        jroot_hash(&dest_root, &c_root_b) == *jr
-    };
+    let rooted = jroot_point_hash(&dest_root, &c_root_b) == *jr;
     if !rooted {
         return false;
     }
@@ -893,79 +808,43 @@ pub fn admit_verify_in(
         Some(p) => p,
         None => return false,
     };
-    if v3 {
-        let point_parent = match commit_ristretto_points(&siblings) {
-            Some(p) => p,
-            None => return false,
-        };
-        if point_parent != c_parent {
-            return false;
-        }
-        // The tree node is the point commitment. The dest-bind leaf opens the
-        // encoding commitment of this same published bucket.
-        let enc_parent = commit_ristretto_encodings(&siblings);
-        let leaf_end = off + LEAF_V3_LEN;
-        if proof.len() != leaf_end + POINT_OPEN_LEN {
-            return false;
-        }
-        let leaf = &proof[off..leaf_end];
-        if !leaf_verify_v3(&dest_parent, &enc_parent, &ct, &p_com, leaf, ctx) {
-            return false;
-        }
-        if !point_open_verify(&siblings, &proof[leaf_end..leaf_end + POINT_OPEN_LEN], ctx) {
-            return false;
-        }
-        let dest_q = match leaf_qd(leaf) {
-            Some(x) => x,
-            None => return false,
-        };
-        return v3_dleq(
-            &dest_q,
-            &p_com,
-            &p_com_b,
-            &r_x_b,
-            &tag,
-            c_tilde,
-            jr,
-            ctx,
-            z_x,
-            z_w,
-        );
-    }
-    if commit_ristretto_encodings(&siblings) != c_parent {
+    let point_parent = match commit_ristretto_points(&siblings) {
+        Some(p) => p,
+        None => return false,
+    };
+    if point_parent != c_parent {
         return false;
     }
-    let leaf_end = off + LEAF_PAIRED_LEN;
-    if proof.len() < leaf_end {
+    // The tree node is the point commitment. The dest-bind leaf opens the
+    // encoding commitment of this same published bucket.
+    let enc_parent = commit_ristretto_encodings(&siblings);
+    let leaf_end = off + LEAF_V3_LEN;
+    if proof.len() != leaf_end + POINT_OPEN_LEN {
         return false;
     }
     let leaf = &proof[off..leaf_end];
-    if !leaf_verify(&dest_parent, &siblings, &p_sib, &ct, &p_com, leaf, ctx) {
+    if !leaf_verify_v3(&dest_parent, &enc_parent, &ct, &p_com, leaf, ctx) {
+        return false;
+    }
+    if !point_open_verify(&siblings, &proof[leaf_end..leaf_end + POINT_OPEN_LEN], ctx) {
         return false;
     }
     let dest_q = match leaf_qd(leaf) {
         Some(x) => x,
         None => return false,
     };
-    let u = note_u();
-    let r_x = match decompress(&r_x_b) {
-        Some(p) => p,
-        None => return false,
-    };
-    let e2 = chal(&[
-        b"dleq",
-        &r_x_b,
+    v3_dleq(
+        &dest_q,
+        &p_com,
         &p_com_b,
+        &r_x_b,
         &tag,
         c_tilde,
         jr,
-        &dest_q,
-        forest_bind,
-    ]);
-    if G * z_x + u * z_w != r_x + p_com * e2 {
-        return false;
-    }
-    true
+        ctx,
+        z_x,
+        z_w,
+    )
 }
 
 fn v3_dleq(
@@ -1000,24 +879,6 @@ fn v3_dleq(
     G * z_x + u * z_w == r_x + *p_com * e2
 }
 
-pub fn admit_verify_batch(
-    items: &[(&[u8], [u8; 32], [u8; 32])],
-    jr: &[u8; 32],
-    dest_leaves: &[u8],
-    c_leaves: &[u8],
-    n: usize,
-) -> bool {
-    if items.is_empty() {
-        return false;
-    }
-    for (pr, ct, tag) in items {
-        if !admit_verify(pr, jr, ct, tag, dest_leaves, c_leaves, n) {
-            return false;
-        }
-    }
-    true
-}
-
 fn forest_bind_v3(ctx: &[u8], pairs: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
     let mut parts: Vec<&[u8]> = Vec::with_capacity(2 + pairs.len() * 2);
     parts.push(ctx);
@@ -1029,100 +890,6 @@ fn forest_bind_v3(ctx: &[u8], pairs: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
     chal(&parts).to_bytes()
 }
 
-fn forest_bind_of(pre: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(16 + pre.len() * 64);
-    buf.extend_from_slice(b"forest-ct");
-    for (tag, ct) in pre {
-        buf.extend_from_slice(tag);
-        buf.extend_from_slice(ct);
-    }
-    chal(&[&buf]).to_bytes()
-}
-
-pub fn forest_prove(
-    spends: &[(
-        [u8; 32],
-        [u8; 32],
-        [u8; 32],
-        [u8; 32],
-        usize,
-    )],
-    dest_leaves: &[u8],
-    c_leaves: &[u8],
-    n: usize,
-) -> Option<Vec<([u8; 32], Vec<u8>)>> {
-    if spends.len() < 2 {
-        return None;
-    }
-    let mut pre = Vec::with_capacity(spends.len());
-    for (x, p, c, t, idx) in spends {
-        if *idx >= n {
-            return None;
-        }
-        let xs = Scalar::from_bytes_mod_order(*x);
-        let p_pt = decompress(p)?;
-        let i_pt = hp(&p_pt) * xs;
-        if i_pt.is_identity() {
-            return None;
-        }
-        let tag = i_pt.compress().to_bytes();
-        let ct = rerand_c(c, t)?;
-        pre.push((tag, ct));
-    }
-    let bind = forest_bind_of(&pre);
-    let mut out = Vec::new();
-    for (x, p, c, t, idx) in spends {
-        out.push(admit_prove_in(
-            x,
-            p,
-            c,
-            t,
-            *idx,
-            dest_leaves,
-            c_leaves,
-            n,
-            &bind,
-            &[],
-        )?);
-    }
-    Some(out)
-}
-
-fn proof_ct_tag(proof: &[u8]) -> Option<([u8; 32], [u8; 32])> {
-    let tag = read32(proof, 1)?;
-    let ct = read32(proof, 33)?;
-    Some((ct, tag))
-}
-
-pub fn forest_verify(
-    proofs: &[(&[u8], [u8; 32], [u8; 32])],
-    jr: &[u8; 32],
-    dest_leaves: &[u8],
-    c_leaves: &[u8],
-    n: usize,
-) -> bool {
-    if proofs.len() < 2 {
-        return false;
-    }
-    let mut pre = Vec::with_capacity(proofs.len());
-    for (pr, ct, tag) in proofs {
-        let (ct_p, tag_p) = match proof_ct_tag(pr) {
-            Some(v) => v,
-            None => return false,
-        };
-        if ct_p != *ct || tag_p != *tag {
-            return false;
-        }
-        pre.push((*tag, *ct));
-    }
-    let bind = forest_bind_of(&pre);
-    for (pr, ct, tag) in proofs {
-        if !admit_verify_in(pr, jr, ct, tag, dest_leaves, c_leaves, n, &bind, &[]) {
-            return false;
-        }
-    }
-    true
-}
 
 #[cfg(test)]
 mod cap_tests {

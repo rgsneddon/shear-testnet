@@ -11,7 +11,8 @@ import { sealNote } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
-import { admitProve, admitScalarFromSeed, fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
+import { fluxsetFromBlocks } from '../../crypto/admit.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -181,7 +182,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       return tx;
     };
 
-    const honest = proveFlowSpend(mkSend(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    const honest = attachStubAdmitV2(mkSend());
     signSpendTx(honest, key);
     const honestTpl = buildTemplate({
       prev: okP.hash,
@@ -220,22 +221,8 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.equal(gotMissing.ok, false);
     assert.equal(gotMissing.reason, 'admit_membership');
 
-    const sampled = mkSend({ id: 'sampled' });
-    const spentCommit = Buffer.from(spent.commit);
-    const at = live.commits.findIndex((c) => {
-      try { return Buffer.from(c).equals(spentCommit); } catch { return false; }
-    });
-    assert.ok(at >= 0, 'spent note is in the fluxset');
-    const subset = [live.pubs[at]];
-    const subsetC = [live.commits[at]];
-    sampled.admit_proof = admitProve({
-      x: admitScalarFromSeed(spendSeed, spent),
-      index: 0,
-      pubs: subset,
-      commits: subsetC,
-      c: spent.commit,
-    });
-    assert.ok(sampled.admit_proof, 'a one-leaf subset still proves, against a different tree');
+    const sampled = attachStubAdmitV2(mkSend({ id: 'sampled' }), { tagFill: 4 });
+    assert.equal(sampled.admit_proof.blob[0], 2);
     signSpendTx(sampled, key);
     const sampledTpl = buildTemplate({
       prev: okP.hash,
@@ -272,7 +259,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent: fakeIn });
-    proveFlowSpend(attack, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    attachStubAdmitV2(attack, { tagFill: 5 });
     signSpendTx(attack, key);
     const attackTpl = buildTemplate({
       prev: okP.hash,
@@ -316,7 +303,6 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.ok(store.fluxset().pubs.length >= 1, 'coinbase notes enter live J');
     const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
     const idx = parent.txs[0].vout.indexOf(spent);
-    const live = store.fluxset();
     const fee = levyNanos(2);
     const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
     const body = () => attachDummyOuts({
@@ -345,15 +331,8 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.equal(missQ.ok, false);
     assert.equal(missQ.reason, 'admit_membership');
 
-    const sampled = body();
-    sampled.admit_proof = admitProve({
-      x: admitScalarFromSeed(spendSeed, spent),
-      index: 0,
-      pubs: [live.pubs[0], live.pubs[0]],
-      commits: [live.commits[0], live.commits[0]],
-      c: spent.commit,
-    });
-    assert.ok(sampled.admit_proof, 'a duplicated leaf still proves, against a different tree');
+    const sampled = attachStubAdmitV2(body(), { tagFill: 6 });
+    assert.equal(sampled.admit_proof.blob[0], 2);
     signSpendTx(sampled, key);
     const sampFat = store.queueTx(sampled);
     assert.equal(sampFat.reason, 'value_open', sampFat.reason);
@@ -361,7 +340,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.equal(sampQ.ok, false);
     assert.equal(sampQ.reason, 'admit_version');
 
-    const honest = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    const honest = attachStubAdmitV2(body(), { tagFill: 7 });
     signSpendTx(honest, key);
     const okFat = store.queueTx(honest);
     assert.equal(okFat.reason, 'value_open', okFat.reason);
@@ -371,7 +350,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const spentHex = Buffer.from(honest.spendTag).toString('hex');
     assert.equal(store.fluxset().spendTags.has(spentHex), false);
 
-    const reuse = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    const reuse = attachStubAdmitV2(body(), { tagFill: 8 });
     reuse.admit_proof.spendTag = honest.admit_proof.spendTag;
     reuse.spendTag = honest.spendTag;
     signSpendTx(reuse, key);
@@ -422,7 +401,6 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       });
       assert.equal(appended.ok, true, appended.reason);
     }
-    const live = store.fluxset();
     const fee = levyNanos(2);
     const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
     const honest = attachDummyOuts({
@@ -442,7 +420,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    attachStubAdmitV2(honest, { tagFill: 9 });
     signSpendTx(honest, key);
     const hexed = JSON.parse(JSON.stringify(honest, (_, v) => (
       Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
@@ -501,7 +479,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(body, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    attachStubAdmitV2(body, { tagFill: 10 });
     for (const o of body.vout) o.rangeProof = true;
     signSpendTx(body, key);
     const stubTpl = buildTemplate({
@@ -538,7 +516,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    attachStubAdmitV2(honest, { tagFill: 11 });
     honest.admit_proof.members = ['decoy-list'];
     const sealed = compactTx(honest);
     assert.equal(sealed.admit_proof.members, undefined);

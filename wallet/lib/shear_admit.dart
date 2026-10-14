@@ -1,10 +1,9 @@
 import 'dart:typed_data';
 
-import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
-/// Shown when a send is attempted. Bucket-32 prove stays off until FS-1.
+/// Shown when a send is attempted. The v3 prove stays off until FS-1.
 const String kErrSendUnavailable = 'send unavailable until FS-1';
 
 final admitXDst = utf8Bytes('shear-admit-x-v1');
@@ -101,7 +100,7 @@ bool _eq(Uint8List a, Uint8List b) {
   return true;
 }
 
-/// Closed until FS-1. Does not call [nativeProveFlowSpend].
+/// Closed until FS-1. The wallet has no spend prover to call.
 /// A missing helper used to surface as admit_native_required.
 Map<String, dynamic> proveFlowSpend(
   Map<String, dynamic> tx, {

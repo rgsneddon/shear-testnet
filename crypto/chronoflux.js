@@ -547,12 +547,14 @@ export function compactTx(tx) {
   if ((keepDest || poolWithdraw || reserveTx || kind === 'b-spend') && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
-    if (tx.admit_proof.blob || tx.admit_proof.v === 2 || tx.admit_proof.v === 3) {
-      let ver = 2;
+    if (tx.admit_proof.blob || tx.admit_proof.v === 3) {
+      // The label is the blob's first byte, so a closed byte is still refused
+      // as admit_version downstream.
+      let ver = 3;
       try {
         const blob = Buffer.from(asU8(tx.admit_proof.blob || []));
-        if (blob.length > 0 && blob[0] === 3) ver = 3;
-      } catch { /* a blob that is not bytes stays a version-2 label */ }
+        if (blob.length > 0) ver = blob[0];
+      } catch { /* a blob that is not bytes keeps the byte-3 label */ }
       out.admit_proof = {
         admit_proof: true,
         v: ver,

@@ -63,8 +63,6 @@ import {
 } from '../../crypto/reserve_evm.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields, admitBaseFromAddress, encodeDest } from '../../crypto/address.js';
 import {
-  admit_verify,
-  admitVerifyBatch,
   attachAdmitPub,
   fluxsetFromBlocks,
   appendFluxBlock,
@@ -97,8 +95,6 @@ import {
   noteCommitOfDest20,
   asU8,
   pointFrom,
-  txSpendTags,
-  canonicalSpendTag,
   txIoCap,
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
@@ -2409,62 +2405,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (flowV3Done) {
         // Tags are already in spentTags. Do not send the blob to admit_verify.
       } else {
-      const parsed = txSpendTags(tx);
-      if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
-      // Verify the bound list only. tx.admit_proof is not a spend unless it is
-      // that list. A distinct extra never reaches admit_verify or spentTags.
-      const boundProofs = boundIns?.proofs || [];
-      const vins = boundIns?.vins || [];
-      if (boundProofs.length !== vins.length || boundProofs.length < 1) {
+        // A flow that did not finish verifyFlowAdmitV3 is not a member.
+        // The v2 verifier is not called.
         return { ok: false, reason: 'admit_membership' };
-      }
-      const liveJ = { pubs, commits, jroot: live.jroot };
-      const spendOne = (proof, tag) => {
-        if (!tag) return { ok: false, reason: 'admit_membership' };
-        if (!admit_verify(proof, liveJ, { cTilde: proof.cTilde, spendTag: tag, jroot: live.jroot })) {
-          return { ok: false, reason: 'admit_membership' };
-        }
-        const th = tag.toString('hex');
-        if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
-        spentTags.add(th);
-        return null;
-      };
-      if (boundProofs.length === 1) {
-        const proof = boundProofs[0];
-        const one = canonicalSpendTag(proof);
-        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
-        const failed = spendOne(proof, one.tag);
-        if (failed) return failed;
-      } else {
-      const items = [];
-      const tags = [];
-      for (let pi = 0; pi < boundProofs.length; pi += 1) {
-        const proof = boundProofs[pi];
-        if (!proof) return { ok: false, reason: 'admit_membership' };
-        const one = canonicalSpendTag(proof);
-        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
-        if (!one.tag) return { ok: false, reason: 'admit_membership' };
-        const cTilde = proof.cTilde;
-        if (!cTilde || !vins[pi]?.commit) return { ok: false, reason: 'admit_membership' };
-        const posted = Buffer.from(asU8(vins[pi].commit));
-        const want = Buffer.from(asU8(cTilde));
-        if (posted.length !== want.length || !posted.equals(want)) {
-          return { ok: false, reason: 'admit_membership' };
-        }
-        items.push({ proof: proof.blob || proof.proof || proof, cTilde, spendTag: one.tag });
-        tags.push(one.tag);
-      }
-      if (!admitVerifyBatch(items, liveJ, { jroot: live.jroot })) {
-        return { ok: false, reason: 'admit_membership' };
-      }
-      const seen = new Set();
-      for (const tag of tags) {
-        const th = tag.toString('hex');
-        if (seen.has(th) || spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
-        seen.add(th);
-        spentTags.add(th);
-      }
-      }
       }
     }
     for (const o of outs) pushPub(tx, o);
