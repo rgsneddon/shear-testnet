@@ -434,6 +434,9 @@ export const OUTPUT_AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'v', 'value'
 export const TX_AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'changeNanos']);
 /** Kinds whose outputs are hidden. Reserve, pool-withdraw, b-spend, and coinbase are public-amount by design. */
 const HIDDEN_TX_KINDS = new Set(['', 'send', 'transfer', 'change', 'dummy']);
+export const HIDDEN_WRAP_KEYS = Object.freeze(['rEph', 'rCt', 'amtCt']);
+/** Dummies go to a random dest with no admit base; they stay publicly zero instead. */
+const WRAPPED_OUTPUT_KINDS = new Set(['', 'send', 'transfer', 'change']);
 
 function hasKey(o, k) {
   return !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined;
@@ -474,6 +477,12 @@ export function amountFieldRejected(tx) {
     if (!hiddenAmountTx(tx) && !o.commit) continue;
     for (const k of OUTPUT_AMOUNT_KEYS) {
       if (hasKey(o, k)) return { ok: false, reason: 'amount_field' };
+    }
+    // A hidden output is spendable and readable only by its dest: rEph, rCt, and amtCt are required.
+    if (hiddenAmountTx(tx) && o.commit && WRAPPED_OUTPUT_KINDS.has(String(o.kind || ''))) {
+      for (const k of HIDDEN_WRAP_KEYS) {
+        if (!hasKey(o, k) || o[k] === '') return { ok: false, reason: 'amount_ct', field: k };
+      }
     }
   }
   return null;
