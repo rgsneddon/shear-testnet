@@ -5,6 +5,9 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { destBoundShareHash } from '../../crypto/share_batch.js';
+import { meetsTarget } from '../../crypto/shear_hash.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, '..', 'dist');
@@ -362,6 +365,97 @@ describe('ShearK-Miner', () => {
     assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
     assert.match(stripAnsi(out), /job[= ]dest-job/);
     assert.equal(header.toString('hex').length, 256);
+  });
+
+  it('shareBind=note binds every share to the job\'s T21 note commit and sends the voucher at login', async () => {
+    const header = Buffer.alloc(128);
+    header[0] = 1;
+    const noteCommit = createHash('sha256').update('t21-label-note').digest();
+    const job = {
+      jobId: 'note-job',
+      header: header.toString('hex'),
+      shareBits: 8,
+      blockBits: 64,
+      bits: 64,
+      shareBind: 'note',
+      noteCommit: noteCommit.toString('hex'),
+    };
+    const voucher = 'ab'.repeat(32) + 'cd'.repeat(32) + 'ef'.repeat(32);
+    let loginLine = '';
+    const submits = [];
+    let pending = '';
+    const server = net.createServer((sock) => {
+      sock.on('error', () => {});
+      sock.on('data', (chunk) => {
+        pending += chunk.toString();
+        let at;
+        while ((at = pending.indexOf('\n')) >= 0) {
+          const text = pending.slice(0, at);
+          pending = pending.slice(at + 1);
+          if (text.includes('"method":"login"')) {
+            loginLine += text;
+            sock.write(`${JSON.stringify({ id: 1, result: { status: 'OK' }, job })}\n`);
+          } else if (text.includes('"method":"submit"')) {
+            submits.push(JSON.parse(text).params);
+            sock.write(`${JSON.stringify({ id: 2, result: { status: 'OK' } })}\n`);
+          }
+        }
+      });
+    });
+    server.on('error', () => {});
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const child = spawn(bin, [
+      '--backend', 'interpreter',
+      '--pool', `127.0.0.1:${server.address().port}`,
+      '--notls',
+      '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
+      '--voucher', voucher.toUpperCase(),
+      '--threads', '2',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { out += d.toString(); });
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && submits.length < 3) await new Promise((r) => setTimeout(r, 200));
+    child.kill('SIGTERM');
+    await new Promise((r) => child.once('close', r));
+    server.close();
+    assert.match(loginLine, new RegExp(`"voucher":\\{"B":"${'ab'.repeat(32)}","Y":"${'cd'.repeat(32)}","lambda":"${'ef'.repeat(32)}"\\}`));
+    assert.ok(submits.length >= 3, `${submits.length} submits\n${out}`);
+    for (const s of submits) {
+      const bits = Number(BigInt(s.nonce) >> 56n);
+      assert.equal(bits, 8);
+      const bound = destBoundShareHash(Buffer.from(s.hash, 'hex'), noteCommit);
+      assert.equal(meetsTarget(bound, bits), true, JSON.stringify(s));
+    }
+  });
+
+  it('a shareBind=note job without a 32-byte note commit is ignored', async () => {
+    const header = Buffer.alloc(128);
+    header[0] = 1;
+    const job = { jobId: 'bad-note', header: header.toString('hex'), shareBits: 8, blockBits: 64, bits: 64, shareBind: 'note', noteCommit: 'abcd' };
+    const server = net.createServer((sock) => {
+      sock.on('error', () => {});
+      sock.on('data', (chunk) => {
+        if (chunk.toString().includes('"method":"login"')) sock.write(`${JSON.stringify({ id: 1, result: { status: 'OK' }, job })}\n`);
+      });
+    });
+    server.on('error', () => {});
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const child = spawn(bin, [
+      '--backend', 'interpreter', '--pool', `127.0.0.1:${server.address().port}`, '--notls',
+      '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul', '--threads', '1',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { out += d.toString(); });
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !/noteCommit for shareBind=note/.test(out)) await new Promise((r) => setTimeout(r, 150));
+    child.kill('SIGTERM');
+    await new Promise((r) => child.once('close', r));
+    server.close();
+    assert.match(out, /job without a 32-byte noteCommit for shareBind=note; ignored/);
+    assert.equal(/job[= ]bad-note/.test(stripAnsi(out)), false, out);
   });
 
   it('two hash threads complete more hashes than one against the same job', async () => {

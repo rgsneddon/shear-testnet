@@ -58,6 +58,8 @@
 static const char *g_user = NULL;
 static char g_login[320];
 static char g_dest[256];
+/* T21 voucher B || Y || lambda, 192 lowercase hex. Sent at login; the pool then labels each job. */
+static char g_voucher[193];
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
@@ -81,6 +83,9 @@ typedef struct {
   int height;
   char jobId[80];
   unsigned char header[SHEAR_HEADER_LEN];
+  /* Share bind for this header: 0 raw, 1 dest (g_note_commit), 2 the job's T21 label note. */
+  int bind;
+  unsigned char note[32];
   int have;
 } JobSnap;
 
@@ -93,7 +98,6 @@ static int g_job_gen = 0;
 static atomic_int g_job_seq;
 static atomic_int g_share_bits_live;
 static atomic_int g_block_bits_live;
-static atomic_int g_share_bind_dest;
 static unsigned char g_note_commit[32];
 static unsigned char g_dest20[20];
 static char g_dest20_hex[41];
@@ -171,6 +175,7 @@ static void usage(FILE *out) {
           "Hashes the 128-byte Shear header. One proven share-hash mints units.\n\n"
           "  --user she1…|ssa1….worker   required (not shear1)\n"
           "  --dest ssa1…                owned payout dest (she1 login)\n"
+          "  --voucher HEX               T21 voucher B||Y||lambda (192 hex) for pool share labels\n"
           "  --pool host:port            default stratum+ssl://%s:%d\n"
           "  --threads N                 no 256 farm cap\n"
           "  --backend jit-full            default: 2 GiB dataset JIT (same digest as light)\n"
@@ -206,6 +211,21 @@ static int parse_header_hex(const char *hex, unsigned char out[SHEAR_HEADER_LEN]
     out[i] = (unsigned char)((a << 4) | b);
   }
   return 0;
+}
+
+static int parse_hex32(const char *hex, unsigned char out[32]) {
+  if (!hex || strlen(hex) != 64) return -1;
+  for (int i = 0; i < 32; i++) {
+    int a = hex_nibble(hex[i * 2]);
+    int b = hex_nibble(hex[i * 2 + 1]);
+    if (a < 0 || b < 0) return -1;
+    out[i] = (unsigned char)((a << 4) | b);
+  }
+  return 0;
+}
+
+static int same_bind(const JobSnap *a, const JobSnap *b) {
+  return a->bind == b->bind && (a->bind != 2 || memcmp(a->note, b->note, 32) == 0);
 }
 
 static int valid_worker(const char *w) {
@@ -324,16 +344,17 @@ static int credit_bits_of_nonce(uint64_t nonce) {
   return shear_credit_bits_of_nonce(nonce);
 }
 
-static int share_or_block_hit(const unsigned char hash[32], uint64_t nonce) {
+static int share_or_block_hit(const unsigned char hash[32], uint64_t nonce, const JobSnap *job) {
   int sb = credit_bits_of_nonce(nonce);
   int bb = atomic_load_explicit(&g_block_bits_live, memory_order_relaxed);
   if (bb > 0 && shear_meets_target(hash, bb)) return 1;
   /* Share credit is the byte in this nonce, not a later vardiff dial.
-   * dest-bound submit only when the job says shareBind=dest. */
+   * shareBind=dest binds to the dest note; shareBind=note to the job's T21 label. */
   if (sb < 0) return 0;
-  if (atomic_load_explicit(&g_share_bind_dest, memory_order_relaxed) && g_have_note) {
+  const unsigned char *note = job->bind == 2 ? job->note : (job->bind == 1 && g_have_note ? g_note_commit : NULL);
+  if (note) {
     unsigned char bound[32];
-    shear_share_bind(hash, g_note_commit, bound);
+    shear_share_bind(hash, note, bound);
     return shear_meets_target(bound, sb);
   }
   return shear_meets_target(hash, sb);
@@ -579,10 +600,14 @@ static void identity_json(char *out, size_t cap, const char *login, int threads)
 }
 
 static int send_login(Conn *c, const char *login, int threads) {
-  char ident[1400], line[3200];
+  char ident[1400], line[3200], voucher[260] = "";
   identity_json(ident, sizeof(ident), login, threads);
+  if (g_voucher[0]) {
+    snprintf(voucher, sizeof(voucher), ",\"voucher\":{\"B\":\"%.64s\",\"Y\":\"%.64s\",\"lambda\":\"%.64s\"}",
+             g_voucher, g_voucher + 64, g_voucher + 128);
+  }
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":1,\"method\":\"login\",\"params\":{%s},%s}\n", ident, ident);
+                   "{\"id\":1,\"method\":\"login\",\"params\":{%s%s},%s}\n", ident, voucher, ident);
   return conn_write(c, line, n) == 0 ? 0 : -1;
 }
 
@@ -629,7 +654,16 @@ static void apply_job(const char *line) {
   {
     char bind[16] = "";
     json_token(line, "shareBind", bind, sizeof(bind));
-    atomic_store_explicit(&g_share_bind_dest, strcmp(bind, "dest") == 0, memory_order_release);
+    if (strcmp(bind, "note") == 0) {
+      char nc[80] = "";
+      if (!json_token(line, "noteCommit", nc, sizeof(nc)) || parse_hex32(nc, job.note) != 0) {
+        fprintf(stderr, "job without a 32-byte noteCommit for shareBind=note; ignored\n");
+        return;
+      }
+      job.bind = 2;
+    } else {
+      job.bind = strcmp(bind, "dest") == 0 ? 1 : 0;
+    }
   }
   if (!job.jobId[0]) snprintf(job.jobId, sizeof(job.jobId), "job");
   if (job.height > g_height) {
@@ -638,7 +672,7 @@ static void apply_job(const char *line) {
   }
   pthread_mutex_lock(&g_job_mu);
   if (g_have_main && g_main_job.have
-      && memcmp(g_main_job.header, job.header, SHEAR_HEADER_LEN) == 0) {
+      && memcmp(g_main_job.header, job.header, SHEAR_HEADER_LEN) == 0 && same_bind(&g_main_job, &job)) {
     g_main_job.share_bits = job.share_bits;
     g_main_job.block_bits = job.block_bits;
     if (job.height > 0) g_main_job.height = job.height;
@@ -669,6 +703,8 @@ static void apply_job(const char *line) {
       && memcmp(g_pending_job.header, job.header, 100) == 0
       && memcmp(g_pending_job.header + 108, job.header + 108, 4) == 0) {
     memcpy(g_pending_job.header, job.header, SHEAR_HEADER_LEN);
+    g_pending_job.bind = job.bind;
+    memcpy(g_pending_job.note, job.note, 32);
     g_pending_job.share_bits = job.share_bits;
     g_pending_job.block_bits = job.block_bits;
     if (job.height > 0) g_pending_job.height = job.height;
@@ -954,7 +990,11 @@ static void *hash_worker(void *arg) {
       unsigned char live[SHEAR_HEADER_LEN];
       pthread_mutex_lock(&g_job_mu);
       int have_live = g_have_main && g_main_job.have;
-      if (have_live) memcpy(live, g_main_job.header, SHEAR_HEADER_LEN);
+      if (have_live) {
+        memcpy(live, g_main_job.header, SHEAR_HEADER_LEN);
+        job.bind = g_main_job.bind;
+        memcpy(job.note, g_main_job.note, 32);
+      }
       pthread_mutex_unlock(&g_job_mu);
       if (!have_live) {
         usleep(10000);
@@ -975,7 +1015,7 @@ static void *hash_worker(void *arg) {
         shear_hash(header, hash);
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-            && share_or_block_hit(hash, stamped)) {
+            && share_or_block_hit(hash, stamped, &job)) {
           enqueue_share(job.jobId, stamped, hash, job.gen);
         }
         n += (uint64_t)g_threads;
@@ -994,12 +1034,12 @@ static void *hash_worker(void *arg) {
     }
     atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-        && share_or_block_hit(hash, primed_n)) {
+        && share_or_block_hit(hash, primed_n, &job)) {
       unsigned char check[32];
       shear_hash(primed_hdr, check);
       if (memcmp(hash, check, 32) != 0) {
         memcpy(hash, check, 32);
-        if (!share_or_block_hit(hash, primed_n)) {
+        if (!share_or_block_hit(hash, primed_n, &job)) {
           g_dropped++;
           primed_n = stamped;
           memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
@@ -1284,6 +1324,17 @@ int main(int argc, char **argv) {
       return 2;
     } else if (strcmp(argv[i], "--user") == 0 && i + 1 < argc) {
       g_user = argv[++i];
+    } else if (strcmp(argv[i], "--voucher") == 0 && i + 1 < argc) {
+      const char *v = argv[++i];
+      size_t vn = strlen(v);
+      int okv = vn == 192;
+      for (size_t k = 0; okv && k < vn; k++) okv = hex_nibble(v[k]) >= 0;
+      if (!okv) {
+        fprintf(stderr, "--voucher must be 192 hex characters (B || Y || lambda)\n");
+        return 2;
+      }
+      for (size_t k = 0; k < vn; k++) g_voucher[k] = (char)tolower((unsigned char)v[k]);
+      g_voucher[vn] = 0;
     } else if (strcmp(argv[i], "--dest") == 0 && i + 1 < argc) {
       snprintf(g_dest, sizeof(g_dest), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
