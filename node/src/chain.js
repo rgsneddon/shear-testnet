@@ -49,7 +49,16 @@ import {
   stashSharePow,
   dropSharePowKeys,
 } from '../../crypto/share_batch.js';
-import { interestNanos, observeVerdict, canonicalObserve, verifyRateCommit } from '../../crypto/reserve_oracle.js';
+import {
+  interestNanos,
+  canonicalObserve,
+  canonicalReports,
+  verifyRateCommit,
+  verifyMinerReport,
+  oracleRuleAt,
+  epochBpsFromReports,
+  ORACLE_ACTIVATION_HEIGHT,
+} from '../../crypto/reserve_oracle.js';
 import {
   bootReserveEvm,
   blockNeedsEvm,
@@ -202,6 +211,12 @@ export function digestTx(tx) {
   if (tx.observe) {
     const canon = canonicalObserve(tx.observe);
     const mixed = createHash('sha256').update(JSON.stringify(canon)).digest();
+    memoH = memoH
+      ? createHash('sha256').update(Buffer.from(asU8(memoH))).update(mixed).digest()
+      : mixed;
+  }
+  if (tx.reports) {
+    const mixed = createHash('sha256').update(JSON.stringify(canonicalReports(tx.reports))).digest();
     memoH = memoH
       ? createHash('sha256').update(Buffer.from(asU8(memoH))).update(mixed).digest()
       : mixed;
@@ -956,26 +971,35 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const txNanos = txs[oi]?.nanos;
     if (typeof txNanos === 'bigint' && txNanos < 0n) return { ok: false, reason: 'negative_mint' };
     if (typeof txNanos === 'number' && txNanos < 0) return { ok: false, reason: 'negative_mint' };
+    if (txs[oi]?.observe) return { ok: false, reason: 'observe_unattested' };
+    if (txs[oi]?.reports) {
+      if (oi !== 0) return { ok: false, reason: 'bad_rate' };
+      const report = verifyMinerReport(txs[oi].reports);
+      if (!report.ok) return report;
+    }
   }
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
-  for (let oi = 0; oi < txs.length; oi += 1) {
-    if (!txs[oi]?.observe) continue;
-    if (oi !== 0 || !txs[oi].coinbase) return { ok: false, reason: 'bad_rate' };
-    const verdict = observeVerdict(txs[oi].observe);
-    if (!verdict.ok) return verdict;
-  }
   if (txs[0]?.rateCommit) {
     const blockTimeMs = Number(decoded.timestamp);
     const genesis = Number(genesisMs);
     const epochIndex = genesis > 0
       ? vortexEpochIndex({ nowMs: blockTimeMs, genesisMs: genesis, epochDays: epochDays(magic) })
       : Math.floor(Number(txs[0].rateCommit.epochIndex) || 0);
+    const activationHeight = opts.oracleActivationHeight === undefined
+      ? ORACLE_ACTIVATION_HEIGHT
+      : opts.oracleActivationHeight;
+    const rule = oracleRuleAt(block.height, { activationHeight });
+    const prevEpochBps = committedBps ?? reserveState?.epochBps ?? GENESIS_BPS;
+    const expectedBps = rule === 'median3b'
+      ? epochBpsFromReports(prevEpochBps, opts.oracleWindow || [], { windowSize: opts.oracleWindowSize })
+      : null;
     const commit = verifyRateCommit(txs[0].rateCommit, {
-      prevEpochBps: committedBps ?? reserveState?.epochBps ?? GENESIS_BPS,
+      prevEpochBps,
       blockTimeMs,
       epochIndex,
       magic,
+      expectedBps,
     });
     if (!commit.ok) return commit;
   }

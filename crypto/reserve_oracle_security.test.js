@@ -227,7 +227,7 @@ describe('oracle security pack (attester keys held)', () => {
       const got = await verifyBlock(blockFor({
         observe: { annualBps, observedAtMs: T0 },
       }), null, { probeBody: true });
-      assert.equal(got.reason, 'bad_rate');
+      assert.equal(got.reason, 'observe_unattested');
     }
   });
 
@@ -377,7 +377,7 @@ describe('oracle security pack (attester keys held)', () => {
     assert.equal(recomputeEpochBps(prev, [], T0), prev);
     assert.equal(observeVerdict({
       sources: nine.map((s) => ({ id: s.id, annualBps: GENESIS_BPS, observedAtMs: T0 })),
-    }).reason, 'oracle_quorum');
+    }).reason, 'observe_unattested');
   });
 
   it('Ob-3 staleness follows the boundary block time', () => {
@@ -408,8 +408,7 @@ describe('oracle security pack (attester keys held)', () => {
   });
 
   it('Od-1 a raw producer observe cannot set the rate', async () => {
-    assert.equal(observeVerdict({ annualBps: 9000, observedAtMs: T0 }).reason, 'oracle_quorum');
-    assert.notEqual(observeVerdict({ annualBps: 9000, observedAtMs: T0 }).reason, 'observe_unattested');
+    assert.equal(observeVerdict({ annualBps: 9000, observedAtMs: T0 }).reason, 'observe_unattested');
     const who = destOf(newIdentity());
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
@@ -472,7 +471,7 @@ describe('oracle security pack (attester keys held)', () => {
     const stag = recomputeEpochBps(264, staggered, T0);
     assert.equal(stag, trimmedMeanBps(staggered.map((s) => s.tenths)));
     assert.ok(stag > 284);
-    for (const bad of [10001, 50000, 999999]) {
+    for (const bad of [100001, -1001, 999999]) {
       const sources = bundleSources();
       sources[12] = { ...sources[12], tenths: bad };
       assert.equal(classifySource(sources[12], T0), 'bad_rate');

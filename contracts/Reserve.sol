@@ -204,7 +204,7 @@ contract Reserve {
         uint256 n = 0;
         for (uint256 i = 0; i < tenths.length; i++) {
             int256 t = tenths[i];
-            if (t < -1000 || t > 10000) continue;
+            if (t < -1000 || t > 100000) continue;
             vals[n] = t;
             n++;
         }

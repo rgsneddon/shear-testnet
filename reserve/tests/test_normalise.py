@@ -70,7 +70,7 @@ class NormaliseTests(unittest.TestCase):
         self.assertEqual(trimmed_mean_bps(bundled), 284)
         self.assertEqual(trimmed_mean_bps([-1000] * 14), 0)
         self.assertIsNone(trimmed_mean_bps([100] * 9))
-        self.assertEqual(trimmed_mean_bps([10001] + [1000] * 13), trimmed_mean_bps([1000] * 13))
+        self.assertEqual(trimmed_mean_bps([100001] + [1000] * 13), trimmed_mean_bps([1000] * 13))
 
     def test_refuse_overnight_ids(self):
         for sid in ('SOFR', 'SONIA', '€STR', 'EFFR', 'AONIA'):

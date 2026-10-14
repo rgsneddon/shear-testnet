@@ -653,7 +653,7 @@ describe('Vault Security test map', () => {
         for (const observedAtMs of ages) {
           for (let n = 0; n < (k === 1 ? 1 : 1); n += 1) {
             const observe = { annualBps: bps, observedAtMs, producer: 'miner-1' };
-            assert.equal(observeVerdict(observe).reason, 'oracle_quorum');
+            assert.equal(observeVerdict(observe).reason, 'observe_unattested');
             const tpl = buildTemplate({
               prev: GENESIS_PREV,
               height: 1,
@@ -684,7 +684,7 @@ describe('Vault Security test map', () => {
               miner: tpl.miner,
               height: 1,
             }, null, { probeBody: true });
-            assert.equal(got.reason, 'oracle_quorum', `${k} ${bps} ${observedAtMs} ${got.reason}`);
+            assert.equal(got.reason, 'observe_unattested', `${k} ${bps} ${observedAtMs} ${got.reason}`);
             assert.equal(state.epochBps, prior);
             assert.ok(k < ORACLE_QUORUM);
           }

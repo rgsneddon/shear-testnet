@@ -83,7 +83,7 @@ describe('oracle observe is sealed in a block', () => {
       const holder = destOf(newIdentity());
       openEpoch(held, holder, T0);
       const due = previewWithdraw(held, holder).interest;
-      assert.equal(observeVerdict({ annualBps: bps, observedAtMs: T0 + 1 }).reason, 'oracle_quorum');
+      assert.equal(observeVerdict({ annualBps: bps, observedAtMs: T0 + 1 }).reason, 'observe_unattested');
       assert.equal(previewWithdraw(held, holder).interest, due, `preview ${bps}`);
       assert.equal(held.epochBps, GENESIS_BPS, `single observe ${bps}`);
     }
@@ -178,12 +178,12 @@ describe('oracle observe is sealed in a block', () => {
     for (const bps of BPS) {
       const got = await verifyBlock(blockFor({ annualBps: bps, observedAtMs: T0 }), null, { probeBody: true });
       assert.equal(got.ok, false, `${bps} ${got.reason}`);
-      assert.equal(got.reason, 'oracle_quorum', `${bps}`);
+      assert.equal(got.reason, 'observe_unattested', `${bps}`);
     }
     for (const annualBps of BAD_BPS) {
       const got = await verifyBlock(blockFor({ annualBps, observedAtMs: T0 }), null, { probeBody: true });
       assert.equal(got.ok, false, String(annualBps));
-      assert.equal(got.reason, 'bad_rate', String(annualBps));
+      assert.equal(got.reason, 'observe_unattested', String(annualBps));
     }
     assert.equal(ORACLE_QUORUM, 14);
   });

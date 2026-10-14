@@ -25,8 +25,19 @@ export const ORACLE_QUORUM = 14;
 /** Fresh in-range sources required before a window replaces the last rate. */
 export const ORACLE_MIN_SOURCES = 10;
 export const SOURCE_TENTHS_MIN = -1000;
-export const SOURCE_TENTHS_MAX = 10_000;
+/** +100% in tenths of a basis point. −1000 tenths is −1%. */
+export const SOURCE_TENTHS_MAX = 100_000;
 export const TRIM_EACH_SIDE = 2;
+/** 3b stays off until a fork sets this height. Null ships the fixed genesis rate. */
+export const ORACLE_ACTIVATION_HEIGHT = null;
+export const ORACLE_SUPERMAJORITY_NUM = 2;
+export const ORACLE_SUPERMAJORITY_DEN = 3;
+/** Pack window: 1008 blocks on mainnet, 144 on testnet (fits the 4-day epoch). */
+export const ORACLE_WINDOW_MAINNET = 1008;
+export const ORACLE_WINDOW_TESTNET = 144;
+/** Mainnet reports older than one week before the boundary are outside the window. */
+export const ORACLE_WINDOW_MS = 7 * 86_400_000;
+export const PRODUCER_SHARE_ALERT = 0.4;
 
 /**
  * Developed-economy (first-world) central banks, display order.
@@ -177,6 +188,153 @@ export function sourceFreshness(asOfMs, blockTimeMs) {
   return 'fresh';
 }
 
+export function oracleActivationPin(activationHeight = ORACLE_ACTIVATION_HEIGHT) {
+  return activationHeight == null ? 'fixed' : String(activationHeight);
+}
+
+/** `fixed` until the activation height. From that height, the miner median (3b) applies. */
+export function oracleRuleAt(height, { activationHeight = ORACLE_ACTIVATION_HEIGHT } = {}) {
+  if (activationHeight == null) return 'fixed';
+  const h = Math.floor(Number(height) || 0);
+  return h >= Math.floor(Number(activationHeight)) ? 'median3b' : 'fixed';
+}
+
+export function windowBlocksFor(magic) {
+  return String(magic) === 'shear-v1' ? ORACLE_WINDOW_MAINNET : ORACLE_WINDOW_TESTNET;
+}
+
+/**
+ * Blocks that may carry a report for the boundary.
+ * Mainnet keeps the week before the boundary, then the last 1008.
+ * Testnet keeps the last 144, which fits inside the 4-day epoch.
+ */
+export function selectReportWindow(blocks, boundaryMs, {
+  magic = 'shear-testnet-v12',
+  windowBlocks = null,
+} = {}) {
+  const cap = windowBlocks == null ? windowBlocksFor(magic) : Math.floor(Number(windowBlocks));
+  const week = String(magic) === 'shear-v1';
+  const picked = [];
+  for (const block of blocks || []) {
+    if (week && boundaryMs != null) {
+      const t = Number(block?.timeMs ?? block?.timestamp);
+      if (!Number.isInteger(t)) continue;
+      if (t >= Number(boundaryMs)) continue;
+      if (Number(boundaryMs) - t > ORACLE_WINDOW_MS) continue;
+    }
+    picked.push(block);
+  }
+  if (picked.length <= cap) return picked;
+  return picked.slice(picked.length - cap);
+}
+
+/**
+ * One coinbase report. Absent is fine. The template must not invent one.
+ * A value outside −1%..+100%, or a value that is not an integer tenth, is `bad_rate`.
+ */
+export function verifyMinerReport(reports) {
+  if (reports == null) return { ok: true, present: false };
+  if (!Array.isArray(reports)) return { ok: false, reason: 'bad_rate' };
+  if (reports.length === 0) return { ok: true, present: false };
+  if (reports.length > POLICY_BANK_IDS.length) return { ok: false, reason: 'report_count' };
+  const seen = new Set();
+  for (const row of reports) {
+    const id = String(row?.id || '').trim();
+    if (!Object.prototype.hasOwnProperty.call(BUNDLED_POLICY_TENTHS, id)) {
+      return { ok: false, reason: 'bad_rate' };
+    }
+    if (seen.has(id)) return { ok: false, reason: 'report_dup' };
+    seen.add(id);
+    const tenths = row?.tenths;
+    if (typeof tenths !== 'number' || !Number.isInteger(tenths) || !sourceTenthsOk(tenths)) {
+      return { ok: false, reason: 'bad_rate' };
+    }
+  }
+  return { ok: true, present: true };
+}
+
+export function canonicalReports(reports) {
+  return (reports || [])
+    .map((row) => ({ id: String(row?.id || '').trim(), tenths: Math.trunc(Number(row?.tenths)) }))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/** Lower median. A value is used only when at least 2/3 of the window reports that exact tenth. */
+export function medianBankTenths(values, windowSize) {
+  const W = Math.floor(Number(windowSize) || 0);
+  const list = Array.isArray(values) ? values : [];
+  if (W <= 0 || list.length * ORACLE_SUPERMAJORITY_DEN < W * ORACLE_SUPERMAJORITY_NUM) return null;
+  const sorted = list.slice().sort((a, b) => a - b);
+  const mid = sorted[Math.floor((sorted.length - 1) / 2)];
+  let count = 0;
+  for (const v of list) if (v === mid) count += 1;
+  if (count * ORACLE_SUPERMAJORITY_DEN < W * ORACLE_SUPERMAJORITY_NUM) return null;
+  return mid;
+}
+
+/**
+ * 3b. Per-bank supermajority, then the trimmed mean, then the 0 floor.
+ * Fewer than 10 valid banks keeps `prev`.
+ */
+export function epochBpsFromReports(prevEpochBps, blocks, { windowSize = null } = {}) {
+  const prev = issuanceBps(prevEpochBps);
+  const rows = Array.isArray(blocks) ? blocks : [];
+  const W = windowSize == null ? rows.length : Math.floor(Number(windowSize) || 0);
+  const byBank = new Map(POLICY_BANK_IDS.map((id) => [id, []]));
+  for (const block of rows) {
+    const reports = Array.isArray(block?.reports) ? block.reports : [];
+    const seen = new Set();
+    for (const row of reports) {
+      const id = String(row?.id || '').trim();
+      if (seen.has(id) || !byBank.has(id)) continue;
+      seen.add(id);
+      const tenths = Math.trunc(Number(row?.tenths));
+      if (!sourceTenthsOk(tenths)) continue;
+      byBank.get(id).push(tenths);
+    }
+  }
+  const medians = [];
+  for (const id of POLICY_BANK_IDS) {
+    const value = medianBankTenths(byBank.get(id), W);
+    if (value != null) medians.push(value);
+  }
+  if (medians.length < ORACLE_MIN_SOURCES) return prev;
+  const mean = trimmedMeanBps(medians);
+  return mean == null ? prev : mean;
+}
+
+/** Fixed mode always returns the genesis rate. 3b uses the report window. */
+export function boundaryEpochBps({
+  prevEpochBps = GENESIS_BPS,
+  height = 0,
+  activationHeight = ORACLE_ACTIVATION_HEIGHT,
+  windowBlocks = null,
+  windowSize = null,
+} = {}) {
+  if (oracleRuleAt(height, { activationHeight }) !== 'median3b') return issuanceBps(GENESIS_BPS);
+  return epochBpsFromReports(prevEpochBps, windowBlocks || [], { windowSize });
+}
+
+/** Telemetry only. One producer above 40% of the window does not change the rate. */
+export function producerShareAlert(blocks) {
+  const rows = Array.isArray(blocks) ? blocks : [];
+  const counts = new Map();
+  for (const block of rows) {
+    const producer = String(block?.miner || block?.producer || '');
+    if (!producer) continue;
+    counts.set(producer, (counts.get(producer) || 0) + 1);
+  }
+  const n = rows.length || 1;
+  let top = null;
+  for (const [producer, count] of counts) {
+    const share = count / n;
+    if (share > PRODUCER_SHARE_ALERT && (!top || share > top.share)) {
+      top = { alert: true, producer, share, count, window: rows.length };
+    }
+  }
+  return top || { alert: false, window: rows.length };
+}
+
 /**
  * Why a source does not enter the average. `fresh` counts.
  * A repeated bank id is `att_dup` (the first copy already counted).
@@ -235,6 +393,7 @@ export function verifyRateCommit(commit, {
   blockTimeMs,
   epochIndex = 0,
   magic,
+  expectedBps = null,
 } = {}) {
   if (!commit || typeof commit !== 'object') return { ok: false, reason: 'rate_commit' };
   if (magic != null && String(commit.magic || '') !== String(magic)) {
@@ -243,9 +402,11 @@ export function verifyRateCommit(commit, {
   if (Number(commit.epochIndex) !== Math.floor(Number(epochIndex) || 0)) {
     return { ok: false, reason: 'att_epoch' };
   }
-  const expected = Array.isArray(sources)
-    ? recomputeEpochBps(prevEpochBps, sources, blockTimeMs)
-    : (bundledEpochBps() ?? issuanceBps(prevEpochBps));
+  const expected = expectedBps == null
+    ? (Array.isArray(sources)
+      ? recomputeEpochBps(prevEpochBps, sources, blockTimeMs)
+      : (bundledEpochBps() ?? issuanceBps(prevEpochBps)))
+    : Math.floor(Number(expectedBps));
   if (Math.floor(Number(commit.epochBps)) !== expected) return { ok: false, reason: 'rate_commit' };
   return { ok: true, epochBps: expected };
 }
@@ -409,36 +570,12 @@ export function canonicalObserve(observe) {
 }
 
 /**
- * One producer observation is not a rate. A block observe is accepted only
- * when it carries the 14 distinct bundled bank ids, all agreeing on the
- * attested bps. Anything short of that quorum is `oracle_quorum`. A value
- * that is not an in-range integer is `bad_rate` and does not reach the quorum check.
+ * The single-producer observe is not a rate input. Any observe is
+ * `observe_unattested`. Miner reports use `reports` and the 3b window.
  */
 export function observeVerdict(observe) {
   if (observe == null) return { ok: true, present: false };
-  const srcs = Array.isArray(observe.sources) && observe.sources.length
-    ? observe.sources
-    : [observe];
-  for (const s of srcs) {
-    const bps = s?.annualBps;
-    const at = s?.observedAtMs;
-    if (typeof bps !== 'number' || !Number.isInteger(bps) || bps < 0 || bps > RESERVE_ORACLE_MAX_BPS) {
-      return { ok: false, reason: 'bad_rate' };
-    }
-    if (typeof at !== 'number' || !Number.isInteger(at) || at < 0) {
-      return { ok: false, reason: 'bad_rate' };
-    }
-  }
-  const ids = new Set(srcs.map((s) => String(s?.id || '')).filter(Boolean));
-  const bundle = bundledEpochBps();
-  const agree = srcs.every((s) => s.annualBps === bundle);
-  if (ids.size < ORACLE_QUORUM || !agree || bundle == null) {
-    return { ok: false, reason: 'oracle_quorum' };
-  }
-  for (const id of POLICY_BANK_IDS) {
-    if (!ids.has(id)) return { ok: false, reason: 'oracle_quorum' };
-  }
-  return { ok: true, present: true, quorum: true };
+  return { ok: false, reason: 'observe_unattested', present: true };
 }
 
 export function verifyFreezeRecord(rec, {

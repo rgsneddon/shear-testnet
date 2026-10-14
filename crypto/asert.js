@@ -18,7 +18,14 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
-import { bundleObservationRoot, GENESIS_BPS } from './reserve_oracle.js';
+import {
+  bundleObservationRoot,
+  GENESIS_BPS,
+  oracleActivationPin,
+  ORACLE_WINDOW_MAINNET,
+  ORACLE_WINDOW_TESTNET,
+  ORACLE_WINDOW_MS,
+} from './reserve_oracle.js';
 export { GENESIS_BPS };
 import { HISTORICAL_TIP } from './historical_prefix.js';
 
@@ -296,8 +303,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `POT_PROP=${POT_PROP}`,
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
-    `RESERVE_ORACLE=bundle-trim:banks=14:sourceQuorum=10:floorBps=0:sourceTenths=-1000..10000`,
-    `RESERVE_RATE=epoch-bundle:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=2:root=${bundleObservationRoot()}`,
+    `RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2/3:windowMain=${ORACLE_WINDOW_MAINNET}:windowTest=${ORACLE_WINDOW_TESTNET}:windowMs=${ORACLE_WINDOW_MS}:floorBps=0:sourceTenths=-1000..100000:activation=${oracleActivationPin()}`,
+    `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=2:root=${bundleObservationRoot()}`,
     `INTEREST=${INTEREST_LAW}`,
     `RESERVE_INTEREST=${days}d-bps-floor`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,

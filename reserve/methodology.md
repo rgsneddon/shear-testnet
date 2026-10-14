@@ -84,9 +84,9 @@ Averaging, in integers:
 2. Half-up mean of tenths: `(sum + 7) / 14` = 2636.
 3. Trimmed mean: drop the two lowest and two highest tenths, half-up the middle 10, then half-up to whole bps. This bundle's middle sums to 28400 tenths → 2840 → **284** bps. Negative tenths stay in the average. The 0 floor applies only to that result.
 
-The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. There is no per-epoch step and no aggregate cap: the freeze is the trimmed mean, then the 0 floor. A source outside −1000..+10000 tenths is excluded. Fewer than 10 fresh in-range sources leaves the previous freeze in place.
+The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. There is no per-epoch step and no aggregate cap: the freeze is the trimmed mean, then the 0 floor. A source outside −1%..+100% (−1000..+100000 tenths) is `bad_rate`. Fewer than 10 banks with a 2/3 supermajority leaves the previous freeze in place once 3b is active.
 
-A new official print enters consensus only when a software release replaces the attested integers and the fingerprint root `RESERVE_RATE=epoch-bundle:...`. Until that release every epoch freezes 284 bps. A lone producer observe cannot select the rate. `oracle-snapshot.json` and `latest.json` are display only.
+Until the oracle activation height, every epoch freezes the genesis rate, 284 bps, floored at 0. A lone producer observe is `observe_unattested` and cannot select the rate. Templates do not pre-fill miner reports. After activation, the rate is the hardened miner median: each bank needs the same tenth from at least 2/3 of the window, at least 10 banks must clear that bar, then the trimmed mean is floored at 0. Otherwise the previous rate is kept. Mainnet's window is the week before the boundary, capped at 1008 blocks. Testnet's window is 144 blocks. A producer with more than 40% of the window is an alert, not a rate change. `oracle-snapshot.json` and `latest.json` are display only.
 
 ## Example (fixture `snapshot_a`)
 
