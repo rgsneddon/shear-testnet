@@ -160,6 +160,8 @@ describe('T21 vouchers (must-fix 12)', () => {
     assert.equal(voucherKeysOk({ ...pub, lambda: Buffer.alloc(32) }), false);
     assert.equal(voucherKeysOk({ ...pub, lambda: Buffer.alloc(32, 0xff) }), false);
     assert.equal(voucherKeysOk({ ...pub, lambda: Buffer.alloc(31, 1) }), false);
+    assert.equal(voucherKeysOk({ ...pub, lambda: publicVoucher(voucher(1)).lambda }), false);
+    assert.equal(voucherKeysOk({ ...publicVoucher(voucher(1)), lambda: pub.lambda }), false);
   });
 });
 
@@ -301,6 +303,28 @@ describe('T21 cb-v3 coinbase', { timeout: 600_000 }, () => {
     shifted.t21.shares[1].w = String(BigInt(shifted.t21.shares[1].w) - 1n);
     restate(shifted);
     assert.equal(verifyT21Coinbase({ tx: shifted, expect: expectFor(shifted) }).reason, 'split_tally');
+  });
+
+  it('P0-1: a pool cannot pay a miner\'s shares to its own keys', () => {
+    const victim = voucher(3);
+    const thief = voucherAt(Buffer.alloc(32, 0x66), 0);
+    const base = {
+      S, cin: 0n, u: 0n, height: 9, magic, prevHash, dummySecret, voucherOk: () => true,
+    };
+    const honest = [payee(0, [5n]), payee(1, [5n]), payee(2, [5n])];
+    const victimShares = [minerShare(victim, 1000n)];
+    // Victim's label, thief's keys: the tally balances, so only the label binding refuses it.
+    const swapped = buildT21Coinbase({
+      ...base,
+      payees: [...honest, { voucher: { ...publicVoucher(thief), lambda: publicVoucher(victim).lambda }, shares: victimShares }],
+    });
+    assert.equal(verifyT21Coinbase({ tx: swapped.tx, expect: expectFor(swapped.tx) }).reason, 'split_label');
+    // The thief's own label on the victim's shares: E still opens to the victim's label.
+    const relabelled = buildT21Coinbase({
+      ...base,
+      payees: [...honest, { voucher: publicVoucher(thief), shares: victimShares }],
+    });
+    assert.equal(verifyT21Coinbase({ tx: relabelled.tx, expect: expectFor(relabelled.tx) }).reason, 'split_tally');
   });
 
   it('binds every row field into the statement', () => {

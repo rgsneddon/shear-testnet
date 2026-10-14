@@ -12,6 +12,19 @@ use crate::leaf::{leaf_of, ChainNote};
 
 /// Domain of the voucher leaf probe.
 pub const VCH_PROBE_DOM: &[u8] = b"shear-vch-probe-v1";
+/// Domain of the voucher label `λ = Hs(dom ‖ B* ‖ Y)`.
+pub const VCH_LAM_DOM: &[u8] = b"shear-vch-lam-v2";
+
+/// The LogUp label bound to the payout keys.
+pub fn voucher_lambda(b: &[u8; 32], y: &[u8; 32]) -> Scalar {
+  let mut h = Sha512::new();
+  h.update(VCH_LAM_DOM);
+  h.update(b);
+  h.update(y);
+  let mut wide = [0u8; 64];
+  wide.copy_from_slice(&h.finalize());
+  Scalar::from_bytes_mod_order_wide(&wide)
+}
 
 /// `W·v = (R + W·u)·W_i − ρ + W·fin`, `0 ≤ ρ < W`. Returns `(v, ρ)`, or `None`
 /// for `W = 0`, `W_i > W`, or an overflow.
@@ -52,7 +65,7 @@ pub fn voucher_probe(b: &[u8; 32]) -> Option<([u8; 32], [u8; 32])> {
 }
 
 /// Voucher acceptance: canonical, distinct, non-identity `B*` and `Y`, a
-/// canonical non-zero `λ`, and a probe note `(B* + δ·G, probeC)` that is an FS-1 leaf.
+/// canonical non-zero `λ` equal to `voucher_lambda(B*, Y)`, and a probe note `(B* + δ·G, probeC)` that is an FS-1 leaf.
 pub fn voucher_keys_ok(b: &[u8; 32], y: &[u8; 32], lambda: &[u8; 32]) -> bool {
   let (Some(bp), Some(yp)) = (canonical_point(b), canonical_point(y)) else { return false };
   if bp == yp {
@@ -60,7 +73,7 @@ pub fn voucher_keys_ok(b: &[u8; 32], y: &[u8; 32], lambda: &[u8; 32]) -> bool {
   }
   let lam: Option<Scalar> = Scalar::from_canonical_bytes(*lambda).into();
   match lam {
-    Some(l) if l != Scalar::ZERO => {}
+    Some(l) if l != Scalar::ZERO && l == voucher_lambda(b, y) => {}
     _ => return false,
   }
   let Some((probe_c, p)) = voucher_probe(b) else { return false };

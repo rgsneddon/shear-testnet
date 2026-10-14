@@ -35,11 +35,13 @@ row('y-identity', { ...base, Y: Buffer.alloc(32) });
 row('lambda-zero', { ...base, lambda: Buffer.alloc(32) });
 row('lambda-order', { ...base, lambda: ORDER_LE });
 row('lambda-ff', { ...base, lambda: Buffer.alloc(32, 0xff) });
+row('lambda-unbound', { ...base, lambda: publicVoucher(voucherAt(Buffer.alloc(32, 6), 0)).lambda });
 
 const head = [
   '# T21 voucher acceptance (payeeFs1Ok for a voucher). Shared by crypto/t21_voucher.js and shear-fs1.',
   '# name, B*, Y, lambda, probeC, P, ok|refuse. probeC = map(SHA-512(shear-vch-probe-v1 || B*)).',
   '# delta = SHA-512(shear-vch-probe-v1 || B* || probeC) mod L, P = B* + delta*G, and (P, probeC) is an FS-1 leaf.',
+  '# lambda = SHA-512(shear-vch-lam-v2 || B* || Y) mod L; any other lambda is refused.',
 ];
 writeFileSync(new URL('../crypto/vectors/t21_voucher.txt', import.meta.url), `${head.concat(rows).join('\n')}\n`);
 console.log(rows.length, 'rows');

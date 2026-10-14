@@ -28,7 +28,7 @@ import {
   randomScalar, scalarBytes, scalarFrom, wrapNoteBlind,
 } from './note.js';
 import { feeOf, lawDust, scalarOk, splitLaw, t21Big } from './t21_law.js';
-import { voucherAt, voucherKeysOk } from './t21_voucher.js';
+import { voucherAt, voucherKeysOk, voucherLambda } from './t21_voucher.js';
 import { bpProve, bpVerifyTerms } from './t21_bp.js';
 import {
   AMOUNT_KEYS, BP_M, BP_N, CB_FORM, DOM_CB, FEE_BPS_MAX, GEN_H,
@@ -897,7 +897,8 @@ function buildOnce(spec, payees, deferred) {
 }
 
 /**
- * Template builder. A payee is { voucher: {B, Y, lambda}, fin?, shares: [{w, E, ell, beta}] }.
+ * Template builder. A payee is { voucher: {B, Y, lambda}, fin?, shares: [{w, E, ell, beta}] },
+ * with lambda = voucherLambda(B, Y).
  * A voucher that fails voucherKeysOk is deferred before proving. A payee whose
  * row cannot be made an FS-1 leaf throws admit_note_point; that payee and its
  * shares are evicted to `deferred` and the coinbase is rebuilt once. There is
@@ -906,9 +907,11 @@ function buildOnce(spec, payees, deferred) {
 export function buildT21Coinbase(spec) {
   const deferred = [];
   const live = [];
+  // Tests pass a permissive check to build what a dishonest pool would publish.
+  const keysOk = spec.voucherOk || voucherKeysOk;
   (spec.payees || []).forEach((p) => {
     const vch = voucherPoints(p.voucher);
-    if (!vch || !voucherKeysOk(p.voucher)) {
+    if (!vch || !keysOk(p.voucher)) {
       deferred.push({ voucher: p.voucher, shares: p.shares || [], reason: 'voucher_key' });
       return;
     }
@@ -1084,6 +1087,7 @@ export function verifyT21Coinbase(input) {
     const CW = pointOk(o.cw);
     const lamS = scalarOkBytes(o.lambda);
     if (!B || !Y || !C || !P || !CW || lamS == null) return no('cb_point');
+    if (lamS !== voucherLambda(o.B, o.Y)) return no('split_label');
     const rhoK = o.rhoK.map(pointOk);
     const delK = o.delK.map(pointOk);
     for (const c of o.ra.chunks) {

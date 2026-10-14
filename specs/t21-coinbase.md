@@ -8,7 +8,9 @@ A cb-v3 coinbase hides each payout. The block still shows the subsidy, the carry
 
 Each payout row is a Pedersen note `C = v·G + r·H` to a voucher `(B*, Y, λ)`. It carries the payout key `P = B* + δ·G`, the blind wrap `rEph, rCt`, `amtCt`, the weight commitment `cw`, three 16-bit limb commitments of `ρ` (`rhoK`) and three of `W − 1 − ρ` (`delK`), the public `fin` (0 except the finder row), 20 ElGamal chunks to `Y` with their binding proofs, one aggregate proof (five points and four responses, no limbs), the law Schnorr, and one aggregated range proof (tag 0x02, 864 bytes) over the 20 chunk commitments and the six ρ limbs.
 
-A share is `(w, E)` only. `E = ℓ·G + β·H` hides the share's voucher label.
+The label is a function of the keys: `λ = H_s("shear-vch-lam-v2" ‖ B* ‖ Y)`. Consensus recomputes it from the row and refuses any other value with `split_label`. Without that binding a pool, which knows every share's opening, could publish the miner's `λ` with its own `B*` and `Y`; the tally would still balance and the payout would open to the pool.
+
+A share is `(w, E)` only. `E = ℓ·G + β·H` hides the share's voucher label. A share's `E` can only open to the miner's `λ`, so the miner checks `E = λ·G + β·H` before mining a pool-issued note commit.
 
 ## Chain state
 

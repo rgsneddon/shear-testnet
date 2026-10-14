@@ -40,16 +40,27 @@ export function voucherAt(secret, ctr) {
   const c = u64le(ctr);
   const b = hashToScalar(Buffer.from(VCH_B_DOM), key, c);
   const y = hashToScalar(Buffer.from(VCH_Y_DOM), key, c);
-  const lambda = hashToScalar(Buffer.from(VCH_LAM_DOM), key, c);
+  const B = G.multiply(b);
+  const Y = G.multiply(y);
+  const lambda = voucherLambda(B.toBytes(), Y.toBytes());
   return {
     ctr,
     b,
     y,
     lambda,
     lambdaBytes: Buffer.from(scalarBytes(lambda)),
-    B: G.multiply(b),
-    Y: G.multiply(y),
+    B,
+    Y,
   };
+}
+
+/**
+ * The LogUp label is a function of the payout keys, λ = Hs(dom ‖ B* ‖ Y).
+ * Consensus recomputes it from the row, so a row cannot carry one payee's
+ * label with another payee's keys.
+ */
+export function voucherLambda(B, Y) {
+  return hashToScalar(Buffer.from(VCH_LAM_DOM), Buffer.from(B), Buffer.from(Y));
 }
 
 /**
@@ -98,7 +109,8 @@ function canonicalPoint(bytes) {
 
 /**
  * Voucher acceptance (payeeFs1Ok for a voucher). B* and Y are canonical,
- * non-identity, and distinct. λ is a canonical non-zero scalar. A probe
+ * non-identity, and distinct. λ is canonical, non-zero, and equals
+ * voucherLambda(B*, Y). A probe
  * note P = B* + δ·G over a fixed commitment must be an FS-1 leaf, so the
  * admit point Hp(P) decodes. A pool refuses a voucher that fails this.
  */
@@ -111,6 +123,7 @@ export function voucherKeysOk(pub) {
   let l = 0n;
   for (let i = 31; i >= 0; i -= 1) l = (l << 8n) | BigInt(lam[i]);
   if (l === 0n || l >= Fn.ORDER) return false;
+  if (l !== voucherLambda(pub.B, pub.Y)) return false;
   const probeC = Point.hashToCurve(createHash('sha512').update(VCH_PROBE_DOM).update(Buffer.from(pub.B)).digest());
   const delta = hashToScalar(Buffer.from(VCH_PROBE_DOM), Buffer.from(pub.B), Buffer.from(probeC.toBytes()));
   const P = B.add(G.multiply(delta));

@@ -1,7 +1,7 @@
 //! `crypto/vectors/t21_voucher.txt` and `t21_splitlaw.json`, the files the JS tests read.
 
 use shear_fs1::{
-  t21::{split_law, voucher_keys_ok, voucher_probe},
+  t21::{split_law, voucher_keys_ok, voucher_lambda, voucher_probe},
   vectors::{hex, unhex_n},
 };
 
@@ -26,6 +26,7 @@ fn voucher_vector_matches_the_js_check() {
     let ok = voucher_keys_ok(&b, &y, &lambda);
     assert_eq!(ok, cols[6] == "ok", "{}", cols[0]);
     if ok {
+      assert_eq!(voucher_lambda(&b, &y).to_bytes(), lambda, "{} lambda", cols[0]);
       let (probe_c, p) = voucher_probe(&b).expect("probe");
       assert_eq!(hex(&probe_c), cols[4], "{} probeC", cols[0]);
       assert_eq!(hex(&p), cols[5], "{} P", cols[0]);
@@ -33,7 +34,7 @@ fn voucher_vector_matches_the_js_check() {
     }
     rows += 1;
   }
-  assert!(rows >= 11 && accepted >= 4, "{rows} {accepted}");
+  assert!(rows >= 12 && accepted >= 4, "{rows} {accepted}");
 }
 
 fn field(obj: &str, key: &str) -> u128 {

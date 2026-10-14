@@ -81,6 +81,7 @@ CB_FORM=cb-v3
 CB_ONLY=cb-v3-at-genesis-pin
 CB_WRAP=ve-elgamal-16x20+agg-schnorr+shear-amt-v1
 CB_RANGE=bp-agg-16x32+0x02
+VOUCHER_LABEL=shear-vch-lam-v2+B+Y
 SPLIT_TALLY=logup-inv-schnorr+shear-logup-x-v1
 SPLIT_LAW=floor-schnorr+rho-3x16-two-sided
 SHARE_BIND=shear-share-bind-v1
