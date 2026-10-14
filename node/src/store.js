@@ -40,7 +40,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
-import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
+import { emptySupplyState, escrowPublished, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
   verifyShareBatch,
@@ -1067,6 +1067,8 @@ export function createStore(dir, {
         bLocked: s.bLocked,
         permittedHashAll: s.permittedHashAll,
         acceptedHash: s.acceptedHash,
+        escrow: s.escrow || 0n,
+        escrowHash: s.escrowHash || 0n,
         dust: s.dust,
         overflow: s.overflow,
         liveUnit: s.liveUnit,
@@ -1132,6 +1134,12 @@ export function createStore(dir, {
         acceptedSeries: owedKnown ? series.slice(0, tip ? series.length : ck.seriesEnd) : [],
         owedKnown,
       });
+      const published = escrowPublished(blocks[i]?.txs?.[0]);
+      if (rows[i] && published) {
+        rows[i].escrow = published.escrow;
+        rows[i].escrowHash = published.escrowHash;
+        rows[i].escrowRows = published.rows;
+      }
     }
     if (!rows.length) return rows;
     const walked = fillSnapInterest(rows, blocks.slice(0, rows.length));

@@ -106,7 +106,7 @@ import {
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
 import {
-  isT21Coinbase, t21CbOnly, t21DigestSuffix, t21FinderOf, t21OwedOf, t21ParentId, verifyT21Coinbase,
+  isT21Coinbase, t21CbOnly, t21DigestSuffix, t21DustCarry, t21EconomicCarry, t21FinderOf, t21OwedOf, t21ParentId, verifyT21Coinbase,
 } from '../../crypto/t21.js';
 import { blockBudget } from '../../crypto/block_budget.js';
 import {
@@ -432,6 +432,7 @@ function t21CoinbaseFor({ t21, miner, batch, txs, prevHeader, priorHeader, issue
       vaults: t21PendingVaults(t21.vault),
       publicRows: split.reserve ? [sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee')] : [],
       owedIn,
+      producer: miner && isDestAddress(miner) ? admitBaseFromAddress(miner) : null,
       shareMax: t21.shareMax ?? CB_SHARE_MAX,
       payeeMax: t21.payeeMax ?? null,
       unitMax: t21.unitMax ?? W_HASH_MAX,
@@ -1545,6 +1546,7 @@ export function buildTemplate({
   // Anything still unpaid, including an empty list, stays carried. Solo
   // (null shares) pays the miner the subsidy plus that carry and carries nothing.
   const carryIn = canonicalCarry(prevBlock?.txs?.[0]) || 0;
+  const carryInT21 = t21EconomicCarry(prevBlock?.txs?.[0]) ?? BigInt(carryIn);
   const parentCb = prevBlock?.txs?.[0] || null;
   let series = Array.isArray(hashAcceptedSeries) ? hashAcceptedSeries : null;
   // Maintained owed state. A lean parent root is not a reason to walk the chain.
@@ -1581,7 +1583,7 @@ export function buildTemplate({
       issuedJobKeys,
       height,
       subsidy,
-      carryIn,
+      carryIn: carryInT21,
       hashBonusNanos,
       hashAcceptedSeries: series,
       owedIn: t21OwedOf(parentCb),
@@ -2649,11 +2651,14 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!t21Shares.ok) return t21Shares;
     const hashBudget = hashBudgetNanos(opts.hashAcceptedSeries, hashBonusNanos);
     if (hashBudget == null) return { ok: false, reason: 'hash_owed' };
+    const cinEco = t21EconomicCarry(prevCb);
+    const dustOut = t21DustCarry(txs[0]);
+    if (cinEco == null || dustOut == null) return { ok: false, reason: 'pot_sched' };
     const gate = verifyT21Coinbase({
       tx: txs[0],
       expect: {
         S: BigInt(wantPot),
-        cin: BigInt(carryIn),
+        cin: cinEco,
         u: BigInt(liveUnit),
         height,
         magic,
@@ -2662,11 +2667,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         hashBudget,
         prevEs,
         owedIn: t21OwedOf(prevCb),
+        producer: block.miner && isDestAddress(block.miner) ? admitBaseFromAddress(block.miner) : null,
         vaults: t21PendingVaults(reserveState),
       },
     });
     if (!gate.ok) return { ok: false, reason: gate.reason };
-    if (gate.paid !== BigInt(mintedPot) + BigInt(liveUnit) * gate.W + gate.phi) return { ok: false, reason: 'pot_sched' };
+    const scheduled = BigInt(wantPot) + cinEco - dustOut - gate.escrowPot + BigInt(liveUnit) * gate.W + gate.phi + gate.settleV;
+    if (gate.paid !== scheduled) return { ok: false, reason: 'pot_sched' };
     t21Paid = gate.paid;
   }
   if (!t21Ok && txs[0] && txs[0].t21Split != null) {

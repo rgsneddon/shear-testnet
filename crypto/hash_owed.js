@@ -1130,18 +1130,30 @@ export function advanceHashOwed({
 }
 
 /**
- * cb-v3 pays u·W in the block and keeps no owed ledger, so it needs an empty
- * one in. Its full units W (at most W_HASH_MAX) enter the accepted series like a legacy block's.
+ * cb-v3 keeps no legacy owed ledger, so it needs an empty one in. Paid shares
+ * and this block's fresh escrow both enter the accepted series. W >= 2^48
+ * rejects the block; the cap is not a silent drop.
  */
 function advanceT21(owedIn, acceptedSeries, cb) {
   if ((owedIn || []).length) return { ok: false, reason: 'hash_owed' };
   let W = 0n;
-  for (const s of cb.t21?.shares || []) {
-    const w = asBi(s?.w);
-    if (w == null || w <= 0n) return { ok: false, reason: 'hash_units' };
+  const add = (raw) => {
+    const w = asBi(raw);
+    if (w == null || w <= 0n) return false;
     W += w;
+    return true;
+  };
+  for (const s of cb.t21?.shares || []) {
+    if (!add(s?.w)) return { ok: false, reason: 'hash_units' };
   }
-  if (W > W_HASH_MAX) return { ok: false, reason: 'hash_units' };
+  const height = Number(cb.t21?.height ?? cb.height);
+  for (const row of cb.t21?.owed || []) {
+    if (Number(row?.since) !== height) continue;
+    for (const s of row.shares || []) {
+      if (!add(s?.w)) return { ok: false, reason: 'hash_units' };
+    }
+  }
+  if (W >= W_HASH_MAX) return { ok: false, reason: 'hash_units' };
   const series = Array.isArray(acceptedSeries) ? acceptedSeries : [];
   series.push(W);
   return { ok: true, reason: '', rows: [], acceptedUnits: W, acceptedSeries: series, settled: null };

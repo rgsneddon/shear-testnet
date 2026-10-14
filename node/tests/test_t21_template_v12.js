@@ -96,19 +96,16 @@ describe('T21 template: buildTemplate builds a cb-v3 coinbase consensus accepts'
     assert.equal(verdict.ok, true, verdict.reason);
   });
 
-  it('caps template shares at shareMax and still verifies', () => {
+  it('rejects a round past shareMax instead of keeping a prefix', () => {
     const now = 1_700_000_000_000;
     const parent = sealGenesis(now);
     const book = t21LabelBook({ magic });
     const v = t21LoginVoucher(Buffer.alloc(32, 3));
     const bits = shareCreditMaxBits() - 4;
     const shareBatch = [1n, 2n, 3n, 4n].map((n) => labelledShare(book, v, n, bits, parent.header));
-    const { tpl, block, verdict } = childOf(parent, now, {
+    assert.throws(() => childOf(parent, now, {
       shareBatch, miner: minerDest(), t21: { magic, labelOf: book.labelOf, shareMax: 2 },
-    });
-    assert.equal(tpl.shareBatch.length, 2);
-    assert.equal(block.txs[0].t21.shares.length, 2);
-    assert.equal(verdict.ok, true, verdict.reason);
+    }), (err) => err.reason === 'share_cap' || err.message === 'share_cap');
   });
 
   it('carries the pot in an empty cb-v3 round', () => {
@@ -140,6 +137,22 @@ describe('T21 template: buildTemplate builds a cb-v3 coinbase consensus accepts'
     assert.equal(advanceHashOwed({ owedIn: [], acceptedSeries: [], block: wide }).ok, true);
     const fat = { txs: [{ coinbase: true, cbForm: 'cb-v3', t21: { shares: [{ w: String(W_HASH_MAX + 1n) }] } }] };
     assert.equal(advanceHashOwed({ owedIn: [], acceptedSeries: [], block: fat }).reason, 'hash_units');
+    const exact = { txs: [{ coinbase: true, cbForm: 'cb-v3', t21: { shares: [{ w: String(W_HASH_MAX) }] } }] };
+    assert.equal(advanceHashOwed({ owedIn: [], acceptedSeries: [], block: exact }).reason, 'hash_units');
+    const series2 = [];
+    const escrowed = {
+      txs: [{
+        coinbase: true,
+        cbForm: 'cb-v3',
+        t21: {
+          height: 3,
+          shares: [{ w: '3' }],
+          owed: [{ since: 3, shares: [{ w: '5' }] }, { since: 2, shares: [{ w: '9' }] }],
+        },
+      }],
+    };
+    assert.equal(advanceHashOwed({ owedIn: [], acceptedSeries: series2, block: escrowed }).ok, true);
+    assert.deepEqual(series2, [8n]);
   });
 
   it('the label book rotates labels and refuses a bad voucher', () => {

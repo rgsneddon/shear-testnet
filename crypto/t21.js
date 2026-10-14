@@ -28,6 +28,7 @@ import {
   randomScalar, scalarBytes, scalarFrom, wrapBlind,
 } from './note.js';
 import { feeOf, lawDust, scalarOk, splitLaw, t21Big } from './t21_law.js';
+import { composeOwed, priceWeights, quotaExceeded, weightPay } from './t21_escrow.js';
 import { voucherAt, voucherKeysOk, voucherLambda } from './t21_voucher.js';
 import { bpProve, bpVerifyTerms } from './t21_bp.js';
 import { t21ProverEngine } from './t21_native.js';
@@ -529,6 +530,21 @@ function stable(value) {
 
 const pts = (list) => (Array.isArray(list) ? list.map((p) => bytes32(p) || Buffer.alloc(0)) : []);
 
+/** Owed rows bind the voucher, the producer, the sealed value, and each share. The open proof is not in T_stmt. */
+function owedStmt(o) {
+  const shares = Array.isArray(o?.shares) ? o.shares : [];
+  return {
+    since: String(o.since),
+    by: bytes32(o.by) || Buffer.alloc(0),
+    B: bytes32(o.B) || Buffer.alloc(0),
+    Y: bytes32(o.Y) || Buffer.alloc(0),
+    lambda: bytes32(o.lambda) || Buffer.alloc(0),
+    pot: String(o.pot),
+    hash: String(o.hash),
+    shares: shares.map((s) => ({ w: String(s.w), E: bytes32(s.E) || Buffer.alloc(0) })),
+  };
+}
+
 /**
  * T_stmt. Every public input of every proof. Share labels ℓ_s are not here;
  * a share is (w_s, E_s) only.
@@ -538,6 +554,7 @@ export function statementOf(tx) {
   const rows = (tx?.vout || []).map((o) => ({
     kind: String(o.kind || ''),
     kindCode: Number(o.kindCode || 0),
+    ...(bytes32(o.escrowE) ? { escrowE: bytes32(o.escrowE) } : {}),
     noteCommit: bytes32(o.noteCommit) || Buffer.alloc(0),
     commit: bytes32(o.commit) || Buffer.alloc(0),
     admitPub: bytes32(o.admitPub) || Buffer.alloc(0),
@@ -566,10 +583,13 @@ export function statementOf(tx) {
   // Deferred rows join T_stmt only when present, so a coinbase without them keeps its vector bytes.
   const defer = Array.isArray(t21.defer) ? t21.defer : [];
   const owed = Array.isArray(t21.owed) ? t21.owed : [];
-  const rowsOwed = defer.length || owed.length
+  const rowsOwed = defer.length || owed.length || (t21.back != null && t21.back !== '' && t21.back !== '0')
+    || (t21.potCarry != null && t21.potCarry !== '' && t21.potCarry !== '0')
     ? {
         defer: defer.map((d) => ({ w: String(d.w), E: bytes32(d.E) || Buffer.alloc(0) })),
-        owed: owed.map((o) => ({ w: String(o.w), E: bytes32(o.E) || Buffer.alloc(0), since: String(o.since) })),
+        owed: owed.map(owedStmt),
+        ...(t21.back != null && t21.back !== '' && String(t21.back) !== '0' ? { back: String(t21.back) } : {}),
+        ...(t21.potCarry != null && t21.potCarry !== '' && String(t21.potCarry) !== '0' ? { potCarry: String(t21.potCarry) } : {}),
       }
     : {};
   return sha(stable({
@@ -626,7 +646,17 @@ function voucherPoints(pub) {
   return { B, Y, lambda: lam, lambdaBytes: Buffer.from(asU8(pub.lambda)) };
 }
 
-function planPay(spec, payees) {
+function weightOf(p) {
+  let Wi = 0n;
+  for (const s of p.shares || []) {
+    const w = scalarOk(s.w);
+    if (w == null || w <= 0n || w > W_S_MAX) throw fail('split_cap');
+    Wi += w;
+  }
+  return Wi;
+}
+
+function planPay(spec, payees, escrowPayees = []) {
   const S = scalarOk(spec.S);
   const cin = scalarOk(spec.cin);
   const bps = t21Big(spec.bps || 0);
@@ -636,33 +666,66 @@ function planPay(spec, payees) {
   if (f == null) throw fail('fee_sched');
   const R = S + cin - f;
   if (R < 0n) throw fail('pot_sched');
-  let W = 0n;
   const groups = [];
+  let Wpaid = 0n;
   for (const p of payees) {
-    let Wi = 0n;
-    for (const s of p.shares || []) {
-      const w = scalarOk(s.w);
-      if (w == null || w <= 0n || w > W_S_MAX) throw fail('split_cap');
-      Wi += w;
-    }
+    const Wi = weightOf(p);
     const fin = scalarOk(p.fin || 0);
     if (fin == null) throw fail('split_cap');
-    W += Wi;
+    if (Wi === 0n && fin <= 0n) throw fail('split_cap');
+    Wpaid += Wi;
     groups.push({ ...p, Wi, fin });
   }
+  const escrow = [];
+  let Wesc = 0n;
+  for (const p of escrowPayees) {
+    const Wi = weightOf(p);
+    if (Wi <= 0n) throw fail('split_cap');
+    Wesc += Wi;
+    escrow.push({ ...p, Wi, fin: 0n });
+  }
+  const W = Wpaid + Wesc;
   if (W >= W_MAX) throw fail('split_cap');
-  const rate = R + W * u;
+  if (W === 0n) {
+    let phi = 0n;
+    const rows = groups.map((g) => {
+      phi += g.fin;
+      return { ...g, v: g.fin, rho: 0n };
+    });
+    return { S, cin, f, bps, u, R, W, Wpaid, rate: 0n, phi, rows, escrow: [], dust: 0n, escrowPot: 0n, escrowHash: 0n };
+  }
+  const weights = [];
+  for (const g of groups) if (g.Wi > 0n) weights.push(g.Wi);
+  for (const g of escrow) weights.push(g.Wi);
+  const priced = priceWeights(R, u, weights);
+  if (!priced || priced.dust == null || priced.W !== W) throw fail('pot_sched');
   let phi = 0n;
-  const rows = [];
-  for (const g of groups) {
+  let pricedAt = 0;
+  const rows = groups.map((g) => {
+    phi += g.fin;
+    if (g.Wi === 0n) return { ...g, v: g.fin, rho: 0n };
     const law = splitLaw({ R, W, Wi: g.Wi, u, fin: g.fin });
     if (!law) throw fail('pot_sched');
-    phi += g.fin;
-    rows.push({ ...g, v: law.v, rho: law.rho });
+    pricedAt += 1;
+    return { ...g, v: law.v, rho: law.rho };
+  });
+  // Escrow pot is the reference floor, with no finder fin on an overflow row.
+  const escrowRows = escrow.map((g) => {
+    const pay = priced.rows[pricedAt];
+    pricedAt += 1;
+    return { ...g, pot: pay.pot, hash: pay.hash, v: pay.v, rho: pay.rho };
+  });
+  const dust = lawDust([...rows.map((r) => r.rho), ...escrowRows.map((r) => r.rho)], W);
+  if (dust == null || dust !== priced.dust) throw fail('pot_sched');
+  let escrowPot = 0n;
+  let escrowHash = 0n;
+  for (const g of escrowRows) {
+    escrowPot += g.pot;
+    escrowHash += g.hash;
   }
-  const dust = lawDust(rows.map((r) => r.rho), W);
-  if (dust == null) throw fail('pot_sched');
-  return { S, cin, f, bps, u, R, W, rate, phi, rows, dust };
+  return {
+    S, cin, f, bps, u, R, W, Wpaid, rate: R + W * u, phi, rows, escrow: escrowRows, dust, escrowPot, escrowHash,
+  };
 }
 
 /** The owner's blind and amount wrap for a payout row, with the build's ephemeral scalar. */
@@ -844,38 +907,124 @@ function publicRows(spec, empty = false) {
   return rows;
 }
 
-/**
- * Deferred rows on the wire: t21.defer [{w, E}] are this block's proven
- * labels it does not pay; t21.owed [{E, w, since}] is the whole owed list
- * after this block. Both are omitted when empty. An empty round can restate
- * the owed list but cannot defer: it has no A leaves.
- */
-function owedFields(spec, empty) {
-  const defer = empty ? [] : (spec.defer || []).map((d) => ({ w: BigInt(d.w).toString(), E: Buffer.from(asU8(d.E)) }));
-  if (empty && (spec.defer || []).length) throw fail('share_bind');
-  const owed = (spec.owed || []).map((o) => ({ E: Buffer.from(asU8(o.E)), w: BigInt(o.w).toString(), since: Number(o.since) }));
+function hex32(b) {
+  const x = bytes32(b);
+  return x ? Buffer.from(x).toString('hex') : '';
+}
+
+/** The row id is its least share commitment, so a later block cannot retarget it. */
+export function t21Anchor(row) {
+  const shares = Array.isArray(row?.shares) ? row.shares : [];
+  let best = null;
+  for (const s of shares) {
+    const h = hex32(s.E);
+    if (!h) return '';
+    if (best == null || h < best) best = h;
+  }
+  return best || hex32(row?.E);
+}
+
+function cloneOwed(o) {
+  return {
+    since: Number(o.since),
+    by: Buffer.from(asU8(o.by)),
+    B: Buffer.from(asU8(o.B)),
+    Y: Buffer.from(asU8(o.Y)),
+    lambda: Buffer.from(asU8(o.lambda)),
+    pot: BigInt(o.pot).toString(),
+    hash: BigInt(o.hash).toString(),
+    shares: (o.shares || []).map((s) => {
+      const out = { w: BigInt(s.w).toString(), E: Buffer.from(asU8(s.E)) };
+      if (s.open) out.open = { Rpt: Buffer.from(asU8(s.open.Rpt)), z: Buffer.from(asU8(s.open.z)) };
+      return out;
+    }),
+  };
+}
+
+function openBind(row, share) {
+  return sha(
+    Buffer.from('shear-t21-escrow-open-v1'),
+    Buffer.from(asU8(share.E)),
+    Buffer.from(String(share.w)),
+    u64le(row.since),
+    Buffer.from(asU8(row.by)),
+    Buffer.from(asU8(row.B)),
+    Buffer.from(asU8(row.Y)),
+    Buffer.from(asU8(row.lambda)),
+    Buffer.from(String(row.pot)),
+    Buffer.from(String(row.hash)),
+  );
+}
+
+function proveOpen(row, share, k) {
+  const E = pointOk(share.E);
+  const lam = scalarOkBytes(row.lambda);
+  if (!E || lam == null) throw fail('share_label');
+  return proveH(E.subtract(mulP(G, lam)), share.beta, openBind(row, share), k);
+}
+
+function openHolds(row, share) {
+  const E = pointOk(share.E);
+  const lam = scalarOkBytes(row.lambda);
+  if (!E || lam == null || !share.open) return false;
+  const t = hTerms(E.subtract(mulP(G, lam)), share.open, openBind(row, share));
+  return !!t && msmZero([[t, 1n]]);
+}
+
+/** Carry that fits a JSON number stays on carryNanos. The rest is t21.potCarry. */
+function splitCarry(total) {
+  const n = BigInt(total);
+  if (n < 0n) throw fail('pot_sched');
+  if (n <= BigInt(Number.MAX_SAFE_INTEGER)) return { carryNanos: Number(n), potCarry: 0n };
+  return { carryNanos: 0, potCarry: n };
+}
+
+function carryFields(parts) {
   const out = {};
-  if (defer.length) out.defer = defer;
-  if (owed.length) out.owed = owed;
+  if (parts.potCarry > 0n) out.potCarry = parts.potCarry.toString();
+  if (parts.back > 0n) out.back = parts.back.toString();
   return out;
 }
 
 /**
- * The owed list a coinbase must publish: owedIn minus what it paid and what
- * passed T21_OWED_TTL, oldest first, then its own defer at this height.
- * `paidE` is a set of E hex. Pure, so the template and the verifier agree.
+ * Wire fields. t21.defer is the flat (w, E) of this block's escrow shares.
+ * t21.owed is the sealed list. back is escrow value returned to the pot.
+ * An empty round can restate owed and return expired value; it cannot defer.
  */
-export function t21OwedNext({ owedIn = [], paidE = new Set(), defer = [], height }) {
-  const h = BigInt(height);
-  const out = [];
-  for (const o of owedIn) {
-    const e = Buffer.from(asU8(o.E)).toString('hex');
-    if (paidE.has(e)) continue;
-    if (h - BigInt(o.since) > BigInt(T21_OWED_TTL)) continue;
-    out.push({ E: Buffer.from(asU8(o.E)), w: BigInt(o.w).toString(), since: Number(o.since) });
-  }
-  for (const d of defer) out.push({ E: Buffer.from(asU8(d.E)), w: BigInt(d.w).toString(), since: Number(height) });
+function owedFields({ defer = [], owed = [], back = 0n, potCarry = 0n } = {}, empty = false) {
+  if (empty && defer.length) throw fail('share_bind');
+  const out = { ...carryFields({ potCarry, back }) };
+  if (!empty && defer.length) out.defer = defer.map((d) => ({ w: BigInt(d.w).toString(), E: Buffer.from(asU8(d.E)) }));
+  if (owed.length) out.owed = owed.map(cloneOwed);
   return out;
+}
+
+/**
+ * The owed list after this block: owedIn minus settled ids and rows past
+ * T21_OWED_TTL, then this block's fresh escrow. `paidE` is a set of anchors.
+ * Expired value is `back` (pot + hash), returned to the pot.
+ */
+export function t21OwedNext({ owedIn = [], paidE = new Set(), fresh = [], height }) {
+  const tagged = (owedIn || []).map((o) => ({ ...o, id: t21Anchor(o) }));
+  const got = composeOwed({
+    owedIn: tagged,
+    paid: paidE,
+    fresh: fresh.map((o) => ({ ...o, id: t21Anchor(o) })),
+    height,
+  });
+  if (!got.ok) {
+    const err = fail(got.reason);
+    throw err;
+  }
+  return {
+    owed: got.owed.map((o) => {
+      const { id, ...rest } = o;
+      return cloneOwed(rest);
+    }),
+    backPot: got.backPot,
+    backHash: got.backHash,
+    back: got.back,
+  };
 }
 
 /** Entries of owedIn still payable at `height` (not past the TTL). */
@@ -887,9 +1036,46 @@ export function t21OwedLive(owedIn, height) {
 /** The owed list a cb-v3 coinbase published, as the next block's owedIn. Not cb-v3: none. */
 export function t21OwedOf(tx) {
   if (!isT21Coinbase(tx)) return [];
-  return (Array.isArray(tx.t21?.owed) ? tx.t21.owed : []).map((o) => ({
-    E: Buffer.from(asU8(o.E)), w: BigInt(o.w), since: Number(o.since),
-  }));
+  return (Array.isArray(tx.t21?.owed) ? tx.t21.owed : []).map((o) => cloneOwed(o));
+}
+
+/** Law dust, or the whole pot of an empty round. Escrow returned on TTL is not in this. */
+export function t21DustCarry(tx) {
+  if (tx == null) return 0n;
+  let nanos = 0n;
+  if (tx.carryNanos != null && tx.carryNanos !== '') {
+    try {
+      nanos = BigInt(tx.carryNanos);
+    } catch {
+      return null;
+    }
+    if (typeof tx.carryNanos === 'number' && !Number.isSafeInteger(tx.carryNanos)) return null;
+    if (nanos < 0n) return null;
+  }
+  const pot = tx.t21?.potCarry != null && tx.t21.potCarry !== '' ? t21Big(tx.t21.potCarry) : 0n;
+  if (pot == null || pot < 0n) return null;
+  return nanos + pot;
+}
+
+/** Next block's carry input: law dust (or empty-round pot) plus escrow returned to the pot. */
+export function t21EconomicCarry(tx) {
+  const dust = t21DustCarry(tx);
+  if (dust == null) return null;
+  if (tx == null) return dust;
+  const back = tx.t21?.back != null && tx.t21.back !== '' ? t21Big(tx.t21.back) : 0n;
+  if (back == null || back < 0n) return null;
+  return dust + back;
+}
+
+function quotaOk(rows) {
+  return !quotaExceeded(rows, (o) => hex32(o.by));
+}
+
+function listingFor(spec, fresh, settleRows) {
+  const paidE = new Set((settleRows || []).map((r) => t21Anchor(r)).filter(Boolean));
+  const listed = t21OwedNext({ owedIn: spec.owedIn || [], paidE, fresh, height: spec.height });
+  if (!quotaOk(listed.owed)) throw fail('owed_cap');
+  return listed;
 }
 
 function emptyCoinbase(spec, deferred) {
@@ -898,13 +1084,15 @@ function emptyCoinbase(spec, deferred) {
   if (S == null || cin == null) throw fail('pot_sched');
   const ctx = { magic: spec.magic, height: spec.height, prevHash: spec.prevHash };
   const vaults = planVaults(ctx, spec.vaults, 0).concat(publicRows(spec, true));
+  const listed = listingFor(spec, [], []);
+  const pot = splitCarry(cin + S);
   const tx = {
     coinbase: true,
     cbForm: CB_FORM,
     height: spec.height,
     vin: [{ coinbase: true, height: spec.height }],
     vout: vaults,
-    carryNanos: Number(cin + S),
+    carryNanos: pot.carryNanos,
     t21: {
       S: S.toString(),
       cin: cin.toString(),
@@ -914,11 +1102,14 @@ function emptyCoinbase(spec, deferred) {
       magic: spec.magic,
       prevHash: Buffer.from(asU8(spec.prevHash)),
       shares: [],
-      ...owedFields(spec, true),
+      ...owedFields({ owed: listed.owed, back: listed.back, potCarry: pot.potCarry }, true),
     },
   };
   tx.t21.stmt = statementOf(tx);
-  return { tx, deferred, batch: [], secrets: [], W: 0n, f: 0n, phi: 0n, dust: cin + S };
+  return {
+    tx, deferred, batch: [], secrets: [], W: 0n, f: 0n, phi: 0n, dust: cin + S,
+    escrowPot: 0n, settleV: 0n, back: listed.back,
+  };
 }
 
 /** Phase one on the native prover. The wrap stays in JS; r is re-derived from the leaf try. */
@@ -1001,12 +1192,41 @@ function buildOnce(spec, payees, deferred, seed, engine = null) {
   return buildOnceWith(spec, payees, deferred, seed, null);
 }
 
+function freshEscrow(spec, priced) {
+  const producer = bytes32(spec.producer);
+  if (priced.length && !producer) throw fail('owed_list');
+  return priced.map((g) => ({
+    since: Number(spec.height),
+    by: Buffer.from(producer),
+    B: pointBytes(g._vch.B),
+    Y: pointBytes(g._vch.Y),
+    lambda: Buffer.from(g._vch.lambdaBytes),
+    pot: g.pot.toString(),
+    hash: g.hash.toString(),
+    shares: (g.shares || []).map((s) => ({
+      w: BigInt(s.w).toString(), E: Buffer.from(asU8(s.E)), beta: s.beta,
+    })),
+  }));
+}
+
 function buildOnceWith(spec, payees, deferred, seed, engine) {
-  const planned = planPay(spec, payees);
-  if (planned.W === 0n) return emptyCoinbase(spec, deferred);
+  const escrowIn = spec.escrowPayees || [];
+  const settleRows = Array.isArray(spec.settle) ? spec.settle : [];
+  const planned = planPay(spec, payees, escrowIn);
+  const settleOnly = planned.W === 0n && settleRows.length > 0;
+  if (planned.W === 0n && !settleOnly) return emptyCoinbase(spec, deferred);
+  const lawW = settleOnly ? 1n : planned.W;
+  const tallyW = settleOnly ? 0n : planned.Wpaid;
+  const uPub = settleOnly ? 0n : planned.u;
+  const rate = settleOnly ? planned.R : planned.rate;
+  const dustCarry = settleOnly ? planned.cin + planned.S - planned.f : planned.dust;
+  const escrowPot = settleOnly ? 0n : planned.escrowPot;
+  const escrowHash = settleOnly ? 0n : planned.escrowHash;
+  if (engine && lawW !== tallyW && spec.prover === 'native') throw fail('t21_prover_native');
+  const useEngine = engine && lawW === tallyW ? engine : null;
   const nonce = (label, i = 0, j = 0, bind = NO_BIND) => t21Nonce(seed, label, i, j, bind);
   const ctx = {
-    magic: spec.magic, height: spec.height, prevHash: spec.prevHash, nonce, W: planned.W, rate: planned.rate,
+    magic: spec.magic, height: spec.height, prevHash: spec.prevHash, nonce, W: lawW, rate,
   };
   const rows = planned.rows.map((g) => ({
     payee: g._index, noLeaf: !!g.forceNonLeaf, kind: 'pot', vch: g._vch, v: g.v, Wi: g.Wi, rho: g.rho, finEff: g.fin, finPub: g.fin,
@@ -1016,6 +1236,23 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
     if (!vch || !voucherKeysOk(spec.fee.voucher)) throw fail('fee_sched');
     rows.push({ kind: 'pool-fee', vch, v: planned.f, Wi: 0n, rho: 0n, finEff: planned.f, finPub: 0n });
   }
+  let settlePot = 0n;
+  let settleHash = 0n;
+  for (const s of settleRows) {
+    const pot = t21Big(s.pot);
+    const hash = t21Big(s.hash);
+    if (pot == null || hash == null) throw fail('owed_list');
+    const v = pot + hash;
+    settlePot += pot;
+    settleHash += hash;
+    const vch = voucherPoints({ B: s.B, Y: s.Y, lambda: s.lambda });
+    if (!vch || vch.lambda !== voucherLambda(s.B, s.Y)) throw fail('split_label');
+    const anchor = t21Anchor(s);
+    if (!anchor) throw fail('owed_list');
+    rows.push({
+      kind: 'settle', vch, v, Wi: 0n, rho: 0n, finEff: v, finPub: 0n, escrowE: Buffer.from(anchor, 'hex'),
+    });
+  }
   const dummySecret = spec.dummySecret || sha(seed, Buffer.from('dummy'));
   for (let ctr = 0; rows.filter((r) => r.kind === 'pot').length < K_MIN && ctr < 64; ctr += 1) {
     const vch = voucherAt(dummySecret, (spec.dummyStart || 0) + ctr);
@@ -1023,39 +1260,55 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
     if (!voucherKeysOk(pub)) continue;
     rows.push({ kind: 'pot', vch: voucherPoints(pub), v: 0n, Wi: 0n, rho: 0n, finEff: 0n, finPub: 0n });
   }
-  // Row order is shuffled so a dummy's position does not mark it.
   for (let i = rows.length - 1; i > 0; i -= 1) {
     const j = Number(bytesToNumberLE(sha(seed, Buffer.from('shuffle'), u32le(i)).subarray(0, 8)) % BigInt(i + 1));
     [rows[i], rows[j]] = [rows[j], rows[i]];
   }
-  const items = engine ? commitRowsNative(engine, ctx, rows, seed) : rows.map((row, i) => commitRow(ctx, row, i));
-  const vaults = planVaults(ctx, spec.vaults, items.length).concat(publicRows(spec));
+  const items = useEngine ? commitRowsNative(useEngine, ctx, rows, seed) : rows.map((row, i) => commitRow(ctx, row, i));
+  for (const it of items) {
+    if (it.row.escrowE) it.pub.escrowE = Buffer.from(asU8(it.row.escrowE));
+  }
+  const vaults = planVaults(ctx, spec.vaults, items.length).concat(publicRows(spec, settleOnly));
   const shares = [];
   for (const p of payees) {
     for (const s of p.shares || []) shares.push({ w: BigInt(s.w), E: Buffer.from(asU8(s.E)), ell: s.ell, beta: s.beta });
   }
+  const fresh = settleOnly ? [] : freshEscrow(spec, planned.escrow);
+  const defer = [];
+  for (const g of fresh) for (const s of g.shares) defer.push({ w: s.w, E: s.E });
+  const listed = listingFor(spec, fresh, settleRows);
+  const pot = splitCarry(dustCarry);
   const skel = {
     coinbase: true,
     cbForm: CB_FORM,
-    carryNanos: Number(planned.dust),
+    carryNanos: pot.carryNanos,
     vout: items.map((it) => it.pub).concat(vaults),
     t21: {
       S: planned.S.toString(),
       cin: planned.cin.toString(),
       bps: Number(planned.bps),
-      u: planned.u.toString(),
+      u: uPub.toString(),
       height: spec.height,
       magic: spec.magic,
       prevHash: Buffer.from(asU8(spec.prevHash)),
       shares: shares.map((s) => ({ w: s.w.toString(), E: s.E })),
-      ...owedFields(spec, false),
+      ...owedFields({ defer, owed: listed.owed, back: listed.back, potCarry: pot.potCarry }, false),
     },
   };
   const stmt = statementOf(skel);
-  const { proved, tally } = engine
-    ? proveNative(engine, ctx, items, shares, stmt, seed)
-    : { proved: items.map((it) => proveRow(ctx, it, stmt)), tally: proveTally(items, shares, planned.W, stmt, nonce) };
-  const mintG = planned.S + planned.cin - planned.dust + planned.u * planned.W + planned.phi;
+  for (const row of skel.t21.owed || []) {
+    if (Number(row.since) !== Number(spec.height)) continue;
+    const src = fresh.find((f) => t21Anchor(f) === t21Anchor(row));
+    if (!src) throw fail('owed_list');
+    row.shares.forEach((s, i) => {
+      s.open = proveOpen(row, { ...s, beta: src.shares[i].beta }, nonce('escrow-open', i, row.shares.length, stmt));
+    });
+  }
+  const { proved, tally } = useEngine
+    ? proveNative(useEngine, ctx, items, shares, stmt, seed)
+    : { proved: items.map((it) => proveRow(ctx, it, stmt)), tally: proveTally(items, shares, tallyW, stmt, nonce) };
+  const settleV = settlePot + settleHash;
+  const mintG = planned.S + planned.cin - dustCarry - escrowPot + uPub * tallyW + planned.phi + settleV;
   let sumC = Point.ZERO;
   let h = 0n;
   for (const it of items) {
@@ -1069,7 +1322,7 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
     height: spec.height,
     vin: [{ coinbase: true, height: spec.height }],
     vout: proved.concat(vaults),
-    carryNanos: Number(planned.dust),
+    carryNanos: pot.carryNanos,
     excess: scalarBytes(h),
     t21: { ...skel.t21, tally, mint, stmt },
   };
@@ -1078,11 +1331,15 @@ function buildOnceWith(spec, payees, deferred, seed, engine) {
     deferred,
     batch: payees.flatMap((p) => (p.shares || []).map((s) => ({ E: Buffer.from(asU8(s.E)), w: BigInt(s.w) }))),
     secrets: items.map((it) => ({ kind: it.row.kind, v: it.row.v, r: it.r, index: it.index })),
-    W: planned.W,
+    W: tallyW,
     f: planned.f,
     phi: planned.phi,
-    dust: planned.dust,
+    dust: dustCarry,
     paid: mintG,
+    escrowPot,
+    escrowHash,
+    settleV,
+    back: listed.back,
   };
 }
 
@@ -1125,7 +1382,8 @@ function proverEngine(spec) {
  * row cannot be made an FS-1 leaf throws admit_note_point; that payee and its
  * shares are evicted to `deferred` and the coinbase is rebuilt once. Payees
  * past payeeCapLive() (or a lower spec.payeeMax), in rankPayees order, are
- * deferred too. There is no last-payee re-split.
+ * sealed as escrow when spec.producer is set. A share total past shareMax
+ * is share_cap: a payee is never split. There is no last-payee re-split.
  */
 export function buildT21Coinbase(spec) {
   // Every nonce and blind derives from this seed, so a given seed builds the same bytes.
@@ -1143,38 +1401,48 @@ export function buildT21Coinbase(spec) {
     live.push({ ...p, _vch: vch });
   });
   rankPayees(live);
-  // Dummies only pad a short round, so the cap needs no room for them.
-  const cap = Math.min(payeeCapLive(), Math.max(0, Math.floor(Number(spec.payeeMax ?? Infinity))));
-  for (const p of live.splice(cap)) deferred.push({ voucher: p.voucher, shares: p.shares || [], reason: 'payee_cap' });
-  // Shares past CB_SHARE_MAX (or a lower spec.shareMax) wait for the next round; a payee left with none is deferred whole.
-  let room = Math.min(CB_SHARE_MAX, Math.max(0, Math.floor(Number(spec.shareMax ?? CB_SHARE_MAX))));
-  for (let i = 0; i < live.length; i += 1) {
-    const all = (live[i].shares || []).slice().sort((a, b) => {
-      const wa = BigInt(a.w);
-      const wb = BigInt(b.w);
-      return wa === wb ? 0 : wa > wb ? -1 : 1;
-    });
-    const keep = all.slice(0, room);
-    room -= keep.length;
-    if (keep.length < all.length) {
-      deferred.push({ voucher: live[i].voucher, shares: all.slice(keep.length), reason: 'share_cap' });
-      live[i] = keep.length || (scalarOk(live[i].fin || 0) ?? 0n) > 0n ? { ...live[i], shares: keep } : null;
-    }
+  const pinned = [];
+  const ranked = [];
+  for (const p of live) {
+    const fin = scalarOk(p.fin || 0) ?? 0n;
+    if ((p.shares || []).length === 0 && fin > 0n) pinned.push(p);
+    else ranked.push(p);
   }
-  for (let i = live.length - 1; i >= 0; i -= 1) if (!live[i]) live.splice(i, 1);
+  const escrow = [];
+  for (const p of spec.escrowPayees || []) {
+    const vch = voucherPoints(p.voucher);
+    if (!vch || !keysOk(p.voucher)) throw fail('voucher_key');
+    escrow.push({ ...p, _vch: vch });
+  }
+  // Dummies only pad a short round, so the cap needs no room for them.
+  // Overflow payees are sealed whole. They are not a second leftover list.
+  // A finder row with no shares stays in the block; it is not escrow.
+  const cap = Math.min(payeeCapLive(), Math.max(0, Math.floor(Number(spec.payeeMax ?? Infinity))));
+  const settleN = Array.isArray(spec.settle) ? spec.settle.length : 0;
+  const roomPayees = Math.max(0, cap - settleN - pinned.length);
+  for (const p of ranked.splice(roomPayees)) escrow.push(p);
+  const kept = pinned.concat(ranked);
+  const room = Math.min(CB_SHARE_MAX, Math.max(0, Math.floor(Number(spec.shareMax ?? CB_SHARE_MAX))));
+  let nShares = 0;
+  for (const p of kept) nShares += (p.shares || []).length;
+  for (const p of escrow) nShares += (p.shares || []).length;
+  if (nShares > room) throw fail('share_cap');
   const withIndex = (list) => list.map((p, i) => ({ ...p, _index: i }));
-  let payees = withIndex(live);
-  if (!payees.length) return emptyCoinbase(spec, deferred);
+  let payees = withIndex(kept);
+  const specRound = { ...spec, escrowPayees: escrow };
+  if (!payees.length && !escrow.length && !(spec.settle || []).length) return emptyCoinbase(specRound, deferred);
   const engine = proverEngine(spec);
   try {
-    return buildOnce(spec, payees, deferred, seed, engine);
+    return buildOnce(specRound, payees, deferred, seed, engine);
   } catch (err) {
     if (err.reason !== 'admit_note_point' || err.payee == null) throw err;
     const bad = payees[err.payee];
     deferred.push({ voucher: bad.voucher, shares: bad.shares || [], reason: 'admit_note_point' });
     payees = withIndex(payees.filter((_, i) => i !== err.payee).map(({ _index, ...rest }) => rest));
-    if (!payees.length) return emptyCoinbase(spec, deferred);
-    return buildOnce(spec, payees, deferred, seed, engine);
+    if (!payees.length && !(specRound.escrowPayees || []).length && !(spec.settle || []).length) {
+      return emptyCoinbase(specRound, deferred);
+    }
+    return buildOnce(specRound, payees, deferred, seed, engine);
   }
 }
 
@@ -1231,7 +1499,7 @@ export function verifyT21Coinbase(input) {
     // Public levy rows; coinbaseLevyPays opens them. The finder half is public only with no shares.
     if (o.kind === 'reserve-fee' && !hasKey(o, 'kindCode')) continue;
     if (o.kind === 'finder-fee' && !hasKey(o, 'kindCode')) {
-      if (shares.length) return no('levy_split');
+      if (shares.length || defer.length) return no('levy_split');
       continue;
     }
     if (hasKey(o, 'amtCt') && Buffer.from(asU8(o.amtCt)).length !== 8) return no('amount_ct');
@@ -1253,10 +1521,14 @@ export function verifyT21Coinbase(input) {
   const u = scalarOk(t21.u || 0);
   const bps = t21Big(t21.bps);
   const cout = scalarOk(tx.carryNanos || 0);
-  if (S == null || cin == null || u == null || cout == null || bps == null) return no('split_cap');
+  const potCarry = t21.potCarry != null && t21.potCarry !== '' ? t21Big(t21.potCarry) : 0n;
+  if (S == null || cin == null || u == null || cout == null || bps == null || potCarry == null || potCarry < 0n) {
+    return no('split_cap');
+  }
+  const potOut = cout + potCarry;
   // B3: the public scalars are chain state.
   if (S !== BigInt(expect.S) || cin !== BigInt(expect.cin)) return no('pot_sched');
-  if (cout > S + cin) return no('pot_sched');
+  if (potOut > S + cin) return no('pot_sched');
   if (String(t21.height) !== String(expect.height) || String(t21.magic) !== String(expect.magic)
     || !sameBytes(t21.prevHash, expect.prevHash)) {
     return no('cb_form');
@@ -1266,17 +1538,29 @@ export function verifyT21Coinbase(input) {
   if (f == null) return no('fee_sched');
   const vaultPaid = checkVaults(tx, expect);
   if (!vaultPaid.ok) return vaultPaid;
-  if (shares.length === 0) {
+  const settling = payout.some((o) => o.kind === 'settle');
+  if ((settling || defer.length) && vout.some((o) => o.kind === 'finder-fee' && !hasKey(o, 'kindCode'))) {
+    return no('levy_split');
+  }
+  const hasWork = shares.length > 0 || defer.length > 0;
+  if (!hasWork && !settling) {
     if (payout.length) return no('pot_carry');
-    if (cout !== cin + S) return no('pot_sched');
+    if (potOut !== cin + S) return no('pot_sched');
     if (f !== 0n || u !== 0n) return no('fee_sched');
-    if (!Array.isArray(expect.shares) || expect.shares.length || defer.length) return no('share_bind');
-    const owedOk = checkOwed(t21, [], [], expect);
+    if (!Array.isArray(expect.shares) || expect.shares.length) return no('share_bind');
+    const owedOk = checkOwed(tx, [], [], expect, null);
     if (!owedOk.ok) return owedOk;
     if (!sameBytes(t21.stmt, statementOf(tx))) return no('split_law');
-    return { ok: true, reason: null, paid: 0n, phi: 0n, W: 0n, f: 0n, finB: null, vaultPaid: vaultPaid.paid };
+    return {
+      ok: true, reason: null, paid: 0n, phi: 0n, W: 0n, f: 0n, finB: null,
+      escrowPot: 0n, settleV: 0n, back: owedOk.back, vaultPaid: vaultPaid.paid,
+    };
   }
-  if (u !== BigInt(expect.u)) return no('pot_sched');
+  if (!hasWork) {
+    if (u !== 0n) return no('pot_sched');
+    if (!Array.isArray(expect.shares) || expect.shares.length) return no('share_bind');
+    if (potOut !== cin + S - f) return no('pot_sched');
+  } else if (u !== BigInt(expect.u)) return no('pot_sched');
   if (payees.length < K_MIN) return no('payee_cap');
   const feeRows = payout.filter((o) => o.kind === 'pool-fee');
   if (f > 0n ? feeRows.length !== 1 : feeRows.length !== 0) return no('fee_sched');
@@ -1296,7 +1580,7 @@ export function verifyT21Coinbase(input) {
     seenE.add(hex);
   }
   for (const s of shares) W += BigInt(s.w);
-  if (W <= 0n || W >= W_MAX) return no('split_cap');
+  if (shares.length && (W <= 0n || W >= W_MAX)) return no('split_cap');
   if (W > W_HASH_MAX) return no('hash_units');
   let Bh;
   try {
@@ -1304,16 +1588,14 @@ export function verifyT21Coinbase(input) {
   } catch {
     return no('hash_budget');
   }
-  if (Bh < 0n || u * W > Bh) return no('hash_budget');
-  const owedOk = checkOwed(t21, shares, defer, expect);
-  if (!owedOk.ok) return owedOk;
-  if (!Array.isArray(expect.shares) || expect.shares.length !== owedOk.own.length + defer.length) return no('share_bind');
+  if (Bh < 0n) return no('hash_budget');
+  if (!Array.isArray(expect.shares) || expect.shares.length !== shares.length + defer.length) return no('share_bind');
   const pool = new Map();
   for (const p of expect.shares) {
     const k = `${Buffer.from(asU8(p.nc)).toString('hex')}:${String(p.units)}`;
     pool.set(k, (pool.get(k) || 0) + 1);
   }
-  for (const s of owedOk.own.concat(defer)) {
+  for (const s of shares.concat(defer)) {
     const k = `${t21ShareNc(t21.magic, s.E).toString('hex')}:${String(s.w)}`;
     const n = pool.get(k) || 0;
     if (!n) return no('share_bind');
@@ -1369,16 +1651,30 @@ export function verifyT21Coinbase(input) {
     parsed.push({ o, B, Y, C, CW, lamS, rhoK, delK, fin, index: vout.indexOf(o) });
   }
   if (fins > 1) return no('finder_row');
+  const owedOk = checkOwed(tx, shares, defer, expect, finB);
+  if (!owedOk.ok) return owedOk;
+  const wall = W + owedOk.wEsc;
+  if (wall >= W_MAX) return no('split_cap');
+  if (u * wall > Bh) return no('hash_budget');
+  for (const p of parsed) {
+    if (p.o.kind !== 'settle') continue;
+    const row = owedOk.settleById.get(hex32(p.o.escrowE));
+    if (!row || hex32(p.o.B) !== hex32(row.B) || hex32(p.o.Y) !== hex32(row.Y)
+      || hex32(p.o.lambda) !== hex32(row.lambda)) {
+      return no('owed_list');
+    }
+    p.finEff = BigInt(row.pot) + BigInt(row.hash);
+  }
   const R = S + cin - f;
   if (R < 0n) return no('pot_sched');
-  // Full-pot carry is empty-batch only. The law remainder Σρ/W is always carried.
-  // Σρ_i/W with every ρ_i < W, so c_out is below the payout row count.
-  if (cout >= BigInt(payout.length)) return no('pot_carry');
+  // Full-pot carry is a round with no new work. With work, c_out is the law dust.
+  if (hasWork && potOut >= BigInt(payout.length)) return no('pot_carry');
   const stmt = statementOf(tx);
   if (!sameBytes(t21.stmt, stmt)) return no('split_law');
-  const mintG = S + cin - cout + u * W + phi;
-  const rate = R + W * u;
-  const checks = buildChecks({ tx, parsed, shares, W, rate, f, mintG, stmt });
+  const lawW = wall > 0n ? wall : 1n;
+  const mintG = S + cin - potOut - owedOk.escrowPot + u * W + phi + owedOk.settleV;
+  const rate = R + lawW * u;
+  const checks = buildChecks({ tx, parsed, shares, lawW, tallyW: W, rate, f, mintG, stmt });
   if (!checks.ok) return checks;
   const weighted = [];
   for (const c of checks.list) for (const t of c.terms) weighted.push([t, weight128()]);
@@ -1389,48 +1685,122 @@ export function verifyT21Coinbase(input) {
     return no('split_law');
   }
   return {
-    ok: true, reason: null, paid: mintG, phi, W, f, finB, vaultPaid: vaultPaid.paid,
+    ok: true, reason: null, paid: mintG, phi, W, f, finB,
+    escrowPot: owedOk.escrowPot, settleV: owedOk.settleV, back: owedOk.back,
+    vaultPaid: vaultPaid.paid,
   };
 }
 
+function rowShares(row) {
+  return Array.isArray(row?.shares) ? row.shares : [];
+}
+
+function sameRow(got, want) {
+  if (Number(got.since) !== Number(want.since)) return false;
+  if (!sameBytes(got.by, want.by) || !sameBytes(got.B, want.B) || !sameBytes(got.Y, want.Y)
+    || !sameBytes(got.lambda, want.lambda)) return false;
+  if (String(got.pot) !== String(want.pot) || String(got.hash) !== String(want.hash)) return false;
+  const gs = rowShares(got);
+  const ws = rowShares(want);
+  if (gs.length !== ws.length) return false;
+  for (let i = 0; i < gs.length; i += 1) {
+    if (String(gs[i].w) !== String(ws[i].w) || !sameBytes(gs[i].E, ws[i].E)) return false;
+  }
+  return true;
+}
+
 /**
- * Deferred rows. expect.owedIn is the parent coinbase's t21.owed (none for a
- * legacy parent). A share whose E is owed pays that row and must carry its w;
- * a row past T21_OWED_TTL cannot be paid. A defer row may not re-defer an
- * owed E. t21.owed must equal t21OwedNext exactly, at most T21_OWED_MAX rows.
- * Returns the shares that are this block's own (bound to A leaves).
+ * Escrow listing. expect.owedIn is the parent list. Settlement is a settle
+ * row bound to the anchor, not a replay of the share. Fresh rows are priced
+ * from this round (floor(R·w/W_all) + u·w) and bound to expect.producer, or
+ * to the finder row when the block pays one. Quota is per producer.
+ * Expired value is back, returned to the pot.
  */
-function checkOwed(t21, shares, defer, expect) {
+function checkOwed(tx, shares, defer, expect, finB) {
+  const t21 = tx.t21 || {};
   const owedIn = Array.isArray(expect.owedIn) ? expect.owedIn : [];
   const height = BigInt(expect.height);
-  const byE = new Map();
-  for (const o of owedIn) byE.set(Buffer.from(asU8(o.E)).toString('hex'), o);
-  const own = [];
+  const byId = new Map();
+  for (const o of owedIn) {
+    const id = t21Anchor(o);
+    if (!id || byId.has(id)) return no('owed_list');
+    byId.set(id, o);
+  }
+  const settleById = new Map();
   const paidE = new Set();
-  for (const s of shares) {
-    const hex = Buffer.from(asU8(s.E)).toString('hex');
-    const row = byE.get(hex);
-    if (!row) {
-      own.push(s);
-      continue;
-    }
+  for (const o of payoutRows(tx)) {
+    if (o.kind !== 'settle') continue;
+    const id = hex32(o.escrowE);
+    if (!id || paidE.has(id)) return no('owed_list');
+    const row = byId.get(id);
+    if (!row) return no('owed_list');
     if (height - BigInt(row.since) > BigInt(T21_OWED_TTL)) return no('owed_ttl');
-    if (BigInt(s.w) !== BigInt(row.w)) return no('share_bind');
-    paidE.add(hex);
+    paidE.add(id);
+    settleById.set(id, row);
   }
-  for (const d of defer) {
-    if (byE.has(Buffer.from(asU8(d.E)).toString('hex'))) return no('share_label');
-  }
-  const want = t21OwedNext({ owedIn, paidE, defer, height: expect.height });
-  if (want.length > T21_OWED_MAX) return no('owed_cap');
   const got = Array.isArray(t21.owed) ? t21.owed : [];
-  if (got.length !== want.length) return no('owed_list');
-  for (let i = 0; i < want.length; i += 1) {
-    const g = got[i];
-    if (!g || typeof g !== 'object' || Object.keys(g).some((k) => k !== 'E' && k !== 'w' && k !== 'since')) return no('owed_list');
-    if (!sameBytes(g.E, want[i].E) || String(g.w) !== want[i].w || Number(g.since) !== want[i].since) return no('owed_list');
+  const fresh = got.filter((o) => BigInt(o.since) === height);
+  let listed;
+  try {
+    listed = t21OwedNext({ owedIn, paidE, fresh, height: expect.height });
+  } catch (err) {
+    return no(err.reason || 'owed_list');
   }
-  return { ok: true, own };
+  if (got.length !== listed.owed.length) return no('owed_list');
+  for (let i = 0; i < got.length; i += 1) {
+    if (!sameRow(got[i], listed.owed[i])) return no('owed_list');
+  }
+  if (!quotaOk(got)) return no('owed_cap');
+  for (let i = 0; i < got.length; i += 1) {
+    if (!rowShares(got[i]).every((s) => openHolds(got[i], s))) return no('share_label');
+  }
+  const backPub = t21.back != null && t21.back !== '' ? t21Big(t21.back) : 0n;
+  if (backPub == null || backPub !== listed.back) return no('owed_list');
+  const S = scalarOk(t21.S);
+  const cin = scalarOk(t21.cin);
+  const u = scalarOk(t21.u || 0);
+  const bps = t21Big(t21.bps || 0);
+  const f = S != null && bps != null ? feeOf(S, bps) : null;
+  if (S == null || cin == null || u == null || f == null) return no('pot_sched');
+  const R = S + cin - f;
+  let wPaid = 0n;
+  for (const s of shares) wPaid += BigInt(s.w);
+  let wEsc = 0n;
+  let escrowPot = 0n;
+  const flat = [];
+  const who = finB ? hex32(finB) : hex32(expect.producer);
+  for (const row of fresh) {
+    if (!who || hex32(row.by) !== who) return no('owed_list');
+    if (scalarOkBytes(row.lambda) !== voucherLambda(row.B, row.Y)) return no('split_label');
+    let w = 0n;
+    for (const s of rowShares(row)) {
+      w += BigInt(s.w);
+      flat.push(s);
+      const id = hex32(s.E);
+      if ([...byId.values()].some((prev) => rowShares(prev).some((ps) => hex32(ps.E) === id) || t21Anchor(prev) === id)) {
+        return no('share_label');
+      }
+    }
+    wEsc += w;
+  }
+  if (flat.length !== defer.length) return no('owed_list');
+  for (let i = 0; i < flat.length; i += 1) {
+    if (String(flat[i].w) !== String(defer[i].w) || !sameBytes(flat[i].E, defer[i].E)) return no('owed_list');
+  }
+  const wall = wPaid + wEsc;
+  if (wEsc > 0n) {
+    if (wall <= 0n || wall >= W_MAX) return no('split_cap');
+    for (const row of fresh) {
+      let w = 0n;
+      for (const s of rowShares(row)) w += BigInt(s.w);
+      const pay = weightPay(R, wall, w, u);
+      if (!pay || pay.pot !== BigInt(row.pot) || pay.hash !== BigInt(row.hash)) return no('pot_sched');
+      escrowPot += pay.pot;
+    }
+  }
+  let settleV = 0n;
+  for (const row of settleById.values()) settleV += BigInt(row.pot) + BigInt(row.hash);
+  return { ok: true, wEsc, escrowPot, settleV, back: listed.back, settleById };
 }
 
 /** The 0x23 rows must be exactly planVaults over chain state, right after the payout rows. */
@@ -1457,7 +1827,7 @@ function checkVaults(tx, expect) {
 }
 
 /** Every equation as terms, grouped by the reject it maps to, in rule order. */
-function buildChecks({ tx, parsed, shares, W, rate, f, mintG, stmt }) {
+function buildChecks({ tx, parsed, shares, lawW, tallyW, rate, f, mintG, stmt }) {
   const t21 = tx.t21;
   const list = [];
   // T-8 tally.
@@ -1489,20 +1859,20 @@ function buildChecks({ tx, parsed, shares, W, rate, f, mintG, stmt }) {
   const bal = hTerms(balP, tally.balance, stmt);
   let sumW = Point.ZERO;
   for (const p of parsed) sumW = sumW.add(p.CW);
-  const wt = hTerms(sumW.subtract(mulP(G, W)), tally.weight, stmt);
+  const wt = hTerms(sumW.subtract(mulP(G, tallyW)), tally.weight, stmt);
   if (!bal || !wt) return no('split_tally');
   list.push({ reason: 'split_tally', terms: [...tallyTerms, bal, wt] });
   // T-9 law and the two-sided ρ range identity.
   const lawTerms = [];
   for (const p of parsed) {
-    const finEff = p.o.kind === 'pool-fee' ? f : p.fin;
+    const finEff = p.o.kind === 'pool-fee' ? f : (p.finEff != null ? p.finEff : p.fin);
     let rhoC = Point.ZERO;
     for (let i = 0; i < RHO_LIMBS; i += 1) rhoC = rhoC.add(mulP(p.rhoK[i], 1n << (16n * BigInt(i))));
-    const lawP = mulP(p.C, W).subtract(mulP(p.CW, rate)).add(rhoC).subtract(mulP(G, W * finEff));
+    const lawP = mulP(p.C, lawW).subtract(mulP(p.CW, rate)).add(rhoC).subtract(mulP(G, lawW * finEff));
     const lt = hTerms(lawP, p.o.law, stmt);
     if (!lt) return no('split_law');
     lawTerms.push(lt);
-    const sum = new Terms().add(G, -(W - 1n));
+    const sum = new Terms().add(G, -(lawW - 1n));
     for (let i = 0; i < RHO_LIMBS; i += 1) {
       sum.add(p.rhoK[i], 1n << (16n * BigInt(i)));
       sum.add(p.delK[i], 1n << (16n * BigInt(i)));
@@ -1675,7 +2045,10 @@ export function observerView(tx, { truth = [] } = {}) {
 export function supplyIdentities(built) {
   const paid = (built.secrets || []).reduce((a, s) => a + s.v, 0n);
   const t = built.tx.t21;
-  const right = BigInt(t.S) + BigInt(t.cin) - BigInt(built.tx.carryNanos) + BigInt(t.u || 0) * built.W + built.phi;
+  const potCarry = t.potCarry != null && t.potCarry !== '' ? BigInt(t.potCarry) : 0n;
+  const dust = BigInt(built.tx.carryNanos || 0) + potCarry;
+  const right = BigInt(t.S) + BigInt(t.cin) - dust - (built.escrowPot || 0n)
+    + BigInt(t.u || 0) * built.W + built.phi + (built.settleV || 0n);
   return { paid, fee: built.f, right, ok: paid === right };
 }
 

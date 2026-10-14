@@ -28,10 +28,10 @@ export const W_S_MAX = W_HASH_MAX;
  */
 export const T21_SHARES_PER_BLOCK = 85;
 /**
- * Deferred rows. A proven label a block does not pay is published in
- * t21.defer and joins t21.owed, the list every later coinbase restates.
- * A later block pays it at its deferred w; past T21_OWED_TTL blocks it
- * drops. Russell's ruling (2026-10-14) fixes both values.
+ * Payee-cap escrow. Overflow payees are sealed into t21.owed at defer time.
+ * T21_OWED_MAX is per producer, T21_OWED_TTL bounds the listing: on expiry
+ * the sealed value returns to the pot. Neither drops a row unpaid.
+ * Russell's ruling (2026-10-14) fixes both values.
  */
 export const T21_OWED_MAX = 1_024;
 export const T21_OWED_TTL = 960;
@@ -103,7 +103,7 @@ export const T21_FINGERPRINT_TOKENS = Object.freeze([
   `SHARE_BIND=${SHARE_BIND_DOM}`,
   `T21_HASH=full-units,W<=2^${HASH_CAP_BITS},uW<=Bh`,
   `T21_SHARE_FLOOR=ceil-log2-work/${T21_SHARES_PER_BLOCK},proof-header`,
-  `T21_DEFER=owed-restated,max=${T21_OWED_MAX},ttl=${T21_OWED_TTL}`,
+  `T21_DEFER=escrow-payee-cap,max=${T21_OWED_MAX}/producer,ttl=${T21_OWED_TTL}-to-pot`,
   `T21_EMPTY_FEE=${T21_EMPTY_FINDER},miner-dest`,
   `K_MIN=${K_MIN}`,
   `FEE=f1-bps-${FEE_BPS_MAX}`,

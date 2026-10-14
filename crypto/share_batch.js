@@ -1037,8 +1037,8 @@ export function accountShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK, c
 
 /**
  * cb-v3 credit: every share keeps its full 2^bits units. A total above the
- * cap is hash_units; nothing is scaled or walked round-robin, so the
- * template must leave out whole labels instead.
+ * cap is hash_units. The block is rejected. Nothing is scaled, and nothing
+ * is held back for a later round.
  */
 function accountFullUnits(shares, cap, credit) {
   const limit = BigInt(cap);

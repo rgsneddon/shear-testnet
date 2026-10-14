@@ -527,7 +527,7 @@ const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
   'portalId', 'memo', 'memoCt',
-  'lambda', 'B', 'Y', 'cw', 'rhoK', 'delK', 'ra', 'law', 'fin', 'kindCode', 'vaultNanos', 'mintId',
+  'lambda', 'B', 'Y', 'cw', 'rhoK', 'delK', 'ra', 'law', 'fin', 'kindCode', 'vaultNanos', 'mintId', 'escrowE',
 ]);
 
 const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);
