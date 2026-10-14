@@ -34,7 +34,7 @@ import {
   AMOUNT_KEYS, BP_M, BP_N, CB_FORM, DOM_CB, FEE_BPS_MAX, GEN_H,
   K_MIN, L_MAX, LOGUP_DOM, N_MAX, OUTPUT_MAX, PAYOUT_KIND_CODE, PAYOUT_KINDS,
   RANGE_TAG, RHO_LIMBS, R_CHUNKS, SCALAR_MAX, SHARE_BIND_DOM, T21_REQUIRE_ALL_COINBASES,
-  V_CHUNKS, VAULT_KIND_CODE, VAULT_R_DOM, VE_CHUNKS, W_MAX, W_S_MAX,
+  V_CHUNKS, VAULT_KIND_CODE, VAULT_R_DOM, VE_CHUNKS, W_HASH_MAX, W_MAX, W_S_MAX,
 } from './t21_params.js';
 
 const Point = RistrettoPoint;
@@ -954,7 +954,9 @@ function sameBytes(a, b) {
  * Consensus verify. `expect` is chain state, never the coinbase:
  *   S (subsidy at this height), cin (parent carry), u (hash-bonus unit),
  *   height, magic, prevHash,
- *   shares: proven v6 batch rows [{ nc, units }] or 'buried' for a pruned block,
+ *   shares: [{ nc, units }], the block's retained share units per note commit,
+ *     or 'buried' for a pruned block,
+ *   hashBudget: B_h in nanos; u·W must not exceed it,
  *   prevEs: E_s hex set of the parent coinbase (carry window),
  *   vaults: pending pinned withdraws [{ mintId, vaultNanos, B }].
  * Returns paid = S + c_in − c_out + u·W + Φ, Φ, and the finder row's B*.
@@ -1037,6 +1039,14 @@ export function verifyT21Coinbase(input) {
     W += BigInt(s.w);
   }
   if (W <= 0n || W >= W_MAX) return no('split_cap');
+  if (W > W_HASH_MAX) return no('hash_units');
+  let Bh;
+  try {
+    Bh = BigInt(expect.hashBudget);
+  } catch {
+    return no('hash_budget');
+  }
+  if (Bh < 0n || u * W > Bh) return no('hash_budget');
   if (expect.shares !== 'buried') {
     if (!Array.isArray(expect.shares) || expect.shares.length !== shares.length) return no('share_bind');
     const pool = new Map();

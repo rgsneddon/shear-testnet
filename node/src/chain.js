@@ -385,6 +385,13 @@ function aLeavesOf(collated, pay) {
   });
 }
 
+/** cb-v3 share units: the retained units per note commit (the aLeaves), so Σw stays under MAX_HASH_UNITS_PER_BLOCK. */
+export function t21ShareUnits(block, txs, provedLeaves, skipFlow) {
+  const toShares = (leaves) => leaves.map((l) => ({ nc: Buffer.from(l.noteCommit), units: BigInt(l.count) }));
+  if (provedLeaves) return { ok: true, shares: toShares(provedLeaves) };
+  return { ok: true, shares: skipFlow ? 'buried' : [] };
+}
+
 function publishedALeaves(block) {
   if (!Array.isArray(block?.aLeaves)) return [];
   return block.aLeaves.map((l) => {
@@ -2333,6 +2340,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   let provenByDest = new Map();
   let shareLeaves = null;
   let provedShares = null;
+  let provedLeaves = null;
   // Amounts the coinbase rule already opened. A published valueProof.v
   // that is missing or wrong does not replace these.
   const provenOpen = new Map();
@@ -2358,6 +2366,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     });
     if (!proved.ok) return proved;
     provedShares = proved.shares;
+    provedLeaves = proved.aLeaves;
     if (!skipFlow) {
       provenUnits = proved.units;
       provenByDest = proved.byDest;
@@ -2491,6 +2500,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const prevEs = new Set(isT21Coinbase(prevCb)
       ? (prevCb.t21?.shares || []).map((s) => Buffer.from(asU8(s.E)).toString('hex'))
       : []);
+    const t21Shares = t21ShareUnits(block, txs, provedShares ? provedLeaves : null, skipFlow, decoded);
+    if (!t21Shares.ok) return t21Shares;
+    const hashBudget = hashBudgetNanos(opts.hashAcceptedSeries, hashBonusNanos);
+    if (hashBudget == null) return { ok: false, reason: 'hash_owed' };
     const gate = verifyT21Coinbase({
       tx: txs[0],
       expect: {
@@ -2500,9 +2513,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         height,
         magic,
         prevHash: t21ParentId(prev.header),
-        shares: provedShares
-          ? provedShares.map((r) => ({ nc: r.noteCommit, units: BigInt(r.units) }))
-          : (skipFlow ? 'buried' : []),
+        shares: t21Shares.shares,
+        hashBudget,
         prevEs,
         vaults: [],
       },

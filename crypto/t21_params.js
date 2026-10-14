@@ -14,6 +14,9 @@ export const VOUCHER_GAP = 256;
 export const W_S_MAX = 1n << 28n;
 export const N_MAX = 65536;
 export const W_MAX = 1n << 48n;
+/** Σw is retained share units, at most MAX_HASH_UNITS_PER_BLOCK (asert.js); u·W ≤ B_h on every path. */
+export const HASH_CAP_BITS = 28;
+export const W_HASH_MAX = 1n << BigInt(HASH_CAP_BITS);
 export const SCALAR_MAX = 1n << 64n;
 export const OUTPUT_MAX = 65536;
 export const L_MAX = 470;
@@ -67,6 +70,7 @@ export const T21_FINGERPRINT_TOKENS = Object.freeze([
   `SPLIT_TALLY=logup-inv-schnorr+${LOGUP_DOM}`,
   `SPLIT_LAW=floor-schnorr+rho-${RHO_LIMBS}x${CHUNK_BITS}-two-sided`,
   `SHARE_BIND=${SHARE_BIND_DOM}`,
+  `T21_HASH=retained-units,W<=2^${HASH_CAP_BITS},uW<=Bh`,
   `K_MIN=${K_MIN}`,
   `FEE=f1-bps-${FEE_BPS_MAX}`,
   `PAYOUT_KEY=${DOM_CB}`,

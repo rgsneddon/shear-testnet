@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { G, H, pointBytes } from './note.js';
 import { feeOf, lawDust, splitLaw } from './t21_law.js';
 import {
-  GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_REQUIRE_ALL_COINBASES, VOUCHER_GAP,
+  GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_REQUIRE_ALL_COINBASES, VOUCHER_GAP, W_HASH_MAX,
 } from './t21_params.js';
 import {
   publicVoucher, voucherAt, voucherKeysOk, vouchersFromShewall, walletSecretBytes,
@@ -19,11 +19,12 @@ import {
   AGG_KEYS, CHUNK_KEYS, buildT21Coinbase, genesisGateStatus, minerShare, observerView, openOutput,
   statementOf, supplyIdentities, t21CbOnly, t21ShareNc, vaultCommit, verifyT21Coinbase,
 } from './t21.js';
-import { consensusFingerprint } from './asert.js';
+import { MAX_HASH_UNITS_PER_BLOCK, consensusFingerprint } from './asert.js';
+import { accountShareUnits, aLeavesFromShares } from './share_batch.js';
 import { encodeDest } from './address.js';
 import { reserveFeeDest, splitLevy } from './levy.js';
 import {
-  coinbaseFormRejected, coinbaseLevyPays, sealLevyNote, t21HashLedgerOk,
+  coinbaseFormRejected, coinbaseLevyPays, sealLevyNote, t21HashLedgerOk, t21ShareUnits,
 } from '../node/src/chain.js';
 
 const magic = 'shear-testnet-v12';
@@ -53,6 +54,7 @@ function expectFor(tx, over = {}) {
     shares: tx.t21.shares.map((s) => ({ nc: t21ShareNc(magic, s.E), units: BigInt(s.w) })),
     prevEs: new Set(),
     vaults: [],
+    hashBudget: BigInt(tx.t21.u) * W_HASH_MAX,
     ...over,
   };
 }
@@ -390,6 +392,48 @@ describe('T21 cb-v3 coinbase', { timeout: 600_000 }, () => {
     assert.equal(out.tx.vout.filter((o) => o.kind === 'pot').length, K_MIN);
     const gate = verifyT21Coinbase({ tx: out.tx, expect: expectFor(out.tx) });
     assert.equal(gate.ok, true, gate.reason);
+  });
+});
+
+describe('T21 hash bonus budget (P0-2, P1-1)', { timeout: 600_000 }, () => {
+  const u = 1000n;
+  const base = { S: 5_000_000n, cin: 0n, u, height: 9, magic, prevHash, dummySecret };
+  const fill = (top) => [payee(0, [1n << 27n, top]), payee(1, [1n]), payee(2, [1n]), payee(3, [1n])];
+
+  it('caps W at the retained 2^28 and u·W at B_h', () => {
+    assert.equal(W_HASH_MAX, BigInt(MAX_HASH_UNITS_PER_BLOCK));
+    const at = buildT21Coinbase({ ...base, payees: fill((1n << 27n) - 3n) });
+    assert.equal(at.W, W_HASH_MAX);
+    const demand = u * at.W;
+    const ex = expectFor(at.tx);
+    for (const [Bh, want] of [[2n * demand, true], [demand, true], [demand / 2n, false], [demand / 10n, false]]) {
+      const got = verifyT21Coinbase({ tx: at.tx, expect: { ...ex, hashBudget: Bh } });
+      assert.equal(got.ok, want, `B_h=${Bh}: ${got.reason}`);
+      if (!want) assert.equal(got.reason, 'hash_budget');
+    }
+    const { hashBudget, ...noBudget } = ex;
+    assert.equal(verifyT21Coinbase({ tx: at.tx, expect: noBudget }).reason, 'hash_budget');
+    const empty = buildT21Coinbase({ ...base, payees: [] });
+    assert.equal(verifyT21Coinbase({ tx: empty.tx, expect: expectFor(empty.tx, { shares: [], hashBudget: 0n }) }).ok, true);
+  });
+
+  it('refuses W one unit over the cap even with an unlimited budget', () => {
+    const over = buildT21Coinbase({ ...base, payees: fill((1n << 27n) - 2n) });
+    assert.equal(over.W, W_HASH_MAX + 1n);
+    const got = verifyT21Coinbase({ tx: over.tx, expect: expectFor(over.tx, { hashBudget: 1n << 60n }) });
+    assert.equal(got.reason, 'hash_units');
+  });
+
+  it('feeds retained units, not 2^bits, so eight 2^28 shares still sum to 2^28', () => {
+    const rows = [...Array(8)].map((_, i) => ({
+      noteCommit: t21ShareNc(magic, pointBytes(G.multiply(BigInt(i + 2)))), nonce: (28n << 56n) | BigInt(i), shareBits: 28,
+    }));
+    const acc = accountShareUnits(rows);
+    const leaves = aLeavesFromShares(acc.bound, acc.room, acc.retained);
+    assert.equal(leaves.length, 8);
+    assert.equal(leaves.reduce((n, l) => n + BigInt(l.count), 0n), W_HASH_MAX);
+    const shares = t21ShareUnits({}, [], leaves, false).shares;
+    assert.equal(shares.reduce((n, l) => n + l.units, 0n), W_HASH_MAX);
   });
 });
 

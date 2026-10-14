@@ -19,13 +19,14 @@ Consensus checks a cb-v3 coinbase against values it derives itself:
 - the subsidy `S` at this height and the parent carry `c_in`;
 - the live hash bonus unit `u`;
 - height, network magic, and the parent id `SHA-256("shear-t21-parent-v1" ‖ parent header)`;
-- the proven share batch: each share's PoW commits to `t21ShareNc(magic, E) = SHA-256("shear-share-bind-v1" ‖ magic ‖ E)` as its note commit, and the coinbase shares must match the proven rows one to one at the same weight;
+- the proven share batch: each share's PoW commits to `t21ShareNc(magic, E) = SHA-256("shear-share-bind-v1" ‖ magic ‖ E)` as its note commit, and the coinbase shares must match the block's retained units per note commit (its A leaves) one to one. Retained units are `2^bits` scaled into `MAX_HASH_UNITS_PER_BLOCK = 2^28`, so `W ≤ 2^28` (`hash_units`);
+- the hash budget `B_h = hashBudgetNanos(accepted series)`, and `u·W ≤ B_h` (`hash_budget`);
 - the parent coinbase's `E` set, so a share label is not reused across the carry window;
 - the pending pinned vault withdraws (none are wired yet, so a vault row is refused).
 
 It then requires `paid = S + c_in − c_out + u·W + Φ` and checks that `Φ` equals the levy's finder half and that the finder row's `B*` is the block miner's admit base.
 
-cb-v3 pays the hash bonus in the block as `u·W`. It does not settle the legacy hash-owed ledger, so the parent must leave an empty ledger and the coinbase carries none. The legacy hash budget cap does not apply to `u·W`.
+cb-v3 pays the hash bonus in the block as `u·W`, capped by `W ≤ 2^28` and `u·W ≤ B_h`. Shares past the cap are scaled, not escrowed. It does not settle the legacy hash-owed ledger, so the parent must leave an empty ledger and the coinbase carries none.
 
 Once `V12_GENESIS_BLOCK_HASH` is set, cb-v3 is the only coinbase form (`CB_ONLY`). The legacy coinbase, and its last-payee re-split, is then refused with `cb_form`.
 

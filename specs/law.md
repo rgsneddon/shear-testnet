@@ -85,6 +85,7 @@ VOUCHER_LABEL=shear-vch-lam-v2+B+Y
 SPLIT_TALLY=logup-inv-schnorr+shear-logup-x-v1
 SPLIT_LAW=floor-schnorr+rho-3x16-two-sided
 SHARE_BIND=shear-share-bind-v1
+T21_HASH=retained-units,W<=2^28,uW<=Bh
 K_MIN=4
 FEE=f1-bps-200
 PAYOUT_KEY=dom_cb-v1
