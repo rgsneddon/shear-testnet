@@ -379,6 +379,7 @@ describe('v12 snap reload anchor rows', () => {
       const saveAt = tipOff - span - SPACING;
       const built = growTo(live, dest, tipOff, opening, (store, h) => {
         if (h === saveAt) {
+          store.flushBookSnap();
           savedSnap = fs.readFileSync(path.join(dir, 'book.snap'));
           savedVault = fs.readFileSync(path.join(dir, 'reserve.json'));
         }
@@ -398,7 +399,7 @@ describe('v12 snap reload anchor rows', () => {
       const offDir = cloneBook(dir);
       dirs.push(offDir);
       const offSnap = createStore(offDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
-      assert.equal(offSnap.loadMode, 'snap', offSnap.loadMode);
+      assert.notEqual(offSnap.loadMode, 'full', offSnap.loadMode);
       assert.equal(offSnap.anchorView().roots, tipOff, `snap roots ${offSnap.anchorView().roots}`);
       assert.equal(rootHex(offSnap), rootHex(live));
       process.stderr.write(`snap-anchor reload ${tipOff} ${(performance.now() - tReload).toFixed(0)} ms\n`);
@@ -432,7 +433,7 @@ describe('v12 snap reload anchor rows', () => {
           const snapDir = cloneBook(dir);
           dirs.push(snapDir);
           const snap = createStore(snapDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
-          assert.equal(snap.loadMode, 'snap');
+          assert.notEqual(snap.loadMode, 'full', snap.loadMode);
           const row = snap.anchorNote(anchor);
           const liveRow = live.anchorNote(anchor);
           assert.ok(row && liveRow, `anchor ${anchor} depth ${depth}`);

@@ -6,6 +6,7 @@
  * a restart would otherwise replay.
  */
 import fs from 'node:fs';
+import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { packEpochBlock } from '../../crypto/chainbin.js';
 
@@ -78,14 +79,93 @@ function putRow(parts, row) {
   parts.push(nc, d20, base, u64(nanos), u32(since));
 }
 
-/** sha256 over packed epoch frames, including the bSpendIds trailer. */
+function blockFrameTag(block) {
+  const rec = packEpochBlock(block);
+  const h = createHash('sha256');
+  h.update('blkframe1');
+  h.update(u32(rec.length));
+  h.update(rec);
+  return h.digest();
+}
+
+/** sha256 over per-block packed-frame tags. One changed block retags once. */
 export function frameDigest(blocks) {
+  const h = createHash('sha256');
+  h.update('bookframe2');
+  for (const block of Array.isArray(blocks) ? blocks : []) h.update(blockFrameTag(block));
+  return h.digest('hex');
+}
+
+/** Pre-bookframe2 digest. A snap written by an older node still opens. */
+export function legacyFrameDigest(blocks) {
   const h = createHash('sha256');
   h.update('bookframe1');
   for (const block of Array.isArray(blocks) ? blocks : []) {
     const rec = packEpochBlock(block);
     h.update(u32(rec.length));
     h.update(rec);
+  }
+  return h.digest('hex');
+}
+
+function stableBody(block) {
+  const txs = (block?.txs || []).map((tx) => {
+    if (!tx || !tx.coinbase || !Object.prototype.hasOwnProperty.call(tx, 'samples')) return tx;
+    const { samples, ...rest } = tx;
+    void samples;
+    return rest;
+  });
+  return Buffer.from(JSON.stringify({
+    height: Number(block?.height) || 0,
+    weight: Number(block?.weight) || 0,
+    header: Buffer.from(block?.header || Buffer.alloc(0)).toString('hex'),
+    hash: Buffer.from(block?.hash || Buffer.alloc(0)).toString('hex'),
+    rootA: Buffer.from(block?.rootA || Buffer.alloc(32)).toString('hex'),
+    rootB: Buffer.from(block?.rootB || Buffer.alloc(32)).toString('hex'),
+    aLeaves: block?.aLeaves || [],
+    txs,
+    hashCredits: block?.hashCredits || [],
+  }, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
+}
+
+function stableBlockTag(block) {
+  const body = stableBody(block);
+  const h = createHash('sha256');
+  h.update('blkstable1');
+  h.update(u32(body.length));
+  h.update(body);
+  return h.digest();
+}
+
+/**
+ * Identity of the sealed block, ignoring fields pruneSamples drops.
+ * A snap can stay valid after a later burial rewrites share bytes.
+ */
+export function stableDigest(blocks) {
+  const h = createHash('sha256');
+  h.update('bookstable1');
+  for (const block of Array.isArray(blocks) ? blocks : []) h.update(stableBlockTag(block));
+  return h.digest('hex');
+}
+
+export { blockFrameTag, stableBlockTag };
+
+/** bookdisk2: each segment file is hashed alone, then the hashes are combined. */
+export function segmentContentHash(buf) {
+  return createHash('sha256').update(buf).digest();
+}
+
+export function diskDigestFromSegments(parts) {
+  const list = Array.isArray(parts) ? parts : [];
+  const h = createHash('sha256');
+  h.update('bookdisk2');
+  h.update(u32(list.length));
+  for (const part of list) {
+    const len = Number(part?.length) || 0;
+    const content = part?.contentHash;
+    if (!Buffer.isBuffer(content) || content.length !== 32) throw new Error('snap_disk');
+    h.update(u32(len));
+    h.update(content);
   }
   return h.digest('hex');
 }
@@ -208,6 +288,11 @@ export function encodeBookSnap(state, key) {
           throw new Error('snap_supply');
         }
         parts.push(u32(at), u32(n), root, zr);
+      }
+      if (state.stableDigest) {
+        const stable = hex32(state.stableDigest);
+        if (!stable) throw new Error('snap_bind');
+        parts.push(u32(1), stable);
       }
     }
   }
@@ -399,6 +484,7 @@ export function decodeBookSnap(buf, key, expected = {}) {
   let supplySnaps = null;
   let anchorWindow = null;
   let anchorRoots = null;
+  let stableDigestHex = '';
   if (o < payload.length) {
     const nsc = readU32(payload, o);
     if (!nsc) return null;
@@ -495,6 +581,15 @@ export function decodeBookSnap(buf, key, expected = {}) {
           zeroRoot: Buffer.from(zr),
         });
       }
+      if (o < payload.length) {
+        const mark = readU32(payload, o);
+        if (!mark || mark.v !== 1) return null;
+        o = mark.o;
+        const stable = take(payload, o, 32);
+        if (!stable) return null;
+        o += 32;
+        stableDigestHex = Buffer.from(stable).toString('hex');
+      }
     }
   }
   if (o !== payload.length) return null;
@@ -520,6 +615,7 @@ export function decodeBookSnap(buf, key, expected = {}) {
     supplySnaps,
     anchorWindow,
     anchorRoots,
+    stableDigest: stableDigestHex,
   };
   if (expected.rules != null && state.rules !== String(expected.rules)) return null;
   if (expected.genesisPin != null && state.genesisPin !== String(expected.genesisPin)) return null;
@@ -542,9 +638,26 @@ export function readBookSnap(file, key, expected = {}) {
   }
 }
 
-export function writeBookSnap(file, key, state) {
-  const raw = encodeBookSnap(state, key);
+/** Temp file, fsync, then rename. A crash leaves the previous snap intact. */
+export function writeAtomicFile(file, raw) {
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, raw);
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeSync(fd, raw);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   fs.renameSync(tmp, file);
+  let dirfd = null;
+  try {
+    dirfd = fs.openSync(path.dirname(path.resolve(file)), 'r');
+    fs.fsyncSync(dirfd);
+  } catch { /* a directory fsync is best-effort */ } finally {
+    if (dirfd != null) fs.closeSync(dirfd);
+  }
+}
+
+export function writeBookSnap(file, key, state) {
+  writeAtomicFile(file, encodeBookSnap(state, key));
 }

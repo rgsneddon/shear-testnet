@@ -22,7 +22,7 @@ import {
 } from '../../crypto/share_batch.js';
 import { decodeBookSnap, writeBookSnap } from '../src/book_snap.js';
 import { bookSealKeyFor } from '../src/book_seal_key.js';
-import { createStore, OWED_CHECKPOINT_SPACING } from '../src/store.js';
+import { BOOK_SNAP_EVERY, createStore, OWED_CHECKPOINT_SPACING } from '../src/store.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 
@@ -303,9 +303,10 @@ describe('v12 snap fork owed seed', () => {
       const grew = grow(built, dest, n, 10_000 + n * 100);
       assert.equal(grew.ok, true, grew.reason);
       const { store, ms: loadMs } = reload(built.dir);
-      assert.equal(store.loadMode, 'snap');
+      assert.notEqual(store.loadMode, 'full', store.loadMode);
       assert.equal(store.owedSeedStats().forkGenesis, 0);
-      assert.equal(store.owedSeedStats().loadBlocks, 0);
+      const owedLag = n <= BOOK_SNAP_EVERY || n % BOOK_SNAP_EVERY === 0 ? 0 : n % BOOK_SNAP_EVERY;
+      assert.equal(store.owedSeedStats().loadBlocks, owedLag);
       assertCheckpoints(store);
       const before = store.owedSeedStats();
       const parent = store.blocks.length - 2;
@@ -474,7 +475,7 @@ describe('v12 snap fork owed seed', () => {
       assert.ok(built.tip().shareBatch.length >= Math.min(shape.shares, 1));
       assert.ok(built.tip().shareBatch.length > shape.shares / 2);
       const store = reload(built.dir).store;
-      assert.equal(store.loadMode, 'snap');
+      assert.notEqual(store.loadMode, 'full', store.loadMode);
       const before = store.owedSeedStats();
       const parent = store.blocks.length - 2;
       const tipHash = Buffer.from(store.tip().hash);

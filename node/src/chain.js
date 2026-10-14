@@ -2662,7 +2662,8 @@ export const BOOK_SEAL_DOMAIN = 'bookseal1';
  *  persist and a successful verify write it. writeChainBin does not.
  *  Header and hash only. The body shortcut is book.snap, not this seal.
  */
-export function chainLoadSeal(blocks, key, magic = MAGIC_TESTNET) {
+/** Running book.seal hasher. chainLoadSeal folds every block into this. */
+export function chainLoadSealHash(key, magic = MAGIC_TESTNET) {
   const k = asBuf(key);
   if (k.length !== 32) throw new Error('seal_key');
   const rules = Buffer.from(String(consensusFingerprint(magic)), 'utf8');
@@ -2681,16 +2682,23 @@ export function chainLoadSeal(blocks, key, magic = MAGIC_TESTNET) {
   h.update(u32le(cpHash.length));
   h.update(cpHash);
   h.update(k);
-  for (const b of Array.isArray(blocks) ? blocks : []) {
-    const header = asBuf(b?.header);
-    const hash = asBuf(b?.hash);
-    const n = Buffer.alloc(8);
-    n.writeUInt32LE(header.length >>> 0, 0);
-    n.writeUInt32LE(hash.length >>> 0, 4);
-    h.update(n);
-    h.update(header);
-    h.update(hash);
-  }
+  return h;
+}
+
+export function chainLoadSealUpdate(h, block) {
+  const header = asBuf(block?.header);
+  const hash = asBuf(block?.hash);
+  const n = Buffer.alloc(8);
+  n.writeUInt32LE(header.length >>> 0, 0);
+  n.writeUInt32LE(hash.length >>> 0, 4);
+  h.update(n);
+  h.update(header);
+  h.update(hash);
+}
+
+export function chainLoadSeal(blocks, key, magic = MAGIC_TESTNET) {
+  const h = chainLoadSealHash(key, magic);
+  for (const b of Array.isArray(blocks) ? blocks : []) chainLoadSealUpdate(h, b);
   return h.digest('hex');
 }
 

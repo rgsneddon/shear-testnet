@@ -201,17 +201,20 @@ export function writeChainBin(path, blocks) {
   fs.renameSync(tmp, path);
 }
 
-/** Append one packed epoch. Full archival: never drops txs. IBD must not rewrite the book. */
+/** Append one packed epoch. Full archival: never drops txs. IBD must not rewrite the book.
+ *  Returns the bytes just written so a running file digest can extend. */
 export function appendChainBin(path, block) {
   const rec = packEpochBlock(block);
   const len = Buffer.alloc(4);
   len.writeUInt32LE(rec.length, 0);
   const chunk = Buffer.concat([len, rec]);
   if (!fs.existsSync(path) || fs.statSync(path).size < MAGIC.length) {
-    fs.writeFileSync(path, Buffer.concat([MAGIC, chunk]));
-    return;
+    const body = Buffer.concat([MAGIC, chunk]);
+    fs.writeFileSync(path, body);
+    return body;
   }
   fs.appendFileSync(path, chunk);
+  return chunk;
 }
 
 export function readChainBin(path) {
