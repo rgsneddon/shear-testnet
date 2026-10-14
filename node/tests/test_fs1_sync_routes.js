@@ -7,7 +7,7 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
 import { createRpc } from '../src/rpc.js';
-import { SYNC_EPOCH, SYNC_KEYED_PARAMS } from '../src/fs1_sync.js';
+import { SYNC_BANNED_ROUTES, SYNC_EPOCH, SYNC_KEYED_PARAMS } from '../src/fs1_sync.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const VECTORS = path.join(here, '../../crypto/native/vendor/monero-oxide-77788c3/shear-fs1/vectors/sync_routes.txt');
@@ -156,5 +156,100 @@ describe('FS-1 keyed-fetch ban on the real /fluxset routes', () => {
       assert.equal(res.status, 404, route);
       assert.equal(res.json.reason, 'route', route);
     }
+  });
+});
+
+function getRaw(base, route, ms = 3000) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`${base}${route}`, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.setTimeout(ms, () => req.destroy(new Error(`timeout ${route}`)));
+    req.on('error', reject);
+  });
+}
+
+function keysDeep(v, out = []) {
+  if (Array.isArray(v)) v.forEach((x) => keysDeep(x, out));
+  else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { out.push(k); keysDeep(x, out); }
+  return out;
+}
+
+describe('FS-1 wallet snapshots never cross a node route (M76-1)', () => {
+  const SNAPSHOT_NAMES = ['snapshot', 'chunks', 'chunkids', 'held', 'chunk'];
+  const rpcSrc = fs.readFileSync(path.join(here, '../src/rpc.js'), 'utf8');
+  const getRoutes = [...new Set([...rpcSrc.matchAll(/url\.pathname === '([^']+)'/g)].map((m) => m[1]))]
+    .filter((r) => !['/events', '/queuetx', '/queueTx', '/api/wallet/send'].includes(r));
+  let rpc;
+  let base;
+  before(async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fs1-snap-'));
+    rpc = createRpc({ store: createStore(dir), port: 0, host: '127.0.0.1' });
+    const bound = await rpc.listen();
+    base = `http://127.0.0.1:${bound.port}`;
+  });
+  after(() => rpc.close());
+
+  it('snapshot and chunk-list names are in the shared keyed ban', () => {
+    for (const name of SNAPSHOT_NAMES) assert.equal(SYNC_KEYED_PARAMS.includes(name), true, name);
+    for (const route of ['/snapshot', '/chunk', '/chunks']) assert.equal(SYNC_BANNED_ROUTES.includes(route), true, route);
+  });
+
+  it('has no snapshot or chunk route', async () => {
+    for (const route of ['/snapshot', '/chunk', '/chunks', '/sync/snapshot', '/sync/chunks']) {
+      const res = await get(base, `${route}?chunks=0,3,6`);
+      assert.equal(res.status, 404, route);
+      assert.equal(res.json.reason, 'route', route);
+    }
+    assert.equal(getRoutes.some((r) => /snapshot|chunk|held/i.test(r)), false);
+  });
+
+  it('/sync and the fluxset routes refuse a snapshot or chunk list in any case', async () => {
+    for (const name of SNAPSHOT_NAMES) {
+      for (const n of [name, name.toUpperCase()]) {
+        const sync = await get(base, `/sync?from=0&to=64&${n}=0,3,6`);
+        assert.deepEqual([sync.status, sync.json.reason], [400, 'keyed'], n);
+        for (const route of ['/fluxset', '/getfluxset', '/api/wallet/fluxset']) {
+          const res = await get(base, `${route}?${n}=0,3,6`);
+          assert.deepEqual([res.status, res.json.reason], [400, 'keyed_fetch'], `${route} ${n}`);
+        }
+      }
+    }
+  });
+
+  it('no GET route answers a snapshot or chunk request with snapshot or chunk data', async () => {
+    assert.ok(getRoutes.length > 20);
+    for (const route of getRoutes) {
+      const res = await getRaw(base, `${route}?snapshot=1&chunks=0,3,6&held=1&chunkIds=2`);
+      let body = null;
+      try {
+        body = JSON.parse(res.body || '{}');
+      } catch {
+        body = null;
+      }
+      const keys = body ? keysDeep(body) : [];
+      assert.equal(keys.some((k) => /snapshot|chunk|^held$/i.test(k)), false, `${route} ${keys}`);
+    }
+  });
+
+  it('JSON-RPC has no snapshot or chunk method and getfluxset refuses the names', async () => {
+    for (const method of ['getsnapshot', 'snapshot', 'getchunk', 'getchunks', 'chunks', 'fs1snapshot', 'getwalletsnapshot']) {
+      const res = await post(base, { jsonrpc: '2.0', id: 1, method, params: { chunks: [0, 3, 6] } });
+      assert.equal(res.json.result?.ok, false, method);
+      assert.equal(res.json.result?.reason, 'unknown_method', method);
+    }
+    for (const name of SNAPSHOT_NAMES) {
+      const res = await post(base, { jsonrpc: '2.0', id: 2, method: 'getfluxset', params: { [name]: [0, 3, 6] } });
+      assert.equal(res.json.result.reason, 'keyed_fetch', name);
+    }
+  });
+
+  it('the node tree follower and its tool expose no snapshot', async () => {
+    const mod = await import('../src/fs1_tree.js');
+    assert.equal(Object.keys(mod).some((k) => /snapshot|chunk/i.test(k)), false);
+    const follower = Object.getOwnPropertyNames(mod.Fs1TreeFollower.prototype);
+    assert.equal(follower.some((k) => /snapshot|chunk/i.test(k)), false);
   });
 });

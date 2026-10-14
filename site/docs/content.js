@@ -8,7 +8,7 @@ window.SHEAR_DOCS = {
     ]},
     { title: 'Addresses', children: [
       { id: 'names', title: 'shear1, she1, ssa1' },
-      { id: 'privacy', title: 'She is private' },
+      { id: 'privacy', title: 'What is public' },
       { id: 'admit', title: 'ADMITv2' },
       { id: 'dins-dag', title: 'DINS-DAG' }
     ]},
@@ -75,7 +75,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / overview',
     html:
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
-      '<p>ADMITv2 membership over this book\'s notes, with confidential amounts. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v12</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
+      '<p>ADMITv2 membership over this book\'s notes. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v12</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>1.00 SHE in epoch 0, then −0.01 SHE/epoch to a 0.20 SHE floor (4d testnet / 400d mainnet)</td></tr>' +
@@ -136,11 +136,11 @@ window.SHEAR_DOCS = {
   };
 
   P.privacy = {
-    title: 'She is private',
+    title: 'What is public',
     crumb: 'addresses / privacy',
     html:
       '<p>The public explorer shows height, time, status, and type — no dest, no amount. Ciphertext and rest-frame strings stay off that page. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
-      '<p>Amounts are confidential. Dests are stealth. Stratum login is Copy dest (a bare <code>ssa1</code>). A typed suffix is optional. Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry. While this book has fewer than 10,000 notes the membership set is thin.</p>'
+      '<p>Dests revolve. Stratum login is Copy dest (a bare <code>ssa1</code>). A typed suffix is optional. Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry. While this book has fewer than 10,000 notes the membership set is thin.</p>'
   };
 
   P.wallet = {
@@ -164,7 +164,7 @@ window.SHEAR_DOCS = {
       '<ol><li>On a Mac, open the disk image, drag Shear into Applications, eject, then launch from Applications. Do not keep running it from the image, a zip, or Downloads. On Windows or Linux, unzip and open the app. On Android, install the APK.</li>' +
       '<li>Choose a password of at least eight characters, type it again, tap <strong>Set password</strong>. That creates the wallet.</li>' +
       '<li>You will enter that password each time. If it is lost, the wallet cannot be opened. Fingerprint or face unlock, where the device offers it, only works on this device.</li>' +
-      '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a private <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
+      '<li>Continuum shows spendable SHE and your <code>she1</code>. Copy that when someone needs to pay you. Incoming coin lands on a revolving <code>ssa1</code>. Never share a <code>shear1</code> string.</li>' +
       '<li>Open Closure and export <code>shewall.bin</code>. Keep that file with the password. <code>shear restore</code> imports that sealed file. It does not import a raw spend seed.</li>' +
       '<li>Leave the session on Connect bare, or start a local node from Closure. Either way the wallet asks the node for notes sealed to your dest. Mining is ShearK, from the miner page, not from Continuum.</li></ol>' +
       '<p>Tag: <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.71">the Continuum 0.71 release</a>. 0.71 is the previous public pack pin. 0.72 is this Continuum wallet. Debug-signed 0.65 and 0.66 need one export, uninstall, then the 0.71 release-signed APK. Later bumps stay in place. There is no version phone-home. Git tag v16 stays on the same commit as tag 0.66. Pack names: ' +
@@ -421,7 +421,7 @@ window.SHEAR_DOCS = {
     title: 'Consensus',
     crumb: 'network / consensus',
     html:
-      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v12</code> on source pin 0.72. ADMITv2 membership over this book\'s notes, with confidential amounts. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
+      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v12</code> on source pin 0.72. ADMITv2 membership over this book\'s notes. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
   };
 
   P.header = {

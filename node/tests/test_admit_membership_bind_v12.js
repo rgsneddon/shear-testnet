@@ -17,14 +17,14 @@ import {
   flowInputsBound,
   kernelExcess,
   openedCoinbaseNanos,
-  scalarFrom,
   txSpendTags,
   verifyFlowConservation,
 } from '../../crypto/note.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { compactTx, leanBlock } from '../../crypto/chronoflux.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
-import { admitProve, admitScalarFromSeed, fluxsetIndexOf } from '../../crypto/admit.js';
+import { fluxsetIndexOf } from '../../crypto/admit.js';
+import { stubAdmitV2 } from './stub_admit_v2.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos, LEVY_CAP_NANOS } from '../../crypto/levy.js';
 import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../crypto/address.js';
@@ -113,6 +113,9 @@ describe('v12 membership proofs are bound 1:1', () => {
         return room;
       };
 
+      let stubLane = 1;
+      // Paid amounts stay beside the tx: a hidden send names none.
+      const paid = new Map();
       const assemble = (spec) => {
         const input = spec.notes.reduce((sum, note) => sum + note.opened, 0);
         // The cap is the consensus ceiling. A template rewrite cannot push a
@@ -133,20 +136,19 @@ describe('v12 membership proofs are bound 1:1', () => {
           vin: spec.notes.map(() => ({ address: dest })),
           vout,
         }, { spent: spec.notes.length === 1 ? spec.notes[0] : spec.notes });
+        assert.equal(tx.nanos, undefined, spec.id);
+        paid.set(spec.id, sendNanos);
         const proofs = [];
         for (let i = 0; i < spec.notes.length; i += 1) {
           const note = spec.notes[i];
           const index = fluxsetIndexOf(flux.pubs, spendSeed, note);
           assert.ok(index >= 0, `${spec.id} owns note ${i}`);
-          const proof = admitProve({
-            x: admitScalarFromSeed(spendSeed, note),
-            index,
-            pubs: flux.pubs,
-            commits: flux.commits,
-            c: note.commit,
-            t: scalarFrom(tx.vin[i].t),
+          const proof = stubAdmitV2({
+            cTilde: tx.vin[i].commit,
+            tagFill: stubLane,
           });
-          assert.ok(proof?.blob && proof.cTilde, `${spec.id} prove ${i}`);
+          stubLane += 1;
+          assert.ok(proof?.blob && proof.blob[0] === 2 && proof.cTilde, `${spec.id} stub ${i}`);
           const posted = Buffer.from(tx.vin[i].commit);
           const want = Buffer.from(proof.cTilde);
           if (!posted.equals(want)) {
@@ -203,7 +205,7 @@ describe('v12 membership proofs are bound 1:1', () => {
       ];
       assert.equal(attacks[0].vin.length, 1);
       assert.ok(attacks[1].vin.length > 1);
-      assert.notEqual(attacks[0].nanos, attacks[1].nanos);
+      assert.notEqual(paid.get(attacks[0].id), paid.get(attacks[1].id));
 
       const probe = async (block) => Promise.resolve(store.probeBlock(block));
       const tipBefore = store.tip().height;
@@ -212,21 +214,21 @@ describe('v12 membership proofs are bound 1:1', () => {
         assert.equal(flowInputsBound(tx).reason, 'admit_membership', tx.id);
         const queued = store.queueTx(tx);
         assert.equal(queued.ok, false, tx.id);
-        assert.equal(queued.reason, 'value_open', tx.id);
+        assert.equal(queued.reason, 'admit_version', `${tx.id} ${queued.reason}`);
         const book = emptyMempool();
         const parked = admitMempool(book, tx, {
           baseFee: 1,
           fluxset: store.fluxset(),
           spendTags: store.fluxset().spendTags,
         });
-        assert.equal(parked.reason, 'value_open', tx.id);
+        assert.equal(parked.reason, 'admit_version', `${tx.id} ${parked.reason}`);
         assert.equal(book.txs.length, 0, tx.id);
         const { tpl } = store.template({ miner: dest, shareBits: 4, now: T0 + 4 * 90_000 });
         assert.ok(!(tpl.txs || []).some((row) => row && row.id === tx.id), tx.id);
         const block = withTxs(tpl, tpl.txs.concat([tx]));
         const raw = await probe(block);
         assert.equal(raw.ok, false, tx.id);
-        assert.equal(raw.reason, 'value_open', `${tx.id} ${raw.reason}`);
+        assert.equal(raw.reason, 'admit_version', `${tx.id} ${raw.reason}`);
         const lean = await probe(withTxs(block, leanBlock(block).txs));
         assert.equal(lean.ok, false, tx.id);
         assert.equal(lean.reason, 'admit_version', `${tx.id} lean ${lean.reason}`);
@@ -288,14 +290,14 @@ describe('v12 membership proofs are bound 1:1', () => {
       assert.equal(honest[0].vin.length, 1);
       assert.ok(honest[1].vin.length > 1);
       assert.equal(honest[2].vin.length, 1);
-      assert.ok(honest[0].nanos < honest[1].nanos);
-      assert.notEqual(honest[1].nanos, honest[2].nanos);
+      assert.ok(paid.get(honest[0].id) < paid.get(honest[1].id));
+      assert.notEqual(paid.get(honest[1].id), paid.get(honest[2].id));
       assert.equal(flowInputsBound(honest[0]).ok, true);
       assert.equal(txSpendTags(honest[0]).tags.length, 1);
       const verified = new Set();
       for (const tx of honest) {
         const queued = store.queueTx(tx);
-        assert.equal(queued.reason, 'value_open', `${tx.id} ${queued.reason || ''}`);
+        assert.equal(queued.reason, 'admit_version', `${tx.id} ${queued.reason || ''}`);
         assert.equal(store.mempool.some((m) => m.id === tx.id), false);
         for (const tag of txSpendTags(tx).tags) verified.add(tag.toString('hex'));
       }
@@ -308,7 +310,7 @@ describe('v12 membership proofs are bound 1:1', () => {
       for (const tx of attacks) assert.equal(ids.has(tx.id), false, tx.id);
       const forced = withTxs(tpl, tpl.txs.concat(honest));
       const rawOk = await probe(forced);
-      assert.equal(rawOk.reason, 'value_open', rawOk.reason);
+      assert.equal(rawOk.reason, 'admit_version', rawOk.reason);
       const leanOk = await probe(withTxs(forced, leanBlock(forced).txs));
       assert.equal(leanOk.reason, 'admit_version', leanOk.reason || 'lean');
       const wireOk = store.queueTx(compactTx(honest[0]));

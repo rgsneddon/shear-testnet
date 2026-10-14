@@ -1,0 +1,6 @@
+// ADMITv2 prover for the iOS wallet. Static library only.
+// Build: make -C crypto/native ios-staticlib
+//   or:  cargo ios-staticlib   (from crypto/native/admit)
+// Target aarch64-apple-ios. No node addon, no miner, no CI signing.
+SHEAR_ADMIT_STATIC = $(PROJECT_DIR)/../../crypto/native/admit/target/aarch64-apple-ios/release/libshear_admit.a
+OTHER_LDFLAGS = $(inherited) -force_load $(SHEAR_ADMIT_STATIC)

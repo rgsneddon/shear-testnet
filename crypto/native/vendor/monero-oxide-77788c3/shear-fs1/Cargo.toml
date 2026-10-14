@@ -16,7 +16,9 @@ default = []
 # does not compile those generators.
 insecure-test-generators = ["generalized-bulletproofs/tests"]
 # The timing bench. Off in every normal and release build.
-bench = ["insecure-test-generators"]
+bench = []
+# The `fs1_tree` line tool the node drives to build the tree. Off by default.
+tree-cli = []
 
 [dependencies]
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -26,6 +28,9 @@ generic-array = { version = "1", default-features = false }
 
 ciphersuite = { version = "0.4", features = ["alloc"] }
 dalek-ff-group = "0.5"
+curve25519-dalek = { version = "4.1", default-features = false, features = ["alloc", "zeroize"] }
+blake2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
 # Exact pin. The vendored fcmps and GBP crates accept any 0.5 line; this forces 0.5.2.
 multiexp = { version = "=0.5.2", default-features = false, features = ["std", "batch"] }
 
@@ -47,7 +52,11 @@ name = "fs1_bench"
 path = "src/bin/fs1_bench.rs"
 required-features = ["bench"]
 
+[[bin]]
+name = "fs1_tree"
+path = "src/bin/fs1_tree.rs"
+required-features = ["tree-cli"]
+
 [[test]]
 name = "ct7_threads"
 path = "tests/ct7_threads.rs"
-required-features = ["insecure-test-generators"]

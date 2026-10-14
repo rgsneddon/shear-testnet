@@ -10,6 +10,7 @@ import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { verifyLoadedChain, chainLoadSeal, chainWorkOf } from './chain.js';
+import { chainNoteRuleRejected } from '../../crypto/n1.js';
 import { bookSealKeyFor } from './book_seal_key.js';
 
 function hexHash(h) {
@@ -160,8 +161,11 @@ export function readLatestBootstrap(fromDir) {
       throw new Error('bootstrap_dropped_txs');
     }
   }
+  // Header and proof-of-work before N-1. A bad header does not derive a leaf.
   const checked = verifyLoadedChain(blocks, { nowMs: Date.now() });
   if (!checked.ok) throw new Error(checked.reason || 'pow');
+  const notes = chainNoteRuleRejected(blocks);
+  if (notes) throw new Error(notes.reason);
   const install = bootstrapMayInstall([], blocks);
   if (!install.ok) throw new Error(install.reason || 'checkpoint');
   return { manifest, blocks, paths };

@@ -195,7 +195,7 @@ const kLocalNodeFullModeCopy =
 /// Connect bare pushes a signed send. Nodes verify it. No tunnel on this device.
 const kConnectBareCopy =
     'Connect bare. You push a signed send. Each node verifies it on the book it holds. '
-    'DINS-DAG and the ADMITv2 fluxset keep that spend private. No tunnel and no node on this device.';
+    'Flow sends are off until the ADMITv3 full-set proof ships. No tunnel and no node on this device.';
 
 /// Published snapshot. Used only when the wallet node datadir is empty.
 const kPublicBootstrapUrl = 'https://boot.shear.digital';

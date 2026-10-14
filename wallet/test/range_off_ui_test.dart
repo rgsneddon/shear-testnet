@@ -1,0 +1,63 @@
+import 'dart:async';
+import 'dart:isolate';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_admit_ffi.dart';
+
+/// Spawned from the test. Calls the isolate guard only, not the native prover.
+void rangeOffUiWorker(List<Object> args) {
+  final n = args[0] as int;
+  final send = args[1] as SendPort;
+  try {
+    for (var i = 0; i < n; i++) {
+      requireRangeOffUi(enforce: true);
+    }
+    send.send(n);
+  } catch (e) {
+    send.send('err:$e');
+  }
+}
+
+void main() {
+  testWidgets('UI isolate throws and 1, 2, 4, 8 proofs stay in the worker', (tester) async {
+    expect(rangeOnUiIsolate(), isTrue);
+    expect(
+      () => requireRangeOffUi(enforce: true),
+      throwsA(isA<StateError>().having((e) => e.toString(), 'toString', contains('range_on_ui_isolate'))),
+    );
+
+    final spreads = <int>[];
+    for (final n in <int>[1, 2, 4, 8]) {
+      final port = ReceivePort();
+      Object? msg;
+      await tester.runAsync(() async {
+        port.listen((event) {
+          msg = event;
+        });
+        await Isolate.spawn(rangeOffUiWorker, <Object>[n, port.sendPort]);
+      });
+      final gaps = <int>[];
+      final clock = Stopwatch()..start();
+      var last = clock.elapsedMicroseconds;
+      var frames = 0;
+      while (frames < 4 || msg == null) {
+        await tester.pump(const Duration(milliseconds: 16));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 16)));
+        final now = clock.elapsedMicroseconds;
+        gaps.add(now - last);
+        last = now;
+        frames++;
+        if (frames > 40) break;
+      }
+      port.close();
+      expect(msg, n, reason: 'n=$n gaps=$gaps');
+      expect(gaps.length, greaterThan(1), reason: 'n=$n');
+      final minGap = gaps.reduce((a, b) => a < b ? a : b);
+      final maxGap = gaps.reduce((a, b) => a > b ? a : b);
+      final spread = maxGap - minGap;
+      spreads.add(spread);
+      expect(spread, inInclusiveRange(0, 250000), reason: 'n=$n spread ${spread}us gaps=$gaps');
+    }
+    expect(spreads, hasLength(4));
+  }, timeout: const Timeout(Duration(seconds: 20)));
+}

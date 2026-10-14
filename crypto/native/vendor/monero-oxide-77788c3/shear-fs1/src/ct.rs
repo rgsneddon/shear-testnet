@@ -1,6 +1,6 @@
-//! Constant-time checks CT-1 through CT-10 for this crate.
+//! Constant-time checks CT-1 through CT-14 for this crate.
 //!
-//! Each check runs the code it names. CT-2 and CT-10 are dudect-style:
+//! Each check runs the code it names. CT-2, CT-10, CT-11 and CT-13 are dudect-style:
 //! two input classes, interleaved in random order, timed, cropped, and
 //! compared with Welch's t. CT-7 is `tests/ct7_threads.rs`.
 //!
@@ -12,6 +12,22 @@ pub const DUDECT_T_MAX: f64 = 10.0;
 
 /// Multiexp version required on secret-scalar paths.
 pub const MULTIEXP_PIN: &str = "0.5.2";
+
+#[cfg(test)]
+std::thread_local! {
+  static SPAWNS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// Counts prover threads started from the calling thread. Test builds only.
+#[cfg(test)]
+pub(crate) fn note_spawn() {
+  SPAWNS.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+pub(crate) fn take_spawns() -> usize {
+  SPAWNS.with(|c| c.replace(0))
+}
 
 /// Welch's t over two timing samples, after dropping the slowest tenth of each.
 pub fn welch_t(a: &[f64], b: &[f64]) -> f64 {
@@ -41,10 +57,13 @@ pub fn welch_t(a: &[f64], b: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::chain_tree::tests::chain_tree_1024;
+  use crate::chain_tree::ChainTree;
   use crate::membership::tests::{note, params_8, tree_1, tree_2_10};
   use crate::membership::{
-    ct_group, fresh_output_blinds, hash_layer, open_input_points, proof_len, prove, verify,
-    BlindScalars, EdF, HeliosF, Tree, DEPTH, LEAF_SCAN, NOTE_CHANGE, NOTE_PAYMENT,
+    ct_group, fresh_output_blinds, hash_layer, open_input_points, proof_len, prove, prove_prepared, prove_threaded,
+    verify, BlindScalars, EdF, Fs1Tree, HeliosF, OpenNote, PreparedBlinds, Tree, DEPTH, LEAF_SCAN, NOTE_CHANGE,
+    NOTE_PAYMENT,
   };
   use ciphersuite::group::ff::Field;
   use rand_core::{OsRng, RngCore};
@@ -110,7 +129,9 @@ mod tests {
     let (mut fixed, mut random) = (Vec::new(), Vec::new());
     let mut sink = HeliosF::ZERO;
     for class in order(4_000) {
-      let g = if class { 0 } else { usize::try_from(OsRng.next_u64() % groups as u64).unwrap() };
+      // Both classes draw from the RNG, so only the index differs before the timed call.
+      let r = OsRng.next_u64();
+      let g = if class { 0 } else { usize::try_from(r % groups as u64).unwrap() };
       let started = Instant::now();
       let out = ct_group(&level, g, 18, HeliosF::ZERO);
       let took = started.elapsed().as_nanos() as f64;
@@ -274,5 +295,118 @@ mod tests {
     }
     let t = welch_t(&fixed, &random);
     assert!(t.abs() < DUDECT_T_MAX, "t = {t}");
+  }
+
+  fn random_note(size: u64) -> OpenNote {
+    let ty = if OsRng.next_u32() % 2 == 0 { NOTE_PAYMENT } else { NOTE_CHANGE };
+    note(OsRng.next_u64() % size, OsRng.next_u64() % 1_000_000, size, ty)
+  }
+
+  #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
+  fn ct11_dudect_chain_tree_and_snapshot_path_time_does_not_depend_on_the_index() {
+    let tree = chain_tree_1024();
+    let size = tree.len();
+    let held: Vec<u64> = (0 .. 8).map(|k| k * 3).collect();
+    let owned: Vec<u64> = held.iter().map(|k| k * 38 + 5).collect();
+    let snapshot = tree.wallet_snapshot(&owned);
+    let in_held = |r: u64| held[usize::try_from(r % held.len() as u64).unwrap()] * 38 + r % 38;
+    let (mut fixed, mut random) = (Vec::new(), Vec::new());
+    let (mut snap_fixed, mut snap_random) = (Vec::new(), Vec::new());
+    for class in order(1_000) {
+      let (r, s) = (OsRng.next_u64(), OsRng.next_u64());
+      let index = if class { 0 } else { r % size };
+      let started = Instant::now();
+      let path = Fs1Tree::path(tree, index).expect("path");
+      let took = started.elapsed().as_nanos() as f64;
+      assert_eq!(path.leaves.len(), LEAF_SCAN);
+      let index = if class { 0 } else { in_held(s) };
+      let started = Instant::now();
+      let snap = Fs1Tree::path(&snapshot, index).expect("snapshot path");
+      let snap_took = started.elapsed().as_nanos() as f64;
+      assert_eq!(snap.leaves.len(), LEAF_SCAN);
+      if class {
+        fixed.push(took);
+        snap_fixed.push(snap_took);
+      } else {
+        random.push(took);
+        snap_random.push(snap_took);
+      }
+    }
+    let t = welch_t(&fixed, &random);
+    assert!(t.abs() < DUDECT_T_MAX, "tree t = {t}");
+    let t = welch_t(&snap_fixed, &snap_random);
+    assert!(t.abs() < DUDECT_T_MAX, "snapshot t = {t}");
+  }
+
+  #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
+  fn ct12_prover_threads_depend_only_on_input_and_thread_counts() {
+    let params = params_8();
+    let tree = chain_tree_1024();
+    let size = tree.len();
+    crate::ct::take_spawns();
+    prove(params, tree, &[random_note(size), random_note(size)]).expect("prove");
+    assert_eq!(crate::ct::take_spawns(), 0);
+    let mut counts = Vec::new();
+    for statement in [
+      vec![note(0, 0, size, NOTE_PAYMENT), note(1, 0, size, NOTE_PAYMENT)],
+      vec![note(size - 1, 999, size, NOTE_CHANGE), note(size - 1, 5, size, NOTE_PAYMENT)],
+      vec![random_note(size), random_note(size)],
+    ] {
+      let proved = prove_threaded(params, tree, &statement, 4).expect("prove");
+      counts.push(crate::ct::take_spawns());
+      assert_eq!(proved.bytes.len(), proof_len(2, DEPTH));
+      verify(params, &proved).expect("verify");
+    }
+    assert!(counts.iter().all(|c| *c == counts[0] && *c > 0), "{counts:?}");
+  }
+
+  #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
+  fn ct13_dudect_threaded_and_prepared_prove_time_does_not_depend_on_the_statement() {
+    let params = params_8();
+    let tree = chain_tree_1024();
+    let size = tree.len();
+    let (mut fixed, mut random) = (Vec::new(), Vec::new());
+    let (mut prep_fixed, mut prep_random) = (Vec::new(), Vec::new());
+    for class in order(20) {
+      let statement =
+        if class { vec![note(0, 0, size, NOTE_PAYMENT); 2] } else { vec![random_note(size), random_note(size)] };
+      let started = Instant::now();
+      let proved = prove_threaded(params, tree, &statement, 4).expect("prove");
+      let took = started.elapsed().as_nanos() as f64;
+      assert_eq!(proved.bytes.len(), proof_len(2, DEPTH));
+      let blinds = PreparedBlinds::prepare(params, 2, DEPTH, 4).expect("blinds");
+      let started = Instant::now();
+      let prepared = prove_prepared(params, tree, &statement, blinds, 4).expect("prove prepared");
+      let prep_took = started.elapsed().as_nanos() as f64;
+      assert_eq!(prepared.bytes.len(), proof_len(2, DEPTH));
+      if class {
+        fixed.push(took);
+        prep_fixed.push(prep_took);
+      } else {
+        random.push(took);
+        prep_random.push(prep_took);
+      }
+    }
+    let t = welch_t(&fixed, &random);
+    assert!(t.abs() < DUDECT_T_MAX, "threaded t = {t}");
+    let t = welch_t(&prep_fixed, &prep_random);
+    assert!(t.abs() < DUDECT_T_MAX, "prepared t = {t}");
+  }
+
+  #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
+  fn ct14_proofs_and_public_bytes_hold_no_leaf_index_or_chain_position() {
+    let params = params_8();
+    let tree: &ChainTree = chain_tree_1024();
+    let proved = prove(params, tree, &[note(700, 3, tree.len(), NOTE_PAYMENT)]).expect("prove");
+    let public = proved.public_bytes();
+    let leaf = tree.leaf_bytes(700).expect("leaf");
+    for window in [&leaf[.. 32], &leaf[32 .. 64], &leaf[64 ..], &700u64.to_le_bytes()[..]] {
+      assert!(!public.windows(window.len()).any(|w| w == window));
+    }
+    assert_eq!(public.len(), proof_len(1, DEPTH) + 128 + 32);
   }
 }

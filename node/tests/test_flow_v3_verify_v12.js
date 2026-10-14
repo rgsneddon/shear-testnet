@@ -7,6 +7,7 @@ import { createStore } from '../src/store.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
+import { sealHiddenNote } from '../../crypto/note.js';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
@@ -37,16 +38,27 @@ function oneProof(length, lane) {
   return { blob, spendTag: tag, cTilde };
 }
 
+const hiddenByAmount = new Map();
+const FIXTURE_ADMIT_BASE = newIdentity().admitBase;
+/** The amount rides as C and a range proof. A plaintext nanos is amount_field. */
+function hiddenOut(kind, amount) {
+  if (!hiddenByAmount.has(amount)) {
+    const note = sealHiddenNote(amount, { dest20: Buffer.alloc(20, 6), admitBase: FIXTURE_ADMIT_BASE });
+    delete note.r;
+    hiddenByAmount.set(amount, note);
+  }
+  return { ...hiddenByAmount.get(amount), kind };
+}
+
 function flowTx({ kind, amount, length, lanes, anchor, id }) {
   const built = lanes.map((lane) => oneProof(length, lane));
   const tx = {
     id,
     kind,
-    nanos: amount,
     fee: 0,
     anchor,
     vin: built.map((row) => ({ commit: row.cTilde })),
-    vout: [{ kind, nanos: amount }],
+    vout: [hiddenOut(kind, amount)],
   };
   if (built.length === 1) tx.admit_proof = built[0];
   else tx.admit_proofs = built;

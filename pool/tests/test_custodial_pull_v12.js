@@ -9,9 +9,10 @@ import {
   SHARE_FLOOR_BITS,
   shareCreditMaxBits,
 } from '../../crypto/asert.js';
-import { hash20FromAddress, newIdentity } from '../../crypto/address.js';
+import { encodeDest, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { poolWithdrawTx } from '../../crypto/levy.js';
+import { attachDummyOuts } from '../../crypto/dummy.js';
+import { levyNanos, poolWithdrawTx } from '../../crypto/levy.js';
 import { noteCommitOfDest20, openedCoinbaseNanos } from '../../crypto/note.js';
 import { nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { signSpendTx } from '../../crypto/spend.js';
@@ -88,7 +89,7 @@ function bitsFor(i, n) {
 }
 
 describe('v12 custodial pull stays off while coinbase still pays', () => {
-  it('builders and the sweep return before poolWithdrawTx, and queueTx refuses plaintext', () => {
+  it('builders and the sweep return before poolWithdrawTx, and queueTx refuses a sealed send', () => {
     const auto = fs.readFileSync(new URL('../src/auto_payout.js', import.meta.url), 'utf8');
     for (const name of ['buildAutoPayoutTx', 'buildPoolFeeSweepTx']) {
       const at = auto.indexOf(`export function ${name}`);
@@ -145,20 +146,27 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
       const queued = pool.store.queueTx(signed);
       assert.equal(queued.ok, false);
       assert.equal(queued.reason, 'custodial_pull');
-      const bare = {
-        id: 'no-range-any',
+      // Same seal as a wallet flow send: hidden note, amtCt to an admit-base
+      // dest, a public-zero dummy, and no plaintext amount. Not a member.
+      const payee = newIdentity();
+      const payTo = encodeDest(hash20FromAddress(spendDestOf(payee.spendPub)), payee.admitBase);
+      const bare = attachDummyOuts({
+        id: 'sealed-any',
         kind: 'send',
-        from: box.dest,
-        to,
+        fee: levyNanos(0),
         vin: [{ address: box.dest }],
-        vout: [{ address: to, nanos: 1, kind: 'send' }],
-      };
+        vout: [{ address: payTo, nanos: 1, kind: 'send' }],
+      });
+      for (const o of bare.vout) delete o.r;
       signSpendTx(bare, box.key);
-      assert.equal(admitMempool(emptyMempool(), bare).reason, 'range_proof');
+      assert.equal(bare.nanos, undefined);
+      assert.equal(bare.vout[0].nanos, undefined);
+      assert.ok(bare.vout[0].amtCt && bare.vout[0].rEph && bare.vout[0].rCt);
+      assert.equal(admitMempool(emptyMempool(), bare).reason, 'admit_membership');
       assert.equal(pool.store.queueTx(bare).reason, 'admit_membership');
       const ids = (pool.store.template({ miner: FEE, now: 1_700_000_000_000 }).txs || []).map((t) => t.id);
       assert.equal(ids.includes('plain-any'), false);
-      assert.equal(ids.includes('no-range-any'), false);
+      assert.equal(ids.includes('sealed-any'), false);
     } finally {
       pool.close();
     }

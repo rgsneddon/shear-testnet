@@ -61,7 +61,7 @@ function sectionRpc() {
     '  GET /block?height=N         compact block',
     '  GET /blocks?from=&to=       compact window',
     '  GET /chaintips /reorgs /policy /jroot /fingerprint /fluxset',
-    '  GET /notes /api/wallet/notes /api/wallet/balance /api/wallet/history',
+    '  Notes, balance, and history are owner-side: scan /blocks, open amtCt. No route returns an amount.',
     '  GET /api/oracle | /oracle   staking basket. Mint uses frozen epochBps. A stale basket does not move it.',
     '  GET /api/reserve?address=   one portal: staked, idle, vote, accrued. Public vote counts. No other dests.',
     '  POST /api/wallet/send | /queuetx',
@@ -118,7 +118,7 @@ function sectionP2p() {
     '  p2p_ingest reason=prev is a parent miss; the node retries. It is not a ban.',
     '  p2p_ingest reason=unsigned on a sealed compact block retries after a short TTL. It is not a permanent fail. Pull tip and rebuild native; do not wipe.',
     '  Do not wipe a mid-IBD datadir unless CoS says so after a fix.',
-    '  Magic stays shear-testnet-v11. Do not start sheark-v4-afk.',
+    '  Magic stays shear-testnet-v12. Do not start sheark-v4-afk.',
   ];
 }
 
@@ -127,7 +127,7 @@ function sectionBootstrap() {
     'Bootstrap:',
     '  Default start does not pull or apply a snapshot. Sync is sequential from the local tip (genesis if empty).',
     '  Optional manual import: SHEAR_BOOTSTRAP=1 or --bootstrap=https://boot.shear.digital on an empty datadir.',
-    '  latest.json + latest.bin from boot.shear.digital. Magic shear-testnet-v11. Empty datadir only.',
+    '  latest.json + latest.bin from boot.shear.digital. Magic shear-testnet-v12. Empty datadir only.',
     '  A datadir that already holds chain.bin or chain.jsonl resumes from that tip.',
     '  SHEAR_FAST_SYNC=1 skips archival bodies on this node only.',
   ];
@@ -152,7 +152,7 @@ export function helpTopics() {
 export function printHelp(topic) {
   const t = String(topic || '').replace(/^-+/, '').toLowerCase();
   const head = [
-    `${NODE_DISPLAY} — validating full node (ADMITv2)`,
+    `${NODE_DISPLAY} — validating full node (ADMITv3, sends off)`,
     `Book magic: ${MAGIC_TESTNET}`,
     '',
   ];

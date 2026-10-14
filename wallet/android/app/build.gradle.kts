@@ -28,12 +28,30 @@ android {
         applicationId = "com.shear.shear_wallet"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 29
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        ndk {
+            abiFilters.clear()
+            abiFilters.add("arm64-v8a")
+        }
     }
 
+    packaging {
+        jniLibs {
+            excludes += listOf(
+                "lib/armeabi-v7a/**",
+                "lib/armeabi/**",
+                "lib/x86/**",
+                "lib/x86_64/**",
+            )
+        }
+    }
+
+    // Release APKs are signed with Russell's offline Continuum key.
+    // libshear_admit.so is gitignored and is covered by that APK signature,
+    // not by a hash inside the Dart snapshot.
     signingConfigs {
         create("release") {
             if (hasReleaseKey) {
@@ -76,6 +94,20 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+// Packages libshear_admit.so for arm64-v8a. The script cross-compiles the
+// cdylib; jniLibs is the Android linker input. iOS uses a staticlib instead.
+val buildShearAdmitSo = tasks.register<Exec>("buildShearAdmitSo") {
+    group = "shear"
+    description = "Cross-compile libshear_admit.so into jniLibs/arm64-v8a"
+    val script = rootProject.file("../../crypto/native/build-android-arm64.sh")
+    commandLine("bash", script.absolutePath)
+    workingDir = rootProject.projectDir
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(buildShearAdmitSo)
 }
 
 dependencies {

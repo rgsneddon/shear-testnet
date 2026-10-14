@@ -107,8 +107,8 @@ describe('node RPC', () => {
       const stats = await get(`${base}/stats`);
       assert.equal(stats.status, 200);
       assert.equal(stats.json.ok, true);
-      assert.equal(stats.json.magic, 'shear-testnet-v11');
-      assert.equal(stats.json.admit, 'ADMITv2');
+      assert.equal(stats.json.magic, 'shear-testnet-v12');
+      assert.equal(stats.json.admit, 'ADMITv3 (sends off)');
       assert.equal(stats.json.hashTxLive, 1);
       assert.equal(stats.json.height, 1);
       assert.ok(stats.json.header);
@@ -129,19 +129,19 @@ describe('node RPC', () => {
         assert.equal(sendTx.nanos, undefined);
       }
       const jroot = await get(`${base}/jroot`);
-      assert.equal(jroot.json.admit, 'ADMITv2');
+      assert.equal(jroot.json.admit, 'ADMITv3');
       assert.equal(typeof jroot.json.jroot, 'string');
       const explDisk = fs.readFileSync(path.join(dir, 'explorer.jsonl'), 'utf8');
       assert.equal(/"nanos"\s*:/.test(explDisk), false);
       assert.equal(/"amount"\s*:/.test(explDisk), false);
       const flux = await get(`${base}/fluxset`);
-      assert.equal(flux.json.admit, 'ADMITv2');
+      assert.equal(flux.json.admit, 'ADMITv3');
       assert.ok(Array.isArray(flux.json.commits));
       assert.equal(flux.json.commits.length, flux.json.pubs.length);
       const tpl = await post(base, { method: 'gettemplate', params: { miner: dest } });
       assert.equal(tpl.json.ok, true);
-      assert.equal(tpl.json.admit, 'ADMITv2');
-      assert.equal(tpl.json.magic, 'shear-testnet-v11');
+      assert.equal(tpl.json.admit, 'ADMITv3');
+      assert.equal(tpl.json.magic, 'shear-testnet-v12');
       assert.ok(tpl.json.jobId);
       assert.ok(tpl.json.header);
     } finally {

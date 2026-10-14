@@ -39,7 +39,11 @@ cd "$WALLET"
 git config --global --add safe.directory "$FLUTTER_ROOT" || true
 flutter config --enable-linux-desktop --no-analytics >/dev/null
 flutter pub get
-flutter build linux --release --build-name="$FLUTTER_NAME" --build-number="$BUILD_NUMBER"
+REPO="$(cd "$WALLET/.." && pwd)"
+ADMIT="$REPO/crypto/native/admit"
+cargo build --release --manifest-path "$ADMIT/Cargo.toml"
+DEFINE="$(python3 "$REPO/crypto/native/stamp_admit_pin.py" --define "$ADMIT/target/release/libshear_admit.so")"
+flutter build linux --release --build-name="$FLUTTER_NAME" --build-number="$BUILD_NUMBER" $DEFINE
 BUNDLE="$WALLET/build/linux/x64/release/bundle"
 test -x "$BUNDLE/shear_wallet"
 # Bundle libsodium for native AdmitV1 prove.

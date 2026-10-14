@@ -7,6 +7,7 @@ Ad-hoc Flutter seals trigger: Apple could not verify “Shear” is free of malw
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import subprocess
 import sys
@@ -16,6 +17,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_APP = ROOT / "build" / "macos" / "Build" / "Products" / "Release" / "Shear.app"
 DEFAULT_IDENTITY = "Developer ID Application: Russell Sneddon (SFCBP95595)"
+CODESIGN = "/usr/bin/codesign"
+TEAM_ID = "SFCBP95595"
+# Developer ID Certification Authority (intermediate) and Developer ID Application (leaf).
+DEV_ID_INTERMEDIATE_OID = "1.2.840.113635.100.6.2.6"
+DEV_ID_LEAF_OID = "1.2.840.113635.100.6.1.13"
 DEFAULT_KEY_DIR = Path.home() / "Library/Developer/perccent-codesign"
 ENTITLEMENTS = ROOT / "macos" / "Runner" / "Release.entitlements"
 PIN = "0.30"
@@ -34,7 +40,7 @@ def run_capture(cmd: list[str]) -> str:
 
 def sign_path(path: Path, identity: str, entitlements: Path | None) -> None:
     cmd = [
-        "codesign",
+        CODESIGN,
         "--force",
         "--timestamp",
         "--options",
@@ -81,8 +87,55 @@ def sign_app(app: Path, identity: str) -> None:
     main_bin = app / "Contents/MacOS/Shear"
     if main_bin.is_file():
         sign_path(main_bin, identity, ENTITLEMENTS)
-    sign_path(app, identity, ENTITLEMENTS)
-    run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)])
+    _seal_admit_pin(app, identity)
+    _verify_team(app)
+
+
+def _seal_admit_pin(app: Path, identity: str) -> None:
+    """Hash libshear_admit.dylib after its signature is final, then seal the app.
+
+    Developer ID re-signing changes the dylib bytes. The sidecar is written
+    after that and the app is signed again so the sidecar is inside the seal.
+    """
+    dylib = app / "Contents" / "Frameworks" / "libshear_admit.dylib"
+    stamp = ROOT.parent / "crypto" / "native" / "stamp_admit_pin.py"
+    if not dylib.is_file():
+        sign_path(app, identity, ENTITLEMENTS)
+        return
+    side = dylib.with_name(dylib.name + ".sha256")
+    for _ in range(3):
+        run([sys.executable, str(stamp), str(dylib)])
+        sign_path(app, identity, ENTITLEMENTS)
+        digest = hashlib.sha256(dylib.read_bytes()).hexdigest()
+        if side.is_file() and side.read_text(encoding="utf-8").strip() == digest:
+            _verify_team(dylib)
+            return
+    raise RuntimeError("libshear_admit.dylib hash changed after the app seal")
+
+
+def admit_mac_requirement(team_id: str = TEAM_ID) -> str:
+    """Same requirement as wallet/lib/shear_admit_ffi.dart admitMacRequirement.
+
+    OU alone accepts a self-signed certificate that copies the team id.
+    """
+    return (
+        "anchor apple generic"
+        f" and certificate 1[field.{DEV_ID_INTERMEDIATE_OID}] /* exists */"
+        f" and certificate leaf[field.{DEV_ID_LEAF_OID}] /* exists */"
+        f' and certificate leaf[subject.OU] = "{team_id}"'
+    )
+
+
+def _verify_team(path: Path) -> None:
+    run([
+        CODESIGN,
+        "--verify",
+        "--strict",
+        "--verbose=4",
+        "-R",
+        admit_mac_requirement(),
+        str(path),
+    ])
 
 
 def resolve_notary_args() -> list[str]:
@@ -134,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     app = args.app.resolve()
     print(f"Signing {app} with {args.identity}", flush=True)
     sign_app(app, args.identity)
-    cs = run_capture(["codesign", "-dv", "--verbose=4", str(app)])
+    cs = run_capture([CODESIGN, "-dv", "--verbose=4", str(app)])
     print(cs)
     if "Signature=adhoc" in cs:
         print("ERROR: still ad-hoc", file=sys.stderr)
@@ -142,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     if "Developer ID Application" not in cs:
         print("ERROR: not Developer ID", file=sys.stderr)
         return 2
-    ents = run_capture(["codesign", "-d", "--entitlements", ":-", str(app)])
+    ents = run_capture([CODESIGN, "-d", "--entitlements", ":-", str(app)])
     if "get-task-allow" in ents:
         print("ERROR: get-task-allow", file=sys.stderr)
         return 2

@@ -7,6 +7,13 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // Application dir and System32 only. This runs before Flutter loads plugins
+  // so a cwd or PATH shear_admit.dll cannot win the search.
+  if (!::SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+    ::OutputDebugStringW(L"SetDefaultDllDirectories failed\n");
+    return EXIT_FAILURE;
+  }
+
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {

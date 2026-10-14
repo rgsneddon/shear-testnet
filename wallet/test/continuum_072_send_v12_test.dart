@@ -729,22 +729,6 @@ void main() {
   test('send keeps change nanos exact for any amount', () async {
     expect(debugNativeSealNote, isNull);
     expect(debugNativeSealUnits, isNull);
-    debugNativeSpendProver = ({
-      required Uint8List spendSeed,
-      required Map<String, dynamic> spentNote,
-      required List<Uint8List> pubs,
-      List<Uint8List>? commits,
-    }) =>
-        {
-          'admit_proof': true,
-          'v': 2,
-          'spendTag': Uint8List(32)..[0] = 7,
-          'blob': Uint8List.fromList([2, ...List.filled(8, 1)]),
-          'cTilde': Uint8List(32)..[0] = 9,
-        };
-    addTearDown(() {
-      debugNativeSpendProver = null;
-    });
     final fee = BigInt.from(levyNanos(0));
     expect(fee, BigInt.from(levyNanos(1)));
     expect(fee, greaterThan(BigInt.zero));
@@ -935,6 +919,8 @@ class _RecordChange extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
   }) async {
     posts.add({
       'kinds': [
@@ -994,6 +980,8 @@ class _RecordWithdraw extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
   }) async {
     posts.add({
       'kind': kind,

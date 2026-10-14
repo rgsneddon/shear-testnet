@@ -4,10 +4,10 @@
 export const SYNC_EPOCH = 64;
 export const SYNC_MAX_EPOCHS = 16;
 export const SYNC_ROUTES = Object.freeze(['/sync', '/tx']);
-export const SYNC_BANNED_ROUTES = Object.freeze(['/path', '/witness', '/leaf', '/bucket']);
+export const SYNC_BANNED_ROUTES = Object.freeze(['/path', '/witness', '/leaf', '/bucket', '/snapshot', '/chunk', '/chunks']);
 export const SYNC_KEYED_PARAMS = Object.freeze([
   'leaf', 'index', 'chunk', 'path', 'tag', 'spendtag', 'commit', 'notecommit', 'address', 'owned',
-  'note', 'send', 'scanhit', 'clear',
+  'note', 'send', 'scanhit', 'clear', 'snapshot', 'chunks', 'chunkids', 'held',
 ]);
 
 function names(params) {
