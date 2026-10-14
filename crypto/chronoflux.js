@@ -447,9 +447,9 @@ function compactVout(o, tx) {
     if (o.B) row.B = o.B;
     if (o.Y) row.Y = o.Y;
     if (o.cw) row.cw = o.cw;
-    if (o.rhoC) row.rhoC = o.rhoC;
-    if (o.rhoDelta) row.rhoDelta = o.rhoDelta;
-    if (o.rhoRange) row.rhoRange = o.rhoRange;
+    if (o.rhoK) row.rhoK = o.rhoK;
+    if (o.delK) row.delK = o.delK;
+    if (o.mintId) row.mintId = o.mintId;
     if (o.ra) row.ra = o.ra;
     if (o.law) row.law = o.law;
     if (o.fin != null && o.fin !== '') row.fin = o.fin;

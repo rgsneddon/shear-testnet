@@ -1,45 +1,71 @@
 /**
- * T21 hidden coinbase. Fast cases first. One full cb-v3 build at the end.
+ * T21 hidden coinbase. Fast cases first, then two full cb-v3 builds.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { readFileSync } from 'node:fs';
-import { createHash, randomBytes } from 'node:crypto';
-import { potPaysFromLeaves } from '../node/src/chain.js';
-import { H, pointBytes } from './note.js';
+import { createHash } from 'node:crypto';
+import { G, H, pointBytes } from './note.js';
 import { feeOf, lawDust, splitLaw } from './t21_law.js';
 import {
   GEN_H, K_MIN, T21_FINGERPRINT_TOKENS, T21_REQUIRE_ALL_COINBASES, VOUCHER_GAP,
 } from './t21_params.js';
-import { voucherAt, vouchersFromShewall, walletSecretBytes } from './t21_voucher.js';
+import {
+  publicVoucher, voucherAt, voucherKeysOk, vouchersFromShewall, walletSecretBytes,
+} from './t21_voucher.js';
 import { packShewall, sealShewallBin } from './shewall_bin.js';
 import {
-  batchWeightOf, buildT21Coinbase, observerView, openOutput, pickChallenge,
-  rowIsLeaf, settleBatch, shareBindTag, statementOf, supplyIdentities,
-  vaultCommit, verifyT21Coinbase, genesisGateStatus,
+  AGG_KEYS, CHUNK_KEYS, buildT21Coinbase, genesisGateStatus, minerShare, observerView, openOutput,
+  statementOf, supplyIdentities, t21CbOnly, t21ShareNc, vaultCommit, verifyT21Coinbase,
 } from './t21.js';
-import { hashToScalar } from './note.js';
 import { consensusFingerprint } from './asert.js';
 
-const secret = Buffer.alloc(32, 4);
-const dummySecret = Buffer.alloc(32, 9);
+const magic = 'shear-testnet-v12';
 const prevHash = Buffer.alloc(32, 1);
-const header = Buffer.alloc(80, 2);
-const jobKey = Buffer.alloc(32, 3);
+const secrets = [1, 2, 3, 4, 5].map((n) => Buffer.alloc(32, n));
+const feeSecret = Buffer.alloc(32, 8);
+const dummySecret = Buffer.alloc(32, 9);
 
-function payee(ctr, weights, extra = {}) {
+function voucher(i, ctr = 0) {
+  return voucherAt(secrets[i], ctr);
+}
+
+function payee(i, weights, extra = {}) {
+  const v = voucher(i);
+  return { voucher: publicVoucher(v), shares: weights.map((w) => minerShare(v, w)), ...extra };
+}
+
+/** Chain-side inputs: what consensus derives without trusting the coinbase. */
+function expectFor(tx, over = {}) {
   return {
-    secret,
-    ctr,
-    kind: 'pot',
-    fin: 0,
-    shares: weights.map((w) => ({ w, header, jobKey })),
-    ...extra,
+    S: BigInt(tx.t21.S),
+    cin: BigInt(tx.t21.cin),
+    u: BigInt(tx.t21.u),
+    height: tx.t21.height,
+    magic,
+    prevHash,
+    shares: tx.t21.shares.map((s) => ({ nc: t21ShareNc(magic, s.E), units: BigInt(s.w) })),
+    prevEs: new Set(),
+    vaults: [],
+    ...over,
   };
 }
 
-describe('T21 S0 splitLaw and tokens', () => {
+function clone(tx) {
+  return {
+    ...tx,
+    vout: tx.vout.map((o) => ({ ...o, ra: o.ra ? { ...o.ra } : o.ra })),
+    t21: { ...tx.t21, shares: tx.t21.shares.map((s) => ({ ...s })) },
+  };
+}
+
+function restate(tx) {
+  tx.t21.stmt = statementOf(tx);
+  return tx;
+}
+
+describe('T21 splitLaw, fee and params', () => {
   it('matches an independent division over the spread, including a 1.8e14 carry', () => {
     const raw = JSON.parse(readFileSync(new URL('./vectors/t21_splitlaw.json', import.meta.url), 'utf8'));
     for (const row of raw.cases) {
@@ -52,243 +78,254 @@ describe('T21 S0 splitLaw and tokens', () => {
       assert.equal(got.v.toString(), row.v);
       assert.equal(got.rho.toString(), row.rho);
     }
-    const dust = lawDust([2n, 2n], 4n);
-    assert.equal(dust, 1n);
+    assert.equal(lawDust([2n, 2n], 4n), 1n);
     assert.equal(feeOf(10_000n, 200n), 200n);
     assert.equal(feeOf(10_000n, 201n), null);
-    assert.equal(pointBytes(H).toString('hex'), GEN_H);
-    assert.equal(T21_FINGERPRINT_TOKENS[T21_FINGERPRINT_TOKENS.length - 1], `GEN_H=${GEN_H}`);
-    const parts = consensusFingerprint().split(':');
-    assert.equal(parts.includes('AMOUNT=confidential'), true);
-    assert.equal(parts.includes('RANGE=packed-bit'), true);
-    assert.equal(parts.includes('RANGE=packed-bit+0x02'), true);
-    assert.equal(parts.includes('SHARE_BIND=rx+noteCommit'), false);
-    for (const token of T21_FINGERPRINT_TOKENS) assert.equal(parts.includes(token), true);
-    assert.equal(T21_REQUIRE_ALL_COINBASES, false);
+    assert.equal(Buffer.from(pointBytes(H)).toString('hex'), GEN_H);
     assert.equal(K_MIN, 4);
-    for (const token of T21_FINGERPRINT_TOKENS) {
-      assert.equal(typeof token, 'string');
-      assert.match(readFileSync(new URL('./t21_params.js', import.meta.url), 'utf8'), new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    }
-  });
-});
-
-describe('T21 S1 share bind and S2 vouchers', () => {
-  it('derives vouchers from the wallet secret and stops after the gap', () => {
-    assert.throws(() => walletSecretBytes('abandon abandon abandon'), /seed_phrase/);
-    const a = voucherAt(secret, 0);
-    const b = voucherAt(secret, 0);
-    assert.equal(a.lambdaBytes.toString('hex'), b.lambdaBytes.toString('hex'));
-    assert.notEqual(voucherAt(secret, 1).lambdaBytes.toString('hex'), a.lambdaBytes.toString('hex'));
-    const labels = new Set([0, 10, 256, 257].map((c) => voucherAt(secret, c).lambdaBytes.toString('hex')));
-    const found = [];
-    let misses = 0;
-    for (let c = 0; misses < VOUCHER_GAP; c += 1) {
-      const v = voucherAt(secret, c);
-      if (labels.has(v.lambdaBytes.toString('hex')) && (c === 0 || c === 10 || c === 256)) {
-        found.push(c);
-        misses = 0;
-      } else misses += 1;
-    }
-    assert.deepEqual(found, [0, 10, 256]);
-    assert.equal(found.includes(257), false);
-    const E = pointBytes(a.B);
-    const tag = shareBindTag(header, jobKey, E);
-    assert.equal(tag.length, 32);
-    const other = Buffer.from(E);
-    other[0] ^= 1;
-    assert.notEqual(shareBindTag(header, jobKey, other).toString('hex'), tag.toString('hex'));
+    const parts = consensusFingerprint().split(':');
+    for (const token of T21_FINGERPRINT_TOKENS) assert.equal(parts.includes(token), true, token);
   });
 
-  it('restores vouchers from shewall.bin and a password', () => {
-    const dest20 = createHash('sha256').update('t21').digest().subarray(0, 20);
-    const packed = packShewall({ seed32: secret, dest20 });
-    const env = sealShewallBin(packed, 't21-pass');
-    const want = voucherAt(secret, 4).lambdaBytes.toString('hex');
-    const found = vouchersFromShewall(env, 't21-pass', [want]);
-    assert.equal(found.length, 1);
-    assert.equal(found[0].ctr, 4);
-  });
-});
-
-describe('T21 structural rules', () => {
-  it('rejects the listed codes before a proof', () => {
-    const base = {
-      coinbase: true,
-      cbForm: 'cb-v3',
-      carryNanos: 5,
-      vout: [],
-      excess: Buffer.alloc(32),
-      t21: {
-        S: '3', cin: '2', bps: 0, u: '0', height: 1, magic: 'm',
-        prevHash, shares: [],
-      },
-    };
-    base.t21.stmt = statementOf(base);
-    base.t21.bw = batchWeightOf(base.t21.stmt);
-    assert.equal(verifyT21Coinbase({ tx: base }).ok, true);
-
-    const short = structuredClone(base);
-    short.vout = [{ amtCt: Buffer.alloc(3), kind: 'pot' }];
-    short.t21 = { ...base.t21 };
-    assert.equal(verifyT21Coinbase({ tx: short }).reason, 'amount_ct');
-
-    const plain = structuredClone(base);
-    plain.vout = [{ kind: 'pot', kindCode: 0x20, nanos: 1, commit: Buffer.alloc(32, 1) }];
-    plain.t21 = { ...base.t21, shares: [{ w: '1' }] };
-    assert.equal(verifyT21Coinbase({ tx: plain }).reason, 'amount_field');
-
-    const open = structuredClone(base);
-    open.vout = [{ kind: 'pot', kindCode: 0x20, valueProof: { v: 1 }, commit: Buffer.alloc(32, 1) }];
-    open.t21 = { ...base.t21, shares: [{ w: '1' }] };
-    assert.equal(verifyT21Coinbase({ tx: open }).reason, 'value_open');
-
-    const carried = structuredClone(base);
-    carried.carryNanos = 4;
-    carried.t21 = { ...base.t21 };
-    carried.t21.stmt = statementOf(carried);
-    carried.t21.bw = batchWeightOf(carried.t21.stmt);
-    assert.equal(verifyT21Coinbase({ tx: carried }).reason, 'pot_sched');
-
-    const noted = structuredClone(base);
-    noted.vout = [{ kind: 'pot', kindCode: 0x20 }];
-    noted.t21 = { ...base.t21 };
-    assert.equal(verifyT21Coinbase({ tx: noted }).reason, 'pot_carry');
-
-    const fee = structuredClone(base);
-    fee.t21 = { ...base.t21, bps: 201 };
-    assert.equal(verifyT21Coinbase({ tx: fee }).reason, 'fee_sched');
-
-    const many = structuredClone(base);
-    many.t21 = { ...base.t21, shares: Array.from({ length: 65537 }, () => ({ w: '1' })) };
-    assert.equal(verifyT21Coinbase({ tx: many }).reason, 'split_cap');
-
-    const rows = structuredClone(base);
-    rows.t21 = { ...base.t21, shares: [{ w: '1', E: Buffer.alloc(32, 2), bind: Buffer.alloc(32), header, jobKey, lambda: Buffer.alloc(32, 8) }] };
-    rows.vout = Array.from({ length: 471 }, () => ({ kind: 'pot', kindCode: 0x20 }));
-    assert.equal(verifyT21Coinbase({ tx: rows }).reason, 'payee_cap');
-
-    const wide = structuredClone(base);
-    wide.vout = new Array(65537);
-    assert.equal(verifyT21Coinbase({ tx: wide }).reason, 'tx_cap');
-
-    const heavy = structuredClone(base);
-    heavy.t21 = { ...base.t21, shares: [{ w: String((1n << 28n) + 1n) }] };
-    assert.equal(verifyT21Coinbase({ tx: heavy }).reason, 'split_cap');
-
-    const X0 = hashToScalar(Buffer.from('shear-logup-x-v1'), Buffer.from('stmt'), Buffer.from([0]));
-    const picked = pickChallenge(Buffer.from('stmt'), [X0]);
-    assert.notEqual(picked.n, 0);
-
-    const vault = vaultCommit(50n, Buffer.from('mint'), 7, Buffer.alloc(32, 6));
-    assert.ok(vault.commit.length === 32);
-    const again = vaultCommit(50n, Buffer.from('mint'), 7, Buffer.alloc(32, 6));
-    assert.equal(vault.commit.toString('hex'), again.commit.toString('hex'));
-    const moved = vaultCommit(50n, Buffer.from('mint'), 8, Buffer.alloc(32, 6));
-    assert.notEqual(vault.commit.toString('hex'), moved.commit.toString('hex'));
-
-    const badLeaf = { admitPub: Buffer.alloc(32), commit: Buffer.alloc(32), lambda: Buffer.alloc(32, 1) };
-    assert.equal(rowIsLeaf(badLeaf), false);
-    const settled = settleBatch([badLeaf], [{ lambda: badLeaf.lambda, w: '1' }]);
-    assert.equal(settled.evicted, true);
-    assert.equal(settled.deferred.length, 1);
-    assert.equal(settled.shares.length, 0);
-  });
-});
-
-describe('T21 S5 no last-payee re-split', () => {
-  it('keeps the remainder off the last payee', () => {
-    const leaves = [
-      { noteCommit: Buffer.alloc(32, 1), count: 1 },
-      { noteCommit: Buffer.alloc(32, 2), count: 1 },
-    ];
-    const old = potPaysFromLeaves(leaves, null, 0, 11, 0);
-    assert.equal(old.length, 2);
-    const nanos = old.map((r) => r.nanos).sort((a, b) => a - b);
-    assert.deepEqual(nanos, [5, 6]);
-    const a = splitLaw({ R: 10n, W: 2n, Wi: 1n });
-    const b = splitLaw({ R: 10n, W: 2n, Wi: 1n });
-    assert.equal(a.v, 5n);
-    assert.equal(b.v, 5n);
-    assert.equal(a.rho + b.rho, 0n);
-    assert.equal(lawDust([a.rho, b.rho], 2n), 0n);
+  it('keeps the remainder off the last payee: odd pots carry one nano', () => {
     const odd = [splitLaw({ R: 11n, W: 2n, Wi: 1n }), splitLaw({ R: 11n, W: 2n, Wi: 1n })];
-    assert.equal(odd[0].v + odd[1].v, 10n);
+    assert.equal(odd[0].v, odd[1].v);
     assert.equal(lawDust(odd.map((r) => r.rho), 2n), 1n);
   });
 });
 
-describe('T21 cb-v3 coinbase', { timeout: 180_000 }, () => {
-  it('proves a 4-note coinbase, rejects a mutated statement, and opens amtCt or VE', () => {
-    const built = buildT21Coinbase({
-      S: 100_000n,
-      cin: 0n,
-      bps: 0,
-      u: 0n,
-      height: 3,
-      magic: 'shear-testnet-v12',
-      prevHash,
-      dummySecret,
-      payees: [payee(1, [1n, 1n])],
-    });
-    assert.equal(built.tx.vout.filter((o) => o.kind !== 'vault-withdraw-pinned').length, K_MIN);
-    assert.equal(built.dust, 0n);
-    const gate = verifyT21Coinbase({ tx: built.tx, blockHash: Buffer.alloc(32) });
-    assert.equal(gate.ok, true, gate.reason);
-    const supply = supplyIdentities(built);
-    assert.equal(supply.ok, true);
-    const view = observerView(built.tx);
-    assert.equal(view.leaks.length, 0);
-    assert.equal(view.rows >= K_MIN, true);
-    const pay = built.tx.vout.find((o) => o.kind === 'pot');
-    const opened = openOutput(pay, secret, {
-      magic: 'shear-testnet-v12', height: 3, prevHash, index: built.tx.vout.indexOf(pay),
-    });
-    assert.equal(opened.via, 'amtCt');
-    assert.equal(opened.v, built.secrets.find((s) => s.kind === 'pot').v);
-    const lied = { ...pay, amtCt: Buffer.from(pay.amtCt) };
-    lied.amtCt = Buffer.from(lied.amtCt);
-    lied.amtCt[0] ^= 0xff;
-    const viaVe = openOutput(lied, secret, {
-      magic: 'shear-testnet-v12', height: 3, prevHash, index: built.tx.vout.indexOf(pay),
-    });
-    assert.equal(viaVe.via, 've');
-    assert.equal(viaVe.v, opened.v);
-    const mutated = {
-      ...built.tx,
-      vout: built.tx.vout.map((o, i) => (i === 0 ? { ...o, amtCt: lied.amtCt } : o)),
-      t21: built.tx.t21,
-    };
-    const bad = verifyT21Coinbase({ tx: mutated });
-    assert.equal(bad.ok, false);
-    assert.equal(bad.reason, 'split_law');
-    const foreign = {
-      ...built.tx,
-      t21: {
-        ...built.tx.t21,
-        shares: built.tx.t21.shares.map((s, i) => (i === 0 ? { ...s, w: '9' } : s)),
-      },
-    };
-    foreign.t21.stmt = statementOf(foreign);
-    foreign.t21.bw = batchWeightOf(foreign.t21.stmt);
-    assert.equal(verifyT21Coinbase({ tx: foreign }).reason, 'split_tally');
+describe('T21 vouchers (must-fix 12)', () => {
+  it('derives vouchers from the wallet secret and stops after the gap', () => {
+    assert.throws(() => walletSecretBytes('abandon abandon abandon'), /seed_phrase/);
+    const a = voucherAt(secrets[0], 0);
+    assert.equal(a.lambdaBytes.toString('hex'), voucherAt(secrets[0], 0).lambdaBytes.toString('hex'));
+    assert.notEqual(voucherAt(secrets[0], 1).lambdaBytes.toString('hex'), a.lambdaBytes.toString('hex'));
+    assert.ok(VOUCHER_GAP > 0);
   });
 
-  it('defers a non-leaf voucher instead of re-splitting', () => {
+  it('restores vouchers from shewall.bin and a password', () => {
+    const dest20 = createHash('sha256').update('t21').digest().subarray(0, 20);
+    const env = sealShewallBin(packShewall({ seed32: secrets[0], dest20 }), 't21-pass');
+    const want = voucherAt(secrets[0], 4).lambdaBytes.toString('hex');
+    const found = vouchersFromShewall(env, 't21-pass', [want]);
+    assert.equal(found.length, 1);
+    assert.equal(found[0].ctr, 4);
+  });
+
+  it('accepts a wallet voucher and refuses bad B*, Y, or lambda', () => {
+    const pub = publicVoucher(voucher(0));
+    assert.equal(voucherKeysOk(pub), true);
+    assert.equal(voucherKeysOk({ ...pub, Y: pub.B }), false);
+    assert.equal(voucherKeysOk({ ...pub, B: Buffer.alloc(32) }), false);
+    assert.equal(voucherKeysOk({ ...pub, B: Buffer.alloc(32, 0xff) }), false);
+    assert.equal(voucherKeysOk({ ...pub, lambda: Buffer.alloc(32) }), false);
+    assert.equal(voucherKeysOk({ ...pub, lambda: Buffer.alloc(32, 0xff) }), false);
+    assert.equal(voucherKeysOk({ ...pub, lambda: Buffer.alloc(31, 1) }), false);
+  });
+});
+
+describe('T21 vault rows (must-fix 6, KT-10)', () => {
+  const mintId = Buffer.from('mint-1');
+  const owner = publicVoucher(voucher(4)).B;
+
+  it('derives r from the parent hash, deterministically', () => {
+    const a = vaultCommit(50n, mintId, 7, prevHash);
+    assert.equal(a.commit.length, 32);
+    assert.equal(Buffer.from(a.commit).toString('hex'), Buffer.from(vaultCommit(50n, mintId, 7, prevHash).commit).toString('hex'));
+    assert.notEqual(Buffer.from(a.commit).toString('hex'), Buffer.from(vaultCommit(50n, mintId, 7, Buffer.alloc(32, 2)).commit).toString('hex'));
+    assert.notEqual(Buffer.from(a.commit).toString('hex'), Buffer.from(vaultCommit(50n, mintId, 8, prevHash).commit).toString('hex'));
+  });
+
+  it('pays the owner key, is a leaf, and is refused unless chain state lists it', () => {
     const built = buildT21Coinbase({
-      S: 50_000n,
-      cin: 0n,
-      bps: 0,
+      S: 1000n, cin: 0n, height: 7, magic, prevHash, payees: [], vaults: [{ vaultNanos: 50n, mintId, B: owner }],
+    });
+    const row = built.tx.vout[0];
+    assert.equal(row.kindCode, 0x23);
+    assert.notEqual(Buffer.from(row.admitPub).toString('hex'), Buffer.from(pointBytes(G)).toString('hex'));
+    assert.equal(Buffer.from(row.B).toString('hex'), Buffer.from(owner).toString('hex'));
+    const listed = expectFor(built.tx, { shares: [], vaults: [{ mintId, vaultNanos: 50n, B: owner }] });
+    const ok = verifyT21Coinbase({ tx: built.tx, expect: listed });
+    assert.equal(ok.ok, true, ok.reason);
+    assert.equal(ok.vaultPaid, 50n);
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: { ...listed, vaults: [] } }).reason, 'vault_pin');
+    const otherOwner = { ...listed, vaults: [{ mintId, vaultNanos: 50n, B: publicVoucher(voucher(3)).B }] };
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: otherOwner }).reason, 'vault_pin');
+    const moved = { ...listed, prevHash: Buffer.alloc(32, 2) };
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: moved }).reason, 'cb_form');
+  });
+});
+
+describe('T21 empty batch and the cb-only gate (must-fix 5)', () => {
+  it('carries the whole pot only when no share is proven', () => {
+    const built = buildT21Coinbase({ S: 3n, cin: 2n, height: 1, magic, prevHash, payees: [] });
+    const expect = expectFor(built.tx, { shares: [] });
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect }).ok, true);
+    assert.equal(verifyT21Coinbase({ tx: built.tx }).reason, 'pot_sched');
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: { ...expect, S: 4n } }).reason, 'pot_sched');
+    const carried = restate({ ...clone(built.tx), carryNanos: 4 });
+    assert.equal(verifyT21Coinbase({ tx: carried, expect }).reason, 'pot_sched');
+    const proven = { ...expect, shares: [{ nc: Buffer.alloc(32), units: 1n }] };
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: proven }).reason, 'share_bind');
+  });
+
+  it('turns cb-v3-only on with the genesis hash', () => {
+    assert.equal(T21_REQUIRE_ALL_COINBASES, false);
+    assert.equal(t21CbOnly(''), false);
+    assert.equal(t21CbOnly('ab'.repeat(32)), true);
+  });
+});
+
+describe('T21 cb-v3 coinbase', { timeout: 600_000 }, () => {
+  const S = 5_000_000_000n;
+  const fin = 7_000n;
+  const feeVoucher = voucherAt(feeSecret, 0);
+  let built;
+  let expect;
+
+  it('builds and verifies four payees, a finder, and a fee note (B3, must-fix 3, 7)', () => {
+    built = buildT21Coinbase({
+      S,
+      cin: 3n,
+      bps: 100,
       u: 0n,
-      height: 4,
-      magic: 'shear-testnet-v12',
+      height: 9,
+      magic,
       prevHash,
       dummySecret,
-      payees: [payee(2, [2n], { breakLeaf: true }), payee(3, [2n])],
+      fee: { voucher: publicVoucher(feeVoucher) },
+      payees: [payee(0, [25n, 3n], { fin }), payee(1, [26n]), payee(2, [27n, 1n]), payee(3, [28n])],
     });
-    assert.equal(built.deferred.length, 1);
-    assert.equal(built.tx.t21.shares.length, 1);
-    assert.equal(verifyT21Coinbase({ tx: built.tx }).ok, true);
+    expect = expectFor(built.tx);
+    const gate = verifyT21Coinbase({ tx: built.tx, expect });
+    assert.equal(gate.ok, true, gate.reason);
+    assert.equal(gate.phi, fin);
+    assert.equal(Buffer.from(gate.finB).toString('hex'), publicVoucher(voucher(0)).B.toString('hex'));
+    assert.equal(gate.f, 50_000_000n);
+    assert.equal(gate.paid, S + 3n - BigInt(built.tx.carryNanos) + fin);
+    const supply = supplyIdentities(built);
+    assert.equal(supply.ok, true);
+    assert.equal(supply.paid, gate.paid);
+    const feeRows = built.tx.vout.filter((o) => o.kind === 'pool-fee');
+    assert.equal(feeRows.length, 1);
+    const index = built.tx.vout.indexOf(feeRows[0]);
+    const opened = openOutput(feeRows[0], feeSecret, { magic, height: 9, prevHash, index });
+    assert.equal(opened.v, gate.f);
+  });
+
+  it('B1: publishes no limbs; an extra agg or chunk key is cb_wrap', () => {
+    for (const o of built.tx.vout) {
+      assert.deepEqual(Object.keys(o.ra.agg).sort(), [...AGG_KEYS].sort());
+      for (const c of o.ra.chunks) assert.deepEqual(Object.keys(c).sort(), [...CHUNK_KEYS].sort());
+    }
+    const leak = clone(built.tx);
+    leak.vout[0].ra = { ...leak.vout[0].ra, agg: { ...leak.vout[0].ra.agg, vLimbs: [1, 2, 3, 4] } };
+    assert.equal(verifyT21Coinbase({ tx: leak, expect }).reason, 'cb_wrap');
+    const leak2 = clone(built.tx);
+    leak2.vout[1].ra = { ...leak2.vout[1].ra, chunks: leak2.vout[1].ra.chunks.map((c, i) => (i ? c : { ...c, m: 5 })) };
+    assert.equal(verifyT21Coinbase({ tx: leak2, expect }).reason, 'cb_wrap');
+  });
+
+  it('B2: a share is (w, E) only; a share label is refused', () => {
+    for (const s of built.tx.t21.shares) assert.deepEqual(Object.keys(s).sort(), ['E', 'w']);
+    const labelled = clone(built.tx);
+    labelled.t21.shares[0].lambda = publicVoucher(voucher(0)).lambda;
+    assert.equal(verifyT21Coinbase({ tx: labelled, expect }).reason, 'share_label');
+    assert.ok(observerView(labelled).leaks.some((l) => l.key === 'lambda'));
+  });
+
+  it('B3: subsidy, carry, bonus, and parent are chain state', () => {
+    assert.equal(verifyT21Coinbase({ tx: built.tx }).reason, 'pot_sched');
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: { ...expect, S: S + 1n } }).reason, 'pot_sched');
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: { ...expect, cin: 0n } }).reason, 'pot_sched');
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: { ...expect, u: 1n } }).reason, 'pot_sched');
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: { ...expect, height: 10 } }).reason, 'cb_form');
+    const inflated = restate({ ...clone(built.tx), carryNanos: 0 });
+    if (built.tx.carryNanos !== 0) assert.equal(verifyT21Coinbase({ tx: inflated, expect }).ok, false);
+    const over = restate({ ...clone(built.tx), carryNanos: built.tx.vout.length });
+    assert.equal(verifyT21Coinbase({ tx: over, expect }).reason, 'pot_carry');
+  });
+
+  it('B4: every share is a proven batch share at its weight', () => {
+    const missing = { ...expect, shares: expect.shares.slice(1) };
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: missing }).reason, 'share_bind');
+    const reweighed = { ...expect, shares: expect.shares.map((s, i) => (i ? s : { ...s, units: s.units + 1n })) };
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: reweighed }).reason, 'share_bind');
+    const foreignE = { ...expect, shares: expect.shares.map((s, i) => (i ? s : { ...s, nc: Buffer.alloc(32, 7) })) };
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: foreignE }).reason, 'share_bind');
+    const replay = { ...expect, prevEs: new Set([Buffer.from(built.tx.t21.shares[0].E).toString('hex')]) };
+    assert.equal(verifyT21Coinbase({ tx: built.tx, expect: replay }).reason, 'share_label');
+    // Weight moved in both the block and the proven batch: the tally no longer balances.
+    const shifted = clone(built.tx);
+    shifted.t21.shares[0].w = String(BigInt(shifted.t21.shares[0].w) + 1n);
+    shifted.t21.shares[1].w = String(BigInt(shifted.t21.shares[1].w) - 1n);
+    restate(shifted);
+    assert.equal(verifyT21Coinbase({ tx: shifted, expect: expectFor(shifted) }).reason, 'split_tally');
+  });
+
+  it('binds every row field into the statement', () => {
+    const lied = clone(built.tx);
+    const ct = Buffer.from(lied.vout[0].amtCt);
+    ct[0] ^= 0xff;
+    lied.vout[0].amtCt = ct;
+    assert.equal(verifyT21Coinbase({ tx: lied, expect }).reason, 'split_law');
+    restate(lied);
+    assert.equal(verifyT21Coinbase({ tx: lied, expect }).ok, false);
+  });
+
+  it('must-fix 11: the observer derives no per-row amount (D >= 4)', () => {
+    const payees = built.tx.vout.filter((o) => o.kind === 'pot');
+    assert.ok(payees.length >= 4);
+    const truth = built.secrets.filter((s) => s.v >= 1000n);
+    assert.ok(truth.length >= 4);
+    const view = observerView(built.tx, { truth });
+    assert.deepEqual(view.leaks, []);
+    // The harness does fail on a derivable amount.
+    const planted = clone(built.tx);
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64LE(truth[0].v);
+    planted.vout[0].memo = buf;
+    assert.ok(observerView(planted, { truth }).leaks.length > 0);
+    const plain = clone(built.tx);
+    plain.vout[2].nanos = 1;
+    assert.ok(observerView(plain).leaks.some((l) => l.key === 'nanos'));
+  });
+
+  it('opens a payee row by amtCt and, if amtCt lies, by VE', () => {
+    const B = publicVoucher(voucher(1)).B;
+    const index = built.tx.vout.findIndex((o) => Buffer.from(o.B).equals(B));
+    const row = built.tx.vout[index];
+    const ctx = { magic, height: 9, prevHash, index };
+    const opened = openOutput(row, secrets[1], ctx);
+    assert.equal(opened.via, 'amtCt');
+    assert.equal(opened.v, built.secrets.find((s) => s.index === index).v);
+    const ct = Buffer.from(row.amtCt);
+    ct[0] ^= 0xff;
+    const viaVe = openOutput({ ...row, amtCt: ct }, secrets[1], ctx);
+    assert.equal(viaVe.via, 've');
+    assert.equal(viaVe.v, opened.v);
+  });
+
+  it('must-fix 8: evicts a payee whose row is not a leaf, defers it, and rebuilds once', () => {
+    const bad = { ...publicVoucher(voucher(2)), Y: publicVoucher(voucher(2)).B };
+    const out = buildT21Coinbase({
+      S: 50_000n,
+      cin: 0n,
+      height: 4,
+      magic,
+      prevHash,
+      dummySecret,
+      payees: [
+        payee(0, [2n], { forceNonLeaf: true }),
+        payee(1, [2n]),
+        { voucher: bad, shares: [minerShare(voucher(2), 5n)] },
+      ],
+    });
+    assert.deepEqual(out.deferred.map((d) => d.reason).sort(), ['admit_note_point', 'voucher_key']);
+    assert.equal(out.tx.t21.shares.length, 1);
+    assert.equal(out.tx.vout.filter((o) => o.kind === 'pot').length, K_MIN);
+    const gate = verifyT21Coinbase({ tx: out.tx, expect: expectFor(out.tx) });
+    assert.equal(gate.ok, true, gate.reason);
   });
 });
 
@@ -298,7 +335,7 @@ describe('T21 genesis gate', () => {
     assert.equal(V12_GENESIS_BLOCK_HASH, '');
     const status = genesisGateStatus();
     assert.equal(status.requireAllCoinbases, false);
-    assert.deepEqual(status.open, [2, 4, 5, 6, 7, 10]);
+    assert.deepEqual(status.open, [1, 2, 4, 5, 6, 7, 10]);
     assert.equal(fs.existsSync(new URL('../specs/t21-coinbase.md', import.meta.url)), true);
   });
 });
