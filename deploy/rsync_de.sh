@@ -5,6 +5,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${SHEAR_DE_HOST:-de}"
 DEST="${SHEAR_DE_DEST:-/opt/shear-v3}"
+if [[ -n "${SHEAR_FONTS_DIR:-}" ]]; then
+  "$ROOT/deploy/install_fonts.sh"
+else
+  echo "rsync_de: SHEAR_FONTS_DIR unset; brand/fonts/ on $HOST left as deployed" >&2
+fi
 rsync -az \
   --exclude node_modules \
   --exclude '.git/' \
