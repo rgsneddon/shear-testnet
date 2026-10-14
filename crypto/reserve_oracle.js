@@ -246,6 +246,56 @@ export function makeFreezeRecord({
   };
 }
 
+/** Consensus view of a coinbase observe. Extra fields are not part of the digest. */
+export function canonicalObserve(observe) {
+  if (!observe || typeof observe !== 'object') return null;
+  const row = {
+    annualBps: observe.annualBps,
+    observedAtMs: observe.observedAtMs,
+  };
+  if (Array.isArray(observe.sources)) {
+    row.sources = observe.sources.map((s) => ({
+      id: s?.id,
+      annualBps: s?.annualBps,
+      observedAtMs: s?.observedAtMs,
+    }));
+  }
+  return row;
+}
+
+/**
+ * One producer observation is not a rate. A block observe is accepted only
+ * when it carries the 14 distinct bundled bank ids, all agreeing on the
+ * attested bps. Anything short of that quorum is `oracle_quorum`. A value
+ * that is not an in-range integer is `bad_rate` and does not reach the quorum check.
+ */
+export function observeVerdict(observe) {
+  if (observe == null) return { ok: true, present: false };
+  const srcs = Array.isArray(observe.sources) && observe.sources.length
+    ? observe.sources
+    : [observe];
+  for (const s of srcs) {
+    const bps = s?.annualBps;
+    const at = s?.observedAtMs;
+    if (typeof bps !== 'number' || !Number.isInteger(bps) || bps < 0 || bps > RESERVE_ORACLE_MAX_BPS) {
+      return { ok: false, reason: 'bad_rate' };
+    }
+    if (typeof at !== 'number' || !Number.isInteger(at) || at < 0) {
+      return { ok: false, reason: 'bad_rate' };
+    }
+  }
+  const ids = new Set(srcs.map((s) => String(s?.id || '')).filter(Boolean));
+  const bundle = bundledEpochBps();
+  const agree = srcs.every((s) => s.annualBps === bundle);
+  if (ids.size < ORACLE_QUORUM || !agree || bundle == null) {
+    return { ok: false, reason: 'oracle_quorum' };
+  }
+  for (const id of POLICY_BANK_IDS) {
+    if (!ids.has(id)) return { ok: false, reason: 'oracle_quorum' };
+  }
+  return { ok: true, present: true, quorum: true };
+}
+
 export function verifyFreezeRecord(rec, {
   epochIndex,
   prevFreeze,

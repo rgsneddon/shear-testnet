@@ -23,6 +23,7 @@ import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custody
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8 } from './note.js';
 import { hash20FromAddress } from './address.js';
+import { canonicalObserve } from './reserve_oracle.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -445,6 +446,7 @@ export function compactTx(tx) {
     };
     if (tx.excess) row.excess = tx.excess;
     if (tx.jroot) row.jroot = tx.jroot;
+    if (tx.observe) row.observe = canonicalObserve(tx.observe);
     return row;
   }
   const out = compactValue(tx);

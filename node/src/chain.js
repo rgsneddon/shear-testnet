@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { potSubsidyAt, chainGenesisMs as genesisMsOf } from '../../crypto/pot_sched.js';
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
@@ -48,7 +49,7 @@ import {
   stashSharePow,
   dropSharePowKeys,
 } from '../../crypto/share_batch.js';
-import { interestNanos } from '../../crypto/reserve_oracle.js';
+import { interestNanos, observeVerdict, canonicalObserve } from '../../crypto/reserve_oracle.js';
 import {
   bootReserveEvm,
   blockNeedsEvm,
@@ -62,8 +63,14 @@ import {
   jroot as jrootOf,
 } from '../../crypto/admit.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField } from '../../crypto/chronoflux.js';
-import { verifyFundedBody, verifyPoolWithdrawBound } from '../../crypto/spend.js';
-import { portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, verifyReservePortalOpen } from '../../crypto/spend.js';
+import {
+  portalIdFromDest,
+  boundReserveWithdraw,
+  verifyReservePayout,
+  prematureLockSpend,
+  foreignReserveMint,
+} from '../../crypto/reserve_vault.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -192,11 +199,19 @@ export function digestTx(tx) {
       kind: kindByte(o.kind),
     };
   });
+  let memoH = tx.memoH || null;
+  if (tx.observe) {
+    const canon = canonicalObserve(tx.observe);
+    const mixed = createHash('sha256').update(JSON.stringify(canon)).digest();
+    memoH = memoH
+      ? createHash('sha256').update(Buffer.from(asU8(memoH))).update(mixed).digest()
+      : mixed;
+  }
   return packDigest(packTx({
     version: 1,
     vins: vins.length ? vins : [{ prev: Buffer.alloc(32), index: Number(tx.height || 0), dest20: Buffer.alloc(20) }],
     vouts,
-    memoH: tx.memoH || null,
+    memoH,
     bFlag: tx.bFlag || tx.kind === 'b-spend' ? 1 : 0,
   }));
 }
@@ -845,6 +860,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     evmSession = null,
     evmHistory = null,
     trustedPowHash = null,
+    probeBody = false,
     skipSharePow = false,
     parentFluxset = null,
     parentSpendTags = null,
@@ -867,7 +883,9 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // P2P omits that field. It stashes a worker ShearHash, then this branch
   // still checks the target. A missing stash hashes here (local mine / tests).
   let hash;
-  if (trustedPowHash) {
+  if (probeBody) {
+    hash = Buffer.alloc(32);
+  } else if (trustedPowHash) {
     hash = Buffer.from(trustedPowHash);
     if (hash.length !== 32 || !meetsTarget(hash, decoded.bits)) {
       return { ok: false, reason: 'pow' };
@@ -881,6 +899,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
+  for (let oi = 0; oi < txs.length; oi += 1) {
+    if (!txs[oi]?.observe) continue;
+    if (oi !== 0 || !txs[oi].coinbase) return { ok: false, reason: 'bad_rate' };
+    const verdict = observeVerdict(txs[oi].observe);
+    if (!verdict.ok) return verdict;
+  }
   if (prev?.header) {
     let parent;
     try {
@@ -1257,6 +1281,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
+    const foreignMint = foreignReserveMint(tx);
+    if (!foreignMint.ok) return foreignMint;
+    if (reserveState && !reserveState.blankFork) {
+      const lockedSpend = prematureLockSpend(reserveState, tx, Number(decoded.timestamp));
+      if (!lockedSpend.ok) return lockedSpend;
+    }
     if (wrapMintForbidden(tx)) {
       return { ok: false, reason: 'mint_forbidden' };
     }
@@ -1298,7 +1328,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       spentTags.add(th);
     }
     for (const o of outs) pushPub(o);
-    if ((unfunded || tx.mint) && String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
+    if (String(tx.programId || '') === RESERVE_PROGRAM && String(tx.kind || '') === 'withdraw') {
       const bps = Number(committedBps ?? reserveState?.epochBps ?? GENESIS_BPS);
       const dest = String(tx.from || tx.vin?.[0]?.address || '');
       const portals = reserveState?.portals || {};
@@ -1307,16 +1337,28 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         || (dest && (portals[dest] || portals[portalIdFromDest(dest)]))
         || null;
       if (!portal) return { ok: false, reason: 'mint_amount' };
-      const staked = Number(portal.staked || 0);
+      if (!verifyReservePortalOpen(tx)) return { ok: false, reason: 'unsigned' };
+      const bound = boundReserveWithdraw(reserveState, tx);
+      if (!bound.ok) return bound;
+      const pay = verifyReservePayout(reserveState, tx, Number(decoded.timestamp));
+      if (!pay.ok && pay.reason !== 'over_mint') return pay;
+      const staked = Number(portal.staked || portal.active || 0);
       const idle = Number(portal.idle || 0);
       const principal = staked + idle;
       const want = principal + interestNanos(staked, bps);
-      const o = tx.vout?.[0];
-      const claimed = o?.valueProof?.v != null ? Number(o.valueProof.v) : Number(o?.nanos ?? tx.nanos ?? 0);
-      const got = o?.commit
-        ? (verifySealedNote(o, want) ? want : -1)
-        : claimed;
+      let got = 0;
+      for (const o of tx.vout || []) {
+        const claimed = o?.valueProof?.v != null ? Number(o.valueProof.v) : Number(o?.nanos ?? 0);
+        if (o?.commit) {
+          if (!verifySealedNote(o, claimed)) return { ok: false, reason: 'mint_amount' };
+          got += claimed;
+        } else {
+          got += claimed;
+        }
+      }
+      if (!(got > 0)) got = Number(tx.nanos || 0);
       if (got !== want) return { ok: false, reason: 'mint_amount' };
+      if (!pay.ok) return pay;
     }
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
     const bound = verifyPoolWithdrawBound(tx);

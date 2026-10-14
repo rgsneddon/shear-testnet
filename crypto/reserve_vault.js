@@ -79,6 +79,7 @@ export function emptyVault() {
     programCustodyNanos: 0n,
     feeBankNanos: 0n,
     mintBankNanos: 0n,
+    rewardCapNanos: 0n,
     mintedIds: Object.create(null),
     portals: Object.create(null),
     votes: { increase: 0, decrease: 0, hold: 0 },
@@ -118,6 +119,7 @@ export function cloneVault(state) {
   out.programCustodyNanos = 0n;
   out.feeBankNanos = asBig(out.feeBankNanos);
   out.mintBankNanos = asBig(out.mintBankNanos);
+  out.rewardCapNanos = asBig(out.rewardCapNanos);
   out.blankFork = !!src.blankFork;
   delete out.vaultSeal;
   return out;
@@ -161,6 +163,7 @@ export function payoutStakeReward({
   }
   vault.mintedIds[id] = true;
   vault.mintBankNanos = asBig(vault.mintBankNanos) + need;
+  vault.rewardCapNanos = asBig(vault.rewardCapNanos) + need;
   return {
     ok: true,
     paid: asNum(need),
@@ -275,7 +278,28 @@ function lockOwner(payout, dest) {
   return '';
 }
 
-function pushLockNote(p, { nanos, owner, qualifying, unlockMs }) {
+function spendPubHex(spendPub) {
+  if (!spendPub) return '';
+  if (typeof spendPub === 'string' && /^[0-9a-f]{64}$/i.test(spendPub.replace(/^0x/i, ''))) {
+    return spendPub.replace(/^0x/i, '').toLowerCase();
+  }
+  try {
+    const b = Buffer.from(asU8(spendPub));
+    if (b.length === 32) return b.toString('hex');
+  } catch { /* ignore */ }
+  return '';
+}
+
+function commitHex(commit) {
+  if (commit == null || commit === '') return '';
+  try {
+    return Buffer.from(asU8(commit)).toString('hex');
+  } catch {
+    return '';
+  }
+}
+
+function pushLockNote(p, { nanos, owner, qualifying, unlockMs, spendPub, dest20, commit }) {
   const id = createHash('sha256')
     .update('shear-lock-note-v1')
     .update(String(p.id || ''))
@@ -283,14 +307,18 @@ function pushLockNote(p, { nanos, owner, qualifying, unlockMs }) {
     .update(String(owner || ''))
     .update(String((p.locks || []).length))
     .digest('hex');
+  const owner20 = dest20 || (owner ? hash20FromAddress(owner) : null);
   const note = {
     id,
     owner,
-    payout: p.payout || owner,
+    payout: p.payout || null,
     nanos: asNum(nanos),
     active: !!qualifying,
     unlockMs: Math.max(0, Math.floor(Number(unlockMs) || 0)),
     spent: false,
+    spendPub: spendPubHex(spendPub),
+    dest20: owner20 ? Buffer.from(owner20).toString('hex') : '',
+    commit: commitHex(commit),
   };
   p.locks = p.locks || [];
   p.locks.push(note);
@@ -337,7 +365,7 @@ export function supplyIdentity(state) {
     }
   }
   const mintedReward = asBig(vault.mintBankNanos);
-  const permittedReward = asBig(permittedRewardNanos(vault));
+  const permittedReward = asBig(vault.rewardCapNanos);
   const custody = asBig(vault.programCustodyNanos);
   const ok = noteNanos === indexed
     && asBig(vault.totalLockedNanos) === indexed
@@ -345,6 +373,7 @@ export function supplyIdentity(state) {
     && mintedReward <= permittedReward;
   return {
     ok,
+    reason: ok ? undefined : 'supply',
     lockedNanos: asNum(indexed),
     noteNanos: asNum(noteNanos),
     programCustodyNanos: 0,
@@ -446,11 +475,17 @@ function portalPublic(p) {
       owner: n.owner,
       nanos: n.nanos,
       unlockMs: n.unlockMs,
+      spendPub: n.spendPub || '',
+      dest20: n.dest20 || '',
+      commit: n.commit || '',
+      timeLocked: true,
     })),
   };
 }
 
-export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPortalId } = {}) {
+export function deposit({
+  state, dest, portalId, nanos, nowMs, payout, payoutPortalId, spendPub, noteCommit,
+} = {}) {
   const id = portalKey(portalId || dest);
   if (!id) return { ok: false, reason: 'bad_dest' };
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
@@ -458,20 +493,21 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
   }
   const n = asBig(nanos);
   if (n <= 0n) return { ok: false, reason: 'bad_amount' };
-  const owner = lockOwner(payout, isDestAddress(dest) ? dest : '');
-  if (!owner && !(payoutPortalId && isPortalId(payoutPortalId))) {
+  const unbound = payout === false;
+  const owner = lockOwner(unbound ? null : payout, isDestAddress(dest) ? dest : '');
+  if (!owner && !unbound && !(payoutPortalId && isPortalId(payoutPortalId))) {
     return { ok: false, reason: 'need_payout' };
   }
   const p = portalOf(state, id);
-  if (!p.payout) {
+  if (!unbound && !p.payout) {
     if (owner) p.payout = owner;
     else if (payout && isDestAddress(payout) && !isShearAddress(payout)) p.payout = payout;
   }
-  if (p.payout && !p.payoutPortalId) p.payoutPortalId = portalIdFromDest(p.payout);
-  if (payoutPortalId && isPortalId(payoutPortalId) && !p.payoutPortalId) {
+  if (!unbound && p.payout && !p.payoutPortalId) p.payoutPortalId = portalIdFromDest(p.payout);
+  if (!unbound && payoutPortalId && isPortalId(payoutPortalId) && !p.payoutPortalId) {
     p.payoutPortalId = String(payoutPortalId).toLowerCase();
   }
-  if (!p.payout && !p.payoutPortalId) return { ok: false, reason: 'need_payout' };
+  if (!unbound && !p.payout && !p.payoutPortalId) return { ok: false, reason: 'need_payout' };
   if (state.epochStartMs && !state.bonusEnacted && remainingMs(state, nowMs) === 0) {
     return { ok: false, reason: 'need_enact' };
   }
@@ -492,11 +528,14 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
     }
   }
   const unlockMs = state.epochStartMs ? state.epochStartMs + epochMs(state.magic) : 0;
+  const noteOwner = p.payout || owner || dest;
   const note = pushLockNote(p, {
     nanos: n,
-    owner: p.payout || owner || dest,
+    owner: noteOwner,
     qualifying: staking,
     unlockMs,
+    spendPub,
+    commit: noteCommit,
   });
   return {
     ok: true,
@@ -617,14 +656,16 @@ function vinDest20(from) {
   return d20 ? { address: from, dest20: d20 } : { address: from };
 }
 
-export function lockTx({ from, to, nanos, id, payout, unlockMs }) {
+export function lockTx({ from, to, nanos, id, payout, unlockMs, spendPub, bindPayout = true }) {
   const n = Math.floor(Number(nanos));
   const owner = payout && isDestAddress(payout) ? payout : from;
   const portal = portalIdFromDest(to);
   const out = sealedReserveVout(owner, n, KIND_LOCK, portal);
   out.owner = owner;
   out.unlockMs = Math.max(0, Math.floor(Number(unlockMs) || 0));
-  return {
+  const pub = spendPubHex(spendPub);
+  if (pub) out.spendPub = pub;
+  const tx = {
     id,
     programId: RESERVE_PROGRAM,
     kind: KIND_LOCK,
@@ -632,15 +673,21 @@ export function lockTx({ from, to, nanos, id, payout, unlockMs }) {
     to,
     nanos: n,
     owner,
-    payout: owner,
     portalId: portal,
-    payoutPortalId: portalIdFromDest(owner),
+    spendPub: pub || undefined,
     vin: [vinDest20(from)],
     vout: [out],
   };
+  if (bindPayout) {
+    tx.payout = owner;
+    tx.payoutPortalId = portalIdFromDest(owner);
+  } else {
+    tx.payoutBound = false;
+  }
+  return tx;
 }
 
-export function withdrawTx({ from, to, nanos, id, principal, reward }) {
+export function withdrawTx({ from, to, nanos, id, principal, reward, lockNote, spendPub }) {
   const total = Math.floor(Number(nanos) || 0);
   const rewardN = reward != null ? Math.floor(Number(reward) || 0) : 0;
   const principalN = principal != null ? Math.floor(Number(principal) || 0) : (reward != null ? total - rewardN : total);
@@ -652,6 +699,17 @@ export function withdrawTx({ from, to, nanos, id, principal, reward }) {
     minted.mint = true;
     vout.push(minted);
   }
+  const src = lockNote && typeof lockNote === 'object' ? lockNote : {};
+  const vin = {
+    ...vinDest20(src.owner || from),
+    kind: KIND_LOCK,
+  };
+  if (src.commit) vin.commit = src.commit;
+  if (src.id) vin.id = src.id;
+  if (src.dest20) vin.dest20 = src.dest20;
+  if (src.unlockMs) vin.unlockMs = src.unlockMs;
+  const pub = spendPubHex(src.spendPub || spendPub);
+  if (pub) vin.spendPub = pub;
   return {
     id,
     programId: RESERVE_PROGRAM,
@@ -665,7 +723,8 @@ export function withdrawTx({ from, to, nanos, id, principal, reward }) {
     rewardNanos: rewardN,
     portalId: portal,
     payoutPortalId: portalIdFromDest(to),
-    vin: [{ ...vinDest20(to), kind: KIND_LOCK }],
+    spendPub: pub || undefined,
+    vin: [vin],
     vout,
   };
 }
@@ -732,7 +791,132 @@ export function reserveAction(tx) {
   };
 }
 
-export function verifyReservePayout(state, tx) {
+const FOREIGN_RESERVE_KINDS = new Set(['reserve', 'reserve-interest', 'reserve-shortfall', 'reserve-reward']);
+
+/** A non-coinbase, non-Reserve tx cannot carry a reserve mint output. */
+export function foreignReserveMint(tx) {
+  if (!tx || tx.coinbase) return { ok: true };
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  const program = String(tx.programId || '');
+  if (program === RESERVE_PROGRAM && (kind === KIND_LOCK || kind === KIND_VOTE || kind === KIND_WITHDRAW)) {
+    return { ok: true };
+  }
+  if (FOREIGN_RESERVE_KINDS.has(kind)) return { ok: false, reason: 'mint_forbidden' };
+  for (const o of tx.vout || []) {
+    if (FOREIGN_RESERVE_KINDS.has(String(o?.kind || ''))) return { ok: false, reason: 'mint_forbidden' };
+  }
+  return { ok: true };
+}
+
+function findLockNote(state, vin) {
+  if (!state || !vin) return null;
+  const id = String(vin.id || '');
+  const commit = commitHex(vin.commit);
+  for (const p of Object.values(state.portals || {})) {
+    for (const note of p.locks || []) {
+      if (id && note.id === id) return note;
+      if (commit && note.commit && note.commit === commit) return note;
+    }
+  }
+  return null;
+}
+
+/**
+ * A spend of a user-held lock note before its unlock time.
+ * The epoch-end withdraw is the release, so it is not reported here.
+ */
+export function prematureLockSpend(state, tx, blockTimeMs) {
+  if (!state || !tx) return { ok: true };
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind === KIND_WITHDRAW) return { ok: true };
+  const clock = Number(blockTimeMs);
+  for (const vin of tx.vin || []) {
+    const note = findLockNote(state, vin);
+    const tagged = String(vin?.kind || '') === KIND_LOCK;
+    if (!note && !tagged) continue;
+    const unlock = Number(note?.unlockMs || vin?.unlockMs || 0);
+    if (!Number.isFinite(clock) || clock < unlock) return { ok: false, reason: 'locked' };
+  }
+  return { ok: true };
+}
+
+/** Release outputs the owner's wallet scans as spendable after maturity. */
+export function walletReleaseNotes(tx, { dest } = {}) {
+  const want = dest ? hash20FromAddress(dest) : null;
+  const wantHex = want ? Buffer.from(want).toString('hex') : '';
+  const notes = [];
+  for (const o of tx?.vout || []) {
+    let d20 = '';
+    try {
+      if (o?.dest20) d20 = Buffer.from(asU8(o.dest20)).toString('hex');
+    } catch { /* ignore */ }
+    if (wantHex && d20 !== wantHex) continue;
+    const nanos = o?.valueProof?.v != null ? Number(o.valueProof.v) : Number(o?.nanos || 0);
+    notes.push({ dest20: d20, nanos, kind: o?.kind || '', spendable: true, timeLocked: false });
+  }
+  return notes;
+}
+
+/** Notes the owner's wallet lists while they are still time-locked. */
+export function walletLockNotes(state, { dest, spendPub } = {}) {
+  const pub = spendPubHex(spendPub);
+  const want20 = dest ? hash20FromAddress(dest) : null;
+  const wantHex = want20 ? Buffer.from(want20).toString('hex') : '';
+  const out = [];
+  for (const p of Object.values(state?.portals || {})) {
+    for (const note of p.locks || []) {
+      if (!note || note.spent) continue;
+      if (dest && note.owner !== dest && p.payout !== dest) continue;
+      if (wantHex && note.dest20 && note.dest20 !== wantHex) continue;
+      if (pub && note.spendPub && note.spendPub !== pub) continue;
+      out.push({
+        id: note.id,
+        owner: note.owner,
+        dest20: note.dest20,
+        spendPub: note.spendPub || pub,
+        nanos: note.nanos,
+        unlockMs: note.unlockMs,
+        commit: note.commit || '',
+        timeLocked: true,
+        spendable: false,
+      });
+    }
+  }
+  return out;
+}
+
+/** Payout binding. Neither recorded field means the withdraw cannot be redirected. */
+export function boundReserveWithdraw(state, tx) {
+  const act = reserveAction(tx);
+  if (!act || act.kind !== KIND_WITHDRAW) return { ok: true };
+  if (!state) return { ok: false, reason: 'no_vault' };
+  if (state.blankFork) return { ok: false, reason: 'blank_vault' };
+  const p = act.portalId ? state.portals?.[act.portalId] : null;
+  if (!p) return { ok: false, reason: 'empty' };
+  if (asNum(activeOf(p) + asBig(p.idle)) <= 0) {
+    const mintId = withdrawMintId(p.id || act.portalId, state.currentEpoch);
+    if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
+    return { ok: false, reason: 'empty' };
+  }
+  if (!p.payout && !p.payoutPortalId) return { ok: false, reason: 'no_payout' };
+  if (p.payoutPortalId && act.payoutPortalId && String(act.payoutPortalId).toLowerCase() !== String(p.payoutPortalId).toLowerCase()) {
+    return { ok: false, reason: 'payout_mismatch' };
+  }
+  if (p.payout && act.payout && isDestAddress(act.payout) && act.payout !== p.payout) {
+    return { ok: false, reason: 'payout_mismatch' };
+  }
+  if (p.payout && !act.payout) return { ok: false, reason: 'payout_mismatch' };
+  if (act.payout && (isShearAddress(act.payout) || !isDestAddress(act.payout))) {
+    return { ok: false, reason: 'shear1' };
+  }
+  return { ok: true, payout: p.payout || null };
+}
+
+/**
+ * Epoch gate for a sealed withdraw. `blockTimeMs` is the consensus header
+ * timestamp. `tx.nowMs` and the wall clock are not inputs.
+ */
+export function verifyReservePayout(state, tx, blockTimeMs) {
   const act = reserveAction(tx);
   if (!act) return { ok: true };
   if (!state) return { ok: false, reason: 'no_vault' };
@@ -743,24 +927,13 @@ export function verifyReservePayout(state, tx) {
     return { ok: true };
   }
   if (act.kind !== KIND_WITHDRAW) return { ok: true };
-  const p = act.portalId ? state?.portals?.[act.portalId] : null;
-  if (!p?.payout && !p?.payoutPortalId) return { ok: false, reason: 'need_payout' };
-  if (p?.payoutPortalId && act.payoutPortalId && act.payoutPortalId !== p.payoutPortalId) {
-    return { ok: false, reason: 'payout_mismatch' };
-  }
-  if (p?.payout && act.payout && isDestAddress(act.payout) && act.payout !== p.payout) {
-    return { ok: false, reason: 'payout_mismatch' };
-  }
-  if (p?.payout && !act.payout) return { ok: false, reason: 'payout_mismatch' };
-  if (act.payout && (isShearAddress(act.payout) || !isDestAddress(act.payout))) {
-    return { ok: false, reason: 'shear1' };
-  }
-  const nowMs = Number(tx?.nowMs);
-  const clock = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
-  if (!state?.epochStartMs || clock < state.epochStartMs + epochMs(state.magic)) {
+  const clock = Number(blockTimeMs);
+  if (!Number.isFinite(clock) || !state.epochStartMs || clock < state.epochStartMs + epochMs(state.magic)) {
     return { ok: false, reason: 'epoch_open' };
   }
-  if (!p) return { ok: false, reason: 'empty' };
+  const bound = boundReserveWithdraw(state, tx);
+  if (!bound.ok) return bound;
+  const p = state.portals?.[act.portalId];
   const principal = asNum(activeOf(p) + asBig(p.idle));
   const interest = reserveInterestNanos(activeOf(p), state.epochBps);
   if (act.nanos > principal + interest) return { ok: false, reason: 'over_mint' };
@@ -793,8 +966,10 @@ export function applyReserveBlock({ state, block, nowMs }) {
           dest: act.dest,
           nanos: act.nanos,
           nowMs,
-          payout: act.payout,
-          payoutPortalId: act.payoutPortalId,
+          payout: tx.payoutBound === false ? false : act.payout,
+          payoutPortalId: tx.payoutBound === false ? '' : act.payoutPortalId,
+          spendPub: tx.spendPub || tx.vout?.[0]?.spendPub,
+          noteCommit: tx.vout?.[0]?.commit,
         }),
       });
       continue;
@@ -890,7 +1065,14 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!did.ok) return did;
   }
   const p = portalOf(state, id);
-  if (!p.payout && !p.payoutPortalId) return { ok: false, reason: 'need_payout' };
+  const stakedNow = asNum(activeOf(p));
+  const idleNow = asNum(p.idle);
+  if (stakedNow + idleNow <= 0) {
+    const mintId = withdrawMintId(p.id, state.currentEpoch);
+    if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
+    return { ok: false, reason: 'empty' };
+  }
+  if (!p.payout && !p.payoutPortalId) return { ok: false, reason: 'no_payout' };
   if (payoutPortalId && p.payoutPortalId && String(payoutPortalId).toLowerCase() !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
   }

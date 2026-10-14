@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest, ed25519SeedOf, spendDestOf } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
 import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BPS, GENESIS_BITS_PACKED, nextBits } from '../../crypto/asert.js';
@@ -8,6 +8,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { lockTx, withdrawTx, emptyVault, deposit } from '../../crypto/reserve_vault.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
+import { signSpendTx } from '../../crypto/spend.js';
 import { sealNote, verifyRange } from '../../crypto/note.js';
 
 function rangeProofsLive() {
@@ -157,7 +158,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
 
   it('persists EVM session: lock then withdraw against shipped verifyBlock', async () => {
     const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const dest = spendDestOf(id.spendPub);
     const t0 = 1_700_000_000_000;
     const lock = lockTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'lock-p' });
     lock.fee = levyNeed(lock, []);
@@ -179,8 +180,9 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const state = emptyVault();
     deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: t0 });
     const want = PI_SHE_NANOS + interestNanos(PI_SHE_NANOS, GENESIS_BPS);
-    const wd = withdrawTx({ from: dest, to: dest, nanos: want, id: 'wd-p' });
+    const wd = withdrawTx({ from: dest, to: dest, nanos: want, id: 'wd-p', spendPub: id.spendPub });
     wd.fee = 0;
+    signSpendTx(wd, id.privateKey);
     const b2 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -192,8 +194,9 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const empty = await verifyBlock(b2, null, { trustedPowHash: TRUSTED });
     assert.equal(empty.ok, false);
     assert.ok(empty.reason === 'evm' || empty.reason === 'mint_amount', empty.reason);
-    const unbound = withdrawTx({ from: dest, to: dest, nanos: want + 1, id: 'wd-over' });
+    const unbound = withdrawTx({ from: dest, to: dest, nanos: want + 1, id: 'wd-over', spendPub: id.spendPub });
     unbound.fee = 0;
+    signSpendTx(unbound, id.privateKey);
     const over = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,

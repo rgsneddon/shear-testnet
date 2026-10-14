@@ -54,7 +54,7 @@ describe('Reserve mint is sealed-state pure', () => {
   it('JS and Solidity share the 1 SHE × 425 bps = 4_250_000_000 vector', () => {
     assert.equal(interestNanos(NANOS_PER_SHE, 425), 4_250_000_000);
     const sol = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../contracts/Reserve.sol'), 'utf8');
-    assert.match(sol, /staked \* epochBps/);
+    assert.match(sol, /active \* epochBps/);
     assert.match(sol, /\/ 10000/);
     assert.match(sol, /do not use 365/);
     assert.equal(/\* 365|\/ 365|365-day/.test(sol), false);

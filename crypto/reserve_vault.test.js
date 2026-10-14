@@ -626,19 +626,27 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const state = emptyVault();
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     const due = interestNanos(PI_SHE_NANOS, state.epochBps);
-    const openTx = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due, id: 'early' });
-    openTx.nowMs = t0 + 1000;
-    assert.equal(verifyReservePayout(state, openTx).ok, false);
-    assert.equal(verifyReservePayout(state, openTx).reason, 'epoch_open');
     const end = t0 + RESERVE_EPOCH_MS;
+    const openTx = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due, id: 'early' });
+    openTx.nowMs = end + 30 * DAY;
+    const realNow = Date.now;
+    Date.now = () => end + 60 * DAY;
+    try {
+      assert.equal(verifyReservePayout(state, openTx, t0 + 1000).ok, false);
+      assert.equal(verifyReservePayout(state, openTx, t0 + 1000).reason, 'epoch_open');
+      assert.equal(verifyReservePayout(state, openTx).reason, 'epoch_open');
+    } finally {
+      Date.now = realNow;
+    }
     const fat = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due + NANOS_PER_SHE, id: 'fat' });
-    fat.nowMs = end;
-    const over = verifyReservePayout(state, fat);
+    fat.nowMs = t0;
+    const over = verifyReservePayout(state, fat, end);
     assert.equal(over.ok, false);
     assert.equal(over.reason, 'over_mint');
     const okTx = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due, id: 'ok' });
-    okTx.nowMs = end;
-    assert.equal(verifyReservePayout(state, okTx).ok, true);
+    okTx.nowMs = t0;
+    assert.equal(verifyReservePayout(state, okTx, end).ok, true);
+    assert.equal(verifyReservePayout(state, okTx, t0 + 1000).reason, 'epoch_open');
     observeRate({ state, annualBps: 9000, nowMs: t0 + DAY });
     const rw = portalRewards(state, a, t0 + DAY);
     assert.equal(rw.epochBps, 264);

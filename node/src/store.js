@@ -31,7 +31,14 @@ import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, verifyReservePayout, portalPrincipalNanos } from '../../crypto/reserve_vault.js';
+import {
+  emptyVault,
+  cloneVault,
+  applyReserveBlock,
+  verifyReservePayout,
+  portalPrincipalNanos,
+  foreignReserveMint,
+} from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -368,9 +375,24 @@ export function createStore(dir, {
     };
   }
 
-  function payoutOnTip(tx) {
+  function headerStampMs(block) {
+    try {
+      const n = Number(decodeHeader(Buffer.from(block.header)).timestamp);
+      return Number.isFinite(n) ? n : NaN;
+    } catch {
+      return NaN;
+    }
+  }
+
+  /**
+   * Mempool epoch gate. The second argument is ignored: a caller clock cannot
+   * open an epoch. Only the tip header timestamp is consensus time.
+   */
+  function payoutOnTip(tx, clockMs) {
+    void clockMs;
     if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
-    return verifyReservePayout(reserveVault, tx);
+    const t = tip();
+    return verifyReservePayout(reserveVault, tx, t ? headerStampMs(t) : NaN);
   }
 
   function blockTimeMs(block) {
@@ -874,8 +896,9 @@ export function createStore(dir, {
       // A failed consensus check keeps its own reason. The vault clock is a
       // second gate only after the block verifies.
       if (!c?.ok) return c;
+      const headerMs = headerStampMs(block);
       for (const tx of (block.txs || []).slice(1)) {
-        const pay = payoutOnTip(tx);
+        const pay = verifyReservePayout(reserveVault, tx, headerMs);
         if (!pay.ok) return pay;
       }
       return settleCheck(c, (okCheck) => completeAppend(okCheck, block));
@@ -946,9 +969,8 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
-    if (pause.reserveInterest && tx?.mint && String(tx.kind || '') !== 'lock' && String(tx.kind || '') !== 'vote') {
-      return { ok: false, reason: 'paused' };
-    }
+    const foreign = foreignReserveMint(tx);
+    if (!foreign.ok) return foreign;
     if (pause.poolWithdraw && String(tx?.kind || '') === 'pool-withdraw') {
       return { ok: false, reason: 'paused' };
     }
@@ -1136,7 +1158,7 @@ export function createStore(dir, {
     const rows = [];
     for (const b of accepted) rows.push(...sealedExplorerRows(b));
     for (const tx of (fork[i]?.txs || []).slice(1)) {
-      const pay = verifyReservePayout(vault, tx);
+      const pay = verifyReservePayout(vault, tx, headerStampMs(fork[i]));
       if (!pay.ok) return pay;
     }
     return verifyBlock(fork[i], prev, {
@@ -1627,7 +1649,6 @@ export function createStore(dir, {
         vin: m.vin || [{ address: m.from }],
         vout: m.vout || [{ address: dest, nanos: m.nanos, kind: m.kind, memoCt: m.memoCt }],
       };
-      if (pause.reserveInterest && tx.mint) continue;
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
       // Chain notes do not cover a painted spend, so it stays queued and out of the block.
       if (paintedSpendSig(tx)) {
@@ -1738,6 +1759,7 @@ export function createStore(dir, {
     mempool,
     spentB,
     queueTx,
+    reservePayoutOnTip: payoutOnTip,
     noteOpenRound,
     openRoundRows,
     clearOpenRound,

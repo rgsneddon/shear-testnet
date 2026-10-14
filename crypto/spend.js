@@ -72,10 +72,11 @@ export function spendPackDigest(tx) {
 }
 
 export function spendMessage(tx) {
-  return createHash('sha256')
+  const h = createHash('sha256')
     .update(Buffer.from(SPEND_SIG_DOMAIN))
-    .update(spendPackDigest(tx))
-    .digest();
+    .update(spendPackDigest(tx));
+  if (tx?.nonce != null && tx.nonce !== '') h.update(Buffer.from(String(tx.nonce), 'utf8'));
+  return h.digest();
 }
 
 export function spendPubFromTx(tx) {
@@ -309,10 +310,30 @@ function destOpeningShape(open) {
 }
 
 /**
+ * A public dest20 with no spend pub used to skip the signature check.
+ * A withdraw can never take that path.
+ */
+export function publicReserveReceipt(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind === 'withdraw') return false;
+  if (spendPubFromTx(tx)) return false;
+  const o = tx?.vout?.[0];
+  if (!o?.dest20 || !o?.commit || !o?.valueProof) return false;
+  return true;
+}
+
+/**
  * Vote/lock/withdraw prove the vault dest by spend sig. Opening is local-only.
+ * Withdraw always needs the owner spend sig. A public receipt is not a withdraw.
  */
 export function verifyReservePortalOpen(tx) {
   if (!reserveNeedsPortalOpen(tx)) return true;
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind === 'withdraw') {
+    if (publicReserveReceipt(tx)) return false;
+    if (!spendPubFromTx(tx)) return false;
+    return verifySpendSig(tx);
+  }
   // Gossip compact drops the address string and the local opening. The spend
   // pub and sig are the admit proof. A body with no spend pub stays on the
   // historical compact path: sealed range proof, modern commit+valueProof
