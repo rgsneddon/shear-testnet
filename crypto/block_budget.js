@@ -16,7 +16,15 @@ export const W_SEAL = 19;
 export const MAX_BLOCK_VERIFY_WEIGHT = 36_000;
 export const R_SENDS = 16;
 export const R_BYTES = 854_592;
-export const R_WEIGHT = 2_416;
+/**
+ * FS-1 verify weight of one send: 25 + 25 wu per input.
+ * The 16-send reserve prices the preferred 2-input shape, not 2 × W_IN.
+ * 16 × (25 + 25×2 + 3×23 + 2) = 2,336.
+ */
+export const W_FS1_BASE = 25;
+export const W_FS1_PER_INPUT = 25;
+export const R_SEND_INPUTS = 2;
+export const R_WEIGHT = 2_336;
 export const K_VW = 8;
 export const R_VW_BYTES = 181_864;
 export const R_VW_WEIGHT = 528;
@@ -28,9 +36,12 @@ export const TEMPLATE_BUDGET_MS = 1_000;
 export const COINBASE_EXTRA_NOTES = 3;
 /**
  * [EST] bytes of one payout row. Band 17,253–17,528. Re-measure before mainnet.
- * The row shape is not changed here.
+ * The row shape is not changed here. floor(C_MAX / 17,400) is 482.
+ * That byte fit is not the normal payee cap.
  */
 export const PAYEE_ROW_BYTES = 17_400;
+/** Normal per-block payee cap. T21 hidden payout. Below the 482 byte fit. */
+export const PAYEE_CAP_NORMAL = 470;
 /** Hex JSON expansion used while the wire is still hex. */
 export const FRAME_HEX_EXPANSION = 2;
 /**
@@ -47,8 +58,16 @@ export const VW_KIND_CODE = 0x23;
 
 const PAYEE_KINDS = new Set(['pot', 'hash']);
 
+/** W_FS1(n) = 25 + 25n. Null when consensus would refuse that input count. */
+export function fs1VerifyWeight(inputs) {
+  const n = Math.floor(Number(inputs) || 0);
+  if (n < 1 || n > 8) return null;
+  return W_FS1_BASE + W_FS1_PER_INPUT * n;
+}
+
 function assertTable() {
-  if (R_SENDS * (2 * W_IN + 3 * W_OUT + W_TX) !== R_WEIGHT) {
+  const two = fs1VerifyWeight(R_SEND_INPUTS);
+  if (two == null || R_SENDS * (two + 3 * W_OUT + W_TX) !== R_WEIGHT) {
     throw new Error('block_budget R_WEIGHT');
   }
   if (K_VW * (W_IN + W_OUT + W_ROW_0X23 + W_TX) !== R_VW_WEIGHT) {
@@ -58,7 +77,7 @@ function assertTable() {
     throw new Error('block_budget B_MAX');
   }
   const coinbaseRoom = MAX_BLOCK_VERIFY_WEIGHT - R_WEIGHT - R_VW_WEIGHT;
-  if (coinbaseRoom !== 33_056) throw new Error('block_budget V-W3');
+  if (coinbaseRoom !== 33_136) throw new Error('block_budget V-W3');
   for (const cap of [payeeCapNormal(), payeeCapFallback()]) {
     if (W_PAYEE * (cap + COINBASE_EXTRA_NOTES) + R_WEIGHT + R_VW_WEIGHT > MAX_BLOCK_VERIFY_WEIGHT) {
       throw new Error('block_budget payee weight');
@@ -66,9 +85,13 @@ function assertTable() {
   }
 }
 
+/**
+ * Payees that fit in C_MAX, then the T21 cap.
+ * A custom row size can only lower the cap. It cannot raise it past 470.
+ */
 export function payeeCapNormal(rowBytes = PAYEE_ROW_BYTES) {
   const row = Math.max(1, Math.floor(Number(rowBytes) || 0));
-  return Math.floor(C_MAX / row);
+  return Math.min(PAYEE_CAP_NORMAL, Math.floor(C_MAX / row));
 }
 
 export function payeeCapFallback({
@@ -91,7 +114,8 @@ export function payeeCapFallback({
 
 /**
  * Outputs one coinbase may carry. Live payees, the three notes beside them,
- * and the vw rows. That count is inside the 36,000 weight-unit budget.
+ * and the vw rows. On the 8 MiB frame that is 171 + 3 + 8 = 182, inside
+ * the 36,000 weight-unit budget.
  */
 export function coinbaseOutputCap(frame = FALLBACK_IPC_FRAME) {
   const byPayee = payeeCapLive(frame) + COINBASE_EXTRA_NOTES + K_VW;
@@ -99,7 +123,12 @@ export function coinbaseOutputCap(frame = FALLBACK_IPC_FRAME) {
   return Math.min(byPayee, byWeight);
 }
 
-/** While the relay frame is below FRAME_MIN, the fallback cap is the one a block can travel. */
+/**
+ * At or above FRAME_MIN the normal cap is the one a block can travel.
+ * Below that, the live cap is the smaller of the T21 cap and the hex-frame
+ * fallback. The 8 MiB IPC frame and the 16 MiB P2P frame both fall under 470,
+ * so payeeCapLive() stays the fallback.
+ */
 export function payeeCapLive(frame = FALLBACK_IPC_FRAME) {
   const normal = payeeCapNormal();
   if (Math.floor(Number(frame) || 0) >= FRAME_MIN) return normal;
