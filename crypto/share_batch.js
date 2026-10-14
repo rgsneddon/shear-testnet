@@ -18,10 +18,12 @@ import {
   DEST_HRP,
   HASH_BONUS_NANOS,
   shareCreditMaxBits,
+  blockWorkBig,
 } from './asert.js';
+import { HASH_CAP_BITS, T21_SHARES_PER_BLOCK, W_HASH_MAX } from './t21_params.js';
 import { shearHash, meetsTarget, leadingZeroBits } from './shear_hash.js';
 import { hashHeaderOffLoop } from './hash_offloop.js';
-import { setNonce } from './header.js';
+import { decodeHeader, setNonce } from './header.js';
 import { packShareV5, unpackShareBatch } from './pack.js';
 import { isDestAddress, bech32Hrp, encodeDest, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
@@ -100,9 +102,9 @@ function declaredShareBits(share) {
  * A legal byte outside the packed field is still that byte when strict is false (select).
  * An illegal byte is never clamped up to the floor.
  */
-export function creditBitsForShare(share, floor = SHARE_FLOOR_BITS, { strict = true } = {}) {
+export function creditBitsForShare(share, floor = SHARE_FLOOR_BITS, { strict = true, maxBits = null } = {}) {
   const hi = shareTargetByte(share?.nonce);
-  const maxB = shareCreditMaxBits();
+  const maxB = maxBits == null ? shareCreditMaxBits() : maxBits;
   const floorN = Math.floor(Number(floor));
   const lo = Number.isFinite(floorN) ? Math.max(SHARE_FLOOR_BITS, floorN) : SHARE_FLOOR_BITS;
   if (!Number.isInteger(hi) || hi < lo || hi > maxB) {
@@ -1002,7 +1004,8 @@ function boundNote(share) {
  * units is the sum of that map. The same map is aLeaves and byDest.
  * Occupancy above the cap is hash_units. A bound total above the room scales.
  */
-export function accountShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
+export function accountShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK, credit = null) {
+  if (credit?.full) return accountFullUnits(shares, cap, credit);
   const limit = Math.max(0, Math.floor(Number(cap) || 0));
   const list = Array.isArray(shares) ? shares : [];
   let unbound = 0;
@@ -1030,6 +1033,75 @@ export function accountShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
   let units = 0;
   for (const u of retained.values()) units += u;
   return { ok: true, reason: '', units, retained, unbound, room, bound };
+}
+
+/**
+ * cb-v3 credit: every share keeps its full 2^bits units. A total above the
+ * cap is hash_units; nothing is scaled or walked round-robin, so the
+ * template must leave out whole labels instead.
+ */
+function accountFullUnits(shares, cap, credit) {
+  const limit = BigInt(cap);
+  const list = Array.isArray(shares) ? shares : [];
+  const by = new Map();
+  const bound = [];
+  let total = 0n;
+  let unbound = 0n;
+  for (const share of list) {
+    const c = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true, maxBits: credit.maxBits });
+    if (!c.ok) continue;
+    const units = BigInt(unitsForShare(c.bits));
+    total += units;
+    const nc = boundNote(share);
+    if (!nc) {
+      unbound += units;
+      continue;
+    }
+    bound.push(share);
+    const hex = nc.toString('hex');
+    by.set(hex, (by.get(hex) || 0n) + units);
+  }
+  if (total > limit) {
+    return { ok: false, reason: 'hash_units', units: 0, retained: new Map(), unbound: Number(unbound), room: 0, bound };
+  }
+  const retained = new Map([...by].map(([hex, u]) => [hex, Number(u)]));
+  return { ok: true, reason: '', units: Number(total - unbound), retained, unbound: Number(unbound), room: Number(limit - unbound), bound };
+}
+
+/**
+ * cb-v3 share floor (G5): the fewest whole bits at which a header's block
+ * work expects at most `perBlock` shares. Rounding to whole bits puts the
+ * expected count in (perBlock/2, perBlock]. Never below SHARE_FLOOR_BITS,
+ * never above the widest share cb-v3 can credit.
+ */
+export function t21ShareFloorBits(bits, perBlock = T21_SHARES_PER_BLOCK) {
+  const work = blockWorkBig(bits);
+  const per = BigInt(Math.max(1, Math.floor(Number(perBlock) || 1)));
+  let b = SHARE_FLOOR_BITS;
+  while (b < T21_SHARE_MAX_BITS && (1n << BigInt(b)) * per < work) b += 1;
+  return b;
+}
+
+/** The floor for shares proved on `header`, from that header's own bits. */
+export function t21ShareFloorOf(header, perBlock = T21_SHARES_PER_BLOCK) {
+  try {
+    return t21ShareFloorBits(decodeHeader(Buffer.from(header)).bits, perBlock);
+  } catch {
+    return T21_SHARE_MAX_BITS;
+  }
+}
+
+/** One lone share must stay below W_MAX (the split law needs W < 2^48). */
+export const T21_SHARE_MAX_BITS = HASH_CAP_BITS - 1;
+
+/** verifyShareBatch credit for a cb-v3 block. */
+export function t21ShareCredit({ perBlock = T21_SHARES_PER_BLOCK } = {}) {
+  return {
+    full: true,
+    maxBits: T21_SHARE_MAX_BITS,
+    unitCap: W_HASH_MAX,
+    floorOf: (header) => t21ShareFloorOf(header, perBlock),
+  };
 }
 
 /**
@@ -1093,6 +1165,7 @@ export function verifyShareBatch({
   skipPow = false,
   trustWork = false,
   issuedJobKeys = null,
+  credit = null,
 } = {}) {
   const raw = Array.isArray(shares) ? shares : [];
   const linked = [];
@@ -1137,9 +1210,9 @@ export function verifyShareBatch({
     if (dest && (!nc || nc.length !== 32)) {
       nc = noteCommitOfDest20(dest20OfShare({ ...s, dest }));
     }
-    const credit = creditBitsForShare(s, floorBits, { strict: true });
-    if (!credit.ok) return { ok: false, reason: credit.reason };
-    const claimedBits = credit.bits;
+    const claim = creditBitsForShare(s, floorBits, { strict: true, maxBits: credit?.maxBits ?? null });
+    if (!claim.ok) return { ok: false, reason: claim.reason };
+    const claimedBits = claim.bits;
     const ncHex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
     const ctx = { nonce, nk, nc, ncHex, claimedBits, skipPow, trustWork: !!trustWork };
     const wantSlot = s.proofSlot === 1 || s.proofSlot === '1'
@@ -1183,6 +1256,10 @@ export function verifyShareBatch({
         lastFail = { ok: false, reason: 'share_pow' };
         continue;
       }
+      if (credit?.floorOf && claimedBits < credit.floorOf(hdr)) {
+        lastFail = { ok: false, reason: 'share_target' };
+        continue;
+      }
       const attempt = proveShareOn(hdr, ctx);
       if (attempt.contradict) return { ok: false, reason: 'share_pow' };
       if (attempt.ok) {
@@ -1211,7 +1288,7 @@ export function verifyShareBatch({
       bound: !!(nc && nc.length === 32),
     });
   }
-  const account = accountShareUnits(proven);
+  const account = accountShareUnits(proven, credit?.unitCap ?? MAX_HASH_UNITS_PER_BLOCK, credit);
   if (!account.ok) return { ok: false, reason: account.reason || 'hash_units' };
   return {
     ok: true,
@@ -1228,6 +1305,7 @@ export function structuralShareVerdict({
   priorHeader = null,
   shares = [],
   issuedJobKeys = null,
+  credit = null,
 } = {}) {
   return verifyShareBatch({
     parentHeader,
@@ -1235,6 +1313,7 @@ export function structuralShareVerdict({
     shares,
     issuedJobKeys,
     skipPow: true,
+    credit,
   });
 }
 

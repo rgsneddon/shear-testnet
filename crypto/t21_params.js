@@ -11,11 +11,30 @@ export const GEN_H = 'feea2914bda937d74acc1efa93bf1094f65ae709628a7aad9d1b913b6c
 export const K_MIN = 4;
 export const FEE_BPS_MAX = 200;
 export const VOUCHER_GAP = 256;
-export const W_S_MAX = 1n << 28n;
 export const W_MAX = 1n << 48n;
-/** Σw is retained share units, at most MAX_HASH_UNITS_PER_BLOCK (asert.js); u·W ≤ B_h on every path. */
-export const HASH_CAP_BITS = 28;
+/**
+ * cb-v3 credits every share its full 2^bits units: no pro-rata cut, no
+ * noteCommit round-robin. A share may claim up to HASH_CAP_BITS, and Σw stays
+ * at most W_HASH_MAX; a label that does not fit waits whole. u·W ≤ B_h on
+ * every path. The legacy coinbase keeps MAX_HASH_UNITS_PER_BLOCK (asert.js).
+ */
+export const HASH_CAP_BITS = 48;
 export const W_HASH_MAX = 1n << BigInt(HASH_CAP_BITS);
+export const W_S_MAX = W_HASH_MAX;
+/**
+ * Share floor (G5, Russell 2026-10-14): ceil(log2(blockWork / 85)) bits on the
+ * header the share proves on, never below SHARE_FLOOR_BITS. Whole bits only,
+ * so a block expects between 42.5 and 85 floor shares.
+ */
+export const T21_SHARES_PER_BLOCK = 85;
+/**
+ * Deferred rows. A proven label a block does not pay is published in
+ * t21.defer and joins t21.owed, the list every later coinbase restates.
+ * A later block pays it at its deferred w; past T21_OWED_TTL blocks it
+ * drops. TTL and cap are testnet values pending Russell's escrow ruling.
+ */
+export const T21_OWED_MAX = 1_024;
+export const T21_OWED_TTL = 960;
 export const SCALAR_MAX = 1n << 64n;
 export const OUTPUT_MAX = 65536;
 export const PAYOUT_KIND_CODE = 0x20;
@@ -80,7 +99,9 @@ export const T21_FINGERPRINT_TOKENS = Object.freeze([
   `SPLIT_TALLY=logup-inv-schnorr+${LOGUP_DOM}`,
   `SPLIT_LAW=floor-schnorr+rho-${RHO_LIMBS}x${CHUNK_BITS}-two-sided`,
   `SHARE_BIND=${SHARE_BIND_DOM}`,
-  `T21_HASH=retained-units,W<=2^${HASH_CAP_BITS},uW<=Bh`,
+  `T21_HASH=full-units,W<=2^${HASH_CAP_BITS},uW<=Bh`,
+  `T21_SHARE_FLOOR=ceil-log2-work/${T21_SHARES_PER_BLOCK},proof-header`,
+  `T21_DEFER=owed-restated,max=${T21_OWED_MAX},ttl=${T21_OWED_TTL}`,
   `K_MIN=${K_MIN}`,
   `FEE=f1-bps-${FEE_BPS_MAX}`,
   `PAYOUT_KEY=${DOM_CB}`,

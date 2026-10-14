@@ -57,7 +57,7 @@ import {
 } from './share_batch.js';
 import { packShareBatchBytes, unpackShareBatch, unpackShareBatchBytes } from './pack.js';
 import { admitBaseFromAddress } from './address.js';
-import { CB_FORM } from './t21_params.js';
+import { CB_FORM, W_HASH_MAX } from './t21_params.js';
 
 const MAX_U64 = (1n << 64n) - 1n;
 const MAX_U32 = 0xffffffff;
@@ -1131,7 +1131,7 @@ export function advanceHashOwed({
 
 /**
  * cb-v3 pays u·W in the block and keeps no owed ledger, so it needs an empty
- * one in. Its retained units W enter the accepted series like a legacy block's.
+ * one in. Its full units W (at most W_HASH_MAX) enter the accepted series like a legacy block's.
  */
 function advanceT21(owedIn, acceptedSeries, cb) {
   if ((owedIn || []).length) return { ok: false, reason: 'hash_owed' };
@@ -1141,7 +1141,7 @@ function advanceT21(owedIn, acceptedSeries, cb) {
     if (w == null || w <= 0n) return { ok: false, reason: 'hash_units' };
     W += w;
   }
-  if (W > BigInt(MAX_HASH_UNITS_PER_BLOCK)) return { ok: false, reason: 'hash_units' };
+  if (W > W_HASH_MAX) return { ok: false, reason: 'hash_units' };
   const series = Array.isArray(acceptedSeries) ? acceptedSeries : [];
   series.push(W);
   return { ok: true, reason: '', rows: [], acceptedUnits: W, acceptedSeries: series, settled: null };
