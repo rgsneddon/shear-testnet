@@ -103,7 +103,9 @@ import {
   txIoCap,
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
-import { isT21Coinbase, t21DigestSuffix, verifyT21Coinbase } from '../../crypto/t21.js';
+import {
+  isT21Coinbase, t21CbOnly, t21DigestSuffix, t21FinderOf, t21ParentId, verifyT21Coinbase,
+} from '../../crypto/t21.js';
 import { blockBudget } from '../../crypto/block_budget.js';
 import {
   packTx,
@@ -236,6 +238,31 @@ function lookupSpentVout(vin, block, prev, bodyIndex, history) {
     }
   }
   return null;
+}
+
+/**
+ * Once the genesis hash is pinned, cb-v3 is the only coinbase form. The
+ * legacy coinbase, and with it the last-payee re-split, is then refused.
+ */
+export function coinbaseFormRejected(tx, genesisHash = V12_GENESIS_BLOCK_HASH) {
+  if (t21CbOnly(genesisHash) && !isT21Coinbase(tx)) return { ok: false, reason: 'cb_form' };
+  return null;
+}
+
+const T21_LEDGER_KEYS = Object.freeze([
+  'hashOwedRoot', 'hashOwedLocal', 'hashOwedRest', 'hashDustNanos', 'hashOwedOverflowNanos',
+  'hashCreditRoot', 'hashAcceptedUnits', 'hashOwed', 'hashPaid',
+]);
+
+/**
+ * cb-v3 pays the hash bonus in-block as u·W. It does not settle the legacy
+ * hash-owed ledger, so the parent must leave none and the coinbase carries none.
+ */
+export function t21HashLedgerOk(parentCb, cb) {
+  const owedIn = hashOwedFromTx(parentCb);
+  if (!Array.isArray(owedIn) || owedIn.length) return false;
+  if (hashDustFromTx(parentCb) !== 0n || hashOverflowFromTx(parentCb) !== 0n) return false;
+  return T21_LEDGER_KEYS.every((k) => cb?.[k] == null);
 }
 
 /** Non-negative safe-integer carry, 0 when absent. Null is not a carry. */
@@ -956,7 +983,7 @@ function resolveFinderPay(finderDest, miner, poolDest, feeDest, pay) {
   return named;
 }
 
-function sealLevyNote(nanos, dest, kind) {
+export function sealLevyNote(nanos, dest, kind) {
   const d20 = hash20FromAddress(dest);
   if (!d20) return { address: dest, nanos, kind };
   return attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind }), {
@@ -989,9 +1016,20 @@ function pubsJoining(txs) {
  * and that dest is not the reserve or the protocol pool fee. Every
  * reserve-fee note pays the reserve. Sums match splitLevy.
  */
-export function coinbaseLevyPays(cb, fees) {
+export function coinbaseLevyPays(cb, fees, miner = '') {
   const split = splitLevy(fees);
   const rows = (kind) => (cb?.vout || []).filter((v) => v?.kind === kind);
+  if (isT21Coinbase(cb)) {
+    // cb-v3: the finder half is the hidden fin of one payout row, paid to
+    // the block miner's admit base. Only the reserve half is a public row.
+    if (rows('finder-fee').length) return { ok: false, reason: 'levy_split' };
+    const found = t21FinderOf(cb);
+    if (!found || found.phi !== BigInt(split.finder)) return { ok: false, reason: 'finder_row' };
+    if (split.finder > 0) {
+      const base = miner && isDestAddress(miner) ? admitBaseFromAddress(miner) : null;
+      if (!base || !found.finB || !Buffer.from(asU8(base)).equals(found.finB)) return { ok: false, reason: 'finder_row' };
+    }
+  }
   const openedSum = (list) => {
     let sum = 0;
     for (const o of list) {
@@ -1003,7 +1041,7 @@ export function coinbaseLevyPays(cb, fees) {
   };
   const finderRows = rows('finder-fee');
   const reserveRows = rows('reserve-fee');
-  if (split.finder === 0 ? finderRows.length !== 0 : openedSum(finderRows) !== split.finder) {
+  if (!isT21Coinbase(cb) && (split.finder === 0 ? finderRows.length !== 0 : openedSum(finderRows) !== split.finder)) {
     return { ok: false, reason: 'levy_split' };
   }
   if (split.reserve === 0 ? reserveRows.length !== 0 : openedSum(reserveRows) !== split.reserve) {
@@ -2249,16 +2287,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const cbVouts = txs[0].vout || [];
   const confidential = cbVouts.some((o) => o.commit);
   let t21Paid = null;
-  let t21Ok = false;
-  if (isT21Coinbase(txs[0])) {
-    const gate = verifyT21Coinbase({
-      tx: txs[0],
-      blockHash: hash,
-    });
-    if (!gate.ok) return { ok: false, reason: gate.reason };
-    t21Paid = gate.paid;
-    t21Ok = true;
-  }
+  const cbForm = coinbaseFormRejected(txs[0]);
+  if (cbForm) return cbForm;
+  // cb-v3 is verified below, after the share batch is proven.
+  const t21Ok = isT21Coinbase(txs[0]);
+  if (t21Ok && !t21HashLedgerOk(prev?.txs?.[0] || null, txs[0])) return { ok: false, reason: 'hash_owed' };
   const potVouts = cbVouts.filter((o) => o.kind !== 'hash' && o.kind !== 'finder-fee' && o.kind !== 'reserve-fee');
   const hashVouts = cbVouts.filter((o) => o.kind === 'hash');
   let potNanos = 0;
@@ -2299,6 +2332,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   let provenUnits = 0;
   let provenByDest = new Map();
   let shareLeaves = null;
+  let provedShares = null;
   // Amounts the coinbase rule already opened. A published valueProof.v
   // that is missing or wrong does not replace these.
   const provenOpen = new Map();
@@ -2323,6 +2357,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       issuedJobKeys: txs[0]?.issuedJobKeys,
     });
     if (!proved.ok) return proved;
+    provedShares = proved.shares;
     if (!skipFlow) {
       provenUnits = proved.units;
       provenByDest = proved.byDest;
@@ -2336,7 +2371,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     burialTip,
   });
   if (spillReason) return { ok: false, reason: spillReason };
-  if (!skipFlow) {
+  if (!skipFlow && !t21Ok) {
     const settlement = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
@@ -2429,7 +2464,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
   }
-  if (skipFlow) {
+  if (skipFlow && !t21Ok) {
     const buriedSettle = settlementFor(prev, height, block, liveUnit, {
       owedIn: opts.owedIn,
       hashAcceptedSeries: opts.hashAcceptedSeries,
@@ -2449,6 +2484,32 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!coinbase || !Array.isArray(coinbase.vout) || (coinbase.vout.length === 0 && carryOut <= 0 && buriedSettle.owed.length === 0)) {
       return { ok: false, reason: 'pot' };
     }
+  }
+  if (t21Ok) {
+    if (!prev?.header) return { ok: false, reason: 'cb_form' };
+    const prevCb = prev.txs?.[0];
+    const prevEs = new Set(isT21Coinbase(prevCb)
+      ? (prevCb.t21?.shares || []).map((s) => Buffer.from(asU8(s.E)).toString('hex'))
+      : []);
+    const gate = verifyT21Coinbase({
+      tx: txs[0],
+      expect: {
+        S: BigInt(wantPot),
+        cin: BigInt(carryIn),
+        u: BigInt(liveUnit),
+        height,
+        magic,
+        prevHash: t21ParentId(prev.header),
+        shares: provedShares
+          ? provedShares.map((r) => ({ nc: r.noteCommit, units: BigInt(r.units) }))
+          : (skipFlow ? 'buried' : []),
+        prevEs,
+        vaults: [],
+      },
+    });
+    if (!gate.ok) return { ok: false, reason: gate.reason };
+    if (gate.paid !== BigInt(mintedPot) + BigInt(liveUnit) * gate.W + gate.phi) return { ok: false, reason: 'pot_sched' };
+    t21Paid = gate.paid;
   }
   if (!t21Ok && txs[0] && txs[0].t21Split != null) {
     const gate = t21CoinbaseGate(txs[0], payablePot, cbVouts, carryOut);
@@ -2776,7 +2837,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const funded = verifyFundedBody(body, spendableOf, { seenDigests, reserveState });
     if (!funded.ok) return funded;
   }
-  const levyBound = coinbaseLevyPays(txs[0], fees);
+  const levyBound = coinbaseLevyPays(txs[0], fees, block.miner || '');
   if (!levyBound.ok) return { ok: false, reason: levyBound.reason || 'levy_split' };
   const addedPubs = [];
   for (const tx of txs) {

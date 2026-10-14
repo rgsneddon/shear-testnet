@@ -20,6 +20,11 @@ import {
   statementOf, supplyIdentities, t21CbOnly, t21ShareNc, vaultCommit, verifyT21Coinbase,
 } from './t21.js';
 import { consensusFingerprint } from './asert.js';
+import { encodeDest } from './address.js';
+import { reserveFeeDest, splitLevy } from './levy.js';
+import {
+  coinbaseFormRejected, coinbaseLevyPays, sealLevyNote, t21HashLedgerOk,
+} from '../node/src/chain.js';
 
 const magic = 'shear-testnet-v12';
 const prevHash = Buffer.alloc(32, 1);
@@ -178,7 +183,8 @@ describe('T21 empty batch and the cb-only gate (must-fix 5)', () => {
 
 describe('T21 cb-v3 coinbase', { timeout: 600_000 }, () => {
   const S = 5_000_000_000n;
-  const fin = 7_000n;
+  const fees = 1_000_000;
+  const fin = BigInt(splitLevy(fees).finder);
   const feeVoucher = voucherAt(feeSecret, 0);
   let built;
   let expect;
@@ -326,6 +332,46 @@ describe('T21 cb-v3 coinbase', { timeout: 600_000 }, () => {
     assert.equal(out.tx.vout.filter((o) => o.kind === 'pot').length, K_MIN);
     const gate = verifyT21Coinbase({ tx: out.tx, expect: expectFor(out.tx) });
     assert.equal(gate.ok, true, gate.reason);
+  });
+});
+
+describe('T21 chain rules (must-fix 3, 5)', { timeout: 600_000 }, () => {
+  it('refuses a legacy coinbase once the genesis hash is pinned', () => {
+    const legacy = { coinbase: true, vout: [{ kind: 'pot', nanos: 1 }] };
+    const v3 = { coinbase: true, cbForm: 'cb-v3', vout: [] };
+    assert.equal(coinbaseFormRejected(legacy, ''), null);
+    assert.equal(coinbaseFormRejected(legacy, 'ab'.repeat(32)).reason, 'cb_form');
+    assert.equal(coinbaseFormRejected(v3, 'ab'.repeat(32)), null);
+    assert.equal(coinbaseFormRejected(legacy), null);
+  });
+
+  it('needs an empty hash-owed ledger on the parent and none on the coinbase', () => {
+    const v3 = { coinbase: true, cbForm: 'cb-v3', vout: [] };
+    assert.equal(t21HashLedgerOk(null, v3), true);
+    assert.equal(t21HashLedgerOk(v3, v3), true);
+    assert.equal(t21HashLedgerOk({ hashDustNanos: '5' }, v3), false);
+    assert.equal(t21HashLedgerOk(null, { ...v3, hashAcceptedUnits: '3' }), false);
+  });
+
+  it('binds the finder fin to the levy finder half and the block miner', () => {
+    const fees = 1_000_000;
+    const phi = BigInt(splitLevy(fees).finder);
+    const finVoucher = voucher(0);
+    const built = buildT21Coinbase({
+      S: 100_000n, cin: 0n, height: 2, magic, prevHash, dummySecret,
+      payees: [payee(0, [5n], { fin: phi })],
+      publicRows: [sealLevyNote(splitLevy(fees).reserve, reserveFeeDest(), 'reserve-fee')],
+    });
+    const tx = built.tx;
+    assert.equal(verifyT21Coinbase({ tx, expect: expectFor(tx) }).ok, true);
+    const miner = encodeDest(Buffer.alloc(20, 5), publicVoucher(finVoucher).B);
+    const other = encodeDest(Buffer.alloc(20, 5), publicVoucher(voucher(1)).B);
+    assert.equal(coinbaseLevyPays(tx, fees, miner).ok, true);
+    assert.equal(coinbaseLevyPays(tx, fees, other).reason, 'finder_row');
+    assert.equal(coinbaseLevyPays(tx, fees * 2, miner).reason, 'finder_row');
+    assert.equal(coinbaseLevyPays(tx, fees, '').reason, 'finder_row');
+    const withRow = { ...tx, vout: tx.vout.concat([{ kind: 'finder-fee', nanos: Number(phi) }]) };
+    assert.equal(coinbaseLevyPays(withRow, fees, miner).reason, 'levy_split');
   });
 });
 

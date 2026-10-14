@@ -256,6 +256,26 @@ export function vaultCommit(vaultNanos, mintId, height, prevHash) {
   return { r, commit: pointBytes(commit(v, r)) };
 }
 
+/** The parent id a cb-v3 coinbase binds: SHA-256 over the parent header bytes. */
+export function t21ParentId(prevHeader) {
+  return sha(Buffer.from('shear-t21-parent-v1'), Buffer.from(asU8(prevHeader)));
+}
+
+/** Φ and the finder row's B* from a verified cb-v3 coinbase. */
+export function t21FinderOf(tx) {
+  let phi = 0n;
+  let finB = null;
+  for (const o of payoutRows(tx || {})) {
+    const fin = scalarOk(o.fin || 0);
+    if (fin == null) return null;
+    if (fin > 0n) {
+      phi += fin;
+      finB = bytes32(o.B);
+    }
+  }
+  return { phi, finB };
+}
+
 /** The 32 bytes a v6 share's PoW is bound to. A share batch row carries it as noteCommit. */
 export function t21ShareNc(magic, E) {
   return sha(Buffer.from(SHARE_BIND_DOM), Buffer.from(String(magic)), Buffer.from(asU8(E)));
@@ -758,12 +778,19 @@ function vaultRow(ctx, vrow, index) {
   };
 }
 
+/** Public levy rows (the reserve half) go last, inside the statement. */
+function publicRows(spec) {
+  const rows = spec.publicRows || [];
+  for (const r of rows) if (r?.kind !== 'reserve-fee' || hasKey(r, 'kindCode')) throw fail('cb_form');
+  return rows;
+}
+
 function emptyCoinbase(spec, deferred) {
   const S = scalarOk(spec.S);
   const cin = scalarOk(spec.cin);
   if (S == null || cin == null) throw fail('pot_sched');
   const ctx = { magic: spec.magic, height: spec.height, prevHash: spec.prevHash };
-  const vaults = (spec.vaults || []).map((v, i) => vaultRow(ctx, v, i));
+  const vaults = (spec.vaults || []).map((v, i) => vaultRow(ctx, v, i)).concat(publicRows(spec));
   const tx = {
     coinbase: true,
     cbForm: CB_FORM,
@@ -814,7 +841,7 @@ function buildOnce(spec, payees, deferred) {
     [rows[i], rows[j]] = [rows[j], rows[i]];
   }
   const items = rows.map((row, i) => commitRow(ctx, row, i));
-  const vaults = (spec.vaults || []).map((v, i) => vaultRow(ctx, v, items.length + i));
+  const vaults = (spec.vaults || []).map((v, i) => vaultRow(ctx, v, items.length + i)).concat(publicRows(spec));
   const shares = [];
   for (const p of payees) {
     for (const s of p.shares || []) shares.push({ w: BigInt(s.w), E: Buffer.from(asU8(s.E)), ell: s.ell, beta: s.beta });
@@ -946,6 +973,8 @@ export function verifyT21Coinbase(input) {
   }
   for (const o of vout) {
     if (!o || typeof o !== 'object') return no('cb_form');
+    // The reserve half of the levy is a public row; coinbaseLevyPays opens it.
+    if (o.kind === 'reserve-fee' && !hasKey(o, 'kindCode')) continue;
     if (hasKey(o, 'amtCt') && Buffer.from(asU8(o.amtCt)).length !== 8) return no('amount_ct');
     const vault = Number(o.kindCode) === VAULT_KIND_CODE || o.kind === 'vault-withdraw-pinned';
     if (!vault) {
