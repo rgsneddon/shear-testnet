@@ -507,6 +507,17 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
     assert.match(fp, /ADMIT=ADMITv3/);
     assert.match(fp, /N1=admit-note-point/);
+    assert.match(fp, /DEPTH=7/);
+    assert.match(fp, /LAYER_ONE_LEN=38/);
+    assert.match(fp, /LAYER_TWO_LEN=18/);
+    assert.match(fp, /LEAF=O\|\|I\|\|C/);
+    assert.match(fp, /LEAF_BYTES=96/);
+    assert.match(fp, /HP_DST=shear-admit-Hp/);
+    assert.match(fp, /GENERATOR_DST=shear-fs1-generators-v1/);
+    assert.match(fp, /INPUT_MIN=1/);
+    assert.match(fp, /INPUT_MAX=8/);
+    assert.doesNotMatch(fp, /ARITY=32/);
+    assert.doesNotMatch(fp, /leaf-v2/);
     assert.match(fp, /RANGE=packed-bit/);
     assert.match(fp, /LEVY=weight/);
     assert.match(fp, /SHARE_BIND=shear-share-bind-v1/);
@@ -609,6 +620,80 @@ describe('hash-tx consensus law', () => {
     assert.notEqual(law.hashTxLive, Number(process.env.HASH_TX_LIVE));
     const src = fs.readFileSync(new URL('./asert.js', import.meta.url), 'utf8');
     assert.equal(/process\.env\.HASH_TX_LIVE/.test(src), false);
+  });
+});
+
+describe('FS-1 fingerprint tokens', () => {
+  const vendor = path.join(path.dirname(fileURLToPath(import.meta.url)), 'native', 'vendor', 'monero-oxide-77788c3');
+  const read = (rel) => fs.readFileSync(path.join(vendor, rel), 'utf8');
+
+  function rustNumber(src, name) {
+    const m = src.match(new RegExp(`pub const ${name}:[^=]*=\\s*(\\d+)\\s*;`));
+    assert.ok(m, name);
+    return m[1];
+  }
+
+  function rustByteStr(src, name) {
+    const m = src.match(new RegExp(`pub const ${name}:[^=]*=\\s*b"([^"]*)"\\s*;`));
+    assert.ok(m, name);
+    return m[1];
+  }
+
+  it('uses the shear-fs1 parameters and rejects ARITY=32 and leaf-v2', () => {
+    const membership = read('shear-fs1/src/membership.rs');
+    const rulings = read('shear-fs1/src/rulings.rs');
+    const leaf = read('shear-fs1/src/leaf.rs');
+    const generators = read('shear-fs1/src/generators.rs');
+    const fcmps = read('fcmps/src/lib.rs');
+    const depth = rustNumber(membership, 'DEPTH');
+    const layerOne = rustNumber(fcmps, 'LAYER_ONE_LEN');
+    const layerTwo = rustNumber(fcmps, 'LAYER_TWO_LEN');
+    const leafBytes = rustNumber(leaf, 'LEAF_BYTES');
+    const hp = rustByteStr(leaf, 'HP_DST');
+    const generatorDst = rustByteStr(generators, 'GENERATOR_DST');
+    const inputMin = rustNumber(rulings, 'INPUT_MIN');
+    const inputMax = rustNumber(rulings, 'INPUT_MAX');
+    const format = leaf.match(/`(O \|\| I \|\| C)`/);
+    assert.ok(format, 'leaf format');
+    const cap1 = membership.match(/assert_eq!\(tree_capacity\(1\), (\d+)\)/);
+    const cap2 = membership.match(/assert_eq!\(tree_capacity\(2\), (\d+) \* (\d+)\)/);
+    assert.ok(cap1 && cap2, 'tree capacity');
+    assert.equal(layerOne, cap1[1]);
+    assert.equal(cap2[1], cap1[1]);
+    assert.equal(layerTwo, cap2[2]);
+    const tokens = [
+      `DEPTH=${depth}`,
+      `LAYER_ONE_LEN=${layerOne}`,
+      `LAYER_TWO_LEN=${layerTwo}`,
+      `LEAF=${format[1].replaceAll(' ', '')}`,
+      `LEAF_BYTES=${leafBytes}`,
+      `HP_DST=${hp}`,
+      `GENERATOR_DST=${generatorDst}`,
+      `INPUT_MIN=${inputMin}`,
+      `INPUT_MAX=${inputMax}`,
+    ];
+    const fp = consensusFingerprint();
+    const fields = fp.split(':');
+    for (const token of tokens) assert.equal(fields.includes(token), true, token);
+    assert.equal(fields.includes('ADMIT=ADMITv3'), true);
+    assert.equal(fields.includes('AMOUNT=confidential'), true);
+    assert.equal(fp.includes('ARITY=32'), false);
+    assert.equal(fp.includes('leaf-v2'), false);
+    assert.equal(fields.includes('ADMIT_ARITY=32'), false);
+    assert.equal(fields.includes('ADMIT_LEAF=shear-admit-leaf-v2'), false);
+    const main = mainnetFingerprint().split(':');
+    for (const token of tokens) assert.equal(main.includes(token), true, token);
+    assert.equal(mainnetFingerprint().includes('ARITY=32'), false);
+    assert.equal(mainnetFingerprint().includes('leaf-v2'), false);
+    const law = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'specs', 'law.md'), 'utf8');
+    const pinsAt = law.indexOf('Fingerprint also pins:');
+    const fence = law.indexOf('```', pinsAt);
+    const block = law.slice(fence + 3, law.indexOf('```', fence + 3));
+    for (const token of ['ADMIT=ADMITv3', 'AMOUNT=confidential', ...tokens]) {
+      assert.equal(block.includes(token), true, token);
+    }
+    assert.equal(block.includes('ARITY=32'), false);
+    assert.equal(block.includes('leaf-v2'), false);
   });
 });
 

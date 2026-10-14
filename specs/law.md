@@ -67,6 +67,15 @@ VORTICE_NO_MINT=1
 LEVY_CAP=0.001-SHE
 LEVY_SPLIT=50-50-finder-reserve
 ADMIT=ADMITv3
+DEPTH=7
+LAYER_ONE_LEN=38
+LAYER_TWO_LEN=18
+LEAF=O||I||C
+LEAF_BYTES=96
+HP_DST=shear-admit-Hp
+GENERATOR_DST=shear-fs1-generators-v1
+INPUT_MIN=1
+INPUT_MAX=8
 BITS=q16.16
 ASERT_TAU_MS=1440000
 ASERT_STEP=median11(log2(T/seen))*(T/tau)
@@ -78,6 +87,8 @@ MAX_SHARES_PER_BLOCK=65536
 SPEND_SIG=ed25519-shear-spend-v1
 POOL_WITHDRAW=eip712-spend-bound
 ```
+
+`ADMIT` stays `ADMITv3`. `AMOUNT` stays `confidential`. Those admit lines are the FS-1 tree in `shear-fs1`: depth 7, branch widths 38 and 18, leaf `O || I || C` (96 bytes) under domain `shear-admit-Hp`, generator set `shear-fs1-generators-v1`, and input counts 1 through 8. `ADMIT_ARITY=32` and `shear-admit-leaf-v2` are not fingerprint tokens.
 
 v12 consensus caps a pool fee at `POOL_FEE_MAX_BPS` (200) of that block's subsidy. Carried pot is not part of the fee base. This public pool still constructs at 100 bps.
 

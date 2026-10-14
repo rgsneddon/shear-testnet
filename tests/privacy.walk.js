@@ -356,6 +356,17 @@ describe('privacy.walk', () => {
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
     assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
     assert.match(fp, /ADMIT=ADMITv3/);
+    assert.match(fp, /DEPTH=7/);
+    assert.match(fp, /LAYER_ONE_LEN=38/);
+    assert.match(fp, /LAYER_TWO_LEN=18/);
+    assert.match(fp, /LEAF=O\|\|I\|\|C/);
+    assert.match(fp, /LEAF_BYTES=96/);
+    assert.match(fp, /HP_DST=shear-admit-Hp/);
+    assert.match(fp, /GENERATOR_DST=shear-fs1-generators-v1/);
+    assert.match(fp, /INPUT_MIN=1/);
+    assert.match(fp, /INPUT_MAX=8/);
+    assert.doesNotMatch(fp, /ARITY=32/);
+    assert.doesNotMatch(fp, /leaf-v2/);
     assert.match(fp, /RANGE=packed-bit/);
     assert.doesNotMatch(fp, /RANGE=bpplus/);
     assert.match(fp, /LEVY=weight/);
