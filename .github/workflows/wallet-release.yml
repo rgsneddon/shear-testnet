@@ -92,6 +92,20 @@ jobs:
             echo "keyAlias=continuum"
             echo "storeFile=../continuum-release.jks"
           } > key.properties
+      - name: Pin NDK r27d (reproducible libsodium.so, see wallet/android/libsodium.lock.json)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y minisign
+          if [[ ! -f /opt/android-ndk-r27d/source.properties ]]; then
+            curl -fsSL -o /tmp/android-ndk-r27d-linux.zip https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+            echo "22105e410cf29afcf163760cc95522b9fb981121  /tmp/android-ndk-r27d-linux.zip" | sha1sum -c
+            echo "601246087a682d1944e1e16dd85bc6e49560fe8b6d61255be2829178c8ed15d9  /tmp/android-ndk-r27d-linux.zip" | sha256sum -c
+            sudo unzip -q /tmp/android-ndk-r27d-linux.zip -d /opt
+          fi
+          grep -q 'Pkg.ReleaseName = r27d' /opt/android-ndk-r27d/source.properties
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-r27d" >> "$GITHUB_ENV"
+          echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
+          echo "SHEAR_REQUIRE_MINISIGN=1" >> "$GITHUB_ENV"
       - name: Build release APK
         working-directory: wallet
         run: flutter build apk --release --target-platform android-arm64 --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}

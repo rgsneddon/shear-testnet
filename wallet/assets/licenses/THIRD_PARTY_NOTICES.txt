@@ -335,7 +335,7 @@ SOFTWARE.
 
 ================================================================================
 PACKAGES: libsodium
-COMPONENTS: libsodium system libsodium.so.23 or .so.26 (unpinned); Android libsodium.so of unknown origin (bundled runtime)
+COMPONENTS: libsodium Android: 1.0.22, pinned in wallet/android/libsodium.lock.json; Linux: the packing host's libsodium.so.23/.so.26, exact version recorded in each pack's RUNTIME-VERSIONS.txt (bundled runtime)
 LICENSE: ISC
 FILE: LICENSES/third-party/libsodium/LICENSE
 --------------------------------------------------------------------------------
