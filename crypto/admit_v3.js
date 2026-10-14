@@ -6,8 +6,12 @@
  * transfer) that presents a proof is admit_version unless every blob is byte
  * 3 and an anchor is present. Stage 0: a byte-3 bucket proof is
  * send_unavailable on a flow spend and vault_unavailable on a vault kind,
- * before any proof work. No path here calls a membership verifier. A flow
- * spend with no proof is unchanged. Fingerprint tokens stay off.
+ * before any proof work. A flow spend with no proof is unchanged.
+ *
+ * Stage 3: a send or transfer whose every record is an FS-1 record (byte
+ * 0xF1) and that carries `tx.fs1` and an anchor is verified against the FS-1
+ * root of the admit set at that anchor (verifyFlowAdmitFs1). That is the only
+ * flow path that accepts a proof. Vault kinds stay closed.
  */
 import { createHash } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
@@ -23,6 +27,20 @@ import {
   v3BucketSendRejected,
   v3BucketVaultRejected,
 } from './fs1_send_gate.js';
+import {
+  FS1_INPUT_MAX,
+  FS1_WIRE,
+  fs1BlobLen,
+  fs1BlobOf,
+  fs1Records,
+  fs1RootAt,
+  fs1VerifyCount,
+  fs1VerifySpend,
+  resetFs1VerifyCount,
+  txAllFs1,
+  txBodyDigestFs1,
+  txPresentsFs1,
+} from './fs1_spend.js';
 
 export const ANCHOR_QUANTUM = 8;
 export const ANCHOR_WINDOW = 64;
@@ -44,6 +62,24 @@ export function anchorRejectReason(A, H) {
 export function walletAnchor(T) {
   if (!Number.isSafeInteger(T) || T - K < ANCHOR_QUANTUM) return null;
   return Math.floor((T - K) / ANCHOR_QUANTUM) * ANCHOR_QUANTUM;
+}
+
+/**
+ * Anchors a spend included at tipHeight + 1 may name, newest first, as
+ * { height, n }: the first n admit-set notes are that anchor's FS-1 leaves.
+ * Public chain data; the same rows for every caller.
+ */
+export function fs1AnchorRows(tipHeight, anchorNote) {
+  const H = Math.floor(Number(tipHeight) || 0) + 1;
+  const newest = walletAnchor(H);
+  if (newest == null || typeof anchorNote !== 'function') return [];
+  const rows = [];
+  for (let A = newest; A >= ANCHOR_QUANTUM && !anchorRejectReason(A, H); A -= ANCHOR_QUANTUM) {
+    const rec = anchorNote(A);
+    const n = Number(rec?.n);
+    if (Number.isSafeInteger(n) && n >= 1) rows.push({ height: A, n });
+  }
+  return rows;
 }
 
 /** First inclusion height at which a note minted at h can sit in the wallet anchor. */
@@ -79,7 +115,15 @@ export function v12FlowVersionRejected(tx) {
   const gated = v3BucketSendRejected(tx);
   if (gated) return gated;
   const proofs = proofsOf(tx);
-  if (!proofs.length) return null;
+  if (!proofs.length) {
+    return txPresentsFs1(tx) ? { ok: false, reason: 'admit_version' } : null;
+  }
+  if (txPresentsFs1(tx)) {
+    if (!txAllFs1(tx) || !fs1BlobOf(tx) || !presentedAnchors(tx).length) {
+      return { ok: false, reason: 'admit_version' };
+    }
+    return null;
+  }
   for (const proof of proofs) {
     const raw = proof?.blob || proof?.proof;
     let pr = null;
@@ -294,6 +338,7 @@ export function typedAdmitStructure(tx) {
   const gated = v3BucketVaultRejected(tx);
   if (gated) return gated;
   if (!typedKindNeedsAdmitV3(tx)) return { ok: true, skip: true };
+  if (txPresentsFs1(tx)) return { ok: false, reason: 'admit_version' };
   if (tx?.noteSpends != null && !(Array.isArray(tx.noteSpends) && tx.noteSpends.length === 0)) {
     return { ok: false, reason: 'admit_version' };
   }
@@ -350,12 +395,14 @@ export function typedProofVerifyCount() {
 
 export function resetTypedProofVerifies() {}
 
-/** Calls to a membership verifier from a flow spend. No path makes one in Stage 0. */
+/** Native FS-1 verifies from a flow spend. A byte-3 bucket proof never makes one. */
 export function flowProofVerifyCount() {
-  return 0;
+  return fs1VerifyCount();
 }
 
-export function resetFlowProofVerifies() {}
+export function resetFlowProofVerifies() {
+  resetFs1VerifyCount();
+}
 
 /** True when the tx carries an Admit proof object. An empty list does not. */
 export function flowPresentsProof(tx) {
@@ -374,10 +421,12 @@ export function verifyTypedAdmitFunding(tx) {
  * send_unavailable before the anchor, the inputs, or the book are read. Any
  * other byte is admit_version. No proof is accepted on this path.
  */
-export function verifyFlowAdmitV3(tx, { height } = {}) {
+export function verifyFlowAdmitV3(tx, opts = {}) {
+  const { height } = opts;
   const gated = v3BucketSendRejected(tx);
   if (gated) return gated;
   if (!flowNeedsDummy(tx) || !flowPresentsProof(tx)) return { ok: true, skip: true };
+  if (txPresentsFs1(tx)) return verifyFlowAdmitFs1(tx, opts);
   const anchored = checkAdmitAnchor(tx, Number(height || 0));
   if (!anchored.ok) return anchored;
   const bound = flowInputsBound(tx);
@@ -398,4 +447,71 @@ export function verifyFlowAdmitV3(tx, { height } = {}) {
     if (!pr || pr[0] !== 3) return { ok: false, reason: 'admit_version' };
   }
   return { ok: false, reason: FS1_SEND_REASON, state: FS1_SEND_STATE };
+}
+
+/**
+ * FS-1 spend of every input of one send (ADMITv3, full set).
+ *
+ * The anchor must be in the window. Every vin is bound to one record whose
+ * C̃ is that vin's commit. A tag already spent (chain or mempool) or repeated
+ * in the tx is admit_link_tag. `tx.fs1` must name the FS-1 root of the admit
+ * set at the anchor, which the node computes from its own anchor row. The
+ * spend is bound to txBodyDigestFs1 and the anchor.
+ */
+export function verifyFlowAdmitFs1(tx, {
+  height,
+  spentTags,
+  magic = MAGIC_TESTNET,
+  noteAtAnchor = null,
+} = {}) {
+  const anchored = checkAdmitAnchor(tx, Number(height || 0));
+  if (!anchored.ok) return anchored;
+  if (anchored.anchor == null) return { ok: false, reason: 'admit_version' };
+  if (!txAllFs1(tx)) return { ok: false, reason: 'admit_version' };
+  const bound = flowInputsBound(tx);
+  if (!bound.ok) return bound;
+  const proofs = bound.proofs || [];
+  const n = proofs.length;
+  if (n < 1 || n > FS1_INPUT_MAX || n !== (bound.vins || []).length) {
+    return { ok: false, reason: 'admit_membership' };
+  }
+  if (proofsOf(tx).length !== n) return { ok: false, reason: 'admit_membership' };
+  const records = fs1Records(proofs);
+  if (!records) return { ok: false, reason: 'admit_version' };
+  const fs1 = fs1BlobOf(tx);
+  const want = fs1BlobLen(n);
+  if (!fs1 || fs1[0] !== FS1_WIRE || fs1[2] !== n || !want || fs1.length !== want) {
+    return { ok: false, reason: 'admit_membership', proofChecked: true };
+  }
+  const tags = [];
+  for (let i = 0; i < n; i += 1) {
+    const rec = records[i];
+    const ct = bytes32(proofs[i].cTilde);
+    const posted = bytes32(bound.vins[i].commit);
+    if (!ct || !posted || !ct.equals(rec.cTilde) || !posted.equals(rec.cTilde)) {
+      return { ok: false, reason: 'admit_membership', proofChecked: true };
+    }
+    const th = Buffer.from(rec.tag).toString('hex');
+    if (tags.includes(th)) return { ok: false, reason: 'admit_link_tag', proofChecked: true };
+    if (spentTags && typeof spentTags.has === 'function' && spentTags.has(th)) {
+      return { ok: false, reason: 'admit_link_tag', proofChecked: true };
+    }
+    tags.push(th);
+  }
+  const live = typeof noteAtAnchor === 'function' ? noteAtAnchor(anchored.anchor) : null;
+  const root = live ? fs1RootAt(live) : null;
+  if (!root) return { ok: false, reason: 'admit_anchor_root' };
+  if (!root.equals(fs1.subarray(3, 35))) {
+    return { ok: false, reason: 'admit_anchor_root', proofChecked: true };
+  }
+  const digest = txBodyDigestFs1({ ...tx, anchor: anchored.anchor }, magic);
+  const ok = fs1VerifySpend({
+    fs1,
+    records: Buffer.concat(records.map((r) => r.blob)),
+    root,
+    digest,
+    anchor: anchored.anchor,
+  });
+  if (!ok) return { ok: false, reason: 'admit_membership', proofChecked: true };
+  return { ok: true, tags, anchor: anchored.anchor, root: root.toString('hex') };
 }

@@ -621,10 +621,15 @@ function proofBlobBytes(proof) {
   }
 }
 
-/** A byte-3 Admit blob carries the spend tag at bytes 1..33. Byte 2 is closed. */
+/** Byte 3 (bucket, gated) and byte 0xF1 (FS-1 record). Byte 2 is closed. */
+function versionedByte(b) {
+  return b === 3 || b === 0xf1;
+}
+
+/** A versioned Admit blob carries the spend tag at bytes 1..33. */
 function versionedSpendTag(blob) {
   if (!blob || blob.length < 33) return null;
-  if (blob[0] !== 3) return null;
+  if (!versionedByte(blob[0])) return null;
   return Buffer.from(blob.subarray(1, 33));
 }
 
@@ -661,7 +666,7 @@ export function canonicalSpendTag(proof) {
  */
 function proofIdentity(proof) {
   const blob = proofBlobBytes(proof);
-  if (blob && blob.length >= 33 && blob[0] === 3) {
+  if (blob && blob.length >= 33 && versionedByte(blob[0])) {
     return `b:${hash('sha256', blob, 'hex')}`;
   }
   const one = canonicalSpendTag(proof);
@@ -676,7 +681,7 @@ function proofIdentity(proof) {
 /** Tag bytes for the bound check. A Buffer tag is not copied. */
 function boundProofTag(proof) {
   const raw = proof?.blob ?? proof?.proof;
-  if (Buffer.isBuffer(raw) && raw.length >= 33 && raw[0] === 3) {
+  if (Buffer.isBuffer(raw) && raw.length >= 33 && versionedByte(raw[0])) {
     const from = raw.subarray(1, 33);
     const field = proof?.spendTag;
     if (field != null && field !== '') {
@@ -698,8 +703,8 @@ function sameBoundProof(a, b) {
   if (a === b) return true;
   const ba = proofBlobBytes(a);
   const bb = proofBlobBytes(b);
-  const aVer = !!(ba && ba.length >= 33 && ba[0] === 3);
-  const bVer = !!(bb && bb.length >= 33 && bb[0] === 3);
+  const aVer = !!(ba && ba.length >= 33 && versionedByte(ba[0]));
+  const bVer = !!(bb && bb.length >= 33 && versionedByte(bb[0]));
   if (aVer || bVer) return aVer && bVer && ba.length === bb.length && ba.equals(bb);
   return sameSpendProof(a, b);
 }
@@ -875,7 +880,7 @@ function versionedHead(proof) {
   if (!proof) return false;
   const raw = proof.blob != null ? proof.blob : proof.proof;
   const field = proof.spendTag;
-  return Buffer.isBuffer(raw) && raw.length >= 33 && raw[0] === 3
+  return Buffer.isBuffer(raw) && raw.length >= 33 && versionedByte(raw[0])
     && Buffer.isBuffer(field) && field.length === 32
     && Buffer.isBuffer(proof.cTilde);
 }
@@ -899,7 +904,7 @@ function bindListedTight(vins, proofs) {
     const field = proof.spendTag;
     const commit = vins[i].commit;
     const want = proof.cTilde;
-    if (!raw || raw[0] !== 3) return BIND_SLOW;
+    if (!raw || !versionedByte(raw[0])) return BIND_SLOW;
     if (raw.compare(field, 0, 32, 1, 33) !== 0) return { ok: false, reason: 'admit_tag' };
     if (commit.length !== want.length || !commit.equals(want)) {
       return { ok: false, reason: 'admit_membership' };
@@ -993,6 +998,7 @@ export function flowInputsBound(tx) {
  */
 export function unboundMembershipCarry(tx) {
   if (tx?.admit_proof) return { ok: false, reason: 'admit_membership' };
+  if (tx?.fs1 != null && tx.fs1 !== '') return { ok: false, reason: 'admit_membership' };
   if (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length > 0) {
     return { ok: false, reason: 'admit_membership' };
   }
