@@ -153,7 +153,7 @@ Never commit `SHEAR_DATA`, `admin.enc`, PEMs, or a live admin hostname. Pool adm
 
 ## Licence and credits
 
-Shear is released under the MIT License ([LICENSE](LICENSE)), copyright (c) 2026 Shear.
+Shear is released under the MIT License ([LICENSE](LICENSE)), copyright (c) 2026 Shear contributors.
 
 The Shear concept was inspired by Roy D Herbert, and the Chronoflux Principia.
 

@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 const kShearAttribution =
     'The Shear concept was inspired by Roy D Herbert, and the Chronoflux Principia.';
 
-const kShearLegalese = 'Shear is released under the MIT License. Copyright (c) 2026 Shear.\n\n'
+const kShearLegalese = 'Shear is released under the MIT License. Copyright (c) 2026 Shear contributors.\n\n'
     '$kShearAttribution\n\n'
     'This is an attribution, not a licence grant.';
 

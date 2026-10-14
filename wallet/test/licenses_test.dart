@@ -12,7 +12,7 @@ void main() {
     expect(asset, contains(kShearAttribution));
     expect(kShearAttribution, 'The Shear concept was inspired by Roy D Herbert, and the Chronoflux Principia.');
     expect(kShearLegalese, contains(kShearAttribution));
-    expect(asset, contains('Copyright (c) 2026 Shear'));
+    expect(asset, contains('Copyright (c) 2026 Shear contributors'));
   });
 
   test('parser yields entries for native libraries Flutter does not collect', () {

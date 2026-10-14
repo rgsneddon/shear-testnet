@@ -11,4 +11,4 @@ PRODUCT_NAME = Shear
 PRODUCT_BUNDLE_IDENTIFIER = com.shear.shearWallet
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 Shear. MIT License.
+PRODUCT_COPYRIGHT = Copyright © 2026 Shear contributors. MIT License.
