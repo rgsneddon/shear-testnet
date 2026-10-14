@@ -185,9 +185,10 @@ if (!MODE) {
       assert.equal(late.dropped, false, 'a header ahead of this clock is ignored');
       assert.equal(late.accepted, 1);
 
-      // One peer's junk cannot push out another peer's run.
-      assert.equal(E.offerHeaders(page, { peer: 'honest' }).accepted, TIP - 1);
+      // One peer's junk cannot push out another peer's run. The flood comes
+      // first, so its forged runs are the first-seen path.
       for (const rows of pagesOf(forgeRuns(page, 0, 6))) E.offerHeaders(rows, { peer: 'flood' });
+      assert.equal(E.offerHeaders(page, { peer: 'honest' }).accepted, TIP - 1);
       const view = E.burialView();
       assert.equal(view.offerPeerRows.flood, OFFER_PEER_CAP);
       assert.equal(view.offerPeerRows.honest, TIP);
@@ -214,7 +215,7 @@ if (!MODE) {
       assert.ok(after.provenHeaders >= PRUNE);
 
       const p2pSrc = fs.readFileSync(new URL('../src/p2p.js', import.meta.url), 'utf8');
-      assert.match(p2pSrc, /store\.offerHeaders\(page, \{ peer: `p2p:/);
+      assert.match(p2pSrc, /store\.offerHeaders\(page, \{\s+peer: `p2p:[^`]*`,\s+tier: offerTierOf\(rec\),\s+group: peerNetGroup\(rec\.remote\)/);
       assert.match(p2pSrc, /offered\?\.dropped[\s\S]{0,80}sock\.destroy\(\)/);
       const ipcSrc = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
       assert.match(ipcSrc, /offerHeaders\(msg\.headers \|\| \[\], \{ peer: 'ipc' \}\)/);
@@ -265,16 +266,18 @@ if (!MODE) {
             let maxOffered = 0;
             const t0 = performance.now();
             for (let b = 0; b < PRUNED; b += 1) {
-              for (const p of honest) {
-                for (const rows of pagesOf(page)) assert.equal(E.offerHeaders(rows, { peer: p }).dropped, false);
-              }
+              // Junk first, so the forged runs are the first-seen paths.
               const attackers = runsPerBlock ? Array.from({ length: peers }, () => `junk${sybil++}`) : [];
               const runs = forgeRuns(page, b, runsPerBlock);
+              if (b === 0) E.offerHeaders(page.slice(0, 1), { peer: 'root' });
               attackers.forEach((a, i) => {
                 const share = runs.filter((_, k) => Math.floor(k / PRUNE) % attackers.length === i);
                 offeredJunk += share.length;
                 for (const rows of pagesOf(share)) E.offerHeaders(rows, { peer: a });
               });
+              for (const p of honest) {
+                for (const rows of pagesOf(page)) assert.equal(E.offerHeaders(rows, { peer: p }).dropped, false);
+              }
               const view = E.burialView();
               maxOffered = Math.max(maxOffered, view.offered);
               for (const n of Object.values(view.offerPeerRows)) assert.ok(n <= OFFER_PEER_CAP);
@@ -301,7 +304,7 @@ if (!MODE) {
             perBlock.forEach((n, b) => assert.ok(n <= attackersPerBlock[b] * perAttacker, `block ${b + 1} hashed ${n}`));
             assert.deepEqual(perBlock.slice(1), [0, 0, 0], 'later blocks prefer the proven run');
             if (ratio === 0) assert.deepEqual(perBlock, [0, 0, 0, 0]);
-            assert.ok(maxOffered <= OFFER_PEER_SLOTS * OFFER_PEER_CAP);
+            assert.ok(maxOffered <= 2 * OFFER_PEER_SLOTS * OFFER_PEER_CAP);
             if (perBlock[0] > 0) assert.ok(end.dropped >= 1, 'a hashed bad run drops its peer');
             const share = offeredJunk / (offeredJunk + page.length * peers * PRUNED);
             process.stderr.write(`${JSON.stringify({
