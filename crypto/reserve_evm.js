@@ -8,6 +8,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
 import { reserveAction } from './reserve_vault.js';
+import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
 
 function keccak256(data) {
@@ -27,6 +28,14 @@ export const RESERVE_BYTECODE = PIN.bytecode.startsWith('0x') ? PIN.bytecode : `
 
 export function shearMagicBytes(network = MAGIC_TESTNET) {
   return keccak256(Buffer.from(String(network), 'utf8'));
+}
+
+/** True when the pinned creation bytecode contains this book's magic.
+ *  A miss is the constructor revert `reserve_deploy`. */
+export function reservePinOk(network = MAGIC_TESTNET) {
+  const hash = Buffer.from(shearMagicBytes(network)).toString('hex');
+  const code = String(RESERVE_BYTECODE || '').replace(/^0x/i, '').toLowerCase();
+  return hash.length === 64 && code.includes(hash);
 }
 
 export function reserveAddress() {
@@ -313,6 +322,7 @@ export function isEvmValueTx(tx) {
 
 export function blockNeedsEvm(txs) {
   const list = Array.isArray(txs) ? txs : [];
+  if (list[0]?.coinbase && list[0].observe != null) return true;
   return list.some((tx) => isReserveCall(tx) || isEvmValueTx(tx));
 }
 
@@ -394,6 +404,17 @@ export async function executeBlockEvm(session, txs, nowMs) {
     }
     evm.calls += 1;
     evm.valueMoved += Number(got.valueMoved || 0);
+  }
+  const cb = Array.isArray(txs) ? txs[0] : null;
+  if (cb?.observe != null) {
+    const parsed = parseCoinbaseObserve(cb);
+    if (!parsed.ok || !parsed.observe) return { ok: false, reason: 'bad_rate' };
+    const called = await callReserve(
+      session,
+      encodeObserveRate(parsed.observe.annualBps, parsed.observe.observedAtMs),
+    );
+    if (!called.ok) return { ok: false, reason: called.reason || 'bad_rate' };
+    evm.calls += 1;
   }
   const view = decodePublicView(
     (await callReserve(session, encodePublicView(nowMs), { staticCall: true })).returnValue,

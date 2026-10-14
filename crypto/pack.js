@@ -2,6 +2,7 @@
  * shear-enc-v1: packed txs and leaves as hash bytes, not JSON.
  * Magic 12 ASCII + type u8 + body. Digest is SHA-256 of the packed buffer.
  */
+import { createHash } from 'node:crypto';
 import { sha256 } from './shear_hash.js';
 import { hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
@@ -13,6 +14,11 @@ export const ENC_TX = 3;
 export const ENC_SHARE = 4;
 export const ENC_SHARE_V5 = 5;
 export const ENC_A_V5 = 6;
+/** note_commit || nonce || lz || credited share bits. v12 work weight. */
+export const ENC_SHARE_WORK = 7;
+/** Work frame plus the 128-byte header the share was hashed on. */
+export const ENC_SHARE_WORK_KIN = 8;
+export const SHARE_KIN_HEADER_LEN = 128;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_A_LAYOUT_V5 = 'note_commit+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
@@ -20,6 +26,7 @@ export const A_BODY_LEN = 28;
 export const B_BODY_LEN = 76;
 export const SHARE_BODY_LEN = 29;
 export const SHARE_V5_BODY_MIN = 41;
+export const SHARE_WORK_BODY_LEN = 42;
 
 export function u64le(n) {
   const b = Buffer.alloc(8);
@@ -158,11 +165,166 @@ export function unpackShareV5(packed) {
   };
 }
 
+/** Credited share bits travel with the share. A v5 frame has no bits and pays the floor.
+ * v12 work frames always carry the header slot: 0 on this block's parent, 1 on that parent's parent.
+ * A 42-byte body is not a work share. */
+function kinHeaderBytes(header) {
+  if (header == null || header === '') return null;
+  let raw;
+  if (Buffer.isBuffer(header)) raw = Buffer.from(header);
+  else if (header instanceof Uint8Array) raw = Buffer.from(header);
+  else if (typeof header === 'string' && /^[0-9a-fA-F]+$/.test(header) && header.length === SHARE_KIN_HEADER_LEN * 2) {
+    raw = Buffer.from(header, 'hex');
+  } else {
+    try { raw = Buffer.from(header); } catch { return null; }
+  }
+  if (!raw || raw.length !== SHARE_KIN_HEADER_LEN) return null;
+  return raw;
+}
+
+export function packShareWork({ noteCommit, nonce, lz = 0, shareBits = 0, proofSlot, verifiedHeader } = {}) {
+  const commit = Buffer.isBuffer(noteCommit) ? noteCommit : Buffer.from(noteCommit);
+  if (commit.length !== 32) throw new Error('note_commit must be 32 bytes');
+  const bits = Math.max(0, Math.min(255, Math.floor(Number(shareBits) || 0)));
+  const slot = Number(proofSlot);
+  if (proofSlot == null || proofSlot === '' || (slot !== 0 && slot !== 1)) {
+    throw new Error('bad_share_work');
+  }
+  const kin = verifiedHeader == null || verifiedHeader === '' ? null : kinHeaderBytes(verifiedHeader);
+  if (verifiedHeader != null && verifiedHeader !== '' && !kin) throw new Error('bad_share_work');
+  const parts = [
+    commit,
+    u64le(nonce || 0),
+    Buffer.from([Number(lz) & 0xff, bits & 0xff, slot]),
+  ];
+  if (kin) parts.push(kin);
+  const type = kin ? ENC_SHARE_WORK_KIN : ENC_SHARE_WORK;
+  return Buffer.concat([ENC_MAGIC, Buffer.from([type]), Buffer.concat(parts)]);
+}
+
+export function unpackShareWork(packed) {
+  const { type, body } = unpackType(packed);
+  if (type !== ENC_SHARE_WORK) throw new Error('bad_share_work');
+  if (body.length !== SHARE_WORK_BODY_LEN + 1) throw new Error('bad_share_work');
+  const slot = body[SHARE_WORK_BODY_LEN];
+  if (slot !== 0 && slot !== 1) throw new Error('bad_share_work');
+  return {
+    noteCommit: Buffer.from(body.subarray(0, 32)),
+    nonce: body.readBigUInt64LE(32),
+    lz: body[40],
+    shareBits: body[41],
+    proofSlot: slot,
+  };
+}
+
+export function unpackShareWorkKin(packed) {
+  const { type, body } = unpackType(packed);
+  if (type !== ENC_SHARE_WORK_KIN) throw new Error('bad_share_work');
+  const want = SHARE_WORK_BODY_LEN + 1 + SHARE_KIN_HEADER_LEN;
+  if (body.length !== want) throw new Error('bad_share_work');
+  const slot = body[SHARE_WORK_BODY_LEN];
+  if (slot !== 0 && slot !== 1) throw new Error('bad_share_work');
+  return {
+    noteCommit: Buffer.from(body.subarray(0, 32)),
+    nonce: body.readBigUInt64LE(32),
+    lz: body[40],
+    shareBits: body[41],
+    proofSlot: slot,
+    verifiedHeader: Buffer.from(body.subarray(SHARE_WORK_BODY_LEN + 1)),
+    kinHeader: true,
+  };
+}
+
+function slotRootBytes(v) {
+  if (v == null || v === '') return null;
+  if (Buffer.isBuffer(v) && v.length === 32) return Buffer.from(v);
+  if (v instanceof Uint8Array && v.length === 32) return Buffer.from(v);
+  if (typeof v === 'string' && /^[0-9a-fA-F]{64}$/.test(v)) return Buffer.from(v, 'hex');
+  if (v && typeof v === 'object' && typeof v.$hex === 'string' && /^[0-9a-fA-F]{64}$/.test(v.$hex)) {
+    return Buffer.from(v.$hex, 'hex');
+  }
+  if (v && typeof v === 'object' && v.type === 'Buffer' && Array.isArray(v.data) && v.data.length === 32) {
+    return Buffer.from(v.data);
+  }
+  return null;
+}
+
+/** sha256 over the packed frames in stored order. The empty batch has a root.
+ * Frames are the disk form: a dest with no noteCommit still packs as work when it has bits. */
+export function shareSlotRoot(shares = []) {
+  const list = (Array.isArray(shares) ? shares : []).map(shareForPack);
+  const frames = packShareBatch(list);
+  const h = createHash('sha256');
+  h.update(Buffer.from('shareslot1'));
+  const n = Buffer.alloc(4);
+  n.writeUInt32LE(frames.length);
+  h.update(n);
+  for (const frame of frames) {
+    const frameType = frame[ENC_MAGIC.length];
+    if (frameType === ENC_SHARE_WORK || frameType === ENC_SHARE_WORK_KIN) {
+      const bodyLen = frame.length - ENC_MAGIC.length - 1;
+      const kin = frameType === ENC_SHARE_WORK_KIN;
+      const want = SHARE_WORK_BODY_LEN + 1 + (kin ? SHARE_KIN_HEADER_LEN : 0);
+      if (bodyLen !== want) throw new Error('bad_share_work');
+      const slot = frame[ENC_MAGIC.length + 1 + SHARE_WORK_BODY_LEN];
+      if (slot !== 0 && slot !== 1) throw new Error('bad_share_work');
+    }
+    const len = Buffer.alloc(4);
+    len.writeUInt32LE(frame.length);
+    h.update(len);
+    h.update(frame);
+  }
+  return h.digest();
+}
+
+/** Empty when the coinbase has no root. Null when the field is present and not 32 bytes. */
+export function shareSlotDigestSuffix(tx) {
+  if (!tx || tx.shareSlotRoot == null || tx.shareSlotRoot === '') return Buffer.alloc(0);
+  const root = slotRootBytes(tx.shareSlotRoot);
+  if (!root) return null;
+  return Buffer.concat([Buffer.from('shareslot1'), root]);
+}
+
+/**
+ * Null when the committed root matches the batch.
+ * A buried pruned block has no frames left, so a sealed root is not recomputed.
+ * An empty batch with no root is an older empty round.
+ */
+export function shareSlotCommitment(tx, shares, { samplesPruned = false, buried = false } = {}) {
+  const list = Array.isArray(shares) ? shares : [];
+  const rawPresent = !!(tx && tx.shareSlotRoot != null && tx.shareSlotRoot !== '');
+  const committed = rawPresent ? slotRootBytes(tx.shareSlotRoot) : null;
+  if (rawPresent && !committed) return 'share_slot';
+  if (samplesPruned && buried && list.length === 0) return null;
+  if (!list.length) {
+    if (!committed) return null;
+    if (!committed.equals(shareSlotRoot([]))) return 'share_slot';
+    return null;
+  }
+  let expect;
+  try { expect = shareSlotRoot(list); } catch { return 'share_slot'; }
+  if (!committed || !committed.equals(expect)) return 'share_slot';
+  return null;
+}
+
 export function packShareBatch(shares = []) {
   const list = Array.isArray(shares) ? shares : [];
   return list.map((s) => {
     if (Buffer.isBuffer(s)) return s;
     if (s?.noteCommit && Buffer.from(s.noteCommit).length === 32) {
+      const bits = s.shareBits != null && s.shareBits !== ''
+        ? s.shareBits
+        : s.creditedShareBits;
+      if (bits != null && bits !== '') {
+        return packShareWork({
+          noteCommit: s.noteCommit,
+          nonce: s.nonce,
+          lz: s.lz,
+          shareBits: bits,
+          proofSlot: s.proofSlot,
+          verifiedHeader: s.kinHeader ? s.verifiedHeader : undefined,
+        });
+      }
       return packShareV5({
         noteCommit: s.noteCommit,
         nonce: s.nonce,
@@ -188,7 +350,20 @@ function shareForPack(s) {
   const nc = asNoteCommit(s?.noteCommit)
     || ((dest20 && !dest20.equals(Buffer.alloc(20))) ? noteCommitOfDest20(dest20) : null);
   if (nc && nc.length === 32) {
-    return { noteCommit: nc, nonce: s?.nonce, lz: s?.lz, viewTag: s?.viewTag };
+    const bits = s?.shareBits != null && s.shareBits !== ''
+      ? s.shareBits
+      : s?.creditedShareBits;
+    const slot = s?.proofSlot;
+    const stamped = slot === 0 || slot === 1 || slot === '0' || slot === '1';
+    return {
+      noteCommit: nc,
+      nonce: s?.nonce,
+      lz: s?.lz,
+      viewTag: s?.viewTag,
+      ...(bits != null && bits !== '' ? { shareBits: bits } : {}),
+      ...(stamped ? { proofSlot: Number(slot) } : {}),
+      ...(s?.kinHeader && s?.verifiedHeader ? { verifiedHeader: s.verifiedHeader, kinHeader: true } : {}),
+    };
   }
   return { dest20, nonce: s?.nonce, lz: s?.lz };
 }
@@ -225,7 +400,7 @@ export function unpackShareBatchBytes(buf) {
     const frame = b.subarray(o, o + len);
     o += len;
     const type = frame[ENC_MAGIC.length];
-    out.push(type === ENC_SHARE_V5 ? unpackShareV5(frame) : unpackShare(frame));
+    out.push(unpackShareFrame(frame));
   }
   return out;
 }
@@ -272,16 +447,22 @@ export function shareRowJson(s) {
     nonce: String(s?.nonce ?? 0),
     lz: Number(s?.lz || 0) & 0xff,
     ...(tag ? { viewTag: tag.subarray(0, 1).toString('hex') } : {}),
+    ...(s?.shareBits != null && s.shareBits !== '' ? { shareBits: Number(s.shareBits) } : {}),
   };
+}
+
+function unpackShareFrame(buf) {
+  const type = buf[ENC_MAGIC.length];
+  if (type === ENC_SHARE_V5) return unpackShareV5(buf);
+  if (type === ENC_SHARE_WORK) return unpackShareWork(buf);
+  if (type === ENC_SHARE_WORK_KIN) return unpackShareWorkKin(buf);
+  return unpackShare(buf);
 }
 
 export function unpackShareBatch(rows = []) {
   return (Array.isArray(rows) ? rows : []).map((s) => {
     if (Buffer.isBuffer(s) || typeof s === 'string') {
-      const buf = Buffer.from(s);
-      const type = buf[ENC_MAGIC.length];
-      if (type === ENC_SHARE_V5) return unpackShareV5(buf);
-      return unpackShare(buf);
+      return unpackShareFrame(Buffer.from(s));
     }
     const dest = String(s.dest || s.address || s.miner || '');
     let nc;
@@ -290,7 +471,7 @@ export function unpackShareBatch(rows = []) {
         ? Buffer.from(s.noteCommit, /^[0-9a-fA-F]+$/.test(s.noteCommit) ? 'hex' : 'utf8')
         : Buffer.from(s.noteCommit);
     }
-    return {
+    const row = {
       dest20: coerceDest20(s.dest20, dest),
       dest,
       noteCommit: nc && nc.length === 32 ? nc : undefined,
@@ -298,5 +479,19 @@ export function unpackShareBatch(rows = []) {
       lz: Number(s.lz || 0) & 0xff,
       viewTag: s.viewTag || null,
     };
+    // In-memory selection keeps the parent binding. A work frame also carries
+    // proofSlot, and the coinbase shareSlotRoot commits that byte.
+    if (s.verifiedHeader) row.verifiedHeader = s.verifiedHeader;
+    if (s.kinHeader) row.kinHeader = true;
+    if (s.shareBits != null && s.shareBits !== '') row.shareBits = Number(s.shareBits);
+    else if (s.creditedShareBits != null && s.creditedShareBits !== '') {
+      row.shareBits = Number(s.creditedShareBits);
+    }
+    if (s.jobId) row.jobId = String(s.jobId);
+    if (s.hash) row.hash = s.hash;
+    if (s.proofSlot === 0 || s.proofSlot === 1 || s.proofSlot === '0' || s.proofSlot === '1') {
+      row.proofSlot = Number(s.proofSlot);
+    }
+    return row;
   });
 }

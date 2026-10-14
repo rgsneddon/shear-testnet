@@ -254,7 +254,7 @@
           <table>
             <thead>
               <tr>
-                <th>Tag</th><th>Worker</th><th>Ver</th><th>Live H/s</th><th>Eased</th><th>Acc</th><th>Stale</th>
+                <th>Tag</th><th>Worker</th><th>Ver</th><th>Live R/s</th><th>Eased</th><th>Acc</th><th>Stale</th>
                 <th>Round</th><th>Blk</th><th>Thr</th><th>Bits</th><th>Seen</th><th>Reject</th><th></th>
               </tr>
             </thead>
@@ -332,9 +332,9 @@
     }
     function fmtHs(n) {
       const x = Number(n) || 0;
-      if (x >= 1e6) return (x / 1e6).toFixed(2) + ' MH/s';
-      if (x >= 1e3) return (x / 1e3).toFixed(2) + ' kH/s';
-      return x.toFixed(1) + ' H/s';
+      if (x >= 1e6) return (x / 1e6).toFixed(2) + ' mR/s';
+      if (x >= 1e3) return (x / 1e3).toFixed(2) + ' kR/s';
+      return x.toFixed(1) + ' R/s';
     }
     function ago(ms) {
       const t = Number(ms) || 0;

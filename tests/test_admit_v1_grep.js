@@ -21,7 +21,7 @@ describe('C2 ADMITv1 quarantine on v4 send path', () => {
     const joined = files.map(read).join('\n');
     assert.doesNotMatch(joined, /shear-admit-v1/);
     assert.doesNotMatch(joined, /bit\s*\|\s*prove/i);
-    assert.match(read('wallet/lib/shear_admit.dart'), /nativeProveFlowSpend/);
+    assert.match(read('wallet/lib/shear_admit.dart'), /throw StateError\(kErrSendUnavailable\)/);
   });
 
   it('intentional fixture still matches the grep (CI red on fixture, green on tree)', () => {

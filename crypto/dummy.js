@@ -2,7 +2,7 @@
  * Flow dummy outs + view tags. Reserve kinds stay typed; vault is not dummy-deleted.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { sealNote, verifySealedNote, kernelExcess, bindVinToSpent, asU8 } from './note.js';
+import { sealNote, sealHiddenNote, verifySealedNote, kernelExcess, bindVinToSpent, asU8 } from './note.js';
 import { hash20FromAddress, admitBaseFromAddress } from './address.js';
 import { attachAdmitPub } from './admit.js';
 
@@ -20,32 +20,54 @@ export function viewTagOf(noteCommit) {
 
 export function flowNeedsDummy(tx) {
   if (!tx || tx.coinbase) return false;
-  const k = String(tx.kind || tx.vout?.[0]?.kind || '');
-  if (TYPED_NO_DUMMY.has(k)) return false;
-  return k === 'send' || k === '' || k === 'transfer';
-}
-
-/** Money C on Flow and Reserve notes. Missing C is range_proof, including lock/vote/withdraw. */
-export function moneyNeedsRange(tx) {
-  if (!tx || tx.coinbase) return false;
-  const k = String(tx.kind || tx.vout?.[0]?.kind || '');
-  return flowNeedsDummy(tx) || k === 'lock' || k === 'vote' || k === 'withdraw';
+  // A vout kind is not the tx kind. A missing top kind is not Flow.
+  const k = String(tx.kind || '');
+  if (!k || TYPED_NO_DUMMY.has(k)) return false;
+  return k === 'send' || k === 'transfer';
 }
 
 /**
- * Historical Reserve compact: dest20 + valueProof.v, no Pedersen C.
- * Live heights 188/198/199 were mined this way; new mempool locks still need C.
+ * Every non-coinbase tx is a money tx. Each of its outputs needs a range proof.
+ * Coinbase outputs are bound by coinbaseVoutsBound, not this gate.
  */
-export function reserveDest20Open(o) {
-  const k = String(o?.kind || '');
-  if (k !== 'lock' && k !== 'vote' && k !== 'withdraw') return false;
-  if (o?.commit) return false;
+export function moneyNeedsRange(tx) {
+  return !!(tx && !tx.coinbase);
+}
+
+/** v12 has no dest20 compact skip. A lock, vote, or withdraw without C is not open. */
+export function reserveDest20Open(_o) {
+  return false;
+}
+
+function dest20Len(value) {
   try {
-    const d = Buffer.from(asU8(o.dest20));
-    return d.length >= 20;
+    return Buffer.from(value || []).length;
   } catch {
-    return false;
+    return 0;
   }
+}
+
+/**
+ * A compact lock, vote, or withdraw names dest20 and an opened v.
+ * It has no hidden note, so it is not an ADMITv3 spend and it has no range proof.
+ */
+export function publicReserveReceipt(tx) {
+  const kind = String(tx?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return false;
+  if (tx?.admit_proof) return false;
+  if (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length) return false;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v && !v.coinbase);
+  if (!outs.length || !vins.length) return false;
+  const opened = (o) => {
+    if (!o || o.commit || o.rangeProof) return false;
+    if (dest20Len(o.dest20) !== 20) return false;
+    const raw = o.valueProof?.v;
+    const n = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
+    return Number.isInteger(n) && n >= 0;
+  };
+  if (!outs.every((o) => String(o?.kind || kind) === kind && opened(o))) return false;
+  return vins.every((v) => !v.commit && !v.cTilde && !v.address && dest20Len(v.dest20) === 20);
 }
 
 export function dummyCount(tx) {
@@ -71,22 +93,22 @@ export function sealFlowVout(o) {
   const n = Math.floor(Number(o.nanos || 0));
   const d20 = hash20FromAddress(o.address);
   if (!d20) return o;
-  let note = sealNote(n, { dest20: d20, kind: o.kind || 'send' });
+  const admitBase = admitBaseFromAddress(o.address);
+  let note = sealHiddenNote(n, { dest20: d20, kind: o.kind || 'send', admitBase });
   note.viewTag = viewTagOf(note.noteCommit);
   note.dest20 = d20;
   if (o.address) note.address = o.address;
-  note = attachAdmitPub(note, { admitBase: admitBaseFromAddress(o.address) });
+  note = attachAdmitPub(note, { admitBase });
   return note;
 }
 
 export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT, spent } = {}) {
   if (!tx || !flowNeedsDummy(tx)) return tx;
   const raw = [...(tx.vout || [])];
-  const payN = Math.floor(Number(tx.nanos != null ? tx.nanos : raw[0]?.nanos || 0));
-  const changeRaw = raw.find((o, i) => i > 0 && String(o.kind) !== DUMMY_KIND);
-  const changeN = Math.floor(Number(tx.changeNanos != null ? tx.changeNanos : changeRaw?.nanos || 0));
-  const out = { ...tx, nanos: payN, vout: raw.map(sealFlowVout) };
-  if (changeN) out.changeNanos = changeN;
+  const out = { ...tx, vout: raw.map(sealFlowVout) };
+  delete out.nanos;
+  delete out.changeNanos;
+  delete out.amount;
   let n = dummyCount(out);
   const want = Math.max(1, Math.floor(Number(fanout) || DUMMY_FANOUT));
   while (n < want) {

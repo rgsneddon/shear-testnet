@@ -1,0 +1,6 @@
+# shear-testnet-v12. ShearK 2.9. Difficulty comes from the pool job.
+# SHEARK_USER is this host's existing worker login. Do not rename it.
+# Do not put a payout dest in this file in git. The pool host keeps the unit disabled.
+SHEARK_POOL=stratum+ssl://pool.shear.digital:443
+SHEARK_THREADS=1
+SHEARK_BACKEND=jit

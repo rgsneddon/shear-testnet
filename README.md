@@ -1,6 +1,6 @@
 # Shear
 
-**She is Private.** ADMITv2 membership over this book's notes, with confidential amounts. Proof of work elects the tip. Continuity-settled.
+ADMITv2 membership over this book's notes. Proof of work elects the tip. Continuity-settled.
 
 This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs, wallet source, pool source, site, tests. Official miner pin lives in a **separate** repo:
 
@@ -139,7 +139,7 @@ Optional public pool (not solo):
 ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user ssa1YOURDEST.worker --threads 4
 ```
 
-`ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Amounts are confidential; dests are stealth. Reuse that mining mailbox so blocks stay linked.
+`ssa1.worker` / `ssa1.solo` is Continuum/CLI Copy dest — the `ssa1` shown on screen, not a rotated mailbox. Reuse that mining mailbox so blocks stay linked.
 
 Continuum **0.71** reads a node at `127.0.0.1:18332`. Connect Bare uses the same scan when no local node answers (that is the Android path). The node is the book: it returns every note sealed to your dest, including seals from while the wallet was closed. Spendable is an opened coin with 9 confirmations. A pool balance does not raise that sum. `shear restore` opens a password-sealed `shewall.bin`. Public pool HTTP submit is an advanced toggle. How-to: https://shear.digital/docs/#/surfaces
 

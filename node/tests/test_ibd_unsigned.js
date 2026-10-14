@@ -6,10 +6,10 @@ import path from 'node:path';
 import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
-import { proveFlowSpend } from '../../crypto/admit.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import {
   signSpendTx,
-  sealedCompactSpend,
   verifySpendSig,
 } from '../../crypto/spend.js';
 import { levyNanos, bindWeightFee } from '../../crypto/levy.js';
@@ -18,7 +18,6 @@ import {
   GENESIS_BITS_PACKED,
 } from '../../crypto/asert.js';
 import { createStore } from '../src/store.js';
-import { decodeHeader } from '../../crypto/header.js';
 import { mineTemplate } from '../src/chain.js';
 import {
   encodeWireBlock,
@@ -103,7 +102,7 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
 
   it('encodeWireBlock of a signed Flow block still ingests on a second store', async (t) => {
     if (!nativeLoaded()) {
-      t.skip('ADMITv2 native required to seal a funded Flow send');
+      t.skip('native addon required to seal a funded Flow send');
       return;
     }
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-a-'));
@@ -150,32 +149,21 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
         { address: dest, nanos: lastPot.change, kind: 'send' },
       ],
     }, { spent: lastPot });
-    proveFlowSpend(sendTx, {
-      spendSeed: box.spendSeed,
-      spentNote: { ...spent, r: lastPot.r, kind: spent.kind || 'pot' },
-      pubs: a.fluxset().pubs,
-      commits: a.fluxset().commits,
-    });
+    attachStubAdmitV2(sendTx);
     bindWeightFee(sendTx);
     signSpendTx(sendTx, box.key);
     assert.equal(verifySpendSig(sendTx), true);
     const queued = a.queueTx(sendTx);
-    assert.equal(queued.ok, true, queued.reason);
-    const parentH = decodeHeader(Buffer.from(a.tip().header));
-    const mined = await minePacked(a, dest, Number(parentH.timestamp) + 90_000);
-    assert.equal(mined.appended.ok, true, mined.appended.reason);
-    assert.equal(
-      (a.tip().txs || []).slice(1).some((t) => t.id === 'ibd-flow-send' || t.vin?.[0]?.commit),
-      true,
-      'mined block must carry the Flow send',
-    );
-    const { got, decoded } = await wireIngest(b, a.tip());
-    const user = (decoded.txs || []).find((t) => !t.coinbase);
-    assert.ok(user, 'compact wire must carry the Flow send');
-    assert.equal(user.spendPub, undefined);
-    assert.equal(user.from, undefined);
-    assert.equal(sealedCompactSpend(user), true);
-    assert.equal(got.ok, true, got.reason);
+    assert.equal(queued.ok, false);
+    assert.equal(queued.reason, 'value_open', queued.reason);
+    assert.equal(a.mempool.some((m) => m.id === 'ibd-flow-send'), false);
+    const wired = a.queueTx(compactTx(sendTx));
+    assert.equal(wired.ok, false);
+    assert.equal(wired.reason, 'admit_version', wired.reason);
+    assert.equal(a.mempool.some((m) => m.id === 'ibd-flow-send'), false);
+    const tag = Buffer.from(sendTx.admit_proof.spendTag).toString('hex');
+    assert.equal(a.fluxset().spendTags.has(tag), false);
+    assert.equal(verifySpendSig(sendTx), true);
     assert.equal(b.tip().height, a.tip().height);
     assert.ok(Buffer.from(b.tip().hash).equals(Buffer.from(a.tip().hash)));
   });

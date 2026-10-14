@@ -7,6 +7,14 @@ import { encodeHeader, decodeHeader } from './header.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from './pack.js';
 import { compactTx } from './chronoflux.js';
 import { reviveBytes } from './note.js';
+import {
+  packHashCreditBytes,
+  packSpillBytes,
+  packSpillCreditBytes,
+  unpackHashCreditBytes,
+  unpackSpillBytes,
+  unpackSpillCreditBytes,
+} from './hash_owed.js';
 
 const MAGIC = Buffer.from('shear-chn-v1\0\0\0');
 
@@ -55,9 +63,36 @@ export function packEpochBlock(block) {
   const hash = Buffer.from(block.hash || Buffer.alloc(32));
   const sLen = Buffer.alloc(4);
   sLen.writeUInt32LE(sJson.length, 0);
-  return Buffer.concat([parts[0], rootA, rootB, hash, meta, lens, aJson, bJson, txs, sLen, sJson]);
+  const chunks = [parts[0], rootA, rootB, hash, meta, lens, aJson, bJson, txs, sLen, sJson];
+  // Optional trailer. Old books end at the share batch and have no stamp.
+  if (Array.isArray(block.bSpendIds)) {
+    const body = Buffer.from(JSON.stringify(block.bSpendIds.map((id) => String(id))));
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
+  if (Array.isArray(block.hashCredits)) {
+    const body = packHashCreditBytes(block.hashCredits);
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
+  if (Array.isArray(block.hashSpill) && block.hashSpill.length) {
+    const body = packSpillBytes(block.hashSpill);
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
+  if (Array.isArray(block.hashSpillCredits) && block.hashSpillCredits.length) {
+    const body = packSpillCreditBytes(block.hashSpillCredits);
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
+  return Buffer.concat(chunks);
 }
 
+/** Local chain.bin record. Peer and IPC blocks do not enter through this trailer. */
 export function unpackEpochBlock(buf) {
   const b = Buffer.from(buf);
   const header = Buffer.from(b.subarray(0, 128));
@@ -77,15 +112,61 @@ export function unpackEpochBlock(buf) {
   const txs = JSON.parse(b.subarray(o, o + tLen).toString() || '[]', reviveBytes);
   o += tLen;
   let shareBatch = [];
+  let bSpendIds;
+  let sawSpendIds = false;
+  let hashCredits;
+  let sawCredits = false;
+  let hashSpill;
+  let sawSpill = false;
+  let hashSpillCredits;
+  let sawSpillCredits = false;
   if (o + 4 <= b.length) {
     const sLen = b.readUInt32LE(o);
     o += 4;
-    if (sLen > 0 && o + sLen <= b.length) {
-      shareBatch = unpackShareBatchBytes(b.subarray(o, o + sLen));
+    if (sLen > b.length - o) {
+      o = b.length;
+    } else {
+      if (sLen > 0) shareBatch = unpackShareBatchBytes(b.subarray(o, o + sLen));
+      o += sLen;
+      while (o + 4 <= b.length) {
+        const nLen = b.readUInt32LE(o);
+        if (nLen > b.length - (o + 4)) break;
+        const body = b.subarray(o + 4, o + 4 + nLen);
+        const credits = unpackHashCreditBytes(body);
+        if (credits) {
+          hashCredits = credits;
+          sawCredits = true;
+          o += 4 + nLen;
+          continue;
+        }
+        const spill = unpackSpillBytes(body);
+        if (spill) {
+          hashSpill = spill;
+          sawSpill = true;
+          o += 4 + nLen;
+          continue;
+        }
+        const spillCredits = unpackSpillCreditBytes(body);
+        if (spillCredits) {
+          hashSpillCredits = spillCredits;
+          sawSpillCredits = true;
+          o += 4 + nLen;
+          continue;
+        }
+        let parsed = null;
+        try { parsed = JSON.parse(body.toString('utf8')); } catch { parsed = null; }
+        if (Array.isArray(parsed) && parsed.every((id) => typeof id === 'string')) {
+          bSpendIds = parsed;
+          sawSpendIds = true;
+          o += 4 + nLen;
+          continue;
+        }
+        break;
+      }
     }
   }
   decodeHeader(header);
-  return {
+  const block = {
     header,
     rootA,
     rootB,
@@ -100,6 +181,11 @@ export function unpackEpochBlock(buf) {
     bLeavesPruned: !!(flags & 2),
     weight: b.readUInt32LE(232),
   };
+  if (sawSpendIds) block.bSpendIds = bSpendIds;
+  if (sawCredits) block.hashCredits = hashCredits;
+  if (sawSpill) block.hashSpill = hashSpill;
+  if (sawSpillCredits) block.hashSpillCredits = hashSpillCredits;
+  return block;
 }
 
 export function writeChainBin(path, blocks) {

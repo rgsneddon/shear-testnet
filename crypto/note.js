@@ -1,13 +1,14 @@
 /**
  * Pedersen notes on ristretto255. C = v·G + r·H.
- * Range: native Bulletproofs+ (RANGE=bpplus). v3 bit-OR fails.
+ * Range: packed 64-bit OR proofs (RANGE=packed-bit). The wire label is not Bulletproofs+.
  * Coinbase exact-value: Schnorr that C − vG ∈ ⟨H⟩ for v from Tree-A.
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, hash, randomBytes } from 'node:crypto';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { bytesToNumberLE } from '@noble/curves/utils.js';
 import { nativeLoaded, noteH, nativeProveRange, nativeVerifyRange } from './native_admit.js';
+import { coinbaseOutputCap } from './block_budget.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -58,7 +59,7 @@ export function reviveBytes(_key, v) {
 }
 
 const TX_BYTE_KEYS = new Set([
-  'prev', 'commit', 'noteCommit', 'rEph', 'rCt', 'admitPub', 'viewTag',
+  'prev', 'commit', 'noteCommit', 'rEph', 'rCt', 'amtCt', 'admitPub', 'viewTag',
   'excess', 'c0', 'spendTag',
 ]);
 
@@ -94,6 +95,16 @@ export function reviveTx(tx) {
   }
   if (out.spendTag != null && !Buffer.isBuffer(out.spendTag)) out.spendTag = reviveField(out.spendTag);
   if (out.excess != null) out.excess = reviveField(out.excess);
+  if (Array.isArray(out.hashOwed)) {
+    out.hashOwed = out.hashOwed.map((row) => {
+      if (!row || typeof row !== 'object') return row;
+      const next = { ...row };
+      if (next.noteCommit != null) next.noteCommit = reviveField(next.noteCommit);
+      if (next.dest20 != null) next.dest20 = reviveField(next.dest20);
+      if (next.admitBase != null) next.admitBase = reviveField(next.admitBase);
+      return next;
+    });
+  }
   return out;
 }
 
@@ -182,7 +193,7 @@ export function verifyValue(Cbytes, v, proof) {
   }
 }
 
-function bitOrProve(B, b, s) {
+export function bitOrProve(B, b, s) {
   const P0 = B;
   const P1 = B.subtract(G);
   const real = b ? P1 : P0;
@@ -207,7 +218,7 @@ function bitOrProve(B, b, s) {
   };
 }
 
-function bitOrVerify(B, proof) {
+export function bitOrVerify(B, proof) {
   try {
     const R0 = pointFrom(proof.R0);
     const R1 = pointFrom(proof.R1);
@@ -232,7 +243,7 @@ function bitOrVerify(B, proof) {
 export function proveRange(v, r) {
   const rb = Buffer.from(asU8(typeof r === 'bigint' ? scalarBytes(r) : r));
   if (rb.length !== 32) return Buffer.alloc(0);
-  return nativeProveRange(Number(v), rb) || Buffer.alloc(0);
+  return nativeProveRange(v, rb) || Buffer.alloc(0);
 }
 
 export function verifyRange(Cbytes, proof) {
@@ -247,18 +258,20 @@ export function verifyRange(Cbytes, proof) {
 }
 
 /** Coinbase / Tree-A: v is public from collated units. Exact-value proof, no painted nanos. */
-export function sealCoinbaseNote(v, { dest20, noteCommit, kind } = {}) {
-  const r = randomScalar();
-  const value = proveValue(v, r);
+export function sealCoinbaseNote(v, { dest20, noteCommit, kind, r } = {}) {
+  const blind = r == null ? randomScalar() : r;
+  const value = proveValue(v, blind);
   const nc = noteCommit
     ? Buffer.from(noteCommit)
     : (dest20 ? noteCommitOfDest20(dest20) : Buffer.alloc(32));
+  const rangeProof = proveRange(v, blind);
   const row = {
     kind: kind || 'hash',
     noteCommit: nc,
     commit: value.C,
     valueProof: { R: value.R, z: value.z, v },
-    r: scalarBytes(r),
+    r: scalarBytes(blind),
+    rangeProof: rangeProof && rangeProof.length ? rangeProof : Buffer.alloc(0),
   };
   if (dest20) {
     const d = Buffer.from(dest20);
@@ -273,17 +286,70 @@ export function sealNote(v, { dest20, noteCommit, kind } = {}) {
   return sealed;
 }
 
+/**
+ * A hidden output: C, a range proof, and the amount encrypted to the dest.
+ * No shear-note-val-v1 proof and no v, so a reader cannot test a guessed amount.
+ * r stays local and is dropped by compactTx.
+ */
+export function sealHiddenNote(v, { dest20, noteCommit, kind, admitBase } = {}) {
+  const n = noteU64(v);
+  if (n == null) throw new Error('amount');
+  const r = randomScalar();
+  const nc = noteCommit
+    ? Buffer.from(noteCommit)
+    : (dest20 ? noteCommitOfDest20(dest20) : Buffer.alloc(32));
+  const rangeProof = proveRange(n, r);
+  let row = {
+    kind: kind || 'send',
+    noteCommit: nc,
+    commit: pointBytes(commit(n, r)),
+    r: scalarBytes(r),
+    rangeProof: rangeProof && rangeProof.length ? rangeProof : Buffer.alloc(0),
+  };
+  if (dest20) {
+    const d = Buffer.from(dest20);
+    if (d.length === 20) row.dest20 = d;
+  }
+  if (admitBase) row = wrapNoteBlind(row, admitBase, n);
+  return row;
+}
+
 /** ECDH wrap of Pedersen r to dest admit-base B = x_base·G. compactTx keeps rEph/rCt and drops r. */
 export const RWRAP_DST = Buffer.from('shear-r-wrap-v1');
+/** amtCt = u64le(v) XOR SHA-512(AMOUNT_CT_DST ‖ e·B ‖ extra)[0..8], under the same e as rCt. */
+export const AMOUNT_CT_DST = Buffer.from('shear-amt-v1');
+export const AMOUNT_CT_BYTES = 8;
 
-export function wrapBlind(r, admitBase, extra) {
+function amountMask(shared, extra) {
+  return Buffer.from(sha512(concat(AMOUNT_CT_DST, pointBytes(shared), extra || Buffer.alloc(0)))).subarray(0, AMOUNT_CT_BYTES);
+}
+
+function u64leBytes(n) {
+  const b = Buffer.alloc(AMOUNT_CT_BYTES);
+  b.writeBigUInt64LE(BigInt(n));
+  return b;
+}
+
+function xorBytes(a, b) {
+  const out = Buffer.alloc(a.length);
+  for (let i = 0; i < a.length; i += 1) out[i] = a[i] ^ b[i];
+  return out;
+}
+
+export function wrapBlind(r, admitBase, extra, v = null) {
   const e = randomScalar();
   const B = typeof admitBase?.toBytes === 'function' ? admitBase : pointFrom(asU8(admitBase));
   const rEphP = G.multiply(e);
   const shared = B.multiply(e);
   const mask = hashToScalar(RWRAP_DST, pointBytes(shared), extra || Buffer.alloc(0));
   const rs = typeof r === 'bigint' ? r : scalarFrom(r);
-  return { rEph: pointBytes(rEphP), rCt: scalarBytes(Fn.add(rs, mask)) };
+  const out = { rEph: pointBytes(rEphP), rCt: scalarBytes(Fn.add(rs, mask)) };
+  if (v != null) {
+    const n = noteU64(v);
+    if (n == null) throw new Error('amount');
+    out.amtCt = xorBytes(u64leBytes(n), amountMask(shared, extra));
+  }
+  return out;
 }
 
 export function unwrapBlind(rEph, rCt, xBase, extra) {
@@ -293,28 +359,166 @@ export function unwrapBlind(rEph, rCt, xBase, extra) {
   return scalarBytes(Fn.sub(scalarFrom(rCt), mask));
 }
 
-/** Attach rEph/rCt so a compacted mining/Flow note is spendable by the dest owner. */
-export function wrapNoteBlind(vout, admitBase) {
+/** Owner-only: v from amtCt. Not checked against C; openNoteAmount does that. */
+function unwrapAmount(rEph, amtCt, xBase, extra) {
+  const ct = Buffer.from(asU8(amtCt));
+  if (ct.length !== AMOUNT_CT_BYTES) return null;
+  const x = typeof xBase === 'bigint' ? xBase : scalarFrom(xBase);
+  const shared = pointFrom(asU8(rEph)).multiply(x);
+  return xorBytes(ct, amountMask(shared, extra)).readBigUInt64LE(0);
+}
+
+/**
+ * Owner recovery of (v, r) from a sealed output's rEph, rCt, and amtCt.
+ * Null unless v·G + r·H equals the output commitment, so a swapped or
+ * corrupted ciphertext never yields a wrong amount.
+ */
+export function openNoteAmount(vout, xBase) {
+  try {
+    if (!vout?.rEph || !vout?.rCt || !vout?.amtCt || !vout?.commit) return null;
+    const extra = concat(asU8(vout.noteCommit), asU8(vout.commit));
+    const v = unwrapAmount(vout.rEph, vout.amtCt, xBase, extra);
+    if (v == null) return null;
+    const r = unwrapBlind(vout.rEph, vout.rCt, xBase, extra);
+    if (!commit(v, scalarFrom(r)).equals(pointFrom(vout.commit))) return null;
+    return { v, r };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Attach rEph/rCt so a compacted mining/Flow note is spendable by the dest owner.
+ * With v, amtCt carries the amount to that owner under the same ephemeral key.
+ */
+export function wrapNoteBlind(vout, admitBase, v = null) {
   if (!vout?.r || !admitBase) return vout;
-  if (vout.rEph && vout.rCt) return vout;
+  if (vout.rEph && vout.rCt && (v == null || vout.amtCt)) return vout;
   try {
     const extra = concat(asU8(vout.noteCommit), asU8(vout.commit));
-    const wrap = wrapBlind(vout.r, admitBase, extra);
-    return { ...vout, rEph: wrap.rEph, rCt: wrap.rCt };
+    const wrap = wrapBlind(vout.r, admitBase, extra, v);
+    const out = { ...vout, rEph: wrap.rEph, rCt: wrap.rCt };
+    if (wrap.amtCt) out.amtCt = wrap.amtCt;
+    return out;
   } catch {
     return vout;
   }
 }
 
+const NOTE_MAX = (1n << BigInt(NOTE_BITS)) - 1n;
+
+/** Canonical integer in 0..2^64-1. A JS number is accepted only while it is exact. */
+export function noteU64(v) {
+  let n;
+  if (typeof v === 'bigint') n = v;
+  else if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v)) return null;
+    n = BigInt(v);
+  } else if (typeof v === 'string' && /^[0-9]+$/.test(v) && !/^0[0-9]/.test(v)) {
+    try { n = BigInt(v); } catch { return null; }
+  } else return null;
+  if (n < 0n || n > NOTE_MAX) return null;
+  return n;
+}
+
+function openedAsCaller(n) {
+  if (n <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(n);
+  return n;
+}
+
 export function verifySealedNote(vout, v) {
   if (!vout?.commit || !vout.valueProof) return false;
-  if (v < 0 || v >= 2 ** NOTE_BITS) return false;
-  if (!verifyValue(vout.commit, v, vout.valueProof)) return false;
+  const n = noteU64(v);
+  if (n == null) return false;
+  if (!verifyValue(vout.commit, n, vout.valueProof)) return false;
   if (vout.rangeProof) {
     const pr = Buffer.isBuffer(vout.rangeProof) ? vout.rangeProof : Buffer.from(asU8(vout.rangeProof));
     if (pr.length && !verifyRange(vout.commit, vout.rangeProof)) return false;
   }
   return true;
+}
+
+/** Opened non-negative value of one coinbase output. Range proof is required. */
+export function openedCoinbaseNanos(vout) {
+  if (!vout?.commit || !vout.valueProof || vout.valueProof.v == null || vout.valueProof.v === '') return null;
+  const n = noteU64(vout.valueProof.v);
+  if (n == null) return null;
+  const pr = vout.rangeProof
+    ? (Buffer.isBuffer(vout.rangeProof) ? vout.rangeProof : Buffer.from(asU8(vout.rangeProof)))
+    : Buffer.alloc(0);
+  if (!pr.length || !verifyRange(vout.commit, pr)) return null;
+  if (!verifySealedNote(vout, n)) return null;
+  return openedAsCaller(n);
+}
+
+/**
+ * Every committing coinbase output opens, and the commitment sum equals that
+ * opened total. Levy notes are in the sum. A totals-only mint does not pass.
+ */
+const PAYOUT_RANGE_KINDS = new Set(['pot', 'hash', 'finder-fee', 'reserve-fee', 'pool-fee']);
+
+function rangeProofEmpty(o) {
+  if (o?.rangeProof == null) return true;
+  try {
+    const pr = Buffer.isBuffer(o.rangeProof) ? o.rangeProof : Buffer.from(asU8(o.rangeProof));
+    return pr.length === 0;
+  } catch {
+    return true;
+  }
+}
+
+export function coinbaseVoutsBound(vouts, excess, openedFor = null, splitPaid = null) {
+  const rows = Array.isArray(vouts) ? vouts : [];
+  if (splitPaid != null) {
+    if (!rows.length) return { ok: false, reason: 'coinbase_output' };
+    const paid = noteU64(splitPaid);
+    if (paid == null) return { ok: false, reason: 'coinbase_output' };
+    for (const o of rows) {
+      if (!o?.commit) return { ok: false, reason: 'coinbase_output' };
+    }
+    if (!verifyMintSum(rows, paid, excess)) return { ok: false, reason: 'pot' };
+    return {
+      ok: true,
+      opened: openedAsCaller(paid),
+      levy: 0,
+      rest: openedAsCaller(paid),
+    };
+  }
+  if (!rows.length) {
+    // Carry-only coinbase: nothing is minted. Excess must be the zero scalar.
+    if (excess != null) {
+      let got;
+      try { got = Buffer.from(asU8(excess)); } catch { return { ok: false, reason: 'coinbase_output' }; }
+      const zero = Buffer.from(asU8(excessOf([])));
+      if (!got.equals(zero)) return { ok: false, reason: 'coinbase_output' };
+    }
+    return { ok: true, opened: 0, levy: 0, rest: 0 };
+  }
+  let opened = 0n;
+  let levy = 0n;
+  for (const o of rows) {
+    if (!o?.commit) return { ok: false, reason: 'coinbase_output' };
+    let v = null;
+    if (typeof openedFor === 'function') {
+      const hinted = openedFor(o);
+      if (hinted != null && verifySealedNote(o, hinted)) {
+        if (PAYOUT_RANGE_KINDS.has(String(o.kind || '')) && rangeProofEmpty(o)) {
+          return { ok: false, reason: 'range_proof' };
+        }
+        v = noteU64(hinted);
+      }
+    }
+    if (v == null) {
+      const one = openedCoinbaseNanos(o);
+      v = one == null ? null : noteU64(one);
+    }
+    if (v == null) return { ok: false, reason: 'coinbase_output' };
+    opened += v;
+    const kind = String(o.kind || '');
+    if (kind === 'finder-fee' || kind === 'reserve-fee') levy += v;
+  }
+  if (!verifyMintSum(rows, opened, excess)) return { ok: false, reason: 'pot' };
+  return { ok: true, opened: openedAsCaller(opened), levy: openedAsCaller(levy), rest: openedAsCaller(opened - levy) };
 }
 
 export function mintTotal(vouts) {
@@ -344,6 +548,11 @@ export function excessOf(vouts) {
     s = Fn.add(s, scalarFrom(o.r));
   }
   return scalarBytes(s);
+}
+
+export function addExcess(excess, r) {
+  if (!excess || r == null) return null;
+  return scalarBytes(Fn.add(scalarFrom(excess), scalarFrom(r)));
 }
 
 /** Kernel k = Σ r_out − Σ (r_in + t) so sum(C_out) + fee·G = sum(C̃_in) + k·H. */
@@ -401,7 +610,440 @@ export function vinIdentifiesSpent(v) {
   return false;
 }
 
-export function verifyFlowConservation(tx, _spentOf) {
+function proofBlobBytes(proof) {
+  const raw = proof?.blob ?? proof?.proof;
+  if (raw == null || raw === '') return null;
+  try {
+    const blob = Buffer.from(asU8(raw));
+    return blob.length ? blob : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A byte-3 Admit blob carries the spend tag at bytes 1..33. Byte 2 is closed. */
+function versionedSpendTag(blob) {
+  if (!blob || blob.length < 33) return null;
+  if (blob[0] !== 3) return null;
+  return Buffer.from(blob.subarray(1, 33));
+}
+
+function postedSpendTag(tag) {
+  if (tag == null || tag === '') return { present: false, tag: null };
+  try {
+    const buf = Buffer.from(asU8(tag));
+    if (buf.length === 32) return { present: true, tag: buf };
+  } catch { /* present, but not a tag */ }
+  return { present: true, tag: null };
+}
+
+/**
+ * One proof's spend tag. A version 2 or 3 blob owns the tag. A JSON field
+ * that disagrees is admit_tag, and the blob tag is still returned. A proof
+ * with no versioned blob keeps a 32-byte field so a shape check can bind.
+ */
+export function canonicalSpendTag(proof) {
+  const fromBytes = versionedSpendTag(proofBlobBytes(proof));
+  const field = postedSpendTag(proof?.spendTag);
+  if (fromBytes) {
+    if (field.present && (!field.tag || !field.tag.equals(fromBytes))) {
+      return { ok: false, reason: 'admit_tag', tag: fromBytes };
+    }
+    return { ok: true, reason: null, tag: fromBytes };
+  }
+  if (field.tag) return { ok: true, reason: null, tag: field.tag };
+  return { ok: false, reason: 'admit_membership', tag: null };
+}
+
+/**
+ * Identity of one proof. A versioned blob is its bytes. A shape proof is its
+ * tag and cTilde. Reference equality is not identity: reviveTx copies admit_proof.
+ */
+function proofIdentity(proof) {
+  const blob = proofBlobBytes(proof);
+  if (blob && blob.length >= 33 && blob[0] === 3) {
+    return `b:${hash('sha256', blob, 'hex')}`;
+  }
+  const one = canonicalSpendTag(proof);
+  if (!one.tag) return null;
+  let ct = '';
+  try {
+    if (proof?.cTilde != null) ct = Buffer.from(asU8(proof.cTilde)).toString('hex');
+  } catch { ct = ''; }
+  return `s:${one.tag.toString('hex')}:${ct}`;
+}
+
+/** Tag bytes for the bound check. A Buffer tag is not copied. */
+function boundProofTag(proof) {
+  const raw = proof?.blob ?? proof?.proof;
+  if (Buffer.isBuffer(raw) && raw.length >= 33 && raw[0] === 3) {
+    const from = raw.subarray(1, 33);
+    const field = proof?.spendTag;
+    if (field != null && field !== '') {
+      let tag = null;
+      if (Buffer.isBuffer(field) && field.length === 32) tag = field;
+      else tag = postedSpendTag(field).tag;
+      if (!tag || !tag.equals(from)) return { ok: false, reason: 'admit_tag' };
+    }
+    return { ok: true, tag: from };
+  }
+  const one = canonicalSpendTag(proof);
+  if (!one.ok || !one.tag) return { ok: false, reason: one.reason || 'admit_membership' };
+  return { ok: true, tag: one.tag };
+}
+
+/** Exact blob bytes for a versioned proof. A shape proof keeps tag and cTilde. */
+function sameBoundProof(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ba = proofBlobBytes(a);
+  const bb = proofBlobBytes(b);
+  const aVer = !!(ba && ba.length >= 33 && ba[0] === 3);
+  const bVer = !!(bb && bb.length >= 33 && bb[0] === 3);
+  if (aVer || bVer) return aVer && bVer && ba.length === bb.length && ba.equals(bb);
+  return sameSpendProof(a, b);
+}
+
+/** True when both objects are the same proof, including a revived copy. */
+export function sameSpendProof(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ia = proofIdentity(a);
+  const ib = proofIdentity(b);
+  return !!(ia && ib && ia === ib);
+}
+
+/**
+ * admit_proof, then each admit_proofs entry that is not that same proof.
+ * A copy of admit_proofs[0] stored again as admit_proof is one proof.
+ * Two list entries with the same tag stay two proofs so the tag check can reject them.
+ */
+export function txProofs(tx) {
+  const out = [];
+  const list = Array.isArray(tx?.admit_proofs) ? tx.admit_proofs.filter(Boolean) : [];
+  if (tx?.admit_proof && !list.some((proof) => sameSpendProof(proof, tx.admit_proof))) {
+    out.push(tx.admit_proof);
+  }
+  for (const proof of list) out.push(proof);
+  return out;
+}
+
+let spendTagParses = 0;
+const spendTagMemo = new WeakMap();
+
+/** How many times a spend-tag parse ran. A cache hit does not count. */
+export function txSpendTagParses() {
+  return spendTagParses;
+}
+
+export function resetTxSpendTagParses() {
+  spendTagParses = 0;
+}
+
+/**
+ * Proof object identity, not the blob bytes. Replacing a proof or a blob
+ * parses again. Editing bytes inside the same blob object does not.
+ */
+function spendTagStamp(tx) {
+  const list = Array.isArray(tx?.admit_proofs) ? tx.admit_proofs : null;
+  const top = tx?.admit_proof || null;
+  const parts = [top, tx?.spendTag ?? null, list];
+  if (top && typeof top === 'object') parts.push(top.blob ?? null, top.proof ?? null, top.spendTag ?? null);
+  if (list) {
+    for (let i = 0; i < list.length; i += 1) {
+      const proof = list[i];
+      parts.push(proof || null);
+      if (proof && typeof proof === 'object') {
+        parts.push(proof.blob ?? null, proof.proof ?? null, proof.spendTag ?? null);
+      }
+    }
+  }
+  return parts;
+}
+
+function sameSpendTagStamp(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Every proof's spend tag. Tags are the blob bytes when the proof is versioned.
+ * A missing proof list is an empty success (coinbase). A field that disagrees
+ * with those bytes is admit_tag, and the blob tags are still listed so a stored
+ * lie cannot un-spend the note. Duplicate tags in one tx are admit_link_tag.
+ * A lone tx.spendTag with no proof is not a nullifier.
+ * The same tx object is parsed once until a proof object is replaced.
+ */
+export function txSpendTags(tx) {
+  if (tx && typeof tx === 'object') {
+    const stamp = spendTagStamp(tx);
+    const hit = spendTagMemo.get(tx);
+    if (hit && sameSpendTagStamp(hit.stamp, stamp)) return hit.result;
+    spendTagParses += 1;
+    const result = parseTxSpendTags(tx);
+    spendTagMemo.set(tx, { stamp, result });
+    return result;
+  }
+  spendTagParses += 1;
+  return parseTxSpendTags(tx);
+}
+
+function parseTxSpendTags(tx) {
+  const proofs = txProofs(tx);
+  if (!proofs.length) return { ok: true, reason: null, tags: [], proofs };
+  const tags = [];
+  const seen = new Set();
+  let reason = null;
+  for (const proof of proofs) {
+    const one = canonicalSpendTag(proof);
+    if (!one.ok) reason = reason || one.reason || 'admit_membership';
+    if (!one.tag) continue;
+    const hex = one.tag.toString('hex');
+    if (seen.has(hex)) reason = reason || 'admit_link_tag';
+    seen.add(hex);
+    tags.push(one.tag);
+  }
+  const top = postedSpendTag(tx?.spendTag);
+  if (top.present && tags[0] && (!top.tag || !top.tag.equals(tags[0]))) {
+    reason = reason || 'admit_tag';
+  }
+  if (reason) return { ok: false, reason, tags, proofs };
+  return { ok: true, reason: null, tags, proofs };
+}
+
+/** Per-tx shape cap. A coinbase stops at the live payee cap, inside the 36,000 weight-unit budget. */
+export const MAX_TX_INPUTS = 8;
+export const MAX_TX_OUTPUTS = 8;
+
+export function txIsCoinbase(tx) {
+  return !!(tx && (tx.coinbase === true || String(tx.kind || '') === 'coinbase'));
+}
+
+/**
+ * First stateless bound. Over the cap is invalid before any proof parse.
+ * Zero inputs are not this reject: a withdraw vin list is empty.
+ * proofChecked marks the reject so a peer that sent it is scored.
+ */
+export function txIoCap(tx) {
+  const nIn = Array.isArray(tx?.vin) ? tx.vin.length : 0;
+  const nOut = Array.isArray(tx?.vout) ? tx.vout.length : 0;
+  if (nIn > MAX_TX_INPUTS) return { ok: false, reason: 'tx_cap', proofChecked: true };
+  const outCap = txIsCoinbase(tx) ? coinbaseOutputCap() : MAX_TX_OUTPUTS;
+  if (nOut > outCap) return { ok: false, reason: 'tx_cap', proofChecked: true };
+  return { ok: true };
+}
+
+const BIND_SLOW = { slow: true };
+
+function commitSame(posted, want) {
+  let a = posted;
+  let b = want;
+  if (!Buffer.isBuffer(a) || !Buffer.isBuffer(b)) {
+    try {
+      if (!Buffer.isBuffer(a)) a = Buffer.from(asU8(a));
+      if (!Buffer.isBuffer(b)) b = Buffer.from(asU8(b));
+    } catch {
+      return false;
+    }
+  }
+  return a.length === b.length && a.equals(b);
+}
+
+/** Shape proofs and collision storms. One set, so a hostile frame stays linear. */
+function bindListedSlow(vins, proofs) {
+  const seen = new Set();
+  const tagOf = new Array(vins.length);
+  for (let i = 0; i < vins.length; i += 1) {
+    const proof = proofs[i];
+    const parsed = boundProofTag(proof);
+    if (!parsed.ok) return { ok: false, reason: parsed.reason || 'admit_membership' };
+    const tag = parsed.tag;
+    if (!tag || !proof || proof.cTilde == null || !vins[i] || vins[i].commit == null) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+    if (!commitSame(vins[i].commit, proof.cTilde)) return { ok: false, reason: 'admit_membership' };
+    const key = tag.toString('latin1');
+    if (seen.has(key)) return { ok: false, reason: 'admit_link_tag' };
+    seen.add(key);
+    tagOf[i] = tag;
+  }
+  return { ok: true, tagOf };
+}
+
+function versionedHead(proof) {
+  if (!proof) return false;
+  const raw = proof.blob != null ? proof.blob : proof.proof;
+  const field = proof.spendTag;
+  return Buffer.isBuffer(raw) && raw.length >= 33 && raw[0] === 3
+    && Buffer.isBuffer(field) && field.length === 32
+    && Buffer.isBuffer(proof.cTilde);
+}
+
+/**
+ * Versioned buffer proofs only. Shape proofs never enter, so this loop stays
+ * monomorphic. A probe chain longer than the load allows restarts through the set.
+ */
+function bindListedTight(vins, proofs) {
+  const n = vins.length;
+  if (n > 0x10000) return BIND_SLOW;
+  let capN = 2;
+  const need = n << 1;
+  while (capN < need) capN <<= 1;
+  const slot = new Uint32Array(capN);
+  const mask = capN - 1;
+  const tagOf = new Array(n);
+  for (let i = 0; i < n; i += 1) {
+    const proof = proofs[i];
+    const raw = proof.blob != null ? proof.blob : proof.proof;
+    const field = proof.spendTag;
+    const commit = vins[i].commit;
+    const want = proof.cTilde;
+    if (!raw || raw[0] !== 3) return BIND_SLOW;
+    if (raw.compare(field, 0, 32, 1, 33) !== 0) return { ok: false, reason: 'admit_tag' };
+    if (commit.length !== want.length || !commit.equals(want)) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+    tagOf[i] = field;
+    let h = (field.readUInt32BE(0) ^ field.readUInt32BE(8) ^ field.readUInt32BE(16) ^ field.readUInt32BE(24)) & mask;
+    let steps = 0;
+    while (slot[h] !== 0) {
+      if (tagOf[slot[h] - 1].equals(field)) return { ok: false, reason: 'admit_link_tag' };
+      h = (h + 1) & mask;
+      steps += 1;
+      if (steps > 24) return BIND_SLOW;
+    }
+    slot[h] = i + 1;
+  }
+  return { ok: true, tagOf };
+}
+
+/**
+ * Every Flow vin is bound to one Admit proof. cTilde must equal that vin's
+ * commit, the spend tag must be present, and an extra vin is not a proof.
+ * Call this before verifyFlowConservation so an unbound commit cannot enter the sum.
+ * Tag identity is one pass. A long probe chain restarts through a set so a
+ * hostile frame stays linear when the 8-input cap is bypassed.
+ */
+export function flowInputsBound(tx) {
+  const rawVins = Array.isArray(tx?.vin) ? tx.vin : [];
+  let vins = rawVins;
+  let shaped = false;
+  for (let i = 0; i < rawVins.length; i += 1) {
+    const v = rawVins[i];
+    if (!v || v.coinbase) { shaped = true; break; }
+  }
+  if (shaped) {
+    vins = rawVins.filter((x) => x);
+    if (!vins.length || vins.some((v) => v.coinbase)) {
+      return { ok: false, reason: 'admit_membership' };
+    }
+  } else if (!vins.length) {
+    return { ok: false, reason: 'admit_membership' };
+  }
+  const listed = tx?.admit_proofs;
+  const proofs = (Array.isArray(listed) && listed.length)
+    ? listed
+    : (tx?.admit_proof ? [tx.admit_proof] : []);
+  if (proofs.length !== vins.length) return { ok: false, reason: 'admit_membership' };
+  let placed;
+  if (versionedHead(proofs[0]) && versionedHead(proofs[proofs.length - 1])) {
+    try {
+      placed = bindListedTight(vins, proofs);
+    } catch {
+      placed = BIND_SLOW;
+    }
+    if (placed === BIND_SLOW || placed.slow) placed = bindListedSlow(vins, proofs);
+  } else {
+    placed = bindListedSlow(vins, proofs);
+  }
+  if (!placed.ok) return { ok: false, reason: placed.reason || 'admit_membership' };
+  const tagOf = placed.tagOf;
+  // The bound list is the only spend. A distinct admit_proof beside it is not
+  // a second input. Match it by the 32-byte tag already bound above. A full
+  // blob compare runs only on a tag hit, so a hostile extra proof cannot
+  // rescan every blob.
+  const extra = tx?.admit_proof;
+  if (extra && proofs.indexOf(extra) < 0) {
+    const extraTag = boundProofTag(extra);
+    let found = false;
+    if (extraTag.ok && extraTag.tag) {
+      for (let i = 0; i < proofs.length; i += 1) {
+        const tag = tagOf[i];
+        if (!tag || tag.length !== extraTag.tag.length || !tag.equals(extraTag.tag)) continue;
+        if (sameBoundProof(proofs[i], extra)) {
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found) return { ok: false, reason: 'admit_membership' };
+  }
+  const top = postedSpendTag(tx?.spendTag);
+  if (top.present && (!top.tag || !tagOf[0] || !top.tag.equals(tagOf[0]))) {
+    return { ok: false, reason: 'admit_tag' };
+  }
+  return { ok: true, proofs, vins };
+}
+
+/**
+ * Kinds that do not verify membership cannot carry a proof or a top spend tag.
+ * A queued or sealed blob would otherwise enter the spent set with no admit_verify.
+ * An empty list and an absent tag are not a carry.
+ */
+export function unboundMembershipCarry(tx) {
+  if (tx?.admit_proof) return { ok: false, reason: 'admit_membership' };
+  if (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length > 0) {
+    return { ok: false, reason: 'admit_membership' };
+  }
+  if (postedSpendTag(tx?.spendTag).present) return { ok: false, reason: 'admit_membership' };
+  return { ok: true };
+}
+
+/** Positive safe integer. '5.0', a bool, and a negative are not a lock. */
+function canonicalLockNanos(v) {
+  if (typeof v === 'boolean' || v == null || v === '') return null;
+  if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v) || v <= 0) return null;
+    return v;
+  }
+  if (typeof v === 'bigint') {
+    if (v <= 0n || v > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(v);
+  }
+  if (typeof v === 'string') {
+    if (!/^[1-9][0-9]*$/.test(v)) return null;
+    const n = Number(v);
+    if (!Number.isSafeInteger(n) || String(n) !== v || n <= 0) return null;
+    return n;
+  }
+  return null;
+}
+
+/**
+ * Nanos a tx locks into a B leaf. 0 means this tx is not creating a leaf.
+ * null means it asks for a leaf and the amount is not a positive safe integer.
+ * A b-spend is a draw on a leaf, not a new one.
+ */
+export function flowBLockNanos(tx) {
+  if (!tx || typeof tx !== 'object' || tx.coinbase) return 0;
+  if (String(tx.kind || '') === 'b-spend') return 0;
+  const ask = !!(tx.bFlag || tx.bExtra || String(tx.kind || '') === 'b-extra');
+  if (!ask) return 0;
+  const raw = tx.unit != null && tx.unit !== ''
+    ? tx.unit
+    : (tx.nanos != null && tx.nanos !== '' ? tx.nanos : tx.vout?.[0]?.nanos);
+  return canonicalLockNanos(raw);
+}
+
+/**
+ * sum(C_out) + (fee + B)·G = sum(C̃_in) + W·G + excess·H.
+ * W is the vault payout. It is 0 for Flow, lock, and vote. A withdraw
+ * passes W equal to the opened receipt, so a hidden change output lets
+ * the spent note open to fee + change. B is the leaf lock from flowBLockNanos.
+ * It is 0 when the tx is not creating a leaf, so a normal Flow caller is unchanged.
+ */
+export function verifyFlowConservation(tx, _spentOf, vaultPayout = 0) {
   try {
     const vouts = tx?.vout || [];
     const vins = tx?.vin || [];
@@ -415,9 +1057,14 @@ export function verifyFlowConservation(tx, _spentOf) {
     const inC = mintTotal(vins.map((v) => ({ commit: v.commit })));
     if (!outC || !inC) return false;
     if (!tx.excess) return false;
+    const lock = flowBLockNanos(tx);
+    if (lock == null) return false;
     const fee = Math.max(0, Math.floor(Number(tx.fee || 0)));
-    const lhs = fee ? outC.add(mulG(fee)) : outC;
-    const rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
+    const payout = Math.max(0, Math.floor(Number(vaultPayout) || 0));
+    const lhsAdd = BigInt(fee) + BigInt(lock);
+    const lhs = lhsAdd !== 0n ? outC.add(mulG(lhsAdd)) : outC;
+    let rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
+    if (payout) rhs = rhs.add(mulG(payout));
     return lhs.equals(rhs);
   } catch {
     return false;

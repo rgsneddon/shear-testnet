@@ -7,13 +7,18 @@ import 'package:crypto/crypto.dart';
 import 'shear_x25519.dart';
 import 'shear_ed25519.dart';
 import 'shear_admit.dart';
+import 'shear_ristretto.dart';
+
+/// One sentence for every payee route that is handed an ssa1 with no spendable B.
+const kErrShortSsa1 =
+    "This ssa1 is an old short form and can't receive spendable coins. Ask for their full she1, or a current Copy dest from Continuum.";
 
 const shearHrp = 'shear';
 const destHrp = 'ssa';
 /// Public-facing silent ID is she1 (HRP she). Never a dest.
 const payHrp = 'she';
-/// ADMITv2 book. A v9 shewall against this magic needs an explicit reset.
-const kBookMagic = 'shear-testnet-v11';
+/// Live book. A shewall from another magic needs an explicit reset.
+const kBookMagic = 'shear-testnet-v12';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {
@@ -114,6 +119,39 @@ bool isDestAddress(String s) {
   return bech32Hrp(t) == 'ssa' && _bech32BodyOk(t);
 }
 
+bool _ristrettoPointOk(Uint8List bytes) {
+  if (bytes.length != 32) return false;
+  try {
+    pointFrom(bytes);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Payee that can open a spendable note. Payload is exactly dest20||B, and B
+/// is a canonical ristretto element. Short dests stay addresses for watch uses.
+bool isPayableDest(String s) {
+  final t = s.trim();
+  if (bech32Hrp(t) != destHrp) return false;
+  final p = decodeBech32Payload(t);
+  if (p == null || p.length != 52) return false;
+  return _ristrettoPointOk(Uint8List.fromList(p.sublist(20, 52)));
+}
+
+String _stripPayeePrefix(String raw) {
+  var s = raw.trim();
+  if (s.startsWith('shear:')) s = s.substring(6).trim();
+  if (s.startsWith('shear1:')) s = s.substring(7).trim();
+  return s;
+}
+
+/// An ssa1 the recipient cannot open. Fingerprints and other HRPs are not this.
+bool isUnpayableSsa1(String raw) {
+  final s = _stripPayeePrefix(raw);
+  return isDestAddress(s) && !isPayableDest(s);
+}
+
 /// User-facing payee → on-chain dest. she1/shear1 never go on the book.
 /// ssa1 is itself. Full she1 is a one-time silent dest. shear1 is destCommit
 /// only when [spendPub] is that identity's (self / bound wallet).
@@ -121,11 +159,17 @@ String? payableChainDest(String raw, {Uint8List? spendPub, Uint8List? admitBase}
   var s = raw.trim();
   if (s.startsWith('shear:')) s = s.substring(6).trim();
   if (s.startsWith('shear1:')) s = s.substring(7).trim();
-  if (isDestAddress(s)) return s;
+  if (isPayableDest(s)) return s;
+  if (isDestAddress(s)) return null;
   if (isPaymentFingerprint(s)) return null;
-  if (isFullPaymentCode(s)) return silentPay(s)?.dest;
+  if (isFullPaymentCode(s)) {
+    final dest = silentPay(s)?.dest;
+    if (dest != null && isPayableDest(dest)) return dest;
+    return null;
+  }
   if (isShearAddress(s) && spendPub != null && spendPub.length == 32) {
-    return encodeDestAddress(destCommitFromSpendPub(spendPub), admitBase);
+    final built = encodeDestAddress(destCommitFromSpendPub(spendPub), admitBase);
+    return isPayableDest(built) ? built : null;
   }
   return null;
 }

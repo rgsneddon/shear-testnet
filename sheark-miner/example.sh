@@ -1,7 +1,8 @@
 #!/bin/sh
-# ShearK-Miner 2.8 (ShearHash-v3 light)
-# Public pool: stratum+ssl://pool.shear.digital:443  (shear-testnet-v4)
-# Live book is shear-testnet-v10. --print-config still reports magic shear-testnet-v4.
+# ShearK-Miner 2.9 (ShearHash-v3 light)
+# Public pool: stratum+ssl://pool.shear.digital:443
+# This build is for shear-testnet-v12. The pool refuses ShearK older than 2.9.
+# YOUR_SSA1.worker is a placeholder. Keep each host's worker name and payout address.
 # Localhost solo stays cleartext: stratum+tcp://127.0.0.1:1111
 #
 # Paid login is an ssa1 dest the wallet exported (Copy dest), then .worker.
@@ -13,7 +14,7 @@
 
 cd "$(dirname "$0")"
 if [ ! -x ./ShearK-Miner ]; then
-  echo "ShearK-Miner missing or not executable. Unpack the ShearK-Miner 2.8 zip for this machine first."
+  echo "ShearK-Miner missing or not executable. Unpack the ShearK-Miner 2.9 zip for this machine first."
   exit 1
 fi
 

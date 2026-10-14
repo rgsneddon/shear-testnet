@@ -9,6 +9,9 @@ import path from 'node:path';
 import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
+import { verifyLoadedChain, chainLoadSeal, chainWorkOf } from './chain.js';
+import { chainNoteRuleRejected } from '../../crypto/n1.js';
+import { bookSealKeyFor } from './book_seal_key.js';
 
 function hexHash(h) {
   if (h == null || h === '') return '';
@@ -78,7 +81,13 @@ export function shouldPublishBootstrap(tipH, lastCheckpoint) {
   return c >= BOOTSTRAP_FIRST_HEIGHT && c > Number(lastCheckpoint || 0);
 }
 
-/** Pruned prefix only. Overwrites latest.json + latest.bin. Lagged 5 blocks. */
+/**
+ * One image from genesis through the lagged tip. Overwrites latest.json + latest.bin.
+ * Buried blocks may be samplesPruned. The last `depth` blocks stay in the file,
+ * so verifyLoadedChain buries that prefix under this file's own tip.
+ * A samplesPruned block inside that window is not published.
+ * A requested depth below SAMPLE_PRUNE_CONFIRMATIONS does not shrink the window.
+ */
 export function writeLatestBootstrap(dataDir, blocks, {
   magic = MAGIC_TESTNET,
   pruneDepth = SAMPLE_PRUNE_CONFIRMATIONS,
@@ -86,14 +95,29 @@ export function writeLatestBootstrap(dataDir, blocks, {
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   const liveTip = Number(list.at(-1)?.height || 0);
-  const tipH = liveTip - Math.max(0, Number(lag) || 0);
-  if (tipH < pruneDepth + 1) return null;
-  const pruned = list.filter((b) => (
-    Number(b.height) <= tipH
-    && shouldPruneSamples(b.height, tipH, pruneDepth)
-    && b.samplesPruned
-  ));
-  if (!pruned.length) return null;
+  const lagN = Math.max(0, Math.floor(Number(lag) || 0));
+  const tipH = liveTip - lagN;
+  const asked = Math.floor(Number(pruneDepth));
+  const depth = Math.max(
+    SAMPLE_PRUNE_CONFIRMATIONS,
+    Number.isFinite(asked) && asked > 0 ? asked : SAMPLE_PRUNE_CONFIRMATIONS,
+  );
+  if (!Number.isInteger(tipH) || tipH < depth + 1) return null;
+  const byHeight = new Map();
+  for (const b of list) {
+    const h = Number(b?.height);
+    if (!Number.isInteger(h) || h < 1 || h > tipH) continue;
+    if (byHeight.has(h)) return null;
+    byHeight.set(h, b);
+  }
+  if (byHeight.size !== tipH) return null;
+  const pruned = [];
+  for (let h = 1; h <= tipH; h += 1) {
+    const b = byHeight.get(h);
+    if (!b) return null;
+    if (b.samplesPruned && !shouldPruneSamples(h, tipH, depth)) return null;
+    pruned.push(b);
+  }
   const last = pruned[pruned.length - 1];
   const first = pruned[0];
   const paths = latestPaths(dataDir);
@@ -102,7 +126,7 @@ export function writeLatestBootstrap(dataDir, blocks, {
   const manifest = {
     latest: true,
     magic,
-    pruneDepth,
+    pruneDepth: depth,
     height: Number(last.height),
     hash: hexHash(last.hash),
     genesisHash: hexHash(first.hash),
@@ -137,7 +161,30 @@ export function readLatestBootstrap(fromDir) {
       throw new Error('bootstrap_dropped_txs');
     }
   }
+  // Header and proof-of-work before N-1. A bad header does not derive a leaf.
+  const checked = verifyLoadedChain(blocks, { nowMs: Date.now() });
+  if (!checked.ok) throw new Error(checked.reason || 'pow');
+  const notes = chainNoteRuleRejected(blocks);
+  if (notes) throw new Error(notes.reason);
+  const install = bootstrapMayInstall([], blocks);
+  if (!install.ok) throw new Error(install.reason || 'checkpoint');
   return { manifest, blocks, paths };
+}
+
+/**
+ * A bootstrap installs only into an empty book.
+ * The remote chain must have positive work. It does not replace a chain.
+ * Genesis and checkpoint pins are enforced by verifyLoadedChain when set.
+ */
+export function bootstrapMayInstall(localBlocks, remoteBlocks) {
+  const local = Array.isArray(localBlocks) ? localBlocks : [];
+  const remote = Array.isArray(remoteBlocks) ? remoteBlocks : [];
+  if (local.length) return { ok: false, reason: 'bootstrap_datadir_not_empty' };
+  if (!remote.length) return { ok: false, reason: 'bootstrap_empty' };
+  let work = 0n;
+  try { work = chainWorkOf(remote); } catch { return { ok: false, reason: 'pow' }; }
+  if (work <= 0n) return { ok: false, reason: 'checkpoint' };
+  return { ok: true, work };
 }
 
 /** Empty datadir only. Copies latest.json + latest.bin into SHEAR_DATA and installs chain.bin. */
@@ -152,6 +199,8 @@ export function applyLatestBootstrap(dataDir, fromDir) {
   writeChainBin(dest.bin, blocks);
   fs.writeFileSync(dest.json, `${JSON.stringify(manifest)}\n`);
   writeChainBin(chainBin, blocks);
+  const key = bookSealKeyFor(dataDir);
+  fs.writeFileSync(path.join(dataDir, 'book.seal'), `${chainLoadSeal(blocks, key)}\n`);
   return manifest;
 }
 

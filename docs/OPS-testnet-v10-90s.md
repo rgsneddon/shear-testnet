@@ -1,6 +1,8 @@
 # shear-testnet-v10 — 90s tempo, no silent floor freeze
 
-Live book magic is `shear-testnet-v10`. A v8 or v9 datadir does not load. There is no soft-merge. Quarantine v8/v9-wrong packs and git head `6054186` (`6054186b9b5689656b2fa1000e01b08ee67a01f5`). Advertised gitHead is this tree's `git rev-parse HEAD`. `SHEAR_GIT_HEAD` does not label the book. `SHEAR_BITS` is not consensus next-work.
+This page is the closed v10 book. The live book `shear-testnet-v12` uses genesis-anchored aserti3-2d (`T=90000`, `τ=2h`). Do not retune a v10 datadir onto that step.
+
+Live book magic at the time of this note was `shear-testnet-v10`. A v8 or v9 datadir does not load. There is no soft-merge. Quarantine v8/v9-wrong packs and git head `6054186` (`6054186b9b5689656b2fa1000e01b08ee67a01f5`). Advertised gitHead is this tree's `git rev-parse HEAD`. `SHEAR_GIT_HEAD` does not label the book. `SHEAR_BITS` is not consensus next-work.
 
 ## Tempo
 

@@ -245,7 +245,9 @@ describe('oracle security pack (attester keys held)', () => {
     }
     const refused = await callReserve(session, encodeObserveRate(0, T0));
     assert.equal(refused.ok, false);
-    const bad = await callReserve(session, encodeCommitRate(0, 9999));
+    const recomputed = await callReserve(session, encodeCommitRate(0, 9999));
+    assert.equal(recomputed.ok, true, recomputed.reason);
+    const bad = await callReserve(session, encodeCommitRate(0, 10001));
     assert.equal(bad.ok, false);
     const ok = await callReserve(session, encodeCommitRate(0, GENESIS_BPS));
     assert.equal(ok.ok, true, ok.reason);

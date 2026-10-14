@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'shear_admit.dart';
 import 'shear_ctf.dart';
 import 'shear_eip712.dart';
 import 'shear_identity.dart';
@@ -13,7 +14,7 @@ import 'shear_shewall.dart';
 import 'shear_vortex.dart';
 
 /// Public wallet pin. Keep in lock-step with [kWalletVersion] in main.dart.
-const kCliVersion = '0.71';
+const kCliVersion = '0.72';
 
 /// GUI surface each command covers. Tests assert this map stays complete.
 const kCliGuiCoverage = <String, String>{
@@ -73,7 +74,7 @@ const kCliSignSubs = ['flow', 'pull', 'vote', 'lock'];
 const kCliHelp = '''
 Shear wallet CLI $kCliVersion  (GUI pin $kCliVersion)
 Book magic: $kBookMagic
-ADMIT = Anonymous Destination Membership Integer Transactions (ADMITv2)
+ADMITv3 is the full-set send proof. Flow sends are off until it ships.
 
 Every GUI function has a command. Nested --help prints that command only.
 Password never belongs on argv (it shows in ps). Use --password-file or
@@ -329,7 +330,7 @@ shear unlock — open a sealed session
     case 'dest':
       return 'shear dest — print the stable mining mailbox (homeDest / Copy dest). ShearK login is ssa1.worker\n';
     case 'balance':
-      return 'shear balance — spendable and pending SHE (confidential amounts)\n';
+      return 'shear balance — spendable and pending SHE\n';
     case 'receive':
       return 'shear receive — the one spendable address (not the mining mailbox)\n';
     case 'send':
@@ -352,7 +353,7 @@ Signs with the spend key (same as GUI Send).
 shear sign — sign with the spend key (never prints the key)
 
   shear sign flow --to she1…|ssa1… --amount SHE [--memo TEXT]
-      Same as `shear send`: ADMITv2 + BP+ Flow, spend-sig on the compact body.
+      Same as `shear send`. Off until the ADMITv3 full-set proof ships.
   shear sign pull --dest ssa1… --amount SHE
       EIP-712 pool-withdraw signature, then post (miner pull).
   shear sign vote --choice increase|decrease|hold
@@ -431,7 +432,7 @@ int _version(IOSink out, bool json) {
     'ok': true,
     'pin': kCliVersion,
     'magic': kBookMagic,
-    'admit': 'ADMITv2',
+    'admit': 'ADMITv3',
     'gui': true,
     'cli': true,
     'platforms': ['macos', 'windows', 'linux', 'archlinux', 'android'],
@@ -444,7 +445,7 @@ int _version(IOSink out, bool json) {
     },
     'mainnet': false,
   };
-  out.writeln(json ? jsonEncode(body) : 'Shear wallet $kCliVersion  magic $kBookMagic  ADMITv2  GUI+CLI');
+  out.writeln(json ? jsonEncode(body) : 'Shear wallet $kCliVersion  magic $kBookMagic  ADMITv3 (sends off)  GUI+CLI');
   return 0;
 }
 
@@ -663,6 +664,10 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
   final to = flags['to'];
   final amtRaw = flags['amount'];
   if (to == null || to.isEmpty) throw const FormatException('send needs --to she1… or ssa1… or shear1…');
+  if (isUnpayableSsa1(to)) {
+    err.writeln(kErrShortSsa1);
+    return 2;
+  }
   if (amtRaw == null) throw const FormatException('send needs --amount');
   final amount = double.parse(amtRaw);
   final session = _session(flags);
@@ -673,16 +678,25 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
   );
   _bindLedger(ledger, id, session);
   final from = ledger.currentDest(id.address, paymentCode: id.paymentCode);
-  final tx = await ledger.sendSpendableSum(
-    from: from,
-    to: to,
-    amount: amount,
-    memo: flags['memo'],
-    local: dry,
-    restFrame: id.address,
-    paymentCode: id.paymentCode,
-    spendSeed: hexToBytes(id.seedHex),
-  );
+  final ShearTx tx;
+  try {
+    tx = await ledger.sendSpendableSum(
+      from: from,
+      to: to,
+      amount: amount,
+      memo: flags['memo'],
+      local: dry,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: hexToBytes(id.seedHex),
+    );
+  } on StateError catch (e) {
+    if (e.message == kErrSendUnavailable) {
+      err.writeln(e.message);
+      return 2;
+    }
+    rethrow;
+  }
   final body = {
     'ok': true,
     'id': tx.id,
@@ -841,7 +855,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
   _bindLedger(ledger, id, session);
   final reserve = ShearReserve();
   if (session.rememberedReserve != null) {
-    reserve.applyLocalSnapshot(session.rememberedReserve!);
+    reserve.installRemembered(ledger, session.rememberedReserve!);
   }
   final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
   final now = DateTime.now().millisecondsSinceEpoch;
@@ -970,18 +984,26 @@ Future<int> _claimRewards(
   _Flags flags,
 ) async {
   final payout = flags['payout'] ?? dest;
-  final got = reserve.withdrawTo(ledger, dest: dest, payout: payout, nowMs: now);
-  if (got == null) {
+  final posted = await postReserveWithdraw(
+    ledger,
+    reserve: reserve,
+    dest: dest,
+    payout: payout,
+    nowMs: now,
+    local: ledger.pool == null,
+  );
+  if (posted == null) {
     err.writeln('nothing to claim — no staked principal or accrued rewards');
     return 1;
   }
+  final got = posted.settled;
   session.rememberedReserve = _portalSnap(reserve, dest, now);
   await session.persist();
   final she = (got['payout'] ?? 0) / kUnitsPerShe;
   final shown = Map<String, Object?>.from(got);
   shown['reserveReward'] = shown.remove('interest');
   out.writeln(flags.json
-      ? jsonEncode({'ok': true, 'payoutDest': payout, ...shown, 'payoutShe': formatShe(she)})
+      ? jsonEncode({'ok': true, 'payoutDest': payout, 'txid': posted.tx.id, 'kind': posted.tx.kind, ...shown, 'payoutShe': formatShe(she)})
       : 'claimed  principal=${shown['principal']}  reserveReward=${shown['reserveReward']}  onto $payout');
   return 0;
 }
@@ -992,7 +1014,9 @@ Future<int> _rewards(IOSink out, IOSink err, _Flags flags, Map<String, String> e
   final ledger = ShearLedger();
   _bindLedger(ledger, id, session);
   final reserve = ShearReserve();
-  if (session.rememberedReserve != null) reserve.applyLocalSnapshot(session.rememberedReserve!);
+  if (session.rememberedReserve != null) {
+    reserve.installRemembered(ledger, session.rememberedReserve!);
+  }
   final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
   final now = DateTime.now().millisecondsSinceEpoch;
   if (flags['claim'] == '1' || flags.rest.contains('claim')) {

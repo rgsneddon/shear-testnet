@@ -37,7 +37,7 @@ import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
-const kWalletVersion = '0.71';
+const kWalletVersion = '0.72';
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
@@ -252,6 +252,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   int _mempoolDepth = 0;
   String? _flowSendAdvisory;
   bool _flowSendOk = false;
+  bool _flowSending = false;
+  bool _reserveVoteBusy = false;
+
+  /// In-flight Flow send. Plate tests read the Cancel flag from here.
+  bool get debugFlowSending => _flowSending;
+  SendProgress? get debugFlowProgress => _flowProgress;
+  String? _flowFeeQuote;
+  String? _flowProgressText;
+  SendProgress? _flowProgress;
+  int _flowQuoteGen = 0;
   String? _flowReceiveDest;
   String? _spentDestWarn;
   bool _newMemoExpanded = false;
@@ -681,7 +691,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
         setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet to use ADMITv2 (shear-testnet-v11).');
+            'This shewall is from a prior book. Reset the wallet for $kBookMagic.');
         return;
       }
       setState(() => _lockError = 'Wrong password.');
@@ -878,7 +888,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       );
     }
     if (session.rememberedReserve != null) {
-      reserve.applyLocalSnapshot(session.rememberedReserve!);
+      reserve.installRemembered(ledger, session.rememberedReserve!);
     }
     if (!widget.skipPoolSync) {
       // _finishUnlockSync paints the shell before its credit await.
@@ -1576,7 +1586,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'she is private',
+                    'shear testnet',
                     style: TextStyle(color: theme.colorScheme.onSurface),
                   ),
                   const SizedBox(height: 8),
@@ -2144,6 +2154,20 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       return;
     }
     if (raw == null || raw.isEmpty) return;
+    if (isUnpayableSsa1(raw)) {
+      var shown = raw.trim();
+      if (shown.startsWith('shear:')) shown = shown.substring(6).trim();
+      if (shown.startsWith('shear1:')) shown = shown.substring(7).trim();
+      flowTo.text = shown;
+      _noteFlowTo(shown);
+      if (mounted) setState(() {});
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(kErrShortSsa1)),
+        );
+      }
+      return;
+    }
     final got = parseReceiveQr(raw);
     if (got == null) {
       if (context.mounted) {
@@ -2156,6 +2180,39 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     flowTo.text = got;
     _noteFlowTo(got);
     if (mounted) setState(() {});
+  }
+
+  String _flowPhaseLabel(SendProgress p) {
+    if (p.phase == 'select') return 'Selecting notes…';
+    if (p.phase == 'prove') return 'Building proof ${p.done}/${p.total}…';
+    if (p.phase == 'broadcast') return 'Broadcasting…';
+    return p.phase;
+  }
+
+  void _watchFlowProgress(SendProgress progress) {
+    progress.onChange = () {
+      if (!mounted) return;
+      setState(() => _flowProgressText = _flowPhaseLabel(progress));
+    };
+  }
+
+  Future<void> _refreshFlowFee() async {
+    final ident = id;
+    final gen = ++_flowQuoteGen;
+    final amt = double.tryParse(flowAmt.text) ?? 0;
+    final memo = flowMemo.text.trim().isNotEmpty;
+    if (ident == null || amt <= 0) {
+      if (mounted && gen == _flowQuoteGen) setState(() => _flowFeeQuote = null);
+      return;
+    }
+    final units = await ledger.quoteSendLevyUnits(
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+      amount: amt,
+      memo: memo,
+    );
+    if (!mounted || gen != _flowQuoteGen) return;
+    setState(() => _flowFeeQuote = formatShe(units / kUnitsPerShe));
   }
 
   void _noteFlowTo(String raw) {
@@ -2519,8 +2576,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           if (ledger.networkHashrate != null)
             _continuumStatRow(
               context,
-              'Network hashrate',
-              '${ledger.networkHashrate} H/s',
+              'Network rho',
+              '${ledger.networkHashrate} R/s',
             ),
           _continuumStatRow(context, 'Closure quantum', '${formatShe(path1.quantumShe)} SHE'),
           _continuumStatRow(context, 'Target flux', '${formatShe(path1.quantumShe)} SHE / $fluxSec s'),
@@ -2808,6 +2865,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         decoration: const InputDecoration(labelText: 'To (she1, ssa1, or shear1)'),
         onChanged: (v) => setState(() => _noteFlowTo(v)),
       ),
+      if (isUnpayableSsa1(flowTo.text)) ...[
+        const SizedBox(height: 8),
+        const Text(kErrShortSsa1, key: Key('flow-short-ssa1')),
+      ],
       if (_spentDestWarn != null) ...[
         const SizedBox(height: 8),
         Text(_spentDestWarn!, key: const Key('spent-dest-warn')),
@@ -2824,6 +2885,21 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onPressed: () async {
           final data = await Clipboard.getData('text/plain');
           final raw = data?.text ?? '';
+          if (isUnpayableSsa1(raw)) {
+            var shown = raw.trim();
+            if (shown.startsWith('shear:')) shown = shown.substring(6).trim();
+            if (shown.startsWith('shear1:')) shown = shown.substring(7).trim();
+            setState(() {
+              flowTo.text = shown;
+              _noteFlowTo(shown);
+            });
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text(kErrShortSsa1)),
+              );
+            }
+            return;
+          }
           final next = applyReceiveQrTo(flowTo.text, raw);
           if (next == flowTo.text) {
             final copy = receiveQrFailCopy(raw);
@@ -2845,11 +2921,25 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         controller: flowAmt,
         decoration: const InputDecoration(labelText: 'Amount SHE'),
         keyboardType: TextInputType.number,
+        onChanged: (_) => _refreshFlowFee(),
       ),
-      TextField(controller: flowMemo, decoration: const InputDecoration(labelText: 'Memo (optional)')),
+      TextField(
+        controller: flowMemo,
+        decoration: const InputDecoration(labelText: 'Memo (optional)'),
+        onChanged: (_) => _refreshFlowFee(),
+      ),
+      Text(
+        _flowFeeQuote == null ? 'Fee …' : 'Fee $_flowFeeQuote SHE',
+        key: const Key('flow-send-fee'),
+      ),
+      if (_flowProgressText != null)
+        Text(_flowProgressText!, key: const Key('flow-send-progress')),
       FilledButton(
         key: const Key('flow-send'),
-        onPressed: () async {
+        onPressed: _flowSending || isUnpayableSsa1(flowTo.text)
+            ? null
+            : () async {
+          if (!claimSingleSubmit(held: _flowSending)) return;
           if (sidecar.sendBlocked && !walletAtTip(_syncLabel)) {
             setState(() {
               _flowSendAdvisory = sidecar.sendBlockedCopy;
@@ -2857,37 +2947,129 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             });
             return;
           }
+          final nanosWire = parseSheDecimalToNanos(flowAmt.text.trim());
           final amount = double.tryParse(flowAmt.text) ?? 0;
-          final bare = sidecar.committed == ClosureSendMode.connectBare;
-          final result = await submitContinuumSend(
-            ledger: ledger,
-            restFrame: ident.address,
-            paymentCode: ident.paymentCode,
-            startTo: _flowAcceptedTo,
-            enteredTo: flowTo.text,
-            amount: amount,
-            memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
-            spendSeed: hexToBytes(ident.seedHex),
-            local: false,
-            allowPublicHttp: bare,
-            depth: _mempoolDepth,
-          );
-          if (!mounted) return;
-          setState(() {
-            flowTo.text = result.to;
-            if (result.posted && result.tx != null) {
-              _flowAcceptedTo = result.to;
-              _ingestTx(ident, result.tx!);
-              _focusedTxId = result.tx!.id;
-              _flowSendAdvisory = 'sent';
-              _flowSendOk = true;
-            } else {
-              _flowSendAdvisory = result.remark.isEmpty ? kErrSendGeneric : result.remark;
+          if (flowAmt.text.trim().isNotEmpty && nanosWire == null) {
+            setState(() {
+              _flowSendAdvisory = kErrSendGeneric;
               _flowSendOk = false;
-            }
+            });
+            return;
+          }
+          final bare = sidecar.committed == ClosureSendMode.connectBare;
+          final progress = SendProgress();
+          _watchFlowProgress(progress);
+          setState(() {
+            _flowSending = true;
+            _flowProgress = progress;
+            _flowProgressText = 'Selecting notes…';
           });
+          try {
+            final result = await submitContinuumSend(
+              ledger: ledger,
+              restFrame: ident.address,
+              paymentCode: ident.paymentCode,
+              startTo: _flowAcceptedTo,
+              enteredTo: flowTo.text,
+              amount: amount,
+              nanosWire: nanosWire,
+              memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
+              spendSeed: hexToBytes(ident.seedHex),
+              local: false,
+              allowPublicHttp: bare,
+              depth: _mempoolDepth,
+              progress: progress,
+            );
+            if (!mounted) return;
+            setState(() {
+              _flowSending = false;
+              _flowProgress = null;
+              _flowProgressText = null;
+              flowTo.text = result.to;
+              if (result.posted && result.tx != null) {
+                _flowAcceptedTo = result.to;
+                _ingestTx(ident, result.tx!);
+                _focusedTxId = result.tx!.id;
+                _flowSendAdvisory = 'sent';
+                _flowSendOk = true;
+              } else {
+                _flowSendAdvisory = result.remark.isEmpty ? kErrSendGeneric : result.remark;
+                _flowSendOk = false;
+              }
+            });
+          } catch (e) {
+            if (!mounted) return;
+            setState(() {
+              _flowSending = false;
+              _flowProgress = null;
+              _flowProgressText = null;
+              _flowSendAdvisory = flowSendAdvisoryOf(e);
+              _flowSendOk = false;
+            });
+          } finally {
+            if (mounted && _flowSending) {
+              setState(() {
+                _flowSending = false;
+                _flowProgress = null;
+                _flowProgressText = null;
+              });
+            }
+          }
         },
         child: const Text('Send'),
+      ),
+      if (_flowSending)
+        TextButton(
+          key: const Key('flow-send-cancel'),
+          onPressed: () => _flowProgress?.cancel(),
+          child: const Text('Cancel'),
+        ),
+      OutlinedButton(
+        key: const Key('flow-consolidate'),
+        onPressed: _flowSending
+            ? null
+            : () async {
+          if (!claimSingleSubmit(held: _flowSending)) return;
+          final who = id;
+          if (who == null) return;
+          final progress = SendProgress();
+          _watchFlowProgress(progress);
+          setState(() {
+            _flowSending = true;
+            _flowProgress = progress;
+            _flowProgressText = 'Selecting notes…';
+            _flowSendAdvisory = null;
+          });
+          try {
+            await ledger.consolidateSpendableNotes(
+              restFrame: who.address,
+              paymentCode: who.paymentCode,
+              spendSeed: hexToBytes(who.seedHex),
+              progress: progress,
+              allowPublicHttp: sidecar.committed == ClosureSendMode.connectBare,
+            );
+            if (!mounted) return;
+            setState(() {
+              _flowSendAdvisory = 'Consolidated';
+              _flowSendOk = true;
+            });
+          } catch (e) {
+            if (!mounted) return;
+            setState(() {
+              _flowSendAdvisory = flowSendAdvisoryOf(e);
+              _flowSendOk = false;
+            });
+          } finally {
+            if (mounted) {
+              setState(() {
+                _flowSending = false;
+                _flowProgress = null;
+                _flowProgressText = null;
+              });
+            }
+          }
+        },
+        child: const Text('Consolidate now'),
       ),
       if (_flowSendAdvisory != null) ...[
         const SizedBox(height: 8),
@@ -3113,7 +3295,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   String _txFeeAdvice(int amountNanos, {required String oneFeeTo, int? depth}) {
-    final L = levyNanos(amountNanos, depth: depth ?? _mempoolDepth);
+    final L = amountNanos == 0
+        ? estimateSendLevyUnits(inputs: 1, outputs: 1)
+        : levyNanos(amountNanos, depth: depth ?? _mempoolDepth);
     return 'Tx fee ${formatShe(L / kUnitsPerShe)} SHE from Continuum spendable (mempool L now). One fee to $oneFeeTo.';
   }
 
@@ -3528,8 +3712,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final out = reserve.withdrawTo(ledger, dest: dest, payout: to, nowMs: now);
-    if (out == null) {
+    final posted = await postReserveWithdraw(
+      ledger,
+      reserve: reserve,
+      dest: dest,
+      payout: to,
+      nowMs: now,
+      spendSeed: hexToBytes(ident.seedHex),
+      local: ledger.pool == null || widget.skipPoolSync,
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+    );
+    if (posted == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(reserveEpochStillOpenCopy())),
@@ -3540,12 +3734,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (mounted) setState(() {});
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Withdraw signed — Continuum updates when the payout is sealed')),
+        SnackBar(content: Text('Withdraw submitted — tx ${posted.tx.id}')),
       );
     }
   }
 
   Future<void> _reserveVote(BuildContext context, ShearIdentity ident, String choice) async {
+    if (!claimSingleSubmit(held: _reserveVoteBusy)) return;
+    _reserveVoteBusy = true;
+    if (mounted) setState(() {});
+    try {
+      await _reserveVoteBody(context, ident, choice);
+    } finally {
+      _reserveVoteBusy = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _reserveVoteBody(BuildContext context, ShearIdentity ident, String choice) async {
     final dest = _reserveDestOf(ident);
     if (dest == null || dest.isEmpty) return;
     final gate = reserveVoteGate(ledger, reserve, dest);
@@ -3567,8 +3773,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       return;
     }
     var depth = await _mempoolDepthNow();
-    var voteL = levyNanos(0, depth: depth);
-    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
+    var voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
+    if (!spendableCoversLevy(
+      ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+      voteL,
+    )) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE'),
@@ -3585,8 +3794,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
     if (sealed != true || !mounted) return;
     depth = await _mempoolDepthNow();
-    voteL = levyNanos(0, depth: depth);
-    if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < voteL / kUnitsPerShe) {
+    voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
+    if (!spendableCoversLevy(
+      ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+      voteL,
+    )) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE'),
@@ -3664,7 +3876,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final stakedShe = formatShe(p.staked / kUnitsPerShe);
     final idleShe = formatShe(p.idle / kUnitsPerShe);
     final totalShe = formatShe(p.nanos / kUnitsPerShe);
-    final programShe = formatShe(reserve.totalLockedNanos / kUnitsPerShe);
+    final programShe = formatSheFromNanos(reserve.totalLockedNanos);
+    final vortex = reconstructVortexSums(
+      reserve,
+      dest,
+      flowNanos: ledger.continuumFlowNanos(ident.address, paymentCode: ident.paymentCode),
+    );
     final needVoteShe = formatShe(p.remainingToVoteNanos / kUnitsPerShe);
     final rw = dest.isEmpty
         ? const ReserveRewards(
@@ -3824,6 +4041,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     ], key: const Key('reserve-yours-box'));
     final overall = _panel(context, [
             Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text('program ${vortex.overallNanos}', key: const Key('vortex-overall-program')),
             Text('Program locked  $programShe SHE'),
             Text('Program staked  ${formatShe(reserve.totalStakedNanos / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
             Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
@@ -3912,7 +4130,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ));
       voteKids.add(FilledButton(
         key: const Key('reserve-vote-submit'),
-        onPressed: draft == null ? null : () => _reserveVote(context, ident, draft),
+        onPressed: draft == null || _reserveVoteBusy
+            ? null
+            : () => _reserveVote(context, ident, draft),
         child: const Text('Cast vote'),
       ));
     }
@@ -3934,6 +4154,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             textAlign: TextAlign.left,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+          Text('portal ${vortex.yourNanos}', key: const Key('vortex-your-portal')),
+          Text('Flow continuum ${vortex.flowNanos}', key: const Key('vortex-flow-continuum')),
           Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
           Text('Idle  $idleShe SHE', textAlign: TextAlign.justify),
           Text(

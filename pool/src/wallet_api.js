@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, checkAddressField, hash20FromAddress } from '../../crypto/address.js';
 import { walletSubmitLog, newConnId, lineJoinsIpToIdentity } from '../../crypto/privacy_net.js';
 import {
@@ -11,38 +12,93 @@ import {
   MIN_CONFIRMS_POLICY,
   RESERVE_PROGRAM,
   extraMintAllowed,
-  potSubsidyAt,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
+  levyNeed,
+  bindWeightFee,
+  LEVY_CAP_NANOS,
   levyTaxed,
   txWeight,
   mempoolPressure,
   mempoolDepthBytes,
   poolPayoutDest,
-  poolFeeDest,
   poolWithdrawTx,
+  custodialPullAllowed,
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifyDestOpening, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
 import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
-import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations } from '../../crypto/chronoflux.js';
-import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
+import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';
+import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
-import { unpackShareBatch } from '../../crypto/pack.js';
 import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
+import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
+import { v3BucketSendRejected } from '../../crypto/fs1_send_gate.js';
 
 export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
+}
+
+/** Public recent window. Not a chain-height tuning. Headers already stop at 2000. */
+export const EXPLORER_RECENT_CAP = 256;
+export const EXPLORER_RANGE_CAP = 2000;
+
+let explorerVisits = 0;
+let explorerSyncs = 0;
+
+export function resetExplorerWalkStats() {
+  explorerVisits = 0;
+  explorerSyncs = 0;
+}
+
+export function explorerWalkStats() {
+  return { visits: explorerVisits, syncs: explorerSyncs };
+}
+
+const explorerBooks = new WeakMap();
+
+function blockHashHex(b) {
+  if (!b) return '';
+  try {
+    if (Buffer.isBuffer(b.hash)) return b.hash.toString('hex').toLowerCase();
+  } catch { /* string hash */ }
+  return String(b.hash || '').toLowerCase();
+}
+
+/** Index one blocks array. A replaced suffix rolls back by object identity. */
+function syncExplorerBook(list) {
+  if (!Array.isArray(list)) return null;
+  let idx = explorerBooks.get(list);
+  if (!idx) {
+    idx = { idents: [], byHeight: new Map(), byHash: new Map() };
+    explorerBooks.set(list, idx);
+  }
+  const idents = idx.idents;
+  while (idents.length > 0 && list[idents.length - 1] !== idents[idents.length - 1].block) {
+    const gone = idents.pop();
+    if (idx.byHeight.get(gone.height) === gone.block) idx.byHeight.delete(gone.height);
+    if (gone.hash && idx.byHash.get(gone.hash) === gone.block) idx.byHash.delete(gone.hash);
+  }
+  while (idents.length < list.length) {
+    const block = list[idents.length];
+    const height = Number(block?.height);
+    const hash = blockHashHex(block);
+    idents.push({ height, hash, block });
+    if (Number.isFinite(height)) idx.byHeight.set(height, block);
+    if (hash) idx.byHash.set(hash, block);
+    explorerSyncs += 1;
+  }
+  return idx;
 }
 
 function publicTxView(t) {
@@ -151,14 +207,15 @@ function rowsToHistory(rows, addresses, tipHeight = 0) {
   return { spendableNanos, spendable: nanosToShe(spendableNanos), txs };
 }
 
-/** Height-indexed when blocks[i].height === i+1 (the live book). O(1), not a chain scan. */
+/** Height-indexed when blocks[i].height === i+1 (the live book). A hole uses the book index, not a scan. */
 export function headerBlockAt(store, height) {
   const h = Math.floor(Number(height) || 0);
   if (h < 1) return null;
   const list = store?.blocks || [];
   const i = h - 1;
   if (i >= 0 && i < list.length && Number(list[i].height) === h) return list[i];
-  return list.find((x) => Number(x.height) === h) || null;
+  const idx = syncExplorerBook(list);
+  return idx?.byHeight.get(h) || null;
 }
 
 export function ownerDests(address) {
@@ -203,18 +260,22 @@ export function reconstructOwner(store, address) {
   const rec = rowsToHistory(rows, dests, tipH);
   const mempool = store?.mempool || [];
   const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-  // #37 ran the honest vout walk only when matureSpendableNanos was ≤ 0.
-  // Hash dust or one painted 0.99 made that sum positive and skipped the walk,
-  // so N × pot-after-fee stayed. Once sealed coinbase notes exist they replace
-  // explorer coinbase credit. A zero note scan still keeps unsealed history.
+  // One ledger. The live store already subtracted vault principal.
+  // A fixture with no index still opens notes, then subtracts principal once.
+  const liveSpendable = typeof store?.spendableNanos === 'function';
   let nanos = 0;
   for (const d of dests) {
-    const destRows = typeof store?.historyFor === 'function' ? store.historyFor(d) : rows;
-    const noteNanos = noteCommitSpendableNanos(store.blocks || [], d, tipH, {
-      hashBonusNanos: bonus,
-      coinbaseOnly: true,
-    });
-    nanos += reconcileSpendable(destRows, d, tipH, noteNanos);
+    if (liveSpendable) {
+      nanos += Math.max(0, Math.floor(Number(store.spendableNanos(d)) || 0));
+    } else {
+      const noteNanos = noteCommitSpendableNanos(store.blocks || [], d, tipH, {
+        hashBonusNanos: bonus,
+        coinbaseOnly: false,
+      });
+      const opened = reconcileSpendable([], d, tipH, noteNanos);
+      const locked = Math.max(0, Math.floor(Number(portalPrincipalNanos(store?.reserveVault, d)) || 0));
+      nanos += Math.max(0, opened - locked);
+    }
     nanos -= mempoolDebitNanos(mempool, d);
   }
   if (nanos < 0) nanos = 0;
@@ -344,15 +405,19 @@ export function mempoolReservePaint(store) {
   return rows.filter((r) => r.id);
 }
 
-export function sealedReservePaint(store) {
+export function sealedReservePaint(store, limit = Infinity) {
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
   const tipH = Number((typeof store?.tip === 'function' ? store.tip()?.height : 0) || list[list.length - 1]?.height || 0);
   const rows = [];
+  const finite = limit !== Infinity;
+  const cap = finite ? Math.max(1, Math.min(10000, Math.floor(Number(limit) || 30))) : Infinity;
   const sealed = Array.isArray(store?.explorer) && store.explorer.length
     ? store.explorer
     : null;
   if (sealed) {
-    for (const r of sealed) {
+    const src = finite ? sealed.slice(Math.max(0, sealed.length - cap)) : sealed;
+    for (const r of src) {
+      if (finite) explorerVisits += 1;
       const kind = String(r.kind || '');
       if (kind !== 'lock' && kind !== 'vote') continue;
       const to = publicPaintDest(r.to);
@@ -377,7 +442,9 @@ export function sealedReservePaint(store) {
     }
     return rows;
   }
-  for (const b of list) {
+  const src = finite ? list.slice(Math.max(0, list.length - cap)) : list;
+  for (const b of src) {
+    if (finite) explorerVisits += 1;
     for (const r of sealedExplorerRows(b) || []) {
       const kind = String(r.kind || '');
       if (kind !== 'lock' && kind !== 'vote') continue;
@@ -458,12 +525,20 @@ export function orderExplorerRecent(txs, limit = 30) {
   return merged.slice(0, n);
 }
 
+function examinedBlocks(store, limit) {
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  if (limit === Infinity) return list.length;
+  const n = Math.max(1, Math.min(10000, Math.floor(Number(limit) || 30)));
+  return Math.min(list.length, n);
+}
+
 /** Explorer recent: mempool lock/vote first, then sealed reserve rows + blocks. Hash-open-round omitted. */
 export function explorerRecentTxs(store, limit = 30) {
   const pending = mempoolReservePaint(store);
-  const sealed = sealedReservePaint(store).slice().reverse();
   const blockLimit = limit === Infinity ? Infinity : Math.max(Number(limit) || 30, 30);
+  const sealed = sealedReservePaint(store, blockLimit).slice().reverse();
   const blocks = confirmedBlockTxs(store, blockLimit);
+  if (limit !== Infinity) explorerVisits += examinedBlocks(store, blockLimit);
   const seen = new Set();
   const out = [];
   for (const t of [...pending, ...sealed, ...blocks]) {
@@ -501,14 +576,18 @@ export function findSealedBlock(store, q) {
   const id = String(q || '').trim();
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
   if (!id) return null;
-  if (/^\d+$/.test(id)) {
-    const h = Number(id);
-    return list.find((b) => Number(b.height) === h) || null;
-  }
+  const idx = syncExplorerBook(list);
   const want = id.toLowerCase();
-  for (const b of list) {
-    const hid = Buffer.isBuffer(b.hash) ? b.hash.toString('hex') : String(b.hash || '');
-    if (hid.toLowerCase() === want || hid.toLowerCase().startsWith(want)) return b;
+  // A 64-digit hash is still a hash. Number("...0002") is 2, so height must
+  // not win on a full block id.
+  if (want.length === 64 && /^[0-9a-f]+$/.test(want)) return idx?.byHash.get(want) || null;
+  if (/^\d+$/.test(id)) return idx?.byHeight.get(Number(id)) || null;
+  const n = Math.min(list.length, EXPLORER_RECENT_CAP);
+  const start = list.length - n;
+  for (let i = list.length - 1; i >= start; i -= 1) {
+    explorerVisits += 1;
+    const hid = blockHashHex(list[i]);
+    if (hid === want || hid.startsWith(want)) return list[i];
   }
   return null;
 }
@@ -594,6 +673,15 @@ export function publicBlockDetail(store, id) {
   };
 }
 
+function tipHeightOf(store) {
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  return Number(
+    (typeof store?.tip === 'function' ? store.tip()?.height : 0)
+    || list[list.length - 1]?.height
+    || 0,
+  );
+}
+
 export function searchExplorerTxs(store, q = {}) {
   const id = String(q.id || '').trim();
   const height = q.height != null && String(q.height).trim() !== '' ? Number(q.height) : NaN;
@@ -602,17 +690,45 @@ export function searchExplorerTxs(store, q = {}) {
   if (!id && !Number.isFinite(height) && !Number.isFinite(from) && !Number.isFinite(to)) {
     return confirmedBlockTxs(store, 30);
   }
-  let txs = confirmedBlockTxs(store, Infinity);
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  const tipH = tipHeightOf(store);
+  const rowOf = (b) => confirmedBlockRow(b, tipH);
   if (id) {
-    txs = txs.filter((t) => String(t.id) === id || String(t.id).includes(id));
-  } else if (Number.isFinite(height)) {
-    txs = txs.filter((t) => Number(t.height) === height);
-  } else if (Number.isFinite(from) || Number.isFinite(to)) {
-    const lo = Number.isFinite(from) ? from : -Infinity;
-    const hi = Number.isFinite(to) ? to : Infinity;
-    txs = txs.filter((t) => Number(t.height) >= lo && Number(t.height) <= hi);
+    if (/^\d+$/.test(id) || (id.length === 64 && /^[0-9a-fA-F]+$/.test(id))) {
+      const hit = findSealedBlock(store, id);
+      return hit ? [rowOf(hit)] : [];
+    }
+    const n = Math.min(list.length, EXPLORER_RECENT_CAP);
+    const start = list.length - n;
+    const out = [];
+    for (let i = list.length - 1; i >= start; i -= 1) {
+      explorerVisits += 1;
+      const row = rowOf(list[i]);
+      if (String(row.id) === id || String(row.id).includes(id)) out.push(row);
+    }
+    return out;
   }
-  return txs;
+  if (Number.isFinite(height)) {
+    const hit = findSealedBlock(store, String(Math.floor(height)));
+    return hit ? [rowOf(hit)] : [];
+  }
+  let lo = Number.isFinite(from) ? Math.floor(from) : null;
+  let hi = Number.isFinite(to) ? Math.floor(to) : null;
+  if (lo == null) lo = hi;
+  if (hi == null) hi = lo;
+  if (hi < lo) {
+    const swap = lo;
+    lo = hi;
+    hi = swap;
+  }
+  if (hi - lo + 1 > EXPLORER_RANGE_CAP) hi = lo + EXPLORER_RANGE_CAP - 1;
+  const out = [];
+  for (let h = hi; h >= lo; h -= 1) {
+    explorerVisits += 1;
+    const b = headerBlockAt(store, h);
+    if (b) out.push(rowOf(b));
+  }
+  return out;
 }
 
 function confidentialZeroNanos(o) {
@@ -620,130 +736,248 @@ function confidentialZeroNanos(o) {
   return Math.floor(Number(o.nanos) || 0) === 0;
 }
 
-/** Hash-bonus nanos minted in one sealed block. Compact shares drop dest; Tree-A counts remain.
- * Empty aLeaves and an empty shareBatch with one confidential hash vout (plaintext nanos 0)
- * is the sealed finder floor at unitsForShare(). */
+/**
+ * Hash-bonus nanos consensus minted in one sealed coinbase.
+ * Tree-A counts, share units, and owed rows are not a mint.
+ * One confidential hash vout with plaintext nanos 0 is the finder floor.
+ */
 export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
   const u = hashBonusUnitNanos(unit);
-  let n = 0;
-  for (const leaf of block?.aLeaves || []) {
-    n += Math.max(0, Math.floor(Number(leaf?.count) || 0)) * u;
-  }
-  if (n > 0) return n;
-  const packed = unpackShareBatch(block?.shareBatch || []);
-  if (packed.length) return packed.length * unitsForShare() * u;
   const cb = Array.isArray(block?.txs) ? block.txs[0] : null;
-  if (cb?.coinbase && Array.isArray(cb.vout)) {
-    const pays = [
-      ...expectedCoinbasePays(block.shareBatch || [], {
-        miner: block.miner,
-        hashBonusNanos: u,
-        potNanos: Number(block.blockSubsidyNanos) || undefined,
-      }),
-      ...paysFromALeaves(block.aLeaves || [], { hashBonusNanos: u }),
-    ];
-    const hashVouts = [];
-    for (const o of cb.vout) {
-      if (String(o.kind || '') !== 'hash') continue;
-      hashVouts.push(o);
-      const hit = matchSealedCoinbaseVout(o, pays);
-      n += Math.max(0, Math.floor(Number(hit.nanos || o.nanos || 0)));
-    }
-    if (n === 0 && hashVouts.length === 1 && confidentialZeroNanos(hashVouts[0])) {
-      n = unitsForShare() * u;
+  if (!cb || cb.coinbase !== true || !Array.isArray(cb.vout)) return 0;
+  let minted = 0;
+  let hashVouts = 0;
+  let confidentialFloor = false;
+  for (const o of cb.vout) {
+    if (String(o?.kind || '') !== 'hash') continue;
+    hashVouts += 1;
+    const raw = o?.valueProof && o.valueProof.v != null && o.valueProof.v !== '' && o.valueProof.v !== false
+      ? o.valueProof.v
+      : null;
+    if (raw != null) {
+      let n = null;
+      if (typeof raw === 'bigint') n = raw;
+      else if (typeof raw === 'number' && Number.isSafeInteger(raw)) n = BigInt(raw);
+      else if (typeof raw === 'string' && /^[0-9]+$/.test(raw)) {
+        try { n = BigInt(raw); } catch { n = null; }
+      }
+      if (n == null || n < 0n || n > BigInt(Number.MAX_SAFE_INTEGER)) return 0;
+      minted += Number(n);
+    } else if (confidentialZeroNanos(o)) {
+      confidentialFloor = true;
     }
   }
-  return n;
+  if (minted === 0 && hashVouts === 1 && confidentialFloor) return unitsForShare() * u;
+  return minted;
 }
 
-/** All SHE in existence: block pots + hash bonuses + extra mints − burns. Staked coin stays in. */
-let _supplyAt = -1;
-let _supplyVal = null;
-let _supplyBusy = false;
+/** All SHE in existence: the consensus supply, not a fresh proof walk. Staked coin stays out of the sum. */
+let supplyWorker = null;
+let supplyJobSeq = 0;
+const supplyWaiters = new Map();
+/** One book does not reuse another book's verdict, even when the tip hash collides. */
+const supplyCache = new WeakMap();
+const supplyJobs = new WeakMap();
+
+function cachedSupply(store, key) {
+  if (!store || typeof store !== 'object') return null;
+  const hit = supplyCache.get(store);
+  if (!hit || hit.key !== key || !hit.val || hit.val.supplyStatus === 'pending') return null;
+  return hit.val;
+}
+
+function rememberSupply(store, key, packed) {
+  if (!store || typeof store !== 'object') return;
+  if (supplyCacheKey(store) !== key) return;
+  supplyCache.set(store, { key, val: packed });
+}
+
+function forgetSupplyJob(store, key) {
+  if (!store || typeof store !== 'object') return;
+  const job = supplyJobs.get(store);
+  if (job && job.key === key) supplyJobs.delete(store);
+}
+
+/** O(1). Same height with a different tip hash is a different book. */
+export function supplyCacheKey(store) {
+  let height = 0;
+  let hash = '';
+  try {
+    const tip = typeof store?.tip === 'function' ? store.tip() : null;
+    if (tip) {
+      const n = Number(tip.height);
+      if (Number.isInteger(n) && n >= 0) height = n;
+      const raw = tip.hash;
+      hash = Buffer.isBuffer(raw) ? raw.toString('hex') : String(raw || '');
+    }
+  } catch { /* a raw list has no tip method */ }
+  if (!hash) {
+    const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
+    const last = blocks.length ? blocks[blocks.length - 1] : null;
+    const n = Number(last?.height);
+    height = Number.isInteger(n) && n >= 0 ? n : blocks.length;
+    const raw = last?.hash;
+    hash = Buffer.isBuffer(raw) ? raw.toString('hex') : String(raw || '');
+  }
+  return `${height}:${hash}`;
+}
+
+export function supplyStatusWord(status) {
+  if (status === 'verified' || status === 'pending' || status === 'unverifiable') return status;
+  return 'mismatch';
+}
+
+function supplyTipHeight(store) {
+  try {
+    const height = Number(store?.tip?.()?.height);
+    if (Number.isInteger(height) && height >= 0) return height;
+  } catch { /* raw lists */ }
+  const blocks = store?.blocks;
+  return Array.isArray(blocks) ? blocks.length : 0;
+}
+
+function packSupply(audit, store) {
+  const vault = publicVaultView(store?.reserveVault || {}, Date.now());
+  const word = supplyStatusWord(audit?.status);
+  const settled = word === 'verified' || word === 'mismatch';
+  return {
+    circulatingNanos: settled ? audit.circulatingNanos : null,
+    potNanos: settled ? audit.measuredPotNanos : null,
+    hashNanos: settled ? audit.measuredHashNanos : null,
+    hashOwedNanos: settled ? audit.hashOwedNanos : null,
+    levyNanos: settled ? audit.measuredLevyNanos : null,
+    extraMintNanos: settled ? audit.extraMintNanos : null,
+    burnedNanos: settled ? audit.burnedNanos : null,
+    schedulePotNanos: settled ? audit.schedulePotNanos : null,
+    carryNanos: settled ? audit.carryNanos : null,
+    differenceNanos: settled ? audit.differenceNanos : null,
+    supplyStatus: word,
+    supplyReason: audit?.reason || '',
+    asOfHeight: supplyTipHeight(store),
+    lockedNanos: Math.max(0, Math.floor(Number(vault.totalLockedNanos) || 0)),
+    accruingNanos: Math.max(0, Math.floor(Number(vault.accruingNanos) || 0)),
+    vaultNanos: Math.max(0, Math.floor(Number(vault.vaultNanos) || 0)),
+    reserveClaimableNanos: Math.max(0, Math.floor(Number(vault.reserveClaimableNanos) || 0)),
+    reserveMintedNanos: settled ? Math.max(0, Math.floor(Number(audit.extraMintNanos) || 0)) : null,
+  };
+}
+
+function pendingSupply(store) {
+  return packSupply({ status: 'pending', reason: 'pending' }, store);
+}
+
+function holdSupplyWorker() {
+  if (!supplyWorker) return;
+  if (supplyWaiters.size) supplyWorker.ref();
+  else supplyWorker.unref();
+}
+
+function failSupplyWaiters(err) {
+  for (const [id, waiter] of supplyWaiters) {
+    supplyWaiters.delete(id);
+    waiter.reject(err);
+  }
+  holdSupplyWorker();
+}
+
+function ensureSupplyWorker() {
+  if (supplyWorker) return supplyWorker;
+  supplyWorker = new Worker(new URL('../../node/src/supply_audit_worker.js', import.meta.url));
+  supplyWorker.on('message', (msg) => {
+    const waiter = supplyWaiters.get(msg?.id);
+    if (!waiter) return;
+    supplyWaiters.delete(msg.id);
+    holdSupplyWorker();
+    if (msg.error) waiter.reject(new Error(msg.error));
+    else waiter.resolve(msg.audit);
+  });
+  supplyWorker.on('error', (err) => {
+    const failed = supplyWorker;
+    supplyWorker = null;
+    failSupplyWaiters(err);
+    try { failed.terminate(); } catch { /* already gone */ }
+  });
+  supplyWorker.on('exit', (code) => {
+    if (supplyWorker) supplyWorker = null;
+    if (code) failSupplyWaiters(new Error(`audit_worker_${code}`));
+    holdSupplyWorker();
+  });
+  holdSupplyWorker();
+  return supplyWorker;
+}
+
+function runSupplyAudit(store, key) {
+  const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
+  const id = supplyJobSeq + 1;
+  supplyJobSeq = id;
+  const promise = new Promise((resolve, reject) => {
+    supplyWaiters.set(id, { key, resolve, reject });
+  });
+  const worker = ensureSupplyWorker();
+  holdSupplyWorker();
+  let index = 0;
+  const pump = () => {
+    const waiter = supplyWaiters.get(id);
+    if (!waiter || waiter.key !== key) return;
+    try {
+      if (index === 0) worker.postMessage({ id, type: 'start', length: blocks.length });
+      if (index >= blocks.length) {
+        worker.postMessage({ id, type: 'end' });
+        return;
+      }
+      worker.postMessage({ id, type: 'block', index, block: blocks[index] });
+      index += 1;
+      setImmediate(pump);
+    } catch (err) {
+      const failed = supplyWaiters.get(id);
+      supplyWaiters.delete(id);
+      holdSupplyWorker();
+      if (failed) failed.reject(err);
+    }
+  };
+  setImmediate(pump);
+  return promise.then((audit) => {
+    forgetSupplyJob(store, key);
+    const packed = packSupply(audit, store);
+    rememberSupply(store, key, packed);
+    return packed;
+  }, () => {
+    forgetSupplyJob(store, key);
+    const packed = packSupply({ status: 'unverifiable', reason: 'audit_worker' }, store);
+    rememberSupply(store, key, packed);
+    return packed;
+  });
+}
 
 export function networkSupply(store) {
-  const h = Number(store?.tip?.()?.height || store?.blocks?.length || 0);
-  if (h === _supplyAt && _supplyVal) return _supplyVal;
-  if (_supplyBusy) {
-    return _supplyVal || {
-      circulatingNanos: 0, potNanos: 0, hashNanos: 0, extraMintNanos: 0, burnedNanos: 0, lockedNanos: 0,
-    };
+  const consensus = typeof store?.supplyState === 'function' ? store.supplyState() : null;
+  if (consensus) return packSupply(supplyReport(consensus), store);
+  const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
+  if (!blocks.length) return packSupply(supplyReport(emptySupplyState(0)), store);
+  const key = supplyCacheKey(store);
+  const hit = cachedSupply(store, key);
+  if (hit) return hit;
+  let job = supplyJobs.get(store);
+  if (!job || job.key !== key) {
+    job = { key, promise: runSupplyAudit(store, key) };
+    supplyJobs.set(store, job);
   }
-  _supplyBusy = true;
-  try {
-    let extraMintNanos = 0;
-    let burnedNanos = 0;
-    const rows = store?.explorer;
-    if (Array.isArray(rows) && rows.length) {
-      for (const r of rows) {
-        const kind = String(r.kind || '');
-        const n = Math.max(0, Math.floor(Number(r.nanos || 0)));
-        if (!n) continue;
-        if (kind === 'burn') burnedNanos += n;
-        else if (r.mint === true) extraMintNanos += n;
-      }
-    } else {
-      for (const b of store?.blocks || []) {
-        for (const tx of b?.txs || []) {
-          if (tx?.coinbase) continue;
-          const n = Math.max(0, Math.floor(Number(tx.nanos || tx.vout?.[0]?.nanos || 0)));
-          if (!n) continue;
-          if (tx.mint === true) extraMintNanos += n;
-          const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
-          if (kind === 'burn') burnedNanos += n;
-        }
-      }
-    }
-    const blocks = store?.blocks || [];
-    let genesisMs = 0;
-    try {
-      const g = blocks[0];
-      if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
-    } catch { genesisMs = 0; }
-    const unit = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-    let potNanos = 0;
-    let notedPot = 0;
-    let hashNanos = 0;
-    for (const b of blocks) {
-      let ts = genesisMs;
-      try {
-        if (b?.header) ts = Number(decodeHeader(Buffer.from(b.header)).timestamp) || ts;
-      } catch { /* schedule */ }
-      potNanos += potSubsidyAt({ nowMs: ts || genesisMs, genesisMs: genesisMs || ts, magic: MAGIC_TESTNET });
-      hashNanos += hashBonusEmittedOfBlock(b, unit);
-      const cb = Array.isArray(b?.txs) ? b.txs[0] : null;
-      if (cb?.coinbase) {
-        for (const o of cb.vout || []) {
-          const kind = String(o.kind || '');
-          if (kind === 'hash' || kind === 'finder-fee' || kind === 'reserve-fee') continue;
-          notedPot += Math.max(0, Math.floor(Number(o.nanos) || 0));
-        }
-      }
-    }
-    if (notedPot > 0) potNanos = notedPot;
-    const vault = publicVaultView(store?.reserveVault || {}, Date.now());
-    const extra = Math.max(extraMintNanos, Math.floor(Number(vault.mintBankNanos) || 0));
-    const circulatingNanos = potNanos + hashNanos + extra - burnedNanos;
-    _supplyVal = {
-      circulatingNanos: circulatingNanos > 0 ? circulatingNanos : 0,
-      potNanos,
-      hashNanos,
-      extraMintNanos: extra,
-      burnedNanos,
-      lockedNanos: Math.max(0, Math.floor(Number(vault.totalLockedNanos) || 0)),
-      accruingNanos: Math.max(0, Math.floor(Number(vault.accruingNanos) || 0)),
-      vaultNanos: Math.max(0, Math.floor(Number(vault.vaultNanos) || 0)),
-      reserveMintedNanos: Math.max(0, Math.floor(Number(vault.reserveMintedNanos) || 0)),
-    };
-    _supplyAt = h;
-    return _supplyVal;
-  } finally {
-    _supplyBusy = false;
-  }
+  return pendingSupply(store);
+}
+
+/** The publish verdict once the off-loop audit has finished. Consensus state resolves now. */
+export function networkSupplySettled(store) {
+  const now = networkSupply(store);
+  if (now.supplyStatus !== 'pending') return Promise.resolve(now);
+  const job = store && typeof store === 'object' ? supplyJobs.get(store) : null;
+  if (job && job.key === supplyCacheKey(store)) return job.promise;
+  return Promise.resolve(now);
 }
 
 export function explorerCirculation(store) {
   const supply = networkSupply(store);
+  const word = supplyStatusWord(supply.supplyStatus);
+  const settled = word === 'verified' || word === 'mismatch';
   let noteCount = 0;
   for (const b of store.blocks || []) {
     for (const tx of b.txs || []) {
@@ -753,13 +987,17 @@ export function explorerCirculation(store) {
     }
   }
   return {
-    proofs: true,
+    proofs: word === 'verified',
+    supplyStatus: word,
+    differenceNanos: settled ? Number(supply.differenceNanos) || 0 : null,
+    schedulePotNanos: settled ? Number(supply.schedulePotNanos) || 0 : null,
     amountHidden: false,
     noteCount,
-    circulatingNanos: supply.circulatingNanos,
-    circulating: nanosToShe(supply.circulatingNanos),
-    emitted: nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos),
-    reserveMintedNanos: supply.reserveMintedNanos || 0,
+    circulatingNanos: settled ? supply.circulatingNanos : null,
+    circulating: settled ? nanosToShe(supply.circulatingNanos) : null,
+    emitted: settled ? nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos) : null,
+    hashOwedNanos: settled ? Number(supply.hashOwedNanos) || 0 : null,
+    reserveMintedNanos: settled ? Math.max(0, Math.floor(Number(supply.extraMintNanos) || 0)) : null,
     reserveVaultNanos: supply.vaultNanos || supply.lockedNanos || 0,
     accruingNanos: supply.accruingNanos || 0,
     holderCount: 0,
@@ -784,6 +1022,7 @@ function publicHashTag(login) {
   return `m${hex}`;
 }
 
+/** Open-round work is not a mint. `included` stays false until a sealed hash note exists. */
 export function openRoundHashRows(miners, hashBonusNanos) {
   const book = miners && typeof miners.values === 'function'
     ? [...miners.values()]
@@ -802,7 +1041,7 @@ export function openRoundHashRows(miners, hashBonusNanos) {
       count,
       weight: count,
       fee: 0,
-      included: true,
+      included: false,
       priority: 800 + count,
       prime: false,
       tag,
@@ -903,7 +1142,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
         count,
         weight: count,
         fee: 0,
-        included: true,
+        included: false,
         priority: 800 + count,
         prime: false,
         tag,
@@ -982,6 +1221,7 @@ export function paintedSpendableNanos(store, pullBook, address, chainNanos) {
 
 /** Dest-scoped owed-π / confirming pot from the pull-book (credits still below π). */
 export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30 } = {}) {
+  if (!custodialPullAllowed()) return { owedPi: 0, confirmingPot: 0 };
   if (!pullBook || typeof pullBook.viewByDest !== 'function' || !isDestAddress(address)) {
     return { owedPi: 0, confirmingPot: 0 };
   }
@@ -990,20 +1230,153 @@ export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30
   return { owedPi: she, confirmingPot: she };
 }
 
-function requestDestOpen(url, body) {
-  const q = url && url.searchParams
-    ? (url.searchParams.get('open') || url.searchParams.get('destOpen') || '')
-    : '';
-  const posted = body && typeof body === 'object' ? (body.open || body.destOpen || '') : '';
-  return String(q || posted || '');
+/** A local opening on a hidden output is not relayed. Public reserve kinds keep v. */
+function stripHiddenValueOpen(kind, vout) {
+  if (!Array.isArray(vout)) return vout;
+  const tx = { kind: kind || '' };
+  return vout.map((o) => {
+    if (!o || typeof o !== 'object') return o;
+    if (!Object.prototype.hasOwnProperty.call(o, 'valueProof')) return o;
+    if (outputMayCarryValueOpen(tx, o)) return o;
+    const next = { ...o };
+    delete next.valueProof;
+    return next;
+  });
 }
 
-/** Bare address is not a view. No balance, notes, txs, or amounts in the body. */
-function destHoldResponse(address, open) {
-  if (!verifyDestOpening(String(address || ''), String(open || ''))) {
-    return { status: 401, json: { ok: false, reason: 'dest_hold' } };
+/**
+ * AL-5. Address-keyed routes that answered with per-note amounts. A wallet
+ * recovers its own amounts from amtCt over the public block sync.
+ */
+export const AMOUNT_ROUTES = new Set(['/api/wallet/notes', '/api/wallet/balance', '/api/wallet/history']);
+
+/** AL-3. A send request is the sealed tx only. None of these may be present, even empty. */
+export const SEND_HINT_KEYS = Object.freeze([
+  'amount', 'nanos', 'from', 'to', 'change', 'changeNanos', 'paintedOwedNanos', 'open', 'destOpen',
+]);
+
+/**
+ * The wallet built every output. The server reads no amount, address, change,
+ * or opening, and queues the posted body. The FS-1 gate still answers first.
+ */
+function sealedSendOnly(body, { queueSend }) {
+  const gate = v3BucketSendRejected({ ...body, kind: 'send' });
+  if (gate) return { status: 400, json: { ok: false, reason: gate.reason, state: gate.state } };
+  for (const k of SEND_HINT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(body, k) && body[k] !== undefined) {
+      return { status: 400, json: { ok: false, reason: 'send_hint', field: k } };
+    }
+  }
+  const proofs = Array.isArray(body.admit_proofs) ? body.admit_proofs.filter(Boolean) : [];
+  const sealed = !!(body.admit_proof || proofs.length)
+    && Array.isArray(body.vin) && body.vin.length > 0
+    && Array.isArray(body.vout) && body.vout.length > 0;
+  if (!sealed) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  if (!(body.sig || body.signature) || !body.spendPub) {
+    return { status: 403, json: { ok: false, reason: 'unsigned' } };
+  }
+  const fee = parseIntegerNanos(body.fee);
+  if (fee == null) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const draft = {
+    kind: 'send',
+    fee: wireNanos(fee),
+    maxLevy: body.maxLevy != null ? body.maxLevy : wireNanos(fee),
+    vin: body.vin,
+    vout: body.vout,
+    sig: body.sig || body.signature,
+    spendPub: body.spendPub,
+    ...(body.memoCt ? { memoCt: body.memoCt } : {}),
+    ...(body.excess ? { excess: body.excess } : {}),
+    ...(body.admit_proof ? { admit_proof: body.admit_proof } : {}),
+    ...(body.spendTag != null ? { spendTag: body.spendTag } : {}),
+    ...(proofs.length ? { admit_proofs: proofs } : {}),
+  };
+  const open = valueOpenRejected(draft);
+  if (open) return { status: 400, json: { ok: false, reason: open.reason } };
+  if (dummyCount(draft) < 1) return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
+  const need = levyNeed(draft);
+  if (!(Number(fee) >= need) || Number(fee) > LEVY_CAP_NANOS) {
+    return { status: 400, json: { ok: false, reason: 'levy' } };
+  }
+  const tx = typeof queueSend === 'function' ? queueSend(draft, { paintedOwedNanos: 0 }) : null;
+  if (!tx || (typeof tx === 'object' && tx.ok === false)) {
+    return { status: 400, json: { ok: false, reason: tx?.reason || 'queue_failed' } };
+  }
+  const submitLine = walletSubmitLog({ connId: newConnId(), ok: true });
+  if (lineJoinsIpToIdentity(submitLine)) return { status: 500, json: { ok: false, reason: 'log' } };
+  return {
+    status: 200,
+    json: { ok: true, tx: { id: tx.id, kind: 'send', confirmed: false, memo: !!body.memoCt }, log: submitLine },
+  };
+}
+
+/** The client attached a spend body. A from/to/amount quote is not one. */
+function clientPostedSpendBody(body) {
+  if (!body || typeof body !== 'object') return false;
+  if (body.admit_proof) return true;
+  if (Array.isArray(body.admit_proofs) && body.admit_proofs.length > 0) return true;
+  return Array.isArray(body.vin) && body.vin.length > 0
+    && Array.isArray(body.vout) && body.vout.length > 0;
+}
+
+function clientHasSpendSig(body) {
+  return !!(body && (body.sig || body.signature) && body.spendPub);
+}
+
+const SHE_SCALE = 100_000_000_000n;
+const MAX_SAFE_NANOS = 9007199254740991n;
+
+function wireNanos(n) {
+  return n <= MAX_SAFE_NANOS ? Number(n) : n.toString();
+}
+
+/** Decimal integer nanos. A JS number is accepted only while it is still exact. */
+export function parseIntegerNanos(raw) {
+  if (typeof raw === 'bigint') return raw >= 0n ? raw : null;
+  if (typeof raw === 'number') {
+    if (!Number.isSafeInteger(raw) || raw < 0) return null;
+    return BigInt(raw);
+  }
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!/^\d+$/.test(s)) return null;
+    return BigInt(s);
   }
   return null;
+}
+
+/**
+ * SHE as a decimal string, or a JS number only when nanos stay inside 2^53.
+ * A number past that is refused. It is not rounded into a nearby integer.
+ */
+export function parseSheToNanos(raw) {
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw) || raw < 0) return null;
+    const legacy = Math.round(raw * Number(SHE_SCALE));
+    if (!Number.isSafeInteger(legacy) || legacy < 0) return null;
+    return BigInt(legacy);
+  }
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) return null;
+  const [whole, frac = ''] = s.split('.');
+  if (frac.length > 11 && /[^0]/.test(frac.slice(11))) return null;
+  const frac11 = frac.slice(0, 11).padEnd(11, '0');
+  return BigInt(whole) * SHE_SCALE + BigInt(frac11 || '0');
+}
+
+export function parseSendNanos(body) {
+  if (body && body.nanos != null && body.nanos !== '') {
+    const n = parseIntegerNanos(body.nanos);
+    if (n == null) return { ok: false };
+    return { ok: true, nanos: n };
+  }
+  if (body && body.amount != null && body.amount !== '') {
+    const n = parseSheToNanos(body.amount);
+    if (n == null) return { ok: false };
+    return { ok: true, nanos: n };
+  }
+  return { ok: true, nanos: null };
 }
 
 export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
@@ -1067,147 +1440,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       },
     };
   }
-  if (path === '/api/wallet/notes' && verb === 'GET') {
-    const address = url.searchParams.get('address') || '';
-    if (!isDestAddress(address)) {
-      return { status: 400, json: { ok: false, reason: 'bad_address' } };
-    }
-    const notesHeld = destHoldResponse(address, requestDestOpen(url, body));
-    if (notesHeld) return notesHeld;
-    const d20 = hash20FromAddress(address);
-    const want = d20 ? noteCommitOfDest20(d20) : null;
-    const hex = (x) => {
-      try {
-        if (x == null) return undefined;
-        return Buffer.from(typeof x?.toBytes === 'function' ? x.toBytes() : x).toString('hex');
-      } catch {
-        return undefined;
-      }
-    };
-    // R and z stay on the note. A bare {v} is not a value proof, so it is not
-    // forwarded as one. Hex strings are already encoded; Buffer.from(utf8) would
-    // corrupt them and the wallet would never open the proof.
-    const proofHex = (x) => {
-      if (x == null) return undefined;
-      try {
-        if (typeof x === 'string') {
-          const s = x.trim().toLowerCase();
-          if (/^[0-9a-f]+$/.test(s) && s.length >= 64 && s.length % 2 === 0) return s;
-          return undefined;
-        }
-        if (typeof x?.toBytes === 'function') return Buffer.from(x.toBytes()).toString('hex');
-        if (x && typeof x === 'object' && x.type === 'Buffer' && Array.isArray(x.data)) {
-          return Buffer.from(x.data).toString('hex');
-        }
-        if (Buffer.isBuffer(x) || x instanceof Uint8Array) {
-          const b = Buffer.from(x);
-          return b.length ? b.toString('hex') : undefined;
-        }
-      } catch {
-        return undefined;
-      }
-      return undefined;
-    };
-    const notes = [];
-    for (const b of store?.blocks || []) {
-      const prev = hex(b.hash) || hex(b.header && b.header.length >= 32 ? b.hash : null);
-      for (const tx of b.txs || []) {
-        (tx.vout || []).forEach((o, index) => {
-          if (!o?.commit || !o?.noteCommit || !want) return;
-          if (!Buffer.from(o.noteCommit).equals(want)) return;
-          let nanos;
-          if (tx.coinbase) {
-            const bonus = hashBonusUnitNanos(store?.reserveVault?.liveHashBonusNanos);
-            const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-            const custodyDest = custodyPoolDestOf(b, potNanos);
-            const custodialPot = !!custodyDest;
-            const pays = expectedCoinbasePays(b.shareBatch || [], custodialPot ? {
-              miner: b.miner,
-              poolDest: custodyDest,
-              hashBonusNanos: bonus,
-              potNanos,
-              custodialPot: true,
-              feeDest: poolFeeDest(),
-            } : {
-              miner: b.miner,
-              poolDest,
-              hashBonusNanos: bonus,
-              potNanos: Number(b.blockSubsidyNanos) || undefined,
-            });
-            nanos = matchSealedCoinbaseVout(o, pays).nanos || undefined;
-            if (nanos == null) {
-              nanos = matchSealedCoinbaseVout(o, paysFromALeaves(b.aLeaves || [], {
-                hashBonusNanos: bonus,
-                custodialPot,
-              })).nanos || undefined;
-            }
-          }
-          if (nanos == null && o.valueProof?.v != null) {
-            const v = Math.floor(Number(o.valueProof.v));
-            if (Number.isFinite(v) && v > 0) nanos = v;
-          }
-          if (!(nanos > 0) && tx.coinbase) {
-            const opened = openedCoinbaseNanos(o, Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS);
-            if (opened > 0) nanos = opened;
-          }
-          const proofR = proofHex(o.valueProof?.R);
-          const proofZ = proofHex(o.valueProof?.z);
-          notes.push({
-            kind: o.kind || (tx.coinbase ? 'pot' : 'send'),
-            noteCommit: hex(o.noteCommit),
-            commit: hex(o.commit),
-            rEph: hex(o.rEph),
-            rCt: hex(o.rCt),
-            admitPub: hex(o.admitPub),
-            viewTag: hex(o.viewTag),
-            dest20: hex(o.dest20),
-            prev,
-            index,
-            height: b.height,
-            coinbase: !!tx.coinbase,
-            ...(nanos != null ? {
-              nanos,
-              amount: nanosToShe(nanos),
-            } : {}),
-            ...(proofR && proofZ && nanos != null ? {
-              valueProof: { R: proofR, z: proofZ, v: nanos },
-            } : {}),
-          });
-        });
-      }
-    }
-    return { status: 200, json: { ok: true, notes } };
-  }
-  if (path === '/api/wallet/balance' && verb === 'GET') {
-    const address = url.searchParams.get('address') || '';
-    if (!isDestAddress(address) && !isPaymentCode(address)) {
-      return { status: 400, json: { ok: false, reason: 'bad_address' } };
-    }
-    const balanceHeld = destHoldResponse(address, requestDestOpen(url, body));
-    if (balanceHeld) return balanceHeld;
-    const rec = reconstructOwner(store, address);
-    const pending = pendingFor(miners, address);
-    const incoming = mempoolIncoming(store, address);
-    const tipH = store.tip?.()?.height || 0;
-    const need = typeof store.getpolicy === 'function'
-      ? (store.getpolicy().operational?.pool_merchant || 30)
-      : 30;
-    const owed = owedPiFromPullBook(pullBook, address, { tipHeight: tipH, need });
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        coin: 'SHE',
-        address,
-        balance: rec.spendable,
-        pending: pending.amount,
-        incoming,
-        reconstructed: rec.spendable,
-        height: tipH,
-        owedPi: owed.owedPi,
-        confirmingPot: owed.confirmingPot,
-      },
-    };
+  if (AMOUNT_ROUTES.has(path)) {
+    return { status: 404, json: { ok: false, reason: 'route' } };
   }
   if (path === '/api/wallet/register' && verb === 'POST') {
     return { status: 404, json: { ok: false, reason: 'register_disabled' } };
@@ -1269,29 +1503,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     return { status: 200, json: { ok: true, coin: 'SHE', ...circ } };
   }
   if (path === '/api/explorer/recent' && verb === 'GET') {
-    const txs = explorerRecentTxs(store, Infinity);
+    const txs = explorerRecentTxs(store, EXPLORER_RECENT_CAP);
     return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
   }
   if (path === '/api/pool/recent-txs' && verb === 'GET') {
     const txs = explorerRecentTxs(store, 30);
     return { status: 200, json: { ok: true, txs, asset: 'SHE' } };
-  }
-  if (path === '/api/wallet/history' && (verb === 'GET' || verb === 'POST')) {
-    if (url.searchParams.get('viewKey')) {
-      return { status: 400, json: { ok: false, reason: 'viewKey_query_forbidden' } };
-    }
-    const address = url.searchParams.get('address') || body.address || '';
-    if (!isDestAddress(address) && !isPaymentCode(address)) {
-      return { status: 400, json: { ok: false, reason: 'bad_address' } };
-    }
-    const historyHeld = destHoldResponse(address, requestDestOpen(url, body));
-    if (historyHeld) return historyHeld;
-    const rec = reconstructOwner(store, address);
-    const rolled = rollupDestTxs(rec.txs, { revealDest: true });
-    return {
-      status: 200,
-      json: { ok: true, coin: 'SHE', txs: rolled, amountsOnly: false, destProof: true, rolled: true },
-    };
   }
   if (path === '/api/vortex/mint' && verb === 'POST') {
     if (typeof store?.mintVorticeDeployKey !== 'function') {
@@ -1320,6 +1537,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (isShearAddress(body.from) || isShearAddress(body.to)) {
       return { status: 400, json: { ok: false, reason: 'rest_frame' } };
     }
+    if (String(body.kind || 'send') === 'send') {
+      return sealedSendOnly(body, { queueSend });
+    }
     const from = isDestAddress(String(body.from || '')) ? String(body.from).trim() : '';
     const rawTo = String(body.to || '').trim();
     let to = '';
@@ -1329,43 +1549,68 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     } else if (isFullPaymentCode(rawTo) || isPaymentCode(rawTo)) {
       return { status: 400, json: { ok: false, reason: 'need_dest' } };
     }
-    const amount = Number(body.amount);
+    const parsed = parseSendNanos(body);
+    if (!parsed.ok) return { status: 400, json: { ok: false, reason: 'bad_send' } };
     const kindIn = String(body.kind || 'send');
     const programIn = String(body.programId || '');
     const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
     const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
     const isWithdraw = kindIn === 'withdraw' && programIn === RESERVE_PROGRAM;
-    if (!isDestAddress(from) || !isDestAddress(to)) {
+    const multiProofsEarly = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
+    const sealedSendEarly = kindIn === 'send'
+      && (body.admit_proof || multiProofsEarly)
+      && Array.isArray(body.vin) && body.vin.length
+      && Array.isArray(body.vout) && body.vout.length
+      && (body.sig || body.signature)
+      && body.spendPub;
+    if ((!sealedSendEarly && !isDestAddress(from)) || !isDestAddress(to)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    if (!(amount > 0) && !isVote) {
+    const nanosBi = isVote ? 0n : parsed.nanos;
+    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
+    }
+    if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {
+      return { status: 400, json: { ok: false, reason: 'bad_kind' } };
     }
     const poolPay = isDestAddress(String(poolDest || '')) ? String(poolDest) : '';
     if (poolPay && from === poolPay) {
       return { status: 403, json: { ok: false, reason: 'pool_dest' } };
     }
-    const rec = reconstructOwner(store, from);
-    const nanos = isVote ? 0 : Math.round(amount * NANOS_PER_SHE);
+    const rec = (sealedSendEarly && !isDestAddress(from))
+      ? { spendableNanos: 0 }
+      : reconstructOwner(store, from);
+    const nanos = nanosBi == null ? 0 : wireNanos(nanosBi);
+    const amount = typeof nanos === 'number' ? nanos / NANOS_PER_SHE : nanos;
     const chainNanos = rec.spendableNanos;
+    const multiProofs = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
     const sealedSend = kindIn === 'send'
-      && body.admit_proof
+      && (body.admit_proof || multiProofs)
       && Array.isArray(body.vin) && body.vin.length
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
       && body.spendPub;
+    // A posted body with no signature is unsigned, including when the book is short.
+    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && (kindIn === 'send' || isLock || isVote || isWithdraw)) {
+      return { status: 403, json: { ok: false, reason: 'unsigned' } };
+    }
     if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
+    if (Array.isArray(body.vout)) body.vout = stripHiddenValueOpen(kindIn, body.vout);
+    const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
+    if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
     const memoCt = body.memoCt || null;
-    if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {
-      return { status: 400, json: { ok: false, reason: 'bad_kind' } };
-    }
     const kind = isLock ? 'lock' : isVote ? 'vote' : isWithdraw ? 'withdraw' : 'send';
     const programId = (isLock || isVote || isWithdraw) ? RESERVE_PROGRAM : '';
     const taxed = levyTaxed({ kind, programId });
-    const depth = mempoolDepthBytes(store?.mempool || []);
-    const fee = taxed ? levyNanos(nanos, { depth }) : 0;
+    const postedFee = (body.fee == null || body.fee === '') ? null : parseIntegerNanos(body.fee);
+    if ((body.fee != null && body.fee !== '') && postedFee == null) {
+      return { status: 400, json: { ok: false, reason: 'bad_send' } };
+    }
+    let fee = postedFee != null
+      ? wireNanos(postedFee)
+      : (taxed ? levyNanos(0) : 0);
     if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
@@ -1387,6 +1632,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       for (const o of postedVout) vout.push(o);
     }
     const parked = kind === 'send' && changeDest && leftover > 0;
+    let withdrawNonce;
+    if (isWithdraw && body.withdrawNonce != null && body.withdrawNonce !== '') {
+      try {
+        withdrawNonce = withdrawNonceBytes(body.withdrawNonce);
+      } catch {
+        return { status: 400, json: { ok: false, reason: 'kt10_nonce' } };
+      }
+    }
     const draft = isLock
       ? {
         ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
@@ -1409,7 +1662,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         }
         : isWithdraw
         ? {
-          ...withdrawTx({ from, to, nanos, id: `withdraw-${Date.now()}` }),
+          ...withdrawTx({
+            from,
+            to,
+            nanos,
+            id: typeof body.id === 'string' && body.id ? body.id : `withdraw-${Date.now()}`,
+            nonce: withdrawNonce,
+          }),
           fee,
           sig: body.sig || body.signature,
           spendPub: body.spendPub,
@@ -1422,12 +1681,28 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           vout,
           ...(body.excess ? { excess: body.excess } : {}),
           ...(body.admit_proof ? { admit_proof: body.admit_proof, spendTag: body.spendTag || body.admit_proof.spendTag } : {}),
+          ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
+    if (taxed && postedFee == null) bindWeightFee(draft);
+    if (taxed) {
+      const need = levyNeed(draft);
+      const paid = Number(draft.fee);
+      if (!(paid >= need) || paid > LEVY_CAP_NANOS) {
+        return { status: 400, json: { ok: false, reason: 'levy' } };
+      }
+      fee = draft.fee;
+    }
     if (kind === 'send' && dummyCount(draft) < 1) {
       return { status: 400, json: { ok: false, reason: 'dummy_outs' } };
     }
-    if (kind === 'send' && !draft.admit_proof) {
+    if (kind === 'send' && multiProofs) {
+      const need = levyNeed(draft);
+      if (!(fee >= need) || fee > LEVY_CAP_NANOS) {
+        return { status: 400, json: { ok: false, reason: 'levy' } };
+      }
+    }
+    if (kind === 'send' && !draft.admit_proof && !multiProofs) {
       const chainCovers = chainNanos >= nanos + fee;
       if (!(chainCovers && verifySpendSig(draft))) {
         return { status: 400, json: { ok: false, reason: 'admit_membership' } };
@@ -1476,6 +1751,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         extraMint: extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' }),
         ...publicVaultView(vault, now),
         ...portalRewards(vault, dest, now),
+        sums: vortexSums(vault, dest, url.searchParams.get('flow') || 0),
       },
     };
   }

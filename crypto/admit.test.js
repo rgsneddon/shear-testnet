@@ -3,123 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { randomScalar, commit, pointBytes, sealCoinbaseNote } from './note.js';
-import { newIdentity } from './address.js';
-import { admitPub, admitProve, admitVerify, jroot, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks, attachAdmitPub, proveFlowSpend } from './admit.js';
+import { randomScalar, commit, pointBytes } from './note.js';
+import { admitPub, admitProveV3, admitVerifyV3, jrootPoint, emptyFluxset, applyBlockToFluxset, fluxsetFromBlocks } from './admit.js';
 import { nativeLoaded, nativeMaxProof, nativeArity } from './native_admit.js';
 
-const SIB = 32 * 32;
-const LEAF_PAIRED = 32 * 2 + 64 + 32 * 32 * 5;
-
-describe('ADMITv2 fluxset membership', () => {
-  it('proves a spend is admissible in the fluxset; a sampled subset is the wrong set', () => {
-    const n = 8;
-    const xs = Array.from({ length: n }, () => randomScalar());
-    const pubs = xs.map(admitPub);
-    const commits = xs.map((_, i) => pointBytes(commit(i + 1, randomScalar())));
-    const index = 3;
-    let admit_proof;
-    try {
-      admit_proof = admitProve({ x: xs[index], index, pubs, commits, c: commits[index] });
-    } catch (e) {
-      assert.fail(String(e && e.stack || e));
-    }
-    assert.ok(admit_proof, `prove failed n=${n} dest=${pubs.length} c=${commits.length} idx=${index} c0=${commits[0] && commits[0].length}`);
-    assert.equal(admit_proof.admit_proof, true);
-    assert.equal(admit_proof.v, 2);
-    assert.ok(admit_proof.blob[0] === 2);
-    assert.equal(admitVerify(admit_proof, { pubs, commits }, { cTilde: admit_proof.cTilde, spendTag: admit_proof.spendTag }), true);
-    const jr = jroot({ pubs, commits });
-    assert.equal(admitVerify(admit_proof, { pubs: [], commits: [] }, { jroot: jr, cTilde: admit_proof.cTilde, spendTag: admit_proof.spendTag }), true);
-    assert.equal(admitVerify(admit_proof, { pubs: pubs.slice(0, 4), commits: commits.slice(0, 4) }, { cTilde: admit_proof.cTilde, spendTag: admit_proof.spendTag }), false);
-    const other = admitProve({ x: xs[0], index: 0, pubs, commits, c: commits[0] });
-    assert.ok(other);
-    assert.equal(Buffer.from(admit_proof.spendTag).equals(Buffer.from(other.spendTag)), false);
-    const v1 = { admit_proof: true, spendTag: admit_proof.spendTag, c0: Buffer.alloc(32), r: pubs.map(() => Buffer.alloc(32)) };
-    assert.equal(admitVerify(v1, { pubs, commits }, { cTilde: admit_proof.cTilde }), false);
-    const root = Buffer.from(jr);
-    const otherRoot = Buffer.from(jroot({ pubs: pubs.slice(0, 4), commits: commits.slice(0, 4) }));
-    assert.equal(root.length, 32);
-    assert.equal(root.equals(otherRoot), false);
-  });
-
-  it('proveFlowSpend uses the fluxset commit column and does not copy the spent commit', () => {
-    const seed = newIdentity().spendSeed;
-    const pot = attachAdmitPub(
-      sealCoinbaseNote(5, { dest20: Buffer.alloc(20, 3), kind: 'pot' }),
-      { spendSeed: seed },
-    );
-    const hash = attachAdmitPub(
-      sealCoinbaseNote(9, { dest20: Buffer.alloc(20, 4), kind: 'hash' }),
-      { spendSeed: seed },
-    );
-    const pubs = [pot.admitPub, hash.admitPub];
-    const commits = [pot.commit, hash.commit];
-    const bare = () => ({ kind: 'send', vin: [{}], vout: [{ kind: 'send' }] });
-    const dropped = proveFlowSpend(bare(), { spendSeed: seed, spentNote: pot, pubs });
-    assert.equal(dropped.admit_proof, undefined);
-    const copied = proveFlowSpend(bare(), {
-      spendSeed: seed,
-      spentNote: pot,
-      pubs,
-      commits: [pot.commit, pot.commit],
-    });
-    const jr = jroot({ pubs, commits });
-    if (copied.admit_proof) {
-      assert.equal(admitVerify(copied.admit_proof, { pubs, commits }, {
-        jroot: jr,
-        cTilde: copied.admit_proof.cTilde,
-        spendTag: copied.admit_proof.spendTag,
-      }), false);
-    }
-    const proved = proveFlowSpend(bare(), { spendSeed: seed, spentNote: pot, pubs, commits });
-    assert.ok(proved.admit_proof, 'real commit column proves');
-    assert.equal(admitVerify(proved.admit_proof, { pubs, commits }, {
-      jroot: jr,
-      cTilde: proved.admit_proof.cTilde,
-      spendTag: proved.admit_proof.spendTag,
-    }), true);
-  });
-
-  it('native verify rejects from-scratch non-member, self-minted C̃, mixed dest/C siblings', () => {
-    const n = 40;
-    const xs = Array.from({ length: n }, () => randomScalar());
-    const pubs = xs.map(admitPub);
-    const commits = xs.map((_, i) => pointBytes(commit(i + 2, randomScalar())));
-    const victim = admitProve({ x: xs[7], index: 7, pubs, commits, c: commits[7] });
-    const other = admitProve({ x: xs[39], index: 39, pubs, commits, c: commits[39] });
-    assert.ok(victim && other);
-    const extra = (p) => ({ cTilde: p.cTilde, spendTag: p.spendTag });
-    assert.equal(admitVerify(victim, { pubs, commits }, extra(victim)), true);
-    const pAtt = pointBytes(pubs[7]);
-    const hdr = Buffer.from(victim.blob).subarray(1, 1 + 32 * 8 + 1);
-    assert.equal(hdr.includes(pAtt), false);
-    const ax = randomScalar();
-    const aPub = admitPub(ax);
-    const aC = pointBytes(commit(99, randomScalar()));
-    const aPubs = [aPub, ...pubs.slice(1)];
-    const aCommits = [aC, ...commits.slice(1)];
-    const attackerOwn = admitProve({ x: ax, index: 0, pubs: aPubs, commits: aCommits, c: aC });
-    assert.ok(attackerOwn);
-    const forged = admitProve({ x: ax, index: 7, pubs, commits, c: commits[7] });
-    assert.ok(forged);
-    assert.equal(admitVerify(forged, { pubs, commits }, extra(forged)), false);
-    const jr = jroot({ pubs, commits });
-    assert.equal(admitVerify(attackerOwn, { pubs: [], commits: [] }, { jroot: jr, cTilde: attackerOwn.cTilde, spendTag: attackerOwn.spendTag }), false);
-    const minted = Buffer.from(victim.blob);
-    minted[33] ^= 0x5a;
-    const fakeCt = Buffer.from(victim.cTilde);
-    fakeCt[0] ^= 0x5a;
-    assert.equal(admitVerify({ ...victim, blob: minted }, { pubs, commits }, { cTilde: fakeCt, spendTag: victim.spendTag }), false);
-    const vBlob = Buffer.from(victim.blob);
-    const oBlob = Buffer.from(other.blob);
-    const mixed = Buffer.from(vBlob);
-    const offV = vBlob.length - LEAF_PAIRED - SIB;
-    const offO = oBlob.length - LEAF_PAIRED - SIB;
-    oBlob.subarray(offO, offO + SIB).copy(mixed, offV);
-    assert.equal(admitVerify({ ...victim, blob: mixed }, { pubs, commits }, extra(victim)), false);
-  });
-
+describe('fluxset membership', () => {
   it('applyBlockToFluxset matches fluxsetFromBlocks and empty J has a 32-byte jroot', () => {
     const x = randomScalar();
     const P = admitPub(x);
@@ -142,9 +30,46 @@ describe('ADMITv2 fluxset membership', () => {
     assert.equal(fromBlocks.pubs.length, 3);
     assert.equal(Buffer.from(folded.jroot).equals(Buffer.from(fromBlocks.jroot)), true);
     const src = fs.readFileSync(fileURLToPath(new URL('./admit.js', import.meta.url)), 'utf8');
-    const fn = src.slice(src.indexOf('export function fluxsetFromBlocks'), src.indexOf('export function compactAdmitProof'));
-    assert.match(fn, /jroot\(\{ pubs, commits \}\)/);
+    const fn = src.slice(src.indexOf('export function fluxsetFromBlocks'), src.indexOf('export function fluxsetIndexOf'));
+    assert.match(fn, /appendFluxBlock\(live, b\)/);
     assert.equal(fn.includes('applyBlockToFluxset'), false);
+    const install = src.slice(src.indexOf('function installFrontiers'), src.indexOf('export function fluxWithLeaves'));
+    assert.match(install, /jroot\(\{ pubs: dest\.pubs, commits: dest\.commits \}\)/);
+  });
+});
+
+describe('ADMITv3 fresh point', () => {
+  it('seals an honest note and rejects a fresh point that is not in the set', () => {
+    const n = 8;
+    const xs = Array.from({ length: n }, () => randomScalar());
+    const pubs = xs.map(admitPub);
+    const commits = xs.map((_, i) => pointBytes(commit(i + 1, randomScalar())));
+    const index = 3;
+    const t = randomScalar();
+    const ctx = Buffer.alloc(64, 7);
+    ctx[0] = 0x33;
+    const proof = admitProveV3({ x: xs[index], index, pubs, commits, c: commits[index], t, ctx });
+    assert.ok(proof, 'honest v3 seal');
+    assert.equal(proof.v, 3);
+    assert.equal(proof.blob[0], 3);
+    const jr = jrootPoint({ pubs, commits });
+    assert.equal(admitVerifyV3(proof, { pubs, commits }, {
+      jroot: jr, ctx, cTilde: proof.cTilde, spendTag: proof.spendTag,
+    }), true);
+    const ax = randomScalar();
+    const aC = pointBytes(commit(50000, randomScalar()));
+    assert.equal(admitProveV3({
+      x: ax, index: 0, pubs, commits, c: aC, t, ctx,
+    }), null);
+    const aPubs = [admitPub(ax), ...pubs.slice(1)];
+    const aCommits = [aC, ...commits.slice(1)];
+    const outsider = admitProveV3({
+      x: ax, index: 0, pubs: aPubs, commits: aCommits, c: aC, t, ctx,
+    });
+    assert.ok(outsider, 'a fresh point proves only inside a set that contains it');
+    assert.equal(admitVerifyV3(outsider, { pubs, commits }, {
+      jroot: jr, ctx, cTilde: outsider.cTilde, spendTag: outsider.spendTag,
+    }), false);
   });
 });
 

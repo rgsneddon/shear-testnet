@@ -1,19 +1,23 @@
 /**
- * Funded-spend law. A dest cannot pay more than its mature Continuum.
- * Incoming in the same block / mempool is not spendable (9-conf).
- * Outgoing on the sealed book always debits, even before 6 confs —
- * otherwise a dest could send, wait, and send the same coins again.
+ * Funded-spend law. v12 value comes from a balanced ADMITv3 input.
+ * An address balance is not value, and spendableOf is not consulted.
  * Spend authority is Ed25519 over shear-spend-v1 || packDigest.
  */
 import { createHash, createPublicKey, sign, verify } from 'node:crypto';
-import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN } from './asert.js';
-import { levyTaxed, txAmountNanos } from './levy.js';
-import { isSpendableHeight } from './chronoflux.js';
+import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM } from './asert.js';
+import { levyTaxed, txAmountNanos, custodialPullRejected } from './levy.js';
+import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
-import { claimedVoutNanos, reserveDest20Open } from './dummy.js';
-import { asU8 } from './note.js';
+import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
+import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
+import { interestNanos } from './reserve_oracle.js';
+import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
+import { typedAdmitStructure } from './admit_v3.js';
+import { MEMBER_KEYS } from './member_keys.js';
+
+export { MEMBER_KEYS };
 
 function dest20Of(addr) {
   const h = hash20FromAddress(addr);
@@ -38,15 +42,67 @@ function dest20Field(x) {
   return Buffer.alloc(20);
 }
 
+function lenPref(buf) {
+  const body = Buffer.from(buf || []);
+  const n = Buffer.alloc(4);
+  n.writeUInt32LE(body.length >>> 0);
+  return Buffer.concat([n, body]);
+}
+
+function canonicalFee(tx) {
+  const n = Math.floor(Number(tx?.fee || 0));
+  const v = Number.isSafeInteger(n) && n > 0 ? n : 0;
+  const out = Buffer.alloc(8);
+  out.writeBigUInt64LE(BigInt(v));
+  return out;
+}
+
+function proofBlob(proof) {
+  if (!proof) return Buffer.alloc(0);
+  const raw = proof.blob || proof.proof || (Buffer.isBuffer(proof) ? proof : null);
+  if (raw == null) return Buffer.alloc(0);
+  try {
+    return Buffer.from(asU8(raw));
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+export const SPEND_AMT_DST = Buffer.from('shear-spend-amt-v1');
+
+/** Flow sends sign every output's amtCt, empty when absent, beside the packed body. */
+function flowAmtDigest(packed, vout) {
+  const outs = Array.isArray(vout) ? vout : [];
+  const h = createHash('sha256').update(SPEND_AMT_DST).update(packed);
+  const count = Buffer.alloc(4);
+  count.writeUInt32LE(outs.length >>> 0);
+  h.update(count);
+  for (const o of outs) h.update(lenPref(voutAmtCt(o)));
+  return h.digest();
+}
+
+function voutAmtCt(o) {
+  try {
+    return Buffer.from(asU8(o?.amtCt || []));
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
 /** Pack digest of the spend body. sig and open are not hashed. */
 export function spendPackDigest(tx) {
   const vins = (tx?.vin || []).map((v, i) => {
     const nc = asU8(v.noteCommit);
     const prev = asU8(v.prev);
+    let d20 = nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : dest20Field(v.dest20);
+    if (d20.every((b) => b === 0)) {
+      const h = hash20FromAddress(v.address || '');
+      if (h) d20 = Buffer.from(h);
+    }
     return {
       prev: prev.length === 32 ? Buffer.from(prev) : Buffer.alloc(32),
       index: Number(v.index || i),
-      dest20: nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : Buffer.alloc(20),
+      dest20: d20,
     };
   });
   const vouts = (tx?.vout || []).map((o) => {
@@ -62,13 +118,33 @@ export function spendPackDigest(tx) {
       kind: kindByte(o.kind || tx?.kind),
     };
   });
-  return packDigest(packTx({
+  const packed = packDigest(packTx({
     version: 1,
     vins: vins.length ? vins : [{ prev: Buffer.alloc(32), index: Number(tx?.height || 0), dest20: Buffer.alloc(20) }],
     vouts,
     memoH: tx?.memoH || null,
     bFlag: tx?.bFlag || tx?.kind === 'b-spend' ? 1 : 0,
   }));
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return flowAmtDigest(packed, tx?.vout);
+  // Portal, fee, and the admit blob are signed. A stolen sig cannot be
+  // retargeted, repriced, or pointed at a different proof. Flow sends stay
+  // on the packed body alone.
+  const h = createHash('sha256')
+    .update(packed)
+    .update(Buffer.from(String(tx?.portalId || '').toLowerCase()))
+    .update(Buffer.from(String(tx?.payoutPortalId || '').toLowerCase()))
+    .update(canonicalFee(tx));
+  const proofs = [];
+  if (tx?.admit_proof) proofs.push(tx.admit_proof);
+  if (Array.isArray(tx?.admit_proofs)) proofs.push(...tx.admit_proofs);
+  const count = Buffer.alloc(4);
+  count.writeUInt32LE(proofs.length >>> 0);
+  h.update(count);
+  for (const proof of proofs) h.update(lenPref(proofBlob(proof)));
+  const reserveSuffix = reserveDigestSuffix(tx);
+  if (reserveSuffix) h.update(reserveSuffix);
+  return h.digest();
 }
 
 export function spendMessage(tx) {
@@ -310,52 +386,470 @@ function destOpeningShape(open) {
 }
 
 /**
- * A public dest20 with no spend pub used to skip the signature check.
- * A withdraw can never take that path.
- */
-export function publicReserveReceipt(tx) {
-  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind === 'withdraw') return false;
-  if (spendPubFromTx(tx)) return false;
-  const o = tx?.vout?.[0];
-  if (!o?.dest20 || !o?.commit || !o?.valueProof) return false;
-  return true;
-}
-
-/**
- * Vote/lock/withdraw prove the vault dest by spend sig. Opening is local-only.
- * Withdraw always needs the owner spend sig. A public receipt is not a withdraw.
+ * Vote/lock/withdraw authority is the owner signature. A range proof is not
+ * an authorization, and a missing spendPub is not an authorization.
  */
 export function verifyReservePortalOpen(tx) {
   if (!reserveNeedsPortalOpen(tx)) return true;
-  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind === 'withdraw') {
-    if (publicReserveReceipt(tx)) return false;
-    if (!spendPubFromTx(tx)) return false;
-    return verifySpendSig(tx);
-  }
-  // Gossip compact drops the address string and the local opening. The spend
-  // pub and sig are the admit proof. A body with no spend pub stays on the
-  // historical compact path: sealed range proof, modern commit+valueProof
-  // (spendPub stripped; rangeProof-only is not enough), or dest20 with no Pedersen C.
-  if (spendPubFromTx(tx)) return verifySpendSig(tx);
-  const dest = reservePortalDest(tx);
-  if (!dest) {
-    const o = tx?.vout?.[0];
-    if (o?.commit && o.rangeProof && o.rangeProof !== true) return true;
-    if (o?.commit && o.valueProof && o.valueProof !== true) return true;
-    return reserveDest20Open(o);
-  }
+  if (!spendPubFromTx(tx)) return false;
   return verifySpendSig(tx);
+}
+
+function v3CommitCovers(tx, vin) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return false;
+  let posted = null;
+  try {
+    const b = Buffer.from(asU8(vin?.commit));
+    if (b.length === 32) posted = b;
+  } catch { posted = null; }
+  if (!posted) return false;
+  const proofs = [];
+  if (tx?.admit_proof) proofs.push(tx.admit_proof);
+  if (Array.isArray(tx?.admit_proofs)) proofs.push(...tx.admit_proofs);
+  for (const proof of proofs) {
+    const blob = proof?.blob || proof?.proof;
+    if (!blob) continue;
+    const pr = Buffer.from(asU8(blob));
+    if (!pr.length || pr[0] !== 3) continue;
+    try {
+      const ct = Buffer.from(asU8(proof.cTilde));
+      if (ct.length === 32 && ct.equals(posted)) return true;
+    } catch { /* next proof */ }
+  }
+  return false;
+}
+
+/** Body kinds that may move value. Anything else is an address-funded mint. */
+export const V12_VALUE_KINDS = new Set([
+  'send',
+  'transfer',
+  'lock',
+  'vote',
+  'withdraw',
+  'b-spend',
+]);
+
+/**
+ * The top-level kind. A missing kind, or a first output whose kind differs,
+ * is empty so a vout label cannot impersonate a balance rule.
+ */
+export function txKind(tx) {
+  if (!tx || tx.coinbase) return '';
+  const top = tx.kind == null ? '' : String(tx.kind);
+  if (!top) return '';
+  const raw = tx.vout?.[0]?.kind;
+  if (raw != null && String(raw) !== '' && String(raw) !== top) return '';
+  return top;
+}
+
+/** claim, evm-value, pool-withdraw, vortice-register, user-spend, and unknown kinds. */
+export function v12KindRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = txKind(tx);
+  if (!kind || !V12_VALUE_KINDS.has(kind)) return { ok: false, reason: 'kind' };
+  return null;
+}
+
+/**
+ * Only the block's first tx is the coinbase. A later tx that wears the flag
+ * skips kind, range, flow, and the levy, so a fee on it mints finder-fee and
+ * reserve-fee notes. Any truthy flag is that skip. A proof or spend tag on
+ * the same tx is still admit_membership, from the carry check that runs first.
+ */
+export function userCoinbaseRejected(tx) {
+  if (!tx || !tx.coinbase) return null;
+  return { ok: false, reason: 'coinbase' };
+}
+
+/**
+ * A refused kind that spends a note without a signature is unsigned.
+ * A missing signature is not a permanent kind failure.
+ * A refused kind with no note, or with a valid signature, stays kind.
+ */
+export function unsignedRefusedSpend(tx) {
+  if (!tx || tx.coinbase) return null;
+  if (!v12KindRejected(tx)) return null;
+  if (!vinCarriesNote(tx)) return null;
+  if (!flowSendNeedsOpen(tx)) return null;
+  if (verifySpendSig(tx)) return null;
+  return { ok: false, reason: 'unsigned' };
+}
+
+// Openings and wire secrets. compactTx strips them. They are not an extra field
+// on the tx body. A membership row does not get that skip: those names are
+// unsigned there.
+export const BODY_SECRET_KEYS = new Set([
+  'open',
+  'portalOpen',
+  'viewKey',
+  'view',
+  'V',
+  'C',
+  'closure',
+  'closureCommit',
+  'paymentCode',
+  'scanPub',
+  'spendHash20',
+  'seed',
+  'seedHex',
+  'privateKey',
+  'ip',
+  'remoteAddress',
+  'peerIp',
+  'userAgent',
+  'user-agent',
+  'ua',
+  'memoPlain',
+  'login',
+  'spendPub',
+  'r',
+  't',
+  '_origCommit',
+  '_origNoteCommit',
+]);
+
+const BODY_KEYS = new Set([
+  'id', 'kind', 'from', 'to', 'nanos', 'fee', 'vin', 'vout', 'sig', 'signature',
+  'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
+  'portalId', 'payoutPortalId', 'programId', 'choice',
+  'admit_proof', 'admit_proofs', 'spendTag', 'members',
+  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
+  'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
+  'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit',
+  'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
+  'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
+  'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
+  'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
+]);
+
+const VIN_KEYS = new Set([
+  'coinbase', 'height', 'address', 'commit', 'noteCommit', 'dest20',
+  'prev', 'index', 'cTilde', 'pseudo', 'spendTag', 'portalId',
+]);
+
+const VOUT_KEYS = new Set([
+  'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
+  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
+  'portalId', 'memo', 'memoCt',
+]);
+
+const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);
+
+const OBSERVE_KEYS = new Set(['annualBps', 'observedAtMs']);
+
+const PROOF_KEYS = new Set([
+  'admit_proof', 'v', 'version', 'spendTag', 'blob', 'cTilde', 'c0',
+  'proof', 'members', 'anchor', 'root', 'n', 'pseudo', 'commit', 'tag',
+]);
+
+const LEDGER_ROW_KEYS = new Set([
+  'noteCommit', 'dest20', 'nanos', 'sinceHeight', 'admitBase', 'address',
+]);
+
+const LEAF_KEYS = new Set(['dest20', 'unit', 'nonce', 'memoH', 'tag']);
+
+const MERKLE_PROOF_KEYS = new Set(['side', 'hash']);
+
+function uncoveredKey(obj, allow) {
+  if (!obj || typeof obj !== 'object' || Buffer.isBuffer(obj) || Array.isArray(obj)) return null;
+  for (const key of Object.keys(obj)) {
+    if (BODY_SECRET_KEYS.has(key)) continue;
+    if (!allow.has(key)) return key;
+  }
+  return null;
+}
+
+function uncoveredList(list, allow) {
+  if (!Array.isArray(list)) return null;
+  for (const row of list) {
+    if (uncoveredKey(row, allow)) return row;
+  }
+  return null;
+}
+
+/**
+ * `members` must be an array of plain objects. A non-array value is unsigned.
+ * A string, a nested array, null, or any other non-object item is unsigned.
+ * A key outside MEMBER_KEYS is unsigned, including BODY_SECRET_KEYS. Those
+ * names are not skipped on a membership row.
+ */
+function membersFieldRejected(holder) {
+  if (!holder || typeof holder !== 'object' || Buffer.isBuffer(holder) || Array.isArray(holder)) return null;
+  if (!Object.prototype.hasOwnProperty.call(holder, 'members')) return null;
+  const list = holder.members;
+  if (!Array.isArray(list)) return { ok: false, reason: 'unsigned' };
+  for (const row of list) {
+    if (row === null || typeof row !== 'object' || Array.isArray(row) || Buffer.isBuffer(row)) {
+      return { ok: false, reason: 'unsigned' };
+    }
+    for (const key of Object.keys(row)) {
+      if (!MEMBER_KEYS.has(key)) return { ok: false, reason: 'unsigned' };
+    }
+  }
+  return null;
+}
+
+/**
+ * A field the spend signature does not cover. Known consensus keys stay.
+ * Any other key, at any amount, is unsigned on queue, mempool, and verify.
+ */
+export function unsignedBodyField(tx) {
+  if (!tx || typeof tx !== 'object' || Buffer.isBuffer(tx) || Array.isArray(tx)) return null;
+  if (uncoveredKey(tx, BODY_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredKey(tx.leaf, LEAF_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.proof, MERKLE_PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.vin, VIN_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (Array.isArray(tx.vout)) {
+    for (const o of tx.vout) {
+      if (uncoveredKey(o, VOUT_KEYS)) return { ok: false, reason: 'unsigned' };
+      if (o && typeof o.valueProof === 'object' && !Buffer.isBuffer(o.valueProof) && !Array.isArray(o.valueProof)) {
+        if (uncoveredKey(o.valueProof, VALUE_PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
+      }
+    }
+  }
+  if (uncoveredKey(tx.observe, OBSERVE_KEYS)) return { ok: false, reason: 'unsigned' };
+  const proofs = [];
+  if (tx.admit_proof && typeof tx.admit_proof === 'object') proofs.push(tx.admit_proof);
+  if (Array.isArray(tx.admit_proofs)) proofs.push(...tx.admit_proofs);
+  if (uncoveredList(proofs, PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
+  for (const proof of proofs) {
+    const member = membersFieldRejected(proof);
+    if (member) return member;
+  }
+  const topMembers = membersFieldRejected(tx);
+  if (topMembers) return topMembers;
+  if (uncoveredList(tx.hashOwed, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.hashOwedRest, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.hashOwedLocal, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
+  if (uncoveredList(tx.hashCredits, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
+  return null;
+}
+
+const EXPLICIT_OUTPUT_KINDS = new Set(['lock', 'vote', 'withdraw']);
+
+/**
+ * A lock, vote, or withdraw output names its own kind.
+ * An empty kind is not inherited from the tx.
+ */
+export function explicitTypedKindRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const top = tx.kind == null ? '' : String(tx.kind);
+  if (!EXPLICIT_OUTPUT_KINDS.has(top)) return null;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (!o || o.kind == null || String(o.kind) === '') return { ok: false, reason: 'kind' };
+  }
+  return null;
+}
+
+const HIDDEN_OPEN_TOPS = new Set(['send', 'transfer', 'change', 'dummy']);
+
+/**
+ * Value opening to reject before an unbound carry.
+ * Send and transfer stay `value_open` even when the output label disagrees.
+ * A missing or non-matching public kind stays unset so the caller can
+ * return `kind` after the carry check.
+ */
+export function openingBeforeCarry(tx) {
+  const open = valueOpenRejected(tx);
+  if (!open) return null;
+  const top = tx && !tx.coinbase && tx.kind != null && String(tx.kind) !== '' ? String(tx.kind) : '';
+  if (HIDDEN_OPEN_TOPS.has(top)) return open;
+  if (!v12KindRejected(tx)) return open;
+  return null;
+}
+
+/** The vault clock is the block header. A typed tx cannot carry its own nowMs. */
+export function typedClockRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return null;
+  if (tx.nowMs == null) return null;
+  return { ok: false, reason: 'now_ms' };
+}
+
+/** vin.commit on a non-Flow kind has no membership proof. A v3 input may carry C̃. */
+export function typedCommitRejected(tx) {
+  if (!tx || tx.coinbase || flowNeedsDummy(tx)) return null;
+  const vins = Array.isArray(tx.vin) ? tx.vin : [];
+  for (const v of vins) {
+    if (!v || v.coinbase) continue;
+    if (v.commit || v.cTilde || v.pseudo || v.noteCommit || v.prev) {
+      if (v3CommitCovers(tx, v) && !v.cTilde && !v.pseudo && !v.noteCommit && !v.prev) continue;
+      return { ok: false, reason: 'admit_membership' };
+    }
+  }
+  return null;
+}
+
+/**
+ * Lock, vote, and withdraw spend a hidden note.
+ * sum(C_out) + fee·G = sum(C̃) + W·G + excess·H. The excess scalar is the
+ * only opening material that survives compactTx. The vault receipt opens.
+ * A change output stays hidden: range-proved, in the commitment sum, and
+ * not opened, so a compact body that dropped its value still balances.
+ * W is 0 for lock and vote. For withdraw, W is the opened receipt. The
+ * spent note opens to the fee plus the hidden change. A fee that is not
+ * that remainder is commit_sum. The receipt does not have to equal the fee.
+ */
+export function typedCommitSum(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (publicReserveReceipt(tx)) return { ok: true, skip: true };
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  if (!outs.length) return { ok: false, reason: 'commit_sum' };
+  let payout = 0;
+  let opened = 0;
+  for (const o of outs) {
+    const outKind = String(o?.kind || kind);
+    if (outKind !== kind) {
+      if (!o?.commit || !o?.rangeProof || o.rangeProof === true) {
+        return { ok: false, reason: 'commit_sum' };
+      }
+      continue;
+    }
+    const raw = o?.valueProof?.v;
+    const v = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
+    if (!o?.commit || !o?.valueProof || !Number.isInteger(v) || v < 0) {
+      return { ok: false, reason: 'commit_sum' };
+    }
+    if (!verifySealedNote(o, v)) return { ok: false, reason: 'commit_sum' };
+    opened += 1;
+    if (kind === 'withdraw') {
+      if (payout > Number.MAX_SAFE_INTEGER - v) return { ok: false, reason: 'commit_sum' };
+      payout += v;
+    }
+  }
+  if (opened < 1) return { ok: false, reason: 'commit_sum' };
+  const vaultPayout = kind === 'withdraw' ? payout : 0;
+  if (!verifyFlowConservation(tx, null, vaultPayout)) return { ok: false, reason: 'commit_sum' };
+  return { ok: true };
+}
+
+/** Portal-epoch id for a withdraw. Empty when this tx is not a withdraw. */
+export function reserveWithdrawMintId(tx, reserveState = null) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'withdraw') return '';
+  const ref = reservePortalRef(tx);
+  if (!ref.ok || !ref.id) return '';
+  return withdrawMintId(ref.id, reserveState?.currentEpoch || 0);
+}
+
+function reserveKindOf(tx) {
+  return String(tx?.kind || tx?.vout?.[0]?.kind || '');
+}
+
+/** Portal named by the tx. A from-dest that disagrees with portalId is a retarget. */
+export function reservePortalRef(tx) {
+  const from = String(tx?.from || tx?.vin?.[0]?.address || '');
+  const fromId = from ? portalIdFromDest(from) : '';
+  const pid = String(tx?.portalId || tx?.vout?.[0]?.portalId || '').toLowerCase();
+  if (pid && fromId && pid !== fromId) return { ok: false, reason: 'payout_mismatch' };
+  return { ok: true, id: fromId || pid, from };
+}
+
+function voutDest20(o) {
+  if (!o) return null;
+  try {
+    if (o.dest20) {
+      const b = Buffer.from(asU8(o.dest20));
+      if (b.length >= 20) return Buffer.from(b.subarray(0, 20));
+    }
+  } catch { /* fall through */ }
+  const h = hash20FromAddress(o.address || '');
+  return h ? Buffer.from(h) : null;
+}
+
+/**
+ * Owner key recorded on the portal, plus any earlier lock in this body.
+ * `seenOwners` is a Map of portal id → spendPub hex for the block being checked.
+ */
+export function reserveAuth(tx, reserveState = null, seenOwners = null) {
+  if (!reserveNeedsPortalOpen(tx)) return { ok: true };
+  // A public dest20 receipt has no spendPub. The opened v is the body.
+  // A sealed note still needs the owner signature, and a missing one is unsigned.
+  if (publicReserveReceipt(tx)) return { ok: true };
+  if (!verifyReservePortalOpen(tx)) {
+    return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  }
+  const ref = reservePortalRef(tx);
+  if (!ref.ok) return ref;
+  const pub = spendPubFromTx(tx).toString('hex').toLowerCase();
+  const recorded = String(reserveState?.portals?.[ref.id]?.ownerPub || '').toLowerCase();
+  const seen = seenOwners instanceof Map ? String(seenOwners.get(ref.id) || '') : '';
+  const want = recorded || seen;
+  if (want && want !== pub) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  if (reserveKindOf(tx) === 'withdraw' && recorded && recorded !== pub) {
+    return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  }
+  if (seenOwners instanceof Map && ref.id && reserveKindOf(tx) === 'lock') {
+    seenOwners.set(ref.id, pub);
+  }
+  return { ok: true };
+}
+
+/**
+ * A withdraw pays only stake that is already locked. Principal 0 cannot
+ * withdraw any amount. The cap is principal plus this epoch's interest.
+ */
+export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== 'withdraw') return { ok: true };
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const receipts = outs.filter((row) => String(row?.kind || '') === 'withdraw');
+  if (receipts.length !== 1) return { ok: false, reason: 'mint_amount' };
+  const o = receipts[0];
+  const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
+  const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
+  if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };
+  if (claimed === 0) return { ok: false, reason: 'mint_amount' };
+  const ref = reservePortalRef(tx);
+  if (!ref.ok) return ref;
+  const portals = reserveState?.portals || {};
+  const dest = ref.from;
+  let portal = (ref.id && portals[ref.id]) || (dest && portals[dest]) || null;
+  const staked = Math.max(0, Math.floor(Number(portal?.staked || 0)));
+  const idle = Math.max(0, Math.floor(Number(portal?.idle || 0)));
+  const principal = staked + idle;
+  if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
+  const bps = Math.max(0, Math.floor(Number(reserveState?.epochBps || 0)));
+  const cap = principal + interestNanos(staked, bps);
+  if (claimed > cap) return { ok: false, reason: 'insufficient' };
+  if (portal?.payout) {
+    const want = hash20FromAddress(portal.payout);
+    const got = voutDest20(o);
+    if (!want || !got || !Buffer.from(want).equals(got)) {
+      return { ok: false, reason: 'payout_mismatch' };
+    }
+  }
+  if (portal?.payoutPortalId) {
+    const payPid = String(tx?.payoutPortalId || '').toLowerCase();
+    if (!payPid || payPid !== String(portal.payoutPortalId).toLowerCase()) {
+      return { ok: false, reason: 'payout_mismatch' };
+    }
+  }
+  // A foreign program does not own the vault, so it cannot mint.
+  if (String(tx?.programId || '') !== RESERVE_PROGRAM) {
+    return { ok: false, reason: 'mint_forbidden' };
+  }
+  // The label is not an amount. The output must open to exactly principal + interest.
+  if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
+    return { ok: false, reason: 'mint_amount' };
+  }
+  const mintId = withdrawMintId(ref.id, reserveState?.currentEpoch || 0);
+  const already = reserveState?.mintedIds && reserveState.mintedIds[mintId];
+  if (already || (drawn instanceof Set && drawn.has(mintId))) {
+    return { ok: false, reason: 'double_mint' };
+  }
+  return { ok: true, principal, claimed, cap, mintId };
 }
 
 export function fundedDebit(tx) {
   if (!tx || tx.coinbase) return null;
-  if (reserveDest20Open(tx?.vout?.[0]) && !(tx.from || tx.vin?.[0]?.address)) {
-    return null;
-  }
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
-  const kind = String(tx.kind || tx.vout?.[0]?.kind || 'send');
+  const kind = txKind(tx);
+  if (!kind || kind === 'lock' || kind === 'vote' || kind === 'withdraw') return null;
   let from = kind === 'vote'
     ? String(tx.payer || tx.vin?.[0]?.address || '')
     : String(tx.from || tx.vin?.[0]?.address || '');
@@ -382,25 +876,16 @@ export function fundedDebit(tx) {
 const COINBASE_EXPLORER_KINDS = new Set(['coinbase', 'hash', 'pot', 'pool-fee', 'pool-withdraw']);
 
 /**
- * Coinbase credit follows sealed notes once any exist. A positive explorer
- * sum must not keep a prop (N × pot-after-fee) that the notes do not contain.
- * An empty note walk is fail-closed for pot, coinbase, and pool-fee. Hash
- * rows and real non-coinbase payments stay. Match-miss must not fall open
- * onto explorer pot.
+ * One ledger. Spendable is the opened-note sum the caller already walked.
+ * Plaintext explorer rows cannot raise it.
  */
 export function reconcileSpendable(rows, address, tipHeight, noteNanos, need = SPENDABLE_CONFIRMATIONS) {
-  const all = matureSpendableNanos(rows, address, tipHeight, need);
-  const note = Math.max(0, Math.floor(Number(noteNanos) || 0));
-  const coinbaseRows = (rows || []).filter((r) => COINBASE_EXPLORER_KINDS.has(String(r?.kind || '')));
-  const cb = matureSpendableNanos(coinbaseRows, address, tipHeight, need);
-  if (!(note > 0)) {
-    const kept = (rows || []).filter((r) => {
-      const kind = String(r?.kind || '');
-      return kind !== 'pot' && kind !== 'pool-fee' && kind !== 'pool-withdraw';
-    });
-    return matureSpendableNanos(kept, address, tipHeight, need);
-  }
-  return (all - cb) + note;
+  void rows;
+  void address;
+  void tipHeight;
+  void need;
+  // One ledger. A plaintext explorer row cannot raise spendable above opened notes.
+  return Math.max(0, Math.floor(Number(noteNanos) || 0));
 }
 
 /** Unclamped. Credits mature incoming only; debits every sealed outgoing. */
@@ -434,17 +919,37 @@ export function mempoolDebitNanos(txs, address) {
 }
 
 /**
- * Walk body txs in order. Same-block incoming is not credited.
- * `spendableOf(addr)` is mature Continuum at the parent tip.
+ * Walk body txs in order. An address balance is not value: a debit that is
+ * not a note-bound Flow spend is rejected. `spendableOf` is ignored.
  */
-export function verifyFundedBody(body, spendableOf, { seenDigests = null } = {}) {
-  const spent = new Map();
+export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null } = {}) {
+  void spendableOf;
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
-  const have = (addr) => {
-    const base = Math.max(0, Math.floor(Number(typeof spendableOf === 'function' ? spendableOf(addr) : 0) || 0));
-    return base - (spent.get(addr) || 0);
-  };
+  const seenOwners = new Map();
+  const drawn = new Set();
   for (const tx of body || []) {
+    const earlyOpen = openingBeforeCarry(tx);
+    if (earlyOpen) return earlyOpen;
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
+    const kindGate = v12KindRejected(tx);
+    if (kindGate) return kindGate;
+    const explicitKind = explicitTypedKindRejected(tx);
+    if (explicitKind) return explicitKind;
+    const typed = typedCommitRejected(tx);
+    if (typed) return typed;
+    const open = valueOpenRejected(tx);
+    if (open) return open;
+    const stake = boundReserveWithdraw(tx, reserveState, drawn);
+    if (!stake.ok) return stake;
+    const kind = reserveKindOf(tx);
+    if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {
+      const structure = typedAdmitStructure(tx);
+      if (!structure.ok) return structure;
+    }
+    const auth = reserveAuth(tx, reserveState, seenOwners);
+    if (!auth.ok) return auth;
+    if (stake.mintId) drawn.add(stake.mintId);
     const d = fundedDebit(tx);
     if (!d) continue;
     if (flowSendNeedsOpen(tx)) {
@@ -458,16 +963,10 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null } = {})
         seen.add(digest);
       }
     }
-    if (reserveNeedsPortalOpen(tx) && !verifyReservePortalOpen(tx)) {
-      if (!sealedCompactSpend(tx)) {
-        return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
-      }
-    }
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
-    if (!noteBound && have(d.from) < d.nanos) {
-      return { ok: false, reason: 'insufficient', from: d.from, need: d.nanos, have: have(d.from) };
+    if (!(noteBound && flowNeedsDummy(tx))) {
+      return { ok: false, reason: 'kind', from: d.from };
     }
-    spent.set(d.from, (spent.get(d.from) || 0) + d.nanos);
   }
   return { ok: true };
 }

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
 import {
-  bitsForBlock,
+  asertNextBits,
   consensusFingerprint,
   nextBits,
   TARGET_BLOCK_INTERVAL_MS,
@@ -63,11 +63,21 @@ describe('fork choice does not follow the first block or the pool', () => {
     assert.equal(childA.ok, true, childA.reason);
     const parent = decodeHeader(Buffer.from(genesis.header));
     const sealed = decodeHeader(Buffer.from(a.tip().header));
-    const stable = nextBits(parent.bits, TARGET_BLOCK_INTERVAL_MS);
-    const hardened = bitsForBlock(parent.bits, Number(parent.timestamp), Number(sealed.timestamp));
-    assert.equal(sealed.bits, stable);
-    assert.notEqual(Number(sealed.timestamp) - Number(parent.timestamp), TARGET_BLOCK_INTERVAL_MS);
-    assert.notEqual(stable, hardened);
+    assert.equal(a.tip().height, 2);
+    const quote = asertNextBits({
+      anchorBits: parent.bits,
+      anchorTimeMs: Number(parent.timestamp),
+      anchorHeight: 1,
+      blockTimeMs: Number(sealed.timestamp),
+      blockHeight: a.tip().height,
+      parentTimeMs: Number(parent.timestamp),
+    });
+    assert.equal(quote.ok, true, quote.reason);
+    assert.equal(quote.easeBits, 0);
+    assert.equal(sealed.bits, quote.packed);
+    const gap = Number(sealed.timestamp) - Number(parent.timestamp);
+    assert.notEqual(gap, TARGET_BLOCK_INTERVAL_MS);
+    assert.notEqual(sealed.bits, nextBits(parent.bits, TARGET_BLOCK_INTERVAL_MS));
 
     const childB = seal(b, { miner: minerB, now: t0 + 1_000, pow: highPow });
     assert.equal(childB.ok, true, childB.reason);

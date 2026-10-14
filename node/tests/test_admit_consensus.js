@@ -1,40 +1,46 @@
+import { spawn } from 'node:child_process';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../crypto/address.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
-import { admitProve, admitScalarFromSeed, fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
+import { fluxsetFromBlocks } from '../../crypto/admit.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { createStore } from '../src/store.js';
 import {
   buildTemplate,
-  mineTemplate,
   verifyBlock,
   GENESIS_PREV,
 } from '../src/chain.js';
 
+// Genesis is 17 bits, so a hit is expected after 2^17 hashes. The old 32_768
+// cap was sized for a 12-bit header and misses about three searches in four.
+// Sixteen times the expectation, striped across every CPU, makes a miss rare.
+// The jit check below stays. Verify goes back to the interpreter before return.
+const MINE_TRIES = 2_097_152;
+
 function mine(tpl) {
-  // Interpreter ShearHash-v3 is a few hashes per second. Light JIT is the same
-  // digest, so a 12-bit header finishes inside this cap instead of the old
-  // 3_000_000-try walk. blockOnly ignores share hits. Verify stays on interpreter.
   const backend = setHashBackend('jit');
   if (backend !== 'jit') {
     setHashBackend('interpreter');
     assert.fail(`admit miner needs jit, got ${backend}`);
   }
   try {
-    const found = mineTemplate(tpl, { maxTries: 32_768, blockOnly: true });
+    const found = mineAcrossCpus(tpl);
     assert.ok(found && found.block, 'pow');
     return {
       header: found.header,
+      height: tpl.height,
       txs: tpl.txs,
       samples: tpl.samples,
       miner: tpl.miner,
@@ -47,6 +53,59 @@ function mine(tpl) {
     };
   } finally {
     setHashBackend('interpreter');
+  }
+}
+
+const sleepFlag = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepMs(ms) {
+  Atomics.wait(sleepFlag, 0, 0, ms);
+}
+
+function mineAcrossCpus(tpl) {
+  const cpus = Math.max(1, os.availableParallelism());
+  const perWorker = Math.ceil(MINE_TRIES / cpus);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-mine-'));
+  const outPath = path.join(dir, 'hit.json');
+  const stopPath = path.join(dir, 'stop');
+  const workerPath = fileURLToPath(new URL('./admit_mine_worker.js', import.meta.url));
+  const headerHex = Buffer.from(tpl.header).toString('hex');
+  const children = [];
+  try {
+    for (let cpu = 0; cpu < cpus; cpu += 1) {
+      children.push(spawn(process.execPath, [
+        workerPath,
+        headerHex,
+        String(tpl.bits),
+        String(cpu),
+        String(cpus),
+        String(perWorker),
+        outPath,
+        stopPath,
+        path.join(dir, `done-${cpu}`),
+      ], { stdio: 'ignore' }));
+    }
+    const hitFile = () => fs.readdirSync(dir).find((name) => name.startsWith('hit.json.'));
+    while (!hitFile()) {
+      const finished = fs.readdirSync(dir).filter((name) => name.startsWith('done-')).length;
+      if (finished >= cpus) break;
+      sleepMs(200);
+    }
+    fs.writeFileSync(stopPath, '1');
+    for (const child of children) {
+      if (child.exitCode == null) child.kill('SIGTERM');
+    }
+    const name = hitFile();
+    if (!name) return null;
+    const hit = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+    if (hit.error) assert.fail(hit.error);
+    return {
+      header: Buffer.from(hit.header, 'hex'),
+      hash: Buffer.from(hit.hash, 'hex'),
+      block: true,
+    };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -89,6 +148,11 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
     const history = [genesis, parent];
+    // A grandchild is not its own anchor. Pass the genesis stamp, and keep
+    // the height-3 time on the 90s grid so ASERT still accepts GENESIS_BITS_PACKED.
+    const genesisMs = Number(decodeHeader(Buffer.from(genesis.header)).timestamp);
+    const height3Now = genesisMs + 180_000;
+    const height3Opts = { evmHistory: history, genesisMs };
     const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
     assert.ok(spent?.commit && spent.admitPub, 'coinbase note enters J');
     const idx = parent.txs[0].vout.indexOf(spent);
@@ -118,7 +182,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       return tx;
     };
 
-    const honest = proveFlowSpend(mkSend(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    const honest = attachStubAdmitV2(mkSend());
     signSpendTx(honest, key);
     const honestTpl = buildTemplate({
       prev: okP.hash,
@@ -126,15 +190,17 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 3,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_000_180_000,
+      now: height3Now,
       txs: [compactTx(honest)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
     const honestBlock = mine(honestTpl);
-    const gotOk = verifyBlock(honestBlock, parent, { evmHistory: history });
-    assert.equal(gotOk.ok, true, gotOk.reason);
+    const gotOk = verifyBlock(honestBlock, parent, height3Opts);
+    assert.equal(honest.admit_proof.blob[0], 2);
+    assert.equal(gotOk.ok, false);
+    assert.equal(gotOk.reason, 'admit_version', gotOk.reason);
 
     const missing = mkSend({ id: 'missing-proof' });
     signSpendTx(missing, key);
@@ -144,28 +210,19 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 3,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_000_270_000,
+      now: height3Now,
       txs: [compactTx(missing)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
     const missingBlock = mine(missingTpl);
-    const gotMissing = verifyBlock(missingBlock, parent, { evmHistory: history });
+    const gotMissing = verifyBlock(missingBlock, parent, height3Opts);
     assert.equal(gotMissing.ok, false);
     assert.equal(gotMissing.reason, 'admit_membership');
 
-    const sampled = mkSend({ id: 'sampled' });
-    const subset = live.pubs.slice(0, 1);
-    const subsetC = live.commits.slice(0, 1);
-    sampled.admit_proof = admitProve({
-      x: admitScalarFromSeed(spendSeed, spent),
-      index: 0,
-      pubs: subset,
-      commits: subsetC,
-      c: spent.commit,
-    });
-    assert.ok(sampled.admit_proof, 'a one-leaf subset still proves, against a different tree');
+    const sampled = attachStubAdmitV2(mkSend({ id: 'sampled' }), { tagFill: 4 });
+    assert.equal(sampled.admit_proof.blob[0], 2);
     signSpendTx(sampled, key);
     const sampledTpl = buildTemplate({
       prev: okP.hash,
@@ -173,16 +230,16 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 3,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_000_360_000,
+      now: height3Now,
       txs: [compactTx(sampled)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
     const sampledBlock = mine(sampledTpl);
-    const gotSampled = verifyBlock(sampledBlock, parent, { evmHistory: history });
+    const gotSampled = verifyBlock(sampledBlock, parent, height3Opts);
     assert.equal(gotSampled.ok, false);
-    assert.equal(gotSampled.reason, 'admit_membership');
+    assert.equal(gotSampled.reason, 'admit_version');
 
     const fakeIn = sealNote(2 + change + fee, { dest20: Buffer.alloc(20, 9), kind: 'spend-in' });
     const attack = attachDummyOuts({
@@ -202,7 +259,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent: fakeIn });
-    proveFlowSpend(attack, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    attachStubAdmitV2(attack, { tagFill: 5 });
     signSpendTx(attack, key);
     const attackTpl = buildTemplate({
       prev: okP.hash,
@@ -210,16 +267,16 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 3,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_000_450_000,
+      now: height3Now,
       txs: [compactTx(attack)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
     const attackBlock = mine(attackTpl);
-    const gotBad = verifyBlock(attackBlock, parent, { evmHistory: history });
+    const gotBad = verifyBlock(attackBlock, parent, height3Opts);
     assert.equal(gotBad.ok, false);
-    assert.equal(gotBad.reason, 'commit_sum');
+    assert.equal(gotBad.reason, 'admit_version');
   });
 
   it('queueTx admits an honest spent-note send and rejects missing proof, sampled subset, and reused spendTag', () => {
@@ -246,7 +303,6 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     assert.ok(store.fluxset().pubs.length >= 1, 'coinbase notes enter live J');
     const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
     const idx = parent.txs[0].vout.indexOf(spent);
-    const live = store.fluxset();
     const fee = levyNanos(2);
     const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
     const body = () => attachDummyOuts({
@@ -268,36 +324,42 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     }, { spent });
 
     const missing = signSpendTx(body(), key);
-    const missQ = store.queueTx(missing);
+    const missFat = store.queueTx(missing);
+    assert.equal(missFat.ok, false);
+    assert.equal(missFat.reason, 'value_open', missFat.reason);
+    const missQ = store.queueTx(compactTx(missing));
     assert.equal(missQ.ok, false);
     assert.equal(missQ.reason, 'admit_membership');
 
-    const sampled = body();
-    sampled.admit_proof = admitProve({
-      x: admitScalarFromSeed(spendSeed, spent),
-      index: 0,
-      pubs: [live.pubs[0], live.pubs[0]],
-      commits: [live.commits[0], live.commits[0]],
-      c: spent.commit,
-    });
-    assert.ok(sampled.admit_proof, 'a duplicated leaf still proves, against a different tree');
+    const sampled = attachStubAdmitV2(body(), { tagFill: 6 });
+    assert.equal(sampled.admit_proof.blob[0], 2);
     signSpendTx(sampled, key);
-    const sampQ = store.queueTx(sampled);
+    const sampFat = store.queueTx(sampled);
+    assert.equal(sampFat.reason, 'value_open', sampFat.reason);
+    const sampQ = store.queueTx(compactTx(sampled));
     assert.equal(sampQ.ok, false);
-    assert.equal(sampQ.reason, 'admit_membership');
+    assert.equal(sampQ.reason, 'admit_version');
 
-    const honest = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    const honest = attachStubAdmitV2(body(), { tagFill: 7 });
     signSpendTx(honest, key);
-    const okQ = store.queueTx(honest);
-    assert.equal(okQ.ok, true, okQ.reason);
+    const okFat = store.queueTx(honest);
+    assert.equal(okFat.reason, 'value_open', okFat.reason);
+    const okQ = store.queueTx(compactTx(honest));
+    assert.equal(okQ.reason, 'admit_version', okQ.reason);
+    assert.equal(store.mempool.some((m) => m.id === honest.id), false);
+    const spentHex = Buffer.from(honest.spendTag).toString('hex');
+    assert.equal(store.fluxset().spendTags.has(spentHex), false);
 
-    const reuse = proveFlowSpend(body(), { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    const reuse = attachStubAdmitV2(body(), { tagFill: 8 });
     reuse.admit_proof.spendTag = honest.admit_proof.spendTag;
     reuse.spendTag = honest.spendTag;
     signSpendTx(reuse, key);
-    const reuseQ = store.queueTx(reuse);
+    const reuseFat = store.queueTx(reuse);
+    assert.equal(reuseFat.reason, 'value_open', reuseFat.reason);
+    const reuseQ = store.queueTx(compactTx(reuse));
     assert.equal(reuseQ.ok, false);
-    assert.equal(reuseQ.reason, 'admit_link_tag');
+    assert.equal(reuseQ.reason, 'admit_version');
+    assert.equal(store.fluxset().spendTags.has(spentHex), false);
   });
 
   it('hex-posted Flow send is in the next template and mined header with admit_proof', () => {
@@ -339,7 +401,6 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       });
       assert.equal(appended.ok, true, appended.reason);
     }
-    const live = store.fluxset();
     const fee = levyNanos(2);
     const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
     const honest = attachDummyOuts({
@@ -359,13 +420,19 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    attachStubAdmitV2(honest, { tagFill: 9 });
     signSpendTx(honest, key);
     const hexed = JSON.parse(JSON.stringify(honest, (_, v) => (
       Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
     )));
     const queued = store.queueTx(hexed);
-    assert.equal(queued.ok, true, queued.reason);
+    assert.equal(queued.reason, 'value_open', queued.reason);
+    const hexWire = JSON.parse(JSON.stringify(compactTx(honest), (_, v) => (
+      Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
+    )));
+    const wired = store.queueTx(hexWire);
+    assert.equal(wired.reason, 'admit_version', wired.reason);
+    assert.equal(store.mempool.length, 0);
     const parentH = decodeHeader(Buffer.from(store.tip().header));
     const { tpl } = store.template({
       miner: dest,
@@ -373,26 +440,9 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       now: Number(parentH.timestamp) + 90_000,
     });
     const user = (tpl.txs || []).slice(1);
-    assert.equal(user.length, 1, 'mempool send must be in the next job');
-    assert.equal(user[0].id, 'job-send');
-    assert.ok(user[0].admit_proof);
-    const found = mine(tpl);
-    const got = store.append({
-      header: found.header,
-      txs: tpl.txs,
-      samples: tpl.samples,
-      shareBatch: tpl.shareBatch || [],
-      miner: dest,
-      aLeaves: tpl.aLeaves,
-      bLeaves: tpl.bLeaves,
-      rootA: tpl.rootA,
-      rootB: tpl.rootB,
-    });
-    assert.equal(got.ok, true, got.reason);
-    const onchain = store.blocks.at(-1).txs.find((t) => !t.coinbase);
-    assert.ok(onchain, 'user send on chain');
-    assert.ok(onchain.admit_proof, 'admit_proof persisted');
-    assert.equal(store.mempool.length, 0);
+    assert.equal(user.length, 0);
+    const tag = Buffer.from(honest.spendTag).toString('hex');
+    assert.equal(store.fluxset().spendTags.has(tag), false);
   });
 
   it('named reject reasons: range stub, no members list, she1 silent_id', () => {
@@ -429,7 +479,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(body, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    attachStubAdmitV2(body, { tagFill: 10 });
     for (const o of body.vout) o.rangeProof = true;
     signSpendTx(body, key);
     const stubTpl = buildTemplate({
@@ -447,7 +497,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
     const stubBlock = mine(stubTpl);
     const gotStub = verifyBlock(stubBlock, parent, { evmHistory: [parent] });
     assert.equal(gotStub.ok, false);
-    assert.equal(gotStub.reason, 'range_proof');
+    assert.equal(gotStub.reason, 'admit_version');
 
     const honest = attachDummyOuts({
       id: 'sealed-ring',
@@ -466,7 +516,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    proveFlowSpend(honest, { spendSeed, spentNote: spent, pubs: live.pubs, commits: live.commits });
+    attachStubAdmitV2(honest, { tagFill: 11 });
     honest.admit_proof.members = ['decoy-list'];
     const sealed = compactTx(honest);
     assert.equal(sealed.admit_proof.members, undefined);
@@ -559,7 +609,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 2,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_004_135_000,
+      now: 1_700_004_090_000,
       txs: [openSealed],
       prevBlock: parent,
       parentBlocks: [parent],
@@ -576,7 +626,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
       height: 2,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
-      now: 1_700_004_180_000,
+      now: 1_700_004_090_000,
       txs: [stub],
       prevBlock: parent,
       parentBlocks: [parent],

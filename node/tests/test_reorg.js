@@ -199,10 +199,16 @@ describe('most-work adopt', () => {
     assert.equal(Buffer.from(local.tip().hash).equals(before), true);
   });
 
-  it('rebuildSpentB awaits verifyBlock instead of swallowing its Promise', async () => {
+  it('rebuildSpentB awaits a real promise when share prehash is cold', async () => {
     const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+    const body = src.split('function rebuildSpentB()')[1].split('function bounceMempool')[0];
     assert.equal(/Promise\.resolve\(spentCheck\)\.catch\(\(\) => \{\}\)/.test(src), false);
-    assert.match(src, /spentCheck\.then\(step\)/);
+    assert.match(body, /\.then\(/);
+    assert.doesNotMatch(body, /return step\(\)/);
+    assert.doesNotMatch(body, /spentB\.clear\(\)/);
+    assert.match(body, /skipSharePow:\s*false/);
+    assert.doesNotMatch(body, /skipSharePow:\s*true/);
+    assert.match(body, /trustedPowHash/);
     assert.match(src, /spendableOf:/);
     const dest = destMiner();
     const local = tmpStore();

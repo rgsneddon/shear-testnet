@@ -4,7 +4,7 @@
 //! Parent of Fp children is a Vesta Pedersen (Vesta scalar = Pallas base).
 //! Internal Vesta-point x-coords (Fq) are committed on Pallas.
 
-use crate::leaf::{dest_leaf_fp, jroot_hash, sha512_64};
+use crate::leaf::{dest_leaf_fp, jroot_hash, jroot_point_hash, sha512_64, DST_C_POINT};
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar as RScalar;
 use ff::{FromUniformBytes, PrimeField};
@@ -310,6 +310,19 @@ fn fold_c(level: &[[u8; 32]]) -> Vec<[u8; 32]> {
     next
 }
 
+/// First fold of the version-3 C tree. Later folds stay `fold_c`.
+fn fold_c_points(level: &[[u8; 32]]) -> Option<Vec<[u8; 32]>> {
+    let mut next = Vec::with_capacity(level.len() / ARITY + 1);
+    for chunk in level.chunks(ARITY) {
+        let mut xs = [[0u8; 32]; ARITY];
+        for (i, c) in chunk.iter().enumerate() {
+            xs[i] = *c;
+        }
+        next.push(commit_ristretto_points(&xs)?);
+    }
+    Some(next)
+}
+
 /// Every D-ary level including the 1-element root. Built once per prove.
 struct LevelCache {
     n: usize,
@@ -397,6 +410,47 @@ fn c_levels_build(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
 
 pub fn c_levels(c_leaves: &[u8], n: usize) -> Vec<Vec<[u8; 32]>> {
     c_levels_build(c_leaves, n)
+}
+
+/// Version-3 C levels. The leaf bucket folds as ristretto points.
+/// Every fold above that stays the scalar encoding commitment. Not cached:
+/// `trees` is the v2 book and must not see these levels.
+fn c_levels_point_build(c_leaves: &[u8], n: usize) -> Option<Vec<Vec<[u8; 32]>>> {
+    let mut level = c_leaf_level(c_leaves, n);
+    let mut levels = Vec::new();
+    let mut first = true;
+    loop {
+        if level.len() == 1 {
+            levels.push(level);
+            break;
+        }
+        let next = if first {
+            first = false;
+            fold_c_points(&level)?
+        } else {
+            fold_c(&level)
+        };
+        levels.push(level);
+        if next.len() == 1 {
+            levels.push(next);
+            break;
+        }
+        level = next;
+        pad_to_arity(&mut level);
+    }
+    Some(levels)
+}
+
+/// Dest levels are the v2 fold. C levels use the point leaf. Own path, not the v2 cache.
+pub fn trees_point(
+    dest_leaves: &[u8],
+    c_leaves: &[u8],
+    n: usize,
+) -> Option<(Vec<Vec<[u8; 32]>>, Vec<Vec<[u8; 32]>>)> {
+    Some((
+        dest_levels_build(dest_leaves, n),
+        c_levels_point_build(c_leaves, n)?,
+    ))
 }
 
 pub fn path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Option<Vec<[[u8; 32]; ARITY]>> {
@@ -489,6 +543,24 @@ pub(crate) fn commit_ristretto_encodings(cs: &[[u8; 32]; ARITY]) -> [u8; 32] {
     RistrettoPoint::vartime_multiscalar_mul(scalars.iter(), points.iter()).compress().to_bytes()
 }
 
+/// Parent of an arity-32 bucket of ristretto points: r·U + Σ C_i.
+/// r is domain-separated by the point bytes in order. This is not
+/// scalar(compress(C)). A child that does not decompress fails closed.
+/// The all-zero pad is the identity and stays in the sum.
+pub fn commit_ristretto_points(cs: &[[u8; 32]; ARITY]) -> Option<[u8; 32]> {
+    let (u, _, _) = ristretto_gens();
+    let mut parts: Vec<&[u8]> = vec![DST_C_POINT];
+    for c in cs {
+        parts.push(c.as_ref());
+    }
+    let r = RScalar::from_bytes_mod_order_wide(&sha512_64(&parts));
+    let mut acc = u * r;
+    for c in cs {
+        acc += CompressedRistretto(*c).decompress()?;
+    }
+    Some(acc.compress().to_bytes())
+}
+
 pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
     root_of_levels(&c_levels(c_leaves, n))
 }
@@ -496,6 +568,12 @@ pub fn c_root(c_leaves: &[u8], n: usize) -> [u8; 32] {
 pub fn jroot(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> [u8; 32] {
     let (d, c) = trees(dest_leaves, c_leaves, n);
     jroot_hash(&root_of_levels(&d), &root_of_levels(&c))
+}
+
+/// Version-3 book. Not `jroot`: the C root is the point leaf.
+pub fn jroot_point(dest_leaves: &[u8], c_leaves: &[u8], n: usize) -> Option<[u8; 32]> {
+    let (d, c) = trees_point(dest_leaves, c_leaves, n)?;
+    Some(jroot_point_hash(&root_of_levels(&d), &root_of_levels(&c)))
 }
 
 pub struct PastaTree {
@@ -651,4 +729,257 @@ pub fn path_selected_leaf(raw: &[u8], d0: u8) -> Option<[u8; 32]> {
     let path = parse_path(raw)?;
     let first = path.first()?;
     Some(first[d0 as usize])
+}
+
+/// Append-only frontier. Each bag holds the incomplete arity-32 group at that
+/// level (length < ARITY). A full group is committed once and carried up, so
+/// an append touches only the right spine. The root matches `jroot`.
+#[derive(Clone, Debug)]
+struct JFrontier {
+    n: usize,
+    dest: Vec<Vec<[u8; 32]>>,
+    c: Vec<Vec<[u8; 32]>>,
+}
+
+fn commit_padded(nodes: &[[u8; 32]], commit: fn(&[[u8; 32]; ARITY]) -> [u8; 32]) -> [u8; 32] {
+    let mut xs = [[0u8; 32]; ARITY];
+    for (i, node) in nodes.iter().take(ARITY).enumerate() {
+        xs[i] = *node;
+    }
+    commit(&xs)
+}
+
+fn bag_root(bags: &[Vec<[u8; 32]>], commit: fn(&[[u8; 32]; ARITY]) -> [u8; 32]) -> [u8; 32] {
+    if bags.iter().all(|b| b.is_empty()) {
+        // n = 0. dest_leaf_level / c_leaf_level push one raw zero, then pad.
+        return commit_padded(&[], commit);
+    }
+    let mut incoming: Option<[u8; 32]> = None;
+    for level in 0..bags.len() {
+        let mut nodes = bags[level].clone();
+        let had_incoming = incoming.is_some();
+        if let Some(extra) = incoming.take() {
+            nodes.push(extra);
+        }
+        let higher = bags[level + 1..].iter().any(|b| !b.is_empty());
+        if nodes.is_empty() {
+            continue;
+        }
+        if !higher && !had_incoming && level > 0 && nodes.len() == 1 {
+            return nodes[0];
+        }
+        let parent = commit_padded(&nodes, commit);
+        if !higher {
+            return parent;
+        }
+        incoming = Some(parent);
+    }
+    incoming.unwrap_or(commit_padded(&[], commit))
+}
+
+fn push_bag(bags: &mut Vec<Vec<[u8; 32]>>, mut carry: [u8; 32], commit: fn(&[[u8; 32]; ARITY]) -> [u8; 32]) {
+    if bags.is_empty() {
+        bags.push(Vec::new());
+    }
+    let mut level = 0usize;
+    loop {
+        if bags.len() == level {
+            bags.push(Vec::new());
+        }
+        bags[level].push(carry);
+        if bags[level].len() < ARITY {
+            break;
+        }
+        let full = std::mem::take(&mut bags[level]);
+        carry = commit_padded(&full, commit);
+        level += 1;
+        if level > HEIGHT_MAX + 2 {
+            break;
+        }
+    }
+}
+
+fn frontier_extend(fr: &mut JFrontier, dest_leaves: &[u8], c_leaves: &[u8], n_new: usize) {
+    for i in 0..n_new {
+        let raw = take32(dest_leaves, i);
+        let leaf = dest_leaf_fp(&raw);
+        let c_leaf = take32(c_leaves, i);
+        push_bag(&mut fr.dest, leaf, commit_vesta);
+        push_bag(&mut fr.c, c_leaf, commit_ristretto_encodings);
+        fr.n += 1;
+    }
+}
+
+fn frontier_root(fr: &JFrontier) -> [u8; 32] {
+    let d = bag_root(&fr.dest, commit_vesta);
+    let c = bag_root(&fr.c, commit_ristretto_encodings);
+    jroot_hash(&d, &c)
+}
+
+const FRONTIER_MAGIC: &[u8; 4] = b"JF01";
+pub const FRONTIER_MAX: usize = 16384;
+
+fn write_bags(out: &mut Vec<u8>, bags: &[Vec<[u8; 32]>]) -> bool {
+    if bags.len() > 255 {
+        return false;
+    }
+    out.push(bags.len() as u8);
+    for bag in bags {
+        if bag.len() >= ARITY || bag.len() > 255 {
+            return false;
+        }
+        out.push(bag.len() as u8);
+        for node in bag {
+            out.extend_from_slice(node);
+        }
+    }
+    true
+}
+
+fn read_bags(buf: &[u8], at: &mut usize) -> Option<Vec<Vec<[u8; 32]>>> {
+    if *at >= buf.len() {
+        return None;
+    }
+    let n_bags = buf[*at] as usize;
+    *at += 1;
+    let mut bags = Vec::with_capacity(n_bags);
+    for _ in 0..n_bags {
+        if *at >= buf.len() {
+            return None;
+        }
+        let n = buf[*at] as usize;
+        *at += 1;
+        if n >= ARITY || *at + n * 32 > buf.len() {
+            return None;
+        }
+        let mut bag = Vec::with_capacity(n);
+        for _k in 0..n {
+            let mut node = [0u8; 32];
+            node.copy_from_slice(&buf[*at..*at + 32]);
+            *at += 32;
+            bag.push(node);
+        }
+        bags.push(bag);
+    }
+    Some(bags)
+}
+
+fn frontier_to_blob(fr: &JFrontier) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(64);
+    out.extend_from_slice(FRONTIER_MAGIC);
+    out.extend_from_slice(&(fr.n as u32).to_le_bytes());
+    if !write_bags(&mut out, &fr.dest) || !write_bags(&mut out, &fr.c) {
+        return None;
+    }
+    if out.len() > FRONTIER_MAX {
+        return None;
+    }
+    Some(out)
+}
+
+fn frontier_from_blob(buf: &[u8]) -> Option<JFrontier> {
+    if buf.is_empty() {
+        return Some(JFrontier { n: 0, dest: Vec::new(), c: Vec::new() });
+    }
+    if buf.len() < 8 || &buf[..4] != FRONTIER_MAGIC {
+        return None;
+    }
+    let n = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
+    let mut at = 8usize;
+    let dest = read_bags(buf, &mut at)?;
+    let c = read_bags(buf, &mut at)?;
+    if at != buf.len() {
+        return None;
+    }
+    Some(JFrontier { n, dest, c })
+}
+
+/// Extend `prev` (empty means n = 0) by `n_new` dest/C leaves. Returns the new
+/// blob and the root. A bad blob is None. The root equals `jroot` of the whole set.
+pub fn frontier_append(prev: &[u8], dest_leaves: &[u8], c_leaves: &[u8], n_new: usize) -> Option<(Vec<u8>, [u8; 32])> {
+    if dest_leaves.len() < n_new.saturating_mul(32) || c_leaves.len() < n_new.saturating_mul(32) {
+        return None;
+    }
+    let mut fr = frontier_from_blob(prev)?;
+    frontier_extend(&mut fr, dest_leaves, c_leaves, n_new);
+    let root = frontier_root(&fr);
+    let blob = frontier_to_blob(&fr)?;
+    Some((blob, root))
+}
+
+#[cfg(test)]
+mod frontier_tests {
+    use super::*;
+
+    fn leaves(n: usize, tag: u8) -> Vec<u8> {
+        let mut v = vec![0u8; n * 32];
+        for i in 0..n {
+            v[i * 32] = tag;
+            v[i * 32 + 1] = (i & 0xff) as u8;
+            v[i * 32 + 2] = ((i >> 8) & 0xff) as u8;
+            v[i * 32 + 3] = ((i >> 16) & 0xff) as u8;
+        }
+        v
+    }
+
+    fn check_n(n: usize) {
+        let d = leaves(n, 1);
+        let c = leaves(n, 2);
+        let want = jroot(&d, &c, n);
+        let mut blob = Vec::new();
+        let mut got = [0u8; 32];
+        let mut at = 0usize;
+        while at < n {
+            let step = (n - at).min(7);
+            let (next, root) = frontier_append(
+                &blob,
+                &d[at * 32..(at + step) * 32],
+                &c[at * 32..(at + step) * 32],
+                step,
+            )
+            .expect("append");
+            blob = next;
+            got = root;
+            at += step;
+        }
+        if n == 0 {
+            let (blob0, root0) = frontier_append(&[], &[], &[], 0).expect("empty");
+            assert_eq!(root0, want, "empty root");
+            assert!(frontier_from_blob(&blob0).unwrap().n == 0);
+            return;
+        }
+        assert_eq!(got, want, "n={n}");
+        let fr = frontier_from_blob(&blob).unwrap();
+        assert_eq!(fr.n, n);
+        assert_eq!(frontier_root(&fr), want);
+    }
+
+    #[test]
+    fn frontier_matches_jroot_across_arity_boundaries() {
+        for n in [0usize, 1, 2, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1023, 1024, 1025] {
+            check_n(n);
+        }
+    }
+}
+
+#[cfg(test)]
+mod point_commit_tests {
+    use super::{commit_ristretto_points, ARITY};
+
+    #[test]
+    fn commit_ristretto_points_rejects_a_non_point() {
+        let zeros = [[0u8; 32]; ARITY];
+        let honest = commit_ristretto_points(&zeros).expect("identity pad");
+        let mut bad = zeros;
+        let mut rejected = false;
+        for b in 1u8..64 {
+            bad[3] = [b; 32];
+            if commit_ristretto_points(&bad).is_none() {
+                rejected = true;
+                break;
+            }
+        }
+        assert!(rejected, "a non-point child fails closed");
+        assert_eq!(commit_ristretto_points(&zeros).expect("identity pad"), honest);
+    }
 }

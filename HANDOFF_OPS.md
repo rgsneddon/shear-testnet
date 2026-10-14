@@ -3,7 +3,7 @@
 **Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `main`  
-**This file is the Windows start for Shear.** Current pins: Continuum **0.71**, ShearK **2.8** (TLS-aware), Shear Sentinel **v18** (product 18.0). Pins are **0.71** (wallet) and ShearK **2.8**. Pin **0.71**. Do not recut older tags, and do not label a ShearK 2.6 rebuild as TLS-done. The MacBook cuts only the Continuum 0.70 disk image (`MACBOOK-HANDOFF.md`). Do not ask the Mac to cut a node or a miner. This Windows box packs APK, Windows zip, Linux/Arch, and site pins. This tree serves `shear-testnet-v11` from `/var/lib/shear/testnet-v11`. Do not wipe `/var/lib/shear/testnet-v10` or `/var/lib/shear/testnet-v10-p2p`. The 2026-09-17 v4 record below is not a wipe order. Tag **0.68** stays.
+**This file is the Windows start for Shear.** Current pins: Continuum **0.72**, ShearK **2.9** (TLS-aware), Shear Sentinel **v19** (product 19.0). Pins are **0.72** (wallet) and ShearK **2.9**. Pin **0.72**. Do not recut older tags, and do not label a ShearK 2.6 rebuild as TLS-done. The MacBook cuts only the Continuum 0.70 disk image (`MACBOOK-HANDOFF.md`). Do not ask the Mac to cut a node or a miner. This Windows box packs APK, Windows zip, Linux/Arch, and site pins. This tree serves `shear-testnet-v12`. Leave `/var/lib/shear/testnet-v11` and `/var/lib/shear/testnet-v10` in place. Do not wipe `/var/lib/shear/testnet-v10` or `/var/lib/shear/testnet-v10-p2p`. The 2026-09-17 v4 record below is not a wipe order. Tags **0.71**, **0.70**, and **0.68** stay. Git tag `v18` stays.
 
 Other Shear GitHub repos (`rgsneddon/shear`, `rgsneddon/shear-wallet`, `rgsneddon/shear-pool`) are being deleted. Clone **this** repo only, plus **ShearK**.
 
@@ -31,16 +31,16 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 
 | What | Pin |
 |------|-----|
-| Book / magic | `shear-testnet-v11` on `/var/lib/shear/testnet-v11`. Leave `/var/lib/shear/testnet-v10` in place. |
-| Node | **Shear Sentinel v18** (product 18.0). Git tag `v17` stays. Git tag `v16` stays on the same commit as tag `0.66`. Do not move tag `v16` or tag `v17`. |
+| Book / magic | `shear-testnet-v12`. Leave `/var/lib/shear/testnet-v11` and `/var/lib/shear/testnet-v10` in place. |
+| Node | **Shear Sentinel v19** (product 19.0). Git tags `v18` and `v17` stay. Git tag `v16` stays on the same commit as tag `0.66`. Do not move tag `v16`, tag `v17`, or tag `v18`. |
 | ADMIT | ADMITv2 (Pasta arity-32 CDS; Membership, not Multiple) |
-| Wallet | **0.71** (`wallet/pubspec.yaml` `0.71.0+96`, `kWalletVersion`) |
-| Miner | **ShearK 2.8**. Six zips on https://github.com/rgsneddon/ShearK/releases/tag/2.8 (windows, linux, archlinux, fedora, opensuse, macos). Each zip includes `example.bat` and `example.sh`. |
+| Wallet | **0.72** (`wallet/pubspec.yaml` `0.72.0+97`, `kWalletVersion`) |
+| Miner | **ShearK 2.9**. Tag 2.8 stays. Packs for 2.9 are not claimed here. |
 | Stratum | public `stratum+ssl://pool.shear.digital:443`; localhost solo `stratum+tcp://127.0.0.1:1111` |
 | SHARE_BIND | `rx+noteCommit` |
 | Mainnet | **blocked**. Do **not** set `SHEAR_MAINNET_EMIT=1`. Do not rotate the live fee-payout ssa1 from this file. |
 
-Wallet packs on **this** repo: https://github.com/rgsneddon/shear-testnet/releases/tag/0.71. Node packs stay https://github.com/rgsneddon/shear-testnet/releases/tag/v18. Tag **0.68** stays. Do not pass `--clobber`. Git tag `v17` stays.  
+Wallet pin in this tree is **0.72** (`0.72.0+97`). Tag **0.71** stays at https://github.com/rgsneddon/shear-testnet/releases/tag/0.71. Node tag `v18` stays. Tag **0.68** stays. Do not pass `--clobber`. Git tag `v17` stays. Do not claim a 0.72 or v19 release asset until it is uploaded.  
 Sections 2, 3, and the coordinated v4 wipe note are the 2026-09-17 record. They are not the live book and they are not a wipe order.
 
 ---
@@ -112,7 +112,7 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 - Linux node: `make -C crypto/native` on the box. Never copy a macOS `.node` to Linux.
 - p2pnode2 (Ubuntu 26.04) has no gcc — copy Linux `shearadmit.node` from P2pnode.
-- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.71**. pubspec `0.71.0+96`. Build number comes from `+N` and is never 49. Node pin is Shear Sentinel **v18**. Miner pin is ShearK **2.8**.
+- Wallet Flutter **3.47.x** (or 3.44.6). Pin **0.72**. pubspec `0.72.0+97`. Build number comes from `+N` and is never 49. Node pin is Shear Sentinel **v19**. Miner pin is ShearK **2.9**.
 - Pool HTTP: `/api/stats`, not `/stats`.
 - Operator admin vhost is **not** in git.
 - Stratum fleet: `SHEAR_STRATUM_BIND=127.0.0.1` and `SHEAR_STRATUM_AUTH=1` (or TLS in front of loopback). Reload with `deploy/reload-stratum-units.sh`. Checklist: `deploy/STRATUM_CHECKLIST.md`. Confirm `/api/stats` `stratumBind≠0.0.0.0` and `loginAuth≠dest-only` when AUTH is on; `alerts.stratumDrift` fires on non-loopback ∧ AUTH≠1. Do not enable dest-ban without ownership once AUTH is on. Do not invent TLS certs.
@@ -144,7 +144,7 @@ The Windows box cannot produce notarized macOS, iOS, or a Darwin ShearK binary. 
 
 - Invent a mainnet genesis datetime.
 - Dual-stack ADMITv1 + ADMITv2.
-- Recut an older wallet or ShearK tag. Pins are **0.71**, ShearK **2.8**, and Shear Sentinel **v18**. Do not relabel 0.70 as 0.71. Do not move tag `0.68`. Do not move tag `v17`. Do not label ShearK 2.6 as TLS-done.
+- Recut an older wallet or ShearK tag. Pins are **0.72**, ShearK **2.9**, and Shear Sentinel **v19**. Do not relabel 0.71 as 0.72. Do not move tag `0.71`, tag `0.70`, or tag `0.68`. Do not move tag `v18` or tag `v17`. Do not label ShearK 2.6 as TLS-done.
 
 ## 7) Stratum live stats vs tip units
 

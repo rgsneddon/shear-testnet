@@ -33,6 +33,19 @@ final class ShearSodium {
   final int Function(Pointer<Uint8>, Pointer<Uint8>) _fromHash;
 
   static ShearSodium? tryLoad() {
+    // iOS links libsodium into the app. process() sees that static image.
+    if (Platform.isIOS) {
+      for (final opener in <DynamicLibrary Function()>[
+        DynamicLibrary.process,
+        DynamicLibrary.executable,
+      ]) {
+        try {
+          final s = ShearSodium._(opener());
+          s._init();
+          return s;
+        } catch (_) {}
+      }
+    }
     for (final name in _libNames()) {
       try {
         final lib = DynamicLibrary.open(name);
@@ -48,6 +61,8 @@ final class ShearSodium {
 
   static List<String> _libNames() {
     final out = <String>[];
+    // Android jniLibs soname. The loader resolves libsodium.so from the APK.
+    if (Platform.isAndroid) out.add('libsodium.so');
     try {
       final exe = File(Platform.resolvedExecutable).parent.path;
       if (Platform.isMacOS) {

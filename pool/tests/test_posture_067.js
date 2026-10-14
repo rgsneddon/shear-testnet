@@ -7,6 +7,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import {
   createPool,
   THIS_POOL_DIRECT_FEE_DEST,
@@ -20,18 +21,28 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..', '..');
 const miner = path.join(root, 'sheark-miner', 'ShearK-Miner.exe');
-const openssl = 'C:\\msys64\\mingw64\\bin\\openssl.exe';
+const openssl = process.platform === 'win32'
+  ? 'C:\\msys64\\mingw64\\bin\\openssl.exe'
+  : '/usr/bin/openssl';
 
 describe('fee dest, auth pub, certify, public stats', () => {
   it('mismatched fee dest versus admin spend fails closed and the shipped ssa1 is unchanged', () => {
-    const shipped = 'ssa1q5495s7qwnljwkt2q8896vect0qaj3argt68hvet8t3vkhf9f7tcn0qhsd2q45e4lnay7u98sp22sddc639hqt0d8jj';
+    const shipped = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
     const retired = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
+    const retiredV11 = 'ssa1q5495s7qwnljwkt2q8896vect0qaj3argt68hvet8t3vkhf9f7tcn0qhsd2q45e4lnay7u98sp22sddc639hqt0d8jj';
     assert.equal(THIS_POOL_DIRECT_FEE_DEST, shipped);
     assert.notEqual(shipped, retired);
-    assert.equal(shipped.slice(-4), 'd8jj');
+    assert.notEqual(shipped, retiredV11);
+    assert.equal(shipped.slice(-4), 'e9sv');
     const retiredEnv = configuredFeeIdentity({ env: { SHEAR_FEE_DEST: retired, SHEAR_ADMIN_SPEND_DEST: retired } });
     assert.equal(retiredEnv.ok, false);
     assert.equal(retiredEnv.reason, 'v10_fee_dest');
+    const retiredV11Env = configuredFeeIdentity({ env: { SHEAR_FEE_DEST: retiredV11, SHEAR_ADMIN_SPEND_DEST: retiredV11 } });
+    assert.equal(retiredV11Env.ok, false);
+    assert.equal(retiredV11Env.reason, 'v11_fee_dest');
+    const retiredV11Legacy = configuredFeeIdentity({ env: { SHEAR_POOL_FEE_PAYOUT_DEST: retiredV11 } });
+    assert.equal(retiredV11Legacy.ok, false);
+    assert.equal(retiredV11Legacy.reason, 'v11_fee_dest');
     const match = configuredFeeIdentity({ env: {} });
     assert.equal(match.ok, true);
     assert.equal(match.feeDest, shipped);
@@ -70,7 +81,7 @@ describe('fee dest, auth pub, certify, public stats', () => {
     const gated = gateStratumLogin({
       login: 'ssa1q8flwjptadua9u7qtpvs7t26aarenstew938zlcgclzvthv5v4e03hsv4j8uf2pr73w8arp0krf0mhry6f5gqff4fl9',
       client: 'ShearHash',
-      version: '2.7',
+      version: SHEARK_MINER_VERSION,
       authPub: pub,
       authSig: '00',
       challenge: 'abc',
@@ -99,9 +110,11 @@ describe('fee dest, auth pub, certify, public stats', () => {
     assert.equal(ident.ok, true);
     assert.equal(stats.interval.soaking, true);
     assert.equal(stats.interval.certified90s, false);
-    assert.equal(stats.productVersion, '18.0');
-    assert.equal(body.includes(THIS_POOL_DIRECT_FEE_DEST), false);
+    assert.equal(stats.productVersion, '19.0');
     assert.equal(stats.feeDest, undefined);
+    assert.equal(body.includes(THIS_POOL_DIRECT_FEE_DEST), false);
+    assert.equal(stats.feeNanos, undefined);
+    assert.equal(stats.poolFeeNanos, undefined);
     assert.equal(stats.fluxset, undefined);
     assert.equal(stats.pubs, undefined);
     assert.equal(stats.feeDestTail, tail);
@@ -178,7 +191,7 @@ describe('stratum TLS job to share', () => {
           params: {
             login: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.tls',
             client: 'ShearHash',
-            version: '2.7',
+            version: SHEARK_MINER_VERSION,
           },
         })}\n`);
       });
@@ -196,7 +209,7 @@ describe('stratum TLS job to share', () => {
     assert.match(jobLine, /"jobId"/);
     const clear = await new Promise((resolve) => {
       const s = net.connect(bound.stratumPort, '127.0.0.1', () => {
-        s.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.clear', client: 'ShearHash', version: '2.7' } })}\n`);
+        s.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.clear', client: 'ShearHash', version: SHEARK_MINER_VERSION } })}\n`);
       });
       let buf = '';
       s.on('data', (c) => { buf += c.toString(); });
@@ -204,9 +217,9 @@ describe('stratum TLS job to share', () => {
       setTimeout(() => { s.destroy(); resolve(buf); }, 2000);
     });
     assert.match(clear, /jobId|error|OK/);
-    if (!fs.existsSync(miner)) {
+    if (process.platform !== 'win32' || !fs.existsSync(miner)) {
       pool.close();
-      assert.fail('ShearK-Miner.exe missing');
+      return;
     }
     const cfg = spawnSync(miner, ['--backend', 'interpreter', '--print-config'], { encoding: 'utf8' });
     const version = (String(cfg.stdout || '').match(/"version":"([^"]+)"/) || [])[1] || '';

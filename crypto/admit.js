@@ -2,13 +2,14 @@
  * ADMITv2 — Anonymous Destination Membership Integer Transactions.
  * Curve Trees on Pasta (Pallas–Vesta). Circuit = membership of leaf only.
  * Native prove/verify. ADMITv1 linear r.length === |J| blobs fail.
- * Fingerprint: ADMIT=ADMITv2.
+ * Fingerprint: ADMIT=ADMITv3.
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
-import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, kernelExcess } from './note.js';
+import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, txSpendTags } from './note.js';
+import { fs1Leaf, fs1LeafFor, fs1OutputNote } from './fs1_leaf.js';
 import { merkleRoot } from './merkle.js';
-import { nativeJroot, nativeProve, nativeVerify, nativeVerifyBatch } from './native_admit.js';
+import { nativeJroot, nativeJrootPoint, nativeFrontierAppend, nativeProveV3, nativeVerifyV3, noteH } from './native_admit.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -70,96 +71,85 @@ export function jroot(fluxset) {
   return nativeJroot(destLeaves, cLeaves) || Buffer.alloc(32);
 }
 
+/** Version-3 root. Not `jroot`: that field on a fluxset is the v2 book. */
+export function jrootPoint(fluxset) {
+  const { destLeaves, cLeaves } = leafLists(Array.isArray(fluxset) ? { pubs: fluxset, commits: [] } : fluxset);
+  return nativeJrootPoint(destLeaves, cLeaves) || Buffer.alloc(32);
+}
+
+/** C̃ = C + t·H. t is a fresh scalar the caller just drew. */
+export function blindCommit(c, t) {
+  const H = pointFrom(noteH());
+  const C = pointFrom(c);
+  return pointBytes(C.add(H.multiply(scalarFrom(t))));
+}
+
 /**
- * admit_prove. index is the real spend in J.
- * Native Curve Tree. t rerandomizes C → C̃.
+ * ADMITv3 prove. ctx is the 64-byte statement, built with this same t's C̃.
+ * t must be a new scalar for this proof. This function does not reuse a tx field.
  */
-export function admitProve({ x, index, pubs, commits, c, t }) {
+export function admitProveV3({ x, index, pubs, commits, c, t, ctx }) {
   const destLeaves = (pubs || []).map(pubBytes).filter(Boolean);
   const cLeaves = (commits || []).map(commitBytes).filter((b) => b && b.length === 32);
   const n = destLeaves.length;
   if (!n || n !== cLeaves.length) return null;
   if (index < 0 || index >= n) return null;
-  if (cLeaves[index].length !== 32 || destLeaves[index].length !== 32) return null;
-  const ts = t != null ? t : randomScalar();
+  if (t == null) return null;
+  const context = Buffer.isBuffer(ctx) ? ctx : Buffer.from(ctx || []);
+  if (context.length !== 64) return null;
   const P = destLeaves[index];
   const C = c || cLeaves[index];
-  const got = nativeProve({
+  const got = nativeProveV3({
     x: scalarBytes(x),
     p: P,
     c: Buffer.from(asU8(C)),
-    t: scalarBytes(ts),
+    t: scalarBytes(t),
     index,
     destLeaves,
     cLeaves,
+    ctx: context,
   });
-  if (!got) {
-    return null;
-  }
+  if (!got || !got.proof || got.proof[0] !== 3) return null;
   return {
     admit_proof: true,
-    v: 2,
-    spendTag: got.proof.length >= 33 ? Buffer.from(got.proof.subarray(1, 33)) : pointBytes(spendTag(x, pointFrom(P))),
+    v: 3,
+    spendTag: Buffer.from(got.proof.subarray(1, 33)),
     blob: got.proof,
     cTilde: got.cTilde,
-    t: scalarBytes(ts),
+    t: scalarBytes(t),
   };
 }
 
-/** admit_verify against J. ADMITv1 linear r[] returns false. Never throws. */
-export function admitVerify(proof, fluxset, extra = {}) {
+export function admitVerifyV3(proof, fluxset, extra = {}) {
   try {
-    if (proof?.r && Array.isArray(proof.r)) return false;
     const blob = proof?.blob || proof?.proof;
     if (!blob) return false;
     const pr = Buffer.from(asU8(blob));
-    if (!pr.length || pr[0] !== 2) return false;
-    if (pr.length > 32768) return false;
-    let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;
+    if (!pr.length || pr[0] !== 3) return false;
+    // Height-4 v3 proof is 40354 bytes. Height 5 does not fit. v2 stays 32768.
+    if (pr.length > 40354) return false;
+    const context = extra.ctx;
+    if (!context || Buffer.from(asU8(context)).length !== 64) return false;
+    // A fluxset.jroot is the v2 book. Recompute the point root unless the caller passed one.
+    let jr = extra.jroot || null;
     if (!jr) {
       const { destLeaves, cLeaves } = leafLists(fluxset);
-      jr = nativeJroot(destLeaves, cLeaves);
+      jr = nativeJrootPoint(destLeaves, cLeaves);
     }
     const tag = extra.spendTag || proof.spendTag;
     const ct = extra.cTilde || extra.c_tilde || proof.cTilde;
     if (!jr || !tag || !ct) return false;
-    // Consensus verify is log-time against jroot. Do not copy full J into native.
-    return nativeVerify({
+    return nativeVerifyV3({
       proof: pr,
       jroot: jr,
       cTilde: Buffer.from(asU8(ct)),
       spendTag: Buffer.from(asU8(tag)),
-      destLeaves: [],
-      cLeaves: [],
+      ctx: Buffer.from(asU8(context)),
     });
   } catch {
     return false;
   }
 }
-
-export function admitVerifyBatch(items, fluxset, extra = {}) {
-  try {
-    let jr = extra.jroot || (Array.isArray(fluxset) ? null : fluxset?.jroot) || null;
-    if (!jr) {
-      const { destLeaves, cLeaves } = leafLists(fluxset);
-      jr = nativeJroot(destLeaves, cLeaves);
-    }
-    if (!jr || !items?.length) return false;
-    return nativeVerifyBatch({
-      proofs: items.map((it) => it.proof || it.blob),
-      jroot: jr,
-      cTildes: items.map((it) => it.cTilde),
-      tags: items.map((it) => it.spendTag),
-      destLeaves: [],
-      cLeaves: [],
-    });
-  } catch {
-    return false;
-  }
-}
-
-export const admit_prove = admitProve;
-export const admit_verify = admitVerify;
 
 const XDST = Buffer.from('shear-admit-x-v1');
 
@@ -252,76 +242,230 @@ export function pubFromAdmit(buf) {
  * Spent notes stay in J (Admit does not reveal which flowline moved).
  * Double-spend is a repeated spendTag.
  */
-export function emptyFluxset() {
-  return { pubs: [], commits: [], spendTags: new Set(), jroot: jroot({ pubs: [], commits: [] }) };
+const frontierStats = { appendedLeaves: 0, fullRoots: 0 };
+
+/** Leaves fed to the append-only frontier, and how often a call rebuilt the whole root. */
+export function takeFrontierStats() {
+  const snap = { appendedLeaves: frontierStats.appendedLeaves, fullRoots: frontierStats.fullRoots };
+  frontierStats.appendedLeaves = 0;
+  frontierStats.fullRoots = 0;
+  return snap;
 }
 
-/** Append one sealed block's notes and spend-tags onto a live J. */
-export function applyBlockToFluxset(live, block) {
-  const pubs = Array.isArray(live?.pubs) ? live.pubs.slice() : [];
-  const commits = Array.isArray(live?.commits) ? live.commits.slice() : [];
-  const spendTags = new Set(live?.spendTags || []);
+function blankFrontier() {
+  return nativeFrontierAppend(null, [], []);
+}
+
+function pairsFrom(pubs, commits) {
+  const dest = [];
+  const cs = [];
+  const n = Math.max(pubs?.length || 0, commits?.length || 0);
+  for (let i = 0; i < n; i += 1) {
+    const d = pubBytes(pubs[i]);
+    const c = commitBytes(commits[i] || pubs[i]?.commit);
+    if (!d || !c || c.length !== 32) continue;
+    dest.push(d);
+    cs.push(c);
+  }
+  return { dest, cs };
+}
+
+function extendFrontier(prev, dest, cs) {
+  const ext = nativeFrontierAppend(prev, dest, cs);
+  if (!ext) return null;
+  frontierStats.appendedLeaves += dest.length;
+  return ext;
+}
+
+/** Pubs-only root, the coinbase jroot. Null when the parent has no frontier yet. */
+export function extendZeroRoot(flux, newPubs) {
+  if (!flux?.zeroFrontier) return null;
+  const dest = [];
+  for (const p of newPubs || []) {
+    const d = pubBytes(p);
+    if (d) dest.push(d);
+  }
+  const zeros = dest.map(() => Buffer.alloc(32));
+  const ext = nativeFrontierAppend(flux.zeroFrontier, dest, zeros);
+  return ext ? ext.root : null;
+}
+
+export function emptyFluxset() {
+  const blank = blankFrontier();
+  const zero = blankFrontier();
+  return {
+    pubs: [],
+    commits: [],
+    spendTags: new Set(),
+    jroot: blank?.root || jroot({ pubs: [], commits: [] }),
+    frontier: blank?.frontier || null,
+    zeroFrontier: zero?.frontier || null,
+    zeroRoot: zero?.root || blank?.root || null,
+  };
+}
+
+/** A lock or vote receipt is the vault's record, not a note. A withdraw payout is. */
+export function outputJoinsAdmitSet(tx, o) {
+  if (!o?.admitPub) return false;
+  const k = String(o?.kind || tx?.kind || '');
+  return k !== 'lock' && k !== 'vote';
+}
+
+/** An admitPub on a lock or vote receipt would make the stake spendable twice. */
+export function receiptAdmitRejected(tx) {
+  const kind = String(tx?.kind || '');
+  if (kind !== 'lock' && kind !== 'vote') return null;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  for (const o of outs) {
+    const k = String(o?.kind || kind);
+    if ((k === 'lock' || k === 'vote') && o?.admitPub) {
+      return { ok: false, reason: 'receipt_admitpub' };
+    }
+  }
+  return null;
+}
+
+function absorbFluxBlock(pubs, commits, spendTags, block) {
   for (const tx of block?.txs || []) {
-    const tag = tx.admit_proof?.spendTag || tx.spendTag;
-    if (tag) {
+    // Blob bytes win. Record them even when a JSON field disagrees, so a stored lie cannot un-spend the note.
+    const parsed = txSpendTags(tx);
+    for (const tag of parsed.tags) {
       const h = hexTag(tag);
       if (h) spendTags.add(h);
     }
     for (const o of tx.vout || []) {
-      if (!o?.admitPub) continue;
-      try {
-        pubs.push(pubFromAdmit(o.admitPub));
-        commits.push(o.commit ? Buffer.from(asU8(o.commit)) : Buffer.alloc(32));
-      } catch {
-        /* skip unreadable */
-      }
+      if (!outputJoinsAdmitSet(tx, o)) continue;
+      const note = fs1OutputNote(o);
+      if (!fs1LeafFor(o)) throw new Error('admit_note_point');
+      pubs.push(pubFromAdmit(note.admitPub));
+      commits.push(Buffer.from(note.commit));
     }
   }
-  return { pubs, commits, spendTags, jroot: jroot({ pubs, commits }) };
+}
+
+/** Append one sealed block's notes and spend-tags onto a live J. */
+export function applyBlockToFluxset(live, block) {
+  const dest = {
+    pubs: Array.isArray(live?.pubs) ? live.pubs.slice() : [],
+    commits: Array.isArray(live?.commits) ? live.commits.slice() : [],
+    spendTags: new Set(live?.spendTags || []),
+    jroot: live?.jroot || null,
+    frontier: live?.frontier || null,
+    zeroFrontier: live?.zeroFrontier || null,
+    zeroRoot: live?.zeroRoot || null,
+  };
+  return appendFluxBlock(dest, block);
+}
+
+function installFrontiers(dest, addedDest, addedCs) {
+  const zeros = addedDest.map(() => Buffer.alloc(32));
+  if (dest.frontier) {
+    const ext = extendFrontier(dest.frontier, addedDest, addedCs);
+    const zext = dest.zeroFrontier ? nativeFrontierAppend(dest.zeroFrontier, addedDest, zeros) : null;
+    if (ext && zext) {
+      dest.frontier = ext.frontier;
+      dest.jroot = ext.root;
+      dest.zeroFrontier = zext.frontier;
+      dest.zeroRoot = zext.root;
+      return;
+    }
+  }
+  frontierStats.fullRoots += 1;
+  const all = pairsFrom(dest.pubs, dest.commits);
+  let blob = blankFrontier()?.frontier || null;
+  let root = null;
+  let zblob = blankFrontier()?.frontier || null;
+  let zroot = null;
+  const step = 64;
+  for (let i = 0; i < all.dest.length; i += step) {
+    const d = all.dest.slice(i, i + step);
+    const c = all.cs.slice(i, i + step);
+    const ext = extendFrontier(blob, d, c);
+    const zext = nativeFrontierAppend(zblob, d, d.map(() => Buffer.alloc(32)));
+    if (!ext || !zext) {
+      dest.jroot = jroot({ pubs: dest.pubs, commits: dest.commits });
+      dest.frontier = null;
+      dest.zeroFrontier = null;
+      dest.zeroRoot = null;
+      return;
+    }
+    blob = ext.frontier;
+    root = ext.root;
+    zblob = zext.frontier;
+    zroot = zext.root;
+  }
+  if (!all.dest.length) {
+    const blank = blankFrontier();
+    dest.frontier = blank?.frontier || null;
+    dest.jroot = blank?.root || jroot({ pubs: [], commits: [] });
+    dest.zeroFrontier = dest.frontier;
+    dest.zeroRoot = dest.jroot;
+    return;
+  }
+  dest.frontier = blob;
+  dest.jroot = root;
+  dest.zeroFrontier = zblob;
+  dest.zeroRoot = zroot;
+}
+
+/**
+ * A fluxset whose leaves are already the snap's note list.
+ * One frontier pass, so the next append does not recompute the whole root.
+ */
+/** True when every stored (admitPub, commit) pair is an FS-1 leaf. */
+export function fluxLeavesAreFs1(pubs, commits) {
+  const pn = pubs?.length || 0;
+  const cn = commits?.length || 0;
+  if (pn !== cn) return false;
+  for (let i = 0; i < pn; i += 1) {
+    if (!fs1Leaf(fs1OutputNote({ admitPub: pubs[i], commit: commits[i] }))) return false;
+  }
+  return true;
+}
+
+export function fluxWithLeaves(pubs, commits, spendTags, opts = {}) {
+  const trust = opts?.trust === true;
+  const dest = [];
+  const cs = [];
+  const n = Math.min(pubs?.length || 0, commits?.length || 0);
+  if ((pubs?.length || 0) !== n || (commits?.length || 0) !== n) {
+    throw new Error('admit_note_point');
+  }
+  for (let i = 0; i < n; i += 1) {
+    const note = fs1OutputNote({ admitPub: pubs[i], commit: commits[i] });
+    if (!trust && !fs1Leaf(note)) throw new Error('admit_note_point');
+    const d = pubBytes(note.admitPub);
+    const c = commitBytes(note.commit);
+    if (!d || !c || c.length !== 32) throw new Error('admit_note_point');
+    dest.push(d);
+    cs.push(c);
+  }
+  const live = emptyFluxset();
+  live.pubs = dest;
+  live.commits = cs;
+  live.spendTags = spendTags instanceof Set ? new Set(spendTags) : new Set(spendTags || []);
+  live.frontier = null;
+  live.zeroFrontier = null;
+  installFrontiers(live, [], []);
+  return live;
+}
+
+/** Same absorb as applyBlockToFluxset, on the caller's object. Load replay uses this so the note lists are not copied at every height. */
+export function appendFluxBlock(live, block) {
+  const dest = live && Array.isArray(live.pubs) && Array.isArray(live.commits) && live.spendTags instanceof Set
+    ? live
+    : emptyFluxset();
+  const before = dest.pubs.length;
+  absorbFluxBlock(dest.pubs, dest.commits, dest.spendTags, block);
+  const added = pairsFrom(dest.pubs.slice(before), dest.commits.slice(before));
+  installFrontiers(dest, added.dest, added.cs);
+  return dest;
 }
 
 export function fluxsetFromBlocks(blocks) {
-  const pubs = [];
-  const commits = [];
-  const spendTags = new Set();
-  for (const b of blocks || []) {
-    for (const tx of b?.txs || []) {
-      const tag = tx.admit_proof?.spendTag || tx.spendTag;
-      if (tag) {
-        const h = hexTag(tag);
-        if (h) spendTags.add(h);
-      }
-      for (const o of tx.vout || []) {
-        if (!o?.admitPub) continue;
-        try {
-          pubs.push(pubFromAdmit(o.admitPub));
-          commits.push(o.commit ? Buffer.from(asU8(o.commit)) : Buffer.alloc(32));
-        } catch {
-          /* skip unreadable */
-        }
-      }
-    }
-  }
-  return { pubs, commits, spendTags, jroot: jroot({ pubs, commits }) };
-}
-
-export function compactAdmitProof(proof) {
-  if (!proof) return proof;
-  if (proof.blob || proof.v === 2) {
-    return {
-      admit_proof: true,
-      v: 2,
-      spendTag: proof.spendTag,
-      blob: proof.blob,
-      cTilde: proof.cTilde,
-    };
-  }
-  return {
-    admit_proof: true,
-    spendTag: proof.spendTag,
-    c0: proof.c0,
-    r: proof.r,
-  };
+  const live = emptyFluxset();
+  for (const b of blocks || []) appendFluxBlock(live, b);
+  return live;
 }
 
 export function fluxsetIndexOf(pubs, spendSeed, note) {
@@ -335,39 +479,4 @@ export function fluxsetIndexOf(pubs, spendSeed, note) {
       return false;
     }
   });
-}
-
-export function proveFlowSpend(tx, { spendSeed, spentNote, pubs, commits }) {
-  const x = admitScalarFromSeed(spendSeed, spentNote);
-  const index = fluxsetIndexOf(pubs, spendSeed, spentNote);
-  if (index < 0) return tx;
-  const ps = Array.isArray(pubs) ? pubs : [];
-  const cs = Array.isArray(commits) ? commits : [];
-  // J is the pair (P_i, C_i). Copying the spent commit onto every leaf
-  // proves a different tree than the one the node verifies.
-  if (cs.length !== ps.length || cs.length === 0) return tx;
-  const tReuse = tx.vin?.[0]?.t != null ? scalarFrom(tx.vin[0].t) : undefined;
-  const proof = admitProve({
-    x,
-    index,
-    pubs: ps,
-    commits: cs,
-    c: spentNote.commit,
-    t: tReuse,
-  });
-  if (!proof) return tx;
-  tx.admit_proof = proof;
-  tx.spendTag = proof.spendTag;
-  if (Array.isArray(tx.vin) && tx.vin[0] && proof.cTilde) {
-    tx.vin[0] = {
-      commit: proof.cTilde,
-      t: proof.t,
-      r: tx.vin[0].r || spentNote.r,
-    };
-    if (tx.vout?.every((o) => o?.r) && tx.vin[0].r) {
-      const excess = kernelExcess(tx.vout, tx.vin);
-      if (excess) tx.excess = excess;
-    }
-  }
-  return tx;
 }

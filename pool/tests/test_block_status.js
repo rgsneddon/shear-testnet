@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS } from '../../crypto/asert.js';
-import { explorerRecentTxs, confirmedBlockTxs, networkSupply, hashBonusEmittedOfBlock } from '../src/wallet_api.js';
+import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { explorerRecentTxs, confirmedBlockTxs, networkSupplySettled, hashBonusEmittedOfBlock } from '../src/wallet_api.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
@@ -73,18 +73,28 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(byH[3].confirmations, 1);
     assert.equal(byH[1].pending, true);
     assert.equal(byH[1].confirmations, 3);
-    const deep = [];
-    for (let h = 1; h <= 6; h += 1) deep.push(block(h, h));
-    const store6 = { blocks: deep, tip: () => deep[deep.length - 1] };
-    const later = confirmedBlockTxs(store6, 10);
+    const need = SPENDABLE_CONFIRMATIONS;
+    assert.ok(need > 1);
+    const short = [];
+    for (let h = 1; h <= need - 1; h += 1) short.push(block(h, h));
+    const early = confirmedBlockTxs({ blocks: short, tip: () => short[short.length - 1] }, 10);
+    const early1 = early.find((t) => t.height === 1);
+    const earlyTip = early.find((t) => t.height === need - 1);
+    assert.equal(early1.status, 'pending');
+    assert.equal(early1.pending, true);
+    assert.equal(early1.confirmations, need - 1);
+    assert.equal(earlyTip.status, 'pending');
+    assert.equal(earlyTip.confirmations, 1);
+    const deep = short.concat([block(need, need)]);
+    const later = confirmedBlockTxs({ blocks: deep, tip: () => deep[deep.length - 1] }, 10);
     const h1 = later.find((t) => t.height === 1);
-    const h6 = later.find((t) => t.height === 6);
+    const tip = later.find((t) => t.height === need);
     assert.equal(h1.status, 'confirmed');
     assert.equal(h1.pending, false);
-    assert.equal(h1.confirmations, 6);
-    assert.equal(h6.status, 'pending');
-    assert.equal(h6.pending, true);
-    assert.equal(h6.confirmations, 1);
+    assert.equal(h1.confirmations, need);
+    assert.equal(tip.status, 'pending');
+    assert.equal(tip.pending, true);
+    assert.equal(tip.confirmations, 1);
   });
 
   it('explorer recent Infinity returns every sealed block', () => {
@@ -110,7 +120,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(capped.length, 30);
   });
 
-  it('networkSupply uses the pot schedule when compact coinbase nanos are hidden', () => {
+  it('networkSupply does not echo the pot schedule when coinbase commitments do not open', async () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -127,14 +137,17 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
       });
     }
     const store = { blocks, tip: () => blocks[2], reserveVault: emptyVault() };
-    const supply = networkSupply(store);
-    assert.equal(supply.potNanos, 3 * NANOS_PER_SHE);
+    const supply = await networkSupplySettled(store);
+    assert.equal(supply.supplyStatus, 'mismatch');
+    assert.equal(supply.potNanos, 0);
+    assert.notEqual(supply.circulatingNanos, 3 * NANOS_PER_SHE);
+    assert.equal(supply.schedulePotNanos, 3 * NANOS_PER_SHE);
+    assert.notEqual(supply.differenceNanos, 0);
     assert.equal(supply.hashNanos, 0);
-    assert.equal(supply.circulatingNanos, 3 * NANOS_PER_SHE);
     assert.equal(supply.vaultNanos, 0);
   });
 
-  it('networkSupply adds Tree-A hash bonus units on top of the 1 SHE pots', () => {
+  it('networkSupply does not treat a Tree-A count or a zero hash vout as minted bonus', async () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -161,14 +174,24 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     }];
     const store = { blocks, tip: () => blocks[1], reserveVault: emptyVault() };
     const fromLeaves = hashBonusEmittedOfBlock(blocks[0], HASH_BONUS_NANOS);
-    assert.equal(fromLeaves, units * HASH_BONUS_NANOS);
+    assert.equal(fromLeaves, 0);
     const fromShares = hashBonusEmittedOfBlock(blocks[1], HASH_BONUS_NANOS);
-    assert.equal(fromShares, 2 * unitsForShare() * HASH_BONUS_NANOS);
-    const supply = networkSupply(store);
-    assert.equal(supply.potNanos, 2 * NANOS_PER_SHE);
-    assert.equal(supply.hashNanos, fromLeaves + fromShares);
-    assert.equal(supply.circulatingNanos, supply.potNanos + supply.hashNanos);
-    assert.ok(supply.circulatingNanos > supply.potNanos);
+    assert.equal(fromShares, 0);
+    const minted = hashBonusEmittedOfBlock({
+      height: 3,
+      aLeaves: [{ noteCommit: Buffer.alloc(32, 1), count: units }],
+      shareBatch: blocks[1].shareBatch,
+      txs: [{ coinbase: true, vout: [{ kind: 'hash', nanos: units, valueProof: { v: 17 } }] }],
+    }, HASH_BONUS_NANOS);
+    assert.equal(minted, 17);
+    const supply = await networkSupplySettled(store);
+    assert.equal(supply.supplyStatus, 'mismatch');
+    assert.equal(supply.potNanos, 0);
+    assert.equal(supply.hashNanos, 0);
+    assert.equal(supply.hashOwedNanos, 0);
+    assert.notEqual(supply.hashNanos, units * HASH_BONUS_NANOS);
+    assert.equal(supply.schedulePotNanos, 2 * NANOS_PER_SHE);
+    assert.notEqual(supply.circulatingNanos, supply.schedulePotNanos + units * HASH_BONUS_NANOS);
   });
 
   it('empty-aLeaves + empty-shareBatch + one confidential-0 hash vout returns 256', () => {
@@ -191,7 +214,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(got, unitsForShare() * HASH_BONUS_NANOS);
   });
 
-  it('networkSupply returns pot + hash + extra − burned and omits pull-book credit and open-round count', () => {
+  it('networkSupply ignores painted pot nanos, vault mint bank, pull credit, and open-round counts', async () => {
     const hdr = (ms) => encodeHeader({
       prevBlockHash: Buffer.alloc(32),
       merkleRoot: Buffer.alloc(32),
@@ -234,17 +257,20 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
         { kind: 'hash', nanos: pullCredit },
       ],
     };
-    const supply = networkSupply(store);
-    const want = pot + 256 + extra - burned;
-    assert.equal(supply.hashNanos, 256);
-    assert.equal(supply.potNanos, pot);
-    assert.equal(supply.extraMintNanos, extra);
-    assert.equal(supply.burnedNanos, burned);
-    assert.equal(supply.circulatingNanos, want);
-    assert.equal(supply.circulatingNanos, supply.potNanos + supply.hashNanos + supply.extraMintNanos - supply.burnedNanos);
+    const supply = await networkSupplySettled(store);
+    assert.equal(supply.supplyStatus, 'mismatch');
+    assert.equal(supply.potNanos, 0);
+    assert.equal(supply.hashNanos, 0);
+    assert.equal(supply.extraMintNanos, 0);
+    assert.equal(supply.burnedNanos, 0);
+    assert.equal(supply.reserveMintedNanos, supply.extraMintNanos);
+    assert.notEqual(supply.reserveMintedNanos, extra);
+    assert.equal(supply.reserveClaimableNanos, extra);
+    assert.notEqual(supply.circulatingNanos, pot);
+    assert.notEqual(supply.circulatingNanos, pot + 256 + extra - burned);
     assert.equal(supply.lockedNanos, staked);
-    assert.notEqual(supply.circulatingNanos, want + pullCredit);
-    assert.notEqual(supply.circulatingNanos, want + openRound);
-    assert.notEqual(supply.circulatingNanos, want + staked);
+    assert.notEqual(supply.circulatingNanos, pullCredit);
+    assert.notEqual(supply.circulatingNanos, openRound);
+    assert.notEqual(supply.circulatingNanos, staked);
   });
 });

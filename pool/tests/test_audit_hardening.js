@@ -6,6 +6,7 @@ import path from 'node:path';
 import { generateKeyPairSync, sign as signEd } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
+import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   gateStratumLogin,
@@ -28,7 +29,7 @@ import {
   SUBMIT_PER_IP_MAX,
   createPool,
 } from '../src/pool.js';
-import { totpKeyUri, createAdmin, handleAdminApi, totpCode, appendAdminAudit } from '../src/admin.js';
+import { totpKeyUri, createAdmin, handleAdminApi, appendAdminAudit } from '../src/admin.js';
 import { qrModules, qrSvg } from '../src/totp_qr.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -41,7 +42,7 @@ function destOf() {
 describe('A1 stratum auth gate', () => {
   it('auth on rejects dest-only; auth off accepts dest-only', () => {
     const dest = destOf();
-    const params = { login: dest, client: 'ShearHash', version: '2.4' };
+    const params = { login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION };
     const off = gateStratumLogin(params, { requireLoginAuth: false });
     assert.equal(off.ok, true);
     const on = gateStratumLogin(params, { requireLoginAuth: true });
@@ -61,13 +62,13 @@ describe('A1 stratum auth gate', () => {
     const ok = verifyStratumLoginAuth({ dest, challenge: chal, sig: sig.toString('hex'), pub });
     assert.equal(ok, true);
     const unbound = gateStratumLogin({
-      login: dest, client: 'ShearHash', version: '2.4',
+      login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION,
       challenge: chal, authSig: sig.toString('hex'), authPub: pub,
     }, { requireLoginAuth: true });
     assert.equal(unbound.ok, false);
     assert.equal(unbound.reason, 'auth_pub_unbound');
     const gated = gateStratumLogin({
-      login: dest, client: 'ShearHash', version: '2.4',
+      login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION,
       challenge: chal, authSig: sig.toString('hex'), authPub: pub,
     }, { requireLoginAuth: true, boundAuthPub: pub });
     assert.equal(gated.ok, true);
@@ -333,29 +334,42 @@ describe('A5 + 2FA QR', () => {
     assert.match(text, /"action":"withdraw"/);
   });
 
-  it('totp/start returns otpauth + qrSvg', () => {
+  it('totp routes stay absent even after a local setup', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-totp-qr-'));
     const admin = createAdmin(dir);
     const prev = process.env.SHEAR_ADMIN_HOST;
+    const prevSetup = process.env.SHEAR_ADMIN_SETUP;
     delete process.env.SHEAR_ADMIN_HOST;
-    const setup = admin.setup({ user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken });
-    assert.equal(setup.ok, true);
-    const start = handleAdminApi(new URL('https://mypool.site/api/admin/totp/start'), 'POST', {}, {
-      admin,
-      cookie: `shear_admin=${setup.token}`,
-    });
-    assert.equal(start.json.ok, true);
-    assert.match(start.json.otpauth, /^otpauth:\/\/totp\//);
-    assert.match(start.json.qrSvg, /^<svg /);
-    assert.equal(start.json.secret.length >= 16, true);
-    const code = totpCode(admin.sessionOf(setup.token).totpPending);
-    const confirm = handleAdminApi(new URL('https://mypool.site/api/admin/totp/confirm'), 'POST', { code }, {
-      admin,
-      cookie: `shear_admin=${setup.token}`,
-    });
-    assert.equal(confirm.json.ok, true);
-    if (prev == null) delete process.env.SHEAR_ADMIN_HOST;
-    else process.env.SHEAR_ADMIN_HOST = prev;
+    process.env.SHEAR_ADMIN_SETUP = '1';
+    try {
+      const setup = admin.setup({ user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken });
+      assert.equal(setup.ok, true);
+      const start = handleAdminApi(new URL('https://mypool.site/api/admin/totp/start'), 'POST', {}, {
+        admin,
+        cookie: `shear_admin=${setup.token}`,
+        loopback: true,
+        host: '127.0.0.1',
+      });
+      assert.equal(start.status, 404);
+      assert.equal(start.json.reason, 'admin_absent');
+      assert.equal(start.json.otpauth, undefined);
+      assert.equal(start.json.qrSvg, undefined);
+      const confirm = handleAdminApi(new URL('https://mypool.site/api/admin/totp/confirm'), 'POST', { code: '000000' }, {
+        admin,
+        cookie: `shear_admin=${setup.token}`,
+        loopback: true,
+        host: '127.0.0.1',
+      });
+      assert.equal(confirm.status, 404);
+      assert.equal(confirm.json.reason, 'admin_absent');
+      assert.equal(admin.status().totp, false);
+      assert.equal(admin.status().closed, false);
+    } finally {
+      if (prev == null) delete process.env.SHEAR_ADMIN_HOST;
+      else process.env.SHEAR_ADMIN_HOST = prev;
+      if (prevSetup == null) delete process.env.SHEAR_ADMIN_SETUP;
+      else process.env.SHEAR_ADMIN_SETUP = prevSetup;
+    }
   });
 });
 

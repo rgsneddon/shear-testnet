@@ -14,7 +14,8 @@ String? parseReceiveQr(String raw) {
   if (s.startsWith('shear:')) s = s.substring(6).trim();
   if (s.startsWith('shear1:')) s = s.substring(7).trim();
   if (isPaymentFingerprint(s)) return null;
-  if (isFullPaymentCode(s) || isDestAddress(s) || isShearAddress(s)) return s;
+  if (isUnpayableSsa1(s)) return null;
+  if (isFullPaymentCode(s) || isPayableDest(s) || isShearAddress(s)) return s;
   return null;
 }
 
@@ -29,6 +30,7 @@ String? receiveQrFailCopy(String raw) {
   if (parseReceiveQr(raw) != null) return null;
   var s = raw.trim();
   if (s.startsWith('shear:')) s = s.substring(6).trim();
+  if (isUnpayableSsa1(s)) return kErrShortSsa1;
   if (isPaymentFingerprint(s)) return 'Not a payable Shear receive code (fingerprint only)';
   return 'Not a Shear receive QR.';
 }

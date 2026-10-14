@@ -245,10 +245,18 @@ Scalar scalarMul(Scalar a, Scalar b) {
 }
 
 Scalar scalarFromInt(int n) {
+  if (n < 0) throw ArgumentError('u64');
+  return scalarFromU64(BigInt.from(n));
+}
+
+/// Little-endian u64. A Dart int cannot name 2^63 through 2^64-1.
+Scalar scalarFromU64(BigInt n) {
+  if (n < BigInt.zero || n.bitLength > 64) throw ArgumentError('u64');
   final b = Uint8List(32);
   var v = n;
+  final mask = BigInt.from(0xff);
   for (var i = 0; i < 8; i++) {
-    b[i] = v & 0xff;
+    b[i] = (v & mask).toInt();
     v >>= 8;
   }
   return scalarFromBytes(b);

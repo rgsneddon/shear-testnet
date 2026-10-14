@@ -172,12 +172,12 @@ describe('solo block loses to the fleet', () => {
     assert.equal(soloMaySeal({ height: 5, hash: 'aa'.repeat(32), peers }), false);
   });
 
-  it('replay of an accepted chain does not ShearHash again', () => {
+  it('replay of an accepted chain does not skip share credit', () => {
     const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     const body = src.split('function rebuildSpentB()')[1].split('function bounceMempool')[0];
     assert.match(body, /trustedPowHash/);
-    assert.match(body, /skipSharePow:\s*true/);
-    assert.doesNotMatch(body, /shearHash\(/);
+    assert.match(body, /skipSharePow:\s*false/);
+    assert.doesNotMatch(body, /skipSharePow:\s*true/);
   });
 
   it('after the losing block is discarded the node fetches the fleet tip and the miner gets that job', { timeout: 90_000 }, async () => {

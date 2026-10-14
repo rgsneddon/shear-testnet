@@ -3,9 +3,18 @@ import { randomBytes } from 'node:crypto';
 import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
+import {
+  packHashCreditBytes,
+  unpackHashCreditBytes,
+  packSpillBytes,
+  unpackSpillBytes,
+  packSpillCreditBytes,
+  unpackSpillCreditBytes,
+} from '../../crypto/hash_owed.js';
 import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
+import { parseBoundedJson } from '../../crypto/json_bounds.js';
 
 function reviveDeep(v) {
   if (v == null) return v;
@@ -45,6 +54,32 @@ export function ipv4Subnet24(addr) {
   const a = String(addr || '');
   const m = a.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
   return m ? `${m[1]}.0` : a;
+}
+
+/**
+ * Network group for header-offer slots: an IPv4 /24 or an IPv6 /64. One
+ * operator with many addresses in one group gets one slot.
+ */
+export function peerNetGroup(addr) {
+  let a = String(addr || '').trim().toLowerCase();
+  if (a.startsWith('::ffff:')) a = a.slice(7);
+  const v4 = a.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+  if (v4) return `${v4[1]}.${v4[2]}.${v4[3]}.0/24`;
+  if (!a.includes(':')) return a;
+  const bare = a.split('%')[0];
+  const [head, tail = ''] = bare.split('::');
+  const left = head ? head.split(':') : [];
+  const right = bare.includes('::') && tail ? tail.split(':') : [];
+  const fill = bare.includes('::') ? Array(Math.max(0, 8 - left.length - right.length)).fill('0') : [];
+  const parts = left.concat(fill, right).slice(0, 4).map((x) => (parseInt(x || '0', 16) || 0).toString(16));
+  while (parts.length < 4) parts.push('0');
+  return `${parts.join(':')}::/64`;
+}
+
+/** Header-offer tier: operator-pinned dials, our other dials, or inbound. */
+export function offerTierOf(rec) {
+  if (rec?.pinned) return 'pinned';
+  return rec?.inbound ? 'inbound' : 'outbound';
 }
 
 export function noteExpensiveFail(rec) {
@@ -509,6 +544,13 @@ export function encodeWireBlock(b) {
     samples: b.samples,
     miner: b.miner,
     sharePacked: packShareBatchBytes(b.shareBatch || []).toString('hex'),
+    hashCreditPacked: Array.isArray(b.hashCredits) ? packHashCreditBytes(b.hashCredits).toString('hex') : '',
+    ...(Array.isArray(b.hashSpill) && b.hashSpill.length
+      ? { hashSpillPacked: packSpillBytes(b.hashSpill).toString('hex') }
+      : {}),
+    ...(Array.isArray(b.hashSpillCredits) && b.hashSpillCredits.length
+      ? { hashSpillCreditPacked: packSpillCreditBytes(b.hashSpillCredits).toString('hex') }
+      : {}),
     aLeaves: b.aLeaves,
     bLeaves: b.bLeaves,
     rootA: b.rootA,
@@ -519,7 +561,7 @@ export function encodeWireBlock(b) {
 }
 
 export function decodeWireBlock(w) {
-  return {
+  const block = {
     header: wireBytes(w.header),
     hash: w.hash != null ? wireBytes(w.hash) : undefined,
     height: w.height,
@@ -529,6 +571,9 @@ export function decodeWireBlock(w) {
     shareBatch: w.sharePacked
       ? unpackShareBatchBytes(Buffer.from(String(w.sharePacked), 'hex'))
       : (Array.isArray(w.shareBatch) ? w.shareBatch : []),
+    hashSpill: w.hashSpillPacked
+      ? (unpackSpillBytes(Buffer.from(String(w.hashSpillPacked), 'hex')) || [])
+      : (Array.isArray(w.hashSpill) ? w.hashSpill : []),
     aLeaves: reviveDeep(w.aLeaves),
     bLeaves: reviveDeep(w.bLeaves),
     rootA: reviveDeep(w.rootA),
@@ -536,6 +581,19 @@ export function decodeWireBlock(w) {
     samplesPruned: !!w.samplesPruned,
     bLeavesPruned: !!w.bLeavesPruned,
   };
+  // A missing credit column is not a record. An own-property set to undefined
+  // makes freshForBlock / spillForBlock reject the block as hash_owed.
+  if (w.hashCreditPacked) {
+    block.hashCredits = unpackHashCreditBytes(Buffer.from(String(w.hashCreditPacked), 'hex'));
+  } else if (Array.isArray(w.hashCredits)) {
+    block.hashCredits = w.hashCredits;
+  }
+  if (w.hashSpillCreditPacked) {
+    block.hashSpillCredits = unpackSpillCreditBytes(Buffer.from(String(w.hashSpillCreditPacked), 'hex'));
+  } else if (Array.isArray(w.hashSpillCredits)) {
+    block.hashSpillCredits = w.hashSpillCredits;
+  }
+  return block;
 }
 
 /**
@@ -749,6 +807,12 @@ export function upgradeableHold(rec, headers, localHeight, now = Date.now(), pin
 export function recordIngestFail(rec, reason) {
   if (!rec) return false;
   if (!isFinalIngestFail(reason)) return false;
+  return noteExpensiveFail(rec);
+}
+
+/** A shaped proof that failed verification. Cheap shape rejects do not call this. */
+export function recordProofFail(rec) {
+  if (!rec) return false;
   return noteExpensiveFail(rec);
 }
 
@@ -1134,6 +1198,14 @@ export function createP2p({
     const got = store.queueTx(tx);
     if (!got?.ok) {
       seenTx.delete(id);
+      if (got?.proofChecked) {
+        const rec = peers.get(fromSock);
+        if (recordProofFail(rec)) {
+          const until = Date.now() + P2P_BAN_MS;
+          if (rec?.remote) peerBans.set(rec.remote, until);
+          try { fromSock.destroy(); } catch { /* ignore */ }
+        }
+      }
       return;
     }
     const payload = wireTx(got.tx || tx);
@@ -1481,7 +1553,13 @@ export function createP2p({
       const job = getblockServeQ.shift();
       n += 1;
       if (!job?.sock || job.sock.destroyed) continue;
-      send(job.sock, { type: 'block', magic, block: encodeWireBlock(job.block) });
+      // A held body goes out whole. A pruned block this tip does not bury is a miss.
+      const served = typeof store.servableBlock === 'function' ? store.servableBlock(job.block) : job.block;
+      if (!served) {
+        send(job.sock, { type: 'getblock_nak', magic, hash: hexHash(job.block?.hash) });
+        continue;
+      }
+      send(job.sock, { type: 'block', magic, block: encodeWireBlock(served) });
       if (job.key) recentGetblockServe.set(job.key, Date.now());
       getblockServeSent += 1;
     }
@@ -1695,6 +1773,18 @@ export function createP2p({
       const have = seenHashes();
       const page = msg.headers || [];
       rec.page = page;
+      // A pruned body served next needs these headers to show its burial.
+      if (typeof store.offerHeaders === 'function') {
+        const offered = store.offerHeaders(page, {
+          peer: `p2p:${rec.remote || rec.id}`,
+          tier: offerTierOf(rec),
+          group: peerNetGroup(rec.remote),
+        });
+        if (offered?.dropped) {
+          try { sock.destroy(); } catch { /* ignore */ }
+          return;
+        }
+      }
       const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
       const blocked = activeFailSet(rec);
       // A probe-ahead tip has not served a body, so its winning block is not
@@ -1902,20 +1992,9 @@ export function createP2p({
       }
       const job = scheduleP2pVerify(() => {
         const before = store.tip();
-        const networkTip = Math.max(
-          advertisedPeerTip(recNow, 0),
-          Number(last?.height || 0),
-          Number(before?.height || 0),
-        );
-        const blocks = fork.map((b) => {
-          const h = Number(b?.height || 0);
-          const shares = Array.isArray(b.shareBatch) ? b.shareBatch.length : 0;
-          if (b.samplesPruned || shares || !shouldPruneSamples(h, networkTip)) return b;
-          return { ...b, samplesPruned: true };
-        });
-        return Promise.resolve(store.ingest(blocks, {
+        // IBD validates every block. A peer-advertised height is not a skip.
+        return Promise.resolve(store.ingest(fork, {
           offLoopPow: true,
-          tipHeight: networkTip,
         })).then((got) => ({ got, before }));
       });
       job.then(({ got, before }) => {
@@ -2065,6 +2144,7 @@ export function createP2p({
       height: 0,
       dialHost: extra.dialHost || '',
       inbound,
+      pinned: !inbound && extra.pinned === true,
       expensiveFails: 0,
     });
     let buf = '';
@@ -2080,8 +2160,17 @@ export function createP2p({
         buf = buf.slice(idx + 1);
         if (!raw) continue;
         let msg;
-        try { msg = JSON.parse(raw); } catch { continue; }
-        handle(sock, msg);
+        try { msg = parseBoundedJson(raw); } catch { continue; }
+        try {
+          handle(sock, msg);
+        } catch {
+          const rec = peers.get(sock);
+          if (recordProofFail(rec)) {
+            const until = Date.now() + P2P_BAN_MS;
+            if (rec?.remote) peerBans.set(rec.remote, until);
+            try { sock.destroy(); } catch { /* ignore */ }
+          }
+        }
       }
     });
     sock.on('close', () => drop(sock));
@@ -2141,7 +2230,8 @@ export function createP2p({
     });
   }
 
-  function connect(peerHost, peerPort) {
+  /** `pinned` is an operator-chosen peer (seed list, RPC connect), not one learned from addr gossip. */
+  function connect(peerHost, peerPort, { pinned = false } = {}) {
     if (!isRoutablePeerAddr(peerHost) && peerHost !== '127.0.0.1' && peerHost !== '::1') {
       return Promise.reject(new Error('bad_addr'));
     }
@@ -2155,7 +2245,7 @@ export function createP2p({
           resolve(null);
           return;
         }
-        attach(sock, { dialHost: peerHost });
+        attach(sock, { dialHost: peerHost, pinned });
         resolve(sock);
       });
       sock.once('error', reject);
@@ -2173,10 +2263,10 @@ export function createP2p({
     return false;
   }
 
-  function ensurePeer(peerHost, peerPort) {
+  function ensurePeer(peerHost, peerPort, opts = {}) {
     const p = Number(peerPort) || P2P_PORT;
     if (linkedTo(peerHost, p)) return Promise.resolve(null);
-    return connect(peerHost, p);
+    return connect(peerHost, p, opts);
   }
 
   function dialSeeds(list) {
@@ -2194,7 +2284,7 @@ export function createP2p({
         host = String(seed.host);
         port = Number(seed.port) || P2P_PORT;
       } else continue;
-      jobs.push(ensurePeer(host, port).catch(() => null));
+      jobs.push(ensurePeer(host, port, { pinned: true }).catch(() => null));
     }
     return Promise.all(jobs);
   }
@@ -2292,5 +2382,6 @@ export function createP2p({
     originInvSetSize: (id) => Number(originInvSize.get(String(id || '')) || 0),
     get port() { return server?.address()?.port ?? port; },
     get listening() { return Boolean(server?.listening); },
+    ingestRemoteTx,
   };
 }

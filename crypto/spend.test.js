@@ -2,8 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen } from './spend.js';
-import { sealNote } from './note.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen, typedCommitSum } from './spend.js';
+import { sealNote, sealCoinbaseNote, sealHiddenNote, randomScalar, scalarBytes, kernelExcess } from './note.js';
+import { blindCommit } from './admit.js';
 import { compactTx } from './chronoflux.js';
 import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest, ed25519PrivateFromSeed, ed25519RawPub, encodeDest } from './address.js';
 import { destCommitFromSpendPub } from './stealth_ed25519.js';
@@ -14,14 +15,14 @@ const dest = 'ssa1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
 const other = 'ssa1qyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy';
 
 describe('funded spend / no double-spend', () => {
-  it('dest20-only compact vote/lock is a portal open without dest plaintext', () => {
+  it('dest20-only compact vote/lock is not a portal open', () => {
     const d20 = Buffer.alloc(20, 9);
     assert.equal(verifyReservePortalOpen({
       kind: 'vote',
       payer: dest,
       vin: [{}],
       vout: [{ kind: 'vote', dest20: d20 }],
-    }), true);
+    }), false);
     assert.equal(verifyReservePortalOpen({
       kind: 'vote',
       vin: [{}],
@@ -31,7 +32,7 @@ describe('funded spend / no double-spend', () => {
       kind: 'lock',
       vin: [{}],
       vout: [{ kind: 'lock', dest20: d20, valueProof: { v: 1 } }],
-    }), true);
+    }), false);
     const vote = {
       kind: 'vote',
       payer: dest,
@@ -41,36 +42,39 @@ describe('funded spend / no double-spend', () => {
       sig: '00',
     };
     assert.equal(flowSendNeedsOpen(vote), false);
-    assert.equal(fundedDebit(vote), null);
     const funded = verifyFundedBody([vote], () => 0);
-    assert.equal(funded.ok, true, funded.reason);
+    assert.equal(funded.ok, false);
   });
 
-  it('sealed compact lock with commit+valueProof and no spendPub opens the portal', () => {
+  it('a range proof does not open a reserve portal; a kept owner sig does', () => {
     const id = newIdentity();
     const d20 = hash20FromAddress(id.address);
     const note = sealNote(1, { dest20: d20, kind: 'lock' });
-    const sealed = compactTx({
+    const unsigned = compactTx({
       kind: 'lock',
       from: id.address,
       to: id.address,
       spendPub: id.spendPub.toString('hex'),
+      portalId: 'ab'.repeat(32),
       vin: [{ address: id.address, dest20: d20 }],
       vout: [{ ...note, kind: 'lock', address: id.address }],
     });
-    assert.equal(spendPubFromTx(sealed), null);
-    const o = sealed.vout[0];
-    assert.ok(o.commit);
-    assert.ok(o.valueProof);
-    const range = o.rangeProof;
-    delete o.rangeProof;
+    assert.equal(spendPubFromTx(unsigned)?.toString('hex'), id.spendPub.toString('hex'));
+    assert.equal(verifyReservePortalOpen(unsigned), false);
+    const signed = {
+      kind: 'lock',
+      from: encodeDest(destCommitFromSpendPub(id.spendPub)),
+      to: id.address,
+      portalId: 'cd'.repeat(32),
+      vin: [{ dest20: d20 }],
+      vout: [{ ...note, kind: 'lock' }],
+    };
+    signSpendTx(signed, id.privateKey);
+    const sealed = compactTx(signed);
+    assert.equal(spendPubFromTx(sealed)?.toString('hex'), signed.spendPub);
     assert.equal(verifyReservePortalOpen(sealed), true);
-    const vp = o.valueProof;
-    delete o.valueProof;
+    delete sealed.sig;
     assert.equal(verifyReservePortalOpen(sealed), false);
-    o.rangeProof = range;
-    assert.equal(verifyReservePortalOpen(sealed), true);
-    o.valueProof = vp;
   });
 
   it('debits amount plus levy from the sender', () => {
@@ -125,7 +129,7 @@ describe('funded spend / no double-spend', () => {
     assert.equal(matureSpendableNanos(rows, dest, 10, SPENDABLE_CONFIRMATIONS), 7 * NANOS_PER_SHE);
   });
 
-  it('rejects two spends of the same mature coins in one body', () => {
+  it('an address balance does not fund a send, at any amount', () => {
     const id = newIdentity();
     const { privateKey: eph } = generateKeyPairSync('x25519');
     const pay = silentPay(id.paymentCodeFull, eph);
@@ -133,7 +137,7 @@ describe('funded spend / no double-spend', () => {
     const to = from;
     const nanos = NANOS_PER_SHE;
     const fee = levyNanos(nanos);
-    const spendableOf = (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0);
+    const spendableOf = () => Number.MAX_SAFE_INTEGER;
     const rec = recognizeSilentDest({
       viewKey: id.viewKey, spendPub: id.spendPub, dest: from, ephPub: pay.ephPub,
     });
@@ -148,14 +152,16 @@ describe('funded spend / no double-spend', () => {
       vin: [{ address: from }],
       vout: [{ address: to, nanos: amount }],
     }, key);
+    // A plaintext amount is amount_field (AL-1) before the kind gate. Either way, unfunded.
     const once = verifyFundedBody([tx('a', nanos)], spendableOf);
-    assert.equal(once.ok, true, once.reason);
+    assert.equal(once.ok, false);
+    assert.equal(once.reason, 'amount_field');
     const twice = verifyFundedBody([tx('a', nanos), tx('b', nanos)], spendableOf);
     assert.equal(twice.ok, false);
-    assert.equal(twice.reason, 'replay');
-    const over = verifyFundedBody([tx('a', nanos), tx('b', nanos + NANOS_PER_SHE)], spendableOf);
+    assert.equal(twice.reason, 'amount_field');
+    const over = verifyFundedBody([tx('a', 1), tx('b', nanos + NANOS_PER_SHE)], spendableOf);
     assert.equal(over.ok, false);
-    assert.equal(over.reason, 'insufficient');
+    assert.equal(over.reason, 'amount_field');
   });
 
   it('mempool already-queued debit blocks a second pull of the same coins', () => {
@@ -261,25 +267,26 @@ describe('funded spend / no double-spend', () => {
     const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
     const key = ed25519PrivateFromSeed(seed);
     const from = encodeDest(destCommitFromSpendPub(ed25519RawPub(key)));
+    const paid = sealHiddenNote(50n, { dest20: Buffer.alloc(20, 3), kind: 'send', admitBase: newIdentity().admitBase });
+    delete paid.r;
     const tx = {
       kind: 'send',
       from,
-      nanos: 50,
       fee: 1,
       vin: [{ prev: Buffer.alloc(32, 1), index: 0, commit: Buffer.alloc(32, 2) }],
-      vout: [{ address: from, nanos: 50, kind: 'send' }],
+      vout: [paid],
     };
     signSpendTx(tx, key);
     const destMap = verifyFundedBody([tx], () => 0);
     assert.equal(destMap.ok, true, destMap.reason);
     const unbound = { ...tx, vin: [{ address: from }] };
     signSpendTx(unbound, key);
-    const refused = verifyFundedBody([unbound], () => 0);
+    const refused = verifyFundedBody([unbound], () => Number.MAX_SAFE_INTEGER);
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'insufficient');
+    assert.equal(refused.reason, 'kind');
   });
 
-  it('signed vote with recovered dest notes is funded; empty dest is insufficient', () => {
+  it('a plaintext vote is not funded by a balance', () => {
     const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
     const key = ed25519PrivateFromSeed(seed);
     const from = encodeDest(destCommitFromSpendPub(ed25519RawPub(key)));
@@ -298,9 +305,10 @@ describe('funded spend / no double-spend', () => {
     signSpendTx(tx, key);
     const empty = verifyFundedBody([tx], () => 0);
     assert.equal(empty.ok, false);
-    assert.equal(empty.reason, 'insufficient');
+    assert.equal(empty.reason, 'admit_version');
     const funded = verifyFundedBody([tx], (addr) => (addr === from ? fee : 0));
-    assert.equal(funded.ok, true, funded.reason);
+    assert.equal(funded.ok, false);
+    assert.equal(funded.reason, 'admit_version');
   });
 
   it('lock and vote spend digests differ when dest is the same', () => {
@@ -322,5 +330,104 @@ describe('funded spend / no double-spend', () => {
       vout: [{ address: from, nanos: 0, kind: 'vote' }],
     };
     assert.equal(spendPackDigest(lock).equals(spendPackDigest(vote)), false);
+  });
+
+  it('a flow digest ignores the fee, and a typed digest binds the fee and the admit blob', () => {
+    const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
+    const key = ed25519PrivateFromSeed(seed);
+    const send = {
+      kind: 'send',
+      fee: 1,
+      vin: [{ address: dest }],
+      vout: [{ address: dest, nanos: 1, kind: 'send' }],
+    };
+    const repriced = { ...send, fee: send.fee + 1 };
+    assert.equal(spendPackDigest(send).equals(spendPackDigest(repriced)), true);
+    const lock = {
+      kind: 'lock',
+      fee: 1,
+      portalId: 'portal-a',
+      payoutPortalId: 'portal-b',
+      vin: [{ noteCommit: Buffer.alloc(32, 2) }],
+      vout: [{ kind: 'lock', nanos: 1 }],
+    };
+    assert.equal(spendPackDigest(lock).equals(spendPackDigest({ ...lock, fee: lock.fee + 1 })), false);
+    const blob = Buffer.from([3, 9, 8, 7]);
+    const withBlob = { ...lock, admit_proof: { blob } };
+    assert.equal(spendPackDigest(lock).equals(spendPackDigest(withBlob)), false);
+    const flipped = Buffer.from(blob);
+    flipped[flipped.length - 1] ^= 0xff;
+    assert.equal(
+      spendPackDigest(withBlob).equals(spendPackDigest({ ...withBlob, admit_proof: { blob: flipped } })),
+      false,
+    );
+    signSpendTx(withBlob, key);
+    assert.equal(verifySpendSig(withBlob), true);
+    assert.equal(verifySpendSig({ ...withBlob, fee: withBlob.fee + 1 }), false);
+    assert.equal(verifySpendSig({ ...withBlob, admit_proof: { ...withBlob.admit_proof, blob: flipped } }), false);
+  });
+
+  it('a hidden change lets any note fund a vote or withdraw, and a compact body still balances', () => {
+    const d20 = Buffer.alloc(20, 4);
+    const amounts = [1, 1_000_000, 50_000_000_000];
+    for (const noteV of amounts) {
+      const fees = [0, 1, Math.floor(noteV / 2)].filter((fee, i, all) => fee < noteV && all.indexOf(fee) === i);
+      for (const fee of fees) {
+        const note = sealCoinbaseNote(noteV, { dest20: d20, kind: 'pot' });
+        const t = randomScalar();
+        const tb = scalarBytes(t);
+        const vin = [{ commit: Buffer.from(blindCommit(note.commit, tb)), r: note.r, t: tb }];
+        const voteReceipt = sealCoinbaseNote(0, { dest20: d20, kind: 'vote' });
+        const voteChange = sealNote(noteV - fee, { dest20: d20, kind: 'send' });
+        const vote = {
+          kind: 'vote',
+          fee,
+          vin: [{ commit: vin[0].commit }],
+          vout: [voteReceipt, voteChange],
+          excess: kernelExcess([voteReceipt, voteChange], vin),
+        };
+        const voted = typedCommitSum(vote);
+        assert.equal(voted.ok, true, `${noteV} ${fee} ${voted.reason}`);
+        const leanVote = compactTx(vote);
+        assert.equal(leanVote.vout[1].valueProof?.v, undefined);
+        const leanVoted = typedCommitSum(leanVote);
+        assert.equal(leanVoted.ok, true, `${noteV} ${fee} lean ${leanVoted.reason}`);
+        const wrongFee = typedCommitSum({ ...vote, fee: fee + 1 });
+        assert.equal(wrongFee.ok, false, String(noteV));
+        assert.equal(wrongFee.reason, 'commit_sum');
+
+        const cap = noteV === 1 ? 0 : noteV + 1;
+        const receipt = sealCoinbaseNote(cap, { dest20: d20, kind: 'withdraw' });
+        const change = sealNote(noteV - fee, { dest20: d20, kind: 'send' });
+        const withdraw = {
+          kind: 'withdraw',
+          fee,
+          vin: [{ commit: vin[0].commit }],
+          vout: [receipt, change],
+          excess: kernelExcess([receipt, change], vin),
+        };
+        const drawn = typedCommitSum(withdraw);
+        assert.equal(drawn.ok, true, `${noteV} ${fee} ${cap} ${drawn.reason}`);
+        const leanDrawn = typedCommitSum(compactTx(withdraw));
+        assert.equal(leanDrawn.ok, true, `${noteV} lean withdraw ${leanDrawn.reason}`);
+        const notRemainder = typedCommitSum({ ...withdraw, fee: noteV });
+        assert.equal(notRemainder.ok, false);
+        assert.equal(notRemainder.reason, 'commit_sum');
+      }
+      const bare = sealCoinbaseNote(noteV, { dest20: d20, kind: 'pot' });
+      const tb = scalarBytes(randomScalar());
+      const receipt = sealCoinbaseNote(noteV === 1 ? 0 : 7, { dest20: d20, kind: 'withdraw' });
+      const exact = {
+        kind: 'withdraw',
+        fee: noteV,
+        vin: [{ commit: Buffer.from(blindCommit(bare.commit, tb)) }],
+        vout: [receipt],
+        excess: kernelExcess([receipt], [{ r: bare.r, t: tb }]),
+      };
+      assert.equal(typedCommitSum(exact).ok, true, String(noteV));
+      const short = typedCommitSum({ ...exact, fee: noteV > 0 ? noteV - 1 : 1 });
+      assert.equal(short.ok, false);
+      assert.equal(short.reason, 'commit_sum');
+    }
   });
 });

@@ -4,12 +4,14 @@
  */
 import net from 'node:net';
 import { isDestAddress } from '../../crypto/address.js';
+import { payeeFs1Ok } from '../../crypto/n1.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { isInitialBlockDownload } from './status.js';
 import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
 import { setNonce, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
+import { HTTP_BODY_MAX, STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const SOLO_STRATUM_PORT = 1111;
 export const SOLO_STRATUM_BIND = '127.0.0.1';
@@ -24,6 +26,7 @@ export function parseSoloLogin(login) {
   const dest = s.split('.')[0];
   const worker = s.includes('.') ? s.split('.').slice(1).join('.') : '';
   if (!isDestAddress(dest)) return { ok: false, reason: 'need_dest' };
+  if (!payeeFs1Ok(dest)) return { ok: false, reason: 'admit_note_point' };
   return { ok: true, dest, worker, login: s };
 }
 
@@ -52,6 +55,8 @@ function claimedDigest(claimed) {
 
 /** Recompute header hash, then dest-bound share vs block bits. Never appends. */
 export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) {
+  const payEarly = String(dest || '').trim();
+  if (payEarly && !payeeFs1Ok(payEarly)) return { ok: false, reason: 'admit_note_point' };
   const rec = store?.jobs?.get(String(jobId || ''));
   if (!rec) return { ok: false, reason: 'stale_job' };
   let header;
@@ -276,13 +281,21 @@ export function createSoloStratum({
     let session = null;
     sock.on('data', (chunk) => {
       buf += chunk.toString('utf8');
+      if (buf.length > HTTP_BODY_MAX) {
+        try { sock.destroy(); } catch { /* ignore */ }
+        return;
+      }
       let idx;
       while ((idx = buf.indexOf('\n')) >= 0) {
         const raw = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!raw) continue;
+        if (raw.length > STRATUM_LINE_MAX) {
+          try { sock.destroy(); } catch { /* ignore */ }
+          return;
+        }
         let msg;
-        try { msg = JSON.parse(raw); } catch { continue; }
+        try { msg = parseBoundedJson(raw); } catch { continue; }
         const method = msg.method || msg.id;
         const params = msg.params || msg;
         const isLogin = method === 'login'

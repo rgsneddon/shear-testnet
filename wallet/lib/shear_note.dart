@@ -29,9 +29,34 @@ final Uint8List noteHBytes = pointBytes(noteH);
 final Uint8List ristrettoGBytes = pointBytes(ristrettoG());
 final Uint8List ristrettoIdBytes = Uint8List(32);
 
-Uint8List commitBytes(int v, Uint8List r) {
-  final vg = v == 0 ? Uint8List(32) : mulGBytes(scalarBytes(scalarFromInt(v)));
+/// A canonical u64. A digit string stays exact through 2^64-1. A Dart int
+/// only covers the values it can name. A double is not an amount.
+BigInt? tryU64Units(Object? v) {
+  if (v is int) {
+    if (v < 0) return null;
+    return BigInt.from(v);
+  }
+  if (v is BigInt) {
+    if (v < BigInt.zero || v.bitLength > noteBits) return null;
+    return v;
+  }
+  if (v is String && RegExp(r'^\d+$').hasMatch(v)) {
+    final b = BigInt.tryParse(v);
+    if (b == null || b < BigInt.zero || b.bitLength > noteBits) return null;
+    return b;
+  }
+  return null;
+}
+
+Uint8List commitBytesUnits(BigInt v, Uint8List r) {
+  if (v < BigInt.zero || v.bitLength > noteBits) throw ArgumentError('u64');
+  final vg = v == BigInt.zero ? Uint8List(32) : mulGBytes(scalarBytes(scalarFromU64(v)));
   return addBytes(vg, mulBytes(noteHBytes, r));
+}
+
+Uint8List commitBytes(int v, Uint8List r) {
+  if (v < 0) throw ArgumentError('u64');
+  return commitBytesUnits(BigInt.from(v), r);
 }
 
 Uint8List noteCommitOfDest20(Uint8List dest20) {
@@ -40,7 +65,9 @@ Uint8List noteCommitOfDest20(Uint8List dest20) {
 }
 
 Element commit(int v, Scalar r) {
-  final vg = v == 0 ? ristrettoZero() : mulG(scalarFromInt(v));
+  if (v < 0) throw ArgumentError('u64');
+  final units = BigInt.from(v);
+  final vg = units == BigInt.zero ? ristrettoZero() : mulG(scalarFromU64(units));
   return addEl(vg, mulEl(noteH, r));
 }
 
@@ -67,24 +94,30 @@ bool schnorrVerifyH(Element p, Map<String, Uint8List> proof, Uint8List extra) {
   }
 }
 
-Map<String, Uint8List> proveValue(int v, Scalar r) {
+Map<String, Uint8List> proveValueUnits(BigInt v, Scalar r) {
+  if (v < BigInt.zero || v.bitLength > noteBits) throw ArgumentError('u64');
   final rb = scalarBytes(r);
-  final C = commitBytes(v, rb);
-  final vg = v == 0 ? ristrettoIdBytes : mulGBytes(scalarBytes(scalarFromInt(v)));
+  final C = commitBytesUnits(v, rb);
+  final vg = v == BigInt.zero ? ristrettoIdBytes : mulGBytes(scalarBytes(scalarFromU64(v)));
   final P = subBytes(C, vg);
   final sch = schnorrProveHBytes(P, rb, valExtra);
   return {'C': C, 'R': sch['R']!, 'z': sch['z']!};
 }
 
+Map<String, Uint8List> proveValue(int v, Scalar r) {
+  if (v < 0) throw ArgumentError('u64');
+  return proveValueUnits(BigInt.from(v), r);
+}
+
 /// C = v·G + r·H. Same byte backend as [proveValue]. A mismatched v is not a coin.
-bool verifyValue(Uint8List cBytes, int v, Map proof) {
+bool verifyValueUnits(Uint8List cBytes, BigInt v, Map proof) {
   try {
-    // noteBits is 64. `1 << 64` is 0 on a 64-bit int, which would reject every coin.
-    if (v < 0 || v.bitLength > noteBits) return false;
+    // noteBits is 64. A Dart int cannot name that width, so the amount is a BigInt.
+    if (v < BigInt.zero || v.bitLength > noteBits) return false;
     final r = proof['R'];
     final z = proof['z'];
     if (r is! Uint8List || z is! Uint8List) return false;
-    final vg = v == 0 ? ristrettoIdBytes : mulGBytes(scalarBytes(scalarFromInt(v)));
+    final vg = v == BigInt.zero ? ristrettoIdBytes : mulGBytes(scalarBytes(scalarFromU64(v)));
     final p = subBytes(cBytes, vg);
     final e = hashToScalar([p, r, valExtra]);
     final left = mulBytes(noteHBytes, z);
@@ -97,6 +130,11 @@ bool verifyValue(Uint8List cBytes, int v, Map proof) {
   } catch (_) {
     return false;
   }
+}
+
+bool verifyValue(Uint8List cBytes, int v, Map proof) {
+  if (v < 0) return false;
+  return verifyValueUnits(cBytes, BigInt.from(v), proof);
 }
 
 /// Value proof must hold. A flat stand-in range blob is not a range proof.
@@ -162,21 +200,35 @@ Map<String, dynamic> proveRange(int v, Scalar r) {
   };
 }
 
-/// Public-nanos seal (coinbase / Reserve). Same shape as `sealCoinbaseNote` in crypto/note.js.
-Map<String, dynamic> sealCoinbaseNote(int v, {Uint8List? dest20, Uint8List? noteCommit, String kind = 'hash'}) {
-  final r = randomScalar();
-  final value = proveValue(v, r);
+/// Stored nanos. Values above 2^63-1 stay digit strings.
+Object u64OnWire(BigInt v) {
+  if (v.bitLength <= 63) return v.toInt();
+  return v.toString();
+}
+
+/// Public-nanos seal for any u64. Same shape as `sealCoinbaseNote` in crypto/note.js.
+Map<String, dynamic> sealCoinbaseUnits(BigInt v, {Uint8List? dest20, Uint8List? noteCommit, String kind = 'hash', Scalar? r}) {
+  if (v < BigInt.zero || v.bitLength > noteBits) throw ArgumentError('u64');
+  final blind = r ?? randomScalar();
+  final value = proveValueUnits(v, blind);
   final nc = noteCommit ??
       (dest20 != null ? noteCommitOfDest20(dest20) : Uint8List(32));
+  final shown = u64OnWire(v);
   return {
     'kind': kind,
     'noteCommit': nc,
     'commit': value['C'],
-    'valueProof': {'R': value['R'], 'z': value['z'], 'v': v},
-    'r': scalarBytes(r),
-    'nanos': v,
+    'valueProof': {'R': value['R'], 'z': value['z'], 'v': shown},
+    'r': scalarBytes(blind),
+    'nanos': shown,
     if (dest20 != null) 'dest20': dest20,
   };
+}
+
+/// Public-nanos seal (coinbase / Reserve). Same shape as `sealCoinbaseNote` in crypto/note.js.
+Map<String, dynamic> sealCoinbaseNote(int v, {Uint8List? dest20, Uint8List? noteCommit, String kind = 'hash'}) {
+  if (v < 0) throw ArgumentError('u64');
+  return sealCoinbaseUnits(BigInt.from(v), dest20: dest20, noteCommit: noteCommit, kind: kind);
 }
 
 Map<String, dynamic> sealNote(int v, {Uint8List? dest20, Uint8List? noteCommit, String kind = 'send'}) {
@@ -198,15 +250,40 @@ Map<String, dynamic> sealNote(int v, {Uint8List? dest20, Uint8List? noteCommit, 
 
 final rwrapDst = utf8Bytes('shear-r-wrap-v1');
 
-Map<String, Uint8List> wrapBlind(Uint8List r, Element admitBase, Uint8List extra) {
+/// Same bytes as crypto/note.js: amtCt = u64le(v) XOR SHA-512("shear-amt-v1" ‖ e·B ‖ extra)[0..8].
+final amtDst = utf8Bytes('shear-amt-v1');
+const amountCtBytes = 8;
+
+Uint8List _amountMask(Uint8List shared, Uint8List extra) {
+  return Uint8List.sublistView(sha512Bytes(concatBytes([amtDst, shared, extra])), 0, amountCtBytes);
+}
+
+Uint8List _u64leBytes(BigInt v) {
+  if (v < BigInt.zero || v.bitLength > noteBits) throw ArgumentError('u64');
+  final b = Uint8List(amountCtBytes);
+  var n = v;
+  for (var i = 0; i < amountCtBytes; i++) {
+    b[i] = (n & BigInt.from(0xff)).toInt();
+    n >>= 8;
+  }
+  return b;
+}
+
+Map<String, Uint8List> wrapBlind(Uint8List r, Element admitBase, Uint8List extra, {BigInt? v}) {
   final e = randomScalar();
   final rEph = mulG(e);
-  final shared = mulEl(admitBase, e);
-  final mask = hashToScalar([rwrapDst, pointBytes(shared), extra]);
-  return {
+  final shared = pointBytes(mulEl(admitBase, e));
+  final mask = hashToScalar([rwrapDst, shared, extra]);
+  final out = {
     'rEph': pointBytes(rEph),
     'rCt': scalarBytes(scalarAdd(scalarFromBytes(r), mask)),
   };
+  if (v != null) {
+    final m = _amountMask(shared, extra);
+    final pt = _u64leBytes(v);
+    out['amtCt'] = Uint8List.fromList([for (var i = 0; i < amountCtBytes; i++) pt[i] ^ m[i]]);
+  }
+  return out;
 }
 
 Uint8List unwrapBlind(Uint8List rEph, Uint8List rCt, Scalar xBase, Uint8List extra) {
@@ -215,20 +292,80 @@ Uint8List unwrapBlind(Uint8List rEph, Uint8List rCt, Scalar xBase, Uint8List ext
   return scalarBytes(scalarSub(scalarFromBytes(rCt), mask));
 }
 
-Map<String, dynamic> wrapNoteBlind(Map<String, dynamic> vout, Element admitBase) {
+/// Raw decrypt. Not checked against C; callers use [openNoteAmount].
+BigInt? _unwrapAmount(Uint8List rEph, Uint8List amtCt, Scalar xBase, Uint8List extra) {
+  if (amtCt.length != amountCtBytes) return null;
+  final m = _amountMask(pointBytes(mulEl(pointFrom(rEph), xBase)), extra);
+  var v = BigInt.zero;
+  for (var i = amountCtBytes - 1; i >= 0; i--) {
+    v = (v << 8) | BigInt.from(amtCt[i] ^ m[i]);
+  }
+  return v;
+}
+
+Uint8List? _noteBytes(Object? x) {
+  if (x is Uint8List) return x;
+  if (x is List<int>) return Uint8List.fromList(x);
+  if (x is String && x.length.isEven && RegExp(r'^[0-9a-fA-F]*$').hasMatch(x)) {
+    return Uint8List.fromList([for (var i = 0; i < x.length; i += 2) int.parse(x.substring(i, i + 2), radix: 16)]);
+  }
+  return null;
+}
+
+/// Owner recovery of (v, r) from rEph, rCt, amtCt. Null unless v·G + r·H is the output's C,
+/// so a wrong key or a tampered ciphertext never yields an amount.
+Map<String, Object>? openNoteAmount(Map vout, Scalar xBase) {
+  try {
+    final rEph = _noteBytes(vout['rEph']);
+    final rCt = _noteBytes(vout['rCt']);
+    final amtCt = _noteBytes(vout['amtCt']);
+    final c = _noteBytes(vout['commit']);
+    final nc = _noteBytes(vout['noteCommit']);
+    if (rEph == null || rCt == null || amtCt == null || c == null || nc == null) return null;
+    final extra = concatBytes([nc, c]);
+    final v = _unwrapAmount(rEph, amtCt, xBase, extra);
+    if (v == null) return null;
+    final r = unwrapBlind(rEph, rCt, xBase, extra);
+    final want = commitBytesUnits(v, r);
+    if (want.length != c.length) return null;
+    for (var i = 0; i < c.length; i++) {
+      if (want[i] != c[i]) return null;
+    }
+    return {'v': v, 'r': r};
+  } catch (_) {
+    return null;
+  }
+}
+
+Map<String, dynamic> wrapNoteBlind(Map<String, dynamic> vout, Element admitBase, {BigInt? v}) {
   final r = vout['r'];
   if (r is! Uint8List) return vout;
-  if (vout['rEph'] is Uint8List && vout['rCt'] is Uint8List) return vout;
+  if (vout['rEph'] is Uint8List && vout['rCt'] is Uint8List && (v == null || vout['amtCt'] is Uint8List)) return vout;
   final nc = vout['noteCommit'];
   final c = vout['commit'];
   if (nc is! Uint8List || c is! Uint8List) return vout;
-  final wrap = wrapBlind(r, admitBase, concatBytes([nc, c]));
-  return {...vout, 'rEph': wrap['rEph']!, 'rCt': wrap['rCt']!};
+  final wrap = wrapBlind(r, admitBase, concatBytes([nc, c]), v: v);
+  return {...vout, ...wrap};
+}
+
+bool publicValueOpenKind(String? kind) {
+  return kind == 'pot' ||
+      kind == 'hash' ||
+      kind == 'pool-fee' ||
+      kind == 'finder-fee' ||
+      kind == 'reserve-fee' ||
+      kind == 'lock' ||
+      kind == 'vote' ||
+      kind == 'withdraw' ||
+      kind == 'pool-withdraw';
 }
 
 /// Compact a sealed vout the way chain persist does: drop r, keep rEph/rCt.
+/// Hidden kinds drop the value opening. The range proof stays.
 Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
-  final kind = (o['kind'] as String?) ?? 'pot';
+  final posted = o['kind'] as String?;
+  final kind = (posted == null || posted.isEmpty) ? 'pot' : posted;
+  final keepOpen = publicValueOpenKind(posted);
   if (o['commit'] is! Uint8List) {
     if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'vortice-register') {
       return {
@@ -243,27 +380,29 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
     'kind': kind,
     'noteCommit': o['noteCommit'],
     'commit': o['commit'],
-    'valueProof': o['valueProof'],
+    if (keepOpen && o['valueProof'] != null) 'valueProof': o['valueProof'],
   };
   if (o['rangeProof'] != null) row['rangeProof'] = o['rangeProof'];
   if (o['viewTag'] != null) row['viewTag'] = o['viewTag'];
   if (o['admitPub'] != null) row['admitPub'] = o['admitPub'];
   if (o['rEph'] != null) row['rEph'] = o['rEph'];
   if (o['rCt'] != null) row['rCt'] = o['rCt'];
+  if (o['amtCt'] != null) row['amtCt'] = o['amtCt'];
   if (o['dest20'] != null) row['dest20'] = o['dest20'];
   if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'vortice-register') {
     final addr = o['address'];
     if (addr is String && addr.isNotEmpty) row['address'] = addr;
-    final n = o['nanos'];
-    if (n is num) row['nanos'] = n.round();
+    final n = tryU64Units(o['nanos']);
+    if (n != null) row['nanos'] = u64OnWire(n);
   }
-  final coinbaseMoney = kind == 'hash' || kind == 'pot' || kind == 'finder-fee' || kind == 'reserve-fee';
-  if (coinbaseMoney) {
+  final coinbaseMoney = posted == 'hash' || posted == 'pot' || posted == 'pool-fee' || posted == 'finder-fee' || posted == 'reserve-fee';
+  if (keepOpen && coinbaseMoney) {
     final vp = row['valueProof'];
-    if (vp is Map && vp['v'] == null && o['nanos'] is num) {
-      row['valueProof'] = {...vp, 'v': o['nanos']};
-    } else if ((vp == null || (vp is Map && vp['v'] == null)) && o['nanos'] is num) {
-      row['valueProof'] = {'v': o['nanos']};
+    final opened = tryU64Units(o['nanos']);
+    if (vp is Map && vp['v'] == null && opened != null) {
+      row['valueProof'] = {...vp, 'v': u64OnWire(opened)};
+    } else if ((vp == null || (vp is Map && vp['v'] == null)) && opened != null) {
+      row['valueProof'] = {'v': u64OnWire(opened)};
     }
   }
   return row;
@@ -280,6 +419,8 @@ Uint8List kernelExcess(List<Map<String, dynamic>> vouts, List<Map<String, dynami
     final r = v['r'];
     if (r is! Uint8List) throw StateError('missing_r');
     s = scalarSub(s, scalarFromBytes(r));
+    final t = v['t'];
+    if (t is Uint8List) s = scalarSub(s, scalarFromBytes(t));
   }
   return scalarBytes(s);
 }

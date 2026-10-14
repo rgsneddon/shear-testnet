@@ -3,7 +3,7 @@ import http from 'node:http';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, spendDestOf, hash20FromAddress, destOpeningFromView } from '../../crypto/address.js';
-import { sealCoinbaseNote } from '../../crypto/note.js';
+import { sealCoinbaseNote, noteCommitOfDest20 } from '../../crypto/note.js';
 import { NANOS_PER_SHE } from '../../crypto/asert.js';
 import { createRpc } from '../src/rpc.js';
 
@@ -20,7 +20,7 @@ function getJson(port, path) {
 }
 
 describe('wallet history from the book', () => {
-  it('lists every sealed note for the dest once and drops a mismatched explorer id', async () => {
+  it('serves no history route; the owner finds its notes by noteCommit in compact blocks', async () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const mine = spendDestOf(alice.spendPub);
@@ -72,36 +72,30 @@ describe('wallet history from the book', () => {
     const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
     const addr = await rpc.listen();
     try {
-      const bare = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(mine)}`);
-      assert.equal(bare.status, 401);
-      assert.equal(bare.json.reason, 'dest_hold');
-      assert.equal(bare.json.txs, undefined);
-      assert.equal(bare.json.balance, undefined);
-      assert.equal(bare.json.notes, undefined);
-      const own = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(mine)}&open=${encodeURIComponent(mineOpen)}`);
-      assert.equal(own.status, 200);
-      const txs = own.json.txs;
-      assert.equal(txs.length, 2);
-      const byHeight = new Map(txs.map((t) => [t.height, t]));
-      assert.equal(byHeight.get(7).id, `blockfound:7:${mine}`);
-      assert.equal(byHeight.get(7).confirmed, true);
-      assert.equal(byHeight.get(7).nanos, 2 * NANOS_PER_SHE + 256);
-      assert.equal(byHeight.get(7).potNanos, 2 * NANOS_PER_SHE);
-      assert.equal(byHeight.get(7).hashNanos, 256);
-      assert.equal(byHeight.get(8).id, `blockfound:8:${mine}`);
-      assert.equal(byHeight.get(8).confirmed, false);
-      assert.equal(byHeight.get(8).nanos, 2252);
-      assert.equal(txs.some((t) => String(t.id).includes('-cb-')), false);
-      assert.equal(txs.some((t) => t.height === 200), false);
-      assert.equal(JSON.stringify(txs).includes(other), false);
-
-      const foreignBare = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(other)}`);
-      assert.equal(foreignBare.status, 401);
-      assert.equal(foreignBare.json.txs, undefined);
-      const foreignHist = await getJson(addr.port, `/api/wallet/history?address=${encodeURIComponent(other)}&open=${encodeURIComponent(bobOpen)}`);
-      assert.deepEqual(foreignHist.json.txs.map((t) => t.height), [200]);
-      assert.equal(foreignHist.json.txs[0].id, `blockfound:200:${other}`);
-      assert.equal(JSON.stringify(foreignHist.json.txs).includes(mine), false);
+      // AL-5: history is owner-side. No route returns it, opened or not.
+      for (const q of [
+        `/api/wallet/history?address=${encodeURIComponent(mine)}`,
+        `/api/wallet/history?address=${encodeURIComponent(mine)}&open=${encodeURIComponent(mineOpen)}`,
+        `/history?address=${encodeURIComponent(other)}&open=${encodeURIComponent(bobOpen)}`,
+        `/gethistory?address=${encodeURIComponent(other)}`,
+      ]) {
+        const got = await getJson(addr.port, q);
+        assert.equal(got.status, 404, q);
+        assert.equal(got.json.reason, 'route');
+        assert.equal(got.json.txs, undefined);
+        assert.equal(got.json.balance, undefined);
+        assert.equal(got.json.notes, undefined);
+      }
+      // The owner scans compact blocks by noteCommit and finds its rows only.
+      const want = noteCommitOfDest20(hash20FromAddress(mine)).toString('hex');
+      const blocks = (await getJson(addr.port, '/blocks?from=1&to=200')).json.blocks || [];
+      const heights = [];
+      for (const b of blocks) {
+        for (const tx of b.txs || []) {
+          for (const o of tx.vout || []) if (o.noteCommit === want) heights.push(Number(b.height));
+        }
+      }
+      assert.deepEqual([...new Set(heights)].sort((x, y) => x - y), [7, 8]);
     } finally {
       await rpc.close();
     }

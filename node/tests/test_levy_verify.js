@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
-import { fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
+import { newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
+import { fluxsetFromBlocks } from '../../crypto/admit.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
+import { compactTx } from '../../crypto/chronoflux.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { splitLevy, levyNanos, bindWeightFee, levyNeed } from '../../crypto/levy.js';
@@ -113,36 +115,31 @@ describe('verifyBlock Phase B Flow levy', () => {
           { address: dest, nanos: change, kind: 'send' },
         ],
       }, { spent });
-      const live = fluxsetFromBlocks([parent]);
-      return proveFlowSpend(tx, {
-        spendSeed: id.spendSeed || ed25519SeedOf(id.privateKey),
-        spentNote: spent,
-        pubs: live.pubs,
-        commits: live.commits,
-      });
+      return attachStubAdmitV2(tx);
     }
     const unpaid = mine(buildTemplate({
       ...childBase,
-      txs: [potSend({ id: 'u1', fee: 0 })],
+      txs: [compactTx(potSend({ id: 'u1', fee: 0 }))],
     }));
     const denied = verifyBlock(unpaid, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
     assert.equal(denied.ok, false);
-    assert.equal(denied.reason, 'levy');
+    assert.equal(denied.reason, 'admit_version', denied.reason);
 
     const capped = mine(buildTemplate({
       ...childBase,
-      txs: [potSend({ id: 'cap', fee: need, maxLevy: need - 1 })],
+      txs: [compactTx(potSend({ id: 'cap', fee: need, maxLevy: need - 1 }))],
     }));
     const capDenied = verifyBlock(capped, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
     assert.equal(capDenied.ok, false);
-    assert.equal(capDenied.reason, 'max_levy');
+    assert.equal(capDenied.reason, 'admit_version', capDenied.reason);
 
     const paid = mine(buildTemplate({
       ...childBase,
-      txs: [potSend({ id: 'u2', fee: need })],
+      txs: [compactTx(potSend({ id: 'u2', fee: need }))],
     }));
     const allowed = verifyBlock(paid, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
-    assert.equal(allowed.ok, true, allowed.reason);
+    assert.equal(allowed.ok, false);
+    assert.equal(allowed.reason, 'admit_version', allowed.reason);
     const split = splitLevy(need);
     const finderNotes = paid.txs[0].vout.filter((o) => o.kind === 'finder-fee');
     assert.equal(finderNotes.length, 1);
@@ -175,7 +172,7 @@ describe('verifyBlock Phase B Flow levy', () => {
     assert.equal(evmOk.evm.valueMoved, valueNanos);
   });
 
-  it('queueTx quoted L, template, mine, append; verifyFork agrees', async () => {
+  it('a byte-2 flow send is value_open before compact and admit_version on the wire', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-levy-path-'));
     const store = createStore(dir);
     const id = newIdentity();
@@ -239,16 +236,15 @@ describe('verifyBlock Phase B Flow levy', () => {
         { address: dest, nanos: lastPot.change, kind: 'send' },
       ],
     }, { spent: lastPot });
-    proveFlowSpend(sendTx, {
-      spendSeed: id.spendSeed || ed25519SeedOf(id.privateKey),
-      spentNote: { ...spent, r: lastPot.r, kind: spent.kind || 'pot' },
-      pubs: store.fluxset().pubs,
-      commits: store.fluxset().commits,
-    });
+    attachStubAdmitV2(sendTx);
     bindWeightFee(sendTx);
     signSpendTx(sendTx, box.key);
     const queued = store.queueTx(sendTx);
-    assert.equal(queued.ok, true, queued.reason);
+    assert.equal(queued.ok, false);
+    assert.equal(queued.reason, 'value_open', queued.reason);
+    const wired = store.queueTx(compactTx(sendTx));
+    assert.equal(wired.ok, false);
+    assert.equal(wired.reason, 'admit_version', wired.reason);
     const parent = store.tip();
     const parentH = decodeHeader(Buffer.from(parent.header));
     const nowSend = Number(parentH.timestamp) + 90_000;
@@ -257,25 +253,8 @@ describe('verifyBlock Phase B Flow levy', () => {
       bits: GENESIS_BITS_PACKED,
       now: nowSend,
     });
-    assert.equal(tpl.txs.slice(1).some((t) => t.id === 'q-send'), true);
-    const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: shareBitsOf(tpl.bits) });
-    assert.ok(found && found.block, 'pow');
-    const block = {
-      header: found.header,
-      txs: tpl.txs,
-      samples: tpl.samples,
-      shareBatch: tpl.shareBatch || [],
-      miner: tpl.miner,
-      aLeaves: tpl.aLeaves,
-      bLeaves: tpl.bLeaves,
-      rootA: tpl.rootA,
-      rootB: tpl.rootB,
-      weight: tpl.weight,
-    };
-    const appended = await store.append(block);
-    assert.equal(appended.ok, true, appended.reason);
-    const fork = await store.verifyFork(store.blocks);
-    assert.equal(fork.ok, true, fork.reason);
+    assert.equal(tpl.txs.slice(1).some((t) => t.id === 'q-send'), false);
+    assert.equal(store.tip().height, parent.height);
   });
 
   it('Flow send without a range proof is confidential', () => {

@@ -70,7 +70,7 @@ export function printConfig() {
     extraMintThirdParty: extraMintAllowed('third-party-vortice'),
     mainnet: false,
     hashTxLive: HASH_TX_LIVE,
-    admit: 'ADMITv2',
+    admit: 'ADMITv3',
     archival: String(process.env.SHEAR_FAST_SYNC || '').trim() !== '1',
     fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
     genesisMainnet: GENESIS_MAINNET,
@@ -89,7 +89,7 @@ function bookPresent(dir, exists) {
     || exists(path.join(dir, 'segments', 'seg-000000.bin'));
 }
 
-/** This book is testnet-v11 for Shear Sentinel v18 and Continuum 0.71. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming). A testnet-v10 directory is not this book. */
+/** Datadir folder stays testnet-v11. Display is Shear Sentinel v19. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming). A testnet-v10 directory is not this book. */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),
@@ -106,7 +106,7 @@ export function defaultDataDir({
   return roaming;
 }
 
-/** ADMITv2 soak tip. Hostnames only — never a raw IP. DNS + static names (not DNS-only). */
+/** ADMITv3 soak tip. Hostnames only — never a raw IP. DNS + static names (not DNS-only). */
 export const DEFAULT_SEEDS = [
   'p2p.shear.digital:30303',
   'r2r.shear.digital:30303',
@@ -162,7 +162,7 @@ export async function startNode({
     };
   }
   fs.mkdirSync(dataDir, { recursive: true });
-  const store = createStore(dataDir, { fastSync: !!fastSync });
+  const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true });
   store.reserveVault = store.reserveVault || emptyVault();
   store.oracleSnapshot = loadOracleSnapshot({ dataDir });
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });
@@ -408,7 +408,7 @@ async function main() {
         reason: 'clock_wait',
         genesis: started.genesis,
         hashTxLive: HASH_TX_LIVE,
-        admit: 'ADMITv2',
+        admit: 'ADMITv3',
         mainnet: true,
         p2p: 0,
         stratum: null,
@@ -442,7 +442,7 @@ async function main() {
       mainnet: false,
       emit: true,
       hashTxLive: HASH_TX_LIVE,
-      admit: 'ADMITv2',
+      admit: 'ADMITv3',
       jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
       hashBackend,
     }));
@@ -467,7 +467,7 @@ async function main() {
       reason: 'clock_wait',
       genesis: started.genesis,
       hashTxLive: HASH_TX_LIVE,
-      admit: 'ADMITv2',
+      admit: 'ADMITv3',
       mainnet: true,
     }));
     return;
@@ -495,7 +495,7 @@ async function main() {
     mainnet: false,
     emit: true,
     hashTxLive: HASH_TX_LIVE,
-    admit: 'ADMITv2',
+    admit: 'ADMITv3',
     jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
     hashBackend,
   }));

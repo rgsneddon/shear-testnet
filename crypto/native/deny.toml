@@ -1,0 +1,18 @@
+# crates.io copies of these names are stale or yanked 2024 cuts.
+# The only allowed source is the vendored pin
+# crypto/native/vendor/monero-oxide-77788c3 (monero-oxide 77788c36).
+# Do not cargo-add them. The vendored tree is not a Shear dependency yet.
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+deny = [
+  { name = "helioselene" },
+  { name = "generalized-bulletproofs" },
+  { name = "full-chain-membership-proofs" },
+  { name = "ec-divisors" },
+  { name = "generalized-bulletproofs-circuit-abstraction" },
+  { name = "generalized-bulletproofs-ec-gadgets" },
+  { name = "monero-fcmp-plus-plus" },
+  { name = "monero-fcmp-plus-plus-generators" },
+]

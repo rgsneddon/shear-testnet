@@ -169,16 +169,18 @@ describe('hardened miner median (3b)', () => {
     const even = [];
     for (let i = 0; i < 100; i += 1) even.push({ miner: i < 40 ? 'pool' : `h${i}` });
     assert.equal(producerShareAlert(even).alert, false);
-    const boundary = T0 + 400 * DAY;
-    const old = { miner: 'a', timeMs: boundary - ORACLE_WINDOW_MS - 1, reports: reportsAt(0) };
-    const fresh = { miner: 'b', timeMs: boundary - DAY, reports: reportsAt(0) };
-    const future = { miner: 'c', timeMs: boundary, reports: reportsAt(0) };
+    const boundary = 6720;
+    const old = { miner: 'a', height: boundary - ORACLE_WINDOW_MAINNET - 1, reports: reportsAt(0) };
+    const fresh = { miner: 'b', height: boundary - 1, reports: reportsAt(0) };
+    const future = { miner: 'c', height: boundary, reports: reportsAt(0) };
     const week = selectReportWindow(
       [old, fresh, future],
       boundary,
-      { magic: MAGIC_MAINNET, windowBlocks: 1008 },
+      { magic: MAGIC_MAINNET },
     );
     assert.deepEqual(week.map((b) => b.miner), ['b']);
+    assert.equal(ORACLE_WINDOW_MAINNET, 6720);
+    assert.equal(ORACLE_WINDOW_TESTNET, 67);
   });
 
   it('K-4 a boundary reorg keeps only the winning window', () => {
@@ -232,14 +234,14 @@ describe('hardened miner median (3b)', () => {
     assert.equal(verifyMinerReport(good).ok, true);
     const dup = good.map((row, i) => (i === good.length - 1 ? { id: 'FED', tenths: 1000 } : row));
     assert.equal(verifyMinerReport(dup).reason, 'report_dup');
-    assert.equal((await verifyBlock(blockFor(dup, { digest: false }), null, { probeBody: true })).reason, 'report_dup');
+    assert.equal((await verifyBlock(blockFor(dup), null, { probeBody: true })).reason, 'report_dup');
     const tooMany = good.concat([{ id: 'FED', tenths: 1 }]);
     assert.equal(tooMany.length, 15);
     assert.equal(verifyMinerReport(tooMany).reason, 'report_count');
     for (const tenths of [100001, -1001, 1.5, Number.NaN]) {
       const bad = reportsAt(BUNDLED_POLICY_TENTHS).map((row, i) => (i === 0 ? { ...row, tenths } : row));
       assert.equal(verifyMinerReport(bad).reason, 'bad_rate', String(tenths));
-      const got = await verifyBlock(blockFor(bad, { digest: false }), null, { probeBody: true });
+      const got = await verifyBlock(blockFor(bad), null, { probeBody: true });
       assert.equal(got.reason, 'bad_rate', String(tenths));
     }
     assert.equal(verifyMinerReport([{ id: 'SOFR', tenths: 100 }]).reason, 'bad_rate');
@@ -264,7 +266,6 @@ describe('hardened miner median (3b)', () => {
       oracleWindow: window,
       oracleWindowSize: 144,
     });
-    assert.notEqual(opened.reason, 'rate_commit');
-    assert.notEqual(opened.reason, 'bad_rate');
+    assert.equal(opened.reason, 'rate_commit');
   });
 });

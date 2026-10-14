@@ -5,11 +5,18 @@ import { generateKeyPairSync } from 'node:crypto';
 import { newIdentity, freshStealthDest, hash20FromAddress, ed25519RawPub, encodeDest, destCommitFromSpendPub, isDestAddress } from '../../crypto/address.js';
 import { signSpendTx, verifySpendSig } from '../../crypto/spend.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS, GENESIS_BITS_PACKED, bitsForBlock, MAGIC_TESTNET, consensusFingerprint } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SHARE_FLOOR_BITS, GENESIS_BITS_PACKED, bitsForBlock, asertNextBits, MAGIC_TESTNET, consensusFingerprint } from '../../crypto/asert.js';
 import { potSubsidyNanos, epochMs } from '../../crypto/pot_sched.js';
 import { poolFeeDest } from '../../crypto/levy.js';
 import { splitPot, THIS_POOL_DIRECT_FEE_DEST } from '../../pool/src/pool.js';
-import { findShare, dest20OfShare } from '../../crypto/share_batch.js';
+import {
+  findShare,
+  dest20OfShare,
+  nonceWithShareTarget,
+  noteCommitOfShare,
+  rememberLiveSharePow,
+  clearLiveSharePow,
+} from '../../crypto/share_batch.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -27,6 +34,22 @@ import { sealCoinbaseNote, excessOf, noteCommitOfDest20, verifySealedNote } from
 
 function destOf(id) {
   return freshStealthDest(id).dest;
+}
+
+function floorNonce(low) {
+  return nonceWithShareTarget(low, SHARE_FLOOR_BITS);
+}
+
+function seedFloor(header, rows) {
+  clearLiveSharePow();
+  if (!header) return;
+  for (const row of rows || []) {
+    rememberLiveSharePow(header, row.nonce, {
+      noteCommit: noteCommitOfShare(row),
+      shareBits: SHARE_FLOOR_BITS,
+      lz: SHARE_FLOOR_BITS,
+    });
+  }
 }
 
 function mine(tpl) {
@@ -64,8 +87,8 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(shares.find((s) => s.address === bob).nanos, rest / 2);
 
     const batch = [
-      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: 1n, lz: 8 },
-      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: 2n, lz: 8 },
+      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: floorNonce(1n), lz: 8 },
+      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: floorNonce(2n), lz: 8 },
     ];
     const prop = potSharesFromBatch(batch, poolFeeDest());
     const propPot = prop.reduce((a, s) => a + s.nanos, 0);
@@ -78,10 +101,10 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const solo = fs.readFileSync(new URL('../src/solo_stratum.js', import.meta.url), 'utf8');
     assert.equal(isDestAddress(THIS_POOL_DIRECT_FEE_DEST), true);
     const posture = fs.readFileSync(new URL('../../pool/src/posture.js', import.meta.url), 'utf8');
-    assert.match(posture, /THIS_POOL_DIRECT_FEE_DEST = 'ssa1q5495/);
+    assert.match(posture, /THIS_POOL_DIRECT_FEE_DEST = 'ssa1qfqhu/);
     assert.match(posture, /V10_POOL_FEE_DEST/);
     assert.match(src, /configuredFeeIdentity\(\)/);
-    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
     assert.doesNotMatch(src, /ssa1qzcru37269/);
     assert.match(src, /Solo never reaches this function/);
     assert.equal(consensusFingerprint().includes(THIS_POOL_DIRECT_FEE_DEST), false);
@@ -89,7 +112,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.doesNotMatch(solo, /THIS_POOL_DIRECT_FEE_DEST/);
     const miner = destOf(newIdentity());
     const batch = [
-      { dest: miner, dest20: dest20OfShare({ dest: miner }), nonce: 1n, lz: 8 },
+      { dest: miner, dest20: dest20OfShare({ dest: miner }), nonce: floorNonce(1n), lz: 8 },
     ];
     const soloShares = potSharesFromBatch(batch, null);
     assert.equal(soloShares.length, 1);
@@ -100,8 +123,8 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const bob = destOf(newIdentity());
     const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
     const poolShares = potSharesFromBatch([
-      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: 3n, lz: 8 },
-      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: 4n, lz: 8 },
+      { dest: alice, dest20: dest20OfShare({ dest: alice }), nonce: floorNonce(3n), lz: 8 },
+      { dest: bob, dest20: dest20OfShare({ dest: bob }), nonce: floorNonce(4n), lz: 8 },
     ], THIS_POOL_DIRECT_FEE_DEST);
     assert.equal(poolShares.find((s) => s.address === THIS_POOL_DIRECT_FEE_DEST).nanos, fee);
     assert.equal(poolShares.find((s) => s.kind === 'pool-fee').address, THIS_POOL_DIRECT_FEE_DEST);
@@ -132,7 +155,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(okP.ok, true, okP.reason);
     const now = 1_700_000_090_000;
     const ph = decodeHeader(parent.header);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -168,6 +191,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       bLeaves: childTpl.bLeaves,
       weight: childTpl.weight,
     };
+    seedFloor(parent.header, child.shareBatch);
     const got = verifyBlock(child, {
       ...parent,
       hash: okP.hash,
@@ -179,7 +203,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(got.reason, 'pot_prop');
   });
 
-  it('accepts dest-bound hash to hasher dests with custodial pot on the pool dest', () => {
+  it('rejects dest-bound hash when the pot is custodial on the pool dest', () => {
     const hasher = destOf(newIdentity());
     const pool = destOf(newIdentity());
     const TRUSTED = Buffer.alloc(32);
@@ -204,7 +228,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     assert.equal(okP.ok, true, okP.reason);
     const now = 1_700_000_090_000;
     const ph = decodeHeader(parent.header);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -229,22 +253,20 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       weight: childTpl.weight,
       poolDest: pool,
     };
-    const got = verifyBlock(child, {
+    const prev = {
       ...parent,
       hash: okP.hash,
       header: parent.header,
       height: 1,
       weight: parent.weight,
-    }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
-    assert.equal(got.ok, true, got.reason);
-    const p2p = verifyBlock(child, {
-      ...parent,
-      hash: okP.hash,
-      header: parent.header,
-      height: 1,
-      weight: parent.weight,
-    }, { trustedPowHash: TRUSTED, skipSharePow: true });
-    assert.equal(p2p.ok, true, p2p.reason);
+    };
+    seedFloor(parent.header, child.shareBatch);
+    const got = verifyBlock(child, prev, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true });
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'pot_prop');
+    const p2p = verifyBlock(child, prev, { trustedPowHash: TRUSTED, skipSharePow: true });
+    assert.equal(p2p.ok, false);
+    assert.equal(p2p.reason, 'pot_prop');
     const kinds = (childTpl.txs[0].vout || []).map((o) => o.kind);
     assert.ok(kinds.includes('hash'));
     assert.ok(kinds.includes('pot'));
@@ -257,7 +279,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const pool = destOf(poolId);
     const hasher20 = hash20FromAddress(hasher);
     const pool20 = hash20FromAddress(pool);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -298,7 +320,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       const pool = destOf(newIdentity());
       assert.equal(allowedHashBonusCustodyDest(pool), '');
       const hasher20 = hash20FromAddress(hasher);
-      const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
+      const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
       const tpl = buildTemplate({
         prev: GENESIS_PREV,
         height: 1,
@@ -317,6 +339,21 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       }
       process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY = '1';
       assert.equal(allowedHashBonusCustodyDest(pool), pool);
+      const armed = buildTemplate({
+        prev: GENESIS_PREV,
+        height: 1,
+        miner: pool,
+        bits: GENESIS_BITS_PACKED,
+        now: 1_700_000_000_000,
+        shareBatch: [row],
+        poolDest: pool,
+        hashBonusCustodyDest: pool,
+      });
+      const armedHash = (armed.txs[0].vout || []).filter((o) => o.kind === 'hash');
+      assert.ok(armedHash.length >= 1);
+      for (const h of armedHash) {
+        assert.ok(Buffer.from(h.dest20).equals(Buffer.from(hasher20)));
+      }
       const chainSrc = fs.readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
       assert.match(chainSrc, /SHEAR_ALLOW_HASHBONUS_CUSTODY/);
       const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
@@ -329,111 +366,139 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     }
   });
 
-  it('epoch-1 potShares sum equals schedule pot and fails if Σ ≠ wantPot', () => {
+  it('epoch pot follows the genesis header, and height 1 stays epoch 0', () => {
     const pool = destOf(newIdentity());
     const hasher = destOf(newIdentity());
-    const wantPot = potSubsidyNanos(1);
-    assert.equal(wantPot, 99_000_000_000);
-    assert.notEqual(wantPot, BLOCK_SUBSIDY_NANOS);
-    const shares = custodyPotShares(pool, wantPot);
-    const sum = shares.reduce((a, s) => a + s.nanos, 0);
-    assert.equal(sum, wantPot);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
     assert.doesNotMatch(src, /custodyPotShares\(poolPay, wantPot\)/);
     assert.match(src, /splitPot\(/);
     assert.match(src, /wantLivePot\(\)/);
     const genesisMs = 1_700_000_000_000;
-    const parentNow = genesisMs + epochMs(MAGIC_TESTNET) + 90_000;
-    const now = parentNow + 90_000;
+    const span = epochMs(MAGIC_TESTNET);
+    const epochs = [1, 2, 7, 80, 120];
     const TRUSTED = Buffer.alloc(32);
+    function asBlock(tpl, dest, poolDest = null) {
+      return {
+        header: tpl.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        shareBatch: tpl.shareBatch || [],
+        miner: dest,
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        weight: tpl.weight,
+        ...(poolDest ? { poolDest } : {}),
+      };
+    }
+    for (const epoch of epochs) {
+      const late = genesisMs + epoch * span;
+      const epochPot = potSubsidyNanos(epoch);
+      assert.equal(custodyPotShares(pool, epochPot).reduce((a, s) => a + s.nanos, 0), epochPot);
+      const wrongTpl = buildTemplate({
+        prev: GENESIS_PREV,
+        height: 1,
+        miner: hasher,
+        bits: GENESIS_BITS_PACKED,
+        now: late,
+        potShares: custodyPotShares(pool, epochPot),
+      });
+      const wrong = verifyBlock(asBlock(wrongTpl, hasher), null, {
+        trustedPowHash: TRUSTED,
+        genesisMs,
+        nowMs: late + 1_000,
+      });
+      assert.equal(wrong.ok, false, `height 1 must not pay epoch ${epoch}`);
+      assert.ok(
+        wrong.reason === 'pot' || wrong.reason === 'pot_sched' || wrong.reason === 'pot_prop' || wrong.reason === 'pot_carry',
+        wrong.reason,
+      );
+      if (epochPot !== potSubsidyNanos(0)) {
+        const rightTpl = buildTemplate({
+          prev: GENESIS_PREV,
+          height: 1,
+          miner: hasher,
+          bits: GENESIS_BITS_PACKED,
+          now: late,
+          potShares: custodyPotShares(pool, potSubsidyNanos(0)),
+        });
+        const right = verifyBlock(asBlock(rightTpl, hasher), null, {
+          trustedPowHash: TRUSTED,
+          genesisMs,
+          nowMs: late + 1_000,
+        });
+        assert.equal(right.ok, true, `height 1 epoch-0 pot at a late stamp (${epoch}): ${right.reason}`);
+      }
+    }
     const parentTpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: hasher,
       bits: GENESIS_BITS_PACKED,
-      now: parentNow,
-      potShares: custodyPotShares(pool, wantPot),
+      now: genesisMs,
+      potShares: custodyPotShares(pool, potSubsidyNanos(0)),
     });
-    const parent = {
-      header: parentTpl.header,
-      txs: parentTpl.txs,
-      samples: parentTpl.samples,
-      shareBatch: parentTpl.shareBatch || [],
-      miner: hasher,
-      aLeaves: parentTpl.aLeaves,
-      bLeaves: parentTpl.bLeaves,
-      weight: parentTpl.weight,
-    };
-    const okP = verifyBlock(parent, null, { trustedPowHash: TRUSTED, genesisMs });
+    const parent = asBlock(parentTpl, hasher);
+    const okP = verifyBlock(parent, null, { trustedPowHash: TRUSTED, nowMs: genesisMs + 1_000 });
     assert.equal(okP.ok, true, okP.reason);
-    const ph = decodeHeader(parent.header);
-    const row = { dest20: dest20OfShare({ dest: hasher }), dest: hasher, nonce: 1n, lz: 8 };
-    const wrongTpl = buildTemplate({
-      prev: okP.hash,
-      prevHeader: parent.header,
-      prevBlock: parent,
-      parentWeight: parent.weight,
-      height: 2,
-      miner: hasher,
-      bits: bitsForBlock(ph.bits, ph.timestamp, now),
-      now,
-      shareBatch: [row],
-      poolDest: pool,
-      potShares: custodyPotShares(pool, BLOCK_SUBSIDY_NANOS),
-    });
-    const wrong = {
-      header: wrongTpl.header,
-      txs: wrongTpl.txs,
-      samples: wrongTpl.samples,
-      shareBatch: wrongTpl.shareBatch || [],
-      miner: hasher,
-      aLeaves: wrongTpl.aLeaves,
-      bLeaves: wrongTpl.bLeaves,
-      weight: wrongTpl.weight,
-      poolDest: pool,
-    };
-    const denied = verifyBlock(wrong, {
-      ...parent,
-      hash: okP.hash,
-      header: parent.header,
-      height: 1,
-      weight: parent.weight,
-    }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true, genesisMs, nowMs: now, magic: MAGIC_TESTNET });
-    assert.equal(denied.ok, false);
-    assert.ok(denied.reason === 'pot' || denied.reason === 'pot_sched' || denied.reason === 'pot_prop', denied.reason);
-    const okTpl = buildTemplate({
-      prev: okP.hash,
-      prevHeader: parent.header,
-      prevBlock: parent,
-      parentWeight: parent.weight,
-      height: 2,
-      miner: hasher,
-      bits: bitsForBlock(ph.bits, ph.timestamp, now),
-      now,
-      shareBatch: [row],
-      poolDest: pool,
-      potShares: custodyPotShares(pool, wantPot),
-    });
-    const child = {
-      header: okTpl.header,
-      txs: okTpl.txs,
-      samples: okTpl.samples,
-      shareBatch: okTpl.shareBatch || [],
-      miner: hasher,
-      aLeaves: okTpl.aLeaves,
-      bLeaves: okTpl.bLeaves,
-      weight: okTpl.weight,
-      poolDest: pool,
-    };
-    const got = verifyBlock(child, {
-      ...parent,
-      hash: okP.hash,
-      header: parent.header,
-      height: 1,
-      weight: parent.weight,
-    }, { poolDest: pool, trustedPowHash: TRUSTED, skipSharePow: true, genesisMs, nowMs: now, magic: MAGIC_TESTNET });
-    assert.equal(got.ok, true, got.reason);
+    for (const epoch of epochs) {
+      const want = potSubsidyNanos(epoch);
+      const childNow = genesisMs + epoch * span + 90_000;
+      const quote = asertNextBits({
+        anchorBits: GENESIS_BITS_PACKED,
+        anchorTimeMs: genesisMs,
+        anchorHeight: 1,
+        blockTimeMs: childNow,
+        blockHeight: 2,
+        parentTimeMs: genesisMs,
+      });
+      assert.equal(quote.ok, true, `asert epoch ${epoch}`);
+      const prev = {
+        ...parent,
+        hash: okP.hash,
+        header: parent.header,
+        height: 1,
+        weight: parent.weight,
+      };
+      const opts = {
+        poolDest: pool,
+        trustedPowHash: TRUSTED,
+        genesisMs,
+        nowMs: childNow + 1_000,
+        magic: MAGIC_TESTNET,
+        mtpTimestamps: [childNow - 1_000],
+      };
+      function child(pot) {
+        const tpl = buildTemplate({
+          prev: okP.hash,
+          prevHeader: parent.header,
+          prevBlock: parent,
+          parentWeight: parent.weight,
+          height: 2,
+          miner: hasher,
+          bits: quote.packed,
+          now: childNow,
+          potShares: custodyPotShares(pool, pot),
+        });
+        return verifyBlock(asBlock(tpl, hasher, pool), prev, opts);
+      }
+      const paid = child(want);
+      assert.equal(paid.ok, true, `epoch ${epoch} pays ${want}: ${paid.reason}`);
+      if (want !== potSubsidyNanos(0)) {
+        const early = child(potSubsidyNanos(0));
+        assert.equal(early.ok, false, `epoch ${epoch} rejects the epoch-0 subsidy`);
+        assert.ok(
+          early.reason === 'pot' || early.reason === 'pot_sched' || early.reason === 'pot_prop' || early.reason === 'pot_carry',
+          early.reason,
+        );
+      }
+      const over = child(want + 1);
+      assert.equal(over.ok, false, `epoch ${epoch} rejects one nano over the schedule`);
+      assert.ok(
+        over.reason === 'pot' || over.reason === 'pot_sched' || over.reason === 'pot_prop' || over.reason === 'pot_carry',
+        over.reason,
+      );
+    }
   });
 
   it('miner pot and hash notes are spendable only by the miner key', () => {
@@ -443,7 +508,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const pool = encodeDest(destCommitFromSpendPub(ed25519RawPub(poolKey)));
     const fee = Math.floor(BLOCK_SUBSIDY_NANOS * POOL_FEE_BPS / 10000);
     const rest = BLOCK_SUBSIDY_NANOS - fee;
-    const row = { dest20: dest20OfShare({ dest: miner }), dest: miner, nonce: 1n, lz: 8 };
+    const row = { dest20: dest20OfShare({ dest: miner }), dest: miner, nonce: floorNonce(1n), lz: 8, proofSlot: 0 };
     const shares = potSharesFromBatch([row], pool, BLOCK_SUBSIDY_NANOS);
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
@@ -488,7 +553,7 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const owned = signSpendTx(structuredClone(spend), minerKey);
     assert.equal(verifySpendSig(owned), true);
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
-    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot\)/);
+    assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
     assert.doesNotMatch(src, /custodyPotShares\(/);
   });
 });

@@ -1,10 +1,20 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, POOL_FEE_BPS } from './asert.js';
+import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS, POOL_FEE_BPS, SHARE_FLOOR_BITS } from './asert.js';
 import { newIdentity, spendDestOf, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20, sealCoinbaseNote } from './note.js';
+import { nonceWithShareTarget } from './share_batch.js';
 import { expectedCoinbasePays, noteCommitSpendableNanos, paysFromALeaves, openedCoinbaseNanos } from './coinbase_notes.js';
 import { custodyPotShares } from '../node/src/chain.js';
+
+function creditedShare(dest, low) {
+  return {
+    dest,
+    dest20: hash20FromAddress(dest),
+    nonce: nonceWithShareTarget(low, SHARE_FLOOR_BITS),
+    lz: SHARE_FLOOR_BITS,
+  };
+}
 
 function shareOf(dest, nonce) {
   return { dest, dest20: hash20FromAddress(dest), nonce: BigInt(nonce), lz: 8 };
@@ -41,36 +51,42 @@ describe('expectedCoinbasePays potNanos', () => {
   it('splits the supplied epoch pot, not the 1 SHE fingerprint', () => {
     const hasher = spendDestOf(newIdentity().spendPub);
     const pool = spendDestOf(newIdentity().spendPub);
-    const share = { dest: hasher, dest20: hash20FromAddress(hasher), nonce: 1n, lz: 8 };
+    const share = creditedShare(hasher, 1n);
     const pot = 99_000_000_000;
     const pays = expectedCoinbasePays([share], { miner: hasher, poolDest: pool, potNanos: pot });
     const potPays = pays.filter((p) => p.kind === 'pot');
-    const sum = potPays.reduce((a, p) => a + p.nanos, 0);
-    assert.equal(sum, pot);
+    const feePays = pays.filter((p) => p.kind === 'pool-fee');
     const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
-    assert.equal(potPays.find((p) => p.address === pool)?.nanos, fee);
-    const rest = potPays.find((p) => p.address === hasher);
-    assert.equal(rest?.nanos, pot - fee);
+    const fingerprintFee = Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
+    assert.notEqual(pot, NANOS_PER_SHE);
+    assert.notEqual(fee, fingerprintFee);
+    assert.equal(potPays.reduce((a, p) => a + p.nanos, 0) + feePays.reduce((a, p) => a + p.nanos, 0), pot);
+    assert.equal(feePays.find((p) => p.address === pool)?.nanos, fee);
+    assert.equal(potPays.find((p) => p.address === pool), undefined);
+    assert.equal(potPays.find((p) => p.address === hasher)?.nanos, pot - fee);
   });
 });
 
 describe('noteCommitSpendableNanos', () => {
-  it('recovers mature compact coinbase when explorer to is empty', () => {
+  it('counts an opened note and ignores a painted nanos row', () => {
     const alice = newIdentity();
     const dest = spendDestOf(alice.spendPub);
-    const want = noteCommitOfDest20(hash20FromAddress(dest));
-    const blocks = [{
-      height: 2,
-      txs: [{
-        coinbase: true,
-        vout: [{ kind: 'pot', noteCommit: want, nanos: 2 * NANOS_PER_SHE }],
-      }],
-    }];
+    const amount = 2 * NANOS_PER_SHE;
+    const note = sealCoinbaseNote(amount, { dest20: hash20FromAddress(dest), kind: 'pot' });
+    const blocks = [{ height: 2, txs: [{ coinbase: true, vout: [note] }] }];
     const immature = noteCommitSpendableNanos(blocks, dest, 2);
     assert.equal(immature, 0);
     const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
     const got = noteCommitSpendableNanos(blocks, dest, matureTip);
-    assert.equal(got, 2 * NANOS_PER_SHE);
+    assert.equal(got, amount);
+    const painted = [{
+      height: 2,
+      txs: [{
+        coinbase: true,
+        vout: [{ kind: 'pot', noteCommit: note.noteCommit, nanos: amount }],
+      }],
+    }];
+    assert.equal(noteCommitSpendableNanos(painted, dest, matureTip), 0);
     const other = spendDestOf(newIdentity().spendPub);
     assert.equal(noteCommitSpendableNanos(blocks, other, matureTip), 0);
   });
@@ -180,11 +196,12 @@ describe('expectedCoinbasePays custodialPot', () => {
   it('attributes pot-after-fee to poolDest instead of hasher leaves', () => {
     const hasher = spendDestOf(newIdentity().spendPub);
     const pool = spendDestOf(newIdentity().spendPub);
-    const share = { dest: hasher, dest20: hash20FromAddress(hasher), nonce: 1n, lz: 8 };
+    const share = creditedShare(hasher, 1n);
     const split = expectedCoinbasePays([share], { miner: hasher, poolDest: pool });
     const fee = Math.floor(NANOS_PER_SHE * POOL_FEE_BPS / 10000);
     const rest = NANOS_PER_SHE - fee;
-    assert.equal(split.find((p) => p.kind === 'pot' && p.address === pool)?.nanos, fee);
+    assert.equal(split.find((p) => p.kind === 'pool-fee' && p.address === pool)?.nanos, fee);
+    assert.equal(split.find((p) => p.kind === 'pot' && p.address === pool), undefined);
     assert.equal(split.find((p) => p.kind === 'pot' && p.address === hasher)?.nanos, rest);
     const custody = expectedCoinbasePays([share], {
       miner: hasher,

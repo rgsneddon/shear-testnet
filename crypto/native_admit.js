@@ -80,17 +80,42 @@ export function nativeJroot(destLeaves, cLeaves) {
   }
 }
 
-export function nativeProve({ x, p, c, t, index, destLeaves, cLeaves }) {
-  if (!native) return null;
+/** Version-3 book. The C root commits the ristretto points, not scalar(compress(C)). */
+export function nativeJrootPoint(destLeaves, cLeaves) {
+  if (!native || typeof native.jrootPoint !== 'function') return null;
+  try {
+    const o = native.jrootPoint(leafList(destLeaves), leafList(cLeaves));
+    return o && o.length === 32 ? Buffer.from(o) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Extend a JF01 frontier. An empty prev starts at zero leaves. Root matches nativeJroot of the whole set. */
+export function nativeFrontierAppend(prev, destLeaves, cLeaves) {
+  if (!native || typeof native.frontierAppend !== 'function') return null;
+  try {
+    const prior = prev && prev.length ? Buffer.from(prev) : Buffer.alloc(0);
+    const o = native.frontierAppend(prior, leafList(destLeaves), leafList(cLeaves));
+    if (!o || !o.root || o.root.length !== 32 || !o.frontier || !o.frontier.length) return null;
+    return { root: Buffer.from(o.root), frontier: Buffer.from(o.frontier) };
+  } catch {
+    return null;
+  }
+}
+
+export function nativeProveV3({ x, p, c, t, index, destLeaves, cLeaves, ctx }) {
+  if (!native || typeof native.proveV3 !== 'function') return null;
   try {
     const xb = as32(x);
     const pb = as32(p);
     const cb = as32(c);
     const tb = as32(t);
-    if (!xb || !pb || !cb || !tb) return null;
+    const context = Buffer.isBuffer(ctx) ? ctx : Buffer.from(ctx || []);
+    if (!xb || !pb || !cb || !tb || context.length !== 64) return null;
     const dest = leafList(destLeaves);
     const cs = leafList(cLeaves);
-    const got = native.prove(xb, pb, cb, tb, index >>> 0, dest, cs);
+    const got = native.proveV3(xb, pb, cb, tb, index >>> 0, dest, cs, context);
     if (!got || got === false || !got.proof || !got.cTilde) return null;
     return { cTilde: Buffer.from(got.cTilde), proof: Buffer.from(got.proof) };
   } catch {
@@ -98,59 +123,38 @@ export function nativeProve({ x, p, c, t, index, destLeaves, cLeaves }) {
   }
 }
 
-export function nativeVerify({ proof, jroot, cTilde, spendTag, destLeaves = [], cLeaves = [] }) {
-  if (!native) return false;
+export function nativeVerifyV3({ proof, jroot, cTilde, spendTag, ctx }) {
+  if (!native || typeof native.verifyV3 !== 'function') return false;
   try {
     const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
-    return !!native.verify(
-      pr,
-      as32(jroot),
-      as32(cTilde),
-      as32(spendTag),
-      leafList(destLeaves),
-      leafList(cLeaves),
-    );
+    const context = Buffer.from(ctx || []);
+    if (context.length !== 64) return false;
+    return !!native.verifyV3(pr, as32(jroot), as32(cTilde), as32(spendTag), context);
   } catch {
     return false;
   }
 }
 
-/** Native prove+jroot-only verify for |J|=n. Returns {proveUs, verifyUs, proofLen} or null. */
-export function nativeBench(n) {
-  if (!native || typeof native.bench !== 'function') return null;
-  try {
-    const o = native.bench(n >>> 0);
-    if (!o || o === false) return null;
-    return {
-      proveUs: Number(o.proveUs),
-      verifyUs: Number(o.verifyUs),
-      proofLen: Number(o.proofLen),
-    };
-  } catch {
-    return null;
+/** A safe integer, or the decimal text of any u64. Never Number() on a big digit string. */
+export function rangeAmountArg(v) {
+  if (typeof v === 'bigint') {
+    if (v < 0n || v > 0xffffffffffffffffn) return null;
+    return v.toString();
   }
-}
-
-export function nativeVerifyBatch({ proofs, jroot, cTildes, tags, destLeaves = [], cLeaves = [] }) {
-  if (!native) return false;
-  try {
-    return !!native.verifyBatch(
-      (proofs || []).map((p) => (Buffer.isBuffer(p) ? p : Buffer.from(p))),
-      as32(jroot),
-      leafList(cTildes),
-      leafList(tags),
-      leafList(destLeaves),
-      leafList(cLeaves),
-    );
-  } catch {
-    return false;
+  if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v) || v < 0) return null;
+    return v;
   }
+  if (typeof v === 'string' && /^[0-9]+$/.test(v)) return v;
+  return null;
 }
 
 export function nativeProveRange(v, r) {
   if (!native) return null;
+  const arg = rangeAmountArg(v);
+  if (arg == null) return null;
   try {
-    const o = native.proveRange(Number(v), as32(r));
+    const o = native.proveRange(arg, as32(r));
     return o && o.length ? Buffer.from(o) : null;
   } catch {
     return null;

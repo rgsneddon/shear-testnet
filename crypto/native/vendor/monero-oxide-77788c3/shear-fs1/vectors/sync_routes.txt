@@ -1,0 +1,47 @@
+# path<TAB>query<TAB>verdict. Checked by shear-fs1 witness tests and node/tests/test_fs1_sync_routes.js.
+/sync	from=0&to=64	ok
+/sync	from=64&to=128	ok
+/sync	from=0&to=640	ok
+/sync	from=0&to=1024	ok
+/sync	from=0&to=1088	range
+/sync	from=-64&to=64	range
+/sync	from=1&to=64	range
+/sync	from=0&to=63	range
+/sync	from=64&to=64	range
+/sync	from=128&to=64	range
+/sync		range
+/sync	from=0	range
+/path		route
+/witness		route
+/leaf		route
+/bucket		route
+/snapshot		route
+/chunk		route
+/chunks		route
+/snapshot	from=0&to=64	route
+/chunks	chunks=0,3,6	route
+/sync/snapshot	from=0&to=64	route
+/path	from=0&to=64	route
+/witness	leaf=3	route
+/sync/leaf	from=0&to=64	route
+/sync	from=0&to=64&leaf=1	keyed
+/sync	from=0&to=64&index=1	keyed
+/sync	from=0&to=64&chunk=1	keyed
+/sync	from=0&to=64&path=1	keyed
+/sync	from=0&to=64&tag=1	keyed
+/sync	from=0&to=64&spendTag=1	keyed
+/sync	from=0&to=64&commit=1	keyed
+/sync	from=0&to=64&noteCommit=1	keyed
+/sync	from=0&to=64&address=1	keyed
+/sync	from=0&to=64&owned=1	keyed
+/sync	from=0&to=64&note=1	keyed
+/sync	from=0&to=64&send=1	keyed
+/sync	from=0&to=64&scanHit=1	keyed
+/sync	from=0&to=64&clear=1	keyed
+/sync	from=0&to=64&snapshot=1	keyed
+/sync	from=0&to=64&chunks=0,3,6	keyed
+/sync	from=0&to=64&chunkIds=7	keyed
+/sync	from=0&to=64&held=1	keyed
+/sync	from=0&to=64&Snapshot=1	keyed
+/sync	leaf=0	keyed
+/sync	from=0&to=64&LEAF=2	keyed

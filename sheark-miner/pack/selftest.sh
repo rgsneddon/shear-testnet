@@ -1,5 +1,5 @@
 #!/bin/bash
-# Confirm the built miner is ShearK 2.8 and the known ShearHash-v3 digest.
+# Confirm the built miner prints the known ShearHash-v3 digest.
 set -euo pipefail
 BIN=${1:?binary}
 OUT=$("$BIN" --selftest 2>&1)

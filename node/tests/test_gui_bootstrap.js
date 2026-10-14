@@ -13,7 +13,6 @@ import {
   bootstrapBaseUrl,
   latestPaths,
 } from '../src/bootstrap.js';
-import { readChainBin } from '../../crypto/chainbin.js';
 import { locatorHashes, selectHeadersAfterLocator } from '../src/p2p.js';
 import { createStore, writeTipFile } from '../src/store.js';
 
@@ -48,17 +47,18 @@ function prunedBlock(height, hashByte) {
 function snapshotFixture() {
   const src = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-src-'));
   const blocks = [];
-  for (let h = 1; h <= 3; h += 1) blocks.push(prunedBlock(h, h));
-  blocks.push({
-    height: 1008,
-    hash: Buffer.alloc(32, 9),
-    header: Buffer.alloc(128, 9),
-    rootA: Buffer.alloc(32, 1),
-    rootB: Buffer.alloc(32, 2),
-    samplesPruned: false,
-    txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
-    shareBatch: [{ nonce: '1' }],
-  });
+  for (let h = 1; h <= 1001; h += 1) {
+    blocks.push(h === 1 ? prunedBlock(h, h) : {
+      height: h,
+      hash: Buffer.alloc(32, h % 255),
+      header: Buffer.alloc(128, h & 255),
+      rootA: Buffer.alloc(32, 1),
+      rootB: Buffer.alloc(32, 2),
+      samplesPruned: false,
+      txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
+      shareBatch: [{ nonce: String(h) }],
+    });
+  }
   const manifest = writeLatestBootstrap(src, blocks);
   assert.ok(manifest, 'fixture snapshot');
   return { src, manifest };
@@ -84,13 +84,15 @@ describe('wallet node bootstrap', () => {
     });
     assert.equal(pulls, 1);
     assert.equal(decision.pull, true);
-    assert.equal(decision.apply, true);
-    assert.equal(decision.missing, false);
+    assert.equal(decision.apply, false);
+    assert.equal(decision.missing, true);
     assert.equal(decision.resume, false);
-    const installed = readChainBin(path.join(dest, 'chain.bin'));
-    assert.equal(installed.at(-1).height, manifest.height);
+    assert.match(String(decision.reason || ''), /prev|pow|merkle|bad_header|coinbase|bits|timestamp|no_header|height/);
+    assert.equal(fs.existsSync(path.join(dest, 'chain.bin')), false);
+    fs.writeFileSync(path.join(dest, 'chain.bin'), Buffer.from('recorded-tip'));
     const before = fs.readFileSync(path.join(dest, 'chain.bin'));
     assert.equal(datadirIsEmpty(dest), false);
+    void manifest;
 
     let pullsAgain = 0;
     const again = await resolveGuiBootstrap({
@@ -224,9 +226,12 @@ describe('wallet node bootstrap', () => {
       return { ok: true, arrayBuffer: async () => copy.buffer };
     });
     const applied = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-applied-'));
-    const got = applyLatestBootstrap(applied, fetched);
-    assert.equal(got.height, manifest.height);
-    assert.equal(readChainBin(path.join(applied, 'chain.bin')).at(-1).height, manifest.height);
+    assert.throws(
+      () => applyLatestBootstrap(applied, fetched),
+      /prev|pow|merkle|bad_header|coinbase|bits|timestamp|no_header|height/,
+    );
+    assert.equal(fs.existsSync(path.join(applied, 'chain.bin')), false);
+    void manifest;
     const miss = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-404-'));
     await assert.rejects(
       () => pullPublishedBootstrap('https://boot.shear.digital', miss, async () => ({ ok: false, status: 404 })),

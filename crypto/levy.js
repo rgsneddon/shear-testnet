@@ -7,7 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import { createPublicKey, verify } from 'node:crypto';
-import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX, aliasDestOfSilentId } from './address.js';
+import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX, aliasDestOfSilentId, poolFeeDest } from './address.js';
 import {
   NANOS_PER_SHE,
   MAGIC_TESTNET,
@@ -24,6 +24,8 @@ import {
   poolWithdrawDigest,
   POOL_WITHDRAW_DEADLINE_MS,
 } from './eip712.js';
+
+export { poolFeeDest };
 
 export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
@@ -165,8 +167,15 @@ export function reserveFeeDest() {
   return encodeDest(createHash('sha256').update('shear-reserve-v1-fee').digest().subarray(0, 20));
 }
 
-export function poolFeeDest() {
-  return encodeDest(createHash('sha256').update('shear-pool-fee-v1').digest().subarray(0, 20));
+/**
+ * Shared-template finder half when no miner has aimed a header yet.
+ * A one-sided reserve note fails the 50/50 check. This dest is not a miner,
+ * not the reserve, and not a fee dest. The spend base is the short form, so
+ * the note is not spendable. templateForFinder replaces it for the miner
+ * who hashes that header.
+ */
+export function unclaimedFinderDest() {
+  return encodeDest(createHash('sha256').update('shear-finder-unclaimed-v1').digest().subarray(0, 20));
 }
 
 export function poolPayoutDest() {
@@ -233,6 +242,27 @@ export function blockWeight(txs = [], bLeaves = []) {
 export function containsShe1(obj) {
   const s = typeof obj === 'string' ? obj : JSON.stringify(obj || {});
   return /(?:^|[^a-z])she1[0-9a-z]*/i.test(s.replace(/ssa1/gi, ''));
+}
+
+/** This chain pays miners in coinbase notes. Another magic is the old custodial book. */
+export function custodialPullAllowed(magic = MAGIC_TESTNET) {
+  return String(magic || '') !== String(MAGIC_TESTNET);
+}
+
+/**
+ * Disabled pool-withdraw on this magic. The same reason on queue, mempool,
+ * funded body, and verify. A later kind gate would hide it.
+ */
+export function custodialPullRejected(tx) {
+  if (custodialPullAllowed()) return null;
+  if (!tx || tx.coinbase) return null;
+  if (
+    String(tx.kind || '') === 'pool-withdraw'
+    || String(tx.vout?.[0]?.kind || '') === 'pool-withdraw'
+  ) {
+    return { ok: false, reason: 'custodial_pull' };
+  }
+  return null;
 }
 
 export function poolWithdrawTx({ from, to, nanos, fee, id } = {}) {

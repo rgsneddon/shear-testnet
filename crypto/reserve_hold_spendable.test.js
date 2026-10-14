@@ -62,7 +62,7 @@ describe('reserve principal is not spendable', () => {
     assert.equal(portalPrincipalNanos(null, payer), 0);
   });
 
-  it('sealing a 1 SHE lock drops spender spendable by 1 SHE and not by 2', async () => {
+  it('a plaintext lock is not a debit, and spendable is the note walk', async () => {
     const id = newIdentity();
     const miner = spendDestOf(id.spendPub);
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
@@ -94,12 +94,12 @@ describe('reserve principal is not spendable', () => {
       raw.fee = levyNanos(0, { tx: raw });
       const lock = signSpendTx(raw, id.privateKey);
       const queued = live.queueTx(lock);
-      assert.equal(queued.ok, true, queued.reason || 'queue');
+      assert.equal(queued.ok, false, queued.reason || 'queue');
+      assert.equal(queued.reason, 'admit_version');
       const heldSeal = await seal(live, miner, t0 + 10 * step, 11);
       assert.equal(heldSeal.ok, true, heldSeal.reason || 'lock seal');
       const held = live.spendableNanos(miner);
-      assert.equal(held, unlocked - NANOS_PER_SHE);
-      assert.ok(held > unlocked - (2 * NANOS_PER_SHE));
+      assert.equal(held, unlocked);
     } finally {
       fs.rmSync(dirA, { recursive: true, force: true });
       fs.rmSync(dirB, { recursive: true, force: true });

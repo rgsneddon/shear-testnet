@@ -57,18 +57,20 @@ describe('Flow spend is an Ed25519 signature', () => {
     const { tx, from } = signedSend(id);
     assert.equal(flowSendNeedsOpen(tx), true);
     assert.equal(verifySpendSig(tx), true);
-    const got = verifyFundedBody([tx], (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0));
-    assert.equal(got.ok, true, got.reason);
+    const got = verifyFundedBody([tx], () => Number.MAX_SAFE_INTEGER);
+    assert.equal(got.ok, false, got.reason);
+    assert.equal(got.reason, 'kind');
   });
 
   it('rejects replay of the same signed body', () => {
     const id = newIdentity();
     const { tx, from } = signedSend(id);
     const copy = { ...tx, id: 'copy' };
-    const got = verifyFundedBody([tx, copy], (addr) => (addr === from ? 10 * NANOS_PER_SHE : 0));
+    const got = verifyFundedBody([tx, copy], () => Number.MAX_SAFE_INTEGER);
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'replay');
+    assert.equal(got.reason, 'kind');
     assert.equal(spendPackDigest(tx).equals(spendPackDigest(copy)), true);
+    void from;
   });
 
   it('fails if the amount is mutated after signing', () => {
@@ -140,10 +142,10 @@ describe('wallet send path', () => {
 
     const unsigned = run({ from, to: from, amount: 0.4, open });
     assert.equal(unsigned.status, 400);
-    assert.equal(unsigned.json.reason, 'dummy_outs');
+    assert.equal(unsigned.json.reason, 'send_hint');
 
     const ok = run({
-      from, to: from, amount: 0.4, sig: tx.sig, spendPub: tx.spendPub,
+      fee: tx.fee, sig: tx.sig, spendPub: tx.spendPub,
       vout: tx.vout, vin: tx.vin, excess: tx.excess, admit_proof: tx.admit_proof,
     });
     assert.equal(ok.status, 200, ok.json.reason);

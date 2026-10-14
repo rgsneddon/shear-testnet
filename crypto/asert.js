@@ -28,6 +28,39 @@ import {
 } from './reserve_oracle.js';
 export { GENESIS_BPS };
 import { HISTORICAL_TIP } from './historical_prefix.js';
+import {
+  MAGIC_TESTNET_V1,
+  MAGIC_TESTNET_V2,
+  MAGIC_TESTNET_V3,
+  MAGIC_TESTNET_V4,
+  MAGIC_TESTNET_V5,
+  MAGIC_TESTNET_V6,
+  MAGIC_TESTNET_V7,
+  MAGIC_TESTNET_V8,
+  MAGIC_TESTNET_V9,
+  MAGIC_TESTNET_V10,
+  MAGIC_TESTNET_V11,
+  MAGIC_TESTNET_V12,
+  MAGIC_TESTNET,
+  MAGIC_MAINNET,
+} from './reserve_books.js';
+
+export {
+  MAGIC_TESTNET_V1,
+  MAGIC_TESTNET_V2,
+  MAGIC_TESTNET_V3,
+  MAGIC_TESTNET_V4,
+  MAGIC_TESTNET_V5,
+  MAGIC_TESTNET_V6,
+  MAGIC_TESTNET_V7,
+  MAGIC_TESTNET_V8,
+  MAGIC_TESTNET_V9,
+  MAGIC_TESTNET_V10,
+  MAGIC_TESTNET_V11,
+  MAGIC_TESTNET_V12,
+  MAGIC_TESTNET,
+  MAGIC_MAINNET,
+};
 
 export const TARGET_BLOCK_INTERVAL_MS = 90_000;
 export const MIN_BITS = 1;
@@ -48,53 +81,49 @@ export const LIVE_MIN_BITS = 4;
  * Fingerprint includes GENESIS_BITS. After genesis, tempo is the sealed-gap
  * step only. This seed is not a forecast and not a fixed point of the book.
  * v10's closed soak seeded 15. v11 seeds 17, two bits harder. Russell locked
- * 17 (more prudent than 16). Live tip bits are not this open.
+ * 17 (more prudent than 16). v12 keeps that seed. Live tip bits are not this open.
  */
 export const GENESIS_BITS = 17;
 /**
- * Per-block lid on the median step. v9 used harden +6 and testnet ease −2.
- * A short-gap median then walked about twelve bits while the window lagged,
- * and the tip could seal on the floor. v10 testnet lid is ±1.
- * Mainnet harden stays 6 and mainnet ease stays 1 until that book is cut.
- * Do not pin these to a pool hashrate.
+ * v12 does not use a per-block ± lid. Mainnet constants stay for that
+ * book's fingerprint until mainnet is cut. Testnet ease is the emergency
+ * window below, not a sticky step lid.
  */
 export const ASERT_HARDEN_MAX_MAINNET = 6;
-export const ASERT_HARDEN_MAX_TESTNET = 1;
+export const ASERT_HARDEN_MAX_TESTNET = 0;
 /** Live book default (testnet). Mainnet fingerprint still pins HARDEN=6. */
 export const ASERT_HARDEN_MAX = ASERT_HARDEN_MAX_TESTNET;
 export const ASERT_EASE_MAX_MAINNET = 1;
-export const ASERT_EASE_MAX_TESTNET = 1;
+export const ASERT_EASE_MAX_TESTNET = 0;
 /** Live book default (testnet). Mainnet fingerprint still pins EASE=1. */
 export const ASERT_EASE_MAX = ASERT_EASE_MAX_TESTNET;
+/** Own-timestamp emergency ease. Cap 2 bits. Gap must exceed 8·T. */
+export const ASERT_EMERGENCY_EASE_MAX = 2;
+export const ASERT_EMERGENCY_GAP_FACTOR = 8;
 /**
  * Header `bits` is Q16.16 packed work (integer LZ + 16-bit fraction).
  * Integer rungs could not represent the 1.09× target that 90 s needs
  * when hashrate sits between powers of two. Share vardiff stays integer LZ.
  *
- * The network target feeds the median of the last 11 sealed header gaps
- * into nextBits. Missing samples are padded with T, so one fast or slow
- * header cannot move the median. Six of those eleven short gaps do.
- * nextBits applies (T/τ)·log2(T/seen) and the ± lid to that one interval.
- * τ is 16 target intervals (1_440_000 ms). v10 used 32 and is a closed book.
- * A 90000 ms median adds zero. Once the median is a 2000 ms gap, eight
- * further steps add at least one bit. The testnet lid is one bit.
+ * v12 difficulty is genesis-anchored aserti3-2d. The median-11 step and
+ * the ±1 lid are not this book. τ = 2 h. Move to 4 h only if a soak shows
+ * bits chatter. That change is a new book, not a mid-chain edit.
  */
 export const BITS_FP_SCALE = 65536;
 export const ASERT_CURVE_WINDOW = 11;
 export const ASERT_FAST_GAPS = 8;
 export const ASERT_FAST_GAP_MS = 2_000;
-export const ASERT_STEP_ID = 'median11(log2(T/seen))*(T/tau)';
+export const ASERT_STEP_ID = 'aserti3-2d';
 /**
- * Damping time of the log step. v11 chooses τ = 16·T = 1_440_000 ms.
- * v10's closed soak used 32·T (2_880_000 ms) and is not this book.
- * One e-fold of median error moves T/τ of a bit. Median-11 and the ±1 lid
- * stay. This is not a 288-block Ready bar. The pool cannot edit τ mid-chain.
- * Pinned as ASERT_TAU_MS.
+ * Damping time. v12 chooses τ = 2 h = 7_200_000 ms (80·T).
+ * v11's closed book used 16·T (1_440_000 ms). v10 used 32·T.
+ * Pinned as ASERT_TAU_MS. The pool cannot edit τ mid-chain.
  */
-export const ASERT_TAU_BLOCKS = 16;
-export const ASERT_HALFLIFE_MS = ASERT_TAU_BLOCKS * TARGET_BLOCK_INTERVAL_MS;
-/** A non-stall gap may not sit on LIVE_MIN_BITS. An 8τ stall may. */
-export const ASERT_FLOOR_ID = 'above-min-until-8tau';
+export const ASERT_TAU_MS = 2 * 60 * 60 * 1000;
+export const ASERT_TAU_BLOCKS = ASERT_TAU_MS / TARGET_BLOCK_INTERVAL_MS;
+export const ASERT_HALFLIFE_MS = ASERT_TAU_MS;
+/** Unpacked work stays inside [LIVE_MIN_BITS, MAX_BITS]. */
+export const ASERT_FLOOR_ID = 'clamp-live-min-max';
 /**
  * A header may sit this far ahead of the verifier clock. Further ahead is
  * rejected, so a finder cannot publish a 2 s solve stamped as a 90 s gap.
@@ -127,8 +156,8 @@ export function hashBonusUnitNanos(n) {
 }
 /** This public pool's construction rate (1%). Not a consensus requirement. */
 export const POOL_FEE_BPS = 100;
-/** Consensus cap: a pool may charge 0–3% of the pot. Hash bonus is never fee'd. */
-export const POOL_FEE_MAX_BPS = 300;
+/** Consensus cap: 0–2% of this block's subsidy. Carry is not fee'd. Hash bonus is never fee'd. */
+export const POOL_FEE_MAX_BPS = 200;
 /** A digest that meets this floor is worth 2^SHARE_FLOOR_BITS units. */
 export const SHARE_FLOOR_BITS = 8;
 /**
@@ -138,7 +167,51 @@ export const SHARE_FLOOR_BITS = 8;
  * HASH_BONUS_NANOS stays 1. This is headroom, not a bonus-unit retune.
  */
 export const MAX_SHARES_PER_BLOCK = 65536;
-export const MAX_HASH_UNITS_PER_BLOCK = MAX_SHARES_PER_BLOCK * (2 ** SHARE_FLOOR_BITS);
+/**
+ * Work-unit cap. 2^28 covers a 500 kH/s launch surge at T = 90s (about 4.5e7
+ * hashes) with headroom. 2^26 is the floor of that headroom. Do not restore
+ * 65536 * 2^SHARE_FLOOR_BITS (2^24): that bound sits inside the launch band
+ * once units are 2^bits. The share count above stays the body DoS bound.
+ */
+export const MAX_HASH_UNITS_PER_BLOCK = 2 ** 28;
+/**
+ * Owed hash-bonus rows on one coinbase. One block's distinct noteCommits fit.
+ * Rows past this cap sum into a public overflow total. They are not burned
+ * and they are not paid to a different dest.
+ */
+export const HASH_OWED_MAX_ENTRIES = MAX_SHARES_PER_BLOCK;
+/**
+ * HASH_OWED_BUDGET_SCALE_V1. The window is τ/T. k is at least 1.
+ * Capacity is max(MAX_HASH_UNITS_PER_BLOCK, k * lower median) and never
+ * shrinks the 2^28 floor. The median is an observed sample.
+ */
+export const HASH_OWED_SCALE_WINDOW = ASERT_TAU_BLOCKS;
+export const HASH_OWED_SCALE_K = 2;
+/**
+ * HASH_OWED_BUDGET_V1. Parent owed rows take this fraction of the block
+ * budget, oldest first. Fresh credits take the rest, pro-rata. An unused
+ * side spills to the other side. The odd nano stays with the fresh side.
+ */
+export const HASH_OWED_DRAIN_NUM = 1;
+export const HASH_OWED_DRAIN_DEN = 2;
+/**
+ * Shortfalls smaller than one floor share fold into the public dust pot.
+ * The floor share is 2^SHARE_FLOOR_BITS units at the live hash-bonus unit.
+ */
+export function hashOwedDustNanos(unit = HASH_BONUS_NANOS) {
+  return (1n << BigInt(SHARE_FLOOR_BITS)) * BigInt(hashBonusUnitNanos(unit));
+}
+/**
+ * Highest share width a validator may credit. A lone share above this is
+ * retained at the unit cap, so its expected units per hash would fall below 1.
+ * B_MAX = min(52, floor(log2(MAX_HASH_UNITS_PER_BLOCK))). At 2^28 that is 28.
+ */
+export function shareCreditMaxBits(maxUnits = MAX_HASH_UNITS_PER_BLOCK) {
+  const cap = Number(maxUnits);
+  if (!Number.isFinite(cap) || cap < 2) return SHARE_FLOOR_BITS;
+  const log = Math.floor(Math.log2(cap));
+  return Math.min(52, Math.max(SHARE_FLOOR_BITS, log));
+}
 /** Median of last 11 header timestamps. Future skew 2 h (Bitcoin-class).
  *  15 min left only ~3 s of legal header time when the tip sat near the
  *  cap; ASERT then saw a 3 s interval and hardened +2 every round. */
@@ -153,32 +226,7 @@ export const INTEREST_LAW = REWARD_LAW;
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
-export const MAGIC_TESTNET_V1 = 'shear-testnet-v1';
-export const MAGIC_TESTNET_V2 = 'shear-testnet-v2';
-export const MAGIC_TESTNET_V3 = 'shear-testnet-v3';
-export const MAGIC_TESTNET_V4 = 'shear-testnet-v4';
-/** Previous DINS book. Not this magic. */
-export const MAGIC_TESTNET_V5 = 'shear-testnet-v5';
-/** Previous empty-book soak (GENESIS_BITS=12, bang-bang log2 step). Not this magic. */
-export const MAGIC_TESTNET_V6 = 'shear-testnet-v6';
-/** Previous book. Not this magic. */
-export const MAGIC_TESTNET_V7 = 'shear-testnet-v7';
-/** Previous book. Not this magic. */
-export const MAGIC_TESTNET_V8 = 'shear-testnet-v8';
-/** Previous book (median11, harden 6, ease 2). Not this magic. Fail-closed. */
-export const MAGIC_TESTNET_V9 = 'shear-testnet-v9';
-/** Closed soak. τ = 32·T, GENESIS_BITS = 15. Do not retune that book. Not this magic. */
-export const MAGIC_TESTNET_V10 = 'shear-testnet-v10';
-/** Previous book. τ = 16·T, GENESIS_BITS = 17. Not this magic. */
-export const MAGIC_TESTNET_V11 = 'shear-testnet-v11';
-/**
- * Live book. User lock notes, coinbase reserve reward, bundled epoch rate.
- * v11 payloads do not load.
- */
-export const MAGIC_TESTNET_V12 = 'shear-testnet-v12';
-/** ADMITv2 privacy-class book. Empty cut. */
-export const MAGIC_TESTNET = MAGIC_TESTNET_V12;
-export const MAGIC_MAINNET = 'shear-v1';
+/** Chain magics are reserve_books.js. This module re-exports them. */
 /** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
 export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
 export const GENESIS_MAINNET_MS = Date.parse(GENESIS_MAINNET);
@@ -194,7 +242,7 @@ export const RX_SCRATCHPAD_L3 = 2097152;
 export const RX_MODE = 'light';
 export const RX_KEY = 'ShearHash-v3/key';
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
-export const SHEARK_MINER_VERSION = '2.8';
+export const SHEARK_MINER_VERSION = '2.9';
 /** Frozen consensus identity. A different fingerprint is a different law. */
 export const BOOK_LAW_ID = 'shear-book-law-2';
 
@@ -206,8 +254,8 @@ export function asertEaseMax(magic = MAGIC_TESTNET) {
 export function asertHardenMax(magic = MAGIC_TESTNET) {
   return String(magic) === MAGIC_MAINNET ? ASERT_HARDEN_MAX_MAINNET : ASERT_HARDEN_MAX_TESTNET;
 }
-/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Display pin is Shear Sentinel v18. */
-export const PRODUCT_VERSION = '18.0';
+/** Node and pool display version. Two-part only (`*.*`, never `0.1.0`). Not part of consensusFingerprint. Continuum wallet is kWalletVersion, not this number. Display pin is Shear Sentinel v19. */
+export const PRODUCT_VERSION = '19.0';
 /** Official C miner display/tag version. Two-part only (`*.*`). Operator set Shear-Miner to 1.1 (fee-free). 1.0 keeps the built-in fee. */
 export const MINER_VERSION = '1.1';
 /** Hash bonus commits on accept. Not env. */
@@ -293,6 +341,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `RX_KEY=${RX_KEY}`,
     `SHARE_FLOOR_BITS=${SHARE_FLOOR_BITS}`,
     `MAX_SHARES_PER_BLOCK=${MAX_SHARES_PER_BLOCK}`,
+    `MAX_HASH_UNITS=${MAX_HASH_UNITS_PER_BLOCK}`,
     `SPEND_SIG=${SPEND_SIG}`,
     `DEST_HRP_SSA_ONLY=1`,
     `SPEND_SIG_ONLY=1`,
@@ -305,16 +354,33 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `EPOCH_DAYS=${days}`,
     `RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2/3:windowMain=${ORACLE_WINDOW_MAINNET}:windowTest=${ORACLE_WINDOW_TESTNET}:windowMs=${ORACLE_WINDOW_MS}:floorBps=0:sourceTenths=-1000..100000:activation=${oracleActivationPin()}`,
     `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=2:root=${bundleObservationRoot()}`,
-    `INTEREST=${INTEREST_LAW}`,
-    `RESERVE_INTEREST=${days}d-bps-floor`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${network}`,
     'FORK=work-then-lowhash',
     `HASH_TX_LIVE=${HASH_TX_LIVE}`,
     'AMOUNT=confidential',
     'DUMMY_OUTS=1',
-    'ENC_SHARE=v5',
+    'ENC_SHARE=v5+work7',
+    'SHARE_SLOT=bound-v1',
+    'SHARE_UNITS=2^bits',
     'SHARE_BIND=rx+noteCommit',
+    'SHARE_CREDIT=nonce-hi-le',
+    `SHARE_BMAX=${shareCreditMaxBits()}`,
+    'HASH_OWED=noteCommit-carry',
+    `HASH_OWED_DUST=${hashOwedDustNanos()}`,
+    'HASH_OWED_CARRY=v1',
+    'HASH_OWED_SUBDUST=spare-fifo-v1',
+    'HASH_OWED_OVERFLOW=forbidden',
+    `HASH_OWED_INLINE=${HASH_OWED_MAX_ENTRIES}`,
+    'HASH_OWED_BUDGET_SCALE=v1',
+    `HASH_OWED_DRAIN=${HASH_OWED_DRAIN_NUM}/${HASH_OWED_DRAIN_DEN}`,
+    `HASH_OWED_SCALE_WINDOW=${HASH_OWED_SCALE_WINDOW}`,
+    `HASH_OWED_SCALE_K=${HASH_OWED_SCALE_K}`,
+    'HASH_OWED_WIRE=root-v1',
+    'HASH_OWED_RECOVER=sealed-credits-v1',
+    'HASH_OWED_SPILL=witness-v1',
+    'HASH_OWED_UNIT_HISTORY=per-height',
+    'HASH_ACCEPTED_UNITS=validated',
     'DANDELIONPP=1',
     'VIEW_TAG=1',
     'KDF=argon2id-shewall',
@@ -326,8 +392,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'LEVY_CAP=0.001-SHE',
     'LEVY_SPLIT=100-finder-work,empty=public-finder-note',
     'LEVY=weight',
-    'ADMIT=ADMITv2',
-    'RANGE=bpplus',
+    'ADMIT=ADMITv3',
+    'N1=admit-note-point',
+    'RANGE=packed-bit',
     'ADMIT_CYCLE=pallas-vesta-pasta',
     'ADMIT_ARITY=32',
     'ADMIT_K=1',
@@ -340,10 +407,12 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `ASERT_STEP=${ASERT_STEP_ID}`,
     `ASERT_HARDEN=${asertHardenMax(magic)}`,
     `ASERT_EASE=${asertEaseMax(magic)}`,
+    `ASERT_EMERGENCY=${ASERT_EMERGENCY_EASE_MAX}`,
+    `ASERT_EMERGENCY_GAP=${ASERT_EMERGENCY_GAP_FACTOR}`,
     `ASERT_FLOOR=${ASERT_FLOOR_ID}`,
     `HEADER_AHEAD_MS=${HEADER_AHEAD_MS}`,
     `MTP_FUTURE_MS=${MTP_FUTURE_MS}`,
-    ...(String(magic) === MAGIC_MAINNET ? [] : [`HISTORICAL_TIP=${HISTORICAL_TIP}`]),
+    ...(String(magic) === MAGIC_MAINNET || String(magic) === MAGIC_TESTNET_V12 ? [] : [`HISTORICAL_TIP=${HISTORICAL_TIP}`]),
   ].join(':');
 }
 
@@ -495,10 +564,75 @@ export function clampBits(bits) {
   return packBits(unpackBits(n));
 }
 
+function divRoundNearest(numer, denom) {
+  const neg = numer < 0n;
+  const abs = neg ? -numer : numer;
+  const q = (abs + denom / 2n) / denom;
+  return neg ? -q : q;
+}
+
+/**
+ * Genesis-anchored aserti3-2d.
+ * next_bits = anchor_bits + ((h - h_anchor)·T - (t - t_anchor)) / τ
+ * in Q16.16, rounded half away from zero.
+ * Higher bits are harder. A late block is easier. The anchor is the
+ * canonical genesis header, never the parent bits, so an emergency ease
+ * on the parent does not stick.
+ */
+export function asertNextBits({
+  anchorBits = GENESIS_BITS_PACKED,
+  anchorTimeMs,
+  anchorHeight = 1,
+  blockTimeMs,
+  blockHeight,
+  parentTimeMs = null,
+} = {}) {
+  const anchorT = Math.floor(Number(anchorTimeMs));
+  const blockT = Math.floor(Number(blockTimeMs));
+  const height = Math.floor(Number(blockHeight));
+  const anchorH = Math.floor(Number(anchorHeight));
+  if (!Number.isFinite(anchorT) || !Number.isFinite(blockT) || !Number.isFinite(height) || !Number.isFinite(anchorH)) {
+    return { ok: false, reason: 'asert_anchor' };
+  }
+  if (height <= anchorH) return { ok: false, reason: 'asert_anchor' };
+  const heightDelta = BigInt(height - anchorH);
+  const timeDelta = BigInt(blockT - anchorT);
+  const numer = heightDelta * BigInt(TARGET_BLOCK_INTERVAL_MS) - timeDelta;
+  const deltaQ = divRoundNearest(numer * BigInt(BITS_FP_SCALE), BigInt(ASERT_HALFLIFE_MS));
+  const minQ = BigInt(Math.round(LIVE_MIN_BITS * BITS_FP_SCALE));
+  const maxQ = BigInt(Math.round(MAX_BITS * BITS_FP_SCALE));
+  let nextQ = BigInt(clampBits(anchorBits)) + deltaQ;
+  if (nextQ < minQ) nextQ = minQ;
+  if (nextQ > maxQ) nextQ = maxQ;
+  const packed = Number(nextQ);
+  let easeBits = 0;
+  let eased = packed;
+  if (parentTimeMs != null && Number.isFinite(Number(parentTimeMs))) {
+    const gap = blockT - Math.floor(Number(parentTimeMs));
+    const trigger = ASERT_EMERGENCY_GAP_FACTOR * TARGET_BLOCK_INTERVAL_MS;
+    if (gap > trigger) {
+      const raw = Math.log2(gap / trigger);
+      easeBits = Math.min(ASERT_EMERGENCY_EASE_MAX, Math.max(0, raw));
+      let easedQ = nextQ - BigInt(Math.round(easeBits * BITS_FP_SCALE));
+      if (easedQ < minQ) easedQ = minQ;
+      eased = Number(easedQ);
+    }
+  }
+  return { ok: true, packed, eased, easeBits };
+}
+
+/** Exact ASERT, or [eased, packed] when own-timestamp emergency ease applies. */
+export function bitsAcceptAsert(gotPacked, quote) {
+  const got = Number(gotPacked);
+  if (!quote?.ok || !Number.isFinite(got)) return false;
+  if (quote.easeBits > 0) return got <= quote.packed && got >= quote.eased;
+  return got === quote.packed;
+}
+
 /**
  * Median of the last ASERT_CURVE_WINDOW sealed gaps, padded with T.
- * Index 5 of the sorted window of 11. One sample cannot move it.
- * Six short gaps become the median and nextBits walks toward 90s.
+ * Not the v12 difficulty step. Kept so MTP-style callers and old
+ * diagnostics still have a median. Consensus bits use asertNextBits.
  */
 export function medianIntervalMs(gaps) {
   const window = ASERT_CURVE_WINDOW;
@@ -515,12 +649,9 @@ export function medianIntervalMs(gaps) {
 }
 
 /**
- * One step toward 90s on Q16.16 packed work.
- * delta = (T/τ)·log2(T / seen), then the ± lid. The network passes the median
- * sealed gap as `seen`, not a single header. A median of T adds zero.
- * A non-positive or non-finite gap is the 90s target, so template, pool,
- * and verify agree. Stalls clamp at 8 half-lives before the ease lid.
- * Testnet lid is ±1. Mainnet harden is 6 and mainnet ease is 1.
+ * Retired single-gap step. v12 consensus does not call this.
+ * Testnet harden and ease lids are 0, so the result does not move.
+ * Verify, template, and retarget call asertNextBits.
  * A gap shorter than the stall cap cannot park on LIVE_MIN_BITS.
  */
 export function nextBits(previousBits, intervalMs, magic = MAGIC_TESTNET) {

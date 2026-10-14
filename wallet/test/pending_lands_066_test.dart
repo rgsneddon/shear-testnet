@@ -32,10 +32,10 @@ Map<String, dynamic> _landBody(int height, String dest, double she) => {
 
 void main() {
   test('package pin and CLI pin are Continuum 0.70', () {
-    expect(kWalletVersion, '0.71');
-    expect(kCliVersion, '0.71');
-    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.71.0+96'));
-    expect(kBookMagic, 'shear-testnet-v11');
+    expect(kWalletVersion, '0.72');
+    expect(kCliVersion, '0.72');
+    expect(File('pubspec.yaml').readAsStringSync(), contains('version: 0.72.0+97'));
+    expect(kBookMagic, 'shear-testnet-v12');
     final sync = ShearReadSync(jitter: Duration.zero);
     expect(sync.seeds.first, kLocalNodeRpc);
     expect(sync.seeds.contains(kPublicPoolHttp), isFalse);

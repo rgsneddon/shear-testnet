@@ -6,7 +6,6 @@ import { BLOCK_SUBSIDY_NANOS, HASH_BONUS_NANOS, POOL_FEE_BPS, POOL_FEE_MAX_BPS, 
 import { isDestAddress, hash20FromAddress, encodeDest } from './address.js';
 import { aLeavesFromShares, destOfShare, noteCommitOfShare, unitsForShare } from './share_batch.js';
 import { noteCommitOfDest20, verifySealedNote, asU8 } from './note.js';
-import { poolFeeDest } from './levy.js';
 
 function ncHex(buf) {
   try {
@@ -18,7 +17,7 @@ function ncHex(buf) {
 
 /**
  * Coinbase compact drops `v` on a pool-fee note. The commitment still opens
- * at the sealed amount: the claimed v, this pool's 1%, any fee up to 3%, or
+ * at the sealed amount: the claimed v, this pool's 1%, any fee up to 2% of the subsidy, or
  * the whole pot.
  */
 export function openedCoinbaseNanos(vout, potNanos = BLOCK_SUBSIDY_NANOS) {
@@ -242,9 +241,12 @@ export function expectedCoinbasePays(shareBatch, {
     }
   }
   if (pool && fee > 0) {
-    const existing = out.find((s) => s.kind === 'pot' && s.address === pool);
-    if (existing) existing.nanos += fee;
-    else out.push({ address: pool, nanos: fee, kind: 'pot' });
+    out.push({
+      address: pool,
+      nanos: fee,
+      kind: 'pool-fee',
+      noteCommit: noteCommitOfDest20(hash20FromAddress(pool)),
+    });
   }
   return out;
 }
@@ -308,7 +310,29 @@ export function matchSealedCoinbaseVout(o, pays) {
       if (d20 && nc.length === 32) hit = nc.equals(noteCommitOfDest20(d20));
     }
     if (!hit) continue;
-    if (verifySealedNote(o, p.nanos)) return { address: p.address, nanos: p.nanos, kind };
+    let nanos = 0;
+    if (verifySealedNote(o, p.nanos)) nanos = p.nanos;
+    else if (kind === 'pot') {
+      // The noteCommit already names this pay. A legal fee comes off this
+      // pay, and a carried miner pot is added. The opening is the sealed
+      // amount, which is at least the pay minus that fee cap.
+      const opened = Math.floor(Number(o?.valueProof?.v));
+      const floor = Number(p.nanos) - Math.floor(Number(p.nanos) * POOL_FEE_MAX_BPS / 10000);
+      if (opened >= floor && opened > 0 && verifySealedNote(o, opened)) nanos = opened;
+    }
+    if (!(nanos > 0)) continue;
+    let address = p.address || '';
+    if (!address && nc.length === 32) {
+      try {
+        const raw = Buffer.from(asU8(o.dest20));
+        const d20 = raw.length >= 20 ? raw.subarray(0, 20) : null;
+        if (d20 && nc.equals(noteCommitOfDest20(d20))) {
+          const addr = encodeDest(d20);
+          if (addr && isDestAddress(addr)) address = addr;
+        }
+      } catch { /* a pay with no dest stays unlabeled */ }
+    }
+    return { address, nanos, kind };
   }
   // Amount-only match paints pot-after-fee onto whichever hasher prop equals
   // the sealed pot (sole hasher → 0.99 SHE) even though the noteCommit is the pool.
@@ -357,12 +381,24 @@ function sameDest20(field, want) {
   return buf.length === want.length && buf.equals(Buffer.from(want));
 }
 
-/** Mature coinbase/hash nanos owned by dest when compact explorer `to` is empty. */
+let blocksWalked = 0;
+
+/** Blocks the full note walk has visited. The live book does not use this walk. */
+export function noteCommitBlocksWalked() {
+  return blocksWalked;
+}
+
+export function resetNoteCommitBlocksWalked() {
+  blocksWalked = 0;
+}
+
+/** Mature nanos whose commitment opened. A painted nanos field is not a coin. */
 export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   hashBonusNanos = HASH_BONUS_NANOS,
   need = SPENDABLE_CONFIRMATIONS,
   coinbaseOnly = false,
 } = {}) {
+  void hashBonusNanos;
   const dest20 = hash20FromAddress(address);
   if (!dest20) return 0;
   const want = noteCommitOfDest20(dest20);
@@ -370,26 +406,15 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
   const tip = Number(tipHeight) || 0;
   let nanos = 0;
   for (const b of blocks || []) {
+    blocksWalked += 1;
     const h = Number(b?.height) || 0;
     if (!(h > 0 && (tip - h + 1) >= need)) continue;
-    const potNanos = Number(b.blockSubsidyNanos) || BLOCK_SUBSIDY_NANOS;
-    const pool = custodyPoolDestOf(b, potNanos);
-    const custodialPot = !!pool;
-    const pays = [
-      ...expectedCoinbasePays(b.shareBatch || [], {
-        miner: b.miner,
-        poolDest: pool,
-        hashBonusNanos,
-        potNanos,
-        custodialPot,
-        feeDest: custodialPot ? poolFeeDest() : '',
-      }),
-      ...paysFromALeaves(b.aLeaves || [], { hashBonusNanos, custodialPot }),
-    ];
     for (const tx of b.txs || []) {
       if (coinbaseOnly && !tx?.coinbase) continue;
       for (const o of tx.vout || []) {
         const kind = String(o.kind || tx.kind || '');
+        // A lock or vote receipt is vault principal, not a second coin.
+        if (kind === 'lock' || kind === 'vote') continue;
         const byNote = !!(o.noteCommit && noteCommitEq(o.noteCommit, want));
         const byDest = kind === 'pool-withdraw' && sameDest20(o.dest20, dest20);
         if (!byNote && !byDest) continue;
@@ -397,29 +422,17 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
           const hex = noteCommitHex(o.noteCommit);
           if (hex && spent.has(hex)) continue;
         }
-        let n = Number(o.nanos || 0);
-        if (!tx.coinbase && !(n > 0)) {
-          const sealedV = Math.floor(Number(
-            o.valueProof?.v != null ? o.valueProof.v : (tx.nanos || 0),
-          ));
-          if (o.commit) {
-            n = (sealedV > 0 && verifySealedNote(o, sealedV)) ? sealedV : 0;
-          }
-        }
-        if (tx.coinbase) {
-          const matched = matchSealedCoinbaseVout(o, pays);
-          if (o.commit) {
-            if (matched.nanos) n = matched.nanos;
-            else {
-              // Sealed match miss is fail-closed for a guessed pot. A pool-fee
-              // compact omits v; open the commitment instead of painting 0.
-              const sealedV = Math.floor(Number(o.valueProof?.v != null ? o.valueProof.v : 0));
-              n = (sealedV > 0 && verifySealedNote(o, sealedV))
-                ? sealedV
-                : openedCoinbaseNanos(o, potNanos);
-            }
+        // A painted nanos field is not a coin. Only an opened commitment counts.
+        let n = 0;
+        if (o.commit) {
+          if (tx.coinbase) {
+            const opened = openedCoinbaseNanos(o);
+            n = opened == null ? 0 : opened;
           } else {
-            n = matched.nanos || 0;
+            const sealedV = Math.floor(Number(
+              o.valueProof?.v != null ? o.valueProof.v : 0,
+            ));
+            n = (Number.isInteger(sealedV) && sealedV > 0 && verifySealedNote(o, sealedV)) ? sealedV : 0;
           }
         }
         if (n > 0) nanos += n;

@@ -6,17 +6,24 @@ import { fileURLToPath } from 'node:url';
 import {
   ASERT_CURVE_WINDOW,
   ASERT_EASE_MAX,
+  ASERT_EMERGENCY_EASE_MAX,
+  ASERT_EMERGENCY_GAP_FACTOR,
   ASERT_HALFLIFE_MS,
   ASERT_HARDEN_MAX,
+  ASERT_STEP_ID,
+  ASERT_TAU_MS,
   BLOCK_SUBSIDY_NANOS,
   GENESIS_BITS,
   HASH_BONUS_NANOS,
   MAGIC_TESTNET,
   MAGIC_TESTNET_V10,
+  MAGIC_TESTNET_V11,
+  MAGIC_TESTNET_V12,
   PRODUCT_VERSION,
   SHEARK_MINER_VERSION,
   consensusFingerprint,
 } from '../crypto/asert.js';
+import { pdfText } from './pdf_text.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -43,10 +50,60 @@ const PUBLIC = [
   'site/b2b/index.html',
 ];
 
+// Sends are off until the ADMITv3 full-set proof ships, so no surface may
+// claim privacy now, and none may describe a group or bucket anonymity set.
+const COPY_BANNED = [
+  /\bshe is private\b/i,
+  /\bis private\b/i,
+  /\bprivate (cryptocurrency|ledger|notes?|dests?|<code>ssa1)/i,
+  /confidential amounts?/i,
+  /amounts are confidential/i,
+  /\bbuckets?\b/i,
+  /\bgroups? of 32\b/i,
+  /\bgroup-of-32\b/i,
+  /\b32[- ]anonymity\b/i,
+  /\banonymity set of 32\b/i,
+  /\b(one|1)[- ]of[- ]32\b/i,
+];
+
+const TEXT_EXT = new Set(['.html', '.js', '.mjs', '.md', '.py', '.txt', '.json']);
+
+function walk(dir, skip = []) {
+  const out = [];
+  for (const ent of fs.readdirSync(path.join(root, dir), { withFileTypes: true })) {
+    const rel = `${dir}/${ent.name}`;
+    if (skip.includes(rel)) continue;
+    if (ent.isDirectory()) out.push(...walk(rel, skip));
+    else if (TEXT_EXT.has(path.extname(ent.name))) out.push(rel);
+  }
+  return out.sort();
+}
+
+const PDFS = ['site/whitepaper/shear-whitepaper.pdf'];
+
+const CLAIM_SURFACES = [...new Set([
+  ...PUBLIC,
+  ...walk('site', ['site/tests']),
+  'explorer/explorer.html',
+  'wallet/lib/main.dart',
+  'wallet/lib/shear_closure.dart',
+  'wallet/lib/shear_privacy_hop.dart',
+  'wallet/lib/shear_cli.dart',
+  'node/src/help.js',
+])];
+
+// Handoffs in docs/ describe the gated bucket proof itself, so the bare word is
+// allowed there. The privacy and group anonymity bans still apply.
+const DOCS_BANNED = COPY_BANNED.filter((re) => !/bucket/.test(re.source));
+
+function copyText(rel) {
+  return rel.endsWith('.pdf') ? pdfText(path.join(root, rel)) : read(rel);
+}
+
 describe('public copy: dest privacy and per-hasher hash bonus', () => {
-  it('states dest privacy, Copy dest mining, per-hasher bonus; keeps She is Private; omits this is not and worthy coin', () => {
+  it('states dest privacy, Copy dest mining, per-hasher bonus; no privacy or bucket claims; omits this is not and worthy coin', () => {
     const joined = PUBLIC.map((rel) => read(rel)).join('\n');
-    assert.match(joined, /She is Private/);
+    for (const banned of COPY_BANNED) assert.doesNotMatch(joined, banned);
     assert.match(joined, /she1/);
     assert.match(joined, /ssa1/);
     assert.match(joined, /Copy dest/);
@@ -166,14 +223,14 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /178\.105\.187\.178/);
     assert.doesNotMatch(joined, /178\.156\.222\.223/);
     const sheark = read('sheark-miner/README.md');
-    assert.match(sheark, /magic `shear-testnet-v4`/);
+    assert.match(sheark, /magic `shear-testnet-v12`/);
+    assert.doesNotMatch(sheark, /magic `shear-testnet-v4`/);
     assert.doesNotMatch(sheark, /magic `shear-testnet-v2`/);
 
     assert.doesNotMatch(joined, /Private dests, public amounts/);
     assert.doesNotMatch(joined, /amounts stay public/);
     assert.doesNotMatch(docs, /explorer reports amounts, dests/);
     assert.match(docs, /no dest, no amount/);
-    assert.match(joined, /confidential amounts/);
     assert.match(joined, /ADMITv2/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
@@ -194,7 +251,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /Continuum GUI <strong>0\.40<\/strong>/);
     assert.doesNotMatch(main, /Continuum GUI 0\.40/);
     const help = read('node/src/help.js');
-    assert.match(help, /Continuum 0\.71/);
+    assert.match(help, /Continuum 0\.72/);
     assert.doesNotMatch(help, /Continuum 0\.48/);
     assert.doesNotMatch(help, /Continuum 0\.40/);
     assert.doesNotMatch(main, /shear-wallet-0\.38-macos\.dmg/);
@@ -251,6 +308,54 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /does not emit/);
   });
 
+  it('no surface claims privacy, confidential amounts, or a bucket anonymity set', () => {
+    assert.ok(CLAIM_SURFACES.length > 40, `walked ${CLAIM_SURFACES.length} files`);
+    for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
+      const text = copyText(rel);
+      for (const banned of COPY_BANNED) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
+    }
+    assert.doesNotMatch(read('site/whitepaper/build_pdf.py'), /privacy is the default/i);
+    assert.doesNotMatch(pdfText(path.join(root, PDFS[0])), /privacy is the default/i);
+    assert.match(pdfText(path.join(root, PDFS[0])), /Revolving dests/);
+    for (const rel of walk('docs')) {
+      for (const banned of DOCS_BANNED) assert.doesNotMatch(read(rel), banned, `${rel} ${banned}`);
+    }
+    assert.match(read('wallet/lib/shear_closure.dart'), /ADMITv3 full-set proof/);
+    assert.match(read('node/src/help.js'), /validating full node \(ADMITv3, sends off\)/);
+    assert.match(read('wallet/lib/shear_cli.dart'), /ADMITv3 \(sends off\)  GUI\+CLI/);
+  });
+
+  it('v11 pages keep ADMITv2, and v12 copy does not call the ADMITv3 hide live', () => {
+    const V12_CODE = new Set(['node/src/help.js']);
+    for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
+      if (V12_CODE.has(rel)) continue;
+      const text = copyText(rel);
+      if (!/shear-testnet-v1[01]\b|Continuum 0\.71/.test(text)) continue;
+      assert.doesNotMatch(text, /ADMITv3/, `${rel} is a v11 page`);
+    }
+    const v12 = [
+      'wallet/lib/main.dart',
+      'wallet/lib/shear_closure.dart',
+      'wallet/lib/shear_cli.dart',
+      'wallet/lib/shear_privacy_hop.dart',
+      'node/src/help.js',
+      'node/src/rpc.js',
+      'specs/law.md',
+      'specs/consensus.md',
+    ];
+    for (const rel of v12) {
+      for (const sentence of read(rel).split(/[.!?\n]/)) {
+        if (!/ADMITv3/.test(sentence)) continue;
+        if (/off until|until it ships|has not shipped|send_unavailable|sends off/.test(sentence)) continue;
+        assert.doesNotMatch(sentence, /\b(proves?|hides?|keeps?|uses?|over this book|membership over)\b/i, `${rel}: ${sentence.trim()}`);
+      }
+    }
+    for (const rel of ['team/index.html', 'team/creative/privacy-auditor.html', 'specs/admit-v2.md', 'specs/consensus.md']) {
+      const text = read(rel);
+      for (const banned of COPY_BANNED.slice(6)) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
+    }
+  });
+
   it('clone and operator handoff stay on merged main, not feat/admit-v2', () => {
     const readme = read('README.md');
     const ops = read('HANDOFF_OPS.md');
@@ -260,14 +365,14 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(ops, /\*\*Working branch:\*\* `feat\/admit-v2`/);
     assert.match(ops, /git checkout main/);
     assert.doesNotMatch(ops, /git checkout feat\/admit-v2/);
-    assert.match(ops, /Pins are \*\*0\.71\*\*/);
-    assert.match(ops, /ShearK \*\*2\.8\*\*/);
-    assert.match(ops, /Shear Sentinel \*\*v18\*\*/);
+    assert.match(ops, /Pins are \*\*0\.72\*\*/);
+    assert.match(ops, /ShearK \*\*2\.9\*\*/);
+    assert.match(ops, /Shear Sentinel \*\*v19\*\*/);
     assert.doesNotMatch(ops, /Shear Sentinel \*\*v16\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pins are \*\*0\.41\*\*/);
-    assert.match(ops, /Pin \*\*0\.71\*\*/);
+    assert.match(ops, /Pin \*\*0\.72\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.48\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.42\*\*/);
     assert.doesNotMatch(ops, /Pin \*\*0\.41\*\*/);
@@ -318,28 +423,43 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(md, /WINDOWS_HANDOFF\.md/);
   });
 
-  it('wallet pin 0.71 leaves Sentinel 18.0, ShearK 2.8, magic, reward, and fingerprint', () => {
-    assert.equal(PRODUCT_VERSION, '18.0');
-    assert.equal(SHEARK_MINER_VERSION, '2.8');
+  it('v12 pins are node 19.0, ShearK, shear-testnet-v12, and wallet 0.72', () => {
+    const walletPin = read('wallet/lib/main.dart').match(/const kWalletVersion = '(\d+\.\d+)'/);
+    assert.ok(walletPin, 'kWalletVersion');
+    assert.equal(walletPin[1], '0.72');
+    assert.match(read('wallet/lib/shear_cli.dart'), /const kCliVersion = '0\.72'/);
+    assert.match(read('wallet/pubspec.yaml'), /version: 0\.72\.0\+\d+/);
+    assert.equal(PRODUCT_VERSION, '19.0');
+    assert.equal(SHEARK_MINER_VERSION, '2.9');
     assert.equal(MAGIC_TESTNET_V10, 'shear-testnet-v10');
+    assert.equal(MAGIC_TESTNET_V11, 'shear-testnet-v11');
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
+    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(GENESIS_BITS, 17);
-    assert.equal(ASERT_HALFLIFE_MS, 1_440_000);
+    assert.equal(ASERT_HALFLIFE_MS, 7_200_000);
+    assert.equal(ASERT_TAU_MS, ASERT_HALFLIFE_MS);
+    assert.equal(ASERT_STEP_ID, 'aserti3-2d');
     assert.equal(ASERT_CURVE_WINDOW, 11);
-    assert.equal(ASERT_HARDEN_MAX, 1);
-    assert.equal(ASERT_EASE_MAX, 1);
+    assert.equal(ASERT_HARDEN_MAX, 0);
+    assert.equal(ASERT_EASE_MAX, 0);
+    assert.equal(ASERT_EMERGENCY_EASE_MAX, 2);
+    assert.equal(ASERT_EMERGENCY_GAP_FACTOR, 8);
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS, 1);
     const fp = consensusFingerprint();
-    assert.equal(fp.includes('0.71'), false);
-    assert.equal(fp.includes('0.70'), false);
-    assert.equal(fp.includes('18.0'), false);
-    assert.equal(fp.includes('17.0'), false);
-    assert.match(fp, /NETWORK=shear-testnet-v12/);
-    assert.match(fp, /ASERT_TAU_MS=1440000/);
+    for (const banned of ['0.72', '0.71', '0.70', '19.0', '18.0', '17.0', PRODUCT_VERSION, SHEARK_MINER_VERSION]) {
+      assert.equal(fp.includes(banned), false, banned);
+    }
+    assert.match(fp, new RegExp(`NETWORK=${MAGIC_TESTNET}`));
+    assert.match(fp, new RegExp(`ASERT_TAU_MS=${ASERT_TAU_MS}`));
+    assert.match(fp, new RegExp(`ASERT_STEP=${ASERT_STEP_ID}`));
+    assert.doesNotMatch(fp, /ASERT_STEP=median11/);
+    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v11/);
+    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v10/);
     assert.match(fp, /:4:17:/);
-    assert.match(fp, /ASERT_STEP=median11/);
-    assert.doesNotMatch(fp, /shear-testnet-v10/);
+    assert.match(fp, /RANGE=packed-bit/);
+    assert.match(fp, /ASERT_EMERGENCY=2/);
+    assert.match(fp, /ASERT_EMERGENCY_GAP=8/);
     assert.match(fp, /DINS=pot\+hash/);
   });
 });

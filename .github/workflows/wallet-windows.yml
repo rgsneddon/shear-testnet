@@ -21,6 +21,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
@@ -30,7 +31,9 @@ jobs:
         run: |
           flutter config --enable-windows-desktop
           flutter pub get
-          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }}
+          cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
+          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} $define
       - name: Zip
         run: python wallet/pack/zip_windows.py
       - name: Attach to GitHub release

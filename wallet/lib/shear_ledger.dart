@@ -26,10 +26,10 @@ const kUnitsPerShe = 100000000000; // 10^11
 const kBlockPotShe = 1.0;
 
 /// Sealed pool fee is 1% of that pot. Compact drops `v` on a pool-fee note.
-/// The commitment still opens at this rate, any fee up to 3%, or the pot.
+/// The commitment still opens at this rate, any fee up to 2% of the subsidy, or the pot.
 /// Same candidates as `openedCoinbaseNanos`. A node balance is not a candidate.
 const kPoolFeeBps = 100;
-const kPoolFeeMaxBps = 300;
+const kPoolFeeMaxBps = 200;
 /// Fingerprint target interval (TARGET_BLOCK_INTERVAL_MS). Continuum display only.
 const kTargetBlockIntervalMs = 90000;
 
@@ -295,12 +295,431 @@ bool sealFlowOnCaller = false;
 /// [flowSendAdvisoryOf] still collapses the remark the user sees.
 Object? debugLastContinuumSendError;
 
+/// Inputs on one Flow spend. The count is [kMaxInputsPerSend]: the tighter
+/// of the prove-time budget and the hex-body budget recorded below.
+
+/// UI progress for a send. [cancel] is checked between proofs, not inside one.
+class SendProgress {
+  int done = 0;
+  int total = 1;
+  String phase = 'select';
+  bool cancelRequested = false;
+  void cancel() => cancelRequested = true;
+  void Function()? onChange;
+  void bump({int? done, int? total, String? phase}) {
+    if (done != null) this.done = done;
+    if (total != null) this.total = total;
+    if (phase != null) this.phase = phase;
+    onChange?.call();
+  }
+}
+
+/// Isolate stamp of the last [selectSpendNotesWire]. Differs from the UI isolate.
+String debugSendSelectStamp = '';
+
+/// Nanos strings the last selection put in a batch. Digit strings, not doubles.
+List<String> debugSendSelectNanos = <String>[];
+
+List<String> _selectedNanos(Map raw) {
+  final found = <String>[];
+  final batches = raw['batches'];
+  if (batches is! List) return found;
+  for (final batch in batches) {
+    if (batch is! Map) continue;
+    final notes = batch['notes'];
+    if (notes is! List) continue;
+    for (final note in notes) {
+      if (note is! Map) continue;
+      final nanos = note['nanos'];
+      if (nanos == null) continue;
+      found.add(nanos.toString());
+    }
+  }
+  return found;
+}
+
+/// Isolate stamps of the last Flow seal, prove, and sign.
+/// Production [Isolate.run] stamps differ from the UI isolate.
+String debugSendSealStamp = '';
+String debugSendProveStamp = '';
+String debugSendSignStamp = '';
+
+const String kErrSendCancelled = 'Send cancelled';
+const String kErrSendTimeout = 'Send did not reach the node — try again';
+const String kErrFeeShort = 'Not enough spendable to cover this amount and the fee';
+
+/// Hex-JSON sizes and one prove, padded so the posted fee is not under the
+/// sealed body. Wallet quote only. `levy.js` is not modified.
+///
+/// 2026-10-10 `crypto/admit_bench_run.js` at |J|=4096: prove 223.076 ms,
+/// proof 20482 bytes. Hex of that proof is 40964 bytes; the pad is 42000.
+/// A sealed vout is a 14433-byte range proof, about 29420 hex bytes; the
+/// pad is 30000. Cancel is checked between proofs. Consensus levy is
+/// unchanged: `levyFromWeight` is max(100, ceil(jsonBytes/2048)).
+const int kMeasuredProveMs = 223;
+const int kMeasuredProofHexBytes = 42000;
+const int kMeasuredOutputHexBytes = 30000;
+const int kMeasuredTxBaseBytes = 512;
+const int kMeasuredMemoHexBytes = 512;
+
+/// Background prove budget for one send. 223 ms times 8 is 1784 ms, inside
+/// this budget. 223 ms times 9 is 2007 ms, outside it.
+const int kSendProveBudgetMs = 2000;
+
+/// Posted hex body budget. A send's measured body stays under 0.5 MB.
+const int kSendHexBudgetBytes = 500000;
+
+/// Inputs that fit [kSendProveBudgetMs] at [kMeasuredProveMs] each.
+const int kSendTimeCap = kSendProveBudgetMs ~/ kMeasuredProveMs;
+
+/// Inputs that fit [kSendHexBudgetBytes] with pay, change, and a dummy.
+const int kSendSizeCap = (kSendHexBudgetBytes -
+        kMeasuredTxBaseBytes -
+        3 * kMeasuredOutputHexBytes) ~/
+    kMeasuredProofHexBytes;
+
+/// Tighter of prove time and tx size. Not a hand-picked count.
+const int kMaxInputsPerSend =
+    kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap;
+
+/// Sweep while more spendable notes than [kMaxInputsPerSend] remain.
+/// The marginal consensus levy of one extra proof is dust next to the
+/// prove time and the hex body, so a SHE cutoff would not track the cost.
+const int kConsolidateAboveCount = kMaxInputsPerSend;
+
+/// Cap for this output count and memo. Time and size both apply. A memo or
+/// an extra output can only shrink the count.
+int measuredInputCap({int outputs = 3, bool memo = false}) {
+  final nOut = outputs < 1 ? 1 : outputs;
+  final fixed = kMeasuredTxBaseBytes +
+      nOut * kMeasuredOutputHexBytes +
+      (memo ? kMeasuredMemoHexBytes : 0);
+  final room = kSendHexBudgetBytes - fixed;
+  final sizeCap = room < kMeasuredProofHexBytes ? 1 : room ~/ kMeasuredProofHexBytes;
+  final cap = kSendTimeCap < sizeCap ? kSendTimeCap : sizeCap;
+  return cap < 1 ? 1 : cap;
+}
+
+/// SHE text as an exact nanos decimal. A non-integer or an extra non-zero
+/// digit past 11 places is refused. The result is never a JS-style round.
+String? parseSheDecimalToNanos(String raw) {
+  final s = raw.trim();
+  if (!RegExp(r'^\d+(\.\d+)?$').hasMatch(s)) return null;
+  final parts = s.split('.');
+  final whole = parts[0];
+  final frac = parts.length > 1 ? parts[1] : '';
+  if (frac.length > 11 && RegExp(r'[^0]').hasMatch(frac.substring(11))) return null;
+  final frac11 = (frac.length >= 11 ? frac.substring(0, 11) : frac.padRight(11, '0'));
+  final scale = BigInt.from(kUnitsPerShe);
+  final nanos = BigInt.parse(whole) * scale + BigInt.parse(frac11.isEmpty ? '0' : frac11);
+  if (nanos < BigInt.zero) return null;
+  return nanos.toString();
+}
+
+int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = false}) {
+  final nIn = inputs < 1 ? 1 : inputs;
+  final nOut = outputs < 1 ? 1 : outputs;
+  final weight = kMeasuredTxBaseBytes +
+      nIn * kMeasuredProofHexBytes +
+      nOut * kMeasuredOutputHexBytes +
+      (memo ? kMeasuredMemoHexBytes : 0);
+  final padded = (weight * 5) ~/ 4 + 8192;
+  final raw = (padded + 2047) ~/ 2048;
+  final fee = raw < kLevyFloorUnits ? kLevyFloorUnits : raw;
+  return fee > kLevyCapNanos ? kLevyCapNanos : fee;
+}
+
+/// [spendableShe] covers a consensus levy of [levyUnits].
+/// Equality passes. A gap of 1e-12 SHE is float dust under one nano (1e-11 SHE).
+/// Any levy size. A negative levy does not pass.
+bool spendableCoversLevy(double spendableShe, int levyUnits) {
+  if (levyUnits < 0) return false;
+  if (!spendableShe.isFinite) return false;
+  final needShe = levyUnits / kUnitsPerShe;
+  return spendableShe + 1e-12 >= needShe;
+}
+
+/// A second submit while one is [held] must not start another post.
+bool claimSingleSubmit({required bool held}) => !held;
+
+double? _storedNoteShe(Map<dynamic, dynamic> n) {
+  final amt = n['amount'];
+  if (amt is num && amt > 0) return amt.toDouble();
+  final nanos = n['nanos'];
+  if (nanos is num && nanos > 0) return nanos.toDouble() / kUnitsPerShe;
+  final verified = n['verifiedNanos'];
+  if (verified is num && verified > 0) return verified.toDouble() / kUnitsPerShe;
+  return null;
+}
+
+final BigInt _nanosPerShe = BigInt.from(kUnitsPerShe);
+
+/// A double past this is not an amount. 2^53 - 1.
+const int _kSafeDoubleNanos = 9007199254740991;
+
+/// Int view of a send amount. Dart's [BigInt.toInt] clamps 2^63 through
+/// 2^64-1, so this is not the pay path. [sendUnitsFromWire] is.
+int sendNanosFromWire(String? nanosWire) {
+  if (nanosWire == null || !RegExp(r'^\d+$').hasMatch(nanosWire)) return 0;
+  final big = BigInt.parse(nanosWire);
+  if (big < BigInt.zero || big.bitLength > 64) return 0;
+  return big.toInt();
+}
+
+/// Exact send nanos. Any u64, including values a Dart int cannot name.
+BigInt sendUnitsFromWire(String? nanosWire) {
+  final units = tryU64Units(nanosWire);
+  if (units == null || units <= BigInt.zero) return BigInt.zero;
+  return units;
+}
+
+/// One hold for the selector. A pending lock and the portal principal are the
+/// same coins, so the larger one is the hold. Any size, as a decimal string.
+String selectionHoldNanos({
+  required Iterable<BigInt> lockDebits,
+  required Iterable<BigInt> reservePrincipals,
+}) {
+  var lock = BigInt.zero;
+  for (final v in lockDebits) {
+    if (v > BigInt.zero) lock += v;
+  }
+  var reserve = BigInt.zero;
+  for (final v in reservePrincipals) {
+    if (v > reserve) reserve = v;
+  }
+  final hold = lock > reserve ? lock : reserve;
+  return hold.toString();
+}
+
+BigInt? _positiveDigitNanos(Object? v) {
+  if (v is String && RegExp(r'^\d+$').hasMatch(v)) {
+    final b = BigInt.parse(v);
+    return b > BigInt.zero ? b : null;
+  }
+  if (v is int && v > 0) return BigInt.from(v);
+  if (v is BigInt && v > BigInt.zero) return v;
+  return null;
+}
+
+/// Exact nanos behind a send. A note digit string or int wins.
+/// A double balance is used only while it is an exact integer at or below 2^53-1.
+BigInt? fundedSendUnits(Map<dynamic, dynamic>? note, double fundedShe) {
+  if (note != null) {
+    final exact = noteNanosExact(note);
+    if (exact != null) return exact;
+  }
+  if (!fundedShe.isFinite || fundedShe <= 0) return BigInt.zero;
+  final scaled = fundedShe * kUnitsPerShe;
+  if (!scaled.isFinite) return null;
+  final rounded = scaled.round();
+  if (rounded <= 0 || rounded > _kSafeDoubleNanos) return null;
+  if ((rounded.toDouble() - scaled).abs() > 1e-4) return null;
+  return BigInt.from(rounded);
+}
+
+/// Exact note nanos. A digit string or an int wins over a double amount.
+/// A double is used only while it is an exact integer at or below 2^53-1.
+BigInt? noteNanosExact(Map<dynamic, dynamic> n) {
+  final direct = _positiveDigitNanos(n['nanos']) ?? _positiveDigitNanos(n['verifiedNanos']);
+  if (direct != null) return direct;
+  final amt = n['amount'];
+  if (amt is String) {
+    final parsed = parseSheDecimalToNanos(amt);
+    if (parsed != null) return _positiveDigitNanos(parsed);
+  }
+  if (amt is num && amt > 0 && amt.isFinite) {
+    final scaled = amt.toDouble() * kUnitsPerShe;
+    if (!scaled.isFinite) return null;
+    final rounded = scaled.round();
+    if (rounded <= 0 || rounded > _kSafeDoubleNanos) return null;
+    if ((rounded.toDouble() - scaled).abs() > 1e-4) return null;
+    return BigInt.from(rounded);
+  }
+  return null;
+}
+
+BigInt _nanosFromAmountField(Object? raw) {
+  final direct = _positiveDigitNanos(raw);
+  if (direct != null) return direct;
+  if (raw is String) {
+    final parsed = parseSheDecimalToNanos(raw);
+    if (parsed != null) {
+      final b = BigInt.parse(parsed);
+      return b > BigInt.zero ? b : BigInt.zero;
+    }
+  }
+  if (raw is num && raw > 0 && raw.isFinite) {
+    final scaled = raw.toDouble() * kUnitsPerShe;
+    if (!scaled.isFinite) return BigInt.zero;
+    final rounded = scaled.round();
+    if (rounded <= 0 || rounded > _kSafeDoubleNanos) return BigInt.zero;
+    if ((rounded.toDouble() - scaled).abs() > 1e-4) return BigInt.zero;
+    return BigInt.from(rounded);
+  }
+  return BigInt.zero;
+}
+
+/// A SHE field. An int is a whole SHE count, not a nanos count.
+BigInt _sheToNanos(Object? raw) {
+  if (raw is String) {
+    final parsed = parseSheDecimalToNanos(raw);
+    if (parsed == null) return BigInt.zero;
+    final b = BigInt.parse(parsed);
+    return b > BigInt.zero ? b : BigInt.zero;
+  }
+  if (raw is int) {
+    if (raw <= 0) return BigInt.zero;
+    return BigInt.from(raw) * _nanosPerShe;
+  }
+  return _nanosFromAmountField(raw);
+}
+
+double _sheOfNanos(BigInt nanos) {
+  if (nanos <= BigInt.zero) return 0;
+  final whole = nanos ~/ _nanosPerShe;
+  final frac = nanos.remainder(_nanosPerShe);
+  return whole.toDouble() + frac.toDouble() / kUnitsPerShe;
+}
+
+/// Spend material is the sealed commit, the note commit, and the opening.
+/// An amount without those bytes is not a coin, at any size.
+bool noteHasSealedSpendBytes(Map<dynamic, dynamic> n) {
+  final commit = _noteBytes(n['commit']);
+  final noteCommit = _noteBytes(n['noteCommit']);
+  final blind = _noteBytes(n['r']);
+  return commit != null &&
+      commit.isNotEmpty &&
+      noteCommit != null &&
+      noteCommit.isNotEmpty &&
+      blind != null &&
+      blind.isNotEmpty;
+}
+
+/// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
+/// No value-proof open, no spend tag, no search beyond one greedy pass.
+/// Production calls this from [Isolate.run].
+Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  final notes = input['notes'] as List? ?? const [];
+  final need = input['needNanos'] != null
+      ? _nanosFromAmountField(input['needNanos'])
+      : _sheToNanos(input['needShe']);
+  final memo = input['memo'] == true;
+  final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
+  final measured = measuredInputCap(outputs: outputs < 1 ? 1 : outputs, memo: memo);
+  final asked = (input['cap'] as num?)?.toInt();
+  final cap = (asked == null || asked < 1 || asked > measured) ? measured : asked;
+  final tip = (input['tip'] as num?)?.toInt() ?? 0;
+  final floor = (input['confs'] as num?)?.toInt() ?? 9;
+  final hold = input['holdNanos'] != null
+      ? _nanosFromAmountField(input['holdNanos'])
+      : _sheToNanos(input['holdShe']);
+  final dests = <String>{
+    for (final d in (input['dests'] as List? ?? const [])) d.toString(),
+  };
+  final rows = <Map<String, dynamic>>[];
+  for (var i = 0; i < notes.length; i++) {
+    final n = notes[i];
+    if (n is! Map) continue;
+    // Callers that know the bytes set this. A missing flag stays selectable
+    // so an amount-only quote still plans. false means the note cannot be spent.
+    if (n['sealed'] == false) continue;
+    if (n['spent'] == true || n['locked'] == true) continue;
+    final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+    if (addr.isEmpty) continue;
+    if (dests.isNotEmpty && !dests.contains(addr)) continue;
+    final h = n['height'];
+    if (h is num && h >= 1) {
+      final height = h.toInt();
+      if (tip < height || (tip - height + 1) < floor) continue;
+    }
+    final nanos = noteNanosExact(n);
+    if (nanos == null || nanos <= BigInt.zero) continue;
+    rows.add({'i': i, 'nanos': nanos, 'addr': addr});
+  }
+  rows.sort((a, b) => (a['nanos'] as BigInt).compareTo(b['nanos'] as BigInt));
+  var reserved = BigInt.zero;
+  var start = 0;
+  if (hold > BigInt.zero) {
+    for (; start < rows.length && reserved < hold; start++) {
+      reserved += rows[start]['nanos'] as BigInt;
+    }
+  }
+  final free = rows.sublist(start);
+  free.sort((a, b) => (b['nanos'] as BigInt).compareTo(a['nanos'] as BigInt));
+  final freeSum = free.fold<BigInt>(BigInt.zero, (s, r) => s + (r['nanos'] as BigInt));
+  final batches = <Map<String, dynamic>>[];
+  var remaining = need;
+  var cursor = 0;
+  var feeSum = BigInt.zero;
+  while (remaining > BigInt.zero && cursor < free.length) {
+    final taken = <Map<String, dynamic>>[];
+    var sum = BigInt.zero;
+    while (cursor < free.length && taken.length < cap) {
+      final row = free[cursor];
+      taken.add(row);
+      sum += row['nanos'] as BigInt;
+      cursor++;
+      final fee = BigInt.from(estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo));
+      if (sum >= remaining + fee) break;
+    }
+    final fee = BigInt.from(estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo));
+    final room = sum - fee;
+    if (room <= BigInt.zero) {
+      return {
+        'stamp': stamp,
+        'covered': false,
+        'empty': false,
+        'shortFee': true,
+        'batches': batches,
+        'feeShe': _sheOfNanos(feeSum + fee),
+        'spendableNanos': freeSum.toString(),
+      };
+    }
+    final pay = room < remaining ? room : remaining;
+    batches.add({
+      'pay': _sheOfNanos(pay),
+      'payNanos': pay.toString(),
+      'feeShe': _sheOfNanos(fee),
+      'notes': [
+        for (final r in taken)
+          {
+            'index': r['i'],
+            'dest': r['addr'],
+            'she': _sheOfNanos(r['nanos'] as BigInt),
+            'nanos': (r['nanos'] as BigInt).toString(),
+          },
+      ],
+    });
+    feeSum += fee;
+    remaining -= pay;
+  }
+  final covered = remaining <= BigInt.zero && batches.isNotEmpty;
+  // Notes can cover the payment and still miss the weight levy. That is a
+  // fee failure, not an empty book.
+  final shortFee = !covered && free.isNotEmpty && freeSum >= need;
+  return {
+    'stamp': stamp,
+    'covered': covered,
+    'empty': rows.isEmpty,
+    'shortFee': shortFee,
+    'batches': batches,
+    'feeShe': _sheOfNanos(feeSum),
+    'spendableNanos': freeSum.toString(),
+  };
+}
+
+/// The frame-timing child sets this. flutter test injects FLUTTER_TEST into
+/// every process it spawns, which would take the caller shortcut. Production
+/// never sets the flag.
+bool _flowOffUiForced() => Platform.environment['SHEAR_FLOW_OFF_UI'] == '1';
+
 bool _flowCryptoOnCaller() =>
-    sealFlowOnCaller ||
-    debugFlowCryptoOnCaller ||
-    debugNativeSpendProver != null ||
-    debugNativeSealNote != null ||
-    Platform.environment['FLUTTER_TEST'] == 'true';
+    !_flowOffUiForced() &&
+    (sealFlowOnCaller ||
+        debugFlowCryptoOnCaller ||
+        debugNativeSealNote != null ||
+        Platform.environment['FLUTTER_TEST'] == 'true');
 
 /// Counts ledger, sync, and proof work that still runs on the UI isolate.
 int debugUiHeavyCount = 0;
@@ -413,7 +832,7 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
     'destCount': j['destCount'] ?? spec['destCount'],
     'destIndex': j['destIndex'] ?? spec['destIndex'],
     'openedProofs': () {
-      final merged = <String, int>{
+      final merged = <String, String>{
         ...proofCacheMap(j['openedProofs']),
         ...proofCacheMap(spec['openedProofs']),
       };
@@ -577,17 +996,20 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
       continue;
     }
     final addr = (o['address'] as String?) ?? destTo;
-    final n = (o['nanos'] as int?) ?? 0;
+    final self = addr.isNotEmpty && (addr == src || (changeDest != null && addr == changeDest));
+    if (!self && !isPayableDest(addr)) {
+      throw StateError(kErrShortSsa1);
+    }
+    final units = tryU64Units(o['nanos']) ?? BigInt.zero;
     final d20 = hash20FromAddress(addr);
-    var note = nativeSealNote(n, dest20: d20, kind: kind);
+    var note = nativeSealUnits(units, dest20: d20, kind: kind);
     if (addr.isNotEmpty) note['address'] = addr;
-    final B = admitBaseFromAddress(addr) ??
-        ((addr == src || addr == changeDest) ? fallbackBase : null);
-    note = attachAdmitPub(
-      note,
-      admitBase: B != null ? pointFrom(B) : null,
-      spendSeed: B == null ? spendSeed : null,
-    );
+    final opened = admitBaseFromAddress(addr);
+    final baseOk = opened != null && opened.length == 32 && isPayableDest(addr);
+    // Consensus needs rEph/rCt/amtCt on every hidden output, change included.
+    final B = baseOk ? opened : (self ? (fallbackBase ?? admitBaseBytes(spendSeed)) : null);
+    if (B == null) throw StateError(kErrShortSsa1);
+    note = attachAdmitPub(note, admitBase: pointFrom(B), v: units);
     sealed.add(note);
   }
   return {'vouts': sealed};
@@ -621,40 +1043,161 @@ Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) {
     pubs: pubs,
     commits: commits,
   );
+  final proof = body['admit_proof'];
   return {
-    'admitProof': body['admit_proof'],
+    'admitProof': proof is Map ? workerAdmitProof(Map<String, dynamic>.from(proof)) : proof,
     'spendTag': body['spendTag'],
   };
+}
+
+/// Stamp from the worker, including when [sealFlowSpendVouts] throws.
+Map<String, dynamic> _sealFlowStamped(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  try {
+    final out = sealFlowSpendVouts(input);
+    out['stamp'] = stamp;
+    return out;
+  } catch (e) {
+    return {
+      'stamp': stamp,
+      'error': e is StateError ? e.message : e.toString(),
+    };
+  }
+}
+
+/// Stamp from the worker, including when [reproveFlowSpendWire] throws.
+Map<String, dynamic> _proveFlowStamped(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  try {
+    final out = reproveFlowSpendWire(input);
+    final proof = out['admitProof'];
+    if (proof is Map) {
+      out['admitProof'] = workerAdmitProof(Map<String, dynamic>.from(proof));
+    }
+    out['stamp'] = stamp;
+    return out;
+  } catch (e) {
+    return {
+      'stamp': stamp,
+      'error': e is StateError ? e.message : e.toString(),
+    };
+  }
+}
+
+Map<String, dynamic> _takeOffUi(Map<String, dynamic> out, void Function(String) stamp) {
+  stamp(out['stamp']?.toString() ?? '');
+  final err = out['error'];
+  if (err != null) throw StateError(err.toString());
+  return out;
 }
 
 Future<Map<String, dynamic>> _sealFlowOffUi(Map<String, dynamic> input) {
   if (_flowCryptoOnCaller()) {
     noteUiHeavy('seal');
+    debugSendSealStamp = identityHashCode(Isolate.current).toString();
     return Future<Map<String, dynamic>>.value(sealFlowSpendVouts(input));
   }
-  return Isolate.run(() => sealFlowSpendVouts(input));
+  return Isolate.run(() => _sealFlowStamped(input)).then(
+    (out) => _takeOffUi(out, (s) => debugSendSealStamp = s),
+  );
 }
 
 Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
   if (_flowCryptoOnCaller()) {
     noteUiHeavy('prove');
+    debugSendProveStamp = identityHashCode(Isolate.current).toString();
     return Future<Map<String, dynamic>>.value(reproveFlowSpendWire(input));
   }
-  return Isolate.run(() => reproveFlowSpendWire(input));
+  return Isolate.run(() => _proveFlowStamped(input)).then(
+    (out) => _takeOffUi(out, (s) => debugSendProveStamp = s),
+  );
+}
+
+/// Same hops [_sendManyNotes] uses. A caller-side seal or prove is the test shortcut.
+Future<Map<String, dynamic>> sealFlowOffUi(Map<String, dynamic> input) =>
+    _sealFlowOffUi(input);
+
+Future<Map<String, dynamic>> proveFlowOffUi(Map<String, dynamic> input) =>
+    _proveFlowOffUi(input);
+
+/// Ed25519 or stealth sign of a spend message. Pure. No native prover.
+Map<String, dynamic> signSpendWire(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  final spendSeed = input['spendSeed'] as Uint8List;
+  final msg = input['message'] as Uint8List;
+  final shared = input['shared'] is Uint8List ? input['shared'] as Uint8List : null;
+  final Uint8List sig;
+  final Uint8List pub;
+  if (shared != null) {
+    sig = stealthSign(spendSeed, shared, msg);
+    pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
+  } else {
+    sig = ed25519Sign(spendSeed, msg);
+    pub = ed25519PublicFromSeed(spendSeed);
+  }
+  return {'sig': sig, 'pub': pub, 'stamp': stamp};
+}
+
+/// flutter_tester does not finish [Isolate.run] inside one pumped frame, so
+/// plate tests sign on the caller. Production leaves FLUTTER_TEST unset and
+/// signs off the UI isolate. [SHEAR_FLOW_OFF_UI] forces that production hop.
+/// Signing does not start the native prover.
+bool _signOnCaller() =>
+    !_flowOffUiForced() && Platform.environment['FLUTTER_TEST'] == 'true';
+
+Future<Map<String, dynamic>> signSpendOffUi(Map<String, dynamic> input) {
+  if (_signOnCaller()) {
+    noteUiHeavy('sign');
+    final out = signSpendWire(input);
+    debugSendSignStamp = out['stamp']?.toString() ?? '';
+    return Future<Map<String, dynamic>>.value(out);
+  }
+  final savedSeal = debugNativeSealNote;
+  return Isolate.run(() => signSpendWire(input)).then((out) {
+    debugSendSignStamp = out['stamp']?.toString() ?? '';
+    if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
+    return out;
+  });
 }
 
 /// Hexify a Flow post body inside the worker. Vin, vout, and the admit proof
 /// are byte-heavy; the UI isolate only sends them and posts the result.
+List<Map<String, dynamic>> _flowRows(dynamic raw) {
+  if (raw is! List) return const [];
+  return [
+    for (final row in raw)
+      if (row is Map) Map<String, dynamic>.from(row),
+  ];
+}
+
 Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
-  final proof = raw['admitProof'];
+  final proofs = raw['admitProofs'];
+  final listed = proofs is List
+      ? _flowRows(proofs)
+      : <Map<String, dynamic>>[
+          if (raw['admitProof'] is Map) Map<String, dynamic>.from(raw['admitProof'] as Map),
+        ];
+  final body = postedFlowBody(
+    vin: _flowRows(raw['vin']),
+    vout: _flowRows(raw['vout']),
+    proofs: listed,
+  );
   return <String, dynamic>{
-    'vin': List<dynamic>.from(_hexify(raw['vin']) as List? ?? const []),
-    'vout': List<dynamic>.from(_hexify(raw['vout']) as List? ?? const []),
-    'admitProof': proof == null ? null : Map<String, dynamic>.from(_hexify(proof) as Map),
+    'vin': List<dynamic>.from(_hexify(body['vin']) as List? ?? const []),
+    'vout': List<dynamic>.from(_hexify(body['vout']) as List? ?? const []),
+    'admitProof': body['admitProof'] is Map ? _hexify(body['admitProof']) : null,
+    if (proofs is List) 'admitProofs': _hexify(body['admitProofs'] ?? const <Map<String, dynamic>>[]),
   };
 }
 
 Future<Map<String, dynamic>> flowPostHexOffUi(Map<String, dynamic> raw) {
+  // flutter_tester's second Isolate.run nulls these closure hooks on the
+  // caller. A neighbouring int static stays, so the library is not reloaded.
+  // The next seal would then run the real range proof on this isolate.
+  // Production leaves the hooks null and still hexes off the UI isolate.
+  if (debugNativeSealNote != null) {
+    return Future<Map<String, dynamic>>.value(flowPostHex(raw));
+  }
   return Isolate.run(() => flowPostHex(raw));
 }
 
@@ -669,21 +1212,65 @@ String? proofCacheKey(Map o) {
   return '${_bytesHex(commit)}|${_bytesHex(r)}|${_bytesHex(z)}';
 }
 
+/// Exact opened nanos, as digits. A digit string stays exact through 2^64-1.
+/// A double is kept only while it is an integer at or below 2^53-1.
+/// Dart's int cannot name every u64, so this does not return an int.
+String? sessionProofNanos(Object? n) {
+  if (n is String && RegExp(r'^\d+$').hasMatch(n)) {
+    final b = BigInt.tryParse(n);
+    if (b == null || b <= BigInt.zero || b.bitLength > 64) return null;
+    return b.toString();
+  }
+  if (n is int) {
+    if (n <= 0) return null;
+    return n.toString();
+  }
+  if (n is double) {
+    if (!n.isFinite || n <= 0 || n > _kSafeDoubleNanos) return null;
+    final rounded = n.round();
+    if (rounded.toDouble() != n) return null;
+    return rounded.toString();
+  }
+  return null;
+}
+
+/// SHE for a proof nanos string. Absent when the count is not an exact double.
+double? _sheOfExactNanos(String digits) {
+  final b = BigInt.parse(digits);
+  if (b > BigInt.from(_kSafeDoubleNanos)) return null;
+  final scaled = b.toDouble() / kUnitsPerShe;
+  if (!scaled.isFinite || scaled <= 0) return null;
+  return scaled;
+}
+
+/// Opened-proof rows kept in the session. `n` is a digit string so a later
+/// JSON load does not round a u64 through a double.
+List<Map<String, dynamic>> sessionOpenedProofRows(Object? raw) {
+  if (raw is! List) return const [];
+  final out = <Map<String, dynamic>>[];
+  for (final row in raw) {
+    if (row is! Map) continue;
+    final k = row['k']?.toString() ?? '';
+    final n = sessionProofNanos(row['n'] ?? row['nanos']);
+    if (k.isEmpty || n == null) continue;
+    out.add({'k': k, 'n': n.toString()});
+  }
+  return out;
+}
+
 /// Session rows `{k, n}` or a map of key to nanos. `{v}`-only has no key.
-Map<String, int> proofCacheMap(Object? raw) {
-  final out = <String, int>{};
+Map<String, String> proofCacheMap(Object? raw) {
+  final out = <String, String>{};
   if (raw is Map) {
     for (final e in raw.entries) {
       final v = e.value;
-      final n = v is Map ? (v['n'] ?? v['nanos']) : v;
-      if (n is num && n > 0) out[e.key.toString()] = n.round();
+      final n = sessionProofNanos(v is Map ? (v['n'] ?? v['nanos']) : v);
+      if (n != null) out[e.key.toString()] = n;
     }
   } else if (raw is List) {
-    for (final row in raw) {
-      if (row is! Map) continue;
-      final k = row['k']?.toString() ?? '';
-      final n = row['n'] ?? row['nanos'];
-      if (k.isNotEmpty && n is num && n > 0) out[k] = n.round();
+    for (final row in sessionOpenedProofRows(raw)) {
+      final n = sessionProofNanos(row['n']);
+      if (n != null) out[row['k'] as String] = n;
     }
   }
   return out;
@@ -762,6 +1349,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
   final proofCache = proofCacheMap(input['openedProofs']);
   final notes = <Map<String, dynamic>>[];
   final hashFolds = <Map<String, dynamic>>[];
+  final payoutRangeAt = <int, Uint8List?>{};
+  final hashFoldAt = <int, Map<String, dynamic>>{};
   var unopenedProofs = 0;
   for (var i = 0; i < vouts.length; i++) {
     final raw = vouts[i];
@@ -815,11 +1404,11 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     // This proof already opened on a previous read. Do not derive admit or
     // open the value again. The wire kind is the one that was sealed.
     if (cachedEarly != null &&
-        cachedEarly > 0 &&
         kindName != null &&
         kindName.isNotEmpty &&
         kindName != 'pot') {
-      final amtEarly = cachedEarly / kUnitsPerShe;
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), commit)) continue;
+      final amtEarly = _sheOfExactNanos(cachedEarly);
       notes.add({
         'address': matched,
         'dest': matched,
@@ -833,12 +1422,14 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
         'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
         if (o['height'] != null) 'height': o['height'],
-        'amount': amtEarly,
+        'nanos': cachedEarly,
+        if (amtEarly != null) 'amount': amtEarly,
         'proofKey': proofKeyEarly,
         'verifiedNanos': cachedEarly,
         'proofChecked': true,
         'verified': true,
       });
+      _rememberPayoutRange(payoutRangeAt, notes.length - 1, kindName, o);
       seenHex.add(commitHex);
       continue;
     }
@@ -877,13 +1468,10 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     final cachedNanos = proofKey == null ? null : proofCache[proofKey];
     // A remembered opening is this proof's nanos. A new proof still has to open.
     final openRow = Map<String, dynamic>.from(o)..['kind'] = kind;
-    final verifiedNanos = (cachedNanos != null && cachedNanos > 0)
-        ? cachedNanos
-        : _openedSpendNanos(openRow);
+    final verifiedNanos = cachedNanos ?? openedSpendDigits(openRow) ?? _amtCtDigits(o, xBase);
     final proofChecked = verifiedNanos != null;
-    final num? amt = (verifiedNanos != null && verifiedNanos > 0)
-        ? verifiedNanos / kUnitsPerShe
-        : null;
+    final amt = verifiedNanos == null ? null : _sheOfExactNanos(verifiedNanos);
+    if (!noteIsFs1Leaf(admit, commit)) continue;
     notes.add({
       'address': matched,
       'dest': matched,
@@ -904,18 +1492,67 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       if (verifiedNanos != null) 'verified': true,
     });
     seenHex.add(commitHex);
+    _rememberPayoutRange(payoutRangeAt, notes.length - 1, kind, o);
     if (kind == 'hash' && amt != null && !seenCommit) {
-      hashFolds.add({
+      hashFoldAt[notes.length - 1] = {
         'matched': matched,
         'she': amt.toDouble(),
         'height': (o['height'] as num?)?.toInt() ?? 0,
-      });
+      };
     }
     // R and z were present (proofKey) but the commitment did not open.
     // That is not a verified zero.
     if (proofKey != null && verifiedNanos == null) unopenedProofs++;
   }
+  unopenedProofs += _gatePayoutRanges(notes, payoutRangeAt);
+  for (final e in hashFoldAt.entries) {
+    if (notes[e.key]['verified'] == true) hashFolds.add(e.value);
+  }
   return {'notes': notes, 'hashFolds': hashFolds, 'unopenedProofs': unopenedProofs};
+}
+
+const _payoutRangeKinds = {'pot', 'hash', 'finder-fee', 'reserve-fee', 'pool-fee'};
+
+void _rememberPayoutRange(Map<int, Uint8List?> at, int index, String? kind, Map o) {
+  if (kind == null || !_payoutRangeKinds.contains(kind)) return;
+  at[index] = _noteBytes(o['rangeProof']);
+}
+
+int _gatePayoutRanges(List<Map<String, dynamic>> notes, Map<int, Uint8List?> at) {
+  final jobs = <int>[];
+  final commits = <Uint8List>[];
+  final proofs = <Uint8List>[];
+  var dropped = 0;
+  for (final e in at.entries) {
+    final note = notes[e.key];
+    if (note['verified'] != true) continue;
+    final commit = note['commit'];
+    final proof = e.value;
+    if (commit is! Uint8List || commit.length != 32 || proof == null || proof.isEmpty) {
+      _dropOpenedPayout(note);
+      dropped++;
+      continue;
+    }
+    jobs.add(e.key);
+    commits.add(commit);
+    proofs.add(proof);
+  }
+  final oks = nativeVerifyRanges(commits, proofs);
+  for (var i = 0; i < jobs.length; i++) {
+    if (i >= oks.length || !oks[i]) {
+      _dropOpenedPayout(notes[jobs[i]]);
+      dropped++;
+    }
+  }
+  return dropped;
+}
+
+void _dropOpenedPayout(Map<String, dynamic> note) {
+  note.remove('verified');
+  note.remove('verifiedNanos');
+  note.remove('proofChecked');
+  note.remove('amount');
+  note.remove('nanos');
 }
 
 /// Pure history-row parse + optional memoOpen. Full-sync via [Isolate.run].
@@ -994,6 +1631,27 @@ bool _completeValueProof(Map o) {
 bool _feeValueHunt(String? kind) {
   if (kind == null || kind.isEmpty) return true;
   return kind == 'pool-fee' || kind == 'pot' || kind == 'coinbase';
+}
+
+/// Digits the sealed commitment opens, through 2^64-1.
+String? openedSpendDigits(Map o) {
+  final commit = _noteBytes(o['commit']);
+  final vp = o['valueProof'];
+  if (commit != null && vp is Map) {
+    final claimed = tryU64Units(vp['v'] ?? o['nanos']);
+    if (claimed != null && claimed > BigInt.zero && verifyValueUnits(commit, claimed, vp)) {
+      return claimed.toString();
+    }
+  }
+  final hunted = _openedSpendNanos(o);
+  if (hunted == null || hunted <= 0) return null;
+  return hunted.toString();
+}
+
+String? _amtCtDigits(Map o, Scalar xBase) {
+  final v = openNoteAmount(o, xBase)?['v'];
+  if (v is! BigInt || v <= BigInt.zero) return null;
+  return v.toString();
 }
 
 int? _openedSpendNanos(Map o) {
@@ -1090,26 +1748,211 @@ dynamic _hexify(dynamic v) {
 List<Map<String, dynamic>> _postedVin(List<Map<String, dynamic>> vin) {
   return vin.map((v) {
     final row = <String, dynamic>{};
-    if (v['commit'] != null) row['commit'] = v['commit'];
+    final commit = _allowChild('commit', v['commit']);
+    if (commit is! _Omit && v.containsKey('commit')) row['commit'] = commit;
     return row;
   }).toList();
 }
 
+/// Public wire fields. Same set as crypto/spend.js PROOF_KEYS.
+const postedAdmitProofKeys = <String>{
+  'admit_proof', 'v', 'version', 'spendTag', 'blob', 'cTilde', 'c0',
+  'proof', 'members', 'anchor', 'root', 'n', 'pseudo', 'commit', 'tag',
+};
+
+/// crypto/spend.js VALUE_PROOF_KEYS. `R` is public.
+const postedValueProofKeys = <String>{'v', 'R', 'z'};
+
+/// One FS-1 membership row. The same set as crypto/member_keys.js MEMBER_KEYS.
+const postedMemberKeys = <String>{'commit', 'hash', 'side', 'anchor', 'root'};
+
+/// crypto/spend.js MERKLE_PROOF_KEYS.
+const postedMerkleKeys = <String>{'side', 'hash'};
+
+/// crypto/spend.js VOUT_KEYS.
+const postedVoutKeys = <String>{
+  'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
+  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt',
+  'portalId', 'memo', 'memoCt',
+};
+
+/// Sentinel for a nested value the allow-list refuses.
+class _Omit {
+  const _Omit();
+}
+
+const _omit = _Omit();
+
+Map<String, dynamic> _allowMap(Map<dynamic, dynamic> raw, Set<String> keys) {
+  final out = <String, dynamic>{};
+  for (final key in keys) {
+    if (!raw.containsKey(key)) continue;
+    final taken = _allowChild(key, raw[key]);
+    if (taken is _Omit) continue;
+    out[key] = taken;
+  }
+  return out;
+}
+
+dynamic _allowChild(String key, dynamic v) {
+  switch (key) {
+    case 'admit_proof':
+      if (v is Map) return _allowMap(v, postedAdmitProofKeys);
+      return _publicLeaf(v);
+    case 'proof':
+      if (v is Map) return _allowMap(v, postedMerkleKeys);
+      if (v is List && v is! Uint8List && v.any((item) => item is Map)) {
+        return <dynamic>[
+          for (final item in v)
+            if (item is Map) _allowMap(item, postedMerkleKeys) else item,
+        ];
+      }
+      return _publicLeaf(v);
+    case 'members':
+      if (v is List && v is! Uint8List) {
+        return <dynamic>[
+          for (final item in v)
+            if (item is Map) _allowMap(item, postedMemberKeys) else if (_publicLeaf(item) is! _Omit) item,
+        ];
+      }
+      if (v is Map) return _allowMap(v, postedMemberKeys);
+      return _publicLeaf(v);
+    case 'valueProof':
+      if (v is Map) return _allowMap(v, postedValueProofKeys);
+      return _publicLeaf(v);
+    default:
+      return _publicLeaf(v);
+  }
+}
+
+/// Byte lists and scalars stay. A map under a leaf key is dropped so an
+/// unknown name such as `blind` cannot ride inside `anchor` or `commit`.
+dynamic _publicLeaf(dynamic v) {
+  if (v is Map) return _omit;
+  if (v is List && v is! Uint8List) {
+    for (final item in v) {
+      if (item is Map) return _omit;
+    }
+  }
+  return v;
+}
+
+/// Posted admit proof. Copies allow-listed fields and does not mutate [raw].
+Map<String, dynamic> postedAdmitProof(Map<String, dynamic> raw) {
+  return _allowMap(raw, postedAdmitProofKeys);
+}
+
+/// Drop `t` from the map that [Isolate.run] will copy back. Wipes that blind
+/// only when the buffer is the worker's own and not the caller's spend seed.
+Map<String, dynamic> workerAdmitProof(Map<String, dynamic> raw) {
+  final copied = _dropBlind(raw, raw['spendSeed']);
+  return Map<String, dynamic>.from(copied as Map);
+}
+
+dynamic _dropBlind(dynamic v, Object? seed) {
+  if (v is Map) {
+    final out = <String, dynamic>{};
+    for (final e in v.entries) {
+      if (e.key.toString() == 't') {
+        final t = e.value;
+        if (t is Uint8List && !identical(t, seed)) {
+          for (var i = 0; i < t.length; i++) {
+            t[i] = 0;
+          }
+        }
+        continue;
+      }
+      out[e.key.toString()] = _dropBlind(e.value, seed);
+    }
+    return out;
+  }
+  if (v is List && v is! Uint8List) {
+    return <dynamic>[for (final item in v) _dropBlind(item, seed)];
+  }
+  return v;
+}
+
+/// The body [flowPostHex] sends. Vin is C̃-only, vout is the sealed compact
+/// row, and every proof has been through [postedAdmitProof].
+Map<String, dynamic> postedFlowBody({
+  required List<Map<String, dynamic>> vin,
+  required List<Map<String, dynamic>> vout,
+  required List<Map<String, dynamic>> proofs,
+}) {
+  final posted = <Map<String, dynamic>>[for (final proof in proofs) postedAdmitProof(proof)];
+  return <String, dynamic>{
+    'vin': _postedVin(vin),
+    'vout': _postedVout(vout),
+    if (posted.isNotEmpty) 'admitProof': posted.first,
+    if (posted.isNotEmpty) 'admitProofs': posted,
+  };
+}
+
 List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
-  return vouts.map(compactSealedVout).toList();
+  return [
+    for (final row in vouts.map(compactSealedVout)) _allowMap(row, postedVoutKeys),
+  ];
+}
+
+/// KT-10. Same bytes as `kt10WithdrawBlind` in crypto/reserve_vault.js.
+/// `nonce` is 32 bytes. The same (to, nanos, id, nonce) is the same scalar.
+Scalar kt10WithdrawBlind(String to, BigInt nanos, String id, Uint8List nonce) {
+  if (nonce.length != 32) throw StateError('kt10_nonce');
+  final dst = utf8Bytes('shear-kt10-withdraw-r-v1');
+  final n = Uint8List(8);
+  var v = nanos;
+  final mask = BigInt.from(0xff);
+  for (var i = 0; i < 8; i++) {
+    n[i] = (v & mask).toInt();
+    v >>= 8;
+  }
+  final dest = utf8Bytes(to);
+  final ident = utf8Bytes(id);
+  for (var i = 0; i < 8; i++) {
+    final r = hashToScalar([dst, Uint8List.fromList([i]), dest, n, ident, nonce]);
+    if (!scalarEq(r, scalarZero())) return r;
+  }
+  throw StateError('kt10_blind');
+}
+
+String _freshWithdrawId() {
+  final b = randomBytes(16);
+  final hex = b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+  return 'wd-$hex';
+}
+
+Uint8List _withdrawNonce(Uint8List? nonce) {
+  if (nonce == null) return randomBytes(32);
+  if (nonce.length != 32) throw StateError('kt10_nonce');
+  return nonce;
 }
 
 /// Reserve lock/vote/withdraw out, same seal as pool `sealedReserveVout`.
 /// Public nanos + dest20 + noteCommitOfDest20, with `commit` so wallet_api
 /// keeps this body instead of minting a fresh seal after the spend sig.
-Map<String, dynamic> sealedReserveVout(String to, int nanos, String kind) {
+/// A withdraw uses a hash-derived non-zero r. Value 0 is not a withdrawal.
+Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {String id = '', Uint8List? nonce}) {
+  final units = tryU64Units(nanos) ?? BigInt.zero;
+  final shown = u64OnWire(units);
   final d20 = hash20FromAddress(to);
-  if (d20 == null) return {'address': to, 'nanos': nanos, 'kind': kind};
-  final note = sealCoinbaseNote(nanos, dest20: d20, kind: kind);
+  if (d20 == null) return {'address': to, 'nanos': shown, 'kind': kind};
+  if (kind == 'withdraw' && units <= BigInt.zero) {
+    return {'address': to, 'nanos': shown, 'kind': kind};
+  }
+  final blindId = kind == 'withdraw' ? (id.isEmpty ? _freshWithdrawId() : id) : '';
+  final blindNonce = kind == 'withdraw' ? _withdrawNonce(nonce) : null;
+  final blind = kind == 'withdraw'
+      ? kt10WithdrawBlind(to, units, blindId, blindNonce!)
+      : null;
+  final note = sealCoinbaseUnits(units, dest20: d20, kind: kind, r: blind);
+  if (kind == 'withdraw') {
+    note['id'] = blindId;
+    note['withdrawNonce'] = blindNonce;
+  }
   note['address'] = to;
   final vp = note['valueProof'];
   if (vp is Map) {
-    note['valueProof'] = {...Map<String, dynamic>.from(vp), 'v': nanos};
+    note['valueProof'] = {...Map<String, dynamic>.from(vp), 'v': shown};
   }
   return note;
 }
@@ -1120,31 +1963,89 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   final to = (input['to'] as String?) ?? '';
   final from = (input['from'] as String?) ?? '';
   final kind = (input['kind'] as String?) ?? 'lock';
-  final nanos = (input['nanos'] as int?) ?? 0;
+  final nanosUnits = tryU64Units(input['nanos']) ?? BigInt.zero;
   final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
   final shared = input['shared'] is Uint8List ? input['shared'] as Uint8List : null;
   final spec = <Map<String, dynamic>>[
     for (final raw in (input['vouts'] as List? ?? const []))
       if (raw is Map) Map<String, dynamic>.from(raw),
   ];
-  final vinIn = <Map<String, dynamic>>[
-    for (final raw in (input['vin'] as List? ?? const []))
-      if (raw is Map) Map<String, dynamic>.from(raw),
-  ];
   final sealed = <Map<String, dynamic>>[
     for (final o in spec)
       sealedReserveVout(
         (o['address'] as String?) ?? to,
-        (o['nanos'] as int?) ?? (kind == 'vote' ? 0 : nanos),
+        tryU64Units(o['nanos']) ?? (kind == 'vote' ? BigInt.zero : nanosUnits),
         (o['kind'] as String?) ?? kind,
+        id: (input['id'] as String?) ?? '',
+        nonce: input['withdrawNonce'] is Uint8List ? input['withdrawNonce'] as Uint8List : null,
       ),
   ];
-  final postedVin = _postedVin(vinIn);
+  String? withdrawId;
+  String? withdrawNonceHex;
+  Uint8List? withdrawNonceRaw;
+  if (kind == 'withdraw') {
+    for (final o in sealed) {
+      final ident = o.remove('id');
+      final rawNonce = o.remove('withdrawNonce');
+      if (ident is String && ident.isNotEmpty) withdrawId = ident;
+      if (rawNonce is Uint8List && rawNonce.length == 32) {
+        withdrawNonceRaw = rawNonce;
+        withdrawNonceHex = rawNonce.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      }
+    }
+  }
   final postedVout = _postedVout(sealed);
+  final wire = flowPostHex(<String, dynamic>{'vin': const <Map<String, dynamic>>[], 'vout': postedVout});
+  final hexVout = List<dynamic>.from(wire['vout'] as List? ?? const []);
+  final choice = (input['choice'] as String?) ?? '';
+  final taxed = kind == 'vote' || kind == 'lock';
+  final maxLevy = kind == 'vote';
+  final d20 = hash20FromAddress(from) ?? Uint8List(20);
+  final signVin = kind == 'withdraw'
+      ? <Map<String, dynamic>>[
+          {'dest20': Uint8List(20)},
+        ]
+      : <Map<String, dynamic>>[
+          {'address': from, 'dest20': d20},
+        ];
+  final shownNanos = sealed.isNotEmpty ? sealed.first['nanos'] : 0;
+  final draft = _reservePoolDraft(
+    kind: kind,
+    from: from,
+    to: to,
+    choice: choice,
+    vout: hexVout,
+    nanos: shownNanos is int ? shownNanos : jsSafeInt(shownNanos),
+    id: withdrawId,
+    withdrawNonce: withdrawNonceHex,
+  );
+  final fee = taxed ? bindStableWeightFee(draft, maxLevy: maxLevy) : 0;
+  if (taxed && !weightFeeCovers(fee, draft, maxLevy: maxLevy)) {
+    throw StateError('fee_short');
+  }
+  final portalId = kind == 'withdraw' ? reservePortalId(from) : reservePortalId(to);
+  final payoutPortalId = kind == 'withdraw' ? reservePortalId(to) : reservePortalId(from);
+  final commit = sealed.isNotEmpty ? _noteBytes(sealed.first['commit']) : null;
+  final vp = sealed.isNotEmpty ? sealed.first['valueProof'] : null;
+  final suffixNanos = jsSafeInt(vp is Map ? vp['v'] : shownNanos);
   Uint8List? sig;
   Uint8List? pub;
   if (spendSeed != null && spendSeed.length == 32) {
-    final msg = spendMessage(from: from, vout: postedVout, kind: kind, vin: postedVin);
+    final msg = reserveSpendMessage(
+      from: from,
+      vout: postedVout,
+      vin: signVin,
+      kind: kind,
+      portalId: portalId,
+      payoutPortalId: payoutPortalId,
+      programId: 'shear-reserve-v1',
+      choice: choice,
+      fee: fee,
+      suffixNanos: suffixNanos,
+      commit: commit,
+      id: withdrawId ?? '',
+      withdrawNonce: withdrawNonceRaw,
+    );
     if (shared != null) {
       sig = stealthSign(spendSeed, shared, msg);
       pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
@@ -1153,14 +2054,100 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
       pub = ed25519PublicFromSeed(spendSeed);
     }
   }
+  final postedVin = List<dynamic>.from(_hexify(signVin) as List? ?? const []);
   return {
     'vouts': sealed,
     'postedVin': postedVin,
-    'postedVout': postedVout,
+    'postedVout': hexVout,
     'sig': sig,
     'pub': pub,
+    'fee': taxed ? fee : 0,
+    'portalId': portalId,
+    'payoutPortalId': payoutPortalId,
     'isolateStamp': reserveIsolateStamp,
+    if (withdrawId != null) 'id': withdrawId,
+    if (withdrawNonceHex != null) 'withdrawNonce': withdrawNonceHex,
   };
+}
+
+/// JSON the pool's vote/lock/withdraw draft stringifies for [levyNeed].
+/// `id` is the same width as `vote-${Date.now()}`. Buffer fields use Node's
+/// `{"type":"Buffer","data":[...]}` form. The signature is not in this map.
+Map<String, dynamic> _reservePoolDraft({
+  required String kind,
+  required String from,
+  required String to,
+  required String choice,
+  required List<dynamic> vout,
+  required int nanos,
+  String? id,
+  String? withdrawNonce,
+}) {
+  final stamp = DateTime.now().millisecondsSinceEpoch.toString();
+  final portalTo = reservePortalId(to);
+  final portalFrom = reservePortalId(from);
+  final d20 = hash20FromAddress(from) ?? Uint8List(20);
+  final vinBuf = <String, dynamic>{
+    'address': from,
+    'dest20': <String, dynamic>{
+      'type': 'Buffer',
+      'data': [for (final b in d20) b],
+    },
+  };
+  if (kind == 'vote') {
+    return <String, dynamic>{
+      'id': 'vote-$stamp',
+      'programId': 'shear-reserve-v1',
+      'kind': 'vote',
+      'from': from,
+      'to': to,
+      'choice': choice,
+      'portalId': portalTo,
+      'payoutPortalId': portalFrom,
+      'vin': [vinBuf],
+      'vout': vout,
+      'payer': from,
+    };
+  }
+  if (kind == 'withdraw') {
+    return <String, dynamic>{
+      'id': (id != null && id.isNotEmpty) ? id : 'withdraw-$stamp',
+      'programId': 'shear-reserve-v1',
+      'mint': true,
+      'kind': 'withdraw',
+      'from': from,
+      'to': to,
+      'nanos': nanos,
+      if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+      'portalId': portalFrom,
+      'payoutPortalId': portalTo,
+      'vin': <Map<String, dynamic>>[],
+      'vout': vout,
+      'amount': _jsSheAmount(nanos),
+    };
+  }
+  return <String, dynamic>{
+    'id': 'lock-$stamp',
+    'programId': 'shear-reserve-v1',
+    'kind': 'lock',
+    'from': from,
+    'to': to,
+    'nanos': nanos,
+    'portalId': portalTo,
+    'payoutPortalId': portalFrom,
+    'vin': [vinBuf],
+    'vout': vout,
+    'memoCt': null,
+    'amount': _jsSheAmount(nanos),
+  };
+}
+
+/// Whole SHE stays an int so the JSON length matches `JSON.stringify(n / 1e11)`.
+Object _jsSheAmount(int nanos) {
+  const scale = 100000000000;
+  if (scale == 0) return 0;
+  if (nanos % scale == 0) return nanos ~/ scale;
+  return nanos / scale;
 }
 
 /// Reserve lock, vote, and withdraw seal. Always [Isolate.run]. A caller-side
@@ -1180,7 +2167,7 @@ List<Map<String, dynamic>> sealPaintedSpendVouts(List<Map<String, dynamic>> spec
   final out = <Map<String, dynamic>>[];
   for (final o in spec) {
     final kind = (o['kind'] as String?) ?? 'send';
-    final n = (o['nanos'] as int?) ?? 0;
+    final units = tryU64Units(o['nanos']) ?? BigInt.zero;
     final Uint8List d20;
     if (kind == 'dummy') {
       d20 = randomBytes(20);
@@ -1190,7 +2177,7 @@ List<Map<String, dynamic>> sealPaintedSpendVouts(List<Map<String, dynamic>> spec
       if (hashed == null) continue;
       d20 = hashed;
     }
-    final note = sealCoinbaseNote(n, dest20: d20, kind: kind);
+    final note = sealCoinbaseUnits(units, dest20: d20, kind: kind);
     final addr = o['address'];
     if (addr is String && addr.isNotEmpty) note['address'] = addr;
     out.add(note);
@@ -1350,7 +2337,7 @@ class PaintedBookMark {
 
 bool continuumPayable(String raw) {
   final s = raw.trim();
-  return isFullPaymentCode(s) || isDestAddress(s);
+  return isFullPaymentCode(s) || isPayableDest(s);
 }
 
 /// Flow send from its start state. A fingerprint or other short address is
@@ -1369,56 +2356,78 @@ Future<ContinuumSendResult> submitContinuumSend({
   bool privacyHopUp = false,
   bool allowPublicHttp = false,
   int depth = 0,
+  SendProgress? progress,
+  String? nanosWire,
 }) async {
   final candidate = enteredTo.trim();
   if (!continuumPayable(candidate)) {
-    return ContinuumSendResult(posted: false, to: startTo, remark: kErrShortShe1);
+    final remark = isUnpayableSsa1(candidate) ? kErrShortSsa1 : kErrShortShe1;
+    return ContinuumSendResult(posted: false, to: startTo, remark: remark);
   }
-  if (amount <= 0) {
+  if (amount <= 0 && (nanosWire == null || nanosWire.isEmpty)) {
     return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
   }
-  final nanos = (amount * kUnitsPerShe).round();
-  final levy = levyNanos(nanos, depth: depth);
-  final need = amount + levy / kUnitsPerShe;
-  final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
-  if (painted + 1e-12 < need) {
-    return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
-  }
-  debugLastContinuumSendError = null;
-  final mark = ledger.markPaintedBook();
-  final gap = ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need);
-  if (gap == null) {
-    ledger.restorePaintedBook(mark);
-    return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+  if (!ledger.beginSend()) {
+    return ContinuumSendResult(posted: false, to: candidate, remark: 'send_in_flight');
   }
   try {
-    final paintedFrom = ledger.paintedFundDest;
-    final from = gap > 1e-12 && isDestAddress(paintedFrom)
-        ? paintedFrom
-        : flowSpendFrom(
-            ledger,
-            restFrame: restFrame,
-            paymentCode: paymentCode,
-            amount: need,
-          );
-    final tx = await ledger.sendSpendableSum(
-      from: from,
-      to: candidate,
-      amount: amount,
-      memo: memo,
-      local: local,
-      restFrame: restFrame,
-      paymentCode: paymentCode,
-      spendSeed: spendSeed,
-      privacyHopUp: privacyHopUp,
-      allowPublicHttp: allowPublicHttp,
-      paintedCover: gap > 1e-12,
+    // Weight quote, not the amount-bps figure. Depth surge is not the consensus levy.
+    depth;
+    final levy = estimateSendLevyUnits(
+      inputs: 1,
+      outputs: 3,
+      memo: memo != null && memo.isNotEmpty,
     );
-    return ContinuumSendResult(posted: true, to: candidate, remark: '', tx: tx);
-  } catch (e) {
-    debugLastContinuumSendError = e;
-    ledger.restorePaintedBook(mark);
-    return ContinuumSendResult(posted: false, to: candidate, remark: flowSendAdvisoryOf(e));
+    final exactWire = nanosWire != null && RegExp(r'^\d+$').hasMatch(nanosWire);
+    final fromDouble = BigInt.from((amount * kUnitsPerShe).round());
+    final lossyAmount = exactWire && fromDouble != BigInt.parse(nanosWire!);
+    final need = amount + levy / kUnitsPerShe;
+    if (!lossyAmount) {
+      final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
+      if (painted + 1e-12 < need) {
+        return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+      }
+    }
+    debugLastContinuumSendError = null;
+    final mark = ledger.markPaintedBook();
+    final gap = ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need);
+    if (gap == null) {
+      ledger.restorePaintedBook(mark);
+      return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+    }
+    try {
+      final paintedFrom = ledger.paintedFundDest;
+      final from = gap > 1e-12 && isDestAddress(paintedFrom)
+          ? paintedFrom
+          : flowSpendFrom(
+              ledger,
+              restFrame: restFrame,
+              paymentCode: paymentCode,
+              amount: need,
+            );
+      final tx = await ledger.sendSpendableSum(
+        from: from,
+        to: candidate,
+        amount: amount,
+        memo: memo,
+        local: local,
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        spendSeed: spendSeed,
+        privacyHopUp: privacyHopUp,
+        allowPublicHttp: allowPublicHttp,
+        paintedCover: gap > 1e-12,
+        progress: progress,
+        nanosWire: nanosWire,
+      );
+      return ContinuumSendResult(posted: true, to: candidate, remark: '', tx: tx);
+    } catch (e) {
+      debugLastContinuumSendError = e;
+      ledger.restorePaintedBook(mark);
+      return ContinuumSendResult(posted: false, to: candidate, remark: flowSendAdvisoryOf(e));
+    }
+  } finally {
+    ledger.endSend();
   }
 }
 
@@ -1453,6 +2462,43 @@ String formatShe(num she) {
   final s = trunc.toStringAsFixed(kShePublicDigits);
   if (RegExp(r'^-?\d+\.000000000$').hasMatch(s)) return trunc.truncate().toString();
   return s;
+}
+
+/// SHE text from an integer nanos count. Values that fit in a safe double
+/// use [formatShe]. A larger count stays the exact decimal.
+String formatSheFromNanos(int nanos) {
+  if (nanos == 0) return '0';
+  if (nanos > -_kSafeDoubleNanos && nanos < _kSafeDoubleNanos) {
+    return formatShe(nanos / kUnitsPerShe);
+  }
+  final neg = nanos < 0;
+  final v = neg ? -nanos : nanos;
+  final whole = v ~/ kUnitsPerShe;
+  final frac = v % kUnitsPerShe;
+  if (frac == 0) return neg ? '-$whole' : '$whole';
+  var digits = frac.toString().padLeft(11, '0');
+  while (digits.endsWith('0')) {
+    digits = digits.substring(0, digits.length - 1);
+  }
+  final body = '$whole.$digits';
+  return neg ? '-$body' : body;
+}
+
+/// Flow nanos for the Vortex line. A spendable double inside 2^53 is that
+/// book. Above it, the exact note nanos are the figure. The double is not
+/// rounded back into a nanos count.
+int vortexFlowNanos({required double spendableShe, required Iterable<BigInt> exactNotes}) {
+  if (!spendableShe.isFinite || spendableShe <= 0) return 0;
+  final scaled = spendableShe * kUnitsPerShe;
+  if (scaled.isFinite && scaled >= 0 && scaled <= _kSafeDoubleNanos) {
+    return scaled.round();
+  }
+  var sum = BigInt.zero;
+  for (final n in exactNotes) {
+    if (n > BigInt.zero) sum += n;
+  }
+  if (sum.bitLength > 63) return 0;
+  return sum.toInt();
 }
 
 /// Full nano SHE (`*.***********`). Do not use [formatShe] for the hashbonus banner.
@@ -1540,6 +2586,9 @@ String flowSendAdvisoryOf(Object error) {
   if (msg.contains(kErrPayIdentity) || msg.contains('pay this identity')) {
     return kErrPayIdentity;
   }
+  if (msg.contains(kErrShortSsa1) || msg.contains('old short form')) {
+    return kErrShortSsa1;
+  }
   if (msg.contains(kErrShortShe1) ||
       msg.contains('not fingerprint') ||
       msg.contains('payment fingerprint')) {
@@ -1554,6 +2603,16 @@ String flowSendAdvisoryOf(Object error) {
       msg.contains('sync tip')) {
     return kErrSyncTip;
   }
+  if (msg.contains('send_cancelled') || msg.contains(kErrSendCancelled)) {
+    return kErrSendCancelled;
+  }
+  if (msg.contains('send_timeout') || msg.contains(kErrSendTimeout)) {
+    return kErrSendTimeout;
+  }
+  if (msg.contains('fee_short') || msg.contains(kErrFeeShort)) {
+    return kErrFeeShort;
+  }
+  if (msg.contains(kErrSendUnavailable)) return kErrSendUnavailable;
   return kErrSendGeneric;
 }
 
@@ -2108,16 +3167,33 @@ class ShearLedger implements ReadProofSink {
   }
 
   final ShearPoolClient? pool;
+  bool _sendInFlight = false;
+
+  /// One in-flight Continuum send. A second call returns false until [endSend].
+  bool beginSend() {
+    if (_sendInFlight) return false;
+    _sendInFlight = true;
+    return true;
+  }
+
+  void endSend() {
+    _sendInFlight = false;
+  }
+
   final Map<String, double> _spendable = {};
   /// Session header nanos. Never copied into [_spendable].
   final Map<String, double> _advisorySpendable = {};
   /// Accepted Reserve locks still sitting in the verified note sum.
   final Map<String, double> _lockDebitShe = {};
+  final Map<String, BigInt> _lockDebitNanos = {};
   final Map<String, double> _reserveHeldShe = {};
+  final Map<String, BigInt> _reserveHeldNanos = {};
+  Future<int>? _payoutConsolidate;
+  int _payoutConsolidateRounds = 0;
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
-  /// Opened proofs for this wallet only, keyed by commit|R|z. Not a fee credit.
-  final Map<String, int> _openedProofs = {};
+  /// Opened proofs for this wallet only, keyed by commit|R|z. Digit strings.
+  final Map<String, String> _openedProofs = {};
   /// Commit hex already accepted on this device. A follow skips those rows.
   final Set<String> _acceptedCommits = {};
   /// True after a saved book was restored. Spendable can paint before the network.
@@ -2136,7 +3212,7 @@ class ShearLedger implements ReadProofSink {
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
 
   List<Map<String, dynamic>> exportOpenedProofs() => [
-        for (final e in _openedProofs.entries) {'k': e.key, 'n': e.value},
+        for (final e in _openedProofs.entries) {'k': e.key, 'n': e.value.toString()},
       ];
 
   /// Verified notes for the encrypted session. The follow spec does not carry
@@ -2146,7 +3222,14 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['verified'] != true) continue;
       final encoded = _followEncode(n);
-      if (encoded is Map) out.add(Map<String, dynamic>.from(encoded));
+      if (encoded is Map) {
+        final row = Map<String, dynamic>.from(encoded);
+        for (final key in const ['nanos', 'verifiedNanos']) {
+          final v = row[key];
+          if (v is int) row[key] = v.toString();
+        }
+        out.add(row);
+      }
     }
     return out;
   }
@@ -2195,9 +3278,9 @@ class ShearLedger implements ReadProofSink {
 
   void _rememberProofRow(Map<String, dynamic> row) {
     final key = row['proofKey']?.toString() ?? '';
-    final nanos = row['verifiedNanos'];
-    if (key.isEmpty || nanos is! num || nanos <= 0) return;
-    _openedProofs[key] = nanos.round();
+    final nanos = sessionProofNanos(row['verifiedNanos'] ?? row['nanos']);
+    if (key.isEmpty || nanos == null) return;
+    _openedProofs[key] = nanos;
   }
 
   void rememberNote(Map<String, dynamic> note) {
@@ -2246,6 +3329,7 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'spent': false,
       };
+      if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
       _creditNoteToShearview(row);
       rememberDest(tagged);
@@ -2378,6 +3462,7 @@ class ShearLedger implements ReadProofSink {
       for (final n in notes) {
         if (n is Map) {
           final row = Map<String, dynamic>.from(n);
+          if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
           rememberNote(row);
           _rememberProofRow(row);
           if (row['proofChecked'] == true) {
@@ -2393,6 +3478,8 @@ class ShearLedger implements ReadProofSink {
       _unopenedListedProofs += unopened.toInt();
     }
     final folds = out['hashFolds'];
+    final frame = _restFrame;
+    if (frame != null && frame.isNotEmpty) consolidateIncomingRewards(frame);
     if (folds is! List) return;
     for (final raw in folds) {
       if (raw is! Map) continue;
@@ -2438,12 +3525,15 @@ class ShearLedger implements ReadProofSink {
         _immature.add((dest: matched, amount: she, height: h));
       }
     }
+    final again = _restFrame;
+    if (again != null && again.isNotEmpty) consolidateIncomingRewards(again);
   }
 
   /// Turn an unwrapped dest-owned note into a ShearView row so open collate
   /// does not wait for a later history/incoming delta. Hash folds stay in
   /// [_applySealedScan]. Existing dest+height rows are filled, not duplicated.
   void _creditNoteToShearview(Map<String, dynamic> note) {
+    if (!noteIsFs1Leaf(_noteBytes(note['admitPub']), _noteBytes(note['commit']))) return;
     final dest = (note['dest'] ?? note['address'])?.toString() ?? '';
     if (dest.isEmpty) return;
     final kind = (note['kind'] as String?) ?? 'receive';
@@ -3684,7 +4774,7 @@ class ShearLedger implements ReadProofSink {
     if (vaultSealAncestry && !blankFork) {
       vaultSealBanner = '';
     }
-    if (blankFork) vaultLockedNanos = 0;
+    if (blankFork) _clearReserveHold();
   }
 
   /// Disconnect orphaned heights; rows bounce to pending.
@@ -3830,7 +4920,7 @@ class ShearLedger implements ReadProofSink {
       take('extraMintedNanos', (n) => extraMintedNanos = n);
       take('mintBankNanos', (n) => extraMintedNanos = n);
       if (blankFork) {
-        vaultLockedNanos = 0;
+        _clearReserveHold();
       } else {
         take('lockedNanos', (n) => vaultLockedNanos = n);
         if (json['reserveVaultNanos'] is num) {
@@ -3985,6 +5075,28 @@ class ShearLedger implements ReadProofSink {
     return n;
   }
 
+  /// Vortex Flow figure. One reconstruct input. Exact note nanos win when the
+  /// painted double cannot name the count.
+  int continuumFlowNanos(String restFrame, {String? paymentCode}) {
+    final owned = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      owned.add(payKey(d));
+    }
+    final notes = <BigInt>[];
+    for (final n in _notes) {
+      if (n['spent'] == true || n['locked'] == true) continue;
+      final dest = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (dest.isEmpty || !owned.contains(payKey(dest))) continue;
+      final exact = noteNanosExact(n);
+      if (exact != null) notes.add(exact);
+    }
+    return vortexFlowNanos(
+      spendableShe: spendableOwned(restFrame, paymentCode: paymentCode),
+      exactNotes: notes,
+    );
+  }
+
   /// Open-wallet coin control. Notes parked on the shear1 rest frame join the
   /// spendable dest. Every other owned ssa1 stays one note and is counted in
   /// that same sum. A young note stays unspendable. Does not invent coins.
@@ -4030,10 +5142,57 @@ class ShearLedger implements ReadProofSink {
   /// Confirmed Reserve principal is not Continuum spendable. A pending lock
   /// debit and that principal are the same hold, so the larger one applies.
   void setReserveHeldNanos(String dest, int nanos) {
+    setReserveHeldUnits(dest, BigInt.from(nanos));
+  }
+
+  /// Exact portal principal. Any size, including a count a double cannot name.
+  /// Public stats `lockedNanos` is the reserve total, not this wallet, so it
+  /// does not call this. A blank fork clears the hold instead.
+  void setReserveHeldUnits(String dest, BigInt nanos) {
     final pk = payKey(dest);
     if (!isDestAddress(pk)) return;
-    final she = nanos <= 0 ? 0.0 : nanos / kUnitsPerShe;
-    _reserveHeldShe[pk] = she;
+    if (nanos <= BigInt.zero) {
+      _reserveHeldNanos.remove(pk);
+      _reserveHeldShe[pk] = 0;
+      return;
+    }
+    _reserveHeldNanos[pk] = nanos;
+    final asDouble = nanos.toDouble();
+    _reserveHeldShe[pk] = asDouble.isFinite ? asDouble / kUnitsPerShe : double.infinity;
+  }
+
+  /// Snapshot principal for the selector, before a live portal read.
+  /// Replaces any previous principal for [dest]. It does not add.
+  void bindSnapshotHold(String dest, int nanos) {
+    if (blankFork) {
+      _clearReserveHold();
+      return;
+    }
+    setReserveHeldNanos(dest, nanos < 0 ? 0 : nanos);
+  }
+
+  void _clearReserveHold() {
+    vaultLockedNanos = 0;
+    _reserveHeldNanos.clear();
+    _reserveHeldShe.clear();
+  }
+
+  void _installFollowReserveHold(Map<String, dynamic> spec) {
+    if (spec.containsKey('reserveHeld')) {
+      _reserveHeldNanos.clear();
+      _reserveHeldShe.clear();
+      final raw = spec['reserveHeld'];
+      if (raw is Map) {
+        for (final e in raw.entries) {
+          final digits = e.value?.toString() ?? '';
+          if (!RegExp(r'^\d+$').hasMatch(digits)) continue;
+          final big = BigInt.tryParse(digits);
+          if (big == null) continue;
+          setReserveHeldUnits(e.key.toString(), big);
+        }
+      }
+    }
+    if (blankFork) _clearReserveHold();
   }
 
   double _grossShown(String key) {
@@ -4134,10 +5293,13 @@ class ShearLedger implements ReadProofSink {
     return left <= 1e-12 ? 0 : left;
   }
 
-  void _noteLockDebit(String src, double needShe) {
-    if (needShe <= 1e-12) return;
+  void _noteLockDebit(String src, double needShe, {BigInt? nanos}) {
+    if (needShe <= 1e-12 && (nanos == null || nanos <= BigInt.zero)) return;
     final pk = payKey(src);
-    _lockDebitShe[pk] = (_lockDebitShe[pk] ?? 0) + needShe;
+    if (needShe > 1e-12) _lockDebitShe[pk] = (_lockDebitShe[pk] ?? 0) + needShe;
+    if (nanos != null && nanos > BigInt.zero) {
+      _lockDebitNanos[pk] = (_lockDebitNanos[pk] ?? BigInt.zero) + nanos;
+    }
   }
 
   /// Null cap: the pool figure is not spendable. A confirmRound credit that
@@ -4501,15 +5663,15 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true) continue;
       if (!_noteOnDest(n, dest)) continue;
-      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      if (!noteHasSealedSpendBytes(n)) continue;
       if (!_noteMature(n, ignoreConfs: ignoreConfs)) continue;
+      final noteShe = _storedNoteShe(n) ?? _noteSheOf(n, amountFallback);
+      if (noteShe + 1e-18 < needShe) continue;
       final tag = _noteSpendTagHex(spendSeed, n);
       if (tag != null && _spentTagHex.contains(tag)) {
         n['spent'] = true;
         continue;
       }
-      final noteShe = _noteSheOf(n, amountFallback);
-      if (noteShe + 1e-18 < needShe) continue;
       if (best == null || noteShe > bestShe) {
         best = n;
         bestShe = noteShe;
@@ -4762,6 +5924,9 @@ class ShearLedger implements ReadProofSink {
       'advisory': _followEncode(_advisorySpendable),
       'externalShe': _followEncode(_externalShe),
       'lockDebit': _followEncode(_lockDebitShe),
+      'reserveHeld': <String, String>{
+        for (final e in _reserveHeldNanos.entries) e.key: e.value.toString(),
+      },
       'settledNodeShe': _followEncode(_settledNodeShe),
       'proofChecked': _proofCheckedDests.toList(),
       'unverifiedExternal': _unverifiedExternal.toList(),
@@ -4858,6 +6023,7 @@ class ShearLedger implements ReadProofSink {
     takeDoubles(_advisorySpendable, spec['advisory']);
     takeDoubles(_externalShe, spec['externalShe']);
     takeDoubles(_lockDebitShe, spec['lockDebit']);
+    _installFollowReserveHold(spec);
     takeDoubles(_settledNodeShe, spec['settledNodeShe']);
     _proofCheckedDests
       ..clear()
@@ -5010,6 +6176,7 @@ class ShearLedger implements ReadProofSink {
       if (raw is! Map) continue;
       final row = Map<String, dynamic>.from(raw);
       if (row['verified'] != true) continue;
+      if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
       _rememberProofRow(row);
       _creditNoteToShearview(row);
@@ -5063,6 +6230,11 @@ class ShearLedger implements ReadProofSink {
       // Money dests the UI already accepts. The session file does not carry
       // stealth shared secrets, and a recomputed set drops the mining mailbox.
       'uiDests': syncDests(restFrame, paymentCode: paymentCode).toList(),
+      // The worker installs this before it exports. A follow that omits it
+      // would put an empty map back and the selector would spend the vault.
+      'reserveHeld': <String, String>{
+        for (final e in _reserveHeldNanos.entries) e.key: e.value.toString(),
+      },
     };
     // A sealed session is already on disk. The worker opens it. Encoding the
     // in-memory book here is what froze Verifying on 0.68 (Windows and Android).
@@ -5083,6 +6255,7 @@ class ShearLedger implements ReadProofSink {
         'advisory',
         'externalShe',
         'lockDebit',
+        'reserveHeld',
         'settledNodeShe',
         'proofChecked',
         'unverifiedExternal',
@@ -5263,6 +6436,7 @@ class ShearLedger implements ReadProofSink {
     }
     final opened = recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
     _openCollated = true;
+    startPayoutConsolidate(restFrame, paymentCode: paymentCode);
     return opened;
   }
 
@@ -6031,8 +7205,510 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  /// One Flow vin is one note. When no note covers [amount] and the rest-frame
-  /// sum does, post one proven send per note until the pay is filled.
+  /// Non-ssa1 rest-frame rewards join the coin ledger. ssa1 coinbase notes stay
+  /// put until [consolidateSpendableNotes] merges them on chain.
+  void consolidateIncomingRewards(String restFrame, {String? paymentCode}) {
+    final bound = _coinLedger;
+    if (bound == null || !isDestAddress(bound) || _isProgramVaultDest(bound)) return;
+    for (final n in _notes) {
+      if (n['spent'] == true) continue;
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty || isDestAddress(addr) || _isProgramVaultDest(addr)) continue;
+      n['address'] = bound;
+      n['dest'] = bound;
+      rememberDest(bound);
+    }
+  }
+
+  Future<Map<String, dynamic>> _planSpendOffUi(
+    String restFrame,
+    String? paymentCode,
+    double amount, {
+    bool memo = false,
+    String? needNanos,
+  }) async {
+    final dests = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      dests.add(d);
+      dests.add(payKey(d));
+    }
+    for (final n in _notes) {
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty) continue;
+      if (isBindable(addr, restFrame: restFrame, paymentCode: paymentCode)) dests.add(addr);
+    }
+    // Same length and order as [_notes]. The planner's index is the book index.
+    final snap = <Map<String, dynamic>>[
+      for (final n in _notes)
+        {
+          'spent': n['spent'] == true,
+          'locked': n['locked'] == true,
+          'sealed': noteHasSealedSpendBytes(n),
+          'address': (n['address'] ?? n['dest'])?.toString() ?? '',
+          'height': n['height'],
+          'amount': n['amount'],
+          'nanos': n['nanos'],
+          'verifiedNanos': n['verifiedNanos'],
+        },
+    ];
+    // flutter_tester's later Isolate.run nulls this closure hook on the
+    // caller. The closure captured here survives that, and selection still
+    // runs off this isolate. Production leaves the hook null.
+    final savedSeal = debugNativeSealNote;
+    // The map is built here. The closure must not capture this ledger: a pool
+    // that holds a Completer cannot cross to the worker.
+    final input = <String, dynamic>{
+      'notes': snap,
+      'needShe': amount,
+      if (needNanos != null && needNanos.isNotEmpty) 'needNanos': needNanos,
+      'cap': kMaxInputsPerSend,
+      'tip': bookTip,
+      'confs': spendableConfirmations,
+      'holdNanos': selectionHoldNanos(
+        lockDebits: _lockDebitNanos.values,
+        reservePrincipals: _reserveHeldNanos.values,
+      ),
+      'memo': memo,
+      'dests': dests.toList(),
+    };
+    final raw = await Isolate.run(() => selectSpendNotesWire(input));
+    debugSendSelectStamp = raw['stamp']?.toString() ?? '';
+    debugSendSelectNanos = _selectedNanos(raw);
+    if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
+    return raw;
+  }
+
+  /// Weight-levy quote for [amount]. Selection runs off the UI isolate.
+  /// [nanosWire] is the exact nanos digit string. It wins over the SHE double
+  /// so an amount above 2^53 is the same integer the selector spends.
+  Future<int> quoteSendLevyUnits({
+    required String restFrame,
+    String? paymentCode,
+    required double amount,
+    bool memo = false,
+    String? nanosWire,
+  }) async {
+    final exact = nanosWire != null && nanosWire.isNotEmpty;
+    if (!exact && amount <= 0) return estimateSendLevyUnits(inputs: 1, memo: memo);
+    final plan = await _planSpendOffUi(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo,
+      needNanos: exact ? nanosWire : null,
+    );
+    final fee = plan['feeShe'];
+    if (fee is num && fee > 0) return (fee.toDouble() * kUnitsPerShe).round();
+    return estimateSendLevyUnits(inputs: 1, memo: memo);
+  }
+
+  /// Mature rest-frame notes that a capped merge can spend.
+  int _matureOwnedCount(String restFrame, {String? paymentCode}) {
+    final owned = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      owned.add(d);
+      owned.add(payKey(d));
+    }
+    var n = 0;
+    for (final note in _notes) {
+      if (note['spent'] == true || note['locked'] == true) continue;
+      if (!_noteMature(note)) continue;
+      final addr = (note['address'] ?? note['dest'])?.toString() ?? '';
+      if (addr.isEmpty || !owned.contains(addr)) continue;
+      if (_storedNoteShe(note) == null || (_storedNoteShe(note) ?? 0) <= 0) continue;
+      if (_noteBytes(note['commit']) == null || _noteBytes(note['r']) == null) continue;
+      n++;
+    }
+    return n;
+  }
+
+  /// A payout scan starts one capped merge. Ingest does not. A second scan
+  /// waits until this run finishes, and a failure stays on the future.
+  void startPayoutConsolidate(String restFrame, {String? paymentCode}) {
+    if (_payoutConsolidate != null) return;
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32) return;
+    if (_matureOwnedCount(restFrame, paymentCode: paymentCode) <= kConsolidateAboveCount) return;
+    _payoutConsolidate = _runPayoutConsolidate(restFrame, paymentCode: paymentCode, seed: seed);
+  }
+
+  Future<int> _runPayoutConsolidate(
+    String restFrame, {
+    String? paymentCode,
+    required Uint8List seed,
+  }) async {
+    var n = 0;
+    try {
+      n = await consolidateSpendableNotes(
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        spendSeed: seed,
+      );
+      _payoutConsolidateRounds += n;
+    } catch (_) {
+      n = 0;
+    } finally {
+      _payoutConsolidate = null;
+    }
+    return n;
+  }
+
+  /// Rounds finished by [startPayoutConsolidate], including a run that already ended.
+  Future<int> finishPayoutConsolidate() async {
+    final run = _payoutConsolidate;
+    if (run != null) await run;
+    return _payoutConsolidateRounds;
+  }
+
+  /// Merge the smallest mature notes until at most [kMaxInputsPerSend] remain.
+  /// Each batch is one Flow tx. The gap is the weight-levy quote.
+  Future<int> consolidateSpendableNotes({
+    required String restFrame,
+    String? paymentCode,
+    required Uint8List spendSeed,
+    SendProgress? progress,
+    bool allowPublicHttp = false,
+    bool privacyHopUp = false,
+  }) async {
+    var rounds = 0;
+    for (var guard = 0; guard < 100000; guard++) {
+      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+      final owned = <String>{};
+      for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+        if (isDestAddress(d)) {
+          owned.add(d);
+          owned.add(payKey(d));
+        }
+      }
+      final mature = <Map<String, dynamic>>[];
+      for (final n in _notes) {
+        if (n['spent'] == true || n['locked'] == true) continue;
+        if (!_noteMature(n)) continue;
+        final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+        if (addr.isEmpty || !owned.contains(addr)) continue;
+        final she = _storedNoteShe(n);
+        if (she == null || she <= 0) continue;
+        if (noteNanosExact(n) == null) continue;
+        if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+        mature.add(n);
+      }
+      if (mature.length <= kConsolidateAboveCount) break;
+      mature.sort((a, b) => (_storedNoteShe(a) ?? 0).compareTo(_storedNoteShe(b) ?? 0));
+      final take = mature.sublist(0, kMaxInputsPerSend);
+      var sumN = BigInt.zero;
+      var sumExact = true;
+      for (final n in take) {
+        final exact = noteNanosExact(n);
+        if (exact == null) {
+          sumExact = false;
+          break;
+        }
+        sumN += exact;
+      }
+      if (!sumExact || sumN <= BigInt.zero) break;
+      final feeQuoted = BigInt.from(estimateSendLevyUnits(inputs: take.length, outputs: 2));
+      if (sumN <= feeQuoted) break;
+      final payN = sumN - feeQuoted;
+      if (payN.bitLength > 64) break;
+      final src = (take.first['address'] ?? take.first['dest'])?.toString() ?? '';
+      final dest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
+      progress?.bump(phase: 'prove', done: 0, total: take.length);
+      await _sendManyNotes(
+        notes: take,
+        to: dest,
+        payShe: _sheOfNanos(payN),
+        payNanosWire: payN.toString(),
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        spendSeed: spendSeed,
+        allowPublicHttp: allowPublicHttp,
+        privacyHopUp: privacyHopUp,
+        progress: progress,
+        proveDone: 0,
+        proveTotal: take.length,
+      );
+      rounds++;
+      if (Platform.environment['FLUTTER_TEST'] != 'true') {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+    }
+    return rounds;
+  }
+
+  /// One Flow tx. A batch spends every note in [notes]. Notes are marked spent
+  /// only after the node accepts the tx. Closed until FS-1.
+  Future<ShearTx> _sendManyNotes({
+    required List<Map<String, dynamic>> notes,
+    required String to,
+    required double payShe,
+    String? payNanosWire,
+    required String restFrame,
+    String? paymentCode,
+    required Uint8List spendSeed,
+    String? memo,
+    bool allowPublicHttp = false,
+    bool privacyHopUp = false,
+    SendProgress? progress,
+    int proveDone = 0,
+    int proveTotal = 1,
+  }) async {
+    if (notes.isEmpty) throw StateError(kErrNoSealedNote);
+    if (pool == null) throw StateError(kErrNoSealedNote);
+    if (!localSendReady(pool!.baseUrl) && !privacyHopUp && !allowPublicHttp) {
+      throw StateError(kErrPublicHttp);
+    }
+    final src = (notes.first['address'] ?? notes.first['dest'])?.toString() ?? '';
+    if (!isDestAddress(src)) throw ArgumentError('bad_send');
+    var destTo = to;
+    SilentPay? pay;
+    if (isFullPaymentCode(to)) {
+      pay = silentPay(to);
+      if (pay == null) throw ArgumentError('bad_send');
+      destTo = pay.dest;
+    } else if (isShearAddress(to)) {
+      if (to.trim() == restFrame.trim()) {
+        destTo = currentDest(restFrame, paymentCode: paymentCode);
+      } else {
+        throw StateError(kErrPayIdentity);
+      }
+    } else if (!isDestAddress(to)) {
+      throw ArgumentError('bad_send');
+    }
+    if (destTo == src) throw ArgumentError('same_dest');
+    var inputSum = BigInt.zero;
+    for (final n in notes) {
+      final exact = noteNanosExact(n);
+      if (exact == null) throw StateError(kErrNoSealedNote);
+      inputSum += exact;
+    }
+    final memoOn = memo != null && memo.isNotEmpty;
+    final feeUnits = estimateSendLevyUnits(inputs: notes.length, outputs: 3, memo: memoOn);
+    final fee = BigInt.from(feeUnits);
+    var payUnits = sendUnitsFromWire(payNanosWire);
+    if (payUnits <= BigInt.zero) {
+      final scaled = payShe * kUnitsPerShe;
+      if (!scaled.isFinite) throw StateError('fee_short');
+      final rounded = scaled.round();
+      if (rounded <= 0 || rounded > _kSafeDoubleNanos) throw StateError('fee_short');
+      if ((rounded.toDouble() - scaled).abs() > 1e-4) throw StateError('fee_short');
+      payUnits = BigInt.from(rounded);
+    }
+    if (payUnits + fee > inputSum) payUnits = inputSum - fee;
+    if (payUnits <= BigInt.zero || payUnits.bitLength > 64) throw StateError('fee_short');
+    final change = inputSum - payUnits - fee;
+    if (change < BigInt.zero || change.bitLength > 64) throw StateError('fee_short');
+    final payNanos = u64OnWire(payUnits);
+    final changeNanos = u64OnWire(change);
+    String? changeDest;
+    if (change > BigInt.zero) {
+      changeDest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
+      if (changeDest == src || changeDest == destTo) throw ArgumentError('same_dest');
+    }
+    Map<String, dynamic>? memoCt;
+    if (memoOn) {
+      if (pay?.shared == null) throw ArgumentError('no_shared');
+      memoCt = await memoSeal(destTo, memo, pay!.shared);
+    }
+    final vouts = <Map<String, dynamic>>[
+      {'address': destTo, 'nanos': payNanos, 'kind': 'send'},
+      if (changeDest != null) {'address': changeDest, 'nanos': changeNanos, 'kind': 'send'},
+      {'kind': 'dummy', 'nanos': 0},
+    ];
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+    final sealedBuilt = await _sealFlowOffUi({
+      'spendSeed': spendSeed,
+      'destTo': destTo,
+      'src': src,
+      'changeDest': changeDest,
+      'admitBase': admitBase ?? _admitBaseOf(paymentCode),
+      'vouts': [for (final o in vouts) Map<String, dynamic>.from(o)],
+    });
+    final sealed = <Map<String, dynamic>>[
+      for (final raw in (sealedBuilt['vouts'] as List))
+        if (raw is Map) Map<String, dynamic>.from(raw),
+    ];
+    final cols = await _fluxColumns();
+    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length) throw StateError('fluxset');
+    final vin = <Map<String, dynamic>>[];
+    final proofs = <Map<String, dynamic>>[];
+    var done = proveDone;
+    final total = proveTotal < notes.length ? notes.length : proveTotal;
+    for (final note in notes) {
+      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+      progress?.bump(phase: 'prove', done: done, total: total);
+      final spentNote = {
+        'kind': (note['kind'] as String?) ?? 'pot',
+        'commit': _noteBytes(note['commit'])!,
+        'noteCommit': _noteBytes(note['noteCommit'])!,
+        'r': _noteBytes(note['r'])!,
+      };
+      Map<String, dynamic> proved;
+      try {
+        proved = await _proveFlowOffUi({
+          'vin': [
+            {'commit': spentNote['commit'], 'r': spentNote['r']},
+          ],
+          'vout': sealed,
+          'spendSeed': spendSeed,
+          'spentNote': spentNote,
+          'pubs': cols.pubs,
+          'commits': cols.commits,
+        }).timeout(const Duration(seconds: 8));
+      } on TimeoutException {
+        throw StateError('send_timeout');
+      }
+      final proof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
+      final ct = proof['cTilde'];
+      vin.add({
+        'commit': ct is Uint8List ? ct : spentNote['commit'],
+        'r': spentNote['r'],
+      });
+      proofs.add(proof);
+      done++;
+      progress?.bump(phase: 'prove', done: done, total: total);
+    }
+    final excess = kernelExcess(sealed, vin);
+    final posted = postedFlowBody(vin: vin, vout: sealed, proofs: proofs);
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+    if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
+      throw StateError('unspendable_dest');
+    }
+    final postedVin = List<Map<String, dynamic>>.from(
+      (posted['vin'] as List).whereType<Map>().map((v) => Map<String, dynamic>.from(v)),
+    );
+    final postedVout = List<Map<String, dynamic>>.from(
+      (posted['vout'] as List).whereType<Map>().map((v) => Map<String, dynamic>.from(v)),
+    );
+    final msg = spendMessage(from: src, vout: postedVout, kind: 'send', vin: postedVin);
+    final shared = _stealthShared[src];
+    final signed = await signSpendOffUi(<String, dynamic>{
+      'spendSeed': spendSeed,
+      'message': msg,
+      if (shared != null) 'shared': shared,
+    });
+    final sig = signed['sig'] as Uint8List;
+    final pub = signed['pub'] as Uint8List;
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+    progress?.bump(phase: 'broadcast', done: done, total: total);
+    final wire = await flowPostHexOffUi(posted);
+    // The change output already reserved [feeUnits]. A lighter one-pass fee
+    // must not be written back. A heavier body is fee_short, not a vote error.
+    if (!sealedFeeCovers(feeUnits, <String, dynamic>{
+      'kind': 'send',
+      'vin': wire['vin'],
+      'vout': wire['vout'],
+      if (wire['admitProof'] != null) 'admit_proof': wire['admitProof'],
+      if (wire['admitProofs'] != null) 'admit_proofs': wire['admitProofs'],
+    })) {
+      throw StateError('fee_short');
+    }
+    final json = await pool!.send(
+      from: src,
+      to: destTo,
+      amount: _sheOfExactNanos(payUnits.toString()) ?? payShe,
+      nanosWire: payUnits.toString(),
+      memoCt: memoCt,
+      kind: 'send',
+      change: changeDest,
+      sig: _bytesHex(sig),
+      spendPub: _bytesHex(pub),
+      ephPub: pay?.ephPub != null ? _bytesHex(pay!.ephPub) : null,
+      vin: List<dynamic>.from(wire['vin'] as List? ?? const []),
+      vout: List<dynamic>.from(wire['vout'] as List? ?? const []),
+      excess: _bytesHex(excess),
+      admitProof: wire['admitProof'] is Map
+          ? Map<String, dynamic>.from(wire['admitProof'] as Map)
+          : proofs.first,
+      admitProofs: wire['admitProofs'] is List
+          ? List<Map<String, dynamic>>.from(
+              (wire['admitProofs'] as List).whereType<Map>().map((p) => Map<String, dynamic>.from(p)),
+            )
+          : null,
+      spendTag: proofs.first['spendTag'] is Uint8List
+          ? _bytesHex(proofs.first['spendTag'] as Uint8List)
+          : proofs.first['spendTag']?.toString(),
+      fee: feeUnits,
+    );
+    if (json['ok'] != true || json['tx'] is! Map) {
+      throw StateError(json['reason']?.toString() ?? 'send failed');
+    }
+    for (final note in notes) {
+      note['spent'] = true;
+      final d = (note['address'] ?? note['dest'])?.toString() ?? '';
+      if (d.isEmpty) continue;
+      final she = _storedNoteShe(note) ?? 0;
+      final left = spendable(payKey(d)) - she;
+      _spendable[payKey(d)] = left <= 1e-18 ? 0 : left;
+    }
+    for (var i = 0; i < sealed.length; i++) {
+      final o = sealed[i];
+      if ((o['kind'] as String?) == 'dummy') continue;
+      final addr = o['address'] as String?;
+      if (addr == null) continue;
+      final ours = addr == src ||
+          addr == changeDest ||
+          isBindable(addr, restFrame: restFrame, paymentCode: paymentCode);
+      if (!ours) continue;
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
+      rememberNote({
+        'address': addr,
+        'dest': addr,
+        'kind': o['kind'] ?? 'send',
+        'commit': o['commit'],
+        'noteCommit': o['noteCommit'],
+        'r': o['r'],
+        'rEph': o['rEph'],
+        'rCt': o['rCt'],
+        'admitPub': o['admitPub'],
+        'index': i,
+        'verified': true,
+        'prev': Uint8List(32),
+        if (o['valueProof'] != null) 'valueProof': o['valueProof'],
+        if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
+        if (o['nanos'] != null) 'nanos': o['nanos'],
+        if (tryU64Units(o['nanos']) != null && _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
+          'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
+      });
+      _proofCheckedDests.add(payKey(addr));
+      final addUnits = tryU64Units(o['nanos']);
+      final add = addUnits == null ? null : _sheOfExactNanos(addUnits.toString());
+      if (add != null && addr != changeDest) {
+        _spendable[payKey(addr)] = spendable(payKey(addr)) + add;
+        _dests.add(addr);
+      }
+    }
+    if (changeDest != null && change > BigInt.zero) {
+      final changeShe = _sheOfExactNanos(change.toString());
+      if (changeShe != null) {
+        _spendable[changeDest] = spendable(changeDest) + changeShe;
+      }
+      _dests.add(changeDest);
+    }
+    final echoed = Map<String, dynamic>.from(json['tx'] as Map);
+    echoed['amount'] ??= _sheOfExactNanos(payUnits.toString()) ?? payShe;
+    echoed['from'] ??= src;
+    final raw = ShearTx.fromJson(echoed);
+    final tx = ShearTx(
+      id: raw.id,
+      from: raw.from,
+      to: destTo,
+      amount: raw.amount,
+      kind: raw.kind,
+      height: raw.height,
+      confirmed: raw.confirmed,
+      memo: memoCt != null || raw.memo,
+      memoPlain: memo,
+      memoCt: memoCt ?? raw.memoCt,
+      change: changeDest,
+    );
+    _txs.add(tx);
+    return tx;
+  }
+
+  /// One note when one note covers. Otherwise batches of at most
+  /// [kMaxInputsPerSend], each batch one Flow tx.
   Future<ShearTx> sendSpendableSum({
     required String from,
     required String to,
@@ -6051,9 +7727,12 @@ class ShearLedger implements ReadProofSink {
     bool privacyHopUp = false,
     bool allowPublicHttp = false,
     bool paintedCover = false,
+    SendProgress? progress,
+    String? nanosWire,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
-    Future<ShearTx> once(double pay, String src) {
+    Future<ShearTx> once(double pay, String src, {Map<String, dynamic>? note, String? payNanos}) {
+      final wire = (payNanos != null && payNanos.isNotEmpty) ? payNanos : null;
       return send(
         from: src,
         to: to,
@@ -6072,24 +7751,99 @@ class ShearLedger implements ReadProofSink {
         privacyHopUp: privacyHopUp,
         allowPublicHttp: allowPublicHttp,
         paintedCover: paintedCover,
+        progress: progress,
+        spendNote: note,
+        nanosWire: wire,
       );
     }
     if (sendKind != 'send' || local || paintedCover || restFrame == null) {
-      return once(amount, from);
+      return once(amount, from, payNanos: nanosWire);
     }
-    try {
-      return await once(amount, from);
-    } catch (e) {
-      final msg = e is StateError ? e.message : '';
-      if (msg != 'no_note' && msg != kErrNoSealedNote && msg != 'insufficient') rethrow;
-      final slices = _sumSlices(restFrame, paymentCode, amount);
-      if (slices.length < 2) rethrow;
-      ShearTx? last;
-      for (final slice in slices) {
-        last = await once(slice.pay, slice.dest);
+    if (spendSeed == null || spendSeed.length != 32 || pool == null) {
+      return once(amount, from, payNanos: nanosWire);
+    }
+    consolidateIncomingRewards(restFrame, paymentCode: paymentCode);
+    progress?.bump(phase: 'select', done: 0, total: 1);
+    final plan = await _planSpendOffUi(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo != null && memo.isNotEmpty,
+      needNanos: nanosWire,
+    );
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+    final rawBatches = (plan['batches'] as List? ?? const []).whereType<Map>().toList();
+    if (plan['covered'] != true || rawBatches.isEmpty) {
+      if (plan['shortFee'] == true) throw StateError('fee_short');
+      if (plan['empty'] == true) throw StateError(kErrNoSealedNote);
+      throw StateError('insufficient');
+    }
+    final batches = <({double pay, String payNanos, List<Map<String, dynamic>> notes})>[];
+    for (final b in rawBatches) {
+      final specs = (b['notes'] as List? ?? const []).whereType<Map>().toList();
+      final refs = <Map<String, dynamic>>[];
+      for (final spec in specs) {
+        final i = spec['index'];
+        if (i is! num || i < 0 || i >= _notes.length) continue;
+        refs.add(_notes[i.toInt()]);
       }
-      return last!;
+      final pay = (b['pay'] as num?)?.toDouble() ?? 0;
+      final payNanos = b['payNanos']?.toString() ?? '';
+      if (refs.isEmpty) continue;
+      if (payNanos.isEmpty && pay <= 1e-12) continue;
+      batches.add((pay: pay, payNanos: payNanos, notes: refs));
     }
+    if (batches.isEmpty) throw StateError('insufficient');
+    if (batches.length == 1 && batches.single.notes.length == 1) {
+      progress?.bump(phase: 'broadcast', done: 0, total: 1);
+      final only = batches.single;
+      final tx = await once(
+        only.pay,
+        (only.notes.single['address'] ?? only.notes.single['dest'])?.toString() ?? from,
+        note: only.notes.single,
+        payNanos: only.payNanos,
+      );
+      progress?.bump(phase: 'broadcast', done: 1, total: 1);
+      return tx;
+    }
+    final totalProofs = batches.fold<int>(0, (s, b) => s + b.notes.length);
+    ShearTx? last;
+    var done = 0;
+    for (final batch in batches) {
+      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+      if (batch.notes.length == 1) {
+        progress?.bump(phase: 'prove', done: done, total: totalProofs);
+        last = await once(
+          batch.pay,
+          (batch.notes.single['address'] ?? batch.notes.single['dest'])?.toString() ?? from,
+          note: batch.notes.single,
+          payNanos: batch.payNanos,
+        );
+        done += 1;
+        progress?.bump(phase: 'prove', done: done, total: totalProofs);
+      } else {
+        last = await _sendManyNotes(
+          notes: batch.notes,
+          to: to,
+          payShe: batch.pay,
+          payNanosWire: batch.payNanos,
+          restFrame: restFrame,
+          paymentCode: paymentCode,
+          spendSeed: spendSeed,
+          memo: memo,
+          allowPublicHttp: allowPublicHttp,
+          privacyHopUp: privacyHopUp,
+          progress: progress,
+          proveDone: done,
+          proveTotal: totalProofs,
+        );
+        done += batch.notes.length;
+      }
+      if (Platform.environment['FLUTTER_TEST'] != 'true' && batches.length > 1) {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
+    }
+    return last!;
   }
 
   double _roomAfterLevy(double she) {
@@ -6159,6 +7913,9 @@ class ShearLedger implements ReadProofSink {
     bool privacyHopUp = false,
     bool allowPublicHttp = false,
     bool paintedCover = false,
+    SendProgress? progress,
+    Map<String, dynamic>? spendNote,
+    String? nanosWire,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
@@ -6219,9 +7976,9 @@ class ShearLedger implements ReadProofSink {
       }
     }
     var depth = 0;
-    // Painted funding already reserved the levy at the caller's depth. A
-    // mempool-depth surge here asks for more SHE than that reserve and the
-    // pool fee (floor) does not charge it, so the second send looks short.
+    // Mempool depth is recorded for the pressure readout. The consensus levy
+    // ignores amount and depth. The quote is the weight floor unless a sealed
+    // body is passed to levyNanos. A large principal is not a larger fee.
     if (pool != null && !local && !paintedCover) {
       try {
         final pressure = await pool!.mempoolPressure();
@@ -6229,7 +7986,12 @@ class ShearLedger implements ReadProofSink {
       } catch (_) {}
     }
     final taxed = levyTaxed(sendKind);
-    final nanos = sendKind == 'vote' ? 0 : (amount * kUnitsPerShe).round();
+    var payUnits = sendKind == 'vote' ? BigInt.zero : sendUnitsFromWire(nanosWire);
+    if (payUnits <= BigInt.zero && sendKind != 'vote') {
+      final rounded = (amount * kUnitsPerShe).round();
+      if (rounded > 0 && rounded <= _kSafeDoubleNanos) payUnits = BigInt.from(rounded);
+    }
+    final nanos = payUnits.bitLength <= 63 ? payUnits.toInt() : 0;
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
     final needShe = (sendKind == 'vote' ? 0.0 : amount) + levy / kUnitsPerShe;
     if (restFrame != null && (sendKind == 'vote' || sendKind == 'lock')) {
@@ -6265,7 +8027,8 @@ class ShearLedger implements ReadProofSink {
       final hopped = _hopOffMiningMailbox(src, restFrame, paymentCode: paymentCode);
       if (hopped != src) src = hopped;
     }
-    if (!paintedCover) {
+    // A withdraw pays the reserve principal. Continuum spendable is not the source.
+    if (!paintedCover && sendKind != 'withdraw') {
       final usable = _shownSpendable(src);
       final owned = restFrame == null
           ? usable
@@ -6278,7 +8041,7 @@ class ShearLedger implements ReadProofSink {
         _spendable[pk] = usable;
       }
     }
-    if (spendable(src) < needShe) {
+    if (sendKind != 'withdraw' && spendable(src) < needShe) {
       var fromNotes = 0.0;
       for (final n in _notes) {
         if (n['spent'] == true) continue;
@@ -6290,7 +8053,7 @@ class ShearLedger implements ReadProofSink {
         _spendable[src] = fromNotes;
       }
     }
-    if (spendable(src) < needShe) {
+    if (sendKind != 'withdraw' && spendable(src) < needShe) {
       final owned = restFrame == null
           ? spendable(src)
           : spendableOwned(restFrame, paymentCode: paymentCode);
@@ -6302,9 +8065,18 @@ class ShearLedger implements ReadProofSink {
     List<Uint8List> livePubs = const [];
     List<Uint8List> liveCommits = const [];
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local && !paintedCover) {
-      // One sealed note covers this send. A sum of smaller notes is posted by
-      // sendSpendableSum as one transaction per note. Pull the pool note list
-      // when the local book has no covering note.
+      // The planner already chose this note off the UI isolate. Do not scan
+      // spend tags for every other note.
+      if (spendNote != null) {
+        final cols = await _fluxColumns();
+        livePubs = cols.pubs;
+        liveCommits = cols.commits;
+        chosen = spendNote;
+        final addr = (spendNote['address'] ?? spendNote['dest'])?.toString() ?? '';
+        if (addr.isNotEmpty) src = addr;
+        fundedShe = _storedNoteShe(spendNote) ?? spendable(src);
+      } else {
+      // Pull the pool note list when the local book has no covering note.
       final cols = await _fluxColumns();
       livePubs = cols.pubs;
       liveCommits = cols.commits;
@@ -6383,15 +8155,29 @@ class ShearLedger implements ReadProofSink {
       }
       chosen = spent;
       fundedShe = _noteSheOf(chosen!, spendable(src));
+      }
     }
     String? changeDest = change;
+    // Change is the note minus the pay minus the weight-floor levy.
+    // A double must not round it or drop it once it no longer fits in 2^53.
+    final feeUnits = BigInt.from(levy < 0 ? 0 : levy);
+    final fundedUnits = sendKind == 'send' ? fundedSendUnits(chosen ?? spendNote, fundedShe) : null;
+    BigInt? changeUnits;
+    if (fundedUnits != null && (chosen != null || spendNote != null) && noteNanosExact((chosen ?? spendNote)!) != null) {
+      final cost = payUnits + feeUnits;
+      if (cost > fundedUnits) throw StateError('insufficient');
+      final next = fundedUnits - cost;
+      if (next.bitLength > 64) throw StateError('fee_short');
+      changeUnits = next;
+    }
     if (sendKind == 'send') {
       String? portal;
       if (restFrame != null && (viewSecret ?? '').isNotEmpty) {
         portal = vaultDest(restFrame, viewKey: viewSecret!);
       }
       final leftover = fundedShe - needShe;
-      if (leftover > 1e-18) {
+      final wantsChange = changeUnits != null ? changeUnits > BigInt.zero : leftover > 1e-18;
+      if (wantsChange) {
         final derive = restFrame ?? src;
         if (paymentCode != null && isFullPaymentCode(paymentCode)) {
           final payChange = silentPay(paymentCode);
@@ -6421,12 +8207,18 @@ class ShearLedger implements ReadProofSink {
     String? sigHex;
     String? spendPubHex;
     final vouts = <Map<String, dynamic>>[
-      {'address': destTo, 'nanos': nanos, 'kind': sendKind},
+      {'address': destTo, 'nanos': u64OnWire(payUnits), 'kind': sendKind},
     ];
     if (sendKind == 'send' && changeDest != null) {
-      final leftoverNanos = ((fundedShe - needShe) * kUnitsPerShe).round();
-      if (leftoverNanos > 0) {
-        vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
+      if (changeUnits != null) {
+        if (changeUnits > BigInt.zero) {
+          vouts.add({'address': changeDest, 'nanos': u64OnWire(changeUnits), 'kind': 'send'});
+        }
+      } else {
+        final leftoverNanos = ((fundedShe - needShe) * kUnitsPerShe).round();
+        if (leftoverNanos > 0 && leftoverNanos <= _kSafeDoubleNanos) {
+          vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
+        }
       }
     }
     if (sendKind == 'send' && !vouts.any((o) => o['kind'] == 'dummy')) {
@@ -6450,6 +8242,7 @@ class ShearLedger implements ReadProofSink {
       }
       if (chosen != null) {
       final note = chosen!;
+      if (!noteHasSealedSpendBytes(note)) throw StateError('no_note');
       final spentNote = {
         'kind': (note['kind'] as String?) ?? 'pot',
         'commit': _noteBytes(note['commit'])!,
@@ -6477,6 +8270,7 @@ class ShearLedger implements ReadProofSink {
         final addr = o['address'] as String?;
         if (addr == null || addr.isEmpty) continue;
         if (addr == src || addr == changeDest) {
+          if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
           rememberNote({
             'address': addr,
             'dest': addr,
@@ -6489,8 +8283,11 @@ class ShearLedger implements ReadProofSink {
             'admitPub': o['admitPub'],
             'index': i,
             'prev': Uint8List(32),
+            if (o['valueProof'] != null) 'valueProof': o['valueProof'],
+            if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
             if (o['nanos'] != null) 'nanos': o['nanos'],
-            if (o['nanos'] != null) 'amount': (o['nanos'] as num) / kUnitsPerShe,
+            if (tryU64Units(o['nanos']) != null && _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
+              'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
           });
         }
       }
@@ -6519,20 +8316,38 @@ class ShearLedger implements ReadProofSink {
           'pubs': pubs.map(_bytesHex).toList(),
         }));
       }
-      final proved = await _proveFlowOffUi({
-        'vin': vin,
-        'vout': vouts,
-        'spendSeed': spendSeed,
-        'spentNote': spentNote,
-        'pubs': pubs,
-        'commits': commits,
-      });
-      admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
-      note['spent'] = true;
+      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+      progress?.bump(phase: 'prove', done: 0, total: 1);
+      Map<String, dynamic> proved;
+      try {
+        proved = await _proveFlowOffUi({
+          'vin': vin,
+          'vout': vouts,
+          'spendSeed': spendSeed,
+          'spentNote': spentNote,
+          'pubs': pubs,
+          'commits': commits,
+        }).timeout(const Duration(seconds: 8));
+      } on TimeoutException {
+        throw StateError('send_timeout');
+      }
+      admitProof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
+      final ct = admitProof['cTilde'];
+      if (ct is Uint8List) {
+        vin[0] = {
+          'commit': ct,
+          'r': vin[0]['r'] ?? spentNote['r'],
+        };
+        excess = kernelExcess(vouts, vin);
+      }
+      progress?.bump(phase: 'prove', done: 1, total: 1);
       }
     }
     final List<Map<String, dynamic>> postedVin;
     final List<Map<String, dynamic>> postedVout;
+    int? reserveFee;
+    String? postedWithdrawId;
+    String? postedWithdrawNonce;
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
       if (spendSeed != null && spendSeed.length == 32) {
         if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
@@ -6553,6 +8368,8 @@ class ShearLedger implements ReadProofSink {
         'vin': <Map<String, dynamic>>[
           for (final o in vin) Map<String, dynamic>.from(o),
         ],
+        'choice': choice ?? '',
+        'programId': programId ?? '',
       });
       final sealed = <Map<String, dynamic>>[
         for (final raw in (built['vouts'] as List))
@@ -6573,6 +8390,10 @@ class ShearLedger implements ReadProofSink {
       final pub = built['pub'];
       if (sig is Uint8List) sigHex = _bytesHex(sig);
       if (pub is Uint8List) spendPubHex = _bytesHex(pub);
+      final boundFee = built['fee'];
+      if (boundFee is int && boundFee > 0) reserveFee = boundFee;
+      if (built['id'] is String) postedWithdrawId = built['id'] as String;
+      if (built['withdrawNonce'] is String) postedWithdrawNonce = built['withdrawNonce'] as String;
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
@@ -6583,15 +8404,13 @@ class ShearLedger implements ReadProofSink {
         // Sign the posted C̃-only vin/vout so spendPackDigest matches the server.
         final msg = spendMessage(from: src, vout: postedVout, kind: sendKind, vin: postedVin);
         final shared = _stealthShared[src];
-        late Uint8List sig;
-        late Uint8List pub;
-        if (shared != null) {
-          sig = stealthSign(spendSeed, shared, msg);
-          pub = stealthTweakPub(ed25519PublicFromSeed(spendSeed), shared);
-        } else {
-          sig = ed25519Sign(spendSeed, msg);
-          pub = ed25519PublicFromSeed(spendSeed);
-        }
+        final signed = await signSpendOffUi(<String, dynamic>{
+          'spendSeed': spendSeed,
+          'message': msg,
+          if (shared != null) 'shared': shared,
+        });
+        final sig = signed['sig'] as Uint8List;
+        final pub = signed['pub'] as Uint8List;
         sigHex = _bytesHex(sig);
         spendPubHex = _bytesHex(pub);
       }
@@ -6626,6 +8445,10 @@ class ShearLedger implements ReadProofSink {
               ? _bytesHex(admitProof!['spendTag'] as Uint8List)
               : admitProof?['spendTag']?.toString(),
           paintedOwedNanos: paintedCover ? _paintedFundOwedNanos : 0,
+          nanosWire: nanosWire,
+          fee: reserveFee,
+          id: postedWithdrawId,
+          withdrawNonce: postedWithdrawNonce,
         );
       }
 
@@ -6652,7 +8475,7 @@ class ShearLedger implements ReadProofSink {
             'pubs': pubs,
             'commits': commits,
           });
-          admitProof = Map<String, dynamic>.from(proved['admitProof'] as Map);
+          admitProof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
         }
         json = await postOnce();
         if (json['ok'] == true && json['tx'] is Map) break;
@@ -6669,12 +8492,16 @@ class ShearLedger implements ReadProofSink {
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');
       }
+      chosen?['spent'] = true;
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
         // The pool balance below is already net. Debit only when Spendable
         // shows the opened-note cap, which is the gross sum.
-        _noteLockDebit(src, needShe);
+        _noteLockDebit(src, needShe, nanos: payUnits + BigInt.from(levy));
       }
-      final raw = ShearTx.fromJson(Map<String, dynamic>.from(json['tx'] as Map));
+      final echoed = Map<String, dynamic>.from(json['tx'] as Map);
+      echoed['amount'] ??= needShe;
+      echoed['from'] ??= src;
+      final raw = ShearTx.fromJson(echoed);
       // wallet_api.js sets fromBalance to 0 and sends changeBalance for the
       // pool's reconstructed leftover whenever change is parked. That figure
       // is the spent output, not the other confirmed notes on this dest.
@@ -6684,7 +8511,7 @@ class ShearLedger implements ReadProofSink {
         _spendable[src] = left <= 1e-18 ? 0 : left;
         final noteChange = fundedShe - needShe;
         _parkChange(src, changeDest, changeShe: noteChange > 1e-18 ? noteChange : null);
-      } else {
+      } else if (sendKind != 'withdraw') {
         final reported = (json['fromBalance'] as num?)?.toDouble();
         var nextBal = reported ?? (spendable(src) - needShe);
         if (nextBal < 0) nextBal = 0;
@@ -6714,15 +8541,17 @@ class ShearLedger implements ReadProofSink {
       _txs.add(tx);
       return tx;
     }
-    final netBook = spendable(src) - needShe;
-    _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
-    if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
-      // This book is already net. A confirmRound pot has no opened-note cap,
-      // so the assignment above is the only cut. The cap path shows the gross
-      // opened sum and needs this debit once so a 0 book cannot paint it back.
-      _noteLockDebit(src, needShe);
+    if (sendKind != 'withdraw') {
+      final netBook = spendable(src) - needShe;
+      _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
+      if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
+        // This book is already net. A confirmRound pot has no opened-note cap,
+        // so the assignment above is the only cut. The cap path shows the gross
+        // opened sum and needs this debit once so a 0 book cannot paint it back.
+        _noteLockDebit(src, needShe, nanos: payUnits + BigInt.from(levy));
+      }
+      _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     }
-    _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
@@ -7211,33 +9040,44 @@ class ShearPoolClient {
     List<dynamic>? vout,
     dynamic excess,
     Map<String, dynamic>? admitProof,
+    List<Map<String, dynamic>>? admitProofs,
     String? spendTag,
+    int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
-  }) =>
-      _post('/api/wallet/send', {
-        'from': from,
-        'to': to,
-        'amount': amount,
-        if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
-        if (memoCt != null) 'memoCt': memoCt,
-        if (open != null && open.isNotEmpty) 'open': open,
-        if (sig != null && sig.isNotEmpty) 'sig': sig,
-        if (spendPub != null && spendPub.isNotEmpty) 'spendPub': spendPub,
-        if (ephPub != null && ephPub.isNotEmpty) 'ephPub': ephPub,
-        if (portalOpen != null && portalOpen.isNotEmpty) 'portalOpen': portalOpen,
-        if (kind != null && kind.isNotEmpty) 'kind': kind,
-        if (programId != null && programId.isNotEmpty) 'programId': programId,
-        if (choice != null && choice.isNotEmpty) 'choice': choice,
-        if (currentEpoch != null) 'currentEpoch': currentEpoch,
-        if (epochStartMs != null) 'epochStartMs': epochStartMs,
-        if (change != null && change.isNotEmpty) 'change': change,
-        if (vin != null) 'vin': vin,
-        if (vout != null) 'vout': vout,
-        if (excess != null) 'excess': excess,
-        if (admitProof != null) 'admit_proof': admitProof,
-        if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
-      }, legacyPoolSend: legacyPoolSend);
+    String? nanosWire,
+    String? id,
+    String? withdrawNonce,
+  }) {
+    return _post('/api/wallet/send', walletSendBody(
+      from: from,
+      to: to,
+      amount: amount,
+      memoCt: memoCt,
+      open: open,
+      sig: sig,
+      portalOpen: portalOpen,
+      kind: kind,
+      programId: programId,
+      choice: choice,
+      currentEpoch: currentEpoch,
+      epochStartMs: epochStartMs,
+      change: change,
+      spendPub: spendPub,
+      ephPub: ephPub,
+      vin: vin,
+      vout: vout,
+      excess: excess,
+      admitProof: admitProof,
+      admitProofs: admitProofs,
+      spendTag: spendTag,
+      fee: fee,
+      paintedOwedNanos: paintedOwedNanos,
+      nanosWire: nanosWire,
+      id: id,
+      withdrawNonce: withdrawNonce,
+    ), legacyPoolSend: legacyPoolSend);
+  }
 
   Future<Map<String, dynamic>> fluxset() async {
     final got = await _getRawFirst(const ['/fluxset', '/api/wallet/fluxset']);
@@ -7321,4 +9161,99 @@ Future<String> continuumTipReport({List<String>? seeds, HttpClient? http}) async
     'displayHeight=${ledger.displayHeight}',
     'tipHeight=${ledger.tipHeight}',
   ].join('\n');
+}
+
+/// Body for POST /api/wallet/send. A flow send (kind send) posts the sealed tx only:
+/// no from, to, amount, nanos, change, open, or painted owed (AL-3). Its recipient must
+/// carry an admit base, or there is no key to encrypt amtCt to (AL-7). Lock, vote, and
+/// withdraw keep their public-amount body.
+Map<String, dynamic> walletSendBody({
+  required String from,
+  required String to,
+  required double amount,
+  Map<String, dynamic>? memoCt,
+  String? open,
+  String? sig,
+  String? portalOpen,
+  String? kind,
+  String? programId,
+  String? choice,
+  int? currentEpoch,
+  int? epochStartMs,
+  String? change,
+  String? spendPub,
+  String? ephPub,
+  List<dynamic>? vin,
+  List<dynamic>? vout,
+  dynamic excess,
+  Map<String, dynamic>? admitProof,
+  List<Map<String, dynamic>>? admitProofs,
+  String? spendTag,
+  int? fee,
+  int paintedOwedNanos = 0,
+  String? nanosWire,
+  String? id,
+  String? withdrawNonce,
+}) {
+  final flow = kind == null || kind.isEmpty || kind == 'send';
+  if (flow) {
+    if (admitBaseFromAddress(to) == null) throw StateError('send_dest_no_admit_base');
+    final sealed = sig != null &&
+        sig.isNotEmpty &&
+        spendPub != null &&
+        spendPub.isNotEmpty &&
+        vin != null &&
+        vin.isNotEmpty &&
+        vout != null &&
+        vout.isNotEmpty &&
+        (admitProof != null || (admitProofs != null && admitProofs.isNotEmpty));
+    if (!sealed) throw StateError('send_not_sealed');
+    for (final o in vout) {
+      if (o is Map && o['kind'] != 'dummy' && (o['amtCt'] == null || o['rEph'] == null || o['rCt'] == null)) {
+        throw StateError('send_vout_not_wrapped');
+      }
+    }
+    return {
+      if (fee != null) 'fee': fee,
+      if (memoCt != null) 'memoCt': memoCt,
+      'sig': sig,
+      'spendPub': spendPub,
+      'vin': vin,
+      'vout': vout,
+      if (excess != null) 'excess': excess,
+      if (admitProof != null) 'admit_proof': admitProof,
+      if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+      if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+      if (id != null && id.isNotEmpty) 'id': id,
+      if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+    };
+  }
+  return {
+    'from': from,
+    'to': to,
+    if (nanosWire != null && nanosWire.isNotEmpty) 'nanos': nanosWire,
+    if (nanosWire == null || nanosWire.isEmpty) 'amount': amount,
+    if (fee != null) 'fee': fee,
+    if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
+    if (memoCt != null) 'memoCt': memoCt,
+    if (open != null && open.isNotEmpty) 'open': open,
+    if (sig != null && sig.isNotEmpty) 'sig': sig,
+    if (spendPub != null && spendPub.isNotEmpty) 'spendPub': spendPub,
+    if (ephPub != null && ephPub.isNotEmpty) 'ephPub': ephPub,
+    if (portalOpen != null && portalOpen.isNotEmpty) 'portalOpen': portalOpen,
+    'kind': kind,
+    if (programId != null && programId.isNotEmpty) 'programId': programId,
+    if (choice != null && choice.isNotEmpty) 'choice': choice,
+    if (currentEpoch != null) 'currentEpoch': currentEpoch,
+    if (epochStartMs != null) 'epochStartMs': epochStartMs,
+    if (change != null && change.isNotEmpty) 'change': change,
+    if (vin != null) 'vin': vin,
+    if (vout != null) 'vout': vout,
+    if (excess != null) 'excess': excess,
+    if (admitProof != null) 'admit_proof': admitProof,
+    if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+    if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+    if (id != null && id.isNotEmpty) 'id': id,
+    if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+  };
 }

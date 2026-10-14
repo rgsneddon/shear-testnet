@@ -64,7 +64,6 @@ contract Reserve {
     uint256 public constant DAY_MS = 86_400_000;
     uint256 public constant EPOCH_MS = 400 * 86_400_000;
     uint256 public constant CUTOFF_MS = 99 * 86_400_000;
-    uint256 public constant MAX_BPS = 10_000;
     uint256 public constant GENESIS_BONUS = 1;
     uint256 public constant GENESIS_BPS = 284;
     uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
@@ -176,14 +175,17 @@ contract Reserve {
         revert RateBundled();
     }
 
-    /// Node commit only. A caller bps that is not the recomputed bundle is BadRate.
+    uint256 public rateCommitEpoch;
+
+    /// The node passes the recomputed epoch rate. Floor is 0 (uint). Source tenths cannot
+    /// produce a trimmed mean above +100% (100000 tenths → 10000 bps).
     function commitRate(uint256 epochIdx, uint256 bps) external onlyShear {
-        uint256 want = _bundledEpochBps();
-        if (bps != want) revert BadRate();
+        if (bps > 100_000 / 10) revert BadRate();
         if (currentEpoch != 0 && epochIdx != currentEpoch) revert BadRate();
-        epochBps = want;
-        nextEpochBps = want;
-        annualBps = want;
+        epochBps = bps;
+        nextEpochBps = bps;
+        annualBps = bps;
+        rateCommitEpoch = epochIdx == 0 ? 1 : epochIdx;
     }
 
     function rewardNanos(uint256 active, uint256 bps) public pure returns (uint256) {
@@ -236,6 +238,7 @@ contract Reserve {
     }
 
     function _applyEpochRate() internal {
+        if (rateCommitEpoch != 0 && rateCommitEpoch == currentEpoch) return;
         uint256 proposal = _bundledEpochBps();
         epochBps = proposal;
         nextEpochBps = proposal;

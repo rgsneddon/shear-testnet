@@ -32,8 +32,29 @@ describe('website W-IMPL binds', () => {
     assert.match(explorer, /Nodes online/);
     assert.match(explorer, /id="ex-nodes-online"/);
     assert.match(explorer, /setText\('ex-nodes-online', String\(Math\.max\(0, Number\(stats\.nodesOnline\) \|\| 0\)\)\)/);
-    assert.doesNotMatch(explorer, /id="ex-reserve-minted"/);
+    assert.match(explorer, /id="ex-reserve-minted"/);
+    assert.match(explorer, /Reserve minted \(on-chain\)/);
     assert.doesNotMatch(explorer, /Shear minted by Reserve/);
+    assert.doesNotMatch(explorer, /Reserve minted \(on-chain\)[^<]*nanos/);
+    const fmtShe = explorer.slice(explorer.indexOf('function fmtShe'), explorer.indexOf('function ongoingHashbonusHashes'));
+    const supplyFns = explorer.slice(explorer.indexOf('function supplyWord'), explorer.indexOf('async function loadRecent'));
+    const paint = vm.runInNewContext(
+      `const bag = {};
+       function setText(id, text) { bag[id] = String(text); }
+       ${fmtShe}
+       ${supplyFns}
+       paintHolders({ reserveMintedNanos: 100000000000, supplyStatus: 'verified', circulating: 1, emitted: 1, noteCount: 2 });
+       const verified = bag['ex-reserve-minted'];
+       paintHolders({ reserveMintedNanos: null, supplyStatus: 'pending', circulating: null, emitted: null, noteCount: 0 });
+       const pending = bag['ex-reserve-minted'];
+       paintHolders({ reserveMintedNanos: 0, supplyStatus: 'verified', circulating: 0, emitted: 0, noteCount: 0 });
+       const zero = bag['ex-reserve-minted'];
+       ({ verified, pending, zero });`,
+    );
+    assert.equal(paint.verified, '1 SHE · verified');
+    assert.equal(paint.pending, '—');
+    assert.equal(paint.zero, '0 SHE · verified');
+    assert.equal(paint.verified.includes('nanos'), false);
     assert.match(explorer, /id="ex-reserve-vault"/);
     assert.doesNotMatch(explorer, /fully synced/);
     const start = explorer.indexOf('function ongoingHashbonusHashes');
@@ -44,7 +65,9 @@ describe('website W-IMPL binds', () => {
     assert.equal(withNetwork, 12);
     assert.equal(poolOnly, 0);
     const poolSrc = read('../src/pool.js');
-    assert.match(poolSrc, /networkAvgBlockTimeMs: avgBlockIntervalMs\(store\.blocks\)/);
+    assert.match(poolSrc, /const sealed = sealedIntervalSpan\(store\.blocks\)/);
+    assert.match(poolSrc, /networkAvgBlockTimeMs: sealed\.meanMs/);
+    assert.doesNotMatch(poolSrc, /avgBlockIntervalMs\(store\.blocks\)/);
     assert.doesNotMatch(poolSrc, /networkAvgBlockTimeMs: avgMs/);
     assert.match(poolSrc, /avgBlockTimeMs: avgMs/);
   });
@@ -225,7 +248,7 @@ describe('website W-IMPL binds', () => {
 
   it('pool heading is pool-scoped and circulating subtitle does not say spendable people', () => {
     assert.match(pool, /Last Block \(pool\)/);
-    assert.match(pool, /Pool hashrate/);
+    assert.match(pool, /Pool rho/);
     assert.match(explorer, /Circulating supply\. Dest tags are not listed as people\./);
     assert.doesNotMatch(explorer, /Spendable SHE/);
   });
@@ -275,14 +298,14 @@ describe('website W-IMPL binds', () => {
     assert.match(pool, /shear-chrome\.js/);
   });
 
-  it('v11 law and the closed v10 soak note name their own fingerprints', () => {
+  it('v12 law and the closed v10 soak note name their own fingerprints', () => {
     const consensus = read('../../specs/consensus.md');
     const ops = read('../../docs/OPS-testnet-v10-90s.md');
-    assert.match(consensus, /shear-testnet-v11/);
-    assert.match(consensus, /median11/);
+    assert.match(consensus, /shear-testnet-v12/);
+    assert.match(consensus, /aserti3-2d/);
     assert.match(consensus, /GENESIS_BITS=17/);
-    assert.match(consensus, /τ=16T/);
-    assert.match(consensus, /ASERT_TAU_MS=1440000/);
+    assert.match(consensus, /τ=2h/);
+    assert.match(consensus, /ASERT_TAU_MS=7200000/);
     assert.match(consensus, /invent-must-not-return/);
     assert.match(ops, /shear-testnet-v10/);
     assert.match(ops, /median11/);

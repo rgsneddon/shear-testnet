@@ -8,6 +8,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SHEARK_MINER_VERSION } from '../crypto/asert.js';
 import {
   newIdentity,
   payoutDest,
@@ -115,8 +116,9 @@ describe('privacy.walk', () => {
     }), spendKey);
     assert.equal(verifySpendSig(tx), true);
     assert.equal(SPENDABLE_CONFIRMATIONS, 9);
-    const funded = verifyFundedBody([tx], (addr) => (addr === bobPay.dest ? 3 * NANOS_PER_SHE : 0));
-    assert.equal(funded.ok, true, funded.reason);
+    const funded = verifyFundedBody([tx], () => Number.MAX_SAFE_INTEGER);
+    assert.equal(funded.ok, false, funded.reason);
+    assert.equal(funded.reason, 'kind');
     assert.notEqual(change.dest, bobPay.dest);
     const foreign = generateKeyPairSync('ed25519');
     const stolen = signSpendTx({ ...tx, sig: undefined, spendPub: undefined }, foreign.privateKey);
@@ -280,10 +282,10 @@ describe('privacy.walk', () => {
   it('10: stratum she1 is RAM-only; serialized miner row and pool-miner.json have no she1/IP/UA', () => {
     const alice = newIdentity();
     const owned = freshStealthDest(alice).dest;
-    const sheOnly = admitClient({ version: '2.1', login: alice.paymentCode, client: 'ShearHash' });
+    const sheOnly = admitClient({ version: SHEARK_MINER_VERSION, login: alice.paymentCode, client: 'ShearHash' });
     assert.equal(sheOnly.payoutDest, '');
     assert.equal(sheOnly.ramAlias, true);
-    const sheOwned = admitClient({ version: '2.1', login: `${alice.paymentCode}.worker`, dest: owned, client: 'ShearHash' });
+    const sheOwned = admitClient({ version: SHEARK_MINER_VERSION, login: `${alice.paymentCode}.worker`, dest: owned, client: 'ShearHash' });
     assert.equal(sheOwned.payoutDest, owned);
     assert.equal(sheOwned.login.startsWith('ssa1'), true);
     assert.equal(hasherPayoutDest(alice.paymentCode, { dest: aliasDestOfSilentId(alice.paymentCode) }), null);
@@ -321,37 +323,44 @@ describe('privacy.walk', () => {
     const restTx = { kind: 'send', from: dest, to: alice.address, vin: [{ address: dest }], vout: [{ address: alice.address, nanos: 1 }] };
     assert.equal(checkTxAddressFields(restTx).reason, 'rest_frame_on_chain');
     const pool = emptyMempool();
-    assert.equal(admitMempool(pool, sheTx).reason, 'silent_id_on_chain');
+    // No plaintext amount on the probe, or amount_field answers first.
+    assert.equal(admitMempool(pool, { ...sheTx, vout: [{ address: alice.paymentCode }] }).reason, 'silent_id_on_chain');
     assert.equal(HASH_TX_LIVE, 1);
     const fp = consensusFingerprint();
     assert.match(fp, /DEST_HRP_SSA_ONLY=1/);
     assert.match(fp, /SPEND_SIG_ONLY=1/);
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);
+    assert.doesNotMatch(fp, /NETWORK=shear-testnet-v11/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.match(fp, /HASH_TX_LIVE=1/);
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
-    assert.match(fp, /ASERT_STEP=median11\(log2\(T\/seen\)\)\*\(T\/tau\)/);
-    assert.match(fp, /POOL_FEE_MAX_BPS=300/);
+    assert.match(fp, /ASERT_STEP=aserti3-2d/);
+    assert.doesNotMatch(fp, /ASERT_STEP=median11/);
+    assert.match(fp, /POOL_FEE_MAX_BPS=200/);
     assert.doesNotMatch(fp, /POOL_FEE_BPS=100/);
     assert.match(fp, /AMOUNT=confidential/);
     assert.match(fp, /DUMMY_OUTS=1/);
-    assert.match(fp, /ENC_SHARE=v5/);
+    assert.match(fp, /ENC_SHARE=v5\+work7/);
+    assert.match(fp, /SHARE_UNITS=2\^bits/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);
     assert.match(fp, /DANDELIONPP=1/);
     assert.match(fp, /VIEW_TAG=1/);
     assert.match(fp, /KDF=argon2id-shewall/);
     assert.match(fp, /RESERVE=shear-reserve-v1/);
     assert.match(fp, /RESERVE_EVM=1/);
-    assert.match(fp, /RESERVE_INTEREST=4d-bps-floor/);
+    assert.match(fp, /RESERVE_REWARD=4d-bps-floor/);
+    assert.doesNotMatch(fp, /RESERVE_INTEREST=/);
+    assert.doesNotMatch(fp, /INTEREST=epoch-bps-floor/);
     assert.match(fp, /ORACLE=basket-mean-14/);
     assert.match(fp, /VORTEX=vort1-pin/);
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
     assert.match(fp, /LEVY_SPLIT=100-finder-work,empty=public-finder-note/);
-    assert.match(fp, /ADMIT=ADMITv2/);
-    assert.match(fp, /RANGE=bpplus/);
+    assert.match(fp, /ADMIT=ADMITv3/);
+    assert.match(fp, /RANGE=packed-bit/);
+    assert.doesNotMatch(fp, /RANGE=bpplus/);
     assert.match(fp, /LEVY=weight/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v3/);
     assert.equal(/fcmp/i.test(fp), false);

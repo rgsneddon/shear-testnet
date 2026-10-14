@@ -8,6 +8,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const WATCH_FILE = 'watch.jsonl';
 
@@ -15,13 +16,31 @@ function getJson(url) {
   return new Promise((resolve, reject) => {
     const req = http.get(url, (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let got = 0;
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        fn(value);
+      };
+      res.on('data', (c) => {
+        const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+        got += buf.length;
+        if (got > HTTP_BODY_MAX) {
+          const err = new Error('body_cap');
+          err.code = 'body_cap';
+          try { res.destroy(); } catch { /* ignore */ }
+          finish(reject, err);
+          return;
+        }
+        chunks.push(buf);
+      });
       res.on('end', () => {
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
-        catch (e) { reject(e); }
+        try { finish(resolve, parseBoundedJson(Buffer.concat(chunks).toString('utf8') || '{}')); }
+        catch (e) { finish(reject, e); }
       });
     });
-    req.on('error', reject);
+    req.on('error', (err) => reject(err));
   });
 }
 
@@ -76,10 +95,26 @@ export async function pushFreeze(poolBase, row) {
     const body = JSON.stringify({ frozen: row.frozen, reason: row.alert?.reason || '', sample: row });
     const req = http.request(url, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      let got = 0;
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      res.on('data', (c) => {
+        const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+        got += buf.length;
+        if (got > HTTP_BODY_MAX) {
+          try { res.destroy(); } catch { /* ignore */ }
+          finish({ ok: false, reason: 'body_cap' });
+          return;
+        }
+        chunks.push(buf);
+      });
       res.on('end', () => {
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{"ok":true}')); }
-        catch { resolve({ ok: true }); }
+        try { finish(parseBoundedJson(Buffer.concat(chunks).toString('utf8') || '{"ok":true}')); }
+        catch { finish({ ok: true }); }
       });
     });
     req.on('error', reject);

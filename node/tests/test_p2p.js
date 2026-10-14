@@ -9,7 +9,8 @@ import { spendBox, admitSend } from '../../tests/spend_box.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
-import { MAGIC_TESTNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BITS_PACKED, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { NODE_DISPLAY } from '../src/product.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 import { decodeHeader } from '../../crypto/header.js';
@@ -385,14 +386,14 @@ describe('p2p gossip', () => {
     assert.equal(cfg.p2p, P2P_PORT);
     assert.equal(cfg.p2p, 30303);
     assert.equal(cfg.magic, MAGIC_TESTNET);
-    assert.equal(cfg.magic, 'shear-testnet-v12');
-    assert.equal(cfg.version, '18.0');
-    assert.equal(cfg.display, 'Shear Sentinel v18');
+    assert.equal(cfg.version, PRODUCT_VERSION);
+    assert.equal(cfg.display, NODE_DISPLAY);
+    assert.equal(NODE_DISPLAY, `Shear Sentinel v${PRODUCT_VERSION.split('.')[0]}`);
     assert.equal(cfg.name, 'Shear Sentinel');
     assert.equal(cfg.mainnet, false);
     assert.equal(cfg.phaseBGate, true);
     assert.equal(cfg.rpc, 18332);
-    assert.equal(cfg.admit, 'ADMITv2');
+    assert.equal(cfg.admit, 'ADMITv3');
     assert.equal(cfg.hashTxLive, 1);
     assert.equal(cfg.archival, true);
     assert.equal(cfg.fastSync, false);

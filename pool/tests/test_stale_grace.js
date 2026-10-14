@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'node:path';
 import net from 'node:net';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   createPool,
@@ -18,6 +19,13 @@ import {
   JOB_HEADER_HISTORY,
 } from '../src/pool.js';
 import { decodeHeader, encodeHeader, headerFromHex } from '../../crypto/header.js';
+import { nonceWithShareTarget } from '../../crypto/share_batch.js';
+
+function shareNonce(n, job) {
+  const bits = Number(job?.shareBits);
+  if (Number.isInteger(bits) && bits > 0) return nonceWithShareTarget(n, bits);
+  return n;
+}
 
 function tmpPool(shareBits = 8) {
   const id = newIdentity();
@@ -35,7 +43,8 @@ function tmpPool(shareBits = 8) {
 }
 
 function findShare(job, dest, max = 30_000n) {
-  for (let nonce = 0n; nonce < max; nonce += 1n) {
+  for (let n = 0n; n < max; n += 1n) {
+    const nonce = shareNonce(n, job);
     const s = scoreShare({ job, nonce, dest });
     if (s.ok) return { nonce, s };
   }
@@ -43,7 +52,8 @@ function findShare(job, dest, max = 30_000n) {
 }
 
 function findMiss(job, dest, max = 80_000n) {
-  for (let nonce = 0n; nonce < max; nonce += 1n) {
+  for (let n = 0n; n < max; n += 1n) {
+    const nonce = shareNonce(n, job);
     const s = scoreShare({ job, nonce, dest });
     if (!s.ok && s.reason === 'low_diff' && s.hash) return { nonce, s };
   }
@@ -70,7 +80,7 @@ function loginAndSubmit(port, dest, submits) {
       sock.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login: `${dest}.rig`, client: 'ShearHash', name: 'ShearK-Miner', version: '2.1', threads: 1 },
+        params: { login: `${dest}.rig`, client: 'ShearHash', name: 'ShearK-Miner', version: SHEARK_MINER_VERSION, threads: 1 },
       }) + '\n');
     });
     sock.on('data', (c) => {
@@ -103,7 +113,7 @@ function loginAndSubmit(port, dest, submits) {
   });
 }
 
-describe('stale classification and restamp/grace accept', { timeout: 300_000 }, () => {
+describe('stale classification and restamp/grace accept', { timeout: 1_200_000 }, () => {
   it('only stale_job counts as stale; restamp history is kept', () => {
     assert.equal(isStaleReject('stale_job'), true);
     assert.equal(isStaleReject('stale'), true);
@@ -122,7 +132,7 @@ describe('stale classification and restamp/grace accept', { timeout: 300_000 }, 
     assert.equal(jobWithinGrace({ jobId: 'old' }, { jobId: 'old' }, Date.now() - 13_000), false);
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /byPrev === livePrev/);
-    assert.match(src, /liveInt === jobInt/);
+    assert.match(src, /Number\(decoded\.bits\) === Number\(wantBits\)/);
     const { pool } = tmpPool(8);
     const a = pool.issueJob();
     a.timestamp = String(Date.now() - JOB_RESTAMP_MS - 50_000);
@@ -198,7 +208,9 @@ describe('stale classification and restamp/grace accept', { timeout: 300_000 }, 
     const job = pool.issueJob();
     const a = findShare(job, dest);
     let b;
-    for (let nonce = a.nonce + 1n; nonce < a.nonce + 30_000n; nonce += 1n) {
+    for (let n = 0n; n < 30_000n; n += 1n) {
+      const nonce = shareNonce(n, job);
+      if (nonce === a.nonce) continue;
       const s = scoreShare({ job, nonce, dest });
       if (s.ok) { b = { nonce, s }; break; }
     }

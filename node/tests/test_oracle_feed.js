@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { consensusFingerprint } from '../../crypto/asert.js';
+import { consensusFingerprint, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { NODE_DISPLAY } from '../src/product.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { encodeDest } from '../../crypto/address.js';
 import { createRpc } from '../src/rpc.js';
@@ -81,8 +82,9 @@ describe('Shear Sentinel staking oracle', () => {
       assert.equal(one.portal.accrued, 0);
       assert.equal(Object.keys(vault.portals).length, 0);
       const cfg = printConfig();
-      assert.equal(cfg.display, 'Shear Sentinel v18');
-      assert.equal(cfg.version, '18.0');
+      assert.equal(cfg.display, NODE_DISPLAY);
+      assert.equal(cfg.version, PRODUCT_VERSION);
+      assert.equal(NODE_DISPLAY, `Shear Sentinel v${PRODUCT_VERSION.split('.')[0]}`);
     } finally {
       rpc.close();
     }

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { epochMs } from './pot_sched.js';
+import { epochMs, epochDays, vortexEpochIndex } from './pot_sched.js';
 
 /**
  * The Reserve oracle. The epoch rate is the attested 14-bank bundle below.
@@ -15,8 +15,6 @@ export const RESERVE_ORACLE_ID = 'shear-reserve-oracle-v1';
  */
 export const GENESIS_BPS = 284;
 export const RESERVE_ORACLE_DEFAULT_BPS = GENESIS_BPS;
-/** Wire bound for a lone producer observe. Not an aggregate cap. */
-export const RESERVE_ORACLE_MAX_BPS = 10_000;
 export const REWARD_DENOM_DAYS = 400;
 export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;
 export const ORACLE_MAX_AGE_MS = 14 * 86_400_000;
@@ -32,11 +30,14 @@ export const TRIM_EACH_SIDE = 2;
 export const ORACLE_ACTIVATION_HEIGHT = null;
 export const ORACLE_SUPERMAJORITY_NUM = 2;
 export const ORACLE_SUPERMAJORITY_DEN = 3;
-/** Pack window: 1008 blocks on mainnet, 144 on testnet (fits the 4-day epoch). */
-export const ORACLE_WINDOW_MAINNET = 1008;
-export const ORACLE_WINDOW_TESTNET = 144;
-/** Mainnet reports older than one week before the boundary are outside the window. */
+/**
+ * One week of 90 s blocks. Same interval as TARGET_BLOCK_INTERVAL_MS.
+ * asert.js imports this module, so the interval is not imported back.
+ */
+export const ORACLE_BLOCK_MS = 90_000;
+/** Mainnet report window is one week by duration, counted in block heights. */
 export const ORACLE_WINDOW_MS = 7 * 86_400_000;
+export const ORACLE_WINDOW_MAINNET = ORACLE_WINDOW_MS / ORACLE_BLOCK_MS;
 export const PRODUCER_SHARE_ALERT = 0.4;
 
 /**
@@ -199,33 +200,95 @@ export function oracleRuleAt(height, { activationHeight = ORACLE_ACTIVATION_HEIG
   return h >= Math.floor(Number(activationHeight)) ? 'median3b' : 'fixed';
 }
 
+/**
+ * Testnet uses the same week-of-epoch fraction as mainnet.
+ * 7/400 of a 4-day epoch is 67 blocks at 90 s.
+ */
 export function windowBlocksFor(magic) {
-  return String(magic) === 'shear-v1' ? ORACLE_WINDOW_MAINNET : ORACLE_WINDOW_TESTNET;
+  if (String(magic) === 'shear-v1') return ORACLE_WINDOW_MAINNET;
+  const mainMs = epochMs('shear-v1');
+  const hereMs = epochMs(magic);
+  if (!mainMs || !hereMs) return ORACLE_WINDOW_MAINNET;
+  return Math.max(1, Math.round((ORACLE_WINDOW_MAINNET * hereMs) / mainMs));
 }
 
+export const ORACLE_WINDOW_TESTNET = windowBlocksFor('shear-testnet-v12');
+
 /**
- * Blocks that may carry a report for the boundary.
- * Mainnet keeps the week before the boundary, then the last 1008.
- * Testnet keeps the last 144, which fits inside the 4-day epoch.
+ * Reports that count for the boundary. Selection is by height:
+ * [boundaryHeight − N, boundaryHeight). Miner timestamps are not an input.
  */
-export function selectReportWindow(blocks, boundaryMs, {
+export function selectReportWindow(blocks, boundaryHeight, {
   magic = 'shear-testnet-v12',
   windowBlocks = null,
 } = {}) {
   const cap = windowBlocks == null ? windowBlocksFor(magic) : Math.floor(Number(windowBlocks));
-  const week = String(magic) === 'shear-v1';
+  const boundary = Math.floor(Number(boundaryHeight));
   const picked = [];
   for (const block of blocks || []) {
-    if (week && boundaryMs != null) {
-      const t = Number(block?.timeMs ?? block?.timestamp);
-      if (!Number.isInteger(t)) continue;
-      if (t >= Number(boundaryMs)) continue;
-      if (Number(boundaryMs) - t > ORACLE_WINDOW_MS) continue;
+    const h = Number(block?.height);
+    if (!Number.isInteger(h)) continue;
+    if (Number.isInteger(boundary)) {
+      if (h >= boundary || h < boundary - cap) continue;
     }
     picked.push(block);
   }
+  picked.sort((a, b) => Number(a.height) - Number(b.height));
   if (picked.length <= cap) return picked;
   return picked.slice(picked.length - cap);
+}
+
+export function epochIndexAt(timeMs, genesisMs, magic) {
+  return vortexEpochIndex({
+    nowMs: timeMs,
+    genesisMs,
+    epochDays: epochDays(magic),
+  });
+}
+
+/** First block whose header epoch is later than its parent. Timestamps are the header clock, not a report filter. */
+export function isReportBoundary({ headerMs, parentMs, genesisMs, magic } = {}) {
+  if (!(Number(genesisMs) > 0) || !(Number(headerMs) > 0) || !(Number(parentMs) > 0)) return false;
+  return epochIndexAt(headerMs, genesisMs, magic) > epochIndexAt(parentMs, genesisMs, magic);
+}
+
+/** Window the node passes into verifyBlock. Prior blocks only; this block is the boundary. */
+export function oracleContextFor(priorBlocks, block, magic = 'shear-testnet-v12') {
+  const height = Math.floor(Number(block?.height) || 0);
+  const windowSize = windowBlocksFor(magic);
+  const rows = (priorBlocks || []).map((b) => ({
+    height: Number(b?.height),
+    miner: b?.miner || b?.producer || '',
+    reports: b?.txs?.[0]?.reports || b?.reports || null,
+  }));
+  return {
+    height,
+    oracleWindow: selectReportWindow(rows, height, { magic, windowBlocks: windowSize }),
+    oracleWindowSize: windowSize,
+    activationHeight: ORACLE_ACTIVATION_HEIGHT,
+  };
+}
+
+/** Fields applyReserveBlock needs. The caller supplies header times. */
+export function reserveApplyFields({
+  prior = [],
+  block,
+  magic = 'shear-testnet-v12',
+  parentMs = 0,
+  genesisMs = 0,
+  nowMs = 0,
+} = {}) {
+  const ctx = oracleContextFor(prior, block, magic);
+  return {
+    block,
+    nowMs,
+    oracleWindow: ctx.oracleWindow,
+    oracleWindowSize: ctx.oracleWindowSize,
+    activationHeight: ctx.activationHeight,
+    height: Math.floor(Number(block?.height) || ctx.height || 0),
+    parentMs,
+    genesisMs,
+  };
 }
 
 /**
@@ -447,6 +510,48 @@ export function observeRate(oracle, { annualBps, nowMs } = {}) {
   void nowMs;
   void oracle;
   return { ok: false, reason: 'rate_bundled' };
+}
+
+/**
+ * A coinbase observe is one integer bps and one integer time.
+ * Absent is no observation. Anything else is not a rate.
+ */
+export function parseCoinbaseObserve(tx) {
+  if (!tx || tx.observe == null) return { ok: true, observe: null };
+  if (!tx.coinbase) return { ok: false, reason: 'bad_rate' };
+  const raw = tx.observe;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, reason: 'bad_rate' };
+  }
+  const bps = raw.annualBps;
+  const at = raw.observedAtMs;
+  if (typeof bps !== 'number' || !Number.isSafeInteger(bps) || bps < 0) {
+    return { ok: false, reason: 'bad_rate' };
+  }
+  if (typeof at !== 'number' || !Number.isSafeInteger(at) || at < 0) {
+    return { ok: false, reason: 'bad_rate' };
+  }
+  return { ok: true, observe: { annualBps: bps, observedAtMs: at } };
+}
+
+/** Any observe is unattested. Miner reports use `reports`, not this field. */
+export function coinbaseObserveRejected(txs) {
+  const list = Array.isArray(txs) ? txs : [];
+  for (const tx of list) {
+    if (tx && tx.observe != null) return { ok: false, reason: 'observe_unattested' };
+  }
+  return null;
+}
+
+/** Bound into the coinbase digest. A bad field still changes the digest. */
+export function observeDigestSuffix(tx) {
+  if (!tx?.coinbase || tx.observe == null) return null;
+  const parsed = parseCoinbaseObserve(tx);
+  if (!parsed.ok || !parsed.observe) return Buffer.from('observebad1');
+  const b = Buffer.alloc(12);
+  b.writeUInt32LE(parsed.observe.annualBps, 0);
+  b.writeBigUInt64LE(BigInt(parsed.observe.observedAtMs), 4);
+  return Buffer.concat([Buffer.from('observe1'), b]);
 }
 
 function asUnit(n) {

@@ -13,13 +13,13 @@ import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_session.dart';
 
 void main() {
-  test('Continuum 0.71 build number comes from pubspec +N and is not 49', () {
-    expect(kWalletVersion, '0.71');
-    expect(kCliVersion, '0.71');
-    expect(kBookMagic, 'shear-testnet-v11');
+  test('Continuum 0.72 build number comes from pubspec +N and is not 49', () {
+    expect(kWalletVersion, '0.72');
+    expect(kCliVersion, '0.72');
+    expect(kBookMagic, 'shear-testnet-v12');
     final pubspec = File('pubspec.yaml').readAsStringSync();
-    expect(pubspec, contains('version: 0.71.0+96'));
-    final plus = RegExp(r'version:\s*0\.71\.0\+(\d+)').firstMatch(pubspec);
+    expect(pubspec, contains('version: 0.72.0+97'));
+    final plus = RegExp(r'version:\s*0\.72\.0\+(\d+)').firstMatch(pubspec);
     expect(plus, isNotNull);
     final build = int.parse(plus!.group(1)!);
     expect(build, greaterThan(91));
@@ -28,7 +28,7 @@ void main() {
     expect(pack, isNot(contains('BUILD_NUMBER:-49')));
     expect(pack, contains('PUBSPEC_PLUS'));
     expect(pack, contains('ANDROID_BUILD_NUMBER_NOT_ABOVE_91'));
-    expect(pubspec, contains('Displayed pin is 0.71.'));
+    expect(pubspec, contains('Displayed pin is 0.72.'));
     expect(pubspec, isNot(contains('Displayed pin is 0.66.')));
     final buildLine = pack.split('\n').where((l) => l.contains('flutter build apk')).join('\n');
     expect(buildLine, contains('flutter build apk'));
@@ -74,7 +74,7 @@ void main() {
     json.listen((req) async {
       req.response.statusCode = 200;
       req.response.headers.contentType = ContentType.json;
-      req.response.write('{"height":4,"header":"aa","magic":"shear-testnet-v11"}');
+      req.response.write('{"height":4,"header":"aa","magic":"$kBookMagic"}');
       await req.response.close();
     });
     final live = ShearReadSync(
@@ -140,7 +140,7 @@ void main() {
     final again = ShearSession(store: store);
     await again.unlock('correct horse battery staple');
     expect(again.identity!.paymentCode, she1);
-    expect(kBookMagic, 'shear-testnet-v11');
+    expect(kBookMagic, 'shear-testnet-v12');
   });
 
   test('unsealed vault observe does not mint Spendable and Sign is local-only', () {
@@ -148,7 +148,7 @@ void main() {
     expect(vaultObserveLabel(sealed: false), contains('not book-final'));
     expect(spendableFromVaultObserve(sealed: false, oracleNanos: 9), 0);
     expect(spendableFromVaultObserve(sealed: true, oracleNanos: 9), 0);
-    expect(reserveWithdrawDialogCopy(), contains('local-only'));
+    expect(reserveWithdrawDialogCopy(), isNot(contains('local-only')));
     expect(reserveWithdrawDialogCopy(), contains('Not full custody'));
     final mainSrc = File('lib/main.dart').readAsStringSync();
     expect(mainSrc, contains('vaultObserveLabel(sealed: false)'));

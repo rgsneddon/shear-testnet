@@ -8,9 +8,11 @@ import path from 'node:path';
 import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS, HASH_BONUS_NANOS } from '../../crypto/asert.js';
 import { isSpendableHeight } from '../../crypto/chronoflux.js';
 import { hash20FromAddress, encodeDest } from '../../crypto/address.js';
+import { payeeFs1Ok } from '../../crypto/n1.js';
 import { asU8 } from '../../crypto/note.js';
 import {
   AUTO_PAYOUT_MIN_NANOS,
+  custodialPullAllowed,
   isMinerSsa1,
   shouldAutoPayout,
   potCreditAfterFeeNanos,
@@ -166,6 +168,8 @@ export function createPullBook(dir) {
 
   /** Record payout dest on login so miner pages show ssa1**** before the next found block. */
   function bindDest(tag, dest) {
+    const raw = String(dest || '').trim().split('.')[0];
+    if (raw && !payeeFs1Ok(raw)) return false;
     const d20 = rememberDest(tag, dest);
     if (d20) save();
     return !!d20;
@@ -180,6 +184,7 @@ export function createPullBook(dir) {
     finderTag = '',
     finderWorker = '',
   } = {}) {
+    if (!custodialPullAllowed()) return { ok: false, reason: 'custodial_pull' };
     const list = (rows || []).filter((r) => r && r.tag && (Number(r.count) || 0) > 0);
     const total = list.reduce((a, r) => a + (Number(r.count) || 0), 0);
     const pot = Math.max(0, Math.floor(Number(nanos) || 0));
@@ -251,6 +256,27 @@ export function createPullBook(dir) {
 
   function view(tag, { tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
     const key = String(tag || '').trim().toLowerCase();
+    if (!custodialPullAllowed()) {
+      const dest = destOf(key);
+      return {
+        pendingNanos: 0,
+        confirmedNanos: 0,
+        unconfirmedNanos: 0,
+        confirmedPotNanos: 0,
+        confirmedHashNanos: 0,
+        hashPaidNanos: 0,
+        sentNanos: 0,
+        lastPullMs: 0,
+        nextPullMs: 0,
+        dest,
+        destRedacted: redactSsa1(dest),
+        autoPayoutMinNanos: 0,
+        foundBlocks: 0,
+        oldestUnconfirmedHeight: 0,
+        confirmRemain: 0,
+        confirmNeed: Math.max(1, Number(need) || 1),
+      };
+    }
     let unconfirmedPot = 0;
     let confirmedPot = 0;
     let hashPaid = 0;
@@ -446,6 +472,7 @@ export function createPullBook(dir) {
   }
 
   function ledger(tag) {
+    if (!custodialPullAllowed()) return [];
     const key = String(tag || '').trim().toLowerCase();
     const byH = new Map();
     for (const c of state.credits) {
@@ -481,6 +508,7 @@ export function createPullBook(dir) {
   }
 
   function dueAuto({ tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
+    if (!custodialPullAllowed()) return [];
     const out = [];
     for (const tag of tags()) {
       const dest = destOf(tag);

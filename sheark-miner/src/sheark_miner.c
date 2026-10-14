@@ -12,7 +12,9 @@
 #endif
 #endif
 #include "shear_hash.h"
+#include "job_bits.h"
 #include "stratum_tls.h"
+#include "../../crypto/share_stamp.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -312,12 +314,23 @@ static void init_note_commit(void) {
   g_have_note = 1;
 }
 
-static int share_or_block_hit(const unsigned char hash[32]) {
+/* Credited width is the LE high byte. The clamp lives in share_stamp.h. */
+static uint64_t stamp_share_nonce(uint64_t n) {
   int sb = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+  return shear_stamp_share_nonce(n, sb);
+}
+
+static int credit_bits_of_nonce(uint64_t nonce) {
+  return shear_credit_bits_of_nonce(nonce);
+}
+
+static int share_or_block_hit(const unsigned char hash[32], uint64_t nonce) {
+  int sb = credit_bits_of_nonce(nonce);
   int bb = atomic_load_explicit(&g_block_bits_live, memory_order_relaxed);
   if (bb > 0 && shear_meets_target(hash, bb)) return 1;
-  /* dest-bound submit only when the job says shareBind=dest. Live rx-floor
-   * pools reject dest-only hits as low_diff. */
+  /* Share credit is the byte in this nonce, not a later vardiff dial.
+   * dest-bound submit only when the job says shareBind=dest. */
+  if (sb < 0) return 0;
   if (atomic_load_explicit(&g_share_bind_dest, memory_order_relaxed) && g_have_note) {
     unsigned char bound[32];
     shear_share_bind(hash, g_note_commit, bound);
@@ -607,13 +620,12 @@ static void apply_job(const char *line) {
     json_token(line, "id", job.jobId, sizeof(job.jobId));
   }
   if (!has_header || parse_header_hex(header_hex, job.header) != 0) return;
-  int sb = 8, bb = 16, bits = 0;
-  json_int(line, "shareBits", &sb);
-  json_int(line, "blockBits", &bb);
-  json_int(line, "bits", &bits);
+  int sb = 0, bb = 0, bits = 0;
+  int has_sb = json_int(line, "shareBits", &sb);
+  int has_bb = json_int(line, "blockBits", &bb);
+  int has_bits = json_int(line, "bits", &bits);
   json_int(line, "height", &job.height);
-  job.share_bits = sb > 0 ? sb : 8;
-  job.block_bits = bb > 0 ? bb : (bits > 0 ? bits : 16);
+  if (!shear_job_widths(has_sb, sb, has_bb, bb, has_bits, bits, &job.share_bits, &job.block_bits)) return;
   {
     char bind[16] = "";
     json_token(line, "shareBind", bind, sizeof(bind));
@@ -720,12 +732,19 @@ static void apply_ack(const char *line) {
   json_token(line, "status", status, sizeof(status));
   char err[160] = "";
   json_token(line, "error", err, sizeof(err));
+  char note[200] = "";
+  json_token(line, "message", note, sizeof(note));
   char low[160];
   snprintf(low, sizeof(low), "%s", err[0] ? err : status);
   for (char *p = low; *p; p++) *p = (char)tolower((unsigned char)*p);
   int inflight = atomic_load(&g_inflight);
   /* Login replies with status=OK. Only a submit ACK (in-flight share) counts. */
-  if (msgid == 1 && inflight <= 0) return;
+  if (msgid == 1 && inflight <= 0) {
+    if (err[0] || note[0]) {
+      fprintf(stderr, "pool refused login: %s\n", note[0] ? note : err);
+    }
+    return;
+  }
   if (strstr(low, "ok") && !err[0]) {
     if (inflight > 0) {
       g_accepted++;
@@ -856,7 +875,7 @@ static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char 
   snprintf(s->jobId, sizeof(s->jobId), "%s", jobId);
   s->nonce = nonce;
   s->gen = gen;
-  s->share_bits = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+  s->share_bits = credit_bits_of_nonce(nonce);
   shear_hash_hex(hash, s->hash);
   snprintf(g_last_job, sizeof(g_last_job), "%s", jobId);
   g_last_nonce = nonce;
@@ -948,21 +967,22 @@ static void *hash_worker(void *arg) {
       primed = 0;
       memcpy(header, live, SHEAR_HEADER_LEN);
     }
-    shear_set_nonce(header, n);
+    uint64_t stamped = stamp_share_nonce(n);
+    shear_set_nonce(header, stamped);
     if (!primed) {
       if (shear_hash_first(header) != 0) {
         unsigned char hash[32];
         shear_hash(header, hash);
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-            && share_or_block_hit(hash)) {
-          enqueue_share(job.jobId, n, hash, job.gen);
+            && share_or_block_hit(hash, stamped)) {
+          enqueue_share(job.jobId, stamped, hash, job.gen);
         }
         n += (uint64_t)g_threads;
         continue;
       }
       primed = 1;
-      primed_n = n;
+      primed_n = stamped;
       memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
       n += (uint64_t)g_threads;
       continue;
@@ -974,14 +994,14 @@ static void *hash_worker(void *arg) {
     }
     atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-        && share_or_block_hit(hash)) {
+        && share_or_block_hit(hash, primed_n)) {
       unsigned char check[32];
       shear_hash(primed_hdr, check);
       if (memcmp(hash, check, 32) != 0) {
         memcpy(hash, check, 32);
-        if (!share_or_block_hit(hash)) {
+        if (!share_or_block_hit(hash, primed_n)) {
           g_dropped++;
-          primed_n = n;
+          primed_n = stamped;
           memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
           n += (uint64_t)g_threads;
           continue;
@@ -989,7 +1009,7 @@ static void *hash_worker(void *arg) {
       }
       enqueue_share(job.jobId, primed_n, hash, job.gen);
     }
-    primed_n = n;
+    primed_n = stamped;
     memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
     n += (uint64_t)g_threads;
   }
@@ -1052,11 +1072,11 @@ static void flush_shares(Conn *mainc) {
 
 static void fmt_hashrate(double hs, char *buf, size_t n) {
   static const char *units[] = {
-    "H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s", "EH/s", "ZH/s",
+    "R/s", "kR/s", "mR/s", "gR/s", "tR/s", "pR/s", "eR/s", "zR/s",
   };
   int i = 0;
   if (!(hs > 0.0)) {
-    snprintf(buf, n, "0.0 H/s");
+    snprintf(buf, n, "0.0 R/s");
     return;
   }
   while (hs >= 1000.0 && i < 7) {
@@ -1198,6 +1218,15 @@ static int mine_once(void) {
 }
 
 int main(int argc, char **argv) {
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--stamp") == 0 && i + 1 < argc) {
+      int bits = atoi(argv[++i]);
+      unsigned long long low = (i + 1 < argc) ? strtoull(argv[++i], NULL, 0) : 1ull;
+      uint64_t stamped = shear_stamp_share_nonce(low, bits);
+      printf("%llu %d\n", (unsigned long long)stamped, shear_credit_bits_of_nonce(stamped));
+      return 0;
+    }
+  }
   int do_selftest = 0;
   int do_cfg = 0;
   int bench_secs = 0;
@@ -1344,7 +1373,7 @@ int main(int argc, char **argv) {
       n += 1;
     }
     double secs = (double)bench_secs;
-    printf("bench hashes=%llu rate=%.0f H/s backend=%s (%.0fs)\n",
+    printf("bench hashes=%llu rate=%.0f R/s backend=%s (%.0fs)\n",
            (unsigned long long)h, (double)h / secs, shear_hash_backend(), secs);
     return 0;
   }

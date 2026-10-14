@@ -11,6 +11,11 @@ import {
   TARGET_BLOCK_INTERVAL_MS,
   MAGIC_TESTNET,
   HASH_TX_LIVE,
+  PRODUCT_VERSION,
+  SHARE_FLOOR_BITS,
+  SHEARK_MINER_VERSION,
+  shareCreditMaxBits,
+  MAX_HASH_UNITS_PER_BLOCK,
 } from '../../crypto/asert.js';
 import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { payoutDest, newIdentity, encodeHrp, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
@@ -19,6 +24,7 @@ import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, 
 import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
+import { nonceWithShareTarget, unitsForShare } from '../../crypto/share_batch.js';
 import { publicJob, buildTemplate, hashBonusByMiner } from '../../node/src/chain.js';
 import { GENESIS_PREV } from '../../node/src/chain.js';
 
@@ -58,8 +64,8 @@ describe('stratum wire job', () => {
     assert.equal(j.shareBits, 9);
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /export function wireJob/);
-    assert.match(src, /payload = wireJob\(job, sb\)/);
-    assert.match(src, /job: wireJob\(job, conn\.shareBits\)/);
+    assert.match(src, /payload = wireJob\(aimed \|\| job, sb\)/);
+    assert.match(src, /job: wireJob\(conn\.job, conn\.shareBits\)/);
     assert.match(src, /params: wireJob\(live, next\)/);
   });
 
@@ -132,7 +138,7 @@ describe('observed interval', () => {
     assert.match(src, /setInterval\(maybeRestampJob/);
     assert.match(src, /restampJob: restampLiveHeader/);
     const body = src.slice(src.indexOf('function maybeRestampJob'), src.indexOf('function resolveSubmitJob'));
-    assert.match(body, /decoded\.bits === wantBits/);
+    assert.match(body, /Number\(decoded\.bits\) === Number\(wantBits\)/);
     assert.equal(/liveInt === jobInt/.test(body), false);
     assert.equal(/issueJob\(undefined, \{ force: true \}\)/.test(body), false);
     assert.equal(/if \(hashWait\.size > 0\) return lastJob/.test(src), false);
@@ -281,29 +287,32 @@ describe('HTTP stats cannot stall', () => {
       shareBits: 8,
       bits: 16,
     });
-    await new Promise((resolve, reject) => {
-      pool.stratum.listen(0, '127.0.0.1', () => {
-        pool.httpServer.listen(0, '127.0.0.1', resolve);
+    try {
+      await new Promise((resolve, reject) => {
+        pool.stratum.listen(0, '127.0.0.1', () => {
+          pool.httpServer.listen(0, '127.0.0.1', resolve);
+        });
+        pool.stratum.on('error', reject);
       });
-      pool.stratum.on('error', reject);
-    });
-    const httpPort = pool.httpServer.address().port;
-    const t0 = Date.now();
-    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok(Date.now() - t0 < 500, 'stats handler must not wait on RandomX');
-    assert.equal(stats.ok, true);
-    assert.equal(stats.coin, 'SHE');
-    const fp = await fetch(`http://127.0.0.1:${httpPort}/fingerprint`).then((r) => r.json());
-    assert.equal(fp.ok, true);
-    assert.equal(fp.admit, 'ADMITv2');
-    assert.equal(fp.hashTxLive, 1);
-    assert.equal(fp.magic, 'shear-testnet-v12');
-    assert.ok(String(fp.fingerprint || '').length > 8);
-    const shePage = await fetch(`http://127.0.0.1:${httpPort}/miner/she1ccbe79d6`);
-    assert.equal(shePage.status, 404);
-    const sheApi = await fetch(`http://127.0.0.1:${httpPort}/api/miners/she1862e37`);
-    assert.equal(sheApi.status, 404);
-    pool.close();
+      const httpPort = pool.httpServer.address().port;
+      const t0 = Date.now();
+      const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+      assert.ok(Date.now() - t0 < 500, 'stats handler must not wait on RandomX');
+      assert.equal(stats.ok, true);
+      assert.equal(stats.coin, 'SHE');
+      const fp = await fetch(`http://127.0.0.1:${httpPort}/fingerprint`).then((r) => r.json());
+      assert.equal(fp.ok, true);
+      assert.equal(fp.admit, 'ADMITv3');
+      assert.equal(fp.hashTxLive, 1);
+      assert.equal(fp.magic, MAGIC_TESTNET);
+      assert.ok(String(fp.fingerprint || '').length > 8);
+      const shePage = await fetch(`http://127.0.0.1:${httpPort}/miner/she1ccbe79d6`);
+      assert.equal(shePage.status, 404);
+      const sheApi = await fetch(`http://127.0.0.1:${httpPort}/api/miners/she1862e37`);
+      assert.equal(sheApi.status, 404);
+    } finally {
+      pool.close();
+    }
   });
 
   it('does not sweep auto-payout from stats paint (borkatpayout)', async () => {
@@ -357,20 +366,23 @@ describe('HTTP stats cannot stall', () => {
       queueCalls += 1;
       return inner(tx);
     };
-    await new Promise((resolve, reject) => {
-      pool.stratum.listen(0, '127.0.0.1', () => {
-        pool.httpServer.listen(0, '127.0.0.1', resolve);
+    try {
+      await new Promise((resolve, reject) => {
+        pool.stratum.listen(0, '127.0.0.1', () => {
+          pool.httpServer.listen(0, '127.0.0.1', resolve);
+        });
+        pool.stratum.on('error', reject);
       });
-      pool.stratum.on('error', reject);
-    });
-    pool.paintStatsSnap();
-    assert.equal(queueCalls, 0, 'stats paint must not queueTx; slow mock would be HTTP-only, never an admit_verify stub');
-    const httpPort = pool.httpServer.address().port;
-    const t0 = Date.now();
-    const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok(Date.now() - t0 < 200);
-    assert.equal(stats.ok, true);
-    pool.close();
+      pool.paintStatsSnap();
+      assert.equal(queueCalls, 0, 'stats paint must not queueTx; slow mock would be HTTP-only, never an admit_verify stub');
+      const httpPort = pool.httpServer.address().port;
+      const t0 = Date.now();
+      const stats = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
+      assert.ok(Date.now() - t0 < 200);
+      assert.equal(stats.ok, true);
+    } finally {
+      pool.close();
+    }
   });
 });
 
@@ -392,28 +404,28 @@ describe('admit', () => {
   it('admits ssa1 dest and she1 silent ID, refuses rest-frame shear1 and wrong client', () => {
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash' }).ok, true);
-    const sheOnly = admitClient({ version: '2.1', login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' });
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash' }).ok, true);
+    const sheOnly = admitClient({ version: SHEARK_MINER_VERSION, login: id.paymentCode, client: 'ShearHash', name: 'Shear-Miner' });
     assert.equal(sheOnly.ok, true);
     assert.equal(sheOnly.payoutDest, '');
     assert.equal(sheOnly.login, id.paymentCode);
-    const sheOwned = admitClient({ version: '2.1', login: id.paymentCode, dest, client: 'ShearHash' });
+    const sheOwned = admitClient({ version: SHEARK_MINER_VERSION, login: id.paymentCode, dest, client: 'ShearHash' });
     assert.equal(sheOwned.payoutDest, dest);
-    assert.equal(admitClient({ version: '2.1', login: id.paymentCode, dest: aliasDestOfSilentId(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash', name: 'ShearK-Miner' }).ok, true);
-    assert.equal(admitClient({ version: '2.1', login: id.address, client: 'ShearHash' }).ok, false);
-    const truncated = admitClient({ version: '2.1', login: 'ssa1qincomplete.ubuntu-noel', client: 'ShearHash' });
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: id.paymentCode, dest: aliasDestOfSilentId(id.paymentCode), client: 'ShearHash' }).payoutDest, '');
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash', name: 'ShearK-Miner' }).ok, true);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: id.address, client: 'ShearHash' }).ok, false);
+    const truncated = admitClient({ version: SHEARK_MINER_VERSION, login: 'ssa1qincomplete.ubuntu-noel', client: 'ShearHash' });
     assert.equal(truncated.ok, true);
     assert.equal(truncated.payoutDest, '');
     assert.equal(truncated.ramAlias, true);
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'other' }).ok, false);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'other' }).ok, false);
     assert.equal(admitClient({ version: '1.9', login: dest, client: 'ShearHash' }).ok, false);
-    assert.equal(admitClient({ version: '2.0', login: dest, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ version: '2.0', login: dest, client: 'ShearHash' }).ok, false);
     assert.equal(admitClient({ version: '1.9', login: dest, client: 'ShearHash' }).reason, 'miner_version');
     assert.equal(admitClient({ version: '1.8', login: dest, client: 'ShearHash' }).reason, 'miner_version');
     assert.equal(admitClient({ login: dest, client: 'ShearHash' }).reason, 'miner_version');
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash' }).ok, true);
-    assert.equal(admitClient({ version: '2.1', login: dest, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash' }).ok, true);
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: dest, client: 'ShearHash' }).ok, true);
     assert.equal(publicMinerLabel(id.paymentCode), publicMinerTag(id.paymentCode));
     assert.match(publicMinerLabel(id.paymentCode), /^m[0-9a-f]{8}$/);
     assert.equal(publicMinerLabel(id.paymentCode).includes(id.paymentCode.slice(4)), false);
@@ -427,9 +439,62 @@ describe('admit', () => {
     const hashes = 1_000_000;
     const hud = hashBonusByMiner([{ miner: dest, count: hashes }]);
     assert.equal(hud.size, 0);
-    const bonuses = hashBonusByMiner([], HASH_BONUS_NANOS, [{ dest, nonce: 1n, lz: 8 }]);
-    assert.equal(bonuses.get(dest), 2 ** 8 * HASH_BONUS_NANOS);
-    assert.notEqual(bonuses.get(dest), Math.floor(hashes * HASH_BONUS_NANOS * (10000 - POOL_FEE_BPS) / 10000));
+    const widths = [SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 1, SHARE_FLOOR_BITS + 4, shareCreditMaxBits()];
+    const oneEach = widths.map((bits) => ({ bits, dest: freshStealthDest(newIdentity()).dest }));
+    const stackedWidths = widths.filter((bits) => bits < shareCreditMaxBits());
+    const stacked = freshStealthDest(newIdentity()).dest;
+    const illegalOnly = freshStealthDest(newIdentity()).dest;
+    const rows = [];
+    let low = 1n;
+    for (const row of oneEach) {
+      rows.push({
+        dest: row.dest,
+        nonce: nonceWithShareTarget(low, row.bits),
+        lz: row.bits,
+        shareBits: row.bits,
+      });
+      low += 1n;
+    }
+    for (const bits of stackedWidths) {
+      rows.push({
+        dest: stacked,
+        nonce: nonceWithShareTarget(low, bits),
+        lz: bits,
+        shareBits: bits,
+      });
+      low += 1n;
+    }
+    rows.push({ dest: stacked, nonce: 1n, lz: SHARE_FLOOR_BITS, shareBits: SHARE_FLOOR_BITS });
+    rows.push({ dest: illegalOnly, nonce: 1n, lz: SHARE_FLOOR_BITS, shareBits: SHARE_FLOOR_BITS });
+    for (let i = rows.length - 1; i > 0; i -= 1) {
+      const j = (i * 17 + 3) % (i + 1);
+      const tmp = rows[i];
+      rows[i] = rows[j];
+      rows[j] = tmp;
+    }
+    for (const row of oneEach) {
+      const alone = hashBonusByMiner([], HASH_BONUS_NANOS, [{
+        dest: row.dest,
+        nonce: nonceWithShareTarget(low, row.bits),
+        lz: row.bits,
+        shareBits: row.bits,
+      }]);
+      low += 1n;
+      assert.equal(alone.get(row.dest), unitsForShare(row.bits) * HASH_BONUS_NANOS);
+      assert.equal(alone.size, 1);
+    }
+    const stackedAlone = hashBonusByMiner([], HASH_BONUS_NANOS, rows.filter((row) => row.dest === stacked && row.nonce !== 1n));
+    let stackedExpect = 0;
+    for (const bits of stackedWidths) stackedExpect += unitsForShare(bits) * HASH_BONUS_NANOS;
+    assert.equal(stackedAlone.get(stacked), stackedExpect);
+    const bonuses = hashBonusByMiner([], HASH_BONUS_NANOS, rows);
+    let paidUnits = 0;
+    for (const value of bonuses.values()) paidUnits += value;
+    assert.equal(paidUnits, MAX_HASH_UNITS_PER_BLOCK * HASH_BONUS_NANOS);
+    assert.equal(bonuses.has(illegalOnly), false);
+    for (const row of oneEach) assert.equal(bonuses.has(row.dest), true);
+    assert.equal(bonuses.has(stacked), true);
+    assert.notEqual(bonuses.get(stacked), Math.floor(hashes * HASH_BONUS_NANOS * (10000 - POOL_FEE_BPS) / 10000));
   });
 });
 
@@ -455,7 +520,7 @@ describe('she1 login jobs', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: `${id.paymentCode}.de`, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
+          params: { login: `${id.paymentCode}.de`, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -497,6 +562,7 @@ describe('pool dashboard + stratum', () => {
       });
       pool.stratum.on('error', reject);
     });
+    let minerSock;
     try {
     const httpPort = pool.httpServer.address().port;
     const stratumPort = pool.stratum.address().port;
@@ -505,10 +571,12 @@ describe('pool dashboard + stratum', () => {
     assert.match(html, /color:var\(--ink\)|#0d2137/);
     assert.match(html, />SHE</);
     assert.match(html, /ShearHash/);
-    assert.match(html, /:1111/);
+    assert.match(html, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
+    assert.doesNotMatch(html, /pool\.shear\.digital:1111/);
+    assert.doesNotMatch(html, /0\.0\.0\.0:1111/);
     assert.match(html, />SHE</);
     assert.equal(html.toLowerCase().includes('shearhash'), true);
-    assert.match(html, /She is Private/);
+    assert.match(html, /Shear testnet/);
     assert.match(html, /SmartScreen/);
     assert.match(html, /Authenticode/);
     assert.match(html, /win-smartscreen/);
@@ -533,10 +601,10 @@ describe('pool dashboard + stratum', () => {
     assert.doesNotMatch(html, />To</);
     assert.doesNotMatch(html, />Amount</);
     assert.doesNotMatch(html, />Asset</);
-    assert.match(html, /function fmtLocalTs/);
-    assert.match(html, /getDate\(\)/);
-    assert.match(html, /getHours\(\)/);
-    assert.match(html, /getSeconds\(\)/);
+    assert.match(html, /not a header-timestamp gap/);
+    assert.match(html, /function poolFindClockOffsetMs/);
+    assert.match(html, /function poolLastBlockAgeMs/);
+    assert.match(html, /function fmtSinceBlock/);
     assert.match(html, /b\.hashrate/);
     assert.match(html, /function shortDest/);
     assert.match(html, /slice\(0, 9\)/);
@@ -577,21 +645,22 @@ describe('pool dashboard + stratum', () => {
     assert.equal(stats.policy.freeze_banner, '');
     assert.equal(typeof stats.policy.h_ratio, 'number');
     assert.equal(typeof stats.policy.side_lead, 'number');
-    assert.equal(stats.productVersion, '18.0');
+    assert.equal(stats.productVersion, PRODUCT_VERSION);
     assert.equal(stats.minerVersion, '1.1');
     if (stats.header) assert.equal(stats.header.length, 256);
 
     const job = pool.issueJob();
     assert.equal(gateJob(job).ok, true);
     assert.equal(job.header.length, 256);
-    const hit = findOkShare(job);
+    const hit = findOkShare(job, 25_000n, dest);
 
     const scored = await new Promise((resolve, reject) => {
       const sock = net.connect(stratumPort, '127.0.0.1', () => {
+        minerSock = sock;
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest + '.rig', client: 'ShearHash', name: 'ShearK-Miner', version: '2.1', threads: 1 },
+          params: { login: dest + '.rig', client: 'ShearHash', name: 'ShearK-Miner', version: SHEARK_MINER_VERSION, threads: 1 },
         }) + '\n');
       });
       let buf = '';
@@ -607,17 +676,18 @@ describe('pool dashboard + stratum', () => {
           }) + '\n');
         }
         if (buf.includes('"status":"OK"') && buf.includes('"hash"')) {
-          sock.end();
           resolve(buf);
         }
       });
       sock.on('error', reject);
     });
     assert.match(scored, /OK/);
+    await new Promise((r) => setTimeout(r, STATS_REFRESH_MS + 100));
     const named = await fetch(`http://127.0.0.1:${httpPort}/api/stats`).then((r) => r.json());
-    assert.ok((named.workers || []).some((w) => w.name === 'ShearK-Miner' && w.version === '2.0'));
+    assert.ok((named.workers || []).some((w) => w.name === 'ShearK-Miner' && w.version === SHEARK_MINER_VERSION));
     assert.match(html, /w\.name/);
     } finally {
+      try { minerSock?.destroy(); } catch { /* closed */ }
       pool.close();
     }
   });
@@ -646,7 +716,7 @@ describe('pool dashboard + stratum', () => {
         sock.write(JSON.stringify({
           id: 1,
           method: 'login',
-          params: { login: dest, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
+          params: { login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads, cpuThreads, cpuCores: cpuThreads },
         }) + '\n');
       });
       sock.once('data', () => resolve(sock));
@@ -691,18 +761,24 @@ describe('session inventory fold', () => {
   });
 });
 
-function findOkShare(job, max = 25_000n) {
-  for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+function findOkShare(job, max = 25_000n, dest = '') {
+  const bits = Number(job?.shareBits);
+  const legal = Number.isInteger(bits) && bits > 0;
+  for (let n = 0n; n < max; n += 1n) {
+    const nonce = legal ? nonceWithShareTarget(n, bits) : n;
+    const s = scoreShare({ job, nonce, dest: dest || undefined });
     if (s.ok) return { nonce, s };
   }
   throw new Error('no_share');
 }
 
-function findOkShares(job, n, max = 25_000n) {
+function findOkShares(job, n, max = 25_000n, dest = '') {
+  const bits = Number(job?.shareBits);
+  const legal = Number.isInteger(bits) && bits > 0;
   const out = [];
-  for (let nonce = 0n; nonce < max && out.length < n; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+  for (let i = 0n; i < max && out.length < n; i += 1n) {
+    const nonce = legal ? nonceWithShareTarget(i, bits) : i;
+    const s = scoreShare({ job, nonce, dest: dest || undefined });
     if (s.ok) out.push({ nonce, s });
   }
   if (out.length < n) throw new Error('no_share');
@@ -715,7 +791,7 @@ function loginAndShare(port, login, extra = {}, hit = null) {
       sock.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login, client: 'ShearHash', version: '2.1', threads: 1, name: 'ShearK-Miner', ...extra },
+        params: { login, client: 'ShearHash', version: SHEARK_MINER_VERSION, threads: 1, name: 'ShearK-Miner', ...extra },
       }) + '\n');
     });
     let buf = '';
@@ -747,7 +823,7 @@ function loginAndShare(port, login, extra = {}, hit = null) {
           job.bits = Number(job.bits || job.blockBits || 16);
           job.blockBits = Number(job.blockBits || job.bits || 16);
           try {
-            const use = hit || findOkShare(job);
+            const use = hit || findOkShare(job, 25_000n, destForLogin(login) || '');
             sock.write(JSON.stringify({
               id: 2,
               method: 'submit',
@@ -789,7 +865,7 @@ describe('public miner listing', () => {
     assert.match(miner, /hasPayoutDest/);
     assert.equal(miner.includes('Waiting payout'), false);
     assert.match(miner, /id="workers"/);
-    assert.match(miner, /<th>Worker<\/th>\s*<th>Client<\/th>\s*<th>Hashrate<\/th>\s*<th>Session finds<\/th>\s*<th>Lifetime seals<\/th>\s*<th>Accepted shares<\/th>\s*<th>Hashes reported<\/th>\s*<th>Stale shares<\/th>\s*<th>CPU threads<\/th>/);
+    assert.match(miner, /<th>Worker<\/th>\s*<th>Client<\/th>\s*<th>Rho<\/th>\s*<th>Session finds<\/th>\s*<th>Lifetime seals<\/th>\s*<th>Accepted shares<\/th>\s*<th>Hashes reported<\/th>\s*<th>Stale shares<\/th>\s*<th>CPU threads<\/th>/);
     const workerPaint = miner.slice(miner.indexOf('function paintWorkers'), miner.indexOf('function paint('));
     assert.match(workerPaint, /w\.hashrate/);
     assert.match(workerPaint, /w\.accepted/);
@@ -891,7 +967,7 @@ describe('public miner listing', () => {
     const labels = [...grid[0].matchAll(/class="label">([^<]+)</g)].map((m) => m[1]);
     assert.deepEqual(labels, [
       'Coin', 'Algo', 'Network', 'Proof', 'Height',
-      'Pool hashrate', 'Resistance', 'Miners', 'Workers', 'blockBits', 'shareBits',
+      'Pool rho', 'Resistance', 'Miners', 'Workers', 'blockBits', 'shareBits',
       'Uptime', 'Last Block (pool)',
     ]);
     assert.match(dash, /networkAvgBlockTimeMs/);
@@ -908,14 +984,14 @@ describe('public miner listing', () => {
     assert.doesNotMatch(dash, /class="repo-btn"/);
     assert.doesNotMatch(dash, /class="repo-btns"/);
     assert.match(dash, /grid-template-columns:\s*1fr 2fr/);
-    assert.match(dash, /class="she-private-lockup">She is Private</);
+    assert.match(dash, /class="she-private-lockup">Shear testnet</);
     assert.match(dash, /Great Vibes/);
     assert.match(dash, /<h1>Shear<\/h1>/);
     assert.match(dash, /\.cmd-row \{ display:flex; flex-direction:row;/);
     assert.match(dash, /\.cmd-row pre \{[^}]*overflow-wrap:anywhere/);
-    assert.match(dash, /\.cmd-row button \{ flex:0 0 auto;/);
+    assert.match(dash, /\.cmd-row button[^{]*\{[^}]*flex:\s*0\s+0\s+auto;/);
     assert.match(dash, /<pre id="mine-cmd">[\s\S]*<\/pre>\s*<button type="submit" id="copy-cmd">/);
-    assert.match(dash, /Shear is a private cryptocurrency\./);
+    assert.match(dash, /Shear is a cryptocurrency\./);
     assert.doesNotMatch(dash, /fully fledged blockchain/);
     assert.match(dash, /class="miner-pop"/);
     assert.match(dash, /workerNames/);
@@ -998,11 +1074,11 @@ describe('public miner listing', () => {
     assert.equal(uniquePublicLabels(['0.1.7', '0.1.7']), '0.1.7');
     assert.equal(uniquePublicLabels(['a', 'b', 'a']), 'a, b');
     const folded = foldPublicMinerViews([
-      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: '2.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
-      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: '2.1', hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: SHEARK_MINER_VERSION, hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
+      { miner: 'maaaaaaaa', name: 'Shear-Miner', version: SHEARK_MINER_VERSION, hashrate: 1, accepted: 1, threads: 1, sessions: 1, roundHashes: 1 },
     ]);
     assert.equal(folded[0].name, 'Shear-Miner');
-    assert.equal(folded[0].version, '2.1');
+    assert.equal(folded[0].version, SHEARK_MINER_VERSION);
   });
 
   it('replaces rude miner software names with flower names; worker names stay raw', () => {
@@ -1063,13 +1139,15 @@ describe('public miner listing', () => {
       shareBits: 8,
       bits: 16,
     });
+    let sock;
+    try {
     await new Promise((resolve, reject) => {
       pool.stratum.listen(0, '127.0.0.1', () => {
         pool.httpServer.listen(0, '127.0.0.1', resolve);
       });
       pool.stratum.on('error', reject);
     });
-    const sock = await new Promise((resolve, reject) => {
+    sock = await new Promise((resolve, reject) => {
       const s = net.connect(pool.stratum.address().port, '127.0.0.1', () => {
         s.write(JSON.stringify({
           id: 1,
@@ -1078,6 +1156,7 @@ describe('public miner listing', () => {
             login: `${dest}.rig`,
             client: 'ShearHash',
             name: 'ShearK-Miner',
+            version: SHEARK_MINER_VERSION,
             threads: 2,
             hashes: 4200,
             hashrate: 55,
@@ -1104,7 +1183,10 @@ describe('public miner listing', () => {
     await new Promise((r) => setTimeout(r, 50));
     const gone = pool.publicStats();
     assert.equal((gone.workers || []).some((x) => x.miner === tag), false);
-    pool.close();
+    } finally {
+      try { sock?.destroy(); } catch { /* already closed */ }
+      pool.close();
+    }
   });
 
   it('foldPublicMinerViews keeps one row per opaque miner tag and sums device stats', () => {
@@ -1151,7 +1233,7 @@ describe('public miner listing', () => {
     const stratumPort = pool.stratum.address().port;
     try {
     const job = pool.issueJob();
-    const hits = findOkShares(job, 2);
+    const hits = findOkShares(job, 2, 25_000n, dest);
     const a = await loginAndShare(stratumPort, `${dest}.alpha`, {}, hits[0]);
     const b = await loginAndShare(stratumPort, `${dest}.beta`, {}, hits[1]);
     await new Promise((r) => setTimeout(r, STATS_REFRESH_MS + 100));
@@ -1218,7 +1300,7 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const job = pool.issueJob();
-    const hit = findOkShare(job);
+    const hit = findOkShare(job, 25_000n, dest);
     const sock = await loginAndShare(pool.stratum.address().port, `${dest}.rig`, {
       hashes: 16_590_151_266_784,
       hashrate: 1_062_582_824,
@@ -1283,7 +1365,9 @@ describe('public miner listing', () => {
     const httpPort = pool.httpServer.address().port;
     pool.store.tip = () => ({ height: 40 });
     pool.store.getpolicy = () => ({ operational: { pool_merchant: 6 } });
-    assert.equal(pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1 }).ok, true);
+    const credited = pool.pullBook.creditRound([{ tag, dest, count: 10 }], { height: 1, nanos: 100000000000 });
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
     const r = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}/withdraw`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1292,11 +1376,19 @@ describe('public miner listing', () => {
     const json = await r.json();
     assert.equal(r.status, 410);
     assert.equal(json.reason, 'auto_payout');
+    const unknown = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent('mdeadbeef')}/withdraw`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(unknown.status, 410);
+    assert.equal((await unknown.json()).reason, 'auto_payout');
     const view = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`);
     const miner = await view.json();
-    assert.equal(miner.ok, true);
-    assert.match(miner.confirmedSentLabel, /^Confirmed sent to ssa1\*{8}/);
-    assert.equal(typeof miner.sentNanos, 'number');
+    assert.equal(view.status, 404);
+    assert.equal(miner.reason, 'unknown_miner');
+    assert.equal(JSON.stringify(miner).includes('100000000000'), false);
+    assert.equal(miner.pendingShe, undefined);
     pool.close();
   });
 
@@ -1319,20 +1411,22 @@ describe('public miner listing', () => {
     });
     const httpPort = pool.httpServer.address().port;
     const hashByDest = new Map([[dest, 11]]);
-    assert.equal(pool.pullBook.creditRound(
+    const credited = pool.pullBook.creditRound(
       [{ tag, dest, count: 10 }],
       { height: 4, nanos: 100000000000, hashByDest },
-    ).ok, true);
-    const internal = pool.pullBook.ledger(tag);
-    assert.equal(internal[0].hashBonusNanos, 11);
-    assert.equal(internal[0].totalNanos, internal[0].blockRwdNanos + 11);
-    const page = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`).then((r) => r.json());
-    assert.equal(page.ok, true);
-    assert.equal(page.ledger.length, 1);
-    assert.equal(Object.hasOwn(page.ledger[0], 'hashBonusNanos'), false);
-    assert.equal(page.ledger[0].totalNanos, page.ledger[0].blockRwdNanos);
-    assert.equal(page.ledger[0].blockRwdNanos, 100000000000);
-    assert.equal(JSON.stringify(page).includes('hashBonusNanos'), false);
+    );
+    assert.equal(credited.ok, false);
+    assert.equal(credited.reason, 'custodial_pull');
+    assert.equal(pool.pullBook.ledger(tag).length, 0);
+    const pageRes = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`);
+    const page = await pageRes.json();
+    assert.equal(pageRes.status, 404);
+    assert.equal(page.reason, 'unknown_miner');
+    assert.equal(page.ledger, undefined);
+    const body = JSON.stringify(page);
+    assert.equal(body.includes('hashBonusNanos'), false);
+    assert.equal(body.includes('100000000000'), false);
+    assert.equal(body.includes('"blockRwdNanos"'), false);
     pool.close();
   });
 });

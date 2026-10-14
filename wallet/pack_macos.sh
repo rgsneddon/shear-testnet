@@ -29,7 +29,8 @@ if [ "$BUILD_NUMBER" = "49" ]; then
   exit 1
 fi
 if [ "${PACK_REBUILD:-}" = "1" ] || [ ! -d "$APP" ]; then
-  flutter build macos --release --build-name="$VER" --build-number="$BUILD_NUMBER"
+  flutter build macos --release --build-name="$VER" --build-number="$BUILD_NUMBER" \
+    --dart-define=SHEAR_ADMIT_SIGN_ID="Developer ID Application: Russell Sneddon (SFCBP95595)"
 fi
 test -d "$APP"
 # Bundle libsodium so AdmitV1 prove is native (Dart BigInt field is minutes at live n).

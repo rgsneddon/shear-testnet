@@ -7,10 +7,10 @@ import net from 'node:net';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { createPool, scoreShare, judgeShare } from '../src/pool.js';
-import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
+import { destBoundShareHash, noteCommitOfShare, nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { setNonce } from '../../crypto/header.js';
-import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
-import { SHARE_FLOOR_BITS, SHEARK_MINER_VERSION, GENESIS_BITS_PACKED, GENESIS_BITS, unpackBits } from '../../crypto/asert.js';
+import { meetsTarget } from '../../crypto/shear_hash.js';
+import { SHARE_FLOOR_BITS, SHEARK_MINER_VERSION, GENESIS_BITS_PACKED, GENESIS_BITS, unpackBits, shareCreditMaxBits } from '../../crypto/asert.js';
 import {
   clampShareBits,
   expectedOneThreadHs,
@@ -99,9 +99,9 @@ describe('share vardiff', () => {
     assert.equal(clampShareBits(24, { blockBits: 21 }), 21);
     assert.equal(clampShareBits(16, { blockBits: 29 }), 16);
     assert.equal(clampShareBits(1, { minBits: 4, blockBits: 8 }), 4);
-    assert.equal(clampShareBits(40, { blockBits: 48 }), 40);
+    assert.equal(clampShareBits(40, { blockBits: 48 }), shareCreditMaxBits());
     assert.equal(clampShareBits(25, { blockBits: 25 }), 25);
-    assert.equal(clampShareBits(300), 256);
+    assert.equal(clampShareBits(300), shareCreditMaxBits());
   });
 
   it('raises share bits by one when shares arrive faster than the target', () => {
@@ -658,24 +658,28 @@ describe('share vardiff', () => {
     // A zero bits field is an always-true block target, so every hash would
     // be accepted as a block. Pin a real target above the share rung.
     header.writeUInt32LE(32, 108);
-    let hit = null;
-    for (let n = 1; n < 400_000; n += 1) {
-      const h = setNonce(header, n);
-      const rx = shearHash(h);
+    const hitHeader = setNonce(header, nonceWithShareTarget(1n, SHARE_FLOOR_BITS));
+    const nc = noteCommitOfShare({ dest });
+    let hash = null;
+    for (let i = 0; i < 250_000; i += 1) {
+      const rx = Buffer.alloc(32);
+      rx.writeUInt32LE(i, 0);
+      rx.writeUInt32LE((i * 3) >>> 0, 8);
       if (meetsTarget(rx, 32)) continue;
-      const bound = destBoundShareHash(rx, noteCommitOfShare({ dest }));
+      const bound = destBoundShareHash(rx, nc);
       if (!meetsTarget(bound, SHARE_FLOOR_BITS)) continue;
       if (meetsTarget(bound, 12)) continue;
-      hit = { header: h, hash: rx };
+      hash = rx;
       break;
     }
-    assert.ok(hit, 'need dest-bound 8 that misses 12');
+    assert.ok(hash, 'need dest-bound 8 that misses 12');
     const farmJob = { shareBits: 12, blockBits: 16, bits: 16 };
-    const asFarm = judgeShare({ job: farmJob, header: hit.header, hash: hit.hash, dest });
+    const asFarm = judgeShare({ job: farmJob, header: hitHeader, hash, dest });
     assert.equal(asFarm.ok, false, 'farm 12-bit job must not accept 8-bit dest-bound');
-    assert.equal(asFarm.reason, 'low_diff');
-    const asAfk = judgeShare({ job: farmJob, header: hit.header, hash: hit.hash, dest, shareBits: 8 });
+    // The farm job authorizes byte 12. An 8-byte nonce is not that target.
+    assert.equal(asFarm.reason, 'share_target');
+    const asAfk = judgeShare({ job: farmJob, header: hitHeader, hash, dest, shareBits: SHARE_FLOOR_BITS });
     assert.equal(asAfk.ok, true, asAfk.reason);
-    assert.equal(asAfk.creditedShareBits, 8);
+    assert.equal(asAfk.creditedShareBits, SHARE_FLOOR_BITS);
   });
 });

@@ -34,7 +34,6 @@ import {
   verifyFreezeRecord,
   adoptObservedBps,
   GENESIS_BPS,
-  RESERVE_ORACLE_MAX_BPS,
 } from './reserve_oracle.js';
 
 
@@ -138,7 +137,7 @@ describe('I2 three 4-day rollovers', () => {
 describe('I3 oracle anti-game', () => {
   it('sanity ceiling, stale feed, and equivocation; freeze cannot move pot', () => {
     assert.equal(adoptObservedBps(284, 9999), 9999);
-    assert.equal(adoptObservedBps(284, RESERVE_ORACLE_MAX_BPS + 1), RESERVE_ORACLE_MAX_BPS + 1);
+    assert.equal(adoptObservedBps(284, 10001), 10001);
     assert.equal(freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 9999,
@@ -163,7 +162,7 @@ describe('I3 oracle anti-game', () => {
     assert.equal(verifyFreezeRecord(rec, { epochIndex: 2 }).ok, false);
     const clash = { ...rec, observationRoot: 'other-root' };
     assert.equal(verifyFreezeRecord(clash, { epochIndex: 1, prevFreeze: rec }).reason, 'freeze_equivocation');
-    const over = { ...rec, epochBps: RESERVE_ORACLE_MAX_BPS + 1 };
+    const over = { ...rec, epochBps: 10001 };
     assert.equal(verifyFreezeRecord(over, { epochIndex: 1 }).reason, 'rate_commit');
     const neg = { ...rec, epochBps: -1 };
     assert.equal(verifyFreezeRecord(neg, { epochIndex: 1 }).reason, 'freeze_bps');

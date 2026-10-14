@@ -14,17 +14,16 @@ import { encodeHeader, decodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import {
   GENESIS_BPS,
-  ORACLE_QUORUM,
   RESERVE_ORACLE_ID,
-  RESERVE_ORACLE_MAX_BPS,
-  canonicalObserve,
-  observeVerdict,
+  interestNanos,
+  observeRate as observeOracle,
 } from '../../crypto/reserve_oracle.js';
 import {
   emptyVault,
   deposit,
   enact,
   observeRate,
+  applyReserveBlock,
   previewWithdraw,
 } from '../../crypto/reserve_vault.js';
 import { compactTx } from '../../crypto/chronoflux.js';
@@ -32,15 +31,10 @@ import { GENESIS_PREV, buildTemplate, verifyBlock, digestTx } from '../src/chain
 import { createStore } from '../src/store.js';
 
 const T0 = 1_700_000_000_000;
-const BPS = [0, 1, 50, 100, 164, 264, 300, 364, 1000, 5000, 9999, RESERVE_ORACLE_MAX_BPS];
-const BAD_BPS = [-1, RESERVE_ORACLE_MAX_BPS + 1, 1.5, Number.NaN, true, '9999', null, 2 ** 53];
+const RATES = [0, 1, 50, 100, 284, 300, 1000, 5000, 10000];
 
 function destOf(id) {
   return vaultDest(id.address, { viewKey: id.viewKey });
-}
-
-function payOf(id) {
-  return destForLogin(id.address, { viewKey: id.viewKey });
 }
 
 function openEpoch(state, dest, nowMs) {
@@ -49,48 +43,57 @@ function openEpoch(state, dest, nowMs) {
   return got;
 }
 
-describe('oracle observe is sealed in a block', () => {
-  it('any local rate, disk snapshot, or single block observe leaves the epoch on the bundle', () => {
-    for (const bps of BPS) {
+describe('oracle observe is not a rate', () => {
+  it('a local rate and a coinbase observe leave the epoch on the genesis bps', () => {
+    for (const bps of RATES) {
       const alice = newIdentity();
-      const bob = newIdentity();
       const local = emptyVault();
       openEpoch(local, destOf(alice), T0);
       assert.equal(enact({ state: local, nowMs: T0 + RESERVE_EPOCH_MS }).ok, true);
-      const refused = observeRate({
+      const seen = observeRate({
         state: local,
         annualBps: bps,
         nowMs: T0 + RESERVE_EPOCH_MS + 1,
       });
-      assert.equal(refused.ok, false, `local ${bps}`);
-      assert.equal(refused.reason, 'rate_bundled', `local ${bps}`);
-      openEpoch(local, destOf(bob), T0 + RESERVE_EPOCH_MS + 2);
+      assert.equal(seen.ok, false);
+      assert.equal(seen.reason, 'rate_bundled');
+      assert.equal(observeOracle(local.oracle, { annualBps: bps }).reason, 'rate_bundled');
+      openEpoch(local, destOf(newIdentity()), T0 + RESERVE_EPOCH_MS + 2);
       assert.equal(local.epochBps, GENESIS_BPS, `local ${bps}`);
-
-      const disk = emptyVault();
-      openEpoch(disk, destOf(newIdentity()), T0);
-      assert.equal(enact({ state: disk, nowMs: T0 + RESERVE_EPOCH_MS }).ok, true);
-      disk.oracle = {
-        id: RESERVE_ORACLE_ID,
-        annualBps: bps,
-        observedAtMs: T0 + RESERVE_EPOCH_MS + 1,
-        components: [{ id: 'basket', bps }],
-      };
-      openEpoch(disk, destOf(newIdentity()), T0 + RESERVE_EPOCH_MS + 2);
-      assert.equal(disk.epochBps, GENESIS_BPS, `disk ${bps}`);
 
       const held = emptyVault();
       const holder = destOf(newIdentity());
       openEpoch(held, holder, T0);
       const due = previewWithdraw(held, holder).interest;
-      assert.equal(observeVerdict({ annualBps: bps, observedAtMs: T0 + 1 }).reason, 'observe_unattested');
-      assert.equal(previewWithdraw(held, holder).interest, due, `preview ${bps}`);
-      assert.equal(held.epochBps, GENESIS_BPS, `single observe ${bps}`);
+      const mid = applyReserveBlock({
+        state: held,
+        block: { txs: [{ coinbase: true, vout: [], observe: { annualBps: bps, observedAtMs: T0 + 1 } }] },
+        nowMs: T0 + 1,
+      });
+      assert.equal(mid.ok, false);
+      assert.equal(mid.reason, 'observe_unattested');
+      assert.equal(held.epochBps, GENESIS_BPS);
+      assert.equal(previewWithdraw(held, holder).interest, due);
+      assert.equal(due, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
     }
   });
 
-  it('createStore ignores a reserve.json oracle for every rate', () => {
-    for (const bps of BPS) {
+  it('the coinbase digest binds an observe, and compact drops it', () => {
+    const plain = { coinbase: true, height: 1, vin: [{ coinbase: true }], vout: [] };
+    const bare = digestTx(plain);
+    for (const bps of RATES) {
+      const row = { ...plain, observe: { annualBps: bps, observedAtMs: T0 } };
+      assert.equal(digestTx(row).equals(bare), false, `bare ${bps}`);
+      const flipped = digestTx({ ...plain, observe: { annualBps: bps + 1, observedAtMs: T0 } });
+      assert.equal(digestTx(row).equals(flipped), false, `flip ${bps}`);
+      const compact = compactTx(row);
+      assert.equal(compact.observe, undefined);
+      assert.equal(digestTx(compact).equals(bare), true);
+    }
+  });
+
+  it('createStore ignores a reserve.json oracle', () => {
+    for (const bps of RATES) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-oracle-'));
       fs.writeFileSync(path.join(dir, 'reserve.json'), JSON.stringify({
         oracle: {
@@ -104,41 +107,12 @@ describe('oracle observe is sealed in a block', () => {
       }));
       const store = createStore(dir);
       assert.equal(store.reserveVault.epochBps, GENESIS_BPS, `boot ${bps}`);
-      const refused = observeRate({
-        state: store.reserveVault,
-        annualBps: bps,
-        nowMs: T0 + RESERVE_EPOCH_MS + 1,
-      });
-      assert.equal(refused.ok, false);
-      assert.equal(refused.reason, 'rate_bundled');
-      assert.equal(store.reserveVault.epochBps, GENESIS_BPS, `store roll ${bps}`);
+      assert.equal(store.reserveVault.oracle.annualBps, GENESIS_BPS, `oracle ${bps}`);
     }
   });
 
-  it('the coinbase digest binds a sealed observe, and compact keeps the canonical fields', () => {
-    const plain = { coinbase: true, height: 1, vin: [{ coinbase: true }], vout: [] };
-    const bare = digestTx(plain);
-    for (const bps of [0, 264, RESERVE_ORACLE_MAX_BPS]) {
-      const row = {
-        ...plain,
-        observe: { annualBps: bps, observedAtMs: T0, extra: 'not-consensus' },
-      };
-      const dig = digestTx(row);
-      assert.equal(dig.equals(bare), false, `bare ${bps}`);
-      const other = bps === RESERVE_ORACLE_MAX_BPS ? 0 : bps + 1;
-      const flipped = digestTx({ ...plain, observe: { annualBps: other, observedAtMs: T0 } });
-      assert.equal(dig.equals(flipped), false, `flip ${bps}`);
-      const compact = compactTx(row);
-      assert.equal(compact.observe.annualBps, bps);
-      assert.equal(compact.observe.observedAtMs, T0);
-      assert.equal(Object.prototype.hasOwnProperty.call(compact.observe, 'extra'), false);
-      assert.deepEqual(compact.observe, canonicalObserve(row.observe));
-      assert.equal(digestTx(compact).equals(dig), true, `compact ${bps}`);
-    }
-  });
-
-  it('verifyBlock rejects a non-canonical observe and rejects a canonical one without quorum', async () => {
-    const who = payOf(newIdentity());
+  it('verifyBlock rejects every observe', async () => {
+    const who = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey });
     const tpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -161,30 +135,32 @@ describe('oracle observe is sealed in a block', () => {
         nonce: 0n,
         baseFee: decoded.baseFee,
       });
-      return {
-        header,
-        txs: [cb],
-        samples: tpl.samples,
-        shareBatch: tpl.shareBatch || [],
-        miner: tpl.miner,
-        aLeaves: tpl.aLeaves,
-        bLeaves: tpl.bLeaves,
-        rootA: tpl.rootA,
-        rootB: tpl.rootB,
-        weight: tpl.weight,
-        height: tpl.height,
-      };
+      return { ...tpl, header, txs: [cb] };
     }
-    for (const bps of BPS) {
+    for (const bps of RATES) {
       const got = await verifyBlock(blockFor({ annualBps: bps, observedAtMs: T0 }), null, { probeBody: true });
-      assert.equal(got.ok, false, `${bps} ${got.reason}`);
-      assert.equal(got.reason, 'observe_unattested', `${bps}`);
+      assert.equal(got.ok, false, String(bps));
+      assert.equal(got.reason, 'observe_unattested', String(bps));
     }
-    for (const annualBps of BAD_BPS) {
-      const got = await verifyBlock(blockFor({ annualBps, observedAtMs: T0 }), null, { probeBody: true });
-      assert.equal(got.ok, false, String(annualBps));
-      assert.equal(got.reason, 'observe_unattested', String(annualBps));
-    }
-    assert.equal(ORACLE_QUORUM, 14);
+    const stray = await verifyBlock(blockFor(null), null, { probeBody: true });
+    void stray;
+    const body = blockFor(undefined);
+    body.txs = [
+      { ...tpl.txs[0] },
+      { kind: 'send', observe: { annualBps: 300, observedAtMs: T0 } },
+    ];
+    const decodedBody = decodeHeader(Buffer.from(tpl.header));
+    body.header = encodeHeader({
+      version: decodedBody.version,
+      prevBlockHash: decodedBody.prevBlockHash,
+      merkleRoot: merkleRoot(body.txs.map(digestTx)),
+      continuityRoot: decodedBody.continuityRoot,
+      timestamp: decodedBody.timestamp,
+      bits: decodedBody.bits,
+      nonce: 0n,
+      baseFee: decodedBody.baseFee,
+    });
+    const offCoinbase = await verifyBlock(body, null, { probeBody: true });
+    assert.equal(offCoinbase.reason, 'observe_unattested');
   });
 });

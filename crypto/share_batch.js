@@ -1,12 +1,14 @@
 /**
  * Lag-1 proven shareBatch. A hash is one ShearHash-v3 digest of the frozen
- * parent header (nonce replaced). Units are 2^SHARE_FLOOR_BITS, never a
- * client counter.
+ * parent header (nonce replaced). The credited width is the little-endian
+ * high byte of that nonce (header offset 119). Units are 2^b when that byte
+ * is b, the packed claim is b, and the dest-bound digest meets b.
  *
- * Share difficulty binds hasher identity: the floor target is on
+ * Share difficulty binds hasher identity: the target is on
  * sha256("shear-share-dest-v1" || rx || noteCommit), not on rx alone.
  * A third-party pool cannot restamp dest/noteCommit on a stolen nonce.
- * Block POW stays ShearHash-v3 of the 128-byte header.
+ * Block POW stays ShearHash-v3 of the child header. The share byte does not
+ * constrain that header's nonce.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -15,8 +17,10 @@ import {
   MAX_HASH_UNITS_PER_BLOCK,
   DEST_HRP,
   HASH_BONUS_NANOS,
+  shareCreditMaxBits,
 } from './asert.js';
 import { shearHash, meetsTarget, leadingZeroBits } from './shear_hash.js';
+import { hashHeaderOffLoop } from './hash_offloop.js';
 import { setNonce } from './header.js';
 import { packShareV5, unpackShareBatch } from './pack.js';
 import { isDestAddress, bech32Hrp, encodeDest, hash20FromAddress } from './address.js';
@@ -38,10 +42,76 @@ export function shareMeetsFloor(rxHash, share, floorBits = SHARE_FLOOR_BITS) {
   return meetsTarget(destBoundShareHash(rxHash, nc), floorBits);
 }
 
+/** Work units of one share. Floor when bits are omitted, below the floor, or not a number. */
 export function unitsForShare(shareBits = SHARE_FLOOR_BITS) {
-  const b = Math.max(SHARE_FLOOR_BITS, Math.floor(Number(shareBits) || 0));
-  void b;
-  return 2 ** SHARE_FLOOR_BITS;
+  const raw = Math.floor(Number(shareBits));
+  const b = Math.max(SHARE_FLOOR_BITS, Number.isFinite(raw) ? raw : SHARE_FLOOR_BITS);
+  // 2^53 is not an exact JS integer. Cap the unit; the block unit cap rejects it.
+  if (b >= 53) return 2 ** 52;
+  return 2 ** b;
+}
+
+/** Packed difficulty field. Absent or below the floor stays the floor. Not the credit law. */
+export function shareWorkBits(share) {
+  const raw = share?.creditedShareBits != null && share.creditedShareBits !== ''
+    ? share.creditedShareBits
+    : share?.shareBits;
+  if (raw == null || raw === '') return SHARE_FLOOR_BITS;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n)) return SHARE_FLOOR_BITS;
+  if (n > 52) return 52;
+  return Math.max(SHARE_FLOOR_BITS, n);
+}
+
+/** LE high byte of the share nonce. Header byte 119. Low 56 bits are the search. */
+export const SHARE_NONCE_TARGET_SHIFT = 56n;
+const SHARE_NONCE_LOW_MASK = (1n << SHARE_NONCE_TARGET_SHIFT) - 1n;
+
+export function shareTargetByte(nonce) {
+  try {
+    const n = BigInt(nonce);
+    if (n < 0n) return -1;
+    return Number((n >> SHARE_NONCE_TARGET_SHIFT) & 0xffn);
+  } catch {
+    return -1;
+  }
+}
+
+/** Low 56 bits of `nonce`, with credited width `bits` in the high byte. */
+export function nonceWithShareTarget(nonce, bits) {
+  const low = BigInt(nonce ?? 0) & SHARE_NONCE_LOW_MASK;
+  const b = BigInt(Math.floor(Number(bits)) & 0xff);
+  return low | (b << SHARE_NONCE_TARGET_SHIFT);
+}
+
+function declaredShareBits(share) {
+  const raw = share?.creditedShareBits != null && share.creditedShareBits !== ''
+    ? share.creditedShareBits
+    : share?.shareBits;
+  if (raw == null || raw === '') return null;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
+/**
+ * Credit width from the nonce high byte.
+ * strict: the packed claim must equal that byte (verify, supply).
+ * A legal byte outside the packed field is still that byte when strict is false (select).
+ * An illegal byte is never clamped up to the floor.
+ */
+export function creditBitsForShare(share, floor = SHARE_FLOOR_BITS, { strict = true } = {}) {
+  const hi = shareTargetByte(share?.nonce);
+  const maxB = shareCreditMaxBits();
+  const floorN = Math.floor(Number(floor));
+  const lo = Number.isFinite(floorN) ? Math.max(SHARE_FLOOR_BITS, floorN) : SHARE_FLOOR_BITS;
+  if (!Number.isInteger(hi) || hi < lo || hi > maxB) {
+    return { ok: false, reason: 'share_target', bits: hi };
+  }
+  const declared = declaredShareBits(share);
+  const claim = declared == null ? lo : declared;
+  if (strict && claim !== hi) return { ok: false, reason: 'share_target', bits: hi };
+  return { ok: true, bits: hi, reason: '' };
 }
 
 function asBuf(v, n) {
@@ -80,6 +150,18 @@ export function destOfShare(share) {
   return encodeDest(d20);
 }
 
+function headerTie(share) {
+  const slot = share?.proofSlot === 0 || share?.proofSlot === 1
+    || share?.proofSlot === '0' || share?.proofSlot === '1'
+    ? String(Number(share.proofSlot))
+    : '';
+  const raw = share?.verifiedHeader;
+  let hex = '';
+  if (Buffer.isBuffer(raw)) hex = raw.toString('hex');
+  else if (typeof raw === 'string') hex = raw.toLowerCase();
+  return `${slot}:${hex}`;
+}
+
 export function sortShares(shares = []) {
   return [...shares].sort((a, b) => {
     const da = noteCommitOfShare(a);
@@ -90,60 +172,187 @@ export function sortShares(shares = []) {
     const nb = BigInt(b.nonce || 0);
     if (na < nb) return -1;
     if (na > nb) return 1;
+    const ha = headerTie(a);
+    const hb = headerTie(b);
+    if (ha < hb) return -1;
+    if (ha > hb) return 1;
     return 0;
   });
 }
 
-/** Extra leading zeros above the floor. Equal floor shares tie; dest order does not decide. */
-export function shareInclusionWeight(share) {
-  const lz = Number(share?.lz) & 0xff;
-  const extra = Math.max(0, lz - SHARE_FLOOR_BITS);
-  return 2 ** Math.min(extra, 20);
+/**
+ * Keep at most `cap` shares. Under that count, every share stays. The unit
+ * cap scales credit later; it does not drop a share. Over the count, each
+ * noteCommit takes a turn in sorted order so one dest is not cleared to
+ * make room for another. A block over the count still fails verify with
+ * share_cap when the caller does not select first.
+ */
+function shareQuotaKey(share) {
+  const nc = noteCommitOfShare(share);
+  const hex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
+  return hex || `:${String(share?.nonce)}`;
 }
 
-/** Tie break for equal weight. Hash of the commit and nonce, not the address. */
-export function shareInclusionTie(share) {
-  const nc = noteCommitOfShare(share);
-  const nonce = Buffer.alloc(8);
-  try { nonce.writeBigUInt64LE(BigInt(share?.nonce || 0)); } catch { /* zero */ }
-  return createHash('sha256').update(nc).update(nonce).digest();
+function provenShareUnits(share) {
+  const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: false });
+  if (!credit.ok) return 0n;
+  return BigInt(unitsForShare(credit.bits));
+}
+
+function quotaAhead(a, b) {
+  const left = a.work * BigInt(b.take + 1);
+  const right = b.work * BigInt(a.take + 1);
+  if (left !== right) return left > right;
+  return a.key < b.key;
+}
+
+function heapPush(heap, row) {
+  heap.push(row);
+  let i = heap.length - 1;
+  while (i > 0) {
+    const parent = (i - 1) >> 1;
+    if (quotaAhead(heap[parent], heap[i])) break;
+    const swap = heap[parent];
+    heap[parent] = heap[i];
+    heap[i] = swap;
+    i = parent;
+  }
+}
+
+function heapPop(heap) {
+  const top = heap[0];
+  const last = heap.pop();
+  if (!heap.length || last == null) return top;
+  heap[0] = last;
+  let i = 0;
+  for (;;) {
+    let best = i;
+    const left = i * 2 + 1;
+    const right = left + 1;
+    if (left < heap.length && quotaAhead(heap[left], heap[best])) best = left;
+    if (right < heap.length && quotaAhead(heap[right], heap[best])) best = right;
+    if (best === i) break;
+    const swap = heap[i];
+    heap[i] = heap[best];
+    heap[best] = swap;
+    i = best;
+  }
+  return top;
 }
 
 /**
- * Keep at most `cap` shares. Over cap, higher hash-share weight stays.
- * Ties break on shareInclusionTie, then the kept set is canonical-sorted.
- * A block that already exceeds the cap still fails verify with share_cap.
+ * When the share-count cap binds, seats follow submitted work (D'Hondt).
+ * The next share goes to the noteCommit with the highest work / (kept + 1).
+ * Equal averages break on noteCommit order. Splitting one pile of work across
+ * more noteCommits cannot raise the work that pile keeps. Inside a noteCommit,
+ * the higher-work shares are kept.
  */
 export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK) {
-  const list = unpackShareBatch(shares);
+  const list = sharesAtProvenBits(unpackShareBatch(shares));
   const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  if (limit <= 0) return [];
   if (list.length <= limit) return sortShares(list);
-  const ranked = [...list].sort((a, b) => {
-    const byWeight = shareInclusionWeight(b) - shareInclusionWeight(a);
-    if (byWeight !== 0) return byWeight;
-    return shareInclusionTie(a).compare(shareInclusionTie(b));
-  });
-  return sortShares(ranked.slice(0, limit));
+  const groups = new Map();
+  for (const s of sortShares(list)) {
+    const key = shareQuotaKey(s);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+  const heap = [];
+  for (const [key, bucket] of groups) {
+    const ranked = bucket.slice().sort((a, b) => {
+      const ua = provenShareUnits(a);
+      const ub = provenShareUnits(b);
+      if (ua !== ub) return ua > ub ? -1 : 1;
+      return 0;
+    });
+    const work = ranked.reduce((n, s) => n + provenShareUnits(s), 0n);
+    heapPush(heap, { key, ranked, work, take: 0 });
+  }
+  const kept = [];
+  while (kept.length < limit && heap.length) {
+    const row = heapPop(heap);
+    if (row.take >= row.ranked.length) continue;
+    kept.push(row.ranked[row.take]);
+    row.take += 1;
+    if (row.take < row.ranked.length) heapPush(heap, row);
+  }
+  return sortShares(kept);
 }
 
-export function collateShareUnits(shares = []) {
+/**
+ * Credited units per noteCommit. Under the cap, every proven unit is kept.
+ * Over the cap, each noteCommit keeps floor(submitted * cap / total).
+ * Leftover units fill a zero credit first, then walk sorted noteCommit.
+ * A dest that still has zero takes one unit from a dest that has more than
+ * one, so accepted work is not dropped while another dest is paid.
+ */
+export function retainedUnitsByCommit(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
   const by = new Map();
   for (const s of unpackShareBatch(shares)) {
+    const nc = noteCommitOfShare(s);
+    if (!nc || nc.length !== 32 || nc.equals(Buffer.alloc(32))) continue;
+    const hex = Buffer.from(nc).toString('hex');
+    const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: false });
+    if (!credit.ok) continue;
+    const units = BigInt(unitsForShare(credit.bits));
+    by.set(hex, (by.get(hex) || 0n) + units);
+  }
+  const entries = [...by.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const total = entries.reduce((n, [, u]) => n + u, 0n);
+  const limit = BigInt(Math.max(0, Math.floor(Number(cap) || 0)));
+  const out = new Map();
+  if (total === 0n || limit <= 0n) return out;
+  if (total <= limit) {
+    for (const [hex, u] of entries) out.set(hex, Number(u));
+    return out;
+  }
+  const floors = entries.map(([hex, u]) => ({ hex, base: (u * limit) / total }));
+  let leftover = limit - floors.reduce((n, row) => n + row.base, 0n);
+  for (const row of floors) {
+    if (leftover <= 0n) break;
+    if (row.base === 0n) {
+      row.base += 1n;
+      leftover -= 1n;
+    }
+  }
+  let i = 0;
+  while (leftover > 0n && floors.length) {
+    floors[i % floors.length].base += 1n;
+    leftover -= 1n;
+    i += 1;
+  }
+  for (const row of floors) {
+    if (row.base > 0n) continue;
+    const donor = floors.find((other) => other.base > 1n);
+    if (!donor) break;
+    donor.base -= 1n;
+    row.base += 1n;
+  }
+  for (const row of floors) if (row.base > 0n) out.set(row.hex, Number(row.base));
+  return out;
+}
+
+export function collateShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK, retained = null) {
+  const kept = retained || retainedUnitsByCommit(shares, cap);
+  const by = new Map();
+  const seen = new Set();
+  for (const s of unpackShareBatch(shares)) {
     const dest = destOfShare(s);
-    if (!dest) continue;
-    by.set(dest, (by.get(dest) || 0) + unitsForShare());
+    const nc = noteCommitOfShare(s);
+    if (!dest || !nc || nc.length !== 32) continue;
+    const hex = Buffer.from(nc).toString('hex');
+    if (seen.has(hex)) continue;
+    seen.add(hex);
+    const units = kept.get(hex) || 0;
+    if (units > 0) by.set(dest, (by.get(dest) || 0) + units);
   }
   return by;
 }
 
-export function aLeavesFromShares(shares = []) {
-  const by = new Map();
-  for (const s of unpackShareBatch(shares)) {
-    const nc = noteCommitOfShare(s);
-    const key = nc.toString('hex');
-    by.set(key, (by.get(key) || 0) + unitsForShare());
-  }
-  return [...by.entries()]
+export function aLeavesFromShares(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK, retained = null) {
+  const kept = retained || retainedUnitsByCommit(shares, cap);
+  return [...kept.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([hex, count]) => ({ noteCommit: Buffer.from(hex, 'hex'), count }));
 }
@@ -166,8 +375,413 @@ function shareJobKey(header) {
   }
 }
 
-/** Process-local: floor shares the pool already hashed live. Not on the wire. */
-const liveSharePow = new Set();
+/**
+ * Version, prev, continuity, timestamp, bits, and base fee match.
+ * Merkle and nonce may differ. This is not a slot. A share slots only on
+ * the exact job key, or on an issued header in the same round family.
+ */
+export function sameWorkRound(a, b) {
+  const left = asHeaderBuf(a);
+  const right = asHeaderBuf(b);
+  if (!left || !right || left.length !== 128 || right.length !== 128) return false;
+  if (!left.subarray(0, 36).equals(right.subarray(0, 36))) return false;
+  if (!left.subarray(68, 112).equals(right.subarray(68, 112))) return false;
+  if (!left.subarray(120, 128).equals(right.subarray(120, 128))) return false;
+  return true;
+}
+
+/**
+ * One round family. Version, prev, continuity, and base fee match.
+ * Timestamp, bits, merkle, and nonce may differ. A restamp and a finder
+ * sibling are the same family. A different parent is not.
+ */
+export function sameRoundFamily(a, b) {
+  const left = asHeaderBuf(a);
+  const right = asHeaderBuf(b);
+  if (!left || !right || left.length !== 128 || right.length !== 128) return false;
+  if (!left.subarray(0, 36).equals(right.subarray(0, 36))) return false;
+  if (!left.subarray(68, 100).equals(right.subarray(68, 100))) return false;
+  if (!left.subarray(120, 128).equals(right.subarray(120, 128))) return false;
+  return true;
+}
+
+/** Memory bound for the coinbase issued-header list. Not a miner-count tune. */
+export const ISSUED_HEADER_CAP = 4096;
+
+/** sha256 of the 128-byte header with the nonce zeroed. Empty when the header is short. */
+export function issuedJobId(header) {
+  try {
+    const buf = asHeaderBuf(header);
+    if (!buf || buf.length !== 128) return '';
+    return createHash('sha256').update(setNonce(buf, 0n)).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Issued ids. Null is a malformed list. An absent list is an empty set,
+ * and an empty set does not slot a different merkle or a different timestamp.
+ * A 128-byte header is accepted here so a caller can pass the headers it issued.
+ * The coinbase field itself is only the sorted id list.
+ */
+export function issuedKeySet(list) {
+  if (list == null || list === '') return new Set();
+  if (list instanceof Set) return issuedKeySet([...list]);
+  if (!Array.isArray(list)) return null;
+  if (list.length > ISSUED_HEADER_CAP) return null;
+  const out = new Set();
+  for (const raw of list) {
+    if (typeof raw === 'string' && /^[0-9a-fA-F]{64}$/.test(raw)) {
+      out.add(raw.toLowerCase());
+    } else {
+      const id = issuedJobId(raw);
+      if (!id) return null;
+      out.add(id);
+    }
+    if (out.size > ISSUED_HEADER_CAP) return null;
+  }
+  return out;
+}
+
+/** Sorted unique ids. Headers that are not 128 bytes are skipped. The cap stops the walk. */
+export function canonicalIssuedJobKeys(headers) {
+  const ids = [];
+  const seen = new Set();
+  for (const header of Array.isArray(headers) ? headers : []) {
+    if (seen.size >= ISSUED_HEADER_CAP) break;
+    const id = typeof header === 'string' && /^[0-9a-fA-F]{64}$/.test(header)
+      ? header.toLowerCase()
+      : issuedJobId(header);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  ids.sort();
+  return ids;
+}
+
+/** Ids of explicit headers that sit in the parent or prior round family. */
+export function issuedKeysForParents(headers, parentHeader, priorHeader = null) {
+  const kept = [];
+  for (const header of Array.isArray(headers) ? headers : []) {
+    if (sameRoundFamily(header, parentHeader) || (priorHeader && sameRoundFamily(header, priorHeader))) {
+      kept.push(header);
+    }
+  }
+  return canonicalIssuedJobKeys(kept);
+}
+
+/**
+ * Empty when the coinbase names no issued headers.
+ * Null when the field is present and is not a sorted unique id list.
+ * An empty list omits the suffix so an older coinbase digest stays put.
+ */
+export function issuedJobDigestSuffix(tx) {
+  if (!tx || tx.issuedJobKeys == null || tx.issuedJobKeys === '') return Buffer.alloc(0);
+  if (!Array.isArray(tx.issuedJobKeys)) return null;
+  if (tx.issuedJobKeys.length > ISSUED_HEADER_CAP) return null;
+  const ids = [];
+  for (const raw of tx.issuedJobKeys) {
+    const id = typeof raw === 'string' ? raw.toLowerCase() : '';
+    if (!/^[0-9a-f]{64}$/.test(id)) return null;
+    ids.push(id);
+  }
+  for (let i = 1; i < ids.length; i += 1) {
+    if (ids[i] <= ids[i - 1]) return null;
+  }
+  if (!ids.length) return Buffer.alloc(0);
+  const h = createHash('sha256');
+  h.update(Buffer.from('issuedjob1'));
+  const n = Buffer.alloc(4);
+  n.writeUInt32LE(ids.length);
+  h.update(n);
+  for (const id of ids) h.update(Buffer.from(id, 'hex'));
+  return Buffer.concat([Buffer.from('issuedjob1'), h.digest()]);
+}
+
+/**
+ * exact: the nonce-zeroed header is the slot header.
+ * issued: the header is in the issued set and in that slot's round family.
+ * Anything else, including a same-round merkle nobody issued, is null.
+ */
+export function shareHeaderSlot(header, canonical, issuedJobKeys = null) {
+  const id = shareJobKey(header);
+  const canon = shareJobKey(canonical);
+  if (!id || !canon) return null;
+  if (id === canon) return 'exact';
+  const issued = issuedJobKeys instanceof Set ? issuedJobKeys : issuedKeySet(issuedJobKeys);
+  if (!issued || issued.size === 0) return null;
+  if (!sameRoundFamily(header, canonical)) return null;
+  const key = issuedJobId(header);
+  if (!key || !issued.has(key)) return null;
+  return 'issued';
+}
+
+/** Slot 0 is this round's parent. Slot 1 is the prior round. kin keeps the header on the wire. */
+function roundSlot(header, parentHeader, priorHeader, issuedJobKeys = null) {
+  const parentHit = shareHeaderSlot(header, parentHeader, issuedJobKeys);
+  const priorHit = shareHeaderSlot(header, priorHeader, issuedJobKeys);
+  if (parentHit === 'exact') return { slot: 0, kin: false };
+  if (priorHit === 'exact') return { slot: 1, kin: false };
+  if (parentHit === 'issued') return { slot: 0, kin: true };
+  if (priorHit === 'issued') return { slot: 1, kin: true };
+  return null;
+}
+
+/** One proven unit. The same nonce on two headers is two units. */
+export function shareWorkKey(header, nonce) {
+  const job = shareJobKey(header);
+  if (!job) return '';
+  try {
+    return `${job}:${BigInt(nonce ?? 0).toString()}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Work already sealed in the parent block, keyed by the header it proved on.
+ * `provedOnHeader` is that block's parent, which is this block's grandparent
+ * candidate. A row marked proofSlot 1 proved on the older header and does
+ * not exclude a new unit on `provedOnHeader`. A missing slot excludes the
+ * nonce on `provedOnHeader` so an unmarked parent share cannot be paid twice.
+ */
+export function paidWorkKeys(shares, provedOnHeader) {
+  const out = new Set();
+  const want = shareJobKey(provedOnHeader);
+  if (!want) return out;
+  let rows = [];
+  try { rows = unpackShareBatch(shares || []); } catch {
+    rows = Array.isArray(shares) ? shares : [];
+  }
+  for (const s of rows) {
+    const slot = s?.proofSlot;
+    const vh = shareJobKey(s?.verifiedHeader);
+    if (vh && vh !== want) continue;
+    if (slot === 1 || slot === '1') continue;
+    if (vh === want || slot === 0 || slot === '0' || slot == null || slot === '') {
+      const key = shareWorkKey(provedOnHeader, s?.nonce);
+      if (key) out.add(key);
+    }
+  }
+  return out;
+}
+
+function workBitsOf(share) {
+  const raw = share?.shareBits != null && share.shareBits !== ''
+    ? share.shareBits
+    : share?.creditedShareBits;
+  if (raw == null || raw === '') return null;
+  return raw;
+}
+
+function claimedProofSlot(share) {
+  const slot = share?.proofSlot;
+  if (slot === 0 || slot === 1 || slot === '0' || slot === '1') return Number(slot);
+  return null;
+}
+
+/**
+ * A work row is packable only with slot 0 or 1.
+ * Slot 0 matches this block's parent job. Slot 1 matches that parent's parent.
+ * keepClaim leaves an existing 0 or 1 alone so a caller that already bound the
+ * slot is not restamped. Otherwise the slot comes only from verifiedHeader.
+ * An exact job key is slot 0 or 1 with kin false. A different merkle or a
+ * restamp slots only when that header is in issuedJobKeys and in the family.
+ * Without that list, a different merkle and a timestamp change stay unslotted.
+ * A row with no share bits is not a work frame.
+ */
+export function bindShareProofSlots(shares, parentHeader, priorHeader = null, { keepClaim = false, issuedJobKeys = null } = {}) {
+  const slotted = [];
+  const unslotted = [];
+  const issued = issuedKeySet(issuedJobKeys);
+  const issuedSet = issued == null ? new Set() : issued;
+  for (const s of Array.isArray(shares) ? shares : []) {
+    if (!s || typeof s !== 'object' || Buffer.isBuffer(s)) {
+      if (s) slotted.push(s);
+      continue;
+    }
+    if (workBitsOf(s) == null) {
+      slotted.push(s);
+      continue;
+    }
+    if (keepClaim && claimedProofSlot(s) != null) {
+      slotted.push(s);
+      continue;
+    }
+    const hit = roundSlot(s.verifiedHeader, parentHeader, priorHeader, issuedSet);
+    if (!hit) {
+      unslotted.push(s);
+      continue;
+    }
+    s.proofSlot = hit.slot;
+    s.kinHeader = hit.kin;
+    slotted.push(s);
+  }
+  return { slotted, unslotted };
+}
+
+/**
+ * One sealing window. Expiring rows (prior header) fill the count cap first.
+ * Fresh rows fill what remains. Fresh overflow is still eligible on the next
+ * block. Expiring overflow is not. Rows on neither header are stale.
+ * issuedJobKeys is optional. Absent, only the exact parent and prior job keys
+ * are fresh or expiring. A restamp the pool did not issue is stale.
+ */
+export function splitDeferWindow(shares, parentHeader, priorHeader, cap = MAX_SHARES_PER_BLOCK, issuedJobKeys = null) {
+  const expiring = [];
+  const fresh = [];
+  const stale = [];
+  const list = Array.isArray(shares) ? shares : [];
+  const issued = issuedKeySet(issuedJobKeys);
+  const issuedSet = issued == null ? new Set() : issued;
+  for (const s of list) {
+    const hit = roundSlot(s?.verifiedHeader, parentHeader, priorHeader, issuedSet);
+    if (hit?.slot === 0) fresh.push(s);
+    else if (hit?.slot === 1) expiring.push(s);
+    else stale.push(s);
+  }
+  const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  const keptExp = selectBlockShares(expiring, limit);
+  const room = limit - keptExp.length;
+  const keptFresh = room > 0 ? selectBlockShares(fresh, room) : [];
+  const seal = sortShares(keptExp.concat(keptFresh));
+  // selectBlockShares returns copies. Match the unit, not the object.
+  const sealIds = new Set(seal.map((s) => shareWorkKey(s?.verifiedHeader, s?.nonce)).filter(Boolean));
+  const spill = (rows) => sortShares(rows.filter((s) => {
+    const key = shareWorkKey(s?.verifiedHeader, s?.nonce);
+    return !key || !sealIds.has(key);
+  }));
+  return {
+    seal,
+    carry: spill(fresh),
+    owe: spill(expiring),
+    stale: sortShares(stale),
+  };
+}
+
+/**
+ * One witness batch of expiring overflow. `cap` is the witness size, which
+ * consensus keeps at MAX_SHARES_PER_BLOCK. Rows past that batch are not a
+ * second unpaid file. The caller counts them lost.
+ */
+export function partitionSpillRows(rows, { pending = 0, cap = MAX_SHARES_PER_BLOCK } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const room = Math.max(0, Math.floor(Number(cap) || 0) - Math.max(0, Math.floor(Number(pending) || 0)));
+  const witness = room > 0 ? selectBlockShares(list, room) : [];
+  const ids = new Set(witness.map((s) => shareWorkKey(s?.verifiedHeader, s?.nonce)).filter(Boolean));
+  const rest = [];
+  for (const s of list) {
+    const key = shareWorkKey(s?.verifiedHeader, s?.nonce);
+    if (key && ids.has(key)) continue;
+    rest.push(s);
+  }
+  return { witness, rest };
+}
+
+/**
+ * Rows the defer window can still pay: slot 0 or slot 1.
+ * A stale header is not eligible. The number is a count, not a miner.
+ * issuedJobKeys uses the same rule as splitDeferWindow.
+ */
+export function eligibleShareCount(shares, parentHeader, priorHeader = null, issuedJobKeys = null) {
+  const list = Array.isArray(shares) ? shares : [];
+  const issued = issuedKeySet(issuedJobKeys);
+  const issuedSet = issued == null ? new Set() : issued;
+  let n = 0;
+  for (const s of list) {
+    const hit = roundSlot(s?.verifiedHeader, parentHeader, priorHeader, issuedSet);
+    if (hit && (hit.slot === 0 || hit.slot === 1)) n += 1;
+  }
+  return n;
+}
+
+/**
+ * The share-count cap binds when eligible rows exceed it.
+ * A zero cap binds only when the eligible count is positive.
+ * Negative and non-numeric inputs clamp to zero before the compare.
+ */
+export function shareCountCapBinds(eligible, cap = MAX_SHARES_PER_BLOCK) {
+  const n = Math.max(0, Math.floor(Number(eligible) || 0));
+  const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  return n > limit;
+}
+
+/**
+ * Process-local proofs for shares this process already hashed.
+ * Keyed by job and nonce. The value binds noteCommit and the proven bit
+ * width. A hit cannot be restamped onto another dest or a higher width.
+ * Not on the wire. Peers do not see it.
+ */
+const liveSharePow = new Map();
+/** Keys the pool still needs: open round and the template's lag-1 batch. */
+const liveSharePins = new Set();
+/** One entry per accepted share, eight blocks of the count cap. Not a wipe line. */
+export const LIVE_SHARE_POW_BOUND = MAX_SHARES_PER_BLOCK * 8;
+let liveShareEvictions = 0;
+let liveShareWipes = 0;
+let syncSharePowHashes = 0;
+let preparedSharePowUses = 0;
+
+export function sharePowCounters() {
+  return { sync: syncSharePowHashes, prepared: preparedSharePowUses };
+}
+
+export function resetSharePowCounters() {
+  syncSharePowHashes = 0;
+  preparedSharePowUses = 0;
+}
+
+export function liveSharePowMetrics() {
+  return {
+    size: liveSharePow.size,
+    bound: LIVE_SHARE_POW_BOUND,
+    evictions: liveShareEvictions,
+    wipes: liveShareWipes,
+    pins: liveSharePins.size,
+    overBound: Math.max(0, liveSharePow.size - LIVE_SHARE_POW_BOUND),
+  };
+}
+
+/** Replace the pin set. An empty list pins nothing. Eviction will not drop these keys. */
+export function pinLiveSharePow(keys) {
+  liveSharePins.clear();
+  for (const key of keys || []) {
+    if (key) liveSharePins.add(String(key));
+  }
+  return liveSharePins.size;
+}
+
+/** Keep one more key pinned. Does not drop keys already pinned. */
+export function pinOneLiveSharePow(key) {
+  if (key) liveSharePins.add(String(key));
+  return liveSharePins.size;
+}
+
+export function liveSharePowKey(parentHeader, nonce) {
+  const job = shareJobKey(parentHeader);
+  if (!job || nonce == null || nonce === '') return '';
+  return `${job}:${String(nonce)}`;
+}
+
+export function hasLiveSharePow(parentHeader, nonce) {
+  const key = liveSharePowKey(parentHeader, nonce);
+  return !!key && liveSharePow.has(key);
+}
+
+function evictUnpinned(keepKey) {
+  if (liveSharePow.size <= LIVE_SHARE_POW_BOUND) return 0;
+  let n = 0;
+  for (const key of liveSharePow.keys()) {
+    if (liveSharePow.size <= LIVE_SHARE_POW_BOUND) break;
+    if (key === keepKey || liveSharePins.has(key)) continue;
+    liveSharePow.delete(key);
+    liveShareEvictions += 1;
+    n += 1;
+  }
+  return n;
+}
 
 /**
  * Digests ShearHash already computed off the accept thread for this process.
@@ -194,26 +808,301 @@ export function dropSharePowKeys(keys) {
   for (const key of keys || []) preparedSharePow.delete(key);
 }
 
-export function rememberLiveSharePow(parentHeader, nonce) {
-  const job = shareJobKey(parentHeader);
-  if (!job) return;
-  liveSharePow.add(`${job}:${String(nonce)}`);
-  if (liveSharePow.size > MAX_SHARES_PER_BLOCK * 8) liveSharePow.clear();
+export function clearLiveSharePow() {
+  if (liveSharePow.size) liveShareWipes += 1;
+  liveSharePow.clear();
 }
 
 /**
- * Recompute ShearHash-v3 on the frozen parent job header.
- * Duplicate nonce = dup_share. Miss floor = share_pow. Dest must be ssa1.
- * Live pool shares already hashed off-thread skip a second RandomX on the
- * event loop (p2p / tests still hash).
+ * Record a share this process already proved. Incomplete proof records nothing.
+ * A second proof cannot move the nonce to another noteCommit or a higher width.
+ */
+export function rememberLiveSharePow(parentHeader, nonce, proof) {
+  const job = shareJobKey(parentHeader);
+  if (!job || !proof) return false;
+  const nc = asBuf(proof.noteCommit, 32);
+  if (!nc || proof.shareBits == null || proof.shareBits === '') return false;
+  const lz = Number(proof.lz);
+  if (!Number.isFinite(lz)) return false;
+  const hi = shareTargetByte(nonce);
+  const raw = Math.floor(Number(proof.shareBits));
+  const maxB = shareCreditMaxBits();
+  if (!Number.isFinite(raw) || raw !== hi || hi < SHARE_FLOOR_BITS || hi > maxB) return false;
+  const bits = hi;
+  const key = `${job}:${String(nonce)}`;
+  const hex = Buffer.from(nc).toString('hex');
+  const prev = liveSharePow.get(key);
+  if (prev) {
+    if (prev.noteCommit !== hex || bits !== prev.bits) return false;
+    return true;
+  }
+  liveSharePow.set(key, { noteCommit: hex, bits, lz: lz & 0xff });
+  // Drop the oldest unpinned jobs. Never the key just stored, and never a pin.
+  evictUnpinned(key);
+  return liveSharePow.has(key);
+}
+
+/**
+ * Re-hash lag-1 rows that lost their process-local proof.
+ * RandomX runs off the accept thread. A miss is not a skipPow pass.
+ * Rows that meet the nonce-byte target are cached again. The rest are failed.
+ */
+export async function reproveSharesOffLoop(parentHeader, shares = []) {
+  const list = Array.isArray(shares) ? shares : [];
+  const job = asHeaderBuf(parentHeader);
+  // A missing parent is not a per-share failure. Callers must keep the batch.
+  if (!job || job.length !== 128) {
+    return { ok: false, reason: 'parent_header', failed: [], proved: 0 };
+  }
+  const cold = [];
+  for (const s of list) {
+    const own = asHeaderBuf(s?.verifiedHeader);
+    const onPrior = (s?.proofSlot === 1 || s?.proofSlot === '1') && own && own.length === 128;
+    const onKin = own && own.length === 128 && sameRoundFamily(own, job);
+    if (onPrior || onKin) {
+      if (hasLiveSharePow(own, s?.nonce)) continue;
+    } else if (hasLiveSharePow(job, s?.nonce) || hasLiveSharePow(s?.verifiedHeader, s?.nonce)) {
+      continue;
+    }
+    cold.push(s);
+  }
+  if (!cold.length) return { ok: true, reason: '', failed: [], proved: list.length };
+  // Illegal rows fail closed before RandomX. A worker miss is not those rows.
+  const failed = [];
+  const hashable = [];
+  for (const s of cold) {
+    let header;
+    try {
+      const own = asHeaderBuf(s?.verifiedHeader);
+      const onPrior = (s?.proofSlot === 1 || s?.proofSlot === '1') && own && own.length === 128;
+      const onKin = own && own.length === 128 && sameRoundFamily(own, job);
+      const base = onPrior || onKin ? own : job;
+      header = setNonce(base, BigInt(s?.nonce || 0));
+    } catch {
+      failed.push(s);
+      continue;
+    }
+    const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: true });
+    const nc = noteCommitOfShare(s);
+    if (!credit.ok || !nc || nc.length !== 32) {
+      failed.push(s);
+      continue;
+    }
+    hashable.push({ share: s, header, credit, nc });
+  }
+  let hashes = [];
+  if (hashable.length) {
+    try {
+      hashes = await Promise.all(hashable.map((row) => hashHeaderOffLoop(row.header)));
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'worker',
+        failed: [],
+        proved: 0,
+        error: String(err?.message || err),
+      };
+    }
+  }
+  let proved = list.length - cold.length;
+  for (let i = 0; i < hashable.length; i += 1) {
+    const { share: s, credit, nc } = hashable[i];
+    const bound = destBoundShareHash(hashes[i], nc);
+    if (!meetsTarget(bound, credit.bits)) {
+      failed.push(s);
+      continue;
+    }
+    const lz = leadingZeroBits(bound) & 0xff;
+    const own = asHeaderBuf(s?.verifiedHeader);
+    const onPrior = (s?.proofSlot === 1 || s?.proofSlot === '1') && own && own.length === 128;
+    const onKin = own && own.length === 128 && sameRoundFamily(own, job);
+    const base = onPrior || onKin ? own : job;
+    const remembered = rememberLiveSharePow(base, s.nonce, {
+      noteCommit: nc,
+      shareBits: credit.bits,
+      lz,
+    });
+    if (!remembered) failed.push(s);
+    else proved += 1;
+  }
+  return {
+    ok: failed.length === 0,
+    reason: failed.length ? 'share_pow' : '',
+    failed,
+    proved,
+  };
+}
+
+function liveProofForShare(share) {
+  if (!share?.verifiedHeader) return null;
+  const buf = asHeaderBuf(share.verifiedHeader);
+  if (!buf || buf.length !== 128) return null;
+  const job = shareJobKey(buf);
+  if (!job || share.nonce == null || share.nonce === '') return null;
+  return liveSharePow.get(`${job}:${String(share.nonce)}`) || null;
+}
+
+/** Keep a share only at the nonce-byte width. A moved dest or a different cached width is dropped. */
+function sharesAtProvenBits(list) {
+  const out = [];
+  for (const s of list) {
+    const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: false });
+    if (!credit.ok) continue;
+    const proof = liveProofForShare(s);
+    if (proof) {
+      const nc = noteCommitOfShare(s);
+      const hex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
+      if (!hex || hex !== proof.noteCommit || proof.bits !== credit.bits) continue;
+    }
+    out.push({ ...s, shareBits: credit.bits, creditedShareBits: credit.bits });
+  }
+  return out;
+}
+
+function headerWorkBuf(header) {
+  const raw = asHeaderBuf(header);
+  if (!raw || raw.length !== 128) return null;
+  return raw;
+}
+
+function nonceKeySet(excludeNonces) {
+  if (excludeNonces instanceof Set) return excludeNonces;
+  const out = new Set();
+  if (!excludeNonces) return out;
+  for (const n of excludeNonces) {
+    const raw = String(n ?? '');
+    if (raw.includes(':')) {
+      out.add(raw);
+      continue;
+    }
+    try { out.add(BigInt(n).toString()); } catch { /* skip */ }
+  }
+  return out;
+}
+
+/** A bare nonce still blocks every header. A work key blocks that header only. */
+function paidBlocks(paid, headerBuf, nk) {
+  if (!paid || paid.size === 0) return false;
+  if (paid.has(nk)) return true;
+  const key = shareWorkKey(headerBuf, nk);
+  return !!(key && paid.has(key));
+}
+
+function boundNote(share) {
+  let nc;
+  try { nc = noteCommitOfShare(share); } catch { return null; }
+  if (!nc || nc.length !== 32 || Buffer.from(nc).equals(Buffer.alloc(32))) return null;
+  return Buffer.from(nc);
+}
+
+/**
+ * One retained-units result for a share list.
+ * Rows with no noteCommit occupy the cap and are not leaves.
+ * Bound rows keep retainedUnitsByCommit of the room that occupancy leaves.
+ * units is the sum of that map. The same map is aLeaves and byDest.
+ * Occupancy above the cap is hash_units. A bound total above the room scales.
+ */
+export function accountShareUnits(shares = [], cap = MAX_HASH_UNITS_PER_BLOCK) {
+  const limit = Math.max(0, Math.floor(Number(cap) || 0));
+  const list = Array.isArray(shares) ? shares : [];
+  let unbound = 0;
+  const bound = [];
+  for (const share of list) {
+    const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: true });
+    if (!credit.ok) continue;
+    const units = unitsForShare(credit.bits);
+    if (!boundNote(share)) unbound += units;
+    else bound.push(share);
+  }
+  if (unbound > limit) {
+    return {
+      ok: false,
+      reason: 'hash_units',
+      units: 0,
+      retained: new Map(),
+      unbound,
+      room: 0,
+      bound,
+    };
+  }
+  const room = limit - unbound;
+  const retained = retainedUnitsByCommit(bound, room);
+  let units = 0;
+  for (const u of retained.values()) units += u;
+  return { ok: true, reason: '', units, retained, unbound, room, bound };
+}
+
+/**
+ * Proof of one share against one header. A cache hit that names another dest
+ * or width is a contradiction and is not re-hashed. skipPow with no cache
+ * entry and no prepared digest does not hash.
+ */
+function proveShareOn(headerBuf, { nonce, nk, nc, ncHex, claimedBits, skipPow, trustWork }) {
+  const jobKey = shareJobKey(headerBuf);
+  const cached = jobKey ? liveSharePow.get(`${jobKey}:${nk}`) : null;
+  if (cached) {
+    if (!ncHex || ncHex !== cached.noteCommit || claimedBits !== cached.bits) {
+      return { ok: false, reason: 'share_pow', contradict: true };
+    }
+    return { ok: true, lz: Number(cached.lz) & 0xff };
+  }
+  let stamped;
+  try { stamped = setNonce(Buffer.from(headerBuf), nonce); } catch {
+    return { ok: false, reason: 'share_pow' };
+  }
+  const prepared = takeSharePow(stamped);
+  if (prepared) preparedSharePowUses += 1;
+  // Own-install keyed load only. The slot, width, dest, and work key
+  // were already checked. A foreign load must not set this.
+  if (!prepared && trustWork) return { ok: true, lz: 0, trusted: true };
+  if (!prepared && skipPow) return { ok: false, reason: 'share_pow', cold: true };
+  if (!nc || Buffer.from(nc).length !== 32) return { ok: false, reason: 'miner_addr' };
+  if (!prepared) syncSharePowHashes += 1;
+  const hash = prepared || shearHash(stamped);
+  const bound = destBoundShareHash(hash, nc);
+  if (!meetsTarget(bound, claimedBits)) return { ok: false, reason: 'share_pow' };
+  return { ok: true, lz: leadingZeroBits(bound) & 0xff };
+}
+
+/**
+ * Recompute ShearHash-v3 on the header the share names.
+ * A work row names its header with proofSlot. 0 is parentHeader. 1 is
+ * priorHeader, the parent of that parent, for one step. An exact job key
+ * uses that slot header. A different merkle or a restamp is hashed only
+ * when issuedJobKeys names that header and the header is in the slot's
+ * round family. Without that list, those rows are share_slot and are not
+ * hashed. A work row with no slot is share_slot and is not tried on both
+ * headers. Identity is that header plus the nonce. The same nonce on both
+ * headers is two units. The same header and nonce twice is dup_share.
+ * excludeNonces may be bare nonces or work keys. Verification does not
+ * write the slot back.
+ * Credit is the nonce high byte. A packed claim that disagrees, or a byte
+ * outside [floor, B_MAX], is share_target and is not hashed. A dest-bound
+ * digest that misses that byte is share_pow. A cache hit at that exact dest
+ * and width skips a second RandomX. skipPow does not credit a row that has
+ * no such proof and no prepared digest. trustWork credits a row that already
+ * passed the slot, width, dest, duplicate, and paid-work checks. It is the
+ * own-install load shortcut. A foreign load leaves it false and hashes.
  */
 export function verifyShareBatch({
   parentHeader,
+  priorHeader = null,
+  excludeNonces = null,
   shares = [],
   floorBits = SHARE_FLOOR_BITS,
   skipPow = false,
+  trustWork = false,
+  issuedJobKeys = null,
 } = {}) {
-  const list = sortShares(unpackShareBatch(shares));
+  const raw = Array.isArray(shares) ? shares : [];
+  const linked = [];
+  for (const src of raw) {
+    const row = unpackShareBatch([src])[0];
+    if (!row) continue;
+    if (src && typeof src === 'object' && !Buffer.isBuffer(src)) row._src = src;
+    linked.push(row);
+  }
+  const list = sortShares(linked);
   if (list.length > MAX_SHARES_PER_BLOCK) {
     return { ok: false, reason: 'share_cap' };
   }
@@ -221,15 +1110,16 @@ export function verifyShareBatch({
     return { ok: true, shares: [], units: 0, byDest: new Map(), aLeaves: [] };
   }
   if (!parentHeader) return { ok: false, reason: 'parent_header' };
+  const issued = issuedKeySet(issuedJobKeys);
+  if (issued == null) return { ok: false, reason: 'share_slot' };
   const job = Buffer.from(parentHeader);
-  const jobKey = shareJobKey(job);
-  const seenNonce = new Set();
+  const priorBuf = headerWorkBuf(priorHeader);
+  const paid = nonceKeySet(excludeNonces);
+  const seenWork = new Set();
   const proven = [];
   for (const s of list) {
     const nonce = BigInt(s.nonce || 0);
     const nk = nonce.toString();
-    if (seenNonce.has(nk)) return { ok: false, reason: 'dup_share' };
-    seenNonce.add(nk);
     const dest = destOfShare(s);
     if (dest) {
       if (!isDestAddress(dest) || bech32Hrp(dest) !== DEST_HRP) {
@@ -247,22 +1137,66 @@ export function verifyShareBatch({
     if (dest && (!nc || nc.length !== 32)) {
       nc = noteCommitOfDest20(dest20OfShare({ ...s, dest }));
     }
-    const header = setNonce(job, nonce);
-    const cached = skipPow || (jobKey && liveSharePow.has(`${jobKey}:${nk}`));
-    let lz = Number(s.lz) & 0xff;
-    if (!cached) {
-      if (!nc || Buffer.from(nc).length !== 32) {
-        return { ok: false, reason: 'miner_addr' };
-      }
-      // P2P may have hashed this header on a worker. The floor check stays here.
-      const prepared = takeSharePow(header);
-      const hash = prepared || shearHash(header);
-      const bound = destBoundShareHash(hash, nc);
-      if (!meetsTarget(bound, floorBits)) {
-        return { ok: false, reason: 'share_pow' };
-      }
-      lz = leadingZeroBits(bound) & 0xff;
+    const credit = creditBitsForShare(s, floorBits, { strict: true });
+    if (!credit.ok) return { ok: false, reason: credit.reason };
+    const claimedBits = credit.bits;
+    const ncHex = nc && nc.length === 32 ? Buffer.from(nc).toString('hex') : '';
+    const ctx = { nonce, nk, nc, ncHex, claimedBits, skipPow, trustWork: !!trustWork };
+    const wantSlot = s.proofSlot === 1 || s.proofSlot === '1'
+      ? 1
+      : (s.proofSlot === 0 || s.proofSlot === '0' ? 0 : null);
+    const workRow = (s.shareBits != null && s.shareBits !== '')
+      || (s.creditedShareBits != null && s.creditedShareBits !== '');
+    if (workRow && wantSlot == null) return { ok: false, reason: 'share_slot' };
+    const own = headerWorkBuf(s.verifiedHeader);
+    const canonical = wantSlot === 1 ? priorBuf : job;
+    // A stated header that this slot did not issue is not hashed.
+    const named = s.verifiedHeader
+      ? (own && canonical && shareHeaderSlot(own, canonical, issued) ? own : null)
+      : canonical;
+    if (workRow && s.verifiedHeader && !named) return { ok: false, reason: 'share_slot' };
+    const tries = [];
+    if (wantSlot === 1) {
+      const hdr = s.verifiedHeader ? named : priorBuf;
+      if (hdr) tries.push([hdr, 1]);
+    } else if (wantSlot === 0) {
+      const hdr = s.verifiedHeader ? named : job;
+      if (hdr) tries.push([hdr, 0]);
+    } else if (!workRow) {
+      tries.push([job, 0]);
+      if (priorBuf) tries.push([priorBuf, 1]);
     }
+    let chosen = null;
+    let sawDup = false;
+    let lastFail = { ok: false, reason: 'share_pow' };
+    for (const [hdr, slot] of tries) {
+      const key = shareWorkKey(hdr, nonce);
+      if (!key) {
+        lastFail = { ok: false, reason: 'share_pow' };
+        continue;
+      }
+      if (seenWork.has(key)) {
+        sawDup = true;
+        continue;
+      }
+      if (paidBlocks(paid, hdr, nk)) {
+        lastFail = { ok: false, reason: 'share_pow' };
+        continue;
+      }
+      const attempt = proveShareOn(hdr, ctx);
+      if (attempt.contradict) return { ok: false, reason: 'share_pow' };
+      if (attempt.ok) {
+        chosen = { attempt, key, slot };
+        break;
+      }
+      lastFail = attempt;
+    }
+    if (!chosen) {
+      if (sawDup) return { ok: false, reason: 'dup_share' };
+      return { ok: false, reason: lastFail.reason || 'share_pow' };
+    }
+    seenWork.add(chosen.key);
+    const lz = chosen.attempt.lz;
     // Historical persist dropped dest/noteCommit and kept nonce+lz. POW still binds
     // the share; hasher identity is the sealed aLeaf. New rows keep noteCommit.
     proven.push({
@@ -271,22 +1205,37 @@ export function verifyShareBatch({
       noteCommit: nc && nc.length === 32 ? Buffer.from(nc) : Buffer.alloc(32),
       nonce,
       lz,
-      units: unitsForShare(),
+      proofSlot: chosen.slot,
+      shareBits: claimedBits,
+      units: unitsForShare(claimedBits),
       bound: !!(nc && nc.length === 32),
     });
   }
-  const units = proven.reduce((n, s) => n + s.units, 0);
-  if (units > MAX_HASH_UNITS_PER_BLOCK) {
-    return { ok: false, reason: 'hash_units' };
-  }
-  const bound = proven.filter((s) => s.bound);
+  const account = accountShareUnits(proven);
+  if (!account.ok) return { ok: false, reason: account.reason || 'hash_units' };
   return {
     ok: true,
     shares: proven,
-    units,
-    byDest: collateShareUnits(bound),
-    aLeaves: aLeavesFromShares(bound),
+    units: account.units,
+    byDest: collateShareUnits(account.bound, account.room, account.retained),
+    aLeaves: aLeavesFromShares(account.bound, account.room, account.retained),
   };
+}
+
+/** Seal-escape row check. skipPow is fixed so the pool thread never hashes. */
+export function structuralShareVerdict({
+  parentHeader,
+  priorHeader = null,
+  shares = [],
+  issuedJobKeys = null,
+} = {}) {
+  return verifyShareBatch({
+    parentHeader,
+    priorHeader,
+    shares,
+    issuedJobKeys,
+    skipPow: true,
+  });
 }
 
 export function findShare(header, {
@@ -299,25 +1248,32 @@ export function findShare(header, {
   const job = Buffer.from(header);
   const d20 = dest20 ? Buffer.from(dest20) : dest20OfShare({ dest });
   const addr = dest || encodeDest(d20);
-  for (let n = BigInt(startNonce); n < BigInt(startNonce) + BigInt(maxTries); n += 1n) {
-    const h = setNonce(job, n);
+  const width = Math.floor(Number(floorBits));
+  const bits = Number.isFinite(width) ? width : SHARE_FLOOR_BITS;
+  let n = BigInt(startNonce) & SHARE_NONCE_LOW_MASK;
+  const limit = n + BigInt(maxTries);
+  for (; n < limit; n += 1n) {
+    const stamped = nonceWithShareTarget(n, bits);
+    const h = setNonce(job, stamped);
     const hash = shearHash(h);
     const share = {
       dest20: d20,
       dest: addr,
-      nonce: n,
+      nonce: stamped,
       lz: 0,
+      shareBits: bits,
+      creditedShareBits: bits,
     };
     const nc = noteCommitOfShare(share);
     const bound = destBoundShareHash(hash, nc);
-    if (meetsTarget(bound, floorBits)) {
+    if (meetsTarget(bound, bits)) {
       share.lz = leadingZeroBits(bound) & 0xff;
       return {
         ...share,
         noteCommit: nc,
         packed: packShareV5({
           noteCommit: nc,
-          nonce: n,
+          nonce: stamped,
           lz: share.lz,
         }),
         header: h,

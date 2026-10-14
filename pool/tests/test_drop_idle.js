@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { nonceWithShareTarget } from '../../crypto/share_batch.js';
 import {
   createPool,
   scoreShare,
@@ -99,17 +101,25 @@ function waitMsg(msgs, pred, ms = 30000) {
   });
 }
 
-function findShare(job, max = 6_000n) {
-  for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+function shareNonce(n, job) {
+  const bits = Number(job?.shareBits);
+  if (Number.isInteger(bits) && bits > 0) return nonceWithShareTarget(n, bits);
+  return n;
+}
+
+function findShare(job, dest, max = 6_000n) {
+  for (let n = 0n; n < max; n += 1n) {
+    const nonce = shareNonce(n, job);
+    const s = scoreShare({ job, nonce, dest });
     if (s.ok) return { nonce, s };
   }
   throw new Error('no_share');
 }
 
-function findMiss(job, max = 4096n) {
-  for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+function findMiss(job, dest, max = 4096n) {
+  for (let n = 0n; n < max; n += 1n) {
+    const nonce = shareNonce(n, job);
+    const s = scoreShare({ job, nonce, dest });
     if (!s.ok && s.reason === 'low_diff' && s.hash) return { nonce, s };
   }
   throw new Error('no_low_diff');
@@ -188,7 +198,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.old`, client: 'ShearHash', version: '2.1', name: 'Shear-Miner', threads: 1 },
+      params: { login: `${dest}.old`, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'Shear-Miner', threads: 1 },
     }) + '\n');
     const login = await waitMsg(msgs, (m) => m.id === 1);
     assert.equal(login.error, undefined);
@@ -213,7 +223,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock2.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest2}.bad`, client: 'ShearHash', version: '2.1', threads: 1 },
+      params: { login: `${dest2}.bad`, client: 'ShearHash', version: SHEARK_MINER_VERSION, threads: 1 },
     }) + '\n');
     const login2 = await waitMsg(msgs2, (m) => m.id === 1);
     sock2.write(JSON.stringify({
@@ -230,7 +240,7 @@ describe('drop idle / wrong-algo miners', () => {
   it('low_diff (right algo, below share bits) does not drop; idle never-share does', async () => {
     const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();
-    const miss = findMiss(job);
+    const miss = findMiss(job, dest);
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
     sock.on('error', () => {});
@@ -240,7 +250,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.low`, client: 'ShearHash', version: '2.1', threads: 1 },
+      params: { login: `${dest}.low`, client: 'ShearHash', version: SHEARK_MINER_VERSION, threads: 1 },
     }) + '\n');
     await waitMsg(msgs, (m) => m.id === 1);
     sock.write(JSON.stringify({
@@ -268,7 +278,7 @@ describe('drop idle / wrong-algo miners', () => {
     idleSock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${idleDest}.idle`, client: 'ShearHash', version: '2.1', threads: 1 },
+      params: { login: `${idleDest}.idle`, client: 'ShearHash', version: SHEARK_MINER_VERSION, threads: 1 },
     }) + '\n');
     await waitMsg(idleMsgs, (m) => m.id === 1);
     const note = await waitMsg(idleMsgs, (m) => m.error === 'no_valid_share' || m.method === 'error', 2000)
@@ -283,26 +293,36 @@ describe('drop idle / wrong-algo miners', () => {
   });
 
   it('a hasher with an accepted ShearHash-v3 share is not idle-dropped', async () => {
-    const { pool, dest } = tmpPool(8, { noValidShareMs: 80 });
+    // 80ms ends before this host delivers the login and the worker finishes
+    // one ShearHash. The window stays short of the default, and the explicit
+    // sweep after accept is what must keep the socket.
+    const { pool, dest } = tmpPool(8, { noValidShareMs: 2_000 });
     const job = pool.issueJob();
-    const hit = findShare(job);
+    const hit = findShare(job, dest);
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
     sock.on('error', () => {});
     const msgs = [];
     readLines(sock, msgs);
+    let submitted = false;
+    sock.on('data', () => {
+      if (submitted) return;
+      if (!msgs.some((m) => m.id === 1 && m.result?.status === 'OK')) return;
+      submitted = true;
+      sock.write(JSON.stringify({
+        id: 2,
+        method: 'submit',
+        params: { jobId: job.jobId, nonce: String(hit.nonce), hash: hit.s.hash },
+      }) + '\n');
+    });
     await new Promise((res, rej) => { sock.on('connect', res); sock.on('error', rej); });
+    try { sock.setNoDelay(true); } catch { /* ignore */ }
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.ok`, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
+      params: { login: `${dest}.ok`, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads: 1 },
     }) + '\n');
     await waitMsg(msgs, (m) => m.id === 1);
-    sock.write(JSON.stringify({
-      id: 2,
-      method: 'submit',
-      params: { jobId: job.jobId, nonce: String(hit.nonce), hash: hit.s.hash },
-    }) + '\n');
     const ack = await waitMsg(msgs, (m) => m.id === 2);
     assert.equal(ack.error, undefined, JSON.stringify(ack));
     assert.equal(ack.result?.status, 'OK');
@@ -326,7 +346,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.old`, client: 'ShearHash', version: '2.1', name: 'Shear-Miner', threads: 1 },
+      params: { login: `${dest}.old`, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'Shear-Miner', threads: 1 },
     }) + '\n');
     await waitMsg(msgs, (m) => m.id === 1);
     sock.write(JSON.stringify({
@@ -350,7 +370,7 @@ describe('drop idle / wrong-algo miners', () => {
       s.write(JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
+        params: { login, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads: 1 },
       }) + '\n');
       const reply = await waitMsg(out, (m) => m.id === 1);
       await waitClose(s).catch(() => {});
@@ -375,7 +395,7 @@ describe('drop idle / wrong-algo miners', () => {
     sock.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.idle`, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
+      params: { login: `${dest}.idle`, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads: 1 },
     }) + '\n');
     await waitMsg(msgs, (m) => m.id === 1);
     await waitClose(sock, 2000);
@@ -390,7 +410,7 @@ describe('drop idle / wrong-algo miners', () => {
     s2.write(JSON.stringify({
       id: 1,
       method: 'login',
-      params: { login: `${dest}.idle`, client: 'ShearHash', version: '2.1', name: 'ShearK-Miner', threads: 1 },
+      params: { login: `${dest}.idle`, client: 'ShearHash', version: SHEARK_MINER_VERSION, name: 'ShearK-Miner', threads: 1 },
     }) + '\n');
     const reply = await waitMsg(out, (m) => m.id === 1);
     assert.equal(reply.error, undefined, JSON.stringify(reply));

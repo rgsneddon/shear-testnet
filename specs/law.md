@@ -23,9 +23,9 @@ Network: `shear-testnet-v12` (privacy-class). Previous book `shear-testnet-v11`.
 | `MAX_BITS` | `256` |
 | `SHARE_FLOOR_BITS` | `8` |
 | `MAX_SHARES_PER_BLOCK` | `65536` (v11). Direct from the closed v10 cap of `8192`. The 32768 rung is cancelled. Do not soft-merge 65536 onto v10. |
-| `MAX_HASH_UNITS_PER_BLOCK` | `MAX_SHARES_PER_BLOCK * 2^SHARE_FLOOR_BITS` = `16777216`. `HASH_BONUS_NANOS` stays `1`. |
+| `MAX_HASH_UNITS_PER_BLOCK` | `2^28` (`268435456`). Not `65536 * 2^SHARE_FLOOR_BITS`. `HASH_BONUS_NANOS` stays `1`. |
 | Interest | 400-day APR: `floor(staked * bps / 10000)`. Not × 400/365. |
-| Oracle | Fixed at genesis **284** bps until `ORACLE_ACTIVATION`. After that height, the 3b miner median: 1-week mainnet window (1008 blocks, 7 days), testnet 144 blocks, per-bank 2/3, 10 of 14, trimmed mean, bounds −1% to +100%, floor 0. |
+| Oracle | Fixed at genesis **284** bps until `ORACLE_ACTIVATION`. After that height, the 3b miner median: one week by duration (mainnet 6720 blocks at 90 s; testnet the same week-of-epoch fraction, 67 blocks), selected by height, per-bank 2/3 of the window, 10 of 14, trimmed mean, bounds −1% to +100%, floor 0. |
 | Late 99 days | idle, can vote, no interest |
 | Dest HRP | `ssa` on chain only |
 | Extra mint | `shear-reserve-v1` withdraw only, amount-bound |
@@ -46,21 +46,22 @@ HASH_TX_LIVE=1
 HASH_UNIT_FLOOR=1
 LAG1_SHAREBATCH=1
 POT_PROP=shareBatch
-POOL_FEE_MAX_BPS=300
+POOL_FEE_MAX_BPS=200
 POOL_FEE_BPS=100 (this public pool's construction rate; not required of other pools)
 DEST_HRP_SSA_ONLY=1
 SPEND_SIG_ONLY=1
 MEMO_NOT_DEST_KEYED=1
 AMOUNT=confidential
 DUMMY_OUTS=1
-ENC_SHARE=v5
+ENC_SHARE=v5+work7
+SHARE_UNITS=2^bits
 DANDELIONPP=1
 VIEW_TAG=1
 KDF=argon2id-shewall
 RESERVE=shear-reserve-v1
 RESERVE_EVM=1
-RESERVE_INTEREST=400d-bps-floor
 RESERVE_REWARD=epoch-bps-floor
+RESERVE_REWARD=400d-bps-floor
 ORACLE=basket-mean-14
 RESERVE_RATE=epoch-fixed:quorum=10:genesis=284:floor=0:trim=2
 ORACLE_ACTIVATION=fixed
@@ -68,7 +69,7 @@ VORTEX=vort1-pin
 VORTICE_NO_MINT=1
 LEVY_CAP=0.001-SHE
 LEVY_SPLIT=100-finder-work,empty=public-finder-note
-ADMIT=ADMITv2
+ADMIT=ADMITv3
 BITS=q16.16
 ASERT_TAU_MS=1440000
 ASERT_STEP=median11(log2(T/seen))*(T/tau)
@@ -80,6 +81,10 @@ MAX_SHARES_PER_BLOCK=65536
 SPEND_SIG=ed25519-shear-spend-v1
 POOL_WITHDRAW=eip712-spend-bound
 ```
+
+v12 consensus caps a pool fee at `POOL_FEE_MAX_BPS` (200) of that block's subsidy. Carried pot is not part of the fee base. This public pool still constructs at 100 bps.
+
+v12 share credit is `ENC_SHARE=v5+work7`, `SHARE_UNITS=2^bits`, and `SHARE_CREDIT=nonce-hi-le`. The little-endian high byte of the share nonce (header offset 119) is the credited width `b`. A validator credits `2^b` only when that byte is `b`, the packed claim is `b`, and the dest-bound digest meets `b`. Legal `b` is `[SHARE_FLOOR_BITS, SHARE_BMAX]` with `SHARE_BMAX = min(52, floor(log2(MAX_HASH_UNITS)))`. A live cache hit binds that nonce to its noteCommit and that same width. `skipPow` does not credit a row that has no such proof. A sealed shortfall that this block's hash budget does not pay is an owed row on the coinbase (`HASH_OWED=noteCommit-carry`). Any later producer pays parent rows from `HASH_OWED_DRAIN` (1/2) of the same budget, oldest first. Fresh credits take the rest, pro-rata. An unused side spills to the other side. A balance below one floor share (`HASH_OWED_DUST`) stays on that noteCommit. After every row at or above the floor is handled, spare budget pays those rows oldest first, even below the floor (`HASH_OWED_SUBDUST=spare-fifo-v1`). `HASH_OWED_CARRY=v1` keeps every unpaid nano on its note. `HASH_OWED_INLINE` packs payable rows first, then sub-dust rows, in node memory. The coinbase wire carries only `hashOwedRoot` (`HASH_OWED_WIRE=root-v1`). A full node replays the map from each block's sealed fresh-credit record (`HASH_OWED_RECOVER=sealed-credits-v1`), at the hash-bonus unit live before that block (`HASH_OWED_UNIT_HISTORY=per-height`), and checks the sealed accepted-unit total (`HASH_ACCEPTED_UNITS=validated`). Hash mint capacity is `max(MAX_HASH_UNITS, HASH_OWED_SCALE_K * lowerMedian)` of sealed accepted units over `HASH_OWED_SCALE_WINDOW` (`HASH_OWED_BUDGET_SCALE=v1`) and never drops below `MAX_HASH_UNITS`. A public dust pot and a public overflow scalar are rejected. The fee does not apply to this bonus. Slot-1 expiring shares that do not get a seat, up to one batch of `MAX_SHARES_PER_BLOCK`, are `hashSpill` (`HASH_OWED_SPILL=witness-v1`). Their full credit is an owed row at that height and is not taken from this block's hash budget. The next block pays that row once. Owe past that one batch is `lostWork`. A row that cannot bind as slot 1 stays off the template and is not minted. The pool file `window-owed.json` is the queue until that block seals. It is not a mint.
 
 Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. **Hash bonus never goes to 0** (`HASH_UNIT_FLOOR=1`). Votes cannot zero the unit or move the pot schedule. Clients refuse to emit before that instant.
 
@@ -105,7 +110,7 @@ Lag-1: ShearHash-v3 key K includes `continuity_root` and `merkle_root`. This-rou
 
 Block N pays the shares proven on the frozen job header of the previous open round (parent sealed header; nonce replaced per share; no restamp).
 
-Body encoding `ENC_SHARE=v5` = `note_commit || nonce_u64le || lz_u8` (optional view tag). Wire and disk store packed frames, not one JSON object per share. `shareBatch` max `MAX_SHARES_PER_BLOCK`. Canonical order is `(noteCommit, nonce)`. Over-cap inclusion keeps higher hash-share weight; equal weight breaks on sha256(noteCommit || nonce), not on a low dest20. Duplicate nonce = `dup_share`. Tree A stays `note_commit+u64count`; count must equal summed units for that dest; mismatch = `hash_bonus`.
+Body encoding `ENC_SHARE=v5` = `note_commit || nonce_u64le || lz_u8` (optional view tag). The work frame (`ENC_SHARE_WORK`) adds credited bits, and those bits are `2^bits` units when the dest-bound hash meets them. Wire and disk store packed frames, not one JSON object per share. `shareBatch` max `MAX_SHARES_PER_BLOCK`. Canonical order is `(noteCommit, nonce)`. Over-cap inclusion keeps higher hash-share weight; equal weight breaks on sha256(noteCommit || nonce), not on a low dest20. Duplicate nonce = `dup_share`. Tree A stays `note_commit+u64count`; count must equal summed units for that dest; mismatch = `hash_bonus`.
 
 `skipFlow` when buried && samplesPruned may skip `shareBatch` bodies. It may not skip hash vouts / `ssa1` checks. IBD of a pruned height is assume-valid after 1000. Full nodes validate `shareBatch` until prune-1000; money vouts forever.
 
@@ -133,7 +138,7 @@ Coinbase `kind:pot` is PROP across dest20 in `shareBatch`. Hasher dests receive 
 
 - One proven share-hash mints units; user txs are signed Flow.
 - Full nodes validate shareBatch until prune-1000; money vouts forever.
-- Private dests, confidential amounts. ADMITv2 membership over this book's notes.
+- Revolving dests. Flow sends are off until the ADMITv3 full-set proof ships (FS-1).
 - PoW elects the tip. Pot is 1 SHE PROP. Hash units are proven PoW. Reserve interest is the only other mint, amount-bound.
 - GPU/ASIC refuse is pool share-gate only, not consensus.
 - Admin is TOTP + password. Host header is not authorization.

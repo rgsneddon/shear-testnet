@@ -26,8 +26,8 @@ function sectionRun() {
 function sectionEnv() {
   return [
     'Env:',
-    '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v12 (Roaming). Unix ~/.shear/testnet-v12.',
-    '                      Same path for Shear Sentinel v18 and Continuum 0.71. Do not reuse a v11 datadir.',
+    '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v11 (Roaming). Unix ~/.shear/testnet-v11.',
+    '                      Same path for Shear Sentinel v19 and Continuum 0.72.',
     '  SHEAR_NETWORK       shear-testnet-v12 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
@@ -61,7 +61,7 @@ function sectionRpc() {
     '  GET /block?height=N         compact block',
     '  GET /blocks?from=&to=       compact window',
     '  GET /chaintips /reorgs /policy /jroot /fingerprint /fluxset',
-    '  GET /notes /api/wallet/notes /api/wallet/balance /api/wallet/history',
+    '  Notes, balance, and history are owner-side: scan /blocks, open amtCt. No route returns an amount.',
     '  GET /api/oracle | /oracle   lock issuance rate for the epoch. Mint uses frozen epochBps. A local snapshot does not move it.',
     '  GET /api/reserve?address=   one portal: staked, idle, vote, accrued. Public vote counts. No other dests.',
     '  POST /api/wallet/send | /queuetx',
@@ -89,13 +89,13 @@ function sectionSolo() {
     '       npm run solo',
     '     Bare node node/src/node.js is validator-only (no stratum).',
     '     npm run pool is the public-pool operator stack — not solo.',
-    '  3. CLI (first-class) or Continuum 0.71:',
+    '  3. CLI (first-class) or Continuum 0.72:',
     '       dart run bin/shear.dart dest --rpc http://127.0.0.1:18332',
     '       dart run bin/shear.dart balance',
     '       dart run bin/shear.dart history',
     '  4. Status lines print height, hash, peers, want, ibd, hashBackend.',
     '     hashBackend=missing means shares will reject native_missing — build step 1.',
-    '  Mining, --solo, and a self-pool need Shear Sentinel v18. A follow-only node may lag.',
+    '  Mining, --solo, and a self-pool need Shear Sentinel v19. A follow-only node may lag.',
     '  5. ./ShearK-Miner --selftest',
     '     ./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --threads 8',
     '',
@@ -154,7 +154,7 @@ export function helpTopics() {
 export function printHelp(topic) {
   const t = String(topic || '').replace(/^-+/, '').toLowerCase();
   const head = [
-    `${NODE_DISPLAY} — validating full node (ADMITv2)`,
+    `${NODE_DISPLAY} — validating full node (ADMITv3, sends off)`,
     `Book magic: ${MAGIC_TESTNET}`,
     '',
   ];

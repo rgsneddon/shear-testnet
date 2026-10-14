@@ -1,0 +1,40 @@
+#!/bin/sh
+# Reads SHEARK_* from the environment (systemd EnvironmentFile) or from
+# /etc/default/sheark-miner when the variables are unset.
+set -eu
+if [ -z "${SHEARK_USER:-}" ] && [ -f /etc/default/sheark-miner ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /etc/default/sheark-miner
+  set +a
+fi
+threads=${SHEARK_THREADS:-1}
+case ${threads} in
+  ''|*[!0-9]*)
+    echo "SHEARK_THREADS must be a positive integer" >&2
+    exit 1
+    ;;
+esac
+if [ "$threads" -lt 1 ]; then
+  echo "SHEARK_THREADS must be >= 1" >&2
+  exit 1
+fi
+case ${SHEARK_USER:-} in
+  ''|YOUR_SSA1.worker|YOUR_*)
+    echo "Set SHEARK_USER in /etc/default/sheark-miner to this host's worker login." >&2
+    exit 1
+    ;;
+esac
+case ${SHEARK_POOL:-} in
+  stratum+ssl://*) ;;
+  *)
+    echo "SHEARK_POOL must be a stratum+ssl URL." >&2
+    exit 1
+    ;;
+esac
+exec /opt/shear-v12/bin/ShearK-Miner \
+  --pool "$SHEARK_POOL" \
+  --user "$SHEARK_USER" \
+  --backend "${SHEARK_BACKEND:-jit}" \
+  --threads "$threads" \
+  --require-tls

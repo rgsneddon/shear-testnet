@@ -56,6 +56,41 @@ export function merkleVerify(leaf, proof, root) {
   return h.equals(Buffer.from(root));
 }
 
+/**
+ * Position named by the proof path.
+ * A right-hand slot whose sibling is this node is the odd-leaf pad, not a leaf.
+ * Returns the index, or null when the path does not bind one.
+ */
+export function merkleBound(leaf, proof, root) {
+  let h = asLeaf(leaf);
+  const steps = Array.isArray(proof) ? proof : [];
+  if (steps.length > 52) return null;
+  let index = 0;
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    const side = step?.side;
+    if (side !== 'L' && side !== 'R') return null;
+    let sib;
+    try {
+      sib = Buffer.from(String(step.hash || ''), 'hex');
+    } catch {
+      return null;
+    }
+    if (sib.length !== 32) return null;
+    if (side === 'L' && sib.equals(h)) return null;
+    if (side === 'L') index += 2 ** i;
+    h = side === 'L' ? sha256(Buffer.concat([sib, h])) : sha256(Buffer.concat([h, sib]));
+  }
+  let want;
+  try {
+    want = Buffer.from(root);
+  } catch {
+    return null;
+  }
+  if (want.length !== 32 || !h.equals(want)) return null;
+  return index;
+}
+
 export function sampleLeaf({ nonce, tag, nanos = 1 }) {
   return sha256(Buffer.from(JSON.stringify({
     nonce: String(nonce),

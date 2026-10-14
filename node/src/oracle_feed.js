@@ -20,14 +20,11 @@ export function bpsFromSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return null;
   if (snapshot.version && snapshot.version !== RESERVE_ORACLE_ID) return null;
   const components = Array.isArray(snapshot.components) ? snapshot.components : [];
-  let annualBps = null;
-  if (components.length) annualBps = averagePolicyBps(components);
-  else if (Number.isFinite(Number(snapshot.averagePercent))) annualBps = Math.round(Number(snapshot.averagePercent) * 100);
-  else if (Number.isFinite(Number(snapshot.averageInteger))) annualBps = Math.round(Number(snapshot.averageInteger) / 10);
-  if (!Number.isFinite(annualBps)) return null;
+  const fromComponents = components.length ? averagePolicyBps(components) : null;
   const observedAtMs = Date.parse(String(snapshot.observedAt || '')) || 0;
+  if (!Number.isFinite(fromComponents) && !(observedAtMs > 0)) return null;
   return {
-    annualBps: Math.floor(annualBps),
+    annualBps: Number.isFinite(fromComponents) ? Math.floor(fromComponents) : null,
     observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : 0,
     components,
   };

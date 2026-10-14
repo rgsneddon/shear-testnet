@@ -1,13 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
+import { newIdentity, freshStealthDest } from '../../crypto/address.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
-import { sealNote } from '../../crypto/note.js';
+import { sealNote, verifyFlowConservation } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
-import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED, nextBits } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED, asertNextBits } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { levyNanos } from '../../crypto/levy.js';
-import { fluxsetFromBlocks, proveFlowSpend } from '../../crypto/admit.js';
+import { fluxsetFromBlocks } from '../../crypto/admit.js';
+import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -21,6 +22,7 @@ function mine(tpl) {
   powTag += 1;
   return {
     header: tpl.header,
+    height: tpl.height,
     txs: tpl.txs,
     samples: tpl.samples,
     miner: tpl.miner,
@@ -41,7 +43,6 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
   it('compact send whose vin.commit is the parent coinbase is ok; a self-minted C_in is confidential', () => {
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
-    const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
     const parent = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -74,13 +75,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent });
-    const liveJ = fluxsetFromBlocks([parent]);
-    proveFlowSpend(honest, {
-      spendSeed,
-      spentNote: spent,
-      pubs: liveJ.pubs,
-      commits: liveJ.commits,
-    });
+    attachStubAdmitV2(honest);
     const honestTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -99,7 +94,10 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       header: parent.header,
       height: 1,
     }, trust(honestBlock));
-    assert.equal(gotOk.ok, true, gotOk.reason);
+    assert.equal(honest.admit_proof.blob[0], 2);
+    assert.equal(verifyFlowConservation(honest), true);
+    assert.equal(gotOk.ok, false);
+    assert.equal(gotOk.reason, 'admit_version', gotOk.reason);
 
     const fakeIn = sealNote(2 + change + fee, { dest20: Buffer.alloc(20, 9), kind: 'spend-in' });
     const attack = attachDummyOuts({
@@ -119,14 +117,26 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
         { address: dest, nanos: change, kind: 'send' },
       ],
     }, { spent: fakeIn });
+    const attackNow = 1_700_000_180_000;
+    const parentTs = Number(decodeHeader(parent.header).timestamp);
+    const attackQuote = asertNextBits({
+      anchorBits: GENESIS_BITS_PACKED,
+      anchorTimeMs: parentTs,
+      anchorHeight: 1,
+      blockTimeMs: attackNow,
+      blockHeight: 2,
+      parentTimeMs: parentTs,
+    });
+    assert.equal(attackQuote.ok, true, attackQuote.reason);
     const attackTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: nextBits(decodeHeader(parent.header).bits, 90_000),
-      now: 1_700_000_180_000,
+      bits: attackQuote.packed,
+      now: attackNow,
       txs: [compactTx(attack)],
+      prevBlock: parent,
     });
     const attackBlock = mine(attackTpl);
     const gotBad = verifyBlock(attackBlock, {
@@ -136,6 +146,7 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
       height: 1,
     }, trust(attackBlock));
     assert.equal(gotBad.ok, false);
-    assert.equal(gotBad.reason, 'admit_membership');
+    // Stage 0 refuses a v12 send that carries no proof before membership is judged.
+    assert.equal(gotBad.reason, 'send_unavailable');
   });
 });

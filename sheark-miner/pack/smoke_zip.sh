@@ -12,7 +12,7 @@ ssl=("$DIR"/libssl*)
 crypto=("$DIR"/libcrypto*)
 test "${#ssl[@]}" -ge 1
 test "${#crypto[@]}" -ge 1
-grep -q 'ShearK-Miner-2.8-windows.zip' "$DIR/example.bat"
+grep -q 'ShearK-Miner-2.9-windows.zip' "$DIR/example.bat"
 grep -q 'stratum+ssl://pool.shear.digital:443' "$DIR/example.bat"
 grep -q 'stratum+ssl://pool.shear.digital:443' "$DIR/example.sh"
 chmod +x "$DIR/ShearK-Miner" "$DIR/example.sh"

@@ -21,9 +21,10 @@ import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, 
 import { packShareBatchBytes } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, openedCoinbaseNanos } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
-import { verifySealedNote, asU8 } from './note.js';
+import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES } from './note.js';
 import { hash20FromAddress } from './address.js';
-import { canonicalObserve } from './reserve_oracle.js';
+import { canonicalReserveFields } from './reserve_vault.js';
+import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -96,15 +97,23 @@ export function pruneSamples(block) {
     }
     return rest;
   });
-  return {
+  const spillCredits = Array.isArray(block.hashSpillCredits)
+    ? block.hashSpillCredits
+    : (Array.isArray(block.hashSpill) && block.hashSpill.length
+      ? freshCreditsFromShares(block.hashSpill)
+      : null);
+  const next = {
     ...block,
     samples: [],
     shareBatch: [],
+    hashSpill: [],
     bLeaves: [],
     samplesPruned: true,
     bLeavesPruned: true,
     txs: nextTxs,
   };
+  if (spillCredits && spillCredits.length) next.hashSpillCredits = spillCredits;
+  return next;
 }
 
 /**
@@ -334,6 +343,21 @@ function compactValue(v) {
 
 const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw']);
 
+/**
+ * Top-level keys a sealed body tx may carry, from the signed body list in
+ * spend.js. Anything else, including nanos, amount, and changeNanos, is not
+ * copied. A key outside the signed list is already `unsigned` at admission.
+ */
+export const COMPACT_TX_KEYS = Object.freeze([
+  'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
+  'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
+  'portalId', 'payoutPortalId', 'programId', 'choice',
+  'admit_proof', 'admit_proofs', 'spendTag', 'members',
+  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
+  'weight', 'payer', 'sponsor',
+  'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
+]);
+
 function dest20Buf(x) {
   if (x == null || x === '') return null;
   try {
@@ -376,36 +400,136 @@ function attachReserveSeal(row, o) {
   }
 }
 
-function compactVout(o) {
+const COINBASE_OPEN_KINDS = new Set(['pot', 'hash', 'pool-fee', 'finder-fee', 'reserve-fee']);
+
+/** A public receipt may carry {R,z,v}. A hidden output, including one labelled as a public kind, may not. */
+export function outputMayCarryValueOpen(tx, o) {
+  if (!o || typeof o !== 'object') return false;
+  const kind = o.kind == null || o.kind === '' ? '' : String(o.kind);
+  if (tx?.coinbase || String(tx?.kind || '') === 'coinbase') return COINBASE_OPEN_KINDS.has(kind);
+  const top = tx?.kind == null ? '' : String(tx.kind);
+  // b-spend is a public mint receipt: the opened sum is the chain leaf.
+  if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'pool-withdraw' || top === 'b-spend') return kind === top;
+  // A dummy is publicly zero. That opening is not an amount. Any other value stays hidden.
+  if (kind === 'dummy') {
+    const v = o?.valueProof?.v;
+    return v === 0 || v === 0n;
+  }
+  return false;
+}
+
+function carriesValueOpen(o) {
+  const vp = o?.valueProof;
+  if (vp == null || vp === false || vp === '') return false;
+  if (typeof vp !== 'object') return true;
+  return Object.keys(vp).length > 0;
+}
+
+/**
+ * Plaintext amount keys. A hidden output carries none of them, present or
+ * empty. The amount is C, the range proof, and amtCt to the dest.
+ */
+export const OUTPUT_AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'v', 'value']);
+/** Top-level amount hints. A hidden-kind tx carries none of them. */
+export const TX_AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'changeNanos']);
+/** Kinds whose outputs are hidden. Reserve, pool-withdraw, b-spend, and coinbase are public-amount by design. */
+const HIDDEN_TX_KINDS = new Set(['', 'send', 'transfer', 'change', 'dummy']);
+export const HIDDEN_WRAP_KEYS = Object.freeze(['rEph', 'rCt', 'amtCt']);
+/** Dummies go to a random dest with no admit base; they stay publicly zero instead. */
+const WRAPPED_OUTPUT_KINDS = new Set(['', 'send', 'transfer', 'change']);
+
+function hasKey(o, k) {
+  return !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined;
+}
+
+function hiddenAmountTx(tx) {
+  if (!tx || tx.coinbase || String(tx.kind || '') === 'coinbase') return false;
+  const kind = tx.kind == null ? String(tx.vout?.[0]?.kind || '') : String(tx.kind);
+  return HIDDEN_TX_KINDS.has(kind);
+}
+
+/**
+ * AL-1. A hidden output, or a hidden-kind tx, that names its amount in clear
+ * is amount_field. A coinbase output with a commitment carries no nanos or
+ * amount beside it. amtCt, when present, is exactly AMOUNT_CT_BYTES.
+ */
+export function amountFieldRejected(tx) {
+  if (!tx || typeof tx !== 'object') return null;
+  const coinbase = !!(tx.coinbase || String(tx.kind || '') === 'coinbase');
+  if (!coinbase && hiddenAmountTx(tx)) {
+    for (const k of TX_AMOUNT_KEYS) {
+      if (hasKey(tx, k)) return { ok: false, reason: 'amount_field' };
+    }
+  }
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (!o || typeof o !== 'object') continue;
+    if (hasKey(o, 'amtCt')) {
+      let n = -1;
+      try { n = Buffer.from(asU8(o.amtCt)).length; } catch { n = -1; }
+      if (n !== AMOUNT_CT_BYTES) return { ok: false, reason: 'amount_ct' };
+    }
+    if (coinbase) {
+      if (o.commit && (hasKey(o, 'nanos') || hasKey(o, 'amount'))) return { ok: false, reason: 'amount_field' };
+      continue;
+    }
+    if (outputMayCarryValueOpen(tx, o)) continue;
+    if (!hiddenAmountTx(tx) && !o.commit) continue;
+    for (const k of OUTPUT_AMOUNT_KEYS) {
+      if (hasKey(o, k)) return { ok: false, reason: 'amount_field' };
+    }
+    // A hidden output is spendable and readable only by its dest: rEph, rCt, and amtCt are required.
+    if (hiddenAmountTx(tx) && o.commit && WRAPPED_OUTPUT_KINDS.has(String(o.kind || ''))) {
+      for (const k of HIDDEN_WRAP_KEYS) {
+        if (!hasKey(o, k) || o[k] === '') return { ok: false, reason: 'amount_ct', field: k };
+      }
+    }
+  }
+  return null;
+}
+
+/** Hidden outputs reject a valueProof (value_open) and any plaintext amount field (amount_field). */
+export function valueOpenRejected(tx) {
+  if (!tx || typeof tx !== 'object') return null;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (!carriesValueOpen(o)) continue;
+    if (outputMayCarryValueOpen(tx, o)) continue;
+    return { ok: false, reason: 'value_open' };
+  }
+  return amountFieldRejected(tx);
+}
+
+function compactVout(o, tx) {
   if (!o) return o;
-  const kind = o.kind || 'pot';
+  const posted = o.kind == null || o.kind === '' ? '' : String(o.kind);
+  const kind = posted || 'pot';
   const keepDest = kind === 'vortice-register';
-  const reserveKind = RESERVE_TX_KINDS.has(kind);
+  const reserveKind = RESERVE_TX_KINDS.has(posted);
+  const coinbaseMoney = COINBASE_OPEN_KINDS.has(posted);
+  const keepOpen = outputMayCarryValueOpen(tx, o);
   if (o.commit) {
     const row = {
       kind,
       noteCommit: o.noteCommit,
       commit: o.commit,
-      valueProof: o.valueProof,
     };
+    if (keepOpen && o.valueProof) row.valueProof = o.valueProof;
     if (o.rangeProof) row.rangeProof = o.rangeProof;
     if (o.viewTag) row.viewTag = o.viewTag;
     if (o.admitPub) row.admitPub = o.admitPub;
     if (o.rEph) row.rEph = o.rEph;
     if (o.rCt) row.rCt = o.rCt;
+    if (o.amtCt) row.amtCt = o.amtCt;
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
-    const coinbaseMoney = kind === 'hash' || kind === 'pot' || kind === 'finder-fee' || kind === 'reserve-fee';
     if (reserveKind || coinbaseMoney) {
       const d20 = dest20FromOpen(o);
       if (d20) row.dest20 = d20;
-      if (coinbaseMoney && o.valueProof?.v != null) {
+      if (keepOpen && coinbaseMoney && o.valueProof?.v != null) {
         row.valueProof = { ...(row.valueProof && typeof row.valueProof === 'object' ? compactValue(o.valueProof) : {}), v: Math.floor(Number(o.valueProof.v)) };
       }
-      if (reserveKind) attachReserveSeal(row, o);
-    } else if (row.valueProof && typeof row.valueProof === 'object') {
-      const { v: _v, ...vp } = row.valueProof;
-      row.valueProof = vp;
+      if (keepOpen && reserveKind) attachReserveSeal(row, o);
     }
     if (o.memo) row.memo = true;
     if (keepDest && o.address) row.address = o.address;
@@ -415,11 +539,13 @@ function compactVout(o) {
   const d20 = dest20FromOpen(o);
   if (d20) row.dest20 = d20;
   if (o.noteCommit) row.noteCommit = o.noteCommit;
-  const claimed = claimedReserveV(o);
-  if (Number.isFinite(claimed)) {
-    row.valueProof = { ...(o.valueProof && typeof o.valueProof === 'object' ? compactValue(o.valueProof) : {}), v: claimed };
+  if (keepOpen) {
+    const claimed = claimedReserveV(o);
+    if (Number.isFinite(claimed)) {
+      row.valueProof = { ...(o.valueProof && typeof o.valueProof === 'object' ? compactValue(o.valueProof) : {}), v: claimed };
+    }
+    if (reserveKind) attachReserveSeal(row, o);
   }
-  if (reserveKind) attachReserveSeal(row, o);
   if (keepDest && o.address) row.address = o.address;
   if (o.memo) row.memo = true;
   return row;
@@ -442,22 +568,37 @@ export function compactTx(tx) {
       coinbase: true,
       height: tx.height,
       vin: [{ coinbase: true, height: tx.height }],
-      vout: (tx.vout || []).map(compactVout),
+      vout: (tx.vout || []).map((o) => compactVout(o, tx)),
     };
     if (tx.excess) row.excess = tx.excess;
     if (tx.jroot) row.jroot = tx.jroot;
-    if (tx.observe) row.observe = canonicalObserve(tx.observe);
+    if (Array.isArray(tx.reports) && tx.reports.length) {
+      row.reports = tx.reports.map((r) => ({ id: r?.id, tenths: r?.tenths }));
+    }
+    if (tx.rateCommit && typeof tx.rateCommit === 'object') {
+      row.rateCommit = {
+        epochIndex: Math.floor(Number(tx.rateCommit.epochIndex) || 0),
+        epochBps: Math.floor(Number(tx.rateCommit.epochBps) || 0),
+        magic: String(tx.rateCommit.magic || ''),
+      };
+    }
+    const carry = Math.floor(Number(tx.carryNanos) || 0);
+    if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;
+    if (Array.isArray(tx.issuedJobKeys) && tx.issuedJobKeys.length) {
+      row.issuedJobKeys = tx.issuedJobKeys.map((id) => String(id).toLowerCase());
+    }
+    compactHashLedger(tx, row);
     return row;
   }
-  const out = compactValue(tx);
-  delete out.samples;
+  const out = {};
+  for (const k of COMPACT_TX_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(tx, k) && tx[k] !== undefined) out[k] = compactValue(tx[k]);
+  }
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
   const keepDest = kind === 'vortice-register';
   const reserveTx = RESERVE_TX_KINDS.has(kind);
+  const reserveFields = reserveTx ? canonicalReserveFields(tx) : null;
   const poolWithdraw = kind === 'pool-withdraw';
-  delete out.nanos;
-  delete out.changeNanos;
-  delete out.amount;
   if (!keepDest) {
     delete out.from;
     delete out.to;
@@ -484,16 +625,24 @@ export function compactTx(tx) {
       return row;
     });
   }
-  if (tx.vout) out.vout = (tx.vout || []).map(compactVout);
+  if (tx.vout) out.vout = (tx.vout || []).map((o) => compactVout(o, tx));
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
-  if ((keepDest || poolWithdraw) && tx.spendPub) out.spendPub = tx.spendPub;
+  // The owner signature is checked on the sealed body. A b-spend keeps spendPub.
+  if ((keepDest || poolWithdraw || reserveTx || kind === 'b-spend') && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
-    if (tx.admit_proof.blob || tx.admit_proof.v === 2) {
+    if (tx.admit_proof.blob || tx.admit_proof.v === 3) {
+      // The label is the blob's first byte, so a closed byte is still refused
+      // as admit_version downstream.
+      let ver = 3;
+      try {
+        const blob = Buffer.from(asU8(tx.admit_proof.blob || []));
+        if (blob.length > 0) ver = blob[0];
+      } catch { /* a blob that is not bytes keeps the byte-3 label */ }
       out.admit_proof = {
         admit_proof: true,
-        v: 2,
+        v: ver,
         spendTag: tx.admit_proof.spendTag,
         blob: tx.admit_proof.blob,
         cTilde: tx.admit_proof.cTilde,
@@ -510,8 +659,41 @@ export function compactTx(tx) {
     delete out.members;
   }
   if (tx.spendTag) out.spendTag = tx.spendTag;
+  // A present JSON tag is replaced by the blob tag, so a lie does not survive.
+  // An absent tag stays absent. txDigestV3 binds that field, and filling it
+  // in after the proof would make the sealed body fail on reload.
+  try {
+    const fieldWasPosted = (value) => value != null && value !== '';
+    if (out.admit_proof) {
+      const one = canonicalSpendTag(tx.admit_proof);
+      if (fieldWasPosted(tx.admit_proof.spendTag) && one.tag) out.admit_proof.spendTag = one.tag;
+      else if (!fieldWasPosted(tx.admit_proof.spendTag)) delete out.admit_proof.spendTag;
+    }
+    if (Array.isArray(out.admit_proofs) && Array.isArray(tx.admit_proofs)) {
+      out.admit_proofs = out.admit_proofs.map((proof, i) => {
+        const src = tx.admit_proofs[i] || proof;
+        const one = canonicalSpendTag(src);
+        if (!one.tag || !proof || typeof proof !== 'object') return proof;
+        if (!fieldWasPosted(src.spendTag)) {
+          const next = { ...proof };
+          delete next.spendTag;
+          return next;
+        }
+        return { ...proof, spendTag: one.tag };
+      });
+    }
+    const parsed = txSpendTags(tx);
+    if (fieldWasPosted(tx.spendTag) && parsed.tags.length) out.spendTag = parsed.tags[0];
+    else if (!fieldWasPosted(tx.spendTag)) delete out.spendTag;
+  } catch { /* compact must not throw on a fixture */ }
   if (tx.jroot) out.jroot = tx.jroot;
   if (tx.excess) out.excess = tx.excess;
+  if (reserveFields) {
+    if (reserveFields.portalId) out.portalId = reserveFields.portalId;
+    if (reserveFields.payoutPortalId) out.payoutPortalId = reserveFields.payoutPortalId;
+    if (reserveFields.programId) out.programId = reserveFields.programId;
+    if (reserveFields.kind === 'vote') out.choice = reserveFields.choice;
+  }
   return out;
 }
 
@@ -537,7 +719,7 @@ export function admitWireTx(tx) {
 export function compactChainBlock(block) {
   const samplesPruned = !!block.samplesPruned;
   const bLeavesPruned = !!block.bLeavesPruned || samplesPruned;
-  return {
+  const row = {
     magic: block.magic,
     height: block.height,
     miner: block.miner,
@@ -555,4 +737,14 @@ export function compactChainBlock(block) {
     txs: (block.txs || []).map(compactTx),
     sharePacked: packShareBatchBytes(block.shareBatch || []).toString('hex'),
   };
+  if (Array.isArray(block.hashSpill) && block.hashSpill.length) {
+    row.hashSpillPacked = packShareBatchBytes(block.hashSpill).toString('hex');
+  }
+  if (Array.isArray(block.hashSpillCredits) && block.hashSpillCredits.length) {
+    row.hashSpillCreditPacked = packHashCreditBytes(block.hashSpillCredits).toString('hex');
+  }
+  if (Array.isArray(block.hashCredits)) {
+    row.hashCreditPacked = packHashCreditBytes(block.hashCredits).toString('hex');
+  }
+  return row;
 }

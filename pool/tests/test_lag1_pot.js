@@ -4,12 +4,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import { fork } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
-import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, SHEARK_MINER_VERSION, unpackBits } from '../../crypto/asert.js';
 import { createPool, scoreShare } from '../src/pool.js';
 import { coinbaseSplit } from '../../crypto/mint.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout } from '../../crypto/coinbase_notes.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { nonceWithShareTarget } from '../../crypto/share_batch.js';
+import { headerFromHex, setNonce } from '../../crypto/header.js';
+import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 
 function send(sock, obj) {
   sock.write(`${JSON.stringify(obj)}\n`);
@@ -69,19 +74,22 @@ async function login(port, login) {
   send(sock, {
     id: 1,
     method: 'login',
-    params: { login, client: 'ShearHash', version: '2.1', threads: 1 },
+    params: { login, client: 'ShearHash', version: SHEARK_MINER_VERSION, threads: 1 },
   });
   const hello = await lines.readLine();
   assert.equal(hello.result?.status, 'OK');
   return { sock, job: hello.job, lines };
 }
 
-function findNonces(job, n, { block = false, skip = [], max = 2_500 } = {}) {
+function findNonces(job, n, { block = false, skip = [], max = 2_500, dest = '' } = {}) {
+  const bits = Number(job?.shareBits);
+  const legal = Number.isInteger(bits) && bits > 0;
   const seen = new Set([...skip].map((x) => String(x)));
   const out = [];
-  for (let nonce = 0n; nonce < BigInt(max) && out.length < n; nonce += 1n) {
+  for (let i = 0n; i < BigInt(max) && out.length < n; i += 1n) {
+    const nonce = legal ? nonceWithShareTarget(i, bits) : i;
     if (seen.has(String(nonce))) continue;
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest: dest || undefined });
     if (!s.ok) continue;
     if (block && !s.block) continue;
     if (!block && s.block) continue;
@@ -90,7 +98,97 @@ function findNonces(job, n, { block = false, skip = [], max = 2_500 } = {}) {
   return out;
 }
 
-describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
+const SEEK_WORKER = fileURLToPath(new URL('./seek_block_worker.mjs', import.meta.url));
+
+/** Trials for one block: eight per expected hash at the issued width.
+ *  Any packed target. A fixed 2500 cannot meet the genesis width. */
+function blockSeekCap(bits) {
+  const width = Math.ceil(Number(unpackBits(bits)));
+  const w = Math.max(1, Math.min(24, Number.isFinite(width) ? width : 1));
+  return 8n * (1n << BigInt(w));
+}
+
+function seekBlock(job, { skip = [] } = {}) {
+  const bits = Number(job?.blockBits || job?.bits);
+  const cap = blockSeekCap(bits);
+  const workers = Math.max(1, Math.min(4, os.availableParallelism?.() || os.cpus().length || 1));
+  const skipStr = skip.map((x) => String(x));
+  // Each searcher is its own process. Worker threads share one native
+  // hasher and died with 0xC0000005. The parent rehashes only after they exit.
+  return new Promise((resolve, reject) => {
+    let pending = workers;
+    let done = false;
+    let hitMsg = null;
+    let fail = null;
+    const kids = [];
+    const stopKids = () => {
+      for (const kid of kids) {
+        try { kid.kill(); } catch { /* ignore */ }
+      }
+    };
+    const settle = () => {
+      if (done) return;
+      done = true;
+      if (fail) {
+        reject(fail);
+        return;
+      }
+      if (!hitMsg) {
+        resolve(null);
+        return;
+      }
+      try {
+        const header = setNonce(headerFromHex(job.header), BigInt(hitMsg.nonce));
+        const hash = Buffer.from(shearHash(header)).toString('hex');
+        if (hash !== hitMsg.hash || !meetsTarget(Buffer.from(hash, 'hex'), bits)) {
+          reject(new Error('block_seek_mismatch'));
+          return;
+        }
+        resolve({ nonce: BigInt(hitMsg.nonce), hash: hitMsg.hash });
+      } catch (e) {
+        reject(e);
+      }
+    };
+    console.error(JSON.stringify({
+      event: 'block_seek',
+      bits,
+      workers,
+      cap: cap.toString(),
+    }));
+    for (let w = 0; w < workers; w += 1) {
+      const kid = fork(SEEK_WORKER, [JSON.stringify({
+        headerHex: String(job.header),
+        bits,
+        start: String(w),
+        step: String(workers),
+        cap: cap.toString(),
+        skip: skipStr,
+      })], {
+        execArgv: [],
+        env: { ...process.env, NODE_OPTIONS: '' },
+      });
+      kids.push(kid);
+      kid.on('message', (msg) => {
+        if (!msg || hitMsg || done) return;
+        hitMsg = msg;
+        stopKids();
+      });
+      kid.on('error', (err) => {
+        if (!fail) fail = err;
+        stopKids();
+      });
+      kid.on('exit', () => {
+        pending -= 1;
+        setImmediate(() => {
+          if (!done && pending <= 0) settle();
+        });
+      });
+    }
+  });
+}
+
+// Light jit is about 37ms per hash. Four processes, cap unchanged.
+describe('lag-1 PROP pot', { timeout: 7_200_000 }, () => {
   it('height 2 seals when the live hasher dest is not a lag-1 dest', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-seal-'));
     const alice = newIdentity();
@@ -120,7 +218,7 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
       const job1 = a.job;
       // Pin accepted>0 before the bits=12 block hunt so idle-drop cannot
       // kill the socket (NO_VALID_SHARE_MS is 90s; a floor block is slower).
-      const hud = findNonces(job1, 1, { block: false, max: 2_500 })[0];
+      const hud = findNonces(job1, 1, { block: false, max: 2_500, dest: destA })[0];
       assert.ok(hud, 'need a lag-1 share');
       send(a.sock, {
         id: 2,
@@ -130,7 +228,7 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
       const shareAck = await a.lines.readResult();
       assert.equal(shareAck.result?.status, 'OK', JSON.stringify(shareAck));
       assert.equal(shareAck.result?.block, false);
-      const win1 = findNonces(job1, 1, { block: true, max: 2_500, skip: [hud.nonce] })[0];
+      const win1 = await seekBlock(job1, { skip: [hud.nonce] });
       assert.ok(win1 != null, 'need a height-1 block nonce');
       send(a.sock, {
         id: 3,
@@ -166,7 +264,7 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
           break;
         }
       }
-      const win2 = findNonces(live2, 1, { block: true, max: 2_500 })[0];
+      const win2 = await seekBlock(live2, {});
       assert.ok(win2 != null, 'need a height-2 block nonce');
       send(b.sock, {
         id: 4,

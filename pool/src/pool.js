@@ -5,13 +5,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { STRATUM_LINE_MAX, parseBoundedJson, HTTP_TX_BODY_MAX } from '../../crypto/json_bounds.js';
 import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
+import { payeeFs1Ok } from '../../crypto/n1.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
-import { destBoundShareHash, noteCommitOfShare, shareMeetsFloor } from '../../crypto/share_batch.js';
+import { destBoundShareHash, noteCommitOfShare, shareTargetByte } from '../../crypto/share_batch.js';
 import {
   BLOCK_SUBSIDY_NANOS,
   POOL_FEE_BPS,
@@ -37,14 +39,17 @@ import {
   LIVE_MIN_BITS,
   MAX_BITS,
   SHARE_FLOOR_BITS,
+  MAX_SHARES_PER_BLOCK,
+  shareCreditMaxBits,
   displayBits,
+  bitsAcceptAsert,
   SHEARK_MINER_VERSION,
   PRODUCT_VERSION,
   PI_SHE_NANOS,
 } from '../../crypto/asert.js';
-import { poolFeeDest, levyNanos, mempoolDepthBytes, poolWithdrawTx, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
+import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, custodialPullRejected, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
-import { isAdminHost, handleAdminHttp, createAdmin } from './admin.js';
+import { handleAdminHttp, createAdmin } from './admin.js';
 import {
   THIS_POOL_DIRECT_FEE_DEST,
   configuredFeeIdentity,
@@ -52,8 +57,9 @@ import {
   authPubGate,
   intervalCertify,
   narrowPublicStats,
+  CERTIFY_WINDOW,
 } from './posture.js';
-export { THIS_POOL_DIRECT_FEE_DEST, configuredFeeIdentity, feeIdentityCheck, stratumListenPlan, authPubGate, intervalCertify, CERTIFY_WINDOW } from './posture.js';
+export { THIS_POOL_DIRECT_FEE_DEST, V10_POOL_FEE_DEST, V11_POOL_FEE_DEST, configuredFeeIdentity, feeIdentityCheck, stratumListenPlan, authPubGate, intervalCertify, CERTIFY_WINDOW } from './posture.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
 import {
   buildAutoPayoutTx,
@@ -61,10 +67,36 @@ import {
 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
-import { potSharesFromBatch, hashBonusByMiner, retarget } from '../../node/src/chain.js';
-import { sortShares, selectBlockShares, rememberLiveSharePow } from '../../crypto/share_batch.js';
+import { epochMs } from '../../crypto/pot_sched.js';
+import { reservePinOk } from '../../crypto/reserve_evm.js';
+import { txIsReserveAction } from '../../crypto/reserve_vault.js';
+import { potSharesFromBatch, hashBonusByMiner, retarget, retargetQuote, templateForFinder, cachedFinderTemplate, publicJob } from '../../node/src/chain.js';
+import { rememberStoredJob } from '../../node/src/job_cap.js';
+import {
+  sortShares,
+  selectBlockShares,
+  bindShareProofSlots,
+  splitDeferWindow,
+  partitionSpillRows,
+  shareWorkKey,
+  shareHeaderSlot,
+  ISSUED_HEADER_CAP,
+  paidWorkKeys,
+  rememberLiveSharePow,
+  destOfShare,
+  structuralShareVerdict,
+  pinLiveSharePow,
+  pinOneLiveSharePow,
+  liveSharePowKey,
+  hasLiveSharePow,
+  reproveSharesOffLoop,
+  liveSharePowMetrics,
+  unitsForShare,
+  eligibleShareCount,
+  shareCountCapBinds,
+} from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
-import { poolRecentBlockTxs, networkSupply, openRoundHashRows } from './wallet_api.js';
+import { poolRecentBlockTxs, networkSupply, openRoundHashRows, supplyStatusWord } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
@@ -89,29 +121,49 @@ export { hasherHasValidRoundShare, roundActualHashes };
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = path.join(__dirname, '../public');
 const REPO_ROOT = path.join(__dirname, '../..');
+const gitHeadCache = new Map();
+
+function gitDirOf(cwd) {
+  const gitPath = path.join(cwd, '.git');
+  const st = fs.statSync(gitPath);
+  if (st.isDirectory()) return gitPath;
+  const txt = fs.readFileSync(gitPath, 'utf8').trim();
+  const m = txt.match(/^gitdir:\s*(.+)$/i);
+  if (!m) return null;
+  return path.resolve(cwd, m[1].trim());
+}
 
 export function gitHeadOf(cwd = REPO_ROOT) {
   // The advertised head is this tree. SHEAR_GIT_HEAD must not label another book.
+  // One read per directory. A worktree .git file is a pointer, and spawnSync
+  // on every stats paint stalls /api/stats.
   void process.env.SHEAR_GIT_HEAD;
+  if (gitHeadCache.has(cwd)) return gitHeadCache.get(cwd);
+  let head = '';
   try {
-    const gitDir = path.join(cwd, '.git');
-    let head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
-    if (/^ref:/.test(head)) {
-      head = fs.readFileSync(path.join(gitDir, head.slice(4).trim()), 'utf8').trim();
+    const gitDir = gitDirOf(cwd);
+    if (gitDir) {
+      let text = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (/^ref:/.test(text)) {
+        text = fs.readFileSync(path.join(gitDir, text.slice(4).trim()), 'utf8').trim();
+      }
+      if (/^[0-9a-f]{7,40}$/i.test(text)) head = text.toLowerCase();
     }
-    if (/^[0-9a-f]{7,40}$/i.test(head)) return head.toLowerCase();
   } catch { /* packed-refs or missing */ }
-  try {
-    const r = spawnSync('git', ['rev-parse', 'HEAD'], {
-      cwd,
-      encoding: 'utf8',
-      timeout: 2000,
-      windowsHide: true,
-    });
-    const h = String(r.stdout || '').trim();
-    if (/^[0-9a-f]{7,40}$/i.test(h)) return h.toLowerCase();
-  } catch { /* not a git checkout */ }
-  return '';
+  if (!head) {
+    try {
+      const r = spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd,
+        encoding: 'utf8',
+        timeout: 2000,
+        windowsHide: true,
+      });
+      const h = String(r.stdout || '').trim();
+      if (/^[0-9a-f]{7,40}$/i.test(h)) head = h.toLowerCase();
+    } catch { /* not a git checkout */ }
+  }
+  gitHeadCache.set(cwd, head);
+  return head;
 }
 /** Public H/s is proven hashes in this window, not lifetime hashes / first-seen. */
 export const HASHRATE_WINDOW_MS = 180_000;
@@ -119,8 +171,13 @@ export const HASHRATE_WINDOW_MS = 180_000;
 export const HASHRATE_EMA_TAU_S = 8;
 /** After the last socket closes, keep the row this long. Still-connected hashers with proven shares stay listed (header bits can put shares >12s apart). */
 export const HASH_PRESENCE_MS = 12_000;
-/** Default is every sealed header. Pass a finite window to clip a test. */
-export const AVG_BLOCK_WINDOW = Infinity;
+/**
+ * Sealed-header paint window, in blocks. Certify needs CERTIFY_WINDOW
+ * intervals, and an interval count is one less than the block count, so the
+ * paint keeps one block more than that floor. A longer chain does not decode
+ * more headers, and the same mean is not decoded twice.
+ */
+export const AVG_BLOCK_WINDOW = CERTIFY_WINDOW + 1;
 /** Re-stamp the live job this often so sealed header time tracks wall clock. */
 export const JOB_RESTAMP_MS = 10_000;
 /** Keep this many prior restamp headers per job so in-flight shares still verify. */
@@ -264,11 +321,24 @@ export function avgBlockIntervalMs(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
   return sum / n;
 }
 
-/** PROP of (pot - 100 bps) across hasher dests. Fee dest gets only the fee. */
-export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null) {
+/** One decode of the paint window. samples is one less than the blocks in that window. */
+export function sealedIntervalSpan(blocks, windowBlocks = AVG_BLOCK_WINDOW) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  const requested = Number(windowBlocks);
+  const keep = Number.isFinite(requested) && requested > 0
+    ? Math.max(2, Math.floor(requested))
+    : AVG_BLOCK_WINDOW;
+  const meanMs = avgBlockIntervalMs(list, keep);
+  const n = Math.min(list.length, keep);
+  return { meanMs, samples: Math.max(0, n - 1) };
+}
+
+/** PROP of (pot - 100 bps + carry) across hasher dests. Fee is the subsidy only. */
+export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDest = null, carryNanos = 0) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
+  const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
   const fee = Math.floor(pot * POOL_FEE_BPS / 10000);
-  const rest = pot - fee;
+  const rest = pot - fee + carry;
   const named = feeDest && isDestAddress(feeDest) ? feeDest : '';
   const feeAddr = named || poolFeeDest() || payoutDest(poolDest);
   const by = new Map();
@@ -291,11 +361,70 @@ export function splitPot(round, poolDest, potNanos = BLOCK_SUBSIDY_NANOS, feeDes
     if (nanos > 0) out.push({ address: addr, nanos, kind: 'pot' });
   }
   if (fee > 0 && feeAddr && isDestAddress(feeAddr)) {
-    const existing = out.find((s) => s.address === feeAddr);
-    if (existing) existing.nanos += fee;
-    else out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
+    out.push({ address: feeAddr, nanos: fee, kind: 'pool-fee' });
   }
   return out.filter((s) => s.nanos > 0);
+}
+
+/** dest20 byte order. The same bytes sort the same on every host. */
+function compareCanonicalDest(a, b) {
+  const ha = hash20FromAddress(a);
+  const hb = hash20FromAddress(b);
+  if (ha && hb) return Buffer.compare(ha, hb);
+  if (ha) return -1;
+  if (hb) return 1;
+  return Buffer.compare(Buffer.from(String(a)), Buffer.from(String(b)));
+}
+
+/** Operator fee, protocol fee sink, and the reserve are not a block finder. */
+function namesFeeSink(dest, feeTo) {
+  if (!isDestAddress(dest)) return false;
+  if (feeTo && dest === feeTo) return true;
+  if (dest === poolFeeDest()) return true;
+  if (dest === reserveFeeDest()) return true;
+  return false;
+}
+
+/**
+ * Header hasher when someone has proven work. Order is dest20 bytes, never
+ * localeCompare and never miner-map insertion order. This dest is not the
+ * finder-fee payee. No proven dest means no hasher.
+ */
+export function templateHasherDest(rows, provenDests) {
+  const proven = new Set();
+  const list = provenDests instanceof Set ? provenDests : (Array.isArray(provenDests) ? provenDests : []);
+  for (const dest of list) {
+    const s = String(dest || '').trim();
+    if (isDestAddress(s)) proven.add(s);
+  }
+  const eligible = [];
+  const seen = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (isCminerFeeLogin(row?.workerKey || row?.login)) continue;
+    const dest = hasherPayoutDest(row?.login, { dest: row?.payoutDest });
+    if (!dest || !proven.has(dest) || seen.has(dest)) continue;
+    seen.add(dest);
+    eligible.push(dest);
+  }
+  eligible.sort(compareCanonicalDest);
+  return eligible[0] || '';
+}
+
+/**
+ * Pot for the job being issued. A proven lag-1 batch wins. Otherwise the
+ * live round's proven counts are split. Carry is part of that same split.
+ * An empty proven round returns no miner rows. issueJob adds this block's
+ * pool-fee note and carries the miner remainder. The fee dest never receives the pot.
+ */
+export function potRoundShares({ lag1Shares = [], potRows = [], feeTo, wantPot, carryNanos = 0 } = {}) {
+  const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
+  if (Array.isArray(lag1Shares) && lag1Shares.length) {
+    return potSharesFromBatch(lag1Shares, feeTo, wantPot, carry);
+  }
+  const rows = (Array.isArray(potRows) ? potRows : [])
+    .filter((s) => Math.floor(Number(s.count) || 0) > 0);
+  if (rows.length) return splitPot(rows, feeTo, wantPot, feeTo, carry);
+  return [];
 }
 
 /**
@@ -317,21 +446,37 @@ export function shareJobId(header) {
 }
 
 /**
- * Lag-1 shares must verify against the sealed parent. A restamped share or a
- * bech32-as-dest20 row that fails share_pow/miner_addr must not freeze the
- * next template. Drop the bad rows; an empty batch is still sealable.
+ * Lag-1 shares must verify against the sealed parent, or against the
+ * parent's parent when that header and nonce are not already paid.
+ * An exact job key matches with no issued list. A different merkle or a
+ * restamp matches only when issuedJobKeys names that header and the header
+ * is in the slot's round family. Parent-family rows skip the paid check.
+ * Prior-family rows still use it. One step only. The same nonce on the
+ * other header is a different unit. A row this filter does not keep must
+ * not freeze the next template. An empty batch is still sealable.
  */
-export function provenLag1Shares(parentHeader, shares) {
+export function provenLag1Shares(parentHeader, shares, priorHeader = null, excludeNonces = null, issuedJobKeys = null) {
   const list = Array.isArray(shares) ? shares : [];
   if (!list.length || !parentHeader) return [];
   const parentId = shareJobId(parentHeader);
+  const priorId = shareJobId(priorHeader);
+  const paid = excludeNonces instanceof Set ? excludeNonces : new Set();
   const trusted = [];
   for (const s of list) {
     const id = shareJobId(s?.verifiedHeader);
-    if (id && parentId && id === parentId) trusted.push(s);
+    if (!id || !parentId) continue;
+    let nonce = '';
+    try { nonce = BigInt(s?.nonce || 0).toString(); } catch { nonce = ''; }
+    if (shareHeaderSlot(s?.verifiedHeader, parentHeader, issuedJobKeys)) {
+      trusted.push(s);
+      continue;
+    }
+    const work = shareWorkKey(s?.verifiedHeader, s?.nonce);
+    const blocked = (nonce && paid.has(nonce)) || (work && paid.has(work));
+    if (priorId && shareHeaderSlot(s?.verifiedHeader, priorHeader, issuedJobKeys) && nonce && !blocked) {
+      trusted.push(s);
+    }
   }
-  // Never RandomX leftovers on the event loop. A restamp / missing
-  // verifiedHeader cannot freeze the next job; drop it.
   return sortShares(trusted);
 }
 
@@ -457,8 +602,8 @@ export function isCminerFeeLogin() {
 export const SHEARK_MINER_NAME = 'ShearK-Miner';
 export { SHEARK_MINER_VERSION };
 
-/** Major.minor compare. Pre-2.0 ShearK is refused. */
-export function minerVersionAtLeast(version, min = '2.0') {
+/** Major.minor compare. Below the ShearK pin is refused. */
+export function minerVersionAtLeast(version, min = SHEARK_MINER_VERSION) {
   const parse = (s) => {
     const m = String(s || '').trim().match(/^(\d+)\.(\d+)/);
     if (!m) return null;
@@ -477,7 +622,12 @@ export function admitClient(params) {
     return { ok: false, reason: 'client_refused' };
   }
   if (!minerVersionAtLeast(params?.version)) {
-    return { ok: false, reason: 'miner_version' };
+    const got = String(params?.version || '').trim() || 'unversioned';
+    return {
+      ok: false,
+      reason: 'miner_version',
+      message: `ShearK ${SHEARK_MINER_VERSION} or newer is required on ${MAGIC_TESTNET}. This client is ${got}.`,
+    };
   }
   const raw = String(params?.login || params?.user || '').trim();
   const dest = parseLogin(raw);
@@ -490,6 +640,7 @@ export function admitClient(params) {
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
   if (isPaymentCode(dest)) {
     if (!payout) return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
+    if (!payeeFs1Ok(payout)) return { ok: false, reason: 'admit_note_point' };
     return {
       ok: true,
       login: payout,
@@ -498,7 +649,9 @@ export function admitClient(params) {
       ramAlias: true,
     };
   }
-  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || (isDestAddress(dest) ? dest : '') };
+  const payee = payout || (isDestAddress(dest) ? dest : '');
+  if (payee && !payeeFs1Ok(payee)) return { ok: false, reason: 'admit_note_point' };
+  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payee };
 }
 
 /** Wrong-algo login or a submit that is not a ShearHash-v3 digest. */
@@ -540,6 +693,51 @@ export function banInvalidKeys({ login, workerKey } = {}) {
 export const DEST_BAN_MIN_ACCEPTS = 3;
 export const IP_SOFT_STRIKES = 8;
 export const BAN_TTL_MS = 6 * 3600 * 1000;
+// Pool policy, not a consensus pin. The second consecutive failure of one
+// lag-1 batch recuts the template. SEAL_BAN_V0 (a dest ban on that streak)
+// is forbidden. SEAL_ESCAPE_V1 quarantines only rows that make the batch
+// unsealable.
+export const SEAL_ESCAPE_AFTER = 2;
+// Probes per escape, any batch width. A bisection stays under this.
+// A linear scan of the share cap does not.
+export const SEAL_ESCAPE_PROBE_CAP = 32;
+// After one rebuild, this many more header faults, or two block intervals
+// from the first fault on that batch and tip, and the pool stops holding
+// that template. A rebuild, a reason change, or a transient fault does not
+// move the first-fault time.
+export const HEADER_HOLD_MAX_FAULTS = SEAL_ESCAPE_AFTER;
+export const HEADER_HOLD_DEADLINE_MS = TARGET_BLOCK_INTERVAL_MS * 2;
+
+export function transientHeaderFault(reason) {
+  const why = String(reason || '');
+  if (why === 'worker' || why === 'stale_job') return true;
+  return /timeout/i.test(why);
+}
+
+export function headerHoldExpired(hold, now = Date.now()) {
+  if (!hold) return false;
+  const at = Number(hold.at) || 0;
+  if (at > 0 && Number(now) - at >= HEADER_HOLD_DEADLINE_MS) return true;
+  if (!hold.rebuilt) return false;
+  const faults = Number(hold.faults) || 0;
+  if (faults >= HEADER_HOLD_MAX_FAULTS) return true;
+  return false;
+}
+
+const HEADER_SEAL_FAULTS = new Set([
+  'pow', 'merkle', 'prev', 'timestamp', 'bits', 'base_fee', 'version',
+  'bad_header', 'stale_job', 'worker', 'parent_header', 'genesis_ms',
+  'no_header', 'not_heavier',
+]);
+
+export function sealFailureClass(reason) {
+  const why = String(reason || '');
+  if (why === 'share_pow' || why === 'miner_addr' || why === 'share_target' || why === 'hash_bonus') {
+    return 'share';
+  }
+  if (HEADER_SEAL_FAULTS.has(why)) return 'header';
+  return 'body';
+}
 
 export function shouldDurableDestBan(session) {
   return (Number(session?.accepted) || 0) >= DEST_BAN_MIN_ACCEPTS;
@@ -755,6 +953,9 @@ export const ALERT_CONCENTRATION = Number(process.env.SHEAR_ALERT_CONCENTRATION 
 export const ALERT_SHARE_BLOCK = Number(process.env.SHEAR_ALERT_SHARE_BLOCK || 10_000) || 10_000;
 export const SUBMIT_PER_IP_MAX = Math.max(4, Number(process.env.SHEAR_SUBMIT_PER_IP_MAX || 32) || 32);
 export const SUBMIT_PER_IP_WINDOW_MS = Math.max(200, Number(process.env.SHEAR_SUBMIT_PER_IP_WINDOW_MS || 1000) || 1000);
+/** Fresh stratum logins per IP. A reconnect of a known worker is not counted. */
+export const LOGIN_PER_IP_MAX = Math.max(1, Number(process.env.SHEAR_LOGIN_PER_IP_MAX || 4) || 4);
+export const LOGIN_PER_IP_WINDOW_MS = Math.max(1000, Number(process.env.SHEAR_LOGIN_PER_IP_WINDOW_MS || 10_000) || 10_000);
 
 export function statsAlerts({
   topDestSharePct: pct,
@@ -763,11 +964,14 @@ export function statsAlerts({
   shareBlock = ALERT_SHARE_BLOCK,
   stratumBind,
   requireLoginAuth,
+  eligibleShares = 0,
+  shareCountCap = MAX_SHARES_PER_BLOCK,
 } = {}) {
   return {
     concentration: Number(pct) >= Number(concentration),
     shareBlock: Number(ratio) >= Number(shareBlock),
     stratumDrift: stratumDriftAlert({ bind: stratumBind, requireLoginAuth }),
+    shareCountCap: shareCountCapBinds(eligibleShares, shareCountCap),
   };
 }
 
@@ -841,13 +1045,87 @@ export function openShareFingerprint(job, nonce, hashHex) {
   return shareFingerprint(job, nonce, hashHex);
 }
 
+let openShareRescanCount = 0;
+
+export function resetOpenShareRescans() {
+  openShareRescanCount = 0;
+}
+
+export function openShareRescans() {
+  return openShareRescanCount;
+}
+
+function attachOpenFp(list) {
+  const seen = new Set();
+  for (const s of list) {
+    const id = String(s?.fp || '');
+    if (id) seen.add(id);
+  }
+  Object.defineProperty(list, '_openFp', {
+    value: seen,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+  return list;
+}
+
+/** A new array whose duplicate set matches the kept fingerprints. Not a wire field. */
+export function filterOpenShares(list, pred) {
+  const src = Array.isArray(list) ? list : [];
+  const kept = [];
+  for (const s of src) {
+    if (pred(s)) kept.push(s);
+  }
+  return attachOpenFp(kept);
+}
+
 export function rememberOpenShare(openShares, rec) {
   const list = Array.isArray(openShares) ? openShares : [];
   const fp = rec?.fp || openShareFingerprint(rec, rec?.nonce, rec?.hash);
   if (!fp) return { ok: false, reason: 'bad_share', list };
-  if (list.some((s) => String(s.fp || '') === fp)) return { ok: false, reason: 'duplicate_share', list };
+  // Same duplicate rule as a full scan. Replacing the array drops the set.
+  // filterOpenShares puts it back, so a later submit does not rescan the round.
+  // The property is not enumerable and is not a wire field.
+  let seen = list._openFp;
+  if (!(seen instanceof Set) || seen.size !== list.length) {
+    openShareRescanCount += 1;
+    seen = new Set();
+    for (const s of list) {
+      const id = String(s?.fp || '');
+      if (id) seen.add(id);
+    }
+    Object.defineProperty(list, '_openFp', {
+      value: seen,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  }
+  if (seen.has(fp)) return { ok: false, reason: 'duplicate_share', list };
   list.push({ ...rec, fp });
+  seen.add(fp);
   return { ok: true, list };
+}
+
+/**
+ * Keep a scored share only when this header and nonce are unbound, or already
+ * bound to this same note and width. A second dest on that nonce is share_pow
+ * and is not added to the round. Callers must not count a failed result.
+ */
+export function bindAcceptedShare(openShares, rec) {
+  const payee = String(rec?.dest || rec?.address || rec?.miner || destOfShare(rec) || '');
+  if (!payeeFs1Ok(payee)) {
+    return { ok: false, reason: 'admit_note_point', list: openShares };
+  }
+  const header = rec?.verifiedHeader || rec?.header;
+  const bound = rememberLiveSharePow(header, rec?.nonce, {
+    noteCommit: noteCommitOfShare(rec),
+    shareBits: rec?.shareBits,
+    lz: rec?.lz,
+  });
+  if (!bound) return { ok: false, reason: 'share_pow', list: openShares };
+  return rememberOpenShare(openShares, rec);
 }
 
 export function makeLoginChallenge() {
@@ -947,6 +1225,38 @@ export function rememberJobHeader(job, outgoingHex) {
   return job;
 }
 
+/**
+ * Headers this pool actually issued. The live job is pinned first, then
+ * jobs from newest to oldest, then any extra the caller still holds.
+ * The list is not derived from share frames. The cap is a memory bound.
+ */
+export function collectIssuedHeaders(jobs, extra = [], liveJob = null) {
+  const out = [];
+  const seen = new Set();
+  const push = (header) => {
+    if (out.length >= ISSUED_HEADER_CAP) return;
+    let hex = '';
+    if (Buffer.isBuffer(header) || header instanceof Uint8Array) hex = Buffer.from(header).toString('hex');
+    else hex = String(header || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{256}$/.test(hex) || seen.has(hex)) return;
+    seen.add(hex);
+    out.push(hex);
+  };
+  const visit = (job) => {
+    for (const header of candidateShareHeaders(job)) push(header);
+  };
+  if (liveJob) visit(liveJob);
+  const rows = [];
+  if (jobs && typeof jobs.values === 'function') {
+    for (const rec of jobs.values()) rows.push(rec?.job || rec);
+  } else if (Array.isArray(jobs)) {
+    for (const job of jobs) rows.push(job);
+  }
+  for (let i = rows.length - 1; i >= 0; i -= 1) visit(rows[i]);
+  for (const header of extra || []) push(header);
+  return out;
+}
+
 /** Current header first, then prior restamps of the same job. */
 export function candidateShareHeaders(job) {
   const out = [];
@@ -974,13 +1284,30 @@ export function jobWithinGrace(job, prevJob, prevJobAt, now = Date.now()) {
   return at > 0 && (Number(now) - at) < PREV_JOB_GRACE_MS;
 }
 
+function nonceHiFromShareHeader(header) {
+  try {
+    const buf = Buffer.isBuffer(header)
+      ? header
+      : (header instanceof Uint8Array ? Buffer.from(header) : null);
+    const raw = buf && buf.length === 128
+      ? buf
+      : (typeof header === 'string' && /^[0-9a-fA-F]+$/.test(header) && header.length >= 256
+        ? Buffer.from(header, 'hex')
+        : null);
+    if (!raw || raw.length < 120) return -1;
+    return shareTargetByte(raw.readBigUInt64LE(112));
+  } catch {
+    return -1;
+  }
+}
+
 export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
   const current = Number(shareBits ?? job?.shareBits);
   const prev = Number(job.shareBitsPrev);
   const prevAt = Number(job.shareBitsAt) || 0;
   const now = Date.now();
   // Block credit is the sealed header target. shareBits and a substituted
-  // job.blockBits are not that target.
+  // job.blockBits are not that target. Share credit is the nonce high byte.
   const sealedBits = headerWorkBits(header || job?.header);
   const blockTarget = sealedBits != null ? sealedBits : Number(job.blockBits || job.bits);
   const blockOk = meetsTarget(hash, blockTarget);
@@ -993,31 +1320,38 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
     }
     shareHash = destBoundShareHash(hash, nc);
   }
-  let creditedShareBits = 0;
-  if (meetsTarget(shareHash, current)) creditedShareBits = current;
-  const hist = [
-    ...(Number.isFinite(prev) && prev > 0 ? [{ bits: prev, at: prevAt }] : []),
-    ...(Array.isArray(job.shareBitsHist) ? job.shareBitsHist : []),
-  ];
-  for (const row of hist) {
-    const b = Number(row?.bits);
-    const at = Number(row?.at) || 0;
-    if (!(b > 0) || b === current) continue;
-    if (now - at >= 12_000) continue;
-    if (meetsTarget(shareHash, b) && b > creditedShareBits) creditedShareBits = b;
+  const hi = nonceHiFromShareHeader(header);
+  const maxB = shareCreditMaxBits();
+  const byteLegal = Number.isInteger(hi) && hi >= SHARE_FLOOR_BITS && hi <= maxB;
+  // The job target and the grace window authorize which byte may be submitted.
+  // They do not pay the highest target the same digest also meets.
+  let allowed = byteLegal && Number.isFinite(current) && current === hi;
+  if (byteLegal && !allowed) {
+    const hist = [
+      ...(Number.isFinite(prev) && prev > 0 ? [{ bits: prev, at: prevAt }] : []),
+      ...(Array.isArray(job.shareBitsHist) ? job.shareBitsHist : []),
+    ];
+    for (const row of hist) {
+      const b = Number(row?.bits);
+      const at = Number(row?.at) || 0;
+      if (b !== hi) continue;
+      if (now - at >= 12_000) continue;
+      allowed = true;
+      break;
+    }
   }
-  /* Dest-bound miners still submit RandomX block hits (shareBits often
-   * equals unpacked header bits). Those are blocks, not low_diff. */
-  if (creditedShareBits > 0) {
+  if (byteLegal && allowed && meetsTarget(shareHash, hi)) {
     return {
       ok: true,
       hash: hash.toString('hex'),
       block: blockOk,
       header,
       bitsMet: leadingZeroBits(shareHash),
-      creditedShareBits,
+      creditedShareBits: hi,
     };
   }
+  /* A raw hash that meets the sealed block target is always a block candidate.
+   * An illegal byte, a stale grace byte, or a dest-bound miss earns no share. */
   if (blockOk) {
     return {
       ok: true,
@@ -1027,6 +1361,9 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
       bitsMet: leadingZeroBits(hash),
       creditedShareBits: 0,
     };
+  }
+  if (!byteLegal || !allowed) {
+    return { ok: false, reason: 'share_target', hash: hash.toString('hex'), header };
   }
   return { ok: false, reason: 'low_diff', hash: hash.toString('hex') };
 }
@@ -1440,6 +1777,55 @@ export function adminMinerView(m, now = Date.now()) {
   };
 }
 
+/** Wallet and stratum bodies. A block still fits the 16 MiB P2P frame. A larger declared body is refused before it is read. */
+export const HTTP_BODY_MAX = HTTP_TX_BODY_MAX;
+
+export function readCappedBody(req, cap = HTTP_BODY_MAX) {
+  const rawLen = req?.headers?.['content-length'];
+  const lenText = Array.isArray(rawLen) ? rawLen[0] : rawLen;
+  if (lenText != null && lenText !== '') {
+    const declared = Number(lenText);
+    if (!Number.isFinite(declared) || declared < 0 || declared > cap) {
+      const err = new Error('body_cap');
+      err.code = 'body_cap';
+      return Promise.reject(err);
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let got = 0;
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+      fn(value);
+    };
+    const onData = (c) => {
+      const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+      got += buf.length;
+      if (got > cap) {
+        const err = new Error('body_cap');
+        err.code = 'body_cap';
+        try { req.pause(); } catch { /* ignore */ }
+        req.on('error', () => {});
+        finish(reject, err);
+        return;
+      }
+      chunks.push(buf);
+    };
+    const onEnd = () => {
+      finish(resolve, Buffer.concat(chunks).toString('utf8') || '{}');
+    };
+    const onError = (err) => finish(reject, err);
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+  });
+}
+
 export function createPool({
   dataDir,
   stratumPort = 1111,
@@ -1463,6 +1849,7 @@ export function createPool({
   onRestart = null,
   onRestartHasher = null,
   noValidShareMs = NO_VALID_SHARE_MS,
+  shareCap = null,
 } = {}) {
   const store = createStore(dataDir);
   const admin = createAdmin(dataDir);
@@ -1498,6 +1885,7 @@ export function createPool({
     }
   }
   const ipSubmitAt = new Map();
+  const ipLoginAt = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
   let hashSeq = 0;
@@ -1670,8 +2058,25 @@ export function createPool({
   let packedMempoolKey = '';
   let pendingPayout = [];
   let lag1Shares = [];
+  let lag1Issued = [];
   let openShares = [];
+  // Honest rows a body fault could not pay this round. Not lost work.
+  let deferredShares = [];
+  let headerHold = null;
+  let escapePinKeys = null;
   let sealing = false;
+  // Declared before the tip listener. A tip during init must not hit the
+  // temporal dead zone, and a seal holds the paint until the job is out.
+  let statsSnap = { at: 0, json: '{"ok":true,"supplyStatus":"pending","asOfHeight":0}' };
+  let statsTimer = null;
+  let statsImmediate = null;
+  let statsAfterSeal = false;
+  const tipWork = [];
+  let proofWarm = null;
+  let sealFailStreak = 0;
+  let sealFailBatch = '';
+  // Body faults that survive an empty share probe. Cleared when the tip moves.
+  let bodyTxHold = null;
   let paused = false;
   let restarting = false;
   const banPath = path.join(dataDir, 'pool-bans.json');
@@ -1726,6 +2131,59 @@ export function createPool({
     } catch { /* datadir may be read-only in tests */ }
   }
   const persistedLost = loadLostWork();
+  const owedPath = path.join(dataDir, 'window-owed.json');
+  const owedByNote = new Map();
+  const owedWork = new Set();
+  const owedWorkUnits = new Map();
+  let pendingSpill = [];
+  const seatCap = (() => {
+    const n = Math.floor(Number(shareCap));
+    if (!Number.isInteger(n) || n <= 0) return MAX_SHARES_PER_BLOCK;
+    return Math.min(MAX_SHARES_PER_BLOCK, n);
+  })();
+  function loadWindowOwed() {
+    try {
+      const j = JSON.parse(fs.readFileSync(owedPath, 'utf8'));
+      const rows = Array.isArray(j?.rows) ? j.rows : [];
+      for (const row of rows) {
+        const hex = String(row?.noteCommit || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+        let units = 0n;
+        try { units = BigInt(row.units); } catch { continue; }
+        if (units <= 0n) continue;
+        const works = [];
+        for (const w of row.works || []) {
+          const id = String(w || '');
+          if (!id || owedWork.has(id)) continue;
+          owedWork.add(id);
+          works.push(id);
+        }
+        if (!works.length) continue;
+        const prev = owedByNote.get(hex);
+        if (!prev) owedByNote.set(hex, { units, works });
+        else {
+          prev.units += units;
+          prev.works.push(...works);
+        }
+      }
+    } catch { /* first boot */ }
+  }
+  function windowOwedSum() {
+    let n = 0n;
+    for (const row of owedByNote.values()) n += row.units;
+    return n;
+  }
+  function saveWindowOwed() {
+    try {
+      const rows = [];
+      for (const [hex, row] of owedByNote) {
+        rows.push({ noteCommit: hex, units: row.units.toString(), works: row.works });
+      }
+      rows.sort((a, b) => (a.noteCommit < b.noteCommit ? -1 : a.noteCommit > b.noteCommit ? 1 : 0));
+      fs.writeFileSync(owedPath, JSON.stringify({ version: 1, rows }));
+    } catch { /* datadir may be read-only in tests */ }
+  }
+  loadWindowOwed();
   const stats = {
     started: Date.now(),
     lastFoundAt: 0,
@@ -1737,6 +2195,12 @@ export function createPool({
     dropped: 0,
     lostWorkHashes: persistedLost.lostWorkHashes,
     lostWorkEvents: persistedLost.lostWorkEvents,
+    windowOwedUnits: windowOwedSum().toString(),
+    windowOwedNotes: owedByNote.size,
+    sealFailed: 0,
+    sealStrikes: 0,
+    shareCacheEvictions: 0,
+    shareCacheWipes: 0,
     hashBusy: 0,
     coin: 'SHE',
     algo: ALGO,
@@ -1812,11 +2276,23 @@ export function createPool({
     replyLine(sock, { id: msg.id, error: reason }, { drop });
   }
 
-  function parentIntervalBits() {
-    // Same call template() uses, including an empty book. A null here made
-    // sealReject ignore an undercut and leave the easier header up.
+  function parentIntervalBits(at = null) {
+    // Same quote template() seals: aserti3-2d for this header stamp.
+    // A null here made sealReject ignore an undercut and leave the easier header up.
     try {
-      return retarget(store.blocks || []);
+      const rows = store.blocks || [];
+      let stamp = Number(at);
+      if (!Number.isFinite(stamp)) {
+        const tip = store.tip();
+        if (tip?.header) {
+          const parent = decodeHeader(Buffer.from(tip.header));
+          const mtp = medianTimePast((rows).slice(-MTP_WINDOW).map((b) => {
+            try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
+          }));
+          stamp = templateStampMs(parent.timestamp, Date.now(), null, mtp);
+        }
+      }
+      return retarget(rows, Number.isFinite(stamp) ? stamp : undefined);
     } catch {
       return null;
     }
@@ -1909,9 +2385,13 @@ export function createPool({
     let decoded;
     try { decoded = decodeHeader(headerFromHex(lastJob.header)); }
     catch { return 'header'; }
-    const wantBits = parentIntervalBits();
-    if (wantBits != null && Number(decoded.bits) !== Number(wantBits)) return 'bits';
     const ts = Number(decoded.timestamp);
+    if (!tip?.header) {
+      if (Number(decoded.bits) !== Number(GENESIS_BITS_PACKED)) return 'bits';
+    } else {
+      const quote = retargetQuote(store.blocks || [], ts);
+      if (!quote?.ok || !bitsAcceptAsert(Number(decoded.bits), quote)) return 'bits';
+    }
     if (!(ts > 0) || ts > Number(now) + HEADER_AHEAD_MS) return 'timestamp';
     if (tip?.header) {
       let parent;
@@ -2044,18 +2524,60 @@ export function createPool({
   if (typeof store.on === 'function') {
     store.on('reorg', () => {
       if (sealing) return;
-      lag1Shares = [];
+      headerHold = null;
+      const ctx = tipShareContext();
+      const all = [];
+      const seen = new Set();
+      for (const s of lag1Shares.concat(openShares, deferredShares)) {
+        if (!s || seen.has(s)) continue;
+        seen.add(s);
+        all.push(s);
+      }
+      lag1Issued = snapshotIssuedHeaders();
+      const kept = ctx.parentHeader
+        ? provenLag1Shares(ctx.parentHeader, all, ctx.priorHeader, ctx.paid, lag1Issued)
+        : [];
+      const keep = new Set(kept);
+      const dropped = [];
+      for (const s of all) {
+        if (keep.has(s)) continue;
+        const work = shareWorkKey(s?.verifiedHeader, s?.nonce);
+        if (work && ctx.paid.has(work)) continue;
+        dropped.push(s);
+      }
+      deferredShares = [];
       openShares = [];
+      const split = ctx.parentHeader
+        ? splitDeferWindow(kept, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued)
+        : { seal: kept, carry: [], owe: [], stale: [] };
+      if (split.owe.length) admitWindowSpill(split.owe);
+      if (split.carry.length) deferredShares = sortShares(split.carry);
+      if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
+      const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+      lag1Shares = split.seal;
+      if (unslotted.length) disposeUnpayable(unslotted, 'unstamped_slot');
+      if (dropped.length) disposeUnpayable(dropped, 'reorg');
       resetOpenRound();
     });
     store.on('tip', (t) => {
       noteStallHeight(Date.now());
-      if (sealing || t?.reorg) return;
+      if (sealing) {
+        statsAfterSeal = true;
+        return;
+      }
+      if (t?.reorg) {
+        scheduleStatsSnap();
+        return;
+      }
       const tipHash = store.tip()
         ? Buffer.from(store.tip().hash).toString('hex')
         : '';
-      if (lastJob && String(lastJob.prevBlockHash) === tipHash) return;
+      if (lastJob && String(lastJob.prevBlockHash) === tipHash) {
+        scheduleStatsSnap();
+        return;
+      }
       resetOpenRound();
+      scheduleStatsSnap();
     });
   }
 
@@ -2074,12 +2596,1142 @@ export function createPool({
     return mempoolKey(store.mempool) !== packedMempoolKey;
   }
 
-  function issueJob(shareBitsNow, { force = false } = {}) {
+  function sharePinKey(share, parentHeader) {
+    return liveSharePowKey(share?.verifiedHeader || parentHeader, share?.nonce);
+  }
+
+  function refreshSharePins() {
+    const tipHdr = store.tip()?.header || null;
+    const keys = [];
+    for (const s of openShares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) keys.push(k);
+    }
+    for (const s of lag1Shares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) keys.push(k);
+    }
+    const rec = lastJob?.jobId ? store.jobs.get(String(lastJob.jobId)) : null;
+    for (const s of rec?.tpl?.shareBatch || []) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) keys.push(k);
+    }
+    if (escapePinKeys) {
+      for (const k of escapePinKeys) keys.push(k);
+    }
+    pinLiveSharePow(keys);
+    const m = liveSharePowMetrics();
+    stats.shareCacheEvictions = m.evictions;
+    stats.shareCacheWipes = m.wipes;
+    stats.shareCache = m;
+    return m;
+  }
+
+  function batchKeyOf(shares) {
+    return (shares || []).map((s) => shareIdentityKey(s)).sort().join(',');
+  }
+
+  function shareWorkUnits(share) {
+    const bits = share?.creditedShareBits != null && share.creditedShareBits !== ''
+      ? share.creditedShareBits
+      : share?.shareBits;
+    return unitsForShare(bits);
+  }
+
+  function nonceKeyOf(share) {
+    try { return BigInt(share?.nonce || 0).toString(); } catch { return ''; }
+  }
+
+  function shareIdentityKey(share) {
+    const work = shareWorkKey(share?.verifiedHeader, share?.nonce);
+    if (work) return work;
+    const bare = nonceKeyOf(share);
+    return bare ? `n:${bare}` : '';
+  }
+
+  function nonceSetOf(shares) {
+    const out = new Set();
+    for (const s of shares || []) {
+      const k = nonceKeyOf(s);
+      if (k) out.add(k);
+    }
+    return out;
+  }
+
+  function tipShareContext() {
+    const blocks = Array.isArray(store.blocks) ? store.blocks : [];
+    const tip = blocks.length ? blocks[blocks.length - 1] : null;
+    const prior = blocks.length >= 2 ? blocks[blocks.length - 2] : null;
+    return {
+      parentHeader: tip?.header || null,
+      priorHeader: prior?.header || null,
+      paid: paidWorkKeys(tip?.shareBatch, prior?.header || null),
+    };
+  }
+
+  /**
+   * Eligible open-round rows for the count-cap alert.
+   * A live job that is not the sealed tip is the header this round pays on,
+   * including the genesis job when the chain is empty. The sealed tip is then
+   * the prior header. Lag-1 was already selected under the cap and is not counted.
+   * Deferred rows join the open list before the next roll, so they count now.
+   */
+  function openRoundEligibleCount() {
+    const ctx = tipShareContext();
+    const jobHeader = lastJob?.header || null;
+    const jobIsNew = !!jobHeader && shareHeaderSlot(jobHeader, ctx.parentHeader) !== 'exact';
+    const parentHeader = jobIsNew ? jobHeader : (ctx.parentHeader || jobHeader || null);
+    const priorHeader = jobIsNew ? (ctx.parentHeader || null) : (ctx.priorHeader || null);
+    const rows = deferredShares.length ? openShares.concat(deferredShares) : openShares;
+    return eligibleShareCount(rows, parentHeader, priorHeader, snapshotIssuedHeaders());
+  }
+
+  function refreshWindowOwedStats() {
+    stats.windowOwedUnits = windowOwedSum().toString();
+    stats.windowOwedNotes = owedByNote.size;
+  }
+
+  function attributableShare(share) {
+    if (!share?.verifiedHeader) return false;
+    const nc = noteCommitOfShare(share);
+    return !!(nc && nc.length === 32 && !Buffer.from(nc).equals(Buffer.alloc(32)));
+  }
+
+  function forgetWorkKeys(keys) {
+    const drop = keys instanceof Set ? keys : new Set(keys || []);
+    if (!drop.size) return;
+    const pull = (list) => (list || []).filter((s) => !drop.has(shareIdentityKey(s)));
+    lag1Shares = pull(lag1Shares);
+    openShares = filterOpenShares(openShares, (s) => !drop.has(shareIdentityKey(s)));
+    deferredShares = pull(deferredShares);
+  }
+
+  // Pre-seal queue keyed by noteCommit. Not a mint input.
+  // share_cap rows reach this only after admitWindowSpill keeps a witness
+  // batch for hashSpill. Rows outside that window stay here and are not minted.
+  function creditUnsealedOwed(refs, reason) {
+    const list = Array.isArray(refs) ? refs : [];
+    const credited = [];
+    const keys = new Set();
+    let added = 0n;
+    const dests = [];
+    for (const s of list) {
+      const id = shareIdentityKey(s);
+      if (!id || owedWork.has(id) || keys.has(id)) continue;
+      if (!attributableShare(s)) continue;
+      const nc = noteCommitOfShare(s);
+      const hex = Buffer.from(nc).toString('hex');
+      const units = BigInt(unitsForShare(s?.creditedShareBits ?? s?.shareBits));
+      if (units <= 0n) continue;
+      keys.add(id);
+      owedWork.add(id);
+      owedWorkUnits.set(id, units);
+      const prev = owedByNote.get(hex);
+      if (!prev) owedByNote.set(hex, { units, works: [id] });
+      else {
+        prev.units += units;
+        prev.works.push(id);
+      }
+      added += units;
+      credited.push(s);
+      const d = destOfShare(s);
+      if (d && dests.length < 32) dests.push(d);
+    }
+    if (!credited.length) return [];
+    forgetWorkKeys(keys);
+    refreshWindowOwedStats();
+    saveWindowOwed();
+    console.error(JSON.stringify({
+      event: 'share_window_owed',
+      alert: true,
+      reason: String(reason || ''),
+      shares: credited.length,
+      units: added.toString(),
+      notes: owedByNote.size,
+      dests,
+    }));
+    return credited;
+  }
+
+  // Expiring overflow only. One witness batch is sealed as hashSpill.
+  // Anything past that batch is lost. Stale and unslotted rows never enter here.
+  function admitWindowSpill(rows) {
+    const { witness, rest } = partitionSpillRows(rows, {
+      pending: pendingSpill.length,
+      cap: MAX_SHARES_PER_BLOCK,
+    });
+    const credited = creditUnsealedOwed(witness, 'share_cap');
+    for (const s of credited) pendingSpill.push(s);
+    if (rest.length) countUnpayableShares(rest, 'spill_cap', 'witness');
+  }
+
+  function releaseSpillWorks(keys) {
+    const drop = new Set();
+    for (const id of keys || []) {
+      if (id) drop.add(String(id));
+    }
+    if (!drop.size) return;
+    pendingSpill = pendingSpill.filter((s) => !drop.has(shareIdentityKey(s)));
+    let changed = false;
+    for (const id of drop) {
+      const units = owedWorkUnits.get(id);
+      owedWorkUnits.delete(id);
+      owedWork.delete(id);
+      if (units == null) continue;
+      for (const [hex, row] of owedByNote) {
+        const idx = row.works.indexOf(id);
+        if (idx < 0) continue;
+        row.works.splice(idx, 1);
+        row.units -= units;
+        if (row.units <= 0n || row.works.length === 0) owedByNote.delete(hex);
+        changed = true;
+        break;
+      }
+    }
+    if (changed) {
+      refreshWindowOwedStats();
+      saveWindowOwed();
+    }
+  }
+
+  // A parent move cannot still prove as slot 1. Drop those rows from the file.
+  function retainReadySpill() {
+    const prior = tipShareContext().priorHeader;
+    const keep = [];
+    const drop = [];
+    for (const s of pendingSpill) {
+      if (prior && shareHeaderSlot(s?.verifiedHeader, prior) === 'exact') keep.push(s);
+      else drop.push(s);
+    }
+    pendingSpill = keep;
+    if (!drop.length) return;
+    countUnpayableShares(drop, 'spill_cap', 'parent');
+    releaseSpillWorks(drop.map((s) => shareIdentityKey(s)));
+  }
+
+  // A proven row that cannot be sealed on this parent or its parent.
+  // lostWork names the dests. Already-paid nonces are not passed here.
+  function countUnpayableShares(refs, reason, evidence) {
+    const bad = new Set(refs || []);
+    if (!bad.size) return [];
+    const pull = (list) => {
+      const keep = [];
+      for (const s of list || []) {
+        if (bad.has(s)) continue;
+        keep.push(s);
+      }
+      return keep;
+    };
+    lag1Shares = pull(lag1Shares);
+    openShares = filterOpenShares(openShares, (s) => !bad.has(s));
+    deferredShares = pull(deferredShares);
+    const seen = new Set();
+    const named = [];
+    let units = 0;
+    const dests = [];
+    for (const s of refs) {
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      named.push(s);
+      units += shareWorkUnits(s);
+      const d = destOfShare(s);
+      if (d) dests.push(d);
+    }
+    if (units > 0) {
+      stats.lostWorkHashes = (Number(stats.lostWorkHashes) || 0) + units;
+      stats.lostWorkEvents = (Number(stats.lostWorkEvents) || 0) + 1;
+      saveLostWork();
+    }
+    console.error(JSON.stringify({
+      event: 'share_unpayable',
+      alert: true,
+      reason: String(reason || ''),
+      evidence: String(evidence || ''),
+      shares: named.length,
+      units,
+      dests,
+    }));
+    return named;
+  }
+
+  function disposeUnpayable(rows, reason) {
+    const named = [];
+    const junk = [];
+    for (const s of rows || []) {
+      if (attributableShare(s)) named.push(s);
+      else junk.push(s);
+    }
+    if (named.length) creditUnsealedOwed(named, reason);
+    if (junk.length) countUnpayableShares(junk, reason, 'parent');
+  }
+
+  function snapshotIssuedHeaders() {
+    const extra = [];
+    if (Array.isArray(lastJob?.headerHistory)) {
+      for (const header of lastJob.headerHistory) extra.push(header);
+    }
+    return collectIssuedHeaders(store.jobs, extra, lastJob);
+  }
+
+  function stampSealSlots(rows, parentHeader, priorHeader, issued = lag1Issued) {
+    const bound = bindShareProofSlots(rows, parentHeader, priorHeader, { issuedJobKeys: issued });
+    if (Array.isArray(rows)) {
+      rows.length = 0;
+      for (const s of bound.slotted) rows.push(s);
+    }
+    return bound.unslotted;
+  }
+
+  function bindLag1ToTip() {
+    const ctx = tipShareContext();
+    if (!ctx.parentHeader) {
+      lag1Shares = [];
+      return;
+    }
+    const before = lag1Shares.slice();
+    const trusted = provenLag1Shares(ctx.parentHeader, before, ctx.priorHeader, ctx.paid, lag1Issued);
+    const keep = new Set(trusted);
+    const unpayable = [];
+    for (const s of before) {
+      if (keep.has(s)) continue;
+      const work = shareWorkKey(s?.verifiedHeader, s?.nonce);
+      // Paid on this header already. A different header with the same nonce is not.
+      if (work && ctx.paid.has(work)) continue;
+      if (!work && ctx.paid.has(nonceKeyOf(s))) continue;
+      unpayable.push(s);
+    }
+    const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued);
+    if (split.owe.length) admitWindowSpill(split.owe);
+    if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
+    const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+    lag1Shares = split.seal;
+    if (unslotted.length) disposeUnpayable(unslotted, 'unstamped_slot');
+    if (unpayable.length) disposeUnpayable(unpayable, 'stale_window');
+  }
+
+  // Per-share re-proof only. pow, append, tip, and worker keep the batch.
+  function perShareFailure(reason) {
+    return sealFailureClass(reason) === 'share';
+  }
+
+  function dropUnprovenShares(failed, reason, miner) {
+    const bad = new Set((failed || []).map((s) => shareIdentityKey(s)).filter(Boolean));
+    if (!bad.size) return [];
+    const dropped = [];
+    const keep = [];
+    for (const s of lag1Shares) {
+      if (bad.has(shareIdentityKey(s))) dropped.push(s);
+      else keep.push(s);
+    }
+    lag1Shares = keep;
+    if (openShares.length) {
+      openShares = filterOpenShares(openShares, (s) => !bad.has(shareIdentityKey(s)));
+    }
+    if (store.jobs && typeof store.jobs.values === 'function') {
+      for (const rec of store.jobs.values()) {
+        if (!Array.isArray(rec?.tpl?.shareBatch)) continue;
+        rec.tpl = {
+          ...rec.tpl,
+          shareBatch: rec.tpl.shareBatch.filter((s) => !bad.has(shareIdentityKey(s))),
+        };
+      }
+    }
+    let units = 0;
+    for (const s of dropped) units += shareWorkUnits(s);
+    if (units > 0) {
+      stats.lostWorkHashes = (Number(stats.lostWorkHashes) || 0) + units;
+      stats.lostWorkEvents = (Number(stats.lostWorkEvents) || 0) + 1;
+      saveLostWork();
+    }
+    console.error(JSON.stringify({
+      event: 'share_pow_drop',
+      alert: true,
+      reason: String(reason || 'share_pow'),
+      miner: String(miner || ''),
+      shares: dropped.length,
+      units,
+    }));
+    return dropped;
+  }
+
+  function removeShareCopies(list, dropCount) {
+    const left = new Map(dropCount);
+    const out = [];
+    for (const s of list || []) {
+      const k = shareIdentityKey(s);
+      const n = left.get(k) || 0;
+      if (n > 0) {
+        left.set(k, n - 1);
+        continue;
+      }
+      out.push(s);
+    }
+    return out;
+  }
+
+  // SEAL_ESCAPE_V1. Drop these objects only. A duplicate nonce keeps the
+  // other copy. lostWork counts the dropped copies and names their dests.
+  function dropShareRefs(refs, reason, miner, evidence) {
+    const bad = new Set(refs || []);
+    if (!bad.size) return [];
+    const dropped = [];
+    const keep = [];
+    for (const s of lag1Shares) {
+      if (bad.has(s)) dropped.push(s);
+      else keep.push(s);
+    }
+    if (!dropped.length) return [];
+    lag1Shares = keep;
+    const dropCount = new Map();
+    for (const s of dropped) {
+      const k = shareIdentityKey(s);
+      if (!k) continue;
+      dropCount.set(k, (dropCount.get(k) || 0) + 1);
+    }
+    if (openShares.length) openShares = filterOpenShares(removeShareCopies(openShares, dropCount), () => true);
+    if (store.jobs && typeof store.jobs.values === 'function') {
+      for (const rec of store.jobs.values()) {
+        if (!Array.isArray(rec?.tpl?.shareBatch)) continue;
+        rec.tpl = {
+          ...rec.tpl,
+          shareBatch: removeShareCopies(rec.tpl.shareBatch, dropCount),
+        };
+      }
+    }
+    let units = 0;
+    const dests = [];
+    for (const s of dropped) {
+      units += shareWorkUnits(s);
+      const d = destOfShare(s);
+      if (d) dests.push(d);
+    }
+    if (units > 0) {
+      stats.lostWorkHashes = (Number(stats.lostWorkHashes) || 0) + units;
+      stats.lostWorkEvents = (Number(stats.lostWorkEvents) || 0) + 1;
+      saveLostWork();
+    }
+    console.error(JSON.stringify({
+      event: 'seal_batch_escape',
+      alert: true,
+      reason: String(reason || ''),
+      evidence: String(evidence || 'reproof'),
+      miner: String(miner || ''),
+      shares: dropped.length,
+      units,
+      dests,
+    }));
+    return dropped;
+  }
+
+  function blockFromTpl(tpl) {
+    return {
+      header: tpl.header,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      shareBatch: tpl.shareBatch || [],
+      miner: tpl.miner,
+      poolDest: tpl.poolDest || '',
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      rootA: tpl.rootA,
+      rootB: tpl.rootB,
+      height: tpl.height,
+    };
+  }
+
+  function tipHashNow() {
+    const tipNow = store.tip();
+    if (!tipNow) return '';
+    return Buffer.isBuffer(tipNow.hash) ? tipNow.hash.toString('hex') : String(tipNow.hash);
+  }
+
+  // Same issueJob path as a live template. Jobs created here are deleted.
+  // No job, no header, a thrown template, a cold proof, or a promise is not
+  // a verdict. Those quarantine nothing.
+  function probeShares(shares) {
+    if (typeof store.probeBlock !== 'function') return { ok: false, reason: 'append', pending: true };
+    if (sidecarAhead()) return { ok: false, reason: 'append', pending: true };
+    const savedLag = lag1Shares;
+    const savedLast = lastJob;
+    const savedPrev = prevJob;
+    const savedPrevAt = prevJobAt;
+    const savedPacked = packedMempoolKey;
+    const savedHold = headerHold;
+    const before = new Set();
+    if (store.jobs && typeof store.jobs.keys === 'function') {
+      for (const id of store.jobs.keys()) before.add(id);
+    }
+    const tipHdr = store.tip()?.header || null;
+    const pinSnap = [];
+    for (const s of openShares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) pinSnap.push(k);
+    }
+    for (const s of lag1Shares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) pinSnap.push(k);
+    }
+    for (const s of deferredShares) {
+      const k = sharePinKey(s, tipHdr);
+      if (k) pinSnap.push(k);
+    }
+    escapePinKeys = pinSnap;
+    lag1Shares = Array.isArray(shares) ? shares.slice() : [];
+    let verdict = { ok: false, reason: 'append', pending: true };
+    try {
+      refreshSharePins();
+      const job = issueJob(undefined, { force: true, probe: true });
+      const rec = job && store.jobs?.get?.(String(job.jobId));
+      if (job && rec?.tpl?.header) {
+        let got = null;
+        try { got = store.probeBlock(blockFromTpl(rec.tpl)); } catch { got = null; }
+        if (got && typeof got.then === 'function') {
+          verdict = { ok: false, reason: 'append', pending: true };
+        } else if (got?.ok) verdict = { ok: true, reason: '' };
+        else if (got && got.pending !== true) {
+          verdict = { ok: false, reason: String(got.reason || 'append'), pending: false };
+        }
+      }
+    } catch {
+      verdict = { ok: false, reason: 'append', pending: true };
+    } finally {
+      if (store.jobs && typeof store.jobs.keys === 'function') {
+        for (const id of [...store.jobs.keys()]) {
+          if (!before.has(id)) store.jobs.delete(id);
+        }
+      }
+      lag1Shares = savedLag;
+      lastJob = savedLast;
+      prevJob = savedPrev;
+      prevJobAt = savedPrevAt;
+      packedMempoolKey = savedPacked;
+      headerHold = savedHold;
+      escapePinKeys = null;
+      refreshSharePins();
+    }
+    return verdict;
+  }
+
+  function yieldLoop() {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  async function probeYield(shares, probes) {
+    if (probes.n >= SEAL_ESCAPE_PROBE_CAP) return { ok: false, reason: 'append', budget: true };
+    const t0 = process.hrtime.bigint();
+    const got = probeShares(shares);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (!(Number(stats.sealEscapeStallMs) >= ms)) stats.sealEscapeStallMs = ms;
+    probes.n += 1;
+    stats.sealEscapeProbes = (Number(stats.sealEscapeProbes) || 0) + 1;
+    await yieldLoop();
+    stats.sealEscapeYields = (Number(stats.sealEscapeYields) || 0) + 1;
+    return got;
+  }
+
+  // Canonical order. A later copy of the same header and nonce is the duplicate.
+  // The same nonce on another header is a different unit. Dest noteCommit is
+  // shared by every honest share of that miner, so it is not a duplicate key.
+  function duplicateNonces(rows) {
+    const sorted = sortShares(rows);
+    const seen = new Set();
+    const drop = [];
+    for (const s of sorted) {
+      const k = shareIdentityKey(s);
+      if (!k) continue;
+      if (seen.has(k)) drop.push(s);
+      else seen.add(k);
+    }
+    return drop;
+  }
+
+  function freshTemplateState() {
+    const key = batchKeyOf(lag1Shares);
+    if (store.jobs?.entries) {
+      for (const [id, rec] of [...store.jobs.entries()]) {
+        if (batchKeyOf(rec?.tpl?.shareBatch) === key) store.jobs.delete(id);
+      }
+    }
+    lastJob = null;
+    prevJob = null;
+    prevJobAt = 0;
+    packedMempoolKey = '';
+  }
+
+  function noteBoundedRebuild(why, key) {
+    freshTemplateState();
+    const tip = tipHashNow();
+    const same = headerHold && headerHold.batch === key && headerHold.tip === tip;
+    const reason = String(why || '');
+    const reasons = same && headerHold.reasons ? headerHold.reasons : {};
+    if (!same) reasons[reason] = (Number(reasons[reason]) || 0) + 1;
+    headerHold = {
+      batch: key,
+      tip,
+      reason,
+      rebuilt: true,
+      latched: false,
+      at: same && Number(headerHold.at) > 0 ? Number(headerHold.at) : Date.now(),
+      faults: same ? (Number(headerHold.faults) || 0) : 0,
+      reasons,
+      alerted: same ? headerHold.alerted === true : false,
+    };
+    stats.headerRebuilds = (Number(stats.headerRebuilds) || 0) + 1;
+    if (!headerHold.alerted) {
+      headerHold.alerted = true;
+      console.error(JSON.stringify({
+        event: 'seal_header_hold',
+        alert: true,
+        at: headerHold.at,
+        reason,
+        reasons: headerHold.reasons,
+        shares: lag1Shares.length,
+      }));
+    }
+    console.error(JSON.stringify({
+      event: 'seal_header_rebuild',
+      alert: false,
+      at: headerHold.at,
+      reason,
+      shares: lag1Shares.length,
+    }));
+  }
+
+  // Largest canonical prefix that seals. A row is a singleton reject only
+  // when some other non-empty subset seals. If every non-empty subset fails,
+  // the fault is the template and nothing is lost.
+  async function partitionRows(rows, probes) {
+    let pool = rows.slice();
+    const singleton = [];
+    const defer = [];
+    while (pool.length) {
+      if (probes.n >= SEAL_ESCAPE_PROBE_CAP) {
+        defer.push(...pool);
+        break;
+      }
+      let lo = 0;
+      let hi = pool.length;
+      let budget = false;
+      // lo is the longest prefix already shown to seal. The upward mid
+      // reaches the full width, so a set that seals is not split on its
+      // last row.
+      while (lo < hi) {
+        if (probes.n >= SEAL_ESCAPE_PROBE_CAP) { budget = true; break; }
+        const mid = (lo + hi + 1) >> 1;
+        if (mid <= lo) break;
+        const got = await probeYield(pool.slice(0, mid), probes);
+        if (got.budget) { budget = true; break; }
+        if (got.pending) return { aborted: true };
+        if (got.ok) lo = mid;
+        else hi = mid - 1;
+      }
+      if (budget) {
+        defer.push(...pool.slice(lo));
+        break;
+      }
+      if (lo === pool.length) break;
+      const pivot = pool[lo];
+      if (probes.n >= SEAL_ESCAPE_PROBE_CAP) {
+        defer.push(...pool.slice(lo));
+        break;
+      }
+      const one = await probeYield([pivot], probes);
+      if (one.budget) {
+        defer.push(...pool.slice(lo));
+        break;
+      }
+      if (one.pending) return { aborted: true };
+      if (one.ok) {
+        defer.push(...pool.slice(lo));
+        break;
+      }
+      if (pool.length === 1) {
+        singleton.push(pivot);
+        break;
+      }
+      const other = pool[pool.length - 1] === pivot ? pool[0] : pool[pool.length - 1];
+      // A singleton drop needs another non-empty subset that seals. lo > 0
+      // is that subset. With no probe left and lo === 0, defer the rows.
+      const holdUnproven = () => {
+        if (lo > 0) {
+          singleton.push(pivot);
+          const rest = [];
+          for (const s of pool) if (s !== pivot) rest.push(s);
+          defer.push(...rest);
+        } else {
+          defer.push(...pool);
+        }
+      };
+      if (probes.n >= SEAL_ESCAPE_PROBE_CAP) {
+        holdUnproven();
+        break;
+      }
+      const alt = await probeYield([other], probes);
+      if (alt.budget) {
+        holdUnproven();
+        break;
+      }
+      if (alt.pending) return { aborted: true };
+      if (!alt.ok && lo === 0) return { presence: true, aborted: false, singleton: [], defer: [] };
+      singleton.push(pivot);
+      const rest = [];
+      for (const s of pool) if (s !== pivot) rest.push(s);
+      pool = rest;
+    }
+    return { presence: false, aborted: false, singleton, defer };
+  }
+
+  function dropMempoolTx(tx) {
+    if (!Array.isArray(store.mempool)) return false;
+    const id = String(tx?.id || '');
+    const next = [];
+    let removed = false;
+    for (const row of store.mempool) {
+      if (!removed && (row === tx || (id && String(row?.id || '') === id))) {
+        removed = true;
+        continue;
+      }
+      next.push(row);
+    }
+    if (!removed) return false;
+    store.mempool.length = 0;
+    store.mempool.push(...next);
+    return true;
+  }
+
+  async function probeMempool(list, probes) {
+    const saved = (store.mempool || []).slice();
+    store.mempool.length = 0;
+    for (const tx of list) store.mempool.push(tx);
+    freshTemplateState();
+    let got;
+    try {
+      got = await probeYield([], probes);
+    } finally {
+      store.mempool.length = 0;
+      for (const tx of saved) store.mempool.push(tx);
+      freshTemplateState();
+    }
+    return got;
+  }
+
+  // One user tx inside a share-less template that still fails.
+  // Follows a failing half so several bad txs are dropped one at a time.
+  // Stops inside the same probe cap. No user tx returns null.
+  async function isolateBodyTx(probes) {
+    let group = (store.mempool || []).filter((tx) => tx && !tx.coinbase);
+    if (!group.length) return null;
+    const coinbase = (store.mempool || []).filter((tx) => tx && tx.coinbase);
+    while (group.length > 1) {
+      if (probes.n >= SEAL_ESCAPE_PROBE_CAP) return null;
+      const mid = Math.max(1, group.length >> 1);
+      const left = group.slice(0, mid);
+      const got = await probeMempool(coinbase.concat(left), probes);
+      if (got.pending || got.budget) return null;
+      const right = group.slice(mid);
+      group = got.ok ? right : left;
+      if (!group.length) return null;
+    }
+    return group[0] || null;
+  }
+
+  async function escapeBodyTx(why, probes) {
+    while (probes.n < SEAL_ESCAPE_PROBE_CAP) {
+      const got = await probeYield([], probes);
+      if (got.pending) return;
+      if (got.ok) return;
+      if (got.budget) break;
+      const bad = await isolateBodyTx(probes);
+      if (!bad) break;
+      const id = String(bad.id || '');
+      if (!dropMempoolTx(bad)) break;
+      console.error(JSON.stringify({
+        event: 'seal_body_tx_fault',
+        alert: true,
+        id,
+        reason: String(why || ''),
+      }));
+      freshTemplateState();
+    }
+    const held = (store.mempool || []).find((tx) => tx && !tx.coinbase);
+    if (!held) return;
+    bodyTxHold = { tip: tipHashNow(), reason: String(why || '') };
+    console.error(JSON.stringify({
+      event: 'seal_body_tx_fault',
+      alert: true,
+      id: String(held.id || ''),
+      reason: String(why || ''),
+      coinbaseOnly: true,
+    }));
+  }
+
+  async function runBodyEscape(why, miner) {
+    const rows = sortShares(lag1Shares.slice());
+    const probes = { n: 0 };
+    if (!rows.length) {
+      await escapeBodyTx(why, probes);
+      return;
+    }
+    const whole = await probeYield(rows, probes);
+    if (whole.pending || whole.ok) return;
+    const empty = await probeYield([], probes);
+    if (empty.pending) return;
+    if (!empty.ok) {
+      await escapeBodyTx(why, probes);
+      const again = await probeYield([], probes);
+      if (again.pending || again.ok || again.budget) return;
+      noteBoundedRebuild(why, batchKeyOf(lag1Shares));
+      return;
+    }
+    const plan = await partitionRows(rows, probes);
+    if (!plan || plan.aborted) return;
+    if (plan.presence) {
+      noteBoundedRebuild(why, batchKeyOf(lag1Shares));
+      return;
+    }
+    if (plan.singleton.length) dropShareRefs(plan.singleton, why, miner, 'singleton');
+    if (plan.defer.length) {
+      const deferIds = new Set(plan.defer);
+      const stay = [];
+      const moved = [];
+      for (const s of lag1Shares) {
+        if (deferIds.has(s)) moved.push(s);
+        else stay.push(s);
+      }
+      lag1Shares = sortShares(stay);
+      deferredShares = sortShares(deferredShares.concat(moved));
+    }
+  }
+
+  function forgetBatchJobs(batchKey) {
+    if (!batchKey || !store.jobs?.entries) return;
+    for (const [id, rec] of [...store.jobs.entries()]) {
+      if (batchKeyOf(rec?.tpl?.shareBatch) === batchKey) store.jobs.delete(id);
+    }
+  }
+
+  // The held template is not sealable. Carry its shares onto the next round
+  // and publish a template without them. Unsealed holds are not lostWork.
+  function releaseHeldBatch(why) {
+    const batchKey = String(headerHold?.batch || '');
+    const at = Number(headerHold?.at) || 0;
+    const reasons = headerHold?.reasons || {};
+    if (lag1Shares.length) {
+      deferredShares = sortShares(deferredShares.concat(lag1Shares));
+      lag1Shares = [];
+    }
+    forgetBatchJobs(batchKey);
+    headerHold = null;
+    freshTemplateState();
+    stats.headerFallbacks = (Number(stats.headerFallbacks) || 0) + 1;
+    console.error(JSON.stringify({
+      event: 'seal_header_fallback',
+      alert: true,
+      reason: String(why || ''),
+      at,
+      reasons,
+      shares: deferredShares.length,
+    }));
+  }
+
+  // POOL_LAG1_CARRY_V1. Pool policy, not a consensus pin. A seal miss keeps
+  // every share that has not itself failed re-proof. Unsealed holds are not
+  // written into the consensus owed ledger. SEAL_BAN_V0 is forbidden: this
+  // path does not ban or kick. SEAL_ESCAPE_V1 drops a row only for a failed
+  // re-proof, a duplicate nonce, or a singleton that fails while another
+  // non-empty subset seals.
+  async function noteSealFailure(reason, jobId, miner) {
+    // SEAL_ESCAPE_V1. No dest ban and no kick on this path.
+    stats.sealFailed = (Number(stats.sealFailed) || 0) + 1;
+    const key = batchKeyOf(lag1Shares);
+    // An empty share batch is still a streak. Body faults with no shares
+    // used to reset forever and never reach the escape.
+    const streakKey = key || 'coinbase';
+    if (streakKey === sealFailBatch) sealFailStreak += 1;
+    else {
+      sealFailBatch = streakKey;
+      sealFailStreak = 1;
+    }
+    const why = String(reason || 'append');
+    const transient = transientHeaderFault(why);
+    const klass = transient ? 'header' : sealFailureClass(why);
+    console.error(JSON.stringify({
+      event: 'seal_failed',
+      alert: true,
+      reason: why,
+      jobId: String(jobId || ''),
+      streak: sealFailStreak,
+      height: Number(store.tip()?.height || 0) + 1,
+    }));
+    const tip = tipHashNow();
+    let released = false;
+    if (key && klass === 'header') {
+      const same = headerHold && headerHold.batch === key && headerHold.tip === tip;
+      if (!same) {
+        headerHold = {
+          batch: key,
+          tip,
+          reason: why,
+          rebuilt: false,
+          latched: false,
+          at: Date.now(),
+          faults: 0,
+          reasons: {},
+          alerted: false,
+        };
+      }
+      headerHold.reasons[why] = (Number(headerHold.reasons[why]) || 0) + 1;
+      if (!headerHold.alerted) {
+        headerHold.alerted = true;
+        console.error(JSON.stringify({
+          event: 'seal_header_hold',
+          alert: true,
+          at: headerHold.at,
+          reason: why,
+          reasons: headerHold.reasons,
+          shares: lag1Shares.length,
+        }));
+      }
+      if (!transient && headerHold.rebuilt) {
+        headerHold.faults = (Number(headerHold.faults) || 0) + 1;
+        headerHold.reason = why;
+      }
+      if (headerHoldExpired(headerHold)) {
+        releaseHeldBatch(why);
+        released = true;
+      } else if (!transient && headerHold.rebuilt && (Number(headerHold.faults) || 0) > 0) {
+        headerHold.latched = true;
+        forgetBatchJobs(key);
+        lastJob = null;
+      }
+    }
+    const bodyWithNoShares = klass === 'body' && !key;
+    if (!released && (key || bodyWithNoShares) && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
+      const parent = store.tip()?.header || null;
+      if (parent && key && klass !== 'header') {
+        const rowBad = [];
+        const priorHeader = tipShareContext().priorHeader;
+        for (const s of lag1Shares) {
+          const one = structuralShareVerdict({
+            parentHeader: parent,
+            priorHeader,
+            shares: [s],
+            issuedJobKeys: lag1Issued,
+          });
+          if (one.ok) continue;
+          // skipPow with no cached digest did not hash the row. That is a
+          // cold proof, not a failed share. A cached proof that disagrees,
+          // or an illegal width or dest, is positive evidence.
+          if (one.reason === 'share_pow' && !hasLiveSharePow(parent, s?.nonce)) continue;
+          rowBad.push(s);
+        }
+        if (rowBad.length) dropShareRefs(rowBad, why, miner, 'reproof');
+      }
+      const dups = duplicateNonces(lag1Shares);
+      if (dups.length) dropShareRefs(dups, 'dup_share', miner, 'duplicate');
+      if (klass === 'body') await runBodyEscape(why, miner);
+      else if (key && klass === 'header') noteBoundedRebuild(why, key);
+    }
+    if (!released && (key || bodyWithNoShares) && sealFailStreak >= SEAL_ESCAPE_AFTER && !headerHold?.latched) {
+      const who = String(miner || '');
+      // The failed template is not the only copy. lag1Shares still holds it.
+      if (store.jobs?.entries) {
+        for (const [id, rec] of store.jobs) {
+          if (batchKeyOf(rec?.tpl?.shareBatch) === key) store.jobs.delete(id);
+        }
+      }
+      if (jobId && store.jobs?.delete) store.jobs.delete(String(jobId));
+      console.error(JSON.stringify({
+        event: 'seal_batch_carry',
+        alert: true,
+        jobId: String(jobId || ''),
+        batchId: createHash('sha256').update(key).digest('hex').slice(0, 16),
+        shares: lag1Shares.length,
+        miner: who,
+      }));
+      sealFailStreak = 0;
+      sealFailBatch = '';
+    }
+    refreshSharePins();
+  }
+
+  function noteSealSuccess() {
+    sealFailStreak = 0;
+    sealFailBatch = '';
+    headerHold = null;
+    const sealed = store.tip()?.hashSpill;
+    if (Array.isArray(sealed) && sealed.length) {
+      const keys = [];
+      for (const s of sealed) {
+        const id = shareIdentityKey(s);
+        if (id) keys.push(id);
+      }
+      releaseSpillWorks(keys);
+    }
+    if (deferredShares.length) {
+      openShares = filterOpenShares(sortShares(deferredShares.concat(openShares)), () => true);
+      deferredShares = [];
+    }
+  }
+
+  function lag1MissingProof(parentHeader, shares) {
+    if (!parentHeader || !shares?.length) return [];
+    const missing = [];
+    for (const s of shares) {
+      if (!hasLiveSharePow(parentHeader, s?.nonce) && !hasLiveSharePow(s?.verifiedHeader, s?.nonce)) {
+        missing.push(s);
+      }
+    }
+    return missing;
+  }
+
+  function creditAcceptedShare(rec) {
+    const opened = bindAcceptedShare(openShares, rec);
+    if (opened.ok) {
+      // One new pin. Rebuilding every open, lag-1, and template key here is
+      // quadratic in the round, so a full cap never finishes inside a block.
+      const pinned = sharePinKey(rec, store.tip()?.header || rec.verifiedHeader || rec.header || null);
+      if (pinned) pinOneLiveSharePow(pinned);
+    }
+    const m = liveSharePowMetrics();
+    stats.shareCacheEvictions = m.evictions;
+    stats.shareCacheWipes = m.wipes;
+    stats.shareCache = m;
+    return opened;
+  }
+
+  function rollOpenRound() {
+    lag1Issued = snapshotIssuedHeaders();
+    const ctx = tipShareContext();
+    const split = ctx.parentHeader
+      ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued)
+      : { seal: [], carry: openShares.slice(), owe: [], stale: [] };
+    if (split.owe.length) admitWindowSpill(split.owe);
+    if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
+    if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
+    const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
+    lag1Shares = split.seal;
+    if (unslotted.length) disposeUnpayable(unslotted, 'unstamped_slot');
+    openShares = [];
+    refreshSharePins();
+    return lag1Shares.slice();
+  }
+
+  function publishLiveJob(prior) {
+    let job = null;
+    try {
+      job = issueJob(undefined, { force: true, proofPending: true });
+    } catch {
+      job = null;
+    }
+    if (!job) job = prior || null;
+    if (job) {
+      try { broadcastJob(job); } catch { /* the caller still has the job */ }
+    }
+    return job;
+  }
+
+  function ensureCachedShareProofs() {
+    const tipHdr = store.tip()?.header || null;
+    const pending = reproveSharesOffLoop(tipHdr, lag1Shares).then(async (got) => {
+      if (proofWarm === pending) proofWarm = null;
+      const prior = lastJob;
+      if (!got.ok) {
+        const why = String(got.reason || 'share_pow');
+        if (perShareFailure(why)) dropUnprovenShares(got.failed || [], why, '');
+        await noteSealFailure(why, String(prior?.jobId || ''), '');
+      }
+      refreshSharePins();
+      return publishLiveJob(prior);
+    }).catch(async () => {
+      if (proofWarm === pending) proofWarm = null;
+      // A thrown worker is not a share_pow drop. The batch stays, and the
+      // pool still broadcasts a job. The first-fault deadline still applies.
+      const prior = lastJob;
+      await noteSealFailure('worker', String(prior?.jobId || ''), '');
+      return publishLiveJob(prior);
+    });
+    proofWarm = pending;
+    return pending;
+  }
+
+  function whenShareProofs() {
+    return proofWarm || Promise.resolve(lastJob);
+  }
+
+  async function sealFoundShare({ jobId, nonce, miner, powHash, header } = {}) {
+    // The accept path holds this too. A tip event inside the seal must not
+    // rebind the batch that is being sealed and owe shares the block just paid.
+    const sealingBefore = sealing;
+    sealing = true;
+    try {
+    const jid = String(jobId || '');
+    const rec = jid ? store.jobs.get(jid) : null;
+    if (rec && header) rec.tpl = { ...rec.tpl, header };
+    const parent = store.tip()?.header || null;
+    const batch = rec?.tpl?.shareBatch || [];
+    if (parent && batch.length) {
+      const missing = batch.filter((s) => !hasLiveSharePow(parent, s?.nonce) && !hasLiveSharePow(s?.verifiedHeader, s?.nonce));
+      if (missing.length) {
+        const proved = await reproveSharesOffLoop(parent, batch);
+        if (!proved.ok) {
+          const why = String(proved.reason || 'share_pow');
+          if (perShareFailure(why)) dropUnprovenShares(proved.failed || [], why, miner);
+          await noteSealFailure(why, jid, miner);
+          try {
+            const next = issueJob(undefined, { force: true });
+            if (next) broadcastJob(next);
+          } catch { /* keep the live job */ }
+          return { ok: false, reason: proved.reason || 'share_pow' };
+        }
+      }
+    }
+    const got = await Promise.resolve(store.submitHeader({
+      jobId: jid,
+      nonce,
+      miner,
+      powHash,
+    }, { trusted: true }));
+    if (got?.ok) {
+      noteSealSuccess();
+      return got;
+    }
+    await noteSealFailure(got?.reason || 'append', jid, miner);
+    try {
+      const next = issueJob(undefined, { force: true });
+      if (next) broadcastJob(next);
+    } catch { /* keep the live job */ }
+    return got || { ok: false, reason: 'append' };
+    } finally {
+      sealing = sealingBefore;
+      if (!sealing && statsAfterSeal) {
+        statsAfterSeal = false;
+        scheduleStatsSnap();
+      }
+    }
+  }
+
+  let reservePinLogged = false;
+  function issueJob(shareBitsNow, { force = false, probe = false, proofPending = false } = {}) {
+    if (!reservePinOk()) {
+      if (!reservePinLogged) {
+        reservePinLogged = true;
+        console.error(JSON.stringify({ event: 'reserve_deploy', reason: 'reserve_pin' }));
+      }
+      return null;
+    }
     if (sidecarAhead()) {
       logJobHold();
       return lastJob;
     }
     jobHoldLogged = false;
+    if (!probe && headerHold && headerHoldExpired(headerHold)) {
+      releaseHeldBatch(headerHold.reason);
+    }
+    if (!probe && headerHold) {
+      const tipHex = tipHashNow();
+      if (headerHold.tip !== tipHex || headerHold.batch !== batchKeyOf(lag1Shares)) headerHold = null;
+    }
     // No explicit dial: keep the live job's bits. The opening floor is only
     // for the first template, before any dest has stepped.
     const carriedTemplate = shareBitsNow != null
@@ -2115,15 +3767,15 @@ export function createPool({
       if (rec && rec.job) rec.job = job;
       return job;
     }
-    const hasherRow = [...miners.values()].find((m) => !isCminerFeeLogin(m.workerKey || m.login))
-      || [...miners.values()][0];
-    const hasherPay = hasherPayoutDest(hasherRow?.login, {
-      dest: hasherRow?.payoutDest,
-      height: Number(store.tip()?.height || 0) + 1,
-    });
     const poolPay = payoutDest(miner);
     const tipHdr = store.tip()?.header || null;
-    lag1Shares = selectBlockShares(provenLag1Shares(tipHdr, lag1Shares));
+    bindLag1ToTip();
+    retainReadySpill();
+    const coldLag1 = lag1MissingProof(tipHdr, lag1Shares);
+    if (coldLag1.length && !proofPending) {
+      if (!probe && !proofWarm) ensureCachedShareProofs();
+      return null;
+    }
     const live = snapshotRound();
     const potRows = live.map((s) => ({ miner: s.miner, count: Number(s.proven) || 0 })).filter((s) => s.count > 0);
     const wantPot = wantLivePot();
@@ -2135,36 +3787,83 @@ export function createPool({
       return null;
     }
     const feeTo = ident.feeDest;
-    const potShares = lag1Shares.length
-      ? potSharesFromBatch(lag1Shares, feeTo, wantPot)
-      : splitPot(
-        potRows.length ? potRows : (hasherPay ? [{ miner: hasherPay, count: 1 }] : []),
+    const emptyRound = !lag1Shares.length && !potRows.length;
+    const carryIn = Math.max(0, Math.floor(Number(store.tip()?.txs?.[0]?.carryNanos) || 0));
+    // Fee is this block's subsidy only. Parent carry is miner pot and is not fee'd again.
+    const feeNanos = Math.floor(wantPot * POOL_FEE_BPS / 10000);
+    let potShares;
+    if (emptyRound) {
+      potShares = feeNanos > 0 && isDestAddress(feeTo)
+        ? [{ address: feeTo, nanos: feeNanos, kind: 'pool-fee' }]
+        : [];
+    } else {
+      potShares = potRoundShares({
+        lag1Shares,
+        potRows,
         feeTo,
         wantPot,
-        feeTo,
-      );
-    // she1 login may have no dest yet (dest arrives as owned ssa1). The header
-    // still issues; shareBatch credit stays hasher dests only. The finder
-    // address is the hasher, never the pool fee note.
-    const payout = hasherPay
-      || potShares.find((s) => s.kind === 'pot')?.address
-      || poolPay
-      || poolFeeDest();
+        carryNanos: carryIn,
+      });
+    }
+    const provenDests = [];
+    for (const share of lag1Shares) {
+      const dest = destOfShare(share);
+      if (dest && isDestAddress(dest)) provenDests.push(dest);
+    }
+    for (const row of potRows) {
+      if (isDestAddress(row.miner)) provenDests.push(row.miner);
+    }
+    const hasherPay = templateHasherDest([...miners.values()], provenDests);
+    // The finder-fee is not hasherPay. The shared job passes finderDest ''
+    // and holds that half until aimFinderJob pays the miner who hashes the
+    // header. An empty proven round has no hasher, so the header names the
+    // unclaimed hold. A fee dest is never that name.
+    const provenPay = hasherPay || potShares.find((s) => s.kind === 'pot')?.address || '';
+    const payout = provenPay && !namesFeeSink(provenPay, feeTo)
+      ? provenPay
+      : unclaimedFinderDest();
     if (!payout) return null;
     const samples = pendingPayout.filter((s) => (s.count || 0) > 0);
     // Block target is consensus next-work for this parent (retarget → nextBits).
     // `bits` / lockBits may size an empty book only. A live parent never
     // keeps that override. A share that misses the issued target is not a block.
     void lockBits;
-    const { job, tpl } = store.template({
-      miner: payout,
-      samples,
-      potShares,
-      shareBits: sb,
-      shareBatch: lag1Shares,
-      poolDest: poolPay,
-      wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
-    });
+    if (bodyTxHold && bodyTxHold.tip !== tipHash) bodyTxHold = null;
+    const holdUserTxs = !!(bodyTxHold && bodyTxHold.tip === tipHash);
+    let stashed = null;
+    if (holdUserTxs && Array.isArray(store.mempool)) {
+      stashed = [];
+      const stay = [];
+      for (const tx of store.mempool) {
+        if (tx && !tx.coinbase) stashed.push(tx);
+        else stay.push(tx);
+      }
+      store.mempool.length = 0;
+      store.mempool.push(...stay);
+    }
+    let built;
+    try {
+      built = store.template({
+        miner: payout,
+        samples,
+        potShares,
+        shareBits: sb,
+        shareBatch: lag1Shares,
+        hashSpill: pendingSpill.slice(),
+        poolDest: poolPay,
+        feeDest: feeTo,
+        finderDest: '',
+        issuedHeaders: lag1Issued,
+        wallIntervalMs: avgWallFindIntervalMs(stats.findAt),
+      });
+    } finally {
+      if (stashed && stashed.length && Array.isArray(store.mempool)) {
+        const kept = store.mempool.slice();
+        store.mempool.length = 0;
+        store.mempool.push(...kept, ...stashed);
+      }
+    }
+    const { job, tpl } = built;
     const gate = gateJob(job);
     if (!gate.ok) return null;
     packedMempoolKey = mempoolKey(store.mempool);
@@ -2180,11 +3879,160 @@ export function createPool({
     }
     lastJob = job;
     lastIssueAt = now;
+    refreshSharePins();
     return job;
   }
 
   function line(obj) {
     return `${JSON.stringify(obj)}\n`;
+  }
+
+  function finderJobId(baseId, dest) {
+    const raw = hash20FromAddress(dest);
+    const hex = raw ? Buffer.from(raw).toString('hex').slice(0, 16) : '';
+    return hex ? `${baseId}.${hex}` : '';
+  }
+
+  function isLiveFinderJob(job, live) {
+    const id = String(job?.jobId || '');
+    const base = String(live?.jobId || '');
+    return !!base && id.startsWith(`${base}.`);
+  }
+
+  /** Keep a finder's merkle and move the stamp onto the live base header. */
+  function alignFinderHeader(aimed, baseHeader) {
+    if (!aimed?.header || !baseHeader) return aimed;
+    let base;
+    let cur;
+    try {
+      base = decodeHeader(Buffer.isBuffer(baseHeader) ? Buffer.from(baseHeader) : headerFromHex(baseHeader));
+      cur = decodeHeader(Buffer.isBuffer(aimed.header) ? Buffer.from(aimed.header) : headerFromHex(aimed.header));
+    } catch {
+      return aimed;
+    }
+    if (cur.timestamp === base.timestamp && Number(cur.bits) === Number(base.bits)) return aimed;
+    const header = encodeHeader({
+      version: cur.version,
+      prevBlockHash: cur.prevBlockHash,
+      merkleRoot: cur.merkleRoot,
+      continuityRoot: cur.continuityRoot,
+      timestamp: base.timestamp,
+      bits: base.bits,
+      nonce: 0n,
+      baseFee: cur.baseFee,
+    });
+    return { ...aimed, header, bits: base.bits };
+  }
+
+  /**
+   * Header this connection hashes. The finder-fee note pays `dest`.
+   * The shared job holds that half at the unclaimed dest. A fee dest is not given one.
+   * A cache miss returns the shared job and seals at most one new dest
+   * on a later turn. `seal` is that later turn.
+   */
+  let finderSealArmed = false;
+  const finderSealWait = [];
+
+  function deliverAimedJob(dest, aimed) {
+    if (!aimed?.header) return;
+    for (const m of miners.values()) {
+      const payout = hasherPayoutDest(m.login, { dest: m.payoutDest });
+      if (payout !== dest) continue;
+      for (const c of m.connections || []) {
+        if (!c?.sock || c.shearFeeRoute) continue;
+        c.job = aimed;
+        try {
+          c.sock.write(line({ method: 'job', params: wireJob(aimed, c.shareBits) }));
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
+  function runFinderSeal() {
+    finderSealArmed = false;
+    const next = finderSealWait.shift();
+    if (!next) return;
+    let aimed = null;
+    try {
+      aimed = aimFinderJob(next.job, next.dest, { seal: true });
+    } catch { /* a failed seal stays on the shared job */ }
+    if (aimed && aimed.jobId && aimed.jobId !== next.job.jobId) deliverAimedJob(next.dest, aimed);
+    if (finderSealWait.length && !finderSealArmed) {
+      finderSealArmed = true;
+      setImmediate(runFinderSeal);
+    }
+  }
+
+  function scheduleFinderAim(job, dest) {
+    const id = `${job?.jobId || ''}\0${dest}`;
+    if (finderSealWait.some((row) => row.id === id)) return;
+    finderSealWait.push({ id, job, dest });
+    if (finderSealArmed) return;
+    finderSealArmed = true;
+    setImmediate(runFinderSeal);
+  }
+
+  function aimFinderJob(job, dest, { seal = false } = {}) {
+    if (!job || !isDestAddress(dest)) return job;
+    const rec = store.jobs.get(String(job.jobId));
+    const tpl = rec?.tpl;
+    if (!tpl?.levyBind?.finderNanos) return job;
+    const peek = cachedFinderTemplate(tpl, dest);
+    if (!peek.ok) return null;
+    let aimedTpl = peek.tpl;
+    if (peek.miss) {
+      if (!seal) {
+        scheduleFinderAim(job, dest);
+        return job;
+      }
+      aimedTpl = templateForFinder(tpl, dest);
+      if (!aimedTpl) return null;
+    }
+    const aligned = alignFinderHeader(aimedTpl, headerFromHex(job.header));
+    const jobId = finderJobId(job.jobId, dest);
+    if (!jobId) return null;
+    const child = publicJob(aligned, { jobId, shareBits: job.shareBits });
+    child.shareBitsPrev = job.shareBitsPrev;
+    child.shareBitsAt = job.shareBitsAt;
+    child.shareBitsHist = job.shareBitsHist;
+    const prev = store.jobs.get(jobId);
+    if (prev?.job?.header && prev.job.header !== child.header) rememberJobHeader(child, prev.job.header);
+    if (Array.isArray(prev?.job?.headerHistory)) {
+      for (const h of prev.job.headerHistory) rememberJobHeader(child, h);
+    }
+    rememberStoredJob(store.jobs, jobId, { tpl: aligned, job: child, shareBits: job.shareBits }, {
+      pin: [String(job.jobId)],
+    });
+    return child;
+  }
+
+  function alignLiveFinderJobs(base) {
+    if (!base?.jobId || !base.header || !store.jobs?.keys) return;
+    const prefix = `${base.jobId}.`;
+    for (const id of [...store.jobs.keys()]) {
+      if (!String(id).startsWith(prefix)) continue;
+      const rec = store.jobs.get(id);
+      if (!rec?.tpl || !rec.job) continue;
+      const aligned = alignFinderHeader(rec.tpl, headerFromHex(base.header));
+      const prevHeader = rec.job.header;
+      const child = publicJob(aligned, { jobId: id, shareBits: rec.job.shareBits });
+      if (prevHeader && prevHeader !== child.header) rememberJobHeader(child, prevHeader);
+      if (Array.isArray(rec.job.headerHistory)) {
+        for (const h of rec.job.headerHistory) rememberJobHeader(child, h);
+      }
+      child.shareBitsPrev = rec.job.shareBitsPrev;
+      child.shareBitsAt = rec.job.shareBitsAt;
+      child.shareBitsHist = rec.job.shareBitsHist;
+      rec.tpl = { ...aligned, header: headerFromHex(child.header) };
+      rec.job = child;
+    }
+  }
+
+  function jobForSession(job, session) {
+    if (!job || !session) return job;
+    const dest = hasherPayoutDest(session.login, { dest: session.payoutDest });
+    if (!dest) return job;
+    return aimFinderJob(job, dest) || job;
   }
 
   /** Push one round job to every TCP session now. Do this before the finder ACK. */
@@ -2205,6 +4053,7 @@ export function createPool({
   function broadcastJob(job, { force = false } = {}) {
     if (!job) return 0;
     if (paused && !force) return 0;
+    noteTipWork('job');
     let n = 0;
     for (const m of miners.values()) {
       for (const c of m.connections || []) {
@@ -2219,8 +4068,9 @@ export function createPool({
           template: job.shareBits,
         }, { blockBits: blockBitsNow(), minBits: liveShareMin() });
         c.shareBits = sb;
-        const payload = wireJob(job, sb);
-        c.job = payload;
+        const aimed = c.shearFeeRoute ? job : jobForSession(job, m);
+        const payload = wireJob(aimed || job, sb);
+        c.job = aimed || job;
         try {
           if (typeof c.sock.setNoDelay === 'function') c.sock.setNoDelay(true);
           c.sock.write(line({ method: 'job', params: payload }));
@@ -2267,10 +4117,36 @@ export function createPool({
    * Every JOB_RESTAMP_MS, advance the live header timestamp on the same jobId.
    * Bits stay on the parent solve interval. A short in-progress stamp must not
    * retarget. rememberJobHeader keeps the previous header so in-flight shares
-   * still count.
+   * still count. A stamp that crosses the open epoch, or a body that already
+   * holds a reserve row, is rebuilt so the vault trials that stamp.
    */
   let lastEaseAt = Date.now();
   let restampTimer = null;
+  function jobHoldsReserveRow(job) {
+    const rec = job?.jobId ? store.jobs?.get?.(String(job.jobId)) : null;
+    const txs = rec?.tpl?.txs;
+    if (!Array.isArray(txs)) return false;
+    return txs.some((tx) => tx && !tx.coinbase && txIsReserveAction(tx));
+  }
+  function stampsStraddleEpoch(oldMs, newMs) {
+    const vault = store.reserveVault;
+    const start = Number(vault?.epochStartMs || 0);
+    if (!(start > 0)) return false;
+    const end = start + epochMs(vault?.magic);
+    const a = Number(oldMs);
+    const b = Number(newMs);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(end)) return false;
+    const lo = a < b ? a : b;
+    const hi = a < b ? b : a;
+    return lo < end && hi >= end;
+  }
+  function restampMustRebuild(oldMs, newMs) {
+    return jobHoldsReserveRow(lastJob) || stampsStraddleEpoch(oldMs, newMs);
+  }
+  function rebuildLiveTemplate() {
+    rememberJobHeader(lastJob, lastJob?.header);
+    return issueJob(undefined, { force: true });
+  }
   function restampLiveHeader(now = Date.now()) {
     if (sidecarAhead()) {
       logJobHold();
@@ -2299,6 +4175,9 @@ export function createPool({
     }
     if (stamp > wall && !overMtp) return lastJob;
     if (stamp <= Number(decoded.timestamp) && !overMtp) return lastJob;
+    if (restampMustRebuild(decoded.timestamp, stamp)) {
+      return rebuildLiveTemplate() || lastJob;
+    }
     const header = encodeHeader({
       version: decoded.version,
       prevBlockHash: decoded.prevBlockHash,
@@ -2321,15 +4200,16 @@ export function createPool({
       rec.tpl = { ...rec.tpl, header };
       rec.job = lastJob;
     }
+    alignLiveFinderJobs(lastJob);
     return lastJob;
   }
-  function maybeRestampJob() {
-    watchTipStall();
+  function maybeRestampJob(now = Date.now()) {
+    watchTipStall(now);
     if (paused) return lastJob;
     if (!lastJob) return lastJob;
-    const now = Date.now();
-    if ((now - lastEaseAt) < JOB_RESTAMP_MS) return lastJob;
-    lastEaseAt = now;
+    const wall = Number(now);
+    if ((wall - lastEaseAt) < JOB_RESTAMP_MS) return lastJob;
+    lastEaseAt = wall;
     const tip = store.tip();
     if (tip?.header) {
       try {
@@ -2338,17 +4218,20 @@ export function createPool({
         const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
-        const stamp = templateStampMs(parent.timestamp, now, null, mtp);
-        const wantBits = parentIntervalBits() ?? decoded.bits;
+        const stamp = templateStampMs(parent.timestamp, wall, null, mtp);
+        const quote = retargetQuote(store.blocks || [], stamp);
+        // Past 8·T the same job eases to the verify floor. Before that window
+        // a sealable header stays up so a short tick does not restart the search.
+        const easing = !!(quote?.ok && quote.easeBits > 0);
+        const wantBits = quote?.ok
+          ? (easing ? quote.eased : quote.packed)
+          : (parentIntervalBits(stamp) ?? decoded.bits);
         const liveTs = Number(decoded.timestamp);
         const overMtp = liveTs > Number(mtp) + MTP_FUTURE_MS;
-        // Same jobId. A sealable header is left alone so miners finish the
-        // search. Timestamp ticks do not retarget. Any packed undercut,
-        // including a fraction under one bit, is rewritten to consensus work.
-        if (!overMtp && decoded.bits === wantBits) {
-          if (liveJobCanSeal(now)) return lastJob;
+        if (!easing && !overMtp && Number(decoded.bits) === Number(wantBits)) {
+          if (liveJobCanSeal(wall)) return lastJob;
           const before = String(lastJob.header || '');
-          const job = restampLiveHeader(now);
+          const job = restampLiveHeader(wall);
           if (job && String(job.header || '') !== before) broadcastJob(job);
           return job;
         }
@@ -2362,6 +4245,11 @@ export function createPool({
           nonce: 0n,
           baseFee: decoded.baseFee,
         });
+        if (restampMustRebuild(liveTs, stamp)) {
+          const rebuilt = rebuildLiveTemplate();
+          if (rebuilt) broadcastJob(rebuilt);
+          return rebuilt || lastJob;
+        }
         rememberJobHeader(lastJob, lastJob.header);
         lastJob = {
           ...lastJob,
@@ -2375,6 +4263,7 @@ export function createPool({
           rec.tpl = { ...rec.tpl, header, bits: wantBits };
           rec.job = lastJob;
         }
+        alignLiveFinderJobs(lastJob);
         broadcastJob(lastJob);
         return lastJob;
       } catch { /* keep live job */ }
@@ -2385,6 +4274,9 @@ export function createPool({
   function resolveSubmitJob(params, conn) {
     const id = String(params?.jobId || '');
     const byId = id ? store.jobs.get(id)?.job : null;
+    if (byId && isLiveFinderJob(byId, lastJob)) {
+      return { job: byId, closedRound: false, stale: false };
+    }
     const liveId = String(lastJob?.jobId || '');
     if (byId && String(byId.jobId) === liveId) {
       return { job: byId, closedRound: false, stale: false };
@@ -2502,25 +4394,30 @@ export function createPool({
         return;
       }
     }
+    const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
+    const creditedBits = Number(scored.creditedShareBits) || 0;
+    if (session && isDestAddress(destPay) && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
+      const rec = {
+        dest: destPay,
+        dest20: hash20FromAddress(destPay),
+        nonce: BigInt(params.nonce),
+        hash: String(scored.hash || ''),
+        jobId: String(job?.jobId || ''),
+        lz: Number(scored.bitsMet) & 0xff,
+        shareBits: creditedBits,
+        verifiedHeader: Buffer.isBuffer(scored.header)
+          ? scored.header.toString('hex').toLowerCase()
+          : String(job?.header || '').toLowerCase(),
+      };
+      const opened = creditAcceptedShare(rec);
+      if (!opened.ok) {
+        rejectSubmit(sock, session, msg, opened.reason || 'share_pow');
+        return;
+      }
+    }
     stats.accepted += 1;
     if (session) {
       session.accepted += 1;
-      const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
-      if (isDestAddress(destPay) && hashBuf.length === 32 && shareMeetsFloor(hashBuf, { dest: destPay }, SHARE_FLOOR_BITS)) {
-        const rec = {
-          dest: destPay,
-          dest20: hash20FromAddress(destPay),
-          nonce: BigInt(params.nonce),
-          hash: String(scored.hash || ''),
-          jobId: String(job?.jobId || ''),
-          lz: Number(scored.bitsMet) & 0xff,
-          verifiedHeader: Buffer.isBuffer(scored.header)
-            ? scored.header.toString('hex').toLowerCase()
-            : String(job?.header || '').toLowerCase(),
-        };
-        const opened = rememberOpenShare(openShares, rec);
-        if (opened.ok) rememberLiveSharePow(scored.header || job?.header, params.nonce);
-      }
       const credited = Number(scored.creditedShareBits || 0);
       const proven = credited > 0 ? hashesProvenByShare(credited) : 0;
       if (!closedRound && proven > 0) {
@@ -2553,14 +4450,15 @@ export function createPool({
     }
     let nextJob = null;
     let sealedBlock = false;
+    let sealTried = false;
+    let sealFailReason = '';
     if (scored.block && !closedRound && sidecarAhead()) {
       logJobHold();
     } else if (scored.block && !closedRound) {
       sealing = true;
+      sealTried = true;
       const jid = String(params.jobId || job.jobId || '');
-      const rec = jid ? store.jobs.get(jid) : null;
-      if (rec && scored.header) rec.tpl = { ...rec.tpl, header: scored.header };
-      const got = await Promise.resolve(store.submitHeader({
+      const got = await sealFoundShare({
         jobId: jid,
         nonce: params.nonce,
         miner: hasherPayoutDest(session?.login, {
@@ -2568,13 +4466,13 @@ export function createPool({
           height: Number(store.tip()?.height || 0) + 1,
         }),
         powHash: scored.hash,
-      }, { trusted: true }));
+        header: scored.header,
+      });
       sealing = false;
       if (got?.ok) {
         sealedBlock = true;
         stats.blocks += 1;
-        lag1Shares = selectBlockShares(openShares.slice());
-        openShares = [];
+        rollOpenRound();
         try {
           const sealed = store.tip();
           // Wall clock, not header time: the job stamp may be 90s ahead of now.
@@ -2611,6 +4509,10 @@ export function createPool({
         if (typeof store.clearOpenRound === 'function') store.clearOpenRound();
         const base = issueJob(undefined, { force: true });
         broadcastJob(base);
+        if (statsAfterSeal) {
+          statsAfterSeal = false;
+          scheduleStatsSnap();
+        }
         console.log(JSON.stringify({
           event: 'vardiff_carry',
           template: Number(base?.shareBits) || 0,
@@ -2619,27 +4521,27 @@ export function createPool({
         }));
         nextJob = true;
       } else {
-        console.error(JSON.stringify({
-          event: 'seal_failed',
-          reason: String(got?.reason || 'append'),
-          error: got?.error,
-          jobId: jid,
-          height: Number(store.tip()?.height || 0) + 1,
-        }));
-        try {
-          const base = issueJob(undefined, { force: true });
-          if (base) {
-            broadcastJob(base);
-            nextJob = true;
-          }
-        } catch { /* keep live job */ }
+        sealFailReason = String(got?.reason || 'seal_failed');
+        nextJob = true;
+        if (statsAfterSeal) {
+          statsAfterSeal = false;
+          scheduleStatsSnap();
+        }
       }
     }
     try {
-      sock.write(line({
-        id: msg.id,
-        result: { status: 'OK', hash: scored.hash, block: sealedBlock },
-      }));
+      if (sealTried && !sealedBlock) {
+        sock.write(line({
+          id: msg.id,
+          error: 'seal_failed',
+          reason: sealFailReason || 'seal_failed',
+        }));
+      } else {
+        sock.write(line({
+          id: msg.id,
+          result: { status: 'OK', hash: scored.hash, block: sealedBlock },
+        }));
+      }
     } catch { /* ignore */ }
     if (!paused && !nextJob && !closedRound && conn && !conn.shearFeeRoute && !isCminerFeeLogin(session?.workerKey || session?.login) && Number(scored.creditedShareBits) > 0) {
       const destKey = destShareBitsKey(session?.login || session?.payoutDest);
@@ -2740,13 +4642,21 @@ export function createPool({
     let conn = null;
     sock.on('data', (chunk) => {
       buf += chunk.toString('utf8');
+      if (buf.length > HTTP_BODY_MAX) {
+        try { sock.destroy(); } catch { /* ignore */ }
+        return;
+      }
       let idx;
       while ((idx = buf.indexOf('\n')) >= 0) {
         const raw = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!raw) continue;
+        if (raw.length > STRATUM_LINE_MAX) {
+          try { sock.destroy(); } catch { /* ignore */ }
+          return;
+        }
         let msg;
-        try { msg = JSON.parse(raw); } catch { continue; }
+        try { msg = parseBoundedJson(raw); } catch { continue; }
         const method = msg.method || msg.id;
         const params = msg.params || msg;
         // C miner submit repeats identity (login/threads) inside params.
@@ -2761,7 +4671,9 @@ export function createPool({
             if (isWrongAlgoReject(adm.reason)) {
               rememberInvalid(null, String(params.login || params.user || ''), sock);
             }
-            const extra = adm.reason === 'need_auth' && adm.challenge ? { challenge: adm.challenge } : {};
+            const extra = {};
+            if (adm.reason === 'need_auth' && adm.challenge) extra.challenge = adm.challenge;
+            if (adm.message) extra.message = adm.message;
             replyLine(sock, { id: msg.id, error: adm.reason, ...extra }, { drop: true });
             continue;
           }
@@ -2770,6 +4682,16 @@ export function createPool({
             continue;
           }
           const key = adm.workerKey;
+          if (!miners.has(key)) {
+            const ipBudget = noteIpSubmit(ipLoginAt, sockIp(sock), Date.now(), {
+              max: LOGIN_PER_IP_MAX,
+              windowMs: LOGIN_PER_IP_WINDOW_MS,
+            });
+            if (!ipBudget.ok) {
+              replyLine(sock, { id: msg.id, error: 'busy' }, { drop: true });
+              continue;
+            }
+          }
           session = miners.get(key) || {
             login: adm.login,
             workerKey: key,
@@ -2810,7 +4732,6 @@ export function createPool({
             varShares: 0,
             varWindowAt: Date.now(),
             seen: Date.now(),
-            authedAt: Date.now(),
           };
           session.connections = (session.connections || []).filter((c) => c.sock && c.sock !== sock);
           session.connections.push(conn);
@@ -2826,11 +4747,15 @@ export function createPool({
           // Fee socket submits the hasher's current jobId. A new template here
           // superseded lastJob and the main worker painted 0 H/s until the
           // next share on a stale header.
-          const job = conn.shearFeeRoute && lastJob
+          const issued = conn.shearFeeRoute && lastJob
             ? lastJob
             : issueJob(conn.shareBits);
-          conn.job = job;
-          sock.write(line({ id: msg.id, result: { status: 'OK' }, job: wireJob(job, conn.shareBits) }));
+          const job = conn.shearFeeRoute ? issued : jobForSession(issued, session);
+          conn.job = job || issued;
+          // Idle starts when the job is on the wire. Template build is server
+          // time: the hasher cannot submit a header it has not been sent.
+          conn.authedAt = Date.now();
+          sock.write(line({ id: msg.id, result: { status: 'OK' }, job: wireJob(conn.job, conn.shareBits) }));
           continue;
         }
         if (method === 'stats') {
@@ -2915,14 +4840,37 @@ export function createPool({
     };
   }
 
-  let statsSnap = { at: 0, json: '{"ok":true}' };
-  let statsTimer = null;
+  function noteTipWork(kind) {
+    tipWork.push(kind);
+    if (tipWork.length > 32) tipWork.shift();
+  }
+  function scheduleStatsSnap() {
+    if (sealing) {
+      statsAfterSeal = true;
+      return;
+    }
+    if (statsImmediate) return;
+    statsImmediate = setImmediate(() => {
+      statsImmediate = null;
+      if (stopped) return;
+      if (sealing) {
+        statsAfterSeal = true;
+        return;
+      }
+      try { paintStatsSnap(); } catch { /* the stats cadence retries */ }
+    });
+  }
   let payoutTimer = null;
   let payoutSweepBusy = false;
   let payoutSweepAgain = false;
   let autoPayoutLastError = null;
   let jobDirty = false;
   function paintStatsSnap() {
+    if (sealing) {
+      statsAfterSeal = true;
+      return;
+    }
+    noteTipWork('stats');
     try {
       const rows = openRoundHashRows(miners, hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos))
         .map((r) => ({ tag: r.tag, count: r.count }));
@@ -2932,6 +4880,12 @@ export function createPool({
     } catch {
       if (!statsSnap.json) statsSnap = { at: Date.now(), json: '{"ok":true}' };
     }
+  }
+  /** A pending or unverifiable supply has no total yet. Zero is a settled total. */
+  function supplyNumber(status, value) {
+    if (status !== 'verified' && status !== 'mismatch') return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
   }
   function publicStats() {
     const now = Date.now();
@@ -2943,6 +4897,7 @@ export function createPool({
     const findDts = intervalDeltasMs(stats.findAt);
     const avgMs = ewmaBlockIntervalMs(findDts);
     const medianMs = medianBlockIntervalMs(findDts);
+    const sealed = sealedIntervalSpan(store.blocks);
     const supply = networkSupply(store);
     let genesisMs = Date.now();
     try {
@@ -2950,6 +4905,10 @@ export function createPool({
       if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || genesisMs;
     } catch { /* wall */ }
     const ev = epochView({ nowMs: Date.now(), genesisMs, magic: MAGIC_TESTNET });
+    const feeIdent = configuredFeeIdentity();
+    const feePublish = feeIdent.ok && isDestAddress(feeIdent.feeDest)
+      ? feeIdent.feeDest
+      : THIS_POOL_DIRECT_FEE_DEST;
     return narrowPublicStats({
       ok: true,
       coin: 'SHE',
@@ -2968,7 +4927,7 @@ export function createPool({
       epochRemainMs: ev.remainMs,
       hashBonusNanos: hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos),
       hashTxLive: HASH_TX_LIVE,
-      admit: 'ADMITv2',
+      admit: 'ADMITv3',
       bookLawFingerprint: consensusFingerprint(),
       ...consensusLaw(),
       policy: typeof store.getpolicy === 'function' ? store.getpolicy() : undefined,
@@ -2977,9 +4936,12 @@ export function createPool({
       stratum: `:${stratumPort}`,
       stratumBind: stratumBindHost(stratumBind),
       poolFeeBps: POOL_FEE_BPS,
-      feeDestTail: String((configuredFeeIdentity().feeDest || '')).slice(-4),
+      feeDest: feePublish,
+      feeDestTail: String(feePublish).slice(-4),
       lostWorkHashes: Number(stats.lostWorkHashes) || 0,
       lostWorkEvents: Number(stats.lostWorkEvents) || 0,
+      windowOwedUnits: String(stats.windowOwedUnits || '0'),
+      windowOwedNotes: Number(stats.windowOwedNotes) || 0,
       hashBusy: Number(stats.hashBusy) || 0,
       hashQueue: hashWait.size,
       topDestSharePct: topDestSharePct(workers),
@@ -2994,6 +4956,7 @@ export function createPool({
             : 0,
           stratumBind,
           requireLoginAuth,
+          eligibleShares: openRoundEligibleCount(),
         }),
         tipStall: !!tipStallAlert,
         tipStallReason: tipStallAlert?.reason || '',
@@ -3046,11 +5009,16 @@ export function createPool({
       accepted: stats.accepted,
       stale: stats.stale,
       circulatingNanos: supply.circulatingNanos,
+      supplyStatus: supplyStatusWord(supply.supplyStatus),
+      asOfHeight: Number.isInteger(Number(supply.asOfHeight)) ? Number(supply.asOfHeight) : 0,
+      supplyDifferenceNanos: supplyNumber(supply.supplyStatus, supply.differenceNanos),
+      schedulePotNanos: supplyNumber(supply.supplyStatus, supply.schedulePotNanos),
       potEmittedNanos: supply.potNanos,
       hashBonusEmittedNanos: supply.hashNanos,
+      hashOwedNanos: supplyNumber(supply.supplyStatus, supply.hashOwedNanos),
       extraMintedNanos: supply.extraMintNanos,
       burnedNanos: supply.burnedNanos,
-      reserveMintedNanos: supply.reserveMintedNanos || 0,
+      reserveMintedNanos: supply.extraMintNanos == null ? null : supply.extraMintNanos,
       reserveVaultNanos: supply.vaultNanos || 0,
       accruingNanos: supply.accruingNanos || 0,
       height: tip?.height || 0,
@@ -3063,11 +5031,11 @@ export function createPool({
       shareBits: liveShareBits(),
       lastFoundAt: stats.lastFoundAt || 0,
       avgBlockTimeMs: avgMs,
-      networkAvgBlockTimeMs: avgBlockIntervalMs(store.blocks),
+      networkAvgBlockTimeMs: sealed.meanMs,
       interval: intervalCertify({
-        sealedSamples: Math.max(0, (Array.isArray(store.blocks) ? store.blocks.length : 0) - 1),
+        sealedSamples: sealed.samples,
         ewmaMs: avgMs,
-        sealedMeanMs: avgBlockIntervalMs(store.blocks),
+        sealedMeanMs: sealed.meanMs,
       }),
       avgBlockTimeMedianMs: medianMs,
       avgBlockWindow: findDts.length,
@@ -3110,7 +5078,7 @@ export function createPool({
       }),
     });
   }
-  paintStatsSnap();
+  scheduleStatsSnap();
 
   function minerByTag(tag, now = Date.now()) {
     const want = String(tag || '').trim().toLowerCase();
@@ -3316,6 +5284,7 @@ export function createPool({
     maxRows = PAYOUT_SWEEP_MAX_ROWS,
     budgetMs = PAYOUT_SWEEP_BUDGET_MS,
   } = {}) {
+    if (!custodialPullAllowed()) return [];
     const tipH = Number(store.tip?.()?.height || 0);
     const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
     const from = payoutDest(miner) || poolFeeDest();
@@ -3414,6 +5383,8 @@ export function createPool({
   function queueSend(t, meta) {
     const id = t.id || `send-${Date.now()}`;
     const tx = { id, ...t };
+    const pull = custodialPullRejected(tx);
+    if (pull) return pull;
     const owedRaw = Number(meta && meta.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     if (typeof store.queueTx === 'function') {
@@ -3607,11 +5578,9 @@ export function createPool({
   };
 
   const httpServer = http.createServer(async (req, res) => {
-    const host = String(req.headers.host || '').split(':')[0].toLowerCase();
     const url = new URL(req.url, 'http://127.0.0.1');
     if (
-      isAdminHost(host)
-      || url.pathname === '/admin'
+      url.pathname === '/admin'
       || url.pathname.startsWith('/admin/')
       || url.pathname.startsWith('/api/admin')
     ) {
@@ -3641,7 +5610,7 @@ export function createPool({
       res.end(JSON.stringify({
         ok: true,
         fingerprint: fp,
-        admit: 'ADMITv2',
+        admit: 'ADMITv3',
         hashTxLive: Number(store.hashTxLive ?? HASH_TX_LIVE),
         magic: MAGIC_TESTNET,
       }));
@@ -3685,19 +5654,8 @@ export function createPool({
     if (url.pathname.startsWith('/api/miners/')) {
       const parts = url.pathname.slice('/api/miners/'.length).split('/').filter(Boolean);
       const tag = decodeURIComponent(parts[0] || '');
-      const rows = minerByTag(tag);
       res.setHeader('content-type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
-      const tipH = Number(store.tip?.()?.height || 0);
-      const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
-      const pull = pullBook.view(tag, { tipHeight: tipH, need });
-      const held = typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [];
-      const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
-      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length && !known) {
-        res.statusCode = 404;
-        res.end(JSON.stringify({ ok: false, reason: 'unknown_miner', tag }));
-        return;
-      }
       if (parts[1] === 'withdraw' && req.method === 'POST') {
         res.statusCode = 410;
         res.end(JSON.stringify({
@@ -3709,24 +5667,46 @@ export function createPool({
         }));
         return;
       }
+      const rows = minerByTag(tag);
+      const tipH = Number(store.tip?.()?.height || 0);
+      const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
+      const pull = pullBook.view(tag, { tipHeight: tipH, need });
+      const held = typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [];
+      const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
+      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length && !known) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ ok: false, reason: 'unknown_miner', tag }));
+        return;
+      }
       res.end(JSON.stringify(minerPublicJson(tag)));
       return;
     }
     if (url.pathname === '/api/mempool' || url.pathname === '/api/mempoolPressure' || url.pathname === '/api/mempoolpressure' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/') || url.pathname.startsWith('/api/vault/') || url.pathname.startsWith('/api/join/')) {
       let body = {};
       if (req.method === 'POST') {
-        const raw = await new Promise((resolve, reject) => {
-          const chunks = [];
-          req.on('data', (c) => chunks.push(c));
-          req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8') || '{}'));
-          req.on('error', reject);
-        });
+        let raw;
         try {
-          body = JSON.parse(raw);
+          raw = await readCappedBody(req);
+        } catch (err) {
+          if (!res.headersSent) {
+            const over = err && err.code === 'body_cap';
+            res.statusCode = over ? 413 : 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: false, reason: over ? 'body_cap' : 'bad_body' }), () => {
+              if (over) {
+                try { req.socket.end(); } catch { /* ignore */ }
+              }
+            });
+          }
+          return;
+        }
+        try {
+          body = parseBoundedJson(raw);
         } catch (err) {
           res.statusCode = 400;
           res.setHeader('content-type', 'application/json');
-          res.end(JSON.stringify({ ok: false, reason: 'bad_json', error: String(err && err.message || err) }));
+          const reason = err && err.code === 'json_cap' ? 'json_cap' : 'bad_json';
+          res.end(JSON.stringify({ ok: false, reason, error: String(err && err.message || err) }));
           return;
         }
         if (url.pathname === '/api/wallet/send') {
@@ -3781,6 +5761,7 @@ export function createPool({
         return;
       }
     }
+    const host = String(req.headers.host || '');
     const file = publicHtmlFile(host, url.pathname);
     const full = path.join(PUBLIC_DIR, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
     if (!full.startsWith(PUBLIC_DIR)) {
@@ -3925,6 +5906,10 @@ export function createPool({
     try { httpServer.close(); } catch { /* ignore */ }
   }
 
+  // The first /api/stats read is the snap. A listen-time setImmediate is too
+  // late for a request that arrives in the same turn as listen.
+  try { paintStatsSnap(); } catch { /* the listening refresh retries */ }
+
   return {
     store,
     issueJob,
@@ -3938,6 +5923,8 @@ export function createPool({
     httpServer,
     snapshotRound,
     paintStatsSnap,
+    scheduleStatsSnap,
+    tipWork() { return tipWork.slice(); },
     runAutoPayoutSweep,
     sweepAutoPayouts,
     setP2p,
@@ -3945,6 +5932,23 @@ export function createPool({
     noteSidecarTip,
     jobHoldReason,
     restampJob: restampLiveHeader,
+    restampTick: maybeRestampJob,
+    creditAcceptedShare,
+    rollOpenRound,
+    windowOwedRows() {
+      const out = [];
+      for (const [hex, row] of owedByNote) {
+        out.push({ noteCommit: hex, units: row.units.toString() });
+      }
+      out.sort((a, b) => (a.noteCommit < b.noteCommit ? -1 : a.noteCommit > b.noteCommit ? 1 : 0));
+      return out;
+    },
+    sealFoundShare,
+    whenShareProofs,
+    get lag1Shares() { return lag1Shares; },
+    get deferredShares() { return deferredShares; },
+    get openShares() { return openShares; },
+    get lastJob() { return lastJob; },
     watchTipStall,
     sweepIdle: sweepIdleMiners,
     get pendingPayout() { return pendingPayout; },

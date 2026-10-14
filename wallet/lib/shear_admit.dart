@@ -1,8 +1,10 @@
 import 'dart:typed_data';
 
-import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
+
+/// Shown when a send is attempted. The v3 prove stays off until FS-1.
+const String kErrSendUnavailable = 'send unavailable until FS-1';
 
 final admitXDst = utf8Bytes('shear-admit-x-v1');
 final admitHpDst = utf8Bytes('shear-admit-Hp');
@@ -60,10 +62,39 @@ Element admitPubFromBase(Element B, Map<String, dynamic> note) {
 Uint8List admitBaseBytes(Uint8List spendSeed) =>
     pointBytes(admitPub(admitBaseScalar(spendSeed)));
 
+/// Canonical non-identity Ristretto255 point, or null.
+Element? canonicalNonIdentity(Uint8List? raw) {
+  if (raw == null || raw.length != 32) return null;
+  try {
+    final p = Element.newElement();
+    p.setCanonicalBytes(raw);
+    final back = pointBytes(p);
+    if (back.length != 32) return null;
+    for (var i = 0; i < 32; i++) {
+      if (back[i] != raw[i]) return null;
+    }
+    if (elementEq(p, ristrettoZero())) return null;
+    return p;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// N-1. The shear-fs1 leaf predicate: admitPub, commit, and Hp(admitPub)
+/// each decode to a non-identity point. A wallet credits a note only after this.
+bool noteIsFs1Leaf(Uint8List? admitPub, Uint8List? commit) {
+  if (canonicalNonIdentity(admitPub) == null) return false;
+  if (canonicalNonIdentity(commit) == null) return false;
+  if (admitPub == null) return false;
+  final hp = hashToRistretto(admitPub, admitHpDst);
+  return !elementEq(hp, ristrettoZero());
+}
+
 Map<String, dynamic> attachAdmitPub(
   Map<String, dynamic> vout, {
   Uint8List? spendSeed,
   Element? admitBase,
+  BigInt? v,
 }) {
   if (vout['commit'] is! Uint8List) return vout;
   var out = Map<String, dynamic>.from(vout);
@@ -77,7 +108,7 @@ Map<String, dynamic> attachAdmitPub(
       out['admitPub'] = pointBytes(admitPub(randomScalar()));
     }
   }
-  if (admitBase != null) out = wrapNoteBlind(out, admitBase);
+  if (admitBase != null) out = wrapNoteBlind(out, admitBase, v: v);
   return out;
 }
 
@@ -98,6 +129,8 @@ bool _eq(Uint8List a, Uint8List b) {
   return true;
 }
 
+/// Closed until FS-1. The wallet has no spend prover to call.
+/// A missing helper used to surface as admit_native_required.
 Map<String, dynamic> proveFlowSpend(
   Map<String, dynamic> tx, {
   required Uint8List spendSeed,
@@ -105,20 +138,5 @@ Map<String, dynamic> proveFlowSpend(
   required List<Uint8List> pubs,
   List<Uint8List>? commits,
 }) {
-  final index = fluxsetIndexOf(pubs, spendSeed, spentNote);
-  if (index < 0) throw StateError('not_in_fluxset');
-  final cs = commits ?? const <Uint8List>[];
-  if (cs.length != pubs.length) throw StateError('admit_native_required');
-  final proof = nativeProveFlowSpend(
-    spendSeed: spendSeed,
-    spentNote: spentNote,
-    pubs: pubs,
-    commits: cs,
-  );
-  if (proof == null || proof['v'] != 2 || proof['r'] != null) {
-    throw StateError('admit_native_required');
-  }
-  tx['admit_proof'] = proof;
-  tx['spendTag'] = proof['spendTag'];
-  return tx;
+  throw StateError(kErrSendUnavailable);
 }

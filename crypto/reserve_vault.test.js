@@ -37,6 +37,7 @@ import {
   lockTx,
   voteTx,
   withdrawTx,
+  reserveAction,
   VOTE_INCREASE,
   VOTE_DECREASE,
   VOTE_HOLD,
@@ -46,6 +47,7 @@ import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, GENESIS_BPS, interestNanos } from './reserve_oracle.js';
 import { extraMint } from './mint.js';
+import { verifySealedNote } from './note.js';
 
 const DAY = 86_400_000;
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -301,6 +303,7 @@ describe('Reserve Solidity is Shear-only copy', () => {
     assert.match(src, /shear-testnet-v6/);
     assert.match(src, /shear-testnet-v8/);
     assert.match(src, /shear-testnet-v11/);
+    assert.match(src, /shear-testnet-v12/);
     assert.match(src, /shear-v1/);
     assert.match(src, /shear-reserve-v1/);
     assert.match(src, /400/);
@@ -403,15 +406,13 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(enacted.ok, true);
     assert.equal(enacted.delta, 1);
     assert.equal(state.epochBps, GENESIS_BPS);
-    assert.equal(state.nextEpochBps, GENESIS_BPS);
     assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + RESERVE_EPOCH_MS + 1 }).ok, false);
     state.oracle.annualBps = 9999;
     deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: t0 + RESERVE_EPOCH_MS + 2 });
     assert.equal(state.currentEpoch, 2);
     assert.equal(state.bonusEnacted, false);
     assert.equal(state.epochBps, GENESIS_BPS);
-    assert.equal(state.freeze.source, 'bundle-trim-10');
-    assert.equal(state.freeze.sourceCount, 14);
+    assert.equal(state.sealedObserve ?? null, null);
   });
 
   it('first vote lands; second same portal same epoch is vote_locked and piles stay', () => {
@@ -631,6 +632,9 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const state = emptyVault();
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     const due = interestNanos(PI_SHE_NANOS, state.epochBps);
+    const early = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due, id: 'early-clock' });
+    assert.equal(verifyReservePayout(state, early, t0 + 1000).ok, false);
+    assert.equal(verifyReservePayout(state, early, t0 + 1000).reason, 'epoch_open');
     const end = t0 + RESERVE_EPOCH_MS;
     const openTx = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due, id: 'early' });
     openTx.nowMs = end + 30 * DAY;
@@ -644,12 +648,10 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       Date.now = realNow;
     }
     const fat = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due + NANOS_PER_SHE, id: 'fat' });
-    fat.nowMs = t0;
     const over = verifyReservePayout(state, fat, end);
     assert.equal(over.ok, false);
     assert.equal(over.reason, 'over_mint');
     const okTx = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due, id: 'ok' });
-    okTx.nowMs = t0;
     assert.equal(verifyReservePayout(state, okTx, end).ok, true);
     assert.equal(verifyReservePayout(state, okTx, t0 + 1000).reason, 'epoch_open');
     observeRate({ state, annualBps: 9000, nowMs: t0 + DAY });
@@ -670,6 +672,63 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const view = publicVaultView(state, t0 + DAY);
     assert.ok(view.vaultNanos >= view.totalLockedNanos);
     assert.equal(view.accruingNanos, rw.accrued);
+    assert.equal(view.reserveMintedNanos, undefined);
+    assert.equal(view.reserveClaimableNanos, due);
+  });
+
+  it('a withdraw note that opens to more than the public amount is rejected', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const honest = PI_SHE_NANOS + 10;
+    const tx = withdrawTx({ from: a, to: a, nanos: honest, id: 'open-more' });
+    const fat = withdrawTx({ from: a, to: a, nanos: honest + 1, id: 'open-more-note' });
+    tx.vout = fat.vout;
+    tx.nanos = honest;
+    const act = reserveAction(tx);
+    assert.equal(act.kind, 'withdraw');
+    assert.equal(act.nanos, honest);
+    assert.equal(act.opened, false);
+    assert.equal(verifySealedNote(tx.vout[0], honest + 1), true);
+    assert.equal(verifySealedNote(tx.vout[0], act.nanos), false);
+    const ok = reserveAction(withdrawTx({ from: a, to: a, nanos: honest, id: 'open-ok' }));
+    assert.equal(ok.opened, true);
+    assert.equal(ok.nanos, honest);
+  });
+
+  it('a sealed withdraw is one note, and a missing note or a missing kind does not open', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const n = PI_SHE_NANOS + 7;
+    const tx = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-one' });
+    assert.equal(tx.vout.length, 1);
+    assert.equal(String(tx.vout[0].kind), 'withdraw');
+    assert.equal(tx.vout[0].valueProof.v, n);
+    assert.ok(tx.vout[0].commit);
+    assert.equal(verifySealedNote(tx.vout[0], n), true);
+    assert.equal(Buffer.from(tx.vout[0].r).equals(Buffer.alloc(32)), false);
+    const act = reserveAction(tx);
+    assert.equal(act.opened, true);
+    assert.equal(act.nanos, n);
+    const zero = withdrawTx({ from: a, to: a, nanos: 0, id: 'kt10-zero' });
+    assert.equal(zero.vout[0].commit, undefined);
+    assert.equal(reserveAction(zero).opened, false);
+    const multi = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-multi' });
+    multi.vout.push(withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-multi-2' }).vout[0]);
+    assert.equal(reserveAction(multi).opened, false);
+    const bare = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-bare' });
+    delete bare.vout[0].commit;
+    delete bare.vout[0].valueProof;
+    assert.equal(reserveAction(bare).opened, false);
+    const hidden = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-kind' });
+    const stripped = { ...hidden.vout[0] };
+    delete stripped.kind;
+    hidden.vout = [stripped];
+    assert.equal(reserveAction(hidden).opened, false);
+    const beside = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-beside' });
+    beside.vout.push({ commit: beside.vout[0].commit });
+    const kept = reserveAction(beside);
+    assert.equal(kept.opened, true);
+    assert.equal(kept.nanos, n);
   });
 
   it('a rate far from the previous freeze is adopted in full when an epoch opens', () => {

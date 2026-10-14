@@ -13,21 +13,26 @@ import {
   GENESIS_BITS_PACKED,
   bitsForBlock,
 } from '../../crypto/asert.js';
-import { unitsForShare, findShare, dest20OfShare, verifyShareBatch } from '../../crypto/share_batch.js';
+import { unitsForShare, findShare, dest20OfShare, verifyShareBatch, nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { roundActualHashes } from '../../pool/src/hash_credit.js';
 import { hashesCreditedForShare } from '../../pool/src/share_vardiff.js';
 import {
   buildTemplate,
-  mineTemplate,
   verifyBlock,
   GENESIS_PREV,
   coinbaseTx,
   digestTx,
   hashBonusByMiner,
 } from '../src/chain.js';
+import { mineHeaderParallel, mineLaneCount } from './hash_bonus_mine_pool.js';
+import { shareSlotRoot } from '../../crypto/pack.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { applyMinerSelfRate } from '../../pool/src/pool.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
+
+// Same ShearHash-v3 digest as light. Eight difficulty-17 mines need the dataset.
+setHashBackend('jit-full');
 
 function destMiner() {
   const id = newIdentity();
@@ -40,8 +45,9 @@ function childBits(parent, now) {
 }
 
 function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
+  // Same 3_000_000 nonce cap, split across the cores on this machine.
+  const found = mineHeaderParallel(tpl.header, tpl.bits, 3_000_000);
+  assert.ok(found && found.block, `pow lanes=${mineLaneCount()}`);
   return {
     header: found.header,
     txs: tpl.txs,
@@ -58,10 +64,12 @@ describe('hash bonus unit never zero', () => {
   it('hashBonusByMiner never applies a zero unit', () => {
     const dest = destMiner();
     const unit = 2 ** SHARE_FLOOR_BITS;
-    const zero = hashBonusByMiner([], 0, [{ dest, nonce: 1n, lz: SHARE_FLOOR_BITS }]);
+    // Credit reads the nonce high byte. A bare nonce 1 has byte 0 and is dropped.
+    const nonce = nonceWithShareTarget(1n, SHARE_FLOOR_BITS);
+    const zero = hashBonusByMiner([], 0, [{ dest, nonce, lz: SHARE_FLOOR_BITS }]);
     assert.equal(zero.get(dest), unit * HASH_BONUS_NANOS_FLOOR);
     assert.ok(zero.get(dest) > 0);
-    const neg = hashBonusByMiner([], -9, [{ dest, nonce: 1n, lz: SHARE_FLOOR_BITS }]);
+    const neg = hashBonusByMiner([], -9, [{ dest, nonce, lz: SHARE_FLOOR_BITS }]);
     assert.equal(neg.get(dest), unit * HASH_BONUS_NANOS_FLOOR);
   });
 });
@@ -71,6 +79,15 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   let parent;
   let okP;
   let share;
+
+  // Select stamps share bits, then slots only a named job. The parent header is that job.
+  function onJob(row) {
+    return { ...row, verifiedHeader: Buffer.from(parent.header) };
+  }
+
+  function parentView() {
+    return { ...parent, hash: okP.hash, header: parent.header, height: 1 };
+  }
 
   // One real parent + one real floor share. Three independent findShare
   // walks at SHARE_FLOOR_BITS blow the 600s file budget under load.
@@ -118,15 +135,15 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
-      prevBlock: { ...parent, hash: okP.hash, header: parent.header },
+      prevBlock: parentView(),
       height: 2,
       miner: dest,
       bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
-      shareBatch: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
+      shareBatch: [onJob({ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz })],
     });
     const child = mine(childTpl);
-    const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
+    const got = verifyBlock(child, parentView());
     assert.equal(got.ok, true, got.reason);
     const hashV = child.txs[0].vout.filter((o) => o.kind === 'hash');
     assert.equal(hashV.length, 1);
@@ -146,12 +163,12 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
   it('rejects a third-party pool that restamps hasher dest on a stolen nonce', () => {
     const thief = destMiner();
     assert.notEqual(thief, dest);
-    const stolen = {
+    const stolen = onJob({
       dest20: dest20OfShare({ dest: thief }),
       dest: thief,
       nonce: share.nonce,
       lz: share.lz,
-    };
+    });
     const proved = verifyShareBatch({
       parentHeader: parent.header,
       shares: [stolen],
@@ -162,7 +179,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
 
     const honest = verifyShareBatch({
       parentHeader: parent.header,
-      shares: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
+      shares: [onJob({ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz })],
       floorBits: SHARE_FLOOR_BITS,
     });
     assert.equal(honest.ok, true, honest.reason);
@@ -170,6 +187,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
+      prevBlock: parentView(),
       height: 2,
       miner: thief,
       bits: childBits(parent, 1_700_000_090_000),
@@ -177,45 +195,57 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       shareBatch: [stolen],
     });
     const child = mine(childTpl);
-    const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
+    const got = verifyBlock(child, parentView());
     assert.equal(got.ok, false);
     assert.ok(got.reason === 'share_pow' || got.reason === 'hash_bonus', got.reason);
   });
 
   it('rejects a share that misses SHARE_FLOOR_BITS', () => {
+    const bad = onJob({
+      dest20: dest20OfShare({ dest }),
+      dest,
+      nonce: 0n,
+      lz: 0,
+    });
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
+      prevBlock: parentView(),
       height: 2,
       miner: dest,
       bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
-      shareBatch: [{
-        dest20: dest20OfShare({ dest }),
-        dest,
-        nonce: 0n,
-        lz: 0,
-      }],
+      shareBatch: [],
+    });
+    // Select drops a high byte under the floor. The slot root is checked
+    // before credit, so the frame has to be committed before the mine.
+    childTpl.shareBatch = [bad];
+    childTpl.txs[0].shareSlotRoot = shareSlotRoot(childTpl.shareBatch);
+    const decoded = decodeHeader(childTpl.header);
+    childTpl.header = encodeHeader({
+      ...decoded,
+      merkleRoot: merkleRoot(childTpl.txs.map(digestTx)),
     });
     const child = mine(childTpl);
-    const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
+    const got = verifyBlock(child, parentView());
     assert.equal(got.ok, false);
-    assert.ok(got.reason === 'share_pow' || got.reason === 'hash_bonus', got.reason);
+    assert.equal(got.reason, 'share_target');
   });
 
   it('rejects duplicate nonce as dup_share', () => {
-    const row = { dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz };
+    const row = onJob({ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz });
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
+      prevBlock: parentView(),
       height: 2,
       miner: dest,
       bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
-      shareBatch: [row, row],
+      shareBatch: [row, { ...row }],
     });
     const child = mine(childTpl);
-    const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
+    const got = verifyBlock(child, parentView());
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'dup_share');
   });
@@ -225,11 +255,12 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
     const childTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
+      prevBlock: parentView(),
       height: 2,
       miner: dest,
       bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
-      shareBatch: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
+      shareBatch: [onJob({ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz })],
     });
     const hashV = childTpl.txs[0].vout.find((o) => o.kind === 'hash');
     assert.ok(hashV);
@@ -241,9 +272,9 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       merkleRoot: merkleRoot(childTpl.txs.map(digestTx)),
     });
     const child = mine(childTpl);
-    const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 });
+    const got = verifyBlock(child, parentView());
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'hash_bonus');
+    assert.equal(got.reason, 'hash_owed');
   });
 
   it('samplesPruned does not skip shareBatch until 1000 confirms vs tip', async () => {
@@ -255,7 +286,7 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       miner: dest,
       bits: childBits(parent, 1_700_000_090_000),
       now: 1_700_000_090_000,
-      shareBatch: [{ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz }],
+      shareBatch: [onJob({ dest20: share.dest20, dest, nonce: share.nonce, lz: share.lz })],
     });
     const child = mine(childTpl);
     child.samplesPruned = true;
@@ -264,11 +295,12 @@ describe('proven hash bonus cap', { timeout: 600_000 }, () => {
       ...parent, hash: okP.hash, header: parent.header, height: 1,
     }, { tipHeight: 2 }));
     assert.equal(live.ok, false);
-    assert.equal(live.reason, 'hash_bonus');
+    assert.equal(live.reason, 'samples_pruned');
     const buried = await Promise.resolve(verifyBlock(child, {
       ...parent, hash: okP.hash, header: parent.header, height: 1,
     }, { tipHeight: 2 + SAMPLE_PRUNE_CONFIRMATIONS }));
-    assert.equal(buried.ok, true, buried.reason);
+    assert.equal(buried.ok, false);
+    assert.equal(buried.reason, 'samples_pruned');
   });
 });
 

@@ -1,0 +1,303 @@
+import 'dart:io';
+import 'dart:isolate';
+import 'dart:typed_data';
+
+import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_ed25519.dart';
+import 'package:shear_wallet/shear_identity.dart';
+import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_native_prove.dart';
+import 'package:shear_wallet/shear_pack.dart';
+
+/// Production hops. Run with `dart run test/t18_off_ui_check.dart`.
+/// flutter test injects FLUTTER_TEST. SHEAR_FLOW_OFF_UI=1 still takes the
+/// isolate hop. Without that flag, FLUTTER_TEST is the caller shortcut.
+
+Future<void> main() async {
+  final forceOff = Platform.environment['SHEAR_FLOW_OFF_UI'] == '1';
+  if (Platform.environment['FLUTTER_TEST'] == 'true' && !forceOff) {
+    throw StateError('FLUTTER_TEST is set; this is the caller shortcut');
+  }
+  if (debugNativeSealNote != null) {
+    throw StateError('debug prover hooks are set');
+  }
+  if (sealFlowOnCaller || debugFlowCryptoOnCaller) {
+    throw StateError('caller crypto flag is set');
+  }
+  final ui = identityHashCode(Isolate.current).toString();
+  final heavyBefore = debugUiHeavyCount;
+  final id = createIdentity();
+  final ledger = ShearLedger()..bindIdentity(id);
+  for (final memo in [false, true]) {
+    for (final amount in [1e-6, 1.0, 1000.0]) {
+      await ledger.quoteSendLevyUnits(
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        amount: amount,
+        memo: memo,
+      );
+      if (debugSendSelectStamp.isEmpty || debugSendSelectStamp == ui) {
+        throw StateError('select stamp $debugSendSelectStamp ui $ui memo $memo amount $amount');
+      }
+    }
+  }
+
+  // Exact nanos above 2^53. The SHE double is not the amount. The selector
+  // must put that digit string in the batch, off this isolate.
+  const above = '9007199254740993';
+  final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
+  // A coin the selector may spend has a sealed commit, a note commit, and
+  // an opening. An amount with only one of those stays out of the pay set.
+  ledger.rememberNote(<String, dynamic>{
+    'address': dest,
+    'dest': dest,
+    'nanos': above,
+    'commit': Uint8List(32)..[0] = 11,
+    'noteCommit': Uint8List(32)..[0] = 21,
+    'r': Uint8List(32)..[0] = 31,
+  });
+  ledger.rememberNote(<String, dynamic>{
+    'address': dest,
+    'dest': dest,
+    'nanos': '100000000000',
+    'commit': Uint8List(32)..[1] = 12,
+    'noteCommit': Uint8List(32)..[1] = 22,
+    'r': Uint8List(32)..[1] = 32,
+  });
+  await ledger.quoteSendLevyUnits(
+    restFrame: id.address,
+    paymentCode: id.paymentCode,
+    amount: 1,
+    nanosWire: above,
+  );
+  if (!debugSendSelectNanos.contains(above)) {
+    throw StateError('select nanos $debugSendSelectNanos want $above dest $dest');
+  }
+  if (debugSendSelectStamp.isEmpty || debugSendSelectStamp == ui) {
+    throw StateError('exact select stamp $debugSendSelectStamp ui $ui');
+  }
+
+  // An empty output list still runs sealFlowSpendVouts on the worker.
+  Object? sealErr;
+  final sealed = await sealFlowOffUi(<String, dynamic>{
+    'spendSeed': Uint8List(32)..[0] = 3,
+    'destTo': '',
+    'src': '',
+    'vouts': <Map<String, dynamic>>[],
+  }).timeout(const Duration(seconds: 20));
+  final vouts = sealed['vouts'];
+  if (vouts is! List || vouts.isNotEmpty) {
+    throw StateError('empty seal returned $vouts');
+  }
+  if (debugSendSealStamp.isEmpty || debugSendSealStamp == ui) {
+    throw StateError('seal stamp $debugSendSealStamp ui $ui err $sealErr');
+  }
+
+  // One real output. The range blob is the node proof, checked against the
+  // commitment. Amounts cross 2^53. Each seal is capped.
+  final rangeMs = <int>[];
+  final sealedSends = <Map<String, dynamic>>[];
+  for (final nanos in <int>[0, 1, 1000, 9007199254740993]) {
+    final sw = Stopwatch()..start();
+    // A send to an empty address is a short ssa1 and is refused before the
+    // range proof. Seal to this wallet's own dest, the change path.
+    final one = await sealFlowOffUi(<String, dynamic>{
+      'spendSeed': Uint8List(32)..[0] = 4,
+      'destTo': '',
+      'src': dest,
+      'vouts': <Map<String, dynamic>>[
+        {
+          'kind': nanos == 0 ? 'dummy' : 'send',
+          'nanos': nanos,
+          'address': nanos == 0 ? '' : dest,
+        },
+      ],
+    }).timeout(const Duration(seconds: 30));
+    final outs = one['vouts'];
+    if (outs is! List || outs.length != 1) {
+      throw StateError('range outs nanos=$nanos $outs');
+    }
+    final note = Map<String, dynamic>.from(outs.single as Map);
+    final proof = note['rangeProof'];
+    final commit = note['commit'];
+    if (proof is! Uint8List || proof.length < 2 || proof[0] != 2) {
+      throw StateError('range blob nanos=$nanos');
+    }
+    if (commit is! Uint8List || commit.length != 32) {
+      throw StateError('range commit nanos=$nanos');
+    }
+    if (note['nanos'] != nanos) throw StateError('range nanos field $nanos');
+    if (debugSendSealStamp.isEmpty || debugSendSealStamp == ui) {
+      throw StateError('range stamp $debugSendSealStamp ui $ui nanos=$nanos');
+    }
+    await _rangeOpens(commit, proof, nanos);
+    if (nanos != 0) sealedSends.add(note);
+    rangeMs.add(sw.elapsedMilliseconds);
+  }
+
+  Object? proveErr;
+  try {
+    await proveFlowOffUi(<String, dynamic>{
+      'vin': <Map<String, dynamic>>[
+        {'commit': Uint8List(32), 'r': Uint8List(32)},
+      ],
+      'vout': <Map<String, dynamic>>[],
+      'spendSeed': Uint8List(32)..[0] = 9,
+      'spentNote': <String, dynamic>{
+        'kind': 'pot',
+        'commit': Uint8List(32)..[0] = 1,
+        'noteCommit': Uint8List(32)..[0] = 2,
+        'r': Uint8List(32)..[0] = 3,
+      },
+      'pubs': <Uint8List>[Uint8List(32)..[0] = 4],
+      'commits': <Uint8List>[Uint8List(32)..[0] = 5],
+    }).timeout(const Duration(seconds: 30));
+    throw StateError('prove accepted a pub that is not the note');
+  } on StateError catch (e) {
+    proveErr = e.message;
+    if (e.message != kErrSendUnavailable) rethrow;
+  }
+  if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {
+    throw StateError('prove stamp $debugSendProveStamp ui $ui err $proveErr');
+  }
+
+  // The sealed note is still a range opening. Membership prove is closed.
+  var closed = 0;
+  final flowSeed = Uint8List(32)..[0] = 4;
+  for (final note in sealedSends) {
+    final pub = note['admitPub'];
+    final commit = note['commit'];
+    final nc = note['noteCommit'];
+    final opening = note['r'];
+    if (pub is! Uint8List || pub.length != 32) {
+      throw StateError('admit pub nanos=${note['nanos']}');
+    }
+    if (commit is! Uint8List || nc is! Uint8List || opening is! Uint8List) {
+      throw StateError('spend fields nanos=${note['nanos']}');
+    }
+    try {
+      await proveFlowOffUi(<String, dynamic>{
+        'vin': <Map<String, dynamic>>[
+          {'commit': commit, 'r': opening},
+        ],
+        'vout': <Map<String, dynamic>>[],
+        'spendSeed': flowSeed,
+        'spentNote': <String, dynamic>{
+          'kind': note['kind'],
+          'commit': commit,
+          'noteCommit': nc,
+          'r': opening,
+        },
+        'pubs': <Uint8List>[pub],
+        'commits': <Uint8List>[commit],
+      }).timeout(const Duration(seconds: 30));
+      throw StateError('spend proved nanos=${note['nanos']}');
+    } on StateError catch (e) {
+      if (e.message != kErrSendUnavailable) rethrow;
+      closed += 1;
+    }
+    if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {
+      throw StateError('spend stamp $debugSendProveStamp ui $ui nanos=${note['nanos']}');
+    }
+  }
+  if (closed != sealedSends.length || closed == 0) {
+    throw StateError('spend closed $closed');
+  }
+
+  final seed = Uint8List(32)..[0] = 7;
+  for (final n in [0, 1, 32, 64]) {
+    final msg = Uint8List(n);
+    for (var i = 0; i < n; i++) {
+      msg[i] = (i + 1) & 0xff;
+    }
+    final signed = await signSpendOffUi(<String, dynamic>{
+      'spendSeed': seed,
+      'message': msg,
+    });
+    final sig = signed['sig'];
+    final pub = signed['pub'];
+    if (sig is! Uint8List || pub is! Uint8List) throw StateError('sign bytes');
+    if (!ed25519Verify(pub, msg, sig)) throw StateError('sign verify len $n');
+    if (debugSendSignStamp.isEmpty || debugSendSignStamp == ui) {
+      throw StateError('sign stamp $debugSendSignStamp ui $ui len $n');
+    }
+  }
+  final packed = spendMessage(
+    from: id.address,
+    vout: const <Map<String, dynamic>>[],
+    kind: 'send',
+    vin: const <Map<String, dynamic>>[],
+  );
+  final packedSig = await signSpendOffUi(<String, dynamic>{
+    'spendSeed': seed,
+    'message': packed,
+  });
+  final packedBytes = packedSig['sig'];
+  final packedPub = packedSig['pub'];
+  if (packedBytes is! Uint8List || packedPub is! Uint8List) throw StateError('packed sign');
+  if (!ed25519Verify(packedPub, packed, packedBytes)) throw StateError('packed verify');
+  if (debugSendSignStamp == ui) throw StateError('packed sign on caller');
+
+  final shared = Uint8List(32)..[31] = 11;
+  final stealth = await signSpendOffUi(<String, dynamic>{
+    'spendSeed': seed,
+    'message': packed,
+    'shared': shared,
+  });
+  final stealthSig = stealth['sig'];
+  if (stealthSig is! Uint8List || stealthSig.length != 64) throw StateError('stealth len');
+  if (_same(stealthSig, packedBytes)) throw StateError('stealth matched plain');
+  if (debugSendSignStamp.isEmpty || debugSendSignStamp == ui) {
+    throw StateError('stealth stamp $debugSendSignStamp');
+  }
+  if (debugUiHeavyCount != heavyBefore) {
+    throw StateError('ui heavy ${debugUiHeavyCount - heavyBefore}');
+  }
+  stdout.writeln(
+    'T18_OFF_UI pass select=$debugSendSelectStamp seal=$debugSendSealStamp '
+    'prove=$debugSendProveStamp sign=$debugSendSignStamp ui=$ui '
+    'sealErr=$sealErr proveErr=$proveErr rangeMs=${rangeMs.join(',')} '
+    'proveClosed=$closed '
+    'selectNanos=${debugSendSelectNanos.join(',')}',
+  );
+}
+
+Future<void> _rangeOpens(Uint8List commit, Uint8List proof, int nanos) async {
+  final script = File('test/t18_range_verify.mjs');
+  if (!script.existsSync()) {
+    throw StateError('missing ${script.absolute.path}');
+  }
+  final tmp = File(
+    '${Directory.systemTemp.path}/t18-range-${DateTime.now().microsecondsSinceEpoch}.json',
+  );
+  tmp.writeAsStringSync(
+    '{"commit":"${_hex(commit)}","proof":"${_hex(proof)}"}',
+    flush: true,
+  );
+  try {
+    final result = await Process.run(
+      'node',
+      [script.absolute.path, tmp.absolute.path],
+    );
+    final out = result.stdout.toString();
+    final err = result.stderr.toString();
+    if (result.exitCode != 0 || !out.contains('ok')) {
+      throw StateError(
+        'range verify nanos=$nanos exit=${result.exitCode} out=$out err=$err',
+      );
+    }
+  } finally {
+    if (tmp.existsSync()) tmp.deleteSync();
+  }
+}
+
+String _hex(Uint8List b) =>
+    b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+bool _same(Uint8List a, Uint8List b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}

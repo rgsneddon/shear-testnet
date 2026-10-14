@@ -4,19 +4,116 @@
  * Shares are not in the mempool.
  */
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
-import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes } from './levy.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange } from './dummy.js';
-import { admit_verify } from './admit.js';
-import { asU8, verifyRange } from './note.js';
-import { sealedVinLinkField } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound } from './spend.js';
+import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceipt } from './dummy.js';
+import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
+import { txBudget } from './block_budget.js';
+import { bLeafAskRejected } from './clearing.js';
+import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField } from './spend.js';
+import { receiptAdmitRejected } from './admit.js';
+import { txNoteRuleRejected } from './n1.js';
+import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
+import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
+import { v3BucketProofRejected } from './fs1_send_gate.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
 export const MEMPOOL_KIND_B_SPEND = 'b-spend';
 
+/**
+ * Openings and blinds a held tx never keeps. With r or t, C names its amount
+ * by trial; the wire form already drops them, and the pool row matches it.
+ */
+export const MEMPOOL_SECRET_KEYS = Object.freeze([
+  'r', 't', 'open', 'destOpen', 'viewKey', 'view', 'seed', 'seedHex', 'privateKey',
+  'memoPlain', '_origCommit', '_origNoteCommit', 'ip', 'remoteAddress', 'peerIp',
+  'userAgent', 'user-agent', 'ua', 'login', 'paintedOwedNanos',
+]);
+
+function withoutSecrets(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row) || Buffer.isBuffer(row) || row instanceof Uint8Array) return row;
+  const out = { ...row };
+  for (const k of MEMPOOL_SECRET_KEYS) delete out[k];
+  if (out.valueProof && typeof out.valueProof === 'object') {
+    const vp = { ...out.valueProof };
+    delete vp.r;
+    delete vp.t;
+    out.valueProof = vp;
+  }
+  return out;
+}
+
+/** AL-6. The held row: the admitted body less openings, blinds, and client hints. */
+export function mempoolRow(tx, fee, kind) {
+  const out = withoutSecrets({ ...tx, fee, kind });
+  if (Array.isArray(tx.vin)) out.vin = tx.vin.map(withoutSecrets);
+  if (Array.isArray(tx.vout)) out.vout = tx.vout.map(withoutSecrets);
+  return out;
+}
+
 export function emptyMempool() {
-  return { txs: [], baseFee: 1, max: MEMPOOL_MAX };
+  return { txs: [], baseFee: 1, max: MEMPOOL_MAX, tagIndex: new Map() };
+}
+
+/** tag hex → tx id. One walk when the set changes, not one walk per arrival. */
+export function rememberMempoolTag(index, tx, tags) {
+  if (!index || typeof index.set !== 'function' || !tx) return;
+  const id = String(tx.id || '');
+  const list = Array.isArray(tags) ? tags : txSpendTags(tx).tags.map((tag) => tag.toString('hex'));
+  for (const th of list) {
+    const hex = String(th || '');
+    if (hex) index.set(hex, id);
+  }
+}
+
+function tagHeld(book, opts, hex, selfId) {
+  const chain = opts?.spendTags;
+  if (chain && typeof chain.has === 'function' && chain.has(hex)) return true;
+  const indexes = [book?.tagIndex, opts?.tagIndex];
+  for (const index of indexes) {
+    if (!index || typeof index.get !== 'function' || !index.has(hex)) continue;
+    const owner = String(index.get(hex) || '');
+    if (selfId && owner === selfId) continue;
+    return true;
+  }
+  return false;
+}
+
+function spentView(book, opts, selfId) {
+  return {
+    has(tag) {
+      return tagHeld(book, opts, String(tag), selfId);
+    },
+  };
+}
+
+function rootHexOf(live) {
+  try {
+    if (!live?.jroot) return '';
+    const b = Buffer.from(asU8(live.jroot));
+    return b.length === 32 ? b.toString('hex') : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A Flow send that posts a commit, a coinbase vin, an Admit proof, or a spend
+ * tag has asked to be bound. An address-only vin with none of those is not a
+ * membership attempt: the output still has to pass the range check.
+ */
+function flowPresentsMembership(tx) {
+  const vins = Array.isArray(tx?.vin) ? tx.vin : [];
+  for (let i = 0; i < vins.length; i += 1) {
+    const v = vins[i];
+    if (!v) continue;
+    if (v.coinbase || v.commit) return true;
+  }
+  if (tx?.admit_proof) return true;
+  if (Array.isArray(tx?.admit_proofs) && tx.admit_proofs.length > 0) return true;
+  if (tx?.spendTag != null && tx.spendTag !== '') return true;
+  return false;
 }
 
 export function admitMempool(pool, tx, opts = {}) {
@@ -24,27 +121,84 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
-  const kind = String(tx.kind || MEMPOOL_KIND_SEND);
-  const allowed = new Set([
-    MEMPOOL_KIND_SEND,
-    MEMPOOL_KIND_B_SPEND,
-    'claim',
-    'evm-value',
-    'pool-withdraw',
-    'vortice-register',
-    'lock',
-    'vote',
-    'withdraw',
-  ]);
-  if (!allowed.has(kind)) {
-    return { ok: false, reason: 'kind' };
+  const bucket = v3BucketProofRejected(tx);
+  if (bucket) return bucket;
+  const unsignedField = unsignedBodyField(tx);
+  if (unsignedField) return unsignedField;
+  const capped = txIoCap(tx);
+  if (!capped.ok) return capped;
+  const budget = txBudget(tx);
+  if (!budget.ok) return budget;
+  const noteRule = txNoteRuleRejected(tx);
+  if (noteRule) return noteRule;
+  const pull = custodialPullRejected(tx);
+  if (pull) return pull;
+  const earlyOpen = openingBeforeCarry(tx);
+  if (earlyOpen) return earlyOpen;
+  // A refused kind returns kind before an unbound proof, tag, or commit vin
+  // is membership. Lock, vote, and withdraw still fail that vin as
+  // admit_membership.
+  const kindGate = v12KindRejected(tx);
+  if (kindGate) return kindGate;
+  if (!flowNeedsDummy(tx) && !typedKindNeedsAdmitV3(tx)) {
+    const carry = unboundMembershipCarry(tx);
+    if (!carry.ok) return carry;
   }
+  const userCb = userCoinbaseRejected(tx);
+  if (userCb) return userCb;
+  const explicitKind = explicitTypedKindRejected(tx);
+  if (explicitKind) return explicitKind;
+  const typedVin = typedCommitRejected(tx);
+  if (typedVin) return typedVin;
+  const open = valueOpenRejected(tx);
+  if (open) return open;
+  const leafAsk = bLeafAskRejected(tx);
+  if (leafAsk) return leafAsk;
+  const kind = String(tx.kind);
+  const clockField = typedClockRejected(tx);
+  if (clockField) return clockField;
+  const receiptPub = receiptAdmitRejected(tx);
+  if (receiptPub) return receiptPub;
   for (const v of tx.vin || []) {
     const link = sealedVinLinkField(v);
     if (link) return { ok: false, reason: 'vin_link' };
   }
-  const bound = verifyPoolWithdrawBound(tx);
-  if (!bound.ok) return bound;
+  // A presented flow proof whose byte is not 3, or a byte-3 proof with no
+  // anchor, is admit_version before membership or range. A membership shape
+  // (cTilde and a spend tag, no blob) is not a versioned proof: the policy
+  // book binds it and does not call the v3 verifier. Consensus still rejects
+  // that shape as admit_version. A send with no proof still fails vin_link
+  // or range_proof on the path above and below.
+  const shapeOnly = membershipShapeOnly(tx);
+  const flowVersion = v12FlowVersionRejected(tx);
+  if (flowVersion && !shapeOnly) return flowVersion;
+  // Same v3 verifier as consensus. A bad byte-3 proof is not saved by a
+  // missing range proof. A flow that did not finish that check does not
+  // reach admit_verify.
+  const flowSelf = String(tx?.id || '');
+  const flowSpent = spentView(book, opts, flowSelf);
+  let flowV3Done = false;
+  if (flowNeedsDummy(tx) && flowPresentsProof(tx) && !shapeOnly) {
+    const flowProof = verifyFlowAdmitV3(tx, {
+      height: Number(opts.height || 0),
+      blocks: opts.blocks || [],
+      spentTags: flowSpent,
+      magic: opts.magic,
+      noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
+      fluxset: opts.fluxset && !Array.isArray(opts.fluxset) ? opts.fluxset : null,
+    });
+    if (!flowProof.ok) return flowProof;
+    if (!flowProof.skip) flowV3Done = true;
+  }
+  // Bind a presented Flow membership before the range check. An unbound
+  // commit or proof is admit_membership. An address-only vin with no proof
+  // still fails range_proof. A bound output with no range proof stays range_proof.
+  if (flowNeedsDummy(tx) && flowPresentsMembership(tx)) {
+    const earlyBound = flowInputsBound(tx);
+    if (!earlyBound.ok) return earlyBound;
+  }
+  // A forbidden HRP is named before a missing range proof, same as the block
+  // path. An ssa money output with no proof still fails range_proof.
   const fields = checkTxAddressFields(tx, { coinbase: false });
   if (!fields.ok) return { ok: false, reason: fields.reason };
   const dests = [];
@@ -62,40 +216,106 @@ export function admitMempool(pool, tx, opts = {}) {
     if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
     if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
   }
+  if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
+    for (const o of (tx.vout || [])) {
+      if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
+        return { ok: false, reason: 'range_proof' };
+      }
+      if (!verifyRange(o.commit, o.rangeProof)) return { ok: false, reason: 'range_proof' };
+    }
+  }
+  // Same sum as the block body. A missing range proof already returned.
+  // Flow sends skip this. An unbalanced lock, vote, or withdraw does not
+  // sit in a template until the block path rejects it.
+  const summed = typedCommitSum(tx);
+  if (!summed.ok) return summed;
+  // Lock, vote, and withdraw: same funding check, same drawn mint, same
+  // header-time vault trial as queue and consensus. A vault miss is marked
+  // so the template drops the tx instead of retrying it forever.
+  const selfId = String(tx?.id || '');
+  const runningTags = spentView(book, opts, selfId);
+  let fundTags = null;
+  let vaultState = null;
+  if (txIsReserveAction(tx) && ('reserveState' in opts || 'nowMs' in opts || typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null || 'reserveCarried' in opts)) {
+    const prior = (book.txs || []).filter(txIsReserveAction);
+    if (prior.length >= RESERVE_ACTION_CAP) return { ok: false, reason: 'reserve_cap' };
+    const wantFund = typeof opts.noteAtAnchor === 'function' || Array.isArray(opts.blocks) || opts.height != null;
+    if (wantFund) {
+      const verdict = opts.verifiedFund;
+      let usedVerdict = false;
+      const ownHex = txSpendTags(tx).tags.map((tag) => tag.toString('hex'));
+      if (ownHex.some((th) => runningTags.has(th))) {
+        return { ok: false, reason: 'admit_link_tag' };
+      }
+      if (verdict && verdict.ok && Array.isArray(verdict.tags) && verdict.tags.length > 0 && ownHex.length > 0) {
+        const anchored = checkAdmitAnchor(tx, Number(opts.height || 0));
+        const live = typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor(Number(verdict.anchor)) : null;
+        const liveRoot = rootHexOf(live);
+        const sameTags = verdict.tags.length === ownHex.length
+          && verdict.tags.every((th) => ownHex.includes(String(th)));
+        if (sameTags && anchored.ok && anchored.anchor != null && Number(anchored.anchor) === Number(verdict.anchor)
+            && liveRoot && liveRoot === String(verdict.root || '')) {
+          fundTags = ownHex.slice();
+          usedVerdict = true;
+        }
+      }
+      if (!usedVerdict) {
+        const noteFund = verifyTypedAdmitFunding(tx, {
+          height: Number(opts.height || 0),
+          blocks: opts.blocks || [],
+          spentTags: runningTags,
+          magic: opts.magic,
+          noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
+        });
+        if (!noteFund.ok) return noteFund;
+        if (Array.isArray(noteFund.tags)) fundTags = noteFund.tags;
+      }
+    }
+    const drawn = new Set();
+    const minted = opts.reserveState?.mintedIds || {};
+    for (const id of Object.keys(minted)) {
+      if (minted[id]) drawn.add(id);
+    }
+    for (const prev of book.txs || []) {
+      const id = reserveWithdrawMintId(prev, opts.reserveState || null);
+      if (id) drawn.add(id);
+    }
+    const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn);
+    if (!stake.ok) return { ...stake, vault: true };
+    // A carried vault already includes every accepted reserve tx. Trial only
+    // this one. A caller with no carried vault still trials the prefix once.
+    const useCarried = Object.prototype.hasOwnProperty.call(opts, 'reserveCarried');
+    const tried = trialReserveApply({
+      state: useCarried ? opts.reserveCarried : (opts.reserveState || null),
+      txs: useCarried ? [tx] : [...prior, tx],
+      nowMs: Number(opts.nowMs) || 0,
+      inPlace: useCarried && !!opts.reserveCarried,
+    });
+    if (!tried.ok) return { ok: false, reason: tried.reason || 'no_vault', vault: true };
+    vaultState = tried.state || null;
+  }
+  const bound = verifyPoolWithdrawBound(tx);
+  if (!bound.ok) return bound;
+  let boundIns = null;
+  if (flowNeedsDummy(tx)) {
+    boundIns = flowInputsBound(tx);
+    if (!boundIns.ok) return boundIns;
+  }
   if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
     return { ok: false, reason: 'dummy_outs' };
   }
   const paintedHold = opts.paintedHold === true && paintedSpendSig(tx);
-  if (moneyNeedsRange(tx)) {
-    for (const o of (tx.vout || [])) {
-      if (!o?.commit) return { ok: false, reason: 'range_proof' };
-      if (o.rangeProof === true) return { ok: false, reason: 'range_proof' };
-      if (o.rangeProof && !verifyRange(o.commit, o.rangeProof)) {
-        return { ok: false, reason: 'range_proof' };
-      }
-      if (flowNeedsDummy(tx) && !o.rangeProof && !paintedHold) return { ok: false, reason: 'range_proof' };
-    }
-  }
   if (flowNeedsDummy(tx)) {
     const live = opts.fluxset && !Array.isArray(opts.fluxset)
       ? opts.fluxset
       : { pubs: opts.fluxset || opts.pubs || [], commits: opts.commits || [] };
-    if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold) {
-      const proof = tx.admit_proof;
-      if (!proof) return { ok: false, reason: 'admit_membership' };
-      const cTilde = proof.cTilde || tx.vin?.[0]?.commit;
-      if (!admit_verify(proof, live, { cTilde, spendTag: proof.spendTag || tx.spendTag, jroot: live.jroot })) {
-        return { ok: false, reason: 'admit_membership' };
-      }
-      const tag = proof.spendTag || tx.spendTag;
-      if (!tag) return { ok: false, reason: 'admit_membership' };
-      const spent = opts.spendTags;
-      if (spent && spent.has(Buffer.from(asU8(tag)).toString('hex'))) {
-        return { ok: false, reason: 'admit_link_tag' };
-      }
+    if (Array.isArray(live.pubs) && live.pubs.length && !paintedHold && !flowV3Done) {
+      // A flow that did not finish verifyFlowAdmitV3 is not a member.
+      // The v2 verifier is not called. An empty live set and a painted hold
+      // stay on the path above.
+      return { ok: false, reason: 'admit_membership' };
     }
   }
-  const depth = mempoolDepthBytes(book.txs);
   const need = levyTaxed({ ...tx, kind }) ? levyNanos(0, { tx }) : 0;
   const paid = Math.floor(Number(tx.fee || tx.paid || 0));
   if (paid < need) return { ok: false, reason: 'levy', need, paid };
@@ -103,8 +323,12 @@ export function admitMempool(pool, tx, opts = {}) {
     return { ok: false, reason: 'max_levy', need };
   }
   if ((book.txs || []).length >= (book.max || MEMPOOL_MAX)) return { ok: false, reason: 'full' };
-  book.txs.push({ ...tx, fee: paid, kind });
-  return { ok: true, tx: book.txs[book.txs.length - 1] };
+  book.txs.push(mempoolRow(tx, paid, kind));
+  const accepted = book.txs[book.txs.length - 1];
+  const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));
+  if (!book.tagIndex) book.tagIndex = new Map();
+  rememberMempoolTag(book.tagIndex, accepted, tags);
+  return { ok: true, tx: accepted, tags, vaultState };
 }
 
 /** After header retarget, drop or mark requote if paid < new base levy. */
@@ -123,5 +347,9 @@ export function retargetMempool(pool, nextBase) {
     }
   }
   book.txs = keep;
+  if (book.tagIndex) {
+    book.tagIndex.clear();
+    for (const row of keep) rememberMempoolTag(book.tagIndex, row);
+  }
   return { ok: true, dropped, nextBaseFee: nextBaseFee(base, keep.length || 1) };
 }

@@ -146,8 +146,8 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
 
     const buried = store.blocks.find((b) => Number(b.height) === sendHeight) || store.blocks[0];
     const genesis = store.blocks[0];
-    assert.equal(genesis.samplesPruned, true);
-    assert.deepEqual(genesis.samples, []);
+    assert.notEqual(genesis.samplesPruned, true);
+    assert.ok((genesis.samples || []).length > 0);
     assert.ok(genesis.txs[0].vout.some((o) => o.kind === 'pot'));
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.ok(buried.txs.slice(1).some((t) => t.id === 'send-forever'));
@@ -156,9 +156,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     assert.equal(fs.existsSync(path.join(segDir, 'seg-000000.bin')), true);
     const epochs = readChainSegments(segDir);
     assert.ok(epochs.length >= 1);
-    assert.equal(epochs[0].samplesPruned, true);
-    assert.deepEqual(epochs[0].bLeaves, []);
-    assert.equal(Array.isArray(epochs[0].samples) ? epochs[0].samples.length : 0, 0);
+    assert.equal(epochs[0].samplesPruned, false);
     assert.ok(epochs[0].txs[0].vout.some((o) => o.kind === 'pot'));
     const sendEpoch = epochs.find((e) => (e.txs || []).some((t) => t.id === 'send-forever'));
     assert.ok(sendEpoch, 'send-forever stays in the pruned chainbin');
@@ -166,10 +164,12 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     const buriedBin = verifyBlock({
       ...epochs[0],
       samples: [],
+      shareBatch: [],
       samplesPruned: true,
       height: epochs[0].height || 1,
     }, null, { tipHeight: SAMPLE_PRUNE_CONFIRMATIONS + 1, trustedPowHash: epochs[0].hash, skipSharePow: true });
-    assert.equal(buriedBin.ok, true, buriedBin.reason);
+    assert.equal(buriedBin.ok, false);
+    assert.equal(buriedBin.reason, 'samples_pruned');
 
     const histAlice = reconstructOwner(store, destA);
     const histBob = reconstructOwner(store, destB);

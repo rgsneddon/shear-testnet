@@ -20,6 +20,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
@@ -33,7 +34,9 @@ jobs:
         run: |
           flutter config --enable-linux-desktop
           flutter pub get
-          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+          cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
+          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
       - name: Bundle libsodium and zip linux + arch
         env:
           PIN: ${{ inputs.pin }}
