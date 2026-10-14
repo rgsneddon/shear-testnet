@@ -287,14 +287,18 @@ export const RESERVE_FEE_FIRST = 1;
  * Selene, 38 wide (fcmps LAYER_ONE_LEN); layer two is Helios, 18 wide
  * (LAYER_TWO_LEN); DEPTH layers. The leaf is O || I || C on Ed25519,
  * FS1_LEAF_BYTES long, with I = E(Hp(admitPub)) under FS1_HP_DST
- * (crypto/fs1_leaf.js, shear-fs1 src/leaf.rs). The bucket arity 32 and
- * shear-admit-leaf-v2 are retired from the fingerprint.
+ * (crypto/fs1_leaf.js, shear-fs1 src/leaf.rs). The cycle is Selene then
+ * Helios (shear-fs1 ShearCurves: C1 = Selene, C2 = Helios). The bucket arity
+ * 32, shear-admit-leaf-v2, and the Pasta cycle are retired from the fingerprint.
  */
 export const FS1_LAYER_ONE_LEN = 38;
 export const FS1_LAYER_TWO_LEN = 18;
 export const FS1_DEPTH = 7;
 export const FS1_LEAF_LEN = 96;
 export const FS1_LEAF_HP_DST = 'shear-admit-Hp';
+export const FS1_CYCLE_C1 = 'selene';
+export const FS1_CYCLE_C2 = 'helios';
+export const ADMIT_CYCLE_ID = `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`;
 export const ADMIT_ARITY_ID = `fs1-selene${FS1_LAYER_ONE_LEN}-helios${FS1_LAYER_TWO_LEN}-d${FS1_DEPTH}`;
 export const ADMIT_LEAF_ID = `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DST}`;
 
@@ -396,7 +400,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ADMIT=ADMITv3',
     'N1=admit-note-point',
     'RANGE=packed-bit',
-    'ADMIT_CYCLE=pallas-vesta-pasta',
+    `ADMIT_CYCLE=${ADMIT_CYCLE_ID}`,
     `ADMIT_ARITY=${ADMIT_ARITY_ID}`,
     'ADMIT_K=1',
     `ADMIT_LEAF=${ADMIT_LEAF_ID}`,

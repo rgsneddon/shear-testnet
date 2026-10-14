@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   ADMIT_ARITY_ID,
+  ADMIT_CYCLE_ID,
   ADMIT_LEAF_ID,
+  FS1_CYCLE_C1,
+  FS1_CYCLE_C2,
   FS1_DEPTH,
   FS1_LAYER_ONE_LEN,
   FS1_LAYER_TWO_LEN,
@@ -57,18 +60,29 @@ test('ADMIT_ARITY=32 and shear-admit-leaf-v2 are banned from every fingerprint',
   }
 });
 
-test('ADMIT and AMOUNT stay, and the arity and leaf are the FS-1 ones', () => {
+test('ADMIT and AMOUNT stay, and the cycle, arity and leaf are the FS-1 ones', () => {
   for (const [name, fp] of books()) {
     assert.equal(tokenValue(fp, 'ADMIT'), 'ADMITv3', name);
     assert.equal(tokenValue(fp, 'AMOUNT'), 'confidential', name);
     assert.equal(tokenValue(fp, 'ADMIT_K'), '1', name);
     assert.equal(tokenValue(fp, 'N1'), 'admit-note-point', name);
+    assert.equal(tokenValue(fp, 'ADMIT_CYCLE'), 'fs1-selene-helios', name);
     assert.equal(tokenValue(fp, 'ADMIT_ARITY'), 'fs1-selene38-helios18-d7', name);
     assert.equal(tokenValue(fp, 'ADMIT_LEAF'), 'fs1-ed25519-OIC96-Hp-shear-admit-Hp', name);
     assert.equal(/fcmp/i.test(fp), false, name);
   }
+  assert.equal(ADMIT_CYCLE_ID, 'fs1-selene-helios');
   assert.equal(ADMIT_ARITY_ID, 'fs1-selene38-helios18-d7');
   assert.equal(ADMIT_LEAF_ID, 'fs1-ed25519-OIC96-Hp-shear-admit-Hp');
+});
+
+test('Pasta names are banned from every fingerprint', () => {
+  for (const [name, fp] of books()) {
+    assert.equal(tokenValue(fp, 'ADMIT_CYCLE'), `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`, name);
+    for (const pasta of ['pallas', 'vesta', 'pasta']) {
+      assert.equal(new RegExp(pasta, 'i').test(fp), false, `${name}: ${pasta}`);
+    }
+  }
 });
 
 test('the FS-1 fingerprint parameters match the tree crate', () => {
@@ -83,6 +97,11 @@ test('the FS-1 fingerprint parameters match the tree crate', () => {
   const tree = rs('shear-fs1', 'src', 'chain_tree.rs');
   assert.match(tree, /selene/);
   assert.match(tree, /helios/);
+  assert.match(membership, /type C1 = Selene;/);
+  assert.match(membership, /type C2 = Helios;/);
+  assert.equal(FS1_CYCLE_C1, 'selene');
+  assert.equal(FS1_CYCLE_C2, 'helios');
+  assert.equal(ADMIT_CYCLE_ID, `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`);
 });
 
 test('the FS-1 fingerprint leaf is the N-1 predicate', () => {
