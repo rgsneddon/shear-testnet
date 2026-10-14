@@ -3,7 +3,7 @@ import 'dart:typed_data';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
-/// Shown when a send is attempted. Bucket-32 prove stays off until FS-1.
+/// Shown when a send is attempted. The v3 prove stays off until FS-1.
 const String kErrSendUnavailable = 'send unavailable until FS-1';
 
 final admitXDst = utf8Bytes('shear-admit-x-v1');

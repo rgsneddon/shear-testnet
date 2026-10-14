@@ -353,7 +353,7 @@ Signs with the spend key (same as GUI Send).
 shear sign — sign with the spend key (never prints the key)
 
   shear sign flow --to she1…|ssa1… --amount SHE [--memo TEXT]
-      Same as `shear send`: ADMITv3 + BP+ Flow, spend-sig on the compact body.
+      Same as `shear send`. Off until the ADMITv3 full-set proof ships.
   shear sign pull --dest ssa1… --amount SHE
       EIP-712 pool-withdraw signature, then post (miner pull).
   shear sign vote --choice increase|decrease|hold

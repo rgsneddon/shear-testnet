@@ -102,7 +102,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /ssa1/);
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
-    assert.match(main, /ADMITv3/);
+    assert.match(main, /ADMITv2/);
     assert.match(main, /Continuum 0\.71/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
@@ -211,7 +211,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /amounts stay public/);
     assert.doesNotMatch(docs, /explorer reports amounts, dests/);
     assert.match(docs, /no dest, no amount/);
-    assert.match(joined, /ADMITv3/);
+    assert.match(joined, /ADMITv2/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK 2\.8/);
@@ -294,6 +294,33 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
       for (const banned of COPY_BANNED) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
     }
     assert.match(read('wallet/lib/shear_closure.dart'), /ADMITv3 full-set proof/);
+  });
+
+  it('v11 pages keep ADMITv2, and v12 copy does not call the ADMITv3 hide live', () => {
+    for (const rel of CLAIM_SURFACES) {
+      const text = read(rel);
+      if (!/shear-testnet-v1[01]\b|Continuum 0\.71/.test(text)) continue;
+      assert.doesNotMatch(text, /ADMITv3/, `${rel} is a v11 page`);
+    }
+    const v12 = [
+      'wallet/lib/main.dart',
+      'wallet/lib/shear_closure.dart',
+      'wallet/lib/shear_cli.dart',
+      'wallet/lib/shear_privacy_hop.dart',
+      'specs/law.md',
+      'specs/consensus.md',
+    ];
+    for (const rel of v12) {
+      for (const sentence of read(rel).split(/[.!?\n]/)) {
+        if (!/ADMITv3/.test(sentence)) continue;
+        if (/off until|until it ships|has not shipped|send_unavailable/.test(sentence)) continue;
+        assert.doesNotMatch(sentence, /\b(proves?|hides?|keeps?|uses?|over this book|membership over)\b/i, `${rel}: ${sentence.trim()}`);
+      }
+    }
+    for (const rel of ['team/index.html', 'team/creative/privacy-auditor.html', 'specs/admit-v2.md', 'specs/consensus.md']) {
+      const text = read(rel);
+      for (const banned of COPY_BANNED.slice(6)) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
+    }
   });
 
   it('clone and operator handoff stay on merged main, not feat/admit-v2', () => {
