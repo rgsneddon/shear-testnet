@@ -302,11 +302,11 @@ describe('v12 snap fork owed seed', () => {
       const built = freshStore(`shear-owed-len-${n}-`);
       const grew = grow(built, dest, n, 10_000 + n * 100);
       assert.equal(grew.ok, true, grew.reason);
+      built.flushBookSnap();
       const { store, ms: loadMs } = reload(built.dir);
-      assert.notEqual(store.loadMode, 'full', store.loadMode);
+      assert.equal(store.loadMode, 'snap', store.loadMode);
       assert.equal(store.owedSeedStats().forkGenesis, 0);
-      const owedLag = n <= BOOK_SNAP_EVERY || n % BOOK_SNAP_EVERY === 0 ? 0 : n % BOOK_SNAP_EVERY;
-      assert.equal(store.owedSeedStats().loadBlocks, owedLag);
+      assert.equal(store.owedSeedStats().loadBlocks, 0);
       assertCheckpoints(store);
       const before = store.owedSeedStats();
       const parent = store.blocks.length - 2;
@@ -474,8 +474,10 @@ describe('v12 snap fork owed seed', () => {
       assert.equal(sealed.ok, true, sealed.reason);
       assert.ok(built.tip().shareBatch.length >= Math.min(shape.shares, 1));
       assert.ok(built.tip().shareBatch.length > shape.shares / 2);
+      built.flushBookSnap();
       const store = reload(built.dir).store;
-      assert.notEqual(store.loadMode, 'full', store.loadMode);
+      assert.equal(store.loadMode, 'snap', store.loadMode);
+      assert.equal(store.owedSeedStats().loadBlocks, 0);
       const before = store.owedSeedStats();
       const parent = store.blocks.length - 2;
       const tipHash = Buffer.from(store.tip().hash);
@@ -501,5 +503,18 @@ describe('v12 snap fork owed seed', () => {
         wall,
       }));
     }
+  });
+
+  it('a height between snap points replays only the suffix', () => {
+    const n = BOOK_SNAP_EVERY + 16;
+    const dest = minerDest();
+    const built = freshStore('shear-owed-suffix-');
+    assert.equal(grow(built, dest, n, 130_000).ok, true);
+    const store = reload(built.dir).store;
+    assert.equal(store.loadMode, 'suffix', store.loadMode);
+    assert.equal(store.owedSeedStats().loadBlocks, n % BOOK_SNAP_EVERY);
+    assert.equal(store.owedSeedStats().forkGenesis, 0);
+    assertCheckpoints(store);
+    fullParity(built.dir, store);
   });
 });

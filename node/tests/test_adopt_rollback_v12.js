@@ -123,6 +123,7 @@ function shot(store, dir) {
     jroot: jroot ? Buffer.from(jroot).toString('hex') : '',
     anchors: store.anchorView(),
     snap: fileBytes(path.join(dir, 'book.snap')),
+    vaultSnap: fileBytes(path.join(dir, 'vault.snap')),
     vault: fileBytes(path.join(dir, 'reserve.json')),
   };
 }
@@ -165,6 +166,7 @@ describe('v12 adopt rolls back a throw after publish', () => {
         assert.equal(after.jroot, before.jroot);
         assert.deepEqual(after.anchors, before.anchors);
         assert.equal(sameBytes(after.snap, before.snap), true);
+        assert.equal(sameBytes(after.vaultSnap, before.vaultSnap), true);
         assert.equal(sameBytes(after.vault, before.vault), true);
       };
 

@@ -217,6 +217,25 @@ export function appendChainBin(path, block) {
   return chunk;
 }
 
+/** Packed record bodies, or null when the file is missing, torn, or not a segment. */
+export function segmentRecordBodies(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  let buf;
+  try { buf = fs.readFileSync(filePath); } catch { return null; }
+  if (buf.length < MAGIC.length || !buf.subarray(0, MAGIC.length).equals(MAGIC)) return null;
+  const bodies = [];
+  let o = MAGIC.length;
+  while (o + 4 <= buf.length) {
+    const n = buf.readUInt32LE(o);
+    o += 4;
+    if (n > buf.length - o) return null;
+    bodies.push(Buffer.from(buf.subarray(o, o + n)));
+    o += n;
+  }
+  if (o !== buf.length) return null;
+  return bodies;
+}
+
 export function readChainBin(path) {
   if (!fs.existsSync(path)) return [];
   const buf = fs.readFileSync(path);

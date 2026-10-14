@@ -374,6 +374,7 @@ describe('v12 snap reload anchor rows', () => {
       assert.equal(halt, 0);
       let savedSnap = null;
       let savedVault = null;
+      let savedVaultSnap = null;
       // The saved tip is far enough behind that the depth-24 anchor is outside
       // its frontier window. A short suffix would still keep that row.
       const saveAt = tipOff - span - SPACING;
@@ -382,13 +383,15 @@ describe('v12 snap reload anchor rows', () => {
           store.flushBookSnap();
           savedSnap = fs.readFileSync(path.join(dir, 'book.snap'));
           savedVault = fs.readFileSync(path.join(dir, 'reserve.json'));
+          savedVaultSnap = fs.readFileSync(path.join(dir, 'vault.snap'));
         }
       });
       assert.equal(built.ok, true, built.reason || 'grow');
       assert.equal(live.tip().height, tipOff);
+      live.flushBookSnap();
       assert.ok(opening.note && opening.note.v > 1, 'opened pot');
       assert.equal(live.anchorView().roots, tipOff);
-      assert.ok(savedSnap && savedVault, 'suffix snap');
+      assert.ok(savedSnap && savedVault && savedVaultSnap, 'suffix snap');
 
       const offView = live.blocks.slice();
       const offEnds = windowQuantums(tipOff - 24 + 1);
@@ -399,7 +402,7 @@ describe('v12 snap reload anchor rows', () => {
       const offDir = cloneBook(dir);
       dirs.push(offDir);
       const offSnap = createStore(offDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
-      assert.notEqual(offSnap.loadMode, 'full', offSnap.loadMode);
+      assert.equal(offSnap.loadMode, 'snap', offSnap.loadMode);
       assert.equal(offSnap.anchorView().roots, tipOff, `snap roots ${offSnap.anchorView().roots}`);
       assert.equal(rootHex(offSnap), rootHex(live));
       process.stderr.write(`snap-anchor reload ${tipOff} ${(performance.now() - tReload).toFixed(0)} ms\n`);
@@ -416,6 +419,7 @@ describe('v12 snap reload anchor rows', () => {
       dirs.push(suffixDir);
       fs.writeFileSync(path.join(suffixDir, 'book.snap'), savedSnap);
       fs.writeFileSync(path.join(suffixDir, 'reserve.json'), savedVault);
+      fs.writeFileSync(path.join(suffixDir, 'vault.snap'), savedVaultSnap);
       const suffix = createStore(suffixDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
       assert.equal(suffix.loadMode, 'suffix', suffix.loadMode);
       assert.equal(suffix.tip().height, tipOff);
@@ -433,7 +437,7 @@ describe('v12 snap reload anchor rows', () => {
           const snapDir = cloneBook(dir);
           dirs.push(snapDir);
           const snap = createStore(snapDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
-          assert.notEqual(snap.loadMode, 'full', snap.loadMode);
+          assert.equal(snap.loadMode, 'snap', snap.loadMode);
           const row = snap.anchorNote(anchor);
           const liveRow = live.anchorNote(anchor);
           assert.ok(row && liveRow, `anchor ${anchor} depth ${depth}`);

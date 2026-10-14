@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { packEpochBlock } from '../../crypto/chainbin.js';
+import { pruneSamples } from '../../crypto/chronoflux.js';
 
 export const BOOK_SNAP_DOMAIN = 'booksnap1';
 const MAGIC = Buffer.from('booksnap1\0');
@@ -108,44 +109,38 @@ export function legacyFrameDigest(blocks) {
   return h.digest('hex');
 }
 
-function stableBody(block) {
-  const txs = (block?.txs || []).map((tx) => {
-    if (!tx || !tx.coinbase || !Object.prototype.hasOwnProperty.call(tx, 'samples')) return tx;
-    const { samples, ...rest } = tx;
-    void samples;
-    return rest;
-  });
-  return Buffer.from(JSON.stringify({
-    height: Number(block?.height) || 0,
-    weight: Number(block?.weight) || 0,
-    header: Buffer.from(block?.header || Buffer.alloc(0)).toString('hex'),
-    hash: Buffer.from(block?.hash || Buffer.alloc(0)).toString('hex'),
-    rootA: Buffer.from(block?.rootA || Buffer.alloc(32)).toString('hex'),
-    rootB: Buffer.from(block?.rootB || Buffer.alloc(32)).toString('hex'),
-    aLeaves: block?.aLeaves || [],
-    txs,
-    hashCredits: block?.hashCredits || [],
-  }, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
-}
+/** Combined stable-tag domain. A snap from the previous domain falls through. */
+export const STABLE_DIGEST_DOMAIN = 'bookstable2';
 
 function stableBlockTag(block) {
-  const body = stableBody(block);
+  // pruneSamples drops the sample list. Every other packed field stays,
+  // including leaves, spend ids, spill, and the share batch of a buried block.
+  const rec = packEpochBlock(pruneSamples(block));
   const h = createHash('sha256');
-  h.update('blkstable1');
-  h.update(u32(body.length));
-  h.update(body);
+  h.update('blkstable2');
+  h.update(u32(rec.length));
+  h.update(rec);
   return h.digest();
 }
 
 /**
- * Identity of the sealed block, ignoring fields pruneSamples drops.
- * A snap can stay valid after a later burial rewrites share bytes.
+ * Identity of the sealed block after samples are dropped.
+ * A later burial keeps this digest. Share bytes that are still on an
+ * unpruned block are bound by the snap's per-block body tags.
  */
 export function stableDigest(blocks) {
   const h = createHash('sha256');
-  h.update('bookstable1');
+  h.update(STABLE_DIGEST_DOMAIN);
   for (const block of Array.isArray(blocks) ? blocks : []) h.update(stableBlockTag(block));
   return h.digest('hex');
+}
+
+/** Raw segment record body. Not a repack, so a torn share frame still mismatches. */
+export function unprunedBodyTag(buf) {
+  const h = createHash('sha256');
+  h.update('blkbody1');
+  h.update(buf);
+  return h.digest();
 }
 
 export { blockFrameTag, stableBlockTag };
@@ -293,6 +288,18 @@ export function encodeBookSnap(state, key) {
         const stable = hex32(state.stableDigest);
         if (!stable) throw new Error('snap_bind');
         parts.push(u32(1), stable);
+        if (Array.isArray(state.unprunedBodies)) {
+          const rows = state.unprunedBodies;
+          parts.push(u32(rows.length));
+          let prev = -1;
+          for (const row of rows) {
+            const index = Number(row?.index);
+            const hash = bytesOf(row?.hash, 32);
+            if (!Number.isInteger(index) || index < 0 || index <= prev || !hash) throw new Error('snap_bind');
+            prev = index;
+            parts.push(u32(index), hash);
+          }
+        }
       }
     }
   }
@@ -485,6 +492,7 @@ export function decodeBookSnap(buf, key, expected = {}) {
   let anchorWindow = null;
   let anchorRoots = null;
   let stableDigestHex = '';
+  let unprunedBodies = null;
   if (o < payload.length) {
     const nsc = readU32(payload, o);
     if (!nsc) return null;
@@ -589,6 +597,23 @@ export function decodeBookSnap(buf, key, expected = {}) {
         if (!stable) return null;
         o += 32;
         stableDigestHex = Buffer.from(stable).toString('hex');
+        if (o < payload.length) {
+          const nbody = readU32(payload, o);
+          if (!nbody) return null;
+          o = nbody.o;
+          unprunedBodies = [];
+          let prev = -1;
+          for (let i = 0; i < nbody.v; i += 1) {
+            const idx = readU32(payload, o);
+            if (!idx || idx.v <= prev) return null;
+            o = idx.o;
+            const hash = take(payload, o, 32);
+            if (!hash) return null;
+            o += 32;
+            prev = idx.v;
+            unprunedBodies.push({ index: idx.v, hash: Buffer.from(hash) });
+          }
+        }
       }
     }
   }
@@ -616,6 +641,7 @@ export function decodeBookSnap(buf, key, expected = {}) {
     anchorWindow,
     anchorRoots,
     stableDigest: stableDigestHex,
+    unprunedBodies,
   };
   if (expected.rules != null && state.rules !== String(expected.rules)) return null;
   if (expected.genesisPin != null && state.genesisPin !== String(expected.genesisPin)) return null;
@@ -653,7 +679,12 @@ export function writeAtomicFile(file, raw) {
   try {
     dirfd = fs.openSync(path.dirname(path.resolve(file)), 'r');
     fs.fsyncSync(dirfd);
-  } catch { /* a directory fsync is best-effort */ } finally {
+  } catch (err) {
+    console.error(JSON.stringify({
+      event: 'snap_dir_fsync',
+      error: String(err?.message || err),
+    }));
+  } finally {
     if (dirfd != null) fs.closeSync(dirfd);
   }
 }

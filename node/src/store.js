@@ -81,10 +81,12 @@ import { createVorticeCatalog } from './vortice.js';
 import {
   writeChainBin,
   readChainBin,
+  packEpochBlock,
   appendChainBin,
   readChainSegments,
   writeChainSegments,
   segmentFileName,
+  segmentRecordBodies,
   CHAIN_SEGMENT_BLOCKS,
 } from '../../crypto/chainbin.js';
 import {
@@ -103,8 +105,10 @@ import {
   frameDigest,
   legacyFrameDigest,
   stableDigest,
+  STABLE_DIGEST_DOMAIN,
   blockFrameTag,
   stableBlockTag,
+  unprunedBodyTag,
   diskDigestFromSegments,
   readBookSnap,
   writeBookSnap,
@@ -321,6 +325,7 @@ export function createStore(dir, {
   let preFlux = null;
   let prefixHeight = 0;
   let segLive = [];
+  let unprunedLive = null;
   let snapVaultRaw = null;
   let frameTags = [];
   let frameStream = null;
@@ -526,6 +531,40 @@ export function createStore(dir, {
     segLive[idx] = { hash: createHash('sha256').update(buf), length: buf.length };
   }
 
+  function noteUnprunedBody(index, body) {
+    if (!unprunedLive || !Buffer.isBuffer(body)) return;
+    if (blocks[index]?.samplesPruned) unprunedLive.delete(index);
+    else unprunedLive.set(index, unprunedBodyTag(body));
+  }
+
+  function scanUnprunedBodies() {
+    const bodies = diskRecordBodies();
+    if (!bodies) return null;
+    const live = new Map();
+    const n = Math.min(bodies.length, blocks.length);
+    for (let i = 0; i < n; i += 1) {
+      if (blocks[i]?.samplesPruned) continue;
+      live.set(i, unprunedBodyTag(bodies[i]));
+    }
+    return live;
+  }
+
+  function unprunedBodiesForSnap() {
+    if (!unprunedLive) {
+      const built = scanUnprunedBodies();
+      if (!built) return null;
+      unprunedLive = built;
+    }
+    const rows = [];
+    for (const [index, hash] of unprunedLive) {
+      if (index < 0 || index >= blocks.length) continue;
+      if (blocks[index]?.samplesPruned) continue;
+      rows.push({ index, hash });
+    }
+    rows.sort((a, b) => a.index - b.index);
+    return rows;
+  }
+
   function chainDiskDigest() {
     if (segmented && segLive.length) {
       return diskDigestFromSegments(segLive.map((s) => ({
@@ -622,6 +661,52 @@ export function createStore(dir, {
     }
   }
 
+  function diskRecordBodies() {
+    if (segmented) {
+      const names = segmentNames();
+      const bodies = [];
+      for (let s = 0; s < names.length; s += 1) {
+        const id = /^seg-(\d+)\.bin$/.exec(names[s]);
+        if (!id || Number(id[1]) !== s) return null;
+        const got = segmentRecordBodies(path.join(segDir, names[s]));
+        if (!got) return null;
+        bodies.push(...got);
+      }
+      return bodies;
+    }
+    if (fs.existsSync(binFile)) return segmentRecordBodies(binFile);
+    return null;
+  }
+
+  function unprunedDiskOk(snap) {
+    const tags = snap?.unprunedBodies;
+    if (!Array.isArray(tags)) return false;
+    const bodies = diskRecordBodies();
+    if (!bodies) return false;
+    const want = new Map();
+    for (const row of tags) {
+      const index = Number(row?.index);
+      const hash = row?.hash;
+      if (!Number.isInteger(index) || index < 0 || want.has(index)) return false;
+      if (!Buffer.isBuffer(hash) || hash.length !== 32) return false;
+      want.set(index, hash);
+    }
+    for (let i = 0; i < snap.height; i += 1) {
+      if (blocks[i]?.samplesPruned) continue;
+      const expected = want.get(i);
+      const body = bodies[i];
+      if (!expected || !body || !expected.equals(unprunedBodyTag(body))) return false;
+    }
+    return true;
+  }
+
+  function vaultSnapBody(snap) {
+    const saved = readVaultSnap();
+    if (!saved || saved.height !== snap.height) return null;
+    if (vaultCommitment(saved.body) !== snap.vaultCommitment) return null;
+    return saved.body;
+  }
+
   function acceptBookSnap(snap) {
     if (!snap || snap.height < 1 || snap.height > blocks.length) return null;
     let tipHash;
@@ -629,21 +714,29 @@ export function createStore(dir, {
     if (tipHash.length !== 32 || !tipHash.equals(snap.tipHash)) return null;
     const gms = genesisHeaderMs(blocks);
     if (!gms || gms !== snap.genesisMs) return null;
+    // vault.snap is written after book.snap. A crash between them, or a
+    // lagged snap whose vault file does not match, replays. reserve.json
+    // is not a substitute for that file.
+    const vaultBody = vaultSnapBody(snap);
+    if (!vaultBody) return null;
+    snapVaultRaw = vaultBody;
     const vaultNow = vaultCommitmentFromFile();
-    snapVaultRaw = null;
-    const lagged = snap.height < blocks.length ? readVaultSnap() : null;
-    if (lagged && lagged.height === snap.height && vaultCommitment(lagged.body) === snap.vaultCommitment) {
-      snapVaultRaw = lagged.body;
-    } else if (!vaultNow || vaultNow !== snap.vaultCommitment) {
-      return null;
+    if (snap.height === blocks.length) {
+      if (!diskDigestMatches(snap)) return null;
+      if (!vaultNow || vaultNow !== snap.vaultCommitment) return null;
+      return snap;
     }
-    if (snap.height === blocks.length) return diskDigestMatches(snap) ? snap : null;
+    const prefix = blocks.slice(0, snap.height);
+    let stableOk = false;
     if (snap.stableDigest) {
-      try {
-        if (stableDigest(blocks.slice(0, snap.height)) === snap.stableDigest) return snap;
-      } catch { /* packed frame is the older check */ }
+      try { stableOk = stableDigest(prefix) === snap.stableDigest; } catch { stableOk = false; }
     }
-    if (prefixFrameOk(snap)) return snap;
+    const listed = Array.isArray(snap.unprunedBodies);
+    const bodiesOk = listed && unprunedDiskOk(snap);
+    // Stable tags omit samples. Unpruned share bytes are the raw record tags.
+    // A snap that lists those tags cannot skip a mismatch via the frame digest.
+    if (stableOk && bodiesOk) return snap;
+    if (prefixFrameOk(snap) && (!listed || bodiesOk)) return snap;
     return null;
   }
 
@@ -1176,7 +1269,7 @@ export function createStore(dir, {
     const end = blocks.length;
     if (!stream || at > end) {
       stream = createHash('sha256');
-      stream.update(frame ? 'bookframe2' : 'bookstable1');
+      stream.update(frame ? 'bookframe2' : STABLE_DIGEST_DOMAIN);
       at = 0;
       for (let i = ckpt.length - 1; i >= 0; i -= 1) {
         if (ckpt[i].at <= end) {
@@ -1229,6 +1322,13 @@ export function createStore(dir, {
       stableAt += 1;
       if (stableAt % 64 === 0) stableCkpt.push({ at: stableAt, hash: stableStream.copy() });
     }
+  }
+
+  // Burial rewrites one block's packed body. A burial-hold lift that puts a
+  // share batch back must call this too, so the frame and stable tags move
+  // with the segment bytes.
+  function noteReplacedBlock(index) {
+    retag(index);
   }
 
   function retag(index) {
@@ -1464,6 +1564,7 @@ export function createStore(dir, {
         diskDigest: chainDiskDigest(),
         frameDigest: frameDigestNow(),
         stableDigest: stableDigestNow(),
+        unprunedBodies: unprunedBodiesForSnap(),
         genesisMs: gms,
         vaultCommitment: commit,
         owedRows,
@@ -1497,6 +1598,7 @@ export function createStore(dir, {
     fs.rmSync(tmp, { recursive: true, force: true });
     if (fs.existsSync(binFile)) fs.renameSync(binFile, `${binFile}.legacy`);
     segmented = true;
+    unprunedLive = null;
     writeLoadSeal(diskBlocks);
   }
 
@@ -1514,9 +1616,11 @@ export function createStore(dir, {
     } else {
       fs.mkdirSync(segDir, { recursive: true });
       const idx = Math.floor((diskBlocks.length - 1) / CHAIN_SEGMENT_BLOCKS);
+      const rec = packEpochBlock(row);
       const written = appendChainBin(path.join(segDir, segmentFileName(idx)), row);
       segmented = true;
       if (written && written.length) rememberSegmentBytes(idx, written);
+      noteUnprunedBody(diskBlocks.length - 1, rec);
     }
     fs.appendFileSync(file, `${slimRow(row)}\n`);
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
@@ -1532,6 +1636,7 @@ export function createStore(dir, {
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
     segmented = true;
     loadSegLive();
+    unprunedLive = null;
     resetFrameHash();
     resetSeal();
     writeLoadSeal(blocks);
@@ -1581,7 +1686,10 @@ export function createStore(dir, {
         writeChainSegments(segDir, image, { only: dirtySegs });
         for (const idx of dirtySegs) rehashSegmentFile(idx);
       }
-      for (const i of dirtyIdx) retag(i);
+      for (const i of dirtyIdx) {
+        if (unprunedLive) unprunedLive.delete(i);
+        noteReplacedBlock(i);
+      }
       maybePublishBootstrap();
     }
     return dirtySegs.size > 0;
@@ -3763,6 +3871,7 @@ export function createStore(dir, {
       headers: new Map(headers),
       forks: new Map(forks),
       snap: fileBytes(snapFile),
+      vaultSnap: fileBytes(vaultSnapFile),
       vaultBytes: fileBytes(vaultFile),
       explorerBytes: fileBytes(explorerFile),
       policyBytes: fileBytes(policyStatePath),
@@ -3807,6 +3916,7 @@ export function createStore(dir, {
     for (const [k, v] of image.forks) forks.set(k, v);
     try { rewriteChain(); } catch { /* memory is already the pre-publish book */ }
     putFileBytes(snapFile, image.snap);
+    putFileBytes(vaultSnapFile, image.vaultSnap);
     putFileBytes(vaultFile, image.vaultBytes);
     putFileBytes(explorerFile, image.explorerBytes);
     putFileBytes(policyStatePath, image.policyBytes);
