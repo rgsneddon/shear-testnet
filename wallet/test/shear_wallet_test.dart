@@ -6974,7 +6974,7 @@ void main() {
 
   test('kWalletVersion == 0.70 and 400-day APR uses observed average bps', () {
     expect(kWalletVersion, '0.71');
-    expect(kReserveOracleDefaultBps, 264);
+    expect(kReserveOracleDefaultBps, 284);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
     final dart = File('lib/shear_reserve.dart').readAsStringSync();

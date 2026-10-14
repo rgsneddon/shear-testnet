@@ -25,7 +25,7 @@ Network: `shear-testnet-v12` (privacy-class). Previous book `shear-testnet-v11`.
 | `MAX_SHARES_PER_BLOCK` | `65536` (v11). Direct from the closed v10 cap of `8192`. The 32768 rung is cancelled. Do not soft-merge 65536 onto v10. |
 | `MAX_HASH_UNITS_PER_BLOCK` | `MAX_SHARES_PER_BLOCK * 2^SHARE_FLOOR_BITS` = `16777216`. `HASH_BONUS_NANOS` stays `1`. |
 | Interest | 400-day APR: `floor(staked * bps / 10000)`. Not × 400/365. |
-| Oracle | unweighted mean of the frozen 14-bank basket. Default **264** bps until first sealed observe. |
+| Oracle | trimmed mean of the frozen 14-bank basket (drop 2 high, 2 low). Default **284** bps. |
 | Late 99 days | idle, can vote, no interest |
 | Dest HRP | `ssa` on chain only |
 | Extra mint | `shear-reserve-v1` withdraw only, amount-bound |
@@ -62,7 +62,7 @@ RESERVE_EVM=1
 RESERVE_INTEREST=400d-bps-floor
 RESERVE_REWARD=epoch-bps-floor
 ORACLE=basket-mean-14
-RESERVE_RATE=epoch-bundle:quorum=14:genesis=264:floor=0
+RESERVE_RATE=epoch-bundle:quorum=10:genesis=284:floor=0:trim=2
 VORTEX=vort1-pin
 VORTICE_NO_MINT=1
 LEVY_CAP=0.001-SHE
@@ -118,7 +118,7 @@ Miner login is `ssa1.worker`. `she1` login is RAM-only and must resolve to an ow
 
 ## Reserve
 
-`vout.nanos = principal + floor(active * epochBps / 10000)`. Idle adds 0 reward. Epoch ended. Bonus enacted first. `epochBps` is the bundled 14-bank average, written only when the epoch opens. A vote does not set it. `observeRate`, a coinbase field, `SHEAR_ORACLE_BPS`, and `dataDir/oracle-snapshot.json` do not set it. `verifyBlock` does not read `reserve/latest.json`. This book's bundle freezes at 264 bps. There is no per-epoch step: a later bundle is adopted in full. The rate is floored at 0% so a lock never reduces principal. A non-integer rate, or a rate above 10000 bps, is implausible and leaves the previous freeze in place. Wrong nanos = `mint_amount`. `wrapMintForbidden` stays. Third-party vortice cannot mint. `gateVorticeRegister` `ok: false` fails the block. The reward is coinbase-minted. Transaction fees are not a vault balance and are not a reward source. Principal stays in the user's time-locked note.
+`vout.nanos = principal + floor(active * epochBps / 10000)`. Idle adds 0 reward. Epoch ended. Bonus enacted first. `epochBps` is the trimmed mean of the bundled 14-bank tenths, written when the epoch boundary commits it. A vote does not set it. A coinbase observe and `dataDir/oracle-snapshot.json` do not set it. `verifyBlock` does not read `reserve/latest.json`. This book's bundle freezes at 284 bps. There is no per-epoch step and no aggregate cap. A source outside −1000..+10000 tenths is excluded. Fewer than 10 fresh sources keeps the previous rate. The rate is floored at 0% so a lock never reduces principal. Wrong nanos = `mint_amount`. `wrapMintForbidden` stays. Third-party vortice cannot mint. `gateVorticeRegister` `ok: false` fails the block. The reward is coinbase-minted. Transaction fees are not a vault balance and are not a reward source. Principal stays in the user's time-locked note.
 
 Vector: staked = 1 SHE, bps = 425, interest = `4_250_000_000`.
 

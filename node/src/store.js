@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BPS, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
@@ -680,7 +680,7 @@ export function createStore(dir, {
         spentB,
         tipHeight: Number(tip()?.height || b.height),
         hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
-        committedBps: Number(reserveVault.epochBps ?? 264),
+        committedBps: Number(reserveVault.epochBps ?? GENESIS_BPS),
         reserveState: reserveVault,
         spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, prev ? prev.height : 0)),
         grandparentHeader: grandparentHeader(blocks.slice(0, i - 1)),
@@ -866,7 +866,7 @@ export function createStore(dir, {
       evmSession,
       evmHistory: blocks,
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH)),
-      committedBps: Number(reserveVault.epochBps ?? 264),
+      committedBps: Number(reserveVault.epochBps ?? GENESIS_BPS),
       reserveState: reserveVault,
       seenDigests: sealedSpendDigests(),
       mtpTimestamps: blocks.slice(-11).map((b) => {
@@ -1168,7 +1168,7 @@ export function createStore(dir, {
       evmSession: trialSession,
       evmHistory: trialSession ? [] : accepted,
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH, accepted, rows)),
-      committedBps: Number(vault?.epochBps ?? 264),
+      committedBps: Number(vault?.epochBps ?? GENESIS_BPS),
       reserveState: vault,
       offLoopPow: !!verifyOpts.offLoopPow,
       trustedPowHash: verifyOpts.trustedPowHash || null,

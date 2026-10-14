@@ -452,9 +452,10 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);
-    assert.match(fp, /RESERVE_RATE=epoch-bundle:quorum=14:genesis=264:floor=0:root=/);
-    assert.match(fp, /RESERVE_ORACLE=bundle-quorum-14:maxBps=10000:floorBps=0/);
+    assert.match(fp, /RESERVE_RATE=epoch-bundle:quorum=10:genesis=284:floor=0:trim=2:root=/);
+    assert.match(fp, /RESERVE_ORACLE=bundle-trim:banks=14:sourceQuorum=10:floorBps=0:sourceTenths=-1000\.\.10000/);
     assert.doesNotMatch(fp, /maxStep=/);
+    assert.doesNotMatch(fp, /process\.env/);
     assert.doesNotMatch(fp, /RESERVE_RATE=epoch-vote/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v7/);

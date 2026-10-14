@@ -17,6 +17,7 @@ import {
   selector,
   shearMagicBytes,
 } from './reserve_evm.js';
+import { GENESIS_BPS } from './reserve_oracle.js';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -94,7 +95,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(en.ok, true, en.reason);
     const view = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(view.liveHashBonusNanos, 2);
-    assert.equal(view.oracleBps, 264);
+    assert.equal(view.oracleBps, 284);
     assert.equal(view.bonusEnacted, true);
     const w = await callReserve(s, encodeWithdraw(destB, end));
     assert.equal(w.ok, true, w.reason);
@@ -107,11 +108,11 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.notEqual(after.votesIncrease + after.votesDecrease + after.votesHold, 0);
   });
 
-  it('constructor freezes 264; second vote is VoteLocked; mid-epoch observe does not mint', async () => {
+  it('constructor freezes the trimmed bundle; second vote is VoteLocked; mid-epoch observe does not mint', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
     const view0 = decodePublicView((await callReserve(s, encodePublicView(t0), { staticCall: true })).returnValue);
-    assert.equal(view0.oracleBps, 264);
+    assert.equal(view0.oracleBps, 284);
     const d = await callReserve(s, encodeDeposit(destA, NANOS_PER_SHE, t0));
     assert.equal(d.ok, true, d.reason);
     const rest = PI_SHE_NANOS - NANOS_PER_SHE;
@@ -125,7 +126,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const w = await callReserve(s, encodeWithdraw(destA, end));
     assert.equal(w.ok, true, w.reason);
     const paid = decodeWithdraw(w.returnValue);
-    assert.equal(paid.interest, Number((BigInt(PI_SHE_NANOS) * 264n) / 10000n));
+    assert.equal(paid.interest, Number((BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS)) / 10000n));
     const view = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(view.votesIncrease, 1);
     assert.notEqual(view.votesIncrease + view.votesDecrease + view.votesHold, 0);

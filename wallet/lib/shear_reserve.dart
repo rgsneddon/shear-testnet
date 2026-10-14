@@ -19,8 +19,8 @@ const kReserveJoinCutoffDaysMainnet = 99;
 const kReserveJoinCutoffDays = kBookMagic == 'shear-v1' ? kReserveJoinCutoffDaysMainnet : kReserveJoinCutoffDaysTestnet;
 const kReserveEpochMs = kReserveEpochDays * 86400000;
 const kReserveJoinCutoffMs = kReserveJoinCutoffDays * 86400000;
-/// Unweighted mean of all observed first-world policy rates (14 banks). 2.636% → 264 bps.
-const kReserveOracleDefaultBps = 264;
+/// Trimmed mean of the bundled policy rates (14 banks, drop 2 each side). 2.84%.
+const kReserveOracleDefaultBps = 284;
 const kBpsStepCap = 100;
 const kStaleObserveMs = 14 * 86400000;
 const kVoteIncrease = 'increase bonus';

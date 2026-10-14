@@ -10,13 +10,14 @@ pragma solidity ^0.8.20;
  * holds ≥ π, even on a first-ever lock. A portal votes once per epoch; a
  * second cast reverts VoteLocked(). At epoch end the unique plurality of
  * {increase, decrease, hold} enacts ±1 protocol unit on the live hash bonus.
- * It does not set the reserve rate. The rate is the unweighted half-up mean
- * of the attested 14-bank policy tenths (FED 3625, BOE 3750, ECB 2075,
- * BOJ 500, BOC 2750, RBA 3600, RBNZ 3000, SNB 0, RIKSBANK 2000, NORGES 4000,
- * DNBANK 1600, BOK 2500, BOI 4000, CNB 3500): 36900 tenths → 2636 → 264 bps.
- * It is written only when an epoch opens. There is no per-epoch step:
- * the freeze is that average, and a rate below 0% is floored at 0 so a
- * lock never reduces principal. The 1 SHE pot never moves. The reserve reward
+ * It does not set the reserve rate. The freeze is the trimmed mean of the
+ * attested 14-bank policy tenths (FED 3625, BOE 3750, ECB 2075, BOJ 500,
+ * BOC 2750, RBA 3600, RBNZ 3000, SNB 0, RIKSBANK 2000, NORGES 4000,
+ * DNBANK 1600, BOK 2500, BOI 4000, CNB 3500): drop 2 high and 2 low,
+ * half-up the middle 10, 2840 tenths → 284 bps, floored at 0.
+ * It is written only when an epoch opens. There is no per-epoch step and
+ * no aggregate cap. A caller cannot select the rate.
+ * The 1 SHE pot never moves. The reserve reward
  * is minted by consensus on release, only for this program id, only on the
  * active lock. Principal stays in the user's own time-locked note. This
  * contract refuses well-known foreign chain ids. The Reserve oracle is the
@@ -65,7 +66,7 @@ contract Reserve {
     uint256 public constant CUTOFF_MS = 99 * 86_400_000;
     uint256 public constant MAX_BPS = 10_000;
     uint256 public constant GENESIS_BONUS = 1;
-    uint256 public constant GENESIS_BPS = 264;
+    uint256 public constant GENESIS_BPS = 284;
     uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
     uint256 public constant REWARD_DENOM_DAYS = 400;
 
@@ -175,17 +176,67 @@ contract Reserve {
         revert RateBundled();
     }
 
-    /// Attested tenths of a basis point. Same integers as the JS bundle.
+    /// Node commit only. A caller bps that is not the recomputed bundle is BadRate.
+    function commitRate(uint256 epochIdx, uint256 bps) external onlyShear {
+        uint256 want = _bundledEpochBps();
+        if (bps != want) revert BadRate();
+        if (currentEpoch != 0 && epochIdx != currentEpoch) revert BadRate();
+        epochBps = want;
+        nextEpochBps = want;
+        annualBps = want;
+    }
+
+    function rewardNanos(uint256 active, uint256 bps) public pure returns (uint256) {
+        return (active * bps) / 10000;
+    }
+
+    function _halfUpDiv(int256 num, int256 den) internal pure returns (int256) {
+        if (den == 0) return 0;
+        int256 sign = num < 0 ? int256(-1) : int256(1);
+        uint256 an = uint256(num < 0 ? -num : num);
+        uint256 ad = uint256(den < 0 ? -den : den);
+        return sign * int256((an + ad / 2) / ad);
+    }
+
+    /// Same integers as crypto/reserve_oracle.js trimmedMeanBps. ok is false under quorum.
+    function trimmedMeanBps(int256[] memory tenths) public pure returns (bool ok, uint256 bps) {
+        int256[] memory vals = new int256[](tenths.length);
+        uint256 n = 0;
+        for (uint256 i = 0; i < tenths.length; i++) {
+            int256 t = tenths[i];
+            if (t < -1000 || t > 10000) continue;
+            vals[n] = t;
+            n++;
+        }
+        if (n < 10) return (false, 0);
+        for (uint256 i = 1; i < n; i++) {
+            int256 key = vals[i];
+            uint256 j = i;
+            while (j > 0 && vals[j - 1] > key) {
+                vals[j] = vals[j - 1];
+                j--;
+            }
+            vals[j] = key;
+        }
+        uint256 start = 2;
+        uint256 end = n - 2;
+        if (end <= start) return (false, 0);
+        int256 sum = 0;
+        for (uint256 i = start; i < end; i++) sum += vals[i];
+        int256 whole = _halfUpDiv(_halfUpDiv(sum, int256(uint256(end - start))), 10);
+        if (whole < 0) return (true, 0);
+        return (true, uint256(whole));
+    }
+
+    /// Sorted attested tenths. Drop the two lowest and two highest, half-up.
     function _bundledEpochBps() internal pure returns (uint256) {
-        uint256 sum = 3625 + 3750 + 2075 + 500 + 2750 + 3600 + 3000
-            + 0 + 2000 + 4000 + 1600 + 2500 + 4000 + 3500;
-        uint256 tenthsMean = (sum + 7) / 14;
+        uint256 sum = 1600 + 2000 + 2075 + 2500 + 2750 + 3000 + 3500 + 3600 + 3625 + 3750;
+        uint256 tenthsMean = (sum + 5) / 10;
         return (tenthsMean + 5) / 10;
     }
 
     function _applyEpochRate() internal {
         uint256 proposal = _bundledEpochBps();
-        if (proposal > MAX_BPS) return;
         epochBps = proposal;
         nextEpochBps = proposal;
         annualBps = proposal;

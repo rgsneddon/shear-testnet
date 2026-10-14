@@ -110,6 +110,24 @@ export function encodeObserveRate(bps, nowTs) {
   return concat(selector('observeRate(uint256,uint256)'), pad32(bps), pad32(nowTs));
 }
 
+export function encodeCommitRate(epochIdx, bps) {
+  return concat(selector('commitRate(uint256,uint256)'), pad32(epochIdx), pad32(bps));
+}
+
+export function encodeRewardNanos(active, bps) {
+  return concat(selector('rewardNanos(uint256,uint256)'), pad32(active), pad32(bps));
+}
+
+export function encodeTrimmedMean(tenths) {
+  const vals = Array.isArray(tenths) ? tenths : [];
+  return concat(
+    selector('trimmedMeanBps(int256[])'),
+    pad32(32),
+    pad32(vals.length),
+    ...vals.map((n) => pad32(n)),
+  );
+}
+
 export function encodePublicView(nowTs) {
   return concat(selector('publicView(uint256)'), pad32(nowTs));
 }

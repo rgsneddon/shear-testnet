@@ -137,21 +137,21 @@ describe('I2 three 4-day rollovers', () => {
 
 describe('I3 oracle anti-game', () => {
   it('sanity ceiling, stale feed, and equivocation; freeze cannot move pot', () => {
-    assert.equal(adoptObservedBps(264, 9999), 9999);
-    assert.equal(adoptObservedBps(264, RESERVE_ORACLE_MAX_BPS + 1), 264);
+    assert.equal(adoptObservedBps(284, 9999), 9999);
+    assert.equal(adoptObservedBps(284, RESERVE_ORACLE_MAX_BPS + 1), RESERVE_ORACLE_MAX_BPS + 1);
     assert.equal(freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 9999,
       observedAtMs: 1,
       nowMs: 1,
-    }), 264);
+    }), GENESIS_BPS);
     const stale = freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 9000,
       observedAtMs: 1,
       nowMs: 1 + 15 * DAY,
     });
-    assert.equal(stale, 264);
+    assert.equal(stale, GENESIS_BPS);
     const rec = makeFreezeRecord({
       epochIndex: 1,
       prevEpochBps: GENESIS_BPS,
@@ -164,7 +164,9 @@ describe('I3 oracle anti-game', () => {
     const clash = { ...rec, observationRoot: 'other-root' };
     assert.equal(verifyFreezeRecord(clash, { epochIndex: 1, prevFreeze: rec }).reason, 'freeze_equivocation');
     const over = { ...rec, epochBps: RESERVE_ORACLE_MAX_BPS + 1 };
-    assert.equal(verifyFreezeRecord(over, { epochIndex: 1 }).reason, 'freeze_bps');
+    assert.equal(verifyFreezeRecord(over, { epochIndex: 1 }).reason, 'rate_commit');
+    const neg = { ...rec, epochBps: -1 };
+    assert.equal(verifyFreezeRecord(neg, { epochIndex: 1 }).reason, 'freeze_bps');
     assert.equal(potSubsidyNanos(1), 99_000_000_000);
     assert.notEqual(rec.epochBps, potSubsidyNanos(1));
   });

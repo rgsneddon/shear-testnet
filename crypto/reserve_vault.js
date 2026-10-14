@@ -16,7 +16,6 @@ import {
   interestNanos,
   accruedNanos,
   GENESIS_BPS,
-  RESERVE_ORACLE_MAX_BPS,
   epochRateBps,
   bundleObservationRoot,
   bundledEpochBps,
@@ -421,9 +420,8 @@ function portalOf(state, destOrId) {
 }
 
 function clampBps(n) {
-  let b = Math.floor(Number(n) || 0);
-  if (b < 0) b = 0;
-  if (b > RESERVE_ORACLE_MAX_BPS) b = RESERVE_ORACLE_MAX_BPS;
+  const b = Math.floor(Number(n));
+  if (!Number.isFinite(b) || b < 0) return 0;
   return b;
 }
 
@@ -447,8 +445,9 @@ function beginEpoch(state, nowMs) {
       epochIndex: idx,
       epochBps: bps,
       prevEpochBps: prev,
+      magic,
       observationRoot: root,
-      source: 'bundle-quorum-14',
+      source: 'bundle-trim-10',
       sourceCount: ORACLE_QUORUM,
       frozenAtMs: Number(nowMs) || 0,
     };
@@ -939,7 +938,7 @@ export function verifyReservePayout(state, tx, blockTimeMs) {
   const p = state.portals?.[act.portalId];
   const principal = asNum(activeOf(p) + asBig(p.idle));
   const interest = reserveInterestNanos(activeOf(p), state.epochBps);
-  if (interest < 0 || act.nanos < principal) return { ok: false, reason: 'principal' };
+  if (interest < 0 || act.nanos < principal) return { ok: false, reason: 'principal_short' };
   if (act.nanos > principal + interest) return { ok: false, reason: 'over_mint' };
   const mintId = withdrawMintId(p.id || act.portalId, state.currentEpoch);
   if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };

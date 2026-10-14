@@ -82,11 +82,11 @@ Averaging, in integers:
 
 1. Sum the 14 tenths (this bundle: 36900).
 2. Half-up mean of tenths: `(sum + 7) / 14` = 2636.
-3. Half-up to whole basis points: `(2636 + 5) / 10` = 264.
+3. Trimmed mean: drop the two lowest and two highest tenths, half-up the middle 10, then half-up to whole bps. This bundle's middle sums to 28400 tenths → 2840 → **284** bps. Negative tenths stay in the average. The 0 floor applies only to that result.
 
-The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. There is no per-epoch step: the freeze is the observed average. The rate is floored at 0% so a lock never reduces principal. A non-integer observation, or one above 10000 bps, is implausible and leaves the previous freeze in place.
+The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. There is no per-epoch step and no aggregate cap: the freeze is the trimmed mean, then the 0 floor. A source outside −1000..+10000 tenths is excluded. Fewer than 10 fresh in-range sources leaves the previous freeze in place.
 
-A new official print enters consensus only when a software release replaces the attested integers and the fingerprint root `RESERVE_RATE=epoch-bundle:...`. Until that release every epoch freezes 264 bps.
+A new official print enters consensus only when a software release replaces the attested integers and the fingerprint root `RESERVE_RATE=epoch-bundle:...`. Until that release every epoch freezes 284 bps. A lone producer observe cannot select the rate. `oracle-snapshot.json` and `latest.json` are display only.
 
 ## Example (fixture `snapshot_a`)
 

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { potSubsidyAt, chainGenesisMs as genesisMsOf } from '../../crypto/pot_sched.js';
+import { potSubsidyAt, chainGenesisMs as genesisMsOf, vortexEpochIndex, epochDays } from '../../crypto/pot_sched.js';
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import { encodeHeader, decodeHeader, setNonce, VERSION } from '../../crypto/header.js';
@@ -49,7 +49,7 @@ import {
   stashSharePow,
   dropSharePowKeys,
 } from '../../crypto/share_batch.js';
-import { interestNanos, observeVerdict, canonicalObserve } from '../../crypto/reserve_oracle.js';
+import { interestNanos, observeVerdict, canonicalObserve, verifyRateCommit } from '../../crypto/reserve_oracle.js';
 import {
   bootReserveEvm,
   blockNeedsEvm,
@@ -202,6 +202,17 @@ export function digestTx(tx) {
   if (tx.observe) {
     const canon = canonicalObserve(tx.observe);
     const mixed = createHash('sha256').update(JSON.stringify(canon)).digest();
+    memoH = memoH
+      ? createHash('sha256').update(Buffer.from(asU8(memoH))).update(mixed).digest()
+      : mixed;
+  }
+  if (tx.rateCommit) {
+    const mixed = createHash('sha256').update(JSON.stringify({
+      epochIndex: tx.rateCommit.epochIndex,
+      epochBps: tx.rateCommit.epochBps,
+      magic: tx.rateCommit.magic,
+      attRoot: tx.rateCommit.attRoot,
+    })).digest();
     memoH = memoH
       ? createHash('sha256').update(Buffer.from(asU8(memoH))).update(mixed).digest()
       : mixed;
@@ -936,6 +947,16 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const txs = Array.isArray(block.txs) ? block.txs : [];
   if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
+  for (let oi = 0; oi < txs.length; oi += 1) {
+    for (const o of txs[oi]?.vout || []) {
+      const raw = o?.valueProof?.v != null ? o.valueProof.v : o?.nanos;
+      if (typeof raw === 'bigint' && raw < 0n) return { ok: false, reason: 'negative_mint' };
+      if (typeof raw === 'number' && raw < 0) return { ok: false, reason: 'negative_mint' };
+    }
+    const txNanos = txs[oi]?.nanos;
+    if (typeof txNanos === 'bigint' && txNanos < 0n) return { ok: false, reason: 'negative_mint' };
+    if (typeof txNanos === 'number' && txNanos < 0) return { ok: false, reason: 'negative_mint' };
+  }
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
   for (let oi = 0; oi < txs.length; oi += 1) {
@@ -943,6 +964,20 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (oi !== 0 || !txs[oi].coinbase) return { ok: false, reason: 'bad_rate' };
     const verdict = observeVerdict(txs[oi].observe);
     if (!verdict.ok) return verdict;
+  }
+  if (txs[0]?.rateCommit) {
+    const blockTimeMs = Number(decoded.timestamp);
+    const genesis = Number(genesisMs);
+    const epochIndex = genesis > 0
+      ? vortexEpochIndex({ nowMs: blockTimeMs, genesisMs: genesis, epochDays: epochDays(magic) })
+      : Math.floor(Number(txs[0].rateCommit.epochIndex) || 0);
+    const commit = verifyRateCommit(txs[0].rateCommit, {
+      prevEpochBps: committedBps ?? reserveState?.epochBps ?? GENESIS_BPS,
+      blockTimeMs,
+      epochIndex,
+      magic,
+    });
+    if (!commit.ok) return commit;
   }
   if (prev?.header) {
     let parent;

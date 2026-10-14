@@ -108,4 +108,4 @@ Proof: few KB (≤ 32768). Node RAM: tens of MB, not ~1 GB. Miss 100k → fix cy
 
 ## P0 (unchanged law, this book)
 
-`HASH_TX_LIVE=1`, 1 unit per proven floor-share lag-1, no clientHashes, no finder-only, 1 SHE pot PROP, pool 100 bps of the **pot**, ShearK job 128 bytes. Reserve lock/vote/withdraw/claim, 400-day floor APR, 14-bank oracle default 264 bps, EVM, `shear-reserve-v1`. Vortex `vort1` pin, `gateVorticeRegister`, no third-party mint.
+`HASH_TX_LIVE=1`, 1 unit per proven floor-share lag-1, no clientHashes, no finder-only, 1 SHE pot PROP, pool 100 bps of the **pot**, ShearK job 128 bytes. Reserve lock/vote/withdraw/claim, 400-day floor APR, 14-bank oracle default 284 bps, EVM, `shear-reserve-v1`. Vortex `vort1` pin, `gateVorticeRegister`, no third-party mint.

@@ -76,6 +76,7 @@ export function oracleView(vault, snapshot, nowMs = Date.now()) {
     floorBps: 0,
     mintUses: 'epochBps',
     snapshotIgnored: true,
+    displayOnly: true,
     observeCall: Buffer.from(encodeObserveRate(wouldFreezeBps, Math.floor(Number(nowMs) / 1000))).toString('hex'),
   };
 }

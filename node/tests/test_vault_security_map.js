@@ -70,11 +70,11 @@ const ABI_NAMES = [
   'SHEAR_TESTNET_V1', 'SHEAR_TESTNET_V10', 'SHEAR_TESTNET_V11', 'SHEAR_TESTNET_V12',
   'SHEAR_TESTNET_V3', 'SHEAR_TESTNET_V4', 'SHEAR_TESTNET_V5', 'SHEAR_TESTNET_V6',
   'SHEAR_TESTNET_V7', 'SHEAR_TESTNET_V8', 'SHEAR_TESTNET_V9', 'addMore', 'annualBps',
-  'bonusEnacted', 'canJoin', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
+  'bonusEnacted', 'canJoin', 'commitRate', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
   'enactedAtMs', 'enactedDelta', 'enactedDown', 'enactedHold', 'enactedLiveBonus', 'enactedUp',
   'epochBps', 'epochDaysOf', 'epochLengthMs', 'epochOpen', 'epochStart', 'liveHashBonusNanos',
   'lock', 'magic', 'nextEpochBps', 'observeRate', 'oracleAsOfMs', 'portalId', 'portalOf',
-  'publicView', 'remainingDays', 'remainingMs', 'totalLocked', 'vote', 'votesDecrease',
+  'publicView', 'remainingDays', 'remainingMs', 'rewardNanos', 'totalLocked', 'trimmedMeanBps', 'vote', 'votesDecrease',
   'votesHold', 'votesIncrease', 'withdraw',
 ];
 

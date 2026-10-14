@@ -18,7 +18,8 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
-import { bundleObservationRoot } from './reserve_oracle.js';
+import { bundleObservationRoot, GENESIS_BPS } from './reserve_oracle.js';
+export { GENESIS_BPS };
 import { HISTORICAL_TIP } from './historical_prefix.js';
 
 export const TARGET_BLOCK_INTERVAL_MS = 90_000;
@@ -295,8 +296,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `POT_PROP=${POT_PROP}`,
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
-    `RESERVE_ORACLE=bundle-quorum-14:maxBps=10000:floorBps=0`,
-    `RESERVE_RATE=epoch-bundle:quorum=14:genesis=264:floor=0:root=${bundleObservationRoot()}`,
+    `RESERVE_ORACLE=bundle-trim:banks=14:sourceQuorum=10:floorBps=0:sourceTenths=-1000..10000`,
+    `RESERVE_RATE=epoch-bundle:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=2:root=${bundleObservationRoot()}`,
     `INTEREST=${INTEREST_LAW}`,
     `RESERVE_INTEREST=${days}d-bps-floor`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
@@ -412,7 +413,6 @@ export const RESERVE_EPOCH_DAYS = EPOCH_DAYS_TESTNET;
 export const RESERVE_JOIN_CUTOFF_DAYS = 1;
 export const REWARD_DENOM_DAYS = EPOCH_DAYS_MAINNET;
 export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;
-export const GENESIS_BPS = 264;
 export const ORACLE_MAX_AGE_MS = 14 * 86_400_000;
 export const RESERVE_EPOCH_MS = RESERVE_EPOCH_DAYS * 86_400_000;
 export const RESERVE_JOIN_CUTOFF_MS = RESERVE_JOIN_CUTOFF_DAYS * 86_400_000;

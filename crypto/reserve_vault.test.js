@@ -44,7 +44,7 @@ import {
 import { compactTx } from './chronoflux.js';
 import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
-import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, interestNanos } from './reserve_oracle.js';
+import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, GENESIS_BPS, interestNanos } from './reserve_oracle.js';
 import { extraMint } from './mint.js';
 
 const DAY = 86_400_000;
@@ -361,13 +361,13 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     one.oracle.annualBps = 100;
     two.oracle.annualBps = 9000;
     assert.equal(one.epochBps, two.epochBps);
-    assert.equal(one.epochBps, 264);
+    assert.equal(one.epochBps, GENESIS_BPS);
     const w1 = withdraw({ state: one, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     const w2 = withdraw({ state: two, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(w1.ok, true);
     assert.equal(w2.ok, true);
     assert.equal(w1.interest, w2.interest);
-    assert.equal(w1.interest, interestNanos(PI_SHE_NANOS, 264));
+    assert.equal(w1.interest, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
   });
 
   it('mid-epoch observeRate(9999) does not change withdraw or preview interest', () => {
@@ -379,14 +379,14 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const before = previewWithdraw(state, a).interest;
     const saw = observeRate({ state, annualBps: 9999, nowMs: t0 + 10 * DAY });
     assert.equal(saw.ok, false);
-    assert.equal(state.oracle.annualBps, 264);
+    assert.equal(state.oracle.annualBps, GENESIS_BPS);
     state.oracle.annualBps = 9999;
-    assert.equal(state.epochBps, 264);
+    assert.equal(state.epochBps, GENESIS_BPS);
     assert.equal(previewWithdraw(state, a).interest, before);
-    assert.equal(publicVaultView(state, t0 + 10 * DAY).oracleBps, 264);
+    assert.equal(publicVaultView(state, t0 + 10 * DAY).oracleBps, GENESIS_BPS);
     const out = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(out.interest, before);
-    assert.equal(state.epochBps, 264);
+    assert.equal(state.epochBps, GENESIS_BPS);
   });
 
   it('a vote enacts the hash bonus only; the next epoch stays on the bundle', () => {
@@ -397,20 +397,20 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    assert.equal(state.epochBps, 264);
+    assert.equal(state.epochBps, GENESIS_BPS);
     assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).ok, true);
     const enacted = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(enacted.ok, true);
     assert.equal(enacted.delta, 1);
-    assert.equal(state.epochBps, 264);
-    assert.equal(state.nextEpochBps, 264);
+    assert.equal(state.epochBps, GENESIS_BPS);
+    assert.equal(state.nextEpochBps, GENESIS_BPS);
     assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + RESERVE_EPOCH_MS + 1 }).ok, false);
     state.oracle.annualBps = 9999;
     deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: t0 + RESERVE_EPOCH_MS + 2 });
     assert.equal(state.currentEpoch, 2);
     assert.equal(state.bonusEnacted, false);
-    assert.equal(state.epochBps, 264);
-    assert.equal(state.freeze.source, 'bundle-quorum-14');
+    assert.equal(state.epochBps, GENESIS_BPS);
+    assert.equal(state.freeze.source, 'bundle-trim-10');
     assert.equal(state.freeze.sourceCount, 14);
   });
 
@@ -654,7 +654,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(verifyReservePayout(state, okTx, t0 + 1000).reason, 'epoch_open');
     observeRate({ state, annualBps: 9000, nowMs: t0 + DAY });
     const rw = portalRewards(state, a, t0 + DAY);
-    assert.equal(rw.epochBps, 264);
+    assert.equal(rw.epochBps, GENESIS_BPS);
     assert.equal(rw.projected, due);
     const shear1 = extraMint({ programId: RESERVE_PROGRAM, to: alice.address, nanos: 1, kind: 'withdraw' });
     assert.equal(shear1.ok, false);
@@ -679,7 +679,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     state.epochBps = 0;
     const opened = deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: 1_700_000_000_000 });
     assert.equal(opened.ok, true, opened.reason);
-    assert.equal(state.epochBps, 264);
+    assert.equal(state.epochBps, GENESIS_BPS);
     assert.notEqual(state.epochBps, 100);
   });
 
@@ -694,7 +694,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const short = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS - 1, id: 'short' });
     const refused = verifyReservePayout(state, short, end);
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'principal');
+    assert.equal(refused.reason, 'principal_short');
     const paid = withdraw({ state, dest: a, nowMs: end });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.reward, 0);

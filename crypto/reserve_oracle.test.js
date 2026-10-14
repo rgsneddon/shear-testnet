@@ -33,15 +33,15 @@ describe('Reserve oracle', () => {
     const o = emptyOracle();
     assert.equal(o.id, RESERVE_ORACLE_ID);
     assert.equal(o.annualBps, RESERVE_ORACLE_DEFAULT_BPS);
-    assert.equal(o.annualBps, 264);
+    assert.equal(o.annualBps, GENESIS_BPS);
     assert.equal(observeRate(o, { annualBps: 250, nowMs: 10 }).reason, 'rate_bundled');
-    assert.equal(o.annualBps, 264);
+    assert.equal(o.annualBps, GENESIS_BPS);
     assert.equal(interestNanos(0, 250, 400), 0);
     const paid = interestNanos(PI_SHE_NANOS, 250, 400);
     assert.ok(paid > 0);
     assert.equal(paid, Number((BigInt(PI_SHE_NANOS) * 250n) / 10000n));
     assert.equal(observeRate(o, { annualBps: -1, nowMs: 11 }).ok, false);
-    assert.equal(o.annualBps, 264);
+    assert.equal(o.annualBps, GENESIS_BPS);
   });
 
   it('golden vector 1 SHE × 425 bps is 0.0425 SHE (fixture only)', () => {
@@ -68,11 +68,11 @@ describe('Reserve oracle', () => {
     assert.equal(accruedNanos(0, 425, 200 * day, MAGIC_MAINNET), 0);
   });
 
-  it('default bps is the unweighted average of all observed policy rates', () => {
+  it('default bps is the trimmed mean, negatives included, floored at 0', () => {
     const latest = JSON.parse(readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../reserve/latest.json'), 'utf8'));
     const avg = averagePolicyBps(latest.components);
     assert.equal(RESERVE_ORACLE_DEFAULT_BPS, avg);
-    assert.equal(GENESIS_BPS, 264);
+    assert.equal(GENESIS_BPS, 284);
     assert.equal(INTEREST_DENOM_DAYS, 400);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.notEqual(RESERVE_ORACLE_DEFAULT_BPS, 425);
@@ -85,36 +85,36 @@ describe('Reserve oracle', () => {
       annualBps: 425,
       observedAtMs: 0,
       nowMs: t0,
-    }), 264);
+    }), GENESIS_BPS);
     assert.equal(freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 425,
       observedAtMs: t0,
       nowMs: t0,
-    }), 264);
+    }), GENESIS_BPS);
     assert.equal(freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 9999,
       observedAtMs: t0,
       nowMs: t0,
       magic: MAGIC_MAINNET,
-    }), 264);
-    assert.equal(epochRateBps(0), 264);
-    assert.equal(epochRateBps(10000), 264);
-    assert.equal(epochRateBps(50), 264);
+    }), GENESIS_BPS);
+    assert.equal(epochRateBps(0), 284);
+    assert.equal(epochRateBps(10000), 284);
+    assert.equal(epochRateBps(50), 284);
   });
 
-  it('the observed average has no per-epoch step; only implausible data is refused', () => {
-    assert.equal(adoptObservedBps(264, 900), 900);
-    assert.equal(adoptObservedBps(264, 0), 0);
+  it('the observed average has no per-epoch step and no aggregate cap', () => {
+    assert.equal(adoptObservedBps(284, 900), 900);
+    assert.equal(adoptObservedBps(284, 0), 0);
     assert.equal(adoptObservedBps(0, 5000), 5000);
     assert.equal(adoptObservedBps(10000, 1), 1);
-    assert.equal(adoptObservedBps(264, 10001), 264);
-    assert.equal(adoptObservedBps(264, 1.5), 264);
-    assert.equal(adoptObservedBps(264, Number.NaN), 264);
+    assert.equal(adoptObservedBps(284, 10001), 10001);
+    assert.equal(adoptObservedBps(284, 1.5), 284);
+    assert.equal(adoptObservedBps(284, Number.NaN), 284);
     assert.equal(adoptObservedBps(500, -40), 0);
     assert.equal(issuanceBps(-40), 0);
-    assert.equal(issuanceBps(10001), 10000);
+    assert.equal(issuanceBps(10001), 10001);
   });
 
   it('the lock issuance rate is floored at 0% so principal is not reduced', () => {
@@ -136,7 +136,7 @@ describe('Reserve oracle', () => {
     assert.equal(parts.length, 14);
     const sum = parts.reduce((n, c) => n + c.tenths, 0);
     assert.equal(sum, 36900);
-    assert.equal(bundledEpochBps(), 264);
+    assert.equal(bundledEpochBps(), 284);
     assert.equal(bundleObservationRoot(), bundleObservationRoot());
     assert.equal(quorumEpochBps(parts.slice(0, 13)), null);
     assert.equal(quorumEpochBps(parts.concat(parts[0])), null);
