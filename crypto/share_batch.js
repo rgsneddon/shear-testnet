@@ -195,8 +195,8 @@ function shareQuotaKey(share) {
   return hex || `:${String(share?.nonce)}`;
 }
 
-function provenShareUnits(share) {
-  const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: false });
+function provenShareUnits(share, maxBits = null) {
+  const credit = creditBitsForShare(share, SHARE_FLOOR_BITS, { strict: false, maxBits });
   if (!credit.ok) return 0n;
   return BigInt(unitsForShare(credit.bits));
 }
@@ -249,8 +249,8 @@ function heapPop(heap) {
  * more noteCommits cannot raise the work that pile keeps. Inside a noteCommit,
  * the higher-work shares are kept.
  */
-export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK) {
-  const list = sharesAtProvenBits(unpackShareBatch(shares));
+export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK, { maxBits = null } = {}) {
+  const list = sharesAtProvenBits(unpackShareBatch(shares), maxBits);
   const limit = Math.max(0, Math.floor(Number(cap) || 0));
   if (limit <= 0) return [];
   if (list.length <= limit) return sortShares(list);
@@ -263,12 +263,12 @@ export function selectBlockShares(shares = [], cap = MAX_SHARES_PER_BLOCK) {
   const heap = [];
   for (const [key, bucket] of groups) {
     const ranked = bucket.slice().sort((a, b) => {
-      const ua = provenShareUnits(a);
-      const ub = provenShareUnits(b);
+      const ua = provenShareUnits(a, maxBits);
+      const ub = provenShareUnits(b, maxBits);
       if (ua !== ub) return ua > ub ? -1 : 1;
       return 0;
     });
-    const work = ranked.reduce((n, s) => n + provenShareUnits(s), 0n);
+    const work = ranked.reduce((n, s) => n + provenShareUnits(s, maxBits), 0n);
     heapPush(heap, { key, ranked, work, take: 0 });
   }
   const kept = [];
@@ -945,10 +945,10 @@ function liveProofForShare(share) {
 }
 
 /** Keep a share only at the nonce-byte width. A moved dest or a different cached width is dropped. */
-function sharesAtProvenBits(list) {
+function sharesAtProvenBits(list, maxBits = null) {
   const out = [];
   for (const s of list) {
-    const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: false });
+    const credit = creditBitsForShare(s, SHARE_FLOOR_BITS, { strict: false, maxBits });
     if (!credit.ok) continue;
     const proof = liveProofForShare(s);
     if (proof) {

@@ -10,7 +10,7 @@ import { GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS, asertNextBits } from '..
 import { nonceWithShareTarget, noteCommitOfShare, rememberLiveSharePow, shareWorkKey } from '../../crypto/share_batch.js';
 import { t21ShareNc } from '../../crypto/t21.js';
 import { GENESIS_PREV, buildTemplate, verifyBlock } from '../src/chain.js';
-import { planT21Round, t21LabelBook, t21LoginVoucher } from '../src/t21_template.js';
+import { assertNotEmptyHeld, planT21Round, t21LabelBook, t21LoginVoucher } from '../src/t21_template.js';
 import { t21CarryBook, withCarry } from '../src/t21_carry.js';
 
 const magic = 'shear-testnet-v12';
@@ -25,15 +25,20 @@ function lab(nc, payee, units, { count = 1, carried = false } = {}) {
 
 const ncsOf = (rows) => rows.map((l) => l.nc);
 
-describe('T21 carry: planT21Round fills slots by units and never cuts a label', () => {
+const owedRow = (nc, payee, units, since) => ({ nc, payee, units: BigInt(units), w: BigInt(units), since, owed: true });
+
+describe('T21 carry: planT21Round fills slots by units, defers in-block, and never cuts a label', () => {
   it('Sybil vouchers cannot take the payee slots from the hashers (MF-3)', () => {
     const sybils = Array.from({ length: 300 }, (_, i) => lab(`s${String(i).padStart(3, '0')}`, `sy${i}`, 1));
     const honest = [lab('h1', 'A', 1000), lab('h2', 'B', 900), lab('h3', 'C', 800)];
     const got = planT21Round({ labels: [...sybils, ...honest], payeeMax: 171 });
-    assert.deepEqual(ncsOf(got.take).slice(0, 3), ['h1', 'h2', 'h3']);
+    assert.deepEqual(ncsOf(got.pay).slice(0, 3), ['h1', 'h2', 'h3']);
     assert.equal(got.payees, 171);
-    assert.equal(got.later.length, 132);
-    assert.ok(got.later.every((l) => l.reason === 'payee_cap' && l.units === 1n));
+    // Past the cap the labels stay in the batch as deferred rows; none leaves the block.
+    assert.equal(got.defer.length, 132);
+    assert.ok(got.defer.every((l) => l.reason === 'payee_cap' && l.units === 1n));
+    assert.equal(got.later.length, 0);
+    assert.equal(got.batch.length, 303);
   });
 
   it('a payee with several labels counts its total units', () => {
@@ -41,42 +46,77 @@ describe('T21 carry: planT21Round fills slots by units and never cuts a label', 
       labels: [lab('x1', 'X', 40), lab('x2', 'X', 40), lab('y1', 'Y', 70)],
       payeeMax: 1,
     });
-    assert.deepEqual(ncsOf(got.take).sort(), ['x1', 'x2']);
-    assert.deepEqual(got.later.map((l) => [l.nc, l.reason]), [['y1', 'payee_cap']]);
+    assert.deepEqual(ncsOf(got.pay).sort(), ['x1', 'x2']);
+    assert.deepEqual(got.defer.map((l) => [l.nc, l.reason]), [['y1', 'payee_cap']]);
   });
 
-  it('units past the unit cap are deferred whole, not scaled (MF-1)', () => {
+  it('units past the budget are deferred whole in-block; past the batch cap they leave the batch (MF-1)', () => {
     const labels = [lab('a', 'A', 600), lab('b', 'B', 500), lab('c', 'C', 300), lab('d', 'D', 200)];
-    const got = planT21Round({ labels, unitMax: 1000n });
-    assert.deepEqual(ncsOf(got.take), ['a', 'c']);
-    assert.equal(got.units, 900n);
-    assert.deepEqual(got.later.map((l) => [l.nc, l.reason, l.units]), [['b', 'hash_units', 500n], ['d', 'hash_units', 200n]]);
     const budget = planT21Round({ labels, unitBudget: 800n });
-    assert.deepEqual(ncsOf(budget.take), ['a', 'd']);
-    assert.ok(budget.later.every((l) => l.reason === 'hash_budget'));
+    assert.deepEqual(ncsOf(budget.pay), ['a', 'd']);
+    assert.equal(budget.units, 800n);
+    assert.deepEqual(budget.defer.map((l) => [l.nc, l.reason, l.units]), [['b', 'hash_budget', 500n], ['c', 'hash_budget', 300n]]);
+    const pay = planT21Round({ labels, payMax: 1000n });
+    assert.deepEqual(ncsOf(pay.pay), ['a', 'c']);
+    assert.ok(pay.defer.every((l) => l.reason === 'hash_units'));
+    const batch = planT21Round({ labels, unitMax: 1000n });
+    assert.deepEqual(ncsOf(batch.batch), ['a', 'c']);
+    assert.deepEqual(batch.later.map((l) => [l.nc, l.reason, l.units]), [['b', 'hash_units', 500n], ['d', 'hash_units', 200n]]);
   });
 
   it('the share cap counts raw shares and moves a label whole', () => {
     const got = planT21Round({ labels: [lab('a', 'A', 90, { count: 3 }), lab('b', 'B', 50, { count: 2 }), lab('c', 'C', 10, { count: 1 })], shareMax: 4 });
-    assert.deepEqual(ncsOf(got.take), ['a', 'c']);
-    assert.equal(got.shares, 4);
+    assert.deepEqual(ncsOf(got.pay), ['a', 'c']);
+    assert.equal(got.shares, 2);
     assert.deepEqual(got.later.map((l) => [l.nc, l.reason]), [['b', 'share_cap']]);
   });
 
-  it('expiring carry goes before fresh shares of any size', () => {
+  it('expiring carry enters the batch before fresh shares of any size', () => {
     const got = planT21Round({
       labels: [lab('big', 'F', 10_000), lab('old', 'O', 1, { carried: true }), lab('old2', 'P', 5, { carried: true })],
       payeeMax: 2,
     });
-    assert.deepEqual(ncsOf(got.take), ['old2', 'old']);
-    assert.deepEqual(got.later.map((l) => [l.nc, l.reason]), [['big', 'payee_cap']]);
+    assert.deepEqual(ncsOf(got.pay), ['old2', 'old']);
+    assert.deepEqual(got.defer.map((l) => [l.nc, l.reason]), [['big', 'payee_cap']]);
   });
 
   it('the finder payee holds a slot before any share payee', () => {
     const got = planT21Round({ labels: [lab('a', 'A', 5), lab('b', 'B', 4)], payeeMax: 2, finderPayee: 'F' });
-    assert.deepEqual(ncsOf(got.take), ['a']);
+    assert.deepEqual(ncsOf(got.pay), ['a']);
     const own = planT21Round({ labels: [lab('a', 'A', 5), lab('f', 'F', 1)], payeeMax: 2, finderPayee: 'F' });
-    assert.deepEqual(ncsOf(own.take).sort(), ['a', 'f']);
+    assert.deepEqual(ncsOf(own.pay).sort(), ['a', 'f']);
+  });
+
+  it('owed rows are paid first, oldest first, ahead of larger fresh labels (Russell 2026-10-14)', () => {
+    const owed = [owedRow('o1', 'O', 3, 10), owedRow('o2', 'P', 2, 11)];
+    const got = planT21Round({ labels: [lab('a', 'A', 1000), lab('b', 'B', 900)], owed, payeeMax: 3 });
+    assert.deepEqual(ncsOf(got.pay), ['o1', 'o2', 'a']);
+    assert.deepEqual(got.defer.map((l) => [l.nc, l.reason]), [['b', 'payee_cap']]);
+    // An owed row that does not fit stays owed; it is not a defer row again.
+    const tight = planT21Round({ labels: [lab('a', 'A', 1000)], owed, payeeMax: 1 });
+    assert.deepEqual(ncsOf(tight.pay), ['o1']);
+    assert.deepEqual(tight.kept.map((l) => [l.nc, l.reason]), [['o2', 'payee_cap']]);
+    assert.deepEqual(ncsOf(tight.defer), ['a']);
+  });
+
+  it('defer rows past the owed list room leave the batch, last first', () => {
+    const labels = [lab('a', 'A', 9), lab('b', 'B', 8), lab('c', 'C', 7)];
+    const got = planT21Round({ labels, payeeMax: 1, owedRoom: 1 });
+    assert.deepEqual(ncsOf(got.pay), ['a']);
+    assert.deepEqual(ncsOf(got.defer), ['b']);
+    assert.deepEqual(got.later.map((l) => [l.nc, l.reason]), [['c', 'owed_cap']]);
+    assert.deepEqual(ncsOf(got.batch), ['a', 'b']);
+  });
+
+  it('a round that can pay nothing defers nothing; a payable one never publishes empty (MF-4)', () => {
+    const none = planT21Round({ labels: [lab('a', 'A', 9)], payeeMax: 0 });
+    assert.equal(none.pay.length, 0);
+    assert.equal(none.defer.length, 0);
+    assert.deepEqual(none.later.map((l) => [l.nc, l.reason]), [['a', 'payee_cap']]);
+    assert.doesNotThrow(() => assertNotEmptyHeld(none, { payeeMax: 0 }));
+    // A plan that held a payable label and paid none is a template bug.
+    const forged = { pay: [], kept: [], later: [{ ...lab('a', 'A', 9), reason: 'payee_cap' }] };
+    assert.throws(() => assertNotEmptyHeld(forged, { payeeMax: 171 }), /t21_empty_batch/);
   });
 });
 
@@ -340,5 +380,88 @@ describe('T21 carry: nothing is lost across consecutive full blocks, a restart, 
       assert.ok(labels.labelOf(t21ShareNc(magic, s.E).toString('hex')));
     }
     assert.ok(b4r.block.shareBatch.every((s) => labels.labelOf(noteCommitOfShare(s).toString('hex'))));
+  });
+});
+
+/** E hex → w for every share a coinbase pays. */
+function paidRows(block) {
+  return (block.txs[0].t21?.shares || []).map((s) => [Buffer.from(s.E).toString('hex'), BigInt(s.w)]);
+}
+
+describe('T21 deferred rows: the payee-cap overflow path loses no hash bonus (MF-2)', () => {
+  it('labels past the payee cap are deferred in-block and paid oldest-first, across a restart and a reorg', () => {
+    const dir = tmpDir('defer');
+    const labelFile = path.join(dir, 'labels.log');
+    const carryFile = path.join(dir, 't21-carry.json');
+    let labels = t21LabelBook({ magic, file: labelFile });
+    let carry = t21CarryBook({ file: carryFile });
+    const cap = { payeeMax: 2 };
+    const g = sealGenesis();
+    const eOf = (s) => labels.labelOf(noteCommitOfShare(s).toString('hex')).E.toString('hex');
+    const unitsOf = (s) => 1n << BigInt(s.shareBits);
+    const onG = [26, 25, 24, 23, 22].map((bits, i) => mineShare(labels, 60 + i, g, BigInt(500 + i), bits));
+
+    // Block 2: two payee slots. The three smaller labels are proven A leaves, deferred in t21.defer.
+    const b2 = mineChild({ parent: g, grand: null, carry, labels, fresh: onG, t21: cap });
+    assert.deepEqual(paidRows(b2.block).map(([e]) => e).sort(), onG.slice(0, 2).map(eOf).sort());
+    assert.equal(b2.block.shareBatch.length, 5);
+    assert.deepEqual(b2.tpl.t21Deferred.map((l) => l.reason), ['payee_cap', 'payee_cap', 'payee_cap']);
+    assert.deepEqual(b2.block.txs[0].t21.owed.map((o) => Buffer.from(o.E).toString('hex')), onG.slice(2).map(eOf));
+    assert.equal(b2.tpl.t21Later.length, 0);
+
+    // Block 3: the two oldest owed rows go first, ahead of two larger fresh labels, which are deferred.
+    const onB2 = [27, 26].map((bits, i) => mineShare(labels, 70 + i, b2.block, BigInt(600 + i), bits));
+    const b3 = mineChild({ parent: b2.block, grand: g, carry, labels, fresh: onB2, t21: cap });
+    assert.deepEqual(paidRows(b3.block).map(([e]) => e).sort(), onG.slice(2, 4).map(eOf).sort());
+    assert.equal(b3.tpl.t21OwedPaid.length, 2);
+    assert.deepEqual(b3.block.txs[0].t21.owed.map((o) => [Buffer.from(o.E).toString('hex'), o.since]),
+      [[eOf(onG[4]), 2], [eOf(onB2[0]), 3], [eOf(onB2[1]), 3]]);
+
+    // Restart: the label book still opens the owed rows.
+    labels = t21LabelBook({ magic, file: labelFile });
+    carry = t21CarryBook({ file: carryFile });
+
+    const b4 = mineChild({ parent: b3.block, grand: b2.block, carry, labels, fresh: [], t21: cap });
+    assert.deepEqual(paidRows(b4.block).map(([e]) => e).sort(), [eOf(onG[4]), eOf(onB2[0])].sort());
+    const b5 = mineChild({ parent: b4.block, grand: b3.block, carry, labels, fresh: [], t21: cap });
+    assert.deepEqual(paidRows(b5.block).map(([e]) => e), [eOf(onB2[1])]);
+    assert.equal(b5.block.txs[0].t21.owed, undefined);
+
+    // Every label is paid once, at its full units, and u·w is minted when it is paid.
+    const all = [...onG, ...onB2];
+    const paid = new Map();
+    for (const b of [b2, b3, b4, b5]) {
+      for (const [e, w] of paidRows(b.block)) {
+        assert.equal(paid.has(e), false);
+        paid.set(e, w);
+      }
+    }
+    assert.equal(paid.size, all.length);
+    for (const s of all) assert.equal(paid.get(eOf(s)), unitsOf(s));
+    assert.equal(carry.stats().expiredShares, 0);
+
+    // Reorg: a sibling of block 4 with room for every payee settles the whole owed list at once.
+    const b4r = mineChild({ parent: b3.block, grand: b2.block, carry, labels, fresh: [], t21: {}, n: 5 });
+    assert.deepEqual(paidRows(b4r.block).map(([e]) => e).sort(), [onG[4], ...onB2].map(eOf).sort());
+    assert.equal(b4r.block.txs[0].t21.owed, undefined);
+    const b5r = mineChild({ parent: b4r.block, grand: b3.block, carry, labels, fresh: [], t21: cap, n: 5 });
+    assert.equal(paidRows(b5r.block).length, 0);
+  });
+
+  it('a share on a label that is already owed is refused, not paid twice', () => {
+    const labels = t21LabelBook({ magic });
+    const carry = t21CarryBook();
+    const g = sealGenesis();
+    const onG = [24, 23, 22].map((bits, i) => mineShare(labels, 80 + i, g, BigInt(700 + i), bits));
+    const b2 = mineChild({ parent: g, grand: null, carry, labels, fresh: onG, t21: { payeeMax: 1 } });
+    const owedNc = noteCommitOfShare(onG[2]);
+    const again = {
+      noteCommit: owedNc, nonce: nonceWithShareTarget(800n, 21), lz: 21, shareBits: 21, creditedShareBits: 21,
+      verifiedHeader: b2.block.header,
+    };
+    rememberLiveSharePow(b2.block.header, again.nonce, { noteCommit: owedNc, shareBits: 21, lz: 21 });
+    const b3 = mineChild({ parent: b2.block, grand: g, carry, labels, fresh: [again], t21: { payeeMax: 171 } });
+    assert.deepEqual(b3.tpl.t21Refused.map((s) => s.deferReason), ['label_owed']);
+    assert.equal(paidRows(b3.block).length, 2);
   });
 });

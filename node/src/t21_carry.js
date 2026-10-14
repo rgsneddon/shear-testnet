@@ -18,7 +18,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { decodeHeader } from '../../crypto/header.js';
-import { creditBitsForShare, noteCommitOfShare, shareWorkKey, unitsForShare } from '../../crypto/share_batch.js';
+import {
+  T21_SHARE_MAX_BITS, creditBitsForShare, noteCommitOfShare, shareWorkKey, unitsForShare,
+} from '../../crypto/share_batch.js';
 import { isT21Coinbase, t21ShareNc } from '../../crypto/t21.js';
 import { asU8 } from '../../crypto/note.js';
 
@@ -41,7 +43,7 @@ function workKeyOf(share) {
 }
 
 function unitsOf(share) {
-  const c = creditBitsForShare(share, undefined, { strict: false });
+  const c = creditBitsForShare(share, undefined, { strict: false, maxBits: T21_SHARE_MAX_BITS });
   return c.ok ? BigInt(unitsForShare(c.bits)) : 0n;
 }
 

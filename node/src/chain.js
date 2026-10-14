@@ -30,7 +30,6 @@ import {
   JOIN_KIND_GENESIS,
   SHARE_FLOOR_BITS,
   MAX_SHARES_PER_BLOCK,
-  MAX_HASH_UNITS_PER_BLOCK,
   POOL_FEE_BPS,
   POOL_FEE_MAX_BPS,
   MTP_WINDOW,
@@ -50,6 +49,8 @@ import {
   noteCommitOfShare,
   accountShareUnits,
   selectBlockShares,
+  t21ShareCredit,
+  T21_SHARE_MAX_BITS,
   bindShareProofSlots,
   shareWorkKey,
   stashSharePow,
@@ -105,7 +106,7 @@ import {
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
 import {
-  isT21Coinbase, t21CbOnly, t21DigestSuffix, t21FinderOf, t21ParentId, verifyT21Coinbase,
+  isT21Coinbase, t21CbOnly, t21DigestSuffix, t21FinderOf, t21OwedOf, t21ParentId, verifyT21Coinbase,
 } from '../../crypto/t21.js';
 import { blockBudget } from '../../crypto/block_budget.js';
 import {
@@ -134,7 +135,7 @@ import {
   settleHashOwed,
   writeHashLedger,
 } from '../../crypto/hash_owed.js';
-import { CB_SHARE_MAX } from '../../crypto/t21_params.js';
+import { CB_SHARE_MAX, T21_OWED_MAX, W_HASH_MAX } from '../../crypto/t21_params.js';
 import { t21TemplateCoinbase } from './t21_template.js';
 import { buildDualTree, bindBSpend, derivedBLeaves, sameBLeaves, bLeafAskRejected } from '../../crypto/clearing.js';
 import {
@@ -399,10 +400,11 @@ export function t21PendingVaults(vault) {
 
 /**
  * The template's cb-v3 coinbase. `t21` is the pool's side: { labelOf, finder,
- * fee, bps, vault, shareMax, magic, seed }. An empty batch cannot carry the
+ * fee, bps, vault, shareMax, payeeMax, owedMax, perBlock, magic, seed }.
+ * `owedIn` is the parent coinbase's owed list. An empty batch cannot carry the
  * finder half, so fee-paying txs then wait for a round with shares.
  */
-function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKeys, height, subsidy, carryIn, hashBonusNanos, hashAcceptedSeries }) {
+function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKeys, height, subsidy, carryIn, hashBonusNanos, hashAcceptedSeries, owedIn }) {
   if (!prevHeader) throw new Error('cb_form');
   const feeOfTx = (t) => Math.max(0, Math.floor(Number(t.fee || 0)));
   const run = (body) => {
@@ -427,9 +429,12 @@ function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKey
       phi: BigInt(split.finder),
       vaults: t21PendingVaults(t21.vault),
       publicRows: split.reserve ? [sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee')] : [],
+      owedIn,
       shareMax: t21.shareMax ?? CB_SHARE_MAX,
       payeeMax: t21.payeeMax ?? null,
-      unitMax: t21.unitMax ?? MAX_HASH_UNITS_PER_BLOCK,
+      unitMax: t21.unitMax ?? W_HASH_MAX,
+      owedMax: t21.owedMax ?? T21_OWED_MAX,
+      perBlock: t21.perBlock,
       seed: t21.seed,
     });
     return { ...made, txs: body, fees };
@@ -443,8 +448,8 @@ function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKey
 }
 
 /**
- * cb-v3 share units: the retained units per note commit (the aLeaves), so Σw
- * stays under MAX_HASH_UNITS_PER_BLOCK. A buried pruned block has no batch;
+ * cb-v3 share units: the full units per note commit (the aLeaves), so Σw
+ * stays at most W_HASH_MAX. A buried pruned block has no batch;
  * its published aLeaves must rebuild the header's continuity root with the
  * block's B leaves, so W stays bound to the PoW header.
  */
@@ -1484,7 +1489,9 @@ export function buildTemplate({
   // cb-v3 caps the batch in planT21Round, label by label, and reports what waits.
   // selectBlockShares would trim it here without a trace.
   const selected = Array.isArray(shareBatch)
-    ? selectBlockShares(shareBatch, t21 ? Number.MAX_SAFE_INTEGER : MAX_SHARES_PER_BLOCK)
+    ? (t21
+      ? selectBlockShares(shareBatch, Number.MAX_SAFE_INTEGER, { maxBits: T21_SHARE_MAX_BITS })
+      : selectBlockShares(shareBatch, MAX_SHARES_PER_BLOCK))
     : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
@@ -1563,12 +1570,13 @@ export function buildTemplate({
       carryIn,
       hashBonusNanos,
       hashAcceptedSeries: series,
+      owedIn: t21OwedOf(parentCb),
     });
     cb = made.tx;
     batch = made.batch;
     txs = made.txs;
     t21Leaves = made.aLeaves;
-    t21Left = { later: made.later, expired: made.expired, unlabelled: made.unlabelled, flags: made.flags };
+    t21Left = made;
     spillBatch = [];
     fees = made.fees;
     split = splitLevy(fees);
@@ -1718,7 +1726,15 @@ export function buildTemplate({
     samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
     shareBatch: batch,
     hashSpill: spillBatch,
-    ...(t21Left ? { t21Later: t21Left.later, t21Expired: t21Left.expired, t21Unlabelled: t21Left.unlabelled, t21Flags: t21Left.flags } : {}),
+    ...(t21Left ? {
+      t21Later: t21Left.later,
+      t21Expired: t21Left.expired,
+      t21Unlabelled: t21Left.unlabelled,
+      t21Refused: t21Left.refused,
+      t21Deferred: t21Left.deferRows,
+      t21OwedPaid: t21Left.owedPaid,
+      t21Flags: t21Left.flags,
+    } : {}),
     miner,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
@@ -2476,6 +2492,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       skipPow: trustWork ? false : !!skipSharePow,
       trustWork,
       issuedJobKeys: txs[0]?.issuedJobKeys,
+      credit: t21Ok ? t21ShareCredit() : null,
     });
     if (!proved.ok) return proved;
     provedShares = proved.shares;
@@ -2629,6 +2646,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         shares: t21Shares.shares,
         hashBudget,
         prevEs,
+        owedIn: t21OwedOf(prevCb),
         vaults: t21PendingVaults(reserveState),
       },
     });

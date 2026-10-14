@@ -9,7 +9,7 @@ import {
 import { advanceHashOwed } from '../../crypto/hash_owed.js';
 import { clearLiveSharePow, nonceWithShareTarget, noteCommitOfShare, rememberLiveSharePow } from '../../crypto/share_batch.js';
 import { isT21Coinbase, t21ShareNc } from '../../crypto/t21.js';
-import { CB_SHARE_MAX } from '../../crypto/t21_params.js';
+import { CB_SHARE_MAX, W_HASH_MAX } from '../../crypto/t21_params.js';
 import { cbV3WeightFor, payeeCapLive, txVerifyWeight } from '../../crypto/block_budget.js';
 import { GENESIS_PREV, buildTemplate, verifyBlock } from '../src/chain.js';
 import { t21LabelBook, t21LoginVoucher } from '../src/t21_template.js';
@@ -135,7 +135,10 @@ describe('T21 template: buildTemplate builds a cb-v3 coinbase consensus accepts'
     assert.deepEqual(series, [8n]);
     const owed = [{ noteCommit: Buffer.alloc(32, 1), dest20: Buffer.alloc(20, 1), nanos: 1n, sinceHeight: 1 }];
     assert.equal(advanceHashOwed({ owedIn: owed, acceptedSeries: [], block }).reason, 'hash_owed');
-    const fat = { txs: [{ coinbase: true, cbForm: 'cb-v3', t21: { shares: [{ w: String(MAX_HASH_UNITS_PER_BLOCK + 1) }] } }] };
+    // cb-v3 credits full units: past the legacy 2^28 is fine, past W_HASH_MAX is not.
+    const wide = { txs: [{ coinbase: true, cbForm: 'cb-v3', t21: { shares: [{ w: String(MAX_HASH_UNITS_PER_BLOCK + 1) }] } }] };
+    assert.equal(advanceHashOwed({ owedIn: [], acceptedSeries: [], block: wide }).ok, true);
+    const fat = { txs: [{ coinbase: true, cbForm: 'cb-v3', t21: { shares: [{ w: String(W_HASH_MAX + 1n) }] } }] };
     assert.equal(advanceHashOwed({ owedIn: [], acceptedSeries: [], block: fat }).reason, 'hash_units');
   });
 
