@@ -1,0 +1,90 @@
+# Builds the gitignored arm64 libshear_admit.so with NDK r27d and fails if
+# that library is missing. The .so is not committed. Android integrity rests
+# on the APK signature from Russell's offline Continuum key.
+#
+# NDK r27d linux zip:
+#   https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+# Published checksum (SHA1 22105e410cf29afcf163760cc95522b9fb981121, 663956036 bytes):
+#   https://github.com/android/ndk/releases/tag/r27d
+# SHA256 below is sha256sum of that zip after the published SHA1 matched
+# (checked 2026-10-14). Pkg.ReleaseName in the zip is r27d.
+name: android-admit
+on:
+  push:
+    paths:
+      - '.github/workflows/android-admit.yml'
+      - 'crypto/native/**'
+      - 'crypto/android_arm64_libs.test.js'
+      - 'crypto/admit_wallet_symbols.test.js'
+      - 'wallet/android/**'
+      - 'wallet/lib/shear_admit_ffi.dart'
+      - 'wallet/lib/shear_admit_pin.dart'
+      - 'wallet/test/android_apk_test.dart'
+      - 'wallet/test/admit_lib_load_test.dart'
+  pull_request:
+    paths:
+      - '.github/workflows/android-admit.yml'
+      - 'crypto/native/**'
+      - 'crypto/android_arm64_libs.test.js'
+      - 'crypto/admit_wallet_symbols.test.js'
+      - 'wallet/android/**'
+      - 'wallet/lib/shear_admit_ffi.dart'
+      - 'wallet/lib/shear_admit_pin.dart'
+      - 'wallet/test/android_apk_test.dart'
+      - 'wallet/test/admit_lib_load_test.dart'
+permissions:
+  contents: read
+jobs:
+  arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: 1.99.0
+          targets: aarch64-linux-android
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Pin NDK r27d
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /opt
+          if [[ ! -f /opt/android-ndk-r27d/source.properties ]]; then
+            curl -fsSL -o /tmp/android-ndk-r27d-linux.zip https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+            echo "22105e410cf29afcf163760cc95522b9fb981121  /tmp/android-ndk-r27d-linux.zip" | sha1sum -c
+            echo "601246087a682d1944e1e16dd85bc6e49560fe8b6d61255be2829178c8ed15d9  /tmp/android-ndk-r27d-linux.zip" | sha256sum -c
+            sudo unzip -q /tmp/android-ndk-r27d-linux.zip -d /opt
+          fi
+          grep -q 'Pkg.ReleaseName = r27d' /opt/android-ndk-r27d/source.properties
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-r27d" >> "$GITHUB_ENV"
+          echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
+      - name: Build arm64 libshear_admit.so
+        run: bash crypto/native/build-android-arm64.sh
+      - name: nm the Android admit library
+        run: |
+          set -euo pipefail
+          so=wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_admit.so
+          nm -D "$so" > /tmp/android-admit-nm.txt
+          echo "--- nm -D $so (shear_ symbols) ---"
+          grep 'shear_' /tmp/android-admit-nm.txt
+          grep -E '[[:space:]]shear_range_prove$|[[:space:]]shear_range_verify$' /tmp/android-admit-nm.txt
+          if grep -E 'shear_admit_prove_v3|shear_admit_verify_v3' /tmp/android-admit-nm.txt; then
+            echo "v3 symbols are present in $so" >&2
+            exit 1
+          fi
+      - name: APK native library must exist and omit v3 symbols
+        run: |
+          test -f wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_admit.so
+          test -f wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_admit.so.sha256
+          node --test crypto/android_arm64_libs.test.js crypto/fs1_member_keys.test.js crypto/admit_wallet_symbols.test.js
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Flutter APK test fails when the .so is missing
+        working-directory: wallet
+        run: |
+          flutter pub get
+          flutter test test/android_apk_test.dart

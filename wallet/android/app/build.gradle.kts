@@ -49,6 +49,9 @@ android {
         }
     }
 
+    // Release APKs are signed with Russell's offline Continuum key.
+    // libshear_admit.so is gitignored and is covered by that APK signature,
+    // not by a hash inside the Dart snapshot.
     signingConfigs {
         create("release") {
             if (hasReleaseKey) {

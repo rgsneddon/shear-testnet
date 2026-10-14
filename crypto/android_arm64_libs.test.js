@@ -79,7 +79,13 @@ describe('android native libs', () => {
     assert.equal(elfArm64Page16k(elfFixture(183, 4096)), false);
   });
 
-  it('a present jniLibs tree or APK is arm64-only and pin-matched', () => {
+  it('libshear_admit.so is present for the APK and pin-matched', () => {
+    const so = path.join(root, 'wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_admit.so');
+    assert.equal(
+      fs.existsSync(so),
+      true,
+      'libshear_admit.so is gitignored. android-admit CI builds it with NDK r27c.',
+    );
     const jni = path.join(root, 'wallet/android/app/src/main/jniLibs');
     const sos = [];
     walkSos(jni, sos);
@@ -88,10 +94,6 @@ describe('android native libs', () => {
       path.join(root, 'wallet/../dist/shear-wallet-0.48-android.apk'),
     ];
     const apk = apkCandidates.find((p) => fs.existsSync(p));
-    if (sos.length === 0 && !apk) {
-      assert.equal(sos.length, 0);
-      return;
-    }
     for (const so of sos) {
       const rel = so.replaceAll('\\', '/');
       assert.equal(rel.includes('/arm64-v8a/'), true, rel);

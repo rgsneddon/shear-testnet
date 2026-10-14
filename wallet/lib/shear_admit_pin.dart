@@ -12,3 +12,10 @@ const String kShearAdmitSignId = String.fromEnvironment(
   'SHEAR_ADMIT_SIGN_ID',
   defaultValue: 'Developer ID Application: Russell Sneddon (SFCBP95595)',
 );
+
+/// Apple Team ID required by `/usr/bin/codesign --verify --strict`.
+/// Override with `--dart-define=SHEAR_ADMIT_TEAM_ID=...`.
+const String kShearAdmitTeamId = String.fromEnvironment(
+  'SHEAR_ADMIT_TEAM_ID',
+  defaultValue: 'SFCBP95595',
+);
