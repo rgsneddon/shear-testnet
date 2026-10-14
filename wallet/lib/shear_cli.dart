@@ -444,7 +444,7 @@ int _version(IOSink out, bool json) {
     },
     'mainnet': false,
   };
-  out.writeln(json ? jsonEncode(body) : 'Shear wallet $kCliVersion  magic $kBookMagic  ADMITv3  GUI+CLI');
+  out.writeln(json ? jsonEncode(body) : 'Shear wallet $kCliVersion  magic $kBookMagic  ADMITv3 (sends off)  GUI+CLI');
   return 0;
 }
 

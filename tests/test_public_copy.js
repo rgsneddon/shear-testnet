@@ -321,10 +321,14 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
       for (const banned of DOCS_BANNED) assert.doesNotMatch(read(rel), banned, `${rel} ${banned}`);
     }
     assert.match(read('wallet/lib/shear_closure.dart'), /ADMITv3 full-set proof/);
+    assert.match(read('node/src/help.js'), /validating full node \(ADMITv3, sends off\)/);
+    assert.match(read('wallet/lib/shear_cli.dart'), /ADMITv3 \(sends off\)  GUI\+CLI/);
   });
 
   it('v11 pages keep ADMITv2, and v12 copy does not call the ADMITv3 hide live', () => {
+    const V12_CODE = new Set(['node/src/help.js']);
     for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
+      if (V12_CODE.has(rel)) continue;
       const text = copyText(rel);
       if (!/shear-testnet-v1[01]\b|Continuum 0\.71/.test(text)) continue;
       assert.doesNotMatch(text, /ADMITv3/, `${rel} is a v11 page`);
@@ -334,13 +338,15 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
       'wallet/lib/shear_closure.dart',
       'wallet/lib/shear_cli.dart',
       'wallet/lib/shear_privacy_hop.dart',
+      'node/src/help.js',
+      'node/src/rpc.js',
       'specs/law.md',
       'specs/consensus.md',
     ];
     for (const rel of v12) {
       for (const sentence of read(rel).split(/[.!?\n]/)) {
         if (!/ADMITv3/.test(sentence)) continue;
-        if (/off until|until it ships|has not shipped|send_unavailable/.test(sentence)) continue;
+        if (/off until|until it ships|has not shipped|send_unavailable|sends off/.test(sentence)) continue;
         assert.doesNotMatch(sentence, /\b(proves?|hides?|keeps?|uses?|over this book|membership over)\b/i, `${rel}: ${sentence.trim()}`);
       }
     }

@@ -108,7 +108,7 @@ describe('node RPC', () => {
       assert.equal(stats.status, 200);
       assert.equal(stats.json.ok, true);
       assert.equal(stats.json.magic, 'shear-testnet-v12');
-      assert.equal(stats.json.admit, 'ADMITv3');
+      assert.equal(stats.json.admit, 'ADMITv3 (sends off)');
       assert.equal(stats.json.hashTxLive, 1);
       assert.equal(stats.json.height, 1);
       assert.ok(stats.json.header);

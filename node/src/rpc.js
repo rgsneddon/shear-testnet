@@ -229,7 +229,7 @@ function statsJson(store) {
     header: raw.toString('hex'),
     hash: t?.hash ? Buffer.from(t.hash).toString('hex') : '',
     magic: MAGIC_TESTNET,
-    admit: 'ADMITv3',
+    admit: 'ADMITv3 (sends off)',
     hashTxLive: HASH_TX_LIVE,
     jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
     bookLawFingerprint: consensusFingerprint(),
