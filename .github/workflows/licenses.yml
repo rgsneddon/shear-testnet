@@ -53,9 +53,21 @@ jobs:
         with:
           flutter-version: '3.44.6'
           channel: stable
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
       - name: Android runtime libraries match android-runtime-deps.json
         run: |
           (cd wallet && flutter pub get --enforce-lockfile)
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+          # Flutter gitignores gradlew. The SDK ships the wrapper scripts.
+          wrapper="${FLUTTER_ROOT}/bin/cache/artifacts/gradle_wrapper"
+          test -f "${wrapper}/gradlew"
+          cp -n "${wrapper}/gradlew" wallet/android/gradlew
+          chmod +x wallet/android/gradlew
+          mkdir -p wallet/android/gradle/wrapper
+          cp -n "${wrapper}/gradle/wrapper/gradle-wrapper.jar" wallet/android/gradle/wrapper/gradle-wrapper.jar
+          printf 'flutter.sdk=%s\nsdk.dir=%s\n' "${FLUTTER_ROOT}" "${ANDROID_HOME}" > wallet/android/local.properties
           (cd wallet/android && ./gradlew --no-daemon -q :app:dependencies --configuration releaseRuntimeClasspath) > /tmp/gradle-deps.txt
           python3 scripts/licenses/notices.py android-sync /tmp/gradle-deps.txt
           git diff --exit-code scripts/licenses/android-runtime-deps.json || {

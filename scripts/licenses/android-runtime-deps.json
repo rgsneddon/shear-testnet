@@ -693,28 +693,28 @@
   {
    "group": "io.flutter",
    "artifact": "arm64_v8a_release",
-   "version": "1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
+   "version": "1.0.0-83675ed27633283e7fc296c8bca22e841224c096",
    "pom_license": "NONE-DECLARED",
    "pom_holders": []
   },
   {
    "group": "io.flutter",
    "artifact": "armeabi_v7a_release",
-   "version": "1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
+   "version": "1.0.0-83675ed27633283e7fc296c8bca22e841224c096",
    "pom_license": "NONE-DECLARED",
    "pom_holders": []
   },
   {
    "group": "io.flutter",
    "artifact": "flutter_embedding_release",
-   "version": "1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
+   "version": "1.0.0-83675ed27633283e7fc296c8bca22e841224c096",
    "pom_license": "NONE-DECLARED",
    "pom_holders": []
   },
   {
    "group": "io.flutter",
    "artifact": "x86_64_release",
-   "version": "1.0.0-deb287481e3ce9468f3434937ced4240a70539ca",
+   "version": "1.0.0-83675ed27633283e7fc296c8bca22e841224c096",
    "pom_license": "NONE-DECLARED",
    "pom_holders": []
   },
