@@ -73,6 +73,29 @@ fn decode_leaf_ct(words: &[u64]) -> Result<Output<EdG>, Fs1Error> {
   Output::new(points[0], points[1], points[2]).map_err(|_| Fs1Error::Path)
 }
 
+/// `f` over `items` in order, split across the available cores. Public data only.
+fn par_map<T: Sync, U: Send>(
+  items: &[T],
+  f: impl Fn(&[T]) -> Result<Vec<U>, Fs1Error> + Sync,
+) -> Result<Vec<U>, Fs1Error> {
+  const MIN_CHUNK: usize = 64;
+  let threads = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1);
+  if threads < 2 || items.len() < 2 * MIN_CHUNK {
+    return f(items);
+  }
+  let chunk = items.len().div_ceil(threads).max(MIN_CHUNK);
+  let parts: Vec<Result<Vec<U>, Fs1Error>> = std::thread::scope(|scope| {
+    let f = &f;
+    let handles: Vec<_> = items.chunks(chunk).map(|part| scope.spawn(move || f(part))).collect();
+    handles.into_iter().map(|h| h.join().unwrap_or(Err(Fs1Error::Blind))).collect()
+  });
+  let mut out = Vec::new();
+  for part in parts {
+    out.extend(part?);
+  }
+  Ok(out)
+}
+
 fn x_of<G: DivisorCurve>(point: G) -> Result<G::FieldElement, Fs1Error> {
   G::to_xy(point).map(|xy| xy.0).ok_or(Fs1Error::Blind)
 }
@@ -322,10 +345,7 @@ impl ChainTree {
     if !self.blocks.is_empty() {
       return Err(Fs1Error::Link);
     }
-    let mut leaves = Vec::with_capacity(notes.len());
-    for note in notes {
-      leaves.push(leaf_of(note).ok_or(Fs1Error::Path)?);
-    }
+    let leaves = par_map(notes, |chunk| chunk.iter().map(|note| leaf_of(note).ok_or(Fs1Error::Path)).collect())?;
     self.append(params, &leaves)
   }
 
@@ -349,10 +369,11 @@ impl ChainTree {
     let first = usize::try_from(self.len).map_err(|_| Fs1Error::TreeSize)?;
     let mut deltas = Vec::with_capacity(leaves.len() * LEAF_SCALARS);
     let mut words = Vec::with_capacity(leaves.len() * LEAF_WORDS);
+    let all_scalars = par_map(leaves, |chunk| leaf_scalars(chunk))?;
     for (offset, leaf) in leaves.iter().enumerate() {
       let index = first + offset;
       words.extend_from_slice(&words_of(&leaf_bytes(leaf)));
-      let scalars = leaf_scalars(&[*leaf])?;
+      let scalars = &all_scalars[offset * LEAF_SCALARS .. (offset + 1) * LEAF_SCALARS];
       let base = (index % LAYER_ONE_LEN) * LEAF_SCALARS;
       for (t, (new, empty)) in scalars.iter().zip(self.empty.leaf_scalars.iter()).enumerate() {
         deltas.push((index / LAYER_ONE_LEN, base + t, *new - *empty));
