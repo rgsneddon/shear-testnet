@@ -35,10 +35,10 @@ function dirSha256(root) {
   return h.digest('hex');
 }
 
-test('the FS-1 vendor matches the monero-oxide pin and is not wired', () => {
+test('the FS-1 vendor matches the monero-oxide pin and is wired only through the vendored path', () => {
   assert.equal(pin.commit, '77788c368145127f2dde2ac3e2ddce919f3ddd01');
   assert.equal(pin.cryptoTree, '6ba344ad5412c103dab278845a8b418886fdd3d5');
-  assert.equal(pin.wired, false);
+  assert.equal(pin.wired, true);
   assert.deepEqual(pin.excluded, ['monero-fcmp-plus-plus', 'monero-fcmp-plus-plus-generators']);
   const names = Object.keys(pin.trees).sort();
   assert.deepEqual(names, ['divisors', 'fcmps', 'generalized-bulletproofs', 'helioselene']);
@@ -83,10 +83,19 @@ test('the FS-1 vendor matches the monero-oxide pin and is not wired', () => {
   assert.equal(readFileSync(path.join(vendor, 'fcmps', 'circuit-abstraction', 'LICENSE'), 'utf8').includes('Copyright (c) 2024-2025 Luke Parker'), true);
   assert.equal(readFileSync(path.join(vendor, 'fcmps', 'ec-gadgets', 'LICENSE'), 'utf8').includes('Copyright (c) 2024-2025 Luke Parker'), true);
   const admitToml = readFileSync(path.join(here, 'native', 'admit', 'Cargo.toml'), 'utf8');
+  const admitLock = readFileSync(path.join(here, 'native', 'admit', 'Cargo.lock'), 'utf8');
   const deny = readFileSync(path.join(here, 'native', 'deny.toml'), 'utf8');
-  for (const banned of ['helioselene', 'generalized-bulletproofs', 'full-chain-membership-proofs', 'ec-divisors', 'monero-fcmp-plus-plus']) {
-    assert.equal(deny.includes(banned), true, banned);
-    assert.equal(admitToml.includes(banned), false, banned);
+  assert.match(admitToml, /shear-fs1 = \{ path = "\.\.\/vendor\/monero-oxide-77788c3\/shear-fs1" \}/);
+  for (const banned of ['monero-fcmp-plus-plus', 'monero-fcmp-plus-plus-generators']) {
+    assert.equal(deny.includes(`name = "${banned}"`), true, banned);
+    assert.equal(admitLock.includes(`name = "${banned}"`), false, banned);
+  }
+  const packages = admitLock.split('[[package]]').slice(1);
+  for (const name of ['helioselene', 'generalized-bulletproofs', 'full-chain-membership-proofs', 'ec-divisors',
+    'generalized-bulletproofs-circuit-abstraction', 'generalized-bulletproofs-ec-gadgets', 'shear-fs1']) {
+    const rows = packages.filter((row) => row.includes(`name = "${name}"\n`));
+    assert.equal(rows.length, 1, name);
+    assert.equal(/\nsource = /.test(rows[0]), false, `${name} must come from the vendored path`);
   }
   assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
   assert.equal(ASERT_TAU_MS, 7_200_000);
