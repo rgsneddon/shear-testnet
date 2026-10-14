@@ -211,6 +211,22 @@ Bounded hold, 65,536 shares per block (3.8 MB per body):
 
 The 1000-share and 8000-share rows cap at 22.9 MB and 177 MB, compared with 573 MB and 4445 MB unbounded at 10,000 blocks.
 
+### Merge of feat at `36296798` (PR 65, ADMITv2 removal)
+
+Merged as `f55c790d`, a merge commit with no force-push. Only `node/src/p2p.js` conflicted, in `decodeWireBlock`. Both sides leave absent `hashCredits` and `hashSpillCredits` off the decoded block, so the merge takes feat's version. `chain.js`, `store.js` and `rpc.js` merged cleanly. They keep feat's FS-1 stage-0 gates, the removed v2 verifier and the `ADMITv3 (sends off)` label, alongside this branch's burial and offer code. RPC `connect` still dials pinned. No conflict touched the burial path, so the long proof test was not rerun. Its last clean run is the one at `a527207c` above.
+
+| Test after the merge | Result |
+| --- | --- |
+| `test_burial_gate_v12` | 2/2 |
+| `test_burial_tip_v12` | 2/2, 205 s |
+| `test_burial_hold_v12` | 14/14 |
+| `test_burial_offers_v12` | 3/3, 272 s |
+| `test_burial_sybil_v12` | 26/26, 204 s |
+| `test_fs1_send_gate_v12` | 11/11 |
+| `test_anchor_notes_v12`, `test_notes_range_030` | 1/1 each |
+| `test_mempool_depth_v12` 2/2, `pool/tests/test_mempool_lattice` 6/6 | pass |
+| `test_mempool_parse_v12` 0/1, `test_mempool_tag_copy_v12` 0/1, `site/tests/test_mempool` 3/4 | fail identically on feat `36296798` and on `9fbb28c0` before the merge |
+
 ### Failing on both base (`e8947428`) and this branch
 
 These fail or time out the same way before this round. The error text is identical, apart from one timing number.
