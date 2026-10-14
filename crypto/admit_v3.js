@@ -123,6 +123,8 @@ function bytes32(value) {
   return null;
 }
 
+const AMT_CT_TAG = Buffer.from([0xa7]);
+
 function lenPref(value) {
   const b = Buffer.isBuffer(value) ? value : Buffer.from(value || []);
   const n = Buffer.alloc(4);
@@ -229,6 +231,11 @@ export function txDigestV3(tx, magic = MAGIC_TESTNET) {
     // dest20 survives sealing. The address string does not, so it is not in the digest.
     const d20 = Buffer.from(asU8(o?.dest20 || []));
     parts.push(lenPref(d20.length >= 20 ? d20.subarray(0, 20) : Buffer.alloc(0)));
+    // A present amtCt is bound so a relay cannot swap it. Absent leaves the digest unchanged.
+    if (o?.amtCt != null && o.amtCt !== '') {
+      parts.push(AMT_CT_TAG);
+      parts.push(lenPref(Buffer.from(asU8(o.amtCt))));
+    }
   }
   parts.push(lenPref(Buffer.from(String(tx?.portalId || '').toLowerCase())));
   parts.push(lenPref(Buffer.from(String(tx?.programId || ''))));
