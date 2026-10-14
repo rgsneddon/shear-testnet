@@ -21,7 +21,7 @@ import {
   sealedVinLinkField,
 } from './chronoflux.js';
 import { lockTx, voteTx, portalIdFromDest } from './reserve_vault.js';
-import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest, spendDestOf } from './address.js';
+import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest, spendDestOf, encodeDest } from './address.js';
 import { vaultDest, destForLogin } from './flow_sheet.js';
 import { verifySealedNote, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
 import { attachAdmitPub } from './admit.js';
@@ -345,6 +345,8 @@ describe('chronoflux prune + collate', () => {
   it('compact of a fat vin is C̃-only; verify and mempool reject a still-linked vin', () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey });
+    // Hidden outputs need a dest with an admit base: amtCt is encrypted to it.
+    const payTo = encodeDest(hash20FromAddress(dest), id.admitBase);
     const fat = {
       kind: 'send',
       from: dest,
@@ -357,7 +359,7 @@ describe('chronoflux prune + collate', () => {
         commit: Buffer.alloc(32, 2),
         address: dest,
       }],
-      vout: [{ address: dest, nanos: 1, kind: 'send' }],
+      vout: [{ address: payTo, nanos: 1, kind: 'send' }],
     };
     const sealed = compactTx(fat);
     assert.deepEqual(Object.keys(sealed.vin[0]), ['commit']);
@@ -372,7 +374,7 @@ describe('chronoflux prune + collate', () => {
       fee: 100,
       id: 'commit-only-vin',
       vin: [{ commit: fat.vin[0].commit }],
-      vout: [{ address: dest, nanos: 1, kind: 'send' }],
+      vout: [{ address: payTo, nanos: 1, kind: 'send' }],
     });
     assert.deepEqual(Object.keys(commitOnly.vin[0]), ['commit']);
     assert.equal(sealedVinLinkField(commitOnly.vin[0]), null);

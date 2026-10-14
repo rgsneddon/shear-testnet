@@ -39,10 +39,11 @@ function oneProof(length, lane) {
 }
 
 const hiddenByAmount = new Map();
+const FIXTURE_ADMIT_BASE = newIdentity().admitBase;
 /** The amount rides as C and a range proof. A plaintext nanos is amount_field. */
 function hiddenOut(kind, amount) {
   if (!hiddenByAmount.has(amount)) {
-    const note = sealHiddenNote(amount, { dest20: Buffer.alloc(20, 6) });
+    const note = sealHiddenNote(amount, { dest20: Buffer.alloc(20, 6), admitBase: FIXTURE_ADMIT_BASE });
     delete note.r;
     hiddenByAmount.set(amount, note);
   }

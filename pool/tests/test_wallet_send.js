@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView, spendDestOf, hash20FromAddress } from '../../crypto/address.js';
-import { noteCommitOfDest20, sealCoinbaseNote } from '../../crypto/note.js';
+import { newIdentity, destOpeningFromView, spendDestOf, hash20FromAddress, encodeDest } from '../../crypto/address.js';
+import { noteCommitOfDest20, sealCoinbaseNote, sealHiddenNote } from '../../crypto/note.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos, poolFeeDest } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
@@ -534,7 +534,9 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(unsigned.status, 403);
     assert.equal(unsigned.json.reason, 'unsigned');
 
-    const signed = spendSig({ from: silent, to: bob, amount: 0.4, identity: alice });
+    // A hidden send needs a dest with an admit base: amtCt is encrypted to it.
+    const bobPay = encodeDest(hash20FromAddress(bob), bobId.admitBase);
+    const signed = spendSig({ from: silent, to: bobPay, amount: 0.4, identity: alice });
     const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
       fee: levyNanos(Math.round(0.4 * NANOS_PER_SHE), { depth: 0 }),
       sig: signed.sig,
@@ -781,8 +783,8 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(chain.mempool.length, 0);
 
     const boundNanos = Math.round(0.2 * NANOS_PER_SHE);
-    const boundPay = sealCoinbaseNote(boundNanos, { dest20: hash20FromAddress(bob), kind: 'send' });
-    delete boundPay.valueProof;
+    const boundPay = sealHiddenNote(boundNanos, { dest20: hash20FromAddress(bob), kind: 'send', admitBase: newIdentity().admitBase });
+    delete boundPay.r;
     const bound = {
       id: 'note-bound-painted',
       kind: 'send',

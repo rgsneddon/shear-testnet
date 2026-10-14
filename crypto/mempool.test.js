@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { admitMempool, emptyMempool, retargetMempool } from './mempool.js';
-import { encodeDest, encodeAddress } from './address.js';
+import { encodeDest, encodeAddress, newIdentity } from './address.js';
 import { attachDummyOuts } from './dummy.js';
 import { sealNote } from './note.js';
 
-const dest = encodeDest(Buffer.alloc(20, 3));
+const dest = encodeDest(Buffer.alloc(20, 3), newIdentity().admitBase);
 
 describe('policy mempool', () => {
   it('refuses an opened hidden send, admits a bound send and a B-spend, and drops a fee under the levy', () => {

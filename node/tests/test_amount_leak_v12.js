@@ -6,18 +6,21 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  sealHiddenNote, sealNote, sealCoinbaseNote, openNoteAmount, unwrapAmount, verifyRange,
+  sealHiddenNote, sealNote, sealCoinbaseNote, openNoteAmount, verifyRange,
   noteCommitOfDest20, asU8, AMOUNT_CT_BYTES,
 } from '../../crypto/note.js';
+import * as noteExports from '../../crypto/note.js';
 import { admitBaseScalar } from '../../crypto/admit.js';
 import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
 import {
   compactTx, admitWireTx, compactChainBlock, valueOpenRejected, amountFieldRejected,
-  COMPACT_TX_KEYS, OUTPUT_AMOUNT_KEYS, TX_AMOUNT_KEYS,
+  COMPACT_TX_KEYS, OUTPUT_AMOUNT_KEYS, TX_AMOUNT_KEYS, HIDDEN_WRAP_KEYS,
 } from '../../crypto/chronoflux.js';
+import { spendPackDigest } from '../../crypto/spend.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { txDigestV3 } from '../../crypto/admit_v3.js';
 import { mempoolRow, MEMPOOL_SECRET_KEYS } from '../../crypto/mempool.js';
@@ -111,6 +114,20 @@ describe('AL-1 decoder: a hidden output names no amount', () => {
       tx.vout[0].amtCt = Buffer.alloc(n);
       assert.equal(valueOpenRejected(tx)?.reason, 'amount_ct', `len ${n}`);
     }
+  });
+  it('requires rEph, rCt, and amtCt on every hidden output', () => {
+    for (const kind of HIDDEN_KINDS) {
+      for (const k of HIDDEN_WRAP_KEYS) {
+        const tx = hiddenTx(10n ** 9n, kind, who);
+        delete tx.vout[0][k];
+        assert.equal(valueOpenRejected(tx)?.reason, 'amount_ct', `${kind} missing ${k}`);
+      }
+    }
+    const bare = sealHiddenNote(5n, { dest20: who.dest20, kind: 'send' });
+    delete bare.r;
+    assert.equal(valueOpenRejected({ kind: 'send', vout: [bare] })?.reason, 'amount_ct', 'no admit base, no send');
+    const dummy = sealNote(0, { dest20: Buffer.alloc(20, 9), kind: 'dummy' });
+    assert.equal(valueOpenRejected({ kind: 'send', vout: [dummy] }), null, 'publicly-zero dummy is exempt');
   });
   it('rejects nanos beside a committed coinbase row', () => {
     const o = sealCoinbaseNote(5000, { dest20: who.dest20, kind: 'pot' });
@@ -272,10 +289,22 @@ describe('AL-7 the owner recovers v from amtCt alone', () => {
     const bad = Buffer.from(asU8(o.amtCt));
     bad[0] ^= 1;
     assert.equal(openNoteAmount({ ...o, amtCt: bad }, who.x), null);
-    const extra = Buffer.concat([Buffer.from(asU8(o.noteCommit)), Buffer.from(asU8(o.commit))]);
-    assert.notEqual(unwrapAmount(o.rEph, o.amtCt, other.x, extra), 2n ** 32n + 7n);
+    assert.equal(Object.hasOwn(noteExports, 'unwrapAmount'), false, 'raw decrypt stays module-private');
   });
-  it('txDigestV3 binds amtCt, and is unchanged without it', () => {
+  it('spendPackDigest binds amtCt on the flow path; reserve kinds are unchanged', () => {
+    const who = owner();
+    const tx = hiddenTx(10n ** 9n, 'send', who);
+    const flipped = Buffer.from(asU8(tx.vout[0].amtCt));
+    flipped[0] ^= 1;
+    const d0 = spendPackDigest(tx);
+    assert.notDeepEqual(d0, spendPackDigest({ ...tx, vout: [{ ...tx.vout[0], amtCt: flipped }] }));
+    const bare = { ...tx.vout[0] };
+    delete bare.amtCt;
+    assert.notDeepEqual(d0, spendPackDigest({ ...tx, vout: [bare] }));
+    const lock = { kind: 'lock', vout: [{ kind: 'lock', dest20: who.dest20 }] };
+    assert.deepEqual(spendPackDigest(lock), spendPackDigest({ ...lock, vout: [{ ...lock.vout[0], amtCt: Buffer.alloc(8, 1) }] }));
+  });
+  it('txDigestV3 binds amtCt unconditionally', () => {
     const who = owner();
     const tx = hiddenTx(10n ** 9n, 'send', who);
     const d0 = txDigestV3(tx);
@@ -288,6 +317,36 @@ describe('AL-7 the owner recovers v from amtCt alone', () => {
     const d2 = txDigestV3({ ...tx, vout: [bare] });
     const d3 = txDigestV3({ ...tx, vout: [{ ...bare, amtCt: '' }] });
     assert.deepEqual(Buffer.from(d2), Buffer.from(d3));
+    assert.notDeepEqual(Buffer.from(d0), Buffer.from(d2), 'dropping amtCt changes the digest');
     assert.equal(noteCommitOfDest20(who.dest20).length, 32);
+  });
+});
+
+describe('shared amtCt vector (crypto/vectors/amtct_v1.json) matches the JS implementation', () => {
+  const vec = JSON.parse(fs.readFileSync(path.join(ROOT, 'crypto/vectors/amtct_v1.json'), 'utf8'));
+  const h = (s) => Buffer.from(s, 'hex');
+  it('owner opens every case; a wrong seed opens nothing', () => {
+    assert.ok(vec.cases.length >= 5);
+    for (const c of vec.cases) {
+      const o = { noteCommit: h(c.noteCommit), commit: h(c.commit), rEph: h(c.rEph), rCt: h(c.rCt), amtCt: h(c.amtCt) };
+      const got = openNoteAmount(o, admitBaseScalar(h(c.spendSeed)));
+      assert.equal(got?.v, BigInt(c.v), c.v);
+      assert.equal(Buffer.from(got.r).toString('hex'), c.r);
+      assert.equal(openNoteAmount(o, admitBaseScalar(h(c.wrongSeed))), null);
+    }
+  });
+  it('flow spendPackDigest is the packed body plus the amtCt binding', () => {
+    for (const c of vec.cases) {
+      const vout = [{ kind: 'send', noteCommit: h(c.noteCommit), commit: h(c.commit), rEph: h(c.rEph), rCt: h(c.rCt), amtCt: h(c.amtCt) }];
+      const tx = { kind: 'send', vin: [{ dest20: h(c.dest20) }], vout };
+      assert.equal(spendPackDigest(tx).toString('hex'), c.spendPackDigest);
+      const ct = h(c.amtCt);
+      const n = Buffer.alloc(4);
+      n.writeUInt32LE(1);
+      const len = Buffer.alloc(4);
+      len.writeUInt32LE(ct.length);
+      const want = createHash('sha256').update(Buffer.from(vec.dst.spendAmt)).update(h(c.packed)).update(n).update(len).update(ct).digest('hex');
+      assert.equal(want, c.spendPackDigest);
+    }
   });
 });
