@@ -62,6 +62,29 @@
 
   <main class="gift-main">
     <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card" id="whole-sea">
+      <p class="gift-who"><strong>Atlas Quill</strong> · new this week</p>
+      <h1>The Whole-Sea Chart</h1>
+      <p class="gift-tag">Where did the ship sail from? The chart lights every harbour.</p>
+      <canvas id="wsc" width="640" height="300" style="width:100%;height:auto;border-radius:12px;border:1px solid var(--line);background:#07121a;cursor:crosshair" aria-label="A sea of harbour lights; pressing one lights them all"></canvas>
+      <p class="copy" style="margin-top:.8rem">Press anywhere on the sea to set sail. Under the old chart a lantern lit a small cove, and drawing it took most of an hour. The new chart, FS-1, lights every harbour on the map at once, so the departure point is any of them. On this week's desktop bench a one-input chart was drawn in under a second.</p>
+      <blockquote>I used to ink a cove and call it cover,
+and wait out the tide while the lamp burned down.
+Now one tap of the pen and the whole coast glows:
+every harbour a maybe, and no harbour a mark.<cite>— Atlas Quill</cite></blockquote>
+      <script>
+      (function(){var c=document.getElementById('wsc');if(!c)return;var x=c.getContext('2d'),W=c.width,H=c.height,P=[],glow=0,s=7;
+      function r(){s=(s*16807)%2147483647;return s/2147483647;}
+      for(var i=0;i<420;i++)P.push([r()*W,r()*H,r()*6.28]);
+      function draw(t){x.fillStyle='#07121a';x.fillRect(0,0,W,H);x.strokeStyle='rgba(94,234,212,.08)';
+      for(var g=0;g<W;g+=40){x.beginPath();x.moveTo(g,0);x.lineTo(g,H);x.stroke();}for(g=0;g<H;g+=40){x.beginPath();x.moveTo(0,g);x.lineTo(W,g);x.stroke();}
+      for(var i=0;i<P.length;i++){var p=P[i],b=.25+.15*Math.sin(t/900+p[2])+glow*.6;x.fillStyle='rgba(248,231,181,'+Math.min(1,b)+')';x.beginPath();x.arc(p[0],p[1],1.6+glow*1.6,0,6.28);x.fill();}
+      x.fillStyle='rgba(233,216,166,.8)';x.font='13px ui-monospace,monospace';x.fillText(glow>.05?'departed from: any harbour on the chart':'tap the sea to set sail',12,H-12);
+      glow*=.985;requestAnimationFrame(draw);}
+      c.addEventListener('click',function(){glow=1;});requestAnimationFrame(draw);})();
+      </script>
+    </article>
+    <hr style="border:0;border-top:1px solid var(--line);margin:2rem 0" />
     <article class="gift-card">
       <img class="avatar" src="../avatars/attack-cartographer.jpg" alt="Atlas Quill" width="140" height="140" />
       <p class="gift-who"><strong>Atlas Quill</strong> · aka Attack Cartographer</p>

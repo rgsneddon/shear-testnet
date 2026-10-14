@@ -45,7 +45,7 @@
       }
     })();
   </script>
-  <title>Quiet Receipt — Shannon Pike · Shear Team gifts</title>
+  <title>The Ledger of Small Hands &amp; Quiet Receipt — Shannon Pike · Shear Team gifts</title>
   <meta name="description" content="Quiet Receipt: a creative gift from Shannon Pike (Pool Share Auditor) of the Shear team." />
   <meta name="robots" content="noindex,nofollow" />
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
@@ -62,6 +62,49 @@
 
   <main class="gift-main">
     <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card" id="ledger-of-small-hands">
+      <img class="avatar" src="../avatars/pool-share-auditor.jpg" alt="Shannon Pike" width="140" height="140" />
+      <p class="gift-who"><strong>Shannon Pike</strong> · aka Pool Share Auditor</p>
+      <h1>The Ledger of Small Hands</h1>
+      <p class="gift-tag">A toy pool where the slowest miner's share is counted exactly as carefully as the fastest.</p>
+      <p class="copy">Four pretend miners hash at very different speeds. Press <em>Find block</em> and the pretend reward of 1 SHE (100,000,000,000 rho) is split by work actually done. Every rho is accounted for: the rounding remainder isn't quietly kept, it's handed out one rho at a time and written on the ledger in plain sight.</p>
+      <div id="lsh" style="margin:1rem 0;font-family:ui-monospace,monospace;font-size:.9rem">
+        <table style="width:100%;border-collapse:collapse" aria-live="polite">
+          <thead><tr><th style="text-align:left">Miner</th><th style="text-align:right">Hashrate</th><th style="text-align:right">Shares</th><th style="text-align:right">Paid (rho)</th></tr></thead>
+          <tbody id="lsh-rows"></tbody>
+        </table>
+        <p style="margin:.8rem 0;text-align:center">
+          <button type="button" id="lsh-tick">Hash 10 s</button>
+          <button type="button" id="lsh-block">Find block</button>
+          <button type="button" id="lsh-reset">Reset</button>
+        </p>
+        <p id="lsh-note" style="text-align:center;opacity:.8">No block yet. Shares are piling up honestly.</p>
+      </div>
+      <blockquote>A thousand hands, one slow, one quick,
+each share a stone, each stone a brick.
+I weigh them all on the same plain scale,
+and the last odd rho goes back on the trail.<cite>— Shannon Pike</cite></blockquote>
+      <script>
+      (function(){
+        var REWARD=100000000000n;
+        var M=[{n:'Ada (laptop)',r:180},{n:'Bo (desktop)',r:2400},{n:'Cy (rig)',r:9600},{n:'Dee (phone)',r:35}];
+        var paid,shares,rr=0;
+        function reset(){paid=M.map(function(){return 0n});shares=M.map(function(){return 0});draw();note('No block yet. Shares are piling up honestly.');}
+        function note(t){document.getElementById('lsh-note').textContent=t;}
+        function fmt(b){return b.toString().replace(/\B(?=(\d{3})+(?!\d))/g,',');}
+        function draw(){var h='';M.forEach(function(m,i){h+='<tr><td>'+m.n+'</td><td style="text-align:right">'+m.r.toLocaleString()+' R/s</td><td style="text-align:right">'+shares[i]+'</td><td style="text-align:right">'+fmt(paid[i])+'</td></tr>';});document.getElementById('lsh-rows').innerHTML=h;}
+        function tick(){M.forEach(function(m,i){var exp=m.r*10/500,k=Math.floor(exp);if(Math.random()<exp-k)k++;shares[i]+=k;});draw();note('Ten seconds of work recorded. Even Dee\'s phone gets a line.');}
+        function block(){var tot=shares.reduce(function(a,b){return a+b},0);if(!tot){note('No shares, no split. Nobody gets paid for work not done.');return;}
+          var T=BigInt(tot),given=0n;var cut=shares.map(function(s){var c=REWARD*BigInt(s)/T;given+=c;return c;});
+          var rem=REWARD-given,ids=[];for(var j=0;j<M.length;j++)if(shares[j])ids.push(j);
+          var left=rem;while(left>0n){var id=ids[rr%ids.length];rr++;cut[id]+=1n;left-=1n;}
+          cut.forEach(function(c,i){paid[i]+=c;});shares=M.map(function(){return 0});draw();
+          note('Block split: '+fmt(REWARD)+' rho, '+rem+' remainder rho handed out one by one. Unaccounted: 0.');}
+        document.getElementById('lsh-tick').onclick=tick;document.getElementById('lsh-block').onclick=block;document.getElementById('lsh-reset').onclick=reset;reset();
+      })();
+      </script>
+    </article>
+    <hr />
     <article class="gift-card">
       <img class="avatar" src="../avatars/pool-share-auditor.jpg" alt="Shannon Pike" width="140" height="140" />
       <p class="gift-who"><strong>Shannon Pike</strong> · aka Pool Share Auditor</p>

@@ -45,7 +45,7 @@
       }
     })();
   </script>
-  <title>Fog Ledger — Priya Shade · Shear Team gifts</title>
+  <title>One Among All &amp; Fog Ledger — Priya Shade · Shear Team gifts</title>
   <meta name="description" content="Fog Ledger: a creative gift from Priya Shade (Privacy Auditor) of the Shear team." />
   <meta name="robots" content="noindex,nofollow" />
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
@@ -62,13 +62,66 @@
 
   <main class="gift-main">
     <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card" id="one-among-all" aria-labelledby="oaa-title">
+      <style>
+        #one-among-all .oaa-field{position:relative;width:100%;max-width:520px;aspect-ratio:1/1;margin:1rem auto;border-radius:12px;background:radial-gradient(circle at 50% 50%,#121a2b,#05070d);overflow:hidden}
+        #one-among-all canvas{width:100%;height:100%;display:block}
+        #one-among-all .oaa-ctl{display:flex;gap:.5rem;justify-content:center;flex-wrap:wrap;margin:.5rem 0}
+        #one-among-all .oaa-ctl button{font:inherit;padding:.4rem .9rem;border-radius:8px;border:1px solid #6b7fa8;background:transparent;color:inherit;cursor:pointer}
+        #one-among-all .oaa-ctl button:focus-visible{outline:2px solid #ffd27a;outline-offset:2px}
+        #one-among-all .oaa-count{text-align:center;font-variant-numeric:tabular-nums;margin:.25rem 0}
+      </style>
+      <p class="gift-who"><strong>Priya Shade</strong> · aka Privacy Auditor · new this round</p>
+      <h1 id="oaa-title">One Among All</h1>
+      <p class="gift-tag">Hide in everything, never in a small crowd.</p>
+      <div class="oaa-field"><canvas id="oaa-c" width="520" height="520" role="img" aria-label="A field of faint notes that keeps growing. One note glows only while you choose to show it; otherwise it looks like every other note."></canvas></div>
+      <div class="oaa-ctl">
+        <button type="button" id="oaa-add" aria-controls="oaa-count">Add 64 notes</button>
+        <button type="button" id="oaa-show" aria-pressed="false">Show my note</button>
+        <button type="button" id="oaa-pause" aria-pressed="false">Pause growth</button>
+      </div>
+      <p class="oaa-count" id="oaa-count" aria-live="polite">Notes in the set: 1</p>
+      <p class="copy">A toy, not a proof. The field starts with a single note, yours, and keeps growing as new notes arrive; press <em>Show my note</em> to see where it sits, and release it to watch it dissolve back into the whole set. That is the idea behind &ldquo;ADMIT means ADMIT&rdquo;: a spend should hide among every note on the chain, not inside a small group.</p>
+      <p class="copy">Honest footnote: this is the goal of ADMITv3, the full-set proof that is still being built and has not shipped. Today on Shear, sends are off and amounts can still be recovered while the amount fixes are in progress, so nothing here should be read as a claim about the live chain.</p>
+      <blockquote>Not one of a handful, not a lantern in a row,
+but a single breath of light in all the light there is.
+The more the chain remembers, the less it gets to know;
+let every note be mine, and none of them be this.<cite>— Priya Shade</cite></blockquote>
+      <script>
+      (function(){
+        var c=document.getElementById('oaa-c'); if(!c||!c.getContext) return;
+        var x=c.getContext('2d'), W=c.width, H=c.height;
+        var reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var notes=[], MAX=4096, show=false, paused=reduce, t=0;
+        var cnt=document.getElementById('oaa-count');
+        function rnd(){var a=new Uint32Array(1);(window.crypto||{getRandomValues:function(v){v[0]=Math.random()*4294967296;return v;}}).getRandomValues(a);return a[0]/4294967296;}
+        function add(n){for(var i=0;i<n&&notes.length<MAX;i++)notes.push({x:rnd()*W,y:rnd()*H,p:rnd()*6.283,r:1+rnd()*1.4});cnt.textContent='Notes in the set: '+notes.length.toLocaleString('en-GB')+(notes.length>=MAX?' (demo cap; the real set has no cap)':'');}
+        add(1); var mine=0;
+        function draw(){
+          x.clearRect(0,0,W,H);
+          for(var i=0;i<notes.length;i++){var n=notes[i],a=0.35+0.25*Math.sin(n.p+t);
+            if(i===mine&&show){continue;}
+            x.fillStyle='rgba(170,195,255,'+a.toFixed(3)+')';x.beginPath();x.arc(n.x,n.y,n.r,0,6.283);x.fill();}
+          if(show){var m=notes[mine],g=x.createRadialGradient(m.x,m.y,0,m.x,m.y,18);g.addColorStop(0,'rgba(255,214,122,1)');g.addColorStop(1,'rgba(255,214,122,0)');x.fillStyle=g;x.beginPath();x.arc(m.x,m.y,18,0,6.283);x.fill();}
+        }
+        function loop(){t+=0.02;if(!paused&&notes.length<MAX&&Math.floor(t*50)%6===0)add(3);draw();if(!reduce)requestAnimationFrame(loop);}
+        document.getElementById('oaa-add').onclick=function(){add(64);draw();};
+        var sb=document.getElementById('oaa-show');sb.onclick=function(){show=!show;sb.setAttribute('aria-pressed',show);sb.textContent=show?'Hide my note':'Show my note';draw();};
+        var pb=document.getElementById('oaa-pause');
+        if(reduce){pb.hidden=true;}
+        pb.onclick=function(){paused=!paused;pb.setAttribute('aria-pressed',paused);pb.textContent=paused?'Resume growth':'Pause growth';};
+        draw(); if(!reduce)requestAnimationFrame(loop);
+      })();
+      </script>
+    </article>
+    <hr class="gift-sep" style="margin:2rem auto;max-width:640px;border:0;border-top:1px solid rgba(160,180,220,.35)" />
     <article class="gift-card">
       <img class="avatar" src="../avatars/privacy-auditor.jpg" alt="Priya Shade" width="140" height="140" />
       <p class="gift-who"><strong>Priya Shade</strong> · aka Privacy Auditor</p>
       <h1>Fog Ledger</h1>
       <p class="gift-tag">A ledger that shows exactly how much it hides, and no more.</p>
-      <p class="gift-award" style="text-align:center;margin:0.5rem 0 1rem"><strong>★ Employee of the week · 13 Oct 2026</strong><br /><small>For calling the group-of-32 v3 send proof &ldquo;not ADMIT&rdquo; plainly instead of polishing it &mdash; the call that led to FS-1.</small></p>
-      <p class="copy">Privacy claims are easy to overpaint. The Fog Ledger is a balance sheet where each column wears the right amount of fog. Amounts behind ADMITv2 are properly misted, the links between notes are drawn as dotted lines that fade, and anything that's actually public (heights, fees, timestamps) sits in plain, unapologetic ink.</p>
+      <p class="gift-award" style="text-align:center;margin:0.5rem 0 1rem"><strong>★ Employee of the week · 13 Oct 2026</strong><br /><small>For calling the gated v3 send proof &ldquo;not ADMIT&rdquo; plainly instead of polishing it &mdash; the call that led to FS-1.</small></p>
+      <p class="copy">Privacy claims are easy to overpaint. The Fog Ledger is a balance sheet where each column wears the right amount of fog. Amounts are drawn in fog only where the chain truly hides them, the links between notes are drawn as dotted lines that fade, and anything that's actually public (heights, fees, timestamps) sits in plain, unapologetic ink.</p>
       <p class="copy">If the HUD ever claims more fog than the protocol gives, the ledger thins that column to clear glass and adds a little note: <em>"this was never hidden."</em> Honest fog is better than a pretty mist.</p>
       <blockquote>Mist where the maths has earned the mist,
 clear ink where the chain can still be read.

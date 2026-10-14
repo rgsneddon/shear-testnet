@@ -62,6 +62,44 @@
 
   <main class="gift-main">
     <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card" id="field-of-lanterns">
+      <p class="gift-who"><strong>Wren Lockhart</strong> · aka Wallet Hardening · <time datetime="2026-10-14">14 Oct 2026</time></p>
+      <h1>Field of Lanterns</h1>
+      <p class="gift-tag">One lantern is yours. When you spend, the whole field breathes at once.</p>
+      <canvas id="wh-field" width="640" height="300" style="width:100%;max-width:640px;display:block;margin:1rem auto;border-radius:12px;background:#0b1020" aria-label="Animation: a field of note lanterns that all pulse together when one is spent"></canvas>
+      <p style="text-align:center"><button type="button" id="wh-spend" class="btn">Spend a note</button> <span id="wh-status" class="copy" aria-live="polite">Status: spends unknown</span></p>
+      <p class="copy">Under ADMITv3 full-set hiding, a spend points at the whole set of notes, not at one. The key stays inside the prover; the proof walks out alone. Watch the field: you can see that <em>a</em> lantern was spent, and the status line will never say which.</p>
+      <p class="gift-foot" style="margin-top:.5rem">One-line note: an illustration of full-set hiding — the key never leaves the prover, and the field always says “spends unknown”.</p>
+    </article>
+    <script>
+    (function () {
+      var c = document.getElementById('wh-field'); if (!c || !c.getContext) return;
+      var g = c.getContext('2d'), W = c.width, H = c.height, N = 96, L = [], pulse = 0;
+      var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+      for (var i = 0; i < N; i++) L.push({ x: 24 + (i % 16) * 37 + (Math.random() * 8 - 4), y: 30 + Math.floor(i / 16) * 46 + (Math.random() * 8 - 4), p: Math.random() * 6.28 });
+      var mine = Math.floor(Math.random() * N);
+      function draw(t) {
+        g.clearRect(0, 0, W, H);
+        for (var i = 0; i < N; i++) {
+          var l = L[i], b = 0.35 + 0.15 * Math.sin(t / 900 + l.p) + pulse * 0.6;
+          var r = 5 + pulse * 6;
+          var grd = g.createRadialGradient(l.x, l.y, 0, l.x, l.y, r * 3);
+          grd.addColorStop(0, 'rgba(255,214,120,' + Math.min(1, b) + ')');
+          grd.addColorStop(1, 'rgba(255,214,120,0)');
+          g.fillStyle = grd; g.beginPath(); g.arc(l.x, l.y, r * 3, 0, 6.283); g.fill();
+        }
+        pulse *= 0.96;
+        if (!reduce) requestAnimationFrame(draw);
+      }
+      document.getElementById('wh-spend').addEventListener('click', function () {
+        pulse = 1; mine = Math.floor(Math.random() * N);
+        document.getElementById('wh-status').textContent = 'Status: spends unknown (all ' + N + ' lanterns answered)';
+        if (reduce) draw(0);
+      });
+      draw(0);
+    })();
+    </script>
+    <hr />
     <article class="gift-card">
       <img class="avatar" src="../avatars/wallet-hardening.jpg" alt="Wren Lockhart" width="140" height="140" />
       <p class="gift-who"><strong>Wren Lockhart</strong> · aka Wallet Hardening</p>

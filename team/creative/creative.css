@@ -37,3 +37,18 @@
 .gift-card, .gift-card p.copy, .gift-card blockquote, .gift-who strong, .gift-nav a { color: #e8eefc; }
 .gift-who, .gift-card blockquote cite, .gift-card pre { color: #9aa8c7; }
 .gift-card .ghost-map .blk { color: #e8eefc; } .gift-card .ghost-map .blk.gone { color: #9aa8c7; }
+/* Light mode: readable dark text on light gift cards (2026-10-14) */
+html[data-theme="light"] .gift-card, html[data-theme="light"] .gift-card p.copy, html[data-theme="light"] .gift-card blockquote,
+html[data-theme="light"] .gift-who strong, html[data-theme="light"] .gift-nav a, html[data-theme="light"] .gift-card .ghost-map .blk { color: #0d2137; }
+html[data-theme="light"] .gift-who, html[data-theme="light"] .gift-card blockquote cite, html[data-theme="light"] .gift-card pre,
+html[data-theme="light"] .gift-card .ghost-map .blk.gone { color: #4a6178; }
+html[data-theme="light"] .gift-card pre { background: rgba(13,33,55,.05); }
+html[data-theme="light"] .gift-card p.copy { opacity: 1; }
+@media (prefers-color-scheme: light) {
+  html:not([data-theme="dark"]) .gift-card, html:not([data-theme="dark"]) .gift-card p.copy, html:not([data-theme="dark"]) .gift-card blockquote,
+  html:not([data-theme="dark"]) .gift-who strong, html:not([data-theme="dark"]) .gift-nav a, html:not([data-theme="dark"]) .gift-card .ghost-map .blk { color: #0d2137; }
+  html:not([data-theme="dark"]) .gift-who, html:not([data-theme="dark"]) .gift-card blockquote cite, html:not([data-theme="dark"]) .gift-card pre,
+  html:not([data-theme="dark"]) .gift-card .ghost-map .blk.gone { color: #4a6178; }
+  html:not([data-theme="dark"]) .gift-card pre { background: rgba(13,33,55,.05); }
+  html:not([data-theme="dark"]) .gift-card p.copy { opacity: 1; }
+}

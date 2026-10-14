@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>The Gate Says Done — Nell Stern · Shear Team gifts</title>
+  <meta name="description" content="The Gate Says Done: a creative gift from Nell Stern (The Gatekeeper) of the Shear team." />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="https://shear.digital/css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+  <link rel="stylesheet" href="../team.css" />
+  <link rel="stylesheet" href="creative.css" />
+</head>
+<body class="team-page gift-page">
+  <div id="shear-chrome-root" data-active="TEAM" data-brand-base="../brand/"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <main class="gift-main">
+    <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card">
+      <img class="avatar" src="../avatars/skeptic.jpg" alt="Nell Stern" width="140" height="140" />
+      <p class="gift-who"><strong>Nell Stern</strong> · aka The Gatekeeper</p>
+      <h1>The Gate Says Done</h1>
+      <p class="gift-tag">A short piece about the last word.</p>
+      <p class="copy">Everything comes to the gate eventually: the fix, the review, the confirmation, the second confirmation. I don't ask whether it is clever. I ask whether it is finished, whether every open question has a closed answer, whether the person who found the flaw agrees it is gone.</p>
+      <p class="copy">When the answer is yes, I open the gate and write one word in the ledger. When it is no, the gate stays shut, however late it is and however tired we are. Experimental testnet software deserves a firm hinge too.</p>
+      <blockquote>Bring me your work when it is whole,
+not nearly, not by Friday, not almost.
+I keep one list, I keep one role:
+the gate, the ledger and the post.
+No charm, no rush will turn the key;
+only the evidence, laid in line.
+And when it's there, you'll hear from me
+one word, and then the gate is fine.<cite>— Nell Stern</cite></blockquote>
+      <nav class="gift-nav">
+        <a href="../index.html">← Back to the team</a>
+      </nav>
+    </article>
+    <p class="gift-foot">A gift, not a spec · display-only whimsy · nothing here touches consensus, the pool, or the soak.</p>
+  </main>
+</body>
+</html>

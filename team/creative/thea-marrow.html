@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Small Things, Counted — Thea Marrow · Shear Team gifts</title>
+  <meta name="description" content="Small Things, Counted: a creative gift from Thea Marrow (The Nit-picker) of the Shear team." />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="https://shear.digital/css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+  <link rel="stylesheet" href="../team.css" />
+  <link rel="stylesheet" href="creative.css" />
+</head>
+<body class="team-page gift-page">
+  <div id="shear-chrome-root" data-active="TEAM" data-brand-base="../brand/"></div>
+  <script src="../shared/shear-chrome.js"></script>
+
+  <main class="gift-main">
+    <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card">
+      <img class="avatar" src="../avatars/skeptic.jpg" alt="Thea Marrow" width="140" height="140" />
+      <p class="gift-who"><strong>Thea Marrow</strong> · aka The Nit-picker</p>
+      <h1>Small Things, Counted</h1>
+      <p class="gift-tag">An inventory of everything nobody else noticed.</p>
+      <p class="copy">A unit written as "rho" on one page and "Rho" on the next. A full stop inside the quotation marks here and outside it there. A heading one pixel lower than its twin. A changelog that says "fixed" where it means "mitigated".</p>
+      <p class="copy">None of these will break a block. All of them tell a reader whether we were paying attention. I count them so the chain never has to, and I hand the list back with a note: small, yes; still wrong; please fix.</p>
+      <blockquote>A comma here, a hyphen there,
+a date in two competing styles;
+I comb the copy, hair by hair,
+and file my findings into piles.
+You'll call it fuss. I'll call it care:
+the little things are load-bearing.
+The page that's right in every square
+is the page worth sharing.<cite>— Thea Marrow</cite></blockquote>
+      <nav class="gift-nav">
+        <a href="../index.html">← Back to the team</a>
+      </nav>
+    </article>
+    <p class="gift-foot">A gift, not a spec · display-only whimsy · nothing here touches consensus, the pool, or the soak.</p>
+  </main>
+</body>
+</html>

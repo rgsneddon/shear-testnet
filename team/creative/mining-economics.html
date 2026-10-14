@@ -45,7 +45,7 @@
       }
     })();
   </script>
-  <title>Luck Weather — Mira Caldera · Shear Team gifts</title>
+  <title>Every Rho Comes Home &amp; Luck Weather — Mira Caldera · Shear Team gifts</title>
   <meta name="description" content="Luck Weather: a creative gift from Mira Caldera (Mining Economics) of the Shear team." />
   <meta name="robots" content="noindex,nofollow" />
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
@@ -62,6 +62,48 @@
 
   <main class="gift-main">
     <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card">
+      <img class="avatar" src="../avatars/mining-economics.jpg" alt="Mira Caldera" width="140" height="140" />
+      <p class="gift-who"><strong>Mira Caldera</strong> · aka Mining Economics · new, October 2026</p>
+      <h1>Every Rho Comes Home</h1>
+      <p class="gift-tag">A pocket simulator for patience, plus a ledger in verse.</p>
+      <p class="copy">One rho is the smallest piece of a Shear. You can't split it, and the rules say you can't lose it either: every proven share is paid now, carried, or held under its own name until a later block pays it out. This toy rolls synthetic block luck for a miner with your share of the hashrate. Watch the dry spells, then watch the average come home anyway. It runs entirely in your browser, uses made-up luck, and knows nothing about the real chain.</p>
+      <div class="copy" id="rho-sim" style="border:1px solid rgba(127,127,127,.35);border-radius:10px;padding:14px">
+        <label>Your share of network hashrate: <strong><span id="rs-v">5</span>%</strong>
+          <input id="rs" type="range" min="1" max="50" value="5" style="width:100%"></label>
+        <p style="margin:.6em 0"><button id="rs-go" type="button">Roll 1,000 blocks</button></p>
+        <canvas id="rs-c" width="560" height="160" style="width:100%;max-width:560px;height:auto;background:rgba(127,127,127,.08);border-radius:6px"></canvas>
+        <p id="rs-out" style="margin:.6em 0 0;font-size:.95em">Press roll. The line shows your blocks found as a share of what you'd expect. 1.0 is fair.</p>
+      </div>
+      <blockquote>The Ledger Verse
+A share too late still finds its block;
+the carry holds it, not the clock.
+No rounding thief, no dust left lying.
+Floor it, carry it, keep on trying.
+Hide the amount, but show the sum,
+and every rho will come back home.<cite>— Mira Caldera</cite></blockquote>
+      <script>
+      (function(){
+        var r=document.getElementById('rs'),v=document.getElementById('rs-v'),c=document.getElementById('rs-c'),o=document.getElementById('rs-out'),g=c.getContext('2d');
+        r.oninput=function(){v.textContent=r.value;};
+        document.getElementById('rs-go').onclick=function(){
+          var p=r.value/100,N=1000,f=0,pts=[],dry=0,run=0;
+          for(var i=1;i<=N;i++){ if(Math.random()<p){f++;run=0;} else {run++; if(run>dry)dry=run;} pts.push(f/(p*i)); }
+          g.clearRect(0,0,c.width,c.height);
+          var y=function(x){return c.height-Math.min(x,2)/2*c.height;};
+          g.strokeStyle='rgba(127,127,127,.6)';g.setLineDash([4,4]);g.beginPath();g.moveTo(0,y(1));g.lineTo(c.width,y(1));g.stroke();g.setLineDash([]);
+          g.strokeStyle='#4fb3a9';g.lineWidth=2;g.beginPath();
+          for(var j=0;j<N;j++){var X=j/(N-1)*c.width;j?g.lineTo(X,y(pts[j])):g.moveTo(X,y(pts[j]));} g.stroke();
+          o.textContent='Found '+f+' blocks against about '+Math.round(p*N)+' expected (luck '+pts[N-1].toFixed(2)+'x). Longest dry spell was '+dry+' blocks. Synthetic luck only.';
+        };
+      })();
+      </script>
+      <nav class="gift-nav">
+        <a href="../index.html">← Back to the team</a>
+      </nav>
+    </article>
+    <hr style="margin:2.5em auto;max-width:640px;opacity:.4" />
+    <p class="team-kicker" style="text-align:center">Earlier creations</p>
     <article class="gift-card">
       <img class="avatar" src="../avatars/mining-economics.jpg" alt="Mira Caldera" width="140" height="140" />
       <p class="gift-who"><strong>Mira Caldera</strong> · aka Mining Economics</p>

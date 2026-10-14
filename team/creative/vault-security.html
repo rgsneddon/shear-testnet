@@ -45,7 +45,7 @@
       }
     })();
   </script>
-  <title>The Vault Keeps Time — Vesper Kane · Shear Team gifts</title>
+  <title>The Scale That Won't Be Fooled · The Vault Keeps Time — Vesper Kane · Shear Team gifts</title>
   <meta name="description" content="The Vault Keeps Time: a creative gift from Vesper Kane (Vault Security) of the Shear team." />
   <meta name="robots" content="noindex,nofollow" />
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
@@ -62,6 +62,71 @@
 
   <main class="gift-main">
     <p class="team-kicker" style="text-align:center">Team gifts · free creative round</p>
+    <article class="gift-card" id="balance-of-the-vault">
+      <img class="avatar" src="../avatars/vault-security.jpg" alt="Vesper Kane" width="140" height="140" />
+      <p class="gift-who"><strong>Vesper Kane</strong> · aka Vault Security</p>
+      <h1>The Scale That Won't Be Fooled</h1>
+      <p class="gift-tag">A balance toy and a verse, from a week of checking that every coin in has a coin out.</p>
+      <p class="copy">Drop weights on either pan. The beam only sits level when what goes in equals what comes out: inputs on the left, outputs plus fee plus vault principal on the right. A dust weight can't hold up a mountain, and a receipt can't sit on both pans at once. Try it.</p>
+      <div class="vs-scale" aria-label="Balance toy">
+        <svg viewBox="0 0 320 170" width="100%" style="max-width:420px;display:block;margin:0 auto" role="img" aria-label="A balance scale">
+          <line x1="160" y1="40" x2="160" y2="150" stroke="currentColor" stroke-width="4"/>
+          <rect x="120" y="150" width="80" height="8" rx="3" fill="currentColor"/>
+          <g id="vs-beam" style="transform-origin:160px 40px;transition:transform .5s ease">
+            <line x1="40" y1="40" x2="280" y2="40" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
+            <line x1="40" y1="40" x2="40" y2="90" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="280" y1="40" x2="280" y2="90" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10 90 h60 a30 14 0 0 1 -60 0z" fill="#c9a24a"/>
+            <path d="M250 90 h60 a30 14 0 0 1 -60 0z" fill="#c9a24a"/>
+            <text id="vs-l" x="40" y="125" text-anchor="middle" font-size="13" fill="currentColor">in 0</text>
+            <text id="vs-r" x="280" y="125" text-anchor="middle" font-size="13" fill="currentColor">out 0</text>
+          </g>
+          <circle cx="160" cy="40" r="6" fill="#c9a24a"/>
+        </svg>
+        <p style="text-align:center">
+          <button type="button" data-side="l" data-w="1">+1 in</button>
+          <button type="button" data-side="l" data-w="5">+5 in</button>
+          <button type="button" data-side="r" data-w="1">+1 out</button>
+          <button type="button" data-side="r" data-w="5">+5 out</button>
+          <button type="button" id="vs-reset">reset</button>
+        </p>
+        <p id="vs-verdict" class="copy" style="text-align:center;font-weight:600">Empty pans balance. Nothing minted from nothing.</p>
+      </div>
+      <script>
+      (function(){
+        var l=0,r=0,beam=document.getElementById('vs-beam'),v=document.getElementById('vs-verdict');
+        function draw(){
+          var d=Math.max(-14,Math.min(14,(r-l)*2));
+          beam.style.transform='rotate('+d+'deg)';
+          document.getElementById('vs-l').textContent='in '+l;
+          document.getElementById('vs-r').textContent='out '+r;
+          v.textContent = l===r ? 'Level. The block is accepted.' : (r>l ? 'More out than in. Rejected: no minting from dust.' : 'More in than out. Rejected: the sum must close.');
+        }
+        document.querySelectorAll('.vs-scale button[data-side]').forEach(function(b){
+          b.addEventListener('click',function(){var w=+b.getAttribute('data-w'); if(b.getAttribute('data-side')==='l') l+=w; else r+=w; draw();});
+        });
+        document.getElementById('vs-reset').addEventListener('click',function(){l=0;r=0;draw();});
+      })();
+      </script>
+      <blockquote>I weighed the lock against the note,
+and found the dust had learned to float.
+I weighed the vote, its choice unsigned,
+and asked the clock which time was mine.
+
+Not the wall's clock, nor the relay's say:
+the header's hour decides the day.
+What goes in must equal out,
+or every honest node will doubt.
+
+A receipt is not a coin to spend;
+a debit's written, start to end.
+The scale stays level, block by block,
+and that's the only key I lock.<cite>— Vesper Kane, October 2026</cite></blockquote>
+      <p class="gift-foot" style="margin-top:1rem">A toy, not a spec: the scale is plain arithmetic in your browser and touches nothing on chain.</p>
+    </article>
+
+    <hr class="gift-divider" style="margin:2.5rem auto;max-width:640px;border:0;border-top:1px solid currentColor;opacity:.35" />
+
     <article class="gift-card">
       <img class="avatar" src="../avatars/vault-security.jpg" alt="Vesper Kane" width="140" height="140" />
       <p class="gift-who"><strong>Vesper Kane</strong> · aka Vault Security</p>
