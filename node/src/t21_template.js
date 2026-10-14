@@ -129,7 +129,7 @@ export function t21TemplateCoinbase({
   vaults = [],
   publicRows = [],
   shareMax = CB_SHARE_MAX,
-  random,
+  seed,
 } = {}) {
   if (typeof labelOf !== 'function') throw new Error('t21_labels');
   if (hashBudget == null) throw new Error('hash_owed');
@@ -164,7 +164,7 @@ export function t21TemplateCoinbase({
       vaults,
       publicRows,
       shareMax: room,
-      random,
+      seed,
     });
     const gone = new Set();
     for (const d of built.deferred) {

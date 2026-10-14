@@ -336,8 +336,8 @@ function xorBytes(a, b) {
   return out;
 }
 
-export function wrapBlind(r, admitBase, extra, v = null) {
-  const e = randomScalar();
+export function wrapBlind(r, admitBase, extra, v = null, eph = null) {
+  const e = eph == null ? randomScalar() : eph;
   const B = typeof admitBase?.toBytes === 'function' ? admitBase : pointFrom(asU8(admitBase));
   const rEphP = G.multiply(e);
   const shared = B.multiply(e);

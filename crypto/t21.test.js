@@ -612,3 +612,24 @@ describe('T21 genesis gate', () => {
     assert.equal(fs.existsSync(new URL('../specs/t21-coinbase.md', import.meta.url)), true);
   });
 });
+
+describe('T21 seeded prover', { timeout: 600_000 }, () => {
+  const bytesOf = (tx) => JSON.stringify(tx, (k, v) => {
+    if (typeof v === 'bigint') return v.toString();
+    if (v && v.type === 'Buffer' && Array.isArray(v.data)) return Buffer.from(v.data).toString('hex');
+    if (v instanceof Uint8Array) return Buffer.from(v).toString('hex');
+    return v;
+  });
+
+  it('one seed builds the same bytes, another seed does not', () => {
+    const payees = [payee(0, [5n]), payee(1, [7n])];
+    const spec = { S: 1_000_000n, cin: 0n, u: 1n, height: 4, magic, prevHash, payees, seed: Buffer.alloc(32, 7) };
+    const a = buildT21Coinbase(spec);
+    const b = buildT21Coinbase(spec);
+    assert.equal(bytesOf(a.tx), bytesOf(b.tx));
+    const c = buildT21Coinbase({ ...spec, seed: Buffer.alloc(32, 8) });
+    assert.notEqual(bytesOf(a.tx), bytesOf(c.tx));
+    const ok = verifyT21Coinbase({ tx: a.tx, expect: expectFor(a.tx) });
+    assert.equal(ok.ok, true, ok.reason);
+  });
+});

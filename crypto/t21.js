@@ -25,7 +25,7 @@ import { bytesToNumberLE } from '@noble/curves/utils.js';
 import { fs1Leaf } from './fs1_leaf.js';
 import {
   G, H, asU8, commit, hashToScalar, openNoteAmount, pointBytes as encodePoint, pointFrom,
-  randomScalar, scalarBytes, scalarFrom, wrapNoteBlind,
+  randomScalar, scalarBytes, scalarFrom, wrapBlind,
 } from './note.js';
 import { feeOf, lawDust, scalarOk, splitLaw, t21Big } from './t21_law.js';
 import { voucherAt, voucherKeysOk, voucherLambda } from './t21_voucher.js';
@@ -190,10 +190,25 @@ function msmZero(lists) {
   }
 }
 
+/* ---------- prover nonces ---------- */
+
+const NONCE_DOM = Buffer.from('shear-t21-nonce-v1');
+const NO_BIND = Buffer.alloc(0);
+
+/**
+ * Every prover nonce and blind is H_s(dom ‖ seed ‖ bind ‖ len ‖ label ‖ i ‖ j).
+ * The seed is fresh per build. Phase-two nonces bind the statement. The
+ * native prover derives the same values, so both produce the same bytes.
+ */
+export function t21Nonce(seed, label, i = 0, j = 0, bind = NO_BIND) {
+  const l = Buffer.from(label);
+  const s = hashToScalar(NONCE_DOM, Buffer.from(asU8(seed)), Buffer.from(asU8(bind)), Buffer.from([l.length]), l, u32le(i), u32le(j));
+  return Fn.is0(s) ? 1n : s;
+}
+
 /* ---------- Schnorr on H ---------- */
 
-function proveH(P, s, extra) {
-  const k = randomScalar();
+function proveH(P, s, extra, k) {
   const R = H.multiply(k);
   const e = hashToScalar(pointBytes(P), pointBytes(R), extra);
   return { Rpt: pointBytes(R), z: scalarBytes(Fn.add(k, Fn.mul(e, mod(s)))) };
@@ -308,19 +323,15 @@ function limbsOf(n, count) {
   return out;
 }
 
-function encryptLimb(m, Y) {
-  const t = randomScalar();
-  const s = randomScalar();
+export function encryptLimb(m, Y, t, s) {
   const epV = G.multiply(t);
   const epD = Y.multiply(t).add(mulP(G, m));
   const M = commit(m, s);
   return { m, t, s, epV, epD, M };
 }
 
-function finishChunk(enc, Y, extra) {
+function finishChunk(enc, Y, extra, kT, kS) {
   const { t, s, epV, epD, M } = enc;
-  const kT = randomScalar();
-  const kS = randomScalar();
   const R1 = G.multiply(kT);
   const R2 = Y.multiply(kT).subtract(H.multiply(kS));
   const e = hashToScalar(pointBytes(R1), pointBytes(R2), pointBytes(epV), pointBytes(epD), pointBytes(M), extra);
@@ -351,15 +362,15 @@ function chunkTerms(chunk, Y, extra) {
   return [a, b];
 }
 
-function proveAggregate(chunks, encs, v, r, Y, C, extra) {
+function proveAggregate(chunks, encs, v, r, Y, C, extra, nk) {
   let Tv = 0n;
   let Tr = 0n;
   for (let j = 0; j < V_CHUNKS; j += 1) Tv = Fn.add(Tv, Fn.mul(mod(1n << (16n * BigInt(j))), encs[j].t));
   for (let j = 0; j < R_CHUNKS; j += 1) Tr = Fn.add(Tr, Fn.mul(mod(1n << (16n * BigInt(j))), encs[V_CHUNKS + j].t));
-  const kv = randomScalar();
-  const kr = randomScalar();
-  const ktv = randomScalar();
-  const ktr = randomScalar();
+  const kv = nk('agg-kv');
+  const kr = nk('agg-kr');
+  const ktv = nk('agg-ktv');
+  const ktr = nk('agg-ktr');
   const RC = G.multiply(kv).add(H.multiply(kr));
   const RVv = G.multiply(ktv);
   const RDv = Y.multiply(ktv).add(G.multiply(kv));
@@ -457,10 +468,7 @@ function decryptVe(row, y) {
 
 /* ---------- LogUp tally ---------- */
 
-function proveProduct(Ca, a, ra, Cb, rInv, extra) {
-  const kA = randomScalar();
-  const kBlind = randomScalar();
-  const kR = randomScalar();
+function proveProduct(Ca, a, ra, Cb, rInv, extra, kA, kBlind, kR) {
   const Rp = Cb.multiply(kA).subtract(H.multiply(kR));
   const Ra = G.multiply(kA).add(H.multiply(kBlind));
   const e = hashToScalar(pointBytes(Rp), pointBytes(Ra), pointBytes(Ca), pointBytes(Cb), extra);
@@ -645,6 +653,11 @@ function planPay(spec, payees) {
   return { S, cin, f, bps, u, R, W, rate, phi, rows, dust };
 }
 
+/** The owner's blind and amount wrap for a payout row, with the build's ephemeral scalar. */
+function sealWrap(r, B, noteCommit, C, v, e) {
+  return wrapBlind(r, B, Buffer.concat([Buffer.from(asU8(noteCommit)), Buffer.from(asU8(C))]), v, e);
+}
+
 /** Phase one: commitment, payout key, N-1 leaf, ρ limbs, AL-7 triple, VE ciphertexts. */
 function commitRow(ctx, row, index) {
   const { B, Y } = row.vch;
@@ -652,7 +665,7 @@ function commitRow(ctx, row, index) {
   let C = null;
   let P = null;
   for (let n = 0; n < (row.noLeaf ? 0 : LEAF_TRIES); n += 1) {
-    const rr = ctx.random();
+    const rr = ctx.nonce('r', index, n);
     const CC = commit(row.v, rr);
     const delta = payoutDelta({ magic: ctx.magic, height: ctx.height, prevHash: ctx.prevHash, index, commit: pointBytes(CC) });
     if (Fn.is0(delta)) continue;
@@ -665,23 +678,23 @@ function commitRow(ctx, row, index) {
     }
   }
   if (!C) throw fail('admit_note_point', { payee: row.payee });
-  const rw = ctx.random();
+  const rw = ctx.nonce('rw', index);
   const cw = commit(row.Wi, rw);
   const rhoLimbs = limbsOf(row.rho, RHO_LIMBS);
-  const sRho = rhoLimbs.map(() => ctx.random());
+  const sRho = rhoLimbs.map((_, k) => ctx.nonce('srho', index, k));
   let rRho = 0n;
   for (let i = 0; i < RHO_LIMBS; i += 1) rRho = mod(rRho + (1n << (16n * BigInt(i))) * sb(sRho[i]));
   const del = ctx.W - 1n - row.rho;
   const delLimbs = limbsOf(del, RHO_LIMBS);
-  const sDel = [ctx.random(), ctx.random()];
+  const sDel = [ctx.nonce('sdel', index, 0), ctx.nonce('sdel', index, 1)];
   const top = mod(-rRho - sb(sDel[0]) - (1n << 16n) * sb(sDel[1]));
   sDel.push(Fn.mul(top, Fn.inv(mod(1n << 32n))));
   const rhoK = rhoLimbs.map((m, i) => commit(m, sRho[i]));
   const delK = delLimbs.map((m, i) => commit(m, sDel[i]));
   const noteCommit = sha(Buffer.from('shear-t21-nc-v1'), row.vch.lambdaBytes, u32le(index));
-  const sealed = wrapNoteBlind({ kind: row.kind, noteCommit, commit: pointBytes(C), r: scalarBytes(r) }, B, row.v);
+  const sealed = sealWrap(r, B, noteCommit, pointBytes(C), row.v, ctx.nonce('wrap', index));
   const limbMs = [...limbsOf(row.v, V_CHUNKS), ...limbsOf(sb(r), R_CHUNKS)];
-  const encs = limbMs.map((m) => encryptLimb(m, Y));
+  const encs = limbMs.map((m, j) => encryptLimb(m, Y, ctx.nonce('enc-t', index, j), ctx.nonce('enc-s', index, j)));
   const pub = {
     kind: row.kind,
     kindCode: PAYOUT_KIND_CODE,
@@ -708,17 +721,18 @@ function commitRow(ctx, row, index) {
 
 /** Phase two: every proof against the final statement. */
 function proveRow(ctx, item, stmt) {
-  const { row, encs } = item;
+  const { row, encs, index } = item;
   const Y = row.vch.Y;
-  const chunks = encs.map((enc) => finishChunk(enc, Y, stmt));
-  const agg = proveAggregate(chunks, encs, row.v, sb(item.r), Y, item.C, stmt);
+  const nk = (label, j = 0) => ctx.nonce(label, index, j, stmt);
+  const chunks = encs.map((enc, j) => finishChunk(enc, Y, stmt, nk('chunk-kt', j), nk('chunk-ks', j)));
+  const agg = proveAggregate(chunks, encs, row.v, sb(item.r), Y, item.C, stmt, nk);
   const lawH = mod(mod(ctx.W) * sb(item.r) - mod(ctx.rate) * sb(item.rw) + item.rRho);
   const lawP = mulP(item.C, ctx.W).subtract(mulP(item.cw, ctx.rate)).add(item.rhoC).subtract(mulP(G, ctx.W * row.finEff));
-  const law = proveH(lawP, lawH, stmt);
+  const law = proveH(lawP, lawH, stmt, nk('law'));
   const pad = BP_M - VE_CHUNKS - 2 * RHO_LIMBS;
   const values = [...encs.map((e) => e.m), ...item.rhoLimbs, ...item.delLimbs, ...new Array(pad).fill(0n)];
   const blinds = [...encs.map((e) => e.s), ...item.sRho, ...item.sDel, ...new Array(pad).fill(0n)];
-  const bp = bpProve(values, blinds, BP_N, bpSeed(stmt, item.index));
+  const bp = bpProve(values, blinds, BP_N, bpSeed(stmt, index), (label, k = 0) => nk(`bp-${label}`, k));
   return {
     ...item.pub,
     ra: { chunks, agg },
@@ -727,7 +741,8 @@ function proveRow(ctx, item, stmt) {
   };
 }
 
-function proveTally(items, shares, W, stmt) {
+function proveTally(items, shares, W, stmt, nonce) {
+  const nk = (label, i = 0) => nonce(label, i, 0, stmt);
   const lambdas = items.map((it) => it.row.vch.lambda);
   const picked = pickChallenge(stmt, lambdas);
   if (!picked) throw fail('split_tally');
@@ -738,10 +753,12 @@ function proveTally(items, shares, W, stmt) {
     const a = Fn.sub(X, s.ell);
     if (Fn.is0(a)) throw fail('split_tally');
     const ai = Fn.inv(a);
-    const rInv = randomScalar();
+    const si = inv.length;
+    const rInv = nk('tally-rinv', si);
     const Cb = mulP(G, ai).add(H.multiply(rInv));
     const Ca = mulP(G, X).subtract(pointFrom(s.E));
-    inv.push({ Cinv: pointBytes(Cb), proof: proveProduct(Ca, a, mod(-sb(s.beta)), Cb, rInv, stmt) });
+    const proof = proveProduct(Ca, a, mod(-sb(s.beta)), Cb, rInv, stmt, nk('prod-ka', si), nk('prod-kb', si), nk('prod-kr', si));
+    inv.push({ Cinv: pointBytes(Cb), proof });
     hShare = mod(hShare + mod(s.w) * sb(rInv));
   }
   let Crow = Point.ZERO;
@@ -760,8 +777,8 @@ function proveTally(items, shares, W, stmt) {
   return {
     n: picked.n,
     inv,
-    balance: proveH(Cshare.subtract(Crow), hShare - hRow, stmt),
-    weight: proveH(sumW.subtract(mulP(G, W)), hW, stmt),
+    balance: proveH(Cshare.subtract(Crow), hShare - hRow, stmt, nk('tally-bal')),
+    weight: proveH(sumW.subtract(mulP(G, W)), hW, stmt, nk('tally-wt')),
   };
 }
 
@@ -836,12 +853,12 @@ function emptyCoinbase(spec, deferred) {
   return { tx, deferred, batch: [], secrets: [], W: 0n, f: 0n, phi: 0n, dust: cin + S };
 }
 
-function buildOnce(spec, payees, deferred) {
-  const random = spec.random || randomScalar;
+function buildOnce(spec, payees, deferred, seed) {
   const planned = planPay(spec, payees);
   if (planned.W === 0n) return emptyCoinbase(spec, deferred);
+  const nonce = (label, i = 0, j = 0, bind = NO_BIND) => t21Nonce(seed, label, i, j, bind);
   const ctx = {
-    magic: spec.magic, height: spec.height, prevHash: spec.prevHash, random, W: planned.W, rate: planned.rate,
+    magic: spec.magic, height: spec.height, prevHash: spec.prevHash, nonce, W: planned.W, rate: planned.rate,
   };
   const rows = planned.rows.map((g) => ({
     payee: g._index, noLeaf: !!g.forceNonLeaf, kind: 'pot', vch: g._vch, v: g.v, Wi: g.Wi, rho: g.rho, finEff: g.fin, finPub: g.fin,
@@ -851,7 +868,7 @@ function buildOnce(spec, payees, deferred) {
     if (!vch || !voucherKeysOk(spec.fee.voucher)) throw fail('fee_sched');
     rows.push({ kind: 'pool-fee', vch, v: planned.f, Wi: 0n, rho: 0n, finEff: planned.f, finPub: 0n });
   }
-  const dummySecret = spec.dummySecret || randomBytes(32);
+  const dummySecret = spec.dummySecret || sha(seed, Buffer.from('dummy'));
   for (let ctr = 0; rows.filter((r) => r.kind === 'pot').length < K_MIN && ctr < 64; ctr += 1) {
     const vch = voucherAt(dummySecret, (spec.dummyStart || 0) + ctr);
     const pub = { B: pointBytes(vch.B), Y: pointBytes(vch.Y), lambda: vch.lambdaBytes };
@@ -860,7 +877,7 @@ function buildOnce(spec, payees, deferred) {
   }
   // Row order is shuffled so a dummy's position does not mark it.
   for (let i = rows.length - 1; i > 0; i -= 1) {
-    const j = Number(bytesToNumberLE(randomBytes(6)) % BigInt(i + 1));
+    const j = Number(bytesToNumberLE(sha(seed, Buffer.from('shuffle'), u32le(i)).subarray(0, 8)) % BigInt(i + 1));
     [rows[i], rows[j]] = [rows[j], rows[i]];
   }
   const items = rows.map((row, i) => commitRow(ctx, row, i));
@@ -887,7 +904,7 @@ function buildOnce(spec, payees, deferred) {
   };
   const stmt = statementOf(skel);
   const proved = items.map((it) => proveRow(ctx, it, stmt));
-  const tally = proveTally(items, shares, planned.W, stmt);
+  const tally = proveTally(items, shares, planned.W, stmt, nonce);
   const mintG = planned.S + planned.cin - planned.dust + planned.u * planned.W + planned.phi;
   let sumC = Point.ZERO;
   let h = 0n;
@@ -895,7 +912,7 @@ function buildOnce(spec, payees, deferred) {
     sumC = sumC.add(it.C);
     h = mod(h + sb(it.r));
   }
-  const mint = proveH(sumC.subtract(mulP(G, mintG)), h, stmt);
+  const mint = proveH(sumC.subtract(mulP(G, mintG)), h, stmt, nonce('mint', 0, 0, stmt));
   const tx = {
     coinbase: true,
     cbForm: CB_FORM,
@@ -928,6 +945,8 @@ function buildOnce(spec, payees, deferred) {
  * past payeeCapLive() are deferred too. There is no last-payee re-split.
  */
 export function buildT21Coinbase(spec) {
+  // Every nonce and blind derives from this seed, so a given seed builds the same bytes.
+  const seed = spec.seed ? Buffer.from(asU8(spec.seed)) : randomBytes(32);
   const deferred = [];
   const live = [];
   // Tests pass a permissive check to build what a dishonest pool would publish.
@@ -959,14 +978,14 @@ export function buildT21Coinbase(spec) {
   let payees = withIndex(live);
   if (!payees.length) return emptyCoinbase(spec, deferred);
   try {
-    return buildOnce(spec, payees, deferred);
+    return buildOnce(spec, payees, deferred, seed);
   } catch (err) {
     if (err.reason !== 'admit_note_point' || err.payee == null) throw err;
     const bad = payees[err.payee];
     deferred.push({ voucher: bad.voucher, shares: bad.shares || [], reason: 'admit_note_point' });
     payees = withIndex(payees.filter((_, i) => i !== err.payee).map(({ _index, ...rest }) => rest));
     if (!payees.length) return emptyCoinbase(spec, deferred);
-    return buildOnce(spec, payees, deferred);
+    return buildOnce(spec, payees, deferred, seed);
   }
 }
 

@@ -398,7 +398,7 @@ export function t21PendingVaults(vault) {
 
 /**
  * The template's cb-v3 coinbase. `t21` is the pool's side: { labelOf, finder,
- * fee, bps, vault, shareMax, magic, random }. An empty batch cannot carry the
+ * fee, bps, vault, shareMax, magic, seed }. An empty batch cannot carry the
  * finder half, so fee-paying txs then wait for a round with shares.
  */
 function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKeys, height, subsidy, carryIn, hashBonusNanos, hashAcceptedSeries }) {
@@ -427,7 +427,7 @@ function t21CoinbaseFor({ t21, batch, txs, prevHeader, priorHeader, issuedJobKey
       vaults: t21PendingVaults(t21.vault),
       publicRows: split.reserve ? [sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee')] : [],
       shareMax: t21.shareMax ?? CB_SHARE_MAX,
-      random: t21.random,
+      seed: t21.seed,
     });
     return { ...made, txs: body, fees };
   };

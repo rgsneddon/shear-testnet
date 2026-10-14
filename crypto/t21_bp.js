@@ -106,7 +106,8 @@ function isPow2(m) {
  * values: bigint[] (each < 2^n). blinds: scalar[] with V_j = v_j·G + γ_j·H.
  * Returns the proof. The verifier is given the V_j points separately.
  */
-export function bpProve(values, blinds, n, seed) {
+export function bpProve(values, blinds, n, seed, rand = null) {
+  const rk = (label, k = 0) => (rand ? rand(label, k) : randomScalar());
   const m = values.length;
   if (!isPow2(m) || blinds.length !== m) throw new Error('bp_shape');
   const N = n * m;
@@ -131,11 +132,11 @@ export function bpProve(values, blinds, n, seed) {
       aR[j * n + i] = sc(bit - 1n);
     }
   }
-  const alpha = randomScalar();
+  const alpha = rk('alpha');
   const A = H.multiply(alpha).add(msm([...Gv, ...Hv], [...aL, ...aR]));
-  const sL = Array.from({ length: N }, () => randomScalar());
-  const sR = Array.from({ length: N }, () => randomScalar());
-  const rho = randomScalar();
+  const sL = Array.from({ length: N }, (_, i) => rk('sl', i));
+  const sR = Array.from({ length: N }, (_, i) => rk('sr', i));
+  const rho = rk('rho');
   const S = H.multiply(rho).add(msm([...Gv, ...Hv], [...sL, ...sR]));
   tr.point(A);
   tr.point(S);
@@ -157,8 +158,8 @@ export function bpProve(values, blinds, n, seed) {
   }
   const t1 = Fn.add(inner(l0, r1), inner(l1, r0));
   const t2 = inner(l1, r1);
-  const tau1 = randomScalar();
-  const tau2 = randomScalar();
+  const tau1 = rk('tau1');
+  const tau2 = rk('tau2');
   const T1p = (Fn.is0(t1) ? Point.ZERO : G.multiply(t1)).add(H.multiply(tau1));
   const T2p = (Fn.is0(t2) ? Point.ZERO : G.multiply(t2)).add(H.multiply(tau2));
   tr.point(T1p);
