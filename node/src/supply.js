@@ -690,10 +690,12 @@ export function foldSupply(blocks, opts = {}) {
   let vault = null;
   for (let i = 0; i < list.length; i += 1) {
     const h = Number(list[i]?.height) || (i + 1);
+    // A pruned block a proven-work header chain buried keeps that tip.
+    const own = typeof opts.burialOf === 'function' ? opts.burialOf(list[i]) : null;
     const stepped = supplyStep(state, list[i], {
       magic: opts.magic,
       unit: units[i] == null ? HASH_BONUS_NANOS : units[i],
-      tipHeight,
+      tipHeight: Number.isInteger(own) && own > tipHeight ? own : tipHeight,
       height: h,
       genesisMs,
       blockHash: list[i]?.hash || null,

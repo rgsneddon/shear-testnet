@@ -56,6 +56,32 @@ export function ipv4Subnet24(addr) {
   return m ? `${m[1]}.0` : a;
 }
 
+/**
+ * Network group for header-offer slots: an IPv4 /24 or an IPv6 /64. One
+ * operator with many addresses in one group gets one slot.
+ */
+export function peerNetGroup(addr) {
+  let a = String(addr || '').trim().toLowerCase();
+  if (a.startsWith('::ffff:')) a = a.slice(7);
+  const v4 = a.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+  if (v4) return `${v4[1]}.${v4[2]}.${v4[3]}.0/24`;
+  if (!a.includes(':')) return a;
+  const bare = a.split('%')[0];
+  const [head, tail = ''] = bare.split('::');
+  const left = head ? head.split(':') : [];
+  const right = bare.includes('::') && tail ? tail.split(':') : [];
+  const fill = bare.includes('::') ? Array(Math.max(0, 8 - left.length - right.length)).fill('0') : [];
+  const parts = left.concat(fill, right).slice(0, 4).map((x) => (parseInt(x || '0', 16) || 0).toString(16));
+  while (parts.length < 4) parts.push('0');
+  return `${parts.join(':')}::/64`;
+}
+
+/** Header-offer tier: operator-pinned dials, our other dials, or inbound. */
+export function offerTierOf(rec) {
+  if (rec?.pinned) return 'pinned';
+  return rec?.inbound ? 'inbound' : 'outbound';
+}
+
 export function noteExpensiveFail(rec) {
   if (!rec || typeof rec !== 'object') return false;
   rec.expensiveFails = (Number(rec.expensiveFails) || 0) + 1;
@@ -1527,7 +1553,13 @@ export function createP2p({
       const job = getblockServeQ.shift();
       n += 1;
       if (!job?.sock || job.sock.destroyed) continue;
-      send(job.sock, { type: 'block', magic, block: encodeWireBlock(job.block) });
+      // A held body goes out whole. A pruned block this tip does not bury is a miss.
+      const served = typeof store.servableBlock === 'function' ? store.servableBlock(job.block) : job.block;
+      if (!served) {
+        send(job.sock, { type: 'getblock_nak', magic, hash: hexHash(job.block?.hash) });
+        continue;
+      }
+      send(job.sock, { type: 'block', magic, block: encodeWireBlock(served) });
       if (job.key) recentGetblockServe.set(job.key, Date.now());
       getblockServeSent += 1;
     }
@@ -1741,6 +1773,18 @@ export function createP2p({
       const have = seenHashes();
       const page = msg.headers || [];
       rec.page = page;
+      // A pruned body served next needs these headers to show its burial.
+      if (typeof store.offerHeaders === 'function') {
+        const offered = store.offerHeaders(page, {
+          peer: `p2p:${rec.remote || rec.id}`,
+          tier: offerTierOf(rec),
+          group: peerNetGroup(rec.remote),
+        });
+        if (offered?.dropped) {
+          try { sock.destroy(); } catch { /* ignore */ }
+          return;
+        }
+      }
       const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
       const blocked = activeFailSet(rec);
       // A probe-ahead tip has not served a body, so its winning block is not
@@ -2100,6 +2144,7 @@ export function createP2p({
       height: 0,
       dialHost: extra.dialHost || '',
       inbound,
+      pinned: !inbound && extra.pinned === true,
       expensiveFails: 0,
     });
     let buf = '';
@@ -2185,7 +2230,8 @@ export function createP2p({
     });
   }
 
-  function connect(peerHost, peerPort) {
+  /** `pinned` is an operator-chosen peer (seed list, RPC connect), not one learned from addr gossip. */
+  function connect(peerHost, peerPort, { pinned = false } = {}) {
     if (!isRoutablePeerAddr(peerHost) && peerHost !== '127.0.0.1' && peerHost !== '::1') {
       return Promise.reject(new Error('bad_addr'));
     }
@@ -2199,7 +2245,7 @@ export function createP2p({
           resolve(null);
           return;
         }
-        attach(sock, { dialHost: peerHost });
+        attach(sock, { dialHost: peerHost, pinned });
         resolve(sock);
       });
       sock.once('error', reject);
@@ -2217,10 +2263,10 @@ export function createP2p({
     return false;
   }
 
-  function ensurePeer(peerHost, peerPort) {
+  function ensurePeer(peerHost, peerPort, opts = {}) {
     const p = Number(peerPort) || P2P_PORT;
     if (linkedTo(peerHost, p)) return Promise.resolve(null);
-    return connect(peerHost, p);
+    return connect(peerHost, p, opts);
   }
 
   function dialSeeds(list) {
@@ -2238,7 +2284,7 @@ export function createP2p({
         host = String(seed.host);
         port = Number(seed.port) || P2P_PORT;
       } else continue;
-      jobs.push(ensurePeer(host, port).catch(() => null));
+      jobs.push(ensurePeer(host, port, { pinned: true }).catch(() => null));
     }
     return Promise.all(jobs);
   }

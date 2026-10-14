@@ -1726,10 +1726,17 @@ export function assessHeader(block, prev, opts = {}) {
   if (decoded.version !== VERSION) return finish({ ok: false, reason: 'version' });
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return finish({ ok: false, reason: 'prev' });
+  // P2P burial gate. Structural height is the parent already accepted, plus one.
+  // A peer height field is not that number. Reject it before slot burial,
+  // ASERT, or skipFlow can read it.
+  const structuralH = (Number(prev?.height) || 0) + 1;
+  if (block.height != null && block.height !== '' && Number(block.height) !== structuralH) {
+    return finish({ ok: false, reason: 'height' });
+  }
   // The slot byte is consensus. Check it before header work so a flipped
   // trailer is share_slot and does not depend on proof-of-work. An unburied
   // pruned block keeps the samples_pruned reason from the later check.
-  const slotHeight = Number(block.height || (Number(prev?.height || 0) + 1));
+  const slotHeight = structuralH;
   const slotParent = Number(prev?.height || 0);
   // burialTip is the caller's own tip (load, fork, or suffix). A peer
   // tipHeight does not bury. Live append leaves burialTip unset.
@@ -1793,7 +1800,7 @@ export function assessHeader(block, prev, opts = {}) {
     if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
       return finish({ ok: false, reason: 'genesis_ms' });
     }
-    const heightNow = Number(block.height || (Number(prev.height) || 0) + 1);
+    const heightNow = structuralH;
     const quote = asertNextBits({
       anchorBits: parentIsGenesis ? parent.bits : GENESIS_BITS_PACKED,
       anchorTimeMs: resolvedGenesisMs,
@@ -1837,6 +1844,73 @@ export function assessHeader(block, prev, opts = {}) {
     return finish({ ok: false, reason: 'genesis_ms' });
   }
   return finish({ ok: true, hash, decoded, genesisMs: resolvedGenesisMs });
+}
+
+/** A genesis header without its body, under a claimed hash. */
+export function rootHeaderReason(header, hash) {
+  let decoded;
+  try {
+    decoded = decodeHeader(Buffer.from(header));
+  } catch {
+    return { ok: false, reason: 'bad_header' };
+  }
+  if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
+  if (!decoded.prevBlockHash.equals(GENESIS_PREV)) return { ok: false, reason: 'prev' };
+  if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) return { ok: false, reason: 'bits' };
+  const pow = Buffer.from(hash || []);
+  if (pow.length !== 32 || !meetsTarget(pow, decoded.bits)) return { ok: false, reason: 'pow' };
+  return { ok: true, decoded };
+}
+
+/**
+ * One header above a parent header, without its body: version, prev link,
+ * proof-of-work under its own bits, genesis-anchored ASERT bits, the packed
+ * range, and the timestamp rules. The base fee and the merkle root need the
+ * body, so a header run does not prove them. `hash` is the header's proven
+ * ShearHash. `parent` is { header, hash, height }.
+ */
+export function headerLinkReason(header, hash, parent, { genesisMs = 0, mtpTimestamps = null, nowMs = null } = {}) {
+  let decoded;
+  let up;
+  try {
+    decoded = decodeHeader(Buffer.from(header));
+    up = decodeHeader(Buffer.from(parent.header));
+  } catch {
+    return { ok: false, reason: 'bad_header' };
+  }
+  if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
+  if (!decoded.prevBlockHash.equals(Buffer.from(parent.hash))) return { ok: false, reason: 'prev' };
+  const pow = Buffer.from(hash || []);
+  if (pow.length !== 32 || !meetsTarget(pow, decoded.bits)) return { ok: false, reason: 'pow' };
+  const ts = Number(decoded.timestamp);
+  const parentTs = Number(up.timestamp);
+  if (!(ts > parentTs)) return { ok: false, reason: 'timestamp' };
+  const parentIsGenesis = up.prevBlockHash.equals(GENESIS_PREV);
+  const anchorMs = parentIsGenesis ? parentTs : Number(genesisMs);
+  if (!Number.isFinite(anchorMs) || anchorMs <= 0) return { ok: false, reason: 'genesis_ms' };
+  const quote = asertNextBits({
+    anchorBits: parentIsGenesis ? up.bits : GENESIS_BITS_PACKED,
+    anchorTimeMs: anchorMs,
+    anchorHeight: parentIsGenesis ? Number(parent.height || 1) : 1,
+    blockTimeMs: ts,
+    blockHeight: Number(parent.height) + 1,
+    parentTimeMs: parentTs,
+  });
+  if (!quote.ok || !bitsAcceptAsert(decoded.bits, quote) || !isPackedBits(decoded.bits)) {
+    return { ok: false, reason: 'bits' };
+  }
+  const fp = unpackBits(decoded.bits);
+  if (fp < LIVE_MIN_BITS || fp > MAX_BITS) return { ok: false, reason: 'bits' };
+  const window = Array.isArray(mtpTimestamps) && mtpTimestamps.length
+    ? mtpTimestamps.slice(-MTP_WINDOW)
+    : [parentTs];
+  if (ts > medianTimePast(window) + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
+  if (nowMs != null && Number.isFinite(Number(nowMs))) {
+    if (ts > Number(nowMs) + HEADER_AHEAD_MS || ts > Number(nowMs) + MTP_FUTURE_MS) {
+      return { ok: false, reason: 'timestamp' };
+    }
+  }
+  return { ok: true, decoded };
 }
 
 // Parent tags stay in the live set. Copying them once per block grows with
@@ -1962,11 +2036,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const hashVouts = cbVouts.filter((o) => o.kind === 'hash');
   let potNanos = 0;
   let bonusNanos = 0;
-  const height = Number(block.height || (prev?.height || 0) + 1);
-  // Burial on the live path is only the parent this caller already accepted.
+  // Structural height. assessHeader already rejected a peer height field.
   // opts.tipHeight is a peer advertisement and must not open skipFlow.
   // loadReplay is this book's own tip, used only while checking a loaded chain.
   const parentHeight = Number(prev?.height || 0);
+  const height = parentHeight + 1;
   // Live burial is the parent this caller already accepted. A peer tipHeight
   // does not open it. loadReplay is this book's own tip. Fork and suffix
   // pass burialTip, the tip of the chain they are validating, and that
@@ -2676,6 +2750,7 @@ function beginLoaded(blocks, {
   fromIndex = 0,
   prior = null,
   reorgHaltDepth = 0,
+  burialOf = null,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true, empty: true };
@@ -2772,6 +2847,7 @@ function beginLoaded(blocks, {
       trustStoredHash: trustStoredHash === true,
       trustShareWork: trustStoredHash === true && trustShareWork !== false,
       reorgHaltDepth: Math.max(0, Math.floor(Number(reorgHaltDepth) || 0)),
+      burialOf: typeof burialOf === 'function' ? burialOf : null,
     },
   };
 }
@@ -2877,6 +2953,10 @@ function stepLoaded(state, list, i) {
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
   const prevBlock = i === 0 ? null : list[i - 1];
+  // A pruned block a proven-work header chain buried keeps that tip for
+  // verify and for the owed step. Every other block is buried by this load.
+  const own = state.burialOf ? state.burialOf(block) : null;
+  const burial = Number.isInteger(own) && own > state.loadTip ? own : state.loadTip;
   const body = verifyBlockConsensus(block, prevBlock, {
     trustedPowHash: link,
     loadReplay: true,
@@ -2884,7 +2964,7 @@ function stepLoaded(state, list, i) {
     // hash on an own-keyed load, which is how the load test reaches it
     // without a second header search. createStore does not pass it.
     trustShareWork: state.trustShareWork,
-    tipHeight: state.loadTip,
+    tipHeight: burial,
     genesisMs: state.genesisMs,
     mtpTimestamps: state.mtp.slice(),
     owedIn: state.owedIn,
@@ -2917,7 +2997,7 @@ function stepLoaded(state, list, i) {
     acceptedSeries: state.acceptedSeries,
     block,
     unit: HASH_BONUS_NANOS,
-    tipHeight: state.loadTip,
+    tipHeight: burial,
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'hash_owed' };
   state.owedIn = stepped.rows;
