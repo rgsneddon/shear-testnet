@@ -219,7 +219,7 @@ Nits. The node help banner says "validating full node (ADMITv3, sends off)". `/a
 
 Not touched: the fingerprint tokens in `crypto/asert.js` (`ADMIT`, `AMOUNT`, `ADMIT_ARITY`, `shear-admit-leaf-v2`) wait for Russell's ruling. Consensus behaviour is unchanged.
 
-Every SHA above this section predates one or both rebases. The current SHAs for the auditor-round commits are: cap `bd32bfbe`, chain.js `f69be55f`, t18 `ce3f8a6f`, byte-3 spend tags `65432410`, neutral copy `a75fdcdf`, hook deleted `1c7e7397`, snap audit `b1a657da`, ADMITv3 kept `ae64cbfb`, FS-1 error `60e9c308`, Windows doc `b342e4fb`, gate copy test `4191100f`, v11 ADMITv2 `a4b2ed23`, and v12 sends-off copy `c8f8a319`.
+Every SHA above this section predates one or both rebases. The current SHAs for the auditor-round commits are: cap `222aefec`, chain.js `e136cdf7`, t18 `5747c3a5`, byte-3 spend tags `2159f7f7`, neutral copy `a26071de`, hook deleted `cc097a59`, snap audit `a17b9f32`, ADMITv3 kept `09253e1f`, FS-1 error `6e91b0c6`, Windows doc `d9cc373a`, gate copy test `21e6c016`, v11 ADMITv2 `d87368a1`, and v12 sends-off copy `325434d0`.
 
 Tests at this head:
 
@@ -227,4 +227,6 @@ Tests at this head:
 - Node, all pass: `test_admit_byte_v12` 2/0, `test_fs1_send_gate_v12` 11/0, `test_fs1_admit_divergence` 5/0, `test_fs1_sync_routes` 14/0, `test_fs1_tree` 18/0, `test_flow_v3_verify` 1/0, `test_flow_v3_accept` 1/0, `test_finder_levy` 1/0, `test_finder_levy_accept` 1/0, `test_admit_membership_bind` 1/0, `test_gate_evm` 4/0, `test_rpc` 3/0, `crypto/mempool.test.js` 1/0, `test_hardening_p0` 10/0, `test_admit_v1_grep` 2/0, `test_audit_admit_byte2` 1/0, `forbid_privacy_regressions` 7/0, `test_public_copy` 6/0, site `test_clients` 4/0, site `test_docs` 4/0, `pool/tests/test_brand` 11/0, and `pool/tests/test_pool` 33/0 (run alone, since it timed out under parallel load).
 - These fail the same way on feat at `1f69c557`: `test_money_range_v12` 0/2 (`custodial_pull`) and `forbid_foreign_names` 1/1.
 - Not finished: `test_ibd_unsigned` mines at the 17-bit genesis difficulty and was stopped at 900s. The full `test_spend_tags_v12` hits the 420s timeout on a real prove.
-- `dart analyze lib`: 0 errors.
+- `dart analyze lib`: 0 errors. `flutter test test/t18_off_ui_test.dart` (Flutter 3.47.7): **1 pass, 0 fail**, "selection, prove, and sign run off the caller isolate".
+
+The `decodeWireBlock` credit-column fix in `node/src/p2p.js` is now its own commit (`639cc075`), split out of the cap and gate-reasons commit (`0e49741a`) at the Codebase Auditor's request. The tree is unchanged by the split.
