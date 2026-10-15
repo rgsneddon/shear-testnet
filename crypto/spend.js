@@ -426,6 +426,7 @@ export const V12_VALUE_KINDS = new Set([
   'lock',
   'vote',
   'withdraw',
+  'reward-claim',
   'b-spend',
 ]);
 
@@ -446,8 +447,28 @@ export function txKind(tx) {
 export function v12KindRejected(tx) {
   if (!tx || tx.coinbase) return null;
   const kind = txKind(tx);
-  if (!kind || !V12_VALUE_KINDS.has(kind)) return { ok: false, reason: 'kind' };
-  return null;
+  if (kind === 'claim') {
+    const vout = Array.isArray(tx?.vout) ? tx.vout : [];
+    const stated = tx?.nanos != null && tx.nanos !== '';
+    const nanos = Math.floor(Number(tx?.nanos || 0));
+    let opened = 0;
+    let badRow = false;
+    for (const row of vout) {
+      const raw = row?.valueProof?.v != null ? row.valueProof.v : row?.nanos;
+      const n = Math.floor(Number(raw || 0));
+      if (!(Number.isFinite(n) && n > 0)) badRow = true;
+      else opened += n;
+    }
+    // Finder-fee fee row: no amount and no outputs, so nothing is minted.
+    // A stated amount must equal the sum of the outputs. A missing output,
+    // a row of zero or less, or a sum that is not the stated amount does not conserve.
+    if (vout.length === 0 && !stated) return null;
+    if (vout.length === 0 || badRow || !(opened > 0) || !stated || !Number.isFinite(nanos) || nanos !== opened) {
+      return { ok: false, reason: 'conservation' };
+    }
+  }
+  if (kind && V12_VALUE_KINDS.has(kind)) return null;
+  return { ok: false, reason: 'kind' };
 }
 
 /**
@@ -515,7 +536,8 @@ const BODY_KEYS = new Set([
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
-  'coinbase', 'carryNanos', 'share', 'withdrawNonce',
+  'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit', 'rewardRoot',
+  'nullifier',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -530,7 +552,7 @@ const VIN_KEYS = new Set([
 const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
-  'portalId', 'memo', 'memoCt',
+  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch',
 ]);
 
 const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);

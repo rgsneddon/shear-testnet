@@ -141,12 +141,14 @@ describe('verifyBlock Phase B Flow levy', () => {
     assert.equal(allowed.ok, false);
     assert.equal(allowed.reason, 'admit_version', allowed.reason);
     const split = splitLevy(need);
-    const finderO = paid.txs[0].vout.find((o) => o.kind === 'finder-fee');
-    const reserveO = paid.txs[0].vout.find((o) => o.kind === 'reserve-fee');
+    const finderNotes = paid.txs[0].vout.filter((o) => o.kind === 'finder-fee');
+    assert.equal(finderNotes.length, 1);
+    assert.equal(paid.txs[0].vout.some((o) => o.kind === 'reserve-fee'), false);
+    const finderO = finderNotes[0];
     const finder = finderO?.commit ? (verifySealedNote(finderO, split.finder) ? split.finder : -1) : Number(finderO?.nanos || 0);
-    const reserve = reserveO?.commit ? (verifySealedNote(reserveO, split.reserve) ? split.reserve : -1) : Number(reserveO?.nanos || 0);
+    assert.equal(split.reserve, 0);
+    assert.equal(finder, need);
     assert.equal(finder, split.finder);
-    assert.equal(reserve, split.reserve);
 
     const valueNanos = 77;
     const evmNeed = levyNanos(valueNanos);

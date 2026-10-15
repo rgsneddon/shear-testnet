@@ -108,14 +108,14 @@ describe('node Reserve vault', () => {
     assert.equal(c.reserveJoinCutoffDays, 1);
     assert.equal(c.reserveOracle, RESERVE_ORACLE_ID);
     assert.equal(c.reserveOracleDefaultBps, RESERVE_ORACLE_DEFAULT_BPS);
-    assert.equal(c.reserveOracleDefaultBps, 264);
+    assert.equal(c.reserveOracleDefaultBps, 284);
     assert.equal(c.reserveEpochDays, 4);
     assert.equal(c.interestDenomDays, INTEREST_DENOM_DAYS);
     assert.equal(c.interestDenomDays, 400);
     assert.equal(c.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(c.hashBonusNanos, 1);
     assert.equal(c.mainnet, false);
-    assert.equal(c.magic, 'shear-testnet-v11');
+    assert.equal(c.magic, 'shear-testnet-v12');
   });
 
   it('lock spends mature Continuum, refuses when spendable is short, withdraw returns principal + staked interest', { timeout: 600_000 }, async () => {

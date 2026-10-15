@@ -350,12 +350,14 @@ describe('privacy.walk', () => {
     assert.match(fp, /KDF=argon2id-shewall/);
     assert.match(fp, /RESERVE=shear-reserve-v1/);
     assert.match(fp, /RESERVE_EVM=1/);
-    assert.match(fp, /RESERVE_INTEREST=4d-bps-floor/);
+    assert.match(fp, /RESERVE_REWARD=4d-bps-floor/);
+    assert.doesNotMatch(fp, /RESERVE_INTEREST=/);
+    assert.doesNotMatch(fp, /INTEREST=epoch-bps-floor/);
     assert.match(fp, /ORACLE=basket-mean-14/);
     assert.match(fp, /VORTEX=vort1-pin/);
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
-    assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
+    assert.match(fp, /LEVY_SPLIT=100-finder-work,empty=public-finder-note/);
     assert.match(fp, /ADMIT=ADMITv3/);
     assert.match(fp, /RANGE=packed-bit/);
     assert.doesNotMatch(fp, /RANGE=bpplus/);

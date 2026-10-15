@@ -32,8 +32,14 @@ export function extraMint({ programId, to, nanos, kind }) {
     return { ok: false, reason: 'mint_forbidden' };
   }
   if (isShearAddress(to) || !isDestAddress(to)) return { ok: false, reason: 'shear1' };
-  const n = Number(nanos);
-  if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_nanos' };
+  let n;
+  if (typeof nanos === 'bigint') {
+    if (nanos <= 0n) return { ok: false, reason: 'bad_nanos' };
+    n = nanos <= 9007199254740991n ? Number(nanos) : nanos;
+  } else {
+    n = Number(nanos);
+    if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: 'bad_nanos' };
+  }
   return { ok: true, programId, to, nanos: n, kind: k, mint: true };
 }
 

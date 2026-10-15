@@ -4,10 +4,11 @@ The Reserve stays a complete product surface. Privacy-class may wrap the vault a
 
 - Program: `shear-reserve-v1`. Exactly one stable vault note per identity (`shear-reserve-v1` root, height 0).
 - Kinds: `lock`, `vote`, `withdraw` (amount-bound mint only). `wrapMintForbidden`. Third-party vortice cannot mint SHE.
-- Interest: `floor(staked * committedBps / 10000)` over 400 days. Idle (late 99 days) = 0 interest, can still vote.
-- `committedBps` is the last `observeRate` sealed in a prior block. verifyBlock does not read `reserve/latest.json`.
-- Oracle: unweighted mean of the frozen 14-bank basket. Default 264 bps until first sealed observe.
+- Reward: `floor(active * epochBps / 10000)` for the epoch (4 days testnet / 400 days mainnet). Idle (last 1 testnet day / 99 mainnet days) = 0 reward, can still vote.
+- `epochBps` is fixed at the genesis trimmed mean until the oracle activation height. After that, it is the 3b miner median over the report window. There is no per-epoch step and no aggregate cap. The rate is floored at 0% so a lock never reduces principal. A vote does not set it. A single-miner `observe` is rejected. verifyBlock does not read `reserve/latest.json` or a local snapshot. Templates do not pre-fill reports.
+- Banks, in order: FED, BOE, ECB, BOJ, BOC, RBA, RBNZ, SNB, RIKSBANK, NORGES, DNBANK, BOK, BOI, CNB. Each rate is the official base rate in tenths of a basis point (Fed: target-range median; ECB: median of deposit facility and main refinancing rate). The freeze is a trimmed mean: drop the two lowest and two highest tenths, half-up the middle 10, then half-up to whole bps, then floor at 0. This bundle is 284 bps. At least 10 of the 14 sources must be in range (−1%..+100%, −1000..+100000 tenths) or the previous epoch bps is kept. A substituted tenth is not this release's bundle.
+- Live fetches of central-bank websites are not consensus. Nodes cannot be required to observe the same page. A new official rate enters only when a consensus release replaces the attested integers and the fingerprint root.
 - Wrong amount = `mint_amount`. Vote cannot set `liveHashBonusNanos < 1`. The 1 SHE pot is not on the ballot.
 - Portal check at admit. Openings local-only; stripped before chain.bin / P2P / public RPC.
-- EVM `Reserve.sol` + gate remain. Levy cap 0.001 SHE, 50/50 finder / Reserve vault.
+- EVM `Reserve.sol` + gate remain. Levy cap 0.001 SHE. All of a block's transaction fees go to that block's miners. None is a vault fee share.
 - Wallet Vortex hosts The Reserve. APIs `/api/vault/reserve` stay.

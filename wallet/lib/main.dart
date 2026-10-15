@@ -3906,9 +3906,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               'The Reserve is Shear governance. Deposit any amount into your own portal, '
               'in as many transactions as you like. Only a vote needs that sum to reach π SHE, '
               'then 9 confirmations. The first portal to reach π opens a 400-day epoch. '
-              'Last-99-day deposits still unlock a vote but earn no stake. '
-              'Interest is a variable rate observed by The Reserve oracle. '
+              'Last-99-day deposits still unlock a vote but earn no Reserve reward. '
+              'The lock issuance rate is frozen for the epoch. '
               'The winning vote then moves the hash bonus by one unit.',
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              "Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.",
             ),
             const SizedBox(height: 8),
             _glowBanner(
@@ -3968,8 +3972,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               const SizedBox(height: 8),
               _glowBanner(
                 context,
-                key: const Key('reserve-apr'),
-                text: 'Oracle observed Apr $rate · ${vaultObserveLabel(sealed: false)}',
+                key: const Key('reserve-issuance-rate'),
+                text: 'Lock issuance rate $rate · ${vaultObserveLabel(sealed: false)}',
               ),
             ],
             if (p.deposits.isNotEmpty) ...[
@@ -4019,6 +4023,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               key: Key('reserve-ip-disclaimer'),
             ),
             const SizedBox(height: 8),
+            if (p.claimableRewards > 0)
+              Text(
+                'Fee ${formatShe(rewardClaimFee() / kUnitsPerShe)} SHE',
+                key: const Key('reserve-claim-fee'),
+              ),
             Wrap(spacing: 8, runSpacing: 8, children: [
               FilledButton(
                 key: const Key('reserve-send'),
@@ -4165,7 +4174,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               textAlign: TextAlign.justify,
             ),
           Text(
-            'Accrued this epoch  $accruedShe SHE  ·  updates daily at frozen oracle bps; paid at epoch end',
+            'Reserve reward this epoch  $accruedShe SHE  ·  lock issuance rate; paid at epoch end',
             textAlign: TextAlign.justify,
           ),
           Text(

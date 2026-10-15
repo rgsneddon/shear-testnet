@@ -141,5 +141,23 @@ describe('range JS is opt-in and hidden amounts fail closed', () => {
     assert.match(opted.stdout, /OPT_IN_OK/);
     assert.match(opted.stderr, /SHEAR RANGE WARNING: SHEAR_RANGE_JS=1 is verifying range proofs in JavaScript/);
     assert.match(opted.stderr, /SHEAR RANGE WARNING: proving a range in JavaScript/);
+
+    const unsealed = runPolicy({ SHEAR_ADMIT_DISABLE: '1' }, `
+      import { attachDummyOuts, sealFlowVout } from './crypto/dummy.js';
+      const row = { address: 'ssa1q', nanos: 10, kind: 'send' };
+      const tx = { kind: 'send', vout: [row] };
+      let flow = '';
+      try { attachDummyOuts(tx); }
+      catch (err) { flow = String(err && err.message); }
+      if (flow !== 'range_native_required') throw new Error('draft returned: ' + flow);
+      let one = '';
+      try { sealFlowVout(row); }
+      catch (err) { one = String(err && err.message); }
+      if (one !== 'range_native_required') throw new Error('output returned: ' + one);
+      console.log('THROW_OK');
+    `);
+    assert.equal(unsealed.status, 0, unsealed.stderr || unsealed.stdout);
+    assert.match(unsealed.stdout, /THROW_OK/);
+    assert.equal(unsealed.stdout.includes('nanos'), false);
   });
 });

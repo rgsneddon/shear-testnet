@@ -29,7 +29,7 @@ describe('confirm policy is not consensus', () => {
     assert.equal(POLICY_BANDS.pool_merchant, 12);
     assert.equal(POLICY_BANDS.join_mark_paid, undefined);
     const fp = consensusFingerprint();
-    assert.match(fp, /:9:1:1000:/);
+    assert.match(fp, /:9:0:1000:/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.match(fp, /:4:17:1:/); // LIVE_MIN_BITS, GENESIS_BITS — policy 12 is not this pin
     assert.equal(fp.includes(':30:'), false);
