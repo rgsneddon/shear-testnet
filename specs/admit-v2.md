@@ -82,7 +82,7 @@ fee    ≤ CAP
 | `RATE_DEN` | `2048` (1 unit per 2048 weight-bytes) |
 | `CAP` | `100_000_000` = `0.001 SHE` |
 
-Same weight ⇒ same required fee for amounts 1 and `10^9`. A spend that sets fee from 2 bps of `v` is invalid. Default wallet feerate = this RATE (relay minimum). Paid levy splits 50/50 finder / Reserve vault. Mempool orders by `fee / weight`.
+Same weight ⇒ same required fee for amounts 1 and `10^9`. A spend that sets fee from 2 bps of `v` is invalid. Default wallet feerate = this RATE (relay minimum). Paid levy goes in full to that block's miners (by work when the round has shares, one public finder-fee note when it does not). Mempool orders by `fee / weight`.
 
 ## Reject reasons
 
@@ -94,6 +94,7 @@ Rebuild J, both trees, and spent tags from the sealed chain. Do not delete spent
 
 ## Fingerprint pins
 
+<!-- Legacy Pasta fingerprint of this retired statement. Not the live book. Removal is a follow-up. -->
 `ADMIT=ADMITv3`, `RANGE=bpplus`, `LEVY=weight`, `NETWORK=shear-testnet-v8`, `FORK=work-then-lowhash`, cycle `pallas-vesta-pasta`, `ADMIT_ARITY=32`, `ADMIT_K=1`, `ADMIT_LEAF=shear-admit-leaf-v2`.
 
 ## Performance bar
@@ -108,4 +109,4 @@ Proof: few KB (≤ 32768). Node RAM: tens of MB, not ~1 GB. Miss 100k → fix cy
 
 ## P0 (unchanged law, this book)
 
-`HASH_TX_LIVE=1`, 1 unit per proven floor-share lag-1, no clientHashes, no finder-only, 1 SHE pot PROP, pool 100 bps of the **pot**, ShearK job 128 bytes. Reserve lock/vote/withdraw/claim, 400-day floor APR, 14-bank oracle default 264 bps, EVM, `shear-reserve-v1`. Vortex `vort1` pin, `gateVorticeRegister`, no third-party mint.
+`HASH_TX_LIVE=1`, 1 unit per proven floor-share lag-1, no clientHashes, no finder-only, 1 SHE pot PROP, pool 100 bps of the **pot**, ShearK job 128 bytes. Reserve lock/vote/withdraw/claim, 400-day floor APR, 14-bank oracle default 284 bps, EVM, `shear-reserve-v1`. Vortex `vort1` pin, `gateVorticeRegister`, no third-party mint.

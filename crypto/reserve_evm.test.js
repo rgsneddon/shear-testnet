@@ -15,6 +15,7 @@ import {
   reservePinOk,
   callReserve,
   encodeDeposit,
+  encodePinClock,
   encodeVote,
   encodeEnact,
   encodeWithdraw,
@@ -27,6 +28,7 @@ import {
   selector,
   shearMagicBytes,
 } from './reserve_evm.js';
+import { GENESIS_BPS } from './reserve_oracle.js';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -36,7 +38,7 @@ const destB = 'ssa1ppppppppppppppppppppppppppppppppppppppppppppppppppppp';
 describe('Reserve bytecode on the Shear EVM', () => {
   it('bootReserveEvm defaults to MAGIC_TESTNET', async () => {
     const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
-    assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET \}/);
+    assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET\b/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
@@ -161,15 +163,16 @@ describe('Reserve bytecode on the Shear EVM', () => {
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
+    assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const d = await callReserve(s, encodeDeposit(destA, PI_SHE_NANOS, t0));
     assert.equal(d.ok, true, d.reason);
     const view0 = decodePublicView((await callReserve(s, encodePublicView(t0), { staticCall: true })).returnValue);
-    assert.equal(view0.currentEpoch, 1);
+    assert.equal(view0.currentEpoch, 0);
     assert.equal(view0.liveHashBonusNanos, 1);
     const v = await callReserve(s, encodeVote(destA, 1, t0 + 2));
     assert.equal(v.ok, true, v.reason);
     const epochMs = EPOCH_DAYS_TESTNET * 86_400_000;
-    const cutoffMs = Math.floor((99 * epochMs) / 400);
+    const cutoffMs = Math.floor(epochMs / 4);
     const late = t0 + epochMs - cutoffMs + 1_000;
     const bob = await callReserve(s, encodeDeposit(destB, PI_SHE_NANOS, late));
     assert.equal(bob.ok, true, bob.reason);
@@ -186,6 +189,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(en.ok, true, en.reason);
     const view = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(view.liveHashBonusNanos, 2);
+    assert.equal(view.oracleBps, 284);
     assert.equal(view.bonusEnacted, true);
     const w = await callReserve(s, encodeWithdraw(destB, end));
     assert.equal(w.ok, true, w.reason);
@@ -198,11 +202,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.notEqual(after.votesIncrease + after.votesDecrease + after.votesHold, 0);
   });
 
-  it('constructor freezes 264; second vote is VoteLocked; mid-epoch observe does not mint', async () => {
+  it('constructor freezes the trimmed bundle; second vote is VoteLocked; mid-epoch observe does not mint', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
+    assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const view0 = decodePublicView((await callReserve(s, encodePublicView(t0), { staticCall: true })).returnValue);
-    assert.equal(view0.oracleBps, 264);
+    assert.equal(view0.oracleBps, 284);
     const d = await callReserve(s, encodeDeposit(destA, NANOS_PER_SHE, t0));
     assert.equal(d.ok, true, d.reason);
     const rest = PI_SHE_NANOS - NANOS_PER_SHE;
@@ -210,13 +215,13 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal((await callReserve(s, encodeVote(destA, 1, t0 + 2))).ok, true);
     const locked = await callReserve(s, encodeVote(destA, 3, t0 + 3));
     assert.equal(locked.ok, false);
-    assert.equal((await callReserve(s, encodeObserveRate(9999, t0 + 4))).ok, true);
+    assert.equal((await callReserve(s, encodeObserveRate(9999, t0 + 4))).ok, false);
     const end = t0 + RESERVE_EPOCH_MS;
     assert.equal((await callReserve(s, encodeEnact(end))).ok, true);
     const w = await callReserve(s, encodeWithdraw(destA, end));
     assert.equal(w.ok, true, w.reason);
     const paid = decodeWithdraw(w.returnValue);
-    assert.equal(paid.interest, Number((BigInt(PI_SHE_NANOS) * 264n) / 10000n));
+    assert.equal(paid.interest, Number((BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS)) / 10000n));
     const view = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(view.votesIncrease, 1);
     assert.notEqual(view.votesIncrease + view.votesDecrease + view.votesHold, 0);
@@ -225,6 +230,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
   it('withdraw after a new epoch opens does not decrement the new piles', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
+    assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(s, encodeDeposit(destA, PI_SHE_NANOS, t0))).ok, true);
     assert.equal((await callReserve(s, encodeVote(destA, 1, t0 + 2))).ok, true);
     const end1 = t0 + RESERVE_EPOCH_MS;
@@ -240,5 +246,24 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.ok(view.votesIncrease >= 0);
     assert.ok(view.votesDecrease >= 0);
     assert.ok(view.votesHold >= 0);
+  });
+
+  it('deleting the ClockUnpinned revert lets an unpinned lock through', async () => {
+    const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
+    const line = 'if (clockGenesis == 0) revert ClockUnpinned();';
+    assert.equal(sol.includes(line), true);
+    const t0 = 1_700_000_000_000;
+    const live = await bootReserveEvm();
+    const denied = await callReserve(live, encodeDeposit(destA, PI_SHE_NANOS, t0));
+    assert.equal(denied.ok, false);
+    const stripped = sol.replace(line, '');
+    assert.notEqual(stripped, sol);
+    const bad = compileReserveSource(stripped);
+    assert.notEqual(bad.bytecode, String(
+      JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8')).bytecode || '',
+    ).replace(/^0x/i, '').toLowerCase());
+    const open = await bootReserveEvm({ bytecode: bad.bytecode });
+    const allowed = await callReserve(open, encodeDeposit(destA, PI_SHE_NANOS, t0));
+    assert.equal(allowed.ok, true, allowed.reason);
   });
 });

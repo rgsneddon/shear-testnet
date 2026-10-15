@@ -2,9 +2,8 @@
   "version": "shear-reserve-oracle-v1",
   "asOf": "2026-08-01",
   "observedAt": "2026-08-01T12:00:00Z",
-  "averagePercent": 2.636,
-  "averageScale": "tenths_of_basis_point",
-  "averageInteger": 2636,
+  "consensusBps": 284,
+  "consensusScale": "basis_point",
   "changed": true,
   "changedBanks": [
     "FED",

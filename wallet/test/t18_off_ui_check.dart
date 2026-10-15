@@ -4,9 +4,11 @@ import 'dart:typed_data';
 
 import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_ed25519.dart';
+import 'package:shear_wallet/shear_fs1.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_native_prove.dart';
+import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_pack.dart';
 
 /// Production hops. Run with `dart run test/t18_off_ui_check.dart`.
@@ -137,71 +139,65 @@ Future<void> main() async {
 
   Object? proveErr;
   try {
+    final stranger = sealCoinbaseNote(5, dest20: Uint8List(20), kind: 'pot');
     await proveFlowOffUi(<String, dynamic>{
-      'vin': <Map<String, dynamic>>[
-        {'commit': Uint8List(32), 'r': Uint8List(32)},
+      'notes': Uint8List(64)
+        ..[0] = 4
+        ..setRange(32, 64, stranger['commit'] as Uint8List),
+      'indices': <int>[0],
+      'spent': <Map<String, dynamic>>[
+        {'kind': 'pot', 'commit': stranger['commit'], 'noteCommit': stranger['noteCommit'], 'r': stranger['r']},
       ],
-      'vout': <Map<String, dynamic>>[],
       'spendSeed': Uint8List(32)..[0] = 9,
-      'spentNote': <String, dynamic>{
-        'kind': 'pot',
-        'commit': Uint8List(32)..[0] = 1,
-        'noteCommit': Uint8List(32)..[0] = 2,
-        'r': Uint8List(32)..[0] = 3,
-      },
-      'pubs': <Uint8List>[Uint8List(32)..[0] = 4],
-      'commits': <Uint8List>[Uint8List(32)..[0] = 5],
+      'vout': <Map<String, dynamic>>[],
+      'digest': Uint8List(32),
+      'anchor': 8,
+      'tree': const Fs1TreeState().toWire(),
     }).timeout(const Duration(seconds: 30));
     throw StateError('prove accepted a pub that is not the note');
   } on StateError catch (e) {
     proveErr = e.message;
-    if (e.message != kErrSendUnavailable) rethrow;
+    if (e.message != 'fs1_not_owner') rethrow;
   }
   if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {
     throw StateError('prove stamp $debugSendProveStamp ui $ui err $proveErr');
   }
 
-  // The sealed note is still a range opening. Membership prove is closed.
-  var closed = 0;
+  // Every sealed note joins the admit set as an FS-1 leaf. One owned note
+  // among them proves off the caller isolate.
   final flowSeed = Uint8List(32)..[0] = 4;
-  for (final note in sealedSends) {
-    final pub = note['admitPub'];
-    final commit = note['commit'];
-    final nc = note['noteCommit'];
-    final opening = note['r'];
-    if (pub is! Uint8List || pub.length != 32) {
-      throw StateError('admit pub nanos=${note['nanos']}');
+  final owned = attachAdmitPub(sealCoinbaseNote(1000, dest20: Uint8List(20)..[0] = 1, kind: 'pot'), spendSeed: flowSeed);
+  final book = <Map<String, dynamic>>[...sealedSends, owned];
+  final notes = Uint8List(64 * book.length);
+  for (var i = 0; i < book.length; i++) {
+    final pub = book[i]['admitPub'];
+    final commit = book[i]['commit'];
+    if (pub is! Uint8List || pub.length != 32 || commit is! Uint8List || commit.length != 32) {
+      throw StateError('admit pub nanos=${book[i]['nanos']}');
     }
-    if (commit is! Uint8List || nc is! Uint8List || opening is! Uint8List) {
-      throw StateError('spend fields nanos=${note['nanos']}');
-    }
-    try {
-      await proveFlowOffUi(<String, dynamic>{
-        'vin': <Map<String, dynamic>>[
-          {'commit': commit, 'r': opening},
-        ],
-        'vout': <Map<String, dynamic>>[],
-        'spendSeed': flowSeed,
-        'spentNote': <String, dynamic>{
-          'kind': note['kind'],
-          'commit': commit,
-          'noteCommit': nc,
-          'r': opening,
-        },
-        'pubs': <Uint8List>[pub],
-        'commits': <Uint8List>[commit],
-      }).timeout(const Duration(seconds: 30));
-      throw StateError('spend proved nanos=${note['nanos']}');
-    } on StateError catch (e) {
-      if (e.message != kErrSendUnavailable) rethrow;
-      closed += 1;
-    }
-    if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {
-      throw StateError('spend stamp $debugSendProveStamp ui $ui nanos=${note['nanos']}');
-    }
+    if (!noteIsFs1Leaf(pub, commit)) throw StateError('not a leaf nanos=${book[i]['nanos']}');
+    notes.setRange(64 * i, 64 * i + 32, pub);
+    notes.setRange(64 * i + 32, 64 * (i + 1), commit);
   }
-  if (closed != sealedSends.length || closed == 0) {
-    throw StateError('spend closed $closed');
+  final proveWatch = Stopwatch()..start();
+  final proved = await proveFlowOffUi(<String, dynamic>{
+    'notes': notes,
+    'indices': <int>[book.length - 1],
+    'spent': <Map<String, dynamic>>[
+      {'kind': 'pot', 'commit': owned['commit'], 'noteCommit': owned['noteCommit'], 'r': owned['r']},
+    ],
+    'spendSeed': flowSeed,
+    'vout': <Map<String, dynamic>>[],
+    'digest': Uint8List(32),
+    'anchor': 8,
+    'tree': const Fs1TreeState().toWire(),
+  }).timeout(const Duration(minutes: 2));
+  final closed = proveWatch.elapsedMilliseconds;
+  final blob = proved['fs1'];
+  if (blob is! Uint8List || blob.isEmpty || blob[0] != kFs1Wire) throw StateError('fs1 blob');
+  if (proved.containsKey('t')) throw StateError('blind left the worker');
+  if (debugSendProveStamp.isEmpty || debugSendProveStamp == ui) {
+    throw StateError('spend stamp $debugSendProveStamp ui $ui');
   }
 
   final seed = Uint8List(32)..[0] = 7;
@@ -257,7 +253,7 @@ Future<void> main() async {
     'T18_OFF_UI pass select=$debugSendSelectStamp seal=$debugSendSealStamp '
     'prove=$debugSendProveStamp sign=$debugSendSignStamp ui=$ui '
     'sealErr=$sealErr proveErr=$proveErr rangeMs=${rangeMs.join(',')} '
-    'proveClosed=$closed '
+    'proveMs=$closed '
     'selectNanos=${debugSendSelectNanos.join(',')}',
   );
 }

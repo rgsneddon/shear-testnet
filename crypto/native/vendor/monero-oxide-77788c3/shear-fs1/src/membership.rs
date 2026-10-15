@@ -15,9 +15,11 @@
 //! verifier's public check.
 //!
 //! [`Fs1Params::fixed`] builds the curve parameters from the fixed derivation
-//! in [`crate::generators`]. [`Fs1Params::open`] builds them from the upstream
+//! in [`crate::generators`]. Status: pending PA+CA ratification. It is not a
+//! ratified consensus set. [`Fs1Params::open`] builds them from the upstream
 //! insecure test generators and exists only under `cfg(test)` or the
-//! `insecure-test-generators` feature. Neither is a ratified consensus set.
+//! `insecure-test-generators` feature. Those test generators are never a
+//! consensus set.
 //!
 //! [`prove`] runs on the calling thread. [`prove_threaded`] and
 //! [`prove_prepared`] spread the paths and the blind divisors over a fixed
@@ -87,6 +89,13 @@ impl DiscreteLogParameter for HeliosBits {
   #[allow(clippy::cast_possible_truncation)]
   type ScalarBits = U<{ <<Helios as Ciphersuite>::F as PrimeField>::NUM_BITS as usize }>;
 }
+
+/// Layer-one curve name in the consensus fingerprint.
+pub const CYCLE_C1: &str = "selene";
+/// Layer-two curve name in the consensus fingerprint.
+pub const CYCLE_C2: &str = "helios";
+/// Consensus fingerprint `ADMIT_CYCLE`: `fs1-` || [`CYCLE_C1`] || `-` || [`CYCLE_C2`].
+pub const ADMIT_CYCLE: &str = "fs1-selene-helios";
 
 /// The curve cycle: Ed25519 outputs, Selene and Helios layers.
 pub struct ShearCurves;
@@ -763,9 +772,21 @@ pub fn prove_prepared(
   params: &Fs1Params,
   tree: &impl Fs1Tree,
   notes: &[OpenNote],
-  mut blinds: PreparedBlinds,
+  blinds: PreparedBlinds,
   threads: usize,
 ) -> Result<Proved, Fs1Error> {
+  prove_prepared_scalars(params, tree, notes, blinds, threads).map(|(proved, _)| proved)
+}
+
+/// [`prove_prepared`], also returning each input's blind scalars in input order.
+/// The spend proof needs them; they are wiped when dropped.
+pub(crate) fn prove_prepared_scalars(
+  params: &Fs1Params,
+  tree: &impl Fs1Tree,
+  notes: &[OpenNote],
+  mut blinds: PreparedBlinds,
+  threads: usize,
+) -> Result<(Proved, Vec<BlindScalars>), Fs1Error> {
   check_notes(tree, notes)?;
   let n = notes.len();
   if blinds.layers != tree.layers() || blinds.inputs() < n {
@@ -783,6 +804,7 @@ pub fn prove_prepared(
   let mut output_blinds = Vec::with_capacity(n);
   let mut opened = Vec::with_capacity(n);
   let mut input_bytes = Vec::with_capacity(n);
+  let mut kept = Vec::with_capacity(n);
   for (output, (blinds, scalars)) in outputs.iter().zip(blinds.outputs.drain(.. n)) {
     let points = open_input_points(output, &scalars, params);
     opened.push(Input::new(points[0], points[1], points[2], points[3]).map_err(|_| Fs1Error::Blind)?);
@@ -792,6 +814,7 @@ pub fn prove_prepared(
     }
     input_bytes.push(encoded);
     output_blinds.push(blinds);
+    kept.push(scalars);
   }
   let c1_blinds: Vec<_> = blinds.c1.drain(.. per_c1 * n).collect();
   let c2_blinds: Vec<_> = blinds.c2.drain(.. per_c2 * n).collect();
@@ -805,7 +828,7 @@ pub fn prove_prepared(
   if bytes.len() != proof_len(n, tree.layers()) {
     return Err(Fs1Error::Io);
   }
-  Ok(Proved { bytes, inputs: opened, input_bytes, root: tree.root(), layers: tree.layers() })
+  Ok((Proved { bytes, inputs: opened, input_bytes, root: tree.root(), layers: tree.layers() }, kept))
 }
 
 /// Verify a proof produced by [`prove`] against the same parameters.

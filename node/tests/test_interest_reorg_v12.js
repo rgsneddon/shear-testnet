@@ -17,7 +17,6 @@ import {
   EPOCH_DAYS_TESTNET,
 } from '../../crypto/asert.js';
 import { MS_PER_DAY } from '../../crypto/pot_sched.js';
-import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { lockTx, withdraw, portalIdFromDest } from '../../crypto/reserve_vault.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { createStore } from '../src/store.js';
@@ -67,7 +66,12 @@ describe('store reorg across a withdraw', () => {
     const miner = dest(3);
     const portal = dest(9);
     const pid = portalIdFromDest(portal);
-    const interest = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
+    const lockDelay = 90_000;
+    const remain = EPOCH_MS - lockDelay;
+    const interest = Number(
+      (BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS) * BigInt(remain))
+      / (BigInt(EPOCH_MS) * 10000n),
+    );
     assert.ok(interest > 0);
     const local = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wd-reorg-local-')));
     const peer = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wd-reorg-peer-')));

@@ -6,7 +6,7 @@ This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs
 
 | Repo | What |
 |------|------|
-| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v11`) |
+| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v12`; previous book `shear-testnet-v11`) |
 | [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
 
 Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts only the Continuum 0.70 disk image: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
@@ -22,15 +22,15 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Node pin: **Shear Sentinel v18** (product 18.0). Windows, Linux, and Fedora zips are one release: [v18](https://github.com/rgsneddon/shear-testnet/releases/tag/v18) ([windows](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-windows.zip), [linux](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-linux.zip), [fedora](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-fedora.zip)). This cut has no macOS node zip, no Arch node zip, and no openSUSE node zip. Git tag `v16` stays on the same commit as tag `0.66`.
 - Previous note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. `6054186` is quarantine.)
 - Stratum: public `stratum+ssl://pool.shear.digital:443`; cleartext migrate `pool.shear.digital:1111`; localhost solo `127.0.0.1:1111`. Port 1113 is only the pool process TLS listener. Public packets to 1113 do not arrive, so miners use 443. nginx ssl_preread sends a ShearK ClientHello (no ALPN) to that listener and keeps browser ALPN on the site.
-- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v11`)
+- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v12`)
 - Site: https://shear.digital
 - Docs: https://shear.digital/docs/#/surfaces
 - Pool: https://pool.shear.digital
-- Chain: `shear-testnet-v11`
+- Chain: `shear-testnet-v12`
 
 Mainnet `shear-v1` is **not live**. The public countdown is 30th October 2026 at 1400hrs UK time. That countdown is a display date. It is not genesis and it does not emit. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
 
-Block pot starts at **1.00 SHE** and falls **0.01 SHE per Vortex epoch** to a **0.20 SHE** floor. Testnet epochs are **4 days** (so rollovers can be watched); mainnet epochs are **400 days**. Hash bonus stays governance-voted. Reserve interest is oracle-frozen each epoch. The pot schedule is not votable.
+Block pot starts at **1.00 SHE** and falls **0.01 SHE per Vortex epoch** to a **0.20 SHE** floor. Testnet epochs are **4 days** (so rollovers can be watched); mainnet epochs are **400 days**. Hash bonus stays governance-voted. The lock issuance rate is frozen when an epoch opens. A vote does not set it. The amount paid on withdraw is the Reserve reward. Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins. The pot schedule is not votable.
 
 One proven floor share mints hash-bonus units onto the dest that hashed. User transfers are signed Flow. The header commits a continuity root. Full nodes validate shareBatch until prune-1000; money vouts remain. The public pool is an equal node with a stratum.
 
@@ -88,7 +88,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"18.0"`, `"magic":"shear-testnet-v11"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"18.0"`, `"magic":"shear-testnet-v12"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 

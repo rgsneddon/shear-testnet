@@ -81,5 +81,5 @@
     "monero-fcmp-plus-plus",
     "monero-fcmp-plus-plus-generators"
   ],
-  "wired": false
+  "wired": true
 }

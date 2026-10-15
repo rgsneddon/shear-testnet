@@ -56,3 +56,6 @@ deploy/nginx-*-secrets.conf
 # Operator spend seed is 0600 on the pool datadir / Desktop vault — never git.
 pool-spend.seed
 **/pool-spend.seed
+
+# FS-1 phone bench output (crypto/native/phone-bench.*)
+crypto/native/phone-bench-*.jsonl

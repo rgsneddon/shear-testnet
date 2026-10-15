@@ -31,13 +31,32 @@ use curve25519_dalek::traits::IsIdentity;
 use rand_core::{OsRng, RngCore};
 
 pub const MAX_PROOF: usize = 32768;
-/// Height-4 v3 proof: header + 3 paired layers + both published buckets
-/// + the dest-bind leaf + the point-open trailer = 43490.
-/// Height 5 does not fit. The v2 cap stays 32768.
-pub const MAX_PROOF_V3: usize = 43490;
 pub const VERSION: u8 = 2;
 pub const VERSION_V3: u8 = 3;
 const HDR: usize = 1 + 32 * 8 + 1; // version, tag, ct, dest_root, c_root, p_com, r_x, z_x, z_w, n_layers
+
+/// Largest FS-1 spend blob consensus accepts.
+///
+/// Derived as `spend_blob_len(INPUT_MAX)`: the 35-byte head plus
+/// `Fcmp::proof_size` for 8 inputs at the fixed tree depth. The retired
+/// height-4 v3 bucket length is not this bound.
+pub fn max_fs1_blob() -> usize {
+    shear_fs1::spend_blob_len(shear_fs1::INPUT_MAX).expect("FS-1 accepts 8 inputs")
+}
+
+/// Wire length of a legacy v3 bucket proof. Not the FS-1 consensus bound.
+fn v3_wire_len(layers: usize) -> usize {
+    let tail = 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN;
+    if layers <= 1 {
+        return HDR + tail;
+    }
+    HDR + (layers - 1) * (PAIRED_LEN + 128) + tail
+}
+
+/// Four-layer v3 bucket proof. Private to the retired v3 prover and verifier.
+pub(crate) fn v3_legacy_cap() -> usize {
+    v3_wire_len(4)
+}
 
 pub struct Proof {
     pub bytes: Vec<u8>,
@@ -257,7 +276,7 @@ pub fn admit_prove_in(
     proof.extend_from_slice(&z_w.to_bytes());
     proof.push(n_layers as u8);
     proof.extend_from_slice(&mem);
-    if proof.len() > MAX_PROOF_V3 {
+    if proof.len() > v3_legacy_cap() {
         return None;
     }
     Some((c_tilde, proof))
@@ -627,7 +646,7 @@ pub fn admit_verify_in(
     if proof.is_empty() || proof[0] != VERSION_V3 {
         return false;
     }
-    if proof.len() > MAX_PROOF_V3 {
+    if proof.len() > v3_legacy_cap() {
         return false;
     }
     if n > 0 && proof.len() == 4 + 64 + n * 32 {
@@ -893,23 +912,35 @@ fn forest_bind_v3(ctx: &[u8], pairs: &[([u8; 32], [u8; 32])]) -> [u8; 32] {
 
 #[cfg(test)]
 mod cap_tests {
-    use super::MAX_PROOF_V3;
-    use crate::select::{LEAF_V3_LEN, PAIRED_LEN, POINT_OPEN_LEN};
+    use crate::select::{LEAF_V3_LEN, POINT_OPEN_LEN};
     use crate::tree::ARITY;
-
-    fn v3_proof_len(layers: usize) -> usize {
-        let tail = 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN;
-        if layers <= 1 {
-            return super::HDR + tail;
-        }
-        super::HDR + (layers - 1) * (PAIRED_LEN + 128) + tail
-    }
 
     #[test]
     fn v3_cap_fits_height_4_and_rejects_height_5() {
-        assert_eq!(v3_proof_len(4), MAX_PROOF_V3);
-        assert!(v3_proof_len(5) > MAX_PROOF_V3);
-        assert_eq!(v3_proof_len(1), super::HDR + 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN);
+        let cap = super::v3_legacy_cap();
+        assert_eq!(super::v3_wire_len(4), cap);
+        assert!(super::v3_wire_len(5) > cap);
+        assert_eq!(super::v3_wire_len(1), super::HDR + 2 * ARITY * 32 + LEAF_V3_LEN + POINT_OPEN_LEN);
+    }
+
+    #[test]
+    fn fs1_bound_is_eight_inputs_at_the_tree_depth() {
+        let max = super::max_fs1_blob();
+        let n = shear_fs1::INPUT_MAX;
+        assert_eq!(max, shear_fs1::spend_blob_len(n).unwrap());
+        assert_eq!(max, shear_fs1::SPEND_HEAD + shear_fs1::proof_len(n, shear_fs1::DEPTH));
+        assert!(max < super::v3_legacy_cap());
+        for k in 1..n {
+            assert!(shear_fs1::spend_blob_len(k).unwrap() < max);
+        }
+        assert!(shear_fs1::spend_blob_len(n + 1).is_none());
+        let mut exact = vec![0u8; max];
+        exact[0] = shear_fs1::SPEND_WIRE;
+        exact[1] = u8::try_from(shear_fs1::DEPTH).unwrap();
+        exact[2] = u8::try_from(n).unwrap();
+        assert!(shear_fs1::spend_blob_fits(&exact, n));
+        exact.push(0);
+        assert!(!shear_fs1::spend_blob_fits(&exact, n));
     }
 
     /// A 23-round one-wire blob is 1920 bytes. Replacing only the raw C bucket
@@ -928,12 +959,13 @@ mod cap_tests {
         let responses = POINT_OPEN_LEN - 32;
         assert_eq!(bucket, 1024);
         assert_eq!(responses, 1056);
-        let bucket_only = v3_proof_len(4) - bucket + blob;
+        let cap = super::v3_legacy_cap();
+        let bucket_only = super::v3_wire_len(4) - bucket + blob;
         assert_eq!(bucket_only, 44386);
-        assert!(bucket_only > MAX_PROOF_V3);
-        let with_open = v3_proof_len(4) - bucket - responses + blob;
+        assert!(bucket_only > cap);
+        let with_open = super::v3_wire_len(4) - bucket - responses + blob;
         assert_eq!(with_open, 43330);
-        assert!(with_open <= MAX_PROOF_V3);
+        assert!(with_open <= cap);
         let slot_gates = 5_630_566usize;
         assert!(slot_gates > (1 << 22) && slot_gates <= (1 << 23));
     }

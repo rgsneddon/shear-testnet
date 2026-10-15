@@ -18,6 +18,15 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
+import {
+  bundleObservationRoot,
+  GENESIS_BPS,
+  oracleActivationPin,
+  ORACLE_WINDOW_MAINNET,
+  ORACLE_WINDOW_TESTNET,
+  ORACLE_WINDOW_MS,
+} from './reserve_oracle.js';
+export { GENESIS_BPS };
 import { HISTORICAL_TIP } from './historical_prefix.js';
 import {
   MAGIC_TESTNET_V1,
@@ -210,7 +219,10 @@ export const MTP_WINDOW = 11;
 export const MTP_FUTURE_MS = 2 * 60 * 60_000;
 export const SPEND_SIG_DOMAIN = 'shear-spend-v1';
 export const SPEND_SIG = 'ed25519-shear-spend-v1';
-export const INTEREST_LAW = 'epoch-bps-floor';
+/** Epoch reward rate: floor(active lock × bundled bps / 10000). */
+export const REWARD_LAW = 'epoch-bps-floor';
+export const INTEREST_LAW = REWARD_LAW;
+/** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
@@ -266,13 +278,14 @@ export const HASH_TX_LIVE = 1;
 export const DEST_HRP = 'ssa';
 export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
-export const FEE_SPLIT_FINDER_BPS = 5000;
-export const FEE_SPLIT_RESERVE_BPS = 5000;
+/** Every transaction-fee unit is paid to that block's miners. None is reserved. */
+export const FEE_SPLIT_FINDER_BPS = 10000;
+export const FEE_SPLIT_RESERVE_BPS = 0;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
  * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
- * In the fingerprint. shear-testnet-v11 book.
+ * In the fingerprint. shear-testnet-v12 book.
  */
 export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */
@@ -280,7 +293,32 @@ export const SAMPLE_PRUNE_CONFIRMATIONS = 1000;
 const SAMPLE_PRUNE_PIN = SAMPLE_PRUNE_CONFIRMATIONS;
 /** Third-party/merchant wait (~18 min). Not consensus. Not fingerprint. */
 export const MIN_CONFIRMS_POLICY = 12;
-export const RESERVE_FEE_FIRST = 1;
+/** Reserve reward is minted in full. The fee bank is not a reward source. */
+export const RESERVE_FEE_FIRST = 0;
+
+/**
+ * FS-1 parameters for the consensus fingerprint, as the shear-fs1 crate and
+ * N-1 use them. Layer one is Selene, 38 wide (fcmps LAYER_ONE_LEN); layer two
+ * is Helios, 18 wide (LAYER_TWO_LEN); DEPTH layers. The leaf is O || I || C
+ * on Ed25519, FS1_LEAF_BYTES long, with I = E(Hp(admitPub)) under FS1_HP_DST
+ * (crypto/fs1_leaf.js, shear-fs1 src/leaf.rs). The cycle token is shear-fs1
+ * `ADMIT_CYCLE`, built from `CYCLE_C1` (Selene) and `CYCLE_C2` (Helios).
+ * PSA-df82-1: these parameters are the live tokens. The retired Pasta bucket
+ * arity and leaf domain must not reappear in this file.
+ */
+export const FS1_LAYER_ONE_LEN = 38;
+export const FS1_LAYER_TWO_LEN = 18;
+export const FS1_DEPTH = 7;
+export const FS1_LEAF_LEN = 96;
+export const FS1_LEAF_HP_DST = 'shear-admit-Hp';
+/** shear-fs1 `CYCLE_C1`. */
+export const FS1_CYCLE_C1 = 'selene';
+/** shear-fs1 `CYCLE_C2`. */
+export const FS1_CYCLE_C2 = 'helios';
+/** shear-fs1 `ADMIT_CYCLE`: fs1- || CYCLE_C1 || - || CYCLE_C2. */
+export const ADMIT_CYCLE_ID = `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`;
+export const ADMIT_ARITY_ID = `fs1-selene${FS1_LAYER_ONE_LEN}-helios${FS1_LAYER_TWO_LEN}-d${FS1_DEPTH}`;
+export const ADMIT_LEAF_ID = `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DST}`;
 
 /** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
 export function consensusFingerprint(magic = MAGIC_TESTNET) {
@@ -332,13 +370,14 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `DEST_HRP_SSA_ONLY=1`,
     `SPEND_SIG_ONLY=1`,
     `MEMO_NOT_DEST_KEYED=1`,
-    `INTEREST=${INTEREST_LAW}`,
+    `RESERVE_REWARD=${REWARD_LAW}`,
     `ORACLE=${ORACLE_LAW}`,
     `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
     `POT_PROP=${POT_PROP}`,
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
-    `RESERVE_ORACLE=shear-reserve-oracle-v1:maxBps=10000:maxStep=100:maxAgeMs=${ORACLE_MAX_AGE_MS}:quorum=14`,
+    `RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2/3:windowMain=${ORACLE_WINDOW_MAINNET}:windowTest=${ORACLE_WINDOW_TESTNET}:windowMs=${ORACLE_WINDOW_MS}:floorBps=0:sourceTenths=-1000..100000:activation=${oracleActivationPin()}`,
+    `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=2:root=${bundleObservationRoot()}`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${network}`,
     'FORK=work-then-lowhash',
@@ -371,19 +410,20 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'KDF=argon2id-shewall',
     `RESERVE=${RESERVE_PROGRAM}`,
     'RESERVE_EVM=1',
-    `RESERVE_INTEREST=${days}d-bps-floor`,
+    `RESERVE_REWARD=${days}d-bps-floor`,
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',
     'LEVY_CAP=0.001-SHE',
-    'LEVY_SPLIT=50-50-finder-reserve',
+    'LEVY_SPLIT=100-finder-work,empty=public-finder-note',
     'LEVY=weight',
     'ADMIT=ADMITv3',
     'N1=admit-note-point',
     'RANGE=packed-bit',
-    'ADMIT_CYCLE=pallas-vesta-pasta',
-    'ADMIT_ARITY=32',
+    `ADMIT_CYCLE=${ADMIT_CYCLE_ID}`,
+    `ADMIT_ARITY=${ADMIT_ARITY_ID}`,
     'ADMIT_K=1',
-    'ADMIT_LEAF=shear-admit-leaf-v2',
+    `ADMIT_LEAF=${ADMIT_LEAF_ID}`,
+    'ADMIT_SPEND=fs1-f1-agg-sal-v1',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
@@ -458,7 +498,7 @@ export function consensusLaw() {
     mainnetFingerprint: mainnetFingerprint(),
   };
 }
-/** Reserve may mint interest. Extra mint is Reserve-only. */
+/** Reserve may mint the reserve reward. Extra mint is Reserve-only. */
 export const RESERVE_PROGRAM = 'shear-reserve-v1';
 /** Dead program id. extraMintAllowed is always false. */
 export const JOIN_PROGRAM = 'shear-join-v1';
@@ -471,10 +511,10 @@ export const PRIOR_TO_SHEAR_UNITS = NANOS_PER_SHE / PRIOR_UNITS_PER_COIN;
 export const PI_SHE_NANOS = 314159265358; // floor(π × 10^11) SHE in protocol units
 /** Default book is testnet (4-day epochs). Mainnet fingerprint uses 400. */
 export const RESERVE_EPOCH_DAYS = EPOCH_DAYS_TESTNET;
+/** Testnet stake window: the last quarter of the 4-day epoch, which is 1 day. */
 export const RESERVE_JOIN_CUTOFF_DAYS = 1;
-export const INTEREST_DENOM_DAYS = EPOCH_DAYS_MAINNET;
-export const GENESIS_BPS = 264;
-export const EPOCH_BPS_MAX_STEP = 100;
+export const REWARD_DENOM_DAYS = EPOCH_DAYS_MAINNET;
+export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;
 export const ORACLE_MAX_AGE_MS = 14 * 86_400_000;
 export const RESERVE_EPOCH_MS = RESERVE_EPOCH_DAYS * 86_400_000;
 export const RESERVE_JOIN_CUTOFF_MS = RESERVE_JOIN_CUTOFF_DAYS * 86_400_000;
@@ -509,18 +549,14 @@ export function wrapMintForbidden(tx) {
 export function extraMintAllowed(programId, opts = {}) {
   const id = String(programId || '');
   const kind = String(opts.kind || '');
-  // The Reserve is the only vortice that extra-mints ongoing SHE (oracle APR, per portal).
+  // The Reserve is the only vortice that extra-mints SHE (reserve reward, per lock).
   if (id === RESERVE_PROGRAM) {
     if (opts.alreadyMinted || opts.preMint) return false;
     if (kind === 'lock' || kind === 'vote' || kind === 'claim') return false;
-    if (opts.feeFirst) {
-      if (opts.gateOk === false) return false;
-      const gap = Math.max(0, Number(opts.reward || 0) - Number(opts.feeBank || 0));
-      if (gap <= 0) return false;
-      if (opts.amount != null && Number(opts.amount) > gap) return false;
-      return true;
-    }
-    if (kind !== 'withdraw') return false;
+    // Fee-bank shortfall is not a reward. A feeFirst request never mints.
+    if (opts.feeFirst) return false;
+    // A reward-claim mints the committed reward once. The old `claim` kind does not.
+    if (kind !== 'withdraw' && kind !== 'reserve-reward' && kind !== 'reward-claim') return false;
     return true;
   }
   return false;

@@ -178,6 +178,8 @@ export function txVerifyWeight(tx) {
   }
   const nIn = Array.isArray(tx.vin) ? tx.vin.length : 0;
   const nOut = Array.isArray(tx.vout) ? tx.vout.length : 0;
+  const fs1 = tx.fs1 != null && tx.fs1 !== '' ? fs1VerifyWeight(nIn) : null;
+  if (fs1 != null) return W_TX + fs1 + W_OUT * nOut;
   let w = W_TX + W_IN * nIn + W_OUT * nOut;
   if (txIsReserveAction(tx)) w += W_SEAL;
   return w;

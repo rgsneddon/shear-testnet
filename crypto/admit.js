@@ -120,6 +120,10 @@ export function admitProveV3({ x, index, pubs, commits, c, t, ctx }) {
   };
 }
 
+/**
+ * Legacy Pasta verifier: `shear-admit-leaf-v2` on the Pallas–Vesta cycle, arity 32.
+ * The live fingerprint leaf is FS-1 Selene/Helios. Removal is a follow-up.
+ */
 export function admitVerifyV3(proof, fluxset, extra = {}) {
   try {
     const blob = proof?.blob || proof?.proof;
@@ -304,22 +308,33 @@ export function emptyFluxset() {
   };
 }
 
-/** A lock or vote receipt is the vault's record, not a note. A withdraw payout is. */
+/**
+ * A vote receipt is not a note. A lock is a note once it carries its unlock
+ * time. A lock receipt with no unlock stays out of the admit set.
+ */
 export function outputJoinsAdmitSet(tx, o) {
   if (!o?.admitPub) return false;
   const k = String(o?.kind || tx?.kind || '');
-  return k !== 'lock' && k !== 'vote';
+  if (k === 'vote') return false;
+  if (k === 'lock') return Number(o.unlockAtMs) > 0;
+  return true;
 }
 
-/** An admitPub on a lock or vote receipt would make the stake spendable twice. */
+/**
+ * An admitPub on a vote, or on a lock that is not a time-locked note, would
+ * make the stake spendable twice. A time-locked lock joins only as an FS-1 leaf.
+ */
 export function receiptAdmitRejected(tx) {
   const kind = String(tx?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote') return null;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   for (const o of outs) {
     const k = String(o?.kind || kind);
-    if ((k === 'lock' || k === 'vote') && o?.admitPub) {
+    if (k === 'vote' && o?.admitPub) return { ok: false, reason: 'receipt_admitpub' };
+    if (k === 'lock' && o?.admitPub && !(Number(o.unlockAtMs) > 0)) {
       return { ok: false, reason: 'receipt_admitpub' };
+    }
+    if (k === 'lock' && Number(o.unlockAtMs) > 0 && o?.admitPub && !fs1LeafFor(o)) {
+      return { ok: false, reason: 'admit_note_point' };
     }
   }
   return null;

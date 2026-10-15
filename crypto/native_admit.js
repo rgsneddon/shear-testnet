@@ -10,10 +10,29 @@ const require = createRequire(import.meta.url);
 const dir = path.dirname(fileURLToPath(import.meta.url));
 
 let native = null;
-try {
-  native = require(path.join(dir, 'native', 'shearadmit.node'));
-} catch {
+let nativeLoadError = '';
+
+function noteNativeLoadFailure(reason) {
   native = null;
+  nativeLoadError = String(reason || 'unknown');
+  console.error(`shearadmit.node failed to load: ${nativeLoadError}`);
+}
+
+const admitDisabled = String(process.env.SHEAR_ADMIT_DISABLE || '').trim() === '1';
+if (admitDisabled) {
+  noteNativeLoadFailure('SHEAR_ADMIT_DISABLE=1');
+} else {
+  try {
+    native = require(path.join(dir, 'native', 'shearadmit.node'));
+  } catch (err) {
+    const code = err && err.code ? `${err.code}: ` : '';
+    const msg = err && err.message ? err.message : String(err);
+    noteNativeLoadFailure(`${code}${msg}`);
+  }
+}
+
+export function nativeLoadErrorText() {
+  return nativeLoadError;
 }
 
 export function nativeLoaded() {
@@ -166,6 +185,97 @@ export function nativeVerifyRange(c, proof) {
   try {
     const pr = Buffer.isBuffer(proof) ? proof : (proof ? Buffer.from(proof) : Buffer.alloc(0));
     return !!native.verifyRange(as32(c), pr);
+  } catch {
+    return false;
+  }
+}
+
+/** True when the addon carries the FS-1 spend. */
+export function fs1NativeLoaded() {
+  return !!(native && typeof native.fs1Verify === 'function' && typeof native.fs1TreeNew === 'function');
+}
+
+export function fs1BlobCap(n) {
+  if (!fs1NativeLoaded()) return 0;
+  try {
+    return Number(native.fs1BlobCap(n >>> 0)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function fs1RecordBytes() {
+  if (!fs1NativeLoaded()) return 0;
+  return Number(native.fs1RecordBytes()) || 0;
+}
+
+/** FS-1 root of a note buffer (64 bytes per note). Null when a note is not a leaf. */
+export function fs1RootOf(notes) {
+  if (!fs1NativeLoaded()) return null;
+  try {
+    const o = native.fs1Root(Buffer.from(notes));
+    return o && o.length === 32 ? Buffer.from(o) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A native FS-1 tree. The addon frees it with the returned object. */
+export function fs1TreeNew() {
+  if (!fs1NativeLoaded()) return null;
+  try {
+    return native.fs1TreeNew();
+  } catch {
+    return null;
+  }
+}
+
+export function fs1TreeLen(h) {
+  return Number(native.fs1TreeLen(h));
+}
+
+export function fs1TreeAppend(h, notes) {
+  try {
+    return !!native.fs1TreeAppend(h, Buffer.from(notes));
+  } catch {
+    return false;
+  }
+}
+
+export function fs1TreeTruncate(h, len) {
+  try {
+    return !!native.fs1TreeTruncate(h, len);
+  } catch {
+    return false;
+  }
+}
+
+export function fs1TreeRoot(h) {
+  try {
+    const o = native.fs1TreeRoot(h);
+    return o && o.length === 32 ? Buffer.from(o) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Prove a spend against a tree handle. `xs` is one 32-byte admit scalar per index. */
+export function fs1Prove(h, { indices, xs, digest, anchor, threads = 0 }) {
+  if (!fs1NativeLoaded() || !h) return null;
+  try {
+    const o = native.fs1Prove(h, indices.map(Number), Buffer.concat(xs.map((x) => as32(x))), as32(digest), Number(anchor), threads >>> 0);
+    if (!o || o === false) return null;
+    return { fs1: Buffer.from(o.fs1), records: Buffer.from(o.records), t: Buffer.from(o.t) };
+  } catch {
+    return null;
+  }
+}
+
+/** Consensus verify of one FS-1 spend. False when the addon is missing. */
+export function fs1Verify({ fs1, records, root, digest, anchor }) {
+  if (!fs1NativeLoaded()) return false;
+  try {
+    return !!native.fs1Verify(Buffer.from(fs1), Buffer.from(records), as32(root), as32(digest), Number(anchor));
   } catch {
     return false;
   }

@@ -7,7 +7,7 @@ import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
-import { reserveAction } from './reserve_vault.js';
+import { reserveAction, blockRewardRoot, packRewardProof } from './reserve_vault.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
 
@@ -82,7 +82,7 @@ export function encodeBytes(data) {
 export function encodeDeposit(dest, nanos, nowTs) {
   const body = encodeBytes(dest);
   return concat(
-    selector('deposit(bytes,uint256,uint256)'),
+    selector('lock(bytes,uint256,uint256)'),
     pad32(96),
     pad32(nanos),
     pad32(nowTs),
@@ -99,6 +99,29 @@ export function encodeVote(dest, choice, nowTs) {
     pad32(nowTs),
     body,
   );
+}
+
+export function encodeCommitRewards(nowTs) {
+  return concat(selector('commitRewards(uint256)'), pad32(nowTs));
+}
+
+export function encodeClaim(nullifierHex, nanos, proof) {
+  const id = Buffer.from(String(nullifierHex || ''), 'hex');
+  const word = new Uint8Array(32);
+  if (id.length === 32) word.set(id);
+  const raw = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
+  return concat(
+    selector('claim(bytes32,uint256,bytes)'),
+    word,
+    pad32(nanos),
+    pad32(96),
+    encodeBytes(raw),
+  );
+}
+
+export function decodeBytes32(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  return Buffer.from(b.subarray(0, 32)).toString('hex');
 }
 
 export function encodeWithdraw(dest, nowTs) {
@@ -119,6 +142,42 @@ export function encodeObserveRate(bps, nowTs) {
   return concat(selector('observeRate(uint256,uint256)'), pad32(bps), pad32(nowTs));
 }
 
+export function encodeCommitRate(epochIdx, bps, nowTs, chainGenesis = 0) {
+  return concat(
+    selector('commitRate(uint256,uint256,uint256,uint256)'),
+    pad32(epochIdx),
+    pad32(bps),
+    pad32(nowTs),
+    pad32(chainGenesis),
+  );
+}
+
+export function encodePinClock(chainGenesis) {
+  return concat(selector('pinClock(uint256)'), pad32(chainGenesis));
+}
+
+export function encodeSyncEpoch(nowTs) {
+  return concat(selector('syncEpoch(uint256)'), pad32(nowTs));
+}
+
+export function encodeHoldEpochRoll(hold) {
+  return concat(selector('holdEpochRoll(bool)'), pad32(hold ? 1 : 0));
+}
+
+export function encodeRewardNanos(active, bps) {
+  return concat(selector('rewardNanos(uint256,uint256)'), pad32(active), pad32(bps));
+}
+
+export function encodeTrimmedMean(tenths) {
+  const vals = Array.isArray(tenths) ? tenths : [];
+  return concat(
+    selector('trimmedMeanBps(int256[])'),
+    pad32(32),
+    pad32(vals.length),
+    ...vals.map((n) => pad32(n)),
+  );
+}
+
 export function encodePublicView(nowTs) {
   return concat(selector('publicView(uint256)'), pad32(nowTs));
 }
@@ -130,6 +189,10 @@ export function encodePortalOf(dest) {
 
 export function encodeLiveBonus() {
   return selector('liveHashBonusNanos()');
+}
+
+export function encodeCutoffLengthMs() {
+  return selector('cutoffLengthMs()');
 }
 
 function readU256(buf, off = 0) {
@@ -185,11 +248,14 @@ function shearCommon() {
 
 const SYSTEM = createAddressFromString('0x0000000000000000000000000000000000002701');
 
-export async function bootReserveEvm({ network = MAGIC_TESTNET } = {}) {
+export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
   const common = shearCommon();
   const evm = await createEVM({ common });
   const magic = shearMagicBytes(network);
-  const ctor = concat(hexToBytes(RESERVE_BYTECODE), magic);
+  const code = bytecode == null
+    ? RESERVE_BYTECODE
+    : (String(bytecode).startsWith('0x') ? String(bytecode) : `0x${bytecode}`);
+  const ctor = concat(hexToBytes(code), magic);
   const created = await evm.runCall({
     caller: SYSTEM,
     data: ctor,
@@ -294,7 +360,7 @@ export function isReserveCall(tx) {
   if (!tx || tx.coinbase) return false;
   if (String(tx.programId || '') !== RESERVE_PROGRAM) return false;
   const k = txKindOf(tx);
-  return k === 'lock' || k === 'vote' || k === 'withdraw';
+  return k === 'lock' || k === 'vote' || k === 'withdraw' || k === 'reward-claim';
 }
 
 export function isEvmValueTx(tx) {
@@ -302,9 +368,26 @@ export function isEvmValueTx(tx) {
   return txKindOf(tx) === 'evm-value';
 }
 
+export function encodeNextEpochBps() {
+  return selector('nextEpochBps()');
+}
+
+export function encodeRateCommitEpoch() {
+  return selector('rateCommitEpoch()');
+}
+
+export function encodeEpochRateOf(epochIdx) {
+  return concat(selector('epochRateOf(uint256)'), pad32(epochIdx));
+}
+
+export function decodeNextEpochBps(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  return Number(readU256(b, 0));
+}
+
 export function blockNeedsEvm(txs) {
   const list = Array.isArray(txs) ? txs : [];
-  if (list[0]?.coinbase && list[0].observe != null) return true;
+  if (list[0]?.coinbase && (list[0].observe != null || list[0].rateCommit != null || list[0].rewardRoot)) return true;
   return list.some((tx) => isReserveCall(tx) || isEvmValueTx(tx));
 }
 
@@ -344,6 +427,12 @@ export async function executeReserveTx(session, tx, nowMs) {
     if (!dest) return { ok: true };
     return callReserve(session, encodeVote(dest, choice, nowMs));
   }
+  if (kind === 'reward-claim') {
+    const proof = tx?.evmProof || tx?.proof;
+    const packed = Buffer.isBuffer(proof) ? proof : packRewardProof(proof);
+    if (!tx?.nullifier || !packed) return { ok: false, reason: 'stake_reward' };
+    return callReserve(session, encodeClaim(tx.nullifier, nanos, packed));
+  }
   if (kind === 'withdraw') {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
     if (viewGot.ok) {
@@ -362,48 +451,92 @@ export async function executeReserveTx(session, tx, nowMs) {
 }
 
 /** Run pinned Reserve bytecode + EVM SHE value for a block body. Fail closed. */
-export async function executeBlockEvm(session, txs, nowMs) {
+export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
-  const prior = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
-  if (prior.ok) {
-    const view0 = decodePublicView(prior.returnValue);
-    const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + RESERVE_EPOCH_MS;
-    if (ended && !view0.bonusEnacted) {
-      const en = await callReserve(session, encodeEnact(nowMs));
-      if (!en.ok) return { ok: false, reason: en.reason || 'enact' };
+  const list = Array.isArray(txs) ? txs : [];
+  const cb = list[0] || null;
+  let held = false;
+  const fail = (reason) => ({ ok: false, reason });
+  try {
+    if (Number(genesisMs) > 0) {
+      const pinned = await callReserve(session, encodePinClock(genesisMs));
+      if (!pinned.ok) return fail(pinned.reason || 'clock');
+      evm.calls += 1;
     }
-  }
-  for (const tx of (txs || []).slice(1)) {
-    if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
-    const got = await executeReserveTx(session, tx, nowMs);
-    if (!got.ok) {
-      if (isEvmValueTx(tx)) {
-        evm.calls += 1;
-        evm.failed = (evm.failed || 0) + 1;
-        continue;
+    // Commit before the roll. Opening the epoch marks its rate known, and a
+    // commit of that same index would then revert.
+    if (cb?.rateCommit && typeof cb.rateCommit === 'object') {
+      const epochIdx = Math.floor(Number(cb.rateCommit.epochIndex) || 0);
+      const bps = Math.floor(Number(cb.rateCommit.epochBps) || 0);
+      const committed = await callReserve(session, encodeCommitRate(epochIdx, bps, nowMs, genesisMs));
+      if (!committed.ok) return fail(committed.reason || 'rate_commit');
+      evm.calls += 1;
+      evm.committedBps = bps;
+    }
+    const prior = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
+    if (prior.ok) {
+      let view0 = decodePublicView(prior.returnValue);
+      if (view0.bonusEnacted) {
+        const rolled = await callReserve(session, encodeSyncEpoch(nowMs));
+        if (!rolled.ok) return fail(rolled.reason || 'epoch');
+        const again = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
+        if (again.ok) view0 = decodePublicView(again.returnValue);
       }
-      return { ok: false, reason: got.reason || 'evm' };
+      const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + RESERVE_EPOCH_MS;
+      if (ended && !view0.bonusEnacted) {
+        const en = await callReserve(session, encodeEnact(nowMs));
+        if (!en.ok) return fail(en.reason || 'enact');
+      }
     }
-    evm.calls += 1;
-    evm.valueMoved += Number(got.valueMoved || 0);
-  }
-  const cb = Array.isArray(txs) ? txs[0] : null;
-  if (cb?.observe != null) {
-    const parsed = parseCoinbaseObserve(cb);
-    if (!parsed.ok || !parsed.observe) return { ok: false, reason: 'bad_rate' };
-    const called = await callReserve(
-      session,
-      encodeObserveRate(parsed.observe.annualBps, parsed.observe.observedAtMs),
+    const rootHex = blockRewardRoot({ txs: list });
+    if (rootHex === 'bad') return fail('stake_reward');
+    if (rootHex) {
+      const committed = await callReserve(session, encodeCommitRewards(nowMs));
+      if (!committed.ok) return fail(committed.reason || 'stake_reward');
+      if (decodeBytes32(committed.returnValue) !== rootHex) return fail('stake_reward');
+      evm.calls += 1;
+    }
+    if (list.slice(1).some((tx) => isReserveCall(tx) || isEvmValueTx(tx))) {
+      const on = await callReserve(session, encodeHoldEpochRoll(true));
+      if (!on.ok) return fail(on.reason || 'epoch');
+      held = true;
+    }
+    for (const tx of list.slice(1)) {
+      if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
+      const got = await executeReserveTx(session, tx, nowMs);
+      if (!got.ok) {
+        if (isEvmValueTx(tx)) {
+          evm.calls += 1;
+          evm.failed = (evm.failed || 0) + 1;
+          continue;
+        }
+        return fail(got.reason || 'evm');
+      }
+      evm.calls += 1;
+      evm.valueMoved += Number(got.valueMoved || 0);
+      if (txKindOf(tx) === 'withdraw' && got.returnValue) {
+        evm.withdrawInterest = decodeWithdraw(got.returnValue).interest;
+      }
+    }
+    if (cb?.observe != null) {
+      const parsed = parseCoinbaseObserve(cb);
+      if (!parsed.ok || !parsed.observe) return fail('bad_rate');
+      const called = await callReserve(
+        session,
+        encodeObserveRate(parsed.observe.annualBps, parsed.observe.observedAtMs),
+      );
+      if (!called.ok) return fail(called.reason || 'bad_rate');
+      evm.calls += 1;
+    }
+    const view = decodePublicView(
+      (await callReserve(session, encodePublicView(nowMs), { staticCall: true })).returnValue,
     );
-    if (!called.ok) return { ok: false, reason: called.reason || 'bad_rate' };
-    evm.calls += 1;
+    evm.totalLocked = view.totalLockedNanos;
+    evm.liveHashBonusNanos = view.liveHashBonusNanos;
+    return { ok: true, ...evm };
+  } finally {
+    if (held) await callReserve(session, encodeHoldEpochRoll(false));
   }
-  const view = decodePublicView(
-    (await callReserve(session, encodePublicView(nowMs), { staticCall: true })).returnValue,
-  );
-  evm.totalLocked = view.totalLockedNanos;
-  evm.liveHashBonusNanos = view.liveHashBonusNanos;
-  return { ok: true, ...evm };
 }
 
 export { bytesToHex, SYSTEM, createAddressFromString, RESERVE_PROGRAM };

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_fs1.dart' show kFs1InputMax;
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
@@ -613,8 +614,10 @@ void main() {
     expect(kMaxInputsPerSend, greaterThan(1));
     expect(kSendTimeCap, kSendProveBudgetMs ~/ kMeasuredProveMs);
     final loose = measuredInputCap(outputs: 1);
-    final tight = measuredInputCap(outputs: 12, memo: true);
+    final tight = measuredInputCap(outputs: 16, memo: true);
     expect(tight, lessThan(loose));
+    expect(measuredInputCap(outputs: 12, memo: true), lessThanOrEqualTo(loose));
+    expect(loose, lessThanOrEqualTo(kFs1InputMax));
     expect(tight, lessThanOrEqualTo(kSendTimeCap));
     final src = File('lib/shear_ledger.dart').readAsStringSync();
     expect(src, contains('kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap'));
@@ -921,6 +924,8 @@ class _RecordChange extends ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) async {
     posts.add({
       'kinds': [
@@ -982,6 +987,8 @@ class _RecordWithdraw extends ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) async {
     posts.add({
       'kind': kind,
