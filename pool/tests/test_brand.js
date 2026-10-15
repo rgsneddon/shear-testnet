@@ -98,14 +98,6 @@ describe('brand pages', () => {
     assert.match(wallet, /'Network rho'/);
     assert.match(wallet, /\$\{ledger\.networkHashrate\} R\/s/);
     assert.match(wallet, /networkHashrate/);
-    const admin = read('pool/admin/index.html');
-    assert.match(admin, />Live R\/s</);
-    assert.match(admin, /1e6/);
-    assert.match(admin, /1e3/);
-    assert.match(admin, /' mR\/s'/);
-    assert.match(admin, /' kR\/s'/);
-    assert.match(admin, /' R\/s'/);
-    assert.doesNotMatch(admin, /H\/s/);
     const sheark = read('sheark-miner/src/sheark_miner.c');
     const solo = read('miner/src/shear_miner.c');
     for (const src of [sheark, solo]) {
@@ -543,7 +535,6 @@ describe('sticky public navbar', () => {
     for (const rel of [
       'pool/public/explorer.html',
       'site/whitepaper/index.html',
-      'pool/admin/index.html',
     ]) {
       const page = read(rel);
       assert.match(page, /class="nav-btn/, `${rel} must ship nav-btn`);

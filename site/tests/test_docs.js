@@ -209,7 +209,6 @@ describe('shear.digital/docs', () => {
       path.join(root, 'pool/public/explorer.html'),
       path.join(root, 'pool/public/miner.html'),
       path.join(root, 'mempool/index.html'),
-      path.join(root, 'pool/admin/index.html'),
     ];
     const chrome = fs.readFileSync(path.join(here, '../shared/shear-chrome.js'), 'utf8');
     assert.match(chrome, /https:\/\/shear\.digital\/docs\//);
@@ -308,9 +307,8 @@ describe('deploy headers', () => {
   it('SSL vhosts send HSTS; stratum reload requires BIND+AUTH', () => {
     const root = path.join(here, '../..');
     const boot = fs.readFileSync(path.join(root, 'deploy/nginx-boot.shear.digital.conf'), 'utf8');
-    const admin = fs.readFileSync(path.join(root, 'deploy/nginx-admin.shear.digital.conf'), 'utf8');
     assert.match(boot, /Strict-Transport-Security/);
-    assert.match(admin, /Strict-Transport-Security/);
+    assert.equal(fs.existsSync(path.join(root, 'deploy/nginx-admin.shear.digital.conf')), false);
     const reload = fs.readFileSync(path.join(root, 'deploy/reload-stratum-units.sh'), 'utf8');
     assert.match(reload, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
     assert.match(reload, /SHEAR_STRATUM_AUTH=1/);
