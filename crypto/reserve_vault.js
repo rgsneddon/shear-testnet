@@ -696,8 +696,9 @@ function syncVaultEpoch(state, nowMs) {
     applyEpochOpen(state, nowMs, idx);
     return;
   }
-  // A block settles the epoch it found open. The roll waits until that
-  // block's reserve rows are done, so a same-block top-up cannot close it.
+  // The block rolls once, before its rows, when the epoch it found was
+  // already enacted. deferEpochRoll holds any further roll for those rows,
+  // so a same-block withdraw still settles the epoch that just ended.
   if (state.deferEpochRoll) return;
   if (idx === Number(state.currentEpoch || 0)) return;
   if (!state.bonusEnacted) return;
@@ -767,6 +768,8 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
   }
   const n = asBig(nanos);
   if (n <= 0n) return { ok: false, reason: 'bad_amount' };
+  // No clock, no credit. A later pin must not inherit an unpinned lock.
+  if (!(Number(state?.genesisMs) > 0)) return { ok: false, reason: 'clock' };
   const p = portalOf(state, id);
   const pub = String(ownerPub || '').replace(/^0x/i, '').toLowerCase();
   if (/^[0-9a-f]{64}$/.test(pub)) {
@@ -1506,6 +1509,7 @@ export function applyReserveBlock({
   height = null,
   parentMs = 0,
   genesisMs = 0,
+  holdEpoch = false,
 } = {}) {
   if (!state || state.blankFork) return [];
   const txs = Array.isArray(block?.txs) ? block.txs : [];
@@ -1564,6 +1568,10 @@ export function applyReserveBlock({
     state.nextEpochBps = expected;
     state.rateEpochIndex = epochIdx;
   }
+  // Roll before the block's rows when the previous epoch is already
+  // enacted, so this epoch's open adopts the queued rate. The enacting
+  // block itself does not roll: it still settles the epoch that ended.
+  if (state.bonusEnacted && !holdEpoch) syncVaultEpoch(state, nowMs);
   if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     const did = enact({ state, nowMs });
     results.push({ action: 'enact', ...did });
@@ -1938,8 +1946,9 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
   let permittedSum = 0n;
   let from = 0;
   let counted = 0;
+  let started = false;
   const fail = () => ({ ok: false, reason: 'supply' });
-  const applySlice = (slice) => {
+  const applySlice = (slice, holdEpoch = false) => {
     if (!slice.length) return true;
     let declared = 0n;
     for (const tx of slice) {
@@ -1952,6 +1961,7 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
       state,
       block: { txs: slice, height: block?.height },
       nowMs: clock,
+      holdEpoch,
       ...oracleForward({ ...oracle, block }),
     });
     if (!applied || applied.ok !== true) return false;
@@ -1962,7 +1972,11 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
   };
   for (let i = 0; i < txs.length; i += 1) {
     if (!isWithdrawTx(txs[i])) continue;
-    if (!applySlice(txs.slice(from, i))) return fail();
+    const prefix = txs.slice(from, i);
+    if (prefix.length) {
+      if (!applySlice(prefix, started)) return fail();
+      started = true;
+    }
     from = i + 1;
     const act = reserveAction(txs[i]);
     if (!act || act.opened !== true) return fail();
@@ -1974,12 +1988,16 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     const opened = exactBi(act.nanos);
     if (principal == null || permitted == null || opened == null) return fail();
     if (opened !== principal + permitted) return fail();
+    // The first slice is the start of this block. Later slices, including a
+    // second withdraw, stay on the epoch that slice enacted.
     const applied = applyReserveBlock({
       state,
       block: { txs: [txs[i]], height: block?.height },
       nowMs: clock,
+      holdEpoch: started,
       ...oracleForward({ ...oracle, block }),
     });
+    started = true;
     if (!applied || applied.ok !== true) return fail();
     const got = [];
     for (const row of applied) {
@@ -1998,7 +2016,7 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     if (minted > REWARD_U64 || permittedSum > REWARD_U64) return fail();
     counted += 1;
   }
-  if (!applySlice(txs.slice(from))) return fail();
+  if (!applySlice(txs.slice(from), started)) return fail();
   if (counted !== rows.length) return fail();
   const endLocked = asBig(state.totalLockedNanos);
   if (startLocked + locksIn !== endLocked + principalOut) return fail();

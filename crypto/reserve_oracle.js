@@ -328,9 +328,8 @@ export function canonicalReports(reports) {
 /**
  * Lower median of the values blocks actually reported for one bank.
  * Fewer than half the window reporting keeps no median (the caller holds
- * the last rate). Non-reporting above 1/3 of the window cannot freeze.
- * The winning tenth needs a 2/3 supermajority of the reporting values,
- * not of the silent blocks.
+ * the last rate). The winning tenth needs a 2/3 supermajority of the
+ * reporting values. Silence is not a second vote against the freeze.
  */
 export function medianBankTenths(values, windowSize) {
   const W = Math.floor(Number(windowSize) || 0);
@@ -338,7 +337,6 @@ export function medianBankTenths(values, windowSize) {
   const reported = list.length;
   if (W <= 0 || reported <= 0) return null;
   if (reported * 2 < W) return null;
-  if ((W - reported) * 3 > W) return null;
   const sorted = list.slice().sort((a, b) => a - b);
   const mid = sorted[Math.floor((sorted.length - 1) / 2)];
   let count = 0;

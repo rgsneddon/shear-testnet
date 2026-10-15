@@ -147,16 +147,29 @@ describe('hardened miner median (3b)', () => {
     assert.equal(medianBankTenths([1, 1, 9, 9], 4), null);
   });
 
-  it('counts 2/3 over reporting blocks, and silence above the bounds cannot freeze', () => {
+  it('counts 2/3 over reporting blocks, and half the window must report', () => {
     const W = 144;
     const quiet = (n) => Array.from({ length: n }, () => ({ miner: 'quiet' }));
     const speak = (n, tenths) => blocksOf('honest', n, tenths);
+    const adopted = trimmedMeanBps(Array(14).fill(15000));
+    assert.equal(adopted, 1500);
+    // 80/144 is 55.6%: at least half the window, and under 60%.
+    const reporting = 80;
+    assert.ok(reporting / W > 0.5 && reporting / W < 0.6);
+    assert.ok(reporting * 2 >= W);
+    assert.equal(
+      epochBpsFromReports(PREV, [...speak(reporting, 15000), ...quiet(W - reporting)], { windowSize: W }),
+      adopted,
+      'a 50-60% reporting window adopts the new rate',
+    );
+    assert.equal(medianBankTenths(Array(reporting).fill(15000), W), 15000);
     const tooQuiet = Math.floor(W / 3) + 1;
     assert.ok(tooQuiet / W > 1 / 3);
+    assert.ok((W - tooQuiet) * 2 >= W);
     assert.equal(
       epochBpsFromReports(PREV, [...speak(W - tooQuiet, 15000), ...quiet(tooQuiet)], { windowSize: W }),
-      PREV,
-      'non-reporting above 1/3 cannot freeze',
+      adopted,
+      'silence above 1/3 still adopts when half the window reports',
     );
     const underHalf = Math.floor((W - 1) / 2);
     assert.ok(underHalf * 2 < W);
@@ -165,6 +178,7 @@ describe('hardened miner median (3b)', () => {
       PREV,
       'under half reporting keeps the last rate',
     );
+    assert.equal(medianBankTenths(Array(underHalf).fill(15000), W), null);
     const attackN = Math.floor(W / 3) - 1;
     assert.ok(attackN / W < 1 / 3);
     assert.equal(

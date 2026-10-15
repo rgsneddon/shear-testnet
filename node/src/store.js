@@ -938,12 +938,16 @@ export function createStore(dir, {
 
   function vaultArgs(state, block, prior) {
     const parent = prior?.length ? prior[prior.length - 1] : null;
+    // The genesis header is this block when the book is still empty.
+    // A later block keeps the height-1 header already in prior.
+    const clockChain = Array.isArray(prior) ? prior.slice() : [];
+    if (block) clockChain.push(block);
     const fields = reserveApplyFields({
       prior,
       block,
       magic: bookMagic,
       parentMs: parent ? blockTimeMs(parent) : 0,
-      genesisMs: genesisHeaderMs(prior),
+      genesisMs: genesisHeaderMs(clockChain),
       nowMs: blockTimeMs(block),
     });
     if (oracleActivationHeight !== undefined) fields.activationHeight = oracleActivationHeight;

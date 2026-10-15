@@ -133,6 +133,14 @@ export function encodePinClock(chainGenesis) {
   return concat(selector('pinClock(uint256)'), pad32(chainGenesis));
 }
 
+export function encodeSyncEpoch(nowTs) {
+  return concat(selector('syncEpoch(uint256)'), pad32(nowTs));
+}
+
+export function encodeHoldEpochRoll(hold) {
+  return concat(selector('holdEpochRoll(bool)'), pad32(hold ? 1 : 0));
+}
+
 export function encodeRewardNanos(active, bps) {
   return concat(selector('rewardNanos(uint256,uint256)'), pad32(active), pad32(bps));
 }
@@ -411,60 +419,80 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
   const list = Array.isArray(txs) ? txs : [];
   const cb = list[0] || null;
-  if (Number(genesisMs) > 0) {
-    const pinned = await callReserve(session, encodePinClock(genesisMs));
-    if (!pinned.ok) return { ok: false, reason: pinned.reason || 'clock' };
-    evm.calls += 1;
-  }
-  const prior = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
-  if (prior.ok) {
-    const view0 = decodePublicView(prior.returnValue);
-    const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + RESERVE_EPOCH_MS;
-    if (ended && !view0.bonusEnacted) {
-      const en = await callReserve(session, encodeEnact(nowMs));
-      if (!en.ok) return { ok: false, reason: en.reason || 'enact' };
+  let held = false;
+  const fail = (reason) => ({ ok: false, reason });
+  try {
+    if (Number(genesisMs) > 0) {
+      const pinned = await callReserve(session, encodePinClock(genesisMs));
+      if (!pinned.ok) return fail(pinned.reason || 'clock');
+      evm.calls += 1;
     }
-  }
-  // Commit before locks so a same-block stake settles on the chain-genesis
-  // key, matching applyReserveBlock. The commit names the epoch that is opening.
-  if (cb?.rateCommit && typeof cb.rateCommit === 'object') {
-    const epochIdx = Math.floor(Number(cb.rateCommit.epochIndex) || 0);
-    const bps = Math.floor(Number(cb.rateCommit.epochBps) || 0);
-    const committed = await callReserve(session, encodeCommitRate(epochIdx, bps, nowMs, genesisMs));
-    if (!committed.ok) return { ok: false, reason: committed.reason || 'rate_commit' };
-    evm.calls += 1;
-    evm.committedBps = bps;
-  }
-  for (const tx of list.slice(1)) {
-    if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
-    const got = await executeReserveTx(session, tx, nowMs);
-    if (!got.ok) {
-      if (isEvmValueTx(tx)) {
-        evm.calls += 1;
-        evm.failed = (evm.failed || 0) + 1;
-        continue;
+    // Commit before the roll. Opening the epoch marks its rate known, and a
+    // commit of that same index would then revert.
+    if (cb?.rateCommit && typeof cb.rateCommit === 'object') {
+      const epochIdx = Math.floor(Number(cb.rateCommit.epochIndex) || 0);
+      const bps = Math.floor(Number(cb.rateCommit.epochBps) || 0);
+      const committed = await callReserve(session, encodeCommitRate(epochIdx, bps, nowMs, genesisMs));
+      if (!committed.ok) return fail(committed.reason || 'rate_commit');
+      evm.calls += 1;
+      evm.committedBps = bps;
+    }
+    const prior = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
+    if (prior.ok) {
+      let view0 = decodePublicView(prior.returnValue);
+      if (view0.bonusEnacted) {
+        const rolled = await callReserve(session, encodeSyncEpoch(nowMs));
+        if (!rolled.ok) return fail(rolled.reason || 'epoch');
+        const again = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
+        if (again.ok) view0 = decodePublicView(again.returnValue);
       }
-      return { ok: false, reason: got.reason || 'evm' };
+      const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + RESERVE_EPOCH_MS;
+      if (ended && !view0.bonusEnacted) {
+        const en = await callReserve(session, encodeEnact(nowMs));
+        if (!en.ok) return fail(en.reason || 'enact');
+      }
     }
-    evm.calls += 1;
-    evm.valueMoved += Number(got.valueMoved || 0);
-  }
-  if (cb?.observe != null) {
-    const parsed = parseCoinbaseObserve(cb);
-    if (!parsed.ok || !parsed.observe) return { ok: false, reason: 'bad_rate' };
-    const called = await callReserve(
-      session,
-      encodeObserveRate(parsed.observe.annualBps, parsed.observe.observedAtMs),
+    if (list.slice(1).some((tx) => isReserveCall(tx) || isEvmValueTx(tx))) {
+      const on = await callReserve(session, encodeHoldEpochRoll(true));
+      if (!on.ok) return fail(on.reason || 'epoch');
+      held = true;
+    }
+    for (const tx of list.slice(1)) {
+      if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
+      const got = await executeReserveTx(session, tx, nowMs);
+      if (!got.ok) {
+        if (isEvmValueTx(tx)) {
+          evm.calls += 1;
+          evm.failed = (evm.failed || 0) + 1;
+          continue;
+        }
+        return fail(got.reason || 'evm');
+      }
+      evm.calls += 1;
+      evm.valueMoved += Number(got.valueMoved || 0);
+      if (txKindOf(tx) === 'withdraw' && got.returnValue) {
+        evm.withdrawInterest = decodeWithdraw(got.returnValue).interest;
+      }
+    }
+    if (cb?.observe != null) {
+      const parsed = parseCoinbaseObserve(cb);
+      if (!parsed.ok || !parsed.observe) return fail('bad_rate');
+      const called = await callReserve(
+        session,
+        encodeObserveRate(parsed.observe.annualBps, parsed.observe.observedAtMs),
+      );
+      if (!called.ok) return fail(called.reason || 'bad_rate');
+      evm.calls += 1;
+    }
+    const view = decodePublicView(
+      (await callReserve(session, encodePublicView(nowMs), { staticCall: true })).returnValue,
     );
-    if (!called.ok) return { ok: false, reason: called.reason || 'bad_rate' };
-    evm.calls += 1;
+    evm.totalLocked = view.totalLockedNanos;
+    evm.liveHashBonusNanos = view.liveHashBonusNanos;
+    return { ok: true, ...evm };
+  } finally {
+    if (held) await callReserve(session, encodeHoldEpochRoll(false));
   }
-  const view = decodePublicView(
-    (await callReserve(session, encodePublicView(nowMs), { staticCall: true })).returnValue,
-  );
-  evm.totalLocked = view.totalLockedNanos;
-  evm.liveHashBonusNanos = view.liveHashBonusNanos;
-  return { ok: true, ...evm };
 }
 
 export { bytesToHex, SYSTEM, createAddressFromString, RESERVE_PROGRAM };

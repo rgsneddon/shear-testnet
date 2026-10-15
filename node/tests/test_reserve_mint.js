@@ -58,7 +58,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.match(sol, /\/ 10000/);
     assert.match(sol, /do not use 365/);
     assert.equal(/\* 365|\/ 365|365-day/.test(sol), false);
-    assert.match(sol, /GENESIS_BPS = 284/);
+    assert.match(sol, new RegExp(`GENESIS_BPS = ${GENESIS_BPS}`));
     assert.match(sol, /UnitFloor/);
   });
 
@@ -144,6 +144,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
     const state = emptyVault();
+    state.genesisMs = 1_700_000_000_000;
     const id = newIdentity();
     const dest = vaultDest(id.address, { viewKey: id.viewKey });
     deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: 1_700_000_000_000 });

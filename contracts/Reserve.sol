@@ -4,27 +4,28 @@ pragma solidity ^0.8.20;
 /**
  * The Reserve — Shear's first Vortex program. Nodes execute this bytecode.
  *
- * Lock is legal any time an epoch is open. Vault epochs are chain vortex
- * epochs. Coin locked while at least 99/400 of the chain epoch remains is
- * an active lock (reserve reward, vote). Coin locked later is idle (no
- * reserve reward) but still unlocks a vote if the portal holds ≥ π, even
- * on a first-ever lock. A lock or top-up earns its epoch's rate times the
- * time still left in that chain epoch, by integer floor, then each later
- * full epoch through the withdraw index, exclusive. A portal votes once per epoch; a
- * second cast reverts VoteLocked(). At epoch end the unique plurality of
- * {increase, decrease, hold} enacts ±1 protocol unit on the live hash bonus.
- * It does not set the reserve rate. The freeze is the trimmed mean of the
- * attested 14-bank policy tenths (FED 3625, BOE 3750, ECB 2075, BOJ 500,
- * BOC 2750, RBA 3600, RBNZ 3000, SNB 0, RIKSBANK 2000, NORGES 4000,
- * DNBANK 1600, BOK 2500, BOI 4000, CNB 3500): drop 2 high and 2 low,
- * half-up the middle 10, 2840 tenths → 284 bps, floored at 0.
+ * Lock is legal while an epoch is open and the chain clock is pinned. An
+ * unpinned clock rejects the lock. Vault epochs are chain vortex epochs.
+ * Coin locked while at least 99/400 of the chain epoch remains is an active
+ * lock and can vote. Coin locked later is idle: it does not vote as a stake,
+ * but it earns the same reserve reward. A lock or top-up, staked or idle,
+ * earns its epoch's rate times the time still left in that chain epoch, by
+ * integer floor, then each later full epoch through the withdraw index,
+ * exclusive. A portal votes once per epoch; a second cast reverts
+ * VoteLocked(). At epoch end the unique plurality of {increase, decrease,
+ * hold} enacts ±1 protocol unit on the live hash bonus. It does not set
+ * the reserve rate. The freeze is the trimmed mean of the attested 14-bank
+ * policy tenths (FED 3625, BOE 3750, ECB 2075, BOJ 500, BOC 2750, RBA 3600,
+ * RBNZ 3000, SNB 0, RIKSBANK 2000, NORGES 4000, DNBANK 1600, BOK 2500,
+ * BOI 4000, CNB 3500): drop 2 high and 2 low, half-up the middle 10,
+ * 2840 tenths → 284 bps, floored at 0.
  * It is written only when an epoch opens. There is no per-epoch step and
  * no aggregate cap. A caller cannot select the rate.
- * The 1 SHE pot never moves. The reserve reward
- * is minted by consensus on release, only for this program id, only on the
- * active lock. Principal stays in the user's own time-locked note. This
- * contract refuses well-known foreign chain ids. The Reserve oracle is the
- * bundled quorum. observeRate does not move the rate.
+ * The 1 SHE pot never moves. The reserve reward is minted by consensus on
+ * release, for this program id, on every lock, idle or active, pro-rata.
+ * Principal stays in the user's own time-locked note. This contract refuses
+ * well-known foreign chain ids. The Reserve oracle is the bundled quorum.
+ * observeRate does not move the rate.
  *
  * Reserve reward: floor(active * epochBps / 10000). do not use 365.
  */
@@ -42,6 +43,7 @@ error NeedEnact();
 error UnitFloor();
 error RateBundled();
 error NeedPayout();
+error ClockUnpinned();
 
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
@@ -201,6 +203,7 @@ contract Reserve {
     uint256 public rateCommitEpoch;
     uint256 internal genesisTs;
     uint256 internal clockGenesis;
+    bool internal deferEpochRoll;
     mapping(uint256 => uint256) public epochRateOf;
     mapping(uint256 => bool) internal epochRateKnown;
 
@@ -332,6 +335,19 @@ contract Reserve {
         annualBps = epochBps;
     }
 
+    /// Start of a consensus block, before its rows. An enacted epoch rolls
+    /// onto the chain index and adopts that epoch's rate.
+    function syncEpoch(uint256 nowTs) external onlyShear {
+        if (deferEpochRoll) return;
+        if (bonusEnacted) _syncEpoch(nowTs);
+    }
+
+    /// Hold the roll for the rest of the block. A same-block lock must not
+    /// close the epoch a withdraw in that block is settling.
+    function holdEpochRoll(bool hold) external onlyShear {
+        deferEpochRoll = hold;
+    }
+
     function _syncEpoch(uint256 nowTs) internal {
         if (clockGenesis == 0) return;
         uint256 idx = _chainEpoch(nowTs);
@@ -356,8 +372,9 @@ contract Reserve {
     function lock(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
         if (nanos == 0) revert BadAmount();
         if (dest.length == 0) revert BadDest();
+        if (clockGenesis == 0) revert ClockUnpinned();
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
-        if (bonusEnacted) _syncEpoch(nowTs);
+        if (bonusEnacted && !deferEpochRoll) _syncEpoch(nowTs);
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
         _settle(p, nowTs);

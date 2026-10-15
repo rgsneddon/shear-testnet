@@ -309,7 +309,7 @@ describe('Reserve vault protocol', () => {
       },
     });
     assert.equal(undone.ok, false);
-    assert.equal(undone.reason, 'empty');
+    assert.equal(undone.reason, 'epoch_open');
     assert.equal(live.portals[aliceId].accruedReward, 0n);
     assert.equal(live.totalLockedNanos, BigInt(PI_SHE_NANOS));
     assert.equal(supplyIdentity(live).ok, true);
@@ -721,6 +721,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       state: wireState,
       block: decodeWireBlock(wire),
       nowMs: t0,
+      genesisMs: t0,
     });
     assert.equal(peer.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(peer));
     assert.equal(Number(wireState.totalLockedNanos), PI_SHE_NANOS);
