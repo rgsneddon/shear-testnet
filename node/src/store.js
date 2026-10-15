@@ -67,7 +67,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, planStakeRewards, stakeRewardNote } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -1181,7 +1181,7 @@ export function createStore(dir, {
       nowMs: blockTimeMs(block),
     });
     if (oracleActivationHeight !== undefined) fields.activationHeight = oracleActivationHeight;
-    return { state, ...fields };
+    return { state, ...fields, requireStakeReward: true };
   }
 
   function oracleVerifyFields(prior, nextHeight) {
@@ -1287,9 +1287,20 @@ export function createStore(dir, {
     if (chain === blocks) spendChecks += 1;
     else forkSpendChecks += 1;
     syncNoteLedger(chain);
-    const noteNanos = ledgerFor(chain).spendable(addr, tipH, { coinbaseOnly: false });
+    const tipBlock = chain[Math.max(0, Math.min(chain.length, Math.floor(Number(tipH) || 0)) - 1)] || null;
+    const tipMs = tipBlock ? blockTimeMs(tipBlock) : 0;
+    const clock = {
+      coinbaseOnly: false,
+      tipMs,
+      genesisMs: Number(reserveVault.genesisMs) || 0,
+      magic: bookMagic,
+    };
+    const book = ledgerFor(chain);
+    const noteNanos = book.spendable(addr, tipH, clock);
     const opened = reconcileSpendable([], addr, tipH, noteNanos);
-    const locked = Math.max(0, Math.floor(Number(portalPrincipalNanos(reserveVault, addr)) || 0));
+    const principal = Math.max(0, Math.floor(Number(portalPrincipalNanos(reserveVault, addr)) || 0));
+    const released = Math.max(0, Math.floor(Number(book.unlockedLockNanos(addr, tipH, clock)) || 0));
+    const locked = Math.max(0, principal - released);
     return Math.max(0, opened - locked);
   }
 
@@ -5327,6 +5338,16 @@ export function createStore(dir, {
       hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
+      prepareCoinbase: (cb) => {
+        const pulling = pendingTxs.some((tx) => String(tx?.kind || tx?.vout?.[0]?.kind || '') === 'withdraw');
+        if (pulling) return;
+        const plan = planStakeRewards(reserveVault, now);
+        if (!plan.ok) return;
+        for (const row of plan.pay) {
+          const note = stakeRewardNote(row.dest, row.nanos, row.epoch, row.portalId);
+          if (note) cb.vout.push(note);
+        }
+      },
     });
     const jobId = `shear-${height}-${jobSeq++}`;
     const job = publicJob(tpl, { jobId, shareBits });

@@ -7,7 +7,7 @@ import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
-import { reserveAction } from './reserve_vault.js';
+import { reserveAction, STAKE_REWARD_KIND } from './reserve_vault.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
 
@@ -96,6 +96,16 @@ export function encodeVote(dest, choice, nowTs) {
     selector('vote(bytes,uint8,uint256)'),
     pad32(96),
     pad32(choice),
+    pad32(nowTs),
+    body,
+  );
+}
+
+export function encodeCredit(dest, nowTs) {
+  const body = encodeBytes(dest);
+  return concat(
+    selector('credit(bytes,uint256)'),
+    pad32(64),
     pad32(nowTs),
     body,
   );
@@ -458,6 +468,17 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
         const en = await callReserve(session, encodeEnact(nowMs));
         if (!en.ok) return fail(en.reason || 'enact');
       }
+    }
+    const rewardDests = [];
+    for (const o of cb?.vout || []) {
+      if (String(o?.kind || '') !== STAKE_REWARD_KIND) continue;
+      const dest = o.address || (o.dest20 ? encodeDest(Buffer.from(asU8(o.dest20)).subarray(0, 20)) : '');
+      if (dest && !rewardDests.includes(dest)) rewardDests.push(dest);
+    }
+    for (const dest of rewardDests) {
+      const credited = await callReserve(session, encodeCredit(dest, nowMs));
+      if (!credited.ok) return fail(credited.reason || 'stake_reward');
+      evm.calls += 1;
     }
     if (list.slice(1).some((tx) => isReserveCall(tx) || isEvmValueTx(tx))) {
       const on = await callReserve(session, encodeHoldEpochRoll(true));

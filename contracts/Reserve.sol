@@ -56,6 +56,7 @@ error UnitFloor();
 error RateBundled();
 error NeedPayout();
 error ClockUnpinned();
+error AlreadyMinted();
 
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
@@ -87,6 +88,10 @@ contract Reserve {
     uint256 public constant GENESIS_BPS = 284;
     uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
     uint256 public constant REWARD_DENOM_DAYS = 400;
+    /// Same cap as K_VW. Russell has not ruled a block that owes more than
+    /// this many rewards. This contract does not pay a subset, queue the
+    /// rest, or drop them. The block planner stops while that ruling is open.
+    uint256 public constant STAKE_REWARD_BLOCK_CAP = 8;
 
     enum Vote {
         None,
@@ -121,6 +126,10 @@ contract Reserve {
     bool public bonusEnacted;
     uint256 public liveHashBonusNanos;
     mapping(bytes32 => Portal) private portals;
+    /// portal id → chain epoch → reward already minted for that epoch.
+    mapping(bytes32 => mapping(uint256 => bool)) private rewardMinted;
+    /// Open index through which this portal's reward was already credited.
+    mapping(bytes32 => uint256) private creditedThrough;
     uint256 public totalLocked;
     uint256 public votesIncrease;
     uint256 public votesDecrease;
@@ -517,15 +526,92 @@ contract Reserve {
         enactedAtEpoch = currentEpoch;
     }
 
+    function _rewardTaken(bytes32 id, Portal storage p, uint256 nowIdx) internal view returns (bool) {
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            if (nowIdx <= p.tranches[i].epoch) continue;
+            for (uint256 e = p.tranches[i].epoch; e < nowIdx; e++) {
+                if (rewardMinted[id][e]) return true;
+            }
+        }
+        return false;
+    }
+
+    function _markReward(bytes32 id, Portal storage p, uint256 nowIdx) internal {
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            if (nowIdx <= p.tranches[i].epoch) continue;
+            for (uint256 e = p.tranches[i].epoch; e < nowIdx; e++) {
+                rewardMinted[id][e] = true;
+            }
+        }
+    }
+
+    /// Release matured principal from the vault and record the reward mint.
+    /// Principal is the user's time-locked note. This does not mint it again.
+    /// The reward is minted once per portal per epoch. A later withdraw of
+    /// that epoch reverts AlreadyMinted.
+    function credit(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
+        if (_payIndex(nowTs) == 0) revert EpochNotEnded();
+        bytes32 id = portalId(dest);
+        Portal storage p = portals[id];
+        uint256 chain = _chainEpoch(nowTs);
+        if (_rewardTaken(id, p, chain)) revert AlreadyMinted();
+        _settle(p, nowTs);
+        uint256 release = 0;
+        uint256 kept = 0;
+        uint256 credits = p.tranches.length;
+        for (uint256 i = 0; i < credits; i++) {
+            if (chain <= p.tranches[i].epoch) {
+                if (kept != i) p.tranches[kept] = p.tranches[i];
+                kept += 1;
+            } else {
+                release += p.tranches[i].amount;
+            }
+        }
+        if (release == 0) revert EpochNotEnded();
+        _markReward(id, p, chain);
+        while (p.tranches.length > kept) p.tranches.pop();
+        reward = p.accruedReward;
+        p.accruedReward = 0;
+        creditedThrough[id] = chain;
+        if (release > p.active) {
+            uint256 rest = release - p.active;
+            p.active = 0;
+            if (rest > p.idle) revert BadAmount();
+            p.idle -= rest;
+        } else {
+            p.active -= release;
+        }
+        totalLocked -= release;
+        principal = release;
+        uint256 left = p.active + p.idle;
+        if (left == 0) {
+            p.rewardTracked = false;
+            p.rewardEpoch = 0;
+            p.joined = false;
+            p.vote = Vote.None;
+            p.voteEpoch = 0;
+        } else if (left < PI_NANOS) {
+            p.joined = false;
+            p.vote = Vote.None;
+            p.voteEpoch = 0;
+        }
+    }
+
     function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
         // Each deposit unlocks at the end of its own lock epoch. A later
         // top-up does not re-lock principal whose epoch has already ended.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
+        if (_rewardTaken(id, p, _chainEpoch(nowTs))) revert AlreadyMinted();
         uint256 active = p.active;
         uint256 idleBal = p.idle;
-        if (active + idleBal == 0) revert BadAmount();
+        if (active + idleBal == 0) {
+            if (creditedThrough[id] != 0) revert AlreadyMinted();
+            revert BadAmount();
+        }
         uint256 chain = _chainEpoch(nowTs);
         _settle(p, nowTs);
         uint256 release = 0;

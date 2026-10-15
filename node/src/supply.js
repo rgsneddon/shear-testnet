@@ -39,6 +39,7 @@ import {
   bonusUnitsBefore,
   blockWithdrawInterest,
   blockPermittedInterest,
+  stakeRewardSupply,
   emptyVault,
   cloneVault,
   applyReserveBlock,
@@ -633,7 +634,9 @@ function accountBlock(prev, block, opts = {}) {
   state.dust = settled.dust;
   state.overflow = settled.overflow;
   state.carry = carryOut;
-  const publicTotal = potMinted + mintedHashHere + levy;
+  const reward = stakeRewardSupply(opts.vault, block, ts, opts.oracle);
+  if (!reward.ok) return { reason: reward.reason || 'supply', state };
+  const publicTotal = potMinted + mintedHashHere + levy + reward.minted;
   const rememberRange = opts.rememberRange !== false;
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
@@ -643,13 +646,13 @@ function accountBlock(prev, block, opts = {}) {
   // Schedule allowance is staked × epochBps per epoch, not a copy of the receipt.
   const allowed = blockPermittedInterest(opts.vault, block, ts, opts.oracle);
   if (!allowed.ok) return { reason: allowed.reason || 'supply', state };
-  if (state.mintedInterest + interest.nanos > U64) return { reason: 'supply', state };
-  if (state.permittedInterest + allowed.nanos > U64) return { reason: 'supply', state };
   state.mintedPot += potMinted;
   state.mintedHash += mintedHashHere;
   state.mintedLevy += levy;
-  state.mintedInterest += interest.nanos;
-  state.permittedInterest += allowed.nanos;
+  if (state.mintedInterest + interest.nanos + reward.minted > U64) return { reason: 'supply', state };
+  if (state.permittedInterest + allowed.nanos + reward.permitted > U64) return { reason: 'supply', state };
+  state.mintedInterest += interest.nanos + reward.minted;
+  state.permittedInterest += allowed.nanos + reward.permitted;
   const bReason = accountBLocked(state, block);
   if (bReason) return { reason: bReason, state };
   state.liveUnit = unit;

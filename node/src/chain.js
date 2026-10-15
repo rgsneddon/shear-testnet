@@ -81,7 +81,7 @@ import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, stakeRewardRejected, lockNoteSpendRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -2820,6 +2820,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    const lockedNote = lockNoteSpendRejected(reserveState, tx, headerMs);
+    if (lockedNote) return lockedNote;
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
     const fields = checkTxAddressFields(tx, { coinbase: false });
     if (!fields.ok) {
@@ -2968,6 +2970,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // The store passes the live vault. A public receipt on a block that has
   // no carried vault is the first lock, so the trial starts from empty.
   // A sealed reserve row with no vault still fails closed.
+  if (reserveState) {
+    const rewardGate = stakeRewardRejected(reserveState, block, headerMs, { require: true });
+    if (rewardGate) return rewardGate;
+  }
   const vaultForTrial = reserveState || (txs.some((tx) => publicReserveReceipt(tx)) ? emptyVault() : null);
   const vaultTry = trialReserveApply({
     state: vaultForTrial,
@@ -3219,7 +3225,7 @@ function applyLoadedVault(vault, list, index, load) {
   if (load && load.oracleActivationHeight !== undefined) {
     fields.activationHeight = load.oracleActivationHeight;
   }
-  return applyReserveBlock({ state: vault, ...fields });
+  return applyReserveBlock({ state: vault, ...fields, requireStakeReward: true });
 }
 
 function beginLoaded(blocks, {

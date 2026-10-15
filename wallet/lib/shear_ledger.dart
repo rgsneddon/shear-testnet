@@ -618,6 +618,18 @@ bool noteHasSealedSpendBytes(Map<dynamic, dynamic> n) {
       blind.isNotEmpty;
 }
 
+/// A lock note stays locked until the tip time reaches its unlock.
+/// No unlock on the note stays locked. Any other kind keeps its own flag.
+bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
+  final kind = (note['kind'] ?? '').toString();
+  if (kind != 'lock') return note['locked'] == true;
+  final raw = note['unlockAtMs'];
+  final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+  if (at <= 0) return true;
+  if (tipMs == null || tipMs < at) return true;
+  return false;
+}
+
 /// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
 /// No value-proof open, no spend tag, no search beyond one greedy pass.
 /// Production calls this from [Isolate.run].
@@ -3317,6 +3329,9 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'spent': false,
       };
+      if ((row['kind'] ?? '').toString() == 'lock') {
+        row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
+      }
       if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
       _creditNoteToShearview(row);
@@ -5066,6 +5081,7 @@ class ShearLedger implements ReadProofSink {
   /// Vortex Flow figure. One reconstruct input. Exact note nanos win when the
   /// painted double cannot name the count.
   int continuumFlowNanos(String restFrame, {String? paymentCode}) {
+    refreshTimeLockedNotes();
     final owned = <String>{};
     for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
       if (!isDestAddress(d)) continue;
@@ -5088,7 +5104,17 @@ class ShearLedger implements ReadProofSink {
   /// Open-wallet coin control. Notes parked on the shear1 rest frame join the
   /// spendable dest. Every other owned ssa1 stays one note and is counted in
   /// that same sum. A young note stays unspendable. Does not invent coins.
+  /// Flip lock notes once the tip time has passed their unlock.
+  void refreshTimeLockedNotes() {
+    final tip = tipTimestampMs;
+    for (final n in _notes) {
+      if ((n['kind'] ?? '').toString() != 'lock') continue;
+      n['locked'] = lockNoteIsLocked(n, tip);
+    }
+  }
+
   double recheckRestFrameSpendable(String restFrame, {String? paymentCode}) {
+    refreshTimeLockedNotes();
     _dropProgramVaults();
     _foldFlowDest(restFrame, paymentCode: paymentCode);
     final bound = currentDest(restFrame, paymentCode: paymentCode);
@@ -7306,6 +7332,7 @@ class ShearLedger implements ReadProofSink {
     bool memo = false,
     String? needNanos,
   }) async {
+    refreshTimeLockedNotes();
     final dests = <String>{};
     for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
       if (!isDestAddress(d)) continue;
