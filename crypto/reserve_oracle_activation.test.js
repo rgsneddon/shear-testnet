@@ -1306,6 +1306,82 @@ describe('a lock stays until its epoch ends', () => {
   });
 });
 
+describe('a top-up does not re-lock earlier principal', () => {
+  const TOP = PI_SHE_NANOS * 2;
+
+  function partialOf(amount, remain, span) {
+    return Number((BigInt(amount) * BigInt(GENESIS_BPS) * BigInt(remain)) / (BigInt(span) * 10000n));
+  }
+
+  it('JS and the EVM release a finished deposit while a later top-up stays locked', async () => {
+    const epoch = RESERVE_EPOCH_MS;
+    const who = minerOf();
+    const lockAt = T0;
+    const topAt = T0 + epoch + Math.floor(epoch / 2);
+    const topEnd = T0 + 2 * epoch;
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
+    assert.equal(enact({ state, nowMs: T0 + epoch }).ok, true);
+    assert.equal(deposit({ state, dest: who, nanos: TOP, nowMs: topAt }).ok, true);
+    const full = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
+    const early = withdraw({ state, dest: who, nowMs: topAt });
+    assert.equal(early.ok, true, early.reason);
+    assert.equal(early.principal, PI_SHE_NANOS);
+    assert.equal(early.interest, full);
+    assert.notEqual(early.principal, PI_SHE_NANOS + TOP);
+    const portal = state.portals[Object.keys(state.portals)[0]];
+    assert.equal(portal.tranches.length, 1);
+    assert.equal(Number(portal.tranches[0].amount), TOP);
+    assert.equal(portal.tranches[0].epoch, 1);
+    assert.equal(Number(state.totalLockedNanos), TOP);
+    const again = withdraw({ state, dest: who, nowMs: topAt + 1 });
+    assert.equal(again.ok, false);
+    assert.equal(again.reason, 'epoch_open');
+
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lockAt))).ok, true);
+    assert.equal((await callReserve(session, encodeEnact(T0 + epoch))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who, TOP, topAt))).ok, true);
+    const held = decodePortal((await callReserve(session, encodePortalOf(who), { staticCall: true })).returnValue);
+    assert.equal(held.staked + held.idle, PI_SHE_NANOS + TOP);
+    const drawn = await callReserve(session, encodeWithdraw(who, topAt));
+    assert.equal(drawn.ok, true, drawn.reason);
+    const paid = decodeWithdraw(drawn.returnValue);
+    assert.equal(paid.principal, PI_SHE_NANOS);
+    assert.equal(paid.interest, full);
+    assert.equal(paid.interest, early.interest);
+    const left = decodePortal((await callReserve(session, encodePortalOf(who), { staticCall: true })).returnValue);
+    assert.equal(left.staked + left.idle, TOP);
+    const locked = decodePublicView((await callReserve(session, encodePublicView(topAt), { staticCall: true })).returnValue);
+    assert.equal(locked.totalLockedNanos, TOP);
+    const refused = await callReserve(session, encodeWithdraw(who, topAt + 1));
+    assert.equal(refused.ok, false);
+
+    const remain = topEnd - topAt;
+    const topDue = partialOf(TOP, remain, epoch);
+    const wholeTop = interestNanos(TOP, GENESIS_BPS);
+    assert.ok(topDue > 0);
+    assert.ok(topDue < wholeTop);
+    assert.equal(enact({ state, nowMs: topEnd }).ok, true);
+    const rest = withdraw({ state, dest: who, nowMs: topEnd });
+    assert.equal(rest.ok, true, rest.reason);
+    assert.equal(rest.principal, TOP);
+    assert.equal(rest.interest, topDue);
+    assert.notEqual(rest.interest, wholeTop);
+    assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal((await callReserve(session, encodeEnact(topEnd))).ok, true);
+    const restEvm = await callReserve(session, encodeWithdraw(who, topEnd));
+    assert.equal(restEvm.ok, true, restEvm.reason);
+    const restPaid = decodeWithdraw(restEvm.returnValue);
+    assert.equal(restPaid.principal, TOP);
+    assert.equal(restPaid.interest, topDue);
+    assert.equal(restPaid.interest, rest.interest);
+  });
+});
+
 describe('an epoch with no commit keeps the running rate', () => {
   it('fixed mode keeps the adopted rate when the next epoch has no commit', () => {
     const epoch = RESERVE_EPOCH_MS;

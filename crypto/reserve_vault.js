@@ -177,6 +177,17 @@ export function withdrawMintId(portalId, epoch) {
     .digest('hex');
 }
 
+/**
+ * Epoch label of a withdraw mint. Chain time wins once it has passed the
+ * vault's current epoch, so a later deposit is not stuck on the mint id of
+ * an earlier withdraw. After a block rolls, the two are the same integer.
+ */
+function mintEpoch(state, nowMs) {
+  const chain = chainEpochIndex(state, nowMs);
+  const live = Math.floor(Number(state?.currentEpoch) || 0);
+  return chain > live ? chain : live;
+}
+
 export function emptyVault() {
   return {
     programId: RESERVE_PROGRAM,
@@ -990,17 +1001,31 @@ function trancheDue(state, tranche, nowIdx, span) {
 }
 
 /**
- * The arrival epoch of a credit is still open. Principal and reward for
- * that credit stay locked until chain time has passed the epoch.
+ * Every recorded credit is still inside its own lock epoch. One open
+ * top-up does not re-lock an earlier deposit whose epoch has already ended.
+ * A portal with no tranche list is the legacy whole balance.
  */
 function arrivalEpochOpen(state, portal, nowMs) {
-  const chain = chainEpochIndex(state, nowMs);
   const tranches = portal?.tranches;
-  if (!Array.isArray(tranches)) return false;
+  if (!Array.isArray(tranches) || tranches.length === 0) return false;
+  const chain = chainEpochIndex(state, nowMs);
   for (const tranche of tranches) {
-    if (chain <= Math.floor(Number(tranche?.epoch) || 0)) return true;
+    if (chain > Math.floor(Number(tranche?.epoch) || 0)) return false;
   }
-  return false;
+  return true;
+}
+
+/** Principal whose own lock epoch has ended. The open top-up stays put. */
+function maturedPrincipal(state, portal, nowMs) {
+  const tranches = portal?.tranches;
+  const whole = asBig(portal?.staked) + asBig(portal?.idle);
+  if (!Array.isArray(tranches) || tranches.length === 0) return whole;
+  const chain = chainEpochIndex(state, nowMs);
+  let due = 0n;
+  for (const tranche of tranches) {
+    if (chain > Math.floor(Number(tranche?.epoch) || 0)) due += asBig(tranche.amount);
+  }
+  return due;
 }
 
 /**
@@ -1054,7 +1079,7 @@ export function previewWithdraw(state, dest, nowMs = null) {
   const clock = nowMs == null
     ? (Number(state?.epochStartMs) || 0) + epochMs(state?.magic)
     : nowMs;
-  const principal = asNum(asBig(p.staked) + asBig(p.idle));
+  const principal = nanosOut(maturedPrincipal(state, p, clock));
   const interest = portalEpochInterest(state, p, clock);
   return {
     principal,
@@ -1435,7 +1460,7 @@ export function verifyReservePayout(state, tx, clockMs) {
   }
   if (!p) return { ok: false, reason: 'empty' };
   if (arrivalEpochOpen(state, p, clock)) return { ok: false, reason: 'epoch_open' };
-  const principal = asNum(asBig(p.staked) + asBig(p.idle));
+  const principal = nanosOut(maturedPrincipal(state, p, clock));
   const interest = portalEpochInterest(state, p, clock);
   const published = publicActionNanos(tx, (tx?.vout || []).find((row) => String(row?.kind || '') === KIND_WITHDRAW) || tx?.vout?.[0]);
   if (published != null && published < principal) return { ok: false, reason: 'principal_short' };
@@ -1443,7 +1468,7 @@ export function verifyReservePayout(state, tx, clockMs) {
   if (act.nanos < principal) return { ok: false, reason: 'principal_short' };
   if (act.nanos > principal + interest) return { ok: false, reason: 'over_mint' };
   if (act.nanos !== principal + interest) return { ok: false, reason: 'mint_amount' };
-  const mintId = withdrawMintId(p.id || act.portalId, state.currentEpoch);
+  const mintId = withdrawMintId(p.id || act.portalId, mintEpoch(state, clock));
   if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
   return { ok: true };
 }
@@ -1882,8 +1907,9 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
-  // Completed epochs can be withdrawn on any later block. A credit whose
-  // own epoch is still open stays locked, principal and reward together.
+  // Completed deposits can be withdrawn on any later block. Each credit
+  // unlocks at the end of its own lock epoch. A later top-up does not
+  // re-lock principal whose epoch has already ended.
   if (settlementIndex(state, nowMs) <= 0) {
     return { ok: false, reason: 'epoch_open' };
   }
@@ -1900,14 +1926,15 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   }
   const staked = asBig(p.staked);
   const idle = asBig(p.idle);
-  const principal = staked + idle;
-  if (principal <= 0n) return { ok: false, reason: 'empty' };
+  if (staked + idle <= 0n) return { ok: false, reason: 'empty' };
   if (arrivalEpochOpen(state, p, nowMs)) return { ok: false, reason: 'epoch_open' };
+  const release = maturedPrincipal(state, p, nowMs);
+  if (release <= 0n) return { ok: false, reason: 'epoch_open' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
   settlePortal(state, p, nowMs);
   const interest = capReward(p.accruedReward);
   p.accruedReward = 0n;
-  const mintId = withdrawMintId(p.id, state.currentEpoch);
+  const mintId = withdrawMintId(p.id, mintEpoch(state, nowMs));
   if (state.mintedIds && state.mintedIds[mintId]) {
     return { ok: false, reason: 'double_mint' };
   }
@@ -1931,10 +1958,21 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     rememberMint(state, mintId);
     state.mintedIds[mintId] = true;
   }
-  state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);
+  state.totalLockedNanos = asBig(state.totalLockedNanos) - release;
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
-  p.redeemedNanos = asBig(p.redeemedNanos) + asBig(principal);
-  if (Number(p.voteEpoch || 0) === Number(state.currentEpoch || 0)) {
+  p.redeemedNanos = asBig(p.redeemedNanos) + release;
+  const chain = chainEpochIndex(state, nowMs);
+  if (Array.isArray(p.tranches) && p.tranches.length) {
+    p.tranches = p.tranches.filter((tranche) => chain <= Math.floor(Number(tranche.epoch) || 0));
+  }
+  let fromStaked = release >= staked ? staked : release;
+  let fromIdle = release - fromStaked;
+  if (fromIdle > idle) fromIdle = idle;
+  p.staked = staked - fromStaked;
+  p.idle = idle - fromIdle;
+  const remain = asBig(p.staked) + asBig(p.idle);
+  const stillVoter = remain >= BigInt(PI_SHE_NANOS);
+  if (!stillVoter && Number(p.voteEpoch || 0) === Number(state.currentEpoch || 0)) {
     if (p.vote === VOTE_INCREASE && Number(state.votes.increase) > 0) state.votes.increase -= 1;
     if (p.vote === VOTE_DECREASE && Number(state.votes.decrease) > 0) state.votes.decrease -= 1;
     if (p.vote === VOTE_HOLD && Number(state.votes.hold) > 0) state.votes.hold -= 1;
@@ -1942,24 +1980,31 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (Number(state.votes.increase) < 0) state.votes.increase = 0;
   if (Number(state.votes.decrease) < 0) state.votes.decrease = 0;
   if (Number(state.votes.hold) < 0) state.votes.hold = 0;
-  p.staked = 0n;
-  p.idle = 0n;
-  p.tranches = [];
-  p.rewardEpoch = null;
-  p.joined = false;
-  p.vote = null;
-  p.voteEpoch = 0;
-  p.payout = null;
+  if (remain <= 0n) {
+    p.staked = 0n;
+    p.idle = 0n;
+    p.tranches = [];
+    p.rewardEpoch = null;
+    p.joined = false;
+    p.vote = null;
+    p.voteEpoch = 0;
+    p.payout = null;
+  } else if (!stillVoter) {
+    p.joined = false;
+    p.vote = null;
+    p.voteEpoch = 0;
+  }
   const shownInterest = nanosOut(interest);
+  const shownPrincipal = nanosOut(release);
   return {
     ok: true,
-    principal: nanosOut(principal),
-    staked: nanosOut(staked),
-    idle: nanosOut(idle),
+    principal: shownPrincipal,
+    staked: nanosOut(fromStaked),
+    idle: nanosOut(fromIdle),
     interest: shownInterest,
     reward: shownInterest,
     rewardSource: interest > 0n ? 'coinbase' : undefined,
-    payout: nanosOut(principal + interest),
+    payout: nanosOut(release + interest),
     to,
     mint,
     programId: RESERVE_PROGRAM,
@@ -2011,8 +2056,9 @@ function declaredLockNanos(tx) {
 /**
  * One forward pass over the block. Each withdraw is checked on the vault
  * after the earlier txs, before that withdraw clears the stake.
- * Opened must be principal + permitted. The vault's own interest must be
- * that permitted amount, and the mint must be that interest.
+ * Opened must be the matured principal plus permitted. A top-up whose
+ * own epoch is still open is not part of that principal. The vault's own
+ * interest must be that permitted amount, and the mint must be that interest.
  * Locked-in is the sum of the lock txs in this block, not the change in the
  * vault's own total. Start plus those amounts must equal principal out plus
  * what is still locked. Offsetting receipts cannot cancel across the block.
@@ -2066,9 +2112,7 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     const act = reserveAction(txs[i]);
     if (!act || act.opened !== true) return fail();
     const portal = act.portalId ? state.portals?.[act.portalId] : null;
-    const staked = portal?.staked ?? 0n;
-    const idle = portal?.idle ?? 0n;
-    const principal = exactBi(asBig(staked) + asBig(idle));
+    const principal = exactBi(maturedPrincipal(state, portal, clock));
     const permitted = exactBi(portalEpochInterest(state, portal, clock));
     const opened = exactBi(act.nanos);
     if (principal == null || permitted == null || opened == null) return fail();

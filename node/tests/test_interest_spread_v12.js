@@ -329,9 +329,9 @@ describe('per-withdraw interest spread', () => {
     const added = 38;
     const withLock = interestNanos(PI_SHE_NANOS + added, GENESIS_BPS);
     assert.equal(withLock, interest + 1);
-    // A top-up opens in the new epoch. That credit has not ended, so a
-    // withdraw in the same block would release it early and is refused.
-    // Claiming the completed epoch's interest on the added amount is refused too.
+    // A top-up opens in the new epoch. That credit stays locked. Taking it,
+    // or paying it this epoch's interest, is refused. The earlier principal
+    // is payable in the same block.
     const before = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock')]),
       potBlock(DRAW, again, [
@@ -348,6 +348,14 @@ describe('per-withdraw interest spread', () => {
       ]),
     ];
     expectSupplyReject(honest, 'lock-then-withdraw');
+    const released = [
+      potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'own-lock')]),
+      potBlock(DRAW, again, [
+        lockOf(again, who, added, 'own-add'),
+        drawOf(who, again, PI_SHE_NANOS + interest, 'own-draw'),
+      ]),
+    ];
+    expectVerified(released, interest, 'old-principal-while-top-up-open');
     const after = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'post-lock')]),
       potBlock(DRAW, again, [

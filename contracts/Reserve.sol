@@ -13,10 +13,12 @@ pragma solidity ^0.8.20;
  * integer floor, then each later full epoch before the open one. A
  * completed gap is paid immediately, at that epoch's committed rate or
  * else the last paid rate, including a commit on a skipped epoch. It does
- * not wait for a later enact. A credit stays locked until its own epoch
- * has ended. After that, any later block can withdraw the completed
- * epochs. The still-open epoch is not paid. A portal
- * votes once per epoch;
+ * not wait for a later enact. Each deposit, the original lock and every
+ * top-up, stays locked until its own epoch has ended. A later top-up does
+ * not re-lock earlier principal. Each tranche keeps the pro-rata of its
+ * own lock epoch. After that epoch ends, any later block can withdraw
+ * that deposit. A deposit whose epoch is still open stays in the reserve.
+ * The still-open epoch is not paid. A portal votes once per epoch;
  * a second cast reverts VoteLocked(). At epoch end the unique plurality of {increase, decrease,
  * hold} enacts ±1 protocol unit on the live hash bonus. It does not set
  * the reserve rate. The freeze is the trimmed mean of the attested 14-bank
@@ -495,38 +497,61 @@ contract Reserve {
     }
 
     function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
-        // Completed epochs are payable on any later block. A credit whose
-        // own epoch is still open stays locked, principal and reward together.
+        // Each deposit unlocks at the end of its own lock epoch. A later
+        // top-up does not re-lock principal whose epoch has already ended.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
         uint256 active = p.active;
-        uint256 idle = p.idle;
-        principal = active + idle;
-        if (principal == 0) revert BadAmount();
+        uint256 idleBal = p.idle;
+        if (active + idleBal == 0) revert BadAmount();
         uint256 chain = _chainEpoch(nowTs);
+        _settle(p, nowTs);
+        uint256 release = 0;
+        uint256 kept = 0;
         uint256 credits = p.tranches.length;
         for (uint256 i = 0; i < credits; i++) {
-            if (chain <= p.tranches[i].epoch) revert EpochNotEnded();
+            if (chain <= p.tranches[i].epoch) {
+                if (kept != i) p.tranches[kept] = p.tranches[i];
+                kept += 1;
+            } else {
+                release += p.tranches[i].amount;
+            }
         }
-        _settle(p, nowTs);
+        if (credits == 0) release = active + idleBal;
+        if (release == 0) revert EpochNotEnded();
+        while (p.tranches.length > kept) p.tranches.pop();
         // Each completed chain epoch pays at the rate committed for that epoch.
         reward = p.accruedReward;
         p.accruedReward = 0;
-        totalLocked -= principal;
-        if (p.voteEpoch == currentEpoch) {
+        if (release > active) {
+            uint256 rest = release - active;
+            p.active = 0;
+            if (rest > p.idle) revert BadAmount();
+            p.idle -= rest;
+        } else {
+            p.active = active - release;
+        }
+        totalLocked -= release;
+        principal = release;
+        uint256 left = p.active + p.idle;
+        bool leave = left == 0 || left < PI_NANOS;
+        if (leave && p.voteEpoch == currentEpoch) {
             if (p.vote == Vote.IncreaseBonus && votesIncrease > 0) votesIncrease -= 1;
             if (p.vote == Vote.DecreaseBonus && votesDecrease > 0) votesDecrease -= 1;
             if (p.vote == Vote.LeaveBonusAsIs && votesHold > 0) votesHold -= 1;
         }
-        p.active = 0;
-        p.idle = 0;
-        delete p.tranches;
-        p.rewardTracked = false;
-        p.rewardEpoch = 0;
-        p.joined = false;
-        p.vote = Vote.None;
-        p.voteEpoch = 0;
+        if (left == 0) {
+            p.rewardTracked = false;
+            p.rewardEpoch = 0;
+            p.joined = false;
+            p.vote = Vote.None;
+            p.voteEpoch = 0;
+        } else if (left < PI_NANOS) {
+            p.joined = false;
+            p.vote = Vote.None;
+            p.voteEpoch = 0;
+        }
     }
 
     function publicView(uint256 nowTs)

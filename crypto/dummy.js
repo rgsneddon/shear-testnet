@@ -90,7 +90,7 @@ export function claimedVoutNanos(tx, o, i) {
 
 export function sealFlowVout(o) {
   if (!o || o.commit) return o;
-  if (!hiddenAmountRangeReady()) return o;
+  if (!hiddenAmountRangeReady()) throw new Error('range_native_required');
   const n = Math.floor(Number(o.nanos || 0));
   const d20 = hash20FromAddress(o.address);
   if (!d20) return o;
@@ -105,7 +105,7 @@ export function sealFlowVout(o) {
 
 export function attachDummyOuts(tx, { fanout = DUMMY_FANOUT, spent } = {}) {
   if (!tx || !flowNeedsDummy(tx)) return tx;
-  if (!hiddenAmountRangeReady()) return tx;
+  if (!hiddenAmountRangeReady()) throw new Error('range_native_required');
   const raw = [...(tx.vout || [])];
   const out = { ...tx, vout: raw.map(sealFlowVout) };
   delete out.nanos;
