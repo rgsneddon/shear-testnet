@@ -3,6 +3,7 @@
  * Range: packed 64-bit OR proofs (RANGE=packed-bit). The wire label is not Bulletproofs+.
  * Coinbase exact-value: Schnorr that C − vG ∈ ⟨H⟩ for v from Tree-A.
  */
+import assert from 'node:assert/strict';
 import { createHash, hash, randomBytes } from 'node:crypto';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
@@ -485,12 +486,16 @@ export function verifyRange(Cbytes, proof) {
 }
 
 /** Coinbase / Tree-A: v is public from collated units. Exact-value proof, no painted nanos. */
-export function sealCoinbaseNote(v, { dest20, noteCommit, kind, r, skipRange } = {}) {
+export function sealCoinbaseNote(v, { dest20, noteCommit, kind, r, skipRange, hidden, t21 } = {}) {
   const blind = r == null ? randomScalar() : r;
   const value = proveValue(v, blind);
   const nc = noteCommit
     ? Buffer.from(noteCommit)
     : (dest20 ? noteCommitOfDest20(dest20) : Buffer.alloc(32));
+  // Hidden coinbase and T21 payouts are sealHiddenNote. The call below is
+  // proveRange(..., { public: true }), which is only the public-coinbase
+  // exception. Those hidden amounts must not reach it.
+  assert.ok(hidden !== true && t21 !== true, 'hidden coinbase or T21 payout must use sealHiddenNote');
   const rangeProof = skipRange ? Buffer.alloc(0) : proveRange(v, blind, { public: true });
   const row = {
     kind: kind || 'hash',

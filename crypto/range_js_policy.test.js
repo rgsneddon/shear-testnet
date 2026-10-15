@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nativeProveRange, nativeLoaded } from './native_admit.js';
-import { provePackedRange, proveRange, scalarBytes, randomScalar } from './note.js';
+import { provePackedRange, proveRange, scalarBytes, randomScalar, sealCoinbaseNote, sealHiddenNote } from './note.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -33,6 +33,39 @@ describe('range JS is opt-in and hidden amounts fail closed', () => {
     assert.match(note, /return false/);
     assert.match(note, /opts\.public !== true && !rangeJsOptIn\(\)/);
     assert.match(note, /proveRange\(v, blind, \{ public: true \}\)/);
+    assert.match(note, /hidden coinbase or T21 payout must use sealHiddenNote/);
+    assert.match(note, /hidden !== true && t21 !== true/);
+    const hiddenFn = note.slice(note.indexOf('export function sealHiddenNote'));
+    assert.match(hiddenFn, /proveRange\(n, r\)/);
+    assert.equal(/public:\s*true/.test(hiddenFn), false);
+  });
+
+  it('a hidden coinbase or T21 payout cannot use the public prover', () => {
+    assert.throws(
+      () => sealCoinbaseNote(5, { dest20: Buffer.alloc(20, 1), kind: 'pot', hidden: true }),
+      /hidden coinbase or T21 payout must use sealHiddenNote/,
+    );
+    assert.throws(
+      () => sealCoinbaseNote(5, { dest20: Buffer.alloc(20, 1), kind: 'hash', t21: true }),
+      /hidden coinbase or T21 payout must use sealHiddenNote/,
+    );
+    const missed = runPolicy({ SHEAR_ADMIT_DISABLE: '1' }, `
+      import { sealCoinbaseNote } from './crypto/note.js';
+      for (const opts of [{ hidden: true, kind: 'pot' }, { t21: true, kind: 'pool-fee' }]) {
+        let message = '';
+        try { sealCoinbaseNote(5, { dest20: Buffer.alloc(20, 1), ...opts }); }
+        catch (err) { message = String(err && err.message); }
+        if (!message.includes('sealHiddenNote')) throw new Error('guard missing: ' + message);
+      }
+      console.log('GUARD_OK');
+    `);
+    assert.equal(missed.status, 0, missed.stderr || missed.stdout);
+    assert.match(missed.stdout, /GUARD_OK/);
+    assert.equal(missed.stderr.includes('proving a range in JavaScript'), false);
+    const payout = sealHiddenNote(5, { dest20: Buffer.alloc(20, 3), kind: 'hash' });
+    assert.equal(payout.kind, 'hash');
+    assert.equal(payout.valueProof, undefined);
+    assert.equal(payout.rangeProof.length, 14433);
   });
 
   it('native prove ignores the public flag', () => {
