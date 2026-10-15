@@ -2910,7 +2910,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     const summed = typedCommitSum(tx);
     if (!summed.ok) return summed;
-    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws);
+    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws, Number(decoded.timestamp) || 0);
     if (!stake.ok) return stake;
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;
@@ -2947,7 +2947,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (stake.mintId) drawnWithdraws.add(stake.mintId);
   }
   if (typeof spendableOf === 'function') {
-    const funded = verifyFundedBody(body, spendableOf, { seenDigests, reserveState });
+    const funded = verifyFundedBody(body, spendableOf, {
+      seenDigests,
+      reserveState,
+      nowMs: Number(decoded.timestamp) || 0,
+    });
     if (!funded.ok) return funded;
   }
   const levyBound = coinbaseLevyPays(txs[0], fees, {

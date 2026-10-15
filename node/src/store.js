@@ -3477,7 +3477,8 @@ export function createStore(dir, {
       const id = reserveWithdrawMintId(m, reserveVault);
       if (id) drawn.add(id);
     }
-    const stake = boundReserveWithdraw(tx, reserveVault, drawn);
+    const stamp = headerStamp(opts.nowMs);
+    const stake = boundReserveWithdraw(tx, reserveVault, drawn, stamp);
     if (!stake.ok) return stake;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
@@ -3508,7 +3509,6 @@ export function createStore(dir, {
       } catch { /* ignore */ }
       return auth;
     }
-    const stamp = headerStamp(opts.nowMs);
     if (txIsReserveAction(tx)) {
       if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
       ensureMempoolVault(stamp);

@@ -1582,7 +1582,7 @@ function maturedPrincipal(state, portal, nowMs) {
 }
 
 /** Principal a withdraw may pay. Time-locked notes are not included. */
-function withdrawablePrincipal(state, portal, nowMs) {
+export function withdrawablePrincipal(state, portal, nowMs) {
   return maturedSplit(state, portal, nowMs).legacy;
 }
 

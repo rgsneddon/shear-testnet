@@ -13,7 +13,7 @@ import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
-import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
+import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -814,7 +814,7 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
  * A withdraw pays only stake that is already locked. Principal 0 cannot
  * withdraw any amount. The cap is principal plus this epoch's interest.
  */
-export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
+export function boundReserveWithdraw(tx, reserveState = null, drawn = null, clockMs = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return { ok: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
@@ -832,7 +832,12 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   let portal = (ref.id && portals[ref.id]) || (dest && portals[dest]) || null;
   const staked = Math.max(0, Math.floor(Number(portal?.staked || 0)));
   const idle = Math.max(0, Math.floor(Number(portal?.idle || 0)));
-  const principal = staked + idle;
+  const locked = staked + idle;
+  const clock = Number(clockMs);
+  const duePrincipal = Number.isFinite(clock) && clock > 0
+    ? Math.max(0, Math.floor(Number(withdrawablePrincipal(reserveState, portal, clock)) || 0))
+    : locked;
+  const principal = duePrincipal;
   if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
   const bps = Math.max(0, Math.floor(Number(reserveState?.epochBps || 0)));
   const cap = principal + interestNanos(staked, bps);
@@ -854,7 +859,9 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   if (String(tx?.programId || '') !== RESERVE_PROGRAM) {
     return { ok: false, reason: 'mint_forbidden' };
   }
-  // The label is not an amount. The output must open to exactly principal + interest.
+  // The label is not an amount. The output must open to exactly the
+  // withdrawable legacy principal plus this epoch's interest. A time-locked
+  // note is not part of that principal.
   if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
     return { ok: false, reason: 'mint_amount' };
   }
@@ -943,7 +950,7 @@ export function mempoolDebitNanos(txs, address) {
  * Walk body txs in order. An address balance is not value: a debit that is
  * not a note-bound Flow spend is rejected. `spendableOf` is ignored.
  */
-export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null } = {}) {
+export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null, nowMs = null } = {}) {
   void spendableOf;
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
   const seenOwners = new Map();
@@ -961,7 +968,7 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
     if (typed) return typed;
     const open = valueOpenRejected(tx);
     if (open) return open;
-    const stake = boundReserveWithdraw(tx, reserveState, drawn);
+    const stake = boundReserveWithdraw(tx, reserveState, drawn, nowMs);
     if (!stake.ok) return stake;
     const kind = reserveKindOf(tx);
     if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {

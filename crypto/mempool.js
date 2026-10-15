@@ -280,7 +280,7 @@ export function admitMempool(pool, tx, opts = {}) {
       const id = reserveWithdrawMintId(prev, opts.reserveState || null);
       if (id) drawn.add(id);
     }
-    const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn);
+    const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn, Number(opts.nowMs) || 0);
     if (!stake.ok) return { ...stake, vault: true };
     // A carried vault already includes every accepted reserve tx. Trial only
     // this one. A caller with no carried vault still trials the prefix once.

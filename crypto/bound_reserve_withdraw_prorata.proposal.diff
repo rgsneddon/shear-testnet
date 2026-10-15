@@ -1,51 +1,35 @@
-diff --git a/crypto/mempool.js b/crypto/mempool.js
-index 24afb247..646144c2 100644
---- a/crypto/mempool.js
-+++ b/crypto/mempool.js
-@@ -280,7 +280,7 @@ export function admitMempool(pool, tx, opts = {}) {
-       const id = reserveWithdrawMintId(prev, opts.reserveState || null);
-       if (id) drawn.add(id);
-     }
--    const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn);
-+    const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn, Number(opts.nowMs) || 0);
-     if (!stake.ok) return { ...stake, vault: true };
-     // A carried vault already includes every accepted reserve tx. Trial only
-     // this one. A caller with no carried vault still trials the prefix once.
-diff --git a/crypto/spend.js b/crypto/spend.js
-index 41ad7496..04defa29 100644
 --- a/crypto/spend.js
 +++ b/crypto/spend.js
-@@ -13,7 +13,7 @@ import { packTx, packDigest } from './pack.js';
+@@ -13,7 +13,7 @@
  import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
  import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
  import { interestNanos } from './reserve_oracle.js';
--import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
-+import { portalEpochInterest, portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
+-import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId } from './reserve_vault.js';
++import { portalEpochInterest, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId } from './reserve_vault.js';
  import { typedAdmitStructure } from './admit_v3.js';
  import { MEMBER_KEYS } from './member_keys.js';
  
-@@ -812,9 +812,12 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
+@@ -812,7 +812,11 @@
  
  /**
   * A withdraw pays only stake that is already locked. Principal 0 cannot
 - * withdraw any amount. The cap is principal plus this epoch's interest.
-+ * withdraw any amount. The cap is principal plus the interest due at the
-+ * header time. interestNanos(staked, bps) is one full epoch. A legacy lock
-+ * made after the epoch opened earns only the pro-rata, and a correct
-+ * receipt then fails mint_amount against the full-epoch cap.
++ * withdraw any amount. The cap is the withdrawable legacy principal plus
++ * the interest due at the header time. interestNanos(staked, bps) is one
++ * full epoch. A legacy lock made after the epoch opened earns only the
++ * pro-rata, and a correct receipt then fails mint_amount against the
++ * full-epoch cap.
   */
--export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
-+export function boundReserveWithdraw(tx, reserveState = null, drawn = null, clockMs = null) {
+ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, clockMs = null) {
    const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-   if (kind !== 'withdraw') return { ok: true };
-   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
-@@ -835,7 +838,12 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
-   const principal = staked + idle;
+@@ -840,7 +844,13 @@
+   const principal = duePrincipal;
    if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
    const bps = Math.max(0, Math.floor(Number(reserveState?.epochBps || 0)));
 -  const cap = principal + interestNanos(staked, bps);
 +  const full = interestNanos(staked, bps);
-+  const clock = Number(clockMs);
++  // Header clock only. A missing clock keeps the full-epoch figure.
++  // portalEpochInterest is the pro-rata withdraw() actually pays.
 +  const due = Number.isFinite(clock) && clock > 0 && portal
 +    ? Math.max(0, Math.floor(Number(portalEpochInterest(reserveState, portal, clock)) || 0))
 +    : full;
@@ -53,38 +37,14 @@ index 41ad7496..04defa29 100644
    if (claimed > cap) return { ok: false, reason: 'insufficient' };
    if (portal?.payout) {
      const want = hash20FromAddress(portal.payout);
-@@ -961,7 +969,7 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
-     if (typed) return typed;
-     const open = valueOpenRejected(tx);
-     if (open) return open;
--    const stake = boundReserveWithdraw(tx, reserveState, drawn);
-+    const stake = boundReserveWithdraw(tx, reserveState, drawn, body?.nowMs);
-     if (!stake.ok) return stake;
-     const kind = reserveKindOf(tx);
-     if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {
-diff --git a/node/src/chain.js b/node/src/chain.js
-index 8d8206e7..b2fef772 100644
---- a/node/src/chain.js
-+++ b/node/src/chain.js
-@@ -2910,7 +2910,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
-     }
-     const summed = typedCommitSum(tx);
-     if (!summed.ok) return summed;
--    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws);
-+    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws, Number(decoded.timestamp) || 0);
-     if (!stake.ok) return stake;
-     const auth = reserveAuth(tx, reserveState, seenOwners);
-     if (!auth.ok) return auth;
-diff --git a/node/src/store.js b/node/src/store.js
-index 568539ec..583cf20e 100644
---- a/node/src/store.js
-+++ b/node/src/store.js
-@@ -3477,7 +3477,7 @@ export function createStore(dir, {
-       const id = reserveWithdrawMintId(m, reserveVault);
-       if (id) drawn.add(id);
-     }
--    const stake = boundReserveWithdraw(tx, reserveVault, drawn);
-+    const stake = boundReserveWithdraw(tx, reserveVault, drawn, Number(opts?.nowMs) || 0);
-     if (!stake.ok) return stake;
-     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
-     const debit = fundedDebit(tx);
+@@ -860,8 +870,8 @@
+     return { ok: false, reason: 'mint_forbidden' };
+   }
+   // The label is not an amount. The output must open to exactly the
+-  // withdrawable legacy principal plus this epoch's interest. A time-locked
+-  // note is not part of that principal.
++  // withdrawable legacy principal plus the pro-rata interest due at the
++  // header clock. A time-locked note is not part of that principal.
+   if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
+     return { ok: false, reason: 'mint_amount' };
+   }

@@ -61,6 +61,7 @@ import {
 import { chainLoadSealHash, coinbaseTx } from '../src/chain.js';
 import { createNoteLedger } from '../src/note_ledger.js';
 import { foldSupply } from '../src/supply.js';
+import { boundReserveWithdraw } from '../../crypto/spend.js';
 
 const T0 = 1_700_000_000_000;
 const DRAW = T0 + RESERVE_EPOCH_MS;
@@ -260,6 +261,15 @@ describe('time-locked withdraw supply', () => {
     const preview = previewWithdraw(state, dest, DRAW);
     assert.equal(preview.principal, PI_SHE_NANOS);
     assert.equal(preview.notePrincipal, PI_SHE_NANOS);
+    // Full-epoch remain makes the two partials equal interest on all staked.
+    // The receipt opens to legacy principal only, so the exact check must use
+    // withdrawablePrincipal. All locked principal would refuse this seal.
+    const cap = PI_SHE_NANOS + interestNanos(PI_SHE_NANOS * 2, GENESIS_BPS);
+    assert.equal(preview.payout, cap);
+    const draw = withdrawTx({ from: dest, to: dest, nanos: preview.payout, id: 'mixed-bound' });
+    const bound = boundReserveWithdraw(draw, state, new Set(), DRAW);
+    assert.equal(bound.ok, true, bound.reason);
+    assert.equal(bound.principal, PI_SHE_NANOS);
     const paid = withdraw({ state, dest, nowMs: DRAW });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
