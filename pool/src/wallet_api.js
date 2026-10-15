@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums, claimRowsForView } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums, publishedRewardSets } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1013,6 +1013,30 @@ function memoTxWeight(m) {
   return txWeight({ vouts, memoChunks: memo, bFlag });
 }
 
+/** Structural stubs a wallet re-weighs. The stated weight integer is not the quote. */
+function quoteStructure(m) {
+  const shape = {};
+  if (Array.isArray(m?.vin) && m.vin.length) shape.vin = m.vin.map(() => ({}));
+  if (Array.isArray(m?.vout) && m.vout.length) shape.vout = m.vout.map(() => ({}));
+  if (m?.coinbase === true || String(m?.kind || '') === 'coinbase') shape.coinbase = true;
+  if (m?.fs1 != null && m.fs1 !== '') shape.fs1 = '1';
+  return shape;
+}
+
+function carriesViewKey(url, body) {
+  if (url?.searchParams) {
+    for (const key of url.searchParams.keys()) {
+      if (String(key).toLowerCase() === 'viewkey') return true;
+    }
+  }
+  if (body && typeof body === 'object') {
+    for (const key of Object.keys(body)) {
+      if (String(key).toLowerCase() === 'viewkey') return true;
+    }
+  }
+  return false;
+}
+
 function publicHashTag(login) {
   const dest = String(login || '').trim().split('.')[0];
   const hex = createHash('sha256')
@@ -1084,6 +1108,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       kind: t.kind || 'send',
       fee: Number(t.fee || 0),
       weight,
+      ...quoteStructure(t),
     });
   }
   const rawPending = Array.isArray(opts.networkPending)
@@ -1099,6 +1124,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       kind: m.kind || 'send',
       fee,
       weight,
+      ...quoteStructure(m),
       prime: m.kind === 'b-spend' || m.kind === 'send' || m.kind === 'claim',
       included,
       priority: (included ? 400 : 0) + mass,
@@ -1113,6 +1139,10 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       kind: row.kind,
       fee: row.fee,
       weight: row.weight,
+      ...(Array.isArray(row.vin) ? { vin: row.vin } : {}),
+      ...(Array.isArray(row.vout) ? { vout: row.vout } : {}),
+      ...(row.coinbase === true ? { coinbase: true } : {}),
+      ...(row.fs1 != null && row.fs1 !== '' ? { fs1: row.fs1 } : {}),
       prime: row.kind === 'b-spend' || row.kind === 'send' || row.kind === 'claim',
       included: true,
       priority: 400 + mass,
@@ -1337,7 +1367,7 @@ function queuedRewardClaim(body, { queueSend, store }) {
   }
   const to = String(body.to || '').trim();
   if (!isDestAddress(to)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
-  const nanos = parseIntegerNanos(body.nanos);
+  const nanos = parseIntegerNanos(body.rho != null ? body.rho : body.nanos);
   if (nanos == null || nanos <= 0n) return { status: 400, json: { ok: false, reason: 'bad_send' } };
   const nullifier = String(body.nullifier || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(nullifier)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
@@ -1815,15 +1845,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       },
     };
   }
-  if (path === '/api/vault/claims' && (verb === 'POST' || verb === 'GET')) {
-    const viewKey = body.viewKey || url.searchParams.get('viewKey') || '';
-    const address = body.address || body.rest || url.searchParams.get('address') || url.searchParams.get('rest') || '';
-    const to = body.to || url.searchParams.get('to') || '';
+  if ((path === '/api/vault/claims' || path === '/api/vault/rewards') && (verb === 'POST' || verb === 'GET')) {
+    if (carriesViewKey(url, body)) {
+      return { status: 400, json: { ok: false, reason: 'view_key' } };
+    }
     const vault = store?.reserveVault;
     if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
-    const got = claimRowsForView(vault, { viewKey, address, to });
-    if (!got.ok) return { status: 400, json: { ok: false, reason: got.reason } };
-    return { status: 200, json: { ok: true, claims: got.claims } };
+    return { status: 200, json: publishedRewardSets(vault) };
   }
   if (path === '/api/vault/reserve' && verb === 'GET') {
     const dest = url.searchParams.get('dest') || '';

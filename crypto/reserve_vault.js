@@ -10,7 +10,6 @@ import {
   MAGIC_TESTNET,
 } from './asert.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress } from './address.js';
-import { vaultDest } from './flow_sheet.js';
 import { attachAdmitPub } from './admit.js';
 import { fs1LeafFor } from './fs1_leaf.js';
 import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos, hashToScalar, scalarBytes } from './note.js';
@@ -322,67 +321,47 @@ export function portalClaimableNanos(state, destOrId) {
   return sum;
 }
 
-function jsonSafeClaim(value) {
-  if (value == null) return value;
-  if (typeof value === 'bigint') return value.toString();
-  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-    return { type: 'Buffer', data: Array.from(Buffer.from(value)) };
-  }
-  if (Array.isArray(value)) return value.map(jsonSafeClaim);
-  if (typeof value === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (k === 'portalId' || k === 'payoutPortalId' || k === 'lockDest' || k === 'dest') continue;
-      out[k] = jsonSafeClaim(v);
-    }
-    return out;
-  }
-  return value;
+function rootHex(value) {
+  if (typeof value === 'string') return value.toLowerCase();
+  if (Buffer.isBuffer(value)) return value.toString('hex');
+  if (value instanceof Uint8Array) return Buffer.from(value).toString('hex');
+  return '';
 }
 
 /**
- * Unclaimed reward rows for the vault opened by this view key.
- * The response is nanos, nullifier, the merkle proof, and the sealed
- * reward-claim output paid to `to`. It does not name the lock dest,
- * the portal id, or any other user's row.
- * `to` is the caller's payout dest. Sealing the note to the lock dest
- * would tie the claim back to the lock, so that dest is refused.
+ * Every archived epoch reward set, in stored leaf order.
+ * A wallet scans these leaves locally. The response has no view key,
+ * no portal id, no lock dest, and no sealed payout.
+ * Spent leaves stay in the list so the published root still matches.
  */
-export function claimRowsForView(state, { viewKey, address, to } = {}) {
-  const rest = String(address || '').trim();
-  const key = String(viewKey || '');
-  if (!key || !isShearAddress(rest)) return { ok: false, reason: 'view' };
-  const lockDest = vaultDest(rest, { viewKey: key });
-  if (!lockDest) return { ok: false, reason: 'view' };
-  const pay = String(to || '').trim();
-  if (!isDestAddress(pay) || isShearAddress(pay)) return { ok: false, reason: 'bad_dest' };
-  if (pay === lockDest) return { ok: false, reason: 'lock_dest' };
-  const portalId = portalIdFromDest(lockDest);
+export function publishedRewardSets(state) {
+  const book = state?.rewardSets || {};
+  const roots = state?.rewardRoots || {};
   const minted = state?.mintedIds || {};
-  const claims = [];
-  for (const [nullifier, row] of Object.entries(state?.rewardBook || {})) {
-    if (!row || String(row.portalId || '') !== portalId) continue;
-    const id = String(nullifier || '').toLowerCase();
-    if (minted[id]) continue;
-    const proof = rewardClaimProof(state, id);
-    if (!proof) continue;
-    const tx = rewardClaimTx({
-      to: pay,
-      nanos: row.nanos,
-      nullifier: id,
-      proof,
-    });
-    const vout = tx?.vout?.[0];
-    if (!vout || String(vout.kind || '') !== KIND_REWARD_CLAIM) continue;
-    claims.push({
-      nanos: row.nanos,
-      nullifier: id,
-      proof: jsonSafeClaim(proof),
-      vout: jsonSafeClaim(vout),
-    });
+  const sets = [];
+  for (const key of Object.keys(book).sort()) {
+    const rows = book[key];
+    if (!Array.isArray(rows) || rows.length === 0) continue;
+    const root = rootHex(roots[key]);
+    if (!/^[0-9a-f]{64}$/.test(root)) continue;
+    const leaves = [];
+    let dropped = false;
+    for (const row of rows) {
+      const nullifier = String(row?.nullifier || '').toLowerCase();
+      const rho = Math.floor(Number(row?.nanos ?? row?.rho) || 0);
+      if (!/^[0-9a-f]{64}$/.test(nullifier) || !(rho > 0)) {
+        dropped = true;
+        break;
+      }
+      const leaf = { nullifier, rho };
+      if (minted[nullifier]) leaf.spent = true;
+      leaves.push(leaf);
+    }
+    if (dropped || leaves.length !== rows.length) continue;
+    sets.push({ root, leaves });
   }
-  claims.sort((a, b) => (a.nullifier < b.nullifier ? -1 : a.nullifier > b.nullifier ? 1 : 0));
-  return { ok: true, claims };
+  sets.sort((a, b) => (a.root < b.root ? -1 : a.root > b.root ? 1 : 0));
+  return { ok: true, sets };
 }
 
 /** Packed EVM proof. Side 0 is a right sibling, side 1 is a left sibling. */

@@ -7,7 +7,7 @@ import { isDestAddress, encodeDest } from '../../crypto/address.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { networkReport } from './network_report.js';
 import { oracleView } from './oracle_feed.js';
-import { cloneVault, portalRewards, publicVaultView, claimRowsForView } from '../../crypto/reserve_vault.js';
+import { cloneVault, portalRewards, publicVaultView, publishedRewardSets } from '../../crypto/reserve_vault.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { keyedFetchRejected, syncVerdict, witnessRouteBanned } from './fs1_sync.js';
@@ -380,14 +380,15 @@ export function createRpc({
       const vault = store.reserveVault || null;
       return { ok: true, ...oracleView(vault, store.oracleSnapshot, Date.now()) };
     }
-    if (m === 'getvaultclaims' || m === 'vaultclaims' || m === 'api/vault/claims') {
+    if (m === 'getvaultclaims' || m === 'vaultclaims' || m === 'api/vault/claims'
+      || m === 'getvaultrewards' || m === 'api/vault/rewards') {
+      const named = params && typeof params === 'object'
+        ? Object.keys(params).some((key) => String(key).toLowerCase() === 'viewkey')
+        : false;
+      if (named) return { ok: false, reason: 'view_key' };
       const vault = store?.reserveVault;
       if (!vault) return { ok: false, reason: 'no_vault' };
-      return claimRowsForView(vault, {
-        viewKey: params.viewKey,
-        address: params.address || params.rest,
-        to: params.to,
-      });
+      return publishedRewardSets(vault);
     }
     if (m === 'getreserve' || m === 'reserve') {
       const vault = store.reserveVault;
@@ -510,7 +511,10 @@ export function createRpc({
       json(res, 200, dispatch('getreserve', Object.fromEntries(url.searchParams)));
       return;
     }
-    if ((req.method === 'GET' || req.method === 'POST') && (url.pathname === '/api/vault/claims' || url.pathname === '/vaultclaims')) {
+    if ((req.method === 'GET' || req.method === 'POST') && (
+      url.pathname === '/api/vault/claims' || url.pathname === '/vaultclaims'
+      || url.pathname === '/api/vault/rewards' || url.pathname === '/vaultrewards'
+    )) {
       let posted = {};
       if (req.method === 'POST') {
         try {

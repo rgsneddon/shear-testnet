@@ -7828,7 +7828,87 @@ void main() {
     expect(vault.portal(dest).nanos, second);
     expect(vault.portal(dest).deposits, hasLength(1));
     expect(vault.maturedPrincipalNanos(dest, mid), 0);
-    expect(vault.depositUnlockAtMs(vault.portal(dest).deposits.single), later + kReserveEpochMs);
+    expect(vault.depositUnlockAtMs(vault.portal(dest).deposits.single), 0);
+    expect(vault.maturedPrincipalNanos(dest, later + kReserveEpochMs), 0);
+    expect(vault.withdraw(dest: dest, nowMs: later + kReserveEpochMs), isNull);
+  });
+
+  test('there is no mid-epoch withdraw path', () async {
+    final vault = ShearReserve();
+    final dest = kPoolFeeDest;
+    const now = 1700000000000;
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: now), isNull);
+    expect(vault.maturedPrincipalNanos(dest, now), 0);
+    expect(vault.maturedPrincipalNanos(dest, now + kReserveEpochMs - 1), 0);
+    expect(vault.withdraw(dest: dest, nowMs: now + 1), isNull);
+    final posted = await postReserveWithdraw(
+      ShearLedger(),
+      reserve: vault,
+      dest: dest,
+      payout: dest,
+      nowMs: now + 1,
+      local: true,
+    );
+    expect(posted, isNull);
+    expect(vault.portal(dest).staked, kPiSheNanos);
+    expect(vault.portal(dest).nanos, kPiSheNanos);
+    expect(vault.maturedPrincipalNanos(dest, now + kReserveEpochMs), kPiSheNanos);
+  });
+
+  testWidgets('a time-lock deposit builds no withdraw tx', (tester) async {
+    _tallContinuum(tester);
+    final opened = await _open018(tester);
+    final ident = opened.session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final t0 = now - kReserveEpochMs;
+    final vault = ShearReserve();
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0, noteIsPrincipal: true), isNull);
+    expect(vault.maturedTimeLockNanos(dest, now), kPiSheNanos);
+    opened.ledger.rememberNote({
+      'address': dest,
+      'dest': dest,
+      'kind': 'lock',
+      'unlockAtMs': t0 + kReserveEpochMs,
+      'nanos': kPiSheNanos,
+      'amount': kPiShe,
+      'locked': true,
+      'spent': false,
+      'commit': Uint8List(32)..[0] = 1,
+      'noteCommit': Uint8List(32)..[0] = 2,
+      'r': Uint8List(32)..[0] = 3,
+    });
+    await tester.pumpWidget(ShearWalletApp(
+      session: opened.session,
+      ledger: opened.ledger,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-withdraw')));
+    expect(find.text('Withdraw to Continuum'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-withdraw')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-withdraw-sign')), findsNothing);
+    expect(opened.ledger.transactions.where((tx) => tx.kind == 'withdraw'), isEmpty);
+    expect(
+      opened.live.traffic.where((hit) => hit.body.contains('"kind":"withdraw"') || hit.body.contains('"kind": "withdraw"')),
+      isEmpty,
+    );
+    final note = opened.ledger.notes.singleWhere((row) => row['kind'] == 'lock');
+    expect(note['locked'], isFalse);
+    expect(
+      note['address'],
+      opened.ledger.currentDest(ident.address, paymentCode: ident.paymentCode),
+    );
+    expect(note['spent'], isNot(true));
+    expect(vault.portal(dest).nanos, 0);
+    expect(vault.maturedTimeLockNanos(dest, now), 0);
+    await _end018(tester, opened.ledger);
   });
 
   testWidgets('claim fee picker posts the chosen exact fee', (tester) async {
@@ -7839,12 +7919,17 @@ void main() {
     final home = opened.ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
     opened.ledger.confirmRound(address: home, pot: 10, height: 20);
     opened.ledger.settleTo(30);
-    const nullifier = '1111111111111111111111111111111111111111111111111111111111111111';
     final to = opened.ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
+    final nullifier = withdrawMintId(portalIdFromDest(dest), 1);
+    const foreign = '2222222222222222222222222222222222222222222222222222222222222222';
+    final leaves = <Map<String, dynamic>>[
+      {'nullifier': nullifier, 'rho': 42},
+      {'nullifier': foreign, 'rho': 7},
+    ];
     final mempool = <Map<String, dynamic>>[
-      {'fee': 1000, 'weight': 25},
-      {'fee': 5000, 'weight': 25},
-      {'fee': 20000, 'weight': 25},
+      {'fee': 1000, 'weight': 999, 'vin': <dynamic>[], 'vout': <dynamic>[{}]},
+      {'fee': 5000, 'weight': 1, 'vin': <dynamic>[], 'vout': <dynamic>[{}]},
+      {'fee': 20000, 'weight': 1, 'vin': <dynamic>[], 'vout': <dynamic>[{}]},
     ];
     final quote = rewardClaimFeePresets(
       body: {
@@ -7852,7 +7937,7 @@ void main() {
         'programId': kReserveProgram,
         'mint': true,
         'to': to,
-        'nanos': 42,
+        'rho': 42,
         'nullifier': nullifier,
         'proof': const <dynamic>[],
         'vin': const <dynamic>[],
@@ -7863,21 +7948,25 @@ void main() {
       mempool: mempool,
     );
     final presets = (quote['presets'] as List).cast<Map<String, dynamic>>();
+    expect(presets[0]['fee'], 1000);
+    expect(presets[2]['fee'], 20000);
     expect(presets[0]['she'], isNot(presets[2]['she']));
     opened.live.mempoolPending = [
-      {'id': 'a', 'fee': 1000, 'weight': 25, 'kind': 'send'},
-      {'id': 'b', 'fee': 5000, 'weight': 25, 'kind': 'send'},
-      {'id': 'c', 'fee': 20000, 'weight': 25, 'kind': 'send'},
+      {'id': 'a', 'fee': 1000, 'weight': 999, 'kind': 'send', 'vin': <dynamic>[], 'vout': <dynamic>[{}]},
+      {'id': 'b', 'fee': 5000, 'weight': 1, 'kind': 'send', 'vin': <dynamic>[], 'vout': <dynamic>[{}]},
+      {'id': 'c', 'fee': 20000, 'weight': 1, 'kind': 'send', 'vin': <dynamic>[], 'vout': <dynamic>[{}]},
     ];
-    opened.live.claims = [
-      {
-        'nanos': 42,
-        'nullifier': nullifier,
-        'proof': <dynamic>[],
-        'vout': {'kind': 'reward-claim'},
-      },
+    opened.live.rewardSets = [
+      {'root': rewardSetRoot(leaves), 'leaves': leaves},
     ];
+    opened.live.reservePortal = {
+      'ok': true,
+      'staked': 11,
+      'idle': 2,
+      'votes': {'increase': 1, 'decrease': 0, 'hold': 0},
+    };
     final vault = ShearReserve();
+    vault.currentEpoch = 1;
     vault.portal(dest).claimableRewards = 42;
     await tester.pumpWidget(ShearWalletApp(
       session: opened.session,
@@ -7890,28 +7979,88 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    await _waitKey(tester, const Key('claim-fee-low'));
-    expect(find.text('Low  ${presets[0]['she']} SHE'), findsOneWidget);
-    expect(find.text('Medium  ${presets[1]['she']} SHE'), findsOneWidget);
-    expect(find.text('High  ${presets[2]['she']} SHE'), findsOneWidget);
-    expect(find.textContaining('100% of the fee goes to the miner'), findsOneWidget);
-    await tester.ensureVisible(find.byKey(const Key('claim-fee-high')));
-    await tester.tap(find.byKey(const Key('claim-fee-high')));
-    await tester.pump();
+    expect(find.byKey(const Key('reserve-claim')), findsOneWidget);
+    expect(find.byKey(const Key('claim-fee-low')), findsNothing);
+    expect(find.byKey(const Key('reserve-claim-progress')), findsNothing);
+    expect(
+      opened.live.traffic.where((hit) => hit.uri.contains('/api/vault/rewards')),
+      isEmpty,
+    );
     await tester.ensureVisible(find.byKey(const Key('reserve-claim')));
     await tester.tap(find.byKey(const Key('reserve-claim')));
     await tester.pump();
-    expect(find.byKey(const Key('reserve-claim-confirm')), findsOneWidget);
-    expect(find.textContaining('${presets[2]['she']} SHE'), findsWidgets);
+    expect(find.byKey(const Key('reserve-claim-progress')), findsOneWidget);
+    var drew = false;
+    tester.binding.addPostFrameCallback((_) => drew = true);
+    final frame = Stopwatch()..start();
+    await tester.pump();
+    frame.stop();
+    expect(drew, isTrue);
+    expect(frame.elapsed < const Duration(seconds: 15), isTrue);
+    await _waitKey(tester, const Key('reserve-claim-confirm'));
+    expect(find.text('Low  ${presets[0]['she']} SHE'), findsOneWidget);
+    expect(find.text('Medium  ${presets[1]['she']} SHE'), findsOneWidget);
+    expect(find.text('High  ${presets[2]['she']} SHE'), findsOneWidget);
+    expect(find.text('Total ${presets[1]['she']} SHE'), findsOneWidget);
+    expect(find.textContaining('100% of the fee goes to the miner'), findsWidgets);
+    await tester.tap(find.byKey(const Key('claim-fee-high')));
+    await tester.pump();
+    expect(find.text('Total ${presets[2]['she']} SHE'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-claim-cancel')));
+    await tester.pump();
+    await _waitUntil(
+      tester,
+      () => find.byKey(const Key('reserve-claim-progress')).evaluate().isEmpty,
+      'claim stayed busy after cancel',
+    );
+    expect(opened.live.postedClaims, isEmpty);
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-claim'))).onPressed, isNotNull);
+    final firstReads = opened.live.traffic.where((hit) => hit.uri.contains('/api/vault/rewards')).length;
+    expect(firstReads, 1);
+    await tester.ensureVisible(find.byKey(const Key('reserve-claim')));
+    await tester.tap(find.byKey(const Key('reserve-claim')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-claim-progress')), findsOneWidget);
+    await _waitKey(tester, const Key('reserve-claim-confirm'));
+    await tester.tap(find.byKey(const Key('claim-fee-high')));
+    await tester.pump();
     await tester.tap(find.byKey(const Key('reserve-claim-accept')));
     await tester.pump();
+    await _waitKey(tester, const Key('reserve-claim-outlier'));
+    await tester.tap(find.byKey(const Key('reserve-claim-outlier-accept')));
+    await tester.pump();
     await _waitUntil(tester, () => opened.live.postedClaims.isNotEmpty, 'claim not posted');
+    await _waitUntil(tester, () => vault.portal(dest).staked == 11, 'chain stake');
+    expect(opened.live.traffic.where((hit) => hit.uri.contains('/api/vault/rewards')).length, firstReads + 1);
     expect(opened.live.postedClaims, hasLength(1));
-    expect(opened.live.postedClaims.single['kind'], 'reward-claim');
-    expect(opened.live.postedClaims.single['programId'], kReserveProgram);
-    expect(opened.live.postedClaims.single['nullifier'], nullifier);
-    expect(opened.live.postedClaims.single['fee'], presets[2]['fee']);
-    expect((opened.live.postedClaims.single['vout'] as List).first['kind'], 'reward-claim');
+    final posted = opened.live.postedClaims.single;
+    expect(posted['kind'], 'reward-claim');
+    expect(posted['programId'], kReserveProgram);
+    expect(posted['nullifier'], nullifier);
+    expect(posted['rho'], 42);
+    expect(posted.containsKey('nanos'), isFalse);
+    expect(posted.containsKey('viewKey'), isFalse);
+    expect(posted['fee'], presets[2]['fee']);
+    final note = (posted['vout'] as List).first as Map;
+    expect(note['kind'], 'reward-claim');
+    expect(posted['to'], note['address']);
+    expect(note['address'], isNot(dest));
+    expect(
+      note['address'],
+      opened.ledger.currentDest(ident.address, paymentCode: ident.paymentCode),
+    );
+    expect(note.containsKey('portalId'), isFalse);
+    expect(note['commit'], isNotNull);
+    expect(debugReserveOffIsolateStamp, isNotEmpty);
+    expect(debugReserveOffIsolateStamp, isNot(reserveIsolateStamp));
+    expect(vault.portal(dest).claimableRewards, 42);
+    expect(vault.portal(dest).staked, 11);
+    expect(vault.portal(dest).idle, 2);
+    expect(vault.votesIncrease, 1);
+    final wire = opened.live.traffic.map((hit) => '${hit.uri}\n${hit.body}').join('\n');
+    expect(wire.contains(ident.viewKey), isFalse);
+    expect(wire.contains('viewKey'), isFalse);
+    expect(wire.contains('viewkey'), isFalse);
     await _end018(tester, opened.ledger);
   });
 
@@ -9625,8 +9774,9 @@ class _PoolLive {
   Map<String, dynamic>? reservePortal;
   Map<String, dynamic>? pendingPull;
   List<Map<String, dynamic>> mempoolPending = [];
-  List<Map<String, dynamic>> claims = [];
+  List<Map<String, dynamic>> rewardSets = [];
   final List<Map<String, dynamic>> postedClaims = [];
+  final List<({String method, String uri, String body})> traffic = [];
   final List<Map<String, dynamic>> postedWithdraws = [];
   final Map<int, String> headerAtHeight = {};
 
@@ -9660,9 +9810,11 @@ Future<HttpServer> _fakePool({
     await for (final c in req) {
       chunks.addAll(c);
     }
+    final rawBody = chunks.isEmpty ? '' : utf8.decode(chunks);
+    state.traffic.add((method: req.method, uri: req.uri.toString(), body: rawBody));
     Map<String, dynamic> body = {};
-    if (chunks.isNotEmpty) {
-      body = Map<String, dynamic>.from(jsonDecode(utf8.decode(chunks)) as Map);
+    if (rawBody.isNotEmpty) {
+      body = Map<String, dynamic>.from(jsonDecode(rawBody) as Map);
     }
     req.response.headers.contentType = ContentType.json;
     if (req.uri.path == '/api/stats' || req.uri.path == '/stats') {
@@ -9779,11 +9931,15 @@ Future<HttpServer> _fakePool({
       }));
     } else if (req.uri.path == '/api/mempoolPressure' || req.uri.path == '/api/mempoolpressure') {
       req.response.write(jsonEncode({'depth': state.mempoolPending.length}));
-    } else if (req.uri.path == '/api/vault/claims') {
-      req.response.write(jsonEncode({
-        'ok': true,
-        'claims': state.claims,
-      }));
+    } else if (req.uri.path == '/api/vault/rewards' || req.uri.path == '/api/vault/claims') {
+      final named = req.uri.queryParameters.keys.any((key) => key.toLowerCase() == 'viewkey')
+          || body.keys.any((key) => key.toLowerCase() == 'viewkey');
+      if (named) {
+        req.response.statusCode = 400;
+        req.response.write(jsonEncode({'ok': false, 'reason': 'view_key'}));
+      } else {
+        req.response.write(jsonEncode({'ok': true, 'sets': state.rewardSets}));
+      }
     } else if (req.uri.path == '/api/vault/reserve') {
       req.response.write(jsonEncode(state.reservePortal ?? {'ok': true, 'public': false, 'staked': 0, 'idle': 0, 'accrued': 0}));
     } else if (req.uri.path == '/api/vault/join' || req.uri.path == '/api/join/claim') {

@@ -3344,7 +3344,7 @@ class ShearLedger implements ReadProofSink {
         final she = _sheOfExactNanos(units.toString());
         if (she != null) row['amount'] = she;
       }
-      row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
+      row['locked'] = lockNoteIsLocked(row, _lockClockMs);
       rememberNote(row);
       rememberDest(dest);
       _proofCheckedDests.add(payKey(dest));
@@ -3398,7 +3398,7 @@ class ShearLedger implements ReadProofSink {
         'spent': false,
       };
       if ((row['kind'] ?? '').toString() == 'lock') {
-        row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
+        row['locked'] = lockNoteIsLocked(row, _lockClockMs);
       }
       if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
@@ -4069,6 +4069,10 @@ class ShearLedger implements ReadProofSink {
 
   /// Sealed tip header wall-clock (ms). ShearView date column. Not an interval.
   int? get tipTimestampMs => _headerTimestampMs;
+
+  /// Header time when the chain has one. Otherwise the wallet clock, so a
+  /// matured lock note does not stay locked just because no header arrived.
+  int get _lockClockMs => tipTimestampMs ?? DateTime.now().millisecondsSinceEpoch;
 
   void applyAvgBlockTimeMs(int? ms) {
     if (ms == null || ms < 0) return;
@@ -5173,12 +5177,43 @@ class ShearLedger implements ReadProofSink {
   /// spendable dest. Every other owned ssa1 stays one note and is counted in
   /// that same sum. A young note stays unspendable. Does not invent coins.
   /// Flip lock notes once the tip time has passed their unlock.
-  void refreshTimeLockedNotes() {
-    final tip = tipTimestampMs;
+  /// [nowMs] is the chain clock for a release. The header tip is the default.
+  void refreshTimeLockedNotes({int? nowMs}) {
+    final tip = nowMs ?? _lockClockMs;
     for (final n in _notes) {
       if ((n['kind'] ?? '').toString() != 'lock') continue;
       n['locked'] = lockNoteIsLocked(n, tip);
     }
+  }
+
+  /// A matured time-lock note is the principal. Move it onto [spendDest]
+  /// and clear the lock. This does not build a reserve withdraw.
+  int releaseMaturedLockNotes({
+    required String fromDest,
+    required String spendDest,
+    required int nowMs,
+  }) {
+    refreshTimeLockedNotes(nowMs: nowMs);
+    var released = 0;
+    for (final note in _notes) {
+      if ((note['kind'] ?? '').toString() != 'lock') continue;
+      if (note['spent'] == true) continue;
+      final raw = note['unlockAtMs'];
+      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+      if (at <= 0 || nowMs < at) continue;
+      final addr = (note['address'] ?? note['dest'])?.toString() ?? '';
+      if (fromDest.isNotEmpty && addr.isNotEmpty && addr != fromDest && addr != spendDest) {
+        continue;
+      }
+      note['locked'] = false;
+      if (isDestAddress(spendDest)) {
+        note['address'] = spendDest;
+        note['dest'] = spendDest;
+        rememberDest(spendDest);
+      }
+      released += 1;
+    }
+    return released;
   }
 
   double recheckRestFrameSpendable(String restFrame, {String? paymentCode}) {
@@ -5319,7 +5354,7 @@ class ShearLedger implements ReadProofSink {
       if (at <= 0) continue;
       if (!_noteOnDest(note, key)) continue;
       if (!_noteMature(note)) continue;
-      final open = !lockNoteIsLocked(Map<String, dynamic>.from(note), tipTimestampMs);
+      final open = !lockNoteIsLocked(Map<String, dynamic>.from(note), _lockClockMs);
       if (open != unlocked) continue;
       final she = _noteSheOf(note, 0);
       if (she > 0) n += she;
@@ -5442,7 +5477,7 @@ class ShearLedger implements ReadProofSink {
       if (n['spent'] == true || n['verified'] != true) continue;
       if (!_noteOnDest(n, key)) continue;
       // A time-locked note stays out of Spendable until its epoch ends.
-      if ((n['kind'] ?? '').toString() == 'lock' && lockNoteIsLocked(n, tipTimestampMs)) {
+      if ((n['kind'] ?? '').toString() == 'lock' && lockNoteIsLocked(n, _lockClockMs)) {
         final raw = n['unlockAtMs'];
         final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
         if (at > 0) continue;
@@ -9298,45 +9333,35 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
 
-  /// Pending mempool rows. Quotes read `pending[].fee` and `pending[].weight`.
+  /// Pending mempool rows. Quotes recompute verify-weight from vin and vout.
   Future<Map<String, dynamic>> mempool() => _get('/api/mempool');
 
-  /// This view key's unclaimed reward rows. Other portals are not in the list.
-  Future<Map<String, dynamic>> vaultClaims({
-    required String viewKey,
-    required String address,
-    required String to,
-  }) =>
-      _post('/api/vault/claims', {
-        'viewKey': viewKey,
-        'address': address,
-        'to': to,
-      });
+  /// Published epoch reward sets. No view key, no address, no query.
+  Future<Map<String, dynamic>> rewardSets() => _get('/api/vault/rewards');
 
-  /// Post one reward-claim. [preset] is `low`, `medium`, or `high`.
+  /// Post one reward-claim. [fee] is the confirmed integer. It is not re-quoted.
   Future<Map<String, dynamic>> claimReward({
     required String to,
-    required Object nanos,
+    required Object rho,
     required String nullifier,
     required List<dynamic> proof,
     required List<dynamic> vout,
-    int? fee,
+    required int fee,
     String? id,
-    String? preset,
-    List<Map<String, dynamic>> mempool = const [],
   }) {
-    final built = rewardClaimSendBody(
-      to: to,
-      nanos: nanos,
-      nullifier: nullifier,
-      proof: proof,
-      vout: vout,
-      fee: fee,
-      id: id,
-      preset: preset,
-      mempool: mempool,
-    );
-    return _post('/api/wallet/send', Map<String, dynamic>.from(built['tx'] as Map));
+    return _post('/api/wallet/send', {
+      'kind': 'reward-claim',
+      'programId': 'shear-reserve-v1',
+      'mint': true,
+      'to': to,
+      'rho': rho,
+      'nullifier': nullifier,
+      'proof': proof,
+      'vin': const <dynamic>[],
+      'vout': vout,
+      'fee': fee,
+      if (id != null && id.isNotEmpty) 'id': id,
+    });
   }
 }
 
@@ -9473,7 +9498,8 @@ String exactSheFromNanos(int nanos) {
   return '$whole.$digits';
 }
 
-/// Pending rows from GET /api/mempool. A stated positive `weight` is the quote weight.
+/// Pending rows from GET /api/mempool. Verify-weight is recomputed from
+/// vin and vout. A stated `weight` integer is ignored.
 List<Map<String, dynamic>> mempoolQuoteRows(Map<String, dynamic> json) {
   final pending = json['pending'];
   if (pending is! List) return const [];
@@ -9481,32 +9507,26 @@ List<Map<String, dynamic>> mempoolQuoteRows(Map<String, dynamic> json) {
   for (final item in pending) {
     if (item is! Map) continue;
     final feeRaw = item['fee'];
-    final weightRaw = item['weight'];
     final fee = feeRaw is int ? feeRaw : (feeRaw is num ? feeRaw.toInt() : 0);
-    final weight = weightRaw is int ? weightRaw : (weightRaw is num ? weightRaw.toInt() : 0);
     if (fee <= 0) continue;
+    final kind = item['kind']?.toString() ?? '';
     rows.add({
       'fee': fee,
-      if (weight > 0) 'weight': weight,
-      if (item['coinbase'] == true) 'coinbase': true,
+      if (item['coinbase'] == true || kind == 'coinbase') 'coinbase': true,
       if (item['vin'] is List) 'vin': item['vin'],
       if (item['vout'] is List) 'vout': item['vout'],
-      if (item['kind'] != null) 'kind': item['kind'],
+      if (kind.isNotEmpty) 'kind': kind,
+      if (item['fs1'] != null && item['fs1'] != '') 'fs1': item['fs1'],
     });
   }
   return rows;
 }
 
 /// Same verify-weight as `txVerifyWeight` in `crypto/block_budget.js`.
-/// A positive integer `weight` (the mempool lattice field) wins over vin/vout.
+/// A stated `weight` is not read. Coinbase rows are skipped by the quote.
 int _quoteVerifyWeight(Map<String, dynamic> tx) {
-  final stated = tx['weight'];
-  if (stated is int && stated > 0) return stated;
-  if (stated is num) {
-    final n = stated.toInt();
-    if (n > 0 && stated == n) return n;
-  }
-  if (tx['coinbase'] == true) return 0;
+  final kind = tx['kind']?.toString() ?? '';
+  if (tx['coinbase'] == true || kind == 'coinbase') return 0;
   final vin = tx['vin'];
   final vout = tx['vout'];
   final nIn = vin is List ? vin.length : 0;
@@ -9516,7 +9536,6 @@ int _quoteVerifyWeight(Map<String, dynamic> tx) {
     return 2 + (25 + 25 * nIn) + 23 * nOut;
   }
   var w = 2 + 40 * nIn + 23 * nOut;
-  final kind = tx['kind']?.toString() ?? '';
   if (kind == 'lock' || kind == 'vote' || kind == 'withdraw') w += 19;
   return w;
 }

@@ -255,12 +255,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool _flowSending = false;
   bool _reserveVoteBusy = false;
   bool _claimBusy = false;
-  bool _claimQuoteInflight = false;
-  String _claimPreset = 'medium';
-  Map<String, dynamic>? _claimQuote;
-  List<Map<String, dynamic>> _claimRows = [];
-  List<Map<String, dynamic>> _claimMempool = [];
-  int _claimQuoteGen = 0;
 
   /// In-flight Flow send. Plate tests read the Cancel flag from here.
   bool get debugFlowSending => _flowSending;
@@ -3682,6 +3676,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
+  void _claimSnack(BuildContext context, String text) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
   List<dynamic> _claimVoutOf(Map<String, dynamic> row) {
     final v = row['vout'];
     if (v is List) return v;
@@ -3689,167 +3688,223 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     return const [];
   }
 
-  void _ensureClaimQuote(ShearIdentity ident) {
-    if (_claimQuoteInflight || _claimQuote != null || ledger.pool == null) return;
-    final dest = _reserveDestOf(ident);
-    if (dest == null || dest.isEmpty) return;
-    if (reserve.portal(dest).claimableRewards <= 0) return;
-    _claimQuoteInflight = true;
-    final gen = ++_claimQuoteGen;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_refreshClaimQuote(ident, gen));
-    });
+  bool _claimPayeeIsOurs(Map<String, dynamic> row, String ours) {
+    if (ours.isEmpty) return false;
+    final vout = _claimVoutOf(row);
+    if (vout.isEmpty || vout.first is! Map) return false;
+    final note = Map<String, dynamic>.from(vout.first as Map);
+    return note['address']?.toString() == ours && note['portalId'] == null;
   }
 
-  Future<void> _refreshClaimQuote(ShearIdentity ident, int gen) async {
-    final pool = ledger.pool;
-    if (pool == null) {
-      _claimQuoteInflight = false;
-      return;
-    }
-    try {
-      final to = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
-      final claims = await pool.vaultClaims(
-        viewKey: ident.viewKey,
-        address: ident.address,
-        to: to,
-      );
-      final mem = await pool.mempool();
-      if (!mounted || gen != _claimQuoteGen) return;
-      final rows = <Map<String, dynamic>>[];
-      final raw = claims['claims'];
-      if (raw is List) {
-        for (final item in raw) {
-          if (item is Map) rows.add(Map<String, dynamic>.from(item));
-        }
-      }
-      final quoted = mempoolQuoteRows(mem);
-      Map<String, dynamic> quote = {'presets': <Map<String, dynamic>>[]};
-      if (rows.isNotEmpty) {
-        final first = rows.first;
-        quote = rewardClaimFeePresets(
-          body: {
-            'kind': 'reward-claim',
-            'programId': kReserveProgram,
-            'mint': true,
-            'to': to,
-            'nanos': first['nanos'],
-            'nullifier': first['nullifier'],
-            'proof': first['proof'] is List ? first['proof'] : const <dynamic>[],
-            'vin': const <dynamic>[],
-            'vout': _claimVoutOf(first),
-          },
-          mempool: quoted,
-        );
-      }
-      setState(() {
-        _claimRows = rows;
-        _claimMempool = quoted;
-        _claimQuote = quote;
-        _claimQuoteInflight = false;
-      });
-    } catch (_) {
-      if (!mounted || gen != _claimQuoteGen) return;
-      setState(() {
-        _claimRows = [];
-        _claimQuote = {'presets': <Map<String, dynamic>>[]};
-        _claimQuoteInflight = false;
-      });
-    }
+  Future<String?> _pickClaimFee(
+    BuildContext context, {
+    required List<Map<String, dynamic>> presets,
+    required int rows,
+  }) {
+    var preset = 'medium';
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          Map<String, dynamic> chosen = presets.first;
+          for (final row in presets) {
+            if (row['id'] == preset) chosen = row;
+          }
+          final fee = chosen['fee'] is int ? chosen['fee'] as int : 0;
+          final total = exactSheFromNanos(fee * rows);
+          return AlertDialog(
+            key: const Key('reserve-claim-confirm'),
+            title: const Text('Confirm reward claim'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '100% of the fee goes to the miner. A higher fee confirms sooner.',
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final raw in presets)
+                      ChoiceChip(
+                        key: Key('claim-fee-${raw['id']}'),
+                        label: Text(
+                          '${raw['label']}  ${raw['she']} SHE',
+                          key: Key('claim-fee-she-${raw['id']}'),
+                        ),
+                        selected: preset == raw['id'],
+                        onSelected: (_) => setLocal(() => preset = '${raw['id']}'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text('Total $total SHE', key: const Key('reserve-claim-total')),
+              ],
+            ),
+            actions: [
+              TextButton(
+                key: const Key('reserve-claim-cancel'),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                key: const Key('reserve-claim-accept'),
+                onPressed: () => Navigator.pop(ctx, preset),
+                child: const Text('Claim'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<bool> _confirmOutlierFee(BuildContext context, String she) async {
+    final go = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('reserve-claim-outlier'),
+        title: const Text('High fee'),
+        content: Text('This fee is more than four times the low bid ($she SHE).'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('reserve-claim-outlier-accept'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Pay this fee'),
+          ),
+        ],
+      ),
+    );
+    return go == true;
   }
 
   Future<void> _reserveClaim(BuildContext context, ShearIdentity ident) async {
     if (!claimSingleSubmit(held: _claimBusy)) return;
     final pool = ledger.pool;
-    final quote = _claimQuote;
-    if (pool == null || quote == null || _claimRows.isEmpty) return;
-    final presets = quote['presets'];
-    if (presets is! List || presets.isEmpty) return;
-    Map<String, dynamic>? chosen;
-    for (final raw in presets) {
-      if (raw is Map && raw['id'] == _claimPreset) {
-        chosen = Map<String, dynamic>.from(raw);
-        break;
-      }
-    }
-    chosen ??= Map<String, dynamic>.from(presets.first as Map);
-    final fee = chosen['fee'];
-    if (fee is! int || fee <= 0) return;
-    final she = chosen['she']?.toString() ?? exactSheFromNanos(fee);
-    final rows = [for (final row in _claimRows) Map<String, dynamic>.from(row)];
-    if (!spendableCoversLevy(
-      ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
-      fee * rows.length,
-    )) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Not enough Continuum spendable for claim fee $she SHE'),
-        ));
-      }
-      return;
-    }
-    final go = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        key: const Key('reserve-claim-confirm'),
-        title: const Text('Confirm reward claim'),
-        content: Text(
-          'Fee $she SHE. This bid is queued in the mempool. '
-          '100% of the fee goes to the miner. A higher fee confirms sooner.',
-        ),
-        actions: [
-          TextButton(
-            key: const Key('reserve-claim-cancel'),
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            key: const Key('reserve-claim-accept'),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Claim'),
-          ),
-        ],
-      ),
-    );
-    if (go != true || !mounted) return;
+    final dest = _reserveDestOf(ident);
+    if (pool == null || dest == null || dest.isEmpty) return;
+    if (reserve.portal(dest).claimableRewards <= 0) return;
     _claimBusy = true;
     if (mounted) setState(() {});
     try {
       final to = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
-      final mem = [for (final row in _claimMempool) Map<String, dynamic>.from(row)];
+      final published = await pool.rewardSets();
+      if (!mounted) return;
+      if (published['ok'] == false) {
+        _claimSnack(context, 'Claim was not queued (${published['reason'] ?? 'refused'})');
+        return;
+      }
+      final sets = published['sets'];
+      final built = await scanRewardClaimsOffUi({
+        'viewKey': ident.viewKey,
+        'address': ident.address,
+        'payee': to,
+        'epochs': reserve.rewardScanEpochs(),
+        'sets': sets is List ? sets : const <dynamic>[],
+        'spendSeed': hexToBytes(ident.seedHex),
+      });
+      if (!mounted) return;
+      final stamp = (built['isolateStamp'] ?? '').toString();
+      debugReserveOffIsolateStamp = stamp;
+      if (stamp.isNotEmpty) debugReserveIsolateRuns += 1;
+      if (stamp.isEmpty || stamp == reserveIsolateStamp || built['ok'] != true) {
+        _claimSnack(context, 'Claim was not queued (${built['reason'] ?? 'refused'})');
+        return;
+      }
+      final rows = <Map<String, dynamic>>[];
+      final rawRows = built['rows'];
+      if (rawRows is List) {
+        for (final item in rawRows) {
+          if (item is Map) rows.add(Map<String, dynamic>.from(item));
+        }
+      }
+      if (rows.isEmpty || rows.any((row) => !_claimPayeeIsOurs(row, to))) {
+        _claimSnack(context, 'Claim was not queued (${rows.isEmpty ? 'empty' : 'payee'})');
+        return;
+      }
+      final quoted = mempoolQuoteRows(await pool.mempool());
+      if (!mounted) return;
+      final first = rows.first;
+      final quote = rewardClaimFeePresets(
+        body: {
+          'kind': 'reward-claim',
+          'programId': kReserveProgram,
+          'mint': true,
+          'to': to,
+          'rho': first['rho'],
+          'nullifier': first['nullifier'],
+          'proof': first['proof'] is List ? first['proof'] : const <dynamic>[],
+          'vin': const <dynamic>[],
+          'vout': _claimVoutOf(first),
+        },
+        mempool: quoted,
+      );
+      final presets = <Map<String, dynamic>>[
+        for (final raw in (quote['presets'] as List? ?? const <dynamic>[]))
+          if (raw is Map) Map<String, dynamic>.from(raw),
+      ];
+      if (presets.isEmpty || !context.mounted) {
+        _claimSnack(context, 'Claim was not queued (empty)');
+        return;
+      }
+      final picked = await _pickClaimFee(context, presets: presets, rows: rows.length);
+      if (picked == null || !mounted) return;
+      Map<String, dynamic> chosen = presets.first;
+      for (final row in presets) {
+        if (row['id'] == picked) chosen = row;
+      }
+      final fee = chosen['fee'];
+      if (fee is! int || fee <= 0) {
+        _claimSnack(context, 'Claim was not queued (empty)');
+        return;
+      }
+      final lowRaw = presets.first['fee'];
+      final lowFee = lowRaw is int ? lowRaw : 0;
+      if (lowFee > 0 && fee > 4 * lowFee) {
+        if (!context.mounted) return;
+        final she = chosen['she']?.toString() ?? exactSheFromNanos(fee);
+        final outlier = await _confirmOutlierFee(context, she);
+        if (!outlier || !mounted) return;
+      }
+      final total = fee * rows.length;
+      if (!spendableCoversLevy(
+        ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+        total,
+      )) {
+        _claimSnack(context, 'Not enough Continuum spendable for claim fee ${exactSheFromNanos(total)} SHE');
+        return;
+      }
       for (final row in rows) {
+        if (!_claimPayeeIsOurs(row, to)) {
+          _claimSnack(context, 'Claim was not queued (payee)');
+          return;
+        }
         final posted = await pool.claimReward(
           to: to,
-          nanos: row['nanos'] ?? 0,
+          rho: row['rho'] ?? 0,
           nullifier: row['nullifier']?.toString() ?? '',
           proof: row['proof'] is List ? List<dynamic>.from(row['proof'] as List) : const [],
           vout: _claimVoutOf(row),
-          preset: _claimPreset,
-          mempool: mem,
+          fee: fee,
         );
         if (posted['ok'] != true) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Claim was not queued (${posted['reason'] ?? 'refused'})'),
-            ));
-          }
+          _claimSnack(context, 'Claim was not queued (${posted['reason'] ?? 'refused'})');
           return;
         }
       }
-      final dest = _reserveDestOf(ident);
-      if (dest != null && dest.isNotEmpty) {
-        reserve.portal(dest).claimableRewards = 0;
-      }
-      _claimRows = [];
-      _claimQuote = null;
-      _claimQuoteInflight = false;
+      await _syncVaults(ident);
       if (mounted) setState(() {});
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Claim submitted')),
-        );
-      }
+      _claimSnack(context, 'Claim submitted');
+    } catch (_) {
+      _claimSnack(context, 'Claim was not queued (refused)');
     } finally {
       _claimBusy = false;
       if (mounted) setState(() {});
@@ -3866,6 +3921,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
+    if (reserve.maturedTimeLockNanos(dest, now) > 0) {
+      ledger.releaseMaturedLockNotes(fromDest: dest, spendDest: to, nowMs: now);
+      reserve.releaseTimeLockPrincipal(dest: dest, nowMs: now);
+      if (ledger.pool != null && !widget.skipPoolSync) await _syncVaults(ident);
+      if (mounted) setState(() {});
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Principal is spendable')),
         );
       }
       return;
@@ -3892,6 +3959,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
+    final chain = ledger.pool != null && !widget.skipPoolSync;
     final posted = await postReserveWithdraw(
       ledger,
       reserve: reserve,
@@ -3902,7 +3970,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       local: ledger.pool == null || widget.skipPoolSync,
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
+      settleLocal: !chain,
     );
+    if (posted != null && chain) await _syncVaults(ident);
     if (posted == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -4050,7 +4120,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   List<Widget> _reservePane(BuildContext context, ShearIdentity ident) {
     final dest = _reserveDestOf(ident) ?? '';
     final p = dest.isEmpty ? ReservePortal() : reserve.portal(dest);
-    if (p.claimableRewards > 0) _ensureClaimQuote(ident);
     final now = DateTime.now().millisecondsSinceEpoch;
     final daysLeft = (reserve.remainingMs(now) / 86400000).floor();
     final dayOfEpoch = reserveDayOfEpoch(epochStartMs: reserve.epochStartMs, nowMs: now);
@@ -4227,33 +4296,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 'Claim is a mempool bid. 100% of the fee goes to the miner. A higher fee confirms sooner.',
                 key: Key('reserve-claim-fee-note'),
               ),
-              const SizedBox(height: 8),
-              if (_claimQuote != null && _claimQuote!['presets'] is List)
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final raw in (_claimQuote!['presets'] as List))
-                      if (raw is Map)
-                        ChoiceChip(
-                          key: Key('claim-fee-${raw['id']}'),
-                          label: Text(
-                            '${raw['label']}  ${raw['she']} SHE',
-                            key: Key('claim-fee-she-${raw['id']}'),
-                          ),
-                          selected: _claimPreset == raw['id'],
-                          onSelected: _claimBusy
-                              ? null
-                              : (_) => setState(() => _claimPreset = '${raw['id']}'),
-                        ),
-                  ],
-                ),
+              if (_claimBusy) ...[
+                const SizedBox(height: 8),
+                const Text('Building claim…', key: Key('reserve-claim-progress')),
+              ],
               const SizedBox(height: 8),
               FilledButton(
                 key: const Key('reserve-claim'),
-                onPressed: _claimBusy || _claimRows.isEmpty || _claimQuote == null
-                    ? null
-                    : () => _reserveClaim(context, ident),
+                onPressed: _claimBusy ? null : () => _reserveClaim(context, ident),
                 child: const Text('Claim rewards'),
               ),
             ],
