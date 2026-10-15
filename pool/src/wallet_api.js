@@ -1313,6 +1313,58 @@ function sealedSendOnly(body, { queueSend }) {
   };
 }
 
+/**
+ * A reward claim is a user tx. The posted fee is the same bid a sealed send
+ * carries: required, at least the weight levy, and at most the levy cap.
+ * The mempool orders it by fee rate. The whole fee is paid to miners.
+ */
+function queuedRewardClaim(body, { queueSend }) {
+  if (String(body.programId || '') !== RESERVE_PROGRAM) {
+    return { status: 400, json: { ok: false, reason: 'bad_kind' } };
+  }
+  const to = String(body.to || '').trim();
+  if (!isDestAddress(to)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const nanos = parseIntegerNanos(body.nanos);
+  if (nanos == null || nanos <= 0n) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const nullifier = String(body.nullifier || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(nullifier)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  if (!Array.isArray(body.proof)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const vout = Array.isArray(body.vout) ? body.vout.filter((o) => o && typeof o === 'object') : [];
+  if (!vout.length || String(vout[0].kind || '') !== 'reward-claim') {
+    return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  }
+  const fee = parseIntegerNanos(body.fee);
+  if (fee == null) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const draft = {
+    id: typeof body.id === 'string' && body.id ? body.id : `claim-${Date.now()}`,
+    programId: RESERVE_PROGRAM,
+    mint: true,
+    kind: 'reward-claim',
+    to,
+    nanos: wireNanos(nanos),
+    nullifier,
+    proof: body.proof,
+    fee: wireNanos(fee),
+    vin: [],
+    vout,
+  };
+  const need = levyNeed(draft);
+  const paid = Number(draft.fee);
+  if (!(paid >= need) || paid > LEVY_CAP_NANOS) {
+    return { status: 400, json: { ok: false, reason: 'levy' } };
+  }
+  const tx = typeof queueSend === 'function' ? queueSend(draft, { paintedOwedNanos: 0 }) : null;
+  if (!tx || (typeof tx === 'object' && tx.ok === false)) {
+    return { status: 400, json: { ok: false, reason: tx?.reason || 'queue_failed' } };
+  }
+  const submitLine = walletSubmitLog({ connId: newConnId(), ok: true });
+  if (lineJoinsIpToIdentity(submitLine)) return { status: 500, json: { ok: false, reason: 'log' } };
+  return {
+    status: 200,
+    json: { ok: true, tx: { id: tx.id, kind: 'reward-claim', fee: draft.fee, confirmed: false }, log: submitLine },
+  };
+}
+
 /** The client attached a spend body. A from/to/amount quote is not one. */
 function clientPostedSpendBody(body) {
   if (!body || typeof body !== 'object') return false;
@@ -1547,6 +1599,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     if (String(body.kind || 'send') === 'send') {
       return sealedSendOnly(body, { queueSend });
+    }
+    if (String(body.kind || '') === 'reward-claim') {
+      return queuedRewardClaim(body, { queueSend });
     }
     const from = isDestAddress(String(body.from || '')) ? String(body.from).trim() : '';
     const rawTo = String(body.to || '').trim();

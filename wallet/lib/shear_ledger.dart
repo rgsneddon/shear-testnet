@@ -9418,3 +9418,31 @@ Map<String, dynamic> walletSendBody({
     if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
   };
 }
+
+/// Reward-claim body. [fee] is the same field [walletSendBody] posts for a send.
+/// Omit it and the weight floor of this body is used. A higher fee is the bid
+/// the mempool orders by fee rate. Every unit of that fee is paid to miners.
+Map<String, dynamic> rewardClaimSendBody({
+  required String to,
+  required Object nanos,
+  required String nullifier,
+  required List<dynamic> proof,
+  required List<dynamic> vout,
+  int? fee,
+  String? id,
+}) {
+  final draft = <String, dynamic>{
+    'kind': 'reward-claim',
+    'programId': 'shear-reserve-v1',
+    'mint': true,
+    'to': to,
+    'nanos': nanos,
+    'nullifier': nullifier,
+    'proof': proof,
+    'vin': const <dynamic>[],
+    'vout': vout,
+    if (id != null && id.isNotEmpty) 'id': id,
+  };
+  draft['fee'] = rewardClaimFee(fee: fee, body: draft);
+  return draft;
+}

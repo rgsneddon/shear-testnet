@@ -7,11 +7,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, spendDestOf } from './address.js';
-import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
+import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, extraMintAllowed } from './asert.js';
 import { outputJoinsAdmitSet } from './admit.js';
 import { compactTx } from './chronoflux.js';
 import { fs1LeafFor } from './fs1_leaf.js';
-import { levyNanos, levyTaxed } from './levy.js';
+import { selectBodyIndexes, txVerifyWeight } from './block_budget.js';
+import { FEE_SPLIT_FINDER_BPS, LEVY_CAP_NANOS, levyNanos, levyNeed, levyTaxed, splitLevy } from './levy.js';
+import { admitMempool, emptyMempool } from './mempool.js';
 import { merkleRoot } from './merkle.js';
 import {
   KIND_REWARD_CLAIM,
@@ -28,6 +30,7 @@ import {
   rewardClaimProof,
   rewardClaimTx,
   rewardCommitment,
+  txIsReserveAction,
   rewardLeaf,
   stakeRewardSupply,
   trialReserveApply,
@@ -36,6 +39,7 @@ import {
   withdraw,
   withdrawMintId,
 } from './reserve_vault.js';
+import { handleWalletApi } from '../pool/src/wallet_api.js';
 import {
   bootReserveEvm,
   callReserve,
@@ -493,5 +497,135 @@ describe('aggregated reward root', () => {
     assert.equal(again.ok, false);
     const drawn = await callReserve(session, encodeWithdraw(dest, draw));
     assert.equal(drawn.ok, false);
+  });
+
+  it('orders mempool claims by fee rate and pays the whole fee to miners', () => {
+    const state = vault();
+    const lockDest = who();
+    const other = who();
+    assert.equal(lockPortal(state, lockDest).ok, true);
+    assert.equal(lockPortal(state, other).ok, true);
+    const draw = T0 + RESERVE_EPOCH_MS + 1;
+    const plan = rewardCommitment(state, draw);
+    assert.equal(plan.rows.length, 2);
+    assert.equal(applyReserveBlock({
+      state,
+      block: commitBlock(plan),
+      nowMs: draw,
+      genesisMs: T0,
+      requireStakeReward: true,
+    }).ok, true);
+    const [first, second] = plan.rows;
+    const pay = who();
+    const low = rewardClaimTx({
+      to: pay,
+      nanos: first.nanos,
+      nullifier: first.nullifier,
+      proof: rewardClaimProof(state, first.nullifier),
+      id: 'claim-low',
+      fee: 1_000,
+    });
+    const high = rewardClaimTx({
+      to: who(),
+      nanos: second.nanos,
+      nullifier: second.nullifier,
+      proof: rewardClaimProof(state, second.nullifier),
+      id: 'claim-high',
+      fee: 8_000,
+    });
+    assert.equal(low.fee, 1_000);
+    assert.equal(high.fee, 8_000);
+    assert.equal(txIsReserveAction(low), false);
+    assert.equal(levyTaxed(low), true);
+    assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'reward-claim' }), true);
+    assert.equal(extraMintAllowed(RESERVE_PROGRAM, { kind: 'claim' }), false);
+    const floor = rewardClaimTx({
+      to: pay,
+      nanos: first.nanos,
+      nullifier: first.nullifier,
+      proof: rewardClaimProof(state, first.nullifier),
+      id: 'claim-floor',
+    });
+    assert.ok(floor.fee >= levyNanos(0, { tx: { ...floor, fee: undefined } }));
+    assert.equal(floor.fee, levyNanos(0, { tx: floor }));
+    assert.ok(low.fee >= levyNeed(low));
+    assert.ok(low.fee <= LEVY_CAP_NANOS);
+    assert.ok(high.fee > low.fee);
+
+    const book = emptyMempool();
+    const admittedLow = admitMempool(book, low);
+    const admittedHigh = admitMempool(book, high);
+    assert.equal(admittedLow.ok, true, admittedLow.reason);
+    assert.equal(admittedHigh.ok, true, admittedHigh.reason);
+    const picks = selectBodyIndexes(book.txs);
+    assert.equal(book.txs[picks[0]].id, 'claim-high');
+    assert.equal(book.txs[picks[1]].id, 'claim-low');
+
+    const heavy = {
+      ...high,
+      id: 'claim-heavy',
+      fee: 1_500,
+      vout: [high.vout[0], { ...high.vout[0] }],
+    };
+    const light = { ...low, id: 'claim-light', fee: 1_000 };
+    assert.ok(txVerifyWeight(heavy) > txVerifyWeight(light));
+    assert.ok(heavy.fee > light.fee);
+    assert.ok(light.fee * txVerifyWeight(heavy) > heavy.fee * txVerifyWeight(light));
+    assert.deepEqual(selectBodyIndexes([heavy, light]), [1, 0]);
+
+    const crowd = [];
+    for (let i = 0; i < 33; i += 1) {
+      const lock = lockTx({ from: who(), to: who(), nanos: 1, id: `busy-lock-${i}` });
+      lock.fee = 50_000;
+      crowd.push(lock);
+    }
+    crowd.push(low);
+    const busy = selectBodyIndexes(crowd);
+    const busyLocks = busy.filter((i) => crowd[i].kind === 'lock');
+    assert.equal(busyLocks.length, 32);
+    assert.ok(busy.some((i) => crowd[i].id === 'claim-low'));
+
+    assert.equal(FEE_SPLIT_FINDER_BPS, 10_000);
+    assert.deepEqual(splitLevy(low.fee + high.fee), {
+      finder: low.fee + high.fee,
+      reserve: 0,
+    });
+
+    const posted = [];
+    const body = {
+      kind: 'reward-claim',
+      programId: 'shear-reserve-v1',
+      to: pay,
+      nanos: first.nanos,
+      nullifier: first.nullifier,
+      proof: low.proof,
+      vout: low.vout,
+      id: 'claim-post',
+      fee: 8_000,
+    };
+    const accepted = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', body, {
+      queueSend: (tx) => {
+        posted.push(tx);
+        return tx;
+      },
+    });
+    assert.equal(accepted.status, 200, accepted.json && accepted.json.reason);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].fee, 8_000);
+    assert.equal(posted[0].kind, 'reward-claim');
+    const short = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', {
+      ...body,
+      fee: 1,
+      id: 'claim-short',
+    }, { queueSend: (tx) => tx });
+    assert.equal(short.status, 400);
+    assert.equal(short.json.reason, 'levy');
+    const bare = { ...body, id: 'claim-bare' };
+    delete bare.fee;
+    const noFee = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', bare, {
+      queueSend: (tx) => tx,
+    });
+    assert.equal(noFee.status, 400);
+    assert.equal(noFee.json.reason, 'bad_send');
   });
 });

@@ -4023,6 +4023,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               key: Key('reserve-ip-disclaimer'),
             ),
             const SizedBox(height: 8),
+            if (p.claimableRewards > 0)
+              Text(
+                'Fee ${formatShe(rewardClaimFee() / kUnitsPerShe)} SHE',
+                key: const Key('reserve-claim-fee'),
+              ),
             Wrap(spacing: 8, runSpacing: 8, children: [
               FilledButton(
                 key: const Key('reserve-send'),

@@ -1719,11 +1719,54 @@ export function withdrawTx({ from, to, nanos, id, nonce } = {}) {
 }
 
 /**
+ * A posted claim fee. Null means the caller did not choose one.
+ * Zero is a choice. A negative or a non-integer is not.
+ */
+function chosenClaimFee(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'bigint') {
+    if (raw < 0n || raw > 9007199254740991n) return null;
+    return Number(raw);
+  }
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!/^\d+$/.test(t)) return null;
+    return chosenClaimFee(BigInt(t));
+  }
+  const n = Math.floor(Number(raw));
+  if (!Number.isSafeInteger(n) || n < 0) return null;
+  return n;
+}
+
+/**
+ * Absent fee is the weight floor, raised until it covers the fee digits.
+ * A caller fee is kept. The mempool ranks that bid by fee rate, and
+ * consensus rejects a bid under the floor or over the levy cap.
+ */
+function bindClaimFee(tx, chosen) {
+  const bid = chosenClaimFee(chosen);
+  if (bid != null) {
+    tx.fee = bid;
+    return tx;
+  }
+  let fee = levyNanos(0, { tx });
+  tx.fee = fee;
+  for (let i = 0; i < 8; i += 1) {
+    const need = levyNanos(0, { tx });
+    if (fee >= need) break;
+    fee = need;
+    tx.fee = fee;
+  }
+  return tx;
+}
+
+/**
  * Claim one reward into `to`. `to` is not the lock dest.
  * The nullifier, the amount, and the proof are the public link to the root.
- * The fee is the weight levy. The claim does not expire.
+ * `fee` is the same user bid a send posts. Omit it and the weight floor is used.
+ * The claim does not expire.
  */
-export function rewardClaimTx({ to, nanos, nullifier, proof, id, spendSeed = null } = {}) {
+export function rewardClaimTx({ to, nanos, nullifier, proof, id, spendSeed = null, fee = null } = {}) {
   const n = exactFloorNanos(nanos);
   const out = sealedReserveVout(to, n, KIND_REWARD_CLAIM);
   delete out.portalId;
@@ -1746,8 +1789,7 @@ export function rewardClaimTx({ to, nanos, nullifier, proof, id, spendSeed = nul
     vin: [],
     vout: [out],
   };
-  tx.fee = levyNanos(0, { tx });
-  return tx;
+  return bindClaimFee(tx, fee);
 }
 
 export function voteTx({ from, dest, choice, id }) {

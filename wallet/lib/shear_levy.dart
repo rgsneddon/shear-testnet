@@ -122,6 +122,22 @@ bool weightFeeCovers(int fee, Map<String, dynamic> source, {bool maxLevy = false
   return fee >= need;
 }
 
+/// Fee for a reward claim. The same choice a send posts in `fee`.
+/// Null is the weight floor of [body], or the levy floor when there is no body.
+/// A higher [fee] is the mempool bid. Under the floor or over the cap is `levy`.
+int rewardClaimFee({int? fee, Map<String, dynamic>? body}) {
+  if (body == null) {
+    final floor = levyNanos(0);
+    if (fee == null) return floor;
+    if (fee < floor || fee > kLevyCapNanos) throw StateError('levy');
+    return fee;
+  }
+  final source = Map<String, dynamic>.from(body);
+  if (fee == null) return bindStableWeightFee(source);
+  if (!weightFeeCovers(fee, source)) throw StateError('levy');
+  return fee;
+}
+
 /// The reserved fee already sealed into outputs covers the one-pass weight
 /// fee of [posted]. Does not write a smaller fee back onto [posted].
 bool sealedFeeCovers(int reserved, Map<String, dynamic> posted) {
@@ -158,6 +174,7 @@ bool levyTaxed(String kind, {bool coinbase = false}) {
     'user-spend',
     'lock',
     'vote',
+    'reward-claim',
   };
   return taxed.contains(kind);
 }

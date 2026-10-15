@@ -3643,6 +3643,7 @@ void main() {
     expect(levyNanos(0), 100);
     expect(levyTaxed('lock'), isTrue);
     expect(levyTaxed('vote'), isTrue);
+    expect(levyTaxed('reward-claim'), isTrue);
     expect(levyTaxed('withdraw'), isFalse);
     expect(kEip712ChainId, 2701);
     const login = 'she1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';

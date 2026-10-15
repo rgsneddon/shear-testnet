@@ -357,6 +357,7 @@ bool publicValueOpenKind(String? kind) {
       kind == 'lock' ||
       kind == 'vote' ||
       kind == 'withdraw' ||
+      kind == 'reward-claim' ||
       kind == 'pool-withdraw';
 }
 

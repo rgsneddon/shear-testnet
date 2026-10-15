@@ -531,7 +531,8 @@ export function extraMintAllowed(programId, opts = {}) {
     if (kind === 'lock' || kind === 'vote' || kind === 'claim') return false;
     // Fee-bank shortfall is not a reward. A feeFirst request never mints.
     if (opts.feeFirst) return false;
-    if (kind !== 'withdraw' && kind !== 'reserve-reward') return false;
+    // A reward-claim mints the committed reward once. The old `claim` kind does not.
+    if (kind !== 'withdraw' && kind !== 'reserve-reward' && kind !== 'reward-claim') return false;
     return true;
   }
   return false;
