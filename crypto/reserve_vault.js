@@ -732,17 +732,21 @@ function syncVaultEpoch(state, nowMs) {
   if (idx === Number(state.currentEpoch || 0)) return;
   if (!state.bonusEnacted) return;
   // The open epoch's rate is the live epochBps until it rolls. Keep that
-  // integer for the epoch that just ended, then install the next one.
-  // A skipped epoch keeps its commit, or else this adopted rate. The
-  // destination's rate is applied after, so it cannot leak backward.
+  // integer for the epoch that just ended. Then walk the skipped epochs:
+  // a commit is paid at that rate and becomes the last paid rate. A gap
+  // with no commit keeps it. The epoch we open, if it has no commit, pays
+  // that same rate, so a later epoch cannot be left on the pre-gap rate.
   rememberOpenRate(state, state.currentEpoch);
-  const carried = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+  let carried = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
   const from = Math.floor(Number(state.currentEpoch) || 0) + 1;
   if (!state.pendingRates) state.pendingRates = Object.create(null);
   for (let e = from; e < idx; e += 1) {
-    if (state.pendingRates[e] == null || state.pendingRates[e] === '') {
-      state.pendingRates[e] = carried;
-    }
+    const queued = state.pendingRates[e];
+    if (queued == null || queued === '') state.pendingRates[e] = carried;
+    else carried = Math.max(0, Math.floor(Number(queued)));
+  }
+  if (state.pendingRates[idx] == null || state.pendingRates[idx] === '') {
+    state.epochBps = carried;
   }
   state.votes = { increase: 0, decrease: 0, hold: 0 };
   applyEpochOpen(state, nowMs, idx);

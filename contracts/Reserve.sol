@@ -12,8 +12,9 @@ pragma solidity ^0.8.20;
  * earns its epoch's rate times the time still left in that chain epoch, by
  * integer floor, then each later full epoch before the open one. A
  * completed gap is paid immediately, at that epoch's committed rate or
- * else the last adopted rate, and does not wait for a later enact. The
- * still-open epoch is not paid. A portal votes once per epoch;
+ * else the last paid rate, including a commit on a skipped epoch. It does
+ * not wait for a later enact. The still-open epoch is not paid. A portal
+ * votes once per epoch;
  * a second cast reverts VoteLocked(). At epoch end the unique plurality of {increase, decrease,
  * hold} enacts ±1 protocol unit on the live hash bonus. It does not set
  * the reserve rate. The freeze is the trimmed mean of the attested 14-bank
@@ -379,15 +380,19 @@ contract Reserve {
         }
         if (idx == currentEpoch) return;
         if (!bonusEnacted) return;
-        // Stamp a skipped epoch before the destination adopts its own rate.
-        // Its commit wins. With none, it keeps the rate already adopted.
+        // Walk the skipped epochs in order. A commit is that epoch's rate
+        // and becomes the last paid rate. A gap with no commit keeps it.
+        // The epoch we open, if it has no commit, pays that same rate.
         uint256 carried = epochBps;
         for (uint256 e = currentEpoch + 1; e < idx; e++) {
             if (!epochRateKnown[e]) {
                 epochRateOf[e] = carried;
                 epochRateKnown[e] = true;
+            } else {
+                carried = epochRateOf[e];
             }
         }
+        if (!epochRateKnown[idx]) epochBps = carried;
         votesIncrease = 0;
         votesDecrease = 0;
         votesHold = 0;

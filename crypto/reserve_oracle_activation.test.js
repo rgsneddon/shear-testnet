@@ -1139,6 +1139,96 @@ describe('a no-commit gap keeps the last adopted rate', () => {
   });
 });
 
+describe('a skipped commit carries forward', () => {
+  it('JS and the EVM pay the next uncommitted epoch at the last gap commit', async () => {
+    const epoch = RESERVE_EPOCH_MS;
+    const who = minerOf();
+    const state = emptyVault();
+    state.magic = MAGIC_TESTNET;
+    state.pendingRates[2] = 0;
+    state.pendingRates[3] = 10000;
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodeCommitRate(2, 0, T0 + 2 * epoch, T0))).ok, true);
+    assert.equal((await callReserve(session, encodeCommitRate(3, 10000, T0 + 3 * epoch, T0))).ok, true);
+    const cb = { coinbase: true, vout: [] };
+    const run = async (now, txs) => {
+      const applied = applyReserveBlock({
+        state,
+        block: { txs, height: 1 },
+        nowMs: now,
+        genesisMs: T0,
+        activationHeight: 0,
+      });
+      assert.equal(applied.ok, true, `${now} ${applied.reason}`);
+      const evm = await executeBlockEvm(session, txs, now, T0);
+      assert.equal(evm.ok, true, `${now} ${evm.reason}`);
+      return { applied, evm };
+    };
+    await run(T0, [cb, lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'carry-lock' })]);
+    await run(T0 + epoch, [cb]);
+    await run(T0 + 4 * epoch + 1, [cb]);
+    assert.equal(state.currentEpoch, 4);
+    assert.equal(state.bonusEnacted, false);
+    assert.equal(state.epochBps, 10000);
+    assert.notEqual(state.epochBps, GENESIS_BPS);
+    let view = decodePublicView(
+      (await callReserve(session, encodePublicView(T0 + 4 * epoch + 1), { staticCall: true })).returnValue,
+    );
+    assert.equal(view.currentEpoch, 4);
+    assert.equal(view.oracleBps, 10000);
+    const gapZero = await callReserve(session, encodeEpochRateOf(2), { staticCall: true });
+    const gapHigh = await callReserve(session, encodeEpochRateOf(3), { staticCall: true });
+    const opened = await callReserve(session, encodeEpochRateOf(4), { staticCall: true });
+    assert.equal(decodeNextEpochBps(gapZero.returnValue), 0);
+    assert.equal(decodeNextEpochBps(gapHigh.returnValue), 10000);
+    assert.equal(decodeNextEpochBps(opened.returnValue), 10000);
+    const drawAt = T0 + 5 * epoch;
+    const { applied, evm } = await run(drawAt, [
+      cb,
+      withdrawTx({ from: who, to: who, nanos: 1, id: 'carry-draw' }),
+    ]);
+    const row = [...applied].find((item) => item && item.action === 'withdraw');
+    assert.equal(row && row.ok, true, row && row.reason);
+    const full = (bps) => interestOf(PI_SHE_NANOS, bps);
+    const want = full(GENESIS_BPS) * 2 + full(10000) * 2;
+    assert.equal(row.interest, want);
+    assert.equal(evm.withdrawInterest, want);
+    assert.notEqual(row.interest, full(GENESIS_BPS) * 3 + full(10000));
+  });
+});
+
+describe('the rate lookback is load-bearing', () => {
+  it('JS and the EVM pay an unstamped epoch at the last committed rate', async () => {
+    const epoch = RESERVE_EPOCH_MS;
+    const who = minerOf();
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: T0 }).ok, true);
+    assert.equal(enact({ state, nowMs: T0 + epoch }).ok, true);
+    state.pendingRates[2] = 0;
+    state.pendingRates[3] = 10000;
+    const drawAt = T0 + 5 * epoch;
+    const paid = withdraw({ state, dest: who, nowMs: drawAt });
+    assert.equal(paid.ok, true, paid.reason);
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, T0))).ok, true);
+    assert.equal((await callReserve(session, encodeEnact(T0 + epoch))).ok, true);
+    assert.equal((await callReserve(session, encodeCommitRate(2, 0, T0 + 2 * epoch, T0))).ok, true);
+    assert.equal((await callReserve(session, encodeCommitRate(3, 10000, T0 + 3 * epoch, T0))).ok, true);
+    const drawn = await callReserve(session, encodeWithdraw(who, drawAt));
+    assert.equal(drawn.ok, true, drawn.reason);
+    const evmPaid = decodeWithdraw(drawn.returnValue).interest;
+    const full = (bps) => interestOf(PI_SHE_NANOS, bps);
+    const want = full(GENESIS_BPS) * 2 + full(10000) * 2;
+    assert.equal(paid.interest, want);
+    assert.equal(evmPaid, want);
+    assert.notEqual(paid.interest, full(GENESIS_BPS) * 3 + full(10000));
+    assert.equal(state.epochBps, GENESIS_BPS);
+  });
+});
+
 describe('an epoch with no commit keeps the running rate', () => {
   it('fixed mode keeps the adopted rate when the next epoch has no commit', () => {
     const epoch = RESERVE_EPOCH_MS;
