@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 
 import 'shear_shewall.dart';
+import 'shear_shewall_acl.dart';
 
 /// User-visible dest for Export shewall.bin. Never Directory.systemTemp alone.
 /// Android public Download is not used: targetSdk 34+ EACCES. Use [saveShewallBytes]
@@ -74,8 +75,7 @@ Future<String> saveShewallBytes(
   bool? passBytes,
 }) async {
   if (dest != null) {
-    dest.parent.createSync(recursive: true);
-    dest.writeAsBytesSync(sealed);
+    writePrivateShewallSync(dest, sealed);
     return dest.path;
   }
   final sendBytes = passBytes ?? shewallSavePassesBytes();
@@ -85,9 +85,7 @@ Future<String> saveShewallBytes(
     throw const FormatException('export_cancelled');
   }
   if (!sendBytes) {
-    final f = File(path);
-    f.parent.createSync(recursive: true);
-    f.writeAsBytesSync(sealed);
+    writePrivateShewallSync(File(path), sealed);
   }
   return path;
 }
