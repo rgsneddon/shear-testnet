@@ -20,7 +20,7 @@ H = from_uniform_bytes(SHA-512("shear-bpplus-v2" || "shear-note-H-v1"))
 
 `B` is the Ed25519 basepoint. SA+L multiplies the spend secret by `B`. `B` is not the commitment blind.
 
-`T`, `U`, and `V` stay on the Blake2b try-and-increment derivation below. Spec 100c §1.5.1 still names a different SHA-512 derivation of `T`. Amending that section is pending Russell's ruling. This file does not change the points.
+`T`, `U`, and `V` are derived with Blake2b exactly as Spec 100c §1.5 and §1.5.1 state, and exactly as `ed25519_point` in `shear-fs1/src/generators.rs` does. Owner ruling G2 (05:08 BST) amended those sections to this derivation. The digest in §1.5 covers `E(H)` as `G` and `B` and is `4aab173c8065e7e5cff88945399b98cbbb51f647297231d09cb069c82f965288eaaf3ecb9ea88ae4e3de1dde2623710fe5e4f4353c529ef613fac9ff8b0699e6`. This file does not change the points.
 
 No discrete log among `{B, E(H), T, U, V}` is known.
 
