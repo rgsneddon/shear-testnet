@@ -9,7 +9,7 @@ window.SHEAR_DOCS = {
     { title: 'Addresses', children: [
       { id: 'names', title: 'shear1, she1, ssa1' },
       { id: 'privacy', title: 'What is public' },
-      { id: 'admit', title: 'ADMITv2' },
+      { id: 'admit', title: 'ADMITv3 (FS-1)' },
       { id: 'dins-dag', title: 'DINS-DAG' }
     ]},
     { title: 'Wallet', children: [
@@ -75,7 +75,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / overview',
     html:
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
-      '<p>ADMITv2 membership over this book\'s notes. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v11</code>. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
+      '<p>ADMITv3 (FS-1) is full-chain membership, not rings of N, over this book\'s notes. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v11</code>, the current live testnet. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>1.00 SHE in epoch 0, then −0.01 SHE/epoch to a 0.20 SHE floor (4d testnet / 400d mainnet)</td></tr>' +
@@ -94,14 +94,14 @@ window.SHEAR_DOCS = {
     title: 'Pages and downloads',
     crumb: 'start / pages',
     html:
-      '<p>Each public host is one job. Downloads stay on the published pins: Continuum <strong>0.71</strong> and Shear Sentinel v18. The node is the book. The wallet reads that book. The pool is where you hash.</p>' +
+      '<p>Each public host is one job. Downloads stay on the published pins: Continuum <strong>0.71</strong> and Shear Sentinel v18, the current live testnet. The node is the book. The wallet reads that book. The pool is where you hash.</p>' +
       '<table><tr><th>Wallet</th><td><a href="https://shear.digital/wallet/">shear.digital/wallet</a> — Continuum 0.71 for Windows, Linux, Arch, Fedora, and Android. Android has no full node, so it uses Connect bare. <a href="https://shear.digital/wallet/">Release 0.71</a>.</td></tr>' +
       '<tr><th>Node</th><td><a href="https://shear.digital/node/">shear.digital/node</a> — Shear Sentinel v18. Unzip and run, or build from source. It syncs height 1, 2, 3, … and serves notes for one dest at a time on <code>127.0.0.1:18332</code>. A new block is advised on <code>/events</code>.</td></tr>' +
       '<tr><th>Get started</th><td><a href="https://shear.digital/get-started.html">get-started</a> — password, Connect bare or local node, <code>shewall.bin</code>, then mine.</td></tr>' +
       '<tr><th>Pool</th><td><a href="https://pool.shear.digital/">pool.shear.digital</a> — public <code>stratum+ssl://pool.shear.digital:443</code>. Login is Copy dest. Coins are sealed on the book; the wallet reads them from a node. The pool HUD is not spendable.</td></tr>' +
-      '<tr><th>Explorer</th><td><a href="https://explorer.shear.digital/">explorer.shear.digital</a> — every sealed block, newest first. Height, time, status, type. No dest, no amount.</td></tr>' +
+      '<tr><th>Explorer</th><td><a href="https://explorer.shear.digital/">explorer.shear.digital</a> — every sealed block, newest first. Height, time, status, type. No dest, no amount on wallet sends.</td></tr>' +
       '<tr><th>Mempool</th><td><a href="https://mempool.shear.digital/">mempool.shear.digital</a> — one lattice for the whole network. Gold hoop is pending Flow sends. Cyan hoop is miners. Purple rings are confirming blocks. The last ring is 9 confirmations. Full screen is the lattice alone.</td></tr>' +
-      '<tr><th>DINS-DAG</th><td><a href="https://shear.digital/docs/#/dins-dag">DINS-DAG</a> — blue set for the open round, sorted by identity. The mint is the spine pot plus the hash nanos, once. The live round is the DAG host linked from the navbar.</td></tr>' +
+      '<tr><th>DINS-DAG</th><td><a href="https://shear.digital/docs/#/dins-dag">DINS-DAG</a> — blue set for the open round, sorted by identity. The mint is the spine pot plus the hash rho, once. The live round is the DAG host linked from the navbar.</td></tr>' +
       '<tr><th>Miner</th><td><a href="https://shear.digital/miner/">shear.digital/miner</a> — ShearK 2.8. Separate from Continuum. Run <code>--selftest</code> once, then point it at the pool or at <code>127.0.0.1:1111</code> after your node reports <code>ibd=false</code>.</td></tr>' +
       '<tr><th>Bootstrap</th><td><a href="https://boot.shear.digital/">boot.shear.digital</a> — optional <code>latest.json</code> and <code>latest.bin</code>. A node does not pull this by itself.</td></tr>' +
       '<tr><th>Docs</th><td><a href="https://shear.digital/docs/">shear.digital/docs</a></td></tr></table>' +
@@ -113,7 +113,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / testnet',
     html:
       '<p>This is testnet. Balances can vanish. Treat them as a practice run before mainnet.</p>' +
-      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v11</code>). Mainnet <code>shear-v1</code> is not live. The public countdown is 16th November 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
+      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v11</code>), the current live testnet. Mainnet <code>shear-v1</code> is not live. The public countdown is 16th November 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
       '<p>Install clients only from the buttons on <a href="https://shear.digital">shear.digital</a> or the official GitHub tags. Windows SmartScreen may warn that ShearK-Miner.exe is unrecognized; this testnet build is not Authenticode-signed.</p>'
   };
 
@@ -121,7 +121,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.71. Live magic <code>shear-testnet-v11</code>.</p>' +
+      '<p>Version 2.0 of the project note: ADMITv3 (FS-1), full-chain membership, not rings of N, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.71. Live magic <code>shear-testnet-v11</code>, the current live testnet.</p>' +
       '<p><a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar. Typed whitepaper.shear.digital may fail TLS (apex SAN).</p>'
   };
 
@@ -139,7 +139,7 @@ window.SHEAR_DOCS = {
     title: 'What is public',
     crumb: 'addresses / privacy',
     html:
-      '<p>The public explorer shows height, time, status, and type — no dest, no amount. Ciphertext and rest-frame strings stay off that page. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
+      '<p>The public explorer shows height, time, status, and type — no dest, no amount on wallet sends. Ciphertext and rest-frame strings stay off that page. Memo plaintext opens only with the stealth shared secret in the two wallets that scanned that dest.</p>' +
       '<p>Dests revolve. Stratum login is Copy dest (a bare <code>ssa1</code>). A typed suffix is optional. Hash bonuses land on that dest. Keep view secrets, rest-frame, seeds, and passwords off POST bodies and vortice hosts. There is no telemetry. While this book has fewer than 10,000 notes the membership set is thin.</p>'
   };
 
@@ -421,7 +421,7 @@ window.SHEAR_DOCS = {
     title: 'Consensus',
     crumb: 'network / consensus',
     html:
-      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v11</code> on release 0.71. ADMITv2 membership over this book\'s notes. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
+      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v11</code> on release 0.71, the current live testnet. ADMITv3 (FS-1) is full-chain membership, not rings of N, over this book\'s notes. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
   };
 
   P.header = {
@@ -478,10 +478,10 @@ window.SHEAR_DOCS = {
   };
 
   P.admit = {
-    title: 'ADMITv2',
+    title: 'ADMITv3 (FS-1)',
     crumb: 'addresses / admit',
     html:
-      '<p>Membership is the full live fluxset of every <code>admitPub</code> on this book, in appearance order. A spend proves it belongs in that set. A sampled subset is the wrong set and fails <code>admit_membership</code>. A reused spend tag fails <code>admit_link_tag</code>. ADMITv2 is full-chain membership, not rings of N. While this book has fewer than 10,000 notes the set is thin.</p>'
+      '<p>Membership is the full live fluxset of every <code>admitPub</code> on this book, in appearance order. A sampled subset is the wrong set and fails <code>admit_membership</code>. A reused spend tag fails <code>admit_link_tag</code>. ADMITv3 (FS-1) is full-chain membership, not rings of N. Sends stay off until the full-set proof ships. While this book has fewer than 10,000 notes the set is thin.</p>'
   };
 
   P['dins-dag'] = {
@@ -489,8 +489,8 @@ window.SHEAR_DOCS = {
     crumb: 'addresses / dins-dag',
     html:
       '<p><code>shear-testnet-v11</code> settles a mining round as DINS-DAG. The book fingerprint carries <code>DINS=pot+hash</code> and <code>ROOTA=pot-spine+dag-fluxset</code>. Eligible shares are the blue set, sorted by identity. Arrival order is not membership. Each eligible share is counted once. A blue share is not dropped to favour another set.</p>' +
-      '<p>The mint is the spine pot plus the hash nanos, once. That mint is not paid again from a second hash leg. Miners receive the epoch pot in the coinbase and the hash bonus on the next sealed block. Epoch 0 pot is 1.00 SHE. It steps down 0.01 SHE each 4-day testnet epoch to a 0.20 SHE floor. The hash unit is 10<sup>−11</sup> SHE. Public pages show nine digits.</p>' +
-      '<p>Wallet pin Continuum 0.71. Miner pin ShearK 2.8. DAG is a link in the client navbar. Mainnet is not live.</p>'
+      '<p>The mint is the spine pot plus the hash rho, once. That mint is not paid again from a second hash leg. Miners receive the epoch pot in the coinbase and the hash bonus on the next sealed block. Epoch 0 pot is 1.00 SHE. It steps down 0.01 SHE each 4-day testnet epoch to a 0.20 SHE floor. The hash unit is 10<sup>−11</sup> SHE. Public pages show nine digits.</p>' +
+      '<p>Wallet pin Continuum 0.71. Miner pin ShearK 2.8. DAG is a link in the client navbar. Continuum 0.71 on <code>shear-testnet-v11</code> is the current live testnet. Mainnet is not live.</p>'
   };
 
   P.p2p = {

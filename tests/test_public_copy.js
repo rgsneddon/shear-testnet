@@ -122,7 +122,10 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /ssa1/);
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
-    assert.match(main, /ADMITv2/);
+    assert.match(main, /ADMITv3 \(FS-1\)/);
+    assert.match(main, /full-chain membership, not rings of N/);
+    assert.match(main, /the current live testnet/);
+    assert.doesNotMatch(main, /ADMITv2/);
     assert.match(main, /Continuum 0\.71/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
@@ -231,7 +234,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /amounts stay public/);
     assert.doesNotMatch(docs, /explorer reports amounts, dests/);
     assert.match(docs, /no dest, no amount/);
-    assert.match(joined, /ADMITv2/);
+    assert.match(joined, /ADMITv3 \(FS-1\)/);
+    assert.match(joined, /full-chain membership, not rings of N/);
     assert.match(joined, /https:\/\/shear\.digital\/docs\//);
     assert.match(joined, /cleartext TCP/);
     assert.match(main, /ShearK 2\.8/);
@@ -306,6 +310,30 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
     assert.match(readme, /16th November 2026 at 1400hrs UK time/);
     assert.match(readme, /does not emit/);
+    assert.match(readme, /the current live testnet/);
+    assert.match(readme, /"admit":"ADMITv3"/);
+    assert.match(readme, /"magic":"shear-testnet-v12"/);
+
+    const howto = read('site/how-to/index.html');
+    const qualified = 'Amounts in wallet sends are confidential; block mint totals, finder rewards and testnet pool payouts are public.';
+    assert.equal(howto.split(qualified).length - 1, 2);
+    const privacy = read('site/privacy.html');
+    assert.match(privacy, /shewall\.bin/);
+    assert.doesNotMatch(privacy, /seed phrase/);
+    assert.doesNotMatch(privacy, /wake lock/);
+    assert.doesNotMatch(privacy, /foreground service/);
+    const gov = read('site/governance.html');
+    assert.match(gov, /shear-chrome-pill">Testnet/);
+    assert.match(gov, /class="shear-legal"/);
+    assert.match(gov, /href="\/privacy\.html"/);
+    assert.match(gov, /no Reserve reward/);
+    assert.match(gov, /lock issuance rate<\/strong> is frozen for the epoch/);
+    assert.doesNotMatch(gov, /recalculated by consensus/);
+    assert.match(read('docs/site-unmapped/index.html'), /Historical snapshot/);
+    assert.match(read('docs/site-unmapped/miner.html'), /Historical snapshot/);
+    assert.match(docs, /no dest, no amount on wallet sends/);
+    assert.match(docs, /hash rho, once/);
+    assert.doesNotMatch(read('site/node/index.html'), /shear-testnet-v12/);
   });
 
   it('no surface claims privacy, confidential amounts, or a bucket anonymity set', () => {
@@ -325,12 +353,34 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(read('wallet/lib/shear_cli.dart'), /ADMITv3 \(sends off\)  GUI\+CLI/);
   });
 
-  it('v11 pages keep ADMITv2, and v12 copy does not call the ADMITv3 hide live', () => {
+  it('synced pages name ADMITv3 (FS-1), and v12 copy does not call the ADMITv3 hide live', () => {
+    const synced = new Set([
+      'README.md',
+      'explorer/explorer.html',
+      'pool/public/explorer.html',
+      'pool/public/index.html',
+      'site/admin/index.html',
+      'site/docs/content.js',
+      'site/how-to/index.html',
+      'site/index.html',
+      'site/network.html',
+      'site/node/index.html',
+      'site/wallet/index.html',
+      'site/whitepaper/index.html',
+      'site/whitepaper/build_pdf.py',
+      'site/whitepaper/shear-whitepaper.pdf',
+    ]);
     const V12_CODE = new Set(['node/src/help.js']);
     for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
       if (V12_CODE.has(rel)) continue;
       const text = copyText(rel);
       if (!/shear-testnet-v1[01]\b|Continuum 0\.71/.test(text)) continue;
+      if (synced.has(rel)) {
+        assert.match(text, /ADMITv3 \(FS-1\)/, `${rel} names ADMITv3 (FS-1)`);
+        assert.match(text, /full-chain membership, not rings of N/, `${rel} keeps full-chain membership`);
+        assert.doesNotMatch(text, /ADMITv2/, `${rel} dropped ADMITv2`);
+        continue;
+      }
       assert.doesNotMatch(text, /ADMITv3/, `${rel} is a v11 page`);
     }
     const v12 = [

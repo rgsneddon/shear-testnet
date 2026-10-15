@@ -182,7 +182,9 @@ describe('shear.digital/docs', () => {
     assert.match(content, /node-sync/);
     assert.match(content, /com\.shear\.shear_wallet/);
     assert.match(content, /Stem then fluff/);
-    assert.match(content, /ADMITv2/);
+    assert.match(content, /ADMITv3 \(FS-1\)/);
+    assert.match(content, /full-chain membership, not rings of N/);
+    assert.doesNotMatch(content, /ADMITv2/);
     assert.ok(content.indexOf("id: 'dins-dag'") > content.indexOf("id: 'admit'"));
     assert.match(content, /P\['dins-dag'\]/);
     assert.match(content, /blue set, sorted by identity/);

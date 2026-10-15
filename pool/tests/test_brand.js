@@ -90,7 +90,8 @@ describe('brand pages', () => {
     assert.match(paper, /the rho sheathes of those shares/);
     assert.match(paper, /The hash bonus is 1 sheath, 10<sup>−11<\/sup> SHE/);
     assert.doesNotMatch(paper, /hash nanos/);
-    assert.match(paper, /ADMITv2/);
+    assert.match(paper, /ADMITv3 \(FS-1\)/);
+    assert.match(paper, /full-chain membership, not rings of N/);
     const dag = read('site/dag/index.html');
     assert.match(dag, /plus the rho sheathes, once/);
     assert.doesNotMatch(dag, /hash nanos/);
@@ -304,10 +305,11 @@ describe('brand pages', () => {
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
     assert.match(poolHtml, /class="she-private-lockup">Shear testnet</);
     assert.doesNotMatch(poolHtml, /onfidential amounts|private cryptocurrency/);
-    assert.match(poolHtml, /ADMITv2 membership/);
+    assert.match(poolHtml, /ADMITv3 \(FS-1\)/);
+    assert.match(poolHtml, /full-chain membership, not rings of N/);
     assert.match(poolHtml, /DINS-DAG/);
     assert.match(poolHtml, /blue set/);
-    assert.match(poolHtml, /spine pot plus the hash nanos, once/);
+    assert.match(poolHtml, /spine pot plus the hash rho, once/);
     assert.match(poolHtml, /PoW elects the tip/);
     assert.match(poolHtml, /id="mine-form"/);
     assert.match(poolHtml, /id="addr"/);

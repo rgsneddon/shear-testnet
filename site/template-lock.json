@@ -41,7 +41,7 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/index.html": {
-      "skeleton": "e4a0d974ef8b8dba72136aa333aaba813954ffc56a4ff2d626f2951e1c97e246",
+      "skeleton": "aed3182ef6e0cde134962fe9513c505ab95da9f70bfa024ee65ac0925124f0fe",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/admin/index.html": {
@@ -57,7 +57,7 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/governance.html": {
-      "skeleton": "d17e715212335a15a7f30026a0238db4c6e3514955168001b6c67c3442645c7c",
+      "skeleton": "138c97381743abf5732398a94c6035ee8020b42f43c5db205180a48e03fac0c4",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/mine.html": {

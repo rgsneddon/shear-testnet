@@ -1,12 +1,12 @@
 # Shear
 
-ADMITv2 membership over this book's notes. Proof of work elects the tip. Continuity-settled.
+ADMITv3 (FS-1) is full-chain membership, not rings of N, over this book's notes. Proof of work elects the tip. Continuity-settled.
 
 This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs, wallet source, pool source, site, tests. Official miner pin lives in a **separate** repo:
 
 | Repo | What |
 |------|------|
-| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v12`; previous book `shear-testnet-v11`) |
+| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv3 (FS-1) (`shear-testnet-v12`; previous book `shear-testnet-v11`, the current live testnet) |
 | [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
 
 Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts only the Continuum 0.70 disk image: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
@@ -18,8 +18,8 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Ticker: **SHE**
 - Algo: **ShearHash-v3** (CPU, RandomX light)
 - Miner pin: **ShearK-Miner 2.8** (TLS-aware, not a quiet 2.6 or 2.7). Windows, Linux, Arch, Fedora, openSUSE, and macOS zips are one release: [ShearK 2.8](https://github.com/rgsneddon/ShearK/releases/tag/2.8) ([windows](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-windows.zip), [linux](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-linux.zip), [archlinux](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-archlinux.zip), [fedora](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-fedora.zip), [opensuse](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-opensuse.zip), [macos](https://github.com/rgsneddon/ShearK/releases/download/2.8/ShearK-Miner-2.8-macos.zip)). Each zip includes `example.bat` and `example.sh`.
-- Wallet pin: **0.71** (Continuum GUI + CLI). Packs are on the [0.71 release](https://github.com/rgsneddon/shear-testnet/releases/tag/0.71). This cut has no macOS disk image.
-- Node pin: **Shear Sentinel v18** (product 18.0). Windows, Linux, and Fedora zips are one release: [v18](https://github.com/rgsneddon/shear-testnet/releases/tag/v18) ([windows](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-windows.zip), [linux](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-linux.zip), [fedora](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-fedora.zip)). This cut has no macOS node zip, no Arch node zip, and no openSUSE node zip. Git tag `v16` stays on the same commit as tag `0.66`.
+- Wallet pin: **0.71** (Continuum GUI + CLI), the current live testnet. Packs are on the [0.71 release](https://github.com/rgsneddon/shear-testnet/releases/tag/0.71). This cut has no macOS disk image.
+- Node pin: **Shear Sentinel v18** (product 18.0), the current live testnet. Windows, Linux, and Fedora zips are one release: [v18](https://github.com/rgsneddon/shear-testnet/releases/tag/v18) ([windows](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-windows.zip), [linux](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-linux.zip), [fedora](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-fedora.zip)). This cut has no macOS node zip, no Arch node zip, and no openSUSE node zip. Git tag `v16` stays on the same commit as tag `0.66`.
 - Previous note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. `6054186` is quarantine.)
 - Stratum: public `stratum+ssl://pool.shear.digital:443`; cleartext migrate `pool.shear.digital:1111`; localhost solo `127.0.0.1:1111`. Port 1113 is only the pool process TLS listener. Public packets to 1113 do not arrive, so miners use 443. nginx ssl_preread sends a ShearK ClientHello (no ALPN) to that listener and keeps browser ALPN on the site.
 - P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v12`)
@@ -38,7 +38,7 @@ One proven floor share mints hash-bonus units onto the dest that hashed. User tr
 
 | Path | What |
 |------|------|
-| `specs/` | Header, validation, pool jobs, emissions, ADMITv2 |
+| `specs/` | Header, validation, pool jobs, emissions, ADMITv3 (FS-1) |
 | `crypto/` | ShearHash, header codec, Merkle, addresses, native ADMIT + BP+ |
 | `node/` | Validating daemon, P2P `:30303`, RPC `:18332` |
 | `wallet/` | GUI (Flutter) + CLI (`bin/shear.dart`) |
@@ -56,7 +56,7 @@ sudo apt-get install -y git curl build-essential cmake python3 pkg-config libssl
 # Node 20+
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
-# Rust (native ADMITv2 / BP+)
+# Rust (native ADMITv3 (FS-1) / BP+)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
 
@@ -88,7 +88,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"18.0"`, `"magic":"shear-testnet-v12"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"18.0"`, `"magic":"shear-testnet-v12"`, `"admit":"ADMITv3"`, `"mainnet":false`. ADMITv3 (FS-1) is full-chain membership, not rings of N. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 

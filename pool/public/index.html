@@ -424,14 +424,14 @@
       <section class="panel-card">
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">Shear testnet</span></p>
-        <p>Shear is a cryptocurrency. Continuity-settled proof of work. DINS-DAG settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. <strong>Testnet.</strong> Pool fee address : <code id="pool-fee-dest">ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv</code> <button type="button" id="copy-fee-dest">Copy dest</button></p>
+        <p>Shear is a cryptocurrency. Continuity-settled proof of work. DINS-DAG settles each round as the blue set: the spine pot plus the hash rho, once. PoW elects the tip. <strong>Testnet.</strong> Pool fee address : <code id="pool-fee-dest">ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv</code> <button type="button" id="copy-fee-dest">Copy dest</button></p>
         <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot after the 1% fee seal to that <code>ssa1</code> in the found block. Continuum lists that seal as blockfound. This pool is not custodial - we merely process what the node tells us.</p>
-        <p>Spends use ADMITv2 membership over the notes on this blockchain. Offer a silent ID (<code>she1</code>) when someone pays you. Coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure.</p>
+        <p>Spends use ADMITv3 (FS-1), full-chain membership, not rings of N, over the notes on this blockchain. Offer a silent ID (<code>she1</code>) when someone pays you. Coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure.</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
       </section>
       <section class="panel-card" id="start-mining">
         <h2>Start mining</h2>
-        <p>Public stratum <code>stratum+ssl://pool.shear.digital:443</code>. Magic <code>shear-testnet-v11</code> · ShearHash-v3. Continuum 0.71. ShearK 2.8.</p>
+        <p>Public stratum <code>stratum+ssl://pool.shear.digital:443</code>. Magic <code>shear-testnet-v11</code> · ShearHash-v3. Continuum 0.71. ShearK 2.8. Continuum 0.71 and shear-testnet-v11 are the current live testnet.</p>
         <p class="label" id="stratum-cleartext">Stratum is <strong>cleartext TCP</strong>. Set <code>SHEAR_STRATUM_AUTH=1</code> when TLS is not in front.</p>
         <p>Paste Copy dest, a worker name, and CPU threads. Copy the command into ShearK. Use a worker name that you will recognise, so you can find your miners page link in the pool miners table below.</p>
         <form id="mine-form" action="#" method="get" autocomplete="off">

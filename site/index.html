@@ -46,7 +46,7 @@
     })();
   </script>
   <title>Shear — testnet</title>
-  <meta name="description" content="Shear ADMITv2 testnet: CPU PoW, Continuity-settled." />
+  <meta name="description" content="Shear ADMITv3 (FS-1) testnet: CPU PoW, Continuity-settled." />
   <link rel="icon" href="brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="css/site.css" />
@@ -138,7 +138,7 @@
         </div>
         <div class="scroll-hero-fade" aria-hidden="true"></div>
         <div class="scroll-hero-copy wrap">
-          <div class="hero-tag">ADMITv2 · <span data-shear-network>shear-testnet-v11</span></div>
+          <div class="hero-tag">ADMITv3 (FS-1) · <span data-shear-network>shear-testnet-v11</span> · the current live testnet</div>
           <h1>
             <span class="title-word" aria-label="Shear">
               <img class="hero-wordmark theme-img-light" src="brand/05c-wordmark-nevia-light-transparent.png" alt="Shear" width="280" height="72" decoding="async" />
@@ -147,8 +147,8 @@
             <span class="sub">Shear testnet</span>
           </h1>
           <p class="lede">
-            Built for <strong>ADMITv2</strong>. CPU proof-of-work tip,
-            <strong>Continuity-settled</strong>, live on testnet — not mainnet.
+            Built for <strong>ADMITv3 (FS-1)</strong>, full-chain membership, not rings of N. CPU proof-of-work tip,
+            <strong>Continuity-settled</strong>, on the current live testnet — not mainnet.
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" href="get-started.html">Get wallet</a>
@@ -251,7 +251,7 @@
         </div>
         <div class="faq-item" role="listitem">
           <button class="faq-q" type="button" aria-expanded="false">Pool or solo?<span class="chev">▾</span></button>
-          <div class="faq-a">Most people use the pool (<code>stratum+ssl://pool.shear.digital:443</code>) with ShearK 2.8 and Copy dest. The pool seals the pay on the book. Continuum, on Connect Bare or beside a local node, asks a node for every note sealed to your dest up through the tip, including seals from while the wallet was closed. Solo needs a synced node (ibd=false) and is documented under Mine → docs. Explorer lists sealed blocks with no dest and no amount. The mempool lattice shows pending sends and purple confirming rings through 9 confirmations. Downloads: Continuum 0.71 on the wallet hub, Shear Sentinel v18 on the node page.</div>
+          <div class="faq-a">Most people use the pool (<code>stratum+ssl://pool.shear.digital:443</code>) with ShearK 2.8 and Copy dest. The pool seals the pay on the book. Continuum, on Connect Bare or beside a local node, asks a node for every note sealed to your dest up through the tip, including seals from while the wallet was closed. Solo needs a synced node (ibd=false) and is documented under Mine → docs. Explorer lists sealed blocks with no dest and no amount on wallet sends. The mempool lattice shows pending sends and purple confirming rings through 9 confirmations. Downloads: Continuum 0.71 on the wallet hub, Shear Sentinel v18 on the node page. Continuum 0.71, Shear Sentinel v18, and shear-testnet-v11 are the current live testnet.</div>
         </div>
         <div class="faq-item" role="listitem">
           <button class="faq-q" type="button" aria-expanded="false">Can I share my shear1 address?<span class="chev">▾</span></button>
