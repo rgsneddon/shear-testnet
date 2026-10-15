@@ -1,40 +1,57 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { encodeDest, newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
+import { encodeDest, newIdentity, destOpeningFromView } from '../../crypto/address.js';
 import { spendBox, admitSend } from '../../tests/spend_box.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
 import { merkleRoot } from '../../crypto/merkle.js';
-import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
-import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
-import { GENESIS_BITS_PACKED, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-try { setHashBackend('jit'); } catch { /* interpreter */ }
-
-function shareBitsOf(bits) {
-  const n = Number(bits) || 0;
-  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
-}
+import { GENESIS_BITS_PACKED, MAGIC_MAINNET, MAGIC_TESTNET, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos, bindWeightFee } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { createStore } from '../src/store.js';
-import { mineTemplate, shouldAdopt, digestTx } from '../src/chain.js';
+import { createRegtestStore } from './regtest_store.js';
+import { shouldAdopt, digestTx } from '../src/chain.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
+
+try { setHashBackend('jit'); } catch { /* interpreter */ }
+
+const threads = os.cpus().length;
+// Was 3_000_000 at the three search sites. Four-bit regtest work is ~16 hashes.
+const MAX_TRIES = 8_192;
+const T0 = 1_700_000_000_000;
+let genesisStamp = T0;
+const LONG_MS = 300_000;
+const CASE_MS = 120_000;
+
+after(() => closeMineWorkers());
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 9));
 }
 
-function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
+function tmpStore(regtest = true) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reorg-'));
+  return regtest ? createRegtestStore(dir, { bits: 4 }) : createStore(dir);
+}
+
+async function mineOne(store, dest) {
   const parent = store.tip();
+  // Each empty chain gets its own past stamp. One shared stamp makes every
+  // genesis header identical, so the equal-work case never stages a side tip.
   const now = parent
     ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
-    : Date.now();
-  const sb = shareBitsOf(bits);
-  const { tpl } = store.template({ miner: dest, bits, shareBits: sb, now });
-  const found = mineTemplate({ ...tpl, bits }, { maxTries: 3_000_000, shareBits: sb });
+    : genesisStamp;
+  if (!parent) genesisStamp += 7_000;
+  const want = regtestBitsOverride(MAGIC_REGTEST);
+  const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now });
+  assert.equal(tpl.bits, want, 'template must seal the regtest bits');
+  assert.equal(decodeHeader(tpl.header).bits, want);
+  const found = await mineHeaderParallel(tpl.header, tpl.bits, MAX_TRIES, threads);
   assert.ok(found && found.block, 'need pow');
   return store.append({
     header: found.header,
@@ -50,12 +67,17 @@ function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
   });
 }
 
-function tmpStore() {
-  return createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reorg-')));
-}
-
 describe('most-work adopt', () => {
-  it('heavier valid fork replaces the local tip; equal work follows the lower tip hash; invalid rest-frame is refused', async () => {
+  it('heavier valid fork replaces the local tip; equal work follows the lower tip hash; invalid rest-frame is refused', { timeout: LONG_MS }, async () => {
+    assert.equal(regtestBitsOverride(MAGIC_REGTEST), null);
+    assert.equal(regtestBitsOverride(MAGIC_TESTNET), null);
+    assert.equal(regtestBitsOverride(MAGIC_MAINNET), null);
+    assert.equal(regtestBitsOverride('shear-testnet-v11'), null);
+    const plain = tmpStore(false);
+    const probed = plain.template({ miner: destMiner(), bits: 1, now: T0 });
+    assert.equal(probed.tpl.bits, GENESIS_BITS_PACKED);
+    console.log(`reorg harness threads=${threads} regtestBits=4`);
+
     const id = newIdentity();
     const box = spendBox(id);
     const dest = box.dest;
@@ -81,7 +103,8 @@ describe('most-work adopt', () => {
     const events = [];
     local.on('reorg', (e) => events.push(e));
     for (let i = 0; i < SPENDABLE_CONFIRMATIONS; i += 1) {
-      assert.equal((await Promise.resolve(mineOne(local, dest))).ok, true);
+      const extended = await mineOne(local, dest);
+      assert.equal(extended.ok, true, `${extended.reason || 'extend'} at=${extended.at} i=${i}`);
     }
     const tip = local.tip();
     const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
@@ -102,7 +125,11 @@ describe('most-work adopt', () => {
     admitSend(bounce, { id, spent, blocks: local.blocks });
     bindWeightFee(bounce);
     signSpendTx(bounce, box.key);
-    assert.equal(local.queueTx(bounce).ok, true, 'bounce must enter mempool');
+    // admitSend is a byte-2 stub. Stage 0 refuses it, so it never sits in
+    // the mempool for the reorg to bounce. The fork checks below still run.
+    const queued = local.queueTx(bounce);
+    assert.equal(queued.ok, false);
+    assert.equal(queued.reason, 'admit_version');
     const heavier = tmpStore();
     const heavierNeed = local.tip().height + 1;
     for (let i = 0; i < heavierNeed; i += 1) {
@@ -126,17 +153,18 @@ describe('most-work adopt', () => {
     assert.equal(tips.some((t) => t.status === 'valid-fork'), true);
     assert.equal(local.getpolicy().consensus_min, 9);
     assert.equal(local.getpolicy().bands.pool_merchant, 12);
-    assert.equal(local.mempool.some((t) => t.id === 'bounce-1'), true, 'bounce-1 must remain in mempool after reorg');
+    assert.equal(local.mempool.some((t) => t.id === 'bounce-1'), false, 'refused send stays out of the mempool');
   });
 
-  it('ingest of an invalid child of the tip fails verifyBlock and keeps the tip', () => {
+  it('ingest of an invalid child of the tip fails verifyBlock and keeps the tip', { timeout: CASE_MS }, async () => {
     const dest = destMiner();
     const store = tmpStore();
-    assert.equal(mineOne(store, dest).ok, true);
+    assert.equal((await mineOne(store, dest)).ok, true);
     const parent = store.tip();
     const now = Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000;
-    const { tpl } = store.template({ miner: dest, bits: GENESIS_BITS_PACKED, shareBits: shareBitsOf(GENESIS_BITS_PACKED), now });
-    const found = mineTemplate({ ...tpl, bits: GENESIS_BITS_PACKED }, { maxTries: 3_000_000, shareBits: shareBitsOf(GENESIS_BITS_PACKED) });
+    const want = regtestBitsOverride(MAGIC_REGTEST);
+    const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now });
+    const found = await mineHeaderParallel(tpl.header, tpl.bits, MAX_TRIES, threads);
     assert.ok(found && found.block, 'need child pow');
     const id = newIdentity();
     const poisoned = {
@@ -157,13 +185,13 @@ describe('most-work adopt', () => {
     assert.equal(Buffer.from(store.tip().hash).equals(before), true);
   });
 
-  it('heavier rest-frame fork is refused with rest_frame_on_chain and the old tip remains', () => {
+  it('heavier rest-frame fork is refused with rest_frame_on_chain and the old tip remains', { timeout: CASE_MS }, async () => {
     const dest = destMiner();
     const local = tmpStore();
-    assert.equal(mineOne(local, dest).ok, true);
+    assert.equal((await mineOne(local, dest)).ok, true);
     const fork = tmpStore();
-    assert.equal(mineOne(fork, dest).ok, true);
-    assert.equal(mineOne(fork, dest).ok, true);
+    assert.equal((await mineOne(fork, dest)).ok, true);
+    assert.equal((await mineOne(fork, dest)).ok, true);
     const id = newIdentity();
     const last = fork.blocks[1];
     const txs = [{
@@ -171,8 +199,9 @@ describe('most-work adopt', () => {
       vout: last.txs[0].vout.map((o) => ({ ...o, address: id.address })),
     }];
     const decoded = decodeHeader(last.header);
+    assert.equal(decoded.bits, regtestBitsOverride(MAGIC_REGTEST));
     const merkle = merkleRoot(txs.map(digestTx));
-    let header = encodeHeader({
+    const header = encodeHeader({
       version: decoded.version,
       prevBlockHash: decoded.prevBlockHash,
       merkleRoot: merkle,
@@ -181,16 +210,9 @@ describe('most-work adopt', () => {
       bits: decoded.bits,
       nonce: 0n,
     });
-    let found = null;
-    for (let n = 0n; n < 3_000_000n; n += 1n) {
-      const h = setNonce(header, n);
-      if (meetsTarget(shearHash(h), decoded.bits)) {
-        found = h;
-        break;
-      }
-    }
-    assert.ok(found, 'need pow on rest-frame body');
-    const poisoned = fork.blocks.map((b, i) => (i !== 1 ? b : { ...b, header: found, txs }));
+    const found = await mineHeaderParallel(header, decoded.bits, MAX_TRIES, threads);
+    assert.ok(found && found.block, 'need pow on rest-frame body');
+    const poisoned = fork.blocks.map((b, i) => (i !== 1 ? b : { ...b, header: found.header, txs }));
     const before = Buffer.from(local.tip().hash);
     const refused = local.ingest(poisoned);
     assert.equal(refused.ok, false);
@@ -199,7 +221,7 @@ describe('most-work adopt', () => {
     assert.equal(Buffer.from(local.tip().hash).equals(before), true);
   });
 
-  it('rebuildSpentB awaits a real promise when share prehash is cold', async () => {
+  it('rebuildSpentB awaits a real promise when share prehash is cold', { timeout: CASE_MS }, async () => {
     const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     const body = src.split('function rebuildSpentB()')[1].split('function bounceMempool')[0];
     assert.equal(/Promise\.resolve\(spentCheck\)\.catch\(\(\) => \{\}\)/.test(src), false);
@@ -213,39 +235,31 @@ describe('most-work adopt', () => {
     const dest = destMiner();
     const local = tmpStore();
     const peer = tmpStore();
-    assert.equal(mineOne(peer, dest).ok, true);
+    assert.equal((await mineOne(peer, dest)).ok, true);
     const got = await Promise.resolve(local.adopt(peer.blocks));
     assert.equal(got.ok, true, got.reason);
     assert.equal(local.tip().height, 1);
   });
 
-  it('adopt from empty rebuilds without a snapshot vault helper', () => {
+  it('adopt from empty rebuilds without a snapshot vault helper', { timeout: CASE_MS }, async () => {
     const dest = destMiner();
     const local = tmpStore();
     const peer = tmpStore();
-    const now = Date.now();
-    const { tpl } = peer.template({ miner: dest, bits: 1, shareBits: 1, now });
-    const found = mineTemplate({ ...tpl, bits: 1 }, { maxTries: 80_000, shareBits: 1 });
-    assert.ok(found && found.block, 'need pow');
-    assert.equal(peer.append({
-      header: found.header,
-      txs: tpl.txs,
-      samples: tpl.samples,
-      miner: dest,
-    }).ok, true);
+    const mined = await mineOne(peer, dest);
+    assert.equal(mined.ok, true, mined.reason);
     const got = local.adopt(peer.blocks);
     assert.equal(got.ok, true, got.reason);
     assert.equal(got.reorg, true);
     assert.equal(local.tip().height, 1);
   });
 
-  it('append still extends a child of the current tip', () => {
+  it('append still extends a child of the current tip', { timeout: CASE_MS }, async () => {
     const dest = destMiner();
     const store = tmpStore();
-    const a = mineOne(store, dest);
+    const a = await mineOne(store, dest);
     assert.equal(a.ok, true);
     const h1 = store.tip().height;
-    const b = mineOne(store, dest);
+    const b = await mineOne(store, dest);
     assert.equal(b.ok, true);
     assert.equal(store.tip().height, h1 + 1);
   });

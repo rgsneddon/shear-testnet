@@ -445,11 +445,13 @@ describe('v12 frontier, burial, and reorg fallback', () => {
     assert.equal(built.ok, true, built.reason);
     const snap = fs.readFileSync(path.join(snapDir, 'book.snap'));
     const vault = fs.readFileSync(path.join(snapDir, 'reserve.json'));
+    const vaultSnap = fs.readFileSync(path.join(snapDir, 'vault.snap'));
     built = grow(snapStore, dest, 6);
     assert.equal(built.ok, true, built.reason);
     const snapTip = Buffer.from(snapStore.tip().hash);
     fs.writeFileSync(path.join(snapDir, 'book.snap'), snap);
     fs.writeFileSync(path.join(snapDir, 'reserve.json'), vault);
+    fs.writeFileSync(path.join(snapDir, 'vault.snap'), vaultSnap);
     const snapped = createStore(snapDir);
     assert.equal(snapped.loadMode, 'suffix', snapped.loadMode);
     assert.equal(snapped.tip().height, 8);

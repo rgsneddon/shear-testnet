@@ -10,10 +10,29 @@ const require = createRequire(import.meta.url);
 const dir = path.dirname(fileURLToPath(import.meta.url));
 
 let native = null;
-try {
-  native = require(path.join(dir, 'native', 'shearadmit.node'));
-} catch {
+let nativeLoadError = '';
+
+function noteNativeLoadFailure(reason) {
   native = null;
+  nativeLoadError = String(reason || 'unknown');
+  console.error(`shearadmit.node failed to load: ${nativeLoadError}`);
+}
+
+const admitDisabled = String(process.env.SHEAR_ADMIT_DISABLE || '').trim() === '1';
+if (admitDisabled) {
+  noteNativeLoadFailure('SHEAR_ADMIT_DISABLE=1');
+} else {
+  try {
+    native = require(path.join(dir, 'native', 'shearadmit.node'));
+  } catch (err) {
+    const code = err && err.code ? `${err.code}: ` : '';
+    const msg = err && err.message ? err.message : String(err);
+    noteNativeLoadFailure(`${code}${msg}`);
+  }
+}
+
+export function nativeLoadErrorText() {
+  return nativeLoadError;
 }
 
 export function nativeLoaded() {
