@@ -31,7 +31,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
-import 'shear_privacy_hop.dart';
+import 'shear_public_confirm.dart';
 import 'shear_closure.dart';
 import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
@@ -103,9 +103,7 @@ class ShearWalletApp extends StatefulWidget {
     this.pickQrImage,
     this.startUnlocked = false,
     this.skipPoolSync = false,
-    this.privacyHop,
     this.postReserveLock = false,
-    this.hopFeePay,
     this.hostAndroid,
     this.bookLoading = false,
   });
@@ -135,14 +133,8 @@ class ShearWalletApp extends StatefulWidget {
   final bool startUnlocked;
   /// Tests: skip unlock HTTP so the sign-pull dialog can be driven without a hung pool.
   final bool skipPoolSync;
-  /// Residual hop controller. Tests inject a mock.
-  final PrivacyHopController? privacyHop;
   /// Tests: post Reserve lock to [ledger.pool] even when [skipPoolSync] is set.
   final bool postReserveLock;
-
-  /// Test hook. Production pays the hop fee with [ShearLedger.send], whose
-  /// seal/prove runs in [Isolate.run]. A slow hook must not run in the confirm turn.
-  final Future<void> Function()? hopFeePay;
 
   /// Null uses the real platform. Tests set this so a phone bar can be
   /// measured on a desktop host. iOS will use this same coins-only shell.
@@ -208,8 +200,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   final shearviewQuery = TextEditingController();
   bool _vorticeBusy = false;
   late final ShearReserve reserve = widget.reserve ?? ShearReserve();
-  late final PrivacyHopController hop =
-      widget.privacyHop ?? PrivacyHopController();
   late final ShearNodeSidecar sidecar;
   NodeProcHandle? _nodeHandle;
   Timer? _nodeLogPaint;
@@ -269,16 +259,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   final _depositsScroll = ScrollController();
   bool _reserveUnprivateOk = false;
   String? _reserveDepositProgress;
-  /// Hop fee already posted this process. VPN grant / retry must not pay again.
-  bool _hopFeePaidSession = false;
-  bool _hopBusy = false;
-  String? _hopProgress;
   int _owedAnchorMs = 0;
   double _owedAnchorShe = 0;
-
-  void _onHop() {
-    if (mounted) setState(() {});
-  }
 
   final List<String> _pendingNodeLines = [];
   Future<void>? _nodeLogApply;
@@ -471,7 +453,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ..nodeScript = packed?.script
       ..workDir = packed?.workDir;
     _tabScroll = List.generate(kTabs.length, (_) => ScrollController());
-    hop.addListener(_onHop);
     _boot();
   }
 
@@ -489,8 +470,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       c.dispose();
     }
     _depositsScroll.dispose();
-    hop.removeListener(_onHop);
-    unawaited(hop.disconnect());
     WidgetsBinding.instance.removeObserver(this);
     _tipWatchGen += 1;
     _accrualTick?.cancel();
@@ -2013,34 +1992,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               Expanded(child: pages[tab]()),
             ],
           ),
-          if (_hopProgress != null)
-            Positioned.fill(
-              child: AbsorbPointer(
-                child: ColoredBox(
-                  color: const Color(0x66000000),
-                  child: Center(
-                    child: Card(
-                      key: const Key('reserve-hop-progress'),
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            const SizedBox(width: 16),
-                            Text(_hopProgress!, key: const Key('reserve-hop-progress-text')),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -3461,6 +3412,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       setState(() => _reserveDepositProgress = 'Consolidating Continuum notes for Deposit…');
       await _yieldUiFrame();
     }
+    final local = reserveLockPostsLocal(
+      hasPool: ledger.pool != null,
+      skipPoolSync: widget.skipPoolSync,
+      postReserveLock: widget.postReserveLock,
+    );
+    final consent = await _ensurePublicIpConsent(context, local: local);
+    if (!consent || !mounted) {
+      if (mounted) setState(() => _reserveDepositProgress = null);
+      return;
+    }
     final result = await postReserveDeposit(
       ledger: ledger,
       reserve: reserve,
@@ -3470,11 +3431,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       she: she,
       depth: _mempoolDepth,
       spendSeed: hexToBytes(ident.seedHex),
-      local: reserveLockPostsLocal(
-        hasPool: ledger.pool != null,
-        skipPoolSync: widget.skipPoolSync,
-        postReserveLock: widget.postReserveLock,
-      ),
+      local: local,
+      publicIpConsent: local || _reserveUnprivateOk,
     );
     if (!result.posted || result.tx == null) {
       if (mounted) setState(() => _reserveDepositProgress = null);
@@ -3513,135 +3471,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// One frame of budget so the pay/connect card paints before fee crypto or Connect.
   Future<void> _yieldUiFrame() => Future<void>.delayed(const Duration(milliseconds: 1));
 
-  Future<void> _payHopFee(ShearIdentity ident, double need) async {
-    final hook = widget.hopFeePay;
-    if (hook != null) {
-      await hook();
-      return;
-    }
-    final from = ledger.spendFrom(
-      ident.address,
-      paymentCode: ident.paymentCode,
-      amount: need,
-    );
-    // Spendable covers the fee. Do not scan the note book or wait for one
-    // sealed note. Same path on every platform.
-    await ledger.send(
-      from: from,
-      to: kPrivacyHopFeeDest,
-      amount: kPrivacyHopFeeShe,
-      kind: 'hop-fee',
-      local: ledger.pool == null || widget.skipPoolSync,
-      restFrame: ident.address,
-      paymentCode: ident.paymentCode,
-      spendSeed: hexToBytes(ident.seedHex),
-      allowPublicHttp: true,
-    );
-  }
-
-  Future<void> _reserveHopToggle(BuildContext context, ShearIdentity ident) async {
-    if (_hopBusy) return;
-    if (hop.isUp || hop.isConnecting) {
-      await hop.disconnect();
-      return;
-    }
-    if (!privacyHopFeeDestOk(kPrivacyHopFeeDest)) {
-      _snack.currentState?.showSnackBar(
-        const SnackBar(content: Text('Hop fee dest is not the pool ssa1')),
-      );
-      return;
-    }
-    var need = kPrivacyHopFeeShe;
-    if (!_hopFeePaidSession) {
-      final depth = await _mempoolDepthNow();
-      final feeNanos = (kPrivacyHopFeeShe * kUnitsPerShe).round();
-      final feeL = levyNanos(feeNanos, depth: depth);
-      need = kPrivacyHopFeeShe + feeL / kUnitsPerShe;
-      if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < need) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(
-              'Not enough Continuum spendable for hop fee $kPrivacyHopFeeSheText + tx fee ${formatShe(feeL / kUnitsPerShe)} SHE',
-            ),
-          ));
-        }
-        return;
-      }
-      final go = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          key: const Key('reserve-hop-fee-confirm'),
-          title: Text(kPrivacyHopFeeConfirmTitle),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(kPrivacyHopFeeConfirmBody),
-              const SizedBox(height: 8),
-              Text(
-                _txFeeAdvice(feeNanos, oneFeeTo: 'pay the Privacy hop fee', depth: depth),
-                key: const Key('reserve-hop-fee-levy'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              key: const Key('reserve-hop-fee-cancel'),
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              key: const Key('reserve-hop-fee-accept'),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: Text(kPrivacyHopFeePayLabel),
-            ),
-          ],
-        ),
-      );
-      if (go != true || !mounted) return;
-    }
-    setState(() => _hopBusy = true);
-    try {
-      if (!_hopFeePaidSession) {
-        setState(() => _hopProgress = kHopProgressPaying);
-        await _yieldUiFrame();
-        if (!mounted) return;
-        try {
-          await _payHopFee(ident, need);
-        } catch (e) {
-          if (mounted) {
-            setState(() => _hopProgress = null);
-            _snack.currentState?.showSnackBar(
-              SnackBar(content: Text(hopFeeAdvisoryOf(e))),
-            );
-          }
-          return;
-        }
-        if (!mounted) return;
-        _hopFeePaidSession = true;
-      }
-      setState(() => _hopProgress = kHopProgressConnecting);
-      await _yieldUiFrame();
-      if (!mounted) return;
-      final ok = await hop.connect();
-      if (!mounted) return;
-      setState(() => _hopProgress = null);
-      if (!ok) {
-        _snack.currentState?.showSnackBar(
-          SnackBar(content: Text(hop.message.isEmpty ? 'Privacy hop unreachable' : hop.message)),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _hopBusy = false;
-          if (!hop.isConnecting) _hopProgress = null;
-        });
-      }
-    }
-  }
-
   Future<void> _reserveUnprivateConfirm(BuildContext context) async {
     final go = await showDialog<bool>(
       context: context,
@@ -3673,6 +3502,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (go == true && mounted) {
       setState(() => _reserveUnprivateOk = true);
     }
+  }
+
+  /// Public-node Reserve posts wait on the VPN / IP confirm. A local post does not.
+  Future<bool> _ensurePublicIpConsent(BuildContext context, {required bool local}) async {
+    if (local || _reserveUnprivateOk) return true;
+    await _reserveUnprivateConfirm(context);
+    return _reserveUnprivateOk;
   }
 
   Future<void> _reserveWithdraw(BuildContext context, ShearIdentity ident) async {
@@ -3712,17 +3548,29 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final posted = await postReserveWithdraw(
-      ledger,
-      reserve: reserve,
-      dest: dest,
-      payout: to,
-      nowMs: now,
-      spendSeed: hexToBytes(ident.seedHex),
-      local: ledger.pool == null || widget.skipPoolSync,
-      restFrame: ident.address,
-      paymentCode: ident.paymentCode,
-    );
+    final local = ledger.pool == null || widget.skipPoolSync;
+    final consent = await _ensurePublicIpConsent(context, local: local);
+    if (!consent || !mounted) return;
+    final ({ShearTx tx, Map<String, int> settled})? posted;
+    try {
+      posted = await postReserveWithdraw(
+        ledger,
+        reserve: reserve,
+        dest: dest,
+        payout: to,
+        nowMs: now,
+        spendSeed: hexToBytes(ident.seedHex),
+        local: local,
+        restFrame: ident.address,
+        paymentCode: ident.paymentCode,
+        publicIpConsent: local || _reserveUnprivateOk,
+      );
+    } on StateError catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+      return;
+    }
     if (posted == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3842,7 +3690,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final tun = hop.tunVerified && !hop.probeOnly;
+    final local = ledger.pool == null || widget.skipPoolSync;
+    final consent = await _ensurePublicIpConsent(context, local: local);
+    if (!consent || !mounted) return;
     final result = await commandReserveVote(
       ledger: ledger,
       reserve: reserve,
@@ -3852,8 +3702,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       choice: choice,
       depth: depth,
       spendSeed: hexToBytes(ident.seedHex),
-      local: ledger.pool == null || widget.skipPoolSync,
-      privacyHopUp: tun,
+      local: local,
+      publicIpConsent: local || _reserveUnprivateOk,
     );
     if (context.mounted) {
       final messenger = ScaffoldMessenger.of(context);

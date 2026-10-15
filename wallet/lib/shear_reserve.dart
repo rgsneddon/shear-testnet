@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_levy.dart';
+import 'shear_public_confirm.dart';
 
 const kReserveProgram = 'shear-reserve-v1';
 const kReserveOracleId = 'shear-reserve-oracle-v1';
@@ -109,9 +110,14 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   String? restFrame,
   String? paymentCode,
   bool allowPublicHttp = false,
+  bool publicIpConsent = false,
 }) async {
   final nanos = reserveWithdrawPayoutNanos(reserve, dest, nowMs);
   if (nanos <= 0) return null;
+  final publicHttp = allowPublicHttp || !local;
+  if (publicHttp && !publicNodePostAllowed(consent: publicIpConsent)) {
+    throw StateError(kPublicIpWaitCopy);
+  }
   final amount = nanos / kUnitsPerShe;
   final from = (restFrame != null && restFrame.isNotEmpty)
       ? ledger.currentDest(restFrame, paymentCode: paymentCode)
@@ -685,6 +691,7 @@ Future<ReserveDepositResult> postReserveDeposit({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
+  bool publicIpConsent = false,
 }) async {
   if (she <= 0 || !isDestAddress(dest)) {
     return const ReserveDepositResult(posted: false, remark: 'bad_amount');
@@ -723,6 +730,10 @@ Future<ReserveDepositResult> postReserveDeposit({
       keepHome: true,
     );
     final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
+    if (!local && !publicNodePostAllowed(consent: publicIpConsent)) {
+      ledger.restorePaintedBook(mark);
+      return const ReserveDepositResult(posted: false, remark: kPublicIpWaitCopy);
+    }
     final tx = await ledger.send(
       from: from,
       to: dest,
@@ -807,7 +818,7 @@ Future<ReserveVoteResult> commandReserveVote({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
-  bool privacyHopUp = false,
+  bool publicIpConsent = false,
   int? nowMs,
 }) async {
   final gate = reserveVoteGate(ledger, reserve, dest);
@@ -840,6 +851,9 @@ Future<ReserveVoteResult> commandReserveVote({
       paymentCode: paymentCode,
       needShe: needShe,
     );
+    if (!local && !publicNodePostAllowed(consent: publicIpConsent)) {
+      return const ReserveVoteResult(enacted: false, remark: kPublicIpWaitCopy);
+    }
     await ledger.send(
       from: from,
       to: dest,
@@ -847,7 +861,6 @@ Future<ReserveVoteResult> commandReserveVote({
       local: local,
       kind: 'vote',
       programId: kReserveProgram,
-      privacyHopUp: privacyHopUp,
       allowPublicHttp: true,
       restFrame: restFrame,
       paymentCode: paymentCode,

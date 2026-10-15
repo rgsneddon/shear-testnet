@@ -816,6 +816,7 @@ void main() {
         dest: dest,
         payout: dest,
         nowMs: now,
+        publicIpConsent: true,
       );
       expect(posted, isNotNull, reason: 'principal=$principal');
       expect(posted!.tx.kind, 'withdraw');
