@@ -2015,7 +2015,7 @@ export function assessHeader(block, prev, opts = {}) {
     const heightNow = structuralH;
     // After genesis, testnet and mainnet anchor on the genesis seed. Those
     // books seal that seed in the genesis header, so this is the same bits.
-    // The regtest override is that seed for the test runner only.
+    // The regtest override is that seed only after the test factory seals it.
     const regtestBits = regtestBitsOverride(magic);
     const quote = asertNextBits({
       anchorBits: parentIsGenesis ? parent.bits : (regtestBits != null ? regtestBits : GENESIS_BITS_PACKED),
@@ -2051,7 +2051,7 @@ export function assessHeader(block, prev, opts = {}) {
     }
   } else {
     // Testnet and mainnet stay on the genesis seed. regtestBitsOverride is
-    // null for those books, and null outside the node test runner.
+    // null for those books, and null until the test-only store factory seals.
     const wantBits = regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
     if (decoded.bits !== wantBits || !isPackedBits(decoded.bits)) {
       return finish({ ok: false, reason: 'bits' });

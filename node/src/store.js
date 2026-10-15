@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
-import { regtestBitsOverride } from '../../crypto/regtest_bits.js';
+import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
@@ -290,7 +290,16 @@ export function createStore(dir, {
   yieldForeign = false,
   onLoadProgress = null,
   magic: magicIn = null,
+  regtestPermit = null,
 } = {}, resume = null) {
+  // shear-regtest is not a public book. A genesis pin (the v12 hash, or any
+  // caller pin) refuses it outright. An unpinned open still needs the permit
+  // that only node/tests/regtest_store.js can seal. Env vars do not.
+  const genesisPin = String(genesisHash || '');
+  if (String(magicIn || '') === MAGIC_REGTEST) {
+    if (genesisPin) throw new Error('regtest_genesis_pin');
+    if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
+  }
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
@@ -312,9 +321,8 @@ export function createStore(dir, {
   let policyState = emptyPolicyState();
   const pause = { reserveInterest: false, poolWithdraw: false };
   const haltDepth = Math.max(0, Math.floor(Number(reorgHaltDepth) || 0));
-  // Easy bits only when the test runner opted into the regtest book.
-  // A testnet or mainnet store keeps MAGIC_TESTNET and the genesis seed.
-  const networkMagic = regtestBitsOverride(magicIn) != null ? String(magicIn) : MAGIC_TESTNET;
+  // The permit was checked above. Testnet and mainnet stores stay on MAGIC_TESTNET.
+  const networkMagic = String(magicIn || '') === MAGIC_REGTEST ? MAGIC_REGTEST : MAGIC_TESTNET;
   const archiveFast = !!fastSync;
   const sealFirst = Math.max(1, Math.floor(Number(firstCheckpoint) || CHECKPOINT_FIRST_HEIGHT));
   const sealEvery = Math.max(1, Math.floor(Number(checkpointEvery) || CHECKPOINT_EVERY_BLOCKS));
@@ -504,6 +512,7 @@ export function createStore(dir, {
           yieldForeign: false,
           onLoadProgress,
           magic: networkMagic,
+          regtestPermit,
         }, {
           token: loadResumeToken,
           verified: true,

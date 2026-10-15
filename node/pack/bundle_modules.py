@@ -143,6 +143,10 @@ def required_module_paths(repo: str) -> list[str]:
     queue: list[str] = []
 
     def add(arc: str) -> None:
+        # The regtest store factory lives under node/tests. A release that
+        # reached it would ship the only opener for the shear-regtest book.
+        if arc.startswith("node/tests/"):
+            raise SystemExit(f"release graph reaches test-only module {arc}")
         if arc in seen:
             return
         seen.add(arc)

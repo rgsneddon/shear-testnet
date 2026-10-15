@@ -14,14 +14,11 @@ import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos, bindWeightFee } from '../../crypto/levy.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { createStore } from '../src/store.js';
+import { createRegtestStore } from './regtest_store.js';
 import { shouldAdopt, digestTx } from '../src/chain.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
-
-// Opt in before any store opens. The runner sets NODE_TEST_CONTEXT.
-// Testnet and mainnet stores never read this value.
-process.env.SHEAR_REGTEST_BITS = '4';
 
 const threads = os.cpus().length;
 // Was 3_000_000 at the three search sites. Four-bit regtest work is ~16 hashes.
@@ -39,7 +36,7 @@ function destMiner() {
 
 function tmpStore(regtest = true) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reorg-'));
-  return regtest ? createStore(dir, { magic: MAGIC_REGTEST }) : createStore(dir);
+  return regtest ? createRegtestStore(dir, { bits: 4 }) : createStore(dir);
 }
 
 async function mineOne(store, dest) {
@@ -72,18 +69,14 @@ async function mineOne(store, dest) {
 
 describe('most-work adopt', () => {
   it('heavier valid fork replaces the local tip; equal work follows the lower tip hash; invalid rest-frame is refused', { timeout: LONG_MS }, async () => {
-    const saved = process.env.NODE_TEST_CONTEXT;
-    delete process.env.NODE_TEST_CONTEXT;
     assert.equal(regtestBitsOverride(MAGIC_REGTEST), null);
-    process.env.NODE_TEST_CONTEXT = saved;
     assert.equal(regtestBitsOverride(MAGIC_TESTNET), null);
     assert.equal(regtestBitsOverride(MAGIC_MAINNET), null);
     assert.equal(regtestBitsOverride('shear-testnet-v11'), null);
-    assert.equal(regtestBitsOverride(MAGIC_REGTEST), 4 * 65536);
     const plain = tmpStore(false);
     const probed = plain.template({ miner: destMiner(), bits: 1, now: T0 });
     assert.equal(probed.tpl.bits, GENESIS_BITS_PACKED);
-    console.log(`reorg harness threads=${threads} regtestBits=${process.env.SHEAR_REGTEST_BITS}`);
+    console.log(`reorg harness threads=${threads} regtestBits=4`);
 
     const id = newIdentity();
     const box = spendBox(id);
