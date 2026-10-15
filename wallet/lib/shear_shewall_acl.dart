@@ -120,6 +120,11 @@ final class ShewallAclIo {
 }
 
 /// `getApplicationSupportDirectory()/shear`. Only this directory is tightened.
+///
+/// No production caller passes this path yet. `main.dart:825` and
+/// `shear_session.dart:608` write only to a destination the user picks.
+/// Moving the default `shewall.bin` into this folder is future work and needs
+/// a migration.
 String shewallAppDirectory(String applicationSupport) {
   return p.normalize(p.absolute(p.join(applicationSupport, shewallAppFolder)));
 }
