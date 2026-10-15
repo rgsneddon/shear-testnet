@@ -4,7 +4,7 @@ Status: **prepared, not run.** This is decision 1 in `docs/licensing-audit.md`. 
 
 ## What is removed
 
-All 56 `.otf`, `.ttf` and `.woff2` files of Nevia (Sentavio) and Urema Variable (Zafira Type) under `brand/`, `site/`, `site/boot/`, `explorer/`, `mempool/`, `pool/public/` and `team/`. They were added in `f0072e12`, `f67d2902`, `c8ee5713` and `76ea8e59`. The script removes every path ending `.otf`, `.ttf`, `.woff`, `.woff2` or `.eot`; no other such files have ever been committed.
+All 56 `.otf`, `.ttf` and `.woff2` files of Nevia (Sentavio) and Urema Variable (Zafira Type) under `brand/`, `site/`, `site/boot/`, `explorer/`, `mempool/`, `pool/public/` and `team/`. They were added in `f0072e12`, `f67d2902`, `c8ee5713` and `76ea8e59`. The script removes only paths whose names contain Nevia or Urema and end in `.otf`, `.ttf`, `.woff`, `.woff2` or `.eot`. Great Vibes (`fonts/greatvibes/`, SIL OFL WOFF2) stays, and the survivor check ignores that directory.
 
 The wordmark PNGs (`*wordmark-nevia*.png`) are rendered images, not font software, and stay.
 
@@ -25,11 +25,11 @@ The wordmark PNGs (`*wordmark-nevia*.png`) are rendered images, not font softwar
    scripts/licenses/purge_font_history.sh /tmp/font-purge
    ```
 
-   The script makes a mirror clone, records the font paths, runs `git filter-repo --invert-paths` for the font extensions, and fails if any font path survives.
+   The script makes a mirror clone, records the font paths, runs `git filter-repo --invert-paths` for Nevia and Urema only, and fails if any font path outside `fonts/greatvibes/` survives. It does not push.
 3. **After the GO only:** `cd /tmp/font-purge/shear-testnet.git && git push --force --mirror https://github.com/rgsneddon/shear-testnet.git`.
 4. Ask GitHub Support to purge cached views and unreachable objects for the repository, and to drop the old `refs/pull/*` objects (see GitHub's "Removing sensitive data from a repository").
 5. Tell collaborators to re-clone, rebase open PRs, and ask fork owners to delete their forks.
-6. Check that `git log --all --name-only --format= | grep -iE '\.(otf|ttf|woff2?|eot)$'` is empty on a fresh clone.
+6. On a fresh clone, `git log --all --name-only --format= | grep -iE '\.(otf|ttf|woff2?|eot)$' | grep -viE '^fonts/greatvibes/'` is empty. `fonts/greatvibes/` is still there.
 
 ## Deployed sites
 

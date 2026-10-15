@@ -487,7 +487,7 @@
    "texts": [
     "fonts/greatvibes/OFL.txt"
    ],
-   "shipped": "fonts/greatvibes/ (SIL OFL). Pages load /fonts/greatvibes/. deploy/install_fonts.sh copies that directory into each site. .gitignore keeps the source tracked and ignores only the deploy copies. Not in the wallet, node or miner",
+   "shipped": "fonts/greatvibes/ (SIL OFL): great-vibes.css and the six live greatvibes-*.woff2 files. The TTF is not shipped because the stylesheet does not reference it. Pages load /fonts/greatvibes/. deploy/install_fonts.sh copies that directory into each site. .gitignore keeps the source tracked and ignores only the deploy copies. Not in the wallet, node or miner",
    "obligation": "SIL Open Font License 1.1: keep this copyright and licence with the font; the font may not be sold by itself",
    "status": "OK: OFL text kept beside the font; notice in THIRD_PARTY_NOTICES.txt"
   },

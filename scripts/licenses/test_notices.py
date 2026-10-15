@@ -248,29 +248,46 @@ class FontInstallTests(unittest.TestCase):
             if "node_modules" in path.parts or ".git" in path.parts:
                 continue
             text = path.read_text(encoding="utf-8")
-            if re.search(r"url\(\s*[\"']?[^)\"']*(?:nevia|urema|\.woff2)", text):
-                hits.append(str(path.relative_to(root)))
+            rel = str(path.relative_to(root))
+            if re.search(r"url\(\s*[\"']?[^)\"']*(?:nevia|urema)", text, re.I):
+                hits.append(rel)
+            for match in re.finditer(r"url\(\s*[\"']?([^)\"']+\.woff2)", text, re.I):
+                if not re.fullmatch(r"/fonts/greatvibes/greatvibes-[A-Za-z0-9_-]+\.woff2", match.group(1)):
+                    hits.append(rel + " " + match.group(1))
         self.assertEqual(hits, [])
 
     def test_great_vibes_stays_tracked_and_install_copies_it(self):
         root = Path(__file__).resolve().parents[2]
-        font = root / "fonts" / "greatvibes" / "GreatVibes-Regular.ttf"
-        ofl = root / "fonts" / "greatvibes" / "OFL.txt"
-        self.assertTrue(font.is_file())
+        gv = root / "fonts" / "greatvibes"
+        woff2 = [
+            "greatvibes-RWmMoKWR9v4ksMfaWd_JN9XIiaQ6DQ.woff2",
+            "greatvibes-RWmMoKWR9v4ksMfaWd_JN9XBiaQ6DQ.woff2",
+            "greatvibes-RWmMoKWR9v4ksMfaWd_JN9XJiaQ6DQ.woff2",
+            "greatvibes-RWmMoKWR9v4ksMfaWd_JN9XKiaQ6DQ.woff2",
+            "greatvibes-RWmMoKWR9v4ksMfaWd_JN9XLiaQ6DQ.woff2",
+            "greatvibes-RWmMoKWR9v4ksMfaWd_JN9XFiaQ.woff2",
+        ]
+        css = (gv / "great-vibes.css").read_text(encoding="utf-8")
+        self.assertNotIn(".ttf", css)
+        for name in woff2:
+            font = gv / name
+            self.assertTrue(font.is_file(), name)
+            self.assertEqual(font.read_bytes()[:4], b"wOF2")
+            self.assertIn(f"/fonts/greatvibes/{name}", css)
+            ignored = subprocess.run(
+                ["git", "check-ignore", "-q", "--no-index", f"fonts/greatvibes/{name}"],
+                cwd=root, capture_output=True, text=True,
+            )
+            self.assertEqual(ignored.returncode, 1, name)
+            tracked = subprocess.run(
+                ["git", "ls-files", "--error-unmatch", f"fonts/greatvibes/{name}"],
+                cwd=root, capture_output=True, text=True,
+            )
+            self.assertEqual(tracked.returncode, 0, tracked.stderr)
+            self.assertIn(f"fonts/greatvibes/{name}", tracked.stdout)
+        self.assertFalse((gv / "GreatVibes-Regular.ttf").exists())
+        ofl = gv / "OFL.txt"
         self.assertIn("SIL OPEN FONT LICENSE Version 1.1", ofl.read_text(encoding="utf-8"))
-        tracked = subprocess.run(
-            ["git", "ls-files", "--error-unmatch", "fonts/greatvibes/GreatVibes-Regular.ttf"],
-            cwd=root, capture_output=True, text=True,
-        )
-        self.assertEqual(tracked.returncode, 0, tracked.stderr)
-        self.assertIn("fonts/greatvibes/GreatVibes-Regular.ttf", tracked.stdout)
-        # --no-index checks the exception even though the file is already tracked.
-        # git add -n is silent for a clean tracked path, so it cannot prove this.
-        ignored = subprocess.run(
-            ["git", "check-ignore", "-q", "--no-index", "fonts/greatvibes/GreatVibes-Regular.ttf"],
-            cwd=root, capture_output=True, text=True,
-        )
-        self.assertEqual(ignored.returncode, 1, ignored.stdout)
         script = (root / "deploy" / "install_fonts.sh").read_text(encoding="utf-8")
         for name in (
             "nevia/woff2/Nevia-Light.woff2",
@@ -317,15 +334,19 @@ class FontInstallTests(unittest.TestCase):
             run = subprocess.run(["bash", "deploy/install_fonts.sh"], cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertTrue((root / "brand" / "fonts" / "nevia" / "woff2" / "Nevia-Regular.woff2").is_file())
-            self.assertTrue((root / "pool" / "public" / "fonts" / "greatvibes" / "GreatVibes-Regular.ttf").is_file())
+            for name in woff2:
+                self.assertTrue((root / "pool" / "public" / "fonts" / "greatvibes" / name).is_file(), name)
+                self.assertFalse((root / "site" / "fonts" / "greatvibes" / "GreatVibes-Regular.ttf").exists())
             self.assertTrue((root / "site" / "fonts" / "greatvibes" / "OFL.txt").is_file())
+            self.assertIn("/fonts/greatvibes/greatvibes-RWmMoKWR9v4ksMfaWd_JN9XFiaQ.woff2",
+                           (root / "site" / "fonts" / "greatvibes" / "great-vibes.css").read_text(encoding="utf-8"))
             commercial = subprocess.run(
                 ["git", "check-ignore", "-q", "brand/fonts/nevia/woff2/Nevia-Regular.woff2"],
                 cwd=root,
             )
             self.assertEqual(commercial.returncode, 0)
             copied = subprocess.run(
-                ["git", "check-ignore", "-q", "site/fonts/greatvibes/GreatVibes-Regular.ttf"],
+                ["git", "check-ignore", "-q", "site/fonts/greatvibes/greatvibes-RWmMoKWR9v4ksMfaWd_JN9XFiaQ.woff2"],
                 cwd=root,
             )
             self.assertEqual(copied.returncode, 0)
@@ -334,6 +355,20 @@ class FontInstallTests(unittest.TestCase):
                 if path.exists():
                     shutil.rmtree(path)
             shutil.rmtree(src, ignore_errors=True)
+
+    def test_purge_font_history_keeps_great_vibes(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "scripts" / "licenses" / "purge_font_history.sh").read_text(encoding="utf-8")
+        for blanket in ("'*.otf'", "'*.ttf'", "'*.woff'", "'*.woff2'", "'*.eot'"):
+            self.assertNotIn(blanket, script)
+        self.assertIn("*[Nn]evia*.ttf", script)
+        self.assertIn("*[Uu]rema*.woff2", script)
+        self.assertIn("fonts/greatvibes/", script)
+        survivor = script.split("left=", 1)[1].split("if [[", 1)[0]
+        self.assertIn("fonts/greatvibes/", survivor)
+        self.assertNotIn("git push", script.split("echo", 1)[0])
+        checked = subprocess.run(["bash", "-n", "scripts/licenses/purge_font_history.sh"], cwd=root, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
 
 
 if __name__ == "__main__":

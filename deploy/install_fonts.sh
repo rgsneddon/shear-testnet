@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Copy webfonts into the sites.
 #
-# Great Vibes (SIL OFL 1.1) is committed at fonts/greatvibes/ and is copied
-# to each site as /fonts/greatvibes/. .gitignore keeps that source tracked.
+# Great Vibes (SIL OFL 1.1) is committed at fonts/greatvibes/ as the live
+# great-vibes.css and its six greatvibes-*.woff2 files. The TTF is not
+# referenced, so it is not shipped. The directory is copied to each site as
+# /fonts/greatvibes/. .gitignore keeps that source tracked.
 #
 # Nevia and Urema are not in git (see docs/licensing-audit.md, decision 1).
 # They come from Shear's purchased licence package, unpacked outside the
@@ -17,8 +19,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 GV_SRC="$ROOT/fonts/greatvibes"
-[[ -f "$GV_SRC/OFL.txt" && -f "$GV_SRC/GreatVibes-Regular.ttf" && -f "$GV_SRC/great-vibes.css" ]] \
-  || { echo "install_fonts: fonts/greatvibes is incomplete" >&2; exit 1; }
+GV_FILES=(
+  OFL.txt
+  great-vibes.css
+  greatvibes-RWmMoKWR9v4ksMfaWd_JN9XIiaQ6DQ.woff2
+  greatvibes-RWmMoKWR9v4ksMfaWd_JN9XBiaQ6DQ.woff2
+  greatvibes-RWmMoKWR9v4ksMfaWd_JN9XJiaQ6DQ.woff2
+  greatvibes-RWmMoKWR9v4ksMfaWd_JN9XKiaQ6DQ.woff2
+  greatvibes-RWmMoKWR9v4ksMfaWd_JN9XLiaQ6DQ.woff2
+  greatvibes-RWmMoKWR9v4ksMfaWd_JN9XFiaQ.woff2
+)
+for name in "${GV_FILES[@]}"; do
+  [[ -f "$GV_SRC/$name" ]] || { echo "install_fonts: fonts/greatvibes/$name is missing" >&2; exit 1; }
+done
 
 GV_SITES=(site site/boot explorer mempool pool/public team)
 for site in "${GV_SITES[@]}"; do
