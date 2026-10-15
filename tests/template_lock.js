@@ -39,7 +39,7 @@ export function fileSha(absPath) {
 }
 
 export function collectCss(repoRoot) {
-  const roots = ['site', 'pool/public', 'pool/admin', 'explorer', 'mempool', 'dag', 'vortices'];
+  const roots = ['site', 'pool/public', 'explorer', 'mempool', 'dag', 'vortices'];
   const out = [];
   function walk(relDir) {
     const abs = path.join(repoRoot, relDir);
