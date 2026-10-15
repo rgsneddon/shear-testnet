@@ -10,10 +10,10 @@ pragma solidity ^0.8.20;
  * lock and can vote. Coin locked later is idle: it does not vote as a stake,
  * but it earns the same reserve reward. A lock or top-up, staked or idle,
  * earns its epoch's rate times the time still left in that chain epoch, by
- * integer floor, then each later full epoch through the last enacted
- * epoch, exclusive. A withdraw is open in any later block: it pays those
- * completed epochs and does not wait for this block to enact a boundary.
- * An epoch that never enacted is not paid. A portal votes once per epoch;
+ * integer floor, then each later full epoch before the open one. A
+ * completed gap is paid immediately, at that epoch's committed rate or
+ * else the last adopted rate, and does not wait for a later enact. The
+ * still-open epoch is not paid. A portal votes once per epoch;
  * a second cast reverts VoteLocked(). At epoch end the unique plurality of {increase, decrease,
  * hold} enacts ±1 protocol unit on the live hash bonus. It does not set
  * the reserve rate. The freeze is the trimmed mean of the attested 14-bank
@@ -245,8 +245,13 @@ contract Reserve {
         return (nowTs - g) / epochLengthMs();
     }
 
+    /// A commit or a stamped gap wins. Otherwise the newest earlier rate,
+    /// so a later epoch's rate cannot flow backward into a gap.
     function _rateFor(uint256 epochIdx) internal view returns (uint256) {
         if (epochRateKnown[epochIdx]) return epochRateOf[epochIdx];
+        for (uint256 e = epochIdx; e > 0; e--) {
+            if (epochRateKnown[e - 1]) return epochRateOf[e - 1];
+        }
         return epochBps;
     }
 
@@ -256,23 +261,18 @@ contract Reserve {
         return (amount * bps * remain) / (span * 10000);
     }
 
-    /// Exclusive end of settlement. Chain time pays every completed epoch.
-    /// After a roll, an epoch that is still open pays only through the last
-    /// enacted one, so a gap that never enacted is not paid.
+    /// Exclusive end of settlement. Completed epochs, including a gap, are
+    /// due immediately. The open epoch is not included.
     function _payIndex(uint256 nowTs) internal view returns (uint256) {
         uint256 chain = _chainEpoch(nowTs);
         bool ended = epochStart != 0 && nowTs >= epochStart + epochLengthMs();
-        if (!bonusEnacted && enactedAtMs != 0 && !ended) {
-            uint256 cap = enactedAtEpoch + 1;
-            return chain < cap ? chain : cap;
-        }
         if (chain == 0 && !ended) return 0;
         return chain;
     }
 
-    /// The arrival epoch pays the time still left. Later epochs pay in full
-    /// through the settlement index. An open epoch after a roll stops at
-    /// the last enacted epoch.
+    /// The arrival epoch pays the time still left. Later full epochs pay
+    /// through the open index, so a finished gap is included and the open
+    /// epoch is not.
     function _settle(Portal storage p, uint256 nowTs) internal {
         uint256 nowIdx = _payIndex(nowTs);
         uint256 span = epochLengthMs();
@@ -379,6 +379,15 @@ contract Reserve {
         }
         if (idx == currentEpoch) return;
         if (!bonusEnacted) return;
+        // Stamp a skipped epoch before the destination adopts its own rate.
+        // Its commit wins. With none, it keeps the rate already adopted.
+        uint256 carried = epochBps;
+        for (uint256 e = currentEpoch + 1; e < idx; e++) {
+            if (!epochRateKnown[e]) {
+                epochRateOf[e] = carried;
+                epochRateKnown[e] = true;
+            }
+        }
         votesIncrease = 0;
         votesDecrease = 0;
         votesHold = 0;

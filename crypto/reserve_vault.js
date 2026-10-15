@@ -733,7 +733,17 @@ function syncVaultEpoch(state, nowMs) {
   if (!state.bonusEnacted) return;
   // The open epoch's rate is the live epochBps until it rolls. Keep that
   // integer for the epoch that just ended, then install the next one.
+  // A skipped epoch keeps its commit, or else this adopted rate. The
+  // destination's rate is applied after, so it cannot leak backward.
   rememberOpenRate(state, state.currentEpoch);
+  const carried = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+  const from = Math.floor(Number(state.currentEpoch) || 0) + 1;
+  if (!state.pendingRates) state.pendingRates = Object.create(null);
+  for (let e = from; e < idx; e += 1) {
+    if (state.pendingRates[e] == null || state.pendingRates[e] === '') {
+      state.pendingRates[e] = carried;
+    }
+  }
   state.votes = { increase: 0, decrease: 0, hold: 0 };
   applyEpochOpen(state, nowMs, idx);
 }
@@ -933,18 +943,28 @@ function chainEpochIndex(state, nowMs) {
   return derivedCommitIndex(nowMs, state?.genesisMs, state?.magic);
 }
 
-/**
- * Rate of one chain epoch. A 3b freeze is the rate adopted when that epoch
- * opened. A queued commit covers an epoch the vault has not opened yet.
- * Fixed mode follows the running epochBps, which is the single bundled rate.
- */
-function rateForEpoch(state, epochIndex) {
+/** A freeze or a queued commit for this epoch. Null when it has neither. */
+function recordedRate(state, epochIndex) {
   const freeze = state?.freezes?.[epochIndex];
   if (freeze && (freeze.source === 'median3b' || freeze.source === 'running') && freeze.epochBps != null) {
     return Math.max(0, Math.floor(Number(freeze.epochBps)));
   }
   const queued = state?.pendingRates?.[epochIndex];
   if (queued != null && queued !== '') return Math.max(0, Math.floor(Number(queued)));
+  return null;
+}
+
+/**
+ * Rate of one chain epoch. A commit or an adopted freeze wins. A gap with
+ * neither keeps the newest earlier rate, not the live rate of a later epoch.
+ */
+function rateForEpoch(state, epochIndex) {
+  const own = recordedRate(state, epochIndex);
+  if (own != null) return own;
+  for (let e = epochIndex - 1; e >= 0; e -= 1) {
+    const prior = recordedRate(state, e);
+    if (prior != null) return prior;
+  }
   return Math.max(0, Math.floor(Number(state?.epochBps ?? GENESIS_BPS)));
 }
 
@@ -966,10 +986,8 @@ function trancheDue(state, tranche, nowIdx, span) {
 }
 
 /**
- * Exclusive settlement index. Chain time pays every completed epoch, which
- * is the pro-rata rule. Once a block has rolled into an epoch that is still
- * open, pay only through the last enacted epoch: the open one is not due,
- * and a gap that never enacted is not due either.
+ * Exclusive settlement index. Completed epochs, including a gap, are due
+ * as soon as chain time has passed them. The open epoch is not included.
  */
 function settlementIndex(state, nowMs) {
   const now = Number(nowMs) || 0;
@@ -977,11 +995,6 @@ function settlementIndex(state, nowMs) {
   const span = epochMs(state?.magic);
   const start = Number(state?.epochStartMs) || 0;
   const ended = start > 0 && now >= start + span;
-  if (!state?.bonusEnacted && Number(state?.enactedAtMs) > 0 && !ended) {
-    const cap = Math.floor(Number(state.enactedAtEpoch) || 0) + 1;
-    if (cap <= 0) return 0;
-    return chain < cap ? chain : cap;
-  }
   if (chain <= 0 && !ended) return 0;
   return chain;
 }
@@ -989,8 +1002,7 @@ function settlementIndex(state, nowMs) {
 /**
  * Move completed chain epochs onto the portal. The epoch a credit arrives
  * in pays floor(amount * rate * time remaining / epoch length / 10000).
- * Later epochs pay the full rate through the settlement index. An open
- * epoch after a roll stops at the last enacted epoch.
+ * Later epochs pay the full rate up to, and not including, the open index.
  */
 function settlePortal(state, p, nowMs) {
   if (!p) return 0n;
