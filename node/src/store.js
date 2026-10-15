@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW } from '../../crypto/asert.js';
+import { regtestBitsOverride } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
@@ -288,6 +289,7 @@ export function createStore(dir, {
   loadNowMs = null,
   yieldForeign = false,
   onLoadProgress = null,
+  magic: magicIn = null,
 } = {}, resume = null) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
@@ -310,6 +312,9 @@ export function createStore(dir, {
   let policyState = emptyPolicyState();
   const pause = { reserveInterest: false, poolWithdraw: false };
   const haltDepth = Math.max(0, Math.floor(Number(reorgHaltDepth) || 0));
+  // Easy bits only when the test runner opted into the regtest book.
+  // A testnet or mainnet store keeps MAGIC_TESTNET and the genesis seed.
+  const networkMagic = regtestBitsOverride(magicIn) != null ? String(magicIn) : MAGIC_TESTNET;
   const archiveFast = !!fastSync;
   const sealFirst = Math.max(1, Math.floor(Number(firstCheckpoint) || CHECKPOINT_FIRST_HEIGHT));
   const sealEvery = Math.max(1, Math.floor(Number(checkpointEvery) || CHECKPOINT_EVERY_BLOCKS));
@@ -498,6 +503,7 @@ export function createStore(dir, {
           loadNowMs,
           yieldForeign: false,
           onLoadProgress,
+          magic: networkMagic,
         }, {
           token: loadResumeToken,
           verified: true,
@@ -2532,7 +2538,7 @@ export function createStore(dir, {
           return Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
         } catch { return 0; }
       })(),
-      magic: MAGIC_TESTNET,
+      magic: networkMagic,
       trustedPowHash: probe ? null : (extra.trustedPowHash || null),
       skipSharePow: probe ? true : !!extra.skipSharePow,
       offLoopPow: probe ? false : !!extra.offLoopPow,
@@ -3555,6 +3561,7 @@ export function createStore(dir, {
       sealedIntervalsMs: headerGapsMs(accepted),
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       genesisMs: genesisHeaderMs(accepted) || Number(verifyOpts.genesisMs) || 0,
+      magic: networkMagic,
     });
     const stamp = (c) => {
       if (!c?.ok) {
@@ -3891,7 +3898,7 @@ export function createStore(dir, {
       genesisMs: genesisHeaderMs(history) || Number(verifyOpts.genesisMs) || 0,
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       consumePrepared: false,
-      magic: MAGIC_TESTNET,
+      magic: networkMagic,
       probeBody: verifyOpts.probeBody === true,
     };
     const finish = (assessed) => {
@@ -4324,6 +4331,7 @@ export function createStore(dir, {
         sealedIntervalsMs: headerGapsMs(rows.concat(out)),
         nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
         genesisMs: genesisHeaderMs(rows) || Number(verifyOpts.genesisMs) || 0,
+        magic: networkMagic,
         reserveState: trialVault,
       });
       const take = (c) => {
@@ -5028,7 +5036,7 @@ export function createStore(dir, {
     }
     // Sealed parent interval only. Caller bits (share target, boot override,
     // a private easier job) must not undercut the header miners are offered.
-    const bits = retarget(blocks, now);
+    const bits = retarget(blocks, now, networkMagic);
     void bitsIn;
     const lag1 = lag1Continuity(t ? t.header : null);
     let baseFeeNow = 1;

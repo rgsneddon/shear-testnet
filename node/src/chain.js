@@ -38,6 +38,7 @@ import {
   medianTimePast,
 } from '../../crypto/asert.js';
 import { isHistoricalHeader } from '../../crypto/historical_prefix.js';
+import { regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import {
   verifyShareBatch,
   paidWorkKeys,
@@ -2012,8 +2013,12 @@ export function assessHeader(block, prev, opts = {}) {
       return finish({ ok: false, reason: 'genesis_ms' });
     }
     const heightNow = structuralH;
+    // After genesis, testnet and mainnet anchor on the genesis seed. Those
+    // books seal that seed in the genesis header, so this is the same bits.
+    // The regtest override is that seed for the test runner only.
+    const regtestBits = regtestBitsOverride(magic);
     const quote = asertNextBits({
-      anchorBits: parentIsGenesis ? parent.bits : GENESIS_BITS_PACKED,
+      anchorBits: parentIsGenesis ? parent.bits : (regtestBits != null ? regtestBits : GENESIS_BITS_PACKED),
       anchorTimeMs: resolvedGenesisMs,
       anchorHeight: parentIsGenesis ? Number(prev.height || 1) : 1,
       blockTimeMs: ts,
@@ -2045,7 +2050,10 @@ export function assessHeader(block, prev, opts = {}) {
       return finish({ ok: false, reason: 'timestamp' });
     }
   } else {
-    if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
+    // Testnet and mainnet stay on the genesis seed. regtestBitsOverride is
+    // null for those books, and null outside the node test runner.
+    const wantBits = regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
+    if (decoded.bits !== wantBits || !isPackedBits(decoded.bits)) {
       return finish({ ok: false, reason: 'bits' });
     }
     if (Number(decoded.baseFee) < 1) return finish({ ok: false, reason: 'base_fee' });
@@ -3465,9 +3473,9 @@ export function retargetQuote(chain, candidateTimestamp) {
  *  The emergency ease window is not this return value. A fresh template
  *  issues the full target. `retargetQuote` carries the ease window.
  */
-export function retarget(chain, candidateTimestamp) {
+export function retarget(chain, candidateTimestamp, magic = undefined) {
   const quote = retargetQuote(chain, candidateTimestamp);
-  if (!quote.ok) return GENESIS_BITS_PACKED;
+  if (!quote.ok) return regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
   return quote.packed;
 }
 
