@@ -2,6 +2,7 @@ import http from 'node:http';
 import { mempoolPressure } from '../../crypto/levy.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
 import { MAGIC_TESTNET, HASH_TX_LIVE, consensusFingerprint } from '../../crypto/asert.js';
+import { fs1AnchorRows } from '../../crypto/admit_v3.js';
 import { isDestAddress, encodeDest } from '../../crypto/address.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { networkReport } from './network_report.js';
@@ -254,9 +255,13 @@ export function createRpc({
       const live = typeof store.fluxset === 'function' ? store.fluxset() : { pubs: [], spendTags: new Set(), jroot: null, commits: [] };
       const pubs = (live.pubs || []).map((p) => Buffer.from(typeof p.toBytes === 'function' ? p.toBytes() : p).toString('hex'));
       const commits = (live.commits || []).map((c) => Buffer.from(c).toString('hex'));
+      const tipHeight = Number((typeof store.tip === 'function' ? store.tip()?.height : 0) || 0);
+      const anchors = typeof store.anchorNote === 'function' ? fs1AnchorRows(tipHeight, store.anchorNote) : [];
       return {
         ok: true,
         jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
+        height: tipHeight,
+        anchors,
         pubs,
         commits,
         fluxset: pubs,

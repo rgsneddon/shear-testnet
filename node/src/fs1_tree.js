@@ -1,7 +1,8 @@
 // FS-1 tree follower. Mirrors shear-fs1 src/chain_tree.rs.
 // The leaf map lives in crypto/fs1_leaf.js, the same predicate as src/leaf.rs,
-// and consensus (N-1) calls that predicate. This module is still not on the
-// accept path: no mempool or store import follows the Selene root.
+// and consensus (N-1) calls that predicate. The accept path takes the root
+// from the in-process native tree in crypto/fs1_spend.js (fs1RootAt). This
+// follower and its fs1_tree tool are the out-of-process cross-check.
 //
 // T-1. The leaf set is every output that joins the admit set (outputJoinsAdmitSet),
 //      in block, transaction and output order. A missing or short field reads as
@@ -33,7 +34,7 @@ import {
   ristrettoToEd,
 } from '../../crypto/fs1_leaf.js';
 
-export const FS1_TREE_WIRED = false;
+export const FS1_TREE_WIRED = true;
 export { FS1_HP_DST, FS1_LEAF_BYTES, bytesOf, fs1Leaf, fs1OutputNote, ristrettoToEd };
 
 const here = path.dirname(fileURLToPath(import.meta.url));
