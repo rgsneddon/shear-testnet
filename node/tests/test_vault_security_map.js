@@ -25,6 +25,7 @@ import {
   cloneVault,
   deposit,
   withdraw,
+  portalEpochInterest,
   lockTx,
   withdrawTx,
   verifyReservePayout,
@@ -88,6 +89,7 @@ function owner() {
 function openPortal(principal, when = T0, { payout = null } = {}) {
   const who = owner();
   const state = emptyVault();
+  state.genesisMs = T0;
   const got = deposit({
     state,
     dest: who.dest,
@@ -176,6 +178,7 @@ describe('Vault Security test map', () => {
       for (const bps of [0, 1, 284, 10000]) {
         const who = owner();
         const state = emptyVault();
+        state.genesisMs = T0;
         assert.equal(deposit({
           state, dest: who.dest, nanos: PI_SHE_NANOS, nowMs: T0, ownerPub: who.pub, payout: who.dest,
         }).ok, true);
@@ -193,7 +196,7 @@ describe('Vault Security test map', () => {
         const portal = state.portals[portalIdFromDest(who.dest)];
         const active = Number(portal.staked);
         const idle = Number(portal.idle);
-        const reward = interestNanos(active, bps);
+        const reward = portalEpochInterest(state, portal, END);
         const done = withdraw({ state: cloneVault(state), dest: who.dest, nowMs: END, payout: who.dest });
         assert.equal(done.ok, true, `${split} ${bps} ${done.reason}`);
         assert.equal(done.payout, active + idle + reward);
@@ -312,6 +315,7 @@ describe('Vault Security test map', () => {
     assert.equal(supplyIdentity(dirty).reason, 'supply');
     for (const n of [1, 3, 17]) {
       const state = emptyVault();
+      state.genesisMs = T0;
       const people = [];
       for (let i = 0; i < n; i += 1) {
         const who = owner();
@@ -320,7 +324,12 @@ describe('Vault Security test map', () => {
           state, dest: who.dest, nanos: PI_SHE_NANOS, nowMs: T0 + i, ownerPub: who.pub,
         }).ok, true);
       }
-      const reward = interestNanos(PI_SHE_NANOS, state.epochBps);
+      const dues = people.map((who) => portalEpochInterest(
+        state,
+        state.portals[portalIdFromDest(who.dest)],
+        END,
+      ));
+      const reward = dues[0];
       for (const bank of [0, Math.max(0, reward - 1), reward, reward + 1, reward * 10]) {
         const trial = cloneVault(state);
         trial.feeBankNanos = BigInt(bank);
@@ -331,17 +340,19 @@ describe('Vault Security test map', () => {
           nowMs: T0 + 10,
         });
         assert.equal(Number(trial.feeBankNanos), 0);
-        for (const who of people) {
-          const paid = withdraw({ state: trial, dest: who.dest, nowMs: END });
+        let mintedSum = 0;
+        for (let i = 0; i < people.length; i += 1) {
+          const paid = withdraw({ state: trial, dest: people[i].dest, nowMs: END });
           assert.equal(paid.ok, true, `${n} ${bank} ${paid.reason}`);
-          assert.equal(paid.reward, reward);
-          assert.equal(paid.rewardSource, 'coinbase');
+          assert.equal(paid.reward, dues[i]);
+          if (paid.reward > 0) assert.equal(paid.rewardSource, 'coinbase');
+          mintedSum += paid.reward;
         }
         assert.equal(Number(trial.feeBankNanos), 0);
         const idn = supplyIdentity(trial);
         assert.equal(idn.ok, true, idn.reason);
         assert.equal(idn.feeBankRewardNanos, 0);
-        assert.equal(idn.mintedReward, reward * n);
+        assert.equal(idn.mintedReward, mintedSum);
         const minted = payoutStakeReward({ state: emptyVault(), reward, id: `fee-${n}-${bank}` });
         assert.equal(minted.fromFee, 0);
         assert.equal(minted.minted, reward);
@@ -363,6 +374,7 @@ describe('Vault Security test map', () => {
     })();
     for (const epochs of [1, 5, 40]) {
       const state = emptyVault();
+      state.genesisMs = T0;
       let expected = 0;
       let cursor = T0;
       for (let e = 0; e < epochs; e += 1) {
@@ -380,17 +392,16 @@ describe('Vault Security test map', () => {
         if (e === epochs - 1 && epochs > 1) {
           const snap = cloneVault(state);
           for (const who of locked) {
-            const due = interestNanos(Number(state.portals[portalIdFromDest(who.dest)].staked), state.epochBps);
             const paid = withdraw({ state, dest: who.dest, nowMs: end });
             assert.equal(paid.ok, true, paid.reason);
-            expected += due;
+            expected += paid.interest;
           }
           const reorg = cloneVault(snap);
           let reorgMint = Number(snap.mintBankNanos);
           for (const who of locked) {
-            const due = interestNanos(Number(reorg.portals[portalIdFromDest(who.dest)].staked), reorg.epochBps);
-            assert.equal(withdraw({ state: reorg, dest: who.dest, nowMs: end }).ok, true);
-            reorgMint += due;
+            const paid = withdraw({ state: reorg, dest: who.dest, nowMs: end });
+            assert.equal(paid.ok, true, paid.reason);
+            reorgMint += paid.interest;
           }
           assert.equal(Number(reorg.mintBankNanos), reorgMint);
           assert.equal(supplyIdentity(reorg).ok, true);
@@ -398,10 +409,9 @@ describe('Vault Security test map', () => {
           expected = reorgMint;
         } else {
           for (const who of locked) {
-            const due = interestNanos(Number(state.portals[portalIdFromDest(who.dest)].staked), state.epochBps);
             const paid = withdraw({ state, dest: who.dest, nowMs: end + Math.floor(rand() * 1000) });
             assert.equal(paid.ok, true, paid.reason);
-            expected += due;
+            expected += paid.interest;
           }
           if (e + 1 < epochs) {
             const nxt = owner();
@@ -520,6 +530,7 @@ describe('Vault Security test map', () => {
       const { tpl } = store.template({ miner: who.dest, now: T0 });
       assert.equal(tpl.txs[0].observe, undefined);
       assert.equal(tpl.txs[0].rateCommit, undefined);
+      store.reserveVault.genesisMs = T0;
       deposit({ state: store.reserveVault, dest: who.dest, nanos: PI_SHE_NANOS, nowMs: T0 });
       const paid = withdraw({ state: store.reserveVault, dest: who.dest, nowMs: END });
       assert.equal(paid.ok, true, paid.reason);

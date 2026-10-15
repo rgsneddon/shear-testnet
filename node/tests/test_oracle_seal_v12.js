@@ -38,6 +38,7 @@ function destOf(id) {
 }
 
 function openEpoch(state, dest, nowMs) {
+  if (!(Number(state.genesisMs) > 0)) state.genesisMs = T0;
   const got = deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs });
   assert.equal(got.ok, true, got.reason);
   return got;

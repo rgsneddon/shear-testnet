@@ -88,7 +88,7 @@ function vaultApply(state, block, prior) {
       block,
       magic: MAGIC_TESTNET,
       parentMs: parent ? headerMs(parent) || 0 : 0,
-      genesisMs: prior?.length ? headerMs(prior[0]) || 0 : 0,
+      genesisMs: headerMs(prior?.[0] || block) || 0,
       nowMs: headerMs(block) || 0,
     }),
   });

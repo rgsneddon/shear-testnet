@@ -75,7 +75,7 @@ import {
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
-import { checkAdmitAnchor, membershipShapeOnly, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
+import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
 import { txNoteRuleRejected } from '../../crypto/n1.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
@@ -2956,9 +2956,8 @@ export function createStore(dir, {
     } catch { base = 1; }
     // Same byte rule as verify and the mempool. A lock commit vin already
     // returned admit_membership above. A refused kind already returned kind.
-    // A membership shape has no version byte. Parse its spend tag before the
-    // version gate rejects it, so an arrival is counted once and still refused.
-    if (membershipShapeOnly(tx)) txSpendTags(tx);
+    // A membership shape has no version byte. The version gate refuses it
+    // before any tag parse, so an arrival is not counted as a parse.
     const flowVersion = v12FlowVersionRejected(tx);
     if (flowVersion) return flowVersion;
     const anchored = checkAdmitAnchor(tx, Number(t?.height || 0) + 1);

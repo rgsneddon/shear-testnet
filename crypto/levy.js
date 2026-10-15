@@ -145,11 +145,11 @@ export function quoteLevy(amountNanos, pressure = {}) {
   };
 }
 
-/** Finder receives the whole levy. The reserve share stays zero. */
+/** Finder receives FEE_SPLIT_FINDER_BPS of the levy. Reserve is the remainder. */
 export function splitLevy(levy) {
   const n = Math.max(0, Math.floor(Number(levy) || 0));
   const finder = Math.floor(n * FEE_SPLIT_FINDER_BPS / 10000);
-  return { finder, reserve: 0 };
+  return { finder, reserve: n - finder };
 }
 
 /** Fee ASERT: heavier parent weight raises next header base_fee. Not the Phase B L. */

@@ -219,7 +219,7 @@ describe('per-withdraw interest spread', () => {
     assert.equal(minted.reason, 'supply');
   });
 
-  it('pays zero interest on dust, on the rounding boundary, and on idle', () => {
+  it('pays zero interest on dust and the rounding boundary, and pro-rates an idle lock', () => {
     // Smallest stake whose floor(stake * bps / 10000) is 1, and the unit below it.
     const boundary = Math.ceil(10000 / GENESIS_BPS);
     const dust = boundary - 1;
@@ -246,14 +246,21 @@ describe('per-withdraw interest spread', () => {
 
     const late = GENESIS + EPOCH_MS - joinCutoffMs(MAGIC_TESTNET) + 1000;
     assert.ok(late < GENESIS + EPOCH_MS);
+    const idleRemain = (GENESIS + EPOCH_MS) - late;
+    const idleStake = 1000;
+    const idleInterest = Number(
+      (BigInt(idleStake) * BigInt(GENESIS_BPS) * BigInt(idleRemain))
+      / (BigInt(EPOCH_MS) * 10000n),
+    );
+    assert.ok(idleInterest > 0);
     const idleMiner = minerDest();
     const parked = portalDest();
     const idleChain = [
       potBlock(GENESIS, idleMiner, [lockOf(idleMiner, portalDest(), PI_SHE_NANOS, 'idle-open')]),
-      potBlock(late, idleMiner, [lockOf(idleMiner, parked, 1000, 'idle-lock')]),
-      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, 1000, 'idle-draw')]),
+      potBlock(late, idleMiner, [lockOf(idleMiner, parked, idleStake, 'idle-lock')]),
+      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, idleStake + idleInterest, 'idle-draw')]),
     ];
-    expectVerified(idleChain, 0, 'idle');
+    expectVerified(idleChain, idleInterest, 'idle');
   });
 
   it('keeps the genesis bps across epochs; an observe is not a rate', () => {
@@ -275,8 +282,8 @@ describe('per-withdraw interest spread', () => {
       potBlock(DRAW, miner, [
         drawOf(first, miner, stake + atGenesis, 'bps-wa'),
       ]),
-      potBlock(DRAW + 1, miner, [lockOf(miner, second, stake, 'bps-b')]),
-      potBlock(DRAW + 1 + EPOCH_MS, miner, [
+      potBlock(GENESIS + 2 * EPOCH_MS, miner, [lockOf(miner, second, stake, 'bps-b')]),
+      potBlock(GENESIS + 3 * EPOCH_MS, miner, [
         drawOf(second, miner, stake + atGenesis, 'bps-wb'),
       ]),
     ];
@@ -322,8 +329,9 @@ describe('per-withdraw interest spread', () => {
     const added = 38;
     const withLock = interestNanos(PI_SHE_NANOS + added, GENESIS_BPS);
     assert.equal(withLock, interest + 1);
-    // The lock settles before the new stake is added, so the old amount
-    // (interest on principal + added) is not the epoch's reward.
+    // The lock settles before the new stake is added. The addition earns
+    // only the time left after it arrives, so interest on principal + added
+    // for the epoch already completed is rejected.
     const before = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock')]),
       potBlock(DRAW, again, [

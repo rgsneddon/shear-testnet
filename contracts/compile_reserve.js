@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { RESERVE_BOOKS, RESERVE_PROGRAM_ID } from '../crypto/reserve_books.js';
+import { GENESIS_BPS } from '../crypto/reserve_oracle.js';
 
 const require = createRequire(import.meta.url);
 const solc = require('solc');
@@ -52,7 +53,12 @@ export function applyReserveBooks(source, books = RESERVE_BOOKS) {
   if (!source.includes(regions.constants) || !source.includes(regions.allow)) {
     throw new Error('Reserve.sol magic regions missing');
   }
-  return source.replace(regions.constants, constants).replace(regions.allow, allow);
+  const withBooks = source.replace(regions.constants, constants).replace(regions.allow, allow);
+  const genesis = `uint256 public constant GENESIS_BPS = ${GENESIS_BPS};`;
+  if (!withBooks.includes('uint256 public constant GENESIS_BPS = ')) {
+    throw new Error('Reserve.sol GENESIS_BPS constant missing');
+  }
+  return withBooks.replace(/uint256 public constant GENESIS_BPS = \d+;/, genesis);
 }
 
 export function compileReserveSource(source) {

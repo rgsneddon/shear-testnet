@@ -9,8 +9,11 @@ import { epochMs, epochDays, vortexEpochIndex } from './pot_sched.js';
  */
 export const RESERVE_ORACLE_ID = 'shear-reserve-oracle-v1';
 /**
- * Trimmed mean of the bundled policy rates (drop 2 high and 2 low, half-up
- * the middle 10). 2840 tenths → 284 bps. Not a single-bank print.
+ * Placeholder fixed rate until the cut. Refresh this one constant from
+ * current central-bank policy before the cut. Fixed mode, the EVM
+ * constant, and every default read GENESIS_BPS. It is not copied elsewhere.
+ * Today's placeholder is the trimmed mean of the bundled policy rates
+ * (drop 2 high and 2 low, half-up the middle 10): 2840 tenths → 284 bps.
  * Attester keys are not consensus until Russell decides.
  */
 export const GENESIS_BPS = 284;
@@ -322,16 +325,25 @@ export function canonicalReports(reports) {
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-/** Lower median. A value is used only when at least 2/3 of the window reports that exact tenth. */
+/**
+ * Lower median of the values blocks actually reported for one bank.
+ * Fewer than half the window reporting keeps no median (the caller holds
+ * the last rate). Non-reporting above 1/3 of the window cannot freeze.
+ * The winning tenth needs a 2/3 supermajority of the reporting values,
+ * not of the silent blocks.
+ */
 export function medianBankTenths(values, windowSize) {
   const W = Math.floor(Number(windowSize) || 0);
   const list = Array.isArray(values) ? values : [];
-  if (W <= 0 || list.length * ORACLE_SUPERMAJORITY_DEN < W * ORACLE_SUPERMAJORITY_NUM) return null;
+  const reported = list.length;
+  if (W <= 0 || reported <= 0) return null;
+  if (reported * 2 < W) return null;
+  if ((W - reported) * 3 > W) return null;
   const sorted = list.slice().sort((a, b) => a - b);
   const mid = sorted[Math.floor((sorted.length - 1) / 2)];
   let count = 0;
   for (const v of list) if (v === mid) count += 1;
-  if (count * ORACLE_SUPERMAJORITY_DEN < W * ORACLE_SUPERMAJORITY_NUM) return null;
+  if (count * ORACLE_SUPERMAJORITY_DEN < reported * ORACLE_SUPERMAJORITY_NUM) return null;
   return mid;
 }
 
@@ -343,9 +355,11 @@ export function epochBpsFromReports(prevEpochBps, blocks, { windowSize = null } 
   const prev = issuanceBps(prevEpochBps);
   const rows = Array.isArray(blocks) ? blocks : [];
   const W = windowSize == null ? rows.length : Math.floor(Number(windowSize) || 0);
+  let reportingBlocks = 0;
   const byBank = new Map(POLICY_BANK_IDS.map((id) => [id, []]));
   for (const block of rows) {
     const reports = Array.isArray(block?.reports) ? block.reports : [];
+    if (reports.length > 0) reportingBlocks += 1;
     const seen = new Set();
     for (const row of reports) {
       const id = String(row?.id || '').trim();
@@ -356,6 +370,7 @@ export function epochBpsFromReports(prevEpochBps, blocks, { windowSize = null } 
       byBank.get(id).push(tenths);
     }
   }
+  if (W > 0 && reportingBlocks * 2 < W) return prev;
   const medians = [];
   for (const id of POLICY_BANK_IDS) {
     const value = medianBankTenths(byBank.get(id), W);

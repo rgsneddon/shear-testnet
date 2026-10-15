@@ -132,8 +132,7 @@ describe('v12 mempool tag parse stays linear', () => {
       resetTxSpendTagParses();
       const arrival = store.queueTx(makeTx(0, k + 1));
       const arrivalParses = txSpendTagParses();
-      assert.ok(arrivalParses <= PARSE_PER_TX, `arrival parses=${arrivalParses} k=${k}`);
-      assert.ok(arrivalParses >= 1, `arrival parses=${arrivalParses}`);
+      assert.equal(arrivalParses, 0, `arrival parses=${arrivalParses}`);
       assert.equal(arrival.ok, false);
       console.error(JSON.stringify({
         event: 'n30_parses',

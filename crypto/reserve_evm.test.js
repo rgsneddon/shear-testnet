@@ -15,6 +15,7 @@ import {
   reservePinOk,
   callReserve,
   encodeDeposit,
+  encodePinClock,
   encodeVote,
   encodeEnact,
   encodeWithdraw,
@@ -162,10 +163,11 @@ describe('Reserve bytecode on the Shear EVM', () => {
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
+    assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const d = await callReserve(s, encodeDeposit(destA, PI_SHE_NANOS, t0));
     assert.equal(d.ok, true, d.reason);
     const view0 = decodePublicView((await callReserve(s, encodePublicView(t0), { staticCall: true })).returnValue);
-    assert.equal(view0.currentEpoch, 1);
+    assert.equal(view0.currentEpoch, 0);
     assert.equal(view0.liveHashBonusNanos, 1);
     const v = await callReserve(s, encodeVote(destA, 1, t0 + 2));
     assert.equal(v.ok, true, v.reason);
@@ -193,7 +195,13 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(w.ok, true, w.reason);
     const paid = decodeWithdraw(w.returnValue);
     assert.equal(paid.principal, PI_SHE_NANOS);
-    assert.equal(paid.interest, 0);
+    const remain = end - late;
+    const partial = Number(
+      (BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS) * BigInt(remain))
+      / (BigInt(RESERVE_EPOCH_MS) * 10000n),
+    );
+    assert.ok(partial > 0);
+    assert.equal(paid.interest, partial);
     const after = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(after.votesIncrease, 2);
     assert.equal(after.votesDecrease, 0);
@@ -203,6 +211,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
   it('constructor freezes the trimmed bundle; second vote is VoteLocked; mid-epoch observe does not mint', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
+    assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const view0 = decodePublicView((await callReserve(s, encodePublicView(t0), { staticCall: true })).returnValue);
     assert.equal(view0.oracleBps, 284);
     const d = await callReserve(s, encodeDeposit(destA, NANOS_PER_SHE, t0));
@@ -227,6 +236,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
   it('withdraw after a new epoch opens does not decrement the new piles', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
+    assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(s, encodeDeposit(destA, PI_SHE_NANOS, t0))).ok, true);
     assert.equal((await callReserve(s, encodeVote(destA, 1, t0 + 2))).ok, true);
     const end1 = t0 + RESERVE_EPOCH_MS;

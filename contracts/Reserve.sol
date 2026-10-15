@@ -4,10 +4,13 @@ pragma solidity ^0.8.20;
 /**
  * The Reserve — Shear's first Vortex program. Nodes execute this bytecode.
  *
- * Lock is legal any time an epoch is open. Coin locked in the first 301
- * days is an active lock (reserve reward, vote). Coin locked in the last 99
- * days is idle (no reserve reward) but still unlocks a vote if the portal
- * holds ≥ π, even on a first-ever lock. A portal votes once per epoch; a
+ * Lock is legal any time an epoch is open. Vault epochs are chain vortex
+ * epochs. Coin locked while at least 99/400 of the chain epoch remains is
+ * an active lock (reserve reward, vote). Coin locked later is idle (no
+ * reserve reward) but still unlocks a vote if the portal holds ≥ π, even
+ * on a first-ever lock. A lock or top-up earns its epoch's rate times the
+ * time still left in that chain epoch, by integer floor, then each later
+ * full epoch through the withdraw index, exclusive. A portal votes once per epoch; a
  * second cast reverts VoteLocked(). At epoch end the unique plurality of
  * {increase, decrease, hold} enacts ±1 protocol unit on the live hash bonus.
  * It does not set the reserve rate. The freeze is the trimmed mean of the
@@ -65,6 +68,7 @@ contract Reserve {
     uint256 public constant EPOCH_MS = 400 * 86_400_000;
     uint256 public constant CUTOFF_MS = 99 * 86_400_000;
     uint256 public constant GENESIS_BONUS = 1;
+    // Placeholder. The single source is crypto/reserve_oracle.js GENESIS_BPS.
     uint256 public constant GENESIS_BPS = 284;
     uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
     uint256 public constant REWARD_DENOM_DAYS = 400;
@@ -76,6 +80,14 @@ contract Reserve {
         LeaveBonusAsIs
     }
 
+    struct Tranche {
+        uint256 amount;
+        uint256 epoch;
+        uint256 remainMs;
+        uint256 fullFrom;
+        bool partialPaid;
+    }
+
     struct Portal {
         uint256 active;
         uint256 idle;
@@ -85,6 +97,7 @@ contract Reserve {
         bool rewardTracked;
         uint256 rewardEpoch;
         uint256 accruedReward;
+        Tranche[] tranches;
     }
 
     bytes32 public immutable magic;
@@ -159,6 +172,13 @@ contract Reserve {
     }
 
     function canJoin(uint256 nowTs) public view returns (bool) {
+        if (clockGenesis != 0) {
+            uint256 span = epochLengthMs();
+            uint256 idx = _chainEpoch(nowTs);
+            uint256 end = clockGenesis + (idx + 1) * span;
+            uint256 left = nowTs >= end ? 0 : end - nowTs;
+            return left >= cutoffLengthMs();
+        }
         if (epochStart == 0 || bonusEnacted) return true;
         return remainingMs(nowTs) >= cutoffLengthMs();
     }
@@ -198,7 +218,7 @@ contract Reserve {
 
     /// Chain epoch index, the same integer as JS vortexEpochIndex: 0 at genesis.
     /// epochIdx must equal that derived index. A repeated index reverts.
-    /// Epoch 0 is not rewritten to 1, and the vault's currentEpoch counter is not this index.
+    /// Epoch 0 is not rewritten to 1. currentEpoch is this same index.
     function commitRate(uint256 epochIdx, uint256 bps, uint256 nowTs, uint256 chainGenesis) external onlyShear {
         if (bps > 100_000 / 10) revert BadRate();
         _pinClock(chainGenesis);
@@ -212,11 +232,10 @@ contract Reserve {
         rateCommitEpoch = epochIdx;
     }
 
-    /// Chain-genesis vortex index once pinned. genesisTs is only the fallback
-    /// for a vault that has never been told the chain genesis. A first lock
-    /// does not replace a pinned clock.
+    /// Chain-genesis vortex index. Unpinned, the index is 0. A first lock
+    /// does not install a clock, and genesisTs is not a fallback.
     function _chainEpoch(uint256 nowTs) internal view returns (uint256) {
-        uint256 g = clockGenesis != 0 ? clockGenesis : genesisTs;
+        uint256 g = clockGenesis;
         if (g == 0 || nowTs <= g) return 0;
         return (nowTs - g) / epochLengthMs();
     }
@@ -226,15 +245,31 @@ contract Reserve {
         return epochBps;
     }
 
+    /// floor(amount * bps * remain / epochLength / 10000).
+    function _partial(uint256 amount, uint256 bps, uint256 remain, uint256 span) internal pure returns (uint256) {
+        if (amount == 0 || bps == 0 || remain == 0 || span == 0) return 0;
+        return (amount * bps * remain) / (span * 10000);
+    }
+
+    /// The arrival epoch pays the time still left. Later epochs pay in full
+    /// up to, and not including, the open chain index.
     function _settle(Portal storage p, uint256 nowTs) internal {
-        if (!p.rewardTracked) return;
         uint256 nowIdx = _chainEpoch(nowTs);
-        uint256 from = p.rewardEpoch;
-        if (nowIdx <= from) return;
-        for (uint256 e = from; e < nowIdx; e++) {
-            p.accruedReward += (p.active * _rateFor(e)) / 10000;
+        uint256 span = epochLengthMs();
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            Tranche storage t = p.tranches[i];
+            if (!t.partialPaid && nowIdx > t.epoch) {
+                p.accruedReward += _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
+                t.partialPaid = true;
+            }
+            if (nowIdx > t.fullFrom) {
+                for (uint256 e = t.fullFrom; e < nowIdx; e++) {
+                    p.accruedReward += (t.amount * _rateFor(e)) / 10000;
+                }
+                t.fullFrom = nowIdx;
+            }
         }
-        p.rewardEpoch = nowIdx;
     }
 
     function rewardNanos(uint256 active, uint256 bps) public pure returns (uint256) {
@@ -297,44 +332,61 @@ contract Reserve {
         annualBps = epochBps;
     }
 
-    function _maybeOpenEpoch(uint256 nowTs) internal {
+    function _syncEpoch(uint256 nowTs) internal {
+        if (clockGenesis == 0) return;
+        uint256 idx = _chainEpoch(nowTs);
         if (epochStart == 0) {
-            genesisTs = nowTs;
-            currentEpoch = 1;
-            epochStart = nowTs;
+            currentEpoch = idx;
+            epochStart = clockGenesis + idx * epochLengthMs();
             bonusEnacted = false;
             _applyEpochRate(nowTs);
             return;
         }
-        if (bonusEnacted) {
-            currentEpoch += 1;
-            epochStart = nowTs;
-            bonusEnacted = false;
-            votesIncrease = 0;
-            votesDecrease = 0;
-            votesHold = 0;
-            _applyEpochRate(nowTs);
-        }
+        if (idx == currentEpoch) return;
+        if (!bonusEnacted) return;
+        votesIncrease = 0;
+        votesDecrease = 0;
+        votesHold = 0;
+        currentEpoch = idx;
+        epochStart = clockGenesis + idx * epochLengthMs();
+        bonusEnacted = false;
+        _applyEpochRate(nowTs);
     }
 
     function lock(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
         if (nanos == 0) revert BadAmount();
         if (dest.length == 0) revert BadDest();
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
+        if (bonusEnacted) _syncEpoch(nowTs);
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
         _settle(p, nowTs);
-        if (!p.rewardTracked) {
-            p.rewardTracked = true;
-            p.rewardEpoch = _chainEpoch(nowTs);
-        }
         bool staking = canJoin(nowTs);
         if (staking) p.active += nanos;
         else p.idle += nanos;
+        uint256 idx = _chainEpoch(nowTs);
+        uint256 span = epochLengthMs();
+        uint256 remain = 0;
+        if (clockGenesis != 0) {
+            uint256 end = clockGenesis + (idx + 1) * span;
+            if (nowTs < end) remain = end - nowTs;
+            if (remain > span) remain = span;
+        }
+        p.tranches.push(Tranche({
+            amount: nanos,
+            epoch: idx,
+            remainMs: remain,
+            fullFrom: idx + 1,
+            partialPaid: false
+        }));
+        p.rewardTracked = true;
         totalLocked += nanos;
         if (!p.joined && (p.active + p.idle) >= PI_NANOS) {
             p.joined = true;
-            _maybeOpenEpoch(nowTs);
+            _syncEpoch(nowTs);
+        } else if (p.joined && epochStart == 0) {
+            // Clock pinned after the first lock. The next credit opens the chain epoch.
+            _syncEpoch(nowTs);
         }
     }
 
@@ -411,6 +463,9 @@ contract Reserve {
         }
         p.active = 0;
         p.idle = 0;
+        delete p.tranches;
+        p.rewardTracked = false;
+        p.rewardEpoch = 0;
         p.joined = false;
         p.vote = Vote.None;
         p.voteEpoch = 0;

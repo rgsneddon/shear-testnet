@@ -147,6 +147,51 @@ describe('hardened miner median (3b)', () => {
     assert.equal(medianBankTenths([1, 1, 9, 9], 4), null);
   });
 
+  it('counts 2/3 over reporting blocks, and silence above the bounds cannot freeze', () => {
+    const W = 144;
+    const quiet = (n) => Array.from({ length: n }, () => ({ miner: 'quiet' }));
+    const speak = (n, tenths) => blocksOf('honest', n, tenths);
+    const tooQuiet = Math.floor(W / 3) + 1;
+    assert.ok(tooQuiet / W > 1 / 3);
+    assert.equal(
+      epochBpsFromReports(PREV, [...speak(W - tooQuiet, 15000), ...quiet(tooQuiet)], { windowSize: W }),
+      PREV,
+      'non-reporting above 1/3 cannot freeze',
+    );
+    const underHalf = Math.floor((W - 1) / 2);
+    assert.ok(underHalf * 2 < W);
+    assert.equal(
+      epochBpsFromReports(PREV, [...speak(underHalf, 15000), ...quiet(W - underHalf)], { windowSize: W }),
+      PREV,
+      'under half reporting keeps the last rate',
+    );
+    const attackN = Math.floor(W / 3) - 1;
+    assert.ok(attackN / W < 1 / 3);
+    assert.equal(
+      epochBpsFromReports(PREV, mix(W - attackN, attackN, 10000), { windowSize: W }),
+      GENESIS_BPS,
+      'steering under 1/3 stays on the bundle',
+    );
+    const belowTwoThirds = Math.floor((2 * W) / 3) - 1;
+    const attackerBps = trimmedMeanBps(Array(14).fill(10000));
+    assert.notEqual(
+      epochBpsFromReports(PREV, mix(W - belowTwoThirds, belowTwoThirds, 10000), { windowSize: W }),
+      attackerBps,
+      'steering under 2/3 cannot install the attack',
+    );
+    const atTwoThirds = Math.ceil((2 * W) / 3);
+    assert.equal(
+      epochBpsFromReports(PREV, mix(W - atTwoThirds, atTwoThirds, 10000), { windowSize: W }),
+      attackerBps,
+      'a 2/3 reporting share can steer',
+    );
+    // Silence of exactly 1/3 leaves a reporting set. 2/3 of that set is
+    // under 2/3 of the window, and it still freezes.
+    const values = [1, 1, 1, 1, 9, 9];
+    assert.equal(medianBankTenths(values, 9), 1);
+    assert.ok(values.filter((v) => v === 1).length * 3 < 9 * 2);
+  });
+
   it('K-3 the template carries no report and a 40% producer is an alert', () => {
     const who = vaultDest(newIdentity().address, { viewKey: newIdentity().viewKey });
     const tpl = buildTemplate({

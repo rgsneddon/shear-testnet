@@ -7,7 +7,6 @@ import { potSubsidyAt, potSubsidyNanos, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '.
 import { PI_SHE_NANOS, GENESIS_BPS, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
-import { reserveFeeDest } from '../../crypto/levy.js';
 import { lockTx, withdrawTx, reserveAction } from '../../crypto/reserve_vault.js';
 import { verifySealedNote } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
@@ -77,14 +76,18 @@ function blockAt(ts, miner, notes, moreTxs) {
   };
 }
 
-function feeModes(interestSum) {
-  const partial = Math.floor(interestSum / 2);
-  return [
-    { name: 'none', reserve: 0 },
-    { name: 'partial', reserve: partial },
-    { name: 'covered', reserve: interestSum },
-    { name: 'over', reserve: interestSum + 1 },
-  ].filter((mode) => mode.reserve !== interestSum || mode.name !== 'partial');
+/** Pro-rata of the lock epoch, then each later full epoch before the draw. */
+function earned(stake, lockTs, drawTs) {
+  const lockIdx = Math.floor((lockTs - GENESIS) / EPOCH_MS);
+  const drawIdx = Math.floor((drawTs - GENESIS) / EPOCH_MS);
+  const end = GENESIS + (lockIdx + 1) * EPOCH_MS;
+  const remain = Math.max(0, end - lockTs);
+  let total = 0;
+  if (drawIdx > lockIdx) {
+    total += Number((BigInt(stake) * BigInt(GENESIS_BPS) * BigInt(remain)) / (BigInt(EPOCH_MS) * 10000n));
+  }
+  for (let e = lockIdx + 1; e < drawIdx; e += 1) total += interestNanos(stake, GENESIS_BPS);
+  return total;
 }
 
 function lockBlock(ts, miner, portals, stake) {
@@ -97,20 +100,14 @@ function lockBlock(ts, miner, portals, stake) {
   return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], locks);
 }
 
-function drawBlock(ts, miner, portals, payout, reserve) {
-  const draws = portals.map((portal, i) => {
-    const tx = withdrawTx({
-      from: portal,
-      to: miner,
-      nanos: payout,
-      id: `draw-${i}-${payout}-${ts}-${reserve}`,
-    });
-    if (i === 0 && reserve > 0) tx.fee = reserve;
-    return tx;
-  });
-  const notes = [{ nanos: potAt(ts), kind: 'pot' }];
-  if (reserve > 0) notes.push({ nanos: reserve, kind: 'reserve-fee', address: reserveFeeDest() });
-  return blockAt(ts, miner, notes, draws);
+function drawBlock(ts, miner, portals, payout) {
+  const draws = portals.map((portal, i) => withdrawTx({
+    from: portal,
+    to: miner,
+    nanos: payout,
+    id: `draw-${i}-${payout}-${ts}`,
+  }));
+  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], draws);
 }
 
 describe('v12 supply counts reserve interest from the chain', () => {
@@ -137,55 +134,45 @@ describe('v12 supply counts reserve interest from the chain', () => {
     }
 
     for (const stake of STAKES) {
-      const one = interestNanos(stake, GENESIS_BPS);
-      assert.equal(typeof one, 'number');
-      assert.ok(one > 0, `stake ${stake} earns interest`);
       for (const count of PORTALS) {
-        const interestSum = one * count;
-        assert.notEqual(interestSum, 0);
         for (const lead of LEADS) {
           const drawTs = GENESIS + EPOCH_MS + lead;
+          const one = earned(stake, GENESIS, drawTs);
+          const interestSum = one * count;
+          assert.ok(one > 0, `stake ${stake} lead ${lead} earns interest`);
           const epoch = Math.floor((drawTs - GENESIS) / EPOCH_MS);
           assert.equal(potAt(drawTs), potSubsidyNanos(epoch), `lead ${lead}`);
           assert.equal(potAt(GENESIS), potSubsidyNanos(0));
           const potSum = potAt(GENESIS) + potAt(drawTs);
-          for (const mode of feeModes(interestSum)) {
-            if (mode.name === 'partial' && !(mode.reserve > 0 && mode.reserve < interestSum)) continue;
-            const miner = minerDest();
-            const portals = Array.from({ length: count }, () => portalDest());
-            const chain = [
-              lockBlock(GENESIS, miner, portals, stake),
-              drawBlock(drawTs, miner, portals, stake + one, mode.reserve),
-            ];
-            const label = `stake ${stake} portals ${count} lead ${lead} fee ${mode.name}`;
-            const paid = auditCirculatingSupply(chain);
-            assert.equal(paid.status, 'verified', `${label} ${paid.reason}`);
-            assert.equal(paid.extraMintNanos, interestSum, label);
-            assert.equal(paid.circulatingNanos, potSum + interestSum, label);
-            assert.equal(paid.measuredPotNanos, potSum, label);
-            assert.equal(paid.measuredLevyNanos, mode.reserve, label);
-            assert.equal(paid.differenceNanos, 0, label);
-            if (mode.reserve > 0) {
-              assert.notEqual(paid.circulatingNanos, potSum + interestSum + mode.reserve, label);
-              const gap = Math.max(0, interestSum - mode.reserve);
-              assert.notEqual(paid.extraMintNanos, gap, `${label} gap`);
-            }
-            const echoed = auditCirculatingSupply(chain, { extraMintNanos: interestSum });
-            assert.equal(echoed.status, 'verified', `${label} echo`);
-            assert.equal(echoed.extraMintNanos, interestSum, label);
-            assert.equal(echoed.differenceNanos, 0, label);
-            for (const claim of [0, 1, interestSum + 1 + stake]) {
-              if (claim === interestSum) continue;
-              const miss = auditCirculatingSupply(chain, { extraMintNanos: claim });
-              assert.equal(miss.status, 'mismatch', `${label} claim ${claim}`);
-              assert.equal(miss.reason, 'supply', `${label} claim ${claim}`);
-              assert.equal(miss.extraMintNanos, interestSum, `${label} claim ${claim}`);
-              assert.equal(miss.differenceNanos, 0, `${label} claim ${claim}`);
-            }
-            const folded = foldSupply(chain, { genesisMs: GENESIS });
-            assert.equal(folded.ok, true, `${label} fold ${folded.reason}`);
-            assert.equal(folded.state.mintedInterest, BigInt(interestSum), label);
+          const miner = minerDest();
+          const portals = Array.from({ length: count }, () => portalDest());
+          const chain = [
+            lockBlock(GENESIS, miner, portals, stake),
+            drawBlock(drawTs, miner, portals, stake + one),
+          ];
+          const label = `stake ${stake} portals ${count} lead ${lead}`;
+          const paid = auditCirculatingSupply(chain);
+          assert.equal(paid.status, 'verified', `${label} ${paid.reason}`);
+          assert.equal(paid.extraMintNanos, interestSum, label);
+          assert.equal(paid.circulatingNanos, potSum + interestSum, label);
+          assert.equal(paid.measuredPotNanos, potSum, label);
+          assert.equal(paid.measuredLevyNanos, 0, label);
+          assert.equal(paid.differenceNanos, 0, label);
+          const echoed = auditCirculatingSupply(chain, { extraMintNanos: interestSum });
+          assert.equal(echoed.status, 'verified', `${label} echo`);
+          assert.equal(echoed.extraMintNanos, interestSum, label);
+          assert.equal(echoed.differenceNanos, 0, label);
+          for (const claim of [0, 1, interestSum + 1 + stake]) {
+            if (claim === interestSum) continue;
+            const miss = auditCirculatingSupply(chain, { extraMintNanos: claim });
+            assert.equal(miss.status, 'mismatch', `${label} claim ${claim}`);
+            assert.equal(miss.reason, 'supply', `${label} claim ${claim}`);
+            assert.equal(miss.extraMintNanos, interestSum, `${label} claim ${claim}`);
+            assert.equal(miss.differenceNanos, 0, `${label} claim ${claim}`);
           }
+          const folded = foldSupply(chain, { genesisMs: GENESIS });
+          assert.equal(folded.ok, true, `${label} fold ${folded.reason}`);
+          assert.equal(folded.state.mintedInterest, BigInt(interestSum), label);
         }
       }
     }
@@ -193,14 +180,14 @@ describe('v12 supply counts reserve interest from the chain', () => {
 
   it('rejects a receipt that is not principal plus interest, and a second withdraw of the same portal', () => {
     const stake = PI_SHE_NANOS * 2 + 17;
-    const one = interestNanos(stake, GENESIS_BPS);
+    const drawTs = GENESIS + EPOCH_MS + 1;
+    const one = earned(stake, GENESIS, drawTs);
     assert.ok(one > 0);
     const miner = minerDest();
     const portal = portalDest();
-    const drawTs = GENESIS + EPOCH_MS + 1;
     const honest = [
       lockBlock(GENESIS, miner, [portal], stake),
-      drawBlock(drawTs, miner, [portal], stake + one, 0),
+      drawBlock(drawTs, miner, [portal], stake + one),
     ];
     const paid = auditCirculatingSupply(honest);
     assert.equal(paid.status, 'verified', paid.reason);
@@ -208,7 +195,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
 
     const inflated = [
       honest[0],
-      drawBlock(drawTs, miner, [portal], stake + one + 1, 0),
+      drawBlock(drawTs, miner, [portal], stake + one + 1),
     ];
     const bad = auditCirculatingSupply(inflated);
     assert.equal(bad.status, 'mismatch');
@@ -218,7 +205,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
 
     const againTs = drawTs + EPOCH_MS;
     const twice = honest.concat([
-      drawBlock(againTs, miner, [portal], stake + one, 0),
+      drawBlock(againTs, miner, [portal], stake + one),
     ]);
     const second = auditCirculatingSupply(twice);
     assert.notEqual(second.status, 'verified', second.reason);
@@ -243,15 +230,15 @@ describe('v12 supply counts reserve interest from the chain', () => {
 
   it('rejects a withdraw note that opens above the public amount, and an inflated interest', () => {
     const stake = PI_SHE_NANOS;
-    const one = interestNanos(stake, GENESIS_BPS);
+    const drawTs = GENESIS + EPOCH_MS + 1;
+    const one = earned(stake, GENESIS, drawTs);
     assert.ok(one > 0);
     const miner = minerDest();
     const portal = portalDest();
-    const drawTs = GENESIS + EPOCH_MS + 1;
     const honestPay = stake + one;
     const lock = lockBlock(GENESIS, miner, [portal], stake);
 
-    const openedHigh = drawBlock(drawTs, miner, [portal], honestPay, 0);
+    const openedHigh = drawBlock(drawTs, miner, [portal], honestPay);
     const fat = withdrawTx({
       from: portal,
       to: miner,
@@ -273,7 +260,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     assert.equal(highFold.ok, false);
     assert.equal(highFold.reason, 'supply');
 
-    const inflatedBlock = drawBlock(drawTs, miner, [portal], honestPay + 1, 0);
+    const inflatedBlock = drawBlock(drawTs, miner, [portal], honestPay + 1);
     const fatAct = reserveAction(inflatedBlock.txs[1]);
     assert.equal(fatAct.opened, true, 'the inflated receipt does open to its public amount');
     assert.equal(fatAct.nanos, honestPay + 1);
