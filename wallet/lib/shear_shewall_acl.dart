@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -13,26 +14,37 @@ import 'package:path/path.dart' as p;
 /// then it is renamed over the destination. A crash before the rename leaves
 /// the previous wallet file in place.
 ///
-/// Outside Windows the directory is mode 0700 and the file is mode 0600.
+/// The file is always private: mode 0600 outside Windows, and an owner-only
+/// DACL on Windows. The directory is tightened only when it is the app-owned
+/// folder [shewallAppDirectory] (`getApplicationSupportDirectory()/shear`).
+/// Downloads, Documents, a picked folder, and the CLI working directory are
+/// left alone.
+///
 /// A symlink at the destination, or on any path component, is refused.
 /// `chmod` of `/` or of the shared system temp directory is refused.
 ///
-/// On Windows the DACL is replaced, by SID, with the current user, SYSTEM
-/// (`S-1-5-18`), and Administrators (`S-1-5-32-544`). The user is the owner.
-/// `whoami.exe` and `icacls.exe` come from `GetSystemDirectoryW`, and that
-/// directory must equal the HKLM `SystemRoot` value plus `\System32`. A
-/// mismatch, including a planted `C:\Windows\System32` when Windows lives on
-/// another drive, refuses the write. The process environment is not consulted.
-/// The DACL is read back with `icacls /save`, not PowerShell, so a planted
-/// `PSModulePath` cannot fake `Get-Acl`. A mismatch throws before the rename.
+/// On Windows the file DACL is the current user, SYSTEM (`S-1-5-18`), and
+/// Administrators (`S-1-5-32-544`), with the user as owner. The file is
+/// created with that descriptor. The user SID comes from `GetTokenInformation`
+/// (`TokenUser`), not from `whoami`. `icacls.exe` comes from
+/// `GetSystemDirectoryW`, and that directory must equal the HKLM `SystemRoot`
+/// value plus `\System32`. A mismatch, including a planted
+/// `C:\Windows\System32` when Windows lives on another drive, refuses the
+/// write. The process environment is not consulted and is not passed to
+/// `icacls` (`includeParentEnvironment: false`). The DACL is read back with
+/// `icacls /save`, not PowerShell. A mismatch throws before the rename.
+///
+/// Android and iOS export that hands the bytes to `file_picker` is not covered
+/// by this writer. The plugin owns that file.
 ///
 /// This follows `node/src/datadir_acl.js` (PR 96) for the trustees and the
-/// icacls grant shape. `/T` is not used: this writer is pointed at whatever
-/// directory holds one `shewall.bin`, and a walk would rewrite every sibling
-/// in Downloads or Documents.
+/// icacls grant shape. `/T` is not used.
 const shewallFileMode = 0x180; // 0600
 const shewallDirMode = 0x1c0; // 0700
 const _modeMask = 0x1ff;
+
+/// Folder under `getApplicationSupportDirectory()` whose mode or DACL is set.
+const shewallAppFolder = 'shear';
 
 const systemSid = 'S-1-5-18';
 const administratorsSid = 'S-1-5-32-544';
@@ -40,21 +52,28 @@ const administratorsSid = 'S-1-5-32-544';
 const shewallAclSymlink = 'shewall_acl:symlink';
 const shewallAclChmod = 'shewall_acl:chmod';
 const shewallAclDacl = 'shewall_acl:dacl';
-const shewallAclWhoami = 'shewall_acl:whoami';
+const shewallAclToken = 'shewall_acl:token';
 const shewallAclIcacls = 'shewall_acl:icacls';
 const shewallAclSystem32 = 'shewall_acl:system32';
 const shewallAclFsync = 'shewall_acl:fsync';
 const shewallAclIoError = 'shewall_acl:io';
 const shewallAclDir = 'shewall_acl:dir';
 
+/// Stamp of the isolate that last ran [writeShewallOffUi]. Differs from the UI isolate.
+String debugShewallWriteStamp = '';
+
 typedef ShewallProc =
     String Function(
       String executable,
       List<String> args, {
       Map<String, String>? environment,
+      bool includeParentEnvironment,
     });
 
 typedef ShewallChmod = void Function(String path, int mode);
+
+typedef ShewallSecureCreate =
+    void Function(String path, Uint8List bytes, String sddl);
 
 /// Test seam. Production leaves every field null and uses the host.
 final class ShewallAclIo {
@@ -66,6 +85,8 @@ final class ShewallAclIo {
     this.systemDirectory,
     this.registrySystemRoot,
     this.readOwner,
+    this.readUserSid,
+    this.createOwnerOnly,
     this.env = const {},
   });
 
@@ -84,6 +105,13 @@ final class ShewallAclIo {
   /// Owner SID read. Null uses `GetNamedSecurityInfoW` on Windows.
   final String Function(String path)? readOwner;
 
+  /// Current-user SID. Null uses `GetTokenInformation` on Windows.
+  final String Function()? readUserSid;
+
+  /// Creates [path] with an owner-only descriptor and writes [bytes].
+  /// Null uses `CreateFileW` on Windows.
+  final ShewallSecureCreate? createOwnerOnly;
+
   /// Caller environment. It is never copied into a child process. A test
   /// plants `SystemRoot` and `PSModulePath` here.
   final Map<String, String> env;
@@ -91,9 +119,111 @@ final class ShewallAclIo {
   bool get isWindows => windows ?? Platform.isWindows;
 }
 
+/// `getApplicationSupportDirectory()/shear`. Only this directory is tightened.
+String shewallAppDirectory(String applicationSupport) {
+  return p.normalize(p.absolute(p.join(applicationSupport, shewallAppFolder)));
+}
+
+/// True when [parent] is exactly [shewallAppDirectory]. A folder the user
+/// picked, including one named `shear` somewhere else, is not app-owned.
+bool shewallParentIsAppOwned(String parent, {String? applicationSupport}) {
+  if (applicationSupport == null || applicationSupport.isEmpty) return false;
+  final app = shewallAppDirectory(applicationSupport);
+  final dir = p.normalize(p.absolute(parent));
+  return p.equals(dir, app);
+}
+
+/// Owner-only file SDDL. [sid] must already be a SID, not an account name.
+String ownerOnlyFileSddl(String sid) {
+  if (!RegExp(r'^S-1-\d+(?:-\d+)+$', caseSensitive: false).hasMatch(sid)) {
+    throw const FormatException(shewallAclToken);
+  }
+  return 'O:$sid D:P(A;;FA;;;$sid)(A;;FA;;;$systemSid)(A;;FA;;;$administratorsSid)';
+}
+
+/// Linux `open` flags. x86 keeps the arch values. arm64 uses the generic ones.
+({int nofollow, int directory}) linuxOpenFlags(Abi abi) {
+  switch (abi) {
+    case Abi.linuxX64:
+    case Abi.linuxIA32:
+    case Abi.androidX64:
+    case Abi.androidIA32:
+      return (nofollow: 0x20000, directory: 0x10000);
+    case Abi.linuxArm64:
+    case Abi.linuxArm:
+    case Abi.androidArm64:
+    case Abi.androidArm:
+    case Abi.linuxRiscv64:
+    case Abi.linuxRiscv32:
+    case Abi.androidRiscv64:
+      return (nofollow: 0x8000, directory: 0x4000);
+    default:
+      throw const FormatException(shewallAclIoError);
+  }
+}
+
+/// Byte offset of `st_mode` in glibc `struct stat`.
+/// x86_64 stores `st_nlink` before `st_mode` (offset 24). arm64 stores
+/// `st_mode` at offset 16.
+int linuxStatModeOffset(Abi abi) {
+  switch (abi) {
+    case Abi.linuxX64:
+    case Abi.androidX64:
+      return 24;
+    case Abi.linuxArm64:
+    case Abi.linuxArm:
+    case Abi.androidArm64:
+    case Abi.androidArm:
+    case Abi.linuxRiscv64:
+    case Abi.linuxRiscv32:
+    case Abi.androidRiscv64:
+      return 16;
+    default:
+      throw const FormatException(shewallAclIoError);
+  }
+}
+
+/// `_STAT_VER` passed to `__fxstat`. x86_64 uses `_STAT_VER_LINUX` (1).
+/// arm64 uses `_STAT_VER_KERNEL` (0).
+int linuxFstatVersion(Abi abi) {
+  switch (abi) {
+    case Abi.linuxX64:
+    case Abi.linuxIA32:
+    case Abi.androidX64:
+    case Abi.androidIA32:
+      return 1;
+    case Abi.linuxArm64:
+    case Abi.linuxArm:
+    case Abi.androidArm64:
+    case Abi.androidArm:
+    case Abi.linuxRiscv64:
+    case Abi.linuxRiscv32:
+    case Abi.androidRiscv64:
+      return 0;
+    default:
+      throw const FormatException(shewallAclIoError);
+  }
+}
+
+/// `fstat` was not a dynamic libc symbol before glibc 2.33. Prefer it, then
+/// `__fxstat64` / `__fxstat`. Null means the caller must use [FileStat].
+String? selectLinuxFstatSymbol(bool Function(String name) present) {
+  if (present('fstat')) return 'fstat';
+  if (present('__fxstat64')) return '__fxstat64';
+  if (present('__fxstat')) return '__fxstat';
+  return null;
+}
+
+/// Mode word from a `struct stat` buffer. Apple is a 16-bit field at offset 4.
+int statModeAt(List<int> bytes, {required Abi abi, bool apple = false}) {
+  final data = ByteData.sublistView(Uint8List.fromList(bytes));
+  if (apple) return data.getUint16(4, Endian.host);
+  return data.getUint32(linuxStatModeOffset(abi), Endian.host);
+}
+
 /// Join [name] onto a system directory that [resolveWindowsSystem32] accepted.
 String system32Exe(String name, String systemDirectory) {
-  if (name != 'whoami.exe' && name != 'icacls.exe') {
+  if (name != 'icacls.exe') {
     throw const FormatException(shewallAclSystem32);
   }
   final dir = _normalizeWin(systemDirectory);
@@ -146,6 +276,7 @@ void writePrivateShewallSync(
   File dest,
   Uint8List sealed, {
   ShewallAclIo io = const ShewallAclIo(),
+  String? applicationSupport,
 }) {
   if (sealed.isNotEmpty && sealed[0] == 0x7b) {
     throw const FormatException('json_refused');
@@ -159,11 +290,47 @@ void writePrivateShewallSync(
       FileSystemEntityType.link) {
     throw const FormatException(shewallAclSymlink);
   }
+  final hardenDirectory = shewallParentIsAppOwned(
+    parent,
+    applicationSupport: applicationSupport,
+  );
   if (io.isWindows) {
-    _windowsReplace(full, parent, sealed, io);
+    _windowsReplace(full, parent, sealed, io, hardenDirectory: hardenDirectory);
     return;
   }
-  _posixReplace(full, name, parent, sealed, io);
+  _posixReplace(
+    full,
+    name,
+    parent,
+    sealed,
+    io,
+    hardenDirectory: hardenDirectory,
+  );
+}
+
+Map<String, String> _writeShewallOffUi(
+  String path,
+  Uint8List sealed,
+  String? applicationSupport,
+) {
+  writePrivateShewallSync(
+    File(path),
+    sealed,
+    applicationSupport: applicationSupport,
+  );
+  return {'stamp': identityHashCode(Isolate.current).toString()};
+}
+
+/// Runs [writePrivateShewallSync] on a worker isolate.
+Future<void> writeShewallOffUi(
+  String path,
+  Uint8List sealed, {
+  String? applicationSupport,
+}) async {
+  final out = await Isolate.run(
+    () => _writeShewallOffUi(path, sealed, applicationSupport),
+  );
+  debugShewallWriteStamp = out['stamp'] ?? '';
 }
 
 void _rejectLeafName(String name) {
@@ -215,15 +382,18 @@ void _posixReplace(
   String name,
   String parent,
   Uint8List sealed,
-  ShewallAclIo io,
-) {
+  ShewallAclIo io, {
+  required bool hardenDirectory,
+}) {
   final posix = _posixFiles();
   final dirfd = posix.openDirectory(parent);
   var filefd = -1;
   var tmp = '';
   var renamed = false;
   try {
-    _chmodFd(posix, io, dirfd, parent, shewallDirMode);
+    if (hardenDirectory) {
+      _chmodFd(posix, io, dirfd, parent, shewallDirMode);
+    }
     tmp = '.shewall.$pid.${Random.secure().nextInt(0x7fffffff)}.tmp';
     filefd = posix.openExclusive(dirfd, tmp);
     posix.writeAll(filefd, sealed);
@@ -241,11 +411,13 @@ void _posixReplace(
     // way: the file fsync already finished, and some filesystems reject it.
     posix.fsync(dirfd);
     final mode = posix.fstatMode(filefd);
-    if ((mode & 0xF000) == 0xA000) {
-      throw const FormatException(shewallAclSymlink);
-    }
-    if ((mode & _modeMask) != shewallFileMode) {
-      throw const FormatException(shewallAclChmod);
+    if (mode != null) {
+      if ((mode & 0xF000) == 0xA000) {
+        throw const FormatException(shewallAclSymlink);
+      }
+      if ((mode & _modeMask) != shewallFileMode) {
+        throw const FormatException(shewallAclChmod);
+      }
     }
     if (FileSystemEntity.typeSync(full, followLinks: false) !=
         FileSystemEntityType.file) {
@@ -275,13 +447,16 @@ void _chmodFd(
   } else if (posix.fchmod(fd, mode) != 0) {
     throw const FormatException(shewallAclChmod);
   }
-  final viaFd = posix.fstatMode(fd) & _modeMask;
   if (FileSystemEntity.typeSync(path, followLinks: false) ==
       FileSystemEntityType.link) {
     throw const FormatException(shewallAclSymlink);
   }
+  final viaFd = posix.fstatMode(fd);
+  if (viaFd != null && (viaFd & _modeMask) != mode) {
+    throw const FormatException(shewallAclChmod);
+  }
   final viaPath = FileStat.statSync(path).mode & _modeMask;
-  if (viaFd != mode || viaPath != mode) {
+  if (viaPath != mode) {
     throw const FormatException(shewallAclChmod);
   }
 }
@@ -290,19 +465,22 @@ void _windowsReplace(
   String full,
   String parent,
   Uint8List sealed,
-  ShewallAclIo io,
-) {
+  ShewallAclIo io, {
+  required bool hardenDirectory,
+}) {
   final system32 = _resolvedSystem32(io);
   final childEnv = _fixedChildEnv(system32, io);
-  final sid = _readUserSid(io, system32, childEnv);
-  _applyDacl(
-    io,
-    parent,
-    directory: true,
-    sid: sid,
-    system32: system32,
-    childEnv: childEnv,
-  );
+  final sid = _readUserSid(io);
+  if (hardenDirectory) {
+    _applyDacl(
+      io,
+      parent,
+      directory: true,
+      sid: sid,
+      system32: system32,
+      childEnv: childEnv,
+    );
+  }
   final tmpName = '.shewall.$pid.${Random.secure().nextInt(0x7fffffff)}.tmp';
   final tmpPath = p.join(parent, tmpName);
   if (FileSystemEntity.typeSync(tmpPath, followLinks: false) ==
@@ -312,12 +490,11 @@ void _windowsReplace(
   final tmp = File(tmpPath);
   var renamed = false;
   try {
-    final raf = tmp.openSync(mode: FileMode.writeOnly);
-    try {
-      raf.writeFromSync(sealed);
-      raf.flushSync();
-    } finally {
-      raf.closeSync();
+    final descriptor = ownerOnlyFileSddl(sid);
+    if (io.createOwnerOnly != null) {
+      io.createOwnerOnly!(tmpPath, sealed, descriptor);
+    } else {
+      _createOwnerOnlyWin32(tmpPath, sealed, descriptor);
     }
     _applyDacl(
       io,
@@ -411,22 +588,19 @@ Map<String, String> _fixedChildEnv(String system32, ShewallAclIo io) {
   return child;
 }
 
-String _readUserSid(
-  ShewallAclIo io,
-  String system32,
-  Map<String, String> childEnv,
-) {
-  final out = _runChecked(
-    io,
-    system32Exe('whoami.exe', system32),
-    ['/user', '/fo', 'csv', '/nh'],
-    shewallAclWhoami,
-    system32,
-    childEnv,
-  );
-  final match = RegExp(r'S-1-\d+(?:-\d+)+').firstMatch(out);
-  if (match == null) throw const FormatException(shewallAclWhoami);
-  return match.group(0)!;
+String _readUserSid(ShewallAclIo io) {
+  late final String sid;
+  try {
+    sid = io.readUserSid != null ? io.readUserSid!() : _tokenUserSid();
+  } on FormatException {
+    rethrow;
+  } catch (_) {
+    throw const FormatException(shewallAclToken);
+  }
+  if (!RegExp(r'^S-1-\d+(?:-\d+)+$', caseSensitive: false).hasMatch(sid)) {
+    throw const FormatException(shewallAclToken);
+  }
+  return sid;
 }
 
 void _applyDacl(
@@ -558,7 +732,12 @@ String _runChecked(
   _assertSystem32(executable, system32, io);
   try {
     final runner = io.run ?? _defaultRun;
-    return runner(executable, args, environment: environment);
+    return runner(
+      executable,
+      args,
+      environment: environment,
+      includeParentEnvironment: false,
+    );
   } on FormatException {
     rethrow;
   } catch (_) {
@@ -570,12 +749,16 @@ String _defaultRun(
   String executable,
   List<String> args, {
   Map<String, String>? environment,
+  bool includeParentEnvironment = true,
 }) {
-  if (environment == null) throw const FormatException(shewallAclSystem32);
+  if (environment == null || includeParentEnvironment) {
+    throw const FormatException(shewallAclSystem32);
+  }
   final result = Process.runSync(
     executable,
     args,
     environment: environment,
+    includeParentEnvironment: false,
     stdoutEncoding: utf8,
     stderrEncoding: utf8,
   );
@@ -594,7 +777,7 @@ void _assertSystem32(String executable, String system32, ShewallAclIo io) {
   final exe = _normalizeWin(executable);
   final dir = _normalizeWin(system32);
   final name = exe.split(r'\').last.toLowerCase();
-  if (name != 'whoami.exe' && name != 'icacls.exe') {
+  if (name != 'icacls.exe') {
     throw const FormatException(shewallAclSystem32);
   }
   if (exe.toLowerCase() != '${dir.toLowerCase()}\\$name') {
@@ -725,11 +908,7 @@ final class _PosixFiles {
         .lookupFunction<Int32 Function(Int32, Uint32), int Function(int, int)>(
           'fchmod',
         );
-    _fstat = _lib
-        .lookupFunction<
-          Int32 Function(Int32, Pointer<Uint8>),
-          int Function(int, Pointer<Uint8>)
-        >('fstat');
+    _fstat = _bindFstat(_lib);
     _renameat = _lib
         .lookupFunction<
           Int32 Function(Int32, Pointer<Utf8>, Int32, Pointer<Utf8>),
@@ -761,10 +940,10 @@ final class _PosixFiles {
   late final int Function(int) _fsync;
   late final int Function(int) _close;
   late final int Function(int, int) _fchmod;
-  late final int Function(int, Pointer<Uint8>) _fstat;
   late final int Function(int, Pointer<Utf8>, int, Pointer<Utf8>) _renameat;
   late final int Function(int, Pointer<Utf8>, int) _unlinkat;
   late final int Function() _errno;
+  int Function(int, Pointer<Uint8>)? _fstat;
 
   static const _eintr = 4;
   static const _eexist = 17;
@@ -778,9 +957,10 @@ final class _PosixFiles {
   int get _oWronly => 1;
   int get _oCreat => _apple ? 0x200 : 0x40;
   int get _oExcl => _apple ? 0x800 : 0x80;
-  int get _oNofollow => _apple ? 0x100 : 0x20000;
+  int get _oNofollow => _apple ? 0x100 : linuxOpenFlags(Abi.current()).nofollow;
   int get _oCloexec => _apple ? 0x1000000 : 0x80000;
-  int get _oDirectory => _apple ? 0x100000 : 0x10000;
+  int get _oDirectory =>
+      _apple ? 0x100000 : linuxOpenFlags(Abi.current()).directory;
   int get _atFdcwd => _apple ? -2 : -100;
 
   int get errno => _errno();
@@ -860,17 +1040,51 @@ final class _PosixFiles {
 
   int fchmod(int fd, int mode) => _fchmod(fd, mode);
 
-  int fstatMode(int fd) {
+  int? fstatMode(int fd) {
+    final read = _fstat;
+    if (read == null) return null;
     final buf = calloc<Uint8>(256);
     try {
-      final rc = _fstat(fd, buf);
+      final rc = read(fd, buf);
       if (rc != 0) throw const FormatException(shewallAclIoError);
-      final data = ByteData.sublistView(buf.asTypedList(256));
-      if (_apple) return data.getUint16(4, Endian.host);
-      return data.getUint32(24, Endian.host);
+      return statModeAt(
+        buf.asTypedList(256),
+        abi: Abi.current(),
+        apple: _apple,
+      );
     } finally {
       calloc.free(buf);
     }
+  }
+
+  int Function(int, Pointer<Uint8>)? _bindFstat(DynamicLibrary lib) {
+    if (_apple) {
+      return lib.lookupFunction<
+        Int32 Function(Int32, Pointer<Uint8>),
+        int Function(int, Pointer<Uint8>)
+      >('fstat');
+    }
+    final symbol = selectLinuxFstatSymbol(lib.providesSymbol);
+    if (symbol == null) return null;
+    if (symbol == 'fstat') {
+      return lib.lookupFunction<
+        Int32 Function(Int32, Pointer<Uint8>),
+        int Function(int, Pointer<Uint8>)
+      >(symbol);
+    }
+    final fx = lib
+        .lookupFunction<
+          Int32 Function(Int32, Int32, Pointer<Uint8>),
+          int Function(int, int, Pointer<Uint8>)
+        >(symbol);
+    final version = linuxFstatVersion(Abi.current());
+    return (fd, buf) {
+      var rc = fx(version, fd, buf);
+      if (rc != 0 && errno == 22) {
+        rc = fx(version == 0 ? 1 : 0, fd, buf);
+      }
+      return rc;
+    };
   }
 
   int renameAt(int dirfd, String from, String to) {
@@ -1091,5 +1305,227 @@ String _ownerSidWin32(String path) {
     calloc.free(sdOut);
     calloc.free(sidText);
     malloc.free(name);
+  }
+}
+
+final class _SecurityAttributes extends Struct {
+  @Uint32()
+  external int nLength;
+
+  external Pointer<Void> lpSecurityDescriptor;
+
+  @Int32()
+  external int bInheritHandle;
+}
+
+String _tokenUserSid() {
+  if (!Platform.isWindows) throw const FormatException(shewallAclToken);
+  final kernel = DynamicLibrary.open('kernel32.dll');
+  final adv = DynamicLibrary.open('advapi32.dll');
+  final current = kernel.lookupFunction<IntPtr Function(), int Function()>(
+    'GetCurrentProcess',
+  );
+  final openToken = adv
+      .lookupFunction<
+        Int32 Function(IntPtr, Uint32, Pointer<IntPtr>),
+        int Function(int, int, Pointer<IntPtr>)
+      >('OpenProcessToken');
+  final info = adv
+      .lookupFunction<
+        Int32 Function(IntPtr, Int32, Pointer<Uint8>, Uint32, Pointer<Uint32>),
+        int Function(int, int, Pointer<Uint8>, int, Pointer<Uint32>)
+      >('GetTokenInformation');
+  final convert = adv
+      .lookupFunction<
+        Int32 Function(Pointer<Void>, Pointer<Pointer<Utf16>>),
+        int Function(Pointer<Void>, Pointer<Pointer<Utf16>>)
+      >('ConvertSidToStringSidW');
+  final close = kernel
+      .lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');
+  final localFree = kernel
+      .lookupFunction<
+        Pointer<Void> Function(Pointer<Void>),
+        Pointer<Void> Function(Pointer<Void>)
+      >('LocalFree');
+  final tokenOut = calloc<IntPtr>();
+  try {
+    if (openToken(current(), 0x0008, tokenOut) == 0 || tokenOut.value == 0) {
+      throw const FormatException(shewallAclToken);
+    }
+    final token = tokenOut.value;
+    try {
+      final needed = calloc<Uint32>();
+      try {
+        info(token, 1, Pointer<Uint8>.fromAddress(0), 0, needed);
+        final size = needed.value;
+        if (size < 8 || size > 4096) {
+          throw const FormatException(shewallAclToken);
+        }
+        final buf = calloc<Uint8>(size);
+        try {
+          final got = calloc<Uint32>();
+          try {
+            if (info(token, 1, buf, size, got) == 0) {
+              throw const FormatException(shewallAclToken);
+            }
+          } finally {
+            calloc.free(got);
+          }
+          final sid = buf.cast<Pointer<Void>>().value;
+          if (sid == nullptr) throw const FormatException(shewallAclToken);
+          final text = calloc<Pointer<Utf16>>();
+          try {
+            if (convert(sid, text) == 0 || text.value == nullptr) {
+              throw const FormatException(shewallAclToken);
+            }
+            final sidText = text.value.toDartString();
+            localFree(text.value.cast<Void>());
+            text.value = nullptr;
+            return sidText;
+          } finally {
+            if (text.value != nullptr) localFree(text.value.cast<Void>());
+            calloc.free(text);
+          }
+        } finally {
+          calloc.free(buf);
+        }
+      } finally {
+        calloc.free(needed);
+      }
+    } finally {
+      close(token);
+    }
+  } finally {
+    calloc.free(tokenOut);
+  }
+}
+
+void _createOwnerOnlyWin32(String path, Uint8List bytes, String sddl) {
+  if (!Platform.isWindows) throw const FormatException(shewallAclIoError);
+  final kernel = DynamicLibrary.open('kernel32.dll');
+  final adv = DynamicLibrary.open('advapi32.dll');
+  final convert = adv
+      .lookupFunction<
+        Int32 Function(
+          Pointer<Utf16>,
+          Uint32,
+          Pointer<Pointer<Void>>,
+          Pointer<Uint32>,
+        ),
+        int Function(
+          Pointer<Utf16>,
+          int,
+          Pointer<Pointer<Void>>,
+          Pointer<Uint32>,
+        )
+      >('ConvertStringSecurityDescriptorToSecurityDescriptorW');
+  final createFile = kernel
+      .lookupFunction<
+        IntPtr Function(
+          Pointer<Utf16>,
+          Uint32,
+          Uint32,
+          Pointer<_SecurityAttributes>,
+          Uint32,
+          Uint32,
+          IntPtr,
+        ),
+        int Function(
+          Pointer<Utf16>,
+          int,
+          int,
+          Pointer<_SecurityAttributes>,
+          int,
+          int,
+          int,
+        )
+      >('CreateFileW');
+  final write = kernel
+      .lookupFunction<
+        Int32 Function(
+          IntPtr,
+          Pointer<Uint8>,
+          Uint32,
+          Pointer<Uint32>,
+          Pointer<Void>,
+        ),
+        int Function(int, Pointer<Uint8>, int, Pointer<Uint32>, Pointer<Void>)
+      >('WriteFile');
+  final flush = kernel
+      .lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+        'FlushFileBuffers',
+      );
+  final close = kernel
+      .lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');
+  final localFree = kernel
+      .lookupFunction<
+        Pointer<Void> Function(Pointer<Void>),
+        Pointer<Void> Function(Pointer<Void>)
+      >('LocalFree');
+  final sddlPtr = sddl.toNativeUtf16();
+  final sdOut = calloc<Pointer<Void>>();
+  final sa = calloc<_SecurityAttributes>();
+  final name = path.toNativeUtf16();
+  try {
+    if (convert(sddlPtr, 1, sdOut, Pointer<Uint32>.fromAddress(0)) == 0 ||
+        sdOut.value == nullptr) {
+      throw const FormatException(shewallAclDacl);
+    }
+    sa.ref.nLength = sizeOf<_SecurityAttributes>();
+    sa.ref.lpSecurityDescriptor = sdOut.value;
+    sa.ref.bInheritHandle = 0;
+    final handle = createFile(name, 0x40000000, 0, sa, 1, 0x80, 0);
+    if (handle == 0 || handle == -1) {
+      throw const FormatException(shewallAclIoError);
+    }
+    try {
+      _writeHandle(write, handle, bytes);
+      if (flush(handle) == 0) throw const FormatException(shewallAclFsync);
+    } finally {
+      close(handle);
+    }
+  } finally {
+    if (sdOut.value != nullptr) localFree(sdOut.value);
+    calloc.free(sdOut);
+    calloc.free(sa);
+    malloc.free(sddlPtr);
+    malloc.free(name);
+  }
+}
+
+void _writeHandle(
+  int Function(int, Pointer<Uint8>, int, Pointer<Uint32>, Pointer<Void>) write,
+  int handle,
+  Uint8List bytes,
+) {
+  if (bytes.isEmpty) return;
+  const chunk = 65536;
+  final buf = malloc<Uint8>(chunk);
+  final written = calloc<Uint32>();
+  try {
+    var off = 0;
+    while (off < bytes.length) {
+      final take = bytes.length - off < chunk ? bytes.length - off : chunk;
+      buf.asTypedList(take).setRange(0, take, bytes, off);
+      var done = 0;
+      while (done < take) {
+        written.value = 0;
+        final ok = write(
+          handle,
+          Pointer<Uint8>.fromAddress(buf.address + done),
+          take - done,
+          written,
+          nullptr,
+        );
+        if (ok == 0 || written.value == 0) {
+          throw const FormatException(shewallAclIoError);
+        }
+        done += written.value;
+      }
+      off += take;
+    }
+  } finally {
+    malloc.free(buf);
+    calloc.free(written);
   }
 }

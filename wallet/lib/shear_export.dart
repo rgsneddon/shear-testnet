@@ -52,6 +52,11 @@ bool isPrivateAndroidFilesPath(String path) {
 
 /// file_picker 8.x: Android/iOS [saveFile] requires [bytes]. Desktop (macOS)
 /// throws [UnsupportedError] if [bytes] is set; the dialog only returns a path.
+///
+/// Mobile export passes those bytes into file_picker. The plugin writes the
+/// file. That path is not covered by [writePrivateShewallSync]: there is no
+/// mode 0600 and no owner-only DACL. Desktop, and an explicit [dest], use the
+/// private replace.
 bool shewallSavePassesBytes({bool? android, bool? ios}) {
   return (android ?? Platform.isAndroid) || (ios ?? Platform.isIOS);
 }
@@ -67,15 +72,26 @@ Future<String?> defaultShewallSavePicker({Uint8List? bytes}) {
 
 /// Writes sealed bytes to [dest], or opens a user save dialog (SAF on Android).
 /// Desktop: dialog returns a path; always write (overwrite). Never pass bytes
-/// to [saveFile] on macOS/Windows/Linux. Mobile: pass bytes (SAF writes them).
+/// to [saveFile] on macOS/Windows/Linux.
+///
+/// Mobile (`passBytes`, the Android and iOS default) gives the sealed bytes to
+/// file_picker and does not run the private replace. A picked folder, Downloads,
+/// Documents, and the CLI working directory are not chmod'd or given a directory
+/// DACL. Pass [applicationSupport] only so a dest inside
+/// `applicationSupport/shear` can tighten that app-owned directory.
 Future<String> saveShewallBytes(
   Uint8List sealed, {
   File? dest,
   Future<String?> Function({Uint8List? bytes})? picker,
   bool? passBytes,
+  String? applicationSupport,
 }) async {
   if (dest != null) {
-    writePrivateShewallSync(dest, sealed);
+    await writeShewallOffUi(
+      dest.path,
+      sealed,
+      applicationSupport: applicationSupport,
+    );
     return dest.path;
   }
   final sendBytes = passBytes ?? shewallSavePassesBytes();
@@ -85,7 +101,11 @@ Future<String> saveShewallBytes(
     throw const FormatException('export_cancelled');
   }
   if (!sendBytes) {
-    writePrivateShewallSync(File(path), sealed);
+    await writeShewallOffUi(
+      path,
+      sealed,
+      applicationSupport: applicationSupport,
+    );
   }
   return path;
 }

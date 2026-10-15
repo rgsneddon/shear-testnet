@@ -568,8 +568,16 @@ ShearIdentity importShewall(
   return id;
 }
 
-Future<File> writeShewallFile(File dest, Uint8List sealed) async {
-  writePrivateShewallSync(dest, sealed);
+Future<File> writeShewallFile(
+  File dest,
+  Uint8List sealed, {
+  String? applicationSupport,
+}) async {
+  await writeShewallOffUi(
+    dest.path,
+    sealed,
+    applicationSupport: applicationSupport,
+  );
   return dest;
 }
 
