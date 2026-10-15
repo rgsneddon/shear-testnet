@@ -22,7 +22,6 @@ ROOTS = ("node/src/node.js",)
 SHIPPED = (
     "pool/src/pool.js",
     "pool/src/main.js",
-    "pool/src/admin.js",
 )
 NATIVE = (
     "crypto/native/shearhash.node",

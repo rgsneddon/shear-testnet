@@ -46,7 +46,7 @@ import {
 } from '../../crypto/spend.js';
 import { GENESIS_PREV, buildTemplate, verifyBlock, digestTx } from '../src/chain.js';
 import { createStore } from '../src/store.js';
-import { adminWalletBalance } from '../../pool/src/admin.js';
+import { adminWalletBalance } from '../../pool/src/operator_wallet.js';
 import {
   bootReserveEvm,
   callReserve,
@@ -606,7 +606,7 @@ describe('Vault Security test map', () => {
       const missing = withdrawTx({ from: who.dest, to: reserveFeeDest(), nanos: principal, id: `miss-${principal}` });
       assert.equal(verifyReservePortalOpen(missing), false);
     }
-    const src = fs.readFileSync(path.join(ROOT, 'pool/src/admin.js'), 'utf8');
+    const src = fs.readFileSync(path.join(ROOT, 'pool/src/operator_wallet.js'), 'utf8');
     const slice = src.slice(src.indexOf('function adminWalletBalance'), src.indexOf('function adminSpendFrom'));
     assert.equal(/totalLocked|mintBank|reserveVault/.test(slice), false);
     const store = { historyFor: () => [], tip: () => null };

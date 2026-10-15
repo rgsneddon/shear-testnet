@@ -18,9 +18,8 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /data-active="MAIN"/);
     assert.match(html, /Shear testnet/);
     assert.doesNotMatch(html, /She Is Private|onfidential/);
-    assert.match(html, /ADMITv3 \(FS-1\)/);
+    assert.match(html, /ADMITv3 \(FS-1\) full-chain membership on v12; live v11 uses ADMITv2 until the cut/);
     assert.match(html, /the current live testnet/);
-    assert.doesNotMatch(html, /ADMITv2/);
     assert.match(html, /Continuum 0\.71/);
     assert.match(html, /shear-testnet-v11/);
     assert.doesNotMatch(html, /shear-testnet-v6/);
@@ -104,12 +103,10 @@ describe('shear.digital client buttons', () => {
       pool: fs.readFileSync(path.join(here, '../../pool/public/index.html'), 'utf8'),
       explorer: fs.readFileSync(path.join(here, '../../pool/public/explorer.html'), 'utf8'),
       miner: fs.readFileSync(path.join(here, '../../pool/public/miner.html'), 'utf8'),
-      poolAdmin: fs.readFileSync(path.join(here, '../../pool/admin/index.html'), 'utf8'),
       docs: fs.readFileSync(path.join(here, '../docs/index.html'), 'utf8'),
-      admin: fs.readFileSync(path.join(here, '../admin/index.html'), 'utf8'),
       whitepaper: fs.readFileSync(path.join(here, '../whitepaper/index.html'), 'utf8'),
     };
-    const navPages = ['explorer', 'poolAdmin', 'whitepaper'];
+    const navPages = ['explorer', 'whitepaper'];
     const chromePages = ['mempool', 'pool', 'docs'];
     for (const name of navPages) {
       const nav = pages[name].match(/id="shear-nav"[\s\S]*?<\/nav>/);
@@ -119,8 +116,6 @@ describe('shear.digital client buttons', () => {
       assert.match(nav[0], /href="https:\/\/shear\.digital\/miner\/"/, `${name} MINER stays on the site`);
       assert.doesNotMatch(nav[0], /github\.com/, `${name} navbar must not leave the site`);
     }
-    assert.match(pages.admin, /https:\/\/shear\.digital\/wallet\//);
-    assert.match(pages.admin, /https:\/\/shear\.digital\/miner\//);
     for (const name of chromePages) {
       assert.match(pages[name], /id="shear-chrome-root"/, `${name} mounts shared chrome`);
       assert.doesNotMatch(pages[name], /releases\/tag\/0\.\d+/, `${name} leaves the wallet pin off the chrome shell`);
@@ -202,48 +197,9 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /GNFP/);
   });
 
-  it('admin how-to is Shear-only: wallet, mine, Reserve; no claim copy', () => {
-    const admin = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '../admin/index.html'),
-      'utf8',
-    );
-    assert.match(admin, /Install the wallet/);
-    assert.match(admin, /How to mine/);
-    assert.match(admin, /The Reserve/);
-    assert.match(admin, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
-    assert.match(admin, /ShearK-Miner 2\.8/);
-    assert.match(admin, /A typed suffix is optional/);
-    assert.doesNotMatch(admin, /YOUR_SSA1\.solo/);
-    assert.match(admin, /shear-wallet-0\.71-windows\.zip/);
-    assert.match(admin, /shear-wallet-0\.71-android\.apk/);
-    assert.doesNotMatch(admin, /releases\/download\/0\.71\/shear-wallet-0\.71-macos\.dmg/);
-    assert.doesNotMatch(admin, /shear-wallet-0\.71-macos\.dmg/);
-    assert.doesNotMatch(admin, /shear-wallet-0\.55\.1-macos\.dmg/);
-    assert.doesNotMatch(admin, /shear-wallet-0\.55-/);
-    assert.doesNotMatch(admin, /releases\/download\/0\.55\//);
-    assert.doesNotMatch(admin, /releases\/tag\/0\.55(?!\.)/);
-    assert.doesNotMatch(admin, /macOS — coming soon/);
-    assert.match(admin, /Mainnet shear-v1 is not live/);
-    assert.match(admin, /The public countdown is 16th November 2026 at 1400hrs UK time/);
-    assert.doesNotMatch(admin, /A launch date is not decided/);
-    assert.doesNotMatch(admin, /MAINNET LAUNCH at 9pm UK time on 11th September 2026/);
-    assert.doesNotMatch(admin, /2026-09-18T21:00:00\+01:00/);
-    assert.doesNotMatch(admin, /11th September 2026/);
-    assert.doesNotMatch(admin, /9pm UK/);
-    assert.match(admin, /ADMITv3 \(FS-1\)/);
-    assert.match(admin, /full-chain membership, not rings of N/);
-    assert.match(admin, /the current live testnet/);
-    assert.match(admin, /PoW elects the tip/);
-    assert.match(admin, /can still vote/);
-    assert.match(admin, /Export shewall\.bin/);
-    assert.doesNotMatch(admin, /Private by default/);
-    assert.doesNotMatch(admin, /Proof of work only/);
-    assert.doesNotMatch(admin, /cannot vote/);
-    assert.doesNotMatch(admin, /shewall\.json/);
-    assert.doesNotMatch(admin, /The Join/);
-    assert.doesNotMatch(admin, /join1\./);
-    assert.doesNotMatch(admin, /GNFP/);
-    assert.doesNotMatch(admin, /1:1/);
-    assert.doesNotMatch(admin, /migrat/i);
+  it('the how-to admin page is gone', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    assert.equal(fs.existsSync(path.join(here, '../admin/index.html')), false);
+    assert.equal(fs.existsSync(path.join(here, '../../pool/admin/index.html')), false);
   });
 });

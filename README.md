@@ -149,4 +149,4 @@ Backup: encrypted `shewall.bin` (same file in GUI and CLI; v1 files still open a
 
 ## Secrets
 
-Never commit `SHEAR_DATA`, `admin.enc`, PEMs, or a live admin hostname. Pool admin host is `SHEAR_ADMIN_HOST` on the box only. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`, `b2b.shear.digital:30303`) — never a raw IP in public copy.
+Never commit `SHEAR_DATA` or PEMs. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`, `b2b.shear.digital:30303`) — never a raw IP in public copy.

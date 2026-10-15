@@ -99,14 +99,6 @@ describe('brand pages', () => {
     assert.match(wallet, /'Network rho'/);
     assert.match(wallet, /\$\{ledger\.networkHashrate\} R\/s/);
     assert.match(wallet, /networkHashrate/);
-    const admin = read('pool/admin/index.html');
-    assert.match(admin, />Live R\/s</);
-    assert.match(admin, /1e6/);
-    assert.match(admin, /1e3/);
-    assert.match(admin, /' mR\/s'/);
-    assert.match(admin, /' kR\/s'/);
-    assert.match(admin, /' R\/s'/);
-    assert.doesNotMatch(admin, /H\/s/);
     const sheark = read('sheark-miner/src/sheark_miner.c');
     const solo = read('miner/src/shear_miner.c');
     for (const src of [sheark, solo]) {
@@ -226,10 +218,12 @@ describe('brand pages', () => {
     assert.match(theme, /cookieGet/);
     assert.match(theme, /cookieSet/);
     assert.match(theme, /onShearHost/);
-    assert.match(theme, /flagShearOsadmin/);
-    assert.match(theme, /paintShearOsadmin/);
-    assert.match(theme, /textContent = 'OSAdmin'/);
-    assert.match(theme, /nav-osadmin/);
+    assert.doesNotMatch(theme, /flagShearOsadmin/);
+    assert.doesNotMatch(theme, /paintShearOsadmin/);
+    assert.doesNotMatch(theme, /osadminHref/);
+    assert.doesNotMatch(theme, /shear_osadmin/);
+    assert.doesNotMatch(theme, /nav-osadmin/);
+    assert.doesNotMatch(theme, /textContent = 'OSAdmin'/);
     assert.doesNotMatch(theme, /textContent = 'OSadmin'/);
     const siteTheme = read('site/brand/theme.js');
     assert.match(siteTheme, /function cookieGet\(\) \{[\s\S]*?var found = ''[\s\S]*?found = v[\s\S]*?return found;\s*\}/);
@@ -305,8 +299,7 @@ describe('brand pages', () => {
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
     assert.match(poolHtml, /class="she-private-lockup">Shear testnet</);
     assert.doesNotMatch(poolHtml, /onfidential amounts|private cryptocurrency/);
-    assert.match(poolHtml, /ADMITv3 \(FS-1\)/);
-    assert.match(poolHtml, /full-chain membership, not rings of N/);
+    assert.match(poolHtml, /ADMITv3 \(FS-1\) full-chain membership on v12; live v11 uses ADMITv2 until the cut/);
     assert.match(poolHtml, /DINS-DAG/);
     assert.match(poolHtml, /blue set/);
     assert.match(poolHtml, /spine pot plus the hash rho, once/);
@@ -545,7 +538,6 @@ describe('sticky public navbar', () => {
     for (const rel of [
       'pool/public/explorer.html',
       'site/whitepaper/index.html',
-      'pool/admin/index.html',
     ]) {
       const page = read(rel);
       assert.match(page, /class="nav-btn/, `${rel} must ship nav-btn`);

@@ -35,7 +35,6 @@ const PUBLIC = [
   'site/index.html',
   'site/docs/content.js',
   'site/docs/index.html',
-  'site/admin/index.html',
   'site/whitepaper/index.html',
   'site/whitepaper/build_pdf.py',
   'pool/public/index.html',
@@ -122,10 +121,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /ssa1/);
     assert.match(main, /shear1/);
     assert.match(main, /never share/i);
-    assert.match(main, /ADMITv3 \(FS-1\)/);
-    assert.match(main, /full-chain membership, not rings of N/);
+    assert.match(main, /ADMITv3 \(FS-1\) full-chain membership on v12; live v11 uses ADMITv2 until the cut/);
     assert.match(main, /the current live testnet/);
-    assert.doesNotMatch(main, /ADMITv2/);
     assert.match(main, /Continuum 0\.71/);
     assert.doesNotMatch(main, /Continuum 0\.55/);
     assert.match(main, /https:\/\/shear\.digital\/docs\//);
@@ -306,7 +303,6 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /launch date not decided/);
     assert.doesNotMatch(main, /2026-09-18T21:00:00/);
     assert.doesNotMatch(docs, /2026-09-18T21:00:00/);
-    assert.doesNotMatch(read('site/admin/index.html'), /2026-09-18T21:00:00/);
     assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
     assert.match(readme, /16th November 2026 at 1400hrs UK time/);
     assert.match(readme, /does not emit/);
@@ -320,8 +316,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     const privacy = read('site/privacy.html');
     assert.match(privacy, /shewall\.bin/);
     assert.doesNotMatch(privacy, /seed phrase/);
-    assert.doesNotMatch(privacy, /wake lock/);
-    assert.doesNotMatch(privacy, /foreground service/);
+    assert.match(privacy, /notifications, a foreground service and wake lock/);
     const gov = read('site/governance.html');
     assert.match(gov, /shear-chrome-pill">Testnet/);
     assert.match(gov, /class="shear-legal"/);
@@ -337,7 +332,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
   });
 
   it('no surface claims privacy, confidential amounts, or a bucket anonymity set', () => {
-    assert.ok(CLAIM_SURFACES.length > 40, `walked ${CLAIM_SURFACES.length} files`);
+    assert.ok(CLAIM_SURFACES.length >= 40, `walked ${CLAIM_SURFACES.length} files`);
     for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
       const text = copyText(rel);
       for (const banned of COPY_BANNED) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
@@ -359,7 +354,6 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
       'explorer/explorer.html',
       'pool/public/explorer.html',
       'pool/public/index.html',
-      'site/admin/index.html',
       'site/docs/content.js',
       'site/how-to/index.html',
       'site/index.html',
@@ -376,6 +370,12 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
       const text = copyText(rel);
       if (!/shear-testnet-v1[01]\b|Continuum 0\.71/.test(text)) continue;
       if (synced.has(rel)) {
+        const liveBook = /shear-testnet-v11\b|Continuum 0\.71|the current live testnet/.test(text)
+          && /ADMITv3 \(FS-1\) full-chain/.test(text);
+        if (liveBook) {
+          assert.match(text, /ADMITv3 \(FS-1\) full-chain membership on v12; live v11 uses ADMITv2 until the cut/, `${rel} splits v12 membership from live v11`);
+          continue;
+        }
         assert.match(text, /ADMITv3 \(FS-1\)/, `${rel} names ADMITv3 (FS-1)`);
         assert.match(text, /full-chain membership, not rings of N/, `${rel} keeps full-chain membership`);
         assert.doesNotMatch(text, /ADMITv2/, `${rel} dropped ADMITv2`);

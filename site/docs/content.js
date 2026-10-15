@@ -75,7 +75,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / overview',
     html:
       '<p>Shear is a CPU-mined ledger. Coin is created when a block is found, not before. There is no premine and the developers do not sell SHE. You hash, or someone who already holds coin pays you.</p>' +
-      '<p>ADMITv3 (FS-1) is full-chain membership, not rings of N, over this book\'s notes. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v11</code>, the current live testnet. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
+      '<p>ADMITv3 (FS-1) full-chain membership on v12; live v11 uses ADMITv2 until the cut. Continuity-settled. PoW elects the tip. Offer a silent ID (<code>she1</code>) when someone pays you. Incoming coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure. On the public pool, a found block seals hash bonus (no 1% fee) and your pot share after the 1% fee to your miner <code>ssa1</code> in that block. Continuum reads it on the next sealed block. The live network today is <code>shear-testnet-v11</code>, the current live testnet. While this book has fewer than 10,000 notes the membership set is thin.</p>' +
       '<table><tr><th>Coin</th><td>SHE (11 protocol decimals; public pages show nine)</td></tr>' +
       '<tr><th>Algo</th><td>ShearHash-v3 (RandomX light, CPU)</td></tr>' +
       '<tr><th>Block pot</th><td>1.00 SHE in epoch 0, then −0.01 SHE/epoch to a 0.20 SHE floor (4d testnet / 400d mainnet)</td></tr>' +
@@ -113,7 +113,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / testnet',
     html:
       '<p>This is testnet. Balances can vanish. Treat them as a practice run before mainnet.</p>' +
-      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v11</code>), the current live testnet. Mainnet <code>shear-v1</code> is not live. The public countdown is 16th November 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
+      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v11</code>), the current live testnet. ADMITv3 (FS-1) full-chain membership on v12; live v11 uses ADMITv2 until the cut. Mainnet <code>shear-v1</code> is not live. The public countdown is 16th November 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
       '<p>Install clients only from the buttons on <a href="https://shear.digital">shear.digital</a> or the official GitHub tags. Windows SmartScreen may warn that ShearK-Miner.exe is unrecognized; this testnet build is not Authenticode-signed.</p>'
   };
 
@@ -121,7 +121,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>Version 2.0 of the project note: ADMITv3 (FS-1), full-chain membership, not rings of N, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.71. Live magic <code>shear-testnet-v11</code>, the current live testnet.</p>' +
+      '<p>Version 2.0 of the project note: ADMITv3 (FS-1) full-chain membership on v12; live v11 uses ADMITv2 until the cut. Node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.71. Live magic <code>shear-testnet-v11</code>, the current live testnet.</p>' +
       '<p><a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar. Typed whitepaper.shear.digital may fail TLS (apex SAN).</p>'
   };
 
@@ -421,7 +421,7 @@ window.SHEAR_DOCS = {
     title: 'Consensus',
     crumb: 'network / consensus',
     html:
-      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v11</code> on release 0.71, the current live testnet. ADMITv3 (FS-1) is full-chain membership, not rings of N, over this book\'s notes. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
+      '<p>More work wins, whoever mined it. Equal work follows the lower tip hash, not the block that arrived first and not the pool. Magic <code>shear-testnet-v11</code> on release 0.71, the current live testnet. ADMITv3 (FS-1) full-chain membership on v12; live v11 uses ADMITv2 until the cut. Extra mint is allowed only from <code>shear-reserve-v1</code>. Hash-tx law is consensus: proven floor shares collate per hasher dest, and each dest is paid its own bonus on the next coinbase.</p>'
   };
 
   P.header = {
@@ -481,7 +481,7 @@ window.SHEAR_DOCS = {
     title: 'ADMITv3 (FS-1)',
     crumb: 'addresses / admit',
     html:
-      '<p>Membership is the full live fluxset of every <code>admitPub</code> on this book, in appearance order. A sampled subset is the wrong set and fails <code>admit_membership</code>. A reused spend tag fails <code>admit_link_tag</code>. ADMITv3 (FS-1) is full-chain membership, not rings of N. Sends stay off until the full-set proof ships. While this book has fewer than 10,000 notes the set is thin.</p>'
+      '<p>Membership is the full live fluxset of every <code>admitPub</code> on this book, in appearance order. A sampled subset is the wrong set and fails <code>admit_membership</code>. A reused spend tag fails <code>admit_link_tag</code>. ADMITv3 (FS-1) full-chain membership on v12; live v11 uses ADMITv2 until the cut. Sends stay off until the full-set proof ships. While this book has fewer than 10,000 notes the set is thin.</p>'
   };
 
   P['dins-dag'] = {
