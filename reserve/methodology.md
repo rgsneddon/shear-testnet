@@ -82,6 +82,6 @@ The rate is written only when an epoch opens. A vote moves the hash-bonus unit a
 
 Until the oracle activation height, every epoch freezes the genesis rate, 291 bps, floored at 0. A lone producer observe is `observe_unattested` and cannot select the rate. Templates do not pre-fill miner reports. After activation, the rate is the hardened miner median: each bank needs the same tenth from at least 2/3 of the window, at least 10 banks must clear that bar, then the trimmed mean is floored at 0. Otherwise the previous rate is kept. The window is one week of block heights: 6720 blocks on mainnet at 90 seconds. Testnet uses that same week as a fraction of its epoch (67 blocks). A producer with more than 40% of the window is an alert, not a rate change. `oracle-snapshot.json` and `latest.json` are display only.
 
-## Example (fixture `snapshot_a`)
+## Example (bundle observed 2026-10-15)
 
-Fed 3.50–3.75 → 3.625. The consensus figure for this fixture is the trimmed mean, **284** bps.
+Fed 3.75–4.00 → 3.875. The consensus figure for this bundle is the trimmed mean, **291** bps.

@@ -7248,7 +7248,10 @@ void main() {
 
   test('kWalletVersion == 0.72 and the lock issuance rate uses the genesis bps', () {
     expect(kWalletVersion, '0.72');
-    expect(kReserveOracleDefaultBps, 284);
+    final genesis = RegExp(r'export const GENESIS_BPS = (\d+);')
+        .firstMatch(File('../crypto/reserve_oracle.js').readAsStringSync());
+    expect(genesis, isNotNull);
+    expect(kReserveOracleDefaultBps, int.parse(genesis!.group(1)!));
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
     final dart = File('lib/shear_reserve.dart').readAsStringSync();

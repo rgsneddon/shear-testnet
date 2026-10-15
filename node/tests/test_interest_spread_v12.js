@@ -325,7 +325,12 @@ describe('per-withdraw interest spread', () => {
 
     const again = minerDest();
     const who = portalDest();
-    const added = 38;
+    // Smallest top-up that lifts floor((π + added) * bps / 10000) by one nanos.
+    // The gap is the distance from this principal's remainder up to the next
+    // multiple of 10000, so the count moves with GENESIS_BPS.
+    const rem = (PI_SHE_NANOS * GENESIS_BPS) % 10000;
+    const gap = rem === 0 ? 10000 : 10000 - rem;
+    const added = Math.ceil(gap / GENESIS_BPS);
     const withLock = interestNanos(PI_SHE_NANOS + added, GENESIS_BPS);
     assert.equal(withLock, interest + 1);
     // A top-up opens in the new epoch. That credit stays locked. Taking it,

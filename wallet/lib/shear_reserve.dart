@@ -19,8 +19,9 @@ const kReserveJoinCutoffDaysMainnet = 99;
 const kReserveJoinCutoffDays = kBookMagic == 'shear-v1' ? kReserveJoinCutoffDaysMainnet : kReserveJoinCutoffDaysTestnet;
 const kReserveEpochMs = kReserveEpochDays * 86400000;
 const kReserveJoinCutoffMs = kReserveJoinCutoffDays * 86400000;
-/// Trimmed mean of the bundled policy rates (14 banks, drop 2 each side). 2.84%.
-const kReserveOracleDefaultBps = 284;
+/// Trimmed mean of the bundled policy rates (14 banks, drop 2 each side).
+/// Canonical integer: `GENESIS_BPS` in crypto/reserve_oracle.js. 2.91%.
+const kReserveOracleDefaultBps = 291;
 const kBpsStepCap = 100;
 const kStaleObserveMs = 14 * 86400000;
 const kVoteIncrease = 'increase bonus';
