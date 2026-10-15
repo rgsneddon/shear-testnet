@@ -1,0 +1,218 @@
+diff --git a/crypto/asert.js b/crypto/asert.js
+index f83e2b80..debd6f02 100644
+--- a/crypto/asert.js
++++ b/crypto/asert.js
+@@ -223,11 +223,10 @@ export const SPEND_SIG = 'ed25519-shear-spend-v1';
+ export const REWARD_LAW = 'epoch-bps-floor';
+ export const INTEREST_LAW = REWARD_LAW;
+ /**
+- * Vault Security default. withdraw() does not pay a time-locked note's
+- * principal. Legacy tranches still withdraw. The stricter alternative,
+- * all principal refused, is not this token.
++ * Attack Cartographer. withdraw() pays no principal on v12. Principal
++ * returns only by spending the unlocked lock note. Legacy receipts included.
+  */
+-export const RESERVE_NOTE_LAW = 'note-principal-refused';
++export const RESERVE_NOTE_LAW = 'all-principal-refused';
+ /** Unweighted mean of the attested 14-bank policy basket. */
+ export const ORACLE_LAW = 'basket-mean-14';
+ export const POT_PROP = 'shareBatch';
+diff --git a/crypto/reserve_vault.js b/crypto/reserve_vault.js
+index 829b9e43..535913ad 100644
+--- a/crypto/reserve_vault.js
++++ b/crypto/reserve_vault.js
+@@ -1648,15 +1648,15 @@ export function previewWithdraw(state, dest, nowMs = null) {
+   const principal = nanosOut(split.legacy);
+   const notePrincipal = nanosOut(split.note);
+   const interest = portalEpochInterest(state, p, clock);
+-  const payable = split.legacy > 0n;
++  const reason = split.note > 0n ? 'note_principal' : (split.legacy > 0n ? 'principal' : undefined);
+   return {
+     principal,
+     notePrincipal,
+     staked: asNum(p.staked),
+     idle: asNum(p.idle),
+     interest,
+-    payout: payable ? principal + interest : 0,
+-    reason: !payable && split.note > 0n ? 'note_principal' : undefined,
++    payout: reason ? 0 : principal + interest,
++    reason,
+     to: continuumOf(p, null, dest),
+   };
+ }
+@@ -2139,7 +2139,8 @@ export function verifyReservePayout(state, tx, clockMs) {
+   if (!p) return { ok: false, reason: 'empty' };
+   if (arrivalEpochOpen(state, p, clock)) return { ok: false, reason: 'epoch_open' };
+   const split = maturedSplit(state, p, clock);
+-  if (split.legacy <= 0n && split.note > 0n) return { ok: false, reason: 'note_principal' };
++  if (split.note > 0n) return { ok: false, reason: 'note_principal' };
++  if (split.legacy > 0n) return { ok: false, reason: 'principal' };
+   const principal = nanosOut(split.legacy);
+   const interest = portalEpochInterest(state, p, clock);
+   const published = publicActionNanos(tx, (tx?.vout || []).find((row) => String(row?.kind || '') === KIND_WITHDRAW) || tx?.vout?.[0]);
+@@ -2653,7 +2654,8 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId
+   if (staked + idle <= 0n) return { ok: false, reason: 'empty' };
+   if (arrivalEpochOpen(state, p, nowMs)) return { ok: false, reason: 'epoch_open' };
+   const split = maturedSplit(state, p, nowMs);
+-  if (split.legacy <= 0n && split.note > 0n) return { ok: false, reason: 'note_principal' };
++  if (split.note > 0n) return { ok: false, reason: 'note_principal' };
++  if (split.legacy > 0n) return { ok: false, reason: 'principal' };
+   const release = split.legacy;
+   if (release <= 0n) return { ok: false, reason: 'epoch_open' };
+   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
+diff --git a/node/tests/test_timelock_withdraw_supply_v12.js b/node/tests/test_timelock_withdraw_supply_v12.js
+index f391ee50..490e9098 100644
+--- a/node/tests/test_timelock_withdraw_supply_v12.js
++++ b/node/tests/test_timelock_withdraw_supply_v12.js
+@@ -1,11 +1,9 @@
+ /**
+  * Time-locked principal is the lock note. withdraw() must not pay it again.
+  *
+- * Vault Security default, applied here: refuse only noteIsPrincipal.
+- * A legacy tranche in the same portal still withdraws. A plain receipt
+- * still withdraws. Attack Cartographer's stricter rule (no principal in
+- * withdraw at all) is crypto/timelock_withdraw_refuse_all_principal.proposal.diff
+- * and is not applied.
++ * Attack Cartographer: withdraw() pays no principal. A time-locked note
++ * returns note_principal. A legacy or plain receipt returns principal.
++ * Interest is a reward claim, not a withdraw.
+  *
+  * lockNoteSpendRejected only gates a spend before unlock. The bug was
+  * withdraw() re-paying principal the note already carries. After the
+@@ -202,7 +200,7 @@ describe('time-locked withdraw supply', () => {
+     assert.equal(got.held, 0);
+   });
+ 
+-  it('still withdraws a plain receipt, and refuses a note-only fold', () => {
++  it('refuses a plain receipt as well as a note-only fold', () => {
+     const plainDest = destOf();
+     const plain = freshVault();
+     const plainTx = plainLock(plainDest, T0, 'plain-lock');
+@@ -210,26 +208,18 @@ describe('time-locked withdraw supply', () => {
+     const plainPreview = previewWithdraw(plain, plainDest, DRAW);
+     assert.equal(plainPreview.principal, PI_SHE_NANOS);
+     assert.equal(plainPreview.notePrincipal, 0);
++    assert.equal(plainPreview.reason, 'principal');
++    assert.equal(plainPreview.payout, 0);
+     assert.equal(plainPreview.interest, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+-    const plainDraw = admitWithdraw(plainDest, plainPreview.payout, 'plain-withdraw');
+-    assert.equal(verifyReservePayout(plain, plainDraw, DRAW).ok, true);
+-    const paid = applyReserveBlock({
+-      state: plain,
+-      block: { height: 2, txs: [{ coinbase: true, vout: [] }, plainDraw] },
+-      nowMs: DRAW,
+-      genesisMs: T0,
+-    });
+-    const row = withdrawRow(paid);
+-    assert.equal(row && row.ok, true, row && row.reason);
+-    assert.equal(row.principal, PI_SHE_NANOS);
+-    assert.equal(row.interest, plainPreview.interest);
++    const plainDraw = admitWithdraw(plainDest, plainPreview.principal + plainPreview.interest, 'plain-withdraw');
++    assert.equal(verifyReservePayout(plain, plainDraw, DRAW).reason, 'principal');
++    assert.equal(withdraw({ state: plain, dest: plainDest, nowMs: DRAW }).reason, 'principal');
+     const prior = freshVault();
+     assert.equal(applyLock(prior, plainTx, T0).ok, true);
+     const interest = blockWithdrawInterest(prior, supplyBlock(DRAW, plainDest, [plainDraw]), DRAW);
+     const permittedPlain = blockPermittedInterest(prior, supplyBlock(DRAW, plainDest, [plainDraw]), DRAW);
+-    assert.equal(interest.ok, true, interest.reason);
+-    assert.equal(permittedPlain.ok, true, permittedPlain.reason);
+-    assert.equal(interest.nanos, BigInt(plainPreview.interest));
++    assert.equal(interest.ok, false);
++    assert.equal(permittedPlain.ok, false);
+ 
+     const noteDest = destOf();
+     const note = freshVault();
+@@ -247,7 +237,7 @@ describe('time-locked withdraw supply', () => {
+     assert.equal(permitted.ok, false);
+   });
+ 
+-  it('pays only the legacy tranche when the portal also holds a time-locked note', () => {
++  it('refuses the whole withdraw when a time-locked note shares the portal', () => {
+     const dest = destOf();
+     const state = freshVault();
+     const legacy = plainLock(dest, T0, 'mixed-legacy', PI_SHE_NANOS);
+@@ -260,18 +250,14 @@ describe('time-locked withdraw supply', () => {
+     const preview = previewWithdraw(state, dest, DRAW);
+     assert.equal(preview.principal, PI_SHE_NANOS);
+     assert.equal(preview.notePrincipal, PI_SHE_NANOS);
++    assert.equal(preview.reason, 'note_principal');
+     const paid = withdraw({ state, dest, nowMs: DRAW });
+-    assert.equal(paid.ok, true, paid.reason);
+-    assert.equal(paid.principal, PI_SHE_NANOS);
+-    assert.equal(Number(portal.redeemedNanos), PI_SHE_NANOS);
+-    assert.equal(portal.tranches.length, 1);
+-    assert.equal(portal.tranches[0].noteIsPrincipal, true);
+-    assert.equal(Number(portal.tranches[0].amount), PI_SHE_NANOS);
+-    const again = withdraw({ state, dest, nowMs: DRAW });
+-    assert.equal(again.reason, 'note_principal');
++    assert.equal(paid.reason, 'note_principal');
++    assert.equal(portal.tranches.length, 2);
++    assert.equal(Number(portal.staked) + Number(portal.idle), PI_SHE_NANOS * 2);
+   });
+ 
+-  it('keeps an open top-up when the earlier legacy tranche withdraws', () => {
++  it('does not withdraw the earlier tranche while a later top-up is open', () => {
+     const dest = destOf();
+     const state = freshVault();
+     const first = plainLock(dest, T0, 'top-legacy');
+@@ -284,12 +270,10 @@ describe('time-locked withdraw supply', () => {
+     assert.equal(portal.tranches.length, 2);
+     assert.equal(portal.tranches[1].noteIsPrincipal, true);
+     const paid = withdraw({ state, dest, nowMs: later });
+-    assert.equal(paid.ok, true, paid.reason);
+-    assert.equal(paid.principal, PI_SHE_NANOS);
+-    assert.equal(portal.tranches.length, 1);
+-    assert.equal(portal.tranches[0].noteIsPrincipal, true);
+-    assert.equal(Number(portal.tranches[0].amount), PI_SHE_NANOS);
+-    assert.equal(Number(portal.staked) + Number(portal.idle), PI_SHE_NANOS);
++    assert.equal(paid.reason, 'principal');
++    assert.equal(portal.tranches.length, 2);
++    assert.equal(portal.tranches[1].noteIsPrincipal, true);
++    assert.equal(Number(portal.staked) + Number(portal.idle), PI_SHE_NANOS * 2);
+   });
+ 
+   it('does not let a withdraw skip another portal’s auto-credit', () => {
+@@ -311,14 +295,19 @@ describe('time-locked withdraw supply', () => {
+       genesisMs: T0,
+       requireStakeReward: true,
+     });
+-    assert.equal(grief.ok, true, grief.reason);
+-    const next = grief.state;
+-    const notePortal = next.portals[portalIdFromDest(noteDest)];
+-    const legacyPortal = next.portals[portalIdFromDest(legacyDest)];
+-    assert.equal(Number(notePortal.redeemedNanos), PI_SHE_NANOS);
+-    assert.equal(notePortal.tranches.length, 0);
+-    assert.equal(Number(legacyPortal.staked) + Number(legacyPortal.idle), 0);
++    assert.equal(grief.ok, false);
++    assert.equal(grief.reason, 'principal');
+     assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS * 2);
++    const releasedBoth = applyReserveBlock({
++      state,
++      block: { height: 4, txs: [{ coinbase: true, vout: [] }] },
++      nowMs: DRAW,
++      genesisMs: T0,
++      requireStakeReward: true,
++    });
++    assert.equal(releasedBoth.ok, true, releasedBoth.reason);
++    assert.equal(Number(state.portals[portalIdFromDest(noteDest)].redeemedNanos), PI_SHE_NANOS);
++    assert.equal(Number(state.portals[portalIdFromDest(legacyDest)].staked) + Number(state.portals[portalIdFromDest(legacyDest)].idle), 0);
+ 
+     const onlyNote = freshVault();
+     onlyNote.epochBps = 0;
+@@ -353,14 +342,14 @@ describe('time-locked withdraw supply', () => {
+   it('names the rule in the consensus fingerprint that the load seal hashes', () => {
+     const fp = consensusFingerprint(MAGIC_TESTNET);
+     assert.match(fp, new RegExp(`RESERVE_NOTE=${RESERVE_NOTE_LAW}`));
+-    assert.equal(RESERVE_NOTE_LAW, 'note-principal-refused');
++    assert.equal(RESERVE_NOTE_LAW, 'all-principal-refused');
+     const chainSrc = readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
+     assert.match(chainSrc, /consensusFingerprint\(magic\)/);
+     const seal = chainLoadSealHash(Buffer.alloc(32, 9), MAGIC_TESTNET);
+     assert.equal(typeof seal.update, 'function');
+     const other = consensusFingerprint(MAGIC_TESTNET).replace(
+       `RESERVE_NOTE=${RESERVE_NOTE_LAW}`,
+-      'RESERVE_NOTE=all-principal-refused',
++      'RESERVE_NOTE=note-principal-refused',
+     );
+     assert.notEqual(other, fp);
+   });
