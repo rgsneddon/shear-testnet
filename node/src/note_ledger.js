@@ -3,10 +3,29 @@
  * Indexing a new suffix is the only chain walk, and it runs when the
  * book grows, not once per request over the whole height.
  */
-import { SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { hash20FromAddress } from '../../crypto/address.js';
 import { openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
 import { asU8, noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
+import { epochMs } from '../../crypto/pot_sched.js';
+
+/**
+ * A lock note is spendable once the tip time has reached its unlock.
+ * No unlock on the note stays locked. A vote is not a note.
+ */
+export function lockNoteHeld(out, { tipMs = 0, genesisMs = 0, magic = MAGIC_TESTNET } = {}) {
+  if (String(out?.kind || '') !== 'lock') return false;
+  const tip = Number(tipMs) || 0;
+  const unlock = Number(out?.unlockAtMs) || 0;
+  if (unlock > 0) return !(tip >= unlock);
+  const epoch = Number(out?.lockEpoch);
+  const genesis = Number(genesisMs) || 0;
+  if (Number.isInteger(epoch) && epoch >= 0 && genesis > 0) {
+    const end = genesis + (epoch + 1) * epochMs(magic || MAGIC_TESTNET);
+    return !(tip >= end);
+  }
+  return true;
+}
 
 function commitHex(v) {
   try {
@@ -108,7 +127,7 @@ export function createNoteLedger({ digestsOf = null } = {}) {
         const o = vout[index];
         indexOutputs += 1;
         const kind = String(o?.kind || tx?.kind || '');
-        if (kind === 'lock' || kind === 'vote') continue;
+        if (kind === 'vote') continue;
         const rec = {
           height: Number(block?.height) || 0,
           coinbase,
@@ -208,18 +227,64 @@ export function createNoteLedger({ digestsOf = null } = {}) {
     return { wantHex, destHex, rows };
   }
 
-  function spendable(address, tipHeight, { need = SPENDABLE_CONFIRMATIONS, coinbaseOnly = false } = {}) {
+  function rowNanos(rec, tip, { need, coinbaseOnly, wantHex, tipMs, genesisMs, magic, locksOnly = false }) {
+    if (coinbaseOnly && !rec.coinbase) return 0;
+    const kind = String(rec.out?.kind || rec.tx?.kind || '');
+    if (locksOnly && kind !== 'lock') return 0;
+    if (kind === 'lock' && lockNoteHeld(rec.out, { tipMs, genesisMs, magic })) return 0;
+    const byNote = !!(rec.commitHex && rec.commitHex === wantHex);
+    if (byNote && spentCount.has(rec.commitHex)) return 0;
+    const h = Number(rec.height) || 0;
+    if (!(h > 0 && (tip - h + 1) >= need)) return 0;
+    return openedOf(rec);
+  }
+
+  function spendable(address, tipHeight, {
+    need = SPENDABLE_CONFIRMATIONS,
+    coinbaseOnly = false,
+    tipMs = 0,
+    genesisMs = 0,
+    magic = MAGIC_TESTNET,
+  } = {}) {
     const tip = Number(tipHeight) || 0;
     const { wantHex, rows } = collect(address);
     let nanos = 0;
     for (const rec of rows) {
-      if (coinbaseOnly && !rec.coinbase) continue;
-      const byNote = !!(rec.commitHex && rec.commitHex === wantHex);
-      if (byNote && spentCount.has(rec.commitHex)) continue;
+      nanos += rowNanos(rec, tip, { need, coinbaseOnly, wantHex, tipMs, genesisMs, magic });
+    }
+    return nanos;
+  }
+
+  /** Lock notes whose unlock has passed. The vault subtracts only what is still held. */
+  function unlockedLockNanos(address, tipHeight, opts = {}) {
+    const tip = Number(tipHeight) || 0;
+    const { wantHex, rows } = collect(address);
+    const need = opts.need ?? SPENDABLE_CONFIRMATIONS;
+    let nanos = 0;
+    for (const rec of rows) {
+      nanos += rowNanos(rec, tip, { ...opts, need, wantHex, locksOnly: true });
+    }
+    return nanos;
+  }
+
+  /**
+   * Lock notes whose unlock has passed, including ones already spent.
+   * A spent note has left the wallet. It still covers its principal so a
+   * later inbound is not frozen by that amount.
+   */
+  function coveredLockNanos(address, tipHeight, opts = {}) {
+    const tip = Number(tipHeight) || 0;
+    const { rows } = collect(address);
+    const need = opts.need ?? SPENDABLE_CONFIRMATIONS;
+    let nanos = 0;
+    for (const rec of rows) {
+      const kind = String(rec.out?.kind || rec.tx?.kind || '');
+      if (kind !== 'lock') continue;
+      if (opts.coinbaseOnly && !rec.coinbase) continue;
+      if (lockNoteHeld(rec.out, opts)) continue;
       const h = Number(rec.height) || 0;
       if (!(h > 0 && (tip - h + 1) >= need)) continue;
-      const n = openedOf(rec);
-      if (n > 0) nanos += n;
+      nanos += openedOf(rec);
     }
     return nanos;
   }
@@ -261,6 +326,8 @@ export function createNoteLedger({ digestsOf = null } = {}) {
   return {
     sync,
     spendable,
+    unlockedLockNanos,
+    coveredLockNanos,
     refs,
     spendDigests: () => digests,
     stats,

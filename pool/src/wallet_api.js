@@ -36,7 +36,7 @@ import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
-import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
+import { noteCommitOfDest20, asU8, hiddenAmountRangeReady } from '../../crypto/note.js';
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -44,6 +44,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import { v3BucketSendRejected } from '../../crypto/fs1_send_gate.js';
+import { fs1AnchorRows } from '../../crypto/admit_v3.js';
 
 export function nanosToShe(n) {
   return Number(n || 0) / NANOS_PER_SHE;
@@ -1290,6 +1291,8 @@ function sealedSendOnly(body, { queueSend }) {
     ...(body.admit_proof ? { admit_proof: body.admit_proof } : {}),
     ...(body.spendTag != null ? { spendTag: body.spendTag } : {}),
     ...(proofs.length ? { admit_proofs: proofs } : {}),
+    ...(body.fs1 != null && body.fs1 !== '' ? { fs1: body.fs1 } : {}),
+    ...(Number.isSafeInteger(body.anchor) && body.anchor > 0 ? { anchor: body.anchor } : {}),
   };
   const open = valueOpenRejected(draft);
   if (open) return { status: 400, json: { ok: false, reason: open.reason } };
@@ -1307,6 +1310,58 @@ function sealedSendOnly(body, { queueSend }) {
   return {
     status: 200,
     json: { ok: true, tx: { id: tx.id, kind: 'send', confirmed: false, memo: !!body.memoCt }, log: submitLine },
+  };
+}
+
+/**
+ * A reward claim is a user tx. The posted fee is the same bid a sealed send
+ * carries: required, at least the weight levy, and at most the levy cap.
+ * The mempool orders it by fee rate. The whole fee is paid to miners.
+ */
+function queuedRewardClaim(body, { queueSend }) {
+  if (String(body.programId || '') !== RESERVE_PROGRAM) {
+    return { status: 400, json: { ok: false, reason: 'bad_kind' } };
+  }
+  const to = String(body.to || '').trim();
+  if (!isDestAddress(to)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const nanos = parseIntegerNanos(body.nanos);
+  if (nanos == null || nanos <= 0n) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const nullifier = String(body.nullifier || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(nullifier)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  if (!Array.isArray(body.proof)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const vout = Array.isArray(body.vout) ? body.vout.filter((o) => o && typeof o === 'object') : [];
+  if (!vout.length || String(vout[0].kind || '') !== 'reward-claim') {
+    return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  }
+  const fee = parseIntegerNanos(body.fee);
+  if (fee == null) return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  const draft = {
+    id: typeof body.id === 'string' && body.id ? body.id : `claim-${Date.now()}`,
+    programId: RESERVE_PROGRAM,
+    mint: true,
+    kind: 'reward-claim',
+    to,
+    nanos: wireNanos(nanos),
+    nullifier,
+    proof: body.proof,
+    fee: wireNanos(fee),
+    vin: [],
+    vout,
+  };
+  const need = levyNeed(draft);
+  const paid = Number(draft.fee);
+  if (!(paid >= need) || paid > LEVY_CAP_NANOS) {
+    return { status: 400, json: { ok: false, reason: 'levy' } };
+  }
+  const tx = typeof queueSend === 'function' ? queueSend(draft, { paintedOwedNanos: 0 }) : null;
+  if (!tx || (typeof tx === 'object' && tx.ok === false)) {
+    return { status: 400, json: { ok: false, reason: tx?.reason || 'queue_failed' } };
+  }
+  const submitLine = walletSubmitLog({ connId: newConnId(), ok: true });
+  if (lineJoinsIpToIdentity(submitLine)) return { status: 500, json: { ok: false, reason: 'log' } };
+  return {
+    status: 200,
+    json: { ok: true, tx: { id: tx.id, kind: 'reward-claim', fee: draft.fee, confirmed: false }, log: submitLine },
   };
 }
 
@@ -1428,6 +1483,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const spendTags = [...(live.spendTags || [])];
     // J is the pair (admit pub, note commit) in one order. A count with no
     // commit column cannot be proved.
+    const tipHeight = Number((typeof store?.tip === 'function' ? store.tip()?.height : 0) || 0);
+    const whole = pubs.length === srcPubs.length;
+    const anchors = whole && typeof store?.anchorNote === 'function' ? fs1AnchorRows(tipHeight, store.anchorNote) : [];
     return {
       status: 200,
       json: {
@@ -1435,6 +1493,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         jroot: root.toString('hex'),
         noteCount: pubs.length,
         spendTagCount: spendTags.length,
+        height: tipHeight,
+        anchors,
         pubs,
         commits,
       },
@@ -1539,6 +1599,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     if (String(body.kind || 'send') === 'send') {
       return sealedSendOnly(body, { queueSend });
+    }
+    if (String(body.kind || '') === 'reward-claim') {
+      return queuedRewardClaim(body, { queueSend });
     }
     const from = isDestAddress(String(body.from || '')) ? String(body.from).trim() : '';
     const rawTo = String(body.to || '').trim();
@@ -1834,6 +1897,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       : null;
     let tx;
     if (pending && pending.kind === 'admin-spendable') {
+      if (!hiddenAmountRangeReady()) {
+        return { status: 503, json: { ok: false, reason: 'range_native_required', public: false } };
+      }
       const open = openingForSpentDest(poolIdentity, from) || String(poolOpen || '');
       const draft = attachDummyOuts({
         kind: 'send',

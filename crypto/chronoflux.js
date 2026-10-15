@@ -341,7 +341,7 @@ function compactValue(v) {
   return out;
 }
 
-const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw']);
+const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw', 'reward-claim']);
 
 /**
  * Top-level keys a sealed body tx may carry, from the signed body list in
@@ -352,10 +352,11 @@ export const COMPACT_TX_KEYS = Object.freeze([
   'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
   'portalId', 'payoutPortalId', 'programId', 'choice',
-  'admit_proof', 'admit_proofs', 'spendTag', 'members',
+  'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'weight', 'payer', 'sponsor',
   'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
+  'nullifier',
 ]);
 
 function dest20Buf(x) {
@@ -388,6 +389,15 @@ function claimedReserveV(o) {
   return 0;
 }
 
+function attachLockTime(row, o) {
+  if (String(o?.kind || row?.kind || '') !== 'lock') return;
+  const unlock = Number(o?.unlockAtMs);
+  if (Number.isInteger(unlock) && unlock > 0) row.unlockAtMs = unlock;
+  if (o?.lockEpoch != null && o.lockEpoch !== '' && Number.isInteger(Number(o.lockEpoch)) && Number(o.lockEpoch) >= 0) {
+    row.lockEpoch = Number(o.lockEpoch);
+  }
+}
+
 function attachReserveSeal(row, o) {
   const d20 = dest20FromOpen(o);
   if (d20) row.dest20 = d20;
@@ -398,6 +408,7 @@ function attachReserveSeal(row, o) {
   if (Number.isFinite(v) && v !== 0) {
     row.valueProof = { ...(row.valueProof || {}), v };
   }
+  attachLockTime(row, o);
 }
 
 const COINBASE_OPEN_KINDS = new Set(['pot', 'hash', 'pool-fee', 'finder-fee', 'reserve-fee']);
@@ -409,7 +420,7 @@ export function outputMayCarryValueOpen(tx, o) {
   if (tx?.coinbase || String(tx?.kind || '') === 'coinbase') return COINBASE_OPEN_KINDS.has(kind);
   const top = tx?.kind == null ? '' : String(tx.kind);
   // b-spend is a public mint receipt: the opened sum is the chain leaf.
-  if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'pool-withdraw' || top === 'b-spend') return kind === top;
+  if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'reward-claim' || top === 'pool-withdraw' || top === 'b-spend') return kind === top;
   // A dummy is publicly zero. That opening is not an amount. Any other value stays hidden.
   if (kind === 'dummy') {
     const v = o?.valueProof?.v;
@@ -572,11 +583,18 @@ export function compactTx(tx) {
     };
     if (tx.excess) row.excess = tx.excess;
     if (tx.jroot) row.jroot = tx.jroot;
-    if (tx.observe != null && typeof tx.observe === 'object' && !Array.isArray(tx.observe)) {
-      row.observe = {
-        annualBps: tx.observe.annualBps,
-        observedAtMs: tx.observe.observedAtMs,
+    if (Array.isArray(tx.reports) && tx.reports.length) {
+      row.reports = tx.reports.map((r) => ({ id: r?.id, tenths: r?.tenths }));
+    }
+    if (tx.rateCommit && typeof tx.rateCommit === 'object') {
+      row.rateCommit = {
+        epochIndex: Math.floor(Number(tx.rateCommit.epochIndex) || 0),
+        epochBps: Math.floor(Number(tx.rateCommit.epochBps) || 0),
+        magic: String(tx.rateCommit.magic || ''),
       };
+    }
+    if (typeof tx.rewardRoot === 'string' && /^[0-9a-f]{64}$/i.test(tx.rewardRoot)) {
+      row.rewardRoot = tx.rewardRoot.toLowerCase();
     }
     const carry = Math.floor(Number(tx.carryNanos) || 0);
     if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;
@@ -601,6 +619,9 @@ export function compactTx(tx) {
     delete out.payer;
     delete out.sponsor;
   }
+  delete out.owner;
+  delete out.payout;
+  delete out.address;
   if (tx.vin) {
     out.vin = (tx.vin || []).map((v) => {
       if (v?.coinbase) return compactValue({ coinbase: true, height: v.height });

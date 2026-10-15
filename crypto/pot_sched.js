@@ -25,14 +25,22 @@ export function epochMs(magic) {
   return epochDays(magic) * MS_PER_DAY;
 }
 
-/** Late-join idle window scales with epoch length (99/400 on mainnet → 1 day on testnet). */
-export function joinCutoffDays(magic) {
-  const days = epochDays(magic);
-  return Math.max(0, Math.round((99 * days) / 400));
+/** Mainnet stake reward closes this many days before the epoch ends. */
+export const STAKE_CUTOFF_DAYS_MAINNET = 99;
+/** Testnet stake reward closes for the last quarter of the epoch. */
+export const STAKE_CUTOFF_QUARTER_DEN = 4;
+
+/**
+ * Time still left in the epoch that a new lock must have in order to earn
+ * a stake reward. Mainnet is 99 days. Testnet is the last quarter.
+ */
+export function joinCutoffMs(magic) {
+  if (String(magic) === MAGIC_MAINNET) return STAKE_CUTOFF_DAYS_MAINNET * MS_PER_DAY;
+  return Math.floor(epochMs(magic) / STAKE_CUTOFF_QUARTER_DEN);
 }
 
-export function joinCutoffMs(magic) {
-  return joinCutoffDays(magic) * MS_PER_DAY;
+export function joinCutoffDays(magic) {
+  return Math.floor(joinCutoffMs(magic) / MS_PER_DAY);
 }
 
 export function vortexEpochIndex({ nowMs, genesisMs, epochDays: days } = {}) {

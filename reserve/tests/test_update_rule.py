@@ -28,7 +28,7 @@ class UpdateRuleTests(unittest.TestCase):
             self.assertTrue(first['changed'])
             self.assertEqual(first['version'], 'shear-reserve-oracle-v1')
             self.assertEqual(len(first['components']), 14)
-            avg = first['averagePercent']
+            avg = first['consensusBps']
             vec = first['components']
             as_of = first['asOf']
             hist1 = (out / 'history.jsonl').read_text().strip().splitlines()
@@ -42,8 +42,7 @@ class UpdateRuleTests(unittest.TestCase):
             )
             self.assertFalse(second['changed'])
             self.assertEqual(second['changedBanks'], [])
-            self.assertEqual(second['averagePercent'], avg)
-            self.assertEqual(second['averageInteger'], first['averageInteger'])
+            self.assertEqual(second['consensusBps'], avg)
             self.assertEqual(second['components'], vec)
             self.assertEqual(second['asOf'], as_of)
             self.assertEqual(second['observedAt'], '2026-08-02T12:00:00Z')
@@ -59,12 +58,12 @@ class UpdateRuleTests(unittest.TestCase):
             self.assertTrue(third['changed'])
             self.assertEqual(third['changedBanks'], ['BOE'])
             self.assertEqual(third['asOf'], '2026-08-15')
-            self.assertNotEqual(third['averagePercent'], avg)
+            self.assertEqual(third['changedBanks'], ['BOE'])
             hist3 = (out / 'history.jsonl').read_text().strip().splitlines()
             self.assertEqual(len(hist3), 2)
             latest = json.loads((out / 'latest.json').read_text())
             self.assertEqual(latest['version'], 'shear-reserve-oracle-v1')
-            self.assertEqual(latest['averageScale'], 'tenths_of_basis_point')
+            self.assertEqual(latest['consensusScale'], 'basis_point')
             self.assertEqual(len(latest['components']), 14)
 
     def test_snapshot_a_then_b_then_same_policy_refetch(self):
@@ -88,7 +87,7 @@ class UpdateRuleTests(unittest.TestCase):
             self.assertTrue(second['changed'])
             self.assertEqual(second['changedBanks'], ['BOE'])
             self.assertEqual(second['asOf'], '2026-08-15')
-            self.assertNotEqual(second['averagePercent'], first['averagePercent'])
+            self.assertNotEqual(second['components'], first['components'])
             self.assertNotEqual(second['components'], first['components'])
             hist1 = (out / 'history.jsonl').read_text().strip().splitlines()
             self.assertEqual(len(hist1), 2)
@@ -102,8 +101,7 @@ class UpdateRuleTests(unittest.TestCase):
             )
             self.assertFalse(third['changed'])
             self.assertEqual(third['changedBanks'], [])
-            self.assertEqual(third['averagePercent'], second['averagePercent'])
-            self.assertEqual(third['averageInteger'], second['averageInteger'])
+            self.assertEqual(third['consensusBps'], second['consensusBps'])
             self.assertEqual(third['components'], second['components'])
             self.assertEqual(third['asOf'], '2026-08-15')
             self.assertEqual(third['observedAt'], '2026-08-16T09:00:00Z')

@@ -11,6 +11,7 @@ from reserve.normalise import (
     percent_to_tenths_bp,
     refuse_overnight,
     tenths_bp_to_percent,
+    trimmed_mean_bps,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +64,13 @@ class NormaliseTests(unittest.TestCase):
         avg = mean_14(ints)
         self.assertEqual(avg, 2636)
         self.assertEqual(float(tenths_bp_to_percent(avg)), 2.636)
+
+    def test_trimmed_mean_floors_at_zero(self):
+        bundled = [3625, 3750, 2075, 500, 2750, 3600, 3000, 0, 2000, 4000, 1600, 2500, 4000, 3500]
+        self.assertEqual(trimmed_mean_bps(bundled), 284)
+        self.assertEqual(trimmed_mean_bps([-1000] * 14), 0)
+        self.assertIsNone(trimmed_mean_bps([100] * 9))
+        self.assertEqual(trimmed_mean_bps([100001] + [1000] * 13), trimmed_mean_bps([1000] * 13))
 
     def test_refuse_overnight_ids(self):
         for sid in ('SOFR', 'SONIA', '€STR', 'EFFR', 'AONIA'):

@@ -2,7 +2,8 @@
  * Stage 0 send and vault gate (Russell R-3).
  *
  * Flow sends (send and transfer) and vault kinds (lock, vote, withdraw) that
- * carry a byte-3 bucket proof are rejected before any proof work. No
+ * carry a byte-3 bucket proof are rejected before any proof work. A send is
+ * only funded by an FS-1 spend (admit_v3 verifyFlowAdmitFs1). No
  * consensus path calls the bucket verifier, so its proof-size cap and its
  * circuit pad are not consensus rules. The prover stays in the tree until
  * Stage 7. The reason text does not call the bucket proof ADMIT.
@@ -20,6 +21,7 @@ export const FS1_VAULT_ERROR = 'vault unavailable until FS-1';
 export const FS1_VAULT_REASON = 'vault_unavailable';
 
 const VAULT_KINDS = new Set(['lock', 'vote', 'withdraw']);
+const FS1_WIRE = 0xf1;
 
 function proofBytes(proof) {
   if (!proof || typeof proof !== 'object') return null;
@@ -32,11 +34,12 @@ function proofBytes(proof) {
   }
 }
 
-/** True when this object is a version-3 bucket membership proof. */
+/** True when this object is a version-3 bucket membership proof. An FS-1 record (wire byte 0xF1) is not one. */
 export function proofIsV3Bucket(proof) {
   if (!proof || typeof proof !== 'object') return false;
-  if (proof.v === 3 || proof.v === '3') return true;
   const pr = proofBytes(proof);
+  if (pr && pr.length >= 1 && pr[0] === FS1_WIRE) return false;
+  if (proof.v === 3 || proof.v === '3') return true;
   return !!(pr && pr.length >= 1 && pr[0] === 3);
 }
 

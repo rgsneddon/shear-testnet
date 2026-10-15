@@ -24,9 +24,8 @@ import {
   MAGIC_TESTNET,
   HASH_BONUS_NANOS,
   HASH_BONUS_NANOS_FLOOR,
-  EPOCH_BPS_MAX_STEP,
 } from '../../crypto/asert.js';
-import { interestNanos, clampBpsStep } from '../../crypto/reserve_oracle.js';
+import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { reserveFeeDest } from '../../crypto/levy.js';
 import {
@@ -220,9 +219,12 @@ describe('per-withdraw interest spread', () => {
     assert.equal(minted.reason, 'supply');
   });
 
-  it('pays zero interest on dust, on the rounding boundary, and on idle', () => {
-    const dust = 37;
-    const boundary = 38;
+  it('pays zero interest on dust and the rounding boundary, and no stake on a last-quarter lock', () => {
+    // Smallest stake whose floor(stake * bps / 10000) is 1, and the unit below it.
+    // A stake below π earns nothing. The +1 rounding is paid on a qualified
+    // stake of π plus that boundary unit.
+    const boundary = Math.ceil(10000 / GENESIS_BPS);
+    const dust = boundary - 1;
     assert.equal(interestNanos(dust, GENESIS_BPS), 0);
     assert.equal(interestNanos(boundary, GENESIS_BPS), 1);
     const miner = minerDest();
@@ -230,59 +232,61 @@ describe('per-withdraw interest spread', () => {
     const low = portalDest();
     const edge = portalDest();
     const sponsorInterest = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
+    const edgeStake = PI_SHE_NANOS + boundary;
+    const edgeInterest = interestNanos(edgeStake, GENESIS_BPS);
+    assert.equal(edgeInterest, sponsorInterest + 1);
     const chain = [
       potBlock(GENESIS, miner, [
         lockOf(miner, sponsor, PI_SHE_NANOS, 'z-sponsor'),
         lockOf(miner, low, dust, 'z-dust'),
-        lockOf(miner, edge, boundary, 'z-edge'),
+        lockOf(miner, edge, edgeStake, 'z-edge'),
       ]),
       potBlock(DRAW, miner, [
         drawOf(sponsor, miner, PI_SHE_NANOS + sponsorInterest, 'z-ws'),
         drawOf(low, miner, dust, 'z-wl'),
-        drawOf(edge, miner, boundary + 1, 'z-we'),
+        drawOf(edge, miner, edgeStake + edgeInterest, 'z-we'),
       ]),
     ];
-    expectVerified(chain, sponsorInterest + 1, 'dust-boundary');
+    expectVerified(chain, sponsorInterest + edgeInterest, 'dust-boundary');
 
     const late = GENESIS + EPOCH_MS - joinCutoffMs(MAGIC_TESTNET) + 1000;
     assert.ok(late < GENESIS + EPOCH_MS);
+    const idleStake = 1000;
     const idleMiner = minerDest();
     const parked = portalDest();
     const idleChain = [
       potBlock(GENESIS, idleMiner, [lockOf(idleMiner, portalDest(), PI_SHE_NANOS, 'idle-open')]),
-      potBlock(late, idleMiner, [lockOf(idleMiner, parked, 1000, 'idle-lock')]),
-      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, 1000, 'idle-draw')]),
+      potBlock(late, idleMiner, [lockOf(idleMiner, parked, idleStake, 'idle-lock')]),
+      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, idleStake, 'idle-draw')]),
     ];
     expectVerified(idleChain, 0, 'idle');
   });
 
-  it('uses genesis bps, the bps after an observe, and the step floor', () => {
+  it('keeps the genesis bps across epochs; an observe is not a rate', () => {
     const miner = minerDest();
     const first = portalDest();
     const second = portalDest();
     const stake = PI_SHE_NANOS;
     const atGenesis = interestNanos(stake, GENESIS_BPS);
-    const floorBps = clampBpsStep(GENESIS_BPS, 0);
-    assert.equal(floorBps, GENESIS_BPS - EPOCH_BPS_MAX_STEP);
-    const atFloor = interestNanos(stake, floorBps);
-    assert.ok(atFloor < atGenesis);
+    const observed = potBlock(GENESIS, miner, [lockOf(miner, first, stake, 'bps-obs')], {
+      annualBps: 0,
+      observedAtMs: GENESIS,
+    });
+    assert.equal(vaultAfterBlock(null, observed).ok, false);
     const chain = [
-      potBlock(GENESIS, miner, [lockOf(miner, first, stake, 'bps-a')], {
-        annualBps: 0,
-        observedAtMs: GENESIS,
-      }),
+      potBlock(GENESIS, miner, [lockOf(miner, first, stake, 'bps-a')]),
       potBlock(GENESIS + 1000, miner, [
         voteTx({ from: miner, dest: first, choice: VOTE_HOLD, id: 'bps-hold' }),
       ]),
       potBlock(DRAW, miner, [
         drawOf(first, miner, stake + atGenesis, 'bps-wa'),
       ]),
-      potBlock(DRAW + 1, miner, [lockOf(miner, second, stake, 'bps-b')]),
-      potBlock(DRAW + 1 + EPOCH_MS, miner, [
-        drawOf(second, miner, stake + atFloor, 'bps-wb'),
+      potBlock(GENESIS + 2 * EPOCH_MS, miner, [lockOf(miner, second, stake, 'bps-b')]),
+      potBlock(GENESIS + 3 * EPOCH_MS, miner, [
+        drawOf(second, miner, stake + atGenesis, 'bps-wb'),
       ]),
     ];
-    expectVerified(chain, atGenesis + atFloor, 'bps-floor');
+    expectVerified(chain, atGenesis + atGenesis, 'genesis-rate');
     let vault = vaultAfterBlock(null, chain[0]);
     assert.equal(vault.ok, true);
     vault = vaultAfterBlock(vault.vault, chain[1]);
@@ -292,7 +296,7 @@ describe('per-withdraw interest spread', () => {
     assert.equal(vault.ok, true);
     vault = vaultAfterBlock(vault.vault, chain[3]);
     assert.equal(vault.ok, true, 'roll');
-    assert.equal(vault.vault.epochBps, floorBps);
+    assert.equal(vault.vault.epochBps, GENESIS_BPS);
 
     const floorMiner = minerDest();
     const voter = portalDest();
@@ -307,7 +311,7 @@ describe('per-withdraw interest spread', () => {
     expectSupplyReject([opened, down], 'unit-floor');
   });
 
-  it('rejects a mid-epoch withdraw and a same-block lock changes the prefix stake', () => {
+  it('rejects a mid-epoch withdraw, and a same-block lock does not earn that epoch', () => {
     const miner = minerDest();
     const portal = portalDest();
     const interest = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
@@ -324,6 +328,9 @@ describe('per-withdraw interest spread', () => {
     const added = 38;
     const withLock = interestNanos(PI_SHE_NANOS + added, GENESIS_BPS);
     assert.equal(withLock, interest + 1);
+    // A top-up opens in the new epoch. That credit stays locked. Taking it,
+    // or paying it this epoch's interest, is refused. The earlier principal
+    // is payable in the same block.
     const before = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock')]),
       potBlock(DRAW, again, [
@@ -331,7 +338,23 @@ describe('per-withdraw interest spread', () => {
         drawOf(who, again, PI_SHE_NANOS + added + withLock, 'pre-draw'),
       ]),
     ];
-    expectVerified(before, withLock, 'lock-then-withdraw');
+    expectSupplyReject(before, 'lock-then-withdraw-old');
+    const honest = [
+      potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock-ok')]),
+      potBlock(DRAW, again, [
+        lockOf(again, who, added, 'pre-add-ok'),
+        drawOf(who, again, PI_SHE_NANOS + added + interest, 'pre-draw-ok'),
+      ]),
+    ];
+    expectSupplyReject(honest, 'lock-then-withdraw');
+    const released = [
+      potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'own-lock')]),
+      potBlock(DRAW, again, [
+        lockOf(again, who, added, 'own-add'),
+        drawOf(who, again, PI_SHE_NANOS + interest, 'own-draw'),
+      ]),
+    ];
+    expectVerified(released, interest, 'old-principal-while-top-up-open');
     const after = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'post-lock')]),
       potBlock(DRAW, again, [

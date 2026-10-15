@@ -15,7 +15,7 @@ First Vortex dapp. Not the general contract surface (that is Vortex).
 | Portals | One per user dest (`ssa1`). Public rows do not list portals, rest-frame, or view keys |
 | Language | Example Solidity at `contracts/Reserve.sol`. Nodes honour the same rules. Shear only. |
 
-Oracle: The Reserve oracle (`shear-reserve-oracle-v1`) is coded into every node. It **may** propose observed annual bps into an epoch freeze. It **must not** move the pot schedule, mint mid-epoch at a live knob, or accept unbounded/stale/equivocating rates. Freeze is consensus-checked (max 10000 bps, max step 100 bps, max age 14d, no second freeze for the same epoch). A bad feed cannot reorg blocks or steal the pot. Mainnet has no operator override switch.
+Oracle: The Reserve oracle (`shear-reserve-oracle-v1`) is coded into every node. It **may** propose observed annual bps into an epoch freeze. It **must not** move the pot schedule, mint mid-epoch at a live knob, or accept unbounded/stale/equivocating rates. Freeze is consensus-checked (0 to 10000 bps, no per-epoch step, max age 14d, no second freeze for the same epoch). A bad feed cannot reorg blocks or steal the pot. Mainnet has no operator override switch.
 
 Hardcoded program id: `shear-reserve-v1`. This is the **only** Vortex dapp whose `mint` is consensus-legal. Third-party staking products must pre-fund (top up) staker rewards from SHE already in circulation.
 
