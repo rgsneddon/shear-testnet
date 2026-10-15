@@ -296,6 +296,30 @@ export const MIN_CONFIRMS_POLICY = 12;
 /** Reserve reward is minted in full. The fee bank is not a reward source. */
 export const RESERVE_FEE_FIRST = 0;
 
+/**
+ * FS-1 parameters for the consensus fingerprint, as the shear-fs1 crate and
+ * N-1 use them. Layer one is Selene, 38 wide (fcmps LAYER_ONE_LEN); layer two
+ * is Helios, 18 wide (LAYER_TWO_LEN); DEPTH layers. The leaf is O || I || C
+ * on Ed25519, FS1_LEAF_BYTES long, with I = E(Hp(admitPub)) under FS1_HP_DST
+ * (crypto/fs1_leaf.js, shear-fs1 src/leaf.rs). The cycle token is shear-fs1
+ * `ADMIT_CYCLE`, built from `CYCLE_C1` (Selene) and `CYCLE_C2` (Helios).
+ * PSA-df82-1: these parameters are the live tokens. The retired Pasta bucket
+ * arity and leaf domain must not reappear in this file.
+ */
+export const FS1_LAYER_ONE_LEN = 38;
+export const FS1_LAYER_TWO_LEN = 18;
+export const FS1_DEPTH = 7;
+export const FS1_LEAF_LEN = 96;
+export const FS1_LEAF_HP_DST = 'shear-admit-Hp';
+/** shear-fs1 `CYCLE_C1`. */
+export const FS1_CYCLE_C1 = 'selene';
+/** shear-fs1 `CYCLE_C2`. */
+export const FS1_CYCLE_C2 = 'helios';
+/** shear-fs1 `ADMIT_CYCLE`: fs1- || CYCLE_C1 || - || CYCLE_C2. */
+export const ADMIT_CYCLE_ID = `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`;
+export const ADMIT_ARITY_ID = `fs1-selene${FS1_LAYER_ONE_LEN}-helios${FS1_LAYER_TWO_LEN}-d${FS1_DEPTH}`;
+export const ADMIT_LEAF_ID = `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DST}`;
+
 /** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
 export function consensusFingerprint(magic = MAGIC_TESTNET) {
   const days = epochDays(magic);
@@ -395,10 +419,10 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ADMIT=ADMITv3',
     'N1=admit-note-point',
     'RANGE=packed-bit',
-    'ADMIT_CYCLE=fs1-selene-helios',
-    'ADMIT_ARITY=fs1-selene38-helios18-d7',
+    `ADMIT_CYCLE=${ADMIT_CYCLE_ID}`,
+    `ADMIT_ARITY=${ADMIT_ARITY_ID}`,
     'ADMIT_K=1',
-    'ADMIT_LEAF=fs1-ed25519-OIC96-Hp-shear-admit-Hp',
+    `ADMIT_LEAF=${ADMIT_LEAF_ID}`,
     'ADMIT_SPEND=fs1-f1-agg-sal-v1',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',

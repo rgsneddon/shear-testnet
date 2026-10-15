@@ -94,6 +94,7 @@ Rebuild J, both trees, and spent tags from the sealed chain. Do not delete spent
 
 ## Fingerprint pins
 
+<!-- Legacy Pasta fingerprint of this retired statement. Not the live book. Removal is a follow-up. -->
 `ADMIT=ADMITv3`, `RANGE=bpplus`, `LEVY=weight`, `NETWORK=shear-testnet-v8`, `FORK=work-then-lowhash`, cycle `pallas-vesta-pasta`, `ADMIT_ARITY=32`, `ADMIT_K=1`, `ADMIT_LEAF=shear-admit-leaf-v2`.
 
 ## Performance bar
