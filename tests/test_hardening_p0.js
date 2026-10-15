@@ -29,10 +29,13 @@ import { SHORT_ADDR_MAX, encodeDest, newIdentity } from '../crypto/address.js';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('P0 hardening + short addresses', () => {
-  it('P0-1 production wallet send fails closed before prove_spend', () => {
+  it('P0-1 production wallet send proves FS-1; the JS helper still refuses prove_spend', () => {
     const ledger = fs.readFileSync(path.join(root, 'wallet/lib/shear_ledger.dart'), 'utf8');
     const admit = fs.readFileSync(path.join(root, 'wallet/lib/shear_admit.dart'), 'utf8');
-    assert.match(ledger, /proveFlowSpend\(/);
+    const fs1 = fs.readFileSync(path.join(root, 'wallet/lib/shear_fs1.dart'), 'utf8');
+    assert.match(ledger, /reproveFlowSpendWire\(/);
+    assert.match(ledger, /=> proveFs1SpendWire\(/);
+    assert.match(fs1, /Map<String, dynamic> proveFs1SpendWire\(/);
     assert.match(ledger, /nativeSealNote\(/);
     assert.equal(ledger.includes('var note = sealNote('), false);
     assert.equal(ledger.includes('viewKey='), false);
