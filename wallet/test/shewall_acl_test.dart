@@ -11,6 +11,8 @@ import 'package:shear_wallet/shear_shewall_acl.dart';
 const _userSid = 'S-1-5-21-1-2-3-1001';
 const _localName = r'DESKTOP-ODTSQ56\rgsne';
 const _modeMask = 0x1ff;
+const _dWhoami = r'D:\Windows\System32\whoami.exe';
+const _dIcacls = r'D:\Windows\System32\icacls.exe';
 
 void main() {
   test('atomic replace keeps the new bytes and leaves no temp file', () {
@@ -168,7 +170,7 @@ void main() {
     },
   );
 
-  test('Windows grants by SID through a verified System32 path', () {
+  test('Windows on D: ignores a planted C: System32 and PSModulePath', () {
     final dir = _tempDir();
     final dest = File(p.join(dir.path, shewallName));
     final probe = _WinProbe();
@@ -177,29 +179,33 @@ void main() {
       Uint8List.fromList([1, 2, 3, 4]),
       io: probe.io(
         env: const {
-          'SystemRoot': r'D:\Evil',
-          'SYSTEMROOT': r'D:\Evil',
-          'WINDIR': r'D:\Evil',
+          'SystemRoot': r'C:\Windows',
+          'SYSTEMROOT': r'C:\Windows',
+          'WINDIR': r'C:\Windows',
+          'PSModulePath': r'C:\Evil\Modules',
+          'PATH': r'C:\Evil',
         },
       ),
     );
     expect(dest.readAsBytesSync(), [1, 2, 3, 4]);
+    expect(_temps(dir), isEmpty);
     expect(probe.calls, isNotEmpty);
     expect(
-      probe.calls.every((call) => call.exe.startsWith(r'C:\Windows\System32\')),
+      probe.calls.every((call) => call.exe.startsWith(r'D:\Windows\System32\')),
       isTrue,
     );
     expect(
+      probe.calls.any((call) => call.exe.toLowerCase().contains('powershell')),
+      isFalse,
+    );
+    expect(
       probe.calls.any(
-        (call) =>
-            call.exe == 'whoami' ||
-            call.exe == 'icacls' ||
-            call.exe == 'powershell',
+        (call) => call.exe.toLowerCase().startsWith(r'c:\windows\system32\'),
       ),
       isFalse,
     );
-    expect(probe.calls.where((call) => call.exe == kSystem32Whoami).length, 1);
-    expect(probe.calls.first.exe, kSystem32Whoami);
+    expect(probe.calls.where((call) => call.exe == _dWhoami).length, 1);
+    expect(probe.calls.first.exe, _dWhoami);
     expect(probe.calls.first.args, ['/user', '/fo', 'csv', '/nh']);
 
     final grants = probe.calls
@@ -207,7 +213,7 @@ void main() {
         .toList();
     expect(grants.length, 2);
     final dirGrant = grants.firstWhere((call) => call.args.first == dir.path);
-    expect(dirGrant.exe, kSystem32Icacls);
+    expect(dirGrant.exe, _dIcacls);
     expect(dirGrant.args, [
       dir.path,
       '/inheritance:r',
@@ -215,45 +221,90 @@ void main() {
       '*$_userSid:(OI)(CI)F',
       '*$systemSid:(OI)(CI)F',
       '*$administratorsSid:(OI)(CI)F',
+      '/L',
     ]);
     final fileGrant = grants.firstWhere(
       (call) => p.basename(call.args.first).startsWith('.shewall.'),
     );
-    expect(fileGrant.exe, kSystem32Icacls);
+    expect(fileGrant.exe, _dIcacls);
     expect(fileGrant.args.sublist(1), [
       '/inheritance:r',
       '/grant:r',
       '*$_userSid:F',
       '*$systemSid:F',
       '*$administratorsSid:F',
+      '/L',
     ]);
+    expect(probe.calls.where((call) => call.args.contains('/save')).length, 3);
 
     final owners = probe.calls
         .where((call) => call.args.contains('/setowner'))
         .toList();
     expect(owners.length, 2);
     for (final call in owners) {
-      expect(call.exe, kSystem32Icacls);
+      expect(call.exe, _dIcacls);
       expect(call.args, contains('*$_userSid'));
       expect(call.args.contains('/T'), isFalse);
+      expect(call.args, contains('/L'));
     }
     expect(probe.calls.any((call) => call.args.contains('/T')), isFalse);
+    for (final call in probe.calls) {
+      expect(call.env['SystemRoot'], r'D:\Windows');
+      expect(call.env['WINDIR'], r'D:\Windows');
+      expect(call.env['SystemDrive'], r'D:');
+      expect(
+        call.env.keys.map((key) => key.toLowerCase()),
+        isNot(contains('psmodulepath')),
+      );
+      expect(call.env.values.contains(r'C:\Evil\Modules'), isFalse);
+      expect(call.env.values.contains(r'C:\Windows'), isFalse);
+      expect(call.env.containsKey('PATH'), isFalse);
+    }
     final flat = probe.calls
         .map((call) => [call.exe, ...call.args].join('\n'))
         .join('\n');
     expect(flat.contains(_localName), isFalse);
-    expect(flat.contains(r'D:\Evil'), isFalse);
+    expect(flat.contains(r'C:\Windows\System32'), isFalse);
+  });
+
+  test('GetSystemDirectoryW must match the HKLM SystemRoot', () {
+    final dir = _tempDir();
+    final dest = File(p.join(dir.path, shewallName))..writeAsBytesSync([1, 2]);
+    var calls = 0;
     expect(
-      probe.calls.where((call) => call.exe == kSystem32PowerShell).length,
-      3,
+      () => writePrivateShewallSync(
+        dest,
+        Uint8List.fromList([9]),
+        io: ShewallAclIo(
+          windows: true,
+          env: const {
+            'SystemRoot': r'C:\Windows',
+            'PSModulePath': r'C:\Evil\Modules',
+          },
+          systemDirectory: () => r'C:\Windows\System32',
+          registrySystemRoot: () => r'D:\Windows',
+          system32Verified: (path) =>
+              path.toLowerCase().startsWith(r'c:\windows\system32\'),
+          run: (executable, args, {environment}) {
+            calls += 1;
+            return executable + args.join();
+          },
+        ),
+      ),
+      throwsA(_message(shewallAclSystem32)),
     );
+    expect(calls, 0);
+    expect(dest.readAsBytesSync(), [1, 2]);
+    expect(_temps(dir), isEmpty);
   });
 
   test('a bad directory DACL does not replace shewall.bin', () {
     final dir = _tempDir();
-    final dest = File(p.join(dir.path, shewallName))..writeAsBytesSync([1, 2, 3]);
+    final dest = File(p.join(dir.path, shewallName))
+      ..writeAsBytesSync([1, 2, 3]);
     final probe = _WinProbe(
-      dirSddl: 'O:$_userSid D:P(A;OICI;FA;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
+      dirSddl:
+          'O:$_userSid D:P(A;OICI;FA;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
     );
     expect(
       () => writePrivateShewallSync(
@@ -271,6 +322,26 @@ void main() {
             call.args.contains('/grant:r') &&
             p.basename(call.args.first).startsWith('.shewall.'),
       ),
+      isFalse,
+    );
+  });
+
+  test('a wrong owner SID leaves the previous shewall.bin', () {
+    final dir = _tempDir();
+    final dest = File(p.join(dir.path, shewallName))..writeAsBytesSync([4, 4]);
+    final probe = _WinProbe(owner: 'S-1-5-21-9-9-9-9');
+    expect(
+      () => writePrivateShewallSync(
+        dest,
+        Uint8List.fromList([1]),
+        io: probe.io(),
+      ),
+      throwsA(_message(shewallAclDacl)),
+    );
+    expect(dest.readAsBytesSync(), [4, 4]);
+    expect(_temps(dir), isEmpty);
+    expect(
+      probe.calls.any((call) => call.exe.toLowerCase().contains('powershell')),
       isFalse,
     );
   });
@@ -308,7 +379,12 @@ void main() {
         Uint8List.fromList([1]),
         io: ShewallAclIo(
           windows: true,
-          env: const {'SystemRoot': r'D:\Evil', 'SYSTEMROOT': r'D:\Evil'},
+          env: const {
+            'SystemRoot': r'C:\Windows',
+            'PSModulePath': r'C:\Evil\Modules',
+          },
+          systemDirectory: () => r'D:\Windows\System32',
+          registrySystemRoot: () => r'D:\Windows',
           system32Verified: (_) => false,
           run: (executable, args, {environment}) {
             calls += 1;
@@ -335,16 +411,43 @@ void main() {
       ),
       throwsA(_message(shewallAclWhoami)),
     );
-    expect(probe.calls.map((call) => call.exe), [kSystem32Whoami]);
+    expect(probe.calls.map((call) => call.exe), [_dWhoami]);
     expect(dest.readAsBytesSync(), [6]);
     expect(_temps(dir), isEmpty);
   });
 
   test('owner-only SDDL accepts SID aliases and a group prefix', () {
-    expect(system32Exe('whoami.exe'), kSystem32Whoami);
-    expect(system32Exe('icacls.exe'), kSystem32Icacls);
-    expect(system32Exe('powershell.exe'), kSystem32PowerShell);
-    expect(() => system32Exe('cmd.exe'), throwsA(_message(shewallAclSystem32)));
+    expect(
+      resolveWindowsSystem32(
+        systemDirectory: r'D:\Windows\System32',
+        registrySystemRoot: r'D:\Windows',
+      ),
+      r'D:\Windows\System32',
+    );
+    expect(
+      resolveWindowsSystem32(
+        systemDirectory: r'D:\Windows\System32\',
+        registrySystemRoot: r'd:\windows',
+      ),
+      r'D:\Windows\System32',
+    );
+    expect(
+      () => resolveWindowsSystem32(
+        systemDirectory: r'C:\Windows\System32',
+        registrySystemRoot: r'D:\Windows',
+      ),
+      throwsA(_message(shewallAclSystem32)),
+    );
+    expect(system32Exe('whoami.exe', r'D:\Windows\System32'), _dWhoami);
+    expect(system32Exe('icacls.exe', r'D:\Windows\System32'), _dIcacls);
+    expect(
+      () => system32Exe('powershell.exe', r'D:\Windows\System32'),
+      throwsA(_message(shewallAclSystem32)),
+    );
+    expect(
+      () => system32Exe(r'..\whoami.exe', r'D:\Windows\System32'),
+      throwsA(_message(shewallAclSystem32)),
+    );
     expect(
       shewallDaclIsOwnerOnly(
         'O:$_userSid D:P(A;;FA;;;$_userSid)(A;;FA;;;SY)(A;;FA;;;BA)',
@@ -460,43 +563,52 @@ Matcher _message(String code) {
 }
 
 final class _Call {
-  _Call(this.exe, this.args);
+  _Call(this.exe, this.args, this.env);
   final String exe;
   final List<String> args;
+  final Map<String, String> env;
 }
 
 final class _WinProbe {
-  _WinProbe({this.fileSddl, this.dirSddl, this.whoami});
+  _WinProbe({this.fileSddl, this.dirSddl, this.whoami, this.owner});
 
   final String? fileSddl;
   final String? dirSddl;
   final String? whoami;
+  final String? owner;
   final calls = <_Call>[];
 
   ShewallAclIo io({Map<String, String> env = const {}}) {
     return ShewallAclIo(
       windows: true,
       env: env,
-      system32Verified: (path) =>
-          path == kSystem32Whoami ||
-          path == kSystem32Icacls ||
-          path == kSystem32PowerShell,
+      systemDirectory: () => r'D:\Windows\System32',
+      registrySystemRoot: () => r'D:\Windows',
+      readOwner: (_) => owner ?? _userSid,
+      system32Verified: (path) {
+        final lower = path.toLowerCase();
+        // A planted C: copy exists. The writer must not select it.
+        if (lower.startsWith(r'c:\windows\system32\')) return true;
+        return lower == _dWhoami.toLowerCase() ||
+            lower == _dIcacls.toLowerCase();
+      },
       run: (executable, args, {environment}) {
-        calls.add(_Call(executable, args));
-        if (executable == kSystem32Whoami) {
+        calls.add(_Call(executable, args, environment ?? const {}));
+        if (executable == _dWhoami) {
           return whoami ?? '"$_localName","$_userSid"\r\n';
         }
-        if (executable == kSystem32PowerShell) {
-          final target = environment?['SHEWALL_ACL_PATH'] ?? '';
+        if (args.contains('/save')) {
+          final index = args.indexOf('/save');
+          final target = args.first;
           final file =
               p.basename(target) == shewallName ||
               p.basename(target).startsWith('.shewall.');
-          if (file) {
-            return fileSddl ??
-                'O:$_userSid D:P(A;;FA;;;$_userSid)(A;;FA;;;SY)(A;;FA;;;BA)';
-          }
-          return dirSddl ??
-              'O:$_userSid D:P(A;OICI;FA;;;$_userSid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)';
+          final sddl = file
+              ? (fileSddl ??
+                    'O:$_userSid D:P(A;;FA;;;$_userSid)(A;;FA;;;SY)(A;;FA;;;BA)')
+              : (dirSddl ??
+                    'O:$_userSid D:P(A;OICI;FA;;;$_userSid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)');
+          File(args[index + 1]).writeAsStringSync(sddl);
         }
         return 'Successfully processed 1 files\r\n';
       },

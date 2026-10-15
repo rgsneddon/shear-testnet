@@ -19,9 +19,12 @@ import 'package:path/path.dart' as p;
 ///
 /// On Windows the DACL is replaced, by SID, with the current user, SYSTEM
 /// (`S-1-5-18`), and Administrators (`S-1-5-32-544`). The user is the owner.
-/// `whoami.exe`, `icacls.exe`, and PowerShell are the absolute System32
-/// binaries. `SystemRoot` is never used to build that path. The DACL is read
-/// back and a mismatch throws before the rename, so the previous file stays.
+/// `whoami.exe` and `icacls.exe` come from `GetSystemDirectoryW`, and that
+/// directory must equal the HKLM `SystemRoot` value plus `\System32`. A
+/// mismatch, including a planted `C:\Windows\System32` when Windows lives on
+/// another drive, refuses the write. The process environment is not consulted.
+/// The DACL is read back with `icacls /save`, not PowerShell, so a planted
+/// `PSModulePath` cannot fake `Get-Acl`. A mismatch throws before the rename.
 ///
 /// This follows `node/src/datadir_acl.js` (PR 96) for the trustees and the
 /// icacls grant shape. `/T` is not used: this writer is pointed at whatever
@@ -33,11 +36,6 @@ const _modeMask = 0x1ff;
 
 const systemSid = 'S-1-5-18';
 const administratorsSid = 'S-1-5-32-544';
-
-const kSystem32Whoami = r'C:\Windows\System32\whoami.exe';
-const kSystem32Icacls = r'C:\Windows\System32\icacls.exe';
-const kSystem32PowerShell =
-    r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';
 
 const shewallAclSymlink = 'shewall_acl:symlink';
 const shewallAclChmod = 'shewall_acl:chmod';
@@ -65,6 +63,9 @@ final class ShewallAclIo {
     this.run,
     this.system32Verified,
     this.chmod,
+    this.systemDirectory,
+    this.registrySystemRoot,
+    this.readOwner,
     this.env = const {},
   });
 
@@ -73,24 +74,57 @@ final class ShewallAclIo {
   final bool Function(String absoluteExe)? system32Verified;
   final ShewallChmod? chmod;
 
-  /// Passed through so a test can hand in a poisoned `SystemRoot`.
-  /// The System32 path is not built from this map.
+  /// `GetSystemDirectoryW`. Null uses the real API, and only on Windows.
+  final String Function()? systemDirectory;
+
+  /// HKLM `SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRoot`.
+  /// Null uses the real registry, and only on Windows.
+  final String Function()? registrySystemRoot;
+
+  /// Owner SID read. Null uses `GetNamedSecurityInfoW` on Windows.
+  final String Function(String path)? readOwner;
+
+  /// Caller environment. It is never copied into a child process. A test
+  /// plants `SystemRoot` and `PSModulePath` here.
   final Map<String, String> env;
 
   bool get isWindows => windows ?? Platform.isWindows;
 }
 
-String system32Exe(String name) {
-  switch (name) {
-    case 'whoami.exe':
-      return kSystem32Whoami;
-    case 'icacls.exe':
-      return kSystem32Icacls;
-    case 'powershell.exe':
-      return kSystem32PowerShell;
-    default:
-      throw const FormatException(shewallAclSystem32);
+/// Join [name] onto a system directory that [resolveWindowsSystem32] accepted.
+String system32Exe(String name, String systemDirectory) {
+  if (name != 'whoami.exe' && name != 'icacls.exe') {
+    throw const FormatException(shewallAclSystem32);
   }
+  final dir = _normalizeWin(systemDirectory);
+  if (!_absoluteWin(dir) || _hasDotDot(dir)) {
+    throw const FormatException(shewallAclSystem32);
+  }
+  final full = '$dir\\$name';
+  if (full.toLowerCase() != '${dir.toLowerCase()}\\$name') {
+    throw const FormatException(shewallAclSystem32);
+  }
+  return full;
+}
+
+/// Fail closed unless `GetSystemDirectoryW` is exactly `SystemRoot\System32`.
+String resolveWindowsSystem32({
+  required String systemDirectory,
+  required String registrySystemRoot,
+}) {
+  final api = _normalizeWin(systemDirectory);
+  final root = _normalizeWin(registrySystemRoot);
+  if (!_absoluteWin(api) || !_absoluteWin(root)) {
+    throw const FormatException(shewallAclSystem32);
+  }
+  if (_hasDotDot(api) || _hasDotDot(root)) {
+    throw const FormatException(shewallAclSystem32);
+  }
+  final expected = '$root\\System32';
+  if (api.toLowerCase() != expected.toLowerCase()) {
+    throw const FormatException(shewallAclSystem32);
+  }
+  return api;
 }
 
 /// True when [sddl] is an owner-only DACL for [ownerSid] plus SYSTEM and
@@ -258,8 +292,17 @@ void _windowsReplace(
   Uint8List sealed,
   ShewallAclIo io,
 ) {
-  final sid = _readUserSid(io);
-  _applyDacl(io, parent, directory: true, sid: sid);
+  final system32 = _resolvedSystem32(io);
+  final childEnv = _fixedChildEnv(system32, io);
+  final sid = _readUserSid(io, system32, childEnv);
+  _applyDacl(
+    io,
+    parent,
+    directory: true,
+    sid: sid,
+    system32: system32,
+    childEnv: childEnv,
+  );
   final tmpName = '.shewall.$pid.${Random.secure().nextInt(0x7fffffff)}.tmp';
   final tmpPath = p.join(parent, tmpName);
   if (FileSystemEntity.typeSync(tmpPath, followLinks: false) ==
@@ -276,14 +319,28 @@ void _windowsReplace(
     } finally {
       raf.closeSync();
     }
-    _applyDacl(io, tmpPath, directory: false, sid: sid);
+    _applyDacl(
+      io,
+      tmpPath,
+      directory: false,
+      sid: sid,
+      system32: system32,
+      childEnv: childEnv,
+    );
     if (FileSystemEntity.typeSync(full, followLinks: false) ==
         FileSystemEntityType.link) {
       throw const FormatException(shewallAclSymlink);
     }
     tmp.renameSync(full);
     renamed = true;
-    _expectReadBack(io, full, directory: false, sid: sid);
+    _expectReadBack(
+      io,
+      full,
+      directory: false,
+      sid: sid,
+      system32: system32,
+      childEnv: childEnv,
+    );
   } catch (_) {
     if (!renamed && tmp.existsSync()) {
       final type = FileSystemEntity.typeSync(tmpPath, followLinks: false);
@@ -297,13 +354,76 @@ void _windowsReplace(
   }
 }
 
-String _readUserSid(ShewallAclIo io) {
-  final out = _runChecked(io, system32Exe('whoami.exe'), [
-    '/user',
-    '/fo',
-    'csv',
-    '/nh',
-  ], shewallAclWhoami);
+String _resolvedSystem32(ShewallAclIo io) {
+  final api = io.systemDirectory != null
+      ? io.systemDirectory!()
+      : _liveSystemDirectory();
+  final reg = io.registrySystemRoot != null
+      ? io.registrySystemRoot!()
+      : _liveRegistrySystemRoot();
+  return resolveWindowsSystem32(systemDirectory: api, registrySystemRoot: reg);
+}
+
+String _liveSystemDirectory() {
+  if (!Platform.isWindows) throw const FormatException(shewallAclSystem32);
+  return _getSystemDirectoryW();
+}
+
+String _liveRegistrySystemRoot() {
+  if (!Platform.isWindows) throw const FormatException(shewallAclSystem32);
+  return _registrySystemRoot();
+}
+
+Map<String, String> _fixedChildEnv(String system32, ShewallAclIo io) {
+  final dir = _normalizeWin(system32);
+  const suffix = r'\system32';
+  if (!dir.toLowerCase().endsWith(suffix)) {
+    throw const FormatException(shewallAclSystem32);
+  }
+  final root = dir.substring(0, dir.length - suffix.length);
+  if (root.length < 2) throw const FormatException(shewallAclSystem32);
+  final child = <String, String>{
+    'SystemRoot': root,
+    'WINDIR': root,
+    'SystemDrive': root.substring(0, 2),
+  };
+  for (final key in child.keys) {
+    if (key.toLowerCase() == 'psmodulepath') {
+      throw const FormatException(shewallAclSystem32);
+    }
+  }
+  for (final entry in io.env.entries) {
+    final key = entry.key.toLowerCase();
+    if (key == 'psmodulepath' &&
+        (child.containsKey(entry.key) || child.values.contains(entry.value))) {
+      throw const FormatException(shewallAclSystem32);
+    }
+    if ((key == 'systemroot' || key == 'windir') &&
+        _normalizeWin(entry.value).toLowerCase() != root.toLowerCase() &&
+        child.values.any(
+          (value) =>
+              _normalizeWin(value).toLowerCase() ==
+              _normalizeWin(entry.value).toLowerCase(),
+        )) {
+      throw const FormatException(shewallAclSystem32);
+    }
+  }
+  return child;
+}
+
+String _readUserSid(
+  ShewallAclIo io,
+  String system32,
+  Map<String, String> childEnv,
+) {
+  final out = _runChecked(
+    io,
+    system32Exe('whoami.exe', system32),
+    ['/user', '/fo', 'csv', '/nh'],
+    shewallAclWhoami,
+    system32,
+    childEnv,
+  );
   final match = RegExp(r'S-1-\d+(?:-\d+)+').firstMatch(out);
   if (match == null) throw const FormatException(shewallAclWhoami);
   return match.group(0)!;
@@ -314,22 +434,46 @@ void _applyDacl(
   String path, {
   required bool directory,
   required String sid,
+  required String system32,
+  required Map<String, String> childEnv,
 }) {
-  final icacls = system32Exe('icacls.exe');
+  final icacls = system32Exe('icacls.exe', system32);
   String ace(String trustee) =>
       directory ? '*$trustee:(OI)(CI)F' : '*$trustee:F';
   // No /T. The node walks its private datadir. This file may sit in a
-  // directory the user shares with other documents.
-  _runChecked(io, icacls, [
+  // directory the user shares with other documents. /L does not follow a link.
+  _runChecked(
+    io,
+    icacls,
+    [
+      path,
+      '/inheritance:r',
+      '/grant:r',
+      ace(sid),
+      ace(systemSid),
+      ace(administratorsSid),
+      '/L',
+    ],
+    shewallAclIcacls,
+    system32,
+    childEnv,
+  );
+  _runChecked(
+    io,
+    icacls,
+    [path, '/setowner', '*$sid', '/L'],
+    shewallAclIcacls,
+    system32,
+    childEnv,
+  );
+  _expectReadBack(
+    io,
     path,
-    '/inheritance:r',
-    '/grant:r',
-    ace(sid),
-    ace(systemSid),
-    ace(administratorsSid),
-  ], shewallAclIcacls);
-  _runChecked(io, icacls, [path, '/setowner', '*$sid'], shewallAclIcacls);
-  _expectReadBack(io, path, directory: directory, sid: sid);
+    directory: directory,
+    sid: sid,
+    system32: system32,
+    childEnv: childEnv,
+  );
 }
 
 void _expectReadBack(
@@ -337,34 +481,81 @@ void _expectReadBack(
   String path, {
   required bool directory,
   required String sid,
+  required String system32,
+  required Map<String, String> childEnv,
 }) {
-  const command =
-      r'$ErrorActionPreference = "Stop"'
-      r'; $p = $env:SHEWALL_ACL_PATH'
-      r'; if ([string]::IsNullOrEmpty($p)) { throw "path" }'
-      r'; $acl = Get-Acl -LiteralPath $p'
-      r'; $sections = [System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Access'
-      r'; [Console]::Out.Write($acl.GetSecurityDescriptorSddlForm($sections))';
-  final env = Map<String, String>.from(Platform.environment);
-  env['SHEWALL_ACL_PATH'] = path;
-  final out = _runChecked(
-    io,
-    system32Exe('powershell.exe'),
-    ['-NoProfile', '-NonInteractive', '-Command', command],
-    shewallAclDacl,
-    environment: env,
+  final icacls = system32Exe('icacls.exe', system32);
+  final save = p.join(
+    p.dirname(path),
+    '.shewall-acl.$pid.${Random.secure().nextInt(0x7fffffff)}.txt',
   );
-  _expectDacl(out, ownerSid: sid, directory: directory);
+  try {
+    _runChecked(
+      io,
+      icacls,
+      [path, '/save', save, '/L'],
+      shewallAclDacl,
+      system32,
+      childEnv,
+    );
+    final file = File(save);
+    if (!file.existsSync()) throw const FormatException(shewallAclDacl);
+    final owner = io.readOwner != null
+        ? io.readOwner!(path)
+        : _ownerSidWin32(path);
+    final sddl = _composeSddl(_decodeIcacls(file.readAsBytesSync()), owner);
+    _expectDacl(sddl, ownerSid: sid, directory: directory);
+  } finally {
+    final file = File(save);
+    if (file.existsSync()) {
+      try {
+        file.deleteSync();
+      } catch (_) {}
+    }
+  }
+}
+
+String _composeSddl(String text, String owner) {
+  if (!RegExp(r'^S-1-\d+(?:-\d+)+$').hasMatch(owner)) {
+    throw const FormatException(shewallAclDacl);
+  }
+  final start = text.indexOf('D:');
+  if (start < 0) throw const FormatException(shewallAclDacl);
+  var dacl = text.substring(start);
+  final lineEnd = dacl.indexOf(RegExp(r'[\r\n]'));
+  if (lineEnd >= 0) dacl = dacl.substring(0, lineEnd);
+  return 'O:$owner${dacl.trim()}';
+}
+
+String _decodeIcacls(List<int> bytes) {
+  if (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) {
+    return _utf16le(bytes.sublist(2));
+  }
+  if (bytes.length >= 4 && bytes[1] == 0 && bytes[3] == 0) {
+    return _utf16le(bytes);
+  }
+  return utf8.decode(bytes);
+}
+
+String _utf16le(List<int> bytes) {
+  final units = <int>[];
+  for (var i = 0; i + 1 < bytes.length; i += 2) {
+    final unit = bytes[i] | (bytes[i + 1] << 8);
+    if (unit == 0) break;
+    units.add(unit);
+  }
+  return String.fromCharCodes(units);
 }
 
 String _runChecked(
   ShewallAclIo io,
   String executable,
   List<String> args,
-  String code, {
-  Map<String, String>? environment,
-}) {
-  _assertSystem32(executable, io);
+  String code,
+  String system32,
+  Map<String, String> environment,
+) {
+  _assertSystem32(executable, system32, io);
   try {
     final runner = io.run ?? _defaultRun;
     return runner(executable, args, environment: environment);
@@ -380,6 +571,7 @@ String _defaultRun(
   List<String> args, {
   Map<String, String>? environment,
 }) {
+  if (environment == null) throw const FormatException(shewallAclSystem32);
   final result = Process.runSync(
     executable,
     args,
@@ -398,43 +590,40 @@ String _defaultRun(
   return '${result.stdout}';
 }
 
-void _assertSystem32(String executable, ShewallAclIo io) {
-  if (executable != kSystem32Whoami &&
-      executable != kSystem32Icacls &&
-      executable != kSystem32PowerShell) {
+void _assertSystem32(String executable, String system32, ShewallAclIo io) {
+  final exe = _normalizeWin(executable);
+  final dir = _normalizeWin(system32);
+  final name = exe.split(r'\').last.toLowerCase();
+  if (name != 'whoami.exe' && name != 'icacls.exe') {
     throw const FormatException(shewallAclSystem32);
   }
-  _rejectForeignRoot(executable, io.env);
-  _rejectForeignRoot(executable, Platform.environment);
-  final ok = io.system32Verified ?? _system32FileIsReal;
-  if (!ok(executable)) throw const FormatException(shewallAclSystem32);
-}
-
-void _rejectForeignRoot(String executable, Map<String, String> env) {
-  for (final key in const ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'windir']) {
-    final root = env[key];
-    if (root == null || root.isEmpty) continue;
-    var norm = root.replaceAll('/', r'\');
-    while (norm.endsWith(r'\')) {
-      norm = norm.substring(0, norm.length - 1);
-    }
-    if (norm.toLowerCase() == r'c:\windows') continue;
-    final lower = executable.toLowerCase();
-    final foreign = norm.toLowerCase();
-    if (lower == foreign || lower.startsWith('$foreign\\')) {
-      throw const FormatException(shewallAclSystem32);
-    }
+  if (exe.toLowerCase() != '${dir.toLowerCase()}\\$name') {
+    throw const FormatException(shewallAclSystem32);
   }
+  final ok = io.system32Verified ?? _system32FileIsReal;
+  if (!ok(exe)) throw const FormatException(shewallAclSystem32);
 }
 
 bool _system32FileIsReal(String path) {
-  if (path != kSystem32Whoami &&
-      path != kSystem32Icacls &&
-      path != kSystem32PowerShell) {
-    return false;
-  }
   return FileSystemEntity.typeSync(path, followLinks: false) ==
       FileSystemEntityType.file;
+}
+
+String _normalizeWin(String value) {
+  var text = value.trim().replaceAll('/', r'\');
+  if (text.startsWith(r'\\?\')) text = text.substring(4);
+  while (text.endsWith(r'\')) {
+    text = text.substring(0, text.length - 1);
+  }
+  return text;
+}
+
+bool _absoluteWin(String value) {
+  return RegExp(r'^[A-Za-z]:\\').hasMatch(value);
+}
+
+bool _hasDotDot(String value) {
+  return value.split(r'\').any((part) => part == '..');
 }
 
 void _expectDacl(
@@ -729,4 +918,178 @@ DynamicLibrary _openLibc() {
     } catch (_) {}
   }
   return DynamicLibrary.process();
+}
+
+String _getSystemDirectoryW() {
+  final kernel = DynamicLibrary.open('kernel32.dll');
+  final get = kernel
+      .lookupFunction<
+        Uint32 Function(Pointer<Utf16>, Uint32),
+        int Function(Pointer<Utf16>, int)
+      >('GetSystemDirectoryW');
+  const cap = 260;
+  final buf = calloc<Uint16>(cap);
+  try {
+    final written = get(buf.cast<Utf16>(), cap);
+    if (written == 0 || written >= cap) {
+      throw const FormatException(shewallAclSystem32);
+    }
+    return String.fromCharCodes(buf.asTypedList(written));
+  } finally {
+    calloc.free(buf);
+  }
+}
+
+String _registrySystemRoot() {
+  final adv = DynamicLibrary.open('advapi32.dll');
+  final open = adv
+      .lookupFunction<
+        Int32 Function(IntPtr, Pointer<Utf16>, Uint32, Uint32, Pointer<IntPtr>),
+        int Function(int, Pointer<Utf16>, int, int, Pointer<IntPtr>)
+      >('RegOpenKeyExW');
+  final query = adv
+      .lookupFunction<
+        Int32 Function(
+          IntPtr,
+          Pointer<Utf16>,
+          Pointer<Uint32>,
+          Pointer<Uint32>,
+          Pointer<Uint8>,
+          Pointer<Uint32>,
+        ),
+        int Function(
+          int,
+          Pointer<Utf16>,
+          Pointer<Uint32>,
+          Pointer<Uint32>,
+          Pointer<Uint8>,
+          Pointer<Uint32>,
+        )
+      >('RegQueryValueExW');
+  final close = adv.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+    'RegCloseKey',
+  );
+  // HKLM is sign-extended. A zero-extended 0x80000002 is the wrong handle.
+  final hklm = 0x80000002.toSigned(32);
+  const sam = 0x20019 | 0x0100;
+  final sub = r'SOFTWARE\Microsoft\Windows NT\CurrentVersion'.toNativeUtf16();
+  final value = 'SystemRoot'.toNativeUtf16();
+  final phk = calloc<IntPtr>();
+  try {
+    if (open(hklm, sub, 0, sam, phk) != 0) {
+      throw const FormatException(shewallAclSystem32);
+    }
+    final type = calloc<Uint32>();
+    final size = calloc<Uint32>();
+    try {
+      final first = query(
+        phk.value,
+        value,
+        Pointer<Uint32>.fromAddress(0),
+        type,
+        Pointer<Uint8>.fromAddress(0),
+        size,
+      );
+      if ((first != 0 && first != 234) ||
+          type.value != 1 ||
+          size.value < 4 ||
+          size.value > 1024) {
+        throw const FormatException(shewallAclSystem32);
+      }
+      final data = calloc<Uint8>(size.value);
+      try {
+        final second = query(
+          phk.value,
+          value,
+          Pointer<Uint32>.fromAddress(0),
+          type,
+          data,
+          size,
+        );
+        if (second != 0 || type.value != 1) {
+          throw const FormatException(shewallAclSystem32);
+        }
+        return _utf16le(data.asTypedList(size.value));
+      } finally {
+        calloc.free(data);
+      }
+    } finally {
+      calloc.free(type);
+      calloc.free(size);
+      close(phk.value);
+    }
+  } finally {
+    calloc.free(phk);
+    malloc.free(sub);
+    malloc.free(value);
+  }
+}
+
+String _ownerSidWin32(String path) {
+  if (!Platform.isWindows) throw const FormatException(shewallAclDacl);
+  final adv = DynamicLibrary.open('advapi32.dll');
+  final kernel = DynamicLibrary.open('kernel32.dll');
+  final getNamed = adv
+      .lookupFunction<
+        Uint32 Function(
+          Pointer<Utf16>,
+          Uint32,
+          Uint32,
+          Pointer<Pointer<Void>>,
+          Pointer<Pointer<Void>>,
+          Pointer<Pointer<Void>>,
+          Pointer<Pointer<Void>>,
+          Pointer<Pointer<Void>>,
+        ),
+        int Function(
+          Pointer<Utf16>,
+          int,
+          int,
+          Pointer<Pointer<Void>>,
+          Pointer<Pointer<Void>>,
+          Pointer<Pointer<Void>>,
+          Pointer<Pointer<Void>>,
+          Pointer<Pointer<Void>>,
+        )
+      >('GetNamedSecurityInfoW');
+  final convert = adv
+      .lookupFunction<
+        Int32 Function(Pointer<Void>, Pointer<Pointer<Utf16>>),
+        int Function(Pointer<Void>, Pointer<Pointer<Utf16>>)
+      >('ConvertSidToStringSidW');
+  final localFree = kernel
+      .lookupFunction<
+        Pointer<Void> Function(Pointer<Void>),
+        Pointer<Void> Function(Pointer<Void>)
+      >('LocalFree');
+  final name = path.toNativeUtf16();
+  final ownerOut = calloc<Pointer<Void>>();
+  final sdOut = calloc<Pointer<Void>>();
+  final sidText = calloc<Pointer<Utf16>>();
+  try {
+    final rc = getNamed(
+      name,
+      1,
+      0x1,
+      ownerOut,
+      Pointer<Pointer<Void>>.fromAddress(0),
+      Pointer<Pointer<Void>>.fromAddress(0),
+      Pointer<Pointer<Void>>.fromAddress(0),
+      sdOut,
+    );
+    if (rc != 0 || ownerOut.value == nullptr) {
+      throw const FormatException(shewallAclDacl);
+    }
+    if (convert(ownerOut.value, sidText) == 0 || sidText.value == nullptr) {
+      throw const FormatException(shewallAclDacl);
+    }
+    return sidText.value.toDartString();
+  } finally {
+    if (sidText.value != nullptr) localFree(sidText.value.cast<Void>());
+    if (sdOut.value != nullptr) localFree(sdOut.value);
+    calloc.free(ownerOut);
+    calloc.free(sdOut);
+    calloc.free(sidText);
+    malloc.free(name);
+  }
 }
