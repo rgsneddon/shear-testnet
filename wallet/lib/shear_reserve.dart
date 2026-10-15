@@ -299,7 +299,7 @@ List<Map<String, String>> rewardMerkleProof(List<Uint8List> leaves, int index) {
 String rewardSetRoot(List<Map<String, dynamic>> leaves) {
   final bytes = <Uint8List>[];
   for (final leaf in leaves) {
-    final rhoRaw = leaf['rho'] ?? leaf['nanos'];
+    final rhoRaw = leaf['rho'];
     final rho = rhoRaw is int ? rhoRaw : (rhoRaw is num ? rhoRaw.toInt() : int.tryParse('$rhoRaw') ?? 0);
     final hashed = rewardLeafBytes('${leaf['nullifier']}', rho);
     if (hashed.isEmpty) return '';
@@ -347,7 +347,7 @@ Map<String, dynamic> buildRewardClaimsWire(Map<String, dynamic> input) {
           break;
         }
         final id = (leaf['nullifier'] ?? '').toString().toLowerCase();
-        final rhoRaw = leaf['rho'] ?? leaf['nanos'];
+        final rhoRaw = leaf['rho'];
         final rho = rhoRaw is int ? rhoRaw : (rhoRaw is num ? rhoRaw.toInt() : int.tryParse('$rhoRaw') ?? 0);
         final hashed = rewardLeafBytes(id, rho);
         if (hashed.isEmpty) {
@@ -414,12 +414,18 @@ class ReserveDepositRow {
     required this.atMs,
     this.txid,
     this.noteIsPrincipal = false,
+    this.epoch = 0,
+    this.unlockAtMs = 0,
   });
   final int nanos;
   final int atMs;
   final String? txid;
   /// The lock output is the principal. A reserve withdraw would pay it again.
   final bool noteIsPrincipal;
+  /// Chain epoch that contains [atMs]. 0 until the chain clock assigns one.
+  final int epoch;
+  /// End of [epoch]. 0 until the chain clock assigns one.
+  final int unlockAtMs;
 }
 
 class ReserveEpochRow {
@@ -504,17 +510,86 @@ class ShearReserve {
   bool epochIsOver(int nowMs) =>
       epochStartMs != 0 && nowMs >= epochStartMs + kReserveEpochMs;
 
-  /// End of the chain epoch that contains [d]. A deposit the chain has not
-  /// placed in an epoch stays locked. There is no local epoch invented from
-  /// the deposit time.
+  /// End of the chain epoch that contains [d]. Every deposit on a pinned
+  /// chain clock belongs to one epoch and unlocks at that epoch's end.
   int depositUnlockAtMs(ReserveDepositRow d) {
+    if (d.unlockAtMs > 0) return d.unlockAtMs;
+    return chainEpochOf(d.atMs).unlockAtMs;
+  }
+
+  /// Earliest chain epoch start this vault has been shown. Later epochs are
+  /// this instant plus whole epoch lengths.
+  int get chainGenesisMs {
+    var g = 0;
+    for (final e in epochs) {
+      if (e.startMs > 0 && (g == 0 || e.startMs < g)) g = e.startMs;
+    }
+    if (g == 0 && epochStartMs > 0) return epochStartMs;
+    return g;
+  }
+
+  int get _genesisEpochNumber {
+    ReserveEpochRow? earliest;
+    for (final e in epochs) {
+      if (e.startMs <= 0) continue;
+      if (earliest == null || e.startMs < earliest.startMs) earliest = e;
+    }
+    if (earliest != null && earliest.epoch >= 1) return earliest.epoch;
+    if (epochStartMs > 0 && currentEpoch >= 1) return currentEpoch;
+    return 1;
+  }
+
+  /// Chain epoch containing [atMs], and the instant that epoch ends.
+  /// No pinned clock means no assignment.
+  ({int epoch, int unlockAtMs}) chainEpochOf(int atMs) {
+    if (atMs <= 0) return (epoch: 0, unlockAtMs: 0);
     for (final e in uniqueEpochs) {
-      if (d.atMs >= e.startMs && d.atMs < e.endMs) return e.endMs;
+      if (atMs >= e.startMs && atMs < e.endMs) {
+        return (epoch: e.epoch, unlockAtMs: e.endMs);
+      }
     }
-    if (epochStartMs > 0 && d.atMs >= epochStartMs && d.atMs < epochStartMs + kReserveEpochMs) {
-      return epochStartMs + kReserveEpochMs;
+    if (epochStartMs > 0 && atMs >= epochStartMs && atMs < epochStartMs + kReserveEpochMs) {
+      final epoch = currentEpoch < 1 ? 1 : currentEpoch;
+      return (epoch: epoch, unlockAtMs: epochStartMs + kReserveEpochMs);
     }
-    return 0;
+    final genesis = chainGenesisMs;
+    if (genesis <= 0 || atMs < genesis) return (epoch: 0, unlockAtMs: 0);
+    final index = (atMs - genesis) ~/ kReserveEpochMs;
+    return (
+      epoch: _genesisEpochNumber + index,
+      unlockAtMs: genesis + (index + 1) * kReserveEpochMs,
+    );
+  }
+
+  void _noteEpoch(int epoch, int endMs) {
+    if (epoch < 1 || endMs <= kReserveEpochMs) return;
+    if (epochs.any((e) => e.epoch == epoch)) return;
+    epochs.add(ReserveEpochRow(
+      epoch: epoch,
+      startMs: endMs - kReserveEpochMs,
+      endMs: endMs,
+    ));
+  }
+
+  /// Stamp each deposit with the chain epoch that contains its time.
+  void _assignOpenDeposits() {
+    for (final p in portals.values) {
+      for (var i = 0; i < p.deposits.length; i++) {
+        final d = p.deposits[i];
+        if (d.unlockAtMs > 0) continue;
+        final hit = chainEpochOf(d.atMs);
+        if (hit.unlockAtMs <= 0) continue;
+        _noteEpoch(hit.epoch, hit.unlockAtMs);
+        p.deposits[i] = ReserveDepositRow(
+          nanos: d.nanos,
+          atMs: d.atMs,
+          txid: d.txid,
+          noteIsPrincipal: d.noteIsPrincipal,
+          epoch: hit.epoch,
+          unlockAtMs: hit.unlockAtMs,
+        );
+      }
+    }
   }
 
   /// Epochs whose reward nullifiers this vault should try. Epoch 1 is always
@@ -536,14 +611,16 @@ class ShearReserve {
     return out;
   }
 
-  /// Principal that can be withdrawn now. A deposit with no row list is the
-  /// whole balance once the open epoch has ended. With rows, only the
-  /// top-ups whose own epoch has ended count. A later top-up stays put.
+  /// Legacy principal a reserve withdraw may pay. A deposit with no row list
+  /// is the whole balance once the open epoch has ended. Time-lock rows are
+  /// the note itself and are not part of this sum. [nowMs] is the chain tip.
   int maturedPrincipalNanos(String dest, int nowMs) {
+    if (nowMs <= 0) return 0;
     final p = portal(dest);
     if (p.deposits.isEmpty) return epochIsOver(nowMs) ? p.nanos : 0;
     var sum = 0;
     for (final d in p.deposits) {
+      if (d.noteIsPrincipal) continue;
       final unlock = depositUnlockAtMs(d);
       if (unlock > 0 && nowMs >= unlock) sum += d.nanos;
     }
@@ -552,8 +629,18 @@ class ShearReserve {
     return sum;
   }
 
+  /// True when this portal still has a reserve-withdraw (not a time-lock note).
+  bool legacyWithdrawVisible(String dest) {
+    final p = portal(dest);
+    if (p.nanos <= 0) return false;
+    if (p.deposits.isEmpty) return true;
+    return p.deposits.any((d) => !d.noteIsPrincipal);
+  }
+
   /// Matured deposits whose lock output is the principal note.
+  /// [nowMs] is the chain tip. No tip means nothing has matured.
   int maturedTimeLockNanos(String dest, int nowMs) {
+    if (nowMs <= 0) return 0;
     final p = portal(dest);
     var sum = 0;
     for (final d in p.deposits) {
@@ -568,15 +655,24 @@ class ShearReserve {
 
   /// Drop matured time-lock rows from the vault mirror. The note is the
   /// principal, so this does not pay interest and does not build a withdraw.
-  int releaseTimeLockPrincipal({required String dest, required int nowMs}) {
+  /// [onlyAtMs] drops that one deposit. Omit it to drop every matured time-lock.
+  int releaseTimeLockPrincipal({
+    required String dest,
+    required int nowMs,
+    int? onlyAtMs,
+  }) {
     final p = portal(dest);
-    if (p.deposits.isEmpty) return 0;
+    if (nowMs <= 0 || p.deposits.isEmpty) return 0;
     var sum = 0;
+    var droppedOne = false;
     final keep = <ReserveDepositRow>[];
     for (final d in p.deposits) {
       final unlock = depositUnlockAtMs(d);
-      if (d.noteIsPrincipal && unlock > 0 && nowMs >= unlock) {
+      final matured = d.noteIsPrincipal && unlock > 0 && nowMs >= unlock;
+      final targeted = onlyAtMs == null || d.atMs == onlyAtMs;
+      if (matured && targeted && (onlyAtMs == null || !droppedOne)) {
         sum += d.nanos;
+        if (onlyAtMs != null) droppedOne = true;
       } else {
         keep.add(d);
       }
@@ -863,6 +959,7 @@ class ShearReserve {
         _beginEpoch(nowMs);
       }
     }
+    _assignOpenDeposits();
     return null;
   }
 
@@ -929,6 +1026,7 @@ class ShearReserve {
       p.idle -= idle;
       if (p.deposits.isNotEmpty) {
         p.deposits.removeWhere((d) {
+          if (d.noteIsPrincipal) return false;
           final unlock = depositUnlockAtMs(d);
           return unlock > 0 && nowMs >= unlock;
         });

@@ -3915,24 +3915,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
     final to = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final matured = dest.isNotEmpty ? reserve.maturedPrincipalNanos(dest, now) : 0;
-    if (matured <= 0) {
+    final now = ledger.tipTimestampMs;
+    final matured = (dest.isNotEmpty && now != null) ? reserve.maturedPrincipalNanos(dest, now) : 0;
+    if (now == null || matured <= 0) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(reserveEpochStillOpenCopy())),
-        );
-      }
-      return;
-    }
-    if (reserve.maturedTimeLockNanos(dest, now) > 0) {
-      ledger.releaseMaturedLockNotes(fromDest: dest, spendDest: to, nowMs: now);
-      reserve.releaseTimeLockPrincipal(dest: dest, nowMs: now);
-      if (ledger.pool != null && !widget.skipPoolSync) await _syncVaults(ident);
-      if (mounted) setState(() {});
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Principal is spendable')),
         );
       }
       return;
@@ -3985,6 +3973,41 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Withdraw submitted — tx ${posted.tx.id}')),
+      );
+    }
+  }
+
+  /// Time-lock principal is the lock note. Unlock that note once the chain
+  /// tip shows its epoch has ended. Do not post a reserve withdraw.
+  Future<void> _reserveWithdrawTimeLock(
+    BuildContext context,
+    ShearIdentity ident,
+    ReserveDepositRow row,
+  ) async {
+    final dest = _reserveDestOf(ident);
+    if (dest == null || !row.noteIsPrincipal) return;
+    final now = ledger.tipTimestampMs;
+    final unlock = reserve.depositUnlockAtMs(row);
+    if (now == null || unlock <= 0 || now < unlock) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
+    ledger.releaseMaturedLockNotes(
+      fromDest: dest,
+      nowMs: now,
+      unlockAtMs: unlock,
+      nanos: row.nanos,
+    );
+    reserve.releaseTimeLockPrincipal(dest: dest, nowMs: now, onlyAtMs: row.atMs);
+    if (ledger.pool != null && !widget.skipPoolSync) await _syncVaults(ident);
+    if (mounted) setState(() {});
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Principal is spendable')),
       );
     }
   }
@@ -4231,18 +4254,38 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               const Text('Your deposits', style: TextStyle(fontWeight: FontWeight.w600)),
               SizedBox(
                 key: const Key('reserve-deposits-scroll'),
-                height: kDepositRowHeight * 2,
+                height: (p.deposits.any((d) => d.noteIsPrincipal) ? 48.0 : kDepositRowHeight) * 2,
                 child: ListView.builder(
                   controller: _depositsScroll,
                   primary: false,
                   physics: const AlwaysScrollableScrollPhysics(),
-                  itemExtent: kDepositRowHeight,
+                  itemExtent: p.deposits.any((d) => d.noteIsPrincipal) ? 48.0 : kDepositRowHeight,
                   itemCount: p.deposits.length,
                   itemBuilder: (context, i) {
                     final d = p.deposits.reversed.elementAt(i);
-                    return Text(
-                      '${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}',
+                    final when = DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first;
+                    final label = '${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  $when';
+                    if (!d.noteIsPrincipal) {
+                      return Text(label, key: Key('reserve-deposit-$i'));
+                    }
+                    final tip = ledger.tipTimestampMs;
+                    final unlock = reserve.depositUnlockAtMs(d);
+                    final open = tip != null && unlock > 0 && tip >= unlock;
+                    return Row(
                       key: Key('reserve-deposit-$i'),
+                      children: [
+                        Expanded(child: Text(label, overflow: TextOverflow.ellipsis)),
+                        TextButton(
+                          key: Key('reserve-deposit-withdraw-$i'),
+                          onPressed: open ? () => _reserveWithdrawTimeLock(context, ident, d) : null,
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                          child: Text(open ? 'Withdraw' : kReserveUnlocksAtEpochEnd),
+                        ),
+                      ],
                     );
                   },
                 ),
@@ -4279,13 +4322,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 onPressed: _reserveSendReady ? () => _reserveSend(context, ident) : null,
                 child: const Text('Deposit sum'),
               ),
-              if (p.nanos > 0)
+              if (reserve.legacyWithdrawVisible(dest))
                 FilledButton(
                   key: const Key('reserve-withdraw'),
-                  onPressed: reserve.maturedPrincipalNanos(dest, now) > 0
+                  onPressed: (ledger.tipTimestampMs != null &&
+                          reserve.maturedPrincipalNanos(dest, ledger.tipTimestampMs!) > 0)
                       ? () => _reserveWithdraw(context, ident)
                       : null,
-                  child: Text(reserve.maturedPrincipalNanos(dest, now) > 0
+                  child: Text((ledger.tipTimestampMs != null &&
+                          reserve.maturedPrincipalNanos(dest, ledger.tipTimestampMs!) > 0)
                       ? 'Withdraw to Continuum'
                       : kReserveUnlocksAtEpochEnd),
                 ),

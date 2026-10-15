@@ -4070,9 +4070,9 @@ class ShearLedger implements ReadProofSink {
   /// Sealed tip header wall-clock (ms). ShearView date column. Not an interval.
   int? get tipTimestampMs => _headerTimestampMs;
 
-  /// Header time when the chain has one. Otherwise the wallet clock, so a
-  /// matured lock note does not stay locked just because no header arrived.
-  int get _lockClockMs => tipTimestampMs ?? DateTime.now().millisecondsSinceEpoch;
+  /// Sealed tip time. Null when the chain has not shown a header, and a lock
+  /// stays locked until that header time reaches the note's unlock.
+  int? get _lockClockMs => tipTimestampMs;
 
   void applyAvgBlockTimeMs(int? ms) {
     if (ms == null || ms < 0) return;
@@ -5186,13 +5186,16 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  /// A matured time-lock note is the principal. Move it onto [spendDest]
-  /// and clear the lock. This does not build a reserve withdraw.
+  /// A matured time-lock note is the principal. Clear the lock flag once
+  /// [nowMs] (the chain tip) has reached the note's unlock. The on-chain
+  /// address stays the lock address. This does not build a reserve withdraw.
   int releaseMaturedLockNotes({
     required String fromDest,
-    required String spendDest,
     required int nowMs,
+    int? unlockAtMs,
+    int? nanos,
   }) {
+    if (nowMs <= 0) return 0;
     refreshTimeLockedNotes(nowMs: nowMs);
     var released = 0;
     for (final note in _notes) {
@@ -5201,17 +5204,17 @@ class ShearLedger implements ReadProofSink {
       final raw = note['unlockAtMs'];
       final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
       if (at <= 0 || nowMs < at) continue;
+      if (unlockAtMs != null && at != unlockAtMs) continue;
       final addr = (note['address'] ?? note['dest'])?.toString() ?? '';
-      if (fromDest.isNotEmpty && addr.isNotEmpty && addr != fromDest && addr != spendDest) {
-        continue;
+      if (fromDest.isNotEmpty && addr.isNotEmpty && addr != fromDest) continue;
+      if (nanos != null) {
+        final have = note['nanos'];
+        final n = have is num ? have.toInt() : int.tryParse('${have ?? ''}') ?? 0;
+        if (n != nanos) continue;
       }
       note['locked'] = false;
-      if (isDestAddress(spendDest)) {
-        note['address'] = spendDest;
-        note['dest'] = spendDest;
-        rememberDest(spendDest);
-      }
       released += 1;
+      if (nanos != null) break;
     }
     return released;
   }
@@ -9681,7 +9684,7 @@ Map<String, dynamic> rewardClaimFeePresets({
 /// A legal custom bid wins over [preset]. The weight floor is the default.
 Map<String, dynamic> rewardClaimSendBody({
   required String to,
-  required Object nanos,
+  required Object rho,
   required String nullifier,
   required List<dynamic> proof,
   required List<dynamic> vout,
@@ -9695,7 +9698,7 @@ Map<String, dynamic> rewardClaimSendBody({
     'programId': 'shear-reserve-v1',
     'mint': true,
     'to': to,
-    'nanos': nanos,
+    'rho': rho,
     'nullifier': nullifier,
     'proof': proof,
     'vin': const <dynamic>[],

@@ -247,6 +247,17 @@ void _tallContinuum(WidgetTester tester) {
   addTearDown(tester.view.resetDevicePixelRatio);
 }
 
+/// Sealed header whose wall-clock is [tipMs]. The withdraw gate reads this, not the device clock.
+void _stampChainTip(ShearLedger ledger, int tipMs, {int height = 12}) {
+  final header = Uint8List(128);
+  var v = tipMs;
+  for (var i = 0; i < 8; i++) {
+    header[100 + i] = v & 0xff;
+    v >>= 8;
+  }
+  ledger.applyTipHeader(header, sealedHeight: height);
+}
+
 class _VortexBalancePool extends ShearPoolClient {
   _VortexBalancePool()
       : super(
@@ -7735,6 +7746,7 @@ void main() {
     final t0 = now - kReserveEpochMs;
     final vault = ShearReserve();
     expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0), isNull);
+    _stampChainTip(opened.ledger, now);
     opened.live.reservePortal = {
       'ok': true,
       'public': false,
@@ -7828,9 +7840,47 @@ void main() {
     expect(vault.portal(dest).nanos, second);
     expect(vault.portal(dest).deposits, hasLength(1));
     expect(vault.maturedPrincipalNanos(dest, mid), 0);
-    expect(vault.depositUnlockAtMs(vault.portal(dest).deposits.single), 0);
-    expect(vault.maturedPrincipalNanos(dest, later + kReserveEpochMs), 0);
-    expect(vault.withdraw(dest: dest, nowMs: later + kReserveEpochMs), isNull);
+    final secondUnlock = t0 + 2 * kReserveEpochMs;
+    expect(vault.depositUnlockAtMs(vault.portal(dest).deposits.single), secondUnlock);
+    expect(vault.maturedPrincipalNanos(dest, secondUnlock - 1), 0);
+    expect(vault.maturedPrincipalNanos(dest, secondUnlock), second);
+    final rest = vault.withdraw(dest: dest, nowMs: secondUnlock);
+    expect(rest, isNotNull);
+    expect(rest!['principal'], second);
+    expect(vault.portal(dest).nanos, 0);
+  });
+
+  test('top-ups across epochs each unlock at their own chain epoch end', () {
+    final vault = ShearReserve();
+    final dest = kPoolFeeDest;
+    const t0 = 1700000000000;
+    final e1 = t0 + kReserveEpochMs;
+    final e2 = t0 + 2 * kReserveEpochMs;
+    final e3 = t0 + 3 * kReserveEpochMs;
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0), isNull);
+    expect(vault.deposit(dest: dest, she: 1, nowMs: t0 + 1000), isNull);
+    vault.bonusEnacted = true;
+    expect(vault.deposit(dest: dest, she: 2, nowMs: e1 + 1000), isNull);
+    expect(vault.deposit(dest: dest, she: 3, nowMs: e2 + 5000), isNull);
+    final rows = vault.portal(dest).deposits;
+    expect(rows, hasLength(4));
+    expect(vault.depositUnlockAtMs(rows[0]), e1);
+    expect(vault.depositUnlockAtMs(rows[1]), e1);
+    expect(vault.depositUnlockAtMs(rows[2]), e2);
+    expect(vault.depositUnlockAtMs(rows[3]), e3);
+    expect(rows.map((d) => d.epoch), [1, 1, 2, 3]);
+    expect(vault.maturedPrincipalNanos(dest, e1 - 1), 0);
+    final first = vault.withdraw(dest: dest, nowMs: e1);
+    expect(first, isNotNull);
+    expect(first!['principal'], kPiSheNanos + kUnitsPerShe);
+    expect(vault.portal(dest).deposits, hasLength(2));
+    expect(vault.maturedPrincipalNanos(dest, e2 - 1), 0);
+    expect(vault.maturedPrincipalNanos(dest, e2), 2 * kUnitsPerShe);
+    expect(vault.maturedPrincipalNanos(dest, e3 - 1), 2 * kUnitsPerShe);
+    final last = vault.withdraw(dest: dest, nowMs: e3);
+    expect(last, isNotNull);
+    expect(last!['principal'], 5 * kUnitsPerShe);
+    expect(vault.portal(dest).nanos, 0);
   });
 
   test('there is no mid-epoch withdraw path', () async {
@@ -7865,6 +7915,7 @@ void main() {
     final vault = ShearReserve();
     expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0, noteIsPrincipal: true), isNull);
     expect(vault.maturedTimeLockNanos(dest, now), kPiSheNanos);
+    _stampChainTip(opened.ledger, now);
     opened.ledger.rememberNote({
       'address': dest,
       'dest': dest,
@@ -7889,9 +7940,11 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    await tester.ensureVisible(find.byKey(const Key('reserve-withdraw')));
-    expect(find.text('Withdraw to Continuum'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('reserve-withdraw')));
+    expect(find.byKey(const Key('reserve-withdraw')), findsNothing);
+    expect(find.text('Withdraw to Continuum'), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('reserve-deposit-withdraw-0')));
+    expect(find.text('Withdraw'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-deposit-withdraw-0')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-withdraw-sign')), findsNothing);
     expect(opened.ledger.transactions.where((tx) => tx.kind == 'withdraw'), isEmpty);
@@ -7901,14 +7954,129 @@ void main() {
     );
     final note = opened.ledger.notes.singleWhere((row) => row['kind'] == 'lock');
     expect(note['locked'], isFalse);
-    expect(
-      note['address'],
-      opened.ledger.currentDest(ident.address, paymentCode: ident.paymentCode),
-    );
+    expect(note['address'], dest);
+    expect(note['dest'], dest);
     expect(note['spent'], isNot(true));
     expect(vault.portal(dest).nanos, 0);
     expect(vault.maturedTimeLockNanos(dest, now), 0);
     await _end018(tester, opened.ledger);
+  });
+
+  testWidgets('a device clock ahead of the chain does not unlock a time-lock', (tester) async {
+    _tallContinuum(tester);
+    final opened = await _open018(tester);
+    final ident = opened.session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final wall = DateTime.now().millisecondsSinceEpoch;
+    final t0 = wall - kReserveEpochMs - 60000;
+    final epochEnd = t0 + kReserveEpochMs;
+    final vault = ShearReserve();
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0, noteIsPrincipal: true), isNull);
+    expect(vault.maturedTimeLockNanos(dest, wall), kPiSheNanos);
+    expect(vault.maturedTimeLockNanos(dest, epochEnd - 1), 0);
+    opened.ledger.rememberNote({
+      'address': dest,
+      'dest': dest,
+      'kind': 'lock',
+      'unlockAtMs': epochEnd,
+      'nanos': kPiSheNanos,
+      'amount': kPiShe,
+      'locked': true,
+      'spent': false,
+      'commit': Uint8List(32)..[0] = 1,
+      'noteCommit': Uint8List(32)..[0] = 2,
+      'r': Uint8List(32)..[0] = 3,
+    });
+    _stampChainTip(opened.ledger, epochEnd - 1);
+    await tester.pumpWidget(ShearWalletApp(
+      session: opened.session,
+      ledger: opened.ledger,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-withdraw')), findsNothing);
+    expect(find.text('Withdraw to Continuum'), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('reserve-deposit-withdraw-0')));
+    final closed = tester.widget<TextButton>(find.byKey(const Key('reserve-deposit-withdraw-0')));
+    expect(closed.onPressed, isNull);
+    expect(find.text(kReserveUnlocksAtEpochEnd), findsOneWidget);
+    final note = opened.ledger.notes.singleWhere((row) => row['kind'] == 'lock');
+    expect(note['locked'], isTrue);
+    expect(note['address'], dest);
+    expect(opened.ledger.transactions.where((tx) => tx.kind == 'withdraw'), isEmpty);
+    await _end018(tester, opened.ledger);
+  });
+
+  testWidgets('a device clock ahead of the chain does not enable a legacy withdraw', (tester) async {
+    _tallContinuum(tester);
+    final opened = await _open018(tester);
+    final ident = opened.session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final wall = DateTime.now().millisecondsSinceEpoch;
+    final t0 = wall - kReserveEpochMs - 60000;
+    final vault = ShearReserve();
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0), isNull);
+    expect(vault.maturedPrincipalNanos(dest, wall), kPiSheNanos);
+    expect(vault.maturedPrincipalNanos(dest, 0), 0);
+    _stampChainTip(opened.ledger, t0 + kReserveEpochMs - 1);
+    await tester.pumpWidget(ShearWalletApp(
+      session: opened.session,
+      ledger: opened.ledger,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-withdraw')));
+    final locked = tester.widget<FilledButton>(find.byKey(const Key('reserve-withdraw')));
+    expect(locked.onPressed, isNull);
+    expect(find.text(kReserveUnlocksAtEpochEnd), findsOneWidget);
+    expect(find.text('Withdraw to Continuum'), findsNothing);
+    await _end018(tester, opened.ledger);
+  });
+
+  test('releasing a matured lock note keeps the on-chain address', () {
+    final ledger = ShearLedger();
+    const dest = kPoolFeeDest;
+    const unlock = 1700000000000;
+    ledger.rememberNote({
+      'address': dest,
+      'dest': dest,
+      'kind': 'lock',
+      'unlockAtMs': unlock,
+      'nanos': kPiSheNanos,
+      'locked': true,
+      'spent': false,
+    });
+    expect(ledger.releaseMaturedLockNotes(fromDest: dest, nowMs: 0, unlockAtMs: unlock, nanos: kPiSheNanos), 0);
+    expect(ledger.notes.single['locked'], isTrue);
+    expect(ledger.notes.single['address'], dest);
+    _stampChainTip(ledger, unlock - 1);
+    expect(
+      ledger.releaseMaturedLockNotes(fromDest: dest, nowMs: unlock - 1, unlockAtMs: unlock, nanos: kPiSheNanos),
+      0,
+    );
+    expect(ledger.notes.single['locked'], isTrue);
+    _stampChainTip(ledger, unlock);
+    expect(
+      ledger.releaseMaturedLockNotes(fromDest: dest, nowMs: unlock, unlockAtMs: unlock, nanos: kPiSheNanos),
+      1,
+    );
+    final note = ledger.notes.single;
+    expect(note['locked'], isFalse);
+    expect(note['address'], dest);
+    expect(note['dest'], dest);
+    ledger.refreshTimeLockedNotes();
+    expect(ledger.notes.single['locked'], isFalse);
+    expect(ledger.notes.single['address'], dest);
   });
 
   testWidgets('claim fee picker posts the chosen exact fee', (tester) async {

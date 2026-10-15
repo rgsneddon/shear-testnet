@@ -84,6 +84,23 @@ void main() {
     expect(apiPresets[0]['she'], isNot(apiPresets[2]['she']));
   });
 
+  test('the reward-claim helper posts rho', () {
+    final built = rewardClaimSendBody(
+      to: 'ssa1payee',
+      rho: 42,
+      nullifier: '11' * 32,
+      proof: const [],
+      vout: const [
+        {'kind': 'reward-claim'},
+      ],
+      fee: 1000,
+    );
+    final tx = built['tx'] as Map<String, dynamic>;
+    expect(tx['rho'], 42);
+    expect(tx.containsKey('nanos'), isFalse);
+    expect(tx['fee'], 1000);
+  });
+
   test('a local scan keeps only this vault and seals to our payee', () async {
     final ident = createIdentity();
     final lock = vaultDest(ident.address, viewKey: ident.viewKey)!;
