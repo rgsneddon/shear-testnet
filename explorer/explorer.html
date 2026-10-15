@@ -49,11 +49,9 @@
 <title>Shear explorer · ShearHash-v3</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/fonts/greatvibes/great-vibes.css" />
   <link rel="stylesheet" href="/css/site.css"/>
-  <link rel="stylesheet" href="/shared/shear-chrome.css"/>
+  <link rel="stylesheet" href="/shared/shear-chrome.css?v=20261014nav"/>
   <style>
     /* Bridge: legacy pool inline vars ? Dark SaaS (matches shear.digital) */
     :root, html[data-theme="dark"] {
@@ -187,8 +185,40 @@
   <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
 </head>
 <body>
-  <div id="shear-chrome-root" data-active="EXPLORER" data-brand-base="/brand/" data-testnet-pill="1"></div>
-  <script src="/shared/shear-chrome.js"></script>
+  <div id="shear-chrome-root" data-active="EXPLORER" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn is-on active" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="/shared/shear-chrome.js?v=20261014nav"></script>
 
   <div class="wrap">
     <section class="panel-card">
@@ -204,7 +234,7 @@
       <article class="panel-card"><div class="label">Circulating Shear</div><div class="value" id="ex-circ-she">—</div></article>
       <article class="panel-card"><div class="label">Average block reward since genesis</div><div class="value" id="ex-avg-reward">—</div></article>
       <article class="panel-card"><div class="label">Nodes online</div><div class="value" id="ex-nodes-online">—</div></article>
-      <article class="panel-card"><div class="label">VAULT · staked + accruing BPS</div><div class="value" id="ex-reserve-vault">—</div></article>
+      <article class="panel-card"><div class="label">VAULT · locked + accruing BPS</div><div class="value" id="ex-reserve-vault">—</div></article>
       <article class="panel-card"><div class="label">Avg block time</div><div class="value" id="ex-avg-block">—</div></article>
       <article class="panel-card"><div class="label">Spendable after</div><div class="value" id="ex-spendable-conf">—</div></article>
     </div>
@@ -478,6 +508,56 @@
     var FIND_LEDGER_KEY = 'shear-pool-find-ledger-v1';
     var findLedger = {};
     var liveStats = null;
+    // Header stamps for every sealed height. recentTxs only carries ten rows, so
+    // search results below that window had no next-header stamp and painted "—".
+    var headerAtBook = {};
+    var headerAtBusy = false;
+    var headerAtTried = {};
+    function noteHeaderAt(rows) {
+      var list = rows || [];
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        var h = Math.floor(Number(r && r.height) || 0);
+        var at = Math.floor(Number(r && r.at) || 0);
+        if (h >= 1 && at > 0 && String((r && r.kind) || 'block') === 'block') headerAtBook[h] = at;
+      }
+    }
+    function headerAtGaps(rows, tip) {
+      var lo = 0;
+      var hi = 0;
+      var list = rows || [];
+      for (var i = 0; i < list.length; i++) {
+        var h = Math.floor(Number(list[i] && list[i].height) || 0);
+        if (!(h >= 1)) continue;
+        var want = [h, h + 1];
+        for (var j = 0; j < want.length; j++) {
+          var w = want[j];
+          if (w > tip || headerAtBook[w] || headerAtTried[w]) continue;
+          if (!lo || w < lo) lo = w;
+          if (w > hi) hi = w;
+        }
+      }
+      return lo ? { from: lo, to: Math.min(hi, lo + 1999) } : null;
+    }
+    function fillHeaderAt(rows, tip, repaint) {
+      var gap = headerAtGaps(rows, tip);
+      if (!gap || headerAtBusy) return;
+      headerAtBusy = true;
+      for (var h = gap.from; h <= gap.to; h++) headerAtTried[h] = 1;
+      fetchJson('/explorer/headers?from=' + gap.from + '&to=' + gap.to, 4000).then(function (got) {
+        var list = (got && got.headers) || [];
+        for (var i = 0; i < list.length; i++) {
+          var hh = Math.floor(Number(list[i] && list[i].height) || 0);
+          var ms = headerTipMs(list[i] && list[i].header);
+          if (hh >= 1 && ms > 0) headerAtBook[hh] = ms;
+        }
+        headerAtBusy = false;
+        if (typeof repaint === 'function') repaint();
+      }).catch(function () {
+        for (var h2 = gap.from; h2 <= gap.to; h2++) delete headerAtTried[h2];
+        headerAtBusy = false;
+      });
+    }
     function loadFindLedger() {
       try {
         var raw = localStorage.getItem(FIND_LEDGER_KEY);
@@ -565,6 +645,9 @@
       var live = Math.floor(Number(stats && stats.lastFoundAt) || 0);
       // The live find stamp is the tip's. An older row still holding it was pinned early.
       if (live > 0 && remembered === live && h !== tip) return 0;
+      if (tip >= 1 && h > tip) return 0;
+      var own = chainAt(stats, h);
+      if (own > 0 && remembered <= own) return 0;
       return remembered;
     }
     function chainAt(stats, height) {
@@ -581,6 +664,9 @@
       if (extra && Math.floor(Number(extra[want] || extra[String(want)]) || 0) > 0) {
         return Math.floor(Number(extra[want] || extra[String(want)]) || 0);
       }
+      // Rows outside recentTxs use the header fetch (headerAtBook).
+      var stamped = Math.floor(Number(headerAtBook[want]) || 0);
+      if (stamped > 0) return stamped;
       return 0;
     }
     function wallFoundMs(row, stats, ledger) {
@@ -766,10 +852,16 @@
       lastBlockId = tip.id || '';
       paintLastBlock();
       const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
-      paintTxs(poolBlockRows(stats, findLedger), '');
+      noteHeaderAt(stats.recentTxs || []);
+      const poolRows = poolBlockRows(stats, findLedger);
+      paintTxs(poolRows, '');
+      fillHeaderAt(poolRows, tipHeight, function () {
+        if (!hasSearchQuery()) paintTxs(poolBlockRows(liveStats, findLedger), '');
+      });
       saveFindLedger();
       paintHolders(circ);
     }
+    let lastSearchStatus = '';
     async function runSearch(ev) {
       if (ev) ev.preventDefault();
       const q = queryFromForm();
@@ -785,11 +877,16 @@
         || spendableNeed
         || 9;
       const got = await fetchJson('/explorer/search?' + q.toString());
+      noteHeaderAt(got.txs || []);
+      fillHeaderAt(got.txs || [], tipHeight, function () {
+        paintTxs(got.txs || [], lastSearchStatus);
+      });
       const n = (got.txs || []).length;
       let status = n + ' block(s)';
       if (q.get('height')) status = n + ' block(s) at height ' + q.get('height');
       else if (q.get('id')) status = n + ' block(s) matching id ' + q.get('id');
       else if (q.get('from') || q.get('to')) status = n + ' block(s) from ' + (q.get('from') || '…') + ' to ' + (q.get('to') || '…');
+      lastSearchStatus = status;
       paintTxs(got.txs || [], status);
     }
     document.getElementById('tx-search').addEventListener('submit', runSearch);

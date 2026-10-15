@@ -50,7 +50,7 @@
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="../css/site.css" />
-  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css?v=20261014nav" />
   <style>
     .os-tabs { margin: 1rem 0 1.5rem; }
     .os-tablist { display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:.85rem; }
@@ -90,8 +90,40 @@
 </style>
 </head>
 <body>
-  <div id="shear-chrome-root" data-active="NODE" data-brand-base="../brand/" data-testnet-pill="1"></div>
-  <script src="../shared/shear-chrome.js"></script>
+  <div id="shear-chrome-root" data-active="NODE" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn is-on active" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="../shared/shear-chrome.js?v=20261014nav"></script>
 
   <div class="banner" role="status">
     <strong>Unzip and run, or build from source.</strong> Shear Sentinel v18 packs
@@ -197,8 +229,8 @@ make -C crypto/native</pre>
           <p>Then continue with clone / RandomX / <code>crypto/native</code> below. Build <code>crypto/native</code> on this Fedora machine. A <code>shearhash.node</code> copied from Ubuntu will not load.</p>
           <p>Deploy with the unit in the repo. It dials any and all seeds and listens for Continuum on <code>127.0.0.1:18332</code>. Do not <code>npm run pool</code>.</p>
           <div class="copy-row">
-            <pre id="fedora-node-deploy">sudo mkdir -p /opt/shear-v4 /var/lib/shear/testnet-v11
-sudo chown "$USER":"$USER" /opt/shear-v4 /var/lib/shear/testnet-v11
+            <pre id="fedora-node-deploy">sudo mkdir -p /opt/shear-v4 /var/lib/shear/testnet-v10
+sudo chown "$USER":"$USER" /opt/shear-v4 /var/lib/shear/testnet-v10
 git clone https://github.com/rgsneddon/shear-testnet.git /opt/shear-v4
 cd /opt/shear-v4
 npm ci
@@ -214,7 +246,7 @@ sudo systemctl enable --now shear-node
 journalctl -u shear-node -n 20 --no-pager</pre>
             <button type="button" data-copy="fedora-node-deploy">Copy</button>
           </div>
-          <p>You are done when a status line shows <code>hashBackend=native</code>, <code>peers</code> at least 1, and <code>ibd=false</code> with the height holding still. While the height is still climbing, <code>ibd=true</code> is catch-up, not a failure. The number on pool.shear.digital is the pool’s own book. Your node follows the public peers. Those two heights are not the same reading. Do not wipe <code>/var/lib/shear/testnet-v11</code> because the pool page is taller. Add every seed you have; the node is not limited to one host.</p>
+          <p>You are done when a status line shows <code>hashBackend=native</code>, <code>peers</code> at least 1, and <code>ibd=false</code> with the height holding still. While the height is still climbing, <code>ibd=true</code> is catch-up, not a failure. The number on pool.shear.digital is the pool’s own book. Your node follows the public peers. Those two heights are not the same reading. Do not wipe <code>/var/lib/shear/testnet-v10</code> because the pool page is taller. Add every seed you have; the node is not limited to one host.</p>
         </div>
         <div class="os-tabpanel" role="tabpanel" id="solo-pane-arch" aria-labelledby="solo-tab-arch" data-os="arch" hidden>
           <p>Arch Linux. <code>base-devel</code> plus nodejs, npm, cmake, openssl. Repo <code>rust</code> is enough; rustup is optional.</p>
@@ -355,9 +387,9 @@ node node/src/node.js --print-config</pre>
       <p><code>--print-config</code> must show <code>"version":"18.0"</code>, <code>"magic":"shear-testnet-v11"</code>, <code>"admit":"ADMITv2"</code>, <code>"mainnet":false</code>.</p>
       
         <h3>2. Validating node (not the full pool)</h3>
-      <p>Node pin <strong>18.0</strong> (v17). Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). It does <strong>not</strong> pull a bootstrap. An empty book starts at genesis and requests height 1, 2, 3, … until the tip; a recorded tip resumes. Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong>. Outbound TCP to those seeds is required. Optional snapshot: download <code>latest.json</code> + <code>latest.bin</code> from <a href="https://boot.shear.digital">boot.shear.digital</a> and pass <code>--bootstrap</code> on an empty datadir. Do <strong>not</strong> <code>npm run pool</code>.</p>
+      <p>Node pin <strong>18.0</strong> (v18). Bare <code>node node/src/node.js</code> is validator-only (P2P + loopback RPC). It does <strong>not</strong> pull a bootstrap. An empty book starts at genesis and requests height 1, 2, 3, … until the tip; a recorded tip resumes. Put <code>SHEAR_SEEDS</code> in the <strong>same shell</strong>. Outbound TCP to those seeds is required. Optional snapshot: download <code>latest.json</code> + <code>latest.bin</code> from <a href="https://boot.shear.digital">boot.shear.digital</a> and pass <code>--bootstrap</code> on an empty datadir. Do <strong>not</strong> <code>npm run pool</code>.</p>
       <div class="copy-row">
-        <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v11"
+        <pre id="solo-run">export SHEAR_DATA="$HOME/.shear/testnet-v10"
 export SHEAR_NETWORK=shear-testnet-v11
 export SHEAR_P2P_PORT=30303
 export SHEAR_P2P_BIND=0.0.0.0
@@ -392,7 +424,9 @@ npm run solo</pre>
   <footer class="footer">
     <div class="wrap footer-inner">
       <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <div class="shear-legal">Shear is experimental open-source software on testnet. Nothing here is financial advice or an offer of investment. Use it lawfully.</div>
       <nav>
+        <a href="/privacy.html">Privacy</a>
         <a href="/">Main</a>
         <a href="/miner/">Miner</a>
         <a href="/wallet/">Wallet</a>

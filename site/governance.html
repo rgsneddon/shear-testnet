@@ -50,12 +50,44 @@
   <link rel="icon" href="brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="css/site.css" />
-  <link rel="stylesheet" href="shared/shear-chrome.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css?v=20261014nav" />
   <link rel="stylesheet" href="css/saas-dark.css" />
 </head>
 <body>
-  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="brand/"></div>
-  <script src="shared/shear-chrome.js"></script>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn is-on active" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="shared/shear-chrome.js?v=20261014nav"></script>
 
 <div class="banner" role="status">
     <strong>Testnet only.</strong> Mainnet is not live · launch date not decided
@@ -74,7 +106,7 @@
           <div class="card-kicker">What happens</div>
           <h3>Epochs, then enact</h3>
           <p>Time on the Reserve runs in epochs (4 days on this testnet; 400 days planned for mainnet). The first qualifying π lock opens the inaugural epoch — not genesis, and not an operator clock.</p>
-          <p>Through most of the epoch, locked holders can cast a vote. Near the end, new locks may still sit idle for interest, but vote changes stop. When the epoch closes, the tallied choice moves the live hashbonus (or a tie leaves it), then principal and earned interest become withdrawable.</p>
+          <p>Through most of the epoch, locked holders can cast a vote. Near the end, new locks may still sit idle for the reserve reward, but vote changes stop. When the epoch closes, the tallied choice moves the live hashbonus (or a tie leaves it), then principal and the reserve reward received become withdrawable.</p>
         </div>
         <div class="panel">
           <div class="card-kicker">How you take part</div>
@@ -89,7 +121,7 @@
             <li><strong>Hashbonus unit</strong> — raise by one, lower by one, or leave it. That unit is the extra mint per proven floor share (base is 10<sup>−11</sup> SHE). Plurality at epoch end enacts the move.</li>
           </ul>
           <div class="note"><strong>Not on the ballot:</strong> the <strong>1 SHE</strong> block pot. Epoch pot issuance is protocol schedule, not a vote outcome. Third-party Vortex programmes cannot mint SHE or move the pot.</div>
-          <p style="margin-top:0.85rem">The Reserve <strong>oracle</strong> publishes an observed staking APR for the epoch. Nodes freeze it fail-closed for interest mint. That rate is attested input, not something the ballot invents in the wallet UI.</p>
+          <p style="margin-top:0.85rem">The Reserve <strong>oracle</strong> supplies the observation behind the lock issuance rate, recalculated by consensus at each epoch end. Nodes freeze it fail-closed for the reserve reward mint. Reserve rewards are newly minted by the protocol in each block’s coinbase at the lock issuance rate. They don’t come from any pool or pot of existing Shear, and nobody holds your coins. That rate is attested input, not something the ballot invents in the wallet UI.</p>
         </div>
       </div>
       <div class="cta-row" style="margin-top:1.5rem">
@@ -103,7 +135,9 @@
   <footer class="footer">
     <div class="wrap footer-inner">
       <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <div class="shear-legal">Shear is experimental open-source software on testnet. Nothing here is financial advice or an offer of investment. Use it lawfully.</div>
       <nav>
+        <a href="/privacy.html">Privacy</a>
         <a href="index.html">Home</a>
         <a href="network.html">Network</a>
         <a href="docs/index.html">Docs</a>

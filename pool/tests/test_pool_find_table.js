@@ -11,9 +11,13 @@ function loadFindFns(rel) {
     .filter((n) => n > start);
   const end = Math.min(...marks);
   assert.ok(start > 0 && end > start, rel);
+  const slice = src.slice(start, end);
+  const names = ['poolTagSet', 'isPoolFoundBlock', 'notePoolFind', 'wallFoundMs', 'poolBlockRows', 'foundInMs', 'fmtFoundIn', 'stampOwner'];
+  if (slice.includes('function chainAt')) names.push('chainAt', 'ledgerFindMs');
   const sandbox = {};
   vm.createContext(sandbox);
-  vm.runInContext(`${src.slice(start, end)}\n({ poolTagSet, isPoolFoundBlock, notePoolFind, wallFoundMs, poolBlockRows, foundInMs, fmtFoundIn, stampOwner });`, sandbox);
+  // headerAtBook is the explorer header fetch. Pages that read it close over this object.
+  vm.runInContext(`var headerAtBook = {};\n${slice}\n({ ${names.join(', ')}, headerAtBook });`, sandbox);
   return sandbox;
 }
 
@@ -44,7 +48,13 @@ describe('explorer pool-found table uses wall-clock finds', () => {
         lastFoundAt: 1_000_000,
         recentTxs: [{ kind: 'block', height: 32, id: 'prev', at: 948_000, finder: TAG }],
       }), ledger);
-      const now = stats();
+      // The header still in view is the one from the find, before the ledger stamp.
+      const now = stats({
+        recentTxs: [
+          { kind: 'block', height: 33, id: 'tip', at: 1_000_000, finder: TAG },
+          { kind: 'block', height: 32, id: 'prev', at: 948_000, finder: TAG },
+        ],
+      });
       const rows = api.poolBlockRows(now, ledger);
       assert.equal(rows[0].height, 33);
       assert.equal(rows[0].height, now.height);
@@ -64,7 +74,7 @@ describe('explorer pool-found table uses wall-clock finds', () => {
       const now = stats({
         height: 33,
         lastFoundAt: 1_140_000,
-        recentTxs: [{ kind: 'block', height: 32, id: 'prev', at: 1_052_000, finder: TAG }],
+        recentTxs: [{ kind: 'block', height: 32, id: 'prev', at: 948_000, finder: TAG }],
       });
       const rows = api.poolBlockRows(now, ledger);
       assert.equal(rows[0].height, 33);
@@ -104,13 +114,13 @@ describe('explorer pool-found table uses wall-clock finds', () => {
       assert.equal(rows[0].height, 33);
       assert.equal(api.wallFoundMs(rows[0], now, ledger), 140_000);
       assert.notEqual(api.wallFoundMs(rows[0], now, ledger), 52_000);
-      if (rel.endsWith('explorer/explorer.html')) {
+      if (rel.includes('public/explorer.html')) {
+        assert.equal(api.foundInMs(rows[0], now, ledger), 0);
+        assert.equal(api.fmtFoundIn(api.foundInMs(rows[0], now, ledger)), '—');
+      } else {
         // Previous find is this header stamp. Tip find stays foundAt.
         assert.equal(api.foundInMs(rows[0], now, ledger), 88_000);
         assert.equal(api.fmtFoundIn(88_000), '1m 28s');
-      } else {
-        assert.equal(api.foundInMs(rows[0], now, ledger), 0);
-        assert.equal(api.fmtFoundIn(api.foundInMs(rows[0], now, ledger)), '—');
       }
     });
   }
@@ -200,5 +210,72 @@ describe('explorer backfills Found in for every listed pool block', () => {
     assert.equal(api.foundInMs(rows[0], now, ledger), lastFoundAt - observed33);
     assert.notEqual(api.foundInMs(rows[0], now, ledger), 140_000);
     assert.equal(api.foundInMs(rows.find((r) => r.height === 33), now, ledger), observed33 - at33);
+  });
+});
+
+describe('found in uses the ledger first, then the header timestamp', () => {
+  for (const rel of ['../../explorer/explorer.html', '../public/index.html']) {
+    const api = loadFindFns(rel);
+
+    it(`${rel} keeps a ledger stamp that is later than the header`, () => {
+      const header32 = 948_000;
+      const find32 = 1_000_000;
+      const find33 = 1_140_000;
+      const now = stats({
+        height: 33,
+        lastFoundAt: find33,
+        recentTxs: [
+          { kind: 'block', height: 33, id: 'tip', at: 1_052_000, finder: TAG },
+          { kind: 'block', height: 32, id: 'prev', at: header32, finder: TAG },
+        ],
+      });
+      const ledger = { 32: find32, 33: find33 };
+      assert.equal(api.wallFoundMs(now.recentTxs[1], now, ledger), find32);
+      assert.notEqual(api.wallFoundMs(now.recentTxs[1], now, ledger), header32);
+      assert.equal(api.foundInMs(now.recentTxs[0], now, ledger), find33 - find32);
+      assert.equal(api.fmtFoundIn(find33 - find32), '2m 20s');
+      assert.notEqual(api.foundInMs(now.recentTxs[0], now, ledger), 52_000);
+    });
+
+    it(`${rel} falls back to the header timestamp when the height is outside the ledger`, () => {
+      const header20 = 500_000;
+      const header21 = 588_000;
+      const now = stats({
+        height: 33,
+        lastFoundAt: 1_140_000,
+        recentTxs: [
+          { kind: 'block', height: 21, id: 'h21', at: header21, finder: TAG, poolFound: true },
+          { kind: 'block', height: 20, id: 'h20', at: header20, finder: TAG, poolFound: true },
+        ],
+      });
+      const ledger = { 33: 1_140_000 };
+      const row20 = now.recentTxs.find((r) => r.height === 20);
+      assert.equal(api.wallFoundMs(row20, now, ledger), header21);
+      assert.notEqual(api.wallFoundMs(row20, now, ledger), header20);
+      assert.equal(api.foundInMs(row20, now, ledger), header21 - header20);
+      assert.equal(api.fmtFoundIn(api.foundInMs(row20, now, ledger)), '1m 28s');
+    });
+  }
+
+  it('explorer header fetch fills a row that is outside the ledger and outside recentTxs', () => {
+    const api = loadFindFns('../../explorer/explorer.html');
+    const now = stats({
+      height: 33,
+      lastFoundAt: 1_140_000,
+      recentTxs: [
+        { kind: 'block', height: 33, id: 'tip', at: 1_052_000, finder: TAG },
+      ],
+    });
+    api.headerAtBook[12] = 200_000;
+    api.headerAtBook[13] = 288_000;
+    const row = { kind: 'block', height: 12, id: 'old', at: 0, finder: TAG, poolFound: true };
+    const outside = { 33: 1_140_000 };
+    assert.equal(api.chainAt(now, 12), 200_000);
+    assert.equal(api.wallFoundMs(row, now, outside), 288_000);
+    assert.equal(api.foundInMs(row, now, outside), 88_000);
+    const inLedger = { 12: 250_000, 33: 1_140_000 };
+    assert.equal(api.wallFoundMs(row, now, inLedger), 250_000);
+    assert.notEqual(api.wallFoundMs(row, now, inLedger), 288_000);
+    assert.equal(api.foundInMs(row, now, inLedger), 50_000);
   });
 });

@@ -99,17 +99,17 @@ function waitMsg(msgs, pred, ms = 30000) {
   });
 }
 
-function findShare(job, max = 6_000n) {
+function findShare(job, dest, max = 6_000n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (s.ok) return { nonce, s };
   }
   throw new Error('no_share');
 }
 
-function findMiss(job, max = 4096n) {
+function findMiss(job, dest, max = 4096n) {
   for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (!s.ok && s.reason === 'low_diff' && s.hash) return { nonce, s };
   }
   throw new Error('no_low_diff');
@@ -230,7 +230,7 @@ describe('drop idle / wrong-algo miners', () => {
   it('low_diff (right algo, below share bits) does not drop; idle never-share does', async () => {
     const { pool, dest } = tmpPool(8);
     const job = pool.issueJob();
-    const miss = findMiss(job);
+    const miss = findMiss(job, dest);
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
     sock.on('error', () => {});
@@ -285,7 +285,7 @@ describe('drop idle / wrong-algo miners', () => {
   it('a hasher with an accepted ShearHash-v3 share is not idle-dropped', async () => {
     const { pool, dest } = tmpPool(8, { noValidShareMs: 80 });
     const job = pool.issueJob();
-    const hit = findShare(job);
+    const hit = findShare(job, dest);
     const port = await listen(pool);
     const sock = net.connect(port, '127.0.0.1');
     sock.on('error', () => {});

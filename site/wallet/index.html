@@ -50,7 +50,7 @@
   <link rel="icon" href="../brand/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
   <link rel="stylesheet" href="../css/site.css" />
-  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css?v=20261014nav" />
   <link rel="stylesheet" href="../css/saas-dark.css" />
   <style>
     .wallet-hero {
@@ -148,16 +148,46 @@
     .vs-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
     @media (max-width:700px){ .vs-grid { grid-template-columns:1fr; } }
   </style>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/fonts/greatvibes/great-vibes.css" />
 </head>
 <body>
-  <div id="shear-chrome-root" data-active="WALLET" data-brand-base="../brand/" data-testnet-pill="1"></div>
-  <script src="../shared/shear-chrome.js"></script>
+  <div id="shear-chrome-root" data-active="WALLET" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn is-on active" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="../shared/shear-chrome.js?v=20261014nav"></script>
 
   <div class="banner" role="status">
-    <strong>Testnet Continuum 0.71.</strong> Mainnet not live · <span id="mainnet-countdown" data-until="2026-10-30T14:00:00+00:00">countdown to 30th October 2026 at 1400hrs UK time</span>
+    <strong>Testnet Continuum 0.71.</strong> Mainnet not live · <span id="mainnet-countdown" data-until="2026-11-16T14:00:00+00:00">countdown to 16th November 2026 at 1400hrs UK time</span>
     <span class="sep">·</span>
     Windows SmartScreen may flag unsigned builds
   </div>
@@ -272,7 +302,9 @@
   <footer class="footer">
     <div class="wrap footer-inner">
       <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <div class="shear-legal">Shear is experimental open-source software on testnet. Nothing here is financial advice or an offer of investment. Use it lawfully.</div>
       <nav>
+        <a href="/privacy.html">Privacy</a>
         <a href="/">Main</a>
         <a href="/get-started.html">Get started</a>
         <a href="/miner/">Miner</a>
@@ -292,14 +324,14 @@
       function tick() {
         var left = until - Date.now();
         if (!(left > 0)) {
-          el.textContent = '30th October 2026 at 1400hrs UK time';
+          el.textContent = '16th November 2026 at 1400hrs UK time';
           return;
         }
         var sec = Math.floor(left / 1000);
         var days = Math.floor(sec / 86400);
         var hours = Math.floor((sec % 86400) / 3600);
         var mins = Math.floor((sec % 3600) / 60);
-        el.textContent = 'countdown to 30th October 2026 at 1400hrs UK time · ' + days + 'd ' + pad(hours) + 'h ' + pad(mins) + 'm ' + pad(sec % 60) + 's';
+        el.textContent = 'countdown to 16th November 2026 at 1400hrs UK time · ' + days + 'd ' + pad(hours) + 'h ' + pad(mins) + 'm ' + pad(sec % 60) + 's';
       }
       tick();
       setInterval(tick, 1000);

@@ -77,12 +77,12 @@ async function login(port, login) {
   return { sock, job: hello.job, lines };
 }
 
-function findNonces(job, n, { block = false, skip = [], max = 2_500 } = {}) {
+function findNonces(job, n, { block = false, skip = [], max = 2_500, dest } = {}) {
   const seen = new Set([...skip].map((x) => String(x)));
   const out = [];
   for (let nonce = 0n; nonce < BigInt(max) && out.length < n; nonce += 1n) {
     if (seen.has(String(nonce))) continue;
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (!s.ok) continue;
     if (block && !s.block) continue;
     if (!block && s.block) continue;
@@ -92,11 +92,11 @@ function findNonces(job, n, { block = false, skip = [], max = 2_500 } = {}) {
 }
 
 /** One RandomX pass: non-sealing shares then a block nonce. */
-function collectRoundNonces(job, shareCount, max = 25_000) {
+function collectRoundNonces(job, shareCount, dest, max = 25_000) {
   const shares = [];
   const blocks = [];
   for (let nonce = 0n; nonce < BigInt(max); nonce += 1n) {
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (!s.ok) continue;
     const rec = { nonce, hash: s.hash };
     if (s.block) blocks.push(rec);
@@ -137,28 +137,16 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
     const job1 = a.job;
     const nA = 1;
     const nB = 1;
-    const pin = findNonces(job1, 1, { block: false, max: 2_500 })[0];
+    const pin = findNonces(job1, 1, { block: false, max: 2_500, dest: destA })[0];
     assert.ok(pin, 'need a floor share before the long hunt');
     send(a.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(pin.nonce), hash: pin.hash } });
     assert.equal((await a.lines.readResult()).result?.status, 'OK');
-    const found = collectRoundNonces(job1, nA + nB);
-    assert.ok(found.shares.length >= nA + nB, `need ${nA + nB} floor shares, got ${found.shares.length}`);
+    const bobPin = findNonces(job1, nB, { block: false, max: 2_500, dest: destB })[0];
+    assert.ok(bobPin, 'need a floor share for the second miner');
+    send(b.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(bobPin.nonce), hash: bobPin.hash } });
+    assert.equal((await b.lines.readResult()).result?.status, 'OK');
+    const found = collectRoundNonces(job1, 0, destA);
     assert.ok(found.blocks.length >= 1, 'need a sealing nonce in the same hunt');
-    const rest = found.shares.filter((s) => String(s.nonce) !== String(pin.nonce));
-    const aliceShares = [pin, ...rest.slice(0, nA - 1)];
-    const bobShares = rest.slice(nA - 1, nA - 1 + nB);
-    assert.equal(aliceShares.length, nA);
-    assert.equal(bobShares.length, nB);
-    for (const rec of aliceShares.slice(1)) {
-      send(a.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(rec.nonce), hash: rec.hash } });
-      const r = await a.lines.readResult();
-      assert.equal(r.result?.status, 'OK');
-    }
-    for (const rec of bobShares) {
-      send(b.sock, { id: 2, method: 'submit', params: { jobId: job1.jobId, nonce: String(rec.nonce), hash: rec.hash } });
-      const r = await b.lines.readResult();
-      assert.equal(r.result?.status, 'OK');
-    }
     assert.equal(pool.stats.blocks, 0);
     const win = found.blocks[0];
     assert.ok(win != null);
@@ -180,7 +168,7 @@ describe('round hash bonuses', { timeout: 1_200_000 }, () => {
     const bobCount = snap.find((s) => s.miner === destB)?.count;
     assert.equal(aliceCount, (nA + 1) * unit);
     assert.equal(bobCount, nB * unit);
-    const win2 = findNonces(job2, 1, { block: true })[0];
+    const win2 = findNonces(job2, 1, { block: true, dest: destA })[0];
     assert.ok(win2 != null);
     send(a.sock, { id: 4, method: 'submit', params: { jobId: job2.jobId, nonce: String(win2.nonce), hash: win2.hash } });
     const sealed2 = await a.lines.readResult();

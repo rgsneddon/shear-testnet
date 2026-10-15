@@ -76,12 +76,12 @@ async function login(port, login) {
   return { sock, job: hello.job, lines };
 }
 
-function findNonces(job, n, { block = false, skip = [], max = 2_500 } = {}) {
+function findNonces(job, n, { block = false, skip = [], max = 2_500, dest } = {}) {
   const seen = new Set([...skip].map((x) => String(x)));
   const out = [];
   for (let nonce = 0n; nonce < BigInt(max) && out.length < n; nonce += 1n) {
     if (seen.has(String(nonce))) continue;
-    const s = scoreShare({ job, nonce });
+    const s = scoreShare({ job, nonce, dest });
     if (!s.ok) continue;
     if (block && !s.block) continue;
     if (!block && s.block) continue;
@@ -120,7 +120,7 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
       const job1 = a.job;
       // Pin accepted>0 before the bits=12 block hunt so idle-drop cannot
       // kill the socket (NO_VALID_SHARE_MS is 90s; a floor block is slower).
-      const hud = findNonces(job1, 1, { block: false, max: 2_500 })[0];
+      const hud = findNonces(job1, 1, { block: false, max: 2_500, dest: destA })[0];
       assert.ok(hud, 'need a lag-1 share');
       send(a.sock, {
         id: 2,
@@ -130,7 +130,7 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
       const shareAck = await a.lines.readResult();
       assert.equal(shareAck.result?.status, 'OK', JSON.stringify(shareAck));
       assert.equal(shareAck.result?.block, false);
-      const win1 = findNonces(job1, 1, { block: true, max: 2_500, skip: [hud.nonce] })[0];
+      const win1 = findNonces(job1, 1, { block: true, max: 2_500, skip: [hud.nonce], dest: destA })[0];
       assert.ok(win1 != null, 'need a height-1 block nonce');
       send(a.sock, {
         id: 3,
@@ -166,7 +166,7 @@ describe('lag-1 PROP pot', { timeout: 1_200_000 }, () => {
           break;
         }
       }
-      const win2 = findNonces(live2, 1, { block: true, max: 2_500 })[0];
+      const win2 = findNonces(live2, 1, { block: true, max: 2_500, dest: destB })[0];
       assert.ok(win2 != null, 'need a height-2 block nonce');
       send(b.sock, {
         id: 4,

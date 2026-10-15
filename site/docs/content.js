@@ -41,7 +41,7 @@ window.SHEAR_DOCS = {
     { title: 'The Reserve', children: [
       { id: 'reserve', title: 'Overview' },
       { id: 'epochs', title: 'Epochs' },
-      { id: 'stake', title: 'Stake, idle, lock' },
+      { id: 'stake', title: 'Lock and idle' },
       { id: 'votes', title: 'Votes' },
       { id: 'oracle', title: 'Oracle' },
       { id: 'withdraw', title: 'Withdraw' }
@@ -99,7 +99,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Node</th><td><a href="https://shear.digital/node/">shear.digital/node</a> — Shear Sentinel v18. Unzip and run, or build from source. It syncs height 1, 2, 3, … and serves notes for one dest at a time on <code>127.0.0.1:18332</code>. A new block is advised on <code>/events</code>.</td></tr>' +
       '<tr><th>Get started</th><td><a href="https://shear.digital/get-started.html">get-started</a> — password, Connect bare or local node, <code>shewall.bin</code>, then mine.</td></tr>' +
       '<tr><th>Pool</th><td><a href="https://pool.shear.digital/">pool.shear.digital</a> — public <code>stratum+ssl://pool.shear.digital:443</code>. Login is Copy dest. Coins are sealed on the book; the wallet reads them from a node. The pool HUD is not spendable.</td></tr>' +
-      '<tr><th>Explorer</th><td><a href="https://explorer.shear.digital/">explorer.shear.digital</a> — blocks this pool found, highest height first. Height, found-in, status, type. Found in is wall-clock time between pool discoveries, not a header gap. No dest, no amount.</td></tr>' +
+      '<tr><th>Explorer</th><td><a href="https://explorer.shear.digital/">explorer.shear.digital</a> — every sealed block, newest first. Height, time, status, type. No dest, no amount.</td></tr>' +
       '<tr><th>Mempool</th><td><a href="https://mempool.shear.digital/">mempool.shear.digital</a> — one lattice for the whole network. Gold hoop is pending Flow sends. Cyan hoop is miners. Purple rings are confirming blocks. The last ring is 9 confirmations. Full screen is the lattice alone.</td></tr>' +
       '<tr><th>DINS-DAG</th><td><a href="https://shear.digital/docs/#/dins-dag">DINS-DAG</a> — blue set for the open round, sorted by identity. The mint is the spine pot plus the hash nanos, once. The live round is the DAG host linked from the navbar.</td></tr>' +
       '<tr><th>Miner</th><td><a href="https://shear.digital/miner/">shear.digital/miner</a> — ShearK 2.8. Separate from Continuum. Run <code>--selftest</code> once, then point it at the pool or at <code>127.0.0.1:1111</code> after your node reports <code>ibd=false</code>.</td></tr>' +
@@ -113,7 +113,7 @@ window.SHEAR_DOCS = {
     crumb: 'start / testnet',
     html:
       '<p>This is testnet. Balances can vanish. Treat them as a practice run before mainnet.</p>' +
-      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v11</code>). Mainnet <code>shear-v1</code> is not live. The public countdown is 30th October 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
+      '<p>This public testnet is the privacy-class book (<code>shear-testnet-v11</code>). Mainnet <code>shear-v1</code> is not live. The public countdown is 16th November 2026 at 1400hrs UK time. Do not cut a mainnet genesis zip from these pages.</p>' +
       '<p>Install clients only from the buttons on <a href="https://shear.digital">shear.digital</a> or the official GitHub tags. Windows SmartScreen may warn that ShearK-Miner.exe is unrecognized; this testnet build is not Authenticode-signed.</p>'
   };
 
@@ -233,11 +233,10 @@ window.SHEAR_DOCS = {
       '<p>Closure holds the rest-frame <code>shear1</code> and the public <code>she1</code>. Rest-frame never goes on the book. Confirmed SHE settles here. Chain dests are <code>ssa1</code> mailboxes derived from this identity; they do not need to be kept after prune. The <code>she1</code> line on this card is a fingerprint, not a payable address. Receive uses the full <code>she1</code>.</p>' +
       '<p>Settings: unlock with biometrics on this device. Password still encrypts <code>shewall.bin</code>. Export of that file is on this card.</p>' +
       '<p>Continuum 0.71 send path is chosen here, then <strong>Apply</strong>. It applies to every Continuum send. A new 0.71 session opens on <strong>Connect bare</strong>. A session that already applied a path keeps that path until you change it.</p>' +
-      '<table><tr><th>Connect bare</th><td>Default. Does not look for Shear Privacy VPN and does not start a node. Does not claim the IP is masked. Flow and Reserve do not wait on the hop.</td></tr>' +
-      '<tr><th>Shear Privacy VPN</th><td>Light wallet. The hop is there to mask the Continuum IP from the public node. Zero VPN fee. The 0.71 default is Connect bare.</td></tr>' +
+      '<table><tr><th>Connect bare</th><td>Default. Does not start a node. Flow and Reserve do not wait on a network path.</td></tr>' +
       '<tr><th>Local node (no stratum)</th><td>Runs the node beside Continuum. Syncs from peers. An empty book applies the snapshot once; a recorded tip resumes and does not pull. No solo-mining stratum. The light seeker stays on the live tip until the local node matches that tip.</td></tr>' +
       '<tr><th>Local node (full)</th><td>Desktop solo. Same peer sync, plus stratum at <code>127.0.0.1:1111</code>. Android does not show this control and does not start a phone node: that pack has no node runtime. The light seeker still follows the live tip.</td></tr></table>' +
-      '<p>On the Resistance heading, <strong>Start</strong> applies local node (full) on desktop: the node plus stratum <code>127.0.0.1:1111</code>, and it does not arm a second node if one is already running. <strong>Stop</strong> applies Shear Privacy VPN. Those buttons stay on the heading after Stop. Android Start does not arm stratum.</p>'
+      '<p>On the Resistance heading, <strong>Start</strong> applies local node (full) on desktop: the node plus stratum <code>127.0.0.1:1111</code>, and it does not arm a second node if one is already running. <strong>Stop</strong> applies Connect bare. Those buttons stay on the heading after Stop. Android Start does not arm stratum.</p>'
   };
 
   P.backup = {
@@ -352,7 +351,7 @@ window.SHEAR_DOCS = {
     title: 'The Reserve',
     crumb: 'reserve / overview',
     html:
-      '<p>The Reserve is the first vortice and the only programme allowed to mint extra SHE. Open it from the Vortex tab. You lock SHE into your own portal. π SHE (about 3.14159265358 SHE) unlocks one vote for the current epoch. <strong>Your deposits</strong> shows two rows; extra deposits scroll inside that pane. A Reserve send shows your IP to the node. Use a VPN.</p>' +
+      '<p>The Reserve is the first vortice and the only programme allowed to mint extra SHE. Open it from the Vortex tab. You lock SHE into your own portal. π SHE (about 3.14159265358 SHE) unlocks one vote for the current epoch. <strong>Your locks</strong> shows two rows; extra locks scroll inside that pane. A Reserve send shows your IP to the node. Use a VPN.</p>' +
       '<p>There is no Shear privacy hop. Confirm <strong>I already use a VPN / I accept exposing my IP</strong>, then Send. The same confirm is on Windows, Linux, Arch, and Android.</p>'
   };
 
@@ -360,14 +359,14 @@ window.SHEAR_DOCS = {
     title: 'Epochs',
     crumb: 'reserve / epochs',
     html:
-      '<p>An epoch is 4 days on this testnet (400 days on mainnet). The first qualifying π deposit opens the inaugural epoch — not genesis, not an operator clock. Last 1 testnet day / 99 mainnet days: new deposits still lock and may vote, but they sit idle (no stake interest). Vote changes are only before that idle window.</p>'
+      '<p>An epoch is 4 days on this testnet (400 days on mainnet). The first qualifying π lock opens the inaugural epoch — not genesis, not an operator clock. Last 1 testnet day / 99 mainnet days: new locks still lock and may vote, but they sit idle (no reserve reward). Vote changes are only before that idle window.</p>'
   };
 
   P.stake = {
-    title: 'Stake, idle, lock',
-    crumb: 'reserve / stake',
+    title: 'Lock and idle',
+    crumb: 'reserve / lock',
     html:
-      '<p>Staked principal earns the oracle APR for the full epoch (4 days testnet / 400 days mainnet). Idle coin earns nothing. Locked is staked plus idle. Daily credits sit in the portal until you withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
+      '<p>Locked principal receives the lock issuance rate, recalculated by consensus at each epoch end, for the full epoch (4 days testnet / 400 days mainnet). Reserve rewards are newly minted by the protocol in each block’s coinbase at the lock issuance rate. They don’t come from any pool or pot of existing Shear, and nobody holds your coins. Idle coin receives no reserve reward. Locked is active plus idle. Daily credits sit in the portal until you withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
   };
 
   P.votes = {
@@ -383,15 +382,15 @@ window.SHEAR_DOCS = {
     title: 'The Reserve oracle',
     crumb: 'reserve / oracle',
     html:
-      '<p>The staking rate is an epoch APR observed by <code>shear-reserve-oracle-v1</code> (4-day testnet / 400-day mainnet), coded into every node. Freeze is bounded and fail-closed. A bad rate cannot reorg blocks or steal the pot. The wallet paints live observations as observational until freeze; mint uses frozen <code>epochBps</code> only.</p>' +
-      '<p>Shear Sentinel v18 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. The basket is the observation. Mint uses the frozen epoch rate. A stale basket leaves that freeze in place. The step between epochs is at most 100 bps. Lock, epoch vote, and withdraw are sealed transactions. The node applies them. The oracle cannot move the pot or the hash-bonus pile.</p>'
+      '<p>The lock issuance rate, recalculated by consensus at each epoch end, is set from observations by <code>shear-reserve-oracle-v1</code> (4-day testnet / 400-day mainnet), coded into every node. Reserve rewards are newly minted by the protocol in each block’s coinbase at the lock issuance rate. They don’t come from any pool or pot of existing Shear, and nobody holds your coins. Freeze is bounded and fail-closed. A bad rate cannot reorg blocks or steal the pot. The wallet paints live observations as observational until freeze; mint uses frozen <code>epochBps</code> only.</p>' +
+      '<p>Shear Sentinel v18 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. The basket is the observation. Mint uses the frozen lock issuance rate. A stale basket leaves that freeze in place. The step between epochs is at most 100 bps. Lock, epoch vote, and withdraw are sealed transactions. The node applies them. The oracle cannot move the pot or the hash-bonus pile.</p>'
   };
 
   P.withdraw = {
     title: 'Withdraw',
     crumb: 'reserve / withdraw',
     html:
-      '<p>After epoch end (and bonus enact), principal plus minted interest on staked SHE return to Continuum on a signed Withdraw. Miss that window and previous-epoch rewards stay claimable; a new epoch does not confiscate them. Withdraw is not levied.</p>'
+      '<p>After epoch end (and bonus enact), principal plus the minted reserve reward on locked SHE return to Continuum on a signed Withdraw. Miss that window and previous-epoch rewards stay claimable; a new epoch does not confiscate them. Withdraw is not levied.</p>'
   };
 
   P.node = {
@@ -401,7 +400,7 @@ window.SHEAR_DOCS = {
       '<p>Release <a href="https://shear.digital/node/">v16</a>. A node is the book. It appends, verifies, speaks P2P, and runs the GATE that lets native Flow and pinned Reserve bytecode land in the same block. Continuum 0.71 reads this node, not flyclient. An empty book applies the snapshot once; a recorded tip resumes and does not pull.</p>' +
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\ngit checkout 0.71\nnpm ci\n' +
-      'export SHEAR_DATA="$HOME/.shear/testnet-v11"\n' +
+      'export SHEAR_DATA="$HOME/.shear/testnet-v10"\n' +
       'export SHEAR_NETWORK=shear-testnet-v11\n' +
       'export SHEAR_BOOTSTRAP=1\n' +
       'export SHEAR_REORG_HALT_DEPTH=0\n' +
@@ -444,7 +443,7 @@ window.SHEAR_DOCS = {
     html:
       '<table><tr><th>Block pot</th><td>1 SHE, every found block</td></tr>' +
       '<tr><th>Hash bonus</th><td>10<sup>−11</sup> SHE per proven floor share, paid to that hasher dest on the next sealed block</td></tr>' +
-      '<tr><th>The Reserve</th><td>Oracle interest on staked SHE — the only dapp mint</td></tr></table>' +
+      '<tr><th>The Reserve</th><td>Reserve reward on locked SHE at the lock issuance rate — the only dapp mint</td></tr></table>' +
       '<p>Third-party vortices must top up rewards from coin already in circulation.</p>'
   };
 
@@ -466,7 +465,7 @@ window.SHEAR_DOCS = {
     title: 'Explorer',
     crumb: 'network / explorer',
     html:
-      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints blocks this pool found — highest height first. Found in is the wall-clock time since the previous block this pool discovered, not a header-timestamp gap. No amount column, no from-dest column. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. Search is by height or id. The Resistance CLI on that page is public fields only (header, kind, proofs).</p>'
+      '<p><a href="https://explorer.shear.digital">explorer.shear.digital</a> paints confirmed blocks — height, time, status, kind. No amount column, no from-dest column. Last block is age of the tip. AVG BLOCK TIME is the mean interval of every sealed header since genesis. Search is by height or id. The Resistance CLI on that page is public fields only (header, kind, proofs).</p>'
   };
 
   P.mempool = {
