@@ -163,4 +163,20 @@ describe('PSA-920-1 login: IP deny and budget before the FS-1 leaf probe', () =>
     assert.equal(payeeDecodeOk(coldDests(1)[0]), true);
     assert.equal(payeeProbeCount(), before);
   });
+
+  it('a banned dest is refused before the leaf probe and the socket stops', () => {
+    const pool = openPool();
+    try {
+      const dests = coldDests(8);
+      assert.equal(pool.adminOps.ban(dests[0]).banned, true);
+      const sock = connect(pool, '10.9.0.5');
+      const got = burst(sock, dests);
+      assert.deepEqual(replies(sock).map((m) => m.error), ['banned']);
+      assert.equal(got.probes, 0, 'a dest ban does not probe the leaf');
+      assert.equal(sock.ended, true);
+      assert.equal(pool.miners.size, 0);
+    } finally {
+      pool.close();
+    }
+  });
 });

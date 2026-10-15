@@ -66,6 +66,33 @@ test('ADMIT_ARITY=32 and shear-admit-leaf-v2 are banned from every fingerprint',
   }
 });
 
+// PSA-df82-1. Russell's ruling: crypto/asert.js carries the FS-1 parameters.
+// The retired Pasta tokens must not come back in that file or on any book.
+test('PSA-df82-1: asert.js uses FS-1 parameters, not ADMIT_ARITY=32 or shear-admit-leaf-v2', () => {
+  const src = readFileSync(path.join(here, 'asert.js'), 'utf8');
+  assert.equal(src.includes('ADMIT_ARITY=32'), false);
+  assert.equal(src.includes('shear-admit-leaf-v2'), false);
+  const start = src.indexOf('export function consensusFingerprint');
+  const end = src.indexOf('export function mainnetFingerprint');
+  assert.ok(start >= 0 && end > start);
+  const fn = src.slice(start, end);
+  assert.match(fn, /`ADMIT_CYCLE=\$\{ADMIT_CYCLE_ID\}`/);
+  assert.match(fn, /`ADMIT_ARITY=\$\{ADMIT_ARITY_ID\}`/);
+  assert.match(fn, /`ADMIT_LEAF=\$\{ADMIT_LEAF_ID\}`/);
+  assert.equal(ADMIT_ARITY_ID, `fs1-selene${FS1_LAYER_ONE_LEN}-helios${FS1_LAYER_TWO_LEN}-d${FS1_DEPTH}`);
+  assert.equal(ADMIT_LEAF_ID, `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DST}`);
+  assert.equal(ADMIT_CYCLE_ID, `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`);
+  assert.notEqual(ADMIT_ARITY_ID, '32');
+  assert.equal(ADMIT_LEAF_ID.includes('shear-admit-leaf-v2'), false);
+  for (const [name, fp] of books()) {
+    assert.equal(fp.includes('ADMIT_ARITY=32'), false, name);
+    assert.equal(fp.includes('shear-admit-leaf-v2'), false, name);
+    assert.equal(tokenValue(fp, 'ADMIT_ARITY'), ADMIT_ARITY_ID, name);
+    assert.equal(tokenValue(fp, 'ADMIT_LEAF'), ADMIT_LEAF_ID, name);
+    assert.equal(tokenValue(fp, 'ADMIT_CYCLE'), ADMIT_CYCLE_ID, name);
+  }
+});
+
 test('ADMIT and AMOUNT stay, and the cycle, arity and leaf are the FS-1 ones', () => {
   for (const [name, fp] of books()) {
     assert.equal(tokenValue(fp, 'ADMIT'), 'ADMITv3', name);

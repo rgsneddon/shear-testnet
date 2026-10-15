@@ -283,14 +283,14 @@ export const MIN_CONFIRMS_POLICY = 12;
 export const RESERVE_FEE_FIRST = 1;
 
 /**
- * FS-1 tree and leaf, as the shear-fs1 crate and N-1 use them. Layer one is
- * Selene, 38 wide (fcmps LAYER_ONE_LEN); layer two is Helios, 18 wide
- * (LAYER_TWO_LEN); DEPTH layers. The leaf is O || I || C on Ed25519,
- * FS1_LEAF_BYTES long, with I = E(Hp(admitPub)) under FS1_HP_DST
+ * FS-1 parameters for the consensus fingerprint, as the shear-fs1 crate and
+ * N-1 use them. Layer one is Selene, 38 wide (fcmps LAYER_ONE_LEN); layer two
+ * is Helios, 18 wide (LAYER_TWO_LEN); DEPTH layers. The leaf is O || I || C
+ * on Ed25519, FS1_LEAF_BYTES long, with I = E(Hp(admitPub)) under FS1_HP_DST
  * (crypto/fs1_leaf.js, shear-fs1 src/leaf.rs). The cycle token is shear-fs1
  * `ADMIT_CYCLE`, built from `CYCLE_C1` (Selene) and `CYCLE_C2` (Helios).
- * The bucket arity 32, shear-admit-leaf-v2, and the Pasta cycle are retired
- * from the fingerprint.
+ * PSA-df82-1: these parameters are the live tokens. The retired Pasta bucket
+ * arity and leaf domain must not reappear in this file.
  */
 export const FS1_LAYER_ONE_LEN = 38;
 export const FS1_LAYER_TWO_LEN = 18;
