@@ -18,7 +18,7 @@ import {
   hash20FromAddress,
 } from '../crypto/address.js';
 import { destAtIndex } from '../crypto/flow_sheet.js';
-import { unwrapBlind, noteCommitOfDest20 } from '../crypto/note.js';
+import { unwrapBlind, hiddenAmountRangeReady, noteCommitOfDest20 } from '../crypto/note.js';
 import { admitBaseScalar } from '../crypto/admit.js';
 import { levyNanos, bindWeightFee } from '../crypto/levy.js';
 import { attachDummyOuts } from '../crypto/dummy.js';
@@ -84,6 +84,8 @@ function b32(x) {
   return Buffer.from(s.length === 64 && /^[0-9a-f]+$/i.test(s) ? s : s, 'hex');
 }
 
+let warnedSoakRange = false;
+
 /** Owner-side scan: no RPC returns notes by dest. Match noteCommit in compact blocks. */
 async function ownedNotes(tipHeight) {
   const want = noteCommitOfDest20(hash20FromAddress(dest)).toString('hex');
@@ -103,6 +105,16 @@ async function ownedNotes(tipHeight) {
 
 async function trySoakFlow(tipHeight) {
   if (fs.existsSync(flowFlag)) return;
+  if (!hiddenAmountRangeReady()) {
+    if (!warnedSoakRange) {
+      warnedSoakRange = true;
+      console.error(
+        'SHEAR RANGE WARNING: hidden-amount soak send refused. shearadmit.node is required, '
+        + 'or set SHEAR_RANGE_JS=1 to allow the non-constant-time prover.',
+      );
+    }
+    return;
+  }
   if (tipHeight < SPENDABLE_CONFIRMATIONS + 1) return;
   const rows = await ownedNotes(tipHeight);
   const pot = rows.find((n) => n.coinbase && n.kind === 'pot'

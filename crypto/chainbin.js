@@ -201,17 +201,39 @@ export function writeChainBin(path, blocks) {
   fs.renameSync(tmp, path);
 }
 
-/** Append one packed epoch. Full archival: never drops txs. IBD must not rewrite the book. */
+/** Append one packed epoch. Full archival: never drops txs. IBD must not rewrite the book.
+ *  Returns the bytes just written so a running file digest can extend. */
 export function appendChainBin(path, block) {
   const rec = packEpochBlock(block);
   const len = Buffer.alloc(4);
   len.writeUInt32LE(rec.length, 0);
   const chunk = Buffer.concat([len, rec]);
   if (!fs.existsSync(path) || fs.statSync(path).size < MAGIC.length) {
-    fs.writeFileSync(path, Buffer.concat([MAGIC, chunk]));
-    return;
+    const body = Buffer.concat([MAGIC, chunk]);
+    fs.writeFileSync(path, body);
+    return body;
   }
   fs.appendFileSync(path, chunk);
+  return chunk;
+}
+
+/** Packed record bodies, or null when the file is missing, torn, or not a segment. */
+export function segmentRecordBodies(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  let buf;
+  try { buf = fs.readFileSync(filePath); } catch { return null; }
+  if (buf.length < MAGIC.length || !buf.subarray(0, MAGIC.length).equals(MAGIC)) return null;
+  const bodies = [];
+  let o = MAGIC.length;
+  while (o + 4 <= buf.length) {
+    const n = buf.readUInt32LE(o);
+    o += 4;
+    if (n > buf.length - o) return null;
+    bodies.push(Buffer.from(buf.subarray(o, o + n)));
+    o += n;
+  }
+  if (o !== buf.length) return null;
+  return bodies;
 }
 
 export function readChainBin(path) {

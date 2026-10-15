@@ -1,7 +1,10 @@
-# FS-1 fixed generators, derivation shear-fs1-generators-v1 (src/generators.rs).
-# digest is Blake2b-512 over every point in the order generators_digest lists.
-# A Stage 3 proposal. Not a ratified consensus set.
-digest	9dacdebd521da9979f7dd297c5ee4be46c59a1f524c4245cd9498d0fecf003cb27def1b9ddda3631a7d09334e73d85bca4c50442bdb77ee51e5c0fb87cf95708
+# FS-1 spend generators, derivation shear-fs1-generators-v1 (src/generators.rs).
+# digest is Blake2b-512 over E(H), B, T, U, V, then Selene, then Helios.
+# G is E(H), the commitment blind. B is the Ed25519 basepoint, spend auth.
+# Status: pending PA+CA ratification. Not a ratified consensus set.
+digest	4aab173c8065e7e5cff88945399b98cbbb51f647297231d09cb069c82f965288eaaf3ecb9ea88ae4e3de1dde2623710fe5e4f4353c529ef613fac9ff8b0699e6
+G	132ba4e11d99a33cadb5e223a5ae090ea51062e34b954440f5825289a44a65ec
+B	5866666666666666666666666666666666666666666666666666666666666666
 T	d5f3591add3283f2b17df466d2d38a4786e4befe6f4b387e8fef06fed832f1f8
 U	762337445e090cff30ef10c2c6960e5ba00f89c619f2e6eae9596170b469864d
 V	a4f2194967473f8c323bb301a02a1f48214f779e346662c5adfc41a30fa84f89

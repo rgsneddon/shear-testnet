@@ -91,14 +91,16 @@ describe('FS-1 tree follower', () => {
     assert.equal(f.leafCount, 7);
   });
 
-  it('the follower is not wired into consensus, mempool or store', () => {
-    assert.equal(FS1_TREE_WIRED, false);
+  it('consensus takes the root in process; the spawned follower stays off the accept path', () => {
+    assert.equal(FS1_TREE_WIRED, true);
     for (const name of ['chain.js', 'store.js', 'rpc.js', 'node.js']) {
       const src = fs.readFileSync(path.join(here, '../src', name), 'utf8');
       assert.equal(src.includes('fs1_tree'), false, name);
     }
+    const v3 = fs.readFileSync(path.join(here, '../../crypto/admit_v3.js'), 'utf8');
+    assert.match(v3, /fs1RootAt/);
     const pin = JSON.parse(fs.readFileSync(path.join(vendor, 'ADMIT_PIN.json'), 'utf8'));
-    assert.equal(pin.wired, false);
+    assert.equal(pin.wired, true);
   });
 });
 

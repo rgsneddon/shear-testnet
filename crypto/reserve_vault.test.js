@@ -24,6 +24,7 @@ import {
   enact,
   applyReserveBlock,
   verifyReservePayout,
+  portalEpochInterest,
   creditFeeBank,
   payoutStakeReward,
   supplyIdentity,
@@ -429,6 +430,33 @@ describe('Reserve vault protocol', () => {
     assert.equal(done.mint.to, continuum);
     assert.equal(done.mint.nanos, done.interest);
     assert.equal(extraMintAllowed(done.programId, { kind: 'withdraw' }), true);
+  });
+
+  it('verifyReservePayout refuses a principal-only withdraw while that credit\'s epoch is open', () => {
+    // Epoch 0 is already refused by settlementIndex <= 0. Epoch 1 is open
+    // (chain index 1) and pays no completed interest, so a principal-only
+    // receipt would pass the amount check if the arrival-epoch gate were gone.
+    const epoch = RESERVE_EPOCH_MS;
+    const lockAt = 1_700_000_000_000 + epoch;
+    const mid = lockAt + Math.floor(epoch / 2);
+    const end = lockAt + epoch;
+    const alice = newIdentity();
+    const dest = destOf(alice);
+    const state = emptyVault();
+    state.genesisMs = 1_700_000_000_000;
+    state.magic = MAGIC_TESTNET;
+    assert.equal(deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
+    const portal = state.portals[portalIdFromDest(dest)];
+    assert.equal(portalEpochInterest(state, portal, mid), 0);
+    const early = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'open-epoch-principal' });
+    const refused = verifyReservePayout(state, early, mid);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'epoch_open');
+    const due = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
+    assert.ok(due > 0);
+    const atEnd = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS + due, id: 'epoch-ended' });
+    const paid = verifyReservePayout(state, atEnd, end);
+    assert.equal(paid.ok, true, paid.reason);
   });
 });
 

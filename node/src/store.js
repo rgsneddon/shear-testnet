@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW, GENESIS_BPS } from '../../crypto/asert.js';
 import { oracleContextFor, reserveApplyFields } from '../../crypto/reserve_oracle.js';
+import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
 import {
@@ -26,6 +27,8 @@ import {
   verifyLoadedChain,
   verifyLoadedChainAsync,
   chainLoadSeal,
+  chainLoadSealHash,
+  chainLoadSealUpdate,
   V12_GENESIS_BLOCK_HASH,
   V12_BOOTSTRAP_CHECKPOINT,
   assessHeader,
@@ -83,17 +86,19 @@ import { createVorticeCatalog } from './vortice.js';
 import {
   writeChainBin,
   readChainBin,
+  packEpochBlock,
   appendChainBin,
   readChainSegments,
   writeChainSegments,
   segmentFileName,
+  segmentRecordBodies,
   CHAIN_SEGMENT_BLOCKS,
-  packEpochBlock,
   unpackEpochBlock,
 } from '../../crypto/chainbin.js';
 import {
   writeLatestBootstrap,
   shouldPublishBootstrap,
+  latestPaths,
   reorgBreaksCheckpoint,
   bootstrapCheckpoint,
   CHECKPOINT_FIRST_HEIGHT,
@@ -103,7 +108,22 @@ import { createBurialHold, createBurialProof, settledHeight } from './burial_hol
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
 import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
-import { frameDigest, readBookSnap, writeBookSnap } from './book_snap.js';
+import {
+  frameDigest,
+  legacyFrameDigest,
+  stableDigest,
+  STABLE_DIGEST_DOMAIN,
+  blockFrameTag,
+  stableBlockTag,
+  unprunedBodyTag,
+  diskDigestFromSegments,
+  readBookSnap,
+  writeBookSnap,
+  writeAtomicFile,
+} from './book_snap.js';
+
+/** Full book.snap rewrite cadence after the opening window. Short books snap every block. */
+export const BOOK_SNAP_EVERY = 32;
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
@@ -272,8 +292,19 @@ export function createStore(dir, {
   onLoadProgress = null,
   network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
   oracleActivationHeight = undefined,
+  magic: magicIn = null,
+  regtestPermit = null,
 } = {}, resume = null) {
-  const configuredMagic = String(network || MAGIC_TESTNET);
+  // shear-regtest is not a public book. A genesis pin (the v12 hash, or any
+  // caller pin) refuses it outright. An unpinned open still needs the permit
+  // that only node/tests/regtest_store.js can seal. Env vars do not.
+  // magic wins when a caller sets it. network stays the node and datadir path.
+  const configuredMagic = String(magicIn || network || MAGIC_TESTNET);
+  if (configuredMagic === MAGIC_REGTEST) {
+    const genesisPin = String(genesisHash || '');
+    if (genesisPin) throw new Error('regtest_genesis_pin');
+    if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
+  }
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
@@ -284,6 +315,7 @@ export function createStore(dir, {
   const magicFile = path.join(dir, 'book.magic');
   const sealFile = path.join(dir, 'book.seal');
   const snapFile = path.join(dir, 'book.snap');
+  const vaultSnapFile = path.join(dir, 'vault.snap');
   const blocks = [];
   const explorer = [];
   const spentB = new Set();
@@ -324,8 +356,19 @@ export function createStore(dir, {
   let loadMode = 'empty';
   let preFlux = null;
   let prefixHeight = 0;
-  let frameHash = null;
-  let frameCovered = 0;
+  let segLive = [];
+  let unprunedLive = null;
+  let snapVaultRaw = null;
+  let frameTags = [];
+  let frameStream = null;
+  let frameAt = 0;
+  let frameCkpt = [];
+  let stableTags = [];
+  let stableStream = null;
+  let stableAt = 0;
+  let stableCkpt = [];
+  let sealStream = null;
+  let sealAt = 0;
   // Archive copies of pruned bodies, on disk only, until the reorg floor settles them.
   const burialHold = createBurialHold({ dir, write: !archiveFast, checkpoints: checkpointOpts });
 
@@ -378,6 +421,7 @@ export function createStore(dir, {
   // book.snap skips the body prefix only when that same key verifies it and
   // the snap binds this chain. A miss replays. A foreign book never uses it.
   const sealKey = bookSealKeyFor(dir);
+  loadSegLive();
   const burialProof = createBurialProof({ dir, key: sealKey, checkpoints: checkpointOpts });
   burialProof.load();
   loadMode = blocks.length ? 'full' : 'empty';
@@ -481,6 +525,8 @@ export function createStore(dir, {
           onLoadProgress,
           network: bookMagic,
           oracleActivationHeight,
+          magic: bookMagic,
+          regtestPermit,
         }, {
           token: loadResumeToken,
           verified: true,
@@ -515,13 +561,88 @@ export function createStore(dir, {
   if (blocks.length) noteBurial(Number(blocks[blocks.length - 1].height) || blocks.length);
   if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
 
+  function segmentNames() {
+    if (!segmented || !fs.existsSync(segDir)) return [];
+    return fs.readdirSync(segDir)
+      .filter((name) => /^seg-\d+\.bin$/.test(name))
+      .sort((a, b) => Number(/^seg-(\d+)\.bin$/.exec(a)[1]) - Number(/^seg-(\d+)\.bin$/.exec(b)[1]));
+  }
+
+  function loadSegLive() {
+    segLive = [];
+    if (!segmented) return;
+    for (const name of segmentNames()) {
+      const buf = fs.readFileSync(path.join(segDir, name));
+      segLive.push({ hash: createHash('sha256').update(buf), length: buf.length });
+    }
+  }
+
+  function rememberSegmentBytes(idx, buf) {
+    const chunk = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+    while (segLive.length < idx) segLive.push({ hash: createHash('sha256'), length: 0 });
+    if (!segLive[idx]) segLive[idx] = { hash: createHash('sha256'), length: 0 };
+    segLive[idx].hash.update(chunk);
+    segLive[idx].length += chunk.length;
+  }
+
+  function rehashSegmentFile(idx) {
+    const file = path.join(segDir, segmentFileName(idx));
+    if (!fs.existsSync(file)) return;
+    const buf = fs.readFileSync(file);
+    while (segLive.length < idx) segLive.push({ hash: createHash('sha256'), length: 0 });
+    segLive[idx] = { hash: createHash('sha256').update(buf), length: buf.length };
+  }
+
+  function noteUnprunedBody(index, body) {
+    if (!unprunedLive || !Buffer.isBuffer(body)) return;
+    if (blocks[index]?.samplesPruned) unprunedLive.delete(index);
+    else unprunedLive.set(index, unprunedBodyTag(body));
+  }
+
+  function scanUnprunedBodies() {
+    const bodies = diskRecordBodies();
+    if (!bodies) return null;
+    const live = new Map();
+    const n = Math.min(bodies.length, blocks.length);
+    for (let i = 0; i < n; i += 1) {
+      if (blocks[i]?.samplesPruned) continue;
+      live.set(i, unprunedBodyTag(bodies[i]));
+    }
+    return live;
+  }
+
+  function unprunedBodiesForSnap() {
+    if (!unprunedLive) {
+      const built = scanUnprunedBodies();
+      if (!built) return null;
+      unprunedLive = built;
+    }
+    const rows = [];
+    for (const [index, hash] of unprunedLive) {
+      if (index < 0 || index >= blocks.length) continue;
+      if (blocks[index]?.samplesPruned) continue;
+      rows.push({ index, hash });
+    }
+    rows.sort((a, b) => a.index - b.index);
+    return rows;
+  }
+
   function chainDiskDigest() {
+    if (segmented && segLive.length) {
+      return diskDigestFromSegments(segLive.map((s) => ({
+        length: s.length,
+        contentHash: s.hash.copy().digest(),
+      })));
+    }
+    return legacyDiskDigest();
+  }
+
+  /** bookdisk1. One full read, only when an older snap is opened. */
+  function legacyDiskDigest() {
     const h = createHash('sha256');
     h.update('bookdisk1');
     if (segmented && fs.existsSync(segDir)) {
-      const names = fs.readdirSync(segDir).filter((name) => /^seg-\d+\.bin$/.test(name));
-      names.sort((a, b) => Number(/^seg-(\d+)\.bin$/.exec(a)[1]) - Number(/^seg-(\d+)\.bin$/.exec(b)[1]));
-      for (const name of names) {
+      for (const name of segmentNames()) {
         const buf = fs.readFileSync(path.join(segDir, name));
         const n = Buffer.alloc(4);
         n.writeUInt32LE(buf.length >>> 0, 0);
@@ -541,6 +662,12 @@ export function createStore(dir, {
     return h.digest('hex');
   }
 
+  function diskDigestMatches(snap) {
+    if (!snap?.diskDigest) return false;
+    if (snap.diskDigest === chainDiskDigest()) return true;
+    return snap.diskDigest === legacyDiskDigest();
+  }
+
   function vaultCommitmentFromFile() {
     if (!fs.existsSync(vaultFile)) return '';
     try {
@@ -554,6 +681,94 @@ export function createStore(dir, {
     }
   }
 
+  function writeVaultSnap(height) {
+    if (!fs.existsSync(vaultFile)) return;
+    const body = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
+    if (!body || typeof body !== 'object' || !body.portals) return;
+    delete body.vaultSeal;
+    delete body.blankFork;
+    writeAtomicFile(vaultSnapFile, Buffer.from(JSON.stringify({ height, body })));
+  }
+
+  function readVaultSnap() {
+    try {
+      if (!fs.existsSync(vaultSnapFile)) return null;
+      const raw = JSON.parse(fs.readFileSync(vaultSnapFile, 'utf8'));
+      if (!raw || typeof raw !== 'object') return null;
+      if (raw.body && raw.body.portals) {
+        delete raw.body.vaultSeal;
+        delete raw.body.blankFork;
+        return { height: Number(raw.height) || 0, body: raw.body };
+      }
+      if (raw.portals) {
+        delete raw.vaultSeal;
+        delete raw.blankFork;
+        return { height: 0, body: raw };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function prefixFrameOk(snap) {
+    const prefix = blocks.slice(0, snap.height);
+    try {
+      if (frameDigest(prefix) === snap.frameDigest) return true;
+    } catch { /* try the previous domain */ }
+    try {
+      return legacyFrameDigest(prefix) === snap.frameDigest;
+    } catch {
+      return false;
+    }
+  }
+
+  function diskRecordBodies() {
+    if (segmented) {
+      const names = segmentNames();
+      const bodies = [];
+      for (let s = 0; s < names.length; s += 1) {
+        const id = /^seg-(\d+)\.bin$/.exec(names[s]);
+        if (!id || Number(id[1]) !== s) return null;
+        const got = segmentRecordBodies(path.join(segDir, names[s]));
+        if (!got) return null;
+        bodies.push(...got);
+      }
+      return bodies;
+    }
+    if (fs.existsSync(binFile)) return segmentRecordBodies(binFile);
+    return null;
+  }
+
+  function unprunedDiskOk(snap) {
+    const tags = snap?.unprunedBodies;
+    if (!Array.isArray(tags)) return false;
+    const bodies = diskRecordBodies();
+    if (!bodies) return false;
+    const want = new Map();
+    for (const row of tags) {
+      const index = Number(row?.index);
+      const hash = row?.hash;
+      if (!Number.isInteger(index) || index < 0 || want.has(index)) return false;
+      if (!Buffer.isBuffer(hash) || hash.length !== 32) return false;
+      want.set(index, hash);
+    }
+    for (let i = 0; i < snap.height; i += 1) {
+      if (blocks[i]?.samplesPruned) continue;
+      const expected = want.get(i);
+      const body = bodies[i];
+      if (!expected || !body || !expected.equals(unprunedBodyTag(body))) return false;
+    }
+    return true;
+  }
+
+  function vaultSnapBody(snap) {
+    const saved = readVaultSnap();
+    if (!saved || saved.height !== snap.height) return null;
+    if (vaultCommitment(saved.body) !== snap.vaultCommitment) return null;
+    return saved.body;
+  }
+
   function acceptBookSnap(snap) {
     if (!snap || snap.height < 1 || snap.height > blocks.length) return null;
     let tipHash;
@@ -561,14 +776,29 @@ export function createStore(dir, {
     if (tipHash.length !== 32 || !tipHash.equals(snap.tipHash)) return null;
     const gms = genesisHeaderMs(blocks);
     if (!gms || gms !== snap.genesisMs) return null;
+    // vault.snap is written after book.snap. A crash between them, or a
+    // lagged snap whose vault file does not match, replays. reserve.json
+    // is not a substitute for that file.
+    const vaultBody = vaultSnapBody(snap);
+    if (!vaultBody) return null;
+    snapVaultRaw = vaultBody;
     const vaultNow = vaultCommitmentFromFile();
-    if (!vaultNow || vaultNow !== snap.vaultCommitment) return null;
-    if (snap.height === blocks.length && snap.diskDigest === chainDiskDigest()) return snap;
-    if (snap.height < blocks.length) {
-      let frame = '';
-      try { frame = frameDigest(blocks.slice(0, snap.height)); } catch { return null; }
-      if (frame === snap.frameDigest) return snap;
+    if (snap.height === blocks.length) {
+      if (!diskDigestMatches(snap)) return null;
+      if (!vaultNow || vaultNow !== snap.vaultCommitment) return null;
+      return snap;
     }
+    const prefix = blocks.slice(0, snap.height);
+    let stableOk = false;
+    if (snap.stableDigest) {
+      try { stableOk = stableDigest(prefix) === snap.stableDigest; } catch { stableOk = false; }
+    }
+    const listed = Array.isArray(snap.unprunedBodies);
+    const bodiesOk = listed && unprunedDiskOk(snap);
+    // Stable tags omit samples. Unpruned share bytes are the raw record tags.
+    // A snap that lists those tags cannot skip a mismatch via the frame digest.
+    if (stableOk && bodiesOk) return snap;
+    if (prefixFrameOk(snap) && (!listed || bodiesOk)) return snap;
     return null;
   }
 
@@ -1023,8 +1253,10 @@ export function createStore(dir, {
       return;
     }
     // A shorter snap committed the prefix vault. Apply only the unsealed suffix.
-    if (loadMode === 'suffix' && loaded && vaultCommitmentFromFile()) {
-      installVault(loaded);
+    // reserve.json may already be at the tip; vault.snap is the prefix vault.
+    // The index is the prior height vaultArgs uses to pin the chain genesis.
+    if (loadMode === 'suffix' && (snapVaultRaw || (loaded && vaultCommitmentFromFile()))) {
+      installVault(snapVaultRaw || loaded);
       const suffix = blocks.slice(prefixHeight);
       for (let s = 0; s < suffix.length; s += 1) {
         const b = suffix[s];
@@ -1084,32 +1316,175 @@ export function createStore(dir, {
     }
   }
 
+  function ensureSeal() {
+    if (!sealStream || sealAt > blocks.length) {
+      sealStream = chainLoadSealHash(sealKey, bookMagic);
+      sealAt = 0;
+    }
+    while (sealAt < blocks.length) {
+      chainLoadSealUpdate(sealStream, blocks[sealAt]);
+      sealAt += 1;
+    }
+  }
+
   function writeLoadSeal(rows) {
-    fs.writeFileSync(sealFile, `${chainLoadSeal(rows, sealKey, bookMagic)}\n`);
+    if (rows !== blocks) {
+      fs.writeFileSync(sealFile, `${chainLoadSeal(rows, sealKey, bookMagic)}\n`);
+      return;
+    }
+    ensureSeal();
+    fs.writeFileSync(sealFile, `${sealStream.copy().digest('hex')}\n`);
   }
 
   function resetFrameHash() {
-    frameHash = null;
-    frameCovered = 0;
+    invalidateTags();
   }
 
-  /** Running frame digest. Each new block is packed once. A rewrite starts over. */
+  function invalidateTags() {
+    frameTags = [];
+    frameStream = null;
+    frameAt = 0;
+    frameCkpt = [];
+    stableTags = [];
+    stableStream = null;
+    stableAt = 0;
+    stableCkpt = [];
+  }
+
+  function resetSeal() {
+    sealStream = null;
+    sealAt = 0;
+  }
+
+  function tagCacheWarm() {
+    return frameTags.length === blocks.length && stableTags.length === blocks.length;
+  }
+
+  function ensureTags() {
+    while (frameTags.length < blocks.length) {
+      const i = frameTags.length;
+      frameTags.push(blockFrameTag(blocks[i]));
+      stableTags.push(stableBlockTag(blocks[i]));
+    }
+    if (frameTags.length > blocks.length || stableTags.length > blocks.length) invalidateTags();
+  }
+
+  function foldTags(kind) {
+    ensureTags();
+    const frame = kind === 'frame';
+    let stream = frame ? frameStream : stableStream;
+    let at = frame ? frameAt : stableAt;
+    let ckpt = frame ? frameCkpt : stableCkpt;
+    const tags = frame ? frameTags : stableTags;
+    const end = blocks.length;
+    if (!stream || at > end) {
+      stream = createHash('sha256');
+      stream.update(frame ? 'bookframe2' : STABLE_DIGEST_DOMAIN);
+      at = 0;
+      for (let i = ckpt.length - 1; i >= 0; i -= 1) {
+        if (ckpt[i].at <= end) {
+          stream = ckpt[i].hash.copy();
+          at = ckpt[i].at;
+          break;
+        }
+      }
+      ckpt = ckpt.filter((c) => c.at <= at);
+    }
+    while (at < end) {
+      stream.update(tags[at]);
+      at += 1;
+      if (at % 64 === 0) ckpt.push({ at, hash: stream.copy() });
+    }
+    while (ckpt.length && ckpt[ckpt.length - 1].at > end) ckpt.pop();
+    if (frame) {
+      frameStream = stream;
+      frameAt = at;
+      frameCkpt = ckpt;
+    } else {
+      stableStream = stream;
+      stableAt = at;
+      stableCkpt = ckpt;
+    }
+    return stream.copy().digest('hex');
+  }
+
+  function noteAppendedBlock() {
+    const i = blocks.length - 1;
+    if (i < 0 || frameTags.length !== i) return;
+    let nextFrame;
+    let nextStable;
+    try {
+      nextFrame = blockFrameTag(blocks[i]);
+      nextStable = stableBlockTag(blocks[i]);
+    } catch {
+      invalidateTags();
+      return;
+    }
+    frameTags.push(nextFrame);
+    stableTags.push(nextStable);
+    if (frameStream && frameAt === i) {
+      frameStream.update(frameTags[i]);
+      frameAt += 1;
+      if (frameAt % 64 === 0) frameCkpt.push({ at: frameAt, hash: frameStream.copy() });
+    }
+    if (stableStream && stableAt === i) {
+      stableStream.update(stableTags[i]);
+      stableAt += 1;
+      if (stableAt % 64 === 0) stableCkpt.push({ at: stableAt, hash: stableStream.copy() });
+    }
+  }
+
+  // Burial rewrites one block's packed body. A burial-hold lift that puts a
+  // share batch back must call this too, so the frame and stable tags move
+  // with the segment bytes.
+  function noteReplacedBlock(index) {
+    retag(index);
+  }
+
+  function retag(index) {
+    if (!tagCacheWarm() || index < 0 || index >= blocks.length) return;
+    let nextFrame;
+    let nextStable;
+    try {
+      nextFrame = blockFrameTag(blocks[index]);
+      nextStable = stableBlockTag(blocks[index]);
+    } catch {
+      invalidateTags();
+      return;
+    }
+    const frameChanged = !frameTags[index].equals(nextFrame);
+    const stableChanged = !stableTags[index].equals(nextStable);
+    frameTags[index] = nextFrame;
+    stableTags[index] = nextStable;
+    if (frameChanged && frameAt > index) {
+      frameStream = null;
+      frameAt = 0;
+      frameCkpt = frameCkpt.filter((c) => c.at <= index);
+    }
+    if (stableChanged && stableAt > index) {
+      stableStream = null;
+      stableAt = 0;
+      stableCkpt = stableCkpt.filter((c) => c.at <= index);
+    }
+  }
+
   function frameDigestNow() {
-    if (!frameHash || frameCovered > blocks.length) resetFrameHash();
-    if (!frameHash) {
-      frameHash = createHash('sha256');
-      frameHash.update('bookframe1');
-      frameCovered = 0;
-    }
-    while (frameCovered < blocks.length) {
-      const rec = packEpochBlock(blocks[frameCovered]);
-      const n = Buffer.alloc(4);
-      n.writeUInt32LE(rec.length >>> 0, 0);
-      frameHash.update(n);
-      frameHash.update(rec);
-      frameCovered += 1;
-    }
-    return frameHash.copy().digest('hex');
+    return foldTags('frame');
+  }
+
+  function stableDigestNow() {
+    return foldTags('stable');
+  }
+
+  function shouldSnap(height) {
+    const h = Number(height) || 0;
+    if (h < 1) return false;
+    if (h <= BOOK_SNAP_EVERY) return true;
+    return h % BOOK_SNAP_EVERY === 0;
+  }
+
+  function maybeSnap(height) {
+    if (shouldSnap(height)) persistBookSnap();
   }
 
   function supplySnapsForSnap() {
@@ -1298,6 +1673,8 @@ export function createStore(dir, {
         tipHash,
         diskDigest: chainDiskDigest(),
         frameDigest: frameDigestNow(),
+        stableDigest: stableDigestNow(),
+        unprunedBodies: unprunedBodiesForSnap(),
         genesisMs: gms,
         vaultCommitment: commit,
         owedRows,
@@ -1316,6 +1693,7 @@ export function createStore(dir, {
         anchorWindow: anchorWindowForSnap(),
         anchorRoots,
       });
+      writeVaultSnap(blocks.length);
     } catch { /* leave the previous snap; the next load replays */ }
   }
 
@@ -1330,6 +1708,7 @@ export function createStore(dir, {
     fs.rmSync(tmp, { recursive: true, force: true });
     if (fs.existsSync(binFile)) fs.renameSync(binFile, `${binFile}.legacy`);
     segmented = true;
+    unprunedLive = null;
     writeLoadSeal(diskBlocks);
   }
 
@@ -1426,16 +1805,19 @@ export function createStore(dir, {
     const diskBlocks = blocks.slice(0, -1).concat([row]);
     if (!segmented && diskBlocks.length > 1 && fs.existsSync(binFile)) {
       migrateMonolith(diskBlocks);
+      loadSegLive();
     } else {
       fs.mkdirSync(segDir, { recursive: true });
       const idx = Math.floor((diskBlocks.length - 1) / CHAIN_SEGMENT_BLOCKS);
-      appendChainBin(path.join(segDir, segmentFileName(idx)), row);
+      const rec = packEpochBlock(row);
+      const written = appendChainBin(path.join(segDir, segmentFileName(idx)), row);
       segmented = true;
+      if (written && written.length) rememberSegmentBytes(idx, written);
+      noteUnprunedBody(diskBlocks.length - 1, rec);
     }
     fs.appendFileSync(file, `${slimRow(row)}\n`);
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
     writeLoadSeal(blocks);
-    persistBookSnap();
   }
 
   function rewriteChain() {
@@ -1446,8 +1828,11 @@ export function createStore(dir, {
     writeSlimIndex();
     writeTipFile(dir, blocks.length ? blocks[blocks.length - 1] : null);
     segmented = true;
-    writeLoadSeal(blocks);
+    loadSegLive();
+    unprunedLive = null;
     resetFrameHash();
+    resetSeal();
+    writeLoadSeal(blocks);
   }
 
   function tip() {
@@ -1462,6 +1847,7 @@ export function createStore(dir, {
       Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : SAMPLE_PRUNE_CONFIRMATIONS,
     );
     const dirtySegs = new Set();
+    const dirtyIdx = [];
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
       if (b.samplesPruned === true && !shouldPruneSamples(b.height, tipH, pruneDepth)) {
@@ -1469,6 +1855,8 @@ export function createStore(dir, {
         if (!lifted) continue;
         blocks[i] = lifted;
         dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
+        noteUnprunedBody(i, packEpochBlock(lifted));
+        noteReplacedBlock(i);
         continue;
       }
       if (b.samplesPruned) continue;
@@ -1480,6 +1868,7 @@ export function createStore(dir, {
       if ((next.txs || []).length !== nTx) throw new Error('prune_dropped_txs');
       if ((next.txs?.[0]?.vout || []).length !== nVout) throw new Error('prune_dropped_coinbase');
       blocks[i] = next;
+      dirtyIdx.push(i);
       dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
     }
     if (dirtySegs.size) {
@@ -1495,15 +1884,33 @@ export function createStore(dir, {
       if (!segmented) {
         writeChainSegments(segDir, image);
         segmented = true;
+        loadSegLive();
       } else {
         writeChainSegments(segDir, image, { only: dirtySegs });
+        for (const idx of dirtySegs) rehashSegmentFile(idx);
       }
-      try { writeLatestBootstrap(dir, blocks); } catch { /* observer/bootstrap must not halt append */ }
-      resetFrameHash();
-      try { persistBookSnap(); } catch { /* the next load replays if the snap is stale */ }
+      for (const i of dirtyIdx) {
+        if (unprunedLive) unprunedLive.delete(i);
+        noteReplacedBlock(i);
+      }
+      maybePublishBootstrap();
     }
     noteBurial(tipH);
     return dirtySegs.size > 0;
+  }
+
+  function maybePublishBootstrap() {
+    const tipH = Number(tip()?.height || 0);
+    let last = 0;
+    try {
+      const paths = latestPaths(dir);
+      if (fs.existsSync(paths.json)) {
+        const manifest = JSON.parse(fs.readFileSync(paths.json, 'utf8'));
+        last = Number(manifest.checkpoint) || 0;
+      }
+    } catch { last = 0; }
+    if (!shouldPublishBootstrap(tipH, last)) return;
+    try { writeLatestBootstrap(dir, blocks); } catch { /* observer must not halt append */ }
   }
 
   function hourlyWork(nowMs) {
@@ -2811,6 +3218,7 @@ export function createStore(dir, {
     anchorAt[stored.height] = anchorRecord(liveFlux, true);
     releaseExitedFrontier(stored.height);
     persist(stored);
+    noteAppendedBlock();
     rememberHeaders([stored], 'active');
     {
       const sealedIds = new Set((stored.txs || []).map((t) => String(t.id || '')));
@@ -2828,6 +3236,7 @@ export function createStore(dir, {
       }
     }
     pruneBuried();
+    maybeSnap(stored.height);
     try {
       const bf = Number(decodeHeader(Buffer.from(stored.header)).baseFee || 1n);
       const book = emptyMempool();
@@ -4159,6 +4568,7 @@ export function createStore(dir, {
       headers: new Map(headers),
       forks: new Map(forks),
       snap: fileBytes(snapFile),
+      vaultSnap: fileBytes(vaultSnapFile),
       vaultBytes: fileBytes(vaultFile),
       explorerBytes: fileBytes(explorerFile),
       policyBytes: fileBytes(policyStatePath),
@@ -4203,6 +4613,7 @@ export function createStore(dir, {
     for (const [k, v] of image.forks) forks.set(k, v);
     try { rewriteChain(); } catch { /* memory is already the pre-publish book */ }
     putFileBytes(snapFile, image.snap);
+    putFileBytes(vaultSnapFile, image.vaultSnap);
     putFileBytes(vaultFile, image.vaultBytes);
     putFileBytes(explorerFile, image.explorerBytes);
     putFileBytes(policyStatePath, image.policyBytes);
@@ -4702,7 +5113,7 @@ export function createStore(dir, {
     }
     // Sealed parent interval only. Caller bits (share target, boot override,
     // a private easier job) must not undercut the header miners are offered.
-    const bits = retarget(blocks, now);
+    const bits = retarget(blocks, now, bookMagic);
     void bitsIn;
     const lag1 = lag1Continuity(t ? t.header : null);
     let baseFeeNow = 1;
@@ -5013,6 +5424,9 @@ export function createStore(dir, {
     sideTipHash,
     sideHashes() {
       return sideBlocks.map((b) => hex32(b.hash).toLowerCase()).filter(Boolean);
+    },
+    flushBookSnap() {
+      persistBookSnap();
     },
     pruneBuried,
     pruneAfter,

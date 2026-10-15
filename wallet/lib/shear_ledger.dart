@@ -14,6 +14,7 @@ import 'shear_session.dart';
 import 'shear_ed25519.dart';
 import 'shear_pack.dart';
 import 'shear_admit.dart';
+import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
@@ -351,20 +352,36 @@ const String kErrFeeShort = 'Not enough spendable to cover this amount and the f
 /// Hex-JSON sizes and one prove, padded so the posted fee is not under the
 /// sealed body. Wallet quote only. `levy.js` is not modified.
 ///
-/// 2026-10-10 `crypto/admit_bench_run.js` at |J|=4096: prove 223.076 ms,
-/// proof 20482 bytes. Hex of that proof is 40964 bytes; the pad is 42000.
-/// A sealed vout is a 14433-byte range proof, about 29420 hex bytes; the
-/// pad is 30000. Cancel is checked between proofs. Consensus levy is
+/// 2026-10-14 node/tests/test_fs1_spend_v12.js, 4-core x86_64 desktop: an
+/// FS-1 spend proves in about 1250 ms per input (1 input 1281 ms, 8 inputs
+/// 9936 ms). The aggregate blob is 5347 + 896 bytes per input and each input
+/// adds a 321-byte record, so an input is 2434 hex bytes (pad 2600) on a
+/// 10694 hex byte base (pad 11000). A sealed vout is a 14433-byte range
+/// proof, about 29420 hex bytes; the pad is 30000. Consensus levy is
 /// unchanged: `levyFromWeight` is max(100, ceil(jsonBytes/2048)).
-const int kMeasuredProveMs = 223;
-const int kMeasuredProofHexBytes = 42000;
+const int kMeasuredProveMs = 1250;
+const int kMeasuredProofHexBytes = 2600;
+const int kMeasuredFs1BaseHexBytes = 11000;
 const int kMeasuredOutputHexBytes = 30000;
 const int kMeasuredTxBaseBytes = 512;
 const int kMeasuredMemoHexBytes = 512;
 
-/// Background prove budget for one send. 223 ms times 8 is 1784 ms, inside
-/// this budget. 223 ms times 9 is 2007 ms, outside it.
-const int kSendProveBudgetMs = 2000;
+/// Background prove budget for one send on a desktop. 1250 ms times 8 is
+/// 10000 ms, inside this budget. A phone is slower; [kFs1ProveTimeout] is
+/// the hard ceiling.
+const int kSendProveBudgetMs = 10000;
+
+/// Ceiling for one FS-1 prove off the UI isolate, tree sync included.
+/// A phone proving eight inputs over a long chain stays well inside it.
+const Duration kFs1ProveTimeout = Duration(minutes: 10);
+
+bool _sameBytes32(Uint8List a, Uint8List b) {
+  if (a.length != 32 || b.length != 32) return false;
+  for (var i = 0; i < 32; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
 
 /// Posted hex body budget. A send's measured body stays under 0.5 MB.
 const int kSendHexBudgetBytes = 500000;
@@ -375,12 +392,15 @@ const int kSendTimeCap = kSendProveBudgetMs ~/ kMeasuredProveMs;
 /// Inputs that fit [kSendHexBudgetBytes] with pay, change, and a dummy.
 const int kSendSizeCap = (kSendHexBudgetBytes -
         kMeasuredTxBaseBytes -
+        kMeasuredFs1BaseHexBytes -
         3 * kMeasuredOutputHexBytes) ~/
     kMeasuredProofHexBytes;
 
-/// Tighter of prove time and tx size. Not a hand-picked count.
-const int kMaxInputsPerSend =
-    kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap;
+const int _kSendMeasuredCap = kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap;
+
+/// Tighter of prove time, tx size, and the consensus input limit of one
+/// FS-1 spend. Not a hand-picked count.
+const int kMaxInputsPerSend = _kSendMeasuredCap < kFs1InputMax ? _kSendMeasuredCap : kFs1InputMax;
 
 /// Sweep while more spendable notes than [kMaxInputsPerSend] remain.
 /// The marginal consensus levy of one extra proof is dust next to the
@@ -392,11 +412,13 @@ const int kConsolidateAboveCount = kMaxInputsPerSend;
 int measuredInputCap({int outputs = 3, bool memo = false}) {
   final nOut = outputs < 1 ? 1 : outputs;
   final fixed = kMeasuredTxBaseBytes +
+      kMeasuredFs1BaseHexBytes +
       nOut * kMeasuredOutputHexBytes +
       (memo ? kMeasuredMemoHexBytes : 0);
   final room = kSendHexBudgetBytes - fixed;
   final sizeCap = room < kMeasuredProofHexBytes ? 1 : room ~/ kMeasuredProofHexBytes;
-  final cap = kSendTimeCap < sizeCap ? kSendTimeCap : sizeCap;
+  var cap = kSendTimeCap < sizeCap ? kSendTimeCap : sizeCap;
+  if (cap > kFs1InputMax) cap = kFs1InputMax;
   return cap < 1 ? 1 : cap;
 }
 
@@ -420,6 +442,7 @@ int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = fal
   final nIn = inputs < 1 ? 1 : inputs;
   final nOut = outputs < 1 ? 1 : outputs;
   final weight = kMeasuredTxBaseBytes +
+      kMeasuredFs1BaseHexBytes +
       nIn * kMeasuredProofHexBytes +
       nOut * kMeasuredOutputHexBytes +
       (memo ? kMeasuredMemoHexBytes : 0);
@@ -1015,40 +1038,9 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
   return {'vouts': sealed};
 }
 
-/// BP+ / ADMIT prove. Same off-isolate rule as [sealFlowSpendVouts].
-Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) {
-  final spendSeed = input['spendSeed'] as Uint8List;
-  final spentNote = Map<String, dynamic>.from(input['spentNote'] as Map);
-  final pubs = <Uint8List>[
-    for (final p in (input['pubs'] as List? ?? const []))
-      if (p is Uint8List) p,
-  ];
-  final vin = <Map<String, dynamic>>[
-    for (final raw in (input['vin'] as List? ?? const []))
-      if (raw is Map) Map<String, dynamic>.from(raw),
-  ];
-  final vout = <Map<String, dynamic>>[
-    for (final raw in (input['vout'] as List? ?? const []))
-      if (raw is Map) Map<String, dynamic>.from(raw),
-  ];
-  final body = <String, dynamic>{'vin': vin, 'vout': vout};
-  final commits = <Uint8List>[
-    for (final raw in (input['commits'] as List? ?? const []))
-      if (raw is Uint8List) raw,
-  ];
-  proveFlowSpend(
-    body,
-    spendSeed: spendSeed,
-    spentNote: spentNote,
-    pubs: pubs,
-    commits: commits,
-  );
-  final proof = body['admit_proof'];
-  return {
-    'admitProof': proof is Map ? workerAdmitProof(Map<String, dynamic>.from(proof)) : proof,
-    'spendTag': body['spendTag'],
-  };
-}
+/// One FS-1 spend of every input of a send ([proveFs1SpendWire]). Same
+/// off-isolate rule as [sealFlowSpendVouts].
+Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) => proveFs1SpendWire(input);
 
 /// Stamp from the worker, including when [sealFlowSpendVouts] throws.
 Map<String, dynamic> _sealFlowStamped(Map<String, dynamic> input) {
@@ -1070,10 +1062,6 @@ Map<String, dynamic> _proveFlowStamped(Map<String, dynamic> input) {
   final stamp = identityHashCode(Isolate.current).toString();
   try {
     final out = reproveFlowSpendWire(input);
-    final proof = out['admitProof'];
-    if (proof is Map) {
-      out['admitProof'] = workerAdmitProof(Map<String, dynamic>.from(proof));
-    }
     out['stamp'] = stamp;
     return out;
   } catch (e) {
@@ -1772,7 +1760,7 @@ const postedMerkleKeys = <String>{'side', 'hash'};
 /// crypto/spend.js VOUT_KEYS.
 const postedVoutKeys = <String>{
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
-  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt',
+  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
   'portalId', 'memo', 'memoCt',
 };
 
@@ -6643,7 +6631,10 @@ class ShearLedger implements ReadProofSink {
     final pub = spendPub;
     final v = viewSecret;
     if (pub != null && pub.length == 32 && v != null && v.isNotEmpty) {
-      return paymentCodeAtIndex(v, pub, 0);
+      // Change and consolidate pay the wallet's own stealth dest. A fingerprint
+      // has no admit base, so the sealed output could not carry amtCt or join
+      // the FS-1 set. The full code embeds this wallet's base.
+      return paymentCodeAtIndex(v, pub, 0, _admitBaseOf(paymentCode));
     }
     return null;
   }
@@ -7169,6 +7160,89 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
+  /// Anchor rows from the last fluxset read (newest first).
+  List<Fs1Anchor> _fs1Anchors = const [];
+
+  /// The native FS-1 tree kept between sends.
+  Fs1TreeState _fs1Tree = const Fs1TreeState();
+
+  /// One FS-1 spend of every note in [notes] for the [sealed] outputs at
+  /// [fee]. The digest binds the posted outputs, the fee, and the anchor, so
+  /// none may change after this. Vin is C̃ only.
+  Future<({List<Map<String, dynamic>> vin, List<Map<String, dynamic>> proofs, Uint8List fs1, int anchor, Uint8List excess})>
+      _fs1Spend({
+    required List<Map<String, dynamic>> notes,
+    required List<Map<String, dynamic>> sealed,
+    required int fee,
+    required Uint8List spendSeed,
+    String kind = 'send',
+  }) async {
+    if (notes.isEmpty || notes.length > kFs1InputMax) throw StateError('fs1_inputs');
+    final cols = await _fluxColumns();
+    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length) throw StateError('fluxset');
+    final spent = <Map<String, dynamic>>[];
+    final indices = <int>[];
+    for (final note in notes) {
+      final commit = _noteBytes(note['commit']);
+      final nc = _noteBytes(note['noteCommit']);
+      final r = _noteBytes(note['r']);
+      if (commit == null || nc == null || r == null || commit.length != 32 || r.length != 32) {
+        throw StateError('no_note');
+      }
+      final pub = _noteBytes(note['admitPub']);
+      var at = -1;
+      for (var i = 0; i < cols.commits.length; i++) {
+        if (_sameBytes32(cols.commits[i], commit) && (pub == null || _sameBytes32(cols.pubs[i], pub))) {
+          at = i;
+          break;
+        }
+      }
+      if (at < 0 || indices.contains(at)) throw StateError('no_note');
+      indices.add(at);
+      spent.add({'kind': (note['kind'] as String?) ?? 'pot', 'commit': commit, 'noteCommit': nc, 'r': r});
+    }
+    final top = indices.reduce((a, b) => a > b ? a : b);
+    final anchor = pickFs1Anchor(_fs1Anchors, top);
+    if (anchor == null) throw StateError(kErrFs1Anchor);
+    final digest = fs1BodyDigest(
+      magic: kBookMagic,
+      kind: kind,
+      anchor: anchor.height,
+      fee: fee,
+      nIn: notes.length,
+      vout: _postedVout(sealed),
+    );
+    Map<String, dynamic> proved;
+    try {
+      proved = await _proveFlowOffUi({
+        'notes': fs1NotesBytes(cols.pubs, cols.commits, anchor.n),
+        'indices': indices,
+        'spent': spent,
+        'spendSeed': spendSeed,
+        'vout': sealed,
+        'digest': digest,
+        'anchor': anchor.height,
+        'tree': _fs1Tree.toWire(),
+      }).timeout(kFs1ProveTimeout);
+    } on TimeoutException {
+      throw StateError('send_timeout');
+    }
+    _fs1Tree = Fs1TreeState.fromWire(proved['tree']);
+    final proofs = <Map<String, dynamic>>[
+      for (final rec in (proved['records'] as List)) fs1PostedProof(rec as Uint8List),
+    ];
+    if (proofs.length != notes.length) throw StateError('fs1_prove');
+    return (
+      vin: <Map<String, dynamic>>[
+        for (final p in proofs) {'commit': p['cTilde']},
+      ],
+      proofs: proofs,
+      fs1: proved['fs1'] as Uint8List,
+      anchor: anchor.height,
+      excess: proved['excess'] as Uint8List,
+    );
+  }
+
   Future<({List<Uint8List> pubs, List<Uint8List> commits})> _fluxColumns() async {
     if (pool == null) return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
     try {
@@ -7192,13 +7266,18 @@ class ShearLedger implements ReadProofSink {
       }
       final pubs = <Uint8List>[];
       final commits = <Uint8List>[];
+      // FS-1 leaf indices are positions in this list. A dropped row would
+      // shift every later index, so one bad row refuses the whole set.
       for (var i = 0; i < rawPubs.length; i++) {
         final p = _noteBytes(rawPubs[i]);
         final c = _noteBytes(rawCommits[i]);
-        if (p == null || c == null || p.length != 32 || c.length != 32) continue;
+        if (p == null || c == null || p.length != 32 || c.length != 32) {
+          return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
+        }
         pubs.add(p);
         commits.add(c);
       }
+      _fs1Anchors = fs1AnchorsOf(live['anchors']);
       return (pubs: pubs, commits: commits);
     } catch (_) {
       return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
@@ -7529,47 +7608,16 @@ class ShearLedger implements ReadProofSink {
       for (final raw in (sealedBuilt['vouts'] as List))
         if (raw is Map) Map<String, dynamic>.from(raw),
     ];
-    final cols = await _fluxColumns();
-    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length) throw StateError('fluxset');
-    final vin = <Map<String, dynamic>>[];
-    final proofs = <Map<String, dynamic>>[];
     var done = proveDone;
     final total = proveTotal < notes.length ? notes.length : proveTotal;
-    for (final note in notes) {
-      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
-      progress?.bump(phase: 'prove', done: done, total: total);
-      final spentNote = {
-        'kind': (note['kind'] as String?) ?? 'pot',
-        'commit': _noteBytes(note['commit'])!,
-        'noteCommit': _noteBytes(note['noteCommit'])!,
-        'r': _noteBytes(note['r'])!,
-      };
-      Map<String, dynamic> proved;
-      try {
-        proved = await _proveFlowOffUi({
-          'vin': [
-            {'commit': spentNote['commit'], 'r': spentNote['r']},
-          ],
-          'vout': sealed,
-          'spendSeed': spendSeed,
-          'spentNote': spentNote,
-          'pubs': cols.pubs,
-          'commits': cols.commits,
-        }).timeout(const Duration(seconds: 8));
-      } on TimeoutException {
-        throw StateError('send_timeout');
-      }
-      final proof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
-      final ct = proof['cTilde'];
-      vin.add({
-        'commit': ct is Uint8List ? ct : spentNote['commit'],
-        'r': spentNote['r'],
-      });
-      proofs.add(proof);
-      done++;
-      progress?.bump(phase: 'prove', done: done, total: total);
-    }
-    final excess = kernelExcess(sealed, vin);
+    if (progress?.cancelRequested == true) throw StateError('send_cancelled');
+    progress?.bump(phase: 'prove', done: done, total: total);
+    final spend = await _fs1Spend(notes: notes, sealed: sealed, fee: feeUnits, spendSeed: spendSeed);
+    final vin = spend.vin;
+    final proofs = spend.proofs;
+    final excess = spend.excess;
+    done += notes.length;
+    progress?.bump(phase: 'prove', done: done, total: total);
     final posted = postedFlowBody(vin: vin, vout: sealed, proofs: proofs);
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
     if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
@@ -7595,12 +7643,15 @@ class ShearLedger implements ReadProofSink {
     final wire = await flowPostHexOffUi(posted);
     // The change output already reserved [feeUnits]. A lighter one-pass fee
     // must not be written back. A heavier body is fee_short, not a vote error.
+    final fs1Hex = _bytesHex(spend.fs1);
     if (!sealedFeeCovers(feeUnits, <String, dynamic>{
       'kind': 'send',
       'vin': wire['vin'],
       'vout': wire['vout'],
       if (wire['admitProof'] != null) 'admit_proof': wire['admitProof'],
       if (wire['admitProofs'] != null) 'admit_proofs': wire['admitProofs'],
+      'fs1': fs1Hex,
+      'anchor': spend.anchor,
     })) {
       throw StateError('fee_short');
     }
@@ -7630,6 +7681,8 @@ class ShearLedger implements ReadProofSink {
           ? _bytesHex(proofs.first['spendTag'] as Uint8List)
           : proofs.first['spendTag']?.toString(),
       fee: feeUnits,
+      fs1: fs1Hex,
+      anchor: spend.anchor,
     );
     if (json['ok'] != true || json['tx'] is! Map) {
       throw StateError(json['reason']?.toString() ?? 'send failed');
@@ -8062,24 +8115,17 @@ class ShearLedger implements ReadProofSink {
     Map<String, dynamic>? spent;
     Map<String, dynamic>? chosen;
     var fundedShe = spendable(src);
-    List<Uint8List> livePubs = const [];
-    List<Uint8List> liveCommits = const [];
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local && !paintedCover) {
       // The planner already chose this note off the UI isolate. Do not scan
       // spend tags for every other note.
       if (spendNote != null) {
-        final cols = await _fluxColumns();
-        livePubs = cols.pubs;
-        liveCommits = cols.commits;
         chosen = spendNote;
         final addr = (spendNote['address'] ?? spendNote['dest'])?.toString() ?? '';
         if (addr.isNotEmpty) src = addr;
         fundedShe = _storedNoteShe(spendNote) ?? spendable(src);
       } else {
       // Pull the pool note list when the local book has no covering note.
-      final cols = await _fluxColumns();
-      livePubs = cols.pubs;
-      liveCommits = cols.commits;
+      await _fluxColumns();
       Map<String, dynamic>? pick(String fromDest, {bool ignoreConfs = false}) =>
           _pickSpendNote(
             fromDest,
@@ -8229,6 +8275,9 @@ class ShearLedger implements ReadProofSink {
     ];
     Map<String, dynamic>? admitProof;
     dynamic excess;
+    String? fs1Hex;
+    int? fs1Anchor;
+    final flowFee = levy < 0 ? 0 : levy;
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
       if (chosen == null && paintedCover) {
         final sealed = sealPaintedSpendVouts([
@@ -8243,12 +8292,6 @@ class ShearLedger implements ReadProofSink {
       if (chosen != null) {
       final note = chosen!;
       if (!noteHasSealedSpendBytes(note)) throw StateError('no_note');
-      final spentNote = {
-        'kind': (note['kind'] as String?) ?? 'pot',
-        'commit': _noteBytes(note['commit'])!,
-        'noteCommit': _noteBytes(note['noteCommit'])!,
-        'r': _noteBytes(note['r'])!,
-      };
       final sealedBuilt = await _sealFlowOffUi({
         'spendSeed': spendSeed,
         'destTo': destTo,
@@ -8291,59 +8334,18 @@ class ShearLedger implements ReadProofSink {
           });
         }
       }
-      vin = [
-        {
-          'prev': _noteBytes(note['prev']) ?? Uint8List(32),
-          'index': (note['index'] as int?) ?? 0,
-          'commit': spentNote['commit'],
-          'noteCommit': spentNote['noteCommit'],
-          'r': spentNote['r'],
-        }
-      ];
-      excess = kernelExcess(vouts, vin);
-      var pubs = livePubs;
-      var commits = liveCommits;
-      if (pubs.isEmpty || commits.length != pubs.length) {
-        final again = await _fluxColumns();
-        pubs = again.pubs;
-        commits = again.commits;
-      }
-      if (pubs.isEmpty || commits.length != pubs.length) throw StateError('fluxset');
-      final dumpPubs = Platform.environment['SHEAR_DUMP_PUBS'];
-      if (dumpPubs != null && dumpPubs.isNotEmpty) {
-        File(dumpPubs).writeAsStringSync(jsonEncode({
-          'n': pubs.length,
-          'pubs': pubs.map(_bytesHex).toList(),
-        }));
-      }
       if (progress?.cancelRequested == true) throw StateError('send_cancelled');
       progress?.bump(phase: 'prove', done: 0, total: 1);
-      Map<String, dynamic> proved;
-      try {
-        proved = await _proveFlowOffUi({
-          'vin': vin,
-          'vout': vouts,
-          'spendSeed': spendSeed,
-          'spentNote': spentNote,
-          'pubs': pubs,
-          'commits': commits,
-        }).timeout(const Duration(seconds: 8));
-      } on TimeoutException {
-        throw StateError('send_timeout');
-      }
-      admitProof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
-      final ct = admitProof['cTilde'];
-      if (ct is Uint8List) {
-        vin[0] = {
-          'commit': ct,
-          'r': vin[0]['r'] ?? spentNote['r'],
-        };
-        excess = kernelExcess(vouts, vin);
-      }
+      final spend = await _fs1Spend(notes: [note], sealed: vouts, fee: flowFee, spendSeed: spendSeed);
+      vin = spend.vin;
+      excess = spend.excess;
+      admitProof = spend.proofs.first;
+      fs1Hex = _bytesHex(spend.fs1);
+      fs1Anchor = spend.anchor;
       progress?.bump(phase: 'prove', done: 1, total: 1);
       }
     }
-    final List<Map<String, dynamic>> postedVin;
+    List<Map<String, dynamic>> postedVin;
     final List<Map<String, dynamic>> postedVout;
     int? reserveFee;
     String? postedWithdrawId;
@@ -8441,14 +8443,17 @@ class ShearLedger implements ReadProofSink {
           vout: List<dynamic>.from(wire['vout'] as List? ?? const []),
           excess: excess is Uint8List ? _bytesHex(excess) : excess,
           admitProof: proof is Map ? Map<String, dynamic>.from(proof) : null,
+          admitProofs: fs1Hex != null && proof is Map ? [Map<String, dynamic>.from(proof)] : null,
           spendTag: admitProof?['spendTag'] is Uint8List
               ? _bytesHex(admitProof!['spendTag'] as Uint8List)
               : admitProof?['spendTag']?.toString(),
           paintedOwedNanos: paintedCover ? _paintedFundOwedNanos : 0,
           nanosWire: nanosWire,
-          fee: reserveFee,
+          fee: reserveFee ?? (fs1Hex != null ? flowFee : null),
           id: postedWithdrawId,
           withdrawNonce: postedWithdrawNonce,
+          fs1: fs1Hex,
+          anchor: fs1Anchor,
         );
       }
 
@@ -8456,26 +8461,25 @@ class ShearLedger implements ReadProofSink {
       Object? lastErr;
       for (var attempt = 0; attempt < 3; attempt++) {
         final retryNote = chosen;
-        if (attempt > 0 && sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && retryNote != null) {
-          final again = await _fluxColumns();
-          final pubs = again.pubs;
-          final commits = again.commits;
-          if (pubs.isEmpty || commits.length != pubs.length) throw StateError('fluxset');
-          final spentNote = {
-            'kind': (retryNote['kind'] as String?) ?? 'pot',
-            'commit': _noteBytes(retryNote['commit'])!,
-            'noteCommit': _noteBytes(retryNote['noteCommit'])!,
-            'r': _noteBytes(retryNote['r'])!,
-          };
-          final proved = await _proveFlowOffUi({
-            'vin': vin,
-            'vout': vouts,
+        // A stale anchor is the one reject a fresh prove can fix. C̃ changes
+        // with every prove, so vin, excess, and the signature are rebuilt.
+        if (attempt > 0 && sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && retryNote != null && fs1Hex != null) {
+          final spend = await _fs1Spend(notes: [retryNote], sealed: vouts, fee: flowFee, spendSeed: spendSeed);
+          vin = spend.vin;
+          excess = spend.excess;
+          admitProof = spend.proofs.first;
+          fs1Hex = _bytesHex(spend.fs1);
+          fs1Anchor = spend.anchor;
+          postedVin = _postedVin(vin);
+          final msg = spendMessage(from: src, vout: postedVout, kind: sendKind, vin: postedVin);
+          final shared = _stealthShared[src];
+          final signed = await signSpendOffUi(<String, dynamic>{
             'spendSeed': spendSeed,
-            'spentNote': spentNote,
-            'pubs': pubs,
-            'commits': commits,
+            'message': msg,
+            if (shared != null) 'shared': shared,
           });
-          admitProof = postedAdmitProof(Map<String, dynamic>.from(proved['admitProof'] as Map));
+          sigHex = _bytesHex(signed['sig'] as Uint8List);
+          spendPubHex = _bytesHex(signed['pub'] as Uint8List);
         }
         json = await postOnce();
         if (json['ok'] == true && json['tx'] is Map) break;
@@ -8487,7 +8491,7 @@ class ShearLedger implements ReadProofSink {
           kind: sendKind,
         );
         final why = json['reason']?.toString() ?? '';
-        if (why != 'admit' && why != 'admit_membership') break;
+        if (why != 'admit' && why != 'admit_membership' && why != 'admit_anchor_root' && why != 'admit_anchor_window') break;
       }
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');
@@ -9048,6 +9052,8 @@ class ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) {
     return _post('/api/wallet/send', walletSendBody(
       from: from,
@@ -9076,6 +9082,8 @@ class ShearPoolClient {
       nanosWire: nanosWire,
       id: id,
       withdrawNonce: withdrawNonce,
+      fs1: fs1,
+      anchor: anchor,
     ), legacyPoolSend: legacyPoolSend);
   }
 
@@ -9194,6 +9202,8 @@ Map<String, dynamic> walletSendBody({
   String? nanosWire,
   String? id,
   String? withdrawNonce,
+  String? fs1,
+  int? anchor,
 }) {
   final flow = kind == null || kind.isEmpty || kind == 'send';
   if (flow) {
@@ -9224,6 +9234,8 @@ Map<String, dynamic> walletSendBody({
       if (admitProof != null) 'admit_proof': admitProof,
       if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
       if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+      if (fs1 != null && fs1.isNotEmpty) 'fs1': fs1,
+      if (anchor != null && anchor > 0) 'anchor': anchor,
       if (id != null && id.isNotEmpty) 'id': id,
       if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
     };

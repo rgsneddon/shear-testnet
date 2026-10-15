@@ -1,0 +1,99 @@
+{
+  "magic": "shear-testnet-v12",
+  "cases": [
+    {
+      "kind": "send",
+      "anchor": 8,
+      "fee": 100,
+      "nIn": 1,
+      "vout": [
+        {
+          "kind": "send",
+          "noteCommit": "f173e859f29bce17d36375ea37c8bb7e6afe6e9be95e2fecdf835fb0012eb0b6",
+          "commit": "2637bb49964bc75d1a18f00c2c101229d62bb493d25e55cb6ab3a9c63857223a",
+          "admitPub": "2d554db67f971e25c94061749c029edddb906546e107857464f04bf70c50bdd3",
+          "rangeProof": "99b07880dd347750f2df1f01021ae2158bea74103107addbc0c4cf9c1ad506801d74c1b636b5ec65c48c100282f405e865a919d32199b5163703a42537f91c99f8bfd8f22fa03a9a8cc65bf137f012a123a124736f09f4b49fbf4e84b1605637",
+          "rEph": "6d9fec1d249763291cb6e8bb9a9df2757c1f4318249c36a323c81ead05316106",
+          "rCt": "ad1066876fcd1c4d1a21c41bf24b5ffb50964f17019a1965373d3be75e427951",
+          "amtCt": "398ca312adb6eab2",
+          "dest20": "03c014e0807ba61bd312ac437602128a0ca75471"
+        },
+        {
+          "kind": "send",
+          "noteCommit": "5ad05a8d2394795fc99f7ff25464bbdd05db0e47a8a24d8c831b7eb2131daf6c",
+          "commit": "85325389ecd3320018c99bdb41d04ce6a0503f90868121716eb25f620a036968",
+          "admitPub": "4fbd7012d9c552015f2541d8f1996fbbbdb008a60bd9f540310022f1075dbd6f",
+          "rangeProof": "bf57eacd40049f6e9b138117f6a6dcbfe56996f81763b3c2e0520a2b47b92691bc97510e2c74a1d39ccd048ea25b77e897328595679cd7909bbf952812fdad86f1724219e31bbc64898089a93d6ddec96f1340d975addc389ccf36eaf18906bf",
+          "rEph": "ae6e39f7eaf9d11301f9ae705519088b6359d720158b7919ff6644b7631d0255",
+          "rCt": "403a0f9e1636fa8d19e2876faa5a0615df4197409552750467a6e2c4af783f9e",
+          "amtCt": "1c3a1bc0b602517b",
+          "dest20": "7a16f55b0c0ccce0e1aa235dc2c131f14d206f62"
+        },
+        {
+          "kind": "dummy",
+          "noteCommit": "63701b22b40cd5829d7d981a75dcb89a8ce618231cdcb0530339dea5e291f6bd",
+          "commit": "d0a3afbef0ed5f5bde341cf5856fb7a18ab6ae411f9f40d5562894dc3c957454",
+          "admitPub": "92baed2f24b3e12cc3a1f40d5a6788639a7961deb0d058c9f868dac3b3227a3e",
+          "rangeProof": "2dea7a4580b7268b3d5016320cac9e7ac5875970bb325d0b12e4f3f0b107851f97861d56f8eb880fa0aedd5d3d5b707e2eddf7ac47342ca56a77257fe828e9ec17f1bd7420a62832bfcbdc2b54428032fec7d82d23dafc332acf601e2ad884a3",
+          "dest20": "67f0ab519d08d3dc088948dfdd4b0b6341d3c855"
+        }
+      ],
+      "digest": "48aeb3b4a73999f706d4355e04bde6aa4f453213d13fd79b90d2ce28c42460c4"
+    },
+    {
+      "kind": "send",
+      "anchor": 4096,
+      "fee": 4000000123,
+      "nIn": 8,
+      "vout": [
+        {
+          "kind": "send",
+          "noteCommit": "5dbe9eaba9de6ac2cda3f3995756a4e7e164d2e3deb5a12ccd5ffaa684bf2fda",
+          "commit": "76cf52c533b6520327977236a163e466b2c978292de10b1a5f3dbe17d30877a7",
+          "admitPub": "bc24c97219ef78ff75681092a511a499c7a574bffc4d3631917ba0d4aa5e9a82",
+          "rangeProof": "c1e5848069d43504f87f2fa1500fa072ec4cd98d6fb8773beb579aab321a5807923a76ded236fb95d03ddad62f00efc34b5c820c9f77a369660bb656d8c443c402cc11d125fc79e9e74335bdd67fae8f2c13ae89edf399ad43fe3c50f9b16f96",
+          "rEph": "f5ba07d5608bf1ebab2bf68dd52751fadd38804bf88f74d36c8630f30d04b3ac",
+          "rCt": "b352148ac708b8506ac73467982596b126d05bb1248baea52b3d092cd932e06c",
+          "amtCt": "e043d951a2565ded",
+          "dest20": "77a9e700186628a7a0207971236a1b0ec73840af",
+          "viewTag": "46"
+        },
+        {
+          "kind": "send",
+          "noteCommit": "c004539cec8c9a28983cf329a571c54fa365c1600cb7909f480b6c1743a7394b",
+          "commit": "228728851cf4708b61f4631bf8e4afeb595b3005e790b8ca0ed93a0fe1dc75ff",
+          "admitPub": "0518d57941913ce965ceb04a7f9f15e264bf46cf60983b58f96caf7d220e7d86",
+          "rangeProof": "b4512d2b4b67211d29f14d0ed475626ac8c2b4f4defbb2bb1cbdc10868b675816eb219293ad61a2cfbed9c4adcd3992ecf54c7fe35a754d0e230ff91ad21a5511bd1c0925b978a91d302e3efe3e4820537ea078bc5d4941aba4cd94422038af2",
+          "rEph": "06e66c22b8f33d4bad0eda2af8cb2e3294e4e57c3a574a27dff97a8a170f88c5",
+          "rCt": "ca629c840c54f5e32bb482c33a4b5abf8ab4b68df131bfdc77872a07d99b9679",
+          "amtCt": "3c76a418af6c42fa"
+        },
+        {
+          "kind": "",
+          "noteCommit": "6c84c902690d0c87b576def3a63f5ae9d33cf84249305cfd4f3c29a74180765f",
+          "commit": "9977fc1a06c368d623fc6b324df83ef27d5d8ca74fdb64ad8de6b742c00f4441",
+          "admitPub": "9839c4a999f15d4192a4121e2b6fbbd80f049b55652bc4b6071a7b990e13117f",
+          "rangeProof": "aac690f9598e971e8b7c5e7ac6af7baf7a064dfca15c325468fd9ebf41f80f2dd0640528aff55acdccd47161f5131de94db573cbc3e46186686a44ef9ca7a705816153d9b7ab51066725635382717be9bb8b553221239e499d285c0c6274571b",
+          "dest20": "2288a7e112a5a6c57b1c9b9b6310f7b605d1f751"
+        }
+      ],
+      "digest": "99cdd5f2de0eca467e75055406e0565cf5815c2affb66bcd257ea111fd2e72fb"
+    },
+    {
+      "kind": "transfer",
+      "anchor": 9007199254740984,
+      "fee": 0,
+      "nIn": 5,
+      "vout": [
+        {
+          "kind": "dummy",
+          "noteCommit": "0d6d28f460a73653a96965bf9173fbef07ed3481ac1da55de76317efa8912190",
+          "commit": "fdbb61911aa7b6441c3de89ea4bfc1f6d6138e6e34638927e11e5dc3161f4a09",
+          "admitPub": "f42efc417e1ca8f95f5608d63bee582221730f2ff31f2858abc5572d13fb437d",
+          "rangeProof": "0a9f27b81ea852d6ca639a85b438893d51922ff2a42ed689701c4a2d2a03ac82b063a58d96ea40d65cc85a2f3732d7f67a79aae8b71f9089c20000c2aa40da0247a70f5fb8711c35419222d4f36a977d4bc55719de0e029b0fae76011267650a"
+        }
+      ],
+      "digest": "2d0a60142789d31ffa479e113e4fe260d1716a4d67ecde0a247d137081fb9fae"
+    }
+  ]
+}

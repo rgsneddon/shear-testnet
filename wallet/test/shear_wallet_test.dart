@@ -33,6 +33,7 @@ import 'package:shear_wallet/shear_privacy_hop.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_tip_tick.dart';
 import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_fs1.dart';
 import 'package:shear_wallet/shear_native_prove.dart';
 import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
@@ -75,6 +76,12 @@ class _NoteWallet {
   final Uint8List seed;
 }
 
+/// A dest a Flow spend can pay. Short destForLogin addresses have no admit base.
+String _payablePayee() {
+  final id = createIdentity();
+  return (ShearLedger()..bindIdentity(id)).homeDest(id.address, paymentCode: id.paymentCode);
+}
+
 _NoteWallet _noteWallet(int count, {required int nanos}) {
   final id = createIdentity();
   final seed = hexToBytes(id.seedHex);
@@ -83,14 +90,16 @@ _NoteWallet _noteWallet(int count, {required int nanos}) {
   final d20 = hash20FromAddress(dest)!;
   final notes = <Map<String, dynamic>>[];
   final pubs = <Uint8List>[];
+  final commits = <Uint8List>[];
   for (var i = 0; i < count; i++) {
     final n = _offlinePot(nanos, 2, dest20: d20, seed: seed);
     notes.add(n);
     final x = admitScalarFromSeed(seed, n);
     pubs.add(pointBytes(admitPub(x)));
+    commits.add(n['commit'] as Uint8List);
   }
   final posts = <Map<String, dynamic>>[];
-  final pool = _RecordingPool(posts, pubs: pubs);
+  final pool = _RecordingPool(posts, pubs: pubs, commits: commits);
   final ledger = ShearLedger(pool: pool)..bindIdentity(id);
   ledger.ingestSealedVouts(
     notes,
@@ -395,7 +404,7 @@ void main() {
     expect(id.address.startsWith('shear1'), isTrue);
   });
 
-  test('proveFlowSpend fails closed and leaves no shear-admit-*.json', () {
+  test('the FS-1 prover refuses a leaf the seed does not own and leaves no shear-admit-*.json', () {
     Set<String> admitTemps() {
       return Directory.systemTemp
           .listSync()
@@ -408,22 +417,30 @@ void main() {
           .toSet();
     }
     final before = admitTemps();
-    final tx = <String, dynamic>{'kind': 'send'};
+    final seed = Uint8List(32)..[0] = 9;
+    final note = sealCoinbaseNote(5, dest20: Uint8List(20), kind: 'pot');
+    final notes = Uint8List(64)
+      ..setRange(0, 32, pointBytes(admitPub(randomScalar())))
+      ..setRange(32, 64, note['commit'] as Uint8List);
     expect(
-      () => proveFlowSpend(
-        tx,
-        spendSeed: Uint8List(32),
-        spentNote: {
-          'kind': 'send',
-          'commit': Uint8List(32),
-          'noteCommit': Uint8List(32),
-        },
-        pubs: [Uint8List(32)],
-        commits: [Uint8List(32)],
-      ),
-      throwsA(isA<StateError>().having((e) => e.message, 'msg', kErrSendUnavailable)),
+      () => reproveFlowSpendWire({
+        'notes': notes,
+        'indices': [0],
+        'spent': [
+          {'kind': 'pot', 'commit': note['commit'], 'noteCommit': note['noteCommit'], 'r': note['r']},
+        ],
+        'spendSeed': seed,
+        'vout': <Map<String, dynamic>>[],
+        'digest': Uint8List(32),
+        'anchor': 8,
+        'tree': const Fs1TreeState().toWire(),
+      }),
+      throwsA(isA<StateError>().having(
+        (e) => e.message,
+        'msg',
+        Fs1Native.tryLoad() == null ? kErrFs1Prover : 'fs1_not_owner',
+      )),
     );
-    expect(tx.containsKey('admit_proof'), isFalse);
     expect(admitTemps().difference(before), isEmpty);
   });
 
@@ -599,7 +616,10 @@ void main() {
     expect(src.contains('shear-admit-v1'), isFalse);
     expect(src.contains('admitProve'), isFalse);
     expect(src.contains('nativeProveFlowSpend'), isFalse);
-    expect(src.contains('throw StateError(kErrSendUnavailable)'), isTrue);
+    expect(src.contains('throw StateError(kErrSendUnavailable)'), isFalse);
+    final fs1 = File('lib/shear_fs1.dart').readAsStringSync();
+    expect(fs1, contains('Map<String, dynamic> proveFs1SpendWire('));
+    expect(fs1.contains('Process.'), isFalse);
   });
 
   test('tracks owned notes and POSTs a sealed Flow body (vin, vout, admit_proof, sig, spendPub)', () async {
@@ -831,7 +851,7 @@ void main() {
       pool.close();
       await server.close(force: true);
     });
-    final got = await pool.send(from: 'ssa1from', to: 'ssa1to', amount: 0.01);
+    final got = await pool.send(from: 'ssa1from', to: 'ssa1to', amount: 0.01, kind: 'lock');
     expect(got['ok'], isTrue);
     expect(hits, ['POST /api/wallet/send']);
     expect(base.contains('pool.shear.digital'), isFalse);
@@ -1185,7 +1205,7 @@ void main() {
     expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
   });
 
-  test('hop fee collates a sealed note when the book was empty, then the closed prover refuses', () async {
+  test('hop fee collates a sealed note when the book was empty, then sends it with one FS-1 spend', () async {
     debugNativeSealNote = (v, {dest20, kind = 'send'}) =>
         _sealNoteNoRange(v, dest20: dest20, kind: kind);
     addTearDown(() { debugNativeSealNote = null; });
@@ -1199,7 +1219,9 @@ void main() {
     pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseBytes(seed)));
     final x = admitScalarFromSeed(seed, pot);
     final posts = <Map<String, dynamic>>[];
-    final pool = _RecordingPool(posts, pubs: [pointBytes(admitPub(x))]);
+    final pubs = [pointBytes(admitPub(x))];
+    final commits = [pot['commit'] as Uint8List];
+    final pool = _RecordingPool(posts, pubs: pubs, commits: commits);
     pool.sealedNotes = [pot];
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.confirmRound(address: dest, pot: 1, height: 2);
@@ -1210,22 +1232,19 @@ void main() {
       greaterThanOrEqualTo(0.001),
     );
     final bob = payableChainDest(createIdentity().paymentCodeFull)!;
-    await expectLater(
-      ledger.send(
-        from: dest,
-        to: bob,
-        amount: 0.001,
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
-        spendSeed: seed,
-        allowPublicHttp: true,
-      ),
-      throwsA(isA<StateError>().having((e) => e.message, 'msg', kErrSendUnavailable)),
+    await ledger.send(
+      from: dest,
+      to: bob,
+      amount: 0.001,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: seed,
+      allowPublicHttp: true,
     );
     expect(pool.notesHits, greaterThan(0));
-    expect(posts, isEmpty);
-    expect(ledger.notes, isNotEmpty);
-    expect(ledger.notes.every((n) => n['spent'] != true), isTrue);
+    expect(posts, hasLength(1));
+    _expectFs1Post(posts.single, pubs, commits);
+    expect(ledger.notes.where((n) => _sameCommit(n['commit'], pot['commit'])).every((n) => n['spent'] == true), isTrue);
   });
 
   test('empty note inventory stops spendable from claiming a hop-fee cover', () async {
@@ -1273,12 +1292,14 @@ void main() {
     final a = _offlinePot(kUnitsPerShe * 2 ~/ 5, 2, dest20: d20, seed: seed);
     final b = _offlinePot(kUnitsPerShe * 9 ~/ 20, 2, dest20: d20, seed: seed);
     final pubs = <Uint8List>[];
+    final commits = <Uint8List>[];
     for (final n in [a, b]) {
       final x = admitScalarFromSeed(seed, n);
       pubs.add(pointBytes(admitPub(x)));
+      commits.add(n['commit'] as Uint8List);
     }
     final posts = <Map<String, dynamic>>[];
-    final pool = _RecordingPool(posts, pubs: pubs);
+    final pool = _RecordingPool(posts, pubs: pubs, commits: commits);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.ingestSealedVouts(
       [a, b],
@@ -1293,7 +1314,7 @@ void main() {
       ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
       closeTo(0.85, 1e-9),
     );
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final bob = _payablePayee();
     final tx = await ledger.sendSpendableSum(
       from: dest,
       to: bob,
@@ -1367,21 +1388,23 @@ void main() {
           ? (ShearLedger()..bindIdentity(bob)).homeDest(bob.address, paymentCode: bob.paymentCode)
           : bob.paymentCodeFull;
       w.posts.clear();
-      await expectLater(
-        w.ledger.sendSpendableSum(
-          from: w.dest,
-          to: to,
-          amount: amount,
-          memo: memo,
-          restFrame: w.id.address,
-          paymentCode: w.id.paymentCode,
-          spendSeed: w.seed,
-          allowPublicHttp: true,
-        ),
-        throwsA(isA<StateError>().having((e) => e.message, 'msg', kErrSendUnavailable)),
+      await w.ledger.sendSpendableSum(
+        from: w.dest,
+        to: to,
+        amount: amount,
+        memo: memo,
+        restFrame: w.id.address,
+        paymentCode: w.id.paymentCode,
+        spendSeed: w.seed,
+        allowPublicHttp: true,
       );
-      expect(w.posts, isEmpty);
-      expect(w.ledger.notes.every((n) => n['spent'] != true), isTrue);
+      expect(w.posts, isNotEmpty);
+      final pool = w.ledger.pool! as _RecordingPool;
+      for (final p in w.posts) {
+        expect((p['vin'] as List).length, inInclusiveRange(1, kMaxInputsPerSend));
+        _expectFs1Post(p, pool.pubs, pool.commits!);
+      }
+      expect(w.ledger.notes.any((n) => n['spent'] == true), isTrue);
     }
 
     final tiny = _noteWallet(3, nanos: kUnitsPerShe);
@@ -1503,7 +1526,7 @@ void main() {
     final noteNanos = BigInt.parse('9007199254740993');
     final w = _noteWallet(2, nanos: noteNanos.toInt());
     final pay = noteNanos + BigInt.one;
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ef' * 32)!;
+    final bob = _payablePayee();
     await w.ledger.sendSpendableSum(
       from: w.dest,
       to: bob,
@@ -1516,7 +1539,7 @@ void main() {
     );
     expect(w.posts, hasLength(1));
     expect((w.posts.single['vin'] as List).length, 2);
-    expect(w.posts.single['nanosWire'], pay.toString());
+    expect(w.posts.single.containsKey('nanos'), isFalse);
     expect(sealed, contains(pay.toInt()));
   });
 
@@ -1632,12 +1655,14 @@ void main() {
     final a = _offlinePot(kUnitsPerShe * 2 ~/ 5, 2, dest20: d20, seed: seed);
     final b = _offlinePot(kUnitsPerShe * 9 ~/ 20, 2, dest20: d20, seed: seed);
     final pubs = <Uint8List>[];
+    final commits = <Uint8List>[];
     for (final n in [a, b]) {
       final x = admitScalarFromSeed(seed, n);
       pubs.add(pointBytes(admitPub(x)));
+      commits.add(n['commit'] as Uint8List);
     }
     final posts = <Map<String, dynamic>>[];
-    final pool = _RecordingPool(posts, pubs: pubs);
+    final pool = _RecordingPool(posts, pubs: pubs, commits: commits);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.ingestSealedVouts(
       [a, b],
@@ -1686,7 +1711,7 @@ void main() {
       throwsA(isA<StateError>().having((e) => flowSendAdvisoryOf(e), 'advisory', kErrPayIdentity)),
     );
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(0.85, 1e-9));
-    final bob = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
+    final bob = _payablePayee();
     final before = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
     pool.reconstructedNanos = (before * kUnitsPerShe).round();
     await ledger.sendSpendableSum(
@@ -1847,7 +1872,7 @@ void main() {
         paymentCode: id.paymentCode,
         spendSeed: seed,
       ),
-      throwsA(isA<StateError>().having((e) => e.message, 'msg', kErrSendUnavailable)),
+      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'no_note')),
     );
     expect(posts, isEmpty);
     expect(ledger.notes.every((n) => n['spent'] != true), isTrue);
@@ -9125,13 +9150,16 @@ class _NotesPool extends _RecordingPool {
 }
 
 class _RecordingPool extends ShearPoolClient {
-  _RecordingPool(this.posts, {this.pubs = const [], this.spendTags = const [], String? baseUrl})
+  _RecordingPool(this.posts, {this.pubs = const [], this.commits, this.spendTags = const [], String? baseUrl})
       : super(
           baseUrl: baseUrl ?? 'http://127.0.0.1:9',
           http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
         );
   final List<Map<String, dynamic>> posts;
   final List<Uint8List> pubs;
+  /// Real commit column. With it the fluxset carries one FS-1 anchor row
+  /// over every note, so a send proves for real.
+  final List<Uint8List>? commits;
   final List<String> spendTags;
   List<Map<String, dynamic>> sealedNotes = const [];
   int notesHits = 0;
@@ -9152,8 +9180,14 @@ class _RecordingPool extends ShearPoolClient {
       'ok': true,
       'pubs': pubHex,
       // J is (P, C). A count of pubs with no commit column is not a fluxset.
-      'commits': List<String>.filled(pubHex.length, '00' * 32),
+      'commits': commits == null
+          ? List<String>.filled(pubHex.length, '00' * 32)
+          : [for (final c in commits!) _hexOf(c)],
       'spendTags': spendTags,
+      if (commits != null && pubs.isNotEmpty)
+        'anchors': [
+          {'height': 8, 'n': pubs.length},
+        ],
     };
   }
 
@@ -9189,27 +9223,41 @@ class _RecordingPool extends ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) async {
-    posts.add({
-      'from': from,
-      'to': to,
-      'amount': amount,
-      'kind': kind ?? 'send',
-      'vin': vin,
-      'vout': vout,
-      'excess': excess,
-      'admit_proof': admitProof,
-      if (admitProofs != null) 'admit_proofs': admitProofs,
-      if (memoCt != null) 'memoCt': memoCt,
-      if (fee != null) 'postedFee': fee,
-      'sig': sig,
-      'spendPub': spendPub,
-      'programId': programId,
-      if (change != null) 'change': change,
-      if (paintedOwedNanos > 0) 'paintedOwedNanos': paintedOwedNanos,
-      if (legacyPoolSend) 'legacyPoolSend': true,
-      if (nanosWire != null && nanosWire.isNotEmpty) 'nanosWire': nanosWire,
-    });
+    final body = walletSendBody(
+      from: from,
+      to: to,
+      amount: amount,
+      memoCt: memoCt,
+      open: open,
+      sig: sig,
+      portalOpen: portalOpen,
+      kind: kind,
+      programId: programId,
+      choice: choice,
+      currentEpoch: currentEpoch,
+      epochStartMs: epochStartMs,
+      change: change,
+      spendPub: spendPub,
+      ephPub: ephPub,
+      vin: vin,
+      vout: vout,
+      excess: excess,
+      admitProof: admitProof,
+      admitProofs: admitProofs,
+      spendTag: spendTag,
+      fee: fee,
+      paintedOwedNanos: paintedOwedNanos,
+      nanosWire: nanosWire,
+      id: id,
+      withdrawNonce: withdrawNonce,
+      fs1: fs1,
+      anchor: anchor,
+    );
+    if (fee != null) body['postedFee'] = fee;
+    posts.add(body);
     final tx = <String, dynamic>{
       'id': 'note-send-1',
       'from': from,
@@ -9281,6 +9329,8 @@ class _ReasonPool extends ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) async =>
       {'ok': false, 'reason': legacyPoolSend && reason.isEmpty ? 'legacy' : (paintedOwedNanos < 0 ? 'bad_owed' : reason)};
 }
@@ -9708,4 +9758,59 @@ Future<HttpServer> _fakePool({
     await req.response.close();
   });
   return server;
+}
+
+String _hexOf(List<int> b) => b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+
+Uint8List _anyBytes(Object? v) {
+  if (v is Uint8List) return v;
+  if (v is String) return hexToBytes(v);
+  if (v is List) return Uint8List.fromList(List<int>.from(v));
+  throw StateError('bytes');
+}
+
+bool _sameCommit(Object? a, Object? b) {
+  if (a == null || b == null) return false;
+  final x = _anyBytes(a);
+  final y = _anyBytes(b);
+  if (x.length != y.length) return false;
+  for (var i = 0; i < x.length; i++) {
+    if (x[i] != y[i]) return false;
+  }
+  return true;
+}
+
+/// The posted body is what the node checks: the FS-1 blob verifies against
+/// the root of the published admit set, bound to the posted outputs, fee, and anchor.
+void _expectFs1Post(Map<String, dynamic> post, List<Uint8List> pubs, List<Uint8List> commits) {
+  final lib = Fs1Native.tryLoad();
+  expect(lib, isNotNull, reason: 'libshear_admit with shear_fs1_* is required for a send');
+  final fs1 = _anyBytes(post['fs1']);
+  expect(fs1[0], kFs1Wire);
+  final anchor = post['anchor'] as int;
+  final proofs = [for (final p in (post['admit_proofs'] as List)) Map<String, dynamic>.from(p as Map)];
+  final records = [for (final p in proofs) _anyBytes(p['blob'])];
+  final vin = post['vin'] as List;
+  expect(vin.length, records.length);
+  for (var i = 0; i < records.length; i++) {
+    expect(records[i][0], kFs1Wire);
+    expect(_sameCommit((vin[i] as Map)['commit'], records[i].sublist(33, 65)), isTrue);
+  }
+  final h = lib!.treeNew();
+  try {
+    expect(lib.treeAppend(h, fs1NotesBytes(pubs, commits, pubs.length)), isTrue);
+    final root = lib.treeRoot(h)!;
+    final vout = [for (final o in (post['vout'] as List)) Map<String, dynamic>.from(o as Map)];
+    final digest = fs1BodyDigest(
+      magic: kBookMagic,
+      kind: 'send',
+      anchor: anchor,
+      fee: post['postedFee'] as int,
+      nIn: records.length,
+      vout: vout,
+    );
+    expect(lib.verify(fs1, records, root, digest, anchor), isTrue);
+  } finally {
+    lib.treeFree(h);
+  }
 }
