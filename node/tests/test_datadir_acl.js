@@ -28,6 +28,25 @@ const USER_SID = 'S-1-5-21-1-2-3-1001';
 const LOCAL_NAME = 'DESKTOP-ODTSQ56\\rgsne';
 const WIN_ENV = { SystemRoot: 'C:\\Windows' };
 
+function identityRealpath(file) {
+  return file;
+}
+
+function system32(name) {
+  return system32Exe(name, WIN_ENV, identityRealpath);
+}
+
+function goodReport(dir, shewallPresent) {
+  const dirSddl = `O:${USER_SID}G:SYD:P(A;OICI;FA;;;${USER_SID})(A;CIOI;FA;;;SY)(A;OICI;FA;;;BA)`;
+  let text = `PATH=${dir}\nOWNER=${USER_SID}\nPROTECTED=1\nSDDL=${dirSddl}\n`;
+  if (shewallPresent) {
+    const shewall = path.join(dir, SHEWALL_FILE);
+    const fileSddl = `O:${USER_SID}G:SYD:P(A;;FA;;;${USER_SID})(A;;FA;;;SY)(A;;FA;;;BA)`;
+    text += `PATH=${shewall}\nOWNER=${USER_SID}\nPROTECTED=1\nSDDL=${fileSddl}\n`;
+  }
+  return text;
+}
+
 function tempDatadir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-acl-dir-'));
   const resolved = path.resolve(dir);
@@ -43,12 +62,21 @@ function tempDatadir() {
   return dir;
 }
 
-function recordWindows(dir) {
+function recordWindows(dir, { aclScript } = {}) {
   const calls = [];
+  let aclReads = 0;
   const execFileSync = (file, args) => {
     calls.push({ file: String(file), args: args.slice() });
     if (String(file).endsWith(`${path.win32.sep}whoami.exe`)) {
       return `"${LOCAL_NAME}","${USER_SID}"\r\n`;
+    }
+    if (String(file).endsWith(`${path.win32.sep}powershell.exe`)) {
+      aclReads += 1;
+      if (aclScript) return aclScript(aclReads, dir);
+      if (aclReads === 1) {
+        return `PATH=${dir}\nOWNER=${ADMINISTRATORS_SID}\nPROTECTED=0\nSDDL=O:BA G:BA D:(A;;FA;;;WD)\n`;
+      }
+      return goodReport(dir, fs.existsSync(path.join(dir, SHEWALL_FILE)));
     }
     return 'Successfully processed 1 files\r\n';
   };
@@ -56,6 +84,7 @@ function recordWindows(dir) {
     platform: 'win32',
     env: WIN_ENV,
     execFileSync,
+    realpathSync: identityRealpath,
   });
   return { calls, got };
 }
@@ -85,8 +114,8 @@ describe('datadir DACL', () => {
   it('calls whoami and icacls by absolute System32 path', () => {
     const dir = tempDatadir();
     const { calls } = recordWindows(dir);
-    const whoami = system32Exe('whoami.exe', WIN_ENV);
-    const icacls = system32Exe('icacls.exe', WIN_ENV);
+    const whoami = system32('whoami.exe');
+    const icacls = system32('icacls.exe');
     assert.equal(path.win32.isAbsolute(whoami), true);
     assert.equal(whoami, 'C:\\Windows\\System32\\whoami.exe');
     assert.equal(icacls, 'C:\\Windows\\System32\\icacls.exe');
@@ -131,7 +160,10 @@ describe('datadir DACL', () => {
     const { calls } = recordWindows(dir);
     const walked = icaclsCalls(calls).filter((call) => call.args[0] === dir);
     assert.ok(walked.length >= 1);
-    for (const call of walked) assert.equal(call.args.includes('/T'), true, call.args.join(' '));
+    for (const call of walked) {
+      assert.equal(call.args.includes('/T'), true, call.args.join(' '));
+      assert.equal(call.args.includes('/L'), true, call.args.join(' '));
+    }
   });
 
   it('covers shewall.bin', () => {
@@ -151,15 +183,98 @@ describe('datadir DACL', () => {
     }
   });
 
-  it('does not run icacls again once the datadir is private', () => {
+  it('ignores SystemRoot and refuses a System32 path that resolves outside it', () => {
+    const spoofed = { SystemRoot: 'C:\\Temp\\fake', SYSTEMROOT: 'C:\\Temp\\fake' };
+    assert.equal(system32Exe('whoami.exe', spoofed, identityRealpath), 'C:\\Windows\\System32\\whoami.exe');
+    assert.equal(system32Exe('icacls.exe', spoofed, identityRealpath), 'C:\\Windows\\System32\\icacls.exe');
+    assert.throws(
+      () => system32Exe('whoami.exe', spoofed, () => 'C:\\Temp\\fake\\System32\\whoami.exe'),
+      /datadir_acl:system32/,
+    );
     const dir = tempDatadir();
-    fs.writeFileSync(path.join(dir, SHEWALL_FILE), 'sealed');
+    let called = false;
+    assert.throws(() => ensureDatadir(dir, {
+      platform: 'win32',
+      env: spoofed,
+      realpathSync: () => 'C:\\Temp\\fake\\System32\\whoami.exe',
+      execFileSync: () => {
+        called = true;
+        return '';
+      },
+    }), /datadir_acl:system32/);
+    assert.equal(called, false);
+  });
+
+  it('re-reads the DACL and owner on every open and re-applies a mismatch', () => {
+    const dir = tempDatadir();
+    fs.writeFileSync(path.join(dir, 'datadir.acl'), `1\n${USER_SID}\nnoshewall\n`);
     const first = recordWindows(dir);
     assert.ok(icaclsCalls(first.calls).length >= 1);
-    const second = recordWindows(dir);
+    assert.equal(first.calls.some((call) => call.file.endsWith(`${path.win32.sep}powershell.exe`)), true);
+
+    const second = recordWindows(dir, {
+      aclScript: () => goodReport(dir, false),
+    });
     assert.equal(second.got.applied, false);
     assert.equal(icaclsCalls(second.calls).length, 0);
-    assert.equal(second.calls.some((call) => call.file.endsWith('whoami.exe')), true);
+    assert.equal(second.calls.some((call) => call.file.endsWith(`${path.win32.sep}powershell.exe`)), true);
+
+    const extra = `PATH=${dir}\nOWNER=${USER_SID}\nPROTECTED=1\nSDDL=O:${USER_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})(A;OICI;FA;;;S-1-1-0)\n`;
+    const third = recordWindows(dir, {
+      aclScript: (n) => (n === 1 ? extra : goodReport(dir, false)),
+    });
+    assert.equal(third.got.applied, true);
+    assert.ok(icaclsCalls(third.calls).length >= 1);
+  });
+
+  it('throws when the read-back DACL has an extra ACE, is unprotected, or has the wrong owner', () => {
+    const dir = tempDatadir();
+    const mismatch = `PATH=${dir}\nOWNER=${SYSTEM_SID}\nPROTECTED=0\nSDDL=O:SYD:(A;;FA;;;WD)\n`;
+    const cases = [
+      `PATH=${dir}\nOWNER=${USER_SID}\nPROTECTED=1\nSDDL=O:${USER_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})(A;;FA;;;S-1-1-0)\n`,
+      `PATH=${dir}\nOWNER=${USER_SID}\nPROTECTED=0\nSDDL=O:${USER_SID}D:(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})\n`,
+      `PATH=${dir}\nOWNER=${ADMINISTRATORS_SID}\nPROTECTED=1\nSDDL=O:${ADMINISTRATORS_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})\n`,
+    ];
+    for (const bad of cases) {
+      assert.throws(() => recordWindows(dir, {
+        aclScript: (n) => (n === 1 ? mismatch : bad),
+      }), /datadir_acl:verify/);
+    }
+  });
+
+  it('refuses a symlink instead of letting /T follow it', () => {
+    const dir = tempDatadir();
+    const outside = tempDatadir();
+    fs.writeFileSync(path.join(outside, 'secret'), 'no');
+    fs.symlinkSync(outside, path.join(dir, 'jump'), 'dir');
+    let called = false;
+    assert.throws(() => ensureDatadir(dir, {
+      platform: 'win32',
+      env: WIN_ENV,
+      realpathSync: identityRealpath,
+      execFileSync: () => {
+        called = true;
+        return '';
+      },
+    }), /datadir_acl:link/);
+    assert.equal(called, false);
+
+    const parent = tempDatadir();
+    const real = path.join(parent, 'real');
+    fs.mkdirSync(real);
+    const linked = path.join(parent, 'linked');
+    fs.symlinkSync(real, linked, 'dir');
+    called = false;
+    assert.throws(() => ensureDatadir(linked, {
+      platform: 'win32',
+      env: WIN_ENV,
+      realpathSync: identityRealpath,
+      execFileSync: () => {
+        called = true;
+        return '';
+      },
+    }), /datadir_acl:link/);
+    assert.equal(called, false);
   });
 
   it('a chmod failure refuses to start', async () => {
