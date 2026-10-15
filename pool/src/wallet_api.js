@@ -37,7 +37,7 @@ import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, noteCommitSpendableNanos, openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
-import { noteCommitOfDest20, asU8 } from '../../crypto/note.js';
+import { noteCommitOfDest20, asU8, hiddenAmountRangeReady } from '../../crypto/note.js';
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -1930,6 +1930,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       : null;
     let tx;
     if (pending && pending.kind === 'admin-spendable') {
+      if (!hiddenAmountRangeReady()) {
+        return { status: 503, json: { ok: false, reason: 'range_native_required', public: false } };
+      }
       const open = openingForSpentDest(poolIdentity, from) || String(poolOpen || '');
       const draft = attachDummyOuts({
         kind: 'send',

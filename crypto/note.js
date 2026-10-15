@@ -7,7 +7,7 @@ import { createHash, hash, randomBytes } from 'node:crypto';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { bytesToNumberLE } from '@noble/curves/utils.js';
-import { nativeLoaded, noteH, nativeProveRange, nativeVerifyRange } from './native_admit.js';
+import { nativeLoaded, nativeLoadErrorText, noteH, nativeProveRange, nativeVerifyRange } from './native_admit.js';
 
 const Point = RistrettoPoint;
 const Fn = Point.Fn;
@@ -277,7 +277,8 @@ function weightedBits(points) {
 
 /**
  * Packed 64-bit OR proof, marker 0x02. Same bytes as
- * crypto/native/admit/src/bpplus.rs. shearadmit.node is optional.
+ * crypto/native/admit/src/bpplus.rs. Not constant-time.
+ * Consensus verify does not call this unless SHEAR_RANGE_JS=1.
  */
 export function provePackedRange(v, rBytes) {
   const n = noteU64(v);
@@ -396,11 +397,66 @@ export function verifyPackedRange(cBytes, proof) {
   }
 }
 
-export function proveRange(v, r) {
+/** Set to 1 to allow the non-constant-time JavaScript range prover and verifier. */
+export const RANGE_JS_ENV = 'SHEAR_RANGE_JS';
+
+export function rangeJsOptIn() {
+  return String(process.env[RANGE_JS_ENV] || '').trim() === '1';
+}
+
+/** Hidden amounts need the native prover, or an explicit opt-in. Public coinbase does not. */
+export function hiddenAmountRangeReady() {
+  return nativeLoaded() || rangeJsOptIn();
+}
+
+let warnedJsProve = false;
+let warnedJsVerify = false;
+let warnedHiddenRefuse = false;
+
+function rangeLoadReason() {
+  const why = nativeLoadErrorText();
+  return why ? ` (${why})` : '';
+}
+
+function warnJsProveOnce() {
+  if (warnedJsProve) return;
+  warnedJsProve = true;
+  console.error(
+    `SHEAR RANGE WARNING: proving a range in JavaScript because shearadmit.node is not loaded${rangeLoadReason()}. `
+    + 'This prover is not constant-time. Hidden-amount outputs stay refused unless '
+    + `${RANGE_JS_ENV}=1 is set on purpose.`,
+  );
+}
+
+function warnJsVerifyOnce() {
+  if (warnedJsVerify) return;
+  warnedJsVerify = true;
+  console.error(
+    `SHEAR RANGE WARNING: ${RANGE_JS_ENV}=1 is verifying range proofs in JavaScript${rangeLoadReason()}. `
+    + 'Consensus verification fails closed when shearadmit.node is missing and this flag is unset. '
+    + 'The JavaScript verifier is not the consensus implementation.',
+  );
+}
+
+function warnHiddenRefusedOnce(where) {
+  if (warnedHiddenRefuse) return;
+  warnedHiddenRefuse = true;
+  const site = where ? ` (${where})` : '';
+  console.error(
+    `SHEAR RANGE WARNING: refusing a hidden-amount range proof${site}. shearadmit.node is not loaded${rangeLoadReason()}. `
+    + `The JavaScript prover is not constant-time. Set ${RANGE_JS_ENV}=1 only if this process may leak amounts through timing.`,
+  );
+}
+
+export function proveRange(v, r, opts = {}) {
   const rb = Buffer.from(asU8(typeof r === 'bigint' ? scalarBytes(r) : r));
   if (rb.length !== 32) return Buffer.alloc(0);
-  const native = nativeProveRange(v, rb);
-  if (native && native.length) return native;
+  if (nativeLoaded()) {
+    const native = nativeProveRange(v, rb);
+    return native && native.length ? native : Buffer.alloc(0);
+  }
+  if (opts.hidden === true && !rangeJsOptIn()) return Buffer.alloc(0);
+  warnJsProveOnce();
   try {
     const js = provePackedRange(v, rb);
     if (js && js.length) return js;
@@ -414,20 +470,24 @@ export function verifyRange(Cbytes, proof) {
     const c = Buffer.from(asU8(Cbytes));
     const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
     if (nativeLoaded()) return nativeVerifyRange(c, pr);
-    return verifyPackedRange(c, pr);
+    if (rangeJsOptIn()) {
+      warnJsVerifyOnce();
+      return verifyPackedRange(c, pr);
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
 /** Coinbase / Tree-A: v is public from collated units. Exact-value proof, no painted nanos. */
-export function sealCoinbaseNote(v, { dest20, noteCommit, kind } = {}) {
+export function sealCoinbaseNote(v, { dest20, noteCommit, kind, skipRange } = {}) {
   const r = randomScalar();
   const value = proveValue(v, r);
   const nc = noteCommit
     ? Buffer.from(noteCommit)
     : (dest20 ? noteCommitOfDest20(dest20) : Buffer.alloc(32));
-  const rangeProof = proveRange(v, r);
+  const rangeProof = skipRange ? Buffer.alloc(0) : proveRange(v, r);
   const row = {
     kind: kind || 'hash',
     noteCommit: nc,
@@ -444,8 +504,14 @@ export function sealCoinbaseNote(v, { dest20, noteCommit, kind } = {}) {
 }
 
 export function sealNote(v, { dest20, noteCommit, kind } = {}) {
-  const sealed = sealCoinbaseNote(v, { dest20, noteCommit, kind });
-  sealed.rangeProof = proveRange(v, scalarFrom(sealed.r));
+  if (!hiddenAmountRangeReady()) {
+    warnHiddenRefusedOnce('sealNote');
+    const sealed = sealCoinbaseNote(v, { dest20, noteCommit, kind, skipRange: true });
+    sealed.rangeProof = Buffer.alloc(0);
+    return sealed;
+  }
+  const sealed = sealCoinbaseNote(v, { dest20, noteCommit, kind, skipRange: true });
+  sealed.rangeProof = proveRange(v, scalarFrom(sealed.r), { hidden: true });
   return sealed;
 }
 

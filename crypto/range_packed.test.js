@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { bytesToNumberLE } from '@noble/curves/utils.js';
@@ -15,6 +17,9 @@ import {
   verifyRange,
 } from './note.js';
 import { nativeLoaded, nativeProveRange, nativeVerifyRange, noteH } from './native_admit.js';
+
+const NOTE_H = 'feea2914bda937d74acc1efa93bf1094f65ae709628a7aad9d1b913b6c80c301';
+const FS1_GENERATOR_DIGEST = 'fdafff2e1972bdf910b51d6c1d4502c1dc749c1a4c1e42cc92ed9f43495f968d';
 
 const U64_MAX = (1n << 64n) - 1n;
 const L = 0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3edn;
@@ -41,18 +46,38 @@ function addL(bytes) {
   return out;
 }
 
+function assertNativeBytes(v, r, label) {
+  const js = provePackedRange(v, r);
+  assert.ok(js && js.length === 14433 && js[0] === 2, `js ${label}`);
+  const native = nativeProveRange(typeof v === 'bigint' ? v.toString() : v, r);
+  assert.ok(native, `native ${label}`);
+  assert.equal(Buffer.from(native).equals(js), true, `bytes ${label}`);
+  const c = commitReduced(v, r);
+  assert.equal(nativeVerifyRange(c, js), true, `native open ${label}`);
+  assert.equal(verifyRange(c, js), true, `verifyRange ${label}`);
+  return js;
+}
+
 describe('packed range proof matches bpplus.rs', () => {
-  it('uses the consensus note generator', () => {
+  it('requires the native module and the pinned note H', () => {
+    assert.equal(nativeLoaded(), true, 'shearadmit.node must be loaded; the byte comparison does not skip');
     const wide = sha512(Buffer.concat([
       Buffer.from('shear-bpplus-v2'),
       Buffer.from('shear-note-H-v1'),
     ]));
     const js = Buffer.from(RistrettoPoint.hashToCurve(wide).toBytes());
-    if (nativeLoaded()) assert.equal(js.equals(Buffer.from(noteH())), true);
-    assert.equal(js.length, 32);
+    assert.equal(js.toString('hex'), NOTE_H);
+    assert.equal(js.equals(Buffer.from(noteH())), true);
+    assert.equal(Buffer.from(H.toBytes()).toString('hex'), NOTE_H);
+    const pin = JSON.parse(readFileSync(new URL('./native/vendor/monero-oxide-77788c3/ADMIT_PIN.json', import.meta.url), 'utf8'));
+    assert.equal(pin.dirSha256['generalized-bulletproofs'], FS1_GENERATOR_DIGEST);
+    const doc = readFileSync(new URL('../docs/RANGE-H-AND-FS1-PIN.md', import.meta.url), 'utf8');
+    assert.equal(doc.includes(NOTE_H), true);
+    assert.equal(doc.includes(FS1_GENERATOR_DIGEST), true);
   });
 
   it('agrees with the native prover on wire bytes', () => {
+    assert.equal(nativeLoaded(), true, 'shearadmit.node must be loaded; the byte comparison does not skip');
     const amounts = [0n, 1n, 255n, (1n << 32n) + 9n, 100_000_000_000n, 1n << 63n, U64_MAX];
     const blinds = [
       scalarBytes(randomScalar()),
@@ -61,24 +86,26 @@ describe('packed range proof matches bpplus.rs', () => {
     ];
     for (const r of blinds) {
       for (const v of amounts) {
-        const js = provePackedRange(v, r);
-        assert.ok(js && js.length === 14433 && js[0] === 2, `js ${v}`);
+        const js = assertNativeBytes(v, r, String(v));
         const c = commitReduced(v, r);
         assert.equal(verifyPackedRange(c, js), true, `js open ${v}`);
         const neighbor = v === U64_MAX ? v - 1n : v + 1n;
         assert.equal(verifyPackedRange(commitReduced(neighbor, r), js), false);
-        if (!nativeLoaded()) continue;
-        const native = nativeProveRange(typeof v === 'bigint' ? v.toString() : v, r);
-        assert.ok(native, `native ${v}`);
-        assert.equal(Buffer.from(native).equals(js), true, `bytes ${v}`);
-        assert.equal(nativeVerifyRange(c, js), true, `native open ${v}`);
-        assert.equal(verifyRange(c, js), true);
       }
     }
     const r = scalarBytes(randomScalar());
     assert.equal(proveRange(256, r).length, 14433);
     assert.equal(provePackedRange((U64_MAX + 1n).toString(), r), null);
     assert.equal(proveRange('-1', r).length, 0);
+  });
+
+  it('matches native bytes for random amounts and blinds', () => {
+    assert.equal(nativeLoaded(), true, 'shearadmit.node must be loaded; the byte comparison does not skip');
+    for (let i = 0; i < 8; i += 1) {
+      const v = bytesToNumberLE(randomBytes(8));
+      const r = randomBytes(32);
+      assertNativeBytes(v, r, `random ${i}`);
+    }
   });
 
   it('rejects a short, trailing, or non-canonical proof', () => {
@@ -97,6 +124,7 @@ describe('packed range proof matches bpplus.rs', () => {
     const lifted = Buffer.from(proof);
     lifted.set(addL(proof.subarray(zAt)), zAt);
     assert.equal(verifyPackedRange(c, lifted), false, 'non-canonical z');
-    if (nativeLoaded()) assert.equal(nativeVerifyRange(c, lifted), false);
+    assert.equal(nativeLoaded(), true, 'shearadmit.node must be loaded; the byte comparison does not skip');
+    assert.equal(nativeVerifyRange(c, lifted), false);
   });
 });
