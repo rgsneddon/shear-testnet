@@ -14,7 +14,7 @@ const kSurgeRef = 2048;
 const kChainId = 2701;
 /// Hard ceiling: 0.001 SHE. The pool rejects a paid fee above this.
 /// [levyFromWeight] does not apply it. The ceiling is not the price.
-const kLevyCapNanos = 100000000;
+const kLevyCapRho = 100000000;
 
 /// JSON byte length. Same one-pass input as `flowWeight` in `crypto/levy.js`.
 int flowWeight(Object? tx) {
@@ -96,16 +96,16 @@ void _attachFee(Map<String, dynamic> draft, int fee, {required bool maxLevy}) {
 
 /// One-pass weight fee, then raised until it still covers the body after the
 /// signature is attached. The fee never moves down. Any body size.
-/// A body whose levy is above [kLevyCapNanos] returns the cap; [weightFeeCovers] is then false.
+/// A body whose levy is above [kLevyCapRho] returns the cap; [weightFeeCovers] is then false.
 int bindStableWeightFee(Map<String, dynamic> source, {bool maxLevy = false}) {
   final draft = _weightCopy(source);
   var fee = levyFromWeight(flowWeight(draft));
-  if (fee > kLevyCapNanos) fee = kLevyCapNanos;
+  if (fee > kLevyCapRho) fee = kLevyCapRho;
   _attachFee(draft, fee, maxLevy: maxLevy);
   for (var step = 0; step < 8; step++) {
     final need = levyFromWeight(flowWeight(draft));
     if (need <= fee) return fee;
-    if (need > kLevyCapNanos) return fee;
+    if (need > kLevyCapRho) return fee;
     fee = need;
     draft['fee'] = fee;
     if (maxLevy) draft['maxLevy'] = fee;
@@ -115,7 +115,7 @@ int bindStableWeightFee(Map<String, dynamic> source, {bool maxLevy = false}) {
 
 /// True when [fee] is inside the cap and covers the signed body. Does not write [source].
 bool weightFeeCovers(int fee, Map<String, dynamic> source, {bool maxLevy = false}) {
-  if (fee < 0 || fee > kLevyCapNanos) return false;
+  if (fee < 0 || fee > kLevyCapRho) return false;
   final draft = _weightCopy(source);
   _attachFee(draft, fee, maxLevy: maxLevy);
   final need = levyFromWeight(flowWeight(draft));
@@ -129,7 +129,7 @@ int rewardClaimFee({int? fee, Map<String, dynamic>? body}) {
   if (body == null) {
     final floor = levyNanos(0);
     if (fee == null) return floor;
-    if (fee < floor || fee > kLevyCapNanos) throw StateError('levy');
+    if (fee < floor || fee > kLevyCapRho) throw StateError('levy');
     return fee;
   }
   final source = Map<String, dynamic>.from(body);

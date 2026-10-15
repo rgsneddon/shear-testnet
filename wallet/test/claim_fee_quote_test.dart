@@ -45,7 +45,7 @@ void main() {
     expect(presets[1]['she'], '0.00000005');
     expect(presets[2]['she'], '0.0000002');
     expect(presets.map((row) => row['she']).toSet(), hasLength(3));
-    expect(presets.every((row) => (row['fee'] as int) <= kLevyCapNanos), isTrue);
+    expect(presets.every((row) => (row['fee'] as int) <= kLevyCapRho), isTrue);
 
     final peer = rewardClaimFeePresets(
       body: body,

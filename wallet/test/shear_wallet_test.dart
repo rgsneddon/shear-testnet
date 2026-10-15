@@ -247,7 +247,8 @@ void _tallContinuum(WidgetTester tester) {
   addTearDown(tester.view.resetDevicePixelRatio);
 }
 
-/// Sealed header whose wall-clock is [tipMs]. The withdraw gate reads this, not the device clock.
+/// Sealed header whose wall-clock is [tipMs]. Display only. The withdraw gate
+/// does not read this raw timestamp.
 void _stampChainTip(ShearLedger ledger, int tipMs, {int height = 12}) {
   final header = Uint8List(128);
   var v = tipMs;
@@ -256,6 +257,34 @@ void _stampChainTip(ShearLedger ledger, int tipMs, {int height = 12}) {
     v >>= 8;
   }
   ledger.applyTipHeader(header, sealedHeight: height);
+}
+
+/// Eleven parent-linked headers at [tipMs]. The claimed hash meets bits=1.
+/// Median time is [tipMs]. A raw /stats tip is a separate clock.
+void _noteVerifiedChain(ShearLedger ledger, int tipMs, {int count = 11}) {
+  final hashes = <Uint8List>[];
+  for (var h = 1; h <= count; h++) {
+    final hash = Uint8List(32);
+    hash[30] = (h >> 8) & 0xff;
+    hash[31] = h & 0xff;
+    final header = Uint8List(128);
+    header[0] = 1;
+    if (h > 1) header.setRange(4, 36, hashes.last);
+    var v = tipMs;
+    for (var i = 0; i < 8; i++) {
+      header[100 + i] = v & 0xff;
+      v >>= 8;
+    }
+    header[108] = 1;
+    final hashHex = hash.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+    hashes.add(hash);
+    expect(
+      ledger.noteVerifiedHeader(header: header, height: h, hashHex: hashHex),
+      isTrue,
+      reason: 'verified header $h',
+    );
+  }
+  expect(ledger.verifiedMedianTimeMs, tipMs);
 }
 
 class _VortexBalancePool extends ShearPoolClient {
@@ -7746,6 +7775,7 @@ void main() {
     final t0 = now - kReserveEpochMs;
     final vault = ShearReserve();
     expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0), isNull);
+    _noteVerifiedChain(opened.ledger, now);
     _stampChainTip(opened.ledger, now);
     opened.live.reservePortal = {
       'ok': true,
@@ -7915,6 +7945,7 @@ void main() {
     final vault = ShearReserve();
     expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0, noteIsPrincipal: true), isNull);
     expect(vault.maturedTimeLockNanos(dest, now), kPiSheNanos);
+    _noteVerifiedChain(opened.ledger, now);
     _stampChainTip(opened.ledger, now);
     opened.ledger.rememberNote({
       'address': dest,
@@ -8074,9 +8105,267 @@ void main() {
     expect(note['locked'], isFalse);
     expect(note['address'], dest);
     expect(note['dest'], dest);
+    _noteVerifiedChain(ledger, unlock);
     ledger.refreshTimeLockedNotes();
     expect(ledger.notes.single['locked'], isFalse);
     expect(ledger.notes.single['address'], dest);
+  });
+
+  test('a header that does not link to its parent is not a verified tip', () {
+    final ledger = ShearLedger();
+    final header = Uint8List(128);
+    header[0] = 1;
+    header[108] = 1;
+    const tip = 1700000000000;
+    var v = tip;
+    for (var i = 0; i < 8; i++) {
+      header[100 + i] = v & 0xff;
+      v >>= 8;
+    }
+    final hash = Uint8List(32)..[31] = 2;
+    final hashHex = hash.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+    expect(ledger.noteVerifiedHeader(header: header, height: 2, hashHex: hashHex), isFalse);
+    expect(ledger.verifiedMedianTimeMs, isNull);
+    _stampChainTip(ledger, tip + 2 * 3600000);
+    expect(ledger.tipTimestampMs, tip + 2 * 3600000);
+    expect(ledger.verifiedMedianTimeMs, isNull);
+  });
+
+  test('a deposit row is stamped from the sealed unlock, not the device clock', () {
+    final src = File('lib/shear_reserve.dart').readAsStringSync();
+    final start = src.indexOf('Future<ReserveDepositResult> postReserveDeposit');
+    final end = src.indexOf('int reserveLockConfirmations');
+    final body = src.substring(start, end);
+    expect(body.contains('DateTime.now()'), isFalse);
+    expect(body.contains('verifiedMedianTimeMs'), isTrue);
+    expect(body.contains('sealedUnlockAtMs'), isTrue);
+    final cli = File('lib/shear_cli.dart').readAsStringSync();
+    final reserveFn = cli.indexOf('Future<int> _reserve');
+    final lockAt = cli.indexOf("case 'lock':", reserveFn);
+    final voteAt = cli.indexOf("case 'vote':", lockAt);
+    final lockBody = cli.substring(lockAt, voteAt);
+    expect(lockBody.contains('DateTime.now()'), isFalse);
+    expect(lockBody.contains('verifiedMedianTimeMs'), isTrue);
+    final vault = ShearReserve();
+    const unlock = 1700000000000;
+    expect(
+      vault.deposit(
+        dest: kPoolFeeDest,
+        she: 1,
+        nowMs: 0,
+        noteIsPrincipal: true,
+        sealedUnlockAtMs: unlock,
+      ),
+      isNull,
+    );
+    final row = vault.portal(kPoolFeeDest).deposits.single;
+    expect(row.atMs, 0);
+    expect(row.unlockAtMs, unlock);
+    expect(row.noteIsPrincipal, isTrue);
+    expect(vault.maturedTimeLockNanos(kPoolFeeDest, unlock - 1), 0);
+    expect(vault.maturedTimeLockNanos(kPoolFeeDest, unlock), kUnitsPerShe);
+  });
+
+  test('an unlocked lock note on the vault dest can be spent', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
+    ledger.rememberVaultDest(vault);
+    const unlock = 1700000000000;
+    final later = unlock + kReserveEpochMs;
+    Map<String, dynamic> lockNote(int at, int nanos, int tag) => {
+          'address': vault,
+          'dest': vault,
+          'kind': 'lock',
+          'unlockAtMs': at,
+          'nanos': nanos,
+          'amount': nanos / kUnitsPerShe,
+          'locked': true,
+          'spent': false,
+          'verified': true,
+          'commit': Uint8List(32)..[0] = tag,
+          'noteCommit': Uint8List(32)..[1] = tag,
+          'r': Uint8List(32)..[2] = tag,
+        };
+    ledger.rememberNote(lockNote(unlock, 2 * kUnitsPerShe, 1));
+    ledger.rememberNote(lockNote(later, 5 * kUnitsPerShe, 2));
+    final frame = id.address;
+    final code = id.paymentCode;
+    expect(ledger.moneyDests(frame, paymentCode: code).contains(vault), isFalse);
+    expect(ledger.spendableOwned(frame, paymentCode: code), 0);
+    expect(ledger.selectionDests(frame, paymentCode: code).contains(vault), isFalse);
+    final from = ledger.currentDest(frame, paymentCode: code);
+    final to = _payablePayee();
+    expect(to == vault, isFalse);
+    Future<ShearTx> sendOne() => ledger.send(
+          from: from,
+          to: to,
+          amount: 1,
+          local: true,
+          restFrame: frame,
+          paymentCode: code,
+          spendSeed: hexToBytes(id.seedHex),
+        );
+    await expectLater(sendOne(), throwsA(isA<StateError>()));
+    _noteVerifiedChain(ledger, unlock);
+    final before = ledger.spendableOwned(frame, paymentCode: code);
+    expect(before, closeTo(2, 1e-9));
+    expect(ledger.selectionDests(frame, paymentCode: code), contains(vault));
+    final openPlan = selectSpendNotesWire({
+      'notes': [
+        {
+          'address': vault,
+          'kind': 'lock',
+          'unlockAtMs': unlock,
+          'amount': 2.0,
+          'nanos': 2 * kUnitsPerShe,
+          'sealed': true,
+          'locked': false,
+          'spent': false,
+        },
+      ],
+      'needShe': 1,
+      'dests': [vault],
+      'tip': 30,
+      'confs': 9,
+    });
+    expect(openPlan['covered'], isTrue);
+    final closedPlan = selectSpendNotesWire({
+      'notes': [
+        {
+          'address': vault,
+          'kind': 'lock',
+          'unlockAtMs': later,
+          'amount': 5.0,
+          'nanos': 5 * kUnitsPerShe,
+          'sealed': true,
+          'locked': true,
+          'spent': false,
+        },
+      ],
+      'needShe': 1,
+      'dests': [vault],
+      'tip': 30,
+      'confs': 9,
+    });
+    expect(closedPlan['covered'], isNot(true));
+    final tx = await sendOne();
+    expect(tx.kind, 'send');
+    expect(tx.from, vault);
+    expect(tx.amount, 1);
+    final open = ledger.notes.singleWhere((n) => n['unlockAtMs'] == unlock);
+    final held = ledger.notes.singleWhere((n) => n['unlockAtMs'] == later);
+    expect(open['spent'], isTrue);
+    expect(open['address'], vault);
+    expect(open['dest'], vault);
+    expect(held['spent'], isNot(true));
+    expect(held['locked'], isTrue);
+    final after = ledger.spendableOwned(frame, paymentCode: code);
+    final feeShe = kLevyFloorUnits / kUnitsPerShe;
+    expect(after, closeTo(before - 1 - feeShe, 1e-9));
+    expect(after, greaterThan(0.5));
+    expect(after, isNot(closeTo(before, 1e-6)));
+  });
+
+  testWidgets('a node-reported tip two hours ahead does not unlock a time-lock', (tester) async {
+    _tallContinuum(tester);
+    final opened = await _open018(tester);
+    final ident = opened.session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final wall = DateTime.now().millisecondsSinceEpoch;
+    final epochEnd = wall;
+    final t0 = epochEnd - kReserveEpochMs;
+    final verified = epochEnd - 3600000;
+    final rawTip = verified + 2 * 3600000;
+    final vault = ShearReserve();
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0, noteIsPrincipal: true), isNull);
+    expect(vault.depositUnlockAtMs(vault.portal(dest).deposits.single), epochEnd);
+    expect(vault.maturedTimeLockNanos(dest, wall), kPiSheNanos);
+    opened.ledger.rememberNote({
+      'address': dest,
+      'dest': dest,
+      'kind': 'lock',
+      'unlockAtMs': epochEnd,
+      'nanos': kPiSheNanos,
+      'amount': kPiShe,
+      'locked': true,
+      'spent': false,
+      'commit': Uint8List(32)..[0] = 1,
+      'noteCommit': Uint8List(32)..[0] = 2,
+      'r': Uint8List(32)..[0] = 3,
+    });
+    _noteVerifiedChain(opened.ledger, verified);
+    _stampChainTip(opened.ledger, rawTip);
+    expect(opened.ledger.tipTimestampMs, rawTip);
+    expect(opened.ledger.verifiedMedianTimeMs, verified);
+    await tester.pumpWidget(ShearWalletApp(
+      session: opened.session,
+      ledger: opened.ledger,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-withdraw')), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('reserve-deposit-withdraw-0')));
+    final closed = tester.widget<TextButton>(find.byKey(const Key('reserve-deposit-withdraw-0')));
+    expect(closed.onPressed, isNull);
+    expect(find.text(kReserveUnlocksAtEpochEnd), findsOneWidget);
+    final note = opened.ledger.notes.singleWhere((row) => row['kind'] == 'lock');
+    expect(note['locked'], isTrue);
+    expect(note['address'], dest);
+    await _end018(tester, opened.ledger);
+  });
+
+  testWidgets('time-lock withdraw keeps the row when no lock note is released', (tester) async {
+    _tallContinuum(tester);
+    final opened = await _open018(tester);
+    final ident = opened.session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final t0 = now - kReserveEpochMs;
+    final vault = ShearReserve();
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0, noteIsPrincipal: true), isNull);
+    opened.ledger.rememberNote({
+      'address': dest,
+      'dest': dest,
+      'kind': 'lock',
+      'unlockAtMs': t0 + 2 * kReserveEpochMs,
+      'nanos': kPiSheNanos,
+      'amount': kPiShe,
+      'locked': true,
+      'spent': false,
+      'commit': Uint8List(32)..[0] = 4,
+      'noteCommit': Uint8List(32)..[0] = 5,
+      'r': Uint8List(32)..[0] = 6,
+    });
+    _noteVerifiedChain(opened.ledger, now);
+    await tester.pumpWidget(ShearWalletApp(
+      session: opened.session,
+      ledger: opened.ledger,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-deposit-withdraw-0')));
+    expect(find.text('Withdraw'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-deposit-withdraw-0')));
+    await tester.pump();
+    expect(find.textContaining('The epoch is still open'), findsOneWidget);
+    expect(find.text('Principal is spendable'), findsNothing);
+    expect(vault.portal(dest).deposits, hasLength(1));
+    expect(vault.portal(dest).nanos, kPiSheNanos);
+    final note = opened.ledger.notes.singleWhere((row) => row['kind'] == 'lock');
+    expect(note['locked'], isTrue);
+    expect(note['address'], dest);
+    await _end018(tester, opened.ledger);
   });
 
   testWidgets('claim fee picker posts the chosen exact fee', (tester) async {

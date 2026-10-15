@@ -3712,7 +3712,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             if (row['id'] == preset) chosen = row;
           }
           final fee = chosen['fee'] is int ? chosen['fee'] as int : 0;
-          final total = exactSheFromNanos(fee * rows);
+          final total = exactSheFromRho(fee * rows);
           return AlertDialog(
             key: const Key('reserve-claim-confirm'),
             title: const Text('Confirm reward claim'),
@@ -3870,7 +3870,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final lowFee = lowRaw is int ? lowRaw : 0;
       if (lowFee > 0 && fee > 4 * lowFee) {
         if (!context.mounted) return;
-        final she = chosen['she']?.toString() ?? exactSheFromNanos(fee);
+        final she = chosen['she']?.toString() ?? exactSheFromRho(fee);
         final outlier = await _confirmOutlierFee(context, she);
         if (!outlier || !mounted) return;
       }
@@ -3879,7 +3879,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
         total,
       )) {
-        _claimSnack(context, 'Not enough Continuum spendable for claim fee ${exactSheFromNanos(total)} SHE');
+        _claimSnack(context, 'Not enough Continuum spendable for claim fee ${exactSheFromRho(total)} SHE');
         return;
       }
       for (final row in rows) {
@@ -3915,7 +3915,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
     final to = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
-    final now = ledger.tipTimestampMs;
+    final now = ledger.verifiedMedianTimeMs;
     final matured = (dest.isNotEmpty && now != null) ? reserve.maturedPrincipalNanos(dest, now) : 0;
     if (now == null || matured <= 0) {
       if (context.mounted) {
@@ -3986,7 +3986,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   ) async {
     final dest = _reserveDestOf(ident);
     if (dest == null || !row.noteIsPrincipal) return;
-    final now = ledger.tipTimestampMs;
+    final now = ledger.verifiedMedianTimeMs;
     final unlock = reserve.depositUnlockAtMs(row);
     if (now == null || unlock <= 0 || now < unlock) {
       if (context.mounted) {
@@ -3996,12 +3996,20 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       }
       return;
     }
-    ledger.releaseMaturedLockNotes(
+    final released = ledger.releaseMaturedLockNotes(
       fromDest: dest,
       nowMs: now,
       unlockAtMs: unlock,
       nanos: row.nanos,
     );
+    if (released <= 0) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
     reserve.releaseTimeLockPrincipal(dest: dest, nowMs: now, onlyAtMs: row.atMs);
     if (ledger.pool != null && !widget.skipPoolSync) await _syncVaults(ident);
     if (mounted) setState(() {});
@@ -4268,7 +4276,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                     if (!d.noteIsPrincipal) {
                       return Text(label, key: Key('reserve-deposit-$i'));
                     }
-                    final tip = ledger.tipTimestampMs;
+                    final tip = ledger.verifiedMedianTimeMs;
                     final unlock = reserve.depositUnlockAtMs(d);
                     final open = tip != null && unlock > 0 && tip >= unlock;
                     return Row(
@@ -4325,12 +4333,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               if (reserve.legacyWithdrawVisible(dest))
                 FilledButton(
                   key: const Key('reserve-withdraw'),
-                  onPressed: (ledger.tipTimestampMs != null &&
-                          reserve.maturedPrincipalNanos(dest, ledger.tipTimestampMs!) > 0)
+                  onPressed: (ledger.verifiedMedianTimeMs != null &&
+                          reserve.maturedPrincipalNanos(dest, ledger.verifiedMedianTimeMs!) > 0)
                       ? () => _reserveWithdraw(context, ident)
                       : null,
-                  child: Text((ledger.tipTimestampMs != null &&
-                          reserve.maturedPrincipalNanos(dest, ledger.tipTimestampMs!) > 0)
+                  child: Text((ledger.verifiedMedianTimeMs != null &&
+                          reserve.maturedPrincipalNanos(dest, ledger.verifiedMedianTimeMs!) > 0)
                       ? 'Withdraw to Continuum'
                       : kReserveUnlocksAtEpochEnd),
                 ),
@@ -4487,7 +4495,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             textAlign: TextAlign.justify,
           ),
           Text(
-            'Previous-epoch rewards  ${exactSheFromNanos(p.claimableRewards)} SHE  ·  claim in the mempool',
+            'Previous-epoch rewards  ${exactSheFromRho(p.claimableRewards)} SHE  ·  claim in the mempool',
             textAlign: TextAlign.justify,
           ),
           Text(

@@ -885,7 +885,14 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         lockEpoch: clock == null ? null : reserve.currentEpoch,
         unlockAtMs: unlockAt,
       );
-      reserve.deposit(dest: dest, she: she, nowMs: now, noteIsPrincipal: unlockAt != null);
+      final verified = ledger.verifiedMedianTimeMs ?? 0;
+      reserve.deposit(
+        dest: dest,
+        she: she,
+        nowMs: verified,
+        noteIsPrincipal: unlockAt != null,
+        sealedUnlockAtMs: unlockAt,
+      );
       session.rememberedReserve = _portalSnap(reserve, dest, now);
       await session.persist();
       out.writeln(flags.json ? jsonEncode({'ok': true, 'id': tx.id, 'kind': 'lock'}) : 'lock  id=${tx.id}');

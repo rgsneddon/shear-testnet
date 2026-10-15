@@ -17,9 +17,9 @@ void main() {
     2049,
     10000,
     100000,
-    kLevyCapNanos - 1,
-    kLevyCapNanos,
-    kLevyCapNanos + 1,
+    kLevyCapRho - 1,
+    kLevyCapRho,
+    kLevyCapRho + 1,
   };
   for (var shift = 1; shift <= 20; shift++) {
     levies.add(1 << shift);

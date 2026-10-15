@@ -924,6 +924,7 @@ class ShearReserve {
     required int nowMs,
     String? payout,
     bool noteIsPrincipal = false,
+    int? sealedUnlockAtMs,
   }) {
     if (!isDestAddress(dest) || isShearAddress(dest)) return 'bad_dest';
     final n = (she * kUnitsPerShe).round();
@@ -941,10 +942,12 @@ class ShearReserve {
       p.idle += n;
     }
     totalLockedNanos += n;
+    final sealed = sealedUnlockAtMs != null && sealedUnlockAtMs > 0 ? sealedUnlockAtMs : 0;
     p.deposits.add(ReserveDepositRow(
       nanos: n,
       atMs: nowMs,
       noteIsPrincipal: noteIsPrincipal,
+      unlockAtMs: sealed,
     ));
     if (!p.joined && p.nanos >= kPiSheNanos) {
       p.joined = true;
@@ -1181,12 +1184,26 @@ Future<ReserveDepositResult> postReserveDeposit({
       lockEpoch: clock == null ? null : reserve.currentEpoch,
       unlockAtMs: unlockAt,
     );
+    final height = tx.height;
+    final atHeight = height != null ? ledger.verifiedTimeAtHeight(height) : null;
+    final verified = atHeight ?? ledger.verifiedMedianTimeMs;
+    int? sealed;
+    for (final n in ledger.notes) {
+      if ((n['kind'] ?? '').toString() != 'lock') continue;
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr != dest) continue;
+      final raw = n['unlockAtMs'];
+      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+      if (at > 0) sealed = at;
+    }
+    sealed ??= unlockAt;
     final err = reserve.deposit(
       dest: dest,
       she: she,
-      nowMs: DateTime.now().millisecondsSinceEpoch,
+      nowMs: verified ?? 0,
       payout: from,
-      noteIsPrincipal: unlockAt != null,
+      noteIsPrincipal: sealed != null,
+      sealedUnlockAtMs: sealed,
     );
     if (err != null) {
       return ReserveDepositResult(posted: false, remark: err, tx: tx);

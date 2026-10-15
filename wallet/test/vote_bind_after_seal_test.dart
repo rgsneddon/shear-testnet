@@ -38,8 +38,8 @@ void main() {
       expect(weightFeeCovers(withMax, source, maxLevy: true), isTrue, reason: 'max $n');
       expect(weightFeeCovers(plain, source, maxLevy: false), isTrue, reason: 'plain $n');
       expect(weightFeeCovers(withMax - 1, source, maxLevy: true), isFalse, reason: 'short $n');
-      expect(withMax, inInclusiveRange(kLevyFloorUnits, kLevyCapNanos));
-      expect(plain, inInclusiveRange(kLevyFloorUnits, kLevyCapNanos));
+      expect(withMax, inInclusiveRange(kLevyFloorUnits, kLevyCapRho));
+      expect(plain, inInclusiveRange(kLevyFloorUnits, kLevyCapRho));
       if (n > kLevyFloorUnits * kLevyWeightRateDen) {
         expect(withMax, greaterThan(kLevyFloorUnits), reason: 'above floor $n');
       }
@@ -47,7 +47,7 @@ void main() {
       previous = withMax;
       expect(source.containsKey('fee'), isFalse, reason: 'source untouched $n');
       expect(source.containsKey('sig'), isFalse);
-      expect(weightFeeCovers(kLevyCapNanos + 1, source, maxLevy: true), isFalse);
+      expect(weightFeeCovers(kLevyCapRho + 1, source, maxLevy: true), isFalse);
       expect(weightFeeCovers(-1, source, maxLevy: true), isFalse);
     }
   });
