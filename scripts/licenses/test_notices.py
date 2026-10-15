@@ -1,9 +1,13 @@
 import io
 import os
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import notices  # noqa: E402
@@ -234,6 +238,95 @@ class ReleaseNoticesTest(unittest.TestCase):
             release_notices.ATTRIBUTION,
             "The Shear concept was inspired by Roy D Herbert, and the Chronoflux Principia.",
         )
+
+
+class FontInstallTests(unittest.TestCase):
+    def test_css_does_not_reference_deleted_commercial_fonts(self):
+        root = Path(__file__).resolve().parents[2]
+        hits = []
+        for path in root.rglob("*.css"):
+            if "node_modules" in path.parts or ".git" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"url\(\s*[\"']?[^)\"']*(?:nevia|urema|\.woff2)", text):
+                hits.append(str(path.relative_to(root)))
+        self.assertEqual(hits, [])
+
+    def test_great_vibes_stays_tracked_and_install_copies_it(self):
+        root = Path(__file__).resolve().parents[2]
+        font = root / "fonts" / "greatvibes" / "GreatVibes-Regular.ttf"
+        ofl = root / "fonts" / "greatvibes" / "OFL.txt"
+        self.assertTrue(font.is_file())
+        self.assertIn("SIL OPEN FONT LICENSE Version 1.1", ofl.read_text(encoding="utf-8"))
+        added = subprocess.run(
+            ["git", "add", "-n", "fonts/greatvibes/GreatVibes-Regular.ttf"],
+            cwd=root, capture_output=True, text=True,
+        )
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertIn("fonts/greatvibes/GreatVibes-Regular.ttf", added.stdout)
+        script = (root / "deploy" / "install_fonts.sh").read_text(encoding="utf-8")
+        for name in (
+            "nevia/woff2/Nevia-Light.woff2",
+            "nevia/woff2/Nevia-LightCondensed.woff2",
+            "nevia/woff2/Nevia-Regular.woff2",
+            "nevia/woff2/Nevia-ExtraBold.woff2",
+            "nevia/woff2/Nevia-ExtraBoldCondensed.woff2",
+            "nevia/woff2/Nevia-Black.woff2",
+            "urema/woff2/Urema-Variable.woff2",
+        ):
+            self.assertIn(name, script)
+        self.assertIn("fonts/greatvibes", script)
+        src = Path(tempfile.mkdtemp())
+        for name in (
+            "nevia/woff2/Nevia-Light.woff2",
+            "nevia/woff2/Nevia-LightCondensed.woff2",
+            "nevia/woff2/Nevia-Regular.woff2",
+            "nevia/woff2/Nevia-ExtraBold.woff2",
+            "nevia/woff2/Nevia-ExtraBoldCondensed.woff2",
+            "nevia/woff2/Nevia-Black.woff2",
+            "urema/woff2/Urema-Variable.woff2",
+        ):
+            dest = src / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"woff2")
+        env = os.environ.copy()
+        env["SHEAR_FONTS_DIR"] = str(src)
+        planted = (
+            root / "brand" / "fonts",
+            root / "site" / "brand" / "fonts",
+            root / "site" / "boot" / "brand" / "fonts",
+            root / "explorer" / "brand" / "fonts",
+            root / "mempool" / "brand" / "fonts",
+            root / "pool" / "public" / "brand" / "fonts",
+            root / "team" / "brand" / "fonts",
+            root / "site" / "fonts" / "greatvibes",
+            root / "site" / "boot" / "fonts" / "greatvibes",
+            root / "explorer" / "fonts" / "greatvibes",
+            root / "mempool" / "fonts" / "greatvibes",
+            root / "pool" / "public" / "fonts" / "greatvibes",
+            root / "team" / "fonts" / "greatvibes",
+        )
+        try:
+            run = subprocess.run(["bash", "deploy/install_fonts.sh"], cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertTrue((root / "brand" / "fonts" / "nevia" / "woff2" / "Nevia-Regular.woff2").is_file())
+            self.assertTrue((root / "pool" / "public" / "fonts" / "greatvibes" / "GreatVibes-Regular.ttf").is_file())
+            self.assertTrue((root / "site" / "fonts" / "greatvibes" / "OFL.txt").is_file())
+            commercial = subprocess.run(
+                ["git", "check-ignore", "-q", "brand/fonts/nevia/woff2/Nevia-Regular.woff2"],
+                cwd=root,
+            )
+            self.assertEqual(commercial.returncode, 0)
+            copied = subprocess.run(
+                ["git", "check-ignore", "-q", "site/fonts/greatvibes/GreatVibes-Regular.ttf"],
+                cwd=root,
+            )
+            self.assertEqual(copied.returncode, 0)
+        finally:
+            for path in planted:
+                if path.exists():
+                    shutil.rmtree(path)
+            shutil.rmtree(src, ignore_errors=True)
 
 
 if __name__ == "__main__":

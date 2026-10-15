@@ -42,12 +42,21 @@ wallet/android/app/src/main/jniLibs/**/*.so
 wallet/android/app/src/main/jniLibs/**/*.sha256
 # Licensed webfonts (Nevia, Urema) are copied in at deploy time by
 # deploy/install_fonts.sh and must never be committed.
+# Great Vibes (fonts/greatvibes/, SIL OFL) is committed and is the exception.
 *.otf
 *.ttf
 *.woff
 *.woff2
 *.eot
 **/brand/fonts/
+!/fonts/greatvibes/
+!/fonts/greatvibes/**
+site/fonts/greatvibes/
+site/boot/fonts/greatvibes/
+explorer/fonts/greatvibes/
+mempool/fonts/greatvibes/
+pool/public/fonts/greatvibes/
+team/fonts/greatvibes/
 # Distro pack tarballs, checksums, and smoke logs. Do not commit.
 scripts/packaging/out/
 # Operator admin vhost lives on the box only (SHEAR_ADMIN_HOST).

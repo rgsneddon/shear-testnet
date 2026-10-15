@@ -5,11 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${SHEAR_DE_HOST:-de}"
 DEST="${SHEAR_DE_DEST:-/opt/shear-v3}"
-if [[ -n "${SHEAR_FONTS_DIR:-}" ]]; then
-  "$ROOT/deploy/install_fonts.sh"
-else
-  echo "rsync_de: SHEAR_FONTS_DIR unset; brand/fonts/ on $HOST left as deployed" >&2
-fi
+# Great Vibes is copied from git on every deploy. Nevia and Urema are
+# copied only when SHEAR_FONTS_DIR is set; otherwise the host keeps the
+# commercial files already deployed.
+"$ROOT/deploy/install_fonts.sh"
 rsync -az \
   --exclude node_modules \
   --exclude '.git/' \

@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
-# Copy the licensed Nevia and Urema webfonts into each site's brand/fonts/
-# at deploy time. The fonts are not in git (see docs/licensing-audit.md,
-# decision 1); they come from Shear's purchased licence package, which must
-# be unpacked outside the repository with this layout:
+# Copy webfonts into the sites.
+#
+# Great Vibes (SIL OFL 1.1) is committed at fonts/greatvibes/ and is copied
+# to each site as /fonts/greatvibes/. .gitignore keeps that source tracked.
+#
+# Nevia and Urema are not in git (see docs/licensing-audit.md, decision 1).
+# They come from Shear's purchased licence package, unpacked outside the
+# repository, and are copied only when SHEAR_FONTS_DIR is set:
 #
 #   $SHEAR_FONTS_DIR/nevia/woff2/Nevia-{Light,LightCondensed,Regular,ExtraBold,ExtraBoldCondensed,Black}.woff2
 #   $SHEAR_FONTS_DIR/urema/woff2/Urema-Variable.woff2
 #
-# Only the WOFF2 webfonts are deployed, as the webfont licence covers
-# self-hosting on Shear's own sites. Desktop formats (.otf/.ttf) are never copied.
+# Only those WOFF2 webfonts are deployed. Desktop formats (.otf/.ttf) of the
+# commercial faces are never copied.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="${SHEAR_FONTS_DIR:?set SHEAR_FONTS_DIR to the unpacked licensed font package}"
+
+GV_SRC="$ROOT/fonts/greatvibes"
+[[ -f "$GV_SRC/OFL.txt" && -f "$GV_SRC/GreatVibes-Regular.ttf" && -f "$GV_SRC/great-vibes.css" ]] \
+  || { echo "install_fonts: fonts/greatvibes is incomplete" >&2; exit 1; }
+
+GV_SITES=(site site/boot explorer mempool pool/public team)
+for site in "${GV_SITES[@]}"; do
+  dest="$ROOT/$site/fonts/greatvibes"
+  mkdir -p "$dest"
+  cp -a "$GV_SRC/." "$dest/"
+done
 
 FILES=(
   nevia/woff2/Nevia-Light.woff2
@@ -22,20 +36,28 @@ FILES=(
   nevia/woff2/Nevia-Black.woff2
   urema/woff2/Urema-Variable.woff2
 )
-SITES=(brand site/brand site/boot/brand explorer/brand mempool/brand pool/public/brand team/brand)
+BRAND_SITES=(brand site/brand site/boot/brand explorer/brand mempool/brand pool/public/brand team/brand)
 
-for f in "${FILES[@]}"; do
-  [[ -f "$SRC/$f" ]] || { echo "install_fonts: missing $SRC/$f" >&2; exit 1; }
-done
-
-for site in "${SITES[@]}"; do
+if [[ -n "${SHEAR_FONTS_DIR:-}" ]]; then
   for f in "${FILES[@]}"; do
-    install -D -m 0644 "$SRC/$f" "$ROOT/$site/fonts/$f"
+    [[ -f "$SHEAR_FONTS_DIR/$f" ]] || { echo "install_fonts: missing $SHEAR_FONTS_DIR/$f" >&2; exit 1; }
   done
-done
+  for site in "${BRAND_SITES[@]}"; do
+    for f in "${FILES[@]}"; do
+      install -D -m 0644 "$SHEAR_FONTS_DIR/$f" "$ROOT/$site/fonts/$f"
+    done
+  done
+  commercial="${#BRAND_SITES[@]} sites x ${#FILES[@]} commercial fonts"
+else
+  commercial="commercial fonts skipped (SHEAR_FONTS_DIR unset)"
+fi
 
-if git -C "$ROOT" ls-files --error-unmatch -- '*.woff2' >/dev/null 2>&1; then
-  echo "install_fonts: font files are tracked by git; refusing" >&2
+# Nevia and Urema must not be tracked. Great Vibes under fonts/greatvibes/ may be.
+tracked="$(git -C "$ROOT" ls-files -- '*.woff2' '*.woff' '*.otf' '*.eot' '*.ttf' || true)"
+bad="$(printf '%s\n' "$tracked" | grep -v -E '^(fonts/greatvibes/.*)?$' | grep -v '^$' || true)"
+if [[ -n "$bad" ]]; then
+  echo "install_fonts: licensed font files are tracked by git; refusing" >&2
+  printf '%s\n' "$bad" >&2
   exit 1
 fi
-echo "install_fonts_ok ${#SITES[@]} sites x ${#FILES[@]} fonts (git-ignored)"
+echo "install_fonts_ok greatvibes ${#GV_SITES[@]} sites; $commercial"

@@ -1,0 +1,10 @@
+/* Great Vibes 1.103, SIL Open Font License 1.1.
+   The font file and OFL.txt live in this directory and stay in git.
+   deploy/install_fonts.sh copies the directory to each site as /fonts/greatvibes/. */
+@font-face {
+  font-family: "Great Vibes";
+  src: url("/fonts/greatvibes/GreatVibes-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
