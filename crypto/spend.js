@@ -550,7 +550,7 @@ const VIN_KEYS = new Set([
 const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
-  'portalId', 'memo', 'memoCt',
+  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch',
 ]);
 
 const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);

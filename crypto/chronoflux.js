@@ -388,6 +388,15 @@ function claimedReserveV(o) {
   return 0;
 }
 
+function attachLockTime(row, o) {
+  if (String(o?.kind || row?.kind || '') !== 'lock') return;
+  const unlock = Number(o?.unlockAtMs);
+  if (Number.isInteger(unlock) && unlock > 0) row.unlockAtMs = unlock;
+  if (o?.lockEpoch != null && o.lockEpoch !== '' && Number.isInteger(Number(o.lockEpoch)) && Number(o.lockEpoch) >= 0) {
+    row.lockEpoch = Number(o.lockEpoch);
+  }
+}
+
 function attachReserveSeal(row, o) {
   const d20 = dest20FromOpen(o);
   if (d20) row.dest20 = d20;
@@ -398,6 +407,7 @@ function attachReserveSeal(row, o) {
   if (Number.isFinite(v) && v !== 0) {
     row.valueProof = { ...(row.valueProof || {}), v };
   }
+  attachLockTime(row, o);
 }
 
 const COINBASE_OPEN_KINDS = new Set(['pot', 'hash', 'pool-fee', 'finder-fee', 'reserve-fee']);

@@ -10,6 +10,7 @@ import { newIdentity, spendDestOf } from './address.js';
 import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
 import { K_VW } from './block_budget.js';
 import { outputJoinsAdmitSet } from './admit.js';
+import { compactTx } from './chronoflux.js';
 import { fs1LeafFor } from './fs1_leaf.js';
 import {
   STAKE_REWARD_BLOCK_CAP,
@@ -19,10 +20,12 @@ import {
   cloneVault,
   deposit,
   emptyVault,
+  lockStampRejected,
   lockTx,
   lockNoteSpendRejected,
   planStakeRewards,
   portalEpochInterest,
+  portalPrincipalNanos,
   stakeRewardNote,
   stakeRewardSupply,
   trialReserveApply,
@@ -117,6 +120,98 @@ describe('time-locked lock notes', () => {
     const spend = { vin: [{ commit: tx.vout[0].commit }] };
     assert.equal(lockNoteSpendRejected(state, spend, T0 + 2_000).reason, 'locked');
     assert.equal(lockNoteSpendRejected(state, spend, T0 + RESERVE_EPOCH_MS), null);
+  });
+
+  it('keeps the unlock on the sealed lock and refuses a different one', () => {
+    const dest = who();
+    const tx = lockNote(dest, 1000, 'lock-wire');
+    const wire = compactTx(tx);
+    assert.equal(wire.vout[0].unlockAtMs, T0 + RESERVE_EPOCH_MS);
+    assert.equal(wire.vout[0].lockEpoch, 0);
+    assert.ok(wire.vout[0].admitPub);
+    assert.equal(wire.vout[0].r, undefined);
+    const plain = compactTx(lockTx({ from: dest, to: dest, nanos: 1000, id: 'plain-lock' }));
+    assert.equal(plain.vout[0].unlockAtMs, undefined);
+    assert.equal(plain.vout[0].lockEpoch, undefined);
+    const state = vault();
+    const bad = lockTx({
+      from: dest,
+      to: dest,
+      nanos: 1000,
+      id: 'early-lock',
+      timeLock: true,
+      lockEpoch: 0,
+      unlockAtMs: T0 + 1,
+    });
+    assert.equal(lockStampRejected(state, bad, T0 + 1_000).reason, 'lock_unlock');
+    const refused = applyReserveBlock({
+      state,
+      block: { height: 1, txs: [bad] },
+      nowMs: T0 + 1_000,
+      genesisMs: T0,
+    });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'lock_unlock');
+    assert.equal(Number(state.totalLockedNanos), 0);
+    const book = createNoteLedger();
+    book.sync([{ height: 1, hash: Buffer.alloc(32, 7), txs: [wire] }]);
+    assert.equal(book.spendable(dest, 1, { need: 1, tipMs: T0 + 1, genesisMs: T0 }), 0);
+    assert.equal(book.spendable(dest, 1, {
+      need: 1,
+      tipMs: T0 + RESERVE_EPOCH_MS,
+      genesisMs: T0,
+    }), 1000);
+  });
+
+  it('holds the funding coins after the lock note is the principal', () => {
+    const payer = who();
+    const dest = who();
+    const state = vault();
+    const tx = lockTx({
+      from: payer,
+      to: dest,
+      nanos: PI_SHE_NANOS,
+      id: 'principal-note',
+      timeLock: true,
+      lockEpoch: 0,
+      unlockAtMs: T0 + RESERVE_EPOCH_MS,
+    });
+    const locked = applyReserveBlock({
+      state,
+      block: { height: 1, txs: [tx] },
+      nowMs: T0 + 1_000,
+      genesisMs: T0,
+    });
+    assert.equal(locked.ok, true, locked.reason);
+    const portal = state.portals[Object.keys(state.portals)[0]];
+    assert.equal(portal.tranches[0].noteIsPrincipal, true);
+    const draw = T0 + RESERVE_EPOCH_MS + 1;
+    const plan = planStakeRewards(state, draw);
+    assert.equal(plan.ok, true, plan.reason);
+    const reward = stakeRewardNote(plan.pay[0].dest, plan.pay[0].nanos, plan.pay[0].epoch, plan.pay[0].portalId);
+    const credited = applyReserveBlock({
+      state,
+      block: { height: 2, txs: [{ coinbase: true, vout: [reward] }] },
+      nowMs: draw,
+      genesisMs: T0,
+      requireStakeReward: true,
+    });
+    assert.equal(credited.ok, true, credited.reason);
+    assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(portalPrincipalNanos(state, payer), PI_SHE_NANOS);
+    assert.equal(portalPrincipalNanos(state, dest), PI_SHE_NANOS);
+    const book = createNoteLedger();
+    book.sync([{ height: 1, hash: Buffer.alloc(32, 8), txs: [compactTx(tx)] }]);
+    const clock = { need: 1, tipMs: draw, genesisMs: T0 };
+    const opened = book.spendable(dest, 1, clock);
+    const released = book.unlockedLockNanos(dest, 1, clock);
+    const principal = portalPrincipalNanos(state, dest);
+    assert.equal(opened, PI_SHE_NANOS);
+    assert.equal(Math.max(0, opened - Math.max(0, principal - released)), PI_SHE_NANOS);
+    const payerOpened = book.spendable(payer, 1, clock);
+    const payerReleased = book.unlockedLockNanos(payer, 1, clock);
+    const payerPrincipal = portalPrincipalNanos(state, payer);
+    assert.equal(Math.max(0, payerOpened - Math.max(0, payerPrincipal - payerReleased)), 0);
   });
 });
 

@@ -722,6 +722,7 @@ Future<ReserveDepositResult> postReserveDeposit({
       needShe: need,
       keepHome: true,
     );
+    final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
     final tx = await ledger.send(
       from: from,
       to: dest,
@@ -734,6 +735,10 @@ Future<ReserveDepositResult> postReserveDeposit({
       spendSeed: spendSeed,
       allowPublicHttp: true,
       paintedCover: gap > 1e-12,
+      currentEpoch: clock == null ? null : reserve.currentEpoch,
+      epochStartMs: clock,
+      lockEpoch: clock == null ? null : reserve.currentEpoch,
+      unlockAtMs: clock == null ? null : clock + kReserveEpochMs,
     );
     final err = reserve.deposit(
       dest: dest,

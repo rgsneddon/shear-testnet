@@ -394,10 +394,14 @@ function releaseMaturedPrincipal(state, nowMs) {
     if (!portal?.tranches?.length) continue;
     rememberPortal(state, portal.id);
     let drop = 0n;
+    let notePrincipal = 0n;
     const keep = [];
     for (const tranche of portal.tranches) {
-      if (nowIdx > Math.floor(Number(tranche.epoch) || 0)) drop += asBig(tranche.amount);
-      else keep.push(tranche);
+      if (nowIdx > Math.floor(Number(tranche.epoch) || 0)) {
+        const amount = asBig(tranche.amount);
+        drop += amount;
+        if (tranche.noteIsPrincipal) notePrincipal += amount;
+      } else keep.push(tranche);
     }
     if (drop <= 0n) continue;
     const staked = asBig(portal.staked);
@@ -409,6 +413,11 @@ function releaseMaturedPrincipal(state, nowMs) {
     portal.idle = idle - fromIdle;
     portal.tranches = keep;
     const booked = fromStaked + fromIdle;
+    // The time-locked note is the principal. Keep that amount subtracted from
+    // the coins that funded it, or those coins and the note are both spendable
+    // once the vault drops its stake figure.
+    const redeem = notePrincipal > booked ? booked : notePrincipal;
+    if (redeem > 0n) portal.redeemedNanos = asBig(portal.redeemedNanos) + redeem;
     state.totalLockedNanos = asBig(state.totalLockedNanos) - booked;
     if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
     released += booked;
@@ -1089,6 +1098,7 @@ function bindLockNote(state, portalId, tx, nowMs) {
   tranche.lockEpoch = Number.isInteger(Number(out?.lockEpoch)) ? Number(out.lockEpoch) : idx;
   const hex = commitHexOf(out?.commit);
   if (hex) tranche.noteCommit = hex;
+  tranche.noteIsPrincipal = Number(out?.unlockAtMs) > 0;
 }
 
 /** One credit. It earns the rest of its chain epoch, then later full epochs. */
@@ -1275,6 +1285,40 @@ function derivedCommitIndex(nowMs, genesisMs, magic) {
 /** Chain-genesis vortex index. Rate keys and settlement both use this integer. */
 function chainEpochIndex(state, nowMs) {
   return derivedCommitIndex(nowMs, state?.genesisMs, state?.magic);
+}
+
+/** End of the chain epoch that a lock at this time belongs to. */
+export function lockUnlockOf(state, nowMs) {
+  const epoch = chainEpochIndex(state, nowMs);
+  const genesis = Number(state?.genesisMs) || 0;
+  const span = epochMs(state?.magic);
+  const unlockAtMs = genesis > 0 && span > 0 ? genesis + (epoch + 1) * span : 0;
+  return { epoch, unlockAtMs };
+}
+
+/**
+ * A stamped lock must name this epoch's end. A missing stamp stays the older
+ * receipt: the tranche still records the end, and the output is not a note.
+ * An admit pub with no matching stamp is not a note either.
+ */
+export function lockStampRejected(state, tx, nowMs) {
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const out = [...outs].reverse().find((row) => String(row?.kind || tx?.kind || '') === KIND_LOCK) || null;
+  if (!out) return null;
+  const unlock = Number(out.unlockAtMs);
+  const hasUnlock = Number.isInteger(unlock) && unlock > 0;
+  const hasEpoch = out.lockEpoch != null && out.lockEpoch !== '' && Number.isInteger(Number(out.lockEpoch));
+  let hasAdmit = false;
+  try {
+    hasAdmit = Buffer.from(asU8(out.admitPub)).length === 32;
+  } catch { /* a missing pub is not a stamp */ }
+  if (!hasUnlock && !hasEpoch && !hasAdmit) return null;
+  const want = lockUnlockOf(state, nowMs);
+  if (!(want.unlockAtMs > 0)) return { ok: false, reason: 'clock' };
+  if (unlock !== want.unlockAtMs || Number(out.lockEpoch) !== want.epoch) {
+    return { ok: false, reason: 'lock_unlock' };
+  }
+  return null;
 }
 
 /** A freeze or a queued commit for this epoch. Null when it has neither. */
@@ -1803,6 +1847,8 @@ export function verifyReservePayout(state, tx, clockMs) {
   if (!state) return { ok: false, reason: 'no_vault' };
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   if (act.kind === KIND_LOCK) {
+    const stamp = lockStampRejected(state, tx, clockMs);
+    if (stamp) return stamp;
     if (act.opened === false) return { ok: false, reason: 'bad_amount' };
     if (!(act.nanos > 0)) return { ok: false, reason: 'bad_amount' };
     if (act.dest && isShearAddress(act.dest)) return { ok: false, reason: 'shear1' };
@@ -2068,6 +2114,12 @@ export function applyReserveBlock({
     const act = reserveAction(tx);
     if (!act || act.opened === false) continue;
     if (act.kind === KIND_LOCK) {
+      const stamp = lockStampRejected(state, tx, nowMs);
+      if (stamp) {
+        results.push({ action: KIND_LOCK, ...stamp });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
       const got = deposit({
         state,
         portalId: act.portalId,

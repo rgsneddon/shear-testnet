@@ -653,6 +653,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     for (final d in (input['dests'] as List? ?? const [])) d.toString(),
   };
   final rows = <Map<String, dynamic>>[];
+  final openedLocks = <Map<String, dynamic>>[];
   for (var i = 0; i < notes.length; i++) {
     final n = notes[i];
     if (n is! Map) continue;
@@ -670,7 +671,18 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     }
     final nanos = noteNanosExact(n);
     if (nanos == null || nanos <= BigInt.zero) continue;
-    rows.add({'i': i, 'nanos': nanos, 'addr': addr});
+    final row = {'i': i, 'nanos': nanos, 'addr': addr};
+    // An unlocked lock note is the principal. The hold still covers the coins
+    // that funded it, so this note is not one of the coins the hold reserves.
+    if ((n['kind'] ?? '').toString() == 'lock') {
+      final raw = n['unlockAtMs'];
+      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+      if (at > 0) {
+        openedLocks.add(row);
+        continue;
+      }
+    }
+    rows.add(row);
   }
   rows.sort((a, b) => (a['nanos'] as BigInt).compareTo(b['nanos'] as BigInt));
   var reserved = BigInt.zero;
@@ -680,7 +692,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       reserved += rows[start]['nanos'] as BigInt;
     }
   }
-  final free = rows.sublist(start);
+  final free = <Map<String, dynamic>>[...rows.sublist(start), ...openedLocks];
   free.sort((a, b) => (b['nanos'] as BigInt).compareTo(a['nanos'] as BigInt));
   final freeSum = free.fold<BigInt>(BigInt.zero, (s, r) => s + (r['nanos'] as BigInt));
   final batches = <Map<String, dynamic>>[];
@@ -1773,7 +1785,7 @@ const postedMerkleKeys = <String>{'side', 'hash'};
 const postedVoutKeys = <String>{
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
-  'portalId', 'memo', 'memoCt',
+  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch',
 };
 
 /// Sentinel for a nested value the allow-list refuses.
@@ -1957,6 +1969,25 @@ Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {St
   return note;
 }
 
+/// A lock note carries the epoch end and the user's admit pub.
+/// No clock leaves the older receipt. A random pub would not be the user's key.
+void _stampLockNote(List<Map<String, dynamic>> sealed, Map<String, dynamic> input) {
+  final epoch = input['lockEpoch'];
+  final unlock = input['unlockAtMs'];
+  final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
+  final hasClock = epoch is int && epoch >= 0 && unlock is int && unlock > 0;
+  if (!hasClock) return;
+  for (var i = 0; i < sealed.length; i++) {
+    final note = sealed[i];
+    if ((note['kind'] ?? '').toString() != 'lock') continue;
+    note['lockEpoch'] = epoch;
+    note['unlockAtMs'] = unlock;
+    if (spendSeed != null && spendSeed.length == 32 && note['commit'] is Uint8List) {
+      sealed[i] = attachAdmitPub(note, spendSeed: spendSeed);
+    }
+  }
+}
+
 /// Seal and sign one reserve lock, vote, or withdraw.
 /// Production calls this only from [Isolate.run].
 Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
@@ -1980,6 +2011,7 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
         nonce: input['withdrawNonce'] is Uint8List ? input['withdrawNonce'] as Uint8List : null,
       ),
   ];
+  if (kind == 'lock') _stampLockNote(sealed, input);
   String? withdrawId;
   String? withdrawNonceHex;
   Uint8List? withdrawNonceRaw;
@@ -3281,6 +3313,42 @@ class ShearLedger implements ReadProofSink {
     final nanos = sessionProofNanos(row['verifiedNanos'] ?? row['nanos']);
     if (key.isEmpty || nanos == null) return;
     _openedProofs[key] = nanos;
+  }
+
+  /// Keep the lock note's blind. The chain drops it, and the spend needs it
+  /// once the epoch ends.
+  void _rememberTimeLock(List<Map<String, dynamic>> sealed, String dest) {
+    if (!isDestAddress(dest)) return;
+    for (final o in sealed) {
+      if ((o['kind'] ?? '').toString() != 'lock') continue;
+      final unlock = o['unlockAtMs'];
+      if (unlock is! int || unlock <= 0) continue;
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
+      final row = <String, dynamic>{
+        'address': dest,
+        'dest': dest,
+        'kind': 'lock',
+        'commit': o['commit'],
+        'noteCommit': o['noteCommit'],
+        'r': o['r'],
+        'admitPub': o['admitPub'],
+        'unlockAtMs': unlock,
+        if (o['lockEpoch'] != null) 'lockEpoch': o['lockEpoch'],
+        if (o['valueProof'] != null) 'valueProof': o['valueProof'],
+        if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
+        if (o['nanos'] != null) 'nanos': o['nanos'],
+        'verified': true,
+      };
+      final units = tryU64Units(o['nanos']);
+      if (units != null) {
+        final she = _sheOfExactNanos(units.toString());
+        if (she != null) row['amount'] = she;
+      }
+      row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
+      rememberNote(row);
+      rememberDest(dest);
+      _proofCheckedDests.add(payKey(dest));
+    }
   }
 
   void rememberNote(Map<String, dynamic> note) {
@@ -5240,7 +5308,27 @@ class ShearLedger implements ReadProofSink {
     return n;
   }
 
+  /// Time-locked principal on [key]. Unstamped lock receipts are not this.
+  double _timeLockShe(String key, {required bool unlocked}) {
+    var n = 0.0;
+    for (final note in _notes) {
+      if ((note['kind'] ?? '').toString() != 'lock') continue;
+      if (note['spent'] == true) continue;
+      final raw = note['unlockAtMs'];
+      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+      if (at <= 0) continue;
+      if (!_noteOnDest(note, key)) continue;
+      if (!_noteMature(note)) continue;
+      final open = !lockNoteIsLocked(Map<String, dynamic>.from(note), tipTimestampMs);
+      if (open != unlocked) continue;
+      final she = _noteSheOf(note, 0);
+      if (she > 0) n += she;
+    }
+    return n;
+  }
+
   Map<String, double> _spendableAfterHold() {
+    refreshTimeLockedNotes();
     final keys = <String>{
       ..._spendable.keys,
       ..._lockDebitShe.keys,
@@ -5250,6 +5338,19 @@ class ShearLedger implements ReadProofSink {
     for (final k in keys) {
       if (!isDestAddress(k) || _isProgramVaultDest(k)) continue;
       gross[k] = _grossShown(k);
+    }
+    // A lock note is not spendable until its epoch ends. After that it is the
+    // principal, and the hold stays on the coins that funded it.
+    final openedLock = <String, double>{};
+    for (final k in gross.keys.toList()) {
+      final heldNote = _timeLockShe(k, unlocked: false);
+      final openNote = _timeLockShe(k, unlocked: true);
+      final cut = heldNote + openNote;
+      if (cut > 1e-12) {
+        final left = (gross[k] ?? 0) - cut;
+        gross[k] = left <= 1e-12 ? 0 : left;
+      }
+      if (openNote > 1e-12) openedLock[k] = openNote;
     }
     var pendingSum = 0.0;
     final pending = <String, double>{};
@@ -5283,6 +5384,9 @@ class ShearLedger implements ReadProofSink {
         left[k] = remain <= 1e-12 ? 0 : remain;
         owe -= take;
       }
+    }
+    for (final e in openedLock.entries) {
+      left[e.key] = (left[e.key] ?? 0) + e.value;
     }
     return left;
   }
@@ -5337,6 +5441,12 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true || n['verified'] != true) continue;
       if (!_noteOnDest(n, key)) continue;
+      // A time-locked note stays out of Spendable until its epoch ends.
+      if ((n['kind'] ?? '').toString() == 'lock' && lockNoteIsLocked(n, tipTimestampMs)) {
+        final raw = n['unlockAtMs'];
+        final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+        if (at > 0) continue;
+      }
       // Same floor as the Flow picker. A missing height is already in the
       // mature book; a stamped height still waits for 9 confirmations.
       if (!_noteMature(n)) continue;
@@ -7356,6 +7466,8 @@ class ShearLedger implements ReadProofSink {
           'amount': n['amount'],
           'nanos': n['nanos'],
           'verifiedNanos': n['verifiedNanos'],
+          'kind': (n['kind'] ?? '').toString(),
+          'unlockAtMs': n['unlockAtMs'],
         },
     ];
     // flutter_tester's later Isolate.run nulls this closure hook on the
@@ -7802,6 +7914,8 @@ class ShearLedger implements ReadProofSink {
     String? choice,
     int? currentEpoch,
     int? epochStartMs,
+    int? lockEpoch,
+    int? unlockAtMs,
     String? change,
     Uint8List? spendSeed,
     bool privacyHopUp = false,
@@ -7826,6 +7940,8 @@ class ShearLedger implements ReadProofSink {
         choice: choice,
         currentEpoch: currentEpoch,
         epochStartMs: epochStartMs,
+        lockEpoch: lockEpoch,
+        unlockAtMs: unlockAtMs,
         change: change,
         spendSeed: spendSeed,
         privacyHopUp: privacyHopUp,
@@ -7988,6 +8104,8 @@ class ShearLedger implements ReadProofSink {
     String? choice,
     int? currentEpoch,
     int? epochStartMs,
+    int? lockEpoch,
+    int? unlockAtMs,
     String? change,
     Uint8List? spendSeed,
     bool privacyHopUp = false,
@@ -8399,6 +8517,8 @@ class ShearLedger implements ReadProofSink {
         ],
         'choice': choice ?? '',
         'programId': programId ?? '',
+        if (sendKind == 'lock' && lockEpoch != null) 'lockEpoch': lockEpoch,
+        if (sendKind == 'lock' && unlockAtMs != null) 'unlockAtMs': unlockAtMs,
       });
       final sealed = <Map<String, dynamic>>[
         for (final raw in (built['vouts'] as List))
@@ -8523,6 +8643,7 @@ class ShearLedger implements ReadProofSink {
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');
       }
+      if (sendKind == 'lock') _rememberTimeLock(vouts, destTo);
       chosen?['spent'] = true;
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
         // The pool balance below is already net. Debit only when Spendable
@@ -8572,6 +8693,7 @@ class ShearLedger implements ReadProofSink {
       _txs.add(tx);
       return tx;
     }
+    if (sendKind == 'lock') _rememberTimeLock(vouts, destTo);
     if (sendKind != 'withdraw') {
       final netBook = spendable(src) - needShe;
       _spendable[src] = netBook <= 1e-18 ? 0 : netBook;

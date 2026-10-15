@@ -868,6 +868,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       if (amt == null) throw const FormatException('reserve lock needs --amount');
       final she = double.parse(amt);
       final from = dest;
+      final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
       final tx = await ledger.sendSpendableSum(
         from: from,
         to: dest,
@@ -878,6 +879,10 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
+        currentEpoch: clock == null ? null : reserve.currentEpoch,
+        epochStartMs: clock,
+        lockEpoch: clock == null ? null : reserve.currentEpoch,
+        unlockAtMs: clock == null ? null : clock + kReserveEpochMs,
       );
       reserve.deposit(dest: dest, she: she, nowMs: now);
       session.rememberedReserve = _portalSnap(reserve, dest, now);
