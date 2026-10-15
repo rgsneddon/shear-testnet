@@ -26,25 +26,41 @@ process.env.SHEAR_SEAL_KEY_DIR = keyDir;
 
 const USER_SID = 'S-1-5-21-1-2-3-1001';
 const LOCAL_NAME = 'DESKTOP-ODTSQ56\\rgsne';
-const WIN_ENV = { SystemRoot: 'C:\\Windows' };
+const SYSTEM_DIR = 'D:\\Windows\\System32';
+const SYSTEM_ROOT = 'D:\\Windows';
+const PLANTED_ENV = {
+  SystemRoot: 'C:\\Windows',
+  SYSTEMROOT: 'C:\\Windows',
+  PSModulePath: 'C:\\evil\\modules;C:\\Users\\rgsne\\Documents\\WindowsPowerShell\\Modules',
+  PATH: 'C:\\evil',
+};
 
 function identityRealpath(file) {
-  return file;
+  const text = String(file);
+  assert.equal(text.toLowerCase().startsWith('c:\\windows\\system32'), false, text);
+  return text;
 }
 
 function system32(name) {
-  return system32Exe(name, WIN_ENV, identityRealpath);
+  return system32Exe(name, SYSTEM_DIR, identityRealpath);
 }
 
-function goodReport(dir, shewallPresent) {
-  const dirSddl = `O:${USER_SID}G:SYD:P(A;OICI;FA;;;${USER_SID})(A;CIOI;FA;;;SY)(A;OICI;FA;;;BA)`;
-  let text = `PATH=${dir}\nOWNER=${USER_SID}\nPROTECTED=1\nSDDL=${dirSddl}\n`;
-  if (shewallPresent) {
-    const shewall = path.join(dir, SHEWALL_FILE);
-    const fileSddl = `O:${USER_SID}G:SYD:P(A;;FA;;;${USER_SID})(A;;FA;;;SY)(A;;FA;;;BA)`;
-    text += `PATH=${shewall}\nOWNER=${USER_SID}\nPROTECTED=1\nSDDL=${fileSddl}\n`;
+function goodSecurity(filePath, dir) {
+  const shewall = path.join(dir, SHEWALL_FILE);
+  if (filePath === shewall) {
+    return {
+      owner: USER_SID,
+      sddl: `O:${USER_SID}G:SYD:P(A;;FA;;;${USER_SID})(A;;FA;;;SY)(A;;FA;;;BA)`,
+    };
   }
-  return text;
+  return {
+    owner: USER_SID,
+    sddl: `O:${USER_SID}G:SYD:P(A;OICI;FA;;;${USER_SID})(A;CIOI;FA;;;SY)(A;OICI;FA;;;BA)`,
+  };
+}
+
+function badSecurity() {
+  return { owner: ADMINISTRATORS_SID, sddl: 'O:BAD:(A;;FA;;;WD)' };
 }
 
 function tempDatadir() {
@@ -62,31 +78,35 @@ function tempDatadir() {
   return dir;
 }
 
-function recordWindows(dir, { aclScript } = {}) {
+function recordWindows(dir, { securityScript, realpathSync = identityRealpath } = {}) {
   const calls = [];
   let aclReads = 0;
-  const execFileSync = (file, args) => {
-    calls.push({ file: String(file), args: args.slice() });
+  const execFileSync = (file, args, opts) => {
+    calls.push({ file: String(file), args: args.slice(), env: opts?.env });
+    assert.equal(/powershell/i.test(String(file)), false, String(file));
+    assert.deepEqual(opts.env, { SystemRoot: SYSTEM_ROOT });
     if (String(file).endsWith(`${path.win32.sep}whoami.exe`)) {
       return `"${LOCAL_NAME}","${USER_SID}"\r\n`;
     }
-    if (String(file).endsWith(`${path.win32.sep}powershell.exe`)) {
-      aclReads += 1;
-      if (aclScript) return aclScript(aclReads, dir);
-      if (aclReads === 1) {
-        return `PATH=${dir}\nOWNER=${ADMINISTRATORS_SID}\nPROTECTED=0\nSDDL=O:BA G:BA D:(A;;FA;;;WD)\n`;
-      }
-      return goodReport(dir, fs.existsSync(path.join(dir, SHEWALL_FILE)));
-    }
     return 'Successfully processed 1 files\r\n';
+  };
+  const readSecurity = (filePath) => {
+    aclReads += 1;
+    if (securityScript) return securityScript(aclReads, filePath);
+    const firstReads = fs.existsSync(path.join(dir, SHEWALL_FILE)) ? 2 : 1;
+    if (aclReads <= firstReads) return badSecurity();
+    return goodSecurity(filePath, dir);
   };
   const got = ensureDatadir(dir, {
     platform: 'win32',
-    env: WIN_ENV,
+    env: PLANTED_ENV,
     execFileSync,
-    realpathSync: identityRealpath,
+    realpathSync,
+    getSystemDirectory: () => SYSTEM_DIR,
+    readSystemRoot: () => SYSTEM_ROOT,
+    readSecurity,
   });
-  return { calls, got };
+  return { calls, got, aclReads };
 }
 
 function icaclsCalls(calls) {
@@ -117,8 +137,8 @@ describe('datadir DACL', () => {
     const whoami = system32('whoami.exe');
     const icacls = system32('icacls.exe');
     assert.equal(path.win32.isAbsolute(whoami), true);
-    assert.equal(whoami, 'C:\\Windows\\System32\\whoami.exe');
-    assert.equal(icacls, 'C:\\Windows\\System32\\icacls.exe');
+    assert.equal(whoami, 'D:\\Windows\\System32\\whoami.exe');
+    assert.equal(icacls, 'D:\\Windows\\System32\\icacls.exe');
     assert.equal(calls.some((call) => call.file === whoami), true);
     assert.equal(calls.some((call) => call.file === icacls), true);
     assert.equal(calls.some((call) => call.file === 'whoami' || call.file === 'icacls'), false);
@@ -183,26 +203,63 @@ describe('datadir DACL', () => {
     }
   });
 
-  it('ignores SystemRoot and refuses a System32 path that resolves outside it', () => {
-    const spoofed = { SystemRoot: 'C:\\Temp\\fake', SYSTEMROOT: 'C:\\Temp\\fake' };
-    assert.equal(system32Exe('whoami.exe', spoofed, identityRealpath), 'C:\\Windows\\System32\\whoami.exe');
-    assert.equal(system32Exe('icacls.exe', spoofed, identityRealpath), 'C:\\Windows\\System32\\icacls.exe');
+  it('uses GetSystemDirectoryW on D: and ignores a planted C: System32', () => {
+    const dir = tempDatadir();
+    const planted = [];
+    const { calls } = recordWindows(dir, {
+      realpathSync: (file) => {
+        const text = String(file);
+        if (text.toLowerCase().startsWith('c:\\')) planted.push(text);
+        return text;
+      },
+    });
+    assert.deepEqual(planted, []);
+    assert.ok(calls.some((call) => call.file === 'D:\\Windows\\System32\\whoami.exe'));
+    assert.ok(calls.some((call) => call.file === 'D:\\Windows\\System32\\icacls.exe'));
+    assert.equal(calls.some((call) => String(call.file).toLowerCase().startsWith('c:\\')), false);
     assert.throws(
-      () => system32Exe('whoami.exe', spoofed, () => 'C:\\Temp\\fake\\System32\\whoami.exe'),
+      () => system32Exe('whoami.exe', SYSTEM_DIR, () => 'C:\\Windows\\System32\\whoami.exe'),
       /datadir_acl:system32/,
     );
-    const dir = tempDatadir();
     let called = false;
     assert.throws(() => ensureDatadir(dir, {
       platform: 'win32',
-      env: spoofed,
-      realpathSync: () => 'C:\\Temp\\fake\\System32\\whoami.exe',
+      env: PLANTED_ENV,
+      getSystemDirectory: () => SYSTEM_DIR,
+      readSystemRoot: () => 'C:\\Windows',
+      readSecurity: () => goodSecurity(dir, dir),
+      realpathSync: identityRealpath,
       execFileSync: () => {
         called = true;
         return '';
       },
     }), /datadir_acl:system32/);
     assert.equal(called, false);
+    called = false;
+    assert.throws(() => ensureDatadir(dir, {
+      platform: 'win32',
+      env: PLANTED_ENV,
+      getSystemDirectory: () => SYSTEM_DIR,
+      readSystemRoot: () => SYSTEM_ROOT,
+      readSecurity: () => goodSecurity(dir, dir),
+      realpathSync: (file) => (
+        String(file).toLowerCase() === SYSTEM_DIR.toLowerCase()
+          ? 'C:\\Windows\\System32'
+          : file
+      ),
+      execFileSync: () => {
+        called = true;
+        return '';
+      },
+    }), /datadir_acl:system32/);
+    assert.equal(called, false);
+    const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '../src/win32_system.cjs'), 'utf8');
+    const acl = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '../src/datadir_acl.js'), 'utf8');
+    assert.match(src, /GetSystemDirectoryW/);
+    assert.match(src, /RegGetValueW/);
+    assert.match(src, /SystemRoot/);
+    assert.doesNotMatch(src, /C:\\Windows\\System32/);
+    assert.doesNotMatch(acl, /C:\\Windows\\System32/);
   });
 
   it('re-reads the DACL and owner on every open and re-applies a mismatch', () => {
@@ -210,18 +267,21 @@ describe('datadir DACL', () => {
     fs.writeFileSync(path.join(dir, 'datadir.acl'), `1\n${USER_SID}\nnoshewall\n`);
     const first = recordWindows(dir);
     assert.ok(icaclsCalls(first.calls).length >= 1);
-    assert.equal(first.calls.some((call) => call.file.endsWith(`${path.win32.sep}powershell.exe`)), true);
+    assert.ok(first.aclReads >= 1);
 
     const second = recordWindows(dir, {
-      aclScript: () => goodReport(dir, false),
+      securityScript: (_n, filePath) => goodSecurity(filePath, dir),
     });
     assert.equal(second.got.applied, false);
     assert.equal(icaclsCalls(second.calls).length, 0);
-    assert.equal(second.calls.some((call) => call.file.endsWith(`${path.win32.sep}powershell.exe`)), true);
+    assert.ok(second.aclReads >= 1);
 
-    const extra = `PATH=${dir}\nOWNER=${USER_SID}\nPROTECTED=1\nSDDL=O:${USER_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})(A;OICI;FA;;;S-1-1-0)\n`;
+    const extra = {
+      owner: USER_SID,
+      sddl: `O:${USER_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})(A;;FA;;;S-1-1-0)`,
+    };
     const third = recordWindows(dir, {
-      aclScript: (n) => (n === 1 ? extra : goodReport(dir, false)),
+      securityScript: (n, filePath) => (n === 1 ? extra : goodSecurity(filePath, dir)),
     });
     assert.equal(third.got.applied, true);
     assert.ok(icaclsCalls(third.calls).length >= 1);
@@ -229,17 +289,45 @@ describe('datadir DACL', () => {
 
   it('throws when the read-back DACL has an extra ACE, is unprotected, or has the wrong owner', () => {
     const dir = tempDatadir();
-    const mismatch = `PATH=${dir}\nOWNER=${SYSTEM_SID}\nPROTECTED=0\nSDDL=O:SYD:(A;;FA;;;WD)\n`;
+    const mismatch = { owner: SYSTEM_SID, sddl: 'O:SYD:(A;;FA;;;WD)' };
     const cases = [
-      `PATH=${dir}\nOWNER=${USER_SID}\nPROTECTED=1\nSDDL=O:${USER_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})(A;;FA;;;S-1-1-0)\n`,
-      `PATH=${dir}\nOWNER=${USER_SID}\nPROTECTED=0\nSDDL=O:${USER_SID}D:(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})\n`,
-      `PATH=${dir}\nOWNER=${ADMINISTRATORS_SID}\nPROTECTED=1\nSDDL=O:${ADMINISTRATORS_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})\n`,
+      {
+        owner: USER_SID,
+        sddl: `O:${USER_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})(A;;FA;;;S-1-1-0)`,
+      },
+      {
+        owner: USER_SID,
+        sddl: `O:${USER_SID}D:(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})`,
+      },
+      {
+        owner: ADMINISTRATORS_SID,
+        sddl: `O:${ADMINISTRATORS_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})`,
+      },
     ];
     for (const bad of cases) {
       assert.throws(() => recordWindows(dir, {
-        aclScript: (n) => (n === 1 ? mismatch : bad),
+        securityScript: (n) => (n === 1 ? mismatch : bad),
       }), /datadir_acl:verify/);
     }
+  });
+
+  it('reads the security descriptor without PowerShell or the caller PSModulePath', () => {
+    const dir = tempDatadir();
+    const { calls, aclReads } = recordWindows(dir);
+    assert.ok(aclReads >= 2);
+    assert.equal(calls.some((call) => /powershell/i.test(call.file)), false);
+    assert.ok(calls.length >= 1);
+    for (const call of calls) {
+      assert.deepEqual(call.env, { SystemRoot: SYSTEM_ROOT });
+      assert.equal(Object.hasOwn(call.env, 'PSModulePath'), false);
+      assert.equal(JSON.stringify(call.env).includes('evil'), false);
+    }
+    const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '../src/win32_system.cjs'), 'utf8');
+    const acl = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '../src/datadir_acl.js'), 'utf8');
+    assert.match(src, /GetNamedSecurityInfoW/);
+    assert.doesNotMatch(src, /powershell\.exe/i);
+    assert.doesNotMatch(acl, /powershell\.exe/i);
+    assert.doesNotMatch(acl, /PSModulePath/);
   });
 
   it('refuses a symlink instead of letting /T follow it', () => {
@@ -250,7 +338,12 @@ describe('datadir DACL', () => {
     let called = false;
     assert.throws(() => ensureDatadir(dir, {
       platform: 'win32',
-      env: WIN_ENV,
+      env: PLANTED_ENV,
+      getSystemDirectory: () => SYSTEM_DIR,
+      readSystemRoot: () => SYSTEM_ROOT,
+      readSecurity: () => {
+        throw new Error('datadir_acl:link should win');
+      },
       realpathSync: identityRealpath,
       execFileSync: () => {
         called = true;
@@ -267,7 +360,12 @@ describe('datadir DACL', () => {
     called = false;
     assert.throws(() => ensureDatadir(linked, {
       platform: 'win32',
-      env: WIN_ENV,
+      env: PLANTED_ENV,
+      getSystemDirectory: () => SYSTEM_DIR,
+      readSystemRoot: () => SYSTEM_ROOT,
+      readSecurity: () => {
+        throw new Error('datadir_acl:link should win');
+      },
       realpathSync: identityRealpath,
       execFileSync: () => {
         called = true;
