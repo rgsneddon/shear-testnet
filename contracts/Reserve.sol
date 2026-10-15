@@ -184,17 +184,24 @@ contract Reserve {
     mapping(uint256 => uint256) public epochRateOf;
     mapping(uint256 => bool) internal epochRateKnown;
 
+    /// First non-zero chain genesis wins. Settlement and rate keys share it.
+    /// A later call that names a different genesis reverts.
+    function _pinClock(uint256 chainGenesis) internal {
+        if (chainGenesis == 0) return;
+        if (clockGenesis == 0) clockGenesis = chainGenesis;
+        else if (clockGenesis != chainGenesis) revert BadRate();
+    }
+
+    function pinClock(uint256 chainGenesis) external onlyShear {
+        _pinClock(chainGenesis);
+    }
+
     /// Chain epoch index, the same integer as JS vortexEpochIndex: 0 at genesis.
     /// epochIdx must equal that derived index. A repeated index reverts.
     /// Epoch 0 is not rewritten to 1, and the vault's currentEpoch counter is not this index.
-    /// chainGenesis pins the clock the first time it is non-zero. A later commit
-    /// that names a different genesis reverts.
     function commitRate(uint256 epochIdx, uint256 bps, uint256 nowTs, uint256 chainGenesis) external onlyShear {
         if (bps > 100_000 / 10) revert BadRate();
-        if (chainGenesis != 0) {
-            if (clockGenesis == 0) clockGenesis = chainGenesis;
-            else if (clockGenesis != chainGenesis) revert BadRate();
-        }
+        _pinClock(chainGenesis);
         uint256 g = clockGenesis;
         uint256 derived = (g == 0 || nowTs <= g) ? 0 : (nowTs - g) / epochLengthMs();
         if (epochIdx != derived) revert BadRate();
@@ -205,9 +212,13 @@ contract Reserve {
         rateCommitEpoch = epochIdx;
     }
 
+    /// Chain-genesis vortex index once pinned. genesisTs is only the fallback
+    /// for a vault that has never been told the chain genesis. A first lock
+    /// does not replace a pinned clock.
     function _chainEpoch(uint256 nowTs) internal view returns (uint256) {
-        if (genesisTs == 0 || nowTs <= genesisTs) return 0;
-        return (nowTs - genesisTs) / epochLengthMs();
+        uint256 g = clockGenesis != 0 ? clockGenesis : genesisTs;
+        if (g == 0 || nowTs <= g) return 0;
+        return (nowTs - g) / epochLengthMs();
     }
 
     function _rateFor(uint256 epochIdx) internal view returns (uint256) {

@@ -13,7 +13,7 @@ import { attachDummyOuts } from '../../crypto/dummy.js';
 import { levyNanos } from '../../crypto/levy.js';
 import {
   resetTxSpendTagParses,
-  sealNote,
+  sealHiddenNote,
   txSpendTagParses,
   txSpendTags,
 } from '../../crypto/note.js';
@@ -45,9 +45,11 @@ describe('v12 mempool tag parse stays linear', () => {
     assert.ok(AMOUNTS.every((n) => Number.isSafeInteger(n) && n > 0));
     const dest = destOf();
     const d20 = hash20FromAddress(dest);
+    const admitBase = newIdentity().admitBase;
     const pays = AMOUNTS.map((amount) => {
-      const note = sealNote(amount, { dest20: Buffer.from(d20), kind: 'send' });
+      const note = sealHiddenNote(amount, { dest20: Buffer.from(d20), kind: 'send', admitBase });
       note.address = dest;
+      assert.equal(note.valueProof, undefined);
       return note;
     });
     const dummyTx = attachDummyOuts({
@@ -67,21 +69,23 @@ describe('v12 mempool tag parse stays linear', () => {
       seq += 1;
       const amount = AMOUNTS[i % AMOUNTS.length];
       const len = BLOB_LENS[i % BLOB_LENS.length];
-      const blob = Buffer.alloc(len);
-      blob[0] = i % 2 === 0 ? 2 : 3;
-      blob[1] = seq & 0xff;
-      blob[2] = (seq >> 8) & 0xff;
-      blob[3] = k & 0xff;
-      blob[4] = len & 0xff;
+      // Hidden outputs carry no value opening. A membership shape binds the
+      // tag and cTilde and carries no proof blob, so a version byte is not an opening.
+      const spendTag = Buffer.alloc(32);
+      spendTag[0] = i % 2 === 0 ? 2 : 3;
+      spendTag[1] = seq & 0xff;
+      spendTag[2] = (seq >> 8) & 0xff;
+      spendTag[3] = k & 0xff;
+      spendTag[4] = len & 0xff;
+      spendTag[5] = amount & 0xff;
       const tx = {
         id: `n30-${k}-${i}-${seq}`,
         kind: 'send',
         from: dest,
         to: dest,
-        nanos: amount,
         vin: [{ address: dest, commit: cTilde }],
         vout: [pays[i % pays.length], dummy],
-        admit_proofs: [{ blob, cTilde }],
+        admit_proofs: [{ cTilde, spendTag }],
       };
       tx.fee = levyNanos(0, { tx });
       return tx;

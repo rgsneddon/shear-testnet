@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
+import { createRpc } from '../src/rpc.js';
 import { HISTORICAL_TIP } from '../../crypto/historical_prefix.js';
 import { chainLoadSeal, retarget } from '../src/chain.js';
 import { bookSealKeyFor } from '../src/book_seal_key.js';
@@ -95,6 +96,42 @@ describe('v3 and v4 datadirs refuse each other', () => {
     assert.equal(store.tip(), null);
     const again = createStore(dir);
     assert.equal(again.tip(), null);
+  });
+
+  it('store.magic is the book network RPC stats read', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-store-'));
+    const store = createStore(dir);
+    assert.equal(store.magic, MAGIC_TESTNET);
+    assert.equal(store.magic, 'shear-testnet-v12');
+    const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
+    try {
+      const stats = rpc.dispatch('getstats', {});
+      assert.equal(stats.magic, store.magic);
+      const fingerprint = rpc.dispatch('getfingerprint', {});
+      assert.equal(typeof fingerprint.fingerprint, 'string');
+      assert.match(fingerprint.fingerprint, new RegExp(`NETWORK=${store.magic}`));
+    } finally {
+      rpc.close();
+    }
+    const mainnet = {
+      magic: MAGIC_MAINNET,
+      tip() { return null; },
+      fluxset() { return { jroot: null }; },
+      on() {},
+      blocks: [],
+      mempool: [],
+      hashTxLive: 1,
+      consensusFingerprint() { return `NETWORK=${MAGIC_MAINNET}`; },
+    };
+    const other = createRpc({ store: mainnet, port: 0, host: '127.0.0.1' });
+    try {
+      const stats = other.dispatch('getstats', {});
+      assert.equal(stats.magic, MAGIC_MAINNET);
+      assert.equal(stats.magic, mainnet.magic);
+      assert.notEqual(stats.magic, MAGIC_TESTNET);
+    } finally {
+      other.close();
+    }
   });
 
   it('P2P drops a hello whose magic is the frozen v2 book', async () => {

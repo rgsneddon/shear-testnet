@@ -75,7 +75,7 @@ const ABI_NAMES = [
   'bonusEnacted', 'canJoin', 'commitRate', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
   'enactedAtMs', 'enactedDelta', 'enactedDown', 'enactedHold', 'enactedLiveBonus', 'enactedUp',
   'epochBps', 'epochDaysOf', 'epochLengthMs', 'epochOpen', 'epochRateOf', 'epochStart', 'liveHashBonusNanos',
-  'lock', 'magic', 'nextEpochBps', 'observeRate', 'oracleAsOfMs', 'portalId', 'portalOf',
+  'lock', 'magic', 'nextEpochBps', 'observeRate', 'oracleAsOfMs', 'pinClock', 'portalId', 'portalOf',
   'publicView', 'rateCommitEpoch', 'remainingDays', 'remainingMs', 'rewardNanos', 'totalLocked', 'trimmedMeanBps', 'vote', 'votesDecrease',
   'votesHold', 'votesIncrease', 'withdraw',
 ];

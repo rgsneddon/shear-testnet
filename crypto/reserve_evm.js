@@ -129,6 +129,10 @@ export function encodeCommitRate(epochIdx, bps, nowTs, chainGenesis = 0) {
   );
 }
 
+export function encodePinClock(chainGenesis) {
+  return concat(selector('pinClock(uint256)'), pad32(chainGenesis));
+}
+
 export function encodeRewardNanos(active, bps) {
   return concat(selector('rewardNanos(uint256,uint256)'), pad32(active), pad32(bps));
 }
@@ -405,6 +409,13 @@ export async function executeReserveTx(session, tx, nowMs) {
 /** Run pinned Reserve bytecode + EVM SHE value for a block body. Fail closed. */
 export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
+  const list = Array.isArray(txs) ? txs : [];
+  const cb = list[0] || null;
+  if (Number(genesisMs) > 0) {
+    const pinned = await callReserve(session, encodePinClock(genesisMs));
+    if (!pinned.ok) return { ok: false, reason: pinned.reason || 'clock' };
+    evm.calls += 1;
+  }
   const prior = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
   if (prior.ok) {
     const view0 = decodePublicView(prior.returnValue);
@@ -414,7 +425,17 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
       if (!en.ok) return { ok: false, reason: en.reason || 'enact' };
     }
   }
-  for (const tx of (txs || []).slice(1)) {
+  // Commit before locks so a same-block stake settles on the chain-genesis
+  // key, matching applyReserveBlock. The commit names the epoch that is opening.
+  if (cb?.rateCommit && typeof cb.rateCommit === 'object') {
+    const epochIdx = Math.floor(Number(cb.rateCommit.epochIndex) || 0);
+    const bps = Math.floor(Number(cb.rateCommit.epochBps) || 0);
+    const committed = await callReserve(session, encodeCommitRate(epochIdx, bps, nowMs, genesisMs));
+    if (!committed.ok) return { ok: false, reason: committed.reason || 'rate_commit' };
+    evm.calls += 1;
+    evm.committedBps = bps;
+  }
+  for (const tx of list.slice(1)) {
     if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
     const got = await executeReserveTx(session, tx, nowMs);
     if (!got.ok) {
@@ -428,7 +449,6 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
     evm.calls += 1;
     evm.valueMoved += Number(got.valueMoved || 0);
   }
-  const cb = Array.isArray(txs) ? txs[0] : null;
   if (cb?.observe != null) {
     const parsed = parseCoinbaseObserve(cb);
     if (!parsed.ok || !parsed.observe) return { ok: false, reason: 'bad_rate' };
@@ -438,14 +458,6 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
     );
     if (!called.ok) return { ok: false, reason: called.reason || 'bad_rate' };
     evm.calls += 1;
-  }
-  if (cb?.rateCommit && typeof cb.rateCommit === 'object') {
-    const epochIdx = Math.floor(Number(cb.rateCommit.epochIndex) || 0);
-    const bps = Math.floor(Number(cb.rateCommit.epochBps) || 0);
-    const committed = await callReserve(session, encodeCommitRate(epochIdx, bps, nowMs, genesisMs));
-    if (!committed.ok) return { ok: false, reason: committed.reason || 'rate_commit' };
-    evm.calls += 1;
-    evm.committedBps = bps;
   }
   const view = decodePublicView(
     (await callReserve(session, encodePublicView(nowMs), { staticCall: true })).returnValue,

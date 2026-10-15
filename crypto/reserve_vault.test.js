@@ -300,6 +300,25 @@ describe('Reserve vault protocol', () => {
     assert.equal(supplyIdentity(fork).ok, true);
   });
 
+  it('a withdraw mints the u64 cap, not the rounded Number', () => {
+    const U64 = 0xffffffffffffffffn;
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const dest = destOf(newIdentity());
+    assert.equal(deposit({ state, dest, nanos: U64, nowMs: t0 }).ok, true);
+    state.epochBps = 10000;
+    const paid = withdraw({ state, dest, nowMs: t0 + 2 * RESERVE_EPOCH_MS });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.mint.ok, true, paid.mint && paid.mint.reason);
+    assert.equal(typeof paid.mint.nanos, 'bigint');
+    assert.equal(paid.mint.nanos, U64);
+    assert.equal(paid.interest, U64);
+    assert.notEqual(paid.mint.nanos, BigInt(Number(U64)));
+    assert.equal(state.mintBankNanos, U64);
+    assert.equal(supplyIdentity(state).ok, true);
+  });
+
   it('first sealed block after epoch auto-enacts the winning vote; height is unchanged', () => {
     const alice = newIdentity();
     const a = destOf(alice);

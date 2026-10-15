@@ -101,7 +101,15 @@ function minerOf() {
   return vaultDest(id.address, { viewKey: id.viewKey });
 }
 
-async function verifyBoundary({ activation, window, commitBps, epochIndex, now, committedBps = GENESIS_BPS }) {
+async function verifyBoundary({
+  activation,
+  window,
+  commitBps,
+  epochIndex,
+  now,
+  committedBps = GENESIS_BPS,
+  genesisMs = T0,
+}) {
   const who = minerOf();
   const parentTpl = buildTemplate({
     prev: GENESIS_PREV,
@@ -159,7 +167,8 @@ async function verifyBoundary({ activation, window, commitBps, epochIndex, now, 
   return verifyBlock({ ...childTpl, header, txs: [cb] }, parent, {
     probeBody: true,
     magic: MAGIC_TESTNET,
-    genesisMs: T0,
+    genesisMs,
+    evmHistory: [parent],
     mtpTimestamps: [now - 180_000, now - 90_000, now - 1_000],
     oracleActivationHeight: activation,
     oracleWindow: window || [],
@@ -493,6 +502,119 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     assert.equal(repeat.ok, false);
     const repeatOther = await callReserve(session, encodeCommitRate(1, GENESIS_BPS, boundary, T0));
     assert.equal(repeatOther.ok, false);
+  });
+
+  it('verifyBlockEvm derives the chain genesis and ignores a raw option', async () => {
+    const window = windowOf(2500, 1);
+    const bps = epochBpsFromReports(GENESIS_BPS, window, { windowSize: W });
+    assert.equal(bps, 250);
+    const now = T0 + RESERVE_EPOCH_MS;
+    const lie = T0 + 5 * RESERVE_EPOCH_MS;
+    const got = await verifyBoundary({
+      activation: 0,
+      window,
+      commitBps: bps,
+      epochIndex: 1,
+      now,
+      genesisMs: lie,
+    });
+    assert.equal(got.ok, true, `${got.reason || ''} ${got.error || ''}`);
+  });
+});
+
+function epochInterest(bps) {
+  return Number((BigInt(PI_SHE_NANOS) * BigInt(bps)) / 10000n);
+}
+
+/**
+ * Completed chain epochs the stake's cursor covers: the vortex index at
+ * lock, inclusive, through the index at withdraw, exclusive. Each pays
+ * floor(stake * that epoch's bps / 10000). A first-lock clock would alias
+ * those steps onto chain keys 0 and 1.
+ */
+function epochsSat(offset, holdEpochs) {
+  const from = Math.floor(offset);
+  const until = Math.floor(offset + holdEpochs);
+  const out = [];
+  for (let e = from; e < until; e += 1) out.push(e);
+  return out;
+}
+
+async function satInterest(offset, holdEpochs, rates) {
+  const epoch = RESERVE_EPOCH_MS;
+  const lockAt = T0 + offset * epoch;
+  const drawAt = lockAt + holdEpochs * epoch;
+  const state = emptyVault();
+  state.magic = MAGIC_TESTNET;
+  const session = await bootReserveEvm();
+  const indexes = Object.keys(rates).map(Number).sort((a, b) => a - b);
+  for (const idx of indexes) {
+    const bps = rates[idx];
+    const window = windowOf(bps * 10, 1);
+    const expected = epochBpsFromReports(GENESIS_BPS, window, { windowSize: W });
+    assert.equal(expected, bps, `tenths ${bps * 10}`);
+    const nowMs = T0 + idx * epoch;
+    const queued = applyBoundary(state, {
+      height: W + 1 + idx,
+      nowMs,
+      parentMs: nowMs - 1,
+      window,
+      bps,
+      epochIndex: idx,
+    });
+    assert.equal(queued.ok, true, `js commit ${idx} ${queued.reason}`);
+    const committed = await callReserve(session, encodeCommitRate(idx, bps, nowMs, T0));
+    assert.equal(committed.ok, true, `evm commit ${idx} ${committed.reason}`);
+  }
+  assert.equal(state.genesisMs, T0);
+  const who = minerOf();
+  const opened = deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lockAt });
+  assert.equal(opened.ok, true, opened.reason);
+  const paid = withdraw({ state, dest: who, nowMs: drawAt });
+  assert.equal(paid.ok, true, paid.reason);
+  const id = `portal-${offset}-${holdEpochs}`;
+  const locked = await callReserve(session, encodeDeposit(id, PI_SHE_NANOS, lockAt));
+  assert.equal(locked.ok, true, locked.reason);
+  const enacted = await callReserve(session, encodeEnact(drawAt));
+  assert.equal(enacted.ok, true, enacted.reason);
+  const drawn = await callReserve(session, encodeWithdraw(id, drawAt));
+  assert.equal(drawn.ok, true, drawn.reason);
+  const evmPaid = decodeWithdraw(drawn.returnValue);
+  assert.equal(evmPaid.principal, PI_SHE_NANOS);
+  assert.equal(evmPaid.interest, paid.interest);
+  const covered = epochsSat(offset, holdEpochs);
+  const want = covered.reduce((sum, idx) => sum + epochInterest(rates[idx] ?? GENESIS_BPS), 0);
+  assert.equal(paid.interest, want, `offset ${offset} epochs ${covered.join(',')}`);
+  return paid.interest;
+}
+
+describe('chain-genesis clock pays the epochs a stake sat through', () => {
+  const rates = { 1: 300, 2: 400, 3: 500, 4: 640 };
+
+  it('first lock at 0, 0.5, 1.5, and 3.25 epochs matches JS to the EVM', async () => {
+    const at0 = await satInterest(0, 2, rates);
+    const atHalf = await satInterest(0.5, 2, rates);
+    const at15 = await satInterest(1.5, 2, rates);
+    const at325 = await satInterest(3.25, 2, rates);
+    assert.equal(at0, epochInterest(GENESIS_BPS) + epochInterest(300));
+    assert.equal(atHalf, at0);
+    // Lock at 1.5, withdraw two epochs later (3.5). Completed chain epochs
+    // are 1 and 2, rates 300 and 400. Epoch 3 (500) is still open. The
+    // first-lock clock pays chain keys 0 and 1: 284+300.
+    assert.equal(at15, epochInterest(300) + epochInterest(400));
+    assert.notEqual(at15, epochInterest(GENESIS_BPS) + epochInterest(300));
+    assert.equal(at325, epochInterest(500) + epochInterest(640));
+    assert.notEqual(at325, epochInterest(GENESIS_BPS) + epochInterest(300));
+  });
+
+  it('a withdraw across several epochs pays each committed rate', async () => {
+    const got = await satInterest(0, 4, rates);
+    const want = epochInterest(GENESIS_BPS)
+      + epochInterest(300)
+      + epochInterest(400)
+      + epochInterest(500);
+    assert.equal(got, want);
+    assert.notEqual(got, epochInterest(500) * 4);
   });
 });
 

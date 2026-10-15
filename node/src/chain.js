@@ -3044,6 +3044,26 @@ function headerTimeMs(block) {
   }
 }
 
+/** Chain genesis for the EVM clock. A genesis header in the replay wins.
+ * Otherwise the header assessment. A caller-supplied option is not a clock. */
+function evmClockGenesis(consensus, block, opts) {
+  const rows = [];
+  if (Array.isArray(opts?.evmHistory)) rows.push(...opts.evmHistory);
+  if (block) rows.push(block);
+  for (const row of rows) {
+    if (!row?.header) continue;
+    try {
+      const decoded = decodeHeader(Buffer.from(row.header));
+      if (!decoded.prevBlockHash.equals(GENESIS_PREV)) continue;
+      const ts = Number(decoded.timestamp);
+      if (Number.isFinite(ts) && ts > 0) return ts;
+    } catch { /* skip an unreadable header */ }
+  }
+  const assessed = Number(consensus?.genesisMs);
+  if (Number.isFinite(assessed) && assessed > 0) return assessed;
+  return 0;
+}
+
 async function verifyBlockEvm(consensus, block, opts = {}) {
   let session = opts.evmSession;
   let fresh = false;
@@ -3055,7 +3075,7 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   } catch (e) {
     return { ok: false, reason: 'evm', error: String(e?.message || e) };
   }
-  const genesisMs = Number(opts.genesisMs) || 0;
+  const genesisMs = evmClockGenesis(consensus, block, opts);
   if (fresh && Array.isArray(opts.evmHistory)) {
     for (const b of opts.evmHistory) {
       if (!blockNeedsEvm(b?.txs || [])) continue;

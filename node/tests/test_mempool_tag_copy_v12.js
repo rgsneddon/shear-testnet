@@ -11,7 +11,7 @@ import path from 'node:path';
 import { createStore } from '../src/store.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { levyNanos } from '../../crypto/levy.js';
-import { sealNote } from '../../crypto/note.js';
+import { sealHiddenNote } from '../../crypto/note.js';
 import { freshStealthDest, hash20FromAddress, newIdentity } from '../../crypto/address.js';
 
 const CHAIN_SIZES = [1, 64, 4096];
@@ -26,9 +26,11 @@ function destOf() {
 
 function makeTxs(dest, k) {
   const d20 = hash20FromAddress(dest);
+  const admitBase = newIdentity().admitBase;
   const pays = AMOUNTS.map((amount) => {
-    const note = sealNote(amount, { dest20: Buffer.from(d20), kind: 'send' });
+    const note = sealHiddenNote(amount, { dest20: Buffer.from(d20), kind: 'send', admitBase });
     note.address = dest;
+    assert.equal(note.valueProof, undefined);
     return note;
   });
   const dummyTx = attachDummyOuts({
@@ -46,21 +48,21 @@ function makeTxs(dest, k) {
   for (let i = 0; i < k; i += 1) {
     const amount = AMOUNTS[i % AMOUNTS.length];
     const len = BLOB_LENS[i % BLOB_LENS.length];
-    const blob = Buffer.alloc(len);
-    blob[0] = i % 2 === 0 ? 2 : 3;
-    blob[1] = (i + 1) & 0xff;
-    blob[2] = k & 0xff;
-    blob[3] = len & 0xff;
-    blob[4] = (i * 17) & 0xff;
+    const spendTag = Buffer.alloc(32);
+    spendTag[0] = i % 2 === 0 ? 2 : 3;
+    spendTag[1] = (i + 1) & 0xff;
+    spendTag[2] = k & 0xff;
+    spendTag[3] = len & 0xff;
+    spendTag[4] = (i * 17) & 0xff;
+    spendTag[5] = amount & 0xff;
     const tx = {
       id: `n752-${k}-${i}-${amount}`,
       kind: 'send',
       from: dest,
       to: dest,
-      nanos: amount,
       vin: [{ address: dest, commit: cTilde }],
       vout: [pays[i % pays.length], dummy],
-      admit_proofs: [{ blob, cTilde }],
+      admit_proofs: [{ cTilde, spendTag }],
     };
     tx.fee = levyNanos(0, { tx });
     txs.push(tx);

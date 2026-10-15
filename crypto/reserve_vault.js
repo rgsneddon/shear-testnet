@@ -616,10 +616,11 @@ function portalOf(state, destOrId) {
 }
 
 function beginEpoch(state, nowMs) {
+  // Chain genesis is the vortex clock once a block has installed it. A first
+  // lock supplies the clock only when the chain genesis is still unknown.
   if (!state.genesisMs) state.genesisMs = nowMs;
   const magic = state.magic || MAGIC_TESTNET;
-  const days = epochDays(magic);
-  const idx = vortexEpochIndex({ nowMs, genesisMs: state.genesisMs, epochDays: days });
+  const idx = chainEpochIndex(state, nowMs);
   const activationHeight = state.oracleActivationHeight === undefined
     ? ORACLE_ACTIVATION_HEIGHT
     : state.oracleActivationHeight;
@@ -822,15 +823,9 @@ function derivedCommitIndex(nowMs, genesisMs, magic) {
   });
 }
 
-/** Chain clock. The same integer Solidity commitRate stores: vortex index, 0 at genesis. */
+/** Chain-genesis vortex index. Rate keys and settlement both use this integer. */
 function chainEpochIndex(state, nowMs) {
-  const genesis = Number(state?.genesisMs) || 0;
-  if (!(genesis > 0) || !(Number(nowMs) > 0)) return 0;
-  return vortexEpochIndex({
-    nowMs,
-    genesisMs: genesis,
-    epochDays: epochDays(state?.magic || MAGIC_TESTNET),
-  });
+  return derivedCommitIndex(nowMs, state?.genesisMs, state?.magic);
 }
 
 /**
@@ -1441,6 +1436,9 @@ export function applyReserveBlock({
   if (height != null) state.oracleHeight = Math.floor(Number(height) || 0);
   const blockHeight = Math.floor(Number(height ?? block?.height ?? state.oracleHeight ?? 0));
   const rule = oracleRuleAt(blockHeight, { activationHeight });
+  // One clock. The chain-genesis argument wins over a first-lock stamp so
+  // settlement indexes the same epochs the rate keys were queued under.
+  if (Number(genesisMs) > 0) state.genesisMs = Number(genesisMs);
   const clockGenesis = Number(genesisMs) > 0 ? Number(genesisMs) : Number(state.genesisMs) || 0;
   const boundary = isReportBoundary({
     headerMs: nowMs,
