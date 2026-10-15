@@ -116,7 +116,7 @@ describe('Reserve vault protocol', () => {
     assert.notEqual(state.epochStartMs, 0);
   });
 
-  it('after the 99-day cutoff, deposits are idle, earn the time left, and can vote once', () => {
+  it('after the stake cutoff, deposits are idle, earn no stake reward, and can vote once', () => {
     const alice = newIdentity();
     const bob = newIdentity();
     const a = destOf(alice);
@@ -148,16 +148,10 @@ describe('Reserve vault protocol', () => {
     const done = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
     assert.equal(done.idle, 100);
-    assert.ok(done.interest > 0);
+    assert.equal(done.interest, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
     const bobOut = withdraw({ state, dest: b, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(bobOut.ok, true);
-    const bobRemain = (t0 + RESERVE_EPOCH_MS) - late;
-    const bobDue = Number(
-      (BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS) * BigInt(bobRemain))
-      / (BigInt(RESERVE_EPOCH_MS) * 10000n),
-    );
-    assert.ok(bobDue > 0);
-    assert.equal(bobOut.interest, bobDue);
+    assert.equal(bobOut.interest, 0);
     assert.equal(bobOut.idle, PI_SHE_NANOS);
   });
 

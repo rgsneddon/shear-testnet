@@ -487,6 +487,7 @@ export const PRIOR_TO_SHEAR_UNITS = NANOS_PER_SHE / PRIOR_UNITS_PER_COIN;
 export const PI_SHE_NANOS = 314159265358; // floor(π × 10^11) SHE in protocol units
 /** Default book is testnet (4-day epochs). Mainnet fingerprint uses 400. */
 export const RESERVE_EPOCH_DAYS = EPOCH_DAYS_TESTNET;
+/** Testnet stake window: the last quarter of the 4-day epoch, which is 1 day. */
 export const RESERVE_JOIN_CUTOFF_DAYS = 1;
 export const REWARD_DENOM_DAYS = EPOCH_DAYS_MAINNET;
 export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;

@@ -219,7 +219,7 @@ describe('per-withdraw interest spread', () => {
     assert.equal(minted.reason, 'supply');
   });
 
-  it('pays zero interest on dust and the rounding boundary, and pro-rates an idle lock', () => {
+  it('pays zero interest on dust and the rounding boundary, and no stake on a last-quarter lock', () => {
     // Smallest stake whose floor(stake * bps / 10000) is 1, and the unit below it.
     const boundary = Math.ceil(10000 / GENESIS_BPS);
     const dust = boundary - 1;
@@ -246,21 +246,15 @@ describe('per-withdraw interest spread', () => {
 
     const late = GENESIS + EPOCH_MS - joinCutoffMs(MAGIC_TESTNET) + 1000;
     assert.ok(late < GENESIS + EPOCH_MS);
-    const idleRemain = (GENESIS + EPOCH_MS) - late;
     const idleStake = 1000;
-    const idleInterest = Number(
-      (BigInt(idleStake) * BigInt(GENESIS_BPS) * BigInt(idleRemain))
-      / (BigInt(EPOCH_MS) * 10000n),
-    );
-    assert.ok(idleInterest > 0);
     const idleMiner = minerDest();
     const parked = portalDest();
     const idleChain = [
       potBlock(GENESIS, idleMiner, [lockOf(idleMiner, portalDest(), PI_SHE_NANOS, 'idle-open')]),
       potBlock(late, idleMiner, [lockOf(idleMiner, parked, idleStake, 'idle-lock')]),
-      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, idleStake + idleInterest, 'idle-draw')]),
+      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, idleStake, 'idle-draw')]),
     ];
-    expectVerified(idleChain, idleInterest, 'idle');
+    expectVerified(idleChain, 0, 'idle');
   });
 
   it('keeps the genesis bps across epochs; an observe is not a rate', () => {

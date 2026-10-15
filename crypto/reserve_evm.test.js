@@ -172,7 +172,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const v = await callReserve(s, encodeVote(destA, 1, t0 + 2));
     assert.equal(v.ok, true, v.reason);
     const epochMs = EPOCH_DAYS_TESTNET * 86_400_000;
-    const cutoffMs = Math.floor((99 * epochMs) / 400);
+    const cutoffMs = Math.floor(epochMs / 4);
     const late = t0 + epochMs - cutoffMs + 1_000;
     const bob = await callReserve(s, encodeDeposit(destB, PI_SHE_NANOS, late));
     assert.equal(bob.ok, true, bob.reason);
@@ -195,13 +195,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(w.ok, true, w.reason);
     const paid = decodeWithdraw(w.returnValue);
     assert.equal(paid.principal, PI_SHE_NANOS);
-    const remain = end - late;
-    const partial = Number(
-      (BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS) * BigInt(remain))
-      / (BigInt(RESERVE_EPOCH_MS) * 10000n),
-    );
-    assert.ok(partial > 0);
-    assert.equal(paid.interest, partial);
+    assert.equal(paid.interest, 0);
     const after = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(after.votesIncrease, 2);
     assert.equal(after.votesDecrease, 0);

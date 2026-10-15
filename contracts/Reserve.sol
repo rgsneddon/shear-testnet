@@ -6,9 +6,11 @@ pragma solidity ^0.8.20;
  *
  * Lock is legal while an epoch is open and the chain clock is pinned. An
  * unpinned clock rejects the lock. Vault epochs are chain vortex epochs.
- * Coin locked while at least 99/400 of the chain epoch remains is an active
- * lock and can vote. Coin locked later is idle: it does not vote as a stake,
- * but it earns the same reserve reward. A lock or top-up, staked or idle,
+ * Coin locked while at least the stake cutoff remains is an active
+ * lock and can vote. Coin locked in the final stake window is idle: it earns
+ * no stake reward, and its owner can still vote. Mainnet's window is the
+ * last 99 days. Testnet's window is the last quarter of the epoch. A lock
+ * or top-up made before that window, staked or idle,
  * earns its epoch's rate times the time still left in that chain epoch, by
  * integer floor, then each later full epoch before the open one. A
  * completed gap is paid immediately, at that epoch's committed rate or
@@ -73,6 +75,7 @@ contract Reserve {
     uint256 public constant EPOCH_DAYS_MAINNET = 400;
     uint256 public constant EPOCH_DAYS = EPOCH_DAYS_MAINNET;
     uint256 public constant JOIN_CUTOFF_DAYS = 99;
+    uint256 public constant STAKE_CUTOFF_QUARTER_DEN = 4;
     uint256 public constant DAY_MS = 86_400_000;
     uint256 public constant EPOCH_MS = 400 * 86_400_000;
     uint256 public constant CUTOFF_MS = 99 * 86_400_000;
@@ -164,8 +167,11 @@ contract Reserve {
         return epochDaysOf() * DAY_MS;
     }
 
+    /// Mainnet closes 99 days before the epoch ends. Testnet closes at the
+    /// last quarter. A lock with less time left earns no stake reward.
     function cutoffLengthMs() public view returns (uint256) {
-        return (99 * epochLengthMs()) / 400;
+        if (magic == SHEAR_MAINNET) return JOIN_CUTOFF_DAYS * DAY_MS;
+        return epochLengthMs() / STAKE_CUTOFF_QUARTER_DEN;
     }
 
     function remainingMs(uint256 nowTs) public view returns (uint256) {
@@ -281,9 +287,11 @@ contract Reserve {
     function _settle(Portal storage p, uint256 nowTs) internal {
         uint256 nowIdx = _payIndex(nowTs);
         uint256 span = epochLengthMs();
+        uint256 cut = cutoffLengthMs();
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
+            if (t.remainMs < cut) continue;
             if (!t.partialPaid && nowIdx > t.epoch) {
                 p.accruedReward += _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
                 t.partialPaid = true;

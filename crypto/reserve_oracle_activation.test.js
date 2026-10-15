@@ -23,7 +23,7 @@ import {
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { applyReserveBlock, deposit, enact, emptyVault, lockTx, previewWithdraw, withdraw, withdrawTx } from './reserve_vault.js';
+import { applyReserveBlock, deposit, enact, emptyVault, lockTx, previewWithdraw, vote, VOTE_INCREASE, withdraw, withdrawTx } from './reserve_vault.js';
 import {
   GENESIS_PREV,
   buildTemplate,
@@ -34,6 +34,7 @@ import {
 } from '../node/src/chain.js';
 import { bookSealKeyFor } from '../node/src/book_seal_key.js';
 import { createStore } from '../node/src/store.js';
+import { MAGIC_MAINNET, joinCutoffMs, STAKE_CUTOFF_DAYS_MAINNET, STAKE_CUTOFF_QUARTER_DEN } from './pot_sched.js';
 import { newIdentity } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import {
@@ -49,6 +50,7 @@ import {
   encodeNextEpochBps,
   encodePinClock,
   encodePortalOf,
+  encodeVote,
   encodePublicView,
   encodeRateCommitEpoch,
   encodeWithdraw,
@@ -601,9 +603,10 @@ function remainAt(offset) {
   return Math.max(0, Math.floor(end - lockAt));
 }
 
-/** Pro-rata of the lock epoch, then each later full epoch before withdraw. */
+/** Pro-rata of the lock epoch, then each later full epoch before withdraw. A lock in the testnet's last quarter earns none. */
 function satWant(offset, holdEpochs, rates, stake = PI_SHE_NANOS) {
   const span = RESERVE_EPOCH_MS;
+  if (remainAt(offset) < Math.floor(span / 4)) return 0;
   const idx = Math.floor(offset);
   const until = Math.floor(offset + holdEpochs);
   const rate = (e) => (rates && rates[e] != null ? rates[e] : GENESIS_BPS);
@@ -713,7 +716,7 @@ describe('a lock earns the rest of its chain epoch, then full epochs', () => {
   const nine = PI_SHE_NANOS * 9;
   const due = (stake, offset, draw, rates = null) => satWant(offset, draw - offset, rates, stake);
 
-  it('Alice at 0.2 and Mallory at 0.95 withdraw at 1.2, and Mallory earns about 5%', async () => {
+  it('Alice at 0.2 earns pro-rata and Mallory at 0.95 is inside the last quarter', async () => {
     const alice = minerOf();
     const mallory = minerOf();
     const paid = await jsEvmStake({
@@ -725,12 +728,11 @@ describe('a lock earns the rest of its chain epoch, then full epochs', () => {
     });
     const full = interestOf(PI_SHE_NANOS, GENESIS_BPS);
     assert.equal(paid[alice], due(PI_SHE_NANOS, 0.2, 1.2));
-    assert.equal(paid[mallory], due(PI_SHE_NANOS, 0.95, 1.2));
-    assert.ok(paid[mallory] > Math.floor(full * 4 / 100));
-    assert.ok(paid[mallory] < Math.ceil(full * 6 / 100));
+    assert.equal(paid[mallory], 0);
+    assert.ok(paid[alice] > Math.floor(full * 4 / 100));
   });
 
-  it('a top-up of π at 0.1 then 9π at 0.8 pro-rates each credit', async () => {
+  it('a top-up of π at 0.1 earns pro-rata and 9π at 0.8 is inside the last quarter', async () => {
     const who = minerOf();
     const early = await jsEvmStake({
       locks: [
@@ -739,7 +741,8 @@ describe('a lock earns the rest of its chain epoch, then full epochs', () => {
       ],
       drawOffset: 1.2,
     });
-    assert.equal(early[who], due(PI_SHE_NANOS, 0.1, 1.2) + due(nine, 0.8, 1.2));
+    assert.equal(early[who], due(PI_SHE_NANOS, 0.1, 1.2));
+    assert.equal(due(nine, 0.8, 1.2), 0);
     const who2 = minerOf();
     const later = await jsEvmStake({
       locks: [
@@ -748,7 +751,7 @@ describe('a lock earns the rest of its chain epoch, then full epochs', () => {
       ],
       drawOffset: 2,
     });
-    assert.equal(later[who2], due(PI_SHE_NANOS, 0.1, 2) + due(nine, 0.8, 2));
+    assert.equal(later[who2], due(PI_SHE_NANOS, 0.1, 2));
   });
 
   it('a staked top-up pro-rates its own arrival, then shares later full epochs', async () => {
@@ -792,6 +795,64 @@ describe('a lock earns the rest of its chain epoch, then full epochs', () => {
       });
       assert.equal(paid[who], due(PI_SHE_NANOS, row.lock, row.draw), `lock ${row.lock} draw ${row.draw}`);
     }
+  });
+});
+
+describe('the stake-reward cutoff is per network', () => {
+  it('mainnet is the last 99 days and testnet is the last quarter', () => {
+    assert.equal(STAKE_CUTOFF_DAYS_MAINNET, 99);
+    assert.equal(STAKE_CUTOFF_QUARTER_DEN, 4);
+    assert.equal(joinCutoffMs(MAGIC_MAINNET), 99 * 86_400_000);
+    assert.equal(joinCutoffMs(MAGIC_TESTNET), Math.floor(RESERVE_EPOCH_MS / 4));
+  });
+
+  it('a pre-cutoff add earns pro-rata and a last-quarter add earns 0 but can vote', async () => {
+    const epoch = RESERVE_EPOCH_MS;
+    const quarter = Math.floor(epoch / 4);
+    const earlyWho = minerOf();
+    const lateWho = minerOf();
+    const earlyAt = T0;
+    const addAt = T0 + Math.floor(epoch / 2);
+    const lateAt = T0 + epoch - quarter + 1000;
+    const end = T0 + epoch;
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    assert.equal(deposit({ state, dest: earlyWho, nanos: PI_SHE_NANOS, nowMs: earlyAt }).ok, true);
+    assert.equal(deposit({ state, dest: earlyWho, nanos: PI_SHE_NANOS, nowMs: addAt }).ok, true);
+    const late = deposit({ state, dest: lateWho, nanos: PI_SHE_NANOS, nowMs: lateAt });
+    assert.equal(late.ok, true, late.reason);
+    assert.equal(late.idle, true);
+    const cast = vote({ state, dest: lateWho, choice: VOTE_INCREASE, nowMs: lateAt });
+    assert.equal(cast.ok, true, cast.reason);
+    const addRemain = end - addAt;
+    const want = interestNanos(PI_SHE_NANOS, GENESIS_BPS) + proRata(PI_SHE_NANOS, GENESIS_BPS, addRemain, epoch);
+    assert.equal(enact({ state, nowMs: end }).ok, true);
+    const paid = withdraw({ state, dest: earlyWho, nowMs: end });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.principal, PI_SHE_NANOS * 2);
+    assert.equal(paid.interest, want);
+    const none = withdraw({ state, dest: lateWho, nowMs: end });
+    assert.equal(none.ok, true, none.reason);
+    assert.equal(none.principal, PI_SHE_NANOS);
+    assert.equal(none.interest, 0);
+
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(earlyWho, PI_SHE_NANOS, earlyAt))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(earlyWho, PI_SHE_NANOS, addAt))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(lateWho, PI_SHE_NANOS, lateAt))).ok, true);
+    const evmVote = await callReserve(session, encodeVote(lateWho, 1, lateAt));
+    assert.equal(evmVote.ok, true, evmVote.reason);
+    assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
+    const evmEarly = await callReserve(session, encodeWithdraw(earlyWho, end));
+    assert.equal(evmEarly.ok, true, evmEarly.reason);
+    assert.equal(decodeWithdraw(evmEarly.returnValue).interest, want);
+    assert.equal(decodeWithdraw(evmEarly.returnValue).interest, paid.interest);
+    const evmLate = await callReserve(session, encodeWithdraw(lateWho, end));
+    assert.equal(evmLate.ok, true, evmLate.reason);
+    assert.equal(decodeWithdraw(evmLate.returnValue).principal, PI_SHE_NANOS);
+    assert.equal(decodeWithdraw(evmLate.returnValue).interest, 0);
   });
 });
 

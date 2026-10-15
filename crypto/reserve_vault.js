@@ -983,8 +983,18 @@ function rateForEpoch(state, epochIndex) {
   return Math.max(0, Math.floor(Number(state?.epochBps ?? GENESIS_BPS)));
 }
 
+/**
+ * A credit locked with at least the stake cutoff still to run earns a reward.
+ * One locked in the final window does not. The portal can still vote.
+ */
+function earnsStakeReward(state, tranche) {
+  const remain = Math.floor(Number(tranche?.remainMs) || 0);
+  return remain >= joinCutoffMs(state?.magic);
+}
+
 /** Interest still owed on one credit. Does not mutate the tranche. */
 function trancheDue(state, tranche, nowIdx, span) {
+  if (!earnsStakeReward(state, tranche)) return 0n;
   let total = 0n;
   const amount = asBig(tranche?.amount);
   const epoch = Math.floor(Number(tranche?.epoch) || 0);
