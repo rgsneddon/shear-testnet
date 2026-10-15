@@ -13,7 +13,9 @@ pragma solidity ^0.8.20;
  * integer floor, then each later full epoch before the open one. A
  * completed gap is paid immediately, at that epoch's committed rate or
  * else the last paid rate, including a commit on a skipped epoch. It does
- * not wait for a later enact. The still-open epoch is not paid. A portal
+ * not wait for a later enact. A credit stays locked until its own epoch
+ * has ended. After that, any later block can withdraw the completed
+ * epochs. The still-open epoch is not paid. A portal
  * votes once per epoch;
  * a second cast reverts VoteLocked(). At epoch end the unique plurality of {increase, decrease,
  * hold} enacts ±1 protocol unit on the live hash bonus. It does not set
@@ -493,16 +495,21 @@ contract Reserve {
     }
 
     function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
-        // Open on any block once an enacted epoch is payable. This block
-        // does not have to be the one that enacted the boundary.
+        // Completed epochs are payable on any later block. A credit whose
+        // own epoch is still open stays locked, principal and reward together.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
-        _settle(p, nowTs);
         uint256 active = p.active;
         uint256 idle = p.idle;
         principal = active + idle;
         if (principal == 0) revert BadAmount();
+        uint256 chain = _chainEpoch(nowTs);
+        uint256 credits = p.tranches.length;
+        for (uint256 i = 0; i < credits; i++) {
+            if (chain <= p.tranches[i].epoch) revert EpochNotEnded();
+        }
+        _settle(p, nowTs);
         // Each completed chain epoch pays at the rate committed for that epoch.
         reward = p.accruedReward;
         p.accruedReward = 0;

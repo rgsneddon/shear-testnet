@@ -990,6 +990,20 @@ function trancheDue(state, tranche, nowIdx, span) {
 }
 
 /**
+ * The arrival epoch of a credit is still open. Principal and reward for
+ * that credit stay locked until chain time has passed the epoch.
+ */
+function arrivalEpochOpen(state, portal, nowMs) {
+  const chain = chainEpochIndex(state, nowMs);
+  const tranches = portal?.tranches;
+  if (!Array.isArray(tranches)) return false;
+  for (const tranche of tranches) {
+    if (chain <= Math.floor(Number(tranche?.epoch) || 0)) return true;
+  }
+  return false;
+}
+
+/**
  * Exclusive settlement index. Completed epochs, including a gap, are due
  * as soon as chain time has passed them. The open epoch is not included.
  */
@@ -1420,6 +1434,7 @@ export function verifyReservePayout(state, tx, clockMs) {
     return { ok: false, reason: 'epoch_open' };
   }
   if (!p) return { ok: false, reason: 'empty' };
+  if (arrivalEpochOpen(state, p, clock)) return { ok: false, reason: 'epoch_open' };
   const principal = asNum(asBig(p.staked) + asBig(p.idle));
   const interest = portalEpochInterest(state, p, clock);
   const published = publicActionNanos(tx, (tx?.vout || []).find((row) => String(row?.kind || '') === KIND_WITHDRAW) || tx?.vout?.[0]);
@@ -1867,8 +1882,8 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
-  // Any block can pay, once an enacted epoch is complete. The open epoch
-  // does not have to end, and this block does not have to enact it.
+  // Completed epochs can be withdrawn on any later block. A credit whose
+  // own epoch is still open stays locked, principal and reward together.
   if (settlementIndex(state, nowMs) <= 0) {
     return { ok: false, reason: 'epoch_open' };
   }
@@ -1887,6 +1902,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   const idle = asBig(p.idle);
   const principal = staked + idle;
   if (principal <= 0n) return { ok: false, reason: 'empty' };
+  if (arrivalEpochOpen(state, p, nowMs)) return { ok: false, reason: 'epoch_open' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
   settlePortal(state, p, nowMs);
   const interest = capReward(p.accruedReward);

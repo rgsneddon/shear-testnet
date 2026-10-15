@@ -329,9 +329,9 @@ describe('per-withdraw interest spread', () => {
     const added = 38;
     const withLock = interestNanos(PI_SHE_NANOS + added, GENESIS_BPS);
     assert.equal(withLock, interest + 1);
-    // The lock settles before the new stake is added. The addition earns
-    // only the time left after it arrives, so interest on principal + added
-    // for the epoch already completed is rejected.
+    // A top-up opens in the new epoch. That credit has not ended, so a
+    // withdraw in the same block would release it early and is refused.
+    // Claiming the completed epoch's interest on the added amount is refused too.
     const before = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock')]),
       potBlock(DRAW, again, [
@@ -347,7 +347,7 @@ describe('per-withdraw interest spread', () => {
         drawOf(who, again, PI_SHE_NANOS + added + interest, 'pre-draw-ok'),
       ]),
     ];
-    expectVerified(honest, interest, 'lock-then-withdraw');
+    expectSupplyReject(honest, 'lock-then-withdraw');
     const after = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'post-lock')]),
       potBlock(DRAW, again, [
