@@ -26,3 +26,7 @@ jobs:
           test -f crypto/native/shearadmit.node
       - name: Native range bytes and fail-closed policy
         run: node --test --test-timeout 180000 crypto/range_packed.test.js crypto/range_js_policy.test.js
+      - name: Boot-verify worker parity
+        run: node --test --test-concurrency=1 --test-timeout=600000 node/tests/test_boot_verify_worker.js
+      - name: Boot-verify 1001-block sealed restart
+        run: node --test --test-concurrency=1 --test-timeout=600000 node/tests/test_boot_verify_worker_long.js
