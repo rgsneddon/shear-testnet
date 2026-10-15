@@ -239,10 +239,173 @@ export function bitOrVerify(B, proof) {
   }
 }
 
+const RANGE_DST = Buffer.from('shear-bpplus-v2');
+const RANGE_BITS = 64;
+const RANGE_PROOF_LEN = 1 + 32 + RANGE_BITS * 32 + RANGE_BITS * 192 + 64;
+
+function rangeChal(parts) {
+  const wide = sha512(Buffer.concat([RANGE_DST, ...parts]));
+  return Fn.create(bytesToNumberLE(wide));
+}
+
+function rangeNonce(tag, rBytes, i) {
+  const ib = Buffer.alloc(8);
+  ib.writeBigUInt64LE(BigInt(i));
+  return rangeChal([Buffer.from(tag), rBytes, ib]);
+}
+
+function mulP(P, s) {
+  return P.multiplyUnsafe(s);
+}
+
+function scalarCanon(buf) {
+  const b = Buffer.from(buf);
+  if (b.length !== 32) return null;
+  const n = bytesToNumberLE(b);
+  if (!Fn.isValid(n)) return null;
+  return n;
+}
+
+/** sum_i B_i · 2^i. Horner matches the scalar double-and-add in bpplus.rs. */
+function weightedBits(points) {
+  let acc = Point.ZERO;
+  for (let i = points.length - 1; i >= 0; i -= 1) {
+    acc = acc.double().add(points[i]);
+  }
+  return acc;
+}
+
+/**
+ * Packed 64-bit OR proof, marker 0x02. Same bytes as
+ * crypto/native/admit/src/bpplus.rs. shearadmit.node is optional.
+ */
+export function provePackedRange(v, rBytes) {
+  const n = noteU64(v);
+  if (n == null || !rBytes || rBytes.length !== 32) return null;
+  const rb = Buffer.from(rBytes);
+  const r = Fn.create(bytesToNumberLE(rb));
+  const c = mulP(G, n).add(mulP(H, r));
+  const cB = pointBytes(c);
+  const bits = new Array(RANGE_BITS);
+  const s = new Array(RANGE_BITS);
+  const bPts = new Array(RANGE_BITS);
+  const bBytes = new Array(RANGE_BITS);
+  let vv = n;
+  for (let i = 0; i < RANGE_BITS; i += 1) {
+    bits[i] = Number(vv & 1n);
+    vv >>= 1n;
+    s[i] = rangeNonce('sbit', rb, i);
+    const bitG = bits[i] ? G : Point.ZERO;
+    bPts[i] = bitG.add(mulP(H, s[i]));
+    bBytes[i] = pointBytes(bPts[i]);
+  }
+  const out = [Buffer.from([2]), cB, ...bBytes];
+  const eAll = rangeChal([Buffer.from('bits'), cB, ...bBytes]);
+  const eAllB = scalarBytes(eAll);
+  let sSum = 0n;
+  let two = 1n;
+  for (let i = 0; i < RANGE_BITS; i += 1) {
+    const on = bits[i] === 1;
+    const bi = bPts[i];
+    const si = s[i];
+    const p1 = bi.subtract(G);
+    const fake = on ? bi : p1;
+    const eFake = rangeNonce('efake', rb, i);
+    const zFake = rangeNonce('zfake', rb, i);
+    const rFake = mulP(H, zFake).subtract(mulP(fake, eFake));
+    const k = rangeNonce('kbit', rb, i);
+    const rReal = mulP(H, k);
+    const r0 = on ? rFake : rReal;
+    const r1 = on ? rReal : rFake;
+    const r0b = pointBytes(r0);
+    const r1b = pointBytes(r1);
+    const e = rangeChal([Buffer.from('bit'), bBytes[i], r0b, r1b, eAllB]);
+    const eReal = Fn.sub(e, eFake);
+    const zReal = Fn.add(k, Fn.mul(eReal, si));
+    out.push(
+      r0b,
+      r1b,
+      scalarBytes(on ? eFake : eReal),
+      scalarBytes(on ? eReal : eFake),
+      scalarBytes(on ? zFake : zReal),
+      scalarBytes(on ? zReal : zFake),
+    );
+    sSum = Fn.add(sSum, Fn.mul(two, si));
+    two = Fn.add(two, two);
+  }
+  const rDelta = Fn.sub(r, sSum);
+  const p = c.subtract(weightedBits(bPts));
+  const k = rangeNonce('cons', rb, 0);
+  const rPt = mulP(H, k);
+  const rPtB = pointBytes(rPt);
+  const e = rangeChal([Buffer.from('cons'), cB, pointBytes(p), rPtB]);
+  const z = Fn.add(k, Fn.mul(e, rDelta));
+  out.push(rPtB, scalarBytes(z));
+  const proof = Buffer.concat(out);
+  return proof.length === RANGE_PROOF_LEN ? proof : null;
+}
+
+export function verifyPackedRange(cBytes, proof) {
+  try {
+    const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
+    if (pr.length !== RANGE_PROOF_LEN || pr[0] !== 2) return false;
+    const cWire = Buffer.from(pr.subarray(1, 33));
+    const c = Point.fromBytes(cWire);
+    const want = Point.fromBytes(Buffer.from(asU8(cBytes)));
+    if (!c.equals(want)) return false;
+    const bPts = new Array(RANGE_BITS);
+    const bBytes = new Array(RANGE_BITS);
+    let off = 33;
+    for (let i = 0; i < RANGE_BITS; i += 1) {
+      const raw = Buffer.from(pr.subarray(off, off + 32));
+      bPts[i] = Point.fromBytes(raw);
+      bBytes[i] = raw;
+      off += 32;
+    }
+    const eAll = rangeChal([Buffer.from('bits'), cWire, ...bBytes]);
+    if (eAll === 0n) return false;
+    const eAllB = scalarBytes(eAll);
+    for (let i = 0; i < RANGE_BITS; i += 1) {
+      const r0b = Buffer.from(pr.subarray(off, off + 32));
+      const r1b = Buffer.from(pr.subarray(off + 32, off + 64));
+      const r0 = Point.fromBytes(r0b);
+      const r1 = Point.fromBytes(r1b);
+      const e0 = scalarCanon(pr.subarray(off + 64, off + 96));
+      const e1 = scalarCanon(pr.subarray(off + 96, off + 128));
+      const z0 = scalarCanon(pr.subarray(off + 128, off + 160));
+      const z1 = scalarCanon(pr.subarray(off + 160, off + 192));
+      off += 192;
+      if (e0 == null || e1 == null || z0 == null || z1 == null) return false;
+      const e = rangeChal([Buffer.from('bit'), bBytes[i], r0b, r1b, eAllB]);
+      if (e === 0n || Fn.add(e0, e1) !== e) return false;
+      const p0 = bPts[i];
+      const p1 = p0.subtract(G);
+      if (!mulP(H, z0).equals(r0.add(mulP(p0, e0)))) return false;
+      if (!mulP(H, z1).equals(r1.add(mulP(p1, e1)))) return false;
+    }
+    const p = c.subtract(weightedBits(bPts));
+    const rPtB = Buffer.from(pr.subarray(off, off + 32));
+    const rPt = Point.fromBytes(rPtB);
+    const z = scalarCanon(pr.subarray(off + 32, off + 64));
+    if (z == null) return false;
+    const e = rangeChal([Buffer.from('cons'), cWire, pointBytes(p), rPtB]);
+    if (e === 0n) return false;
+    return mulP(H, z).equals(rPt.add(mulP(p, e)));
+  } catch {
+    return false;
+  }
+}
+
 export function proveRange(v, r) {
   const rb = Buffer.from(asU8(typeof r === 'bigint' ? scalarBytes(r) : r));
   if (rb.length !== 32) return Buffer.alloc(0);
-  return nativeProveRange(v, rb) || Buffer.alloc(0);
+  const native = nativeProveRange(v, rb);
+  if (native && native.length) return native;
+  try {
+    const js = provePackedRange(v, rb);
+    if (js && js.length) return js;
+  } catch { /* same empty proof native returns */ }
+  return Buffer.alloc(0);
 }
 
 export function verifyRange(Cbytes, proof) {
@@ -250,7 +413,8 @@ export function verifyRange(Cbytes, proof) {
     if (proof && typeof proof === 'object' && !Buffer.isBuffer(proof) && proof.bits) return false;
     const c = Buffer.from(asU8(Cbytes));
     const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
-    return nativeVerifyRange(c, pr);
+    if (nativeLoaded()) return nativeVerifyRange(c, pr);
+    return verifyPackedRange(c, pr);
   } catch {
     return false;
   }

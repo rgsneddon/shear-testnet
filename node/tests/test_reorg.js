@@ -223,16 +223,8 @@ describe('most-work adopt', () => {
     const dest = destMiner();
     const local = tmpStore();
     const peer = tmpStore();
-    const now = Date.now();
-    const { tpl } = peer.template({ miner: dest, bits: 1, shareBits: 1, now });
-    const found = mineTemplate({ ...tpl, bits: 1 }, { maxTries: 80_000, shareBits: 1 });
-    assert.ok(found && found.block, 'need pow');
-    assert.equal(peer.append({
-      header: found.header,
-      txs: tpl.txs,
-      samples: tpl.samples,
-      miner: dest,
-    }).ok, true);
+    const mined = mineOne(peer, dest);
+    assert.equal(mined.ok, true, mined.reason);
     const got = local.adopt(peer.blocks);
     assert.equal(got.ok, true, got.reason);
     assert.equal(got.reorg, true);
