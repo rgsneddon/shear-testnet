@@ -62,12 +62,12 @@ function vaultSnap(v) {
 }
 
 describe('fork trial vault (VS-R1)', () => {
-  it('verifyFork clones empty vault at fork root and applyReserveBlock on the trial, not tip saveReserve', () => {
+  it('verifyFork clones the book vault at the fork root and applyReserveBlock on the trial, not tip saveReserve', () => {
     const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.match(src, /function trialVaultAtForkRoot\(/);
     assert.match(src, /function trialVaultForFork\(/);
-    assert.match(src, /cloneVault\(emptyVault\(\)\)/);
-    assert.match(src, /applyReserveBlock\(\{ state: trialVault, block: lean/);
+    assert.match(src, /const trial = cloneVault\(bookVault\(\)\)/);
+    assert.match(src, /applyReserveBlock\(vaultArgs\(trialVault, lean, accepted\.slice\(0, -1\)\)\)/);
     assert.match(src, /verifyOneForkBlock\(fork, i, accepted, trialSpent, null, trialVault/);
     assert.equal(/applyReserveBlock\(\{\s*state:\s*reserveVault/.test(src.split('function verifyFork')[1]?.split('function adopt')[0] || ''), false);
     assert.equal(/saveReserve\(\)/.test(src.split('function verifyFork')[1]?.split('function adopt')[0] || ''), false);
@@ -130,12 +130,20 @@ describe('fork trial vault (VS-R1)', () => {
     assert.equal(Number(local.reserveVault.totalLockedNanos), 0);
     const trial = cloneVault(emptyVault());
     if (peer.reserveVault?.oracle) trial.oracle = JSON.parse(JSON.stringify(peer.reserveVault.oracle));
+    let genesisMs = 0;
+    let parentMs = 0;
     for (const b of peer.blocks) {
-      applyReserveBlock({
+      const nowMs = Number(decodeHeader(Buffer.from(b.header)).timestamp);
+      if (!(genesisMs > 0) && Number(b.height) === 1) genesisMs = nowMs;
+      const applied = applyReserveBlock({
         state: trial,
         block: b,
-        nowMs: Number(decodeHeader(Buffer.from(b.header)).timestamp),
+        nowMs,
+        parentMs,
+        genesisMs,
       });
+      assert.equal(applied.ok, true, applied && applied.reason);
+      parentMs = nowMs;
     }
     assert.equal(Number(trial.totalLockedNanos), PI_SHE_NANOS);
     const got = await Promise.resolve(local.ingest(peer.blocks));

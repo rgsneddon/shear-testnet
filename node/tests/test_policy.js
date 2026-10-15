@@ -51,7 +51,7 @@ describe('store policy and pause', () => {
     const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.match(storeSrc, /hourlyWorkBuckets/);
     const fp = consensusFingerprint();
-    assert.match(fp, /:9:1:1000:/);
+    assert.match(fp, /:9:0:1000:/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.equal(fp.includes(':30:'), false);
   });

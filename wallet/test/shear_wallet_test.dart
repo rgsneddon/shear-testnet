@@ -3643,6 +3643,7 @@ void main() {
     expect(levyNanos(0), 100);
     expect(levyTaxed('lock'), isTrue);
     expect(levyTaxed('vote'), isTrue);
+    expect(levyTaxed('reward-claim'), isTrue);
     expect(levyTaxed('withdraw'), isFalse);
     expect(kEip712ChainId, 2701);
     const login = 'she1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
@@ -5796,12 +5797,15 @@ void main() {
       expect(t.textAlign == TextAlign.left || t.textAlign == TextAlign.justify, isTrue);
       expect(t.textAlign, isNot(TextAlign.center));
     }
-    expect(find.byKey(const Key('reserve-apr')), findsOneWidget);
-    final apr = tester.widget<Text>(find.byKey(const Key('reserve-apr')));
-    expect(apr.data, contains('Oracle observed Apr '));
+    expect(find.byKey(const Key('reserve-issuance-rate')), findsOneWidget);
+    final apr = tester.widget<Text>(find.byKey(const Key('reserve-issuance-rate')));
+    expect(apr.data, contains('Lock issuance rate '));
     expect(apr.data, contains(RegExp(r'\d+\.\d{2}%')));
     expect(apr.data!.contains('Default'), isFalse);
     expect(apr.data!.contains('400-day APR'), isFalse);
+    expect(apr.data!.toLowerCase().contains('apr'), isFalse);
+    expect(apr.data!.toLowerCase().contains('interest'), isFalse);
+    expect(apr.data!.toLowerCase().contains('oracle'), isFalse);
     expect(find.text('Cast vote'), findsOneWidget);
     expect(find.text('Update vote'), findsNothing);
     expect(find.textContaining('change this vote at any time'), findsNothing);
@@ -5814,6 +5818,7 @@ void main() {
     expect(find.byKey(const Key('reserve-overall-box')), findsOneWidget);
     expect(find.byKey(const Key('reserve-vote-box')), findsOneWidget);
     expect(find.textContaining('central bank'), findsNothing);
+    expect(find.textContaining('base rate'), findsNothing);
     expect(find.textContaining('Median'), findsNothing);
     expect(find.text('increase bonus'), findsOneWidget);
     expect(find.text('decrease bonus'), findsOneWidget);
@@ -5821,7 +5826,9 @@ void main() {
     expect(find.text(kReserveCutoffDisclaimer), findsNothing);
     expect(find.textContaining('Bank of England'), findsNothing);
     expect(find.textContaining('BoE'), findsNothing);
-    expect(find.textContaining('Reserve oracle'), findsWidgets);
+    expect(find.textContaining('Reserve oracle'), findsNothing);
+    expect(find.textContaining('Lock issuance rate'), findsWidgets);
+    expect(find.textContaining('Interest'), findsNothing);
     expect(find.textContaining(kReserveAccruedLabel), findsOneWidget);
     expect(find.textContaining('At epoch end'), findsOneWidget);
     expect(find.textContaining('400-day APR'), findsNothing);
@@ -7239,15 +7246,23 @@ void main() {
     expect(await bio.recalledPassword(), kGatePassword);
   });
 
-  test('kWalletVersion == 0.70 and 400-day APR uses observed average bps', () {
+  test('kWalletVersion == 0.72 and the lock issuance rate uses the genesis bps', () {
     expect(kWalletVersion, '0.72');
-    expect(kReserveOracleDefaultBps, 264);
+    expect(kReserveOracleDefaultBps, 284);
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
     final dart = File('lib/shear_reserve.dart').readAsStringSync();
     expect(dart.contains('3650000'), isFalse);
     expect(dart.contains('a year'), isFalse);
     expect(File('lib/main.dart').readAsStringSync().contains('central bank'), isFalse);
+    expect(File('lib/main.dart').readAsStringSync().contains('Lock issuance rate'), isTrue);
+    expect(
+      File('lib/main.dart').readAsStringSync().contains(
+        "Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.",
+      ),
+      isTrue,
+    );
+    expect(File('lib/main.dart').readAsStringSync().toLowerCase().contains('apr'), isFalse);
   });
 
   test('Reserve epoch table records one row per epoch number', () {

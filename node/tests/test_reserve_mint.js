@@ -54,15 +54,15 @@ describe('Reserve mint is sealed-state pure', () => {
   it('JS and Solidity share the 1 SHE × 425 bps = 4_250_000_000 vector', () => {
     assert.equal(interestNanos(NANOS_PER_SHE, 425), 4_250_000_000);
     const sol = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../contracts/Reserve.sol'), 'utf8');
-    assert.match(sol, /staked \* epochBps/);
+    assert.match(sol, /active \* epochBps/);
     assert.match(sol, /\/ 10000/);
     assert.match(sol, /do not use 365/);
     assert.equal(/\* 365|\/ 365|365-day/.test(sol), false);
-    assert.match(sol, /GENESIS_BPS = 264/);
+    assert.match(sol, new RegExp(`GENESIS_BPS = ${GENESIS_BPS}`));
     assert.match(sol, /UnitFloor/);
   });
 
-  it('wrong withdraw nanos is mint_amount; idle adds 0; default committedBps is 264', async () => {
+  it('wrong withdraw nanos is mint_amount; idle adds 0; default committedBps is the trimmed bundle', async () => {
     const id = newIdentity();
     const dest = destOf(id);
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
@@ -106,7 +106,7 @@ describe('Reserve mint is sealed-state pure', () => {
     const defDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 180_000, txs: [as425] })), null, { trustedPowHash: TRUSTED }));
     assert.equal(defDenied.ok, false);
     assert.equal(defDenied.reason, 'mint_amount');
-    assert.equal(GENESIS_BPS, 264);
+    assert.equal(GENESIS_BPS, 284);
   });
 
   it('gateVorticeRegister ok:false fails the block', () => {
@@ -144,6 +144,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
     const state = emptyVault();
+    state.genesisMs = 1_700_000_000_000;
     const id = newIdentity();
     const dest = vaultDest(id.address, { viewKey: id.viewKey });
     deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: 1_700_000_000_000 });

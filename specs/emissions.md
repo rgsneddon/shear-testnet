@@ -69,7 +69,7 @@ Interest: `floor(stakedNanos * epochBps / 10000)` using the freeze for that epoc
 | Fail closed to previous freeze / default on stale data | Silently invent rates with no attestation |
 | Be replaced only via fingerprint/program rules | Accept unbounded jump, negative, or > max bps |
 
-Freeze is consensus-checked: bounds `[0, 10000]` bps, max step 100 bps/epoch, max observation age 14d, no equivocating freeze for the same epoch index. A bad feed cannot reorg blocks or steal the pot.
+Freeze is consensus-checked: bounds `[0, 10000]` bps, no per-epoch step, max observation age 14d, no equivocating freeze for the same epoch index. The rate is floored at 0% so a lock never reduces principal. A bad feed cannot reorg blocks or steal the pot.
 
 ## What wallets show (Continuum)
 

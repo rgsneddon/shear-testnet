@@ -217,10 +217,12 @@ describe('brand pages', () => {
     assert.match(theme, /cookieGet/);
     assert.match(theme, /cookieSet/);
     assert.match(theme, /onShearHost/);
-    assert.match(theme, /flagShearOsadmin/);
-    assert.match(theme, /paintShearOsadmin/);
-    assert.match(theme, /textContent = 'OSAdmin'/);
-    assert.match(theme, /nav-osadmin/);
+    assert.doesNotMatch(theme, /flagShearOsadmin/);
+    assert.doesNotMatch(theme, /paintShearOsadmin/);
+    assert.doesNotMatch(theme, /osadminHref/);
+    assert.doesNotMatch(theme, /shear_osadmin/);
+    assert.doesNotMatch(theme, /nav-osadmin/);
+    assert.doesNotMatch(theme, /textContent = 'OSAdmin'/);
     assert.doesNotMatch(theme, /textContent = 'OSadmin'/);
     const siteTheme = read('site/brand/theme.js');
     assert.match(siteTheme, /function cookieGet\(\) \{[\s\S]*?var found = ''[\s\S]*?found = v[\s\S]*?return found;\s*\}/);

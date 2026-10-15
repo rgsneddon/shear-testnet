@@ -59,7 +59,7 @@ The 16-send FS-1 reserve is **2,336** weight units. Verify weight is `25 + 25n` 
 
 ADMITv3 names the full-set FS-1 send proof. It has not shipped. Until it does, a send or transfer with a byte-3 blob is `send_unavailable` before any proof work, and no full-set hide is live on this book. The rules below are the wire checks that stay in place.
 
-A flow spend on this book presents a byte-3 blob and one anchor. A presented flow blob whose first byte is not 3, or byte 3 with no anchor, is `admit_version`. Byte 3 with an anchor is checked by `admitVerifyV3`. The dest leaf is still `H_to_field("shear-admit-leaf-v2" || P)` on the Pasta 2-cycle (arity 32). There is no `RING_SIZE` in the fingerprint. The retired byte-2 statement is [admit-v2.md](admit-v2.md).
+A flow spend on this book presents a byte-3 blob and one anchor. A presented flow blob whose first byte is not 3, or byte 3 with no anchor, is `admit_version`. Byte 3 with an anchor is checked by `admitVerifyV3`, the legacy Pasta verifier. The fingerprint leaf is FS-1: `O || I || C` (96 bytes) on Ed25519, with `I = E(Hp(admitPub))` under `shear-admit-Hp`, on the Selene/Helios cycle (`ADMIT_CYCLE=fs1-selene-helios`, Selene width 38, Helios width 18, depth 7). There is no `RING_SIZE` in the fingerprint. The retired byte-2 statement is [admit-v2.md](admit-v2.md).
 
 Live verifier: native `admitVerifyV3` against the point root, after the stored scalar `jroot` matches. A sampled subset fails (`admit_membership`). A flow that presents no proof stays `admit_membership`. Reused `spendTag` fails (`admit_link_tag`). Sealed vin must not name the spent note (`prev`/`index`/`noteCommit`/`dest20`/`address`/original C).
 

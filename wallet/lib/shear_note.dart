@@ -357,6 +357,7 @@ bool publicValueOpenKind(String? kind) {
       kind == 'lock' ||
       kind == 'vote' ||
       kind == 'withdraw' ||
+      kind == 'reward-claim' ||
       kind == 'pool-withdraw';
 }
 
@@ -394,6 +395,12 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
     if (addr is String && addr.isNotEmpty) row['address'] = addr;
     final n = tryU64Units(o['nanos']);
     if (n != null) row['nanos'] = u64OnWire(n);
+  }
+  if (kind == 'lock') {
+    final unlock = o['unlockAtMs'];
+    if (unlock is int && unlock > 0) row['unlockAtMs'] = unlock;
+    final epoch = o['lockEpoch'];
+    if (epoch is int && epoch >= 0) row['lockEpoch'] = epoch;
   }
   final coinbaseMoney = posted == 'hash' || posted == 'pot' || posted == 'pool-fee' || posted == 'finder-fee' || posted == 'reserve-fee';
   if (keepOpen && coinbaseMoney) {

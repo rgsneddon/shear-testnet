@@ -33,7 +33,9 @@ export function vaultCommitment(state) {
   const body = [
     String(src.programId || ''),
     String(asNum(src.totalLockedNanos)),
-    String(asNum(src.feeBankNanos)),
+    // Transaction fees are not a vault balance. The field stays in the
+    // commitment layout and is always zero.
+    '0',
     String(asNum(src.mintBankNanos)),
     String(src.currentEpoch || 0),
     String(src.epochBps ?? 0),

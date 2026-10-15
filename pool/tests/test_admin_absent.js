@@ -80,6 +80,22 @@ describe('pool web admin is absent', () => {
     assert.doesNotMatch(mainSrc, /SHEAR_ADMIN_SETUP/);
     assert.match(poolSrc, /runAutoPayoutSweep/);
     assert.match(mainSrc, /operatorSpendKey/);
+    const themes = [
+      'brand/theme.js',
+      'team/brand/theme.js',
+      'pool/public/brand/theme.js',
+      'site/brand/theme.js',
+      'site/boot/brand/theme.js',
+      'mempool/brand/theme.js',
+      'explorer/brand/theme.js',
+    ];
+    for (const rel of themes) {
+      const theme = fs.readFileSync(path.join(root, rel), 'utf8');
+      assert.doesNotMatch(theme, /osadminHref/, rel);
+      assert.doesNotMatch(theme, /shear_osadmin/, rel);
+      assert.doesNotMatch(theme, /nav-osadmin/, rel);
+      assert.doesNotMatch(theme, /flagShearOsadmin/, rel);
+    }
   });
 
   it('the pool starts with no admin config and does not serve /admin', async () => {

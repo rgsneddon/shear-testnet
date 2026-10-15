@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen, typedCommitSum } from './spend.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen, typedCommitSum, v12KindRejected } from './spend.js';
 import { sealNote, sealCoinbaseNote, sealHiddenNote, randomScalar, scalarBytes, kernelExcess } from './note.js';
 import { blindCommit } from './admit.js';
 import { compactTx } from './chronoflux.js';
@@ -429,5 +429,58 @@ describe('funded spend / no double-spend', () => {
       assert.equal(short.ok, false);
       assert.equal(short.reason, 'commit_sum');
     }
+  });
+});
+
+describe('claim conservation', () => {
+  it('rejects a claim with no output or a value of zero or less', () => {
+    const payee = 'ssa1qzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz';
+    const feeRow = v12KindRejected({ kind: 'claim', fee: 1, vin: [{ address: payee }] });
+    assert.equal(feeRow, null);
+    const empty = v12KindRejected({ kind: 'claim', nanos: 0, vout: [] });
+    assert.equal(empty.reason, 'conservation');
+    const bare = v12KindRejected({ kind: 'claim', nanos: 5 });
+    assert.equal(bare.reason, 'conservation');
+    const zero = v12KindRejected({
+      kind: 'claim',
+      nanos: 0,
+      vout: [{ address: payee, nanos: 0 }],
+    });
+    assert.equal(zero.reason, 'conservation');
+    const negative = v12KindRejected({
+      kind: 'claim',
+      nanos: -3,
+      vout: [{ address: payee, nanos: -3 }],
+    });
+    assert.equal(negative.reason, 'conservation');
+    const outputOnly = v12KindRejected({
+      kind: 'claim',
+      nanos: 4,
+      vout: [{ address: payee, nanos: 0 }],
+    });
+    assert.equal(outputOnly.reason, 'conservation');
+    const valued = v12KindRejected({
+      kind: 'claim',
+      nanos: 4,
+      vout: [{ address: payee, nanos: 4 }],
+    });
+    assert.equal(valued.reason, 'kind');
+    const mismatch = v12KindRejected({
+      kind: 'claim',
+      nanos: 4,
+      vout: [{ address: payee, nanos: 5 }],
+    });
+    assert.equal(mismatch.reason, 'conservation');
+    const unstated = v12KindRejected({
+      kind: 'claim',
+      vout: [{ address: payee, nanos: 4 }],
+    });
+    assert.equal(unstated.reason, 'conservation');
+    const split = v12KindRejected({
+      kind: 'claim',
+      nanos: 9,
+      vout: [{ address: payee, nanos: 4 }, { address: payee, nanos: 5 }],
+    });
+    assert.equal(split.reason, 'kind');
   });
 });

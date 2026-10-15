@@ -46,8 +46,9 @@ describe('LEVY=weight Flow levy', () => {
     assert.ok(levyFromWeight(1) === 100);
     assert.equal(levyFromWeight(64 * 100), Math.max(100, Math.ceil((6400 * LEVY_WEIGHT_RATE_NUM) / LEVY_WEIGHT_RATE_DEN)));
     assert.ok(levyFromWeight(1e12) > LEVY_CAP_NANOS || levyFromWeight(1e12) >= LEVY_FLOOR_UNITS);
-    assert.deepEqual(splitLevy(12), { finder: 6, reserve: 6 });
-    assert.deepEqual(splitLevy(1), { finder: 0, reserve: 1 });
+    assert.deepEqual(splitLevy(12), { finder: 12, reserve: 0 });
+    assert.deepEqual(splitLevy(1), { finder: 1, reserve: 0 });
+    assert.deepEqual(splitLevy(0), { finder: 0, reserve: 0 });
     assert.equal(nextBaseFee(1, 8), 1);
     assert.ok(nextBaseFee(1, 32) > 1);
     assert.equal(bech32Hrp(reserveFeeDest()), 'ssa');

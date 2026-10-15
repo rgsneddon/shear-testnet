@@ -1,4 +1,4 @@
-# Fails when MAGIC_TESTNET, Reserve.sol, and the pinned Reserve.json disagree.
+# Fails when MAGIC_TESTNET, Reserve.sol, the pinned bytecode, or the vault security map disagree.
 name: reserve-pin
 on:
   push:
@@ -13,5 +13,5 @@ jobs:
           node-version: '22'
       - name: Install node deps
         run: npm ci
-      - name: Reserve pin and mine gate
-        run: node --test --test-concurrency=1 crypto/reserve_evm.test.js node/tests/test_reserve_pin_v12.js
+      - name: Reserve pin, bytecode, and vault security map
+        run: node --test --test-concurrency=1 crypto/reserve_evm.test.js node/tests/test_reserve_pin_v12.js node/tests/test_vault_security_map.js node/tests/test_oracle_seal_v12.js

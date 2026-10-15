@@ -618,6 +618,18 @@ bool noteHasSealedSpendBytes(Map<dynamic, dynamic> n) {
       blind.isNotEmpty;
 }
 
+/// A lock note stays locked until the tip time reaches its unlock.
+/// No unlock on the note stays locked. Any other kind keeps its own flag.
+bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
+  final kind = (note['kind'] ?? '').toString();
+  if (kind != 'lock') return note['locked'] == true;
+  final raw = note['unlockAtMs'];
+  final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+  if (at <= 0) return true;
+  if (tipMs == null || tipMs < at) return true;
+  return false;
+}
+
 /// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
 /// No value-proof open, no spend tag, no search beyond one greedy pass.
 /// Production calls this from [Isolate.run].
@@ -641,6 +653,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     for (final d in (input['dests'] as List? ?? const [])) d.toString(),
   };
   final rows = <Map<String, dynamic>>[];
+  final openedLocks = <Map<String, dynamic>>[];
   for (var i = 0; i < notes.length; i++) {
     final n = notes[i];
     if (n is! Map) continue;
@@ -658,7 +671,18 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     }
     final nanos = noteNanosExact(n);
     if (nanos == null || nanos <= BigInt.zero) continue;
-    rows.add({'i': i, 'nanos': nanos, 'addr': addr});
+    final row = {'i': i, 'nanos': nanos, 'addr': addr};
+    // An unlocked lock note is the principal. The hold still covers the coins
+    // that funded it, so this note is not one of the coins the hold reserves.
+    if ((n['kind'] ?? '').toString() == 'lock') {
+      final raw = n['unlockAtMs'];
+      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+      if (at > 0) {
+        openedLocks.add(row);
+        continue;
+      }
+    }
+    rows.add(row);
   }
   rows.sort((a, b) => (a['nanos'] as BigInt).compareTo(b['nanos'] as BigInt));
   var reserved = BigInt.zero;
@@ -668,7 +692,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       reserved += rows[start]['nanos'] as BigInt;
     }
   }
-  final free = rows.sublist(start);
+  final free = <Map<String, dynamic>>[...rows.sublist(start), ...openedLocks];
   free.sort((a, b) => (b['nanos'] as BigInt).compareTo(a['nanos'] as BigInt));
   final freeSum = free.fold<BigInt>(BigInt.zero, (s, r) => s + (r['nanos'] as BigInt));
   final batches = <Map<String, dynamic>>[];
@@ -1761,7 +1785,7 @@ const postedMerkleKeys = <String>{'side', 'hash'};
 const postedVoutKeys = <String>{
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
-  'portalId', 'memo', 'memoCt',
+  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch',
 };
 
 /// Sentinel for a nested value the allow-list refuses.
@@ -1945,6 +1969,25 @@ Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {St
   return note;
 }
 
+/// A lock note carries the epoch end and the user's admit pub.
+/// No clock leaves the older receipt. A random pub would not be the user's key.
+void _stampLockNote(List<Map<String, dynamic>> sealed, Map<String, dynamic> input) {
+  final epoch = input['lockEpoch'];
+  final unlock = input['unlockAtMs'];
+  final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
+  final hasClock = epoch is int && epoch >= 0 && unlock is int && unlock > 0;
+  if (!hasClock) return;
+  for (var i = 0; i < sealed.length; i++) {
+    final note = sealed[i];
+    if ((note['kind'] ?? '').toString() != 'lock') continue;
+    note['lockEpoch'] = epoch;
+    note['unlockAtMs'] = unlock;
+    if (spendSeed != null && spendSeed.length == 32 && note['commit'] is Uint8List) {
+      sealed[i] = attachAdmitPub(note, spendSeed: spendSeed);
+    }
+  }
+}
+
 /// Seal and sign one reserve lock, vote, or withdraw.
 /// Production calls this only from [Isolate.run].
 Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
@@ -1968,6 +2011,7 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
         nonce: input['withdrawNonce'] is Uint8List ? input['withdrawNonce'] as Uint8List : null,
       ),
   ];
+  if (kind == 'lock') _stampLockNote(sealed, input);
   String? withdrawId;
   String? withdrawNonceHex;
   Uint8List? withdrawNonceRaw;
@@ -3271,6 +3315,42 @@ class ShearLedger implements ReadProofSink {
     _openedProofs[key] = nanos;
   }
 
+  /// Keep the lock note's blind. The chain drops it, and the spend needs it
+  /// once the epoch ends.
+  void _rememberTimeLock(List<Map<String, dynamic>> sealed, String dest) {
+    if (!isDestAddress(dest)) return;
+    for (final o in sealed) {
+      if ((o['kind'] ?? '').toString() != 'lock') continue;
+      final unlock = o['unlockAtMs'];
+      if (unlock is! int || unlock <= 0) continue;
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
+      final row = <String, dynamic>{
+        'address': dest,
+        'dest': dest,
+        'kind': 'lock',
+        'commit': o['commit'],
+        'noteCommit': o['noteCommit'],
+        'r': o['r'],
+        'admitPub': o['admitPub'],
+        'unlockAtMs': unlock,
+        if (o['lockEpoch'] != null) 'lockEpoch': o['lockEpoch'],
+        if (o['valueProof'] != null) 'valueProof': o['valueProof'],
+        if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
+        if (o['nanos'] != null) 'nanos': o['nanos'],
+        'verified': true,
+      };
+      final units = tryU64Units(o['nanos']);
+      if (units != null) {
+        final she = _sheOfExactNanos(units.toString());
+        if (she != null) row['amount'] = she;
+      }
+      row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
+      rememberNote(row);
+      rememberDest(dest);
+      _proofCheckedDests.add(payKey(dest));
+    }
+  }
+
   void rememberNote(Map<String, dynamic> note) {
     final incoming = Map<String, dynamic>.from(note);
     final commit = _noteBytes(incoming['commit']);
@@ -3317,6 +3397,9 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'spent': false,
       };
+      if ((row['kind'] ?? '').toString() == 'lock') {
+        row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
+      }
       if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
       _creditNoteToShearview(row);
@@ -5066,6 +5149,7 @@ class ShearLedger implements ReadProofSink {
   /// Vortex Flow figure. One reconstruct input. Exact note nanos win when the
   /// painted double cannot name the count.
   int continuumFlowNanos(String restFrame, {String? paymentCode}) {
+    refreshTimeLockedNotes();
     final owned = <String>{};
     for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
       if (!isDestAddress(d)) continue;
@@ -5088,7 +5172,17 @@ class ShearLedger implements ReadProofSink {
   /// Open-wallet coin control. Notes parked on the shear1 rest frame join the
   /// spendable dest. Every other owned ssa1 stays one note and is counted in
   /// that same sum. A young note stays unspendable. Does not invent coins.
+  /// Flip lock notes once the tip time has passed their unlock.
+  void refreshTimeLockedNotes() {
+    final tip = tipTimestampMs;
+    for (final n in _notes) {
+      if ((n['kind'] ?? '').toString() != 'lock') continue;
+      n['locked'] = lockNoteIsLocked(n, tip);
+    }
+  }
+
   double recheckRestFrameSpendable(String restFrame, {String? paymentCode}) {
+    refreshTimeLockedNotes();
     _dropProgramVaults();
     _foldFlowDest(restFrame, paymentCode: paymentCode);
     final bound = currentDest(restFrame, paymentCode: paymentCode);
@@ -5214,7 +5308,27 @@ class ShearLedger implements ReadProofSink {
     return n;
   }
 
+  /// Time-locked principal on [key]. Unstamped lock receipts are not this.
+  double _timeLockShe(String key, {required bool unlocked}) {
+    var n = 0.0;
+    for (final note in _notes) {
+      if ((note['kind'] ?? '').toString() != 'lock') continue;
+      if (note['spent'] == true) continue;
+      final raw = note['unlockAtMs'];
+      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+      if (at <= 0) continue;
+      if (!_noteOnDest(note, key)) continue;
+      if (!_noteMature(note)) continue;
+      final open = !lockNoteIsLocked(Map<String, dynamic>.from(note), tipTimestampMs);
+      if (open != unlocked) continue;
+      final she = _noteSheOf(note, 0);
+      if (she > 0) n += she;
+    }
+    return n;
+  }
+
   Map<String, double> _spendableAfterHold() {
+    refreshTimeLockedNotes();
     final keys = <String>{
       ..._spendable.keys,
       ..._lockDebitShe.keys,
@@ -5224,6 +5338,19 @@ class ShearLedger implements ReadProofSink {
     for (final k in keys) {
       if (!isDestAddress(k) || _isProgramVaultDest(k)) continue;
       gross[k] = _grossShown(k);
+    }
+    // A lock note is not spendable until its epoch ends. After that it is the
+    // principal, and the hold stays on the coins that funded it.
+    final openedLock = <String, double>{};
+    for (final k in gross.keys.toList()) {
+      final heldNote = _timeLockShe(k, unlocked: false);
+      final openNote = _timeLockShe(k, unlocked: true);
+      final cut = heldNote + openNote;
+      if (cut > 1e-12) {
+        final left = (gross[k] ?? 0) - cut;
+        gross[k] = left <= 1e-12 ? 0 : left;
+      }
+      if (openNote > 1e-12) openedLock[k] = openNote;
     }
     var pendingSum = 0.0;
     final pending = <String, double>{};
@@ -5257,6 +5384,9 @@ class ShearLedger implements ReadProofSink {
         left[k] = remain <= 1e-12 ? 0 : remain;
         owe -= take;
       }
+    }
+    for (final e in openedLock.entries) {
+      left[e.key] = (left[e.key] ?? 0) + e.value;
     }
     return left;
   }
@@ -5311,6 +5441,12 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true || n['verified'] != true) continue;
       if (!_noteOnDest(n, key)) continue;
+      // A time-locked note stays out of Spendable until its epoch ends.
+      if ((n['kind'] ?? '').toString() == 'lock' && lockNoteIsLocked(n, tipTimestampMs)) {
+        final raw = n['unlockAtMs'];
+        final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+        if (at > 0) continue;
+      }
       // Same floor as the Flow picker. A missing height is already in the
       // mature book; a stamped height still waits for 9 confirmations.
       if (!_noteMature(n)) continue;
@@ -7306,6 +7442,7 @@ class ShearLedger implements ReadProofSink {
     bool memo = false,
     String? needNanos,
   }) async {
+    refreshTimeLockedNotes();
     final dests = <String>{};
     for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
       if (!isDestAddress(d)) continue;
@@ -7329,6 +7466,8 @@ class ShearLedger implements ReadProofSink {
           'amount': n['amount'],
           'nanos': n['nanos'],
           'verifiedNanos': n['verifiedNanos'],
+          'kind': (n['kind'] ?? '').toString(),
+          'unlockAtMs': n['unlockAtMs'],
         },
     ];
     // flutter_tester's later Isolate.run nulls this closure hook on the
@@ -7775,6 +7914,8 @@ class ShearLedger implements ReadProofSink {
     String? choice,
     int? currentEpoch,
     int? epochStartMs,
+    int? lockEpoch,
+    int? unlockAtMs,
     String? change,
     Uint8List? spendSeed,
     bool privacyHopUp = false,
@@ -7799,6 +7940,8 @@ class ShearLedger implements ReadProofSink {
         choice: choice,
         currentEpoch: currentEpoch,
         epochStartMs: epochStartMs,
+        lockEpoch: lockEpoch,
+        unlockAtMs: unlockAtMs,
         change: change,
         spendSeed: spendSeed,
         privacyHopUp: privacyHopUp,
@@ -7961,6 +8104,8 @@ class ShearLedger implements ReadProofSink {
     String? choice,
     int? currentEpoch,
     int? epochStartMs,
+    int? lockEpoch,
+    int? unlockAtMs,
     String? change,
     Uint8List? spendSeed,
     bool privacyHopUp = false,
@@ -8372,6 +8517,8 @@ class ShearLedger implements ReadProofSink {
         ],
         'choice': choice ?? '',
         'programId': programId ?? '',
+        if (sendKind == 'lock' && lockEpoch != null) 'lockEpoch': lockEpoch,
+        if (sendKind == 'lock' && unlockAtMs != null) 'unlockAtMs': unlockAtMs,
       });
       final sealed = <Map<String, dynamic>>[
         for (final raw in (built['vouts'] as List))
@@ -8496,6 +8643,7 @@ class ShearLedger implements ReadProofSink {
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');
       }
+      if (sendKind == 'lock') _rememberTimeLock(vouts, destTo);
       chosen?['spent'] = true;
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
         // The pool balance below is already net. Debit only when Spendable
@@ -8545,6 +8693,7 @@ class ShearLedger implements ReadProofSink {
       _txs.add(tx);
       return tx;
     }
+    if (sendKind == 'lock') _rememberTimeLock(vouts, destTo);
     if (sendKind != 'withdraw') {
       final netBook = spendable(src) - needShe;
       _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
@@ -9267,5 +9416,216 @@ Map<String, dynamic> walletSendBody({
     if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
     if (id != null && id.isNotEmpty) 'id': id,
     if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+  };
+}
+
+/// Integer nanos as SHE. Eleven protocol digits, no public-frame truncation.
+String exactSheFromNanos(int nanos) {
+  if (nanos <= 0) return '0';
+  final whole = nanos ~/ kUnitsPerShe;
+  final frac = nanos % kUnitsPerShe;
+  if (frac == 0) return '$whole';
+  var digits = frac.toString().padLeft(11, '0');
+  while (digits.endsWith('0')) {
+    digits = digits.substring(0, digits.length - 1);
+  }
+  return '$whole.$digits';
+}
+
+/// Same verify-weight as `txVerifyWeight` in `crypto/block_budget.js`.
+int _quoteVerifyWeight(Map<String, dynamic> tx) {
+  if (tx['coinbase'] == true) return 0;
+  final vin = tx['vin'];
+  final vout = tx['vout'];
+  final nIn = vin is List ? vin.length : 0;
+  final nOut = vout is List ? vout.length : 0;
+  final fs1 = tx['fs1'];
+  if (fs1 != null && fs1 != '' && nIn >= 1 && nIn <= 8) {
+    return 2 + (25 + 25 * nIn) + 23 * nOut;
+  }
+  var w = 2 + 40 * nIn + 23 * nOut;
+  final kind = tx['kind']?.toString() ?? '';
+  if (kind == 'lock' || kind == 'vote' || kind == 'withdraw') w += 19;
+  return w;
+}
+
+int _publicByteCount(Object? value, Set<Object> seen) {
+  if (value == null) return 0;
+  if (value is String) return utf8.encode(value).length;
+  if (value is num || value is bool) return 0;
+  if (value is Uint8List) return value.length;
+  if (value is List) {
+    if (!seen.add(value)) return 0;
+    var n = 0;
+    for (final item in value) {
+      n += _publicByteCount(item, seen);
+    }
+    return n;
+  }
+  if (value is Map) {
+    if (!seen.add(value)) return 0;
+    var n = 0;
+    for (final item in value.values) {
+      n += _publicByteCount(item, seen);
+    }
+    return n;
+  }
+  return 0;
+}
+
+/// Weight levy of [body], raised until the fee digits are covered. No fake signature.
+int _claimLevyFloor(Map<String, dynamic> body) {
+  final copy = Map<String, dynamic>.from(body);
+  copy.remove('fee');
+  var fee = levyFromWeight(flowWeight(copy));
+  if (fee > kLevyCapNanos) return kLevyCapNanos;
+  copy['fee'] = fee;
+  for (var step = 0; step < 8; step++) {
+    final need = levyFromWeight(flowWeight(copy));
+    if (need <= fee) return fee;
+    if (need > kLevyCapNanos) return fee;
+    fee = need;
+    copy['fee'] = fee;
+  }
+  return fee > kLevyCapNanos ? kLevyCapNanos : fee;
+}
+
+int _feeAtRate(int peerFee, int peerWeight, int claimWeight) {
+  final pw = peerWeight < 1 ? 1 : peerWeight;
+  final cw = claimWeight < 1 ? 1 : claimWeight;
+  if (peerFee <= 0) return 0;
+  return (peerFee * cw + pw - 1) ~/ pw;
+}
+
+/// Low, Medium, and High fees for one claim, plus a custom bid.
+/// Low is the cheapest mempool fee rate, medium the upper median, high the dearest.
+/// Each fee is that rate times this claim's verify-weight, clamped to the levy.
+/// An empty mempool prices all three at the weight floor. [she] is the exact SHE.
+Map<String, dynamic> rewardClaimFeePresets({
+  required Map<String, dynamic> body,
+  List<Map<String, dynamic>> mempool = const [],
+  int? custom,
+}) {
+  final weight = _quoteVerifyWeight(body);
+  final bytes = _publicByteCount(body, <Object>{});
+  final floor = _claimLevyFloor(body);
+  final rates = <({int fee, int w, int i})>[];
+  for (var i = 0; i < mempool.length; i++) {
+    final tx = mempool[i];
+    if (tx['coinbase'] == true) continue;
+    final fee = tx['fee'];
+    if (fee is! int || fee <= 0) continue;
+    final w = _quoteVerifyWeight(tx);
+    rates.add((fee: fee, w: w < 1 ? 1 : w, i: i));
+  }
+  rates.sort((a, b) {
+    final left = a.fee * b.w;
+    final right = b.fee * a.w;
+    if (left != right) return left < right ? -1 : 1;
+    return a.i.compareTo(b.i);
+  });
+  ({int fee, bool capped}) at(int index) {
+    if (rates.isEmpty) return (fee: floor, capped: false);
+    final slot = index < 0 ? 0 : (index >= rates.length ? rates.length - 1 : index);
+    final rate = rates[slot];
+    final raw = _feeAtRate(rate.fee, rate.w, weight < 1 ? 1 : weight);
+    var fee = raw;
+    var capped = false;
+    if (fee < floor) fee = floor;
+    if (fee > kLevyCapNanos) {
+      fee = kLevyCapNanos;
+      capped = true;
+    } else if (raw > kLevyCapNanos) {
+      capped = true;
+    }
+    return (fee: fee, capped: capped);
+  }
+
+  final n = rates.length;
+  final picks = n == 0
+      ? [at(0), at(0), at(0)]
+      : [at(0), at(n ~/ 2), at(n - 1)];
+  const labels = [
+    ['low', 'Low'],
+    ['medium', 'Medium'],
+    ['high', 'High'],
+  ];
+  final presets = <Map<String, dynamic>>[
+    for (var i = 0; i < labels.length; i++)
+      {
+        'id': labels[i][0],
+        'label': labels[i][1],
+        'fee': picks[i].fee,
+        'she': exactSheFromNanos(picks[i].fee),
+        'capped': picks[i].capped,
+      },
+  ];
+  Map<String, dynamic> customRow;
+  if (custom == null) {
+    customRow = {'id': 'custom', 'label': 'Custom', 'fee': null, 'she': null, 'ok': true};
+  } else {
+    final legal = custom >= floor && custom <= kLevyCapNanos;
+    customRow = {
+      'id': 'custom',
+      'label': 'Custom',
+      'fee': custom < 0 ? null : custom,
+      'she': custom < 0 ? null : exactSheFromNanos(custom),
+      'ok': legal,
+      if (!legal) 'reason': 'levy',
+    };
+  }
+  return {
+    'weight': weight < 1 ? 1 : weight,
+    'bytes': bytes,
+    'floor': floor,
+    'cap': kLevyCapNanos,
+    'presets': presets,
+    'custom': customRow,
+  };
+}
+
+/// Reward-claim body plus Low / Medium / High and a custom fee.
+/// Each preset's `she` is the exact cost. [fee] is the custom bid.
+/// [preset] `low`, `medium`, or `high` selects that quote for the tx.
+/// A legal custom bid wins over [preset]. The weight floor is the default.
+/// Continuum does not render these buttons yet.
+Map<String, dynamic> rewardClaimSendBody({
+  required String to,
+  required Object nanos,
+  required String nullifier,
+  required List<dynamic> proof,
+  required List<dynamic> vout,
+  int? fee,
+  String? id,
+  String? preset,
+  List<Map<String, dynamic>> mempool = const [],
+}) {
+  final draft = <String, dynamic>{
+    'kind': 'reward-claim',
+    'programId': 'shear-reserve-v1',
+    'mint': true,
+    'to': to,
+    'nanos': nanos,
+    'nullifier': nullifier,
+    'proof': proof,
+    'vin': const <dynamic>[],
+    'vout': vout,
+    if (id != null && id.isNotEmpty) 'id': id,
+  };
+  final quote = rewardClaimFeePresets(body: draft, mempool: mempool, custom: fee);
+  final presets = (quote['presets'] as List).cast<Map<String, dynamic>>();
+  final custom = quote['custom'] as Map<String, dynamic>;
+  int chosen = quote['floor'] as int;
+  final named = presets.where((row) => row['id'] == preset);
+  if (fee != null && custom['ok'] == true && custom['fee'] is int) {
+    chosen = custom['fee'] as int;
+  } else if (named.isNotEmpty) {
+    chosen = named.first['fee'] as int;
+  }
+  draft['fee'] = chosen;
+  return {
+    'tx': draft,
+    ...quote,
+    'bytes': _publicByteCount(draft, <Object>{}),
   };
 }
