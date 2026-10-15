@@ -109,6 +109,13 @@ function openingOf(vout, claimed) {
 
 function asBig(n) {
   if (typeof n === 'bigint') return n < 0n ? 0n : n;
+  if (typeof n === 'string') {
+    const s = n.trim();
+    if (/^\d+$/.test(s)) {
+      try { return BigInt(s); } catch { return 0n; }
+    }
+    if (/^-\d+$/.test(s)) return 0n;
+  }
   const v = Math.floor(Number(n) || 0);
   if (!Number.isFinite(v) || v <= 0) return 0n;
   return BigInt(v);
@@ -116,6 +123,33 @@ function asBig(n) {
 
 function asNum(n) {
   return Number(asBig(n));
+}
+
+/** Accrued reward is a bigint and never exceeds u64. A Number would round past 2^53. */
+const REWARD_U64 = 0xffffffffffffffffn;
+const MAX_SAFE_NANOS = 9007199254740991n;
+
+function capReward(n) {
+  const v = asBig(n);
+  return v > REWARD_U64 ? REWARD_U64 : v;
+}
+
+function epochInterestBig(staked, bps) {
+  const p = asBig(staked);
+  const rate = Math.floor(Number(bps) || 0);
+  if (p <= 0n || !Number.isFinite(rate) || rate <= 0) return 0n;
+  const got = (p * BigInt(rate)) / 10000n;
+  return got > REWARD_U64 ? REWARD_U64 : got;
+}
+
+function addReward(total, delta) {
+  const sum = capReward(total) + capReward(delta);
+  return sum > REWARD_U64 ? REWARD_U64 : sum;
+}
+
+function nanosOut(n) {
+  const v = asBig(n);
+  return v <= MAX_SAFE_NANOS ? Number(v) : v;
 }
 
 export function portalIdFromDest(dest) {
@@ -187,7 +221,14 @@ export function cloneVault(state) {
   Object.assign(out, raw);
   out.portals = Object.create(null);
   for (const [k, p] of Object.entries(raw.portals || {})) {
-    out.portals[k] = p && typeof p === 'object' ? { ...p } : p;
+    const row = p && typeof p === 'object' ? { ...p } : p;
+    if (row && typeof row === 'object') {
+      if (row.staked != null) row.staked = asBig(row.staked);
+      if (row.idle != null) row.idle = asBig(row.idle);
+      if (row.redeemedNanos != null) row.redeemedNanos = asBig(row.redeemedNanos);
+      if (row.accruedReward != null && row.accruedReward !== '') row.accruedReward = capReward(row.accruedReward);
+    }
+    out.portals[k] = row;
   }
   out.votes = { increase: 0, decrease: 0, hold: 0, ...(raw.votes || {}) };
   out.mintedIds = Object.create(null);
@@ -222,8 +263,8 @@ function schedulePermittedNanos(vault) {
   const bps = vault?.epochBps ?? GENESIS_BPS;
   let live = 0n;
   for (const p of Object.values(vault?.portals || {})) {
-    live += BigInt(Math.max(0, Math.floor(Number(p?.accruedReward || 0))));
-    live += BigInt(reserveInterestNanos(p?.staked, bps));
+    live += capReward(p?.accruedReward);
+    live += epochInterestBig(p?.staked, bps);
   }
   return asBig(vault?.rewardPermittedNanos) + live;
 }
@@ -414,8 +455,6 @@ function portalPrincipalBig(state, dest) {
 export function portalPrincipalNanos(state, dest) {
   return asNum(portalPrincipalBig(state, dest));
 }
-
-const MAX_SAFE_NANOS = 9007199254740991n;
 
 function wireNanos(n) {
   const x = typeof n === 'bigint' ? n : 0n;
@@ -760,6 +799,29 @@ function continuumOf(p, payout, dest) {
   return dest;
 }
 
+/** Integer the commit names. A fraction, or an index outside a safe integer, is not a chain epoch. */
+function statedEpochIndex(raw) {
+  if (typeof raw === 'bigint') {
+    if (raw < 0n || raw > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(raw);
+  }
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  return n;
+}
+
+/** Vortex index of this header. No genesis yet means the clock has not opened, so the index is 0. */
+function derivedCommitIndex(nowMs, genesisMs, magic) {
+  const genesis = Number(genesisMs) || 0;
+  const now = Number(nowMs) || 0;
+  if (!(genesis > 0) || !(now > 0)) return 0;
+  return vortexEpochIndex({
+    nowMs: now,
+    genesisMs: genesis,
+    epochDays: epochDays(magic || MAGIC_TESTNET),
+  });
+}
+
 /** Chain clock. The same integer Solidity commitRate stores: vortex index, 0 at genesis. */
 function chainEpochIndex(state, nowMs) {
   const genesis = Number(state?.genesisMs) || 0;
@@ -791,18 +853,18 @@ function rateForEpoch(state, epochIndex) {
  * does not earn those epochs. Each epoch uses the rate committed for it.
  */
 function settlePortal(state, p, nowMs) {
-  if (!p) return 0;
+  if (!p) return 0n;
   const nowIdx = chainEpochIndex(state, nowMs);
   if (p.rewardEpoch == null) {
     p.rewardEpoch = nowIdx;
-    p.accruedReward = Math.max(0, Math.floor(Number(p.accruedReward || 0)));
+    p.accruedReward = capReward(p.accruedReward);
     return p.accruedReward;
   }
   const from = Math.floor(Number(p.rewardEpoch));
-  let total = Math.max(0, Math.floor(Number(p.accruedReward || 0)));
+  let total = capReward(p.accruedReward);
   if (nowIdx > from) {
     for (let e = from; e < nowIdx; e += 1) {
-      total += reserveInterestNanos(p.staked, rateForEpoch(state, e));
+      total = addReward(total, epochInterestBig(p.staked, rateForEpoch(state, e)));
     }
   }
   p.accruedReward = total;
@@ -815,13 +877,13 @@ export function portalEpochInterest(state, p, nowMs) {
   if (!p) return 0;
   const nowIdx = chainEpochIndex(state, nowMs);
   const from = p.rewardEpoch == null ? nowIdx : Math.floor(Number(p.rewardEpoch));
-  let total = Math.max(0, Math.floor(Number(p.accruedReward || 0)));
+  let total = capReward(p.accruedReward);
   if (nowIdx > from) {
     for (let e = from; e < nowIdx; e += 1) {
-      total += reserveInterestNanos(p.staked, rateForEpoch(state, e));
+      total = addReward(total, epochInterestBig(p.staked, rateForEpoch(state, e)));
     }
   }
-  return total;
+  return nanosOut(total);
 }
 
 export function previewWithdraw(state, dest, nowMs = null) {
@@ -1387,6 +1449,16 @@ export function applyReserveBlock({
     magic: state.magic || MAGIC_TESTNET,
   });
   const coinbase = txs.find((t) => t?.coinbase);
+  // The commit's epochIndex is the vortex index of this header. 999, a
+  // negative, the previous index, or the next index are not that epoch.
+  // Before genesis the derived index is 0, so a pre-open epoch is refused.
+  if (rule === 'median3b' && coinbase?.rateCommit && typeof coinbase.rateCommit === 'object') {
+    const derived = derivedCommitIndex(nowMs, clockGenesis, state.magic || MAGIC_TESTNET);
+    const stated = statedEpochIndex(coinbase.rateCommit.epochIndex);
+    if (stated == null || stated !== derived) {
+      return finishReserveApply([{ ok: false, reason: 'rate_commit', action: 'rate' }]);
+    }
+  }
   if (rule === 'median3b' && boundary && coinbase) {
     const commit = coinbase.rateCommit;
     const prev = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
@@ -1398,7 +1470,7 @@ export function applyReserveBlock({
     }
     // Queue by chain epoch. A later boundary must not erase an earlier commit:
     // the stake sat through that epoch and a withdraw pays it at that rate.
-    const epochIdx = Math.floor(Number(commit.epochIndex) || 0);
+    const epochIdx = derivedCommitIndex(nowMs, clockGenesis, state.magic || MAGIC_TESTNET);
     if (!state.pendingRates) state.pendingRates = Object.create(null);
     const queued = state.pendingRates[epochIdx];
     if (queued != null && Math.floor(Number(queued)) !== expected) {
@@ -1639,20 +1711,20 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (p.payout && payout && isDestAddress(payout) && payout !== p.payout) {
     return { ok: false, reason: 'payout_mismatch' };
   }
-  const staked = asNum(p.staked);
-  const idle = asNum(p.idle);
+  const staked = asBig(p.staked);
+  const idle = asBig(p.idle);
   const principal = staked + idle;
-  if (principal <= 0) return { ok: false, reason: 'empty' };
+  if (principal <= 0n) return { ok: false, reason: 'empty' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
   settlePortal(state, p, nowMs);
-  const interest = Math.max(0, Math.floor(Number(p.accruedReward || 0)));
-  p.accruedReward = 0;
+  const interest = capReward(p.accruedReward);
+  p.accruedReward = 0n;
   const mintId = withdrawMintId(p.id, state.currentEpoch);
   if (state.mintedIds && state.mintedIds[mintId]) {
     return { ok: false, reason: 'double_mint' };
   }
   let mint = null;
-  if (interest > 0) {
+  if (interest > 0n) {
     const paid = payoutStakeReward({
       state,
       reward: interest,
@@ -1663,7 +1735,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!paid.ok) return { ok: false, reason: paid.reason };
     mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
     if (!mint.ok) return { ok: false, reason: mint.reason };
-    state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + BigInt(interest);
+    state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + interest;
   } else if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' })) {
     return { ok: false, reason: 'mint_forbidden' };
   } else {
@@ -1688,23 +1760,22 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   p.vote = null;
   p.voteEpoch = 0;
   p.payout = null;
+  const shownInterest = nanosOut(interest);
   return {
     ok: true,
-    principal,
-    staked,
-    idle,
-    interest,
-    reward: interest,
-    rewardSource: interest > 0 ? 'coinbase' : undefined,
-    payout: principal + interest,
+    principal: nanosOut(principal),
+    staked: nanosOut(staked),
+    idle: nanosOut(idle),
+    interest: shownInterest,
+    reward: shownInterest,
+    rewardSource: interest > 0n ? 'coinbase' : undefined,
+    payout: nanosOut(principal + interest),
     to,
     mint,
     programId: RESERVE_PROGRAM,
     kind: KIND_WITHDRAW,
   };
 }
-
-const INTEREST_U64 = 0xffffffffffffffffn;
 
 function exactBi(n) {
   if (typeof n === 'bigint') return n >= 0n ? n : null;
@@ -1801,7 +1872,7 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     const portal = act.portalId ? state.portals?.[act.portalId] : null;
     const staked = portal?.staked ?? 0n;
     const idle = portal?.idle ?? 0n;
-    const principal = exactBi(asNum(asBig(staked) + asBig(idle)));
+    const principal = exactBi(asBig(staked) + asBig(idle));
     const permitted = exactBi(portalEpochInterest(state, portal, clock));
     const opened = exactBi(act.nanos);
     if (principal == null || permitted == null || opened == null) return fail();
@@ -1827,7 +1898,7 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     minted += opened - principal;
     permittedSum += permitted;
     principalOut += principal;
-    if (minted > INTEREST_U64 || permittedSum > INTEREST_U64) return fail();
+    if (minted > REWARD_U64 || permittedSum > REWARD_U64) return fail();
     counted += 1;
   }
   if (!applySlice(txs.slice(from))) return fail();

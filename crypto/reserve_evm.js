@@ -119,8 +119,14 @@ export function encodeObserveRate(bps, nowTs) {
   return concat(selector('observeRate(uint256,uint256)'), pad32(bps), pad32(nowTs));
 }
 
-export function encodeCommitRate(epochIdx, bps) {
-  return concat(selector('commitRate(uint256,uint256)'), pad32(epochIdx), pad32(bps));
+export function encodeCommitRate(epochIdx, bps, nowTs, chainGenesis = 0) {
+  return concat(
+    selector('commitRate(uint256,uint256,uint256,uint256)'),
+    pad32(epochIdx),
+    pad32(bps),
+    pad32(nowTs),
+    pad32(chainGenesis),
+  );
 }
 
 export function encodeRewardNanos(active, bps) {
@@ -397,7 +403,7 @@ export async function executeReserveTx(session, tx, nowMs) {
 }
 
 /** Run pinned Reserve bytecode + EVM SHE value for a block body. Fail closed. */
-export async function executeBlockEvm(session, txs, nowMs) {
+export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
   const prior = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
   if (prior.ok) {
@@ -436,7 +442,7 @@ export async function executeBlockEvm(session, txs, nowMs) {
   if (cb?.rateCommit && typeof cb.rateCommit === 'object') {
     const epochIdx = Math.floor(Number(cb.rateCommit.epochIndex) || 0);
     const bps = Math.floor(Number(cb.rateCommit.epochBps) || 0);
-    const committed = await callReserve(session, encodeCommitRate(epochIdx, bps));
+    const committed = await callReserve(session, encodeCommitRate(epochIdx, bps, nowMs, genesisMs));
     if (!committed.ok) return { ok: false, reason: committed.reason || 'rate_commit' };
     evm.calls += 1;
     evm.committedBps = bps;

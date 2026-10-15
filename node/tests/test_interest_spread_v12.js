@@ -305,7 +305,7 @@ describe('per-withdraw interest spread', () => {
     expectSupplyReject([opened, down], 'unit-floor');
   });
 
-  it('rejects a mid-epoch withdraw and a same-block lock changes the prefix stake', () => {
+  it('rejects a mid-epoch withdraw, and a same-block lock does not earn that epoch', () => {
     const miner = minerDest();
     const portal = portalDest();
     const interest = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
@@ -322,6 +322,8 @@ describe('per-withdraw interest spread', () => {
     const added = 38;
     const withLock = interestNanos(PI_SHE_NANOS + added, GENESIS_BPS);
     assert.equal(withLock, interest + 1);
+    // The lock settles before the new stake is added, so the old amount
+    // (interest on principal + added) is not the epoch's reward.
     const before = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock')]),
       potBlock(DRAW, again, [
@@ -329,7 +331,15 @@ describe('per-withdraw interest spread', () => {
         drawOf(who, again, PI_SHE_NANOS + added + withLock, 'pre-draw'),
       ]),
     ];
-    expectVerified(before, withLock, 'lock-then-withdraw');
+    expectSupplyReject(before, 'lock-then-withdraw-old');
+    const honest = [
+      potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock-ok')]),
+      potBlock(DRAW, again, [
+        lockOf(again, who, added, 'pre-add-ok'),
+        drawOf(who, again, PI_SHE_NANOS + added + interest, 'pre-draw-ok'),
+      ]),
+    ];
+    expectVerified(honest, interest, 'lock-then-withdraw');
     const after = [
       potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'post-lock')]),
       potBlock(DRAW, again, [

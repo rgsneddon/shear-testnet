@@ -105,11 +105,11 @@ function statsJson(store) {
     height: t?.height || 0,
     header: raw.toString('hex'),
     hash: t?.hash ? Buffer.from(t.hash).toString('hex') : '',
-    magic: MAGIC_TESTNET,
+    magic: store.magic || MAGIC_TESTNET,
     admit: 'ADMITv3 (sends off)',
     hashTxLive: HASH_TX_LIVE,
     jroot: live.jroot ? Buffer.from(live.jroot).toString('hex') : '',
-    bookLawFingerprint: consensusFingerprint(),
+    bookLawFingerprint: consensusFingerprint(store.magic || MAGIC_TESTNET),
   };
 }
 
@@ -304,7 +304,7 @@ export function createRpc({
         height: tpl.height,
         miner,
         admit: 'ADMITv3',
-        magic: MAGIC_TESTNET,
+        magic: store.magic || MAGIC_TESTNET,
       };
     }
     if (m === 'submitblock' || m === 'submitHeader') {

@@ -465,5 +465,22 @@ describe('claim conservation', () => {
       vout: [{ address: payee, nanos: 4 }],
     });
     assert.equal(valued.reason, 'kind');
+    const mismatch = v12KindRejected({
+      kind: 'claim',
+      nanos: 4,
+      vout: [{ address: payee, nanos: 5 }],
+    });
+    assert.equal(mismatch.reason, 'conservation');
+    const unstated = v12KindRejected({
+      kind: 'claim',
+      vout: [{ address: payee, nanos: 4 }],
+    });
+    assert.equal(unstated.reason, 'conservation');
+    const split = v12KindRejected({
+      kind: 'claim',
+      nanos: 9,
+      vout: [{ address: payee, nanos: 4 }, { address: payee, nanos: 5 }],
+    });
+    assert.equal(split.reason, 'kind');
   });
 });

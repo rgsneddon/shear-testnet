@@ -459,10 +459,10 @@ export function v12KindRejected(tx) {
       else opened += n;
     }
     // Finder-fee fee row: no amount and no outputs, so nothing is minted.
-    // Any stated amount, a missing output for that amount, or a row of zero
-    // or less does not conserve.
+    // A stated amount must equal the sum of the outputs. A missing output,
+    // a row of zero or less, or a sum that is not the stated amount does not conserve.
     if (vout.length === 0 && !stated) return null;
-    if (vout.length === 0 || badRow || !(opened > 0) || (stated && !(nanos > 0))) {
+    if (vout.length === 0 || badRow || !(opened > 0) || !stated || !Number.isFinite(nanos) || nanos !== opened) {
       return { ok: false, reason: 'conservation' };
     }
   }

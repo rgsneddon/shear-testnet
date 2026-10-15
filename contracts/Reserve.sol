@@ -180,14 +180,25 @@ contract Reserve {
 
     uint256 public rateCommitEpoch;
     uint256 internal genesisTs;
+    uint256 internal clockGenesis;
     mapping(uint256 => uint256) public epochRateOf;
     mapping(uint256 => bool) internal epochRateKnown;
 
     /// Chain epoch index, the same integer as JS vortexEpochIndex: 0 at genesis.
-    /// A commit keeps its index. Epoch 0 is not rewritten to 1, and the vault's
-    /// currentEpoch counter is not this index.
-    function commitRate(uint256 epochIdx, uint256 bps) external onlyShear {
+    /// epochIdx must equal that derived index. A repeated index reverts.
+    /// Epoch 0 is not rewritten to 1, and the vault's currentEpoch counter is not this index.
+    /// chainGenesis pins the clock the first time it is non-zero. A later commit
+    /// that names a different genesis reverts.
+    function commitRate(uint256 epochIdx, uint256 bps, uint256 nowTs, uint256 chainGenesis) external onlyShear {
         if (bps > 100_000 / 10) revert BadRate();
+        if (chainGenesis != 0) {
+            if (clockGenesis == 0) clockGenesis = chainGenesis;
+            else if (clockGenesis != chainGenesis) revert BadRate();
+        }
+        uint256 g = clockGenesis;
+        uint256 derived = (g == 0 || nowTs <= g) ? 0 : (nowTs - g) / epochLengthMs();
+        if (epochIdx != derived) revert BadRate();
+        if (epochRateKnown[epochIdx]) revert BadRate();
         epochRateOf[epochIdx] = bps;
         epochRateKnown[epochIdx] = true;
         nextEpochBps = bps;

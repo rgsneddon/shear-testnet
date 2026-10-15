@@ -3055,10 +3055,11 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   } catch (e) {
     return { ok: false, reason: 'evm', error: String(e?.message || e) };
   }
+  const genesisMs = Number(opts.genesisMs) || 0;
   if (fresh && Array.isArray(opts.evmHistory)) {
     for (const b of opts.evmHistory) {
       if (!blockNeedsEvm(b?.txs || [])) continue;
-      const replayed = await executeBlockEvm(session, b.txs, headerTimeMs(b));
+      const replayed = await executeBlockEvm(session, b.txs, headerTimeMs(b), genesisMs);
       if (!replayed.ok) {
         return { ok: false, reason: 'evm', error: `replay:${replayed.reason}` };
       }
@@ -3067,7 +3068,7 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   const headerMs = consensus?.decoded?.timestamp != null
     ? Number(consensus.decoded.timestamp)
     : headerTimeMs(block);
-  const ran = await executeBlockEvm(session, block.txs || [], headerMs);
+  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs);
   if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
   return {
     ...consensus,

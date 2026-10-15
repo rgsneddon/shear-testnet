@@ -411,6 +411,89 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     assert.equal(state.nextEpochBps, 350);
     assert.equal(state.epochBps, GENESIS_BPS);
   });
+
+  it('JS and the EVM refuse a commit whose index is not the derived epoch', async () => {
+    const window = windowOf(2500, 1);
+    const bps = epochBpsFromReports(GENESIS_BPS, window, { windowSize: W });
+    assert.equal(bps, 250);
+    const boundary = T0 + RESERVE_EPOCH_MS;
+    const inside = T0 + Math.floor(RESERVE_EPOCH_MS / 2);
+    const session = await bootReserveEvm();
+    const locked = await callReserve(session, encodeDeposit('portal-idx', PI_SHE_NANOS, T0));
+    assert.equal(locked.ok, true, locked.reason);
+
+    function jsCommit(epochIndex, nowMs, parentMs) {
+      return applyBoundary(freshVault(), {
+        height: W + 1,
+        nowMs,
+        parentMs,
+        window,
+        bps,
+        epochIndex,
+        activationHeight: 0,
+      });
+    }
+
+    const preOpen = jsCommit(1, inside, T0 + 1);
+    assert.equal(preOpen.ok, false, preOpen.reason);
+    assert.equal(preOpen.reason, 'rate_commit');
+    const bare = emptyVault();
+    const beforeGenesis = applyReserveBlock({
+      state: bare,
+      block: {
+        height: W + 1,
+        txs: [{
+          coinbase: true,
+          vout: [],
+          rateCommit: { epochIndex: 1, epochBps: bps, magic: MAGIC_TESTNET },
+        }],
+      },
+      nowMs: T0,
+      parentMs: T0 - 1,
+      genesisMs: 0,
+      oracleWindow: window,
+      oracleWindowSize: W,
+      activationHeight: 0,
+      height: W + 1,
+    });
+    assert.equal(beforeGenesis.ok, false);
+    assert.equal(beforeGenesis.reason, 'rate_commit');
+    const evmPre = await callReserve(session, encodeCommitRate(1, bps, inside, T0));
+    assert.equal(evmPre.ok, false);
+    const evmUnopened = await callReserve(await bootReserveEvm(), encodeCommitRate(1, bps, T0, 0));
+    assert.equal(evmUnopened.ok, false);
+
+    for (const epochIndex of [999, -5, 0, 2]) {
+      const js = jsCommit(epochIndex, boundary, boundary - 1);
+      assert.equal(js.ok, false, `js ${epochIndex} ${js.reason}`);
+      assert.equal(js.reason, 'rate_commit');
+      const evm = await callReserve(session, encodeCommitRate(epochIndex, bps, boundary, T0));
+      assert.equal(evm.ok, false, `evm ${epochIndex}`);
+    }
+
+    const jsOk = jsCommit(1, boundary, boundary - 1);
+    assert.equal(jsOk.ok, true, jsOk.reason);
+    const kept = freshVault();
+    const queued = applyBoundary(kept, {
+      height: W + 1,
+      nowMs: boundary,
+      parentMs: boundary - 1,
+      window,
+      bps,
+      epochIndex: 1,
+    });
+    assert.equal(queued.ok, true, queued.reason);
+    assert.equal(kept.rateEpochIndex, 1);
+    assert.equal(kept.pendingRates[1], bps);
+    const evmOk = await callReserve(session, encodeCommitRate(1, bps, boundary, T0));
+    assert.equal(evmOk.ok, true, evmOk.reason);
+    const slot = await callReserve(session, encodeRateCommitEpoch(), { staticCall: true });
+    assert.equal(decodeNextEpochBps(slot.returnValue), 1);
+    const repeat = await callReserve(session, encodeCommitRate(1, bps, boundary, T0));
+    assert.equal(repeat.ok, false);
+    const repeatOther = await callReserve(session, encodeCommitRate(1, GENESIS_BPS, boundary, T0));
+    assert.equal(repeatOther.ok, false);
+  });
 });
 
 const STEP_MS = 1_200_000;
@@ -539,11 +622,11 @@ describe('activation reaches the store, the EVM, a reorg, and a sealed boot', ()
     assert.equal(view.currentEpoch, 1);
     assert.equal(view.oracleBps, 350);
     const boundary = T0 + epoch;
-    const commit1 = await callReserve(session, encodeCommitRate(1, 400));
+    const commit1 = await callReserve(session, encodeCommitRate(1, 400, boundary, T0));
     assert.equal(commit1.ok, true, commit1.reason);
     const enacted = await callReserve(session, encodeEnact(boundary));
     assert.equal(enacted.ok, true, enacted.reason);
-    const commit2 = await callReserve(session, encodeCommitRate(2, 500));
+    const commit2 = await callReserve(session, encodeCommitRate(2, 500, T0 + 2 * epoch, T0));
     assert.equal(commit2.ok, true, commit2.reason);
     const kept = await callReserve(session, encodeEpochRateOf(1), { staticCall: true });
     const later = await callReserve(session, encodeEpochRateOf(2), { staticCall: true });
@@ -567,7 +650,7 @@ describe('activation reaches the store, the EVM, a reorg, and a sealed boot', ()
     const before = decodePublicView((await callReserve(session, encodePublicView(T0), { staticCall: true })).returnValue);
     assert.equal(before.oracleBps, GENESIS_BPS);
     assert.equal(before.currentEpoch, 1);
-    const committed = await callReserve(session, encodeCommitRate(1, 350));
+    const committed = await callReserve(session, encodeCommitRate(1, 350, T0 + epoch, T0));
     assert.equal(committed.ok, true, committed.reason);
     const enacted = await callReserve(session, encodeEnact(T0 + epoch));
     assert.equal(enacted.ok, true, enacted.reason);

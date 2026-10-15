@@ -5108,6 +5108,7 @@ export function createStore(dir, {
       return { tip: tipH, roots, withFrontier, blobBytes, maxBlob, heights };
     },
     hashTxLive: HASH_TX_LIVE,
+    magic: bookMagic,
     consensusFingerprint,
     pause,
     reorgHaltDepth: haltDepth,

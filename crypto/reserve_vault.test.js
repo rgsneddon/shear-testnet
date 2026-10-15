@@ -34,6 +34,7 @@ import {
   observeRate,
   portalRewards,
   previewWithdraw,
+  trialReserveApply,
   lockTx,
   voteTx,
   withdrawTx,
@@ -197,6 +198,106 @@ describe('Reserve vault protocol', () => {
     assert.equal(Number(state.portals[pid].staked), PI_SHE_NANOS);
     assert.equal(state.portals[pid].joined, true);
     assert.notEqual(trial.portals, state.portals);
+  });
+
+  it('accruedReward is a bigint capped at u64 across a rollover, 0%, and an undo', () => {
+    const U64 = 0xffffffffffffffffn;
+    const t0 = 1_700_000_000_000;
+    const who = destOf(newIdentity());
+    const rolled = emptyVault();
+    assert.equal(deposit({ state: rolled, dest: who, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    assert.equal(enact({ state: rolled, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
+    const added = 38;
+    const more = deposit({
+      state: rolled,
+      dest: who,
+      nanos: added,
+      nowMs: t0 + RESERVE_EPOCH_MS + 1,
+    });
+    assert.equal(more.ok, true, more.reason);
+    const id = portalIdFromDest(who);
+    const due = BigInt(interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+    const oldAmount = BigInt(interestNanos(PI_SHE_NANOS + added, GENESIS_BPS));
+    assert.equal(typeof rolled.portals[id].accruedReward, 'bigint');
+    assert.equal(rolled.portals[id].accruedReward, due);
+    assert.notEqual(rolled.portals[id].accruedReward, oldAmount);
+    assert.equal(supplyIdentity(rolled).ok, true);
+
+    const zero = emptyVault();
+    const zDest = destOf(newIdentity());
+    assert.equal(deposit({ state: zero, dest: zDest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    zero.epochBps = 0;
+    assert.equal(enact({ state: zero, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
+    const zMore = deposit({ state: zero, dest: zDest, nanos: 1, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
+    assert.equal(zMore.ok, true, zMore.reason);
+    assert.equal(zero.portals[portalIdFromDest(zDest)].accruedReward, 0n);
+    assert.equal(supplyIdentity(zero).ok, true);
+
+    const near = emptyVault();
+    const nDest = destOf(newIdentity());
+    const stake = U64 - 5n;
+    assert.equal(deposit({ state: near, dest: nDest, nanos: stake, nowMs: t0 }).ok, true);
+    near.epochBps = 10000;
+    assert.equal(enact({ state: near, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
+    const nMore = deposit({ state: near, dest: nDest, nanos: 1n, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
+    assert.equal(nMore.ok, true, nMore.reason);
+    const nearId = portalIdFromDest(nDest);
+    assert.equal(near.portals[nearId].accruedReward, stake);
+    assert.notEqual(BigInt(Number(near.portals[nearId].accruedReward)), stake);
+    const copied = cloneVault(near);
+    assert.equal(copied.portals[nearId].accruedReward, stake);
+    assert.equal(supplyIdentity(near).ok, true);
+
+    const capped = emptyVault();
+    const cDest = destOf(newIdentity());
+    assert.equal(deposit({ state: capped, dest: cDest, nanos: U64, nowMs: t0 }).ok, true);
+    capped.epochBps = 10000;
+    assert.equal(enact({ state: capped, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
+    const cMore = deposit({
+      state: capped,
+      dest: cDest,
+      nanos: 1n,
+      nowMs: t0 + 2 * RESERVE_EPOCH_MS,
+    });
+    assert.equal(cMore.ok, true, cMore.reason);
+    assert.equal(capped.portals[portalIdFromDest(cDest)].accruedReward, U64);
+    assert.equal(supplyIdentity(capped).ok, true);
+
+    const live = emptyVault();
+    const alice = destOf(newIdentity());
+    const bob = destOf(newIdentity());
+    assert.equal(deposit({ state: live, dest: alice, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    assert.equal(enact({ state: live, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
+    const aliceId = portalIdFromDest(alice);
+    assert.equal(live.portals[aliceId].accruedReward, 0n);
+    const fork = cloneVault(live);
+    const settled = deposit({
+      state: fork,
+      dest: alice,
+      nanos: 10,
+      nowMs: t0 + RESERVE_EPOCH_MS + 1,
+    });
+    assert.equal(settled.ok, true, settled.reason);
+    assert.equal(fork.portals[aliceId].accruedReward, due);
+    const undone = trialReserveApply({
+      state: live,
+      inPlace: true,
+      nowMs: t0 + RESERVE_EPOCH_MS + 1,
+      genesisMs: t0,
+      block: {
+        height: 2,
+        txs: [
+          lockTx({ from: alice, to: alice, nanos: 10, id: 'settle-lock' }),
+          withdrawTx({ from: bob, to: alice, nanos: 1, id: 'settle-miss' }),
+        ],
+      },
+    });
+    assert.equal(undone.ok, false);
+    assert.equal(undone.reason, 'empty');
+    assert.equal(live.portals[aliceId].accruedReward, 0n);
+    assert.equal(live.totalLockedNanos, BigInt(PI_SHE_NANOS));
+    assert.equal(supplyIdentity(live).ok, true);
+    assert.equal(supplyIdentity(fork).ok, true);
   });
 
   it('first sealed block after epoch auto-enacts the winning vote; height is unchanged', () => {
