@@ -996,6 +996,8 @@ Future<int> _claimRewards(
     payout: payout,
     nowMs: now,
     local: ledger.pool == null,
+    // The operator typed this claim. That is the public-node consent.
+    publicIpConsent: true,
   );
   if (posted == null) {
     err.writeln('nothing to claim — no staked principal or accrued rewards');
