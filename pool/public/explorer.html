@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -8,9 +8,7 @@
   <title>Shear explorer · ShearHash-v3</title>
   <link rel="icon" href="/brand/favicon-32.png" sizes="32x32"/>
   <link rel="icon" href="/brand/favicon.ico"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/fonts/greatvibes/great-vibes.css" />
   <link rel="stylesheet" href="/brand/theme.css?v=30"/>
   <style>
     :root {
@@ -122,18 +120,22 @@
       .she-private-lockup { font-size: clamp(1.35rem, 6.4vw, 1.75rem); }
     }
   </style>
+  <link rel="stylesheet" href="/shared/shear-chrome.css?v=20261014nav"/>
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
 </head>
 <body>
-  <header class="top-banner">
-    <div class="banner-brand">
+  <div id="shear-chrome-root" data-active="EXPLORER" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
       <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
-        src="/brand/05c-wordmark-nevia-light-transparent.png"
-        data-light="/brand/05c-wordmark-nevia-light-transparent.png"
-        data-dark="/brand/05d-wordmark-nevia-dark-transparent.png"/>
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
       <img class="banner-wordmark theme-img-dark" alt=""
-        src="/brand/05d-wordmark-nevia-dark-transparent.png"/>
-    </div>
-    <nav class="nav" id="shear-nav">
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
       <a class="nav-btn" href="https://shear.digital/">MAIN</a>
       <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
       <a class="nav-btn is-on" href="https://explorer.shear.digital/">EXPLORER</a>
@@ -143,16 +145,19 @@
       <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
       <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
       <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
-    </nav>
-    <div class="banner-tools">
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark" onclick="toggleShearTheme()">
         <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
         <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
       </button>
-      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" onclick="toggleShearNav()">Menu</button>
-    </div>
-  </header>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu" onclick="toggleShearNav()"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="/shared/shear-chrome.js?v=20261014nav"></script>
   <div class="wrap">
     <section class="panel-card">
       <h1>Shear explorer</h1>
@@ -198,7 +203,7 @@
     </section>
     <section class="panel-card">
       <h2>BLOCK LIST - FULL</h2>
-      <p class="label">Blocks this pool found, highest height first. Found in is the wall-clock time since the previous block this pool discovered — the same clock as the pool find — not a header-timestamp gap. Ten rows in view; scroll for the rest. Search by height, block id, or a from–to range. Amounts and dests stay off this table. Spendable in the wallet is 9 confirmations of an opened coin, not a figure on this page.</p>
+      <p class="label">Blocks this pool found, highest height first. Found in is the wall-clock time since the previous block this pool discovered — the same clock as the pool find — not a header-timestamp gap. Ten rows in view; scroll for the rest. Search by height, block id, or a from–to range. Reserve lock and vote appear from mempool as (pending). Amounts and dests stay off this table. Spendable in the wallet is 9 confirmations of an opened coin, not a figure on this page.</p>
       <div class="table-wrap block-list-scroll" id="ex-tx-wrap">
       <table id="ex-txs">
         <thead>
@@ -514,9 +519,17 @@
       const st = document.getElementById('tx-status');
       if (st) st.textContent = status || '';
       if (!body) return;
-      const rows = (Array.isArray(txs) ? txs.slice() : []).sort(function (a, b) {
+      const list = Array.isArray(txs) ? txs.slice() : [];
+      const pendingRows = [];
+      const sealed = [];
+      for (let i = 0; i < list.length; i += 1) {
+        if (isPendingRow(list[i])) pendingRows.push(list[i]);
+        else sealed.push(list[i]);
+      }
+      sealed.sort(function (a, b) {
         return Number(b.height) - Number(a.height);
       });
+      const rows = pendingRows.concat(sealed);
       body.innerHTML = rows.length
         ? rows.map(function (t) {
             const href = '/tx/' + encodeURIComponent(t.id || '');
@@ -617,7 +630,9 @@
       lastBlockAt = blockAt > 0 ? blockAt : 0;
       setText('ex-updated', lastBlockAt ? fmtSinceBlock(lastBlockAt) : '—');
       const circ = await fetchJson('/explorer/circulation').catch(function () { return { holders: [] }; });
-      paintTxs(poolBlockRows(stats, findLedger), '');
+      const recent = orderRecentTxs(hist.txs || []);
+      const pending = recent.filter(isPendingRow);
+      paintTxs(pending.concat(poolBlockRows(stats, findLedger)), '');
       saveFindLedger();
       paintHolders(circ);
     }

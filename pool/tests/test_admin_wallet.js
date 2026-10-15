@@ -26,6 +26,28 @@ import { createPullBook, potCreditNanos } from '../src/pull_book.js';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const ADMIN_HOST = 'admin.mypool.site';
 
+/** Mature pool-fee note. An explorer row alone is fail-closed once notes exist. */
+function feeNoteStore(feeDest) {
+  return {
+    blocks: [{
+      height: 10,
+      hash: Buffer.alloc(32, 0x11),
+      miner: feeDest,
+      txs: [{
+        coinbase: true,
+        vout: [
+          sealCoinbaseNote(NANOS_PER_SHE, { dest20: hash20FromAddress(feeDest), kind: 'pool-fee' }),
+        ],
+      }],
+    }],
+    historyFor: (addr) => (addr === feeDest ? [{
+      id: 'fee-1', from: 'coinbase', to: feeDest, nanos: NANOS_PER_SHE, height: 10, kind: 'pool-fee',
+    }] : []),
+    tip: () => ({ height: 20 }),
+    mempool: [],
+  };
+}
+
 function url(p) {
   return new URL(`https://${ADMIN_HOST}${p}`);
 }
@@ -136,13 +158,7 @@ describe('operator admin fee wallet', () => {
     const amount = 0.05;
     const nanos = Math.round(amount * NANOS_PER_SHE);
     const fee = levyNanos(nanos);
-    const store = {
-      historyFor: (addr) => (addr === from ? [{
-        id: 'fee-1', from: 'coinbase', to: from, nanos: NANOS_PER_SHE, height: 10, kind: 'pool-fee',
-      }] : []),
-      tip: () => ({ height: 20 }),
-      mempool: [],
-    };
+    const store = feeNoteStore(from);
     const posted = [];
     const run = (p, method, body, cookie, extra = {}) => handleAdminApi(url(p), method, body, {
       store, admin, cookie, queueSend: (t) => {
@@ -259,13 +275,7 @@ describe('operator admin fee wallet', () => {
     assert.equal(credited.ok, false);
     assert.equal(credited.reason, 'custodial_pull');
     const fee = configuredFeeIdentity().feeDest;
-    const store = {
-      historyFor: (addr) => (addr === fee ? [{
-        id: 'fee-1', from: 'coinbase', to: fee, nanos: NANOS_PER_SHE, height: 10, kind: 'pool-fee',
-      }] : []),
-      tip: () => ({ height: 20 }),
-      mempool: [],
-    };
+    const store = feeNoteStore(fee);
     const bal = adminWalletBalance(store, dest, book);
     assert.equal(bal.spendableNanos, 0);
     assert.equal(bal.spendable, 0);

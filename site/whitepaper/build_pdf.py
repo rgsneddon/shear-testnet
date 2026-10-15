@@ -31,7 +31,7 @@ def _font_pair():
             lib / "LiberationSerif-Italic.ttf",
             lib / "LiberationSerif-BoldItalic.ttf",
         )
-    raise FileNotFoundError("Times New Roman not found (macOS Supplemental or Windows Fonts), and no Liberation Serif")
+    raise FileNotFoundError("Times New Roman not found (macOS Supplemental, Windows Fonts, or Liberation Serif)")
 
 
 FONT, FONT_B, FONT_I, FONT_BI = _font_pair()
@@ -172,7 +172,7 @@ def main() -> None:
         pdf,
         "The public sites — shear.digital, pool.shear.digital, explorer.shear.digital, mempool.shear.digital — "
         "are the face of the testnet. Live magic is shear-testnet-v10. Mainnet shear-v1 is not live "
-        "and the public countdown is 30th October 2026 at 1400hrs UK time. "
+        "and the public countdown is 16th November 2026 at 1400hrs UK time. "
         "Testnet balances can vanish. Treat them as a practice run.",
     )
 
