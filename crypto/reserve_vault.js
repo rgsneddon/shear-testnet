@@ -160,6 +160,11 @@ export function emptyVault() {
     sealedObserve: null,
     epochBps: GENESIS_BPS,
     nextEpochBps: null,
+    // epochIndex → bps. Two boundaries can pass before the next lock opens
+    // the vault. One nextEpochBps slot would drop the earlier rate, and a
+    // withdraw would pay those epochs at the later rate. The latest commit
+    // is also nextEpochBps, for the epoch that opens next.
+    pendingRates: Object.create(null),
     rewardPermittedNanos: 0n,
     freezes: Object.create(null),
     genesisMs: 0,
@@ -189,6 +194,8 @@ export function cloneVault(state) {
   Object.assign(out.mintedIds, raw.mintedIds || {});
   out.freezes = Object.create(null);
   Object.assign(out.freezes, raw.freezes || {});
+  out.pendingRates = Object.create(null);
+  Object.assign(out.pendingRates, raw.pendingRates || {});
   out.liveHashBonusNanos = asBig(out.liveHashBonusNanos);
   out.totalLockedNanos = asBig(out.totalLockedNanos);
   out.feeBankNanos = asBig(out.feeBankNanos);
@@ -215,6 +222,7 @@ function schedulePermittedNanos(vault) {
   const bps = vault?.epochBps ?? GENESIS_BPS;
   let live = 0n;
   for (const p of Object.values(vault?.portals || {})) {
+    live += BigInt(Math.max(0, Math.floor(Number(p?.accruedReward || 0))));
     live += BigInt(reserveInterestNanos(p?.staked, bps));
   }
   return asBig(vault?.rewardPermittedNanos) + live;
@@ -469,6 +477,7 @@ function snapTrial(state) {
     liveHashBonusNanos: state.liveHashBonusNanos,
     epochBps: state.epochBps,
     nextEpochBps: state.nextEpochBps,
+    pendingRates: state.pendingRates ? { ...state.pendingRates } : Object.create(null),
     rewardPermittedNanos: state.rewardPermittedNanos,
     genesisMs: state.genesisMs,
     magic: state.magic,
@@ -504,6 +513,7 @@ function restoreTrial(state, snap, frame) {
   state.liveHashBonusNanos = snap.liveHashBonusNanos;
   state.epochBps = snap.epochBps;
   state.nextEpochBps = snap.nextEpochBps;
+  state.pendingRates = snap.pendingRates ? { ...snap.pendingRates } : Object.create(null);
   state.rewardPermittedNanos = snap.rewardPermittedNanos;
   state.genesisMs = snap.genesisMs;
   state.magic = snap.magic;
@@ -579,9 +589,10 @@ function beginEpoch(state, nowMs) {
   const prior = state.freezes[idx];
   if (rule === 'median3b') {
     const running = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
-    const pending = state.nextEpochBps == null
+    const queued = state.pendingRates?.[idx];
+    const pending = queued == null
       ? running
-      : Math.max(0, Math.floor(Number(state.nextEpochBps)));
+      : Math.max(0, Math.floor(Number(queued)));
     if (!prior) {
       rememberFreeze(state, idx);
       state.freezes[idx] = {
@@ -657,6 +668,7 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
   if (state.epochStartMs && !state.bonusEnacted && remainingMs(state, nowMs) === 0) {
     return { ok: false, reason: 'need_enact' };
   }
+  settlePortal(state, p, nowMs);
   const staking = canJoin(state, nowMs);
   if (staking) p.staked = asBig(p.staked) + n;
   else p.idle = asBig(p.idle) + n;
@@ -748,10 +760,77 @@ function continuumOf(p, payout, dest) {
   return dest;
 }
 
-export function previewWithdraw(state, dest) {
+/** Chain clock. The same integer Solidity commitRate stores: vortex index, 0 at genesis. */
+function chainEpochIndex(state, nowMs) {
+  const genesis = Number(state?.genesisMs) || 0;
+  if (!(genesis > 0) || !(Number(nowMs) > 0)) return 0;
+  return vortexEpochIndex({
+    nowMs,
+    genesisMs: genesis,
+    epochDays: epochDays(state?.magic || MAGIC_TESTNET),
+  });
+}
+
+/**
+ * Rate of one chain epoch. A 3b freeze is the rate adopted when that epoch
+ * opened. A queued commit covers an epoch the vault has not opened yet.
+ * Fixed mode follows the running epochBps, which is the single bundled rate.
+ */
+function rateForEpoch(state, epochIndex) {
+  const freeze = state?.freezes?.[epochIndex];
+  if (freeze && freeze.source === 'median3b' && freeze.epochBps != null) {
+    return Math.max(0, Math.floor(Number(freeze.epochBps)));
+  }
+  const queued = state?.pendingRates?.[epochIndex];
+  if (queued != null && queued !== '') return Math.max(0, Math.floor(Number(queued)));
+  return Math.max(0, Math.floor(Number(state?.epochBps ?? GENESIS_BPS)));
+}
+
+/**
+ * Move completed chain epochs onto the portal. Stake added after this call
+ * does not earn those epochs. Each epoch uses the rate committed for it.
+ */
+function settlePortal(state, p, nowMs) {
+  if (!p) return 0;
+  const nowIdx = chainEpochIndex(state, nowMs);
+  if (p.rewardEpoch == null) {
+    p.rewardEpoch = nowIdx;
+    p.accruedReward = Math.max(0, Math.floor(Number(p.accruedReward || 0)));
+    return p.accruedReward;
+  }
+  const from = Math.floor(Number(p.rewardEpoch));
+  let total = Math.max(0, Math.floor(Number(p.accruedReward || 0)));
+  if (nowIdx > from) {
+    for (let e = from; e < nowIdx; e += 1) {
+      total += reserveInterestNanos(p.staked, rateForEpoch(state, e));
+    }
+  }
+  p.accruedReward = total;
+  p.rewardEpoch = nowIdx;
+  return total;
+}
+
+/** Interest a withdraw at `nowMs` pays: each completed chain epoch at that epoch's rate. */
+export function portalEpochInterest(state, p, nowMs) {
+  if (!p) return 0;
+  const nowIdx = chainEpochIndex(state, nowMs);
+  const from = p.rewardEpoch == null ? nowIdx : Math.floor(Number(p.rewardEpoch));
+  let total = Math.max(0, Math.floor(Number(p.accruedReward || 0)));
+  if (nowIdx > from) {
+    for (let e = from; e < nowIdx; e += 1) {
+      total += reserveInterestNanos(p.staked, rateForEpoch(state, e));
+    }
+  }
+  return total;
+}
+
+export function previewWithdraw(state, dest, nowMs = null) {
   const p = portalOf(state, dest);
+  const clock = nowMs == null
+    ? (Number(state?.epochStartMs) || 0) + epochMs(state?.magic)
+    : nowMs;
   const principal = asNum(asBig(p.staked) + asBig(p.idle));
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  const interest = portalEpochInterest(state, p, clock);
   return {
     principal,
     staked: asNum(p.staked),
@@ -1131,7 +1210,7 @@ export function verifyReservePayout(state, tx, clockMs) {
   }
   if (!p) return { ok: false, reason: 'empty' };
   const principal = asNum(asBig(p.staked) + asBig(p.idle));
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  const interest = portalEpochInterest(state, p, clock);
   const published = publicActionNanos(tx, (tx?.vout || []).find((row) => String(row?.kind || '') === KIND_WITHDRAW) || tx?.vout?.[0]);
   if (published != null && published < principal) return { ok: false, reason: 'principal_short' };
   if (act.opened === false) return { ok: false, reason: 'mint_amount' };
@@ -1317,8 +1396,17 @@ export function applyReserveBlock({
     if (!commit || Math.floor(Number(commit.epochBps)) !== expected) {
       return finishReserveApply([{ ok: false, reason: 'rate_commit', action: 'rate' }]);
     }
+    // Queue by chain epoch. A later boundary must not erase an earlier commit:
+    // the stake sat through that epoch and a withdraw pays it at that rate.
+    const epochIdx = Math.floor(Number(commit.epochIndex) || 0);
+    if (!state.pendingRates) state.pendingRates = Object.create(null);
+    const queued = state.pendingRates[epochIdx];
+    if (queued != null && Math.floor(Number(queued)) !== expected) {
+      return finishReserveApply([{ ok: false, reason: 'rate_commit', action: 'rate' }]);
+    }
+    state.pendingRates[epochIdx] = expected;
     state.nextEpochBps = expected;
-    state.rateEpochIndex = Math.floor(Number(commit.epochIndex) || 0);
+    state.rateEpochIndex = epochIdx;
   }
   if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     const did = enact({ state, nowMs });
@@ -1556,7 +1644,9 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   const principal = staked + idle;
   if (principal <= 0) return { ok: false, reason: 'empty' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  settlePortal(state, p, nowMs);
+  const interest = Math.max(0, Math.floor(Number(p.accruedReward || 0)));
+  p.accruedReward = 0;
   const mintId = withdrawMintId(p.id, state.currentEpoch);
   if (state.mintedIds && state.mintedIds[mintId]) {
     return { ok: false, reason: 'double_mint' };
@@ -1712,8 +1802,7 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     const staked = portal?.staked ?? 0n;
     const idle = portal?.idle ?? 0n;
     const principal = exactBi(asNum(asBig(staked) + asBig(idle)));
-    const bps = state.epochBps ?? GENESIS_BPS;
-    const permitted = exactBi(reserveInterestNanos(staked, bps));
+    const permitted = exactBi(portalEpochInterest(state, portal, clock));
     const opened = exactBi(act.nanos);
     if (principal == null || permitted == null || opened == null) return fail();
     if (opened !== principal + permitted) return fail();

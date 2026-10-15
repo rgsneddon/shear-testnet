@@ -324,6 +324,14 @@ export function encodeNextEpochBps() {
   return selector('nextEpochBps()');
 }
 
+export function encodeRateCommitEpoch() {
+  return selector('rateCommitEpoch()');
+}
+
+export function encodeEpochRateOf(epochIdx) {
+  return concat(selector('epochRateOf(uint256)'), pad32(epochIdx));
+}
+
 export function decodeNextEpochBps(ret) {
   const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
   return Number(readU256(b, 0));

@@ -74,7 +74,7 @@ const ABI_NAMES = [
   'SHEAR_TESTNET_V7', 'SHEAR_TESTNET_V8', 'SHEAR_TESTNET_V9', 'addMore', 'annualBps',
   'bonusEnacted', 'canJoin', 'commitRate', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
   'enactedAtMs', 'enactedDelta', 'enactedDown', 'enactedHold', 'enactedLiveBonus', 'enactedUp',
-  'epochBps', 'epochDaysOf', 'epochLengthMs', 'epochOpen', 'epochStart', 'liveHashBonusNanos',
+  'epochBps', 'epochDaysOf', 'epochLengthMs', 'epochOpen', 'epochRateOf', 'epochStart', 'liveHashBonusNanos',
   'lock', 'magic', 'nextEpochBps', 'observeRate', 'oracleAsOfMs', 'portalId', 'portalOf',
   'publicView', 'rateCommitEpoch', 'remainingDays', 'remainingMs', 'rewardNanos', 'totalLocked', 'trimmedMeanBps', 'vote', 'votesDecrease',
   'votesHold', 'votesIncrease', 'withdraw',

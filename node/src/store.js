@@ -273,7 +273,7 @@ export function createStore(dir, {
   network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
   oracleActivationHeight = undefined,
 } = {}, resume = null) {
-  const bookMagic = String(network || MAGIC_TESTNET);
+  const configuredMagic = String(network || MAGIC_TESTNET);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
@@ -360,15 +360,20 @@ export function createStore(dir, {
     }
   }
   burialHold.load(Number(blocks[blocks.length - 1]?.height) || blocks.length);
-  {
-    const diskMagic = fs.existsSync(magicFile)
-      ? fs.readFileSync(magicFile, 'utf8').trim()
-      : String(blocks[0]?.magic || '');
-    if (diskMagic && diskMagic !== MAGIC_TESTNET) {
-      // Empty cut. v8 and v9 books do not join this magic. No soft-merge.
-      throw new Error(`datadir_magic:${diskMagic}`);
-    }
+  const fileMagic = fs.existsSync(magicFile) ? fs.readFileSync(magicFile, 'utf8').trim() : '';
+  let chainMagic = '';
+  for (const row of blocks) {
+    const stamped = String(row?.magic || '').trim();
+    if (!stamped) continue;
+    if (!chainMagic) chainMagic = stamped;
+    else if (stamped !== chainMagic) throw new Error(`datadir_magic:${stamped}`);
   }
+  if (fileMagic && chainMagic && fileMagic !== chainMagic) throw new Error(`datadir_magic:${fileMagic}`);
+  const book = fileMagic || chainMagic;
+  if (book && configuredMagic && book !== configuredMagic) throw new Error(`datadir_magic:${book}`);
+  // One network for this book. The datadir check, the fingerprint, the
+  // book.magic writes, and every block stamp below all use bookMagic.
+  const bookMagic = book || configuredMagic;
   // book.seal skips the header ShearHash when it matches this install's key.
   // book.snap skips the body prefix only when that same key verifies it and
   // the snap binds this chain. A miss replays. A foreign book never uses it.
@@ -377,7 +382,7 @@ export function createStore(dir, {
   burialProof.load();
   loadMode = blocks.length ? 'full' : 'empty';
   const snapExpect = {
-    rules: consensusFingerprint(MAGIC_TESTNET),
+    rules: consensusFingerprint(bookMagic),
     genesisPin: String(genesisHash || ''),
     checkpoint,
   };
@@ -389,7 +394,7 @@ export function createStore(dir, {
     && resume.height === blocks.length && tipBuf(blocks).equals(Buffer.from(resume.tipHash || [])));
   let trustStoredHash = false;
   if (blocks.length && !resumed) {
-    const want = chainLoadSeal(blocks, sealKey);
+    const want = chainLoadSeal(blocks, sealKey, bookMagic);
     let got = '';
     if (fs.existsSync(sealFile)) {
       try { got = fs.readFileSync(sealFile, 'utf8').trim(); } catch { got = ''; }
@@ -1076,7 +1081,7 @@ export function createStore(dir, {
   }
 
   function writeLoadSeal(rows) {
-    fs.writeFileSync(sealFile, `${chainLoadSeal(rows, sealKey)}\n`);
+    fs.writeFileSync(sealFile, `${chainLoadSeal(rows, sealKey, bookMagic)}\n`);
   }
 
   function resetFrameHash() {
@@ -1406,7 +1411,7 @@ export function createStore(dir, {
   }
 
   function persist(block) {
-    fs.writeFileSync(magicFile, MAGIC_TESTNET);
+    fs.writeFileSync(magicFile, bookMagic);
     const tipH = Number(block?.height || 0);
     // The block being written is the tip. Fast-sync must not mark it pruned.
     // pruneBuried puts a share batch back when a later tip lifts the block
@@ -1430,7 +1435,7 @@ export function createStore(dir, {
   }
 
   function rewriteChain() {
-    fs.writeFileSync(magicFile, MAGIC_TESTNET);
+    fs.writeFileSync(magicFile, bookMagic);
     fs.mkdirSync(segDir, { recursive: true });
     writeChainSegments(segDir, blocks);
     dropSegmentsFrom(Math.ceil(blocks.length / CHAIN_SEGMENT_BLOCKS));
@@ -1984,7 +1989,7 @@ export function createStore(dir, {
         height: Number(tipNow?.height || 0) + 1,
         blocks,
         spentTags: live.spendTags,
-        magic: MAGIC_TESTNET,
+        magic: bookMagic,
         noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       });
       if (proved.ok && !proved.skip) keep.push(tx);
@@ -2055,7 +2060,7 @@ export function createStore(dir, {
           commits: liveFlux?.commits,
           height: Number(t?.height || 0) + 1,
           blocks,
-          magic: MAGIC_TESTNET,
+          magic: bookMagic,
           noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
         };
         if (txIsReserveAction(row)) {
@@ -2755,7 +2760,7 @@ export function createStore(dir, {
     const prev = tip();
     const full = {
       ...block,
-      magic: MAGIC_TESTNET,
+      magic: bookMagic,
       hash: check.hash,
       height: prev ? prev.height + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
@@ -3000,7 +3005,7 @@ export function createStore(dir, {
         height: Number(t?.height || 0) + 1,
         blocks,
         spentTags: spentNow,
-        magic: MAGIC_TESTNET,
+        magic: bookMagic,
         noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       });
       if (!flowProof.ok) {
@@ -3032,7 +3037,7 @@ export function createStore(dir, {
       height: Number(t?.height || 0) + 1,
       blocks,
       spentTags: spentNow,
-      magic: MAGIC_TESTNET,
+      magic: bookMagic,
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     });
     if (!noteFund.ok) return noteFund;
@@ -3310,7 +3315,7 @@ export function createStore(dir, {
         if (!c?.ok) return { ok: false, reason: c.reason, at: i };
         const lean = leanBlock({
           ...fork[i],
-          magic: MAGIC_TESTNET,
+          magic: bookMagic,
           hash: c.hash,
           height: i + 1,
           weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
@@ -3370,7 +3375,7 @@ export function createStore(dir, {
       stampCredits(fork[i], units[i]);
       const lean = leanBlock({
         ...fork[i],
-        magic: MAGIC_TESTNET,
+        magic: bookMagic,
         hash: check.hash,
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
@@ -3431,7 +3436,7 @@ export function createStore(dir, {
       stampCredits(fork[i], units[i]);
       const lean = leanBlock({
         ...fork[i],
-        magic: MAGIC_TESTNET,
+        magic: bookMagic,
         hash: check.hash,
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
@@ -3513,7 +3518,7 @@ export function createStore(dir, {
   function leanVerified(block, check, prev) {
     return leanBlock({
       ...block,
-      magic: MAGIC_TESTNET,
+      magic: bookMagic,
       hash: check.hash,
       height: prev ? Number(prev.height || 0) + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
@@ -3845,7 +3850,7 @@ export function createStore(dir, {
         tipHeight: viewed.tip,
         genesisMs: state.genesisMs,
         blockHash: block?.hash,
-        magic: MAGIC_TESTNET,
+        magic: bookMagic,
         vault,
       });
       if (!stepped.ok) return null;
@@ -3934,7 +3939,7 @@ export function createStore(dir, {
           tipHeight: viewed.tip,
           genesisMs: gms,
           blockHash: rows[hi]?.hash,
-          magic: MAGIC_TESTNET,
+          magic: bookMagic,
           vault,
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
@@ -4363,7 +4368,7 @@ export function createStore(dir, {
             tipHeight: suffixBurial,
             genesisMs: carriedSupply.genesisMs,
             blockHash: block?.hash,
-            magic: MAGIC_TESTNET,
+            magic: bookMagic,
             vault: carriedVault,
           });
           if (!stepped.ok || failSupplyAt === i - lca) {

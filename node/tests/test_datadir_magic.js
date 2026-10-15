@@ -6,7 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
 import { HISTORICAL_TIP } from '../../crypto/historical_prefix.js';
-import { retarget } from '../src/chain.js';
+import { chainLoadSeal, retarget } from '../src/chain.js';
+import { bookSealKeyFor } from '../src/book_seal_key.js';
 import { nextBits } from '../../crypto/asert.js';
 import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_TESTNET_V6, MAGIC_TESTNET_V8, MAGIC_TESTNET_V9, MAGIC_MAINNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { encodeDest } from '../../crypto/address.js';
@@ -68,6 +69,23 @@ describe('v3 and v4 datadirs refuse each other', () => {
     fs.writeFileSync(path.join(dir, 'book.magic'), MAGIC_TESTNET_V9);
     assert.throws(() => createStore(dir), new RegExp(`datadir_magic:${MAGIC_TESTNET_V9}`));
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
+  });
+
+  it('refuses a book whose magic, chain stamp, or configured network disagree', () => {
+    const foreign = MAGIC_TESTNET_V9;
+    const configured = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-net-'));
+    fs.writeFileSync(path.join(configured, 'book.magic'), MAGIC_TESTNET);
+    assert.throws(() => createStore(configured, { network: foreign }), new RegExp(`datadir_magic:${MAGIC_TESTNET}`));
+
+    const split = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-split-'));
+    const row = {
+      magic: foreign,
+      header: Buffer.alloc(80).toString('hex'),
+      hash: Buffer.alloc(32, 1).toString('hex'),
+    };
+    fs.writeFileSync(path.join(split, 'chain.jsonl'), `${JSON.stringify(row)}\n`);
+    fs.writeFileSync(path.join(split, 'book.magic'), MAGIC_TESTNET);
+    assert.throws(() => createStore(split), /datadir_magic:/);
   });
 
   it('empty datadir loads as shear-testnet-v12', () => {
@@ -168,6 +186,13 @@ describe('v3 and v4 datadirs refuse each other', () => {
       rootB: tpl.rootB,
       weight: tpl.weight,
     }).ok, true);
+    const written = fs.readFileSync(path.join(dir, 'book.magic'), 'utf8').trim();
+    assert.equal(written, MAGIC_TESTNET);
+    assert.equal(store.blocks[0].magic, written);
+    const key = bookSealKeyFor(dir);
+    const sealed = fs.readFileSync(path.join(dir, 'book.seal'), 'utf8').trim();
+    assert.equal(sealed, chainLoadSeal(store.blocks, key, written));
+    assert.notEqual(sealed, chainLoadSeal(store.blocks, key, MAGIC_TESTNET_V9));
     const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
     const bound = await p2p.listen();
     const sock = net.connect(bound.port, '127.0.0.1');

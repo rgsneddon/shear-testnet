@@ -18,11 +18,12 @@ import {
   ORACLE_WINDOW_TESTNET,
   POLICY_BANK_IDS,
   epochBpsFromReports,
+  interestNanos,
   reserveApplyFields,
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { applyReserveBlock, deposit, emptyVault } from './reserve_vault.js';
+import { applyReserveBlock, deposit, emptyVault, previewWithdraw, withdraw } from './reserve_vault.js';
 import {
   GENESIS_PREV,
   buildTemplate,
@@ -40,8 +41,15 @@ import {
   callReserve,
   decodeNextEpochBps,
   decodePublicView,
+  decodeWithdraw,
+  encodeCommitRate,
+  encodeDeposit,
+  encodeEnact,
+  encodeEpochRateOf,
   encodeNextEpochBps,
   encodePublicView,
+  encodeRateCommitEpoch,
+  encodeWithdraw,
   executeBlockEvm,
 } from './reserve_evm.js';
 
@@ -287,7 +295,92 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
       epochIndex: 1,
       now: T0 + RESERVE_EPOCH_MS,
     });
-    assert.notEqual(stillFixed.reason, 'rate_commit', stillFixed.reason);
+    assert.equal(stillFixed.ok, true, stillFixed.reason);
+    assert.equal(stillFixed.reason, undefined);
+  });
+
+  it('a split inside a bank still yields the trimmed mean of the agreeing banks', () => {
+    const majority = [1000, 1500, 2000, 2500, 3000, 3200, 3400, 3600, 3800, 4000, 4500, 5000, 5500, 6000];
+    assert.equal(majority.length, POLICY_BANK_IDS.length);
+    const agree = 50;
+    const dissent = W - agree;
+    assert.ok(agree * 3 >= W * 2);
+    assert.ok(dissent * 3 < W * 2);
+    const window = [];
+    for (let i = 0; i < W; i += 1) {
+      window.push({
+        height: 1 + i,
+        miner: 'm',
+        reports: POLICY_BANK_IDS.map((id, k) => {
+          const split = i >= agree;
+          if (k === POLICY_BANK_IDS.length - 1) {
+            return { id, tenths: i < 33 ? 1000 : 9000 };
+          }
+          return { id, tenths: split ? majority[k] + 800 : majority[k] };
+        }),
+      });
+    }
+    const kept = majority.slice(0, -1);
+    const want = trimmedMeanBps(kept);
+    assert.equal(want, 333);
+    const bps = epochBpsFromReports(GENESIS_BPS, window, { windowSize: W });
+    assert.equal(bps, want);
+    const state = freshVault();
+    const got = applyBoundary(state, {
+      height: W + 1,
+      nowMs: T0 + RESERVE_EPOCH_MS,
+      parentMs: T0 + RESERVE_EPOCH_MS - 1,
+      window,
+      bps,
+      epochIndex: 1,
+    });
+    assert.equal(got.ok, true, got.reason);
+    assert.equal(state.pendingRates[1], 333);
+    assert.equal(state.nextEpochBps, 333);
+    assert.equal(state.epochBps, GENESIS_BPS);
+  });
+
+  it('two boundaries before a rollover keep both rates, and a withdraw pays each epoch its own', () => {
+    const firstWindow = windowOf(2500, 1);
+    const secondWindow = windowOf(5000, W + 1);
+    const firstBps = epochBpsFromReports(GENESIS_BPS, firstWindow, { windowSize: W });
+    const secondBps = epochBpsFromReports(firstBps, secondWindow, { windowSize: W });
+    assert.equal(firstBps, 250);
+    assert.equal(secondBps, 500);
+    const state = freshVault();
+    const who = minerOf();
+    const opened = deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: T0 });
+    assert.equal(opened.ok, true, opened.reason);
+    const first = applyBoundary(state, {
+      height: W + 1,
+      nowMs: T0 + RESERVE_EPOCH_MS,
+      parentMs: T0 + RESERVE_EPOCH_MS - 1,
+      window: firstWindow,
+      bps: firstBps,
+      epochIndex: 1,
+    });
+    assert.equal(first.ok, true, first.reason);
+    const second = applyBoundary(state, {
+      height: (W + 1) + W,
+      nowMs: T0 + 2 * RESERVE_EPOCH_MS,
+      parentMs: T0 + 2 * RESERVE_EPOCH_MS - 1,
+      window: secondWindow,
+      bps: secondBps,
+      epochIndex: 2,
+    });
+    assert.equal(second.ok, true, second.reason);
+    assert.equal(state.pendingRates[1], firstBps);
+    assert.equal(state.pendingRates[2], secondBps);
+    assert.equal(state.nextEpochBps, secondBps);
+    assert.equal(state.epochBps, GENESIS_BPS);
+    const at = T0 + 2 * RESERVE_EPOCH_MS;
+    const due = interestNanos(PI_SHE_NANOS, GENESIS_BPS) + interestNanos(PI_SHE_NANOS, firstBps);
+    assert.equal(previewWithdraw(state, who, at).interest, due);
+    const paid = withdraw({ state, dest: who, nowMs: at });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.interest, due);
+    assert.notEqual(paid.interest, interestNanos(PI_SHE_NANOS, secondBps) * 2);
+    assert.notEqual(paid.interest, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
   });
 
   it('commits the trimmed mean of a mixed-bank window', () => {
@@ -426,6 +519,68 @@ describe('activation reaches the store, the EVM, a reorg, and a sealed boot', ()
     const view = await callReserve(session, encodePublicView(T0), { staticCall: true });
     assert.equal(view.ok, true, view.reason);
     assert.equal(decodePublicView(view.returnValue).oracleBps, GENESIS_BPS);
+  });
+
+  it('commitRate stores the vortex index, including 0 and an index past currentEpoch', async () => {
+    const session = await bootReserveEvm();
+    const epoch = RESERVE_EPOCH_MS;
+    const opened = await executeBlockEvm(session, [{
+      coinbase: true,
+      vout: [],
+      rateCommit: { epochIndex: 0, epochBps: 350, magic: MAGIC_TESTNET },
+    }], T0);
+    assert.equal(opened.ok, true, opened.reason);
+    const slot = await callReserve(session, encodeRateCommitEpoch(), { staticCall: true });
+    assert.equal(slot.ok, true, slot.reason);
+    assert.equal(decodeNextEpochBps(slot.returnValue), 0);
+    const locked = await callReserve(session, encodeDeposit('portal-a', PI_SHE_NANOS, T0));
+    assert.equal(locked.ok, true, locked.reason);
+    const view = decodePublicView((await callReserve(session, encodePublicView(T0), { staticCall: true })).returnValue);
+    assert.equal(view.currentEpoch, 1);
+    assert.equal(view.oracleBps, 350);
+    const boundary = T0 + epoch;
+    const commit1 = await callReserve(session, encodeCommitRate(1, 400));
+    assert.equal(commit1.ok, true, commit1.reason);
+    const enacted = await callReserve(session, encodeEnact(boundary));
+    assert.equal(enacted.ok, true, enacted.reason);
+    const commit2 = await callReserve(session, encodeCommitRate(2, 500));
+    assert.equal(commit2.ok, true, commit2.reason);
+    const kept = await callReserve(session, encodeEpochRateOf(1), { staticCall: true });
+    const later = await callReserve(session, encodeEpochRateOf(2), { staticCall: true });
+    const cursor = await callReserve(session, encodeRateCommitEpoch(), { staticCall: true });
+    assert.equal(decodeNextEpochBps(kept.returnValue), 400);
+    assert.equal(decodeNextEpochBps(later.returnValue), 500);
+    assert.equal(decodeNextEpochBps(cursor.returnValue), 2);
+    const drawn = await callReserve(session, encodeWithdraw('portal-a', T0 + 2 * epoch));
+    assert.equal(drawn.ok, true, drawn.reason);
+    const paid = decodeWithdraw(drawn.returnValue);
+    const one = (bps) => Number((BigInt(PI_SHE_NANOS) * BigInt(bps)) / 10000n);
+    assert.equal(paid.principal, PI_SHE_NANOS);
+    assert.equal(paid.interest, one(350) + one(400));
+  });
+
+  it('the next epoch open adopts the committed rate end to end', async () => {
+    const session = await bootReserveEvm();
+    const epoch = RESERVE_EPOCH_MS;
+    const locked = await callReserve(session, encodeDeposit('portal-b', PI_SHE_NANOS, T0));
+    assert.equal(locked.ok, true, locked.reason);
+    const before = decodePublicView((await callReserve(session, encodePublicView(T0), { staticCall: true })).returnValue);
+    assert.equal(before.oracleBps, GENESIS_BPS);
+    assert.equal(before.currentEpoch, 1);
+    const committed = await callReserve(session, encodeCommitRate(1, 350));
+    assert.equal(committed.ok, true, committed.reason);
+    const enacted = await callReserve(session, encodeEnact(T0 + epoch));
+    assert.equal(enacted.ok, true, enacted.reason);
+    const held = decodePublicView((await callReserve(session, encodePublicView(T0 + epoch), { staticCall: true })).returnValue);
+    assert.equal(held.oracleBps, GENESIS_BPS);
+    assert.equal(held.bonusEnacted, true);
+    const rolled = await callReserve(session, encodeDeposit('portal-c', PI_SHE_NANOS, T0 + epoch + 1));
+    assert.equal(rolled.ok, true, rolled.reason);
+    const after = decodePublicView((await callReserve(session, encodePublicView(T0 + epoch + 1), { staticCall: true })).returnValue);
+    assert.equal(after.currentEpoch, 2);
+    assert.equal(after.oracleBps, 350);
+    const rate = await callReserve(session, encodeEpochRateOf(1), { staticCall: true });
+    assert.equal(decodeNextEpochBps(rate.returnValue), 350);
   });
 
   it('a heavier fork replaces the committed rate, and a sealed boot replays it', async () => {

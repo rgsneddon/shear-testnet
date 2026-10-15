@@ -82,6 +82,9 @@ contract Reserve {
         Vote vote;
         bool joined;
         uint256 voteEpoch;
+        bool rewardTracked;
+        uint256 rewardEpoch;
+        uint256 accruedReward;
     }
 
     bytes32 public immutable magic;
@@ -176,16 +179,40 @@ contract Reserve {
     }
 
     uint256 public rateCommitEpoch;
+    uint256 internal genesisTs;
+    mapping(uint256 => uint256) public epochRateOf;
+    mapping(uint256 => bool) internal epochRateKnown;
 
-    /// The node passes the recomputed epoch rate. Floor is 0 (uint). Source tenths cannot
-    /// produce a trimmed mean above +100% (100000 tenths → 10000 bps).
-    /// The commit is the next epoch's rate. The running epochBps stays until
-    /// the next epoch opens.
+    /// Chain epoch index, the same integer as JS vortexEpochIndex: 0 at genesis.
+    /// A commit keeps its index. Epoch 0 is not rewritten to 1, and the vault's
+    /// currentEpoch counter is not this index.
     function commitRate(uint256 epochIdx, uint256 bps) external onlyShear {
         if (bps > 100_000 / 10) revert BadRate();
-        if (currentEpoch != 0 && epochIdx != currentEpoch) revert BadRate();
+        epochRateOf[epochIdx] = bps;
+        epochRateKnown[epochIdx] = true;
         nextEpochBps = bps;
-        rateCommitEpoch = epochIdx == 0 ? 1 : epochIdx;
+        rateCommitEpoch = epochIdx;
+    }
+
+    function _chainEpoch(uint256 nowTs) internal view returns (uint256) {
+        if (genesisTs == 0 || nowTs <= genesisTs) return 0;
+        return (nowTs - genesisTs) / epochLengthMs();
+    }
+
+    function _rateFor(uint256 epochIdx) internal view returns (uint256) {
+        if (epochRateKnown[epochIdx]) return epochRateOf[epochIdx];
+        return epochBps;
+    }
+
+    function _settle(Portal storage p, uint256 nowTs) internal {
+        if (!p.rewardTracked) return;
+        uint256 nowIdx = _chainEpoch(nowTs);
+        uint256 from = p.rewardEpoch;
+        if (nowIdx <= from) return;
+        for (uint256 e = from; e < nowIdx; e++) {
+            p.accruedReward += (p.active * _rateFor(e)) / 10000;
+        }
+        p.rewardEpoch = nowIdx;
     }
 
     function rewardNanos(uint256 active, uint256 bps) public pure returns (uint256) {
@@ -237,24 +264,24 @@ contract Reserve {
         return (tenthsMean + 5) / 10;
     }
 
-    function _applyEpochRate() internal {
-        if (rateCommitEpoch != 0) {
-            epochBps = nextEpochBps;
-            annualBps = nextEpochBps;
-            return;
+    function _applyEpochRate(uint256 nowTs) internal {
+        uint256 idx = _chainEpoch(nowTs);
+        if (!epochRateKnown[idx]) {
+            uint256 proposal = _bundledEpochBps();
+            epochRateOf[idx] = proposal;
+            epochRateKnown[idx] = true;
         }
-        uint256 proposal = _bundledEpochBps();
-        epochBps = proposal;
-        nextEpochBps = proposal;
-        annualBps = proposal;
+        epochBps = epochRateOf[idx];
+        annualBps = epochBps;
     }
 
     function _maybeOpenEpoch(uint256 nowTs) internal {
         if (epochStart == 0) {
+            genesisTs = nowTs;
             currentEpoch = 1;
             epochStart = nowTs;
             bonusEnacted = false;
-            _applyEpochRate();
+            _applyEpochRate(nowTs);
             return;
         }
         if (bonusEnacted) {
@@ -264,7 +291,7 @@ contract Reserve {
             votesIncrease = 0;
             votesDecrease = 0;
             votesHold = 0;
-            _applyEpochRate();
+            _applyEpochRate(nowTs);
         }
     }
 
@@ -274,6 +301,11 @@ contract Reserve {
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
+        _settle(p, nowTs);
+        if (!p.rewardTracked) {
+            p.rewardTracked = true;
+            p.rewardEpoch = _chainEpoch(nowTs);
+        }
         bool staking = canJoin(nowTs);
         if (staking) p.active += nanos;
         else p.idle += nanos;
@@ -322,11 +354,10 @@ contract Reserve {
         if (down == m && m > 0) { winners += 1; delta = -1; }
         if (hold == m && m > 0) { winners += 1; delta = 0; }
         if (winners == 1 && delta > 0) liveHashBonusNanos += 1;
-        else if (winners == 1 && delta < 0) {
+        else         if (winners == 1 && delta < 0) {
             if (liveHashBonusNanos <= GENESIS_BONUS) delta = 0;
             else liveHashBonusNanos -= 1;
         }
-        nextEpochBps = epochBps;
         bonusEnacted = true;
         enactedUp = up;
         enactedDown = down;
@@ -342,12 +373,14 @@ contract Reserve {
         if (!bonusEnacted) revert NeedEnact();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
+        _settle(p, nowTs);
         uint256 active = p.active;
         uint256 idle = p.idle;
         principal = active + idle;
         if (principal == 0) revert BadAmount();
-        // Reserve reward: floor(active * epochBps / 10000). do not use 365.
-        reward = (active * epochBps) / 10000;
+        // Each completed chain epoch pays at the rate committed for that epoch.
+        reward = p.accruedReward;
+        p.accruedReward = 0;
         totalLocked -= principal;
         if (p.voteEpoch == currentEpoch) {
             if (p.vote == Vote.IncreaseBonus && votesIncrease > 0) votesIncrease -= 1;

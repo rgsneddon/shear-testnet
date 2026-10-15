@@ -446,11 +446,27 @@ export function txKind(tx) {
 export function v12KindRejected(tx) {
   if (!tx || tx.coinbase) return null;
   const kind = txKind(tx);
+  if (kind === 'claim') {
+    const vout = Array.isArray(tx?.vout) ? tx.vout : [];
+    const stated = tx?.nanos != null && tx.nanos !== '';
+    const nanos = Math.floor(Number(tx?.nanos || 0));
+    let opened = 0;
+    let badRow = false;
+    for (const row of vout) {
+      const raw = row?.valueProof?.v != null ? row.valueProof.v : row?.nanos;
+      const n = Math.floor(Number(raw || 0));
+      if (!(Number.isFinite(n) && n > 0)) badRow = true;
+      else opened += n;
+    }
+    // Finder-fee fee row: no amount and no outputs, so nothing is minted.
+    // Any stated amount, a missing output for that amount, or a row of zero
+    // or less does not conserve.
+    if (vout.length === 0 && !stated) return null;
+    if (vout.length === 0 || badRow || !(opened > 0) || (stated && !(nanos > 0))) {
+      return { ok: false, reason: 'conservation' };
+    }
+  }
   if (kind && V12_VALUE_KINDS.has(kind)) return null;
-  // A claim with no output is the fee row for the finder split. It does not mint.
-  const vout = Array.isArray(tx?.vout) ? tx.vout : [];
-  const nanos = Math.floor(Number(tx?.nanos || 0));
-  if (kind === 'claim' && vout.length === 0 && !(nanos > 0)) return null;
   return { ok: false, reason: 'kind' };
 }
 
