@@ -23,7 +23,7 @@ import {
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { applyReserveBlock, deposit, enact, emptyVault, lockTx, previewWithdraw, vote, VOTE_INCREASE, withdraw, withdrawTx } from './reserve_vault.js';
+import { applyReserveBlock, deposit, enact, emptyVault, lockTx, previewWithdraw, trialReserveApply, vote, VOTE_INCREASE, withdraw, withdrawTx } from './reserve_vault.js';
 import {
   GENESIS_PREV,
   buildTemplate,
@@ -44,6 +44,7 @@ import {
   decodePublicView,
   decodeWithdraw,
   encodeCommitRate,
+  encodeCutoffLengthMs,
   encodeDeposit,
   encodeEnact,
   encodeEpochRateOf,
@@ -607,6 +608,7 @@ function remainAt(offset) {
 function satWant(offset, holdEpochs, rates, stake = PI_SHE_NANOS) {
   const span = RESERVE_EPOCH_MS;
   if (remainAt(offset) < Math.floor(span / 4)) return 0;
+  if (stake < PI_SHE_NANOS) return 0;
   const idx = Math.floor(offset);
   const until = Math.floor(offset + holdEpochs);
   const rate = (e) => (rates && rates[e] != null ? rates[e] : GENESIS_BPS);
@@ -854,6 +856,120 @@ describe('the stake-reward cutoff is per network', () => {
     assert.equal(decodeWithdraw(evmLate.returnValue).principal, PI_SHE_NANOS);
     assert.equal(decodeWithdraw(evmLate.returnValue).interest, 0);
   });
+
+  it('fails if the EVM mainnet cutoff stops being 99 days', async () => {
+    const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
+    assert.match(sol, /if \(magic == SHEAR_MAINNET\) return JOIN_CUTOFF_DAYS \* DAY_MS;/);
+    const day = 86_400_000;
+    const main = await bootReserveEvm({ network: MAGIC_MAINNET });
+    const mainCut = await callReserve(main, encodeCutoffLengthMs(), { staticCall: true });
+    assert.equal(mainCut.ok, true, mainCut.reason);
+    assert.equal(word(mainCut.returnValue), BigInt(STAKE_CUTOFF_DAYS_MAINNET) * BigInt(day));
+    const test = await bootReserveEvm();
+    const testCut = await callReserve(test, encodeCutoffLengthMs(), { staticCall: true });
+    assert.equal(testCut.ok, true, testCut.reason);
+    assert.equal(word(testCut.returnValue), BigInt(Math.floor(RESERVE_EPOCH_MS / STAKE_CUTOFF_QUARTER_DEN)));
+  });
+});
+
+function word(ret) {
+  const b = ret instanceof Uint8Array ? ret : new Uint8Array(ret);
+  let x = 0n;
+  for (let i = 0; i < 32 && i < b.length; i += 1) x = (x << 8n) + BigInt(b[i]);
+  return x;
+}
+
+describe('a pre-cutoff sum below pi earns no stake reward', () => {
+  const epoch = RESERVE_EPOCH_MS;
+
+  async function oneLock(nanos, lockAt, drawAt) {
+    const who = minerOf();
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    assert.equal(deposit({ state, dest: who, nanos, nowMs: lockAt }).ok, true);
+    const paid = withdraw({ state, dest: who, nowMs: drawAt });
+    assert.equal(paid.ok, true, paid.reason);
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who, nanos, lockAt))).ok, true);
+    const evm = await callReserve(session, encodeWithdraw(who, drawAt));
+    assert.equal(evm.ok, true, evm.reason);
+    const decoded = decodeWithdraw(evm.returnValue);
+    assert.equal(decoded.principal, Number(paid.principal));
+    assert.equal(decoded.interest, paid.interest);
+    return paid.interest;
+  }
+
+  it('pi-1 earns 0, pi and pi+1 earn the epoch', async () => {
+    const drawAt = T0 + epoch;
+    const below = await oneLock(PI_SHE_NANOS - 1, T0, drawAt);
+    const exact = await oneLock(PI_SHE_NANOS, T0, drawAt);
+    const above = await oneLock(PI_SHE_NANOS + 1, T0, drawAt);
+    assert.equal(below, 0);
+    assert.equal(exact, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+    assert.equal(above, interestNanos(PI_SHE_NANOS + 1, GENESIS_BPS));
+    assert.ok(exact > 0);
+    assert.ok(above > 0);
+  });
+
+  it('a later pre-cutoff top-up that crosses pi still pays the earlier credit', async () => {
+    const who = minerOf();
+    const first = PI_SHE_NANOS - 1;
+    const second = 2;
+    const addAt = T0 + epoch;
+    const drawAt = T0 + 2 * epoch;
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    assert.equal(deposit({ state, dest: who, nanos: first, nowMs: T0 }).ok, true);
+    assert.equal(deposit({ state, dest: who, nanos: second, nowMs: addAt }).ok, true);
+    const paid = withdraw({ state, dest: who, nowMs: drawAt });
+    assert.equal(paid.ok, true, paid.reason);
+    const want = interestNanos(first, GENESIS_BPS) * 2 + interestNanos(second, GENESIS_BPS);
+    assert.equal(paid.interest, want);
+    assert.equal(paid.principal, first + second);
+
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who, first, T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who, second, addAt))).ok, true);
+    const evm = await callReserve(session, encodeWithdraw(who, drawAt));
+    assert.equal(evm.ok, true, evm.reason);
+    assert.equal(decodeWithdraw(evm.returnValue).interest, want);
+    assert.equal(decodeWithdraw(evm.returnValue).principal, first + second);
+  });
+
+  it('a post-cutoff add does not lift a pre-cutoff sum below pi, and the owner can vote', async () => {
+    const who = minerOf();
+    const quarter = Math.floor(epoch / STAKE_CUTOFF_QUARTER_DEN);
+    const lateAt = T0 + epoch - quarter + 1000;
+    const end = T0 + epoch;
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS - 1, nowMs: T0 }).ok, true);
+    const late = deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lateAt });
+    assert.equal(late.ok, true, late.reason);
+    assert.equal(late.idle, true);
+    const cast = vote({ state, dest: who, choice: VOTE_INCREASE, nowMs: lateAt });
+    assert.equal(cast.ok, true, cast.reason);
+    const paid = withdraw({ state, dest: who, nowMs: end });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.interest, 0);
+    assert.equal(paid.principal, (PI_SHE_NANOS - 1) + PI_SHE_NANOS);
+
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS - 1, T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lateAt))).ok, true);
+    const evmVote = await callReserve(session, encodeVote(who, 1, lateAt));
+    assert.equal(evmVote.ok, true, evmVote.reason);
+    const evm = await callReserve(session, encodeWithdraw(who, end));
+    assert.equal(evm.ok, true, evm.reason);
+    assert.equal(decodeWithdraw(evm.returnValue).interest, 0);
+    assert.equal(decodeWithdraw(evm.returnValue).principal, (PI_SHE_NANOS - 1) + PI_SHE_NANOS);
+  });
 });
 
 describe('pinClock runs before the first lock in a block', () => {
@@ -933,6 +1049,14 @@ describe('an unpinned clock rejects a lock', () => {
     const replayDenied = applyReserveBlock({ state: replay, block, nowMs: T0 });
     assert.equal(replayDenied.ok, false);
     assert.equal(replayDenied.reason, 'clock');
+    const trialDenied = trialReserveApply({
+      state: emptyVault(),
+      txs: [lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'trial-unpinned' })],
+      nowMs: T0,
+      genesisMs: 0,
+    });
+    assert.equal(trialDenied.ok, false);
+    assert.equal(trialDenied.reason, 'clock');
     assert.equal(replay.totalLockedNanos, 0n);
     const replayed = applyReserveBlock({ state: replay, block, nowMs: T0, genesisMs: T0 });
     assert.equal(replayed.ok, true, replayed.reason);

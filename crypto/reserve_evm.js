@@ -168,6 +168,10 @@ export function encodeLiveBonus() {
   return selector('liveHashBonusNanos()');
 }
 
+export function encodeCutoffLengthMs() {
+  return selector('cutoffLengthMs()');
+}
+
 function readU256(buf, off = 0) {
   let n = 0n;
   for (let i = 0; i < 32; i += 1) n = (n << 8n) + BigInt(buf[off + i] || 0);

@@ -221,6 +221,8 @@ describe('per-withdraw interest spread', () => {
 
   it('pays zero interest on dust and the rounding boundary, and no stake on a last-quarter lock', () => {
     // Smallest stake whose floor(stake * bps / 10000) is 1, and the unit below it.
+    // A stake below π earns nothing. The +1 rounding is paid on a qualified
+    // stake of π plus that boundary unit.
     const boundary = Math.ceil(10000 / GENESIS_BPS);
     const dust = boundary - 1;
     assert.equal(interestNanos(dust, GENESIS_BPS), 0);
@@ -230,19 +232,22 @@ describe('per-withdraw interest spread', () => {
     const low = portalDest();
     const edge = portalDest();
     const sponsorInterest = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
+    const edgeStake = PI_SHE_NANOS + boundary;
+    const edgeInterest = interestNanos(edgeStake, GENESIS_BPS);
+    assert.equal(edgeInterest, sponsorInterest + 1);
     const chain = [
       potBlock(GENESIS, miner, [
         lockOf(miner, sponsor, PI_SHE_NANOS, 'z-sponsor'),
         lockOf(miner, low, dust, 'z-dust'),
-        lockOf(miner, edge, boundary, 'z-edge'),
+        lockOf(miner, edge, edgeStake, 'z-edge'),
       ]),
       potBlock(DRAW, miner, [
         drawOf(sponsor, miner, PI_SHE_NANOS + sponsorInterest, 'z-ws'),
         drawOf(low, miner, dust, 'z-wl'),
-        drawOf(edge, miner, boundary + 1, 'z-we'),
+        drawOf(edge, miner, edgeStake + edgeInterest, 'z-we'),
       ]),
     ];
-    expectVerified(chain, sponsorInterest + 1, 'dust-boundary');
+    expectVerified(chain, sponsorInterest + edgeInterest, 'dust-boundary');
 
     const late = GENESIS + EPOCH_MS - joinCutoffMs(MAGIC_TESTNET) + 1000;
     assert.ok(late < GENESIS + EPOCH_MS);

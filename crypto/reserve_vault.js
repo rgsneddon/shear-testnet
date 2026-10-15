@@ -984,17 +984,33 @@ function rateForEpoch(state, epochIndex) {
 }
 
 /**
- * A credit locked with at least the stake cutoff still to run earns a reward.
- * One locked in the final window does not. The portal can still vote.
+ * A credit locked with at least the stake cutoff still to run can earn.
+ * One locked in the final window cannot. The portal can still vote.
+ * Earning also requires the portal's pre-cutoff sum to reach π.
  */
 function earnsStakeReward(state, tranche) {
   const remain = Math.floor(Number(tranche?.remainMs) || 0);
   return remain >= joinCutoffMs(state?.magic);
 }
 
+/** Sum of credits locked before the stake cutoff. The final window does not count. */
+function preCutoffStake(state, portal) {
+  let sum = 0n;
+  for (const tranche of portal?.tranches || []) {
+    if (!earnsStakeReward(state, tranche)) continue;
+    sum += asBig(tranche.amount);
+  }
+  return sum;
+}
+
+/** Stake reward is off until the pre-cutoff sum is at least π. */
+function stakeQualified(state, portal) {
+  return preCutoffStake(state, portal) >= BigInt(PI_SHE_NANOS);
+}
+
 /** Interest still owed on one credit. Does not mutate the tranche. */
-function trancheDue(state, tranche, nowIdx, span) {
-  if (!earnsStakeReward(state, tranche)) return 0n;
+function trancheDue(state, tranche, nowIdx, span, earns) {
+  if (!earns) return 0n;
   let total = 0n;
   const amount = asBig(tranche?.amount);
   const epoch = Math.floor(Number(tranche?.epoch) || 0);
@@ -1061,9 +1077,14 @@ function settlePortal(state, p, nowMs) {
   if (!p) return 0n;
   const nowIdx = settlementIndex(state, nowMs);
   const span = epochMs(state.magic);
+  const qualified = stakeQualified(state, p);
   let total = capReward(p.accruedReward);
   for (const tranche of p.tranches || []) {
-    total = addReward(total, trancheDue(state, tranche, nowIdx, span));
+    const earns = qualified && earnsStakeReward(state, tranche);
+    total = addReward(total, trancheDue(state, tranche, nowIdx, span, earns));
+    // Below π the cursors stay put. A later pre-cutoff top-up that crosses
+    // π must still be able to pay the epochs this credit already sat.
+    if (!earns) continue;
     if (!tranche.partialPaid && nowIdx > tranche.epoch) tranche.partialPaid = true;
     const from = Math.floor(Number(tranche.fullFrom ?? tranche.epoch + 1));
     if (nowIdx > from) tranche.fullFrom = nowIdx;
@@ -1077,9 +1098,11 @@ export function portalEpochInterest(state, p, nowMs) {
   if (!p) return 0;
   const nowIdx = settlementIndex(state, nowMs);
   const span = epochMs(state?.magic);
+  const qualified = stakeQualified(state, p);
   let total = capReward(p.accruedReward);
   for (const tranche of p.tranches || []) {
-    total = addReward(total, trancheDue(state, tranche, nowIdx, span));
+    const earns = qualified && earnsStakeReward(state, tranche);
+    total = addReward(total, trancheDue(state, tranche, nowIdx, span, earns));
   }
   return nanosOut(total);
 }
@@ -1769,6 +1792,19 @@ function trialBlock(rows, block) {
   return block && Array.isArray(block.txs) ? block : { txs: rows };
 }
 
+/**
+ * Consensus passes an explicit genesis, and 0 means the clock is unpinned.
+ * A trial that omits the argument has no chain header. Use its nowMs so a
+ * lock on that trial can pin, which is what the in-place undo hit does.
+ * A vault that already has a clock keeps it.
+ */
+function trialClock(state, nowMs, genesisMs) {
+  if (genesisMs != null && genesisMs !== '') return Number(genesisMs) || 0;
+  if (Number(state?.genesisMs) > 0) return 0;
+  const now = Number(nowMs) || 0;
+  return now > 0 ? now : 0;
+}
+
 function oracleForward(src = {}) {
   const out = {
     oracleWindow: src.oracleWindow ?? null,
@@ -1832,7 +1868,7 @@ export function trialReserveApply({
   oracleActivationHeight = undefined,
   height = null,
   parentMs = 0,
-  genesisMs = 0,
+  genesisMs = null,
 } = {}) {
   const rows = Array.isArray(txs) ? txs : (Array.isArray(block?.txs) ? block.txs : []);
   const oracle = {
@@ -1842,7 +1878,7 @@ export function trialReserveApply({
     oracleActivationHeight,
     height,
     parentMs,
-    genesisMs,
+    genesisMs: trialClock(state, nowMs, genesisMs),
     block,
   };
   if (!rows.some(txIsReserveAction)) return { ok: true };

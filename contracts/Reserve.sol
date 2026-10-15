@@ -10,9 +10,12 @@ pragma solidity ^0.8.20;
  * lock and can vote. Coin locked in the final stake window is idle: it earns
  * no stake reward, and its owner can still vote. Mainnet's window is the
  * last 99 days. Testnet's window is the last quarter of the epoch. A lock
- * or top-up made before that window, staked or idle,
- * earns its epoch's rate times the time still left in that chain epoch, by
- * integer floor, then each later full epoch before the open one. A
+ * or top-up made before that window earns only when the sum of those
+ * pre-cutoff credits is at least π. Below π the stake reward is 0, and a
+ * settle while the sum is still short does not mark those credits paid.
+ * A qualifying credit earns its epoch's rate times the time still left in
+ * that chain epoch, by integer floor, then each later full epoch before
+ * the open one. Coin added inside the window does not count toward π. A
  * completed gap is paid immediately, at that epoch's committed rate or
  * else the last paid rate, including a commit on a skipped epoch. It does
  * not wait for a later enact. Each deposit, the original lock and every
@@ -31,7 +34,7 @@ pragma solidity ^0.8.20;
  * It is written only when an epoch opens. There is no per-epoch step and
  * no aggregate cap. A caller cannot select the rate.
  * The 1 SHE pot never moves. The reserve reward is minted by consensus on
- * release, for this program id, on every lock, idle or active, pro-rata.
+ * release, for this program id, on a qualifying pre-cutoff stake, pro-rata.
  * Principal stays in the user's own time-locked note. This contract refuses
  * well-known foreign chain ids. The Reserve oracle is the bundled quorum.
  * observeRate does not move the rate.
@@ -281,17 +284,27 @@ contract Reserve {
         return chain;
     }
 
+    /// Credits locked before the cutoff. The final window is not in this sum.
+    function _preCutoffStake(Portal storage p, uint256 cut) internal view returns (uint256 sum) {
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            if (p.tranches[i].remainMs >= cut) sum += p.tranches[i].amount;
+        }
+    }
+
     /// The arrival epoch pays the time still left. Later full epochs pay
     /// through the open index, so a finished gap is included and the open
-    /// epoch is not.
+    /// epoch is not. A pre-cutoff sum below π earns nothing, and that
+    /// settle does not mark the credit paid.
     function _settle(Portal storage p, uint256 nowTs) internal {
         uint256 nowIdx = _payIndex(nowTs);
         uint256 span = epochLengthMs();
         uint256 cut = cutoffLengthMs();
+        bool qualified = _preCutoffStake(p, cut) >= PI_NANOS;
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
-            if (t.remainMs < cut) continue;
+            if (t.remainMs < cut || !qualified) continue;
             if (!t.partialPaid && nowIdx > t.epoch) {
                 p.accruedReward += _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
                 t.partialPaid = true;
