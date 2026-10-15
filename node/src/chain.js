@@ -91,6 +91,7 @@ import {
   observeDigestSuffix,
   oracleRuleAt,
   verifyMinerReport,
+  reserveApplyFields,
   verifyRateCommit,
   windowBlocksFor,
 } from '../../crypto/reserve_oracle.js';
@@ -508,6 +509,52 @@ export function potPaysFromLeaves(leaves = [], poolDest = null, feeNanos = null,
     out.push({ noteCommit: noteCommitOfDest20(hash20FromAddress(pool)), nanos: fee, kind: 'pool-fee' });
   }
   return out.filter((s) => s.nanos > 0);
+}
+
+/**
+ * Finder-fee notes for one block. An empty round is one public note to the
+ * block miner. A round with shares splits the finder half across that
+ * round's payees by work. The last leaf takes the remainder so the notes
+ * sum to the finder half. The pool is not a payee unless it holds shares.
+ */
+export function finderFeePays(shareBatch = [], feeNanos = 0, minerDest = '') {
+  const fee = Math.max(0, Math.floor(Number(feeNanos) || 0));
+  if (!fee) return [];
+  const leaves = aLeavesFromShares(shareBatch);
+  const total = leaves.reduce((a, l) => a + (Number(l.count) || 0), 0);
+  if (!total) {
+    const dest = minerDest && isDestAddress(minerDest) ? minerDest : String(minerDest || '');
+    const d20 = dest && isDestAddress(dest) ? hash20FromAddress(dest) : null;
+    return [{
+      address: dest,
+      nanos: fee,
+      kind: 'finder-fee',
+      noteCommit: d20 ? noteCommitOfDest20(d20) : null,
+    }];
+  }
+  const destByNc = new Map();
+  for (const s of shareBatch || []) {
+    const dest = destOfShare(s);
+    const nc = ncHex(noteCommitOfShare(s));
+    if (dest && nc) destByNc.set(nc, dest);
+  }
+  let paid = 0;
+  const out = [];
+  for (let i = 0; i < leaves.length; i += 1) {
+    const nanos = i === leaves.length - 1
+      ? fee - paid
+      : Math.floor(fee * leaves[i].count / total);
+    paid += nanos;
+    if (!(nanos > 0)) continue;
+    const nc = leaves[i].noteCommit;
+    out.push({
+      noteCommit: nc,
+      address: destByNc.get(ncHex(nc)) || '',
+      nanos,
+      kind: 'finder-fee',
+    });
+  }
+  return out;
 }
 
 /** PROP of (pot - pool fee + carry) across dest20 in shareBatch. Pool dest gets only the fee. */
@@ -1009,7 +1056,7 @@ function pubsJoining(txs) {
  * and that dest is not the reserve or the protocol pool fee. Every
  * reserve-fee note pays the reserve. Sums match splitLevy.
  */
-export function coinbaseLevyPays(cb, fees) {
+export function coinbaseLevyPays(cb, fees, levyOpts = {}) {
   const split = splitLevy(fees);
   const rows = (kind) => (cb?.vout || []).filter((v) => v?.kind === kind);
   const openedSum = (list) => {
@@ -1031,12 +1078,34 @@ export function coinbaseLevyPays(cb, fees) {
   }
   const reserve20 = Buffer.from(hash20FromAddress(reserveFeeDest()));
   const pool20 = Buffer.from(hash20FromAddress(poolFeeDest()));
+  const shareBatch = Array.isArray(levyOpts?.shareBatch) ? levyOpts.shareBatch : [];
+  const finderWork = shareBatch.length
+    ? aLeavesFromShares(shareBatch).reduce((a, l) => a + (Number(l.count) || 0), 0)
+    : 0;
+  if (finderWork > 0) {
+    const want = finderFeePays(shareBatch, split.finder, levyOpts?.miner || '');
+    if (want.length !== finderRows.length) return { ok: false, reason: 'levy_split' };
+    const used = new Set();
+    for (const row of want) {
+      const hit = finderRows.findIndex((o, i) => {
+        if (used.has(i)) return false;
+        if (openedCoinbaseNanos(o) !== row.nanos) return false;
+        if (row.noteCommit && o.noteCommit) return ncHex(o.noteCommit) === ncHex(row.noteCommit);
+        return true;
+      });
+      if (hit < 0) return { ok: false, reason: 'levy_split' };
+      const d20 = noteDest20(finderRows[hit]);
+      if (!d20 || d20.equals(reserve20) || d20.equals(pool20)) return { ok: false, reason: 'levy_split' };
+      used.add(hit);
+    }
+  } else {
   let finder20 = null;
   for (const o of finderRows) {
     const d20 = noteDest20(o);
     if (!d20 || d20.equals(reserve20) || d20.equals(pool20)) return { ok: false, reason: 'levy_split' };
     if (finder20 && !finder20.equals(d20)) return { ok: false, reason: 'levy_split' };
     finder20 = d20;
+  }
   }
   for (const o of reserveRows) {
     const d20 = noteDest20(o);
@@ -1124,7 +1193,9 @@ function finderAimPeek(tpl, finderDest) {
   if (forbiddenFinderDest(dest, bind.poolDest, bind.feeDest)) return { state: 'refuse' };
   const cb = tpl.txs?.[0];
   if (!cb?.coinbase) return { state: 'refuse' };
-  const existing = (cb.vout || []).find((o) => o.kind === 'finder-fee');
+  const finderNotes = (cb.vout || []).filter((o) => o.kind === 'finder-fee');
+  if (finderNotes.length > 1) return { state: 'plain', tpl };
+  const existing = finderNotes[0];
   const want = hash20FromAddress(dest);
   if (existing && want && noteDest20(existing)?.equals(Buffer.from(want))) return { state: 'plain', tpl };
   const key = finderAimKey(tpl.header, dest, bind.finderNanos);
@@ -1457,8 +1528,17 @@ export function buildTemplate({
   });
   const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
   const split = splitLevy(fees);
-  const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
-  if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
+  const finderWork = aLeavesFromShares(batch).reduce((a, l) => a + (Number(l.count) || 0), 0);
+  if (finderWork > 0) {
+    for (const row of finderFeePays(batch, split.finder, pay(miner))) {
+      const dest = row.address;
+      if (dest && isDestAddress(dest)) cb.vout.push(sealLevyNote(row.nanos, dest, 'finder-fee'));
+      else cb.vout.push({ address: dest, nanos: row.nanos, kind: 'finder-fee', noteCommit: row.noteCommit });
+    }
+  } else {
+    const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
+    if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
+  }
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
   if (typeof prepareCoinbase === 'function') prepareCoinbase(cb);
   try {
@@ -2851,7 +2931,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     const funded = verifyFundedBody(body, spendableOf, { seenDigests, reserveState });
     if (!funded.ok) return funded;
   }
-  const levyBound = coinbaseLevyPays(txs[0], fees);
+  const levyBound = coinbaseLevyPays(txs[0], fees, {
+    shareBatch,
+    miner: block.miner,
+  });
   if (!levyBound.ok) return { ok: false, reason: levyBound.reason || 'levy_split' };
   const addedPubs = [];
   for (const tx of txs) {
@@ -2882,6 +2965,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     state: vaultForTrial,
     block,
     nowMs: Number(decoded.timestamp),
+    oracleWindow: opts.oracleWindow || null,
+    oracleWindowSize: opts.oracleWindowSize,
+    activationHeight: opts.oracleActivationHeight,
+    height,
+    parentMs,
+    genesisMs: resolvedGenesisMs || genesisMs || 0,
   });
   if (!vaultTry.ok) return { ok: false, reason: vaultTry.reason || 'epoch_open' };
   const parentSupply = parentSupplyState(prev, block, opts, height, burialTip);
@@ -2894,6 +2983,14 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     genesisMs: resolvedGenesisMs || genesisMs || 0,
     blockHash: hash,
     vault: reserveState || null,
+    oracle: {
+      oracleWindow: opts.oracleWindow || null,
+      oracleWindowSize: opts.oracleWindowSize,
+      activationHeight: opts.oracleActivationHeight,
+      height,
+      parentMs,
+      genesisMs: resolvedGenesisMs || genesisMs || 0,
+    },
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
   return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot, supplyState: stepped.state };
@@ -3062,6 +3159,32 @@ function normGenesisPin(hex) {
  * fromIndex replays only the suffix. The prefix state is the caller's,
  * already checked under this install's snapshot. It is not a weaker rule.
  */
+function applyLoadedVault(vault, list, index, load) {
+  const block = list[index];
+  let nowMs = 0;
+  let parentMs = 0;
+  try { nowMs = Number(decodeHeader(asBuf(block.header)).timestamp) || 0; } catch { nowMs = 0; }
+  if (index > 0) {
+    try { parentMs = Number(decodeHeader(asBuf(list[index - 1].header)).timestamp) || 0; } catch { parentMs = 0; }
+  }
+  let genesisMs = Number(load?.genesisMs) || 0;
+  if (!(genesisMs > 0) && list[0]?.header) {
+    try { genesisMs = Number(decodeHeader(asBuf(list[0].header)).timestamp) || 0; } catch { genesisMs = 0; }
+  }
+  const fields = reserveApplyFields({
+    prior: list.slice(0, index),
+    block,
+    magic: load?.magic || MAGIC_TESTNET,
+    parentMs,
+    genesisMs,
+    nowMs,
+  });
+  if (load && load.oracleActivationHeight !== undefined) {
+    fields.activationHeight = load.oracleActivationHeight;
+  }
+  return applyReserveBlock({ state: vault, ...fields });
+}
+
 function beginLoaded(blocks, {
   trustStoredHash = false,
   trustShareWork = null,
@@ -3072,6 +3195,8 @@ function beginLoaded(blocks, {
   prior = null,
   reorgHaltDepth = 0,
   burialOf = null,
+  magic = MAGIC_TESTNET,
+  oracleActivationHeight = undefined,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true, empty: true };
@@ -3102,11 +3227,12 @@ function beginLoaded(blocks, {
   let supplyAt = [];
   let anchors = [];
   const vault = emptyVault();
+  vault.magic = magic || MAGIC_TESTNET;
   if (start > 0) {
     for (let j = 0; j < start; j += 1) {
       let priorTs = 0;
       try { priorTs = Number(decodeHeader(asBuf(list[j].header)).timestamp); } catch { priorTs = 0; }
-      const applied = applyReserveBlock({ state: vault, block: list[j], nowMs: priorTs });
+      const applied = applyLoadedVault(vault, list, j, { magic, oracleActivationHeight });
       if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
     }
   }
@@ -3163,6 +3289,8 @@ function beginLoaded(blocks, {
       mtp,
       flux,
       vault,
+      magic,
+      oracleActivationHeight,
       supply,
       supplyAt,
       anchors,
@@ -3280,9 +3408,23 @@ function stepLoaded(state, list, i) {
   // verify and for the owed step. Every other block is buried by this load.
   const own = state.burialOf ? state.burialOf(block) : null;
   const burial = Number.isInteger(own) && own > state.loadTip ? own : state.loadTip;
+  const oracle = reserveApplyFields({
+    prior: list.slice(0, i),
+    block,
+    magic: state.magic || MAGIC_TESTNET,
+    parentMs: state.prevDecoded ? Number(state.prevDecoded.timestamp) || 0 : 0,
+    genesisMs: state.genesisMs || 0,
+    nowMs: ts,
+  });
+  if (state.oracleActivationHeight !== undefined) {
+    oracle.activationHeight = state.oracleActivationHeight;
+  }
   const body = verifyBlockConsensus(block, prevBlock, {
     trustedPowHash: link,
     loadReplay: true,
+    oracleWindow: oracle.oracleWindow,
+    oracleWindowSize: oracle.oracleWindowSize,
+    oracleActivationHeight: oracle.activationHeight,
     // A foreign book cannot set this. An explicit false keeps the share
     // hash on an own-keyed load, which is how the load test reaches it
     // without a second header search. createStore does not pass it.
@@ -3293,7 +3435,7 @@ function stepLoaded(state, list, i) {
     owedIn: state.owedIn,
     hashAcceptedSeries: state.acceptedSeries,
     spentB: state.spentB,
-    magic: MAGIC_TESTNET,
+    magic: state.magic || MAGIC_TESTNET,
     hashBonusNanos: HASH_BONUS_NANOS,
     grandparentHeader: i >= 2 ? list[i - 2].header : null,
     parentFluxset: state.flux,
@@ -3311,7 +3453,7 @@ function stepLoaded(state, list, i) {
   }
   state.supply = body.supplyState;
   state.supplyAt.push(body.supplyState);
-  const appliedVault = applyReserveBlock({ state: state.vault, block, nowMs: ts });
+  const appliedVault = applyLoadedVault(state.vault, list, i, state);
   if (appliedVault && appliedVault.ok === false) {
     return { ok: false, reason: appliedVault.reason || 'epoch_open' };
   }

@@ -270,7 +270,10 @@ export function createStore(dir, {
   loadNowMs = null,
   yieldForeign = false,
   onLoadProgress = null,
+  network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
+  oracleActivationHeight = undefined,
 } = {}, resume = null) {
+  const bookMagic = String(network || MAGIC_TESTNET);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
@@ -418,6 +421,8 @@ export function createStore(dir, {
         reorgHaltDepth: haltDepth,
         burialOf: provenTipOf,
         fromIndex: plan.height,
+        magic: bookMagic,
+        oracleActivationHeight,
         prior: {
           owedRows: plan.owedRows,
           acceptedSeries: plan.acceptedSeries.slice(),
@@ -454,6 +459,8 @@ export function createStore(dir, {
         reorgHaltDepth: haltDepth,
         burialOf: provenTipOf,
         onProgress: onLoadProgress,
+        magic: bookMagic,
+        oracleActivationHeight,
       }).then((checked) => {
         if (!checked.ok) throw new Error(checked.reason || 'pow');
         return createStore(dir, {
@@ -467,6 +474,8 @@ export function createStore(dir, {
           loadNowMs,
           yieldForeign: false,
           onLoadProgress,
+          network: bookMagic,
+          oracleActivationHeight,
         }, {
           token: loadResumeToken,
           verified: true,
@@ -482,6 +491,8 @@ export function createStore(dir, {
         checkpoint,
         reorgHaltDepth: haltDepth,
         burialOf: provenTipOf,
+        magic: bookMagic,
+        oracleActivationHeight,
       });
       if (!checked.ok) throw new Error(checked.reason || 'pow');
       if (!checked.supply) throw new Error('supply_state');
@@ -792,6 +803,7 @@ export function createStore(dir, {
   }
 
   const reserveVault = emptyVault();
+  reserveVault.magic = bookMagic;
 
   function saveReserve() {
     const raw = JSON.parse(JSON.stringify(reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
@@ -904,27 +916,43 @@ export function createStore(dir, {
     return applied;
   }
 
+  function bookVault() {
+    const vault = emptyVault();
+    vault.magic = bookMagic;
+    if (oracleActivationHeight !== undefined) vault.oracleActivationHeight = oracleActivationHeight;
+    return vault;
+  }
+
+  function unitsOnBook(spec) {
+    const walked = { ...spec, magic: bookMagic };
+    if (walked.activationHeight === undefined && oracleActivationHeight !== undefined) {
+      walked.activationHeight = oracleActivationHeight;
+    }
+    return unitsAlongChain(walked);
+  }
+
   function vaultArgs(state, block, prior) {
     const parent = prior?.length ? prior[prior.length - 1] : null;
-    return {
-      state,
-      ...reserveApplyFields({
-        prior,
-        block,
-        magic: MAGIC_TESTNET,
-        parentMs: parent ? blockTimeMs(parent) : 0,
-        genesisMs: genesisHeaderMs(prior),
-        nowMs: blockTimeMs(block),
-      }),
-    };
+    const fields = reserveApplyFields({
+      prior,
+      block,
+      magic: bookMagic,
+      parentMs: parent ? blockTimeMs(parent) : 0,
+      genesisMs: genesisHeaderMs(prior),
+      nowMs: blockTimeMs(block),
+    });
+    if (oracleActivationHeight !== undefined) fields.activationHeight = oracleActivationHeight;
+    return { state, ...fields };
   }
 
   function oracleVerifyFields(prior, nextHeight) {
-    const ctx = oracleContextFor(prior, { height: nextHeight }, MAGIC_TESTNET);
+    const ctx = oracleContextFor(prior, { height: nextHeight }, bookMagic);
     return {
       oracleWindow: ctx.oracleWindow,
       oracleWindowSize: ctx.oracleWindowSize,
-      oracleActivationHeight: ctx.activationHeight,
+      oracleActivationHeight: oracleActivationHeight !== undefined
+        ? oracleActivationHeight
+        : ctx.activationHeight,
     };
   }
 
@@ -939,7 +967,7 @@ export function createStore(dir, {
       saveReserve();
       return;
     }
-    const fresh = emptyVault();
+    const fresh = bookVault();
     for (const k of Object.keys(reserveVault)) delete reserveVault[k];
     Object.assign(reserveVault, fresh);
     reserveVault.portals = Object.create(null);
@@ -1608,7 +1636,7 @@ export function createStore(dir, {
     let series = seriesIn;
     const unitWalk = unitAt.length === list.length
       ? { ok: true, units: unitAt }
-      : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
+      : unitsOnBook({ fork: list, timeOf: (block) => blockTimeMs(block) });
     if (!unitWalk.ok) return null;
     const units = unitWalk.units;
     const tipH = Number(list[tipAt]?.height || tipAt + 1);
@@ -1649,7 +1677,7 @@ export function createStore(dir, {
         if (!canExtend) {
           const unitWalk = unitAt.length === list.length
             ? { ok: true, units: unitAt }
-            : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
+            : unitsOnBook({ fork: list, timeOf: (block) => blockTimeMs(block) });
           if (!unitWalk.ok) throw new Error(unitWalk.reason || 'epoch_open');
           const units = unitWalk.units;
           const got = replayHashOwed(list, { units, burialOf: provenTipOf });
@@ -1679,7 +1707,7 @@ export function createStore(dir, {
     }
     const unitWalk = unitAt.length === list.length
       ? { ok: true, units: unitAt }
-      : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
+      : unitsOnBook({ fork: list, timeOf: (block) => blockTimeMs(block) });
     if (!unitWalk.ok) throw new Error(unitWalk.reason || 'epoch_open');
     const units = unitWalk.units;
     const got = replayHashOwed(list, { units, burialOf: provenTipOf });
@@ -1711,7 +1739,7 @@ export function createStore(dir, {
   }
 
   function fillAllVaultCheckpoints() {
-    const trial = cloneVault(emptyVault());
+    const trial = cloneVault(bookVault());
     if (reserveVault?.oracle) {
       try { trial.oracle = JSON.parse(JSON.stringify(reserveVault.oracle)); } catch { /* empty oracle */ }
     }
@@ -1741,12 +1769,12 @@ export function createStore(dir, {
   }
 
   function vaultAfter(at) {
-    if (at < 0) return cloneVault(emptyVault());
+    if (at < 0) return cloneVault(bookVault());
     let best = null;
     for (const c of vaultCkpt) {
       if (c.at <= at && (!best || c.at > best.at)) best = c;
     }
-    const trial = best ? cloneVault(best.vault) : cloneVault(emptyVault());
+    const trial = best ? cloneVault(best.vault) : cloneVault(bookVault());
     const start = best ? best.at + 1 : 0;
     for (let i = start; i <= at; i += 1) {
       commitReserveApply(applyReserveBlock(vaultArgs(trial, blocks[i], blocks.slice(0, i))));
@@ -1756,11 +1784,11 @@ export function createStore(dir, {
 
   function unitsAlong(history, fork) {
     const rows = Array.isArray(history) ? history : [];
-    return unitsAlongChain({
+    return unitsOnBook({
       unitAt,
       history: rows,
       fork,
-      vault: rows.length ? vaultAfter(rows.length - 1) : emptyVault(),
+      vault: rows.length ? vaultAfter(rows.length - 1) : bookVault(),
       timeOf: (block) => blockTimeMs(block),
     });
   }
@@ -2168,7 +2196,7 @@ export function createStore(dir, {
           return Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
         } catch { return 0; }
       })(),
-      magic: MAGIC_TESTNET,
+      magic: bookMagic,
       trustedPowHash: probe ? null : (extra.trustedPowHash || null),
       skipSharePow: probe ? true : !!extra.skipSharePow,
       offLoopPow: probe ? false : !!extra.offLoopPow,
@@ -3098,7 +3126,7 @@ export function createStore(dir, {
   }
 
   function trialVaultAtForkRoot() {
-    const trial = cloneVault(emptyVault());
+    const trial = cloneVault(bookVault());
     if (reserveVault?.oracle) {
       trial.oracle = JSON.parse(JSON.stringify(reserveVault.oracle));
     }
@@ -3187,6 +3215,7 @@ export function createStore(dir, {
       sealedIntervalsMs: headerGapsMs(accepted),
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       genesisMs: genesisHeaderMs(accepted) || Number(verifyOpts.genesisMs) || 0,
+      magic: bookMagic,
     });
     const stamp = (c) => {
       if (!c?.ok) {
@@ -3258,7 +3287,7 @@ export function createStore(dir, {
     if (!Number.isInteger(at) || at <= 0) return gated;
     const accepted = [];
     const trialSpent = new Set();
-    const walkedUnits = unitsAlongChain({ fork, timeOf: (block) => blockTimeMs(block) });
+    const walkedUnits = unitsOnBook({ fork, timeOf: (block) => blockTimeMs(block) });
     if ((!walkedUnits.ok && Number(walkedUnits.at) < at) || !walkedUnits.units) {
       return { ok: false, reason: walkedUnits.reason || 'epoch_open', at: walkedUnits.at || 0 };
     }
@@ -3318,7 +3347,7 @@ export function createStore(dir, {
     }
     const accepted = [];
     const trialSpent = new Set();
-    const walkedUnits = unitsAlongChain({ fork, timeOf: (block) => blockTimeMs(block) });
+    const walkedUnits = unitsOnBook({ fork, timeOf: (block) => blockTimeMs(block) });
     if (!walkedUnits.ok || !walkedUnits.units) {
       return { ok: false, reason: walkedUnits.reason || 'epoch_open', at: walkedUnits.at || 0 };
     }
@@ -3376,7 +3405,7 @@ export function createStore(dir, {
     const accepted = [];
     const trialSpent = new Set();
     let trialSession = null;
-    const walkedUnits = unitsAlongChain({ fork, timeOf: (block) => blockTimeMs(block) });
+    const walkedUnits = unitsOnBook({ fork, timeOf: (block) => blockTimeMs(block) });
     if (!walkedUnits.ok || !walkedUnits.units) {
       return { ok: false, reason: walkedUnits.reason || 'epoch_open', at: walkedUnits.at || 0 };
     }
@@ -3523,7 +3552,7 @@ export function createStore(dir, {
       genesisMs: genesisHeaderMs(history) || Number(verifyOpts.genesisMs) || 0,
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       consumePrepared: false,
-      magic: MAGIC_TESTNET,
+      magic: bookMagic,
       probeBody: verifyOpts.probeBody === true,
     };
     const finish = (assessed) => {
@@ -3609,7 +3638,7 @@ export function createStore(dir, {
     const walked = n > 0
       ? unitsAlong(list.slice(0, n), list.slice(n))
       : (list.length
-        ? unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) })
+        ? unitsOnBook({ fork: list, timeOf: (block) => blockTimeMs(block) })
         : { ok: true, reason: '', units: [] });
     if (!walked.ok || !walked.units) return { ok: false, reason: walked.reason || 'epoch_open' };
     const units = walked.units;
@@ -3918,7 +3947,7 @@ export function createStore(dir, {
         anchors[hh] = anchorRecord(flux, false);
       }
     }
-    const trialVault = cloneVault(emptyVault());
+    const trialVault = cloneVault(bookVault());
     for (let i = 0; i < rows.length; i += 1) {
       const b = rows[i];
       const applied = applyReserveBlock(vaultArgs(trialVault, b, rows.slice(0, i)));
@@ -3960,6 +3989,7 @@ export function createStore(dir, {
         reserveState: trialVault,
         committedBps: Number(trialVault.epochBps ?? GENESIS_BPS),
         ...oracleVerifyFields(rows.concat(out), (Number(prev?.height) || 0) + 1),
+        magic: bookMagic,
       });
       const take = (c) => {
         if (!c?.ok) {
@@ -4209,7 +4239,7 @@ export function createStore(dir, {
     const units = unitAt.slice(0, Math.min(unitAt.length, lca));
     const tipAt = accepted.length - 1;
     const last = ckpt.length ? ckpt[ckpt.length - 1] : null;
-    const trial = last ? cloneVault(last.vault) : cloneVault(emptyVault());
+    const trial = last ? cloneVault(last.vault) : cloneVault(bookVault());
     const start = last ? last.at + 1 : 0;
     for (let i = start; i <= tipAt; i += 1) {
       const unit = hashBonusUnitNanos(trial.liveHashBonusNanos);

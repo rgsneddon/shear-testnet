@@ -320,9 +320,18 @@ export function isEvmValueTx(tx) {
   return txKindOf(tx) === 'evm-value';
 }
 
+export function encodeNextEpochBps() {
+  return selector('nextEpochBps()');
+}
+
+export function decodeNextEpochBps(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  return Number(readU256(b, 0));
+}
+
 export function blockNeedsEvm(txs) {
   const list = Array.isArray(txs) ? txs : [];
-  if (list[0]?.coinbase && list[0].observe != null) return true;
+  if (list[0]?.coinbase && (list[0].observe != null || list[0].rateCommit != null)) return true;
   return list.some((tx) => isReserveCall(tx) || isEvmValueTx(tx));
 }
 
@@ -415,6 +424,14 @@ export async function executeBlockEvm(session, txs, nowMs) {
     );
     if (!called.ok) return { ok: false, reason: called.reason || 'bad_rate' };
     evm.calls += 1;
+  }
+  if (cb?.rateCommit && typeof cb.rateCommit === 'object') {
+    const epochIdx = Math.floor(Number(cb.rateCommit.epochIndex) || 0);
+    const bps = Math.floor(Number(cb.rateCommit.epochBps) || 0);
+    const committed = await callReserve(session, encodeCommitRate(epochIdx, bps));
+    if (!committed.ok) return { ok: false, reason: committed.reason || 'rate_commit' };
+    evm.calls += 1;
+    evm.committedBps = bps;
   }
   const view = decodePublicView(
     (await callReserve(session, encodePublicView(nowMs), { staticCall: true })).returnValue,

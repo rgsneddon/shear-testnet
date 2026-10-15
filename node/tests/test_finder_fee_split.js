@@ -1,12 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
-import { GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, SHARE_FLOOR_BITS, bitsForBlock } from '../../crypto/asert.js';
 import { splitLevy } from '../../crypto/levy.js';
-import { dest20OfShare } from '../../crypto/share_batch.js';
+import {
+  clearLiveSharePow,
+  dest20OfShare,
+  nonceWithShareTarget,
+  noteCommitOfShare,
+  rememberLiveSharePow,
+} from '../../crypto/share_batch.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
-import { sealCoinbaseNote, verifySealedNote, noteCommitOfDest20 } from '../../crypto/note.js';
+import { sealCoinbaseNote, verifySealedNote, noteCommitOfDest20, excessOf } from '../../crypto/note.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -85,12 +91,13 @@ describe('transaction fees pay miners', () => {
     parent.hash = okP.hash;
     const now = T0 + 90_000;
     const ph = decodeHeader(parent.header);
-    const shares = [
-      { dest20: dest20OfShare({ dest: alice }), dest: alice, nonce: 1n, lz: 8 },
-      { dest20: dest20OfShare({ dest: bob }), dest: bob, nonce: 2n, lz: 8 },
-      { dest20: dest20OfShare({ dest: bob }), dest: bob, nonce: 3n, lz: 8 },
-      { dest20: dest20OfShare({ dest: bob }), dest: bob, nonce: 4n, lz: 8 },
-    ];
+    const shares = [alice, bob, bob, bob].map((dest, i) => ({
+      dest20: dest20OfShare({ dest }),
+      dest,
+      nonce: nonceWithShareTarget(BigInt(i + 1), SHARE_FLOOR_BITS),
+      lz: SHARE_FLOOR_BITS,
+      proofSlot: 0,
+    }));
     const fee = 1000;
     const tpl = buildTemplate({
       prev: okP.hash,
@@ -104,6 +111,14 @@ describe('transaction fees pay miners', () => {
       shareBatch: shares,
       txs: [{ kind: 'claim', fee, vin: [{ address: miner }] }],
     });
+    clearLiveSharePow();
+    for (const row of tpl.shareBatch || []) {
+      rememberLiveSharePow(parent.header, row.nonce, {
+        noteCommit: noteCommitOfShare(row),
+        shareBits: SHARE_FLOOR_BITS,
+        lz: SHARE_FLOOR_BITS,
+      });
+    }
     const pays = finderFeePays(tpl.shareBatch, fee, miner);
     const notes = tpl.txs[0].vout.filter((o) => o.kind === 'finder-fee');
     assert.equal(notes.length, pays.length);
@@ -132,6 +147,7 @@ describe('transaction fees pay miners', () => {
       kind: 'finder-fee',
     });
     tpl.txs[0].vout = tpl.txs[0].vout.filter((o) => o.kind !== 'finder-fee').concat([whole]);
+    tpl.txs[0].excess = excessOf(tpl.txs[0].vout);
     reseal(tpl);
     const redirected = verifyBlock(blockOf(tpl), { ...parent, hash: okP.hash, header: parent.header, height: 1 }, {
       trustedPowHash: TRUSTED,
@@ -152,7 +168,11 @@ describe('transaction fees pay miners', () => {
       shareBatch: shares,
       txs: [{ kind: 'claim', fee, vin: [{ address: miner }] }],
     });
-    fresh.txs[0].vout.push({ kind: 'reserve-fee', nanos: 1, address: miner });
+    fresh.txs[0].vout.push(sealCoinbaseNote(1, {
+      dest20: hash20FromAddress(miner),
+      kind: 'reserve-fee',
+    }));
+    fresh.txs[0].excess = excessOf(fresh.txs[0].vout);
     reseal(fresh);
     const vaulted = verifyBlock(blockOf(fresh), { ...parent, hash: okP.hash, header: parent.header, height: 1 }, {
       trustedPowHash: TRUSTED,

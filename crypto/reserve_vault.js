@@ -26,6 +26,7 @@ import {
   oracleRuleAt,
   epochBpsFromReports,
   isReportBoundary,
+  reserveApplyFields,
   bundleObservationRoot,
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
@@ -158,6 +159,7 @@ export function emptyVault() {
     oracle: emptyOracle(),
     sealedObserve: null,
     epochBps: GENESIS_BPS,
+    nextEpochBps: null,
     rewardPermittedNanos: 0n,
     freezes: Object.create(null),
     genesisMs: 0,
@@ -204,6 +206,20 @@ export function creditFeeBank(state, _nanos) {
   return 0;
 }
 
+/**
+ * Schedule allowance still owed on live stake, plus interest already
+ * settled at withdraw. The mint counter is not this number: paying more
+ * than the schedule makes supplyIdentity fail.
+ */
+function schedulePermittedNanos(vault) {
+  const bps = vault?.epochBps ?? GENESIS_BPS;
+  let live = 0n;
+  for (const p of Object.values(vault?.portals || {})) {
+    live += BigInt(reserveInterestNanos(p?.staked, bps));
+  }
+  return asBig(vault?.rewardPermittedNanos) + live;
+}
+
 /** User notes hold principal. Minted reward cannot exceed the epoch allowance. The fee bank is zero. */
 export function supplyIdentity(state) {
   const vault = state || emptyVault();
@@ -213,7 +229,7 @@ export function supplyIdentity(state) {
   }
   const feeBank = asBig(vault.feeBankNanos);
   const minted = asBig(vault.mintBankNanos);
-  const permitted = asBig(vault.rewardPermittedNanos);
+  const permitted = schedulePermittedNanos(vault);
   const ok = asBig(vault.totalLockedNanos) === indexed && feeBank === 0n && minted <= permitted;
   return {
     ok,
@@ -259,7 +275,6 @@ export function payoutStakeReward({
   rememberMint(vault, id);
   vault.mintedIds[id] = true;
   vault.mintBankNanos = asBig(vault.mintBankNanos) + need;
-  vault.rewardPermittedNanos = asBig(vault.rewardPermittedNanos) + need;
   return {
     ok: true,
     paid: asNum(need),
@@ -453,6 +468,8 @@ function snapTrial(state) {
     mintBankNanos: state.mintBankNanos,
     liveHashBonusNanos: state.liveHashBonusNanos,
     epochBps: state.epochBps,
+    nextEpochBps: state.nextEpochBps,
+    rewardPermittedNanos: state.rewardPermittedNanos,
     genesisMs: state.genesisMs,
     magic: state.magic,
     currentEpoch: state.currentEpoch,
@@ -486,6 +503,8 @@ function restoreTrial(state, snap, frame) {
   state.mintBankNanos = snap.mintBankNanos;
   state.liveHashBonusNanos = snap.liveHashBonusNanos;
   state.epochBps = snap.epochBps;
+  state.nextEpochBps = snap.nextEpochBps;
+  state.rewardPermittedNanos = snap.rewardPermittedNanos;
   state.genesisMs = snap.genesisMs;
   state.magic = snap.magic;
   state.currentEpoch = snap.currentEpoch;
@@ -559,14 +578,17 @@ function beginEpoch(state, nowMs) {
   state.freezes = state.freezes || Object.create(null);
   const prior = state.freezes[idx];
   if (rule === 'median3b') {
-    const kept = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+    const running = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+    const pending = state.nextEpochBps == null
+      ? running
+      : Math.max(0, Math.floor(Number(state.nextEpochBps)));
     if (!prior) {
       rememberFreeze(state, idx);
       state.freezes[idx] = {
         ok: true,
         epochIndex: idx,
-        epochBps: kept,
-        prevEpochBps: kept,
+        epochBps: pending,
+        prevEpochBps: running,
         magic,
         observationRoot: bundleObservationRoot(),
         source: 'median3b',
@@ -1133,6 +1155,8 @@ export function unitsAlongChain({
   fork = [],
   vault = null,
   timeOf = null,
+  magic = null,
+  activationHeight = undefined,
 } = {}) {
   const units = [];
   const rows = Array.isArray(history) ? history : [];
@@ -1141,7 +1165,17 @@ export function unitsAlongChain({
     units.push(hashBonusUnitNanos(recorded));
   }
   const trial = vault || emptyVault();
+  const bookMagic = magic || trial.magic || MAGIC_TESTNET;
+  if (magic) trial.magic = String(magic);
   const blocks = Array.isArray(fork) ? fork : [];
+  const priorChain = rows.slice();
+  let genesisWalk = 0;
+  if (priorChain.length) {
+    try {
+      const headMs = typeof timeOf === 'function' ? Number(timeOf(priorChain[0])) || 0 : 0;
+      if (headMs > 0) genesisWalk = headMs;
+    } catch { /* first header is not readable */ }
+  }
   for (let i = 0; i < blocks.length; i += 1) {
     const block = blocks[i];
     units.push(hashBonusUnitNanos(trial.liveHashBonusNanos));
@@ -1151,7 +1185,33 @@ export function unitsAlongChain({
     } catch {
       nowMs = 0;
     }
-    const applied = applyReserveBlock({ state: trial, block, nowMs });
+    const parent = priorChain.length ? priorChain[priorChain.length - 1] : null;
+    let parentMs = 0;
+    if (parent) {
+      try {
+        parentMs = typeof timeOf === 'function' ? Number(timeOf(parent)) || 0 : 0;
+      } catch {
+        parentMs = 0;
+      }
+    }
+    if (!(genesisWalk > 0)) {
+      const head = priorChain[0] || block;
+      try {
+        const headMs = typeof timeOf === 'function' ? Number(timeOf(head)) || 0 : 0;
+        if (headMs > 0 && (Number(head?.height) === 1 || priorChain.length === 0)) genesisWalk = headMs;
+      } catch { /* genesis stays 0 until a readable header */ }
+    }
+    const fields = reserveApplyFields({
+      prior: priorChain,
+      block,
+      magic: bookMagic,
+      parentMs,
+      genesisMs: genesisWalk,
+      nowMs,
+    });
+    if (activationHeight !== undefined) fields.activationHeight = activationHeight;
+    const applied = applyReserveBlock({ state: trial, ...fields });
+    priorChain.push(block);
     if (applied && applied.ok === false) {
       return { ok: false, reason: applied.reason || 'epoch_open', units, at: rows.length + i };
     }
@@ -1247,8 +1307,9 @@ export function applyReserveBlock({
     genesisMs: clockGenesis,
     magic: state.magic || MAGIC_TESTNET,
   });
-  if (rule === 'median3b' && boundary) {
-    const commit = (txs.find((t) => t?.coinbase) || txs[0])?.rateCommit;
+  const coinbase = txs.find((t) => t?.coinbase);
+  if (rule === 'median3b' && boundary && coinbase) {
+    const commit = coinbase.rateCommit;
     const prev = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
     const expected = epochBpsFromReports(prev, oracleWindow || [], {
       windowSize: oracleWindowSize,
@@ -1256,7 +1317,6 @@ export function applyReserveBlock({
     if (!commit || Math.floor(Number(commit.epochBps)) !== expected) {
       return finishReserveApply([{ ok: false, reason: 'rate_commit', action: 'rate' }]);
     }
-    state.epochBps = expected;
     state.nextEpochBps = expected;
     state.rateEpochIndex = Math.floor(Number(commit.epochIndex) || 0);
   }
@@ -1329,7 +1389,20 @@ function trialBlock(rows, block) {
   return block && Array.isArray(block.txs) ? block : { txs: rows };
 }
 
-function trialInPlace(state, rows, block, nowMs) {
+function oracleForward(src = {}) {
+  const out = {
+    oracleWindow: src.oracleWindow ?? null,
+    oracleWindowSize: src.oracleWindowSize ?? null,
+    height: src.height ?? src.block?.height ?? null,
+    parentMs: Number(src.parentMs) || 0,
+    genesisMs: Number(src.genesisMs) || 0,
+  };
+  if (src.activationHeight !== undefined) out.activationHeight = src.activationHeight;
+  else if (src.oracleActivationHeight !== undefined) out.activationHeight = src.oracleActivationHeight;
+  return out;
+}
+
+function trialInPlace(state, rows, block, nowMs, oracle = {}) {
   const snap = snapTrial(state);
   const frame = {
     state,
@@ -1345,6 +1418,7 @@ function trialInPlace(state, rows, block, nowMs) {
       state,
       block: trialBlock(rows, block),
       nowMs: Number(nowMs) || 0,
+      ...oracleForward(oracle),
     });
   } catch (err) {
     restoreTrial(state, snap, frame);
@@ -1366,20 +1440,44 @@ function trialInPlace(state, rows, block, nowMs) {
   return { ok: true, state };
 }
 
-export function trialReserveApply({ state, txs, block, nowMs, inPlace = false } = {}) {
+export function trialReserveApply({
+  state,
+  txs,
+  block,
+  nowMs,
+  inPlace = false,
+  oracleWindow = null,
+  oracleWindowSize = null,
+  activationHeight = undefined,
+  oracleActivationHeight = undefined,
+  height = null,
+  parentMs = 0,
+  genesisMs = 0,
+} = {}) {
   const rows = Array.isArray(txs) ? txs : (Array.isArray(block?.txs) ? block.txs : []);
+  const oracle = {
+    oracleWindow,
+    oracleWindowSize,
+    activationHeight,
+    oracleActivationHeight,
+    height,
+    parentMs,
+    genesisMs,
+    block,
+  };
   if (!rows.some(txIsReserveAction)) return { ok: true };
   if (!state) return { ok: false, reason: 'no_vault' };
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   // The carried vault is already a private copy. Mutate it and undo a miss.
   // Any other caller, including consensus, still gets one clone so the live
   // vault cannot change inside a check that discards the trial.
-  if (inPlace) return trialInPlace(state, rows, block, nowMs);
+  if (inPlace) return trialInPlace(state, rows, block, nowMs, oracle);
   const trial = cloneVault(state);
   const applied = applyReserveBlock({
     state: trial,
     block: trialBlock(rows, block),
     nowMs: Number(nowMs) || 0,
+    ...oracleForward(oracle),
   });
   if (applied && applied.ok === false) {
     return { ok: false, reason: applied.reason || 'epoch_open' };
@@ -1475,6 +1573,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!paid.ok) return { ok: false, reason: paid.reason };
     mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
     if (!mint.ok) return { ok: false, reason: mint.reason };
+    state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + BigInt(interest);
   } else if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' })) {
     return { ok: false, reason: 'mint_forbidden' };
   } else {
@@ -1567,7 +1666,7 @@ function declaredLockNanos(tx) {
  * vault's own total. Start plus those amounts must equal principal out plus
  * what is still locked. Offsetting receipts cannot cancel across the block.
  */
-function walkWithdrawInterest(vault, block, nowMs) {
+function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
   const rows = withdrawRowsOf(block);
   if (!rows.length) return { ok: true, minted: 0n, permitted: 0n };
   if (!vault || vault.blankFork) return { ok: false, reason: 'supply' };
@@ -1593,8 +1692,9 @@ function walkWithdrawInterest(vault, block, nowMs) {
     const before = asBig(state.totalLockedNanos);
     const applied = applyReserveBlock({
       state,
-      block: { txs: slice },
+      block: { txs: slice, height: block?.height },
       nowMs: clock,
+      ...oracleForward({ ...oracle, block }),
     });
     if (!applied || applied.ok !== true) return false;
     const after = asBig(state.totalLockedNanos);
@@ -1619,8 +1719,9 @@ function walkWithdrawInterest(vault, block, nowMs) {
     if (opened !== principal + permitted) return fail();
     const applied = applyReserveBlock({
       state,
-      block: { txs: [txs[i]] },
+      block: { txs: [txs[i]], height: block?.height },
       nowMs: clock,
+      ...oracleForward({ ...oracle, block }),
     });
     if (!applied || applied.ok !== true) return fail();
     const got = [];
@@ -1653,8 +1754,8 @@ function walkWithdrawInterest(vault, block, nowMs) {
  * schedule on the pre-withdraw vault, and the mint equals that interest.
  * No withdraw is zero and does not need a vault.
  */
-export function blockWithdrawInterest(vault, block, nowMs) {
-  const walked = walkWithdrawInterest(vault, block, nowMs);
+export function blockWithdrawInterest(vault, block, nowMs, oracle = {}) {
+  const walked = walkWithdrawInterest(vault, block, nowMs, oracle);
   if (!walked.ok) return { ok: false, reason: walked.reason || 'supply' };
   return { ok: true, nanos: walked.minted };
 }
@@ -1663,8 +1764,8 @@ export function blockWithdrawInterest(vault, block, nowMs) {
  * Interest the bps schedule allows for this block's withdraws.
  * One forward pass, the same pre-withdraw vault blockWithdrawInterest uses.
  */
-export function blockPermittedInterest(vault, block, nowMs) {
-  const walked = walkWithdrawInterest(vault, block, nowMs);
+export function blockPermittedInterest(vault, block, nowMs, oracle = {}) {
+  const walked = walkWithdrawInterest(vault, block, nowMs, oracle);
   if (!walked.ok) return { ok: false, reason: walked.reason || 'supply' };
   return { ok: true, nanos: walked.permitted };
 }

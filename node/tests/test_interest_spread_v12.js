@@ -220,8 +220,9 @@ describe('per-withdraw interest spread', () => {
   });
 
   it('pays zero interest on dust, on the rounding boundary, and on idle', () => {
-    const dust = 37;
-    const boundary = 38;
+    // Smallest stake whose floor(stake * bps / 10000) is 1, and the unit below it.
+    const boundary = Math.ceil(10000 / GENESIS_BPS);
+    const dust = boundary - 1;
     assert.equal(interestNanos(dust, GENESIS_BPS), 0);
     assert.equal(interestNanos(boundary, GENESIS_BPS), 1);
     const miner = minerDest();

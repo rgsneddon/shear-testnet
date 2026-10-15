@@ -416,11 +416,13 @@ describe('Vault Security test map', () => {
         assert.equal(idn.mintedReward, expected);
         assert.equal(idn.reason, undefined);
       }
+      const ceiling = supplyIdentity(state).permittedReward;
       const broken = cloneVault(state);
-      broken.mintBankNanos = BigInt(expected + 1);
+      broken.mintBankNanos = BigInt(ceiling + 1);
       const bad = supplyIdentity(broken);
       assert.equal(bad.ok, false);
       assert.equal(bad.reason, 'supply');
+      assert.ok(bad.mintedReward > bad.permittedReward);
     }
   });
 

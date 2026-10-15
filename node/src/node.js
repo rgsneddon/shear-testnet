@@ -162,7 +162,7 @@ export async function startNode({
     };
   }
   fs.mkdirSync(dataDir, { recursive: true });
-  const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true });
+  const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true, network });
   store.reserveVault = store.reserveVault || emptyVault();
   store.oracleSnapshot = loadOracleSnapshot({ dataDir });
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });
@@ -363,6 +363,7 @@ async function main() {
     const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
     const store = createStore(dataDir, {
       fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
+      network: process.env.SHEAR_NETWORK || MAGIC_TESTNET,
     });
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;

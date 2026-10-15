@@ -179,12 +179,12 @@ contract Reserve {
 
     /// The node passes the recomputed epoch rate. Floor is 0 (uint). Source tenths cannot
     /// produce a trimmed mean above +100% (100000 tenths → 10000 bps).
+    /// The commit is the next epoch's rate. The running epochBps stays until
+    /// the next epoch opens.
     function commitRate(uint256 epochIdx, uint256 bps) external onlyShear {
         if (bps > 100_000 / 10) revert BadRate();
         if (currentEpoch != 0 && epochIdx != currentEpoch) revert BadRate();
-        epochBps = bps;
         nextEpochBps = bps;
-        annualBps = bps;
         rateCommitEpoch = epochIdx == 0 ? 1 : epochIdx;
     }
 
@@ -238,7 +238,11 @@ contract Reserve {
     }
 
     function _applyEpochRate() internal {
-        if (rateCommitEpoch != 0 && rateCommitEpoch == currentEpoch) return;
+        if (rateCommitEpoch != 0) {
+            epochBps = nextEpochBps;
+            annualBps = nextEpochBps;
+            return;
+        }
         uint256 proposal = _bundledEpochBps();
         epochBps = proposal;
         nextEpochBps = proposal;

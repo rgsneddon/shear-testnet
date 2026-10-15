@@ -82,7 +82,9 @@ describe('Reserve vault protocol', () => {
     assert.equal(covered.minted, 7);
     assert.equal(Number(bank.feeBankNanos), 0);
     const idn = supplyIdentity(bank);
-    assert.equal(idn.ok, true);
+    assert.equal(idn.ok, false);
+    assert.equal(idn.reason, 'supply');
+    assert.ok(idn.mintedReward > idn.permittedReward);
     assert.equal(idn.feeBankRewardNanos, 0);
   });
 

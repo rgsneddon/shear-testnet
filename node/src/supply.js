@@ -638,10 +638,10 @@ function accountBlock(prev, block, opts = {}) {
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
   }
-  const interest = blockWithdrawInterest(opts.vault, block, ts);
+  const interest = blockWithdrawInterest(opts.vault, block, ts, opts.oracle);
   if (!interest.ok) return { reason: interest.reason || 'supply', state };
   // Schedule allowance is staked × epochBps per epoch, not a copy of the receipt.
-  const allowed = blockPermittedInterest(opts.vault, block, ts);
+  const allowed = blockPermittedInterest(opts.vault, block, ts, opts.oracle);
   if (!allowed.ok) return { reason: allowed.reason || 'supply', state };
   if (state.mintedInterest + interest.nanos > U64) return { reason: 'supply', state };
   if (state.permittedInterest + allowed.nanos > U64) return { reason: 'supply', state };

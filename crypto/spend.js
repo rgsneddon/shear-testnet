@@ -148,11 +148,10 @@ export function spendPackDigest(tx) {
 }
 
 export function spendMessage(tx) {
-  const h = createHash('sha256')
+  return createHash('sha256')
     .update(Buffer.from(SPEND_SIG_DOMAIN))
-    .update(spendPackDigest(tx));
-  if (tx?.nonce != null && tx.nonce !== '') h.update(Buffer.from(String(tx.nonce), 'utf8'));
-  return h.digest();
+    .update(spendPackDigest(tx))
+    .digest();
 }
 
 export function spendPubFromTx(tx) {
@@ -447,8 +446,12 @@ export function txKind(tx) {
 export function v12KindRejected(tx) {
   if (!tx || tx.coinbase) return null;
   const kind = txKind(tx);
-  if (!kind || !V12_VALUE_KINDS.has(kind)) return { ok: false, reason: 'kind' };
-  return null;
+  if (kind && V12_VALUE_KINDS.has(kind)) return null;
+  // A claim with no output is the fee row for the finder split. It does not mint.
+  const vout = Array.isArray(tx?.vout) ? tx.vout : [];
+  const nanos = Math.floor(Number(tx?.nanos || 0));
+  if (kind === 'claim' && vout.length === 0 && !(nanos > 0)) return null;
+  return { ok: false, reason: 'kind' };
 }
 
 /**
