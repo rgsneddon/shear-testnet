@@ -23,7 +23,7 @@ import {
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { applyReserveBlock, deposit, emptyVault, lockTx, previewWithdraw, withdraw, withdrawTx } from './reserve_vault.js';
+import { applyReserveBlock, deposit, enact, emptyVault, lockTx, previewWithdraw, withdraw, withdrawTx } from './reserve_vault.js';
 import {
   GENESIS_PREV,
   buildTemplate,
@@ -977,6 +977,170 @@ describe('the block path rolls before its transactions', () => {
     );
     assert.equal(view.currentEpoch, 3);
     assert.equal(view.oracleBps, 500);
+  });
+});
+
+describe('a withdraw stays open after the enacting block', () => {
+  const blocksLater = 8;
+
+  async function exitLater({ blocksAfter = null, at = null, gapBps = null } = {}) {
+    const epoch = RESERVE_EPOCH_MS;
+    const who = minerOf();
+    const state = emptyVault();
+    state.magic = MAGIC_TESTNET;
+    const session = await bootReserveEvm();
+    const cb = { coinbase: true, vout: [] };
+    const half = epoch / 2;
+    if (gapBps != null) {
+      state.pendingRates[1] = gapBps;
+      const committed = await callReserve(session, encodeCommitRate(1, gapBps, T0 + epoch, T0));
+      assert.equal(committed.ok, true, committed.reason);
+    }
+    const run = async (now, txs) => {
+      const applied = applyReserveBlock({
+        state,
+        block: { txs, height: 1 },
+        nowMs: now,
+        genesisMs: T0,
+        activationHeight: 0,
+      });
+      assert.equal(applied.ok, true, `${now} ${applied.reason}`);
+      const evm = await executeBlockEvm(session, txs, now, T0);
+      assert.equal(evm.ok, true, `${now} ${evm.reason}`);
+      return { applied, evm };
+    };
+    await run(T0 + half, [
+      cb,
+      lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'open-lock' }),
+    ]);
+    await run(T0 + epoch, [cb]);
+    if (blocksAfter != null) {
+      for (let i = 1; i < blocksAfter; i += 1) {
+        await run(T0 + epoch + i, [cb]);
+      }
+    }
+    const drawAt = at != null ? at : T0 + epoch + blocksAfter;
+    const { applied, evm } = await run(drawAt, [
+      cb,
+      withdrawTx({ from: who, to: who, nanos: 1, id: 'open-draw' }),
+    ]);
+    const row = [...applied].find((item) => item && item.action === 'withdraw');
+    assert.equal(row && row.ok, true, row && row.reason);
+    const want = proRata(PI_SHE_NANOS, GENESIS_BPS, half, epoch);
+    assert.equal(row.interest, want);
+    assert.equal(evm.withdrawInterest, want);
+    if (gapBps != null) {
+      assert.equal(state.pendingRates[1], gapBps);
+      const skipped = await callReserve(session, encodeEpochRateOf(1), { staticCall: true });
+      assert.equal(skipped.ok, true, skipped.reason);
+      assert.equal(decodeNextEpochBps(skipped.returnValue), gapBps);
+      assert.notEqual(row.interest, want + interestOf(PI_SHE_NANOS, gapBps));
+    }
+    return { state, want };
+  }
+
+  it('a withdraw 1 block after the enact pays the enacted pro-rata', async () => {
+    await exitLater({ blocksAfter: 1 });
+  });
+
+  it('a withdraw 3 blocks after the enact pays the enacted pro-rata', async () => {
+    await exitLater({ blocksAfter: 3 });
+  });
+
+  it('a withdraw N blocks after the enact pays the enacted pro-rata', async () => {
+    await exitLater({ blocksAfter: blocksLater });
+  });
+
+  it('a withdraw mid next epoch pays the enacted pro-rata only', async () => {
+    const epoch = RESERVE_EPOCH_MS;
+    const { state } = await exitLater({ at: T0 + epoch + epoch / 2 });
+    assert.equal(state.currentEpoch, 1);
+    assert.equal(state.bonusEnacted, false);
+  });
+
+  it('a withdraw succeeds when an epoch had no block, and that epoch is not paid', async () => {
+    const epoch = RESERVE_EPOCH_MS;
+    const { state } = await exitLater({
+      at: T0 + 2 * epoch + epoch / 2,
+      gapBps: 500,
+    });
+    assert.equal(state.currentEpoch, 2);
+    assert.equal(state.bonusEnacted, false);
+    assert.equal(state.enactedAtEpoch, 0);
+  });
+});
+
+describe('an epoch with no commit keeps the running rate', () => {
+  it('fixed mode keeps the adopted rate when the next epoch has no commit', () => {
+    const epoch = RESERVE_EPOCH_MS;
+    const state = emptyVault();
+    state.genesisMs = T0;
+    const who = minerOf();
+    assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: T0 }).ok, true);
+    assert.equal(state.epochBps, GENESIS_BPS);
+    assert.equal(enact({ state, nowMs: T0 + epoch }).ok, true);
+    state.epochBps = 350;
+    const rolled = applyReserveBlock({
+      state,
+      block: { txs: [{ coinbase: true, vout: [] }], height: 2 },
+      nowMs: T0 + epoch + 1,
+      genesisMs: T0,
+    });
+    assert.equal(rolled.ok, true, rolled.reason);
+    assert.equal(state.currentEpoch, 1);
+    assert.equal(state.bonusEnacted, false);
+    assert.equal(state.epochBps, 350);
+    assert.equal(state.freezes[1].epochBps, 350);
+    assert.notEqual(state.epochBps, GENESIS_BPS);
+  });
+
+  it('JS and the EVM keep the last adopted rate when the next epoch has no commit', async () => {
+    const epoch = RESERVE_EPOCH_MS;
+    const who = minerOf();
+    const adopted = 350;
+    const state = emptyVault();
+    state.magic = MAGIC_TESTNET;
+    const session = await bootReserveEvm();
+    state.pendingRates[1] = adopted;
+    const committed = await callReserve(session, encodeCommitRate(1, adopted, T0 + epoch, T0));
+    assert.equal(committed.ok, true, committed.reason);
+    const cb = { coinbase: true, vout: [] };
+    const run = async (now, txs) => {
+      const applied = applyReserveBlock({
+        state,
+        block: { txs, height: 1 },
+        nowMs: now,
+        genesisMs: T0,
+        activationHeight: 0,
+      });
+      assert.equal(applied.ok, true, `${now} ${applied.reason}`);
+      const evm = await executeBlockEvm(session, txs, now, T0);
+      assert.equal(evm.ok, true, `${now} ${evm.reason}`);
+    };
+    await run(T0, [cb, lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'rate-lock' })]);
+    await run(T0 + epoch, [cb]);
+    await run(T0 + epoch + 1, [cb]);
+    assert.equal(state.currentEpoch, 1);
+    assert.equal(state.epochBps, adopted);
+    let view = decodePublicView(
+      (await callReserve(session, encodePublicView(T0 + epoch + 1), { staticCall: true })).returnValue,
+    );
+    assert.equal(view.currentEpoch, 1);
+    assert.equal(view.oracleBps, adopted);
+    await run(T0 + 2 * epoch, [cb]);
+    assert.equal(state.epochBps, adopted);
+    await run(T0 + 2 * epoch + 1, [cb]);
+    assert.equal(state.currentEpoch, 2);
+    assert.equal(state.epochBps, adopted);
+    assert.notEqual(state.epochBps, GENESIS_BPS);
+    view = decodePublicView(
+      (await callReserve(session, encodePublicView(T0 + 2 * epoch + 1), { staticCall: true })).returnValue,
+    );
+    assert.equal(view.currentEpoch, 2);
+    assert.equal(view.oracleBps, adopted);
+    const slot = await callReserve(session, encodeEpochRateOf(2), { staticCall: true });
+    assert.equal(slot.ok, true, slot.reason);
+    assert.equal(decodeNextEpochBps(slot.returnValue), adopted);
   });
 });
 

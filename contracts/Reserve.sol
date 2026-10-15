@@ -10,9 +10,11 @@ pragma solidity ^0.8.20;
  * lock and can vote. Coin locked later is idle: it does not vote as a stake,
  * but it earns the same reserve reward. A lock or top-up, staked or idle,
  * earns its epoch's rate times the time still left in that chain epoch, by
- * integer floor, then each later full epoch through the withdraw index,
- * exclusive. A portal votes once per epoch; a second cast reverts
- * VoteLocked(). At epoch end the unique plurality of {increase, decrease,
+ * integer floor, then each later full epoch through the last enacted
+ * epoch, exclusive. A withdraw is open in any later block: it pays those
+ * completed epochs and does not wait for this block to enact a boundary.
+ * An epoch that never enacted is not paid. A portal votes once per epoch;
+ * a second cast reverts VoteLocked(). At epoch end the unique plurality of {increase, decrease,
  * hold} enacts ±1 protocol unit on the live hash bonus. It does not set
  * the reserve rate. The freeze is the trimmed mean of the attested 14-bank
  * policy tenths (FED 3625, BOE 3750, ECB 2075, BOJ 500, BOC 2750, RBA 3600,
@@ -254,10 +256,25 @@ contract Reserve {
         return (amount * bps * remain) / (span * 10000);
     }
 
+    /// Exclusive end of settlement. Chain time pays every completed epoch.
+    /// After a roll, an epoch that is still open pays only through the last
+    /// enacted one, so a gap that never enacted is not paid.
+    function _payIndex(uint256 nowTs) internal view returns (uint256) {
+        uint256 chain = _chainEpoch(nowTs);
+        bool ended = epochStart != 0 && nowTs >= epochStart + epochLengthMs();
+        if (!bonusEnacted && enactedAtMs != 0 && !ended) {
+            uint256 cap = enactedAtEpoch + 1;
+            return chain < cap ? chain : cap;
+        }
+        if (chain == 0 && !ended) return 0;
+        return chain;
+    }
+
     /// The arrival epoch pays the time still left. Later epochs pay in full
-    /// up to, and not including, the open chain index.
+    /// through the settlement index. An open epoch after a roll stops at
+    /// the last enacted epoch.
     function _settle(Portal storage p, uint256 nowTs) internal {
-        uint256 nowIdx = _chainEpoch(nowTs);
+        uint256 nowIdx = _payIndex(nowTs);
         uint256 span = epochLengthMs();
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
@@ -324,10 +341,12 @@ contract Reserve {
         return (tenthsMean + 5) / 10;
     }
 
-    function _applyEpochRate(uint256 nowTs) internal {
+    /// A commit already stored for this epoch wins. The first open takes
+    /// the bundle. Every later epoch with no commit keeps the running rate.
+    function _applyEpochRate(uint256 nowTs, bool firstOpen) internal {
         uint256 idx = _chainEpoch(nowTs);
         if (!epochRateKnown[idx]) {
-            uint256 proposal = _bundledEpochBps();
+            uint256 proposal = firstOpen ? _bundledEpochBps() : epochBps;
             epochRateOf[idx] = proposal;
             epochRateKnown[idx] = true;
         }
@@ -355,7 +374,7 @@ contract Reserve {
             currentEpoch = idx;
             epochStart = clockGenesis + idx * epochLengthMs();
             bonusEnacted = false;
-            _applyEpochRate(nowTs);
+            _applyEpochRate(nowTs, true);
             return;
         }
         if (idx == currentEpoch) return;
@@ -366,7 +385,7 @@ contract Reserve {
         currentEpoch = idx;
         epochStart = clockGenesis + idx * epochLengthMs();
         bonusEnacted = false;
-        _applyEpochRate(nowTs);
+        _applyEpochRate(nowTs, false);
     }
 
     function lock(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
@@ -460,8 +479,9 @@ contract Reserve {
     }
 
     function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
-        if (epochStart == 0 || nowTs < epochStart + epochLengthMs()) revert EpochNotEnded();
-        if (!bonusEnacted) revert NeedEnact();
+        // Open on any block once an enacted epoch is payable. This block
+        // does not have to be the one that enacted the boundary.
+        if (_payIndex(nowTs) == 0) revert EpochNotEnded();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
         _settle(p, nowTs);

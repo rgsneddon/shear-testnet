@@ -38,7 +38,7 @@ const destB = 'ssa1ppppppppppppppppppppppppppppppppppppppppppppppppppppp';
 describe('Reserve bytecode on the Shear EVM', () => {
   it('bootReserveEvm defaults to MAGIC_TESTNET', async () => {
     const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
-    assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET \}/);
+    assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET\b/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
@@ -252,5 +252,24 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.ok(view.votesIncrease >= 0);
     assert.ok(view.votesDecrease >= 0);
     assert.ok(view.votesHold >= 0);
+  });
+
+  it('deleting the ClockUnpinned revert lets an unpinned lock through', async () => {
+    const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
+    const line = 'if (clockGenesis == 0) revert ClockUnpinned();';
+    assert.equal(sol.includes(line), true);
+    const t0 = 1_700_000_000_000;
+    const live = await bootReserveEvm();
+    const denied = await callReserve(live, encodeDeposit(destA, PI_SHE_NANOS, t0));
+    assert.equal(denied.ok, false);
+    const stripped = sol.replace(line, '');
+    assert.notEqual(stripped, sol);
+    const bad = compileReserveSource(stripped);
+    assert.notEqual(bad.bytecode, String(
+      JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8')).bytecode || '',
+    ).replace(/^0x/i, '').toLowerCase());
+    const open = await bootReserveEvm({ bytecode: bad.bytecode });
+    const allowed = await callReserve(open, encodeDeposit(destA, PI_SHE_NANOS, t0));
+    assert.equal(allowed.ok, true, allowed.reason);
   });
 });

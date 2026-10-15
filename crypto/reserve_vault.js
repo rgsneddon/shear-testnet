@@ -661,22 +661,51 @@ function applyEpochOpen(state, nowMs, idx) {
     state.epochBps = Math.max(0, Math.floor(Number(state.freezes[idx].epochBps)));
     state.freeze = state.freezes[idx];
   } else {
-  const rec = makeFreezeRecord({
-    epochIndex: idx,
-    prevEpochBps: state.epochBps ?? GENESIS_BPS,
-    nowMs,
-    magic,
-  });
-  const check = verifyFreezeRecord(rec, { epochIndex: idx, prevFreeze: prior, magic });
-  if (prior && (!check.ok || prior.epochBps !== rec.epochBps)) {
-    state.epochBps = prior.epochBps;
-    state.freeze = prior;
-  } else {
-    rememberFreeze(state, idx);
-    state.freezes[idx] = rec;
-    state.freeze = rec;
-    state.epochBps = rec.epochBps;
-  }
+    const running = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+    const queuedRaw = state.pendingRates?.[idx];
+    const hasQueue = queuedRaw != null && queuedRaw !== '';
+    // The first open adopts the bundle, so a caller-set rate cannot skip
+    // it. A later epoch with no commit keeps the rate already adopted.
+    const firstOpen = !(Number(state.epochStartMs) > 0);
+    if (!firstOpen || hasQueue) {
+      const adopted = prior
+        ? Math.max(0, Math.floor(Number(prior.epochBps)))
+        : (hasQueue ? Math.max(0, Math.floor(Number(queuedRaw))) : running);
+      if (!state.pendingRates) state.pendingRates = Object.create(null);
+      if (!hasQueue && state.pendingRates[idx] == null) state.pendingRates[idx] = adopted;
+      if (!prior) {
+        rememberFreeze(state, idx);
+        state.freezes[idx] = {
+          ok: true,
+          epochIndex: idx,
+          epochBps: adopted,
+          prevEpochBps: running,
+          magic,
+          observationRoot: bundleObservationRoot(),
+          source: 'running',
+          frozenAtMs: Number(nowMs) || 0,
+        };
+      }
+      state.epochBps = Math.max(0, Math.floor(Number(state.freezes[idx].epochBps)));
+      state.freeze = state.freezes[idx];
+    } else {
+      const rec = makeFreezeRecord({
+        epochIndex: idx,
+        prevEpochBps: state.epochBps ?? GENESIS_BPS,
+        nowMs,
+        magic,
+      });
+      const check = verifyFreezeRecord(rec, { epochIndex: idx, prevFreeze: prior, magic });
+      if (prior && (!check.ok || prior.epochBps !== rec.epochBps)) {
+        state.epochBps = prior.epochBps;
+        state.freeze = prior;
+      } else {
+        rememberFreeze(state, idx);
+        state.freezes[idx] = rec;
+        state.freeze = rec;
+        state.epochBps = rec.epochBps;
+      }
+    }
   }
   const genesis = Number(state.genesisMs) || 0;
   state.epochIndex = idx;
@@ -911,7 +940,7 @@ function chainEpochIndex(state, nowMs) {
  */
 function rateForEpoch(state, epochIndex) {
   const freeze = state?.freezes?.[epochIndex];
-  if (freeze && freeze.source === 'median3b' && freeze.epochBps != null) {
+  if (freeze && (freeze.source === 'median3b' || freeze.source === 'running') && freeze.epochBps != null) {
     return Math.max(0, Math.floor(Number(freeze.epochBps)));
   }
   const queued = state?.pendingRates?.[epochIndex];
@@ -937,13 +966,35 @@ function trancheDue(state, tranche, nowIdx, span) {
 }
 
 /**
+ * Exclusive settlement index. Chain time pays every completed epoch, which
+ * is the pro-rata rule. Once a block has rolled into an epoch that is still
+ * open, pay only through the last enacted epoch: the open one is not due,
+ * and a gap that never enacted is not due either.
+ */
+function settlementIndex(state, nowMs) {
+  const now = Number(nowMs) || 0;
+  const chain = chainEpochIndex(state, now);
+  const span = epochMs(state?.magic);
+  const start = Number(state?.epochStartMs) || 0;
+  const ended = start > 0 && now >= start + span;
+  if (!state?.bonusEnacted && Number(state?.enactedAtMs) > 0 && !ended) {
+    const cap = Math.floor(Number(state.enactedAtEpoch) || 0) + 1;
+    if (cap <= 0) return 0;
+    return chain < cap ? chain : cap;
+  }
+  if (chain <= 0 && !ended) return 0;
+  return chain;
+}
+
+/**
  * Move completed chain epochs onto the portal. The epoch a credit arrives
  * in pays floor(amount * rate * time remaining / epoch length / 10000).
- * Later epochs pay the full rate, up to but not including the open index.
+ * Later epochs pay the full rate through the settlement index. An open
+ * epoch after a roll stops at the last enacted epoch.
  */
 function settlePortal(state, p, nowMs) {
   if (!p) return 0n;
-  const nowIdx = chainEpochIndex(state, nowMs);
+  const nowIdx = settlementIndex(state, nowMs);
   const span = epochMs(state.magic);
   let total = capReward(p.accruedReward);
   for (const tranche of p.tranches || []) {
@@ -959,7 +1010,7 @@ function settlePortal(state, p, nowMs) {
 /** Interest a withdraw at `nowMs` pays. Same split as settle, without writing cursors. */
 export function portalEpochInterest(state, p, nowMs) {
   if (!p) return 0;
-  const nowIdx = chainEpochIndex(state, nowMs);
+  const nowIdx = settlementIndex(state, nowMs);
   const span = epochMs(state?.magic);
   let total = capReward(p.accruedReward);
   for (const tranche of p.tranches || []) {
@@ -1349,7 +1400,7 @@ export function verifyReservePayout(state, tx, clockMs) {
     return { ok: false, reason: 'shear1' };
   }
   const clock = Number(clockMs);
-  if (!Number.isFinite(clock) || clock <= 0 || !state?.epochStartMs || clock < state.epochStartMs + epochMs(state.magic)) {
+  if (!Number.isFinite(clock) || clock <= 0 || settlementIndex(state, clock) <= 0) {
     return { ok: false, reason: 'epoch_open' };
   }
   if (!p) return { ok: false, reason: 'empty' };
@@ -1800,10 +1851,12 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
-  if (!state.epochStartMs || nowMs < state.epochStartMs + epochMs(state.magic)) {
+  // Any block can pay, once an enacted epoch is complete. The open epoch
+  // does not have to end, and this block does not have to enact it.
+  if (settlementIndex(state, nowMs) <= 0) {
     return { ok: false, reason: 'epoch_open' };
   }
-  if (!state.bonusEnacted) {
+  if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     const did = enact({ state, nowMs });
     if (!did.ok) return did;
   }

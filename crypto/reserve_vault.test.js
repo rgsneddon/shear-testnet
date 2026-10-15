@@ -309,7 +309,7 @@ describe('Reserve vault protocol', () => {
       },
     });
     assert.equal(undone.ok, false);
-    assert.equal(undone.reason, 'epoch_open');
+    assert.equal(undone.reason, 'empty');
     assert.equal(live.portals[aliceId].accruedReward, 0n);
     assert.equal(live.totalLockedNanos, BigInt(PI_SHE_NANOS));
     assert.equal(supplyIdentity(live).ok, true);

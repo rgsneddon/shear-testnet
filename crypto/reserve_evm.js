@@ -221,11 +221,14 @@ function shearCommon() {
 
 const SYSTEM = createAddressFromString('0x0000000000000000000000000000000000002701');
 
-export async function bootReserveEvm({ network = MAGIC_TESTNET } = {}) {
+export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
   const common = shearCommon();
   const evm = await createEVM({ common });
   const magic = shearMagicBytes(network);
-  const ctor = concat(hexToBytes(RESERVE_BYTECODE), magic);
+  const code = bytecode == null
+    ? RESERVE_BYTECODE
+    : (String(bytecode).startsWith('0x') ? String(bytecode) : `0x${bytecode}`);
+  const ctor = concat(hexToBytes(code), magic);
   const created = await evm.runCall({
     caller: SYSTEM,
     data: ctor,
