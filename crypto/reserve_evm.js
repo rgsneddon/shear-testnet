@@ -90,6 +90,29 @@ export function encodeDeposit(dest, nanos, nowTs) {
   );
 }
 
+/** Time-locked note. The bool is the tranche flag withdraw() will not pay. */
+export function encodeLockNote(dest, nanos, nowTs, notePrincipal = true) {
+  const body = encodeBytes(dest);
+  return concat(
+    selector('lockNote(bytes,uint256,uint256,bool)'),
+    pad32(128),
+    pad32(nanos),
+    pad32(nowTs),
+    pad32(notePrincipal ? 1 : 0),
+    body,
+  );
+}
+
+/** Keep this portal's legacy principal for the withdraw later in the block. */
+export function encodeHoldWithdraw(dest) {
+  const body = encodeBytes(dest);
+  return concat(selector('holdWithdraw(bytes)'), pad32(32), body);
+}
+
+export function encodeClearWithdrawHolds() {
+  return selector('clearWithdrawHolds()');
+}
+
 export function encodeVote(dest, choice, nowTs) {
   const body = encodeBytes(dest);
   return concat(
@@ -420,7 +443,10 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
-    return callReserve(session, encodeDeposit(dest, nanos, nowMs));
+    const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+    const note = outs.some((row) => Number(row?.unlockAtMs) > 0);
+    const calldata = note ? encodeLockNote(dest, nanos, nowMs, true) : encodeDeposit(dest, nanos, nowMs);
+    return callReserve(session, calldata);
   }
   if (kind === 'vote') {
     const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;
@@ -490,6 +516,15 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
     }
     const rootHex = blockRewardRoot({ txs: list });
     if (rootHex === 'bad') return fail('stake_reward');
+    for (const tx of list) {
+      if (!tx || tx.coinbase) continue;
+      if (txKindOf(tx) !== 'withdraw') continue;
+      const heldDest = txFromOf(tx) || destBytesForEvm(tx, reserveAction(tx));
+      if (!heldDest) continue;
+      const held = await callReserve(session, encodeHoldWithdraw(heldDest));
+      if (!held.ok) return fail(held.reason || 'evm');
+      evm.calls += 1;
+    }
     if (rootHex) {
       const committed = await callReserve(session, encodeCommitRewards(nowMs));
       if (!committed.ok) return fail(committed.reason || 'stake_reward');
@@ -533,9 +568,12 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
     );
     evm.totalLocked = view.totalLockedNanos;
     evm.liveHashBonusNanos = view.liveHashBonusNanos;
+    const cleared = await callReserve(session, encodeClearWithdrawHolds());
+    if (!cleared.ok) return fail(cleared.reason || 'evm');
     return { ok: true, ...evm };
   } finally {
     if (held) await callReserve(session, encodeHoldEpochRoll(false));
+    if (session) await callReserve(session, encodeClearWithdrawHolds());
   }
 }
 

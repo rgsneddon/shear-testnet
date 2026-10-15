@@ -3145,6 +3145,8 @@ export const BOOK_SEAL_DOMAIN = 'bookseal2';
 export function chainLoadSealHash(key, magic = MAGIC_TESTNET) {
   const k = asBuf(key);
   if (k.length !== 32) throw new Error('seal_key');
+  // RESERVE_NOTE lives in consensusFingerprint. A different principal rule
+  // is a different seal, so old and new nodes do not share a chain.
   const rules = Buffer.from(String(consensusFingerprint(magic)), 'utf8');
   const pin = Buffer.from(String(V12_GENESIS_BLOCK_HASH || ''), 'utf8');
   const cpH = Math.floor(Number(V12_BOOTSTRAP_CHECKPOINT?.height) || 0);

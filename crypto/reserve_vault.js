@@ -339,9 +339,18 @@ export function planStakeRewards(state, nowMs) {
   };
 }
 
-function blockPaysByWithdraw(block) {
+/** Portal ids a withdraw in this block will pay. Notes still auto-credit. */
+function withdrawPortalIds(block) {
+  const ids = new Set();
   const txs = Array.isArray(block?.txs) ? block.txs : [];
-  return txs.some((tx) => tx && !tx.coinbase && txKind(tx) === KIND_WITHDRAW);
+  for (const tx of txs) {
+    if (!tx || tx.coinbase) continue;
+    if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
+    if (txKind(tx) !== KIND_WITHDRAW) continue;
+    const act = reserveAction(tx);
+    if (act?.portalId) ids.add(String(act.portalId).toLowerCase());
+  }
+  return ids;
 }
 
 export function stakeRewardNotesOf(block) {
@@ -363,8 +372,8 @@ export function blockRewardRoot(block) {
 /**
  * The epoch-end coinbase carries one root, or it carries no reward.
  * A stake-reward coinbase row is the dropped per-payee path.
- * A withdraw in the block is the older pull: it may omit the root.
- * The root is required only when the caller says so and a reward is due.
+ * A withdraw does not excuse a missing root. The root is required when
+ * the caller says so and a reward is due.
  */
 export function stakeRewardRejected(state, block, nowMs, { require = false } = {}) {
   if (!state || state.blankFork) return null;
@@ -376,7 +385,7 @@ export function stakeRewardRejected(state, block, nowMs, { require = false } = {
     if (got !== plan.root) return { ok: false, reason: 'stake_reward' };
     return null;
   }
-  if (!require || blockPaysByWithdraw(block)) return null;
+  if (!require) return null;
   if (plan.rows.length) return { ok: false, reason: 'stake_reward' };
   return null;
 }
@@ -403,17 +412,22 @@ function rewardAlreadyMinted(state, portal, nowMs) {
   return false;
 }
 
-function releaseMaturedPrincipal(state, nowMs) {
+function releaseMaturedPrincipal(state, nowMs, holdLegacyIds = null) {
   const nowIdx = settlementIndex(state, nowMs);
+  const hold = holdLegacyIds instanceof Set ? holdLegacyIds : new Set();
   let released = 0n;
   for (const portal of Object.values(state.portals || {})) {
     if (!portal?.tranches?.length) continue;
     rememberPortal(state, portal.id);
+    const keepLegacy = hold.has(String(portal.id || '').toLowerCase());
     let drop = 0n;
     let notePrincipal = 0n;
     const keep = [];
     for (const tranche of portal.tranches) {
-      if (nowIdx > Math.floor(Number(tranche.epoch) || 0)) {
+      const matured = nowIdx > Math.floor(Number(tranche.epoch) || 0);
+      // A withdraw in this block still pays a legacy tranche. It does not
+      // hold a time-locked note, and it does not hold any other portal.
+      if (matured && !(keepLegacy && !tranche.noteIsPrincipal)) {
         const amount = asBig(tranche.amount);
         drop += amount;
         if (tranche.noteIsPrincipal) notePrincipal += amount;
@@ -475,8 +489,8 @@ export function coinbaseRewardRoot(state, nowMs) {
  * Archive the root and drop matured principal out of the vault.
  * Nothing is minted here. A claim tx mints one archived row later.
  * An epoch with no earning rows still releases principal. The block may
- * omit the root or carry the empty root. A withdraw in the block is the
- * older pull and releases the portals it pays.
+ * omit the root or carry the empty root. A withdraw does not skip that
+ * release. Legacy principal the withdraw itself pays stays put.
  */
 export function applyStakeRewards(state, block, nowMs, { require = false } = {}) {
   const rejected = stakeRewardRejected(state, block, nowMs, { require });
@@ -486,15 +500,16 @@ export function applyStakeRewards(state, block, nowMs, { require = false } = {})
   if (got && got !== plan.root) {
     return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
   }
+  const hold = withdrawPortalIds(block);
   if (!plan.rows.length) {
-    if (!(plan.index > 0) || blockPaysByWithdraw(block)) {
+    if (!(plan.index > 0)) {
       return { ok: true, minted: 0n, principal: 0n, skipped: true };
     }
     const prior = state.rewardRoots?.[String(plan.index)];
     if (got && prior && prior !== got) {
       return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
     }
-    const principal = releaseMaturedPrincipal(state, nowMs);
+    const principal = releaseMaturedPrincipal(state, nowMs, hold);
     return { ok: true, minted: 0n, principal, root: got || '', skipped: false };
   }
   if (!got) return { ok: true, minted: 0n, principal: 0n, skipped: true };
@@ -516,14 +531,17 @@ export function applyStakeRewards(state, block, nowMs, { require = false } = {})
     if (have && (have.nanos !== row.nanos || have.rootKey !== key)) {
       return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
     }
-    state.rewardBook[row.nullifier] = {
+    const paidHere = hold.has(String(row.portalId || '').toLowerCase()) || have?.settledByWithdraw === true;
+    const entry = {
       nanos: row.nanos,
       epoch: row.epoch,
       rootKey: key,
       portalId: row.portalId,
     };
+    if (paidHere) entry.settledByWithdraw = true;
+    state.rewardBook[row.nullifier] = entry;
   }
-  const principal = releaseMaturedPrincipal(state, nowMs);
+  const principal = releaseMaturedPrincipal(state, nowMs, hold);
   return { ok: true, minted: 0n, principal, root: plan.root, skipped: false };
 }
 
@@ -550,6 +568,7 @@ export function applyRewardClaim(state, tx) {
   const row = state.rewardBook?.[nullifier];
   const root = row ? state.rewardRoots?.[row.rootKey] : '';
   if (!row || !root) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  if (row.settledByWithdraw) return { ok: false, reason: 'double_mint', nanos: 0 };
   if (state.mintedIds?.[nullifier]) return { ok: false, reason: 'double_mint', nanos: 0 };
   if (!claimNoteOpens(tx, row.nanos)) return { ok: false, reason: 'stake_reward', nanos: 0 };
   const leaf = rewardLeaf(nullifier, row.nanos);
@@ -572,7 +591,7 @@ function rewardReserved(state, portalId) {
   const id = String(portalId || '');
   if (!id) return false;
   for (const row of Object.values(state?.rewardBook || {})) {
-    if (row && row.portalId === id) return true;
+    if (row && row.portalId === id && row.settledByWithdraw !== true) return true;
   }
   return false;
 }
@@ -1534,17 +1553,37 @@ function arrivalEpochOpen(state, portal, nowMs) {
   return true;
 }
 
-/** Principal whose own lock epoch has ended. The open top-up stays put. */
-function maturedPrincipal(state, portal, nowMs) {
+/**
+ * Matured principal split by who carries it.
+ * A time-locked note carries its own principal. A legacy tranche, or a
+ * portal with no tranche list, is what withdraw() may pay.
+ * An open top-up is in neither number.
+ */
+function maturedSplit(state, portal, nowMs) {
   const tranches = portal?.tranches;
   const whole = asBig(portal?.staked) + asBig(portal?.idle);
-  if (!Array.isArray(tranches) || tranches.length === 0) return whole;
+  if (!Array.isArray(tranches) || tranches.length === 0) return { note: 0n, legacy: whole };
   const chain = chainEpochIndex(state, nowMs);
-  let due = 0n;
+  let note = 0n;
+  let legacy = 0n;
   for (const tranche of tranches) {
-    if (chain > Math.floor(Number(tranche?.epoch) || 0)) due += asBig(tranche.amount);
+    if (chain <= Math.floor(Number(tranche?.epoch) || 0)) continue;
+    const amount = asBig(tranche.amount);
+    if (tranche.noteIsPrincipal) note += amount;
+    else legacy += amount;
   }
-  return due;
+  return { note, legacy };
+}
+
+/** Principal whose own lock epoch has ended. The open top-up stays put. */
+function maturedPrincipal(state, portal, nowMs) {
+  const split = maturedSplit(state, portal, nowMs);
+  return split.note + split.legacy;
+}
+
+/** Principal a withdraw may pay. Time-locked notes are not included. */
+function withdrawablePrincipal(state, portal, nowMs) {
+  return maturedSplit(state, portal, nowMs).legacy;
 }
 
 /**
@@ -1605,14 +1644,19 @@ export function previewWithdraw(state, dest, nowMs = null) {
   const clock = nowMs == null
     ? (Number(state?.epochStartMs) || 0) + epochMs(state?.magic)
     : nowMs;
-  const principal = nanosOut(maturedPrincipal(state, p, clock));
+  const split = maturedSplit(state, p, clock);
+  const principal = nanosOut(split.legacy);
+  const notePrincipal = nanosOut(split.note);
   const interest = portalEpochInterest(state, p, clock);
+  const payable = split.legacy > 0n;
   return {
     principal,
+    notePrincipal,
     staked: asNum(p.staked),
     idle: asNum(p.idle),
     interest,
-    payout: principal + interest,
+    payout: payable ? principal + interest : 0,
+    reason: !payable && split.note > 0n ? 'note_principal' : undefined,
     to: continuumOf(p, null, dest),
   };
 }
@@ -2094,7 +2138,9 @@ export function verifyReservePayout(state, tx, clockMs) {
   }
   if (!p) return { ok: false, reason: 'empty' };
   if (arrivalEpochOpen(state, p, clock)) return { ok: false, reason: 'epoch_open' };
-  const principal = nanosOut(maturedPrincipal(state, p, clock));
+  const split = maturedSplit(state, p, clock);
+  if (split.legacy <= 0n && split.note > 0n) return { ok: false, reason: 'note_principal' };
+  const principal = nanosOut(split.legacy);
   const interest = portalEpochInterest(state, p, clock);
   const published = publicActionNanos(tx, (tx?.vout || []).find((row) => String(row?.kind || '') === KIND_WITHDRAW) || tx?.vout?.[0]);
   if (published != null && published < principal) return { ok: false, reason: 'principal_short' };
@@ -2606,7 +2652,9 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   const idle = asBig(p.idle);
   if (staked + idle <= 0n) return { ok: false, reason: 'empty' };
   if (arrivalEpochOpen(state, p, nowMs)) return { ok: false, reason: 'epoch_open' };
-  const release = maturedPrincipal(state, p, nowMs);
+  const split = maturedSplit(state, p, nowMs);
+  if (split.legacy <= 0n && split.note > 0n) return { ok: false, reason: 'note_principal' };
+  const release = split.legacy;
   if (release <= 0n) return { ok: false, reason: 'epoch_open' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
   settlePortal(state, p, nowMs);
@@ -2641,7 +2689,11 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   p.redeemedNanos = asBig(p.redeemedNanos) + release;
   const chain = chainEpochIndex(state, nowMs);
   if (Array.isArray(p.tranches) && p.tranches.length) {
-    p.tranches = p.tranches.filter((tranche) => chain <= Math.floor(Number(tranche.epoch) || 0));
+    p.tranches = p.tranches.filter((tranche) => {
+      const matured = chain > Math.floor(Number(tranche.epoch) || 0);
+      if (!matured) return true;
+      return !!tranche.noteIsPrincipal;
+    });
   }
   let fromStaked = release >= staked ? staked : release;
   let fromIdle = release - fromStaked;
@@ -2790,7 +2842,7 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     const act = reserveAction(txs[i]);
     if (!act || act.opened !== true) return fail();
     const portal = act.portalId ? state.portals?.[act.portalId] : null;
-    const principal = exactBi(maturedPrincipal(state, portal, clock));
+    const principal = exactBi(withdrawablePrincipal(state, portal, clock));
     const permitted = exactBi(portalEpochInterest(state, portal, clock));
     const opened = exactBi(act.nanos);
     if (principal == null || permitted == null || opened == null) return fail();

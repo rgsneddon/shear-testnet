@@ -222,6 +222,12 @@ export const SPEND_SIG = 'ed25519-shear-spend-v1';
 /** Epoch reward rate: floor(active lock × bundled bps / 10000). */
 export const REWARD_LAW = 'epoch-bps-floor';
 export const INTEREST_LAW = REWARD_LAW;
+/**
+ * Vault Security default. withdraw() does not pay a time-locked note's
+ * principal. Legacy tranches still withdraw. The stricter alternative,
+ * all principal refused, is not this token.
+ */
+export const RESERVE_NOTE_LAW = 'note-principal-refused';
 /** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
@@ -410,6 +416,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'KDF=argon2id-shewall',
     `RESERVE=${RESERVE_PROGRAM}`,
     'RESERVE_EVM=1',
+    `RESERVE_NOTE=${RESERVE_NOTE_LAW}`,
     `RESERVE_REWARD=${days}d-bps-floor`,
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',

@@ -1,39 +1,37 @@
 /**
- * Time-locked principal is the lock note. A withdraw must not pay that
- * principal again. Consensus currently does.
+ * Time-locked principal is the lock note. withdraw() must not pay it again.
  *
- * withdraw() (reserve_vault.js, the release around the redeemedNanos
- * update) does not look at noteIsPrincipal. At epoch end, before any
- * reward root, it pays principal + interest, sets redeemedNanos to the
- * principal, and drops the tranche. The lock note is still an admit leaf
- * and lockNoteSpendRejected does not refuse a spend of it.
+ * Vault Security default, applied here: refuse only noteIsPrincipal.
+ * A legacy tranche in the same portal still withdraws. A plain receipt
+ * still withdraws. Attack Cartographer's stricter rule (no principal in
+ * withdraw at all) is crypto/timelock_withdraw_refuse_all_principal.proposal.diff
+ * and is not applied.
  *
- * Covered lock nanos then equal redeemed nanos, so the hold cancels and
- * both notes stay in the spendable sum. blockWithdrawInterest counts only
- * the interest, so the supply counter does not inflate.
+ * lockNoteSpendRejected only gates a spend before unlock. The bug was
+ * withdraw() re-paying principal the note already carries. After the
+ * refusal, auto-credit releases the note and spendable value is that
+ * note alone.
  *
- * The reported probe (lock 1π at genesis+1000ms) is that withdraw():
- * principal 314159265358, interest 8922097319, redeemedNanos = principal.
- * verifyBlock's boundReserveWithdraw rejects that partial receipt with
- * mint_amount. A lock at the epoch open makes the pro-rata equal the
- * full-epoch cap, and boundReserveWithdraw, verifyReservePayout, withdraw(),
- * and the supply interest check all accept. That path is the failing
- * invariant below.
- *
- * NEEDS RUSSELL SIGN-OFF. The refusal is proposed in
- * crypto/timelock_withdraw_note_principal.proposal.diff and is not applied.
+ * NEEDS RUSSELL SIGN-OFF. Consensus rule. Do not merge on this draft.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, spendDestOf, admitBaseFromAddress, hash20FromAddress } from '../../crypto/address.js';
-import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from '../../crypto/asert.js';
+import { newIdentity, spendDestOf, admitBaseFromAddress } from '../../crypto/address.js';
+import {
+  GENESIS_BPS,
+  MAGIC_TESTNET,
+  PI_SHE_NANOS,
+  RESERVE_EPOCH_MS,
+  RESERVE_NOTE_LAW,
+  consensusFingerprint,
+} from '../../crypto/asert.js';
 import { attachAdmitPub, outputJoinsAdmitSet } from '../../crypto/admit.js';
 import { fs1LeafFor } from '../../crypto/fs1_leaf.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { excessOf } from '../../crypto/note.js';
 import { potSubsidyAt } from '../../crypto/pot_sched.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
-import { boundReserveWithdraw } from '../../crypto/spend.js';
 import {
   applyReserveBlock,
   blockPermittedInterest,
@@ -42,20 +40,30 @@ import {
   lockNoteSpendRejected,
   lockTx,
   lockUnlockOf,
+  portalIdFromDest,
   portalPrincipalNanos,
   previewWithdraw,
+  rewardCommitment,
   supplyIdentity,
+  trialReserveApply,
   verifyReservePayout,
+  withdraw,
   withdrawTx,
 } from '../../crypto/reserve_vault.js';
-import { coinbaseTx } from '../src/chain.js';
+import {
+  bootReserveEvm,
+  callReserve,
+  decodePublicView,
+  encodeCommitRewards,
+  encodePublicView,
+  executeBlockEvm,
+} from '../../crypto/reserve_evm.js';
+import { chainLoadSealHash, coinbaseTx } from '../src/chain.js';
 import { createNoteLedger } from '../src/note_ledger.js';
 import { foldSupply } from '../src/supply.js';
 
 const T0 = 1_700_000_000_000;
 const DRAW = T0 + RESERVE_EPOCH_MS;
-const PROBE_LOCK_AT = T0 + 1_000;
-const PROBE_INTEREST = 8_922_097_319;
 
 function destOf() {
   return spendDestOf(newIdentity().spendPub);
@@ -68,17 +76,21 @@ function freshVault() {
   return state;
 }
 
-function timeLock(dest, when, id) {
+function timeLock(dest, when, id, nanos = PI_SHE_NANOS) {
   const stamp = lockUnlockOf({ genesisMs: T0, magic: MAGIC_TESTNET }, when);
   return lockTx({
     from: dest,
     to: dest,
-    nanos: PI_SHE_NANOS,
+    nanos,
     id,
     timeLock: true,
     lockEpoch: stamp.epoch,
     unlockAtMs: stamp.unlockAtMs,
   });
+}
+
+function plainLock(dest, when, id, nanos = PI_SHE_NANOS) {
+  return lockTx({ from: dest, to: dest, nanos, id });
 }
 
 function admitWithdraw(dest, nanos, id) {
@@ -87,20 +99,11 @@ function admitWithdraw(dest, nanos, id) {
   return tx;
 }
 
-function applyLock(state, tx, when) {
+function applyLock(state, tx, when, height = 1) {
   return applyReserveBlock({
     state,
-    block: { height: 1, txs: [tx] },
+    block: { height, txs: [tx] },
     nowMs: when,
-    genesisMs: T0,
-  });
-}
-
-function applyDraw(state, tx) {
-  return applyReserveBlock({
-    state,
-    block: { height: 2, txs: [{ coinbase: true, vout: [] }, tx] },
-    nowMs: DRAW,
     genesisMs: T0,
   });
 }
@@ -109,29 +112,13 @@ function withdrawRow(applied) {
   return (applied || []).find((row) => row && row.action === 'withdraw') || null;
 }
 
-function admitFace(tx) {
-  let n = 0;
-  for (const o of tx?.vout || []) {
-    if (!outputJoinsAdmitSet(tx, o) || !fs1LeafFor(o)) continue;
-    n += Number(o.valueProof?.v || 0);
-  }
-  return n;
-}
-
-/** The node spendable formula in store.destSpendableNanos. */
 function nodeSpendable(book, vault, addr, tipH) {
   const clock = { need: 1, tipMs: DRAW, genesisMs: T0, magic: MAGIC_TESTNET };
   const opened = book.spendable(addr, tipH, clock);
   const principal = Math.max(0, Math.floor(Number(portalPrincipalNanos(vault, addr)) || 0));
   const covered = Math.max(0, Math.floor(Number(book.coveredLockNanos(addr, tipH, clock)) || 0));
   const held = Math.max(0, principal - covered);
-  return {
-    opened,
-    principal,
-    covered,
-    held,
-    spendable: Math.max(0, opened - held),
-  };
+  return { opened, principal, covered, held, spendable: Math.max(0, opened - held) };
 }
 
 function header(ts) {
@@ -168,63 +155,7 @@ function supplyBlock(ts, miner, extra) {
 }
 
 describe('time-locked withdraw supply', () => {
-  it('mints the interest and does not mint the principal a second time', () => {
-    const dest = destOf();
-    const state = freshVault();
-    const lock = timeLock(dest, PROBE_LOCK_AT, 'probe-lock');
-    const locked = applyLock(state, lock, PROBE_LOCK_AT);
-    assert.equal(locked.ok, true, locked.reason);
-    const preview = previewWithdraw(state, dest, DRAW);
-    assert.equal(preview.principal, PI_SHE_NANOS);
-    assert.equal(preview.interest, PROBE_INTEREST);
-    const draw = admitWithdraw(dest, preview.payout, 'probe-withdraw');
-    const pre = freshVault();
-    assert.equal(applyLock(pre, lock, PROBE_LOCK_AT).ok, true);
-    const paid = applyDraw(state, draw);
-    const row = withdrawRow(paid);
-    assert.equal(row && row.ok, true, row && row.reason);
-    assert.equal(row.principal, PI_SHE_NANOS);
-    assert.equal(row.interest, PROBE_INTEREST);
-    assert.equal(row.payout, PI_SHE_NANOS + PROBE_INTEREST);
-    const portal = state.portals[Object.keys(state.portals)[0]];
-    assert.equal(Number(portal.redeemedNanos), PI_SHE_NANOS);
-    assert.equal(Number(portal.staked) + Number(portal.idle), 0);
-    assert.equal(portal.tranches.length, 0);
-    const identity = supplyIdentity(state);
-    assert.equal(identity.ok, true, identity.reason);
-    assert.equal(identity.mintedReward, PROBE_INTEREST);
-    assert.equal(identity.permittedReward, PROBE_INTEREST);
-    const interest = blockWithdrawInterest(pre, supplyBlock(DRAW, dest, [draw]), DRAW);
-    const permitted = blockPermittedInterest(pre, supplyBlock(DRAW, dest, [draw]), DRAW);
-    assert.equal(interest.ok, true, interest.reason);
-    assert.equal(permitted.ok, true, permitted.reason);
-    assert.equal(interest.nanos, BigInt(PROBE_INTEREST));
-    assert.equal(permitted.nanos, BigInt(PROBE_INTEREST));
-    // Accidental, not a time-lock refusal. The receipt opens to the
-    // pro-rata interest, and this gate demands the full-epoch cap.
-    assert.equal(boundReserveWithdraw(draw, pre, new Set()).reason, 'mint_amount');
-
-    const openDest = destOf();
-    const open = freshVault();
-    const openLock = timeLock(openDest, T0, 'open-lock');
-    assert.equal(applyLock(open, openLock, T0).ok, true);
-    const openPreview = previewWithdraw(open, openDest, DRAW);
-    assert.equal(openPreview.interest, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
-    const openDraw = admitWithdraw(openDest, openPreview.payout, 'open-withdraw');
-    const chain = [
-      supplyBlock(T0, openDest, [openLock]),
-      supplyBlock(DRAW, openDest, [openDraw]),
-    ];
-    const folded = foldSupply(chain, { genesisMs: T0, magic: MAGIC_TESTNET });
-    assert.equal(folded.ok, true, folded.reason);
-    assert.equal(folded.state.mintedInterest, BigInt(openPreview.interest));
-    assert.equal(folded.state.permittedInterest, BigInt(openPreview.interest));
-    const pots = BigInt(potAt(T0) + potAt(DRAW));
-    assert.equal(folded.state.mintedPot, pots);
-    assert.equal(folded.state.mintedPot + folded.state.mintedHash + folded.state.mintedInterest, pots + BigInt(openPreview.interest));
-  });
-
-  it('does not leave the unlocked note spendable after the withdraw', () => {
+  it('refuses the note and leaves spendable equal to that note', () => {
     const dest = destOf();
     const state = freshVault();
     const lock = timeLock(dest, T0, 'spend-lock');
@@ -232,42 +163,234 @@ describe('time-locked withdraw supply', () => {
     assert.equal(outputJoinsAdmitSet(lock, lock.vout[0]), true);
     assert.ok(fs1LeafFor(lock.vout[0]));
     const preview = previewWithdraw(state, dest, DRAW);
-    const pre = freshVault();
-    assert.equal(applyLock(pre, lock, T0).ok, true);
-    const draw = admitWithdraw(dest, preview.payout, 'spend-withdraw');
-    assert.equal(verifyReservePayout(pre, draw, DRAW).ok, true);
-    assert.equal(boundReserveWithdraw(draw, pre, new Set()).ok, true);
-    const paid = applyDraw(state, draw);
-    const row = withdrawRow(paid);
-    assert.equal(row && row.ok, true, row && row.reason);
-    assert.equal(row.principal, PI_SHE_NANOS);
-    assert.equal(row.interest, preview.interest);
-    assert.equal(outputJoinsAdmitSet(draw, draw.vout[0]), true);
-    assert.ok(fs1LeafFor(draw.vout[0]));
+    assert.equal(preview.principal, 0);
+    assert.equal(preview.notePrincipal, PI_SHE_NANOS);
+    assert.equal(preview.reason, 'note_principal');
+    assert.equal(preview.payout, 0);
+    const face = preview.notePrincipal + preview.interest;
+    const draw = admitWithdraw(dest, face, 'spend-withdraw');
+    assert.equal(verifyReservePayout(state, draw, DRAW).reason, 'note_principal');
+    assert.equal(withdraw({ state, dest, nowMs: DRAW }).reason, 'note_principal');
+    assert.equal(Number(state.portals[portalIdFromDest(dest)].staked), PI_SHE_NANOS);
 
-    const spend = { vin: [{ commit: lock.vout[0].commit }] };
-    assert.equal(lockNoteSpendRejected(state, spend, DRAW), null);
+    const plan = rewardCommitment(state, DRAW);
+    const credited = applyReserveBlock({
+      state,
+      block: { height: 2, txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }] },
+      nowMs: DRAW,
+      genesisMs: T0,
+      requireStakeReward: true,
+    });
+    assert.equal(credited.ok, true, credited.reason);
+    const portal = state.portals[portalIdFromDest(dest)];
+    assert.equal(Number(portal.redeemedNanos), PI_SHE_NANOS);
+    assert.equal(Number(portal.staked) + Number(portal.idle), 0);
+    assert.equal(lockNoteSpendRejected(state, { vin: [{ commit: lock.vout[0].commit }] }, DRAW), null);
+    const identity = supplyIdentity(state);
+    assert.equal(identity.ok, true, identity.reason);
+    assert.equal(identity.mintedReward, 0);
+
     const book = createNoteLedger();
     book.sync([
       { height: 1, hash: Buffer.alloc(32, 1), txs: [lock] },
-      { height: 2, hash: Buffer.alloc(32, 2), txs: [draw] },
-      {
-        height: 3,
-        hash: Buffer.alloc(32, 3),
-        txs: [{ id: 'spend-unlocked-note', kind: 'send', vin: [{ commit: lock.vout[0].commit }], vout: [] }],
-      },
+      { height: 2, hash: Buffer.alloc(32, 2), txs: [] },
     ]);
-    const got = nodeSpendable(book, state, dest, 3);
-    const face = admitFace(lock) + admitFace(draw);
-    assert.equal(got.held, 0);
+    const got = nodeSpendable(book, state, dest, 2);
+    assert.equal(got.spendable, PI_SHE_NANOS);
+    assert.equal(got.opened, PI_SHE_NANOS);
     assert.equal(got.covered, PI_SHE_NANOS);
-    assert.equal(got.principal, PI_SHE_NANOS);
-    assert.equal(
-      face,
-      preview.payout,
-      `admit face ${face} wallet spendable ${got.spendable} payout ${preview.payout} `
-      + `covered ${got.covered} redeemed ${got.principal}`,
+    assert.equal(got.held, 0);
+  });
+
+  it('still withdraws a plain receipt, and refuses a note-only fold', () => {
+    const plainDest = destOf();
+    const plain = freshVault();
+    const plainTx = plainLock(plainDest, T0, 'plain-lock');
+    assert.equal(applyLock(plain, plainTx, T0).ok, true);
+    const plainPreview = previewWithdraw(plain, plainDest, DRAW);
+    assert.equal(plainPreview.principal, PI_SHE_NANOS);
+    assert.equal(plainPreview.notePrincipal, 0);
+    assert.equal(plainPreview.interest, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+    const plainDraw = admitWithdraw(plainDest, plainPreview.payout, 'plain-withdraw');
+    assert.equal(verifyReservePayout(plain, plainDraw, DRAW).ok, true);
+    const paid = applyReserveBlock({
+      state: plain,
+      block: { height: 2, txs: [{ coinbase: true, vout: [] }, plainDraw] },
+      nowMs: DRAW,
+      genesisMs: T0,
+    });
+    const row = withdrawRow(paid);
+    assert.equal(row && row.ok, true, row && row.reason);
+    assert.equal(row.principal, PI_SHE_NANOS);
+    assert.equal(row.interest, plainPreview.interest);
+    const prior = freshVault();
+    assert.equal(applyLock(prior, plainTx, T0).ok, true);
+    const interest = blockWithdrawInterest(prior, supplyBlock(DRAW, plainDest, [plainDraw]), DRAW);
+    const permittedPlain = blockPermittedInterest(prior, supplyBlock(DRAW, plainDest, [plainDraw]), DRAW);
+    assert.equal(interest.ok, true, interest.reason);
+    assert.equal(permittedPlain.ok, true, permittedPlain.reason);
+    assert.equal(interest.nanos, BigInt(plainPreview.interest));
+
+    const noteDest = destOf();
+    const note = freshVault();
+    const noteTx = timeLock(noteDest, T0, 'fold-note');
+    assert.equal(applyLock(note, noteTx, T0).ok, true);
+    const notePreview = previewWithdraw(note, noteDest, DRAW);
+    const noteDraw = admitWithdraw(noteDest, notePreview.notePrincipal + notePreview.interest, 'fold-withdraw');
+    const chain = [
+      supplyBlock(T0, noteDest, [noteTx]),
+      supplyBlock(DRAW, noteDest, [noteDraw]),
+    ];
+    const folded = foldSupply(chain, { genesisMs: T0, magic: MAGIC_TESTNET });
+    assert.equal(folded.ok, false);
+    const permitted = blockPermittedInterest(note, supplyBlock(DRAW, noteDest, [noteDraw]), DRAW);
+    assert.equal(permitted.ok, false);
+  });
+
+  it('pays only the legacy tranche when the portal also holds a time-locked note', () => {
+    const dest = destOf();
+    const state = freshVault();
+    const legacy = plainLock(dest, T0, 'mixed-legacy', PI_SHE_NANOS);
+    const note = timeLock(dest, T0, 'mixed-note', PI_SHE_NANOS);
+    assert.equal(applyLock(state, legacy, T0).ok, true);
+    assert.equal(applyLock(state, note, T0, 2).ok, true);
+    const portal = state.portals[portalIdFromDest(dest)];
+    assert.equal(portal.tranches.length, 2);
+    assert.equal(portal.tranches[1].noteIsPrincipal, true);
+    const preview = previewWithdraw(state, dest, DRAW);
+    assert.equal(preview.principal, PI_SHE_NANOS);
+    assert.equal(preview.notePrincipal, PI_SHE_NANOS);
+    const paid = withdraw({ state, dest, nowMs: DRAW });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.principal, PI_SHE_NANOS);
+    assert.equal(Number(portal.redeemedNanos), PI_SHE_NANOS);
+    assert.equal(portal.tranches.length, 1);
+    assert.equal(portal.tranches[0].noteIsPrincipal, true);
+    assert.equal(Number(portal.tranches[0].amount), PI_SHE_NANOS);
+    const again = withdraw({ state, dest, nowMs: DRAW });
+    assert.equal(again.reason, 'note_principal');
+  });
+
+  it('keeps an open top-up when the earlier legacy tranche withdraws', () => {
+    const dest = destOf();
+    const state = freshVault();
+    const first = plainLock(dest, T0, 'top-legacy');
+    assert.equal(applyLock(state, first, T0).ok, true);
+    const later = DRAW + 1_000;
+    const top = timeLock(dest, later, 'top-note');
+    const topped = applyLock(state, top, later, 2);
+    assert.equal(topped.ok, true, topped.reason);
+    const portal = state.portals[portalIdFromDest(dest)];
+    assert.equal(portal.tranches.length, 2);
+    assert.equal(portal.tranches[1].noteIsPrincipal, true);
+    const paid = withdraw({ state, dest, nowMs: later });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.principal, PI_SHE_NANOS);
+    assert.equal(portal.tranches.length, 1);
+    assert.equal(portal.tranches[0].noteIsPrincipal, true);
+    assert.equal(Number(portal.tranches[0].amount), PI_SHE_NANOS);
+    assert.equal(Number(portal.staked) + Number(portal.idle), PI_SHE_NANOS);
+  });
+
+  it('does not let a withdraw skip another portal’s auto-credit', () => {
+    const noteDest = destOf();
+    const legacyDest = destOf();
+    const state = freshVault();
+    state.epochBps = 0;
+    state.pendingRates[0] = 0;
+    const note = timeLock(noteDest, T0, 'grief-note');
+    const legacy = plainLock(legacyDest, T0, 'grief-legacy');
+    assert.equal(applyLock(state, note, T0).ok, true);
+    assert.equal(applyLock(state, legacy, T0, 2).ok, true);
+    assert.equal(rewardCommitment(state, DRAW).rows.length, 0);
+    const pull = withdrawTx({ from: legacyDest, to: legacyDest, nanos: PI_SHE_NANOS, id: 'grief-withdraw' });
+    const grief = trialReserveApply({
+      state,
+      block: { height: 3, txs: [{ coinbase: true, vout: [] }, pull] },
+      nowMs: DRAW,
+      genesisMs: T0,
+      requireStakeReward: true,
+    });
+    assert.equal(grief.ok, true, grief.reason);
+    const next = grief.state;
+    const notePortal = next.portals[portalIdFromDest(noteDest)];
+    const legacyPortal = next.portals[portalIdFromDest(legacyDest)];
+    assert.equal(Number(notePortal.redeemedNanos), PI_SHE_NANOS);
+    assert.equal(notePortal.tranches.length, 0);
+    assert.equal(Number(legacyPortal.staked) + Number(legacyPortal.idle), 0);
+    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS * 2);
+
+    const onlyNote = freshVault();
+    onlyNote.epochBps = 0;
+    onlyNote.pendingRates[0] = 0;
+    assert.equal(applyLock(onlyNote, timeLock(noteDest, T0, 'grief-only'), T0).ok, true);
+    const skipped = trialReserveApply({
+      state: onlyNote,
+      block: {
+        height: 3,
+        txs: [
+          { coinbase: true, vout: [] },
+          withdrawTx({ from: noteDest, to: noteDest, nanos: PI_SHE_NANOS, id: 'grief-self' }),
+        ],
+      },
+      nowMs: DRAW,
+      genesisMs: T0,
+      requireStakeReward: true,
+    });
+    assert.equal(skipped.ok, false);
+    assert.equal(Number(onlyNote.totalLockedNanos), PI_SHE_NANOS);
+    const released = applyReserveBlock({
+      state: onlyNote,
+      block: { height: 4, txs: [{ coinbase: true, vout: [] }] },
+      nowMs: DRAW,
+      genesisMs: T0,
+      requireStakeReward: true,
+    });
+    assert.equal(released.ok, true, released.reason);
+    assert.equal(Number(onlyNote.portals[portalIdFromDest(noteDest)].redeemedNanos), PI_SHE_NANOS);
+  });
+
+  it('names the rule in the consensus fingerprint that the load seal hashes', () => {
+    const fp = consensusFingerprint(MAGIC_TESTNET);
+    assert.match(fp, new RegExp(`RESERVE_NOTE=${RESERVE_NOTE_LAW}`));
+    assert.equal(RESERVE_NOTE_LAW, 'note-principal-refused');
+    const chainSrc = readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
+    assert.match(chainSrc, /consensusFingerprint\(magic\)/);
+    const seal = chainLoadSealHash(Buffer.alloc(32, 9), MAGIC_TESTNET);
+    assert.equal(typeof seal.update, 'function');
+    const other = consensusFingerprint(MAGIC_TESTNET).replace(
+      `RESERVE_NOTE=${RESERVE_NOTE_LAW}`,
+      'RESERVE_NOTE=all-principal-refused',
     );
-    assert.equal(got.spendable, preview.payout);
+    assert.notEqual(other, fp);
+  });
+
+  it('the EVM tranche carries the note flag and withdraw does not pay it', async () => {
+    const sol = readFileSync(new URL('../../contracts/Reserve.sol', import.meta.url), 'utf8');
+    assert.match(sol, /struct Tranche \{[\s\S]*bool notePrincipal;/);
+    const dest = destOf();
+    const session = await bootReserveEvm();
+    const lock = timeLock(dest, T0, 'evm-note');
+    const locked = await executeBlockEvm(session, [{ coinbase: true, vout: [] }, lock], T0, T0);
+    assert.equal(locked.ok, true, locked.reason);
+    const open = decodePublicView(
+      (await callReserve(session, encodePublicView(T0 + 1_000), { staticCall: true })).returnValue,
+    );
+    assert.equal(open.totalLockedNanos, PI_SHE_NANOS);
+    const refused = await executeBlockEvm(session, [
+      { coinbase: true, vout: [] },
+      withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'evm-withdraw' }),
+    ], DRAW, T0);
+    assert.equal(refused.ok, false);
+    const still = decodePublicView(
+      (await callReserve(session, encodePublicView(DRAW), { staticCall: true })).returnValue,
+    );
+    assert.equal(still.totalLockedNanos, PI_SHE_NANOS);
+    const committed = await callReserve(session, encodeCommitRewards(DRAW));
+    assert.equal(committed.ok, true, committed.reason);
+    const released = decodePublicView(
+      (await callReserve(session, encodePublicView(DRAW), { staticCall: true })).returnValue,
+    );
+    assert.equal(released.totalLockedNanos, 0);
   });
 });

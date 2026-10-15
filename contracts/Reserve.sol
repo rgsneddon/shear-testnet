@@ -58,6 +58,7 @@ error RateBundled();
 error NeedPayout();
 error ClockUnpinned();
 error AlreadyMinted();
+error NotePrincipal();
 
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
@@ -103,6 +104,8 @@ contract Reserve {
         uint256 remainMs;
         uint256 fullFrom;
         bool partialPaid;
+        // Time-locked note. withdraw() does not pay this principal.
+        bool notePrincipal;
     }
 
     struct Portal {
@@ -238,6 +241,11 @@ contract Reserve {
     uint256 internal genesisTs;
     uint256 internal clockGenesis;
     bool internal deferEpochRoll;
+    /// Portal whose legacy principal a withdraw in this block still pays.
+    mapping(bytes32 => bool) internal withdrawHold;
+    mapping(bytes32 => bool) internal withdrawHoldSha;
+    bytes32[] internal heldIds;
+    bytes32[] internal heldShas;
     mapping(uint256 => uint256) public epochRateOf;
     mapping(uint256 => bool) internal epochRateKnown;
 
@@ -446,6 +454,43 @@ contract Reserve {
     }
 
     function lock(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
+        _lock(dest, nanos, nowTs, false);
+    }
+
+    /// Same credit as lock, with the time-locked note flag set.
+    function lockNote(bytes calldata dest, uint256 nanos, uint256 nowTs, bool notePrincipal) external onlyShear {
+        _lock(dest, nanos, nowTs, notePrincipal);
+    }
+
+    /// A withdraw in this block keeps this portal's legacy principal.
+    function holdWithdraw(bytes calldata dest) external onlyShear {
+        if (dest.length == 0) revert BadDest();
+        bytes32 id = portalId(dest);
+        bytes32 shaId = sha256(abi.encodePacked("shear-portal-v1", dest));
+        if (!withdrawHold[id]) {
+            withdrawHold[id] = true;
+            heldIds.push(id);
+        }
+        if (!withdrawHoldSha[shaId]) {
+            withdrawHoldSha[shaId] = true;
+            heldShas.push(shaId);
+        }
+    }
+
+    function clearWithdrawHolds() external onlyShear {
+        _clearWithdrawHolds();
+    }
+
+    function _clearWithdrawHolds() internal {
+        uint256 n = heldIds.length;
+        for (uint256 i = 0; i < n; i++) withdrawHold[heldIds[i]] = false;
+        uint256 m = heldShas.length;
+        for (uint256 i = 0; i < m; i++) withdrawHoldSha[heldShas[i]] = false;
+        delete heldIds;
+        delete heldShas;
+    }
+
+    function _lock(bytes calldata dest, uint256 nanos, uint256 nowTs, bool notePrincipal) internal {
         if (nanos == 0) revert BadAmount();
         if (dest.length == 0) revert BadDest();
         if (clockGenesis == 0) revert ClockUnpinned();
@@ -475,7 +520,8 @@ contract Reserve {
             epoch: idx,
             remainMs: remain,
             fullFrom: idx + 1,
-            partialPaid: false
+            partialPaid: false,
+            notePrincipal: notePrincipal
         }));
         p.rewardTracked = true;
         totalLocked += nanos;
@@ -741,11 +787,15 @@ contract Reserve {
         uint256 nKeys = portalKeys.length;
         for (uint256 p = 0; p < nKeys; p++) {
             Portal storage portal = portals[portalKeys[p]];
+            bool held = withdrawHold[portalKeys[p]];
             uint256 release = 0;
             uint256 kept = 0;
             uint256 credits = portal.tranches.length;
             for (uint256 i = 0; i < credits; i++) {
-                if (nowIdx <= portal.tranches[i].epoch) {
+                bool matured = nowIdx > portal.tranches[i].epoch;
+                // A withdraw in this block still pays legacy principal.
+                // A time-locked note is released here either way.
+                if (!matured || (held && !portal.tranches[i].notePrincipal)) {
                     if (kept != i) portal.tranches[kept] = portal.tranches[i];
                     kept += 1;
                 } else {
@@ -791,6 +841,7 @@ contract Reserve {
         if (prior != bytes32(0) && prior != root) revert BadAmount();
         if (rows.length == 0) {
             _releaseMatured(nowIdx);
+            _clearWithdrawHolds();
             return root;
         }
         rewardRootOf[nowIdx] = root;
@@ -800,9 +851,15 @@ contract Reserve {
             leafKnown[nf] = true;
             leafNanos[nf] = rows[i].nanos;
             leafRootKey[nf] = nowIdx;
+            if (withdrawHoldSha[rows[i].shaId]) {
+                // This block's withdraw pays the leaf. A claim must not pay it too.
+                nullifierMinted[nf] = true;
+                continue;
+            }
             portalReserved[rows[i].shaId] = true;
         }
         _releaseMatured(nowIdx);
+        _clearWithdrawHolds();
         uint256 nKeys = portalKeys.length;
         for (uint256 i = 0; i < nKeys; i++) {
             bytes32 shaId = portalSha[portalKeys[i]];
@@ -838,10 +895,14 @@ contract Reserve {
         uint256 chain = _chainEpoch(nowTs);
         _settle(p, nowTs);
         uint256 release = 0;
+        uint256 noteMatured = 0;
         uint256 kept = 0;
         uint256 credits = p.tranches.length;
         for (uint256 i = 0; i < credits; i++) {
-            if (chain <= p.tranches[i].epoch) {
+            if (chain <= p.tranches[i].epoch || p.tranches[i].notePrincipal) {
+                if (chain > p.tranches[i].epoch && p.tranches[i].notePrincipal) {
+                    noteMatured += p.tranches[i].amount;
+                }
                 if (kept != i) p.tranches[kept] = p.tranches[i];
                 kept += 1;
             } else {
@@ -849,7 +910,10 @@ contract Reserve {
             }
         }
         if (credits == 0) release = active + idleBal;
-        if (release == 0) revert EpochNotEnded();
+        if (release == 0) {
+            if (noteMatured > 0) revert NotePrincipal();
+            revert EpochNotEnded();
+        }
         while (p.tranches.length > kept) p.tranches.pop();
         // Each completed chain epoch pays at the rate committed for that epoch.
         reward = p.accruedReward;
