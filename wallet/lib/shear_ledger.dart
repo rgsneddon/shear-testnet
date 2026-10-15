@@ -9419,9 +9419,176 @@ Map<String, dynamic> walletSendBody({
   };
 }
 
-/// Reward-claim body. [fee] is the same field [walletSendBody] posts for a send.
-/// Omit it and the weight floor of this body is used. A higher fee is the bid
-/// the mempool orders by fee rate. Every unit of that fee is paid to miners.
+/// Integer nanos as SHE. Eleven protocol digits, no public-frame truncation.
+String exactSheFromNanos(int nanos) {
+  if (nanos <= 0) return '0';
+  final whole = nanos ~/ kUnitsPerShe;
+  final frac = nanos % kUnitsPerShe;
+  if (frac == 0) return '$whole';
+  var digits = frac.toString().padLeft(11, '0');
+  while (digits.endsWith('0')) {
+    digits = digits.substring(0, digits.length - 1);
+  }
+  return '$whole.$digits';
+}
+
+/// Same verify-weight as `txVerifyWeight` in `crypto/block_budget.js`.
+int _quoteVerifyWeight(Map<String, dynamic> tx) {
+  if (tx['coinbase'] == true) return 0;
+  final vin = tx['vin'];
+  final vout = tx['vout'];
+  final nIn = vin is List ? vin.length : 0;
+  final nOut = vout is List ? vout.length : 0;
+  final fs1 = tx['fs1'];
+  if (fs1 != null && fs1 != '' && nIn >= 1 && nIn <= 8) {
+    return 2 + (25 + 25 * nIn) + 23 * nOut;
+  }
+  var w = 2 + 40 * nIn + 23 * nOut;
+  final kind = tx['kind']?.toString() ?? '';
+  if (kind == 'lock' || kind == 'vote' || kind == 'withdraw') w += 19;
+  return w;
+}
+
+int _publicByteCount(Object? value, Set<Object> seen) {
+  if (value == null) return 0;
+  if (value is String) return utf8.encode(value).length;
+  if (value is num || value is bool) return 0;
+  if (value is Uint8List) return value.length;
+  if (value is List) {
+    if (!seen.add(value)) return 0;
+    var n = 0;
+    for (final item in value) {
+      n += _publicByteCount(item, seen);
+    }
+    return n;
+  }
+  if (value is Map) {
+    if (!seen.add(value)) return 0;
+    var n = 0;
+    for (final item in value.values) {
+      n += _publicByteCount(item, seen);
+    }
+    return n;
+  }
+  return 0;
+}
+
+/// Weight levy of [body], raised until the fee digits are covered. No fake signature.
+int _claimLevyFloor(Map<String, dynamic> body) {
+  final copy = Map<String, dynamic>.from(body);
+  copy.remove('fee');
+  var fee = levyFromWeight(flowWeight(copy));
+  if (fee > kLevyCapNanos) return kLevyCapNanos;
+  copy['fee'] = fee;
+  for (var step = 0; step < 8; step++) {
+    final need = levyFromWeight(flowWeight(copy));
+    if (need <= fee) return fee;
+    if (need > kLevyCapNanos) return fee;
+    fee = need;
+    copy['fee'] = fee;
+  }
+  return fee > kLevyCapNanos ? kLevyCapNanos : fee;
+}
+
+int _feeAtRate(int peerFee, int peerWeight, int claimWeight) {
+  final pw = peerWeight < 1 ? 1 : peerWeight;
+  final cw = claimWeight < 1 ? 1 : claimWeight;
+  if (peerFee <= 0) return 0;
+  return (peerFee * cw + pw - 1) ~/ pw;
+}
+
+/// Low, Medium, and High fees for one claim, plus a custom bid.
+/// Low is the cheapest mempool fee rate, medium the upper median, high the dearest.
+/// Each fee is that rate times this claim's verify-weight, clamped to the levy.
+/// An empty mempool prices all three at the weight floor. [she] is the exact SHE.
+Map<String, dynamic> rewardClaimFeePresets({
+  required Map<String, dynamic> body,
+  List<Map<String, dynamic>> mempool = const [],
+  int? custom,
+}) {
+  final weight = _quoteVerifyWeight(body);
+  final bytes = _publicByteCount(body, <Object>{});
+  final floor = _claimLevyFloor(body);
+  final rates = <({int fee, int w, int i})>[];
+  for (var i = 0; i < mempool.length; i++) {
+    final tx = mempool[i];
+    if (tx['coinbase'] == true) continue;
+    final fee = tx['fee'];
+    if (fee is! int || fee <= 0) continue;
+    final w = _quoteVerifyWeight(tx);
+    rates.add((fee: fee, w: w < 1 ? 1 : w, i: i));
+  }
+  rates.sort((a, b) {
+    final left = a.fee * b.w;
+    final right = b.fee * a.w;
+    if (left != right) return left < right ? -1 : 1;
+    return a.i.compareTo(b.i);
+  });
+  ({int fee, bool capped}) at(int index) {
+    if (rates.isEmpty) return (fee: floor, capped: false);
+    final slot = index < 0 ? 0 : (index >= rates.length ? rates.length - 1 : index);
+    final rate = rates[slot];
+    final raw = _feeAtRate(rate.fee, rate.w, weight < 1 ? 1 : weight);
+    var fee = raw;
+    var capped = false;
+    if (fee < floor) fee = floor;
+    if (fee > kLevyCapNanos) {
+      fee = kLevyCapNanos;
+      capped = true;
+    } else if (raw > kLevyCapNanos) {
+      capped = true;
+    }
+    return (fee: fee, capped: capped);
+  }
+
+  final n = rates.length;
+  final picks = n == 0
+      ? [at(0), at(0), at(0)]
+      : [at(0), at(n ~/ 2), at(n - 1)];
+  const labels = [
+    ['low', 'Low'],
+    ['medium', 'Medium'],
+    ['high', 'High'],
+  ];
+  final presets = <Map<String, dynamic>>[
+    for (var i = 0; i < labels.length; i++)
+      {
+        'id': labels[i][0],
+        'label': labels[i][1],
+        'fee': picks[i].fee,
+        'she': exactSheFromNanos(picks[i].fee),
+        'capped': picks[i].capped,
+      },
+  ];
+  Map<String, dynamic> customRow;
+  if (custom == null) {
+    customRow = {'id': 'custom', 'label': 'Custom', 'fee': null, 'she': null, 'ok': true};
+  } else {
+    final legal = custom >= floor && custom <= kLevyCapNanos;
+    customRow = {
+      'id': 'custom',
+      'label': 'Custom',
+      'fee': custom < 0 ? null : custom,
+      'she': custom < 0 ? null : exactSheFromNanos(custom),
+      'ok': legal,
+      if (!legal) 'reason': 'levy',
+    };
+  }
+  return {
+    'weight': weight < 1 ? 1 : weight,
+    'bytes': bytes,
+    'floor': floor,
+    'cap': kLevyCapNanos,
+    'presets': presets,
+    'custom': customRow,
+  };
+}
+
+/// Reward-claim body plus Low / Medium / High and a custom fee.
+/// Each preset's `she` is the exact cost. [fee] is the custom bid.
+/// [preset] `low`, `medium`, or `high` selects that quote for the tx.
+/// A legal custom bid wins over [preset]. The weight floor is the default.
+/// Continuum does not render these buttons yet.
 Map<String, dynamic> rewardClaimSendBody({
   required String to,
   required Object nanos,
@@ -9430,6 +9597,8 @@ Map<String, dynamic> rewardClaimSendBody({
   required List<dynamic> vout,
   int? fee,
   String? id,
+  String? preset,
+  List<Map<String, dynamic>> mempool = const [],
 }) {
   final draft = <String, dynamic>{
     'kind': 'reward-claim',
@@ -9443,6 +9612,20 @@ Map<String, dynamic> rewardClaimSendBody({
     'vout': vout,
     if (id != null && id.isNotEmpty) 'id': id,
   };
-  draft['fee'] = rewardClaimFee(fee: fee, body: draft);
-  return draft;
+  final quote = rewardClaimFeePresets(body: draft, mempool: mempool, custom: fee);
+  final presets = (quote['presets'] as List).cast<Map<String, dynamic>>();
+  final custom = quote['custom'] as Map<String, dynamic>;
+  int chosen = quote['floor'] as int;
+  final named = presets.where((row) => row['id'] == preset);
+  if (fee != null && custom['ok'] == true && custom['fee'] is int) {
+    chosen = custom['fee'] as int;
+  } else if (named.isNotEmpty) {
+    chosen = named.first['fee'] as int;
+  }
+  draft['fee'] = chosen;
+  return {
+    'tx': draft,
+    ...quote,
+    'bytes': _publicByteCount(draft, <Object>{}),
+  };
 }
