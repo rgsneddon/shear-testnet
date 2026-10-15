@@ -27,10 +27,10 @@ pragma solidity ^0.8.20;
  * a second cast reverts VoteLocked(). At epoch end the unique plurality of {increase, decrease,
  * hold} enacts ±1 protocol unit on the live hash bonus. It does not set
  * the reserve rate. The freeze is the trimmed mean of the attested 14-bank
- * policy tenths (FED 3625, BOE 3750, ECB 2075, BOJ 500, BOC 2750, RBA 3600,
- * RBNZ 3000, SNB 0, RIKSBANK 2000, NORGES 4000, DNBANK 1600, BOK 2500,
- * BOI 4000, CNB 3500): drop 2 high and 2 low, half-up the middle 10,
- * 2840 tenths → 284 bps, floored at 0.
+ * policy tenths (FED 3875, BOE 3750, ECB 2575, BOJ 1250, BOC 2250, RBA 4600,
+ * RBNZ 2750, SNB 0, RIKSBANK 1750, NORGES 4500, DNBANK 2100, BOK 3000,
+ * BOI 3250, CNB 3750), observed 2026-10-15: drop 2 high and 2 low,
+ * half-up the middle 10, 29050 tenths → 2905 → 291 bps, floored at 0.
  * It is written only when an epoch opens. There is no per-epoch step and
  * no aggregate cap. A caller cannot select the rate.
  * The 1 SHE pot never moves. At epoch end the block commits one root over
@@ -85,8 +85,8 @@ contract Reserve {
     uint256 public constant EPOCH_MS = 400 * 86_400_000;
     uint256 public constant CUTOFF_MS = 99 * 86_400_000;
     uint256 public constant GENESIS_BONUS = 1;
-    // Placeholder. The single source is crypto/reserve_oracle.js GENESIS_BPS.
-    uint256 public constant GENESIS_BPS = 284;
+    // Attested 2026-10-15 basket. The single source is crypto/reserve_oracle.js GENESIS_BPS.
+    uint256 public constant GENESIS_BPS = 291;
     uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
     uint256 public constant REWARD_DENOM_DAYS = 400;
 
@@ -380,7 +380,7 @@ contract Reserve {
 
     /// Sorted attested tenths. Drop the two lowest and two highest, half-up.
     function _bundledEpochBps() internal pure returns (uint256) {
-        uint256 sum = 1600 + 2000 + 2075 + 2500 + 2750 + 3000 + 3500 + 3600 + 3625 + 3750;
+        uint256 sum = 1750 + 2100 + 2250 + 2575 + 2750 + 3000 + 3250 + 3750 + 3750 + 3875;
         uint256 tenthsMean = (sum + 5) / 10;
         return (tenthsMean + 5) / 10;
     }

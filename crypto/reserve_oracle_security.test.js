@@ -348,8 +348,8 @@ describe('oracle security pack (attester keys held)', () => {
   it('Ob-1 two in-range outliers on one side do not move the trimmed mean', () => {
     const base = bundleSources();
     const baseline = recomputeEpochBps(264, base, T0);
-    assert.equal(baseline, 284);
-    const high = ['NORGES', 'BOI'];
+    assert.equal(baseline, 291);
+    const high = ['RBA', 'NORGES'];
     const low = ['SNB', 'BOJ'];
     for (const n of [1, 2]) {
       const bumped = base.map((s) => (high.slice(0, n).includes(s.id) ? { ...s, tenths: 10000 } : s));
@@ -374,7 +374,7 @@ describe('oracle security pack (attester keys held)', () => {
   it('Ob-2 ten fresh sources compute a rate and nine keep the last rate', () => {
     const prev = 99;
     const full = bundleSources();
-    assert.equal(recomputeEpochBps(prev, full, T0), 284);
+    assert.equal(recomputeEpochBps(prev, full, T0), 291);
     const ten = bundleSources(T0, 0, POLICY_BANK_IDS.slice(0, ORACLE_MIN_SOURCES));
     const computed = recomputeEpochBps(prev, ten, T0);
     assert.equal(computed, trimmedMeanBps(ten.map((s) => s.tenths)));
@@ -404,7 +404,7 @@ describe('oracle security pack (attester keys held)', () => {
       sources[5] = { ...sources[5], asOfMs: asOf };
       if (age.counts) {
         assert.equal(reason, 'fresh');
-        assert.equal(recomputeEpochBps(50, sources, boundary), 284);
+        assert.equal(recomputeEpochBps(50, sources, boundary), 291);
       } else {
         assert.equal(reason, age.reason || 'stale');
         assert.notEqual(classifySource(sources[5], boundary), 'fresh');
@@ -465,7 +465,7 @@ describe('oracle security pack (attester keys held)', () => {
         const sources = bundleSources(T0, deltaBps * 10);
         const want = trimmedMeanBps(sources.map((s) => s.tenths));
         assert.equal(recomputeEpochBps(prev, sources, T0), want);
-        assert.equal(want, 284 + deltaBps);
+        assert.equal(want, 291 + deltaBps);
         assert.equal(interestNanos(PI_SHE_NANOS, want), Number((BigInt(PI_SHE_NANOS) * BigInt(want)) / 10000n));
       }
       assert.equal(recomputeEpochBps(prev, flatSources(-1000), T0), 0);
@@ -477,7 +477,7 @@ describe('oracle security pack (attester keys held)', () => {
     }));
     const stag = recomputeEpochBps(264, staggered, T0);
     assert.equal(stag, trimmedMeanBps(staggered.map((s) => s.tenths)));
-    assert.ok(stag > 284);
+    assert.ok(stag > 291);
     for (const bad of [100001, -1001, 999999]) {
       const sources = bundleSources();
       sources[12] = { ...sources[12], tenths: bad };
@@ -485,9 +485,9 @@ describe('oracle security pack (attester keys held)', () => {
       const rest = sources.filter((s) => s.tenths !== bad).map((s) => s.tenths);
       assert.equal(recomputeEpochBps(264, sources, T0), trimmedMeanBps(rest));
     }
-    for (const edge of [{ id: 'BOI', tenths: 9000 }, { id: 'SNB', tenths: -900 }]) {
+    for (const edge of [{ id: 'RBA', tenths: 9000 }, { id: 'SNB', tenths: -900 }]) {
       const sources = bundleSources().map((s) => (s.id === edge.id ? { ...s, tenths: edge.tenths } : s));
-      assert.equal(recomputeEpochBps(264, sources, T0), 284, edge.id);
+      assert.equal(recomputeEpochBps(264, sources, T0), 291, edge.id);
     }
     const eras = {
       '2008-Q4': [125, 2000, 2500, 100, 1500, 4250, 5000, 500, 2000, 3000, 3750, 3000, 2500, 2250],
@@ -521,12 +521,12 @@ describe('oracle security pack (attester keys held)', () => {
   it('Of keeps the last rate when a window misses quorum', () => {
     let prev = 99;
     const steps = [
-      { sources: bundleSources(), want: 284 },
+      { sources: bundleSources(), want: 291 },
       { sources: bundleSources(T0, 0, POLICY_BANK_IDS.slice(0, 9)), want: null },
       { sources: [], want: null },
-      { sources: bundleSources(T0, 2500), want: 534 },
+      { sources: bundleSources(T0, 2500), want: 541 },
       { sources: bundleSources(T0, 0, POLICY_BANK_IDS.slice(0, 9)), want: null },
-      { sources: bundleSources(), want: 284 },
+      { sources: bundleSources(), want: 291 },
     ];
     const seen = [];
     for (const step of steps) {
@@ -534,7 +534,7 @@ describe('oracle security pack (attester keys held)', () => {
       seen.push(prev);
       if (step.want == null) assert.equal(prev, seen.length === 1 ? 99 : seen[seen.length - 2]);
     }
-    assert.deepEqual(seen, [284, 284, 284, 534, 534, 284]);
+    assert.deepEqual(seen, [291, 291, 291, 541, 541, 291]);
     assert.equal(epochRateBps(0), GENESIS_BPS);
   });
 
@@ -589,6 +589,6 @@ describe('oracle security pack (attester keys held)', () => {
     const dup = bundleSources();
     for (let i = 0; i < 5; i += 1) dup.push({ id: 'FED', tenths: 10000, asOfMs: T0 });
     assert.equal(classifySource(dup[dup.length - 1], T0, new Set(['FED'])), 'att_dup');
-    assert.equal(recomputeEpochBps(50, dup, T0), 284);
+    assert.equal(recomputeEpochBps(50, dup, T0), 291);
   });
 });

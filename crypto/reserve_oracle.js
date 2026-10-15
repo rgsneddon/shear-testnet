@@ -9,14 +9,13 @@ import { epochMs, epochDays, vortexEpochIndex } from './pot_sched.js';
  */
 export const RESERVE_ORACLE_ID = 'shear-reserve-oracle-v1';
 /**
- * Placeholder fixed rate until the cut. Refresh this one constant from
- * current central-bank policy before the cut. Fixed mode, the EVM
- * constant, and every default read GENESIS_BPS. It is not copied elsewhere.
- * Today's placeholder is the trimmed mean of the bundled policy rates
- * (drop 2 high and 2 low, half-up the middle 10): 2840 tenths → 284 bps.
+ * Refresh this one constant from current central-bank policy before the cut.
+ * Fixed mode, the EVM constant, and every default read GENESIS_BPS.
+ * Observed 2026-10-15. Trimmed mean of the bundled policy rates
+ * (drop 2 high and 2 low, half-up the middle 10): 29050 tenths → 2905 → 291 bps.
  * Attester keys are not consensus until Russell decides.
  */
-export const GENESIS_BPS = 284;
+export const GENESIS_BPS = 291;
 export const RESERVE_ORACLE_DEFAULT_BPS = GENESIS_BPS;
 export const REWARD_DENOM_DAYS = 400;
 export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;
@@ -54,26 +53,27 @@ export const POLICY_BANK_IDS = Object.freeze([
 ]);
 
 /**
- * Attested policy rates in tenths of a basis point, as of 2026-08-01.
+ * Attested policy rates in tenths of a basis point, observed 2026-10-15.
  * These constants are the consensus observation. `reserve/latest.json`
  * documents the same integers; a node does not read that file to freeze.
  * Fed is the target-range median. ECB is median(deposit facility, MRO).
+ * Sources and effective dates: docs/genesis-basket-2026-10-15.md.
  */
 export const BUNDLED_POLICY_TENTHS = Object.freeze({
-  FED: 3625,
+  FED: 3875,
   BOE: 3750,
-  ECB: 2075,
-  BOJ: 500,
-  BOC: 2750,
-  RBA: 3600,
-  RBNZ: 3000,
+  ECB: 2575,
+  BOJ: 1250,
+  BOC: 2250,
+  RBA: 4600,
+  RBNZ: 2750,
   SNB: 0,
-  RIKSBANK: 2000,
-  NORGES: 4000,
-  DNBANK: 1600,
-  BOK: 2500,
-  BOI: 4000,
-  CNB: 3500,
+  RIKSBANK: 1750,
+  NORGES: 4500,
+  DNBANK: 2100,
+  BOK: 3000,
+  BOI: 3250,
+  CNB: 3750,
 });
 
 export function bundledComponents() {

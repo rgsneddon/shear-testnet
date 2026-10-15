@@ -72,7 +72,7 @@ describe('Reserve oracle', () => {
     const latest = JSON.parse(readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../reserve/latest.json'), 'utf8'));
     const avg = averagePolicyBps(latest.components);
     assert.equal(RESERVE_ORACLE_DEFAULT_BPS, avg);
-    assert.equal(GENESIS_BPS, 284);
+    assert.equal(GENESIS_BPS, 291);
     assert.equal(INTEREST_DENOM_DAYS, 400);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.notEqual(RESERVE_ORACLE_DEFAULT_BPS, 425);
@@ -99,9 +99,9 @@ describe('Reserve oracle', () => {
       nowMs: t0,
       magic: MAGIC_MAINNET,
     }), GENESIS_BPS);
-    assert.equal(epochRateBps(0), 284);
-    assert.equal(epochRateBps(10000), 284);
-    assert.equal(epochRateBps(50), 284);
+    assert.equal(epochRateBps(0), 291);
+    assert.equal(epochRateBps(10000), 291);
+    assert.equal(epochRateBps(50), 291);
   });
 
   it('the observed average has no per-epoch step and no aggregate cap', () => {
@@ -135,8 +135,8 @@ describe('Reserve oracle', () => {
     assert.equal(POLICY_BANK_IDS.length, ORACLE_QUORUM);
     assert.equal(parts.length, 14);
     const sum = parts.reduce((n, c) => n + c.tenths, 0);
-    assert.equal(sum, 36900);
-    assert.equal(bundledEpochBps(), 284);
+    assert.equal(sum, 39400);
+    assert.equal(bundledEpochBps(), 291);
     assert.equal(bundleObservationRoot(), bundleObservationRoot());
     assert.equal(quorumEpochBps(parts.slice(0, 13)), null);
     assert.equal(quorumEpochBps(parts.concat(parts[0])), null);

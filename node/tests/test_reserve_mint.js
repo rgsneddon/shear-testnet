@@ -106,7 +106,7 @@ describe('Reserve mint is sealed-state pure', () => {
     const defDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 180_000, txs: [as425] })), null, { trustedPowHash: TRUSTED }));
     assert.equal(defDenied.ok, false);
     assert.equal(defDenied.reason, 'mint_amount');
-    assert.equal(GENESIS_BPS, 284);
+    assert.equal(GENESIS_BPS, 291);
   });
 
   it('gateVorticeRegister ok:false fails the block', () => {

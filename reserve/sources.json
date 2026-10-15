@@ -9,7 +9,7 @@
       "kind": "range",
       "officialUrl": "https://www.federalreserve.gov/monetarypolicy/openmarket.htm",
       "apiPattern": "https://api.stlouisfed.org/fred/series/observations?series_id=DFEDTARL|DFEDTARU&api_key=YOUR_KEY",
-      "lastKnown": { "raw": "3.50-3.75", "placeholder": true }
+      "lastKnown": { "raw": "3.75-4.00", "placeholder": false }
     },
     {
       "id": "BOE",
@@ -18,7 +18,7 @@
       "kind": "single",
       "officialUrl": "https://www.bankofengland.co.uk/monetary-policy",
       "apiPattern": "https://www.bankofengland.co.uk/boeapps/database/",
-      "lastKnown": { "raw": "3.75", "placeholder": true }
+      "lastKnown": { "raw": "3.75", "placeholder": false }
     },
     {
       "id": "ECB",
@@ -30,7 +30,7 @@
       "forbidField": "marginal_lending_facility",
       "officialUrl": "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/key_ecb_interest_rates/html/index.en.html",
       "apiPattern": null,
-      "lastKnown": { "raw": "2.00-2.15", "placeholder": true }
+      "lastKnown": { "raw": "2.50-2.65", "placeholder": false }
     },
     {
       "id": "BOJ",
@@ -39,7 +39,7 @@
       "kind": "single",
       "officialUrl": "https://www.boj.or.jp/en/mopo/outline/index.htm",
       "apiPattern": null,
-      "lastKnown": { "raw": "0.50", "placeholder": true }
+      "lastKnown": { "raw": "1.25", "placeholder": false }
     },
     {
       "id": "BOC",
@@ -48,7 +48,7 @@
       "kind": "single",
       "officialUrl": "https://www.bankofcanada.ca/core-functions/monetary-policy/key-interest-rate/",
       "apiPattern": "https://www.bankofcanada.ca/valet/observations/V39079/json",
-      "lastKnown": { "raw": "2.75", "placeholder": true }
+      "lastKnown": { "raw": "2.25", "placeholder": false }
     },
     {
       "id": "RBA",
@@ -57,7 +57,7 @@
       "kind": "single",
       "officialUrl": "https://www.rba.gov.au/statistics/cash-rate/",
       "apiPattern": null,
-      "lastKnown": { "raw": "3.60", "placeholder": true }
+      "lastKnown": { "raw": "4.60", "placeholder": false }
     },
     {
       "id": "RBNZ",
@@ -66,7 +66,7 @@
       "kind": "single",
       "officialUrl": "https://www.rbnz.govt.nz/monetary-policy/official-cash-rate-decisions",
       "apiPattern": null,
-      "lastKnown": { "raw": "3.00", "placeholder": true }
+      "lastKnown": { "raw": "2.75", "placeholder": false }
     },
     {
       "id": "SNB",
@@ -75,7 +75,7 @@
       "kind": "single",
       "officialUrl": "https://www.snb.ch/en/the-snb/mandates-goals/monetary-policy/strategy",
       "apiPattern": null,
-      "lastKnown": { "raw": "0.00", "placeholder": true }
+      "lastKnown": { "raw": "0.00", "placeholder": false }
     },
     {
       "id": "RIKSBANK",
@@ -84,7 +84,7 @@
       "kind": "single",
       "officialUrl": "https://www.riksbank.se/en-gb/monetary-policy/the-interest-rate/",
       "apiPattern": null,
-      "lastKnown": { "raw": "2.00", "placeholder": true }
+      "lastKnown": { "raw": "1.75", "placeholder": false }
     },
     {
       "id": "NORGES",
@@ -93,7 +93,7 @@
       "kind": "single",
       "officialUrl": "https://www.norges-bank.no/en/topics/Monetary-policy/Policy-rate/",
       "apiPattern": null,
-      "lastKnown": { "raw": "4.00", "placeholder": true }
+      "lastKnown": { "raw": "4.50", "placeholder": false }
     },
     {
       "id": "DNBANK",
@@ -102,7 +102,7 @@
       "kind": "single",
       "officialUrl": "https://www.nationalbanken.dk/en/what-we-do/stable-prices-in-denmark",
       "apiPattern": null,
-      "lastKnown": { "raw": "1.60", "placeholder": true }
+      "lastKnown": { "raw": "2.10", "placeholder": false }
     },
     {
       "id": "BOK",
@@ -111,7 +111,7 @@
       "kind": "single",
       "officialUrl": "https://www.bok.or.kr/eng/main/contents.do?menuNo=400016",
       "apiPattern": null,
-      "lastKnown": { "raw": "2.50", "placeholder": true }
+      "lastKnown": { "raw": "3.00", "placeholder": false }
     },
     {
       "id": "BOI",
@@ -120,7 +120,7 @@
       "kind": "single",
       "officialUrl": "https://www.boi.org.il/en/economic-roles/monetary-policy/",
       "apiPattern": null,
-      "lastKnown": { "raw": "4.00", "placeholder": true }
+      "lastKnown": { "raw": "3.25", "placeholder": false }
     },
     {
       "id": "CNB",
@@ -129,7 +129,7 @@
       "kind": "single",
       "officialUrl": "https://www.cnb.cz/en/monetary-policy/instruments/",
       "apiPattern": null,
-      "lastKnown": { "raw": "3.50", "placeholder": true }
+      "lastKnown": { "raw": "3.75", "placeholder": false }
     }
   ]
 }
