@@ -206,6 +206,8 @@ describe('v12 burial tip', () => {
     assert.doesNotMatch(adopt, /prefixBurial/);
     assert.match(src, /function liftPrunedBlock/);
     assert.match(src, /function rememberPrunedBody/);
+    assert.match(src, /noteUnprunedBody\(i, packEpochBlock\(lifted\)\)/);
+    assert.match(src, /noteReplacedBlock\(i\)/);
   });
 
   it('un-buries a pruned block under the candidate tip', { timeout: 900_000 }, async () => {
@@ -276,7 +278,9 @@ describe('v12 burial tip', () => {
     assert.equal(store.blocks[creditHeight - 1].samplesPruned, true, 'a losing fork does not lift the canonical block');
 
     const disk = createStore(dir);
-    assert.equal(disk.loadMode, 'snap');
+    // Height PRUNE+2 is not a BOOK_SNAP_EVERY boundary, and a prune does not
+    // write a tip snap. Reload replays the suffix after the last snap.
+    assert.equal(disk.loadMode, 'suffix', disk.loadMode);
     assert.equal(disk.blocks[creditHeight - 1].samplesPruned, true);
     const diskEasy = forkOne(disk, dest, lowParent, { late: true });
     const fromDisk = await Promise.resolve(ingest(disk, diskEasy.block));

@@ -22,7 +22,7 @@ import {
 import { CHECKPOINT_EVERY_BLOCKS, CHECKPOINT_FIRST_HEIGHT } from '../src/bootstrap.js';
 import { decodeBookSnap, writeBookSnap } from '../src/book_snap.js';
 import { bookSealKeyFor } from '../src/book_seal_key.js';
-import { createStore, OWED_CHECKPOINT_SPACING } from '../src/store.js';
+import { BOOK_SNAP_EVERY, createStore, OWED_CHECKPOINT_SPACING } from '../src/store.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 
@@ -303,8 +303,9 @@ describe('v12 snap fork owed seed', { concurrency: false }, () => {
       const built = freshStore(`shear-owed-len-${n}-`);
       const grew = grow(built, dest, n, 10_000 + n * 100);
       assert.equal(grew.ok, true, grew.reason);
+      built.flushBookSnap();
       const { store, ms: loadMs } = reload(built.dir);
-      assert.equal(store.loadMode, 'snap');
+      assert.equal(store.loadMode, 'snap', store.loadMode);
       assert.equal(store.owedSeedStats().forkGenesis, 0);
       assert.equal(store.owedSeedStats().loadBlocks, 0);
       assertCheckpoints(store);
@@ -487,8 +488,10 @@ describe('v12 snap fork owed seed', { concurrency: false }, () => {
       assert.equal(sealed.ok, true, sealed.reason);
       assert.ok(built.tip().shareBatch.length >= Math.min(shape.shares, 1));
       assert.ok(built.tip().shareBatch.length > shape.shares / 2);
+      built.flushBookSnap();
       const store = reload(built.dir).store;
-      assert.equal(store.loadMode, 'snap');
+      assert.equal(store.loadMode, 'snap', store.loadMode);
+      assert.equal(store.owedSeedStats().loadBlocks, 0);
       const before = store.owedSeedStats();
       const parent = store.blocks.length - 2;
       const tipHash = Buffer.from(store.tip().hash);
@@ -514,5 +517,18 @@ describe('v12 snap fork owed seed', { concurrency: false }, () => {
         wall,
       }));
     }
+  });
+
+  it('a height between snap points replays only the suffix', () => {
+    const n = BOOK_SNAP_EVERY + 16;
+    const dest = minerDest();
+    const built = freshStore('shear-owed-suffix-');
+    assert.equal(grow(built, dest, n, 130_000).ok, true);
+    const store = reload(built.dir).store;
+    assert.equal(store.loadMode, 'suffix', store.loadMode);
+    assert.equal(store.owedSeedStats().loadBlocks, n % BOOK_SNAP_EVERY);
+    assert.equal(store.owedSeedStats().forkGenesis, 0);
+    assertCheckpoints(store);
+    fullParity(built.dir, store);
   });
 });

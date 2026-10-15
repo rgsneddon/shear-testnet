@@ -162,10 +162,10 @@ export async function startNode({
     };
   }
   fs.mkdirSync(dataDir, { recursive: true });
-  const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true });
+  const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true, network });
   store.reserveVault = store.reserveVault || emptyVault();
   store.oracleSnapshot = loadOracleSnapshot({ dataDir });
-  const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });
+  const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: store.magic, fluffDelayMs });
   const bound = await p2p.listen();
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
   const rpcBound = await rpc.listen();
@@ -184,7 +184,7 @@ export async function startNode({
     stratumBound = await stratum.listen();
   }
   await p2p.dialSeeds(seedList);
-  const httpFollow = startHttpFollow({ store, magic: MAGIC_TESTNET });
+  const httpFollow = startHttpFollow({ store, magic: store.magic });
   const seedTimer = setInterval(() => {
     p2p.dialSeeds(seedList);
   }, SEED_RETRY_MS);
@@ -199,7 +199,7 @@ export async function startNode({
   return {
     store, p2p, rpc, bound, rpcBound, stratum, stratumBound,
     solo: !!stratum,
-    magic: MAGIC_TESTNET,
+    magic: store.magic,
     mainnet: false,
     emit: true,
     phaseBGate: PHASE_B_GATE,
@@ -363,6 +363,7 @@ async function main() {
     const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
     const store = createStore(dataDir, {
       fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
+      network: process.env.SHEAR_NETWORK || MAGIC_TESTNET,
     });
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
@@ -435,7 +436,7 @@ async function main() {
       stratum: null,
       solo: false,
       bind: started.bound.host,
-      magic: MAGIC_TESTNET,
+      magic: started.magic,
       phaseBGate: PHASE_B_GATE,
       height: tip?.height || 0,
       hash: tip ? Buffer.from(tip.hash).toString('hex') : '',
@@ -488,7 +489,7 @@ async function main() {
     stratum: started.stratumBound ? `${started.stratumBound.host}:${started.stratumBound.port}` : null,
     solo: !!started.solo,
     bind: started.bound.host,
-    magic: MAGIC_TESTNET,
+    magic: started.magic,
     phaseBGate: PHASE_B_GATE,
     height: tip?.height || 0,
     hash: tip ? Buffer.from(tip.hash).toString('hex') : '',

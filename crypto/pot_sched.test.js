@@ -32,10 +32,8 @@ import {
   freezeEpochBps,
   makeFreezeRecord,
   verifyFreezeRecord,
-  clampBpsStep,
+  adoptObservedBps,
   GENESIS_BPS,
-  EPOCH_BPS_MAX_STEP,
-  RESERVE_ORACLE_MAX_BPS,
 } from './reserve_oracle.js';
 
 
@@ -137,21 +135,22 @@ describe('I2 three 4-day rollovers', () => {
 });
 
 describe('I3 oracle anti-game', () => {
-  it('step/max/stale/equivocation; freeze cannot move pot', () => {
-    assert.equal(clampBpsStep(264, 9999), 264 + EPOCH_BPS_MAX_STEP);
+  it('sanity ceiling, stale feed, and equivocation; freeze cannot move pot', () => {
+    assert.equal(adoptObservedBps(284, 9999), 9999);
+    assert.equal(adoptObservedBps(284, 10001), 10001);
     assert.equal(freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 9999,
       observedAtMs: 1,
       nowMs: 1,
-    }) <= 264 + EPOCH_BPS_MAX_STEP, true);
+    }), GENESIS_BPS);
     const stale = freezeEpochBps({
       prevEpochBps: 264,
       annualBps: 9000,
       observedAtMs: 1,
       nowMs: 1 + 15 * DAY,
     });
-    assert.equal(stale, 264);
+    assert.equal(stale, GENESIS_BPS);
     const rec = makeFreezeRecord({
       epochIndex: 1,
       prevEpochBps: GENESIS_BPS,
@@ -163,8 +162,10 @@ describe('I3 oracle anti-game', () => {
     assert.equal(verifyFreezeRecord(rec, { epochIndex: 2 }).ok, false);
     const clash = { ...rec, observationRoot: 'other-root' };
     assert.equal(verifyFreezeRecord(clash, { epochIndex: 1, prevFreeze: rec }).reason, 'freeze_equivocation');
-    const over = { ...rec, epochBps: RESERVE_ORACLE_MAX_BPS + 1 };
-    assert.equal(verifyFreezeRecord(over, { epochIndex: 1 }).reason, 'freeze_bps');
+    const over = { ...rec, epochBps: 10001 };
+    assert.equal(verifyFreezeRecord(over, { epochIndex: 1 }).reason, 'rate_commit');
+    const neg = { ...rec, epochBps: -1 };
+    assert.equal(verifyFreezeRecord(neg, { epochIndex: 1 }).reason, 'freeze_bps');
     assert.equal(potSubsidyNanos(1), 99_000_000_000);
     assert.notEqual(rec.epochBps, potSubsidyNanos(1));
   });

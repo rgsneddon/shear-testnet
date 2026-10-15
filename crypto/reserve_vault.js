@@ -9,7 +9,9 @@ import {
   hashBonusUnitNanos,
   MAGIC_TESTNET,
 } from './asert.js';
-import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest } from './address.js';
+import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress } from './address.js';
+import { attachAdmitPub } from './admit.js';
+import { fs1LeafFor } from './fs1_leaf.js';
 import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos, hashToScalar, scalarBytes } from './note.js';
 import {
   emptyOracle,
@@ -22,11 +24,18 @@ import {
   parseCoinbaseObserve,
   coinbaseObserveRejected,
   GENESIS_BPS,
+  ORACLE_ACTIVATION_HEIGHT,
+  oracleRuleAt,
+  epochBpsFromReports,
+  isReportBoundary,
+  reserveApplyFields,
+  bundleObservationRoot,
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
 import { extraMint } from './mint.js';
-import { reserveFeeDest } from './levy.js';
+import { reserveFeeDest, levyNanos } from './levy.js';
 import { decodeHeader } from './header.js';
+import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
 
 export const VOTE_INCREASE = 'increase bonus';
 export const VOTE_DECREASE = 'decrease bonus';
@@ -34,6 +43,11 @@ export const VOTE_HOLD = 'leave bonus as-is';
 export const KIND_LOCK = 'lock';
 export const KIND_WITHDRAW = 'withdraw';
 export const KIND_VOTE = 'vote';
+export const STAKE_REWARD_KIND = 'stake-reward';
+/** User tx that mints one archived reward. It is not a coinbase row. */
+export const KIND_REWARD_CLAIM = 'reward-claim';
+/** Domain for one reward leaf: tag || nullifier(32) || nanos u64le. */
+export const REWARD_LEAF_TAG = 'shear-reward-leaf-v1';
 
 /**
  * How many reserve actions one mempool, and one template, will trial.
@@ -103,6 +117,13 @@ function openingOf(vout, claimed) {
 
 function asBig(n) {
   if (typeof n === 'bigint') return n < 0n ? 0n : n;
+  if (typeof n === 'string') {
+    const s = n.trim();
+    if (/^\d+$/.test(s)) {
+      try { return BigInt(s); } catch { return 0n; }
+    }
+    if (/^-\d+$/.test(s)) return 0n;
+  }
   const v = Math.floor(Number(n) || 0);
   if (!Number.isFinite(v) || v <= 0) return 0n;
   return BigInt(v);
@@ -110,6 +131,33 @@ function asBig(n) {
 
 function asNum(n) {
   return Number(asBig(n));
+}
+
+/** Accrued reward is a bigint and never exceeds u64. A Number would round past 2^53. */
+const REWARD_U64 = 0xffffffffffffffffn;
+const MAX_SAFE_NANOS = 9007199254740991n;
+
+function capReward(n) {
+  const v = asBig(n);
+  return v > REWARD_U64 ? REWARD_U64 : v;
+}
+
+function epochInterestBig(staked, bps) {
+  const p = asBig(staked);
+  const rate = Math.floor(Number(bps) || 0);
+  if (p <= 0n || !Number.isFinite(rate) || rate <= 0) return 0n;
+  const got = (p * BigInt(rate)) / 10000n;
+  return got > REWARD_U64 ? REWARD_U64 : got;
+}
+
+function addReward(total, delta) {
+  const sum = capReward(total) + capReward(delta);
+  return sum > REWARD_U64 ? REWARD_U64 : sum;
+}
+
+function nanosOut(n) {
+  const v = asBig(n);
+  return v <= MAX_SAFE_NANOS ? Number(v) : v;
 }
 
 export function portalIdFromDest(dest) {
@@ -137,6 +185,431 @@ export function withdrawMintId(portalId, epoch) {
     .digest('hex');
 }
 
+function commitHexOf(v) {
+  try {
+    const b = Buffer.from(asU8(v));
+    return b.length === 32 ? b.toString('hex') : '';
+  } catch {
+    return '';
+  }
+}
+
+function rewardDest(portal) {
+  if (portal?.payout && isDestAddress(portal.payout)) return portal.payout;
+  if (portal?.dest && isDestAddress(portal.dest)) return portal.dest;
+  return '';
+}
+
+/** Unpaid stake reward for each completed epoch, one row per portal. */
+export function stakeRewardsDue(state, nowMs) {
+  const nowIdx = settlementIndex(state, nowMs);
+  const rows = [];
+  if (!(nowIdx > 0) || !state?.portals) return rows;
+  for (const portal of Object.values(state.portals)) {
+    if (!portal?.joined && !(portal?.tranches || []).length) continue;
+    const byEpoch = new Map();
+    const qualified = stakeQualified(state, portal);
+    for (const tranche of portal.tranches || []) {
+      const earns = qualified && earnsStakeReward(state, tranche);
+      if (!earns) continue;
+      const arrival = Math.floor(Number(tranche.epoch) || 0);
+      if (!tranche.partialPaid && nowIdx > arrival) {
+        const part = partialInterest(
+          asBig(tranche.amount),
+          rateForEpoch(state, arrival),
+          tranche.remainMs,
+          epochMs(state?.magic),
+        );
+        if (part > 0n) byEpoch.set(arrival, (byEpoch.get(arrival) || 0n) + part);
+      }
+      const from = Math.floor(Number(tranche.fullFrom ?? arrival + 1));
+      if (nowIdx > from) {
+        for (let e = from; e < nowIdx; e += 1) {
+          const full = epochInterestBig(asBig(tranche.amount), rateForEpoch(state, e));
+          if (full > 0n) byEpoch.set(e, (byEpoch.get(e) || 0n) + full);
+        }
+      }
+    }
+    const dest = rewardDest(portal);
+    for (const [epoch, nanos] of byEpoch) {
+      if (nanos <= 0n || !dest) continue;
+      const mintId = withdrawMintId(portal.id, epoch);
+      if (state.mintedIds && state.mintedIds[mintId]) continue;
+      const asNumber = nanos <= 9007199254740991n ? Number(nanos) : null;
+      if (asNumber == null) continue;
+      rows.push({
+        portalId: portal.id,
+        epoch,
+        nanos: asNumber,
+        mintId,
+        dest,
+      });
+    }
+  }
+  rows.sort((a, b) => (a.epoch - b.epoch) || (a.portalId < b.portalId ? -1 : a.portalId > b.portalId ? 1 : 0));
+  return rows;
+}
+
+function u64le(value) {
+  const b = Buffer.alloc(8);
+  const n = BigInt(value);
+  b.writeBigUInt64LE(n);
+  return b;
+}
+
+/** Leaf over one portal-epoch reward. The preimage is the nullifier and the amount. */
+export function rewardLeaf(nullifierHex, nanos) {
+  const id = Buffer.from(String(nullifierHex || ''), 'hex');
+  if (id.length !== 32) return null;
+  const n = BigInt(nanos);
+  if (n <= 0n || n > 0xffffffffffffffffn) return null;
+  return sha256Reward(Buffer.concat([Buffer.from(REWARD_LEAF_TAG), id, u64le(n)]));
+}
+
+function sha256Reward(buf) {
+  return createHash('sha256').update(buf).digest();
+}
+
+/**
+ * One root over every unpaid eligible reward due at this clock.
+ * Order is the nullifier, so the tree does not sort by lock dest.
+ * The amount is rate × principal × pro-rata time, with the π gate and the cutoff.
+ */
+export function rewardCommitment(state, nowMs) {
+  const due = stakeRewardsDue(state, nowMs);
+  const rows = due.map((row) => ({
+    nullifier: row.mintId,
+    epoch: row.epoch,
+    nanos: row.nanos,
+    portalId: row.portalId,
+  }));
+  rows.sort((a, b) => (a.nullifier < b.nullifier ? -1 : a.nullifier > b.nullifier ? 1 : 0));
+  const leaves = rows.map((row) => rewardLeaf(row.nullifier, row.nanos));
+  const root = Buffer.from(merkleRoot(leaves)).toString('hex');
+  return {
+    ok: true,
+    rows,
+    root,
+    index: settlementIndex(state, nowMs),
+  };
+}
+
+/** Sibling path for one archived nullifier. Empty once the root did not include it. */
+export function rewardClaimProof(state, nullifierHex) {
+  const id = String(nullifierHex || '').toLowerCase();
+  const row = state?.rewardBook?.[id];
+  const rows = row ? state?.rewardSets?.[row.rootKey] : null;
+  if (!row || !Array.isArray(rows)) return null;
+  const index = rows.findIndex((item) => item.nullifier === id);
+  if (index < 0) return null;
+  const leaves = rows.map((item) => rewardLeaf(item.nullifier, item.nanos));
+  return merkleProof(leaves, index);
+}
+
+/** Packed EVM proof. Side 0 is a right sibling, side 1 is a left sibling. */
+export function packRewardProof(proof) {
+  const steps = Array.isArray(proof) ? proof : [];
+  const parts = [];
+  for (const step of steps) {
+    const side = step?.side === 'L' ? 1 : 0;
+    const hash = Buffer.from(String(step?.hash || ''), 'hex');
+    if (hash.length !== 32) return null;
+    parts.push(Buffer.from([side]), hash);
+  }
+  return Buffer.concat(parts);
+}
+
+/**
+ * Every reward due at this clock. There is no per-block row cap: the block
+ * carries one root, and each user mints their own row later.
+ */
+export function planStakeRewards(state, nowMs) {
+  const commit = rewardCommitment(state, nowMs);
+  return {
+    ok: true,
+    pay: commit.rows.map((row) => ({
+      portalId: row.portalId,
+      epoch: row.epoch,
+      nanos: row.nanos,
+      mintId: row.nullifier,
+    })),
+    held: [],
+    root: commit.root,
+    index: commit.index,
+  };
+}
+
+function blockPaysByWithdraw(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  return txs.some((tx) => tx && !tx.coinbase && txKind(tx) === KIND_WITHDRAW);
+}
+
+export function stakeRewardNotesOf(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const cb = txs.find((tx) => tx?.coinbase) || null;
+  return (cb?.vout || []).filter((o) => String(o?.kind || '') === STAKE_REWARD_KIND);
+}
+
+/** Hex root on the coinbase, '' when the block carries none, 'bad' when it is not 32 bytes. */
+export function blockRewardRoot(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const cb = txs.find((tx) => tx?.coinbase) || null;
+  const raw = cb?.rewardRoot;
+  if (raw == null || raw === '') return '';
+  const hex = Buffer.isBuffer(raw) ? raw.toString('hex') : String(raw).replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(hex) ? hex : 'bad';
+}
+
+/**
+ * The epoch-end coinbase carries one root, or it carries no reward.
+ * A stake-reward coinbase row is the dropped per-payee path.
+ * A withdraw in the block is the older pull: it may omit the root.
+ * The root is required only when the caller says so and a reward is due.
+ */
+export function stakeRewardRejected(state, block, nowMs, { require = false } = {}) {
+  if (!state || state.blankFork) return null;
+  if (stakeRewardNotesOf(block).length) return { ok: false, reason: 'stake_reward' };
+  const got = blockRewardRoot(block);
+  if (got === 'bad') return { ok: false, reason: 'stake_reward' };
+  const plan = rewardCommitment(state, nowMs);
+  if (got) {
+    if (got !== plan.root) return { ok: false, reason: 'stake_reward' };
+    return null;
+  }
+  if (!require || blockPaysByWithdraw(block)) return null;
+  if (plan.rows.length) return { ok: false, reason: 'stake_reward' };
+  return null;
+}
+
+function rewardAlreadyMinted(state, portal, nowMs) {
+  const nowIdx = settlementIndex(state, nowMs);
+  const credited = portal?.creditedEpochs || {};
+  const hit = (epoch) => epoch < nowIdx && credited[epoch]
+    && state.mintedIds?.[withdrawMintId(portal.id, epoch)];
+  let matured = false;
+  for (const tranche of portal?.tranches || []) {
+    const arrival = Math.floor(Number(tranche.epoch) || 0);
+    if (nowIdx <= arrival) continue;
+    matured = true;
+    for (let e = arrival; e < nowIdx; e += 1) {
+      if (hit(e)) return true;
+    }
+  }
+  if (!matured && !(portal?.tranches || []).length) {
+    for (const key of Object.keys(credited)) {
+      if (hit(Number(key))) return true;
+    }
+  }
+  return false;
+}
+
+function releaseMaturedPrincipal(state, nowMs) {
+  const nowIdx = settlementIndex(state, nowMs);
+  let released = 0n;
+  for (const portal of Object.values(state.portals || {})) {
+    if (!portal?.tranches?.length) continue;
+    rememberPortal(state, portal.id);
+    let drop = 0n;
+    let notePrincipal = 0n;
+    const keep = [];
+    for (const tranche of portal.tranches) {
+      if (nowIdx > Math.floor(Number(tranche.epoch) || 0)) {
+        const amount = asBig(tranche.amount);
+        drop += amount;
+        if (tranche.noteIsPrincipal) notePrincipal += amount;
+      } else keep.push(tranche);
+    }
+    if (drop <= 0n) continue;
+    const staked = asBig(portal.staked);
+    const idle = asBig(portal.idle);
+    let fromStaked = drop >= staked ? staked : drop;
+    let fromIdle = drop - fromStaked;
+    if (fromIdle > idle) fromIdle = idle;
+    portal.staked = staked - fromStaked;
+    portal.idle = idle - fromIdle;
+    portal.tranches = keep;
+    const booked = fromStaked + fromIdle;
+    // The time-locked note is the principal. Keep that amount subtracted from
+    // the coins that funded it, or those coins and the note are both spendable
+    // once the vault drops its stake figure.
+    const redeem = notePrincipal > booked ? booked : notePrincipal;
+    if (redeem > 0n) portal.redeemedNanos = asBig(portal.redeemedNanos) + redeem;
+    state.totalLockedNanos = asBig(state.totalLockedNanos) - booked;
+    if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
+    released += booked;
+    const remain = asBig(portal.staked) + asBig(portal.idle);
+    if (remain <= 0n) {
+      portal.joined = false;
+      portal.vote = null;
+      portal.voteEpoch = 0;
+    }
+  }
+  return released;
+}
+
+function ensureRewardMaps(state) {
+  if (!state.rewardRoots) state.rewardRoots = Object.create(null);
+  if (!state.rewardBook) state.rewardBook = Object.create(null);
+  if (!state.rewardSets) state.rewardSets = Object.create(null);
+}
+
+/**
+ * Root the coinbase should carry. An empty earning set still carries the
+ * empty root while matured principal is sitting in the vault, so the epoch
+ * end releases it. A root already stored for this index stays put.
+ */
+export function coinbaseRewardRoot(state, nowMs) {
+  const plan = rewardCommitment(state, nowMs);
+  if (plan.rows.length) return plan.root;
+  if (!(plan.index > 0)) return '';
+  if (state?.rewardRoots?.[String(plan.index)]) return '';
+  for (const portal of Object.values(state?.portals || {})) {
+    for (const tranche of portal?.tranches || []) {
+      if (plan.index > Math.floor(Number(tranche.epoch) || 0)) return plan.root;
+    }
+  }
+  return '';
+}
+
+/**
+ * Archive the root and drop matured principal out of the vault.
+ * Nothing is minted here. A claim tx mints one archived row later.
+ * An epoch with no earning rows still releases principal. The block may
+ * omit the root or carry the empty root. A withdraw in the block is the
+ * older pull and releases the portals it pays.
+ */
+export function applyStakeRewards(state, block, nowMs, { require = false } = {}) {
+  const rejected = stakeRewardRejected(state, block, nowMs, { require });
+  if (rejected) return { ok: false, reason: rejected.reason || 'stake_reward', minted: 0n, principal: 0n };
+  const plan = rewardCommitment(state, nowMs);
+  const got = blockRewardRoot(block);
+  if (got && got !== plan.root) {
+    return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
+  }
+  if (!plan.rows.length) {
+    if (!(plan.index > 0) || blockPaysByWithdraw(block)) {
+      return { ok: true, minted: 0n, principal: 0n, skipped: true };
+    }
+    const prior = state.rewardRoots?.[String(plan.index)];
+    if (got && prior && prior !== got) {
+      return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
+    }
+    const principal = releaseMaturedPrincipal(state, nowMs);
+    return { ok: true, minted: 0n, principal, root: got || '', skipped: false };
+  }
+  if (!got) return { ok: true, minted: 0n, principal: 0n, skipped: true };
+  ensureRewardMaps(state);
+  const key = String(plan.index);
+  const prior = state.rewardRoots[key];
+  if (prior && prior !== plan.root) {
+    return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
+  }
+  state.rewardRoots[key] = plan.root;
+  state.rewardSets[key] = plan.rows.map((row) => ({
+    nullifier: row.nullifier,
+    nanos: row.nanos,
+    epoch: row.epoch,
+    portalId: row.portalId,
+  }));
+  for (const row of plan.rows) {
+    const have = state.rewardBook[row.nullifier];
+    if (have && (have.nanos !== row.nanos || have.rootKey !== key)) {
+      return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
+    }
+    state.rewardBook[row.nullifier] = {
+      nanos: row.nanos,
+      epoch: row.epoch,
+      rootKey: key,
+      portalId: row.portalId,
+    };
+  }
+  const principal = releaseMaturedPrincipal(state, nowMs);
+  return { ok: true, minted: 0n, principal, root: plan.root, skipped: false };
+}
+
+function claimNoteOpens(tx, nanos) {
+  const notes = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === KIND_REWARD_CLAIM);
+  if (notes.length !== 1) return false;
+  const note = notes[0];
+  if (!verifySealedNote(note, nanos)) return false;
+  if (!fs1LeafFor(note)) return false;
+  const proofV = Math.floor(Number(note?.valueProof?.v));
+  return proofV === nanos;
+}
+
+/**
+ * Mint one archived reward. The nullifier is the portal-epoch id.
+ * A second claim, or a withdraw of that id, is double_mint.
+ * The output dest is the claimer's choice. The lock dest is not on this tx.
+ */
+export function applyRewardClaim(state, tx) {
+  if (!state || state.blankFork) return { ok: false, reason: 'no_vault', nanos: 0 };
+  if (String(tx?.programId || '') !== RESERVE_PROGRAM) return { ok: false, reason: 'mint_forbidden', nanos: 0 };
+  const nullifier = String(tx?.nullifier || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  const row = state.rewardBook?.[nullifier];
+  const root = row ? state.rewardRoots?.[row.rootKey] : '';
+  if (!row || !root) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  if (state.mintedIds?.[nullifier]) return { ok: false, reason: 'double_mint', nanos: 0 };
+  if (!claimNoteOpens(tx, row.nanos)) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  const leaf = rewardLeaf(nullifier, row.nanos);
+  let rootBuf;
+  try { rootBuf = Buffer.from(root, 'hex'); } catch { rootBuf = Buffer.alloc(0); }
+  if (!leaf || !merkleVerify(leaf, tx?.proof, rootBuf)) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  const paid = payoutStakeReward({
+    state,
+    reward: row.nanos,
+    id: nullifier,
+    gateOk: true,
+    maxReward: row.nanos,
+  });
+  if (!paid.ok) return { ok: false, reason: paid.reason || 'double_mint', nanos: 0 };
+  state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + BigInt(row.nanos);
+  return { ok: true, nanos: row.nanos, nullifier };
+}
+
+function rewardReserved(state, portalId) {
+  const id = String(portalId || '');
+  if (!id) return false;
+  for (const row of Object.values(state?.rewardBook || {})) {
+    if (row && row.portalId === id) return true;
+  }
+  return false;
+}
+
+/** A spend of a lock note before its unlock time. */
+export function lockNoteSpendRejected(state, tx, nowMs) {
+  const wanted = new Set();
+  for (const vin of tx?.vin || []) {
+    const a = commitHexOf(vin?.noteCommit);
+    const b = commitHexOf(vin?.commit);
+    if (a) wanted.add(a);
+    if (b) wanted.add(b);
+  }
+  if (!wanted.size || !state?.portals) return null;
+  const tip = Number(nowMs) || 0;
+  for (const portal of Object.values(state.portals)) {
+    for (const tranche of portal?.tranches || []) {
+      const hex = String(tranche.noteCommit || '');
+      const unlock = Number(tranche.unlockAtMs) || 0;
+      if (!hex || !(unlock > 0) || !wanted.has(hex)) continue;
+      if (tip < unlock) return { ok: false, reason: 'locked' };
+    }
+  }
+  return null;
+}
+
+/**
+ * Epoch label of a withdraw mint. Chain time wins once it has passed the
+ * vault's current epoch, so a later deposit is not stuck on the mint id of
+ * an earlier withdraw. After a block rolls, the two are the same integer.
+ */
+function mintEpoch(state, nowMs) {
+  const chain = chainEpochIndex(state, nowMs);
+  const live = Math.floor(Number(state?.currentEpoch) || 0);
+  return chain > live ? chain : live;
+}
+
 export function emptyVault() {
   return {
     programId: RESERVE_PROGRAM,
@@ -153,6 +626,13 @@ export function emptyVault() {
     oracle: emptyOracle(),
     sealedObserve: null,
     epochBps: GENESIS_BPS,
+    nextEpochBps: null,
+    // epochIndex → bps. Two boundaries can pass before the next lock opens
+    // the vault. One nextEpochBps slot would drop the earlier rate, and a
+    // withdraw would pay those epochs at the later rate. The latest commit
+    // is also nextEpochBps, for the epoch that opens next.
+    pendingRates: Object.create(null),
+    rewardPermittedNanos: 0n,
     freezes: Object.create(null),
     genesisMs: 0,
     magic: MAGIC_TESTNET,
@@ -163,6 +643,9 @@ export function emptyVault() {
     enactedLiveBonus: 1,
     enactedAtMs: 0,
     enactedAtEpoch: 0,
+    rewardRoots: Object.create(null),
+    rewardBook: Object.create(null),
+    rewardSets: Object.create(null),
   };
 }
 
@@ -174,26 +657,87 @@ export function cloneVault(state) {
   Object.assign(out, raw);
   out.portals = Object.create(null);
   for (const [k, p] of Object.entries(raw.portals || {})) {
-    out.portals[k] = p && typeof p === 'object' ? { ...p } : p;
+    const row = p && typeof p === 'object' ? { ...p } : p;
+    if (row && typeof row === 'object') {
+      if (row.staked != null) row.staked = asBig(row.staked);
+      if (row.idle != null) row.idle = asBig(row.idle);
+      if (Array.isArray(row.tranches)) {
+        row.tranches = row.tranches.map((t) => ({
+          ...t,
+          amount: asBig(t?.amount),
+        }));
+      }
+      if (row.redeemedNanos != null) row.redeemedNanos = asBig(row.redeemedNanos);
+      if (row.accruedReward != null && row.accruedReward !== '') row.accruedReward = capReward(row.accruedReward);
+    }
+    out.portals[k] = row;
   }
   out.votes = { increase: 0, decrease: 0, hold: 0, ...(raw.votes || {}) };
   out.mintedIds = Object.create(null);
   Object.assign(out.mintedIds, raw.mintedIds || {});
   out.freezes = Object.create(null);
   Object.assign(out.freezes, raw.freezes || {});
+  out.pendingRates = Object.create(null);
+  Object.assign(out.pendingRates, raw.pendingRates || {});
+  out.rewardRoots = Object.create(null);
+  Object.assign(out.rewardRoots, raw.rewardRoots || {});
+  out.rewardBook = Object.create(null);
+  Object.assign(out.rewardBook, raw.rewardBook || {});
+  out.rewardSets = Object.create(null);
+  for (const [key, rows] of Object.entries(raw.rewardSets || {})) {
+    out.rewardSets[key] = Array.isArray(rows) ? rows.map((row) => ({ ...row })) : rows;
+  }
   out.liveHashBonusNanos = asBig(out.liveHashBonusNanos);
   out.totalLockedNanos = asBig(out.totalLockedNanos);
   out.feeBankNanos = asBig(out.feeBankNanos);
   out.mintBankNanos = asBig(out.mintBankNanos);
+  out.rewardPermittedNanos = asBig(out.rewardPermittedNanos);
   out.blankFork = !!src.blankFork;
   delete out.vaultSeal;
   return out;
 }
 
-export function creditFeeBank(state, nanos) {
-  const n = asBig(nanos);
-  state.feeBankNanos = asBig(state.feeBankNanos) + n;
-  return asNum(state.feeBankNanos);
+/** Transaction fees are not a vault balance. A credit leaves the bank at zero. */
+export function creditFeeBank(state, _nanos) {
+  void _nanos;
+  if (state) state.feeBankNanos = 0n;
+  return 0;
+}
+
+/**
+ * Schedule allowance still owed on live stake, plus interest already
+ * settled at withdraw. The mint counter is not this number: paying more
+ * than the schedule makes supplyIdentity fail.
+ */
+function schedulePermittedNanos(vault) {
+  const bps = vault?.epochBps ?? GENESIS_BPS;
+  let live = 0n;
+  for (const p of Object.values(vault?.portals || {})) {
+    live += capReward(p?.accruedReward);
+    live += epochInterestBig(p?.staked, bps);
+  }
+  return asBig(vault?.rewardPermittedNanos) + live;
+}
+
+/** User notes hold principal. Minted reward cannot exceed the epoch allowance. The fee bank is zero. */
+export function supplyIdentity(state) {
+  const vault = state || emptyVault();
+  let indexed = 0n;
+  for (const p of Object.values(vault.portals || {})) {
+    indexed += asBig(p?.staked) + asBig(p?.idle);
+  }
+  const feeBank = asBig(vault.feeBankNanos);
+  const minted = asBig(vault.mintBankNanos);
+  const permitted = schedulePermittedNanos(vault);
+  const ok = asBig(vault.totalLockedNanos) === indexed && feeBank === 0n && minted <= permitted;
+  return {
+    ok,
+    reason: ok ? undefined : 'supply',
+    lockedNanos: asNum(indexed),
+    permittedReward: asNum(permitted),
+    mintedReward: asNum(minted),
+    feeBankRewardNanos: 0,
+  };
 }
 
 /** Stake rewards pay from the fee bank first; mint only the shortfall. */
@@ -218,30 +762,25 @@ export function payoutStakeReward({
   if (!id) {
     return { ok: false, reason: 'need_id', paid: 0, minted: 0, feeBank: asNum(vault.feeBankNanos) };
   }
-  const bank = asBig(vault.feeBankNanos);
-  const fromFee = need < bank ? need : bank;
-  const gap = need - fromFee;
-  if (gap > 0n) {
-    if (!extraMintAllowed(RESERVE_PROGRAM, {
-      feeFirst: true,
-      gateOk: true,
-      reward: asNum(need),
-      feeBank: asNum(bank),
-      amount: asNum(gap),
-    })) {
-      return { ok: false, reason: 'mint_forbidden', paid: 0, minted: 0, feeBank: asNum(bank) };
-    }
+  vault.feeBankNanos = 0n;
+  if (!extraMintAllowed(RESERVE_PROGRAM, {
+    kind: 'reserve-reward',
+    feeFirst: false,
+    gateOk: true,
+    reward: asNum(need),
+  })) {
+    return { ok: false, reason: 'mint_forbidden', paid: 0, minted: 0, feeBank: 0 };
   }
-  vault.feeBankNanos = bank - fromFee;
   rememberMint(vault, id);
   vault.mintedIds[id] = true;
-  if (gap > 0n) vault.mintBankNanos = asBig(vault.mintBankNanos) + gap;
+  vault.mintBankNanos = asBig(vault.mintBankNanos) + need;
   return {
     ok: true,
     paid: asNum(need),
-    fromFee: asNum(fromFee),
-    minted: asNum(gap),
-    feeBank: asNum(vault.feeBankNanos),
+    fromFee: 0,
+    minted: asNum(need),
+    source: 'coinbase',
+    feeBank: 0,
     id,
   };
 }
@@ -254,6 +793,14 @@ export function remainingMs(state, nowMs) {
 }
 
 export function canJoin(state, nowMs) {
+  const genesis = Number(state?.genesisMs) || 0;
+  if (genesis > 0) {
+    const span = epochMs(state.magic);
+    const idx = chainEpochIndex(state, nowMs);
+    const end = genesis + (idx + 1) * span;
+    const now = Number(nowMs) || 0;
+    return Math.max(0, end - now) >= joinCutoffMs(state.magic);
+  }
   if (!state.epochStartMs) return true;
   return remainingMs(state, nowMs) >= joinCutoffMs(state.magic);
 }
@@ -307,7 +854,7 @@ export function publicVaultView(state, nowMs) {
     feeBankNanos: blank ? 0 : asNum(state.feeBankNanos),
     mintBankNanos: blank ? 0 : asNum(state.mintBankNanos),
     votes: blank ? { increase: 0, decrease: 0, hold: 0 } : votesView(state),
-    oracleBps: state.oracle?.annualBps ?? 0,
+    oracleBps: Number(state.epochBps ?? GENESIS_BPS),
     oracleObserved: true,
     epochBps: Number(state.epochBps ?? GENESIS_BPS),
     epochIndex: Number(state.epochIndex || 0),
@@ -366,8 +913,6 @@ function portalPrincipalBig(state, dest) {
 export function portalPrincipalNanos(state, dest) {
   return asNum(portalPrincipalBig(state, dest));
 }
-
-const MAX_SAFE_NANOS = 9007199254740991n;
 
 function wireNanos(n) {
   const x = typeof n === 'bigint' ? n : 0n;
@@ -428,6 +973,9 @@ function snapTrial(state) {
     mintBankNanos: state.mintBankNanos,
     liveHashBonusNanos: state.liveHashBonusNanos,
     epochBps: state.epochBps,
+    nextEpochBps: state.nextEpochBps,
+    pendingRates: state.pendingRates ? { ...state.pendingRates } : Object.create(null),
+    rewardPermittedNanos: state.rewardPermittedNanos,
     genesisMs: state.genesisMs,
     magic: state.magic,
     currentEpoch: state.currentEpoch,
@@ -449,9 +997,13 @@ function snapTrial(state) {
     freeze: state.freeze,
     oracle: state.oracle,
     sealedObserve: state.sealedObserve,
+    deferEpochRoll: !!state.deferEpochRoll,
     portals: state.portals,
     mintedIds: state.mintedIds,
     freezes: state.freezes,
+    rewardRoots: state.rewardRoots ? { ...state.rewardRoots } : null,
+    rewardBook: state.rewardBook ? { ...state.rewardBook } : null,
+    rewardSets: state.rewardSets ? { ...state.rewardSets } : null,
   };
 }
 
@@ -461,6 +1013,9 @@ function restoreTrial(state, snap, frame) {
   state.mintBankNanos = snap.mintBankNanos;
   state.liveHashBonusNanos = snap.liveHashBonusNanos;
   state.epochBps = snap.epochBps;
+  state.nextEpochBps = snap.nextEpochBps;
+  state.pendingRates = snap.pendingRates ? { ...snap.pendingRates } : Object.create(null);
+  state.rewardPermittedNanos = snap.rewardPermittedNanos;
   state.genesisMs = snap.genesisMs;
   state.magic = snap.magic;
   state.currentEpoch = snap.currentEpoch;
@@ -484,9 +1039,13 @@ function restoreTrial(state, snap, frame) {
   state.freeze = snap.freeze;
   state.oracle = snap.oracle;
   state.sealedObserve = snap.sealedObserve;
+  state.deferEpochRoll = !!snap.deferEpochRoll;
   state.portals = snap.portals;
   state.mintedIds = snap.mintedIds;
   state.freezes = snap.freezes;
+  state.rewardRoots = snap.rewardRoots ? { ...snap.rewardRoots } : Object.create(null);
+  state.rewardBook = snap.rewardBook ? { ...snap.rewardBook } : Object.create(null);
+  state.rewardSets = snap.rewardSets ? { ...snap.rewardSets } : Object.create(null);
   const portals = frame.portals.get(state.portals);
   if (portals) {
     for (const [id, prev] of portals) {
@@ -522,38 +1081,184 @@ function portalOf(state, destOrId) {
   return state.portals[id];
 }
 
-function beginEpoch(state, nowMs) {
-  if (!state.genesisMs) state.genesisMs = nowMs;
+function applyEpochOpen(state, nowMs, idx) {
   const magic = state.magic || MAGIC_TESTNET;
-  const days = epochDays(magic);
-  const idx = vortexEpochIndex({ nowMs, genesisMs: state.genesisMs, epochDays: days });
-  const sealed = parseCoinbaseObserve({ coinbase: true, observe: state.sealedObserve || null });
-  const reading = sealed.ok && sealed.observe ? sealed.observe : null;
-  const rec = makeFreezeRecord({
-    epochIndex: idx,
-    prevEpochBps: state.epochBps ?? GENESIS_BPS,
-    annualBps: reading ? reading.annualBps : undefined,
-    observedAtMs: reading ? reading.observedAtMs : 0,
-    nowMs,
-    magic,
-  });
+  const activationHeight = state.oracleActivationHeight === undefined
+    ? ORACLE_ACTIVATION_HEIGHT
+    : state.oracleActivationHeight;
+  const rule = oracleRuleAt(state.oracleHeight ?? 0, { activationHeight });
   state.freezes = state.freezes || Object.create(null);
   const prior = state.freezes[idx];
-  const check = verifyFreezeRecord(rec, { epochIndex: idx, prevFreeze: prior, magic });
-  if (prior && (!check.ok || prior.epochBps !== rec.epochBps)) {
-    state.epochBps = prior.epochBps;
-    state.freeze = prior;
+  if (rule === 'median3b') {
+    const running = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+    const queued = state.pendingRates?.[idx];
+    const pending = queued == null
+      ? running
+      : Math.max(0, Math.floor(Number(queued)));
+    if (!prior) {
+      rememberFreeze(state, idx);
+      state.freezes[idx] = {
+        ok: true,
+        epochIndex: idx,
+        epochBps: pending,
+        prevEpochBps: running,
+        magic,
+        observationRoot: bundleObservationRoot(),
+        source: 'median3b',
+        frozenAtMs: Number(nowMs) || 0,
+      };
+    }
+    state.epochBps = Math.max(0, Math.floor(Number(state.freezes[idx].epochBps)));
+    state.freeze = state.freezes[idx];
   } else {
-    rememberFreeze(state, idx);
-    state.freezes[idx] = rec;
-    state.freeze = rec;
-    state.epochBps = rec.epochBps;
+    const running = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+    const queuedRaw = state.pendingRates?.[idx];
+    const hasQueue = queuedRaw != null && queuedRaw !== '';
+    // The first open adopts the bundle, so a caller-set rate cannot skip
+    // it. A later epoch with no commit keeps the rate already adopted.
+    const firstOpen = !(Number(state.epochStartMs) > 0);
+    if (!firstOpen || hasQueue) {
+      const adopted = prior
+        ? Math.max(0, Math.floor(Number(prior.epochBps)))
+        : (hasQueue ? Math.max(0, Math.floor(Number(queuedRaw))) : running);
+      if (!state.pendingRates) state.pendingRates = Object.create(null);
+      if (!hasQueue && state.pendingRates[idx] == null) state.pendingRates[idx] = adopted;
+      if (!prior) {
+        rememberFreeze(state, idx);
+        state.freezes[idx] = {
+          ok: true,
+          epochIndex: idx,
+          epochBps: adopted,
+          prevEpochBps: running,
+          magic,
+          observationRoot: bundleObservationRoot(),
+          source: 'running',
+          frozenAtMs: Number(nowMs) || 0,
+        };
+      }
+      state.epochBps = Math.max(0, Math.floor(Number(state.freezes[idx].epochBps)));
+      state.freeze = state.freezes[idx];
+    } else {
+      const rec = makeFreezeRecord({
+        epochIndex: idx,
+        prevEpochBps: state.epochBps ?? GENESIS_BPS,
+        nowMs,
+        magic,
+      });
+      const check = verifyFreezeRecord(rec, { epochIndex: idx, prevFreeze: prior, magic });
+      if (prior && (!check.ok || prior.epochBps !== rec.epochBps)) {
+        state.epochBps = prior.epochBps;
+        state.freeze = prior;
+      } else {
+        rememberFreeze(state, idx);
+        state.freezes[idx] = rec;
+        state.freeze = rec;
+        state.epochBps = rec.epochBps;
+      }
+    }
   }
+  const genesis = Number(state.genesisMs) || 0;
   state.epochIndex = idx;
-  state.epochStartMs = nowMs;
+  state.currentEpoch = idx;
+  state.epochStartMs = genesis + idx * epochMs(magic);
   state.bonusEnacted = false;
   void freezeEpochBps;
   void MAGIC_MAINNET;
+}
+
+/** Open the chain vortex window. A first lock does not choose the start. */
+function syncVaultEpoch(state, nowMs) {
+  const genesis = Number(state?.genesisMs) || 0;
+  if (!(genesis > 0)) return;
+  const idx = chainEpochIndex(state, nowMs);
+  if (!state.epochStartMs) {
+    applyEpochOpen(state, nowMs, idx);
+    return;
+  }
+  // The block rolls once, before its rows, when the epoch it found was
+  // already enacted. deferEpochRoll holds any further roll for those rows,
+  // so a same-block withdraw still settles the epoch that just ended.
+  if (state.deferEpochRoll) return;
+  if (idx === Number(state.currentEpoch || 0)) return;
+  if (!state.bonusEnacted) return;
+  // The open epoch's rate is the live epochBps until it rolls. Keep that
+  // integer for the epoch that just ended. Then walk the skipped epochs:
+  // a commit is paid at that rate and becomes the last paid rate. A gap
+  // with no commit keeps it. The epoch we open, if it has no commit, pays
+  // that same rate, so a later epoch cannot be left on the pre-gap rate.
+  rememberOpenRate(state, state.currentEpoch);
+  let carried = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+  const from = Math.floor(Number(state.currentEpoch) || 0) + 1;
+  if (!state.pendingRates) state.pendingRates = Object.create(null);
+  for (let e = from; e < idx; e += 1) {
+    const queued = state.pendingRates[e];
+    if (queued == null || queued === '') state.pendingRates[e] = carried;
+    else carried = Math.max(0, Math.floor(Number(queued)));
+  }
+  if (state.pendingRates[idx] == null || state.pendingRates[idx] === '') {
+    state.epochBps = carried;
+  }
+  state.votes = { increase: 0, decrease: 0, hold: 0 };
+  applyEpochOpen(state, nowMs, idx);
+}
+
+/** Keep the rate the open epoch was paying. A queued commit already won. */
+function rememberOpenRate(state, epochIndex) {
+  const idx = Math.floor(Number(epochIndex) || 0);
+  if (!state.pendingRates) state.pendingRates = Object.create(null);
+  if (state.pendingRates[idx] != null && state.pendingRates[idx] !== '') return;
+  const freeze = state.freezes?.[idx];
+  if (freeze && freeze.source === 'median3b' && freeze.epochBps != null) return;
+  state.pendingRates[idx] = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+}
+
+/** The lock output is the principal note. Its unlock is the end of this epoch. */
+function bindLockNote(state, portalId, tx, nowMs) {
+  const portal = state.portals?.[portalId];
+  const tranche = portal?.tranches?.[portal.tranches.length - 1];
+  if (!tranche) return;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const out = [...outs].reverse().find((row) => String(row?.kind || tx?.kind || '') === KIND_LOCK) || null;
+  const idx = chainEpochIndex(state, nowMs);
+  const genesis = Number(state.genesisMs) || 0;
+  const span = epochMs(state.magic);
+  const computed = genesis > 0 ? genesis + (idx + 1) * span : 0;
+  const unlock = Number(out?.unlockAtMs) > 0 ? Number(out.unlockAtMs) : computed;
+  tranche.unlockAtMs = unlock;
+  tranche.lockEpoch = Number.isInteger(Number(out?.lockEpoch)) ? Number(out.lockEpoch) : idx;
+  const hex = commitHexOf(out?.commit);
+  if (hex) tranche.noteCommit = hex;
+  tranche.noteIsPrincipal = Number(out?.unlockAtMs) > 0;
+}
+
+/** One credit. It earns the rest of its chain epoch, then later full epochs. */
+function noteCredit(state, p, amount, nowMs) {
+  const idx = chainEpochIndex(state, nowMs);
+  const span = epochMs(state.magic);
+  const genesis = Number(state.genesisMs) || 0;
+  const end = genesis > 0 ? genesis + (idx + 1) * span : 0;
+  const now = Number(nowMs) || 0;
+  let remain = end > now ? end - now : 0;
+  if (remain > span) remain = span;
+  if (!Array.isArray(p.tranches)) p.tranches = [];
+  p.tranches.push({
+    amount: asBig(amount),
+    epoch: idx,
+    remainMs: remain,
+    fullFrom: idx + 1,
+    partialPaid: false,
+  });
+}
+
+/** floor(amount * bps * remainMs / epochMs / 10000). */
+function partialInterest(amount, bps, remainMs, epochLen) {
+  const p = asBig(amount);
+  const rate = Math.floor(Number(bps) || 0);
+  const remain = Math.floor(Number(remainMs) || 0);
+  const span = Math.floor(Number(epochLen) || 0);
+  if (p <= 0n || !Number.isFinite(rate) || rate <= 0 || remain <= 0 || span <= 0) return 0n;
+  const got = (p * BigInt(rate) * BigInt(remain)) / (BigInt(span) * 10000n);
+  return got > REWARD_U64 ? REWARD_U64 : got;
 }
 
 function portalPublic(p) {
@@ -575,6 +1280,8 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
   }
   const n = asBig(nanos);
   if (n <= 0n) return { ok: false, reason: 'bad_amount' };
+  // No clock, no credit. A later pin must not inherit an unpinned lock.
+  if (!(Number(state?.genesisMs) > 0)) return { ok: false, reason: 'clock' };
   const p = portalOf(state, id);
   const pub = String(ownerPub || '').replace(/^0x/i, '').toLowerCase();
   if (/^[0-9a-f]{64}$/.test(pub)) {
@@ -588,23 +1295,23 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
     if (!p.payout) p.payout = payout;
     if (!p.payoutPortalId) p.payoutPortalId = portalIdFromDest(payout);
   }
+  if (dest && isDestAddress(dest) && !isShearAddress(dest) && !p.dest) p.dest = dest;
   if (state.epochStartMs && !state.bonusEnacted && remainingMs(state, nowMs) === 0) {
     return { ok: false, reason: 'need_enact' };
   }
+  if (state.bonusEnacted) syncVaultEpoch(state, nowMs);
+  settlePortal(state, p, nowMs);
   const staking = canJoin(state, nowMs);
   if (staking) p.staked = asBig(p.staked) + n;
   else p.idle = asBig(p.idle) + n;
+  noteCredit(state, p, n, nowMs);
   state.totalLockedNanos = asBig(state.totalLockedNanos) + n;
   if (!p.joined && (asBig(p.staked) + asBig(p.idle)) >= BigInt(PI_SHE_NANOS)) {
     p.joined = true;
-    if (!state.epochStartMs) {
-      state.currentEpoch = 1;
-      beginEpoch(state, nowMs);
-    } else if (state.bonusEnacted) {
-      state.currentEpoch = (state.currentEpoch || 1) + 1;
-      state.votes = { increase: 0, decrease: 0, hold: 0 };
-      beginEpoch(state, nowMs);
-    }
+    syncVaultEpoch(state, nowMs);
+  } else if (p.joined && !state.epochStartMs) {
+    // Clock pinned after the first lock. The next credit opens the chain epoch.
+    syncVaultEpoch(state, nowMs);
   }
   return {
     ok: true,
@@ -682,10 +1389,224 @@ function continuumOf(p, payout, dest) {
   return dest;
 }
 
-export function previewWithdraw(state, dest) {
+/** Integer the commit names. A fraction, or an index outside a safe integer, is not a chain epoch. */
+function statedEpochIndex(raw) {
+  if (typeof raw === 'bigint') {
+    if (raw < 0n || raw > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(raw);
+  }
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  return n;
+}
+
+/** Vortex index of this header. No genesis yet means the clock has not opened, so the index is 0. */
+function derivedCommitIndex(nowMs, genesisMs, magic) {
+  const genesis = Number(genesisMs) || 0;
+  const now = Number(nowMs) || 0;
+  if (!(genesis > 0) || !(now > 0)) return 0;
+  return vortexEpochIndex({
+    nowMs: now,
+    genesisMs: genesis,
+    epochDays: epochDays(magic || MAGIC_TESTNET),
+  });
+}
+
+/** Chain-genesis vortex index. Rate keys and settlement both use this integer. */
+function chainEpochIndex(state, nowMs) {
+  return derivedCommitIndex(nowMs, state?.genesisMs, state?.magic);
+}
+
+/** End of the chain epoch that a lock at this time belongs to. */
+export function lockUnlockOf(state, nowMs) {
+  const epoch = chainEpochIndex(state, nowMs);
+  const genesis = Number(state?.genesisMs) || 0;
+  const span = epochMs(state?.magic);
+  const unlockAtMs = genesis > 0 && span > 0 ? genesis + (epoch + 1) * span : 0;
+  return { epoch, unlockAtMs };
+}
+
+/**
+ * A stamped lock must name this epoch's end. A missing stamp stays the older
+ * receipt: the tranche still records the end, and the output is not a note.
+ * An admit pub with no matching stamp is not a note either.
+ */
+export function lockStampRejected(state, tx, nowMs) {
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const out = [...outs].reverse().find((row) => String(row?.kind || tx?.kind || '') === KIND_LOCK) || null;
+  if (!out) return null;
+  const unlock = Number(out.unlockAtMs);
+  const hasUnlock = Number.isInteger(unlock) && unlock > 0;
+  const hasEpoch = out.lockEpoch != null && out.lockEpoch !== '' && Number.isInteger(Number(out.lockEpoch));
+  let hasAdmit = false;
+  try {
+    hasAdmit = Buffer.from(asU8(out.admitPub)).length === 32;
+  } catch { /* a missing pub is not a stamp */ }
+  if (!hasUnlock && !hasEpoch && !hasAdmit) return null;
+  const want = lockUnlockOf(state, nowMs);
+  if (!(want.unlockAtMs > 0)) return { ok: false, reason: 'clock' };
+  if (unlock !== want.unlockAtMs || Number(out.lockEpoch) !== want.epoch) {
+    return { ok: false, reason: 'lock_unlock' };
+  }
+  return null;
+}
+
+/** A freeze or a queued commit for this epoch. Null when it has neither. */
+function recordedRate(state, epochIndex) {
+  const freeze = state?.freezes?.[epochIndex];
+  if (freeze && (freeze.source === 'median3b' || freeze.source === 'running') && freeze.epochBps != null) {
+    return Math.max(0, Math.floor(Number(freeze.epochBps)));
+  }
+  const queued = state?.pendingRates?.[epochIndex];
+  if (queued != null && queued !== '') return Math.max(0, Math.floor(Number(queued)));
+  return null;
+}
+
+/**
+ * Rate of one chain epoch. A commit or an adopted freeze wins. A gap with
+ * neither keeps the newest earlier rate, not the live rate of a later epoch.
+ */
+function rateForEpoch(state, epochIndex) {
+  const own = recordedRate(state, epochIndex);
+  if (own != null) return own;
+  for (let e = epochIndex - 1; e >= 0; e -= 1) {
+    const prior = recordedRate(state, e);
+    if (prior != null) return prior;
+  }
+  return Math.max(0, Math.floor(Number(state?.epochBps ?? GENESIS_BPS)));
+}
+
+/**
+ * A credit locked with at least the stake cutoff still to run can earn.
+ * One locked in the final window cannot. The portal can still vote.
+ * Earning also requires the portal's pre-cutoff sum to reach π.
+ */
+function earnsStakeReward(state, tranche) {
+  const remain = Math.floor(Number(tranche?.remainMs) || 0);
+  return remain >= joinCutoffMs(state?.magic);
+}
+
+/** Sum of credits locked before the stake cutoff. The final window does not count. */
+function preCutoffStake(state, portal) {
+  let sum = 0n;
+  for (const tranche of portal?.tranches || []) {
+    if (!earnsStakeReward(state, tranche)) continue;
+    sum += asBig(tranche.amount);
+  }
+  return sum;
+}
+
+/** Stake reward is off until the pre-cutoff sum is at least π. */
+function stakeQualified(state, portal) {
+  return preCutoffStake(state, portal) >= BigInt(PI_SHE_NANOS);
+}
+
+/** Interest still owed on one credit. Does not mutate the tranche. */
+function trancheDue(state, tranche, nowIdx, span, earns) {
+  if (!earns) return 0n;
+  let total = 0n;
+  const amount = asBig(tranche?.amount);
+  const epoch = Math.floor(Number(tranche?.epoch) || 0);
+  if (!tranche?.partialPaid && nowIdx > epoch) {
+    total = addReward(total, partialInterest(amount, rateForEpoch(state, epoch), tranche.remainMs, span));
+  }
+  const from = Math.floor(Number(tranche?.fullFrom ?? epoch + 1));
+  if (nowIdx > from && amount > 0n) {
+    for (let e = from; e < nowIdx; e += 1) {
+      total = addReward(total, epochInterestBig(amount, rateForEpoch(state, e)));
+    }
+  }
+  return total;
+}
+
+/**
+ * Every recorded credit is still inside its own lock epoch. One open
+ * top-up does not re-lock an earlier deposit whose epoch has already ended.
+ * A portal with no tranche list is the legacy whole balance.
+ */
+function arrivalEpochOpen(state, portal, nowMs) {
+  const tranches = portal?.tranches;
+  if (!Array.isArray(tranches) || tranches.length === 0) return false;
+  const chain = chainEpochIndex(state, nowMs);
+  for (const tranche of tranches) {
+    if (chain > Math.floor(Number(tranche?.epoch) || 0)) return false;
+  }
+  return true;
+}
+
+/** Principal whose own lock epoch has ended. The open top-up stays put. */
+function maturedPrincipal(state, portal, nowMs) {
+  const tranches = portal?.tranches;
+  const whole = asBig(portal?.staked) + asBig(portal?.idle);
+  if (!Array.isArray(tranches) || tranches.length === 0) return whole;
+  const chain = chainEpochIndex(state, nowMs);
+  let due = 0n;
+  for (const tranche of tranches) {
+    if (chain > Math.floor(Number(tranche?.epoch) || 0)) due += asBig(tranche.amount);
+  }
+  return due;
+}
+
+/**
+ * Exclusive settlement index. Completed epochs, including a gap, are due
+ * as soon as chain time has passed them. The open epoch is not included.
+ */
+function settlementIndex(state, nowMs) {
+  const now = Number(nowMs) || 0;
+  const chain = chainEpochIndex(state, now);
+  const span = epochMs(state?.magic);
+  const start = Number(state?.epochStartMs) || 0;
+  const ended = start > 0 && now >= start + span;
+  if (chain <= 0 && !ended) return 0;
+  return chain;
+}
+
+/**
+ * Move completed chain epochs onto the portal. The epoch a credit arrives
+ * in pays floor(amount * rate * time remaining / epoch length / 10000).
+ * Later epochs pay the full rate up to, and not including, the open index.
+ */
+function settlePortal(state, p, nowMs) {
+  if (!p) return 0n;
+  const nowIdx = settlementIndex(state, nowMs);
+  const span = epochMs(state.magic);
+  const qualified = stakeQualified(state, p);
+  let total = capReward(p.accruedReward);
+  for (const tranche of p.tranches || []) {
+    const earns = qualified && earnsStakeReward(state, tranche);
+    total = addReward(total, trancheDue(state, tranche, nowIdx, span, earns));
+    // Below π the cursors stay put. A later pre-cutoff top-up that crosses
+    // π must still be able to pay the epochs this credit already sat.
+    if (!earns) continue;
+    if (!tranche.partialPaid && nowIdx > tranche.epoch) tranche.partialPaid = true;
+    const from = Math.floor(Number(tranche.fullFrom ?? tranche.epoch + 1));
+    if (nowIdx > from) tranche.fullFrom = nowIdx;
+  }
+  p.accruedReward = total;
+  return total;
+}
+
+/** Interest a withdraw at `nowMs` pays. Same split as settle, without writing cursors. */
+export function portalEpochInterest(state, p, nowMs) {
+  if (!p) return 0;
+  const nowIdx = settlementIndex(state, nowMs);
+  const span = epochMs(state?.magic);
+  const qualified = stakeQualified(state, p);
+  let total = capReward(p.accruedReward);
+  for (const tranche of p.tranches || []) {
+    const earns = qualified && earnsStakeReward(state, tranche);
+    total = addReward(total, trancheDue(state, tranche, nowIdx, span, earns));
+  }
+  return nanosOut(total);
+}
+
+export function previewWithdraw(state, dest, nowMs = null) {
   const p = portalOf(state, dest);
-  const principal = asNum(asBig(p.staked) + asBig(p.idle));
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  const clock = nowMs == null
+    ? (Number(state?.epochStartMs) || 0) + epochMs(state?.magic)
+    : nowMs;
+  const principal = nanosOut(maturedPrincipal(state, p, clock));
+  const interest = portalEpochInterest(state, p, clock);
   return {
     principal,
     staked: asNum(p.staked),
@@ -773,8 +1694,24 @@ function exactFloorNanos(nanos) {
   return n;
 }
 
-export function lockTx({ from, to, nanos, id }) {
+export function lockTx({
+  from, to, nanos, id, lockEpoch = null, unlockAtMs = null, timeLock = false, spendSeed = null,
+} = {}) {
   const n = exactFloorNanos(nanos);
+  const out = sealedReserveVout(to, n, KIND_LOCK);
+  if (timeLock) {
+    const epoch = Number(lockEpoch);
+    const unlock = Number(unlockAtMs);
+    if (Number.isInteger(epoch) && epoch >= 0) out.lockEpoch = epoch;
+    if (unlock > 0) out.unlockAtMs = unlock;
+    if (out.commit) {
+      const base = admitBaseFromAddress(to);
+      Object.assign(out, attachAdmitPub(out, {
+        admitBase: base || undefined,
+        spendSeed: spendSeed || undefined,
+      }));
+    }
+  }
   return {
     id,
     programId: RESERVE_PROGRAM,
@@ -785,7 +1722,7 @@ export function lockTx({ from, to, nanos, id }) {
     portalId: portalIdFromDest(to),
     payoutPortalId: portalIdFromDest(from),
     vin: [vinDest20(from)],
-    vout: [sealedReserveVout(to, n, KIND_LOCK)],
+    vout: [out],
   };
 }
 
@@ -811,6 +1748,80 @@ export function withdrawTx({ from, to, nanos, id, nonce } = {}) {
   };
   if (blindNonce) tx.withdrawNonce = Buffer.from(blindNonce).toString('hex');
   return tx;
+}
+
+/**
+ * A posted claim fee. Null means the caller did not choose one.
+ * Zero is a choice. A negative or a non-integer is not.
+ */
+function chosenClaimFee(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'bigint') {
+    if (raw < 0n || raw > 9007199254740991n) return null;
+    return Number(raw);
+  }
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!/^\d+$/.test(t)) return null;
+    return chosenClaimFee(BigInt(t));
+  }
+  const n = Math.floor(Number(raw));
+  if (!Number.isSafeInteger(n) || n < 0) return null;
+  return n;
+}
+
+/**
+ * Absent fee is the weight floor, raised until it covers the fee digits.
+ * A caller fee is kept. The mempool ranks that bid by fee rate, and
+ * consensus rejects a bid under the floor or over the levy cap.
+ */
+function bindClaimFee(tx, chosen) {
+  const bid = chosenClaimFee(chosen);
+  if (bid != null) {
+    tx.fee = bid;
+    return tx;
+  }
+  let fee = levyNanos(0, { tx });
+  tx.fee = fee;
+  for (let i = 0; i < 8; i += 1) {
+    const need = levyNanos(0, { tx });
+    if (fee >= need) break;
+    fee = need;
+    tx.fee = fee;
+  }
+  return tx;
+}
+
+/**
+ * Claim one reward into `to`. `to` is not the lock dest.
+ * The nullifier, the amount, and the proof are the public link to the root.
+ * `fee` is the same user bid a send posts. Omit it and the weight floor is used.
+ * The claim does not expire.
+ */
+export function rewardClaimTx({ to, nanos, nullifier, proof, id, spendSeed = null, fee = null } = {}) {
+  const n = exactFloorNanos(nanos);
+  const out = sealedReserveVout(to, n, KIND_REWARD_CLAIM);
+  delete out.portalId;
+  if (out.commit) {
+    const base = admitBaseFromAddress(to);
+    Object.assign(out, attachAdmitPub(out, {
+      admitBase: base || undefined,
+      spendSeed: spendSeed || undefined,
+    }));
+  }
+  const tx = {
+    id,
+    programId: RESERVE_PROGRAM,
+    mint: true,
+    kind: KIND_REWARD_CLAIM,
+    to,
+    nanos: n,
+    nullifier: String(nullifier || '').toLowerCase(),
+    proof: Array.isArray(proof) ? proof : [],
+    vin: [],
+    vout: [out],
+  };
+  return bindClaimFee(tx, fee);
 }
 
 export function voteTx({ from, dest, choice, id }) {
@@ -1029,6 +2040,22 @@ export function reserveDigestSuffix(tx) {
   return Buffer.concat(parts);
 }
 
+/** Binds the nullifier, the amount, and the proof. The lock dest is not in it. */
+export function rewardClaimDigestSuffix(tx) {
+  if (txKind(tx) !== KIND_REWARD_CLAIM) return null;
+  const id = Buffer.from(String(tx?.nullifier || ''), 'hex');
+  if (id.length !== 32) return Buffer.from('rewardclaim-bad');
+  const steps = Array.isArray(tx?.proof) ? tx.proof : [];
+  const parts = [Buffer.from('rewardclaim1'), id, i64le(tx?.nanos)];
+  for (const step of steps) {
+    const side = step?.side === 'L' ? 1 : 0;
+    const hash = Buffer.from(String(step?.hash || ''), 'hex');
+    if (hash.length !== 32) return Buffer.from('rewardclaim-bad');
+    parts.push(Buffer.from([side]), hash);
+  }
+  return Buffer.concat(parts);
+}
+
 export function txIsReserveAction(tx) {
   if (!tx || tx.coinbase) return false;
   return canonicalReserveFields(tx) != null;
@@ -1040,6 +2067,8 @@ export function verifyReservePayout(state, tx, clockMs) {
   if (!state) return { ok: false, reason: 'no_vault' };
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   if (act.kind === KIND_LOCK) {
+    const stamp = lockStampRejected(state, tx, clockMs);
+    if (stamp) return stamp;
     if (act.opened === false) return { ok: false, reason: 'bad_amount' };
     if (!(act.nanos > 0)) return { ok: false, reason: 'bad_amount' };
     if (act.dest && isShearAddress(act.dest)) return { ok: false, reason: 'shear1' };
@@ -1049,7 +2078,6 @@ export function verifyReservePayout(state, tx, clockMs) {
   if (String(tx?.programId || '') !== RESERVE_PROGRAM) {
     return { ok: false, reason: 'mint_forbidden' };
   }
-  if (act.opened === false) return { ok: false, reason: 'mint_amount' };
   const p = act.portalId ? state?.portals?.[act.portalId] : null;
   if (act.payoutPortalId && p?.payoutPortalId && act.payoutPortalId !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
@@ -1061,15 +2089,20 @@ export function verifyReservePayout(state, tx, clockMs) {
     return { ok: false, reason: 'shear1' };
   }
   const clock = Number(clockMs);
-  if (!Number.isFinite(clock) || clock <= 0 || !state?.epochStartMs || clock < state.epochStartMs + epochMs(state.magic)) {
+  if (!Number.isFinite(clock) || clock <= 0 || settlementIndex(state, clock) <= 0) {
     return { ok: false, reason: 'epoch_open' };
   }
   if (!p) return { ok: false, reason: 'empty' };
-  const principal = asNum(asBig(p.staked) + asBig(p.idle));
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
+  if (arrivalEpochOpen(state, p, clock)) return { ok: false, reason: 'epoch_open' };
+  const principal = nanosOut(maturedPrincipal(state, p, clock));
+  const interest = portalEpochInterest(state, p, clock);
+  const published = publicActionNanos(tx, (tx?.vout || []).find((row) => String(row?.kind || '') === KIND_WITHDRAW) || tx?.vout?.[0]);
+  if (published != null && published < principal) return { ok: false, reason: 'principal_short' };
+  if (act.opened === false) return { ok: false, reason: 'mint_amount' };
+  if (act.nanos < principal) return { ok: false, reason: 'principal_short' };
   if (act.nanos > principal + interest) return { ok: false, reason: 'over_mint' };
   if (act.nanos !== principal + interest) return { ok: false, reason: 'mint_amount' };
-  const mintId = withdrawMintId(p.id || act.portalId, state.currentEpoch);
+  const mintId = withdrawMintId(p.id || act.portalId, mintEpoch(state, clock));
   if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
   return { ok: true };
 }
@@ -1086,6 +2119,8 @@ export function unitsAlongChain({
   fork = [],
   vault = null,
   timeOf = null,
+  magic = null,
+  activationHeight = undefined,
 } = {}) {
   const units = [];
   const rows = Array.isArray(history) ? history : [];
@@ -1094,7 +2129,17 @@ export function unitsAlongChain({
     units.push(hashBonusUnitNanos(recorded));
   }
   const trial = vault || emptyVault();
+  const bookMagic = magic || trial.magic || MAGIC_TESTNET;
+  if (magic) trial.magic = String(magic);
   const blocks = Array.isArray(fork) ? fork : [];
+  const priorChain = rows.slice();
+  let genesisWalk = 0;
+  if (priorChain.length) {
+    try {
+      const headMs = typeof timeOf === 'function' ? Number(timeOf(priorChain[0])) || 0 : 0;
+      if (headMs > 0) genesisWalk = headMs;
+    } catch { /* first header is not readable */ }
+  }
   for (let i = 0; i < blocks.length; i += 1) {
     const block = blocks[i];
     units.push(hashBonusUnitNanos(trial.liveHashBonusNanos));
@@ -1104,7 +2149,33 @@ export function unitsAlongChain({
     } catch {
       nowMs = 0;
     }
-    const applied = applyReserveBlock({ state: trial, block, nowMs });
+    const parent = priorChain.length ? priorChain[priorChain.length - 1] : null;
+    let parentMs = 0;
+    if (parent) {
+      try {
+        parentMs = typeof timeOf === 'function' ? Number(timeOf(parent)) || 0 : 0;
+      } catch {
+        parentMs = 0;
+      }
+    }
+    if (!(genesisWalk > 0)) {
+      const head = priorChain[0] || block;
+      try {
+        const headMs = typeof timeOf === 'function' ? Number(timeOf(head)) || 0 : 0;
+        if (headMs > 0 && (Number(head?.height) === 1 || priorChain.length === 0)) genesisWalk = headMs;
+      } catch { /* genesis stays 0 until a readable header */ }
+    }
+    const fields = reserveApplyFields({
+      prior: priorChain,
+      block,
+      magic: bookMagic,
+      parentMs,
+      genesisMs: genesisWalk,
+      nowMs,
+    });
+    if (activationHeight !== undefined) fields.activationHeight = activationHeight;
+    const applied = applyReserveBlock({ state: trial, ...fields });
+    priorChain.push(block);
     if (applied && applied.ok === false) {
       return { ok: false, reason: applied.reason || 'epoch_open', units, at: rows.length + i };
     }
@@ -1169,7 +2240,19 @@ function finishReserveApply(results) {
   return results;
 }
 
-export function applyReserveBlock({ state, block, nowMs }) {
+export function applyReserveBlock({
+  state,
+  block,
+  nowMs,
+  oracleWindow = null,
+  oracleWindowSize = null,
+  activationHeight = ORACLE_ACTIVATION_HEIGHT,
+  height = null,
+  parentMs = 0,
+  genesisMs = 0,
+  holdEpoch = false,
+  requireStakeReward = false,
+} = {}) {
   if (!state || state.blankFork) return [];
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const observeGate = coinbaseObserveRejected(txs);
@@ -1179,21 +2262,93 @@ export function applyReserveBlock({ state, block, nowMs }) {
   const results = [];
   // First block whose time is past the epoch collates votes into the live
   // hash bonus. Winning plurality moves the bonus by ±1. Height is unchanged.
+  state.oracleActivationHeight = activationHeight;
+  if (height != null) state.oracleHeight = Math.floor(Number(height) || 0);
+  const blockHeight = Math.floor(Number(height ?? block?.height ?? state.oracleHeight ?? 0));
+  const rule = oracleRuleAt(blockHeight, { activationHeight });
+  // One clock. The first positive chain genesis wins. A later block must
+  // not move it, and a lock never installs one.
+  if (Number(genesisMs) > 0 && !(Number(state.genesisMs) > 0)) {
+    state.genesisMs = Number(genesisMs);
+  }
+  const clockGenesis = Number(state.genesisMs) || 0;
+  const boundary = isReportBoundary({
+    headerMs: nowMs,
+    parentMs,
+    genesisMs: clockGenesis,
+    magic: state.magic || MAGIC_TESTNET,
+  });
+  const coinbase = txs.find((t) => t?.coinbase);
+  // The commit's epochIndex is the vortex index of this header. 999, a
+  // negative, the previous index, or the next index are not that epoch.
+  // Before genesis the derived index is 0, so a pre-open epoch is refused.
+  if (rule === 'median3b' && coinbase?.rateCommit && typeof coinbase.rateCommit === 'object') {
+    const derived = derivedCommitIndex(nowMs, clockGenesis, state.magic || MAGIC_TESTNET);
+    const stated = statedEpochIndex(coinbase.rateCommit.epochIndex);
+    if (stated == null || stated !== derived) {
+      return finishReserveApply([{ ok: false, reason: 'rate_commit', action: 'rate' }]);
+    }
+  }
+  if (rule === 'median3b' && boundary && coinbase) {
+    const commit = coinbase.rateCommit;
+    const prev = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
+    const expected = epochBpsFromReports(prev, oracleWindow || [], {
+      windowSize: oracleWindowSize,
+    });
+    if (!commit || Math.floor(Number(commit.epochBps)) !== expected) {
+      return finishReserveApply([{ ok: false, reason: 'rate_commit', action: 'rate' }]);
+    }
+    // Queue by chain epoch. A later boundary must not erase an earlier commit:
+    // the stake sat through that epoch and a withdraw pays it at that rate.
+    const epochIdx = derivedCommitIndex(nowMs, clockGenesis, state.magic || MAGIC_TESTNET);
+    if (!state.pendingRates) state.pendingRates = Object.create(null);
+    const queued = state.pendingRates[epochIdx];
+    if (queued != null && Math.floor(Number(queued)) !== expected) {
+      return finishReserveApply([{ ok: false, reason: 'rate_commit', action: 'rate' }]);
+    }
+    state.pendingRates[epochIdx] = expected;
+    state.nextEpochBps = expected;
+    state.rateEpochIndex = epochIdx;
+  }
+  // Roll before the block's rows when the previous epoch is already
+  // enacted, so this epoch's open adopts the queued rate. The enacting
+  // block itself does not roll: it still settles the epoch that ended.
+  if (state.bonusEnacted && !holdEpoch) syncVaultEpoch(state, nowMs);
   if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     const did = enact({ state, nowMs });
     results.push({ action: 'enact', ...did });
     if (!did.ok) return finishReserveApply(results);
   }
+  const credited = applyStakeRewards(state, block, nowMs, { require: requireStakeReward });
+  if (!credited.ok) {
+    return finishReserveApply([{ ok: false, reason: credited.reason || 'stake_reward', action: 'stake-reward' }]);
+  }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
   const reservePaid = openedReserveFeeNanos(cb);
   if (reservePaid > 0) creditFeeBank(state, reservePaid);
+  state.deferEpochRoll = true;
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
     reserveApplyCount += 1;
+    if (txKind(tx) === KIND_REWARD_CLAIM) {
+      const got = applyRewardClaim(state, tx);
+      results.push({ action: KIND_REWARD_CLAIM, ...got });
+      if (!got.ok) {
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
+      continue;
+    }
     const act = reserveAction(tx);
     if (!act || act.opened === false) continue;
     if (act.kind === KIND_LOCK) {
+      const stamp = lockStampRejected(state, tx, nowMs);
+      if (stamp) {
+        results.push({ action: KIND_LOCK, ...stamp });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
       const got = deposit({
         state,
         portalId: act.portalId,
@@ -1205,7 +2360,11 @@ export function applyReserveBlock({ state, block, nowMs }) {
         ownerPub: tx.spendPub,
       });
       results.push({ action: KIND_LOCK, ...got });
-      if (!got.ok) return finishReserveApply(results);
+      if (!got.ok) {
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
+      bindLockNote(state, act.portalId, tx, nowMs);
       continue;
     }
     if (act.kind === KIND_VOTE) {
@@ -1217,7 +2376,10 @@ export function applyReserveBlock({ state, block, nowMs }) {
         nowMs,
       });
       results.push({ action: KIND_VOTE, ...got });
-      if (!got.ok) return finishReserveApply(results);
+      if (!got.ok) {
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
       continue;
     }
     if (act.kind === KIND_WITHDRAW) {
@@ -1230,9 +2392,13 @@ export function applyReserveBlock({ state, block, nowMs }) {
         payoutPortalId: act.payoutPortalId,
       });
       results.push({ action: KIND_WITHDRAW, ...got });
-      if (!got.ok) return finishReserveApply(results);
+      if (!got.ok) {
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
     }
   }
+  state.deferEpochRoll = false;
   const sealed = parseCoinbaseObserve(cb?.coinbase ? cb : null);
   if (sealed.observe) state.sealedObserve = sealed.observe;
   return finishReserveApply(results);
@@ -1248,7 +2414,33 @@ function trialBlock(rows, block) {
   return block && Array.isArray(block.txs) ? block : { txs: rows };
 }
 
-function trialInPlace(state, rows, block, nowMs) {
+/**
+ * Consensus passes an explicit genesis, and 0 means the clock is unpinned.
+ * A trial that omits the argument has no chain header. Use its nowMs so a
+ * lock on that trial can pin, which is what the in-place undo hit does.
+ * A vault that already has a clock keeps it.
+ */
+function trialClock(state, nowMs, genesisMs) {
+  if (genesisMs != null && genesisMs !== '') return Number(genesisMs) || 0;
+  if (Number(state?.genesisMs) > 0) return 0;
+  const now = Number(nowMs) || 0;
+  return now > 0 ? now : 0;
+}
+
+function oracleForward(src = {}) {
+  const out = {
+    oracleWindow: src.oracleWindow ?? null,
+    oracleWindowSize: src.oracleWindowSize ?? null,
+    height: src.height ?? src.block?.height ?? null,
+    parentMs: Number(src.parentMs) || 0,
+    genesisMs: Number(src.genesisMs) || 0,
+  };
+  if (src.activationHeight !== undefined) out.activationHeight = src.activationHeight;
+  else if (src.oracleActivationHeight !== undefined) out.activationHeight = src.oracleActivationHeight;
+  return out;
+}
+
+function trialInPlace(state, rows, block, nowMs, oracle = {}) {
   const snap = snapTrial(state);
   const frame = {
     state,
@@ -1264,6 +2456,8 @@ function trialInPlace(state, rows, block, nowMs) {
       state,
       block: trialBlock(rows, block),
       nowMs: Number(nowMs) || 0,
+      requireStakeReward: !!oracle.requireStakeReward,
+      ...oracleForward(oracle),
     });
   } catch (err) {
     restoreTrial(state, snap, frame);
@@ -1285,20 +2479,51 @@ function trialInPlace(state, rows, block, nowMs) {
   return { ok: true, state };
 }
 
-export function trialReserveApply({ state, txs, block, nowMs, inPlace = false } = {}) {
+export function trialReserveApply({
+  state,
+  txs,
+  block,
+  nowMs,
+  inPlace = false,
+  oracleWindow = null,
+  oracleWindowSize = null,
+  activationHeight = undefined,
+  oracleActivationHeight = undefined,
+  height = null,
+  parentMs = 0,
+  genesisMs = null,
+  requireStakeReward = false,
+} = {}) {
   const rows = Array.isArray(txs) ? txs : (Array.isArray(block?.txs) ? block.txs : []);
-  if (!rows.some(txIsReserveAction)) return { ok: true };
+  const oracle = {
+    oracleWindow,
+    oracleWindowSize,
+    activationHeight,
+    oracleActivationHeight,
+    height,
+    parentMs,
+    genesisMs: trialClock(state, nowMs, genesisMs),
+    block,
+  };
+  const rewardBlock = trialBlock(rows, block);
+  const rewardTouch = blockRewardRoot(rewardBlock) || stakeRewardNotesOf(rewardBlock).length
+    || rows.some((tx) => txKind(tx) === KIND_REWARD_CLAIM);
+  if (!rows.some(txIsReserveAction) && !requireStakeReward && !rewardTouch) {
+    return { ok: true };
+  }
   if (!state) return { ok: false, reason: 'no_vault' };
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   // The carried vault is already a private copy. Mutate it and undo a miss.
   // Any other caller, including consensus, still gets one clone so the live
   // vault cannot change inside a check that discards the trial.
-  if (inPlace) return trialInPlace(state, rows, block, nowMs);
+  if (inPlace) return trialInPlace(state, rows, block, nowMs, { ...oracle, requireStakeReward });
   const trial = cloneVault(state);
   const applied = applyReserveBlock({
     state: trial,
-    block: trialBlock(rows, block),
+    block: rewardBlock,
     nowMs: Number(nowMs) || 0,
+    requireStakeReward,
+    ...oracleForward(oracle),
   });
   if (applied && applied.ok === false) {
     return { ok: false, reason: applied.reason || 'epoch_open' };
@@ -1358,32 +2583,41 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
-  if (!state.epochStartMs || nowMs < state.epochStartMs + epochMs(state.magic)) {
+  // Completed deposits can be withdrawn on any later block. Each credit
+  // unlocks at the end of its own lock epoch. A later top-up does not
+  // re-lock principal whose epoch has already ended.
+  if (settlementIndex(state, nowMs) <= 0) {
     return { ok: false, reason: 'epoch_open' };
   }
-  if (!state.bonusEnacted) {
+  if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     const did = enact({ state, nowMs });
     if (!did.ok) return did;
   }
   const p = portalOf(state, id);
+  if (rewardAlreadyMinted(state, p, nowMs)) return { ok: false, reason: 'double_mint' };
+  if (rewardReserved(state, p.id)) return { ok: false, reason: 'double_mint' };
   if (payoutPortalId && p.payoutPortalId && String(payoutPortalId).toLowerCase() !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
   }
   if (p.payout && payout && isDestAddress(payout) && payout !== p.payout) {
     return { ok: false, reason: 'payout_mismatch' };
   }
-  const staked = asNum(p.staked);
-  const idle = asNum(p.idle);
-  const principal = staked + idle;
-  if (principal <= 0) return { ok: false, reason: 'empty' };
+  const staked = asBig(p.staked);
+  const idle = asBig(p.idle);
+  if (staked + idle <= 0n) return { ok: false, reason: 'empty' };
+  if (arrivalEpochOpen(state, p, nowMs)) return { ok: false, reason: 'epoch_open' };
+  const release = maturedPrincipal(state, p, nowMs);
+  if (release <= 0n) return { ok: false, reason: 'epoch_open' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
-  const interest = reserveInterestNanos(p.staked, state.epochBps);
-  const mintId = withdrawMintId(p.id, state.currentEpoch);
+  settlePortal(state, p, nowMs);
+  const interest = capReward(p.accruedReward);
+  p.accruedReward = 0n;
+  const mintId = withdrawMintId(p.id, mintEpoch(state, nowMs));
   if (state.mintedIds && state.mintedIds[mintId]) {
     return { ok: false, reason: 'double_mint' };
   }
   let mint = null;
-  if (interest > 0) {
+  if (interest > 0n) {
     const paid = payoutStakeReward({
       state,
       reward: interest,
@@ -1394,6 +2628,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!paid.ok) return { ok: false, reason: paid.reason };
     mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
     if (!mint.ok) return { ok: false, reason: mint.reason };
+    state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + interest;
   } else if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' })) {
     return { ok: false, reason: 'mint_forbidden' };
   } else {
@@ -1401,10 +2636,21 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     rememberMint(state, mintId);
     state.mintedIds[mintId] = true;
   }
-  state.totalLockedNanos = asBig(state.totalLockedNanos) - asBig(principal);
+  state.totalLockedNanos = asBig(state.totalLockedNanos) - release;
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
-  p.redeemedNanos = asBig(p.redeemedNanos) + asBig(principal);
-  if (Number(p.voteEpoch || 0) === Number(state.currentEpoch || 0)) {
+  p.redeemedNanos = asBig(p.redeemedNanos) + release;
+  const chain = chainEpochIndex(state, nowMs);
+  if (Array.isArray(p.tranches) && p.tranches.length) {
+    p.tranches = p.tranches.filter((tranche) => chain <= Math.floor(Number(tranche.epoch) || 0));
+  }
+  let fromStaked = release >= staked ? staked : release;
+  let fromIdle = release - fromStaked;
+  if (fromIdle > idle) fromIdle = idle;
+  p.staked = staked - fromStaked;
+  p.idle = idle - fromIdle;
+  const remain = asBig(p.staked) + asBig(p.idle);
+  const stillVoter = remain >= BigInt(PI_SHE_NANOS);
+  if (!stillVoter && Number(p.voteEpoch || 0) === Number(state.currentEpoch || 0)) {
     if (p.vote === VOTE_INCREASE && Number(state.votes.increase) > 0) state.votes.increase -= 1;
     if (p.vote === VOTE_DECREASE && Number(state.votes.decrease) > 0) state.votes.decrease -= 1;
     if (p.vote === VOTE_HOLD && Number(state.votes.hold) > 0) state.votes.hold -= 1;
@@ -1412,27 +2658,37 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (Number(state.votes.increase) < 0) state.votes.increase = 0;
   if (Number(state.votes.decrease) < 0) state.votes.decrease = 0;
   if (Number(state.votes.hold) < 0) state.votes.hold = 0;
-  p.staked = 0n;
-  p.idle = 0n;
-  p.joined = false;
-  p.vote = null;
-  p.voteEpoch = 0;
-  p.payout = null;
+  if (remain <= 0n) {
+    p.staked = 0n;
+    p.idle = 0n;
+    p.tranches = [];
+    p.rewardEpoch = null;
+    p.joined = false;
+    p.vote = null;
+    p.voteEpoch = 0;
+    p.payout = null;
+  } else if (!stillVoter) {
+    p.joined = false;
+    p.vote = null;
+    p.voteEpoch = 0;
+  }
+  const shownInterest = nanosOut(interest);
+  const shownPrincipal = nanosOut(release);
   return {
     ok: true,
-    principal,
-    staked,
-    idle,
-    interest,
-    payout: principal + interest,
+    principal: shownPrincipal,
+    staked: nanosOut(fromStaked),
+    idle: nanosOut(fromIdle),
+    interest: shownInterest,
+    reward: shownInterest,
+    rewardSource: interest > 0n ? 'coinbase' : undefined,
+    payout: nanosOut(release + interest),
     to,
     mint,
     programId: RESERVE_PROGRAM,
     kind: KIND_WITHDRAW,
   };
 }
-
-const INTEREST_U64 = 0xffffffffffffffffn;
 
 function exactBi(n) {
   if (typeof n === 'bigint') return n >= 0n ? n : null;
@@ -1478,13 +2734,14 @@ function declaredLockNanos(tx) {
 /**
  * One forward pass over the block. Each withdraw is checked on the vault
  * after the earlier txs, before that withdraw clears the stake.
- * Opened must be principal + permitted. The vault's own interest must be
- * that permitted amount, and the mint must be that interest.
+ * Opened must be the matured principal plus permitted. A top-up whose
+ * own epoch is still open is not part of that principal. The vault's own
+ * interest must be that permitted amount, and the mint must be that interest.
  * Locked-in is the sum of the lock txs in this block, not the change in the
  * vault's own total. Start plus those amounts must equal principal out plus
  * what is still locked. Offsetting receipts cannot cancel across the block.
  */
-function walkWithdrawInterest(vault, block, nowMs) {
+function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
   const rows = withdrawRowsOf(block);
   if (!rows.length) return { ok: true, minted: 0n, permitted: 0n };
   if (!vault || vault.blankFork) return { ok: false, reason: 'supply' };
@@ -1498,8 +2755,9 @@ function walkWithdrawInterest(vault, block, nowMs) {
   let permittedSum = 0n;
   let from = 0;
   let counted = 0;
+  let started = false;
   const fail = () => ({ ok: false, reason: 'supply' });
-  const applySlice = (slice) => {
+  const applySlice = (slice, holdEpoch = false) => {
     if (!slice.length) return true;
     let declared = 0n;
     for (const tx of slice) {
@@ -1510,8 +2768,10 @@ function walkWithdrawInterest(vault, block, nowMs) {
     const before = asBig(state.totalLockedNanos);
     const applied = applyReserveBlock({
       state,
-      block: { txs: slice },
+      block: { txs: slice, height: block?.height },
       nowMs: clock,
+      holdEpoch,
+      ...oracleForward({ ...oracle, block }),
     });
     if (!applied || applied.ok !== true) return false;
     const after = asBig(state.totalLockedNanos);
@@ -1521,24 +2781,30 @@ function walkWithdrawInterest(vault, block, nowMs) {
   };
   for (let i = 0; i < txs.length; i += 1) {
     if (!isWithdrawTx(txs[i])) continue;
-    if (!applySlice(txs.slice(from, i))) return fail();
+    const prefix = txs.slice(from, i);
+    if (prefix.length) {
+      if (!applySlice(prefix, started)) return fail();
+      started = true;
+    }
     from = i + 1;
     const act = reserveAction(txs[i]);
     if (!act || act.opened !== true) return fail();
     const portal = act.portalId ? state.portals?.[act.portalId] : null;
-    const staked = portal?.staked ?? 0n;
-    const idle = portal?.idle ?? 0n;
-    const principal = exactBi(asNum(asBig(staked) + asBig(idle)));
-    const bps = state.epochBps ?? GENESIS_BPS;
-    const permitted = exactBi(reserveInterestNanos(staked, bps));
+    const principal = exactBi(maturedPrincipal(state, portal, clock));
+    const permitted = exactBi(portalEpochInterest(state, portal, clock));
     const opened = exactBi(act.nanos);
     if (principal == null || permitted == null || opened == null) return fail();
     if (opened !== principal + permitted) return fail();
+    // The first slice is the start of this block. Later slices, including a
+    // second withdraw, stay on the epoch that slice enacted.
     const applied = applyReserveBlock({
       state,
-      block: { txs: [txs[i]] },
+      block: { txs: [txs[i]], height: block?.height },
       nowMs: clock,
+      holdEpoch: started,
+      ...oracleForward({ ...oracle, block }),
     });
+    started = true;
     if (!applied || applied.ok !== true) return fail();
     const got = [];
     for (const row of applied) {
@@ -1554,10 +2820,10 @@ function walkWithdrawInterest(vault, block, nowMs) {
     minted += opened - principal;
     permittedSum += permitted;
     principalOut += principal;
-    if (minted > INTEREST_U64 || permittedSum > INTEREST_U64) return fail();
+    if (minted > REWARD_U64 || permittedSum > REWARD_U64) return fail();
     counted += 1;
   }
-  if (!applySlice(txs.slice(from))) return fail();
+  if (!applySlice(txs.slice(from), started)) return fail();
   if (counted !== rows.length) return fail();
   const endLocked = asBig(state.totalLockedNanos);
   if (startLocked + locksIn !== endLocked + principalOut) return fail();
@@ -1570,8 +2836,34 @@ function walkWithdrawInterest(vault, block, nowMs) {
  * schedule on the pre-withdraw vault, and the mint equals that interest.
  * No withdraw is zero and does not need a vault.
  */
-export function blockWithdrawInterest(vault, block, nowMs) {
-  const walked = walkWithdrawInterest(vault, block, nowMs);
+/**
+ * Coinbase carries a root, not a mint. Supply grows only by claim outputs.
+ * Unclaimed rows stay out of minted and permitted interest.
+ */
+export function stakeRewardSupply(vault, block, nowMs) {
+  if (stakeRewardNotesOf(block).length) return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+  const got = blockRewardRoot(block);
+  if (got === 'bad') return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+  const state = vault ? cloneVault(vault) : emptyVault();
+  if (state.blankFork) return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+  if (got) {
+    const committed = applyStakeRewards(state, block, nowMs, { require: true });
+    if (!committed.ok || committed.skipped) {
+      return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+    }
+  }
+  let claimed = 0n;
+  for (const tx of Array.isArray(block?.txs) ? block.txs : []) {
+    if (!tx || tx.coinbase || txKind(tx) !== KIND_REWARD_CLAIM) continue;
+    const paid = applyRewardClaim(state, tx);
+    if (!paid.ok) return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+    claimed += BigInt(paid.nanos);
+  }
+  return { ok: true, minted: 0n, permitted: 0n, claimed };
+}
+
+export function blockWithdrawInterest(vault, block, nowMs, oracle = {}) {
+  const walked = walkWithdrawInterest(vault, block, nowMs, oracle);
   if (!walked.ok) return { ok: false, reason: walked.reason || 'supply' };
   return { ok: true, nanos: walked.minted };
 }
@@ -1580,8 +2872,8 @@ export function blockWithdrawInterest(vault, block, nowMs) {
  * Interest the bps schedule allows for this block's withdraws.
  * One forward pass, the same pre-withdraw vault blockWithdrawInterest uses.
  */
-export function blockPermittedInterest(vault, block, nowMs) {
-  const walked = walkWithdrawInterest(vault, block, nowMs);
+export function blockPermittedInterest(vault, block, nowMs, oracle = {}) {
+  const walked = walkWithdrawInterest(vault, block, nowMs, oracle);
   if (!walked.ok) return { ok: false, reason: walked.reason || 'supply' };
   return { ok: true, nanos: walked.permitted };
 }

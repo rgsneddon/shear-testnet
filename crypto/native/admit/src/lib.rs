@@ -1,10 +1,13 @@
-//! ADMITv2 native: Pasta Curve Trees membership + ristretto C select-and-rerandomize + BP+.
+//! Legacy Pasta admit crate: Curve Trees on Pallas–Vesta, leaf `shear-admit-leaf-v2`, arity 32,
+//! plus ristretto C select-and-rerandomize and BP+.
+//! The live fingerprint is FS-1 Selene/Helios (`ADMIT_CYCLE` in shear-fs1). Removal is a follow-up.
 //! Verify returns 0/1, never panics across the C ABI.
 
 #![allow(non_snake_case)]
 
 mod bpplus;
 mod fe25519;
+pub mod fs1;
 mod gadget;
 mod ipa;
 mod leaf;
@@ -15,7 +18,7 @@ mod tree;
 
 pub use bpplus::{prove_range, verify_range, RANGE_BITS};
 pub use leaf::{c_leaf_scalar, dest_leaf_fp, DST_LEAF};
-pub use prove::{admit_prove_v3, admit_verify_v3, MAX_PROOF, MAX_PROOF_V3};
+pub use prove::{admit_prove_v3, admit_verify_v3, max_fs1_blob, MAX_PROOF};
 pub use tree::{c_root, jroot, jroot_point, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -194,7 +197,7 @@ pub extern "C" fn shear_admit_frontier_append(
     .unwrap_or(BAD)
 }
 
-/// v3 prove. `ctx` is 64 bytes. Returns proof length, or 0. `out` holds MAX_PROOF_V3.
+/// v3 prove. `ctx` is 64 bytes. Returns proof length, or 0. `out` holds the legacy v3 wire cap.
 /// Wallet builds leave `admit-v3` off, so this symbol is not in the cdylib.
 #[cfg(feature = "admit-v3")]
 #[no_mangle]
@@ -239,7 +242,7 @@ pub extern "C" fn shear_admit_prove_v3(
         }
         match admit_prove_v3(&x_b, &p_b, &c_b, &t_b, index as usize, dest, cs, n, ctx_b) {
             Some((ct, proof)) => {
-                if proof.len() > MAX_PROOF_V3 {
+                if proof.len() > prove::v3_legacy_cap() {
                     return BAD;
                 }
                 unsafe {
@@ -566,7 +569,7 @@ mod tests {
         )
         .expect("v3");
         assert_eq!(proof[0], 3);
-        assert!(proof.len() <= MAX_PROOF_V3);
+        assert!(proof.len() <= prove::v3_legacy_cap());
         let tag = proof_spend_tag(&proof).expect("v3 tag");
         assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
         let kids = leaf_dest_children(&dest_blob, n, idx);

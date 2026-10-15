@@ -39,11 +39,13 @@ import {
   bonusUnitsBefore,
   blockWithdrawInterest,
   blockPermittedInterest,
+  stakeRewardSupply,
   emptyVault,
   cloneVault,
   applyReserveBlock,
   txIsReserveAction,
 } from '../../crypto/reserve_vault.js';
+import { reserveApplyFields } from '../../crypto/reserve_oracle.js';
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -73,20 +75,34 @@ export function blockNeedsReserve(block) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
     if (txIsReserveAction(tx)) return true;
+    if (String(tx?.kind || tx?.vout?.[0]?.kind || '') === 'reward-claim') return true;
   }
+  const cb = txs.find((tx) => tx?.coinbase);
+  if (cb?.rewardRoot) return true;
   return false;
 }
 
 /** Vault after `block`, or null when this block does not touch a vault. */
-export function vaultAfterBlock(vault, block) {
+function vaultApply(state, block, prior) {
+  const parent = prior?.length ? prior[prior.length - 1] : null;
+  return applyReserveBlock({
+    state,
+    ...reserveApplyFields({
+      prior,
+      block,
+      magic: MAGIC_TESTNET,
+      parentMs: parent ? headerMs(parent) || 0 : 0,
+      genesisMs: headerMs(prior?.[0] || block) || 0,
+      nowMs: headerMs(block) || 0,
+    }),
+  });
+}
+
+export function vaultAfterBlock(vault, block, prior = []) {
   if (!vault && !blockNeedsReserve(block)) return { ok: true, vault: null };
   if (vault && vault.blankFork) return { ok: false, vault: null };
   const next = vault ? cloneVault(vault) : emptyVault();
-  const applied = applyReserveBlock({
-    state: next,
-    block,
-    nowMs: headerMs(block) || 0,
-  });
+  const applied = vaultApply(next, block, prior);
   if (!applied || applied.ok !== true) return { ok: false, vault: null };
   return { ok: true, vault: next };
 }
@@ -106,11 +122,7 @@ export function vaultBefore(blocks, index) {
   const end = Math.max(0, Math.min(Number(index) || 0, list.length));
   let vault = emptyVault();
   for (let i = 0; i < end; i += 1) {
-    const applied = applyReserveBlock({
-      state: vault,
-      block: list[i],
-      nowMs: headerMs(list[i]) || 0,
-    });
+    const applied = vaultApply(vault, list[i], list.slice(0, i));
     if (!applied || applied.ok !== true) return null;
   }
   return vault;
@@ -625,23 +637,26 @@ function accountBlock(prev, block, opts = {}) {
   state.dust = settled.dust;
   state.overflow = settled.overflow;
   state.carry = carryOut;
-  const publicTotal = potMinted + mintedHashHere + levy;
+  const reward = stakeRewardSupply(opts.vault, block, ts, opts.oracle);
+  if (!reward.ok) return { reason: reward.reason || 'supply', state };
+  const claimedReward = reward.claimed || 0n;
+  const publicTotal = potMinted + mintedHashHere + levy + reward.minted;
   const rememberRange = opts.rememberRange !== false;
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
   }
-  const interest = blockWithdrawInterest(opts.vault, block, ts);
+  const interest = blockWithdrawInterest(opts.vault, block, ts, opts.oracle);
   if (!interest.ok) return { reason: interest.reason || 'supply', state };
   // Schedule allowance is staked × epochBps per epoch, not a copy of the receipt.
-  const allowed = blockPermittedInterest(opts.vault, block, ts);
+  const allowed = blockPermittedInterest(opts.vault, block, ts, opts.oracle);
   if (!allowed.ok) return { reason: allowed.reason || 'supply', state };
-  if (state.mintedInterest + interest.nanos > U64) return { reason: 'supply', state };
-  if (state.permittedInterest + allowed.nanos > U64) return { reason: 'supply', state };
   state.mintedPot += potMinted;
   state.mintedHash += mintedHashHere;
   state.mintedLevy += levy;
-  state.mintedInterest += interest.nanos;
-  state.permittedInterest += allowed.nanos;
+  if (state.mintedInterest + interest.nanos + reward.minted + claimedReward > U64) return { reason: 'supply', state };
+  if (state.permittedInterest + allowed.nanos + reward.permitted + claimedReward > U64) return { reason: 'supply', state };
+  state.mintedInterest += interest.nanos + reward.minted + claimedReward;
+  state.permittedInterest += allowed.nanos + reward.permitted + claimedReward;
   const bReason = accountBLocked(state, block);
   if (bReason) return { reason: bReason, state };
   state.liveUnit = unit;

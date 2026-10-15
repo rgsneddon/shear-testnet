@@ -451,7 +451,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
     assert.equal(HASH_TX_LIVE, 1);
     assert.match(fp, /:1:/); // HASH_TX_LIVE pin stays 1
-    assert.match(fp, /INTEREST=epoch-bps-floor/);
+    assert.match(fp, /RESERVE_REWARD=epoch-bps-floor/);
+    assert.doesNotMatch(fp, /INTEREST=epoch-bps-floor/);
+    assert.doesNotMatch(fp, /RESERVE_INTEREST=/);
     assert.match(fp, /EPOCH_DAYS=4/);
     assert.match(fp, /POT_SCHED=lin-epoch/);
     assert.match(fp, /ORACLE=basket-mean-14/);
@@ -459,6 +461,11 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);
+    assert.match(fp, /RESERVE_RATE=epoch-fixed:quorum=10:genesis=284:floor=0:trim=2:root=/);
+    assert.match(fp, /RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2\/3:windowMain=6720:windowTest=67:windowMs=604800000:floorBps=0:sourceTenths=-1000\.\.100000:activation=fixed/);
+    assert.doesNotMatch(fp, /maxStep=/);
+    assert.doesNotMatch(fp, /process\.env/);
+    assert.doesNotMatch(fp, /RESERVE_RATE=epoch-vote/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v7/);
     assert.match(fp, /:4:17:/);
@@ -500,11 +507,12 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /KDF=argon2id-shewall/);
     assert.match(fp, /RESERVE=shear-reserve-v1/);
     assert.match(fp, /RESERVE_EVM=1/);
-    assert.match(fp, /RESERVE_INTEREST=4d-bps-floor/);
+    assert.match(fp, /RESERVE_REWARD=4d-bps-floor/);
     assert.match(fp, /VORTEX=vort1-pin/);
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
-    assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
+    assert.match(fp, /LEVY_SPLIT=100-finder-work,empty=public-finder-note/);
+    assert.doesNotMatch(fp, /LEVY_SPLIT=50-50-finder-reserve/);
     assert.match(fp, /ADMIT=ADMITv3/);
     assert.match(fp, /N1=admit-note-point/);
     assert.match(fp, /RANGE=packed-bit/);

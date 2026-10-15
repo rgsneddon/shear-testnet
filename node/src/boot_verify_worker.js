@@ -1,6 +1,10 @@
 /**
  * Boot-verify thread. stepLoaded runs here so the node event loop can
  * serve timers. Progress lines are posted; the parent writes stderr.
+ *
+ * verifyOpts is the full set the main thread passed to verifyLoadedChain.
+ * This file does not keep its own list of load options. burialOf is rebuilt
+ * from the integer tips the parent copied, because a function cannot cross.
  */
 import { parentPort, workerData } from 'node:worker_threads';
 import { verifyLoadedChain } from './chain.js';
@@ -17,22 +21,12 @@ function burialOfFromTips(tips) {
 
 function run() {
   try {
-    const tips = workerData.burialTips;
-    const opts = {
-      trustStoredHash: workerData.trustStoredHash === true,
-      nowMs: workerData.nowMs,
-      quiet: workerData.quiet === true,
-      burialOf: burialOfFromTips(tips),
-      onBlock: ({ height, total, line }) => {
-        parentPort.postMessage({ type: 'block', height, total, line });
-      },
+    const opts = { ...(workerData.verifyOpts || {}) };
+    const burialOf = burialOfFromTips(workerData.burialTips);
+    if (burialOf) opts.burialOf = burialOf;
+    opts.onBlock = ({ height, total, line }) => {
+      parentPort.postMessage({ type: 'block', height, total, line });
     };
-    if ('trustShareWork' in workerData) opts.trustShareWork = workerData.trustShareWork;
-    if ('genesisHash' in workerData) opts.genesisHash = workerData.genesisHash;
-    if ('checkpoint' in workerData) opts.checkpoint = workerData.checkpoint;
-    if ('fromIndex' in workerData) opts.fromIndex = workerData.fromIndex;
-    if ('prior' in workerData) opts.prior = workerData.prior;
-    if ('reorgHaltDepth' in workerData) opts.reorgHaltDepth = workerData.reorgHaltDepth;
     const result = verifyLoadedChain(workerData.blocks, opts);
     parentPort.postMessage({ type: 'result', result });
   } catch (err) {

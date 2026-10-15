@@ -376,11 +376,12 @@ One vote per portal per epoch. GUI: Vortex → The Reserve → Cast vote.
 shear rewards — staked + accrued Reserve rewards
 
   shear rewards                 print staked, idle, accrued, projected, claimable
-  shear rewards --claim         settle principal + extra-minted interest onto Copy dest
+  shear rewards --claim         settle principal and the Reserve reward onto Copy dest
   shear reserve claim           same as --claim
   shear reserve withdraw        same settlement (GUI unlock)
 
-400-day floor APR, oracle default 264 bps. Extra mint is Reserve-only.
+Lock issuance rate, frozen for the epoch. Extra mint is the Reserve reward only.
+Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.
 ''';
     case 'history':
       return 'shear history — Shearview rows (id, kind/type, height, confirmed)\n';
@@ -867,6 +868,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       if (amt == null) throw const FormatException('reserve lock needs --amount');
       final she = double.parse(amt);
       final from = dest;
+      final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
       final tx = await ledger.sendSpendableSum(
         from: from,
         to: dest,
@@ -877,6 +879,10 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
+        currentEpoch: clock == null ? null : reserve.currentEpoch,
+        epochStartMs: clock,
+        lockEpoch: clock == null ? null : reserve.currentEpoch,
+        unlockAtMs: clock == null ? null : clock + kReserveEpochMs,
       );
       reserve.deposit(dest: dest, she: she, nowMs: now);
       session.rememberedReserve = _portalSnap(reserve, dest, now);
@@ -999,9 +1005,11 @@ Future<int> _claimRewards(
   session.rememberedReserve = _portalSnap(reserve, dest, now);
   await session.persist();
   final she = (got['payout'] ?? 0) / kUnitsPerShe;
+  final shown = Map<String, Object?>.from(got);
+  shown['reserveReward'] = shown.remove('interest');
   out.writeln(flags.json
-      ? jsonEncode({'ok': true, 'payoutDest': payout, 'txid': posted.tx.id, 'kind': posted.tx.kind, ...got, 'payoutShe': formatShe(she)})
-      : 'claimed  principal=${got['principal']}  interest=${got['interest']}  onto $payout');
+      ? jsonEncode({'ok': true, 'payoutDest': payout, 'txid': posted.tx.id, 'kind': posted.tx.kind, ...shown, 'payoutShe': formatShe(she)})
+      : 'claimed  principal=${shown['principal']}  reserveReward=${shown['reserveReward']}  onto $payout');
   return 0;
 }
 

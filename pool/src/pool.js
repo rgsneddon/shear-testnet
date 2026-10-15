@@ -11,7 +11,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
-import { payeeFs1Ok } from '../../crypto/n1.js';
+import { payeeDecodeOk, payeeFs1Ok, payeeWillProbe } from '../../crypto/n1.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { destBoundShareHash, noteCommitOfShare, shareTargetByte } from '../../crypto/share_batch.js';
 import {
@@ -616,7 +616,12 @@ export function minerVersionAtLeast(version, min = SHEARK_MINER_VERSION) {
   return got.minor >= need.minor;
 }
 
-export function admitClient(params) {
+/**
+ * leaf: false decodes the payout dest only (payeeDecodeOk). The caller must
+ * then run payeeFs1Ok(payoutDest) itself, after its ban and budget checks.
+ */
+export function admitClient(params, { leaf = true } = {}) {
+  const payeeOk = leaf ? payeeFs1Ok : payeeDecodeOk;
   const client = String(params?.client || params?.algo || '');
   if (client !== CLIENT && client !== ALGO) {
     return { ok: false, reason: 'client_refused' };
@@ -640,7 +645,7 @@ export function admitClient(params) {
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
   if (isPaymentCode(dest)) {
     if (!payout) return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
-    if (!payeeFs1Ok(payout)) return { ok: false, reason: 'admit_note_point' };
+    if (!payeeOk(payout)) return { ok: false, reason: 'admit_note_point' };
     return {
       ok: true,
       login: payout,
@@ -650,7 +655,7 @@ export function admitClient(params) {
     };
   }
   const payee = payout || (isDestAddress(dest) ? dest : '');
-  if (payee && !payeeFs1Ok(payee)) return { ok: false, reason: 'admit_note_point' };
+  if (payee && !payeeOk(payee)) return { ok: false, reason: 'admit_note_point' };
   return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payee };
 }
 
@@ -747,6 +752,41 @@ export function sockIp(sock) {
   let a = String(sock?.remoteAddress || '');
   if (a.startsWith('::ffff:')) a = a.slice(7);
   return a;
+}
+
+function ipv6Groups(addr) {
+  const raw = String(addr || '').trim().toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
+  if (!raw.includes(':') || raw.includes('.')) return null;
+  const halves = raw.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  if (halves.length === 1 && left.length !== 8) return null;
+  const missing = 8 - left.length - right.length;
+  if (missing < 0) return null;
+  const full = halves.length === 2 ? [...left, ...Array(missing).fill('0'), ...right] : left;
+  if (full.length !== 8) return null;
+  const norm = [];
+  for (const h of full) {
+    if (!/^[0-9a-f]{1,4}$/.test(h)) return null;
+    norm.push(h.padStart(4, '0'));
+  }
+  return norm;
+}
+
+/** IPv4 /24 or IPv6 /48 key for the login budget. Empty when the address is not one of those. */
+export function loginBudgetPrefix(ip) {
+  let a = String(ip || '').trim();
+  if (a.startsWith('::ffff:')) a = a.slice(7);
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
+  if (v4) {
+    const o = v4.slice(1).map(Number);
+    if (o.some((n) => n > 255)) return '';
+    return `${o[0]}.${o[1]}.${o[2]}.0/24`;
+  }
+  const g = ipv6Groups(a);
+  if (!g) return '';
+  return `${g.slice(0, 3).join(':')}::/48`;
 }
 
 export function normalizeBanBook(raw, now = Date.now()) {
@@ -848,8 +888,8 @@ export function publicHtmlFile(host, pathname) {
   return p;
 }
 
-export function gateStratumLogin(params, { requireLoginAuth = false, boundAuthPub = '' } = {}) {
-  const adm = admitClient(params);
+export function gateStratumLogin(params, { requireLoginAuth = false, boundAuthPub = '', leaf = true } = {}) {
+  const adm = admitClient(params, { leaf });
   if (!adm.ok) return adm;
   if (!requireLoginAuth) return { ok: true, ...adm };
   const presented = String(params?.authPub || params?.spendPub || '');
@@ -953,9 +993,22 @@ export const ALERT_CONCENTRATION = Number(process.env.SHEAR_ALERT_CONCENTRATION 
 export const ALERT_SHARE_BLOCK = Number(process.env.SHEAR_ALERT_SHARE_BLOCK || 10_000) || 10_000;
 export const SUBMIT_PER_IP_MAX = Math.max(4, Number(process.env.SHEAR_SUBMIT_PER_IP_MAX || 32) || 32);
 export const SUBMIT_PER_IP_WINDOW_MS = Math.max(200, Number(process.env.SHEAR_SUBMIT_PER_IP_WINDOW_MS || 1000) || 1000);
-/** Fresh stratum logins per IP. A reconnect of a known worker is not counted. */
+/**
+ * Fresh stratum logins per IP. A reconnect of a known worker on the same
+ * payout dest is not counted. A login that will cold-probe a new dest is.
+ */
 export const LOGIN_PER_IP_MAX = Math.max(1, Number(process.env.SHEAR_LOGIN_PER_IP_MAX || 4) || 4);
 export const LOGIN_PER_IP_WINDOW_MS = Math.max(1000, Number(process.env.SHEAR_LOGIN_PER_IP_WINDOW_MS || 10_000) || 10_000);
+/** Distinct payout dests one socket may present. The window does not reset this. */
+export const LOGIN_DESTS_PER_SOCKET = Math.max(1, Number(process.env.SHEAR_LOGIN_DESTS_PER_SOCKET || LOGIN_PER_IP_MAX) || LOGIN_PER_IP_MAX);
+/**
+ * Fresh logins per IPv4 /24 and per IPv6 /48, on top of the per-IP budget.
+ * One address can still use its full per-IP budget. A spray across the prefix cannot.
+ */
+export const LOGIN_PER_PREFIX_MAX = Math.max(
+  LOGIN_PER_IP_MAX,
+  Number(process.env.SHEAR_LOGIN_PER_PREFIX_MAX || LOGIN_PER_IP_MAX * 4) || LOGIN_PER_IP_MAX * 4,
+);
 
 export function statsAlerts({
   topDestSharePct: pct,
@@ -1886,6 +1939,7 @@ export function createPool({
   }
   const ipSubmitAt = new Map();
   const ipLoginAt = new Map();
+  const prefixLoginAt = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
   let hashSeq = 0;
@@ -4640,7 +4694,17 @@ export function createPool({
     let buf = '';
     let session = null;
     let conn = null;
+    // A refused login ends the socket. Lines already buffered or still in
+    // flight are not parsed: each one could cost a decode or a leaf probe.
+    let refused = false;
+    const socketDests = new Set();
+    const refuse = (obj) => {
+      refused = true;
+      buf = '';
+      replyLine(sock, obj, { drop: true });
+    };
     sock.on('data', (chunk) => {
+      if (refused) return;
       buf += chunk.toString('utf8');
       if (buf.length > HTTP_BODY_MAX) {
         try { sock.destroy(); } catch { /* ignore */ }
@@ -4666,7 +4730,14 @@ export function createPool({
           || (params.login && method !== 'submit' && method !== 'job' && method !== 'stats'
             && method !== 2 && method !== '2');
         if (isLogin) {
-          const adm = gateStratumLogin(params, { requireLoginAuth, boundAuthPub });
+          // PSA-920-1. IP deny, then decode only, then dest ban, the per-socket
+          // dest cap, and the per-IP and per-prefix budgets. The FS-1 leaf
+          // probe (~12 ms cold) runs last, and only for a login that was counted.
+          if (isIpDenied(sock)) {
+            refuse({ id: msg.id, error: 'banned' });
+            return;
+          }
+          const adm = gateStratumLogin(params, { requireLoginAuth, boundAuthPub, leaf: false });
           if (!adm.ok) {
             if (isWrongAlgoReject(adm.reason)) {
               rememberInvalid(null, String(params.login || params.user || ''), sock);
@@ -4674,23 +4745,51 @@ export function createPool({
             const extra = {};
             if (adm.reason === 'need_auth' && adm.challenge) extra.challenge = adm.challenge;
             if (adm.message) extra.message = adm.message;
-            replyLine(sock, { id: msg.id, error: adm.reason, ...extra }, { drop: true });
-            continue;
+            refuse({ id: msg.id, error: adm.reason, ...extra });
+            return;
           }
-          if (isIpDenied(sock) || isBanned(adm.workerKey) || isBanned(adm.login)) {
-            replyLine(sock, { id: msg.id, error: 'banned' }, { drop: true });
-            continue;
+          if (isBanned(adm.workerKey) || isBanned(adm.login)) {
+            refuse({ id: msg.id, error: 'banned' });
+            return;
           }
           const key = adm.workerKey;
-          if (!miners.has(key)) {
-            const ipBudget = noteIpSubmit(ipLoginAt, sockIp(sock), Date.now(), {
+          const pay = String(adm.payoutDest || '');
+          const prior = miners.get(key);
+          // Same name, new params.dest: the worker row already exists, and the
+          // leaf probe is the cost. Count it. A same-dest reconnect does not.
+          const willProbe = payeeWillProbe(pay);
+          const newDest = pay && !socketDests.has(pay);
+          if (newDest && socketDests.size >= LOGIN_DESTS_PER_SOCKET) {
+            refuse({ id: msg.id, error: 'busy' });
+            return;
+          }
+          if (!prior || willProbe) {
+            const now = Date.now();
+            const ip = sockIp(sock);
+            const ipBudget = noteIpSubmit(ipLoginAt, ip, now, {
               max: LOGIN_PER_IP_MAX,
               windowMs: LOGIN_PER_IP_WINDOW_MS,
             });
             if (!ipBudget.ok) {
-              replyLine(sock, { id: msg.id, error: 'busy' }, { drop: true });
-              continue;
+              refuse({ id: msg.id, error: 'busy' });
+              return;
             }
+            const prefix = loginBudgetPrefix(ip);
+            if (prefix) {
+              const prefixBudget = noteIpSubmit(prefixLoginAt, prefix, now, {
+                max: LOGIN_PER_PREFIX_MAX,
+                windowMs: LOGIN_PER_IP_WINDOW_MS,
+              });
+              if (!prefixBudget.ok) {
+                refuse({ id: msg.id, error: 'busy' });
+                return;
+              }
+            }
+          }
+          if (newDest) socketDests.add(pay);
+          if (pay && !payeeFs1Ok(pay)) {
+            refuse({ id: msg.id, error: 'admit_note_point' });
+            return;
           }
           session = miners.get(key) || {
             login: adm.login,

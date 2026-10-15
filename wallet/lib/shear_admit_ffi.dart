@@ -11,20 +11,25 @@ import 'shear_range_isolate.dart';
 
 export 'shear_range_isolate.dart' show debugFlowCryptoOnCaller, rangeOnUiIsolate, requireRangeOffUi;
 
-/// In-process BP+ range proofs. Same C ABI as `libshear_admit`
-/// (`shear_range_prove` / `shear_range_verify`). Send prove stays fail-closed
-/// until FS-1. The opening is staged in a calloc buffer and wiped before free.
+/// In-process BP+ range proofs and the FS-1 spend prover. Same C ABI as
+/// `libshear_admit` (`shear_range_prove` / `shear_range_verify` and the
+/// `shear_fs1_*` family in shear_fs1.dart). The opening is staged in a calloc
+/// buffer and wiped before free.
 class AdmitNative {
   AdmitNative._(DynamicLibrary lib)
-      : _range = lib.lookupFunction<_RangeC, _RangeDart>('shear_range_prove'),
+      : library = lib,
+        _range = lib.lookupFunction<_RangeC, _RangeDart>('shear_range_prove'),
         _verify = lib.lookupFunction<_VerifyC, _VerifyDart>('shear_range_verify');
 
   /// Test stand-in. [debugRange] supplies the native call.
   @visibleForTesting
   AdmitNative.debug()
-      : _range = ((_, __, ___, ____, _____) => 0),
+      : library = null,
+        _range = ((_, __, ___, ____, _____) => 0),
         _verify = ((_, __, ___) => 0);
 
+  /// The loaded image. Null for the test stand-in.
+  final DynamicLibrary? library;
   final _RangeDart _range;
   final _VerifyDart _verify;
 
