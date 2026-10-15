@@ -2,7 +2,7 @@
  * The node datadir is private before the book opens.
  * The test directory is a temp folder, never the Roaming Shear book and
  * never shear-data. Windows ACL behaviour is exercised with a fake
- * whoami/icacls so the suite does not need a Windows host.
+ * icacls and an injected user SID so the suite does not need a Windows host.
  */
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,18 +45,20 @@ function system32(name) {
   return system32Exe(name, SYSTEM_DIR, identityRealpath);
 }
 
-function goodSecurity(filePath, dir) {
-  const shewall = path.join(dir, SHEWALL_FILE);
-  if (filePath === shewall) {
-    return {
-      owner: USER_SID,
-      sddl: `O:${USER_SID}G:SYD:P(A;;FA;;;${USER_SID})(A;;FA;;;SY)(A;;FA;;;BA)`,
-    };
-  }
-  return {
+function goodSecurity(filePath) {
+  const fileAce = {
+    owner: USER_SID,
+    sddl: `O:${USER_SID}G:SYD:P(A;;FA;;;${USER_SID})(A;;FA;;;SY)(A;;FA;;;BA)`,
+  };
+  const dirAce = {
     owner: USER_SID,
     sddl: `O:${USER_SID}G:SYD:P(A;OICI;FA;;;${USER_SID})(A;CIOI;FA;;;SY)(A;OICI;FA;;;BA)`,
   };
+  try {
+    return fs.statSync(filePath).isFile() ? fileAce : dirAce;
+  } catch {
+    return dirAce;
+  }
 }
 
 function badSecurity() {
@@ -81,21 +83,21 @@ function tempDatadir() {
 function recordWindows(dir, { securityScript, realpathSync = identityRealpath } = {}) {
   const calls = [];
   let aclReads = 0;
+  const seen = new Map();
   const execFileSync = (file, args, opts) => {
     calls.push({ file: String(file), args: args.slice(), env: opts?.env });
     assert.equal(/powershell/i.test(String(file)), false, String(file));
+    assert.equal(/whoami/i.test(String(file)), false, String(file));
     assert.deepEqual(opts.env, { SystemRoot: SYSTEM_ROOT });
-    if (String(file).endsWith(`${path.win32.sep}whoami.exe`)) {
-      return `"${LOCAL_NAME}","${USER_SID}"\r\n`;
-    }
     return 'Successfully processed 1 files\r\n';
   };
   const readSecurity = (filePath) => {
     aclReads += 1;
     if (securityScript) return securityScript(aclReads, filePath);
-    const firstReads = fs.existsSync(path.join(dir, SHEWALL_FILE)) ? 2 : 1;
-    if (aclReads <= firstReads) return badSecurity();
-    return goodSecurity(filePath, dir);
+    const n = (seen.get(filePath) || 0) + 1;
+    seen.set(filePath, n);
+    if (n === 1) return badSecurity();
+    return goodSecurity(filePath);
   };
   const got = ensureDatadir(dir, {
     platform: 'win32',
@@ -104,6 +106,7 @@ function recordWindows(dir, { securityScript, realpathSync = identityRealpath } 
     realpathSync,
     getSystemDirectory: () => SYSTEM_DIR,
     readSystemRoot: () => SYSTEM_ROOT,
+    readUserSid: () => USER_SID,
     readSecurity,
   });
   return { calls, got, aclReads };
@@ -131,17 +134,20 @@ describe('datadir DACL', () => {
     assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
   });
 
-  it('calls whoami and icacls by absolute System32 path', () => {
+  it('calls icacls by absolute System32 path and does not spawn whoami', () => {
     const dir = tempDatadir();
     const { calls } = recordWindows(dir);
-    const whoami = system32('whoami.exe');
     const icacls = system32('icacls.exe');
-    assert.equal(path.win32.isAbsolute(whoami), true);
-    assert.equal(whoami, 'D:\\Windows\\System32\\whoami.exe');
+    assert.equal(path.win32.isAbsolute(icacls), true);
     assert.equal(icacls, 'D:\\Windows\\System32\\icacls.exe');
-    assert.equal(calls.some((call) => call.file === whoami), true);
     assert.equal(calls.some((call) => call.file === icacls), true);
-    assert.equal(calls.some((call) => call.file === 'whoami' || call.file === 'icacls'), false);
+    assert.equal(calls.some((call) => /whoami/i.test(call.file)), false);
+    assert.equal(calls.some((call) => call.file === 'icacls'), false);
+    const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '../src/win32_system.cjs'), 'utf8');
+    const acl = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '../src/datadir_acl.js'), 'utf8');
+    assert.match(src, /GetTokenInformation/);
+    assert.match(src, /OpenProcessToken/);
+    assert.doesNotMatch(acl, /whoami/i);
   });
 
   it('grants access by SID', () => {
@@ -214,11 +220,11 @@ describe('datadir DACL', () => {
       },
     });
     assert.deepEqual(planted, []);
-    assert.ok(calls.some((call) => call.file === 'D:\\Windows\\System32\\whoami.exe'));
+    assert.equal(calls.some((call) => /whoami/i.test(call.file)), false);
     assert.ok(calls.some((call) => call.file === 'D:\\Windows\\System32\\icacls.exe'));
     assert.equal(calls.some((call) => String(call.file).toLowerCase().startsWith('c:\\')), false);
     assert.throws(
-      () => system32Exe('whoami.exe', SYSTEM_DIR, () => 'C:\\Windows\\System32\\whoami.exe'),
+      () => system32Exe('icacls.exe', SYSTEM_DIR, () => 'C:\\Windows\\System32\\icacls.exe'),
       /datadir_acl:system32/,
     );
     let called = false;
@@ -227,7 +233,8 @@ describe('datadir DACL', () => {
       env: PLANTED_ENV,
       getSystemDirectory: () => SYSTEM_DIR,
       readSystemRoot: () => 'C:\\Windows',
-      readSecurity: () => goodSecurity(dir, dir),
+      readSecurity: () => goodSecurity(dir),
+      readUserSid: () => USER_SID,
       realpathSync: identityRealpath,
       execFileSync: () => {
         called = true;
@@ -241,7 +248,8 @@ describe('datadir DACL', () => {
       env: PLANTED_ENV,
       getSystemDirectory: () => SYSTEM_DIR,
       readSystemRoot: () => SYSTEM_ROOT,
-      readSecurity: () => goodSecurity(dir, dir),
+      readSecurity: () => goodSecurity(dir),
+      readUserSid: () => USER_SID,
       realpathSync: (file) => (
         String(file).toLowerCase() === SYSTEM_DIR.toLowerCase()
           ? 'C:\\Windows\\System32'
@@ -270,7 +278,7 @@ describe('datadir DACL', () => {
     assert.ok(first.aclReads >= 1);
 
     const second = recordWindows(dir, {
-      securityScript: (_n, filePath) => goodSecurity(filePath, dir),
+      securityScript: (_n, filePath) => goodSecurity(filePath),
     });
     assert.equal(second.got.applied, false);
     assert.equal(icaclsCalls(second.calls).length, 0);
@@ -281,7 +289,7 @@ describe('datadir DACL', () => {
       sddl: `O:${USER_SID}D:P(A;OICI;FA;;;${USER_SID})(A;OICI;FA;;;${SYSTEM_SID})(A;OICI;FA;;;${ADMINISTRATORS_SID})(A;;FA;;;S-1-1-0)`,
     };
     const third = recordWindows(dir, {
-      securityScript: (n, filePath) => (n === 1 ? extra : goodSecurity(filePath, dir)),
+      securityScript: (n, filePath) => (n === 1 ? extra : goodSecurity(filePath)),
     });
     assert.equal(third.got.applied, true);
     assert.ok(icaclsCalls(third.calls).length >= 1);
@@ -372,6 +380,85 @@ describe('datadir DACL', () => {
         return '';
       },
     }), /datadir_acl:link/);
+    assert.equal(called, false);
+  });
+
+  it('rejects an extra ACE on a child file', () => {
+    const dir = tempDatadir();
+    const child = path.join(dir, 'chain.bin');
+    fs.writeFileSync(child, 'chain');
+    const nest = path.join(dir, 'a');
+    fs.mkdirSync(nest);
+    const deep = path.join(nest, 'deep.bin');
+    fs.writeFileSync(deep, 'deep');
+    const seen = new Map();
+    const reads = [];
+    const { calls } = recordWindows(dir, {
+      securityScript: (_n, filePath) => {
+        reads.push(filePath);
+        const count = (seen.get(filePath) || 0) + 1;
+        seen.set(filePath, count);
+        if (count === 1) return badSecurity();
+        return goodSecurity(filePath);
+      },
+    });
+    assert.ok(reads.includes(child));
+    assert.ok(reads.includes(deep));
+    assert.ok(reads.includes(nest));
+    const named = icaclsCalls(calls).filter((call) => call.args[0] === child);
+    assert.ok(named.some((call) => call.args.includes(`*${USER_SID}:F`)));
+    assert.ok(named.some((call) => call.args.includes(`*${SYSTEM_SID}:F`)));
+    assert.ok(named.some((call) => call.args.includes(`*${ADMINISTRATORS_SID}:F`)));
+    assert.ok(named.some((call) => call.args.includes('/L')));
+    const extra = {
+      owner: USER_SID,
+      sddl: `O:${USER_SID}D:P(A;;FA;;;${USER_SID})(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;S-1-1-0)`,
+    };
+    const seenAgain = new Map();
+    assert.throws(() => recordWindows(dir, {
+      securityScript: (_n, filePath) => {
+        const count = (seenAgain.get(filePath) || 0) + 1;
+        seenAgain.set(filePath, count);
+        if (filePath === child && count >= 2) return extra;
+        if (count === 1) return badSecurity();
+        return goodSecurity(filePath);
+      },
+    }), /datadir_acl:verify/);
+  });
+
+  it('refuses a parent junction and a deep junction before icacls', () => {
+    const outside = tempDatadir();
+    const grand = tempDatadir();
+    const realParent = path.join(grand, 'real-parent');
+    fs.mkdirSync(realParent);
+    const jumpParent = path.join(grand, 'jump-parent');
+    fs.symlinkSync(realParent, jumpParent, 'dir');
+    const book = path.join(jumpParent, 'book');
+    fs.mkdirSync(book);
+    let called = false;
+    const windows = {
+      platform: 'win32',
+      env: PLANTED_ENV,
+      getSystemDirectory: () => SYSTEM_DIR,
+      readSystemRoot: () => SYSTEM_ROOT,
+      readUserSid: () => USER_SID,
+      readSecurity: () => {
+        throw new Error('datadir_acl:link should win');
+      },
+      realpathSync: identityRealpath,
+      execFileSync: () => {
+        called = true;
+        return '';
+      },
+    };
+    assert.throws(() => ensureDatadir(book, windows), /datadir_acl:link/);
+    assert.equal(called, false);
+
+    const dir = tempDatadir();
+    fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+    fs.symlinkSync(outside, path.join(dir, 'a', 'b', 'jump'), 'dir');
+    called = false;
+    assert.throws(() => ensureDatadir(dir, windows), /datadir_acl:link/);
     assert.equal(called, false);
   });
 

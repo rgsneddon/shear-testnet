@@ -70,9 +70,9 @@ su -s /bin/bash builder -c '/usr/local/bin/as-builder flutter config --no-analyt
 su -s /bin/bash builder -c '/usr/local/bin/as-builder flutter --version'
 su -s /bin/bash builder -c '/usr/local/bin/as-builder dart --version'
 
-log "npm ci"
+log "npm ci --ignore-scripts"
 cd "${SRC}"
-npm ci --no-audit --no-fund
+npm ci --no-audit --no-fund --ignore-scripts
 
 log "randomx"
 RX="${SRC}/crypto/randomx"

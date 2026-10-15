@@ -1,6 +1,6 @@
 #!/bin/sh
 # macOS runner: Shear Sentinel zip for PRODUCT_VERSION 19.0 (not the Continuum .dmg).
-#   npm ci
+#   npm ci --ignore-scripts
 #   sh node/pack/pack_macos.sh
 # Writes dist/shear-node-v19-macos.zip. The node release tag is v19.
 # Datadir folder name stays testnet-v11. Live magic is shear-testnet-v12.
@@ -16,7 +16,7 @@ if [ "$PIN" != "19.0" ]; then
 fi
 LABEL=v19
 if [ ! -d node_modules ]; then
-  echo "missing node_modules — run npm ci before packing" >&2
+  echo "missing node_modules — run npm ci --ignore-scripts before packing" >&2
   exit 1
 fi
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native

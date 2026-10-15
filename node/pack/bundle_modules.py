@@ -328,7 +328,7 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
         z.write(src, rel)
     modules = os.path.join(repo, "node_modules")
     if not os.path.isdir(modules):
-        raise SystemExit("release sidecar missing node_modules — run npm ci before packing")
+        raise SystemExit("release sidecar missing node_modules — run npm ci --ignore-scripts before packing")
     add_tree(modules, "node_modules", {".git"})
     runtime_name = "node.exe" if flavor == "windows" else "node"
     runtime_src = shutil.which("node")

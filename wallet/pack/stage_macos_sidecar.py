@@ -62,7 +62,7 @@ def stage_app_sidecar(dest: str, repo: str) -> None:
         shutil.copy2(src, target)
     modules = os.path.join(repo, "node_modules")
     if not os.path.isdir(modules):
-        raise SystemExit("wallet sidecar missing node_modules — run npm ci before packing")
+        raise SystemExit("wallet sidecar missing node_modules — run npm ci --ignore-scripts before packing")
     copy_tree(modules, "node_modules", {".git"})
     runtime_src = shutil.which("node")
     if not runtime_src or not os.path.isfile(runtime_src):

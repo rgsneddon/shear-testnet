@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.exit("refusing zip: SHEAR_NODE_PACK_DEPS=0 omits node_modules")
         nm = os.path.join(REPO, "node_modules")
         if not os.path.isdir(nm):
-            sys.exit("missing node_modules — run npm ci before packing")
+            sys.exit("missing node_modules — run npm ci --ignore-scripts before packing")
         add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"})
         if flavor == "windows":
             runtime = os.path.join(REPO, "runtime")

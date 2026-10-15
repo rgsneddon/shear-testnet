@@ -9,7 +9,9 @@
  * SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRoot is the install
  * directory. The caller fails closed unless both name the same System32.
  *
- * File owner and DACL come from GetNamedSecurityInfoW. No script host is started.
+ * File owner and DACL come from GetNamedSecurityInfoW. The current user's
+ * SID is TokenUser from GetTokenInformation on this process token.
+ * No script host is started.
  */
 'use strict';
 
@@ -21,7 +23,14 @@ const SE_FILE_OBJECT = 1;
 const OWNER_SECURITY_INFORMATION = 0x1;
 const DACL_SECURITY_INFORMATION = 0x4;
 const SDDL_REVISION_1 = 1;
+const TOKEN_QUERY = 0x0008;
+const TokenUser = 1;
 const SYSTEM_ROOT_KEY = 'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion';
+
+const TokenUserInfo = koffi.struct('TokenUserInfo', {
+  Sid: 'void *',
+  Attributes: 'uint32',
+});
 
 let bound;
 
@@ -37,7 +46,15 @@ function bind() {
   const advapi32 = koffi.load('advapi32.dll');
   bound = {
     GetSystemDirectoryW: kernel32.func('uint32 __stdcall GetSystemDirectoryW(uint16_t *lpBuffer, uint32 uSize)'),
+    GetCurrentProcess: kernel32.func('void * __stdcall GetCurrentProcess()'),
+    CloseHandle: kernel32.func('int32 __stdcall CloseHandle(void *hObject)'),
     LocalFree: kernel32.func('void * __stdcall LocalFree(void *hMem)'),
+    OpenProcessToken: advapi32.func(
+      'int32 __stdcall OpenProcessToken(void *ProcessHandle, uint32 DesiredAccess, _Out_ void **TokenHandle)',
+    ),
+    GetTokenInformation: advapi32.func(
+      'int32 __stdcall GetTokenInformation(void *TokenHandle, int32 TokenInformationClass, void *TokenInformation, uint32 TokenInformationLength, _Out_ uint32 *ReturnLength)',
+    ),
     RegGetValueW: advapi32.func(
       'int32 __stdcall RegGetValueW(uintptr_t hkey, str16 lpSubKey, str16 lpValue, uint32 dwFlags, _Out_ uint32 *pdwType, uint16_t *pvData, _Inout_ uint32 *pcbData)',
     ),
@@ -101,6 +118,36 @@ function localString(fn, ptr) {
   }
 }
 
+function readUserSid() {
+  const fn = bind();
+  const token = [null];
+  if (!fn.OpenProcessToken(fn.GetCurrentProcess(), TOKEN_QUERY, token) || !token[0]) {
+    throw new Error('datadir_acl:token');
+  }
+  const sidOut = [null];
+  try {
+    const needed = [0];
+    fn.GetTokenInformation(token[0], TokenUser, null, 0, needed);
+    const size = needed[0];
+    if (!size || size > 4096) throw new Error('datadir_acl:token');
+    const buf = Buffer.alloc(size);
+    const got = [0];
+    if (!fn.GetTokenInformation(token[0], TokenUser, buf, size, got)) {
+      throw new Error('datadir_acl:token');
+    }
+    const user = koffi.decode(buf, TokenUserInfo);
+    if (!user || !user.Sid) throw new Error('datadir_acl:token');
+    if (!fn.ConvertSidToStringSidW(user.Sid, sidOut) || !sidOut[0]) throw new Error('datadir_acl:token');
+    const text = localString(fn, sidOut[0]);
+    sidOut[0] = null;
+    if (!/^S-1-\d+(?:-\d+)+$/i.test(text)) throw new Error('datadir_acl:token');
+    return text;
+  } finally {
+    if (sidOut[0]) fn.LocalFree(sidOut[0]);
+    fn.CloseHandle(token[0]);
+  }
+}
+
 function readSecurity(filePath) {
   const fn = bind();
   const owner = [null];
@@ -147,5 +194,6 @@ function readSecurity(filePath) {
 module.exports = {
   getSystemDirectory,
   readSystemRoot,
+  readUserSid,
   readSecurity,
 };

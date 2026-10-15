@@ -12,6 +12,6 @@ jobs:
         with:
           node-version: '22'
       - name: Install node deps
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Reserve pin, bytecode, and vault security map
         run: node --test --test-concurrency=1 crypto/reserve_evm.test.js node/tests/test_reserve_pin_v12.js node/tests/test_vault_security_map.js node/tests/test_oracle_seal_v12.js

@@ -153,7 +153,7 @@ def main() -> int:
                 z.write(p, extra)
             nm = os.path.join(node_root, "node_modules")
             if not os.path.isdir(nm):
-                sys.exit("Continuum sidecar missing node_modules — run npm ci before packing")
+                sys.exit("Continuum sidecar missing node_modules — run npm ci --ignore-scripts before packing")
             bundled = 0
             for dp, dns, fns in os.walk(nm):
                 dns[:] = [d for d in dns if d not in {".git"}]

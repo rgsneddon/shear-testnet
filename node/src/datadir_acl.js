@@ -2,7 +2,7 @@
  * Private node datadir.
  *
  * Windows grants three trustees, by SID, never by a localized account name:
- *   - the current user (whoami /user)
+ *   - the current user (TokenUser from GetTokenInformation)
  *   - SYSTEM (S-1-5-18)
  *   - BUILTIN\Administrators (S-1-5-32-544)
  * SYSTEM and Administrators keep access so a service restart and an elevated
@@ -10,11 +10,10 @@
  * are not granted. /inheritance:r drops inherited ACEs and protects the DACL.
  * The owner is the current user's SID.
  *
- * whoami.exe and icacls.exe are resolved under the directory returned by
- * GetSystemDirectoryW. That directory must be HKLM SystemRoot\System32.
- * The process environment is not a source for either value, and it is not
- * passed to the child. A mismatch, or a real path that leaves that directory,
- * fails closed.
+ * icacls.exe is resolved under the directory returned by GetSystemDirectoryW.
+ * That directory must be HKLM SystemRoot\System32. The process environment is
+ * not a source for either value, and it is not passed to the child. A
+ * mismatch, or a real path that leaves that directory, fails closed.
  *
  * Every open re-reads the DACL and owner. A datadir.acl stamp is not trusted.
  * A mismatch is rewritten. After a write, the DACL and owner are read back
@@ -22,9 +21,9 @@
  *
  * /T walks files already in the directory. /L tells icacls not to follow a
  * link. A symlink or junction inside the datadir, including the datadir
- * itself, refuses startup before icacls runs. shewall.bin is also named
- * explicitly, so a wallet file that is already there is covered even when it
- * does not inherit.
+ * itself, a parent of the datadir, or a junction nested under it, refuses
+ * startup before icacls runs. Every file already in the directory is named
+ * explicitly, so a wallet file that does not inherit is still covered.
  *
  * Other platforms: the directory is mode 0700 and shewall.bin, when present,
  * is mode 0600. mkdir's mode is masked by umask, so a wide directory is
@@ -171,21 +170,16 @@ function ensurePosix(dir, { existsSync, statSync, chmodSync }) {
   };
 }
 
-function userSid(execFileSync, systemDir, systemRoot, realpathSync) {
-  const whoami = system32Exe('whoami.exe', systemDir, realpathSync);
-  let out;
+function currentUserSid(readUserSid) {
+  let sid;
   try {
-    out = execFileSync(whoami, ['/user', '/fo', 'csv', '/nh'], {
-      encoding: 'utf8',
-      windowsHide: true,
-      env: childEnv(systemRoot),
-    });
+    sid = readUserSid();
   } catch (err) {
-    throw fail('datadir_acl:whoami', err);
+    if (err?.message === 'datadir_acl:token') throw err;
+    throw fail('datadir_acl:token', err);
   }
-  const match = String(out || '').match(/S-1-\d+(?:-\d+)+/);
-  if (!match) throw fail('datadir_acl:whoami');
-  return match[0];
+  if (!/^S-1-\d+(?:-\d+)+$/i.test(String(sid || ''))) throw fail('datadir_acl:token');
+  return normalizeSid(sid);
 }
 
 function runIcacls(execFileSync, systemDir, systemRoot, realpathSync, args) {
@@ -319,22 +313,40 @@ function applyWindows(dir, sid, targets, execFileSync, systemDir, systemRoot, re
     dir, '/inheritance:r', '/grant:r', user, system, admins, '/T', '/L',
   ]);
   runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [dir, '/setowner', `*${sid}`, '/T', '/L']);
-  const shewall = targets.find((target) => target.kind === 'file');
-  if (!shewall) return;
   const fileGrant = (trustee) => `*${trustee}:F`;
-  runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
-    shewall.path,
-    '/inheritance:r',
-    '/grant:r',
-    fileGrant(sid),
-    fileGrant(SYSTEM_SID),
-    fileGrant(ADMINISTRATORS_SID),
-    '/L',
-  ]);
-  runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [shewall.path, '/setowner', `*${sid}`, '/L']);
+  for (const file of targets) {
+    if (file.kind !== 'file') continue;
+    runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
+      file.path,
+      '/inheritance:r',
+      '/grant:r',
+      fileGrant(sid),
+      fileGrant(SYSTEM_SID),
+      fileGrant(ADMINISTRATORS_SID),
+      '/L',
+    ]);
+    runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [file.path, '/setowner', `*${sid}`, '/L']);
+  }
+}
+
+function assertNoAncestorLinks(dir, lstatSync) {
+  let current = path.resolve(dir);
+  for (;;) {
+    const parent = path.dirname(current);
+    if (parent === current) return;
+    let st;
+    try {
+      st = lstatSync(parent);
+    } catch (err) {
+      throw fail('datadir_acl:link', err);
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) throw fail('datadir_acl:link');
+    current = parent;
+  }
 }
 
 function assertNoLinks(root, lstatSync, readdirSync) {
+  assertNoAncestorLinks(root, lstatSync);
   let rootStat;
   try {
     rootStat = lstatSync(root);
@@ -342,6 +354,7 @@ function assertNoLinks(root, lstatSync, readdirSync) {
     throw fail('datadir_acl:link', err);
   }
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw fail('datadir_acl:link');
+  const targets = [{ path: root, kind: 'dir' }];
   const stack = [root];
   while (stack.length) {
     const current = stack.pop();
@@ -360,27 +373,33 @@ function assertNoLinks(root, lstatSync, readdirSync) {
         throw fail('datadir_acl:link', err);
       }
       if (st.isSymbolicLink()) throw fail('datadir_acl:link');
-      if (st.isDirectory()) stack.push(child);
+      if (st.isDirectory()) {
+        targets.push({ path: child, kind: 'dir' });
+        stack.push(child);
+      } else if (st.isFile()) {
+        targets.push({ path: child, kind: 'file' });
+      } else {
+        throw fail('datadir_acl:link');
+      }
     }
   }
+  return targets;
 }
 
 function ensureWindows(dir, {
   execFileSync,
-  existsSync,
   realpathSync,
   lstatSync,
   readdirSync,
   getSystemDirectory,
   readSystemRoot,
   readSecurity,
+  readUserSid,
 }) {
-  assertNoLinks(dir, lstatSync, readdirSync);
+  const targets = assertNoLinks(dir, lstatSync, readdirSync);
   const { systemDir, systemRoot } = resolveSystem32({ getSystemDirectory, readSystemRoot, realpathSync });
-  const sid = userSid(execFileSync, systemDir, systemRoot, realpathSync);
-  const targets = [{ path: dir, kind: 'dir' }];
-  const shewall = path.join(dir, SHEWALL_FILE);
-  if (existsSync(shewall)) targets.push({ path: shewall, kind: 'file' });
+  const sid = currentUserSid(readUserSid);
+  const shewall = targets.some((target) => target.path === path.join(dir, SHEWALL_FILE));
   let current = null;
   try {
     current = targets.map((target) => readOne(readSecurity, target));
@@ -388,12 +407,12 @@ function ensureWindows(dir, {
     if (err?.message !== 'datadir_acl:acl') throw err;
   }
   if (current && aclMatches(current, targets, sid)) {
-    return { applied: false, sid, shewall: targets.length > 1 };
+    return { applied: false, sid, shewall };
   }
   applyWindows(dir, sid, targets, execFileSync, systemDir, systemRoot, realpathSync);
   const after = targets.map((target) => readOne(readSecurity, target));
   if (!aclMatches(after, targets, sid)) throw fail('datadir_acl:verify');
-  return { applied: true, sid, shewall: targets.length > 1 };
+  return { applied: true, sid, shewall };
 }
 
 export function ensureDatadir(dir, {
@@ -409,15 +428,17 @@ export function ensureDatadir(dir, {
   getSystemDirectory,
   readSystemRoot,
   readSecurity,
+  readUserSid,
 } = {}) {
   mkdirSync(dir, { recursive: true, mode: DATADIR_MODE });
   if (platform !== 'win32') {
     return ensurePosix(dir, { existsSync, statSync, chmodSync });
   }
   return ensureWindows(dir, {
-    execFileSync, existsSync, realpathSync, lstatSync, readdirSync,
+    execFileSync, realpathSync, lstatSync, readdirSync,
     getSystemDirectory: getSystemDirectory || (() => win32Api().getSystemDirectory()),
     readSystemRoot: readSystemRoot || (() => win32Api().readSystemRoot()),
     readSecurity: readSecurity || ((file) => win32Api().readSecurity(file)),
+    readUserSid: readUserSid || (() => win32Api().readUserSid()),
   });
 }
