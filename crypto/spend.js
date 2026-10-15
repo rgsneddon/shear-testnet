@@ -426,6 +426,7 @@ export const V12_VALUE_KINDS = new Set([
   'lock',
   'vote',
   'withdraw',
+  'reward-claim',
   'b-spend',
 ]);
 
@@ -535,7 +536,8 @@ const BODY_KEYS = new Set([
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
-  'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit',
+  'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit', 'rewardRoot',
+  'nullifier',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',

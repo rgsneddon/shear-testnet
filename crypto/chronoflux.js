@@ -341,7 +341,7 @@ function compactValue(v) {
   return out;
 }
 
-const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw']);
+const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw', 'reward-claim']);
 
 /**
  * Top-level keys a sealed body tx may carry, from the signed body list in
@@ -356,6 +356,7 @@ export const COMPACT_TX_KEYS = Object.freeze([
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'weight', 'payer', 'sponsor',
   'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
+  'nullifier',
 ]);
 
 function dest20Buf(x) {
@@ -419,7 +420,7 @@ export function outputMayCarryValueOpen(tx, o) {
   if (tx?.coinbase || String(tx?.kind || '') === 'coinbase') return COINBASE_OPEN_KINDS.has(kind);
   const top = tx?.kind == null ? '' : String(tx.kind);
   // b-spend is a public mint receipt: the opened sum is the chain leaf.
-  if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'pool-withdraw' || top === 'b-spend') return kind === top;
+  if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'reward-claim' || top === 'pool-withdraw' || top === 'b-spend') return kind === top;
   // A dummy is publicly zero. That opening is not an amount. Any other value stays hidden.
   if (kind === 'dummy') {
     const v = o?.valueProof?.v;
@@ -591,6 +592,9 @@ export function compactTx(tx) {
         epochBps: Math.floor(Number(tx.rateCommit.epochBps) || 0),
         magic: String(tx.rateCommit.magic || ''),
       };
+    }
+    if (typeof tx.rewardRoot === 'string' && /^[0-9a-f]{64}$/i.test(tx.rewardRoot)) {
+      row.rewardRoot = tx.rewardRoot.toLowerCase();
     }
     const carry = Math.floor(Number(tx.carryNanos) || 0);
     if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;

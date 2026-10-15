@@ -1,43 +1,47 @@
 /**
  * A lock is a time-locked note under the user's key. It is spendable when
- * its lock epoch ends. Only the reward is minted, once per portal per epoch.
- * A withdraw of that mint id is rejected. Nine rewards in one block are not
- * given a payout rule while STAKE_REWARD_OVERFLOW is null.
+ * its lock epoch ends. The epoch-end block commits one reward root. The user
+ * claims that reward once, in their own tx. A second claim or a withdraw of
+ * the same id is rejected.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, spendDestOf } from './address.js';
-import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
-import { K_VW } from './block_budget.js';
+import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
 import { outputJoinsAdmitSet } from './admit.js';
 import { compactTx } from './chronoflux.js';
 import { fs1LeafFor } from './fs1_leaf.js';
+import { levyNanos, levyTaxed } from './levy.js';
+import { merkleRoot } from './merkle.js';
 import {
-  STAKE_REWARD_BLOCK_CAP,
-  STAKE_REWARD_KIND,
-  STAKE_REWARD_OVERFLOW,
+  KIND_REWARD_CLAIM,
   applyReserveBlock,
-  cloneVault,
   deposit,
   emptyVault,
   lockStampRejected,
   lockTx,
   lockNoteSpendRejected,
-  planStakeRewards,
+  packRewardProof,
   portalEpochInterest,
+  portalIdFromDest,
   portalPrincipalNanos,
-  stakeRewardNote,
+  rewardClaimProof,
+  rewardClaimTx,
+  rewardCommitment,
+  rewardLeaf,
   stakeRewardSupply,
   trialReserveApply,
   voteTx,
   VOTE_HOLD,
   withdraw,
+  withdrawMintId,
 } from './reserve_vault.js';
 import {
   bootReserveEvm,
   callReserve,
-  decodeWithdraw,
-  encodeCredit,
+  decodeBytes32,
+  encodeClaim,
+  encodeCommitRewards,
   encodeDeposit,
   encodePinClock,
   encodeWithdraw,
@@ -186,12 +190,11 @@ describe('time-locked lock notes', () => {
     const portal = state.portals[Object.keys(state.portals)[0]];
     assert.equal(portal.tranches[0].noteIsPrincipal, true);
     const draw = T0 + RESERVE_EPOCH_MS + 1;
-    const plan = planStakeRewards(state, draw);
-    assert.equal(plan.ok, true, plan.reason);
-    const reward = stakeRewardNote(plan.pay[0].dest, plan.pay[0].nanos, plan.pay[0].epoch, plan.pay[0].portalId);
+    const plan = rewardCommitment(state, draw);
+    assert.equal(plan.rows.length, 1);
     const credited = applyReserveBlock({
       state,
-      block: { height: 2, txs: [{ coinbase: true, vout: [reward] }] },
+      block: { height: 2, txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }] },
       nowMs: draw,
       genesisMs: T0,
       requireStakeReward: true,
@@ -215,81 +218,240 @@ describe('time-locked lock notes', () => {
   });
 });
 
-describe('reward minted once', () => {
-  it('coinbase-mints the reward and rejects a withdraw of that mint', () => {
+function lockPortal(state, dest, when = T0 + 1_000) {
+  return deposit({
+    state,
+    dest,
+    nanos: PI_SHE_NANOS,
+    nowMs: when,
+    payout: dest,
+  });
+}
+
+function commitBlock(plan) {
+  return { height: 2, txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }] };
+}
+
+describe('aggregated reward root', () => {
+  it('commits one root of rate × principal × pro-rata time, with the pi gate and the cutoff', () => {
     const dest = who();
     const state = vault();
-    const locked = deposit({
-      state,
-      dest,
-      nanos: PI_SHE_NANOS,
-      nowMs: T0 + 1_000,
-      payout: dest,
-    });
-    assert.equal(locked.ok, true, locked.reason);
+    assert.equal(lockPortal(state, dest).ok, true);
     const draw = T0 + RESERVE_EPOCH_MS + 1;
-    const plan = planStakeRewards(state, draw);
-    assert.equal(plan.ok, true, plan.reason);
-    assert.equal(plan.pay.length, 1);
-    assert.ok(plan.pay[0].nanos > 0);
-    assert.ok(plan.pay[0].nanos < PI_SHE_NANOS);
-    const interest = portalEpochInterest(state, state.portals[plan.pay[0].portalId], draw);
-    assert.equal(plan.pay[0].nanos, interest);
-    const note = stakeRewardNote(plan.pay[0].dest, plan.pay[0].nanos, plan.pay[0].epoch, plan.pay[0].portalId);
-    assert.ok(note);
-    assert.equal(note.kind, STAKE_REWARD_KIND);
-    assert.equal(Number(note.valueProof.v), plan.pay[0].nanos);
-    assert.ok(fs1LeafFor(note));
-    assert.equal(outputJoinsAdmitSet({ coinbase: true }, note), true);
-    const block = { height: 2, txs: [{ coinbase: true, vout: [note] }] };
-    const supply = stakeRewardSupply(state, block, draw);
-    assert.equal(supply.ok, true, supply.reason);
-    assert.equal(supply.minted, BigInt(plan.pay[0].nanos));
-    assert.equal(supply.permitted, supply.minted);
-    const applied = applyReserveBlock({
-      state,
-      block,
+    const portal = state.portals[portalIdFromDest(dest)];
+    const tranche = portal.tranches[0];
+    const span = RESERVE_EPOCH_MS;
+    const expected = Number(
+      (BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS) * BigInt(tranche.remainMs)) / (BigInt(span) * 10000n),
+    );
+    const plan = rewardCommitment(state, draw);
+    assert.equal(plan.rows.length, 1);
+    assert.equal(plan.rows[0].nanos, expected);
+    assert.equal(plan.rows[0].nanos, portalEpochInterest(state, portal, draw));
+    assert.equal(plan.rows[0].nullifier, withdrawMintId(portal.id, plan.rows[0].epoch));
+    const leaf = rewardLeaf(plan.rows[0].nullifier, plan.rows[0].nanos);
+    assert.equal(plan.root, Buffer.from(merkleRoot([leaf])).toString('hex'));
+    const below = vault();
+    assert.equal(deposit({
+      state: below, dest: who(), nanos: 1, nowMs: T0 + 1_000, payout: who(),
+    }).ok, true);
+    assert.equal(rewardCommitment(below, draw).rows.length, 0);
+    const late = vault();
+    const lateDest = who();
+    assert.equal(lockPortal(late, lateDest, T0 + RESERVE_EPOCH_MS - 1_000).ok, true);
+    assert.equal(rewardCommitment(late, draw).rows.length, 0);
+    const many = vault();
+    for (let i = 0; i < 9; i += 1) assert.equal(lockPortal(many, who()).ok, true);
+    const wide = rewardCommitment(many, draw);
+    assert.equal(wide.rows.length, 9);
+    const leaves = wide.rows.map((row) => rewardLeaf(row.nullifier, row.nanos));
+    assert.equal(wide.root, Buffer.from(merkleRoot(leaves)).toString('hex'));
+    const committed = applyReserveBlock({
+      state: many,
+      block: commitBlock(wide),
       nowMs: draw,
       genesisMs: T0,
       requireStakeReward: true,
     });
-    assert.equal(applied.ok, true, applied.reason);
-    assert.equal(Number(state.totalLockedNanos), 0);
-    assert.equal(Number(state.mintBankNanos), plan.pay[0].nanos);
-    const drawn = withdraw({ state, dest, nowMs: draw });
-    assert.equal(drawn.ok, false);
-    assert.equal(drawn.reason, 'double_mint');
-    const again = applyReserveBlock({
-      state,
-      block: { height: 3, txs: [{ coinbase: true, vout: [] }] },
-      nowMs: draw + 1,
+    assert.equal(committed.ok, true, committed.reason);
+    assert.equal(Number(many.mintBankNanos), 0);
+    assert.equal(Number(many.totalLockedNanos), 0);
+    const rowNote = { coinbase: true, vout: [{ kind: 'stake-reward' }], rewardRoot: wide.root };
+    const refused = applyReserveBlock({
+      state: vault(),
+      block: { height: 2, txs: [rowNote] },
+      nowMs: draw,
       genesisMs: T0,
       requireStakeReward: true,
     });
-    assert.equal(again.ok, true, again.reason);
-    assert.equal(Number(state.mintBankNanos), plan.pay[0].nanos);
+    assert.equal(refused.reason, 'stake_reward');
   });
 
-  it('undoes the mint when the block is rejected', () => {
+  it('mints a claim once, rejects a second claim and a withdraw, and still pays epochs later', () => {
+    const lockDest = who();
+    const payDest = who();
+    const state = vault();
+    assert.equal(lockPortal(state, lockDest).ok, true);
+    const draw = T0 + RESERVE_EPOCH_MS + 1;
+    const plan = rewardCommitment(state, draw);
+    const row = plan.rows[0];
+    assert.notEqual(payDest, lockDest);
+    const committed = applyReserveBlock({
+      state,
+      block: commitBlock(plan),
+      nowMs: draw,
+      genesisMs: T0,
+      requireStakeReward: true,
+    });
+    assert.equal(committed.ok, true, committed.reason);
+    assert.equal(Number(state.mintBankNanos), 0);
+    const proof = rewardClaimProof(state, row.nullifier);
+    const claim = rewardClaimTx({
+      to: payDest,
+      nanos: row.nanos,
+      nullifier: row.nullifier,
+      proof,
+      id: 'claim-once',
+    });
+    assert.equal(claim.kind, KIND_REWARD_CLAIM);
+    assert.equal(claim.portalId, undefined);
+    assert.equal(claim.vout[0].portalId, undefined);
+    assert.equal(claim.nullifier, withdrawMintId(portalIdFromDest(lockDest), row.epoch));
+    assert.ok(fs1LeafFor(claim.vout[0]));
+    assert.equal(outputJoinsAdmitSet(claim, claim.vout[0]), true);
+    assert.equal(levyTaxed(claim), true);
+    assert.equal(claim.fee, levyNanos(0, { tx: { ...claim, fee: undefined } }));
+    const later = draw + 3 * RESERVE_EPOCH_MS;
+    const paid = applyReserveBlock({
+      state,
+      block: { height: 9, txs: [{ coinbase: true, vout: [] }, claim] },
+      nowMs: later,
+      genesisMs: T0,
+      requireStakeReward: true,
+    });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(Number(state.mintBankNanos), row.nanos);
+    const supply = stakeRewardSupply(state, { txs: [{ coinbase: true, vout: [] }, claim] }, later);
+    assert.equal(supply.ok, false);
+    const fresh = vault();
+    assert.equal(lockPortal(fresh, lockDest).ok, true);
+    const againPlan = rewardCommitment(fresh, draw);
+    const other = who();
+    assert.equal(lockPortal(fresh, other).ok, true);
+    const both = rewardCommitment(fresh, draw);
+    assert.equal(both.rows.length, 2);
+    assert.equal(applyReserveBlock({
+      state: fresh,
+      block: commitBlock(both),
+      nowMs: draw,
+      genesisMs: T0,
+      requireStakeReward: true,
+    }).ok, true);
+    const one = both.rows.find((item) => item.nullifier === againPlan.rows[0].nullifier);
+    const claimOne = rewardClaimTx({
+      to: payDest,
+      nanos: one.nanos,
+      nullifier: one.nullifier,
+      proof: rewardClaimProof(fresh, one.nullifier),
+      id: 'claim-one',
+    });
+    const block = { height: 4, txs: [{ coinbase: true, vout: [] }, claimOne] };
+    assert.equal(applyReserveBlock({
+      state: fresh,
+      block,
+      nowMs: later,
+      genesisMs: T0,
+    }).ok, true);
+    const summed = stakeRewardSupply(fresh, block, later);
+    assert.equal(summed.ok, false);
+    const beforeClaim = vault();
+    assert.equal(lockPortal(beforeClaim, lockDest).ok, true);
+    assert.equal(lockPortal(beforeClaim, other).ok, true);
+    const open = rewardCommitment(beforeClaim, draw);
+    const only = open.rows[0];
+    const supplyState = beforeClaim;
+    const supplyProof = rewardClaimProof({
+      rewardBook: Object.fromEntries(open.rows.map((item) => [item.nullifier, {
+        nanos: item.nanos,
+        rootKey: String(open.index),
+        portalId: item.portalId,
+      }])),
+      rewardSets: { [String(open.index)]: open.rows },
+    }, only.nullifier);
+    const supplyBlock = {
+      height: 4,
+      txs: [
+        { coinbase: true, vout: [], rewardRoot: open.root },
+        rewardClaimTx({
+          to: payDest,
+          nanos: only.nanos,
+          nullifier: only.nullifier,
+          proof: supplyProof,
+          id: 'claim-supply',
+        }),
+      ],
+    };
+    const got = stakeRewardSupply(supplyState, supplyBlock, draw);
+    assert.equal(got.ok, true, got.reason);
+    assert.equal(got.minted, 0n);
+    assert.equal(got.claimed, BigInt(only.nanos));
+    const unclaimed = open.rows.reduce((sum, item) => sum + item.nanos, 0) - only.nanos;
+    assert.ok(unclaimed > 0);
+    assert.notEqual(got.claimed, BigInt(only.nanos + unclaimed));
+    const spent = applyReserveBlock({
+      state: supplyState,
+      block: supplyBlock,
+      nowMs: draw,
+      genesisMs: T0,
+      requireStakeReward: true,
+    });
+    assert.equal(spent.ok, true, spent.reason);
+    const second = rewardClaimTx({
+      to: payDest,
+      nanos: only.nanos,
+      nullifier: only.nullifier,
+      proof: supplyProof,
+      id: 'claim-again',
+    });
+    const doubled = applyReserveBlock({
+      state: supplyState,
+      block: { height: 5, txs: [{ coinbase: true, vout: [] }, second] },
+      nowMs: later,
+      genesisMs: T0,
+    });
+    assert.equal(doubled.ok, false);
+    assert.equal(doubled.reason, 'double_mint');
+    assert.equal(withdraw({ state: supplyState, dest: lockDest, nowMs: later }).reason, 'double_mint');
+    assert.equal(Number(supplyState.mintBankNanos), only.nanos);
+  });
+
+  it('undoes the root and its claim when the block is rejected', () => {
     const dest = who();
     const state = vault();
-    assert.equal(deposit({
-      state,
-      dest,
-      nanos: PI_SHE_NANOS,
-      nowMs: T0 + 1_000,
-      payout: dest,
-    }).ok, true);
+    assert.equal(lockPortal(state, dest).ok, true);
     const draw = T0 + RESERVE_EPOCH_MS + 1;
-    const plan = planStakeRewards(state, draw);
-    const note = stakeRewardNote(plan.pay[0].dest, plan.pay[0].nanos, plan.pay[0].epoch, plan.pay[0].portalId);
+    const plan = rewardCommitment(state, draw);
+    const row = plan.rows[0];
+    const preview = {
+      rewardBook: { [row.nullifier]: { nanos: row.nanos, epoch: row.epoch, rootKey: String(plan.index), portalId: row.portalId } },
+      rewardSets: { [String(plan.index)]: plan.rows },
+      rewardRoots: { [String(plan.index)]: plan.root },
+    };
+    const claim = rewardClaimTx({
+      to: who(),
+      nanos: row.nanos,
+      nullifier: row.nullifier,
+      proof: rewardClaimProof(preview, row.nullifier),
+      id: 'claim-undo',
+    });
     const beforeLocked = Number(state.totalLockedNanos);
     const trial = trialReserveApply({
       state,
       block: {
         height: 2,
         txs: [
-          { coinbase: true, vout: [note] },
+          { coinbase: true, vout: [], rewardRoot: plan.root },
+          claim,
           voteTx({ from: dest, dest, choice: VOTE_HOLD, id: 'late-vote' }),
         ],
       },
@@ -301,82 +463,35 @@ describe('reward minted once', () => {
     assert.equal(trial.ok, false);
     assert.equal(Number(state.totalLockedNanos), beforeLocked);
     assert.equal(Number(state.mintBankNanos), 0);
+    assert.equal(state.rewardRoots[String(plan.index)], undefined);
     assert.equal(withdraw({ state, dest, nowMs: draw }).ok, true);
   });
 
-  it('matches the EVM credit and then rejects withdraw', async () => {
+  it('matches the EVM root and then rejects a second claim and a withdraw', async () => {
     const dest = who();
     const state = vault();
     const when = T0 + 1_000;
-    assert.equal(deposit({
-      state,
-      dest,
-      nanos: PI_SHE_NANOS,
-      nowMs: when,
-      payout: dest,
-    }).ok, true);
+    assert.equal(lockPortal(state, dest, when).ok, true);
     const draw = T0 + RESERVE_EPOCH_MS + 1;
-    const plan = planStakeRewards(state, draw);
+    const plan = rewardCommitment(state, draw);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, when))).ok, true);
-    const credited = await callReserve(session, encodeCredit(dest, draw));
-    assert.equal(credited.ok, true, credited.reason);
-    const paid = decodeWithdraw(credited.returnValue);
-    assert.equal(paid.principal, PI_SHE_NANOS);
-    assert.equal(paid.interest, plan.pay[0].nanos);
-    assert.ok(paid.interest > 0);
-    assert.ok(paid.interest < PI_SHE_NANOS);
-    const again = await callReserve(session, encodeWithdraw(dest, draw));
+    const committed = await callReserve(session, encodeCommitRewards(draw));
+    assert.equal(committed.ok, true, committed.reason);
+    assert.equal(decodeBytes32(committed.returnValue), plan.root);
+    const row = plan.rows[0];
+    const preview = {
+      rewardBook: { [row.nullifier]: { nanos: row.nanos, rootKey: String(plan.index), portalId: row.portalId } },
+      rewardSets: { [String(plan.index)]: plan.rows },
+    };
+    const proof = packRewardProof(rewardClaimProof(preview, row.nullifier));
+    const claimed = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof));
+    assert.equal(claimed.ok, true, claimed.reason);
+    assert.equal(decodeBytes32(claimed.returnValue), row.nanos.toString(16).padStart(64, '0'));
+    const again = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof));
     assert.equal(again.ok, false);
-  });
-});
-
-describe('more than eight rewards', () => {
-  it('does not choose a payout while the overflow rule is unset', () => {
-    assert.equal(STAKE_REWARD_BLOCK_CAP, K_VW);
-    assert.equal(STAKE_REWARD_BLOCK_CAP, 8);
-    assert.equal(STAKE_REWARD_OVERFLOW, null);
-    const state = vault();
-    for (let i = 0; i < 9; i += 1) {
-      const dest = who();
-      const got = deposit({
-        state,
-        dest,
-        nanos: PI_SHE_NANOS,
-        nowMs: T0 + 1_000,
-        payout: dest,
-      });
-      assert.equal(got.ok, true, got.reason);
-    }
-    const draw = T0 + RESERVE_EPOCH_MS + 1;
-    const plan = planStakeRewards(state, draw);
-    assert.equal(plan.ok, false);
-    assert.equal(plan.reason, 'reward_overflow_unset');
-    assert.equal(plan.pay.length, 0);
-    assert.equal(plan.held.length, 9);
-    const locked = Number(state.totalLockedNanos);
-    const applied = applyReserveBlock({
-      state,
-      block: { height: 2, txs: [{ coinbase: true, vout: [] }] },
-      nowMs: draw,
-      genesisMs: T0,
-      requireStakeReward: true,
-    });
-    assert.equal(applied.ok, true, applied.reason);
-    assert.equal(Number(state.mintBankNanos), 0);
-    assert.equal(Number(state.totalLockedNanos), locked);
-    const one = cloneVault(state);
-    const row = plan.held[0];
-    const note = stakeRewardNote(row.dest, row.nanos, row.epoch, row.portalId);
-    const forced = applyReserveBlock({
-      state: one,
-      block: { height: 2, txs: [{ coinbase: true, vout: [note] }] },
-      nowMs: draw,
-      genesisMs: T0,
-      requireStakeReward: true,
-    });
-    assert.equal(forced.ok, false);
-    assert.equal(forced.reason, 'stake_reward');
+    const drawn = await callReserve(session, encodeWithdraw(dest, draw));
+    assert.equal(drawn.ok, false);
   });
 });

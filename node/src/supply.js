@@ -75,7 +75,10 @@ export function blockNeedsReserve(block) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
     if (txIsReserveAction(tx)) return true;
+    if (String(tx?.kind || tx?.vout?.[0]?.kind || '') === 'reward-claim') return true;
   }
+  const cb = txs.find((tx) => tx?.coinbase);
+  if (cb?.rewardRoot) return true;
   return false;
 }
 
@@ -636,6 +639,7 @@ function accountBlock(prev, block, opts = {}) {
   state.carry = carryOut;
   const reward = stakeRewardSupply(opts.vault, block, ts, opts.oracle);
   if (!reward.ok) return { reason: reward.reason || 'supply', state };
+  const claimedReward = reward.claimed || 0n;
   const publicTotal = potMinted + mintedHashHere + levy + reward.minted;
   const rememberRange = opts.rememberRange !== false;
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
@@ -649,10 +653,10 @@ function accountBlock(prev, block, opts = {}) {
   state.mintedPot += potMinted;
   state.mintedHash += mintedHashHere;
   state.mintedLevy += levy;
-  if (state.mintedInterest + interest.nanos + reward.minted > U64) return { reason: 'supply', state };
-  if (state.permittedInterest + allowed.nanos + reward.permitted > U64) return { reason: 'supply', state };
-  state.mintedInterest += interest.nanos + reward.minted;
-  state.permittedInterest += allowed.nanos + reward.permitted;
+  if (state.mintedInterest + interest.nanos + reward.minted + claimedReward > U64) return { reason: 'supply', state };
+  if (state.permittedInterest + allowed.nanos + reward.permitted + claimedReward > U64) return { reason: 'supply', state };
+  state.mintedInterest += interest.nanos + reward.minted + claimedReward;
+  state.permittedInterest += allowed.nanos + reward.permitted + claimedReward;
   const bReason = accountBLocked(state, block);
   if (bReason) return { reason: bReason, state };
   state.liveUnit = unit;

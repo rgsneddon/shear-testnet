@@ -81,7 +81,7 @@ import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, stakeRewardRejected, lockNoteSpendRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -306,10 +306,14 @@ export function digestTx(tx) {
   const rateSuffix = tx?.coinbase && tx.rateCommit && typeof tx.rateCommit === 'object'
     ? Buffer.from(`ratecommit1${Math.floor(Number(tx.rateCommit.epochIndex) || 0)}:${Math.floor(Number(tx.rateCommit.epochBps) || 0)}:${String(tx.rateCommit.magic || '')}`)
     : null;
+  const rootHex = tx?.coinbase ? blockRewardRoot({ txs: [tx] }) : '';
+  const rewardSuffix = rootHex && rootHex !== 'bad'
+    ? Buffer.from(`rewardroot1${rootHex}`)
+    : (rootHex === 'bad' ? Buffer.from('rewardroot-bad') : null);
   if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length) || (reportSuffix && reportSuffix.length) || (rateSuffix && rateSuffix.length))) {
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length) || (reportSuffix && reportSuffix.length) || (rateSuffix && rateSuffix.length) || (rewardSuffix && rewardSuffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
@@ -318,6 +322,7 @@ export function digestTx(tx) {
     if (observeSuffix && observeSuffix.length) parts.push(observeSuffix);
     if (reportSuffix && reportSuffix.length) parts.push(reportSuffix);
     if (rateSuffix && rateSuffix.length) parts.push(rateSuffix);
+    if (rewardSuffix && rewardSuffix.length) parts.push(rewardSuffix);
     return packDigest(Buffer.concat(parts));
   }
   if (reportSuffix && reportSuffix.length) {
@@ -326,6 +331,10 @@ export function digestTx(tx) {
   const reserveSuffix = reserveDigestSuffix(tx);
   if (reserveSuffix && reserveSuffix.length) {
     return packDigest(Buffer.concat([packed, reserveSuffix]));
+  }
+  const claimSuffix = rewardClaimDigestSuffix(tx);
+  if (claimSuffix && claimSuffix.length) {
+    return packDigest(Buffer.concat([packed, claimSuffix]));
   }
   return packDigest(packed);
 }

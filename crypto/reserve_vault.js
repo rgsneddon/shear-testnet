@@ -33,8 +33,9 @@ import {
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
 import { extraMint } from './mint.js';
-import { reserveFeeDest } from './levy.js';
+import { reserveFeeDest, levyNanos } from './levy.js';
 import { decodeHeader } from './header.js';
+import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
 
 export const VOTE_INCREASE = 'increase bonus';
 export const VOTE_DECREASE = 'decrease bonus';
@@ -43,23 +44,10 @@ export const KIND_LOCK = 'lock';
 export const KIND_WITHDRAW = 'withdraw';
 export const KIND_VOTE = 'vote';
 export const STAKE_REWARD_KIND = 'stake-reward';
-/**
- * How many stake-reward notes one block may carry. This is K_VW (8).
- * It is not an overflow policy.
- *
- * STAKE_REWARD_OVERFLOW is null until Russell rules a block that owes
- * more than this cap. While it is null this code does not pay a subset,
- * queue the rest, drop them, or reject the block. The rewards stay unminted.
- *
- * Options waiting on that ruling:
- * 1. FIFO: pay STAKE_REWARD_BLOCK_CAP this block, carry the rest in portal
- *    order onto later blocks, and expire a carried reward after a fixed TTL.
- * 2. Defer the whole set: an over-cap block pays none of them, and the next
- *    block pays up to the cap once the set is small enough.
- * 3. Raise the cap so one block can carry every reward that epoch owes.
- */
-export const STAKE_REWARD_BLOCK_CAP = 8;
-export const STAKE_REWARD_OVERFLOW = null;
+/** User tx that mints one archived reward. It is not a coinbase row. */
+export const KIND_REWARD_CLAIM = 'reward-claim';
+/** Domain for one reward leaf: tag || nullifier(32) || nanos u64le. */
+export const REWARD_LEAF_TAG = 'shear-reward-leaf-v1';
 
 /**
  * How many reserve actions one mempool, and one template, will trial.
@@ -262,38 +250,93 @@ export function stakeRewardsDue(state, nowMs) {
   return rows;
 }
 
-/**
- * Rewards this block may mint. More than STAKE_REWARD_BLOCK_CAP with
- * STAKE_REWARD_OVERFLOW still null is not a chosen rule: pay nothing.
- */
-export function planStakeRewards(state, nowMs) {
-  const due = stakeRewardsDue(state, nowMs);
-  if (due.length > STAKE_REWARD_BLOCK_CAP && STAKE_REWARD_OVERFLOW == null) {
-    return {
-      ok: false,
-      reason: 'reward_overflow_unset',
-      pay: [],
-      held: due,
-      cap: STAKE_REWARD_BLOCK_CAP,
-    };
-  }
-  return { ok: true, pay: due, held: [], cap: STAKE_REWARD_BLOCK_CAP };
+function u64le(value) {
+  const b = Buffer.alloc(8);
+  const n = BigInt(value);
+  b.writeBigUInt64LE(n);
+  return b;
 }
 
-/** Coinbase note for one portal's reward. Principal is not in this note. */
-export function stakeRewardNote(dest, nanos, epoch, portalId = '') {
-  const n = Math.floor(Number(nanos) || 0);
-  const d20 = hash20FromAddress(dest);
-  if (!d20 || !(n > 0)) return null;
-  const note = attachAdmitPub(sealCoinbaseNote(n, { dest20: d20, kind: STAKE_REWARD_KIND }), {
-    admitBase: admitBaseFromAddress(dest),
-  });
-  note.kind = STAKE_REWARD_KIND;
-  note.address = dest;
-  note.rewardEpoch = Math.floor(Number(epoch) || 0);
-  if (portalId) note.portalId = String(portalId);
-  if (!fs1LeafFor(note)) return null;
-  return note;
+/** Leaf over one portal-epoch reward. The preimage is the nullifier and the amount. */
+export function rewardLeaf(nullifierHex, nanos) {
+  const id = Buffer.from(String(nullifierHex || ''), 'hex');
+  if (id.length !== 32) return null;
+  const n = BigInt(nanos);
+  if (n <= 0n || n > 0xffffffffffffffffn) return null;
+  return sha256Reward(Buffer.concat([Buffer.from(REWARD_LEAF_TAG), id, u64le(n)]));
+}
+
+function sha256Reward(buf) {
+  return createHash('sha256').update(buf).digest();
+}
+
+/**
+ * One root over every unpaid eligible reward due at this clock.
+ * Order is the nullifier, so the tree does not sort by lock dest.
+ * The amount is rate × principal × pro-rata time, with the π gate and the cutoff.
+ */
+export function rewardCommitment(state, nowMs) {
+  const due = stakeRewardsDue(state, nowMs);
+  const rows = due.map((row) => ({
+    nullifier: row.mintId,
+    epoch: row.epoch,
+    nanos: row.nanos,
+    portalId: row.portalId,
+  }));
+  rows.sort((a, b) => (a.nullifier < b.nullifier ? -1 : a.nullifier > b.nullifier ? 1 : 0));
+  const leaves = rows.map((row) => rewardLeaf(row.nullifier, row.nanos));
+  const root = Buffer.from(merkleRoot(leaves)).toString('hex');
+  return {
+    ok: true,
+    rows,
+    root,
+    index: settlementIndex(state, nowMs),
+  };
+}
+
+/** Sibling path for one archived nullifier. Empty once the root did not include it. */
+export function rewardClaimProof(state, nullifierHex) {
+  const id = String(nullifierHex || '').toLowerCase();
+  const row = state?.rewardBook?.[id];
+  const rows = row ? state?.rewardSets?.[row.rootKey] : null;
+  if (!row || !Array.isArray(rows)) return null;
+  const index = rows.findIndex((item) => item.nullifier === id);
+  if (index < 0) return null;
+  const leaves = rows.map((item) => rewardLeaf(item.nullifier, item.nanos));
+  return merkleProof(leaves, index);
+}
+
+/** Packed EVM proof. Side 0 is a right sibling, side 1 is a left sibling. */
+export function packRewardProof(proof) {
+  const steps = Array.isArray(proof) ? proof : [];
+  const parts = [];
+  for (const step of steps) {
+    const side = step?.side === 'L' ? 1 : 0;
+    const hash = Buffer.from(String(step?.hash || ''), 'hex');
+    if (hash.length !== 32) return null;
+    parts.push(Buffer.from([side]), hash);
+  }
+  return Buffer.concat(parts);
+}
+
+/**
+ * Every reward due at this clock. There is no per-block row cap: the block
+ * carries one root, and each user mints their own row later.
+ */
+export function planStakeRewards(state, nowMs) {
+  const commit = rewardCommitment(state, nowMs);
+  return {
+    ok: true,
+    pay: commit.rows.map((row) => ({
+      portalId: row.portalId,
+      epoch: row.epoch,
+      nanos: row.nanos,
+      mintId: row.nullifier,
+    })),
+    held: [],
+    root: commit.root,
+    index: commit.index,
+  };
 }
 
 function blockPaysByWithdraw(block) {
@@ -307,61 +350,34 @@ export function stakeRewardNotesOf(block) {
   return (cb?.vout || []).filter((o) => String(o?.kind || '') === STAKE_REWARD_KIND);
 }
 
-function rewardNoteKey(row) {
-  return `${row.dest || ''}:${row.epoch}:${row.nanos}`;
-}
-
-function openedRewardNote(note) {
-  const n = Math.floor(Number(note?.valueProof?.v));
-  if (!Number.isSafeInteger(n) || n <= 0) return null;
-  if (!verifySealedNote(note, n)) return null;
-  if (!fs1LeafFor(note)) return null;
-  const dest = note.address && isDestAddress(note.address)
-    ? note.address
-    : (note.dest20 ? encodeDest(Buffer.from(asU8(note.dest20)).subarray(0, 20)) : '');
-  if (!dest) return null;
-  return {
-    dest,
-    epoch: Math.floor(Number(note.rewardEpoch) || 0),
-    nanos: n,
-    portalId: String(note.portalId || ''),
-  };
-}
-
-function sameRewardNotes(pay, notes) {
-  if (pay.length !== notes.length) return false;
-  const want = pay.map(rewardNoteKey).sort();
-  const got = [];
-  for (const note of notes) {
-    const opened = openedRewardNote(note);
-    if (!opened) return false;
-    got.push(rewardNoteKey(opened));
-  }
-  got.sort();
-  for (let i = 0; i < want.length; i += 1) {
-    if (want[i] !== got[i]) return false;
-  }
-  return true;
+/** Hex root on the coinbase, '' when the block carries none, 'bad' when it is not 32 bytes. */
+export function blockRewardRoot(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  const cb = txs.find((tx) => tx?.coinbase) || null;
+  const raw = cb?.rewardRoot;
+  if (raw == null || raw === '') return '';
+  const hex = Buffer.isBuffer(raw) ? raw.toString('hex') : String(raw).replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(hex) ? hex : 'bad';
 }
 
 /**
- * Coinbase stake-reward notes must match the plan. A null overflow does
- * not invent a payout, and a block that omits a ruled plan fails only
- * when the caller requires the reward.
+ * The epoch-end coinbase carries one root, or it carries no reward.
+ * A stake-reward coinbase row is the dropped per-payee path.
+ * A withdraw in the block is the older pull: it may omit the root.
+ * The root is required only when the caller says so and a reward is due.
  */
 export function stakeRewardRejected(state, block, nowMs, { require = false } = {}) {
   if (!state || state.blankFork) return null;
-  const plan = planStakeRewards(state, nowMs);
-  const notes = stakeRewardNotesOf(block);
-  if (!plan.ok) {
-    if (notes.length) return { ok: false, reason: 'stake_reward' };
+  if (stakeRewardNotesOf(block).length) return { ok: false, reason: 'stake_reward' };
+  const got = blockRewardRoot(block);
+  if (got === 'bad') return { ok: false, reason: 'stake_reward' };
+  const plan = rewardCommitment(state, nowMs);
+  if (got) {
+    if (got !== plan.root || !plan.rows.length) return { ok: false, reason: 'stake_reward' };
     return null;
   }
-  if (!notes.length && !require) return null;
-  // A withdraw in this block is the older pull. It mints the id itself.
-  // The coinbase path is for a block that does not pull. Both at once mismatch.
-  if (!notes.length && blockPaysByWithdraw(block)) return null;
-  if (!sameRewardNotes(plan.pay, notes)) return { ok: false, reason: 'stake_reward' };
+  if (!require || blockPaysByWithdraw(block)) return null;
+  if (plan.rows.length) return { ok: false, reason: 'stake_reward' };
   return null;
 }
 
@@ -431,37 +447,102 @@ function releaseMaturedPrincipal(state, nowMs) {
   return released;
 }
 
+function ensureRewardMaps(state) {
+  if (!state.rewardRoots) state.rewardRoots = Object.create(null);
+  if (!state.rewardBook) state.rewardBook = Object.create(null);
+  if (!state.rewardSets) state.rewardSets = Object.create(null);
+}
+
 /**
- * Mint each planned reward once and drop the matured principal out of the
- * vault. The principal note is already the user's. A second call sees the
- * mint id and does not mint again.
+ * Archive the root and drop matured principal out of the vault.
+ * Nothing is minted here. A claim tx mints one archived row later.
  */
 export function applyStakeRewards(state, block, nowMs, { require = false } = {}) {
   const rejected = stakeRewardRejected(state, block, nowMs, { require });
   if (rejected) return { ok: false, reason: rejected.reason || 'stake_reward', minted: 0n, principal: 0n };
-  const plan = planStakeRewards(state, nowMs);
-  const notes = stakeRewardNotesOf(block);
-  if (!plan.ok || (!notes.length && (!require || blockPaysByWithdraw(block)))) {
-    return { ok: true, minted: 0n, principal: 0n, skipped: true };
+  const got = blockRewardRoot(block);
+  if (!got) return { ok: true, minted: 0n, principal: 0n, skipped: true };
+  const plan = rewardCommitment(state, nowMs);
+  if (got !== plan.root || !plan.rows.length) {
+    return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
   }
-  let minted = 0n;
-  for (const row of plan.pay) {
-    const portal = state.portals?.[row.portalId];
-    if (!portal) return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
-    rememberPortal(state, portal.id);
-    const paid = payoutStakeReward({
-      state,
-      reward: row.nanos,
-      id: row.mintId,
-      gateOk: true,
-      maxReward: row.nanos,
-    });
-    if (!paid.ok) return { ok: false, reason: paid.reason || 'stake_reward', minted: 0n, principal: 0n };
-    portal.creditedEpochs = { ...(portal.creditedEpochs || {}), [row.epoch]: true };
-    minted += BigInt(row.nanos);
+  ensureRewardMaps(state);
+  const key = String(plan.index);
+  const prior = state.rewardRoots[key];
+  if (prior && prior !== plan.root) {
+    return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
+  }
+  state.rewardRoots[key] = plan.root;
+  state.rewardSets[key] = plan.rows.map((row) => ({
+    nullifier: row.nullifier,
+    nanos: row.nanos,
+    epoch: row.epoch,
+    portalId: row.portalId,
+  }));
+  for (const row of plan.rows) {
+    const have = state.rewardBook[row.nullifier];
+    if (have && (have.nanos !== row.nanos || have.rootKey !== key)) {
+      return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
+    }
+    state.rewardBook[row.nullifier] = {
+      nanos: row.nanos,
+      epoch: row.epoch,
+      rootKey: key,
+      portalId: row.portalId,
+    };
   }
   const principal = releaseMaturedPrincipal(state, nowMs);
-  return { ok: true, minted, principal, skipped: false };
+  return { ok: true, minted: 0n, principal, root: plan.root, skipped: false };
+}
+
+function claimNoteOpens(tx, nanos) {
+  const notes = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === KIND_REWARD_CLAIM);
+  if (notes.length !== 1) return false;
+  const note = notes[0];
+  if (!verifySealedNote(note, nanos)) return false;
+  if (!fs1LeafFor(note)) return false;
+  const proofV = Math.floor(Number(note?.valueProof?.v));
+  return proofV === nanos;
+}
+
+/**
+ * Mint one archived reward. The nullifier is the portal-epoch id.
+ * A second claim, or a withdraw of that id, is double_mint.
+ * The output dest is the claimer's choice. The lock dest is not on this tx.
+ */
+export function applyRewardClaim(state, tx) {
+  if (!state || state.blankFork) return { ok: false, reason: 'no_vault', nanos: 0 };
+  if (String(tx?.programId || '') !== RESERVE_PROGRAM) return { ok: false, reason: 'mint_forbidden', nanos: 0 };
+  const nullifier = String(tx?.nullifier || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  const row = state.rewardBook?.[nullifier];
+  const root = row ? state.rewardRoots?.[row.rootKey] : '';
+  if (!row || !root) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  if (state.mintedIds?.[nullifier]) return { ok: false, reason: 'double_mint', nanos: 0 };
+  if (!claimNoteOpens(tx, row.nanos)) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  const leaf = rewardLeaf(nullifier, row.nanos);
+  let rootBuf;
+  try { rootBuf = Buffer.from(root, 'hex'); } catch { rootBuf = Buffer.alloc(0); }
+  if (!leaf || !merkleVerify(leaf, tx?.proof, rootBuf)) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  const paid = payoutStakeReward({
+    state,
+    reward: row.nanos,
+    id: nullifier,
+    gateOk: true,
+    maxReward: row.nanos,
+  });
+  if (!paid.ok) return { ok: false, reason: paid.reason || 'double_mint', nanos: 0 };
+  state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + BigInt(row.nanos);
+  return { ok: true, nanos: row.nanos, nullifier };
+}
+
+function rewardReserved(state, portalId) {
+  const id = String(portalId || '');
+  if (!id) return false;
+  for (const row of Object.values(state?.rewardBook || {})) {
+    if (row && row.portalId === id) return true;
+  }
+  return false;
 }
 
 /** A spend of a lock note before its unlock time. */
@@ -530,6 +611,9 @@ export function emptyVault() {
     enactedLiveBonus: 1,
     enactedAtMs: 0,
     enactedAtEpoch: 0,
+    rewardRoots: Object.create(null),
+    rewardBook: Object.create(null),
+    rewardSets: Object.create(null),
   };
 }
 
@@ -563,6 +647,14 @@ export function cloneVault(state) {
   Object.assign(out.freezes, raw.freezes || {});
   out.pendingRates = Object.create(null);
   Object.assign(out.pendingRates, raw.pendingRates || {});
+  out.rewardRoots = Object.create(null);
+  Object.assign(out.rewardRoots, raw.rewardRoots || {});
+  out.rewardBook = Object.create(null);
+  Object.assign(out.rewardBook, raw.rewardBook || {});
+  out.rewardSets = Object.create(null);
+  for (const [key, rows] of Object.entries(raw.rewardSets || {})) {
+    out.rewardSets[key] = Array.isArray(rows) ? rows.map((row) => ({ ...row })) : rows;
+  }
   out.liveHashBonusNanos = asBig(out.liveHashBonusNanos);
   out.totalLockedNanos = asBig(out.totalLockedNanos);
   out.feeBankNanos = asBig(out.feeBankNanos);
@@ -877,6 +969,9 @@ function snapTrial(state) {
     portals: state.portals,
     mintedIds: state.mintedIds,
     freezes: state.freezes,
+    rewardRoots: state.rewardRoots ? { ...state.rewardRoots } : null,
+    rewardBook: state.rewardBook ? { ...state.rewardBook } : null,
+    rewardSets: state.rewardSets ? { ...state.rewardSets } : null,
   };
 }
 
@@ -916,6 +1011,9 @@ function restoreTrial(state, snap, frame) {
   state.portals = snap.portals;
   state.mintedIds = snap.mintedIds;
   state.freezes = snap.freezes;
+  state.rewardRoots = snap.rewardRoots ? { ...snap.rewardRoots } : Object.create(null);
+  state.rewardBook = snap.rewardBook ? { ...snap.rewardBook } : Object.create(null);
+  state.rewardSets = snap.rewardSets ? { ...snap.rewardSets } : Object.create(null);
   const portals = frame.portals.get(state.portals);
   if (portals) {
     for (const [id, prev] of portals) {
@@ -1620,6 +1718,38 @@ export function withdrawTx({ from, to, nanos, id, nonce } = {}) {
   return tx;
 }
 
+/**
+ * Claim one reward into `to`. `to` is not the lock dest.
+ * The nullifier, the amount, and the proof are the public link to the root.
+ * The fee is the weight levy. The claim does not expire.
+ */
+export function rewardClaimTx({ to, nanos, nullifier, proof, id, spendSeed = null } = {}) {
+  const n = exactFloorNanos(nanos);
+  const out = sealedReserveVout(to, n, KIND_REWARD_CLAIM);
+  delete out.portalId;
+  if (out.commit) {
+    const base = admitBaseFromAddress(to);
+    Object.assign(out, attachAdmitPub(out, {
+      admitBase: base || undefined,
+      spendSeed: spendSeed || undefined,
+    }));
+  }
+  const tx = {
+    id,
+    programId: RESERVE_PROGRAM,
+    mint: true,
+    kind: KIND_REWARD_CLAIM,
+    to,
+    nanos: n,
+    nullifier: String(nullifier || '').toLowerCase(),
+    proof: Array.isArray(proof) ? proof : [],
+    vin: [],
+    vout: [out],
+  };
+  tx.fee = levyNanos(0, { tx });
+  return tx;
+}
+
 export function voteTx({ from, dest, choice, id }) {
   return {
     id,
@@ -1832,6 +1962,22 @@ export function reserveDigestSuffix(tx) {
   if (fields.kind === KIND_WITHDRAW) {
     parts.push(lenPrefUtf8(String(tx?.id || '')));
     parts.push(withdrawNonceSigned(tx));
+  }
+  return Buffer.concat(parts);
+}
+
+/** Binds the nullifier, the amount, and the proof. The lock dest is not in it. */
+export function rewardClaimDigestSuffix(tx) {
+  if (txKind(tx) !== KIND_REWARD_CLAIM) return null;
+  const id = Buffer.from(String(tx?.nullifier || ''), 'hex');
+  if (id.length !== 32) return Buffer.from('rewardclaim-bad');
+  const steps = Array.isArray(tx?.proof) ? tx.proof : [];
+  const parts = [Buffer.from('rewardclaim1'), id, i64le(tx?.nanos)];
+  for (const step of steps) {
+    const side = step?.side === 'L' ? 1 : 0;
+    const hash = Buffer.from(String(step?.hash || ''), 'hex');
+    if (hash.length !== 32) return Buffer.from('rewardclaim-bad');
+    parts.push(Buffer.from([side]), hash);
   }
   return Buffer.concat(parts);
 }
@@ -2111,6 +2257,15 @@ export function applyReserveBlock({
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
     reserveApplyCount += 1;
+    if (txKind(tx) === KIND_REWARD_CLAIM) {
+      const got = applyRewardClaim(state, tx);
+      results.push({ action: KIND_REWARD_CLAIM, ...got });
+      if (!got.ok) {
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
+      continue;
+    }
     const act = reserveAction(tx);
     if (!act || act.opened === false) continue;
     if (act.kind === KIND_LOCK) {
@@ -2277,7 +2432,9 @@ export function trialReserveApply({
     block,
   };
   const rewardBlock = trialBlock(rows, block);
-  if (!rows.some(txIsReserveAction) && !requireStakeReward && !stakeRewardNotesOf(rewardBlock).length) {
+  const rewardTouch = blockRewardRoot(rewardBlock) || stakeRewardNotesOf(rewardBlock).length
+    || rows.some((tx) => txKind(tx) === KIND_REWARD_CLAIM);
+  if (!rows.some(txIsReserveAction) && !requireStakeReward && !rewardTouch) {
     return { ok: true };
   }
   if (!state) return { ok: false, reason: 'no_vault' };
@@ -2364,6 +2521,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   }
   const p = portalOf(state, id);
   if (rewardAlreadyMinted(state, p, nowMs)) return { ok: false, reason: 'double_mint' };
+  if (rewardReserved(state, p.id)) return { ok: false, reason: 'double_mint' };
   if (payoutPortalId && p.payoutPortalId && String(payoutPortalId).toLowerCase() !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
   }
@@ -2604,16 +2762,30 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
  * schedule on the pre-withdraw vault, and the mint equals that interest.
  * No withdraw is zero and does not need a vault.
  */
-/** Coinbase stake reward opened on this block. It must equal the schedule. */
+/**
+ * Coinbase carries a root, not a mint. Supply grows only by claim outputs.
+ * Unclaimed rows stay out of minted and permitted interest.
+ */
 export function stakeRewardSupply(vault, block, nowMs) {
-  const notes = stakeRewardNotesOf(block);
-  if (!notes.length) return { ok: true, minted: 0n, permitted: 0n };
-  if (!vault || vault.blankFork) return { ok: false, reason: 'supply' };
-  const plan = planStakeRewards(vault, nowMs);
-  if (!plan.ok || !sameRewardNotes(plan.pay, notes)) return { ok: false, reason: 'supply' };
-  let minted = 0n;
-  for (const row of plan.pay) minted += BigInt(row.nanos);
-  return { ok: true, minted, permitted: minted };
+  if (stakeRewardNotesOf(block).length) return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+  const got = blockRewardRoot(block);
+  if (got === 'bad') return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+  const state = vault ? cloneVault(vault) : emptyVault();
+  if (state.blankFork) return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+  if (got) {
+    const committed = applyStakeRewards(state, block, nowMs, { require: true });
+    if (!committed.ok || committed.skipped) {
+      return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+    }
+  }
+  let claimed = 0n;
+  for (const tx of Array.isArray(block?.txs) ? block.txs : []) {
+    if (!tx || tx.coinbase || txKind(tx) !== KIND_REWARD_CLAIM) continue;
+    const paid = applyRewardClaim(state, tx);
+    if (!paid.ok) return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
+    claimed += BigInt(paid.nanos);
+  }
+  return { ok: true, minted: 0n, permitted: 0n, claimed };
 }
 
 export function blockWithdrawInterest(vault, block, nowMs, oracle = {}) {

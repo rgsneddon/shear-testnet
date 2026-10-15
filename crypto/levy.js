@@ -62,6 +62,7 @@ const TAXED = new Set([
   'user-spend',
   'lock',
   'vote',
+  'reward-claim',
 ]);
 
 export function levyTaxed(tx) {
@@ -70,7 +71,7 @@ export function levyTaxed(tx) {
   if (k === 'claim' || k === 'join-claim') return false;
   if (k === 'withdraw') return false;
   if (k === 'reserve' || k === 'reserve-interest' || k === 'reserve-shortfall') return false;
-  if (tx?.mint && k !== KIND_POOL_WITHDRAW && k !== KIND_VORTICE_REGISTER) return false;
+  if (tx?.mint && k !== KIND_POOL_WITHDRAW && k !== KIND_VORTICE_REGISTER && k !== 'reward-claim') return false;
   if (TAXED.has(k)) return true;
   return !tx?.mint && Array.isArray(tx?.vin) && tx.vin.length > 0 && k !== 'b-spend';
 }

@@ -7,7 +7,7 @@ import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
-import { reserveAction, STAKE_REWARD_KIND } from './reserve_vault.js';
+import { reserveAction, blockRewardRoot, packRewardProof } from './reserve_vault.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
 
@@ -101,14 +101,27 @@ export function encodeVote(dest, choice, nowTs) {
   );
 }
 
-export function encodeCredit(dest, nowTs) {
-  const body = encodeBytes(dest);
+export function encodeCommitRewards(nowTs) {
+  return concat(selector('commitRewards(uint256)'), pad32(nowTs));
+}
+
+export function encodeClaim(nullifierHex, nanos, proof) {
+  const id = Buffer.from(String(nullifierHex || ''), 'hex');
+  const word = new Uint8Array(32);
+  if (id.length === 32) word.set(id);
+  const raw = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
   return concat(
-    selector('credit(bytes,uint256)'),
-    pad32(64),
-    pad32(nowTs),
-    body,
+    selector('claim(bytes32,uint256,bytes)'),
+    word,
+    pad32(nanos),
+    pad32(96),
+    encodeBytes(raw),
   );
+}
+
+export function decodeBytes32(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  return Buffer.from(b.subarray(0, 32)).toString('hex');
 }
 
 export function encodeWithdraw(dest, nowTs) {
@@ -347,7 +360,7 @@ export function isReserveCall(tx) {
   if (!tx || tx.coinbase) return false;
   if (String(tx.programId || '') !== RESERVE_PROGRAM) return false;
   const k = txKindOf(tx);
-  return k === 'lock' || k === 'vote' || k === 'withdraw';
+  return k === 'lock' || k === 'vote' || k === 'withdraw' || k === 'reward-claim';
 }
 
 export function isEvmValueTx(tx) {
@@ -374,7 +387,7 @@ export function decodeNextEpochBps(ret) {
 
 export function blockNeedsEvm(txs) {
   const list = Array.isArray(txs) ? txs : [];
-  if (list[0]?.coinbase && (list[0].observe != null || list[0].rateCommit != null)) return true;
+  if (list[0]?.coinbase && (list[0].observe != null || list[0].rateCommit != null || list[0].rewardRoot)) return true;
   return list.some((tx) => isReserveCall(tx) || isEvmValueTx(tx));
 }
 
@@ -413,6 +426,12 @@ export async function executeReserveTx(session, tx, nowMs) {
     const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;
     if (!dest) return { ok: true };
     return callReserve(session, encodeVote(dest, choice, nowMs));
+  }
+  if (kind === 'reward-claim') {
+    const proof = tx?.evmProof || tx?.proof;
+    const packed = Buffer.isBuffer(proof) ? proof : packRewardProof(proof);
+    if (!tx?.nullifier || !packed) return { ok: false, reason: 'stake_reward' };
+    return callReserve(session, encodeClaim(tx.nullifier, nanos, packed));
   }
   if (kind === 'withdraw') {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
@@ -469,15 +488,12 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
         if (!en.ok) return fail(en.reason || 'enact');
       }
     }
-    const rewardDests = [];
-    for (const o of cb?.vout || []) {
-      if (String(o?.kind || '') !== STAKE_REWARD_KIND) continue;
-      const dest = o.address || (o.dest20 ? encodeDest(Buffer.from(asU8(o.dest20)).subarray(0, 20)) : '');
-      if (dest && !rewardDests.includes(dest)) rewardDests.push(dest);
-    }
-    for (const dest of rewardDests) {
-      const credited = await callReserve(session, encodeCredit(dest, nowMs));
-      if (!credited.ok) return fail(credited.reason || 'stake_reward');
+    const rootHex = blockRewardRoot({ txs: list });
+    if (rootHex === 'bad') return fail('stake_reward');
+    if (rootHex) {
+      const committed = await callReserve(session, encodeCommitRewards(nowMs));
+      if (!committed.ok) return fail(committed.reason || 'stake_reward');
+      if (decodeBytes32(committed.returnValue) !== rootHex) return fail('stake_reward');
       evm.calls += 1;
     }
     if (list.slice(1).some((tx) => isReserveCall(tx) || isEvmValueTx(tx))) {

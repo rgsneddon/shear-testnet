@@ -67,7 +67,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, planStakeRewards, stakeRewardNote } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardCommitment } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -5341,12 +5341,9 @@ export function createStore(dir, {
       prepareCoinbase: (cb) => {
         const pulling = pendingTxs.some((tx) => String(tx?.kind || tx?.vout?.[0]?.kind || '') === 'withdraw');
         if (pulling) return;
-        const plan = planStakeRewards(reserveVault, now);
-        if (!plan.ok) return;
-        for (const row of plan.pay) {
-          const note = stakeRewardNote(row.dest, row.nanos, row.epoch, row.portalId);
-          if (note) cb.vout.push(note);
-        }
+        const plan = rewardCommitment(reserveVault, now);
+        if (!plan.rows.length) return;
+        cb.rewardRoot = plan.root;
       },
     });
     const jobId = `shear-${height}-${jobSeq++}`;

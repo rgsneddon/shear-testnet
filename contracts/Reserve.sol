@@ -33,8 +33,9 @@ pragma solidity ^0.8.20;
  * 2840 tenths → 284 bps, floored at 0.
  * It is written only when an epoch opens. There is no per-epoch step and
  * no aggregate cap. A caller cannot select the rate.
- * The 1 SHE pot never moves. The reserve reward is minted by consensus on
- * release, for this program id, on a qualifying pre-cutoff stake, pro-rata.
+ * The 1 SHE pot never moves. At epoch end the block commits one root over
+ * every eligible reward (rate × principal × pro-rata time, π gate, cutoff).
+ * A user claims one leaf of that root, once, in their own transaction.
  * Principal stays in the user's own time-locked note. This contract refuses
  * well-known foreign chain ids. The Reserve oracle is the bundled quorum.
  * observeRate does not move the rate.
@@ -88,10 +89,6 @@ contract Reserve {
     uint256 public constant GENESIS_BPS = 284;
     uint256 public constant ORACLE_MAX_AGE_MS = 14 * 86_400_000;
     uint256 public constant REWARD_DENOM_DAYS = 400;
-    /// Same cap as K_VW. Russell has not ruled a block that owes more than
-    /// this many rewards. This contract does not pay a subset, queue the
-    /// rest, or drop them. The block planner stops while that ruling is open.
-    uint256 public constant STAKE_REWARD_BLOCK_CAP = 8;
 
     enum Vote {
         None,
@@ -128,6 +125,18 @@ contract Reserve {
     mapping(bytes32 => Portal) private portals;
     /// portal id → chain epoch → reward already minted for that epoch.
     mapping(bytes32 => mapping(uint256 => bool)) private rewardMinted;
+    /// keccak portal id → sha256("shear-portal-v1" || dest), the JS portal id.
+    mapping(bytes32 => bytes32) internal portalSha;
+    bytes32[] internal portalKeys;
+    mapping(bytes32 => bool) internal portalListed;
+    /// Settlement index → merkle root of every reward that became due there.
+    mapping(uint256 => bytes32) internal rewardRootOf;
+    mapping(bytes32 => uint256) internal leafNanos;
+    mapping(bytes32 => uint256) internal leafRootKey;
+    mapping(bytes32 => bool) internal leafKnown;
+    mapping(bytes32 => bool) internal nullifierMinted;
+    /// sha256 portal id whose rewards are claimed, not withdrawn.
+    mapping(bytes32 => bool) internal portalReserved;
     /// Open index through which this portal's reward was already credited.
     mapping(bytes32 => uint256) private creditedThrough;
     uint256 public totalLocked;
@@ -443,6 +452,11 @@ contract Reserve {
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
         if (bonusEnacted && !deferEpochRoll) _syncEpoch(nowTs);
         bytes32 id = portalId(dest);
+        if (!portalListed[id]) {
+            portalListed[id] = true;
+            portalKeys.push(id);
+            portalSha[id] = sha256(abi.encodePacked("shear-portal-v1", dest));
+        }
         Portal storage p = portals[id];
         _settle(p, nowTs);
         bool staking = canJoin(nowTs);
@@ -547,56 +561,258 @@ contract Reserve {
         }
     }
 
-    /// Release matured principal from the vault and record the reward mint.
-    /// Principal is the user's time-locked note. This does not mint it again.
-    /// The reward is minted once per portal per epoch. A later withdraw of
-    /// that epoch reverts AlreadyMinted.
-    function credit(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
-        if (_payIndex(nowTs) == 0) revert EpochNotEnded();
-        bytes32 id = portalId(dest);
+    struct RewardRow {
+        bytes32 nullifier;
+        uint256 nanos;
+        uint256 epoch;
+        bytes32 shaId;
+    }
+
+    function _hex64(bytes32 value) internal pure returns (string memory) {
+        bytes16 alphabet = 0x30313233343536373839616263646566;
+        bytes memory out = new bytes(64);
+        for (uint256 i = 0; i < 32; i++) {
+            uint8 b = uint8(value[i]);
+            out[i * 2] = alphabet[b >> 4];
+            out[i * 2 + 1] = alphabet[b & 0x0f];
+        }
+        return string(out);
+    }
+
+    function _dec(uint256 n) internal pure returns (string memory) {
+        if (n == 0) return "0";
+        uint256 x = n;
+        uint256 digits = 0;
+        while (x != 0) {
+            digits += 1;
+            x /= 10;
+        }
+        bytes memory out = new bytes(digits);
+        x = n;
+        while (x != 0) {
+            digits -= 1;
+            out[digits] = bytes1(uint8(48 + (x % 10)));
+            x /= 10;
+        }
+        return string(out);
+    }
+
+    function _nullifier(bytes32 shaId, uint256 epoch) internal pure returns (bytes32) {
+        return sha256(abi.encodePacked("shear-reserve-v1", _hex64(shaId), _dec(epoch), "withdraw"));
+    }
+
+    function _u64le(uint256 n) internal pure returns (bytes memory) {
+        bytes memory out = new bytes(8);
+        uint256 v = n;
+        for (uint256 i = 0; i < 8; i++) {
+            out[i] = bytes1(uint8(v));
+            v >>= 8;
+        }
+        return out;
+    }
+
+    function _leaf(bytes32 nullifier, uint256 nanos) internal pure returns (bytes32) {
+        return sha256(abi.encodePacked("shear-reward-leaf-v1", nullifier, _u64le(nanos)));
+    }
+
+    function _verify(bytes32 leaf, bytes calldata proof, bytes32 root) internal pure returns (bool) {
+        if (proof.length % 33 != 0) return false;
+        bytes32 h = leaf;
+        for (uint256 i = 0; i < proof.length;) {
+            uint8 side = uint8(proof[i]);
+            bytes32 sib = bytes32(proof[i + 1:i + 33]);
+            if (side == 1) h = sha256(abi.encodePacked(sib, h));
+            else if (side == 0) h = sha256(abi.encodePacked(h, sib));
+            else return false;
+            unchecked { i += 33; }
+        }
+        return h == root;
+    }
+
+    function _taken(bytes32 id, uint256 epoch) internal view returns (bool) {
+        return nullifierMinted[_nullifier(portalSha[id], epoch)];
+    }
+
+    function _portalAccrual(bytes32 id, uint256 nowIdx)
+        internal
+        view
+        returns (uint256[] memory epochs, uint256[] memory amounts)
+    {
         Portal storage p = portals[id];
-        uint256 chain = _chainEpoch(nowTs);
-        if (_rewardTaken(id, p, chain)) revert AlreadyMinted();
-        _settle(p, nowTs);
-        uint256 release = 0;
-        uint256 kept = 0;
-        uint256 credits = p.tranches.length;
-        for (uint256 i = 0; i < credits; i++) {
-            if (chain <= p.tranches[i].epoch) {
-                if (kept != i) p.tranches[kept] = p.tranches[i];
-                kept += 1;
-            } else {
-                release += p.tranches[i].amount;
+        uint256 span = epochLengthMs();
+        uint256 cut = cutoffLengthMs();
+        bool qualified = _preCutoffStake(p, cut) >= PI_NANOS;
+        if (!qualified || nowIdx == 0) return (new uint256[](0), new uint256[](0));
+        uint256[] memory sums = new uint256[](nowIdx);
+        bool[] memory hit = new bool[](nowIdx);
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            Tranche storage t = p.tranches[i];
+            if (t.remainMs < cut) continue;
+            if (!t.partialPaid && nowIdx > t.epoch && t.epoch < nowIdx) {
+                uint256 part = _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
+                if (part > 0) {
+                    sums[t.epoch] += part;
+                    hit[t.epoch] = true;
+                }
+            }
+            if (nowIdx > t.fullFrom) {
+                for (uint256 e = t.fullFrom; e < nowIdx; e++) {
+                    uint256 full = (t.amount * _rateFor(e)) / 10000;
+                    if (full > 0) {
+                        sums[e] += full;
+                        hit[e] = true;
+                    }
+                }
             }
         }
-        if (release == 0) revert EpochNotEnded();
-        _markReward(id, p, chain);
-        while (p.tranches.length > kept) p.tranches.pop();
-        reward = p.accruedReward;
-        p.accruedReward = 0;
-        creditedThrough[id] = chain;
-        if (release > p.active) {
-            uint256 rest = release - p.active;
-            p.active = 0;
-            if (rest > p.idle) revert BadAmount();
-            p.idle -= rest;
-        } else {
-            p.active -= release;
+        uint256 count = 0;
+        for (uint256 e = 0; e < nowIdx; e++) {
+            if (!hit[e] || sums[e] == 0 || sums[e] > 9007199254740991) continue;
+            if (_taken(id, e)) continue;
+            count += 1;
         }
-        totalLocked -= release;
-        principal = release;
-        uint256 left = p.active + p.idle;
-        if (left == 0) {
-            p.rewardTracked = false;
-            p.rewardEpoch = 0;
-            p.joined = false;
-            p.vote = Vote.None;
-            p.voteEpoch = 0;
-        } else if (left < PI_NANOS) {
-            p.joined = false;
-            p.vote = Vote.None;
-            p.voteEpoch = 0;
+        epochs = new uint256[](count);
+        amounts = new uint256[](count);
+        uint256 w = 0;
+        for (uint256 e = 0; e < nowIdx; e++) {
+            if (!hit[e] || sums[e] == 0 || sums[e] > 9007199254740991) continue;
+            if (_taken(id, e)) continue;
+            epochs[w] = e;
+            amounts[w] = sums[e];
+            w += 1;
         }
+    }
+
+    function _collect(uint256 nowIdx) internal view returns (RewardRow[] memory rows) {
+        uint256 nKeys = portalKeys.length;
+        uint256 count = 0;
+        for (uint256 i = 0; i < nKeys; i++) {
+            (uint256[] memory epochs,) = _portalAccrual(portalKeys[i], nowIdx);
+            count += epochs.length;
+        }
+        rows = new RewardRow[](count);
+        uint256 w = 0;
+        for (uint256 i = 0; i < nKeys; i++) {
+            bytes32 id = portalKeys[i];
+            (uint256[] memory epochs, uint256[] memory amounts) = _portalAccrual(id, nowIdx);
+            bytes32 shaId = portalSha[id];
+            for (uint256 j = 0; j < epochs.length; j++) {
+                rows[w] = RewardRow({
+                    nullifier: _nullifier(shaId, epochs[j]),
+                    nanos: amounts[j],
+                    epoch: epochs[j],
+                    shaId: shaId
+                });
+                w += 1;
+            }
+        }
+        for (uint256 i = 1; i < count; i++) {
+            RewardRow memory key = rows[i];
+            uint256 j = i;
+            while (j > 0 && rows[j - 1].nullifier > key.nullifier) {
+                rows[j] = rows[j - 1];
+                j -= 1;
+            }
+            rows[j] = key;
+        }
+    }
+
+    function _rootOf(RewardRow[] memory rows) internal pure returns (bytes32) {
+        uint256 n = rows.length;
+        if (n == 0) return sha256("shear-empty-root-v1");
+        bytes32[] memory layer = new bytes32[](n);
+        for (uint256 i = 0; i < n; i++) layer[i] = _leaf(rows[i].nullifier, rows[i].nanos);
+        while (n > 1) {
+            uint256 m = (n + 1) / 2;
+            bytes32[] memory nextL = new bytes32[](m);
+            for (uint256 i = 0; i < n; i += 2) {
+                bytes32 a = layer[i];
+                bytes32 b = i + 1 < n ? layer[i + 1] : a;
+                nextL[i / 2] = sha256(abi.encodePacked(a, b));
+            }
+            layer = nextL;
+            n = m;
+        }
+        return layer[0];
+    }
+
+    function _releaseMatured(uint256 nowIdx) internal {
+        uint256 nKeys = portalKeys.length;
+        for (uint256 p = 0; p < nKeys; p++) {
+            Portal storage portal = portals[portalKeys[p]];
+            uint256 release = 0;
+            uint256 kept = 0;
+            uint256 credits = portal.tranches.length;
+            for (uint256 i = 0; i < credits; i++) {
+                if (nowIdx <= portal.tranches[i].epoch) {
+                    if (kept != i) portal.tranches[kept] = portal.tranches[i];
+                    kept += 1;
+                } else {
+                    release += portal.tranches[i].amount;
+                }
+            }
+            while (portal.tranches.length > kept) portal.tranches.pop();
+            if (release == 0) continue;
+            if (release > portal.active) {
+                uint256 rest = release - portal.active;
+                portal.active = 0;
+                if (rest > portal.idle) revert BadAmount();
+                portal.idle -= rest;
+            } else {
+                portal.active -= release;
+            }
+            totalLocked -= release;
+            uint256 left = portal.active + portal.idle;
+            if (left == 0) {
+                portal.rewardTracked = false;
+                portal.rewardEpoch = 0;
+                portal.joined = false;
+                portal.vote = Vote.None;
+                portal.voteEpoch = 0;
+            } else if (left < PI_NANOS) {
+                portal.joined = false;
+                portal.vote = Vote.None;
+                portal.voteEpoch = 0;
+            }
+        }
+    }
+
+    /// One root over every eligible reward. Principal is released, not minted.
+    /// A later claim mints one leaf. The root does not expire.
+    function commitRewards(uint256 nowTs) external onlyShear returns (bytes32 root) {
+        uint256 nowIdx = _payIndex(nowTs);
+        if (nowIdx == 0) revert EpochNotEnded();
+        RewardRow[] memory rows = _collect(nowIdx);
+        if (rows.length == 0) revert EpochNotEnded();
+        root = _rootOf(rows);
+        bytes32 prior = rewardRootOf[nowIdx];
+        if (prior != bytes32(0) && prior != root) revert BadAmount();
+        rewardRootOf[nowIdx] = root;
+        for (uint256 i = 0; i < rows.length; i++) {
+            bytes32 nf = rows[i].nullifier;
+            if (leafKnown[nf] && leafNanos[nf] != rows[i].nanos) revert BadAmount();
+            leafKnown[nf] = true;
+            leafNanos[nf] = rows[i].nanos;
+            leafRootKey[nf] = nowIdx;
+            portalReserved[rows[i].shaId] = true;
+        }
+        _releaseMatured(nowIdx);
+        uint256 nKeys = portalKeys.length;
+        for (uint256 i = 0; i < nKeys; i++) {
+            bytes32 shaId = portalSha[portalKeys[i]];
+            if (portalReserved[shaId]) portals[portalKeys[i]].accruedReward = 0;
+        }
+    }
+
+    /// Mint one archived leaf. A second call, or a withdraw of that portal, reverts.
+    function claim(bytes32 nullifier, uint256 nanos, bytes calldata proof) external onlyShear returns (uint256) {
+        if (!leafKnown[nullifier] || leafNanos[nullifier] != nanos || nanos == 0) revert BadAmount();
+        if (nullifierMinted[nullifier]) revert AlreadyMinted();
+        bytes32 root = rewardRootOf[leafRootKey[nullifier]];
+        if (root == bytes32(0) || !_verify(_leaf(nullifier, nanos), proof, root)) revert BadAmount();
+        nullifierMinted[nullifier] = true;
+        return nanos;
     }
 
     function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
@@ -605,6 +821,8 @@ contract Reserve {
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
+        bytes32 shaId = portalSha[id];
+        if (shaId != bytes32(0) && portalReserved[shaId]) revert AlreadyMinted();
         if (_rewardTaken(id, p, _chainEpoch(nowTs))) revert AlreadyMinted();
         uint256 active = p.active;
         uint256 idleBal = p.idle;
