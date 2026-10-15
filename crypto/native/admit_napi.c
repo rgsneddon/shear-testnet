@@ -14,10 +14,6 @@ int32_t shear_admit_frontier_append(
     const uint8_t *dest, const uint8_t *c, uint32_t n,
     uint8_t *out_frontier, uint32_t out_cap, uint32_t *out_len,
     uint8_t *out_root);
-int32_t shear_admit_prove(
-    const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
-    uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
-    uint8_t *c_tilde_out, uint8_t *proof_out, uint32_t *proof_len);
 int32_t shear_admit_prove_v3(
     const uint8_t *x, const uint8_t *p, const uint8_t *c, const uint8_t *t,
     uint32_t index, const uint8_t *dest, const uint8_t *cs, uint32_t n,
@@ -27,17 +23,26 @@ int32_t shear_admit_verify_v3(
     const uint8_t *proof, uint32_t proof_len, const uint8_t *jroot,
     const uint8_t *c_tilde, const uint8_t *spend_tag,
     const uint8_t *ctx, uint32_t ctx_len);
-int32_t shear_admit_verify(
-    const uint8_t *proof, uint32_t proof_len, const uint8_t *jroot,
-    const uint8_t *c_tilde, const uint8_t *spend_tag,
-    const uint8_t *dest, const uint8_t *cs, uint32_t n);
-int32_t shear_range_prove(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t *out_len);
+int32_t shear_range_prove(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t out_cap, uint32_t *out_len);
 int32_t shear_range_verify(const uint8_t *c, const uint8_t *proof, uint32_t proof_len);
-int32_t shear_admit_verify_batch(
-    const uint8_t *proofs, const uint32_t *lens, uint32_t count,
-    const uint8_t *jroot, const uint8_t *c_tildes, const uint8_t *tags,
-    const uint8_t *dest, const uint8_t *cs, uint32_t n);
-int32_t shear_admit_bench(uint32_t n, uint64_t *prove_us, uint64_t *verify_us, uint32_t *proof_len);
+typedef struct Fs1Handle Fs1Handle;
+uint32_t shear_fs1_blob_cap(uint32_t n);
+uint32_t shear_fs1_record_bytes(void);
+int32_t shear_fs1_root(const uint8_t *notes, uint64_t count, uint8_t *out);
+Fs1Handle *shear_fs1_tree_new(void);
+void shear_fs1_tree_free(Fs1Handle *h);
+uint64_t shear_fs1_tree_len(const Fs1Handle *h);
+int32_t shear_fs1_tree_append(Fs1Handle *h, const uint8_t *notes, uint64_t count);
+int32_t shear_fs1_tree_truncate(Fs1Handle *h, uint64_t len);
+int32_t shear_fs1_tree_root(const Fs1Handle *h, uint8_t *out);
+int32_t shear_fs1_prove(
+    const Fs1Handle *h, const uint64_t *indices, const uint8_t *xs, uint32_t n,
+    const uint8_t *digest, uint64_t anchor, uint32_t threads,
+    uint8_t *out_fs1, size_t fs1_cap, size_t *out_fs1_len,
+    uint8_t *out_records, uint8_t *out_t);
+int32_t shear_fs1_verify(
+    const uint8_t *fs1, size_t fs1_len, const uint8_t *records, uint32_t n,
+    const uint8_t *root, const uint8_t *digest, uint64_t anchor);
 
 static int buf32(napi_env env, napi_value v, uint8_t out[32]) {
   void *data = NULL;
@@ -161,50 +166,6 @@ static napi_value jroot_point_fn(napi_env env, napi_callback_info info) {
   return buf_from(env, out, 32);
 }
 
-static napi_value prove_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 7;
-  napi_value argv[7];
-  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  uint8_t x[32], p[32], c[32], t[32];
-  uint32_t index = 0;
-  if (argc < 7
-      || buf32(env, argv[0], x) || buf32(env, argv[1], p) || buf32(env, argv[2], c) || buf32(env, argv[3], t)) {
-    napi_throw_error(env, NULL, "prove scalars");
-    return NULL;
-  }
-  napi_get_value_uint32(env, argv[4], &index);
-  uint8_t *dest = NULL, *cs = NULL;
-  uint32_t nd = 0, nc = 0;
-  if (concat_32s(env, argv[5], &dest, &nd) || concat_32s(env, argv[6], &cs, &nc)) {
-    free(dest);
-    free(cs);
-    napi_throw_error(env, NULL, "prove leaves");
-    return NULL;
-  }
-  uint32_t n = nd < nc ? nd : nc;
-  uint8_t ct[32];
-  uint32_t maxp = (uint32_t)shear_admit_max_proof();
-  uint8_t *proof = (uint8_t *)malloc(maxp);
-  uint32_t plen = 0;
-  int32_t ok = 0;
-  if (proof) ok = shear_admit_prove(x, p, c, t, index, dest, cs, n, ct, proof, &plen);
-  free(dest);
-  free(cs);
-  if (!proof || ok != 1) {
-    free(proof);
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  napi_value obj, ct_v, pr_v;
-  napi_create_object(env, &obj);
-  ct_v = buf_from(env, ct, 32);
-  pr_v = buf_from(env, proof, plen);
-  free(proof);
-  napi_set_named_property(env, obj, "cTilde", ct_v);
-  napi_set_named_property(env, obj, "proof", pr_v);
-  return obj;
-}
 
 static napi_value prove_v3_fn(napi_env env, napi_callback_info info) {
   size_t argc = 8;
@@ -291,34 +252,6 @@ static napi_value verify_v3_fn(napi_env env, napi_callback_info info) {
   return out;
 }
 
-static napi_value verify_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 6;
-  napi_value argv[6];
-  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  void *pr = NULL;
-  size_t prlen = 0;
-  uint8_t jr[32], ct[32], tag[32];
-  if (argc < 4
-      || napi_get_buffer_info(env, argv[0], &pr, &prlen) != napi_ok
-      || buf32(env, argv[1], jr) || buf32(env, argv[2], ct) || buf32(env, argv[3], tag)) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  uint8_t *dest = NULL, *cs = NULL;
-  uint32_t nd = 0, nc = 0, n = 0;
-  if (argc >= 6) {
-    concat_32s(env, argv[4], &dest, &nd);
-    concat_32s(env, argv[5], &cs, &nc);
-    n = nd < nc ? nd : nc;
-  }
-  int32_t ok = shear_admit_verify((const uint8_t *)pr, (uint32_t)prlen, jr, ct, tag, dest, cs, n);
-  free(dest);
-  free(cs);
-  napi_value out;
-  napi_get_boolean(env, ok == 1, &out);
-  return out;
-}
 
 /* Decimal digits only. A JS number above 2^53 is already rounded, so it is refused. */
 static int parse_u64_digits(const char *s, size_t n, uint64_t *out) {
@@ -377,7 +310,9 @@ static napi_value prove_range_fn(napi_env env, napi_callback_info info) {
   uint8_t *out = (uint8_t *)malloc(maxp);
   uint32_t olen = 0;
   int32_t ok = 0;
-  if (out) ok = shear_range_prove(v, r, out, &olen);
+  if (out) ok = shear_range_prove(v, r, out, maxp, &olen);
+  volatile uint8_t *wipe = r;
+  for (size_t i = 0; i < sizeof r; i++) wipe[i] = 0;
   if (!out || ok != 1) {
     free(out);
     napi_value f;
@@ -407,105 +342,7 @@ static napi_value verify_range_fn(napi_env env, napi_callback_info info) {
   return out;
 }
 
-static napi_value verify_batch_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 6;
-  napi_value argv[6];
-  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  bool is_arr = 0;
-  if (argc < 4 || napi_is_array(env, argv[0], &is_arr) != napi_ok || !is_arr) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  uint32_t count = 0;
-  napi_get_array_length(env, argv[0], &count);
-  uint8_t jr[32];
-  if (buf32(env, argv[1], jr)) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  size_t total = 0;
-  uint32_t *lens = (uint32_t *)calloc(count, sizeof(uint32_t));
-  if (!lens && count) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  for (uint32_t i = 0; i < count; i++) {
-    napi_value el;
-    napi_get_element(env, argv[0], i, &el);
-    void *data = NULL;
-    size_t len = 0;
-    napi_get_buffer_info(env, el, &data, &len);
-    lens[i] = (uint32_t)len;
-    total += len;
-  }
-  uint8_t *blob = (uint8_t *)malloc(total ? total : 1);
-  size_t off = 0;
-  for (uint32_t i = 0; i < count; i++) {
-    napi_value el;
-    napi_get_element(env, argv[0], i, &el);
-    void *data = NULL;
-    size_t len = 0;
-    napi_get_buffer_info(env, el, &data, &len);
-    memcpy(blob + off, data, len);
-    off += len;
-  }
-  uint8_t *cts = NULL, *tags = NULL;
-  uint32_t nct = 0, ntg = 0;
-  concat_32s(env, argv[2], &cts, &nct);
-  concat_32s(env, argv[3], &tags, &ntg);
-  uint8_t *dest = NULL, *cs = NULL;
-  uint32_t nd = 0, nc = 0, n = 0;
-  if (argc >= 6) {
-    concat_32s(env, argv[4], &dest, &nd);
-    concat_32s(env, argv[5], &cs, &nc);
-    n = nd < nc ? nd : nc;
-  }
-  int32_t ok = 0;
-  if (nct == count && ntg == count) {
-    ok = shear_admit_verify_batch(blob, lens, count, jr, cts, tags, dest, cs, n);
-  }
-  free(lens);
-  free(blob);
-  free(cts);
-  free(tags);
-  free(dest);
-  free(cs);
-  napi_value out;
-  napi_get_boolean(env, ok == 1, &out);
-  return out;
-}
 
-static napi_value bench_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1];
-  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
-  uint32_t n = 0;
-  if (argc < 1 || napi_get_value_uint32(env, argv[0], &n) != napi_ok || n == 0) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  uint64_t prove_us = 0, verify_us = 0;
-  uint32_t plen = 0;
-  int32_t ok = shear_admit_bench(n, &prove_us, &verify_us, &plen);
-  if (ok != 1) {
-    napi_value f;
-    napi_get_boolean(env, 0, &f);
-    return f;
-  }
-  napi_value obj, p_v, v_v, l_v;
-  napi_create_object(env, &obj);
-  napi_create_double(env, (double)prove_us, &p_v);
-  napi_create_double(env, (double)verify_us, &v_v);
-  napi_create_uint32(env, plen, &l_v);
-  napi_set_named_property(env, obj, "proveUs", p_v);
-  napi_set_named_property(env, obj, "verifyUs", v_v);
-  napi_set_named_property(env, obj, "proofLen", l_v);
-  return obj;
-}
 
 static napi_value frontier_append_fn(napi_env env, napi_callback_info info) {
   size_t argc = 3;
@@ -551,6 +388,230 @@ static napi_value frontier_append_fn(napi_env env, napi_callback_info info) {
   return obj;
 }
 
+static napi_value false_v(napi_env env) {
+  napi_value f;
+  napi_get_boolean(env, 0, &f);
+  return f;
+}
+
+static napi_value bool_v(napi_env env, int ok) {
+  napi_value b;
+  napi_get_boolean(env, ok ? 1 : 0, &b);
+  return b;
+}
+
+static int buf_any(napi_env env, napi_value v, uint8_t **data, size_t *len) {
+  void *d = NULL;
+  size_t n = 0;
+  if (napi_get_buffer_info(env, v, &d, &n) != napi_ok) return -1;
+  if (n > 0 && !d) return -1;
+  *data = (uint8_t *)d;
+  *len = n;
+  return 0;
+}
+
+static int u64_arg(napi_env env, napi_value v, uint64_t *out) {
+  double d = 0;
+  if (napi_get_value_double(env, v, &d) != napi_ok) return -1;
+  if (!(d >= 0) || d > 9007199254740991.0 || d != (double)(uint64_t)d) return -1;
+  *out = (uint64_t)d;
+  return 0;
+}
+
+static void fs1_tree_finalize(napi_env env, void *data, void *hint) {
+  (void)env;
+  (void)hint;
+  shear_fs1_tree_free((Fs1Handle *)data);
+}
+
+static Fs1Handle *fs1_handle(napi_env env, napi_value v) {
+  void *data = NULL;
+  if (napi_get_value_external(env, v, &data) != napi_ok) return NULL;
+  return (Fs1Handle *)data;
+}
+
+static napi_value fs1_blob_cap_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint32_t n = 0;
+  if (argc < 1 || napi_get_value_uint32(env, argv[0], &n) != napi_ok) n = 0;
+  napi_value out;
+  napi_create_uint32(env, shear_fs1_blob_cap(n), &out);
+  return out;
+}
+
+static napi_value fs1_record_bytes_fn(napi_env env, napi_callback_info info) {
+  (void)info;
+  napi_value out;
+  napi_create_uint32(env, shear_fs1_record_bytes(), &out);
+  return out;
+}
+
+static napi_value fs1_root_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint8_t *notes = NULL;
+  size_t len = 0;
+  if (argc < 1 || buf_any(env, argv[0], &notes, &len) != 0 || len % 64 != 0) {
+    napi_throw_error(env, NULL, "fs1Root notes");
+    return NULL;
+  }
+  uint8_t out[32];
+  if (shear_fs1_root(notes, (uint64_t)(len / 64), out) != 1) return false_v(env);
+  return buf_from(env, out, 32);
+}
+
+static napi_value fs1_tree_new_fn(napi_env env, napi_callback_info info) {
+  (void)info;
+  Fs1Handle *h = shear_fs1_tree_new();
+  if (!h) {
+    napi_throw_error(env, NULL, "fs1TreeNew");
+    return NULL;
+  }
+  napi_value out;
+  if (napi_create_external(env, h, fs1_tree_finalize, NULL, &out) != napi_ok) {
+    shear_fs1_tree_free(h);
+    napi_throw_error(env, NULL, "fs1TreeNew");
+    return NULL;
+  }
+  return out;
+}
+
+static napi_value fs1_tree_len_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  Fs1Handle *h = argc < 1 ? NULL : fs1_handle(env, argv[0]);
+  if (!h) {
+    napi_throw_error(env, NULL, "fs1 handle");
+    return NULL;
+  }
+  napi_value out;
+  napi_create_double(env, (double)shear_fs1_tree_len(h), &out);
+  return out;
+}
+
+static napi_value fs1_tree_append_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  Fs1Handle *h = argc < 2 ? NULL : fs1_handle(env, argv[0]);
+  uint8_t *notes = NULL;
+  size_t len = 0;
+  if (!h || buf_any(env, argv[1], &notes, &len) != 0 || len % 64 != 0) {
+    napi_throw_error(env, NULL, "fs1TreeAppend args");
+    return NULL;
+  }
+  return bool_v(env, shear_fs1_tree_append(h, notes, (uint64_t)(len / 64)) == 1);
+}
+
+static napi_value fs1_tree_truncate_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  Fs1Handle *h = argc < 2 ? NULL : fs1_handle(env, argv[0]);
+  uint64_t len = 0;
+  if (!h || u64_arg(env, argv[1], &len) != 0) {
+    napi_throw_error(env, NULL, "fs1TreeTruncate args");
+    return NULL;
+  }
+  return bool_v(env, shear_fs1_tree_truncate(h, len) == 1);
+}
+
+static napi_value fs1_tree_root_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  Fs1Handle *h = argc < 1 ? NULL : fs1_handle(env, argv[0]);
+  if (!h) {
+    napi_throw_error(env, NULL, "fs1 handle");
+    return NULL;
+  }
+  uint8_t out[32];
+  if (shear_fs1_tree_root(h, out) != 1) return false_v(env);
+  return buf_from(env, out, 32);
+}
+
+/* fs1Prove(handle, indices[], xs (32n), digest32, anchor, threads) */
+static napi_value fs1_prove_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 6;
+  napi_value argv[6];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  Fs1Handle *h = argc < 6 ? NULL : fs1_handle(env, argv[0]);
+  bool is_arr = 0;
+  uint32_t n = 0;
+  if (h) napi_is_array(env, argv[1], &is_arr);
+  if (is_arr) napi_get_array_length(env, argv[1], &n);
+  uint8_t *xs = NULL;
+  size_t xs_len = 0;
+  uint8_t digest[32];
+  uint64_t anchor = 0;
+  uint32_t threads = 0;
+  if (!h || !is_arr || n < 1 || n > 8 || buf_any(env, argv[2], &xs, &xs_len) != 0 || xs_len != (size_t)n * 32
+      || buf32(env, argv[3], digest) != 0 || u64_arg(env, argv[4], &anchor) != 0
+      || napi_get_value_uint32(env, argv[5], &threads) != napi_ok) {
+    napi_throw_error(env, NULL, "fs1Prove args");
+    return NULL;
+  }
+  uint64_t indices[8];
+  for (uint32_t i = 0; i < n; i++) {
+    napi_value el;
+    napi_get_element(env, argv[1], i, &el);
+    if (u64_arg(env, el, &indices[i]) != 0) {
+      napi_throw_error(env, NULL, "fs1Prove index");
+      return NULL;
+    }
+  }
+  uint32_t cap = shear_fs1_blob_cap(n);
+  uint32_t rec = shear_fs1_record_bytes();
+  uint8_t *fs1 = (uint8_t *)malloc(cap);
+  uint8_t *records = (uint8_t *)malloc((size_t)rec * n);
+  uint8_t t[8 * 32];
+  size_t fs1_len = 0;
+  if (!fs1 || !records) {
+    free(fs1);
+    free(records);
+    napi_throw_error(env, NULL, "fs1Prove alloc");
+    return NULL;
+  }
+  int32_t ok = shear_fs1_prove(h, indices, xs, n, digest, anchor, threads, fs1, cap, &fs1_len, records, t);
+  if (ok != 1) {
+    free(fs1);
+    free(records);
+    memset(t, 0, sizeof(t));
+    return false_v(env);
+  }
+  napi_value obj;
+  napi_create_object(env, &obj);
+  napi_set_named_property(env, obj, "fs1", buf_from(env, fs1, fs1_len));
+  napi_set_named_property(env, obj, "records", buf_from(env, records, (size_t)rec * n));
+  napi_set_named_property(env, obj, "t", buf_from(env, t, (size_t)32 * n));
+  memset(t, 0, sizeof(t));
+  free(fs1);
+  free(records);
+  return obj;
+}
+
+/* fs1Verify(fs1, records (321n), root32, digest32, anchor) */
+static napi_value fs1_verify_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value argv[5];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint8_t *fs1 = NULL, *records = NULL;
+  size_t fs1_len = 0, rec_len = 0;
+  uint8_t root[32], digest[32];
+  uint64_t anchor = 0;
+  if (argc < 5 || buf_any(env, argv[0], &fs1, &fs1_len) != 0 || buf_any(env, argv[1], &records, &rec_len) != 0
+      || buf32(env, argv[2], root) != 0 || buf32(env, argv[3], digest) != 0 || u64_arg(env, argv[4], &anchor) != 0) {
+    return false_v(env);
+  }
+  uint32_t rec = shear_fs1_record_bytes();
+  if (rec_len == 0 || rec_len % rec != 0 || rec_len / rec > 8) return false_v(env);
+  return bool_v(env, shear_fs1_verify(fs1, fs1_len, records, (uint32_t)(rec_len / rec), root, digest, anchor) == 1);
+}
+
 static napi_value init(napi_env env, napi_value exports) {
   napi_value fn;
 #define EX(name, fnp) \
@@ -563,14 +624,20 @@ static napi_value init(napi_env env, napi_value exports) {
   EX("jroot", jroot_fn);
   EX("jrootPoint", jroot_point_fn);
   EX("frontierAppend", frontier_append_fn);
-  EX("prove", prove_fn);
   EX("proveV3", prove_v3_fn);
-  EX("verify", verify_fn);
   EX("verifyV3", verify_v3_fn);
   EX("proveRange", prove_range_fn);
   EX("verifyRange", verify_range_fn);
-  EX("verifyBatch", verify_batch_fn);
-  EX("bench", bench_fn);
+  EX("fs1BlobCap", fs1_blob_cap_fn);
+  EX("fs1RecordBytes", fs1_record_bytes_fn);
+  EX("fs1Root", fs1_root_fn);
+  EX("fs1TreeNew", fs1_tree_new_fn);
+  EX("fs1TreeLen", fs1_tree_len_fn);
+  EX("fs1TreeAppend", fs1_tree_append_fn);
+  EX("fs1TreeTruncate", fs1_tree_truncate_fn);
+  EX("fs1TreeRoot", fs1_tree_root_fn);
+  EX("fs1Prove", fs1_prove_fn);
+  EX("fs1Verify", fs1_verify_fn);
 #undef EX
   return exports;
 }

@@ -59,27 +59,16 @@ function measure(store, dest, open) {
   store.spendableNanos(dest);
   store.historyFor(dest);
   reconstructOwner(store, dest);
-  const balance = handleWalletApi(
-    url(`/api/wallet/balance?address=${encodeURIComponent(dest)}&open=${open}`),
-    'GET',
-    {},
-    { store },
-  );
-  const history = handleWalletApi(
-    url(`/api/wallet/history?address=${encodeURIComponent(dest)}&open=${open}`),
-    'GET',
-    {},
-    { store },
-  );
-  const notes = handleWalletApi(
-    url(`/api/wallet/notes?address=${encodeURIComponent(dest)}&open=${open}`),
-    'GET',
-    {},
-    { store },
-  );
-  assert.equal(balance.json.ok, true);
-  assert.equal(history.json.ok, true);
-  assert.equal(notes.json.ok, true);
+  // AL-5: the routes are gone; the internal walks they used still stay flat.
+  for (const route of ['balance', 'history', 'notes']) {
+    const got = handleWalletApi(
+      url(`/api/wallet/${route}?address=${encodeURIComponent(dest)}&open=${open}`),
+      'GET',
+      {},
+      { store },
+    );
+    assert.equal(got.status, 404, route);
+  }
   return store.walletWalkStats();
 }
 

@@ -7,9 +7,8 @@ import { createStore } from '../src/store.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { newIdentity, freshStealthDest } from '../../crypto/address.js';
-import { admitProve, admitVerify, admitPub, jroot } from '../../crypto/admit.js';
-import { randomScalar, commit, pointBytes } from '../../crypto/note.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
+import { sealHiddenNote } from '../../crypto/note.js';
 
 const KINDS = ['send', 'transfer'];
 const VERSIONS = [0, 1, 2, 4, 255];
@@ -31,15 +30,26 @@ function oneProof(version, lane) {
   return { tag, cTilde, proof: { blob, spendTag: tag, cTilde } };
 }
 
+const hiddenByAmount = new Map();
+const FIXTURE_ADMIT_BASE = newIdentity().admitBase;
+/** The amount rides as C and a range proof. A plaintext nanos is amount_field. */
+function hiddenOut(kind, amount) {
+  if (!hiddenByAmount.has(amount)) {
+    const note = sealHiddenNote(amount, { dest20: Buffer.alloc(20, 6), admitBase: FIXTURE_ADMIT_BASE });
+    delete note.r;
+    hiddenByAmount.set(amount, note);
+  }
+  return { ...hiddenByAmount.get(amount), kind };
+}
+
 function flowTx({ kind, amount, version, anchor = undefined, proofs = null, id }) {
   const built = proofs || [oneProof(version, 1)];
   const tx = {
     id: id || `${kind}-${amount}-${version}-${anchor == null ? 'na' : anchor}`,
     kind,
-    nanos: amount,
     fee: 0,
     vin: built.map((row) => ({ commit: row.cTilde })),
-    vout: [{ kind, nanos: amount }],
+    vout: [hiddenOut(kind, amount)],
     admit_proof: built.length === 1 ? built[0].proof : undefined,
     admit_proofs: built.length === 1 ? undefined : built.map((row) => row.proof),
   };
@@ -77,7 +87,7 @@ function blockVerdict(tx, height, prev) {
 }
 
 describe('v12 flow spends reject a non-v3 byte before the v2 verifier', () => {
-  it('any other version byte, a missing anchor, or a mixed list is admit_version on queue, mempool, and verify', { timeout: 180_000 }, () => {
+  it('any other version byte is admit_version, and a byte-3 send with or without an anchor is send_unavailable, on queue, mempool, and verify', { timeout: 180_000 }, () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-byte-'));
     const store = createStore(dir);
     const who = freshStealthDest(newIdentity()).dest;
@@ -129,18 +139,18 @@ describe('v12 flow spends reject a non-v3 byte before the v2 verifier', () => {
         id: 'mixed',
         proofs: [oneProof(2, 1), oneProof(3, 2)],
       });
-      assert.equal(store.queueTx(mixed).reason, 'admit_version');
-      assert.equal(admitMempool(emptyMempool(), mixed).reason, 'admit_version');
-      assert.equal(blockVerdict(mixed, 1, null).reason, 'admit_version');
+      assert.equal(store.queueTx(mixed).reason, 'send_unavailable');
+      assert.equal(admitMempool(emptyMempool(), mixed).reason, 'send_unavailable');
+      assert.equal(blockVerdict(mixed, 1, null).reason, 'send_unavailable');
       const noAnchor = flowTx({ kind: 'transfer', amount: 1, version: 3, id: 'v3-open' });
-      assert.equal(store.queueTx(noAnchor).reason, 'admit_version');
-      assert.equal(admitMempool(emptyMempool(), noAnchor).reason, 'admit_version');
-      assert.equal(blockVerdict(noAnchor, 1, null).reason, 'admit_version');
+      assert.equal(store.queueTx(noAnchor).reason, 'send_unavailable');
+      assert.equal(admitMempool(emptyMempool(), noAnchor).reason, 'send_unavailable');
+      assert.equal(blockVerdict(noAnchor, 1, null).reason, 'send_unavailable');
       const anchored = flowTx({ kind: 'send', amount: AMOUNTS[1], version: 2, anchor: 8, id: 'anchored-v2' });
       assert.equal(store.queueTx(anchored).reason, 'admit_version', 'a v2 byte is not saved by an anchor');
       const v3anchor = flowTx({ kind: 'send', amount: 1, version: 3, anchor: 8, id: 'v3-anchor' });
       const v3q = store.queueTx(v3anchor);
-      assert.notEqual(v3q.reason, 'admit_version');
+      assert.equal(v3q.reason, 'send_unavailable');
       assert.equal(v3q.ok, false);
       const refused = flowTx({ kind: 'vortice-register', amount: 1, version: 2, id: 'refused' });
       assert.equal(store.queueTx(refused).reason, 'kind');
@@ -162,49 +172,20 @@ describe('v12 flow spends reject a non-v3 byte before the v2 verifier', () => {
     }
   });
 
-  it('the v2 verifier still accepts a real proof, and consensus does not', { timeout: 180_000 }, () => {
-    const n = 4;
-    const xs = Array.from({ length: n }, () => randomScalar());
-    const pubs = xs.map(admitPub);
-    const commits = xs.map((_, i) => pointBytes(commit(i + 1, randomScalar())));
-    const proof = admitProve({ x: xs[1], index: 1, pubs, commits, c: commits[1] });
-    assert.equal(proof.blob[0], 2);
-    assert.equal(admitVerify(proof, { pubs, commits }, { cTilde: proof.cTilde, spendTag: proof.spendTag }), true);
-    const jr = jroot({ pubs, commits });
-    assert.equal(admitVerify(proof, { pubs: [], commits: [] }, {
-      jroot: jr, cTilde: proof.cTilde, spendTag: proof.spendTag,
-    }), true);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-byte-v2-'));
+  it('a stub blob starting with 2 is admit_version on queue, mempool, and verify', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-byte-stub-'));
     const store = createStore(dir);
     try {
-      for (const amount of AMOUNTS) {
-        const kind = amount === AMOUNTS[0] ? 'send' : 'transfer';
-        const tx = {
-          id: `real-${amount}`,
-          kind,
-          nanos: amount,
-          fee: 0,
-          vin: [{ commit: proof.cTilde }],
-          vout: [{ kind, nanos: amount }],
-          admit_proof: proof,
-        };
-        assert.equal(store.queueTx(tx).reason, 'admit_version', String(amount));
-        assert.equal(admitMempool(emptyMempool(), tx, {
-          fluxset: { pubs, commits, jroot: jr },
-        }).reason, 'admit_version', String(amount));
-      }
-      const got = blockVerdict({
-        id: 'real-block',
-        kind: 'send',
-        nanos: AMOUNTS[1],
-        fee: 0,
-        vin: [{ commit: proof.cTilde }],
-        vout: [{ kind: 'send', nanos: AMOUNTS[1] }],
-        admit_proof: proof,
-      }, 1, null);
-      assert.equal(got.reason, 'admit_version', got.reason);
+      const tx = flowTx({ kind: 'send', amount: 1, version: 2, id: 'stub-byte-2' });
+      assert.equal(tx.admit_proof.blob[0], 2);
+      assert.equal(store.queueTx(tx).reason, 'admit_version');
+      assert.equal(admitMempool(emptyMempool(), tx, {
+        fluxset: { pubs: [1], commits: [Buffer.alloc(32)], jroot: Buffer.alloc(32) },
+      }).reason, 'admit_version');
+      assert.equal(blockVerdict(tx, 1, null).reason, 'admit_version');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
 });

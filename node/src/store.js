@@ -30,6 +30,8 @@ import {
   V12_GENESIS_BLOCK_HASH,
   V12_BOOTSTRAP_CHECKPOINT,
   assessHeader,
+  headerLinkReason,
+  rootHeaderReason,
   discardPreparedHeader,
   noteFromAnchor,
   OWED_CHECKPOINT_SPACING,
@@ -76,6 +78,7 @@ import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, 
 import { valueOpenRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
+import { txNoteRuleRejected } from '../../crypto/n1.js';
 import { rememberFundVerdict, readFundVerdict } from '../../crypto/fund_verdict.js';
 import { createVorticeCatalog } from './vortice.js';
 import {
@@ -88,6 +91,7 @@ import {
   segmentFileName,
   segmentRecordBodies,
   CHAIN_SEGMENT_BLOCKS,
+  unpackEpochBlock,
 } from '../../crypto/chainbin.js';
 import {
   writeLatestBootstrap,
@@ -98,6 +102,7 @@ import {
   CHECKPOINT_FIRST_HEIGHT,
   CHECKPOINT_EVERY_BLOCKS,
 } from './bootstrap.js';
+import { createBurialHold, createBurialProof, settledHeight } from './burial_hold.js';
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
 import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
@@ -121,7 +126,7 @@ import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
-import { blockWork } from '../../crypto/asert.js';
+import { blockWork, HEADER_AHEAD_MS } from '../../crypto/asert.js';
 import {
   emptyPolicyState,
   recordReorg,
@@ -260,6 +265,17 @@ function grandparentHeader(chain) {
 }
 
 const loadResumeToken = Symbol('shear-load-resume');
+/** Two headers pages per peer. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
+export const OFFER_PEER_CAP = 4000;
+export const OFFER_PEER_SLOTS = 8;
+export const PROVEN_HEADER_CAP = 6000;
+export const OFFER_DROP_MS = 10 * 60_000;
+/** Rows an inbound or outbound slot may hand the cheap check at once, and its refill. */
+export const OFFER_RATE_BURST = 4000;
+export const OFFER_RATE_PER_SEC = 2000;
+const OFFER_DROPPED_CAP = 1024;
+const LOCAL_HEADER_INDEX = 4096;
+const PROOF_HASH_BATCH = 16;
 
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
@@ -337,6 +353,8 @@ export function createStore(dir, {
   let stableCkpt = [];
   let sealStream = null;
   let sealAt = 0;
+  // Archive copies of pruned bodies, on disk only, until the reorg floor settles them.
+  const burialHold = createBurialHold({ dir, write: !archiveFast, checkpoints: checkpointOpts });
 
   const segLoaded = readChainSegments(segDir);
   if (segLoaded) {
@@ -368,6 +386,7 @@ export function createStore(dir, {
       blocks.push(b);
     }
   }
+  burialHold.load(Number(blocks[blocks.length - 1]?.height) || blocks.length);
   {
     const diskMagic = fs.existsSync(magicFile)
       ? fs.readFileSync(magicFile, 'utf8').trim()
@@ -382,6 +401,8 @@ export function createStore(dir, {
   // the snap binds this chain. A miss replays. A foreign book never uses it.
   const sealKey = bookSealKeyFor(dir);
   loadSegLive();
+  const burialProof = createBurialProof({ dir, key: sealKey, checkpoints: checkpointOpts });
+  burialProof.load();
   loadMode = blocks.length ? 'full' : 'empty';
   const snapExpect = {
     rules: consensusFingerprint(MAGIC_TESTNET),
@@ -394,17 +415,23 @@ export function createStore(dir, {
   }
   const resumed = !!(resume && resume.token === loadResumeToken && resume.verified === true
     && resume.height === blocks.length && tipBuf(blocks).equals(Buffer.from(resume.tipHash || [])));
-  if (blocks.length) {
-    const gated = chainStage0Rejected(blocks);
-    if (gated) throw new Error(gated.reason);
-  }
+  let trustStoredHash = false;
   if (blocks.length && !resumed) {
     const want = chainLoadSeal(blocks, sealKey);
     let got = '';
     if (fs.existsSync(sealFile)) {
       try { got = fs.readFileSync(sealFile, 'utf8').trim(); } catch { got = ''; }
     }
-    const trustStoredHash = got.length > 0 && got === want;
+    trustStoredHash = got.length > 0 && got === want;
+  }
+  if (blocks.length) {
+    const gated = chainStage0Rejected(blocks);
+    if (gated) throw new Error(gated.reason);
+    // N-1 runs inside verifyLoadedChain, after the header, the coinbase
+    // cap, and the block budget. A matching bookseal2 seal may skip that
+    // rescan. An in-process resume already checked.
+  }
+  if (blocks.length && !resumed) {
     const plan = trustStoredHash ? acceptBookSnap(readBookSnap(snapFile, sealKey, snapExpect)) : null;
     const planOk = plan && planSupplyLinks(plan);
     const snapRows = planOk ? supplyRowsFromPlan(plan) : null;
@@ -413,13 +440,14 @@ export function createStore(dir, {
       installSupplyPlan(plan, snapRows);
       loadMode = 'snap';
     } else if (snapRows) {
-      const priorFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
+      const priorFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags, { trust: true });
       const checked = verifyLoadedChain(blocks, {
         trustStoredHash: true,
         nowMs: loadNowMs,
         genesisHash,
         checkpoint,
         reorgHaltDepth: haltDepth,
+        burialOf: provenTipOf,
         fromIndex: plan.height,
         prior: {
           owedRows: plan.owedRows,
@@ -455,6 +483,7 @@ export function createStore(dir, {
         genesisHash,
         checkpoint,
         reorgHaltDepth: haltDepth,
+        burialOf: provenTipOf,
         onProgress: onLoadProgress,
       }).then((checked) => {
         if (!checked.ok) throw new Error(checked.reason || 'pow');
@@ -483,6 +512,7 @@ export function createStore(dir, {
         genesisHash,
         checkpoint,
         reorgHaltDepth: haltDepth,
+        burialOf: provenTipOf,
       });
       if (!checked.ok) throw new Error(checked.reason || 'pow');
       if (!checked.supply) throw new Error('supply_state');
@@ -493,10 +523,11 @@ export function createStore(dir, {
     }
   } else if (resumed) {
     writeLoadSeal(blocks);
-    const folded = foldSupply(blocks);
+    const folded = foldSupply(blocks, { burialOf: provenTipOf });
     if (!folded.ok) throw new Error(folded.reason || 'supply');
     supplyTip = folded.state;
   }
+  if (blocks.length) noteBurial(Number(blocks[blocks.length - 1].height) || blocks.length);
   if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
 
   function segmentNames() {
@@ -759,7 +790,7 @@ export function createStore(dir, {
     adoptPlanCheckpoints(plan);
     spentB.clear();
     for (const id of plan.spentIds) spentB.add(String(id));
-    preFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags);
+    preFlux = fluxWithLeaves(plan.pubs, plan.commits, plan.spendTags, { trust: true });
     unitAt = plan.unitAt.slice();
     prefixHeight = height;
   }
@@ -1602,10 +1633,93 @@ export function createStore(dir, {
     writeLoadSeal(diskBlocks);
   }
 
+  function holdFromBlock(block) {
+    return {
+      shareBatch: block.shareBatch || [],
+      samples: Array.isArray(block.samples) ? block.samples : [],
+      hashSpill: Array.isArray(block.hashSpill) ? block.hashSpill : [],
+      hashSpillCredits: block.hashSpillCredits,
+      bLeaves: Array.isArray(block.bLeaves) ? block.bLeaves : [],
+      txSamples: (block.txs || []).map((tx) => (tx && tx.coinbase ? (tx.samples || []) : null)),
+    };
+  }
+
+  // Archive only, and only until the reorg floor settles the block. A later
+  // tip that no longer buries it serves the full block again.
+  function rememberPrunedBody(block, tipH) {
+    burialHold.remember(blockHex(block), Number(block?.height), () => packEpochBlock(block), tipH);
+  }
+
+  function liftPrunedBlock(block) {
+    const key = blockHex(block);
+    const bytes = key ? burialHold.read(key) : null;
+    if (!bytes) return null;
+    let held;
+    try {
+      const body = unpackEpochBlock(bytes);
+      if (!body?.hash || !Buffer.from(body.hash).equals(Buffer.from(block.hash))) return null;
+      held = holdFromBlock(body);
+    } catch {
+      return null;
+    }
+    const txs = (block.txs || []).map((tx, i) => {
+      if (!tx?.coinbase || held.txSamples[i] == null) return tx;
+      return { ...tx, samples: held.txSamples[i] };
+    });
+    const next = {
+      ...block,
+      shareBatch: held.shareBatch || [],
+      samples: held.samples || [],
+      hashSpill: held.hashSpill || [],
+      bLeaves: held.bLeaves || [],
+      samplesPruned: false,
+      bLeavesPruned: false,
+      txs,
+    };
+    if (held.hashSpillCredits) next.hashSpillCredits = held.hashSpillCredits;
+    return next;
+  }
+
+  function provenTipOf(block) {
+    if (!block || block.samplesPruned !== true) return null;
+    return burialProof.tipOf(blockHex(block), Number(block.height));
+  }
+
+  /**
+   * The pruned block and the tip that buries it. Buried under this tip, or
+   * under a proven-work header chain this store validated: the sealed credit
+   * root stands for the share batch. Archive and fast-sync answer the same,
+   * because the archive hold is never read here. Neither fails closed.
+   */
+  function blockForTip(block, tipH) {
+    if (!block || block.samplesPruned !== true) return { ok: true, block, tip: tipH };
+    const h = Number(block.height) || 0;
+    if (shouldPruneSamples(h, tipH)) return { ok: true, block, tip: tipH };
+    const proven = provenTipOf(block);
+    if (proven != null && shouldPruneSamples(h, proven)) return { ok: true, block, tip: proven };
+    return { ok: false, block: null, tip: tipH };
+  }
+
+  function noteBurial(tipH) {
+    const settled = settledHeight(tipH, checkpointOpts);
+    for (let i = blocks.length - 1; i >= 0; i -= 1) {
+      const b = blocks[i];
+      const h = Number(b?.height) || i + 1;
+      if (h <= settled) break;
+      if (b?.samplesPruned !== true || !shouldPruneSamples(h, tipH)) continue;
+      if (provenTipOf(b) == null) burialProof.note(blockHex(b), h, tipH);
+    }
+    burialProof.evict(tipH);
+    burialHold.evict(tipH);
+    burialProof.save();
+  }
+
   function persist(block) {
     fs.writeFileSync(magicFile, MAGIC_TESTNET);
     const tipH = Number(block?.height || 0);
     // The block being written is the tip. Fast-sync must not mark it pruned.
+    // pruneBuried puts a share batch back when a later tip lifts the block
+    // above the depth-1000 line.
     const row = archiveFast && shouldPruneSamples(tipH, tipH)
       ? pruneSamples(block)
       : block;
@@ -1657,10 +1771,20 @@ export function createStore(dir, {
     const dirtyIdx = [];
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
+      if (b.samplesPruned === true && !shouldPruneSamples(b.height, tipH, pruneDepth)) {
+        const lifted = liftPrunedBlock(b);
+        if (!lifted) continue;
+        blocks[i] = lifted;
+        dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
+        noteUnprunedBody(i, packEpochBlock(lifted));
+        noteReplacedBlock(i);
+        continue;
+      }
       if (b.samplesPruned) continue;
       if (!shouldPruneSamples(b.height, tipH, pruneDepth)) continue;
       const nTx = (b.txs || []).length;
       const nVout = (b.txs?.[0]?.vout || []).length;
+      rememberPrunedBody(b, tipH);
       const next = pruneSamples(b);
       if ((next.txs || []).length !== nTx) throw new Error('prune_dropped_txs');
       if ((next.txs?.[0]?.vout || []).length !== nVout) throw new Error('prune_dropped_coinbase');
@@ -1692,6 +1816,7 @@ export function createStore(dir, {
       }
       maybePublishBootstrap();
     }
+    noteBurial(tipH);
     return dirtySegs.size > 0;
   }
 
@@ -1853,13 +1978,15 @@ export function createStore(dir, {
     const units = unitWalk.units;
     const tipH = Number(list[tipAt]?.height || tipAt + 1);
     for (let i = fromAt; i <= tipAt; i += 1) {
+      const viewed = blockForTip(list[i], tipH);
+      if (!viewed.ok) return null;
       const next = advanceHashOwed({
         owedIn: rows,
         acceptedSeries: series,
-        block: list[i],
+        block: viewed.block,
         unit: units[i],
         height: Number(list[i]?.height) || i + 1,
-        tipHeight: tipH,
+        tipHeight: viewed.tip,
       });
       if (!next.ok) return null;
       rows = next.rows;
@@ -1890,7 +2017,7 @@ export function createStore(dir, {
             : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
           if (!unitWalk.ok) throw new Error(unitWalk.reason || 'epoch_open');
           const units = unitWalk.units;
-          const got = replayHashOwed(list, { units });
+          const got = replayHashOwed(list, { units, burialOf: provenTipOf });
           if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
           owedRows = got.rows;
           acceptedSeries = got.accepted;
@@ -1920,7 +2047,7 @@ export function createStore(dir, {
       : unitsAlongChain({ fork: list, timeOf: (block) => blockTimeMs(block) });
     if (!unitWalk.ok) throw new Error(unitWalk.reason || 'epoch_open');
     const units = unitWalk.units;
-    const got = replayHashOwed(list, { units });
+    const got = replayHashOwed(list, { units, burialOf: provenTipOf });
     if (!got.ok) throw new Error(got.reason || 'hash_owed_replay');
     owedRows = got.rows;
     acceptedSeries = got.accepted;
@@ -2053,7 +2180,10 @@ export function createStore(dir, {
       } catch { trustedPowHash = null; }
       if (!trustedPowHash) return { ok: false, reason: 'share_credit_bind', at: i };
       const chainTip = Number(accepted[accepted.length - 1]?.height || 0);
-      const bound = shareCreditBound(b, chainTip);
+      // The adopted tip, or the proven-work tip that buried this pruned block.
+      const viewed = blockForTip(b, chainTip);
+      if (!viewed.ok) return { ok: false, reason: 'samples_pruned', at: i };
+      const bound = shareCreditBound(viewed.block, viewed.tip);
       if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind', at: i };
     }
     const dropIds = [];
@@ -2365,14 +2495,11 @@ export function createStore(dir, {
     const prev = tip();
     const parentH = prev ? prev.height : 0;
     const tipHeight = parentH;
-    const incomingH = Number(block?.height || (prev ? prev.height + 1 : 1));
-    const shareN = Array.isArray(block?.shareBatch) ? block.shareBatch.length : 0;
     const probe = extra.probeBody === true;
     // A peer-advertised height must not prune or skip validation.
-    // Burial uses only the parent already on this chain.
-    const toVerify = (!probe && !shareN && shouldPruneSamples(incomingH, tipHeight))
-      ? { ...block, samplesPruned: true }
-      : block;
+    // Burial uses only the parent already on this chain. The next block
+    // is that parent plus one, so this path does not set samplesPruned.
+    const toVerify = block;
     const spentBefore = new Set(spentB);
     const check = verifyBlock(toVerify, prev ? {
       hash: prev.hash,
@@ -2416,6 +2543,7 @@ export function createStore(dir, {
       parentSpendTags: liveFlux.spendTags,
       ...(blocks.length && supplyTip ? { parentSupply: supplyTip } : {}),
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
+      ...(Number.isInteger(extra.burialTip) ? { burialTip: extra.burialTip } : {}),
       poolDest: extra.poolDest
         || block?.poolDest
         || (block?.miner && isDestAddress(block.miner) ? block.miner : null),
@@ -2441,6 +2569,461 @@ export function createStore(dir, {
     return finish(check);
   }
 
+  // Peer headers ahead of this tip, cached per slot and unproven until a
+  // pruned block needs them. Inbound peers share a slot per network group
+  // (/24, /64); outbound, pinned and local callers have their own pool that
+  // inbound peers cannot take. A proven header keeps its bytes in its own
+  // pool, so junk from any slot cannot push out a run this store hashed.
+  const offeredRows = new Map();
+  const provenRows = new Map();
+  const headerKids = new Map();
+  const offerSlots = new Map();
+  const droppedPeers = new Map();
+  const offerStats = { hashed: 0, rejected: 0, orphaned: 0, dropped: 0, limited: 0, refused: 0 };
+  let offerSeq = 0;
+  let localIndex = { len: -1, tipHex: '', map: new Map() };
+
+  function headerRowOf(hex) {
+    return provenRows.get(hex) || offeredRows.get(hex) || null;
+  }
+
+  function unlinkHeaderRow(hex, prevHex) {
+    if (provenRows.has(hex) || offeredRows.has(hex)) return;
+    const kids = headerKids.get(prevHex);
+    if (!kids) return;
+    kids.delete(hex);
+    if (!kids.size) headerKids.delete(prevHex);
+  }
+
+  function linkHeaderRow(row) {
+    if (!headerKids.has(row.prevHex)) headerKids.set(row.prevHex, new Set());
+    headerKids.get(row.prevHex).add(row.hex);
+  }
+
+  function releaseOffered(hex, slotKey) {
+    const row = offeredRows.get(hex);
+    if (!row) return;
+    row.slots.delete(slotKey);
+    if (row.slots.size) return;
+    offeredRows.delete(hex);
+    unlinkHeaderRow(hex, row.prevHex);
+  }
+
+  function evictOfferSlot(slotKey) {
+    const slot = offerSlots.get(slotKey);
+    if (!slot) return;
+    offerSlots.delete(slotKey);
+    for (const hex of slot.rows.keys()) releaseOffered(hex, slotKey);
+  }
+
+  function banOfferKey(key, nowMs) {
+    droppedPeers.delete(key);
+    droppedPeers.set(key, nowMs + OFFER_DROP_MS);
+    while (droppedPeers.size > OFFER_DROPPED_CAP) droppedPeers.delete(droppedPeers.keys().next().value);
+  }
+
+  /**
+   * Drop a peer that sent a bad link: its slot's unproven headers go, and the
+   * peer is refused for a while. A shared group slot is refused with it, so a
+   * /24 or /64 cannot come straight back under the next address.
+   */
+  function dropOfferPeer(peer, slotKey, nowMs = Date.now()) {
+    const slot = offerSlots.get(slotKey);
+    evictOfferSlot(slotKey);
+    banOfferKey(peer, nowMs);
+    if (slot && slot.tier !== 'pinned' && slot.tier !== 'local') banOfferKey(slotKey, nowMs);
+    offerStats.dropped += 1;
+  }
+
+  function offerKeyDropped(key, nowMs) {
+    const until = droppedPeers.get(key);
+    if (until == null) return false;
+    if (until > nowMs) return true;
+    droppedPeers.delete(key);
+    return false;
+  }
+
+  function offerPeerDropped(peer, nowMs = Date.now()) {
+    return offerKeyDropped(String(peer), nowMs);
+  }
+
+  const TIER_RANK = { local: 2, pinned: 2, outbound: 1, inbound: 0 };
+
+  function slotKeyOf(peer, tier, group) {
+    if (tier === 'inbound' || tier === 'outbound') return `${tier === 'inbound' ? 'in' : 'out'}:${group || peer}`;
+    return peer;
+  }
+
+  function poolOf(tier) {
+    return tier === 'inbound' ? 'inbound' : 'reserved';
+  }
+
+  /** The best cached run above this tip, as deep as a burial proof needs. */
+  function pathFromTip() {
+    const t = tip();
+    const from = t?.hash ? blockHex(t) : GENESIS_PREV.toString('hex');
+    return bestPath(from, SAMPLE_PRUNE_CONFIRMATIONS + 1).rows;
+  }
+
+  /**
+   * The fewest slots that still hold the whole best path: the slot holding
+   * the most of it first, then the higher tier, then the oldest. A slot that
+   * only replays part of that path is not kept for it.
+   */
+  function protectedSlots() {
+    const keep = new Set();
+    let left = pathFromTip().map((row) => row && offeredRows.get(row.hex)).filter(Boolean);
+    while (left.length) {
+      const held = new Map();
+      for (const row of left) for (const k of row.slots) held.set(k, (held.get(k) || 0) + 1);
+      let pick = null;
+      for (const [k, n] of held) {
+        const s = offerSlots.get(k);
+        if (!s) continue;
+        const better = !pick || n > pick.n
+          || (n === pick.n && (TIER_RANK[s.tier] > TIER_RANK[pick.s.tier]
+            || (TIER_RANK[s.tier] === TIER_RANK[pick.s.tier] && s.born < pick.s.born)));
+        if (better) pick = { k, n, s };
+      }
+      if (!pick) break;
+      keep.add(pick.k);
+      left = left.filter((row) => !row.slots.has(pick.k));
+    }
+    return keep;
+  }
+
+  /**
+   * A slot for this caller, or null when every slot it may take holds the
+   * proof path or outranks it. Within a pool the slot with the fewest proven
+   * headers, then the smallest bucket, then the stalest is evicted.
+   */
+  function offerSlot(slotKey, tier) {
+    let slot = offerSlots.get(slotKey);
+    if (!slot) {
+      const pool = poolOf(tier);
+      const mates = [...offerSlots].filter(([, s]) => poolOf(s.tier) === pool);
+      if (mates.length >= OFFER_PEER_SLOTS) {
+        const keep = protectedSlots();
+        const below = (x, y) => TIER_RANK[x.tier] - TIER_RANK[y.tier]
+          || x.proven - y.proven || x.rows.size - y.rows.size || x.last - y.last;
+        let worst = null;
+        for (const [k, s] of mates) {
+          if (keep.has(k) || TIER_RANK[s.tier] > TIER_RANK[tier]) continue;
+          if (!worst || below(s, worst[1]) < 0) worst = [k, s];
+        }
+        if (!worst) return null;
+        evictOfferSlot(worst[0]);
+      }
+      slot = { tier, rows: new Map(), proven: 0, last: 0, born: (offerSeq += 1), tokens: OFFER_RATE_BURST, tokAt: null };
+      offerSlots.set(slotKey, slot);
+    }
+    slot.last = (offerSeq += 1);
+    return slot;
+  }
+
+  function offerBudget(slot, nowMs) {
+    if (slot.tier !== 'inbound' && slot.tier !== 'outbound') return Infinity;
+    if (slot.tokAt != null) {
+      const add = Math.max(0, nowMs - slot.tokAt) * (OFFER_RATE_PER_SEC / 1000);
+      slot.tokens = Math.min(OFFER_RATE_BURST, slot.tokens + add);
+    }
+    slot.tokAt = nowMs;
+    return Math.floor(slot.tokens);
+  }
+
+  function localBlockByHex(hex) {
+    const t = tip();
+    const tipHex = t?.hash ? blockHex(t) : '';
+    if (localIndex.len !== blocks.length || localIndex.tipHex !== tipHex) {
+      const map = new Map();
+      for (let i = Math.max(0, blocks.length - LOCAL_HEADER_INDEX); i < blocks.length; i += 1) {
+        map.set(blockHex(blocks[i]), blocks[i]);
+      }
+      localIndex = { len: blocks.length, tipHex, map };
+    }
+    return localIndex.map.get(hex) || null;
+  }
+
+  function localGenesisMs() {
+    return blocks.length ? blockTimeMs(blocks[0]) : null;
+  }
+
+  /**
+   * Cheap work check before a header is cached: it links to a known parent,
+   * its ASERT bits and timestamp follow that parent, and its claimed hash
+   * meets its own bits. No ShearHash runs here; proveBurial hashes the run
+   * it uses. A bad link drops the peer. An unknown parent or a header ahead
+   * of this clock is ignored.
+   *
+   * `tier` is 'inbound', 'outbound', 'pinned' or 'local' (the default, also
+   * IPC). `group` is the inbound or outbound peer's /24 or /64. Inbound and
+   * outbound slots read at most OFFER_RATE_BURST rows at once, refilled at
+   * OFFER_RATE_PER_SEC; rows past that are skipped unread.
+   */
+  function offerHeaders(list, { peer = 'local', tier = 'local', group = '', nowMs = Date.now() } = {}) {
+    const out = { accepted: 0, rejected: 0, limited: 0, dropped: false, refused: false };
+    const key = String(peer || 'local');
+    const kind = Object.prototype.hasOwnProperty.call(TIER_RANK, tier) ? tier : 'inbound';
+    const slotKey = slotKeyOf(key, kind, String(group || ''));
+    if (offerKeyDropped(key, nowMs) || offerKeyDropped(slotKey, nowMs)) {
+      out.dropped = true;
+      return out;
+    }
+    const slot = offerSlot(slotKey, kind);
+    if (!slot) {
+      out.refused = true;
+      offerStats.refused += 1;
+      return out;
+    }
+    const rows = Array.isArray(list) ? list : [];
+    const budget = offerBudget(slot, nowMs);
+    const take = Math.min(rows.length, budget);
+    if (budget !== Infinity) slot.tokens -= take;
+    out.limited = rows.length - take;
+    offerStats.limited += out.limited;
+    for (let r = 0; r < take; r += 1) {
+      const raw = rows[r];
+      let header;
+      let hash;
+      try {
+        header = Buffer.isBuffer(raw?.header) ? Buffer.from(raw.header) : Buffer.from(String(raw?.header || ''), 'hex');
+        hash = Buffer.isBuffer(raw?.hash) ? Buffer.from(raw.hash) : Buffer.from(String(raw?.hash || ''), 'hex');
+      } catch { out.rejected += 1; continue; }
+      if (header.length !== 128 || hash.length !== 32) { out.rejected += 1; continue; }
+      const hex = hash.toString('hex');
+      if (localBlockByHex(hex) || provenRows.has(hex)) continue;
+      const known = offeredRows.get(hex);
+      if (known) {
+        if (!known.header.equals(header)) { out.dropped = true; break; }
+        known.slots.add(slotKey);
+        slot.rows.delete(hex);
+        slot.rows.set(hex, true);
+        continue;
+      }
+      let decoded;
+      try { decoded = decodeHeader(header); } catch { out.dropped = true; break; }
+      if (Number(decoded.timestamp) > nowMs + HEADER_AHEAD_MS) { offerStats.orphaned += 1; continue; }
+      const prevHex = decoded.prevBlockHash.toString('hex');
+      let parent = null;
+      let rootMs = localGenesisMs();
+      let checked;
+      if (decoded.prevBlockHash.equals(GENESIS_PREV)) {
+        if (blocks.length) { offerStats.orphaned += 1; continue; }
+        checked = rootHeaderReason(header, hash);
+        rootMs = Number(decoded.timestamp);
+      } else {
+        const local = localBlockByHex(prevHex);
+        if (local) {
+          parent = { header: Buffer.from(local.header), hash: Buffer.from(local.hash), height: Number(local.height) };
+        } else {
+          const up = headerRowOf(prevHex);
+          if (up) {
+            parent = up;
+            if (rootMs == null) rootMs = up.rootMs;
+          }
+        }
+        if (!parent) { offerStats.orphaned += 1; continue; }
+        checked = headerLinkReason(header, hash, parent, { genesisMs: rootMs || 0 });
+      }
+      if (!checked.ok) { out.dropped = true; break; }
+      const row = {
+        hex,
+        header,
+        hash,
+        prevHex,
+        height: parent ? Number(parent.height) + 1 : 1,
+        rootMs,
+        seq: (offerSeq += 1),
+        slots: new Set([slotKey]),
+        senders: new Set([key]),
+      };
+      offeredRows.set(hex, row);
+      linkHeaderRow(row);
+      slot.rows.set(hex, true);
+      out.accepted += 1;
+      while (slot.rows.size > OFFER_PEER_CAP) {
+        const old = slot.rows.keys().next().value;
+        slot.rows.delete(old);
+        releaseOffered(old, slotKey);
+      }
+    }
+    if (out.dropped) {
+      offerStats.rejected += 1;
+      dropOfferPeer(key, slotKey, nowMs);
+    }
+    return out;
+  }
+
+  function rememberProvenRow(row) {
+    const kept = { hex: row.hex, header: row.header, hash: row.hash, prevHex: row.prevHex, height: row.height, rootMs: row.rootMs };
+    provenRows.delete(row.hex);
+    provenRows.set(row.hex, kept);
+    linkHeaderRow(kept);
+    for (const s of row.slots || []) {
+      const slot = offerSlots.get(s);
+      if (slot) slot.proven += 1;
+    }
+    while (provenRows.size > PROVEN_HEADER_CAP) {
+      const old = provenRows.values().next().value;
+      provenRows.delete(old.hex);
+      unlinkHeaderRow(old.hex, old.prevHex);
+    }
+  }
+
+  // Proven first, then the highest tier that offered it, then slots whose
+  // headers proved out, then the first seen. A count of offering groups is
+  // not a rank: sybils can always bring more groups than honest peers.
+  function kidRank(hex) {
+    if (provenRows.has(hex)) return [3, 0, 0];
+    const row = offeredRows.get(hex);
+    let rank = -1;
+    let proven = 0;
+    for (const s of row?.slots || []) {
+      const slot = offerSlots.get(s);
+      if (!slot) continue;
+      rank = Math.max(rank, TIER_RANK[slot.tier]);
+      proven = Math.max(proven, slot.proven);
+    }
+    return [rank, proven, -(row?.seq || 0)];
+  }
+
+  function rankOrder(a, b) {
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+    return 0;
+  }
+
+  /** The deepest cached run above `fromHex`, up to `want` headers, by claimed links only. */
+  function bestPath(fromHex, want) {
+    const stack = [[fromHex, 0]];
+    const trail = [];
+    let best = [];
+    const seen = new Set([fromHex]);
+    while (stack.length) {
+      const [hex, depth] = stack.pop();
+      trail.length = Math.max(0, depth - 1);
+      if (depth > 0) trail.push(hex);
+      if (trail.length > best.length) best = trail.slice();
+      if (trail.length >= want) break;
+      const kids = headerKids.get(hex);
+      if (!kids) continue;
+      const next = [...kids].filter((k) => !seen.has(k) && headerRowOf(k));
+      const ranks = new Map(next.map((k) => [k, kidRank(k)]));
+      next.sort((a, b) => rankOrder(ranks.get(a), ranks.get(b)));
+      for (const k of next) {
+        seen.add(k);
+        stack.push([k, depth + 1]);
+      }
+    }
+    return { rows: best.map(headerRowOf) };
+  }
+
+  // A run of PRUNE cached headers above `fromHex`.
+  function offeredPath(fromHex) {
+    const { rows } = bestPath(fromHex, SAMPLE_PRUNE_CONFIRMATIONS);
+    return rows.length >= SAMPLE_PRUNE_CONFIRMATIONS ? rows.slice(0, SAMPLE_PRUNE_CONFIRMATIONS) : null;
+  }
+
+  /**
+   * A pruned block extending this tip needs SAMPLE_PRUNE_CONFIRMATIONS
+   * proven-work headers above it before its sealed credits stand for the
+   * share batch. Returns { ok, top, claimed }. `top` is the burial tip
+   * verify and the owed step both use. Fewer headers, or one bad link, is
+   * not burial. Each bad link drops the peers that offered it, so a retry
+   * costs at most one hash batch per bad peer.
+   */
+  function proveBurial(block, verifyOpts = {}) {
+    const parent = tip();
+    const h = (Number(parent?.height) || 0) + 1;
+    const fail = { ok: false, reason: 'samples_pruned' };
+    let claimed;
+    let own;
+    try {
+      claimed = Buffer.from(block.hash);
+      own = decodeHeader(Buffer.from(block.header));
+    } catch { return fail; }
+    if (claimed.length !== 32) return fail;
+    const genesisMs = blocks.length ? blockTimeMs(blocks[0]) : Number(own.timestamp);
+    const mtp = blocks.slice(-(MTP_WINDOW - 1)).map(blockTimeMs).concat([Number(own.timestamp)]);
+    const nowMs = verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now();
+    const trust = verifyOpts.trustBlockHash === true;
+    const standIn = verifyOpts.trustedHeaderHashes instanceof Set ? verifyOpts.trustedHeaderHashes : null;
+    const known = (row) => trust || provenRows.has(row.hex) || !!standIn?.has(row.hex);
+    const attempt = (tries) => {
+      const rows = offeredPath(claimed.toString('hex'));
+      if (!rows) return fail;
+      let up = { header: Buffer.from(block.header), hash: claimed, height: h };
+      const window = mtp.slice();
+      const link = (i, ready) => {
+        const got = Buffer.from(ready || []);
+        const linked = got.equals(rows[i].hash)
+          ? headerLinkReason(rows[i].header, got, up, { genesisMs, mtpTimestamps: window, nowMs })
+          : { ok: false };
+        if (!linked.ok) {
+          const bad = offeredRows.get(rows[i].hex);
+          const senders = [...(bad?.senders || [])];
+          for (const slotKey of [...(bad?.slots || [])]) {
+            for (const p of senders) dropOfferPeer(p, slotKey, nowMs);
+            if (!senders.length) evictOfferSlot(slotKey);
+          }
+          if (provenRows.has(rows[i].hex)) {
+            provenRows.delete(rows[i].hex);
+            unlinkHeaderRow(rows[i].hex, rows[i].prevHex);
+          }
+          return false;
+        }
+        if (!trust) rememberProvenRow(offeredRows.get(rows[i].hex) || rows[i]);
+        window.push(Number(linked.decoded.timestamp));
+        if (window.length > MTP_WINDOW) window.shift();
+        up = { header: rows[i].header, hash: rows[i].hash, height: h + i + 1 };
+        return true;
+      };
+      const proven = { ok: true, top: h + rows.length, claimed };
+      const retry = () => (tries > 0 ? attempt(tries - 1) : fail);
+      if (!verifyOpts.offLoopPow || rows.every(known)) {
+        for (let i = 0; i < rows.length; i += 1) {
+          let got = rows[i].hash;
+          if (!known(rows[i])) {
+            got = headerHash(rows[i].header);
+            offerStats.hashed += 1;
+          }
+          if (!link(i, got)) return retry();
+        }
+        return proven;
+      }
+      const batch = async () => {
+        // Start small and grow, so a bad run costs a couple of hashes, not a full batch.
+        let size = 2;
+        for (let i = 0; i < rows.length; i += size, size = Math.min(PROOF_HASH_BATCH, size * 2)) {
+          const part = rows.slice(i, i + size);
+          const hashes = await Promise.all(part.map((row) => {
+            if (known(row)) return row.hash;
+            offerStats.hashed += 1;
+            return hashHeaderOffLoop(row.header);
+          }));
+          for (let j = 0; j < part.length; j += 1) {
+            if (!link(i + j, hashes[j])) return retry();
+          }
+        }
+        return proven;
+      };
+      return batch().catch(() => fail);
+    };
+    return attempt(2 * OFFER_PEER_SLOTS + 1);
+  }
+
+  /**
+   * The block this store serves for getblock. A held body comes back whole.
+   * A pruned block this tip does not bury, with no held body, is not served:
+   * the asking peer could not bury it either.
+   */
+  function servableBlock(block) {
+    if (!block || block.samplesPruned !== true) return block || null;
+    const lifted = liftPrunedBlock(block);
+    if (lifted) return lifted;
+    const tipH = Number(tip()?.height) || 0;
+    return shouldPruneSamples(Number(block.height) || 0, tipH) ? block : null;
+  }
+
   function append(block, verifyOpts = {}) {
     const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
     if (incoming && incoming.length === 32) {
@@ -2450,11 +3033,30 @@ export function createStore(dir, {
         }
       }
     }
+    if (block?.samplesPruned === true) {
+      const proved = proveBurial(block, verifyOpts);
+      // No proven run is samples_pruned before any header hash. A height field
+      // that is not this tip plus one still answers height first.
+      const structuralH = (Number(tip()?.height) || 0) + 1;
+      const liedHeight = block.height != null && block.height !== '' && Number(block.height) !== structuralH;
+      const go = (p) => {
+        if (p.ok) return appendVerified(block, verifyOpts, p);
+        if (liedHeight) return appendVerified(block, verifyOpts, null);
+        return { ok: false, reason: 'samples_pruned', tip: tip() };
+      };
+      if (proved && typeof proved.then === 'function') return proved.then(go);
+      return go(proved);
+    }
+    return appendVerified(block, verifyOpts, null);
+  }
+
+  function appendVerified(block, verifyOpts, burial) {
     const { check, spentBefore } = verifyAgainstTip(block, {
       trustedPowHash: trustedHashFor(block, verifyOpts),
       skipSharePow: !!verifyOpts.skipSharePow,
       offLoopPow: !!verifyOpts.offLoopPow,
       poolDest: verifyOpts.poolDest,
+      ...(burial ? { burialTip: burial.top } : {}),
     });
     const after = (c) => {
       // A failed consensus check keeps its own reason. The vault clock is a
@@ -2462,6 +3064,11 @@ export function createStore(dir, {
       if (!c?.ok) {
         rollbackSpent(spentB, spentBefore);
         return c;
+      }
+      // The proven header run hangs off the claimed hash. Verify hashed the header.
+      if (burial && !(c.hash && Buffer.from(c.hash).equals(burial.claimed))) {
+        rollbackSpent(spentB, spentBefore);
+        return { ok: false, reason: 'pow', tip: tip() };
       }
       const vaultClock = blockTimeMs(block);
       for (const tx of (block.txs || []).slice(1)) {
@@ -2472,13 +3079,13 @@ export function createStore(dir, {
         }
       }
       block.bSpendIds = spentDelta(spentBefore, spentB);
-      return settleCheck(c, (okCheck) => completeAppend(okCheck, block));
+      return settleCheck(c, (okCheck) => completeAppend(okCheck, block, burial));
     };
     if (check && typeof check.then === 'function') return check.then(after);
     return after(check);
   }
 
-  function completeAppend(check, block) {
+  function completeAppend(check, block, burial = null) {
     if (!check.ok) return check;
     if (!check.supplyState) return { ok: false, reason: 'supply_state' };
     const prev = tip();
@@ -2497,7 +3104,8 @@ export function createStore(dir, {
       acceptedSeries,
       block: stored,
       unit: unitNow,
-      tipHeight: full.height,
+      // Verify buried a pruned block under the proven header run. Commit uses that same tip.
+      tipHeight: burial ? burial.top : full.height,
     });
     if (!owedNext.ok) throw new Error(owedNext.reason || 'hash_owed');
     owedRows = owedNext.rows;
@@ -2507,6 +3115,11 @@ export function createStore(dir, {
     indexSealed(stored);
     applyReserve(stored);
     blocks.push(stored);
+    if (burial) {
+      // Saved before the block is, so a restart never loads it without its burial.
+      burialProof.note(blockHex(stored), stored.height, burial.top);
+      burialProof.save();
+    }
     syncNoteLedger(blocks);
     rememberOwed(blocks.length - 1);
     rememberVault(blocks.length - 1);
@@ -2616,6 +3229,8 @@ export function createStore(dir, {
     tx = reviveTx(tx);
     const bucket = v3BucketProofRejected(tx);
     if (bucket) return bucket;
+    const noteRule = txNoteRuleRejected(tx);
+    if (noteRule) return noteRule;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a
@@ -3248,15 +3863,6 @@ export function createStore(dir, {
     try { return hex32(block?.hash).toLowerCase(); } catch { return ''; }
   }
 
-  function listTipHeight(list) {
-    let tipH = 0;
-    for (const b of list || []) {
-      const h = Number(b?.height);
-      if (Number.isInteger(h) && h > tipH) tipH = h;
-    }
-    return tipH;
-  }
-
   function nearestOwedCheckpoint(at) {
     let best = null;
     for (const c of owedCkpt) {
@@ -3331,7 +3937,10 @@ export function createStore(dir, {
     const list = Array.isArray(history) ? history : [];
     let n = 0;
     while (n < list.length && n < blocks.length && blockHex(list[n]) && blockHex(list[n]) === blockHex(blocks[n])) n += 1;
-    const tipH = candidateTipHeight != null ? Number(candidateTipHeight) : listTipHeight(list);
+    // The chain being validated. A height field and the local tip are not this.
+    const tipH = candidateTipHeight != null && Number.isFinite(Number(candidateTipHeight))
+      ? Number(candidateTipHeight)
+      : list.length;
     const tipAt = candidateTipAt != null ? Number(candidateTipAt) : Math.max(0, list.length - 1);
     const anchorHash = n > 0 ? blockHex(blocks[n - 1]) : '';
     const key = `${n}|${blocks.length}|${tipH}|${tipAt}|${anchorHash}|${list.length}`;
@@ -3374,20 +3983,22 @@ export function createStore(dir, {
     const units = walked.units;
     const from = n > 0 ? (nearestOwedCheckpoint(n - 1).at + 1) : 0;
     for (let i = from; i < list.length; i += 1) {
+      const viewed = blockForTip(list[i], tipH);
+      if (!viewed.ok) return { ok: false, reason: 'samples_pruned' };
       const next = advanceHashOwed({
         owedIn: rows,
         acceptedSeries: series,
-        block: list[i],
+        block: viewed.block,
         unit: units[i],
         height: Number(list[i]?.height) || i + 1,
-        tipHeight: tipH,
+        tipHeight: viewed.tip,
       });
       if (!next.ok) {
         // A rewritten share on a block this node already accepted is the
         // share-credit bind, not a new owed ledger. The suffix check still
         // runs only after this prefix agrees.
         if (i < n) {
-          const bound = shareCreditBound(list[i], tipH);
+          const bound = shareCreditBound(viewed.block, viewed.tip);
           if (!bound.ok) return { ok: false, reason: bound.reason || 'share_credit_bind' };
         }
         return { ok: false, reason: next.reason || 'hash_owed' };
@@ -3542,14 +4153,12 @@ export function createStore(dir, {
   }
 
   /**
-   * Burial for a from-genesis fork. The store tip is the chain that already
-   * pruned history. The candidate length is this fork's own height, not a
-   * height field a peer wrote on a decoy block.
+   * Burial for a from-genesis fork. The tip is this fork's own length.
+   * The local store tip does not bury a shorter chain. A height field on
+   * a block is not this number.
    */
   function forkBurial(fork) {
-    const storeTip = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
-    const candidate = Array.isArray(fork) ? fork.length : 0;
-    return Math.max(storeTip, candidate);
+    return Array.isArray(fork) ? fork.length : 0;
   }
 
   function supplyCarriedTo(endIdx, tipH) {
@@ -3566,11 +4175,13 @@ export function createStore(dir, {
     let vault = carriedVault.vault;
     let state = base;
     for (let i = from + 1; i <= endIdx; i += 1) {
-      const block = blocks[i];
+      const viewed = blockForTip(blocks[i], burial);
+      if (!viewed.ok) return null;
+      const block = viewed.block;
       const stepped = supplyStep(state, block, {
         unit: unitAt[i] == null ? undefined : unitAt[i],
         height: Number(block?.height) || i + 1,
-        tipHeight: burial,
+        tipHeight: viewed.tip,
         genesisMs: state.genesisMs,
         blockHash: block?.hash,
         magic: MAGIC_TESTNET,
@@ -3606,13 +4217,12 @@ export function createStore(dir, {
     const trialSpent = new Set();
     const rows = Array.isArray(history) ? history : [];
     const tipAt = rows.length + fork.length - 1;
-    // Candidate height is the linked length, not the largest height field.
-    // The store tip covers history this node already pruned. A peer tipHeight
-    // is not part of this.
-    const storeTip = blocks.length ? (Number(blocks[blocks.length - 1]?.height) || blocks.length) : 0;
+    // One burial tip: the chain being validated. Linked length, not a height
+    // field and not max(local tip, fork length). Commit uses this same tip.
     const baseH = rows.length ? (Number(rows[rows.length - 1]?.height) || rows.length) : 0;
-    const tipH = Math.max(storeTip, baseH + fork.length);
-    const seeded = seedHistory(rows, tipAt, tipH);
+    const candidateTip = baseH + fork.length;
+    const tipH = candidateTip;
+    const seeded = seedHistory(rows, tipAt, candidateTip);
     if (!seeded.ok) return { ok: false, reason: seeded.reason || 'hash_owed' };
     const allUnitsWalk = unitsAlong(rows, fork);
     if (!allUnitsWalk.ok || !allUnitsWalk.units) {
@@ -3631,7 +4241,7 @@ export function createStore(dir, {
       anchors = [];
     } else if (canonical) {
       const endIdx = rows.length - 1;
-      supply = supplyCarriedTo(endIdx, tipH);
+      supply = supplyCarriedTo(endIdx, candidateTip);
       flux = fluxCarriedTo(endIdx);
       if (supply && flux) anchors = anchorAt.slice();
     }
@@ -3642,7 +4252,7 @@ export function createStore(dir, {
       flux = emptyFluxset();
       anchors = [];
       if (prefix > 0) {
-        const carried = supplyCarriedTo(prefix - 1, tipH);
+        const carried = supplyCarriedTo(prefix - 1, candidateTip);
         const restored = fluxThroughIndex(blocks, prefix - 1);
         if (carried && restored?.frontier) {
           supply = carried;
@@ -3655,10 +4265,12 @@ export function createStore(dir, {
       if (!historyVault.ok) return { ok: false, reason: 'supply' };
       let vault = historyVault.vault;
       for (let hi = from; hi < rows.length; hi += 1) {
-        const stepped = supplyStep(supply, rows[hi], {
+        const viewed = blockForTip(rows[hi], candidateTip);
+        if (!viewed.ok) return { ok: false, reason: 'samples_pruned' };
+        const stepped = supplyStep(supply, viewed.block, {
           unit: allUnits[hi],
           height: Number(rows[hi]?.height) || hi + 1,
-          tipHeight: tipH,
+          tipHeight: viewed.tip,
           genesisMs: gms,
           blockHash: rows[hi]?.hash,
           magic: MAGIC_TESTNET,
@@ -3666,7 +4278,7 @@ export function createStore(dir, {
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
         supply = stepped.state;
-        const advanced = vaultAfterBlock(vault, rows[hi]);
+        const advanced = vaultAfterBlock(vault, viewed.block);
         if (!advanced.ok) return { ok: false, reason: 'supply' };
         vault = advanced.vault;
         appendFluxBlock(flux, rows[hi]);
@@ -4049,17 +4661,19 @@ export function createStore(dir, {
         clearReorgMarkers();
         return { ok: false, reason: 'adopt_aborted', tip: tip() };
       }
-      const burialTip = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
-        ? verified.burialTip
-        : (Number(accepted[accepted.length - 1]?.height) || accepted.length);
       const adoptedTip = Number(accepted[accepted.length - 1]?.height) || accepted.length;
+      // One burial tip for the prefix and the suffix: the chain being adopted.
+      // Verify already returned this height. The local tip does not raise it.
+      const suffixBurial = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
+        ? verified.burialTip
+        : adoptedTip;
       let adoptedSupply;
       let stagedFlux;
       let stagedVault;
       try {
         const keptFlux = fluxKeptThrough(lca, fromBlocks);
         const prefixSupply = lca > 0
-          ? supplyCarriedTo(lca - 1, burialTip)
+          ? supplyCarriedTo(lca - 1, suffixBurial)
           : emptySupplyState(genesisHeaderMs(accepted) || 0);
         if (!prefixSupply) {
           clearReorgMarkers();
@@ -4083,7 +4697,7 @@ export function createStore(dir, {
           const stepped = supplyStep(carriedSupply, block, {
             unit: units && units[i] != null ? units[i] : undefined,
             height: Number(block?.height) || i + 1,
-            tipHeight: burialTip,
+            tipHeight: suffixBurial,
             genesisMs: carriedSupply.genesisMs,
             blockHash: block?.hash,
             magic: MAGIC_TESTNET,
@@ -4769,6 +5383,39 @@ export function createStore(dir, {
       spendTags: new Set(liveFlux.spendTags),
       jroot: liveFlux.jroot,
     }),
+    // Flux through blocks[index], frontiers included. A fork template extends
+    // this instead of rebuilding J from genesis.
+    fluxThrough(index) {
+      const end = Number(index);
+      if (!Number.isInteger(end) || end < 0) return null;
+      const flux = fluxThroughIndex(blocks, end);
+      return flux ? detachFlux(flux) : null;
+    },
+    offerHeaders,
+    offerPeerDropped,
+    servableBlock,
+    burialView() {
+      const tipH = Number(tip()?.height) || 0;
+      return {
+        tip: tipH,
+        settled: settledHeight(tipH, checkpointOpts),
+        held: burialHold.count(),
+        heldHeights: burialHold.heights(),
+        heldBytes: burialHold.diskBytes(),
+        proven: burialProof.count(),
+        provenHeights: burialProof.heights(),
+        offered: offeredRows.size,
+        provenHeaders: provenRows.size,
+        offerPeers: offerSlots.size,
+        offerPeerRows: Object.fromEntries([...offerSlots].map(([p, slot]) => [p, slot.rows.size])),
+        offerSlotTiers: Object.fromEntries([...offerSlots].map(([p, slot]) => [p, slot.tier])),
+        droppedPeers: [...droppedPeers.keys()],
+        ...offerStats,
+      };
+    },
+    provenBurialTip(block) {
+      return provenTipOf(block);
+    },
     anchorNote(anchor) {
       return noteFromAnchor(liveFlux, anchorAt, Number(anchor));
     },

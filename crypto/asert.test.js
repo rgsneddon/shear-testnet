@@ -506,6 +506,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
     assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
     assert.match(fp, /ADMIT=ADMITv3/);
+    assert.match(fp, /N1=admit-note-point/);
     assert.match(fp, /RANGE=packed-bit/);
     assert.match(fp, /LEVY=weight/);
     assert.match(fp, /SHARE_BIND=rx\+noteCommit/);

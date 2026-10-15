@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from './address.js';
+import { newIdentity, encodeDest, hash20FromAddress } from './address.js';
+import { admitBaseScalar } from './admit.js';
 import { destForLogin, vaultDest } from './flow_sheet.js';
 import { lockTx, voteTx } from './reserve_vault.js';
-import { verifySealedNote, verifyRange, verifyFlowConservation, sealNote, spentCommitEquals } from './note.js';
+import { verifySealedNote, verifyRange, verifyFlowConservation, sealNote, spentCommitEquals, openNoteAmount } from './note.js';
 import {
   DUMMY_KIND,
   attachDummyOuts,
@@ -34,7 +35,11 @@ describe('Flow dummy outs', () => {
     assert.ok(dummyCount(send) >= 1);
     assert.ok(send.vout[0].commit);
     assert.equal(send.vout[0].nanos, undefined);
-    assert.equal(verifySealedNote(send.vout[0], 10), true);
+    assert.equal(send.vout[0].valueProof, undefined);
+    assert.equal(verifySealedNote(send.vout[0], 10), false);
+    const owned = encodeDest(hash20FromAddress(id.address), id.admitBase);
+    const toOwner = attachDummyOuts({ kind: 'send', vin: [{ address: owned }], vout: [{ address: owned, nanos: 10, kind: 'send' }] });
+    assert.equal(openNoteAmount(toOwner.vout[0], admitBaseScalar(id.spendSeed))?.v, 10n);
     assert.ok(send.vout[0].rangeProof);
     assert.equal(verifyRange(send.vout[0].commit, send.vout[0].rangeProof), true);
     const dummy = send.vout.find((o) => o.kind === DUMMY_KIND);

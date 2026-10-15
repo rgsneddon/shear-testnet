@@ -1,6 +1,6 @@
-# Note H and the FS-1 generator pin
+# Note H and the FS-1 spend-generator pin
 
-Two curve parameters stay fixed. Note H is consensus. The FS-1 generator tree is vendored and not wired into consensus.
+Note H is the Pedersen blind. The FS-1 spend digest is the ratified `generators_digest` of the live spend parameters.
 
 ## Note H
 
@@ -18,14 +18,22 @@ C = v·G + r·H
 
 `crypto/note.js` `consensusNoteH`, native `noteH()`, and `h_note` in `crypto/native/admit/src/bpplus.rs` are this point. A change to the domain, the map, or these 32 bytes is a consensus change.
 
-## FS-1 generator digest
+`E` maps that compressed point onto Ed25519. `E(H)` is the spend proof's commitment blind. It is not these 32 ristretto bytes.
 
-FS-1 membership parameters come from the vendored `generalized-bulletproofs` crate. They are not a consensus generator set. `shear-fs1` is not linked from `shear_admit`.
+## FS-1 spend-generator digest
 
-The pin is `crypto/native/vendor/monero-oxide-77788c3/ADMIT_PIN.json`.
+`generators_digest` is Blake2b-512 over the domain `shear-fs1-generators-v1` and then every compressed point, in this order:
 
-- monero-oxide commit: `77788c368145127f2dde2ac3e2ddce919f3ddd01`
-- crypto tree: `6ba344ad5412c103dab278845a8b418886fdd3d5`
-- generator crate `generalized-bulletproofs` dirSha256: `fdafff2e1972bdf910b51d6c1d4502c1dc749c1a4c1e42cc92ed9f43495f968d`
+1. `E(H)`, the proof's `G`
+2. `B`, the Ed25519 basepoint
+3. `T`, `U`, `V`
+4. Selene `g`, `h`, `init`, every `g_bold`, every `h_bold`
+5. Helios `g`, `h`, `init`, every `g_bold`, every `h_bold`
 
-dirSha256 is sha256 over the sorted relative paths. Each file is the utf-8 path, a NUL, the length as u64be, then the raw bytes. `crypto/fs1_pin.test.js` recomputes that digest.
+The ratified spend digest is
+
+```text
+4aab173c8065e7e5cff88945399b98cbbb51f647297231d09cb069c82f965288eaaf3ecb9ea88ae4e3de1dde2623710fe5e4f4353c529ef613fac9ff8b0699e6
+```
+
+That value is §1.5 of `specs/100c.md` and the `digest` line of `crypto/native/vendor/monero-oxide-77788c3/shear-fs1/vectors/generators.txt`. `crypto/range_packed.test.js` checks this file, that vector, and the spec against one constant.

@@ -56,8 +56,10 @@ Under wine, `runtime/node.exe --version` printed `v22.23.3`. Loading the addons 
 
 ```text
 shearhash object hash,key,backend
-shearadmit object noteH,maxProof,arity,leaf,jroot,jrootPoint,frontierAppend,prove,proveV3,verify,verifyV3,proveRange
+shearadmit object noteH,maxProof,arity,leaf,jroot,jrootPoint,frontierAppend,proveV3,verifyV3,proveRange,verifyRange
 ```
+
+That is the export list after the ADMITv2 removal (PR 65). The v2 `prove`, `verify`, `verifyBatch`, and `bench` exports are gone, and `maxProof()` still returns 32768. The zip in this log was built before that removal, so its `shearadmit.node` still had `prove` and `verify`. Rebuild the addon from a tree that includes the removal before packing again.
 
 ### shearhash.node
 
@@ -353,11 +355,11 @@ if ($LASTEXITCODE -ne 0) { throw "randomx build exited $LASTEXITCODE" }
 mingw32-make -C crypto\native "NODE_INC=$nodeInc"
 if ($LASTEXITCODE -ne 0) { throw "mingw32-make exited $LASTEXITCODE" }
 
-node -e "const h=require('./crypto/native/shearhash.node'); const a=require('./crypto/native/shearadmit.node'); if (typeof h.hash!=='function') throw new Error('shearhash.node has no hash'); if (typeof a.prove!=='function') throw new Error('shearadmit.node has no prove'); if (typeof a.proveRange!=='function') throw new Error('shearadmit.node has no proveRange'); console.log('addons ok');"
+node -e "const h=require('./crypto/native/shearhash.node'); const a=require('./crypto/native/shearadmit.node'); if (typeof h.hash!=='function') throw new Error('shearhash.node has no hash'); if (typeof a.proveV3!=='function') throw new Error('shearadmit.node has no proveV3'); if (typeof a.verifyV3!=='function') throw new Error('shearadmit.node has no verifyV3'); if (typeof a.proveRange!=='function') throw new Error('shearadmit.node has no proveRange'); console.log('addons ok');"
 
 # Node 22's default --test globs do not match tests\test_*.js (the directory is tests, not test).
 Set-Location (Join-Path $Repo 'pool')
 node --test "tests/test_*.js"
 ```
 
-`where.exe gcc` must print `C:\msys64\mingw64\bin\gcc.exe` first. `rustc -vV` must show `host: x86_64-pc-windows-gnu`. `addons ok` is the load check for hash, admit, and range proof. A bare `node --test` with no glob, run in `pool\`, reports tests 0 on Node 22. `node --test "tests/test_*.js"` from `pool\` is the suite.
+`where.exe gcc` must print `C:\msys64\mingw64\bin\gcc.exe` first. `rustc -vV` must show `host: x86_64-pc-windows-gnu`. `addons ok` is the load check for hash, the v3 admit prove and verify, and range proof. The addon no longer exports the v2 `prove`, so the check does not ask for it. A bare `node --test` with no glob, run in `pool\`, reports tests 0 on Node 22. `node --test "tests/test_*.js"` from `pool\` is the suite.

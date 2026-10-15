@@ -16,7 +16,8 @@ describe('shear.digital client buttons', () => {
     assert.match(html, /css\/saas-dark\.css/);
     assert.match(html, /shared\/shear-chrome\.js/);
     assert.match(html, /data-active="MAIN"/);
-    assert.match(html, /She Is Private/);
+    assert.match(html, /Shear testnet/);
+    assert.doesNotMatch(html, /She Is Private|onfidential/);
     assert.match(html, /ADMITv2/);
     assert.match(html, /Continuum 0\.71/);
     assert.match(html, /shear-testnet-v11/);

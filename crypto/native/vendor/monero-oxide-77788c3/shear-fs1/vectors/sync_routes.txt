@@ -15,6 +15,12 @@
 /witness		route
 /leaf		route
 /bucket		route
+/snapshot		route
+/chunk		route
+/chunks		route
+/snapshot	from=0&to=64	route
+/chunks	chunks=0,3,6	route
+/sync/snapshot	from=0&to=64	route
 /path	from=0&to=64	route
 /witness	leaf=3	route
 /sync/leaf	from=0&to=64	route
@@ -32,5 +38,10 @@
 /sync	from=0&to=64&send=1	keyed
 /sync	from=0&to=64&scanHit=1	keyed
 /sync	from=0&to=64&clear=1	keyed
+/sync	from=0&to=64&snapshot=1	keyed
+/sync	from=0&to=64&chunks=0,3,6	keyed
+/sync	from=0&to=64&chunkIds=7	keyed
+/sync	from=0&to=64&held=1	keyed
+/sync	from=0&to=64&Snapshot=1	keyed
 /sync	leaf=0	keyed
 /sync	from=0&to=64&LEAF=2	keyed

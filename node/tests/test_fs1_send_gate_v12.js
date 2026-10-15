@@ -3,7 +3,8 @@
  * rejected on mempool, template, block, load, fork, P2P, and snap before any
  * proof work. No consensus module calls the bucket verifier, so its 43490 byte
  * cap and its 2^23 pad are not consensus rules. Display copy does not call the
- * bucket proof ADMIT.
+ * bucket proof ADMIT. ADMITv3 names the full-set FS-1 proof, so the name is
+ * allowed and only bucket wording beside ADMIT is banned.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -117,7 +118,6 @@ describe('FS-1 stage 0 send gate', () => {
     ];
     for (const rel of files) {
       const text = fs.readFileSync(path.join(root, rel), 'utf8');
-      assert.equal(/ADMIT[\s_-]*v?3\b/i.test(text), false, `${rel} names a v3 ADMIT`);
       for (const sentence of text.split(/[.!?\n]/)) {
         if (!/\bADMIT/.test(sentence)) continue;
         assert.equal(BUCKET_WORDS.test(sentence), false, `${rel}: ${sentence.trim()}`);
@@ -132,6 +132,12 @@ describe('FS-1 stage 0 send gate', () => {
       'ADMIT is a ring of 32',
     ]) {
       assert.equal(BUCKET_WORDS.test(probe), true, probe);
+    }
+    for (const probe of [
+      'ADMITv3 membership proves the note is in the full set',
+      'Sends wait for the ADMITv3 full-set proof',
+    ]) {
+      assert.equal(BUCKET_WORDS.test(probe), false, probe);
     }
     const admit = fs.readFileSync(path.join(root, 'wallet/lib/shear_admit.dart'), 'utf8');
     assert.match(admit, /send unavailable until FS-1/);

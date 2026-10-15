@@ -38,6 +38,7 @@ import {
 import {
   bonusUnitsBefore,
   blockWithdrawInterest,
+  blockPermittedInterest,
   emptyVault,
   cloneVault,
   applyReserveBlock,
@@ -399,6 +400,7 @@ export function fillSnapInterest(rows, blocks) {
   if (!snaps.length || snaps.length !== list.length) return { ok: false, reason: 'supply_state' };
   let vault = null;
   let interest = 0n;
+  let permitted = 0n;
   for (let i = 0; i < list.length; i += 1) {
     const row = snaps[i];
     if (!row) return { ok: false, reason: 'supply_state' };
@@ -406,10 +408,14 @@ export function fillSnapInterest(rows, blocks) {
     if (!(ts > 0)) return { ok: false, reason: 'header' };
     const got = blockWithdrawInterest(vault, list[i], ts);
     if (!got.ok) return { ok: false, reason: got.reason || 'supply' };
+    const allowed = blockPermittedInterest(vault, list[i], ts);
+    if (!allowed.ok) return { ok: false, reason: allowed.reason || 'supply' };
     interest += got.nanos;
-    if (interest > U64) return { ok: false, reason: 'supply' };
+    permitted += allowed.nanos;
+    if (interest > U64 || permitted > U64) return { ok: false, reason: 'supply' };
+    if (interest !== permitted) return { ok: false, reason: 'supply' };
     row.mintedInterest = interest;
-    row.permittedInterest = interest;
+    row.permittedInterest = permitted;
     const advanced = vaultAfterBlock(vault, list[i]);
     if (!advanced.ok) return { ok: false, reason: 'supply' };
     vault = advanced.vault;
@@ -626,13 +632,16 @@ function accountBlock(prev, block, opts = {}) {
   }
   const interest = blockWithdrawInterest(opts.vault, block, ts);
   if (!interest.ok) return { reason: interest.reason || 'supply', state };
+  // Schedule allowance is staked × epochBps per epoch, not a copy of the receipt.
+  const allowed = blockPermittedInterest(opts.vault, block, ts);
+  if (!allowed.ok) return { reason: allowed.reason || 'supply', state };
   if (state.mintedInterest + interest.nanos > U64) return { reason: 'supply', state };
-  if (state.permittedInterest + interest.nanos > U64) return { reason: 'supply', state };
+  if (state.permittedInterest + allowed.nanos > U64) return { reason: 'supply', state };
   state.mintedPot += potMinted;
   state.mintedHash += mintedHashHere;
   state.mintedLevy += levy;
   state.mintedInterest += interest.nanos;
-  state.permittedInterest += interest.nanos;
+  state.permittedInterest += allowed.nanos;
   const bReason = accountBLocked(state, block);
   if (bReason) return { reason: bReason, state };
   state.liveUnit = unit;
@@ -663,6 +672,7 @@ export function supplyStep(prev, block, opts = {}) {
   if (next.state.mintedHash + outstanding !== next.state.acceptedHash) {
     return { ok: false, reason: 'hash_owed', state: null };
   }
+  // Minted is the receipt. Permitted is the bps schedule. They are not the same sum.
   if (next.state.mintedInterest !== next.state.permittedInterest) {
     return { ok: false, reason: 'supply', state: null };
   }
@@ -690,10 +700,12 @@ export function foldSupply(blocks, opts = {}) {
   let vault = null;
   for (let i = 0; i < list.length; i += 1) {
     const h = Number(list[i]?.height) || (i + 1);
+    // A pruned block a proven-work header chain buried keeps that tip.
+    const own = typeof opts.burialOf === 'function' ? opts.burialOf(list[i]) : null;
     const stepped = supplyStep(state, list[i], {
       magic: opts.magic,
       unit: units[i] == null ? HASH_BONUS_NANOS : units[i],
-      tipHeight,
+      tipHeight: Number.isInteger(own) && own > tipHeight ? own : tipHeight,
       height: h,
       genesisMs,
       blockHash: list[i]?.hash || null,
@@ -891,14 +903,22 @@ export function auditCirculatingSupply(blocks, opts = {}) {
       rememberRange: false,
       vault,
     });
-    state = next.state;
     if (next.reason) {
+      state = next.state;
       ok = false;
       reason = reason || next.reason;
       const broken = emptyVault();
       broken.blankFork = true;
       vault = broken;
+    } else if (next.state.mintedInterest !== next.state.permittedInterest) {
+      // Same comparison as supplyStep. The inflated block is not the measured mint.
+      ok = false;
+      reason = reason || 'supply';
+      const broken = emptyVault();
+      broken.blankFork = true;
+      vault = broken;
     } else {
+      state = next.state;
       const advanced = vaultAfterBlock(vault, list[bi]);
       if (!advanced.ok) {
         ok = false;

@@ -1,0 +1,12 @@
+# FS-1 spend generators, derivation shear-fs1-generators-v1 (src/generators.rs).
+# digest is Blake2b-512 over E(H), B, T, U, V, then Selene, then Helios.
+# G is E(H), the commitment blind. B is the Ed25519 basepoint, spend auth.
+# Status: pending PA+CA ratification. Not a ratified consensus set.
+digest	4aab173c8065e7e5cff88945399b98cbbb51f647297231d09cb069c82f965288eaaf3ecb9ea88ae4e3de1dde2623710fe5e4f4353c529ef613fac9ff8b0699e6
+G	132ba4e11d99a33cadb5e223a5ae090ea51062e34b954440f5825289a44a65ec
+B	5866666666666666666666666666666666666666666666666666666666666666
+T	d5f3591add3283f2b17df466d2d38a4786e4befe6f4b387e8fef06fed832f1f8
+U	762337445e090cff30ef10c2c6960e5ba00f89c619f2e6eae9596170b469864d
+V	a4f2194967473f8c323bb301a02a1f48214f779e346662c5adfc41a30fa84f89
+selene_init	68d51a1f566fbb08648d0819169e83e6f09e970a5a18876250b508cc47779adc
+helios_init	630997ceb180fafcbe256a01e65d56bb8aa2390061f71be9bd6e4ec37220eeaf

@@ -15,6 +15,9 @@ import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { interestNanos } from './reserve_oracle.js';
 import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
+import { MEMBER_KEYS } from './member_keys.js';
+
+export { MEMBER_KEYS };
 
 function dest20Of(addr) {
   const h = hash20FromAddress(addr);
@@ -65,6 +68,27 @@ function proofBlob(proof) {
   }
 }
 
+export const SPEND_AMT_DST = Buffer.from('shear-spend-amt-v1');
+
+/** Flow sends sign every output's amtCt, empty when absent, beside the packed body. */
+function flowAmtDigest(packed, vout) {
+  const outs = Array.isArray(vout) ? vout : [];
+  const h = createHash('sha256').update(SPEND_AMT_DST).update(packed);
+  const count = Buffer.alloc(4);
+  count.writeUInt32LE(outs.length >>> 0);
+  h.update(count);
+  for (const o of outs) h.update(lenPref(voutAmtCt(o)));
+  return h.digest();
+}
+
+function voutAmtCt(o) {
+  try {
+    return Buffer.from(asU8(o?.amtCt || []));
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
 /** Pack digest of the spend body. sig and open are not hashed. */
 export function spendPackDigest(tx) {
   const vins = (tx?.vin || []).map((v, i) => {
@@ -102,7 +126,7 @@ export function spendPackDigest(tx) {
     bFlag: tx?.bFlag || tx?.kind === 'b-spend' ? 1 : 0,
   }));
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return packed;
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return flowAmtDigest(packed, tx?.vout);
   // Portal, fee, and the admit blob are signed. A stolen sig cannot be
   // retargeted, repriced, or pointed at a different proof. Flow sends stay
   // on the packed body alone.
@@ -451,8 +475,10 @@ export function unsignedRefusedSpend(tx) {
   return { ok: false, reason: 'unsigned' };
 }
 
-// Openings and wire secrets. compactTx strips them. They are not an extra field.
-const BODY_SECRET_KEYS = new Set([
+// Openings and wire secrets. compactTx strips them. They are not an extra field
+// on the tx body. A membership row does not get that skip: those names are
+// unsigned there.
+export const BODY_SECRET_KEYS = new Set([
   'open',
   'portalOpen',
   'viewKey',
@@ -486,10 +512,10 @@ const BODY_KEYS = new Set([
   'id', 'kind', 'from', 'to', 'nanos', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
   'portalId', 'payoutPortalId', 'programId', 'choice',
-  'admit_proof', 'admit_proofs', 'spendTag', 'members',
+  'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
-  'coinbase', 'carryNanos', 'share',
+  'coinbase', 'carryNanos', 'share', 'withdrawNonce',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -503,7 +529,7 @@ const VIN_KEYS = new Set([
 
 const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
-  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt',
+  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
   'portalId', 'memo', 'memoCt',
 ]);
 
@@ -542,6 +568,28 @@ function uncoveredList(list, allow) {
 }
 
 /**
+ * `members` must be an array of plain objects. A non-array value is unsigned.
+ * A string, a nested array, null, or any other non-object item is unsigned.
+ * A key outside MEMBER_KEYS is unsigned, including BODY_SECRET_KEYS. Those
+ * names are not skipped on a membership row.
+ */
+function membersFieldRejected(holder) {
+  if (!holder || typeof holder !== 'object' || Buffer.isBuffer(holder) || Array.isArray(holder)) return null;
+  if (!Object.prototype.hasOwnProperty.call(holder, 'members')) return null;
+  const list = holder.members;
+  if (!Array.isArray(list)) return { ok: false, reason: 'unsigned' };
+  for (const row of list) {
+    if (row === null || typeof row !== 'object' || Array.isArray(row) || Buffer.isBuffer(row)) {
+      return { ok: false, reason: 'unsigned' };
+    }
+    for (const key of Object.keys(row)) {
+      if (!MEMBER_KEYS.has(key)) return { ok: false, reason: 'unsigned' };
+    }
+  }
+  return null;
+}
+
+/**
  * A field the spend signature does not cover. Known consensus keys stay.
  * Any other key, at any amount, is unsigned on queue, mempool, and verify.
  */
@@ -564,6 +612,12 @@ export function unsignedBodyField(tx) {
   if (tx.admit_proof && typeof tx.admit_proof === 'object') proofs.push(tx.admit_proof);
   if (Array.isArray(tx.admit_proofs)) proofs.push(...tx.admit_proofs);
   if (uncoveredList(proofs, PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
+  for (const proof of proofs) {
+    const member = membersFieldRejected(proof);
+    if (member) return member;
+  }
+  const topMembers = membersFieldRejected(tx);
+  if (topMembers) return topMembers;
   if (uncoveredList(tx.hashOwed, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.hashOwedRest, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.hashOwedLocal, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
@@ -742,12 +796,13 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return { ok: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
-  const receipts = outs.filter((row) => String(row?.kind || kind) === 'withdraw');
+  const receipts = outs.filter((row) => String(row?.kind || '') === 'withdraw');
   if (receipts.length !== 1) return { ok: false, reason: 'mint_amount' };
   const o = receipts[0];
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
   const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
   if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };
+  if (claimed === 0) return { ok: false, reason: 'mint_amount' };
   const ref = reservePortalRef(tx);
   if (!ref.ok) return ref;
   const portals = reserveState?.portals || {};

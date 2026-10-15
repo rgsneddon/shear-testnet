@@ -14,10 +14,17 @@
 //! variable-time multiexp. The batch check inside `Generators::verify` is the
 //! verifier's public check.
 //!
-//! [`Fs1Params::open`] builds the curve parameters from the upstream insecure
-//! test generators. It exists only under `cfg(test)` or the
-//! `insecure-test-generators` feature. Those parameters are not consensus
-//! generators.
+//! [`Fs1Params::fixed`] builds the curve parameters from the fixed derivation
+//! in [`crate::generators`]. Status: pending PA+CA ratification. It is not a
+//! ratified consensus set. [`Fs1Params::open`] builds them from the upstream
+//! insecure test generators and exists only under `cfg(test)` or the
+//! `insecure-test-generators` feature. Those test generators are never a
+//! consensus set.
+//!
+//! [`prove`] runs on the calling thread. [`prove_threaded`] and
+//! [`prove_prepared`] spread the paths and the blind divisors over a fixed
+//! number of scoped threads. The split depends only on the input count and the
+//! thread count. The vendored `Fcmp::prove` always runs on the calling thread.
 
 use ciphersuite::{
   group::{
@@ -41,6 +48,7 @@ use rand_core::{CryptoRng, OsRng, RngCore};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeLess};
 use zeroize::Zeroize;
 
+use crate::generators::{ed25519_point, fixed_set};
 use crate::rulings::consensus_accepts;
 
 /// Curve-tree depth. Proof length depends on this and the input count.
@@ -58,28 +66,32 @@ pub(crate) type EdG = <Ed25519 as Ciphersuite>::G;
 pub(crate) type EdF = <Ed25519 as Ciphersuite>::F;
 pub(crate) type SeleneF = <Selene as Ciphersuite>::F;
 pub(crate) type HeliosF = <Helios as Ciphersuite>::F;
-type SeleneG = <Selene as Ciphersuite>::G;
-type HeliosG = <Helios as Ciphersuite>::G;
+pub(crate) type SeleneG = <Selene as Ciphersuite>::G;
+pub(crate) type HeliosG = <Helios as Ciphersuite>::G;
 
-pub(crate) struct EdBits;
+/// Scalar bit width of Ed25519.
+pub struct EdBits;
 impl DiscreteLogParameter for EdBits {
   #[allow(clippy::cast_possible_truncation)]
   type ScalarBits = U<{ <<Ed25519 as Ciphersuite>::F as PrimeField>::NUM_BITS as usize }>;
 }
 
-pub(crate) struct SeleneBits;
+/// Scalar bit width of Selene.
+pub struct SeleneBits;
 impl DiscreteLogParameter for SeleneBits {
   #[allow(clippy::cast_possible_truncation)]
   type ScalarBits = U<{ <<Selene as Ciphersuite>::F as PrimeField>::NUM_BITS as usize }>;
 }
 
-pub(crate) struct HeliosBits;
+/// Scalar bit width of Helios.
+pub struct HeliosBits;
 impl DiscreteLogParameter for HeliosBits {
   #[allow(clippy::cast_possible_truncation)]
   type ScalarBits = U<{ <<Helios as Ciphersuite>::F as PrimeField>::NUM_BITS as usize }>;
 }
 
-pub(crate) struct ShearCurves;
+/// The curve cycle: Ed25519 outputs, Selene and Helios layers.
+pub struct ShearCurves;
 impl FcmpCurves for ShearCurves {
   type OC = Ed25519;
   type OcParameters = EdBits;
@@ -169,7 +181,7 @@ pub struct Fs1Params {
   pub(crate) c2: Generators<Helios>,
   pub(crate) c1_init: SeleneG,
   pub(crate) c2_init: HeliosG,
-  fcmp: FcmpParams<ShearCurves>,
+  pub(crate) fcmp: FcmpParams<ShearCurves>,
 }
 
 /// Failure while building or checking a membership proof.
@@ -185,6 +197,8 @@ pub enum Fs1Error {
   Path,
   /// The tree is larger than this depth can hold, or is empty.
   TreeSize,
+  /// A block does not extend the tree's tip, or is not the tip.
+  Link,
   /// The vendored prover rejected the witness.
   Prove(FcmpError),
   /// The vendored verifier rejected the proof.
@@ -256,13 +270,63 @@ fn nonzero_point(rng: &mut OsRng) -> EdG {
   point
 }
 
+impl Fs1Params {
+  /// Parameters from the fixed generator derivation. Every call gives the same set.
+  pub fn fixed() -> Result<Self, Fs1Error> {
+    let set = fixed_set().ok_or(Fs1Error::Blind)?;
+    let fcmp = FcmpParams::<ShearCurves>::new(
+      set.c1.clone(),
+      set.c2.clone(),
+      set.c1_init,
+      set.c2_init,
+      set.g,
+      set.t,
+      set.u,
+      set.v,
+    );
+    Ok(Self {
+      g: set.g,
+      t: set.t,
+      u: set.u,
+      v: set.v,
+      c1: set.c1,
+      c2: set.c2,
+      c1_init: set.c1_init,
+      c2_init: set.c2_init,
+      fcmp,
+    })
+  }
+
+  /// The Ed25519 generator `T`.
+  pub fn t_point(&self) -> EdG {
+    self.t
+  }
+  /// The Ed25519 generator `U`.
+  pub fn u_point(&self) -> EdG {
+    self.u
+  }
+  /// The Ed25519 generator `V`.
+  pub fn v_point(&self) -> EdG {
+    self.v
+  }
+  /// Selene hash initialisation point.
+  pub fn c1_init_point(&self) -> SeleneG {
+    self.c1_init
+  }
+  /// Helios hash initialisation point.
+  pub fn c2_init_point(&self) -> HeliosG {
+    self.c2_init
+  }
+
+}
+
 /// Serialised FCMP length for this many inputs at this depth.
 pub fn proof_len(inputs: usize, layers: usize) -> usize {
   Fcmp::<ShearCurves>::proof_size(inputs, layers)
 }
 
 /// Branch widths above the leaves, bottom up. Odd positions are Helios layers.
-fn branch_width(level: usize) -> usize {
+pub(crate) fn branch_width(level: usize) -> usize {
   if level % 2 == 1 {
     LAYER_TWO_LEN
   } else {
@@ -298,8 +362,11 @@ pub struct Tree {
   root: TreeRoot<Selene, Helios>,
 }
 
-fn fixed_point(tag: &[u8]) -> EdG {
-  Ed25519::generator() * Ed25519::hash_to_F(b"shear-fs1-tree", tag)
+/// The empty leaf. Its points come from [`crate::generators::ed25519_point`],
+/// so no one knows a discrete log for them and the empty leaf cannot be opened.
+pub fn empty_leaf() -> Output<EdG> {
+  Output::new(ed25519_point(b"empty-O"), ed25519_point(b"empty-I"), ed25519_point(b"empty-C"))
+    .expect("generator points are not the identity")
 }
 
 fn chunk_hash_x(params: &Fs1Params, chunk: &[Output<EdG>]) -> Result<HeliosF, Fs1Error> {
@@ -313,10 +380,8 @@ impl Tree {
     if len == 0 || layers == 0 || u128::from(len) > tree_capacity(layers) {
       return Err(Fs1Error::TreeSize);
     }
-    let bases = [fixed_point(b"leaf-O"), fixed_point(b"leaf-I"), fixed_point(b"leaf-C")];
-    let empty_leaf =
-      Output::new(fixed_point(b"empty-O"), fixed_point(b"empty-I"), fixed_point(b"empty-C"))
-        .map_err(|_| Fs1Error::Blind)?;
+    let bases = [ed25519_point(b"synthetic-O"), ed25519_point(b"synthetic-I"), ed25519_point(b"synthetic-C")];
+    let empty_leaf = empty_leaf();
     let mut tree = Tree {
       len,
       layers,
@@ -514,12 +579,172 @@ pub(crate) fn ct_group<F: ConditionallySelectable + Copy>(
   out
 }
 
-/// Prove membership of `notes` in `tree`.
+/// A tree a membership proof can open.
+pub trait Fs1Tree: Sync {
+  /// Depth of this tree.
+  fn layers(&self) -> usize;
+  /// Root every path in this tree opens.
+  fn root(&self) -> TreeRoot<Selene, Helios>;
+  /// The full-width path from leaf `index` to the root.
+  ///
+  /// `index` is secret. The memory read must not depend on it.
+  fn path(&self, index: u64) -> Result<Path<ShearCurves>, Fs1Error>;
+}
+
+impl Fs1Tree for Tree {
+  fn layers(&self) -> usize {
+    self.layers
+  }
+  fn root(&self) -> TreeRoot<Selene, Helios> {
+    self.root
+  }
+  fn path(&self, index: u64) -> Result<Path<ShearCurves>, Fs1Error> {
+    Tree::path(self, index)
+  }
+}
+
+/// Branch blinds one input needs at this depth, `(Selene, Helios)`.
+///
+/// Matches `Branches::necessary_c1_blinds` and `necessary_c2_blinds` for full paths.
+pub fn branch_blinds_per_input(layers: usize) -> (usize, usize) {
+  if layers <= 1 {
+    return (0, 0);
+  }
+  let helios_levels = (1 .. layers).filter(|l| l % 2 == 1).count();
+  let selene_levels = (1 .. layers).filter(|l| l % 2 == 0).count();
+  if (layers - 1) % 2 == 1 {
+    (1 + selene_levels, helios_levels - 1)
+  } else {
+    (selene_levels, helios_levels)
+  }
+}
+
+/// Run `jobs` jobs on `threads` scoped threads, job `j` on thread `j % threads`.
+///
+/// With one thread, or one job, nothing is spawned. Every thread is joined
+/// before this returns. The schedule depends only on `jobs` and `threads`.
+pub(crate) fn run_jobs<T: Send>(threads: usize, jobs: usize, job: impl Fn(usize) -> T + Sync) -> Vec<T> {
+  let threads = threads.clamp(1, jobs.max(1));
+  if threads == 1 {
+    return (0 .. jobs).map(job).collect();
+  }
+  let job = &job;
+  let mut lanes: Vec<Vec<(usize, T)>> = std::thread::scope(|scope| {
+    let handles: Vec<_> = (0 .. threads)
+      .map(|lane| {
+        #[cfg(test)]
+        crate::ct::note_spawn();
+        scope.spawn(move || (lane .. jobs).step_by(threads).map(|j| (j, job(j))).collect::<Vec<_>>())
+      })
+      .collect();
+    handles.into_iter().map(|h| h.join().expect("prover thread panicked")).collect()
+  });
+  let mut out: Vec<Option<T>> = (0 .. jobs).map(|_| None).collect();
+  for lane in &mut lanes {
+    for (j, value) in lane.drain(..) {
+      out[j] = Some(value);
+    }
+  }
+  out.into_iter().map(|v| v.expect("every job ran")).collect()
+}
+
+/// Secret blinds for up to [`PreparedBlinds::inputs`] inputs, made before the
+/// statement is known.
+///
+/// A wallet can build these while the user is still choosing what to send,
+/// which takes the divisor work off the prove. They are consumed by
+/// [`prove_prepared`] and never reused. Unused blinds are wiped on drop.
+pub struct PreparedBlinds {
+  layers: usize,
+  outputs: Vec<(OutputBlinds<EdG>, BlindScalars)>,
+  c1: Vec<BranchBlind<SeleneG>>,
+  c2: Vec<BranchBlind<HeliosG>>,
+}
+
+impl Drop for PreparedBlinds {
+  fn drop(&mut self) {
+    for (blinds, scalars) in &mut self.outputs {
+      blinds.zeroize();
+      scalars.wipe();
+    }
+    for blind in &mut self.c1 {
+      blind.zeroize();
+    }
+    for blind in &mut self.c2 {
+      blind.zeroize();
+    }
+  }
+}
+
+enum BlindJob {
+  Output(Box<(OutputBlinds<EdG>, BlindScalars)>),
+  C1(BranchBlind<SeleneG>),
+  C2(BranchBlind<HeliosG>),
+}
+
+impl PreparedBlinds {
+  /// Blinds for up to `inputs` inputs at `layers` depth, on `threads` threads.
+  pub fn prepare(params: &Fs1Params, inputs: usize, layers: usize, threads: usize) -> Result<Self, Fs1Error> {
+    if !consensus_accepts(inputs) || layers == 0 {
+      return Err(Fs1Error::InputCount);
+    }
+    let (per_c1, per_c2) = branch_blinds_per_input(layers);
+    let (n_c1, n_c2) = (per_c1 * inputs, per_c2 * inputs);
+    let jobs = inputs + n_c1 + n_c2;
+    let made = run_jobs(threads, jobs, |j| {
+      let mut rng = OsRng;
+      if j < inputs {
+        BlindJob::Output(Box::new(fresh_output_blinds(&mut rng, params)))
+      } else if j < inputs + n_c1 {
+        BlindJob::C1(BranchBlind::<SeleneG>::new(params.c1.h(), nonzero_decomposition(&mut rng)))
+      } else {
+        BlindJob::C2(BranchBlind::<HeliosG>::new(params.c2.h(), nonzero_decomposition(&mut rng)))
+      }
+    });
+    let mut blinds = PreparedBlinds {
+      layers,
+      outputs: Vec::with_capacity(inputs),
+      c1: Vec::with_capacity(n_c1),
+      c2: Vec::with_capacity(n_c2),
+    };
+    for job in made {
+      match job {
+        BlindJob::Output(pair) => blinds.outputs.push(*pair),
+        BlindJob::C1(blind) => blinds.c1.push(blind),
+        BlindJob::C2(blind) => blinds.c2.push(blind),
+      }
+    }
+    Ok(blinds)
+  }
+
+  /// Most inputs these blinds can prove.
+  pub fn inputs(&self) -> usize {
+    self.outputs.len()
+  }
+}
+
+/// Prove membership of `notes` in `tree` on the calling thread.
 ///
 /// Blinds come from the operating system's RNG. The same notes proved twice
-/// differ in bytes and match in length.
-pub fn prove(params: &Fs1Params, tree: &Tree, notes: &[OpenNote]) -> Result<Proved, Fs1Error> {
-  if !consensus_accepts(notes.len()) || tree.layers == 0 {
+/// differ in bytes and match in length. No thread is started.
+pub fn prove(params: &Fs1Params, tree: &impl Fs1Tree, notes: &[OpenNote]) -> Result<Proved, Fs1Error> {
+  prove_threaded(params, tree, notes, 1)
+}
+
+/// [`prove`], with paths and blinds spread over `threads` scoped threads.
+pub fn prove_threaded(
+  params: &Fs1Params,
+  tree: &impl Fs1Tree,
+  notes: &[OpenNote],
+  threads: usize,
+) -> Result<Proved, Fs1Error> {
+  check_notes(tree, notes)?;
+  let blinds = PreparedBlinds::prepare(params, notes.len(), tree.layers(), threads)?;
+  prove_prepared(params, tree, notes, blinds, threads)
+}
+
+fn check_notes(tree: &impl Fs1Tree, notes: &[OpenNote]) -> Result<(), Fs1Error> {
+  if !consensus_accepts(notes.len()) || tree.layers() == 0 {
     return Err(Fs1Error::InputCount);
   }
   let mut types_ok = Choice::from(1);
@@ -529,20 +754,51 @@ pub fn prove(params: &Fs1Params, tree: &Tree, notes: &[OpenNote]) -> Result<Prov
   if !bool::from(types_ok) {
     return Err(Fs1Error::NoteType);
   }
+  Ok(())
+}
 
-  let mut rng = OsRng;
-  let mut paths = Vec::with_capacity(notes.len());
-  for note in notes {
-    paths.push(tree.path(note.leaf_index)?);
+/// Prove with blinds made earlier by [`PreparedBlinds::prepare`].
+///
+/// The blinds must be for this depth and at least `notes.len()` inputs. They
+/// are consumed whether or not the prove succeeds.
+pub fn prove_prepared(
+  params: &Fs1Params,
+  tree: &impl Fs1Tree,
+  notes: &[OpenNote],
+  blinds: PreparedBlinds,
+  threads: usize,
+) -> Result<Proved, Fs1Error> {
+  prove_prepared_scalars(params, tree, notes, blinds, threads).map(|(proved, _)| proved)
+}
+
+/// [`prove_prepared`], also returning each input's blind scalars in input order.
+/// The spend proof needs them; they are wiped when dropped.
+pub(crate) fn prove_prepared_scalars(
+  params: &Fs1Params,
+  tree: &impl Fs1Tree,
+  notes: &[OpenNote],
+  mut blinds: PreparedBlinds,
+  threads: usize,
+) -> Result<(Proved, Vec<BlindScalars>), Fs1Error> {
+  check_notes(tree, notes)?;
+  let n = notes.len();
+  if blinds.layers != tree.layers() || blinds.inputs() < n {
+    return Err(Fs1Error::Blind);
   }
+
+  let paths = run_jobs(threads, n, |i| tree.path(notes[i].leaf_index)).into_iter().collect::<Result<Vec<_>, _>>()?;
   let outputs: Vec<Output<EdG>> = paths.iter().map(|path| path.output).collect();
   let branches = Branches::new(paths).ok_or(Fs1Error::Path)?;
+  let (per_c1, per_c2) = branch_blinds_per_input(tree.layers());
+  if branches.necessary_c1_blinds() != per_c1 * n || branches.necessary_c2_blinds() != per_c2 * n {
+    return Err(Fs1Error::Path);
+  }
 
-  let mut output_blinds = Vec::with_capacity(notes.len());
-  let mut opened = Vec::with_capacity(notes.len());
-  let mut input_bytes = Vec::with_capacity(notes.len());
-  for output in &outputs {
-    let (blinds, scalars) = fresh_output_blinds(&mut rng, params);
+  let mut output_blinds = Vec::with_capacity(n);
+  let mut opened = Vec::with_capacity(n);
+  let mut input_bytes = Vec::with_capacity(n);
+  let mut kept = Vec::with_capacity(n);
+  for (output, (blinds, scalars)) in outputs.iter().zip(blinds.outputs.drain(.. n)) {
     let points = open_input_points(output, &scalars, params);
     opened.push(Input::new(points[0], points[1], points[2], points[3]).map_err(|_| Fs1Error::Blind)?);
     let mut encoded = [0u8; 128];
@@ -551,25 +807,21 @@ pub fn prove(params: &Fs1Params, tree: &Tree, notes: &[OpenNote]) -> Result<Prov
     }
     input_bytes.push(encoded);
     output_blinds.push(blinds);
+    kept.push(scalars);
   }
+  let c1_blinds: Vec<_> = blinds.c1.drain(.. per_c1 * n).collect();
+  let c2_blinds: Vec<_> = blinds.c2.drain(.. per_c2 * n).collect();
+  drop(blinds);
 
-  let mut c1_blinds = Vec::with_capacity(branches.necessary_c1_blinds());
-  for _ in 0 .. branches.necessary_c1_blinds() {
-    c1_blinds.push(BranchBlind::<SeleneG>::new(params.c1.h(), nonzero_decomposition(&mut rng)));
-  }
-  let mut c2_blinds = Vec::with_capacity(branches.necessary_c2_blinds());
-  for _ in 0 .. branches.necessary_c2_blinds() {
-    c2_blinds.push(BranchBlind::<HeliosG>::new(params.c2.h(), nonzero_decomposition(&mut rng)));
-  }
-
+  let mut rng = OsRng;
   let blinded = branches.blind(output_blinds, c1_blinds, c2_blinds).map_err(Fs1Error::Prove)?;
   let proof = Fcmp::<ShearCurves>::prove(&mut rng, &params.fcmp, blinded).map_err(Fs1Error::Prove)?;
   let mut bytes = Vec::new();
   proof.write(&mut bytes).map_err(|_| Fs1Error::Io)?;
-  if bytes.len() != proof_len(notes.len(), tree.layers) {
+  if bytes.len() != proof_len(n, tree.layers()) {
     return Err(Fs1Error::Io);
   }
-  Ok(Proved { bytes, inputs: opened, input_bytes, root: tree.root, layers: tree.layers })
+  Ok((Proved { bytes, inputs: opened, input_bytes, root: tree.root(), layers: tree.layers() }, kept))
 }
 
 /// Verify a proof produced by [`prove`] against the same parameters.
@@ -685,7 +937,7 @@ pub(crate) mod tests {
 
   pub(crate) fn params_8() -> &'static Fs1Params {
     static CELL: OnceLock<Fs1Params> = OnceLock::new();
-    CELL.get_or_init(|| Fs1Params::open(8).expect("params"))
+    CELL.get_or_init(|| Fs1Params::fixed().expect("params"))
   }
 
   pub(crate) fn tree_1() -> &'static Tree {

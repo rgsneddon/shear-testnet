@@ -11,6 +11,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
+import { payeeFs1Ok } from '../../crypto/n1.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { destBoundShareHash, noteCommitOfShare, shareTargetByte } from '../../crypto/share_batch.js';
 import {
@@ -639,6 +640,7 @@ export function admitClient(params) {
   const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
   if (isPaymentCode(dest)) {
     if (!payout) return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
+    if (!payeeFs1Ok(payout)) return { ok: false, reason: 'admit_note_point' };
     return {
       ok: true,
       login: payout,
@@ -647,7 +649,9 @@ export function admitClient(params) {
       ramAlias: true,
     };
   }
-  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payout || (isDestAddress(dest) ? dest : '') };
+  const payee = payout || (isDestAddress(dest) ? dest : '');
+  if (payee && !payeeFs1Ok(payee)) return { ok: false, reason: 'admit_note_point' };
+  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payee };
 }
 
 /** Wrong-algo login or a submit that is not a ShearHash-v3 digest. */
@@ -1110,6 +1114,10 @@ export function rememberOpenShare(openShares, rec) {
  * and is not added to the round. Callers must not count a failed result.
  */
 export function bindAcceptedShare(openShares, rec) {
+  const payee = String(rec?.dest || rec?.address || rec?.miner || destOfShare(rec) || '');
+  if (!payeeFs1Ok(payee)) {
+    return { ok: false, reason: 'admit_note_point', list: openShares };
+  }
   const header = rec?.verifiedHeader || rec?.header;
   const bound = rememberLiveSharePow(header, rec?.nonce, {
     noteCommit: noteCommitOfShare(rec),
@@ -4919,7 +4927,7 @@ export function createPool({
       epochRemainMs: ev.remainMs,
       hashBonusNanos: hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos),
       hashTxLive: HASH_TX_LIVE,
-      admit: 'ADMITv2',
+      admit: 'ADMITv3',
       bookLawFingerprint: consensusFingerprint(),
       ...consensusLaw(),
       policy: typeof store.getpolicy === 'function' ? store.getpolicy() : undefined,
@@ -5010,7 +5018,7 @@ export function createPool({
       hashOwedNanos: supplyNumber(supply.supplyStatus, supply.hashOwedNanos),
       extraMintedNanos: supply.extraMintNanos,
       burnedNanos: supply.burnedNanos,
-      reserveMintedNanos: supply.reserveMintedNanos || 0,
+      reserveMintedNanos: supply.extraMintNanos == null ? null : supply.extraMintNanos,
       reserveVaultNanos: supply.vaultNanos || 0,
       accruingNanos: supply.accruingNanos || 0,
       height: tip?.height || 0,
@@ -5602,7 +5610,7 @@ export function createPool({
       res.end(JSON.stringify({
         ok: true,
         fingerprint: fp,
-        admit: 'ADMITv2',
+        admit: 'ADMITv3',
         hashTxLive: Number(store.hashTxLive ?? HASH_TX_LIVE),
         magic: MAGIC_TESTNET,
       }));

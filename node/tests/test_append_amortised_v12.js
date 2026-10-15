@@ -12,6 +12,7 @@ import { performance } from 'node:perf_hooks';
 import { encodeDest } from '../../crypto/address.js';
 import { SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { pruneSamples } from '../../crypto/chronoflux.js';
+import { packEpochBlock, unpackEpochBlock } from '../../crypto/chainbin.js';
 import { bookSealKeyFor, bookSealKeyPath } from '../src/book_seal_key.js';
 import {
   decodeBookSnap,
@@ -90,6 +91,13 @@ describe('append cost stays flat after pruning', { timeout: 900_000 }, () => {
     const buried = pruneSamples(block);
     assert.equal(stableDigest([buried]), stableDigest([block]));
     assert.notEqual(frameDigest([buried]), frameDigest([block]));
+    const withLeaf = {
+      ...block,
+      aLeaves: [{ dest20: Buffer.alloc(20, 4), noteCommit: Buffer.alloc(32, 5), count: 1 }],
+    };
+    const leafBuried = pruneSamples(withLeaf);
+    const leafDisk = unpackEpochBlock(packEpochBlock(leafBuried));
+    assert.equal(stableDigest([leafDisk]), stableDigest([withLeaf]));
   });
 
   it('append time does not grow linearly, and restart matches replay', async () => {

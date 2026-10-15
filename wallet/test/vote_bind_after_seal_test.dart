@@ -155,6 +155,10 @@ class _VotePool extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) async {
     posts.add({
       'from': from,

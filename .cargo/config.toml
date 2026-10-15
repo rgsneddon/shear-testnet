@@ -1,0 +1,4 @@
+# The admit select tests build arity-32 transcripts on the test thread and
+# overflow libtest's default 2 MiB stack.
+[env]
+RUST_MIN_STACK = "67108864"

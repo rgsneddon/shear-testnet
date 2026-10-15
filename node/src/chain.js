@@ -63,8 +63,7 @@ import {
 } from '../../crypto/reserve_evm.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, bech32Hrp, checkAddressField, checkTxAddressFields, admitBaseFromAddress, encodeDest } from '../../crypto/address.js';
 import {
-  admit_verify,
-  admitVerifyBatch,
+  admitDelta,
   attachAdmitPub,
   fluxsetFromBlocks,
   appendFluxBlock,
@@ -76,6 +75,8 @@ import {
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
+import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
+import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
@@ -97,8 +98,8 @@ import {
   noteCommitOfDest20,
   asU8,
   pointFrom,
-  txSpendTags,
-  canonicalSpendTag,
+  pointBytes,
+  G,
   txIoCap,
 } from '../../crypto/note.js';
 import { t21CoinbaseGate } from '../../crypto/t21_split.js';
@@ -1166,6 +1167,165 @@ export function templateForFinder(tpl, finderDest) {
   return stampAimed(built, tpl);
 }
 
+function droppedPotNanos(o) {
+  const kind = String(o?.kind || '');
+  // Hash and levy notes are not pot. Folding them into the carry would mint
+  // the wrong supply. Refuse the template instead of publishing that block.
+  if (kind === 'hash' || kind === 'finder-fee' || kind === 'reserve-fee') {
+    throw new Error('admit_note_point');
+  }
+  const opened = openedNoteNanos(o);
+  if (opened == null) throw new Error('admit_note_point');
+  return opened;
+}
+
+function openedNoteNanos(o) {
+  const opened = o?.valueProof && o.valueProof.v != null && o.valueProof.v !== ''
+    ? Number(o.valueProof.v)
+    : Number(o?.nanos || 0);
+  if (!Number.isSafeInteger(opened) || opened < 0) return null;
+  return opened;
+}
+
+/** B from a kept pot note, so the reseal still pays that dest. */
+function admitBaseOfKeptPot(o) {
+  const named = o?.address ? admitBaseFromAddress(o.address) : null;
+  if (named && named.length === 32) return named;
+  const P = pointFrom(o.admitPub);
+  return pointBytes(P.subtract(G.multiply(admitDelta(o))));
+}
+
+function resealPotPayee(o, nanos) {
+  const dest20 = noteDest20(o);
+  if (!dest20) throw new Error('admit_note_point');
+  return attachAdmitPub(sealCoinbaseNote(nanos, { dest20, kind: 'pot' }), {
+    admitBase: admitBaseOfKeptPot(o),
+  });
+}
+
+/**
+ * Drop a coinbase payee that is not an FS-1 leaf.
+ * With no share batch, a dropped pot share is split again over the pot
+ * payees that remain, by the same last-remainder rule as potPaysFromLeaves.
+ * Their notes are resealed at the new amounts. If none remain, the whole
+ * pot is carried and no pot note is left beside that carry.
+ * A share batch already fixed those pays. Re-splitting them misses
+ * pot_prop, and carrying them misses pot_carry, so this throws.
+ * buildTemplate catches that, drops every share of the broken payee,
+ * and builds again. A hash or levy note has no pot to rejoin, so that
+ * drop throws either way.
+ */
+export function dropBrokenCoinbaseNotes(cb, { shares = false } = {}) {
+  if (!(cb && typeof cb === 'object')) return cb;
+  const kept = [];
+  const dropped = [];
+  for (const o of cb.vout || []) {
+    if (outputJoinsAdmitSet(cb, o) && !fs1LeafFor(o)) {
+      const n = droppedPotNanos(o);
+      const kind = String(o?.kind || cb?.kind || '');
+      dropped.push({ kind, nanos: n });
+      console.error(JSON.stringify({
+        event: 'coinbase_note_drop',
+        reason: 'admit_note_point',
+        kind,
+        nanos: n,
+      }));
+      continue;
+    }
+    kept.push(o);
+  }
+  if (shares && dropped.length) throw new Error('admit_note_point');
+  cb.vout = kept;
+  if (!dropped.length) return cb;
+  let droppedNanos = 0;
+  for (const row of dropped) {
+    if (!Number.isSafeInteger(droppedNanos + row.nanos)) throw new Error('admit_note_point');
+    droppedNanos += row.nanos;
+  }
+  const pots = kept.filter((o) => String(o?.kind || '') === 'pot');
+  if (!pots.length || droppedNanos === 0) {
+    if (!pots.length && droppedNanos > 0) {
+      const carry = canonicalCarry(cb);
+      if (carry == null || !Number.isSafeInteger(carry + droppedNanos)) throw new Error('admit_note_point');
+      cb.carryNanos = carry + droppedNanos;
+    }
+    const excess = excessOf(kept);
+    if (!excess) throw new Error('admit_note_point');
+    cb.excess = excess;
+    return cb;
+  }
+  const carry = canonicalCarry(cb);
+  if (carry == null) throw new Error('admit_note_point');
+  // Consensus rejects a carry beside a pot note. The amount re-split is the
+  // pot still opened, the dropped share, and any carry already on this tx.
+  let potSum = droppedNanos + carry;
+  const leaves = [];
+  for (const o of pots) {
+    const n = openedNoteNanos(o);
+    if (n == null || !Number.isSafeInteger(potSum + n)) throw new Error('admit_note_point');
+    potSum += n;
+    const dest20 = noteDest20(o);
+    if (!dest20) throw new Error('admit_note_point');
+    leaves.push({
+      output: o,
+      noteCommit: noteCommitOfDest20(dest20),
+      count: n > 0 ? n : 1,
+    });
+  }
+  const pays = potPaysFromLeaves(
+    leaves.map((leaf) => ({ noteCommit: leaf.noteCommit, count: leaf.count })),
+    null,
+    0,
+    potSum,
+    0,
+  );
+  const used = new Set();
+  const resealed = [];
+  for (const pay of pays) {
+    const src = leaves.find((leaf) => !used.has(leaf) && ncHex(leaf.noteCommit) === ncHex(pay.noteCommit));
+    if (!src) throw new Error('admit_note_point');
+    used.add(src);
+    resealed.push(resealPotPayee(src.output, pay.nanos));
+  }
+  if (!resealed.length) throw new Error('admit_note_point');
+  const next = [];
+  let placed = false;
+  for (const o of kept) {
+    if (String(o?.kind || '') === 'pot') {
+      if (!placed) {
+        next.push(...resealed);
+        placed = true;
+      }
+      continue;
+    }
+    next.push(o);
+  }
+  const excess = excessOf(next);
+  if (!excess) throw new Error('admit_note_point');
+  cb.vout = next;
+  cb.excess = excess;
+  if (carry > 0) cb.carryNanos = 0;
+  return cb;
+}
+
+function brokenPayeeHexes(cb) {
+  const bad = new Set();
+  for (const o of cb?.vout || []) {
+    if (!outputJoinsAdmitSet(cb, o) || fs1LeafFor(o)) continue;
+    const d20 = noteDest20(o);
+    if (d20 && d20.length >= 20) bad.add(Buffer.from(d20.subarray(0, 20)).toString('hex'));
+  }
+  return bad;
+}
+
+function shareHitsBrokenPayee(share, bad) {
+  if (!bad.size) return false;
+  let d20 = null;
+  try { d20 = dest20OfShare(share); } catch { d20 = null; }
+  if (!d20 || d20.length < 20) return false;
+  return bad.has(Buffer.from(d20.subarray(0, 20)).toString('hex'));
+}
+
 export function buildTemplate({
   prev,
   prevHeader,
@@ -1192,7 +1352,9 @@ export function buildTemplate({
   hashOwedIn: hashOwedInOpt = null,
   issuedHeaders = null,
   hashSpill = null,
+  prepareCoinbase = null,
 }) {
+  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !txNoteRuleRejected(tx));
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
@@ -1275,6 +1437,51 @@ export function buildTemplate({
   const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
   if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
   if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
+  if (typeof prepareCoinbase === 'function') prepareCoinbase(cb);
+  try {
+    dropBrokenCoinbaseNotes(cb, { shares: batch.length > 0 });
+  } catch (err) {
+    if (!batch.length || err?.message !== 'admit_note_point') throw err;
+    const bad = brokenPayeeHexes(cb);
+    const source = Array.isArray(shareBatch) ? shareBatch : [];
+    const nextShares = source.filter((s) => !shareHitsBrokenPayee(s, bad));
+    if (!bad.size || nextShares.length === source.length) throw err;
+    console.error(JSON.stringify({
+      event: 'coinbase_share_evict',
+      reason: 'admit_note_point',
+      payees: bad.size,
+      shares: source.length - nextShares.length,
+    }));
+    return buildTemplate({
+      prev,
+      prevHeader,
+      prevBlock,
+      parentWeight: parentWeightIn,
+      height,
+      miner,
+      samples,
+      txs,
+      bLeaves: bLeavesIn,
+      now,
+      bits,
+      destOf,
+      potShares: null,
+      hashBonusNanos,
+      shareBatch: nextShares,
+      poolDest,
+      feeDest,
+      finderDest,
+      hashBonusCustodyDest,
+      parentFluxset,
+      parentBlocks,
+      hashAcceptedSeries,
+      hashOwedIn: hashOwedInOpt,
+      issuedHeaders,
+      hashSpill: Array.isArray(hashSpill)
+        ? hashSpill.filter((s) => !shareHitsBrokenPayee(s, bad))
+        : hashSpill,
+    });
+  }
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
@@ -1730,10 +1937,17 @@ export function assessHeader(block, prev, opts = {}) {
   if (decoded.version !== VERSION) return finish({ ok: false, reason: 'version' });
   const wantPrev = prev?.hash ? Buffer.from(prev.hash) : GENESIS_PREV;
   if (!decoded.prevBlockHash.equals(wantPrev)) return finish({ ok: false, reason: 'prev' });
+  // P2P burial gate. Structural height is the parent already accepted, plus one.
+  // A peer height field is not that number. Reject it before slot burial,
+  // ASERT, or skipFlow can read it.
+  const structuralH = (Number(prev?.height) || 0) + 1;
+  if (block.height != null && block.height !== '' && Number(block.height) !== structuralH) {
+    return finish({ ok: false, reason: 'height' });
+  }
   // The slot byte is consensus. Check it before header work so a flipped
   // trailer is share_slot and does not depend on proof-of-work. An unburied
   // pruned block keeps the samples_pruned reason from the later check.
-  const slotHeight = Number(block.height || (Number(prev?.height || 0) + 1));
+  const slotHeight = structuralH;
   const slotParent = Number(prev?.height || 0);
   // burialTip is the caller's own tip (load, fork, or suffix). A peer
   // tipHeight does not bury. Live append leaves burialTip unset.
@@ -1797,7 +2011,7 @@ export function assessHeader(block, prev, opts = {}) {
     if (!Number.isFinite(resolvedGenesisMs) || resolvedGenesisMs <= 0) {
       return finish({ ok: false, reason: 'genesis_ms' });
     }
-    const heightNow = Number(block.height || (Number(prev.height) || 0) + 1);
+    const heightNow = structuralH;
     const quote = asertNextBits({
       anchorBits: parentIsGenesis ? parent.bits : GENESIS_BITS_PACKED,
       anchorTimeMs: resolvedGenesisMs,
@@ -1841,6 +2055,73 @@ export function assessHeader(block, prev, opts = {}) {
     return finish({ ok: false, reason: 'genesis_ms' });
   }
   return finish({ ok: true, hash, decoded, genesisMs: resolvedGenesisMs });
+}
+
+/** A genesis header without its body, under a claimed hash. */
+export function rootHeaderReason(header, hash) {
+  let decoded;
+  try {
+    decoded = decodeHeader(Buffer.from(header));
+  } catch {
+    return { ok: false, reason: 'bad_header' };
+  }
+  if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
+  if (!decoded.prevBlockHash.equals(GENESIS_PREV)) return { ok: false, reason: 'prev' };
+  if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) return { ok: false, reason: 'bits' };
+  const pow = Buffer.from(hash || []);
+  if (pow.length !== 32 || !meetsTarget(pow, decoded.bits)) return { ok: false, reason: 'pow' };
+  return { ok: true, decoded };
+}
+
+/**
+ * One header above a parent header, without its body: version, prev link,
+ * proof-of-work under its own bits, genesis-anchored ASERT bits, the packed
+ * range, and the timestamp rules. The base fee and the merkle root need the
+ * body, so a header run does not prove them. `hash` is the header's proven
+ * ShearHash. `parent` is { header, hash, height }.
+ */
+export function headerLinkReason(header, hash, parent, { genesisMs = 0, mtpTimestamps = null, nowMs = null } = {}) {
+  let decoded;
+  let up;
+  try {
+    decoded = decodeHeader(Buffer.from(header));
+    up = decodeHeader(Buffer.from(parent.header));
+  } catch {
+    return { ok: false, reason: 'bad_header' };
+  }
+  if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
+  if (!decoded.prevBlockHash.equals(Buffer.from(parent.hash))) return { ok: false, reason: 'prev' };
+  const pow = Buffer.from(hash || []);
+  if (pow.length !== 32 || !meetsTarget(pow, decoded.bits)) return { ok: false, reason: 'pow' };
+  const ts = Number(decoded.timestamp);
+  const parentTs = Number(up.timestamp);
+  if (!(ts > parentTs)) return { ok: false, reason: 'timestamp' };
+  const parentIsGenesis = up.prevBlockHash.equals(GENESIS_PREV);
+  const anchorMs = parentIsGenesis ? parentTs : Number(genesisMs);
+  if (!Number.isFinite(anchorMs) || anchorMs <= 0) return { ok: false, reason: 'genesis_ms' };
+  const quote = asertNextBits({
+    anchorBits: parentIsGenesis ? up.bits : GENESIS_BITS_PACKED,
+    anchorTimeMs: anchorMs,
+    anchorHeight: parentIsGenesis ? Number(parent.height || 1) : 1,
+    blockTimeMs: ts,
+    blockHeight: Number(parent.height) + 1,
+    parentTimeMs: parentTs,
+  });
+  if (!quote.ok || !bitsAcceptAsert(decoded.bits, quote) || !isPackedBits(decoded.bits)) {
+    return { ok: false, reason: 'bits' };
+  }
+  const fp = unpackBits(decoded.bits);
+  if (fp < LIVE_MIN_BITS || fp > MAX_BITS) return { ok: false, reason: 'bits' };
+  const window = Array.isArray(mtpTimestamps) && mtpTimestamps.length
+    ? mtpTimestamps.slice(-MTP_WINDOW)
+    : [parentTs];
+  if (ts > medianTimePast(window) + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
+  if (nowMs != null && Number.isFinite(Number(nowMs))) {
+    if (ts > Number(nowMs) + HEADER_AHEAD_MS || ts > Number(nowMs) + MTP_FUTURE_MS) {
+      return { ok: false, reason: 'timestamp' };
+    }
+  }
+  return { ok: true, decoded };
 }
 
 // Parent tags stay in the live set. Copying them once per block grows with
@@ -1933,6 +2214,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   }
   const budget = blockBudget(txs);
   if (!budget.ok) return budget;
+  const noteRule = chainNoteRuleRejected([block]);
+  if (noteRule) return noteRule;
   const observeGate = coinbaseObserveRejected(txs);
   if (observeGate) return observeGate;
   const wantPot = potSubsidyAt({
@@ -1966,11 +2249,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const hashVouts = cbVouts.filter((o) => o.kind === 'hash');
   let potNanos = 0;
   let bonusNanos = 0;
-  const height = Number(block.height || (prev?.height || 0) + 1);
-  // Burial on the live path is only the parent this caller already accepted.
+  // Structural height. assessHeader already rejected a peer height field.
   // opts.tipHeight is a peer advertisement and must not open skipFlow.
   // loadReplay is this book's own tip, used only while checking a loaded chain.
   const parentHeight = Number(prev?.height || 0);
+  const height = parentHeight + 1;
   // Live burial is the parent this caller already accepted. A peer tipHeight
   // does not open it. loadReplay is this book's own tip. Fork and suffix
   // pass burialTip, the tip of the chain they are validating, and that
@@ -2276,11 +2559,16 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const commits = (live.commits || []).slice();
   const spentTags = parentSpendView(live.spendTags);
   const pushPub = (tx, o) => {
-    if (!outputJoinsAdmitSet(tx, o) || !o?.commit) return;
+    if (!outputJoinsAdmitSet(tx, o)) return null;
+    const note = fs1OutputNote(o);
+    if (!fs1LeafFor(o)) return { ok: false, reason: 'admit_note_point' };
     try {
-      pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
-      commits.push(Buffer.from(asU8(o.commit)));
-    } catch { /* skip */ }
+      pubs.push(pointFrom(note.admitPub));
+      commits.push(Buffer.from(note.commit));
+    } catch {
+      return { ok: false, reason: 'admit_note_point' };
+    }
+    return null;
   };
   for (const tx of txs) {
     const earlyOpen = openingBeforeCarry(tx);
@@ -2409,65 +2697,15 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (flowV3Done) {
         // Tags are already in spentTags. Do not send the blob to admit_verify.
       } else {
-      const parsed = txSpendTags(tx);
-      if (!parsed.ok && parsed.reason === 'admit_tag') return { ok: false, reason: 'admit_tag' };
-      // Verify the bound list only. tx.admit_proof is not a spend unless it is
-      // that list. A distinct extra never reaches admit_verify or spentTags.
-      const boundProofs = boundIns?.proofs || [];
-      const vins = boundIns?.vins || [];
-      if (boundProofs.length !== vins.length || boundProofs.length < 1) {
+        // A flow that did not finish verifyFlowAdmitV3 is not a member.
+        // The v2 verifier is not called.
         return { ok: false, reason: 'admit_membership' };
-      }
-      const liveJ = { pubs, commits, jroot: live.jroot };
-      const spendOne = (proof, tag) => {
-        if (!tag) return { ok: false, reason: 'admit_membership' };
-        if (!admit_verify(proof, liveJ, { cTilde: proof.cTilde, spendTag: tag, jroot: live.jroot })) {
-          return { ok: false, reason: 'admit_membership' };
-        }
-        const th = tag.toString('hex');
-        if (spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
-        spentTags.add(th);
-        return null;
-      };
-      if (boundProofs.length === 1) {
-        const proof = boundProofs[0];
-        const one = canonicalSpendTag(proof);
-        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
-        const failed = spendOne(proof, one.tag);
-        if (failed) return failed;
-      } else {
-      const items = [];
-      const tags = [];
-      for (let pi = 0; pi < boundProofs.length; pi += 1) {
-        const proof = boundProofs[pi];
-        if (!proof) return { ok: false, reason: 'admit_membership' };
-        const one = canonicalSpendTag(proof);
-        if (!one.ok) return { ok: false, reason: one.reason || 'admit_membership' };
-        if (!one.tag) return { ok: false, reason: 'admit_membership' };
-        const cTilde = proof.cTilde;
-        if (!cTilde || !vins[pi]?.commit) return { ok: false, reason: 'admit_membership' };
-        const posted = Buffer.from(asU8(vins[pi].commit));
-        const want = Buffer.from(asU8(cTilde));
-        if (posted.length !== want.length || !posted.equals(want)) {
-          return { ok: false, reason: 'admit_membership' };
-        }
-        items.push({ proof: proof.blob || proof.proof || proof, cTilde, spendTag: one.tag });
-        tags.push(one.tag);
-      }
-      if (!admitVerifyBatch(items, liveJ, { jroot: live.jroot })) {
-        return { ok: false, reason: 'admit_membership' };
-      }
-      const seen = new Set();
-      for (const tag of tags) {
-        const th = tag.toString('hex');
-        if (seen.has(th) || spentTags.has(th)) return { ok: false, reason: 'admit_link_tag' };
-        seen.add(th);
-        spentTags.add(th);
-      }
-      }
       }
     }
-    for (const o of outs) pushPub(tx, o);
+    for (const o of outs) {
+      const pushed = pushPub(tx, o);
+      if (pushed) return pushed;
+    }
     const noteFund = verifyTypedAdmitFunding(tx, {
       height,
       blocks: Array.isArray(evmHistory) ? evmHistory : [],
@@ -2527,9 +2765,13 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   for (const tx of txs) {
     for (const o of tx.vout || []) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
+      const note = fs1OutputNote(o);
+      if (!fs1LeafFor(o)) return { ok: false, reason: 'admit_note_point' };
       try {
-        addedPubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
-      } catch { /* skip */ }
+        addedPubs.push(pointFrom(note.admitPub));
+      } catch {
+        return { ok: false, reason: 'admit_note_point' };
+      }
     }
   }
   const extended = live.zeroFrontier ? extendZeroRoot(live, addedPubs) : null;
@@ -2652,8 +2894,12 @@ function asBuf(v) {
   try { return Buffer.from(v); } catch { return Buffer.alloc(0); }
 }
 
-/** Domain for book.seal. A seal without it was written before the body snapshot and is not trusted. */
-export const BOOK_SEAL_DOMAIN = 'bookseal1';
+/**
+ * Domain for book.seal. bookseal1 predates N-1. A seal under that tag, or
+ * under a fingerprint that does not name N-1, is not this book's seal.
+ * The load discards it and checks the notes.
+ */
+export const BOOK_SEAL_DOMAIN = 'bookseal2';
 
 /** Keyed sha256 over the rules id, the genesis pin, the checkpoint, and each header and stored hash.
  *  The key is the per-install secret kept outside the datadir.
@@ -2741,11 +2987,14 @@ function beginLoaded(blocks, {
   fromIndex = 0,
   prior = null,
   reorgHaltDepth = 0,
+  burialOf = null,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true, empty: true };
   const gated = chainStage0Rejected(list);
   if (gated) return gated;
+  // N-1 runs inside each block, after the header and the budget. A load
+  // does not walk leaves before proof-of-work.
   const givenClock = Number(nowMs);
   const clock = Number.isFinite(givenClock) && givenClock > 0 ? givenClock : Date.now();
   const pinned = normGenesisPin(genesisHash);
@@ -2837,6 +3086,7 @@ function beginLoaded(blocks, {
       trustStoredHash: trustStoredHash === true,
       trustShareWork: trustStoredHash === true && trustShareWork !== false,
       reorgHaltDepth: Math.max(0, Math.floor(Number(reorgHaltDepth) || 0)),
+      burialOf: typeof burialOf === 'function' ? burialOf : null,
     },
   };
 }
@@ -2942,6 +3192,10 @@ function stepLoaded(state, list, i) {
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
   const prevBlock = i === 0 ? null : list[i - 1];
+  // A pruned block a proven-work header chain buried keeps that tip for
+  // verify and for the owed step. Every other block is buried by this load.
+  const own = state.burialOf ? state.burialOf(block) : null;
+  const burial = Number.isInteger(own) && own > state.loadTip ? own : state.loadTip;
   const body = verifyBlockConsensus(block, prevBlock, {
     trustedPowHash: link,
     loadReplay: true,
@@ -2949,7 +3203,7 @@ function stepLoaded(state, list, i) {
     // hash on an own-keyed load, which is how the load test reaches it
     // without a second header search. createStore does not pass it.
     trustShareWork: state.trustShareWork,
-    tipHeight: state.loadTip,
+    tipHeight: burial,
     genesisMs: state.genesisMs,
     mtpTimestamps: state.mtp.slice(),
     owedIn: state.owedIn,
@@ -2982,7 +3236,7 @@ function stepLoaded(state, list, i) {
     acceptedSeries: state.acceptedSeries,
     block,
     unit: HASH_BONUS_NANOS,
-    tipHeight: state.loadTip,
+    tipHeight: burial,
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'hash_owed' };
   state.owedIn = stepped.rows;

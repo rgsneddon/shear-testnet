@@ -19,7 +19,7 @@ import {
 import { nativeLoaded, nativeProveRange, nativeVerifyRange, noteH } from './native_admit.js';
 
 const NOTE_H = 'feea2914bda937d74acc1efa93bf1094f65ae709628a7aad9d1b913b6c80c301';
-const FS1_GENERATOR_DIGEST = 'fdafff2e1972bdf910b51d6c1d4502c1dc749c1a4c1e42cc92ed9f43495f968d';
+const FS1_SPEND_DIGEST = '4aab173c8065e7e5cff88945399b98cbbb51f647297231d09cb069c82f965288eaaf3ecb9ea88ae4e3de1dde2623710fe5e4f4353c529ef613fac9ff8b0699e6';
 
 const U64_MAX = (1n << 64n) - 1n;
 const L = 0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3edn;
@@ -69,11 +69,14 @@ describe('packed range proof matches bpplus.rs', () => {
     assert.equal(js.toString('hex'), NOTE_H);
     assert.equal(js.equals(Buffer.from(noteH())), true);
     assert.equal(Buffer.from(H.toBytes()).toString('hex'), NOTE_H);
-    const pin = JSON.parse(readFileSync(new URL('./native/vendor/monero-oxide-77788c3/ADMIT_PIN.json', import.meta.url), 'utf8'));
-    assert.equal(pin.dirSha256['generalized-bulletproofs'], FS1_GENERATOR_DIGEST);
     const doc = readFileSync(new URL('../docs/RANGE-H-AND-FS1-PIN.md', import.meta.url), 'utf8');
     assert.equal(doc.includes(NOTE_H), true);
-    assert.equal(doc.includes(FS1_GENERATOR_DIGEST), true);
+    assert.equal(doc.includes(FS1_SPEND_DIGEST), true);
+    const vector = readFileSync(new URL('./native/vendor/monero-oxide-77788c3/shear-fs1/vectors/generators.txt', import.meta.url), 'utf8');
+    const digestLine = vector.split('\n').find((line) => line.startsWith('digest'));
+    assert.equal(digestLine.split('\t')[1], FS1_SPEND_DIGEST);
+    const spec = readFileSync(new URL('../specs/100c.md', import.meta.url), 'utf8');
+    assert.equal(spec.includes(FS1_SPEND_DIGEST), true);
   });
 
   it('agrees with the native prover on wire bytes', () => {

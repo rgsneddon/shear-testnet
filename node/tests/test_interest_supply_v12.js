@@ -8,7 +8,8 @@ import { PI_SHE_NANOS, GENESIS_BPS, MAGIC_TESTNET } from '../../crypto/asert.js'
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { reserveFeeDest } from '../../crypto/levy.js';
-import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
+import { lockTx, withdrawTx, reserveAction } from '../../crypto/reserve_vault.js';
+import { verifySealedNote } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
 import { auditCirculatingSupply, foldSupply, supplyStep, emptySupplyState } from '../src/supply.js';
 
@@ -238,5 +239,53 @@ describe('v12 supply counts reserve interest from the chain', () => {
     });
     assert.equal(bare.ok, false);
     assert.equal(bare.reason, 'supply');
+  });
+
+  it('rejects a withdraw note that opens above the public amount, and an inflated interest', () => {
+    const stake = PI_SHE_NANOS;
+    const one = interestNanos(stake, GENESIS_BPS);
+    assert.ok(one > 0);
+    const miner = minerDest();
+    const portal = portalDest();
+    const drawTs = GENESIS + EPOCH_MS + 1;
+    const honestPay = stake + one;
+    const lock = lockBlock(GENESIS, miner, [portal], stake);
+
+    const openedHigh = drawBlock(drawTs, miner, [portal], honestPay, 0);
+    const fat = withdrawTx({
+      from: portal,
+      to: miner,
+      nanos: honestPay + 1,
+      id: 'note-opens-high',
+    });
+    const wd = openedHigh.txs[1];
+    wd.vout = fat.vout;
+    wd.nanos = honestPay;
+    const act = reserveAction(wd);
+    assert.equal(act.nanos, honestPay);
+    assert.equal(act.opened, false);
+    assert.equal(verifySealedNote(wd.vout[0], honestPay + 1), true);
+    assert.equal(verifySealedNote(wd.vout[0], act.nanos), false);
+    const high = auditCirculatingSupply([lock, openedHigh]);
+    assert.equal(high.status, 'mismatch', high.reason);
+    assert.equal(high.reason, 'supply');
+    const highFold = foldSupply([lock, openedHigh], { genesisMs: GENESIS });
+    assert.equal(highFold.ok, false);
+    assert.equal(highFold.reason, 'supply');
+
+    const inflatedBlock = drawBlock(drawTs, miner, [portal], honestPay + 1, 0);
+    const fatAct = reserveAction(inflatedBlock.txs[1]);
+    assert.equal(fatAct.opened, true, 'the inflated receipt does open to its public amount');
+    assert.equal(fatAct.nanos, honestPay + 1);
+    const inflated = [lock, inflatedBlock];
+    const refused = foldSupply(inflated, { genesisMs: GENESIS });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'supply');
+    assert.equal(refused.state, null);
+    const audited = auditCirculatingSupply(inflated);
+    assert.equal(audited.status, 'mismatch');
+    assert.equal(audited.reason, 'supply');
+    assert.notEqual(audited.extraMintNanos, one + 1);
+    assert.notEqual(audited.circulatingNanos, potAt(GENESIS) + potAt(drawTs) + one + 1);
   });
 });

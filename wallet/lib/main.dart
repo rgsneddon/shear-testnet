@@ -691,7 +691,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
         setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet to use ADMITv2 ($kBookMagic).');
+            'This shewall is from a prior book. Reset the wallet for $kBookMagic.');
         return;
       }
       setState(() => _lockError = 'Wrong password.');
@@ -1586,7 +1586,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'she is private',
+                    'shear testnet',
                     style: TextStyle(color: theme.colorScheme.onSurface),
                   ),
                   const SizedBox(height: 8),

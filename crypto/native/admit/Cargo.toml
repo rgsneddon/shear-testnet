@@ -2,13 +2,26 @@
 name = "shear_admit"
 version = "0.1.0"
 edition = "2021"
-description = "ADMITv2 Curve Trees (Pasta) + Bulletproofs+ (ristretto)"
+description = "ADMITv3 FS-1 spend (FCMP++ Selene/Helios), Pasta Curve Trees, Bulletproofs+ (ristretto)"
 license = "MIT"
 publish = false
 
 [lib]
 name = "shear_admit"
+# cdylib: Android arm64-v8a and desktop dart:ffi.
+# staticlib: iOS wallet (`cargo ios-staticlib`, target aarch64-apple-ios).
+# iOS is wallet-only: no node addon and no miner. CI does not sign that target.
 crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = []
+# Node addon only. Wallet cdylib, iOS staticlib, and Android .so leave this off
+# so shear_admit_prove_v3 / shear_admit_verify_v3 are not exported.
+admit-v3 = []
+
+[package.metadata.shear]
+ios = { target = "aarch64-apple-ios", crate-type = "staticlib", sign_ci = false }
+android = { target = "aarch64-linux-android", crate-type = "cdylib", abi = "arm64-v8a" }
 
 [dependencies]
 pasta_curves = "0.5"
@@ -19,6 +32,8 @@ zeroize = "1"
 rand_core = { version = "0.6", features = ["getrandom"] }
 group = "0.13"
 ff = "0.13"
+# FS-1 spend: vendored monero-oxide FCMP++ (MIT), see vendor THIRD_PARTY_NOTICES.
+shear-fs1 = { path = "../vendor/monero-oxide-77788c3/shear-fs1" }
 
 [profile.release]
 lto = true

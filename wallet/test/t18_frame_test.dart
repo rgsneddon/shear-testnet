@@ -369,6 +369,10 @@ class _HoldSendPool extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) {
     return gate.future;
   }

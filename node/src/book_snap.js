@@ -112,10 +112,33 @@ export function legacyFrameDigest(blocks) {
 /** Combined stable-tag domain. A snap from the previous domain falls through. */
 export const STABLE_DIGEST_DOMAIN = 'bookstable2';
 
+function blankMemo(memo) {
+  if (!memo) return true;
+  const raw = Buffer.from(memo);
+  for (let i = 0; i < raw.length; i += 1) if (raw[i] !== 0) return false;
+  return true;
+}
+
+function stableView(block) {
+  const next = pruneSamples(block);
+  // chainbin reads a missing memo back as 32 zero bytes. The stable tag
+  // follows the bytes that were written, which omit that memo.
+  if (!Array.isArray(next.aLeaves) || !next.aLeaves.length) return next;
+  let changed = false;
+  const leaves = next.aLeaves.map((leaf) => {
+    if (!leaf?.memoH || !blankMemo(leaf.memoH)) return leaf;
+    changed = true;
+    const copy = { ...leaf };
+    delete copy.memoH;
+    return copy;
+  });
+  return changed ? { ...next, aLeaves: leaves } : next;
+}
+
 function stableBlockTag(block) {
   // pruneSamples drops the sample list. Every other packed field stays,
   // including leaves, spend ids, spill, and the share batch of a buried block.
-  const rec = packEpochBlock(pruneSamples(block));
+  const rec = packEpochBlock(stableView(block));
   const h = createHash('sha256');
   h.update('blkstable2');
   h.update(u32(rec.length));

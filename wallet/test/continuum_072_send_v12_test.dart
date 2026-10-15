@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_fs1.dart' show kFs1InputMax;
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
@@ -613,8 +614,10 @@ void main() {
     expect(kMaxInputsPerSend, greaterThan(1));
     expect(kSendTimeCap, kSendProveBudgetMs ~/ kMeasuredProveMs);
     final loose = measuredInputCap(outputs: 1);
-    final tight = measuredInputCap(outputs: 12, memo: true);
+    final tight = measuredInputCap(outputs: 16, memo: true);
     expect(tight, lessThan(loose));
+    expect(measuredInputCap(outputs: 12, memo: true), lessThanOrEqualTo(loose));
+    expect(loose, lessThanOrEqualTo(kFs1InputMax));
     expect(tight, lessThanOrEqualTo(kSendTimeCap));
     final src = File('lib/shear_ledger.dart').readAsStringSync();
     expect(src, contains('kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap'));
@@ -729,22 +732,6 @@ void main() {
   test('send keeps change nanos exact for any amount', () async {
     expect(debugNativeSealNote, isNull);
     expect(debugNativeSealUnits, isNull);
-    debugNativeSpendProver = ({
-      required Uint8List spendSeed,
-      required Map<String, dynamic> spentNote,
-      required List<Uint8List> pubs,
-      List<Uint8List>? commits,
-    }) =>
-        {
-          'admit_proof': true,
-          'v': 2,
-          'spendTag': Uint8List(32)..[0] = 7,
-          'blob': Uint8List.fromList([2, ...List.filled(8, 1)]),
-          'cTilde': Uint8List(32)..[0] = 9,
-        };
-    addTearDown(() {
-      debugNativeSpendProver = null;
-    });
     final fee = BigInt.from(levyNanos(0));
     expect(fee, BigInt.from(levyNanos(1)));
     expect(fee, greaterThan(BigInt.zero));
@@ -935,6 +922,10 @@ class _RecordChange extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) async {
     posts.add({
       'kinds': [
@@ -994,6 +985,10 @@ class _RecordWithdraw extends ShearPoolClient {
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
     String? nanosWire,
+    String? id,
+    String? withdrawNonce,
+    String? fs1,
+    int? anchor,
   }) async {
     posts.add({
       'kind': kind,
