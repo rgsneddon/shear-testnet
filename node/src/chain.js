@@ -38,6 +38,7 @@ import {
   medianTimePast,
 } from '../../crypto/asert.js';
 import { isHistoricalHeader } from '../../crypto/historical_prefix.js';
+import { regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import {
   verifyShareBatch,
   paidWorkKeys,
@@ -2012,8 +2013,12 @@ export function assessHeader(block, prev, opts = {}) {
       return finish({ ok: false, reason: 'genesis_ms' });
     }
     const heightNow = structuralH;
+    // After genesis, testnet and mainnet anchor on the genesis seed. Those
+    // books seal that seed in the genesis header, so this is the same bits.
+    // The regtest override is that seed only after the test factory seals it.
+    const regtestBits = regtestBitsOverride(magic);
     const quote = asertNextBits({
-      anchorBits: parentIsGenesis ? parent.bits : GENESIS_BITS_PACKED,
+      anchorBits: parentIsGenesis ? parent.bits : (regtestBits != null ? regtestBits : GENESIS_BITS_PACKED),
       anchorTimeMs: resolvedGenesisMs,
       anchorHeight: parentIsGenesis ? Number(prev.height || 1) : 1,
       blockTimeMs: ts,
@@ -2045,7 +2050,10 @@ export function assessHeader(block, prev, opts = {}) {
       return finish({ ok: false, reason: 'timestamp' });
     }
   } else {
-    if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
+    // Testnet and mainnet stay on the genesis seed. regtestBitsOverride is
+    // null for those books, and null until the test-only store factory seals.
+    const wantBits = regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
+    if (decoded.bits !== wantBits || !isPackedBits(decoded.bits)) {
       return finish({ ok: false, reason: 'bits' });
     }
     if (Number(decoded.baseFee) < 1) return finish({ ok: false, reason: 'base_fee' });
@@ -2908,7 +2916,8 @@ export const BOOK_SEAL_DOMAIN = 'bookseal2';
  *  persist and a successful verify write it. writeChainBin does not.
  *  Header and hash only. The body shortcut is book.snap, not this seal.
  */
-export function chainLoadSeal(blocks, key, magic = MAGIC_TESTNET) {
+/** Running book.seal hasher. chainLoadSeal folds every block into this. */
+export function chainLoadSealHash(key, magic = MAGIC_TESTNET) {
   const k = asBuf(key);
   if (k.length !== 32) throw new Error('seal_key');
   const rules = Buffer.from(String(consensusFingerprint(magic)), 'utf8');
@@ -2927,16 +2936,23 @@ export function chainLoadSeal(blocks, key, magic = MAGIC_TESTNET) {
   h.update(u32le(cpHash.length));
   h.update(cpHash);
   h.update(k);
-  for (const b of Array.isArray(blocks) ? blocks : []) {
-    const header = asBuf(b?.header);
-    const hash = asBuf(b?.hash);
-    const n = Buffer.alloc(8);
-    n.writeUInt32LE(header.length >>> 0, 0);
-    n.writeUInt32LE(hash.length >>> 0, 4);
-    h.update(n);
-    h.update(header);
-    h.update(hash);
-  }
+  return h;
+}
+
+export function chainLoadSealUpdate(h, block) {
+  const header = asBuf(block?.header);
+  const hash = asBuf(block?.hash);
+  const n = Buffer.alloc(8);
+  n.writeUInt32LE(header.length >>> 0, 0);
+  n.writeUInt32LE(hash.length >>> 0, 4);
+  h.update(n);
+  h.update(header);
+  h.update(hash);
+}
+
+export function chainLoadSeal(blocks, key, magic = MAGIC_TESTNET) {
+  const h = chainLoadSealHash(key, magic);
+  for (const b of Array.isArray(blocks) ? blocks : []) chainLoadSealUpdate(h, b);
   return h.digest('hex');
 }
 
@@ -3457,9 +3473,9 @@ export function retargetQuote(chain, candidateTimestamp) {
  *  The emergency ease window is not this return value. A fresh template
  *  issues the full target. `retargetQuote` carries the ease window.
  */
-export function retarget(chain, candidateTimestamp) {
+export function retarget(chain, candidateTimestamp, magic = undefined) {
   const quote = retargetQuote(chain, candidateTimestamp);
-  if (!quote.ok) return GENESIS_BITS_PACKED;
+  if (!quote.ok) return regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
   return quote.packed;
 }
 

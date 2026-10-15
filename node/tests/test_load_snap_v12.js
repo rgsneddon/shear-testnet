@@ -282,6 +282,7 @@ describe('v12 own-install snapshot', () => {
     sealAt(t0 + TARGET_BLOCK_INTERVAL_MS);
     const snap2 = fs.readFileSync(path.join(dir, 'book.snap'));
     const vault2 = fs.readFileSync(path.join(dir, 'reserve.json'));
+    const vaultSnap2 = fs.readFileSync(path.join(dir, 'vault.snap'));
     const key = bookSealKeyFor(dir);
     const decoded = decodeBookSnap(snap2, key);
     assert.ok(decoded);
@@ -294,6 +295,7 @@ describe('v12 own-install snapshot', () => {
     assert.equal(live.tip().height, 3);
     fs.writeFileSync(path.join(dir, 'book.snap'), snap2);
     fs.writeFileSync(path.join(dir, 'reserve.json'), vault2);
+    fs.writeFileSync(path.join(dir, 'vault.snap'), vaultSnap2);
     const loaded = createStore(dir);
     assert.equal(loaded.loadMode, 'suffix', loaded.loadMode);
     assert.equal(loaded.tip().height, 3);
@@ -328,6 +330,7 @@ describe('v12 own-install snapshot', () => {
     fs.copyFileSync(path.join(dir, 'chain.bin'), path.join(moved, 'chain.bin'));
     fs.copyFileSync(path.join(dir, 'book.seal'), path.join(moved, 'book.seal'));
     fs.copyFileSync(path.join(dir, 'book.snap'), path.join(moved, 'book.snap'));
+    fs.copyFileSync(path.join(dir, 'vault.snap'), path.join(moved, 'vault.snap'));
     fs.copyFileSync(path.join(dir, 'reserve.json'), path.join(moved, 'reserve.json'));
     fs.copyFileSync(bookSealKeyPath(dir), bookSealKeyPath(moved));
     const sameKey = createStore(moved);

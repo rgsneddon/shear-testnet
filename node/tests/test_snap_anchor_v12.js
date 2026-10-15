@@ -374,20 +374,24 @@ describe('v12 snap reload anchor rows', () => {
       assert.equal(halt, 0);
       let savedSnap = null;
       let savedVault = null;
+      let savedVaultSnap = null;
       // The saved tip is far enough behind that the depth-24 anchor is outside
       // its frontier window. A short suffix would still keep that row.
       const saveAt = tipOff - span - SPACING;
       const built = growTo(live, dest, tipOff, opening, (store, h) => {
         if (h === saveAt) {
+          store.flushBookSnap();
           savedSnap = fs.readFileSync(path.join(dir, 'book.snap'));
           savedVault = fs.readFileSync(path.join(dir, 'reserve.json'));
+          savedVaultSnap = fs.readFileSync(path.join(dir, 'vault.snap'));
         }
       });
       assert.equal(built.ok, true, built.reason || 'grow');
       assert.equal(live.tip().height, tipOff);
+      live.flushBookSnap();
       assert.ok(opening.note && opening.note.v > 1, 'opened pot');
       assert.equal(live.anchorView().roots, tipOff);
-      assert.ok(savedSnap && savedVault, 'suffix snap');
+      assert.ok(savedSnap && savedVault && savedVaultSnap, 'suffix snap');
 
       const offView = live.blocks.slice();
       const offEnds = windowQuantums(tipOff - 24 + 1);
@@ -415,6 +419,7 @@ describe('v12 snap reload anchor rows', () => {
       dirs.push(suffixDir);
       fs.writeFileSync(path.join(suffixDir, 'book.snap'), savedSnap);
       fs.writeFileSync(path.join(suffixDir, 'reserve.json'), savedVault);
+      fs.writeFileSync(path.join(suffixDir, 'vault.snap'), savedVaultSnap);
       const suffix = createStore(suffixDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
       assert.equal(suffix.loadMode, 'suffix', suffix.loadMode);
       assert.equal(suffix.tip().height, tipOff);
@@ -432,7 +437,7 @@ describe('v12 snap reload anchor rows', () => {
           const snapDir = cloneBook(dir);
           dirs.push(snapDir);
           const snap = createStore(snapDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
-          assert.equal(snap.loadMode, 'snap');
+          assert.equal(snap.loadMode, 'snap', snap.loadMode);
           const row = snap.anchorNote(anchor);
           const liveRow = live.anchorNote(anchor);
           assert.ok(row && liveRow, `anchor ${anchor} depth ${depth}`);

@@ -1,18 +1,19 @@
 # crates.io copies of these names are stale or yanked 2024 cuts.
 # The only allowed source is the vendored pin
-# crypto/native/vendor/monero-oxide-77788c3 (monero-oxide 77788c36).
-# Do not cargo-add them. The vendored tree is not a Shear dependency yet.
+# crypto/native/vendor/monero-oxide-77788c3 (monero-oxide 77788c36), reached
+# through the shear-fs1 path dependency of shear_admit. crypto/fs1_pin.test.js
+# checks that crypto/native/admit/Cargo.lock has no registry source for them.
+# Do not cargo-add them. monero-fcmp-plus-plus is never a dependency.
 
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
 deny = [
-  { name = "helioselene" },
-  { name = "generalized-bulletproofs" },
-  { name = "full-chain-membership-proofs" },
-  { name = "ec-divisors" },
-  { name = "generalized-bulletproofs-circuit-abstraction" },
-  { name = "generalized-bulletproofs-ec-gadgets" },
   { name = "monero-fcmp-plus-plus" },
   { name = "monero-fcmp-plus-plus-generators" },
 ]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

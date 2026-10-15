@@ -5117,7 +5117,7 @@ export function createPool({
       hashOwedNanos: supplyNumber(supply.supplyStatus, supply.hashOwedNanos),
       extraMintedNanos: supply.extraMintNanos,
       burnedNanos: supply.burnedNanos,
-      reserveMintedNanos: supply.reserveMintedNanos || 0,
+      reserveMintedNanos: supply.extraMintNanos == null ? null : supply.extraMintNanos,
       reserveVaultNanos: supply.vaultNanos || 0,
       accruingNanos: supply.accruingNanos || 0,
       height: tip?.height || 0,

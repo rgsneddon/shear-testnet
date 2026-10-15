@@ -1,0 +1,5 @@
+# iOS wallet staticlib. No node addon, no miner, no CI signing.
+#   cargo ios-staticlib
+# writes target/aarch64-apple-ios/release/libshear_admit.a
+[alias]
+ios-staticlib = "rustc --release --target aarch64-apple-ios --crate-type staticlib"

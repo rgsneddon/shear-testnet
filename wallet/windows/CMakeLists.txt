@@ -57,6 +57,19 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# In-process range prover. Loaded from beside the executable.
+set(SHEAR_ADMIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/admit")
+set(SHEAR_ADMIT_DLL "${SHEAR_ADMIT_DIR}/target/release/shear_admit.dll")
+add_custom_target(shear_admit_cdylib
+  COMMAND cargo build --release --manifest-path "${SHEAR_ADMIT_DIR}/Cargo.toml"
+  COMMAND python "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/stamp_admit_pin.py" "${SHEAR_ADMIT_DLL}"
+  BYPRODUCTS "${SHEAR_ADMIT_DLL}"
+  WORKING_DIRECTORY "${SHEAR_ADMIT_DIR}"
+  COMMENT "Building shear_admit.dll without admit-v3"
+  VERBATIM
+)
+add_dependencies(${BINARY_NAME} shear_admit_cdylib)
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
@@ -79,6 +92,9 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+
+install(FILES "${SHEAR_ADMIT_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 if(PLUGIN_BUNDLED_LIBRARIES)

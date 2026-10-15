@@ -7,6 +7,7 @@
 
 mod bpplus;
 mod fe25519;
+pub mod fs1;
 mod gadget;
 mod ipa;
 mod leaf;
@@ -17,21 +18,24 @@ mod tree;
 
 pub use bpplus::{prove_range, verify_range, RANGE_BITS};
 pub use leaf::{c_leaf_scalar, dest_leaf_fp, DST_LEAF};
-pub use prove::{admit_prove_v3, admit_verify_v3, MAX_PROOF, MAX_PROOF_V3};
+pub use prove::{admit_prove_v3, admit_verify_v3, max_fs1_blob, MAX_PROOF};
 pub use tree::{c_root, jroot, jroot_point, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use zeroize::Zeroizing;
 
 const OK: i32 = 1;
 const BAD: i32 = 0;
 
-fn b32(ptr: *const u8) -> Option<[u8; 32]> {
+/// Copy 32 bytes into [out]. The secret never sits in a returned temporary:
+/// [out] is wiped when the caller's [Zeroizing] drops.
+fn fill_secret(ptr: *const u8, out: &mut Zeroizing<[u8; 32]>) -> bool {
     if ptr.is_null() {
-        return None;
+        return false;
     }
-    let mut o = [0u8; 32];
-    unsafe { std::ptr::copy_nonoverlapping(ptr, o.as_mut_ptr(), 32) };
-    Some(o)
+    let dest: &mut [u8; 32] = &mut *out;
+    unsafe { std::ptr::copy_nonoverlapping(ptr, dest.as_mut_ptr(), 32) };
+    true
 }
 
 fn slice<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
@@ -71,14 +75,14 @@ pub extern "C" fn shear_admit_arity() -> u32 {
 #[no_mangle]
 pub extern "C" fn shear_admit_leaf(p: *const u8, out: *mut u8) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
-        let p = match b32(p) {
-            Some(x) => x,
-            None => return BAD,
-        };
+        let mut p_b = Zeroizing::new([0u8; 32]);
+        if !fill_secret(p, &mut p_b) {
+            return BAD;
+        }
         if out.is_null() {
             return BAD;
         }
-        let l = dest_leaf_fp(&p);
+        let l = dest_leaf_fp(&p_b);
         unsafe { std::ptr::copy_nonoverlapping(l.as_ptr(), out, 32) };
         OK
     }))
@@ -193,7 +197,9 @@ pub extern "C" fn shear_admit_frontier_append(
     .unwrap_or(BAD)
 }
 
-/// v3 prove. `ctx` is 64 bytes. Returns proof length, or 0. `out` holds MAX_PROOF_V3.
+/// v3 prove. `ctx` is 64 bytes. Returns proof length, or 0. `out` holds the legacy v3 wire cap.
+/// Wallet builds leave `admit-v3` off, so this symbol is not in the cdylib.
+#[cfg(feature = "admit-v3")]
 #[no_mangle]
 pub extern "C" fn shear_admit_prove_v3(
     x: *const u8,
@@ -212,21 +218,12 @@ pub extern "C" fn shear_admit_prove_v3(
 ) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         let n = n as usize;
-        let x = match b32(x) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let p = match b32(p) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let c = match b32(c) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let t = match b32(t) {
-            Some(v) => v,
-            None => return BAD,
+        let mut x_b = Zeroizing::new([0u8; 32]);
+        let mut p_b = Zeroizing::new([0u8; 32]);
+        let mut c_b = Zeroizing::new([0u8; 32]);
+        let mut t_b = Zeroizing::new([0u8; 32]);
+        if !fill_secret(x, &mut x_b) || !fill_secret(p, &mut p_b) || !fill_secret(c, &mut c_b) || !fill_secret(t, &mut t_b) {
+            return BAD;
         };
         let ctx_b = match slice(ctx, ctx_len as usize) {
             Some(v) => v,
@@ -243,9 +240,9 @@ pub extern "C" fn shear_admit_prove_v3(
         if c_tilde_out.is_null() || proof_out.is_null() || proof_len.is_null() {
             return BAD;
         }
-        match admit_prove_v3(&x, &p, &c, &t, index as usize, dest, cs, n, ctx_b) {
+        match admit_prove_v3(&x_b, &p_b, &c_b, &t_b, index as usize, dest, cs, n, ctx_b) {
             Some((ct, proof)) => {
-                if proof.len() > MAX_PROOF_V3 {
+                if proof.len() > prove::v3_legacy_cap() {
                     return BAD;
                 }
                 unsafe {
@@ -261,6 +258,8 @@ pub extern "C" fn shear_admit_prove_v3(
     .unwrap_or(BAD)
 }
 
+/// Wallet builds leave `admit-v3` off, so this symbol is not in the cdylib.
+#[cfg(feature = "admit-v3")]
 #[no_mangle]
 pub extern "C" fn shear_admit_verify_v3(
     proof: *const u8,
@@ -276,17 +275,11 @@ pub extern "C" fn shear_admit_verify_v3(
             Some(v) => v,
             None => return BAD,
         };
-        let jr = match b32(jroot_bytes) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let ct = match b32(c_tilde) {
-            Some(v) => v,
-            None => return BAD,
-        };
-        let tag = match b32(spend_tag) {
-            Some(v) => v,
-            None => return BAD,
+        let mut jr = Zeroizing::new([0u8; 32]);
+        let mut ct = Zeroizing::new([0u8; 32]);
+        let mut tag = Zeroizing::new([0u8; 32]);
+        if !fill_secret(jroot_bytes, &mut jr) || !fill_secret(c_tilde, &mut ct) || !fill_secret(spend_tag, &mut tag) {
+            return BAD;
         };
         let ctx_b = match slice(ctx, ctx_len as usize) {
             Some(v) => v,
@@ -302,17 +295,26 @@ pub extern "C" fn shear_admit_verify_v3(
 }
 
 #[no_mangle]
-pub extern "C" fn shear_range_prove(v: u64, r: *const u8, out: *mut u8, out_len: *mut u32) -> i32 {
+pub extern "C" fn shear_range_prove(
+    v: u64,
+    r: *const u8,
+    out: *mut u8,
+    out_cap: u32,
+    out_len: *mut u32,
+) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
-        let r = match b32(r) {
-            Some(x) => x,
-            None => return BAD,
-        };
+        let mut r_b = Zeroizing::new([0u8; 32]);
+        if !fill_secret(r, &mut r_b) {
+            return BAD;
+        }
         if out.is_null() || out_len.is_null() {
             return BAD;
         }
-        match prove_range(v, &r) {
+        match prove_range(v, &r_b) {
             Some(p) => {
+                if p.len() > out_cap as usize {
+                    return BAD;
+                }
                 unsafe {
                     std::ptr::copy_nonoverlapping(p.as_ptr(), out, p.len());
                     *out_len = p.len() as u32;
@@ -328,15 +330,15 @@ pub extern "C" fn shear_range_prove(v: u64, r: *const u8, out: *mut u8, out_len:
 #[no_mangle]
 pub extern "C" fn shear_range_verify(c: *const u8, proof: *const u8, proof_len: u32) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
-        let c = match b32(c) {
-            Some(x) => x,
-            None => return BAD,
+        let mut c_b = Zeroizing::new([0u8; 32]);
+        if !fill_secret(c, &mut c_b) {
+            return BAD;
         };
         let p = match slice(proof, proof_len as usize) {
             Some(x) => x,
             None => return BAD,
         };
-        if verify_range(&c, p) {
+        if verify_range(&c_b, p) {
             OK
         } else {
             BAD
@@ -371,6 +373,51 @@ mod tests {
         let mut u = [0u8; 64];
         u.copy_from_slice(&h);
         RistrettoPoint::from_uniform_bytes(&u)
+    }
+
+    #[test]
+    fn secret32_drop_zeroizes() {
+        use zeroize::Zeroize;
+        let mut slot = [0x5au8; 32];
+        let mut held = Zeroizing::new([0u8; 32]);
+        assert!(fill_secret(slot.as_ptr(), &mut held));
+        assert_eq!(held[0], 0x5a);
+        held.zeroize();
+        assert_eq!(*held, [0u8; 32]);
+        drop(held);
+
+        struct WipeOnDrop<'a>(&'a mut [u8; 32]);
+        impl Drop for WipeOnDrop<'_> {
+            fn drop(&mut self) {
+                use zeroize::Zeroize;
+                self.0.zeroize();
+            }
+        }
+        assert_eq!(slot[0], 0x5a);
+        {
+            let _guard = WipeOnDrop(&mut slot);
+        }
+        assert_eq!(slot, [0u8; 32]);
+    }
+
+    #[test]
+    fn range_prove_respects_out_cap() {
+        let r = [7u8; 32];
+        let mut tiny = [0u8; 32];
+        let mut olen = 99u32;
+        assert_eq!(
+            shear_range_prove(1, r.as_ptr(), tiny.as_mut_ptr(), 32, &mut olen),
+            BAD
+        );
+        assert_eq!(olen, 99, "out_len is written only on OK");
+        let mut big = vec![0u8; 65536];
+        olen = 0;
+        assert_eq!(
+            shear_range_prove(1, r.as_ptr(), big.as_mut_ptr(), big.len() as u32, &mut olen),
+            OK
+        );
+        assert!(olen > 32 && (olen as usize) <= big.len());
+        assert_eq!(big[0], 2);
     }
 
     #[test]
@@ -522,7 +569,7 @@ mod tests {
         )
         .expect("v3");
         assert_eq!(proof[0], 3);
-        assert!(proof.len() <= MAX_PROOF_V3);
+        assert!(proof.len() <= prove::v3_legacy_cap());
         let tag = proof_spend_tag(&proof).expect("v3 tag");
         assert!(admit_verify_v3(&proof, &jr, &ct, &tag, &ctx));
         let kids = leaf_dest_children(&dest_blob, n, idx);

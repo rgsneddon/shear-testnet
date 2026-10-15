@@ -408,6 +408,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `ADMIT_ARITY=${ADMIT_ARITY_ID}`,
     'ADMIT_K=1',
     `ADMIT_LEAF=${ADMIT_LEAF_ID}`,
+    'ADMIT_SPEND=fs1-f1-agg-sal-v1',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
