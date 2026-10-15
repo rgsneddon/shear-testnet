@@ -7763,6 +7763,10 @@ void main() {
     expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
     expect(find.byKey(const Key('claim-hashes')), findsNothing);
     await tester.ensureVisible(find.byKey(const Key('reserve-withdraw')));
+    final enabled = tester.widget<FilledButton>(find.byKey(const Key('reserve-withdraw')));
+    expect(enabled.onPressed, isNotNull);
+    expect(find.text('Withdraw to Continuum'), findsOneWidget);
+    expect(find.text(kReserveUnlocksAtEpochEnd), findsNothing);
     await tester.tap(find.byKey(const Key('reserve-withdraw')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-withdraw-sign')), findsOneWidget);
@@ -7770,6 +7774,144 @@ void main() {
     await tester.tap(find.byKey(const Key('reserve-withdraw-sign-accept')));
     await tester.pump();
     expect(find.byKey(const Key('reserve-withdraw-sign')), findsNothing);
+    await _end018(tester, opened.ledger);
+  });
+
+  testWidgets('withdraw stays disabled with unlocks at epoch end during this deposit epoch', (tester) async {
+    _tallContinuum(tester);
+    final opened = await _open018(tester);
+    final ident = opened.session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final vault = ShearReserve();
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: now), isNull);
+    expect(vault.maturedPrincipalNanos(dest, now), 0);
+    await tester.pumpWidget(ShearWalletApp(
+      session: opened.session,
+      ledger: opened.ledger,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-withdraw')));
+    final locked = tester.widget<FilledButton>(find.byKey(const Key('reserve-withdraw')));
+    expect(locked.onPressed, isNull);
+    expect(find.text(kReserveUnlocksAtEpochEnd), findsOneWidget);
+    expect(find.text('Withdraw to Continuum'), findsNothing);
+    await _end018(tester, opened.ledger);
+  });
+
+  test('a later top-up stays locked after the first deposit unlocks', () {
+    final vault = ShearReserve();
+    final dest = kPoolFeeDest;
+    const t0 = 1700000000000;
+    expect(vault.deposit(dest: dest, she: kPiShe, nowMs: t0), isNull);
+    final first = vault.portal(dest).deposits.single.nanos;
+    expect(vault.maturedPrincipalNanos(dest, t0), 0);
+    expect(vault.maturedPrincipalNanos(dest, t0 + kReserveEpochMs - 1), 0);
+    vault.bonusEnacted = true;
+    final later = t0 + kReserveEpochMs + 1000;
+    expect(vault.deposit(dest: dest, she: 1, nowMs: later), isNull);
+    final second = vault.portal(dest).deposits.last.nanos;
+    expect(second, kUnitsPerShe);
+    final mid = later + 1000;
+    expect(vault.maturedPrincipalNanos(dest, mid), first);
+    expect(vault.portal(dest).nanos, first + second);
+    final out = vault.withdraw(dest: dest, nowMs: mid);
+    expect(out, isNotNull);
+    expect(out!['principal'], first);
+    expect(out['payout'], first);
+    expect(vault.portal(dest).nanos, second);
+    expect(vault.portal(dest).deposits, hasLength(1));
+    expect(vault.maturedPrincipalNanos(dest, mid), 0);
+    expect(vault.depositUnlockAtMs(vault.portal(dest).deposits.single), later + kReserveEpochMs);
+  });
+
+  testWidgets('claim fee picker posts the chosen exact fee', (tester) async {
+    _tallContinuum(tester);
+    final opened = await _open018(tester);
+    final ident = opened.session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final home = opened.ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
+    opened.ledger.confirmRound(address: home, pot: 10, height: 20);
+    opened.ledger.settleTo(30);
+    const nullifier = '1111111111111111111111111111111111111111111111111111111111111111';
+    final to = opened.ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
+    final mempool = <Map<String, dynamic>>[
+      {'fee': 1000, 'weight': 25},
+      {'fee': 5000, 'weight': 25},
+      {'fee': 20000, 'weight': 25},
+    ];
+    final quote = rewardClaimFeePresets(
+      body: {
+        'kind': 'reward-claim',
+        'programId': kReserveProgram,
+        'mint': true,
+        'to': to,
+        'nanos': 42,
+        'nullifier': nullifier,
+        'proof': const <dynamic>[],
+        'vin': const <dynamic>[],
+        'vout': [
+          {'kind': 'reward-claim'},
+        ],
+      },
+      mempool: mempool,
+    );
+    final presets = (quote['presets'] as List).cast<Map<String, dynamic>>();
+    expect(presets[0]['she'], isNot(presets[2]['she']));
+    opened.live.mempoolPending = [
+      {'id': 'a', 'fee': 1000, 'weight': 25, 'kind': 'send'},
+      {'id': 'b', 'fee': 5000, 'weight': 25, 'kind': 'send'},
+      {'id': 'c', 'fee': 20000, 'weight': 25, 'kind': 'send'},
+    ];
+    opened.live.claims = [
+      {
+        'nanos': 42,
+        'nullifier': nullifier,
+        'proof': <dynamic>[],
+        'vout': {'kind': 'reward-claim'},
+      },
+    ];
+    final vault = ShearReserve();
+    vault.portal(dest).claimableRewards = 42;
+    await tester.pumpWidget(ShearWalletApp(
+      session: opened.session,
+      ledger: opened.ledger,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await _waitKey(tester, const Key('claim-fee-low'));
+    expect(find.text('Low  ${presets[0]['she']} SHE'), findsOneWidget);
+    expect(find.text('Medium  ${presets[1]['she']} SHE'), findsOneWidget);
+    expect(find.text('High  ${presets[2]['she']} SHE'), findsOneWidget);
+    expect(find.textContaining('100% of the fee goes to the miner'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('claim-fee-high')));
+    await tester.tap(find.byKey(const Key('claim-fee-high')));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-claim')));
+    await tester.tap(find.byKey(const Key('reserve-claim')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-claim-confirm')), findsOneWidget);
+    expect(find.textContaining('${presets[2]['she']} SHE'), findsWidgets);
+    await tester.tap(find.byKey(const Key('reserve-claim-accept')));
+    await tester.pump();
+    await _waitUntil(tester, () => opened.live.postedClaims.isNotEmpty, 'claim not posted');
+    expect(opened.live.postedClaims, hasLength(1));
+    expect(opened.live.postedClaims.single['kind'], 'reward-claim');
+    expect(opened.live.postedClaims.single['programId'], kReserveProgram);
+    expect(opened.live.postedClaims.single['nullifier'], nullifier);
+    expect(opened.live.postedClaims.single['fee'], presets[2]['fee']);
+    expect((opened.live.postedClaims.single['vout'] as List).first['kind'], 'reward-claim');
     await _end018(tester, opened.ledger);
   });
 
@@ -9482,6 +9624,9 @@ class _PoolLive {
   final Map<String, double> destBalances = {};
   Map<String, dynamic>? reservePortal;
   Map<String, dynamic>? pendingPull;
+  List<Map<String, dynamic>> mempoolPending = [];
+  List<Map<String, dynamic>> claims = [];
+  final List<Map<String, dynamic>> postedClaims = [];
   final List<Map<String, dynamic>> postedWithdraws = [];
   final Map<int, String> headerAtHeight = {};
 
@@ -9627,6 +9772,18 @@ Future<HttpServer> _fakePool({
       req.response.write(jsonEncode({'ok': true, 'notes': state.notes}));
     } else if (req.uri.path == '/api/wallet/register') {
       req.response.write(jsonEncode({'ok': true}));
+    } else if (req.uri.path == '/api/mempool' || req.uri.path == '/api/explorer/mempool') {
+      req.response.write(jsonEncode({
+        'ok': true,
+        'pending': state.mempoolPending,
+      }));
+    } else if (req.uri.path == '/api/mempoolPressure' || req.uri.path == '/api/mempoolpressure') {
+      req.response.write(jsonEncode({'depth': state.mempoolPending.length}));
+    } else if (req.uri.path == '/api/vault/claims') {
+      req.response.write(jsonEncode({
+        'ok': true,
+        'claims': state.claims,
+      }));
     } else if (req.uri.path == '/api/vault/reserve') {
       req.response.write(jsonEncode(state.reservePortal ?? {'ok': true, 'public': false, 'staked': 0, 'idle': 0, 'accrued': 0}));
     } else if (req.uri.path == '/api/vault/join' || req.uri.path == '/api/join/claim') {
@@ -9662,7 +9819,18 @@ Future<HttpServer> _fakePool({
       final amount = (body['amount'] as num?)?.toDouble() ?? 0;
       final kind = body['kind']?.toString() ?? 'send';
       final fromKey = payoutDest(from) ?? from;
-      if (kind == 'vote') {
+      if (kind == 'reward-claim') {
+        state.postedClaims.add(Map<String, dynamic>.from(body));
+        req.response.write(jsonEncode({
+          'ok': true,
+          'tx': {
+            'id': 'claim-${state.postedClaims.length}',
+            'kind': 'reward-claim',
+            'fee': body['fee'],
+            'confirmed': false,
+          },
+        }));
+      } else if (kind == 'vote') {
         final choice = body['choice']?.toString() ?? '';
         final portal = Map<String, dynamic>.from(state.reservePortal ?? {'ok': true, 'public': false});
         final votes = Map<String, dynamic>.from(

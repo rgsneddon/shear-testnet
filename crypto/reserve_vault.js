@@ -10,6 +10,7 @@ import {
   MAGIC_TESTNET,
 } from './asert.js';
 import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress } from './address.js';
+import { vaultDest } from './flow_sheet.js';
 import { attachAdmitPub } from './admit.js';
 import { fs1LeafFor } from './fs1_leaf.js';
 import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos, hashToScalar, scalarBytes } from './note.js';
@@ -304,6 +305,84 @@ export function rewardClaimProof(state, nullifierHex) {
   if (index < 0) return null;
   const leaves = rows.map((item) => rewardLeaf(item.nullifier, item.nanos));
   return merkleProof(leaves, index);
+}
+
+/** Unclaimed archived reward nanos for one portal. Minted nullifiers are spent. */
+export function portalClaimableNanos(state, destOrId) {
+  const id = portalKey(destOrId);
+  if (!id || !state?.rewardBook) return 0;
+  const minted = state.mintedIds || {};
+  let sum = 0;
+  for (const [nullifier, row] of Object.entries(state.rewardBook)) {
+    if (!row || String(row.portalId || '') !== id) continue;
+    if (minted[nullifier]) continue;
+    const n = Math.floor(Number(row.nanos) || 0);
+    if (n > 0 && Number.isSafeInteger(sum + n)) sum += n;
+  }
+  return sum;
+}
+
+function jsonSafeClaim(value) {
+  if (value == null) return value;
+  if (typeof value === 'bigint') return value.toString();
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return { type: 'Buffer', data: Array.from(Buffer.from(value)) };
+  }
+  if (Array.isArray(value)) return value.map(jsonSafeClaim);
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (k === 'portalId' || k === 'payoutPortalId' || k === 'lockDest' || k === 'dest') continue;
+      out[k] = jsonSafeClaim(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Unclaimed reward rows for the vault opened by this view key.
+ * The response is nanos, nullifier, the merkle proof, and the sealed
+ * reward-claim output paid to `to`. It does not name the lock dest,
+ * the portal id, or any other user's row.
+ * `to` is the caller's payout dest. Sealing the note to the lock dest
+ * would tie the claim back to the lock, so that dest is refused.
+ */
+export function claimRowsForView(state, { viewKey, address, to } = {}) {
+  const rest = String(address || '').trim();
+  const key = String(viewKey || '');
+  if (!key || !isShearAddress(rest)) return { ok: false, reason: 'view' };
+  const lockDest = vaultDest(rest, { viewKey: key });
+  if (!lockDest) return { ok: false, reason: 'view' };
+  const pay = String(to || '').trim();
+  if (!isDestAddress(pay) || isShearAddress(pay)) return { ok: false, reason: 'bad_dest' };
+  if (pay === lockDest) return { ok: false, reason: 'lock_dest' };
+  const portalId = portalIdFromDest(lockDest);
+  const minted = state?.mintedIds || {};
+  const claims = [];
+  for (const [nullifier, row] of Object.entries(state?.rewardBook || {})) {
+    if (!row || String(row.portalId || '') !== portalId) continue;
+    const id = String(nullifier || '').toLowerCase();
+    if (minted[id]) continue;
+    const proof = rewardClaimProof(state, id);
+    if (!proof) continue;
+    const tx = rewardClaimTx({
+      to: pay,
+      nanos: row.nanos,
+      nullifier: id,
+      proof,
+    });
+    const vout = tx?.vout?.[0];
+    if (!vout || String(vout.kind || '') !== KIND_REWARD_CLAIM) continue;
+    claims.push({
+      nanos: row.nanos,
+      nullifier: id,
+      proof: jsonSafeClaim(proof),
+      vout: jsonSafeClaim(vout),
+    });
+  }
+  claims.sort((a, b) => (a.nullifier < b.nullifier ? -1 : a.nullifier > b.nullifier ? 1 : 0));
+  return { ok: true, claims };
 }
 
 /** Packed EVM proof. Side 0 is a right sibling, side 1 is a left sibling. */
@@ -1372,6 +1451,7 @@ export function portalRewards(state, dest, nowMs) {
   const p = portalOf(state, dest);
   const bps = Number(state.epochBps ?? GENESIS_BPS);
   const elapsed = elapsedMs(state, nowMs);
+  const claimable = portalClaimableNanos(state, dest);
   return {
     accrued: accruedNanos(p.staked, bps, elapsed, state.magic),
     projected: reserveInterestNanos(p.staked, bps),
@@ -1380,6 +1460,8 @@ export function portalRewards(state, dest, nowMs) {
     oracleBps: bps,
     epochBps: bps,
     elapsedMs: elapsed,
+    claimable,
+    claimableRewards: claimable,
   };
 }
 

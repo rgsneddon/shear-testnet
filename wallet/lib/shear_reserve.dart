@@ -53,6 +53,9 @@ int reserveDayOfEpoch({
 String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
 
+/// Shown on the withdraw control while this deposit's own lock epoch is open.
+const kReserveUnlocksAtEpochEnd = 'unlocks at epoch end';
+
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
     'Return principal and the Reserve reward for this $days-day epoch to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
 
@@ -84,15 +87,16 @@ VortexSums reconstructVortexSums(ShearReserve reserve, String dest, {int flowNan
 }
 
 /// Payout a withdraw would post, without mutating the reserve.
+/// Principal is only the deposits whose own lock epoch has ended.
 int reserveWithdrawPayoutNanos(ShearReserve reserve, String dest, int nowMs) {
-  final epochOver = reserve.epochIsOver(nowMs);
   final p = reserve.portal(dest);
-  if (!epochOver && p.claimableRewards <= 0) return 0;
-  final principal = (epochOver || reserve.bonusEnacted) ? p.nanos : 0;
-  final interest = epochOver
+  final principal = reserve.maturedPrincipalNanos(dest, nowMs);
+  if (principal <= 0) return 0;
+  final epochOver = reserve.epochIsOver(nowMs);
+  final full = p.nanos > 0 && principal == p.nanos;
+  final interest = epochOver && full
       ? (p.claimableRewards > 0 ? p.claimableRewards : reserveInterestNanos(p.staked, reserve.epochBps))
-      : p.claimableRewards;
-  if (principal <= 0 && interest <= 0) return 0;
+      : 0;
   if (!extraMintAllowed(kReserveProgram)) return 0;
   return principal + interest;
 }
@@ -281,6 +285,32 @@ class ShearReserve {
 
   bool epochIsOver(int nowMs) =>
       epochStartMs != 0 && nowMs >= epochStartMs + kReserveEpochMs;
+
+  /// End of the lock epoch that contains [d]. Each top-up uses its own epoch.
+  int depositUnlockAtMs(ReserveDepositRow d) {
+    for (final e in uniqueEpochs) {
+      if (d.atMs >= e.startMs && d.atMs < e.endMs) return e.endMs;
+    }
+    if (epochStartMs > 0 && d.atMs < epochStartMs + kReserveEpochMs) {
+      return epochStartMs + kReserveEpochMs;
+    }
+    return d.atMs + kReserveEpochMs;
+  }
+
+  /// Principal that can be withdrawn now. A deposit with no row list is the
+  /// whole balance once the open epoch has ended. With rows, only the
+  /// top-ups whose own epoch has ended count. A later top-up stays put.
+  int maturedPrincipalNanos(String dest, int nowMs) {
+    final p = portal(dest);
+    if (p.deposits.isEmpty) return epochIsOver(nowMs) ? p.nanos : 0;
+    var sum = 0;
+    for (final d in p.deposits) {
+      if (nowMs >= depositUnlockAtMs(d)) sum += d.nanos;
+    }
+    if (sum < 0) return 0;
+    if (sum > p.nanos) return p.nanos;
+    return sum;
+  }
 
   void _recordEpoch(int startMs) {
     if (currentEpoch < 1) currentEpoch = 1;
@@ -557,9 +587,9 @@ class ShearReserve {
   }
 
   Map<String, int>? withdraw({required String dest, required int nowMs, String? payout}) {
+    final matured = maturedPrincipalNanos(dest, nowMs);
     final epochOver = epochStartMs != 0 && nowMs >= epochStartMs + kReserveEpochMs;
-    final p0 = portal(dest);
-    if (!epochOver && p0.claimableRewards <= 0) return null;
+    if (matured <= 0) return null;
     if (epochOver && !bonusEnacted) {
       final up = votesIncrease, down = votesDecrease, hold = votesHold;
       final m = [up, down, hold].reduce((a, b) => a > b ? a : b);
@@ -581,34 +611,45 @@ class ShearReserve {
     final p = portal(dest);
     if (p.payout != null && payout != null && payout != p.payout) return null;
     final claimable = p.claimableRewards;
-    var staked = 0;
-    var idle = 0;
-    var principal = 0;
-    if (epochOver || bonusEnacted) {
-      staked = p.staked;
-      idle = p.idle;
-      principal = staked + idle;
-    }
-    final interest = epochOver
-        ? (claimable > 0 ? claimable : reserveInterestNanos(staked, epochBps))
-        : claimable;
+    var principal = matured;
+    if (principal > p.nanos) principal = p.nanos;
+    final full = p.nanos > 0 && principal == p.nanos;
+    final staked = principal > p.staked ? p.staked : principal;
+    final idle = principal - staked > p.idle ? p.idle : principal - staked;
+    final interest = epochOver && full
+        ? (claimable > 0 ? claimable : reserveInterestNanos(p.staked, epochBps))
+        : 0;
     if (principal <= 0 && interest <= 0) return null;
     if (!extraMintAllowed(kReserveProgram)) return null;
     if (p.payout == null && payout != null && isDestAddress(payout) && !isShearAddress(payout)) {
       p.payout = payout;
     }
-    if (principal > 0) totalLockedNanos -= principal;
     if (principal > 0) {
-      if (p.vote == kVoteIncrease) votesIncrease--;
-      if (p.vote == kVoteDecrease) votesDecrease--;
-      if (p.vote == kVoteHold) votesHold--;
-      p.staked = 0;
-      p.idle = 0;
-      p.joined = false;
-      p.vote = null;
-      p.payout = null;
+      totalLockedNanos -= principal;
+      if (totalLockedNanos < 0) totalLockedNanos = 0;
+      p.staked -= staked;
+      p.idle -= idle;
+      if (p.deposits.isNotEmpty) {
+        p.deposits.removeWhere((d) => nowMs >= depositUnlockAtMs(d));
+      }
+      final stillVoter = p.nanos >= kPiSheNanos;
+      if (!stillVoter) {
+        if (p.vote == kVoteIncrease) votesIncrease--;
+        if (p.vote == kVoteDecrease) votesDecrease--;
+        if (p.vote == kVoteHold) votesHold--;
+      }
+      if (p.nanos <= 0) {
+        p.staked = 0;
+        p.idle = 0;
+        p.joined = false;
+        p.vote = null;
+        p.payout = null;
+      } else if (!stillVoter) {
+        p.joined = false;
+        p.vote = null;
+      }
     }
-    p.claimableRewards = 0;
+    if (full) p.claimableRewards = 0;
     return {
       'principal': principal,
       'staked': staked,

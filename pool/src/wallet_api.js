@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums, claimRowsForView } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1318,7 +1318,20 @@ function sealedSendOnly(body, { queueSend }) {
  * carries: required, at least the weight levy, and at most the levy cap.
  * The mempool orders it by fee rate. The whole fee is paid to miners.
  */
-function queuedRewardClaim(body, { queueSend }) {
+function claimNullifierTaken(store, nullifier) {
+  const id = String(nullifier || '').toLowerCase();
+  if (!id) return false;
+  const minted = store?.reserveVault?.mintedIds;
+  if (minted && minted[id]) return true;
+  const mem = Array.isArray(store?.mempool) ? store.mempool : [];
+  return mem.some((tx) => {
+    if (!tx || tx.coinbase) return false;
+    const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+    return kind === 'reward-claim' && String(tx.nullifier || '').toLowerCase() === id;
+  });
+}
+
+function queuedRewardClaim(body, { queueSend, store }) {
   if (String(body.programId || '') !== RESERVE_PROGRAM) {
     return { status: 400, json: { ok: false, reason: 'bad_kind' } };
   }
@@ -1332,6 +1345,9 @@ function queuedRewardClaim(body, { queueSend }) {
   const vout = Array.isArray(body.vout) ? body.vout.filter((o) => o && typeof o === 'object') : [];
   if (!vout.length || String(vout[0].kind || '') !== 'reward-claim') {
     return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  }
+  if (claimNullifierTaken(store, nullifier)) {
+    return { status: 400, json: { ok: false, reason: 'double_mint' } };
   }
   const fee = parseIntegerNanos(body.fee);
   if (fee == null) return { status: 400, json: { ok: false, reason: 'bad_send' } };
@@ -1601,7 +1617,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return sealedSendOnly(body, { queueSend });
     }
     if (String(body.kind || '') === 'reward-claim') {
-      return queuedRewardClaim(body, { queueSend });
+      return queuedRewardClaim(body, { queueSend, store });
     }
     const from = isDestAddress(String(body.from || '')) ? String(body.from).trim() : '';
     const rawTo = String(body.to || '').trim();
@@ -1798,6 +1814,16 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         log: submitLine,
       },
     };
+  }
+  if (path === '/api/vault/claims' && (verb === 'POST' || verb === 'GET')) {
+    const viewKey = body.viewKey || url.searchParams.get('viewKey') || '';
+    const address = body.address || body.rest || url.searchParams.get('address') || url.searchParams.get('rest') || '';
+    const to = body.to || url.searchParams.get('to') || '';
+    const vault = store?.reserveVault;
+    if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
+    const got = claimRowsForView(vault, { viewKey, address, to });
+    if (!got.ok) return { status: 400, json: { ok: false, reason: got.reason } };
+    return { status: 200, json: { ok: true, claims: got.claims } };
   }
   if (path === '/api/vault/reserve' && verb === 'GET') {
     const dest = url.searchParams.get('dest') || '';

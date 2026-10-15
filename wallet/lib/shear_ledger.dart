@@ -9297,6 +9297,47 @@ class ShearPoolClient {
   /// Per-portal Reserve stake/idle/accrued. Not a public vortice.
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
+
+  /// Pending mempool rows. Quotes read `pending[].fee` and `pending[].weight`.
+  Future<Map<String, dynamic>> mempool() => _get('/api/mempool');
+
+  /// This view key's unclaimed reward rows. Other portals are not in the list.
+  Future<Map<String, dynamic>> vaultClaims({
+    required String viewKey,
+    required String address,
+    required String to,
+  }) =>
+      _post('/api/vault/claims', {
+        'viewKey': viewKey,
+        'address': address,
+        'to': to,
+      });
+
+  /// Post one reward-claim. [preset] is `low`, `medium`, or `high`.
+  Future<Map<String, dynamic>> claimReward({
+    required String to,
+    required Object nanos,
+    required String nullifier,
+    required List<dynamic> proof,
+    required List<dynamic> vout,
+    int? fee,
+    String? id,
+    String? preset,
+    List<Map<String, dynamic>> mempool = const [],
+  }) {
+    final built = rewardClaimSendBody(
+      to: to,
+      nanos: nanos,
+      nullifier: nullifier,
+      proof: proof,
+      vout: vout,
+      fee: fee,
+      id: id,
+      preset: preset,
+      mempool: mempool,
+    );
+    return _post('/api/wallet/send', Map<String, dynamic>.from(built['tx'] as Map));
+  }
 }
 
 /// Tip lines the Windows binary prints for `--print-tip`.
@@ -9432,8 +9473,39 @@ String exactSheFromNanos(int nanos) {
   return '$whole.$digits';
 }
 
+/// Pending rows from GET /api/mempool. A stated positive `weight` is the quote weight.
+List<Map<String, dynamic>> mempoolQuoteRows(Map<String, dynamic> json) {
+  final pending = json['pending'];
+  if (pending is! List) return const [];
+  final rows = <Map<String, dynamic>>[];
+  for (final item in pending) {
+    if (item is! Map) continue;
+    final feeRaw = item['fee'];
+    final weightRaw = item['weight'];
+    final fee = feeRaw is int ? feeRaw : (feeRaw is num ? feeRaw.toInt() : 0);
+    final weight = weightRaw is int ? weightRaw : (weightRaw is num ? weightRaw.toInt() : 0);
+    if (fee <= 0) continue;
+    rows.add({
+      'fee': fee,
+      if (weight > 0) 'weight': weight,
+      if (item['coinbase'] == true) 'coinbase': true,
+      if (item['vin'] is List) 'vin': item['vin'],
+      if (item['vout'] is List) 'vout': item['vout'],
+      if (item['kind'] != null) 'kind': item['kind'],
+    });
+  }
+  return rows;
+}
+
 /// Same verify-weight as `txVerifyWeight` in `crypto/block_budget.js`.
+/// A positive integer `weight` (the mempool lattice field) wins over vin/vout.
 int _quoteVerifyWeight(Map<String, dynamic> tx) {
+  final stated = tx['weight'];
+  if (stated is int && stated > 0) return stated;
+  if (stated is num) {
+    final n = stated.toInt();
+    if (n > 0 && stated == n) return n;
+  }
   if (tx['coinbase'] == true) return 0;
   final vin = tx['vin'];
   final vout = tx['vout'];
@@ -9588,7 +9660,6 @@ Map<String, dynamic> rewardClaimFeePresets({
 /// Each preset's `she` is the exact cost. [fee] is the custom bid.
 /// [preset] `low`, `medium`, or `high` selects that quote for the tx.
 /// A legal custom bid wins over [preset]. The weight floor is the default.
-/// Continuum does not render these buttons yet.
 Map<String, dynamic> rewardClaimSendBody({
   required String to,
   required Object nanos,
