@@ -258,12 +258,19 @@ class FontInstallTests(unittest.TestCase):
         ofl = root / "fonts" / "greatvibes" / "OFL.txt"
         self.assertTrue(font.is_file())
         self.assertIn("SIL OPEN FONT LICENSE Version 1.1", ofl.read_text(encoding="utf-8"))
-        added = subprocess.run(
-            ["git", "add", "-n", "fonts/greatvibes/GreatVibes-Regular.ttf"],
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "fonts/greatvibes/GreatVibes-Regular.ttf"],
             cwd=root, capture_output=True, text=True,
         )
-        self.assertEqual(added.returncode, 0, added.stderr)
-        self.assertIn("fonts/greatvibes/GreatVibes-Regular.ttf", added.stdout)
+        self.assertEqual(tracked.returncode, 0, tracked.stderr)
+        self.assertIn("fonts/greatvibes/GreatVibes-Regular.ttf", tracked.stdout)
+        # --no-index checks the exception even though the file is already tracked.
+        # git add -n is silent for a clean tracked path, so it cannot prove this.
+        ignored = subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", "fonts/greatvibes/GreatVibes-Regular.ttf"],
+            cwd=root, capture_output=True, text=True,
+        )
+        self.assertEqual(ignored.returncode, 1, ignored.stdout)
         script = (root / "deploy" / "install_fonts.sh").read_text(encoding="utf-8")
         for name in (
             "nevia/woff2/Nevia-Light.woff2",
