@@ -86,56 +86,6 @@
   };
   syncBannerH();
   window.addEventListener('resize', syncBannerH);
-  var OSADMIN_KEY = 'shear_osadmin';
-  function cookieRead(name) {
-    var parts = String(document.cookie || '').split(';');
-    for (var i = 0; i < parts.length; i++) {
-      var p = parts[i].trim();
-      if (p.indexOf(name + '=') === 0) {
-        try { return decodeURIComponent(p.slice(name.length + 1)); } catch (e) { return p.slice(name.length + 1); }
-      }
-    }
-    return '';
-  }
-  function osadminHref() {
-    var path = String(location.pathname || '');
-    if (path === '/admin' || path.indexOf('/admin/') === 0) return String(location.origin || '') + '/admin';
-    return String(location.origin || '') + '/';
-  }
-  window.flagShearOsadmin = function (on) {
-    var bits;
-    if (on) {
-      bits = OSADMIN_KEY + '=' + encodeURIComponent(osadminHref()) + '; Path=/; Max-Age=43200; SameSite=Lax';
-    } else {
-      bits = OSADMIN_KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
-    }
-    if (onShearHost()) bits += '; Domain=.shear.digital';
-    if (location.protocol === 'https:') bits += '; Secure';
-    document.cookie = bits;
-    window.paintShearOsadmin();
-  };
-  window.paintShearOsadmin = function () {
-    var nav = document.getElementById('shear-nav');
-    if (!nav) return;
-    var href = cookieRead(OSADMIN_KEY).replace(/\/$/, '');
-    var el = document.getElementById('nav-osadmin');
-    if (!href) {
-      if (el && el.parentNode) el.parentNode.removeChild(el);
-      return;
-    }
-    if (!el) {
-      el = document.createElement('a');
-      el.id = 'nav-osadmin';
-      el.className = 'nav-btn';
-      el.textContent = 'OSAdmin';
-      nav.appendChild(el);
-      el.addEventListener('click', function () { setNav(false); });
-    }
-    el.href = href;
-    var here = String(location.origin + location.pathname).replace(/\/$/, '');
-    if (here === href || here.indexOf(href + '/') === 0) el.classList.add('is-on');
-    else el.classList.remove('is-on');
-  };
   function bindNav() {
     var nav = document.getElementById('shear-nav');
     if (nav) {
@@ -146,7 +96,6 @@
     window.addEventListener('resize', function () {
       if (window.innerWidth > 1024) setNav(false);
     });
-    window.paintShearOsadmin();
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () {

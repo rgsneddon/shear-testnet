@@ -133,4 +133,32 @@ describe('portable node packs', () => {
     assert.equal(crlf.status, 0, `${crlf.stdout}\n${crlf.stderr}`);
     assert.match(crlf.stdout, /crlf-ok/);
   });
+
+  it('every file named by the node and wallet packers is in the tree', () => {
+    function listed(rel, open, close) {
+      const text = fs.readFileSync(path.join(root, rel), 'utf8');
+      const start = text.indexOf(open);
+      assert.ok(start >= 0, `${rel} missing ${open}`);
+      const end = text.indexOf(close, start);
+      assert.ok(end > start, `${rel} missing ${close}`);
+      const body = text.slice(start, end);
+      const paths = [];
+      for (const m of body.matchAll(/['"]([^'"]+)['"]/g)) {
+        if (m[1].includes('/')) paths.push(m[1]);
+      }
+      assert.ok(paths.length > 0, rel);
+      return paths;
+    }
+    const groups = [
+      listed('node/pack/zip_node.py', 'for rel in (', '):'),
+      listed('wallet/pack/zip_windows.py', 'for extra in (', '):'),
+      listed('node/pack/bundle_modules.py', 'SHIPPED = (', ')'),
+    ];
+    for (const paths of groups) {
+      assert.equal(paths.includes('pool/src/admin.js'), false);
+      for (const rel of paths) {
+        assert.equal(fs.existsSync(path.join(root, rel)), true, rel);
+      }
+    }
+  });
 });

@@ -164,7 +164,6 @@ def main(argv: list[str] | None = None) -> int:
             "pool/src/withdraw_state.js",
             "pool/src/pool.js",
             "pool/src/main.js",
-            "pool/src/admin.js",
             "pool/src/posture.js",
             "pool/src/pull_book.js",
             "pool/src/auto_payout.js",

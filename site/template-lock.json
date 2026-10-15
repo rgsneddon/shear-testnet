@@ -44,10 +44,6 @@
       "skeleton": "ec52c77e8e5ddbaf4eb4f1437a654ef13c2399b59696fca98ef8785acd8bf674",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
-    "site/admin/index.html": {
-      "skeleton": "d4869a9ef67921aaf512c7b04c91617659e83facf5e786962b9a46690ae08786",
-      "style": "b5f7428c82f4404ce68772b2baea6b226ebd3c746541003832e51ffb3d4c4e86"
-    },
     "site/docs/index.html": {
       "skeleton": "ce7bc3e72846b1e2bb882ea1f551d330f5ae6e853339120296773f32d39cf755",
       "style": "99e0b7f1f1e516a861f1a34caefc57d2584ebc358bfaa42e4b467d1869edbdbe"
