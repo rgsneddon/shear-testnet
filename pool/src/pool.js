@@ -49,7 +49,6 @@ import {
 } from '../../crypto/asert.js';
 import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, custodialPullRejected, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
-import { handleAdminHttp, createAdmin } from './admin.js';
 import {
   THIS_POOL_DIRECT_FEE_DEST,
   configuredFeeIdentity,
@@ -1794,7 +1793,7 @@ export function refreshMinerRow(miner, now = Date.now()) {
   return miner;
 }
 
-/** Operator table on the admin desk. Dest + workerKey stay off the public pool page. */
+/** In-process operator miner row. Dest + workerKey stay off the public pool page. */
 export function adminMinerView(m, now = Date.now()) {
   const connected = minerConnected(m);
   const bits = [];
@@ -1905,7 +1904,6 @@ export function createPool({
   shareCap = null,
 } = {}) {
   const store = createStore(dataDir);
-  const admin = createAdmin(dataDir);
   const pullBook = createPullBook(dataDir);
   const miners = new Map();
   const destShareBits = loadDestShareBitsMap(dataDir);
@@ -5678,18 +5676,6 @@ export function createPool({
 
   const httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
-    if (
-      url.pathname === '/admin'
-      || url.pathname.startsWith('/admin/')
-      || url.pathname.startsWith('/api/admin')
-    ) {
-      await handleAdminHttp(req, res, {
-        store, admin, queueSend, ops: adminOps, pendingPulls,
-        poolDest: payoutDest(miner) || miner,
-        pullBook,
-      });
-      return;
-    }
     if (url.pathname === '/api/stats') {
       res.setHeader('content-type', 'application/json');
       res.setHeader('Cache-Control', 'no-store');
@@ -6053,7 +6039,6 @@ export function createPool({
     get pendingPayout() { return pendingPayout; },
     get prevJob() { return prevJob; },
     get paused() { return paused; },
-    admin,
     adminOps,
     pullBook,
   };

@@ -35,7 +35,6 @@ const PUBLIC = [
   'site/index.html',
   'site/docs/content.js',
   'site/docs/index.html',
-  'site/admin/index.html',
   'site/whitepaper/index.html',
   'site/whitepaper/build_pdf.py',
   'pool/public/index.html',
@@ -302,14 +301,13 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(main, /launch date not decided/);
     assert.doesNotMatch(main, /2026-09-18T21:00:00/);
     assert.doesNotMatch(docs, /2026-09-18T21:00:00/);
-    assert.doesNotMatch(read('site/admin/index.html'), /2026-09-18T21:00:00/);
     assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
     assert.match(readme, /30th October 2026 at 1400hrs UK time/);
     assert.match(readme, /does not emit/);
   });
 
   it('no surface claims privacy, confidential amounts, or a bucket anonymity set', () => {
-    assert.ok(CLAIM_SURFACES.length > 40, `walked ${CLAIM_SURFACES.length} files`);
+    assert.ok(CLAIM_SURFACES.length >= 40, `walked ${CLAIM_SURFACES.length} files`);
     for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
       const text = copyText(rel);
       for (const banned of COPY_BANNED) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
