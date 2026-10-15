@@ -303,7 +303,7 @@ export const RESERVE_FEE_FIRST = 0;
  * on Ed25519, FS1_LEAF_BYTES long, with I = E(Hp(admitPub)) under FS1_HP_DST
  * (crypto/fs1_leaf.js, shear-fs1 src/leaf.rs). The cycle token is shear-fs1
  * `ADMIT_CYCLE`, built from `CYCLE_C1` (Selene) and `CYCLE_C2` (Helios).
- * PSA-df82-1: these parameters are the live tokens. The retired Pasta bucket
+ * PSA-df82-1: these parameters are the live tokens. The retired bucket
  * arity and leaf domain must not reappear in this file.
  */
 export const FS1_LAYER_ONE_LEN = 38;
