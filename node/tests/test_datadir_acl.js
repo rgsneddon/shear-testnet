@@ -6,6 +6,7 @@
  */
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -170,8 +171,12 @@ describe('datadir DACL', () => {
     const { calls } = recordWindows(dir);
     const owner = icaclsCalls(calls).find((call) => call.args.includes('/setowner'));
     assert.ok(owner, 'setowner was not called');
+    assert.equal(icaclsCalls(calls).length, 1);
     assert.equal(owner.args[0], dir);
-    assert.deepEqual(owner.args.slice(1, 3), ['/setowner', `*${USER_SID}`]);
+    assert.equal(owner.args.includes('/setowner'), true);
+    assert.equal(owner.args.includes(`*${USER_SID}`), true);
+    assert.equal(owner.args.includes('/T'), true);
+    assert.equal(owner.args.includes('/L'), true);
     const grants = icaclsCalls(calls).flatMap((call) => call.args).join('\n');
     assert.equal(grants.includes(`*${SYSTEM_SID}:(OI)(CI)F`), true);
     assert.equal(grants.includes(`*${ADMINISTRATORS_SID}:(OI)(CI)F`), true);
@@ -185,7 +190,7 @@ describe('datadir DACL', () => {
     fs.writeFileSync(path.join(dir, 'chain.bin'), 'already there');
     const { calls } = recordWindows(dir);
     const walked = icaclsCalls(calls).filter((call) => call.args[0] === dir);
-    assert.ok(walked.length >= 1);
+    assert.equal(walked.length, 1);
     for (const call of walked) {
       assert.equal(call.args.includes('/T'), true, call.args.join(' '));
       assert.equal(call.args.includes('/L'), true, call.args.join(' '));
@@ -197,12 +202,16 @@ describe('datadir DACL', () => {
     const shewall = path.join(dir, SHEWALL_FILE);
     fs.writeFileSync(shewall, 'sealed');
     fs.chmodSync(shewall, 0o644);
-    const { calls } = recordWindows(dir);
-    const named = icaclsCalls(calls).filter((call) => call.args[0] === shewall);
-    assert.ok(named.some((call) => call.args.includes(`*${USER_SID}:F`)));
-    assert.ok(named.some((call) => call.args.includes(`*${SYSTEM_SID}:F`)));
-    assert.ok(named.some((call) => call.args.includes(`*${ADMINISTRATORS_SID}:F`)));
-    assert.ok(named.some((call) => call.args.includes('/setowner') && call.args.includes(`*${USER_SID}`)));
+    const { calls, aclReads } = recordWindows(dir);
+    assert.equal(icaclsCalls(calls).length, 1);
+    assert.ok(aclReads >= 2);
+    const named = icaclsCalls(calls)[0];
+    assert.equal(named.args[0], dir);
+    assert.equal(named.args.includes('/T'), true);
+    assert.equal(named.args.includes('/L'), true);
+    assert.equal(named.args.includes(`*${USER_SID}:(OI)(CI)F`), true);
+    assert.equal(named.args.includes(`*${SYSTEM_SID}:(OI)(CI)F`), true);
+    assert.equal(named.args.includes(`*${ADMINISTRATORS_SID}:(OI)(CI)F`), true);
     if (process.platform !== 'win32') {
       ensureDatadir(dir);
       assert.equal(fs.statSync(shewall).mode & 0o777, 0o600);
@@ -405,11 +414,12 @@ describe('datadir DACL', () => {
     assert.ok(reads.includes(child));
     assert.ok(reads.includes(deep));
     assert.ok(reads.includes(nest));
-    const named = icaclsCalls(calls).filter((call) => call.args[0] === child);
-    assert.ok(named.some((call) => call.args.includes(`*${USER_SID}:F`)));
-    assert.ok(named.some((call) => call.args.includes(`*${SYSTEM_SID}:F`)));
-    assert.ok(named.some((call) => call.args.includes(`*${ADMINISTRATORS_SID}:F`)));
-    assert.ok(named.some((call) => call.args.includes('/L')));
+    assert.equal(icaclsCalls(calls).length, 1);
+    const named = icaclsCalls(calls)[0];
+    assert.equal(named.args[0], dir);
+    assert.equal(named.args.includes('/T'), true);
+    assert.equal(named.args.includes('/L'), true);
+    assert.equal(calls.some((call) => call.args[0] === child), false);
     const extra = {
       owner: USER_SID,
       sddl: `O:${USER_SID}D:P(A;;FA;;;${USER_SID})(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;S-1-1-0)`,
@@ -451,14 +461,107 @@ describe('datadir DACL', () => {
         return '';
       },
     };
-    assert.throws(() => ensureDatadir(book, windows), /datadir_acl:link/);
+    let refused = null;
+    try {
+      ensureDatadir(book, windows);
+    } catch (err) {
+      refused = err;
+    }
+    assert.ok(refused);
+    assert.match(refused.message, /datadir_acl:link/);
+    assert.match(refused.message, /--datadir/);
+    assert.match(refused.message, /junction/);
+    assert.match(refused.message, /SHEAR_DATA/);
     assert.equal(called, false);
+    const cli = spawnSync(process.execPath, ['node/src/node.js', '--datadir'], {
+      cwd: path.join(path.dirname(new URL(import.meta.url).pathname), '../..'),
+      encoding: 'utf8',
+      timeout: 20000,
+    });
+    assert.equal(cli.status, 2);
+    assert.match(`${cli.stderr}\n${cli.stdout}`, /--datadir/);
 
     const dir = tempDatadir();
     fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
     fs.symlinkSync(outside, path.join(dir, 'a', 'b', 'jump'), 'dir');
     called = false;
     assert.throws(() => ensureDatadir(dir, windows), /datadir_acl:link/);
+    assert.equal(called, false);
+  });
+
+  it('a file created after setup triggers zero icacls runs', () => {
+    const dir = tempDatadir();
+    const setup = recordWindows(dir);
+    assert.equal(icaclsCalls(setup.calls).length, 1);
+    const created = path.join(dir, 'chain.bin');
+    fs.writeFileSync(created, 'later');
+    const again = recordWindows(dir, {
+      securityScript: (_n, filePath) => {
+        if (path.resolve(filePath) === path.resolve(dir)) return goodSecurity(dir);
+        const st = fs.statSync(filePath);
+        if (st.isDirectory()) {
+          return {
+            owner: USER_SID,
+            sddl: `O:${USER_SID}G:SYD:AI(A;OICIID;FA;;;${USER_SID})(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)`,
+          };
+        }
+        return {
+          owner: USER_SID,
+          sddl: `O:${USER_SID}G:SYD:AI(A;ID;FA;;;${USER_SID})(A;ID;FA;;;SY)(A;ID;FA;;;BA)`,
+        };
+      },
+    });
+    assert.equal(again.got.applied, false);
+    assert.equal(icaclsCalls(again.calls).length, 0);
+    assert.ok(again.aclReads >= 2);
+  });
+
+  it('refuses a hard link before icacls', () => {
+    const dir = tempDatadir();
+    const file = path.join(dir, 'chain.bin');
+    fs.writeFileSync(file, 'chain');
+    fs.linkSync(file, path.join(dir, 'chain-hard.bin'));
+    let called = false;
+    assert.throws(() => ensureDatadir(dir, {
+      platform: 'win32',
+      getSystemDirectory: () => SYSTEM_DIR,
+      readSystemRoot: () => SYSTEM_ROOT,
+      readUserSid: () => USER_SID,
+      readSecurity: () => goodSecurity(dir),
+      realpathSync: identityRealpath,
+      execFileSync: () => {
+        called = true;
+        return '';
+      },
+    }), /datadir_acl:link/);
+    assert.equal(called, false);
+    assert.equal(fs.statSync(file).nlink > 1, true);
+  });
+
+  it('fails closed when the datadir walk exceeds its cap', () => {
+    const dir = tempDatadir();
+    fs.writeFileSync(path.join(dir, 'a.bin'), 'a');
+    fs.writeFileSync(path.join(dir, 'b.bin'), 'b');
+    fs.writeFileSync(path.join(dir, 'c.bin'), 'c');
+    let called = false;
+    const windows = {
+      platform: 'win32',
+      getSystemDirectory: () => SYSTEM_DIR,
+      readSystemRoot: () => SYSTEM_ROOT,
+      readUserSid: () => USER_SID,
+      readSecurity: () => goodSecurity(dir),
+      realpathSync: identityRealpath,
+      execFileSync: () => {
+        called = true;
+        return '';
+      },
+    };
+    assert.throws(() => ensureDatadir(dir, { ...windows, maxEntries: 2 }), /datadir_acl:walk/);
+    assert.equal(called, false);
+    const deep = path.join(dir, 'd1', 'd2', 'd3');
+    fs.mkdirSync(deep, { recursive: true });
+    called = false;
+    assert.throws(() => ensureDatadir(dir, { ...windows, maxDepth: 2 }), /datadir_acl:walk/);
     assert.equal(called, false);
   });
 

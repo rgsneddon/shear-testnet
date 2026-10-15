@@ -16,14 +16,14 @@
  * mismatch, or a real path that leaves that directory, fails closed.
  *
  * Every open re-reads the DACL and owner. A datadir.acl stamp is not trusted.
- * A mismatch is rewritten. After a write, the DACL and owner are read back
- * and a mismatch, an extra ACE, an unprotected DACL, or the wrong owner throws.
+ * The folder DACL is protected. A child may instead carry the inherited form
+ * of that same DACL. An extra explicit ACE, an unprotected folder, or the
+ * wrong owner is a mismatch. One icacls /T /L call rewrites a mismatch, then
+ * the DACL is read back.
  *
- * /T walks files already in the directory. /L tells icacls not to follow a
- * link. A symlink or junction inside the datadir, including the datadir
- * itself, a parent of the datadir, or a junction nested under it, refuses
- * startup before icacls runs. Every file already in the directory is named
- * explicitly, so a wallet file that does not inherit is still covered.
+ * The walk is capped and fails closed. /L tells icacls not to follow a link.
+ * A symlink or junction (the datadir, a parent, or a nested link) refuses
+ * startup before icacls. A file with more than one name (a hard link) does too.
  *
  * Other platforms: the directory is mode 0700 and shewall.bin, when present,
  * is mode 0600. mkdir's mode is masked by umask, so a wide directory is
@@ -42,6 +42,9 @@ export const ADMINISTRATORS_SID = 'S-1-5-32-544';
 export const SHEWALL_FILE = 'shewall.bin';
 export const DATADIR_MODE = 0o700;
 export const SHEWALL_MODE = 0o600;
+// A chain datadir is shallow. Past this, fail closed instead of walking forever.
+const MAX_WALK_ENTRIES = 65536;
+const MAX_WALK_DEPTH = 16;
 // Two-letter SDDL aliases that the security descriptor may use instead of a SID.
 const SDDL_ALIAS = {
   AN: 'S-1-5-7',
@@ -71,6 +74,10 @@ function fail(code, cause) {
   const error = new Error(code);
   if (cause) error.cause = cause;
   return error;
+}
+
+function failJunction(cause) {
+  return fail('datadir_acl:link: refusing a junction or symlink. Start with --datadir (or SHEAR_DATA) pointed at a real directory that is not a junction.', cause);
 }
 
 function stripWinLong(value) {
@@ -244,38 +251,65 @@ function daclOf(sddl) {
   return { protected: flags.toUpperCase().includes('P'), aces };
 }
 
-function expectedAces(kind, sid) {
-  const flags = kind === 'dir' ? ['CI', 'OI'] : [];
-  return [sid, SYSTEM_SID, ADMINISTRATORS_SID].map((trustee) => ({
-    type: 'A',
-    flags,
-    rights: 'FA',
-    sid: normalizeSid(trustee),
-  })).sort((a, b) => a.sid.localeCompare(b.sid));
+function sameFlags(got, want) {
+  if (got.length !== want.length) return false;
+  const right = want.slice().sort();
+  return got.every((flag, i) => flag === right[i]);
 }
 
-function sameAces(got, want) {
-  if (got.length !== want.length) return false;
-  const left = got.map((ace) => JSON.stringify(ace)).sort();
-  const right = want.map((ace) => JSON.stringify(ace)).sort();
-  return left.every((row, i) => row === right[i]);
+function isExactTrustSet(aces, sid) {
+  const want = [sid, SYSTEM_SID, ADMINISTRATORS_SID]
+    .map((trustee) => `A|FA|${normalizeSid(trustee)}`)
+    .sort();
+  if (aces.length !== want.length) return false;
+  const got = aces.map((ace) => `${ace.type}|${ace.rights}|${ace.sid}`).sort();
+  return got.every((row, i) => row === want[i]);
+}
+
+function ownerOk(row, sid) {
+  return row.owner === normalizeSid(sid) && ownerFromSddl(row.sddl) === normalizeSid(sid);
+}
+
+function rootMatches(row, sid) {
+  if (!row || !ownerOk(row, sid)) return false;
+  let dacl;
+  try {
+    dacl = daclOf(row.sddl);
+  } catch {
+    return false;
+  }
+  if (!dacl.protected || !isExactTrustSet(dacl.aces, sid)) return false;
+  return dacl.aces.every((ace) => sameFlags(ace.flags, ['CI', 'OI']));
+}
+
+function childMatches(row, sid, kind) {
+  if (!row || !ownerOk(row, sid)) return false;
+  let dacl;
+  try {
+    dacl = daclOf(row.sddl);
+  } catch {
+    return false;
+  }
+  // Inherited ACEs are the folder DACL propagated (ID). An explicit ACE is
+  // accepted only when it is that same set and nothing more.
+  if (!isExactTrustSet(dacl.aces, sid)) return false;
+  const inherited = kind === 'dir' ? ['CI', 'ID', 'OI'] : ['ID'];
+  const explicit = kind === 'dir' ? ['CI', 'OI'] : [];
+  return dacl.aces.every((ace) => (
+    sameFlags(ace.flags, inherited)
+    || sameFlags(ace.flags, explicit)
+    || (kind === 'file' && sameFlags(ace.flags, ['CI', 'OI']))
+  ));
 }
 
 function aclMatches(report, targets, sid) {
-  if (!report || report.length !== targets.length) return false;
-  for (const target of targets) {
+  if (!report || report.length !== targets.length || !targets.length) return false;
+  for (let i = 0; i < targets.length; i += 1) {
+    const target = targets[i];
     const row = report.find((item) => item.path === target.path);
     if (!row) return false;
-    if (row.owner !== normalizeSid(sid)) return false;
-    let dacl;
-    try {
-      dacl = daclOf(row.sddl);
-    } catch {
-      return false;
-    }
-    if (ownerFromSddl(row.sddl) !== normalizeSid(sid)) return false;
-    if (!dacl.protected) return false;
-    if (!sameAces(dacl.aces, expectedAces(target.kind, sid))) return false;
+    const ok = i === 0 ? rootMatches(row, sid) : childMatches(row, sid, target.kind);
+    if (!ok) return false;
   }
   return true;
 }
@@ -304,29 +338,14 @@ function readOne(readSecurity, target) {
   };
 }
 
-function applyWindows(dir, sid, targets, execFileSync, systemDir, systemRoot, realpathSync) {
+function applyWindows(dir, sid, execFileSync, systemDir, systemRoot, realpathSync) {
   const user = `*${sid}:(OI)(CI)F`;
   const system = `*${SYSTEM_SID}:(OI)(CI)F`;
   const admins = `*${ADMINISTRATORS_SID}:(OI)(CI)F`;
-  // /L does not follow a link. /T re-checks files already in the directory.
+  // One call. /L does not follow a link. /T rewrites the files already there.
   runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
-    dir, '/inheritance:r', '/grant:r', user, system, admins, '/T', '/L',
+    dir, '/inheritance:r', '/grant:r', user, system, admins, '/setowner', `*${sid}`, '/T', '/L',
   ]);
-  runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [dir, '/setowner', `*${sid}`, '/T', '/L']);
-  const fileGrant = (trustee) => `*${trustee}:F`;
-  for (const file of targets) {
-    if (file.kind !== 'file') continue;
-    runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
-      file.path,
-      '/inheritance:r',
-      '/grant:r',
-      fileGrant(sid),
-      fileGrant(SYSTEM_SID),
-      fileGrant(ADMINISTRATORS_SID),
-      '/L',
-    ]);
-    runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [file.path, '/setowner', `*${sid}`, '/L']);
-  }
 }
 
 function assertNoAncestorLinks(dir, lstatSync) {
@@ -338,48 +357,57 @@ function assertNoAncestorLinks(dir, lstatSync) {
     try {
       st = lstatSync(parent);
     } catch (err) {
-      throw fail('datadir_acl:link', err);
+      throw failJunction(err);
     }
-    if (st.isSymbolicLink() || !st.isDirectory()) throw fail('datadir_acl:link');
+    if (st.isSymbolicLink() || !st.isDirectory()) throw failJunction();
     current = parent;
   }
 }
 
-function assertNoLinks(root, lstatSync, readdirSync) {
+function assertNoLinks(root, lstatSync, readdirSync, limits) {
   assertNoAncestorLinks(root, lstatSync);
+  const maxEntries = limits.maxEntries;
+  const maxDepth = limits.maxDepth;
   let rootStat;
   try {
     rootStat = lstatSync(root);
   } catch (err) {
-    throw fail('datadir_acl:link', err);
+    throw failJunction();
   }
-  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw fail('datadir_acl:link');
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw failJunction();
+  let seen = 1;
+  if (seen > maxEntries) throw fail('datadir_acl:walk');
   const targets = [{ path: root, kind: 'dir' }];
-  const stack = [root];
+  const stack = [{ path: root, depth: 0 }];
   while (stack.length) {
     const current = stack.pop();
     let names;
     try {
-      names = readdirSync(current);
+      names = readdirSync(current.path);
     } catch (err) {
-      throw fail('datadir_acl:link', err);
+      throw failJunction();
     }
     for (const name of names) {
-      const child = path.join(current, name);
+      const child = path.join(current.path, name);
+      const depth = current.depth + 1;
+      if (depth > maxDepth) throw fail('datadir_acl:walk');
+      seen += 1;
+      if (seen > maxEntries) throw fail('datadir_acl:walk');
       let st;
       try {
         st = lstatSync(child);
       } catch (err) {
-        throw fail('datadir_acl:link', err);
+        throw failJunction();
       }
-      if (st.isSymbolicLink()) throw fail('datadir_acl:link');
+      if (st.isSymbolicLink()) throw failJunction();
       if (st.isDirectory()) {
         targets.push({ path: child, kind: 'dir' });
-        stack.push(child);
+        stack.push({ path: child, depth });
       } else if (st.isFile()) {
+        if (Number(st.nlink) > 1) throw fail('datadir_acl:link');
         targets.push({ path: child, kind: 'file' });
       } else {
-        throw fail('datadir_acl:link');
+        throw failJunction();
       }
     }
   }
@@ -395,8 +423,10 @@ function ensureWindows(dir, {
   readSystemRoot,
   readSecurity,
   readUserSid,
+  maxEntries,
+  maxDepth,
 }) {
-  const targets = assertNoLinks(dir, lstatSync, readdirSync);
+  const targets = assertNoLinks(dir, lstatSync, readdirSync, { maxEntries, maxDepth });
   const { systemDir, systemRoot } = resolveSystem32({ getSystemDirectory, readSystemRoot, realpathSync });
   const sid = currentUserSid(readUserSid);
   const shewall = targets.some((target) => target.path === path.join(dir, SHEWALL_FILE));
@@ -409,7 +439,7 @@ function ensureWindows(dir, {
   if (current && aclMatches(current, targets, sid)) {
     return { applied: false, sid, shewall };
   }
-  applyWindows(dir, sid, targets, execFileSync, systemDir, systemRoot, realpathSync);
+  applyWindows(dir, sid, execFileSync, systemDir, systemRoot, realpathSync);
   const after = targets.map((target) => readOne(readSecurity, target));
   if (!aclMatches(after, targets, sid)) throw fail('datadir_acl:verify');
   return { applied: true, sid, shewall };
@@ -429,6 +459,8 @@ export function ensureDatadir(dir, {
   readSystemRoot,
   readSecurity,
   readUserSid,
+  maxEntries = MAX_WALK_ENTRIES,
+  maxDepth = MAX_WALK_DEPTH,
 } = {}) {
   mkdirSync(dir, { recursive: true, mode: DATADIR_MODE });
   if (platform !== 'win32') {
@@ -440,5 +472,6 @@ export function ensureDatadir(dir, {
     readSystemRoot: readSystemRoot || (() => win32Api().readSystemRoot()),
     readSecurity: readSecurity || ((file) => win32Api().readSecurity(file)),
     readUserSid: readUserSid || (() => win32Api().readUserSid()),
+    maxEntries, maxDepth,
   });
 }
