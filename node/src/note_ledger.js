@@ -267,6 +267,28 @@ export function createNoteLedger({ digestsOf = null } = {}) {
     return nanos;
   }
 
+  /**
+   * Lock notes whose unlock has passed, including ones already spent.
+   * A spent note has left the wallet. It still covers its principal so a
+   * later inbound is not frozen by that amount.
+   */
+  function coveredLockNanos(address, tipHeight, opts = {}) {
+    const tip = Number(tipHeight) || 0;
+    const { rows } = collect(address);
+    const need = opts.need ?? SPENDABLE_CONFIRMATIONS;
+    let nanos = 0;
+    for (const rec of rows) {
+      const kind = String(rec.out?.kind || rec.tx?.kind || '');
+      if (kind !== 'lock') continue;
+      if (opts.coinbaseOnly && !rec.coinbase) continue;
+      if (lockNoteHeld(rec.out, opts)) continue;
+      const h = Number(rec.height) || 0;
+      if (!(h > 0 && (tip - h + 1) >= need)) continue;
+      nanos += openedOf(rec);
+    }
+    return nanos;
+  }
+
   function refs(address) {
     const { wantHex, rows } = collect(address);
     const out = [];
@@ -305,6 +327,7 @@ export function createNoteLedger({ digestsOf = null } = {}) {
     sync,
     spendable,
     unlockedLockNanos,
+    coveredLockNanos,
     refs,
     spendDigests: () => digests,
     stats,

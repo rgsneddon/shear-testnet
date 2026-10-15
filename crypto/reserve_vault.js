@@ -373,7 +373,7 @@ export function stakeRewardRejected(state, block, nowMs, { require = false } = {
   if (got === 'bad') return { ok: false, reason: 'stake_reward' };
   const plan = rewardCommitment(state, nowMs);
   if (got) {
-    if (got !== plan.root || !plan.rows.length) return { ok: false, reason: 'stake_reward' };
+    if (got !== plan.root) return { ok: false, reason: 'stake_reward' };
     return null;
   }
   if (!require || blockPaysByWithdraw(block)) return null;
@@ -454,18 +454,50 @@ function ensureRewardMaps(state) {
 }
 
 /**
+ * Root the coinbase should carry. An empty earning set still carries the
+ * empty root while matured principal is sitting in the vault, so the epoch
+ * end releases it. A root already stored for this index stays put.
+ */
+export function coinbaseRewardRoot(state, nowMs) {
+  const plan = rewardCommitment(state, nowMs);
+  if (plan.rows.length) return plan.root;
+  if (!(plan.index > 0)) return '';
+  if (state?.rewardRoots?.[String(plan.index)]) return '';
+  for (const portal of Object.values(state?.portals || {})) {
+    for (const tranche of portal?.tranches || []) {
+      if (plan.index > Math.floor(Number(tranche.epoch) || 0)) return plan.root;
+    }
+  }
+  return '';
+}
+
+/**
  * Archive the root and drop matured principal out of the vault.
  * Nothing is minted here. A claim tx mints one archived row later.
+ * An epoch with no earning rows still releases principal. The block may
+ * omit the root or carry the empty root. A withdraw in the block is the
+ * older pull and releases the portals it pays.
  */
 export function applyStakeRewards(state, block, nowMs, { require = false } = {}) {
   const rejected = stakeRewardRejected(state, block, nowMs, { require });
   if (rejected) return { ok: false, reason: rejected.reason || 'stake_reward', minted: 0n, principal: 0n };
-  const got = blockRewardRoot(block);
-  if (!got) return { ok: true, minted: 0n, principal: 0n, skipped: true };
   const plan = rewardCommitment(state, nowMs);
-  if (got !== plan.root || !plan.rows.length) {
+  const got = blockRewardRoot(block);
+  if (got && got !== plan.root) {
     return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
   }
+  if (!plan.rows.length) {
+    if (!(plan.index > 0) || blockPaysByWithdraw(block)) {
+      return { ok: true, minted: 0n, principal: 0n, skipped: true };
+    }
+    const prior = state.rewardRoots?.[String(plan.index)];
+    if (got && prior && prior !== got) {
+      return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
+    }
+    const principal = releaseMaturedPrincipal(state, nowMs);
+    return { ok: true, minted: 0n, principal, root: got || '', skipped: false };
+  }
+  if (!got) return { ok: true, minted: 0n, principal: 0n, skipped: true };
   ensureRewardMaps(state);
   const key = String(plan.index);
   const prior = state.rewardRoots[key];

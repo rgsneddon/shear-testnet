@@ -779,15 +779,20 @@ contract Reserve {
     }
 
     /// One root over every eligible reward. Principal is released, not minted.
-    /// A later claim mints one leaf. The root does not expire.
+    /// Zero earning rows still release matured principal and return the empty
+    /// root. That root is not stored: there is nothing to claim. A later
+    /// claim mints one leaf. The root does not expire.
     function commitRewards(uint256 nowTs) external onlyShear returns (bytes32 root) {
         uint256 nowIdx = _payIndex(nowTs);
         if (nowIdx == 0) revert EpochNotEnded();
         RewardRow[] memory rows = _collect(nowIdx);
-        if (rows.length == 0) revert EpochNotEnded();
         root = _rootOf(rows);
         bytes32 prior = rewardRootOf[nowIdx];
         if (prior != bytes32(0) && prior != root) revert BadAmount();
+        if (rows.length == 0) {
+            _releaseMatured(nowIdx);
+            return root;
+        }
         rewardRootOf[nowIdx] = root;
         for (uint256 i = 0; i < rows.length; i++) {
             bytes32 nf = rows[i].nullifier;

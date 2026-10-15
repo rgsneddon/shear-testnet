@@ -67,7 +67,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardCommitment } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -1281,7 +1281,10 @@ export function createStore(dir, {
     void _rows;
     // The note walk still holds a pot a v3 lock spent, because that spend
     // hides the leaf. Subtract the vault principal once so the same value
-    // is not spendable again. Lock receipts are already omitted by kind.
+    // is not spendable again. A lock note covers that principal once its
+    // unlock has passed, and it keeps covering it after the note is spent.
+    // Spent principal must not freeze a later inbound. Lock receipts are
+    // already omitted by kind.
     // The live book and a fork book each keep their own suffix index.
     // A request does not open notes that belong to someone else.
     if (chain === blocks) spendChecks += 1;
@@ -1299,8 +1302,8 @@ export function createStore(dir, {
     const noteNanos = book.spendable(addr, tipH, clock);
     const opened = reconcileSpendable([], addr, tipH, noteNanos);
     const principal = Math.max(0, Math.floor(Number(portalPrincipalNanos(reserveVault, addr)) || 0));
-    const released = Math.max(0, Math.floor(Number(book.unlockedLockNanos(addr, tipH, clock)) || 0));
-    const locked = Math.max(0, principal - released);
+    const covered = Math.max(0, Math.floor(Number(book.coveredLockNanos(addr, tipH, clock)) || 0));
+    const locked = Math.max(0, principal - covered);
     return Math.max(0, opened - locked);
   }
 
@@ -5341,9 +5344,8 @@ export function createStore(dir, {
       prepareCoinbase: (cb) => {
         const pulling = pendingTxs.some((tx) => String(tx?.kind || tx?.vout?.[0]?.kind || '') === 'withdraw');
         if (pulling) return;
-        const plan = rewardCommitment(reserveVault, now);
-        if (!plan.rows.length) return;
-        cb.rewardRoot = plan.root;
+        const root = coinbaseRewardRoot(reserveVault, now);
+        if (root) cb.rewardRoot = root;
       },
     });
     const jobId = `shear-${height}-${jobSeq++}`;
