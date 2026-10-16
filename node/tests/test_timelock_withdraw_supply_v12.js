@@ -409,8 +409,10 @@ describe('time-locked withdraw supply', () => {
     const state = freshVault();
     assert.equal(applyLock(state, plainLock(dest, T0, 'clock-legacy'), T0).ok, true);
     assert.equal(applyLock(state, timeLock(dest, T0, 'clock-note'), T0, 2).ok, true);
-    const allCap = PI_SHE_NANOS * 2 + interestNanos(PI_SHE_NANOS * 2, GENESIS_BPS);
-    const loose = withdrawTx({ from: dest, to: dest, nanos: allCap, id: 'no-clock' });
+    // Both principals, and no interest. The old missing-clock fallback pays
+    // every locked nanos, so this seal would be accepted. A full-epoch
+    // allCap is larger than that fallback and would still be refused.
+    const loose = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS * 2, id: 'no-clock' });
     for (const clock of [undefined, null, 0, Number.NaN]) {
       const got = boundReserveWithdraw(loose, state, new Set(), clock);
       assert.equal(got.ok, false, String(clock));
