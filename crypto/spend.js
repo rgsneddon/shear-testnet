@@ -12,7 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
-import { lockFundingRejected, maturedHiddenCount, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { hiddenPrincipalOpens, lockFundingRejected, maturedHiddenCount, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -931,7 +931,12 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
         return { ok: false, reason: 'payout_mismatch' };
       }
     }
-    if (claimed !== 0) return { ok: false, reason: 'insufficient' };
+    if (claimed !== 0) {
+      if (!hiddenPrincipalOpens(reserveState, portal, clock, claimed, tx?.principalProof)) {
+        return { ok: false, reason: 'insufficient' };
+      }
+      return { ok: true, principal: claimed, claimed, cap: claimed, mintId };
+    }
     return { ok: true, principal: 0, claimed: 0, cap: 0, mintId };
   }
   if (claimed === 0) return { ok: false, reason: 'mint_amount' };

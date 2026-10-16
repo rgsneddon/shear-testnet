@@ -421,8 +421,8 @@ function ed25519Precompile(opts) {
 
 /**
  * Precompile 0x102.
- * root || nullifier || u64 epoch || u32 bps || u64 span || full || remainCommit || magic || lock || output || proof.
- * The lock word is the leaf bound to that remain. Zeros skip the leaf check.
+ * root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic || u32 outputLen || proof.
+ * The reward integer is public. There is no leaf word and no remainder index.
  */
 function vaultZkPrecompile(opts) {
   const data = Buffer.from(opts.data || new Uint8Array());
@@ -431,32 +431,27 @@ function vaultZkPrecompile(opts) {
   if (opts.gasLimit < gasUsed) return { executionGasUsed: opts.gasLimit, returnValue: zero };
   let code = 0;
   try {
-    const head = 166;
+    const head = 109;
     if (data.length >= head + 4) {
       const epoch = data.readBigUInt64LE(64);
       const bps = data.readUInt32LE(72);
       const span = data.readBigUInt64LE(76);
-      const full = data[84] === 1;
-      const magic = data.subarray(117, 134).toString('utf8');
-      const lockWord = data.subarray(134, 166);
-      const outputLen = data.readUInt32LE(166);
-      const outputAt = 170;
-      if (outputAt + outputLen <= data.length) {
-        const packed = outputLen ? data.subarray(outputAt, outputAt + outputLen) : null;
-        const output = packed ? parseVaultOutput(packed) : null;
-        if (outputLen && !output) code = 2;
-        else {
-          const got = verifyVaultReward({
-            root: data.subarray(0, 32),
-            nullifier: data.subarray(32, 64),
-            rootEpoch: epoch,
-            terms: { bps, span, earnEpoch: epoch, full, leafCommit: lockWord },
-            output,
-            magic,
-            blob: data.subarray(outputAt + outputLen),
-          });
-          code = got.ok ? 1 : (got.code === 2 ? 2 : 0);
-        }
+      const reward = data.readBigUInt64LE(84);
+      const magic = data.subarray(92, 109).toString('utf8');
+      const outputLen = data.readUInt32LE(109);
+      const outputAt = 113;
+      if (outputLen === 0 && outputAt <= data.length) {
+        const got = verifyVaultReward({
+          root: data.subarray(0, 32),
+          nullifier: data.subarray(32, 64),
+          rootEpoch: epoch,
+          terms: { bps, span, earnEpoch: epoch, reward },
+          magic,
+          blob: data.subarray(outputAt),
+        });
+        code = got.ok ? 1 : (got.code === 2 ? 2 : 0);
+      } else if (outputLen !== 0) {
+        code = 2;
       }
     }
   } catch {

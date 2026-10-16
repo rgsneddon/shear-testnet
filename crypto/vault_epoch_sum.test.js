@@ -11,6 +11,7 @@ import {
   portalIdFromDest,
   publicVaultView,
   rewardClaimTx,
+  stakeRewardSupply,
   supplyIdentity,
   VAULT_MINT_DELAY_BLOCKS,
 } from './reserve_vault.js';
@@ -19,11 +20,10 @@ import {
   callReserve,
   encodeClaim,
   encodeCommitEpochStartRoot,
-  encodeNoteVaultLeaf,
   encodePinClock,
 } from './reserve_evm.js';
 import { readFileSync } from 'node:fs';
-import { packVaultOutput, proveVaultReward, vaultLockNote, vaultRewardCommit } from './vault_reward_fs1.js';
+import { proveVaultReward, vaultLockNote } from './vault_reward_fs1.js';
 
 const T0 = 1_700_000_000_000;
 const span = RESERVE_EPOCH_MS;
@@ -156,8 +156,7 @@ describe('epoch sums stay commitments', () => {
     assert.equal(supplyIdentity(state).ok, true);
   });
 
-  it('a lone claim mints without the amount, and JS matches the EVM', async () => {
-    const owner = who();
+  it('a lone claim mints its public reward, and JS matches the EVM', async () => {
     const pay = who();
     const proved = proveVaultReward({
       locks: [{ amount: PI_SHE_NANOS }],
@@ -176,9 +175,19 @@ describe('epoch sums stay commitments', () => {
       proved.locks[0].scalar,
       proved.locks[0].blind,
     ).note;
-    assert.ok(appendVaultLockNote(state, note, { earnEpoch: 0, remainCommit: proved.remainCommit }));
+    assert.ok(appendVaultLockNote(state, note));
+    assert.equal(state.vaultRemainLeaf, undefined);
     state.epochStartRoots = { 0: state.vaultLockRoot };
     const claim = rewardClaimTx({ to: pay.dest, vault: proved, id: 'lone' });
+    assert.equal(claim.nanos, proved.nanos);
+    const walked = stakeRewardSupply(state, {
+      height: HEIGHT,
+      txs: [{ coinbase: true, vout: [], vaultLockRoot: proved.rootHex }, claim],
+    }, T0 + span, HEIGHT);
+    assert.equal(walked.ok, true, walked.reason);
+    assert.equal(walked.minted, BigInt(proved.nanos));
+    assert.equal(walked.permitted, walked.minted);
+    assert.equal(walked.claimed, 0n);
     const paid = applyReserveBlock({
       state,
       block: {
@@ -190,27 +199,31 @@ describe('epoch sums stay commitments', () => {
       genesisMs: T0,
     });
     assert.equal(paid.ok, true, paid.reason);
-    assert.equal(Number(state.mintBankNanos), 0);
-    assert.notEqual(Number(state.mintBankNanos), proved.nanos);
-    assert.equal(state.epochMintSum['0'], vaultRewardCommit(proved.blob).toString('hex'));
+    assert.equal(Number(state.mintBankNanos), proved.nanos);
+    assert.equal(state.epochMintNanos['0'], BigInt(proved.nanos));
+    assert.equal(state.epochMintSum, undefined);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, proved.rootHex))).ok, true);
-    assert.equal((await callReserve(session, encodeNoteVaultLeaf(proved.lockCommit, proved.remainCommit))).ok, true);
     const evm = await callReserve(
       session,
-      encodeClaim(proved.nullifier, 0, proved.blob, 0, packVaultOutput(proved.note)),
+      encodeClaim(proved.nullifier, proved.nanos, proved.blob, 0),
     );
     assert.equal(evm.ok, true, evm.reason);
     const word = BigInt(`0x${Buffer.from(evm.returnValue).subarray(0, 32).toString('hex')}`);
-    assert.equal(word, 1n);
-    assert.notEqual(word, BigInt(proved.nanos));
+    assert.equal(word, BigInt(proved.nanos));
+    const again = await callReserve(
+      session,
+      encodeClaim(proved.nullifier, proved.nanos, proved.blob, 0),
+    );
+    assert.equal(again.ok, false);
   });
 
-  it('JS and the EVM refuse a forged remain and a borrowed lock, at the 0xa7 offsets', async () => {
+  it('JS and the EVM publish the reward at the 0xa8 offset and refuse a reward that does not match', async () => {
     const pay = who();
+    const locks = [{ amount: PI_SHE_NANOS, scalar: 4n, blind: 5n }];
     const first = proveVaultReward({
-      locks: [{ amount: PI_SHE_NANOS }],
+      locks,
       which: 0,
       rootEpoch: 0,
       earnEpoch: 0,
@@ -220,6 +233,16 @@ describe('epoch sums stay commitments', () => {
       dest20: pay.d20,
     });
     const second = proveVaultReward({
+      locks,
+      which: 0,
+      rootEpoch: 1,
+      earnEpoch: 1,
+      bps: GENESIS_BPS,
+      remainMs: span,
+      span,
+      dest20: pay.d20,
+    });
+    const partial = proveVaultReward({
       locks: [{ amount: PI_SHE_NANOS + 1 }],
       which: 0,
       rootEpoch: 0,
@@ -230,68 +253,73 @@ describe('epoch sums stay commitments', () => {
       dest20: pay.d20,
     });
     assert.ok(first && second);
+    assert.equal(partial, null);
     const headerAt = (blob) => 5 + blob.readUInt32LE(1) + 321 + 4 + 8 + 8;
     const off = headerAt(first.blob);
-    assert.equal(first.blob[0], 0xa7);
-    assert.equal(first.blob[off], 1);
-    assert.equal(first.blob.subarray(off + 1 + 32, off + 1 + 64).toString('hex'), first.remainCommit);
-    assert.equal(first.blob.subarray(off + 1 + 64, off + 1 + 96).toString('hex'), first.capCommit);
-    assert.notEqual(first.capCommit, first.lockCommit);
+    assert.equal(first.blob[0], 0xa8);
+    assert.equal(first.blob.readBigUInt64LE(off), BigInt(first.nanos));
+    assert.equal(first.blob.includes(first.locks[0].commit), false);
+    assert.equal(second.blob.includes(second.locks[0].commit), false);
+    const tagOf = (blob) => {
+      const fs1 = blob.readUInt32LE(1);
+      return blob.subarray(5 + fs1 + 1, 5 + fs1 + 33).toString('hex');
+    };
+    const memberOf = (blob) => {
+      const fs1 = blob.readUInt32LE(1);
+      return blob.subarray(5 + fs1 + 33, 5 + fs1 + 65).toString('hex');
+    };
+    assert.notEqual(tagOf(first.blob), tagOf(second.blob));
+    assert.notEqual(memberOf(first.blob), memberOf(second.blob));
+    assert.notEqual(first.nullifier, second.nullifier);
     const sol = readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
-    assert.match(sol, /proof\[0\] != 0xa7/);
+    assert.match(sol, /proof\[0\] != 0xa8/);
     assert.match(sol, /5 \+ fs1Len \+ 321 \+ 4 \+ 8 \+ 8/);
-    assert.match(sol, /off \+ 1 \+ 32:off \+ 1 \+ 64/);
+    assert.equal(sol.includes('off + 1 + 32:off + 1 + 64'), false);
 
+    const wrong = Buffer.from(first.blob);
+    wrong.writeBigUInt64LE(wrong.readBigUInt64LE(off) + 1n, off);
     const claimOf = (proved, id) => rewardClaimTx({ to: pay.dest, vault: proved, id });
-    const forged = fresh();
-    const forgedNote = vaultLockNote(first.locks[0].amount, first.locks[0].scalar, first.locks[0].blind).note;
-    appendVaultLockNote(forged, forgedNote, { earnEpoch: 0, remainCommit: '11'.repeat(32) });
-    forged.epochStartRoots = { 0: first.rootHex };
-    const forgedPaid = applyReserveBlock({
-      state: forged,
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, claimOf(first, 'forged-remain')] },
+    const planted = fresh();
+    const note = vaultLockNote(first.locks[0].amount, first.locks[0].scalar, first.locks[0].blind).note;
+    appendVaultLockNote(planted, note, { earnEpoch: 0, remainCommit: '11'.repeat(32) });
+    planted.epochStartRoots = { 0: first.rootHex };
+    const indexed = applyReserveBlock({
+      state: planted,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, claimOf(first, 'indexed-remain')] },
       nowMs: T0 + span,
       height: HEIGHT,
       genesisMs: T0,
     });
-    assert.equal(forgedPaid.ok, false);
-    assert.equal(forgedPaid.reason, 'stake_reward');
+    assert.equal(indexed.ok, true, indexed.reason);
+    assert.equal(Number(planted.mintBankNanos), first.nanos);
 
     const borrowed = fresh();
-    const borrowedNote = vaultLockNote(second.locks[0].amount, second.locks[0].scalar, second.locks[0].blind).note;
-    appendVaultLockNote(borrowed, borrowedNote, { earnEpoch: 0, remainCommit: first.remainCommit });
-    borrowed.epochStartRoots = { 0: first.rootHex };
+    appendVaultLockNote(borrowed, note);
+    borrowed.epochStartRoots = { 0: 'ab'.repeat(32) };
     const borrowedPaid = applyReserveBlock({
       state: borrowed,
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, claimOf(first, 'borrowed-lock')] },
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, claimOf(first, 'borrowed-root')] },
       nowMs: T0 + span,
       height: HEIGHT,
       genesisMs: T0,
     });
     assert.equal(borrowedPaid.ok, false);
-    assert.equal(borrowedPaid.reason, 'stake_reward');
+    assert.equal(borrowedPaid.reason, 'unsigned');
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, first.rootHex))).ok, true);
-    assert.equal((await callReserve(session, encodeNoteVaultLeaf(first.lockCommit, '11'.repeat(32)))).ok, true);
-    const evmForged = await callReserve(session, encodeClaim(first.nullifier, 0, first.blob, 0, packVaultOutput(first.note)));
-    assert.equal(evmForged.ok, false);
-
-    const other = await bootReserveEvm();
-    assert.equal((await callReserve(other, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(other, encodeCommitEpochStartRoot(0, first.rootHex))).ok, true);
-    assert.equal((await callReserve(other, encodeNoteVaultLeaf(second.lockCommit, first.remainCommit))).ok, true);
-    const evmBorrowed = await callReserve(other, encodeClaim(first.nullifier, 0, first.blob, 0, packVaultOutput(first.note)));
-    assert.equal(evmBorrowed.ok, false);
+    const evmWrong = await callReserve(session, encodeClaim(first.nullifier, Number(wrong.readBigUInt64LE(off)), wrong, 0));
+    assert.equal(evmWrong.ok, false);
 
     const honest = await bootReserveEvm();
     assert.equal((await callReserve(honest, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(honest, encodeCommitEpochStartRoot(0, first.rootHex))).ok, true);
-    assert.equal((await callReserve(honest, encodeNoteVaultLeaf(first.lockCommit, first.remainCommit))).ok, true);
-    const evmHonest = await callReserve(honest, encodeClaim(first.nullifier, 0, first.blob, 0, packVaultOutput(first.note)));
+    const evmHonest = await callReserve(honest, encodeClaim(first.nullifier, first.nanos, first.blob, 0));
     assert.equal(evmHonest.ok, true, evmHonest.reason);
     const evmWord = BigInt(`0x${Buffer.from(evmHonest.returnValue).subarray(0, 32).toString('hex')}`);
-    assert.equal(evmWord, 1n);
+    assert.equal(evmWord, BigInt(first.nanos));
+    const evmAgain = await callReserve(honest, encodeClaim(first.nullifier, first.nanos, first.blob, 0));
+    assert.equal(evmAgain.ok, false);
   });
 });

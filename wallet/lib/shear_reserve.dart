@@ -130,7 +130,8 @@ Map<String, dynamic>? vaultRewardProveInput({
     'rootEpoch': p.lockEpoch,
     'earnEpoch': p.lockEpoch,
     'bps': reserve.epochBps,
-    'remainMs': p.lockRemainMs,
+    // Full span, shared by every lock. A unique remain would time-link the claim.
+    'remainMs': kReserveEpochMs,
     'span': kReserveEpochMs,
     'dest20': d20,
     'magic': kBookMagic,
@@ -186,7 +187,21 @@ Map<String, dynamic> _vaultPostBody({
   };
 }
 
+/// Blocks after epoch close that share one claim slot. Matches VAULT_MINT_DELAY_BLOCKS.
+const int kVaultMintDelayBlocks = 4;
+
+/// Target block interval used only to place the shared claim slot.
+const int kVaultBatchBlockMs = 90000;
+
+/// Epoch close plus N target blocks. Claims posted before this slot are early.
+int vaultClaimSlotMs(ShearReserve reserve, int epoch) {
+  if (reserve.epochStartMs <= 0) return 0;
+  final close = reserve.epochStartMs + (epoch + 1) * kReserveEpochMs;
+  return close + kVaultMintDelayBlocks * kVaultBatchBlockMs;
+}
+
 /// Previous-epoch reward. Builds the vault-lock proof, then posts a claim.
+/// The default slot is epoch close + N, so a claim time is not unique.
 /// A missing native prover fails closed and does not post a withdraw.
 Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
   ShearLedger ledger, {
@@ -200,6 +215,8 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
 }) async {
   final due = reserve.portal(dest).claimableRewards;
   if (due <= 0) return null;
+  final slot = vaultClaimSlotMs(reserve, reserve.portal(dest).lockEpoch);
+  if (slot > 0 && nowMs < slot) return null;
   var proof = vaultProof;
   if (proof == null) {
     final input = vaultRewardProveInput(
@@ -216,7 +233,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
     dest: dest,
     payout: payout,
     proof: proof,
-    nanos: 0,
+    nanos: (proof['nanos'] as num?)?.toInt() ?? 0,
   );
   if (!local && ledger.pool != null) {
     await ledger.pool!.postRaw(body);

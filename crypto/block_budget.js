@@ -26,8 +26,8 @@ export const R_BYTES = 854_592;
  */
 export const W_FS1_BASE = 25;
 export const W_FS1_PER_INPUT = 25;
-/** Cap relation, the fresh under-cap, and the lock-time pool proof on one claim. */
-export const W_VAULT_EXTRA = 3;
+/** Remainder and slack range proofs on one public-reward claim. */
+export const W_VAULT_EXTRA = 2;
 export const R_SEND_INPUTS = 2;
 export const R_WEIGHT = 2_336;
 export const K_VW = 8;

@@ -1106,46 +1106,36 @@ contract Reserve {
         epochPaidOf[epoch] = next;
     }
 
-    /// Header: root || nullifier || u64 epoch || u32 bps || u64 span || full || remainCommit || magic.
+    /// Header: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic.
+    function _vaultReward(bytes calldata proof) internal pure returns (uint256) {
+        if (proof.length < 5 || proof[0] != 0xa8) return 0;
+        uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
+        uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
+        if (off + 8 > proof.length) return 0;
+        uint256 reward = 0;
+        for (uint256 i = 0; i < 8; i++) {
+            reward |= uint256(uint8(proof[off + i])) << (8 * i);
+        }
+        return reward;
+    }
+
     function _vaultHead(bytes32 root, bytes32 nullifier, uint256 epoch, bytes calldata proof) internal view returns (bytes memory) {
         uint256 span = epochLengthMs();
         uint256 bps = _rateFor(epoch);
-        uint256 full = 0;
-        bytes32 remainCommit = bytes32(0);
-        if (proof.length > 5 && proof[0] == 0xa7) {
-            uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
-            uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
-            if (off < proof.length) full = uint256(uint8(proof[off]));
-            if (off + 1 + 32 + 32 <= proof.length) {
-                remainCommit = bytes32(proof[off + 1 + 32:off + 1 + 64]);
-            }
-        }
-        return abi.encodePacked(root, nullifier, _u64le(epoch), _u32le(bps), _u64le(span), bytes1(uint8(full)), remainCommit, bytes("shear-testnet-v12"));
+        uint256 reward = _vaultReward(proof);
+        return abi.encodePacked(root, nullifier, _u64le(epoch), _u32le(bps), _u64le(span), _u64le(reward), bytes("shear-testnet-v12"));
     }
 
     /// 1 accepts. 2 is a bad reward. 0 is not this proof. A missing root is 2,
     /// so the claim can be retried after the root is committed.
-    /// A short arrival, and a full arrival in epoch 0, must be the remain
-    /// stored on that leaf. The leaf word follows the 17-byte magic.
+    /// Membership is the full lock set. No remainder index selects a leaf.
     function _vaultCode(bytes32 nullifier, uint256 epoch, bytes calldata proof, bytes calldata output) internal view returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xa7) return 0;
-        uint256 full = 0;
-        bytes32 remainCommit = bytes32(0);
-        uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
-        uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
-        if (off < proof.length) full = uint256(uint8(proof[off]));
-        if (full > 1) return 2;
-        if (off + 1 + 32 + 32 <= proof.length) {
-            remainCommit = bytes32(proof[off + 1 + 32:off + 1 + 64]);
-        }
-        bytes32 lockWord = bytes32(0);
-        if (full == 0 || epoch == 0) {
-            lockWord = remainLockOf[remainCommit];
-            if (lockWord == bytes32(0)) return 2;
-        }
-        bytes32 root = full == 1 ? epochStartRootOf[epoch] : vaultRootOf[epoch];
+        output;
+        if (proof.length < 2 || proof[0] != 0xa8) return 0;
+        if (_vaultReward(proof) == 0) return 2;
+        bytes32 root = epochStartRootOf[epoch];
         if (root == bytes32(0)) return 2;
-        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(_vaultHead(root, nullifier, epoch, proof), lockWord, _u32le(output.length), output, proof));
+        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(_vaultHead(root, nullifier, epoch, proof), _u32le(0), proof));
         if (!ok || out.length < 32) return 0;
         return uint256(bytes32(out));
     }
@@ -1158,14 +1148,15 @@ contract Reserve {
         bytes calldata proof,
         bytes calldata auth
     ) external onlyShear returns (uint256) {
-        nanos;
-        if (proof.length < 2 || proof[0] != 0xa7) revert ClaimUnavailable();
+        if (proof.length < 2 || proof[0] != 0xa8) revert ClaimUnavailable();
         if (nullifierMinted[nullifier]) revert AlreadyMinted();
+        uint256 reward = _vaultReward(proof);
+        if (reward == 0 || reward != nanos) revert BadAmount();
         uint256 code = _vaultCode(nullifier, rootIndex, proof, auth);
         if (code == 2) revert BadAmount();
         if (code != 1) revert Unsigned();
         nullifierMinted[nullifier] = true;
-        return 1;
+        return reward;
     }
 
     /// A matured qualifying commitment. The interest integer stays hidden.
