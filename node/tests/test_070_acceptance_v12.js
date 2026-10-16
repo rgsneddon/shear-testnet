@@ -839,6 +839,9 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
             const parent = store.blocks.length - 2;
             const probe = forkBlock(store, dest, parent, Buffer.alloc(32));
             let loseCursor = greaterHash(tipHash, probe.bits);
+            // A deferred collection of the previous backend's near-cap side
+            // hold is not an R2 cost. The 2000 ms cap stays.
+            await settleHeap();
             const ipcBase = tipTemplate(store, dest);
             const ipcBefore = snapStats(store);
             const ipcPow = await timed(() => applyVerifiedIpcBlock(store, ipcMsg(ipcBase)));
@@ -865,6 +868,7 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
             assert.ok(ipcPrev.wall < R2_WALL_MS);
             executed.cheapRules += 1;
 
+            await settleHeap();
             const side = forkBlock(store, dest, parent, Buffer.alloc(32));
             const tcpBefore = snapStats(store);
             const tcpPow = await timed(() => store.ingest(
@@ -887,6 +891,7 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
             assert.ok(tcpVer.wall < R2_WALL_MS);
             executed.cheapRules += 1;
 
+            await settleHeap();
             const suffixBefore = snapStats(store);
             const suffixPow = await timed(() => store.ingest([side]));
             assert.equal(suffixPow.result.reason, 'pow', suffixPow.result.reason);
