@@ -161,7 +161,8 @@ export async function startNode({
       hashTxLive: HASH_TX_LIVE,
     };
   }
-  fs.mkdirSync(dataDir, { recursive: true });
+  // createStore is the one datadir check on this path. applyLatestBootstrap
+  // checks before it writes, because that write happens before the store opens.
   const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true, network });
   store.reserveVault = store.reserveVault || emptyVault();
   store.oracleSnapshot = loadOracleSnapshot({ dataDir });
@@ -304,6 +305,15 @@ export async function resolveGuiBootstrap({
   }
 }
 
+function datadirFromArgs(args) {
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--datadir') return { present: true, path: String(args[i + 1] || '').trim() };
+    if (a.startsWith('--datadir=')) return { present: true, path: a.slice('--datadir='.length).trim() };
+  }
+  return { present: false, path: '' };
+}
+
 function parseHelpTopic(argv) {
   const args = argv.slice(2);
   if (args[0] === 'help') return args[1] || '';
@@ -331,6 +341,11 @@ async function main() {
         continue;
       }
     }
+    if (a === '--datadir') {
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('--datadir=')) continue;
     if (a === '--no-bootstrap' || a.startsWith('--bootstrap=')) continue;
     if (a === '--bootstrap') {
       i += 1;
@@ -354,6 +369,15 @@ async function main() {
     console.log(printHelp());
     process.exitCode = 2;
     return;
+  }
+  const flagged = datadirFromArgs(args);
+  if (flagged.present) {
+    if (!flagged.path) {
+      console.error('datadir_acl:link: --datadir needs a real directory that is not a junction');
+      process.exitCode = 2;
+      return;
+    }
+    process.env.SHEAR_DATA = flagged.path;
   }
   if (argv.includes('--print-config')) {
     console.log(JSON.stringify(printConfig()));

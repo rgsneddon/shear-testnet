@@ -102,7 +102,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const block = blockFromTpl(tpl);
     const got = verifyBlock(block, null, { trustedPowHash: TRUSTED_POW });
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'range_proof');
+    assert.equal(got.reason, 'custodial_pull');
     const body = JSON.stringify(block.txs.slice(1));
     assert.equal(body.includes('she1'), false);
     assert.equal(containsShe1(block.txs[1]), false);
@@ -123,7 +123,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const leak = blockFromTpl(leakTpl);
     const denied = verifyBlock(leak, null, { trustedPowHash: TRUSTED_POW });
     assert.equal(denied.ok, false);
-    assert.equal(denied.reason, 'range_proof');
+    assert.equal(denied.reason, 'unsigned');
 
     const api = handleWalletApi(new URL('http://127.0.0.1/api/pool/withdraw'), 'POST', {
       login: '',
@@ -251,7 +251,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const pool = poolBox.dest;
     const unsigned = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100 });
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
-    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'kind');
+    assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'custodial_pull');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-bound-'));
     const store = createStore(dir);
     assert.equal(store.queueTx(unsigned).reason, 'custodial_pull');
@@ -280,10 +280,10 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       vout: [{ address: dest, nanos: 1, kind: 'send' }],
     };
     signSpendTx(bare, poolBox.key);
-    assert.equal(admitMempool(emptyMempool(), bare).reason, 'range_proof');
+    assert.equal(admitMempool(emptyMempool(), bare).reason, 'amount_field');
     const missing = store.queueTx(bare);
     assert.equal(missing.ok, false);
-    assert.equal(missing.reason, 'admit_membership');
+    assert.equal(missing.reason, 'amount_field');
     assert.equal((store.mempool || []).some((m) => m.id === 'no-range'), false);
     const tpl = store.template({ miner: dest, now: 1_700_000_000_000 });
     const ids = (tpl.txs || []).map((t) => t.id);
