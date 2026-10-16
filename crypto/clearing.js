@@ -309,6 +309,37 @@ export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spe
   }
 }
 
+/**
+ * Same b-spend predicate verifyBlock uses, for a load that does not replay
+ * the body. An unsigned compact spend does not pass. The spent set is local.
+ */
+export function chainBSpendsRejected(blocks) {
+  const spent = new Set();
+  const list = Array.isArray(blocks) ? blocks : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const block = list[i];
+    const prev = i > 0 ? list[i - 1] : null;
+    const parentHeight = Number(prev?.height || 0);
+    const txs = Array.isArray(block?.txs) ? block.txs : [];
+    for (const tx of txs) {
+      if (!tx || tx.coinbase || tx.kind !== 'b-spend') continue;
+      let got;
+      try {
+        got = bindBSpend(tx, {
+          history: list.slice(0, i),
+          prev,
+          tipHeight: parentHeight + 1,
+          spent,
+        });
+      } catch {
+        return { ok: false, reason: 'leaf' };
+      }
+      if (!got || !got.ok) return got || { ok: false, reason: 'leaf' };
+    }
+  }
+  return null;
+}
+
 function leafDest20(tx) {
   const owned = decodeExact(tx?.dest20, 20);
   if (owned) return owned;

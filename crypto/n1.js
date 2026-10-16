@@ -121,6 +121,9 @@ export function admitNotePointRejected(tx) {
  * change with it. Leave valueProof.v in place until that lands.
  */
 export function zeroWithdrawRejected(tx) {
+  // A body coinbase is refused as coinbase. Dropping it here as mint_amount
+  // lets the template omit the tx, so the block verifies.
+  if (tx?.coinbase) return null;
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return null;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];

@@ -571,6 +571,52 @@ export function sealedVinLinkField(v) {
   return null;
 }
 
+function vinBytes(raw) {
+  try {
+    if (raw == null || raw === '') return null;
+    return Buffer.from(asU8(raw));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * dest20, prev, and index that spendPackDigest hashes for one vin.
+ * Address is not sealed: the digest already folded it into dest20.
+ * A second compactTx must hash the same bytes.
+ */
+function bSpendDigestDest20(v) {
+  const nc = vinBytes(v?.noteCommit);
+  let d20 = nc && nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : null;
+  if (!d20) {
+    const field = vinBytes(v?.dest20);
+    d20 = field && field.length >= 20 ? Buffer.from(field.subarray(0, 20)) : Buffer.alloc(20);
+  }
+  if (d20.every((b) => b === 0)) {
+    const h = hash20FromAddress(v?.address || '');
+    if (h) d20 = Buffer.from(h);
+  }
+  return d20;
+}
+
+function sealBSpendVin(v, i) {
+  const commit = v?.pseudo || v?.cTilde || v?.commit;
+  const row = {};
+  if (commit != null && commit !== '') row.commit = compactValue(commit);
+  const d20 = bSpendDigestDest20(v || {});
+  if (d20.length === 20 && !d20.every((b) => b === 0)) row.dest20 = d20;
+  if (v?.noteCommit != null && v.noteCommit !== '') row.noteCommit = compactValue(v.noteCommit);
+  if (v?.prev != null && v.prev !== '') {
+    const prev = vinBytes(v.prev);
+    row.prev = prev && prev.length === 32 ? prev : compactValue(v.prev);
+  }
+  if (v?.index != null && v.index !== '') {
+    const idx = Number(v.index || i);
+    row.index = Number.isFinite(idx) ? idx : v.index;
+  }
+  return row;
+}
+
 /** Strip a tx down to the sealed fields. No openings, view material, IP, or memo plaintext. */
 export function compactTx(tx) {
   if (!tx) return tx;
@@ -623,8 +669,9 @@ export function compactTx(tx) {
   delete out.payout;
   delete out.address;
   if (tx.vin) {
-    out.vin = (tx.vin || []).map((v) => {
+    out.vin = (tx.vin || []).map((v, i) => {
       if (v?.coinbase) return compactValue({ coinbase: true, height: v.height });
+      if (kind === 'b-spend') return sealBSpendVin(v, i);
       const commit = v.pseudo || v.cTilde || v.commit;
       const row = {};
       if (commit != null && commit !== '') row.commit = compactValue(commit);

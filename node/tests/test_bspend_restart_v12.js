@@ -3,22 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
+import { hash20FromAddress } from '../../crypto/address.js';
 import { bLeafId, bProof } from '../../crypto/clearing.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { packEpochBlock, unpackEpochBlock, writeChainBin } from '../../crypto/chainbin.js';
-import { sealNote, verifyRange } from '../../crypto/note.js';
+import { verifyRange } from '../../crypto/note.js';
+import { signSpendTx } from '../../crypto/spend.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { createStore } from '../src/store.js';
 import { buildTemplate, retarget, GENESIS_PREV, shouldAdopt } from '../src/chain.js';
+import { payerIdentity, sealMintOut } from './b_leaf_fund.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
-function minerDest() {
-  const id = newIdentity();
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+function minerWho() {
+  return payerIdentity();
 }
 
 function easyPow(tag) {
@@ -159,7 +159,8 @@ describe('v12 b-spend stamps survive a restart', () => {
     const bin = fs.readFileSync(new URL('../../crypto/chainbin.js', import.meta.url), 'utf8');
     assert.match(bin, /bSpendIds/);
 
-    const dest = minerDest();
+    const who = minerWho();
+    const dest = who.dest;
     const dest20 = hash20FromAddress(dest);
     const leaf = {
       dest20,
@@ -171,7 +172,7 @@ describe('v12 b-spend stamps survive a restart', () => {
     const id = bLeafId(leaf, 1, 0);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-'));
     const live = createStore(dir, { pruneAfter: 1_000_000 });
-    const committed = sealBuilt(live, dest, { bLeaves: [leaf] });
+    const committed = sealBuilt(live, dest);
     assert.equal(committed.ok, true, committed.reason);
     assert.equal(live.tip().height, 1);
     while ((live.tip()?.height || 0) < SPENDABLE_CONFIRMATIONS - 1) {
@@ -195,8 +196,9 @@ describe('v12 b-spend stamps survive a restart', () => {
       proof: bProof([leaf], 0),
       index: 0,
       vin: [{ address: dest }],
-      vout: [],
+      vout: [sealMintOut(leaf.unit, dest, 'b-spend')],
     };
+    signSpendTx(spendTx, who.key);
     const spent = sealBuilt(live, dest, { txs: [spendTx] });
     assert.equal(spent.ok, true, spent.reason);
     assert.equal(live.tip().height, 9);
@@ -293,7 +295,8 @@ describe('v12 b-spend stamps survive a restart', () => {
   it('rejects a trailer that is not the set of ids derived from that block', { timeout: 180_000 }, () => {
     const amounts = [1, 1_000_000_000, 2 ** 32, 2 ** 40, Number.MAX_SAFE_INTEGER];
     assert.ok(amounts.every((n) => Number.isSafeInteger(n) && n >= 1));
-    const dest = minerDest();
+    const who = minerWho();
+    const dest = who.dest;
     const dest20 = hash20FromAddress(dest);
     const leaves = [1, 2, 3].map((n) => ({
       dest20,
@@ -306,14 +309,14 @@ describe('v12 b-spend stamps survive a restart', () => {
     assert.equal(new Set(ids).size, ids.length);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-match-'));
     const live = createStore(dir, { pruneAfter: 1_000_000 });
-    const committed = sealBuilt(live, dest, { bLeaves: leaves });
+    const committed = sealBuilt(live, dest);
     assert.equal(committed.ok, true, committed.reason);
     while ((live.tip()?.height || 0) < SPENDABLE_CONFIRMATIONS - 1) {
       const pad = sealBuilt(live, dest);
       assert.equal(pad.ok, true, pad.reason);
     }
     const commit = live.blocks[0];
-    const spendTx = (leaf, index, vout, id) => ({
+    const spendTx = (leaf, index, vout, id) => signSpendTx({
       id,
       kind: 'b-spend',
       from: dest,
@@ -329,8 +332,7 @@ describe('v12 b-spend stamps survive a restart', () => {
       index,
       vin: [{ address: dest }],
       vout,
-    });
-    const note = (nanos) => sealNote(nanos, { dest20, kind: 'send' });
+    }, who.key);
     for (const nanos of amounts) {
       const plain = sealBuilt(live, dest, {
         txs: [spendTx(leaves[0], 0, [{ kind: 'send', address: dest, nanos }], 'bspend-plain')],
@@ -341,9 +343,13 @@ describe('v12 b-spend stamps survive a restart', () => {
       assert.equal(live.spentB.has(ids[0]), false);
     }
     const vouts = [
-      [note(amounts[0])],
-      [note(amounts[1]), note(amounts[2])],
-      [note(amounts[3]), note(amounts[4]), note(amounts[0])],
+      [sealMintOut(leaves[0].unit, dest, 'b-spend')],
+      [sealMintOut(1, dest, 'b-spend'), sealMintOut(leaves[1].unit - 1, dest, 'b-spend')],
+      [
+        sealMintOut(1, dest, 'b-spend'),
+        sealMintOut(1, dest, 'b-spend'),
+        sealMintOut(leaves[2].unit - 2, dest, 'b-spend'),
+      ],
     ];
     assert.deepEqual(vouts.map((v) => v.length), [1, 2, 3]);
     const pair = sealBuilt(live, dest, {

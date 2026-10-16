@@ -6,6 +6,7 @@ import { oracleContextFor, reserveApplyFields } from '../../crypto/reserve_oracl
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
+import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -562,6 +563,11 @@ export function createStore(dir, {
     supplyTip = folded.state;
   }
   if (blocks.length) noteBurial(Number(blocks[blocks.length - 1].height) || blocks.length);
+  // Snap and a suffix prefix skip verifyBlock. The b-spend predicate still runs.
+  if ((loadMode === 'snap' || loadMode === 'suffix') && blocks.length) {
+    const sealedSpend = chainBSpendsRejected(blocks);
+    if (sealedSpend) throw new Error(sealedSpend.reason || 'unsigned');
+  }
   if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
 
   function segmentNames() {
