@@ -17,7 +17,11 @@ import { V12_VALUE_KINDS } from '../../crypto/spend.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { FS1_SEND_REASON } from '../../crypto/fs1_send_gate.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-import { coinbaseLevyPays, GENESIS_PREV, buildTemplate, verifyBlock } from '../src/chain.js';
+import { decodeHeader, encodeHeader } from '../../crypto/header.js';
+import { merkleRoot } from '../../crypto/merkle.js';
+import { chainNoteRuleRejected, zeroWithdrawRejected } from '../../crypto/n1.js';
+import { coinbaseLevyPays, GENESIS_PREV, buildTemplate, digestTx, verifyBlock, verifyLoadedChain } from '../src/chain.js';
+import { meetsTarget } from '../../crypto/shear_hash.js';
 import { createStore } from '../src/store.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
@@ -59,6 +63,32 @@ function template(who, txs) {
   });
 }
 
+/** The template drops a coinbase-flagged body tx. Put it back and restamp merkle. */
+function carry(tpl, body) {
+  const txs = [tpl.txs[0], ...body];
+  const decoded = decodeHeader(Buffer.from(tpl.header));
+  const header = encodeHeader({
+    version: decoded.version,
+    prevBlockHash: decoded.prevBlockHash,
+    merkleRoot: merkleRoot(txs.map(digestTx)),
+    continuityRoot: decoded.continuityRoot,
+    timestamp: decoded.timestamp,
+    bits: decoded.bits,
+    nonce: decoded.nonce,
+    baseFee: decoded.baseFee,
+  });
+  return blockOf({ ...tpl, header, txs });
+}
+
+let powTag = 1;
+function meetsGenesis() {
+  const h = Buffer.alloc(32);
+  h.writeUInt32LE(powTag, 4);
+  powTag += 1;
+  if (!meetsTarget(h, GENESIS_BITS_PACKED)) throw new Error('pow tag');
+  return h;
+}
+
 describe('a body coinbase cannot mint the levy', () => {
   it('any fee and any value kind is coinbase, and a carried proof stays admit_membership', () => {
     const who = minerDest();
@@ -77,15 +107,18 @@ describe('a body coinbase cannot mint the levy', () => {
               vout: [],
             };
             const tpl = template(who, [tx]);
-            const verdict = verifyBlock(blockOf(tpl), null, { probeBody: true });
+            assert.equal(tpl.txs.some((row) => row && row.id === tx.id), false, `template kept ${kind}`);
+            const verdict = verifyBlock(carry(tpl, [tx]), null, { probeBody: true });
             assert.equal(verdict.ok, false, `${kind} ${fee} ${flag}`);
             // Stage 0: a block never carries a proofless send, whatever its flag.
             const want = flowNeedsDummy(tx) ? FS1_SEND_REASON : 'coinbase';
             assert.equal(verdict.reason, want, `${kind} ${fee} ${flag} ${verdict.reason}`);
+            const unpaid = coinbaseLevyPays(tpl.txs[0], 0);
+            assert.equal(unpaid.ok, true, `${kind} ${fee} ${unpaid.reason || ''}`);
             if (fee > 0) {
-              const bound = coinbaseLevyPays(tpl.txs[0], fee);
-              assert.equal(bound.ok, true, `${kind} ${fee} ${bound.reason || ''}`);
-              assert.equal(bound.finder + bound.reserve, fee, `${kind} ${fee}`);
+              const minted = coinbaseLevyPays(tpl.txs[0], fee);
+              assert.equal(minted.ok, false, `${kind} ${fee}`);
+              assert.equal(minted.reason, 'levy_split', `${kind} ${fee} ${minted.reason || ''}`);
             }
             const queued = store.queueTx({ ...tx, vin: [{ address: who }], vout: [] });
             assert.equal(queued.ok, false, `queue ${kind} ${fee}`);
@@ -115,7 +148,9 @@ describe('a body coinbase cannot mint the levy', () => {
           assert.equal(queued.reason, want, `queue proof ${kind} ${fee} ${queued.reason}`);
           const parked = admitMempool(emptyMempool(), tx, { baseFee: 1 });
           assert.equal(parked.reason, want, `admit proof ${kind} ${fee} ${parked.reason}`);
-          const verdict = verifyBlock(blockOf(template(who, [tx])), null, { probeBody: true });
+          const tpl = template(who, [tx]);
+          assert.equal(tpl.txs.some((row) => row && row.id === tx.id), false, `template kept proof ${kind}`);
+          const verdict = verifyBlock(carry(tpl, [tx]), null, { probeBody: true });
           assert.equal(verdict.ok, false);
           assert.equal(verdict.reason, want, `verify proof ${kind} ${fee} ${verdict.reason}`);
         }
@@ -136,14 +171,65 @@ describe('a body coinbase cannot mint the levy', () => {
 
       // The flagged tx is judged first. A later send with a non-bucket proof
       // passes Stage 0 and would be admit_membership only if the flag were skipped.
-      const two = verifyBlock(blockOf(template(who, [
-        { id: 'flagged', kind: 'withdraw', fee: 2, coinbase: true, vin: [{ address: who }], vout: [] },
-        { id: 'later', kind: 'send', fee: 2, vin: [{ address: who }], vout: [], admit_proof: { blob: Buffer.from([2, 1]) } },
-      ])), null, { probeBody: true });
+      const flagged = { id: 'flagged', kind: 'withdraw', fee: 2, coinbase: true, vin: [{ address: who }], vout: [] };
+      const later = { id: 'later', kind: 'send', fee: 2, vin: [{ address: who }], vout: [], admit_proof: { blob: Buffer.from([2, 1]) } };
+      const pair = template(who, [flagged, later]);
+      assert.equal(pair.txs.some((row) => row && row.id === 'flagged'), false);
+      const two = verifyBlock(carry(pair, [flagged, later]), null, { probeBody: true });
       assert.equal(two.ok, false);
       assert.equal(two.reason, 'coinbase', two.reason);
     } finally {
       try { store.close?.(); } catch { /* temp dir */ }
     }
+  });
+
+  it('a real coinbase carrying a zero withdraw row is mint_amount', () => {
+    const who = minerDest();
+    const tpl = template(who, []);
+    const rows = [
+      { kind: 'withdraw', nanos: 0 },
+      { kind: 'withdraw', valueProof: { v: 0 } },
+    ];
+    for (const row of rows) {
+      const coinbase = {
+        ...tpl.txs[0],
+        vout: [...(tpl.txs[0].vout || []), row],
+      };
+      const label = row.nanos != null ? `nanos ${row.nanos}` : 'valueProof 0';
+      assert.equal(zeroWithdrawRejected(coinbase, 0)?.reason, 'mint_amount', label);
+      assert.equal(zeroWithdrawRejected(coinbase, 1), null, `${label} body`);
+      assert.equal(chainNoteRuleRejected([{ txs: [coinbase] }])?.reason, 'mint_amount', label);
+      const decoded = decodeHeader(Buffer.from(tpl.header));
+      const txs = [coinbase];
+      const header = encodeHeader({
+        version: decoded.version,
+        prevBlockHash: decoded.prevBlockHash,
+        merkleRoot: merkleRoot(txs.map(digestTx)),
+        continuityRoot: decoded.continuityRoot,
+        timestamp: decoded.timestamp,
+        bits: decoded.bits,
+        nonce: decoded.nonce,
+        baseFee: decoded.baseFee,
+      });
+      const block = {
+        ...blockOf({ ...tpl, header, txs }),
+        height: 1,
+        hash: meetsGenesis(),
+      };
+      const verdict = verifyBlock(block, null, { probeBody: true });
+      assert.equal(verdict.ok, false, label);
+      assert.equal(verdict.reason, 'mint_amount', `${label} ${verdict.reason}`);
+      const loaded = verifyLoadedChain([block], { trustStoredHash: true, nowMs: NOW + 1 });
+      assert.equal(loaded.ok, false, `${label} load`);
+      assert.equal(loaded.reason, 'mint_amount', `${label} load ${loaded.reason}`);
+    }
+    const positive = {
+      ...tpl.txs[0],
+      vout: [...(tpl.txs[0].vout || []), { kind: 'withdraw', nanos: 1 }],
+    };
+    assert.equal(zeroWithdrawRejected(positive, 0), null);
+    const body = { kind: 'withdraw', fee: 0, vin: [{ address: who }], vout: [{ kind: 'withdraw', nanos: 0 }] };
+    assert.equal(zeroWithdrawRejected(body, 1)?.reason, 'mint_amount');
+    assert.equal(zeroWithdrawRejected({ ...body, coinbase: true }, 1), null);
   });
 });

@@ -48,11 +48,48 @@ function lenPref(buf) {
   return Buffer.concat([n, body]);
 }
 
+/** Not a legal fee. Legal fees are 0..2^53-1, and those encodings have a zero high byte. */
+const FEE_ILLEGAL = Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+
+/**
+ * Absent (missing, null, or undefined) is 0.
+ * A number-typed integer in 0..2^53-1 is itself.
+ * Anything else is null: a string, a float, NaN, a negative, or an integer above 2^53-1.
+ */
+export function postedFeeNanos(tx) {
+  if (!tx || typeof tx !== 'object') return 0;
+  if (tx.fee == null) return 0;
+  const fee = tx.fee;
+  if (typeof fee !== 'number' || !Number.isSafeInteger(fee) || fee < 0) return null;
+  return fee;
+}
+
+/** The fee field is not absent and not a number-typed integer in 0..2^53-1. */
+export function feeFieldRejected(tx) {
+  if (!tx || typeof tx !== 'object' || Array.isArray(tx) || Buffer.isBuffer(tx)) return null;
+  if (postedFeeNanos(tx) == null) return { ok: false, reason: 'fee' };
+  return null;
+}
+
+/**
+ * A b-spend's outputs must sum to the leaf, and the fee is not taken from that
+ * leaf or from any other note. A positive fee would still be added to the
+ * block levy and minted as finder-fee and reserve-fee rows. Only absent or 0.
+ */
+export function bSpendFeeRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind !== 'b-spend') return null;
+  const paid = postedFeeNanos(tx);
+  if (paid == null || paid !== 0) return { ok: false, reason: 'fee' };
+  return null;
+}
+
 function canonicalFee(tx) {
-  const n = Math.floor(Number(tx?.fee || 0));
-  const v = Number.isSafeInteger(n) && n > 0 ? n : 0;
+  const n = postedFeeNanos(tx);
+  if (n == null) return FEE_ILLEGAL;
   const out = Buffer.alloc(8);
-  out.writeBigUInt64LE(BigInt(v));
+  out.writeBigUInt64LE(BigInt(n));
   return out;
 }
 
@@ -125,7 +162,13 @@ export function spendPackDigest(tx) {
     bFlag: tx?.bFlag || tx?.kind === 'b-spend' ? 1 : 0,
   }));
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return flowAmtDigest(packed, tx?.vout);
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') {
+    const flowed = flowAmtDigest(packed, tx?.vout);
+    // A b-spend fee is signed, and consensus only allows absent or 0.
+    // An alias does not hash as that zero. Sends stay on the packed body.
+    if (kind !== 'b-spend') return flowed;
+    return createHash('sha256').update(flowed).update(canonicalFee(tx)).digest();
+  }
   // Portal, fee, and the admit blob are signed. A stolen sig cannot be
   // retargeted, repriced, or pointed at a different proof. Flow sends stay
   // on the packed body alone.

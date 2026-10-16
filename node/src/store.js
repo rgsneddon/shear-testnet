@@ -6,6 +6,7 @@ import { oracleContextFor, reserveApplyFields } from '../../crypto/reserve_oracl
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
+import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -77,8 +78,8 @@ import {
   vaultSealBanner,
 } from '../../crypto/vault_seal.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { valueOpenRejected } from '../../crypto/chronoflux.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected } from '../../crypto/spend.js';
+import { valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
 import { txNoteRuleRejected } from '../../crypto/n1.js';
@@ -562,6 +563,21 @@ export function createStore(dir, {
     supplyTip = folded.state;
   }
   if (blocks.length) noteBurial(Number(blocks[blocks.length - 1].height) || blocks.length);
+  // Snap and a suffix prefix skip verifyBlock. The b-spend predicate still runs,
+  // including the vin format check verifyBlock runs before bindBSpend.
+  if ((loadMode === 'snap' || loadMode === 'suffix') && blocks.length) {
+    for (const block of blocks) {
+      const rows = Array.isArray(block?.txs) ? block.txs : [];
+      for (const tx of rows) {
+        const vinAdmit = bSpendVinRejected(tx);
+        if (vinAdmit) throw new Error(vinAdmit.reason || 'vin_link');
+        const spendFee = bSpendFeeRejected(tx);
+        if (spendFee) throw new Error(spendFee.reason || 'fee');
+      }
+    }
+    const sealedSpend = chainBSpendsRejected(blocks);
+    if (sealedSpend) throw new Error(sealedSpend.reason || 'unsigned');
+  }
   if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
 
   function segmentNames() {
@@ -3324,9 +3340,13 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
+    const feeHit = feeFieldRejected(tx);
+    if (feeHit) return feeHit;
+    const spendFee = bSpendFeeRejected(tx);
+    if (spendFee) return spendFee;
     const bucket = v3BucketProofRejected(tx);
     if (bucket) return bucket;
-    const noteRule = txNoteRuleRejected(tx);
+    const noteRule = txNoteRuleRejected(tx, 1);
     if (noteRule) return noteRule;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
@@ -3359,6 +3379,8 @@ export function createStore(dir, {
     if (open) return open;
     const leafAsk = bLeafAskRejected(tx);
     if (leafAsk) return leafAsk;
+    const vinAdmit = bSpendVinRejected(tx);
+    if (vinAdmit) return vinAdmit;
     if (String(tx.kind || '') === 'b-spend') {
       const tipNow = tip();
       let boundB;
