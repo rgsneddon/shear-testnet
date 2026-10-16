@@ -7268,6 +7268,19 @@ void main() {
     expect(File('lib/main.dart').readAsStringSync().toLowerCase().contains('apr'), isFalse);
   });
 
+  test('an observed rate is the epoch rate with no per-epoch step cap', () {
+    final ident = createIdentity();
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final up = ShearReserve();
+    expect(up.observeRate(annualBps: 10000, nowMs: 1000), isNull);
+    expect(up.deposit(dest: dest, she: kPiShe, nowMs: 1000), isNull);
+    expect(up.epochBps, 10000);
+    final down = ShearReserve();
+    expect(down.observeRate(annualBps: 0, nowMs: 1000), isNull);
+    expect(down.deposit(dest: dest, she: kPiShe, nowMs: 1000), isNull);
+    expect(down.epochBps, 0);
+  });
+
   test('Reserve epoch table records one row per epoch number', () {
     final ident = createIdentity();
     final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;

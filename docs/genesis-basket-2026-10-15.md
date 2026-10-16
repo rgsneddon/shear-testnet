@@ -2,9 +2,9 @@
 
 `GENESIS_BPS` was the placeholder **284**. Recomputed from the official policy rates below, just before the v12 cut. The chain does not fetch these pages. The attested integers live in `crypto/reserve_oracle.js` (`BUNDLED_POLICY_TENTHS`) and match `reserve/latest.json`.
 
-Spec (`reserve/methodology.md`): 14 banks, tenths of a basis point (1% = 1000). Fed is the median of the federal funds target range. ECB is the median of the deposit facility and the main refinancing rate, not the marginal lending facility. Denmark's policy rate is the current-account rate. Drop the two lowest and two highest tenths, half-up the middle 10, half-up to whole basis points, then floor at 0.
+Spec (`reserve/methodology.md`): 14 banks, tenths of a basis point (1% = 1000). Fed is the median of the federal funds target range. ECB is the median of the deposit facility and the main refinancing rate, not the marginal lending facility. Denmark's policy rate is the current-account rate. Plain average of all 14 tenths (negatives keep their sign), half-up the sum by 14, half-up to whole basis points, then floor at 0.
 
-Sorted tenths: 0, 1250, 1750, 2100, 2250, 2575, 2750, 3000, 3250, 3750, 3750, 3875, 4500, 4600. Drop SNB and BOJ (low) and NORGES and RBA (high). Middle sum **29050**. Half-up ÷ 10 = **2905** tenths. Half-up ÷ 10 = **291** bps.
+Sum of all 14 tenths **39400**. Half-up ÷ 14 = **2814** tenths. Half-up ÷ 10 = **281** bps.
 
 | id | Official rate | Tenths | Effective | Source |
 |----|---------------|--------|-----------|--------|
@@ -23,4 +23,4 @@ Sorted tenths: 0, 1250, 1750, 2100, 2250, 2575, 2750, 3000, 3250, 3750, 3750, 38
 | BOI | interest rate 3.25% | 3250 | 2026-09-01 (next decision 2026-10-21) | https://boi.org.il/en/communication-and-publications/press-releases/01-9-26-en/ |
 | CNB | two-week repo rate 3.75% | 3750 | 2026-06-19 (held 2026-08-06 and 2026-09-17) | https://www.cnb.cz/en/monetary-policy/instruments/ |
 
-Old genesis rate: **284** bps. New genesis rate: **291** bps.
+Old genesis rate: **284** bps. New genesis rate: **281** bps.

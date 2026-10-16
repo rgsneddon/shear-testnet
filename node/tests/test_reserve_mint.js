@@ -62,7 +62,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.match(sol, /UnitFloor/);
   });
 
-  it('wrong withdraw nanos is mint_amount; idle adds 0; default committedBps is the trimmed bundle', async () => {
+  it('wrong withdraw nanos is mint_amount; idle adds 0; default committedBps is the plain-average bundle', async () => {
     const id = newIdentity();
     const dest = destOf(id);
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
@@ -106,7 +106,7 @@ describe('Reserve mint is sealed-state pure', () => {
     const defDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 180_000, txs: [as425] })), null, { trustedPowHash: TRUSTED }));
     assert.equal(defDenied.ok, false);
     assert.equal(defDenied.reason, 'mint_amount');
-    assert.equal(GENESIS_BPS, 291);
+    assert.equal(GENESIS_BPS, 281);
   });
 
   it('gateVorticeRegister ok:false fails the block', () => {

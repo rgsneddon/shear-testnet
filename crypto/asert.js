@@ -377,7 +377,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
     `RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2/3:windowMain=${ORACLE_WINDOW_MAINNET}:windowTest=${ORACLE_WINDOW_TESTNET}:windowMs=${ORACLE_WINDOW_MS}:floorBps=0:sourceTenths=-1000..100000:activation=${oracleActivationPin()}`,
-    `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=2:root=${bundleObservationRoot()}`,
+    `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=0:root=${bundleObservationRoot()}`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${network}`,
     'FORK=work-then-lowhash',

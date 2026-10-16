@@ -14,14 +14,14 @@ describe('Shear Sentinel staking oracle', () => {
     vault.epochBps = 264;
     vault.oracle.annualBps = 264;
     const snap = loadOracleSnapshot();
-    assert.equal(bpsFromSnapshot(snap).annualBps, 291);
+    assert.equal(bpsFromSnapshot(snap).annualBps, 281);
     const now = Date.parse('2026-11-15T12:00:00Z');
     const view = oracleView(vault, snap, now);
     assert.equal(view.id, 'shear-reserve-oracle-v1');
-    assert.equal(view.annualBps, 291);
+    assert.equal(view.annualBps, 281);
     assert.equal(view.displayOnly, true);
     assert.equal(view.stale, true);
-    assert.equal(view.wouldFreezeBps, 291);
+    assert.equal(view.wouldFreezeBps, 281);
     assert.equal(view.epochBps, 264);
     assert.equal(view.mintUses, 'epochBps');
     assert.equal(view.sourceCount, 14);
@@ -45,8 +45,8 @@ describe('Shear Sentinel staking oracle', () => {
     };
     const view = oracleView(vault, snap, now);
     assert.equal(view.stale, false);
-    assert.equal(view.annualBps, 291);
-    assert.equal(view.wouldFreezeBps, 291);
+    assert.equal(view.annualBps, 281);
+    assert.equal(view.wouldFreezeBps, 281);
     assert.equal(view.snapshotIgnored, true);
     assert.equal(vault.epochBps, 264);
     assert.equal(bpsFromSnapshot({ version: 'other', averagePercent: 4 }), null);

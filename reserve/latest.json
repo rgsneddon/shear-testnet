@@ -2,7 +2,7 @@
   "version": "shear-reserve-oracle-v1",
   "asOf": "2026-10-15",
   "observedAt": "2026-10-15T21:42:00Z",
-  "consensusBps": 291,
+  "consensusBps": 281,
   "consensusScale": "basis_point",
   "changed": true,
   "changedBanks": [

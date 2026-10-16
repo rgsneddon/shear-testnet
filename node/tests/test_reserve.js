@@ -108,7 +108,7 @@ describe('node Reserve vault', () => {
     assert.equal(c.reserveJoinCutoffDays, 1);
     assert.equal(c.reserveOracle, RESERVE_ORACLE_ID);
     assert.equal(c.reserveOracleDefaultBps, RESERVE_ORACLE_DEFAULT_BPS);
-    assert.equal(c.reserveOracleDefaultBps, 291);
+    assert.equal(c.reserveOracleDefaultBps, 281);
     assert.equal(c.reserveEpochDays, 4);
     assert.equal(c.interestDenomDays, INTEREST_DENOM_DAYS);
     assert.equal(c.interestDenomDays, 400);

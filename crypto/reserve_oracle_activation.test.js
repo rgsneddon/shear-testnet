@@ -314,7 +314,7 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     assert.equal(stillFixed.reason, undefined);
   });
 
-  it('a split inside a bank still yields the trimmed mean of the agreeing banks', () => {
+  it('a split inside a bank still yields the plain average of the agreeing banks', () => {
     const majority = [1000, 1500, 2000, 2500, 3000, 3200, 3400, 3600, 3800, 4000, 4500, 5000, 5500, 6000];
     assert.equal(majority.length, POLICY_BANK_IDS.length);
     const agree = 50;
@@ -337,7 +337,7 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     }
     const kept = majority.slice(0, -1);
     const want = trimmedMeanBps(kept);
-    assert.equal(want, 333);
+    assert.equal(want, 331);
     const bps = epochBpsFromReports(GENESIS_BPS, window, { windowSize: W });
     assert.equal(bps, want);
     const state = freshVault();
@@ -350,8 +350,8 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
       epochIndex: 1,
     });
     assert.equal(got.ok, true, got.reason);
-    assert.equal(state.pendingRates[1], 333);
-    assert.equal(state.nextEpochBps, 333);
+    assert.equal(state.pendingRates[1], 331);
+    assert.equal(state.nextEpochBps, 331);
     assert.equal(state.epochBps, GENESIS_BPS);
   });
 
@@ -410,7 +410,7 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     assert.notEqual(paid.interest, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
   });
 
-  it('commits the trimmed mean of a mixed-bank window', () => {
+  it('commits the plain average of a mixed-bank window', () => {
     const tenths = [1000, 1500, 2000, 2500, 3000, 3200, 3400, 3600, 3800, 4000, 4500, 5000, 5500, 6000];
     assert.equal(tenths.length, POLICY_BANK_IDS.length);
     const window = [];
