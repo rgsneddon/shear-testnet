@@ -7250,7 +7250,10 @@ void main() {
 
   test('kWalletVersion == 0.72 and the lock issuance rate uses the genesis bps', () {
     expect(kWalletVersion, '0.72');
-    expect(kReserveOracleDefaultBps, 284);
+    final genesis = RegExp(r'export const GENESIS_BPS = (\d+);')
+        .firstMatch(File('../crypto/reserve_oracle.js').readAsStringSync());
+    expect(genesis, isNotNull);
+    expect(kReserveOracleDefaultBps, int.parse(genesis!.group(1)!));
     expect(reserveInterestNanos(kUnitsPerShe, kReserveOracleDefaultBps) / kUnitsPerShe, isNot(closeTo(0.0425, 1e-9)));
     expect(accruedNanos(kUnitsPerShe, kReserveOracleDefaultBps, 0), 0);
     final dart = File('lib/shear_reserve.dart').readAsStringSync();
@@ -7265,6 +7268,19 @@ void main() {
       isTrue,
     );
     expect(File('lib/main.dart').readAsStringSync().toLowerCase().contains('apr'), isFalse);
+  });
+
+  test('an observed rate is the epoch rate with no per-epoch step cap', () {
+    final ident = createIdentity();
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final up = ShearReserve();
+    expect(up.observeRate(annualBps: 10000, nowMs: 1000), isNull);
+    expect(up.deposit(dest: dest, she: kPiShe, nowMs: 1000), isNull);
+    expect(up.epochBps, 10000);
+    final down = ShearReserve();
+    expect(down.observeRate(annualBps: 0, nowMs: 1000), isNull);
+    expect(down.deposit(dest: dest, she: kPiShe, nowMs: 1000), isNull);
+    expect(down.epochBps, 0);
   });
 
   test('Reserve epoch table records one row per epoch number', () {

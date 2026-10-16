@@ -466,7 +466,7 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /NETWORK=shear-testnet-v12/);
     assert.match(fp, /RESERVE_NOTE=withdraw-levy-pull/);
     assert.doesNotMatch(fp, /HISTORICAL_TIP=/);
-    assert.match(fp, /RESERVE_RATE=epoch-fixed:quorum=10:genesis=284:floor=0:trim=2:root=/);
+    assert.match(fp, /RESERVE_RATE=epoch-fixed:quorum=10:genesis=281:floor=0:trim=0:root=/);
     assert.match(fp, /RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2\/3:windowMain=6720:windowTest=67:windowMs=604800000:floorBps=0:sourceTenths=-1000\.\.100000:activation=fixed/);
     assert.doesNotMatch(fp, /maxStep=/);
     assert.doesNotMatch(fp, /process\.env/);
