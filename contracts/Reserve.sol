@@ -279,6 +279,10 @@ contract Reserve {
     bytes32[] internal heldShas;
     mapping(uint256 => uint256) public epochRateOf;
     mapping(uint256 => bool) internal epochRateKnown;
+    /// sha256 portal id → epoch → roll consumed that epoch's tranche set.
+    mapping(bytes32 => mapping(uint256 => bool)) internal rolledEpoch;
+    /// sha256 portal id → epoch → principal left, so a roll cannot replay.
+    mapping(bytes32 => mapping(uint256 => bool)) internal withdrewEpochOf;
 
     /// First non-zero chain genesis wins. Settlement and rate keys share it.
     /// A later call that names a different genesis reverts.
@@ -326,7 +330,17 @@ contract Reserve {
         return epochBps;
     }
 
-    /// floor(amount * bps * remain / epochLength / 10000).
+    /// Epoch length in 90s blocks. rate_e is the total for this many blocks.
+    function _epochBlocks() internal view returns (uint256) {
+        return epochDaysOf() * 960;
+    }
+
+    /// Sixteen periods tile the epoch. On the 400-day epoch each is 25 days.
+    uint256 internal constant PERIODS_PER_EPOCH = 16;
+
+    /// floor(amount * rate_e * heldBlocks / (epochBlocks * 10000)).
+    /// rate_e is the total for the whole epoch, not a daily rate.
+    /// heldBlocks == epochBlocks is floor(amount * rate_e / 10000).
     function _partial(uint256 amount, uint256 bps, uint256 remain, uint256 span) internal pure returns (uint256) {
         if (amount == 0 || bps == 0 || remain == 0 || span == 0) return 0;
         return (amount * bps * remain) / (span * 10000);
@@ -1046,7 +1060,7 @@ contract Reserve {
 
     /// Header: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic.
     function _vaultReward(bytes calldata proof) internal pure returns (uint256) {
-        if (proof.length < 5 || proof[0] != 0xa9) return 0;
+        if (proof.length < 5 || proof[0] != 0xaa) return 0;
         uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
         uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
         if (off + 8 > proof.length) return 0;
@@ -1058,8 +1072,8 @@ contract Reserve {
     }
 
     function _vaultHead(bytes32 root, bytes32 nullifier, uint256 epoch, bytes calldata proof) internal view returns (bytes memory) {
-        uint256 span = epochLengthMs();
-        uint256 bps = _rateFor(epoch);
+        uint256 span = _epochBlocks();
+        uint256 bps = _rateFor(epoch / PERIODS_PER_EPOCH);
         uint256 reward = _vaultReward(proof);
         return abi.encodePacked(root, nullifier, _u64le(epoch), _u32le(bps), _u64le(span), _u64le(reward), bytes("shear-testnet-v12"));
     }
@@ -1068,7 +1082,7 @@ contract Reserve {
     /// so the claim can be retried after the root is committed.
     /// Membership is the full lock set. No remainder index selects a leaf.
     function _vaultCode(bytes32 nullifier, uint256 epoch, bytes calldata proof, bytes calldata output) internal view returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xa9) return 0;
+        if (proof.length < 2 || proof[0] != 0xaa) return 0;
         if (output.length < 96) return 2;
         if (_vaultReward(proof) == 0) return 2;
         bytes32 root = epochStartRootOf[epoch];
@@ -1099,7 +1113,7 @@ contract Reserve {
         bytes calldata proof,
         bytes calldata auth
     ) external onlyShear returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xa9) revert ClaimUnavailable();
+        if (proof.length < 2 || proof[0] != 0xaa) revert ClaimUnavailable();
         if (nullifierMinted[nullifier]) revert AlreadyMinted();
         uint256 reward = _vaultReward(proof);
         if (reward == 0 || reward != nanos) revert BadAmount();
@@ -1143,17 +1157,34 @@ contract Reserve {
         // The same sha256 portal id the JS roll signs. keccak portalId is the storage key.
         bytes32 shaId = portalSha[id];
         if (shaId == bytes32(0)) revert Unsigned();
+        if (epoch != currentEpoch) revert EpochNotEnded();
+        Portal storage p = portals[id];
+        if (rolledEpoch[shaId][epoch]) revert AlreadyMinted();
+        bytes32 withdrawId = _nullifier(shaId, _chainEpoch(nowTs));
+        if (nullifierMinted[withdrawId] || withdrewEpochOf[shaId][epoch]) revert AlreadyMinted();
+        bytes32 set = _rollSet(p);
         bytes memory message = abi.encodePacked(
             "shear-reward-roll-v1",
             shaId,
             _u64le(epoch),
             _u64le(block.chainid),
-            magic
+            magic,
+            set
         );
         if (!_ed25519(_authPub(auth), auth[32:96], message)) revert Unsigned();
-        Portal storage p = portals[id];
+        rolledEpoch[shaId][epoch] = true;
         _settle(p, nowTs);
         return 1;
+    }
+
+    /// Same ordered hash as JS rollTrancheSet. A re-lock changes it.
+    function _rollSet(Portal storage p) internal view returns (bytes32 h) {
+        h = sha256("shear-roll-tranche-v1");
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            if (p.tranches[i].commit == bytes32(0)) continue;
+            h = sha256(abi.encodePacked(h, p.tranches[i].commit, _u64le(p.tranches[i].epoch)));
+        }
     }
 
     /// `auth` is ownerPub(32) || sig(64) || payout dest. The signature covers
@@ -1162,7 +1193,24 @@ contract Reserve {
     /// itself names the lock, so the withdraw is linkable to the lock.
     /// `reward` is zero: the stake reward waits for the ZK claim. `earned`
     /// is the qualified amount that claim will pay.
+    /// This entry does not retire vault leaves. withdrawRetire does.
     function withdraw(bytes calldata dest, uint256 nowTs, bytes calldata auth) external onlyShear returns (uint256 principal, uint256 reward, uint256 earned) {
+        return _withdraw(dest, nowTs, auth, bytes(""));
+    }
+
+    /// Same withdraw, and the retire proofs burn the claim nullifiers of the
+    /// leaves it releases. π is paid once per leaf, not once per epoch.
+    /// Blob: u32le count || count × (bytes32 nullifier || u32le proofLen || proof).
+    function withdrawRetire(
+        bytes calldata dest,
+        uint256 nowTs,
+        bytes calldata auth,
+        bytes calldata retireBlob
+    ) external onlyShear returns (uint256 principal, uint256 reward, uint256 earned) {
+        return _withdraw(dest, nowTs, auth, retireBlob);
+    }
+
+    function _withdraw(bytes calldata dest, uint256 nowTs, bytes calldata auth, bytes memory retireBlob) internal returns (uint256 principal, uint256 reward, uint256 earned) {
         // Each deposit unlocks at the end of its own lock epoch. A later
         // top-up does not re-lock principal whose epoch has already ended.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
@@ -1173,6 +1221,7 @@ contract Reserve {
         bytes32 withdrawId = _nullifier(portalSha[id], chainNow);
         // The interest withdraw id is checked even when no vault proof is attached.
         if (portalSha[id] != bytes32(0) && nullifierMinted[withdrawId]) revert AlreadyMinted();
+        if (portalSha[id] != bytes32(0) && rolledEpoch[portalSha[id]][currentEpoch]) revert AlreadyMinted();
         Portal storage p = portals[id];
         uint256 active = p.active;
         uint256 idleBal = p.idle;
@@ -1186,6 +1235,7 @@ contract Reserve {
         _settle(p, nowTs);
         // Hash the matured set before the release loop drops those tranches.
         bytes32 trancheSet = _trancheSet(p, chain);
+        uint256 hiddenRelease = _retireLeaves(p, chain, retireBlob);
         if (_hiddenDue(p, nowTs)) p.hiddenRewardOpen = true;
         uint256 release = 0;
         uint256 noteMatured = 0;
@@ -1210,12 +1260,14 @@ contract Reserve {
             revert EpochNotEnded();
         }
         while (p.tranches.length > kept) p.tranches.pop();
-        // Principal only. A commitment tranche pays integer 0. The ZK claim
-        // is the reward. The recorded owner must sign the release.
+        // Legacy principal was booked on active and idle. A hidden leaf was
+        // not, so its π is not debited from those balances. The owner signs
+        // the sum: legacy principal plus one π per retired leaf.
         earned = p.accruedReward;
         reward = 0;
+        uint256 signed = release + hiddenRelease;
         if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
-        if (!_withdrawAuthOk(portalSha[id], release, auth, trancheSet, chain)) revert Unsigned();
+        if (!_withdrawAuthOk(portalSha[id], signed, auth, trancheSet, chain)) revert Unsigned();
         if (release > 0) {
             if (release > active) {
                 uint256 rest = release - active;
@@ -1227,7 +1279,7 @@ contract Reserve {
             }
             totalLocked -= release;
         }
-        principal = release;
+        principal = signed;
         uint256 left = p.active + p.idle;
         bool stillHidden = false;
         uint256 remainCredits = p.tranches.length;
@@ -1251,7 +1303,88 @@ contract Reserve {
             p.vote = Vote.None;
             p.voteEpoch = 0;
         }
-        if (portalSha[id] != bytes32(0)) nullifierMinted[withdrawId] = true;
+        if (portalSha[id] != bytes32(0)) {
+            nullifierMinted[withdrawId] = true;
+            withdrewEpochOf[portalSha[id]][currentEpoch] = true;
+        }
+    }
+
+    function _readU32(bytes memory b, uint256 off) internal pure returns (uint256) {
+        return uint256(uint8(b[off]))
+            | (uint256(uint8(b[off + 1])) << 8)
+            | (uint256(uint8(b[off + 2])) << 16)
+            | (uint256(uint8(b[off + 3])) << 24);
+    }
+
+    function _copyAt(bytes memory blob, uint256 off, uint256 len) internal pure returns (bytes memory out) {
+        out = new bytes(len);
+        for (uint256 i = 0; i < len; i++) out[i] = blob[off + i];
+    }
+
+    /// One π per distinct leaf commit. A second epoch of the same leaf burns
+    /// another nullifier and does not pay π again.
+    function _retireLeaves(Portal storage p, uint256 chain, bytes memory blob) internal returns (uint256) {
+        if (blob.length == 0) return 0;
+        if (blob.length < 4) revert Unsigned();
+        uint256 n = _readU32(blob, 0);
+        if (n == 0 || n > 64) revert Unsigned();
+        bytes32[16] memory seen;
+        uint256 seenN = 0;
+        uint256 off = 4;
+        for (uint256 i = 0; i < n; i++) {
+            if (off + 36 > blob.length) revert Unsigned();
+            bytes32 nullifier;
+            bytes memory word = _copyAt(blob, off, 32);
+            assembly ("memory-safe") { nullifier := mload(add(word, 32)) }
+            off += 32;
+            uint256 proofLen = _readU32(blob, off);
+            off += 4;
+            if (proofLen == 0 || off + proofLen > blob.length) revert Unsigned();
+            bytes memory proof = _copyAt(blob, off, proofLen);
+            off += proofLen;
+            if (nullifierMinted[nullifier]) revert AlreadyMinted();
+            (bool ok, bytes memory out) = VAULT_ZK.staticcall(
+                abi.encodePacked(nullifier, bytes("shear-retire-v1"), proof)
+            );
+            if (!ok || out.length < 32 || uint256(bytes32(out)) != 1) revert Unsigned();
+            bytes32 commit = _retireLeafCommit(proof);
+            if (commit == bytes32(0) || !_maturedHidden(p, chain, commit)) revert Unsigned();
+            bool known = false;
+            for (uint256 s = 0; s < seenN; s++) {
+                if (seen[s] == commit) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                if (seenN == 16) revert Unsigned();
+                seen[seenN] = commit;
+                seenN += 1;
+            }
+            nullifierMinted[nullifier] = true;
+        }
+        if (off != blob.length) revert Unsigned();
+        return seenN * PI_NANOS;
+    }
+
+    function _maturedHidden(Portal storage p, uint256 chain, bytes32 commit) internal view returns (bool) {
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            if (chain <= p.tranches[i].epoch || p.tranches[i].notePrincipal) continue;
+            if (p.tranches[i].commit == commit) return true;
+        }
+        return false;
+    }
+
+    /// Leaf commit inside a retire proof. Layout matches the JS blob.
+    function _retireLeafCommit(bytes memory proof) internal pure returns (bytes32 commit) {
+        if (proof.length < 12 + 136 + 64 + 32) return bytes32(0);
+        uint256 n = _readU32(proof, 8);
+        if (n < 1 || n > 64) return bytes32(0);
+        uint256 leafAt = 12 + (n * 136);
+        if (proof.length != leafAt + 64 + 32) return bytes32(0);
+        bytes memory word = _copyAt(proof, leafAt + 32, 32);
+        assembly ("memory-safe") { commit := mload(add(word, 32)) }
     }
 
     function publicView(uint256 nowTs)

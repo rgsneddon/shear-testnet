@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -175,7 +176,6 @@ Map<String, dynamic> _vaultPostBody({
   return {
     'kind': kind,
     'programId': kReserveProgram,
-    'from': dest,
     'to': payout,
     'nanos': nanos.toString(),
     'nullifier': proof['nullifier'],
@@ -193,13 +193,16 @@ const int kVaultMintDelayBlocks = 4;
 /// Target block interval used only to place the shared claim slot.
 const int kVaultBatchBlockMs = 90000;
 
-/// A stable height in [close, close + 4 blocks], chosen from the payout and the epoch.
-/// The same dest retries the same slot. Claims posted before that slot are early.
+/// One claim of one leaf in one period. The slot is a Random.secure delay
+/// inside the two-epoch window after the period can be claimed. Sibling
+/// leaves are separate transactions; this function posts one.
+/// A withdraw publishes the lock height and the hold: the arrival stub is
+/// paid from those public numbers.
 int vaultClaimSlotMs(ShearReserve reserve, int epoch, {String dest = ''}) {
   if (reserve.epochStartMs <= 0) return 0;
   final close = reserve.epochStartMs + (epoch + 1) * kReserveEpochMs;
-  final hash = sha256.convert(utf8.encode('$dest|$epoch|${reserve.epochStartMs}')).bytes;
-  final pick = hash[0] % (kVaultMintDelayBlocks + 1);
+  final windowBlocks = (2 * kReserveEpochMs) ~/ kVaultBatchBlockMs;
+  final pick = Random.secure().nextInt(windowBlocks > 0 ? windowBlocks : 1);
   return close + pick * kVaultBatchBlockMs;
 }
 

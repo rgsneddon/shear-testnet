@@ -219,7 +219,7 @@ describe('epoch sums stay commitments', () => {
     assert.equal(again.ok, false);
   });
 
-  it('JS and the EVM publish the reward at the 0xa9 offset and refuse a reward that does not match', async () => {
+  it('JS and the EVM publish the reward at the 0xaa offset and refuse a reward that does not match', async () => {
     const pay = who();
     const locks = [{ amount: PI_SHE_NANOS, scalar: 4n, blind: 5n }];
     const first = proveVaultReward({
@@ -256,7 +256,7 @@ describe('epoch sums stay commitments', () => {
     assert.equal(partial, null);
     const headerAt = (blob) => 5 + blob.readUInt32LE(1) + 321 + 4 + 8 + 8;
     const off = headerAt(first.blob);
-    assert.equal(first.blob[0], 0xa9);
+    assert.equal(first.blob[0], 0xaa);
     assert.equal(first.blob.readBigUInt64LE(off), BigInt(first.nanos));
     assert.equal(first.blob.includes(first.locks[0].commit), false);
     assert.equal(second.blob.includes(second.locks[0].commit), false);
@@ -272,7 +272,7 @@ describe('epoch sums stay commitments', () => {
     assert.notEqual(memberOf(first.blob), memberOf(second.blob));
     assert.notEqual(first.nullifier, second.nullifier);
     const sol = readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
-    assert.match(sol, /proof\[0\] != 0xa9/);
+    assert.match(sol, /proof\[0\] != 0xaa/);
     assert.match(sol, /5 \+ fs1Len \+ 321 \+ 4 \+ 8 \+ 8/);
     assert.equal(sol.includes('off + 1 + 32:off + 1 + 64'), false);
 

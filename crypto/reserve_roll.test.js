@@ -16,6 +16,7 @@ import {
   rewardClaimTx,
   rewardOwnerCommit,
   rollTx,
+  rollTrancheSet,
   signRollReward,
   signWithdrawReward,
   withdrawTx,
@@ -67,11 +68,11 @@ async function openEvm(owner, commit = Buffer.alloc(32, 9), when = T0) {
   return session;
 }
 
-function signedRoll(owner, { epochIndex = 0, id = 'roll' } = {}) {
+function signedRoll(owner, state, { epochIndex = 0, id = 'roll' } = {}) {
   const tx = rollTx({ from: owner.dest, id });
   tx.earnEpoch = epochIndex;
   tx.rootEpoch = epochIndex;
-  signRollReward(tx, owner.key, { portalId: tx.portalId, epoch: epochIndex });
+  signRollReward(tx, owner.key, { portalId: tx.portalId, epoch: epochIndex, state });
   return tx;
 }
 
@@ -98,7 +99,7 @@ describe('a roll is the owner signed transaction', () => {
     assert.equal(Number(state.totalLockedNanos), 0);
 
     const stranger = who();
-    const foreign = signedRoll(stranger, { id: 'roll-stranger' });
+    const foreign = signedRoll(stranger, state, { id: 'roll-stranger' });
     foreign.from = owner.dest;
     foreign.portalId = portalIdFromDest(owner.dest);
     const stolen = applyReserveBlock({
@@ -123,7 +124,7 @@ describe('a roll is the owner signed transaction', () => {
     assert.equal(portal.qualified, true);
     assert.equal(portalEpochInterest(state, portal, at), 0);
     const commit = portal.tranches[0].commit;
-    const tx = signedRoll(owner, { id: 'roll-due' });
+    const tx = signedRoll(owner, state, { id: 'roll-due' });
     const rolled = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, tx] },
@@ -137,7 +138,7 @@ describe('a roll is the owner signed transaction', () => {
     assert.equal(portal.tranches[0].amount, undefined);
     assert.equal(state.mintedIds?.[tx.nullifier], undefined);
 
-    const session = await openEvm(owner);
+    const session = await openEvm(owner, Buffer.from(String(commit), 'hex'));
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
     const evm = await callReserve(session, encodeRoll(owner.dest, at, 0, auth));
     assert.equal(evm.ok, true, evm.reason);
@@ -153,7 +154,7 @@ describe('a roll is the owner signed transaction', () => {
     const end = T0 + epoch;
     const portal = state.portals[portalIdFromDest(owner.dest)];
     assert.equal(portalEpochInterest(state, portal, end), 0);
-    const tx = signedRoll(owner, { epochIndex: 0, id: 'roll-idle' });
+    const tx = signedRoll(owner, state, { epochIndex: 0, id: 'roll-idle' });
     const rolled = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, tx] },
@@ -165,8 +166,15 @@ describe('a roll is the owner signed transaction', () => {
     assert.equal(Number(state.totalLockedNanos), 0);
     assert.equal(portal.tranches[0].epoch, 0);
 
-    const session = await openEvm(owner, Buffer.alloc(32, 9), lateAt);
-    const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
+    const evmCommit = Buffer.alloc(32, 9);
+    const session = await openEvm(owner, evmCommit, lateAt);
+    const evmTx = rollTx({ from: owner.dest, id: 'roll-idle-evm' });
+    signRollReward(evmTx, owner.key, {
+      portalId: evmTx.portalId,
+      epoch: 0,
+      trancheSet: rollTrancheSet({ tranches: [{ commit: evmCommit.toString('hex'), epoch: 0 }] }),
+    });
+    const auth = packRewardAuth({ ownerPub: owner.pub, sig: evmTx.rewardSig, dest: owner.dest });
     const evm = await callReserve(session, encodeRoll(owner.dest, end, 0, auth));
     assert.equal(evm.ok, true, evm.reason);
     const view = decodePublicView((await callReserve(session, encodePublicView(end), { staticCall: true })).returnValue);

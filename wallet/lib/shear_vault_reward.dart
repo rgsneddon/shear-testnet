@@ -17,7 +17,7 @@ const String kVaultRelDst = 'shear-vault-reward-rel-v1';
 const String kVaultBalDst = 'shear-vault-reward-bal-v1';
 const String kVaultLockBlindDst = 'shear-vault-lock-blind-v1';
 const String kVaultLockOwnerDst = 'shear-vault-lock-owner-v1';
-const int kVaultProofVer = 0xa9;
+const int kVaultProofVer = 0xaa;
 const String kClaimTxidDst = 'shear-claim-txid-v1';
 const String kClaimPortalDst = 'shear-claim-portal-v1';
 const String kVaultCapDst = 'shear-epoch-cap-v1';
@@ -241,13 +241,17 @@ Map<String, dynamic> proveVaultLockReward({
     if (!fs1.treeAppend(handle, packed)) throw StateError('fs1_prover_unavailable');
     final root = fs1.treeRoot(handle);
     if (root == null || root.length != 32) throw StateError('fs1_prover_unavailable');
-    if (remainMs != span) throw StateError('stake_reward');
+    // rate_e is the whole-epoch total. covered blocks / epoch blocks, one floor.
+    if (remainMs <= 0 || span <= 0 || remainMs > span) throw StateError('stake_reward');
     final amount = BigInt.from(amounts[which]);
     final rate = BigInt.from(bps);
-    final product = amount * rate;
     final bound = BigInt.one << 110;
-    if (product <= BigInt.zero || product >= bound) throw StateError('stake_reward');
-    final nanos = product ~/ BigInt.from(10000);
+    final product = amount * rate * BigInt.from(remainMs);
+    final denom = BigInt.from(span) * BigInt.from(10000);
+    if (product <= BigInt.zero || product >= bound || denom <= BigInt.zero || denom >= bound) {
+      throw StateError('stake_reward');
+    }
+    final nanos = product ~/ denom;
     final rem = product % BigInt.from(10000);
     if (nanos <= BigInt.zero || nanos.bitLength > 53) throw StateError('stake_reward');
     final slack = BigInt.from(9999) - rem;

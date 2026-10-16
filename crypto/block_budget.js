@@ -26,8 +26,9 @@ export const R_BYTES = 854_592;
  */
 export const W_FS1_BASE = 25;
 export const W_FS1_PER_INPUT = 25;
-/** Remainder and slack range proofs on one public-reward claim. */
-export const W_VAULT_EXTRA = 2;
+/** One π leaf on a lock, withdraw, or retire. The claim no longer carries remainder proofs. */
+export const W_VAULT_LEAF = 4;
+export const W_VAULT_EXTRA = 0;
 export const R_SEND_INPUTS = 2;
 export const R_WEIGHT = 2_336;
 export const K_VW = 8;
@@ -183,9 +184,10 @@ export function txVerifyWeight(tx) {
   }
   const nIn = Array.isArray(tx.vin) ? tx.vin.length : 0;
   const nOut = Array.isArray(tx.vout) ? tx.vout.length : 0;
+  const leaves = vaultLeafWeightCount(tx);
   if (tx.vaultProof != null && tx.vaultProof !== '') {
     const one = fs1VerifyWeight(1);
-    let claim = W_TX + (one || 0) + W_OUT * nOut + W_VAULT_EXTRA;
+    let claim = W_TX + (one || 0) + W_OUT * nOut + W_VAULT_EXTRA + W_VAULT_LEAF * Math.max(1, leaves);
     if (txIsReserveAction(tx)) claim += W_SEAL;
     return claim;
   }
@@ -193,7 +195,18 @@ export function txVerifyWeight(tx) {
   if (fs1 != null) return W_TX + fs1 + W_OUT * nOut;
   let w = W_TX + W_IN * nIn + W_OUT * nOut;
   if (txIsReserveAction(tx)) w += W_SEAL;
+  if (leaves) w += W_VAULT_LEAF * leaves;
   return w;
+}
+
+function vaultLeafWeightCount(tx) {
+  if (!tx || typeof tx !== 'object') return 0;
+  if (tx.vaultProof != null && tx.vaultProof !== '') return 1;
+  const proofs = Array.isArray(tx.retireProofs) ? tx.retireProofs.length : (tx.retireProof ? 1 : 0);
+  if (proofs) return proofs;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  const locks = outs.filter((row) => String(row?.kind || tx.kind || '') === 'lock').length;
+  return locks;
 }
 
 function txIsVaultClaim(tx) {
