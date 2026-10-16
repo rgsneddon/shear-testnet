@@ -15,6 +15,7 @@ import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronof
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
+import { headerPowReason } from './chain.js';
 
 function reviveDeep(v) {
   if (v == null) return v;
@@ -838,6 +839,55 @@ export function headerPrevHash(header) {
   const hex = Buffer.from(buf).subarray(4, 36).toString('hex');
   if (!hex || /^0+$/.test(hex)) return '';
   return hex;
+}
+
+function tipView(store) {
+  const tip = typeof store?.tip === 'function' ? store.tip() : null;
+  if (!tip?.hash || !tip.header) return null;
+  const blocks = store.blocks;
+  const n = Array.isArray(blocks) ? blocks.length : 0;
+  const grand = n >= 2 ? blocks[n - 2]?.header : null;
+  return {
+    prev: {
+      hash: tip.hash,
+      header: tip.header,
+      height: tip.height,
+      txs: tip.txs,
+      bLeaves: tip.bLeaves,
+      weight: tip.weight,
+      shareBatch: tip.shareBatch,
+      rootA: tip.rootA,
+      rootB: tip.rootB,
+    },
+    grandparent: grand || null,
+  };
+}
+
+/** One block whose parent is the tip. A sibling is not this. */
+export function blockExtendsTip(store, block) {
+  const view = tipView(store);
+  if (!view) return false;
+  const prev = headerPrevHash(block?.header);
+  return !!prev && prev === hexHash(view.prev.hash);
+}
+
+/**
+ * Invalid proof-of-work on a tip extension. The header target is checked
+ * before the claimed hash is compared to any block already in the book.
+ * Returns `{ applies: false }` for any other block. A failure reason is
+ * `pow` or an earlier header rule. `release` drops a passing stash when
+ * ingest does not consume it.
+ */
+export async function rejectUnprovenTipExtend(store, block) {
+  if (!blockExtendsTip(store, block)) return { applies: false };
+  const view = tipView(store);
+  const early = await headerPowReason(block, view.prev, {
+    grandparentHeader: view.grandparent,
+    magic: MAGIC_TESTNET,
+    nowMs: Date.now(),
+  });
+  if (early.reason) return { applies: true, reason: early.reason };
+  return { applies: true, reason: null, release: early.release };
 }
 
 function headerSkipped(hash, have, failed, pending) {
@@ -1969,14 +2019,19 @@ export function createP2p({
         }
       }
       if (lastHash) inflightBlocks.delete(lastHash);
-      const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
-      if (lastHash && haveNow.has(lastHash)) {
-        if (recNow) {
-          recNow.pending?.delete(lastHash);
-          recNow.verifying?.delete(lastHash);
-          pumpGetblocks(sock);
+      // A tip extension is proved before its claimed hash is compared to the
+      // book. A duplicate id with a bad header is `pow`, not "already have".
+      const extendsTip = fork.length === 1 && blockExtendsTip(store, fork[0]);
+      if (!extendsTip) {
+        const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
+        if (lastHash && haveNow.has(lastHash)) {
+          if (recNow) {
+            recNow.pending?.delete(lastHash);
+            recNow.verifying?.delete(lastHash);
+            pumpGetblocks(sock);
+          }
+          return;
         }
-        return;
       }
       const verifyKey = fork?.[0]?.header ? Buffer.from(fork[0].header).toString('hex') : lastHash;
       if (verifyKey && recNow?.verifying?.has(verifyKey)) return;
@@ -1993,9 +2048,20 @@ export function createP2p({
       const job = scheduleP2pVerify(() => {
         const before = store.tip();
         // IBD validates every block. A peer-advertised height is not a skip.
-        return Promise.resolve(store.ingest(fork, {
+        const go = () => Promise.resolve(store.ingest(fork, {
           offLoopPow: true,
         })).then((got) => ({ got, before }));
+        if (!extendsTip) return go();
+        return rejectUnprovenTipExtend(store, fork[0]).then((early) => {
+          if (early.reason) return { got: { ok: false, reason: early.reason, tip: before }, before };
+          return go().then((out) => {
+            early.release?.();
+            return out;
+          }, (err) => {
+            early.release?.();
+            throw err;
+          });
+        });
       });
       job.then(({ got, before }) => {
         const rec = peers.get(sock);
@@ -2013,23 +2079,29 @@ export function createP2p({
           rec.verifying?.delete(verifyKey);
           if (!rec.failed) rec.failed = new Set();
           if (!got?.ok && lastHash) {
-            const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
-            if (got?.reason === 'prev' && !have.has(lastHash)) {
-              queueMissingParent(rec, lastHash, headerPrevHash(last?.header));
-            } else if (got?.reason === 'hash_bonus' && !have.has(lastHash)) {
-              requeuePrevHash(rec, lastHash);
-            } else if (got?.reason === 'side_hold') {
-              const follow = sideFollowHeader({
-                headers: rec.page || [],
-                sideTip: typeof store.sideTipHash === 'function' ? store.sideTipHash() : '',
-                have,
-                failed: activeFailSet(rec),
-                pending: rec.pending,
-              });
-              if (follow) rec.want = [follow.hash, ...(rec.want || [])];
-            } else if (isUpgradeableIngestFail(got?.reason) && !have.has(lastHash)) {
-              noteSoftFail(rec, lastHash, got.reason);
-            } else if (isFinalIngestFail(got?.reason)) rec.failed.add(lastHash);
+            const reason = got?.reason;
+            const needsBook = reason === 'prev' || reason === 'hash_bonus' || reason === 'side_hold' || isUpgradeableIngestFail(reason);
+            if (!needsBook) {
+              if (isFinalIngestFail(reason)) rec.failed.add(lastHash);
+            } else {
+              const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+              if (reason === 'prev' && !have.has(lastHash)) {
+                queueMissingParent(rec, lastHash, headerPrevHash(last?.header));
+              } else if (reason === 'hash_bonus' && !have.has(lastHash)) {
+                requeuePrevHash(rec, lastHash);
+              } else if (reason === 'side_hold') {
+                const follow = sideFollowHeader({
+                  headers: rec.page || [],
+                  sideTip: typeof store.sideTipHash === 'function' ? store.sideTipHash() : '',
+                  have,
+                  failed: activeFailSet(rec),
+                  pending: rec.pending,
+                });
+                if (follow) rec.want = [follow.hash, ...(rec.want || [])];
+              } else if (isUpgradeableIngestFail(reason) && !have.has(lastHash)) {
+                noteSoftFail(rec, lastHash, reason);
+              } else if (isFinalIngestFail(reason)) rec.failed.add(lastHash);
+            }
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {
             const until = Date.now() + P2P_BAN_MS;

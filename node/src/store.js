@@ -3177,6 +3177,7 @@ export function createStore(dir, {
     if (incoming && incoming.length === 32) {
       for (const b of blocks) {
         if (b.hash && Buffer.from(b.hash).equals(incoming)) {
+          discardPreparedHeader(block?.header);
           return { ok: false, reason: 'not_heavier', tip: tip() };
         }
       }

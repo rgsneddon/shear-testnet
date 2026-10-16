@@ -5,11 +5,12 @@
  * R4 is a source tripwire: a seed or reorg loop must not slice the prefix
  * once per height. One owedSeriesAll.slice per seed is the allowed shape.
  *
- * Bounds (do not grow with height):
- *   R1 wall < 5000 ms, lag < 2000 ms, max < min * 4 + 250, and the tallest
- *   wall is not proportional to the height ratio.
- *   R2 wall < 2000 ms, lag < 2000 ms, same factor and slack.
- * Fork depth for the flatness rows is 1 (the losing side_hold parent).
+ * Bounds (do not grow with height or with fork depth):
+ *   R1 wall < 5000 ms, lag < 2000 ms, max < min * 4 + 250. The tallest wall
+ *   stays under heightRatio/16 of the short wall. Depth 8 stays under 4x
+ *   depth 1 (a cost linear in depth fails).
+ *   R2 wall < 2000 ms, lag < 2000 ms, same factor and slack, at depth 1.
+ * Fork depths for the R1 rows are 1, 4, and 8.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -34,7 +35,7 @@ import { decodeBookSnap, writeBookSnap } from '../src/book_snap.js';
 import { bookSealKeyPath } from '../src/book_seal_key.js';
 import { buildTemplate, retarget } from '../src/chain.js';
 import { applyVerifiedIpcBlock } from '../src/p2p_ipc.js';
-import { decodeWireBlock, encodeWireBlock } from '../src/p2p.js';
+import { decodeWireBlock, encodeWireBlock, rejectUnprovenTipExtend } from '../src/p2p.js';
 import { createStore, OWED_CHECKPOINT_SPACING } from '../src/store.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 
@@ -52,7 +53,8 @@ const R2_WALL_MS = 2000;
 const R2_LAG_MS = 2000;
 const FLAT_FACTOR = 4;
 const FLAT_SLACK_MS = 250;
-const FORK_DEPTH = 1;
+const FORK_DEPTHS = [1, 4, 8];
+const HEIGHT_PROPORTIONAL = 16;
 
 const dirs = [];
 
@@ -244,11 +246,11 @@ function heavier(store, dest, parentIndex, count, tagBase) {
   return out;
 }
 
-function gapAdvances(length) {
-  const anchor = length - 2;
+function gapAdvances(length, depth = 1) {
+  const anchor = length - 1 - depth;
   let best = -1;
   for (let at = 0; at <= anchor; at += 1) {
-    const keep = at === 0 || at === length - 1 || ((at + 1) % OWED_CHECKPOINT_SPACING) === 0;
+    const keep = at === 0 || ((at + 1) % OWED_CHECKPOINT_SPACING) === 0;
     if (keep && at >= best) best = at;
   }
   return anchor - best;
@@ -476,13 +478,34 @@ function assertFlat(rows, label, wallCap, lagCap, proportional) {
     const ratio = tall.n / short.n;
     assert.ok(ratio > 8, `${label} height ratio`);
     assert.ok(
-      tall.wall * 8 < ratio * Math.max(short.wall, 1),
+      tall.wall * HEIGHT_PROPORTIONAL < ratio * Math.max(short.wall, 1),
       `${label} proportional ${tall.wall} vs ${short.wall} over ${ratio}`,
     );
   }
   for (const row of rows) {
     assert.ok(row.wall < wallCap, `${label} wall ${row.wall} at ${row.n}`);
     assert.ok(row.lag < lagCap, `${label} lag ${row.lag} at ${row.n}`);
+  }
+}
+
+function assertDepthFlat(rows, label) {
+  const deepDepth = FORK_DEPTHS[FORK_DEPTHS.length - 1];
+  const shallowDepth = FORK_DEPTHS[0];
+  for (const n of LENGTHS) {
+    const at = rows.filter((row) => row.n === n);
+    assert.equal(at.length, FORK_DEPTHS.length, `${label} depths at ${n}`);
+    const shallow = at.find((row) => row.depth === shallowDepth);
+    const deep = at.find((row) => row.depth === deepDepth);
+    const ratio = deep.depth / shallow.depth;
+    assert.ok(ratio >= 8, `${label} depth ratio`);
+    assert.ok(
+      deep.wall * 2 < ratio * Math.max(shallow.wall, 1) + FLAT_SLACK_MS,
+      `${label} depth-proportional wall ${deep.wall} vs ${shallow.wall} over ${ratio} at ${n}`,
+    );
+    assert.ok(
+      deep.lag * 2 < ratio * Math.max(shallow.lag, 1) + FLAT_SLACK_MS,
+      `${label} depth-proportional lag ${deep.lag} vs ${shallow.lag} over ${ratio} at ${n}`,
+    );
   }
 }
 
@@ -557,11 +580,15 @@ function assertNoPerHeightSlice(fnSrc, name) {
     const letM = /(?:let|var)\s+([A-Za-z_][\w]*)/.exec(head);
     const index = letM ? letM[1] : null;
     const body = braceBody(fnSrc, m.index + m[0].length - 1);
-    assert.doesNotMatch(body, /\.slice\(\s*0\s*,\s*i\s*\)/, `${name} slice i`);
-    assert.doesNotMatch(body, /\.slice\(\s*0\s*,\s*hi\s*\)/, `${name} slice hi`);
-    assert.doesNotMatch(body, /accepted\.slice\(\s*0\s*,\s*i\b/, `${name} accepted.slice i`);
+    assert.doesNotMatch(body, /\.slice\(\s*0\s*,\s*i\s*(?:\+\s*\d+)?\s*\)/, `${name} slice i`);
+    assert.doesNotMatch(body, /\.slice\(\s*0\s*,\s*hi\s*(?:\+\s*\d+)?\s*\)/, `${name} slice hi`);
+    assert.doesNotMatch(
+      body,
+      /accepted(?:Series)?\.slice\(\s*0\s*,\s*i\s*(?:\+\s*\d+)?\s*\)/,
+      `${name} accepted.slice i`,
+    );
     if (index) {
-      const sliced = new RegExp(`\\.slice\\(\\s*0\\s*,\\s*${index}\\s*\\)`);
+      const sliced = new RegExp(`\\.slice\\(\\s*0\\s*,\\s*${index}\\s*(?:\\+\\s*\\d+)?\\s*\\)`);
       assert.doesNotMatch(body, sliced, `${name} slice ${index}`);
     }
     m = re.exec(fnSrc);
@@ -619,6 +646,76 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
     assert.match(body, /seedHistory/);
     assert.match(body, /vaultThrough/);
     assert.doesNotMatch(body, /replayHashOwed/);
+  });
+
+  it('P3 invalid-PoW tip-extend hits the header target before any hash compare', { timeout: 180_000 }, async () => {
+    const src = fs.readFileSync(new URL('../src/p2p.js', import.meta.url), 'utf8');
+    const gateAt = src.indexOf('const extendsTip = fork.length === 1 && blockExtendsTip(store, fork[0])');
+    assert.ok(gateAt >= 0, 'extendsTip gate');
+    const ifAt = src.indexOf('if (!extendsTip)', gateAt);
+    const haveAt = src.indexOf('const haveNow = new Set', gateAt);
+    assert.ok(ifAt > gateAt && haveAt > ifAt, 'haveNow follows the tip-extend gate');
+    const gated = braceBody(src, src.indexOf('{', ifAt));
+    assert.match(gated, /haveNow/);
+    assert.doesNotMatch(gated, /rejectUnprovenTipExtend/);
+    const jobAt = src.indexOf('const job = scheduleP2pVerify', haveAt);
+    const jobEnd = src.indexOf('job.then', jobAt);
+    const job = src.slice(jobAt, jobEnd);
+    const earlyCall = job.indexOf('rejectUnprovenTipExtend(store, fork[0])');
+    const reasonAt = job.indexOf('if (early.reason)');
+    const successGo = job.indexOf('return go()', reasonAt);
+    assert.ok(earlyCall >= 0 && reasonAt > earlyCall && successGo > reasonAt);
+    assert.match(job, /if\s*\(\s*!extendsTip\s*\)\s*return go\(\)/);
+
+    const dest = minerDest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-070-p3-'));
+    try {
+      const store = createStore(dir, { pruneAfter: 1_000_000, reorgHaltDepth: 8 });
+      const grew = grow(store, dest, 4, 70_000);
+      assert.equal(grew.ok, true, grew.reason);
+      const tipHex = Buffer.from(store.tip().hash).toString('hex');
+      const sibling = flipPrev(tipTemplate(store, dest), Buffer.alloc(32, 0x22));
+      let scans = 0;
+      const rawBlocks = store.blocks;
+      store.blocks = new Proxy(rawBlocks, {
+        get(target, prop, receiver) {
+          if (
+            prop === 'map'
+            || prop === 'forEach'
+            || prop === 'filter'
+            || prop === 'slice'
+            || prop === 'find'
+            || prop === 'some'
+            || prop === Symbol.iterator
+          ) scans += 1;
+          const value = Reflect.get(target, prop, receiver);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      const side = await rejectUnprovenTipExtend(store, sibling);
+      assert.equal(side.applies, false);
+      assert.equal(scans, 0);
+      const before = snapStats(store);
+      const collide = tipTemplate(store, dest);
+      collide.hash = Buffer.from(store.tip().hash);
+      const got = await rejectUnprovenTipExtend(store, collide);
+      assert.equal(got.applies, true);
+      assert.equal(got.reason, 'pow', got.reason);
+      assert.notEqual(got.reason, 'not_heavier');
+      assert.equal(scans, 0, `book scan ${scans}`);
+      assertOwedStill(before, snapStats(store), 'tip-extend pow');
+      assert.equal(Buffer.from(store.tip().hash).toString('hex'), tipHex);
+      const flipped = flipVersion(tipTemplate(store, dest));
+      flipped.hash = Buffer.from(store.tip().hash);
+      const ver = await rejectUnprovenTipExtend(store, flipped);
+      assert.equal(ver.applies, true);
+      assert.equal(ver.reason, 'version', ver.reason);
+      assert.equal(scans, 0, `book scan after version ${scans}`);
+      assertOwedStill(before, snapStats(store), 'tip-extend version');
+      assert.equal(Buffer.from(store.tip().hash).toString('hex'), tipHex);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('R5 spread proves R1-R3 and full-replay parity', { timeout: 28_800_000 }, async () => {
@@ -704,29 +801,44 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
             executed.prunes.add(prune);
             executed.backends.add(backend);
 
-            const parent = store.blocks.length - 2;
-            assert.equal(store.blocks.length - 1 - parent, FORK_DEPTH);
             const tipHash = Buffer.from(store.tip().hash);
-            const probe = forkBlock(store, dest, parent, Buffer.alloc(32));
-            const losePow = greaterHash(tipHash, probe.bits);
-            let loseCursor = losePow;
-            const loseBlock = forkBlock(store, dest, parent, losePow);
-            const beforeLose = snapStats(store);
-            const lose = await timed(() => store.ingest([loseBlock], { trustBlockHash: true, skipSharePow: true }));
-            assert.equal(lose.result.reason, 'side_hold', lose.result.reason);
-            assert.equal(Buffer.from(store.tip().hash).toString('hex'), tipHash.toString('hex'));
-            const afterLose = snapStats(store);
-            const adv = afterLose.forkAdvances - beforeLose.forkAdvances;
-            assert.equal(afterLose.forkGenesis, 0);
-            assert.equal(adv, gapAdvances(store.blocks.length));
-            assert.ok(adv <= OWED_CHECKPOINT_SPACING);
-            assert.ok(adv < store.blocks.length / 2);
-            assert.ok(lose.wall < R1_WALL_MS, `R1 wall ${lose.wall} ${n} ${prune} ${backend}`);
-            assert.ok(lose.maxLag < R1_LAG_MS, `R1 lag ${lose.maxLag} ${n} ${prune} ${backend}`);
-            r1.push({ n, prune, backend, wall: Math.round(lose.wall), lag: Math.round(lose.maxLag), advances: adv });
-            executed.forks.add('side_hold');
-            phase('r1_cell', r1[r1.length - 1]);
+            for (const forkDepth of FORK_DEPTHS) {
+              const timedParent = store.blocks.length - 1 - forkDepth;
+              assert.equal(store.blocks.length - 1 - timedParent, forkDepth);
+              const timedProbe = forkBlock(store, dest, timedParent, Buffer.alloc(32));
+              const losePow = greaterHash(tipHash, timedProbe.bits);
+              const loseBlock = forkBlock(store, dest, timedParent, losePow);
+              const beforeLose = snapStats(store);
+              const lose = await timed(() => store.ingest(
+                [loseBlock],
+                { trustBlockHash: true, skipSharePow: true },
+              ));
+              assert.equal(lose.result.reason, 'side_hold', lose.result.reason);
+              assert.equal(Buffer.from(store.tip().hash).toString('hex'), tipHash.toString('hex'));
+              const afterLose = snapStats(store);
+              const adv = afterLose.forkAdvances - beforeLose.forkAdvances;
+              assert.equal(afterLose.forkGenesis, 0);
+              assert.equal(adv, gapAdvances(store.blocks.length, forkDepth));
+              assert.ok(adv <= OWED_CHECKPOINT_SPACING);
+              assert.ok(adv < store.blocks.length / 2);
+              assert.ok(lose.wall < R1_WALL_MS, `R1 wall ${lose.wall} ${n} ${prune} ${backend} d${forkDepth}`);
+              assert.ok(lose.maxLag < R1_LAG_MS, `R1 lag ${lose.maxLag} ${n} ${prune} ${backend} d${forkDepth}`);
+              r1.push({
+                n,
+                prune,
+                backend,
+                depth: forkDepth,
+                wall: Math.round(lose.wall),
+                lag: Math.round(lose.maxLag),
+                advances: adv,
+              });
+              executed.forks.add('side_hold');
+              phase('r1_cell', r1[r1.length - 1]);
+            }
 
+            const parent = store.blocks.length - 2;
+            const probe = forkBlock(store, dest, parent, Buffer.alloc(32));
+            let loseCursor = greaterHash(tipHash, probe.bits);
             const ipcBase = tipTemplate(store, dest);
             const ipcBefore = snapStats(store);
             const ipcPow = await timed(() => applyVerifiedIpcBlock(store, ipcMsg(ipcBase)));
@@ -922,8 +1034,16 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
 
     for (const prune of PRUNES) {
       for (const backend of BACKENDS) {
-        const series = r1.filter((row) => row.prune === prune && row.backend === backend);
-        assertFlat(series, `R1 ${prune} ${backend}`, R1_WALL_MS, R1_LAG_MS, true);
+        for (const depth of FORK_DEPTHS) {
+          const series = r1
+            .filter((row) => row.prune === prune && row.backend === backend && row.depth === depth)
+            .sort((a, b) => a.n - b.n);
+          assertFlat(series, `R1 d${depth} ${prune} ${backend}`, R1_WALL_MS, R1_LAG_MS, true);
+        }
+        assertDepthFlat(
+          r1.filter((row) => row.prune === prune && row.backend === backend),
+          `R1 ${prune} ${backend}`,
+        );
         const pow = r2.filter((row) => row.prune === prune && row.backend === backend);
         assertFlat(pow, `R2 ${prune} ${backend}`, R2_WALL_MS, R2_LAG_MS, false);
       }
@@ -931,13 +1051,14 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
     const table = r1.filter((row) => row.prune === 'full' && row.backend === 'segments');
     console.log(JSON.stringify({
       event: 'r1_timing_table',
-      forkDepth: FORK_DEPTH,
+      forkDepths: FORK_DEPTHS,
       bound: {
         wallMs: R1_WALL_MS,
         lagMs: R1_LAG_MS,
         factor: FLAT_FACTOR,
         slackMs: FLAT_SLACK_MS,
-        forkDepth: FORK_DEPTH,
+        heightProportional: HEIGHT_PROPORTIONAL,
+        forkDepths: FORK_DEPTHS,
       },
       rows: table,
       all: r1,
