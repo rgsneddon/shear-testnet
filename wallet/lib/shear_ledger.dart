@@ -1225,6 +1225,22 @@ Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
   };
 }
 
+/// Lock, vote, and withdraw already hexified vin and vout in the seal worker.
+/// [flowPostHex] would drop the vin dest the signature covers. The admit
+/// proof is hexified on its own and stays on the post.
+Map<String, dynamic> reserveWireBody({
+  required List<dynamic> vin,
+  required List<dynamic> vout,
+  Map<String, dynamic>? admitProof,
+}) {
+  final proof = admitProof == null ? null : _hexify(postedAdmitProof(admitProof));
+  return <String, dynamic>{
+    'vin': vin,
+    'vout': vout,
+    'admitProof': proof is Map ? Map<String, dynamic>.from(proof) : null,
+  };
+}
+
 Future<Map<String, dynamic>> flowPostHexOffUi(Map<String, dynamic> raw) {
   // flutter_tester's second Isolate.run nulls these closure hooks on the
   // caller. A neighbouring int static stays, so the library is not reloaded.
@@ -9079,6 +9095,42 @@ class ShearLedger implements ReadProofSink {
       if (boundFee is int && boundFee > 0) reserveFee = boundFee;
       if (built['id'] is String) postedWithdrawId = built['id'] as String;
       if (built['withdrawNonce'] is String) postedWithdrawNonce = built['withdrawNonce'] as String;
+      // The seal vin stays. An FS-1 proof of a covering note is attached
+      // beside it. A missing prover or anchor leaves the proof unset.
+      if (pool != null && !local && spendSeed != null && spendSeed.length == 32) {
+        try {
+          final note = _pickSpendNote(
+            src,
+            needShe <= 0 ? 0 : needShe,
+            spendSeed,
+            amountFallback: spendable(src),
+          );
+          if (note != null) {
+            final spend = await _fs1Spend(
+              notes: [note],
+              sealed: vouts,
+              fee: reserveFee ?? (levy < 0 ? 0 : levy),
+              spendSeed: spendSeed,
+              kind: sendKind,
+            );
+            admitProof = spend.proofs.first;
+            excess = spend.excess;
+            fs1Hex = _bytesHex(spend.fs1);
+            fs1Anchor = spend.anchor;
+          }
+        } on StateError catch (err) {
+          const quiet = <String>{
+            kErrFs1Prover,
+            kErrFs1Anchor,
+            'fluxset',
+            'no_note',
+            'fs1_inputs',
+            'fs1_prove',
+            'send_timeout',
+          };
+          if (!quiet.contains(err.message)) rethrow;
+        }
+      }
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
@@ -9106,11 +9158,7 @@ class ShearLedger implements ReadProofSink {
         // A second compact drops the vin dest the signature covers.
         final reserveWire = sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw';
         final wire = reserveWire
-            ? <String, dynamic>{
-                'vin': postedVin,
-                'vout': postedVout,
-                'admitProof': null,
-              }
+            ? reserveWireBody(vin: postedVin, vout: postedVout, admitProof: admitProof)
             : await flowPostHexOffUi(<String, dynamic>{
                 'vin': postedVin,
                 'vout': postedVout,
@@ -9999,6 +10047,8 @@ Map<String, dynamic> walletSendBody({
     if (admitProof != null) 'admit_proof': admitProof,
     if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
     if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+    if (fs1 != null && fs1.isNotEmpty) 'fs1': fs1,
+    if (anchor != null && anchor > 0) 'anchor': anchor,
     if (id != null && id.isNotEmpty) 'id': id,
     if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
   };

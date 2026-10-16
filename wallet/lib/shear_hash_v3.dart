@@ -10,6 +10,14 @@ import 'package:flutter/foundation.dart';
 import 'shear_hash.dart';
 import 'shear_hash_pin.dart';
 
+export 'shear_hash_pin.dart'
+    show
+        androidAbiFromLibraryPath,
+        kShearHashAndroidAbis,
+        kShearHashSha256,
+        kShearHashSha256Android,
+        parseShearHashAndroidPins;
+
 /// ShearHash-v3 selftest. Header byte 0 = 0x01, the rest zero.
 /// A v1 digest (`5d00a242…`) must not be accepted as this.
 const shearHashV3Selftest =
@@ -144,10 +152,21 @@ String? shearHashBundledFailure(String path) {
   return shearHashPinFailure(file.readAsBytesSync(), pin);
 }
 
-/// Desktop pin is [kShearHashSha256]. Tests fall back to `<library>.sha256`.
+/// Android uses the per-ABI pin. A single [kShearHashSha256] does not load
+/// one of the four shipped libraries. Desktop uses that single pin. Tests
+/// fall back to `<library>.sha256` when no pin was compiled in.
 @visibleForTesting
-String shearHashExpectedPin(String libraryPath) {
-  final define = kShearHashSha256.trim().toLowerCase();
+String shearHashExpectedPin(
+  String libraryPath, {
+  String? androidPins,
+  String? desktopPin,
+}) {
+  final abi = androidAbiFromLibraryPath(libraryPath);
+  if (abi != null) {
+    final pins = parseShearHashAndroidPins(androidPins ?? kShearHashSha256Android);
+    return pins[abi] ?? '';
+  }
+  final define = (desktopPin ?? kShearHashSha256).trim().toLowerCase();
   if (define.isNotEmpty) return define;
   if (Platform.environment['FLUTTER_TEST'] == 'true') {
     final side = File('$libraryPath.sha256');

@@ -1480,6 +1480,22 @@ export function parseSendNanos(body) {
   return { ok: true, nanos: null };
 }
 
+/** Proof fields the wallet posts on lock, vote, and withdraw. The draft
+ * keeps lockTx's vin. Replacing that vin would drop the dest the signature covers. */
+export function reserveAdmitCarry(body) {
+  const out = {};
+  if (body && body.admit_proof) {
+    out.admit_proof = body.admit_proof;
+    const tag = body.spendTag || body.admit_proof.spendTag;
+    if (tag) out.spendTag = tag;
+  }
+  if (Array.isArray(body?.admit_proofs) && body.admit_proofs.length) out.admit_proofs = body.admit_proofs;
+  if (body?.fs1) out.fs1 = body.fs1;
+  if (body?.anchor != null && body.anchor !== '') out.anchor = body.anchor;
+  if (body?.excess) out.excess = body.excess;
+  return out;
+}
+
 export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -1749,6 +1765,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         return { status: 400, json: { ok: false, reason: 'kt10_nonce' } };
       }
     }
+    const admitCarry = reserveAdmitCarry(body);
     const draft = isLock
       ? {
         ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
@@ -1758,6 +1775,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         spendPub: body.spendPub,
         amount,
         ...(postedVout.length ? { vout: postedVout } : {}),
+        ...admitCarry,
       }
       : isVote
         ? {
@@ -1768,6 +1786,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           spendPub: body.spendPub,
           payer: from,
           ...(postedVout.length ? { vout: postedVout } : {}),
+          ...admitCarry,
         }
         : isWithdraw
         ? {
@@ -1783,6 +1802,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           spendPub: body.spendPub,
           amount,
           ...(postedVout.length ? { vout: postedVout } : {}),
+          ...admitCarry,
         }
         : {
           kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, ephPub,

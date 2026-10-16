@@ -78,6 +78,9 @@ jobs:
             test -f "wallet/android/app/src/main/jniLibs/$abi/libshearhash.so"
             test -f "wallet/android/app/src/main/jniLibs/$abi/libshearhash.so.sha256"
           done
+          python3 crypto/native/check_shearhash_android_pins.py --jni wallet/android/app/src/main/jniLibs
+          DEFINE="$(python3 crypto/native/stamp_shearhash_pin.py --android-define wallet/android/app/src/main/jniLibs)"
+          python3 crypto/native/check_shearhash_android_pins.py --jni wallet/android/app/src/main/jniLibs --define "$DEFINE"
       - name: nm the Android admit library
         run: |
           set -euo pipefail

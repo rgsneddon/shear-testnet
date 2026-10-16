@@ -41,6 +41,14 @@ android {
         }
     }
 
+    // minSdk 29 still compresses jniLibs into the APK unless this is set.
+    // The loader reads the extracted file beside libflutter.so, before dlopen.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     // Release APKs are signed with Russell's offline Continuum key.
     // libshear_admit.so is gitignored and is covered by that APK signature,
     // not by a hash inside the Dart snapshot.
@@ -106,8 +114,18 @@ val buildShearHashSo = tasks.register<Exec>("buildShearHashSo") {
     workingDir = rootProject.projectDir
 }
 
+val checkShearHashPins = tasks.register<Exec>("checkShearHashPins") {
+    group = "shear"
+    description = "Every shipped ABI libshearhash.so matches its pin"
+    dependsOn(buildShearHashSo)
+    val script = rootProject.file("../../crypto/native/check_shearhash_android_pins.py")
+    val jni = file("src/main/jniLibs")
+    commandLine("python3", script.absolutePath, "--jni", jni.absolutePath)
+    workingDir = rootProject.projectDir
+}
+
 tasks.named("preBuild").configure {
-    dependsOn(buildShearAdmitSo, buildShearHashSo)
+    dependsOn(buildShearAdmitSo, buildShearHashSo, checkShearHashPins)
 }
 
 dependencies {

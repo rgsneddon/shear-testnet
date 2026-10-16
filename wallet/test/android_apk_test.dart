@@ -68,7 +68,14 @@ void main() {
     expect(hash, contains('armeabi-v7a'));
     expect(hash, contains('arm64-v8a'));
     expect(hash, contains('x86_64'));
+    expect(gradle, contains('useLegacyPackaging = true'));
     expect(script, contains('SHEAR_ANDROID_API:-29'));
+    expect(File('../crypto/native/check_shearhash_android_pins.py').existsSync(), isTrue);
+    expect(File('../wallet/lib/shear_hash_pin.dart').existsSync() || File('lib/shear_hash_pin.dart').existsSync(), isTrue);
+    final pinSrc = File('lib/shear_hash_pin.dart').readAsStringSync();
+    expect(pinSrc, contains('SHEAR_HASH_SHA256_ANDROID'));
+    expect(pinSrc, contains('armeabi-v7a'));
+    expect(pinSrc, contains('x86_64'));
     expect(script, contains('max-page-size=16384'));
     expect(script.contains('--features admit-v3'), isFalse);
     expect(elfArm64Page16k(_elfFixture(machine: 183, align: 16384)), isTrue);

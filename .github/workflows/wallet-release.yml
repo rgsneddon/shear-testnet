@@ -111,7 +111,17 @@ jobs:
           echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
       - name: Build release APK
         working-directory: wallet
-        run: flutter build apk --release --target-platform android-arm,android-arm64,android-x64,android-x86 --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          bash ../crypto/native/build-shearhash-android.sh
+          HASH="$(python3 ../crypto/native/stamp_shearhash_pin.py --android-define android/app/src/main/jniLibs)"
+          python3 ../crypto/native/check_shearhash_android_pins.py --jni android/app/src/main/jniLibs --define "$HASH"
+          flutter build apk --release --target-platform android-arm,android-arm64,android-x64,android-x86 --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} "$HASH"
+      - name: Packaged ABI hashes match the pins
+        run: |
+          python3 crypto/native/check_shearhash_android_pins.py \
+            --jni wallet/android/app/src/main/jniLibs \
+            --apk wallet/build/app/outputs/flutter-apk/app-release.apk
       - name: Zip
         run: |
           python3 - <<'PY'

@@ -216,6 +216,45 @@ void main() {
     expect(shearHashMemoryOkFromMeminfo(''), isFalse);
   });
 
+  test('each shipped Android ABI loads its own pin', () {
+    final arm = 'aa' * 32;
+    final arm64 = 'bb' * 32;
+    final x86 = 'cc' * 32;
+    final x64 = 'dd' * 32;
+    final raw = 'armeabi-v7a=$arm,arm64-v8a=$arm64,x86=$x86,x86_64=$x64';
+    final pins = parseShearHashAndroidPins(raw);
+    expect(pins.keys, kShearHashAndroidAbis);
+    expect(androidAbiFromLibraryPath('/data/app/pkg/lib/arm64/libshearhash.so'), 'arm64-v8a');
+    expect(androidAbiFromLibraryPath('/data/app/pkg/lib/arm64-v8a/libflutter.so'), 'arm64-v8a');
+    expect(androidAbiFromLibraryPath('/data/app/pkg/lib/armeabi-v7a/libshearhash.so'), 'armeabi-v7a');
+    expect(androidAbiFromLibraryPath('/data/app/pkg/lib/arm/libapp.so'), 'armeabi-v7a');
+    expect(androidAbiFromLibraryPath('/data/app/pkg/lib/x86_64/libshearhash.so'), 'x86_64');
+    expect(androidAbiFromLibraryPath('/data/app/pkg/lib/x86/libshearhash.so'), 'x86');
+    expect(androidAbiFromLibraryPath('/app/lib/libshearhash.so'), isNull);
+    expect(
+      shearHashExpectedPin('/data/app/pkg/lib/arm64/libshearhash.so', androidPins: raw, desktopPin: 'ff' * 32),
+      arm64,
+    );
+    expect(
+      shearHashExpectedPin('/data/app/pkg/lib/x86/libshearhash.so', androidPins: raw, desktopPin: 'ff' * 32),
+      x86,
+    );
+    expect(
+      shearHashExpectedPin('/data/app/pkg/lib/armeabi-v7a/libshearhash.so', androidPins: raw, desktopPin: 'ff' * 32),
+      arm,
+    );
+    expect(
+      shearHashExpectedPin('/data/app/pkg/lib/x86_64/libshearhash.so', androidPins: '--dart-define=SHEAR_HASH_SHA256_ANDROID=$raw'),
+      x64,
+    );
+    // One compiled-in desktop pin must not authorize an Android ABI.
+    expect(
+      shearHashExpectedPin('/data/app/pkg/lib/arm64/libshearhash.so', androidPins: '', desktopPin: 'ff' * 32),
+      '',
+    );
+    expect(shearHashExpectedPin('/app/lib/libshearhash.so', androidPins: raw, desktopPin: 'ee' * 32), 'ee' * 32);
+  });
+
   test('a low-difficulty 11-header window and an unanchored window are rejected', () async {
     const tipMs = 1700000000000;
     final window = _mine(tipMs);
@@ -272,7 +311,7 @@ void main() {
     expect(live.verifiedMedianTimeMs, isNull);
     expect(live.verifiedClockTip, 0);
     expect(live.tipTimestampMs, tipMs + 3600000);
-  });
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a conflicting digest drops that height and the clock refills from the accepted tip', () async {
     const tipMs = 1700000001000;

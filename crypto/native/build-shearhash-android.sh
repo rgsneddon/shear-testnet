@@ -41,6 +41,14 @@ for abi in "${ABIS[@]}"; do
     echo "missing $clang" >&2
     exit 1
   fi
+  outdir="$JNI/$abi"
+  so="$outdir/libshearhash.so"
+  # A second Gradle pass must not change the digest already compiled into the APK.
+  if [[ -f "$so" && "$so" -nt "$HERE/shearhash_wallet.c" && "$so" -nt "$MINER/shear_hash.c" ]]; then
+    python3 "$HERE/stamp_shearhash_pin.py" "$so"
+    echo "kept $so"
+    continue
+  fi
   build="$RX/build-android-$abi"
   cmake -S "$RX" -B "$build" \
     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
@@ -55,7 +63,6 @@ for abi in "${ABIS[@]}"; do
     echo "librandomx.a missing for $abi" >&2
     exit 1
   fi
-  outdir="$JNI/$abi"
   mkdir -p "$outdir"
   "$clang" -shared -fPIC -O2 \
     -Wl,-z,max-page-size=16384 \
