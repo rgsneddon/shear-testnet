@@ -970,7 +970,12 @@ class ShearReserve {
     nowMs;
     final p = portal(dest);
     if (!p.canVote) return 'not_voter';
-    if (epochStartMs == 0 || bonusEnacted) return 'not_voter';
+    // A verified clock of 0 still begins the epoch (currentEpoch >= 1 and a
+    // recorded row) so a π deposit can vote. epochStartMs stays 0, and unlock
+    // stays closed, until a verified median time exists.
+    final opened = currentEpoch >= 1 &&
+        (epochStartMs != 0 || epochs.any((e) => e.epoch == currentEpoch));
+    if (!opened || bonusEnacted) return 'not_voter';
     if (choice != kVoteIncrease && choice != kVoteDecrease && choice != kVoteHold) {
       return 'bad_vote';
     }
@@ -1098,6 +1103,21 @@ class ShearReserve {
   String publicJson(int nowMs) => jsonEncode(publicView(nowMs));
 }
 
+/// Unlock on the lock note this deposit's tx created.
+/// A later lock on the same address does not match.
+int? sealedUnlockForTx(Iterable<Map<String, dynamic>> notes, String txId) {
+  if (txId.isEmpty) return null;
+  for (final n in notes) {
+    if ((n['kind'] ?? '').toString() != 'lock') continue;
+    final id = (n['txId'] ?? n['id'])?.toString() ?? '';
+    if (id != txId) continue;
+    final raw = n['unlockAtMs'];
+    final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+    if (at > 0) return at;
+  }
+  return null;
+}
+
 class ReserveDepositResult {
   const ReserveDepositResult({required this.posted, required this.remark, this.tx});
 
@@ -1187,16 +1207,9 @@ Future<ReserveDepositResult> postReserveDeposit({
     final height = tx.height;
     final atHeight = height != null ? ledger.verifiedTimeAtHeight(height) : null;
     final verified = atHeight ?? ledger.verifiedMedianTimeMs;
-    int? sealed;
-    for (final n in ledger.notes) {
-      if ((n['kind'] ?? '').toString() != 'lock') continue;
-      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
-      if (addr != dest) continue;
-      final raw = n['unlockAtMs'];
-      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
-      if (at > 0) sealed = at;
-    }
-    sealed ??= unlockAt;
+    // The newest lock on this address is a different deposit. This row
+    // takes the note stamped with this tx id, or the unlock this send used.
+    final sealed = sealedUnlockForTx(ledger.notes, tx.id) ?? unlockAt;
     final err = reserve.deposit(
       dest: dest,
       she: she,

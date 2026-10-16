@@ -9,6 +9,8 @@ import 'shear_identity.dart';
 import 'shear_eip712.dart';
 import 'shear_levy.dart';
 import 'shear_read_open.dart';
+import 'shear_hash.dart';
+import 'shear_hash_v3.dart';
 import 'shear_read_sync.dart';
 import 'shear_session.dart';
 import 'shear_ed25519.dart';
@@ -2926,6 +2928,19 @@ class Path1Observation {
       targetIntervalMs <= 0 ? 0 : quantumShe / targetIntervalMs;
 }
 
+/// Heights the unlock clock hashes.
+/// Full-chain ShearHash-v3 rebuilds a 128 MiB RandomX cache for every
+/// header, because the key includes prev. Walking that on the UI isolate
+/// is the Android "isn't responding" dialog. The sound scope is this
+/// window: genesis through the tip while the tip is inside the MTP window,
+/// otherwise the last [window] headers. They are hashed off the UI isolate
+/// by the native interpreter. ShearHash-v1 is not a substitute.
+List<int> unlockClockHeights(int tip, {int window = ShearLedger.verifiedMtpWindow}) {
+  if (tip < 1 || window < 1) return const [];
+  final start = tip <= window ? 1 : tip - window + 1;
+  return [for (var h = start; h <= tip; h++) h];
+}
+
 int? headerTimestampMs(Uint8List header) {
   if (header.length < 108) return null;
   var v = 0;
@@ -3335,7 +3350,7 @@ class ShearLedger implements ReadProofSink {
 
   /// Keep the lock note's blind. The chain drops it, and the spend needs it
   /// once the epoch ends.
-  void _rememberTimeLock(List<Map<String, dynamic>> sealed, String dest) {
+  void _rememberTimeLock(List<Map<String, dynamic>> sealed, String dest, {String? txId}) {
     if (!isDestAddress(dest)) return;
     for (final o in sealed) {
       if ((o['kind'] ?? '').toString() != 'lock') continue;
@@ -3351,6 +3366,7 @@ class ShearLedger implements ReadProofSink {
         'r': o['r'],
         'admitPub': o['admitPub'],
         'unlockAtMs': unlock,
+        if (txId != null && txId.isNotEmpty) 'txId': txId,
         if (o['lockEpoch'] != null) 'lockEpoch': o['lockEpoch'],
         if (o['valueProof'] != null) 'valueProof': o['valueProof'],
         if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
@@ -3366,6 +3382,23 @@ class ShearLedger implements ReadProofSink {
       rememberNote(row);
       rememberDest(dest);
       _proofCheckedDests.add(payKey(dest));
+    }
+  }
+
+  /// The lock note this send just sealed gets [txId], matched by commit.
+  /// A newer lock already on the address is left alone.
+  void _stampLockTxId(List<Map<String, dynamic>> sealed, String txId) {
+    if (txId.isEmpty) return;
+    for (final o in sealed) {
+      if ((o['kind'] ?? '').toString() != 'lock') continue;
+      final commit = _noteBytes(o['commit']);
+      if (commit == null) continue;
+      for (final n in _notes) {
+        if ((n['kind'] ?? '').toString() != 'lock') continue;
+        final have = _noteBytes(n['commit']);
+        if (have == null || !_bytesEq(have, commit)) continue;
+        n['txId'] = txId;
+      }
     }
   }
 
@@ -4006,6 +4039,7 @@ class ShearLedger implements ReadProofSink {
     _acceptedCommits.clear();
     restoredBook = false;
     _verifiedHeaders.clear();
+    _verifiedClockTip = 0;
     _noteMisses.clear();
     _ingestMisses.clear();
     _nodeBodies.clear();
@@ -4024,7 +4058,10 @@ class ShearLedger implements ReadProofSink {
   int? _headerTimestampMs;
   int? _prevHeaderTimestampMs;
   /// PoW-and-parent verified headers, keyed by height. Not a raw /stats tip.
+  /// [hashHex] is the digest this wallet recomputed, never the server claim.
   final Map<int, ({int timestampMs, String hashHex})> _verifiedHeaders = {};
+  /// Tip whose whole [unlockClockHeights] window verified. 0 until then.
+  int _verifiedClockTip = 0;
   /// Bitcoin-class median window. Matches `MTP_WINDOW` in crypto/asert.js.
   static const verifiedMtpWindow = 11;
   /// Network circulating supply from pool /api/stats. Continuum Integral Q.
@@ -4106,46 +4143,86 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Median of the last [verifiedMtpWindow] verified header times.
-  /// The chain must start at height 1 and link parent to child. Empty is null.
+  /// Null until [unlockClockHeights] for that tip all recomputed and linked.
+  /// A raw server timestamp never enters this clock.
   int? get verifiedMedianTimeMs {
-    if (!_verifiedHeaders.containsKey(1)) return null;
+    final tip = _verifiedClockTip;
+    if (tip < 1) return null;
+    final heights = unlockClockHeights(tip);
+    if (heights.isEmpty) return null;
     final times = <int>[];
-    var height = 1;
-    while (_verifiedHeaders.containsKey(height)) {
-      times.add(_verifiedHeaders[height]!.timestampMs);
-      height += 1;
+    for (final height in heights) {
+      final row = _verifiedHeaders[height];
+      if (row == null) return null;
+      times.add(row.timestampMs);
     }
-    if (times.isEmpty) return null;
-    final window = times.length <= verifiedMtpWindow
-        ? times
-        : times.sublist(times.length - verifiedMtpWindow);
-    final sorted = [...window]..sort();
+    final sorted = [...times]..sort();
     return sorted[(sorted.length - 1) ~/ 2];
   }
 
-  /// Accept one header whose claimed hash meets its bits and whose prev is
-  /// the previous verified header. Height 1 may have a zero prev. A raw
-  /// server timestamp never enters this chain. Returns false when rejected.
+  void _advanceVerifiedClock() {
+    if (_verifiedHeaders.isEmpty) {
+      _verifiedClockTip = 0;
+      return;
+    }
+    var tip = 0;
+    for (final height in _verifiedHeaders.keys) {
+      if (height > tip) tip = height;
+    }
+    for (var candidate = tip; candidate >= 1; candidate--) {
+      if (!unlockClockHeights(candidate).every(_verifiedHeaders.containsKey)) continue;
+      _verifiedClockTip = candidate;
+      return;
+    }
+    _verifiedClockTip = 0;
+  }
+
+  /// Accept one header whose ShearHash-v3 digest this wallet recomputed,
+  /// which meets the header bits, and whose prev is the previous header's
+  /// recomputed digest. [hashHex] is the server claim and is not proof.
+  /// [digest] is that recompute when the caller already ran it off the UI
+  /// isolate. Height 1 may have a zero prev. The first header of a window
+  /// that does not start at 1 passes [requireParent] false; every later
+  /// header must link. Returns false when rejected.
   bool noteVerifiedHeader({
     required Uint8List header,
     required int height,
     required String hashHex,
+    Uint8List? digest,
+    bool requireParent = true,
   }) {
-    if (height < 1) return false;
+    // [hashHex] is the server claim. It is not compared to bits and it does
+    // not select the stored digest.
+    final _ = hashHex;
+    if (height < 1 || header.length != shearHeaderLen) return false;
     final fly = flyHeaderFromJson({
       'header': _bytesHex(header),
-      'hash': hashHex.trim().toLowerCase(),
+      'hash': '',
     });
-    if (fly == null || !flyHeaderPowOk(fly, height: height)) return false;
+    if (fly == null || fly.version < 1 || fly.bits <= 0 || fly.timestamp <= 0) {
+      return false;
+    }
+    final prevZero = RegExp(r'^0+$').hasMatch(fly.prevHex);
+    if (height > 1 && prevZero) return false;
     if (height > 1) {
       final parent = _verifiedHeaders[height - 1];
-      if (parent == null || parent.hashHex != fly.prevHex) return false;
+      if (parent == null) {
+        if (requireParent) return false;
+      } else if (parent.hashHex != fly.prevHex) {
+        return false;
+      }
     }
+    final got = digest ?? shearHashV3(header);
+    if (got == null || got.length != 32 || !shearMeetsTarget(got, fly.bits)) {
+      return false;
+    }
+    final digestHex = _bytesHex(got);
     final have = _verifiedHeaders[height];
     if (have != null) {
-      return have.hashHex == fly.claimedHash && have.timestampMs == fly.timestamp;
+      return have.hashHex == digestHex && have.timestampMs == fly.timestamp;
     }
-    _verifiedHeaders[height] = (timestampMs: fly.timestamp, hashHex: fly.claimedHash);
+    _verifiedHeaders[height] = (timestampMs: fly.timestamp, hashHex: digestHex);
+    _advanceVerifiedClock();
     return true;
   }
 
@@ -5168,13 +5245,50 @@ class ShearLedger implements ReadProofSink {
         final sync = pool!.sync;
         if (sync != null && tip > sync.sampledTip) sync.sampledTip = tip;
       }
+      // Login and the accrual tick pass proveChain false. They still have
+      // to fill the unlock clock, or Withdraw stays disabled.
+      await _verifyUnlockClock();
     } catch (_) {}
     if (!proveChain) return;
     try {
       await pool!.followLive().timeout(kWalletTipTimeout);
       final json = await pool!.stats().timeout(const Duration(seconds: 2));
       await _applyStatsTip(json);
+      await _verifyUnlockClock();
     } catch (_) {}
+  }
+
+  /// Fetch the MTP window from the live node and recompute each header.
+  /// A gap or a digest that misses its bits leaves the clock unchanged.
+  Future<void> _verifyUnlockClock() async {
+    final client = pool;
+    if (client == null) return;
+    final tip = _sealedHeight;
+    final heights = unlockClockHeights(tip);
+    if (heights.isEmpty) return;
+    if (_verifiedClockTip == tip && heights.every(_verifiedHeaders.containsKey)) return;
+    final anchor = heights.first;
+    for (final h in heights) {
+      if (_verifiedHeaders.containsKey(h)) continue;
+      Map<String, dynamic> json;
+      try {
+        json = await client.headerAt(h).timeout(const Duration(seconds: 4));
+      } catch (_) {
+        return;
+      }
+      final raw = headerFromHex(json['header']?.toString() ?? '');
+      if (raw == null || raw.length != shearHeaderLen) return;
+      final digest = await shearHashV3OffUi(raw);
+      if (digest == null) return;
+      final ok = noteVerifiedHeader(
+        header: raw,
+        height: h,
+        hashHex: json['hash']?.toString() ?? '',
+        digest: digest,
+        requireParent: h != anchor,
+      );
+      if (!ok) return;
+    }
   }
 
   Future<double> syncSpendable(String address) async {
@@ -8931,10 +9045,12 @@ class ShearLedger implements ReadProofSink {
         memoCt: memoCt ?? raw.memoCt,
         change: changeDest,
       );
+      if (sendKind == 'lock') _stampLockTxId(vouts, tx.id);
       _txs.add(tx);
       return tx;
     }
-    if (sendKind == 'lock') _rememberTimeLock(vouts, destTo);
+    final localId = 'send-${DateTime.now().millisecondsSinceEpoch}';
+    if (sendKind == 'lock') _rememberTimeLock(vouts, destTo, txId: localId);
     if (_isVaultLockSpend(src, chosen, restFrame: restFrame)) {
       chosen!['spent'] = true;
       _creditLooseChange(changeDest, fundedShe - needShe);
@@ -8950,7 +9066,7 @@ class ShearLedger implements ReadProofSink {
       _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     }
     final tx = ShearTx(
-      id: 'send-${DateTime.now().millisecondsSinceEpoch}',
+      id: localId,
       from: src,
       to: destTo,
       amount: amount,

@@ -6,6 +6,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'shear_hash.dart';
+import 'shear_hash_v3.dart';
 import 'shear_read_open.dart';
 import 'shear_tip_tick.dart';
 
@@ -536,19 +537,27 @@ FlyHeader? flyHeaderFromJson(Map<String, dynamic> json) {
   );
 }
 
-/// PoW sample check. The claimed digest must meet the header bits.
-/// This wallet does not recompute ShearHash-v3. Height 1 may have a zero prev.
-bool flyHeaderPowOk(FlyHeader header, {required int height}) {
+bool _flyHeaderShapeOk(FlyHeader header, {required int height}) {
   if (height < 1 || header.version < 1 || header.bits <= 0 || header.timestamp <= 0) {
     return false;
   }
-  final digest = _hexToBytes(header.claimedHash);
-  if (digest == null || digest.length != 32) return false;
-  if (!shearMeetsTarget(digest, header.bits)) return false;
   final prevZero = RegExp(r'^0+$').hasMatch(header.prevHex);
   if (height > 1 && prevZero) return false;
   return true;
 }
+
+/// PoW check. The digest is ShearHash-v3 of the header bytes.
+/// [digest] is that recompute. The JSON `hash` is not work.
+/// A missing native binding fails closed. Height 1 may have a zero prev.
+bool flyHeaderPowOk(FlyHeader header, {required int height, Uint8List? digest}) {
+  if (!_flyHeaderShapeOk(header, height: height)) return false;
+  final got = digest ?? shearHashV3(_hexToBytes(header.rawHex) ?? Uint8List(0));
+  if (got == null || got.length != 32) return false;
+  return shearMeetsTarget(got, header.bits);
+}
+
+String _digestHex(Uint8List digest) =>
+    digest.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
 /// Inclusive height range for one node-sync header/block page.
 List<int> nodeSyncHeights(int from, int tip, {int page = kNodeSyncHeaderPage}) {
@@ -1292,6 +1301,7 @@ class ShearReadSync {
     final need = <int>{...heights};
     if (tip > 1) need.add(tip - 1);
     final got = <int, FlyHeader>{};
+    final digests = <int, String>{};
     final ordered = need.toList()..sort();
     for (final h in ordered) {
       final path = '/header?height=$h';
@@ -1299,19 +1309,27 @@ class ShearReadSync {
       final json = await _getFirst(base, [path, '/api/explorer/header?height=$h']);
       if (json == null) return false;
       final parsed = flyHeaderFromJson(json);
-      if (parsed == null || !flyHeaderPowOk(parsed, height: h)) return false;
+      if (parsed == null || !_flyHeaderShapeOk(parsed, height: h)) return false;
+      final raw = _hexToBytes(parsed.rawHex);
+      if (raw == null) return false;
+      final digest = await shearHashV3OffUi(raw);
+      if (digest == null || !flyHeaderPowOk(parsed, height: h, digest: digest)) {
+        return false;
+      }
       if (h == 1) {
         final g = parsed.rawHex;
         if (genesisHex != null && genesisHex!.isNotEmpty && genesisHex != g) return false;
         genesisHex = g;
       }
       got[h] = parsed;
+      digests[h] = _digestHex(digest);
     }
     if (tip > 1) {
       final parent = got[tip - 1];
       final child = got[tip];
-      if (parent == null || child == null) return false;
-      if (child.prevHex != parent.claimedHash) return false;
+      final parentDigest = digests[tip - 1];
+      if (parent == null || child == null || parentDigest == null) return false;
+      if (child.prevHex != parentDigest) return false;
     }
     for (final h in heights) {
       if (!got.containsKey(h)) return false;

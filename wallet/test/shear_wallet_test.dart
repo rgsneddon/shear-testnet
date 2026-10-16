@@ -14,6 +14,7 @@ import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_lock.dart';
 import 'package:shear_wallet/shear_session.dart';
 import 'package:shear_wallet/shear_hash.dart';
+import 'package:shear_wallet/shear_hash_v3.dart';
 import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_shewall.dart';
 import 'package:shear_wallet/shear_theme.dart';
@@ -259,29 +260,75 @@ void _stampChainTip(ShearLedger ledger, int tipMs, {int height = 12}) {
   ledger.applyTipHeader(header, sealedHeight: height);
 }
 
-/// Eleven parent-linked headers at [tipMs]. The claimed hash meets bits=1.
-/// Median time is [tipMs]. A raw /stats tip is a separate clock.
-void _noteVerifiedChain(ShearLedger ledger, int tipMs, {int count = 11}) {
-  final hashes = <Uint8List>[];
+final Map<String, List<({Uint8List header, Uint8List digest})>> _minedClock = {};
+
+String _headerHex(Uint8List bytes) =>
+    bytes.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+/// Parent-linked headers at [tipMs] whose ShearHash-v3 digests meet bits=1.
+/// Cached by time and length. The server-claimed hash is not the digest.
+List<({Uint8List header, Uint8List digest})> _mineLinkedHeaders(int tipMs, int count) {
+  final key = '$tipMs:$count';
+  final hit = _minedClock[key];
+  if (hit != null) {
+    return [
+      for (final row in hit)
+        (
+          header: Uint8List.fromList(row.header),
+          digest: Uint8List.fromList(row.digest),
+        ),
+    ];
+  }
+  expect(shearHashV3Ready, isTrue, reason: 'libshearhash.so ShearHash-v3');
+  final out = <({Uint8List header, Uint8List digest})>[];
+  Uint8List? prev;
   for (var h = 1; h <= count; h++) {
-    final hash = Uint8List(32);
-    hash[30] = (h >> 8) & 0xff;
-    hash[31] = h & 0xff;
-    final header = Uint8List(128);
+    final header = Uint8List(shearHeaderLen);
     header[0] = 1;
-    if (h > 1) header.setRange(4, 36, hashes.last);
+    if (prev != null) header.setRange(4, 36, prev);
     var v = tipMs;
     for (var i = 0; i < 8; i++) {
       header[100 + i] = v & 0xff;
       v >>= 8;
     }
     header[108] = 1;
-    final hashHex = hash.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
-    hashes.add(hash);
+    Uint8List? digest;
+    for (var n = 0; n < 64; n++) {
+      shearSetNonce(header, n);
+      final got = shearHashV3(header);
+      if (got != null && shearMeetsTarget(got, 1)) {
+        digest = got;
+        break;
+      }
+    }
+    expect(digest, isNotNull, reason: 'height $h meets bits=1');
+    out.add((header: Uint8List.fromList(header), digest: digest!));
+    prev = digest;
+  }
+  _minedClock[key] = [
+    for (final row in out)
+      (
+        header: Uint8List.fromList(row.header),
+        digest: Uint8List.fromList(row.digest),
+      ),
+  ];
+  return out;
+}
+
+/// Parent-linked headers at [tipMs]. Median time is [tipMs].
+/// A raw /stats tip is a separate clock. Each header is ShearHash-v3.
+void _noteVerifiedChain(ShearLedger ledger, int tipMs, {int count = 11}) {
+  final chain = _mineLinkedHeaders(tipMs, count);
+  for (var i = 0; i < chain.length; i++) {
+    final row = chain[i];
     expect(
-      ledger.noteVerifiedHeader(header: header, height: h, hashHex: hashHex),
+      ledger.noteVerifiedHeader(
+        header: row.header,
+        height: i + 1,
+        hashHex: _headerHex(row.digest),
+      ),
       isTrue,
-      reason: 'verified header $h',
+      reason: 'verified header ${i + 1}',
     );
   }
   expect(ledger.verifiedMedianTimeMs, tipMs);
@@ -5716,6 +5763,20 @@ void main() {
     expect(dump.contains('oracleBps'), isTrue);
   });
 
+  test('a π deposit at verified time 0 still votes and does not unlock', () {
+    final alice = createIdentity();
+    final va = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    final sealed = ShearReserve();
+    expect(sealed.deposit(dest: va, she: kPiShe, nowMs: 0), isNull);
+    expect(sealed.epochStartMs, 0);
+    expect(sealed.currentEpoch, 1);
+    expect(sealed.portal(va).deposits.single.atMs, 0);
+    expect(sealed.vote(dest: va, choice: kVoteHold, nowMs: 0), isNull);
+    expect(sealed.portal(va).vote, kVoteHold);
+    expect(sealed.epochIsOver(0), isFalse);
+    expect(sealed.maturedPrincipalNanos(va, 0), 0);
+  });
+
   test('Reserve withdraw sign does not credit Continuum before a sealed payout', () async {
     final alice = createIdentity();
     final ledger = ShearLedger()..bindIdentity(alice);
@@ -8131,6 +8192,64 @@ void main() {
     expect(ledger.verifiedMedianTimeMs, isNull);
   });
 
+  test('live sync verifies header work and a raw future tip does not unlock', () async {
+    const honest = 1700000000000;
+    const rawTip = honest + 2 * 3600000;
+    final chain = _mineLinkedHeaders(honest, 3);
+    final future = Uint8List(shearHeaderLen);
+    future[0] = 1;
+    future[108] = 32;
+    var clock = rawTip;
+    for (var i = 0; i < 8; i++) {
+      future[100 + i] = clock & 0xff;
+      clock >>= 8;
+    }
+    final lying = _PoolLive(headerHex: _headerHex(future), height: 3);
+    var prevClaim = Uint8List(32);
+    for (var h = 1; h <= 3; h++) {
+      final header = Uint8List(shearHeaderLen);
+      header[0] = 1;
+      if (h > 1) header.setRange(4, 36, prevClaim);
+      var v = honest;
+      for (var i = 0; i < 8; i++) {
+        header[100 + i] = v & 0xff;
+        v >>= 8;
+      }
+      header[108] = 32;
+      final claim = Uint8List(32)..[31] = h;
+      prevClaim = claim;
+      lying.headerAtHeight[h] = _headerHex(header);
+    }
+    final lieServer = await _fakePool(live: lying);
+    addTearDown(() => lieServer.close(force: true));
+    final lieLedger = ShearLedger(
+      pool: ShearPoolClient(
+        baseUrl: 'http://127.0.0.1:${lieServer.port}',
+        http: _realHttp(),
+      ),
+    );
+    await lieLedger.syncTip(proveChain: false);
+    expect(lieLedger.tipTimestampMs, rawTip);
+    expect(lieLedger.verifiedMedianTimeMs, isNull);
+
+    final honestLive = _PoolLive(headerHex: _headerHex(future), height: 3);
+    for (var h = 0; h < chain.length; h++) {
+      honestLive.headerAtHeight[h + 1] = _headerHex(chain[h].header);
+    }
+    final server = await _fakePool(live: honestLive);
+    addTearDown(() => server.close(force: true));
+    final ledger = ShearLedger(
+      pool: ShearPoolClient(
+        baseUrl: 'http://127.0.0.1:${server.port}',
+        http: _realHttp(),
+      ),
+    );
+    await ledger.syncTip(proveChain: false);
+    expect(ledger.tipTimestampMs, rawTip);
+    expect(ledger.verifiedMedianTimeMs, honest);
+    expect(honestLive.headerHits, greaterThanOrEqualTo(3));
+  });
+
   test('a deposit row is stamped from the sealed unlock, not the device clock', () {
     final src = File('lib/shear_reserve.dart').readAsStringSync();
     final start = src.indexOf('Future<ReserveDepositResult> postReserveDeposit');
@@ -8164,6 +8283,67 @@ void main() {
     expect(row.noteIsPrincipal, isTrue);
     expect(vault.maturedTimeLockNanos(kPoolFeeDest, unlock - 1), 0);
     expect(vault.maturedTimeLockNanos(kPoolFeeDest, unlock), kUnitsPerShe);
+  });
+
+  test('two deposits match their own lock notes, not the newest on the address', () async {
+    const older = 1700000000000;
+    const newer = older + kReserveEpochMs;
+    const dest = kPoolFeeDest;
+    final notes = <Map<String, dynamic>>[
+      {'kind': 'lock', 'address': dest, 'txId': 'dep-old', 'unlockAtMs': older},
+      {'kind': 'lock', 'address': dest, 'txId': 'dep-new', 'unlockAtMs': newer},
+    ];
+    expect(sealedUnlockForTx(notes, 'dep-old'), older);
+    expect(sealedUnlockForTx(notes, 'dep-new'), newer);
+    expect(sealedUnlockForTx(notes, 'missing'), isNull);
+
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
+    ledger.rememberNote({
+      'address': home,
+      'dest': home,
+      'verified': true,
+      'height': 1,
+      'amount': 1.0,
+      'commit': Uint8List(32)..[0] = 1,
+      'r': Uint8List(32)..[0] = 2,
+    });
+    ledger.restoreSealedTip(20);
+    ledger.rememberDest(home);
+    ledger.rememberNodeChain(history: [
+      {'kind': 'coinbase', 'dest': home, 'amount': 5.0, 'height': 1},
+    ]);
+    ledger.creditKnownNodeLands();
+    ledger.settleTo(20);
+    ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
+    ledger.rememberNote({
+      'address': vault,
+      'dest': vault,
+      'kind': 'lock',
+      'txId': 'dep-new',
+      'unlockAtMs': newer,
+      'commit': Uint8List(32)..[0] = 9,
+      'locked': true,
+    });
+    final reserve = ShearReserve();
+    final posted = await postReserveDeposit(
+      ledger: ledger,
+      reserve: reserve,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      dest: vault,
+      she: 0.4,
+      depth: 0,
+      spendSeed: hexToBytes(id.seedHex),
+      local: true,
+    );
+    expect(posted.posted, isTrue, reason: posted.remark);
+    final row = reserve.portal(vault).deposits.single;
+    expect(row.unlockAtMs, isNot(newer));
+    expect(sealedUnlockForTx(ledger.notes, 'dep-old'), isNull);
+    expect(sealedUnlockForTx(ledger.notes, posted.tx!.id), isNot(newer));
   });
 
   test('an unlocked lock note on the vault dest can be spent', () async {
