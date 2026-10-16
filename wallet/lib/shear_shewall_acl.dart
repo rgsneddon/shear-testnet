@@ -266,7 +266,9 @@ String resolveWindowsSystem32({
 }
 
 /// True when [sddl] is an owner-only DACL for [ownerSid] plus SYSTEM and
-/// Administrators. Aliases `SY` and `BA` count as those SIDs.
+/// Administrators. Aliases `SY` and `BA` count as those SIDs. `LA` counts as
+/// the owner only when [ownerSid] is the built-in Administrator (RID 500),
+/// which is how Windows prints that account.
 bool shewallDaclIsOwnerOnly(
   String sddl, {
   required String ownerSid,
@@ -685,16 +687,8 @@ void _expectReadBack(
     final owner = io.readOwner != null
         ? io.readOwner!(path)
         : _ownerSidWin32(path);
-    final decoded = _decodeIcacls(file.readAsBytesSync());
-    final sddl = _composeSddl(decoded, owner);
-    try {
-      _expectDacl(sddl, ownerSid: sid, directory: directory);
-    } on FormatException {
-      stderr
-        ..writeln('shewall_acl:dacl-raw $sddl')
-        ..writeln('shewall_acl:icacls-raw $decoded');
-      rethrow;
-    }
+    final sddl = _composeSddl(_decodeIcacls(file.readAsBytesSync()), owner);
+    _expectDacl(sddl, ownerSid: sid, directory: directory);
   } finally {
     final file = File(save);
     if (file.existsSync()) {
@@ -835,10 +829,11 @@ void _expectDacl(
   if (start < 0) throw const FormatException(shewallAclDacl);
   final sddl = text.substring(start).replaceAll(RegExp(r'\s+'), '');
   final header = RegExp(
-    r'^O:(S-1-\d+(?:-\d+)+)(?:G:S-1-\d+(?:-\d+)+)?D:([A-Z]*)',
+    r'^O:((?:S-1-\d+(?:-\d+)+)|[A-Z]{2})(?:G:(?:(?:S-1-\d+(?:-\d+)+)|[A-Z]{2}))?D:([A-Z]*)',
   ).firstMatch(sddl);
   if (header == null) throw const FormatException(shewallAclDacl);
-  if (header.group(1)!.toUpperCase() != ownerSid.toUpperCase()) {
+  if (_canonicalSid(header.group(1)!, ownerSid: ownerSid) !=
+      ownerSid.toUpperCase()) {
     throw const FormatException(shewallAclDacl);
   }
   if (!header.group(2)!.contains('P')) {
@@ -864,7 +859,7 @@ void _expectDacl(
     final type = ace.group(1)!;
     final flags = ace.group(2)!.toUpperCase();
     final rights = ace.group(3)!.toUpperCase();
-    final sid = _canonicalSid(ace.group(6)!);
+    final sid = _canonicalSid(ace.group(6)!, ownerSid: ownerSid);
     if (type != 'A') throw const FormatException(shewallAclDacl);
     if (rights != 'FA' && rights != '0X1F01FF') {
       throw const FormatException(shewallAclDacl);
@@ -884,7 +879,7 @@ void _expectDacl(
   if (got.length != 3) throw const FormatException(shewallAclDacl);
 }
 
-String _canonicalSid(String raw) {
+String _canonicalSid(String raw, {String? ownerSid}) {
   var text = raw.trim();
   if (text.startsWith('*')) text = text.substring(1);
   switch (text.toUpperCase()) {
@@ -892,6 +887,12 @@ String _canonicalSid(String raw) {
       return systemSid;
     case 'BA':
       return administratorsSid;
+    case 'LA':
+      // LOCAL_ADMIN is S-1-5-21-<machine>-500, not a fixed SID. Windows
+      // prints the built-in Administrator as LA. It is the owner only then.
+      final owner = (ownerSid ?? '').toUpperCase();
+      if (RegExp(r'^S-1-5-21-\d+-\d+-\d+-500$').hasMatch(owner)) return owner;
+      return 'LA';
     case 'WD':
       return 'S-1-1-0';
     case 'AU':

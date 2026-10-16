@@ -607,6 +607,23 @@ void main() {
       ),
       isTrue,
     );
+    const adminSid = 'S-1-5-21-9-8-7-500';
+    expect(
+      shewallDaclIsOwnerOnly(
+        'O:LAD:P(A;;FA;;;LA)(A;;FA;;;SY)(A;;FA;;;BA)',
+        ownerSid: adminSid,
+        directory: false,
+      ),
+      isTrue,
+    );
+    expect(
+      shewallDaclIsOwnerOnly(
+        'O:${adminSid}D:PAI(A;;FA;;;LA)(A;;FA;;;SY)(A;;FA;;;BA)',
+        ownerSid: adminSid,
+        directory: false,
+      ),
+      isTrue,
+    );
     expect(
       shewallDaclIsOwnerOnly(
         'O:$_userSid D:PAI(A;OICI;FA;;;$_userSid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
@@ -674,6 +691,14 @@ void main() {
     expect(
       shewallDaclIsOwnerOnly(
         'O:$_userSid D:P(A;ID;FA;;;$_userSid)(A;;FA;;;SY)(A;;FA;;;BA)',
+        ownerSid: _userSid,
+        directory: false,
+      ),
+      isFalse,
+    );
+    expect(
+      shewallDaclIsOwnerOnly(
+        'O:$_userSid D:P(A;;FA;;;LA)(A;;FA;;;SY)(A;;FA;;;BA)',
         ownerSid: _userSid,
         directory: false,
       ),
