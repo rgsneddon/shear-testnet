@@ -23,7 +23,7 @@ import {
 import { lockTx, voteTx, portalIdFromDest } from './reserve_vault.js';
 import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest, spendDestOf, encodeDest } from './address.js';
 import { vaultDest, destForLogin } from './flow_sheet.js';
-import { verifySealedNote, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
+import { verifyRange, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
 import { attachAdmitPub } from './admit.js';
 import { PI_SHE_NANOS, GENESIS_BITS_PACKED, NANOS_PER_SHE, POOL_FEE_BPS } from './asert.js';
 import { digestTx, buildTemplate, verifyBlock, GENESIS_PREV } from '../node/src/chain.js';
@@ -232,12 +232,15 @@ describe('chronoflux prune + collate', () => {
     assert.equal(levy.nanos, 5);
   });
 
-  it('compact lock drops the opening and still proves the amount after JSON', () => {
+  it('compact lock keeps the commitment and the range proof, not the amount', () => {
     const id = newIdentity();
     const continuum = destForLogin(id.address, { viewKey: id.viewKey });
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
     const tx = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-json' });
-    assert.equal(verifySealedNote(tx.vout[0], PI_SHE_NANOS), true);
+    assert.equal(tx.nanos, 0);
+    assert.equal(tx.vout[0].valueProof, undefined);
+    assert.equal(tx.vout[0].nanos, undefined);
+    assert.equal(verifyRange(tx.vout[0].commit, tx.vout[0].rangeProof), true);
     const sealed = compactTx(tx);
     assert.equal(sealed.vout[0].r, undefined);
     assert.equal(sealed.kind, 'lock');
@@ -246,14 +249,14 @@ describe('chronoflux prune + collate', () => {
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.nanos, undefined);
     assert.equal(sealed.vout[0].nanos, undefined);
+    assert.equal(sealed.vout[0].valueProof, undefined);
     assert.ok(sealed.vout[0].commit);
-    assert.ok(sealed.vout[0].rangeProof || sealed.vout[0].valueProof);
-    if (sealed.vout[0].rangeProof) {
-      assert.equal(sealed.vout[0].rangeProof === true, false);
-    }
+    assert.ok(sealed.vout[0].rangeProof);
+    assert.equal(sealed.vout[0].rangeProof === true, false);
     const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
     assert.equal(Buffer.isBuffer(wire.vout[0].commit), true);
-    assert.equal(verifySealedNote(wire.vout[0], PI_SHE_NANOS), true);
+    assert.equal(wire.vout[0].valueProof, undefined);
+    assert.equal(verifyRange(wire.vout[0].commit, wire.vout[0].rangeProof), true);
     assert.equal(wire.vout[0].r, undefined);
     assert.ok(sealed.vout[0].dest20);
     assert.ok(sealed.vout[0].portalId);

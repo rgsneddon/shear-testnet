@@ -119,6 +119,7 @@ contract Reserve {
         bool partialPaid;
         // Time-locked note. withdraw() does not pay this principal.
         bool notePrincipal;
+        bytes32 commit;
     }
 
     struct Portal {
@@ -134,6 +135,9 @@ contract Reserve {
         /// 0: a tranche-less balance is locked in currentEpoch.
         /// Otherwise the lock epoch is legacyEpochPlus - 1, pinned before a roll.
         uint256 legacyEpochPlus;
+        bool hiddenStake;
+        /// Principal was released while a hidden reward was still due.
+        bool hiddenRewardOpen;
     }
 
     bytes32 public immutable magic;
@@ -540,13 +544,14 @@ contract Reserve {
         _applyEpochRate(nowTs, false);
     }
 
-    function lock(bytes calldata dest, uint256 nanos, uint256 nowTs, bytes32 ownerCommit) external onlyShear {
-        _lock(dest, nanos, nowTs, false, ownerCommit);
+    /// The amount is the commitment. `nanos` is not an argument.
+    function lock(bytes calldata dest, bytes32 commit, uint256 nowTs, bytes32 ownerCommit, bool qualifies) external onlyShear {
+        _lock(dest, commit, nowTs, false, ownerCommit, qualifies);
     }
 
     /// Same credit as lock, with the time-locked note flag set.
-    function lockNote(bytes calldata dest, uint256 nanos, uint256 nowTs, bool notePrincipal, bytes32 ownerCommit) external onlyShear {
-        _lock(dest, nanos, nowTs, notePrincipal, ownerCommit);
+    function lockNote(bytes calldata dest, bytes32 commit, uint256 nowTs, bool notePrincipal, bytes32 ownerCommit, bool qualifies) external onlyShear {
+        _lock(dest, commit, nowTs, notePrincipal, ownerCommit, qualifies);
     }
 
     /// A withdraw in this block keeps this portal's legacy principal.
@@ -577,8 +582,8 @@ contract Reserve {
         delete heldShas;
     }
 
-    function _lock(bytes calldata dest, uint256 nanos, uint256 nowTs, bool notePrincipal, bytes32 ownerCommit) internal {
-        if (nanos == 0) revert BadAmount();
+    function _lock(bytes calldata dest, bytes32 commit, uint256 nowTs, bool notePrincipal, bytes32 ownerCommit, bool qualifies) internal {
+        if (commit == bytes32(0)) revert BadAmount();
         if (dest.length == 0) revert BadDest();
         if (clockGenesis == 0) revert ClockUnpinned();
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
@@ -596,9 +601,6 @@ contract Reserve {
         if (prior != bytes32(0) && prior != ownerCommit) revert Unsigned();
         if (prior == bytes32(0)) ownerOf[id] = ownerCommit;
         _settle(p, nowTs);
-        bool staking = canJoin(nowTs);
-        if (staking) p.active += nanos;
-        else p.idle += nanos;
         uint256 idx = _chainEpoch(nowTs);
         uint256 span = epochLengthMs();
         uint256 remain = 0;
@@ -608,16 +610,17 @@ contract Reserve {
             if (remain > span) remain = span;
         }
         p.tranches.push(Tranche({
-            amount: nanos,
+            amount: 0,
             epoch: idx,
             remainMs: remain,
             fullFrom: idx + 1,
             partialPaid: false,
-            notePrincipal: notePrincipal
+            notePrincipal: notePrincipal,
+            commit: commit
         }));
         p.rewardTracked = true;
-        totalLocked += nanos;
-        if (!p.joined && (p.active + p.idle) >= PI_NANOS) {
+        p.hiddenStake = true;
+        if (qualifies && !p.joined) {
             p.joined = true;
             _syncEpoch(nowTs);
         } else if (p.joined && epochStart == 0) {
@@ -630,7 +633,8 @@ contract Reserve {
         nowTs;
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
-        if (!p.joined || (p.active + p.idle) < PI_NANOS) revert NotVoter();
+        if (!p.joined) revert NotVoter();
+        if (!p.hiddenStake && (p.active + p.idle) < PI_NANOS) revert NotVoter();
         if (choice == Vote.None) revert NotVoter();
         if (epochStart == 0) revert NotVoter();
         if (bonusEnacted) revert EpochClosed();
@@ -778,7 +782,7 @@ contract Reserve {
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
             if (chain <= t.epoch || t.notePrincipal) continue;
-            h = sha256(abi.encodePacked(h, t.amount, t.epoch, t.remainMs));
+            h = sha256(abi.encodePacked(h, t.commit, t.epoch, t.remainMs));
         }
     }
 
@@ -792,7 +796,7 @@ contract Reserve {
         bytes32 trancheSet,
         uint256 chain
     ) internal view returns (bool) {
-        if (auth.length < 96 || nanos == 0 || nanos > 9007199254740991) return false;
+        if (auth.length < 96 || nanos > 9007199254740991) return false;
         return _ed25519(
             _authPub(auth),
             auth[32:96],
@@ -1066,7 +1070,7 @@ contract Reserve {
         uint256 bps = _rateFor(epoch);
         uint256 full = 0;
         bytes32 remainCommit = bytes32(0);
-        if (proof.length > 5 && proof[0] == 0xa3) {
+        if (proof.length > 5 && proof[0] == 0xa4) {
             uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
             uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
             if (off < proof.length) full = uint256(uint8(proof[off]));
@@ -1080,7 +1084,7 @@ contract Reserve {
     /// 1 accepts. 2 is a bad reward. 0 is not this proof. A missing root is 2,
     /// so the claim can be retried after the root is committed.
     function _vaultCode(bytes32 nullifier, uint256 epoch, bytes calldata proof, bytes calldata output) internal view returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xa3) return 0;
+        if (proof.length < 2 || proof[0] != 0xa4) return 0;
         bytes32 root = vaultRootOf[epoch];
         if (root == bytes32(0)) return 2;
         (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(_vaultHead(root, nullifier, epoch, proof), _u32le(output.length), output, proof));
@@ -1097,13 +1101,30 @@ contract Reserve {
         bytes calldata auth
     ) external onlyShear returns (uint256) {
         nanos;
-        if (proof.length < 2 || proof[0] != 0xa3) revert ClaimUnavailable();
+        if (proof.length < 2 || proof[0] != 0xa4) revert ClaimUnavailable();
         if (nullifierMinted[nullifier]) revert AlreadyMinted();
         uint256 code = _vaultCode(nullifier, rootIndex, proof, auth);
         if (code == 2) revert BadAmount();
         if (code != 1) revert Unsigned();
         nullifierMinted[nullifier] = true;
         return 1;
+    }
+
+    /// A matured qualifying commitment. The interest integer stays hidden.
+    function _hiddenDue(Portal storage p, uint256 nowTs) internal view returns (bool) {
+        if (p.hiddenRewardOpen) return true;
+        if (!p.hiddenStake || !p.joined) return false;
+        uint256 chain = _chainEpoch(nowTs);
+        if (chain == 0) return false;
+        uint256 cut = cutoffLengthMs();
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            Tranche storage t = p.tranches[i];
+            if (t.commit == bytes32(0) || t.notePrincipal) continue;
+            if (t.remainMs >= cut && chain > t.epoch) return true;
+            if (chain > t.fullFrom && t.remainMs > 0) return true;
+        }
+        return false;
     }
 
     /// The owner's signed roll. When reward is due, the vault proof is required.
@@ -1125,8 +1146,8 @@ contract Reserve {
         if (!_ed25519(_authPub(auth), auth[32:96], message)) revert Unsigned();
         Portal storage p = portals[id];
         _settle(p, nowTs);
-        if (p.accruedReward > 0) {
-            if (proof.length < 2 || proof[0] != 0xa3) revert BadAmount();
+        if (p.accruedReward > 0 || _hiddenDue(p, nowTs)) {
+            if (proof.length < 2 || proof[0] != 0xa4) revert BadAmount();
             if (nullifierMinted[nullifier]) revert AlreadyMinted();
             uint256 code = _vaultCode(nullifier, epoch, proof, proof[0:0]);
             if (code == 2) revert BadAmount();
@@ -1152,7 +1173,7 @@ contract Reserve {
         Portal storage p = portals[id];
         uint256 active = p.active;
         uint256 idleBal = p.idle;
-        if (active + idleBal == 0) {
+        if (active + idleBal == 0 && !p.hiddenStake) {
             if (creditedThrough[id] != 0) revert AlreadyMinted();
             revert BadAmount();
         }
@@ -1162,8 +1183,10 @@ contract Reserve {
         _settle(p, nowTs);
         // Hash the matured set before the release loop drops those tranches.
         bytes32 trancheSet = _trancheSet(p, chain);
+        if (_hiddenDue(p, nowTs)) p.hiddenRewardOpen = true;
         uint256 release = 0;
         uint256 noteMatured = 0;
+        uint256 hiddenCount = 0;
         uint256 kept = 0;
         uint256 credits = p.tranches.length;
         for (uint256 i = 0; i < credits; i++) {
@@ -1173,45 +1196,54 @@ contract Reserve {
                 }
                 if (kept != i) p.tranches[kept] = p.tranches[i];
                 kept += 1;
+            } else if (p.tranches[i].commit != bytes32(0)) {
+                hiddenCount += 1;
             } else {
                 release += p.tranches[i].amount;
             }
         }
-        if (release == 0) {
+        if (release == 0 && hiddenCount == 0) {
             if (noteMatured > 0) revert NotePrincipal();
             revert EpochNotEnded();
         }
         while (p.tranches.length > kept) p.tranches.pop();
-        // Principal only. The qualified reward stays on the portal for the
-        // ZK claim. The recorded owner must sign the release that is happening.
+        // Principal only. A commitment tranche pays integer 0. The ZK claim
+        // is the reward. The recorded owner must sign the release.
         earned = p.accruedReward;
         reward = 0;
         if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
         if (!_withdrawAuthOk(portalSha[id], release, auth, trancheSet, chain)) revert Unsigned();
-        if (release > active) {
-            uint256 rest = release - active;
-            p.active = 0;
-            if (rest > p.idle) revert BadAmount();
-            p.idle -= rest;
-        } else {
-            p.active = active - release;
+        if (release > 0) {
+            if (release > active) {
+                uint256 rest = release - active;
+                p.active = 0;
+                if (rest > p.idle) revert BadAmount();
+                p.idle -= rest;
+            } else {
+                p.active = active - release;
+            }
+            totalLocked -= release;
         }
-        totalLocked -= release;
         principal = release;
         uint256 left = p.active + p.idle;
-        bool leave = left == 0 || left < PI_NANOS;
+        bool stillHidden = false;
+        uint256 remainCredits = p.tranches.length;
+        for (uint256 i = 0; i < remainCredits; i++) {
+            if (p.tranches[i].commit != bytes32(0)) stillHidden = true;
+        }
+        bool leave = !stillHidden && (left == 0 || left < PI_NANOS);
         if (leave && p.voteEpoch == currentEpoch) {
             if (p.vote == Vote.IncreaseBonus && votesIncrease > 0) votesIncrease -= 1;
             if (p.vote == Vote.DecreaseBonus && votesDecrease > 0) votesDecrease -= 1;
             if (p.vote == Vote.LeaveBonusAsIs && votesHold > 0) votesHold -= 1;
         }
-        if (left == 0) {
+        if (left == 0 && !stillHidden) {
             p.rewardTracked = false;
             p.rewardEpoch = 0;
             p.joined = false;
             p.vote = Vote.None;
             p.voteEpoch = 0;
-        } else if (left < PI_NANOS) {
+        } else if (!stillHidden && left < PI_NANOS) {
             p.joined = false;
             p.vote = Vote.None;
             p.voteEpoch = 0;

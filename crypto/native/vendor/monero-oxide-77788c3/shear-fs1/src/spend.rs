@@ -65,6 +65,8 @@ pub const NOTE_H_LABEL: &[u8] = b"shear-note-H-v1";
 
 const TRANSCRIPT_DST: &[u8] = b"shear-fs1-spend-v1";
 const SAL_DST: &[u8] = b"shear-fs1-sal-v1";
+/// Claim spends. The published tag is one-time, so two proofs of one note do not share it.
+const SAL_UNLINK_DST: &[u8] = b"shear-fs1-sal-unlink-v1";
 
 /// Shear's note blinding generator `H` on Ristretto255.
 pub fn note_h() -> RistrettoPoint {
@@ -181,7 +183,7 @@ struct RecordHead {
   points: [u8; 96],
 }
 
-fn transcript(body_digest: &[u8; 32], anchor: u64, root: &[u8; 32], heads: &[RecordHead], fcmp: &[u8]) -> [u8; 64] {
+fn transcript(body_digest: &[u8; 32], anchor: u64, root: &[u8; 32], heads: &[RecordHead], fcmp: &[u8], extra: &[u8]) -> [u8; 64] {
   let mut h = Sha512::new();
   h.update(TRANSCRIPT_DST);
   h.update(body_digest);
@@ -194,6 +196,8 @@ fn transcript(body_digest: &[u8; 32], anchor: u64, root: &[u8; 32], heads: &[Rec
     h.update(head.points);
   }
   h.update(Sha512::digest(fcmp));
+  // Empty on a payment spend, so those transcripts stay byte-identical.
+  h.update(extra);
   let mut out = [0u8; 64];
   out.copy_from_slice(&h.finalize());
   out
@@ -283,6 +287,119 @@ fn sal_verify(params: &Fs1Params, m: &[u8; 64], index: u8, public: &SalPublic, p
   sal_challenge(m, index, &public.l, &a1, &a2, &a3) == e
 }
 
+fn sal_challenge_unlink(m: &[u8; 64], index: u8, l: &DEd, a1: &DEd, a2: &DEd, a3: &DEd, extra: &[u8]) -> Scalar {
+  let mut wide = [0u8; 64];
+  wide.copy_from_slice(
+    &Sha512::new()
+      .chain_update(SAL_UNLINK_DST)
+      .chain_update(m)
+      .chain_update([index])
+      .chain_update(l.compress().to_bytes())
+      .chain_update(a1.compress().to_bytes())
+      .chain_update(a2.compress().to_bytes())
+      .chain_update(a3.compress().to_bytes())
+      .chain_update(extra)
+      .finalize(),
+  );
+  Scalar::from_bytes_mod_order_wide(&wide)
+}
+
+struct UnlinkSal {
+  sal: [u8; SAL_BYTES],
+  /// `A = nullBase · k`, the nullifier announcement.
+  ann: [u8; 32],
+  /// Response for the one-time tag blind.
+  sr: [u8; 32],
+  /// `N = nullBase · x`. Public, and a fresh base each epoch.
+  null_point: [u8; 32],
+}
+
+/// SA+L for a claim. `L' = E(spendTag) + E(H)·r` is the published tag, so the
+/// stable spend tag never leaves the witness. The same `x` opens `N`.
+fn sal_prove_unlinked(
+  params: &Fs1Params,
+  m: &[u8; 64],
+  index: u8,
+  public: &SalPublic,
+  w: &SalWitness,
+  blind: Scalar,
+  null_base: &RistrettoPoint,
+  null_point: &RistrettoPoint,
+) -> Result<UnlinkSal, Fs1Error> {
+  let (t, u, v) = (ed(params.t), ed(params.u), ed(params.v));
+  let h_ed = ed(commitment_blind().ok_or(Fs1Error::Blind)?);
+  let mut kx = random_scalar();
+  let mut ko = random_scalar();
+  let mut ka = random_scalar();
+  let mut kb = random_scalar();
+  let mut kr = random_scalar();
+  let a1 = ED25519_BASEPOINT_POINT * kx - t * ko;
+  let a2 = public.i_tilde * kx + u * ka + h_ed * kr;
+  let a3 = public.r * kx - t * kb + v * ka;
+  let ann_pt = null_base * kx;
+  let mut extra = [0u8; 96];
+  extra[.. 32].copy_from_slice(&ann_pt.compress().to_bytes());
+  extra[32 .. 64].copy_from_slice(&null_point.compress().to_bytes());
+  extra[64 ..].copy_from_slice(&null_base.compress().to_bytes());
+  let e = sal_challenge_unlink(m, index, &public.l, &a1, &a2, &a3, &extra);
+  let sx = kx + e * w.x;
+  let so = ko + e * w.o;
+  let sa = ka + e * w.a;
+  let sb = kb + e * w.b;
+  let sr = kr + e * blind;
+  kx.zeroize();
+  ko.zeroize();
+  ka.zeroize();
+  kb.zeroize();
+  kr.zeroize();
+  let scalars = [e, sx, so, sa, sb];
+  let mut sal = [0u8; SAL_BYTES];
+  for (slot, scalar) in sal.chunks_exact_mut(32).zip(scalars.iter()) {
+    slot.copy_from_slice(scalar.as_bytes());
+  }
+  Ok(UnlinkSal { sal, ann: extra[.. 32].try_into().expect("32"), sr: sr.to_bytes(), null_point: null_point.compress().to_bytes() })
+}
+
+fn sal_verify_unlinked(
+  params: &Fs1Params,
+  m: &[u8; 64],
+  index: u8,
+  public: &SalPublic,
+  proof: &[u8],
+  link: &[u8; 96],
+  null_base: &[u8; 32],
+) -> bool {
+  let mut s = [Scalar::ZERO; 5];
+  for (slot, chunk) in s.iter_mut().zip(proof.chunks_exact(32)) {
+    match canonical_scalar(chunk) {
+      Some(x) => *slot = x,
+      None => return false,
+    }
+  }
+  let Some(sr) = canonical_scalar(&link[32 .. 64]) else { return false };
+  let Some(h_ed) = commitment_blind().map(ed) else { return false };
+  let [e, sx, so, sa, sb] = s;
+  let (t, u, v) = (ed(params.t), ed(params.u), ed(params.v));
+  let a1 = ED25519_BASEPOINT_POINT * sx - t * so - public.o_tilde * e;
+  let a2 = public.i_tilde * sx + u * sa + h_ed * sr - public.l * e;
+  let a3 = public.r * sx - t * sb + v * sa;
+  let mut extra = [0u8; 96];
+  extra[.. 32].copy_from_slice(&link[.. 32]);
+  extra[32 .. 64].copy_from_slice(&link[64 ..]);
+  extra[64 ..].copy_from_slice(null_base);
+  if sal_challenge_unlink(m, index, &public.l, &a1, &a2, &a3, &extra) != e {
+    return false;
+  }
+  let (Some(ann), Some(base), Some(np)) = (
+    canonical_ristretto(&link[.. 32]),
+    canonical_ristretto(null_base),
+    canonical_ristretto(&link[64 ..]),
+  ) else {
+    return false;
+  };
+  base * sx == ann + np * e
+}
+
 /// Build the tree over `notes` (the admit set at the anchor, in chain order).
 pub fn tree_of_notes(notes: &[ChainNote]) -> Result<ChainTree, Fs1Error> {
   let params = spend_params()?;
@@ -303,6 +420,36 @@ pub fn prove_spend(
   anchor: u64,
   threads: usize,
 ) -> Result<SpendOut, Fs1Error> {
+  Ok(prove_spend_inner(tree, notes, inputs, body_digest, anchor, threads, None)?.0)
+}
+
+/// Same membership proof, but each published tag is `spendTag + H·r` for a
+/// fresh `r`, and `link[i]` is `ann(32) || s_r(32) || N(32)`. `N = nullBase·x`.
+/// Two proofs of one note do not share a tag. Payment spends do not use this.
+pub fn prove_spend_unlinked(
+  tree: &ChainTree,
+  notes: &[ChainNote],
+  inputs: &[SpendIn],
+  body_digest: &[u8; 32],
+  anchor: u64,
+  threads: usize,
+  null_bases: &[[u8; 32]],
+) -> Result<(SpendOut, Vec<[u8; 96]>), Fs1Error> {
+  if null_bases.len() != inputs.len() {
+    return Err(Fs1Error::InputCount);
+  }
+  prove_spend_inner(tree, notes, inputs, body_digest, anchor, threads, Some(null_bases))
+}
+
+fn prove_spend_inner(
+  tree: &ChainTree,
+  notes: &[ChainNote],
+  inputs: &[SpendIn],
+  body_digest: &[u8; 32],
+  anchor: u64,
+  threads: usize,
+  null_bases: Option<&[[u8; 32]]>,
+) -> Result<(SpendOut, Vec<[u8; 96]>), Fs1Error> {
   let params = spend_params()?;
   let n = inputs.len();
   if !consensus_accepts(n) || tree.len() == 0 || notes.len() as u64 != tree.len() {
@@ -336,6 +483,9 @@ pub fn prove_spend(
   let mut heads = Vec::with_capacity(n);
   let mut publics = Vec::with_capacity(n);
   let mut ts = Vec::with_capacity(n);
+  let mut tag_blinds: Vec<Option<Scalar>> = Vec::with_capacity(n);
+  let mut null_points: Vec<[u8; 32]> = Vec::with_capacity(n);
+  let mut transcript_extra = Vec::new();
   for (k, input) in inputs.iter().enumerate() {
     let note = &notes[usize::try_from(input.index).map_err(|_| Fs1Error::Path)?];
     let c = canonical_ristretto(&note.commit).ok_or(Fs1Error::Blind)?;
@@ -346,7 +496,26 @@ pub fn prove_spend(
       return Err(Fs1Error::Blind);
     }
     let hp = hash_to_ristretto(&note.admit_pub, HP_DST);
-    let tag = (hp * input.x).compress().to_bytes();
+    let real = hp * input.x;
+    let (tag, blind, null_point) = if let Some(bases) = null_bases {
+      let base = canonical_ristretto(&bases[k]).ok_or(Fs1Error::Blind)?;
+      let r = random_scalar();
+      let blinded = real + h * r;
+      let blinded_bytes = blinded.compress().to_bytes();
+      let lifted = ed(ristretto_to_ed(&blinded_bytes).ok_or(Fs1Error::Blind)?);
+      let h_ed = ed(commitment_blind().ok_or(Fs1Error::Blind)?);
+      let real_ed = ed(ristretto_to_ed(&real.compress().to_bytes()).ok_or(Fs1Error::Blind)?);
+      // The published tag is a one-time blinding. E must carry that addition.
+      if lifted != real_ed + h_ed * r {
+        return Err(Fs1Error::Blind);
+      }
+      let np = (base * input.x).compress().to_bytes();
+      transcript_extra.extend_from_slice(&bases[k]);
+      transcript_extra.extend_from_slice(&np);
+      (blinded_bytes, Some(r), np)
+    } else {
+      (real.compress().to_bytes(), None, [0u8; 32])
+    };
     let l = ristretto_to_ed(&tag).ok_or(Fs1Error::Blind)?;
     publics.push(SalPublic {
       o_tilde: canonical_ed(&points[.. 32]).ok_or(Fs1Error::Blind)?,
@@ -355,15 +524,30 @@ pub fn prove_spend(
       l: ed(l),
     });
     heads.push(RecordHead { tag, c_tilde, points });
+    tag_blinds.push(blind);
+    null_points.push(null_point);
     ts.push(Zeroizing::new((-scalars[k].c).to_bytes()));
   }
 
-  let m = transcript(body_digest, anchor, &root, &heads, &proved.bytes);
+  let m = transcript(body_digest, anchor, &root, &heads, &proved.bytes, &transcript_extra);
   let mut records = Vec::with_capacity(n);
+  let mut links = Vec::with_capacity(n);
   for (k, input) in inputs.iter().enumerate() {
     let s = &scalars[k];
     let w = SalWitness { x: input.x, o: s.o, a: input.x * s.i, b: input.x * s.ib };
-    let sal = sal_prove(params, &m, u8::try_from(k).expect("k < 8"), &publics[k], &w);
+    let sal = if let (Some(bases), Some(blind)) = (null_bases, tag_blinds[k]) {
+      let base = canonical_ristretto(&bases[k]).ok_or(Fs1Error::Blind)?;
+      let np = canonical_ristretto(&null_points[k]).ok_or(Fs1Error::Blind)?;
+      let proved_sal = sal_prove_unlinked(params, &m, u8::try_from(k).expect("k < 8"), &publics[k], &w, blind, &base, &np)?;
+      let mut link = [0u8; 96];
+      link[.. 32].copy_from_slice(&proved_sal.ann);
+      link[32 .. 64].copy_from_slice(&proved_sal.sr);
+      link[64 ..].copy_from_slice(&proved_sal.null_point);
+      links.push(link);
+      proved_sal.sal
+    } else {
+      sal_prove(params, &m, u8::try_from(k).expect("k < 8"), &publics[k], &w)
+    };
     let mut record = [0u8; RECORD_BYTES];
     record[0] = SPEND_WIRE;
     record[1 .. 33].copy_from_slice(&heads[k].tag);
@@ -384,7 +568,7 @@ pub fn prove_spend(
   if !spend_blob_fits(&fs1, n) {
     return Err(Fs1Error::Io);
   }
-  Ok(SpendOut { fs1, records, t: ts })
+  Ok((SpendOut { fs1, records, t: ts }, links))
 }
 
 /// Largest `fs1` blob for `n` inputs at [`DEPTH`].
@@ -474,9 +658,86 @@ pub fn verify_spend(
   let proved = Proved { bytes: fcmp.to_vec(), inputs, input_bytes, root: tree_root, layers: DEPTH };
   verify(params, &proved)?;
 
-  let m = transcript(body_digest, anchor, root, &heads, fcmp);
+  let m = transcript(body_digest, anchor, root, &heads, fcmp, &[]);
   for (k, (record, public)) in records.iter().zip(publics.iter()).enumerate() {
     if !sal_verify(params, &m, u8::try_from(k).expect("k < 8"), public, &record[161 ..]) {
+      return Err(Fs1Error::Batch);
+    }
+  }
+  Ok(())
+}
+
+/// Verify a claim spend whose published tag is one-time.
+///
+/// `links[i]` is `ann || s_r || N` from [`prove_spend_unlinked`]. `null_bases[i]`
+/// is the epoch nullifier base. The stable spend tag is not in the record.
+pub fn verify_spend_unlinked(
+  fs1: &[u8],
+  records: &[[u8; RECORD_BYTES]],
+  links: &[[u8; 96]],
+  root: &[u8; 32],
+  body_digest: &[u8; 32],
+  anchor: u64,
+  null_bases: &[[u8; 32]],
+) -> Result<(), Fs1Error> {
+  let params = spend_params()?;
+  let n = records.len();
+  if !consensus_accepts(n) || links.len() != n || null_bases.len() != n || fs1.len() < SPEND_HEAD || fs1.first() != Some(&SPEND_WIRE) {
+    return Err(Fs1Error::InputCount);
+  }
+  if !spend_blob_fits(fs1, n) {
+    return Err(Fs1Error::Io);
+  }
+  if fs1[3 .. SPEND_HEAD] != root[..] {
+    return Err(Fs1Error::Path);
+  }
+  let tree_root = root_from_bytes(root, DEPTH).ok_or(Fs1Error::Path)?;
+  let fcmp = &fs1[SPEND_HEAD ..];
+
+  let mut heads = Vec::with_capacity(n);
+  let mut publics = Vec::with_capacity(n);
+  let mut inputs = Vec::with_capacity(n);
+  let mut input_bytes = Vec::with_capacity(n);
+  let mut extra = Vec::with_capacity(n * 64);
+  for (record, (link, base)) in records.iter().zip(links.iter().zip(null_bases.iter())) {
+    if record[0] != SPEND_WIRE {
+      return Err(Fs1Error::Io);
+    }
+    let tag: [u8; 32] = record[1 .. 33].try_into().expect("32 bytes");
+    let c_tilde: [u8; 32] = record[33 .. 65].try_into().expect("32 bytes");
+    if heads.iter().any(|h: &RecordHead| h.tag == tag) {
+      return Err(Fs1Error::Verify(full_chain_membership_proofs::FcmpError::IdentityPoint));
+    }
+    canonical_ristretto(&tag).ok_or(Fs1Error::Blind)?;
+    canonical_ristretto(&c_tilde).ok_or(Fs1Error::Blind)?;
+    canonical_ristretto(base).ok_or(Fs1Error::Blind)?;
+    canonical_ristretto(&link[64 ..]).ok_or(Fs1Error::Blind)?;
+    let l = ristretto_to_ed(&tag).ok_or(Fs1Error::Blind)?;
+    let c_ed = ristretto_to_ed(&c_tilde).ok_or(Fs1Error::Blind)?;
+    let o_tilde = canonical_ed(&record[65 .. 97]).ok_or(Fs1Error::Blind)?;
+    let i_tilde = canonical_ed(&record[97 .. 129]).ok_or(Fs1Error::Blind)?;
+    let r = canonical_ed(&record[129 .. 161]).ok_or(Fs1Error::Blind)?;
+    inputs.push(
+      Input::new(EdwardsPoint(o_tilde), EdwardsPoint(i_tilde), EdwardsPoint(r), c_ed).map_err(|_| Fs1Error::Blind)?,
+    );
+    let mut encoded = [0u8; 128];
+    encoded[.. 96].copy_from_slice(&record[65 .. 161]);
+    encoded[96 ..].copy_from_slice(&c_ed.to_bytes());
+    input_bytes.push(encoded);
+    let mut points = [0u8; 96];
+    points.copy_from_slice(&record[65 .. 161]);
+    heads.push(RecordHead { tag, c_tilde, points });
+    publics.push(SalPublic { o_tilde, i_tilde, r, l: ed(l) });
+    extra.extend_from_slice(base);
+    extra.extend_from_slice(&link[64 ..]);
+  }
+
+  let proved = Proved { bytes: fcmp.to_vec(), inputs, input_bytes, root: tree_root, layers: DEPTH };
+  verify(params, &proved)?;
+
+  let m = transcript(body_digest, anchor, root, &heads, fcmp, &extra);
+  for (k, ((record, public), (link, base))) in records.iter().zip(publics.iter()).zip(links.iter().zip(null_bases.iter())).enumerate() {
+    if !sal_verify_unlinked(params, &m, u8::try_from(k).expect("k < 8"), public, &record[161 ..], link, base) {
       return Err(Fs1Error::Batch);
     }
   }

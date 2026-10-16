@@ -8,7 +8,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
 import { EMPTY_ROOT } from './merkle.js';
-import { reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth } from './reserve_vault.js';
+import { reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth, lockQualifies } from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { ED25519_SPKI_PREFIX } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
@@ -93,28 +93,36 @@ function ownerWord(ownerCommit) {
   return word;
 }
 
-export function encodeDeposit(dest, nanos, nowTs, ownerCommit = null) {
+export function encodeDeposit(dest, commit, nowTs, ownerCommit = null, qualifies = false) {
   const body = encodeBytes(dest);
+  const word = Buffer.alloc(32);
+  const raw = Buffer.isBuffer(commit) ? commit : Buffer.from(String(commit || '').replace(/^0x/i, ''), 'hex');
+  if (raw.length === 32) word.set(raw);
   return concat(
-    selector('lock(bytes,uint256,uint256,bytes32)'),
-    pad32(128),
-    pad32(nanos),
+    selector('lock(bytes,bytes32,uint256,bytes32,bool)'),
+    pad32(160),
+    word,
     pad32(nowTs),
     ownerWord(ownerCommit),
+    pad32(qualifies ? 1 : 0),
     body,
   );
 }
 
 /** Time-locked note. The bool is the tranche flag withdraw() will not pay. */
-export function encodeLockNote(dest, nanos, nowTs, notePrincipal = true, ownerCommit = null) {
+export function encodeLockNote(dest, commit, nowTs, notePrincipal = true, ownerCommit = null, qualifies = false) {
   const body = encodeBytes(dest);
+  const word = Buffer.alloc(32);
+  const raw = Buffer.isBuffer(commit) ? commit : Buffer.from(String(commit || '').replace(/^0x/i, ''), 'hex');
+  if (raw.length === 32) word.set(raw);
   return concat(
-    selector('lockNote(bytes,uint256,uint256,bool,bytes32)'),
-    pad32(160),
-    pad32(nanos),
+    selector('lockNote(bytes,bytes32,uint256,bool,bytes32,bool)'),
+    pad32(192),
+    word,
     pad32(nowTs),
     pad32(notePrincipal ? 1 : 0),
     ownerWord(ownerCommit),
+    pad32(qualifies ? 1 : 0),
     body,
   );
 }
@@ -435,6 +443,8 @@ function vaultZkPrecompile(opts) {
 }
 
 export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
+  const { resetLockWitnesses } = await import('./owned_portal.js');
+  resetLockWitnesses();
   const common = shearCommon();
   const evm = await createEVM({
     common,
@@ -618,9 +628,11 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
+    const commit = act?.commit;
+    if (!commit || commit.length !== 32) return { ok: false, reason: 'stake_reward' };
     const pub = String(tx?.ownerPub || tx?.spendPub || '').replace(/^0x/i, '');
-    const commit = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
-    return callReserve(session, encodeDeposit(dest, nanos, nowMs, commit));
+    const owner = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
+    return callReserve(session, encodeDeposit(dest, commit, nowMs, owner, lockQualifies(commit, act?.piProof)));
   }
   if (kind === 'vote') {
     const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;

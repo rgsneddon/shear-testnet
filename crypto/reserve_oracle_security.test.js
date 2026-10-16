@@ -151,7 +151,7 @@ describe('oracle security pack (attester keys held)', () => {
     assert.equal(halfUpDiv(15, 10), 2);
   });
 
-  it('O0-b pays principal exactly at 0% and rejects a short or fat release', () => {
+  it('O0-b pays hidden principal as integer 0 and rejects a published release', () => {
     const stakes = [PI_SHE_NANOS, PI_SHE_NANOS * 3, 2 ** 40];
     for (const stake of stakes) {
       const who = newIdentity();
@@ -160,29 +160,34 @@ describe('oracle security pack (attester keys held)', () => {
       state.genesisMs = T0;
       assert.equal(deposit({ state, dest, nanos: stake, nowMs: T0 }).ok, true);
       state.epochBps = 0;
+      const portal = state.portals[Object.keys(state.portals)[0]];
+      assert.equal(portal.tranches[0].amount, undefined);
+      assert.equal(String(portal.tranches[0].commit).length, 64);
+      assert.equal(Number(state.totalLockedNanos), 0);
       const paid = withdraw({ state, dest, nowMs: END });
       assert.equal(paid.ok, true, paid.reason);
       assert.equal(paid.reward, 0);
-      assert.equal(paid.payout, paid.principal);
-      assert.equal(paid.principal, stake);
-      for (const short of [1, Math.min(NANOS_PER_SHE, stake), stake]) {
+      assert.equal(paid.payout, 0);
+      assert.equal(paid.principal, 0);
+      assert.equal(state.pendingWithdraw.length, 1);
+      for (const published of [1, Math.min(NANOS_PER_SHE, stake), stake, stake + 1]) {
         const again = emptyVault();
         again.genesisMs = T0;
         assert.equal(deposit({ state: again, dest, nanos: stake, nowMs: T0 }).ok, true);
         again.epochBps = 0;
-        const tx = withdrawTx({ from: dest, to: dest, nanos: stake - short, id: `short-${short}` });
+        const tx = withdrawTx({ from: dest, to: dest, nanos: published, id: `pub-${published}` });
         const got = verifyReservePayout(again, tx, END);
-        assert.equal(got.ok, false, String(short));
-        assert.equal(got.reason, 'principal_short');
+        assert.equal(got.ok, false, String(published));
+        assert.equal(got.reason, 'over_mint');
       }
-      const fat = emptyVault();
-      fat.genesisMs = T0;
-      assert.equal(deposit({ state: fat, dest, nanos: stake, nowMs: T0 }).ok, true);
-      fat.epochBps = 0;
-      const over = verifyReservePayout(fat, withdrawTx({
-        from: dest, to: dest, nanos: stake + 1, id: 'fat',
+      const hidden = emptyVault();
+      hidden.genesisMs = T0;
+      assert.equal(deposit({ state: hidden, dest, nanos: stake, nowMs: T0 }).ok, true);
+      hidden.epochBps = 0;
+      const quiet = verifyReservePayout(hidden, withdrawTx({
+        from: dest, to: dest, nanos: 0, id: 'hidden',
       }), END);
-      assert.equal(over.reason, 'over_mint');
+      assert.equal(quiet.ok, true, quiet.reason);
     }
   });
 

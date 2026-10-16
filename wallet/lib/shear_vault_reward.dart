@@ -17,7 +17,15 @@ const String kVaultRelDst = 'shear-vault-reward-rel-v1';
 const String kVaultBalDst = 'shear-vault-reward-bal-v1';
 const String kVaultLockBlindDst = 'shear-vault-lock-blind-v1';
 const String kVaultLockOwnerDst = 'shear-vault-lock-owner-v1';
-const int kVaultProofVer = 0xa3;
+const int kVaultProofVer = 0xa4;
+
+bool _bytesEq(Uint8List a, Uint8List b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
 
 /// Little-endian scalar. The relation's product is wider than a u64 and
 /// still under 2^110, which is under the subgroup order.
@@ -241,8 +249,9 @@ Map<String, dynamic> proveVaultLockReward({
       slackCommit,
       _sha256(slackRange),
     ]));
-    final proved = fs1.prove(handle, [which], [owners[which]], digest, epoch);
-    if (proved == null || proved.records.isEmpty) throw StateError('fs1_prover_unavailable');
+    final epochBase = pointBytes(hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst)));
+    final proved = fs1.proveUnlinked(handle, [which], [owners[which]], digest, epoch, epochBase);
+    if (proved == null || proved.records.isEmpty || proved.link.length < 96) throw StateError('fs1_prover_unavailable');
     final record = proved.records.first;
     if (record.length != kFs1RecordBytes || record[0] != kFs1Wire) throw StateError('fs1_prover_unavailable');
     final cTilde = Uint8List.sublistView(record, 33, 65);
@@ -300,25 +309,16 @@ Map<String, dynamic> proveVaultLockReward({
     final timeS = scalarAdd(rTime, rTimeSlack);
     if (!elementEq(timeP, mulEl(noteH, timeS))) throw StateError('stake_reward');
     final timeBal = schnorrProveH(timeP, timeS, utf8Bytes(kVaultBalDst));
-    final vaultKey = scalarFromBytes(owners[which]);
-    final admitPoint = admitPub(vaultKey);
-    final nullB1 = hashToRistretto(pointBytes(admitPoint), utf8Bytes('shear-admit-Hp'));
-    final nullB2 = hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst));
-    final kLink = randomScalar();
-    final nullA1 = mulEl(nullB1, kLink);
-    final nullA2 = mulEl(nullB2, kLink);
-    final nullP1 = mulEl(nullB1, vaultKey);
-    final nullP2 = mulEl(nullB2, vaultKey);
+    final linkAnn = Uint8List.sublistView(proved.link, 0, 32);
+    final linkSr = Uint8List.sublistView(proved.link, 32, 64);
+    final linkN = Uint8List.sublistView(proved.link, 64, 96);
+    final stable = pointBytes(mulEl(
+      hashToRistretto(pointBytes(admitPub(scalarFromBytes(owners[which]))), utf8Bytes('shear-admit-Hp')),
+      scalarFromBytes(owners[which]),
+    ));
     final tag = Uint8List.sublistView(record, 1, 33);
-    if (!elementEq(nullP1, pointFrom(tag))) throw StateError('stake_reward');
-    final linkE = hashToScalar([
-      pointBytes(nullA1),
-      pointBytes(nullA2),
-      pointBytes(nullP1),
-      pointBytes(nullP2),
-    ]);
-    final nullS = scalarAdd(kLink, scalarMul(linkE, vaultKey));
-    final nullifier = _sha256(_concat([utf8Bytes(kVaultNullPrf), pointBytes(nullP2)]));
+    if (_bytesEq(stable, tag)) throw StateError('stake_reward');
+    final nullifier = _sha256(_concat([utf8Bytes(kVaultNullPrf), linkN]));
     final blob = _concat([
       Uint8List.fromList([kVaultProofVer]),
       _u32(proved.fs1.length),
@@ -335,11 +335,11 @@ Map<String, dynamic> proveVaultLockReward({
       pointBytes(sigA2),
       scalarBytes(sigS),
       scalarBytes(sigSr),
-      pointBytes(nullB1),
-      pointBytes(nullP2),
-      pointBytes(nullA1),
-      pointBytes(nullA2),
-      scalarBytes(nullS),
+      linkAnn,
+      linkN,
+      linkSr,
+      Uint8List(32),
+      Uint8List(32),
       _u32(timeRange.length),
       timeRange,
       _u32(timeSlackRange.length),

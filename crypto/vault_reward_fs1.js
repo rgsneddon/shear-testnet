@@ -5,9 +5,12 @@
  * reward stay committed. The remainder has its own range proof, and
  * rem + slack = denom - 1, so conservation does not open either integer.
  * The nullifier is a PRF of the vault key and the epoch, checked inside
- * the proof. It is not a hash of the public spend tag. The remainder is
- * a commitment, not a public integer. A later epoch uses the public span,
- * which is the same for every lock. The only public mint is a batch sum.
+ * the proof. It is not a hash of the public spend tag. The FS-1 record
+ * publishes a one-time blinding of that tag, so two claims of one lock
+ * do not share it. The remainder is a commitment, not a public integer.
+ * A later epoch uses the public span, which is the same for every lock.
+ * The only public mint is a batch sum, or the one claim still pending
+ * when the epoch deadline arrives.
  */
 import { createHash } from 'node:crypto';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
@@ -15,11 +18,11 @@ import { MAGIC_TESTNET } from './asert.js';
 import { admitPub } from './admit.js';
 import {
   fs1NativeLoaded,
-  fs1Prove,
+  fs1ProveUnlinked,
   fs1TreeAppend,
   fs1TreeNew,
   fs1TreeRoot,
-  fs1Verify,
+  fs1VerifyUnlinked,
 } from './native_admit.js';
 import {
   G,
@@ -49,7 +52,7 @@ export const VAULT_REL_DST = 'shear-vault-reward-rel-v1';
 export const VAULT_BAL_DST = 'shear-vault-reward-bal-v1';
 export const VAULT_LOCK_BLIND_DST = 'shear-vault-lock-blind-v1';
 export const VAULT_LOCK_OWNER_DST = 'shear-vault-lock-owner-v1';
-export const VAULT_PROOF_VER = 0xa3;
+export const VAULT_PROOF_VER = 0xa4;
 export const VAULT_MAGIC_UTF8 = 'shear-testnet-v12';
 /** Scalar multiplies in the relation stay under this, and this stays under the subgroup order. */
 export const RELATION_BOUND = 2n ** 110n;
@@ -207,6 +210,12 @@ function statementDigest({
 
 function hpOf(point) {
   return ristretto255_hasher.hashToCurve(pointBytes(point), { DST: 'shear-admit-Hp' });
+}
+
+/** Stable FS-1 spend tag. A claim record must not publish this point. */
+export function stableSpendTag(scalar) {
+  const x = typeof scalar === 'bigint' ? scalar : scalarFrom(scalar);
+  return pointBytes(hpOf(admitPub(x)).multiply(x));
 }
 
 function nullBase(epoch) {
@@ -700,14 +709,21 @@ export function proveVaultReward({
     slackCommit,
     slackRange,
   });
-  const proved = fs1Prove(handle, {
+  const epochBase = pointBytes(nullBase(epoch));
+  const proved = fs1ProveUnlinked(handle, {
     indices: [which],
     xs: [scalarBytes(rows[which].scalar)],
     digest,
     anchor: Number(rootEpoch),
+    nullBases: epochBase,
   });
-  if (!proved || proved.records.length < RECORD_BYTES) return null;
+  if (!proved || proved.records.length < RECORD_BYTES || proved.link.length < 96) return null;
   const record = Buffer.from(proved.records.subarray(0, RECORD_BYTES));
+  const linkAnn = Buffer.from(proved.link.subarray(0, 32));
+  const linkSr = Buffer.from(proved.link.subarray(32, 64));
+  const linkN = Buffer.from(proved.link.subarray(64, 96));
+  const stableTag = pointBytes(hpOf(admitPub(rows[which].scalar)).multiply(rows[which].scalar));
+  if (stableTag.equals(record.subarray(1, 33))) return null;
   const t = scalarFrom(proved.t.subarray(0, 32));
   const cTilde = record.subarray(33, 65);
   const factor = BigInt(bps) * BigInt(remainMs);
@@ -739,10 +755,7 @@ export function proveVaultReward({
   const timeS = Fn.add(rTime, rTimeSlack);
   if (!timeP.equals(H.multiply(timeS))) return null;
   const timeBal = schnorrProve(timeP, timeS, Buffer.from(VAULT_BAL_DST));
-  const admitPoint = admitPub(rows[which].scalar);
-  const link = dleqProve(hpOf(admitPoint), nullBase(epoch), rows[which].scalar);
-  if (!link.P1.equals(record.subarray(1, 33))) return null;
-  const nullifier = createHash('sha256').update(VAULT_NULL_PRF).update(link.P2).digest();
+  const nullifier = createHash('sha256').update(VAULT_NULL_PRF).update(linkN).digest();
   const expectNf = vaultRewardNullifier(rows[which].scalar, epoch);
   if (!expectNf || !expectNf.equals(nullifier)) return null;
   const blob = packProof({
@@ -759,11 +772,11 @@ export function proveVaultReward({
     sigA2: sigma.A2,
     sigS: sigma.s,
     sigSr: sigma.sr,
-    nullBase: pointBytes(hpOf(admitPoint)),
-    nullP: link.P2,
-    nullA1: link.A1,
-    nullA2: link.A2,
-    nullS: link.s,
+    nullBase: linkAnn,
+    nullP: linkN,
+    nullA1: linkSr,
+    nullA2: Buffer.alloc(32),
+    nullS: Buffer.alloc(32),
     timeRange,
     timeSlackRange,
     timeBalR: timeBal.R,
@@ -915,17 +928,22 @@ export function verifyVaultReward({
   if (!schnorrVerify(timeP, parsed.timeBalR, parsed.timeBalZ, Buffer.from(VAULT_BAL_DST))) return fail(2, 'stake_reward');
   const anchor = Number(rootEpoch);
   if (!Number.isSafeInteger(anchor) || anchor < 0) return fail(0, 'unsigned');
-  if (!fs1Verify({ fs1: parsed.fs1, records: parsed.record, root: rootBuf, digest, anchor })) {
-    return fail(0, 'unsigned');
-  }
-  const base = bytes32(parsed.nullBase);
-  if (!base) return fail(0, 'unsigned');
-  const tag = parsed.record.subarray(1, 33);
-  if (!dleqVerify(base, pointBytes(nullBase(parsed.epoch)), tag, parsed.nullP, parsed.nullA1, parsed.nullA2, parsed.nullS)) {
+  const epochBase = pointBytes(nullBase(parsed.epoch));
+  const link = Buffer.concat([parsed.nullBase, parsed.nullA1, parsed.nullP]);
+  if (!fs1VerifyUnlinked({
+    fs1: parsed.fs1,
+    records: parsed.record,
+    link,
+    root: rootBuf,
+    digest,
+    anchor,
+    nullBases: epochBase,
+  })) {
     return fail(0, 'unsigned');
   }
   const expect = createHash('sha256').update(VAULT_NULL_PRF).update(parsed.nullP).digest();
   if (!expect.equals(nf)) return fail(0, 'unsigned');
+  const tag = parsed.record.subarray(1, 33);
   const derived = tagDerivedNullifier(tag, parsed.epoch);
   if (derived && derived.equals(nf)) return fail(0, 'unsigned');
   return { ok: true, code: 1, reason: null, remainCommit: parsed.remainCommit, full: parsed.full };
@@ -934,7 +952,13 @@ export function verifyVaultReward({
 /** Opening of the sum of reward commitments. This is the epoch's public mint. */
 export function proveEpochMint(nanos, blind) {
   const value = proveValue(nanos, blind);
-  return { nanos: Math.floor(Number(nanos)), proof: { R: value.R, z: value.z }, commit: value.C };
+  const range = proveRange(BigInt(nanos), typeof blind === 'bigint' ? blind : scalarFrom(blind));
+  return {
+    nanos: Math.floor(Number(nanos)),
+    proof: { R: value.R, z: value.z },
+    range,
+    commit: value.C,
+  };
 }
 
 /** commit || noteCommit || amtCt || dest20 || u32le(rangeLen) || range. The claim output. */
