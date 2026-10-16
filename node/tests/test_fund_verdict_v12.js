@@ -5,6 +5,7 @@
  * spreads below. The merkle digest is not the cache key.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -521,7 +522,7 @@ async function plant(pool, rows) {
   return pool.lag1Shares.slice();
 }
 
-describe('v12 fund verdict is the funding witness', () => {
+describe('v12 fund verdict is the funding witness', { timeout: fileCapMs(import.meta.url) }, () => {
   it('a rejected or retagged body cannot satisfy another tx, at any amount', { timeout: 300_000 }, async () => {
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fund-verdict-'));
