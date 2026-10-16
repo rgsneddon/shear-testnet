@@ -618,16 +618,11 @@ bool noteHasSealedSpendBytes(Map<dynamic, dynamic> n) {
       blind.isNotEmpty;
 }
 
-/// A lock note stays locked until the tip time reaches its unlock.
-/// No unlock on the note stays locked. Any other kind keeps its own flag.
+/// A lock tranche is not spendable. Epoch end does not make it a send input.
+/// Withdraw is the only exit. Any other kind keeps its own flag.
 bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
-  final kind = (note['kind'] ?? '').toString();
-  if (kind != 'lock') return note['locked'] == true;
-  final raw = note['unlockAtMs'];
-  final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
-  if (at <= 0) return true;
-  if (tipMs == null || tipMs < at) return true;
-  return false;
+  if ((note['kind'] ?? '').toString() == 'lock') return tipMs == null || true;
+  return note['locked'] == true;
 }
 
 /// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
@@ -653,7 +648,6 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     for (final d in (input['dests'] as List? ?? const [])) d.toString(),
   };
   final rows = <Map<String, dynamic>>[];
-  final openedLocks = <Map<String, dynamic>>[];
   for (var i = 0; i < notes.length; i++) {
     final n = notes[i];
     if (n is! Map) continue;
@@ -661,6 +655,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     // so an amount-only quote still plans. false means the note cannot be spent.
     if (n['sealed'] == false) continue;
     if (n['spent'] == true || n['locked'] == true) continue;
+    if ((n['kind'] ?? '').toString() == 'lock') continue;
     final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
     if (addr.isEmpty) continue;
     if (dests.isNotEmpty && !dests.contains(addr)) continue;
@@ -671,18 +666,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     }
     final nanos = noteNanosExact(n);
     if (nanos == null || nanos <= BigInt.zero) continue;
-    final row = {'i': i, 'nanos': nanos, 'addr': addr};
-    // An unlocked lock note is the principal. The hold still covers the coins
-    // that funded it, so this note is not one of the coins the hold reserves.
-    if ((n['kind'] ?? '').toString() == 'lock') {
-      final raw = n['unlockAtMs'];
-      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
-      if (at > 0) {
-        openedLocks.add(row);
-        continue;
-      }
-    }
-    rows.add(row);
+    rows.add({'i': i, 'nanos': nanos, 'addr': addr});
   }
   rows.sort((a, b) => (a['nanos'] as BigInt).compareTo(b['nanos'] as BigInt));
   var reserved = BigInt.zero;
@@ -692,7 +676,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       reserved += rows[start]['nanos'] as BigInt;
     }
   }
-  final free = <Map<String, dynamic>>[...rows.sublist(start), ...openedLocks];
+  final free = rows.sublist(start);
   free.sort((a, b) => (b['nanos'] as BigInt).compareTo(a['nanos'] as BigInt));
   final freeSum = free.fold<BigInt>(BigInt.zero, (s, r) => s + (r['nanos'] as BigInt));
   final batches = <Map<String, dynamic>>[];
@@ -2030,8 +2014,10 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   final wire = flowPostHex(<String, dynamic>{'vin': const <Map<String, dynamic>>[], 'vout': postedVout});
   final hexVout = List<dynamic>.from(wire['vout'] as List? ?? const []);
   final choice = (input['choice'] as String?) ?? '';
-  final taxed = kind == 'vote' || kind == 'lock';
-  final maxLevy = kind == 'vote';
+  // A vote moves no value. A nonzero fee would pay miners with no debit.
+  // Roll re-locks vault principal. The levy is the only Continuum debit.
+  final taxed = kind == 'lock' || kind == 'roll';
+  final maxLevy = false;
   final d20 = hash20FromAddress(from) ?? Uint8List(20);
   final signVin = kind == 'withdraw'
       ? <Map<String, dynamic>>[
@@ -2156,6 +2142,21 @@ Map<String, dynamic> _reservePoolDraft({
       'vin': <Map<String, dynamic>>[],
       'vout': vout,
       'amount': _jsSheAmount(nanos),
+    };
+  }
+  if (kind == 'roll') {
+    return <String, dynamic>{
+      'id': 'roll-$stamp',
+      'programId': 'shear-reserve-v1',
+      'kind': 'roll',
+      'from': from,
+      'to': to,
+      'nanos': 0,
+      'portalId': portalTo,
+      'payoutPortalId': portalTo,
+      'vin': [vinBuf],
+      'vout': const <Map<String, dynamic>>[],
+      'amount': 0,
     };
   }
   return <String, dynamic>{
@@ -2727,7 +2728,7 @@ StateError _sendHumanError(
   }
   if (why == 'range_proof' || why == 'commit_sum') return StateError(kErrRangeProof);
   if (why == 'unsigned' &&
-      (kind == 'lock' || kind == 'vote' || kind == 'withdraw')) {
+      (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'roll')) {
     return StateError(kErrLockUnsigned);
   }
   final url = baseUrl ?? '';
@@ -5308,15 +5309,12 @@ class ShearLedger implements ReadProofSink {
     return n;
   }
 
-  /// Time-locked principal on [key]. Unstamped lock receipts are not this.
+  /// Lock principal on [key]. It is never the unlocked, sendable amount.
   double _timeLockShe(String key, {required bool unlocked}) {
     var n = 0.0;
     for (final note in _notes) {
       if ((note['kind'] ?? '').toString() != 'lock') continue;
       if (note['spent'] == true) continue;
-      final raw = note['unlockAtMs'];
-      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
-      if (at <= 0) continue;
       if (!_noteOnDest(note, key)) continue;
       if (!_noteMature(note)) continue;
       final open = !lockNoteIsLocked(Map<String, dynamic>.from(note), tipTimestampMs);
@@ -5339,8 +5337,8 @@ class ShearLedger implements ReadProofSink {
       if (!isDestAddress(k) || _isProgramVaultDest(k)) continue;
       gross[k] = _grossShown(k);
     }
-    // A lock note is not spendable until its epoch ends. After that it is the
-    // principal, and the hold stays on the coins that funded it.
+    // A lock tranche is never spendable. The hold stays on the coins that
+    // funded it, and withdraw is the only way the principal leaves.
     final openedLock = <String, double>{};
     for (final k in gross.keys.toList()) {
       final heldNote = _timeLockShe(k, unlocked: false);
@@ -5441,12 +5439,8 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true || n['verified'] != true) continue;
       if (!_noteOnDest(n, key)) continue;
-      // A time-locked note stays out of Spendable until its epoch ends.
-      if ((n['kind'] ?? '').toString() == 'lock' && lockNoteIsLocked(n, tipTimestampMs)) {
-        final raw = n['unlockAtMs'];
-        final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
-        if (at > 0) continue;
-      }
+      // A lock tranche is not spendable at any tip time.
+      if ((n['kind'] ?? '').toString() == 'lock') continue;
       // Same floor as the Flow picker. A missing height is already in the
       // mature book; a stamped height still waits for 9 confirmations.
       if (!_noteMature(n)) continue;
@@ -7104,7 +7098,7 @@ class ShearLedger implements ReadProofSink {
       if (h <= _sealedHeight + 1 && confirmationsOf(h) < spendableConfirmations) return false;
       // Lock/withdraw rows replay portal principal after a thin staked=0 sync.
       // A later history page of payouts must not erase them.
-      if (t.kind == 'lock' || t.kind == 'withdraw') return false;
+      if (t.kind == 'lock' || t.kind == 'withdraw' || t.kind == 'roll') return false;
       final mine = payKey(t.to) == key || t.to == key || payKey(t.from) == key || t.from == key;
       if (!mine) {
         if ((t.from == 'coinbase' || t.from == 'pool' || t.kind == 'block' || t.kind == 'blockfound') &&
@@ -8116,7 +8110,7 @@ class ShearLedger implements ReadProofSink {
     String? nanosWire,
   }) async {
     final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
-    if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
+    if (sendKind != 'vote' && sendKind != 'roll' && amount <= 0) throw ArgumentError('amount');
     if (isShearAddress(from)) {
       throw ArgumentError('rest_frame');
     }
@@ -8191,7 +8185,8 @@ class ShearLedger implements ReadProofSink {
     }
     final nanos = payUnits.bitLength <= 63 ? payUnits.toInt() : 0;
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
-    final needShe = (sendKind == 'vote' ? 0.0 : amount) + levy / kUnitsPerShe;
+    // Roll keeps the vault sum. Continuum pays the levy and nothing else.
+    final needShe = (sendKind == 'vote' || sendKind == 'roll' ? 0.0 : amount) + levy / kUnitsPerShe;
     if (restFrame != null && (sendKind == 'vote' || sendKind == 'lock')) {
       final home = homeDest(restFrame, paymentCode: paymentCode);
       final short = spendable(src) + 1e-12 < needShe;
@@ -8495,23 +8490,26 @@ class ShearLedger implements ReadProofSink {
     int? reserveFee;
     String? postedWithdrawId;
     String? postedWithdrawNonce;
-    if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw') {
+    if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw' || sendKind == 'roll') {
       if (spendSeed != null && spendSeed.length == 32) {
         if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
           throw StateError('unspendable_dest');
         }
       }
       final shared = _stealthShared[src];
+      // Roll names the vault portal. The levy debit may sit on another dest.
       final built = await _reserveSealOffUi({
-        'to': destTo,
-        'from': src,
+        'to': sendKind == 'roll' ? from : destTo,
+        'from': sendKind == 'roll' ? from : src,
         'kind': sendKind,
         'nanos': nanos,
         'spendSeed': spendSeed,
         'shared': shared,
-        'vouts': <Map<String, dynamic>>[
-          for (final o in vouts) Map<String, dynamic>.from(o),
-        ],
+        'vouts': sendKind == 'roll'
+            ? <Map<String, dynamic>>[]
+            : <Map<String, dynamic>>[
+                for (final o in vouts) Map<String, dynamic>.from(o),
+              ],
         'vin': <Map<String, dynamic>>[
           for (final o in vin) Map<String, dynamic>.from(o),
         ],
@@ -9173,6 +9171,10 @@ class ShearPoolClient {
     return _post('/api/wallet/register', {'address': address, 'viewKey': viewKey});
   }
 
+  Future<Map<String, dynamic>> postRaw(Map<String, dynamic> body) {
+    return _post('/api/wallet/send', body);
+  }
+
   Future<Map<String, dynamic>> send({
     required String from,
     required String to,
@@ -9445,7 +9447,7 @@ int _quoteVerifyWeight(Map<String, dynamic> tx) {
   }
   var w = 2 + 40 * nIn + 23 * nOut;
   final kind = tx['kind']?.toString() ?? '';
-  if (kind == 'lock' || kind == 'vote' || kind == 'withdraw') w += 19;
+  if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'roll') w += 19;
   return w;
 }
 

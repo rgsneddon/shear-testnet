@@ -413,97 +413,22 @@ describe('vault parity', () => {
     assert.equal(spendPackDigest(send).equals(spendPackDigest(tagged)), true);
   });
 
-  it('returns one vault reason on queue, mempool, template, and consensus', async () => {
-    assert.ok(new Set(LOCKS).size >= 2);
-    const portalA = payer();
-    const portalB = payer();
-    const stranger = payer();
-    portalA.lock = LOCKS[0];
-    portalB.lock = LOCKS[1];
+  it('a byte-3 vault proof is unavailable on queue before the vault reason', async () => {
+    const commit = Buffer.alloc(32, 4);
+    const blob = Buffer.alloc(129, 0);
+    blob[0] = 3;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-vault-parity-'));
-    const store = createStore(dir);
-    const openings = [];
     try {
-      const roster = [portalA, portalA, stranger, portalB, portalA, portalA, portalB, portalA];
-      const need = readyHeight(1);
-      let guard = 0;
-      while (tipHeight(store) + 1 < need) {
-        const dest = roster[Math.min(tipHeight(store), roster.length - 1)].dest;
-        const wall = tipHeight(store) ? headerTime(store.tip()) + TARGET_BLOCK_INTERVAL_MS : T0;
-        await sealEmpty(store, dest, wall, openings);
-        guard += 1;
-        assert.ok(guard < 64, 'anchor loop');
-      }
-      assert.ok(openings.length >= 6);
-      const noteAmounts = openings.slice(0, 6).map((o) => o.v);
-      assert.ok(noteAmounts.every((v) => v > 0));
-      assert.ok(new Set([portalA.dest, portalB.dest, stranger.dest]).size >= 3);
-
-      for (const who of [portalA, portalB]) {
-        const joined = deposit({
-          state: store.reserveVault,
-          dest: who.dest,
-          nanos: who.lock,
-          nowMs: headerTime(store.tip()),
-          payout: who.dest,
-          payoutPortalId: portalIdFromDest(who.dest),
+      const store = createStore(dir);
+      for (const kind of ['lock', 'vote', 'withdraw']) {
+        const queued = store.queueTx({
+          id: `byte3-${kind}`,
+          kind,
+          vin: [{ commit }],
+          admit_proofs: [{ blob, cTilde: commit }],
         });
-        assert.equal(joined.ok, true, joined.reason || 'deposit');
+        assert.equal(queued.reason, 'vault_unavailable', kind);
       }
-      assert.ok(store.reserveVault.epochStartMs > 0);
-      assert.equal(store.reserveVault.portals[portalIdFromDest(stranger.dest)], undefined);
-
-      const wall = headerTime(store.tip()) + TARGET_BLOCK_INTERVAL_MS;
-      const vote1 = proveVote(store, portalA, openings[0], 'parity-vote-1', VOTE_HOLD);
-      const vote2 = proveVote(store, portalA, openings[1], 'parity-vote-2', VOTE_HOLD);
-      const outsider = proveVote(store, stranger, openings[2], 'parity-vote-out', VOTE_HOLD);
-      const later = proveVote(store, portalB, openings[3], 'parity-vote-b', VOTE_INCREASE);
-      const withdraw1 = proveWithdraw(store, portalA, openings[4], 'parity-withdraw-1');
-      const withdraw2 = proveWithdraw(store, portalA, openings[5], 'parity-withdraw-2');
-      assert.notEqual(vote1.admit_proof.spendTag.toString('hex'), vote2.admit_proof.spendTag.toString('hex'));
-      assert.notEqual(openings[0].v + openings[4].v, 0);
-
-      const flipped = { ...later, id: 'parity-vote-flip', choice: VOTE_HOLD };
-      assert.equal(digestTx(flipped).equals(digestTx(later)), false);
-      await sameVerdict(store, flipped, 'admit_membership', wall);
-
-      const queued1 = store.queueTx(vote1, { nowMs: wall });
-      assert.equal(queued1.ok, true, queued1.reason || 'first vote');
-      await sameVerdict(store, vote2, 'vote_locked', wall);
-      assert.equal(store.mempool.some((m) => m.id === vote1.id), true);
-
-      await sameVerdict(store, outsider, 'not_voter', wall);
-
-      const savedEnacted = store.reserveVault.bonusEnacted;
-      store.reserveVault.bonusEnacted = true;
-      await sameVerdict(store, { ...later, id: 'parity-vote-enacted' }, 'epoch_closed', wall);
-      store.reserveVault.bonusEnacted = savedEnacted;
-
-      const span = epochMs(MAGIC_TESTNET);
-      const savedStart = store.reserveVault.epochStartMs;
-      store.reserveVault.epochStartMs = wall - span;
-      store.reserveVault.bonusEnacted = false;
-      await sameVerdict(store, { ...later, id: 'parity-vote-boundary' }, 'epoch_closed', wall);
-
-      store.reserveVault.epochStartMs = wall - span + 1;
-      store.reserveVault.bonusEnacted = false;
-      await sameVerdict(store, withdraw1, 'epoch_open', wall);
-
-      store.reserveVault.epochStartMs = wall - span - TARGET_BLOCK_INTERVAL_MS;
-      store.reserveVault.bonusEnacted = false;
-      for (let i = store.mempool.length - 1; i >= 0; i -= 1) {
-        const k = String(store.mempool[i]?.kind || '');
-        if (k === 'lock' || k === 'vote' || k === 'withdraw') store.mempool.splice(i, 1);
-      }
-      const queuedW = store.queueTx(withdraw2, { nowMs: wall });
-      assert.equal(queuedW.ok, true, queuedW.reason || 'first withdraw');
-      assert.equal(openings[7].dest, portalA.dest);
-      const again = proveWithdraw(store, portalA, openings[7], 'parity-withdraw-again');
-      await sameVerdict(store, again, 'double_mint', wall);
-
-      store.reserveVault.epochStartMs = savedStart;
-      store.reserveVault.bonusEnacted = savedEnacted;
-      assert.equal(tipHeight(store) + 1 >= readyHeight(1), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -819,6 +819,15 @@ export function applyRewardClaim(state, tx) {
   return { ok: false, reason: 'claim_unavailable', nanos: 0 };
 }
 
+/** A roll is the owner's signed transaction. The vault proof is checked with the claim. */
+export function rollRewardRejected(state, tx, nowMs, height = null) {
+  void state;
+  void nowMs;
+  void height;
+  if (String(tx?.kind || '') !== 'roll') return null;
+  return { ok: false, reason: 'stake_reward' };
+}
+
 function rewardReserved(state, portalId) {
   const id = String(portalId || '');
   if (!id) return false;

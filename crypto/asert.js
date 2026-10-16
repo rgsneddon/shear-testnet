@@ -224,9 +224,36 @@ export const REWARD_LAW = 'epoch-bps-floor';
 export const INTEREST_LAW = REWARD_LAW;
 /**
  * Principal leaves only through the user's own levy-paying withdraw.
- * Epoch end does not release it.
+ * Epoch end does not release it. A reward claim does not pull it.
  */
 export const RESERVE_NOTE_LAW = 'withdraw-levy-pull';
+/** A claim mints one leaf of the committed root and leaves principal in the vault. */
+export const RESERVE_REWARD_CLAIM_LAW = 'root-claim-principal-kept';
+/** A finished tranche rolls its principal and unclaimed reward into the next lock epoch, once. */
+export const RESERVE_ROLL_LAW = 'full-sum-next-epoch';
+/**
+ * FS-1 funds a lock, a top-up, and a withdraw. A vote is an owner signature.
+ * A lock is a plain tranche. It is not a spendable note.
+ */
+export const VAULT_FUND_LAW = 'fs1-typed';
+export const VAULT_LOCK_LAW = 'fs1-tranche';
+/**
+ * Vault-lock reward rules after the FS-1 claim: consensus builds the lock
+ * root, consensus sets the rate terms, and one nullifier spends the epoch.
+ */
+export const VAULT_REWARD_LAW = 'fs1-lock-root-v1';
+/** Lock amount and reward stay committed. The epoch total is the public mint. */
+export const VAULT_HIDDEN_LAW = 'lock-commit-v1';
+/** Reward-claim proofs in one block. Each proof is a vault-lock membership. */
+export const MAX_BLOCK_VAULT_CLAIMS = 4;
+/**
+ * First height at which an FS-1 anchor is inside the window. Confirmations
+ * are 9 and the anchor quantum is 8, so height 17 is the first H whose
+ * wallet anchor is 8. Below this height lock, top-up, vote, and withdraw
+ * are vault_unavailable. Byte-3 bucket proofs stay vault_unavailable at
+ * every height.
+ */
+export const VAULT_FS1_ACTIVATION_HEIGHT = 17;
 /** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
@@ -416,6 +443,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `RESERVE=${RESERVE_PROGRAM}`,
     'RESERVE_EVM=1',
     `RESERVE_NOTE=${RESERVE_NOTE_LAW}`,
+    `RESERVE_REWARD_CLAIM=${RESERVE_REWARD_CLAIM_LAW}`,
+    `RESERVE_ROLL=${RESERVE_ROLL_LAW}`,
     `RESERVE_REWARD=${days}d-bps-floor`,
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',
@@ -430,6 +459,12 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ADMIT_K=1',
     `ADMIT_LEAF=${ADMIT_LEAF_ID}`,
     'ADMIT_SPEND=fs1-f1-agg-sal-v1',
+    `VAULT_FUND=${VAULT_FUND_LAW}`,
+    `VAULT_LOCK=${VAULT_LOCK_LAW}`,
+    `VAULT_FS1=${VAULT_FS1_ACTIVATION_HEIGHT}`,
+    `VAULT_REWARD=${VAULT_REWARD_LAW}`,
+    `VAULT_CLAIM_CAP=${MAX_BLOCK_VAULT_CLAIMS}`,
+    `VAULT_HIDDEN=${VAULT_HIDDEN_LAW}`,
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,

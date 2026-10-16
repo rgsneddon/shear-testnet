@@ -72,9 +72,10 @@ describe('funded spend / no double-spend', () => {
       vin: [{ dest20: destCommitFromSpendPub(id.spendPub) }],
       vout: [{ ...note, kind: 'lock' }],
     };
-    signSpendTx(signed, id.privateKey);
     const sealed = compactTx(signed);
-    assert.equal(spendPubFromTx(sealed)?.toString('hex'), signed.spendPub);
+    // Compact writes payoutPortalId into the signed body. Sign that body.
+    signSpendTx(sealed, id.privateKey);
+    assert.equal(spendPubFromTx(sealed)?.toString('hex'), sealed.spendPub);
     assert.equal(verifyReservePortalOpen(sealed), true);
     delete sealed.sig;
     assert.equal(verifyReservePortalOpen(sealed), false);
@@ -371,7 +372,7 @@ describe('funded spend / no double-spend', () => {
     assert.equal(verifySpendSig({ ...withBlob, admit_proof: { ...withBlob.admit_proof, blob: flipped } }), false);
   });
 
-  it('a hidden change lets any note fund a vote or withdraw, and a compact body still balances', () => {
+  it('a hidden change lets any note fund a withdraw, and a vote moves no value', () => {
     const d20 = Buffer.alloc(20, 4);
     const amounts = [1, 1_000_000, 50_000_000_000];
     for (const noteV of amounts) {
@@ -390,15 +391,12 @@ describe('funded spend / no double-spend', () => {
           vout: [voteReceipt, voteChange],
           excess: kernelExcess([voteReceipt, voteChange], vin),
         };
+        // A vote is an owner signature. It does not spend a note or pay a fee.
         const voted = typedCommitSum(vote);
-        assert.equal(voted.ok, true, `${noteV} ${fee} ${voted.reason}`);
-        const leanVote = compactTx(vote);
-        assert.equal(leanVote.vout[1].valueProof?.v, undefined);
-        const leanVoted = typedCommitSum(leanVote);
-        assert.equal(leanVoted.ok, true, `${noteV} ${fee} lean ${leanVoted.reason}`);
-        const wrongFee = typedCommitSum({ ...vote, fee: fee + 1 });
-        assert.equal(wrongFee.ok, false, String(noteV));
-        assert.equal(wrongFee.reason, 'commit_sum');
+        assert.equal(voted.ok, false, `${noteV} ${fee}`);
+        assert.equal(voted.reason, fee !== 0 ? 'levy' : 'commit_sum', `${noteV} ${fee} ${voted.reason}`);
+        const quiet = typedCommitSum({ kind: 'vote', fee: 0, vin: [], vout: [] });
+        assert.equal(quiet.ok, true, quiet.reason);
 
         const cap = noteV === 1 ? 0 : noteV + 1;
         const receipt = sealCoinbaseNote(cap, { dest20: d20, kind: 'withdraw' });

@@ -20,6 +20,7 @@ import {
   withdraw,
   applyReserveBlock,
   verifyReservePayout,
+  cloneVault,
   portalIdFromDest,
   portalPrincipalNanos,
 } from '../../crypto/reserve_vault.js';
@@ -274,7 +275,9 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vout: [{ kind: 'lock', nanos, address: dest }],
       };
       const funded = verifyFundedBody([bare], () => nanos * 4, { reserveState: { portals: {}, epochBps: 0 } });
-      assert.equal(funded.reason, 'admit_anchor_window', String(nanos));
+      // A lock that does not present FS-1 is the wrong admit shape. The
+      // anchor window is only consulted once that shape is present.
+      assert.equal(funded.reason, 'admit_version', String(nanos));
       const extra = boundReserveWithdraw({
         kind: 'withdraw',
         from: dest,
@@ -462,7 +465,11 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
       const vault = emptyVault();
       vault.genesisMs = 1;
       assert.equal(deposit({ state: vault, dest, nanos, nowMs: 1, payout: dest, payoutPortalId: id }).ok, true);
-      const before = Number(vault.totalLockedNanos);
+      const clock = 1 + RESERVE_EPOCH_MS;
+      // Epoch end leaves principal in the vault. The foreign program
+      // must not move it either.
+      const control = cloneVault(vault);
+      applyReserveBlock({ state: control, block: { txs: [] }, nowMs: clock });
       const skipped = applyReserveBlock({
         state: vault,
         block: {
@@ -473,10 +480,10 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
             vout: [{ ...opened, kind: 'withdraw' }],
           }],
         },
-        nowMs: 1 + RESERVE_EPOCH_MS,
+        nowMs: clock,
       });
       assert.equal(skipped.some((r) => r.action === 'withdraw' && r.ok === true), false);
-      assert.equal(Number(vault.totalLockedNanos), before);
+      assert.equal(Number(vault.totalLockedNanos), Number(control.totalLockedNanos));
       const pay = verifyReservePayout(vault, {
         kind: 'withdraw',
         programId: 'not-the-reserve',

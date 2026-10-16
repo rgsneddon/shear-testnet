@@ -38,7 +38,7 @@
           "dest20": "67f0ab519d08d3dc088948dfdd4b0b6341d3c855"
         }
       ],
-      "digest": "d7834944a34e910cc6f3eb702e9cbcf0c07b2164b19f216a555c30b2bceee82a"
+      "digest": "48aeb3b4a73999f706d4355e04bde6aa4f453213d13fd79b90d2ce28c42460c4"
     },
     {
       "kind": "send",
@@ -77,7 +77,7 @@
           "dest20": "2288a7e112a5a6c57b1c9b9b6310f7b605d1f751"
         }
       ],
-      "digest": "c9fb3642ba624e4de57f6d6844124371c1016975a4915784c1c3a6c208e036fb"
+      "digest": "99cdd5f2de0eca467e75055406e0565cf5815c2affb66bcd257ea111fd2e72fb"
     },
     {
       "kind": "transfer",
@@ -93,7 +93,7 @@
           "rangeProof": "0a9f27b81ea852d6ca639a85b438893d51922ff2a42ed689701c4a2d2a03ac82b063a58d96ea40d65cc85a2f3732d7f67a79aae8b71f9089c20000c2aa40da0247a70f5fb8711c35419222d4f36a977d4bc55719de0e029b0fae76011267650a"
         }
       ],
-      "digest": "2037ef93d62aa261795d0186148dfeff66377253d22de1e8ef9c0377af0cfb57"
+      "digest": "2d0a60142789d31ffa479e113e4fe260d1716a4d67ecde0a247d137081fb9fae"
     }
   ]
 }

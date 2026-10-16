@@ -11,4 +11,6 @@
 # fee 0
 # id wd-1
 # withdrawNonce 32 bytes of 0x01
-5972b25c866f6bfe1646b09cf6d9e8a0bd1275ff0cb0a22fba7e65c3fba41512
+# unlockAtMs absent, bound as 0
+# lockEpoch absent, bound as -1
+bb2f66d3ebec35d5bb13e46f7936ba4a3fab042b082f2b3e187b9886d4f1cd8a

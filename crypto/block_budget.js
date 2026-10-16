@@ -4,8 +4,11 @@
  * levy.js blockWeight is the fee retarget weight and is a different number.
  */
 import { performance } from 'node:perf_hooks';
+import { MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
 import { txIsCoinbase } from './note.js';
 import { txIsReserveAction } from './reserve_vault.js';
+
+export { MAX_BLOCK_VAULT_CLAIMS };
 
 export const W_IN = 40;
 export const W_OUT = 23;
@@ -178,11 +181,24 @@ export function txVerifyWeight(tx) {
   }
   const nIn = Array.isArray(tx.vin) ? tx.vin.length : 0;
   const nOut = Array.isArray(tx.vout) ? tx.vout.length : 0;
+  if (tx.vaultProof != null && tx.vaultProof !== '') {
+    const one = fs1VerifyWeight(1);
+    let claim = W_TX + (one || 0) + W_OUT * nOut;
+    if (txIsReserveAction(tx)) claim += W_SEAL;
+    return claim;
+  }
   const fs1 = tx.fs1 != null && tx.fs1 !== '' ? fs1VerifyWeight(nIn) : null;
   if (fs1 != null) return W_TX + fs1 + W_OUT * nOut;
   let w = W_TX + W_IN * nIn + W_OUT * nOut;
   if (txIsReserveAction(tx)) w += W_SEAL;
   return w;
+}
+
+function txIsVaultClaim(tx) {
+  if (!tx || txIsCoinbase(tx)) return false;
+  if (String(tx.kind || '') === 'reward-claim') return true;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  return outs.some((row) => String(row?.kind || '') === 'reward-claim');
 }
 
 /** Raw public payload. Proof bytes count as length only. */
@@ -255,6 +271,7 @@ export function txBudget(tx) {
 export function blockBudget(txs) {
   const list = Array.isArray(txs) ? txs : [];
   let reserve = 0;
+  let claims = 0;
   let vw = 0;
   let payees = 0;
   let weight = 0;
@@ -272,9 +289,11 @@ export function blockBudget(txs) {
     } else if (txIsReserveAction(tx)) {
       reserve += 1;
     }
+    if (txIsVaultClaim(tx)) claims += 1;
   }
   if (vw > K_VW) return reject('k_vw');
   if (reserve > MAX_BLOCK_RESERVE_TXS) return reject('reserve_txs');
+  if (claims > MAX_BLOCK_VAULT_CLAIMS) return reject('claim_cap');
   if (payees > payeeCapLive()) return reject('payee_cap');
   if (coinbase > C_MAX) return reject('coinbase_bytes');
   if (block > B_MAX) return reject('block_bytes');
@@ -305,6 +324,7 @@ export function selectBodyIndexes(txs, {
       bytes: publicBytes(tx),
       fee,
       reserve: txIsReserveAction(tx),
+      claim: txIsVaultClaim(tx),
     };
   }
   const order = rows.slice().sort((a, b) => {
@@ -318,18 +338,21 @@ export function selectBodyIndexes(txs, {
   let accW = Math.max(0, Math.floor(Number(coinbaseWeight) || 0));
   let accB = Math.max(0, Math.floor(Number(coinbaseBytes) || 0));
   let accR = 0;
+  let accC = 0;
   for (let n = 0; n < order.length; n += 1) {
     const row = order[n];
     if (row.reserve) {
       if (accR >= MAX_BLOCK_RESERVE_TXS) continue;
       if (nowMs() - started >= TEMPLATE_BUDGET_MS) continue;
     }
+    if (row.claim && accC >= MAX_BLOCK_VAULT_CLAIMS) continue;
     if (accW + row.w > MAX_BLOCK_VERIFY_WEIGHT) continue;
     if (accB + row.bytes > B_MAX) continue;
     chosen.push(row.i);
     accW += row.w;
     accB += row.bytes;
     if (row.reserve) accR += 1;
+    if (row.claim) accC += 1;
   }
   return chosen;
 }

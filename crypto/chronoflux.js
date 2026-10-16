@@ -353,7 +353,7 @@ export const COMPACT_TX_KEYS = Object.freeze([
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
   'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub',
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
-  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
+  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs', 'withdrawNonce',
   'weight', 'payer', 'sponsor',
   'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
   'nullifier',

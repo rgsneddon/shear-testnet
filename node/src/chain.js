@@ -81,7 +81,7 @@ import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected, rollRewardRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -2747,6 +2747,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const pubs = (live.pubs || []).slice();
   const commits = (live.commits || []).slice();
   const spentTags = parentSpendView(live.spendTags);
+  // The body loop records this block's tags. Funded-body checks the same
+  // rules against the parent set, then its own additions, so a tag this
+  // tx just recorded is not a double spend of itself.
+  const parentTags = parentSpendView(live.spendTags);
   const pushPub = (tx, o) => {
     if (!outputJoinsAdmitSet(tx, o)) return null;
     const note = fs1OutputNote(o);
@@ -2855,7 +2859,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (!r.ok) return { ok: false, reason: r.reason };
       }
     }
-    const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
+    // A vote with no input, no fee, and no opened value mints nothing.
+    // The empty vin is the owner signature, not an unfunded mint.
+    const voteKind = String(tx?.kind || '');
+    let bareVote = voteKind === 'vote' && !tx?.mint && Math.floor(Number(tx?.fee || 0)) === 0;
+    if (bareVote) {
+      for (const o of (tx.vout || [])) {
+        const raw = o?.valueProof?.v != null ? o.valueProof.v : o?.nanos;
+        if (raw == null || raw === '') continue;
+        const n = Math.floor(Number(raw));
+        if (n > 0) bareVote = false;
+      }
+    }
+    const unfunded = !bareVote && (!Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint);
     if (wrapMintForbidden(tx)) {
       return { ok: false, reason: 'mint_forbidden' };
     }
@@ -2916,10 +2932,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!stake.ok) return stake;
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;
-    const claimAuth = rewardClaimRejected(tx, reserveState);
+    const claimAuth = rewardClaimRejected(tx, reserveState, height);
     if (claimAuth) return claimAuth;
     const withdrawAuth = withdrawRewardRejected(reserveState, tx, Number(decoded.timestamp) || 0);
     if (withdrawAuth) return withdrawAuth;
+    const rollAuth = rollRewardRejected(reserveState, tx, Number(decoded.timestamp) || 0, height);
+    if (rollAuth) return rollAuth;
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
     const bound = verifyPoolWithdrawBound(tx);
     if (!bound.ok) return bound;
@@ -2957,6 +2975,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       seenDigests,
       reserveState,
       nowMs: Number(decoded.timestamp) || 0,
+      height,
+      spentTags: parentTags,
+      magic,
+      noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
     });
     if (!funded.ok) return funded;
   }

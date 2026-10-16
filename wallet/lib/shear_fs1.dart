@@ -8,6 +8,7 @@ import 'shear_admit.dart';
 import 'shear_admit_ffi.dart';
 import 'shear_eip712.dart' show hexToBytes;
 import 'shear_note.dart' show kernelExcess;
+import 'shear_pack.dart' show reserveCommitOf, reserveDigestSuffixBytes, reserveOpenedNanos;
 import 'shear_ristretto.dart';
 
 /// FS-1 full-set spend (ADMITv3). One spend covers every input of a send:
@@ -73,7 +74,8 @@ Uint8List _u64(int v) {
 
 /// SHA-256 body digest an FS-1 spend binds. Port of `txBodyDigestFs1` in
 /// crypto/fs1_spend.js over the posted vout rows (bytes or hex). A send has
-/// no portal, program, payout portal, or reserve suffix.
+/// no portal, program, payout portal, or reserve suffix. A lock, vote, or
+/// withdraw appends `reserveDigestSuffix`, including unlock time and lock epoch.
 Uint8List fs1BodyDigest({
   required String magic,
   required String kind,
@@ -84,6 +86,11 @@ Uint8List fs1BodyDigest({
   String portalId = '',
   String programId = '',
   String payoutPortalId = '',
+  String choice = '',
+  int? reserveNanos,
+  String id = '',
+  Uint8List? withdrawNonce,
+  String oneTimePub = '',
 }) {
   final b = BytesBuilder(copy: false)
     ..add(utf8Bytes(kFs1DigestDst))
@@ -115,6 +122,21 @@ Uint8List fs1BodyDigest({
     ..add(_lenPref(utf8Bytes(portalId.toLowerCase())))
     ..add(_lenPref(utf8Bytes(programId)))
     ..add(_lenPref(utf8Bytes(payoutPortalId.toLowerCase())));
+  if (kind == 'lock' || kind == 'vote' || kind == 'withdraw') {
+    b.add(reserveDigestSuffixBytes(
+      kind: kind,
+      portalId: portalId,
+      payoutPortalId: payoutPortalId,
+      programId: programId,
+      choice: choice,
+      suffixNanos: reserveNanos ?? reserveOpenedNanos(vout, kind),
+      commit: reserveCommitOf(vout, kind),
+      vout: vout,
+      id: id,
+      withdrawNonce: withdrawNonce,
+      oneTimePub: oneTimePub,
+    ));
+  }
   return Uint8List.fromList(sha256.convert(b.takeBytes()).bytes);
 }
 

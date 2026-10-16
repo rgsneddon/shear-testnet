@@ -745,7 +745,12 @@ function accountBlock(prev, block, opts = {}) {
   state.dust = settled.dust;
   state.overflow = settled.overflow;
   state.carry = carryOut;
-  const reward = stakeRewardSupply(opts.vault, block, ts, opts.oracle);
+  const reward = stakeRewardSupply(
+    opts.vault,
+    block,
+    ts,
+    Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : block?.height,
+  );
   if (!reward.ok) return { reason: reward.reason || 'supply', state };
   const claimedReward = reward.claimed || 0n;
   const publicTotal = potMinted + mintedHashHere + levy + reward.minted;
