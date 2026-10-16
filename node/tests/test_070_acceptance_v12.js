@@ -275,8 +275,14 @@ function assertOwedStill(before, after, label) {
 }
 
 async function settleHeap() {
+  // One collection misses memory that becomes garbage on the first pass
+  // (the previous backend's near-cap side holds). The pause then lands
+  // inside timed(), where lag tracks wall. Caps are unchanged.
   await new Promise((resolve) => setImmediate(resolve));
-  if (typeof global.gc === 'function') global.gc();
+  if (typeof global.gc !== 'function') return;
+  global.gc();
+  await new Promise((resolve) => setImmediate(resolve));
+  global.gc();
 }
 
 async function timed(fn) {
@@ -808,6 +814,8 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
               const timedProbe = forkBlock(store, dest, timedParent, Buffer.alloc(32));
               const losePow = greaterHash(tipHash, timedProbe.bits);
               const loseBlock = forkBlock(store, dest, timedParent, losePow);
+              // forkBlock and any deferred collection are outside the R1 clock.
+              await settleHeap();
               const beforeLose = snapStats(store);
               const lose = await timed(() => store.ingest(
                 [loseBlock],
