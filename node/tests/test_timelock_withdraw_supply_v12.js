@@ -23,7 +23,7 @@ import {
 import { attachAdmitPub, outputJoinsAdmitSet } from '../../crypto/admit.js';
 import { fs1LeafFor } from '../../crypto/fs1_leaf.js';
 import { encodeHeader } from '../../crypto/header.js';
-import { excessOf } from '../../crypto/note.js';
+import { excessOf, sealCoinbaseNote } from '../../crypto/note.js';
 import { potSubsidyAt } from '../../crypto/pot_sched.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import {
@@ -227,7 +227,13 @@ describe('time-locked withdraw supply', () => {
     const noteDest = destOf();
     const note = freshVault();
     const noteTx = timeLock(noteDest, T0, 'fold-note');
-    noteTx.vin = [{ ...(noteTx.vin && noteTx.vin[0] ? noteTx.vin[0] : {}), noteCommit: Buffer.alloc(32, 4) }];
+    const sealedNote = sealCoinbaseNote(PI_SHE_NANOS, { dest20: Buffer.alloc(20, 4), kind: 'pot' });
+    noteTx.vin = [{
+      ...(noteTx.vin && noteTx.vin[0] ? noteTx.vin[0] : {}),
+      commit: sealedNote.commit,
+      valueProof: sealedNote.valueProof,
+      rangeProof: sealedNote.rangeProof,
+    }];
     assert.equal(applyLock(note, noteTx, T0).ok, true);
     const notePreview = previewWithdraw(note, noteDest, DRAW);
     assert.equal(notePreview.principal, PI_SHE_NANOS);

@@ -16,7 +16,8 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20 } from '../../crypto/note.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifySealedNote, noteU64 } from '../../crypto/note.js';
+import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
@@ -129,27 +130,48 @@ function openedLockNanos(tx) {
   return asLocked(act.nanos);
 }
 
-function bytes32Note(value) {
-  if (value == null || value === '') return false;
-  if (typeof value === 'string') {
-    const hex = value.replace(/^0x/i, '');
-    return /^[0-9a-fA-F]{64}$/.test(hex);
-  }
+function dest20Len(value) {
   try {
-    return Buffer.from(value).length === 32;
+    return Buffer.from(value || []).length;
   } catch {
-    return false;
+    return 0;
   }
 }
 
-/** A lock input pays a note when its vin carries a 32-byte note. */
+/**
+ * 113's public-receipt input: no note, a 20-byte dest, and no address.
+ * A 32-byte commit, noteCommit, or cTilde is not this kind and is not a note by itself.
+ */
+function publicReceiptInput(vin) {
+  if (!vin || vin.coinbase) return false;
+  if (vin.commit || vin.cTilde || vin.address) return false;
+  return dest20Len(vin.dest20) === 20;
+}
+
+/** Verified opening on one input. Length is not an opening. */
+function openedInputNanos(vin) {
+  if (!vin || vin.coinbase || publicReceiptInput(vin)) return null;
+  if (!vin.commit || !vin.valueProof) return null;
+  const n = noteU64(vin.valueProof.v);
+  if (n == null || !verifySealedNote(vin, n)) return null;
+  return n;
+}
+
+/**
+ * A lock input pays a note when 113's predicate says it is not a public
+ * receipt, and the verified openings on its inputs cover the lock.
+ */
 function vinPaysNote(tx) {
-  const vins = Array.isArray(tx?.vin) ? tx.vin : [];
-  for (const v of vins) {
-    if (!v || v.coinbase) continue;
-    if (bytes32Note(v.commit) || bytes32Note(v.noteCommit) || bytes32Note(v.cTilde)) return true;
+  if (publicReserveReceipt(tx)) return false;
+  const need = openedLockNanos(tx);
+  if (need <= 0n) return false;
+  let opened = 0n;
+  for (const v of Array.isArray(tx?.vin) ? tx.vin : []) {
+    const n = openedInputNanos(v);
+    if (n == null) continue;
+    opened += n;
   }
-  return false;
+  return opened >= need;
 }
 
 /**

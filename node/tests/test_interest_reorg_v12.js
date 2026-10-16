@@ -1,16 +1,18 @@
 /**
- * Heavier-fork reorg across a withdraw on the store vault.
- * A withdraw tx is not fundable in a block at this stage, so the losing
- * fork applies withdraw() — the transition a withdraw block would run.
- * Replay of the heavier fork, which has no withdraw, restores the portal
- * and returns the minted interest to 0.
+ * Heavier-fork reorg of a note-funded lock.
+ * A lock tx is not fundable in a block at this stage, and a public dest20
+ * receipt is refused, so the losing fork applies the lock with
+ * applyReserveBlock — the transition a note-funded lock block would run.
+ * The input opens to at least the lock. Replay of the heavier fork, which
+ * has no lock, unwinds that principal. A withdraw of the same lock pays
+ * principal only.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { encodeDest, ed25519RawPub, newIdentity } from '../../crypto/address.js';
+import { encodeDest, newIdentity } from '../../crypto/address.js';
 import { destCommitFromSpendPub } from '../../crypto/stealth_ed25519.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import {
@@ -19,9 +21,11 @@ import {
   EPOCH_DAYS_TESTNET,
 } from '../../crypto/asert.js';
 import { MS_PER_DAY } from '../../crypto/pot_sched.js';
-import { withdraw, portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { applyReserveBlock, cloneVault, portalIdFromDest, withdraw } from '../../crypto/reserve_vault.js';
 import { lockTx } from '../../crypto/owned_portal.js';
 import { levyNeed } from '../../crypto/levy.js';
+import { kernelExcess, noteU64, sealCoinbaseNote, verifySealedNote } from '../../crypto/note.js';
+import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { createStore } from '../src/store.js';
 
 const EPOCH_MS = EPOCH_DAYS_TESTNET * MS_PER_DAY;
@@ -36,17 +40,30 @@ function pow(tail) {
   return `${'00'.repeat(31)}${tail}`;
 }
 
-function publicLock(portal, key) {
+function noteLock(portal, key) {
   const tx = lockTx({ from: portal, to: portal, nanos: PI_SHE_NANOS, id: 'reorg-lock' });
-  const o = tx.vout[0];
-  delete o.commit;
-  delete o.rangeProof;
-  delete o.r;
-  delete o.noteCommit;
-  delete o.admitPub;
-  tx.vin = [{ dest20: destCommitFromSpendPub(ed25519RawPub(key)) }];
-  tx.fee = levyNeed(tx, []);
-  tx.maxLevy = tx.fee;
+  let fee = 0;
+  const arm = (nextFee) => {
+    const sealed = sealCoinbaseNote(PI_SHE_NANOS + nextFee, {
+      dest20: Buffer.alloc(20, 7),
+      kind: 'pot',
+    });
+    tx.vin = [{
+      commit: sealed.commit,
+      valueProof: sealed.valueProof,
+      rangeProof: sealed.rangeProof,
+    }];
+    tx.fee = nextFee;
+    tx.maxLevy = nextFee;
+    tx.excess = kernelExcess(tx.vout, [{ r: sealed.r }]);
+  };
+  arm(0);
+  for (let i = 0; i < 6; i += 1) {
+    const next = levyNeed(tx, []);
+    if (next === fee) break;
+    fee = next;
+    arm(fee);
+  }
   signSpendTx(tx, key);
   return tx;
 }
@@ -65,8 +82,8 @@ function nanosOf(n) {
   return typeof n === 'bigint' ? n : BigInt(n);
 }
 
-describe('store reorg across a withdraw', () => {
-  it('a heavier fork restores the portal and clears minted interest', async () => {
+describe('store reorg across a note-funded lock', () => {
+  it('a heavier fork unwinds principal the losing fork locked', async () => {
     const miner = dest(3);
     const who = newIdentity();
     const portal = encodeDest(destCommitFromSpendPub(who.spendPub));
@@ -83,19 +100,33 @@ describe('store reorg across a withdraw', () => {
 
     const genesis = await seal(local, miner, T0, '11');
     assert.equal(genesis.ok, true, genesis.reason);
-    const queued = local.queueTx(publicLock(portal, who.privateKey));
-    assert.equal(queued.ok, true, queued.reason);
-    const locked = await seal(local, miner, T0 + 90_000, '12');
-    assert.equal(locked.ok, true, locked.reason);
+    const shared = await Promise.resolve(peer.ingest(local.blocks.slice(0, 1), TRUST));
+    assert.equal(shared.ok, true, shared.reason);
+    const side = await seal(local, miner, T0 + 90_000, '13');
+    assert.equal(side.ok, true, side.reason);
+    assert.equal(local.tip().height, 2);
+
+    const lock = noteLock(portal, who.privateKey);
+    const opened = noteU64(lock.vin[0].valueProof.v);
+    assert.equal(publicReserveReceipt(lock), false);
+    assert.equal(opened != null && verifySealedNote(lock.vin[0], opened), true);
+    assert.ok(opened >= BigInt(PI_SHE_NANOS));
+    const applied = applyReserveBlock({
+      state: local.reserveVault,
+      block: { height: 2, txs: [lock] },
+      nowMs: T0 + 90_000,
+      genesisMs: T0,
+    });
+    const lockedRow = (applied || []).find((row) => row && row.action === 'lock');
+    assert.equal(lockedRow && lockedRow.ok, true, lockedRow && lockedRow.reason);
     assert.equal(nanosOf(local.reserveVault.portals[pid].staked), BigInt(PI_SHE_NANOS));
+    assert.equal(nanosOf(local.reserveVault.totalLockedNanos), BigInt(PI_SHE_NANOS));
     assert.equal(local.supplyState().mintedInterest, 0n);
 
-    const shared = await Promise.resolve(peer.ingest(local.blocks.slice(0, 2), TRUST));
-    assert.equal(shared.ok, true, shared.reason);
-
-    const feeBefore = nanosOf(local.reserveVault.feeBankNanos);
+    const paid = cloneVault(local.reserveVault);
+    const feeBefore = nanosOf(paid.feeBankNanos);
     const drawn = withdraw({
-      state: local.reserveVault,
+      state: paid,
       dest: portal,
       portalId: pid,
       nowMs: T0 + 90_000 + EPOCH_MS + 1,
@@ -104,32 +135,29 @@ describe('store reorg across a withdraw', () => {
     assert.equal(drawn.interest, 0);
     assert.equal(drawn.earned, interest);
     assert.equal(drawn.mint, null);
-    const minted = nanosOf(local.reserveVault.mintBankNanos);
-    const fromFee = feeBefore - nanosOf(local.reserveVault.feeBankNanos);
+    const minted = nanosOf(paid.mintBankNanos);
+    const fromFee = feeBefore - nanosOf(paid.feeBankNanos);
     assert.equal(minted, 0n);
     assert.equal(fromFee, 0n);
-    assert.equal(nanosOf(local.reserveVault.portals[pid].staked), 0n);
+    assert.equal(nanosOf(paid.portals[pid].staked), 0n);
+    assert.equal(nanosOf(local.reserveVault.portals[pid].staked), BigInt(PI_SHE_NANOS));
     assert.equal(local.supplyState().mintedInterest, 0n);
 
-    const side = await seal(local, miner, T0 + 180_000, '13');
-    assert.equal(side.ok, true, side.reason);
-    assert.equal(local.tip().height, 3);
-    assert.equal(nanosOf(local.reserveVault.portals[pid].staked), 0n);
-    assert.equal(nanosOf(local.reserveVault.mintBankNanos), minted);
+    assert.equal(nanosOf(local.reserveVault.portals[pid].staked), BigInt(PI_SHE_NANOS));
+    assert.equal(nanosOf(local.reserveVault.totalLockedNanos), BigInt(PI_SHE_NANOS));
 
     const heavyA = await seal(peer, miner, T0 + 180_000, '21');
     assert.equal(heavyA.ok, true, heavyA.reason);
     const heavyB = await seal(peer, miner, T0 + 270_000, '22');
     assert.equal(heavyB.ok, true, heavyB.reason);
-    assert.equal(peer.blocks.slice(2).some((b) => (b.txs || []).some((tx) => tx?.kind === 'withdraw')), false);
+    assert.equal(peer.blocks.slice(1).some((b) => (b.txs || []).some((tx) => tx?.kind === 'lock')), false);
 
-    const reorged = await Promise.resolve(local.ingest(peer.blocks.slice(2), TRUST));
+    const reorged = await Promise.resolve(local.ingest(peer.blocks.slice(1), TRUST));
     assert.equal(reorged.ok, true, reorged.reason);
     assert.equal(reorged.reorg, true);
     assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(peer.tip().hash)), true);
-    assert.equal(nanosOf(local.reserveVault.portals[pid].staked), BigInt(PI_SHE_NANOS));
-    assert.equal(nanosOf(local.reserveVault.totalLockedNanos), BigInt(PI_SHE_NANOS));
-    assert.equal(local.reserveVault.portals[pid].joined, true);
+    assert.equal(local.reserveVault.portals[pid], undefined);
+    assert.equal(nanosOf(local.reserveVault.totalLockedNanos), 0n);
     assert.equal(nanosOf(local.reserveVault.mintBankNanos), 0n);
     assert.equal(local.supplyState().mintedInterest, 0n);
   });

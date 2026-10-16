@@ -91,11 +91,17 @@ function earned(stake, lockTs, drawTs) {
   return total;
 }
 
-/** A lock whose vin spends a note. A dest20 receipt is not note-paid principal. */
+/** A lock whose vin opens a note for at least the lock. A dest20 receipt is bare. */
 function noteFund(tx, mark) {
-  const vin = { ...(tx.vin && tx.vin[0] ? tx.vin[0] : {}) };
-  vin.noteCommit = Buffer.alloc(32, mark);
-  tx.vin = [vin];
+  const n = Math.floor(Number(tx.nanos) || 0);
+  const sealed = sealCoinbaseNote(n, { dest20: Buffer.alloc(20, mark & 0xff), kind: 'pot' });
+  const prev = tx.vin && tx.vin[0] ? tx.vin[0] : {};
+  tx.vin = [{
+    ...prev,
+    commit: sealed.commit,
+    valueProof: sealed.valueProof,
+    rangeProof: sealed.rangeProof,
+  }];
   return tx;
 }
 
@@ -210,6 +216,27 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const lockedAudit = auditCirculatingSupply([lock]);
     assert.equal(lockedAudit.status, 'verified', lockedAudit.reason);
     assert.equal(lockedAudit.vaultPrincipalNanos, stake);
+    const sticker = lockTx({ from: miner, to: portal, nanos: stake, id: 'sticker-lock' });
+    const stickerVin = { ...(sticker.vin && sticker.vin[0] ? sticker.vin[0] : {}) };
+    stickerVin.noteCommit = Buffer.alloc(32, 4);
+    sticker.vin = [stickerVin];
+    const stickerFold = foldSupply([
+      blockAt(GENESIS, miner, [{ nanos: potAt(GENESIS), kind: 'pot' }], [sticker]),
+    ], { genesisMs: GENESIS });
+    assert.equal(stickerFold.ok, false, stickerFold.reason);
+    assert.equal(stickerFold.reason, 'supply');
+    const shortNote = sealCoinbaseNote(1, { dest20: Buffer.alloc(20, 3), kind: 'pot' });
+    const short = lockTx({ from: miner, to: portal, nanos: stake, id: 'short-lock' });
+    short.vin = [{
+      commit: shortNote.commit,
+      valueProof: shortNote.valueProof,
+      rangeProof: shortNote.rangeProof,
+    }];
+    const shortFold = foldSupply([
+      blockAt(GENESIS, miner, [{ nanos: potAt(GENESIS), kind: 'pot' }], [short]),
+    ], { genesisMs: GENESIS });
+    assert.equal(shortFold.ok, false, shortFold.reason);
+    assert.equal(shortFold.reason, 'supply');
     assert.equal(lockedAudit.totalNanos, lockedAudit.circulatingNanos + stake);
     const drawTs = GENESIS + EPOCH_MS + 1;
     const paid = auditCirculatingSupply([lock, drawBlock(drawTs, miner, [portal], stake)]);

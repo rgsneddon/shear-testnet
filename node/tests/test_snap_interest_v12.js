@@ -25,9 +25,15 @@ function portalDest() {
 }
 
 function noteFund(tx) {
-  const vin = { ...(tx.vin && tx.vin[0] ? tx.vin[0] : {}) };
-  vin.noteCommit = Buffer.alloc(32, 0x91);
-  tx.vin = [vin];
+  const n = Math.floor(Number(tx.nanos) || 0);
+  const sealed = sealCoinbaseNote(n, { dest20: Buffer.alloc(20, 0x91), kind: 'pot' });
+  const prev = tx.vin && tx.vin[0] ? tx.vin[0] : {};
+  tx.vin = [{
+    ...prev,
+    commit: sealed.commit,
+    valueProof: sealed.valueProof,
+    rangeProof: sealed.rangeProof,
+  }];
   return tx;
 }
 
