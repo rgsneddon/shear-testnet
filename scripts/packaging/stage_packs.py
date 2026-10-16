@@ -12,6 +12,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -24,6 +25,10 @@ DESKTOP = os.environ.get("SHEAR_PACK_DESKTOP", "1") == "1"
 PACK = SRC / "scripts" / "packaging"
 SKIP_DIRS = {"vendor", "randomx", "target", ".git", "node_modules", "__pycache__"}
 SKIP_SUFFIXES = {".o", ".a", ".d", ".pdb", ".ilk"}
+DOC = "share/doc/shear"
+
+sys.path.insert(0, str(SRC / "scripts" / "licenses"))
+import release_notices  # noqa: E402
 
 
 def read_text(path: Path) -> str:
@@ -84,7 +89,17 @@ def copy_tree(src: Path, dest: Path) -> None:
                 shutil.rmtree(path, ignore_errors=True)
 
 
-def bundle_openssl(binary: Path, dest_bin: Path, dest_lib: Path) -> None:
+def install_runtime_licenses(binaries: list[Path]) -> None:
+    """Licences for the host binaries copied into the prefix, under share/doc/shear/runtime/."""
+    for src, arc in release_notices.runtime_license_members([str(b) for b in binaries], "runtime", str(SRC)):
+        copy_file(Path(src), PREFIX / DOC / arc, 0o644)
+    versions = PREFIX / DOC / release_notices.RUNTIME_VERSIONS
+    versions.parent.mkdir(parents=True, exist_ok=True)
+    versions.write_text(release_notices.runtime_versions_text([str(b) for b in binaries]), encoding="utf-8")
+    versions.chmod(0o644)
+
+
+def bundle_openssl(binary: Path, dest_bin: Path, dest_lib: Path) -> list[Path]:
     dest_lib.mkdir(parents=True, exist_ok=True)
     copy_file(binary, dest_bin, 0o755)
     ldd = subprocess.check_output(["ldd", str(dest_bin)], text=True)
@@ -108,6 +123,7 @@ def bundle_openssl(binary: Path, dest_bin: Path, dest_lib: Path) -> None:
         dest.chmod(0o644)
         subprocess.check_call(["patchelf", "--set-rpath", "$ORIGIN", str(dest)])
     subprocess.check_call(["patchelf", "--set-rpath", "$ORIGIN/../lib", str(dest_bin)])
+    return [Path(os.path.realpath(path)) for _soname, path in sorted(found.items())]
 
 
 def find_libsodium() -> Path:
@@ -143,7 +159,16 @@ def install_prefix() -> None:
     modules = PREFIX / "node_modules"
     if modules.exists():
         shutil.rmtree(modules)
-    shutil.copytree(SRC / "node_modules", modules, symlinks=False)
+    dev = release_notices.dev_only_npm_dirs(str(SRC))
+
+    def ignore_dev(directory: str, names: list[str]) -> set[str]:
+        return {
+            name for name in names
+            if os.path.relpath(os.path.join(directory, name), SRC).replace(os.sep, "/") in dev
+        }
+
+    shutil.copytree(SRC / "node_modules", modules, symlinks=False, ignore=ignore_dev)
+    release_notices.copy_notices(str(PREFIX / DOC), str(SRC))
 
     for unit in ("shear-sentinel.service", "sheark-miner.service"):
         copy_file(PACK / "systemd" / unit, PREFIX / "share" / "systemd" / unit, 0o644)
@@ -154,11 +179,12 @@ def install_prefix() -> None:
     )
     copy_file(SRC / "sheark-miner" / "example.sh", PREFIX / "share" / "sheark" / "example.sh", 0o755)
     copy_file(SRC / "sheark-miner" / "example.bat", PREFIX / "share" / "sheark" / "example.bat", 0o644)
-    bundle_openssl(
+    openssl = bundle_openssl(
         SRC / "sheark-miner" / "ShearK-Miner",
         PREFIX / "bin" / "ShearK-Miner",
         PREFIX / "lib",
     )
+    licensed = [Path("/usr/local/bin/node")] + openssl
     cli = Path(os.environ.get("SHEAR_CLI_BIN", "/tmp/shear-cli"))
     if not cli.is_file():
         raise SystemExit(f"wallet CLI binary missing: {cli}")
@@ -182,10 +208,15 @@ def install_prefix() -> None:
         lib.mkdir(parents=True, exist_ok=True)
         sodium = find_libsodium()
         shutil.copy2(sodium, lib / sodium.name)
+        licensed.append(Path(os.path.realpath(sodium)))
         link = lib / "libsodium.so"
         if not link.exists():
             link.symlink_to(sodium.name)
         os.chmod(dest / "shear_wallet", 0o755)
+    install_runtime_licenses(licensed)
+    # bin/node is the official Node.js build, which loads the distro libstdc++.
+    # Everything else Shear builds is linked with -static-libgcc -static-libstdc++.
+    release_notices.assert_linux_tree_clean(str(PREFIX), exempt=("bin/node",))
 
 
 def add_path(tar: tarfile.TarFile, abs_path: Path, arcname: str) -> None:
@@ -305,6 +336,8 @@ def collect_members() -> None:
         )
     written = []
     for name, roots, readme in specs:
+        roots = roots + [DOC]
+        readme += f"Licences: {DOC}/LICENSE, {DOC}/THIRD_PARTY_NOTICES.txt and {DOC}/LICENSES/.\n"
         for rel in roots:
             if not (PREFIX / rel).exists():
                 raise SystemExit(f"{name} missing {rel}")

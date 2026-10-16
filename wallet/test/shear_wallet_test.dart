@@ -4008,6 +4008,8 @@ void main() {
     expect(ident.address.startsWith('shear1'), isTrue);
     expect(find.text('Export shewall.bin'), findsOneWidget);
     expect(find.text('Import shewall.bin'), findsWidgets);
+    expect(find.byKey(const Key('about-licences')), findsOneWidget);
+    expect(find.text('The Shear concept was inspired by Roy D Herbert, and the Chronoflux Principia.'), findsOneWidget);
     await tester.ensureVisible(find.text('Export shewall.bin'));
     await tester.runAsync(() => _wallet(tester).exportShewallNow());
     await tester.pump();

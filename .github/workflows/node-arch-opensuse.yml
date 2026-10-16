@@ -150,7 +150,8 @@ jobs:
           runtime.mkdir()
           ldd = subprocess.check_output(["ldd", str(real)], text=True, stderr=subprocess.STDOUT)
           print(ldd)
-          keep = ("libnode", "libstdc++", "libgcc_s", "libuv")
+          # libstdc++ and libgcc_s stay on the distro. Shipping them is GPL object code.
+          keep = ("libnode", "libuv")
           libs = []
           for line in ldd.splitlines():
               if "=>" not in line:
