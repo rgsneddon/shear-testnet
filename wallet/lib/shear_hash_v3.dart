@@ -103,17 +103,22 @@ void _ensure() {
   _openPath(path);
 }
 
+/// Read the extracted library next to an already-loaded Flutter library and
+/// check its SHA-256 before [DynamicLibrary.open]. The soname is not opened.
 void _openAndroid() {
+  final path = androidShearHashLibraryFromMaps(_mapsText());
+  if (path == null) return;
+  final failure = shearHashBundledFailure(path);
+  if (failure != null) return;
+  _openPath(path);
+}
+
+String _mapsText() {
   try {
-    final lib = DynamicLibrary.open('libshearhash.so');
-    final fn = lib.lookupFunction<_WalletHashNative, _WalletHashDart>('shear_wallet_hash');
-    final got = _call(fn, shearSelftestHeader());
-    if (got == null) return;
-    final hex = _hex(got);
-    if (hex != shearHashV3Selftest) return;
-    _hash = fn;
-    _selftestOk = true;
-  } catch (_) {}
+    return File('/proc/self/maps').readAsStringSync();
+  } catch (_) {
+    return '';
+  }
 }
 
 void _openPath(String path) {
@@ -179,8 +184,25 @@ List<String> shearHashLibraryCandidates({
   ];
 }
 
+/// Directory of an already-mapped `libflutter.so` or `libapp.so`, plus
+/// `libshearhash.so`. Null when the maps text has neither library.
+@visibleForTesting
+String? androidShearHashLibraryFromMaps(String maps) {
+  final marked = RegExp(r'(\S*/(?:libflutter|libapp)\.so)');
+  for (final line in maps.split('\n')) {
+    final match = marked.firstMatch(line);
+    if (match == null) continue;
+    final loaded = match.group(1)!;
+    final slash = loaded.lastIndexOf('/');
+    if (slash < 0) continue;
+    return '${loaded.substring(0, slash)}/libshearhash.so';
+  }
+  return null;
+}
+
 /// Linux `<exe>/lib/libshearhash.so`, Windows `<exe>\libshearhash.dll`,
-/// macOS `<exe>/../Frameworks/libshearhash.dylib`, Android the packaged soname.
+/// macOS `<exe>/../Frameworks/libshearhash.dylib`, Android the extracted
+/// library beside `libflutter.so`. The SHA-256 pin is checked before open.
 @visibleForTesting
 String bundledShearHashLibrary({
   required String operatingSystem,

@@ -4055,6 +4055,7 @@ class ShearLedger implements ReadProofSink {
     _acceptedTip = 0;
     _genesisMs = null;
     _anchorDigest.clear();
+    _anchorTime.clear();
     _noteMisses.clear();
     _ingestMisses.clear();
     _nodeBodies.clear();
@@ -4084,7 +4085,11 @@ class ShearLedger implements ReadProofSink {
   /// Timestamp of the genesis header, or a checkpoint pin of that time.
   int? _genesisMs;
   /// Recomputed digests the wallet may anchor a window to. Height to hex.
+  /// Flyclient, a genesis pin, or a checkpoint writes these. A window header
+  /// does not replace one, and a digest that disagrees leaves the clock off.
   final Map<int, String> _anchorDigest = {};
+  /// Header time that came with an anchor. The MTP future limit uses it.
+  final Map<int, int> _anchorTime = {};
   /// Bitcoin-class median window. Matches `MTP_WINDOW` in crypto/asert.js.
   static const verifiedMtpWindow = 11;
   /// Keep the MTP window plus recent confirmation heights. Older rows drop.
@@ -4180,10 +4185,18 @@ class ShearLedger implements ReadProofSink {
 
   /// Trust [digestHex] as the recomputed header at [height].
   /// Flyclient, a genesis pin, or a checkpoint writes this. A raw header does not.
-  void noteUnlockAnchor({required int height, required String digestHex}) {
+  /// A different digest than the one already stored turns the clock off.
+  void noteUnlockAnchor({
+    required int height,
+    required String digestHex,
+    int? timeMs,
+  }) {
     final hex = digestHex.trim().toLowerCase();
     if (height < 1 || !RegExp(r'^[0-9a-f]{64}$').hasMatch(hex)) return;
+    final prev = _anchorDigest[height];
+    if (prev != null && prev != hex) _verifiedClockTip = 0;
     _anchorDigest[height] = hex;
+    if (timeMs != null && timeMs > 0) _anchorTime[height] = timeMs;
   }
 
   /// The tip the unlock clock is allowed to adopt.
@@ -4214,16 +4227,56 @@ class ShearLedger implements ReadProofSink {
 
   void _advanceVerifiedClock() {
     final tip = _acceptedTip;
-    if (tip < 1 || !unlockClockHeights(tip).every(_verifiedHeaders.containsKey)) {
+    final heights = tip < 1 ? const <int>[] : unlockClockHeights(tip);
+    if (tip < 1 || !heights.every(_verifiedHeaders.containsKey)) {
       _verifiedClockTip = 0;
       return;
+    }
+    // The window is the accepted tip only when its tip and parent digests
+    // are the Flyclient (or checkpoint) anchors. A self-hashed window is not.
+    if (!_boundToAnchor(tip) || (tip > 1 && !_boundToAnchor(tip - 1))) {
+      _verifiedClockTip = 0;
+      return;
+    }
+    final tipTime = _verifiedHeaders[tip]!.timestampMs;
+    for (final h in heights) {
+      if (_verifiedHeaders[h]!.timestampMs > tipTime + kMtpFutureMs) {
+        _verifiedClockTip = 0;
+        return;
+      }
     }
     _verifiedClockTip = tip;
   }
 
+  bool _boundToAnchor(int height) {
+    final row = _verifiedHeaders[height];
+    final anchor = _anchorDigest[height];
+    return row != null && anchor != null && row.hashHex == anchor;
+  }
+
+  /// Header time against the median of the headers already verified below
+  /// it, and against the anchored tip time. Same 2h cap as the node.
+  bool _headerTimeOk(int height, int timestampMs) {
+    final prior = <int>[];
+    for (var h = height - 1; h >= 1 && prior.length < verifiedMtpWindow; h--) {
+      final t = _verifiedHeaders[h]?.timestampMs ?? _anchorTime[h];
+      if (t == null || t <= 0) break;
+      prior.add(t);
+    }
+    if (prior.isNotEmpty) {
+      prior.sort();
+      final mtp = prior[(prior.length - 1) ~/ 2];
+      if (timestampMs > mtp + kMtpFutureMs) return false;
+    }
+    final tipTime = _acceptedTip >= 1 ? _anchorTime[_acceptedTip] : null;
+    if (tipTime != null && tipTime > 0 && timestampMs > tipTime + kMtpFutureMs) {
+      return false;
+    }
+    return true;
+  }
+
   void _dropVerifiedFrom(int height) {
     _verifiedHeaders.removeWhere((h, _) => h >= height);
-    _anchorDigest.removeWhere((h, _) => h >= height);
     _verifiedClockTip = 0;
   }
 
@@ -4258,7 +4311,12 @@ class ShearLedger implements ReadProofSink {
     final genesis = sync.pinnedGenesisMs;
     if (genesis != null && genesis > 0) _genesisMs ??= genesis;
     for (final e in sync.acceptedDigests.entries) {
+      final prev = _anchorDigest[e.key];
+      if (prev != null && prev != e.value) _verifiedClockTip = 0;
       _anchorDigest[e.key] = e.value;
+    }
+    for (final e in sync.acceptedHeaderMs.entries) {
+      if (e.value > 0) _anchorTime[e.key] = e.value;
     }
   }
 
@@ -4284,7 +4342,9 @@ class ShearLedger implements ReadProofSink {
       return false;
     }
     if (!_parentAnchored(height, fly.prevHex)) return false;
-    final parentTime = height > 1 ? _verifiedHeaders[height - 1]?.timestampMs : null;
+    final parentTime = height > 1
+        ? (_verifiedHeaders[height - 1]?.timestampMs ?? _anchorTime[height - 1])
+        : null;
     final genesisMs = height == 1 ? fly.timestamp : (_genesisMs ?? 0);
     if (!headerBitsMatchAsert(
       height: height,
@@ -4295,21 +4355,39 @@ class ShearLedger implements ReadProofSink {
     )) {
       return false;
     }
+    if (!_headerTimeOk(height, fly.timestamp)) {
+      _verifiedClockTip = 0;
+      return false;
+    }
     final finger = sha256.convert(header).toString();
     final have = _verifiedHeaders[height];
-    if (have != null && have.headerSha256 == finger) return true;
+    if (have != null && have.headerSha256 == finger) {
+      final anchored = _anchorDigest[height];
+      if (anchored != null && anchored != have.hashHex) {
+        _verifiedClockTip = 0;
+        _dropVerifiedFrom(height);
+        return false;
+      }
+      _advanceVerifiedClock();
+      return true;
+    }
     final got = digest ?? shearHashV3(header);
     if (got == null || got.length != 32 || !shearMeetsTarget(got, fly.bits)) {
       return false;
     }
     final digestHex = _bytesHex(got);
+    final anchored = _anchorDigest[height];
+    if (anchored != null && anchored != digestHex) {
+      _verifiedClockTip = 0;
+      if (have != null && have.hashHex != anchored) _dropVerifiedFrom(height);
+      return false;
+    }
     if (have != null && have.hashHex != digestHex) _dropVerifiedFrom(height);
     _verifiedHeaders[height] = (
       timestampMs: fly.timestamp,
       hashHex: digestHex,
       headerSha256: finger,
     );
-    _anchorDigest[height] = digestHex;
     if (height == 1) _genesisMs = fly.timestamp;
     _trimVerifiedHeaders();
     _advanceVerifiedClock();

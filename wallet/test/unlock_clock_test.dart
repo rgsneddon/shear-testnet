@@ -81,8 +81,25 @@ _Window _mine(int tipMs) {
 }
 
 void _accept(_Window w, ShearLedger ledger) {
+  final stamp = headerTimestampMs(w.rows.first.header);
   ledger.noteGenesisPin(w.genesisMs);
-  ledger.noteUnlockAnchor(height: w.parentHeight, digestHex: _hex(w.parent));
+  ledger.noteUnlockAnchor(
+    height: w.parentHeight,
+    digestHex: _hex(w.parent),
+    timeMs: stamp,
+  );
+  final tip = w.rows.last;
+  final prev = w.rows[w.rows.length - 2];
+  ledger.noteUnlockAnchor(
+    height: prev.height,
+    digestHex: _hex(prev.digest),
+    timeMs: headerTimestampMs(prev.header),
+  );
+  ledger.noteUnlockAnchor(
+    height: tip.height,
+    digestHex: _hex(tip.digest),
+    timeMs: headerTimestampMs(tip.header),
+  );
   ledger.noteAcceptedTip(w.tip);
   for (final row in w.rows) {
     expect(
@@ -176,6 +193,24 @@ void main() {
     );
     expect(shearHashPinFailure([1, 2, 3], ''), 'missing sha256 pin');
     expect(shearHashPinFailure([1, 2, 3], '00'), 'sha256 mismatch');
+    expect(kMtpFutureMs, 7200000);
+    const maps = '7f000000-7f001000 r-xp 00000000 00:00 1 /data/app/pkg/lib/arm64/libflutter.so\n';
+    expect(
+      androidShearHashLibraryFromMaps(maps),
+      '/data/app/pkg/lib/arm64/libshearhash.so',
+    );
+    expect(
+      androidShearHashLibraryFromMaps('7f0-7f1 r-xp 0 /data/app/pkg/lib/x86_64/libapp.so'),
+      '/data/app/pkg/lib/x86_64/libshearhash.so',
+    );
+    expect(androidShearHashLibraryFromMaps(''), isNull);
+    final loader = File('lib/shear_hash_v3.dart').readAsStringSync();
+    final androidOpen = loader.indexOf('void _openAndroid()');
+    final pin = loader.indexOf('shearHashBundledFailure', androidOpen);
+    final dlopen = loader.indexOf('DynamicLibrary.open', androidOpen);
+    expect(androidOpen, greaterThan(0));
+    expect(pin, greaterThan(androidOpen));
+    expect(dlopen, greaterThan(pin));
     expect(shearHashMemoryOkFromMeminfo('MemAvailable:        100 kB\n'), isFalse);
     expect(shearHashMemoryOkFromMeminfo('MemAvailable:        400000 kB\n'), isTrue);
     expect(shearHashMemoryOkFromMeminfo(''), isFalse);
@@ -304,10 +339,42 @@ void main() {
       }
       expect(got, isNotNull, reason: 'refill $h');
       final stored = Uint8List.fromList(header);
-      expect(ledger.noteVerifiedHeader(header: stored, height: h, hashHex: ''), isTrue);
       served[h] = stored;
+      // Tip and tip-1 still name the old Flyclient digests. Those two
+      // headers must not move the clock until the anchors are replaced.
+      if (h >= window.tip - 1) {
+        expect(
+          ledger.noteVerifiedHeader(header: stored, height: h, hashHex: ''),
+          isFalse,
+          reason: 'height $h still bound to the old anchor',
+        );
+      } else {
+        expect(ledger.noteVerifiedHeader(header: stored, height: h, hashHex: ''), isTrue);
+      }
       prev = got!;
     }
+    expect(ledger.verifiedClockTip, 0);
+    final newPrev = served[window.tip - 1]!;
+    final newTip = served[window.tip]!;
+    ledger
+      ..noteUnlockAnchor(
+        height: window.tip - 1,
+        digestHex: _hex(shearHashV3(newPrev)!),
+        timeMs: nextMs,
+      )
+      ..noteUnlockAnchor(
+        height: window.tip,
+        digestHex: _hex(shearHashV3(newTip)!),
+        timeMs: nextMs,
+      );
+    expect(
+      ledger.noteVerifiedHeader(header: newPrev, height: window.tip - 1, hashHex: ''),
+      isTrue,
+    );
+    expect(
+      ledger.noteVerifiedHeader(header: newTip, height: window.tip, hashHex: ''),
+      isTrue,
+    );
     expect(ledger.verifiedClockTip, window.tip);
     expect(ledger.verifiedTimeAtHeight(28), nextMs);
     expect(ledger.verifiedTimeAtHeight(28), isNot(tipMs));
@@ -323,7 +390,7 @@ void main() {
     final outsideQuote = asertNextBits(
       anchorTimeMs: window.genesisMs,
       blockTimeMs: tipMs,
-      blockHeight: 19,
+      blockHeight: 18,
       parentTimeMs: tipMs,
     );
     _u32(outside, 108, outsideQuote.packed);
@@ -337,10 +404,100 @@ void main() {
       }
     }
     expect(outsideDigest, isNotNull);
-    ledger.noteUnlockAnchor(height: 18, digestHex: _hex(window.parent));
-    expect(ledger.noteVerifiedHeader(header: outside, height: 19, hashHex: ''), isTrue);
-    expect(ledger.verifiedTimeAtHeight(19), isNull);
+    ledger.noteUnlockAnchor(height: 17, digestHex: _hex(window.parent));
+    expect(ledger.noteVerifiedHeader(header: outside, height: 18, hashHex: ''), isTrue);
+    expect(ledger.verifiedTimeAtHeight(18), isNull);
     expect(ledger.verifiedTimeAtHeight(28), nextMs);
+  });
+
+  test('a mismatched anchor digest is rejected and the clock stays off', () {
+    const tipMs = 1700000002000;
+    final window = _mine(tipMs);
+    final tip = window.rows.last;
+    final prev = window.rows[window.rows.length - 2];
+    final ledger = ShearLedger()
+      ..noteGenesisPin(window.genesisMs)
+      ..noteUnlockAnchor(
+        height: window.parentHeight,
+        digestHex: _hex(window.parent),
+        timeMs: tipMs,
+      )
+      ..noteUnlockAnchor(
+        height: prev.height,
+        digestHex: _hex(prev.digest),
+        timeMs: tipMs,
+      )
+      ..noteUnlockAnchor(height: tip.height, digestHex: 'ab' * 32, timeMs: tipMs)
+      ..noteAcceptedTip(window.tip);
+    for (final row in window.rows) {
+      final ok = ledger.noteVerifiedHeader(
+        header: row.header,
+        height: row.height,
+        hashHex: 'ff' * 32,
+      );
+      expect(ok, row.height == tip.height ? isFalse : isTrue, reason: 'height ${row.height}');
+    }
+    expect(ledger.verifiedMedianTimeMs, isNull);
+    expect(ledger.verifiedClockTip, 0);
+    ledger.noteUnlockAnchor(height: tip.height, digestHex: _hex(tip.digest), timeMs: tipMs);
+    expect(
+      ledger.noteVerifiedHeader(header: tip.header, height: tip.height, hashHex: ''),
+      isTrue,
+    );
+    expect(ledger.verifiedClockTip, window.tip);
+    expect(ledger.verifiedMedianTimeMs, tipMs);
+  });
+
+  test('a future-dated low-target window is rejected', () {
+    const honest = 1700000003000;
+    final futureMs = honest + kMtpFutureMs + 1000;
+    final window = _mine(futureMs);
+    final first = window.rows.first;
+    final quote = asertNextBits(
+      anchorTimeMs: window.genesisMs,
+      blockTimeMs: futureMs,
+      blockHeight: first.height,
+      parentTimeMs: honest,
+    );
+    expect(quote.packed, kLiveMinBits * kBitsFpScale);
+    expect(quote.easeBits, greaterThan(0));
+    expect(
+      headerBitsMatchAsert(
+        height: first.height,
+        bits: quote.packed,
+        timestampMs: futureMs,
+        parentTimestampMs: honest,
+        genesisMs: window.genesisMs,
+      ),
+      isTrue,
+    );
+    expect(shearMeetsTarget(first.digest, quote.packed), isTrue);
+    final tip = window.rows.last;
+    final prev = window.rows[window.rows.length - 2];
+    final ledger = ShearLedger()
+      ..noteGenesisPin(window.genesisMs)
+      ..noteUnlockAnchor(
+        height: window.parentHeight,
+        digestHex: _hex(window.parent),
+        timeMs: honest,
+      )
+      ..noteUnlockAnchor(
+        height: prev.height,
+        digestHex: _hex(prev.digest),
+        timeMs: futureMs,
+      )
+      ..noteUnlockAnchor(
+        height: tip.height,
+        digestHex: _hex(tip.digest),
+        timeMs: futureMs,
+      )
+      ..noteAcceptedTip(window.tip);
+    expect(
+      ledger.noteVerifiedHeader(header: first.header, height: first.height, hashHex: ''),
+      isFalse,
+    );
+    expect(ledger.verifiedMedianTimeMs, isNull);
+    expect(ledger.verifiedClockTip, 0);
   });
 
   test('deposit matching does not treat a blind id as the tx id', () {

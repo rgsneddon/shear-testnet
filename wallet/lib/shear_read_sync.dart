@@ -664,6 +664,8 @@ class ShearReadSync {
   /// Recomputed digests from the last sample that verified. The unlock clock
   /// may anchor a window to these. A claimed JSON hash is not an entry.
   final Map<int, String> acceptedDigests = {};
+  /// Header time that was hashed with [acceptedDigests]. The MTP cap uses it.
+  final Map<int, int> acceptedHeaderMs = {};
   /// Height 1 timestamp when that header's bits are the genesis seed.
   int? pinnedGenesisMs;
   bool flyclientOk = false;
@@ -1315,6 +1317,7 @@ class ShearReadSync {
     if (tip > 1) need.add(tip - 1);
     final got = <int, FlyHeader>{};
     final digests = <int, String>{};
+    final times = <int, int>{};
     final ordered = need.toList()..sort();
     for (final h in ordered) {
       final path = '/header?height=$h';
@@ -1336,6 +1339,7 @@ class ShearReadSync {
       }
       got[h] = parsed;
       digests[h] = _digestHex(digest);
+      times[h] = parsed.timestamp;
       if (h == 1 && parsed.bits == kGenesisBitsPacked) {
         pinnedGenesisMs = parsed.timestamp;
       }
@@ -1345,7 +1349,10 @@ class ShearReadSync {
         !digests.containsKey(parentH) &&
         pinnedGenesisMs != null) {
       final anchored = await _anchorMtpParent(base, parentH, pinnedGenesisMs!);
-      if (anchored != null) digests[parentH] = anchored;
+      if (anchored != null) {
+        digests[parentH] = anchored.digest;
+        times[parentH] = anchored.timeMs;
+      }
     }
     if (tip > 1) {
       final parent = got[tip - 1];
@@ -1360,12 +1367,15 @@ class ShearReadSync {
     acceptedDigests
       ..clear()
       ..addAll(digests);
+    acceptedHeaderMs
+      ..clear()
+      ..addAll(times);
     return true;
   }
 
   /// ASERT plus a recomputed digest. A bits=1 header is not an unlock anchor.
   /// A miss does not fail the Flyclient sample.
-  Future<String?> _anchorMtpParent(String base, int height, int genesisMs) async {
+  Future<({String digest, int timeMs})?> _anchorMtpParent(String base, int height, int genesisMs) async {
     final path = '/header?height=$height';
     flyclientFetched.add(path);
     final json = await _getFirst(base, [path, '/api/explorer/header?height=$height']);
@@ -1384,7 +1394,7 @@ class ShearReadSync {
     if (raw == null) return null;
     final digest = await shearHashV3OffUi(raw);
     if (digest == null || !shearMeetsTarget(digest, parsed.bits)) return null;
-    return _digestHex(digest);
+    return (digest: _digestHex(digest), timeMs: parsed.timestamp);
   }
 
   Future<Map<String, dynamic>?> _get(String base, String path) async {

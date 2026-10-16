@@ -410,7 +410,24 @@ List<({int height, Uint8List header, Uint8List digest})> _mineEasyWindow(int tip
 
 void _pinWindow(ShearLedger ledger, _MinedWindow window) {
   ledger.noteGenesisPin(window.genesisMs);
-  ledger.noteUnlockAnchor(height: window.parentHeight, digestHex: window.parentHex);
+  final stamp = headerTimestampMs(window.rows.first.header);
+  ledger.noteUnlockAnchor(
+    height: window.parentHeight,
+    digestHex: window.parentHex,
+    timeMs: stamp,
+  );
+  final tip = window.rows.last;
+  final prev = window.rows[window.rows.length - 2];
+  ledger.noteUnlockAnchor(
+    height: prev.height,
+    digestHex: _headerHex(prev.digest),
+    timeMs: headerTimestampMs(prev.header),
+  );
+  ledger.noteUnlockAnchor(
+    height: tip.height,
+    digestHex: _headerHex(tip.digest),
+    timeMs: headerTimestampMs(tip.header),
+  );
   ledger.noteAcceptedTip(window.tip);
 }
 

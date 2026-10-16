@@ -12,6 +12,10 @@ const kAsertHalflifeMs = 2 * 60 * 60 * 1000;
 const kAsertEmergencyEaseMax = 2;
 const kAsertEmergencyGapFactor = 8;
 
+/// Same future skew as `MTP_FUTURE_MS` in crypto/asert.js. A header later
+/// than the median of the previous window by more than this is not legal.
+const int kMtpFutureMs = 2 * 60 * 60 * 1000;
+
 class AsertQuote {
   const AsertQuote({
     required this.ok,
