@@ -21,7 +21,7 @@ import {
   EPOCH_DAYS_TESTNET,
 } from '../../crypto/asert.js';
 import { MS_PER_DAY } from '../../crypto/pot_sched.js';
-import { applyReserveBlock, cloneVault, portalIdFromDest, withdraw } from '../../crypto/reserve_vault.js';
+import { applyReserveBlock, attachLockEquality, cloneVault, lockWitnessOf, portalIdFromDest, provePrincipalOpen, supplyIdentity, withdraw } from '../../crypto/reserve_vault.js';
 import { lockTx } from '../../crypto/owned_portal.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { kernelExcess, noteU64, sealCoinbaseNote, verifySealedNote } from '../../crypto/note.js';
@@ -65,6 +65,7 @@ function noteLock(portal, key) {
     arm(fee);
   }
   signSpendTx(tx, key);
+  if (!attachLockEquality(tx)) throw new Error('lock equality');
   return tx;
 }
 
@@ -119,32 +120,36 @@ describe('store reorg across a note-funded lock', () => {
     });
     const lockedRow = (applied || []).find((row) => row && row.action === 'lock');
     assert.equal(lockedRow && lockedRow.ok, true, lockedRow && lockedRow.reason);
-    assert.equal(nanosOf(local.reserveVault.portals[pid].staked), BigInt(PI_SHE_NANOS));
-    assert.equal(nanosOf(local.reserveVault.totalLockedNanos), BigInt(PI_SHE_NANOS));
+    assert.equal(supplyIdentity(local.reserveVault).principalNanos, PI_SHE_NANOS);
+    assert.equal(nanosOf(local.reserveVault.totalLockedNanos), 0n);
     assert.equal(local.supplyState().mintedInterest, 0n);
 
     const paid = cloneVault(local.reserveVault);
     const feeBefore = nanosOf(paid.feeBankNanos);
+    const held = lockWitnessOf(lock);
     const drawn = withdraw({
       state: paid,
       dest: portal,
       portalId: pid,
       nowMs: T0 + 90_000 + EPOCH_MS + 1,
+      principal: PI_SHE_NANOS,
+      principalProof: provePrincipalOpen(lock.vout[0].commit, PI_SHE_NANOS, held.blind),
     });
     assert.equal(drawn.ok, true, drawn.reason);
+    assert.equal(drawn.principal, PI_SHE_NANOS);
     assert.equal(drawn.interest, 0);
-    assert.equal(drawn.earned, interest);
+    assert.equal(drawn.earned, 0);
     assert.equal(drawn.mint, null);
     const minted = nanosOf(paid.mintBankNanos);
     const fromFee = feeBefore - nanosOf(paid.feeBankNanos);
     assert.equal(minted, 0n);
     assert.equal(fromFee, 0n);
-    assert.equal(nanosOf(paid.portals[pid].staked), 0n);
-    assert.equal(nanosOf(local.reserveVault.portals[pid].staked), BigInt(PI_SHE_NANOS));
+    assert.equal(supplyIdentity(paid).principalNanos, 0);
+    assert.equal(supplyIdentity(local.reserveVault).principalNanos, PI_SHE_NANOS);
     assert.equal(local.supplyState().mintedInterest, 0n);
 
-    assert.equal(nanosOf(local.reserveVault.portals[pid].staked), BigInt(PI_SHE_NANOS));
-    assert.equal(nanosOf(local.reserveVault.totalLockedNanos), BigInt(PI_SHE_NANOS));
+    assert.equal(supplyIdentity(local.reserveVault).principalNanos, PI_SHE_NANOS);
+    assert.equal(nanosOf(local.reserveVault.totalLockedNanos), 0n);
 
     const heavyA = await seal(peer, miner, T0 + 180_000, '21');
     assert.equal(heavyA.ok, true, heavyA.reason);

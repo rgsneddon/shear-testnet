@@ -37,7 +37,7 @@ import {
   settleHashOwed,
 } from '../../crypto/hash_owed.js';
 import {
-  bonusUnitsBefore,
+  supplyUnits,
   unitsAlongChain,
   blockWithdrawInterest,
   blockPermittedInterest,
@@ -48,6 +48,7 @@ import {
   applyReserveBlock,
   txIsReserveAction,
   reserveAction,
+  lockNotePrincipal,
 } from '../../crypto/reserve_vault.js';
 import { reserveApplyFields } from '../../crypto/reserve_oracle.js';
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
@@ -123,8 +124,18 @@ function vaultAccruedNanos(vault) {
   return n;
 }
 
+function publishedLockNanos(tx) {
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const o = outs.find((row) => String(row?.kind || '') === 'lock') || outs[0] || {};
+  if (o?.valueProof?.v != null && o.valueProof.v !== '') return asLocked(o.valueProof.v);
+  return asLocked(tx?.nanos);
+}
+
 function openedLockNanos(tx) {
   if (!tx || tx.coinbase || String(tx.kind || '') !== 'lock') return 0n;
+  if (publicReserveReceipt(tx)) return publishedLockNanos(tx);
+  const noted = lockNotePrincipal(tx);
+  if (noted > 0n) return noted;
   const act = reserveAction(tx);
   if (!act || act.opened === false) return 0n;
   return asLocked(act.nanos);
@@ -833,7 +844,7 @@ export function foldSupply(blocks, opts = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   const genesisMs = Number(opts.genesisMs) > 0 ? Number(opts.genesisMs) : (headerMs(list[0]) || 0);
   if (!list.length) return { ok: true, reason: '', state: emptySupplyState(genesisMs) };
-  const units = opts.units || bonusUnitsBefore(list);
+  const units = opts.units || supplyUnits(list);
   if (!units) return { ok: false, reason: 'epoch_open', state: null };
   let tip = 0;
   for (let i = 0; i < list.length; i += 1) {
@@ -1159,7 +1170,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
     burnedNanos: burnedIn,
     ok,
     reason,
-    vaultPrincipalNanos: vaultLockedNanos(vault) + claimedUnfunded,
+    vaultPrincipalNanos: notePrincipal + claimedUnfunded,
     vaultAccruedNanos: vaultAccruedNanos(vault),
     noteBackedPrincipalNanos: notePrincipal,
   };
