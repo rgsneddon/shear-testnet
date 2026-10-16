@@ -13,6 +13,7 @@ import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { ED25519_SPKI_PREFIX } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
+import { parseVaultOutput, packVaultOutput, verifyVaultReward } from './vault_reward_fs1.js';
 
 function keccak256(data) {
   const u8 = data instanceof Uint8Array ? data : Buffer.from(data);
@@ -172,6 +173,44 @@ export function decodeBytes32(ret) {
   return Buffer.from(b.subarray(0, 32)).toString('hex');
 }
 
+export function encodeCommitVaultRoot(earn, rootHex) {
+  const word = new Uint8Array(32);
+  const raw = String(rootHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('commitVaultRoot(uint256,bytes32)'), pad32(earn), word);
+}
+
+export function encodeSetEpochDue(epoch, due) {
+  return concat(selector('setEpochDue(uint256,uint256)'), pad32(epoch), pad32(due));
+}
+
+export function encodeChargeEpoch(epoch, nanos) {
+  return concat(selector('chargeEpoch(uint256,uint256)'), pad32(epoch), pad32(nanos));
+}
+
+export function encodeRoll(dest, nowTs, nullifierHex, epoch, proof, auth = new Uint8Array()) {
+  const body = encodeBytes(dest);
+  const proofBody = encodeBytes(proof || Buffer.alloc(0));
+  const authBody = encodeBytes(auth || new Uint8Array());
+  const id = new Uint8Array(32);
+  const raw = Buffer.from(String(nullifierHex || '').replace(/^0x/i, ''), 'hex');
+  if (raw.length === 32) id.set(raw);
+  const head = 192;
+  const proofAt = head + body.length;
+  return concat(
+    selector('roll(bytes,uint256,bytes32,uint256,bytes,bytes)'),
+    pad32(head),
+    pad32(nowTs),
+    id,
+    pad32(epoch),
+    pad32(proofAt),
+    pad32(proofAt + proofBody.length),
+    body,
+    proofBody,
+    authBody,
+  );
+}
+
 export function encodeWithdraw(dest, nowTs, auth = new Uint8Array()) {
   const body = encodeBytes(dest);
   const authRaw = Buffer.isBuffer(auth) ? auth : Buffer.from(auth || []);
@@ -319,6 +358,7 @@ function shearCommon() {
 
 const SYSTEM = createAddressFromString('0x0000000000000000000000000000000000002701');
 const ED25519_PRECOMPILE = '0x0000000000000000000000000000000000000101';
+const VAULT_ZK_PRECOMPILE = '0x0000000000000000000000000000000000000102';
 
 /** Precompile 0x101. pubkey(32) || sig(64) || message → uint256 1 when the signature holds. */
 function ed25519Precompile(opts) {
@@ -348,11 +388,60 @@ function ed25519Precompile(opts) {
   return { executionGasUsed: gasUsed, returnValue: out };
 }
 
+/**
+ * Precompile 0x102.
+ * root || nullifier || u64 epoch || u32 bps || u64 span || full || remainCommit || magic || output || proof.
+ */
+function vaultZkPrecompile(opts) {
+  const data = Buffer.from(opts.data || new Uint8Array());
+  const gasUsed = 20000n;
+  const zero = new Uint8Array(32);
+  if (opts.gasLimit < gasUsed) return { executionGasUsed: opts.gasLimit, returnValue: zero };
+  let code = 0;
+  try {
+    const head = 134;
+    if (data.length >= head + 4) {
+      const epoch = data.readBigUInt64LE(64);
+      const bps = data.readUInt32LE(72);
+      const span = data.readBigUInt64LE(76);
+      const full = data[84] === 1;
+      const magic = data.subarray(117, 134).toString('utf8');
+      const outputLen = data.readUInt32LE(134);
+      const outputAt = 138;
+      if (outputAt + outputLen <= data.length) {
+        const packed = outputLen ? data.subarray(outputAt, outputAt + outputLen) : null;
+        const output = packed ? parseVaultOutput(packed) : null;
+        if (outputLen && !output) code = 2;
+        else {
+          const got = verifyVaultReward({
+            root: data.subarray(0, 32),
+            nullifier: data.subarray(32, 64),
+            rootEpoch: epoch,
+            terms: { bps, span, earnEpoch: epoch, full },
+            output,
+            magic,
+            blob: data.subarray(outputAt + outputLen),
+          });
+          code = got.ok ? 1 : (got.code === 2 ? 2 : 0);
+        }
+      }
+    }
+  } catch {
+    code = 0;
+  }
+  const out = new Uint8Array(32);
+  out[31] = code;
+  return { executionGasUsed: gasUsed, returnValue: out };
+}
+
 export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
   const common = shearCommon();
   const evm = await createEVM({
     common,
-    customPrecompiles: [{ address: ED25519_PRECOMPILE, function: ed25519Precompile }],
+    customPrecompiles: [
+      { address: ED25519_PRECOMPILE, function: ed25519Precompile },
+      { address: VAULT_ZK_PRECOMPILE, function: vaultZkPrecompile },
+    ],
   });
   const magic = shearMagicBytes(network);
   const code = bytecode == null
@@ -539,11 +628,23 @@ export async function executeReserveTx(session, tx, nowMs) {
     return callReserve(session, encodeVote(dest, choice, nowMs));
   }
   if (kind === 'reward-claim') {
+    if (tx?.vaultProof) {
+      const output = packVaultOutput(tx.vout?.[0]) || new Uint8Array();
+      const epoch = Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0);
+      return callReserve(session, encodeClaim(tx?.nullifier || '', 0, tx.vaultProof, epoch, output));
+    }
     const proof = tx?.evmProof || tx?.proof;
     const packed = Buffer.isBuffer(proof) ? proof : packRewardProof(proof);
     const auth = packRewardAuth({ ownerPub: tx.spendPub, sig: tx.sig, dest: tx.to || dest }) || new Uint8Array();
     const rootIndex = Math.floor(Number(tx.rootIndex) || 0);
     return callReserve(session, encodeClaim(tx?.nullifier || '', nanos || 0, packed || Buffer.alloc(0), rootIndex, auth));
+  }
+  if (kind === 'roll') {
+    const from = txFromOf(tx) || dest;
+    const auth = tx?.rewardSig
+      ? packRewardAuth({ ownerPub: tx.ownerPub || tx.spendPub, sig: tx.rewardSig, dest: from })
+      : new Uint8Array();
+    return callReserve(session, encodeRoll(from, nowMs, tx?.nullifier || '', Math.floor(Number(tx?.earnEpoch) || 0), tx?.vaultProof || Buffer.alloc(0), auth || new Uint8Array()));
   }
   if (kind === 'withdraw') {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });

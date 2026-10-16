@@ -17,7 +17,7 @@ const String kVaultRelDst = 'shear-vault-reward-rel-v1';
 const String kVaultBalDst = 'shear-vault-reward-bal-v1';
 const String kVaultLockBlindDst = 'shear-vault-lock-blind-v1';
 const String kVaultLockOwnerDst = 'shear-vault-lock-owner-v1';
-const int kVaultProofVer = 0xa2;
+const int kVaultProofVer = 0xa3;
 
 /// Little-endian scalar. The relation's product is wider than a u64 and
 /// still under 2^110, which is under the subgroup order.
@@ -209,14 +209,28 @@ Map<String, dynamic> proveVaultLockReward({
       throw StateError('admit_native_required');
     }
     final epoch = earnEpoch;
+    final full = remainMs == span ? 1 : 0;
+    final timeSlack = BigInt.from(span) - BigInt.from(remainMs);
+    if (timeSlack < BigInt.zero) throw StateError('stake_reward');
+    final rTime = randomScalar();
+    final rTimeSlack = randomScalar();
+    final remainCommit = pointBytes(_commitUnits(BigInt.from(remainMs), rTime));
+    final timeSlackCommit = pointBytes(_commitUnits(timeSlack, rTimeSlack));
+    final timeRange = admit.proveRange(BigInt.from(remainMs), scalarBytes(rTime));
+    final timeSlackRange = admit.proveRange(timeSlack, scalarBytes(rTimeSlack));
+    if (timeRange == null || timeRange.isEmpty || timeSlackRange == null || timeSlackRange.isEmpty) {
+      throw StateError('admit_native_required');
+    }
     final digest = _sha256(_concat([
       utf8Bytes(kVaultRewardDst),
       utf8Bytes(magic),
       root,
       _u64(epoch),
       _u32(bps),
-      _u64(remainMs),
       _u64(span),
+      Uint8List.fromList([full]),
+      remainCommit,
+      timeSlackCommit,
       commitB,
       amtCt,
       dest20,
@@ -232,12 +246,26 @@ Map<String, dynamic> proveVaultLockReward({
     final record = proved.records.first;
     if (record.length != kFs1RecordBytes || record[0] != kFs1Wire) throw StateError('fs1_prover_unavailable');
     final cTilde = Uint8List.sublistView(record, 33, 65);
-    final factor = scalarFromBigInt(factorN);
+    final kSig = randomScalar();
+    final kBlind = randomScalar();
+    final sigA1 = addEl(mulG(kSig), mulEl(noteH, kBlind));
+    final sigA2 = mulEl(pointFrom(cTilde), kSig);
+    final qPoint = mulEl(pointFrom(cTilde), scalarFromBigInt(BigInt.from(remainMs)));
+    final sigE = hashToScalar([
+      pointBytes(sigA1),
+      pointBytes(sigA2),
+      remainCommit,
+      pointBytes(qPoint),
+      cTilde,
+    ]);
+    final sigS = scalarAdd(kSig, scalarMul(sigE, scalarFromBigInt(BigInt.from(remainMs))));
+    final sigSr = scalarAdd(kBlind, scalarMul(sigE, rTime));
     final denomS = scalarFromBigInt(denom);
     final p = subEl(
-      subEl(mulEl(pointFrom(cTilde), factor), mulEl(pointFrom(commitB), denomS)),
+      subEl(mulEl(qPoint, scalarFromBigInt(BigInt.from(bps))), mulEl(pointFrom(commitB), denomS)),
       pointFrom(remCommit),
     );
+    final factor = scalarFromBigInt(factorN);
     final t = proved.t.first;
     final s = scalarSub(
       scalarMul(factor, scalarAdd(scalarFromBytes(blinds[which]), scalarFromBytes(t))),
@@ -246,9 +274,8 @@ Map<String, dynamic> proveVaultLockReward({
     if (!elementEq(p, mulEl(noteH, s))) throw StateError('stake_reward');
     final extra = _sha256(_concat([
       utf8Bytes(kVaultRelDst),
-      cTilde,
+      pointBytes(qPoint),
       _u32(bps),
-      _u64(remainMs),
       _u64(span),
       commitB,
       amtCt,
@@ -266,18 +293,59 @@ Map<String, dynamic> proveVaultLockReward({
     final balS = scalarAdd(rRem, rSlack);
     if (!elementEq(balP, mulEl(noteH, balS))) throw StateError('stake_reward');
     final bal = schnorrProveH(balP, balS, utf8Bytes(kVaultBalDst));
+    final timeP = subEl(
+      addEl(pointFrom(remainCommit), pointFrom(timeSlackCommit)),
+      mulG(scalarFromBigInt(BigInt.from(span))),
+    );
+    final timeS = scalarAdd(rTime, rTimeSlack);
+    if (!elementEq(timeP, mulEl(noteH, timeS))) throw StateError('stake_reward');
+    final timeBal = schnorrProveH(timeP, timeS, utf8Bytes(kVaultBalDst));
+    final vaultKey = scalarFromBytes(owners[which]);
+    final admitPoint = admitPub(vaultKey);
+    final nullB1 = hashToRistretto(pointBytes(admitPoint), utf8Bytes('shear-admit-Hp'));
+    final nullB2 = hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst));
+    final kLink = randomScalar();
+    final nullA1 = mulEl(nullB1, kLink);
+    final nullA2 = mulEl(nullB2, kLink);
+    final nullP1 = mulEl(nullB1, vaultKey);
+    final nullP2 = mulEl(nullB2, vaultKey);
     final tag = Uint8List.sublistView(record, 1, 33);
-    final nullPoint = mulEl(pointFrom(tag), hashToScalar([utf8Bytes(kVaultNullEpochDst), _u64(epoch)]));
-    final nullifier = _sha256(_concat([utf8Bytes(kVaultNullPrf), pointBytes(nullPoint)]));
+    if (!elementEq(nullP1, pointFrom(tag))) throw StateError('stake_reward');
+    final linkE = hashToScalar([
+      pointBytes(nullA1),
+      pointBytes(nullA2),
+      pointBytes(nullP1),
+      pointBytes(nullP2),
+    ]);
+    final nullS = scalarAdd(kLink, scalarMul(linkE, vaultKey));
+    final nullifier = _sha256(_concat([utf8Bytes(kVaultNullPrf), pointBytes(nullP2)]));
     final blob = _concat([
       Uint8List.fromList([kVaultProofVer]),
       _u32(proved.fs1.length),
       proved.fs1,
       record,
       _u32(bps),
-      _u64(remainMs),
       _u64(span),
       _u64(epoch),
+      Uint8List.fromList([full]),
+      pointBytes(qPoint),
+      remainCommit,
+      timeSlackCommit,
+      pointBytes(sigA1),
+      pointBytes(sigA2),
+      scalarBytes(sigS),
+      scalarBytes(sigSr),
+      pointBytes(nullB1),
+      pointBytes(nullP2),
+      pointBytes(nullA1),
+      pointBytes(nullA2),
+      scalarBytes(nullS),
+      _u32(timeRange.length),
+      timeRange,
+      _u32(timeSlackRange.length),
+      timeSlackRange,
+      timeBal['R']!,
+      timeBal['z']!,
       rel['R']!,
       rel['z']!,
       commitB,
@@ -303,6 +371,8 @@ Map<String, dynamic> proveVaultLockReward({
       'rootHex': _hex(root),
       'nullifier': _hex(nullifier),
       'nanos': reward,
+      'remainCommit': _hex(remainCommit),
+      'full': full == 1,
       'rootEpoch': epoch,
       'earnEpoch': epoch,
       'note': {

@@ -152,6 +152,13 @@ contract Reserve {
     address internal constant ED25519 = address(0x101);
     /// Settlement index → merkle root the node already computed.
     mapping(uint256 => bytes32) internal rewardRootOf;
+    /// Earning epoch → vault-lock root. Same key the node stores.
+    mapping(uint256 => bytes32) internal vaultRootOf;
+    /// Vault proof precompile. Returns 1, 2, or 0.
+    address internal constant VAULT_ZK = address(0x102);
+    mapping(uint256 => uint256) internal epochDueOf;
+    mapping(uint256 => uint256) internal epochPaidOf;
+    mapping(uint256 => bool) internal epochDueSet;
     /// Settlement indexes that have a stored root, in commit order.
     uint256[] internal rewardEpochs;
     /// Greatest committed index, stored as index+1 so epoch 0 is representable.
@@ -497,11 +504,6 @@ contract Reserve {
     /// close the epoch a withdraw in that block is settling.
     function holdEpochRoll(bool hold) external onlyShear {
         deferEpochRoll = hold;
-    }
-
-    function _legacyLockEpoch(Portal storage p) internal view returns (uint256) {
-        if (p.legacyEpochPlus == 0) return currentEpoch;
-        return p.legacyEpochPlus - 1;
     }
 
     function _syncEpoch(uint256 nowTs) internal {
@@ -1032,8 +1034,61 @@ contract Reserve {
         return root;
     }
 
-    /// Reward claims wait for the ZK FS-1 ownership proof. Until that activates,
-    /// every claim reverts. The leaf machinery stays for that later proof.
+    /// Store the vault-lock root under the earning epoch. A zero root reverts
+    /// so a missing root is not confused with an empty set. The empty marker
+    /// is not stored. A second root for this epoch must match.
+    function commitVaultRoot(uint256 earn, bytes32 root) external onlyShear returns (bytes32) {
+        if (root == bytes32(0)) revert BadAmount();
+        bytes32 emptyRoot = sha256("shear-empty-root-v1");
+        if (root == emptyRoot) return emptyRoot;
+        bytes32 prior = vaultRootOf[earn];
+        if (prior != bytes32(0) && prior != root) revert BadAmount();
+        vaultRootOf[earn] = root;
+        return root;
+    }
+
+    function setEpochDue(uint256 epoch, uint256 due) external onlyShear {
+        if (epochDueSet[epoch] && epochDueOf[epoch] != due) revert BadAmount();
+        epochDueSet[epoch] = true;
+        epochDueOf[epoch] = due;
+    }
+
+    function chargeEpoch(uint256 epoch, uint256 nanos) external onlyShear {
+        if (!epochDueSet[epoch]) return;
+        uint256 next = epochPaidOf[epoch] + nanos;
+        if (next < epochPaidOf[epoch] || next > epochDueOf[epoch]) revert BadAmount();
+        epochPaidOf[epoch] = next;
+    }
+
+    /// Header: root || nullifier || u64 epoch || u32 bps || u64 span || full || remainCommit || magic.
+    function _vaultHead(bytes32 root, bytes32 nullifier, uint256 epoch, bytes calldata proof) internal view returns (bytes memory) {
+        uint256 span = epochLengthMs();
+        uint256 bps = _rateFor(epoch);
+        uint256 full = 0;
+        bytes32 remainCommit = bytes32(0);
+        if (proof.length > 5 && proof[0] == 0xa3) {
+            uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
+            uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
+            if (off < proof.length) full = uint256(uint8(proof[off]));
+            if (off + 1 + 32 + 32 <= proof.length) {
+                remainCommit = bytes32(proof[off + 1 + 32:off + 1 + 64]);
+            }
+        }
+        return abi.encodePacked(root, nullifier, _u64le(epoch), _u32le(bps), _u64le(span), bytes1(uint8(full)), remainCommit, bytes("shear-testnet-v12"));
+    }
+
+    /// 1 accepts. 2 is a bad reward. 0 is not this proof. A missing root is 2,
+    /// so the claim can be retried after the root is committed.
+    function _vaultCode(bytes32 nullifier, uint256 epoch, bytes calldata proof, bytes calldata output) internal view returns (uint256) {
+        if (proof.length < 2 || proof[0] != 0xa3) return 0;
+        bytes32 root = vaultRootOf[epoch];
+        if (root == bytes32(0)) return 2;
+        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(_vaultHead(root, nullifier, epoch, proof), _u32le(output.length), output, proof));
+        if (!ok || out.length < 32) return 0;
+        return uint256(bytes32(out));
+    }
+
+    /// A vault proof mints nothing here. It spends the nullifier. Anything else stays closed.
     function claim(
         bytes32 nullifier,
         uint256 nanos,
@@ -1041,7 +1096,44 @@ contract Reserve {
         bytes calldata proof,
         bytes calldata auth
     ) external onlyShear returns (uint256) {
-        revert ClaimUnavailable();
+        nanos;
+        if (proof.length < 2 || proof[0] != 0xa3) revert ClaimUnavailable();
+        if (nullifierMinted[nullifier]) revert AlreadyMinted();
+        uint256 code = _vaultCode(nullifier, rootIndex, proof, auth);
+        if (code == 2) revert BadAmount();
+        if (code != 1) revert Unsigned();
+        nullifierMinted[nullifier] = true;
+        return 1;
+    }
+
+    /// The owner's signed roll. When reward is due, the vault proof is required.
+    function roll(
+        bytes calldata dest,
+        uint256 nowTs,
+        bytes32 nullifier,
+        uint256 epoch,
+        bytes calldata proof,
+        bytes calldata auth
+    ) external onlyShear returns (uint256) {
+        bytes32 id = portalId(dest);
+        if (ownerOf[id] == bytes32(0)) revert OwnerMissing();
+        if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
+        // The same sha256 portal id the JS roll signs. keccak portalId is the storage key.
+        bytes32 shaId = portalSha[id];
+        if (shaId == bytes32(0)) revert Unsigned();
+        bytes memory message = abi.encodePacked("shear-reward-roll-v1", shaId, _u64le(epoch));
+        if (!_ed25519(_authPub(auth), auth[32:96], message)) revert Unsigned();
+        Portal storage p = portals[id];
+        _settle(p, nowTs);
+        if (p.accruedReward > 0) {
+            if (proof.length < 2 || proof[0] != 0xa3) revert BadAmount();
+            if (nullifierMinted[nullifier]) revert AlreadyMinted();
+            uint256 code = _vaultCode(nullifier, epoch, proof, proof[0:0]);
+            if (code == 2) revert BadAmount();
+            if (code != 1) revert Unsigned();
+            nullifierMinted[nullifier] = true;
+        }
+        return 1;
     }
 
     /// `auth` is ownerPub(32) || sig(64) || payout dest. The signature covers
@@ -1085,10 +1177,6 @@ contract Reserve {
                 release += p.tranches[i].amount;
             }
         }
-        // No tranche list: one legacy credit for the whole balance. It is
-        // payable only after its lock epoch. The lock instant was not stored,
-        // so this credit does not earn.
-        if (credits == 0 && chain > _legacyLockEpoch(p)) release = active + idleBal;
         if (release == 0) {
             if (noteMatured > 0) revert NotePrincipal();
             revert EpochNotEnded();
@@ -1123,7 +1211,6 @@ contract Reserve {
             p.joined = false;
             p.vote = Vote.None;
             p.voteEpoch = 0;
-            p.legacyEpochPlus = 0;
         } else if (left < PI_NANOS) {
             p.joined = false;
             p.vote = Vote.None;
