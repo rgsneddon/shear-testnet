@@ -403,7 +403,7 @@ window.SHEAR_DOCS = {
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\ngit checkout 0.71\nnpm ci\n' +
       'export SHEAR_DATA="$HOME/.shear/testnet-v11"\n' +
-      'export SHEAR_NETWORK=shear-testnet-v13\n' +
+      'export SHEAR_NETWORK=shear-testnet-v12\n' +
       'export SHEAR_BOOTSTRAP=1\n' +
       'export SHEAR_REORG_HALT_DEPTH=0\n' +
       'export SHEAR_P2P_PORT=30303\n' +
@@ -412,7 +412,7 @@ window.SHEAR_DOCS = {
       'export SHEAR_RPC_BIND=127.0.0.1\n' +
       'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303\n' +
       'node node/src/node.js</pre>' +
-      '<p>Magic <code>shear-testnet-v13</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
+      '<p>Magic <code>shear-testnet-v12</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
       '<p>Windows, same release, in PowerShell from the repo root: <code>git checkout 0.71</code>, <code>npm ci</code>, then set <code>$env:SHEAR_DATA</code>, <code>$env:SHEAR_NETWORK</code>, <code>$env:SHEAR_BOOTSTRAP="1"</code>, <code>$env:SHEAR_SEEDS</code> to the same list, and run <code>node node/src/node.js</code>. Arch uses the same shell as Linux.</p>' +
       '<p>Default sync is full archival IBD from those peers. Reorg checkpoints are height 1000, then every 400. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
       '<p>Tree: <a href="https://shear.digital/node/">shear.digital/node</a>.</p>'

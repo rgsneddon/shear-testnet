@@ -125,7 +125,7 @@ describe('IPC backfill window and parent repair', () => {
       assert.equal(direct.reason, 'magic');
       const wrong = applyVerifiedIpcBlock(store, {
         type: 'ipc_block',
-        magic: 'shear-testnet-v12',
+        magic: 'shear-testnet-v11',
         block: { height: 1 },
         powHash: 'cc'.repeat(32),
       });

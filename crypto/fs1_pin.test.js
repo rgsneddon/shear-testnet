@@ -97,7 +97,7 @@ test('the FS-1 vendor matches the monero-oxide pin and is wired only through the
     assert.equal(rows.length, 1, name);
     assert.equal(/\nsource = /.test(rows[0]), false, `${name} must come from the vendored path`);
   }
-  assert.equal(MAGIC_TESTNET, 'shear-testnet-v13');
+  assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
   assert.equal(ASERT_TAU_MS, 7_200_000);
   assert.equal(/fcmp/i.test(consensusFingerprint()), false);
 });

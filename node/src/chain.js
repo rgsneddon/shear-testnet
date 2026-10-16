@@ -20,7 +20,7 @@ import {
   HASH_BONUS_NANOS_FLOOR,
   hashBonusUnitNanos,
   MAGIC_TESTNET,
-  MAGIC_TESTNET_V13,
+  MAGIC_TESTNET_V12,
   MAGIC_MAINNET,
   consensusFingerprint,
   extraMintAllowed,
@@ -81,7 +81,7 @@ import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -2127,7 +2127,7 @@ export function assessHeader(block, prev, opts = {}) {
     }
     // Genesis-anchored aserti3-2d. The child stamp is the block time.
     // Parent bits are not the anchor, so an emergency ease does not stick.
-    // A closed-book historical header may skip this check. v13 does not.
+    // A closed-book historical header may skip this check. v12 does not.
     const ts = Number(decoded.timestamp);
     const parentTs = Number(parent.timestamp);
     const parentIsGenesis = parent.prevBlockHash.equals(GENESIS_PREV);
@@ -2148,7 +2148,7 @@ export function assessHeader(block, prev, opts = {}) {
       blockHeight: heightNow,
       parentTimeMs: parentTs,
     });
-    const closedBook = String(magic) !== MAGIC_TESTNET_V13 && String(magic) !== MAGIC_MAINNET;
+    const closedBook = String(magic) !== MAGIC_TESTNET_V12 && String(magic) !== MAGIC_MAINNET;
     if ((!quote.ok || !bitsAcceptAsert(decoded.bits, quote)) && !(closedBook && isHistoricalHeader(h))) {
       return finish({ ok: false, reason: 'bits' });
     }
@@ -3115,7 +3115,8 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   const headerMs = consensus?.decoded?.timestamp != null
     ? Number(consensus.decoded.timestamp)
     : headerTimeMs(block);
-  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs);
+  const owedRoot = opts.reserveState ? coinbaseRewardRoot(opts.reserveState, headerMs) : undefined;
+  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot);
   if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
   return {
     ...consensus,

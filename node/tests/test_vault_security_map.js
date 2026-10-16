@@ -71,7 +71,7 @@ const ABI_NAMES = [
   'EPOCH_MS', 'GENESIS_BONUS', 'GENESIS_BPS', 'JOIN_CUTOFF_DAYS', 'ORACLE_MAX_AGE_MS',
   'PI_NANOS', 'PROGRAM_ID', 'REWARD_DENOM_DAYS', 'SHEAR_MAINNET', 'SHEAR_TESTNET',
   'SHEAR_TESTNET_V1', 'SHEAR_TESTNET_V10', 'SHEAR_TESTNET_V11', 'SHEAR_TESTNET_V12',
-  'SHEAR_TESTNET_V13', 'SHEAR_TESTNET_V3', 'SHEAR_TESTNET_V4', 'SHEAR_TESTNET_V5', 'SHEAR_TESTNET_V6',
+  'SHEAR_TESTNET_V3', 'SHEAR_TESTNET_V4', 'SHEAR_TESTNET_V5', 'SHEAR_TESTNET_V6',
   'SHEAR_TESTNET_V7', 'SHEAR_TESTNET_V8', 'SHEAR_TESTNET_V9', 'STAKE_CUTOFF_QUARTER_DEN', 'addMore', 'annualBps',
   'bonusEnacted', 'canJoin', 'claim', 'clearWithdrawHolds', 'commitRate', 'commitRewards', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
   'enactedAtMs', 'enactedDelta', 'enactedDown', 'enactedHold', 'enactedLiveBonus', 'enactedUp',
@@ -621,7 +621,7 @@ describe('Vault Security test map', () => {
     const flags = {
       SHEAR_ORACLE_BPS: '9999',
       SHEAR_MAINNET_EMIT: '1',
-      SHEAR_NETWORK: 'shear-testnet-v13',
+      SHEAR_NETWORK: 'shear-testnet-v12',
       SHEAR_FAST_SYNC: '1',
     };
     const prev = {};

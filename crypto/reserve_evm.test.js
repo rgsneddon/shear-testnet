@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as asert from './asert.js';
-import { PI_SHE_NANOS, RESERVE_EPOCH_MS, NANOS_PER_SHE, MAGIC_TESTNET, MAGIC_TESTNET_V12, MAGIC_TESTNET_V13, EPOCH_DAYS_TESTNET } from './asert.js';
+import { PI_SHE_NANOS, RESERVE_EPOCH_MS, NANOS_PER_SHE, MAGIC_TESTNET, MAGIC_TESTNET_V12, EPOCH_DAYS_TESTNET } from './asert.js';
 import { RESERVE_BOOKS } from './reserve_books.js';
 import {
   applyReserveBooks,
@@ -53,9 +53,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
     assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET\b/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
-    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V13);
+    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v13');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
     assert.equal(reservePinOk(), true);
     assert.equal(reservePinOk('shear-testnet-v11'), true);
     assert.equal(reservePinOk('shear-testnet-not-a-book'), false);
@@ -113,8 +113,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
       magics.add(row.magic);
       sols.add(row.sol);
     }
-    assert.equal(asert.MAGIC_TESTNET, MAGIC_TESTNET_V13);
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v13');
+    assert.equal(asert.MAGIC_TESTNET, MAGIC_TESTNET_V12);
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
     assert.equal(magics.has(MAGIC_TESTNET), true);
     const named = sol.match(new RegExp(
       `constant (SHEAR_TESTNET(?:_V\\d+)?) = keccak256\\(bytes\\("${MAGIC_TESTNET}"\\)\\)`,
@@ -139,7 +139,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     ]);
     assert.notEqual(renderReserveAllow(extra), norm(regions.allow));
     assert.equal(sol.includes(renderReserveConstants(extra)), false);
-    assert.match(walletSrc, /const kBookMagic = 'shear-testnet-v13';/);
+    assert.match(walletSrc, /const kBookMagic = 'shear-testnet-v12';/);
     assert.doesNotMatch(walletSrc, /const kBookMagic = 'shear-testnet-v11'/);
   });
 
@@ -160,12 +160,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const pin = JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8'));
     const code = String(pin.bytecode || '').replace(/^0x/i, '').toLowerCase();
     const mutated = sol.replace(
-      'keccak256(bytes("shear-testnet-v13"))',
+      'keccak256(bytes("shear-testnet-v12"))',
       'keccak256(bytes("shear-testnet-v99"))',
     );
     assert.notEqual(mutated, sol);
     const bad = compileReserveSource(mutated);
-    const live = Buffer.from(shearMagicBytes('shear-testnet-v13')).toString('hex');
+    const live = Buffer.from(shearMagicBytes('shear-testnet-v12')).toString('hex');
     const stranger = Buffer.from(shearMagicBytes('shear-testnet-v99')).toString('hex');
     assert.notEqual(bad.bytecode, code);
     assert.equal(code.includes(live), true);
@@ -337,6 +337,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const vault = fs.readFileSync(new URL('./reserve_vault.js', import.meta.url), 'utf8');
     assert.equal(sol.includes('_pinLegacyEpochs'), false);
     assert.equal(sol.includes('_releaseMatured'), false);
+    assert.equal(sol.includes('function _rootOf'), false);
+    assert.equal(sol.includes('earnerKeys'), false);
+    assert.match(sol, /function commitRewards\(uint256 nowTs, bytes32 root\)/);
     assert.equal(vault.includes('pinLegacyLockEpochs'), false);
     const t0 = 1_700_000_000_000;
     const end = t0 + RESERVE_EPOCH_MS;
@@ -371,9 +374,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
       assert.equal(jsPass.ok, true, jsPass.reason);
       const evmPass = await callReserve(session, encodeSyncEpoch(end));
       assert.equal(evmPass.ok, true, evmPass.reason);
-      const committed = await callReserve(session, encodeCommitRewards(end));
-      assert.equal(committed.ok, true, `${n} ${committed.reason}`);
       const plan = rewardCommitment(js, end);
+      const committed = await callReserve(session, encodeCommitRewards(end, plan.root));
+      assert.equal(committed.ok, true, `${n} ${committed.reason}`);
       assert.equal(decodeBytes32(committed.returnValue), plan.root, `root ${n}`);
       gas[n] = committed.gasUsed;
       const view = decodePublicView(
@@ -419,7 +422,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
       assert.equal(rolled.ok, true, rolled.reason);
       const evmRoll = await callReserve(session, encodeSyncEpoch(now));
       assert.equal(evmRoll.ok, true, evmRoll.reason);
-      const committed = await callReserve(session, encodeCommitRewards(now));
+      const plan = rewardCommitment(js, now);
+      const committed = await callReserve(session, encodeCommitRewards(now, plan.root));
       assert.equal(committed.ok, true, `commit ${epoch} ${committed.reason}`);
       assert.equal(Number(js.totalLockedNanos), nanos, `js still ${epoch}`);
       const view = decodePublicView(

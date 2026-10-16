@@ -125,8 +125,11 @@ export function encodeVote(dest, choice, nowTs) {
   );
 }
 
-export function encodeCommitRewards(nowTs) {
-  return concat(selector('commitRewards(uint256)'), pad32(nowTs));
+export function encodeCommitRewards(nowTs, rootHex = '') {
+  const word = new Uint8Array(32);
+  const raw = String(rootHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('commitRewards(uint256,bytes32)'), pad32(nowTs), word);
 }
 
 export function encodeClaim(nullifierHex, nanos, proof) {
@@ -495,7 +498,7 @@ function evmSettlementIndex(view, nowMs, genesisMs) {
 const EMPTY_REWARD_ROOT = Buffer.from(EMPTY_ROOT).toString('hex');
 
 /** Run pinned Reserve bytecode + EVM SHE value for a block body. Fail closed. */
-export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
+export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRoot = undefined) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
   const list = Array.isArray(txs) ? txs : [];
   const cb = list[0] || null;
@@ -545,17 +548,23 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
       if (!held.ok) return fail(held.reason || 'evm');
       evm.calls += 1;
     }
-    // A withdraw does not excuse a missing root. When this clock owes a
-    // reward, the coinbase root has to be the one commitRewards returns.
-    // An empty earning set still commits so matured principal is released.
+    // A withdraw does not excuse a missing root. The contract stores the
+    // root it is given. It does not build the tree. A non-empty owed root
+    // with nothing on the coinbase is stake_reward. An empty earning set
+    // still commits the empty root and does not store it.
     const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs) > 0;
+    const owed = owedRoot == null || owedRoot === ''
+      ? ''
+      : String(owedRoot).replace(/^0x/i, '').toLowerCase();
+    if (owed && owed !== EMPTY_REWARD_ROOT && !rootHex) return fail('stake_reward');
+    if (owed && rootHex && owed !== rootHex) return fail('stake_reward');
     if (rootHex || oweRoot) {
+      const pass = rootHex || EMPTY_REWARD_ROOT;
       const sm = session.evm.stateManager;
       await sm.checkpoint();
-      const committed = await callReserve(session, encodeCommitRewards(nowMs));
+      const committed = await callReserve(session, encodeCommitRewards(nowMs, pass));
       const got = committed.ok ? decodeBytes32(committed.returnValue) : '';
-      const matches = committed.ok && (rootHex ? got === rootHex : got === EMPTY_REWARD_ROOT);
-      if (!matches) {
+      if (!committed.ok || got !== pass) {
         await sm.revert();
         return fail('stake_reward');
       }

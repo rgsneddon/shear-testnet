@@ -374,14 +374,14 @@ describe('time-locked withdraw supply', () => {
       (await callReserve(session, encodePublicView(T0 + 1_000), { staticCall: true })).returnValue,
     );
     assert.equal(open.totalLockedNanos, PI_SHE_NANOS);
-    const committed = await callReserve(session, encodeCommitRewards(DRAW));
+    const js = freshVault();
+    assert.equal(applyLock(js, lock, T0).ok, true);
+    const committed = await callReserve(session, encodeCommitRewards(DRAW, rewardCommitment(js, DRAW).root));
     assert.equal(committed.ok, true, committed.reason);
     const still = decodePublicView(
       (await callReserve(session, encodePublicView(DRAW), { staticCall: true })).returnValue,
     );
     assert.equal(still.totalLockedNanos, PI_SHE_NANOS);
-    const js = freshVault();
-    assert.equal(applyLock(js, lock, T0).ok, true);
     const face = previewWithdraw(js, dest, DRAW).payout;
     const paid = await executeBlockEvm(session, [
       { coinbase: true, vout: [], rewardRoot: rewardCommitment(js, DRAW).root },

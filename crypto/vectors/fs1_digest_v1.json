@@ -1,5 +1,5 @@
 {
-  "magic": "shear-testnet-v13",
+  "magic": "shear-testnet-v12",
   "cases": [
     {
       "kind": "send",

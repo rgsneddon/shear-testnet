@@ -103,7 +103,7 @@ describe('sealed reserve-lock prefix', () => {
     assert.equal(confs, 6);
     assert.ok(confs < SPENDABLE_CONFIRMATIONS);
     assert.doesNotMatch(consensusFingerprint(), /HISTORICAL_TIP=/);
-    assert.match(consensusFingerprint(), /NETWORK=shear-testnet-v13/);
+    assert.match(consensusFingerprint(), /NETWORK=shear-testnet-v12/);
     assert.match(consensusFingerprint(), /RESERVE_NOTE=note-principal-refused/);
     assert.match(consensusFingerprint(), /ASERT_STEP=aserti3-2d/);
     assert.match(consensusFingerprint(MAGIC_TESTNET_V11), new RegExp(`HISTORICAL_TIP=${HISTORICAL_TIP}`));

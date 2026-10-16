@@ -1227,7 +1227,8 @@ describe('a ≥π withdraw in the second epoch', () => {
       activationHeight: 0,
       requireStakeReward: true,
     });
-    const evm = await executeBlockEvm(session, draw, drawAt, T0);
+    const owed = coinbaseRewardRoot(state, drawAt);
+    const evm = await executeBlockEvm(session, draw, drawAt, T0, owed);
     const view = decodePublicView(
       (await callReserve(session, encodePublicView(drawAt), { staticCall: true })).returnValue,
     );

@@ -18,7 +18,7 @@ const destHrp = 'ssa';
 /// Public-facing silent ID is she1 (HRP she). Never a dest.
 const payHrp = 'she';
 /// Live book. A shewall from another magic needs an explicit reset.
-const kBookMagic = 'shear-testnet-v13';
+const kBookMagic = 'shear-testnet-v12';
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {
