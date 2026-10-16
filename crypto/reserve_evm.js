@@ -266,6 +266,58 @@ export function encodeWithdraw(dest, nowTs, auth = new Uint8Array()) {
   );
 }
 
+function u32le(n) {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(Number(n) >>> 0);
+  return b;
+}
+
+/** Nullifiers a retire proof burns, each paired with that same proof. */
+export function packRetireBlob(proofs) {
+  const list = Array.isArray(proofs) ? proofs : [];
+  const rows = [];
+  for (const proof of list) {
+    const raw = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
+    const burned = verifyLeafRetire(raw);
+    if (!burned) return null;
+    const seen = new Set();
+    for (const epoch of burned.epochs) {
+      for (const id of [epoch.nullifier, epoch.retireNullifier]) {
+        const hex = id.toString('hex');
+        if (seen.has(hex)) continue;
+        seen.add(hex);
+        rows.push({ nullifier: id, proof: raw });
+      }
+    }
+  }
+  if (!rows.length || rows.length > 64) return null;
+  const parts = [u32le(rows.length)];
+  for (const row of rows) parts.push(row.nullifier, u32le(row.proof.length), row.proof);
+  return Buffer.concat(parts);
+}
+
+/** Withdraw that burns the leaf nullifiers in the same call. */
+export function encodeWithdrawRetire(dest, nowTs, auth = new Uint8Array(), retireBlob = new Uint8Array()) {
+  const body = encodeBytes(dest);
+  const authRaw = Buffer.isBuffer(auth) ? auth : Buffer.from(auth || []);
+  const authBody = encodeBytes(authRaw);
+  const retireRaw = Buffer.isBuffer(retireBlob) ? retireBlob : Buffer.from(asU8(retireBlob || []));
+  const retireBody = encodeBytes(retireRaw);
+  const destOff = 128;
+  const authOff = destOff + body.length;
+  const retireOff = authOff + authBody.length;
+  return concat(
+    selector('withdrawRetire(bytes,uint256,bytes,bytes)'),
+    pad32(destOff),
+    pad32(nowTs),
+    pad32(authOff),
+    pad32(retireOff),
+    body,
+    authBody,
+    retireBody,
+  );
+}
+
 export function encodeEnact(nowTs) {
   return concat(selector('enact(uint256)'), pad32(nowTs));
 }
@@ -462,7 +514,7 @@ function vaultZkPrecompile(opts) {
             root: data.subarray(0, 32),
             nullifier: data.subarray(32, 64),
             rootEpoch: epoch,
-            terms: { bps, span, earnEpoch: epoch, reward },
+            terms: { bps, span, covered: span / 16n, earnEpoch: epoch, reward },
             magic,
             output: data.subarray(outputAt, outputEnd),
             blob: data.subarray(outputEnd),
@@ -717,6 +769,14 @@ export async function executeReserveTx(session, tx, nowMs) {
     const auth = tx?.rewardSig
       ? packRewardAuth({ ownerPub: tx.ownerPub || tx.spendPub, sig: tx.rewardSig, dest: tx.to || dest })
       : new Uint8Array();
+    const retireList = Array.isArray(tx?.retireProofs) && tx.retireProofs.length
+      ? tx.retireProofs
+      : (tx?.retireProof ? [tx.retireProof] : []);
+    if (retireList.length) {
+      const blob = packRetireBlob(retireList);
+      if (!blob) return { ok: false, reason: 'stake_reward' };
+      return callReserve(session, encodeWithdrawRetire(from, nowMs, auth || new Uint8Array(), blob));
+    }
     return callReserve(session, encodeWithdraw(from, nowMs, auth || new Uint8Array()));
   }
   return { ok: false, reason: 'evm_kind' };

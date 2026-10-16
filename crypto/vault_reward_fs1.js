@@ -1,18 +1,20 @@
 /**
- * Vault-lock reward proof. A claim proves membership of one hidden lock
- * in the full FS-1 set, plus knowledge of its vault key. The note is
- * admitPub(vaultKey) || Pedersen(lock amount). The reward is a public
- * integer: floor(principal * bps * span / (span * 10000)). Span is the
- * same for every lock and cancels, so the relation is
- * principal * bps = reward * 10000 + rem, with 0 <= rem < 10000.
- * The proof does not publish the lock commitment, a cap commitment, or a
- * remainder that indexes the leaf. Blinds and the nullifier are fresh.
- * The nullifier is a PRF of the vault key and the epoch. It is not a hash
- * of the public spend tag.
+ * Vault-lock reward proof. A claim proves membership of one π leaf, knowledge
+ * of its vault key, and that the hidden payout opens to the public reward
+ * floor(π × rate_e × covered / (epoch_blocks × 10000)). rate_e is the total
+ * for the whole epoch. A claim covers one period (covered = period_blocks),
+ * not the whole epoch. The same floor with covered = epoch_blocks is the
+ * full-epoch total. There is no multiplication proof and no qualify bit.
+ * N leaves earn N period floors, which is at most one floor of an N×π lock.
+ * The leaf is admitPub(vaultKey) || Pedersen(π) + unlock·U. The unlock period
+ * is inside that commitment. A claim proves claimed_period < unlock.
+ * The proof does not publish the lock commitment. The nullifier is a PRF of
+ * the vault key and the period, not a hash of the public spend tag.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
-import { MAGIC_TESTNET, VAULT_PROOF_VER } from './asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS, VAULT_PROOF_VER } from './asert.js';
+import { vaultEpochBlocks, vaultPeriodBlocks } from './vault_accrual.js';
 
 export { VAULT_PROOF_VER };
 import { admitPub } from './admit.js';
@@ -53,6 +55,13 @@ export const VAULT_BAL_DST = 'shear-vault-reward-bal-v1';
 export const CLAIM_TXID_DST = 'shear-claim-txid-v1';
 export const CLAIM_PORTAL_DST = 'shear-claim-portal-v1';
 export const VAULT_RETIRE_MAGIC = 'shear-retire-v1';
+/** Retire nullifier domain. Not the claim PRF, so a retire blob is not a claim. */
+export const VAULT_RETIRE_NULL = 'shear-vault-retire-null-v1';
+export const VAULT_RETIRE_DST = 'shear-vault-retire-dleq-v1';
+export const VAULT_UNLOCK_DST = 'shear-vault-unlock-base-v1';
+/** Claims of a still-locked leaf are below this public unlock. Withdraw replaces it. */
+export const VAULT_UNLOCK_OPEN = (1n << 32n) - 1n;
+export const VAULT_PI_LEAF = BigInt(PI_SHE_NANOS);
 export const VAULT_LOCK_BLIND_DST = 'shear-vault-lock-blind-v1';
 export const VAULT_LOCK_OWNER_DST = 'shear-vault-lock-owner-v1';
 export const VAULT_CAP_DST = 'shear-epoch-cap-v1';
@@ -123,31 +132,33 @@ export function relationProductsBounded(amount, bps, remain, span, nanos, rem) {
 }
 
 /**
- * floor(amount * bps * span / (span * 10000)). Span cancels, so this is
- * floor(amount * bps / 10000). A remain other than the span is not a claim:
- * the public span is the same for every member of the full set.
+ * floor(π × rate_e × held / (epochBlocks × 10000)).
+ * rate_e is the total for the epoch. held == epochBlocks is that total.
+ * A shorter held is one interval (a period, or an arrival stub). A non-π
+ * amount is not a claim. The caller chooses held; this function does not
+ * force held to equal the epoch.
  */
-export function vaultRewardNanos(amount, bps, remainMs, span) {
+export function vaultRewardNanos(amount, bps, heldBlocks, epochBlocks) {
   let width;
-  let left;
+  let held;
   let rate;
   let a;
   try {
-    width = BigInt(span);
-    left = BigInt(remainMs);
+    width = BigInt(epochBlocks);
+    held = BigInt(heldBlocks);
     rate = BigInt(bps);
     a = BigInt(amount);
   } catch {
     return null;
   }
-  if (width <= 0n || left !== width || a <= 0n || rate <= 0n) return null;
-  const product = a * rate;
-  if (product < 0n || product >= RELATION_BOUND) return null;
-  const nanos = product / CAP_DENOM;
-  const rem = product % CAP_DENOM;
-  if (nanos <= 0n || nanos > MAX_NANOS || rem < 0n || rem >= CAP_DENOM) return null;
-  if (width * CAP_DENOM >= RELATION_BOUND) return null;
-  return { nanos, rem, denom: CAP_DENOM };
+  if (width <= 0n || held <= 0n || held > width || a !== VAULT_PI_LEAF || rate <= 0n) return null;
+  const denom = width * CAP_DENOM;
+  const product = a * rate * held;
+  if (product < 0n || product >= RELATION_BOUND || denom <= 0n || denom >= RELATION_BOUND) return null;
+  const nanos = product / denom;
+  const rem = product % denom;
+  if (nanos <= 0n || nanos > MAX_NANOS || rem < 0n) return null;
+  return { nanos, rem, denom: CAP_DENOM, held, epochBlocks: width };
 }
 
 function seedMaterial(seed) {
@@ -188,27 +199,52 @@ export function vaultNullScalar(seed, index) {
   return hashToScalar(Buffer.from(VAULT_NULL_KEY_DST), raw, u64le(index || 0));
 }
 
-/** One vault-lock leaf: owner point || commitment to the hidden amount. */
-export function vaultLockNote(amount, ownerScalar, blind) {
+/** Subtract unlock·U from a leaf commitment. Zero leaves the point unchanged. */
+export function subtractUnlock(commitPoint, unlock) {
+  const u = BigInt(unlock || 0);
+  if (u === 0n) return commitPoint;
+  return commitPoint.subtract(unlockBase().multiply(Fn.create(u)));
+}
+
+/** Third base for the unlock epoch. Independent of G and of the note blind H. */
+function unlockBase() {
+  return RistrettoPoint.hashToCurve(createHash('sha512').update(VAULT_UNLOCK_DST).digest());
+}
+
+/**
+ * One vault-lock leaf: owner point || commit(π) + unlock·U.
+ * The amount is the public constant π. The unlock epoch is inside the commitment.
+ * A non-π amount is not a leaf.
+ */
+export function vaultLockNote(amount, ownerScalar, blind, unlockEpoch = VAULT_UNLOCK_OPEN) {
+  let named;
+  let unlock;
+  try {
+    named = BigInt(amount);
+    unlock = BigInt(unlockEpoch);
+  } catch {
+    return null;
+  }
+  if (named !== VAULT_PI_LEAF || unlock < 0n || unlock > 0xffffffffffffffffn) return null;
   const x = typeof ownerScalar === 'bigint' ? ownerScalar : scalarFrom(ownerScalar);
   const r = typeof blind === 'bigint' ? blind : scalarFrom(blind);
   const pub = pointBytes(admitPub(x));
-  const C = pointBytes(commit(BigInt(amount), r));
+  const C = pointBytes(commit(named, r).add(unlockBase().multiply(Fn.create(unlock))));
   return {
     note: Buffer.concat([pub, C]),
     admitPub: pub,
     commit: C,
     scalar: x,
     blind: r,
-    amount: BigInt(amount),
+    amount: named,
+    unlock,
   };
 }
 
 function statementDigest({
-  magic, root, epoch, bps, span, reward, remCommit, remRange, slackCommit, slackRange,
+  magic, root, epoch, bps, span, reward, covered, unlock,
   commit: outCommit, noteCommit, dest20, amtCt, preimage,
 }) {
-  const hash = (raw) => createHash('sha256').update(raw).digest();
   return createHash('sha256').update(Buffer.concat([
     Buffer.from(VAULT_REWARD_DST),
     Buffer.from(String(magic || MAGIC_TESTNET)),
@@ -217,10 +253,8 @@ function statementDigest({
     u32le(bps),
     u64le(span),
     u64le(reward),
-    remCommit,
-    hash(remRange),
-    slackCommit,
-    hash(slackRange),
+    u64le(covered),
+    u64le(unlock),
     outCommit,
     noteCommit,
     dest20,
@@ -354,20 +388,35 @@ function relationExtra({ cTilde, bps, span, reward, remCommit, slackCommit }) {
   ])).digest();
 }
 
-function dleqProve(b1, b2, x) {
-  const k = randomScalar();
-  const A1 = b1.multiply(k);
-  const A2 = b2.multiply(k);
-  const P1 = b1.multiply(x);
-  const P2 = b2.multiply(x);
-  const e = hashToScalar(pointBytes(A1), pointBytes(A2), pointBytes(P1), pointBytes(P2));
-  const s = Fn.add(k, Fn.mul(e, x));
-  return { A1: pointBytes(A1), A2: pointBytes(A2), P1: pointBytes(P1), P2: pointBytes(P2), s: scalarBytes(s) };
+function dleqChallenge(epoch, b1, b2, A1, A2, P1, P2, magic, txBind) {
+  return hashToScalar(
+    Buffer.from(VAULT_RETIRE_DST),
+    u64le(epoch),
+    pointBytes(b1),
+    pointBytes(b2),
+    A1,
+    A2,
+    P1,
+    P2,
+    Buffer.from(String(magic || MAGIC_TESTNET)),
+    txBind,
+  );
 }
 
-function dleqVerify(b1, b2, P1, P2, A1, A2, s) {
+function dleqProve(b1, b2, x, epoch, magic, txBind) {
+  const k = randomScalar();
+  const A1 = pointBytes(b1.multiply(k));
+  const A2 = pointBytes(b2.multiply(k));
+  const P1 = pointBytes(b1.multiply(x));
+  const P2 = pointBytes(b2.multiply(x));
+  const e = dleqChallenge(epoch, b1, b2, A1, A2, P1, P2, magic, txBind);
+  const s = scalarBytes(Fn.add(k, Fn.mul(e, x)));
+  return { A1, A2, P1, P2, s };
+}
+
+function dleqVerify(b1, b2, P1, P2, A1, A2, s, epoch, magic, txBind) {
   try {
-    const e = hashToScalar(A1, A2, P1, P2);
+    const e = dleqChallenge(epoch, pointFrom(b1), pointFrom(b2), A1, A2, P1, P2, magic, txBind);
     const z = scalarFrom(s);
     const left1 = pointFrom(b1).multiply(z);
     const right1 = pointFrom(A1).add(pointFrom(P1).multiply(e));
@@ -379,45 +428,112 @@ function dleqVerify(b1, b2, P1, P2, A1, A2, s) {
   }
 }
 
+function claimNullifierOf(P2) {
+  return createHash('sha256').update(VAULT_NULL_PRF).update(P2).digest();
+}
+
+function retireNullifierOf(P2, epoch) {
+  return createHash('sha256').update(VAULT_RETIRE_NULL).update(P2).update(u64le(epoch)).digest();
+}
+
 /**
- * The key holder retires one epoch's claim nullifier.
- * Proof: u64 epoch || leaf(64) || A1 || A2 || s || P2. 200 bytes.
- * DLEQ shows leaf[0:32] = G*x and P2 = Hp(epoch)*x. The nullifier is hash(P2).
+ * One leaf, one proof. Each epoch whose nullifier this withdraw burns has its
+ * own DLEQ. The challenge binds the domain, the epoch, both bases, the
+ * network magic, and the withdraw tx. The retire nullifier is not the claim
+ * PRF; the claim nullifier is still derived so consensus can burn it.
+ * Layout: u64 unlock || u32 n || n × (u64 epoch || A1 || A2 || s || P2) || leaf || txBind.
  */
-export function proveLeafRetire({ scalar, epoch, leaf } = {}) {
+export function proveLeafRetire({
+  scalar, epoch, epochs = null, leaf, txBind = null, magic = MAGIC_TESTNET, unlockEpoch = null,
+} = {}) {
   try {
     const x = typeof scalar === 'bigint' ? scalar : scalarFrom(scalar);
-    const at = Math.floor(Number(epoch));
-    if (!Number.isSafeInteger(at) || at < 0) return null;
+    const list = [];
+    const raw = Array.isArray(epochs) && epochs.length ? epochs : [epoch];
+    for (const item of raw) {
+      const at = Math.floor(Number(item));
+      if (!Number.isSafeInteger(at) || at < 0 || list.includes(at)) return null;
+      list.push(at);
+    }
+    if (!list.length || list.length > 64) return null;
     const note = Buffer.from(asU8(leaf));
     if (note.length !== 64) return null;
-    const d = dleqProve(G, nullBase(at), x);
-    if (!note.subarray(0, 32).equals(d.P1)) return null;
-    const nullifier = createHash('sha256').update(VAULT_NULL_PRF).update(d.P2).digest();
-    const proof = Buffer.concat([u64le(at), note, d.A1, d.A2, d.s, d.P2]);
-    return { proof, nullifier, nullifierHex: nullifier.toString('hex'), epoch: at };
+    let bind = Buffer.alloc(32);
+    if (txBind != null) {
+      bind = bytes32(txBind);
+      if (!bind) return null;
+    }
+    const unlock = unlockEpoch == null ? BigInt(Math.max(...list)) : BigInt(unlockEpoch);
+    if (unlock < 0n || unlock > 0xffffffffffffffffn) return null;
+    const rows = [];
+    for (const at of list) {
+      const d = dleqProve(G, nullBase(at), x, at, magic, bind);
+      if (!note.subarray(0, 32).equals(d.P1)) return null;
+      rows.push({ epoch: at, ...d, claim: claimNullifierOf(d.P2), retire: retireNullifierOf(d.P2, at) });
+    }
+    const proof = Buffer.concat([
+      u64le(unlock),
+      u32le(rows.length),
+      ...rows.map((row) => Buffer.concat([u64le(row.epoch), row.A1, row.A2, row.s, row.P2])),
+      note,
+      bind,
+    ]);
+    const primary = rows[0];
+    return {
+      proof,
+      nullifier: primary.claim,
+      nullifierHex: primary.claim.toString('hex'),
+      retireNullifier: primary.retire,
+      epoch: primary.epoch,
+      unlock,
+      epochs: rows.map((row) => ({
+        epoch: row.epoch,
+        nullifier: row.claim,
+        nullifierHex: row.claim.toString('hex'),
+        retireNullifier: row.retire,
+      })),
+      txBind: bind,
+    };
   } catch {
     return null;
   }
 }
 
 /** Null when the retire proof does not open `nullifier` for its leaf. */
-export function verifyLeafRetire(proof, nullifier = null) {
+export function verifyLeafRetire(proof, nullifier = null, magic = MAGIC_TESTNET) {
   try {
     const buf = Buffer.from(asU8(proof));
-    if (buf.length !== 200) return null;
-    const epoch = buf.readBigUInt64LE(0);
-    const leaf = Buffer.from(buf.subarray(8, 72));
-    const A1 = buf.subarray(72, 104);
-    const A2 = buf.subarray(104, 136);
-    const s = buf.subarray(136, 168);
-    const P2 = buf.subarray(168, 200);
-    const base = pointBytes(nullBase(epoch));
-    if (!dleqVerify(pointBytes(G), base, leaf.subarray(0, 32), P2, A1, A2, s)) return null;
-    const expect = createHash('sha256').update(VAULT_NULL_PRF).update(P2).digest();
+    if (buf.length < 8 + 4 + 136 + 64 + 32) return null;
+    const unlock = buf.readBigUInt64LE(0);
+    const n = buf.readUInt32LE(8);
+    if (n < 1 || n > 64) return null;
+    let off = 12;
+    const epochs = [];
+    const leafAt = 12 + n * 136;
+    if (buf.length !== leafAt + 64 + 32) return null;
+    const leaf = Buffer.from(buf.subarray(leafAt, leafAt + 64));
+    const txBind = Buffer.from(buf.subarray(leafAt + 64));
+    for (let i = 0; i < n; i += 1) {
+      const epoch = buf.readBigUInt64LE(off); off += 8;
+      const A1 = buf.subarray(off, off + 32); off += 32;
+      const A2 = buf.subarray(off, off + 32); off += 32;
+      const s = buf.subarray(off, off + 32); off += 32;
+      const P2 = buf.subarray(off, off + 32); off += 32;
+      const base = pointBytes(nullBase(epoch));
+      if (!dleqVerify(pointBytes(G), base, leaf.subarray(0, 32), P2, A1, A2, s, epoch, magic, txBind)) return null;
+      epochs.push({
+        epoch,
+        nullifier: claimNullifierOf(P2),
+        retireNullifier: retireNullifierOf(P2, epoch),
+        P2: Buffer.from(P2),
+      });
+    }
+    const expect = epochs[0].nullifier;
     const nf = nullifier == null ? expect : bytes32(nullifier);
-    if (!nf || !nf.equals(expect)) return null;
-    return { ok: true, nullifier: expect, epoch, leaf };
+    if (!nf) return null;
+    const known = epochs.some((row) => row.nullifier.equals(nf) || row.retireNullifier.equals(nf));
+    if (!known) return null;
+    return { ok: true, nullifier: expect, epoch: epochs[0].epoch, unlock, leaf, epochs, txBind };
   } catch {
     return null;
   }
@@ -455,6 +571,15 @@ function remainSigmaVerify(cTilde, A1, A2, C, Q, s, sr) {
   } catch {
     return false;
   }
+}
+
+function piOpenExtra(cTilde, unlock) {
+  return createHash('sha256').update(Buffer.concat([
+    Buffer.from(VAULT_REL_DST),
+    cTilde,
+    u64le(VAULT_PI_LEAF),
+    u64le(unlock),
+  ])).digest();
 }
 
 function schnorrProve(P, s, extra) {
@@ -636,21 +761,15 @@ function packProof(p) {
     u64le(p.span),
     u64le(p.epoch),
     u64le(p.reward),
+    u64le(p.covered),
+    u64le(p.unlock),
     p.nullBase,
     p.nullP,
     p.nullA1,
-    p.nullA2,
-    p.nullS,
-    p.relR,
-    p.relZ,
-    p.remCommit,
-    u32le(p.remRange.length),
-    p.remRange,
-    p.slackCommit,
-    u32le(p.slackRange.length),
-    p.slackRange,
-    p.balR,
-    p.balZ,
+    p.openR,
+    p.openZ,
+    p.noteR,
+    p.noteZ,
   ]);
 }
 
@@ -680,6 +799,12 @@ function parseProof(blob) {
   const reward = readU64(buf, off);
   if (!reward) return null;
   off = reward.off;
+  const covered = readU64(buf, off);
+  if (!covered) return null;
+  off = covered.off;
+  const unlock = readU64(buf, off);
+  if (!unlock) return null;
+  off = unlock.off;
   const nullBaseB = take(buf, off, 32);
   if (!nullBaseB) return null;
   off = nullBaseB.off;
@@ -689,41 +814,17 @@ function parseProof(blob) {
   const nullA1 = take(buf, off, 32);
   if (!nullA1) return null;
   off = nullA1.off;
-  const nullA2 = take(buf, off, 32);
-  if (!nullA2) return null;
-  off = nullA2.off;
-  const nullS = take(buf, off, 32);
-  if (!nullS) return null;
-  off = nullS.off;
-  const relR = take(buf, off, 32);
-  if (!relR) return null;
-  off = relR.off;
-  const relZ = take(buf, off, 32);
-  if (!relZ) return null;
-  off = relZ.off;
-  const remCommit = take(buf, off, 32);
-  if (!remCommit) return null;
-  off = remCommit.off;
-  const remRangeLen = readU32(buf, off);
-  if (!remRangeLen || remRangeLen.n === 0) return null;
-  off = remRangeLen.off;
-  const remRange = take(buf, off, remRangeLen.n);
-  if (!remRange) return null;
-  off = remRange.off;
-  const slackCommit = take(buf, off, 32);
-  if (!slackCommit) return null;
-  off = slackCommit.off;
-  const slackRangeLen = readU32(buf, off);
-  if (!slackRangeLen || slackRangeLen.n === 0) return null;
-  off = slackRangeLen.off;
-  const slackRange = take(buf, off, slackRangeLen.n);
-  if (!slackRange) return null;
-  off = slackRange.off;
-  const balR = take(buf, off, 32);
-  if (!balR) return null;
-  off = balR.off;
-  const balZ = take(buf, off, 32);
-  if (!balZ || balZ.off !== buf.length) return null;
+  const openR = take(buf, off, 32);
+  if (!openR) return null;
+  off = openR.off;
+  const openZ = take(buf, off, 32);
+  if (!openZ) return null;
+  off = openZ.off;
+  const noteR = take(buf, off, 32);
+  if (!noteR) return null;
+  off = noteR.off;
+  const noteZ = take(buf, off, 32);
+  if (!noteZ || noteZ.off !== buf.length) return null;
   return {
     fs1: fs1.b,
     record: record.b,
@@ -732,19 +833,15 @@ function parseProof(blob) {
     epoch: epoch.n,
     earnEpoch: epoch.n,
     reward: reward.n,
+    covered: covered.n,
+    unlock: unlock.n,
     nullBase: nullBaseB.b,
     nullP: nullP.b,
     nullA1: nullA1.b,
-    nullA2: nullA2.b,
-    nullS: nullS.b,
-    relR: relR.b,
-    relZ: relZ.b,
-    remCommit: remCommit.b,
-    remRange: remRange.b,
-    slackCommit: slackCommit.b,
-    slackRange: slackRange.b,
-    balR: balR.b,
-    balZ: balZ.b,
+    openR: openR.b,
+    openZ: openZ.b,
+    noteR: noteR.b,
+    noteZ: noteZ.b,
   };
 }
 
@@ -815,20 +912,33 @@ export function proveVaultReward({
       : (typeof lock.blind === 'bigint' ? lock.blind : scalarFrom(lock.blind));
     if (blind == null && lock?.seed != null) blind = vaultLockBlind(lock.seed, index, amount, lockMs);
     if (blind == null) blind = randomScalar();
-    rows.push(vaultLockNote(amount, scalar, blind));
+    const unlock = lock?.unlockEpoch == null ? VAULT_UNLOCK_OPEN : lock.unlockEpoch;
+    const row = vaultLockNote(amount, scalar, blind, unlock);
+    if (!row) return null;
+    rows.push(row);
   }
   const handle = fs1TreeNew();
   if (!handle || !fs1TreeAppend(handle, Buffer.concat(rows.map((row) => row.note)))) return null;
   const root = fs1TreeRoot(handle);
   if (!root) return null;
-  const width = BigInt(span);
-  const remain = remainMs == null ? width : BigInt(remainMs);
-  const reward = vaultRewardNanos(rows[which].amount, bps, remain, width);
+  const blocks = BigInt(vaultEpochBlocks(magic));
+  const period = BigInt(vaultPeriodBlocks(magic));
+  // Callers that pass the epoch length twice are asking for one period claim.
+  // An explicit hold that is not that length is one interval, in blocks.
+  let covered = period;
+  if (remainMs != null && span != null && BigInt(remainMs) !== BigInt(span)) {
+    const left = BigInt(remainMs);
+    if (left <= 0n || left > blocks) return null;
+    covered = left;
+  }
+  const reward = vaultRewardNanos(rows[which].amount, bps, covered, blocks);
   if (!reward) return null;
   let dest = null;
   try { dest = Buffer.from(asU8(dest20)); } catch { dest = null; }
   if (!dest || dest.length !== 20) dest = randomBytes(20);
   const epoch = Math.floor(Number(earnEpoch));
+  const unlock = rows[which].unlock;
+  if (BigInt(epoch) >= unlock) return null;
   const nullifier = vaultRewardNullifier(rows[which].scalar, epoch);
   if (!nullifier) return null;
   let note = null;
@@ -853,28 +963,15 @@ export function proveVaultReward({
     reward: reward.nanos,
   });
   if (!preimage) return null;
-  const rRem = randomScalar();
-  const rSlack = randomScalar();
-  const slack = CAP_DENOM - 1n - reward.rem;
-  if (slack < 0n) return null;
-  const remCommitP = commit(reward.rem, rRem);
-  const slackCommitP = commit(slack, rSlack);
-  const remRange = proveRange(reward.rem, rRem);
-  const slackRange = proveRange(slack, rSlack);
-  if (!remRange?.length || !slackRange?.length) return null;
-  const remCommit = pointBytes(remCommitP);
-  const slackCommit = pointBytes(slackCommitP);
   const digest = statementDigest({
     magic,
     root,
     epoch,
     bps,
-    span: width,
+    span: blocks,
     reward: reward.nanos,
-    remCommit,
-    remRange,
-    slackCommit,
-    slackRange,
+    covered,
+    unlock,
     commit: bound.commit,
     noteCommit: bound.noteCommit,
     dest20: bound.dest20,
@@ -898,22 +995,14 @@ export function proveVaultReward({
   if (stableTag.equals(record.subarray(1, 33))) return null;
   const t = scalarFrom(proved.t.subarray(0, 32));
   const cTilde = record.subarray(33, 65);
-  const s = Fn.sub(Fn.mul(Fn.create(BigInt(bps)), Fn.add(rows[which].blind, t)), rRem);
-  const P = relationPoint(cTilde, reward.nanos, remCommit, bps);
-  if (!P.equals(H.multiply(s))) return null;
-  const extra = relationExtra({
-    cTilde,
-    bps,
-    span: width,
-    reward: reward.nanos,
-    remCommit,
-    slackCommit,
-  });
-  const rel = schnorrProve(P, s, extra);
-  const balP = balancePoint(remCommit, slackCommit);
-  const balS = Fn.add(rRem, rSlack);
-  if (!balP.equals(H.multiply(balS))) return null;
-  const bal = schnorrProve(balP, balS, balanceExtra(preimage, bound.dest20));
+  const openS = Fn.add(rows[which].blind, t);
+  const openP = pointFrom(cTilde).subtract(G.multiply(Fn.create(VAULT_PI_LEAF))).subtract(unlockBase().multiply(Fn.create(unlock)));
+  if (!openP.equals(H.multiply(openS))) return null;
+  const open = schnorrProve(openP, openS, piOpenExtra(cTilde, unlock));
+  const noteS = scalarFrom(note.r);
+  const noteP = pointFrom(bound.commit).subtract(G.multiply(Fn.create(reward.nanos)));
+  if (!noteP.equals(H.multiply(noteS))) return null;
+  const noteOpen = schnorrProve(noteP, noteS, balanceExtra(preimage, bound.dest20));
   const linked = createHash('sha256').update(VAULT_NULL_PRF).update(linkN).digest();
   if (!linked.equals(nullifier)) return null;
   const lockCommit = rows[which].commit;
@@ -921,22 +1010,18 @@ export function proveVaultReward({
     fs1: Buffer.from(proved.fs1),
     record,
     bps,
-    span: width,
+    span: blocks,
     epoch,
     reward: reward.nanos,
+    covered,
+    unlock,
     nullBase: linkAnn,
     nullP: linkN,
     nullA1: linkSr,
-    nullA2: Buffer.alloc(32),
-    nullS: Buffer.alloc(32),
-    relR: rel.R,
-    relZ: rel.z,
-    remCommit,
-    remRange,
-    slackCommit,
-    slackRange,
-    balR: bal.R,
-    balZ: bal.z,
+    openR: open.R,
+    openZ: open.z,
+    noteR: noteOpen.R,
+    noteZ: noteOpen.z,
   });
   if (blob.includes(lockCommit)) return null;
   return {
@@ -947,17 +1032,21 @@ export function proveVaultReward({
     nullifier: nullifier.toString('hex'),
     nanos: reward.nanos <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(reward.nanos) : reward.nanos,
     rem: reward.rem,
-    full: true,
+    full: covered === period,
+    span: blocks,
+    covered,
     reward,
     rootEpoch: epoch,
     earnEpoch: epoch,
     note,
     preimage,
+    unlock,
     locks: rows.map((row) => ({
       amount: row.amount,
       scalar: row.scalar,
       blind: row.blind,
       commit: row.commit,
+      unlock: row.unlock,
     })),
   };
 }
@@ -998,13 +1087,18 @@ export function verifyVaultReward({
   if (parsed.span <= 0n || parsed.bps <= 0 || parsed.bps > 1_000_000) return fail(2, 'stake_reward');
   if (BigInt(parsed.bps) * parsed.span >= RELATION_BOUND) return fail(2, 'stake_reward');
   if (parsed.reward <= 0n || parsed.reward > MAX_NANOS) return fail(2, 'stake_reward');
+  if (parsed.epoch >= parsed.unlock) return fail(2, 'stake_reward');
+  const expectCovered = terms.covered != null ? BigInt(terms.covered) : (expectSpan / 16n);
+  if (expectCovered <= 0n || expectCovered > expectSpan || parsed.covered !== expectCovered) {
+    return fail(2, 'stake_reward');
+  }
+  const constant = vaultRewardNanos(VAULT_PI_LEAF, parsed.bps, parsed.covered, parsed.span);
+  if (!constant || constant.nanos !== parsed.reward) return fail(2, 'stake_reward');
   if (terms.reward != null && BigInt(terms.reward) !== parsed.reward) return fail(2, 'stake_reward');
   const cTilde = parsed.record.subarray(33, 65);
-  if (!verifyRange(parsed.remCommit, parsed.remRange)) return fail(2, 'stake_reward');
-  if (!verifyRange(parsed.slackCommit, parsed.slackRange)) return fail(2, 'stake_reward');
   let digest;
-  let P;
-  let balP;
+  let openP;
+  let noteP;
   let preimage;
   try {
     preimage = claimTxPreimage({
@@ -1024,31 +1118,21 @@ export function verifyVaultReward({
       bps: parsed.bps,
       span: parsed.span,
       reward: parsed.reward,
-      remCommit: parsed.remCommit,
-      remRange: parsed.remRange,
-      slackCommit: parsed.slackCommit,
-      slackRange: parsed.slackRange,
+      covered: parsed.covered,
+      unlock: parsed.unlock,
       commit: bound.commit,
       noteCommit: bound.noteCommit,
       dest20: bound.dest20,
       amtCt: bound.amtCt,
       preimage,
     });
-    P = relationPoint(cTilde, parsed.reward, parsed.remCommit, parsed.bps);
-    balP = balancePoint(parsed.remCommit, parsed.slackCommit);
+    openP = pointFrom(cTilde).subtract(G.multiply(Fn.create(VAULT_PI_LEAF))).subtract(unlockBase().multiply(Fn.create(parsed.unlock)));
+    noteP = pointFrom(bound.commit).subtract(G.multiply(Fn.create(parsed.reward)));
   } catch {
     return fail(2, 'stake_reward');
   }
-  const extra = relationExtra({
-    cTilde,
-    bps: parsed.bps,
-    span: parsed.span,
-    reward: parsed.reward,
-    remCommit: parsed.remCommit,
-    slackCommit: parsed.slackCommit,
-  });
-  if (!schnorrVerify(P, parsed.relR, parsed.relZ, extra)) return fail(2, 'stake_reward');
-  if (!schnorrVerify(balP, parsed.balR, parsed.balZ, balanceExtra(preimage, bound.dest20))) return fail(2, 'stake_reward');
+  if (!schnorrVerify(noteP, parsed.noteR, parsed.noteZ, balanceExtra(preimage, bound.dest20))) return fail(2, 'stake_reward');
+  if (!schnorrVerify(openP, parsed.openR, parsed.openZ, piOpenExtra(cTilde, parsed.unlock))) return fail(2, 'stake_reward');
   const anchor = Number(rootEpoch);
   if (!Number.isSafeInteger(anchor) || anchor < 0) return fail(0, 'unsigned');
   const epochBase = pointBytes(nullBase(parsed.epoch));

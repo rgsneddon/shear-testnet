@@ -79,7 +79,7 @@ const ABI_NAMES = [
   'epochBps', 'epochDaysOf', 'epochLengthMs', 'epochOpen', 'epochRateOf', 'epochStart', 'holdEpochRoll', 'holdWithdraw', 'liveHashBonusNanos',
   'lock', 'lockNote', 'magic', 'nextEpochBps', 'observeRate', 'oracleAsOfMs', 'pinClock', 'portalId', 'portalOf',
   'publicView', 'rateCommitEpoch', 'remainingDays', 'remainingMs', 'retire', 'rewardNanos', 'roll', 'syncEpoch', 'totalLocked', 'trimmedMeanBps', 'vote', 'votesDecrease',
-  'votesHold', 'votesIncrease', 'withdraw',
+  'votesHold', 'votesIncrease', 'withdraw', 'withdrawRetire',
 ];
 
 function owner() {

@@ -101,7 +101,7 @@ function proveLock(amount, epoch = 0) {
     dest20: who.d20,
   });
   assert.ok(proved, 'proof');
-  assert.equal(proved.blob[0], 0xa9);
+  assert.equal(proved.blob[0], 0xaa);
   assert.equal(proved.blob.includes(proved.locks[0].commit), false);
   return { who, proved };
 }
@@ -756,11 +756,11 @@ describe('hidden vault claims', () => {
       });
       return tx;
     };
-    const roll = () => {
+    const roll = (state) => {
       const tx = rollTx({ from: who.dest, id: 'roll-spent' });
       tx.rootEpoch = 0;
       tx.earnEpoch = 0;
-      signRollReward(tx, who.id.privateKey, { portalId: tx.portalId, epoch: 0 });
+      signRollReward(tx, who.id.privateKey, { portalId: tx.portalId, epoch: 0, state });
       return tx;
     };
     const run = (state, tx) => applyReserveBlock({
@@ -789,7 +789,7 @@ describe('hidden vault claims', () => {
     assert.equal(withdrawThenClaim.reason, 'double_mint');
 
     const rolled = fresh();
-    const didRoll = run(rolled, roll());
+    const didRoll = run(rolled, roll(rolled));
     assert.equal(didRoll.ok, true, didRoll.reason);
     assert.equal(rolled.mintedIds[row.proved.nullifier], undefined);
     const rollThenClaim = run(rolled, claim());
@@ -880,7 +880,7 @@ describe('hidden vault claims', () => {
     roll.spendPub = stranger.spendPub.toString('hex');
     roll.rewardSig = 'ab'.repeat(64);
     assert.equal(rollRewardRejected(state, roll, T0 + span, HEIGHT).reason, 'unsigned');
-    signRollReward(roll, who.id.privateKey, { portalId: portalIdFromDest(who.dest), epoch: 0 });
+    signRollReward(roll, who.id.privateKey, { portalId: portalIdFromDest(who.dest), epoch: 0, state });
     assert.equal(rollRewardRejected(state, roll, T0 + span, HEIGHT), null);
     roll.nullifier = 'ab'.repeat(32);
     assert.equal(rollRewardRejected(state, roll, T0 + span, HEIGHT).reason, 'stake_reward');

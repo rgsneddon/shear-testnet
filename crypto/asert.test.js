@@ -469,9 +469,12 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /RESERVE_ROLL=full-sum-next-epoch/);
     assert.match(fp, /VAULT_LOCK=fs1-tranche/);
     assert.match(fp, /VAULT_REWARD=fs1-lock-root-v1/);
-    assert.match(fp, /VAULT_CLAIM_CAP=4/);
-    assert.match(fp, /VAULT_HIDDEN=output-bound-v1/);
-    assert.match(fp, /VAULT_PROOF=0xa9/);
+    assert.match(fp, /VAULT_CLAIM_CAP=455/);
+    assert.match(fp, /VAULT_HIDDEN=pi-leaf-v1/);
+    assert.match(fp, /VAULT_ACCRUAL=epoch-total-bps/);
+    assert.match(fp, /VAULT_PROOF=0xaa/);
+    assert.match(fp, /VAULT_PERIODS=16/);
+    assert.match(fp, /VAULT_CLAIM_WINDOW=2/);
     assert.doesNotMatch(fp, /HISTORICAL_TIP=/);
     assert.match(fp, /RESERVE_RATE=epoch-fixed:quorum=10:genesis=281:floor=0:trim=0:root=/);
     assert.match(fp, /RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2\/3:windowMain=6720:windowTest=67:windowMs=604800000:floorBps=0:sourceTenths=-1000\.\.100000:activation=fixed/);

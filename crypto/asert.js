@@ -18,6 +18,7 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
+import { VAULT_PERIODS_PER_EPOCH } from './vault_accrual.js';
 import {
   bundleObservationRoot,
   GENESIS_BPS,
@@ -242,12 +243,34 @@ export const VAULT_LOCK_LAW = 'fs1-tranche';
  * root, consensus sets the rate terms, and one nullifier spends the epoch.
  */
 export const VAULT_REWARD_LAW = 'fs1-lock-root-v1';
-/** A claim publishes the reward integer and binds the payout note into the proof. */
-export const VAULT_HIDDEN_LAW = 'output-bound-v1';
+/**
+ * One lock leaf is exactly π nanos. rate_e is the total for the whole epoch.
+ * A claim publishes floor(π × rate_e × period_blocks / (epoch_blocks × 10000))
+ * and binds the payout note to that constant. A full epoch is
+ * floor(π × rate_e / 10000), which is the sum of the period floors up to
+ * the per-interval remainder. N leaves earn N floors, at most one floor of
+ * an N×π lock. A day earns 1/epoch_days of the epoch total, not rate_e itself.
+ */
+export const VAULT_HIDDEN_LAW = 'pi-leaf-v1';
+export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
 /** Claim proof version. Peers on an older byte do not share this book. */
-export const VAULT_PROOF_VER = 0xa9;
-/** Reward-claim proofs in one block. Each proof is a vault-lock membership. */
-export const MAX_BLOCK_VAULT_CLAIMS = 4;
+export const VAULT_PROOF_VER = 0xaa;
+/** Leaves one lock transaction may append. A larger lock is not a leaf. */
+export const MAX_LOCK_LEAVES = 16;
+/**
+ * Live vault leaves the claim budget is sized to cover. Epoch-e claims stay
+ * valid for this many epochs after e, not for close+4.
+ */
+export const MAX_LIVE_VAULT_LEAVES = 4096;
+/** About two epochs. Unclaimed rewards after this are never minted. */
+export const VAULT_CLAIM_WINDOW_EPOCHS = 2;
+/**
+ * One claim's verify weight: W_TX + one FS-1 input + one output + one leaf.
+ * The block admits as many claims as that weight fits, and that count covers
+ * the live-leaf cap inside the claim window.
+ */
+export const VAULT_CLAIM_UNIT = 79;
+export const MAX_BLOCK_VAULT_CLAIMS = Math.floor(36_000 / VAULT_CLAIM_UNIT);
 /**
  * First height at which an FS-1 anchor is inside the window. Confirmations
  * are 9 and the anchor quantum is 8, so height 17 is the first H whose
@@ -467,7 +490,13 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `VAULT_REWARD=${VAULT_REWARD_LAW}`,
     `VAULT_CLAIM_CAP=${MAX_BLOCK_VAULT_CLAIMS}`,
     `VAULT_HIDDEN=${VAULT_HIDDEN_LAW}`,
+    `VAULT_ACCRUAL=${VAULT_ACCRUAL_LAW}`,
     `VAULT_PROOF=0x${VAULT_PROOF_VER.toString(16)}`,
+    `PI_LEAF=${PI_SHE_NANOS}`,
+    `VAULT_LOCK_CAP=${MAX_LOCK_LEAVES}`,
+    `VAULT_LIVE_CAP=${MAX_LIVE_VAULT_LEAVES}`,
+    `VAULT_PERIODS=${VAULT_PERIODS_PER_EPOCH}`,
+    `VAULT_CLAIM_WINDOW=${VAULT_CLAIM_WINDOW_EPOCHS}`,
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
