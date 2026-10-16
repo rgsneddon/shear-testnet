@@ -5,6 +5,7 @@
  */
 import { ed25519RawPub, newIdentity } from './address.js';
 import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
+import { commit, pointBytes, randomScalar } from './note.js';
 import {
   deposit as depositRaw,
   lockTx as lockTxRaw,
@@ -48,6 +49,35 @@ function chainAt(nowMs, genesisMs) {
   return Math.floor((now - g) / RESERVE_EPOCH_MS);
 }
 
+function amountBig(nanos) {
+  if (typeof nanos === 'bigint') return nanos >= 0n ? nanos : 0n;
+  if (typeof nanos === 'string' && /^\d+$/.test(nanos.trim())) return BigInt(nanos.trim());
+  const n = Math.floor(Number(nanos) || 0);
+  return n > 0 ? BigInt(n) : 0n;
+}
+
+/** Wallet-side record of commitments this process sent to the EVM. Not chain state. */
+const LOCKS = new Map();
+
+export function resetLockWitnesses() {
+  LOCKS.clear();
+}
+
+function commitBuf(word) {
+  if (Buffer.isBuffer(word)) return Buffer.from(word);
+  if (word instanceof Uint8Array) return Buffer.from(word);
+  const hex = String(word || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(hex)) return Buffer.from(hex, 'hex');
+  return Buffer.alloc(32);
+}
+
+function rememberLock(dest, commitWord, nowTs) {
+  const key = String(dest || '');
+  const list = LOCKS.get(key) || [];
+  list.push({ commit: commitBuf(commitWord), at: Math.floor(Number(nowTs) || 0) });
+  LOCKS.set(key, list);
+}
+
 function trancheAt(nanos, at, genesisMs) {
   const g = Number(genesisMs) || 0;
   const when = Number(at);
@@ -56,14 +86,31 @@ function trancheAt(nanos, at, genesisMs) {
   const end = g > 0 ? g + (epoch + 1) * span : 0;
   let remainMs = end > when ? end - when : 0;
   if (remainMs > span) remainMs = span;
-  return { amount: nanos, epoch, remainMs, noteIsPrincipal: false };
+  void nanos;
+  return { epoch, remainMs, noteIsPrincipal: false };
+}
+
+export function lockTranches(dest, genesisMs = BIND_GENESIS_MS) {
+  return recordedTranches(dest, genesisMs) || [];
+}
+
+function recordedTranches(dest, genesisMs) {
+  const list = LOCKS.get(String(dest || ''));
+  if (!list?.length) return null;
+  return list.map((lock) => {
+    const row = trancheAt(0, lock.at, genesisMs);
+    row.commit = lock.commit;
+    return row;
+  });
 }
 
 /** Release epoch and tranche set for a withdraw the EVM will check. */
 export function withdrawAuthBind(nowMs, principal, bind = null) {
   const genesisMs = bind?.genesisMs ?? BIND_GENESIS_MS;
+  const dest = bind?.dest || '';
   const locks = bind?.locks || [{ nanos: principal, at: bind?.lockAt ?? genesisMs }];
-  const tranches = bind?.tranches || locks.map((lock) => trancheAt(lock.nanos, lock.at, genesisMs));
+  const recorded = recordedTranches(dest, genesisMs);
+  const tranches = bind?.tranches || recorded || locks.map((lock) => trancheAt(lock.nanos, lock.at, genesisMs));
   const epoch = bind?.epoch != null ? bind.epoch : chainAt(bind?.nowMs ?? nowMs, genesisMs);
   return {
     epoch,
@@ -86,12 +133,15 @@ export function lockTx(args = {}) {
 }
 
 export function ownerWithdrawAuth(dest, principal, bind = null) {
-  const who = ownerFor(dest);
-  const spec = withdrawAuthBind(bind?.nowMs, principal, bind);
+  const who = bind?.ownerKey
+    ? { key: bind.ownerKey, pub: Buffer.from(ed25519RawPub(bind.ownerKey)).toString('hex') }
+    : ownerFor(dest);
+  const spec = withdrawAuthBind(bind?.nowMs, principal, { ...(bind || {}), dest });
   const tx = { to: dest };
+  const signNanos = bind?.signNanos != null ? bind.signNanos : 0;
   signWithdrawReward(tx, who.key, {
     portalId: portalIdFromDest(dest),
-    nanos: principal,
+    nanos: signNanos,
     dest,
     epoch: spec.epoch,
     tranches: spec.tranches,
@@ -101,12 +151,13 @@ export function ownerWithdrawAuth(dest, principal, bind = null) {
   return packRewardAuth({ ownerPub: who.pub, sig: tx.rewardSig, dest });
 }
 
-/** Sign the withdraw over `principal`, which defaults to the receipt amount. */
+/** Sign the withdraw. Hidden principal is 0 and still requires the owner signature. */
 export function withdrawTx(args = {}, principal = null) {
   const tx = withdrawTxRaw(args);
   const nanos = principal == null ? args.nanos : principal;
   const portal = args.from;
-  if (portal && nanos > 0) {
+  const signed = principal != null || Number(args.nanos) > 0;
+  if (portal && signed && nanos != null && Number(nanos) >= 0) {
     const who = ownerFor(portal);
     const spec = withdrawAuthBind(args.nowMs ?? (BIND_GENESIS_MS + RESERVE_EPOCH_MS), nanos, args.authBind || null);
     signWithdrawReward(tx, who.key, {
@@ -122,15 +173,28 @@ export function withdrawTx(args = {}, principal = null) {
   return tx;
 }
 
-export function encodeDeposit(dest, nanos, nowTs, commit = undefined) {
-  const use = commit === undefined ? ownerFor(dest).commit : commit;
-  return encodeDepositRaw(dest, nanos, nowTs, use);
+function isCommitWord(value) {
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) return value.length === 32;
+  return typeof value === 'string' && /^(0x)?[0-9a-fA-F]{64}$/.test(value.trim());
 }
 
-/** Auth defaults to the one-time owner of `dest` over `principal` (π when omitted). */
+export function encodeDeposit(dest, amountOrCommit, nowTs, ownerCommit = undefined, qualifies = undefined) {
+  let word = amountOrCommit;
+  let joined = qualifies;
+  if (!isCommitWord(amountOrCommit)) {
+    const n = amountBig(amountOrCommit);
+    word = pointBytes(commit(n, randomScalar()));
+    if (joined === undefined) joined = n >= BigInt(PI_SHE_NANOS);
+  }
+  rememberLock(dest, word, nowTs);
+  const use = ownerCommit === undefined ? ownerFor(dest).commit : ownerCommit;
+  return encodeDepositRaw(dest, word, nowTs, use, joined === true);
+}
+
+/** Auth defaults to the one-time owner of `dest`. The signed principal is 0. */
 export function encodeWithdraw(dest, nowTs, auth, principal = PI_SHE_NANOS, bind = null) {
   const blob = auth === undefined
-    ? ownerWithdrawAuth(dest, principal, { ...(bind || {}), nowMs: nowTs })
+    ? ownerWithdrawAuth(dest, principal, { ...(bind || {}), nowMs: nowTs, signNanos: 0 })
     : auth;
   return encodeWithdrawRaw(dest, nowTs, blob);
 }

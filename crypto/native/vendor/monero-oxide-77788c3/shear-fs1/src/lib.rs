@@ -34,8 +34,8 @@ pub use rulings::{
   RESERVE_WU, W_FS1_BASE, W_FS1_PER_INPUT, W_OUT, W_TX,
 };
 pub use spend::{
-  prove_spend, spend_blob_fits, spend_blob_len, spend_params, spend_root, tree_of_notes, verify_spend, SpendIn,
-  SpendOut,
+  prove_spend, prove_spend_unlinked, spend_blob_fits, spend_blob_len, spend_params, spend_root, tree_of_notes,
+  verify_spend, verify_spend_unlinked, SpendIn, SpendOut,
   RECORD_BYTES, SAL_BYTES, SPEND_HEAD, SPEND_WIRE,
 };
 pub use witness::{

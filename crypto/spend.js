@@ -12,7 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
-import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { maturedHiddenCount, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -882,7 +882,6 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
   const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
   if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };
-  if (claimed === 0) return { ok: false, reason: 'mint_amount' };
   const ref = reservePortalRef(tx);
   if (!ref.ok) return ref;
   const portals = reserveState?.portals || {};
@@ -896,6 +895,33 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
     ? Math.max(0, Math.floor(Number(withdrawablePrincipal(reserveState, portal, clock)) || 0))
     : 0;
   const principal = duePrincipal;
+  const hidden = Number.isFinite(clock) && clock > 0
+    ? maturedHiddenCount(reserveState, portal, clock)
+    : 0;
+  const mintId = withdrawMintId(ref.id, reserveState?.currentEpoch || 0);
+  const already = reserveState?.mintedIds && reserveState.mintedIds[mintId];
+  if (already || (drawn instanceof Set && drawn.has(mintId))) {
+    return { ok: false, reason: 'double_mint' };
+  }
+  if (hidden > 0 && principal === 0) {
+    if (String(tx?.programId || '') !== RESERVE_PROGRAM) return { ok: false, reason: 'mint_forbidden' };
+    if (portal?.payout) {
+      const want = hash20FromAddress(portal.payout);
+      const got = voutDest20(o);
+      if (!want || !got || !Buffer.from(want).equals(got)) {
+        return { ok: false, reason: 'payout_mismatch' };
+      }
+    }
+    if (portal?.payoutPortalId) {
+      const payPid = String(tx?.payoutPortalId || '').toLowerCase();
+      if (!payPid || payPid !== String(portal.payoutPortalId).toLowerCase()) {
+        return { ok: false, reason: 'payout_mismatch' };
+      }
+    }
+    if (claimed !== 0) return { ok: false, reason: 'insufficient' };
+    return { ok: true, principal: 0, claimed: 0, cap: 0, mintId };
+  }
+  if (claimed === 0) return { ok: false, reason: 'mint_amount' };
   if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
   const due = Math.max(0, Math.floor(Number(withdrawPaysInterest(reserveState, portal, clock)) || 0));
   const cap = principal + due;
@@ -921,11 +947,6 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
   // withdrawable legacy principal. A time-locked note is not part of it.
   if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
     return { ok: false, reason: 'mint_amount' };
-  }
-  const mintId = withdrawMintId(ref.id, reserveState?.currentEpoch || 0);
-  const already = reserveState?.mintedIds && reserveState.mintedIds[mintId];
-  if (already || (drawn instanceof Set && drawn.has(mintId))) {
-    return { ok: false, reason: 'double_mint' };
   }
   return { ok: true, principal, claimed, cap, mintId };
 }

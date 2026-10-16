@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyVault, cloneVault, verifyReservePayout, withdraw, applyReserveBlock, publicVaultView, withdrawTx } from './reserve_vault.js';
+import { emptyVault, cloneVault, verifyReservePayout, withdraw, applyReserveBlock, publicVaultView, withdrawTx, sealEpochLocks } from './reserve_vault.js';
 import { deposit } from './owned_portal.js';
 import { PI_SHE_NANOS } from './asert.js';
 import { newIdentity } from './address.js';
@@ -135,6 +135,7 @@ describe('fork has no vault', () => {
     const t0 = 1_700_000_000_000;
     live.genesisMs = t0;
     assert.equal(deposit({ state: live, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    assert.equal(sealEpochLocks(live, 0).ok, true);
     const tx = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'w1' });
     tx.nowMs = t0 + 500 * 86_400_000;
     const pay = verifyReservePayout(null, tx);

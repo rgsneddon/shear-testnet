@@ -59,10 +59,10 @@ function openState(owner, when = T0) {
   return state;
 }
 
-async function openEvm(owner, when = T0) {
+async function openEvm(owner, commit = Buffer.alloc(32, 9), when = T0) {
   const session = await bootReserveEvm();
   assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-  assert.equal((await callReserve(session, encodeDeposit(owner.dest, PI_SHE_NANOS, when, rewardOwnerCommit(owner.pub)))).ok, true);
+  assert.equal((await callReserve(session, encodeDeposit(owner.dest, commit, when, rewardOwnerCommit(owner.pub), true))).ok, true);
   return session;
 }
 
@@ -94,7 +94,7 @@ describe('a roll is the owner signed transaction', () => {
     });
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'unsigned');
-    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(state.totalLockedNanos), 0);
 
     const stranger = who();
     const foreign = signedRoll(stranger, { id: 'roll-stranger' });
@@ -119,7 +119,8 @@ describe('a roll is the owner signed transaction', () => {
     const state = openState(owner);
     const at = T0 + epoch;
     const portal = state.portals[portalIdFromDest(owner.dest)];
-    assert.ok(portalEpochInterest(state, portal, at) > 0);
+    assert.equal(portal.qualified, true);
+    assert.equal(portalEpochInterest(state, portal, at), 0);
     const tx = signedRoll(owner, { id: 'roll-due' });
     const refused = applyReserveBlock({
       state,
@@ -129,14 +130,14 @@ describe('a roll is the owner signed transaction', () => {
     });
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'stake_reward');
-    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(state.totalLockedNanos), 0);
 
     const session = await openEvm(owner);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
     const evm = await callReserve(session, encodeRoll(owner.dest, at, '', 0, Buffer.alloc(0), auth));
     assert.equal(evm.ok, false);
     const view = decodePublicView((await callReserve(session, encodePublicView(at), { staticCall: true })).returnValue);
-    assert.equal(view.totalLockedNanos, PI_SHE_NANOS);
+    assert.equal(view.totalLockedNanos, 0);
   });
 
   it('a post-cutoff roll with nothing due needs only the owner signature', async () => {
@@ -156,15 +157,15 @@ describe('a roll is the owner signed transaction', () => {
     });
     assert.equal(rolled.ok, true, rolled.reason);
     assert.equal(rolled.find((row) => row.action === 'roll').interest, 0);
-    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(state.totalLockedNanos), 0);
     assert.equal(portal.tranches[0].epoch, 0);
 
-    const session = await openEvm(owner, lateAt);
+    const session = await openEvm(owner, Buffer.alloc(32, 9), lateAt);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
     const evm = await callReserve(session, encodeRoll(owner.dest, end, '', 0, Buffer.alloc(0), auth));
     assert.equal(evm.ok, true, evm.reason);
     const view = decodePublicView((await callReserve(session, encodePublicView(end), { staticCall: true })).returnValue);
-    assert.equal(view.totalLockedNanos, PI_SHE_NANOS);
+    assert.equal(view.totalLockedNanos, 0);
   });
 
   it('withdraw pays principal only, and a claim below the FS-1 height stays closed', async () => {
@@ -172,8 +173,9 @@ describe('a roll is the owner signed transaction', () => {
     const state = openState(owner);
     const at = T0 + epoch;
     const preview = previewWithdraw(state, owner.dest, at);
+    const lockedCommit = Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches[0].commit, 'hex');
     assert.equal(preview.interest, 0);
-    assert.equal(preview.payout, PI_SHE_NANOS);
+    assert.equal(preview.payout, 0);
     const tx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: preview.payout, id: 'withdraw-principal' });
     signWithdrawReward(tx, owner.key, {
       portalId: portalIdFromDest(owner.dest),
@@ -190,15 +192,15 @@ describe('a roll is the owner signed transaction', () => {
     });
     assert.equal(paid.ok, true, paid.reason);
     const row = paid.find((item) => item.action === 'withdraw');
-    assert.equal(row.principal, PI_SHE_NANOS);
+    assert.equal(row.principal, 0);
     assert.equal(row.interest, 0);
     assert.equal(Number(state.totalLockedNanos), 0);
 
-    const session = await openEvm(owner);
+    const session = await openEvm(owner, lockedCommit);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
     const evm = await callReserve(session, encodeWithdraw(owner.dest, at, auth));
     assert.equal(evm.ok, true, evm.reason);
-    assert.equal(decodeWithdraw(evm.returnValue).principal, PI_SHE_NANOS);
+    assert.equal(decodeWithdraw(evm.returnValue).principal, 0);
     assert.equal(decodeWithdraw(evm.returnValue).interest, 0);
     const evmRoll = await callReserve(session, encodeRoll(owner.dest, at, '', 0, Buffer.alloc(0), auth));
     assert.equal(evmRoll.ok, false);
