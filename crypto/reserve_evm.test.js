@@ -520,9 +520,11 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(preview.payout, 0);
     const earned = portalEpochInterest(js, js.portals[portalIdFromDest(dest)], end);
     assert.equal(earned, 0);
-    const open = hiddenWithdrawOpening(js, dest, end);
-    assert.ok(open);
-    const tx = withdrawTx({ from: dest, to: dest, nanos: open.nanos, id: 'paid-reward' });
+    const peek = hiddenWithdrawOpening(js, dest, end);
+    assert.ok(peek);
+    const tx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: 'paid-reward' });
+    const open = hiddenWithdrawOpening(js, dest, end, tx);
+    assert.ok(open?.proof);
     tx.principalProof = open.proof;
     signWithdrawReward(tx, owner.privateKey, {
       portalId: portalIdFromDest(dest),
@@ -623,9 +625,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
       assert.equal(view.currentEpoch, js.currentEpoch, `epoch ${epoch}`);
       assert.equal(supplyIdentity(js).ok, true);
     }
-    const open = hiddenWithdrawOpening(js, dest, now);
-    assert.ok(open);
-    const paid = withdraw({ state: js, dest, nowMs: now, principal: open.nanos, principalProof: open.proof });
+    const peek = hiddenWithdrawOpening(js, dest, now);
+    assert.ok(peek);
+    const boundTx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: 'parity-draw' });
+    const open = hiddenWithdrawOpening(js, dest, now, boundTx);
+    assert.ok(open?.proof);
+    const paid = withdraw({ state: js, dest, nowMs: now, principal: open.nanos, principalProof: open.proof, tx: boundTx });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(paid.interest, 0);
@@ -796,9 +801,11 @@ describe('Reserve bytecode on the Shear EVM', () => {
     });
     assert.equal(stolenApply.ok, false);
     assert.equal(stolenApply.reason, 'unsigned');
-    const open = hiddenWithdrawOpening(js, dest, end);
-    assert.ok(open);
-    const tx = withdrawTx({ from: dest, to: payout, nanos: open.nanos, id: 'wd-owner' });
+    const peek = hiddenWithdrawOpening(js, dest, end);
+    assert.ok(peek);
+    const tx = withdrawTx({ from: dest, to: payout, nanos: peek.nanos, id: 'wd-owner' });
+    const open = hiddenWithdrawOpening(js, dest, end, tx);
+    assert.ok(open?.proof);
     tx.principalProof = open.proof;
     signWithdrawReward(tx, owner.privateKey, {
       portalId, nanos: open.nanos, dest: payout, state: js, nowMs: end,
@@ -850,9 +857,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
       const js = emptyVault();
       js.genesisMs = t0;
       assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: lateAt }).ok, true);
-      const open = hiddenWithdrawOpening(js, dest, at);
-      assert.ok(open, String(at));
-      const paid = withdraw({ state: js, dest, nowMs: at, principal: open.nanos, principalProof: open.proof });
+      const peek = hiddenWithdrawOpening(js, dest, at);
+      assert.ok(peek, String(at));
+      const boundTx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: `late-${at}` });
+      const open = hiddenWithdrawOpening(js, dest, at, boundTx);
+      assert.ok(open?.proof, String(at));
+      const paid = withdraw({ state: js, dest, nowMs: at, principal: open.nanos, principalProof: open.proof, tx: boundTx });
       assert.equal(paid.ok, true, `${at} ${paid.reason}`);
       assert.equal(paid.interest, 0, `js ${at}`);
       assert.equal(paid.earned, 0, `js earned ${at}`);
@@ -943,9 +953,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
       locks.push({ nanos: PI_SHE_NANOS, at: t0 });
     }
     const drawAt = t0 + epochs * RESERVE_EPOCH_MS;
-    const open = hiddenWithdrawOpening(js, dest, drawAt);
-    assert.ok(open);
-    const paid = withdraw({ state: js, dest, nowMs: drawAt, principal: open.nanos, principalProof: open.proof });
+    const peek = hiddenWithdrawOpening(js, dest, drawAt);
+    assert.ok(peek);
+    const boundTx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: 'many-draw' });
+    const open = hiddenWithdrawOpening(js, dest, drawAt, boundTx);
+    assert.ok(open?.proof);
+    const paid = withdraw({ state: js, dest, nowMs: drawAt, principal: open.nanos, principalProof: open.proof, tx: boundTx });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(paid.earned, 0);
@@ -983,9 +996,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
     });
     const drawn = await callReserve(session, encodeWithdraw(dest, end, firstAuth));
     assert.equal(drawn.ok, true, drawn.reason);
-    const open = hiddenWithdrawOpening(js, dest, end);
-    assert.ok(open);
-    const jsPaid = withdraw({ state: js, dest, nowMs: end, principal: open.nanos, principalProof: open.proof });
+    const peek = hiddenWithdrawOpening(js, dest, end);
+    assert.ok(peek);
+    const boundTx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: 'replay-draw' });
+    const open = hiddenWithdrawOpening(js, dest, end, boundTx);
+    assert.ok(open?.proof);
+    const jsPaid = withdraw({ state: js, dest, nowMs: end, principal: open.nanos, principalProof: open.proof, tx: boundTx });
     assert.equal(jsPaid.ok, true, jsPaid.reason);
     assert.equal(jsPaid.principal, PI_SHE_NANOS);
     const relockAt = end;
@@ -1003,9 +1019,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
       tranches: lockTranches(dest).slice(-1),
     }));
     assert.equal(fresh.ok, true, fresh.reason);
-    const reopened = hiddenWithdrawOpening(js, dest, end2);
-    assert.ok(reopened);
-    const jsAgain = withdraw({ state: js, dest, nowMs: end2, principal: reopened.nanos, principalProof: reopened.proof });
+    const againPeek = hiddenWithdrawOpening(js, dest, end2);
+    assert.ok(againPeek);
+    const againTx = withdrawTx({ from: dest, to: dest, nanos: againPeek.nanos, id: 'replay-again' });
+    const reopened = hiddenWithdrawOpening(js, dest, end2, againTx);
+    assert.ok(reopened?.proof);
+    const jsAgain = withdraw({ state: js, dest, nowMs: end2, principal: reopened.nanos, principalProof: reopened.proof, tx: againTx });
     assert.equal(jsAgain.ok, true, jsAgain.reason);
     assert.equal(jsAgain.principal, PI_SHE_NANOS);
     assert.equal(decodeWithdraw(fresh.returnValue).principal, 0);

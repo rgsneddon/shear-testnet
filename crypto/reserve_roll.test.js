@@ -11,6 +11,7 @@ import {
   packRewardAuth,
   portalEpochInterest,
   portalIdFromDest,
+  hiddenWithdrawOpening,
   previewWithdraw,
   rewardClaimTx,
   rewardOwnerCommit,
@@ -180,10 +181,23 @@ describe('a roll is the owner signed transaction', () => {
     const lockedCommit = Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches[0].commit, 'hex');
     assert.equal(preview.interest, 0);
     assert.equal(preview.payout, 0);
-    const tx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: preview.payout, id: 'withdraw-principal' });
+    const peek = hiddenWithdrawOpening(state, owner.dest, at);
+    assert.equal(peek.nanos, PI_SHE_NANOS);
+    const tx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: peek.nanos, id: 'withdraw-principal' });
+    const open = hiddenWithdrawOpening(state, owner.dest, at, tx);
+    assert.ok(open?.proof);
+    tx.principalProof = open.proof;
     signWithdrawReward(tx, owner.key, {
       portalId: portalIdFromDest(owner.dest),
-      nanos: preview.payout,
+      nanos: open.nanos,
+      dest: owner.dest,
+      state,
+      nowMs: at,
+    });
+    const evmAuth = { to: owner.dest };
+    signWithdrawReward(evmAuth, owner.key, {
+      portalId: portalIdFromDest(owner.dest),
+      nanos: 0,
       dest: owner.dest,
       state,
       nowMs: at,
@@ -196,12 +210,12 @@ describe('a roll is the owner signed transaction', () => {
     });
     assert.equal(paid.ok, true, paid.reason);
     const row = paid.find((item) => item.action === 'withdraw');
-    assert.equal(row.principal, 0);
+    assert.equal(row.principal, PI_SHE_NANOS);
     assert.equal(row.interest, 0);
     assert.equal(Number(state.totalLockedNanos), 0);
 
     const session = await openEvm(owner, lockedCommit);
-    const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
+    const auth = packRewardAuth({ ownerPub: owner.pub, sig: evmAuth.rewardSig, dest: owner.dest });
     const evm = await callReserve(session, encodeWithdraw(owner.dest, at, auth));
     assert.equal(evm.ok, true, evm.reason);
     assert.equal(decodeWithdraw(evm.returnValue).principal, 0);

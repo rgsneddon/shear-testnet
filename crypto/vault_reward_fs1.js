@@ -10,7 +10,7 @@
  * The nullifier is a PRF of the vault key and the epoch. It is not a hash
  * of the public spend tag.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { MAGIC_TESTNET, VAULT_PROOF_VER } from './asert.js';
 
@@ -50,6 +50,9 @@ export const VAULT_NULL_EPOCH_DST = 'shear-vault-null-epoch-v1';
 export const VAULT_NULL_PRF = 'shear-vault-null-prf-v1';
 export const VAULT_REL_DST = 'shear-vault-reward-rel-v1';
 export const VAULT_BAL_DST = 'shear-vault-reward-bal-v1';
+export const CLAIM_TXID_DST = 'shear-claim-txid-v1';
+export const CLAIM_PORTAL_DST = 'shear-claim-portal-v1';
+export const VAULT_RETIRE_MAGIC = 'shear-retire-v1';
 export const VAULT_LOCK_BLIND_DST = 'shear-vault-lock-blind-v1';
 export const VAULT_LOCK_OWNER_DST = 'shear-vault-lock-owner-v1';
 export const VAULT_CAP_DST = 'shear-epoch-cap-v1';
@@ -203,6 +206,7 @@ export function vaultLockNote(amount, ownerScalar, blind) {
 
 function statementDigest({
   magic, root, epoch, bps, span, reward, remCommit, remRange, slackCommit, slackRange,
+  commit: outCommit, noteCommit, dest20, amtCt, preimage,
 }) {
   const hash = (raw) => createHash('sha256').update(raw).digest();
   return createHash('sha256').update(Buffer.concat([
@@ -217,7 +221,68 @@ function statementDigest({
     hash(remRange),
     slackCommit,
     hash(slackRange),
+    outCommit,
+    noteCommit,
+    dest20,
+    amtCt,
+    preimage,
   ])).digest();
+}
+
+/**
+ * sha256(domain || commit || noteCommit || dest20 || amtCt || nullifier || epoch || reward).
+ * The free-form tx id is assigned after the proof, so the preimage is these bytes.
+ */
+export function claimTxPreimage({ commit: outCommit, noteCommit, dest20, amtCt, nullifier, epoch, reward }) {
+  const nf = bytes32(nullifier);
+  if (!outCommit || !noteCommit || !dest20 || !amtCt || !nf) return null;
+  if (outCommit.length !== 32 || noteCommit.length !== 32 || dest20.length !== 20 || amtCt.length !== 8) return null;
+  return createHash('sha256').update(Buffer.concat([
+    Buffer.from(CLAIM_TXID_DST),
+    outCommit,
+    noteCommit,
+    dest20,
+    amtCt,
+    nf,
+    u64le(epoch),
+    u64le(reward),
+  ])).digest();
+}
+
+function claimPortalWord(dest20) {
+  return createHash('sha256').update(Buffer.from(CLAIM_PORTAL_DST)).update(dest20).digest();
+}
+
+function balanceExtra(preimage, dest20) {
+  return createHash('sha256').update(Buffer.concat([
+    Buffer.from(VAULT_BAL_DST),
+    preimage,
+    claimPortalWord(dest20),
+  ])).digest();
+}
+
+/** commit, noteCommit, dest20, and amtCt from a sealed note or from packVaultOutput bytes. */
+export function claimOutputBinding(output) {
+  if (!output) return null;
+  const packed = Buffer.isBuffer(output) || output instanceof Uint8Array;
+  if (packed) {
+    const parsed = parseVaultOutput(output);
+    if (!parsed) return null;
+    if (!verifyRange(parsed.commit, parsed.rangeProof)) return null;
+    return parsed;
+  }
+  try {
+    const outCommit = Buffer.from(asU8(output.commit));
+    const noteCommit = Buffer.from(asU8(output.noteCommit));
+    const amtCt = Buffer.from(asU8(output.amtCt));
+    const dest20 = Buffer.from(asU8(output.dest20));
+    const rangeProof = Buffer.from(asU8(output.rangeProof));
+    if (outCommit.length !== 32 || noteCommit.length !== 32 || amtCt.length !== 8 || dest20.length !== 20) return null;
+    if (!rangeProof.length || !verifyRange(outCommit, rangeProof)) return null;
+    return { commit: outCommit, noteCommit, amtCt, dest20, rangeProof };
+  } catch {
+    return null;
+  }
 }
 
 function hpOf(point) {
@@ -311,6 +376,50 @@ function dleqVerify(b1, b2, P1, P2, A1, A2, s) {
     return left1.equals(right1) && left2.equals(right2);
   } catch {
     return false;
+  }
+}
+
+/**
+ * The key holder retires one epoch's claim nullifier.
+ * Proof: u64 epoch || leaf(64) || A1 || A2 || s || P2. 200 bytes.
+ * DLEQ shows leaf[0:32] = G*x and P2 = Hp(epoch)*x. The nullifier is hash(P2).
+ */
+export function proveLeafRetire({ scalar, epoch, leaf } = {}) {
+  try {
+    const x = typeof scalar === 'bigint' ? scalar : scalarFrom(scalar);
+    const at = Math.floor(Number(epoch));
+    if (!Number.isSafeInteger(at) || at < 0) return null;
+    const note = Buffer.from(asU8(leaf));
+    if (note.length !== 64) return null;
+    const d = dleqProve(G, nullBase(at), x);
+    if (!note.subarray(0, 32).equals(d.P1)) return null;
+    const nullifier = createHash('sha256').update(VAULT_NULL_PRF).update(d.P2).digest();
+    const proof = Buffer.concat([u64le(at), note, d.A1, d.A2, d.s, d.P2]);
+    return { proof, nullifier, nullifierHex: nullifier.toString('hex'), epoch: at };
+  } catch {
+    return null;
+  }
+}
+
+/** Null when the retire proof does not open `nullifier` for its leaf. */
+export function verifyLeafRetire(proof, nullifier = null) {
+  try {
+    const buf = Buffer.from(asU8(proof));
+    if (buf.length !== 200) return null;
+    const epoch = buf.readBigUInt64LE(0);
+    const leaf = Buffer.from(buf.subarray(8, 72));
+    const A1 = buf.subarray(72, 104);
+    const A2 = buf.subarray(104, 136);
+    const s = buf.subarray(136, 168);
+    const P2 = buf.subarray(168, 200);
+    const base = pointBytes(nullBase(epoch));
+    if (!dleqVerify(pointBytes(G), base, leaf.subarray(0, 32), P2, A1, A2, s)) return null;
+    const expect = createHash('sha256').update(VAULT_NULL_PRF).update(P2).digest();
+    const nf = nullifier == null ? expect : bytes32(nullifier);
+    if (!nf || !nf.equals(expect)) return null;
+    return { ok: true, nullifier: expect, epoch, leaf };
+  } catch {
+    return null;
   }
 }
 
@@ -716,8 +825,34 @@ export function proveVaultReward({
   const remain = remainMs == null ? width : BigInt(remainMs);
   const reward = vaultRewardNanos(rows[which].amount, bps, remain, width);
   if (!reward) return null;
-  void dest20;
+  let dest = null;
+  try { dest = Buffer.from(asU8(dest20)); } catch { dest = null; }
+  if (!dest || dest.length !== 20) dest = randomBytes(20);
   const epoch = Math.floor(Number(earnEpoch));
+  const nullifier = vaultRewardNullifier(rows[which].scalar, epoch);
+  if (!nullifier) return null;
+  let note = null;
+  try {
+    note = sealHiddenNote(reward.nanos, {
+      dest20: dest,
+      kind: 'reward-claim',
+      admitBase: admitPub(randomScalar()),
+    });
+  } catch {
+    return null;
+  }
+  const bound = claimOutputBinding(note);
+  if (!bound) return null;
+  const preimage = claimTxPreimage({
+    commit: bound.commit,
+    noteCommit: bound.noteCommit,
+    dest20: bound.dest20,
+    amtCt: bound.amtCt,
+    nullifier,
+    epoch,
+    reward: reward.nanos,
+  });
+  if (!preimage) return null;
   const rRem = randomScalar();
   const rSlack = randomScalar();
   const slack = CAP_DENOM - 1n - reward.rem;
@@ -740,6 +875,11 @@ export function proveVaultReward({
     remRange,
     slackCommit,
     slackRange,
+    commit: bound.commit,
+    noteCommit: bound.noteCommit,
+    dest20: bound.dest20,
+    amtCt: bound.amtCt,
+    preimage,
   });
   const epochBase = pointBytes(nullBase(epoch));
   const proved = fs1ProveUnlinked(handle, {
@@ -773,10 +913,9 @@ export function proveVaultReward({
   const balP = balancePoint(remCommit, slackCommit);
   const balS = Fn.add(rRem, rSlack);
   if (!balP.equals(H.multiply(balS))) return null;
-  const bal = schnorrProve(balP, balS, Buffer.from(VAULT_BAL_DST));
-  const nullifier = createHash('sha256').update(VAULT_NULL_PRF).update(linkN).digest();
-  const expectNf = vaultRewardNullifier(rows[which].scalar, epoch);
-  if (!expectNf || !expectNf.equals(nullifier)) return null;
+  const bal = schnorrProve(balP, balS, balanceExtra(preimage, bound.dest20));
+  const linked = createHash('sha256').update(VAULT_NULL_PRF).update(linkN).digest();
+  if (!linked.equals(nullifier)) return null;
   const lockCommit = rows[which].commit;
   const blob = packProof({
     fs1: Buffer.from(proved.fs1),
@@ -812,6 +951,8 @@ export function proveVaultReward({
     reward,
     rootEpoch: epoch,
     earnEpoch: epoch,
+    note,
+    preimage,
     locks: rows.map((row) => ({
       amount: row.amount,
       scalar: row.scalar,
@@ -832,7 +973,8 @@ function fail(code, reason) {
 export function verifyVaultReward({
   blob, root, rootEpoch, nullifier, output = null, terms = null, magic = MAGIC_TESTNET,
 } = {}) {
-  void output;
+  const bound = claimOutputBinding(output);
+  if (!bound) return fail(0, 'unsigned');
   const parsed = parseProof(blob);
   if (!parsed) return fail(0, 'unsigned');
   const rootBuf = bytes32(root);
@@ -863,7 +1005,18 @@ export function verifyVaultReward({
   let digest;
   let P;
   let balP;
+  let preimage;
   try {
+    preimage = claimTxPreimage({
+      commit: bound.commit,
+      noteCommit: bound.noteCommit,
+      dest20: bound.dest20,
+      amtCt: bound.amtCt,
+      nullifier: nf,
+      epoch: parsed.epoch,
+      reward: parsed.reward,
+    });
+    if (!preimage) return fail(0, 'unsigned');
     digest = statementDigest({
       magic,
       root: rootBuf,
@@ -875,6 +1028,11 @@ export function verifyVaultReward({
       remRange: parsed.remRange,
       slackCommit: parsed.slackCommit,
       slackRange: parsed.slackRange,
+      commit: bound.commit,
+      noteCommit: bound.noteCommit,
+      dest20: bound.dest20,
+      amtCt: bound.amtCt,
+      preimage,
     });
     P = relationPoint(cTilde, parsed.reward, parsed.remCommit, parsed.bps);
     balP = balancePoint(parsed.remCommit, parsed.slackCommit);
@@ -890,7 +1048,7 @@ export function verifyVaultReward({
     slackCommit: parsed.slackCommit,
   });
   if (!schnorrVerify(P, parsed.relR, parsed.relZ, extra)) return fail(2, 'stake_reward');
-  if (!schnorrVerify(balP, parsed.balR, parsed.balZ, Buffer.from(VAULT_BAL_DST))) return fail(2, 'stake_reward');
+  if (!schnorrVerify(balP, parsed.balR, parsed.balZ, balanceExtra(preimage, bound.dest20))) return fail(2, 'stake_reward');
   const anchor = Number(rootEpoch);
   if (!Number.isSafeInteger(anchor) || anchor < 0) return fail(0, 'unsigned');
   const epochBase = pointBytes(nullBase(parsed.epoch));

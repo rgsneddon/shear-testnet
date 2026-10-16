@@ -242,10 +242,10 @@ export const VAULT_LOCK_LAW = 'fs1-tranche';
  * root, consensus sets the rate terms, and one nullifier spends the epoch.
  */
 export const VAULT_REWARD_LAW = 'fs1-lock-root-v1';
-/** A claim publishes the reward integer and proves it for one hidden member. */
-export const VAULT_HIDDEN_LAW = 'public-reward-v1';
+/** A claim publishes the reward integer and binds the payout note into the proof. */
+export const VAULT_HIDDEN_LAW = 'output-bound-v1';
 /** Claim proof version. Peers on an older byte do not share this book. */
-export const VAULT_PROOF_VER = 0xa8;
+export const VAULT_PROOF_VER = 0xa9;
 /** Reward-claim proofs in one block. Each proof is a vault-lock membership. */
 export const MAX_BLOCK_VAULT_CLAIMS = 4;
 /**

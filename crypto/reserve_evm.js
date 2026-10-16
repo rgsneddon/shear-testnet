@@ -13,7 +13,7 @@ import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { ED25519_SPKI_PREFIX } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
-import { parseVaultOutput, packVaultOutput, verifyVaultReward } from './vault_reward_fs1.js';
+import { packVaultOutput, verifyLeafRetire, verifyVaultReward, vaultPublicReward } from './vault_reward_fs1.js';
 
 function keccak256(data) {
   const u8 = data instanceof Uint8Array ? data : Buffer.from(data);
@@ -223,6 +223,15 @@ export function encodeSetEpochDue(epoch, due) {
   return concat(selector('setEpochDue(uint256,uint256)'), pad32(epoch), pad32(due));
 }
 
+export function encodeRetire(nullifierHex, proof) {
+  const id = Buffer.from(String(nullifierHex || '').replace(/^0x/i, ''), 'hex');
+  const word = new Uint8Array(32);
+  if (id.length === 32) word.set(id);
+  const raw = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
+  const body = encodeBytes(raw);
+  return concat(selector('retire(bytes32,bytes)'), word, pad32(64), body);
+}
+
 export function encodeChargeEpoch(epoch, nanos) {
   return concat(selector('chargeEpoch(uint256,uint256)'), pad32(epoch), pad32(nanos));
 }
@@ -375,6 +384,7 @@ function evmRevertReason(res) {
     if (sel.equals(Buffer.from(selector('ClaimUnavailable()')))) return 'claim_unavailable';
     if (sel.equals(Buffer.from(selector('OwnerMissing()')))) return 'owner_missing';
     if (sel.equals(Buffer.from(selector('Unsigned()')))) return 'unsigned';
+    if (sel.equals(Buffer.from(selector('AlreadyMinted()')))) return 'already_minted';
   }
   return String(res?.execResult?.exceptionError?.error || 'revert');
 }
@@ -419,10 +429,12 @@ function ed25519Precompile(opts) {
   return { executionGasUsed: gasUsed, returnValue: out };
 }
 
+const RETIRE_MAGIC = Buffer.from('shear-retire-v1');
+
 /**
  * Precompile 0x102.
- * root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic || u32 outputLen || proof.
- * The reward integer is public. There is no leaf word and no remainder index.
+ * Claim: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic || u32 outputLen || output || proof.
+ * Retire: nullifier || "shear-retire-v1" || proof. A non-empty output is required for a claim.
  */
 function vaultZkPrecompile(opts) {
   const data = Buffer.from(opts.data || new Uint8Array());
@@ -431,27 +443,34 @@ function vaultZkPrecompile(opts) {
   if (opts.gasLimit < gasUsed) return { executionGasUsed: opts.gasLimit, returnValue: zero };
   let code = 0;
   try {
-    const head = 109;
-    if (data.length >= head + 4) {
-      const epoch = data.readBigUInt64LE(64);
-      const bps = data.readUInt32LE(72);
-      const span = data.readBigUInt64LE(76);
-      const reward = data.readBigUInt64LE(84);
-      const magic = data.subarray(92, 109).toString('utf8');
-      const outputLen = data.readUInt32LE(109);
-      const outputAt = 113;
-      if (outputLen === 0 && outputAt <= data.length) {
-        const got = verifyVaultReward({
-          root: data.subarray(0, 32),
-          nullifier: data.subarray(32, 64),
-          rootEpoch: epoch,
-          terms: { bps, span, earnEpoch: epoch, reward },
-          magic,
-          blob: data.subarray(outputAt),
-        });
-        code = got.ok ? 1 : (got.code === 2 ? 2 : 0);
-      } else if (outputLen !== 0) {
-        code = 2;
+    if (data.length >= 32 + RETIRE_MAGIC.length && data.subarray(32, 32 + RETIRE_MAGIC.length).equals(RETIRE_MAGIC)) {
+      const burned = verifyLeafRetire(data.subarray(32 + RETIRE_MAGIC.length), data.subarray(0, 32));
+      code = burned ? 1 : 0;
+    } else {
+      const head = 109;
+      if (data.length >= head + 4) {
+        const epoch = data.readBigUInt64LE(64);
+        const bps = data.readUInt32LE(72);
+        const span = data.readBigUInt64LE(76);
+        const reward = data.readBigUInt64LE(84);
+        const magic = data.subarray(92, 109).toString('utf8');
+        const outputLen = data.readUInt32LE(109);
+        const outputAt = 113;
+        const outputEnd = outputAt + outputLen;
+        if (outputLen > 0 && outputEnd <= data.length) {
+          const got = verifyVaultReward({
+            root: data.subarray(0, 32),
+            nullifier: data.subarray(32, 64),
+            rootEpoch: epoch,
+            terms: { bps, span, earnEpoch: epoch, reward },
+            magic,
+            output: data.subarray(outputAt, outputEnd),
+            blob: data.subarray(outputEnd),
+          });
+          code = got.ok ? 1 : (got.code === 2 ? 2 : 0);
+        } else if (outputLen === 0) {
+          code = 2;
+        }
       }
     }
   } catch {
@@ -654,13 +673,6 @@ export async function executeReserveTx(session, tx, nowMs) {
     const owner = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
     const locked = await callReserve(session, encodeDeposit(dest, commit, nowMs, owner, lockQualifies(commit, act?.piProof)));
     if (!locked.ok) return locked;
-    const notedLock = await callReserve(session, encodeNoteVaultLock(Buffer.from(commit).toString('hex')));
-    if (!notedLock.ok) return notedLock;
-    const remain = String(tx?.remainCommit || '').replace(/^0x/i, '');
-    if (/^[0-9a-fA-F]{64}$/.test(remain)) {
-      const noted = await callReserve(session, encodeNoteVaultLeaf(Buffer.from(commit).toString('hex'), remain));
-      if (!noted.ok) return noted;
-    }
     return locked;
   }
   if (kind === 'vote') {
@@ -670,9 +682,12 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'reward-claim') {
     if (tx?.vaultProof) {
-      const output = packVaultOutput(tx.vout?.[0]) || new Uint8Array();
+      const output = packVaultOutput(tx.vout?.[0]);
+      if (!output) return { ok: false, reason: 'stake_reward' };
       const epoch = Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0);
-      return callReserve(session, encodeClaim(tx?.nullifier || '', 0, tx.vaultProof, epoch, output));
+      const reward = vaultPublicReward(tx.vaultProof);
+      const named = reward == null ? 0 : (reward <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(reward) : reward);
+      return callReserve(session, encodeClaim(tx?.nullifier || '', named, tx.vaultProof, epoch, output));
     }
     const proof = tx?.evmProof || tx?.proof;
     const packed = Buffer.isBuffer(proof) ? proof : packRewardProof(proof);

@@ -17,11 +17,13 @@ const String kVaultRelDst = 'shear-vault-reward-rel-v1';
 const String kVaultBalDst = 'shear-vault-reward-bal-v1';
 const String kVaultLockBlindDst = 'shear-vault-lock-blind-v1';
 const String kVaultLockOwnerDst = 'shear-vault-lock-owner-v1';
-const int kVaultProofVer = 0xa8;
+const int kVaultProofVer = 0xa9;
+const String kClaimTxidDst = 'shear-claim-txid-v1';
+const String kClaimPortalDst = 'shear-claim-portal-v1';
 const String kVaultCapDst = 'shear-epoch-cap-v1';
 const String kVaultLeafDst = 'shear-vault-leaf-v1';
 
-/// Author-built full-epoch cap. Fresh blinds, same value the JS prover packs into 0xa8.
+/// Author-built full-epoch cap. Fresh blinds. The claim blob version is kVaultProofVer.
 Map<String, Uint8List> _lockCap({
   required int amount,
   required Uint8List lockBlind,
@@ -263,6 +265,31 @@ Map<String, dynamic> proveVaultLockReward({
       throw StateError('admit_native_required');
     }
     final epoch = earnEpoch;
+    final epochEl = hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst));
+    final nullP = pointBytes(mulEl(epochEl, scalarFromBytes(owners[which])));
+    final nullifierPre = _sha256(_concat([utf8Bytes(kVaultNullPrf), nullP]));
+    final noteR = randomScalar();
+    final noteCommit = noteCommitOfDest20(dest20);
+    final noteC = pointBytes(_commitUnits(nanos, noteR));
+    final noteRange = admit.proveRange(nanos, scalarBytes(noteR));
+    if (noteRange == null || noteRange.isEmpty) throw StateError('admit_native_required');
+    final wrapped = wrapNoteBlind({
+      'r': scalarBytes(noteR),
+      'noteCommit': noteCommit,
+      'commit': noteC,
+    }, admitPub(randomScalar()), v: nanos);
+    final amtCt = wrapped['amtCt'];
+    if (amtCt is! Uint8List || amtCt.length != 8) throw StateError('unsigned');
+    final preimage = _sha256(_concat([
+      utf8Bytes(kClaimTxidDst),
+      noteC,
+      noteCommit,
+      dest20,
+      amtCt,
+      nullifierPre,
+      _u64(epoch),
+      _u64(reward),
+    ]));
     final digest = _sha256(_concat([
       utf8Bytes(kVaultRewardDst),
       utf8Bytes(magic),
@@ -275,6 +302,11 @@ Map<String, dynamic> proveVaultLockReward({
       _sha256(remRange),
       slackCommit,
       _sha256(slackRange),
+      noteC,
+      noteCommit,
+      dest20,
+      amtCt,
+      preimage,
     ]));
     final epochBase = pointBytes(hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst)));
     final proved = fs1.proveUnlinked(handle, [which], [owners[which]], digest, epoch, epochBase);
@@ -308,7 +340,9 @@ Map<String, dynamic> proveVaultLockReward({
     );
     final balS = scalarAdd(rRem, rSlack);
     if (!elementEq(balP, mulEl(noteH, balS))) throw StateError('stake_reward');
-    final bal = schnorrProveH(balP, balS, utf8Bytes(kVaultBalDst));
+    final portalWord = _sha256(_concat([utf8Bytes(kClaimPortalDst), dest20]));
+    final balExtra = _sha256(_concat([utf8Bytes(kVaultBalDst), preimage, portalWord]));
+    final bal = schnorrProveH(balP, balS, balExtra);
     final linkAnn = Uint8List.sublistView(proved.link, 0, 32);
     final linkSr = Uint8List.sublistView(proved.link, 32, 64);
     final linkN = Uint8List.sublistView(proved.link, 64, 96);
@@ -319,6 +353,7 @@ Map<String, dynamic> proveVaultLockReward({
     final tag = Uint8List.sublistView(record, 1, 33);
     if (_bytesEq(stable, tag)) throw StateError('stake_reward');
     final nullifier = _sha256(_concat([utf8Bytes(kVaultNullPrf), linkN]));
+    if (!_bytesEq(nullifier, nullifierPre)) throw StateError('stake_reward');
     final blob = _concat([
       Uint8List.fromList([kVaultProofVer]),
       _u32(proved.fs1.length),
@@ -355,6 +390,15 @@ Map<String, dynamic> proveVaultLockReward({
       'full': true,
       'rootEpoch': epoch,
       'earnEpoch': epoch,
+      'note': {
+        'commit': noteC,
+        'noteCommit': noteCommit,
+        'amtCt': amtCt,
+        'dest20': dest20,
+        'rangeProof': noteRange,
+        if (wrapped['rEph'] != null) 'rEph': wrapped['rEph'],
+        if (wrapped['rCt'] != null) 'rCt': wrapped['rCt'],
+      },
     };
   } finally {
     fs1.treeFree(handle);

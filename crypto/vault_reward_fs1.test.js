@@ -10,6 +10,7 @@ import {
   cloneVault,
   deposit,
   emptyVault,
+  withdraw,
   packRewardAuth,
   portalEpochInterest,
   portalIdFromDest,
@@ -34,11 +35,14 @@ import {
   encodeCommitVaultRoot,
   encodeDeposit,
   encodePinClock,
+  encodeRetire,
   encodeRoll,
   encodeWithdraw,
 } from './reserve_evm.js';
 import {
   RELATION_BOUND,
+  packVaultOutput,
+  proveLeafRetire,
   proveVaultReward,
   tagDerivedNullifier,
   vaultLockBlind,
@@ -47,6 +51,7 @@ import {
   vaultRewardNanos,
   verifyVaultReward,
 } from './vault_reward_fs1.js';
+import { proveRange } from './note.js';
 import { blockBudget, fs1VerifyWeight, txVerifyWeight, W_OUT, W_TX, W_VAULT_EXTRA } from './block_budget.js';
 import { consensusFingerprint, MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
 
@@ -115,8 +120,8 @@ function provePair(dest20, epoch = 0) {
   });
   assert.ok(second, 'second proof');
   assert.equal(second.rootHex, first.rootHex);
-  assert.equal(first.blob[0], 0xa8);
-  assert.equal(second.blob[0], 0xa8);
+  assert.equal(first.blob[0], 0xa9);
+  assert.equal(second.blob[0], 0xa9);
   const amountBytes = Buffer.alloc(8);
   amountBytes.writeBigUInt64LE(BigInt(PI_SHE_NANOS));
   assert.equal(Buffer.from(first.blob).includes(amountBytes), false);
@@ -201,6 +206,7 @@ describe('vault-lock reward proof', () => {
       root: Buffer.from(pair.first.rootHex, 'hex'),
       rootEpoch: 0,
       nullifier: Buffer.from(pair.first.nullifier, 'hex'),
+      output: pair.first.note,
       terms: { bps: GENESIS_BPS, span, earnEpoch: 0, reward: pair.first.nanos },
     });
     assert.equal(bad.ok, false);
@@ -210,6 +216,7 @@ describe('vault-lock reward proof', () => {
       root: Buffer.from(pair.first.rootHex, 'hex'),
       rootEpoch: 0,
       nullifier: Buffer.from(stranger.nullifier, 'hex'),
+      output: stranger.note,
       terms: { bps: GENESIS_BPS, span, earnEpoch: 0, reward: stranger.nanos },
     });
     assert.equal(notMember.ok, false);
@@ -232,7 +239,11 @@ describe('vault-lock reward proof', () => {
 
     const claim = rewardClaimTx({ to: pay.to, vault: pair.first, id: 'claim-owner' });
     assert.equal(claim.nanos, pair.first.nanos);
-    assert.equal(claim.vout[0].valueProof.v, pair.first.nanos);
+    assert.equal(claim.vout[0].valueProof, undefined);
+    assert.equal(claim.vout[0].commit.length, 32);
+    assert.equal(claim.vout[0].noteCommit.length, 32);
+    assert.equal(claim.vout[0].amtCt.length, 8);
+    assert.equal(claim.vout[0].dest20.length, 20);
     const one = applyAt(state, [claim], pair.first.rootHex);
     assert.equal(one.ok, true, one.reason);
     assert.equal(one.find((row) => row.action === 'reward-claim').nanos, pair.first.nanos);
@@ -284,18 +295,18 @@ describe('vault-lock reward proof', () => {
     assert.equal(stored.ok, true, stored.reason);
     const evmPaid = await callReserve(
       session,
-      encodeClaim(pair.first.nullifier, pair.first.nanos, pair.first.blob, 0),
+      encodeClaim(pair.first.nullifier, pair.first.nanos, pair.first.blob, 0, packVaultOutput(pair.first.note)),
     );
     assert.equal(evmPaid.ok, true, evmPaid.reason);
     assert.equal(word(evmPaid.returnValue), BigInt(pair.first.nanos));
     const evmStranger = await callReserve(
       session,
-      encodeClaim(stranger.nullifier, stranger.nanos, stranger.blob, 0),
+      encodeClaim(stranger.nullifier, stranger.nanos, stranger.blob, 0, packVaultOutput(stranger.note)),
     );
     assert.equal(evmStranger.ok, false);
     const evmAgain = await callReserve(
       session,
-      encodeClaim(pair.first.nullifier, pair.first.nanos, pair.first.blob, 0),
+      encodeClaim(pair.first.nullifier, pair.first.nanos, pair.first.blob, 0, packVaultOutput(pair.first.note)),
     );
     assert.equal(evmAgain.ok, false);
   });
@@ -362,7 +373,7 @@ describe('vault-lock reward proof', () => {
     await callReserve(session, encodeCommitEpochStartRoot(0, pair.second.rootHex));
     const evmClaim = await callReserve(
       session,
-      encodeClaim(pair.second.nullifier, pair.second.nanos, pair.second.blob, 0),
+      encodeClaim(pair.second.nullifier, pair.second.nanos, pair.second.blob, 0, packVaultOutput(pair.second.note)),
     );
     assert.equal(evmClaim.ok, true, evmClaim.reason);
     assert.equal(word(evmClaim.returnValue), BigInt(pair.second.nanos));
@@ -375,8 +386,6 @@ describe('vault-lock reward proof', () => {
     const preview = previewWithdraw(state, owner.dest, at);
     const lockedCommit = Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex');
     const principal = PI_SHE_NANOS;
-    const opening = provePrincipalOpen(lockedCommit, principal, LOCK_BLIND);
-    assert.ok(opening);
     assert.equal(preview.interest, 0);
     assert.equal(preview.payout, 0);
     assert.equal(state.portals[portalIdFromDest(owner.dest)].qualified, true);
@@ -391,7 +400,8 @@ describe('vault-lock reward proof', () => {
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'unsigned');
     const signed = withdrawTx({ from: owner.dest, to, nanos: principal, id: 'withdraw-owner' });
-    signed.principalProof = opening;
+    signed.principalProof = provePrincipalOpen(lockedCommit, principal, LOCK_BLIND, signed, portalIdFromDest(owner.dest));
+    assert.ok(signed.principalProof);
     const portalId = portalIdFromDest(owner.dest);
     const evmTx = withdrawTx({ from: owner.dest, to, nanos: 0, id: 'withdraw-evm' });
     signWithdrawReward(evmTx, owner.key, {
@@ -516,6 +526,7 @@ describe('vault-lock reward proof', () => {
       root: Buffer.from(proved.rootHex, 'hex'),
       rootEpoch: 0,
       nullifier: Buffer.from(chosen.nullifier, 'hex'),
+      output: chosen.note,
       terms: { bps: GENESIS_BPS, span, earnEpoch: 0, reward: chosen.nanos },
     });
     assert.equal(rate.ok, false);
@@ -689,6 +700,7 @@ describe('vault-lock reward proof', () => {
       root: Buffer.from(proved.rootHex, 'hex'),
       rootEpoch: 0,
       nullifier: Buffer.from(proved.nullifier, 'hex'),
+      output: proved.note,
       terms: { bps: GENESIS_BPS, span, earnEpoch: 0, reward: published + 1n },
     });
     assert.equal(badReward.ok, false);
@@ -787,7 +799,8 @@ describe('vault-lock reward proof', () => {
     assert.match(prover, /shear-vault-null-key-v1/);
     assert.match(prover, /shear-vault-null-prf-v1/);
     assert.match(prover, /shear-vault-reward-bal-v1/);
-    assert.match(prover, /0xa8/);
+    assert.match(prover, /0xa9/);
+    assert.equal(prover.includes('0xa8'), false);
     assert.equal(prover.includes('0xa7'), false);
     assert.match(copy, /vaultClaimSlotMs/);
     assert.match(copy, /kVaultBatchBlockMs/);
@@ -800,5 +813,128 @@ describe('vault-lock reward proof', () => {
     assert.match(copy, /'rootEpoch': p\.lockEpoch/);
     assert.match(copy, /'earnEpoch': p\.lockEpoch/);
     assert.match(pack, /shear-reward-owner-v1/);
+  });
+
+  it('refuses a proof moved onto another payout', () => {
+    const owner = who();
+    const pay = payee(0x61);
+    const pair = provePair(pay.d20, 0);
+    const proved = pair.first;
+    const same = verifyVaultReward({
+      blob: proved.blob,
+      root: Buffer.from(proved.rootHex, 'hex'),
+      rootEpoch: 0,
+      nullifier: Buffer.from(proved.nullifier, 'hex'),
+      output: proved.note,
+      terms: { bps: GENESIS_BPS, span, earnEpoch: 0, reward: proved.nanos },
+    });
+    assert.equal(same.ok, true, same.reason);
+    const movedNote = { ...proved.note, dest20: Buffer.alloc(20, 0x9a) };
+    const moved = verifyVaultReward({
+      blob: proved.blob,
+      root: Buffer.from(proved.rootHex, 'hex'),
+      rootEpoch: 0,
+      nullifier: Buffer.from(proved.nullifier, 'hex'),
+      output: movedNote,
+      terms: { bps: GENESIS_BPS, span, earnEpoch: 0, reward: proved.nanos },
+    });
+    assert.equal(moved.ok, false);
+    assert.equal(moved.code, 2);
+    const state = openVault(owner);
+    plantPair(state, pair, 0);
+    const claim = rewardClaimTx({ to: pay.to, vault: proved, id: 'moved-payout' });
+    claim.vout[0] = { ...claim.vout[0], dest20: Buffer.alloc(20, 0x9a) };
+    const refused = applyAt(state, [claim], proved.rootHex);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'stake_reward');
+  });
+
+  it('refuses a claim after the lock leaf is withdrawn', async () => {
+    const owner = who();
+    const pay = payee(0x62);
+    const scalar = 11n;
+    const blind = 13n;
+    const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind);
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    const opened = deposit({
+      state,
+      dest: owner.dest,
+      nanos: PI_SHE_NANOS,
+      commit: leaf.commit,
+      blind,
+      rangeProof: proveRange(PI_SHE_NANOS, blind),
+      nowMs: T0,
+      ownerPub: owner.pub,
+    });
+    assert.equal(opened.ok, true, opened.reason);
+    assert.ok(appendVaultLockNote(state, leaf.note));
+    const inclusive = state.vaultLockRoot;
+    state.epochStartRoots = { 0: inclusive };
+    const proved = proveVaultReward({
+      locks: [{ amount: PI_SHE_NANOS, scalar, blind }],
+      which: 0,
+      rootEpoch: 0,
+      earnEpoch: 0,
+      bps: GENESIS_BPS,
+      remainMs: span,
+      span,
+      dest20: pay.d20,
+    });
+    assert.ok(proved);
+    assert.equal(proved.rootHex, inclusive);
+    const retire = proveLeafRetire({ scalar, epoch: 0, leaf: leaf.note });
+    assert.ok(retire);
+    const portal = portalIdFromDest(owner.dest);
+    const tx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'retire-wd' });
+    tx.principalProof = provePrincipalOpen(leaf.commit, PI_SHE_NANOS, blind, tx, portal);
+    tx.retireProof = retire.proof;
+    const paid = withdraw({
+      state,
+      dest: owner.dest,
+      nowMs: at,
+      principal: PI_SHE_NANOS,
+      principalProof: tx.principalProof,
+      retireProof: retire.proof,
+      tx,
+    });
+    assert.equal(paid.ok, true, paid.reason);
+    const claim = rewardClaimTx({ to: pay.to, vault: proved, id: 'claim-after-withdraw' });
+    const refused = applyReserveBlock({
+      state,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, claim] },
+      nowMs: at,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'double_mint');
+    const live = cloneVault(state);
+    live.epochStartRoots = { 0: state.vaultLockRoot };
+    const missing = applyReserveBlock({
+      state: live,
+      block: {
+        height: HEIGHT,
+        txs: [{ coinbase: true, vout: [] }, rewardClaimTx({ to: pay.to, vault: proved, id: 'claim-live-root' })],
+      },
+      nowMs: at,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.reason, 'unsigned');
+
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
+    assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, inclusive))).ok, true);
+    const burned = await callReserve(session, encodeRetire(retire.nullifierHex, retire.proof));
+    assert.equal(burned.ok, true, burned.reason);
+    const evmClaim = await callReserve(
+      session,
+      encodeClaim(proved.nullifier, proved.nanos, proved.blob, 0, packVaultOutput(proved.note)),
+    );
+    assert.equal(evmClaim.ok, false);
+    assert.equal(evmClaim.reason, 'already_minted');
   });
 });

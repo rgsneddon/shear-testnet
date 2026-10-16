@@ -932,7 +932,7 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
       }
     }
     if (claimed !== 0) {
-      if (!hiddenPrincipalOpens(reserveState, portal, clock, claimed, tx?.principalProof)) {
+      if (!hiddenPrincipalOpens(reserveState, portal, clock, claimed, tx?.principalProof, tx)) {
         return { ok: false, reason: 'insufficient' };
       }
       return { ok: true, principal: claimed, claimed, cap: claimed, mintId };

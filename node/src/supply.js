@@ -17,7 +17,7 @@ import {
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
 import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifiedInputNanos } from '../../crypto/note.js';
-import { publicReserveReceipt } from '../../crypto/dummy.js';
+import { publicReserveReceipt, publicReceiptNanos } from '../../crypto/dummy.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
@@ -124,16 +124,9 @@ function vaultAccruedNanos(vault) {
   return n;
 }
 
-function publishedLockNanos(tx) {
-  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
-  const o = outs.find((row) => String(row?.kind || '') === 'lock') || outs[0] || {};
-  if (o?.valueProof?.v != null && o.valueProof.v !== '') return asLocked(o.valueProof.v);
-  return asLocked(tx?.nanos);
-}
-
 function openedLockNanos(tx) {
   if (!tx || tx.coinbase || String(tx.kind || '') !== 'lock') return 0n;
-  if (publicReserveReceipt(tx)) return publishedLockNanos(tx);
+  if (publicReserveReceipt(tx)) return publicReceiptNanos(tx);
   const noted = lockNotePrincipal(tx);
   if (noted > 0n) return noted;
   const act = reserveAction(tx);
