@@ -814,7 +814,9 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
  * withdraw any amount. The cap is the withdrawable legacy principal plus
  * the pro-rata interest due at the header time. A missing header time
  * pays no principal. interestNanos(staked, bps) is one full epoch, and a
- * mid-epoch lock does not earn that figure.
+ * mid-epoch lock does not earn that figure. A portal with no tranche list
+ * is one legacy credit: withdrawablePrincipal includes it only after its
+ * lock epoch has ended.
  */
 export function boundReserveWithdraw(tx, reserveState = null, drawn = null, clockMs = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');

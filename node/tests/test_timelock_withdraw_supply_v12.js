@@ -58,7 +58,7 @@ import {
   encodePublicView,
   executeBlockEvm,
 } from '../../crypto/reserve_evm.js';
-import { chainLoadSealHash, coinbaseTx } from '../src/chain.js';
+import { V12_GENESIS_BLOCK_HASH, chainLoadSealHash, coinbaseTx } from '../src/chain.js';
 import { createNoteLedger } from '../src/note_ledger.js';
 import { foldSupply } from '../src/supply.js';
 import { boundReserveWithdraw, verifyFundedBody } from '../../crypto/spend.js';
@@ -469,5 +469,97 @@ describe('time-locked withdraw supply', () => {
         assert.equal(paid.payout, preview.payout, name);
       }
     }
+  });
+
+  it('a tranche-less legacy balance is one credit due at its lock-epoch end', () => {
+    // v12 genesis has no portals. A live lock always records a tranche.
+    assert.equal(V12_GENESIS_BLOCK_HASH, '');
+    assert.equal(Object.keys(emptyVault().portals).length, 0);
+    const recorded = freshVault();
+    const recordedDest = destOf();
+    assert.equal(applyLock(recorded, plainLock(recordedDest, T0, 'lump-recorded'), T0).ok, true);
+    assert.equal(recorded.portals[portalIdFromDest(recordedDest)].tranches.length, 1);
+
+    function lump() {
+      const dest = destOf();
+      const state = freshVault();
+      state.epochStartMs = T0;
+      state.currentEpoch = 0;
+      const id = portalIdFromDest(dest);
+      state.portals[id] = {
+        id,
+        dest,
+        staked: BigInt(PI_SHE_NANOS),
+        idle: 0n,
+        joined: true,
+        vote: null,
+        voteEpoch: 0,
+      };
+      state.totalLockedNanos = BigInt(PI_SHE_NANOS);
+      return { dest, state, id };
+    }
+
+    const mid = T0 + Math.floor(RESERVE_EPOCH_MS / 2);
+    const early = lump();
+    assert.equal(withdraw({ state: early.state, dest: early.dest, nowMs: mid }).reason, 'epoch_open');
+    const earlyTx = withdrawTx({ from: early.dest, to: early.dest, nanos: PI_SHE_NANOS, id: 'lump-mid' });
+    const earlyBound = boundReserveWithdraw(earlyTx, early.state, new Set(), mid);
+    assert.equal(earlyBound.ok, false);
+    assert.equal(earlyBound.reason, 'insufficient');
+    assert.equal(supplyIdentity(early.state).ok, true);
+    assert.equal(Number(early.state.totalLockedNanos), PI_SHE_NANOS);
+
+    for (const [label, when] of [['at', DRAW], ['after', DRAW + 1]]) {
+      const { dest, state } = lump();
+      const preview = previewWithdraw(state, dest, when);
+      assert.equal(preview.principal, PI_SHE_NANOS, label);
+      assert.equal(preview.interest, 0, label);
+      assert.equal(preview.payout, PI_SHE_NANOS, label);
+      const exact = withdrawTx({ from: dest, to: dest, nanos: preview.payout, id: `lump-${label}` });
+      const bound = boundReserveWithdraw(exact, state, new Set(), when);
+      assert.equal(bound.ok, true, `${label} ${bound.reason}`);
+      assert.equal(bound.cap, preview.payout, label);
+      const over = boundReserveWithdraw(
+        withdrawTx({ from: dest, to: dest, nanos: preview.payout + 1, id: `lump-${label}-over` }),
+        state,
+        new Set(),
+        when,
+      );
+      assert.equal(over.ok, false, label);
+      assert.equal(over.reason, 'insufficient', label);
+      const paid = withdraw({ state, dest, nowMs: when });
+      assert.equal(paid.ok, true, `${label} ${paid.reason}`);
+      assert.equal(paid.principal, PI_SHE_NANOS, label);
+      assert.equal(paid.interest, 0, label);
+      assert.equal(paid.payout, PI_SHE_NANOS, label);
+      const identity = supplyIdentity(state);
+      assert.equal(identity.ok, true, `${label} ${identity.reason}`);
+      assert.equal(identity.mintedReward, 0, label);
+      assert.equal(Number(state.totalLockedNanos), 0, label);
+    }
+
+    const later = lump();
+    later.state.bonusEnacted = true;
+    const nextMid = DRAW + Math.floor(RESERVE_EPOCH_MS / 2);
+    const rolled = applyReserveBlock({
+      state: later.state,
+      block: { height: 2, txs: [] },
+      nowMs: nextMid,
+      genesisMs: T0,
+    });
+    assert.equal(rolled.some((row) => row && row.ok === false), false, JSON.stringify(rolled));
+    assert.equal(later.state.currentEpoch, 1);
+    assert.equal(later.state.portals[later.id].lockEpoch, 0);
+    const still = previewWithdraw(later.state, later.dest, nextMid);
+    assert.equal(still.principal, PI_SHE_NANOS);
+    assert.equal(still.payout, PI_SHE_NANOS);
+    const paidLater = withdraw({ state: later.state, dest: later.dest, nowMs: nextMid });
+    assert.equal(paidLater.ok, true, paidLater.reason);
+    assert.equal(paidLater.principal, PI_SHE_NANOS);
+    assert.equal(paidLater.interest, 0);
+    assert.equal(paidLater.payout, PI_SHE_NANOS);
+    const laterIdentity = supplyIdentity(later.state);
+    assert.equal(laterIdentity.ok, true, laterIdentity.reason);
+    assert.equal(laterIdentity.mintedReward, 0);
   });
 });

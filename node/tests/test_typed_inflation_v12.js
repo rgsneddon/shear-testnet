@@ -29,6 +29,14 @@ import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 
 const KINDS = ['lock', 'vote', 'withdraw', 'vortice-register'];
 const AMOUNTS = [1, 1_000_000_000, 50_000_000_000];
+// One epoch after genesis. A tranche-less lump locked in epoch 0 is due,
+// so these cases still reach the mint and payout gates.
+const LUMP_GENESIS = 1;
+const LUMP_CLOCK = 1 + RESERVE_EPOCH_MS;
+
+function dueLump(nanos, extra = {}) {
+  return { staked: nanos, idle: 0, lockEpoch: 0, ...extra };
+}
 
 function mine(tpl) {
   return {
@@ -296,17 +304,16 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
       signSpendTx(redirected, thief.key);
       const state = {
         epochBps: 0,
+        genesisMs: LUMP_GENESIS,
         portals: {
-          [victimId]: {
-            staked: nanos,
-            idle: 0,
+          [victimId]: dueLump(nanos, {
             ownerPub: owner.id.spendPub.toString('hex'),
             payout: owner.dest,
             payoutPortalId: portalIdFromDest(owner.dest),
-          },
+          }),
         },
       };
-      const cap = boundReserveWithdraw(redirected, state, null, 1);
+      const cap = boundReserveWithdraw(redirected, state, null, LUMP_CLOCK);
       assert.equal(cap.reason, 'payout_mismatch', String(nanos));
       const foreign = {
         kind: 'withdraw',
@@ -374,14 +381,13 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
     const dest = stealthBox().dest;
     const id = portalIdFromDest(dest);
     for (const nanos of AMOUNTS) {
-      const portal = {
-        staked: nanos,
-        idle: 0,
+      const portal = dueLump(nanos, {
         payout: dest,
         payoutPortalId: id,
-      };
+      });
       const state = {
         epochBps: 0,
+        genesisMs: LUMP_GENESIS,
         currentEpoch: 4,
         mintedIds: Object.create(null),
         portals: { [id]: { ...portal } },
@@ -396,13 +402,13 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vout: [{ ...opened, kind: 'withdraw', address: dest }],
       };
       const drawn = new Set();
-      const first = boundReserveWithdraw(tx, state, drawn, 1);
+      const first = boundReserveWithdraw(tx, state, drawn, LUMP_CLOCK);
       assert.equal(first.ok, true, `${nanos} ${first.reason}`);
       drawn.add(first.mintId);
-      const second = boundReserveWithdraw({ ...tx, id: 'again' }, state, drawn, 1);
+      const second = boundReserveWithdraw({ ...tx, id: 'again' }, state, drawn, LUMP_CLOCK);
       assert.equal(second.reason, 'double_mint', `${nanos} ${second.reason}`);
       state.mintedIds[first.mintId] = true;
-      const later = boundReserveWithdraw({ ...tx, id: 'later' }, state, new Set(), 1);
+      const later = boundReserveWithdraw({ ...tx, id: 'later' }, state, new Set(), LUMP_CLOCK);
       assert.equal(later.reason, 'double_mint', `${nanos} later ${later.reason}`);
 
       const foreign = boundReserveWithdraw({
@@ -411,9 +417,10 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vin: [{ commit: Buffer.alloc(32, 9) }],
       }, {
         epochBps: 0,
+        genesisMs: LUMP_GENESIS,
         currentEpoch: 4,
         portals: { [id]: { ...portal } },
-      }, null, 1);
+      }, null, LUMP_CLOCK);
       assert.equal(foreign.reason, 'mint_forbidden', `${nanos} ${foreign.reason}`);
 
       const broken = sealNote(nanos, { dest20: hash20FromAddress(dest), kind: 'withdraw' });
@@ -423,9 +430,10 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vout: [{ ...broken, kind: 'withdraw' }],
       }, {
         epochBps: 0,
+        genesisMs: LUMP_GENESIS,
         currentEpoch: 4,
         portals: { [id]: { ...portal } },
-      }, null, 1);
+      }, null, LUMP_CLOCK);
       assert.equal(unopened.reason, 'mint_amount', `${nanos} ${unopened.reason}`);
 
       const partial = sealNote(nanos > 1 ? nanos - 1 : 0, {
@@ -438,9 +446,10 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vout: [{ ...partial, kind: 'withdraw' }],
       }, {
         epochBps: 0,
+        genesisMs: LUMP_GENESIS,
         currentEpoch: 9,
         portals: { [id]: { ...portal } },
-      }, null, 1);
+      }, null, LUMP_CLOCK);
       assert.equal(short.reason, 'mint_amount', `${nanos} short ${short.reason}`);
 
       const vault = emptyVault();

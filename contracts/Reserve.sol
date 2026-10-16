@@ -118,6 +118,9 @@ contract Reserve {
         uint256 rewardEpoch;
         uint256 accruedReward;
         Tranche[] tranches;
+        /// 0: a tranche-less balance is locked in currentEpoch.
+        /// Otherwise the lock epoch is legacyEpochPlus - 1, pinned before a roll.
+        uint256 legacyEpochPlus;
     }
 
     bytes32 public immutable magic;
@@ -419,10 +422,29 @@ contract Reserve {
         deferEpochRoll = hold;
     }
 
+    /// A balance with no tranche list is one legacy credit. Pin its lock
+    /// epoch before currentEpoch moves, so a later roll does not lock it again.
+    function _pinLegacyEpochs() internal {
+        uint256 nKeys = portalKeys.length;
+        uint256 stamp = currentEpoch + 1;
+        for (uint256 i = 0; i < nKeys; i++) {
+            Portal storage p = portals[portalKeys[i]];
+            if (p.tranches.length != 0 || p.legacyEpochPlus != 0) continue;
+            if (p.active + p.idle == 0) continue;
+            p.legacyEpochPlus = stamp;
+        }
+    }
+
+    function _legacyLockEpoch(Portal storage p) internal view returns (uint256) {
+        if (p.legacyEpochPlus == 0) return currentEpoch;
+        return p.legacyEpochPlus - 1;
+    }
+
     function _syncEpoch(uint256 nowTs) internal {
         if (clockGenesis == 0) return;
         uint256 idx = _chainEpoch(nowTs);
         if (epochStart == 0) {
+            _pinLegacyEpochs();
             currentEpoch = idx;
             epochStart = clockGenesis + idx * epochLengthMs();
             bonusEnacted = false;
@@ -431,6 +453,7 @@ contract Reserve {
         }
         if (idx == currentEpoch) return;
         if (!bonusEnacted) return;
+        _pinLegacyEpochs();
         // Walk the skipped epochs in order. A commit is that epoch's rate
         // and becomes the last paid rate. A gap with no commit keeps it.
         // The epoch we open, if it has no commit, pays that same rate.
@@ -909,7 +932,10 @@ contract Reserve {
                 release += p.tranches[i].amount;
             }
         }
-        if (credits == 0) release = active + idleBal;
+        // No tranche list: one legacy credit for the whole balance. It is
+        // payable only after its lock epoch. The lock instant was not stored,
+        // so this credit does not earn.
+        if (credits == 0 && chain > _legacyLockEpoch(p)) release = active + idleBal;
         if (release == 0) {
             if (noteMatured > 0) revert NotePrincipal();
             revert EpochNotEnded();

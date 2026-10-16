@@ -1100,7 +1100,24 @@ function portalOf(state, destOrId) {
   return state.portals[id];
 }
 
+/**
+ * A balance with no tranche list is one legacy credit. Pin its lock epoch
+ * before the vault epoch moves, so a later roll does not lock it again.
+ */
+function pinLegacyLockEpochs(state) {
+  const epoch = Math.floor(Number(state?.currentEpoch) || 0);
+  for (const portal of Object.values(state?.portals || {})) {
+    if (!portal || typeof portal !== 'object') continue;
+    if (Array.isArray(portal.tranches) && portal.tranches.length > 0) continue;
+    if (asBig(portal.staked) + asBig(portal.idle) <= 0n) continue;
+    const raw = portal.lockEpoch;
+    if (raw != null && raw !== '' && Number.isInteger(Number(raw)) && Number(raw) >= 0) continue;
+    portal.lockEpoch = epoch;
+  }
+}
+
 function applyEpochOpen(state, nowMs, idx) {
+  pinLegacyLockEpochs(state);
   const magic = state.magic || MAGIC_TESTNET;
   const activationHeight = state.oracleActivationHeight === undefined
     ? ORACLE_ACTIVATION_HEIGHT
@@ -1538,14 +1555,44 @@ function trancheDue(state, tranche, nowIdx, span, earns) {
   return total;
 }
 
+/** Lock epoch of a balance that never recorded a tranche list. */
+function legacyLockEpoch(state, portal) {
+  const raw = portal?.lockEpoch;
+  if (raw != null && raw !== '' && Number.isInteger(Number(raw)) && Number(raw) >= 0) {
+    return Math.floor(Number(raw));
+  }
+  return Math.floor(Number(state?.currentEpoch) || 0);
+}
+
+/**
+ * Recorded credits, or one legacy credit for the whole balance.
+ * The lock instant inside that epoch was not stored, so the credit does
+ * not earn. Principal is due only after the lock epoch ends.
+ */
+function balanceCredits(state, portal) {
+  const tranches = portal?.tranches;
+  if (Array.isArray(tranches) && tranches.length > 0) return tranches;
+  const whole = asBig(portal?.staked) + asBig(portal?.idle);
+  if (whole <= 0n) return [];
+  const epoch = legacyLockEpoch(state, portal);
+  return [{
+    amount: whole,
+    epoch,
+    remainMs: 0,
+    fullFrom: epoch + 1,
+    partialPaid: true,
+    noteIsPrincipal: false,
+  }];
+}
+
 /**
  * Every recorded credit is still inside its own lock epoch. One open
  * top-up does not re-lock an earlier deposit whose epoch has already ended.
- * A portal with no tranche list is the legacy whole balance.
+ * A portal with no tranche list is one credit in its lock epoch.
  */
 function arrivalEpochOpen(state, portal, nowMs) {
-  const tranches = portal?.tranches;
-  if (!Array.isArray(tranches) || tranches.length === 0) return false;
+  const tranches = balanceCredits(state, portal);
+  if (tranches.length === 0) return false;
   const chain = chainEpochIndex(state, nowMs);
   for (const tranche of tranches) {
     if (chain > Math.floor(Number(tranche?.epoch) || 0)) return false;
@@ -1555,14 +1602,13 @@ function arrivalEpochOpen(state, portal, nowMs) {
 
 /**
  * Matured principal split by who carries it.
- * A time-locked note carries its own principal. A legacy tranche, or a
- * portal with no tranche list, is what withdraw() may pay.
- * An open top-up is in neither number.
+ * A time-locked note carries its own principal. A legacy tranche is what
+ * withdraw() may pay. A portal with no tranche list is one legacy credit,
+ * due only after its lock epoch. An open top-up is in neither number.
  */
 function maturedSplit(state, portal, nowMs) {
-  const tranches = portal?.tranches;
-  const whole = asBig(portal?.staked) + asBig(portal?.idle);
-  if (!Array.isArray(tranches) || tranches.length === 0) return { note: 0n, legacy: whole };
+  const tranches = balanceCredits(state, portal);
+  if (tranches.length === 0) return { note: 0n, legacy: 0n };
   const chain = chainEpochIndex(state, nowMs);
   let note = 0n;
   let legacy = 0n;
@@ -1611,11 +1657,12 @@ function settlePortal(state, p, nowMs) {
   const span = epochMs(state.magic);
   const qualified = stakeQualified(state, p);
   let total = capReward(p.accruedReward);
-  for (const tranche of p.tranches || []) {
+  for (const tranche of balanceCredits(state, p)) {
     const earns = qualified && earnsStakeReward(state, tranche);
     total = addReward(total, trancheDue(state, tranche, nowIdx, span, earns));
     // Below π the cursors stay put. A later pre-cutoff top-up that crosses
     // π must still be able to pay the epochs this credit already sat.
+    // A synthetic legacy credit is not stored, so its cursor write is a copy.
     if (!earns) continue;
     if (!tranche.partialPaid && nowIdx > tranche.epoch) tranche.partialPaid = true;
     const from = Math.floor(Number(tranche.fullFrom ?? tranche.epoch + 1));
@@ -1632,7 +1679,7 @@ export function portalEpochInterest(state, p, nowMs) {
   const span = epochMs(state?.magic);
   const qualified = stakeQualified(state, p);
   let total = capReward(p.accruedReward);
-  for (const tranche of p.tranches || []) {
+  for (const tranche of balanceCredits(state, p)) {
     const earns = qualified && earnsStakeReward(state, tranche);
     total = addReward(total, trancheDue(state, tranche, nowIdx, span, earns));
   }
