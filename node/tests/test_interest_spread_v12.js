@@ -123,8 +123,15 @@ function lockOf(miner, portal, stake, id) {
   return lockTx({ from: miner, to: portal, nanos: stake, id });
 }
 
-function drawOf(portal, miner, nanos, id) {
-  return withdrawTx({ from: portal, to: miner, nanos, id });
+function drawOf(portal, miner, nanos, id, bind = null) {
+  return withdrawTx({
+    from: portal,
+    to: miner,
+    nanos,
+    id,
+    nowMs: bind?.nowMs,
+    authBind: bind,
+  });
 }
 
 function foldOpts() {
@@ -254,7 +261,10 @@ describe('principal-only withdraw receipts', () => {
     const idleChain = [
       potBlock(GENESIS, idleMiner, [lockOf(idleMiner, portalDest(), PI_SHE_NANOS, 'idle-open')]),
       potBlock(late, idleMiner, [lockOf(idleMiner, parked, idleStake, 'idle-lock')]),
-      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, idleStake, 'idle-draw')]),
+      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, idleStake, 'idle-draw', {
+        nowMs: DRAW,
+        locks: [{ nanos: idleStake, at: late }],
+      })]),
     ];
     expectVerified(idleChain, 0, 'idle');
   });
@@ -279,7 +289,10 @@ describe('principal-only withdraw receipts', () => {
       ]),
       potBlock(GENESIS + 2 * EPOCH_MS, miner, [lockOf(miner, second, stake, 'bps-b')]),
       potBlock(GENESIS + 3 * EPOCH_MS, miner, [
-        drawOf(second, miner, stake, 'bps-wb'),
+        drawOf(second, miner, stake, 'bps-wb', {
+          nowMs: GENESIS + 3 * EPOCH_MS,
+          locks: [{ nanos: stake, at: GENESIS + 2 * EPOCH_MS }],
+        }),
       ]),
     ];
     expectVerified(chain, 0, 'genesis-rate');

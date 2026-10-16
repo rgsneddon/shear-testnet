@@ -555,6 +555,8 @@ describe('aggregated reward root', () => {
       portalId: portalIdFromDest(dest),
       nanos: PI_SHE_NANOS,
       dest,
+      state,
+      nowMs: draw,
     });
     const drawAuth = packRewardAuth({ ownerPub: alice.pub, sig: drawTx.rewardSig, dest });
     const drawn = await callReserve(session, encodeWithdraw(dest, draw, drawAuth));

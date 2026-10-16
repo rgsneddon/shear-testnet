@@ -35,8 +35,8 @@ import {
   shearMagicBytes,
 } from './reserve_evm.js';
 import { GENESIS_BPS } from './reserve_oracle.js';
-import { encodeDest, newIdentity, spendDestOf } from './address.js';
-import { boundReserveWithdraw } from './spend.js';
+import { ed25519RawPub, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from './address.js';
+import { boundReserveWithdraw, reserveAuth, signSpendTx } from './spend.js';
 import {
   applyReserveBlock,
   cloneVault,
@@ -57,9 +57,15 @@ import {
   withdraw,
   withdrawMintId,
   withdrawPaysInterest,
+  withdrawRewardRejected,
   withdrawTx,
+  portalOwnerKey,
 } from './reserve_vault.js';
-import { deposit, encodeDeposit, encodeWithdraw, portalOwner } from './owned_portal.js';
+import { deposit, encodeDeposit, encodeWithdraw, ownerFor, ownerWithdrawAuth, portalOwner } from './owned_portal.js';
+import { decodeHeader, encodeHeader } from './header.js';
+import { merkleRoot } from './merkle.js';
+import { GENESIS_BITS_PACKED, RESERVE_PROGRAM } from './asert.js';
+import { GENESIS_PREV, buildTemplate, digestTx, verifyBlock } from '../node/src/chain.js';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -223,7 +229,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(view.liveHashBonusNanos, 2);
     assert.equal(view.oracleBps, 284);
     assert.equal(view.bonusEnacted, true);
-    const w = await callReserve(s, encodeWithdraw(destB, end));
+    const w = await callReserve(s, encodeWithdraw(destB, end, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: late }],
+    }));
     assert.equal(w.ok, true, w.reason);
     const paid = decodeWithdraw(w.returnValue);
     assert.equal(paid.principal, PI_SHE_NANOS);
@@ -250,7 +258,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal((await callReserve(s, encodeObserveRate(9999, t0 + 4))).ok, false);
     const end = t0 + RESERVE_EPOCH_MS;
     assert.equal((await callReserve(s, encodeEnact(end))).ok, true);
-    const w = await callReserve(s, encodeWithdraw(destA, end));
+    const w = await callReserve(s, encodeWithdraw(destA, end, undefined, PI_SHE_NANOS, {
+      locks: [
+        { nanos: NANOS_PER_SHE, at: t0 },
+        { nanos: rest, at: t0 },
+      ],
+    }));
     assert.equal(w.ok, true, w.reason);
     const paid = decodeWithdraw(w.returnValue);
     assert.equal(paid.interest, 0);
@@ -551,8 +564,10 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const tx = withdrawTx({ from: dest, to: dest, nanos: preview.payout, id: 'paid-reward' });
     signWithdrawReward(tx, owner.privateKey, {
       portalId: portalIdFromDest(dest),
-      nanos: preview.principal,
+      nanos: preview.payout,
       dest,
+      state: js,
+      nowMs: end,
     });
     const bound = boundReserveWithdraw(tx, js, new Set(), end);
     assert.equal(bound.ok, true, bound.reason);
@@ -596,7 +611,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const drawn = await executeBlockEvm(session, [
       { coinbase: true, vout: [], rewardRoot: plan.root },
       tx,
-    ], end, t0);
+    ], end, t0, plan.root);
     assert.equal(drawn.ok, true, drawn.reason);
     assert.equal(drawn.withdrawInterest, 0);
     assert.equal(drawn.withdrawEarned, plan.rows[0].nanos);
@@ -805,7 +820,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(refused.reason, 'unsigned');
     const stranger = newIdentity();
     const stolen = withdrawTx({ from: dest, to: payout, nanos: preview.payout, id: 'wd-stolen' });
-    signWithdrawReward(stolen, stranger.privateKey, { portalId, nanos: preview.principal, dest: payout });
+    signWithdrawReward(stolen, stranger.privateKey, {
+      portalId, nanos: preview.payout, dest: payout, state: js, nowMs: end,
+    });
     const stolenApply = applyReserveBlock({
       state: cloneVault(js),
       block: { txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }, stolen] },
@@ -816,7 +833,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(stolenApply.ok, false);
     assert.equal(stolenApply.reason, 'unsigned');
     const tx = withdrawTx({ from: dest, to: payout, nanos: preview.payout, id: 'wd-owner' });
-    signWithdrawReward(tx, owner.privateKey, { portalId, nanos: preview.principal, dest: payout });
+    signWithdrawReward(tx, owner.privateKey, {
+      portalId, nanos: preview.payout, dest: payout, state: js, nowMs: end,
+    });
     const applied = applyReserveBlock({
       state: js,
       block: { txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }, tx] },
@@ -835,7 +854,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, rewardOwnerCommit(ownerPub)))).ok, true);
     const bareEvm = await callReserve(session, encodeWithdraw(dest, end));
     assert.equal(bareEvm.ok, false);
-    const stolenAuth = packRewardAuth({ ownerPub: stolen.spendPub, sig: stolen.rewardSig, dest: payout });
+    const stolenAuth = packRewardAuth({ ownerPub: stolen.ownerPub, sig: stolen.rewardSig, dest: payout });
     const stolenEvm = await callReserve(session, encodeWithdraw(dest, end, stolenAuth));
     assert.equal(stolenEvm.ok, false);
     const auth = packRewardAuth({ ownerPub, sig: tx.rewardSig, dest: payout });
@@ -871,7 +890,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
       const session = await bootReserveEvm();
       assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
       assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, lateAt))).ok, true);
-      const evm = await callReserve(session, encodeWithdraw(dest, at));
+      const evm = await callReserve(session, encodeWithdraw(dest, at, undefined, PI_SHE_NANOS, {
+        locks: [{ nanos: PI_SHE_NANOS, at: lateAt }],
+      }));
       assert.equal(evm.ok, true, `${at} ${evm.reason}`);
       const decoded = decodeWithdraw(evm.returnValue);
       assert.equal(decoded.interest, 0, `evm ${at}`);
@@ -905,6 +926,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
     ], end, t0);
     assert.equal(omitted.ok, false);
     assert.equal(omitted.reason, 'stake_reward');
+    const unsolicited = await executeBlockEvm(session, [
+      { coinbase: true, vout: [], rewardRoot: plan.root },
+      tx,
+    ], end, t0);
+    assert.equal(unsolicited.ok, false);
+    assert.equal(unsolicited.reason, 'stake_reward');
 
     const small = PI_SHE_NANOS - 1;
     const quiet = encodeDest(Buffer.alloc(20, 0x73));
@@ -916,10 +943,13 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal((await callReserve(session2, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(session2, encodeDeposit(quiet, small, t0))).ok, true);
     const quietTx = withdrawTx({ from: quiet, to: quiet, nanos: small, id: 'no-rows' });
-    signWithdrawReward(quietTx, portalOwner.privateKey, {
+    const quietOwner = ownerFor(quiet);
+    signWithdrawReward(quietTx, quietOwner.key, {
       portalId: portalIdFromDest(quiet),
       nanos: small,
       dest: quiet,
+      state: below,
+      nowMs: end,
     });
     const empty = await executeBlockEvm(session2, [
       { coinbase: true, vout: [] },
@@ -928,5 +958,175 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(empty.ok, true, empty.reason);
     assert.equal(empty.withdrawInterest, 0);
     assert.equal(empty.totalLocked, 0);
+  });
+
+  it('withdraws 100 tranches across 60 epochs under 8M gas and matches JS', async () => {
+    const t0 = 1_700_000_000_000;
+    const n = 100;
+    const epochs = 60;
+    const dest = encodeDest(Buffer.alloc(20, 0x92));
+    const who = ownerFor(dest);
+    const js = emptyVault();
+    js.genesisMs = t0;
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
+    const locks = [];
+    for (let i = 0; i < n; i += 1) {
+      assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: who.pub }).ok, true, `js ${i}`);
+      const evmLock = await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, who.commit));
+      assert.equal(evmLock.ok, true, `evm ${i} ${evmLock.reason}`);
+      locks.push({ nanos: PI_SHE_NANOS, at: t0 });
+    }
+    const drawAt = t0 + epochs * RESERVE_EPOCH_MS;
+    const paid = withdraw({ state: js, dest, nowMs: drawAt });
+    assert.equal(paid.ok, true, paid.reason);
+    const drawn = await callReserve(session, encodeWithdraw(dest, drawAt, undefined, n * PI_SHE_NANOS, { locks }));
+    assert.equal(drawn.ok, true, drawn.reason);
+    assert.ok(drawn.gasUsed < 8_000_000n, `gas ${drawn.gasUsed}`);
+    assert.equal(decodeWithdraw(drawn.returnValue).principal, Number(paid.principal));
+    assert.equal(decodeWithdrawEarned(drawn.returnValue), Number(paid.earned));
+  });
+
+  it('refuses a withdraw signature replayed after a re-lock', async () => {
+    const t0 = 1_700_000_000_000;
+    const epoch = RESERVE_EPOCH_MS;
+    const dest = encodeDest(Buffer.alloc(20, 0x93));
+    const who = ownerFor(dest);
+    const js = emptyVault();
+    js.genesisMs = t0;
+    assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: who.pub }).ok, true);
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, who.commit))).ok, true);
+    const end = t0 + epoch;
+    const first = { to: dest, kind: 'withdraw', from: dest };
+    signWithdrawReward(first, who.key, {
+      portalId: portalIdFromDest(dest),
+      nanos: PI_SHE_NANOS,
+      dest,
+      state: js,
+      nowMs: end,
+    });
+    const firstAuth = ownerWithdrawAuth(dest, PI_SHE_NANOS, {
+      nowMs: end,
+      locks: [{ nanos: PI_SHE_NANOS, at: t0 }],
+    });
+    const drawn = await callReserve(session, encodeWithdraw(dest, end, firstAuth));
+    assert.equal(drawn.ok, true, drawn.reason);
+    const jsPaid = withdraw({ state: js, dest, nowMs: end });
+    assert.equal(jsPaid.ok, true, jsPaid.reason);
+    const relockAt = end;
+    assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
+    assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: relockAt, ownerPub: who.pub }).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, relockAt, who.commit))).ok, true);
+    const end2 = t0 + 2 * epoch;
+    const replay = await callReserve(session, encodeWithdraw(dest, end2, firstAuth, PI_SHE_NANOS));
+    assert.equal(replay.ok, false);
+    assert.equal(replay.reason, 'unsigned');
+    const again = { ...first, rewardSig: first.rewardSig, ownerPub: first.ownerPub };
+    const rejected = withdrawRewardRejected(js, again, end2);
+    assert.equal(rejected.reason, 'unsigned');
+    const fresh = await callReserve(session, encodeWithdraw(dest, end2, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: relockAt }],
+    }));
+    assert.equal(fresh.ok, true, fresh.reason);
+    const jsAgain = withdraw({ state: js, dest, nowMs: end2 });
+    assert.equal(jsAgain.ok, true, jsAgain.reason);
+    assert.equal(decodeWithdraw(fresh.returnValue).principal, Number(jsAgain.principal));
+  });
+
+  it('a stranger cannot lock into a fresh portal and take its owner slot', async () => {
+    const t0 = 1_700_000_000_000;
+    const victim = newIdentity();
+    const stranger = newIdentity();
+    const dest = spendDestOf(victim.spendPub);
+    const strangerDest = spendDestOf(stranger.spendPub);
+    const victimOwner = portalOwnerKey(victim.privateKey, portalIdFromDest(dest));
+    const ownerPub = Buffer.from(ed25519RawPub(victimOwner)).toString('hex');
+    assert.notEqual(ownerPub, Buffer.from(victim.spendPub).toString('hex'));
+    const strangerOwner = portalOwnerKey(stranger.privateKey, portalIdFromDest(dest));
+    const strangerPub = Buffer.from(ed25519RawPub(strangerOwner)).toString('hex');
+
+    function publicLock({ spender, portalDest, fundDest, owner }) {
+      const fund20 = hash20FromAddress(fundDest);
+      const tx = {
+        id: `lock-${portalDest.slice(-6)}-${fundDest.slice(-4)}`,
+        programId: RESERVE_PROGRAM,
+        kind: 'lock',
+        to: portalDest,
+        nanos: PI_SHE_NANOS,
+        portalId: portalIdFromDest(portalDest),
+        payoutPortalId: portalIdFromDest(fundDest),
+        ownerPub: owner,
+        vin: [{ dest20: fund20 }],
+        vout: [{
+          kind: 'lock',
+          dest20: hash20FromAddress(portalDest),
+          nanos: PI_SHE_NANOS,
+          valueProof: { v: PI_SHE_NANOS },
+        }],
+      };
+      signSpendTx(tx, spender.privateKey);
+      tx.ownerPub = owner;
+      return tx;
+    }
+
+    function asBlock(tx) {
+      const tpl = buildTemplate({
+        prev: GENESIS_PREV,
+        height: 1,
+        miner: dest,
+        bits: GENESIS_BITS_PACKED,
+        now: t0,
+        txs: [tx],
+      });
+      const decoded = decodeHeader(Buffer.from(tpl.header));
+      const header = encodeHeader({
+        version: decoded.version,
+        prevBlockHash: decoded.prevBlockHash,
+        merkleRoot: merkleRoot(tpl.txs.map((row) => digestTx(row))),
+        continuityRoot: decoded.continuityRoot,
+        timestamp: decoded.timestamp,
+        bits: decoded.bits,
+        nonce: 0n,
+        baseFee: decoded.baseFee,
+      });
+      return { ...tpl, header };
+    }
+
+    const stolenDest = publicLock({
+      spender: stranger,
+      portalDest: dest,
+      fundDest: dest,
+      owner: strangerPub,
+    });
+    const stolenId = publicLock({
+      spender: stranger,
+      portalDest: strangerDest,
+      fundDest: strangerDest,
+      owner: strangerPub,
+    });
+    stolenId.portalId = portalIdFromDest(dest);
+    stolenId.ownerPub = strangerPub;
+    signSpendTx(stolenId, stranger.privateKey);
+    const honest = publicLock({
+      spender: victim,
+      portalDest: dest,
+      fundDest: dest,
+      owner: ownerPub,
+    });
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const stolenBlock = await verifyBlock(asBlock(stolenDest), null, { probeBody: true, reserveState: state });
+    const swapped = await verifyBlock(asBlock(stolenId), null, { probeBody: true, reserveState: state });
+    const opened = await verifyBlock(asBlock(honest), null, { probeBody: true, reserveState: state });
+    assert.equal(stolenBlock.ok, false);
+    assert.equal(stolenBlock.reason, 'unsigned', stolenBlock.reason);
+    assert.equal(swapped.ok, false);
+    assert.equal(swapped.reason, 'unsigned', swapped.reason);
+    assert.notEqual(opened.reason, 'unsigned', opened.reason);
+    assert.equal(reserveAuth(honest, state).ok, true, reserveAuth(honest, state).reason);
+    assert.equal(reserveAuth(stolenDest, state).reason, 'unsigned');
+    assert.equal(state.portals?.[portalIdFromDest(dest)]?.ownerPub || '', '');
   });
 });

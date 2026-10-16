@@ -108,6 +108,8 @@ function drawBlock(ts, miner, portals, payout, principal = null) {
     to: miner,
     nanos: payout,
     id: `draw-${i}-${payout}-${ts}`,
+    nowMs: ts,
+    authBind: { genesisMs: GENESIS, nowMs: ts, locks: [{ nanos: signNanos, at: GENESIS }] },
   }, signNanos));
   return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], draws);
 }

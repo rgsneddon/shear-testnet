@@ -388,10 +388,11 @@ describe('time-locked withdraw supply', () => {
     );
     assert.equal(still.totalLockedNanos, PI_SHE_NANOS);
     const face = previewWithdraw(js, dest, DRAW).payout;
+    const owed = rewardCommitment(js, DRAW).root;
     const paid = await executeBlockEvm(session, [
-      { coinbase: true, vout: [], rewardRoot: rewardCommitment(js, DRAW).root },
+      { coinbase: true, vout: [], rewardRoot: owed },
       withdrawTx({ from: dest, to: dest, nanos: face, id: 'evm-withdraw' }),
-    ], DRAW, T0);
+    ], DRAW, T0, owed);
     assert.equal(paid.ok, true, paid.reason);
     const released = decodePublicView(
       (await callReserve(session, encodePublicView(DRAW), { staticCall: true })).returnValue,

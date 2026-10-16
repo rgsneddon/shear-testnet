@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, randomBytes, sign, verify } from 'node:crypto';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   RESERVE_PROGRAM,
   PI_SHE_NANOS,
@@ -9,7 +10,7 @@ import {
   hashBonusUnitNanos,
   MAGIC_TESTNET,
 } from './asert.js';
-import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress, ED25519_SPKI_PREFIX, ed25519RawPub } from './address.js';
+import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress, ED25519_SPKI_PREFIX, ed25519RawPub, ed25519PrivateFromSeed, ed25519SeedOf } from './address.js';
 import { attachAdmitPub } from './admit.js';
 import { fs1LeafFor } from './fs1_leaf.js';
 import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos, hashToScalar, scalarBytes } from './note.js';
@@ -345,22 +346,125 @@ export function rewardAuthMessage({ kind = 'claim', nullifier, nanos, proof, des
 }
 
 export const WITHDRAW_OWNER_TAG = 'shear-withdraw-owner-v1';
+export const TRANCHE_SET_TAG = 'shear-tranche-set-v1';
+export const PORTAL_OWNER_TAG = 'shear-portal-owner-v1';
+/** Shear EVM chain id. The withdraw signature binds this, not a caller nonce. */
+export const WITHDRAW_CHAIN_ID = 2701n;
+
+/** keccak256(magic string). The same word the Reserve stores as `magic`. */
+export function reserveMagicBytes(magic = MAGIC_TESTNET) {
+  return Buffer.from(keccak_256(Buffer.from(String(magic || MAGIC_TESTNET), 'utf8')));
+}
+
+function u256be(value) {
+  const b = Buffer.alloc(32);
+  let x = BigInt(value);
+  if (x < 0n) x = 0n;
+  for (let i = 31; i >= 0; i -= 1) {
+    b[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  return b;
+}
+
+/**
+ * Ordered commitment of the matured non-note tranches a withdraw releases.
+ * The same sha256 chain the EVM builds before it drops those tranches.
+ */
+export function trancheSetHash(tranches, chain) {
+  let h = createHash('sha256').update(Buffer.from(TRANCHE_SET_TAG)).digest();
+  const at = Math.floor(Number(chain) || 0);
+  for (const tranche of tranches || []) {
+    const epoch = Math.floor(Number(tranche?.epoch) || 0);
+    if (at <= epoch) continue;
+    if (tranche?.noteIsPrincipal || tranche?.notePrincipal) continue;
+    const amount = asBig(tranche?.amount);
+    const remain = BigInt(Math.max(0, Math.floor(Number(tranche?.remainMs) || 0)));
+    h = createHash('sha256')
+      .update(h)
+      .update(u256be(amount))
+      .update(u256be(epoch))
+      .update(u256be(remain))
+      .digest();
+  }
+  return h;
+}
+
+/**
+ * One-time owner seed for a lock. The wallet secret and the portal id
+ * never leave the signer. A different lock id is a different key, so
+ * portals of one wallet do not share a public key.
+ */
+export function portalOwnerSeed(spendKeyOrSeed, lockId) {
+  let seed = spendKeyOrSeed;
+  if (seed && typeof seed === 'object' && !Buffer.isBuffer(seed)) {
+    try { seed = ed25519SeedOf(seed); } catch { return null; }
+  }
+  const seedBuf = Buffer.isBuffer(seed) ? seed : Buffer.from(seed || []);
+  const idHex = String(lockId || '').replace(/^0x/i, '');
+  if (seedBuf.length !== 32 || !/^[0-9a-f]{64}$/i.test(idHex)) return null;
+  return createHash('sha256')
+    .update(Buffer.from(PORTAL_OWNER_TAG))
+    .update(seedBuf)
+    .update(Buffer.from(idHex, 'hex'))
+    .digest();
+}
+
+/** Ed25519 key derived from the wallet secret and the portal id. */
+export function portalOwnerKey(spendKeyOrSeed, lockId) {
+  const seed = portalOwnerSeed(spendKeyOrSeed, lockId);
+  if (!seed) return null;
+  return ed25519PrivateFromSeed(seed);
+}
+
+/** Magic, chain id, release epoch, and tranche set for one withdraw. */
+export function withdrawBinding(state, portal, nowMs) {
+  const epoch = chainEpochIndex(state, nowMs);
+  return {
+    epoch,
+    trancheSet: trancheSetHash(portal?.tranches || [], epoch),
+    magic: reserveMagicBytes(state?.magic || MAGIC_TESTNET),
+    chainId: WITHDRAW_CHAIN_ID,
+  };
+}
 
 /**
  * Bytes the owner signs for a principal withdraw.
  * The nullifier is the portal id. The amount is the principal.
- * The destination is the payout. The lock dest is the withdraw's own subject.
+ * The magic, chain id, release epoch, and tranche set are bound so a
+ * signature cannot be replayed onto a later lock. The destination is
+ * the payout. The lock dest is the withdraw's own subject.
  */
-export function withdrawOwnerMessage({ nullifier, nanos, dest } = {}) {
+export function withdrawOwnerMessage({
+  nullifier, nanos, dest, magic, chainId, epoch, trancheSet,
+} = {}) {
   const id = Buffer.from(String(nullifier || '').replace(/^0x/i, ''), 'hex');
   if (id.length !== 32) return null;
   const n = BigInt(nanos);
   if (n <= 0n || n > 0xffffffffffffffffn) return null;
+  const mag = Buffer.isBuffer(magic) ? magic : Buffer.from(magic || []);
+  if (mag.length !== 32) return null;
+  const setRaw = Buffer.isBuffer(trancheSet) ? trancheSet : Buffer.from(String(trancheSet || ''), 'hex');
+  if (setRaw.length !== 32) return null;
+  let chain = 0n;
+  let at = 0n;
+  try {
+    chain = BigInt(chainId);
+    at = BigInt(epoch);
+  } catch {
+    return null;
+  }
+  if (chain < 0n || chain > 0xffffffffffffffffn) return null;
+  if (at < 0n || at > 0xffffffffffffffffn) return null;
   const destBuf = Buffer.from(String(dest || ''), 'utf8');
   return Buffer.concat([
     Buffer.from(WITHDRAW_OWNER_TAG),
     id,
     u64le(n),
+    mag,
+    u64le(chain),
+    u64le(at),
+    setRaw,
     u32le(destBuf.length),
     destBuf,
   ]);
@@ -678,11 +782,20 @@ export function withdrawRewardRejected(state, tx, nowMs) {
   if (!/^[0-9a-f]{64}$/.test(owner)) return { ok: false, reason: 'owner_missing', nanos: 0 };
   const principal = Math.floor(Number(withdrawablePrincipal(state, portal, nowMs)) || 0);
   if (!(principal > 0)) return null;
-  const pub = String(tx?.spendPub || '').replace(/^0x/i, '').toLowerCase();
-  if (pub !== owner) return { ok: false, reason: 'unsigned', nanos: 0 };
+  const presented = String(tx?.ownerPub || '').replace(/^0x/i, '').toLowerCase();
+  if (presented && presented !== owner) return { ok: false, reason: 'unsigned', nanos: 0 };
   const dest = String(tx?.to || act?.payout || '');
-  const message = withdrawOwnerMessage({ nullifier: id, nanos: principal, dest });
-  if (!verifyRewardAuth(message, pub, tx?.rewardSig)) return { ok: false, reason: 'unsigned', nanos: 0 };
+  const bind = withdrawBinding(state, portal, nowMs);
+  const message = withdrawOwnerMessage({
+    nullifier: id,
+    nanos: principal,
+    dest,
+    magic: bind.magic,
+    chainId: bind.chainId,
+    epoch: bind.epoch,
+    trancheSet: bind.trancheSet,
+  });
+  if (!verifyRewardAuth(message, owner, tx?.rewardSig)) return { ok: false, reason: 'unsigned', nanos: 0 };
   return null;
 }
 
@@ -1997,7 +2110,7 @@ export function lockTx({
     vout: [out],
   };
   const pub = String(ownerPub || '').replace(/^0x/i, '').toLowerCase();
-  if (/^[0-9a-f]{64}$/.test(pub)) tx.spendPub = pub;
+  if (/^[0-9a-f]{64}$/.test(pub)) tx.ownerPub = pub;
   return tx;
 }
 
@@ -2122,19 +2235,31 @@ export function rewardClaimTx({
  * Signature that lets the owner withdraw principal. The nullifier is the
  * portal id. The amount is the principal. The destination is the payout.
  */
-export function signWithdrawReward(tx, ownerKey, { portalId, nanos, dest } = {}) {
+export function signWithdrawReward(tx, ownerKey, {
+  portalId, nanos, dest, state = null, nowMs = null, epoch = null, trancheSet = null,
+  tranches = null, magic = null, chainId = null,
+} = {}) {
   if (!tx || !ownerKey) return tx;
   const id = String(portalId || '').replace(/^0x/i, '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(id)) return tx;
+  const bound = state && nowMs != null ? withdrawBinding(state, state.portals?.[id], nowMs) : null;
+  const at = epoch != null ? epoch : bound?.epoch;
+  const set = trancheSet || bound?.trancheSet || (tranches && at != null ? trancheSetHash(tranches, at) : null);
+  const mag = magic || bound?.magic || null;
+  const cid = chainId != null ? chainId : (bound ? bound.chainId : null);
   const message = withdrawOwnerMessage({
     nullifier: id,
     nanos,
     dest: dest || tx.to || '',
+    magic: mag,
+    chainId: cid,
+    epoch: at,
+    trancheSet: set,
   });
   const sig = signRewardAuth(message, ownerKey);
   if (!sig) return tx;
   tx.rewardSig = sig;
-  tx.spendPub = ed25519RawPub(ownerKey).toString('hex');
+  tx.ownerPub = ed25519RawPub(ownerKey).toString('hex');
   return tx;
 }
 
@@ -2347,6 +2472,9 @@ export function reserveDigestSuffix(tx) {
     i64le(fields.nanos),
     fields.commit,
   ];
+  if (fields.kind === KIND_LOCK) {
+    parts.push(rewardOwnerPub(tx?.ownerPub));
+  }
   if (fields.kind === KIND_WITHDRAW) {
     parts.push(lenPrefUtf8(String(tx?.id || '')));
     parts.push(withdrawNonceSigned(tx));
@@ -2673,7 +2801,7 @@ export function applyReserveBlock({
         nowMs,
         payout: act.payout,
         payoutPortalId: act.payoutPortalId,
-        ownerPub: tx.spendPub,
+        ownerPub: tx.ownerPub || tx.spendPub,
       });
       results.push({ action: KIND_LOCK, ...got });
       if (!got.ok) {

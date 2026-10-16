@@ -586,7 +586,9 @@ async function satInterest(offset, holdEpochs, rates) {
   assert.equal(paid.ok, true, paid.reason);
   assert.equal(paid.interest, 0);
   assert.equal(paid.principal, PI_SHE_NANOS);
-  const drawn = await callReserve(session, encodeWithdraw(id, drawAt));
+  const drawn = await callReserve(session, encodeWithdraw(id, drawAt, undefined, PI_SHE_NANOS, {
+    locks: [{ nanos: PI_SHE_NANOS, at: lockAt }],
+  }));
   assert.equal(drawn.ok, true, drawn.reason);
   const evmPaid = decodeWithdraw(drawn.returnValue);
   assert.equal(evmPaid.principal, PI_SHE_NANOS);
@@ -648,6 +650,18 @@ describe('chain-genesis clock pays the epochs a stake sat through', () => {
 
 function interestOf(stake, bps) {
   return Number((BigInt(stake) * BigInt(bps)) / 10000n);
+}
+
+function pullingWithdraw(txs) {
+  return (Array.isArray(txs) ? txs : []).some((tx) => (
+    tx && !tx.coinbase && (tx.kind === 'withdraw' || tx?.vout?.[0]?.kind === 'withdraw')
+  ));
+}
+
+/** Root the EVM must be told to expect. Omitted on a block that does not withdraw. */
+function owedForEvm(state, nowMs, txs) {
+  if (!pullingWithdraw(txs)) return undefined;
+  return coinbaseRewardRoot(state, nowMs);
 }
 
 /** The live coinbase carries the reward root on a withdraw block. */
@@ -723,7 +737,10 @@ async function jsEvmStake({ locks, drawOffset, rates = null }) {
     assert.equal(paid.ok, true, `${lock.who} ${paid.reason}`);
     assert.equal(paid.interest, 0, `${lock.who} principal only`);
     await enactEvm(session, drawAt);
-    const drawn = await callReserve(session, encodeWithdraw(lock.who, drawAt, undefined, paid.principal));
+    const mine = locks.filter((row) => row.who === lock.who);
+    const drawn = await callReserve(session, encodeWithdraw(lock.who, drawAt, undefined, paid.principal, {
+      locks: mine.map((row) => ({ nanos: row.nanos, at: T0 + row.offset * epoch })),
+    }));
     assert.equal(drawn.ok, true, `${lock.who} evm ${drawn.reason}`);
     const evmPaid = decodeWithdraw(drawn.returnValue);
     assert.equal(evmPaid.interest, 0, lock.who);
@@ -871,12 +888,19 @@ describe('the stake-reward cutoff is per network', () => {
     const evmVote = await callReserve(session, encodeVote(lateWho, 1, lateAt));
     assert.equal(evmVote.ok, true, evmVote.reason);
     assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
-    const evmEarly = await callReserve(session, encodeWithdraw(earlyWho, end, undefined, PI_SHE_NANOS * 2));
+    const evmEarly = await callReserve(session, encodeWithdraw(earlyWho, end, undefined, PI_SHE_NANOS * 2, {
+      locks: [
+        { nanos: PI_SHE_NANOS, at: earlyAt },
+        { nanos: PI_SHE_NANOS, at: addAt },
+      ],
+    }));
     assert.equal(evmEarly.ok, true, evmEarly.reason);
     assert.equal(decodeWithdraw(evmEarly.returnValue).interest, 0);
     assert.equal(decodeWithdrawEarned(evmEarly.returnValue), want);
     assert.equal(decodeWithdrawEarned(evmEarly.returnValue), paid.earned);
-    const evmLate = await callReserve(session, encodeWithdraw(lateWho, end));
+    const evmLate = await callReserve(session, encodeWithdraw(lateWho, end, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: lateAt }],
+    }));
     assert.equal(evmLate.ok, true, evmLate.reason);
     assert.equal(decodeWithdraw(evmLate.returnValue).principal, PI_SHE_NANOS);
     assert.equal(decodeWithdraw(evmLate.returnValue).interest, 0);
@@ -920,7 +944,9 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, nanos, lockAt))).ok, true);
-    const evm = await callReserve(session, encodeWithdraw(who, drawAt, undefined, Number(paid.principal)));
+    const evm = await callReserve(session, encodeWithdraw(who, drawAt, undefined, Number(paid.principal), {
+      locks: [{ nanos, at: lockAt }],
+    }));
     assert.equal(evm.ok, true, evm.reason);
     const decoded = decodeWithdraw(evm.returnValue);
     assert.equal(decoded.principal, Number(paid.principal));
@@ -963,7 +989,12 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, first, T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, second, addAt))).ok, true);
-    const evm = await callReserve(session, encodeWithdraw(who, drawAt, undefined, first + second));
+    const evm = await callReserve(session, encodeWithdraw(who, drawAt, undefined, first + second, {
+      locks: [
+        { nanos: first, at: T0 },
+        { nanos: second, at: addAt },
+      ],
+    }));
     assert.equal(evm.ok, true, evm.reason);
     assert.equal(decodeWithdraw(evm.returnValue).interest, 0);
     assert.equal(decodeWithdrawEarned(evm.returnValue), want);
@@ -995,7 +1026,12 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lateAt))).ok, true);
     const evmVote = await callReserve(session, encodeVote(who, 1, lateAt));
     assert.equal(evmVote.ok, true, evmVote.reason);
-    const evm = await callReserve(session, encodeWithdraw(who, end, undefined, (PI_SHE_NANOS - 1) + PI_SHE_NANOS));
+    const evm = await callReserve(session, encodeWithdraw(who, end, undefined, (PI_SHE_NANOS - 1) + PI_SHE_NANOS, {
+      locks: [
+        { nanos: PI_SHE_NANOS - 1, at: T0 },
+        { nanos: PI_SHE_NANOS, at: lateAt },
+      ],
+    }));
     assert.equal(evm.ok, true, evm.reason);
     assert.equal(decodeWithdraw(evm.returnValue).interest, 0);
     assert.equal(decodeWithdraw(evm.returnValue).principal, (PI_SHE_NANOS - 1) + PI_SHE_NANOS);
@@ -1018,7 +1054,9 @@ describe('pinClock runs before the first lock in a block', () => {
     assert.equal(commit.ok, true, commit.reason);
     const enacted = await callReserve(session, encodeEnact(drawAt));
     assert.equal(enacted.ok, true, enacted.reason);
-    const drawn = await callReserve(session, encodeWithdraw('pin-first', drawAt));
+    const drawn = await callReserve(session, encodeWithdraw('pin-first', drawAt, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: lockAt }],
+    }));
     assert.equal(drawn.ok, true, drawn.reason);
     const paid = decodeWithdraw(drawn.returnValue);
     const half = proRata(PI_SHE_NANOS, GENESIS_BPS, epoch / 2, epoch);
@@ -1050,7 +1088,9 @@ describe('pinClock runs before the first lock in a block', () => {
     assert.equal((await callReserve(late, encodeDeposit('late-pin', PI_SHE_NANOS, lockAt))).ok, true);
     assert.equal((await callReserve(late, encodeCommitRate(2, bps, T0 + 2 * epoch, T0))).ok, true);
     assert.equal((await callReserve(late, encodeEnact(drawAt))).ok, true);
-    const afterPin = await callReserve(late, encodeWithdraw('late-pin', drawAt));
+    const afterPin = await callReserve(late, encodeWithdraw('late-pin', drawAt, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: lockAt }],
+    }));
     assert.equal(afterPin.ok, true, afterPin.reason);
     assert.equal(decodeWithdraw(afterPin.returnValue).interest, 0);
     assert.equal(decodeWithdrawEarned(afterPin.returnValue), want);
@@ -1168,9 +1208,20 @@ describe('the block path rolls before its transactions', () => {
       assert.equal(view.oracleBps, step.bps, `evm bps ${step.now}`);
     }
     const drawAt = T0 + 4 * epoch;
+    const owed = owedForEvm(state, drawAt, [
+      cb,
+      { kind: 'withdraw' },
+    ]);
     const draw = withCoinbaseReward(state, drawAt, [
       cb,
-      withdrawTx({ from: who, to: who, nanos: 1, id: 'block-draw' }, PI_SHE_NANOS),
+      withdrawTx({
+        from: who,
+        to: who,
+        nanos: 1,
+        id: 'block-draw',
+        nowMs: drawAt,
+        authBind: { locks: [{ nanos: PI_SHE_NANOS, at: T0 + half }], nowMs: drawAt },
+      }, PI_SHE_NANOS),
     ]);
     const applied = applyReserveBlock({
       state,
@@ -1182,7 +1233,7 @@ describe('the block path rolls before its transactions', () => {
     assert.equal(applied.ok, true, applied.reason);
     const row = [...applied].find((item) => item && item.action === 'withdraw');
     assert.equal(row && row.ok, true, row && row.reason);
-    const evm = await executeBlockEvm(session, draw, drawAt, T0);
+    const evm = await executeBlockEvm(session, draw, drawAt, T0, owed);
     assert.equal(evm.ok, true, evm.reason);
     const want = proRata(PI_SHE_NANOS, GENESIS_BPS, half, epoch)
       + interestOf(PI_SHE_NANOS, 300)
@@ -1243,7 +1294,14 @@ describe('a ≥π withdraw in the second epoch', () => {
     if (withRoot) cb.rewardRoot = owed;
     const draw = [
       cb,
-      withdrawTx({ from: who, to: who, nanos: preview.payout, id: 'pi-second-draw' }),
+      withdrawTx({
+        from: who,
+        to: who,
+        nanos: preview.payout,
+        id: 'pi-second-draw',
+        nowMs: drawAt,
+        authBind: { locks: [{ nanos: PI_SHE_NANOS, at: T0 }], nowMs: drawAt },
+      }, PI_SHE_NANOS),
     ];
     const applied = applyReserveBlock({
       state,
@@ -1306,6 +1364,7 @@ describe('a withdraw stays open after the enacting block', () => {
       assert.equal(later.ok, true, later.reason);
     }
     const run = async (now, txs) => {
+      const owed = owedForEvm(state, now, txs);
       const body = withCoinbaseReward(state, now, txs);
       const applied = applyReserveBlock({
         state,
@@ -1315,7 +1374,7 @@ describe('a withdraw stays open after the enacting block', () => {
         activationHeight: 0,
       });
       assert.equal(applied.ok, true, `${now} ${applied.reason}`);
-      const evm = await executeBlockEvm(session, body, now, T0);
+      const evm = await executeBlockEvm(session, body, now, T0, owed);
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
@@ -1332,7 +1391,14 @@ describe('a withdraw stays open after the enacting block', () => {
     const drawAt = at != null ? at : T0 + epoch + blocksAfter;
     const { applied, evm } = await run(drawAt, [
       cb,
-      withdrawTx({ from: who, to: who, nanos: 1, id: 'open-draw' }, PI_SHE_NANOS),
+      withdrawTx({
+        from: who,
+        to: who,
+        nanos: 1,
+        id: 'open-draw',
+        nowMs: drawAt,
+        authBind: { locks: [{ nanos: PI_SHE_NANOS, at: T0 + half }], nowMs: drawAt },
+      }, PI_SHE_NANOS),
     ]);
     const row = [...applied].find((item) => item && item.action === 'withdraw');
     assert.equal(row && row.ok, true, row && row.reason);
@@ -1402,6 +1468,7 @@ describe('a no-commit gap keeps the last adopted rate', () => {
     assert.equal((await callReserve(session, encodeCommitRate(3, later, T0 + 3 * epoch, T0))).ok, true);
     const cb = { coinbase: true, vout: [] };
     const run = async (now, txs) => {
+      const owed = owedForEvm(state, now, txs);
       const body = withCoinbaseReward(state, now, txs);
       const applied = applyReserveBlock({
         state,
@@ -1411,7 +1478,7 @@ describe('a no-commit gap keeps the last adopted rate', () => {
         activationHeight: 0,
       });
       assert.equal(applied.ok, true, `${now} ${applied.reason}`);
-      const evm = await executeBlockEvm(session, body, now, T0);
+      const evm = await executeBlockEvm(session, body, now, T0, owed);
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
@@ -1425,7 +1492,14 @@ describe('a no-commit gap keeps the last adopted rate', () => {
     const drawAt = T0 + 3 * epoch + Math.floor(epoch / 2);
     const { applied, evm } = await run(drawAt, [
       cb,
-      withdrawTx({ from: who, to: who, nanos: 1, id: 'gap-draw' }, PI_SHE_NANOS),
+      withdrawTx({
+        from: who,
+        to: who,
+        nanos: 1,
+        id: 'gap-draw',
+        nowMs: drawAt,
+        authBind: { locks: [{ nanos: PI_SHE_NANOS, at: T0 }], nowMs: drawAt },
+      }, PI_SHE_NANOS),
     ]);
     const row = [...applied].find((item) => item && item.action === 'withdraw');
     assert.equal(row && row.ok, true, row && row.reason);
@@ -1462,6 +1536,7 @@ describe('a skipped commit carries forward', () => {
     assert.equal((await callReserve(session, encodeCommitRate(3, 10000, T0 + 3 * epoch, T0))).ok, true);
     const cb = { coinbase: true, vout: [] };
     const run = async (now, txs) => {
+      const owed = owedForEvm(state, now, txs);
       const body = withCoinbaseReward(state, now, txs);
       const applied = applyReserveBlock({
         state,
@@ -1471,7 +1546,7 @@ describe('a skipped commit carries forward', () => {
         activationHeight: 0,
       });
       assert.equal(applied.ok, true, `${now} ${applied.reason}`);
-      const evm = await executeBlockEvm(session, body, now, T0);
+      const evm = await executeBlockEvm(session, body, now, T0, owed);
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
@@ -1496,7 +1571,14 @@ describe('a skipped commit carries forward', () => {
     const drawAt = T0 + 5 * epoch;
     const { applied, evm } = await run(drawAt, [
       cb,
-      withdrawTx({ from: who, to: who, nanos: 1, id: 'carry-draw' }, PI_SHE_NANOS),
+      withdrawTx({
+        from: who,
+        to: who,
+        nanos: 1,
+        id: 'carry-draw',
+        nowMs: drawAt,
+        authBind: { locks: [{ nanos: PI_SHE_NANOS, at: T0 }], nowMs: drawAt },
+      }, PI_SHE_NANOS),
     ]);
     const row = [...applied].find((item) => item && item.action === 'withdraw');
     assert.equal(row && row.ok, true, row && row.reason);
@@ -1577,7 +1659,9 @@ describe('a lock stays until its epoch ends', () => {
     assert.equal(later.interest, 0);
     assert.equal(later.earned, full());
     assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
-    const drawn = await callReserve(session, encodeWithdraw(who, end));
+    const drawn = await callReserve(session, encodeWithdraw(who, end, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: lockAt }],
+    }));
     assert.equal(drawn.ok, true, drawn.reason);
     assert.equal(decodeWithdraw(drawn.returnValue).interest, 0);
     assert.equal(decodeWithdrawEarned(drawn.returnValue), full());
@@ -1614,8 +1698,12 @@ describe('a lock stays until its epoch ends', () => {
     assert.equal(atEnd.earned, full());
     assert.equal(afterEnd.earned, full());
     assert.notEqual(afterEnd.earned, full() * 2);
-    const evmEnd = await callReserve(session, encodeWithdraw(boundary, end));
-    const evmLater = await callReserve(session, encodeWithdraw(after, laterAt));
+    const evmEnd = await callReserve(session, encodeWithdraw(boundary, end, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: lockAt }],
+    }));
+    const evmLater = await callReserve(session, encodeWithdraw(after, laterAt, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: lockAt }],
+    }));
     assert.equal(evmEnd.ok, true, evmEnd.reason);
     assert.equal(evmLater.ok, true, evmLater.reason);
     assert.equal(decodeWithdraw(evmEnd.returnValue).interest, 0);
@@ -1697,7 +1785,9 @@ describe('a top-up does not re-lock earlier principal', () => {
     assert.notEqual(rest.earned, early.earned + wholeTop);
     assert.equal(Number(state.totalLockedNanos), 0);
     assert.equal((await callReserve(session, encodeEnact(topEnd))).ok, true);
-    const restEvm = await callReserve(session, encodeWithdraw(who, topEnd, undefined, TOP));
+    const restEvm = await callReserve(session, encodeWithdraw(who, topEnd, undefined, TOP, {
+      locks: [{ nanos: TOP, at: topAt }],
+    }));
     assert.equal(restEvm.ok, true, restEvm.reason);
     const restPaid = decodeWithdraw(restEvm.returnValue);
     assert.equal(restPaid.principal, TOP);

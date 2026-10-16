@@ -10,7 +10,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { encodeDest, hash20FromAddress } from '../../crypto/address.js';
+import { encodeDest, ed25519RawPub, newIdentity } from '../../crypto/address.js';
+import { destCommitFromSpendPub } from '../../crypto/stealth_ed25519.js';
+import { signSpendTx } from '../../crypto/spend.js';
 import {
   PI_SHE_NANOS,
   GENESIS_BPS,
@@ -34,17 +36,18 @@ function pow(tail) {
   return `${'00'.repeat(31)}${tail}`;
 }
 
-function publicLock(miner, portal) {
-  const tx = lockTx({ from: miner, to: portal, nanos: PI_SHE_NANOS, id: 'reorg-lock' });
+function publicLock(portal, key) {
+  const tx = lockTx({ from: portal, to: portal, nanos: PI_SHE_NANOS, id: 'reorg-lock' });
   const o = tx.vout[0];
   delete o.commit;
   delete o.rangeProof;
   delete o.r;
   delete o.noteCommit;
   delete o.admitPub;
-  tx.vin = [{ dest20: hash20FromAddress(miner) }];
+  tx.vin = [{ dest20: destCommitFromSpendPub(ed25519RawPub(key)) }];
   tx.fee = levyNeed(tx, []);
   tx.maxLevy = tx.fee;
+  signSpendTx(tx, key);
   return tx;
 }
 
@@ -65,7 +68,8 @@ function nanosOf(n) {
 describe('store reorg across a withdraw', () => {
   it('a heavier fork restores the portal and clears minted interest', async () => {
     const miner = dest(3);
-    const portal = dest(9);
+    const who = newIdentity();
+    const portal = encodeDest(destCommitFromSpendPub(who.spendPub));
     const pid = portalIdFromDest(portal);
     const lockDelay = 90_000;
     const remain = EPOCH_MS - lockDelay;
@@ -79,7 +83,7 @@ describe('store reorg across a withdraw', () => {
 
     const genesis = await seal(local, miner, T0, '11');
     assert.equal(genesis.ok, true, genesis.reason);
-    const queued = local.queueTx(publicLock(miner, portal));
+    const queued = local.queueTx(publicLock(portal, who.privateKey));
     assert.equal(queued.ok, true, queued.reason);
     const locked = await seal(local, miner, T0 + 90_000, '12');
     assert.equal(locked.ok, true, locked.reason);

@@ -304,6 +304,7 @@ function evmRevertReason(res) {
     const sel = Buffer.from(ret.subarray(0, 4));
     if (sel.equals(Buffer.from(selector('ClaimUnavailable()')))) return 'claim_unavailable';
     if (sel.equals(Buffer.from(selector('OwnerMissing()')))) return 'owner_missing';
+    if (sel.equals(Buffer.from(selector('Unsigned()')))) return 'unsigned';
   }
   return String(res?.execResult?.exceptionError?.error || 'revert');
 }
@@ -528,7 +529,7 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
-    const pub = String(tx?.spendPub || '').replace(/^0x/i, '');
+    const pub = String(tx?.ownerPub || tx?.spendPub || '').replace(/^0x/i, '');
     const commit = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
     return callReserve(session, encodeDeposit(dest, nanos, nowMs, commit));
   }
@@ -557,7 +558,7 @@ export async function executeReserveTx(session, tx, nowMs) {
     const from = txFromOf(tx) || dest;
     if (!from) return { ok: true };
     const auth = tx?.rewardSig
-      ? packRewardAuth({ ownerPub: tx.spendPub, sig: tx.rewardSig, dest: tx.to || dest })
+      ? packRewardAuth({ ownerPub: tx.ownerPub || tx.spendPub, sig: tx.rewardSig, dest: tx.to || dest })
       : new Uint8Array();
     return callReserve(session, encodeWithdraw(from, nowMs, auth || new Uint8Array()));
   }
@@ -635,6 +636,8 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     // still commits the empty root and does not store it.
     const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs) > 0;
     const owedGiven = owedRoot != null;
+    // No JS expectation is not permission to store whatever root arrived.
+    if (oweRoot && !owedGiven) return fail('stake_reward');
     const owed = !owedGiven || owedRoot === ''
       ? ''
       : String(owedRoot).replace(/^0x/i, '').toLowerCase();

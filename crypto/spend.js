@@ -188,7 +188,13 @@ export function verifySpendSig(tx) {
   const pubRaw = spendPubFromTx(tx);
   if (!pubRaw) return false;
   const from = String(tx?.from || tx?.vin?.[0]?.address || '');
-  if (from && !destMatchesSpendPub(from, pubRaw)) return false;
+  if (from) {
+    if (!destMatchesSpendPub(from, pubRaw)) return false;
+  } else {
+    const vin = Array.isArray(tx?.vin) ? tx.vin[0] : null;
+    const d20 = vin?.dest20 || tx?.dest20;
+    if (!d20 || !dest20MatchesSpendPub(d20, pubRaw)) return false;
+  }
   const sigHex = String(tx?.sig || tx?.signature || '').replace(/^0x/i, '');
   if (!/^[0-9a-f]{128}$/i.test(sigHex)) return false;
   try {
@@ -537,6 +543,7 @@ const BODY_KEYS = new Set([
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
   'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit', 'rewardRoot',
   'nullifier',
+  'ownerPub',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -785,29 +792,79 @@ function voutDest20(o) {
  * Owner key recorded on the portal, plus any earlier lock in this body.
  * `seenOwners` is a Map of portal id → spendPub hex for the block being checked.
  */
+/**
+ * The first lock's funder must own the portal dest. The portal id has to be
+ * that dest's id, so a stranger cannot aim a funding key at someone else's portal.
+ */
+function freshLockBound(tx, pubRaw) {
+  const dest = reservePortalDest(tx);
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const o = outs.find((row) => String(row?.kind || 'lock') === 'lock') || outs[0] || {};
+  let ownedDest = '';
+  if (dest && destMatchesSpendPub(dest, pubRaw)) ownedDest = dest;
+  else if (o?.dest20 && dest20MatchesSpendPub(o.dest20, pubRaw)) {
+    try { ownedDest = encodeDest(Buffer.from(o.dest20)); } catch { ownedDest = ''; }
+  }
+  if (!ownedDest) return false;
+  const pid = String(tx?.portalId || o?.portalId || '').toLowerCase();
+  if (pid && pid !== portalIdFromDest(ownedDest)) return false;
+  return true;
+}
+
 export function reserveAuth(tx, reserveState = null, seenOwners = null) {
   if (!reserveNeedsPortalOpen(tx)) return { ok: true };
+  const kind = reserveKindOf(tx);
+  const pubRaw = spendPubFromTx(tx);
   // A public dest20 receipt has no spendPub. The opened v is the body.
-  // A sealed note still needs the owner signature, and a missing one is unsigned.
-  if (publicReserveReceipt(tx)) return { ok: true };
+  // It cannot take a fresh portal's owner slot.
+  if (publicReserveReceipt(tx) && !pubRaw) {
+    if (kind === 'lock') {
+      // The portal is the lock dest. The funder address is not the portal,
+      // so a from-id check would refuse every lock that pays a different dest.
+      const dest = reservePortalDest(tx);
+      const pid = String(tx?.portalId || tx?.vout?.[0]?.portalId || '').toLowerCase();
+      const destId = dest ? portalIdFromDest(dest) : '';
+      if (pid && destId && pid !== destId) {
+        return { ok: false, reason: 'payout_mismatch', from: dest };
+      }
+      const id = destId || pid;
+      const recorded = id ? String(reserveState?.portals?.[id]?.ownerPub || '').toLowerCase() : '';
+      const seen = seenOwners instanceof Map && id ? String(seenOwners.get(id) || '') : '';
+      if (!recorded && !seen) {
+        return { ok: false, reason: 'owner_missing', from: dest };
+      }
+    }
+    return { ok: true };
+  }
   if (!verifyReservePortalOpen(tx)) {
     return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
   }
   const ref = reservePortalRef(tx);
   if (!ref.ok) return ref;
-  const pub = spendPubFromTx(tx).toString('hex').toLowerCase();
+  const spend = pubRaw.toString('hex').toLowerCase();
+  const ownerPub = String(tx?.ownerPub || '').replace(/^0x/i, '').toLowerCase();
   const recorded = String(reserveState?.portals?.[ref.id]?.ownerPub || '').toLowerCase();
   const seen = seenOwners instanceof Map ? String(seenOwners.get(ref.id) || '') : '';
   const want = recorded || seen;
-  if (want && want !== pub) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
-  if (reserveKindOf(tx) === 'withdraw' && !want) {
+  if (kind === 'lock' && !want) {
+    if (!freshLockBound(tx, pubRaw)) {
+      return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+    }
+    if (!/^[0-9a-f]{64}$/.test(ownerPub)) {
+      return { ok: false, reason: 'owner_missing', from: reservePortalDest(tx) };
+    }
+    if (seenOwners instanceof Map && ref.id) seenOwners.set(ref.id, ownerPub);
+    return { ok: true };
+  }
+  if (kind === 'lock' && want) {
+    const presented = ownerPub || spend;
+    if (presented !== want) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  }
+  if (kind === 'withdraw' && !want) {
     return { ok: false, reason: 'owner_missing', from: reservePortalDest(tx) };
   }
-  if (reserveKindOf(tx) === 'withdraw' && recorded && recorded !== pub) {
-    return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
-  }
-  if (seenOwners instanceof Map && ref.id && reserveKindOf(tx) === 'lock') {
-    seenOwners.set(ref.id, pub);
+  if (seenOwners instanceof Map && ref.id && kind === 'lock') {
+    seenOwners.set(ref.id, ownerPub || spend);
   }
   return { ok: true };
 }
