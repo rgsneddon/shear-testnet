@@ -126,7 +126,13 @@ export function spendPackDigest(tx) {
     bFlag: tx?.bFlag || tx?.kind === 'b-spend' ? 1 : 0,
   }));
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return flowAmtDigest(packed, tx?.vout);
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') {
+    const flowed = flowAmtDigest(packed, tx?.vout);
+    // A b-spend fee is signed. A relayer cannot raise it under the same sig.
+    // Sends stay on the packed body. The wallet signs those through spendMessage.
+    if (kind !== 'b-spend') return flowed;
+    return createHash('sha256').update(flowed).update(canonicalFee(tx)).digest();
+  }
   // Portal, fee, and the admit blob are signed. A stolen sig cannot be
   // retargeted, repriced, or pointed at a different proof. Flow sends stay
   // on the packed body alone.

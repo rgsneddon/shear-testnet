@@ -9,7 +9,7 @@ import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceipt } fro
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
-import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
+import { sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
@@ -129,7 +129,7 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!capped.ok) return capped;
   const budget = txBudget(tx);
   if (!budget.ok) return budget;
-  const noteRule = txNoteRuleRejected(tx);
+  const noteRule = txNoteRuleRejected(tx, 1);
   if (noteRule) return noteRule;
   const pull = custodialPullRejected(tx);
   if (pull) return pull;
@@ -159,6 +159,8 @@ export function admitMempool(pool, tx, opts = {}) {
   if (clockField) return clockField;
   const receiptPub = receiptAdmitRejected(tx);
   if (receiptPub) return receiptPub;
+  const vinAdmit = bSpendVinRejected(tx);
+  if (vinAdmit) return vinAdmit;
   for (const v of tx.vin || []) {
     const link = sealedVinLinkField(v);
     if (link) return { ok: false, reason: 'vin_link' };

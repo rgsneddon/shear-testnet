@@ -79,7 +79,7 @@ import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmit
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
 import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
-import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
+import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected } from '../../crypto/reserve_vault.js';
@@ -1459,7 +1459,7 @@ export function buildTemplate({
   hashSpill = null,
   prepareCoinbase = null,
 }) {
-  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !txNoteRuleRejected(tx));
+  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !tx?.coinbase && !txNoteRuleRejected(tx, 1));
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
@@ -2846,6 +2846,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     const ins = Array.isArray(tx.vin) ? tx.vin : [];
+    const vinAdmit = bSpendVinRejected(tx);
+    if (vinAdmit) return vinAdmit;
     for (const i of ins) {
       const link = sealedVinLinkField(i);
       if (link) return { ok: false, reason: 'vin_link' };

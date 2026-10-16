@@ -118,11 +118,15 @@ export function bProof(bLeaves, index) {
 }
 
 /** The block this node already has at `height`, or null. A tx field is not a block. */
-export function chainBlockAt(height, history, prev) {
+export function chainBlockAt(height, history, prev, blockAt) {
   const h = Number(height);
   if (!Number.isInteger(h) || h < 1) return null;
   const hit = (b) => !!(b && b.header && Number(b.height) === h);
   if (hit(prev)) return prev;
+  if (blockAt && typeof blockAt.get === 'function') {
+    const found = blockAt.get(h);
+    return hit(found) ? found : null;
+  }
   if (history && typeof history.length === 'number') {
     for (let i = history.length - 1; i >= 0; i -= 1) {
       const b = history[i];
@@ -274,12 +278,12 @@ function bSpendOwnerRejected(tx, leaf, outs) {
  * Every output opens, the opened sum is the leaf unit, every output pays
  * leaf.dest20, and the leaf owner signs the spend.
  */
-export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spent = null } = {}) {
+export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spent = null, blockAt = null } = {}) {
   try {
     const leaf = canonicalBLeaf(tx);
     if (!leaf) return { ok: false, reason: 'leaf' };
     const commitH = Number(tx?.commitHeight || 0);
-    const block = chainBlockAt(commitH, history, prev);
+    const block = chainBlockAt(commitH, history, prev, blockAt);
     if (!block?.header) return { ok: false, reason: 'pre_seal' };
     const outs = Array.isArray(tx?.vout) ? tx.vout : [];
     if (!outs.length) return { ok: false, reason: 'commit_sum' };
@@ -316,6 +320,7 @@ export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spe
 export function chainBSpendsRejected(blocks) {
   const spent = new Set();
   const list = Array.isArray(blocks) ? blocks : [];
+  const blockAt = new Map();
   for (let i = 0; i < list.length; i += 1) {
     const block = list[i];
     const prev = i > 0 ? list[i - 1] : null;
@@ -326,16 +331,19 @@ export function chainBSpendsRejected(blocks) {
       let got;
       try {
         got = bindBSpend(tx, {
-          history: list.slice(0, i),
+          history: list,
           prev,
           tipHeight: parentHeight + 1,
           spent,
+          blockAt,
         });
       } catch {
         return { ok: false, reason: 'leaf' };
       }
       if (!got || !got.ok) return got || { ok: false, reason: 'leaf' };
     }
+    const h = Number(block?.height);
+    if (block?.header && Number.isInteger(h) && h >= 1) blockAt.set(h, block);
   }
   return null;
 }

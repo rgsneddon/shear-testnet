@@ -79,7 +79,7 @@ import {
 } from '../../crypto/vault_seal.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
 import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { valueOpenRejected } from '../../crypto/chronoflux.js';
+import { valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
 import { txNoteRuleRejected } from '../../crypto/n1.js';
@@ -3332,7 +3332,7 @@ export function createStore(dir, {
     tx = reviveTx(tx);
     const bucket = v3BucketProofRejected(tx);
     if (bucket) return bucket;
-    const noteRule = txNoteRuleRejected(tx);
+    const noteRule = txNoteRuleRejected(tx, 1);
     if (noteRule) return noteRule;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
@@ -3365,6 +3365,8 @@ export function createStore(dir, {
     if (open) return open;
     const leafAsk = bLeafAskRejected(tx);
     if (leafAsk) return leafAsk;
+    const vinAdmit = bSpendVinRejected(tx);
+    if (vinAdmit) return vinAdmit;
     if (String(tx.kind || '') === 'b-spend') {
       const tipNow = tip();
       let boundB;

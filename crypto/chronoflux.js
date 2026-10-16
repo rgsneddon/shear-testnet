@@ -599,21 +599,85 @@ function bSpendDigestDest20(v) {
   return d20;
 }
 
-function sealBSpendVin(v, i) {
+const VIN_INDEX_MAX = 0xffffffff;
+
+/** Integer in 0..2^32-1. Index 0 stays 0. A string, a float, and a boolean are not. */
+function canonicalVinIndex(raw) {
+  if (typeof raw === 'number') {
+    if (!Number.isInteger(raw) || raw < 0 || raw > VIN_INDEX_MAX) return null;
+    return raw;
+  }
+  if (typeof raw === 'bigint') {
+    if (raw < 0n || raw > BigInt(VIN_INDEX_MAX)) return null;
+    return Number(raw);
+  }
+  return null;
+}
+
+function fieldPosted(raw) {
+  return raw != null && raw !== '';
+}
+
+/** Why this b-spend vin is not sealable. Null when the posted link fields are canonical. */
+function bSpendVinFieldRejected(v) {
+  if (!v || typeof v !== 'object') return null;
+  const notePosted = fieldPosted(v.noteCommit);
+  const destPosted = fieldPosted(v.dest20);
+  if (notePosted) {
+    const nc = vinBytes(v.noteCommit);
+    if (!nc || nc.length !== 32) return 'noteCommit';
+    if (destPosted) return 'dest20';
+  }
+  if (fieldPosted(v.prev)) {
+    const prev = vinBytes(v.prev);
+    if (!prev || prev.length !== 32) return 'prev';
+  }
+  if (fieldPosted(v.index) && canonicalVinIndex(v.index) == null) return 'index';
+  return null;
+}
+
+/**
+ * Admission of a b-spend vin. Index must be an integer in 0..2^32-1.
+ * prev and noteCommit must be 32 bytes. dest20 beside noteCommit is refused.
+ * A missing field stays missing. The reason matches the body vin_link gate.
+ */
+export function bSpendVinRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind !== 'b-spend') return null;
+  const vins = Array.isArray(tx.vin) ? tx.vin : [];
+  for (const v of vins) {
+    if (bSpendVinFieldRejected(v)) return { ok: false, reason: 'vin_link' };
+  }
+  return null;
+}
+
+function sealBSpendVin(v) {
+  if (bSpendVinFieldRejected(v)) return null;
   const commit = v?.pseudo || v?.cTilde || v?.commit;
   const row = {};
   if (commit != null && commit !== '') row.commit = compactValue(commit);
-  const d20 = bSpendDigestDest20(v || {});
-  if (d20.length === 20 && !d20.every((b) => b === 0)) row.dest20 = d20;
-  if (v?.noteCommit != null && v.noteCommit !== '') row.noteCommit = compactValue(v.noteCommit);
-  if (v?.prev != null && v.prev !== '') {
-    const prev = vinBytes(v.prev);
-    row.prev = prev && prev.length === 32 ? prev : compactValue(v.prev);
+  const notePosted = fieldPosted(v?.noteCommit);
+  if (notePosted) {
+    row.noteCommit = vinBytes(v.noteCommit);
+  } else {
+    const d20 = bSpendDigestDest20(v || {});
+    if (d20.length === 20 && !d20.every((b) => b === 0)) row.dest20 = d20;
   }
-  if (v?.index != null && v.index !== '') {
-    const idx = Number(v.index || i);
-    row.index = Number.isFinite(idx) ? idx : v.index;
-  }
+  if (fieldPosted(v?.prev)) row.prev = vinBytes(v.prev);
+  if (fieldPosted(v?.index)) row.index = canonicalVinIndex(v.index);
+  return row;
+}
+
+/** A refused vin is copied uncoerced, so the sealed body still fails admission. */
+function unsealedBSpendVin(v) {
+  const row = {};
+  const commit = v?.pseudo || v?.cTilde || v?.commit;
+  if (commit != null && commit !== '') row.commit = compactValue(commit);
+  if (fieldPosted(v?.noteCommit)) row.noteCommit = v.noteCommit;
+  if (fieldPosted(v?.dest20)) row.dest20 = v.dest20;
+  if (fieldPosted(v?.prev)) row.prev = v.prev;
+  if (fieldPosted(v?.index)) row.index = v.index;
   return row;
 }
 
@@ -671,7 +735,10 @@ export function compactTx(tx) {
   if (tx.vin) {
     out.vin = (tx.vin || []).map((v, i) => {
       if (v?.coinbase) return compactValue({ coinbase: true, height: v.height });
-      if (kind === 'b-spend') return sealBSpendVin(v, i);
+      if (kind === 'b-spend') {
+        const sealed = sealBSpendVin(v);
+        return sealed || unsealedBSpendVin(v);
+      }
       const commit = v.pseudo || v.cTilde || v.commit;
       const row = {};
       if (commit != null && commit !== '') row.commit = compactValue(commit);
