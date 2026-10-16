@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -158,7 +159,7 @@ function submitAndReply(sock, payload, timeoutMs = 60_000) {
   });
 }
 
-describe('thin solo stratum', () => {
+describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
   it('does not load pool/src/main.js and npm run solo is node --solo', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const soloSrc = fs.readFileSync(path.join(here, '../src/solo_stratum.js'), 'utf8');
@@ -345,7 +346,7 @@ describe('thin solo stratum', () => {
   });
 });
 
-describe('solo submit share vs block', () => {
+describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, () => {
   setHashBackend('jit-full');
 
   it('does not import pool and share hits skip submitHeader', () => {

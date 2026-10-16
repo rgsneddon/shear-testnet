@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -100,7 +101,7 @@ function dest20EqualsRow(row20, dest) {
   }
 }
 
-describe('node Reserve vault', () => {
+describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
   it('printConfig names the Reserve oracle and epoch', () => {
     const c = printConfig();
     assert.equal(c.reserveProgram, RESERVE_PROGRAM);

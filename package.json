@@ -7,6 +7,7 @@
   "scripts": {
     "build:admit": "make -C crypto/native shearadmit.node",
     "test": "npm run build:admit && node --test --test-concurrency=1 --test-timeout=1800000 crypto/*.test.js node/tests/test_*.js pool/tests/test_*.js miner/tests/test_*.js sheark-miner/tests/test_*.js tests/test_*.js tests/forbid_foreign_names.js tests/forbid_privacy_regressions.js tests/privacy.walk.js",
+    "test:slow": "node node/tests/run_slow.js",
     "node": "node node/src/node.js",
     "solo": "node node/src/node.js --solo",
     "pool": "node pool/src/main.js",
