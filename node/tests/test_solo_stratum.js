@@ -25,9 +25,13 @@ function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
 }
 
-function minerBin() {
+function minerDir() {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const dir = path.join(here, '../../sheark-miner');
+  return path.join(here, '../../sheark-miner');
+}
+
+function minerBin() {
+  const dir = minerDir();
   const names = process.platform === 'win32'
     ? ['ShearK-Miner-2.5.exe', 'ShearK-Miner.exe']
     : ['ShearK-Miner'];
@@ -36,6 +40,19 @@ function minerBin() {
     if (fs.existsSync(p)) return p;
   }
   return '';
+}
+
+function ensureMiner() {
+  const existing = minerBin();
+  if (existing) return existing;
+  const built = spawnSync('make', ['-C', minerDir(), '-j', String(os.availableParallelism?.() || os.cpus().length || 1)], {
+    encoding: 'utf8',
+    timeout: 540_000,
+  });
+  const bin = minerBin();
+  if (bin) return bin;
+  const detail = `${built.stdout || ''}\n${built.stderr || ''}`.trim().slice(-1500);
+  throw new Error(`ShearK-Miner build failed (status ${built.status}): ${detail || built.error?.message || 'make produced no binary'}`);
 }
 
 function stripAnsi(s) {
@@ -364,13 +381,13 @@ describe('solo submit share vs block', () => {
     assert.doesNotMatch(rejected, /"block":true/);
   });
 
-  it('dest-bound shareBits=8 that misses blockBits is OK and does not append', { timeout: 180_000 }, async () => {
+  it('dest-bound shareBits=8 that misses blockBits is OK and does not append', { timeout: 720_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-share-'));
     const store = createStore(dir);
     const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
     const bound = await stratum.listen();
     const dest = destMiner();
-    const bin = minerBin();
+    const bin = ensureMiner();
     assert.ok(bin, 'ShearK-Miner binary required to hash dest-bound shares');
     let child;
     try {
