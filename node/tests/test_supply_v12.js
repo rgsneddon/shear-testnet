@@ -14,7 +14,7 @@ import {
 import { unitsForShare, shareWorkBits, nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
-import { auditCirculatingSupply } from '../src/supply.js';
+import { auditCirculatingSupply, emptySupplyState, supplyReport } from '../src/supply.js';
 import { networkSupplySettled, explorerCirculation } from '../../pool/src/wallet_api.js';
 
 const GENESIS = 1_700_000_000_000;
@@ -110,6 +110,20 @@ describe('v12 circulating supply is the public mint', () => {
     assert.equal(src.includes('openedCoinbaseNanos'), false);
     assert.equal(src.includes('coinbaseVoutsBound'), false);
     assert.equal(src.includes('valueProof'), false);
+  });
+
+  it('a vault number that is not a safe count is a mismatch', () => {
+    const state = emptySupplyState(GENESIS);
+    const bad = supplyReport(state, { vaultPrincipalNanos: -1 });
+    assert.equal(bad.status, 'mismatch');
+    assert.equal(bad.reason, 'supply');
+    const clean = supplyReport(state, {
+      vaultPrincipalNanos: 0,
+      vaultAccruedNanos: 0,
+      noteBackedPrincipalNanos: 0,
+    });
+    assert.equal(clean.status, 'verified', clean.reason);
+    assert.equal(clean.differenceNanos, 0);
   });
 
   it('verifies any pot partition and mismatches any other amount', async () => {

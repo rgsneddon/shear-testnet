@@ -5,20 +5,9 @@
  * valueProof.v, no commitment, no range proof, no owner signature, no funding
  * note. Amounts are {<pi, 1, 2, 7, 31} * PI_SHE_NANOS across 3 portals.
  *
- * The partial body walk can skip the funding debit, the owner signature, the
- * range proof, and the commit sum:
- *   crypto/admit_v3.js typedKindNeedsAdmitV3
- *   crypto/spend.js typedCommitSum, reserveAuth, fundedDebit
- *   node/src/chain.js and crypto/mempool.js moneyNeedsRange
- *
- * This file does not change those gates. It asks whether a mined regtest
- * block that contains the receipts passes full validation (PoW, levy, parent
- * supply, parent fluxset) and whether any vault stake survives a stock snap
- * reload. It does not withdraw.
- *
- * On feat/shear-testnet-v12 @ ba3db91b, and on PR 109 head 56e36aae, the
- * levy-paid receipt is accepted. This test is a failing P0 repro of that mint.
- * A safe node rejects the block and leaves vault principal at 0.
+ * Block, mempool, and funded-body checks share publicReserveReceiptRejected.
+ * A mined regtest block of these receipts must fail full validation, and a
+ * supply audit of that body must be a mismatch. It does not withdraw.
  */
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
 import { PI_SHE_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
-import { publicReserveReceipt, moneyNeedsRange } from '../../crypto/dummy.js';
+import { publicReserveReceipt, publicReserveReceiptRejected, moneyNeedsRange } from '../../crypto/dummy.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import {
@@ -261,7 +250,7 @@ function dropLoadCache(dir) {
 }
 
 describe('P0 public reserve receipt', () => {
-  it('FAILING P0 repro: unfunded public lock mints vault stake', { timeout: 180_000 }, async () => {
+  it('unfunded public lock is rejected and does not mint vault stake', { timeout: 180_000 }, async () => {
     assert.equal(nativeLoaded(), true, 'shearadmit.node must be loaded for full validation');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p0-reserve-'));
     const miner = encodeDest(byte20(9));
@@ -324,15 +313,16 @@ describe('P0 public reserve receipt', () => {
       assert.equal(matrix.length, 15);
       const sample = matrix[0];
       assert.equal(publicReserveReceipt(sample), true);
+      assert.equal(publicReserveReceiptRejected(sample).reason, 'public_receipt');
       assert.equal(sample.sig, undefined);
       assert.equal(sample.spendPub, undefined);
       assert.equal(sample.vout[0].commit, undefined);
       assert.equal(sample.vout[0].rangeProof, undefined);
-      assert.equal(typedKindNeedsAdmitV3(sample), false);
-      assert.equal(typedCommitSum(sample).skip, true);
-      assert.equal(reserveAuth(sample, store.reserveVault).ok, true);
+      assert.equal(typedKindNeedsAdmitV3(sample), true);
+      assert.equal(typedCommitSum(sample).reason, 'commit_sum');
+      assert.equal(reserveAuth(sample, store.reserveVault).reason, 'unsigned');
       assert.equal(fundedDebit(sample), null);
-      assert.equal(moneyNeedsRange(sample) && publicReserveReceipt(sample), true);
+      assert.equal(moneyNeedsRange(sample), true);
       const body = verifyFundedBody(matrix, () => 0, { reserveState: store.reserveVault });
       report.verifyFundedBody = verdict(body);
       const trial = trialReserveApply({
@@ -389,8 +379,8 @@ describe('P0 public reserve receipt', () => {
       await p2pTx(p2pBound.port, store.magic, asArrayTx(p2pArr));
       const p2pHit = store.mempool.find((tx) => tx.id === p2pArr.id);
       report.p2pByteArray = p2pHit
-        ? { ok: true, reason: '' }
-        : { ok: false, reason: 'not_queued', mempool: store.mempool.length - memBefore };
+        ? { ok: true, reason: '', queuedBySocket: true }
+        : { ...verdict(store.queueTx(asArrayTx(p2pArr))), queuedBySocket: false, mempool: store.mempool.length - memBefore };
 
       const p2pHexTx = publicLock({
         id: 'lock-levy-p2p-hex',
@@ -431,18 +421,15 @@ describe('P0 public reserve receipt', () => {
       const principalDelta = BigInt(report.after.principal) - BigInt(before.principal);
       report.principalDelta = principalDelta.toString();
 
-      const sealedTip = store.blocks[store.blocks.length - 1];
-      const sealedPrev = store.blocks[store.blocks.length - 2];
-      const sealedLocks = (sealedTip.txs || []).slice(1);
-      report.sealedReceipt = sealedLocks.length > 0 && sealedLocks.every((tx) => publicReserveReceipt(tx));
+      const parentBlock = store.blocks[store.blocks.length - 1];
       const genesisMs = Number(decodeHeader(Buffer.from(store.blocks[0].header)).timestamp);
       const parentView = {
-        hash: sealedPrev.hash,
-        header: sealedPrev.header,
-        height: sealedPrev.height,
-        txs: sealedPrev.txs,
-        weight: sealedPrev.weight,
-        shareBatch: sealedPrev.shareBatch,
+        hash: parentBlock.hash,
+        header: parentBlock.header,
+        height: parentBlock.height,
+        txs: parentBlock.txs,
+        weight: parentBlock.weight,
+        shareBatch: parentBlock.shareBatch,
       };
       const verifyOpts = {
         magic: store.magic,
@@ -451,7 +438,7 @@ describe('P0 public reserve receipt', () => {
         parentSupply,
         parentFluxset: parentFlux,
         parentSpendTags: parentFlux.spendTags,
-        evmHistory: store.blocks.slice(0, -1),
+        evmHistory: store.blocks.slice(),
         hashBonusNanos: Number(parentVault.liveHashBonusNanos || 1),
         nowMs: Date.now(),
       };
@@ -469,8 +456,7 @@ describe('P0 public reserve receipt', () => {
       };
       const recheckLive = await Promise.resolve(verifyBlock(liveBlock, parentView, verifyOpts));
       report.revalidateLive = verdict(recheckLive);
-      const recheck = await Promise.resolve(verifyBlock(sealedTip, parentView, verifyOpts));
-      report.revalidate = verdict(recheck);
+      report.revalidate = report.revalidateLive;
 
       let reloaded = null;
       let reloadError = '';
@@ -492,30 +478,44 @@ describe('P0 public reserve receipt', () => {
         }
       }
 
+      const attackBlock = {
+        header: mined.found.header,
+        txs: mined.built.txs,
+        samples: mined.built.samples,
+        shareBatch: mined.built.shareBatch || [],
+        miner,
+      };
+      report.attackAudit = supplyAudit({
+        blocks: store.blocks.concat([attackBlock]),
+        magic: store.magic,
+      });
+
       console.log(`P0_PUBLIC_RESERVE_RECEIPT ${JSON.stringify(report)}`);
 
-      assert.equal(report.rpcZeroFee.reason, 'levy');
+      assert.equal(report.verifyFundedBody.reason, 'public_receipt');
+      assert.equal(report.rpcZeroFee.reason, 'public_receipt');
+      assert.equal(report.rpcLevy.ok, false);
+      assert.equal(report.rpcLevy.reason, 'public_receipt');
+      assert.equal(report.p2pByteArray.ok, false);
+      assert.equal(report.p2pByteArray.reason, 'public_receipt');
       assert.equal(report.p2pHexWire.reason, 'admit_version');
       assert.equal(report.p2pHexWire.queuedBySocket, false);
       assert.equal(report.vaultAfterMempool.principal, '0');
-      assert.equal(report.sealedReceipt, true);
-      const minted = report.block.ok === true || report.principalDelta !== '0'
-        || (report.reload.ok && report.reload.principal !== '0')
-        || report.revalidateLive.ok === true
-        || report.revalidate.ok === true
-        || report.rpcLevy.ok === true
-        || report.p2pByteArray.ok === true;
-      assert.equal(minted, false, [
-        'P0 repro: levy-paid public lock accepted',
-        `block=${report.block.ok}`,
-        `revalidateLive=${report.revalidateLive.ok}:${report.revalidateLive.reason}${report.revalidateLive.error ? ':' + report.revalidateLive.error : ''}`,
-        `revalidate=${report.revalidate.ok}:${report.revalidate.reason}${report.revalidate.error ? ':' + report.revalidate.error : ''}`,
-        `principalDelta=${report.principalDelta}`,
-        `reload=${report.reload.mode || report.reload.reason}:${report.reload.principal || ''}`,
-        `rpcLevy=${report.rpcLevy.ok}`,
-        `p2pArray=${report.p2pByteArray.ok}`,
-        `audit=${report.afterAudit?.status}`,
-      ].join(' '));
+      assert.equal(report.block.ok, false);
+      assert.equal(report.block.reason, 'public_receipt');
+      assert.equal(report.principalDelta, '0');
+      assert.equal(report.after.principal, '0');
+      assert.equal(report.after.totalLocked, before.totalLocked);
+      assert.equal(report.afterAudit.status, 'verified');
+      assert.equal(report.afterAudit.differenceNanos, 0);
+      assert.equal(report.revalidateLive.reason, 'public_receipt');
+      assert.equal(report.revalidate.reason, 'public_receipt');
+      assert.equal(report.attackAudit.status, 'mismatch');
+      assert.equal(report.attackAudit.differenceNanos, 39584067435105);
+      assert.equal(report.reload.ok, true);
+      assert.equal(report.reload.mode, 'snap');
+      assert.equal(report.reload.principal, '0');
+      assert.equal(report.reload.height, 3);
     } finally {
       process.off('unhandledRejection', onReject);
       try { rpc.close(); } catch { /* already closed */ }

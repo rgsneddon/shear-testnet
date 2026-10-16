@@ -124,7 +124,7 @@ import {
 
 /** Full book.snap rewrite cadence after the opening window. Short books snap every block. */
 export const BOOK_SNAP_EVERY = 32;
-import { flowNeedsDummy } from '../../crypto/dummy.js';
+import { flowNeedsDummy, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
@@ -3459,6 +3459,8 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     if (txIsReserveAction(tx) && mempool.filter(txIsReserveAction).length >= RESERVE_ACTION_CAP) {
       return { ok: false, reason: 'reserve_cap' };
     }
