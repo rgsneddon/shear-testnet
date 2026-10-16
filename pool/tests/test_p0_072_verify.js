@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +24,7 @@ import { MAGIC_TESTNET, MAGIC_TESTNET_V12 } from '../../crypto/reserve_books.js'
 import { nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { potSharesFromBatch } from '../../node/src/chain.js';
 import { AUTO_PAYOUT_MIN_NANOS } from '../src/auto_payout.js';
-import { configuredFeeIdentity, createPool, publicMinerTag } from '../src/pool.js';
+import { CLIENT, SHEARK_MINER_VERSION, configuredFeeIdentity, createPool, publicMinerTag } from '../src/pool.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const FEE = configuredFeeIdentity().feeDest;
@@ -208,24 +209,38 @@ function bootFromMinerPage(html) {
 
 const PULL_KEY = /owed|due|pending|unpaid|withdraw/i;
 
-/** /api/stats keys that match the pull pattern and are not a custodial balance. */
-const STATS_BENIGN_PULL_KEYS = new Set([
-  'windowOwedUnits',
-  'windowOwedNotes',
-  'hashOwedNanos',
-  'pending',
-]);
+/**
+ * Benign matches are one exact JSON path plus a type. The same key under any
+ * other path is a pull balance. `recentTxs[i].pending` is the block-row flag.
+ */
+const BENIGN_PULL_PATHS = [
+  {
+    path: /^hashOwedNanos$/,
+    ok: (v) => v === null || (typeof v === 'number' && Number.isFinite(v)),
+  },
+  {
+    path: /^windowOwedUnits$/,
+    ok: (v) => typeof v === 'string',
+  },
+  {
+    path: /^windowOwedNotes$/,
+    ok: (v) => typeof v === 'number' && Number.isFinite(v),
+  },
+  {
+    path: /^recentTxs\[\d+\]\.pending$/,
+    ok: (v) => typeof v === 'boolean',
+  },
+];
 
-/** Miner JSON also publishes the zeroed pull display. Any other name still fails. */
-const MINER_BENIGN_PULL_KEYS = new Set([
-  ...STATS_BENIGN_PULL_KEYS,
-  'pendingShe',
-  'pendingDisplay',
-  'pendingConfirmShe',
-  'pendingConfirmDisplay',
-]);
+/** Custodial display from pull.pendingNanos and banner.pending. Zero everywhere. */
+const CUSTODIAL_DISPLAY = {
+  pendingShe: (v) => v === 0,
+  pendingConfirmShe: (v) => v === 0,
+  pendingDisplay: (v) => v === '0',
+  pendingConfirmDisplay: (v) => v === '0',
+};
 
-export function pullBalanceKeys(value, allow) {
+export function pullBalanceKeys(value) {
   const found = [];
   function walk(node, path) {
     if (!node || typeof node !== 'object') return;
@@ -235,16 +250,23 @@ export function pullBalanceKeys(value, allow) {
     }
     for (const key of Object.keys(node)) {
       const here = path ? `${path}.${key}` : key;
-      if (PULL_KEY.test(key) && !allow.has(key)) found.push(here);
-      walk(node[key], here);
+      const child = node[key];
+      const display = CUSTODIAL_DISPLAY[key];
+      if (display) {
+        if (!display(child)) found.push(here);
+      } else if (PULL_KEY.test(key)) {
+        const rule = BENIGN_PULL_PATHS.find((r) => r.path.test(here));
+        if (!rule || !rule.ok(child)) found.push(here);
+      }
+      walk(child, here);
     }
   }
   walk(value, '');
   return found;
 }
 
-function assertNoPullKeys(value, allow, where) {
-  const found = pullBalanceKeys(value, allow);
+function assertNoPullKeys(value, where) {
+  const found = pullBalanceKeys(value);
   assert.deepEqual(found, [], `${where} ${found.join(' ')}`);
 }
 
@@ -261,7 +283,7 @@ function assertStatsShowNoPull(stats, where) {
   assert.equal(stats.autoPayoutLastError, null, where);
   assert.equal(stats.blocksLifetime, 0, where);
   assert.equal(stats.sealsLifetime, 0, where);
-  assertNoPullKeys(stats, STATS_BENIGN_PULL_KEYS, where);
+  assertNoPullKeys(stats, where);
 }
 
 function assertUnknownMiner(res, tag, where) {
@@ -271,8 +293,28 @@ function assertUnknownMiner(res, tag, where) {
   assert.equal(body.ok, false, where);
   assert.equal(body.reason, 'unknown_miner', where);
   assert.equal(body.tag, tag, where);
-  assertNoPullKeys(body, STATS_BENIGN_PULL_KEYS, where);
+  assert.equal(body.pendingShe, undefined, where);
+  assert.equal(body.pendingDisplay, undefined, where);
+  assert.equal(body.pendingConfirmShe, undefined, where);
+  assert.equal(body.pendingConfirmDisplay, undefined, where);
+  assertNoPullKeys(body, where);
   return body;
+}
+
+function assertKnownMiner(body, tag, where, scan) {
+  assert.equal(body && typeof body, 'object', where);
+  assert.equal(body.ok, true, where);
+  assert.equal(body.tag, tag, where);
+  assert.equal(body.pendingShe, 0, where);
+  assert.equal(body.pendingDisplay, '0', where);
+  assert.equal(body.pendingConfirmShe, 0, where);
+  assert.equal(body.pendingConfirmDisplay, '0', where);
+  assert.equal(body.unconfirmedShe, 0, where);
+  assert.equal(body.creditConfirmedShe, 0, where);
+  assert.equal(body.sentShe, 0, where);
+  assert.equal((body.ledger || []).length, 0, where);
+  assertNoPullKeys(body, where);
+  scan.api += 1;
 }
 
 function assertPoolPageShowsNoPull(html, where) {
@@ -285,7 +327,7 @@ function assertPoolPageShowsNoPull(html, where) {
   assert.doesNotMatch(paint, /reconcile|potCredits|pendingShe|owedPi|autoPayout|dueAuto|unpaid/, where);
 }
 
-function assertMinerPageShowsNoPull(html, where) {
+function assertMinerPageShowsNoPull(html, where, scan) {
   assert.match(html, /id="m-pending">Shear Privacy</, where);
   assert.match(html, /id="m-confirmed">Shear Privacy</, where);
   assert.match(html, /id="m-hashbonus">Shear Privacy</, where);
@@ -299,20 +341,85 @@ function assertMinerPageShowsNoPull(html, where) {
   assert.doesNotMatch(paint, /fmtPullShe|pendingShe|pendingDisplay|owedPi/, where);
   const boot = bootFromMinerPage(html);
   assert.ok(boot, where);
-  assertNoPullKeys(boot, MINER_BENIGN_PULL_KEYS, where);
+  assertNoPullKeys(boot, where);
   if (boot.ok) {
     assert.equal(boot.pendingShe, 0, where);
+    assert.equal(boot.pendingDisplay, '0', where);
+    assert.equal(boot.pendingConfirmShe, 0, where);
+    assert.equal(boot.pendingConfirmDisplay, '0', where);
     assert.equal(boot.unconfirmedShe, 0, where);
     assert.equal(boot.creditConfirmedShe, 0, where);
     assert.equal(boot.sentShe, 0, where);
-    assert.equal(boot.pendingConfirmShe, 0, where);
     assert.equal(boot.confirmedSentShe, 0, where);
     assert.equal((boot.ledger || []).length, 0, where);
+    if (scan) scan.boot += 1;
+    return true;
   } else {
     assert.equal(boot.ok, false, where);
     assert.equal(boot.pendingShe, undefined, where);
+    assert.equal(boot.pendingDisplay, undefined, where);
+    assert.equal(boot.pendingConfirmShe, undefined, where);
+    assert.equal(boot.pendingConfirmDisplay, undefined, where);
     assert.equal(boot.owedPi, undefined, where);
+    return false;
   }
+}
+
+function loginProbe(port, login) {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(port, '127.0.0.1');
+    let buf = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      reject(new Error('probe_login_timeout'));
+    }, 20_000);
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      sock.destroy();
+      reject(err);
+    };
+    sock.on('error', fail);
+    sock.on('data', (chunk) => {
+      if (settled) return;
+      buf += chunk.toString();
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.error) {
+          fail(new Error(`probe_login_${msg.error}`));
+          return;
+        }
+        if (msg.id === 1 && (msg.result?.status === 'OK' || msg.result === 'OK')) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(sock);
+          return;
+        }
+      }
+    });
+    sock.on('connect', () => {
+      sock.write(`${JSON.stringify({
+        id: 1,
+        method: 'login',
+        params: {
+          login,
+          client: CLIENT,
+          version: SHEARK_MINER_VERSION,
+          threads: 1,
+          name: 'ShearK-Miner',
+        },
+      })}\n`);
+    });
+  });
 }
 
 const REGEX_AFTER = new Set(['return', 'typeof', 'case', 'in', 'of', 'throw', 'void', 'delete', 'await', 'else', 'do']);
@@ -653,10 +760,17 @@ function assertNoComputedWithdraw(file, src) {
       assert.fail(`${file}:${lineOf(src, tok.index)} computed ${NAME}`);
     }
   }
+  if (/import\s*\(\s*(['"])[^'"]*levy\.js\1\s*\)/.test(src)) {
+    assert.fail(`${file} dynamic import() of the pool module`);
+  }
   for (const m of src.matchAll(/import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s+(['"])([^'"]*levy\.js)\2/g)) {
     const name = m[1];
     const use = new RegExp(`(?:^|[^A-Za-z0-9_$])${name}\\s*\\[`);
     assert.doesNotMatch(src, use, `${file} computed access on ${name} reaches ${NAME}`);
+    const reflect = new RegExp(`Reflect\\s*\\.\\s*get\\s*\\(\\s*${name}\\b`);
+    assert.doesNotMatch(src, reflect, `${file} Reflect.get on ${name} reaches ${NAME}`);
+    const values = new RegExp(`Object\\s*\\.\\s*values\\s*\\(\\s*${name}\\b`);
+    assert.doesNotMatch(src, values, `${file} Object.values on ${name} reaches ${NAME}`);
   }
 }
 
@@ -718,6 +832,12 @@ describe('P0 072 v12 custodial pull', () => {
     assert.throws(() => assertFileUnreachable('comma.js', commaLive), /reaches poolWithdrawTx/);
     const computed = 'import * as L from "./levy.js";\nexport function leak() {\n  return L[\'pool\' + \'WithdrawTx\']({ from: 1 });\n}\n';
     assert.throws(() => assertFileUnreachable('computed.js', computed), /computed poolWithdrawTx/);
+    const dynamicImport = 'export async function leak() {\n  return import("./levy.js");\n}\n';
+    assert.throws(() => assertFileUnreachable('dyn.js', dynamicImport), /dynamic import\(\)/);
+    const reflectGet = 'import * as L from "./levy.js";\nexport function leak() {\n  return Reflect.get(L, \'pool\' + \'WithdrawTx\');\n}\n';
+    assert.throws(() => assertFileUnreachable('reflect.js', reflectGet), /Reflect\.get/);
+    const objectValues = 'import * as L from "./levy.js";\nexport function leak() {\n  return Object.values(L);\n}\n';
+    assert.throws(() => assertFileUnreachable('values.js', objectValues), /Object\.values/);
 
     const gated = 'export function buildAutoPayoutTx() {\n  if (!custodialPullAllowed()) return { ok: false, reason: \'custodial_pull\' };\n  const tx = poolWithdrawTx({ from: 1 });\n  return tx;\n}\n';
     assertFileUnreachable('gated.js', gated);
@@ -727,6 +847,8 @@ describe('P0 072 v12 custodial pull', () => {
     assertFileUnreachable('old.js', oldOnly);
     const decl = 'export function poolWithdrawTx({ from } = {}) {\n  return { kind: \'pool-withdraw\', from };\n}\n';
     assertFileUnreachable('levy.js', decl);
+    const unrelated = 'import * as L from "./wallet_api.js";\nexport async function leak(obj) {\n  const m = await import("./wallet_api.js");\n  return Reflect.get(obj, "x") || Object.values(m);\n}\n';
+    assertFileUnreachable('other.js', unrelated);
 
     const files = productionSources(ROOT);
     const sep = path.sep;
@@ -749,15 +871,20 @@ describe('P0 072 v12 custodial pull', () => {
     assert.ok(calls >= 1, 'production still names the refused builder');
   });
 
-  it('stats key scan rejects injected owedNanos and dueNanos', () => {
+  it('pull-balance scan is exact paths, types, and zero custodial display', () => {
     const benign = {
       ok: true,
       windowOwedNotes: 0,
       windowOwedUnits: '0',
       hashOwedNanos: null,
-      recentTxs: [{ pending: false, kind: 'block' }],
+      recentTxs: [{ pending: false, kind: 'block' }, { pending: true, kind: 'block' }],
+      pendingShe: 0,
+      pendingDisplay: '0',
+      pendingConfirmShe: 0,
+      pendingConfirmDisplay: '0',
     };
-    assert.deepEqual(pullBalanceKeys(benign, STATS_BENIGN_PULL_KEYS), []);
+    assert.deepEqual(pullBalanceKeys(benign), []);
+    assert.deepEqual(pullBalanceKeys({ ...benign, hashOwedNanos: 0 }), []);
     const injected = {
       ...benign,
       owedNanos: 1,
@@ -767,7 +894,7 @@ describe('P0 072 v12 custodial pull', () => {
     };
     let message = '';
     try {
-      assertNoPullKeys(injected, STATS_BENIGN_PULL_KEYS, 'inject');
+      assertNoPullKeys(injected, 'inject');
     } catch (err) {
       message = String(err && err.message);
     }
@@ -775,6 +902,34 @@ describe('P0 072 v12 custodial pull', () => {
     assert.match(message, /\bdueNanos\b/);
     assert.match(message, /reconcile\.owedNanos/);
     assert.match(message, /miners\[0\]\.dueNanos/);
+
+    const custody = { ...benign, custody: { hashOwedNanos: 314159265 } };
+    assert.throws(() => assertNoPullKeys(custody, 'custody'), /custody\.hashOwedNanos/);
+    const topPending = { ...benign, pending: 314159265 };
+    assert.throws(() => assertNoPullKeys(topPending, 'top'), /(?:^|\s)pending(?:\s|$)/);
+    const badRow = {
+      ...benign,
+      recentTxs: [{ pending: 314159265, kind: 'block' }],
+    };
+    assert.throws(() => assertNoPullKeys(badRow, 'row'), /recentTxs\[0\]\.pending/);
+    const badType = { ...benign, recentTxs: [{ pending: 'false' }] };
+    assert.throws(() => assertNoPullKeys(badType, 'type'), /recentTxs\[0\]\.pending/);
+
+    const nonzero = [
+      { pendingShe: 1 },
+      { pendingShe: 314159265 },
+      { pendingDisplay: '1' },
+      { pendingDisplay: 0 },
+      { pendingConfirmShe: 314159265 },
+      { pendingConfirmDisplay: '314159265' },
+      { stats: { pendingShe: 1, pendingDisplay: '0' } },
+      { boot: { pendingConfirmDisplay: '1' } },
+    ];
+    for (const body of nonzero) {
+      const faults = pullBalanceKeys(body);
+      assert.ok(faults.length > 0, JSON.stringify(body));
+      assert.throws(() => assertNoPullKeys(body, 'display'), /pending/);
+    }
   });
 
   it('1, 3 and 17 miners across pots below, at and well above π keep coinbase notes and an empty pull book', { timeout: 600_000 }, async () => {
@@ -791,11 +946,16 @@ describe('P0 072 v12 custodial pull', () => {
         queued.push(tx);
         return orig(tx, opts);
       };
+      let probeSock = null;
       try {
         const port = await listenLocal(pool);
         const base = `http://127.0.0.1:${port}`;
         const dests = [];
         for (let i = 0; i < n; i += 1) dests.push(minerDest());
+        const probe = dests[0];
+        const probeTag = publicMinerTag(probe);
+        probeSock = await loginProbe(pool.stratum.address().port, `${probe}.probe`);
+        const scan = { api: 0, boot: 0 };
         const heightBefore = Number(pool.store.tip()?.height || 0);
         let low = 10 + n * 1000;
         for (const pot of POTS) {
@@ -884,23 +1044,24 @@ describe('P0 072 v12 custodial pull', () => {
           assertPoolPageShowsNoPull(page.text, where);
           for (const dest of dests) {
             const tag = publicMinerTag(dest);
+            const known = tag === probeTag;
+            const beforeApi = scan.api;
+            const beforeBoot = scan.boot;
             const minerPage = await httpCall(`${base}/miner/${tag}`);
             assert.equal(minerPage.status, 200, where);
-            assertMinerPageShowsNoPull(minerPage.text, `${where} ${tag}`);
+            const bootOk = assertMinerPageShowsNoPull(minerPage.text, `${where} ${tag}`, known ? scan : null);
+            assert.equal(bootOk, known, `${where} ${tag} boot.ok`);
             const api = await httpCall(`${base}/api/miners/${tag}`);
-            const body = api.json();
-            if (api.status === 404) {
-              assertUnknownMiner(api, tag, `${where} ${tag}`);
+            if (known) {
+              assert.equal(api.status, 200, `${where} probe miner`);
+              assertKnownMiner(api.json(), tag, `${where} ${tag}`, scan);
+              assert.equal(scan.api, beforeApi + 1, `${where} miner allowlist scan`);
+              assert.equal(scan.boot, beforeBoot + 1, `${where} boot.ok scan`);
             } else {
-              assert.equal(api.status, 200, where);
-              assert.equal(body.ok, true, where);
-              assert.equal(body.tag, tag, where);
-              assert.equal(body.pendingShe, 0, where);
-              assert.equal(body.unconfirmedShe, 0, where);
-              assert.equal(body.creditConfirmedShe, 0, where);
-              assert.equal(body.sentShe, 0, where);
-              assert.equal((body.ledger || []).length, 0, where);
-              assertNoPullKeys(body, MINER_BENIGN_PULL_KEYS, `${where} ${tag}`);
+              assert.equal(api.status, 404, where);
+              assertUnknownMiner(api, tag, `${where} ${tag}`);
+              assert.equal(scan.api, beforeApi, `${where} unknown miner scanned as known`);
+              assert.equal(scan.boot, beforeBoot, `${where} unknown boot scanned as ok`);
             }
           }
           const ghostTag = 'm00000000';
@@ -919,9 +1080,14 @@ describe('P0 072 v12 custodial pull', () => {
           assert.equal(withdraw.status, 410, where);
           assert.equal(queued.length, beforeSweep, `${where} withdraw reached queueTx`);
         }
+        assert.ok(scan.api >= 1, `n=${n} miner API 200`);
+        assert.ok(scan.boot >= 1, `n=${n} boot.ok`);
+        assert.equal(scan.api, POTS.length, `n=${n} probe scan each pot`);
+        assert.equal(scan.boot, POTS.length, `n=${n} probe boot each pot`);
         assert.equal(Number(pool.store.tip().height) - heightBefore, POTS.length * 2, `n=${n} sealed blocks`);
         assert.equal(queued.length, 0, `n=${n} queueTx`);
       } finally {
+        try { probeSock?.destroy(); } catch { /* already closed */ }
         pool.close();
       }
     }
