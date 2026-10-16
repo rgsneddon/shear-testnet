@@ -11,7 +11,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install node deps
         run: npm ci
+      - name: Build shearadmit.node
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+          VER=$(node -p process.version)
+          mkdir -p .node-headers
+          base="https://nodejs.org/dist/${VER}"
+          curl -fsSL "${base}/SHASUMS256.txt" -o .node-headers/SHASUMS256.txt
+          curl -fsSL "${base}/node-${VER}-headers.tar.gz" -o ".node-headers/node-${VER}-headers.tar.gz"
+          grep -E "[[:space:]]node-${VER}-headers\\.tar\\.gz$" .node-headers/SHASUMS256.txt > .node-headers/headers.sha256
+          test "$(wc -l < .node-headers/headers.sha256)" -eq 1
+          (cd .node-headers && sha256sum -c headers.sha256)
+          tar -xzf ".node-headers/node-${VER}-headers.tar.gz" -C .node-headers
+          export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
+          test -f "$NODE_INC/node_api.h"
+          make -C crypto/native shearadmit.node NODE_INC="$NODE_INC"
+          test -f crypto/native/shearadmit.node
+          node -e 'const n = require("module").createRequire(process.cwd()+"/")("./crypto/native/shearadmit.node"); if (!n || typeof n.proveRange !== "function" || typeof n.verifyRange !== "function") throw new Error("shearadmit");'
       - name: Reserve pin, bytecode, and vault security map
         run: node --test --test-concurrency=1 crypto/reserve_evm.test.js node/tests/test_reserve_pin_v12.js node/tests/test_vault_security_map.js node/tests/test_oracle_seal_v12.js
