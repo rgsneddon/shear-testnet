@@ -73,11 +73,11 @@ const ABI_NAMES = [
   'SHEAR_TESTNET_V1', 'SHEAR_TESTNET_V10', 'SHEAR_TESTNET_V11', 'SHEAR_TESTNET_V12',
   'SHEAR_TESTNET_V3', 'SHEAR_TESTNET_V4', 'SHEAR_TESTNET_V5', 'SHEAR_TESTNET_V6',
   'SHEAR_TESTNET_V7', 'SHEAR_TESTNET_V8', 'SHEAR_TESTNET_V9', 'STAKE_CUTOFF_QUARTER_DEN', 'annualBps',
-  'bonusEnacted', 'canJoin', 'claim', 'clearWithdrawHolds', 'commitRate', 'commitRewards', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
+  'bonusEnacted', 'canJoin', 'chargeEpoch', 'claim', 'clearWithdrawHolds', 'commitRate', 'commitRewards', 'commitVaultRoot', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
   'enactedAtMs', 'enactedDelta', 'enactedDown', 'enactedHold', 'enactedLiveBonus', 'enactedUp',
   'epochBps', 'epochDaysOf', 'epochLengthMs', 'epochOpen', 'epochRateOf', 'epochStart', 'holdEpochRoll', 'holdWithdraw', 'liveHashBonusNanos',
-  'lock', 'magic', 'nextEpochBps', 'observeRate', 'oracleAsOfMs', 'pinClock', 'portalId', 'portalOf',
-  'publicView', 'rateCommitEpoch', 'remainingDays', 'remainingMs', 'rewardNanos', 'roll', 'syncEpoch', 'totalLocked', 'trimmedMeanBps', 'vote', 'votesDecrease',
+  'lock', 'lockNote', 'magic', 'nextEpochBps', 'observeRate', 'oracleAsOfMs', 'pinClock', 'portalId', 'portalOf',
+  'publicView', 'rateCommitEpoch', 'remainingDays', 'remainingMs', 'rewardNanos', 'roll', 'setEpochDue', 'syncEpoch', 'totalLocked', 'trimmedMeanBps', 'vote', 'votesDecrease',
   'votesHold', 'votesIncrease', 'withdraw',
 ];
 

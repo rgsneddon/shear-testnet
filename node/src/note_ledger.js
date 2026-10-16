@@ -10,28 +10,21 @@ import { asU8, noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js
 import { epochMs } from '../../crypto/pot_sched.js';
 
 /**
- * A lock output is a vault tranche. A send cannot spend it, before or after
- * the epoch ends. Withdraw is the only way that principal leaves.
- * A vote is not a note.
+ * A lock note is spendable once the tip time has reached its unlock.
+ * No unlock on the note stays locked. A vote is not a note.
  */
-export function lockNoteHeld(out) {
-  return String(out?.kind || '') === 'lock';
-}
-
-/** True once the lock's recorded unlock has passed. Coverage uses this.
- *  Spendable does not: a matured tranche is still not a send input. */
-function lockNotePastUnlock(out, { tipMs = 0, genesisMs = 0, magic = MAGIC_TESTNET } = {}) {
+export function lockNoteHeld(out, { tipMs = 0, genesisMs = 0, magic = MAGIC_TESTNET } = {}) {
   if (String(out?.kind || '') !== 'lock') return false;
   const tip = Number(tipMs) || 0;
   const unlock = Number(out?.unlockAtMs) || 0;
-  if (unlock > 0) return tip >= unlock;
+  if (unlock > 0) return !(tip >= unlock);
   const epoch = Number(out?.lockEpoch);
   const genesis = Number(genesisMs) || 0;
   if (Number.isInteger(epoch) && epoch >= 0 && genesis > 0) {
     const end = genesis + (epoch + 1) * epochMs(magic || MAGIC_TESTNET);
-    return tip >= end;
+    return !(tip >= end);
   }
-  return false;
+  return true;
 }
 
 function commitHex(v) {
@@ -262,7 +255,7 @@ export function createNoteLedger({ digestsOf = null } = {}) {
     return nanos;
   }
 
-  /** Matured lock notes are still not send inputs, so this sum stays zero. */
+  /** Lock notes whose unlock has passed. The vault subtracts only what is still held. */
   function unlockedLockNanos(address, tipHeight, opts = {}) {
     const tip = Number(tipHeight) || 0;
     const { wantHex, rows } = collect(address);
@@ -288,7 +281,7 @@ export function createNoteLedger({ digestsOf = null } = {}) {
       const kind = String(rec.out?.kind || rec.tx?.kind || '');
       if (kind !== 'lock') continue;
       if (opts.coinbaseOnly && !rec.coinbase) continue;
-      if (!lockNotePastUnlock(rec.out, opts)) continue;
+      if (lockNoteHeld(rec.out, opts)) continue;
       const h = Number(rec.height) || 0;
       if (!(h > 0 && (tip - h + 1) >= need)) continue;
       nanos += openedOf(rec);
