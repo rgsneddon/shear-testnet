@@ -435,6 +435,7 @@ describe('FS-1 stage 0 vault gate', () => {
       vout: [{ kind: 'lock', dest20: Buffer.alloc(20, 2), valueProof: { v: 5 } }],
     };
     assert.equal(chainStage0Rejected([{ txs: [tx] }]), null);
-    assert.equal(typedAdmitStructure(tx).skip, true);
+    assert.equal(typedAdmitStructure(tx).skip, undefined);
+    assert.equal(typedAdmitStructure(tx).reason, 'admit_version');
   });
 });

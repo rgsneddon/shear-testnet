@@ -70,6 +70,16 @@ export function publicReserveReceipt(tx) {
   return vins.every((v) => !v.commit && !v.cTilde && !v.address && dest20Len(v.dest20) === 20);
 }
 
+/**
+ * From genesis. A lock, vote, or withdraw in the public-receipt shape is not
+ * a funded note. Block, mempool, and funded-body checks share this reason.
+ * There is no height carve-out and no caller flag.
+ */
+export function publicReserveReceiptRejected(tx) {
+  if (!publicReserveReceipt(tx)) return null;
+  return { ok: false, reason: 'public_receipt' };
+}
+
 export function dummyCount(tx) {
   return (tx?.vout || []).filter((o) => String(o.kind || '') === DUMMY_KIND).length;
 }

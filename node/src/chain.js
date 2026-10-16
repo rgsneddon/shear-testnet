@@ -80,7 +80,6 @@ import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
 import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
-import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected } from '../../crypto/reserve_vault.js';
 import {
@@ -161,7 +160,7 @@ import {
   custodialPullRejected,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange } from '../../crypto/dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -2830,6 +2829,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     const lockedNote = lockNoteSpendRejected(reserveState, tx, headerMs);
     if (lockedNote) return lockedNote;
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
@@ -2872,7 +2873,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
       return { ok: false, reason: 'dummy_outs' };
     }
-    if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
+    if (moneyNeedsRange(tx)) {
       for (const o of (tx.vout || [])) {
         if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
           return { ok: false, reason: 'range_proof' };
@@ -2977,14 +2978,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
     return { ok: false, reason: 'admit_membership' };
   }
-  // The store passes the live vault. A public receipt on a block that has
-  // no carried vault is the first lock, so the trial starts from empty.
-  // A sealed reserve row with no vault still fails closed.
+  // The store passes the live vault. A reserve row with no vault fails closed.
   if (reserveState) {
     const rewardGate = stakeRewardRejected(reserveState, block, headerMs, { require: true });
     if (rewardGate) return rewardGate;
   }
-  const vaultForTrial = reserveState || (txs.some((tx) => publicReserveReceipt(tx)) ? emptyVault() : null);
+  const vaultForTrial = reserveState || null;
   const vaultTry = trialReserveApply({
     state: vaultForTrial,
     block,

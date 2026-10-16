@@ -44,8 +44,10 @@ import {
   cloneVault,
   applyReserveBlock,
   txIsReserveAction,
+  reserveAction,
 } from '../../crypto/reserve_vault.js';
 import { reserveApplyFields } from '../../crypto/reserve_oracle.js';
+import { publicReserveReceipt } from '../../crypto/dummy.js';
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -96,6 +98,74 @@ function vaultApply(state, block, prior) {
       nowMs: headerMs(block) || 0,
     }),
   });
+}
+
+function asLocked(value) {
+  if (typeof value === 'bigint') return value > 0n ? value : 0n;
+  const n = Math.floor(Number(value) || 0);
+  if (!Number.isSafeInteger(n) || n <= 0) return 0n;
+  return BigInt(n);
+}
+
+function vaultLockedNanos(vault) {
+  if (!vault || vault.blankFork) return 0n;
+  return asLocked(vault.totalLockedNanos);
+}
+
+/** Interest minted into the mint bank or a claimable leaf and not yet withdrawn. */
+function vaultAccruedNanos(vault) {
+  if (!vault || vault.blankFork) return 0n;
+  let n = asLocked(vault.mintBankNanos);
+  for (const portal of Object.values(vault.portals || {})) {
+    n += asLocked(portal?.claimableRewards);
+  }
+  return n;
+}
+
+function openedLockNanos(tx) {
+  if (!tx || tx.coinbase || String(tx.kind || '') !== 'lock') return 0n;
+  const act = reserveAction(tx);
+  if (!act || act.opened === false) return 0n;
+  return asLocked(act.nanos);
+}
+
+/** Lock principal this block credits, split by whether a note funded it. */
+function lockPrincipalSplit(block) {
+  let note = 0n;
+  let bare = 0n;
+  for (const tx of block?.txs || []) {
+    const n = openedLockNanos(tx);
+    if (n <= 0n) continue;
+    if (publicReserveReceipt(tx)) bare += n;
+    else note += n;
+  }
+  return { note, bare };
+}
+
+/**
+ * Note-backed principal still in the vault, and public-receipt principal
+ * still in the vault. A withdraw spends note-backed principal first.
+ */
+export function rollVaultSupply(track, beforeLocked, afterLocked, block) {
+  let note = asLocked(track?.noteBacked);
+  let bare = asLocked(track?.unfunded);
+  const before = asLocked(beforeLocked);
+  const after = asLocked(afterLocked);
+  const delta = after - before;
+  const split = lockPrincipalSplit(block);
+  if (delta > 0n) {
+    const bareApplied = split.bare < delta ? split.bare : delta;
+    bare += bareApplied;
+    note += delta - bareApplied;
+  } else if (delta < 0n) {
+    let drop = -delta;
+    const fromNotes = note < drop ? note : drop;
+    note -= fromNotes;
+    drop -= fromNotes;
+    const fromBare = bare < drop ? bare : drop;
+    bare -= fromBare;
+  }
+  return { noteBacked: note, unfunded: bare };
 }
 
 export function vaultAfterBlock(vault, block, prior = []) {
@@ -694,6 +764,8 @@ export function supplyStep(prev, block, opts = {}) {
   const difference = next.state.mintedPot + next.state.mintedHash
     - next.state.schedulePot + next.state.carry - next.state.permittedHashAll;
   if (difference !== 0n) return { ok: false, reason: 'supply', state: null };
+  // A public lock credits vault principal with no note debit.
+  if (lockPrincipalSplit(block).bare > 0n) return { ok: false, reason: 'supply', state: null };
   return { ok: true, reason: '', state: next.state };
 }
 
@@ -785,9 +857,22 @@ export function supplyReport(state, opts = {}) {
     reportOk = false;
     reportReason = reportReason || 'hash_owed';
   }
+  const vaultPrincipal = asNonNeg(opts.vaultPrincipalNanos ?? 0);
+  const vaultAccrued = asNonNeg(opts.vaultAccruedNanos ?? 0);
+  const noteBacked = asNonNeg(opts.noteBackedPrincipalNanos ?? 0);
+  if (vaultPrincipal == null || vaultAccrued == null || noteBacked == null) {
+    return { ...blank, reason: reportReason || 'supply' };
+  }
+  // circulating + vault principal + accrued interest
+  //   == schedule emission + interest ever minted − burned + note-backed principal.
+  // Interest still in the mint bank is on both sides. Note-backed principal is
+  // the matching debit. A public lock has no debit, so differenceNanos moves.
   const circulating = mintedPot + mintedHash + chainExtra - burned;
-  const expected = schedulePot - carry + permittedHashAll + chainExtra - burned;
-  const difference = circulating - expected;
+  const scheduleEmission = schedulePot - carry + permittedHashAll;
+  const mintedEver = chainExtra + vaultAccrued;
+  const expected = scheduleEmission + mintedEver - burned + noteBacked;
+  const lhs = circulating + vaultPrincipal + vaultAccrued;
+  const difference = lhs - expected;
   if (difference !== 0n) {
     reportOk = false;
     reportReason = reportReason || 'supply';
@@ -806,6 +891,10 @@ export function supplyReport(state, opts = {}) {
     burnedNanos: safeNum(burned),
     bLockedNanos: safeNum(state.bLocked),
     differenceNanos: safeSigned(difference),
+    vaultPrincipalNanos: safeNum(vaultPrincipal),
+    vaultAccruedNanos: safeNum(vaultAccrued),
+    noteBackedPrincipalNanos: safeNum(noteBacked),
+    mintedInterestNanos: safeNum(mintedEver),
   };
   if (Object.values(nums).some((n) => n == null || !Number.isSafeInteger(n))) {
     return { ...blank, reason: reportReason || 'supply' };
@@ -906,6 +995,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
   }
   let state = emptySupplyState(genesisMs);
   let vault = null;
+  let vaultTrack = { noteBacked: 0n, unfunded: 0n };
   for (let bi = 0; bi < list.length; bi += 1) {
     const h = Number(list[bi]?.height);
     const next = accountBlock(state, list[bi], {
@@ -934,6 +1024,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
       vault = broken;
     } else {
       state = next.state;
+      const lockedBefore = vaultLockedNanos(vault);
       const advanced = vaultAfterBlock(vault, list[bi]);
       if (!advanced.ok) {
         ok = false;
@@ -942,11 +1033,19 @@ export function auditCirculatingSupply(blocks, opts = {}) {
         broken.blankFork = true;
         vault = broken;
       } else {
+        vaultTrack = rollVaultSupply(vaultTrack, lockedBefore, vaultLockedNanos(advanced.vault), list[bi]);
         vault = advanced.vault;
       }
     }
   }
-  const reportOpts = { burnedNanos: burnedIn, ok, reason };
+  const reportOpts = {
+    burnedNanos: burnedIn,
+    ok,
+    reason,
+    vaultPrincipalNanos: vaultLockedNanos(vault),
+    vaultAccruedNanos: vaultAccruedNanos(vault),
+    noteBackedPrincipalNanos: vaultTrack.noteBacked,
+  };
   if (claimPresent) reportOpts.extraMintNanos = opts.extraMintNanos;
   return supplyReport(state, reportOpts);
 }
