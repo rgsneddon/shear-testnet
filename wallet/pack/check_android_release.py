@@ -5,6 +5,8 @@ The pin is the public cert fingerprint in wallet/android/release-cert-sha256.txt
 Last published versionCode before Continuum 0.71 was 95. This cut is 96. This does not build or sign anything.
 """
 import argparse
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -15,6 +17,7 @@ from pathlib import Path
 PACKAGE = "com.shear.shear_wallet"
 MIN_VERSION_CODE = 92
 FAT_ABIS = ("armeabi-v7a", "arm64-v8a", "x86_64")
+LIBSODIUM_LOCK = Path(__file__).resolve().parents[1] / "android" / "libsodium.lock.json"
 
 
 def normalize_sha256(text):
@@ -116,6 +119,28 @@ def gate(apk, pin_text, badging, certs, min_version_code=MIN_VERSION_CODE):
     }
 
 
+def libsodium_errors(apk, lock_path=LIBSODIUM_LOCK):
+    """The APK must carry the pinned libsodium.so built by crypto/native/build-android-libsodium.sh."""
+    import zipfile
+
+    lock = json.loads(Path(lock_path).read_text(encoding="utf-8"))
+    errors = []
+    with zipfile.ZipFile(apk) as z:
+        names = set(z.namelist())
+        for abi, spec in lock["abis"].items():
+            member = "lib/%s/libsodium.so" % abi
+            if member not in names:
+                errors.append("missing %s (run crypto/native/build-android-libsodium.sh)" % member)
+                continue
+            data = z.read(member)
+            if lock["version"].encode() not in data:
+                errors.append("%s does not report libsodium %s" % (member, lock["version"]))
+            got = hashlib.sha256(data).hexdigest()
+            if got != spec["so_sha256_with_pinned_ndk"]:
+                errors.append("%s sha256 %s is not the NDK %s build %s" % (member, got, lock["ndk"], spec["so_sha256_with_pinned_ndk"]))
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("apk")
@@ -137,6 +162,7 @@ def main():
         dump_certs(apk),
         args.min_version_code,
     )
+    errors += libsodium_errors(apk)
     print("package", info["package"])
     print("versionCode", info["versionCode"])
     print("versionName", info["versionName"])

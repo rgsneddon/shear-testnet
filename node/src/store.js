@@ -44,6 +44,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
+import { ensureDatadir } from './datadir_acl.js';
 import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
@@ -124,7 +125,7 @@ import {
 
 /** Full book.snap rewrite cadence after the opening window. Short books snap every block. */
 export const BOOK_SNAP_EVERY = 32;
-import { flowNeedsDummy } from '../../crypto/dummy.js';
+import { flowNeedsDummy, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
@@ -299,13 +300,15 @@ export function createStore(dir, {
   // caller pin) refuses it outright. An unpinned open still needs the permit
   // that only node/tests/regtest_store.js can seal. Env vars do not.
   // magic wins when a caller sets it. network stays the node and datadir path.
+  // The check runs before the datadir is created or locked down, so a refused
+  // regtest open does not touch the directory.
   const configuredMagic = String(magicIn || network || MAGIC_TESTNET);
   if (configuredMagic === MAGIC_REGTEST) {
     const genesisPin = String(genesisHash || '');
     if (genesisPin) throw new Error('regtest_genesis_pin');
     if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
   }
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDatadir(dir);
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
   const segDir = path.join(dir, 'segments');
@@ -3459,6 +3462,8 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     if (txIsReserveAction(tx) && mempool.filter(txIsReserveAction).length >= RESERVE_ACTION_CAP) {
       return { ok: false, reason: 'reserve_cap' };
     }

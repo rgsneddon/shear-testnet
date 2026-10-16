@@ -1120,11 +1120,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const stolenBlock = await verifyBlock(asBlock(stolenDest), null, { probeBody: true, reserveState: state });
     const swapped = await verifyBlock(asBlock(stolenId), null, { probeBody: true, reserveState: state });
     const opened = await verifyBlock(asBlock(honest), null, { probeBody: true, reserveState: state });
+    // An unfunded dest20 lock is a public receipt. It never reaches the owner slot.
     assert.equal(stolenBlock.ok, false);
-    assert.equal(stolenBlock.reason, 'unsigned', stolenBlock.reason);
+    assert.equal(stolenBlock.reason, 'public_receipt', stolenBlock.reason);
     assert.equal(swapped.ok, false);
-    assert.equal(swapped.reason, 'unsigned', swapped.reason);
-    assert.notEqual(opened.reason, 'unsigned', opened.reason);
+    assert.equal(swapped.reason, 'public_receipt', swapped.reason);
+    assert.equal(opened.reason, 'public_receipt', opened.reason);
     assert.equal(reserveAuth(honest, state).ok, true, reserveAuth(honest, state).reason);
     assert.equal(reserveAuth(stolenDest, state).reason, 'unsigned');
     assert.equal(state.portals?.[portalIdFromDest(dest)]?.ownerPub || '', '');

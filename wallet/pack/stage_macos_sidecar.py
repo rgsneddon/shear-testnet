@@ -14,6 +14,9 @@ import os
 import shutil
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "licenses"))
+import release_notices  # noqa: E402
+
 
 def stage_app_sidecar(dest: str, repo: str) -> None:
     repo = os.path.abspath(repo)
@@ -26,11 +29,13 @@ def stage_app_sidecar(dest: str, repo: str) -> None:
             "(make -C crypto/native shearhash.node). Do not copy another OS addon."
         )
 
-    def copy_tree(root: str, arc_prefix: str, skip_dirs: set[str]) -> None:
+    def copy_tree(root: str, arc_prefix: str, skip_dirs: set[str], keep_dir=None) -> None:
         if not os.path.isdir(root):
             raise SystemExit(f"wallet sidecar missing {root}")
         for dp, dns, fns in os.walk(root):
             dns[:] = [d for d in dns if d not in skip_dirs and not d.startswith(".")]
+            if keep_dir is not None:
+                dns[:] = [d for d in dns if keep_dir(os.path.relpath(os.path.join(dp, d), repo))]
             for fn in fns:
                 if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
                     continue
@@ -62,8 +67,9 @@ def stage_app_sidecar(dest: str, repo: str) -> None:
         shutil.copy2(src, target)
     modules = os.path.join(repo, "node_modules")
     if not os.path.isdir(modules):
-        raise SystemExit("wallet sidecar missing node_modules — run npm ci before packing")
-    copy_tree(modules, "node_modules", {".git"})
+        raise SystemExit("wallet sidecar missing node_modules — run npm ci --ignore-scripts before packing")
+    copy_tree(modules, "node_modules", {".git"}, release_notices.npm_dir_filter(repo))
+    release_notices.copy_notices(dest, repo)
     runtime_src = shutil.which("node")
     if not runtime_src or not os.path.isfile(runtime_src):
         raise SystemExit("Mac sidecar needs a node binary on PATH")
@@ -78,6 +84,12 @@ def stage_app_sidecar(dest: str, repo: str) -> None:
     staged = os.path.join(runtime_dir, "node")
     shutil.copy2(real, staged)
     os.chmod(staged, 0o755)
+    for src, arc in release_notices.runtime_license_members([real], "runtime/licenses", repo):
+        target = os.path.join(dest, *arc.split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(src, target)
+    with open(os.path.join(dest, release_notices.RUNTIME_VERSIONS), "w", encoding="utf-8") as f:
+        f.write(release_notices.runtime_versions_text([real]))
     for name in ("shear-miner", "Shear-Miner"):
         if os.path.exists(os.path.join(dest, name)):
             raise SystemExit("wallet app must not include Shear-Miner")

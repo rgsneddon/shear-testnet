@@ -10,7 +10,7 @@ import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
-import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
+import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
@@ -722,7 +722,6 @@ export function typedCommitRejected(tx) {
  */
 export function typedCommitSum(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (publicReserveReceipt(tx)) return { ok: true, skip: true };
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
@@ -793,8 +792,10 @@ function voutDest20(o) {
  * `seenOwners` is a Map of portal id → spendPub hex for the block being checked.
  */
 /**
- * The first lock's funder must own the portal dest. The portal id has to be
- * that dest's id, so a stranger cannot aim a funding key at someone else's portal.
+ * A fresh portal is the funder's spend address. The vault stores that dest,
+ * so the portal links to the funder. A derived portal address is allowed
+ * when this same spend key owns it: the portal id is that dest's id either
+ * way. A stranger's key cannot take the owner slot.
  */
 function freshLockBound(tx, pubRaw) {
   const dest = reservePortalDest(tx);
@@ -815,27 +816,8 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
   if (!reserveNeedsPortalOpen(tx)) return { ok: true };
   const kind = reserveKindOf(tx);
   const pubRaw = spendPubFromTx(tx);
-  // A public dest20 receipt has no spendPub. The opened v is the body.
-  // It cannot take a fresh portal's owner slot.
-  if (publicReserveReceipt(tx) && !pubRaw) {
-    if (kind === 'lock') {
-      // The portal is the lock dest. The funder address is not the portal,
-      // so a from-id check would refuse every lock that pays a different dest.
-      const dest = reservePortalDest(tx);
-      const pid = String(tx?.portalId || tx?.vout?.[0]?.portalId || '').toLowerCase();
-      const destId = dest ? portalIdFromDest(dest) : '';
-      if (pid && destId && pid !== destId) {
-        return { ok: false, reason: 'payout_mismatch', from: dest };
-      }
-      const id = destId || pid;
-      const recorded = id ? String(reserveState?.portals?.[id]?.ownerPub || '').toLowerCase() : '';
-      const seen = seenOwners instanceof Map && id ? String(seenOwners.get(id) || '') : '';
-      if (!recorded && !seen) {
-        return { ok: false, reason: 'owner_missing', from: dest };
-      }
-    }
-    return { ok: true };
-  }
+  // A sealed note needs the owner signature. A missing one is unsigned.
+  // A public dest20 receipt has no spend key, so it is not an open.
   if (!verifyReservePortalOpen(tx)) {
     return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
   }
@@ -938,6 +920,9 @@ export function fundedDebit(tx) {
   if (!tx || tx.coinbase) return null;
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
   const kind = txKind(tx);
+  // Sealed lock, vote, and withdraw are funded by a note, not an address
+  // balance. A public receipt is public_receipt in verifyFundedBody before
+  // this return, so it is not an unfunded debit.
   if (!kind || kind === 'lock' || kind === 'vote' || kind === 'withdraw') return null;
   let from = kind === 'vote'
     ? String(tx.payer || tx.vin?.[0]?.address || '')
@@ -1017,6 +1002,8 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
   const seenOwners = new Map();
   const drawn = new Set();
   for (const tx of body || []) {
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
     const pull = custodialPullRejected(tx);

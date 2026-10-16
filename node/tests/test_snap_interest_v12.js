@@ -24,6 +24,13 @@ function portalDest() {
   return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
 }
 
+function noteFund(tx) {
+  const vin = { ...(tx.vin && tx.vin[0] ? tx.vin[0] : {}) };
+  vin.noteCommit = Buffer.alloc(32, 0x91);
+  tx.vin = [vin];
+  return tx;
+}
+
 function header(ts) {
   return encodeHeader({
     prevBlockHash: Buffer.alloc(32),
@@ -92,7 +99,7 @@ describe('VS-1 snap interest', () => {
     const drawTs = GENESIS + EPOCH_MS + 1;
     const chain = [
       blockAt(GENESIS, miner, [{ nanos: potAt(GENESIS), kind: 'pot' }], [
-        lockTx({ from: miner, to: portal, nanos: stake, id: 'lock-snap' }),
+        noteFund(lockTx({ from: miner, to: portal, nanos: stake, id: 'lock-snap' })),
       ]),
       blockAt(drawTs, miner, [{ nanos: potAt(drawTs), kind: 'pot' }], [
         withdrawTx({ from: portal, to: miner, nanos: stake, id: 'draw-snap' }),

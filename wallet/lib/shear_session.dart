@@ -12,6 +12,7 @@ import 'shear_lock.dart';
 import 'shear_reserve.dart';
 import 'shear_vortex.dart';
 import 'shear_shewall.dart';
+import 'shear_shewall_acl.dart';
 export 'shear_shewall.dart' show shewallName;
 
 const kMinWalletPasswordLen = 8;
@@ -567,12 +568,16 @@ ShearIdentity importShewall(
   return id;
 }
 
-Future<File> writeShewallFile(File dest, Uint8List sealed) async {
-  dest.parent.createSync(recursive: true);
-  if (sealed.isNotEmpty && sealed[0] == 0x7b) {
-    throw const FormatException('json_refused');
-  }
-  dest.writeAsBytesSync(sealed);
+Future<File> writeShewallFile(
+  File dest,
+  Uint8List sealed, {
+  String? applicationSupport,
+}) async {
+  await writeShewallOffUi(
+    dest.path,
+    sealed,
+    applicationSupport: applicationSupport,
+  );
   return dest;
 }
 

@@ -227,6 +227,7 @@ describe('time-locked withdraw supply', () => {
     const noteDest = destOf();
     const note = freshVault();
     const noteTx = timeLock(noteDest, T0, 'fold-note');
+    noteTx.vin = [{ ...(noteTx.vin && noteTx.vin[0] ? noteTx.vin[0] : {}), noteCommit: Buffer.alloc(32, 4) }];
     assert.equal(applyLock(note, noteTx, T0).ok, true);
     const notePreview = previewWithdraw(note, noteDest, DRAW);
     assert.equal(notePreview.principal, PI_SHE_NANOS);

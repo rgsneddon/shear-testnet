@@ -20,6 +20,8 @@ on:
       - 'crypto/member_keys.js'
       - 'crypto/spend.js'
       - 'wallet/android/**'
+      - 'wallet/pack/check_android_release.py'
+      - 'wallet/pack/test_check_android_release.py'
       - 'wallet/lib/shear_admit_ffi.dart'
       - 'wallet/lib/shear_admit_pin.dart'
       - 'wallet/lib/shear_ledger.dart'
@@ -35,6 +37,8 @@ on:
       - 'crypto/member_keys.js'
       - 'crypto/spend.js'
       - 'wallet/android/**'
+      - 'wallet/pack/check_android_release.py'
+      - 'wallet/pack/test_check_android_release.py'
       - 'wallet/lib/shear_admit_ffi.dart'
       - 'wallet/lib/shear_admit_pin.dart'
       - 'wallet/lib/shear_ledger.dart'
@@ -70,6 +74,14 @@ jobs:
           echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
       - name: Build arm64 libshear_admit.so
         run: bash crypto/native/build-android-arm64.sh
+      - name: Build the pinned libsodium.so (sha256 + minisign; reproducible with r27d)
+        env:
+          SHEAR_REQUIRE_MINISIGN: '1'
+        run: |
+          sudo apt-get install -y minisign
+          bash crypto/native/build-android-libsodium.sh
+          cat wallet/android/app/src/main/jniLibs/arm64-v8a/libsodium.so.sha256
+          (cd wallet/pack && python3 test_check_android_release.py)
       - name: nm the Android admit library
         run: |
           set -euo pipefail

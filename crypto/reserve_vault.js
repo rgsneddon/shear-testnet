@@ -434,6 +434,9 @@ export function withdrawBinding(state, portal, nowMs) {
  * The magic, chain id, release epoch, and tranche set are bound so a
  * signature cannot be replayed onto a later lock. The destination is
  * the payout. The lock dest is the withdraw's own subject.
+ * The release epoch is the chain epoch of the block that mines this
+ * withdraw. A signature mined after that epoch boundary does not verify.
+ * The wallet has to re-sign for the epoch that includes the block.
  */
 export function withdrawOwnerMessage({
   nullifier, nanos, dest, magic, chainId, epoch, trancheSet,

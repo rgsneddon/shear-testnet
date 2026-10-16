@@ -120,7 +120,11 @@ function potBlock(ts, miner, more, observe) {
 }
 
 function lockOf(miner, portal, stake, id) {
-  return lockTx({ from: miner, to: portal, nanos: stake, id });
+  const tx = lockTx({ from: miner, to: portal, nanos: stake, id });
+  const vin = { ...(tx.vin && tx.vin[0] ? tx.vin[0] : {}) };
+  vin.noteCommit = Buffer.alloc(32, 0x91);
+  tx.vin = [vin];
+  return tx;
 }
 
 function drawOf(portal, miner, nanos, id, bind = null) {

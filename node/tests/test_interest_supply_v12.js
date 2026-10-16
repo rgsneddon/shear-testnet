@@ -91,13 +91,21 @@ function earned(stake, lockTs, drawTs) {
   return total;
 }
 
+/** A lock whose vin spends a note. A dest20 receipt is not note-paid principal. */
+function noteFund(tx, mark) {
+  const vin = { ...(tx.vin && tx.vin[0] ? tx.vin[0] : {}) };
+  vin.noteCommit = Buffer.alloc(32, mark);
+  tx.vin = [vin];
+  return tx;
+}
+
 function lockBlock(ts, miner, portals, stake) {
-  const locks = portals.map((portal, i) => lockTx({
+  const locks = portals.map((portal, i) => noteFund(lockTx({
     from: miner,
     to: portal,
     nanos: stake,
     id: `lock-${i}-${stake}-${ts}`,
-  }));
+  }), i + 1));
   return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], locks);
 }
 

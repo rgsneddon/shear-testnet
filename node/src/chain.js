@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import { potSubsidyAt, chainGenesisMs as genesisMsOf, epochDays, vortexEpochIndex } from '../../crypto/pot_sched.js';
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
@@ -79,7 +80,6 @@ import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
 import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
-import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected } from '../../crypto/reserve_vault.js';
 import {
@@ -160,7 +160,7 @@ import {
   custodialPullRejected,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange } from '../../crypto/dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -2829,6 +2829,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     const lockedNote = lockNoteSpendRejected(reserveState, tx, headerMs);
     if (lockedNote) return lockedNote;
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
@@ -2871,7 +2873,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
       return { ok: false, reason: 'dummy_outs' };
     }
-    if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
+    if (moneyNeedsRange(tx)) {
       for (const o of (tx.vout || [])) {
         if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
           return { ok: false, reason: 'range_proof' };
@@ -2984,14 +2986,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
     return { ok: false, reason: 'admit_membership' };
   }
-  // The store passes the live vault. A public receipt on a block that has
-  // no carried vault is the first lock, so the trial starts from empty.
-  // A sealed reserve row with no vault still fails closed.
+  // The store passes the live vault. A reserve row with no vault fails closed.
   if (reserveState) {
     const rewardGate = stakeRewardRejected(reserveState, block, headerMs, { require: true });
     if (rewardGate) return rewardGate;
   }
-  const vaultForTrial = reserveState || (txs.some((tx) => publicReserveReceipt(tx)) ? emptyVault() : null);
+  const vaultForTrial = reserveState || null;
   const vaultTry = trialReserveApply({
     state: vaultForTrial,
     block,
@@ -3604,33 +3604,106 @@ export function verifyLoadedChain(blocks, opts = {}) {
   const begun = beginLoaded(blocks, opts);
   if (!begun.ok || begun.empty) return finishLoaded(begun);
   const { list, state } = begun;
+  const report = typeof opts.onBlock === 'function';
+  const total = list.length;
+  const stride = report ? Math.max(1, Math.ceil((total - state.start) / 8)) : 0;
   for (let i = state.start; i < list.length; i += 1) {
+    if (report) {
+      const n = i + 1;
+      let line = null;
+      if (!opts.quiet && (i === state.start || n === total || (n - state.start) % stride === 0)) {
+        line = `book-replay ${n}/${total}\n`;
+      }
+      opts.onBlock({ height: n, total, line });
+    }
     const stop = stepLoaded(state, list, i);
     if (stop) return stop;
   }
   return finishLoaded(begun);
 }
 
-/** Same load rules as verifyLoadedChain. Yields once per block so the event loop can log progress and serve timers. */
-export async function verifyLoadedChainAsync(blocks, opts = {}) {
-  const begun = beginLoaded(blocks, opts);
-  if (!begun.ok || begun.empty) return finishLoaded(begun);
-  const { list, state } = begun;
-  const total = list.length;
-  const stride = Math.max(1, Math.ceil((total - state.start) / 8));
-  for (let i = state.start; i < total; i += 1) {
-    await new Promise((resolve) => { setImmediate(resolve); });
-    if (!opts.quiet) {
-      const n = i + 1;
-      if (i === state.start || n === total || (n - state.start) % stride === 0) {
-        process.stderr.write(`book-replay ${n}/${total}\n`);
-      }
-    }
-    if (typeof opts.onProgress === 'function') opts.onProgress({ height: i + 1, total });
-    const stop = stepLoaded(state, list, i);
-    if (stop) return stop;
+/** Clock captured on the parent. The worker must not sample Date.now() later. */
+function bootVerifyNowMs(opts) {
+  const given = Number(opts?.nowMs);
+  if (Number.isFinite(given) && given > 0) return given;
+  return Date.now();
+}
+
+/**
+ * burialOf runs on the parent. The worker only receives the integer tips,
+ * keyed by height, because stepLoaded calls it after height === i + 1.
+ */
+function bootBurialTips(list, burialOf) {
+  if (typeof burialOf !== 'function') return null;
+  const tips = new Array(list.length);
+  for (let i = 0; i < list.length; i += 1) {
+    const tip = burialOf(list[i]);
+    tips[i] = Number.isInteger(tip) ? tip : null;
   }
-  return finishLoaded(begun);
+  return tips;
+}
+
+/** Stay on the parent. The worker cannot call them, and they are not load rules. */
+const BOOT_VERIFY_PARENT_KEYS = new Set(['burialOf', 'onProgress', 'onBlock']);
+
+/**
+ * The option set verifyLoadedChain sees on this thread.
+ * Functions stay here. Every other field is forwarded, including ones added
+ * after this worker existed (magic, oracle activation, and whatever is next).
+ * nowMs is this thread's clock so the worker does not sample Date.now().
+ */
+function bootVerifyPayload(list, opts) {
+  const given = opts && typeof opts === 'object' ? opts : {};
+  const verifyOpts = {};
+  for (const key of Object.keys(given)) {
+    if (BOOT_VERIFY_PARENT_KEYS.has(key)) continue;
+    if (typeof given[key] === 'function') continue;
+    verifyOpts[key] = given[key];
+  }
+  verifyOpts.nowMs = bootVerifyNowMs(given);
+  return {
+    blocks: list,
+    burialTips: bootBurialTips(list, given.burialOf),
+    verifyOpts,
+  };
+}
+
+function runBootVerifyWorker(payload, opts) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./boot_verify_worker.js', import.meta.url), { workerData: payload });
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      worker.terminate().catch(() => {});
+      fn(value);
+    };
+    worker.on('message', (msg) => {
+      if (settled || !msg) return;
+      if (msg.type === 'block') {
+        try {
+          if (msg.line) process.stderr.write(msg.line);
+          if (typeof opts.onProgress === 'function') opts.onProgress({ height: msg.height, total: msg.total });
+        } catch (err) {
+          finish(reject, err);
+        }
+        return;
+      }
+      if (msg.type === 'result') finish(resolve, msg.result);
+      else if (msg.type === 'error') finish(reject, new Error(msg.message || 'boot_verify'));
+    });
+    worker.on('error', (err) => finish(reject, err));
+    worker.on('exit', (code) => {
+      if (!settled) finish(reject, new Error(`boot_verify_exit_${code}`));
+    });
+  });
+}
+
+/** Same load rules as verifyLoadedChain. stepLoaded runs in a worker, not on this event loop. */
+export async function verifyLoadedChainAsync(blocks, opts = {}) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  if (!list.length) return verifyLoadedChain(blocks, opts);
+  return runBootVerifyWorker(bootVerifyPayload(list, opts), opts || {});
 }
 
 /**
