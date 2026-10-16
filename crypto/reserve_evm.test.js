@@ -18,10 +18,12 @@ import {
   encodePinClock,
   encodeVote,
   encodeEnact,
+  encodeCommitRewards,
   encodeSyncEpoch,
   encodeWithdraw,
   encodePublicView,
   decodePublicView,
+  decodeBytes32,
   encodePortalOf,
   decodePortal,
   decodeWithdraw,
@@ -31,7 +33,15 @@ import {
 } from './reserve_evm.js';
 import { GENESIS_BPS } from './reserve_oracle.js';
 import { encodeDest } from './address.js';
-import { applyReserveBlock, deposit, emptyVault } from './reserve_vault.js';
+import {
+  applyReserveBlock,
+  deposit,
+  emptyVault,
+  enact,
+  rewardCommitment,
+  supplyIdentity,
+  withdraw,
+} from './reserve_vault.js';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -320,5 +330,117 @@ describe('Reserve bytecode on the Shear EVM', () => {
       assert.equal(state.currentEpoch, evmRolled.currentEpoch, `${n} roll height`);
       assert.equal(state.currentEpoch, 1, `${n} rolled`);
     }
+  });
+
+  it('epoch-end gas stays flat in N and JS matches the EVM', async () => {
+    const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
+    const vault = fs.readFileSync(new URL('./reserve_vault.js', import.meta.url), 'utf8');
+    assert.equal(sol.includes('_pinLegacyEpochs'), false);
+    assert.equal(sol.includes('_releaseMatured'), false);
+    assert.equal(vault.includes('pinLegacyLockEpochs'), false);
+    const t0 = 1_700_000_000_000;
+    const end = t0 + RESERVE_EPOCH_MS;
+    const sizes = [1, 40, 257, 1000];
+    const gas = {};
+    for (const n of sizes) {
+      const js = emptyVault();
+      js.genesisMs = t0;
+      const session = await bootReserveEvm();
+      assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
+      let locked = 0;
+      for (let i = 0; i < n; i += 1) {
+        const raw = Buffer.alloc(20);
+        raw.writeUInt32BE(i + 1, 16);
+        const dest = encodeDest(raw);
+        const nanos = i === 0 ? PI_SHE_NANOS : 1;
+        locked += nanos;
+        const jsLock = deposit({ state: js, dest, nanos, nowMs: t0 });
+        assert.equal(jsLock.ok, true, `${n} js ${i} ${jsLock.reason}`);
+        const evmLock = await callReserve(session, encodeDeposit(dest, nanos, t0));
+        assert.equal(evmLock.ok, true, `${n} evm ${i} ${evmLock.reason}`);
+      }
+      assert.equal(enact({ state: js, nowMs: end }).ok, true);
+      const en = await callReserve(session, encodeEnact(end));
+      assert.equal(en.ok, true, en.reason);
+      const jsPass = applyReserveBlock({
+        state: js,
+        block: { txs: [] },
+        nowMs: end,
+        genesisMs: t0,
+      });
+      assert.equal(jsPass.ok, true, jsPass.reason);
+      const evmPass = await callReserve(session, encodeSyncEpoch(end));
+      assert.equal(evmPass.ok, true, evmPass.reason);
+      const committed = await callReserve(session, encodeCommitRewards(end));
+      assert.equal(committed.ok, true, `${n} ${committed.reason}`);
+      const plan = rewardCommitment(js, end);
+      assert.equal(decodeBytes32(committed.returnValue), plan.root, `root ${n}`);
+      gas[n] = committed.gasUsed;
+      const view = decodePublicView(
+        (await callReserve(session, encodePublicView(end), { staticCall: true })).returnValue,
+      );
+      assert.equal(js.currentEpoch, 1, `js epoch ${n}`);
+      assert.equal(view.currentEpoch, 1, `evm epoch ${n}`);
+      assert.equal(Number(js.totalLockedNanos), locked, `js locked ${n}`);
+      assert.equal(view.totalLockedNanos, locked, `evm locked ${n}`);
+      const id = supplyIdentity(js);
+      assert.equal(id.ok, true, `${n} ${id.reason}`);
+      assert.equal(id.lockedNanos, locked);
+    }
+    for (const n of sizes) {
+      assert.ok(gas[n] > 0n, `gas ${n}`);
+      assert.ok(gas[n] < gas[1] * 2n, `gas ${n}=${gas[n]} gas1=${gas[1]}`);
+    }
+  });
+
+  it('unclaimed principal never expires, and a claim is not what pays it', async () => {
+    const t0 = 1_700_000_000_000;
+    const raw = Buffer.alloc(20, 0xcc);
+    const dest = encodeDest(raw);
+    const nanos = PI_SHE_NANOS;
+    const js = emptyVault();
+    js.genesisMs = t0;
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
+    assert.equal(deposit({ state: js, dest, nanos, nowMs: t0 }).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, nanos, t0))).ok, true);
+    let now = t0;
+    for (let epoch = 0; epoch < 5; epoch += 1) {
+      now = t0 + (epoch + 1) * RESERVE_EPOCH_MS;
+      assert.equal(enact({ state: js, nowMs: now }).ok, true, `js enact ${epoch}`);
+      const en = await callReserve(session, encodeEnact(now));
+      assert.equal(en.ok, true, `evm enact ${epoch} ${en.reason}`);
+      const rolled = applyReserveBlock({
+        state: js,
+        block: { txs: [] },
+        nowMs: now,
+        genesisMs: t0,
+      });
+      assert.equal(rolled.ok, true, rolled.reason);
+      const evmRoll = await callReserve(session, encodeSyncEpoch(now));
+      assert.equal(evmRoll.ok, true, evmRoll.reason);
+      const committed = await callReserve(session, encodeCommitRewards(now));
+      assert.equal(committed.ok, true, `commit ${epoch} ${committed.reason}`);
+      assert.equal(Number(js.totalLockedNanos), nanos, `js still ${epoch}`);
+      const view = decodePublicView(
+        (await callReserve(session, encodePublicView(now), { staticCall: true })).returnValue,
+      );
+      assert.equal(view.totalLockedNanos, nanos, `evm still ${epoch}`);
+      assert.equal(view.currentEpoch, js.currentEpoch, `epoch ${epoch}`);
+      assert.equal(supplyIdentity(js).ok, true);
+    }
+    const paid = withdraw({ state: js, dest, nowMs: now });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.principal, nanos);
+    const evmPaid = await callReserve(session, encodeWithdraw(dest, now));
+    assert.equal(evmPaid.ok, true, evmPaid.reason);
+    assert.equal(decodeWithdraw(evmPaid.returnValue).principal, nanos);
+    assert.equal(Number(js.totalLockedNanos), 0);
+    const left = decodePublicView(
+      (await callReserve(session, encodePublicView(now), { staticCall: true })).returnValue,
+    );
+    assert.equal(left.totalLockedNanos, 0);
+    assert.notEqual(withdraw({ state: js, dest, nowMs: now }).ok, true);
+    assert.equal((await callReserve(session, encodeWithdraw(dest, now))).ok, false);
   });
 });

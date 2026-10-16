@@ -36,7 +36,9 @@ pragma solidity ^0.8.20;
  * The 1 SHE pot never moves. At epoch end the block commits one root over
  * every eligible reward (rate × principal × pro-rata time, π gate, cutoff).
  * A user claims one leaf of that root, once, in their own transaction.
- * Principal stays in the user's own time-locked note. This contract refuses
+ * That claim does not touch principal. Principal stays in the vault until
+ * the user's own withdraw, and an epoch end does not release it.
+ * This contract refuses
  * well-known foreign chain ids. The Reserve oracle is the bundled quorum.
  * observeRate does not move the rate.
  *
@@ -136,6 +138,10 @@ contract Reserve {
     mapping(bytes32 => bytes32) internal portalSha;
     bytes32[] internal portalKeys;
     mapping(bytes32 => bool) internal portalListed;
+    /// Portals whose pre-cutoff stake is at least π. Epoch end walks this
+    /// list, so a dust portal does not make the reward commit linear in N.
+    bytes32[] internal earnerKeys;
+    mapping(bytes32 => uint256) internal earnerPosPlus;
     /// Settlement index → merkle root of every reward that became due there.
     mapping(uint256 => bytes32) internal rewardRootOf;
     mapping(bytes32 => uint256) internal leafNanos;
@@ -312,6 +318,30 @@ contract Reserve {
         bool ended = epochStart != 0 && nowTs >= epochStart + epochLengthMs();
         if (chain == 0 && !ended) return 0;
         return chain;
+    }
+
+    /// Keep the earner list equal to the π-qualified set. Lock and withdraw
+    /// are the only balance changes, so epoch end does not scan every portal.
+    function _noteEarner(bytes32 id) internal {
+        bool earns = _preCutoffStake(portals[id], cutoffLengthMs()) >= PI_NANOS;
+        uint256 pos = earnerPosPlus[id];
+        if (earns) {
+            if (pos == 0) {
+                earnerKeys.push(id);
+                earnerPosPlus[id] = earnerKeys.length;
+            }
+            return;
+        }
+        if (pos == 0) return;
+        uint256 idx = pos - 1;
+        uint256 last = earnerKeys.length - 1;
+        if (idx != last) {
+            bytes32 moved = earnerKeys[last];
+            earnerKeys[idx] = moved;
+            earnerPosPlus[moved] = pos;
+        }
+        earnerKeys.pop();
+        earnerPosPlus[id] = 0;
     }
 
     /// Credits locked before the cutoff. The final window is not in this sum.
@@ -541,6 +571,7 @@ contract Reserve {
             // Clock pinned after the first lock. The next credit opens the chain epoch.
             _syncEpoch(nowTs);
         }
+        _noteEarner(id);
     }
 
     function addMore(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
@@ -740,16 +771,16 @@ contract Reserve {
     }
 
     function _collect(uint256 nowIdx) internal view returns (RewardRow[] memory rows) {
-        uint256 nKeys = portalKeys.length;
+        uint256 nKeys = earnerKeys.length;
         uint256 count = 0;
         for (uint256 i = 0; i < nKeys; i++) {
-            (uint256[] memory epochs,) = _portalAccrual(portalKeys[i], nowIdx);
+            (uint256[] memory epochs,) = _portalAccrual(earnerKeys[i], nowIdx);
             count += epochs.length;
         }
         rows = new RewardRow[](count);
         uint256 w = 0;
         for (uint256 i = 0; i < nKeys; i++) {
-            bytes32 id = portalKeys[i];
+            bytes32 id = earnerKeys[i];
             (uint256[] memory epochs, uint256[] memory amounts) = _portalAccrual(id, nowIdx);
             bytes32 shaId = portalSha[id];
             for (uint256 j = 0; j < epochs.length; j++) {
@@ -792,55 +823,9 @@ contract Reserve {
         return layer[0];
     }
 
-    function _releaseMatured(uint256 nowIdx) internal {
-        uint256 nKeys = portalKeys.length;
-        for (uint256 p = 0; p < nKeys; p++) {
-            Portal storage portal = portals[portalKeys[p]];
-            bool held = withdrawHold[portalKeys[p]];
-            uint256 release = 0;
-            uint256 kept = 0;
-            uint256 credits = portal.tranches.length;
-            for (uint256 i = 0; i < credits; i++) {
-                bool matured = nowIdx > portal.tranches[i].epoch;
-                // A withdraw in this block still pays legacy principal.
-                // A time-locked note is released here either way.
-                if (!matured || (held && !portal.tranches[i].notePrincipal)) {
-                    if (kept != i) portal.tranches[kept] = portal.tranches[i];
-                    kept += 1;
-                } else {
-                    release += portal.tranches[i].amount;
-                }
-            }
-            while (portal.tranches.length > kept) portal.tranches.pop();
-            if (release == 0) continue;
-            if (release > portal.active) {
-                uint256 rest = release - portal.active;
-                portal.active = 0;
-                if (rest > portal.idle) revert BadAmount();
-                portal.idle -= rest;
-            } else {
-                portal.active -= release;
-            }
-            totalLocked -= release;
-            uint256 left = portal.active + portal.idle;
-            if (left == 0) {
-                portal.rewardTracked = false;
-                portal.rewardEpoch = 0;
-                portal.joined = false;
-                portal.vote = Vote.None;
-                portal.voteEpoch = 0;
-            } else if (left < PI_NANOS) {
-                portal.joined = false;
-                portal.vote = Vote.None;
-                portal.voteEpoch = 0;
-            }
-        }
-    }
-
-    /// One root over every eligible reward. Principal is released, not minted.
-    /// Zero earning rows still release matured principal and return the empty
-    /// root. That root is not stored: there is nothing to claim. A later
-    /// claim mints one leaf. The root does not expire.
+    /// One root over every eligible reward. Principal is not released here.
+    /// Zero earning rows return the empty root and do not store it. A later
+    /// claim mints one leaf and does not touch principal. The root does not expire.
     function commitRewards(uint256 nowTs) external onlyShear returns (bytes32 root) {
         uint256 nowIdx = _payIndex(nowTs);
         if (nowIdx == 0) revert EpochNotEnded();
@@ -849,7 +834,6 @@ contract Reserve {
         bytes32 prior = rewardRootOf[nowIdx];
         if (prior != bytes32(0) && prior != root) revert BadAmount();
         if (rows.length == 0) {
-            _releaseMatured(nowIdx);
             _clearWithdrawHolds();
             return root;
         }
@@ -867,16 +851,15 @@ contract Reserve {
             }
             portalReserved[rows[i].shaId] = true;
         }
-        _releaseMatured(nowIdx);
         _clearWithdrawHolds();
-        uint256 nKeys = portalKeys.length;
-        for (uint256 i = 0; i < nKeys; i++) {
-            bytes32 shaId = portalSha[portalKeys[i]];
-            if (portalReserved[shaId]) portals[portalKeys[i]].accruedReward = 0;
+        uint256 nEarn = earnerKeys.length;
+        for (uint256 i = 0; i < nEarn; i++) {
+            bytes32 shaId = portalSha[earnerKeys[i]];
+            if (portalReserved[shaId]) portals[earnerKeys[i]].accruedReward = 0;
         }
     }
 
-    /// Mint one archived leaf. A second call, or a withdraw of that portal, reverts.
+    /// Mint one archived leaf. A second call reverts. The claim does not release principal.
     function claim(bytes32 nullifier, uint256 nanos, bytes calldata proof) external onlyShear returns (uint256) {
         if (!leafKnown[nullifier] || leafNanos[nullifier] != nanos || nanos == 0) revert BadAmount();
         if (nullifierMinted[nullifier]) revert AlreadyMinted();
@@ -893,8 +876,9 @@ contract Reserve {
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
         bytes32 shaId = portalSha[id];
-        if (shaId != bytes32(0) && portalReserved[shaId]) revert AlreadyMinted();
-        if (_rewardTaken(id, p, _chainEpoch(nowTs))) revert AlreadyMinted();
+        // A claim owns the reward. It does not keep the principal.
+        bool rewardHeld = (shaId != bytes32(0) && portalReserved[shaId])
+            || _rewardTaken(id, p, _chainEpoch(nowTs));
         uint256 active = p.active;
         uint256 idleBal = p.idle;
         if (active + idleBal == 0) {
@@ -928,7 +912,8 @@ contract Reserve {
         }
         while (p.tranches.length > kept) p.tranches.pop();
         // Each completed chain epoch pays at the rate committed for that epoch.
-        reward = p.accruedReward;
+        // A reserved reward stays with the claim. This pays principal only.
+        reward = rewardHeld ? 0 : p.accruedReward;
         p.accruedReward = 0;
         if (release > active) {
             uint256 rest = release - active;
@@ -959,6 +944,7 @@ contract Reserve {
             p.vote = Vote.None;
             p.voteEpoch = 0;
         }
+        _noteEarner(id);
     }
 
     function publicView(uint256 nowTs)

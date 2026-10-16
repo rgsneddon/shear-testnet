@@ -309,10 +309,16 @@ export async function callReserve(session, data, { staticCall = false, value = 0
     origin: from,
     isStatic: staticCall,
   });
+  const gasUsed = res.execResult.executionGasUsed;
   if (res.execResult.exceptionError) {
-    return { ok: false, reason: String(res.execResult.exceptionError.error || 'revert'), returnValue: res.execResult.returnValue };
+    return {
+      ok: false,
+      reason: String(res.execResult.exceptionError.error || 'revert'),
+      returnValue: res.execResult.returnValue,
+      gasUsed,
+    };
   }
-  return { ok: true, returnValue: res.execResult.returnValue };
+  return { ok: true, returnValue: res.execResult.returnValue, gasUsed };
 }
 
 export function evmAddressFromDest(dest) {
@@ -444,10 +450,7 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
-    const outs = Array.isArray(tx?.vout) ? tx.vout : [];
-    const note = outs.some((row) => Number(row?.unlockAtMs) > 0);
-    const calldata = note ? encodeLockNote(dest, nanos, nowMs, true) : encodeDeposit(dest, nanos, nowMs);
-    return callReserve(session, calldata);
+    return callReserve(session, encodeDeposit(dest, nanos, nowMs));
   }
   if (kind === 'vote') {
     const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;

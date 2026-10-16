@@ -412,53 +412,12 @@ function rewardAlreadyMinted(state, portal, nowMs) {
   return false;
 }
 
+/** Principal leaves only through withdraw. Epoch end does not drop it. */
 function releaseMaturedPrincipal(state, nowMs, holdLegacyIds = null) {
-  const nowIdx = settlementIndex(state, nowMs);
-  const hold = holdLegacyIds instanceof Set ? holdLegacyIds : new Set();
-  let released = 0n;
-  for (const portal of Object.values(state.portals || {})) {
-    if (!portal?.tranches?.length) continue;
-    rememberPortal(state, portal.id);
-    const keepLegacy = hold.has(String(portal.id || '').toLowerCase());
-    let drop = 0n;
-    let notePrincipal = 0n;
-    const keep = [];
-    for (const tranche of portal.tranches) {
-      const matured = nowIdx > Math.floor(Number(tranche.epoch) || 0);
-      // A withdraw in this block still pays a legacy tranche. It does not
-      // hold a time-locked note, and it does not hold any other portal.
-      if (matured && !(keepLegacy && !tranche.noteIsPrincipal)) {
-        const amount = asBig(tranche.amount);
-        drop += amount;
-        if (tranche.noteIsPrincipal) notePrincipal += amount;
-      } else keep.push(tranche);
-    }
-    if (drop <= 0n) continue;
-    const staked = asBig(portal.staked);
-    const idle = asBig(portal.idle);
-    let fromStaked = drop >= staked ? staked : drop;
-    let fromIdle = drop - fromStaked;
-    if (fromIdle > idle) fromIdle = idle;
-    portal.staked = staked - fromStaked;
-    portal.idle = idle - fromIdle;
-    portal.tranches = keep;
-    const booked = fromStaked + fromIdle;
-    // The time-locked note is the principal. Keep that amount subtracted from
-    // the coins that funded it, or those coins and the note are both spendable
-    // once the vault drops its stake figure.
-    const redeem = notePrincipal > booked ? booked : notePrincipal;
-    if (redeem > 0n) portal.redeemedNanos = asBig(portal.redeemedNanos) + redeem;
-    state.totalLockedNanos = asBig(state.totalLockedNanos) - booked;
-    if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
-    released += booked;
-    const remain = asBig(portal.staked) + asBig(portal.idle);
-    if (remain <= 0n) {
-      portal.joined = false;
-      portal.vote = null;
-      portal.voteEpoch = 0;
-    }
-  }
-  return released;
+  void state;
+  void nowMs;
+  void holdLegacyIds;
+  return 0n;
 }
 
 function ensureRewardMaps(state) {
@@ -468,29 +427,19 @@ function ensureRewardMaps(state) {
 }
 
 /**
- * Root the coinbase should carry. An empty earning set still carries the
- * empty root while matured principal is sitting in the vault, so the epoch
- * end releases it. A root already stored for this index stays put.
+ * Root the coinbase should carry when this epoch has earning rows.
+ * An empty earning set does not force a root. Principal stays until withdraw.
  */
 export function coinbaseRewardRoot(state, nowMs) {
   const plan = rewardCommitment(state, nowMs);
   if (plan.rows.length) return plan.root;
-  if (!(plan.index > 0)) return '';
-  if (state?.rewardRoots?.[String(plan.index)]) return '';
-  for (const portal of Object.values(state?.portals || {})) {
-    for (const tranche of portal?.tranches || []) {
-      if (plan.index > Math.floor(Number(tranche.epoch) || 0)) return plan.root;
-    }
-  }
   return '';
 }
 
 /**
- * Archive the root and drop matured principal out of the vault.
- * Nothing is minted here. A claim tx mints one archived row later.
- * An epoch with no earning rows still releases principal. The block may
- * omit the root or carry the empty root. A withdraw does not skip that
- * release. Legacy principal the withdraw itself pays stays put.
+ * Archive the root. Nothing is minted here, and principal is not released.
+ * A claim tx mints one archived row later and does not touch principal.
+ * An epoch with no earning rows stores nothing.
  */
 export function applyStakeRewards(state, block, nowMs, { require = false } = {}) {
   const rejected = stakeRewardRejected(state, block, nowMs, { require });
@@ -1231,7 +1180,7 @@ function rememberOpenRate(state, epochIndex) {
   state.pendingRates[idx] = Math.max(0, Math.floor(Number(state.epochBps ?? GENESIS_BPS)));
 }
 
-/** The lock output is the principal note. Its unlock is the end of this epoch. */
+/** The lock is a plain tranche. Its unlock is the end of this epoch. It is not a note. */
 function bindLockNote(state, portalId, tx, nowMs) {
   const portal = state.portals?.[portalId];
   const tranche = portal?.tranches?.[portal.tranches.length - 1];
@@ -1245,9 +1194,8 @@ function bindLockNote(state, portalId, tx, nowMs) {
   const unlock = Number(out?.unlockAtMs) > 0 ? Number(out.unlockAtMs) : computed;
   tranche.unlockAtMs = unlock;
   tranche.lockEpoch = Number.isInteger(Number(out?.lockEpoch)) ? Number(out.lockEpoch) : idx;
-  const hex = commitHexOf(out?.commit);
-  if (hex) tranche.noteCommit = hex;
-  tranche.noteIsPrincipal = Number(out?.unlockAtMs) > 0;
+  tranche.noteIsPrincipal = false;
+  delete tranche.noteCommit;
 }
 
 /** One credit. It earns the rest of its chain epoch, then later full epochs. */
@@ -1655,6 +1603,16 @@ function settlePortal(state, p, nowMs) {
   return total;
 }
 
+/**
+ * Interest a withdraw may mint. A reserved or already-minted reward belongs
+ * to the claim. The withdraw still pays principal.
+ */
+export function withdrawPaysInterest(state, portal, nowMs) {
+  if (!portal) return 0;
+  if (rewardAlreadyMinted(state, portal, nowMs) || rewardReserved(state, portal.id)) return 0;
+  return portalEpochInterest(state, portal, nowMs);
+}
+
 /** Interest a withdraw at `nowMs` pays. Same split as settle, without writing cursors. */
 export function portalEpochInterest(state, p, nowMs) {
   if (!p) return 0;
@@ -1677,7 +1635,7 @@ export function previewWithdraw(state, dest, nowMs = null) {
   const split = maturedSplit(state, p, clock);
   const principal = nanosOut(split.legacy);
   const notePrincipal = nanosOut(split.note);
-  const interest = portalEpochInterest(state, p, clock);
+  const interest = withdrawPaysInterest(state, p, clock);
   const payable = split.legacy > 0n;
   return {
     principal,
@@ -1778,14 +1736,8 @@ export function lockTx({
     const unlock = Number(unlockAtMs);
     if (Number.isInteger(epoch) && epoch >= 0) out.lockEpoch = epoch;
     if (unlock > 0) out.unlockAtMs = unlock;
-    if (out.commit) {
-      const base = admitBaseFromAddress(to);
-      Object.assign(out, attachAdmitPub(out, {
-        admitBase: base || undefined,
-        spendSeed: spendSeed || undefined,
-      }));
-    }
   }
+  void spendSeed;
   return {
     id,
     programId: RESERVE_PROGRAM,
@@ -2171,7 +2123,7 @@ export function verifyReservePayout(state, tx, clockMs) {
   const split = maturedSplit(state, p, clock);
   if (split.legacy <= 0n && split.note > 0n) return { ok: false, reason: 'note_principal' };
   const principal = nanosOut(split.legacy);
-  const interest = portalEpochInterest(state, p, clock);
+  const interest = withdrawPaysInterest(state, p, clock);
   const published = publicActionNanos(tx, (tx?.vout || []).find((row) => String(row?.kind || '') === KIND_WITHDRAW) || tx?.vout?.[0]);
   if (published != null && published < principal) return { ok: false, reason: 'principal_short' };
   if (act.opened === false) return { ok: false, reason: 'mint_amount' };
@@ -2670,8 +2622,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!did.ok) return did;
   }
   const p = portalOf(state, id);
-  if (rewardAlreadyMinted(state, p, nowMs)) return { ok: false, reason: 'double_mint' };
-  if (rewardReserved(state, p.id)) return { ok: false, reason: 'double_mint' };
+  const rewardTaken = rewardAlreadyMinted(state, p, nowMs) || rewardReserved(state, p.id);
   if (payoutPortalId && p.payoutPortalId && String(payoutPortalId).toLowerCase() !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
   }
@@ -2688,10 +2639,10 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (release <= 0n) return { ok: false, reason: 'epoch_open' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
   settlePortal(state, p, nowMs);
-  const interest = capReward(p.accruedReward);
+  const interest = rewardTaken ? 0n : capReward(p.accruedReward);
   p.accruedReward = 0n;
   const mintId = withdrawMintId(p.id, mintEpoch(state, nowMs));
-  if (state.mintedIds && state.mintedIds[mintId]) {
+  if (!rewardTaken && state.mintedIds && state.mintedIds[mintId]) {
     return { ok: false, reason: 'double_mint' };
   }
   let mint = null;
@@ -2707,6 +2658,8 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
     if (!mint.ok) return { ok: false, reason: mint.reason };
     state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + interest;
+  } else if (rewardTaken) {
+    // The claim owns this reward id. Principal still leaves.
   } else if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' })) {
     return { ok: false, reason: 'mint_forbidden' };
   } else {

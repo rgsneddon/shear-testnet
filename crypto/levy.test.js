@@ -54,7 +54,8 @@ describe('LEVY=weight Flow levy', () => {
     assert.equal(bech32Hrp(reserveFeeDest()), 'ssa');
     assert.equal(isDestAddress(reserveFeeDest()), true);
     assert.equal(levyTaxed({ kind: 'send', vin: [{}] }), true);
-    assert.equal(levyTaxed({ kind: 'withdraw' }), false);
+    assert.equal(levyTaxed({ kind: 'withdraw' }), true);
+    assert.equal(levyTaxed({ kind: 'withdraw', mint: true }), true);
     const q = quoteLevy(UNITS, { weight: 200 });
     assert.equal(q.L, levyFromWeight(200));
     assert.equal(q.finder + q.reserve, q.L);

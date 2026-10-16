@@ -1,8 +1,8 @@
 /**
- * A lock is a time-locked note under the user's key. It is spendable when
- * its lock epoch ends. The epoch-end block commits one reward root. The user
- * claims that reward once, in their own tx. A second claim or a withdraw of
- * the same id is rejected.
+ * A lock is a plain vault tranche. It is not a spendable note. Principal
+ * stays until the user's withdraw. The epoch-end block commits one reward
+ * root when someone earned. The user claims that reward once, in their own
+ * tx, and the claim does not touch principal.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -46,6 +46,7 @@ import {
   callReserve,
   decodeBytes32,
   decodePublicView,
+  decodeWithdraw,
   encodeClaim,
   encodeCommitRewards,
   encodeDeposit,
@@ -86,8 +87,9 @@ describe('time-locked lock notes', () => {
     const dest = who();
     const tx = lockNote(dest, 1000, 'lock-note');
     const out = tx.vout[0];
-    assert.equal(outputJoinsAdmitSet(tx, out), true);
-    assert.ok(fs1LeafFor(out));
+    assert.equal(outputJoinsAdmitSet(tx, out), false);
+    assert.equal(out.admitPub, undefined);
+    assert.ok(!fs1LeafFor(out));
     const book = createNoteLedger();
     book.sync([{ height: 1, hash: Buffer.alloc(32, 1), txs: [tx] }]);
     const before = book.spendable(dest, 1, { need: 1, tipMs: T0 + 1, genesisMs: T0 });
@@ -130,8 +132,9 @@ describe('time-locked lock notes', () => {
     });
     assert.equal(applied.ok, true, applied.reason);
     const spend = { vin: [{ commit: tx.vout[0].commit }] };
-    assert.equal(lockNoteSpendRejected(state, spend, T0 + 2_000).reason, 'locked');
+    assert.equal(lockNoteSpendRejected(state, spend, T0 + 2_000), null);
     assert.equal(lockNoteSpendRejected(state, spend, T0 + RESERVE_EPOCH_MS), null);
+    assert.equal(state.portals[portalIdFromDest(dest)].tranches[0].noteCommit, undefined);
   });
 
   it('keeps the unlock on the sealed lock and refuses a different one', () => {
@@ -140,7 +143,7 @@ describe('time-locked lock notes', () => {
     const wire = compactTx(tx);
     assert.equal(wire.vout[0].unlockAtMs, T0 + RESERVE_EPOCH_MS);
     assert.equal(wire.vout[0].lockEpoch, 0);
-    assert.ok(wire.vout[0].admitPub);
+    assert.equal(wire.vout[0].admitPub, undefined);
     assert.equal(wire.vout[0].r, undefined);
     const plain = compactTx(lockTx({ from: dest, to: dest, nanos: 1000, id: 'plain-lock' }));
     assert.equal(plain.vout[0].unlockAtMs, undefined);
@@ -175,7 +178,7 @@ describe('time-locked lock notes', () => {
     }), 1000);
   });
 
-  it('holds the funding coins after the lock note is the principal', () => {
+  it('keeps principal in the vault after the epoch, and the lock is not a note', () => {
     const payer = who();
     const dest = who();
     const state = vault();
@@ -196,7 +199,8 @@ describe('time-locked lock notes', () => {
     });
     assert.equal(locked.ok, true, locked.reason);
     const portal = state.portals[Object.keys(state.portals)[0]];
-    assert.equal(portal.tranches[0].noteIsPrincipal, true);
+    assert.notEqual(portal.tranches[0].noteIsPrincipal, true);
+    assert.equal(portal.tranches[0].noteCommit, undefined);
     const draw = T0 + RESERVE_EPOCH_MS + 1;
     const plan = rewardCommitment(state, draw);
     assert.equal(plan.rows.length, 1);
@@ -208,7 +212,7 @@ describe('time-locked lock notes', () => {
       requireStakeReward: true,
     });
     assert.equal(credited.ok, true, credited.reason);
-    assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
     assert.equal(portalPrincipalNanos(state, payer), PI_SHE_NANOS);
     assert.equal(portalPrincipalNanos(state, dest), PI_SHE_NANOS);
     const book = createNoteLedger();
@@ -283,7 +287,7 @@ describe('aggregated reward root', () => {
     });
     assert.equal(committed.ok, true, committed.reason);
     assert.equal(Number(many.mintBankNanos), 0);
-    assert.equal(Number(many.totalLockedNanos), 0);
+    assert.equal(Number(many.totalLockedNanos), PI_SHE_NANOS * 9);
     const rowNote = { coinbase: true, vout: [{ kind: 'stake-reward' }], rewardRoot: wide.root };
     const refused = applyReserveBlock({
       state: vault(),
@@ -335,10 +339,10 @@ describe('aggregated reward root', () => {
       block: { height: 9, txs: [{ coinbase: true, vout: [] }, claim] },
       nowMs: later,
       genesisMs: T0,
-      requireStakeReward: true,
     });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(Number(state.mintBankNanos), row.nanos);
+    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
     const supply = stakeRewardSupply(state, { txs: [{ coinbase: true, vout: [] }, claim] }, later);
     assert.equal(supply.ok, false);
     const fresh = vault();
@@ -429,7 +433,12 @@ describe('aggregated reward root', () => {
     });
     assert.equal(doubled.ok, false);
     assert.equal(doubled.reason, 'double_mint');
-    assert.equal(withdraw({ state: supplyState, dest: lockDest, nowMs: later }).reason, 'double_mint');
+    assert.equal(Number(supplyState.totalLockedNanos), PI_SHE_NANOS * 2);
+    const principal = withdraw({ state: supplyState, dest: lockDest, nowMs: later });
+    assert.equal(principal.ok, true, principal.reason);
+    assert.equal(principal.principal, PI_SHE_NANOS);
+    assert.equal(principal.interest, 0);
+    assert.equal(Number(supplyState.totalLockedNanos), PI_SHE_NANOS);
     assert.equal(Number(supplyState.mintBankNanos), only.nanos);
   });
 
@@ -499,8 +508,14 @@ describe('aggregated reward root', () => {
     assert.equal(decodeBytes32(claimed.returnValue), row.nanos.toString(16).padStart(64, '0'));
     const again = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof));
     assert.equal(again.ok, false);
+    const held = decodePublicView(
+      (await callReserve(session, encodePublicView(draw), { staticCall: true })).returnValue,
+    );
+    assert.equal(held.totalLockedNanos, PI_SHE_NANOS);
     const drawn = await callReserve(session, encodeWithdraw(dest, draw));
-    assert.equal(drawn.ok, false);
+    assert.equal(drawn.ok, true, drawn.reason);
+    assert.equal(decodeWithdraw(drawn.returnValue).principal, PI_SHE_NANOS);
+    assert.equal(decodeWithdraw(drawn.returnValue).interest, 0);
   });
 
   it('orders mempool claims by fee rate and pays the whole fee to miners', () => {
@@ -634,7 +649,7 @@ describe('aggregated reward root', () => {
   });
 });
 
-describe('empty reward epochs still release principal', () => {
+describe('empty reward epochs leave principal in the vault', () => {
   const draw = T0 + RESERVE_EPOCH_MS + 1;
   const emptyRoot = Buffer.from(EMPTY_ROOT).toString('hex');
 
@@ -669,15 +684,15 @@ describe('empty reward epochs still release principal', () => {
     });
   }
 
-  function released(state, dest, nanos) {
+  function stillLocked(state, dest, nanos) {
     const portal = state.portals[portalIdFromDest(dest)];
-    assert.equal(portal.tranches.length, 0);
-    assert.equal(Number(portal.staked) + Number(portal.idle), 0);
-    assert.equal(Number(portal.redeemedNanos), nanos);
-    assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(portal.tranches.length, 1);
+    assert.equal(Number(portal.staked) + Number(portal.idle), nanos);
+    assert.equal(Number(portal.redeemedNanos || 0), 0);
+    assert.equal(Number(state.totalLockedNanos), nanos);
   }
 
-  it('an epoch with no earning portals still releases principal', () => {
+  it('an epoch with no earning portals leaves principal in the vault', () => {
     const dest = who();
     const state = vault();
     state.epochBps = 0;
@@ -685,11 +700,11 @@ describe('empty reward epochs still release principal', () => {
     const { tx, applied } = timeLock(state, dest, PI_SHE_NANOS, T0 + 1_000, 'zero-rate');
     assert.equal(applied.ok, true, applied.reason);
     assert.equal(rewardCommitment(state, draw).rows.length, 0);
-    assert.equal(coinbaseRewardRoot(state, draw), emptyRoot);
-    assert.equal(lockNoteSpendRejected(state, { vin: [{ commit: tx.vout[0].commit }] }, T0 + 2_000).reason, 'locked');
+    assert.equal(coinbaseRewardRoot(state, draw), '');
+    assert.equal(lockNoteSpendRejected(state, { vin: [{ commit: tx.vout[0].commit }] }, T0 + 2_000), null);
     const settled = settle(state);
     assert.equal(settled.ok, true, settled.reason);
-    released(state, dest, PI_SHE_NANOS);
+    stillLocked(state, dest, PI_SHE_NANOS);
     assert.equal(lockNoteSpendRejected(state, { vin: [{ commit: tx.vout[0].commit }] }, draw), null);
     assert.equal(coinbaseRewardRoot(state, draw), '');
     assert.equal(Number(state.mintBankNanos), 0);
@@ -702,7 +717,7 @@ describe('empty reward epochs still release principal', () => {
     assert.equal(Number(earning.totalLockedNanos), PI_SHE_NANOS);
   });
 
-  it('an empty-root epoch releases principal', async () => {
+  it('an empty-root epoch leaves principal in the vault', async () => {
     const dest = who();
     const state = vault();
     const { applied } = timeLock(state, dest, 1, T0 + 1_000, 'empty-root');
@@ -712,7 +727,7 @@ describe('empty reward epochs still release principal', () => {
     assert.equal(plan.root, emptyRoot);
     const settled = settle(state, emptyRoot);
     assert.equal(settled.ok, true, settled.reason);
-    released(state, dest, 1);
+    stillLocked(state, dest, 1);
     assert.equal(state.rewardRoots[String(plan.index)], undefined);
 
     const session = await bootReserveEvm();
@@ -724,7 +739,7 @@ describe('empty reward epochs still release principal', () => {
     const view = decodePublicView(
       (await callReserve(session, encodePublicView(draw), { staticCall: true })).returnValue,
     );
-    assert.equal(view.totalLockedNanos, 0);
+    assert.equal(view.totalLockedNanos, 1);
 
     const again = await bootReserveEvm();
     assert.equal((await callReserve(again, encodePinClock(T0))).ok, true);
@@ -738,10 +753,10 @@ describe('empty reward epochs still release principal', () => {
     const ranView = decodePublicView(
       (await callReserve(again, encodePublicView(draw), { staticCall: true })).returnValue,
     );
-    assert.equal(ranView.totalLockedNanos, 0);
+    assert.equal(ranView.totalLockedNanos, 1);
   });
 
-  it('post-cutoff and below-pi locks still unlock', async () => {
+  it('post-cutoff and below-pi locks stay in the vault until withdraw', async () => {
     const lateWhen = T0 + RESERVE_EPOCH_MS - 1_000;
     const lateDest = who();
     const late = vault();
@@ -749,7 +764,7 @@ describe('empty reward epochs still release principal', () => {
     assert.equal(lateLock.applied.ok, true, lateLock.applied.reason);
     assert.equal(rewardCommitment(late, draw).rows.length, 0);
     assert.equal(settle(late).ok, true);
-    released(late, lateDest, PI_SHE_NANOS);
+    stillLocked(late, lateDest, PI_SHE_NANOS);
     assert.equal(lockNoteSpendRejected(late, { vin: [{ commit: lateLock.tx.vout[0].commit }] }, draw), null);
 
     const smallDest = who();
@@ -758,7 +773,7 @@ describe('empty reward epochs still release principal', () => {
     assert.equal(smallLock.applied.ok, true, smallLock.applied.reason);
     assert.equal(rewardCommitment(small, draw).rows.length, 0);
     assert.equal(settle(small).ok, true);
-    released(small, smallDest, 1);
+    stillLocked(small, smallDest, 1);
     assert.equal(lockNoteSpendRejected(small, { vin: [{ commit: smallLock.tx.vout[0].commit }] }, draw), null);
 
     const book = createNoteLedger();
@@ -791,6 +806,6 @@ describe('empty reward epochs still release principal', () => {
     const lateView = decodePublicView(
       (await callReserve(session, encodePublicView(draw), { staticCall: true })).returnValue,
     );
-    assert.equal(lateView.totalLockedNanos, 0);
+    assert.equal(lateView.totalLockedNanos, PI_SHE_NANOS);
   });
 });

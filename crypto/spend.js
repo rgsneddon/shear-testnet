@@ -12,7 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
-import { portalEpochInterest, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId } from './reserve_vault.js';
+import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -841,7 +841,7 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
     : 0;
   const principal = duePrincipal;
   if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
-  const due = Math.max(0, Math.floor(Number(portalEpochInterest(reserveState, portal, clock)) || 0));
+  const due = Math.max(0, Math.floor(Number(withdrawPaysInterest(reserveState, portal, clock)) || 0));
   const cap = principal + due;
   if (claimed > cap) return { ok: false, reason: 'insufficient' };
   if (portal?.payout) {
