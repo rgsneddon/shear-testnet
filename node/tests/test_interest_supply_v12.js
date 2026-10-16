@@ -243,6 +243,14 @@ describe('v12 supply counts reserve interest from the chain', () => {
     assert.equal(paid.status, 'verified', paid.reason);
     assert.equal(paid.vaultPrincipalNanos, 0);
     assert.equal(paid.totalNanos, paid.circulatingNanos);
+    const edge = Number.MAX_SAFE_INTEGER;
+    const edgeChain = [lockBlock(GENESIS, minerDest(), [portalDest()], edge)];
+    const edgeFold = foldSupply(edgeChain, { genesisMs: GENESIS });
+    const edgeAudit = auditCirculatingSupply(edgeChain);
+    assert.equal(edgeFold.ok, false, edgeFold.reason);
+    assert.equal(edgeFold.reason, 'supply');
+    assert.equal(edgeAudit.status, 'mismatch');
+    assert.equal(edgeAudit.reason, 'supply');
   });
 
   it('rejects a receipt that is not the principal, and a second withdraw of the same portal', () => {

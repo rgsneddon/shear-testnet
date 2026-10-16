@@ -16,7 +16,7 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifySealedNote, noteU64 } from '../../crypto/note.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifiedInputNanos } from '../../crypto/note.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
@@ -130,36 +130,10 @@ function openedLockNanos(tx) {
   return asLocked(act.nanos);
 }
 
-function dest20Len(value) {
-  try {
-    return Buffer.from(value || []).length;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * 113's public-receipt input: no note, a 20-byte dest, and no address.
- * A 32-byte commit, noteCommit, or cTilde is not this kind and is not a note by itself.
- */
-function publicReceiptInput(vin) {
-  if (!vin || vin.coinbase) return false;
-  if (vin.commit || vin.cTilde || vin.address) return false;
-  return dest20Len(vin.dest20) === 20;
-}
-
-/** Verified opening on one input. Length is not an opening. */
-function openedInputNanos(vin) {
-  if (!vin || vin.coinbase || publicReceiptInput(vin)) return null;
-  if (!vin.commit || !vin.valueProof) return null;
-  const n = noteU64(vin.valueProof.v);
-  if (n == null || !verifySealedNote(vin, n)) return null;
-  return n;
-}
-
 /**
  * A lock input pays a note when 113's predicate says it is not a public
  * receipt, and the verified openings on its inputs cover the lock.
+ * The openings are read in note.js. This file does not touch them.
  */
 function vinPaysNote(tx) {
   if (publicReserveReceipt(tx)) return false;
@@ -167,7 +141,7 @@ function vinPaysNote(tx) {
   if (need <= 0n) return false;
   let opened = 0n;
   for (const v of Array.isArray(tx?.vin) ? tx.vin : []) {
-    const n = openedInputNanos(v);
+    const n = verifiedInputNanos(v);
     if (n == null) continue;
     opened += n;
   }
@@ -891,6 +865,10 @@ export function foldSupply(blocks, opts = {}) {
       }
     }
   }
+  // The audit publishes through supplyReport. A total that is not a safe
+  // integer, including one portal locked at 2^53-1, is the same mismatch.
+  const report = supplyReport(state);
+  if (report.status !== 'verified') return { ok: false, reason: report.reason || 'supply', state: null };
   return { ok: true, reason: '', state };
 }
 
