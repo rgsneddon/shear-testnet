@@ -7,8 +7,10 @@
 import net from 'node:net';
 import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { admitWireTx } from '../../crypto/chronoflux.js';
+import { decodeHeader } from '../../crypto/header.js';
 import { txWeight } from '../../crypto/levy.js';
 import { reviveBytes } from '../../crypto/note.js';
+import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
 
@@ -141,6 +143,57 @@ export function ipcParentRepair(block, reason) {
   return { reason: r, parent: parent || '', child, ask };
 }
 
+function hex32(value) {
+  try {
+    const buf = Buffer.from(value);
+    if (buf.length === 32) return buf.toString('hex').toLowerCase();
+  } catch { /* not a hash */ }
+  return '';
+}
+
+function prevHexOfHeader(header) {
+  try {
+    return hex32(decodeHeader(Buffer.from(header)).prevBlockHash);
+  } catch {
+    return '';
+  }
+}
+
+function genesisParent(prevHex) {
+  return !prevHex || /^0+$/.test(prevHex);
+}
+
+/** Main chain, the staged side chain, or the genesis anchor. */
+function parentKnown(store, prevHex) {
+  if (genesisParent(prevHex)) return true;
+  const want = String(prevHex || '').toLowerCase();
+  const blocks = store?.blocks || [];
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    if (hex32(blocks[i]?.hash) === want) return true;
+  }
+  try {
+    if (typeof store?.sideTipHash === 'function' && String(store.sideTipHash() || '').toLowerCase() === want) {
+      return true;
+    }
+  } catch { /* no side tip */ }
+  try {
+    const side = typeof store?.sideHashes === 'function' ? store.sideHashes() : [];
+    if ((side || []).some((h) => String(h || '').toLowerCase() === want)) return true;
+  } catch { /* no side chain */ }
+  return false;
+}
+
+/** Header work against the bits the child declares. Not the ASERT check. */
+function childMeetsTarget(block) {
+  try {
+    const header = Buffer.from(block.header);
+    const decoded = decodeHeader(header);
+    return meetsTarget(shearHash(header), decoded.bits);
+  } catch {
+    return false;
+  }
+}
+
 function tipView(store) {
   const t = typeof store?.tip === 'function' ? store.tip() : null;
   let work = '0x0';
@@ -199,16 +252,40 @@ export function applyVerifiedIpcBlock(store, msg) {
   }
   if (block && Object.prototype.hasOwnProperty.call(block, 'trustedPowHash')) delete block.trustedPowHash;
   let tipH = 0;
-  try { tipH = Number(store.tip()?.height || 0); } catch { tipH = 0; }
+  let tipHash = '';
+  try {
+    const t = store.tip();
+    tipH = Number(t?.height || 0);
+    if (t?.hash) tipHash = hex32(t.hash);
+  } catch { tipH = 0; }
+  const prevHex = prevHexOfHeader(block.header);
+  // A genesis child links only an empty book. Any other child links the tip.
+  const links = genesisParent(prevHex) ? tipHash === '' : prevHex === tipHash;
   // The next block is this tip plus one. A peer height field is not burial.
-  const structuralH = tipH + 1;
-  if (block.height != null && block.height !== '' && Number(block.height) !== structuralH) {
-    return { ok: false, reason: 'height' };
+  // A fork block is judged against its own parent inside append, not against
+  // this tip, so a lied height is refused here only when the block links.
+  if (links) {
+    const structuralH = tipH + 1;
+    if (block.height != null && block.height !== '' && Number(block.height) !== structuralH) {
+      return { ok: false, reason: 'height' };
+    }
+  }
+  // Repair walks ancestors only when the parent is not in this store.
+  // A child that misses its own target gets no repair. append verifies
+  // against the tip only, so a known parent that does not link is ingested
+  // and stageOrAdopt keeps or adopts the fork.
+  if (!links && !parentKnown(store, prevHex)) {
+    if (!childMeetsTarget(block)) return { ok: false, reason: 'pow' };
+    return { ok: false, reason: 'prev' };
+  }
+  const verifyOpts = block.samplesPruned === true ? { offLoopPow: true } : {};
+  if (!links && typeof store.ingest === 'function') {
+    return store.ingest([block], verifyOpts);
   }
   // A pruned block is buried only by the proven header run the store holds
   // from ipc_headers. The store hashes those headers off the loop. No run,
   // or a short one, is samples_pruned there.
-  return store.append(block, block.samplesPruned === true ? { offLoopPow: true } : {});
+  return store.append(block, verifyOpts);
 }
 
 function blockFrame(block) {
@@ -364,6 +441,9 @@ function makeParentRepair(store, send) {
       }));
     } catch { /* ignore */ }
     if (!repair?.ask) return;
+    // A parent this store already has is not a gap. Asking again every 2s
+    // wedges a losing fork whose header does not extend the tip.
+    if (parentKnown(store, repair.parent)) return;
     const now = Date.now();
     const prevAt = asked.get(repair.parent) || 0;
     if (now - prevAt < IPC_REPAIR_RETRY_MS) return;

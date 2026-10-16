@@ -1,18 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { encodeHeader } from '../../crypto/header.js';
+import { encodeHeader, setNonce } from '../../crypto/header.js';
 import { meetsTarget } from '../../crypto/shear_hash.js';
+import { nonceWithShareTarget } from '../../crypto/share_batch.js';
 import {
-  nextBits,
-  packBits,
+  asertNextBits,
   unpackBits,
   GENESIS_BITS,
   GENESIS_BITS_PACKED,
+  SHARE_FLOOR_BITS,
   TARGET_BLOCK_INTERVAL_MS,
   SAMPLE_PRUNE_CONFIRMATIONS,
   HEADER_AHEAD_MS,
-  ASERT_HARDEN_MAX,
   MAGIC_TESTNET,
   MAGIC_TESTNET_V7,
   MAGIC_TESTNET_V8,
@@ -46,16 +46,65 @@ function hdr(timestamp, bits) {
   });
 }
 
-function climb(start) {
-  let packed = start;
-  for (let n = 0; n < 8; n += 1) packed = nextBits(packed, 2_000);
-  return unpackBits(packed) - unpackBits(start);
+/** Hashes per second that solve the v12 genesis target in one target interval. */
+function genesisHashrate() {
+  return (2 ** GENESIS_BITS) * 1000 / TARGET_BLOCK_INTERVAL_MS;
 }
 
-/** Expected solve time at constant hashrate, then the shipped next-work step. */
+function quoteAt(anchorTime, parentTime, height, blockTime) {
+  return asertNextBits({
+    anchorBits: GENESIS_BITS_PACKED,
+    anchorTimeMs: anchorTime,
+    anchorHeight: 1,
+    blockTimeMs: blockTime,
+    blockHeight: height,
+    parentTimeMs: parentTime,
+  });
+}
+
+/**
+ * Expected solve time under aserti3-2d at a constant hashrate.
+ * The block stamp is an input to the target, so the interval is the fixed point of that quote.
+ */
+function solveMs(anchorTime, parentTime, height, hashrate) {
+  let guess = TARGET_BLOCK_INTERVAL_MS;
+  for (let k = 0; k < 16; k += 1) {
+    const quote = quoteAt(anchorTime, parentTime, height, parentTime + guess);
+    if (!quote.ok) throw new Error(quote.reason);
+    const next = (2 ** unpackBits(quote.packed) / hashrate) * 1000;
+    if (Math.abs(next - guess) < 1) return next;
+    guess = next;
+  }
+  return guess;
+}
+
+/** 2s gaps until the genesis-anchored deficit has raised work by at least one bit. */
+function fastScheduleBits(gaps, { prefixOnTime = 0 } = {}) {
+  const anchor = 1_700_000_000_000;
+  let parent = anchor;
+  let height = 1;
+  let packed = GENESIS_BITS_PACKED;
+  for (let i = 0; i < prefixOnTime; i += 1) {
+    height += 1;
+    parent += TARGET_BLOCK_INTERVAL_MS;
+  }
+  for (let i = 0; i < gaps; i += 1) {
+    height += 1;
+    const blockTime = parent + 2_000;
+    const quote = quoteAt(anchor, parent, height, blockTime);
+    if (!quote.ok) throw new Error(quote.reason);
+    packed = quote.packed;
+    parent = blockTime;
+  }
+  return packed;
+}
+
+/** Expected solve time at constant hashrate, then the shipped aserti3-2d step. */
 function pruneWindows({ hashrate, windows, maxAhead = false }) {
   const n = SAMPLE_PRUNE_CONFIRMATIONS;
-  let bits = GENESIS_BITS;
+  const anchorTime = 1_700_000_000_000;
+  let parentTime = anchorTime;
+  let height = 1;
   let excess = 0;
   const means = [];
   const tails = [];
@@ -64,7 +113,8 @@ function pruneWindows({ hashrate, windows, maxAhead = false }) {
   for (let w = 0; w < windows; w += 1) {
     const trues = [];
     for (let i = 0; i < n; i += 1) {
-      const trueMs = (2 ** bits / hashrate) * 1000;
+      height += 1;
+      const trueMs = solveMs(anchorTime, parentTime, height, hashrate);
       let claimed = trueMs;
       if (maxAhead) {
         const nextExcess = HEADER_AHEAD_MS;
@@ -74,7 +124,7 @@ function pruneWindows({ hashrate, windows, maxAhead = false }) {
       }
       trues.push(trueMs);
       life.push(trueMs);
-      bits = unpackBits(nextBits(packBits(bits), claimed));
+      parentTime += claimed;
     }
     means.push(mean(trues));
     tails.push(mean(trues.slice(-200)));
@@ -107,7 +157,8 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     }
     assert.equal(mean(gaps), 90_000);
     assert.equal(unpackBits(retarget(chain)), unpackBits(GENESIS_BITS_PACKED));
-    const honest = pruneWindows({ hashrate: 15_000, windows });
+    const honestHps = genesisHashrate();
+    const honest = pruneWindows({ hashrate: honestHps, windows });
     assert.ok(honest.means[0] > 70_000, `seed window moves toward 90s, got ${honest.means[0]}`);
     for (const m of honest.tails) {
       assert.ok(Math.abs(m - 90_000) < 2_000, `honest settled tail ${m}`);
@@ -115,7 +166,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     for (const m of honest.means.slice(1)) {
       assert.ok(Math.abs(m - 90_000) < 2_000, `honest later window ${m}`);
     }
-    const lied = pruneWindows({ hashrate: 15_000, windows, maxAhead: true });
+    const lied = pruneWindows({ hashrate: honestHps, windows, maxAhead: true });
     for (const m of lied.tails) {
       assert.ok(Math.abs(m - 90_000) < 2_000, `max-ahead settled tail ${m}`);
     }
@@ -124,19 +175,21 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     }
     assert.ok(lied.bias <= HEADER_AHEAD_MS, `timestamp excess ${lied.bias}`);
     // A hashrate change later in the chain recenters on the same fixed point.
-    const shifted = pruneWindows({ hashrate: 15_000 * 4, windows: 2 });
+    const shifted = pruneWindows({ hashrate: honestHps * 4, windows: 2 });
     for (const m of shifted.tails) {
       assert.ok(Math.abs(m - 90_000) < 2_000, `later hashrate settled tail ${m}`);
     }
     assert.ok(Math.abs(shifted.means[1] - 90_000) < 2_000, `later hashrate window ${shifted.means[1]}`);
   });
 
-  it('eight 2000 ms gaps add at least one bit from genesis and from a later parent', () => {
-    assert.ok(climb(GENESIS_BITS_PACKED) >= 1);
-    assert.ok(climb(packBits(30)) >= 1);
-    assert.ok(climb(GENESIS_BITS_PACKED) >= ASERT_HARDEN_MAX);
-    const held = nextBits(packBits(30), TARGET_BLOCK_INTERVAL_MS);
-    assert.equal(unpackBits(held), 30);
+  it('a 2s schedule adds at least one bit once the deficit reaches tau', () => {
+    const fromGenesis = fastScheduleBits(82);
+    assert.ok(unpackBits(fromGenesis) >= GENESIS_BITS + 1, `genesis fast run ${unpackBits(fromGenesis)}`);
+    const later = fastScheduleBits(82, { prefixOnTime: 10 });
+    assert.ok(unpackBits(later) >= GENESIS_BITS + 1, `later fast run ${unpackBits(later)}`);
+    const held = quoteAt(1_700_000_000_000, 1_700_000_000_000, 2, 1_700_000_000_000 + TARGET_BLOCK_INTERVAL_MS);
+    assert.equal(held.ok, true, held.reason);
+    assert.equal(held.packed, GENESIS_BITS_PACKED);
   });
 
   it('verify, pool judge, and solo submit share one next-work and reject a private easier target or a long stamp', () => {
@@ -150,7 +203,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     const fp = consensusFingerprint();
     assert.match(fp, /NETWORK=shear-testnet-v12/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
-    assert.match(fp, /ASERT_STEP=median11\(log2\(T\/seen\)\)\*\(T\/tau\)/);
+    assert.match(fp, /ASERT_STEP=aserti3-2d/);
     assert.equal(medianIntervalMs([2_000]), TARGET_BLOCK_INTERVAL_MS);
     assert.equal(medianIntervalMs(Array.from({ length: 6 }, () => 2_000)), 2_000);
 
@@ -176,15 +229,18 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     const g = verifyBlock(genesis, null, trust());
     assert.equal(g.ok, true, g.reason);
 
-    const gap = 2_000;
+    const childTime = t0 + TARGET_BLOCK_INTERVAL_MS;
+    const childQuote = quoteAt(t0, t0, 2, childTime);
+    assert.equal(childQuote.ok, true, childQuote.reason);
+    assert.equal(childQuote.packed, GENESIS_BITS_PACKED);
     const childTpl = buildTemplate({
       prev: genesis.hash,
       prevHeader: genesis.header,
       prevBlock: genesis,
       height: 2,
       miner,
-      bits: nextBits(GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS),
-      now: t0 + gap,
+      bits: childQuote.packed,
+      now: childTime,
     });
     const child = {
       header: childTpl.header,
@@ -197,21 +253,24 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     };
     const c = verifyBlock(child, genesis, {
       ...trust(),
-      parentIntervalMs: TARGET_BLOCK_INTERVAL_MS,
-      nowMs: t0 + gap,
+      nowMs: childTime + 1_000,
+      genesisMs: t0,
     });
     assert.equal(c.ok, true, c.reason);
 
-    const parentBits = nextBits(GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS);
+    const nextTime = childTime + TARGET_BLOCK_INTERVAL_MS;
     const chain = [
-      { header: genesis.header },
-      { header: child.header },
+      { header: genesis.header, height: 1 },
+      { header: child.header, height: 2 },
     ];
-    const want = retarget(chain);
-    assert.equal(want, nextBits(parentBits, TARGET_BLOCK_INTERVAL_MS));
-    assert.equal(unpackBits(want), unpackBits(parentBits));
-    const oneGapHard = nextBits(parentBits, gap);
-    assert.ok(unpackBits(oneGapHard) > unpackBits(want));
+    const want = retarget(chain, nextTime);
+    const wantQuote = quoteAt(t0, childTime, 3, nextTime);
+    assert.equal(wantQuote.ok, true, wantQuote.reason);
+    assert.equal(want, wantQuote.packed);
+    assert.equal(want, GENESIS_BITS_PACKED);
+    const fastQuote = quoteAt(t0, childTime, 3, childTime + 2_000);
+    assert.equal(fastQuote.ok, true, fastQuote.reason);
+    assert.ok(fastQuote.packed > want, `fast gap packed ${fastQuote.packed}`);
 
     const easyTpl = buildTemplate({
       prev: child.hash,
@@ -219,8 +278,8 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       prevBlock: child,
       height: 3,
       miner,
-      bits: oneGapHard,
-      now: t0 + gap + gap,
+      bits: want - 1,
+      now: nextTime,
     });
     const easy = verifyBlock({
       header: easyTpl.header,
@@ -230,34 +289,48 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       height: 3,
     }, child, {
       ...trust(),
-      parentIntervalMs: TARGET_BLOCK_INTERVAL_MS,
       grandparentHeader: genesis.header,
-      nowMs: t0 + gap + gap,
+      nowMs: nextTime + 1_000,
+      genesisMs: t0,
     });
     assert.equal(easy.ok, false);
     assert.equal(easy.reason, 'bits');
-    const omitted = verifyBlock({
-      header: easyTpl.header,
-      txs: easyTpl.txs,
-      samples: easyTpl.samples,
-      miner,
-      height: 3,
-    }, child, {
-      ...trust(),
-      parentIntervalMs: gap,
-      nowMs: t0 + gap + gap,
-    });
-    assert.equal(omitted.ok, false);
-    assert.equal(omitted.reason, 'bits');
-
-    const aheadTpl = buildTemplate({
+    const fastTime = childTime + 2_000;
+    const omittedTpl = buildTemplate({
       prev: child.hash,
       prevHeader: child.header,
       prevBlock: child,
       height: 3,
       miner,
       bits: want,
-      now: t0 + gap + TARGET_BLOCK_INTERVAL_MS,
+      now: fastTime,
+    });
+    const omitted = verifyBlock({
+      header: omittedTpl.header,
+      txs: omittedTpl.txs,
+      samples: omittedTpl.samples,
+      miner,
+      height: 3,
+    }, child, {
+      ...trust(),
+      parentIntervalMs: 2_000,
+      nowMs: fastTime + 1_000,
+      genesisMs: t0,
+    });
+    assert.equal(omitted.ok, false);
+    assert.equal(omitted.reason, 'bits');
+
+    const aheadTime = nextTime + HEADER_AHEAD_MS + 5_000;
+    const aheadQuote = quoteAt(t0, childTime, 3, aheadTime);
+    assert.equal(aheadQuote.ok, true, aheadQuote.reason);
+    const aheadTpl = buildTemplate({
+      prev: child.hash,
+      prevHeader: child.header,
+      prevBlock: child,
+      height: 3,
+      miner,
+      bits: aheadQuote.packed,
+      now: aheadTime,
     });
     const ahead = verifyBlock({
       header: aheadTpl.header,
@@ -267,9 +340,9 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       height: 3,
     }, child, {
       ...trust(),
-      parentIntervalMs: TARGET_BLOCK_INTERVAL_MS,
       grandparentHeader: genesis.header,
-      nowMs: t0 + gap + 2_000,
+      nowMs: nextTime,
+      genesisMs: t0,
     });
     assert.equal(ahead.ok, false);
     assert.equal(ahead.reason, 'timestamp');
@@ -281,7 +354,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       height: 3,
       miner,
       bits: want,
-      now: t0 + gap + gap,
+      now: nextTime,
     });
     const honest = verifyBlock({
       header: honestTpl.header,
@@ -291,28 +364,34 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       height: 3,
     }, child, {
       ...trust(),
-      parentIntervalMs: TARGET_BLOCK_INTERVAL_MS,
       grandparentHeader: genesis.header,
-      nowMs: t0 + gap + gap,
+      nowMs: nextTime + 1_000,
+      genesisMs: t0,
       supplyParents: [genesis, child],
     });
     assert.equal(honest.ok, true, honest.reason);
 
-    const job = publicJob(honestTpl, { jobId: 'v8', shareBits: 8 });
+    const job = publicJob(honestTpl, { jobId: 'v8', shareBits: SHARE_FLOOR_BITS });
     assert.equal(job.blockBits, want);
     assert.equal(job.bits, want);
+    assert.equal(job.shareBits, SHARE_FLOOR_BITS);
 
+    // v12 credits the nonce high byte, not a bare digest at shareBits 8.
+    // The digest still has exactly the floor width and misses the block target.
+    const shareHeader = setNonce(honestTpl.header, nonceWithShareTarget(1n, SHARE_FLOOR_BITS));
     const shareOnly = Buffer.alloc(32, 0xff);
     shareOnly[0] = 0;
-    const poolMiss = judgeShare({ job, hash: shareOnly, header: honestTpl.header });
+    const poolMiss = judgeShare({ job, hash: shareOnly, header: shareHeader });
     assert.equal(poolMiss.ok, true, poolMiss.reason);
     assert.equal(poolMiss.block, false);
-    const poolHit = judgeShare({ job, hash: Buffer.alloc(32, 0), header: honestTpl.header });
+    assert.equal(poolMiss.creditedShareBits, SHARE_FLOOR_BITS);
+    const poolHit = judgeShare({ job, hash: Buffer.alloc(32, 0), header: shareHeader });
     assert.equal(poolHit.block, true);
+    assert.equal(poolHit.creditedShareBits, SHARE_FLOOR_BITS);
     assert.equal(meetsTarget(shareOnly, job.blockBits), false);
     assert.equal(meetsTarget(Buffer.alloc(32, 0), job.blockBits), true);
 
-    const wired = soloWireJob(job, 8);
+    const wired = soloWireJob(job, SHARE_FLOOR_BITS);
     assert.equal(Number(wired.blockBits), want);
     assert.equal(Number(wired.bits), want);
     const soloSrc = fs.readFileSync(new URL('../src/solo_stratum.js', import.meta.url), 'utf8');
