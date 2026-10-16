@@ -2766,6 +2766,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     p.vote = null;
     p.voteEpoch = 0;
     p.payout = null;
+    delete p.lockEpoch;
   } else if (!stillVoter) {
     p.joined = false;
     p.vote = null;

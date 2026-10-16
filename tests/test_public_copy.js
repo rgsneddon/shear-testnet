@@ -19,6 +19,7 @@ import {
   MAGIC_TESTNET_V10,
   MAGIC_TESTNET_V11,
   MAGIC_TESTNET_V12,
+  MAGIC_TESTNET_V13,
   PRODUCT_VERSION,
   SHEARK_MINER_VERSION,
   consensusFingerprint,
@@ -222,7 +223,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(joined, /178\.105\.187\.178/);
     assert.doesNotMatch(joined, /178\.156\.222\.223/);
     const sheark = read('sheark-miner/README.md');
-    assert.match(sheark, /magic `shear-testnet-v12`/);
+    assert.match(sheark, /magic `shear-testnet-v13`/);
     assert.doesNotMatch(sheark, /magic `shear-testnet-v4`/);
     assert.doesNotMatch(sheark, /magic `shear-testnet-v2`/);
 
@@ -421,7 +422,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(md, /WINDOWS_HANDOFF\.md/);
   });
 
-  it('v12 pins are node 19.0, ShearK, shear-testnet-v12, and wallet 0.72', () => {
+  it('v13 pins are node 19.0, ShearK, shear-testnet-v13, and wallet 0.72', () => {
     const walletPin = read('wallet/lib/main.dart').match(/const kWalletVersion = '(\d+\.\d+)'/);
     assert.ok(walletPin, 'kWalletVersion');
     assert.equal(walletPin[1], '0.72');
@@ -431,8 +432,10 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.equal(SHEARK_MINER_VERSION, '2.9');
     assert.equal(MAGIC_TESTNET_V10, 'shear-testnet-v10');
     assert.equal(MAGIC_TESTNET_V11, 'shear-testnet-v11');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
-    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
+    assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v13');
+    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V13);
+    assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(GENESIS_BITS, 17);
     assert.equal(ASERT_HALFLIFE_MS, 7_200_000);
     assert.equal(ASERT_TAU_MS, ASERT_HALFLIFE_MS);

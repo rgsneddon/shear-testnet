@@ -56,6 +56,8 @@ import {
   MAGIC_TESTNET_V7,
   MAGIC_TESTNET_V8,
   MAGIC_TESTNET_V9,
+  MAGIC_TESTNET_V12,
+  MAGIC_TESTNET_V13,
   MAGIC_MAINNET,
   HASH_FN,
   HASH_TX_LIVE,
@@ -349,7 +351,10 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(formatShe(1e-11), '0.00000000');
     assert.equal(formatShe(1e-8), '0.00000001');
     assert.equal(formatShe(1e-9), '0.00000000');
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
+    assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v13');
+    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V13);
+    assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
@@ -460,7 +465,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
-    assert.match(fp, /NETWORK=shear-testnet-v12/);
+    assert.match(fp, /NETWORK=shear-testnet-v13/);
+    assert.match(fp, /RESERVE_NOTE=note-principal-refused/);
+    assert.doesNotMatch(fp, /HISTORICAL_TIP=/);
     assert.match(fp, /RESERVE_RATE=epoch-fixed:quorum=10:genesis=284:floor=0:trim=2:root=/);
     assert.match(fp, /RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2\/3:windowMain=6720:windowTest=67:windowMs=604800000:floorBps=0:sourceTenths=-1000\.\.100000:activation=fixed/);
     assert.doesNotMatch(fp, /maxStep=/);

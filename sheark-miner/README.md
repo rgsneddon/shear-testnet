@@ -3,7 +3,7 @@
 Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache). TLS-aware stratum. Not a quiet rebuild of 2.6 or 2.8.
 
 - Display repo: **[Testnet] ShearK** (`rgsneddon/ShearK`)
-- Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v12`
+- Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v13`
 - Banner: `ShearK-Miner 2.9 (ShearHash-v3 light)`
 - The v12 pool refuses a ShearK older than 2.9 and names the required version.
 - Difficulty comes from the pool job. A job with no share width or no block width is not mined.

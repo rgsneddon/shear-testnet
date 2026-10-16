@@ -1,7 +1,7 @@
 /**
  * Operator posture that is not book law: fee identity, stratum listen,
  * interval certify wording, and the bound stratum auth pub.
- * shear-testnet-v12 seals the 1% pool fee and admin spend to one dest.
+ * shear-testnet-v13 seals the 1% pool fee and admin spend to one dest.
  * The closed v10 and v11 pins are refused here so a copied unit cannot keep them.
  */
 

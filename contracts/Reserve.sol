@@ -73,6 +73,7 @@ contract Reserve {
     bytes32 public constant SHEAR_TESTNET_V10 = keccak256(bytes("shear-testnet-v10"));
     bytes32 public constant SHEAR_TESTNET_V11 = keccak256(bytes("shear-testnet-v11"));
     bytes32 public constant SHEAR_TESTNET_V12 = keccak256(bytes("shear-testnet-v12"));
+    bytes32 public constant SHEAR_TESTNET_V13 = keccak256(bytes("shear-testnet-v13"));
     bytes32 public constant SHEAR_MAINNET = keccak256(bytes("shear-v1"));
     bytes32 public constant PROGRAM_ID = keccak256(bytes("shear-reserve-v1"));
 
@@ -183,7 +184,7 @@ contract Reserve {
         if (id == 1 || id == 56 || id == 137 || id == 10 || id == 42161 || id == 43114 || id == 8453) {
             revert NotShear();
         }
-        if (magic != SHEAR_TESTNET && magic != SHEAR_TESTNET_V3 && magic != SHEAR_TESTNET_V4 && magic != SHEAR_TESTNET_V5 && magic != SHEAR_TESTNET_V1 && magic != SHEAR_TESTNET_V6 && magic != SHEAR_TESTNET_V7 && magic != SHEAR_TESTNET_V8 && magic != SHEAR_TESTNET_V9 && magic != SHEAR_TESTNET_V10 && magic != SHEAR_TESTNET_V11 && magic != SHEAR_TESTNET_V12 && magic != SHEAR_MAINNET) revert NotShear();
+        if (magic != SHEAR_TESTNET && magic != SHEAR_TESTNET_V3 && magic != SHEAR_TESTNET_V4 && magic != SHEAR_TESTNET_V5 && magic != SHEAR_TESTNET_V1 && magic != SHEAR_TESTNET_V6 && magic != SHEAR_TESTNET_V7 && magic != SHEAR_TESTNET_V8 && magic != SHEAR_TESTNET_V9 && magic != SHEAR_TESTNET_V10 && magic != SHEAR_TESTNET_V11 && magic != SHEAR_TESTNET_V12 && magic != SHEAR_TESTNET_V13 && magic != SHEAR_MAINNET) revert NotShear();
     }
 
     function epochDaysOf() public view returns (uint256) {
@@ -251,6 +252,10 @@ contract Reserve {
     bytes32[] internal heldShas;
     mapping(uint256 => uint256) public epochRateOf;
     mapping(uint256 => bool) internal epochRateKnown;
+    /// Resume index for _pinLegacyEpochs. A roll waits until one full pass finishes.
+    uint256 internal legacyPinCursor;
+    uint256 internal constant LEGACY_PIN_MAX = 256;
+    uint256 internal constant LEGACY_PIN_GAS = 40_000;
 
     /// First non-zero chain genesis wins. Settlement and rate keys share it.
     /// A later call that names a different genesis reverts.
@@ -424,15 +429,32 @@ contract Reserve {
 
     /// A balance with no tranche list is one legacy credit. Pin its lock
     /// epoch before currentEpoch moves, so a later roll does not lock it again.
-    function _pinLegacyEpochs() internal {
+    /// One call walks at most LEGACY_PIN_MAX keys and stops before the gas
+    /// floor. An unfinished pass returns false and leaves currentEpoch where
+    /// it is. The next sync resumes at legacyPinCursor.
+    function _pinLegacyEpochs() internal returns (bool) {
         uint256 nKeys = portalKeys.length;
         uint256 stamp = currentEpoch + 1;
-        for (uint256 i = 0; i < nKeys; i++) {
+        uint256 start = legacyPinCursor;
+        if (start > nKeys) start = 0;
+        uint256 end = start + LEGACY_PIN_MAX;
+        if (end > nKeys) end = nKeys;
+        for (uint256 i = start; i < end; i++) {
+            if (gasleft() < LEGACY_PIN_GAS) {
+                legacyPinCursor = i;
+                return false;
+            }
             Portal storage p = portals[portalKeys[i]];
             if (p.tranches.length != 0 || p.legacyEpochPlus != 0) continue;
             if (p.active + p.idle == 0) continue;
             p.legacyEpochPlus = stamp;
         }
+        if (end < nKeys) {
+            legacyPinCursor = end;
+            return false;
+        }
+        legacyPinCursor = 0;
+        return true;
     }
 
     function _legacyLockEpoch(Portal storage p) internal view returns (uint256) {
@@ -444,7 +466,7 @@ contract Reserve {
         if (clockGenesis == 0) return;
         uint256 idx = _chainEpoch(nowTs);
         if (epochStart == 0) {
-            _pinLegacyEpochs();
+            if (!_pinLegacyEpochs()) return;
             currentEpoch = idx;
             epochStart = clockGenesis + idx * epochLengthMs();
             bonusEnacted = false;
@@ -453,7 +475,7 @@ contract Reserve {
         }
         if (idx == currentEpoch) return;
         if (!bonusEnacted) return;
-        _pinLegacyEpochs();
+        if (!_pinLegacyEpochs()) return;
         // Walk the skipped epochs in order. A commit is that epoch's rate
         // and becomes the last paid rate. A gap with no commit keeps it.
         // The epoch we open, if it has no commit, pays that same rate.
@@ -967,6 +989,7 @@ contract Reserve {
             p.joined = false;
             p.vote = Vote.None;
             p.voteEpoch = 0;
+            p.legacyEpochPlus = 0;
         } else if (left < PI_NANOS) {
             p.joined = false;
             p.vote = Vote.None;

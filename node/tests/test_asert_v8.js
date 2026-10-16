@@ -140,7 +140,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
   });
 
   it('verify, pool judge, and solo submit share one next-work and reject a private easier target or a long stamp', () => {
-    assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
+    assert.equal(MAGIC_TESTNET, 'shear-testnet-v13');
     assert.equal(MAGIC_TESTNET_V9, 'shear-testnet-v9');
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V9);
     assert.equal(MAGIC_TESTNET_V8, 'shear-testnet-v8');
@@ -148,7 +148,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     assert.notEqual(MAGIC_TESTNET, MAGIC_TESTNET_V8);
     assert.notEqual(MAGIC_TESTNET_V7, MAGIC_TESTNET);
     const fp = consensusFingerprint();
-    assert.match(fp, /NETWORK=shear-testnet-v12/);
+    assert.match(fp, /NETWORK=shear-testnet-v13/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v8/);
     assert.match(fp, /ASERT_STEP=median11\(log2\(T\/seen\)\)\*\(T\/tau\)/);
     assert.equal(medianIntervalMs([2_000]), TARGET_BLOCK_INTERVAL_MS);

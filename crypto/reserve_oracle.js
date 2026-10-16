@@ -215,14 +215,14 @@ export function windowBlocksFor(magic) {
   return Math.max(1, Math.round((ORACLE_WINDOW_MAINNET * hereMs) / mainMs));
 }
 
-export const ORACLE_WINDOW_TESTNET = windowBlocksFor('shear-testnet-v12');
+export const ORACLE_WINDOW_TESTNET = windowBlocksFor('shear-testnet-v13');
 
 /**
  * Reports that count for the boundary. Selection is by height:
  * [boundaryHeight − N, boundaryHeight). Miner timestamps are not an input.
  */
 export function selectReportWindow(blocks, boundaryHeight, {
-  magic = 'shear-testnet-v12',
+  magic = 'shear-testnet-v13',
   windowBlocks = null,
 } = {}) {
   const cap = windowBlocks == null ? windowBlocksFor(magic) : Math.floor(Number(windowBlocks));
@@ -256,7 +256,7 @@ export function isReportBoundary({ headerMs, parentMs, genesisMs, magic } = {}) 
 }
 
 /** Window the node passes into verifyBlock. Prior blocks only; this block is the boundary. */
-export function oracleContextFor(priorBlocks, block, magic = 'shear-testnet-v12') {
+export function oracleContextFor(priorBlocks, block, magic = 'shear-testnet-v13') {
   const height = Math.floor(Number(block?.height) || 0);
   const windowSize = windowBlocksFor(magic);
   const rows = (priorBlocks || []).map((b) => ({
@@ -276,7 +276,7 @@ export function oracleContextFor(priorBlocks, block, magic = 'shear-testnet-v12'
 export function reserveApplyFields({
   prior = [],
   block,
-  magic = 'shear-testnet-v12',
+  magic = 'shear-testnet-v13',
   parentMs = 0,
   genesisMs = 0,
   nowMs = 0,

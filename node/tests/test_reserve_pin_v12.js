@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { encodeDest } from '../../crypto/address.js';
-import { MAGIC_TESTNET, MAGIC_TESTNET_V12 } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, MAGIC_TESTNET_V12, MAGIC_TESTNET_V13 } from '../../crypto/asert.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { createRpc } from '../src/rpc.js';
 
@@ -30,7 +30,8 @@ function stubStore(pinOk) {
 
 describe('reserve pin gates mining', () => {
   it('the live magic is in the pinned bytecode, and a stranger magic is not', () => {
-    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
+    assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V13);
+    assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
     assert.equal(reservePinOk(), true);
     assert.equal(reservePinOk('shear-testnet-v11'), true);
     assert.equal(reservePinOk('shear-testnet-v9'), true);
@@ -78,7 +79,7 @@ describe('reserve pin gates mining', () => {
     const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
     const got = rpc.dispatch('gettemplate', { miner: dest });
     assert.equal(got.ok, true, got.reason);
-    assert.equal(got.magic, 'shear-testnet-v12');
+    assert.equal(got.magic, 'shear-testnet-v13');
     assert.equal(calls.template, 1);
   });
 });

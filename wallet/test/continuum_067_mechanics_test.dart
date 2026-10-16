@@ -16,7 +16,7 @@ void main() {
   test('Continuum 0.72 build number comes from pubspec +N and is not 49', () {
     expect(kWalletVersion, '0.72');
     expect(kCliVersion, '0.72');
-    expect(kBookMagic, 'shear-testnet-v12');
+    expect(kBookMagic, 'shear-testnet-v13');
     final pubspec = File('pubspec.yaml').readAsStringSync();
     expect(pubspec, contains('version: 0.72.0+97'));
     final plus = RegExp(r'version:\s*0\.72\.0\+(\d+)').firstMatch(pubspec);
@@ -140,7 +140,7 @@ void main() {
     final again = ShearSession(store: store);
     await again.unlock('correct horse battery staple');
     expect(again.identity!.paymentCode, she1);
-    expect(kBookMagic, 'shear-testnet-v12');
+    expect(kBookMagic, 'shear-testnet-v13');
   });
 
   test('unsealed vault observe does not mint Spendable and Sign is local-only', () {

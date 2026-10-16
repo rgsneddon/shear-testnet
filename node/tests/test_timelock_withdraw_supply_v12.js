@@ -494,6 +494,7 @@ describe('time-locked withdraw supply', () => {
         joined: true,
         vote: null,
         voteEpoch: 0,
+        lockEpoch: 0,
       };
       state.totalLockedNanos = BigInt(PI_SHE_NANOS);
       return { dest, state, id };
@@ -510,7 +511,7 @@ describe('time-locked withdraw supply', () => {
     assert.equal(Number(early.state.totalLockedNanos), PI_SHE_NANOS);
 
     for (const [label, when] of [['at', DRAW], ['after', DRAW + 1]]) {
-      const { dest, state } = lump();
+      const { dest, state, id } = lump();
       const preview = previewWithdraw(state, dest, when);
       assert.equal(preview.principal, PI_SHE_NANOS, label);
       assert.equal(preview.interest, 0, label);
@@ -536,6 +537,7 @@ describe('time-locked withdraw supply', () => {
       assert.equal(identity.ok, true, `${label} ${identity.reason}`);
       assert.equal(identity.mintedReward, 0, label);
       assert.equal(Number(state.totalLockedNanos), 0, label);
+      assert.equal(Object.hasOwn(state.portals[id], 'lockEpoch'), false, label);
     }
 
     const later = lump();
@@ -561,5 +563,6 @@ describe('time-locked withdraw supply', () => {
     const laterIdentity = supplyIdentity(later.state);
     assert.equal(laterIdentity.ok, true, laterIdentity.reason);
     assert.equal(laterIdentity.mintedReward, 0);
+    assert.equal(Object.hasOwn(later.state.portals[later.id], 'lockEpoch'), false);
   });
 });

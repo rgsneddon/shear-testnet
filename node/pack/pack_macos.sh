@@ -3,7 +3,7 @@
 #   npm ci
 #   sh node/pack/pack_macos.sh
 # Writes dist/shear-node-v19-macos.zip. The node release tag is v19.
-# Datadir folder name stays testnet-v11. Live magic is shear-testnet-v12.
+# Datadir folder name stays testnet-v11. Live magic is shear-testnet-v13.
 # Do not upload this zip onto 0.68, 0.67, or v16. Do not pass --clobber.
 set -e
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
@@ -58,8 +58,8 @@ text = z.read("crypto/asert.js").decode()
 books = z.read("crypto/reserve_books.js").decode()
 if "PRODUCT_VERSION = '19.0'" not in text:
     sys.exit("packed asert.js is not Sentinel 19.0")
-if "export const MAGIC_TESTNET = MAGIC_TESTNET_V12" not in books:
-    sys.exit("packed reserve book is not shear-testnet-v12")
+if "export const MAGIC_TESTNET = MAGIC_TESTNET_V13" not in books:
+    sys.exit("packed reserve book is not shear-testnet-v13")
 if "pool/src/posture.js" not in names:
     sys.exit("missing pool/src/posture.js")
 print("darwin-ok", len(names))

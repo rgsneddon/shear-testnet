@@ -301,7 +301,7 @@ describe('website W-IMPL binds', () => {
   it('v12 law and the closed v10 soak note name their own fingerprints', () => {
     const consensus = read('../../specs/consensus.md');
     const ops = read('../../docs/OPS-testnet-v10-90s.md');
-    assert.match(consensus, /shear-testnet-v12/);
+    assert.match(consensus, /shear-testnet-v13/);
     assert.match(consensus, /aserti3-2d/);
     assert.match(consensus, /GENESIS_BITS=17/);
     assert.match(consensus, /τ=2h/);

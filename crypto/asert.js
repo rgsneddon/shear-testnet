@@ -41,6 +41,7 @@ import {
   MAGIC_TESTNET_V10,
   MAGIC_TESTNET_V11,
   MAGIC_TESTNET_V12,
+  MAGIC_TESTNET_V13,
   MAGIC_TESTNET,
   MAGIC_MAINNET,
 } from './reserve_books.js';
@@ -58,6 +59,7 @@ export {
   MAGIC_TESTNET_V10,
   MAGIC_TESTNET_V11,
   MAGIC_TESTNET_V12,
+  MAGIC_TESTNET_V13,
   MAGIC_TESTNET,
   MAGIC_MAINNET,
 };
@@ -291,7 +293,7 @@ export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
 /**
  * Consensus floor: spendable after 9 confirmations (~13.5 min at 90s).
- * In the fingerprint. shear-testnet-v12 book.
+ * In the fingerprint. shear-testnet-v13 book.
  */
 export const SPENDABLE_CONFIRMATIONS = 9;
 /** Sample bodies may drop after this many confirmations. Money vouts stay. */
@@ -444,7 +446,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `ASERT_FLOOR=${ASERT_FLOOR_ID}`,
     `HEADER_AHEAD_MS=${HEADER_AHEAD_MS}`,
     `MTP_FUTURE_MS=${MTP_FUTURE_MS}`,
-    ...(String(magic) === MAGIC_MAINNET || String(magic) === MAGIC_TESTNET_V12 ? [] : [`HISTORICAL_TIP=${HISTORICAL_TIP}`]),
+    ...(String(magic) === MAGIC_MAINNET || String(magic) === MAGIC_TESTNET_V12 || String(magic) === MAGIC_TESTNET_V13 ? [] : [`HISTORICAL_TIP=${HISTORICAL_TIP}`]),
   ].join(':');
 }
 

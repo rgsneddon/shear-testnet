@@ -25,13 +25,13 @@ echo "SMOKE wallet CLI"
 WALLET=$(shear version 2>&1) || fail "shear version exited $?"
 printf '%s\n' "$WALLET"
 printf '%s\n' "$WALLET" | grep -q 'Shear wallet 0.72' || fail "wallet pin is not 0.72"
-printf '%s\n' "$WALLET" | grep -q 'shear-testnet-v12' || fail "wallet magic is not shear-testnet-v12"
+printf '%s\n' "$WALLET" | grep -q 'shear-testnet-v13' || fail "wallet magic is not shear-testnet-v13"
 
 echo "SMOKE node print-config"
 CFG=$(node /opt/shear-v12/node/src/node.js --print-config 2>/tmp/shear-node-stderr) || fail "print-config exited $?"
 printf '%s\n' "$CFG"
 printf '%s\n' "$CFG" | grep -q 'Shear Sentinel v19' || fail "display is not Shear Sentinel v19"
-printf '%s\n' "$CFG" | grep -q 'shear-testnet-v12' || fail "node magic is not shear-testnet-v12"
+printf '%s\n' "$CFG" | grep -q 'shear-testnet-v13' || fail "node magic is not shear-testnet-v13"
 if [ -s /tmp/shear-node-stderr ]; then
   echo "SMOKE print-config stderr:"
   cat /tmp/shear-node-stderr

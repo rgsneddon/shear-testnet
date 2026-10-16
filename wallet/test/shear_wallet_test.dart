@@ -2658,7 +2658,7 @@ void main() {
     expect(sync.seeds.contains(kPublicPoolHttp), isFalse);
     expect(sync.seeds.contains(kLocalPoolHttp), isFalse);
     expect(sync.seeds.contains('https://p2p.shear.digital'), isTrue);
-    expect(kBookMagic, 'shear-testnet-v12');
+    expect(kBookMagic, 'shear-testnet-v13');
     expect(kWalletDefaultSeed, contains('127.0.0.1'));
     expect(kWalletDefaultSeed.contains('pool.shear.digital'), isFalse);
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
@@ -7375,7 +7375,7 @@ void main() {
     );
     final reset = ShearIdentity.fromJson(v3, reset: true);
     expect(reset.address, id.address);
-    expect(id.toJson()['network'], 'shear-testnet-v12');
+    expect(id.toJson()['network'], 'shear-testnet-v13');
   });
 
   test('upgraded wallet drops leftover pre-reset txs; live history is the book', () async {
@@ -7642,7 +7642,7 @@ void main() {
       seeds: ['http://127.0.0.1:${server.port}'],
       http: _realHttp(),
     );
-    expect(report, contains('magic=shear-testnet-v12'));
+    expect(report, contains('magic=shear-testnet-v13'));
     expect(report, contains('followTip.sampledTip=53'));
     expect(report, contains('displayHeight=53'));
     expect(report, contains('sealedHeight=53'));

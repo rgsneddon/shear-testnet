@@ -1,7 +1,7 @@
 @echo off
 REM ShearK-Miner 2.9 (ShearHash-v3 light) — Windows
 REM Public pool: stratum+ssl://pool.shear.digital:443
-REM This build is for shear-testnet-v12. The pool refuses ShearK older than 2.9.
+REM This build is for shear-testnet-v13. The pool refuses ShearK older than 2.9.
 REM YOUR_SSA1.worker is a placeholder. Keep each host's worker name and payout address.
 REM Localhost solo stays cleartext: stratum+tcp://127.0.0.1:1111
 REM

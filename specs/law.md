@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v12` (privacy-class). Previous book `shear-testnet-v11`. Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
+Network: `shear-testnet-v13` (privacy-class). Previous book `shear-testnet-v12`. Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
 
 ## Numbers
 
@@ -39,7 +39,7 @@ Network: `shear-testnet-v12` (privacy-class). Previous book `shear-testnet-v11`.
 Fingerprint also pins:
 
 ```
-NETWORK=shear-testnet-v12
+NETWORK=shear-testnet-v13
 FORK=work-then-lowhash
 HASH_FN=ShearHash-v3
 HASH_TX_LIVE=1
