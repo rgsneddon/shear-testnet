@@ -206,6 +206,48 @@ function bootFromMinerPage(html) {
   return JSON.parse(html.slice(start, i));
 }
 
+const PULL_KEY = /owed|due|pending|unpaid|withdraw/i;
+
+/** /api/stats keys that match the pull pattern and are not a custodial balance. */
+const STATS_BENIGN_PULL_KEYS = new Set([
+  'windowOwedUnits',
+  'windowOwedNotes',
+  'hashOwedNanos',
+  'pending',
+]);
+
+/** Miner JSON also publishes the zeroed pull display. Any other name still fails. */
+const MINER_BENIGN_PULL_KEYS = new Set([
+  ...STATS_BENIGN_PULL_KEYS,
+  'pendingShe',
+  'pendingDisplay',
+  'pendingConfirmShe',
+  'pendingConfirmDisplay',
+]);
+
+export function pullBalanceKeys(value, allow) {
+  const found = [];
+  function walk(node, path) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i += 1) walk(node[i], `${path}[${i}]`);
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      const here = path ? `${path}.${key}` : key;
+      if (PULL_KEY.test(key) && !allow.has(key)) found.push(here);
+      walk(node[key], here);
+    }
+  }
+  walk(value, '');
+  return found;
+}
+
+function assertNoPullKeys(value, allow, where) {
+  const found = pullBalanceKeys(value, allow);
+  assert.deepEqual(found, [], `${where} ${found.join(' ')}`);
+}
+
 function assertStatsShowNoPull(stats, where) {
   const rec = stats.reconcile;
   assert.ok(rec, where);
@@ -219,12 +261,18 @@ function assertStatsShowNoPull(stats, where) {
   assert.equal(stats.autoPayoutLastError, null, where);
   assert.equal(stats.blocksLifetime, 0, where);
   assert.equal(stats.sealsLifetime, 0, where);
-  const blob = JSON.stringify(stats);
-  assert.equal(blob.includes('pendingNanos'), false, where);
-  assert.equal(blob.includes('pendingShe'), false, where);
-  assert.equal(blob.includes('owedPi'), false, where);
-  assert.equal(blob.includes('dueAuto'), false, where);
-  assert.equal(blob.includes('unpaidPot'), false, where);
+  assertNoPullKeys(stats, STATS_BENIGN_PULL_KEYS, where);
+}
+
+function assertUnknownMiner(res, tag, where) {
+  assert.equal(res.status, 404, where);
+  const body = res.json();
+  assert.equal(body && typeof body, 'object', where);
+  assert.equal(body.ok, false, where);
+  assert.equal(body.reason, 'unknown_miner', where);
+  assert.equal(body.tag, tag, where);
+  assertNoPullKeys(body, STATS_BENIGN_PULL_KEYS, where);
+  return body;
 }
 
 function assertPoolPageShowsNoPull(html, where) {
@@ -251,6 +299,7 @@ function assertMinerPageShowsNoPull(html, where) {
   assert.doesNotMatch(paint, /fmtPullShe|pendingShe|pendingDisplay|owedPi/, where);
   const boot = bootFromMinerPage(html);
   assert.ok(boot, where);
+  assertNoPullKeys(boot, MINER_BENIGN_PULL_KEYS, where);
   if (boot.ok) {
     assert.equal(boot.pendingShe, 0, where);
     assert.equal(boot.unconfirmedShe, 0, where);
@@ -345,9 +394,11 @@ function tokensOf(src) {
     }
     if (c === '\'' || c === '"' || c === '`') {
       const end = skipQuoted(src, i);
-      if (src.slice(i, end).includes(NAME)) {
+      const raw = src.slice(i + 1, Math.max(i + 1, end - 1));
+      if (raw.includes(NAME) || src.slice(i, end).includes(NAME)) {
         throw new Error(`${NAME} hidden in a string at ${lineOf(src, i)}`);
       }
+      tokens.push({ type: 'str', value: raw, index: i });
       i = end;
       prev = { type: 'punct', c: '"' };
       continue;
@@ -388,8 +439,50 @@ function lineOf(src, index) {
   return line;
 }
 
+function stripComments(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === '/' && n === '/') {
+      i += 2;
+      while (i < src.length && src[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && n === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i += 1;
+      i = Math.min(src.length, i + 2);
+      out += ' ';
+      continue;
+    }
+    if (c === '\'' || c === '"' || c === '`') {
+      const start = i;
+      i += 1;
+      while (i < src.length) {
+        if (src[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (src[i] === c) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      out += src.slice(start, i);
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
 function headerBefore(src, braceIndex) {
-  return src.slice(Math.max(0, braceIndex - 700), braceIndex).replace(/\s+/g, ' ');
+  const raw = src.slice(Math.max(0, braceIndex - 700), braceIndex);
+  return stripComments(raw).replace(/\s+/g, ' ');
 }
 
 function blockStartsWithReturn(src, braceIndex) {
@@ -399,8 +492,8 @@ function blockStartsWithReturn(src, braceIndex) {
 
 /**
  * A call is off the v12 path when this magic returns before it, the call's
- * own block is `if (false && ...)`, or the call sits in `if (custodialPullAllowed())`.
- * An earlier `if (false)`, `if (false || ...)`, and `else` stay live.
+ * own block is `if (false && ...)` with no `||`, `?`, `:`, or comma.
+ * Comments, `else`, and `false ||` stay live.
  */
 function openFunction(fnStack) {
   for (let i = fnStack.length - 1; i >= 0; i -= 1) {
@@ -459,9 +552,9 @@ export function v12CallVerdict(src, callIndex) {
         blockStack.push({ kind: 'obj' });
         continue;
       }
-      const flat = pre.trim();
-      const deadIf = flat.match(/if\s*\(\s*false\s*&&([^{};]*)\)\s*$/);
-      const dead = !!(deadIf && !deadIf[1].includes('||'));
+      const rawCond = stripComments(src.slice(stmtStart, tok.index));
+      const flat = rawCond.replace(/\s+/g, ' ').trim();
+      const dead = /if\s*\(\s*false\s*&&([^?:,{};|]*)\)\s*$/.test(flat);
       const onlyOld = /if\s*\(\s*custodialPullAllowed\s*\(\s*\)\s*\)\s*$/.test(flat);
       const gateBlock = /if\s*\(\s*!\s*custodialPullAllowed\s*\(\s*\)\s*\)\s*$/.test(flat)
         && blockStartsWithReturn(src, tok.index);
@@ -539,7 +632,36 @@ function classifyUses(src) {
   return uses;
 }
 
+function assertNoComputedWithdraw(file, src) {
+  const tokens = tokensOf(src);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const tok = tokens[i];
+    if (!(tok.type === 'punct' && tok.c === '[')) continue;
+    const parts = [];
+    let pure = true;
+    for (let j = i + 1; j < tokens.length; j += 1) {
+      const t = tokens[j];
+      if (t.type === 'punct' && t.c === ']') break;
+      if (t.type === 'str') parts.push(t.value);
+      else if (t.type === 'punct' && t.c === '+') continue;
+      else {
+        pure = false;
+        break;
+      }
+    }
+    if (pure && parts.length > 0 && parts.join('') === NAME) {
+      assert.fail(`${file}:${lineOf(src, tok.index)} computed ${NAME}`);
+    }
+  }
+  for (const m of src.matchAll(/import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s+(['"])([^'"]*levy\.js)\2/g)) {
+    const name = m[1];
+    const use = new RegExp(`(?:^|[^A-Za-z0-9_$])${name}\\s*\\[`);
+    assert.doesNotMatch(src, use, `${file} computed access on ${name} reaches ${NAME}`);
+  }
+}
+
 export function assertFileUnreachable(file, src) {
+  assertNoComputedWithdraw(file, src);
   const uses = classifyUses(src);
   for (const use of uses) {
     const at = `${file}:${lineOf(src, use.index)}`;
@@ -588,6 +710,14 @@ describe('P0 072 v12 custodial pull', () => {
     assert.throws(() => assertFileUnreachable('or.js', orLive), /reaches poolWithdrawTx/);
     const elseLive = 'export function leak() {\n  if (false) {} else { return poolWithdrawTx(); }\n}\n';
     assert.throws(() => assertFileUnreachable('else.js', elseLive), /reaches poolWithdrawTx/);
+    const commentLive = 'export function leak(ready) {\n  if (ready) // if (false && y)\n  { return poolWithdrawTx(); }\n}\n';
+    assert.throws(() => assertFileUnreachable('comment.js', commentLive), /reaches poolWithdrawTx/);
+    const ternLive = 'export function leak(x) {\n  if (false && x ? 1 : 1) { return poolWithdrawTx(); }\n}\n';
+    assert.throws(() => assertFileUnreachable('tern.js', ternLive), /reaches poolWithdrawTx/);
+    const commaLive = 'export function leak(x) {\n  if (false && x, true) { return poolWithdrawTx(); }\n}\n';
+    assert.throws(() => assertFileUnreachable('comma.js', commaLive), /reaches poolWithdrawTx/);
+    const computed = 'import * as L from "./levy.js";\nexport function leak() {\n  return L[\'pool\' + \'WithdrawTx\']({ from: 1 });\n}\n';
+    assert.throws(() => assertFileUnreachable('computed.js', computed), /computed poolWithdrawTx/);
 
     const gated = 'export function buildAutoPayoutTx() {\n  if (!custodialPullAllowed()) return { ok: false, reason: \'custodial_pull\' };\n  const tx = poolWithdrawTx({ from: 1 });\n  return tx;\n}\n';
     assertFileUnreachable('gated.js', gated);
@@ -609,12 +739,42 @@ describe('P0 072 v12 custodial pull', () => {
     let calls = 0;
     for (const file of files) {
       const src = fs.readFileSync(file, 'utf8');
+      const rel = path.relative(ROOT, file);
+      assertNoComputedWithdraw(rel, src);
       if (!src.includes(NAME)) continue;
       const before = classifyUses(src).filter((u) => u.kind === 'call').length;
       calls += before;
       assertFileUnreachable(path.relative(ROOT, file), src);
     }
     assert.ok(calls >= 1, 'production still names the refused builder');
+  });
+
+  it('stats key scan rejects injected owedNanos and dueNanos', () => {
+    const benign = {
+      ok: true,
+      windowOwedNotes: 0,
+      windowOwedUnits: '0',
+      hashOwedNanos: null,
+      recentTxs: [{ pending: false, kind: 'block' }],
+    };
+    assert.deepEqual(pullBalanceKeys(benign, STATS_BENIGN_PULL_KEYS), []);
+    const injected = {
+      ...benign,
+      owedNanos: 1,
+      dueNanos: 2,
+      reconcile: { owedNanos: 3 },
+      miners: [{ dueNanos: 4 }],
+    };
+    let message = '';
+    try {
+      assertNoPullKeys(injected, STATS_BENIGN_PULL_KEYS, 'inject');
+    } catch (err) {
+      message = String(err && err.message);
+    }
+    assert.match(message, /\bowedNanos\b/);
+    assert.match(message, /\bdueNanos\b/);
+    assert.match(message, /reconcile\.owedNanos/);
+    assert.match(message, /miners\[0\]\.dueNanos/);
   });
 
   it('1, 3 and 17 miners across pots below, at and well above π keep coinbase notes and an empty pull book', { timeout: 600_000 }, async () => {
@@ -730,18 +890,23 @@ describe('P0 072 v12 custodial pull', () => {
             const api = await httpCall(`${base}/api/miners/${tag}`);
             const body = api.json();
             if (api.status === 404) {
-              assert.equal(body.reason, 'unknown_miner', where);
-              assert.equal(body.pendingShe, undefined, where);
-              assert.equal(body.owedPi, undefined, where);
+              assertUnknownMiner(api, tag, `${where} ${tag}`);
             } else {
               assert.equal(api.status, 200, where);
+              assert.equal(body.ok, true, where);
+              assert.equal(body.tag, tag, where);
               assert.equal(body.pendingShe, 0, where);
               assert.equal(body.unconfirmedShe, 0, where);
               assert.equal(body.creditConfirmedShe, 0, where);
               assert.equal(body.sentShe, 0, where);
               assert.equal((body.ledger || []).length, 0, where);
+              assertNoPullKeys(body, MINER_BENIGN_PULL_KEYS, `${where} ${tag}`);
             }
           }
+          const ghostTag = 'm00000000';
+          assert.equal(dests.some((dest) => publicMinerTag(dest) === ghostTag), false, where);
+          const ghost = await httpCall(`${base}/api/miners/${ghostTag}`);
+          assertUnknownMiner(ghost, ghostTag, `${where} unknown miner`);
           const withdraw = await httpCall(`${base}/api/pool/withdraw`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
