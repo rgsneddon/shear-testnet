@@ -367,7 +367,11 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
   final posted = o['kind'] as String?;
   final kind = (posted == null || posted.isEmpty) ? 'pot' : posted;
   final keepOpen = publicValueOpenKind(posted);
-  if (o['commit'] is! Uint8List) {
+  // A second flowPostHex pass already hex-encoded the seal. That string is
+  // still the commit; dropping it is what posted a lock with no commit.
+  final commitRaw = o['commit'];
+  final commit = commitRaw is Uint8List ? commitRaw : _noteBytes(commitRaw);
+  if (commit == null || commit.isEmpty) {
     if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'vortice-register') {
       return {
         'kind': kind,
@@ -380,7 +384,7 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
   final row = <String, dynamic>{
     'kind': kind,
     'noteCommit': o['noteCommit'],
-    'commit': o['commit'],
+    'commit': commit,
     if (keepOpen && o['valueProof'] != null) 'valueProof': o['valueProof'],
   };
   if (o['rangeProof'] != null) row['rangeProof'] = o['rangeProof'];

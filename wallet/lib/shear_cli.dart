@@ -886,11 +886,12 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         unlockAtMs: unlockAt,
       );
       final verified = ledger.verifiedMedianTimeMs ?? 0;
+      if (verified > 0) reserve.reanchorVerifiedClock(verified);
       reserve.deposit(
         dest: dest,
         she: she,
         nowMs: verified,
-        noteIsPrincipal: unlockAt != null,
+        noteIsPrincipal: true,
         sealedUnlockAtMs: unlockAt,
       );
       session.rememberedReserve = _portalSnap(reserve, dest, now);

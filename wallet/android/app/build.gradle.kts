@@ -34,18 +34,10 @@ android {
         versionName = flutter.versionName
         ndk {
             abiFilters.clear()
+            abiFilters.add("armeabi-v7a")
             abiFilters.add("arm64-v8a")
-        }
-    }
-
-    packaging {
-        jniLibs {
-            excludes += listOf(
-                "lib/armeabi-v7a/**",
-                "lib/armeabi/**",
-                "lib/x86/**",
-                "lib/x86_64/**",
-            )
+            abiFilters.add("x86")
+            abiFilters.add("x86_64")
         }
     }
 
@@ -106,8 +98,16 @@ val buildShearAdmitSo = tasks.register<Exec>("buildShearAdmitSo") {
     workingDir = rootProject.projectDir
 }
 
+val buildShearHashSo = tasks.register<Exec>("buildShearHashSo") {
+    group = "shear"
+    description = "Cross-compile libshearhash.so for every shipped ABI"
+    val script = rootProject.file("../../crypto/native/build-shearhash-android.sh")
+    commandLine("bash", script.absolutePath)
+    workingDir = rootProject.projectDir
+}
+
 tasks.named("preBuild").configure {
-    dependsOn(buildShearAdmitSo)
+    dependsOn(buildShearAdmitSo, buildShearHashSo)
 }
 
 dependencies {

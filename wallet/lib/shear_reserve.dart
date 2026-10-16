@@ -730,6 +730,46 @@ class ShearReserve {
     _recordEpoch(nowMs);
   }
 
+  /// Move a clock-0 epoch onto the first verified header time.
+  /// Epoch start, the zero-start epoch row, and every deposit stamped at 0
+  /// take that time, then open rows are assigned. A later header does not
+  /// move an epoch that already has a positive start, and a later top-up
+  /// must not be used as this anchor.
+  void reanchorVerifiedClock(int verifiedMs) {
+    if (verifiedMs <= 0 || epochStartMs > 0) return;
+    final hasZeroEpoch = epochs.any((e) => e.startMs <= 0);
+    final hasZeroRow = portals.values.any((p) => p.deposits.any((d) => d.atMs <= 0));
+    if (!hasZeroEpoch && !hasZeroRow) return;
+    epochStartMs = verifiedMs;
+    for (var i = 0; i < epochs.length; i++) {
+      final e = epochs[i];
+      if (e.startMs > 0) continue;
+      epochs[i] = ReserveEpochRow(
+        epoch: e.epoch,
+        startMs: verifiedMs,
+        endMs: verifiedMs + kReserveEpochMs,
+      );
+    }
+    if (epochs.isEmpty && currentEpoch >= 1) {
+      _recordEpoch(verifiedMs);
+    }
+    for (final p in portals.values) {
+      for (var i = 0; i < p.deposits.length; i++) {
+        final d = p.deposits[i];
+        if (d.atMs > 0) continue;
+        p.deposits[i] = ReserveDepositRow(
+          nanos: d.nanos,
+          atMs: verifiedMs,
+          txid: d.txid,
+          noteIsPrincipal: d.noteIsPrincipal,
+          epoch: d.epoch,
+          unlockAtMs: d.unlockAtMs,
+        );
+      }
+    }
+    _assignOpenDeposits();
+  }
+
   ReserveRewards rewards(String dest, int nowMs) {
     final p = portal(dest);
     final elapsed = elapsedMs(nowMs);
@@ -1105,12 +1145,39 @@ class ShearReserve {
 
 /// Unlock on the lock note this deposit's tx created.
 /// A later lock on the same address does not match.
+bool _lockNoteMatchesTx(
+  Map<String, dynamic> note,
+  String txId,
+  List<Map<String, dynamic>> notes,
+) {
+  final own = note['txId']?.toString() ?? '';
+  if (own.isNotEmpty) return own == txId;
+  final id = note['id']?.toString() ?? '';
+  if (id.isEmpty || id != txId) return false;
+  // A 32-byte hex id is a blind id, not a transaction id.
+  if (RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(id)) return false;
+  for (final other in notes) {
+    if (identical(other, note)) continue;
+    final otherTx = (other['txId'] ?? '').toString();
+    if (otherTx == txId) return false;
+    // This id is already the blind on a note that has a real tx id.
+    if (otherTx.isNotEmpty && (other['id'] ?? '').toString() == id) return false;
+  }
+  return true;
+}
+
+/// Unlock on the lock note this deposit's tx created.
+/// A later lock on the same address does not match. `id` is used only when
+/// `txId` is absent, the id is not a 32-byte blind, no other note already
+/// has that tx id, and no note with a real tx id carries this string as its id.
 int? sealedUnlockForTx(Iterable<Map<String, dynamic>> notes, String txId) {
   if (txId.isEmpty) return null;
-  for (final n in notes) {
+  final list = notes is List<Map<String, dynamic>>
+      ? notes
+      : notes.toList();
+  for (final n in list) {
     if ((n['kind'] ?? '').toString() != 'lock') continue;
-    final id = (n['txId'] ?? n['id'])?.toString() ?? '';
-    if (id != txId) continue;
+    if (!_lockNoteMatchesTx(n, txId, list)) continue;
     final raw = n['unlockAtMs'];
     final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
     if (at > 0) return at;
@@ -1207,15 +1274,22 @@ Future<ReserveDepositResult> postReserveDeposit({
     final height = tx.height;
     final atHeight = height != null ? ledger.verifiedTimeAtHeight(height) : null;
     final verified = atHeight ?? ledger.verifiedMedianTimeMs;
+    // First verified header time, before this row is added, so a top-up
+    // does not become the epoch anchor.
+    if (verified != null && verified > 0) {
+      reserve.reanchorVerifiedClock(verified);
+    }
     // The newest lock on this address is a different deposit. This row
     // takes the note stamped with this tx id, or the unlock this send used.
     final sealed = sealedUnlockForTx(ledger.notes, tx.id) ?? unlockAt;
+    // A lock with no clock is still the principal note. Leaving the flag
+    // false is what paints the legacy Withdraw button.
     final err = reserve.deposit(
       dest: dest,
       she: she,
       nowMs: verified ?? 0,
       payout: from,
-      noteIsPrincipal: sealed != null,
+      noteIsPrincipal: true,
       sealedUnlockAtMs: sealed,
     );
     if (err != null) {

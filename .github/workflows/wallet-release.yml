@@ -37,8 +37,10 @@ jobs:
           flutter config --enable-windows-desktop
           flutter pub get
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          powershell -ExecutionPolicy Bypass -File ../crypto/native/build-shearhash-windows.ps1
           $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
-          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define
+          $hash = (python ../crypto/native/stamp_shearhash_pin.py --define ../crypto/native/libshearhash.dll).Trim()
+          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define $hash
           New-Item -ItemType Directory -Force -Path dist-cli | Out-Null
           cmd /c "dart compile exe bin/shear.dart -o dist-cli/shear.exe & exit /b 0"
       - name: Zip GUI
@@ -65,12 +67,14 @@ jobs:
         working-directory: wallet
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config g++ libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev
           flutter config --enable-linux-desktop
           flutter pub get
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          bash ../crypto/native/build-shearhash-wallet.sh
           DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
-          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
+          HASH="$(python3 ../crypto/native/stamp_shearhash_pin.py --define ../crypto/native/libshearhash.so)"
+          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE $HASH
           mkdir -p dist-cli
           dart compile exe bin/shear.dart -o dist-cli/shear || true
       - name: Continuum release signing
@@ -92,9 +96,22 @@ jobs:
             echo "keyAlias=continuum"
             echo "storeFile=../continuum-release.jks"
           } > key.properties
+      - name: Pin NDK r27d
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /opt
+          if [[ ! -f /opt/android-ndk-r27d/source.properties ]]; then
+            curl -fsSL -o /tmp/android-ndk-r27d-linux.zip https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+            echo "22105e410cf29afcf163760cc95522b9fb981121  /tmp/android-ndk-r27d-linux.zip" | sha1sum -c
+            echo "601246087a682d1944e1e16dd85bc6e49560fe8b6d61255be2829178c8ed15d9  /tmp/android-ndk-r27d-linux.zip" | sha256sum -c
+            sudo unzip -q /tmp/android-ndk-r27d-linux.zip -d /opt
+          fi
+          grep -q 'Pkg.ReleaseName = r27d' /opt/android-ndk-r27d/source.properties
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-r27d" >> "$GITHUB_ENV"
+          echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
       - name: Build release APK
         working-directory: wallet
-        run: flutter build apk --release --target-platform android-arm64 --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+        run: flutter build apk --release --target-platform android-arm,android-arm64,android-x64,android-x86 --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
       - name: Zip
         run: |
           python3 - <<'PY'

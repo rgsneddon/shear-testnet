@@ -5,6 +5,7 @@ import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'shear_asert.dart';
 import 'shear_hash.dart';
 import 'shear_hash_v3.dart';
 import 'shear_read_open.dart';
@@ -438,6 +439,13 @@ List<int> flyclientSampleHeights(int tip) {
 /// Same locator the Connect bare sample uses.
 List<int> flyclientSampleHeightsForTest(int tip) => flyclientSampleHeights(tip);
 
+/// Parent of the median-time window. Null when that window starts at genesis.
+int? _mtpParentHeight(int tip, {int window = 11}) {
+  if (tip <= window || window < 1) return null;
+  final parent = tip - window;
+  return parent >= 1 ? parent : null;
+}
+
 /// A note-scan tip and a Flyclient tip disagree when both are known and
 /// they are not the same book, or their heights differ by more than [slack].
 /// One side still in flight is not a disagreement.
@@ -653,6 +661,11 @@ class ShearReadSync {
   /// Last Flyclient tip. Kept across a failed retry so the bar can name it.
   /// Not a spendable figure and not the local-node header walk.
   int flyclientTip = 0;
+  /// Recomputed digests from the last sample that verified. The unlock clock
+  /// may anchor a window to these. A claimed JSON hash is not an entry.
+  final Map<int, String> acceptedDigests = {};
+  /// Height 1 timestamp when that header's bits are the genesis seed.
+  int? pinnedGenesisMs;
   bool flyclientOk = false;
   bool flyclientFailed = false;
   String? flyclientGenesis;
@@ -1323,6 +1336,16 @@ class ShearReadSync {
       }
       got[h] = parsed;
       digests[h] = _digestHex(digest);
+      if (h == 1 && parsed.bits == kGenesisBitsPacked) {
+        pinnedGenesisMs = parsed.timestamp;
+      }
+    }
+    final parentH = _mtpParentHeight(tip);
+    if (parentH != null &&
+        !digests.containsKey(parentH) &&
+        pinnedGenesisMs != null) {
+      final anchored = await _anchorMtpParent(base, parentH, pinnedGenesisMs!);
+      if (anchored != null) digests[parentH] = anchored;
     }
     if (tip > 1) {
       final parent = got[tip - 1];
@@ -1334,7 +1357,34 @@ class ShearReadSync {
     for (final h in heights) {
       if (!got.containsKey(h)) return false;
     }
+    acceptedDigests
+      ..clear()
+      ..addAll(digests);
     return true;
+  }
+
+  /// ASERT plus a recomputed digest. A bits=1 header is not an unlock anchor.
+  /// A miss does not fail the Flyclient sample.
+  Future<String?> _anchorMtpParent(String base, int height, int genesisMs) async {
+    final path = '/header?height=$height';
+    flyclientFetched.add(path);
+    final json = await _getFirst(base, [path, '/api/explorer/header?height=$height']);
+    if (json == null) return null;
+    final parsed = flyHeaderFromJson(json);
+    if (parsed == null || !_flyHeaderShapeOk(parsed, height: height)) return null;
+    if (!headerBitsMatchAsert(
+      height: height,
+      bits: parsed.bits,
+      timestampMs: parsed.timestamp,
+      genesisMs: genesisMs,
+    )) {
+      return null;
+    }
+    final raw = _hexToBytes(parsed.rawHex);
+    if (raw == null) return null;
+    final digest = await shearHashV3OffUi(raw);
+    if (digest == null || !shearMeetsTarget(digest, parsed.bits)) return null;
+    return _digestHex(digest);
   }
 
   Future<Map<String, dynamic>?> _get(String base, String path) async {

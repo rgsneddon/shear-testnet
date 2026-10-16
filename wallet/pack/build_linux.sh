@@ -11,5 +11,7 @@ flutter pub get
 ADMIT="$HOME/src/shear-testnet/crypto/native/admit"
 cargo build --release --manifest-path "$ADMIT/Cargo.toml"
 DEFINE="$(python3 "$HOME/src/shear-testnet/crypto/native/stamp_admit_pin.py" --define "$ADMIT/target/release/libshear_admit.so")"
-flutter build linux --release --build-name=0.30 --build-number=42 $DEFINE
+bash "$HOME/src/shear-testnet/crypto/native/build-shearhash-wallet.sh"
+HASH="$(python3 "$HOME/src/shear-testnet/crypto/native/stamp_shearhash_pin.py" --define "$HOME/src/shear-testnet/crypto/native/libshearhash.so")"
+flutter build linux --release --build-name=0.30 --build-number=42 $DEFINE $HASH
 echo "LINUX_BUILD_OK"

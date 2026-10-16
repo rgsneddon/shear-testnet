@@ -13,6 +13,7 @@ import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_lock.dart';
 import 'package:shear_wallet/shear_session.dart';
+import 'package:shear_wallet/shear_asert.dart' hide kTargetBlockIntervalMs;
 import 'package:shear_wallet/shear_hash.dart';
 import 'package:shear_wallet/shear_hash_v3.dart';
 import 'package:shear_wallet/shear_pack.dart';
@@ -260,37 +261,132 @@ void _stampChainTip(ShearLedger ledger, int tipMs, {int height = 12}) {
   ledger.applyTipHeader(header, sealedHeight: height);
 }
 
-final Map<String, List<({Uint8List header, Uint8List digest})>> _minedClock = {};
+final Map<String, _MinedWindow> _minedClock = {};
 
 String _headerHex(Uint8List bytes) =>
     bytes.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
 
-/// Parent-linked headers at [tipMs] whose ShearHash-v3 digests meet bits=1.
-/// Cached by time and length. The server-claimed hash is not the digest.
-List<({Uint8List header, Uint8List digest})> _mineLinkedHeaders(int tipMs, int count) {
-  final key = '$tipMs:$count';
+void _stageHashLib() {
+  stageBundledShearHashForTest(
+    '${Directory.current.path}/../crypto/native/libshearhash.so',
+  );
+}
+
+void _writeU32(Uint8List header, int offset, int value) {
+  header[offset] = value & 0xff;
+  header[offset + 1] = (value >> 8) & 0xff;
+  header[offset + 2] = (value >> 16) & 0xff;
+  header[offset + 3] = (value >> 24) & 0xff;
+}
+
+void _writeU64(Uint8List header, int offset, int value) {
+  var v = value;
+  for (var i = 0; i < 8; i++) {
+    header[offset + i] = v & 0xff;
+    v >>= 8;
+  }
+}
+
+class _MinedWindow {
+  _MinedWindow({
+    required this.genesisMs,
+    required this.parentHeight,
+    required this.parentDigest,
+    required this.tip,
+    required this.rows,
+  });
+
+  final int genesisMs;
+  final int parentHeight;
+  final Uint8List parentDigest;
+  final int tip;
+  final List<({int height, Uint8List header, Uint8List digest})> rows;
+
+  String get parentHex => _headerHex(parentDigest);
+}
+
+/// Parent-linked headers at [tipMs] whose bits are the ASERT floor.
+/// The window sits above genesis so height 1 is not mined. Cached.
+_MinedWindow _mineAsertWindow(int tipMs, {int count = 11}) {
+  final tip = 20 + count - 1;
+  final key = '$tipMs:$count:$tip';
   final hit = _minedClock[key];
   if (hit != null) {
-    return [
-      for (final row in hit)
-        (
-          header: Uint8List.fromList(row.header),
-          digest: Uint8List.fromList(row.digest),
-        ),
-    ];
+    return _MinedWindow(
+      genesisMs: hit.genesisMs,
+      parentHeight: hit.parentHeight,
+      parentDigest: Uint8List.fromList(hit.parentDigest),
+      tip: hit.tip,
+      rows: [
+        for (final row in hit.rows)
+          (
+            height: row.height,
+            header: Uint8List.fromList(row.header),
+            digest: Uint8List.fromList(row.digest),
+          ),
+      ],
+    );
   }
-  expect(shearHashV3Ready, isTrue, reason: 'libshearhash.so ShearHash-v3');
-  final out = <({Uint8List header, Uint8List digest})>[];
-  Uint8List? prev;
-  for (var h = 1; h <= count; h++) {
+  _stageHashLib();
+  expect(shearHashV3Ready, isTrue, reason: 'bundled libshearhash.so');
+  final genesisMs = tipMs - 3 * 24 * 3600 * 1000;
+  final parentHeight = tip - count;
+  final parent = Uint8List(32)..[0] = 0xab;
+  final out = <({int height, Uint8List header, Uint8List digest})>[];
+  var prev = parent;
+  for (var h = parentHeight + 1; h <= tip; h++) {
+    final quote = asertNextBits(
+      anchorTimeMs: genesisMs,
+      blockTimeMs: tipMs,
+      blockHeight: h,
+      parentTimeMs: tipMs,
+    );
+    expect(quote.ok, isTrue);
+    expect(quote.packed, kLiveMinBits * kBitsFpScale);
     final header = Uint8List(shearHeaderLen);
     header[0] = 1;
-    if (prev != null) header.setRange(4, 36, prev);
-    var v = tipMs;
-    for (var i = 0; i < 8; i++) {
-      header[100 + i] = v & 0xff;
-      v >>= 8;
+    header.setRange(4, 36, prev);
+    _writeU64(header, 100, tipMs);
+    _writeU32(header, 108, quote.packed);
+    Uint8List? digest;
+    for (var n = 0; n < 256; n++) {
+      shearSetNonce(header, n);
+      final got = shearHashV3(header);
+      if (got != null && shearMeetsTarget(got, quote.packed)) {
+        digest = got;
+        break;
+      }
     }
+    expect(digest, isNotNull, reason: 'height $h meets ASERT bits');
+    out.add((
+      height: h,
+      header: Uint8List.fromList(header),
+      digest: Uint8List.fromList(digest!),
+    ));
+    prev = digest;
+  }
+  final window = _MinedWindow(
+    genesisMs: genesisMs,
+    parentHeight: parentHeight,
+    parentDigest: Uint8List.fromList(parent),
+    tip: tip,
+    rows: out,
+  );
+  _minedClock[key] = window;
+  return window;
+}
+
+/// Low-difficulty headers. They link to each other and still fail ASERT.
+List<({int height, Uint8List header, Uint8List digest})> _mineEasyWindow(int tipMs) {
+  _stageHashLib();
+  expect(shearHashV3Ready, isTrue, reason: 'bundled libshearhash.so');
+  final out = <({int height, Uint8List header, Uint8List digest})>[];
+  var prev = Uint8List(32)..[0] = 0xcd;
+  for (var h = 20; h <= 30; h++) {
+    final header = Uint8List(shearHeaderLen);
+    header[0] = 1;
+    header.setRange(4, 36, prev);
+    _writeU64(header, 100, tipMs);
     header[108] = 1;
     Uint8List? digest;
     for (var n = 0; n < 64; n++) {
@@ -301,37 +397,41 @@ List<({Uint8List header, Uint8List digest})> _mineLinkedHeaders(int tipMs, int c
         break;
       }
     }
-    expect(digest, isNotNull, reason: 'height $h meets bits=1');
-    out.add((header: Uint8List.fromList(header), digest: digest!));
+    expect(digest, isNotNull, reason: 'easy height $h');
+    out.add((
+      height: h,
+      header: Uint8List.fromList(header),
+      digest: Uint8List.fromList(digest!),
+    ));
     prev = digest;
   }
-  _minedClock[key] = [
-    for (final row in out)
-      (
-        header: Uint8List.fromList(row.header),
-        digest: Uint8List.fromList(row.digest),
-      ),
-  ];
   return out;
 }
 
+void _pinWindow(ShearLedger ledger, _MinedWindow window) {
+  ledger.noteGenesisPin(window.genesisMs);
+  ledger.noteUnlockAnchor(height: window.parentHeight, digestHex: window.parentHex);
+  ledger.noteAcceptedTip(window.tip);
+}
+
 /// Parent-linked headers at [tipMs]. Median time is [tipMs].
-/// A raw /stats tip is a separate clock. Each header is ShearHash-v3.
+/// A raw /stats tip is a separate clock. Each header is ShearHash-v3 at the ASERT floor.
 void _noteVerifiedChain(ShearLedger ledger, int tipMs, {int count = 11}) {
-  final chain = _mineLinkedHeaders(tipMs, count);
-  for (var i = 0; i < chain.length; i++) {
-    final row = chain[i];
+  final window = _mineAsertWindow(tipMs, count: count);
+  _pinWindow(ledger, window);
+  for (final row in window.rows) {
     expect(
       ledger.noteVerifiedHeader(
         header: row.header,
-        height: i + 1,
-        hashHex: _headerHex(row.digest),
+        height: row.height,
+        hashHex: '00' * 32,
       ),
       isTrue,
-      reason: 'verified header ${i + 1}',
+      reason: 'verified header ${row.height}',
     );
   }
   expect(ledger.verifiedMedianTimeMs, tipMs);
+  expect(ledger.verifiedClockTip, window.tip);
 }
 
 class _VortexBalancePool extends ShearPoolClient {
@@ -1207,6 +1307,24 @@ void main() {
     expect(row['address'], isNotEmpty);
     expect(row['nanos'], 5);
     expect(row.containsKey('commit'), isFalse);
+  });
+
+  test('a second compact of a sealed lock keeps the hex commit', () {
+    final id = createIdentity();
+    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
+    final nanos = kUnitsPerShe;
+    final sealed = compactSealedVout(sealedReserveVout(vault, nanos, 'lock'));
+    expect(sealed['commit'], isA<Uint8List>());
+    String hexOf(Object? raw) => (raw as Uint8List).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final again = compactSealedVout({
+      ...sealed,
+      'commit': hexOf(sealed['commit']),
+      'noteCommit': hexOf(sealed['noteCommit']),
+    });
+    expect(again['kind'], 'lock');
+    expect(again['commit'], isNotNull);
+    expect(again['noteCommit'], isNotNull);
+    expect(again['address'], vault);
   });
 
   test('vote send with spendSeed posts sig spendPub and vault dest', () async {
@@ -5777,6 +5895,64 @@ void main() {
     expect(sealed.maturedPrincipalNanos(va, 0), 0);
   });
 
+  test('clock-0 π deposit re-anchors on the first verified header', () {
+    final alice = createIdentity();
+    final va = vaultDest(alice.address, viewKey: alice.viewKey)!;
+    final r = ShearReserve();
+    expect(
+      r.deposit(dest: va, she: kPiShe, nowMs: 0, noteIsPrincipal: true),
+      isNull,
+    );
+    expect(r.epochStartMs, 0);
+    expect(r.currentEpoch, 1);
+    expect(r.portal(va).deposits.single.atMs, 0);
+    expect(r.portal(va).deposits.single.noteIsPrincipal, isTrue);
+    expect(r.legacyWithdrawVisible(va), isFalse);
+    expect(r.vote(dest: va, choice: kVoteHold, nowMs: 0), isNull);
+
+    const verified = 1700000000000;
+    r.reanchorVerifiedClock(verified);
+    expect(r.epochStartMs, verified);
+    expect(r.epochs.single.startMs, verified);
+    expect(r.epochs.single.endMs, verified + kReserveEpochMs);
+    expect(r.portal(va).deposits.single.atMs, verified);
+    expect(r.portal(va).deposits.single.unlockAtMs, verified + kReserveEpochMs);
+
+    // Top-ups use the anchored epoch. Their own times must not move it.
+    final cutoff = verified + kReserveEpochMs - kReserveJoinCutoffMs;
+    expect(
+      r.deposit(dest: va, she: 1, nowMs: cutoff - 1000, noteIsPrincipal: true),
+      isNull,
+    );
+    expect(
+      r.deposit(dest: va, she: 2, nowMs: cutoff + 1000, noteIsPrincipal: true),
+      isNull,
+    );
+    final p = r.portal(va);
+    expect(p.staked, kPiSheNanos + kUnitsPerShe);
+    expect(p.idle, 2 * kUnitsPerShe);
+    expect(r.legacyWithdrawVisible(va), isFalse);
+    expect(p.deposits.every((d) => d.noteIsPrincipal), isTrue);
+
+    final shown = r.rewards(va, cutoff - 1000);
+    expect(shown.staked, p.staked);
+    expect(shown.idle, p.idle);
+    expect(shown.elapsedMs, greaterThan(0));
+    expect(shown.accrued, accruedNanos(p.staked, r.epochBps, shown.elapsedMs));
+    expect(shown.accrued, greaterThan(0));
+    expect(shown.accrued, isNot(accruedNanos(p.nanos, r.epochBps, shown.elapsedMs)));
+
+    final end = verified + kReserveEpochMs;
+    expect(r.maturedTimeLockNanos(va, end - 1), 0);
+    expect(r.maturedTimeLockNanos(va, end), p.nanos);
+    expect(r.epochIsOver(end - 1), isFalse);
+    expect(r.epochIsOver(end), isTrue);
+
+    r.reanchorVerifiedClock(verified + 5000);
+    expect(r.epochStartMs, verified);
+    expect(r.portal(va).deposits.first.atMs, verified);
+  });
+
   test('Reserve withdraw sign does not credit Continuum before a sealed payout', () async {
     final alice = createIdentity();
     final ledger = ShearLedger()..bindIdentity(alice);
@@ -8170,7 +8346,7 @@ void main() {
     ledger.refreshTimeLockedNotes();
     expect(ledger.notes.single['locked'], isFalse);
     expect(ledger.notes.single['address'], dest);
-  });
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a header that does not link to its parent is not a verified tip', () {
     final ledger = ShearLedger();
@@ -8192,33 +8368,20 @@ void main() {
     expect(ledger.verifiedMedianTimeMs, isNull);
   });
 
-  test('live sync verifies header work and a raw future tip does not unlock', () async {
+  test(
+    'live sync verifies header work and a raw future tip does not unlock',
+    () async {
     const honest = 1700000000000;
     const rawTip = honest + 2 * 3600000;
-    final chain = _mineLinkedHeaders(honest, 3);
+    final window = _mineAsertWindow(honest);
+    final easy = _mineEasyWindow(honest);
     final future = Uint8List(shearHeaderLen);
     future[0] = 1;
     future[108] = 32;
-    var clock = rawTip;
-    for (var i = 0; i < 8; i++) {
-      future[100 + i] = clock & 0xff;
-      clock >>= 8;
-    }
-    final lying = _PoolLive(headerHex: _headerHex(future), height: 3);
-    var prevClaim = Uint8List(32);
-    for (var h = 1; h <= 3; h++) {
-      final header = Uint8List(shearHeaderLen);
-      header[0] = 1;
-      if (h > 1) header.setRange(4, 36, prevClaim);
-      var v = honest;
-      for (var i = 0; i < 8; i++) {
-        header[100 + i] = v & 0xff;
-        v >>= 8;
-      }
-      header[108] = 32;
-      final claim = Uint8List(32)..[31] = h;
-      prevClaim = claim;
-      lying.headerAtHeight[h] = _headerHex(header);
+    _writeU64(future, 100, rawTip);
+    final lying = _PoolLive(headerHex: _headerHex(future), height: window.tip);
+    for (final row in easy) {
+      lying.headerAtHeight[row.height] = _headerHex(row.header);
     }
     final lieServer = await _fakePool(live: lying);
     addTearDown(() => lieServer.close(force: true));
@@ -8228,13 +8391,17 @@ void main() {
         http: _realHttp(),
       ),
     );
+    lieLedger.noteGenesisPin(window.genesisMs);
+    lieLedger.noteUnlockAnchor(height: window.parentHeight, digestHex: _headerHex(Uint8List(32)..[0] = 0xcd));
+    lieLedger.noteAcceptedTip(window.tip);
     await lieLedger.syncTip(proveChain: false);
     expect(lieLedger.tipTimestampMs, rawTip);
     expect(lieLedger.verifiedMedianTimeMs, isNull);
+    expect(lieLedger.verifiedClockTip, 0);
 
-    final honestLive = _PoolLive(headerHex: _headerHex(future), height: 3);
-    for (var h = 0; h < chain.length; h++) {
-      honestLive.headerAtHeight[h + 1] = _headerHex(chain[h].header);
+    final honestLive = _PoolLive(headerHex: _headerHex(future), height: window.tip);
+    for (final row in window.rows) {
+      honestLive.headerAtHeight[row.height] = _headerHex(row.header);
     }
     final server = await _fakePool(live: honestLive);
     addTearDown(() => server.close(force: true));
@@ -8244,11 +8411,18 @@ void main() {
         http: _realHttp(),
       ),
     );
+    _pinWindow(ledger, window);
+    final before = shearHashV3CallCount;
     await ledger.syncTip(proveChain: false);
     expect(ledger.tipTimestampMs, rawTip);
     expect(ledger.verifiedMedianTimeMs, honest);
-    expect(honestLive.headerHits, greaterThanOrEqualTo(3));
-  });
+    expect(ledger.verifiedClockTip, window.tip);
+    expect(honestLive.headerHits, greaterThanOrEqualTo(window.rows.length));
+    final hashed = shearHashV3CallCount;
+    expect(hashed, greaterThan(before));
+    await ledger.syncTip(proveChain: false);
+    expect(shearHashV3CallCount, hashed);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a deposit row is stamped from the sealed unlock, not the device clock', () {
     final src = File('lib/shear_reserve.dart').readAsStringSync();
@@ -8296,6 +8470,22 @@ void main() {
     expect(sealedUnlockForTx(notes, 'dep-old'), older);
     expect(sealedUnlockForTx(notes, 'dep-new'), newer);
     expect(sealedUnlockForTx(notes, 'missing'), isNull);
+    final blinded = <Map<String, dynamic>>[
+      {
+        'kind': 'lock',
+        'txId': 'dep-new',
+        'id': 'dep-old',
+        'unlockAtMs': newer,
+      },
+      {
+        'kind': 'lock',
+        'id': 'ab' * 32,
+        'unlockAtMs': older,
+      },
+    ];
+    expect(sealedUnlockForTx(blinded, 'dep-old'), isNull);
+    expect(sealedUnlockForTx(blinded, 'dep-new'), newer);
+    expect(sealedUnlockForTx(blinded, 'ab' * 32), isNull);
 
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
@@ -8445,7 +8635,7 @@ void main() {
     expect(after, closeTo(before - 1 - feeShe, 1e-9));
     expect(after, greaterThan(0.5));
     expect(after, isNot(closeTo(before, 1e-6)));
-  });
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   testWidgets('a node-reported tip two hours ahead does not unlock a time-lock', (tester) async {
     _tallContinuum(tester);

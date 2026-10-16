@@ -17,7 +17,10 @@ class _Chain {
   /// Parent-linked headers. Each digest is ShearHash-v3 and meets bits=1.
   /// The JSON hash field is not that digest.
   static _Chain mine(int tip) {
-    expect(shearHashV3Ready, isTrue, reason: 'libshearhash.so ShearHash-v3');
+    stageBundledShearHashForTest(
+      '${Directory.current.path}/../crypto/native/libshearhash.so',
+    );
+    expect(shearHashV3Ready, isTrue, reason: 'bundled libshearhash.so');
     final chain = _Chain._(tip);
     var prev = Uint8List(32);
     for (var h = 1; h <= tip; h++) {

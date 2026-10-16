@@ -1806,6 +1806,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         _flyGenesis = sync.flyclientGenesis;
       });
       if (sync.flyclientOk && !disagree && sync.flyclientTip > 0) {
+        unawaited(ledger.refreshUnlockClock().then((_) {
+          if (!mounted) return;
+          _reanchorReserveClock();
+          setState(() {});
+        }));
         final beforeTip = ledger.sealedHeight;
         if (sync.flyclientTip > ledger.sealedHeight) {
           ledger.noteLiveHeight(sync.flyclientTip);
@@ -4148,7 +4153,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (mounted) setState(() => _reserveVoteDraft = choice);
   }
 
+  void _reanchorReserveClock() {
+    final verified = ledger.verifiedMedianTimeMs;
+    if (verified != null && verified > 0) {
+      reserve.reanchorVerifiedClock(verified);
+    }
+  }
+
   List<Widget> _reservePane(BuildContext context, ShearIdentity ident) {
+    _reanchorReserveClock();
     final dest = _reserveDestOf(ident) ?? '';
     final p = dest.isEmpty ? ReservePortal() : reserve.portal(dest);
     final now = DateTime.now().millisecondsSinceEpoch;

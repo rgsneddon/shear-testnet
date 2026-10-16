@@ -3,14 +3,20 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
 
 import 'shear_hash.dart';
+import 'shear_hash_pin.dart';
 
 /// ShearHash-v3 selftest. Header byte 0 = 0x01, the rest zero.
 /// A v1 digest (`5d00a242…`) must not be accepted as this.
 const shearHashV3Selftest =
     '98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b';
+
+/// RandomX light cache plus scratchpad. Below this, skip the hash.
+const shearHashMemoryFloorBytes = (128 + 2 + 32) * 1024 * 1024;
 
 typedef _WalletHashNative = Int32 Function(Pointer<Uint8> header, Pointer<Uint8> out);
 typedef _WalletHashDart = int Function(Pointer<Uint8> header, Pointer<Uint8> out);
@@ -19,17 +25,23 @@ _WalletHashDart? _hash;
 bool _opened = false;
 bool _selftestOk = false;
 
-/// True after the native interpreter loads and matches [shearHashV3Selftest].
+/// ShearHash-v3 evaluations since process start, including the selftest.
+int shearHashV3CallCount = 0;
+
+/// True after the bundled interpreter loads, the pin matches, and the
+/// selftest matches [shearHashV3Selftest].
 bool get shearHashV3Ready {
   _ensure();
   return _selftestOk;
 }
 
 /// Recompute ShearHash-v3 for one 128-byte header.
-/// Null when the binding is missing, the selftest misses, or the cache
-/// cannot be built. Never the server-claimed hash, and never ShearHash-v1.
+/// Null when the binding is missing, the pin misses, memory is short, the
+/// selftest misses, or the cache cannot be built. Never the server-claimed
+/// hash, and never ShearHash-v1.
 Uint8List? shearHashV3(Uint8List header) {
   if (header.length != shearHeaderLen) return null;
+  if (!shearHashMemoryOk()) return null;
   _ensure();
   final fn = _hash;
   if (fn == null || !_selftestOk) return null;
@@ -41,6 +53,7 @@ Uint8List? shearHashV3(Uint8List header) {
 /// Production leaves `FLUTTER_TEST` unset.
 Future<Uint8List?> shearHashV3OffUi(Uint8List header) {
   if (header.length != shearHeaderLen) return Future<Uint8List?>.value(null);
+  if (!shearHashMemoryOk()) return Future<Uint8List?>.value(null);
   if (Platform.environment['FLUTTER_TEST'] == 'true') {
     return Future<Uint8List?>.value(shearHashV3(header));
   }
@@ -48,25 +61,181 @@ Future<Uint8List?> shearHashV3OffUi(Uint8List header) {
   return Isolate.run(() => shearHashV3(copy));
 }
 
-void _ensure() {
-  if (_opened) return;
-  _opened = true;
-  for (final path in _libCandidates()) {
-    try {
-      final lib = DynamicLibrary.open(path);
-      final fn = lib.lookupFunction<_WalletHashNative, _WalletHashDart>('shear_wallet_hash');
-      final got = _call(fn, shearSelftestHeader());
-      if (got == null) continue;
-      final hex = got.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-      if (hex != shearHashV3Selftest) continue;
-      _hash = fn;
-      _selftestOk = true;
-      return;
-    } catch (_) {}
+/// Linux and Android expose MemAvailable. Unknown or short memory fails closed.
+/// Windows has no MemAvailable file; a failed native alloc still returns null.
+bool shearHashMemoryOk() => shearHashMemoryOkFromMeminfo(_meminfoText());
+
+@visibleForTesting
+bool shearHashMemoryOkFromMeminfo(String? text) {
+  if (text == null) {
+    return !Platform.isLinux && !Platform.isAndroid;
+  }
+  final m = RegExp(r'MemAvailable:\s+(\d+)\s+kB').firstMatch(text);
+  if (m == null) return false;
+  final bytes = int.parse(m.group(1)!) * 1024;
+  return bytes >= shearHashMemoryFloorBytes;
+}
+
+String? _meminfoText() {
+  if (!Platform.isLinux && !Platform.isAndroid) return null;
+  try {
+    final file = File('/proc/meminfo');
+    if (!file.existsSync()) return '';
+    return file.readAsStringSync();
+  } catch (_) {
+    return '';
   }
 }
 
+void _ensure() {
+  if (_opened) return;
+  _opened = true;
+  if (Platform.isAndroid) {
+    _openAndroid();
+    return;
+  }
+  final path = bundledShearHashLibrary(
+    operatingSystem: Platform.operatingSystem,
+    exeDir: _exeDir(),
+  );
+  final failure = shearHashBundledFailure(path);
+  if (failure != null) return;
+  _openPath(path);
+}
+
+void _openAndroid() {
+  try {
+    final lib = DynamicLibrary.open('libshearhash.so');
+    final fn = lib.lookupFunction<_WalletHashNative, _WalletHashDart>('shear_wallet_hash');
+    final got = _call(fn, shearSelftestHeader());
+    if (got == null) return;
+    final hex = _hex(got);
+    if (hex != shearHashV3Selftest) return;
+    _hash = fn;
+    _selftestOk = true;
+  } catch (_) {}
+}
+
+void _openPath(String path) {
+  try {
+    final lib = DynamicLibrary.open(path);
+    final fn = lib.lookupFunction<_WalletHashNative, _WalletHashDart>('shear_wallet_hash');
+    final got = _call(fn, shearSelftestHeader());
+    if (got == null) return;
+    final hex = _hex(got);
+    if (hex != shearHashV3Selftest) return;
+    _hash = fn;
+    _selftestOk = true;
+  } catch (_) {}
+}
+
+/// Null when [path] exists and its SHA-256 is the dart-define pin.
+/// Tests may use the sidecar written next to the staged library.
+@visibleForTesting
+String? shearHashBundledFailure(String path) {
+  final file = File(path);
+  if (!file.existsSync()) return 'missing bundled library';
+  final pin = shearHashExpectedPin(path);
+  return shearHashPinFailure(file.readAsBytesSync(), pin);
+}
+
+/// Desktop pin is [kShearHashSha256]. Tests fall back to `<library>.sha256`.
+@visibleForTesting
+String shearHashExpectedPin(String libraryPath) {
+  final define = kShearHashSha256.trim().toLowerCase();
+  if (define.isNotEmpty) return define;
+  if (Platform.environment['FLUTTER_TEST'] == 'true') {
+    final side = File('$libraryPath.sha256');
+    if (!side.existsSync()) return '';
+    final line = side.readAsStringSync().trim().toLowerCase();
+    if (line.isEmpty) return '';
+    return line.split(RegExp(r'\s+')).first;
+  }
+  return '';
+}
+
+/// Null when [expectedHex] matches [bytes]. A reason otherwise.
+@visibleForTesting
+String? shearHashPinFailure(List<int> bytes, String expectedHex) {
+  final want = expectedHex.trim().toLowerCase();
+  if (want.isEmpty) return 'missing sha256 pin';
+  final got = sha256.convert(bytes).toString();
+  if (got != want) return 'sha256 mismatch';
+  return null;
+}
+
+/// One absolute bundled path. [envPath] and [cwd] are ignored.
+@visibleForTesting
+List<String> shearHashLibraryCandidates({
+  required String operatingSystem,
+  required String exeDir,
+  String? envPath,
+  String? cwd,
+}) {
+  envPath;
+  cwd;
+  return <String>[
+    bundledShearHashLibrary(operatingSystem: operatingSystem, exeDir: exeDir),
+  ];
+}
+
+/// Linux `<exe>/lib/libshearhash.so`, Windows `<exe>\libshearhash.dll`,
+/// macOS `<exe>/../Frameworks/libshearhash.dylib`, Android the packaged soname.
+@visibleForTesting
+String bundledShearHashLibrary({
+  required String operatingSystem,
+  required String exeDir,
+}) {
+  if (operatingSystem == 'android') return 'libshearhash.so';
+  if (operatingSystem == 'windows') {
+    final sep = exeDir.contains('\\') ? '\\' : '/';
+    return '$exeDir${sep}libshearhash.dll';
+  }
+  if (operatingSystem == 'macos') {
+    final parent = exeDir.endsWith('/') ? exeDir.substring(0, exeDir.length - 1) : exeDir;
+    final macOs = parent.lastIndexOf('/');
+    final contents = macOs > 0 ? parent.substring(0, macOs) : '$parent/..';
+    return '$contents/Frameworks/libshearhash.dylib';
+  }
+  return '$exeDir/lib/libshearhash.so';
+}
+
+/// Copy a built library onto the bundled path and write its pin sidecar.
+/// The loader does not search [sourcePath].
+@visibleForTesting
+String stageBundledShearHashForTest(String sourcePath) {
+  if (Platform.environment['FLUTTER_TEST'] != 'true') {
+    throw StateError('stageBundledShearHashForTest is test-only');
+  }
+  final src = File(sourcePath);
+  final destPath = bundledShearHashLibrary(
+    operatingSystem: Platform.operatingSystem,
+    exeDir: _exeDir(),
+  );
+  final dest = File(destPath);
+  dest.parent.createSync(recursive: true);
+  final srcBytes = src.readAsBytesSync();
+  final pin = sha256.convert(srcBytes).toString();
+  final side = File('$destPath.sha256');
+  final already = dest.existsSync() &&
+      side.existsSync() &&
+      side.readAsStringSync().trim().split(RegExp(r'\s+')).first == pin &&
+      sha256.convert(dest.readAsBytesSync()).toString() == pin;
+  // Truncating a mapped library makes the next call jump into unmapped pages.
+  if (!already) {
+    if (_opened) {
+      throw StateError('refusing to replace a loaded shearhash library');
+    }
+    dest.writeAsBytesSync(srcBytes);
+  }
+  side.writeAsStringSync('$pin\n');
+  return destPath;
+}
+
+String _exeDir() => File(Platform.resolvedExecutable).parent.path;
+
 Uint8List? _call(_WalletHashDart fn, Uint8List header) {
+  shearHashV3CallCount += 1;
   final hin = malloc<Uint8>(shearHeaderLen);
   final out = malloc<Uint8>(32);
   try {
@@ -83,21 +252,5 @@ Uint8List? _call(_WalletHashDart fn, Uint8List header) {
   }
 }
 
-List<String> _libCandidates() {
-  final out = <String>[];
-  final env = Platform.environment['SHEAR_HASH_LIB'];
-  if (env != null && env.isNotEmpty) out.add(env);
-  final cwd = Directory.current.path;
-  out.addAll([
-    '$cwd/crypto/native/libshearhash.so',
-    '$cwd/../crypto/native/libshearhash.so',
-    '$cwd/../../crypto/native/libshearhash.so',
-  ]);
-  try {
-    final exe = File(Platform.resolvedExecutable).parent.path;
-    out.add('$exe/lib/libshearhash.so');
-    out.add('$exe/libshearhash.so');
-  } catch (_) {}
-  if (Platform.isLinux) out.add('libshearhash.so');
-  return out;
-}
+String _hex(Uint8List bytes) =>
+    bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();

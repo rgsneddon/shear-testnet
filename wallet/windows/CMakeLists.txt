@@ -70,6 +70,16 @@ add_custom_target(shear_admit_cdylib
 )
 add_dependencies(${BINARY_NAME} shear_admit_cdylib)
 
+set(SHEAR_HASH_DLL "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/libshearhash.dll")
+add_custom_target(shear_hash_shared
+  COMMAND powershell -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/build-shearhash-windows.ps1"
+  BYPRODUCTS "${SHEAR_HASH_DLL}"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native"
+  COMMENT "Building libshearhash.dll"
+  VERBATIM
+)
+add_dependencies(${BINARY_NAME} shear_hash_shared)
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
@@ -95,6 +105,9 @@ install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 install(FILES "${SHEAR_ADMIT_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+
+install(FILES "${SHEAR_HASH_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 if(PLUGIN_BUNDLED_LIBRARIES)

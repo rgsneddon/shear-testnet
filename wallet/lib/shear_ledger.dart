@@ -9,6 +9,9 @@ import 'shear_identity.dart';
 import 'shear_eip712.dart';
 import 'shear_levy.dart';
 import 'shear_read_open.dart';
+import 'package:crypto/crypto.dart';
+
+import 'shear_asert.dart';
 import 'shear_hash.dart';
 import 'shear_hash_v3.dart';
 import 'shear_read_sync.dart';
@@ -2935,10 +2938,19 @@ class Path1Observation {
 /// window: genesis through the tip while the tip is inside the MTP window,
 /// otherwise the last [window] headers. They are hashed off the UI isolate
 /// by the native interpreter. ShearHash-v1 is not a substitute.
+/// A second login hashes only headers whose bytes changed.
 List<int> unlockClockHeights(int tip, {int window = ShearLedger.verifiedMtpWindow}) {
   if (tip < 1 || window < 1) return const [];
   final start = tip <= window ? 1 : tip - window + 1;
   return [for (var h = start; h <= tip; h++) h];
+}
+
+/// Height that must already be a Flyclient, genesis, or checkpoint anchor
+/// before [unlockClockHeights] may start. Null when the window begins at 1.
+int? unlockClockParentHeight(int tip, {int window = ShearLedger.verifiedMtpWindow}) {
+  final heights = unlockClockHeights(tip, window: window);
+  if (heights.isEmpty || heights.first <= 1) return null;
+  return heights.first - 1;
 }
 
 int? headerTimestampMs(Uint8List header) {
@@ -4040,6 +4052,9 @@ class ShearLedger implements ReadProofSink {
     restoredBook = false;
     _verifiedHeaders.clear();
     _verifiedClockTip = 0;
+    _acceptedTip = 0;
+    _genesisMs = null;
+    _anchorDigest.clear();
     _noteMisses.clear();
     _ingestMisses.clear();
     _nodeBodies.clear();
@@ -4059,11 +4074,21 @@ class ShearLedger implements ReadProofSink {
   int? _prevHeaderTimestampMs;
   /// PoW-and-parent verified headers, keyed by height. Not a raw /stats tip.
   /// [hashHex] is the digest this wallet recomputed, never the server claim.
-  final Map<int, ({int timestampMs, String hashHex})> _verifiedHeaders = {};
+  /// [headerSha256] is the header bytes, so a repeat login does not rehash.
+  final Map<int, ({int timestampMs, String hashHex, String headerSha256})> _verifiedHeaders = {};
   /// Tip whose whole [unlockClockHeights] window verified. 0 until then.
+  /// Stays 0 unless it equals [_acceptedTip].
   int _verifiedClockTip = 0;
+  /// Flyclient tip, or a checkpoint tip. A raw /stats height is not this.
+  int _acceptedTip = 0;
+  /// Timestamp of the genesis header, or a checkpoint pin of that time.
+  int? _genesisMs;
+  /// Recomputed digests the wallet may anchor a window to. Height to hex.
+  final Map<int, String> _anchorDigest = {};
   /// Bitcoin-class median window. Matches `MTP_WINDOW` in crypto/asert.js.
   static const verifiedMtpWindow = 11;
+  /// Keep the MTP window plus recent confirmation heights. Older rows drop.
+  static int verifiedHeaderCap = 32;
   /// Network circulating supply from pool /api/stats. Continuum Integral Q.
   int? circulatingNanos;
 
@@ -4136,11 +4161,38 @@ class ShearLedger implements ReadProofSink {
   int? get _lockClockMs => verifiedMedianTimeMs;
 
   /// Timestamp of the verified header at [height]. Null when that height
-  /// was not accepted.
+  /// was not accepted, was trimmed, or was dropped by a reorg.
   int? verifiedTimeAtHeight(int height) {
     if (height < 1) return null;
+    if (_acceptedTip >= 1 && height > _acceptedTip) return null;
     return _verifiedHeaders[height]?.timestampMs;
   }
+
+  /// Clock tip. Nonzero only when it is the accepted tip and its window is full.
+  int get verifiedClockTip => _verifiedClockTip;
+
+  int get acceptedUnlockTip => _acceptedTip;
+
+  /// Genesis time for ASERT. A checkpoint may pin this before height 1 is hashed.
+  void noteGenesisPin(int timeMs) {
+    if (timeMs > 0) _genesisMs = timeMs;
+  }
+
+  /// Trust [digestHex] as the recomputed header at [height].
+  /// Flyclient, a genesis pin, or a checkpoint writes this. A raw header does not.
+  void noteUnlockAnchor({required int height, required String digestHex}) {
+    final hex = digestHex.trim().toLowerCase();
+    if (height < 1 || !RegExp(r'^[0-9a-f]{64}$').hasMatch(hex)) return;
+    _anchorDigest[height] = hex;
+  }
+
+  /// The tip the unlock clock is allowed to adopt.
+  void noteAcceptedTip(int tip) {
+    if (tip >= 1) _acceptedTip = tip;
+  }
+
+  /// Login and accrual call this. It hashes only headers whose bytes changed.
+  Future<void> refreshUnlockClock() => _verifyUnlockClock();
 
   /// Median of the last [verifiedMtpWindow] verified header times.
   /// Null until [unlockClockHeights] for that tip all recomputed and linked.
@@ -4161,39 +4213,68 @@ class ShearLedger implements ReadProofSink {
   }
 
   void _advanceVerifiedClock() {
-    if (_verifiedHeaders.isEmpty) {
+    final tip = _acceptedTip;
+    if (tip < 1 || !unlockClockHeights(tip).every(_verifiedHeaders.containsKey)) {
       _verifiedClockTip = 0;
       return;
     }
-    var tip = 0;
-    for (final height in _verifiedHeaders.keys) {
-      if (height > tip) tip = height;
-    }
-    for (var candidate = tip; candidate >= 1; candidate--) {
-      if (!unlockClockHeights(candidate).every(_verifiedHeaders.containsKey)) continue;
-      _verifiedClockTip = candidate;
-      return;
-    }
+    _verifiedClockTip = tip;
+  }
+
+  void _dropVerifiedFrom(int height) {
+    _verifiedHeaders.removeWhere((h, _) => h >= height);
+    _anchorDigest.removeWhere((h, _) => h >= height);
     _verifiedClockTip = 0;
   }
 
-  /// Accept one header whose ShearHash-v3 digest this wallet recomputed,
-  /// which meets the header bits, and whose prev is the previous header's
-  /// recomputed digest. [hashHex] is the server claim and is not proof.
-  /// [digest] is that recompute when the caller already ran it off the UI
-  /// isolate. Height 1 may have a zero prev. The first header of a window
-  /// that does not start at 1 passes [requireParent] false; every later
-  /// header must link. Returns false when rejected.
+  void _trimVerifiedHeaders() {
+    final window = _acceptedTip >= 1
+        ? unlockClockHeights(_acceptedTip).toSet()
+        : <int>{};
+    while (_verifiedHeaders.length > verifiedHeaderCap) {
+      var drop = 0;
+      for (final h in _verifiedHeaders.keys) {
+        if (window.contains(h)) continue;
+        if (drop == 0 || h < drop) drop = h;
+      }
+      if (drop == 0) return;
+      _verifiedHeaders.remove(drop);
+    }
+  }
+
+  bool _parentAnchored(int height, String prevHex) {
+    final prev = prevHex.toLowerCase();
+    if (height == 1) return RegExp(r'^0+$').hasMatch(prev);
+    final stored = _verifiedHeaders[height - 1];
+    if (stored != null && stored.hashHex == prev) return true;
+    final anchor = _anchorDigest[height - 1];
+    return anchor != null && anchor == prev;
+  }
+
+  void _takeFlyclientAnchors() {
+    final sync = pool?.sync;
+    if (sync == null || !sync.flyclientOk || sync.flyclientTip < 1) return;
+    _acceptedTip = sync.flyclientTip;
+    final genesis = sync.pinnedGenesisMs;
+    if (genesis != null && genesis > 0) _genesisMs ??= genesis;
+    for (final e in sync.acceptedDigests.entries) {
+      _anchorDigest[e.key] = e.value;
+    }
+  }
+
+  /// Accept one header whose ShearHash-v3 digest this wallet recomputed.
+  /// The bits must be the genesis-anchored ASERT quote, not the server's
+  /// choice of an easy target. Prev must be the prior verified digest or an
+  /// anchor (Flyclient, genesis pin, or checkpoint). [hashHex] is the server
+  /// claim and is not proof. A conflicting digest drops this height and
+  /// everything above it. Returns false when rejected.
   bool noteVerifiedHeader({
     required Uint8List header,
     required int height,
     required String hashHex,
     Uint8List? digest,
-    bool requireParent = true,
   }) {
-    // [hashHex] is the server claim. It is not compared to bits and it does
-    // not select the stored digest.
-    final _ = hashHex;
+    hashHex;
     if (height < 1 || header.length != shearHeaderLen) return false;
     final fly = flyHeaderFromJson({
       'header': _bytesHex(header),
@@ -4202,26 +4283,35 @@ class ShearLedger implements ReadProofSink {
     if (fly == null || fly.version < 1 || fly.bits <= 0 || fly.timestamp <= 0) {
       return false;
     }
-    final prevZero = RegExp(r'^0+$').hasMatch(fly.prevHex);
-    if (height > 1 && prevZero) return false;
-    if (height > 1) {
-      final parent = _verifiedHeaders[height - 1];
-      if (parent == null) {
-        if (requireParent) return false;
-      } else if (parent.hashHex != fly.prevHex) {
-        return false;
-      }
+    if (!_parentAnchored(height, fly.prevHex)) return false;
+    final parentTime = height > 1 ? _verifiedHeaders[height - 1]?.timestampMs : null;
+    final genesisMs = height == 1 ? fly.timestamp : (_genesisMs ?? 0);
+    if (!headerBitsMatchAsert(
+      height: height,
+      bits: fly.bits,
+      timestampMs: fly.timestamp,
+      parentTimestampMs: parentTime,
+      genesisMs: genesisMs,
+    )) {
+      return false;
     }
+    final finger = sha256.convert(header).toString();
+    final have = _verifiedHeaders[height];
+    if (have != null && have.headerSha256 == finger) return true;
     final got = digest ?? shearHashV3(header);
     if (got == null || got.length != 32 || !shearMeetsTarget(got, fly.bits)) {
       return false;
     }
     final digestHex = _bytesHex(got);
-    final have = _verifiedHeaders[height];
-    if (have != null) {
-      return have.hashHex == digestHex && have.timestampMs == fly.timestamp;
-    }
-    _verifiedHeaders[height] = (timestampMs: fly.timestamp, hashHex: digestHex);
+    if (have != null && have.hashHex != digestHex) _dropVerifiedFrom(height);
+    _verifiedHeaders[height] = (
+      timestampMs: fly.timestamp,
+      hashHex: digestHex,
+      headerSha256: finger,
+    );
+    _anchorDigest[height] = digestHex;
+    if (height == 1) _genesisMs = fly.timestamp;
+    _trimVerifiedHeaders();
     _advanceVerifiedClock();
     return true;
   }
@@ -5258,37 +5348,54 @@ class ShearLedger implements ReadProofSink {
     } catch (_) {}
   }
 
-  /// Fetch the MTP window from the live node and recompute each header.
-  /// A gap or a digest that misses its bits leaves the clock unchanged.
+  /// Fetch the accepted tip's MTP window and recompute headers whose bytes
+  /// changed. The clock turns on only when that tip is fully linked. A raw
+  /// sealed height is not the accepted tip. Short memory leaves the clock off.
   Future<void> _verifyUnlockClock() async {
     final client = pool;
     if (client == null) return;
-    final tip = _sealedHeight;
+    _takeFlyclientAnchors();
+    final tip = _acceptedTip;
+    if (tip < 1) return;
+    if (!shearHashMemoryOk()) return;
     final heights = unlockClockHeights(tip);
     if (heights.isEmpty) return;
-    if (_verifiedClockTip == tip && heights.every(_verifiedHeaders.containsKey)) return;
-    final anchor = heights.first;
+    if (_genesisMs == null || _genesisMs! <= 0) {
+      final pinned = await _ingestUnlockHeader(1);
+      if (!pinned || _genesisMs == null || _genesisMs! <= 0) return;
+    }
     for (final h in heights) {
-      if (_verifiedHeaders.containsKey(h)) continue;
-      Map<String, dynamic> json;
-      try {
-        json = await client.headerAt(h).timeout(const Duration(seconds: 4));
-      } catch (_) {
-        return;
-      }
-      final raw = headerFromHex(json['header']?.toString() ?? '');
-      if (raw == null || raw.length != shearHeaderLen) return;
-      final digest = await shearHashV3OffUi(raw);
-      if (digest == null) return;
-      final ok = noteVerifiedHeader(
-        header: raw,
-        height: h,
-        hashHex: json['hash']?.toString() ?? '',
-        digest: digest,
-        requireParent: h != anchor,
-      );
+      final ok = await _ingestUnlockHeader(h);
       if (!ok) return;
     }
+    _advanceVerifiedClock();
+  }
+
+  /// True when [height] is stored and matches the server bytes, or the new
+  /// bytes verified. Unchanged bytes are not hashed again.
+  Future<bool> _ingestUnlockHeader(int height) async {
+    final client = pool;
+    if (client == null) return false;
+    Map<String, dynamic> json;
+    try {
+      json = await client.headerAt(height).timeout(const Duration(seconds: 4));
+    } catch (_) {
+      return false;
+    }
+    final raw = headerFromHex(json['header']?.toString() ?? '');
+    if (raw == null || raw.length != shearHeaderLen) return false;
+    final finger = sha256.convert(raw).toString();
+    final have = _verifiedHeaders[height];
+    if (have != null && have.headerSha256 == finger) return true;
+    if (!shearHashMemoryOk()) return false;
+    final digest = await shearHashV3OffUi(raw);
+    if (digest == null) return false;
+    return noteVerifiedHeader(
+      header: raw,
+      height: height,
+      hashHex: json['hash']?.toString() ?? '',
+      digest: digest,
+    );
   }
 
   Future<double> syncSpendable(String address) async {
@@ -8917,11 +9024,20 @@ class ShearLedger implements ReadProofSink {
     }
     if (pool != null && !local) {
       Future<Map<String, dynamic>> postOnce() async {
-        final wire = await flowPostHexOffUi(<String, dynamic>{
-          'vin': postedVin,
-          'vout': postedVout,
-          'admitProof': admitProof,
-        });
+        // Lock, vote, and withdraw already hexified inside the seal worker.
+        // A second compact drops the vin dest the signature covers.
+        final reserveWire = sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw';
+        final wire = reserveWire
+            ? <String, dynamic>{
+                'vin': postedVin,
+                'vout': postedVout,
+                'admitProof': null,
+              }
+            : await flowPostHexOffUi(<String, dynamic>{
+                'vin': postedVin,
+                'vout': postedVout,
+                'admitProof': admitProof,
+              });
         final proof = wire['admitProof'];
         return pool!.send(
           from: src,

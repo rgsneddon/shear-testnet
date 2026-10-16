@@ -54,6 +54,7 @@ jobs:
           cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native -j"$(nproc)"
+          test -f crypto/native/libshearhash.so
           node -e 'const r = require("module").createRequire(process.cwd() + "/"); for (const m of ["shearhash", "shearadmit"]) { const n = r("./crypto/native/" + m + ".node"); if (!n || !Object.keys(n).length) throw new Error(m); }'
       - name: FS-1 Stage 0 send gate, with the native modules
         run: node --test node/tests/test_fs1_send_gate_v12.js

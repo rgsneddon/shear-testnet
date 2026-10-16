@@ -34,9 +34,15 @@ ADMIT_FEATURES := --features admit-v3
 ADMIT_TARGET := $(ADMIT_DIR)/target/node
 ADMITLIB := $(ADMIT_TARGET)/release/libshear_admit.a
 
-.PHONY: all clean admitlib ios-staticlib android-arm64
+.PHONY: all clean admitlib ios-staticlib android-arm64 wallet-hash
 
+# Unix `make` also builds libshearhash.so so Dart tests can stage it.
+# Windows node CI keeps the addon-only default; wallet-hash runs the ps1.
+ifeq ($(OS),Windows_NT)
 all: shearhash.node shearadmit.node
+else
+all: shearhash.node shearadmit.node libshearhash.so
+endif
 
 # C sources. Do not compile with g++ — stdatomic.h is not C++ on this box.
 # RandomX is C++, and Windows N-API symbols come from node.exe via the import lib.
@@ -60,6 +66,18 @@ ios-staticlib:
 android-arm64:
 	bash $(abspath build-android-arm64.sh)
 
+# Wallet ShearHash-v3. Dart tests stage crypto/native/libshearhash.so.
+# The script skips the link when the .so is newer than its sources.
+ifeq ($(OS),Windows_NT)
+wallet-hash:
+	powershell -NoProfile -ExecutionPolicy Bypass -File $(abspath build-shearhash-windows.ps1)
+else
+libshearhash.so: shearhash_wallet.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c
+	bash $(abspath build-shearhash-wallet.sh)
+
+wallet-hash: libshearhash.so
+endif
+
 win_node_import.a: win_node_import.def
 	dlltool -d $< -l $@ -D node.exe
 
@@ -69,5 +87,5 @@ shearadmit.node: admit_napi.c admitlib $(NODE_IMPORT)
 	  -o $@ admit_napi.c $(ADMITLIB) $(NODE_IMPORT) $(ADMITSYS)
 
 clean:
-	rm -f shearhash.node shearadmit.node win_node_import.a
+	rm -f shearhash.node shearadmit.node win_node_import.a libshearhash.so libshearhash.so.sha256
 	cargo clean --manifest-path $(ADMIT_DIR)/Cargo.toml
