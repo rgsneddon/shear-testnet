@@ -21,7 +21,22 @@ describe('C2 ADMITv1 quarantine on v4 send path', () => {
     const joined = files.map(read).join('\n');
     assert.doesNotMatch(joined, /shear-admit-v1/);
     assert.doesNotMatch(joined, /bit\s*\|\s*prove/i);
-    assert.match(read('wallet/lib/shear_admit.dart'), /throw StateError\(kErrSendUnavailable\)/);
+    // The closed proveFlowSpend stub threw kErrSendUnavailable until FS-1.
+    // That stub is gone: shear_admit.dart must not grow a prover, the helper
+    // still refuses prove_spend, and the send path is proveFs1SpendWire.
+    const admit = read('wallet/lib/shear_admit.dart');
+    assert.match(admit, /const String kErrSendUnavailable = 'send unavailable until FS-1'/);
+    assert.doesNotMatch(admit, /throw StateError\(kErrSendUnavailable\)/);
+    assert.doesNotMatch(admit, /proveFlowSpend|nativeProveFlowSpend|admitProve/);
+    assert.match(
+      read('crypto/wallet_native_prove.mjs'),
+      /op === 'prove_spend'[\s\S]{0,240}send unavailable until FS-1/,
+    );
+    assert.match(read('wallet/lib/shear_fs1.dart'), /Map<String, dynamic> proveFs1SpendWire\(/);
+    assert.match(
+      read('wallet/lib/shear_ledger.dart'),
+      /reproveFlowSpendWire\(Map<String, dynamic> input\) => proveFs1SpendWire\(input\)/,
+    );
   });
 
   it('intentional fixture still matches the grep (CI red on fixture, green on tree)', () => {

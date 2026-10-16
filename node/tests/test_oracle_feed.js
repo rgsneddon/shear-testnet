@@ -47,7 +47,7 @@ describe('Shear Sentinel staking oracle', () => {
     assert.equal(view.stale, false);
     assert.equal(view.annualBps, 284);
     assert.equal(view.wouldFreezeBps, 284);
-    assert.equal(view.snapshotIgnored, true);
+    assert.equal(view.callerBasketIgnored, true);
     assert.equal(vault.epochBps, 264);
     assert.equal(bpsFromSnapshot({ version: 'other', averagePercent: 4 }), null);
   });
