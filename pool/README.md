@@ -4,7 +4,7 @@ Open-source Shear pool: stratum on `:1111`, HTTP dashboard on loopback `:8088`, 
 
 This cut speaks **shear-testnet-v11** (ADMITv2, Bulletproofs+, weight levy, Q16.16 packed ASERT toward **90s** blocks). When mainnet `shear-v1` is cut, update `MAGIC_TESTNET` / systemd `SHEAR_NETWORK` and this README — do not dual-stack.
 
-Public site example in this repo is **https://mypool.site**. Operator admin is **https://mypool.site/admin**. Point those names at your box. Prod examples require `SHEAR_ADMIN_HOST` (generic example `mypool.site`); do not commit a real operator subdomain. First-run is deny-by-default when that env is unset.
+Public site example in this repo is **https://mypool.site**. Point that name at your box. There is no web admin desk.
 
 ## What you get
 
@@ -13,7 +13,6 @@ Public site example in this repo is **https://mypool.site**. Operator admin is *
 - HTTP `127.0.0.1:8088` (nginx terminates TLS)
 - Validating node + pool in one process (same magic as the book)
 - Two meters: `hashrate` is a time-window / EMA (does not spike when a round resets). `proven_round` / `roundHashes` is accepted dest-bound work this block for hash-bonus minting and **does** reset at block found.
-- Operator desk: username + password + 2FA (TOTP)
 
 ## Requirements
 
@@ -76,7 +75,6 @@ Optional environment (drop-in `/etc/systemd/system/shear-pool.service.d/local.co
 | `SHEAR_HTTP` | Loopback HTTP (default 8088) |
 | `SHEAR_P2P_IPC` | Localhost TCP to the P2P sidecar (default `127.0.0.1:30313`). The pool does not bind `:30303` |
 | `SHEAR_SEEDS` | Used by the sidecar, not by the pool process |
-| `SHEAR_ADMIN_HOST` | Dedicated admin hostname (required in prod examples; first-run is deny-by-default when unset) |
 | `SHEAR_POOL_MINER` | Pool dest (`ssa1…`) if you do not want a generated ident |
 
 ## nginx
@@ -95,22 +93,11 @@ Public miners: `ShearK-Miner --pool mypool.site:1111 --user YOUR_SSA1.worker`
 
 Unauthenticated stratum login is dest-format only (no ownership proof). Soft-deny is per-IP; dest/tag durable bans require accepted shares or an operator ban.
 
-`/api/stats` publishes `poolFeeBps`, `feeDest`, `hashrate` (HUD/EMA), `proven_round` per worker (hash-bonus), `topDestSharePct`, `shareBlockRatio`, `lostWorkHashes`, `hashBusy`, `alerts.concentration`, `alerts.shareBlock`, `autoPayoutMinNanos` (π SHE), and `stratumCleartextWarning`. Miner unpaid pot-share (after 1%) plus **fee-free hash bonus** auto-pay to the login `ssa1` at π SHE; the pool pays the levy. `/api/miners/:tag/withdraw` and `/api/pool/withdraw` return **410** `auto_payout`. Operator-trust model: admin password+TOTP can pause/kick/ban/withdraw; mutating calls append `admin-audit.jsonl` (including withdraw). Audit file: `$SHEAR_DATA/admin-audit.jsonl`.
+`/api/stats` publishes `poolFeeBps`, `feeDest`, `hashrate` (HUD/EMA), `proven_round` per worker (hash-bonus), `topDestSharePct`, `shareBlockRatio`, `lostWorkHashes`, `hashBusy`, `alerts.concentration`, `alerts.shareBlock`, `autoPayoutMinNanos` (π SHE), and `stratumCleartextWarning`. Miner unpaid pot-share (after 1%) plus **fee-free hash bonus** auto-pay to the login `ssa1` at π SHE; the pool pays the levy. `/api/miners/:tag/withdraw` and `/api/pool/withdraw` return **410** `auto_payout`. Operator payout signs from `SHEAR_DATA/pool-spend.seed`.
 
 ## Solo / second pool
 
 `SHARE_BIND=rx+noteCommit` is book law, so a third-party pool or solo template can validate the same shares. Run a second `shear-pool` with its own `SHEAR_DATA` and `SHEAR_SEEDS` pointing at `p2p.shear.digital:30303` (plus `r2r` / `b2b`). Do not claim multi-party mining security until a second path is live.
-
-## Admin desk (first run)
-
-1. Open **https://mypool.site/admin** (or your dedicated admin host if `SHEAR_ADMIN_HOST` is set).
-2. Create **username** + **password** (8+ characters, confirm).
-3. Enrol **2FA** (scan the QR, or type the authenticator key + 6-digit code). The desk stays closed until 2FA confirms.
-4. Later logins need username, password, and the authenticator code.
-
-If `SHEAR_ADMIN_HOST` is unset, first-run setup is **not** open to the world: a non-loopback request without an explicit setup token is `setup_forbidden`. Allowed first-run paths are the configured admin host, loopback + `SHEAR_ADMIN_SETUP=1`, or the in-process setup token. Do not leave first-run on a public hostname.
-
-Admin HTML is `noindex`. Do not put operator secrets, SSH hosts, or a real admin subdomain in this git tree.
 
 ## 90 second blocks
 
@@ -118,7 +105,7 @@ Header `bits` on this book is **Q16.16 packed work**, not an integer leading-zer
 
 ## Mainnet later
 
-When `shear-v1` is cut: new magic, wipe `SHEAR_DATA`, retarget systemd/nginx copy, and amend any admin hostname you chose. Do not run v4 and mainnet in one process.
+When `shear-v1` is cut: new magic, wipe `SHEAR_DATA`, and retarget systemd/nginx copy. Do not run v4 and mainnet in one process.
 
 ## License
 

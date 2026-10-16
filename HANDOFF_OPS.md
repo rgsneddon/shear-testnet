@@ -174,7 +174,7 @@ Off-host vault (Windows, outside git): `C:\Users\rgsne\Desktop\SHEAR-SECRETS\` c
 ## 9) Ops notes (non-blockers — not code-merge work)
 
 - Fleet: run `deploy/reload-stratum-units.sh` (or set unit `SHEAR_STRATUM_BIND=127.0.0.1` + `SHEAR_STRATUM_AUTH=1` + TLS); confirm `/api/stats` (`stratumBind`, `loginAuth`, `alerts.stratumDrift`, `stratumConfigSource`). Cleartext warning remains until TLS.
-- `SHEAR_ADMIN_HOST=pool.shear.digital` (or the Host operators actually browse); `/api/admin/*` is the desk API.
+- There is no web admin desk. Operator payout still signs from `SHEAR_DATA/pool-spend.seed`.
 - Hostname: re-cert or DNS-retire `docs.shear.digital` + `whitepaper.shear.digital`; then HSTS + baseline headers (separate ops). In-repo copy now points at `https://shear.digital/docs/` and `https://shear.digital/whitepaper/`.
 - Concentration: keep `alerts.concentration`; bring a second hasher — no multi-party security claims at `topDest=100%`.
 - Seed hygiene: 0600 datadir restore; hex off git/units; watch first signed π auto-pay after `confirmedNeed=30` (path ready; `signed=true` live).

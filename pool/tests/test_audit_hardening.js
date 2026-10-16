@@ -29,7 +29,6 @@ import {
   SUBMIT_PER_IP_MAX,
   createPool,
 } from '../src/pool.js';
-import { totpKeyUri, createAdmin, handleAdminApi, appendAdminAudit } from '../src/admin.js';
 import { qrModules, qrSvg } from '../src/totp_qr.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -283,13 +282,9 @@ describe('D3 explorer host serves explorer.html', () => {
   });
 });
 
-describe('A5 + 2FA QR', () => {
-  it('otpauth URI is Google Authenticator compatible and QR has finders', () => {
-    const uri = totpKeyUri({ secret: 'JBSWY3DPEHPK3PXP', account: 'operator' });
-    assert.match(uri, /^otpauth:\/\/totp\//);
-    assert.match(uri, /secret=JBSWY3DPEHPK3PXP/);
-    assert.match(uri, /issuer=shear/);
-    assert.match(uri, /algorithm=SHA1/);
+describe('A5 QR geometry', () => {
+  it('a totp URI renders a scannable QR with finders', () => {
+    const uri = 'otpauth://totp/shear:operator?secret=JBSWY3DPEHPK3PXP&issuer=shear&algorithm=SHA1&digits=6&period=30';
     const m = qrModules(uri);
     assert.equal(m.length, m[0].length);
     assert.ok(m.length >= 21);
@@ -320,56 +315,6 @@ describe('A5 + 2FA QR', () => {
     assert.match(svg, /viewBox="0 0 (\d+) /);
     const dim = Number((svg.match(/viewBox="0 0 (\d+)/) || [])[1] || 0);
     assert.ok(dim >= 200, `qr svg ${dim}px is too small to scan`);
-    const html = fs.readFileSync(path.join(root, 'pool/admin/index.html'), 'utf8');
-    assert.match(html, /id="totp-qr"/);
-    assert.match(html, /function paintTotp/);
-    assert.match(html, /otpauth:\/\/totp\//);
-    assert.match(html, /width:220px/);
-  });
-
-  it('withdraw appends an audit record', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wd-audit-'));
-    appendAdminAudit(dir, { action: 'withdraw', dest: 'ssa1q', nanos: 1 });
-    const text = fs.readFileSync(path.join(dir, 'admin-audit.jsonl'), 'utf8');
-    assert.match(text, /"action":"withdraw"/);
-  });
-
-  it('totp routes stay absent even after a local setup', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-totp-qr-'));
-    const admin = createAdmin(dir);
-    const prev = process.env.SHEAR_ADMIN_HOST;
-    const prevSetup = process.env.SHEAR_ADMIN_SETUP;
-    delete process.env.SHEAR_ADMIN_HOST;
-    process.env.SHEAR_ADMIN_SETUP = '1';
-    try {
-      const setup = admin.setup({ user: 'operator', password: 'aaaaaaaa', setupToken: admin.setupToken });
-      assert.equal(setup.ok, true);
-      const start = handleAdminApi(new URL('https://mypool.site/api/admin/totp/start'), 'POST', {}, {
-        admin,
-        cookie: `shear_admin=${setup.token}`,
-        loopback: true,
-        host: '127.0.0.1',
-      });
-      assert.equal(start.status, 404);
-      assert.equal(start.json.reason, 'admin_absent');
-      assert.equal(start.json.otpauth, undefined);
-      assert.equal(start.json.qrSvg, undefined);
-      const confirm = handleAdminApi(new URL('https://mypool.site/api/admin/totp/confirm'), 'POST', { code: '000000' }, {
-        admin,
-        cookie: `shear_admin=${setup.token}`,
-        loopback: true,
-        host: '127.0.0.1',
-      });
-      assert.equal(confirm.status, 404);
-      assert.equal(confirm.json.reason, 'admin_absent');
-      assert.equal(admin.status().totp, false);
-      assert.equal(admin.status().closed, false);
-    } finally {
-      if (prev == null) delete process.env.SHEAR_ADMIN_HOST;
-      else process.env.SHEAR_ADMIN_HOST = prev;
-      if (prevSetup == null) delete process.env.SHEAR_ADMIN_SETUP;
-      else process.env.SHEAR_ADMIN_SETUP = prevSetup;
-    }
   });
 });
 
@@ -384,7 +329,8 @@ describe('prod examples', () => {
       const unit = fs.readFileSync(path.join(root, rel), 'utf8');
       assert.match(unit, /SHEAR_STRATUM_AUTH=1/, rel);
       assert.match(unit, /SHEAR_STRATUM_BIND=127\.0\.0\.1/, rel);
-      assert.match(unit, /^Environment=SHEAR_ADMIN_HOST=/m, rel);
+      assert.doesNotMatch(unit, /SHEAR_ADMIN_HOST/, rel);
+      assert.doesNotMatch(unit, /SHEAR_ADMIN_SETUP/, rel);
       assert.doesNotMatch(unit, /SHEAR_MAINNET_EMIT=1/, rel);
     }
     const node = fs.readFileSync(path.join(root, 'deploy/shear-node.service'), 'utf8');

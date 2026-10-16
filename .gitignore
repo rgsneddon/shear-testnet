@@ -42,7 +42,7 @@ wallet/android/app/src/main/jniLibs/**/*.so
 wallet/android/app/src/main/jniLibs/**/*.sha256
 # Distro pack tarballs, checksums, and smoke logs. Do not commit.
 scripts/packaging/out/
-# Operator admin vhost lives on the box only (SHEAR_ADMIN_HOST).
+# Private operator vhost. Lives on the box only.
 deploy/nginx-kyrusfables.shear.digital.conf
 deploy/nginx-*-secrets.conf
 # Operator spend seed is 0600 on the pool datadir / Desktop vault — never git.

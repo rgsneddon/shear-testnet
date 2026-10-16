@@ -22,10 +22,9 @@ function loadPaintFreezeBanner(rel) {
 const SURFACES = [
   '../public/index.html',
   '../public/miner.html',
-  '../admin/index.html',
 ];
 
-describe('freeze banner on pool HUD / miner / admin', () => {
+describe('freeze banner on pool HUD / miner', () => {
   for (const rel of SURFACES) {
     it(`${rel} paints freeze_reason and elevated confirms when frozen, hides when not`, () => {
       const paint = loadPaintFreezeBanner(rel);
