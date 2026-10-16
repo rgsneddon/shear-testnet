@@ -70,6 +70,7 @@ error ClockUnpinned();
 error AlreadyMinted();
 error NotePrincipal();
 error Unsigned();
+error OwnerMissing();
 error ClaimUnavailable();
 
 contract Reserve {
@@ -145,7 +146,7 @@ contract Reserve {
     mapping(bytes32 => bytes32) internal portalSha;
     bytes32[] internal portalKeys;
     mapping(bytes32 => bool) internal portalListed;
-    /// Portal id → sha256("shear-reward-owner-v1" || ownerPub). Zero means unset.
+    /// Portal id → sha256("shear-reward-owner-v1" || ownerPub). Zero is missing.
     mapping(bytes32 => bytes32) internal ownerOf;
     /// Ed25519 verify precompile. Input is pubkey || sig || message. Output is uint256 1.
     address internal constant ED25519 = address(0x101);
@@ -541,11 +542,11 @@ contract Reserve {
             portalSha[id] = sha256(abi.encodePacked("shear-portal-v1", dest));
         }
         Portal storage p = portals[id];
-        if (ownerCommit != bytes32(0)) {
-            bytes32 prior = ownerOf[id];
-            if (prior != bytes32(0) && prior != ownerCommit) revert Unsigned();
-            if (prior == bytes32(0)) ownerOf[id] = ownerCommit;
-        }
+        // Every lock names its owner. A later lock must name the same one.
+        if (ownerCommit == bytes32(0)) revert OwnerMissing();
+        bytes32 prior = ownerOf[id];
+        if (prior != bytes32(0) && prior != ownerCommit) revert Unsigned();
+        if (prior == bytes32(0)) ownerOf[id] = ownerCommit;
         _settle(p, nowTs);
         bool staking = canJoin(nowTs);
         if (staking) p.active += nanos;
@@ -963,6 +964,8 @@ contract Reserve {
         // top-up does not re-lock principal whose epoch has already ended.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
         bytes32 id = portalId(dest);
+        // No recorded owner is not a license to take the principal.
+        if (ownerOf[id] == bytes32(0)) revert OwnerMissing();
         Portal storage p = portals[id];
         uint256 active = p.active;
         uint256 idleBal = p.idle;
@@ -999,13 +1002,11 @@ contract Reserve {
         }
         while (p.tranches.length > kept) p.tranches.pop();
         // Principal only. The qualified reward stays on the portal for the
-        // ZK claim. A recorded owner must sign (portal id, principal, payout).
+        // ZK claim. The recorded owner must sign (portal id, principal, payout).
         earned = p.accruedReward;
         reward = 0;
-        if (ownerOf[id] != bytes32(0)) {
-            if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
-            if (!_withdrawAuthOk(portalSha[id], release, auth)) revert Unsigned();
-        }
+        if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
+        if (!_withdrawAuthOk(portalSha[id], release, auth)) revert Unsigned();
         if (release > active) {
             uint256 rest = release - active;
             p.active = 0;

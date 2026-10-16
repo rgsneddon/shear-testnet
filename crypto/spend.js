@@ -531,7 +531,7 @@ export const BODY_SECRET_KEYS = new Set([
 const BODY_KEYS = new Set([
   'id', 'kind', 'from', 'to', 'nanos', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
-  'portalId', 'payoutPortalId', 'programId', 'choice',
+  'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig',
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
@@ -800,6 +800,9 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
   const seen = seenOwners instanceof Map ? String(seenOwners.get(ref.id) || '') : '';
   const want = recorded || seen;
   if (want && want !== pub) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  if (reserveKindOf(tx) === 'withdraw' && !want) {
+    return { ok: false, reason: 'owner_missing', from: reservePortalDest(tx) };
+  }
   if (reserveKindOf(tx) === 'withdraw' && recorded && recorded !== pub) {
     return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
   }
@@ -832,6 +835,8 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
   const portals = reserveState?.portals || {};
   const dest = ref.from;
   let portal = (ref.id && portals[ref.id]) || (dest && portals[dest]) || null;
+  const owner = String(portal?.ownerPub || '').replace(/^0x/i, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(owner)) return { ok: false, reason: 'owner_missing' };
   const clock = Number(clockMs);
   // No header time is not a license to pay every locked nanos.
   const duePrincipal = Number.isFinite(clock) && clock > 0

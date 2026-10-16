@@ -530,7 +530,13 @@ describe('Vault Security test map', () => {
       assert.equal(tpl.txs[0].observe, undefined);
       assert.equal(tpl.txs[0].rateCommit, undefined);
       store.reserveVault.genesisMs = T0;
-      deposit({ state: store.reserveVault, dest: who.dest, nanos: PI_SHE_NANOS, nowMs: T0 });
+      deposit({
+        state: store.reserveVault,
+        dest: who.dest,
+        nanos: PI_SHE_NANOS,
+        nowMs: T0,
+        ownerPub: who.pub,
+      });
       const paid = withdraw({ state: store.reserveVault, dest: who.dest, nowMs: END });
       assert.equal(paid.ok, true, paid.reason);
       assert.equal(paid.reward, 0);

@@ -14,14 +14,14 @@ import {
   bootReserveEvm,
   reservePinOk,
   callReserve,
-  encodeDeposit,
   encodePinClock,
   encodeVote,
   encodeEnact,
   encodeClaim,
+  encodeDeposit as encodeDepositRaw,
+  encodeWithdraw as encodeWithdrawRaw,
   encodeCommitRewards,
   encodeSyncEpoch,
-  encodeWithdraw,
   encodePublicView,
   executeBlockEvm,
   decodePublicView,
@@ -40,7 +40,6 @@ import { boundReserveWithdraw } from './spend.js';
 import {
   applyReserveBlock,
   cloneVault,
-  deposit,
   emptyVault,
   enact,
   packRewardAuth,
@@ -54,11 +53,13 @@ import {
   rewardOwnerCommit,
   signWithdrawReward,
   supplyIdentity,
+  deposit as depositUnowned,
   withdraw,
   withdrawMintId,
   withdrawPaysInterest,
   withdrawTx,
 } from './reserve_vault.js';
+import { deposit, encodeDeposit, encodeWithdraw, portalOwner } from './owned_portal.js';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -391,7 +392,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
           state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: ownerPub || undefined,
         });
         assert.equal(jsLock.ok, true, `${n} js ${i} ${jsLock.reason}`);
-        const evmLock = await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, ownerCommit));
+        const evmLock = await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, ownerCommit || undefined));
         assert.equal(evmLock.ok, true, `${n} evm ${i} ${evmLock.reason}`);
       }
       let firstRow = null;
@@ -745,6 +746,35 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(twice.reason, 'claim_unavailable');
   });
 
+  it('refuses a withdraw when the portal has no recorded owner', async () => {
+    const t0 = 1_700_000_000_000;
+    const end = t0 + RESERVE_EPOCH_MS;
+    const dest = encodeDest(Buffer.alloc(20, 0x91));
+    const js = emptyVault();
+    js.genesisMs = t0;
+    const missing = depositUnowned({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0 });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.reason, 'owner_missing');
+    const owner = newIdentity();
+    const ownerPub = Buffer.from(owner.spendPub).toString('hex');
+    assert.equal(depositUnowned({
+      state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub,
+    }).ok, true);
+    js.portals[portalIdFromDest(dest)].ownerPub = '';
+    const stripped = withdraw({ state: js, dest, nowMs: end });
+    assert.equal(stripped.ok, false);
+    assert.equal(stripped.reason, 'owner_missing');
+
+    const session = await bootReserveEvm();
+    assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
+    const bareLock = await callReserve(session, encodeDepositRaw(dest, PI_SHE_NANOS, t0, null));
+    assert.equal(bareLock.ok, false);
+    assert.equal(bareLock.reason, 'owner_missing');
+    const bareDraw = await callReserve(session, encodeWithdrawRaw(dest, end));
+    assert.equal(bareDraw.ok, false);
+    assert.equal(bareDraw.reason, 'owner_missing');
+  });
+
   it('refuses a reward withdraw that is not signed by the portal owner', async () => {
     const t0 = 1_700_000_000_000;
     const end = t0 + RESERVE_EPOCH_MS;
@@ -885,9 +915,15 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const session2 = await bootReserveEvm();
     assert.equal((await callReserve(session2, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(session2, encodeDeposit(quiet, small, t0))).ok, true);
+    const quietTx = withdrawTx({ from: quiet, to: quiet, nanos: small, id: 'no-rows' });
+    signWithdrawReward(quietTx, portalOwner.privateKey, {
+      portalId: portalIdFromDest(quiet),
+      nanos: small,
+      dest: quiet,
+    });
     const empty = await executeBlockEvm(session2, [
       { coinbase: true, vout: [] },
-      withdrawTx({ from: quiet, to: quiet, nanos: small, id: 'no-rows' }),
+      quietTx,
     ], end, t0, '');
     assert.equal(empty.ok, true, empty.reason);
     assert.equal(empty.withdrawInterest, 0);

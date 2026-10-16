@@ -39,7 +39,13 @@ const LUMP_GENESIS = 1;
 const LUMP_CLOCK = 1 + RESERVE_EPOCH_MS;
 
 function dueLump(nanos, extra = {}) {
-  return { staked: nanos, idle: 0, lockEpoch: 0, ...extra };
+  return {
+    staked: nanos,
+    idle: 0,
+    lockEpoch: 0,
+    ownerPub: '11'.repeat(32),
+    ...extra,
+  };
 }
 
 function plainTx(kind, dest, nanos) {
@@ -67,10 +73,10 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         assert.equal(parked.reason, want, `${kind} ${nanos}`);
       }
       const bare = plainTx('withdraw', dest, nanos);
-      assert.equal(boundReserveWithdraw(bare, { portals: {}, epochBps: 0 }).reason, 'insufficient');
+      assert.equal(boundReserveWithdraw(bare, { portals: {}, epochBps: 0 }).reason, 'owner_missing');
       const over = boundReserveWithdraw(bare, {
         epochBps: 0,
-        portals: { [dest]: { staked: nanos - 1, idle: 0 } },
+        portals: { [dest]: { staked: nanos - 1, idle: 0, ownerPub: '11'.repeat(32) } },
       });
       if (nanos > 1) assert.equal(over.reason, 'insufficient');
       const exact = boundReserveWithdraw(bare, {
@@ -105,7 +111,7 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
       assert.equal(opened.ok, true, `${nanos} ${opened.reason}`);
       const body = verifyFundedBody([bare], () => 0, { reserveState: { portals: {}, epochBps: 0 } });
       assert.equal(body.ok, false);
-      assert.equal(body.reason, 'insufficient');
+      assert.equal(body.reason, 'owner_missing');
     }
   });
 

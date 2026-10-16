@@ -19,10 +19,8 @@ import {
   KIND_REWARD_CLAIM,
   applyReserveBlock,
   coinbaseRewardRoot,
-  deposit,
   emptyVault,
   lockStampRejected,
-  lockTx,
   lockNoteSpendRejected,
   packRewardAuth,
   packRewardProof,
@@ -53,12 +51,11 @@ import {
   decodeWithdraw,
   encodeClaim,
   encodeCommitRewards,
-  encodeDeposit,
   encodePinClock,
   encodePublicView,
-  encodeWithdraw,
   executeBlockEvm,
 } from './reserve_evm.js';
+import { deposit, encodeDeposit, encodeWithdraw, lockTx } from './owned_portal.js';
 import { createNoteLedger } from '../node/src/note_ledger.js';
 
 const T0 = 1_700_000_000_000;
@@ -275,7 +272,7 @@ describe('aggregated reward root', () => {
     assert.equal(plan.rows[0].nanos, expected);
     assert.equal(plan.rows[0].nanos, portalEpochInterest(state, portal, draw));
     assert.equal(plan.rows[0].nullifier, withdrawMintId(portal.id, plan.rows[0].epoch));
-    const leaf = rewardLeaf(plan.rows[0].nullifier, plan.rows[0].nanos);
+    const leaf = rewardLeaf(plan.rows[0].nullifier, plan.rows[0].nanos, plan.rows[0].ownerPub);
     assert.equal(plan.root, Buffer.from(merkleRoot([leaf])).toString('hex'));
     const below = vault();
     assert.equal(deposit({
@@ -290,7 +287,7 @@ describe('aggregated reward root', () => {
     for (let i = 0; i < 9; i += 1) assert.equal(lockPortal(many, who()).ok, true);
     const wide = rewardCommitment(many, draw);
     assert.equal(wide.rows.length, 9);
-    const leaves = wide.rows.map((row) => rewardLeaf(row.nullifier, row.nanos));
+    const leaves = wide.rows.map((row) => rewardLeaf(row.nullifier, row.nanos, row.ownerPub));
     assert.equal(wide.root, Buffer.from(merkleRoot(leaves)).toString('hex'));
     const committed = applyReserveBlock({
       state: many,

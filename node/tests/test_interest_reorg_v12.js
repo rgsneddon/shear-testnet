@@ -17,7 +17,8 @@ import {
   EPOCH_DAYS_TESTNET,
 } from '../../crypto/asert.js';
 import { MS_PER_DAY } from '../../crypto/pot_sched.js';
-import { lockTx, withdraw, portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { withdraw, portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { lockTx } from '../../crypto/owned_portal.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { createStore } from '../src/store.js';
 

@@ -39,7 +39,6 @@ import {
 } from './reserve_oracle.js';
 import {
   cloneVault,
-  deposit,
   emptyVault,
   enact,
   observeRate,
@@ -47,6 +46,7 @@ import {
   withdraw,
   withdrawTx,
 } from './reserve_vault.js';
+import { deposit } from './owned_portal.js';
 import { newIdentity } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import { GENESIS_PREV, buildTemplate, digestTx, verifyBlock } from '../node/src/chain.js';

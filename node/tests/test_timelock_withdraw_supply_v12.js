@@ -31,7 +31,6 @@ import {
   blockPermittedInterest,
   blockWithdrawInterest,
   emptyVault,
-  lockTx,
   lockUnlockOf,
   portalEpochInterest,
   portalIdFromDest,
@@ -41,8 +40,8 @@ import {
   trialReserveApply,
   verifyReservePayout,
   withdraw,
-  withdrawTx,
 } from '../../crypto/reserve_vault.js';
+import { lockTx, withdrawTx, portalOwnerPub } from '../../crypto/owned_portal.js';
 import {
   bootReserveEvm,
   callReserve,
@@ -503,6 +502,7 @@ describe('time-locked withdraw supply', () => {
         vote: null,
         voteEpoch: 0,
         lockEpoch: 0,
+        ownerPub: portalOwnerPub,
       };
       state.totalLockedNanos = BigInt(PI_SHE_NANOS);
       return { dest, state, id };

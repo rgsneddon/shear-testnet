@@ -667,7 +667,7 @@ function claimDestOf(tx) {
  * A withdraw of principal must be signed by the portal owner.
  * The message is the portal id, the principal, and the payout destination.
  * The withdraw names the lock, so it is linkable to that lock.
- * No owner on the portal means this check does not apply.
+ * A portal with no recorded owner is refused.
  */
 export function withdrawRewardRejected(state, tx, nowMs) {
   if (String(tx?.kind || '') !== KIND_WITHDRAW) return null;
@@ -675,7 +675,7 @@ export function withdrawRewardRejected(state, tx, nowMs) {
   const id = act?.portalId || '';
   const portal = id && state?.portals ? state.portals[id] : null;
   const owner = String(portal?.ownerPub || '').toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(owner)) return null;
+  if (!/^[0-9a-f]{64}$/.test(owner)) return { ok: false, reason: 'owner_missing', nanos: 0 };
   const principal = Math.floor(Number(withdrawablePrincipal(state, portal, nowMs)) || 0);
   if (!(principal > 0)) return null;
   const pub = String(tx?.spendPub || '').replace(/^0x/i, '').toLowerCase();
@@ -1425,10 +1425,11 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
   if (!(Number(state?.genesisMs) > 0)) return { ok: false, reason: 'clock' };
   const p = portalOf(state, id);
   const pub = String(ownerPub || '').replace(/^0x/i, '').toLowerCase();
-  if (/^[0-9a-f]{64}$/.test(pub)) {
-    if (p.ownerPub && p.ownerPub !== pub) return { ok: false, reason: 'unsigned' };
-    if (!p.ownerPub) p.ownerPub = pub;
-  }
+  const given = /^[0-9a-f]{64}$/.test(pub);
+  const have = /^[0-9a-f]{64}$/.test(String(p.ownerPub || ''));
+  if (!given) return { ok: false, reason: 'owner_missing' };
+  if (have && p.ownerPub !== pub) return { ok: false, reason: 'unsigned' };
+  if (!have) p.ownerPub = pub;
   if (payoutPortalId && isPortalId(payoutPortalId) && !p.payoutPortalId) {
     p.payoutPortalId = String(payoutPortalId).toLowerCase();
   }
@@ -1972,6 +1973,7 @@ function exactFloorNanos(nanos) {
 
 export function lockTx({
   from, to, nanos, id, lockEpoch = null, unlockAtMs = null, timeLock = false, spendSeed = null,
+  ownerPub = null,
 } = {}) {
   const n = exactFloorNanos(nanos);
   const out = sealedReserveVout(to, n, KIND_LOCK);
@@ -1982,7 +1984,7 @@ export function lockTx({
     if (unlock > 0) out.unlockAtMs = unlock;
   }
   void spendSeed;
-  return {
+  const tx = {
     id,
     programId: RESERVE_PROGRAM,
     kind: KIND_LOCK,
@@ -1994,6 +1996,9 @@ export function lockTx({
     vin: [vinDest20(from)],
     vout: [out],
   };
+  const pub = String(ownerPub || '').replace(/^0x/i, '').toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(pub)) tx.spendPub = pub;
+  return tx;
 }
 
 export function withdrawTx({ from, to, nanos, id, nonce } = {}) {
@@ -2911,6 +2916,8 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!did.ok) return did;
   }
   const p = portalOf(state, id);
+  const owner = String(p.ownerPub || '').replace(/^0x/i, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(owner)) return { ok: false, reason: 'owner_missing' };
   const rewardTaken = rewardAlreadyMinted(state, p, nowMs) || rewardReserved(state, p.id);
   const dueEpochs = rewardTaken ? [] : dueRewardEpochs(state, p, nowMs);
   if (payoutPortalId && p.payoutPortalId && String(payoutPortalId).toLowerCase() !== p.payoutPortalId) {

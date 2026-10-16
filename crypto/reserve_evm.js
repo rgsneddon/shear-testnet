@@ -300,8 +300,10 @@ export function decodeWithdrawEarned(ret) {
 
 function evmRevertReason(res) {
   const ret = res?.execResult?.returnValue;
-  if (ret && ret.length >= 4 && Buffer.from(ret.subarray(0, 4)).equals(Buffer.from(selector('ClaimUnavailable()')))) {
-    return 'claim_unavailable';
+  if (ret && ret.length >= 4) {
+    const sel = Buffer.from(ret.subarray(0, 4));
+    if (sel.equals(Buffer.from(selector('ClaimUnavailable()')))) return 'claim_unavailable';
+    if (sel.equals(Buffer.from(selector('OwnerMissing()')))) return 'owner_missing';
   }
   return String(res?.execResult?.exceptionError?.error || 'revert');
 }

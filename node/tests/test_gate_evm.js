@@ -4,7 +4,8 @@ import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/addre
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
 import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
-import { lockTx, withdrawTx, emptyVault, deposit } from '../../crypto/reserve_vault.js';
+import { emptyVault } from '../../crypto/reserve_vault.js';
+import { lockTx, withdrawTx, deposit } from '../../crypto/owned_portal.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote, verifyRange } from '../../crypto/note.js';
 import { signSpendTx } from '../../crypto/spend.js';

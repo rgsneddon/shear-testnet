@@ -7,7 +7,7 @@ import { potSubsidyAt, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '../../crypto/pot_s
 import { PI_SHE_NANOS, GENESIS_BPS, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
-import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
+import { lockTx, withdrawTx } from '../../crypto/owned_portal.js';
 import { coinbaseTx } from '../src/chain.js';
 import { fillSnapInterest, foldSupply, supplyFromScalar } from '../src/supply.js';
 

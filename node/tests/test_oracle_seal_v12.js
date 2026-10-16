@@ -20,7 +20,6 @@ import {
 } from '../../crypto/reserve_oracle.js';
 import {
   emptyVault,
-  deposit,
   enact,
   observeRate,
   applyReserveBlock,
@@ -28,6 +27,7 @@ import {
   portalIdFromDest,
   previewWithdraw,
 } from '../../crypto/reserve_vault.js';
+import { deposit } from '../../crypto/owned_portal.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { GENESIS_PREV, buildTemplate, verifyBlock, digestTx } from '../src/chain.js';
 import { createStore } from '../src/store.js';

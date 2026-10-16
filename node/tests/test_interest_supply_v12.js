@@ -7,7 +7,8 @@ import { potSubsidyAt, potSubsidyNanos, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '.
 import { PI_SHE_NANOS, GENESIS_BPS, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
-import { lockTx, withdrawTx, reserveAction } from '../../crypto/reserve_vault.js';
+import { reserveAction } from '../../crypto/reserve_vault.js';
+import { lockTx, withdrawTx } from '../../crypto/owned_portal.js';
 import { verifySealedNote } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
 import { auditCirculatingSupply, foldSupply, supplyReport, supplyStep, emptySupplyState } from '../src/supply.js';
@@ -100,13 +101,14 @@ function lockBlock(ts, miner, portals, stake) {
   return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], locks);
 }
 
-function drawBlock(ts, miner, portals, payout) {
+function drawBlock(ts, miner, portals, payout, principal = null) {
+  const signNanos = principal == null ? payout : principal;
   const draws = portals.map((portal, i) => withdrawTx({
     from: portal,
     to: miner,
     nanos: payout,
     id: `draw-${i}-${payout}-${ts}`,
-  }));
+  }, signNanos));
   return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], draws);
 }
 
@@ -223,7 +225,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
 
     const inflated = [
       honest[0],
-      drawBlock(drawTs, miner, [portal], stake + one),
+      drawBlock(drawTs, miner, [portal], stake + one, stake),
     ];
     const bad = auditCirculatingSupply(inflated);
     assert.equal(bad.status, 'mismatch');
@@ -288,7 +290,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     assert.equal(highFold.ok, false);
     assert.equal(highFold.reason, 'supply');
 
-    const inflatedBlock = drawBlock(drawTs, miner, [portal], honestPay + 1);
+    const inflatedBlock = drawBlock(drawTs, miner, [portal], honestPay + 1, honestPay);
     const fatAct = reserveAction(inflatedBlock.txs[1]);
     assert.equal(fatAct.opened, true, 'the inflated receipt does open to its public amount');
     assert.equal(fatAct.nanos, honestPay + 1);

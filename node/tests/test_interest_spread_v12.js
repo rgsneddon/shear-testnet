@@ -29,8 +29,6 @@ import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { reserveFeeDest } from '../../crypto/levy.js';
 import {
-  lockTx,
-  withdrawTx,
   voteTx,
   reserveAction,
   cloneVault,
@@ -39,6 +37,7 @@ import {
   blockWithdrawInterest,
   blockPermittedInterest,
 } from '../../crypto/reserve_vault.js';
+import { lockTx, withdrawTx } from '../../crypto/owned_portal.js';
 import { explicitTypedKindRejected, boundReserveWithdraw } from '../../crypto/spend.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { walletAnchor, checkAdmitAnchor } from '../../crypto/admit_v3.js';

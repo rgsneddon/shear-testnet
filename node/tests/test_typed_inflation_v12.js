@@ -17,13 +17,13 @@ import {
 } from '../../crypto/spend.js';
 import {
   emptyVault,
-  deposit,
   withdraw,
   applyReserveBlock,
   verifyReservePayout,
   portalIdFromDest,
   portalPrincipalNanos,
 } from '../../crypto/reserve_vault.js';
+import { deposit } from '../../crypto/owned_portal.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 
@@ -35,7 +35,13 @@ const LUMP_GENESIS = 1;
 const LUMP_CLOCK = 1 + RESERVE_EPOCH_MS;
 
 function dueLump(nanos, extra = {}) {
-  return { staked: nanos, idle: 0, lockEpoch: 0, ...extra };
+  return {
+    staked: nanos,
+    idle: 0,
+    lockEpoch: 0,
+    ownerPub: '11'.repeat(32),
+    ...extra,
+  };
 }
 
 function mine(tpl) {

@@ -16,7 +16,8 @@ import {
   GENESIS_BITS_PACKED,
 } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
-import { vote, deposit, emptyVault, VOTE_DECREASE, VOTE_HOLD, withdrawTx } from '../../crypto/reserve_vault.js';
+import { vote, emptyVault, VOTE_DECREASE, VOTE_HOLD, withdrawTx } from '../../crypto/reserve_vault.js';
+import { deposit } from '../../crypto/owned_portal.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
 import {

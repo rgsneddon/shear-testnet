@@ -18,7 +18,6 @@ import {
 import {
   emptyVault,
   cloneVault,
-  deposit,
   vote,
   withdraw,
   enact,
@@ -36,14 +35,13 @@ import {
   portalRewards,
   previewWithdraw,
   trialReserveApply,
-  lockTx,
   voteTx,
-  withdrawTx,
   reserveAction,
   VOTE_INCREASE,
   VOTE_DECREASE,
   VOTE_HOLD,
 } from './reserve_vault.js';
+import { deposit, lockTx, withdrawTx, portalOwnerPub } from './owned_portal.js';
 import { compactTx } from './chronoflux.js';
 import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
@@ -305,7 +303,7 @@ describe('Reserve vault protocol', () => {
       },
     });
     assert.equal(undone.ok, false);
-    assert.equal(undone.reason, 'empty');
+    assert.equal(undone.reason, 'owner_missing');
     assert.equal(live.portals[aliceId].accruedReward, 0n);
     assert.equal(live.totalLockedNanos, BigInt(PI_SHE_NANOS));
     assert.equal(supplyIdentity(live).ok, true);
@@ -769,6 +767,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       from: continuum,
       to: vault,
       nanos: PI_SHE_NANOS,
+      spendPub: portalOwnerPub,
       vin: [{ address: continuum }],
       vout: [{ kind: 'lock', address: vault, nanos: PI_SHE_NANOS }],
     };
