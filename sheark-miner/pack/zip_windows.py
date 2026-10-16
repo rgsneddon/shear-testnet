@@ -2,7 +2,8 @@
 """Bundle ShearK-Miner.exe with the DLLs it actually imports.
 
 The Windows link is dynamic OpenSSL (libssl-3-x64.dll, libcrypto-3-x64.dll)
-plus any further non-system DLL those import. A zip of the exe alone does
+plus any further non-system DLL those import. The GCC runtime and winpthreads
+are static (see the Makefile), and the pack refuses an exe that imports them. A zip of the exe alone does
 not start. --stage copies that runtime beside the exe. The default writes
 dist/ShearK-Miner-<version>-windows.zip at the repo root.
 """
@@ -23,6 +24,9 @@ BAT = os.path.join(MINER, "example.bat")
 SH = os.path.join(MINER, "example.sh")
 DIST = os.path.join(REPO, "dist")
 OPENSSL_BIN = os.environ.get("OPENSSL_BIN", r"C:\msys64\mingw64\bin")
+
+sys.path.insert(0, os.path.join(REPO, "scripts", "licenses"))
+import release_notices  # noqa: E402
 
 # Windows loader already has these. Do not ship System32 binaries.
 SYSTEM = {
@@ -211,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     for required in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
         if required not in names:
             sys.exit(f"ShearK TLS build did not import {required}; refusing a cleartext-only pack")
+    release_notices.assert_no_mingw_runtime([EXE] + dlls)
+    release_notices.assert_windows_dlls_covered(dlls)
     stage(EXE, dlls)
     if args == ["--stage"]:
         print("staged", " ".join(os.path.basename(p) for p in dlls))
@@ -228,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
         z.writestr(unix_info("example.sh", 0o755), lf(SH))
         for src in dlls:
             z.write(src, os.path.basename(src))
+        release_notices.write_notices(z, REPO)
+        z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(dlls).replace("\n", "\r\n"))
         note = (
             f"ShearK-Miner {ver}\n"
             "Keep every DLL in this zip next to ShearK-Miner.exe.\n"
@@ -236,9 +244,12 @@ def main(argv: list[str] | None = None) -> int:
             "Public pool: stratum+ssl://pool.shear.digital:443\n"
             "Localhost solo: stratum+tcp://127.0.0.1:1111\n"
             "Do not pass --tls-pin. There is no --tls-insecure.\n"
+            "Licences: LICENSE, THIRD_PARTY_NOTICES.txt and LICENSES/.\n"
+            "Exact OpenSSL version: RUNTIME-VERSIONS.txt.\n"
         )
         z.writestr("README.txt", note.replace("\n", "\r\n"))
     listed = zipfile.ZipFile(out).namelist()
+    release_notices.assert_has_notices(listed, REPO)
     print("wrote", out, "members", " ".join(listed))
     return 0
 

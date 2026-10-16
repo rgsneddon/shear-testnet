@@ -86,7 +86,7 @@ make -C "${SRC}/sheark-miner" -j"${JOBS}"
 bash "${SRC}/sheark-miner/pack/selftest.sh" "${SRC}/sheark-miner/ShearK-Miner"
 
 log "native addons"
-cargo build --release --locked --manifest-path "${SRC}/crypto/native/admit/Cargo.toml"
+bash "${SRC}/crypto/native/build-linux-admit-so.sh" --locked
 make -C "${SRC}/crypto/native" shearhash.node shearadmit.node
 test -f "${SRC}/crypto/native/shearhash.node"
 test -f "${SRC}/crypto/native/shearadmit.node"
