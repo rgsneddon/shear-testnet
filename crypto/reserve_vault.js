@@ -44,6 +44,7 @@ import { reserveFeeDest, levyNanos } from './levy.js';
 import { decodeHeader } from './header.js';
 import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
 import { fs1TreeAppend, fs1TreeNew, fs1TreeRoot } from './native_admit.js';
+import { txDigestV3 } from './admit_v3.js';
 import {
   proveLockCap, verifyLockCap, verifyVaultReward, vaultProofCap, vaultProofFull, vaultRewardCommit,
 } from './vault_reward_fs1.js';
@@ -79,6 +80,7 @@ export const RESERVE_ACTION_CAP = 4096;
  */
 export const VAULT_MINT_DELAY_BLOCKS = 4;
 const LOCK_FUND_DST = 'shear-lock-fund-v1';
+const REMAIN_OPEN_DST = 'shear-lock-remain-v1';
 const Fn = RistrettoPoint.Fn;
 
 const openMemo = new Map();
@@ -888,7 +890,11 @@ export function appendVaultLockNote(state, note, terms = null) {
     state.vaultRemainCommits[earn][commit] = true;
     if (!state.vaultLeafRemain) state.vaultLeafRemain = Object.create(null);
     state.vaultLeafRemain[noteHex] = commit;
+    if (!state.vaultRemainLeaf) state.vaultRemainLeaf = Object.create(null);
+    state.vaultRemainLeaf[commit] = noteHex;
   }
+  if (!state.vaultLockIndex) state.vaultLockIndex = Object.create(null);
+  state.vaultLockIndex[buf.subarray(32, 64).toString('hex')] = noteHex;
   const root = fs1TreeRoot(slot.handle);
   if (!root || root.length !== 32) return null;
   state.vaultLockRoot = root.toString('hex');
@@ -981,16 +987,83 @@ function settleLockTotal(state, block, height) {
   return plaintextOpeningRejected(block, ['epochLockTotal', 'epochLockTotals', 'epochLockProof']);
 }
 
-/** Transcript for the lock-leaf equality proof: domain, tx id, height, network. */
+/**
+ * Transcript for the lock-leaf equality proof: domain and the tx hash.
+ * The free id string and the exact block height are not in it, so a missed
+ * block or a reorg of one height does not invalidate the proof.
+ */
 export function lockFundContext(tx, height, magic) {
-  let at = 0n;
-  try { at = BigInt(Math.floor(Number(height))); } catch { return null; }
-  if (at < 0n || at > 0xffffffffffffffffn) return null;
-  const net = Buffer.from(String(magic || ''));
-  if (!net.length) return null;
-  const h = Buffer.alloc(8);
-  h.writeBigUInt64LE(at);
-  return Buffer.concat([Buffer.from(LOCK_FUND_DST), Buffer.from(String(tx?.id || '')), h, net]);
+  void height;
+  let digest;
+  try { digest = txDigestV3(tx, magic || MAGIC_TESTNET); } catch { return null; }
+  if (!digest || digest.length !== 32) return null;
+  return Buffer.concat([Buffer.from(LOCK_FUND_DST), digest]);
+}
+
+function schnorrH(P, s, extra) {
+  const k = randomScalar();
+  const R = H.multiply(k);
+  const e = hashToScalar(pointBytes(P), pointBytes(R), extra);
+  const z = Fn.add(k, Fn.mul(e, s));
+  return { R: pointBytes(R), z: scalarBytes(z) };
+}
+
+function schnorrHOk(P, R, z, extra) {
+  try {
+    const e = hashToScalar(pointBytes(P), R, extra);
+    return H.multiply(scalarFrom(z)).equals(pointFrom(R).add(P.multiply(e)));
+  } catch {
+    return false;
+  }
+}
+
+function remainExtra(tx, magic, commit) {
+  const digest = txDigestV3(tx, magic || MAGIC_TESTNET);
+  return Buffer.concat([Buffer.from(REMAIN_OPEN_DST), digest, Buffer.from(commit)]);
+}
+
+/** Remainder left in the open epoch. The same integer noteCredit stores. */
+export function consensusRemainMs(state, nowMs) {
+  const idx = chainEpochIndex(state, nowMs);
+  const span = epochMs(state?.magic);
+  const genesis = Number(state?.genesisMs) || 0;
+  const end = genesis > 0 ? genesis + (idx + 1) * span : 0;
+  const now = Number(nowMs) || 0;
+  let remain = end > now ? end - now : 0;
+  if (span > 0 && remain > span) remain = span;
+  return remain;
+}
+
+/** Opening of `remainMs` bound to this tx hash. The integer is the consensus remainder. */
+export function proveRemainOpen(remainMs, blind, tx, magic = MAGIC_TESTNET) {
+  let n;
+  try { n = BigInt(remainMs); } catch { return null; }
+  if (n < 0n || n > 0xffffffffffffffffn) return null;
+  let r;
+  try { r = typeof blind === 'bigint' ? blind : scalarFrom(blind); } catch { return null; }
+  const C = commit(n, r);
+  const P = C.subtract(G.multiply(Fn.create(n)));
+  if (!P.equals(H.multiply(r))) return null;
+  const bytes = pointBytes(C);
+  let extra;
+  try { extra = remainExtra(tx, magic, bytes); } catch { return null; }
+  const sig = schnorrH(P, r, extra);
+  return { commit: bytes, R: sig.R, z: sig.z };
+}
+
+/** True when `commit` opens to `remainMs` under a proof bound to this tx hash. */
+export function verifyRemainOpen(commit, remainMs, proof, tx, magic = MAGIC_TESTNET) {
+  try {
+    const n = BigInt(remainMs);
+    if (n < 0n || n > 0xffffffffffffffffn) return false;
+    const raw = Buffer.from(asU8(commit));
+    if (raw.length !== 32 || !proof?.R || !proof?.z) return false;
+    const C = pointFrom(raw);
+    const P = C.subtract(G.multiply(Fn.create(n)));
+    return schnorrHOk(P, proof.R, proof.z, remainExtra(tx, magic, raw));
+  } catch {
+    return false;
+  }
 }
 
 function sameCommitValue(lockCommit, outCommit, proof, extra) {
@@ -1046,28 +1119,17 @@ function hiddenClaimNote(tx) {
 }
 
 function leafForRemain(state, remainHex) {
-  const map = state?.vaultLeafRemain || {};
-  const notes = state?.vaultLockNotes || [];
-  for (const note of notes) {
-    if (map[note] === remainHex) return note;
-  }
-  return null;
+  const note = state?.vaultRemainLeaf?.[remainHex];
+  return typeof note === 'string' && note.length === 128 ? note : null;
 }
 
-function leafLockMatches(noteHex, lockCommit) {
+function leafCommitOf(noteHex) {
   try {
     const note = Buffer.from(String(noteHex), 'hex');
-    return note.length === 64 && note.subarray(32, 64).equals(Buffer.from(lockCommit));
+    return note.length === 64 ? note.subarray(32, 64) : null;
   } catch {
-    return false;
+    return null;
   }
-}
-
-function someLeafLocks(state, lockCommit) {
-  for (const note of state?.vaultLockNotes || []) {
-    if (leafLockMatches(note, lockCommit)) return true;
-  }
-  return false;
 }
 
 /**
@@ -1102,26 +1164,30 @@ function vaultClaimRejected(tx, state) {
   if (!terms) return { ok: false, reason: 'stake_reward' };
   const note = hiddenClaimNote(tx);
   if (String(tx?.kind || '') === KIND_REWARD_CLAIM && !note) return { ok: false, reason: 'stake_reward' };
+  const bound = vaultProofCap(tx.vaultProof);
+  if (!bound) return { ok: false, reason: 'stake_reward' };
+  let leafCommit = null;
+  let lockCap = null;
+  if (terms.checkRemain) {
+    const leaf = leafForRemain(state, Buffer.from(bound.remainCommit).toString('hex'));
+    leafCommit = leaf ? leafCommitOf(leaf) : null;
+    if (leafCommit) {
+      const capHex = state?.vaultLockCap?.[leafCommit.toString('hex')];
+      if (typeof capHex === 'string' && /^[0-9a-f]{64}$/.test(capHex)) lockCap = Buffer.from(capHex, 'hex');
+    }
+  }
   const got = verifyVaultReward({
     blob: tx.vaultProof,
     root: Buffer.from(terms.root, 'hex'),
     rootEpoch: terms.earnEpoch,
     nullifier: Buffer.from(nullifier, 'hex'),
     output: note,
-    terms,
+    terms: { ...terms, leafCommit, lockCap },
     magic: state?.magic || MAGIC_TESTNET,
   });
   if (!got.ok) return { ok: false, reason: got.reason || 'unsigned' };
   if (Boolean(got.full) !== terms.full) return { ok: false, reason: 'stake_reward' };
-  const bound = vaultProofCap(tx.vaultProof);
-  if (!bound) return { ok: false, reason: 'stake_reward' };
-  if (terms.checkRemain) {
-    const commit = Buffer.from(got.remainCommit).toString('hex');
-    const note = leafForRemain(state, commit);
-    if (!note || !leafLockMatches(note, bound.lockCommit)) return { ok: false, reason: 'stake_reward' };
-  } else if (!someLeafLocks(state, bound.lockCommit)) {
-    return { ok: false, reason: 'stake_reward' };
-  }
+  if (terms.checkRemain && !leafCommit) return { ok: false, reason: 'stake_reward' };
   return null;
 }
 
@@ -1176,14 +1242,7 @@ export function applyRewardClaim(state, tx, height = null) {
   const epoch = String(Math.floor(Number(tx.earnEpoch) || 0));
   if (!state.epochMintSum) state.epochMintSum = Object.create(null);
   state.epochMintSum[epoch] = addPointSum(state.epochMintSum[epoch], commit);
-  if (!state.epochCapSum) state.epochCapSum = Object.create(null);
-  if (!state.epochCapSeen) state.epochCapSeen = Object.create(null);
-  if (!state.epochCapSeen[epoch]) state.epochCapSeen[epoch] = Object.create(null);
-  const capHex = Buffer.from(bound.capCommit).toString('hex');
-  if (!state.epochCapSeen[epoch][capHex]) {
-    state.epochCapSeen[epoch][capHex] = true;
-    state.epochCapSum[epoch] = addPointSum(state.epochCapSum[epoch], bound.capCommit);
-  }
+  void bound;
   return { ok: true, nanos: 0, nullifier };
 }
 
@@ -1996,18 +2055,15 @@ function noteLockCap(state, epoch, lockCommit, proof) {
   }
   if (!state.vaultLockNoted) state.vaultLockNoted = Object.create(null);
   state.vaultLockNoted[lockHex] = true;
+  if (!state.vaultLockCap) state.vaultLockCap = Object.create(null);
+  state.vaultLockCap[lockHex] = capHex;
   return true;
 }
 
 /** One credit. The amount stays inside the commitment. The sum is not opened. */
 function noteCredit(state, p, commitBuf, nowMs, qualifies) {
   const idx = chainEpochIndex(state, nowMs);
-  const span = epochMs(state.magic);
-  const genesis = Number(state.genesisMs) || 0;
-  const end = genesis > 0 ? genesis + (idx + 1) * span : 0;
-  const now = Number(nowMs) || 0;
-  let remain = end > now ? end - now : 0;
-  if (remain > span) remain = span;
+  const remain = consensusRemainMs(state, nowMs);
   if (!Array.isArray(p.tranches)) p.tranches = [];
   p.tranches.push({
     commit: Buffer.from(commitBuf).toString('hex'),
@@ -3561,6 +3617,14 @@ export function applyReserveBlock({
         return finishReserveApply(results);
       }
       bindLockNote(state, act.portalId, tx, nowMs);
+      if (tx?.remainCommit) {
+        const openMs = consensusRemainMs(state, nowMs);
+        if (!verifyRemainOpen(tx.remainCommit, openMs, tx.remainProof, tx, state.magic || MAGIC_TESTNET)) {
+          results.push({ action: KIND_LOCK, ok: false, reason: 'stake_reward' });
+          state.deferEpochRoll = false;
+          return finishReserveApply(results);
+        }
+      }
       if (tx?.vaultLockNote) {
         const funded = lockFundingRejected(tx, { height: blockHeight, magic: state.magic || MAGIC_TESTNET });
         if (funded) {

@@ -33,8 +33,7 @@ import {
   encodeCommitEpochStartRoot,
   encodeCommitVaultRoot,
   encodeDeposit,
-  encodeNoteVaultLock,
-  encodeNoteVaultRemain,
+  encodeNoteVaultLeaf,
   encodePinClock,
   encodeRoll,
   encodeWithdraw,
@@ -51,7 +50,7 @@ import {
   vaultRewardNanos,
   verifyVaultReward,
 } from './vault_reward_fs1.js';
-import { blockBudget, fs1VerifyWeight, txVerifyWeight, W_OUT, W_TX } from './block_budget.js';
+import { blockBudget, fs1VerifyWeight, txVerifyWeight, W_OUT, W_TX, W_VAULT_EXTRA } from './block_budget.js';
 import { consensusFingerprint, MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
 
 const T0 = 1_700_000_000_000;
@@ -114,7 +113,7 @@ function provePair(dest20, remainA, remainB, epoch = 0) {
   });
   assert.ok(second, 'second proof');
   assert.equal(second.rootHex, first.rootHex);
-  assert.equal(first.blob[0], 0xa6);
+  assert.equal(first.blob[0], 0xa7);
   return { first, second };
 }
 
@@ -272,8 +271,7 @@ describe('vault-lock reward proof', () => {
     assert.equal((await callReserve(session, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, rewardOwnerCommit(owner.pub), true))).ok, true);
     const stored = await callReserve(session, encodeCommitEpochStartRoot(0, pair.first.rootHex));
     assert.equal(stored.ok, true, stored.reason);
-    assert.equal((await callReserve(session, encodeNoteVaultRemain(0, pair.first.remainCommit))).ok, true);
-    assert.equal((await callReserve(session, encodeNoteVaultLock(pair.first.lockCommit))).ok, true);
+    assert.equal((await callReserve(session, encodeNoteVaultLeaf(pair.first.lockCommit, pair.first.remainCommit))).ok, true);
     const evmPaid = await callReserve(
       session,
       encodeClaim(pair.first.nullifier, 0, pair.first.blob, 0, packVaultOutput(pair.first.note)),
@@ -352,8 +350,7 @@ describe('vault-lock reward proof', () => {
     assert.equal(evmBare.ok, true, evmBare.reason);
     assert.equal(word(evmBare.returnValue), 1n);
     await callReserve(session, encodeCommitEpochStartRoot(0, pair.second.rootHex));
-    await callReserve(session, encodeNoteVaultRemain(0, pair.second.remainCommit));
-    await callReserve(session, encodeNoteVaultLock(pair.second.lockCommit));
+    await callReserve(session, encodeNoteVaultLeaf(pair.second.lockCommit, pair.second.remainCommit));
     const evmClaim = await callReserve(
       session,
       encodeClaim(pair.second.nullifier, 0, pair.second.blob, 0, packVaultOutput(pair.second.note)),
@@ -559,7 +556,7 @@ describe('vault-lock reward proof', () => {
     if (!state.epochStartRoots) state.epochStartRoots = Object.create(null);
     state.epochStartRoots['0'] = proved.rootHex;
     const claim = rewardClaimTx({ to: pay.to, vault: proved, id: 'claim-weight' });
-    assert.equal(txVerifyWeight(claim), W_TX + fs1VerifyWeight(1) + W_OUT);
+    assert.equal(txVerifyWeight(claim), W_TX + fs1VerifyWeight(1) + W_OUT + W_VAULT_EXTRA);
     assert.ok(txVerifyWeight(claim) > txVerifyWeight({ kind: 'reward-claim', vin: [], vout: claim.vout }));
     const many = [];
     for (let i = 0; i < MAX_BLOCK_VAULT_CLAIMS + 1; i += 1) {
@@ -660,6 +657,12 @@ describe('vault-lock reward proof', () => {
     swapped.vaultRemainCommits['0'] = { [ '11'.repeat(32) ]: true };
     const leaf = swapped.vaultLockNotes.at(-1);
     swapped.vaultLeafRemain[leaf] = '11'.repeat(32);
+    const indexed = swapped.vaultRemainLeaf || {};
+    for (const key of Object.keys(indexed)) {
+      if (indexed[key] === leaf) delete indexed[key];
+    }
+    indexed['11'.repeat(32)] = leaf;
+    swapped.vaultRemainLeaf = indexed;
     const remain = applyAt(swapped, [rewardClaimTx({ to: pay.to, vault: proved, id: 'forged-remain' })], proved.rootHex);
     assert.equal(remain.ok, false);
     assert.equal(remain.reason, 'stake_reward');
@@ -746,7 +749,7 @@ describe('vault-lock reward proof', () => {
     assert.match(prover, /shear-vault-null-key-v1/);
     assert.match(prover, /shear-vault-null-prf-v1/);
     assert.match(prover, /shear-vault-reward-bal-v1/);
-    assert.match(prover, /0xa6/);
+    assert.match(prover, /0xa7/);
     assert.equal(prover.includes('shear-vault-lock-null-v1'), false);
     assert.match(prover, /scalarFromBigInt/);
     assert.match(prover, /BigInt\.one << 110/);

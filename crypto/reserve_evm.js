@@ -202,6 +202,16 @@ export function encodeNoteVaultLock(lockHex) {
   return concat(selector('noteVaultLock(bytes32)'), word);
 }
 
+export function encodeNoteVaultLeaf(lockHex, remainHex) {
+  const lock = new Uint8Array(32);
+  const remain = new Uint8Array(32);
+  const lockRaw = String(lockHex || '').replace(/^0x/i, '');
+  const remainRaw = String(remainHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(lockRaw)) lock.set(Buffer.from(lockRaw, 'hex'));
+  if (/^[0-9a-fA-F]{64}$/.test(remainRaw)) remain.set(Buffer.from(remainRaw, 'hex'));
+  return concat(selector('noteVaultLeaf(bytes32,bytes32)'), lock, remain);
+}
+
 export function encodeNoteVaultRemain(earn, remainHex) {
   const word = new Uint8Array(32);
   const raw = String(remainHex || '').replace(/^0x/i, '');
@@ -411,7 +421,8 @@ function ed25519Precompile(opts) {
 
 /**
  * Precompile 0x102.
- * root || nullifier || u64 epoch || u32 bps || u64 span || full || remainCommit || magic || output || proof.
+ * root || nullifier || u64 epoch || u32 bps || u64 span || full || remainCommit || magic || lock || output || proof.
+ * The lock word is the leaf bound to that remain. Zeros skip the leaf check.
  */
 function vaultZkPrecompile(opts) {
   const data = Buffer.from(opts.data || new Uint8Array());
@@ -420,15 +431,16 @@ function vaultZkPrecompile(opts) {
   if (opts.gasLimit < gasUsed) return { executionGasUsed: opts.gasLimit, returnValue: zero };
   let code = 0;
   try {
-    const head = 134;
+    const head = 166;
     if (data.length >= head + 4) {
       const epoch = data.readBigUInt64LE(64);
       const bps = data.readUInt32LE(72);
       const span = data.readBigUInt64LE(76);
       const full = data[84] === 1;
       const magic = data.subarray(117, 134).toString('utf8');
-      const outputLen = data.readUInt32LE(134);
-      const outputAt = 138;
+      const lockWord = data.subarray(134, 166);
+      const outputLen = data.readUInt32LE(166);
+      const outputAt = 170;
       if (outputAt + outputLen <= data.length) {
         const packed = outputLen ? data.subarray(outputAt, outputAt + outputLen) : null;
         const output = packed ? parseVaultOutput(packed) : null;
@@ -438,7 +450,7 @@ function vaultZkPrecompile(opts) {
             root: data.subarray(0, 32),
             nullifier: data.subarray(32, 64),
             rootEpoch: epoch,
-            terms: { bps, span, earnEpoch: epoch, full },
+            terms: { bps, span, earnEpoch: epoch, full, leafCommit: lockWord },
             output,
             magic,
             blob: data.subarray(outputAt + outputLen),
@@ -651,7 +663,7 @@ export async function executeReserveTx(session, tx, nowMs) {
     if (!notedLock.ok) return notedLock;
     const remain = String(tx?.remainCommit || '').replace(/^0x/i, '');
     if (/^[0-9a-fA-F]{64}$/.test(remain)) {
-      const noted = await callReserve(session, encodeNoteVaultRemain(Math.floor(Number(tx?.earnEpoch) || 0), remain));
+      const noted = await callReserve(session, encodeNoteVaultLeaf(Buffer.from(commit).toString('hex'), remain));
       if (!noted.ok) return noted;
     }
     return locked;

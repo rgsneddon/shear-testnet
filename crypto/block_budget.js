@@ -26,6 +26,8 @@ export const R_BYTES = 854_592;
  */
 export const W_FS1_BASE = 25;
 export const W_FS1_PER_INPUT = 25;
+/** Cap relation, the fresh under-cap, and the lock-time pool proof on one claim. */
+export const W_VAULT_EXTRA = 3;
 export const R_SEND_INPUTS = 2;
 export const R_WEIGHT = 2_336;
 export const K_VW = 8;
@@ -183,7 +185,7 @@ export function txVerifyWeight(tx) {
   const nOut = Array.isArray(tx.vout) ? tx.vout.length : 0;
   if (tx.vaultProof != null && tx.vaultProof !== '') {
     const one = fs1VerifyWeight(1);
-    let claim = W_TX + (one || 0) + W_OUT * nOut;
+    let claim = W_TX + (one || 0) + W_OUT * nOut + W_VAULT_EXTRA;
     if (txIsReserveAction(tx)) claim += W_SEAL;
     return claim;
   }
