@@ -199,7 +199,18 @@ export function applyVerifiedIpcBlock(store, msg) {
   }
   if (block && Object.prototype.hasOwnProperty.call(block, 'trustedPowHash')) delete block.trustedPowHash;
   let tipH = 0;
-  try { tipH = Number(store.tip()?.height || 0); } catch { tipH = 0; }
+  let tipHash = '';
+  try {
+    const t = store.tip();
+    tipH = Number(t?.height || 0);
+    if (t?.hash) tipHash = Buffer.from(t.hash).toString('hex').toLowerCase();
+  } catch { tipH = 0; }
+  // assessHeader answers prev before height. A block that does not link to
+  // this tip is prev, so parent repair can ask for that header. A lied
+  // height on a block that does link stays height and does not walk ancestors.
+  const parentHex = headerPrevHash(block.header);
+  const links = parentHex ? parentHex === tipHash : tipHash === '';
+  if (!links) return { ok: false, reason: 'prev' };
   // The next block is this tip plus one. A peer height field is not burial.
   const structuralH = tipH + 1;
   if (block.height != null && block.height !== '' && Number(block.height) !== structuralH) {

@@ -472,6 +472,9 @@ export function appendFluxBlock(live, block) {
     : emptyFluxset();
   const before = dest.pubs.length;
   absorbFluxBlock(dest.pubs, dest.commits, dest.spendTags, block);
+  // A block that adds no notes leaves the frontier bytes alone. Calling the
+  // native append anyway is what made a long run of empty ancestors quadratic.
+  if (dest.pubs.length === before) return dest;
   const added = pairsFrom(dest.pubs.slice(before), dest.commits.slice(before));
   installFrontiers(dest, added.dest, added.cs);
   return dest;
