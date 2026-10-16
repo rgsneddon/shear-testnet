@@ -81,7 +81,7 @@ import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
-import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
+import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from '../../crypto/spend.js';
 import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
@@ -1459,7 +1459,7 @@ export function buildTemplate({
   hashSpill = null,
   prepareCoinbase = null,
 }) {
-  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !tx?.coinbase && !txNoteRuleRejected(tx, 1));
+  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !tx?.coinbase && !txNoteRuleRejected(tx, 1) && !feeFieldRejected(tx) && !bSpendFeeRejected(tx));
   const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
@@ -1537,7 +1537,10 @@ export function buildTemplate({
     hashAcceptedSeries: series,
     hashSpill: spillBatch,
   });
-  const fees = (txs || []).reduce((a, t) => a + Math.max(0, Math.floor(Number(t.fee || 0))), 0);
+  const fees = (txs || []).reduce((a, t) => {
+    const n = postedFeeNanos(t);
+    return a + (n == null || n < 0 ? 0 : n);
+  }, 0);
   const split = splitLevy(fees);
   const finderWork = aLeavesFromShares(batch).reduce((a, l) => a + (Number(l.count) || 0), 0);
   if (finderWork > 0) {
@@ -2275,6 +2278,13 @@ function parentSpendView(chain) {
 }
 
 function verifyBlockConsensus(block, prev, opts = {}) {
+  const earlyTxs = Array.isArray(block?.txs) ? block.txs : [];
+  for (let i = 0; i < earlyTxs.length; i += 1) {
+    const feeHit = feeFieldRejected(earlyTxs[i]);
+    if (feeHit) return feeHit;
+    const spendFee = bSpendFeeRejected(earlyTxs[i]);
+    if (spendFee) return spendFee;
+  }
   const earlyObserve = coinbaseObserveRejected(block?.txs);
   if (earlyObserve) return earlyObserve;
   const gated = chainStage0Rejected([block]);
@@ -2922,7 +2932,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!bound.ok) return bound;
     const taxed = levyTaxed(tx);
     const need = levyNeed(tx, body.slice(0, i));
-    const paid = Math.floor(Number(tx.fee || 0));
+    const paid = postedFeeNanos(tx);
+    if (paid == null) return { ok: false, reason: 'fee' };
+    const spendFee = bSpendFeeRejected(tx);
+    if (spendFee) return spendFee;
     if (paid < need) return { ok: false, reason: 'levy' };
     if (taxed && paid > LEVY_CAP_NANOS) return { ok: false, reason: 'levy' };
     if (taxed && tx.maxLevy != null && need > Number(tx.maxLevy)) {

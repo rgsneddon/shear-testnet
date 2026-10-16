@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { bSpendVinRejected, compactTx } from '../../crypto/chronoflux.js';
+import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { createStore } from '../src/store.js';
 import { payerIdentity } from './b_leaf_fund.js';
@@ -83,6 +84,17 @@ describe('b-spend vin admission', () => {
         vout: [],
       });
       assert.equal(parked.reason, 'vin_link', parked.reason);
+      // Snap and suffix load skip verifyBlock and run this predicate.
+      assert.equal(chainBSpendsRejected([{
+        height: 1,
+        header: Buffer.alloc(80),
+        txs: [{ kind: 'b-spend', fee: 0, vin: [{ index: 1.5 }] }],
+      }])?.reason, 'vin_link');
+      assert.equal(chainBSpendsRejected([{
+        height: 1,
+        header: Buffer.alloc(80),
+        txs: [{ kind: 'b-spend', fee: 0, vin: [{ noteCommit: Buffer.alloc(16, 3) }] }],
+      }])?.reason, 'vin_link');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

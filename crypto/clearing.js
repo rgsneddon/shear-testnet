@@ -8,7 +8,8 @@ import { merkleRoot, merkleProof, merkleBound } from './merkle.js';
 import { packALeafV5, packBLeaf, packDigest } from './pack.js';
 import { noteCommitOfDest20, openedCoinbaseNanos, flowBLockNanos, verifyFlowConservation } from './note.js';
 import { hash20FromAddress, dest20MatchesSpendPub } from './address.js';
-import { spendPubFromTx, verifySpendSig } from './spend.js';
+import { spendPubFromTx, verifySpendSig, bSpendFeeRejected } from './spend.js';
+import { bSpendVinRejected } from './chronoflux.js';
 import { decodeHeader } from './header.js';
 import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 
@@ -328,6 +329,10 @@ export function chainBSpendsRejected(blocks) {
     const txs = Array.isArray(block?.txs) ? block.txs : [];
     for (const tx of txs) {
       if (!tx || tx.coinbase || tx.kind !== 'b-spend') continue;
+      const vinAdmit = bSpendVinRejected(tx);
+      if (vinAdmit) return vinAdmit;
+      const spendFee = bSpendFeeRejected(tx);
+      if (spendFee) return spendFee;
       let got;
       try {
         got = bindBSpend(tx, {
