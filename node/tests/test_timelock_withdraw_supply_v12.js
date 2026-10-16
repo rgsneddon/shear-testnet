@@ -61,7 +61,7 @@ import {
 import { chainLoadSealHash, coinbaseTx } from '../src/chain.js';
 import { createNoteLedger } from '../src/note_ledger.js';
 import { foldSupply } from '../src/supply.js';
-import { boundReserveWithdraw } from '../../crypto/spend.js';
+import { boundReserveWithdraw, verifyFundedBody } from '../../crypto/spend.js';
 
 const T0 = 1_700_000_000_000;
 const DRAW = T0 + RESERVE_EPOCH_MS;
@@ -402,5 +402,70 @@ describe('time-locked withdraw supply', () => {
       (await callReserve(session, encodePublicView(DRAW), { staticCall: true })).returnValue,
     );
     assert.equal(released.totalLockedNanos, 0);
+  });
+
+  it('rejects a withdraw when the header clock is missing', () => {
+    const dest = destOf();
+    const state = freshVault();
+    assert.equal(applyLock(state, plainLock(dest, T0, 'clock-legacy'), T0).ok, true);
+    assert.equal(applyLock(state, timeLock(dest, T0, 'clock-note'), T0, 2).ok, true);
+    const allCap = PI_SHE_NANOS * 2 + interestNanos(PI_SHE_NANOS * 2, GENESIS_BPS);
+    const loose = withdrawTx({ from: dest, to: dest, nanos: allCap, id: 'no-clock' });
+    for (const clock of [undefined, null, 0, Number.NaN]) {
+      const got = boundReserveWithdraw(loose, state, new Set(), clock);
+      assert.equal(got.ok, false, String(clock));
+      assert.equal(got.reason, 'insufficient', String(clock));
+    }
+    const funded = verifyFundedBody([loose], () => 0, { reserveState: state });
+    assert.equal(funded.reason, 'insufficient');
+    const withClock = boundReserveWithdraw(loose, state, new Set(), DRAW);
+    assert.equal(withClock.ok, false);
+    assert.equal(withClock.reason, 'insufficient');
+  });
+
+  it('accepts the pro-rata legacy and mixed withdraw and refuses one nano either side', () => {
+    const offsets = [
+      ['half', Math.floor(RESERVE_EPOCH_MS / 2)],
+      ['third', Math.floor(RESERVE_EPOCH_MS / 3)],
+      ['last-minute', RESERVE_EPOCH_MS - 60_000],
+    ];
+    for (const [label, offset] of offsets) {
+      for (const mixed of [false, true]) {
+        const dest = destOf();
+        const state = freshVault();
+        const when = T0 + offset;
+        const name = `${label}-${mixed ? 'mixed' : 'legacy'}`;
+        assert.equal(applyLock(state, plainLock(dest, when, `${name}-legacy`), when).ok, true, name);
+        if (mixed) {
+          assert.equal(applyLock(state, timeLock(dest, when, `${name}-note`), when, 2).ok, true, name);
+        }
+        const preview = previewWithdraw(state, dest, DRAW);
+        assert.equal(preview.principal, PI_SHE_NANOS, name);
+        assert.equal(preview.notePrincipal, mixed ? PI_SHE_NANOS : 0, name);
+        const full = interestNanos(mixed ? PI_SHE_NANOS * 2 : PI_SHE_NANOS, GENESIS_BPS);
+        assert.ok(preview.interest < full, `${name} interest ${preview.interest} full ${full}`);
+        assert.equal(preview.payout, preview.principal + preview.interest, name);
+        const exact = withdrawTx({ from: dest, to: dest, nanos: preview.payout, id: `${name}-exact` });
+        const bound = boundReserveWithdraw(exact, state, new Set(), DRAW);
+        assert.equal(bound.ok, true, `${name} ${bound.reason}`);
+        assert.equal(bound.principal, PI_SHE_NANOS, name);
+        assert.equal(bound.cap, preview.payout, name);
+        for (const delta of [-1, 1]) {
+          const off = withdrawTx({
+            from: dest,
+            to: dest,
+            nanos: preview.payout + delta,
+            id: `${name}-${delta}`,
+          });
+          const refused = boundReserveWithdraw(off, state, new Set(), DRAW);
+          assert.equal(refused.ok, false, `${name} ${delta}`);
+        }
+        const paid = withdraw({ state, dest, nowMs: DRAW });
+        assert.equal(paid.ok, true, `${name} ${paid.reason}`);
+        assert.equal(paid.principal, PI_SHE_NANOS, name);
+        assert.equal(paid.interest, preview.interest, name);
+        assert.equal(paid.payout, preview.payout, name);
+      }
+    }
   });
 });

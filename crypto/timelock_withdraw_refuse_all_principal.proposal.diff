@@ -73,14 +73,6 @@
   *
   * lockNoteSpendRejected only gates a spend before unlock. The bug was
   * withdraw() re-paying principal the note already carries. After the
-@@ -61,7 +59,6 @@
- import { chainLoadSealHash, coinbaseTx } from '../src/chain.js';
- import { createNoteLedger } from '../src/note_ledger.js';
- import { foldSupply } from '../src/supply.js';
--import { boundReserveWithdraw } from '../../crypto/spend.js';
- 
- const T0 = 1_700_000_000_000;
- const DRAW = T0 + RESERVE_EPOCH_MS;
 @@ -203,7 +200,7 @@
      assert.equal(got.held, 0);
    });

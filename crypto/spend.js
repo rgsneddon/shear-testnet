@@ -12,8 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
-import { interestNanos } from './reserve_oracle.js';
-import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId } from './reserve_vault.js';
+import { portalEpochInterest, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -812,7 +811,10 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
 
 /**
  * A withdraw pays only stake that is already locked. Principal 0 cannot
- * withdraw any amount. The cap is principal plus this epoch's interest.
+ * withdraw any amount. The cap is the withdrawable legacy principal plus
+ * the pro-rata interest due at the header time. A missing header time
+ * pays no principal. interestNanos(staked, bps) is one full epoch, and a
+ * mid-epoch lock does not earn that figure.
  */
 export function boundReserveWithdraw(tx, reserveState = null, drawn = null, clockMs = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
@@ -830,17 +832,15 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
   const portals = reserveState?.portals || {};
   const dest = ref.from;
   let portal = (ref.id && portals[ref.id]) || (dest && portals[dest]) || null;
-  const staked = Math.max(0, Math.floor(Number(portal?.staked || 0)));
-  const idle = Math.max(0, Math.floor(Number(portal?.idle || 0)));
-  const locked = staked + idle;
   const clock = Number(clockMs);
+  // No header time is not a license to pay every locked nanos.
   const duePrincipal = Number.isFinite(clock) && clock > 0
     ? Math.max(0, Math.floor(Number(withdrawablePrincipal(reserveState, portal, clock)) || 0))
-    : locked;
+    : 0;
   const principal = duePrincipal;
   if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
-  const bps = Math.max(0, Math.floor(Number(reserveState?.epochBps || 0)));
-  const cap = principal + interestNanos(staked, bps);
+  const due = Math.max(0, Math.floor(Number(portalEpochInterest(reserveState, portal, clock)) || 0));
+  const cap = principal + due;
   if (claimed > cap) return { ok: false, reason: 'insufficient' };
   if (portal?.payout) {
     const want = hash20FromAddress(portal.payout);
@@ -860,8 +860,8 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
     return { ok: false, reason: 'mint_forbidden' };
   }
   // The label is not an amount. The output must open to exactly the
-  // withdrawable legacy principal plus this epoch's interest. A time-locked
-  // note is not part of that principal.
+  // withdrawable legacy principal plus the pro-rata interest due at the
+  // header clock. A time-locked note is not part of that principal.
   if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
     return { ok: false, reason: 'mint_amount' };
   }

@@ -67,7 +67,7 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
       const exact = boundReserveWithdraw(bare, {
         epochBps: 0,
         portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0 } },
-      });
+      }, null, 1);
       assert.equal(exact.ok, false, String(nanos));
       assert.equal(exact.reason, 'mint_forbidden', `${nanos} ${exact.reason}`);
       const unlabeled = boundReserveWithdraw({
@@ -76,7 +76,7 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
       }, {
         epochBps: 0,
         portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0 } },
-      });
+      }, null, 1);
       assert.equal(unlabeled.reason, 'mint_amount', `${nanos} ${unlabeled.reason}`);
       const note = sealNote(nanos, { dest20: hash20FromAddress(dest), kind: 'withdraw' });
       const opened = boundReserveWithdraw({
@@ -89,7 +89,7 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         epochBps: 0,
         currentEpoch: 1,
         portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0 } },
-      });
+      }, null, 1);
       assert.equal(opened.ok, true, `${nanos} ${opened.reason}`);
       const body = verifyFundedBody([bare], () => 0, { reserveState: { portals: {}, epochBps: 0 } });
       assert.equal(body.ok, false);

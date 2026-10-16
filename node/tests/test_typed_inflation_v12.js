@@ -306,7 +306,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
           },
         },
       };
-      const cap = boundReserveWithdraw(redirected, state);
+      const cap = boundReserveWithdraw(redirected, state, null, 1);
       assert.equal(cap.reason, 'payout_mismatch', String(nanos));
       const foreign = {
         kind: 'withdraw',
@@ -396,13 +396,13 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vout: [{ ...opened, kind: 'withdraw', address: dest }],
       };
       const drawn = new Set();
-      const first = boundReserveWithdraw(tx, state, drawn);
+      const first = boundReserveWithdraw(tx, state, drawn, 1);
       assert.equal(first.ok, true, `${nanos} ${first.reason}`);
       drawn.add(first.mintId);
-      const second = boundReserveWithdraw({ ...tx, id: 'again' }, state, drawn);
+      const second = boundReserveWithdraw({ ...tx, id: 'again' }, state, drawn, 1);
       assert.equal(second.reason, 'double_mint', `${nanos} ${second.reason}`);
       state.mintedIds[first.mintId] = true;
-      const later = boundReserveWithdraw({ ...tx, id: 'later' }, state, new Set());
+      const later = boundReserveWithdraw({ ...tx, id: 'later' }, state, new Set(), 1);
       assert.equal(later.reason, 'double_mint', `${nanos} later ${later.reason}`);
 
       const foreign = boundReserveWithdraw({
@@ -413,7 +413,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         epochBps: 0,
         currentEpoch: 4,
         portals: { [id]: { ...portal } },
-      });
+      }, null, 1);
       assert.equal(foreign.reason, 'mint_forbidden', `${nanos} ${foreign.reason}`);
 
       const broken = sealNote(nanos, { dest20: hash20FromAddress(dest), kind: 'withdraw' });
@@ -425,7 +425,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         epochBps: 0,
         currentEpoch: 4,
         portals: { [id]: { ...portal } },
-      });
+      }, null, 1);
       assert.equal(unopened.reason, 'mint_amount', `${nanos} ${unopened.reason}`);
 
       const partial = sealNote(nanos > 1 ? nanos - 1 : 0, {
@@ -440,7 +440,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         epochBps: 0,
         currentEpoch: 9,
         portals: { [id]: { ...portal } },
-      });
+      }, null, 1);
       assert.equal(short.reason, 'mint_amount', `${nanos} short ${short.reason}`);
 
       const vault = emptyVault();

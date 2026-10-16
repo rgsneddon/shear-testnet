@@ -493,7 +493,7 @@ describe('per-withdraw interest spread', () => {
     assert.equal(reserveAction(beside).opened, true);
     assert.equal(explicitTypedKindRejected(beside)?.reason, 'kind');
     const parent = vaultAfterBlock(null, lock);
-    const bound = boundReserveWithdraw(beside, parent.vault);
+    const bound = boundReserveWithdraw(beside, parent.vault, null, DRAW);
     assert.equal(bound.ok, true, bound.reason);
   });
 

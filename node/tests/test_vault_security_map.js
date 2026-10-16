@@ -121,7 +121,7 @@ describe('Vault Security test map', () => {
       const home = signedWithdraw(who, state, payTo.dest, principal + reward);
       const foreign = signedWithdraw(who, state, spendDestOf(newIdentity().spendPub), principal + reward);
       assert.equal(verifyReservePayout(state, foreign, END).reason, 'payout_mismatch');
-      assert.equal(boundReserveWithdraw(foreign, state).reason, 'payout_mismatch');
+      assert.equal(boundReserveWithdraw(foreign, state, null, END).reason, 'payout_mismatch');
       assert.equal(verifyReservePayout(state, home, END).ok, true, verifyReservePayout(state, home, END).reason);
     }
   });
@@ -208,7 +208,7 @@ describe('Vault Security test map', () => {
         const wrong = signedWithdraw(who, state, spendDestOf(newIdentity().spendPub), active + idle + reward);
         assert.equal(verifyReservePayout(state, wrong, END).reason, 'payout_mismatch');
         const fat = signedWithdraw(who, state, who.dest, active + idle + reward + 1);
-        assert.equal(boundReserveWithdraw(fat, state).reason, 'insufficient');
+        assert.equal(boundReserveWithdraw(fat, state, null, END).reason, 'insufficient');
       }
     }
   });
@@ -230,7 +230,7 @@ describe('Vault Security test map', () => {
       }
       assert.equal(verifyReservePortalOpen(good), true);
       assert.equal(reserveAuth(good, state).ok, true, reserveAuth(good, state).reason);
-      assert.equal(boundReserveWithdraw(good, state).ok, true, boundReserveWithdraw(good, state).reason);
+      assert.equal(boundReserveWithdraw(good, state, null, END).ok, true, boundReserveWithdraw(good, state, null, END).reason);
     }
   });
 
@@ -449,7 +449,7 @@ describe('Vault Security test map', () => {
         tx.kind = kind === 'reserve-reward' ? 'withdraw' : kind;
         tx.mint = true;
         if (kind === 'reserve-reward') {
-          assert.equal(boundReserveWithdraw(tx, state).reason, 'mint_forbidden');
+          assert.equal(boundReserveWithdraw(tx, state, null, END).reason, 'mint_forbidden');
         }
       }
     }
