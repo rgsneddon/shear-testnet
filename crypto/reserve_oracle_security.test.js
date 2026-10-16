@@ -552,7 +552,7 @@ describe('oracle security pack (attester keys held)', () => {
       components: [{ id: 'FED', tenths: 9999 }],
     }, T0);
     assert.equal(view.displayOnly, true);
-    assert.equal(view.snapshotIgnored, true);
+    assert.equal(view.callerBasketIgnored, true);
     assert.equal(view.wouldFreezeBps, GENESIS_BPS);
     assert.equal(view.annualBps, GENESIS_BPS);
     assert.equal(freezeEpochBps({ prevEpochBps: 0, annualBps: 9999, observedAtMs: T0, nowMs: T0 }), GENESIS_BPS);
