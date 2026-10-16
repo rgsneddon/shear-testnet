@@ -15,7 +15,7 @@ import { unitsForShare, shareWorkBits, nonceWithShareTarget } from '../../crypto
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
 import { auditCirculatingSupply, emptySupplyState, supplyReport } from '../src/supply.js';
-import { networkSupplySettled, explorerCirculation } from '../../pool/src/wallet_api.js';
+import { networkSupply, networkSupplySettled, explorerCirculation } from '../../pool/src/wallet_api.js';
 
 const GENESIS = 1_700_000_000_000;
 const EPOCH_MS = EPOCH_DAYS_TESTNET * MS_PER_DAY;
@@ -124,6 +124,43 @@ describe('v12 circulating supply is the public mint', () => {
     });
     assert.equal(clean.status, 'verified', clean.reason);
     assert.equal(clean.differenceNanos, 0);
+  });
+
+  it('the explorer tip path publishes vault principal and accrued interest', () => {
+    const state = emptySupplyState(GENESIS);
+    const hash = Buffer.alloc(32, 4);
+    state.height = 1;
+    state.blockHash = hash;
+    const vault = {
+      totalLockedNanos: 5,
+      mintBankNanos: 2,
+      portals: { a: { staked: 5, idle: 0, claimableRewards: 1 } },
+    };
+    const store = {
+      blocks: [{ height: 1, hash, txs: [] }],
+      tip: () => ({ height: 1, hash }),
+      reserveVault: vault,
+      supplyState: () => state,
+    };
+    const published = networkSupply(store);
+    assert.equal(published.supplyStatus, 'verified', published.supplyReason);
+    assert.equal(published.vaultPrincipalNanos, 5);
+    assert.equal(published.vaultAccruedNanos, 3);
+    assert.equal(published.noteBackedPrincipalNanos, 5);
+    assert.equal(published.mintedInterestNanos, 3);
+    assert.equal(published.differenceNanos, 0);
+    assert.equal(published.lockedNanos, 5);
+    const circ = explorerCirculation(store);
+    assert.equal(circ.supplyStatus, 'verified');
+    assert.equal(circ.vaultPrincipalNanos, 5);
+    assert.equal(circ.vaultAccruedNanos, 3);
+    assert.equal(circ.noteBackedPrincipalNanos, 5);
+    assert.equal(circ.mintedInterestNanos, 3);
+    const empty = networkSupply({ blocks: [], reserveVault: vault, supplyState: () => null });
+    assert.equal(empty.supplyStatus, 'verified', empty.supplyReason);
+    assert.equal(empty.vaultPrincipalNanos, 5);
+    assert.equal(empty.vaultAccruedNanos, 3);
+    assert.equal(empty.differenceNanos, 0);
   });
 
   it('verifies any pot partition and mismatches any other amount', async () => {
