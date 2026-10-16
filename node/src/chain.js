@@ -81,7 +81,7 @@ import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected } from '../../crypto/chronoflux.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -2914,6 +2914,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (!stake.ok) return stake;
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;
+    const claimAuth = rewardClaimRejected(tx, reserveState);
+    if (claimAuth) return claimAuth;
+    const withdrawAuth = withdrawRewardRejected(reserveState, tx, Number(decoded.timestamp) || 0);
+    if (withdrawAuth) return withdrawAuth;
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
     const bound = verifyPoolWithdrawBound(tx);
     if (!bound.ok) return bound;

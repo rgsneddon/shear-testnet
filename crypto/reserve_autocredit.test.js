@@ -24,6 +24,7 @@ import {
   lockStampRejected,
   lockTx,
   lockNoteSpendRejected,
+  packRewardAuth,
   packRewardProof,
   portalEpochInterest,
   portalIdFromDest,
@@ -31,6 +32,7 @@ import {
   rewardClaimProof,
   rewardClaimTx,
   rewardCommitment,
+  rewardOwnerCommit,
   txIsReserveAction,
   rewardLeaf,
   stakeRewardSupply,
@@ -230,13 +232,23 @@ describe('time-locked lock notes', () => {
   });
 });
 
-function lockPortal(state, dest, when = T0 + 1_000) {
+function holder() {
+  const id = newIdentity();
+  return {
+    dest: spendDestOf(id.spendPub),
+    pub: Buffer.from(id.spendPub).toString('hex'),
+    key: id.privateKey,
+  };
+}
+
+function lockPortal(state, dest, when = T0 + 1_000, ownerPub = null) {
   return deposit({
     state,
     dest,
     nanos: PI_SHE_NANOS,
     nowMs: when,
     payout: dest,
+    ownerPub: ownerPub || undefined,
   });
 }
 
@@ -300,10 +312,11 @@ describe('aggregated reward root', () => {
   });
 
   it('mints a claim once, rejects a second claim and a withdraw, and still pays epochs later', () => {
-    const lockDest = who();
+    const alice = holder();
+    const lockDest = alice.dest;
     const payDest = who();
     const state = vault();
-    assert.equal(lockPortal(state, lockDest).ok, true);
+    assert.equal(lockPortal(state, lockDest, T0 + 1_000, alice.pub).ok, true);
     const draw = T0 + RESERVE_EPOCH_MS + 1;
     const plan = rewardCommitment(state, draw);
     const row = plan.rows[0];
@@ -324,6 +337,7 @@ describe('aggregated reward root', () => {
       nullifier: row.nullifier,
       proof,
       id: 'claim-once',
+      ownerKey: alice.key,
     });
     assert.equal(claim.kind, KIND_REWARD_CLAIM);
     assert.equal(claim.portalId, undefined);
@@ -346,7 +360,7 @@ describe('aggregated reward root', () => {
     const supply = stakeRewardSupply(state, { txs: [{ coinbase: true, vout: [] }, claim] }, later);
     assert.equal(supply.ok, false);
     const fresh = vault();
-    assert.equal(lockPortal(fresh, lockDest).ok, true);
+    assert.equal(lockPortal(fresh, lockDest, T0 + 1_000, alice.pub).ok, true);
     const againPlan = rewardCommitment(fresh, draw);
     const other = who();
     assert.equal(lockPortal(fresh, other).ok, true);
@@ -366,6 +380,7 @@ describe('aggregated reward root', () => {
       nullifier: one.nullifier,
       proof: rewardClaimProof(fresh, one.nullifier),
       id: 'claim-one',
+      ownerKey: alice.key,
     });
     const block = { height: 4, txs: [{ coinbase: true, vout: [] }, claimOne] };
     assert.equal(applyReserveBlock({
@@ -377,8 +392,13 @@ describe('aggregated reward root', () => {
     const summed = stakeRewardSupply(fresh, block, later);
     assert.equal(summed.ok, false);
     const beforeClaim = vault();
-    assert.equal(lockPortal(beforeClaim, lockDest).ok, true);
-    assert.equal(lockPortal(beforeClaim, other).ok, true);
+    const bob = holder();
+    assert.equal(lockPortal(beforeClaim, lockDest, T0 + 1_000, alice.pub).ok, true);
+    assert.equal(lockPortal(beforeClaim, bob.dest, T0 + 1_000, bob.pub).ok, true);
+    const owners = {
+      [portalIdFromDest(lockDest)]: alice,
+      [portalIdFromDest(bob.dest)]: bob,
+    };
     const open = rewardCommitment(beforeClaim, draw);
     const only = open.rows[0];
     const supplyState = beforeClaim;
@@ -400,6 +420,7 @@ describe('aggregated reward root', () => {
           nullifier: only.nullifier,
           proof: supplyProof,
           id: 'claim-supply',
+          ownerKey: owners[only.portalId].key,
         }),
       ],
     };
@@ -424,6 +445,7 @@ describe('aggregated reward root', () => {
       nullifier: only.nullifier,
       proof: supplyProof,
       id: 'claim-again',
+      ownerKey: owners[only.portalId].key,
     });
     const doubled = applyReserveBlock({
       state: supplyState,
@@ -485,15 +507,16 @@ describe('aggregated reward root', () => {
   });
 
   it('matches the EVM root and then rejects a second claim and a withdraw', async () => {
-    const dest = who();
+    const alice = holder();
+    const dest = alice.dest;
     const state = vault();
     const when = T0 + 1_000;
-    assert.equal(lockPortal(state, dest, when).ok, true);
+    assert.equal(lockPortal(state, dest, when, alice.pub).ok, true);
     const draw = T0 + RESERVE_EPOCH_MS + 1;
     const plan = rewardCommitment(state, draw);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, when))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, when, rewardOwnerCommit(alice.pub)))).ok, true);
     const committed = await callReserve(session, encodeCommitRewards(draw, plan.root));
     assert.equal(committed.ok, true, committed.reason);
     assert.equal(decodeBytes32(committed.returnValue), plan.root);
@@ -502,11 +525,21 @@ describe('aggregated reward root', () => {
       rewardBook: { [row.nullifier]: { nanos: row.nanos, rootKey: String(plan.index), portalId: row.portalId } },
       rewardSets: { [String(plan.index)]: plan.rows },
     };
-    const proof = packRewardProof(rewardClaimProof(preview, row.nullifier));
-    const claimed = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof));
+    const steps = rewardClaimProof(preview, row.nullifier);
+    const proof = packRewardProof(steps);
+    const signed = rewardClaimTx({
+      to: who(),
+      nanos: row.nanos,
+      nullifier: row.nullifier,
+      proof: steps,
+      ownerKey: alice.key,
+      id: 'evm-once',
+    });
+    const auth = packRewardAuth({ ownerPub: alice.pub, sig: signed.sig, dest: signed.to });
+    const claimed = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof, plan.index, auth));
     assert.equal(claimed.ok, true, claimed.reason);
     assert.equal(decodeBytes32(claimed.returnValue), row.nanos.toString(16).padStart(64, '0'));
-    const again = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof));
+    const again = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof, plan.index, auth));
     assert.equal(again.ok, false);
     const held = decodePublicView(
       (await callReserve(session, encodePublicView(draw), { staticCall: true })).returnValue,

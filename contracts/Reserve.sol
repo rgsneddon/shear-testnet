@@ -9,12 +9,15 @@ pragma solidity ^0.8.20;
  * Coin locked while at least the stake cutoff remains is an active
  * lock and can vote. Coin locked in the final stake window is idle for
  * that epoch: it misses only that epoch's reward, and its owner can still
- * vote. Later full epochs of that credit still pay when the portal's
- * pre-cutoff sum is at least π. Mainnet's window is the last 99 days.
- * Testnet's window is the last quarter of the epoch. A lock or top-up
- * made before that window earns only when the sum of those pre-cutoff
- * credits is at least π. Below π the stake reward is 0, and a settle
- * while the sum is still short does not mark those credits paid.
+ * vote. From the next epoch on, that coin counts toward π. π is judged
+ * per epoch. An epoch counts every pre-cutoff credit, including a later
+ * top-up, plus every post-cutoff credit that has entered a full epoch.
+ * Below π that epoch pays 0, and a settle does not mark it paid.
+ * Mainnet's window is the last 99 days. Testnet's window is the last
+ * quarter of the epoch. A claim is signed by the portal owner over the
+ * nullifier, the amount, the proof, and the payout. The lock dest is not
+ * on the claim. The signature does publish the spend key, so a reader who
+ * saved that key from the lock can match them.
  * A qualifying credit earns its epoch's rate times the time still left in
  * that chain epoch, by integer floor, then each later full epoch before
  * the open one. Coin added inside the window does not count toward π. A
@@ -66,6 +69,7 @@ error NeedPayout();
 error ClockUnpinned();
 error AlreadyMinted();
 error NotePrincipal();
+error Unsigned();
 
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
@@ -140,6 +144,10 @@ contract Reserve {
     mapping(bytes32 => bytes32) internal portalSha;
     bytes32[] internal portalKeys;
     mapping(bytes32 => bool) internal portalListed;
+    /// Portal id → sha256("shear-reward-owner-v1" || ownerPub). Zero means unset.
+    mapping(bytes32 => bytes32) internal ownerOf;
+    /// Ed25519 verify precompile. Input is pubkey || sig || message. Output is uint256 1.
+    address internal constant ED25519 = address(0x101);
     /// Settlement index → merkle root the node already computed.
     mapping(uint256 => bytes32) internal rewardRootOf;
     /// Settlement indexes that have a stored root, in commit order.
@@ -325,30 +333,45 @@ contract Reserve {
         }
     }
 
-    /// The arrival epoch pays the time still left. Later full epochs pay
-    /// through the open index, so a finished gap is included and the open
-    /// epoch is not. A pre-cutoff sum below π earns nothing, and that
-    /// settle does not mark the credit paid.
+    /// Stake that counts toward π in `epoch`. Pre-cutoff credits count in
+    /// every epoch, including a later top-up. A post-cutoff credit counts
+    /// once the epoch is after the one it arrived in. Remain 0 is a legacy
+    /// credit and does not count.
+    function _qualifyingStake(Portal storage p, uint256 epoch, uint256 cut) internal view returns (uint256 sum) {
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            Tranche storage t = p.tranches[i];
+            if (t.remainMs >= cut) sum += t.amount;
+            else if (t.remainMs > 0 && epoch > t.epoch) sum += t.amount;
+        }
+    }
+
+    /// The arrival epoch pays the time still left when that epoch's stake
+    /// is at least π. Later full epochs pay on their own qualification, so
+    /// a post-cutoff π misses only its arrival epoch. An epoch still under
+    /// π is not marked paid.
     function _settle(Portal storage p, uint256 nowTs) internal {
         uint256 nowIdx = _payIndex(nowTs);
         uint256 span = epochLengthMs();
         uint256 cut = cutoffLengthMs();
-        bool qualified = _preCutoffStake(p, cut) >= PI_NANOS;
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
-            if (!qualified) continue;
             if (!t.partialPaid && nowIdx > t.epoch) {
-                if (t.remainMs >= cut) {
+                if (t.remainMs >= cut && _qualifyingStake(p, t.epoch, cut) >= PI_NANOS) {
                     p.accruedReward += _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
+                    t.partialPaid = true;
+                } else if (t.remainMs < cut) {
+                    t.partialPaid = true;
                 }
-                t.partialPaid = true;
             }
-            if (nowIdx > t.fullFrom) {
-                for (uint256 e = t.fullFrom; e < nowIdx; e++) {
+            if (nowIdx > t.fullFrom && t.remainMs > 0) {
+                uint256 e = t.fullFrom;
+                for (; e < nowIdx; e++) {
+                    if (_qualifyingStake(p, e, cut) < PI_NANOS) break;
                     p.accruedReward += (t.amount * _rateFor(e)) / 10000;
                 }
-                t.fullFrom = nowIdx;
+                t.fullFrom = e;
             }
         }
     }
@@ -467,13 +490,13 @@ contract Reserve {
         _applyEpochRate(nowTs, false);
     }
 
-    function lock(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
-        _lock(dest, nanos, nowTs, false);
+    function lock(bytes calldata dest, uint256 nanos, uint256 nowTs, bytes32 ownerCommit) external onlyShear {
+        _lock(dest, nanos, nowTs, false, ownerCommit);
     }
 
     /// Same credit as lock, with the time-locked note flag set.
-    function lockNote(bytes calldata dest, uint256 nanos, uint256 nowTs, bool notePrincipal) external onlyShear {
-        _lock(dest, nanos, nowTs, notePrincipal);
+    function lockNote(bytes calldata dest, uint256 nanos, uint256 nowTs, bool notePrincipal, bytes32 ownerCommit) external onlyShear {
+        _lock(dest, nanos, nowTs, notePrincipal, ownerCommit);
     }
 
     /// A withdraw in this block keeps this portal's legacy principal.
@@ -504,7 +527,7 @@ contract Reserve {
         delete heldShas;
     }
 
-    function _lock(bytes calldata dest, uint256 nanos, uint256 nowTs, bool notePrincipal) internal {
+    function _lock(bytes calldata dest, uint256 nanos, uint256 nowTs, bool notePrincipal, bytes32 ownerCommit) internal {
         if (nanos == 0) revert BadAmount();
         if (dest.length == 0) revert BadDest();
         if (clockGenesis == 0) revert ClockUnpinned();
@@ -517,6 +540,11 @@ contract Reserve {
             portalSha[id] = sha256(abi.encodePacked("shear-portal-v1", dest));
         }
         Portal storage p = portals[id];
+        if (ownerCommit != bytes32(0)) {
+            bytes32 prior = ownerOf[id];
+            if (prior != bytes32(0) && prior != ownerCommit) revert Unsigned();
+            if (prior == bytes32(0)) ownerOf[id] = ownerCommit;
+        }
         _settle(p, nowTs);
         bool staking = canJoin(nowTs);
         if (staking) p.active += nanos;
@@ -549,7 +577,7 @@ contract Reserve {
     }
 
     function addMore(bytes calldata dest, uint256 nanos, uint256 nowTs) external onlyShear {
-        this.lock(dest, nanos, nowTs);
+        _lock(dest, nanos, nowTs, false, bytes32(0));
     }
 
     function vote(bytes calldata dest, Vote choice, uint256 nowTs) external onlyShear {
@@ -654,8 +682,63 @@ contract Reserve {
         return out;
     }
 
-    function _leaf(bytes32 nullifier, uint256 nanos) internal pure returns (bytes32) {
-        return sha256(abi.encodePacked("shear-reward-leaf-v1", nullifier, _u64le(nanos)));
+    function _ownerCommit(bytes32 ownerPub) internal pure returns (bytes32) {
+        return sha256(abi.encodePacked("shear-reward-owner-v1", ownerPub));
+    }
+
+    function _leaf(bytes32 nullifier, uint256 nanos, bytes32 ownerPub) internal pure returns (bytes32) {
+        return sha256(abi.encodePacked(
+            "shear-reward-leaf-v1",
+            nullifier,
+            _u64le(nanos),
+            _ownerCommit(ownerPub)
+        ));
+    }
+
+    function _u32le(uint256 n) internal pure returns (bytes memory) {
+        bytes memory out = new bytes(4);
+        uint256 v = n;
+        for (uint256 i = 0; i < 4; i++) {
+            out[i] = bytes1(uint8(v));
+            v >>= 8;
+        }
+        return out;
+    }
+
+    function _authMessage(
+        bytes memory tag,
+        bytes32 nullifier,
+        uint256 nanos,
+        bytes calldata proof,
+        bytes calldata dest
+    ) internal pure returns (bytes memory) {
+        return abi.encodePacked(tag, nullifier, _u64le(nanos), _u32le(proof.length), proof, _u32le(dest.length), dest);
+    }
+
+    function _ed25519(bytes32 ownerPub, bytes calldata sig, bytes memory message) internal view returns (bool) {
+        if (sig.length != 64) return false;
+        (bool ok, bytes memory out) = ED25519.staticcall(abi.encodePacked(ownerPub, sig, message));
+        return ok && out.length == 32 && uint256(bytes32(out)) == 1;
+    }
+
+    function _authPub(bytes calldata auth) internal pure returns (bytes32) {
+        return bytes32(auth[0:32]);
+    }
+
+    /// auth is ownerPub(32) || sig(64) || dest. proof may be empty.
+    function _authOk(
+        bytes memory tag,
+        bytes32 id,
+        uint256 nanos,
+        bytes calldata proof,
+        bytes calldata auth
+    ) internal view returns (bool) {
+        if (auth.length < 96) return false;
+        return _ed25519(
+            _authPub(auth),
+            auth[32:96],
+            _authMessage(tag, id, nanos, proof, auth[96:])
+        );
     }
 
     function _verify(bytes32 leaf, bytes calldata proof, bytes32 root) internal pure returns (bool) {
@@ -684,22 +767,22 @@ contract Reserve {
         Portal storage p = portals[id];
         uint256 span = epochLengthMs();
         uint256 cut = cutoffLengthMs();
-        bool qualified = _preCutoffStake(p, cut) >= PI_NANOS;
-        if (!qualified || nowIdx == 0) return (new uint256[](0), new uint256[](0));
+        if (nowIdx == 0) return (new uint256[](0), new uint256[](0));
         uint256[] memory sums = new uint256[](nowIdx);
         bool[] memory hit = new bool[](nowIdx);
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
-            if (t.remainMs >= cut && !t.partialPaid && nowIdx > t.epoch && t.epoch < nowIdx) {
+            if (t.remainMs >= cut && !t.partialPaid && nowIdx > t.epoch && _qualifyingStake(p, t.epoch, cut) >= PI_NANOS) {
                 uint256 part = _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
                 if (part > 0) {
                     sums[t.epoch] += part;
                     hit[t.epoch] = true;
                 }
             }
-            if (nowIdx > t.fullFrom) {
+            if (nowIdx > t.fullFrom && t.remainMs > 0) {
                 for (uint256 e = t.fullFrom; e < nowIdx; e++) {
+                    if (_qualifyingStake(p, e, cut) < PI_NANOS) break;
                     uint256 full = (t.amount * _rateFor(e)) / 10000;
                     if (full > 0) {
                         sums[e] += full;
@@ -753,13 +836,16 @@ contract Reserve {
     function _interestArchived(Portal storage p, uint256 nowIdx) internal view returns (bool) {
         if (rewardEpochs.length == 0 || nowIdx == 0) return false;
         uint256 cut = cutoffLengthMs();
-        if (_preCutoffStake(p, cut) < PI_NANOS) return false;
+        uint256 span = epochLengthMs();
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
-            if (t.remainMs >= cut && !t.partialPaid && nowIdx > t.epoch && _rootCovers(t.epoch, nowIdx)) return true;
-            if (nowIdx > t.fullFrom) {
-                for (uint256 e = t.fullFrom; e < nowIdx; e++) {
+            if (t.remainMs >= cut && nowIdx > t.epoch && _qualifyingStake(p, t.epoch, cut) >= PI_NANOS) {
+                if (_partial(t.amount, _rateFor(t.epoch), t.remainMs, span) > 0 && _rootCovers(t.epoch, nowIdx)) return true;
+            }
+            if (t.remainMs > 0 && nowIdx > t.epoch + 1) {
+                for (uint256 e = t.epoch + 1; e < nowIdx; e++) {
+                    if (_qualifyingStake(p, e, cut) < PI_NANOS) break;
                     if ((t.amount * _rateFor(e)) / 10000 == 0) continue;
                     if (_rootCovers(e, nowIdx)) return true;
                 }
@@ -773,13 +859,16 @@ contract Reserve {
     function _hasPriorArchive(Portal storage p, uint256 nowIdx) internal view returns (bool) {
         if (rewardEpochs.length == 0 || nowIdx == 0) return false;
         uint256 cut = cutoffLengthMs();
-        if (_preCutoffStake(p, cut) < PI_NANOS) return false;
+        uint256 span = epochLengthMs();
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
-            if (t.remainMs >= cut && !t.partialPaid && nowIdx > t.epoch && _archived(t.epoch, nowIdx)) return true;
-            if (nowIdx > t.fullFrom) {
-                for (uint256 e = t.fullFrom; e < nowIdx; e++) {
+            if (t.remainMs >= cut && nowIdx > t.epoch && _qualifyingStake(p, t.epoch, cut) >= PI_NANOS) {
+                if (_partial(t.amount, _rateFor(t.epoch), t.remainMs, span) > 0 && _archived(t.epoch, nowIdx)) return true;
+            }
+            if (t.remainMs > 0 && nowIdx > t.epoch + 1) {
+                for (uint256 e = t.epoch + 1; e < nowIdx; e++) {
+                    if (_qualifyingStake(p, e, cut) < PI_NANOS) break;
                     if ((t.amount * _rateFor(e)) / 10000 == 0) continue;
                     if (_archived(e, nowIdx)) return true;
                 }
@@ -835,24 +924,29 @@ contract Reserve {
         return root;
     }
 
-    /// Mint one leaf whose proof reaches a stored root. A second call reverts.
+    /// Mint one leaf whose proof reaches the root stored at `rootIndex`.
+    /// The index is the settlement index. The call does not scan every root.
+    /// `auth` is ownerPub(32) || sig(64) || payout dest. The lock dest is not an argument.
     /// The claim does not release principal.
-    function claim(bytes32 nullifier, uint256 nanos, bytes calldata proof) external onlyShear returns (uint256) {
-        if (nanos == 0) revert BadAmount();
+    function claim(
+        bytes32 nullifier,
+        uint256 nanos,
+        uint256 rootIndex,
+        bytes calldata proof,
+        bytes calldata auth
+    ) external onlyShear returns (uint256) {
+        if (nanos == 0 || nanos > 9007199254740991) revert BadAmount();
+        if (auth.length < 96) revert Unsigned();
         if (nullifierMinted[nullifier] || settledByWithdraw[nullifier]) revert AlreadyMinted();
-        bytes32 leaf = _leaf(nullifier, nanos);
-        uint256 n = rewardEpochs.length;
-        for (uint256 i = 0; i < n; i++) {
-            bytes32 root = rewardRootOf[rewardEpochs[i]];
-            if (root != bytes32(0) && _verify(leaf, proof, root)) {
-                nullifierMinted[nullifier] = true;
-                return nanos;
-            }
-        }
-        revert BadAmount();
+        bytes32 root = rewardRootOf[rootIndex];
+        if (root == bytes32(0)) revert BadAmount();
+        if (!_verify(_leaf(nullifier, nanos, _authPub(auth)), proof, root)) revert BadAmount();
+        if (!_authOk("shear-reward-auth-v1", nullifier, nanos, proof, auth)) revert Unsigned();
+        nullifierMinted[nullifier] = true;
+        return nanos;
     }
 
-    function withdraw(bytes calldata dest, uint256 nowTs) external onlyShear returns (uint256 principal, uint256 reward) {
+    function withdraw(bytes calldata dest, uint256 nowTs, bytes calldata auth) external onlyShear returns (uint256 principal, uint256 reward) {
         // Each deposit unlocks at the end of its own lock epoch. A later
         // top-up does not re-lock principal whose epoch has already ended.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
@@ -899,6 +993,10 @@ contract Reserve {
         // Each completed chain epoch pays at the rate committed for that epoch.
         // A reserved reward stays with the claim. This pays principal only.
         reward = rewardHeld ? 0 : p.accruedReward;
+        if (reward > 0 && ownerOf[id] != bytes32(0)) {
+            if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
+            if (!_authOk("shear-reward-withdraw-v1", portalSha[id], reward, auth[0:0], auth)) revert Unsigned();
+        }
         p.accruedReward = 0;
         if (release > active) {
             uint256 rest = release - active;

@@ -10,7 +10,7 @@ import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
 import { lockTx, withdrawTx, reserveAction } from '../../crypto/reserve_vault.js';
 import { verifySealedNote } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
-import { auditCirculatingSupply, foldSupply, supplyStep, emptySupplyState } from '../src/supply.js';
+import { auditCirculatingSupply, foldSupply, supplyReport, supplyStep, emptySupplyState } from '../src/supply.js';
 
 const GENESIS = 1_700_000_000_000;
 const EPOCH_MS = EPOCH_DAYS_TESTNET * MS_PER_DAY;
@@ -176,6 +176,30 @@ describe('v12 supply counts reserve interest from the chain', () => {
         }
       }
     }
+  });
+
+  it('counts locked principal in the total supply', () => {
+    const stake = PI_SHE_NANOS;
+    const miner = minerDest();
+    const portal = portalDest();
+    const lock = lockBlock(GENESIS, miner, [portal], stake);
+    const folded = foldSupply([lock], { genesisMs: GENESIS });
+    assert.equal(folded.ok, true, folded.reason);
+    assert.equal(folded.state.vaultPrincipal, BigInt(stake));
+    const report = supplyReport(folded.state);
+    assert.equal(report.status, 'verified', report.reason);
+    assert.equal(report.vaultPrincipalNanos, stake);
+    assert.equal(report.totalNanos, report.circulatingNanos + stake);
+    const lockedAudit = auditCirculatingSupply([lock]);
+    assert.equal(lockedAudit.status, 'verified', lockedAudit.reason);
+    assert.equal(lockedAudit.vaultPrincipalNanos, stake);
+    assert.equal(lockedAudit.totalNanos, lockedAudit.circulatingNanos + stake);
+    const drawTs = GENESIS + EPOCH_MS + 1;
+    const one = earned(stake, GENESIS, drawTs);
+    const paid = auditCirculatingSupply([lock, drawBlock(drawTs, miner, [portal], stake + one)]);
+    assert.equal(paid.status, 'verified', paid.reason);
+    assert.equal(paid.vaultPrincipalNanos, 0);
+    assert.equal(paid.totalNanos, paid.circulatingNanos);
   });
 
   it('rejects a receipt that is not principal plus interest, and a second withdraw of the same portal', () => {

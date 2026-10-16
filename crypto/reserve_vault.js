@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, sign, verify } from 'node:crypto';
 import {
   RESERVE_PROGRAM,
   PI_SHE_NANOS,
@@ -9,7 +9,7 @@ import {
   hashBonusUnitNanos,
   MAGIC_TESTNET,
 } from './asert.js';
-import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress } from './address.js';
+import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress, ED25519_SPKI_PREFIX, ed25519RawPub } from './address.js';
 import { attachAdmitPub } from './admit.js';
 import { fs1LeafFor } from './fs1_leaf.js';
 import { sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos, hashToScalar, scalarBytes } from './note.js';
@@ -46,8 +46,14 @@ export const KIND_VOTE = 'vote';
 export const STAKE_REWARD_KIND = 'stake-reward';
 /** User tx that mints one archived reward. It is not a coinbase row. */
 export const KIND_REWARD_CLAIM = 'reward-claim';
-/** Domain for one reward leaf: tag || nullifier(32) || nanos u64le. */
+/** Domain for one reward leaf: tag || nullifier(32) || nanos u64le || ownerCommit(32). */
 export const REWARD_LEAF_TAG = 'shear-reward-leaf-v1';
+/** ownerCommit = sha256(tag || ownerPub). The leaf binds the key. The claim does not carry the lock dest. */
+export const REWARD_OWNER_TAG = 'shear-reward-owner-v1';
+/** Claim signature: tag || nullifier || u64le(nanos) || u32le(proofLen) || proof || u32le(destLen) || dest. */
+export const REWARD_AUTH_TAG = 'shear-reward-auth-v1';
+/** Withdraw-that-pays-a-reward signature. Same body, different tag, so a claim cannot be replayed as a withdraw. */
+export const REWARD_WITHDRAW_TAG = 'shear-reward-withdraw-v1';
 
 /**
  * How many reserve actions one mempool, and one template, will trial.
@@ -224,14 +230,13 @@ export function stakeRewardsDue(state, nowMs) {
   for (const portal of Object.values(state.portals)) {
     if (!portal?.joined && !(portal?.tranches || []).length) continue;
     const byEpoch = new Map();
-    const qualified = stakeQualified(state, portal);
-    if (!qualified) continue;
     for (const tranche of portal.tranches || []) {
       const arrival = Math.floor(Number(tranche.epoch) || 0);
       if (
         earnsStakeReward(state, tranche)
         && !tranche.partialPaid
         && nowIdx > arrival
+        && epochQualifies(state, portal, arrival)
         && !rewardEpochArchived(state, arrival, nowIdx)
       ) {
         const part = partialInterest(
@@ -243,8 +248,9 @@ export function stakeRewardsDue(state, nowMs) {
         if (part > 0n) byEpoch.set(arrival, (byEpoch.get(arrival) || 0n) + part);
       }
       const from = Math.floor(Number(tranche.fullFrom ?? arrival + 1));
-      if (nowIdx > from) {
+      if (nowIdx > from && stakeRemain(tranche) > 0) {
         for (let e = from; e < nowIdx; e += 1) {
+          if (!epochQualifies(state, portal, e)) break;
           if (rewardEpochArchived(state, e, nowIdx)) continue;
           const full = epochInterestBig(asBig(tranche.amount), rateForEpoch(state, e));
           if (full > 0n) byEpoch.set(e, (byEpoch.get(e) || 0n) + full);
@@ -278,13 +284,103 @@ function u64le(value) {
   return b;
 }
 
-/** Leaf over one portal-epoch reward. The preimage is the nullifier and the amount. */
-export function rewardLeaf(nullifierHex, nanos) {
+/** 32-byte spend key, or 32 zero bytes when the portal has no owner yet. */
+export function rewardOwnerPub(ownerPubHex) {
+  const hex = String(ownerPubHex || '').replace(/^0x/i, '').toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(hex)) return Buffer.from(hex, 'hex');
+  return Buffer.alloc(32);
+}
+
+/** sha256(shear-reward-owner-v1 || ownerPub). The raw key is not in the leaf. */
+export function rewardOwnerCommit(ownerPubHex) {
+  return sha256Reward(Buffer.concat([Buffer.from(REWARD_OWNER_TAG), rewardOwnerPub(ownerPubHex)]));
+}
+
+/**
+ * Leaf over one portal-epoch reward.
+ * The preimage is the nullifier, the amount, and the owner commitment.
+ * A different key cannot reuse the proof.
+ */
+export function rewardLeaf(nullifierHex, nanos, ownerPubHex = '') {
   const id = Buffer.from(String(nullifierHex || ''), 'hex');
   if (id.length !== 32) return null;
   const n = BigInt(nanos);
   if (n <= 0n || n > 0xffffffffffffffffn) return null;
-  return sha256Reward(Buffer.concat([Buffer.from(REWARD_LEAF_TAG), id, u64le(n)]));
+  return sha256Reward(Buffer.concat([
+    Buffer.from(REWARD_LEAF_TAG),
+    id,
+    u64le(n),
+    rewardOwnerCommit(ownerPubHex),
+  ]));
+}
+
+function u32le(value) {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(value >>> 0);
+  return b;
+}
+
+/**
+ * Bytes the owner signs. `kind` is `claim` or `withdraw`.
+ * The destination is the payout, not the lock dest.
+ */
+export function rewardAuthMessage({ kind = 'claim', nullifier, nanos, proof, dest } = {}) {
+  const id = Buffer.from(String(nullifier || '').replace(/^0x/i, ''), 'hex');
+  if (id.length !== 32) return null;
+  const n = BigInt(nanos);
+  if (n <= 0n || n > 0xffffffffffffffffn) return null;
+  const packed = Buffer.isBuffer(proof) ? proof : packRewardProof(proof || []);
+  if (!packed) return null;
+  const destBuf = Buffer.from(String(dest || ''), 'utf8');
+  const tag = kind === 'withdraw' ? REWARD_WITHDRAW_TAG : REWARD_AUTH_TAG;
+  return Buffer.concat([
+    Buffer.from(tag),
+    id,
+    u64le(n),
+    u32le(packed.length),
+    packed,
+    u32le(destBuf.length),
+    destBuf,
+  ]);
+}
+
+/** Ed25519 over the auth message. Returns hex sig, or '' when the key cannot sign. */
+export function signRewardAuth(message, privateKey) {
+  if (!message || !privateKey) return '';
+  try {
+    return Buffer.from(sign(null, message, privateKey)).toString('hex');
+  } catch {
+    return '';
+  }
+}
+
+export function verifyRewardAuth(message, ownerPubHex, sigHex) {
+  if (!message) return false;
+  const pubRaw = rewardOwnerPub(ownerPubHex);
+  if (pubRaw.equals(Buffer.alloc(32))) return false;
+  const sig = String(sigHex || '').replace(/^0x/i, '');
+  if (!/^[0-9a-f]{128}$/.test(sig)) return false;
+  try {
+    const pub = createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, pubRaw]),
+      format: 'der',
+      type: 'spki',
+    });
+    return verify(null, message, pub, Buffer.from(sig, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pubkey || sig || dest utf8. The EVM checks this blob.
+ * The lock dest and the portal id are not in it.
+ */
+export function packRewardAuth({ ownerPub, sig, dest } = {}) {
+  const pub = rewardOwnerPub(ownerPub);
+  const sigBuf = Buffer.from(String(sig || '').replace(/^0x/i, ''), 'hex');
+  if (pub.equals(Buffer.alloc(32)) || sigBuf.length !== 64) return null;
+  return Buffer.concat([pub, sigBuf, Buffer.from(String(dest || ''), 'utf8')]);
 }
 
 function sha256Reward(buf) {
@@ -303,9 +399,10 @@ export function rewardCommitment(state, nowMs) {
     epoch: row.epoch,
     nanos: row.nanos,
     portalId: row.portalId,
+    ownerPub: String(state?.portals?.[row.portalId]?.ownerPub || '').toLowerCase(),
   }));
   rows.sort((a, b) => (a.nullifier < b.nullifier ? -1 : a.nullifier > b.nullifier ? 1 : 0));
-  const leaves = rows.map((row) => rewardLeaf(row.nullifier, row.nanos));
+  const leaves = rows.map((row) => rewardLeaf(row.nullifier, row.nanos, row.ownerPub));
   const root = Buffer.from(merkleRoot(leaves)).toString('hex');
   return {
     ok: true,
@@ -323,7 +420,7 @@ export function rewardClaimProof(state, nullifierHex) {
   if (!row || !Array.isArray(rows)) return null;
   const index = rows.findIndex((item) => item.nullifier === id);
   if (index < 0) return null;
-  const leaves = rows.map((item) => rewardLeaf(item.nullifier, item.nanos));
+  const leaves = rows.map((item) => rewardLeaf(item.nullifier, item.nanos, item.ownerPub));
   return merkleProof(leaves, index);
 }
 
@@ -495,6 +592,7 @@ export function applyStakeRewards(state, block, nowMs, { require = false } = {})
     nanos: row.nanos,
     epoch: row.epoch,
     portalId: row.portalId,
+    ownerPub: row.ownerPub || '',
   }));
   // A portal that already has a claimable leaf does not get this block's
   // new leaves marked paid. The withdraw pays principal, and the claim
@@ -516,6 +614,7 @@ export function applyStakeRewards(state, block, nowMs, { require = false } = {})
       epoch: row.epoch,
       rootKey: key,
       portalId: row.portalId,
+      ownerPub: row.ownerPub || '',
     };
     if (paidHere) entry.settledByWithdraw = true;
     state.rewardBook[row.nullifier] = entry;
@@ -535,22 +634,95 @@ function claimNoteOpens(tx, nanos) {
 }
 
 /**
+ * The claim output address. This is the payout, not the lock dest.
+ */
+function claimDestOf(tx) {
+  const note = (Array.isArray(tx?.vout) ? tx.vout : []).find((row) => String(row?.kind || '') === KIND_REWARD_CLAIM);
+  return String(note?.address || tx?.to || '');
+}
+
+/**
+ * Refuse a claim that is not signed by the portal owner.
+ * The signature covers the nullifier, the amount, the proof, and the payout.
+ * A third party's key does not open the leaf.
+ */
+/**
+ * A withdraw that pays a reward must be signed by the portal owner.
+ * The message is the portal id, the interest, an empty proof, and the payout.
+ * No owner on the portal means this check does not apply. The spend
+ * signature on the lock dest is still required by reserveAuth.
+ */
+export function withdrawRewardRejected(state, tx, nowMs) {
+  if (String(tx?.kind || '') !== KIND_WITHDRAW) return null;
+  const act = reserveAction(tx);
+  const id = act?.portalId || '';
+  const portal = id && state?.portals ? state.portals[id] : null;
+  const owner = String(portal?.ownerPub || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(owner)) return null;
+  const due = Math.floor(Number(withdrawPaysInterest(state, portal, nowMs)) || 0);
+  if (!(due > 0)) return null;
+  const pub = String(tx?.spendPub || '').replace(/^0x/i, '').toLowerCase();
+  if (pub !== owner) return { ok: false, reason: 'unsigned', nanos: 0 };
+  const dest = String(tx?.to || act?.payout || '');
+  const message = rewardAuthMessage({
+    kind: 'withdraw',
+    nullifier: id,
+    nanos: due,
+    proof: [],
+    dest,
+  });
+  if (!verifyRewardAuth(message, pub, tx?.rewardSig)) return { ok: false, reason: 'unsigned', nanos: 0 };
+  return null;
+}
+
+export function rewardClaimRejected(tx, state = null) {
+  if (String(tx?.kind || tx?.vout?.[0]?.kind || '') !== KIND_REWARD_CLAIM) return null;
+  const nullifier = String(tx?.nullifier || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'unsigned' };
+  const nanos = Math.floor(Number(tx?.nanos));
+  if (!Number.isSafeInteger(nanos) || nanos <= 0) return { ok: false, reason: 'unsigned' };
+  const dest = claimDestOf(tx);
+  const pub = String(tx?.spendPub || '').replace(/^0x/i, '').toLowerCase();
+  const message = rewardAuthMessage({
+    kind: 'claim',
+    nullifier,
+    nanos,
+    proof: tx?.proof,
+    dest,
+  });
+  if (!verifyRewardAuth(message, pub, tx?.sig)) return { ok: false, reason: 'unsigned' };
+  const row = state?.rewardBook?.[nullifier];
+  if (row) {
+    const owner = String(state?.portals?.[row.portalId]?.ownerPub || row.ownerPub || '').toLowerCase();
+    if (!owner || owner !== pub) return { ok: false, reason: 'unsigned' };
+  }
+  return null;
+}
+
+/**
  * Mint one archived reward. The nullifier is the portal-epoch id.
  * A second claim, or a withdraw of that id, is double_mint.
  * The output dest is the claimer's choice. The lock dest is not on this tx.
+ * The owner signs (nullifier, amount, proof, destination). The signature
+ * publishes the spend key, not the lock dest. Anyone who saved that key
+ * from the lock can match the two. A proof that hid the key would need
+ * a zero-knowledge opening, which this book does not have.
  */
 export function applyRewardClaim(state, tx) {
   if (!state || state.blankFork) return { ok: false, reason: 'no_vault', nanos: 0 };
   if (String(tx?.programId || '') !== RESERVE_PROGRAM) return { ok: false, reason: 'mint_forbidden', nanos: 0 };
   const nullifier = String(tx?.nullifier || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'stake_reward', nanos: 0 };
+  const refused = rewardClaimRejected(tx, state);
+  if (refused) return { ok: false, reason: refused.reason || 'unsigned', nanos: 0 };
   const row = state.rewardBook?.[nullifier];
   const root = row ? state.rewardRoots?.[row.rootKey] : '';
   if (!row || !root) return { ok: false, reason: 'stake_reward', nanos: 0 };
   if (row.settledByWithdraw) return { ok: false, reason: 'double_mint', nanos: 0 };
   if (state.mintedIds?.[nullifier]) return { ok: false, reason: 'double_mint', nanos: 0 };
   if (!claimNoteOpens(tx, row.nanos)) return { ok: false, reason: 'stake_reward', nanos: 0 };
-  const leaf = rewardLeaf(nullifier, row.nanos);
+  const owner = String(state?.portals?.[row.portalId]?.ownerPub || row.ownerPub || '').toLowerCase();
+  const leaf = rewardLeaf(nullifier, row.nanos, owner);
   let rootBuf;
   try { rootBuf = Buffer.from(root, 'hex'); } catch { rootBuf = Buffer.alloc(0); }
   if (!leaf || !merkleVerify(leaf, tx?.proof, rootBuf)) return { ok: false, reason: 'stake_reward', nanos: 0 };
@@ -737,6 +909,8 @@ export function supplyIdentity(state) {
     principalNanos: asNum(principal),
     lockedNanos: asNum(principal),
     vaultNanos: asNum(principal + accrued),
+    // Locked principal is still supply. It is not a burn.
+    totalNanos: asNum(principal + minted),
     permittedReward: asNum(permitted),
     mintedReward: asNum(minted),
     feeBankRewardNanos: 0,
@@ -1481,12 +1655,16 @@ function rateForEpoch(state, epochIndex) {
 /**
  * The arrival epoch pays only when the credit was locked with the stake
  * cutoff still to run. A credit locked in the final window misses that
- * epoch. Later full epochs still pay once the portal's pre-cutoff sum
- * is at least π. The owner can vote either way.
+ * epoch. A later full epoch counts it toward π. The owner can vote either way.
  */
 function earnsStakeReward(state, tranche) {
   const remain = Math.floor(Number(tranche?.remainMs) || 0);
   return remain >= joinCutoffMs(state?.magic);
+}
+
+/** Remain that is a real lock, not a legacy credit whose instant was not stored. */
+function stakeRemain(tranche) {
+  return Math.floor(Number(tranche?.remainMs) || 0);
 }
 
 /** Sum of credits locked before the stake cutoff. The final window does not count. */
@@ -1499,23 +1677,51 @@ function preCutoffStake(state, portal) {
   return sum;
 }
 
-/** Stake reward is off until the pre-cutoff sum is at least π. */
+/**
+ * Stake that counts toward π in epoch `epoch`.
+ * Every pre-cutoff credit counts, including a later top-up, so an earlier
+ * credit still pays once that sum reaches π. A post-cutoff credit counts
+ * only in epochs after the one it arrived in. A legacy credit with no
+ * remain does not count and does not earn.
+ */
+function qualifyingStake(state, portal, epoch) {
+  let sum = 0n;
+  const at = Math.floor(Number(epoch) || 0);
+  for (const tranche of portal?.tranches || []) {
+    const arrival = Math.floor(Number(tranche?.epoch) || 0);
+    const remain = stakeRemain(tranche);
+    if (earnsStakeReward(state, tranche)) sum += asBig(tranche.amount);
+    else if (remain > 0 && at > arrival) sum += asBig(tranche.amount);
+  }
+  return sum;
+}
+
+function epochQualifies(state, portal, epoch) {
+  return qualifyingStake(state, portal, epoch) >= BigInt(PI_SHE_NANOS);
+}
+
+/** Stake reward is off until the pre-cutoff sum is at least π. Later epochs use epochQualifies. */
 function stakeQualified(state, portal) {
   return preCutoffStake(state, portal) >= BigInt(PI_SHE_NANOS);
 }
 
-/** Interest still owed on one credit. The arrival partial is skipped after the cutoff. Later full epochs stay. */
-function trancheDue(state, tranche, nowIdx, span, qualified) {
-  if (!qualified) return 0n;
+/** Interest still owed on one credit. Each epoch qualifies on its own. */
+function trancheDue(state, portal, tranche, nowIdx, span) {
   let total = 0n;
   const amount = asBig(tranche?.amount);
   const epoch = Math.floor(Number(tranche?.epoch) || 0);
-  if (earnsStakeReward(state, tranche) && !tranche?.partialPaid && nowIdx > epoch) {
+  if (
+    earnsStakeReward(state, tranche)
+    && !tranche?.partialPaid
+    && nowIdx > epoch
+    && epochQualifies(state, portal, epoch)
+  ) {
     total = addReward(total, partialInterest(amount, rateForEpoch(state, epoch), tranche.remainMs, span));
   }
   const from = Math.floor(Number(tranche?.fullFrom ?? epoch + 1));
-  if (nowIdx > from && amount > 0n) {
+  if (nowIdx > from && amount > 0n && stakeRemain(tranche) > 0) {
     for (let e = from; e < nowIdx; e += 1) {
+      if (!epochQualifies(state, portal, e)) break;
       total = addReward(total, epochInterestBig(amount, rateForEpoch(state, e)));
     }
   }
@@ -1526,17 +1732,24 @@ function trancheDue(state, tranche, nowIdx, span, qualified) {
 function dueRewardEpochs(state, portal, nowMs) {
   const nowIdx = settlementIndex(state, nowMs);
   const epochs = [];
-  if (!(nowIdx > 0) || !stakeQualified(state, portal)) return epochs;
+  if (!(nowIdx > 0)) return epochs;
   const seen = new Set();
   for (const tranche of portal?.tranches || []) {
     const arrival = Math.floor(Number(tranche.epoch) || 0);
-    if (earnsStakeReward(state, tranche) && !tranche.partialPaid && nowIdx > arrival && !seen.has(arrival)) {
+    if (
+      earnsStakeReward(state, tranche)
+      && !tranche.partialPaid
+      && nowIdx > arrival
+      && epochQualifies(state, portal, arrival)
+      && !seen.has(arrival)
+    ) {
       seen.add(arrival);
       epochs.push(arrival);
     }
     const from = Math.floor(Number(tranche.fullFrom ?? arrival + 1));
-    if (nowIdx > from) {
+    if (nowIdx > from && stakeRemain(tranche) > 0) {
       for (let e = from; e < nowIdx; e += 1) {
+        if (!epochQualifies(state, portal, e)) break;
         if (seen.has(e)) continue;
         seen.add(e);
         epochs.push(e);
@@ -1646,17 +1859,26 @@ function settlePortal(state, p, nowMs) {
   if (!p) return 0n;
   const nowIdx = settlementIndex(state, nowMs);
   const span = epochMs(state.magic);
-  const qualified = stakeQualified(state, p);
   let total = capReward(p.accruedReward);
   for (const tranche of balanceCredits(state, p)) {
-    total = addReward(total, trancheDue(state, tranche, nowIdx, span, qualified));
-    // Below π the cursors stay put. A later pre-cutoff top-up that crosses
-    // π must still be able to pay the epochs this credit already sat.
-    // A synthetic legacy credit is not stored, so its cursor write is a copy.
-    if (!qualified) continue;
-    if (!tranche.partialPaid && nowIdx > tranche.epoch) tranche.partialPaid = true;
-    const from = Math.floor(Number(tranche.fullFrom ?? tranche.epoch + 1));
-    if (nowIdx > from) tranche.fullFrom = nowIdx;
+    total = addReward(total, trancheDue(state, p, tranche, nowIdx, span));
+    // An epoch that is still under π stays open. A later pre-cutoff top-up
+    // that crosses π must still be able to pay it. A post-cutoff arrival
+    // never pays, so that partial closes. Qualification only grows as
+    // later epochs include more stake, so the first short full epoch stops
+    // the cursor. A synthetic legacy credit is not stored.
+    const arrival = Math.floor(Number(tranche.epoch) || 0);
+    if (!tranche.partialPaid && nowIdx > arrival) {
+      if (!earnsStakeReward(state, tranche) || epochQualifies(state, p, arrival)) {
+        tranche.partialPaid = true;
+      }
+    }
+    const from = Math.floor(Number(tranche.fullFrom ?? arrival + 1));
+    if (nowIdx > from && stakeRemain(tranche) > 0) {
+      let e = from;
+      while (e < nowIdx && epochQualifies(state, p, e)) e += 1;
+      tranche.fullFrom = e;
+    }
   }
   p.accruedReward = total;
   return total;
@@ -1677,10 +1899,9 @@ export function portalEpochInterest(state, p, nowMs) {
   if (!p) return 0;
   const nowIdx = settlementIndex(state, nowMs);
   const span = epochMs(state?.magic);
-  const qualified = stakeQualified(state, p);
   let total = capReward(p.accruedReward);
   for (const tranche of balanceCredits(state, p)) {
-    total = addReward(total, trancheDue(state, tranche, nowIdx, span, qualified));
+    total = addReward(total, trancheDue(state, p, tranche, nowIdx, span));
   }
   return nanosOut(total);
 }
@@ -1878,11 +2099,15 @@ function bindClaimFee(tx, chosen) {
 
 /**
  * Claim one reward into `to`. `to` is not the lock dest.
- * The nullifier, the amount, and the proof are the public link to the root.
+ * The owner signs (nullifier, amount, proof, destination). The signature
+ * carries the spend key and not the lock dest. `ownerKey` is the Ed25519
+ * private key. Omit it and the claim is unsigned, which consensus refuses.
  * `fee` is the same user bid a send posts. Omit it and the weight floor is used.
  * The claim does not expire.
  */
-export function rewardClaimTx({ to, nanos, nullifier, proof, id, spendSeed = null, fee = null } = {}) {
+export function rewardClaimTx({
+  to, nanos, nullifier, proof, id, spendSeed = null, fee = null, ownerKey = null, rootIndex = null,
+} = {}) {
   const n = exactFloorNanos(nanos);
   const out = sealedReserveVout(to, n, KIND_REWARD_CLAIM);
   delete out.portalId;
@@ -1905,7 +2130,44 @@ export function rewardClaimTx({ to, nanos, nullifier, proof, id, spendSeed = nul
     vin: [],
     vout: [out],
   };
+  if (rootIndex != null && rootIndex !== '') tx.rootIndex = Math.floor(Number(rootIndex));
+  if (ownerKey) {
+    const message = rewardAuthMessage({
+      kind: 'claim',
+      nullifier: tx.nullifier,
+      nanos: n,
+      proof: tx.proof,
+      dest: to,
+    });
+    const sig = signRewardAuth(message, ownerKey);
+    if (sig) {
+      tx.sig = sig;
+      tx.spendPub = ed25519RawPub(ownerKey).toString('hex');
+    }
+  }
   return bindClaimFee(tx, fee);
+}
+
+/**
+ * Signature that lets a withdraw pay a reward. The nullifier is the portal
+ * id. The destination is the payout. An empty proof is part of the message.
+ */
+export function signWithdrawReward(tx, ownerKey, { portalId, nanos, dest } = {}) {
+  if (!tx || !ownerKey) return tx;
+  const id = String(portalId || '').replace(/^0x/i, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(id)) return tx;
+  const message = rewardAuthMessage({
+    kind: 'withdraw',
+    nullifier: id,
+    nanos,
+    proof: [],
+    dest: dest || tx.to || '',
+  });
+  const sig = signRewardAuth(message, ownerKey);
+  if (!sig) return tx;
+  tx.rewardSig = sig;
+  tx.spendPub = ed25519RawPub(ownerKey).toString('hex');
+  return tx;
 }
 
 export function voteTx({ from, dest, choice, id }) {
@@ -2469,6 +2731,12 @@ export function applyReserveBlock({
       continue;
     }
     if (act.kind === KIND_WITHDRAW) {
+      const bound = withdrawRewardRejected(state, tx, nowMs);
+      if (bound) {
+        results.push({ action: KIND_WITHDRAW, ...bound });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
       const got = withdraw({
         state,
         portalId: act.portalId,

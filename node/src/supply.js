@@ -40,6 +40,7 @@ import {
   blockWithdrawInterest,
   blockPermittedInterest,
   stakeRewardSupply,
+  supplyIdentity,
   emptyVault,
   cloneVault,
   applyReserveBlock,
@@ -351,6 +352,7 @@ function copySupply(state) {
     mintedInterest: typeof state.mintedInterest === 'bigint' ? state.mintedInterest : 0n,
     permittedInterest: typeof state.permittedInterest === 'bigint' ? state.permittedInterest : 0n,
     bLocked: typeof state.bLocked === 'bigint' ? state.bLocked : 0n,
+    vaultPrincipal: typeof state.vaultPrincipal === 'bigint' ? state.vaultPrincipal : 0n,
     permittedHashAll: state.permittedHashAll,
     acceptedHash: state.acceptedHash,
     owedRows: state.owedRows.slice(),
@@ -377,6 +379,7 @@ export function emptySupplyState(genesisMs = 0) {
     mintedInterest: 0n,
     permittedInterest: 0n,
     bLocked: 0n,
+    vaultPrincipal: 0n,
     permittedHashAll: 0n,
     acceptedHash: 0n,
     owedRows: [],
@@ -453,6 +456,7 @@ export function supplyFromScalar(scalar, {
     mintedInterest: carriedInterest(scalar, 'mintedInterest'),
     permittedInterest: carriedInterest(scalar, 'permittedInterest'),
     bLocked: BigInt(scalar.bLocked || 0),
+    vaultPrincipal: carriedInterest(scalar, 'vaultPrincipal'),
     permittedHashAll: BigInt(scalar.permittedHashAll || 0),
     acceptedHash: BigInt(scalar.acceptedHash || 0),
     owedRows: Array.isArray(owedRows) ? owedRows.slice() : [],
@@ -667,6 +671,7 @@ function accountBlock(prev, block, opts = {}) {
   if (!fitsU64(state.schedulePot) || !fitsU64(state.carry) || !fitsU64(state.mintedPot)
     || !fitsU64(state.mintedHash) || !fitsU64(state.mintedLevy) || !fitsU64(state.bLocked)
     || !fitsU64(state.mintedInterest) || !fitsU64(state.permittedInterest)
+    || !fitsU64(state.vaultPrincipal || 0n)
     || !fitsU64(state.permittedHashAll)
     || !fitsU64(state.acceptedHash) || !fitsU64(state.dust) || !fitsU64(state.overflow)) {
     return { reason: 'supply', state };
@@ -694,6 +699,16 @@ export function supplyStep(prev, block, opts = {}) {
   const difference = next.state.mintedPot + next.state.mintedHash
     - next.state.schedulePot + next.state.carry - next.state.permittedHashAll;
   if (difference !== 0n) return { ok: false, reason: 'supply', state: null };
+  // Vault principal is supply. A lock is not a burn, and a withdraw of
+  // principal moves it out of this term. The check runs when this step
+  // was given the parent vault, which is the chain fold.
+  if (opts.vault) {
+    const advanced = vaultAfterBlock(opts.vault, block);
+    if (!advanced.ok || !advanced.vault) return { ok: false, reason: 'supply', state: null };
+    const identity = supplyIdentity(advanced.vault);
+    if (!identity.ok) return { ok: false, reason: 'supply', state: null };
+    next.state.vaultPrincipal = BigInt(identity.principalNanos);
+  }
   return { ok: true, reason: '', state: next.state };
 }
 
@@ -731,6 +746,11 @@ export function foldSupply(blocks, opts = {}) {
     const advanced = vaultAfterBlock(vault, list[i]);
     if (!advanced.ok) return { ok: false, reason: 'supply', state: null };
     vault = advanced.vault;
+    if (vault) {
+      const identity = supplyIdentity(vault);
+      if (!identity.ok) return { ok: false, reason: 'supply', state: null };
+      state.vaultPrincipal = BigInt(identity.principalNanos);
+    }
   }
   return { ok: true, reason: '', state };
 }
@@ -759,6 +779,8 @@ export function supplyReport(state, opts = {}) {
     extraMintNanos: 0,
     burnedNanos: 0,
     bLockedNanos: 0,
+    vaultPrincipalNanos: 0,
+    totalNanos: 0,
     differenceNanos: 0,
   };
   if (burned == null || !state) return { ...blank, reason: reason || 'supply' };
@@ -805,6 +827,8 @@ export function supplyReport(state, opts = {}) {
     extraMintNanos: safeNum(chainExtra),
     burnedNanos: safeNum(burned),
     bLockedNanos: safeNum(state.bLocked),
+    vaultPrincipalNanos: safeNum(state.vaultPrincipal || 0n),
+    totalNanos: safeNum(circulating + (state.vaultPrincipal || 0n) + (state.bLocked || 0n)),
     differenceNanos: safeSigned(difference),
   };
   if (Object.values(nums).some((n) => n == null || !Number.isSafeInteger(n))) {
@@ -943,6 +967,18 @@ export function auditCirculatingSupply(blocks, opts = {}) {
         vault = broken;
       } else {
         vault = advanced.vault;
+        if (vault) {
+          const identity = supplyIdentity(vault);
+          if (!identity.ok) {
+            ok = false;
+            reason = reason || 'supply';
+            const broken = emptyVault();
+            broken.blankFork = true;
+            vault = broken;
+          } else {
+            state.vaultPrincipal = BigInt(identity.principalNanos);
+          }
+        }
       }
     }
   }

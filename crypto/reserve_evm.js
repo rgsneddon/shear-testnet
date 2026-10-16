@@ -8,7 +8,9 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
 import { EMPTY_ROOT } from './merkle.js';
-import { reserveAction, blockRewardRoot, packRewardProof } from './reserve_vault.js';
+import { reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth } from './reserve_vault.js';
+import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
+import { ED25519_SPKI_PREFIX } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
 
@@ -80,26 +82,38 @@ export function encodeBytes(data) {
   return concat(len, padded);
 }
 
-export function encodeDeposit(dest, nanos, nowTs) {
+function ownerWord(ownerCommit) {
+  const word = new Uint8Array(32);
+  if (ownerCommit == null || ownerCommit === '') return word;
+  const raw = Buffer.isBuffer(ownerCommit)
+    ? ownerCommit
+    : Buffer.from(String(ownerCommit).replace(/^0x/i, ''), 'hex');
+  if (raw.length === 32) word.set(raw);
+  return word;
+}
+
+export function encodeDeposit(dest, nanos, nowTs, ownerCommit = null) {
   const body = encodeBytes(dest);
   return concat(
-    selector('lock(bytes,uint256,uint256)'),
-    pad32(96),
+    selector('lock(bytes,uint256,uint256,bytes32)'),
+    pad32(128),
     pad32(nanos),
     pad32(nowTs),
+    ownerWord(ownerCommit),
     body,
   );
 }
 
 /** Time-locked note. The bool is the tranche flag withdraw() will not pay. */
-export function encodeLockNote(dest, nanos, nowTs, notePrincipal = true) {
+export function encodeLockNote(dest, nanos, nowTs, notePrincipal = true, ownerCommit = null) {
   const body = encodeBytes(dest);
   return concat(
-    selector('lockNote(bytes,uint256,uint256,bool)'),
-    pad32(128),
+    selector('lockNote(bytes,uint256,uint256,bool,bytes32)'),
+    pad32(160),
     pad32(nanos),
     pad32(nowTs),
     pad32(notePrincipal ? 1 : 0),
+    ownerWord(ownerCommit),
     body,
   );
 }
@@ -132,17 +146,24 @@ export function encodeCommitRewards(nowTs, rootHex = '') {
   return concat(selector('commitRewards(uint256,bytes32)'), pad32(nowTs), word);
 }
 
-export function encodeClaim(nullifierHex, nanos, proof) {
+export function encodeClaim(nullifierHex, nanos, proof, rootIndex = 0, auth = new Uint8Array()) {
   const id = Buffer.from(String(nullifierHex || ''), 'hex');
   const word = new Uint8Array(32);
   if (id.length === 32) word.set(id);
   const raw = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
+  const authRaw = Buffer.isBuffer(auth) ? auth : Buffer.from(auth || []);
+  const proofBody = encodeBytes(raw);
+  const authBody = encodeBytes(authRaw);
+  const head = 32 * 5;
   return concat(
-    selector('claim(bytes32,uint256,bytes)'),
+    selector('claim(bytes32,uint256,uint256,bytes,bytes)'),
     word,
     pad32(nanos),
-    pad32(96),
-    encodeBytes(raw),
+    pad32(rootIndex),
+    pad32(head),
+    pad32(head + proofBody.length),
+    proofBody,
+    authBody,
   );
 }
 
@@ -151,13 +172,18 @@ export function decodeBytes32(ret) {
   return Buffer.from(b.subarray(0, 32)).toString('hex');
 }
 
-export function encodeWithdraw(dest, nowTs) {
+export function encodeWithdraw(dest, nowTs, auth = new Uint8Array()) {
   const body = encodeBytes(dest);
+  const authRaw = Buffer.isBuffer(auth) ? auth : Buffer.from(auth || []);
+  const authBody = encodeBytes(authRaw);
+  const head = 96;
   return concat(
-    selector('withdraw(bytes,uint256)'),
-    pad32(64),
+    selector('withdraw(bytes,uint256,bytes)'),
+    pad32(head),
     pad32(nowTs),
+    pad32(head + body.length),
     body,
+    authBody,
   );
 }
 
@@ -274,10 +300,42 @@ function shearCommon() {
 }
 
 const SYSTEM = createAddressFromString('0x0000000000000000000000000000000000002701');
+const ED25519_PRECOMPILE = '0x0000000000000000000000000000000000000101';
+
+/** Precompile 0x101. pubkey(32) || sig(64) || message → uint256 1 when the signature holds. */
+function ed25519Precompile(opts) {
+  const data = opts.data || new Uint8Array();
+  const gasUsed = 3000n;
+  const zero = new Uint8Array(32);
+  if (opts.gasLimit < gasUsed) {
+    return { executionGasUsed: opts.gasLimit, returnValue: zero };
+  }
+  if (data.length < 96) return { executionGasUsed: gasUsed, returnValue: zero };
+  const pub = Buffer.from(data.subarray(0, 32));
+  const sig = Buffer.from(data.subarray(32, 96));
+  const msg = Buffer.from(data.subarray(96));
+  let ok = false;
+  try {
+    const key = createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, pub]),
+      format: 'der',
+      type: 'spki',
+    });
+    ok = verifyEd25519(null, msg, key, sig);
+  } catch {
+    ok = false;
+  }
+  const out = new Uint8Array(32);
+  if (ok) out[31] = 1;
+  return { executionGasUsed: gasUsed, returnValue: out };
+}
 
 export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
   const common = shearCommon();
-  const evm = await createEVM({ common });
+  const evm = await createEVM({
+    common,
+    customPrecompiles: [{ address: ED25519_PRECOMPILE, function: ed25519Precompile }],
+  });
   const magic = shearMagicBytes(network);
   const code = bytecode == null
     ? RESERVE_BYTECODE
@@ -453,7 +511,9 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
-    return callReserve(session, encodeDeposit(dest, nanos, nowMs));
+    const pub = String(tx?.spendPub || '').replace(/^0x/i, '');
+    const commit = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
+    return callReserve(session, encodeDeposit(dest, nanos, nowMs, commit));
   }
   if (kind === 'vote') {
     const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;
@@ -464,7 +524,10 @@ export async function executeReserveTx(session, tx, nowMs) {
     const proof = tx?.evmProof || tx?.proof;
     const packed = Buffer.isBuffer(proof) ? proof : packRewardProof(proof);
     if (!tx?.nullifier || !packed) return { ok: false, reason: 'stake_reward' };
-    return callReserve(session, encodeClaim(tx.nullifier, nanos, packed));
+    const auth = packRewardAuth({ ownerPub: tx.spendPub, sig: tx.sig, dest: tx.to || dest });
+    if (!auth) return { ok: false, reason: 'unsigned' };
+    const rootIndex = Math.floor(Number(tx.rootIndex) || 0);
+    return callReserve(session, encodeClaim(tx.nullifier, nanos, packed, rootIndex, auth));
   }
   if (kind === 'withdraw') {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
@@ -478,7 +541,10 @@ export async function executeReserveTx(session, tx, nowMs) {
     }
     const from = txFromOf(tx) || dest;
     if (!from) return { ok: true };
-    return callReserve(session, encodeWithdraw(from, nowMs));
+    const auth = tx?.rewardSig
+      ? packRewardAuth({ ownerPub: tx.spendPub, sig: tx.rewardSig, dest: tx.to || dest })
+      : new Uint8Array();
+    return callReserve(session, encodeWithdraw(from, nowMs, auth || new Uint8Array()));
   }
   return { ok: false, reason: 'evm_kind' };
 }
@@ -553,11 +619,15 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     // with nothing on the coinbase is stake_reward. An empty earning set
     // still commits the empty root and does not store it.
     const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs) > 0;
-    const owed = owedRoot == null || owedRoot === ''
+    const owedGiven = owedRoot != null;
+    const owed = !owedGiven || owedRoot === ''
       ? ''
       : String(owedRoot).replace(/^0x/i, '').toLowerCase();
-    if (owed && owed !== EMPTY_REWARD_ROOT && !rootHex) return fail('stake_reward');
-    if (owed && rootHex && owed !== rootHex) return fail('stake_reward');
+    if (owed && owed !== rootHex) return fail('stake_reward');
+    if (owedGiven && owed === '' && rootHex && rootHex !== EMPTY_REWARD_ROOT) return fail('stake_reward');
+    // A withdraw after the epoch, with no root on the coinbase, and no
+    // explicit empty expectation from JS, is not an empty earning set.
+    if (oweRoot && !rootHex && owedRoot !== '') return fail('stake_reward');
     if (rootHex || oweRoot) {
       const pass = rootHex || EMPTY_REWARD_ROOT;
       const sm = session.evm.stateManager;
