@@ -70,6 +70,7 @@ error ClockUnpinned();
 error AlreadyMinted();
 error NotePrincipal();
 error Unsigned();
+error ClaimUnavailable();
 
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
@@ -725,6 +726,22 @@ contract Reserve {
         return bytes32(auth[0:32]);
     }
 
+    /// Owner signature over (portal id, principal, payout dest). No proof.
+    function _withdrawAuthOk(bytes32 id, uint256 nanos, bytes calldata auth) internal view returns (bool) {
+        if (auth.length < 96 || nanos == 0 || nanos > 9007199254740991) return false;
+        return _ed25519(
+            _authPub(auth),
+            auth[32:96],
+            abi.encodePacked(
+                "shear-withdraw-owner-v1",
+                id,
+                _u64le(nanos),
+                _u32le(auth.length - 96),
+                auth[96:]
+            )
+        );
+    }
+
     /// auth is ownerPub(32) || sig(64) || dest. proof may be empty.
     function _authOk(
         bytes memory tag,
@@ -924,10 +941,8 @@ contract Reserve {
         return root;
     }
 
-    /// Mint one leaf whose proof reaches the root stored at `rootIndex`.
-    /// The index is the settlement index. The call does not scan every root.
-    /// `auth` is ownerPub(32) || sig(64) || payout dest. The lock dest is not an argument.
-    /// The claim does not release principal.
+    /// Reward claims wait for the ZK FS-1 ownership proof. Until that activates,
+    /// every claim reverts. The leaf machinery stays for that later proof.
     function claim(
         bytes32 nullifier,
         uint256 nanos,
@@ -935,26 +950,20 @@ contract Reserve {
         bytes calldata proof,
         bytes calldata auth
     ) external onlyShear returns (uint256) {
-        if (nanos == 0 || nanos > 9007199254740991) revert BadAmount();
-        if (auth.length < 96) revert Unsigned();
-        if (nullifierMinted[nullifier] || settledByWithdraw[nullifier]) revert AlreadyMinted();
-        bytes32 root = rewardRootOf[rootIndex];
-        if (root == bytes32(0)) revert BadAmount();
-        if (!_verify(_leaf(nullifier, nanos, _authPub(auth)), proof, root)) revert BadAmount();
-        if (!_authOk("shear-reward-auth-v1", nullifier, nanos, proof, auth)) revert Unsigned();
-        nullifierMinted[nullifier] = true;
-        return nanos;
+        revert ClaimUnavailable();
     }
 
-    function withdraw(bytes calldata dest, uint256 nowTs, bytes calldata auth) external onlyShear returns (uint256 principal, uint256 reward) {
+    /// `auth` is ownerPub(32) || sig(64) || payout dest. The signature covers
+    /// the portal id, the principal, and that payout. The call itself names
+    /// the lock, so the withdraw is linkable to the lock. `reward` is zero:
+    /// the stake reward waits for the ZK claim. `earned` is the qualified
+    /// amount that claim will pay.
+    function withdraw(bytes calldata dest, uint256 nowTs, bytes calldata auth) external onlyShear returns (uint256 principal, uint256 reward, uint256 earned) {
         // Each deposit unlocks at the end of its own lock epoch. A later
         // top-up does not re-lock principal whose epoch has already ended.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
         bytes32 id = portalId(dest);
         Portal storage p = portals[id];
-        // A claim owns an archived reward. It does not keep the principal.
-        // A withdraw in the committing block still pays its own interest.
-        bool rewardHeld = _rewardHeld(id, p, nowTs);
         uint256 active = p.active;
         uint256 idleBal = p.idle;
         if (active + idleBal == 0) {
@@ -962,9 +971,8 @@ contract Reserve {
             revert BadAmount();
         }
         uint256 chain = _chainEpoch(nowTs);
-        // Due leaves are read before settle marks them paid. Paying the
-        // interest retires those leaves so a later claim cannot mint them.
-        if (!rewardHeld) _mintDue(id, _payIndex(nowTs));
+        // Fold the qualified reward onto the portal and leave it there.
+        // This pays principal only. It does not retire the leaves.
         _settle(p, nowTs);
         uint256 release = 0;
         uint256 noteMatured = 0;
@@ -990,14 +998,14 @@ contract Reserve {
             revert EpochNotEnded();
         }
         while (p.tranches.length > kept) p.tranches.pop();
-        // Each completed chain epoch pays at the rate committed for that epoch.
-        // A reserved reward stays with the claim. This pays principal only.
-        reward = rewardHeld ? 0 : p.accruedReward;
-        if (reward > 0 && ownerOf[id] != bytes32(0)) {
+        // Principal only. The qualified reward stays on the portal for the
+        // ZK claim. A recorded owner must sign (portal id, principal, payout).
+        earned = p.accruedReward;
+        reward = 0;
+        if (ownerOf[id] != bytes32(0)) {
             if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
-            if (!_authOk("shear-reward-withdraw-v1", portalSha[id], reward, auth[0:0], auth)) revert Unsigned();
+            if (!_withdrawAuthOk(portalSha[id], release, auth)) revert Unsigned();
         }
-        p.accruedReward = 0;
         if (release > active) {
             uint256 rest = release - active;
             p.active = 0;

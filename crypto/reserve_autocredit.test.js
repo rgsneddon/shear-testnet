@@ -36,11 +36,13 @@ import {
   txIsReserveAction,
   rewardLeaf,
   stakeRewardSupply,
+  signWithdrawReward,
   trialReserveApply,
   voteTx,
   VOTE_HOLD,
   withdraw,
   withdrawMintId,
+  withdrawTx,
 } from './reserve_vault.js';
 import { handleWalletApi } from '../pool/src/wallet_api.js';
 import {
@@ -311,7 +313,7 @@ describe('aggregated reward root', () => {
     assert.equal(refused.reason, 'stake_reward');
   });
 
-  it('mints a claim once, rejects a second claim and a withdraw, and still pays epochs later', () => {
+  it('refuses every claim and still pays principal later', () => {
     const alice = holder();
     const lockDest = alice.dest;
     const payDest = who();
@@ -354,8 +356,9 @@ describe('aggregated reward root', () => {
       nowMs: later,
       genesisMs: T0,
     });
-    assert.equal(paid.ok, true, paid.reason);
-    assert.equal(Number(state.mintBankNanos), row.nanos);
+    assert.equal(paid.ok, false);
+    assert.equal(paid.reason, 'claim_unavailable');
+    assert.equal(Number(state.mintBankNanos), 0);
     assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
     const supply = stakeRewardSupply(state, { txs: [{ coinbase: true, vout: [] }, claim] }, later);
     assert.equal(supply.ok, false);
@@ -383,12 +386,14 @@ describe('aggregated reward root', () => {
       ownerKey: alice.key,
     });
     const block = { height: 4, txs: [{ coinbase: true, vout: [] }, claimOne] };
-    assert.equal(applyReserveBlock({
+    const claimedOnce = applyReserveBlock({
       state: fresh,
       block,
       nowMs: later,
       genesisMs: T0,
-    }).ok, true);
+    });
+    assert.equal(claimedOnce.ok, false);
+    assert.equal(claimedOnce.reason, 'claim_unavailable');
     const summed = stakeRewardSupply(fresh, block, later);
     assert.equal(summed.ok, false);
     const beforeClaim = vault();
@@ -425,12 +430,12 @@ describe('aggregated reward root', () => {
       ],
     };
     const got = stakeRewardSupply(supplyState, supplyBlock, draw);
-    assert.equal(got.ok, true, got.reason);
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'supply');
     assert.equal(got.minted, 0n);
-    assert.equal(got.claimed, BigInt(only.nanos));
-    const unclaimed = open.rows.reduce((sum, item) => sum + item.nanos, 0) - only.nanos;
-    assert.ok(unclaimed > 0);
-    assert.notEqual(got.claimed, BigInt(only.nanos + unclaimed));
+    assert.equal(got.claimed, 0n);
+    const unclaimed = open.rows.reduce((sum, item) => sum + item.nanos, 0);
+    assert.ok(unclaimed > only.nanos);
     const spent = applyReserveBlock({
       state: supplyState,
       block: supplyBlock,
@@ -438,7 +443,8 @@ describe('aggregated reward root', () => {
       genesisMs: T0,
       requireStakeReward: true,
     });
-    assert.equal(spent.ok, true, spent.reason);
+    assert.equal(spent.ok, false);
+    assert.equal(spent.reason, 'claim_unavailable');
     const second = rewardClaimTx({
       to: payDest,
       nanos: only.nanos,
@@ -454,14 +460,15 @@ describe('aggregated reward root', () => {
       genesisMs: T0,
     });
     assert.equal(doubled.ok, false);
-    assert.equal(doubled.reason, 'double_mint');
+    assert.equal(doubled.reason, 'claim_unavailable');
     assert.equal(Number(supplyState.totalLockedNanos), PI_SHE_NANOS * 2);
     const principal = withdraw({ state: supplyState, dest: lockDest, nowMs: later });
     assert.equal(principal.ok, true, principal.reason);
     assert.equal(principal.principal, PI_SHE_NANOS);
     assert.equal(principal.interest, 0);
+    assert.ok(principal.earned > 0);
     assert.equal(Number(supplyState.totalLockedNanos), PI_SHE_NANOS);
-    assert.equal(Number(supplyState.mintBankNanos), only.nanos);
+    assert.equal(Number(supplyState.mintBankNanos), 0);
   });
 
   it('undoes the root and its claim when the block is rejected', () => {
@@ -506,7 +513,7 @@ describe('aggregated reward root', () => {
     assert.equal(withdraw({ state, dest, nowMs: draw }).ok, true);
   });
 
-  it('matches the EVM root and then rejects a second claim and a withdraw', async () => {
+  it('matches the EVM root, refuses every claim, and pays principal only', async () => {
     const alice = holder();
     const dest = alice.dest;
     const state = vault();
@@ -537,15 +544,23 @@ describe('aggregated reward root', () => {
     });
     const auth = packRewardAuth({ ownerPub: alice.pub, sig: signed.sig, dest: signed.to });
     const claimed = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof, plan.index, auth));
-    assert.equal(claimed.ok, true, claimed.reason);
-    assert.equal(decodeBytes32(claimed.returnValue), row.nanos.toString(16).padStart(64, '0'));
+    assert.equal(claimed.ok, false);
+    assert.equal(claimed.reason, 'claim_unavailable');
     const again = await callReserve(session, encodeClaim(row.nullifier, row.nanos, proof, plan.index, auth));
     assert.equal(again.ok, false);
+    assert.equal(again.reason, 'claim_unavailable');
     const held = decodePublicView(
       (await callReserve(session, encodePublicView(draw), { staticCall: true })).returnValue,
     );
     assert.equal(held.totalLockedNanos, PI_SHE_NANOS);
-    const drawn = await callReserve(session, encodeWithdraw(dest, draw));
+    const drawTx = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'evm-principal' });
+    signWithdrawReward(drawTx, alice.key, {
+      portalId: portalIdFromDest(dest),
+      nanos: PI_SHE_NANOS,
+      dest,
+    });
+    const drawAuth = packRewardAuth({ ownerPub: alice.pub, sig: drawTx.rewardSig, dest });
+    const drawn = await callReserve(session, encodeWithdraw(dest, draw, drawAuth));
     assert.equal(drawn.ok, true, drawn.reason);
     assert.equal(decodeWithdraw(drawn.returnValue).principal, PI_SHE_NANOS);
     assert.equal(decodeWithdraw(drawn.returnValue).interest, 0);

@@ -24,6 +24,8 @@ import {
   enact,
   observeRate,
   applyReserveBlock,
+  portalEpochInterest,
+  portalIdFromDest,
   previewWithdraw,
 } from '../../crypto/reserve_vault.js';
 import { compactTx } from '../../crypto/chronoflux.js';
@@ -65,7 +67,11 @@ describe('oracle observe is not a rate', () => {
       const held = emptyVault();
       const holder = destOf(newIdentity());
       openEpoch(held, holder, T0);
-      const due = previewWithdraw(held, holder).interest;
+      const due = portalEpochInterest(
+        held,
+        held.portals[portalIdFromDest(holder)],
+        T0 + RESERVE_EPOCH_MS,
+      );
       const mid = applyReserveBlock({
         state: held,
         block: { txs: [{ coinbase: true, vout: [], observe: { annualBps: bps, observedAtMs: T0 + 1 } }] },
@@ -74,7 +80,12 @@ describe('oracle observe is not a rate', () => {
       assert.equal(mid.ok, false);
       assert.equal(mid.reason, 'observe_unattested');
       assert.equal(held.epochBps, GENESIS_BPS);
-      assert.equal(previewWithdraw(held, holder).interest, due);
+      assert.equal(previewWithdraw(held, holder).interest, 0);
+      assert.equal(portalEpochInterest(
+        held,
+        held.portals[portalIdFromDest(holder)],
+        T0 + RESERVE_EPOCH_MS,
+      ), due);
       assert.equal(due, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
     }
   });

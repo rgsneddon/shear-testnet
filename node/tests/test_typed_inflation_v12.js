@@ -338,6 +338,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
     const pub = box.id.spendPub.toString('hex');
     for (const nanos of [1, PI_SHE_NANOS, PI_SHE_NANOS + 1]) {
       const state = emptyVault();
+      state.genesisMs = 1;
       const credited = deposit({
         state,
         dest,
@@ -453,6 +454,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
       assert.equal(short.reason, 'mint_amount', `${nanos} short ${short.reason}`);
 
       const vault = emptyVault();
+      vault.genesisMs = 1;
       assert.equal(deposit({ state: vault, dest, nanos, nowMs: 1, payout: dest, payoutPortalId: id }).ok, true);
       const before = Number(vault.totalLockedNanos);
       const skipped = applyReserveBlock({

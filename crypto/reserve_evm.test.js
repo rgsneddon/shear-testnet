@@ -29,6 +29,7 @@ import {
   encodePortalOf,
   decodePortal,
   decodeWithdraw,
+  decodeWithdrawEarned,
   encodeObserveRate,
   selector,
   shearMagicBytes,
@@ -44,6 +45,7 @@ import {
   enact,
   packRewardAuth,
   packRewardProof,
+  portalEpochInterest,
   portalIdFromDest,
   previewWithdraw,
   rewardClaimProof,
@@ -250,7 +252,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const w = await callReserve(s, encodeWithdraw(destA, end));
     assert.equal(w.ok, true, w.reason);
     const paid = decodeWithdraw(w.returnValue);
-    assert.equal(paid.interest, Number((BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS)) / 10000n));
+    assert.equal(paid.interest, 0);
+    assert.equal(decodeWithdrawEarned(w.returnValue), Number((BigInt(PI_SHE_NANOS) * BigInt(GENESIS_BPS)) / 10000n));
     const view = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(view.votesIncrease, 1);
     assert.notEqual(view.votesIncrease + view.votesDecrease + view.votesHold, 0);
@@ -434,6 +437,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
         const proof = packRewardProof(steps);
         const bad = await callReserve(session, encodeClaim(firstRow.nullifier, firstRow.nanos, Buffer.alloc(33, 9), 1, Buffer.alloc(96)));
         assert.equal(bad.ok, false, 'bad proof');
+        assert.equal(bad.reason, 'claim_unavailable');
         const signed = rewardClaimTx({
           to: firstDest,
           nanos: firstRow.nanos,
@@ -458,11 +462,14 @@ describe('Reserve bytecode on the Shear EVM', () => {
           firstRow.nullifier, firstRow.nanos, proof, 1, stolenAuth,
         ));
         assert.equal(refused.ok, false, 'third party');
+        assert.equal(refused.reason, 'claim_unavailable');
         const auth = packRewardAuth({ ownerPub: signed.spendPub, sig: signed.sig, dest: firstDest });
         const claimed = await callReserve(session, encodeClaim(firstRow.nullifier, firstRow.nanos, proof, 1, auth));
-        assert.equal(claimed.ok, true, claimed.reason);
+        assert.equal(claimed.ok, false);
+        assert.equal(claimed.reason, 'claim_unavailable');
         const twice = await callReserve(session, encodeClaim(firstRow.nullifier, firstRow.nanos, proof, 1, auth));
         assert.equal(twice.ok, false);
+        assert.equal(twice.reason, 'claim_unavailable');
         const later = rewardCommitment(js, t0 + (epochs + 1) * RESERVE_EPOCH_MS);
         assert.equal(later.rows.some((row) => row.nullifier === firstRow.nullifier), false);
       }
@@ -536,17 +543,20 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const plan = rewardCommitment(js, end);
     assert.equal(plan.rows.length, 1);
     const preview = previewWithdraw(js, dest, end);
-    assert.ok(preview.interest > 0);
+    assert.equal(preview.interest, 0);
+    assert.equal(preview.payout, PI_SHE_NANOS);
+    const earned = portalEpochInterest(js, js.portals[portalIdFromDest(dest)], end);
+    assert.equal(earned, plan.rows[0].nanos);
     const tx = withdrawTx({ from: dest, to: dest, nanos: preview.payout, id: 'paid-reward' });
     signWithdrawReward(tx, owner.privateKey, {
       portalId: portalIdFromDest(dest),
-      nanos: preview.interest,
+      nanos: preview.principal,
       dest,
     });
     const bound = boundReserveWithdraw(tx, js, new Set(), end);
     assert.equal(bound.ok, true, bound.reason);
-    assert.equal(bound.cap, preview.principal + preview.interest);
-    assert.equal(bound.cap, PI_SHE_NANOS + plan.rows[0].nanos);
+    assert.equal(bound.cap, preview.principal);
+    assert.equal(bound.cap, PI_SHE_NANOS);
     const applied = applyReserveBlock({
       state: js,
       block: { txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }, tx] },
@@ -558,7 +568,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const paid = [...applied].find((item) => item && item.action === 'withdraw');
     assert.equal(paid.ok, true, paid && paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
-    assert.equal(paid.interest, plan.rows[0].nanos);
+    assert.equal(paid.interest, 0);
+    assert.equal(paid.earned, plan.rows[0].nanos);
     const claim = rewardClaimTx({
       to: dest,
       nanos: plan.rows[0].nanos,
@@ -574,7 +585,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
       genesisMs: t0,
     });
     assert.equal(again.ok, false);
-    assert.equal(again.reason, 'double_mint');
+    assert.equal(again.reason, 'claim_unavailable');
     const after = supplyIdentity(js);
     assert.equal(after.ok, true, after.reason);
     assert.equal(after.principalNanos, 0);
@@ -586,12 +597,14 @@ describe('Reserve bytecode on the Shear EVM', () => {
       tx,
     ], end, t0);
     assert.equal(drawn.ok, true, drawn.reason);
-    assert.equal(drawn.withdrawInterest, plan.rows[0].nanos);
+    assert.equal(drawn.withdrawInterest, 0);
+    assert.equal(drawn.withdrawEarned, plan.rows[0].nanos);
     assert.equal(drawn.totalLocked, 0);
     const proof = packRewardProof(rewardClaimProof(js, plan.rows[0].nullifier));
     const auth = packRewardAuth({ ownerPub, sig: claim.sig, dest });
     const claimed = await callReserve(session, encodeClaim(plan.rows[0].nullifier, plan.rows[0].nanos, proof, plan.index, auth));
     assert.equal(claimed.ok, false);
+    assert.equal(claimed.reason, 'claim_unavailable');
   });
 
   it('unclaimed principal never expires, and a claim is not what pays it', async () => {
@@ -646,7 +659,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal((await callReserve(session, encodeWithdraw(dest, now))).ok, false);
   });
 
-  it('refuses a third-party claim and still pays the owner', async () => {
+  it('refuses every reward claim', async () => {
     const t0 = 1_700_000_000_000;
     const end = t0 + RESERVE_EPOCH_MS;
     const owner = newIdentity();
@@ -688,7 +701,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
       genesisMs: t0,
     });
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'unsigned');
+    assert.equal(refused.reason, 'claim_unavailable');
     const claim = rewardClaimTx({
       to: payout,
       nanos: row.nanos,
@@ -705,12 +718,13 @@ describe('Reserve bytecode on the Shear EVM', () => {
       nowMs: end + 1,
       genesisMs: t0,
     });
-    assert.equal(paid.ok, true, paid.reason);
-    assert.equal(Number(js.mintBankNanos), row.nanos);
+    assert.equal(paid.ok, false);
+    assert.equal(paid.reason, 'claim_unavailable');
+    assert.equal(Number(js.mintBankNanos), 0);
     assert.equal(Number(js.totalLockedNanos), PI_SHE_NANOS);
     const after = supplyIdentity(js);
     assert.equal(after.ok, true, after.reason);
-    assert.equal(after.totalNanos, PI_SHE_NANOS + row.nanos);
+    assert.equal(after.totalNanos, PI_SHE_NANOS);
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
@@ -721,11 +735,14 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const stolenAuth = packRewardAuth({ ownerPub: stolen.spendPub, sig: stolen.sig, dest: payout });
     const evmStolen = await callReserve(session, encodeClaim(row.nullifier, row.nanos, packed, plan.index, stolenAuth));
     assert.equal(evmStolen.ok, false);
+    assert.equal(evmStolen.reason, 'claim_unavailable');
     const auth = packRewardAuth({ ownerPub, sig: claim.sig, dest: payout });
     const evmPaid = await callReserve(session, encodeClaim(row.nullifier, row.nanos, packed, plan.index, auth));
-    assert.equal(evmPaid.ok, true, evmPaid.reason);
+    assert.equal(evmPaid.ok, false);
+    assert.equal(evmPaid.reason, 'claim_unavailable');
     const twice = await callReserve(session, encodeClaim(row.nullifier, row.nanos, packed, plan.index, auth));
     assert.equal(twice.ok, false);
+    assert.equal(twice.reason, 'claim_unavailable');
   });
 
   it('refuses a reward withdraw that is not signed by the portal owner', async () => {
@@ -740,8 +757,11 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub }).ok, true);
     const plan = rewardCommitment(js, end);
     const preview = previewWithdraw(js, dest, end);
-    assert.ok(preview.interest > 0);
-    assert.equal(withdrawPaysInterest(js, js.portals[portalIdFromDest(dest)], end), preview.interest);
+    const earned = portalEpochInterest(js, js.portals[portalIdFromDest(dest)], end);
+    assert.ok(earned > 0);
+    assert.equal(preview.interest, 0);
+    assert.equal(preview.payout, PI_SHE_NANOS);
+    assert.equal(withdrawPaysInterest(js, js.portals[portalIdFromDest(dest)], end), 0);
     const portalId = portalIdFromDest(dest);
     const bare = withdrawTx({ from: dest, to: payout, nanos: preview.payout, id: 'wd-bare' });
     const refused = applyReserveBlock({
@@ -755,7 +775,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(refused.reason, 'unsigned');
     const stranger = newIdentity();
     const stolen = withdrawTx({ from: dest, to: payout, nanos: preview.payout, id: 'wd-stolen' });
-    signWithdrawReward(stolen, stranger.privateKey, { portalId, nanos: preview.interest, dest: payout });
+    signWithdrawReward(stolen, stranger.privateKey, { portalId, nanos: preview.principal, dest: payout });
     const stolenApply = applyReserveBlock({
       state: cloneVault(js),
       block: { txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }, stolen] },
@@ -766,7 +786,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(stolenApply.ok, false);
     assert.equal(stolenApply.reason, 'unsigned');
     const tx = withdrawTx({ from: dest, to: payout, nanos: preview.payout, id: 'wd-owner' });
-    signWithdrawReward(tx, owner.privateKey, { portalId, nanos: preview.interest, dest: payout });
+    signWithdrawReward(tx, owner.privateKey, { portalId, nanos: preview.principal, dest: payout });
     const applied = applyReserveBlock({
       state: js,
       block: { txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }, tx] },
@@ -776,7 +796,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
     });
     assert.equal(applied.ok, true, applied.reason);
     const paid = [...applied].find((item) => item && item.action === 'withdraw');
-    assert.equal(paid.interest, preview.interest);
+    assert.equal(paid.interest, 0);
+    assert.equal(paid.earned, earned);
     assert.equal(paid.principal, PI_SHE_NANOS);
 
     const session = await bootReserveEvm();
@@ -790,7 +811,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const auth = packRewardAuth({ ownerPub, sig: tx.rewardSig, dest: payout });
     const drawn = await callReserve(session, encodeWithdraw(dest, end, auth));
     assert.equal(drawn.ok, true, drawn.reason);
-    assert.equal(decodeWithdraw(drawn.returnValue).interest, preview.interest);
+    assert.equal(decodeWithdraw(drawn.returnValue).interest, 0);
+    assert.equal(decodeWithdrawEarned(drawn.returnValue), earned);
     assert.equal(decodeWithdraw(drawn.returnValue).principal, PI_SHE_NANOS);
   });
 
@@ -813,7 +835,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
       assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: lateAt }).ok, true);
       const paid = withdraw({ state: js, dest, nowMs: at });
       assert.equal(paid.ok, true, `${at} ${paid.reason}`);
-      assert.equal(paid.interest, want, `js ${at}`);
+      assert.equal(paid.interest, 0, `js ${at}`);
+      assert.equal(paid.earned, want, `js earned ${at}`);
       assert.equal(paid.principal, PI_SHE_NANOS);
       const session = await bootReserveEvm();
       assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
@@ -821,7 +844,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
       const evm = await callReserve(session, encodeWithdraw(dest, at));
       assert.equal(evm.ok, true, `${at} ${evm.reason}`);
       const decoded = decodeWithdraw(evm.returnValue);
-      assert.equal(decoded.interest, want, `evm ${at}`);
+      assert.equal(decoded.interest, 0, `evm ${at}`);
+      assert.equal(decodeWithdrawEarned(evm.returnValue), want, `evm earned ${at}`);
       assert.equal(decoded.principal, PI_SHE_NANOS);
     }
   });

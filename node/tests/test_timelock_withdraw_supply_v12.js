@@ -33,6 +33,7 @@ import {
   emptyVault,
   lockTx,
   lockUnlockOf,
+  portalEpochInterest,
   portalIdFromDest,
   previewWithdraw,
   rewardCommitment,
@@ -198,7 +199,11 @@ describe('time-locked withdraw supply', () => {
     const plainPreview = previewWithdraw(plain, plainDest, DRAW);
     assert.equal(plainPreview.principal, PI_SHE_NANOS);
     assert.equal(plainPreview.notePrincipal, 0);
-    assert.equal(plainPreview.interest, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+    assert.equal(plainPreview.interest, 0);
+    assert.equal(
+      portalEpochInterest(plain, plain.portals[portalIdFromDest(plainDest)], DRAW),
+      interestNanos(PI_SHE_NANOS, GENESIS_BPS),
+    );
     const plainDraw = admitWithdraw(plainDest, plainPreview.payout, 'plain-withdraw');
     assert.equal(verifyReservePayout(plain, plainDraw, DRAW).ok, true);
     const paid = applyReserveBlock({
@@ -210,14 +215,15 @@ describe('time-locked withdraw supply', () => {
     const row = withdrawRow(paid);
     assert.equal(row && row.ok, true, row && row.reason);
     assert.equal(row.principal, PI_SHE_NANOS);
-    assert.equal(row.interest, plainPreview.interest);
+    assert.equal(row.interest, 0);
+    assert.equal(row.earned, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
     const prior = freshVault();
     assert.equal(applyLock(prior, plainTx, T0).ok, true);
     const interest = blockWithdrawInterest(prior, supplyBlock(DRAW, plainDest, [plainDraw]), DRAW);
     const permittedPlain = blockPermittedInterest(prior, supplyBlock(DRAW, plainDest, [plainDraw]), DRAW);
     assert.equal(interest.ok, true, interest.reason);
     assert.equal(permittedPlain.ok, true, permittedPlain.reason);
-    assert.equal(interest.nanos, BigInt(plainPreview.interest));
+    assert.equal(interest.nanos, 0n);
 
     const noteDest = destOf();
     const note = freshVault();
@@ -404,9 +410,8 @@ describe('time-locked withdraw supply', () => {
     const state = freshVault();
     assert.equal(applyLock(state, plainLock(dest, T0, 'clock-legacy'), T0).ok, true);
     assert.equal(applyLock(state, timeLock(dest, T0, 'clock-note'), T0, 2).ok, true);
-    // Both principals, and no interest. The old missing-clock fallback pays
-    // every locked nanos, so this seal would be accepted. A full-epoch
-    // allCap is larger than that fallback and would still be refused.
+    // Both principals. A missing header time pays none of that. With the
+    // clock, the receipt is exactly the matured principal.
     const loose = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS * 2, id: 'no-clock' });
     for (const clock of [undefined, null, 0, Number.NaN]) {
       const got = boundReserveWithdraw(loose, state, new Set(), clock);
@@ -416,8 +421,16 @@ describe('time-locked withdraw supply', () => {
     const funded = verifyFundedBody([loose], () => 0, { reserveState: state });
     assert.equal(funded.reason, 'insufficient');
     const withClock = boundReserveWithdraw(loose, state, new Set(), DRAW);
-    assert.equal(withClock.ok, false);
-    assert.equal(withClock.reason, 'mint_amount');
+    assert.equal(withClock.ok, true, withClock.reason);
+    assert.equal(withClock.cap, PI_SHE_NANOS * 2);
+    const over = boundReserveWithdraw(
+      withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS * 2 + 1, id: 'clock-over' }),
+      state,
+      new Set(),
+      DRAW,
+    );
+    assert.equal(over.ok, false);
+    assert.equal(over.reason, 'insufficient');
   });
 
   it('accepts the pro-rata legacy and mixed withdraw and refuses one nano either side', () => {

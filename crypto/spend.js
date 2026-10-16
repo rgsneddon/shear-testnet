@@ -811,12 +811,10 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
 
 /**
  * A withdraw pays only stake that is already locked. Principal 0 cannot
- * withdraw any amount. The cap is the withdrawable legacy principal plus
- * the pro-rata interest due at the header time. A missing header time
- * pays no principal. interestNanos(staked, bps) is one full epoch, and a
- * mid-epoch lock does not earn that figure. A portal with no tranche list
- * is one legacy credit: withdrawablePrincipal includes it only after its
- * lock epoch has ended.
+ * withdraw any amount. The cap is the withdrawable legacy principal. The
+ * stake reward is not part of it. A missing header time pays no principal.
+ * A portal with no tranche list is one legacy credit: withdrawablePrincipal
+ * includes it only after its lock epoch has ended.
  */
 export function boundReserveWithdraw(tx, reserveState = null, drawn = null, clockMs = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
@@ -862,8 +860,7 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
     return { ok: false, reason: 'mint_forbidden' };
   }
   // The label is not an amount. The output must open to exactly the
-  // withdrawable legacy principal plus the pro-rata interest due at the
-  // header clock. A time-locked note is not part of that principal.
+  // withdrawable legacy principal. A time-locked note is not part of it.
   if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
     return { ok: false, reason: 'mint_amount' };
   }

@@ -344,6 +344,28 @@ export function rewardAuthMessage({ kind = 'claim', nullifier, nanos, proof, des
   ]);
 }
 
+export const WITHDRAW_OWNER_TAG = 'shear-withdraw-owner-v1';
+
+/**
+ * Bytes the owner signs for a principal withdraw.
+ * The nullifier is the portal id. The amount is the principal.
+ * The destination is the payout. The lock dest is the withdraw's own subject.
+ */
+export function withdrawOwnerMessage({ nullifier, nanos, dest } = {}) {
+  const id = Buffer.from(String(nullifier || '').replace(/^0x/i, ''), 'hex');
+  if (id.length !== 32) return null;
+  const n = BigInt(nanos);
+  if (n <= 0n || n > 0xffffffffffffffffn) return null;
+  const destBuf = Buffer.from(String(dest || ''), 'utf8');
+  return Buffer.concat([
+    Buffer.from(WITHDRAW_OWNER_TAG),
+    id,
+    u64le(n),
+    u32le(destBuf.length),
+    destBuf,
+  ]);
+}
+
 /** Ed25519 over the auth message. Returns hex sig, or '' when the key cannot sign. */
 export function signRewardAuth(message, privateKey) {
   if (!message || !privateKey) return '';
@@ -642,15 +664,10 @@ function claimDestOf(tx) {
 }
 
 /**
- * Refuse a claim that is not signed by the portal owner.
- * The signature covers the nullifier, the amount, the proof, and the payout.
- * A third party's key does not open the leaf.
- */
-/**
- * A withdraw that pays a reward must be signed by the portal owner.
- * The message is the portal id, the interest, an empty proof, and the payout.
- * No owner on the portal means this check does not apply. The spend
- * signature on the lock dest is still required by reserveAuth.
+ * A withdraw of principal must be signed by the portal owner.
+ * The message is the portal id, the principal, and the payout destination.
+ * The withdraw names the lock, so it is linkable to that lock.
+ * No owner on the portal means this check does not apply.
  */
 export function withdrawRewardRejected(state, tx, nowMs) {
   if (String(tx?.kind || '') !== KIND_WITHDRAW) return null;
@@ -659,83 +676,31 @@ export function withdrawRewardRejected(state, tx, nowMs) {
   const portal = id && state?.portals ? state.portals[id] : null;
   const owner = String(portal?.ownerPub || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(owner)) return null;
-  const due = Math.floor(Number(withdrawPaysInterest(state, portal, nowMs)) || 0);
-  if (!(due > 0)) return null;
+  const principal = Math.floor(Number(withdrawablePrincipal(state, portal, nowMs)) || 0);
+  if (!(principal > 0)) return null;
   const pub = String(tx?.spendPub || '').replace(/^0x/i, '').toLowerCase();
   if (pub !== owner) return { ok: false, reason: 'unsigned', nanos: 0 };
   const dest = String(tx?.to || act?.payout || '');
-  const message = rewardAuthMessage({
-    kind: 'withdraw',
-    nullifier: id,
-    nanos: due,
-    proof: [],
-    dest,
-  });
+  const message = withdrawOwnerMessage({ nullifier: id, nanos: principal, dest });
   if (!verifyRewardAuth(message, pub, tx?.rewardSig)) return { ok: false, reason: 'unsigned', nanos: 0 };
   return null;
 }
 
+/** Every reward claim is refused until the ZK FS-1 ownership proof activates. */
 export function rewardClaimRejected(tx, state = null) {
+  void state;
   if (String(tx?.kind || tx?.vout?.[0]?.kind || '') !== KIND_REWARD_CLAIM) return null;
-  const nullifier = String(tx?.nullifier || '').toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'unsigned' };
-  const nanos = Math.floor(Number(tx?.nanos));
-  if (!Number.isSafeInteger(nanos) || nanos <= 0) return { ok: false, reason: 'unsigned' };
-  const dest = claimDestOf(tx);
-  const pub = String(tx?.spendPub || '').replace(/^0x/i, '').toLowerCase();
-  const message = rewardAuthMessage({
-    kind: 'claim',
-    nullifier,
-    nanos,
-    proof: tx?.proof,
-    dest,
-  });
-  if (!verifyRewardAuth(message, pub, tx?.sig)) return { ok: false, reason: 'unsigned' };
-  const row = state?.rewardBook?.[nullifier];
-  if (row) {
-    const owner = String(state?.portals?.[row.portalId]?.ownerPub || row.ownerPub || '').toLowerCase();
-    if (!owner || owner !== pub) return { ok: false, reason: 'unsigned' };
-  }
-  return null;
+  return { ok: false, reason: 'claim_unavailable' };
 }
 
 /**
- * Mint one archived reward. The nullifier is the portal-epoch id.
- * A second claim, or a withdraw of that id, is double_mint.
- * The output dest is the claimer's choice. The lock dest is not on this tx.
- * The owner signs (nullifier, amount, proof, destination). The signature
- * publishes the spend key, not the lock dest. Anyone who saved that key
- * from the lock can match the two. A proof that hid the key would need
- * a zero-knowledge opening, which this book does not have.
+ * Reward claims are closed. PR 116's ZK proof is what will open them.
+ * The qualified reward stays on the portal. This does not mint it.
  */
 export function applyRewardClaim(state, tx) {
-  if (!state || state.blankFork) return { ok: false, reason: 'no_vault', nanos: 0 };
-  if (String(tx?.programId || '') !== RESERVE_PROGRAM) return { ok: false, reason: 'mint_forbidden', nanos: 0 };
-  const nullifier = String(tx?.nullifier || '').toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'stake_reward', nanos: 0 };
-  const refused = rewardClaimRejected(tx, state);
-  if (refused) return { ok: false, reason: refused.reason || 'unsigned', nanos: 0 };
-  const row = state.rewardBook?.[nullifier];
-  const root = row ? state.rewardRoots?.[row.rootKey] : '';
-  if (!row || !root) return { ok: false, reason: 'stake_reward', nanos: 0 };
-  if (row.settledByWithdraw) return { ok: false, reason: 'double_mint', nanos: 0 };
-  if (state.mintedIds?.[nullifier]) return { ok: false, reason: 'double_mint', nanos: 0 };
-  if (!claimNoteOpens(tx, row.nanos)) return { ok: false, reason: 'stake_reward', nanos: 0 };
-  const owner = String(state?.portals?.[row.portalId]?.ownerPub || row.ownerPub || '').toLowerCase();
-  const leaf = rewardLeaf(nullifier, row.nanos, owner);
-  let rootBuf;
-  try { rootBuf = Buffer.from(root, 'hex'); } catch { rootBuf = Buffer.alloc(0); }
-  if (!leaf || !merkleVerify(leaf, tx?.proof, rootBuf)) return { ok: false, reason: 'stake_reward', nanos: 0 };
-  const paid = payoutStakeReward({
-    state,
-    reward: row.nanos,
-    id: nullifier,
-    gateOk: true,
-    maxReward: row.nanos,
-  });
-  if (!paid.ok) return { ok: false, reason: paid.reason || 'double_mint', nanos: 0 };
-  state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + BigInt(row.nanos);
-  return { ok: true, nanos: row.nanos, nullifier };
+  void state;
+  void tx;
+  return { ok: false, reason: 'claim_unavailable', nanos: 0 };
 }
 
 function rewardReserved(state, portalId) {
@@ -1885,13 +1850,13 @@ function settlePortal(state, p, nowMs) {
 }
 
 /**
- * Interest a withdraw may mint. A reserved or already-minted reward belongs
- * to the claim. The withdraw still pays principal.
+ * A withdraw pays principal only. The qualified reward stays for the ZK claim.
  */
 export function withdrawPaysInterest(state, portal, nowMs) {
-  if (!portal) return 0;
-  if (rewardAlreadyMinted(state, portal, nowMs) || rewardReserved(state, portal.id)) return 0;
-  return portalEpochInterest(state, portal, nowMs);
+  void state;
+  void portal;
+  void nowMs;
+  return 0;
 }
 
 /** Interest a withdraw at `nowMs` pays. Same split as settle, without writing cursors. */
@@ -2149,18 +2114,16 @@ export function rewardClaimTx({
 }
 
 /**
- * Signature that lets a withdraw pay a reward. The nullifier is the portal
- * id. The destination is the payout. An empty proof is part of the message.
+ * Signature that lets the owner withdraw principal. The nullifier is the
+ * portal id. The amount is the principal. The destination is the payout.
  */
 export function signWithdrawReward(tx, ownerKey, { portalId, nanos, dest } = {}) {
   if (!tx || !ownerKey) return tx;
   const id = String(portalId || '').replace(/^0x/i, '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(id)) return tx;
-  const message = rewardAuthMessage({
-    kind: 'withdraw',
+  const message = withdrawOwnerMessage({
     nullifier: id,
     nanos,
-    proof: [],
     dest: dest || tx.to || '',
   });
   const sig = signRewardAuth(message, ownerKey);
@@ -2965,41 +2928,17 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   const release = split.legacy;
   if (release <= 0n) return { ok: false, reason: 'epoch_open' };
   const to = continuumOf(p, payout, isDestAddress(dest) ? dest : '');
+  // Fold the qualified reward onto the portal and leave it there.
+  // The payout is principal only. The ZK claim is what will mint the reward.
   settlePortal(state, p, nowMs);
-  const interest = rewardTaken ? 0n : capReward(p.accruedReward);
-  p.accruedReward = 0n;
-  const mintId = withdrawMintId(p.id, mintEpoch(state, nowMs));
-  if (!rewardTaken && state.mintedIds && state.mintedIds[mintId]) {
-    return { ok: false, reason: 'double_mint' };
-  }
+  const earned = capReward(p.accruedReward);
+  const interest = 0n;
   let mint = null;
-  if (interest > 0n) {
-    const paid = payoutStakeReward({
-      state,
-      reward: interest,
-      id: mintId,
-      gateOk: true,
-      maxReward: interest,
-    });
-    if (!paid.ok) return { ok: false, reason: paid.reason };
-    mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
-    if (!mint.ok) return { ok: false, reason: mint.reason };
-    for (const epoch of dueEpochs) {
-      const leafId = withdrawMintId(p.id, epoch);
-      state.mintedIds[leafId] = true;
-      const row = state.rewardBook?.[leafId];
-      if (row) row.settledByWithdraw = true;
-    }
-    state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + interest;
-  } else if (rewardTaken) {
-    // The claim owns this reward id. Principal still leaves.
-  } else if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' })) {
+  if (!extraMintAllowed(RESERVE_PROGRAM, { kind: 'withdraw' })) {
     return { ok: false, reason: 'mint_forbidden' };
-  } else {
-    state.mintedIds = state.mintedIds || Object.create(null);
-    rememberMint(state, mintId);
-    state.mintedIds[mintId] = true;
   }
+  void rewardTaken;
+  void dueEpochs;
   state.totalLockedNanos = asBig(state.totalLockedNanos) - release;
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
   p.redeemedNanos = asBig(p.redeemedNanos) + release;
@@ -3050,8 +2989,9 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     idle: nanosOut(fromIdle),
     interest: shownInterest,
     reward: shownInterest,
-    rewardSource: interest > 0n ? 'coinbase' : undefined,
-    payout: nanosOut(release + interest),
+    earned: nanosOut(earned),
+    rewardSource: undefined,
+    payout: nanosOut(release),
     to,
     mint,
     programId: RESERVE_PROGRAM,
@@ -3160,10 +3100,10 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     if (!act || act.opened !== true) return fail();
     const portal = act.portalId ? state.portals?.[act.portalId] : null;
     const principal = exactBi(withdrawablePrincipal(state, portal, clock));
-    const permitted = exactBi(portalEpochInterest(state, portal, clock));
     const opened = exactBi(act.nanos);
-    if (principal == null || permitted == null || opened == null) return fail();
-    if (opened !== principal + permitted) return fail();
+    if (principal == null || opened == null) return fail();
+    // The receipt is the principal. The reward is not minted here.
+    if (opened !== principal) return fail();
     // The first slice is the start of this block. Later slices, including a
     // second withdraw, stay on the epoch that slice enacted.
     const applied = applyReserveBlock({
@@ -3183,11 +3123,10 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     const interest = exactBi(got[0].interest);
     const vaultPrincipal = exactBi(got[0].principal);
     if (interest == null || vaultPrincipal == null) return fail();
-    if (interest !== permitted || vaultPrincipal !== principal) return fail();
+    if (interest !== 0n || vaultPrincipal !== principal) return fail();
     const mintedHere = got[0].mint && got[0].mint.ok === true ? exactBi(got[0].mint.nanos) : 0n;
-    if (mintedHere == null || mintedHere !== interest) return fail();
-    minted += opened - principal;
-    permittedSum += permitted;
+    if (mintedHere == null || mintedHere !== 0n) return fail();
+    permittedSum += 0n;
     principalOut += principal;
     if (minted > REWARD_U64 || permittedSum > REWARD_U64) return fail();
     counted += 1;
@@ -3200,11 +3139,6 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
   return { ok: true, minted, permitted: permittedSum };
 }
 
-/**
- * Interest the withdraw receipts open to. Each one is principal + the bps
- * schedule on the pre-withdraw vault, and the mint equals that interest.
- * No withdraw is zero and does not need a vault.
- */
 /**
  * Coinbase carries a root, not a mint. Supply grows only by claim outputs.
  * Unclaimed rows stay out of minted and permitted interest.

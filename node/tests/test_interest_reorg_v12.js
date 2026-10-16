@@ -96,13 +96,13 @@ describe('store reorg across a withdraw', () => {
       nowMs: T0 + 90_000 + EPOCH_MS + 1,
     });
     assert.equal(drawn.ok, true, drawn.reason);
-    assert.equal(drawn.interest, interest);
-    assert.equal(drawn.mint?.ok, true);
-    assert.equal(Number(drawn.mint.nanos), interest);
+    assert.equal(drawn.interest, 0);
+    assert.equal(drawn.earned, interest);
+    assert.equal(drawn.mint, null);
     const minted = nanosOf(local.reserveVault.mintBankNanos);
     const fromFee = feeBefore - nanosOf(local.reserveVault.feeBankNanos);
-    assert.ok(minted > 0n);
-    assert.equal(minted + fromFee, BigInt(interest));
+    assert.equal(minted, 0n);
+    assert.equal(fromFee, 0n);
     assert.equal(nanosOf(local.reserveVault.portals[pid].staked), 0n);
     assert.equal(local.supplyState().mintedInterest, 0n);
 

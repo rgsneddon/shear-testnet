@@ -291,6 +291,21 @@ export function decodeWithdraw(ret) {
   };
 }
 
+/** Qualified reward the withdraw left on the portal. The paid reward is zero. */
+export function decodeWithdrawEarned(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  if (!b || b.length < 96) return 0;
+  return Number(readU256(b, 64));
+}
+
+function evmRevertReason(res) {
+  const ret = res?.execResult?.returnValue;
+  if (ret && ret.length >= 4 && Buffer.from(ret.subarray(0, 4)).equals(Buffer.from(selector('ClaimUnavailable()')))) {
+    return 'claim_unavailable';
+  }
+  return String(res?.execResult?.exceptionError?.error || 'revert');
+}
+
 function shearCommon() {
   return createCustomCommon(
     { chainId: Number(SHEAR_EVM_CHAIN_ID), networkId: Number(SHEAR_EVM_CHAIN_ID) },
@@ -374,7 +389,7 @@ export async function callReserve(session, data, { staticCall = false, value = 0
   if (res.execResult.exceptionError) {
     return {
       ok: false,
-      reason: String(res.execResult.exceptionError.error || 'revert'),
+      reason: evmRevertReason(res),
       returnValue: res.execResult.returnValue,
       gasUsed,
     };
@@ -523,11 +538,9 @@ export async function executeReserveTx(session, tx, nowMs) {
   if (kind === 'reward-claim') {
     const proof = tx?.evmProof || tx?.proof;
     const packed = Buffer.isBuffer(proof) ? proof : packRewardProof(proof);
-    if (!tx?.nullifier || !packed) return { ok: false, reason: 'stake_reward' };
-    const auth = packRewardAuth({ ownerPub: tx.spendPub, sig: tx.sig, dest: tx.to || dest });
-    if (!auth) return { ok: false, reason: 'unsigned' };
+    const auth = packRewardAuth({ ownerPub: tx.spendPub, sig: tx.sig, dest: tx.to || dest }) || new Uint8Array();
     const rootIndex = Math.floor(Number(tx.rootIndex) || 0);
-    return callReserve(session, encodeClaim(tx.nullifier, nanos, packed, rootIndex, auth));
+    return callReserve(session, encodeClaim(tx?.nullifier || '', nanos || 0, packed || Buffer.alloc(0), rootIndex, auth));
   }
   if (kind === 'withdraw') {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
@@ -661,6 +674,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
       evm.valueMoved += Number(got.valueMoved || 0);
       if (txKindOf(tx) === 'withdraw' && got.returnValue) {
         evm.withdrawInterest = decodeWithdraw(got.returnValue).interest;
+        evm.withdrawEarned = decodeWithdrawEarned(got.returnValue);
       }
     }
     if (cb?.observe != null) {
