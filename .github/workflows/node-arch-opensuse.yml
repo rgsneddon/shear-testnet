@@ -115,7 +115,7 @@ jobs:
           rm -rf runtime node_modules dist crypto/randomx/build \
             crypto/native/shearhash.node crypto/native/shearadmit.node \
             crypto/native/admit/target
-          npm ci
+          npm ci --ignore-scripts
           cmake -S crypto/randomx -B crypto/randomx/build
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native -j"$(nproc)"
