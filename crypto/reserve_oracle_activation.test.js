@@ -604,15 +604,15 @@ function remainAt(offset) {
   return Math.max(0, Math.floor(end - lockAt));
 }
 
-/** Pro-rata of the lock epoch, then each later full epoch before withdraw. A lock in the testnet's last quarter earns none. */
+/** Pro-rata of the lock epoch, then each later full epoch before withdraw. A lock in the testnet's last quarter misses only that arrival epoch. */
 function satWant(offset, holdEpochs, rates, stake = PI_SHE_NANOS) {
   const span = RESERVE_EPOCH_MS;
-  if (remainAt(offset) < Math.floor(span / 4)) return 0;
   if (stake < PI_SHE_NANOS) return 0;
   const idx = Math.floor(offset);
   const until = Math.floor(offset + holdEpochs);
   const rate = (e) => (rates && rates[e] != null ? rates[e] : GENESIS_BPS);
-  let total = proRata(stake, rate(idx), remainAt(offset), span);
+  const late = remainAt(offset) < Math.floor(span / 4);
+  let total = late ? 0 : proRata(stake, rate(idx), remainAt(offset), span);
   for (let e = idx + 1; e < until; e += 1) total += proRata(stake, rate(e), span, span);
   return total;
 }
@@ -764,7 +764,9 @@ describe('a lock earns the rest of its chain epoch, then full epochs', () => {
       ],
       drawOffset: 2,
     });
-    assert.equal(later[who2], due(PI_SHE_NANOS, 0.1, 2));
+    // The 9π locked after the cutoff misses epoch 0 and earns epoch 1.
+    assert.equal(later[who2], due(PI_SHE_NANOS, 0.1, 2) + due(nine, 0.8, 2));
+    assert.ok(due(nine, 0.8, 2) > 0);
   });
 
   it('a staked top-up pro-rates its own arrival, then shares later full epochs', async () => {

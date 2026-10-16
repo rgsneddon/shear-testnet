@@ -104,7 +104,7 @@ describe('sealed reserve-lock prefix', () => {
     assert.ok(confs < SPENDABLE_CONFIRMATIONS);
     assert.doesNotMatch(consensusFingerprint(), /HISTORICAL_TIP=/);
     assert.match(consensusFingerprint(), /NETWORK=shear-testnet-v12/);
-    assert.match(consensusFingerprint(), /RESERVE_NOTE=note-principal-refused/);
+    assert.match(consensusFingerprint(), /RESERVE_NOTE=withdraw-levy-pull/);
     assert.match(consensusFingerprint(), /ASERT_STEP=aserti3-2d/);
     assert.match(consensusFingerprint(MAGIC_TESTNET_V11), new RegExp(`HISTORICAL_TIP=${HISTORICAL_TIP}`));
     console.log(`LOCK_PRESENT height=${lockHeight} nanos=${locked} confs=${confs} need=${SPENDABLE_CONFIRMATIONS} tip=${blocks[blocks.length - 1].height}`);

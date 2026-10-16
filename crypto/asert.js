@@ -223,11 +223,10 @@ export const SPEND_SIG = 'ed25519-shear-spend-v1';
 export const REWARD_LAW = 'epoch-bps-floor';
 export const INTEREST_LAW = REWARD_LAW;
 /**
- * Vault Security default. withdraw() does not pay a time-locked note's
- * principal. Legacy tranches still withdraw. The stricter alternative,
- * all principal refused, is not this token.
+ * Principal leaves only through the user's own levy-paying withdraw.
+ * Epoch end does not release it.
  */
-export const RESERVE_NOTE_LAW = 'note-principal-refused';
+export const RESERVE_NOTE_LAW = 'withdraw-levy-pull';
 /** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';

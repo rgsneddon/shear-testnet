@@ -7,12 +7,14 @@ pragma solidity ^0.8.20;
  * Lock is legal while an epoch is open and the chain clock is pinned. An
  * unpinned clock rejects the lock. Vault epochs are chain vortex epochs.
  * Coin locked while at least the stake cutoff remains is an active
- * lock and can vote. Coin locked in the final stake window is idle: it earns
- * no stake reward, and its owner can still vote. Mainnet's window is the
- * last 99 days. Testnet's window is the last quarter of the epoch. A lock
- * or top-up made before that window earns only when the sum of those
- * pre-cutoff credits is at least π. Below π the stake reward is 0, and a
- * settle while the sum is still short does not mark those credits paid.
+ * lock and can vote. Coin locked in the final stake window is idle for
+ * that epoch: it misses only that epoch's reward, and its owner can still
+ * vote. Later full epochs of that credit still pay when the portal's
+ * pre-cutoff sum is at least π. Mainnet's window is the last 99 days.
+ * Testnet's window is the last quarter of the epoch. A lock or top-up
+ * made before that window earns only when the sum of those pre-cutoff
+ * credits is at least π. Below π the stake reward is 0, and a settle
+ * while the sum is still short does not mark those credits paid.
  * A qualifying credit earns its epoch's rate times the time still left in
  * that chain epoch, by integer floor, then each later full epoch before
  * the open one. Coin added inside the window does not count toward π. A
@@ -34,10 +36,13 @@ pragma solidity ^0.8.20;
  * It is written only when an epoch opens. There is no per-epoch step and
  * no aggregate cap. A caller cannot select the rate.
  * The 1 SHE pot never moves. At epoch end the block stores the reward root
- * the node already computed. This contract does not build that tree. A user
- * claims one leaf, once, and the proof is checked against a stored root.
- * That claim does not touch principal. Principal stays in the vault until
- * the user's own withdraw, and an epoch end does not release it.
+ * the node already computed. This contract does not build that tree, and
+ * it does not walk earners. A reward already archived in an earlier root
+ * is not part of the next one. A user claims one leaf, once, and the proof
+ * is checked against a stored root. A withdraw that pays the same reward
+ * retires that leaf. Neither path touches the other's payment. Principal
+ * stays in the vault until the user's own withdraw, and an epoch end does
+ * not release it.
  * This contract refuses
  * well-known foreign chain ids. The Reserve oracle is the bundled quorum.
  * observeRate does not move the rate.
@@ -332,9 +337,11 @@ contract Reserve {
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
-            if (t.remainMs < cut || !qualified) continue;
+            if (!qualified) continue;
             if (!t.partialPaid && nowIdx > t.epoch) {
-                p.accruedReward += _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
+                if (t.remainMs >= cut) {
+                    p.accruedReward += _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
+                }
                 t.partialPaid = true;
             }
             if (nowIdx > t.fullFrom) {
@@ -684,8 +691,7 @@ contract Reserve {
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
-            if (t.remainMs < cut) continue;
-            if (!t.partialPaid && nowIdx > t.epoch && t.epoch < nowIdx) {
+            if (t.remainMs >= cut && !t.partialPaid && nowIdx > t.epoch && t.epoch < nowIdx) {
                 uint256 part = _partial(t.amount, _rateFor(t.epoch), t.remainMs, span);
                 if (part > 0) {
                     sums[t.epoch] += part;
@@ -705,7 +711,7 @@ contract Reserve {
         uint256 count = 0;
         for (uint256 e = 0; e < nowIdx; e++) {
             if (!hit[e] || sums[e] == 0 || sums[e] > 9007199254740991) continue;
-            if (_taken(id, e)) continue;
+            if (_taken(id, e) || _archived(e, nowIdx)) continue;
             count += 1;
         }
         epochs = new uint256[](count);
@@ -713,11 +719,22 @@ contract Reserve {
         uint256 w = 0;
         for (uint256 e = 0; e < nowIdx; e++) {
             if (!hit[e] || sums[e] == 0 || sums[e] > 9007199254740991) continue;
-            if (_taken(id, e)) continue;
+            if (_taken(id, e) || _archived(e, nowIdx)) continue;
             epochs[w] = e;
             amounts[w] = sums[e];
             w += 1;
         }
+    }
+
+    /// An earlier root already holds this reward epoch. The root stored at
+    /// nowIdx does not count, so a recommit of this index lists the same rows.
+    function _archived(uint256 epoch, uint256 nowIdx) internal view returns (bool) {
+        uint256 n = rewardEpochs.length;
+        for (uint256 i = 0; i < n; i++) {
+            uint256 k = rewardEpochs[i];
+            if (epoch < k && k < nowIdx) return true;
+        }
+        return false;
     }
 
     /// A stored root covers reward epoch `epoch` when it was committed at a
@@ -740,12 +757,31 @@ contract Reserve {
         uint256 n = p.tranches.length;
         for (uint256 i = 0; i < n; i++) {
             Tranche storage t = p.tranches[i];
-            if (t.remainMs < cut) continue;
-            if (!t.partialPaid && nowIdx > t.epoch && _rootCovers(t.epoch, nowIdx)) return true;
+            if (t.remainMs >= cut && !t.partialPaid && nowIdx > t.epoch && _rootCovers(t.epoch, nowIdx)) return true;
             if (nowIdx > t.fullFrom) {
                 for (uint256 e = t.fullFrom; e < nowIdx; e++) {
                     if ((t.amount * _rateFor(e)) / 10000 == 0) continue;
                     if (_rootCovers(e, nowIdx)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// A root committed before this settlement already holds one of this
+    /// portal's rewards. This block's withdraw then pays principal only.
+    function _hasPriorArchive(Portal storage p, uint256 nowIdx) internal view returns (bool) {
+        if (rewardEpochs.length == 0 || nowIdx == 0) return false;
+        uint256 cut = cutoffLengthMs();
+        if (_preCutoffStake(p, cut) < PI_NANOS) return false;
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            Tranche storage t = p.tranches[i];
+            if (t.remainMs >= cut && !t.partialPaid && nowIdx > t.epoch && _archived(t.epoch, nowIdx)) return true;
+            if (nowIdx > t.fullFrom) {
+                for (uint256 e = t.fullFrom; e < nowIdx; e++) {
+                    if ((t.amount * _rateFor(e)) / 10000 == 0) continue;
+                    if (_archived(e, nowIdx)) return true;
                 }
             }
         }
@@ -757,6 +793,7 @@ contract Reserve {
     function _rewardHeld(bytes32 id, Portal storage p, uint256 nowTs) internal view returns (bool) {
         uint256 nowIdx = _payIndex(nowTs);
         if (_rewardTaken(id, p, nowIdx)) return true;
+        if (_hasPriorArchive(p, nowIdx)) return true;
         if (withdrawHold[id]) return false;
         return _interestArchived(p, nowIdx);
     }
@@ -774,6 +811,7 @@ contract Reserve {
     function _sealHeldRewards(uint256 nowIdx) internal {
         uint256 n = heldIds.length;
         for (uint256 i = 0; i < n; i++) {
+            if (_hasPriorArchive(portals[heldIds[i]], nowIdx)) continue;
             (uint256[] memory epochs,) = _portalAccrual(heldIds[i], nowIdx);
             for (uint256 j = 0; j < epochs.length; j++) {
                 settledByWithdraw[_nullifier(portalSha[heldIds[i]], epochs[j])] = true;

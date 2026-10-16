@@ -200,7 +200,23 @@ function rewardDest(portal) {
   return '';
 }
 
-/** Unpaid stake reward for each completed epoch, one row per portal. */
+/**
+ * A reward epoch is archived once an earlier root covers it.
+ * The root at this settlement index does not count, so recommitting
+ * the same index still lists the same rows.
+ */
+function rewardEpochArchived(state, epoch, nowIdx) {
+  const roots = state?.rewardRoots;
+  if (!roots || !(nowIdx > 0)) return false;
+  for (const key of Object.keys(roots)) {
+    const k = Number(key);
+    if (!Number.isInteger(k)) continue;
+    if (epoch < k && k < nowIdx) return true;
+  }
+  return false;
+}
+
+/** Unpaid stake reward for each completed epoch, one row per portal. Archived epochs stay on their old root. */
 export function stakeRewardsDue(state, nowMs) {
   const nowIdx = settlementIndex(state, nowMs);
   const rows = [];
@@ -209,11 +225,15 @@ export function stakeRewardsDue(state, nowMs) {
     if (!portal?.joined && !(portal?.tranches || []).length) continue;
     const byEpoch = new Map();
     const qualified = stakeQualified(state, portal);
+    if (!qualified) continue;
     for (const tranche of portal.tranches || []) {
-      const earns = qualified && earnsStakeReward(state, tranche);
-      if (!earns) continue;
       const arrival = Math.floor(Number(tranche.epoch) || 0);
-      if (!tranche.partialPaid && nowIdx > arrival) {
+      if (
+        earnsStakeReward(state, tranche)
+        && !tranche.partialPaid
+        && nowIdx > arrival
+        && !rewardEpochArchived(state, arrival, nowIdx)
+      ) {
         const part = partialInterest(
           asBig(tranche.amount),
           rateForEpoch(state, arrival),
@@ -225,6 +245,7 @@ export function stakeRewardsDue(state, nowMs) {
       const from = Math.floor(Number(tranche.fullFrom ?? arrival + 1));
       if (nowIdx > from) {
         for (let e = from; e < nowIdx; e += 1) {
+          if (rewardEpochArchived(state, e, nowIdx)) continue;
           const full = epochInterestBig(asBig(tranche.amount), rateForEpoch(state, e));
           if (full > 0n) byEpoch.set(e, (byEpoch.get(e) || 0n) + full);
         }
@@ -475,12 +496,21 @@ export function applyStakeRewards(state, block, nowMs, { require = false } = {})
     epoch: row.epoch,
     portalId: row.portalId,
   }));
+  // A portal that already has a claimable leaf does not get this block's
+  // new leaves marked paid. The withdraw pays principal, and the claim
+  // still owns every archived row, including the one just stored.
+  const claimOwned = new Set();
+  for (const row of plan.rows) {
+    const id = String(row.portalId || '').toLowerCase();
+    if (id && rewardReserved(state, id)) claimOwned.add(id);
+  }
   for (const row of plan.rows) {
     const have = state.rewardBook[row.nullifier];
     if (have && (have.nanos !== row.nanos || have.rootKey !== key)) {
       return { ok: false, reason: 'stake_reward', minted: 0n, principal: 0n };
     }
-    const paidHere = hold.has(String(row.portalId || '').toLowerCase()) || have?.settledByWithdraw === true;
+    const portalId = String(row.portalId || '').toLowerCase();
+    const paidHere = (hold.has(portalId) && !claimOwned.has(portalId)) || have?.settledByWithdraw === true;
     const entry = {
       nanos: row.nanos,
       epoch: row.epoch,
@@ -690,18 +720,23 @@ function schedulePermittedNanos(vault) {
 /** User notes hold principal. Minted reward cannot exceed the epoch allowance. The fee bank is zero. */
 export function supplyIdentity(state) {
   const vault = state || emptyVault();
-  let indexed = 0n;
+  let principal = 0n;
+  let accrued = 0n;
   for (const p of Object.values(vault.portals || {})) {
-    indexed += asBig(p?.staked) + asBig(p?.idle);
+    principal += asBig(p?.staked) + asBig(p?.idle);
+    accrued += capReward(p?.accruedReward);
   }
   const feeBank = asBig(vault.feeBankNanos);
   const minted = asBig(vault.mintBankNanos);
   const permitted = schedulePermittedNanos(vault);
-  const ok = asBig(vault.totalLockedNanos) === indexed && feeBank === 0n && minted <= permitted;
+  const locked = asBig(vault.totalLockedNanos);
+  const ok = locked === principal && feeBank === 0n && minted <= permitted;
   return {
     ok,
     reason: ok ? undefined : 'supply',
-    lockedNanos: asNum(indexed),
+    principalNanos: asNum(principal),
+    lockedNanos: asNum(principal),
+    vaultNanos: asNum(principal + accrued),
     permittedReward: asNum(permitted),
     mintedReward: asNum(minted),
     feeBankRewardNanos: 0,
@@ -1444,9 +1479,10 @@ function rateForEpoch(state, epochIndex) {
 }
 
 /**
- * A credit locked with at least the stake cutoff still to run can earn.
- * One locked in the final window cannot. The portal can still vote.
- * Earning also requires the portal's pre-cutoff sum to reach π.
+ * The arrival epoch pays only when the credit was locked with the stake
+ * cutoff still to run. A credit locked in the final window misses that
+ * epoch. Later full epochs still pay once the portal's pre-cutoff sum
+ * is at least π. The owner can vote either way.
  */
 function earnsStakeReward(state, tranche) {
   const remain = Math.floor(Number(tranche?.remainMs) || 0);
@@ -1468,13 +1504,13 @@ function stakeQualified(state, portal) {
   return preCutoffStake(state, portal) >= BigInt(PI_SHE_NANOS);
 }
 
-/** Interest still owed on one credit. Does not mutate the tranche. */
-function trancheDue(state, tranche, nowIdx, span, earns) {
-  if (!earns) return 0n;
+/** Interest still owed on one credit. The arrival partial is skipped after the cutoff. Later full epochs stay. */
+function trancheDue(state, tranche, nowIdx, span, qualified) {
+  if (!qualified) return 0n;
   let total = 0n;
   const amount = asBig(tranche?.amount);
   const epoch = Math.floor(Number(tranche?.epoch) || 0);
-  if (!tranche?.partialPaid && nowIdx > epoch) {
+  if (earnsStakeReward(state, tranche) && !tranche?.partialPaid && nowIdx > epoch) {
     total = addReward(total, partialInterest(amount, rateForEpoch(state, epoch), tranche.remainMs, span));
   }
   const from = Math.floor(Number(tranche?.fullFrom ?? epoch + 1));
@@ -1484,6 +1520,30 @@ function trancheDue(state, tranche, nowIdx, span, earns) {
     }
   }
   return total;
+}
+
+/** Reward epochs this withdraw is about to pay. Read before settle moves the cursors. */
+function dueRewardEpochs(state, portal, nowMs) {
+  const nowIdx = settlementIndex(state, nowMs);
+  const epochs = [];
+  if (!(nowIdx > 0) || !stakeQualified(state, portal)) return epochs;
+  const seen = new Set();
+  for (const tranche of portal?.tranches || []) {
+    const arrival = Math.floor(Number(tranche.epoch) || 0);
+    if (earnsStakeReward(state, tranche) && !tranche.partialPaid && nowIdx > arrival && !seen.has(arrival)) {
+      seen.add(arrival);
+      epochs.push(arrival);
+    }
+    const from = Math.floor(Number(tranche.fullFrom ?? arrival + 1));
+    if (nowIdx > from) {
+      for (let e = from; e < nowIdx; e += 1) {
+        if (seen.has(e)) continue;
+        seen.add(e);
+        epochs.push(e);
+      }
+    }
+  }
+  return epochs;
 }
 
 /** Lock epoch of a balance that never recorded a tranche list. */
@@ -1589,12 +1649,11 @@ function settlePortal(state, p, nowMs) {
   const qualified = stakeQualified(state, p);
   let total = capReward(p.accruedReward);
   for (const tranche of balanceCredits(state, p)) {
-    const earns = qualified && earnsStakeReward(state, tranche);
-    total = addReward(total, trancheDue(state, tranche, nowIdx, span, earns));
+    total = addReward(total, trancheDue(state, tranche, nowIdx, span, qualified));
     // Below π the cursors stay put. A later pre-cutoff top-up that crosses
     // π must still be able to pay the epochs this credit already sat.
     // A synthetic legacy credit is not stored, so its cursor write is a copy.
-    if (!earns) continue;
+    if (!qualified) continue;
     if (!tranche.partialPaid && nowIdx > tranche.epoch) tranche.partialPaid = true;
     const from = Math.floor(Number(tranche.fullFrom ?? tranche.epoch + 1));
     if (nowIdx > from) tranche.fullFrom = nowIdx;
@@ -1621,8 +1680,7 @@ export function portalEpochInterest(state, p, nowMs) {
   const qualified = stakeQualified(state, p);
   let total = capReward(p.accruedReward);
   for (const tranche of balanceCredits(state, p)) {
-    const earns = qualified && earnsStakeReward(state, tranche);
-    total = addReward(total, trancheDue(state, tranche, nowIdx, span, earns));
+    total = addReward(total, trancheDue(state, tranche, nowIdx, span, qualified));
   }
   return nanosOut(total);
 }
@@ -2623,6 +2681,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   }
   const p = portalOf(state, id);
   const rewardTaken = rewardAlreadyMinted(state, p, nowMs) || rewardReserved(state, p.id);
+  const dueEpochs = rewardTaken ? [] : dueRewardEpochs(state, p, nowMs);
   if (payoutPortalId && p.payoutPortalId && String(payoutPortalId).toLowerCase() !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };
   }
@@ -2657,6 +2716,12 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
     if (!paid.ok) return { ok: false, reason: paid.reason };
     mint = extraMint({ programId: RESERVE_PROGRAM, to, nanos: interest });
     if (!mint.ok) return { ok: false, reason: mint.reason };
+    for (const epoch of dueEpochs) {
+      const leafId = withdrawMintId(p.id, epoch);
+      state.mintedIds[leafId] = true;
+      const row = state.rewardBook?.[leafId];
+      if (row) row.settledByWithdraw = true;
+    }
     state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + interest;
   } else if (rewardTaken) {
     // The claim owns this reward id. Principal still leaves.

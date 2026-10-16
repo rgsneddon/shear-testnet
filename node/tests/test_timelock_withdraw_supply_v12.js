@@ -350,7 +350,7 @@ describe('time-locked withdraw supply', () => {
   it('names the rule in the consensus fingerprint that the load seal hashes', () => {
     const fp = consensusFingerprint(MAGIC_TESTNET);
     assert.match(fp, new RegExp(`RESERVE_NOTE=${RESERVE_NOTE_LAW}`));
-    assert.equal(RESERVE_NOTE_LAW, 'note-principal-refused');
+    assert.equal(RESERVE_NOTE_LAW, 'withdraw-levy-pull');
     const chainSrc = readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
     assert.match(chainSrc, /consensusFingerprint\(magic\)/);
     const seal = chainLoadSealHash(Buffer.alloc(32, 9), MAGIC_TESTNET);
