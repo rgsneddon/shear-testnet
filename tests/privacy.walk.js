@@ -331,6 +331,7 @@ describe('privacy.walk', () => {
     assert.match(fp, /SPEND_SIG_ONLY=1/);
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);
+    assert.match(fp, /RESERVE_NOTE=withdraw-levy-pull/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v11/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.match(fp, /HASH_TX_LIVE=1/);

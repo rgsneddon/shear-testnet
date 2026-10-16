@@ -12,7 +12,7 @@ import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { VERSION, encodeHeader } from '../../crypto/header.js';
-import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { decodeWireBlock, encodeWireBlock } from '../src/p2p.js';
 import { applyVerifiedIpcBlock } from '../src/p2p_ipc.js';
 import { verifyBlock } from '../src/chain.js';
@@ -107,6 +107,7 @@ describe('v12 P2P burial gate', () => {
 
     const viaIpc = applyVerifiedIpcBlock(store, {
       type: 'ipc_block',
+      magic: MAGIC_TESTNET,
       block: encodeWireBlock({ ...body, height: 80_000, hash: easyPow(6) }),
       powHash: easyPow(6).toString('hex'),
     });
@@ -119,6 +120,7 @@ describe('v12 P2P burial gate', () => {
     // blocks verify off the loop, so this answer is a Promise.
     const viaIpcPruned = await applyVerifiedIpcBlock(store, {
       type: 'ipc_block',
+      magic: MAGIC_TESTNET,
       block: encodeWireBlock({ ...body, height: 1, hash: easyPow(7) }),
       powHash: easyPow(7).toString('hex'),
     });

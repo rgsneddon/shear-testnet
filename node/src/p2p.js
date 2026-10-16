@@ -1655,7 +1655,12 @@ export function createP2p({
 
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
-    if (msg.magic && msg.magic !== magic) {
+    if (msg.type === 'hello') {
+      if (msg.magic !== magic) {
+        sock.destroy();
+        return;
+      }
+    } else if (msg.magic && msg.magic !== magic) {
       sock.destroy();
       return;
     }

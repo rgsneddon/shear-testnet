@@ -19,7 +19,6 @@ import {
   lockTx,
   voteTx,
   withdrawTx,
-  deposit,
   previewWithdraw,
   portalIdFromDest,
   VOTE_HOLD,
@@ -27,6 +26,7 @@ import {
   canonicalReserveFields,
   reserveDigestSuffix,
 } from '../../crypto/reserve_vault.js';
+import { deposit } from '../../crypto/owned_portal.js';
 import { signSpendTx, spendPackDigest, typedCommitSum } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { levyNeed } from '../../crypto/levy.js';

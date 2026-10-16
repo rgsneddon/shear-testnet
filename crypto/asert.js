@@ -222,6 +222,11 @@ export const SPEND_SIG = 'ed25519-shear-spend-v1';
 /** Epoch reward rate: floor(active lock × bundled bps / 10000). */
 export const REWARD_LAW = 'epoch-bps-floor';
 export const INTEREST_LAW = REWARD_LAW;
+/**
+ * Principal leaves only through the user's own levy-paying withdraw.
+ * Epoch end does not release it.
+ */
+export const RESERVE_NOTE_LAW = 'withdraw-levy-pull';
 /** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
@@ -377,7 +382,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
     `RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2/3:windowMain=${ORACLE_WINDOW_MAINNET}:windowTest=${ORACLE_WINDOW_TESTNET}:windowMs=${ORACLE_WINDOW_MS}:floorBps=0:sourceTenths=-1000..100000:activation=${oracleActivationPin()}`,
-    `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=2:root=${bundleObservationRoot()}`,
+    `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=0:root=${bundleObservationRoot()}`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${network}`,
     'FORK=work-then-lowhash',
@@ -410,6 +415,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'KDF=argon2id-shewall',
     `RESERVE=${RESERVE_PROGRAM}`,
     'RESERVE_EVM=1',
+    `RESERVE_NOTE=${RESERVE_NOTE_LAW}`,
     `RESERVE_REWARD=${days}d-bps-floor`,
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',

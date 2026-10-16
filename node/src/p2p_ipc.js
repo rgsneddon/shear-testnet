@@ -187,7 +187,7 @@ export function applyVerifiedIpcBlock(store, msg) {
   if (!msg || msg.type !== 'ipc_block' || !msg.block || typeof msg.block !== 'object') {
     return { ok: false, reason: 'ipc_block' };
   }
-  if (msg.magic && msg.magic !== MAGIC_TESTNET) return { ok: false, reason: 'magic' };
+  if (msg.magic !== MAGIC_TESTNET) return { ok: false, reason: 'magic' };
   const powHex = String(msg.powHash || '').trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(powHex)) return { ok: false, reason: 'pow' };
   void powHex;
@@ -266,7 +266,7 @@ function forwardRows(store, send, rows) {
 }
 
 function acceptIpcHeaders(store, msg) {
-  if (msg.magic && msg.magic !== MAGIC_TESTNET) return;
+  if (msg.magic !== MAGIC_TESTNET) return;
   if (typeof store?.offerHeaders === 'function') store.offerHeaders(msg.headers || [], { peer: 'ipc' });
 }
 
@@ -414,7 +414,7 @@ function bindTxForward(store, send) {
 
 function acceptIpcTx(store, msg) {
   if (!msg || msg.type !== 'ipc_tx' || !msg.tx || typeof msg.tx !== 'object') return;
-  if (msg.magic && msg.magic !== MAGIC_TESTNET) return;
+  if (msg.magic !== MAGIC_TESTNET) return;
   if (typeof store?.queueTx !== 'function') return;
   try { store.queueTx(reviveIpcTx(msg.tx)); } catch { /* admit_fail stays on the store */ }
 }
@@ -545,6 +545,7 @@ export function attachPoolIpc({
     writeJson(sock, helloMsg('pool', store));
     attachLines(sock, (msg) => {
       if (!msg || typeof msg !== 'object') return;
+      if (msg.magic !== MAGIC_TESTNET) return;
       if (msg.type === 'ipc_hello') {
         noteRemoteTip(msg);
         paceBackfill(store, send, msg.height);
@@ -647,6 +648,7 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
     if (typeof peerTimer.unref === 'function') peerTimer.unref();
     attachLines(sock, (msg) => {
       if (!msg || typeof msg !== 'object') return;
+      if (msg.magic !== MAGIC_TESTNET) return;
       if (msg.type === 'ipc_hello') {
         paceBackfill(store, send, msg.height);
         sendMempool(store, send);
