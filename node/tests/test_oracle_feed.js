@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { consensusFingerprint, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { consensusFingerprint, MAGIC_TESTNET, PI_SHE_NANOS, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { NODE_DISPLAY } from '../src/product.js';
-import { emptyVault } from '../../crypto/reserve_vault.js';
+import { deposit, emptyVault } from '../../crypto/reserve_vault.js';
 import { encodeDest } from '../../crypto/address.js';
 import { createRpc } from '../src/rpc.js';
 import { printConfig } from '../src/node.js';
@@ -87,6 +87,45 @@ describe('Shear Sentinel staking oracle', () => {
       assert.equal(NODE_DISPLAY, `Shear Sentinel v${PRODUCT_VERSION.split('.')[0]}`);
     } finally {
       rpc.close();
+    }
+  });
+
+  it('GET /api/reserve?address= shows zero staked, idle, and accrued for a hidden lock', async () => {
+    const vault = emptyVault();
+    vault.genesisMs = 1_700_000_000_000;
+    vault.magic = MAGIC_TESTNET;
+    const dest = encodeDest(Buffer.alloc(20, 4));
+    const locked = deposit({
+      state: vault,
+      dest,
+      nanos: PI_SHE_NANOS,
+      nowMs: vault.genesisMs,
+      ownerPub: '11'.repeat(32),
+    });
+    assert.equal(locked.ok, true, locked.reason);
+    assert.equal(Number(vault.portals[Object.keys(vault.portals)[0]].staked), 0);
+    assert.equal(Number(vault.portals[Object.keys(vault.portals)[0]].idle), 0);
+    const rpc = createRpc({
+      store: {
+        reserveVault: vault,
+        oracleSnapshot: loadOracleSnapshot(),
+        tip: () => null,
+        mempool: [],
+      },
+      port: 0,
+      host: '127.0.0.1',
+    });
+    try {
+      const info = await rpc.listen();
+      const res = await fetch(`http://127.0.0.1:${info.port}/api/reserve?address=${encodeURIComponent(dest)}`);
+      assert.equal(res.status, 200);
+      const one = await res.json();
+      assert.equal(one.ok, true, one.reason);
+      assert.equal(one.portal.staked, 0);
+      assert.equal(one.portal.idle, 0);
+      assert.equal(one.portal.accrued, 0);
+    } finally {
+      await rpc.close();
     }
   });
 });

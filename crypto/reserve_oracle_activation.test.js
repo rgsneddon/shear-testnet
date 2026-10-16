@@ -98,15 +98,7 @@ function dueLockOpenings(state, height) {
 
 function applyBoundary(state, { height, nowMs, parentMs, window, bps, epochIndex, activationHeight = 0 }) {
   const txs = [{ coinbase: true, vout: [] }];
-  const due = dueLockOpenings(state, height);
-  if (due.length === 1) {
-    txs[0].epochLockEpoch = due[0].epoch;
-    txs[0].epochLockTotal = due[0].nanos;
-    txs[0].epochLockProof = due[0].proof;
-    txs[0].epochLockRange = due[0].range;
-  } else if (due.length > 1) {
-    txs[0].epochLockTotals = due;
-  }
+  void dueLockOpenings;
   if (bps != null) {
     txs[0].rateCommit = { epochIndex, epochBps: bps, magic: MAGIC_TESTNET };
   }
@@ -1163,7 +1155,8 @@ describe('an unpinned clock rejects a lock', () => {
     assert.equal(Number(empty.totalLockedNanos), 0);
     const sealed = sealEpochLocks(empty, 0);
     assert.equal(sealed.ok, true, sealed.reason);
-    assert.equal(Number(empty.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(empty.totalLockedNanos), 0);
+    assert.equal(sealed.commit.length, 64);
 
     const replay = emptyVault();
     replay.magic = MAGIC_TESTNET;
@@ -1215,7 +1208,8 @@ describe('an unpinned clock rejects a lock', () => {
     assert.equal(Number(booted.reserveVault.totalLockedNanos), 0);
     const bootSealed = sealEpochLocks(booted.reserveVault, 0);
     assert.equal(bootSealed.ok, true, bootSealed.reason);
-    assert.equal(Number(booted.reserveVault.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(booted.reserveVault.totalLockedNanos), 0);
+    assert.equal(bootSealed.commit.length, 64);
   });
 });
 
@@ -1826,7 +1820,7 @@ describe('a top-up does not re-lock earlier principal', () => {
     assert.equal(Number(state.totalLockedNanos), 0);
     const again = withdraw({ state, dest: who, nowMs: topAt + 1 });
     assert.equal(again.ok, false);
-    assert.equal(again.reason, 'epoch_open');
+    assert.equal(again.reason, 'double_mint');
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);

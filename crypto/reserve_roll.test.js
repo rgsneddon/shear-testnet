@@ -110,32 +110,36 @@ describe('a roll is the owner signed transaction', () => {
     assert.equal(stolen.reason, 'unsigned');
 
     const session = await openEvm(owner);
-    const evm = await callReserve(session, encodeRoll(owner.dest, at, '', 0, Buffer.alloc(0), new Uint8Array()));
+    const evm = await callReserve(session, encodeRoll(owner.dest, at, 0, new Uint8Array()));
     assert.equal(evm.ok, false);
   });
 
-  it('requires the vault proof when reward is due and leaves principal unchanged', async () => {
+  it('rolls on the owner signature when reward is due and leaves principal unchanged', async () => {
     const owner = who();
     const state = openState(owner);
     const at = T0 + epoch;
     const portal = state.portals[portalIdFromDest(owner.dest)];
     assert.equal(portal.qualified, true);
     assert.equal(portalEpochInterest(state, portal, at), 0);
+    const commit = portal.tranches[0].commit;
     const tx = signedRoll(owner, { id: 'roll-due' });
-    const refused = applyReserveBlock({
+    const rolled = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, tx] },
       nowMs: at,
       genesisMs: T0,
     });
-    assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'stake_reward');
+    assert.equal(rolled.ok, true, rolled.reason);
+    assert.equal(rolled.find((row) => row.action === 'roll').interest, 0);
     assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(portal.tranches[0].commit, commit);
+    assert.equal(portal.tranches[0].amount, undefined);
+    assert.equal(state.mintedIds?.[tx.nullifier], undefined);
 
     const session = await openEvm(owner);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
-    const evm = await callReserve(session, encodeRoll(owner.dest, at, '', 0, Buffer.alloc(0), auth));
-    assert.equal(evm.ok, false);
+    const evm = await callReserve(session, encodeRoll(owner.dest, at, 0, auth));
+    assert.equal(evm.ok, true, evm.reason);
     const view = decodePublicView((await callReserve(session, encodePublicView(at), { staticCall: true })).returnValue);
     assert.equal(view.totalLockedNanos, 0);
   });
@@ -162,7 +166,7 @@ describe('a roll is the owner signed transaction', () => {
 
     const session = await openEvm(owner, Buffer.alloc(32, 9), lateAt);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
-    const evm = await callReserve(session, encodeRoll(owner.dest, end, '', 0, Buffer.alloc(0), auth));
+    const evm = await callReserve(session, encodeRoll(owner.dest, end, 0, auth));
     assert.equal(evm.ok, true, evm.reason);
     const view = decodePublicView((await callReserve(session, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(view.totalLockedNanos, 0);
@@ -202,7 +206,7 @@ describe('a roll is the owner signed transaction', () => {
     assert.equal(evm.ok, true, evm.reason);
     assert.equal(decodeWithdraw(evm.returnValue).principal, 0);
     assert.equal(decodeWithdraw(evm.returnValue).interest, 0);
-    const evmRoll = await callReserve(session, encodeRoll(owner.dest, at, '', 0, Buffer.alloc(0), auth));
+    const evmRoll = await callReserve(session, encodeRoll(owner.dest, at, 0, auth));
     assert.equal(evmRoll.ok, false);
 
     const early = applyReserveBlock({

@@ -135,7 +135,9 @@ describe('fork has no vault', () => {
     const t0 = 1_700_000_000_000;
     live.genesisMs = t0;
     assert.equal(deposit({ state: live, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
-    assert.equal(sealEpochLocks(live, 0).ok, true);
+    const sealed = sealEpochLocks(live, 0);
+    assert.equal(sealed.ok, true, sealed.reason);
+    assert.equal(sealed.commit.length, 64);
     const tx = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'w1' });
     tx.nowMs = t0 + 500 * 86_400_000;
     const pay = verifyReservePayout(null, tx);
@@ -150,10 +152,10 @@ describe('fork has no vault', () => {
       nowMs: tx.nowMs,
     });
     assert.deepEqual(applied, []);
-    assert.equal(Number(live.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(live.totalLockedNanos), 0);
     const view = publicVaultView(live, t0);
     assert.equal(view.blankFork, false);
-    assert.equal(Number(view.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(view.totalLockedNanos), 0);
   });
 
   it('banner is empty until the first freeze; then says the fork has no vault', () => {
