@@ -601,6 +601,14 @@ void main() {
     );
     expect(
       shewallDaclIsOwnerOnly(
+        'O:${_userSid.toLowerCase()}D:P(A;;FA;;;*${_userSid.toLowerCase()})(A;;FA;;;s-1-5-18)(A;;FA;;;s-1-5-32-544)',
+        ownerSid: _userSid,
+        directory: false,
+      ),
+      isTrue,
+    );
+    expect(
+      shewallDaclIsOwnerOnly(
         'O:$_userSid D:PAI(A;OICI;FA;;;$_userSid)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
         ownerSid: _userSid,
         directory: true,

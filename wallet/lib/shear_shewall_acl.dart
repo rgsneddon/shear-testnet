@@ -685,8 +685,16 @@ void _expectReadBack(
     final owner = io.readOwner != null
         ? io.readOwner!(path)
         : _ownerSidWin32(path);
-    final sddl = _composeSddl(_decodeIcacls(file.readAsBytesSync()), owner);
-    _expectDacl(sddl, ownerSid: sid, directory: directory);
+    final decoded = _decodeIcacls(file.readAsBytesSync());
+    final sddl = _composeSddl(decoded, owner);
+    try {
+      _expectDacl(sddl, ownerSid: sid, directory: directory);
+    } on FormatException {
+      stderr
+        ..writeln('shewall_acl:dacl-raw $sddl')
+        ..writeln('shewall_acl:icacls-raw $decoded');
+      rethrow;
+    }
   } finally {
     final file = File(save);
     if (file.existsSync()) {
@@ -698,7 +706,7 @@ void _expectReadBack(
 }
 
 String _composeSddl(String text, String owner) {
-  if (!RegExp(r'^S-1-\d+(?:-\d+)+$').hasMatch(owner)) {
+  if (!RegExp(r'^S-1-\d+(?:-\d+)+$', caseSensitive: false).hasMatch(owner)) {
     throw const FormatException(shewallAclDacl);
   }
   final start = text.indexOf('D:');
@@ -822,7 +830,7 @@ void _expectDacl(
   required String ownerSid,
   required bool directory,
 }) {
-  final text = raw.replaceAll('\uFEFF', '').trim();
+  final text = raw.replaceAll('\uFEFF', '').trim().toUpperCase();
   final start = text.indexOf('O:');
   if (start < 0) throw const FormatException(shewallAclDacl);
   final sddl = text.substring(start).replaceAll(RegExp(r'\s+'), '');
@@ -830,7 +838,9 @@ void _expectDacl(
     r'^O:(S-1-\d+(?:-\d+)+)(?:G:S-1-\d+(?:-\d+)+)?D:([A-Z]*)',
   ).firstMatch(sddl);
   if (header == null) throw const FormatException(shewallAclDacl);
-  if (header.group(1) != ownerSid) throw const FormatException(shewallAclDacl);
+  if (header.group(1)!.toUpperCase() != ownerSid.toUpperCase()) {
+    throw const FormatException(shewallAclDacl);
+  }
   if (!header.group(2)!.contains('P')) {
     throw const FormatException(shewallAclDacl);
   }
@@ -844,7 +854,11 @@ void _expectDacl(
     throw const FormatException(shewallAclDacl);
   }
   if (aces.length != 3) throw const FormatException(shewallAclDacl);
-  final want = <String>{ownerSid, systemSid, administratorsSid};
+  final want = <String>{
+    ownerSid.toUpperCase(),
+    systemSid.toUpperCase(),
+    administratorsSid.toUpperCase(),
+  };
   final got = <String>{};
   for (final ace in aces) {
     final type = ace.group(1)!;
@@ -871,7 +885,9 @@ void _expectDacl(
 }
 
 String _canonicalSid(String raw) {
-  switch (raw.toUpperCase()) {
+  var text = raw.trim();
+  if (text.startsWith('*')) text = text.substring(1);
+  switch (text.toUpperCase()) {
     case 'SY':
       return systemSid;
     case 'BA':
@@ -883,7 +899,7 @@ String _canonicalSid(String raw) {
     case 'BU':
       return 'S-1-5-32-545';
     default:
-      return raw;
+      return text.toUpperCase();
   }
 }
 

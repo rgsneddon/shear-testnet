@@ -21,9 +21,10 @@ jobs:
         with:
           flutter-version: '3.44.6'
           channel: stable
-      - name: shewall ACL tests
-        working-directory: wallet
-        run: flutter test test/shewall_acl_test.dart
       - name: Windows shewall.bin save/load and SDDL
         working-directory: wallet
         run: flutter test test/shewall_windows_ci_test.dart
+      - name: shewall ACL tests
+        if: always()
+        working-directory: wallet
+        run: flutter test test/shewall_acl_test.dart
