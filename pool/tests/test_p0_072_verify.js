@@ -398,8 +398,9 @@ function blockStartsWithReturn(src, braceIndex) {
 }
 
 /**
- * A call is off the v12 path when this magic returns before it, the call
- * sits in `if (false ...)`, or the call sits in `if (custodialPullAllowed())`.
+ * A call is off the v12 path when this magic returns before it, the call's
+ * own block is `if (false && ...)`, or the call sits in `if (custodialPullAllowed())`.
+ * An earlier `if (false)`, `if (false || ...)`, and `else` stay live.
  */
 function openFunction(fnStack) {
   for (let i = fnStack.length - 1; i >= 0; i -= 1) {
@@ -459,8 +460,8 @@ export function v12CallVerdict(src, callIndex) {
         continue;
       }
       const flat = pre.trim();
-      const tail = flat.slice(-500);
-      const dead = /if\s*\(\s*false\b/.test(tail);
+      const deadIf = flat.match(/if\s*\(\s*false\s*&&([^{};]*)\)\s*$/);
+      const dead = !!(deadIf && !deadIf[1].includes('||'));
       const onlyOld = /if\s*\(\s*custodialPullAllowed\s*\(\s*\)\s*\)\s*$/.test(flat);
       const gateBlock = /if\s*\(\s*!\s*custodialPullAllowed\s*\(\s*\)\s*\)\s*$/.test(flat)
         && blockStartsWithReturn(src, tok.index);
@@ -581,6 +582,12 @@ describe('P0 072 v12 custodial pull', () => {
     assert.throws(() => assertFileUnreachable('hide.js', nested), /reaches poolWithdrawTx/);
     const alias = 'import { poolWithdrawTx as build } from "./levy.js";\nexport function leak() { return build(); }\n';
     assert.throws(() => assertFileUnreachable('alias.js', alias), /renames poolWithdrawTx/);
+    const earlierDead = 'export function leak(x) {\n  if (false) {}\n  if (x) { return poolWithdrawTx(); }\n}\n';
+    assert.throws(() => assertFileUnreachable('earlier.js', earlierDead), /reaches poolWithdrawTx/);
+    const orLive = 'export function leak(x) {\n  if (false || x) { return poolWithdrawTx(); }\n}\n';
+    assert.throws(() => assertFileUnreachable('or.js', orLive), /reaches poolWithdrawTx/);
+    const elseLive = 'export function leak() {\n  if (false) {} else { return poolWithdrawTx(); }\n}\n';
+    assert.throws(() => assertFileUnreachable('else.js', elseLive), /reaches poolWithdrawTx/);
 
     const gated = 'export function buildAutoPayoutTx() {\n  if (!custodialPullAllowed()) return { ok: false, reason: \'custodial_pull\' };\n  const tx = poolWithdrawTx({ from: 1 });\n  return tx;\n}\n';
     assertFileUnreachable('gated.js', gated);
