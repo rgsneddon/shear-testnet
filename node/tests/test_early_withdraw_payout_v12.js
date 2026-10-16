@@ -6,12 +6,11 @@
  * if the arrival-epoch gate were removed.
  *
  * The fork check (verifyOneForkBlock) calls verifyReservePayout before the
- * body. The same public receipt fails that body as mint_amount, so the fork
- * reason is epoch_open only while that call stays. payoutOnTip is the
- * post-verify call used when a mempool tx is sealed into a block. A receipt
- * the body already rejects never reaches it, so the test keeps that call in
- * place. Mempool admission of this receipt stops on the admit shape before
- * the vault trial.
+ * body. A public lock never lands, so the fork withdraw has no portal and
+ * the payout reason is empty. The same receipt is public_receipt on append.
+ * The open-arrival refusal is verifyReservePayout on a credited vault.
+ * payoutOnTip stays the post-verify call. A receipt the body already
+ * rejects never reaches it.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,6 +27,8 @@ import {
   medianTimePast,
 } from '../../crypto/asert.js';
 import {
+  cloneVault,
+  deposit,
   portalEpochInterest,
   portalIdFromDest,
   verifyReservePayout,
@@ -78,26 +79,27 @@ function asBlock(tpl) {
   };
 }
 
-async function appendTemplate(store, dest, stamp, extra) {
+function blockAt(store, dest, stamp, extra) {
   const parent = store.tip();
   const { tpl } = store.template({ miner: dest, now: stamp });
-  let block = { ...asBlock(tpl), miner: dest };
-  if (extra) {
-    const bits = Number(decodeHeader(Buffer.from(tpl.header)).bits);
-    const built = buildTemplate({
-      prev: parent ? parent.hash : GENESIS_PREV,
-      prevHeader: parent ? parent.header : null,
-      prevBlock: parent,
-      height: (parent ? parent.height : 0) + 1,
-      miner: dest,
-      now: stamp,
-      bits,
-      txs: extra,
-      parentBlocks: store.blocks,
-    });
-    block = { ...asBlock(built), miner: dest };
-  }
-  const got = await Promise.resolve(store.append(block, {
+  if (!extra) return { ...asBlock(tpl), miner: dest };
+  const bits = Number(decodeHeader(Buffer.from(tpl.header)).bits);
+  const built = buildTemplate({
+    prev: parent ? parent.hash : GENESIS_PREV,
+    prevHeader: parent ? parent.header : null,
+    prevBlock: parent,
+    height: (parent ? parent.height : 0) + 1,
+    miner: dest,
+    now: stamp,
+    bits,
+    txs: extra,
+    parentBlocks: store.blocks,
+  });
+  return { ...asBlock(built), miner: dest };
+}
+
+async function appendTemplate(store, dest, stamp, extra) {
+  const got = await Promise.resolve(store.append(blockAt(store, dest, stamp, extra), {
     trustedPowHash: easyPowHash(),
     skipSharePow: true,
   }));
@@ -154,17 +156,35 @@ describe('P2-L early withdraw payout', () => {
       guard += 1;
       assert.ok(guard < 400, 'mtp walk did not reach the next epoch');
     }
-    const lockedAt = await appendTemplate(store, dest, nextStamp(store.blocks), [publicLock(dest, d20)]);
-    assert.ok(lockedAt >= T0 + RESERVE_EPOCH_MS);
-    assert.ok(lockedAt < T0 + 2 * RESERVE_EPOCH_MS);
-    assert.equal(Number(store.reserveVault.totalLockedNanos), PI_SHE_NANOS);
-    const portal = store.reserveVault.portals[portalIdFromDest(dest)];
+    assert.ok(ts >= T0 + RESERVE_EPOCH_MS);
+    assert.ok(ts < T0 + 2 * RESERVE_EPOCH_MS);
+    const lockAt = nextStamp(store.blocks);
+    const parentBeforeLock = store.tip();
+    const refusedLock = await Promise.resolve(store.append(
+      blockAt(store, dest, lockAt, [publicLock(dest, d20)]),
+      { trustedPowHash: easyPowHash(), skipSharePow: true },
+    ));
+    assert.equal(refusedLock.ok, false);
+    assert.equal(refusedLock.reason, 'public_receipt');
+    assert.equal(store.tip().height, parentBeforeLock.height);
+    assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
+    const held = cloneVault(store.reserveVault);
+    const credited = deposit({
+      state: held,
+      dest,
+      nanos: PI_SHE_NANOS,
+      nowMs: ts,
+      payout: dest,
+      payoutPortalId: portalIdFromDest(dest),
+    });
+    assert.equal(credited.ok, true, credited.reason);
+    const portal = held.portals[portalIdFromDest(dest)];
     const early = publicWithdraw(dest, d20);
-    const drawAt = nextStamp(store.blocks);
-    assert.ok(drawAt > lockedAt);
+    const drawAt = lockAt;
+    assert.ok(drawAt > ts);
     assert.ok(drawAt < T0 + 2 * RESERVE_EPOCH_MS);
-    assert.equal(portalEpochInterest(store.reserveVault, portal, drawAt), 0);
-    const direct = verifyReservePayout(store.reserveVault, early, drawAt);
+    assert.equal(portalEpochInterest(held, portal, drawAt), 0);
+    const direct = verifyReservePayout(held, early, drawAt);
     assert.equal(direct.ok, false);
     assert.equal(direct.reason, 'epoch_open');
 
@@ -189,7 +209,7 @@ describe('P2-L early withdraw payout', () => {
       skipSharePow: true,
     }));
     assert.equal(checked.ok, false);
-    assert.equal(checked.reason, 'epoch_open');
+    assert.equal(checked.reason, 'empty');
     assert.equal(checked.at, fork.length - 1);
 
     const appended = await Promise.resolve(store.append(block, {
@@ -197,9 +217,9 @@ describe('P2-L early withdraw payout', () => {
       skipSharePow: true,
     }));
     assert.equal(appended.ok, false);
-    assert.equal(appended.reason, 'mint_amount');
+    assert.equal(appended.reason, 'public_receipt');
     assert.equal(store.tip().height, parent.height);
-    assert.equal(store.queueTx(early, { nowMs: drawAt }).ok, false);
+    assert.equal(store.queueTx(early, { nowMs: drawAt }).reason, 'public_receipt');
     assert.equal(store.mempool.some((row) => row.id === early.id), false);
   });
 });

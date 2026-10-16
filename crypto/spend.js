@@ -13,7 +13,7 @@ import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
 import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
-import { typedAdmitStructure } from './admit_v3.js';
+import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
 export { MEMBER_KEYS };
@@ -373,7 +373,7 @@ export function reservePortalDest(tx) {
   if (kind === 'lock' || kind === 'vote') {
     return String(tx?.to || tx?.vout?.[0]?.address || '');
   }
-  if (kind === 'withdraw') {
+  if (kind === 'withdraw' || kind === 'roll') {
     return String(tx?.from || tx?.vin?.[0]?.address || '');
   }
   return '';
@@ -381,7 +381,7 @@ export function reservePortalDest(tx) {
 
 export function reserveNeedsPortalOpen(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  return kind === 'lock' || kind === 'vote' || kind === 'withdraw';
+  return kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'roll';
 }
 
 function destOpeningShape(open) {
@@ -415,7 +415,7 @@ function v3CommitCovers(tx, vin) {
     const blob = proof?.blob || proof?.proof;
     if (!blob) continue;
     const pr = Buffer.from(asU8(blob));
-    if (!pr.length || pr[0] !== 3) continue;
+    if (!pr.length || (pr[0] !== 3 && pr[0] !== 0xf1)) continue;
     try {
       const ct = Buffer.from(asU8(proof.cTilde));
       if (ct.length === 32 && ct.equals(posted)) return true;
@@ -431,6 +431,7 @@ export const V12_VALUE_KINDS = new Set([
   'lock',
   'vote',
   'withdraw',
+  'roll',
   'reward-claim',
   'b-spend',
 ]);
@@ -691,7 +692,7 @@ export function openingBeforeCarry(tx) {
 export function typedClockRejected(tx) {
   if (!tx || tx.coinbase) return null;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return null;
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw' && kind !== 'roll') return null;
   if (tx.nowMs == null) return null;
   return { ok: false, reason: 'now_ms' };
 }
@@ -723,6 +724,19 @@ export function typedCommitRejected(tx) {
 export function typedCommitSum(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
+  if (kind === 'vote') {
+    // A vote moves no value. A nonzero fee would be paid to miners with no debit.
+    const paid = Math.floor(Number(tx?.fee || 0));
+    if (paid !== 0) return { ok: false, reason: 'levy' };
+    const voteOuts = Array.isArray(tx?.vout) ? tx.vout : [];
+    for (const o of voteOuts) {
+      const raw = o?.valueProof?.v;
+      if (raw == null || raw === '') continue;
+      const v = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
+      if (v !== 0) return { ok: false, reason: 'commit_sum' };
+    }
+    return { ok: true, skip: true };
+  }
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
   let payout = 0;
@@ -747,7 +761,7 @@ export function typedCommitSum(tx) {
       payout += v;
     }
   }
-  if (opened < 1) return { ok: false, reason: 'commit_sum' };
+  if (opened !== 1) return { ok: false, reason: 'commit_sum' };
   const vaultPayout = kind === 'withdraw' ? payout : 0;
   if (!verifyFlowConservation(tx, null, vaultPayout)) return { ok: false, reason: 'commit_sum' };
   return { ok: true };
@@ -996,11 +1010,20 @@ export function mempoolDebitNanos(txs, address) {
  * Walk body txs in order. An address balance is not value: a debit that is
  * not a note-bound Flow spend is rejected. `spendableOf` is ignored.
  */
-export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null, nowMs = null } = {}) {
+export function verifyFundedBody(body, spendableOf, {
+  seenDigests = null,
+  reserveState = null,
+  nowMs = null,
+  height = null,
+  spentTags = null,
+  magic = null,
+  noteAtAnchor = null,
+} = {}) {
   void spendableOf;
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
   const seenOwners = new Map();
   const drawn = new Set();
+  const tags = spentTags && typeof spentTags.has === 'function' ? spentTags : new Set();
   for (const tx of body || []) {
     const publicReceipt = publicReserveReceiptRejected(tx);
     if (publicReceipt) return publicReceipt;
@@ -1020,8 +1043,16 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
     if (!stake.ok) return stake;
     const kind = reserveKindOf(tx);
     if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {
-      const structure = typedAdmitStructure(tx);
-      if (!structure.ok) return structure;
+      const noteFund = verifyTypedAdmitFunding(tx, {
+        height,
+        spentTags: tags,
+        magic,
+        noteAtAnchor,
+      });
+      if (!noteFund.ok) return noteFund;
+      if (Array.isArray(noteFund.tags)) {
+        for (const th of noteFund.tags) tags.add(th);
+      }
     }
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;

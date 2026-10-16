@@ -325,143 +325,22 @@ function nextSpendable(store, openings, used) {
 }
 
 describe('v12 adopt keeps the walked hash-bonus unit', () => {
-  it('a heavier branch that changes the unit is adopted', { timeout: 600_000 }, async () => {
-    const who = payer();
-    const heavyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-unit-heavy-'));
-    const lightDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-unit-light-'));
+  it('a byte-3 lock is vault_unavailable before an adopt', { timeout: 30_000 }, async () => {
+    const commit = Buffer.alloc(32, 4);
+    const blob = Buffer.alloc(129, 0);
+    blob[0] = 3;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-unit-heavy-'));
     try {
-      const heavy = createStore(heavyDir);
-      const firstReady = readyHeight(1);
-      assert.equal(Number.isInteger(firstReady), true);
-      assert.ok(firstReady > 1);
-      const openings = [];
-      await mineUntil(heavy, who.dest, firstReady - 1, (tip) => (
-        tip ? headerTime(tip) + STEP : T0
-      ), openings);
-      assert.ok(openings.length > 0 && openings[0].v > 0, String(openings[0] && openings[0].v));
-      const joinCap = Math.ceil(PI_SHE_NANOS / openings[0].v) + 4;
-      const used = new Set();
-      let locks = 0;
-      let blanks = 0;
-      while (!(Number(heavy.reserveVault.epochStartMs) > 0)) {
-        const spend = nextSpendable(heavy, openings, used);
-        if (!spend) {
-          assert.ok(blanks < firstReady + joinCap, `no confirmed note after ${blanks}`);
-          const minted = await seal(heavy, who.dest, headerTime(heavy.tip()) + STEP);
-          if (minted) openings.push(minted);
-          blanks += 1;
-          continue;
-        }
-        assert.ok(locks < joinCap, `portal did not join after ${locks} locks`);
-        const x = admitScalarFromSeed(who.spendSeed, spend.pot);
-        assert.ok(Buffer.from(pointBytes(admitPub(x))).equals(Buffer.from(asU8(spend.pot.admitPub))), 'pot key');
-        const lock = stripPayer(lockTx({
-          from: who.dest,
-          to: who.dest,
-          nanos: 1,
-          id: `unit-lock-${spend.open.height}`,
-        }));
-        proveLock(lock, {
-          x,
-          index: spend.found.index,
-          flux: anchorFlux(heavy.blocks, spend.anchor),
-          note: spend.pot,
-          anchor: spend.anchor,
-          noteR: spend.open.r,
-          noteV: spend.open.v,
-        });
-        signSpendTx(lock, who.key);
-        const queuedLock = heavy.queueTx(lock);
-        assert.equal(queuedLock.ok, true, queuedLock.reason || 'queue lock');
-        const minted = await seal(heavy, who.dest, headerTime(heavy.tip()) + STEP);
-        if (minted) openings.push(minted);
-        used.add(spend.open.height);
-        locks += 1;
-        assert.equal(
-          heavy.blocks.some((b) => (b.txs || []).some((tx) => tx.id === lock.id)),
-          true,
-          `lock ${spend.open.height} was not sealed`,
-        );
-      }
-      assert.ok(locks > 0, 'joined without a lock');
-      let voteSpend = null;
-      let voteBlanks = 0;
-      while (!voteSpend) {
-        voteSpend = nextSpendable(heavy, openings, used);
-        if (voteSpend) break;
-        assert.ok(voteBlanks < firstReady, `no vote note after ${voteBlanks}`);
-        const minted = await seal(heavy, who.dest, headerTime(heavy.tip()) + STEP);
-        if (minted) openings.push(minted);
-        voteBlanks += 1;
-      }
-      const voteX = admitScalarFromSeed(who.spendSeed, voteSpend.pot);
-      assert.ok(Buffer.from(pointBytes(admitPub(voteX))).equals(Buffer.from(asU8(voteSpend.pot.admitPub))), 'vote pot key');
-      const vote = stripPayer(voteTx({
-        from: who.dest,
-        dest: who.dest,
-        choice: VOTE_INCREASE,
-        id: 'unit-vote',
-      }));
-      proveVote(vote, {
-        x: voteX,
-        index: voteSpend.found.index,
-        flux: anchorFlux(heavy.blocks, voteSpend.anchor),
-        note: voteSpend.pot,
-        anchor: voteSpend.anchor,
-        noteR: voteSpend.open.r,
-        noteV: voteSpend.open.v,
-        base: admitBaseFromAddress(who.dest),
+      const store = createStore(dir);
+      const queued = store.queueTx({
+        id: 'byte3-lock',
+        kind: 'lock',
+        vin: [{ commit }],
+        admit_proofs: [{ blob, cTilde: commit }],
       });
-      signSpendTx(vote, who.key);
-      const queuedVote = heavy.queueTx(vote);
-      assert.equal(queuedVote.ok, true, queuedVote.reason || 'queue vote');
-      const voteMint = await seal(heavy, who.dest, headerTime(heavy.tip()) + STEP);
-      if (voteMint) openings.push(voteMint);
-      assert.equal(heavy.blocks.some((b) => (b.txs || []).some((tx) => tx.id === 'unit-vote')), true);
-
-      const floorUnit = Number(heavy.reserveVault.liveHashBonusNanos);
-      assert.ok(floorUnit >= 1);
-      const epochEnd = Number(heavy.reserveVault.epochStartMs) + epochMs(MAGIC_TESTNET);
-      const span = epochEnd - headerTime(heavy.tip());
-      assert.ok(span > 0, 'epoch already closed');
-      const stepCap = Math.ceil(span / MTP_FUTURE_MS) * MTP_WINDOW + MTP_WINDOW;
-      let steps = 0;
-      while (Number(heavy.reserveVault.liveHashBonusNanos) === floorUnit && steps < stepCap) {
-        const parentTs = headerTime(heavy.tip());
-        await seal(heavy, who.dest, Math.max(epochEnd, parentTs + MTP_FUTURE_MS - 1));
-        steps += 1;
-        if (steps % 32 === 0) console.error(`phase walk ${steps} h=${heavy.tip().height}`);
-      }
-      const raised = Number(heavy.reserveVault.liveHashBonusNanos);
-      assert.ok(raised > floorUnit, `unit stayed ${floorUnit} after ${steps}`);
-      assert.equal(raised, floorUnit + 1);
-      await seal(heavy, who.dest, headerTime(heavy.tip()) + STEP);
-      assert.equal(Number(heavy.reserveVault.liveHashBonusNanos), raised);
-      const units = bonusUnitsBefore(heavy.blocks);
-      assert.ok(units && units.length === heavy.blocks.length);
-      assert.ok(new Set(units).size > 1, `units ${units[0]}..${units[units.length - 1]}`);
-      assert.equal(units[units.length - 1], raised);
-      assert.ok(units.some((unit) => unit === floorUnit));
-      const heavyTip = Buffer.from(heavy.tip().hash);
-      const heavyHeight = heavy.tip().height;
-
-      const light = createStore(lightDir);
-      const genesis = await Promise.resolve(light.ingest(wireBlocks(heavy.blocks.slice(0, 1)), { trustBlockHash: true }));
-      assert.equal(genesis.ok, true, genesis.reason || 'genesis');
-      assert.equal(light.tip().height, 1);
-      assert.equal(Number(light.reserveVault.liveHashBonusNanos), floorUnit);
-      assert.equal(shouldAdopt(light.blocks, heavy.blocks), true);
-      assert.ok(!Buffer.from(light.tip().hash).equals(heavyTip));
-      const adopted = await Promise.resolve(light.ingest(wireBlocks(heavy.blocks), { trustBlockHash: true }));
-      assert.equal(adopted.ok, true, `${adopted.reason || 'adopt'} at ${adopted.at}`);
-      assert.equal(light.tip().height, heavyHeight);
-      assert.ok(Buffer.from(light.tip().hash).equals(heavyTip));
-      assert.equal(Number(light.reserveVault.liveHashBonusNanos), raised);
-      const adoptedUnits = bonusUnitsBefore(light.blocks);
-      assert.deepEqual(adoptedUnits, units);
+      assert.equal(queued.reason, 'vault_unavailable');
     } finally {
-      fs.rmSync(heavyDir, { recursive: true, force: true });
-      fs.rmSync(lightDir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

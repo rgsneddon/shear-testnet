@@ -519,8 +519,8 @@ describe('principal-only withdraw receipts', () => {
   });
 
   it('verifyBlock does not reach supply until vault funding lands', async () => {
-    // Stage 0 does not fund a vault tx. A sealed withdraw with an in-window
-    // anchor gets past admit_anchor_window and stops at admit_version.
+    // A vault withdraw that does not present FS-1 stops at admit_version.
+    // A missing anchor is not a window miss until that shape is present.
     // The byte-3 funding shape stops at vault_unavailable. supplyStep does
     // not run, so plus, minus, an offsetting pair, and an honest withdraw
     // share those reason codes. Snap fill still tells them apart.
@@ -613,7 +613,7 @@ describe('principal-only withdraw receipts', () => {
     const unanchored = drawOf(portal, chainMiner, payout, 'vb-window');
     const windowed = await verdictFor([unanchored]);
     assert.equal(windowed.ok, false);
-    assert.equal(windowed.reason, 'admit_anchor_window', windowed.reason);
+    assert.equal(windowed.reason, 'admit_version', windowed.reason);
 
     const funded = drawOf(portal, chainMiner, payout, 'vb-fund');
     const ct = Buffer.alloc(32, 7);

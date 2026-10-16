@@ -61,8 +61,10 @@ const TAXED = new Set([
   'transfer',
   'user-spend',
   'lock',
-  'vote',
+  // A vote moves no value. typedCommitSum rejects a nonzero fee, so a vote
+  // is not taxed. Lock, withdraw, roll, and reward-claim still pay the weight levy.
   'withdraw',
+  'roll',
   'reward-claim',
 ]);
 

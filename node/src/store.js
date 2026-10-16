@@ -1282,12 +1282,11 @@ export function createStore(dir, {
 
   function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
     void _rows;
-    // The note walk still holds a pot a v3 lock spent, because that spend
-    // hides the leaf. Subtract the vault principal once so the same value
-    // is not spendable again. A lock note covers that principal once its
-    // unlock has passed, and it keeps covering it after the note is spent.
-    // Spent principal must not freeze a later inbound. Lock receipts are
-    // already omitted by kind.
+    // A lock tranche is not a send input. The note walk omits lock outputs.
+    // A hidden funding leaf can still sit in the walk, so subtract the vault
+    // principal once. A lock output that has passed its unlock covers that
+    // subtraction, including after the output is spent, so a later inbound
+    // is not frozen. The tranche itself stays out of this sum.
     // The live book and a fork book each keep their own suffix index.
     // A request does not open notes that belong to someone else.
     if (chain === blocks) spendChecks += 1;

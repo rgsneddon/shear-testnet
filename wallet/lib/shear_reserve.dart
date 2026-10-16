@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_levy.dart';
+import 'shear_vault_reward.dart';
 
 const kReserveProgram = 'shear-reserve-v1';
 const kReserveOracleId = 'shear-reserve-oracle-v1';
@@ -56,6 +57,14 @@ String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
     'Return principal and the Reserve reward for this $days-day epoch to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
 
+const kReserveWithdrawAction =
+    'Withdraw: move your funds back to your balance. A network levy applies.';
+
+const kReserveRollAction =
+    'Roll over: lock your full amount for the next epoch to keep earning.';
+
+const kReserveUnlockedIdle = 'Unlocked, not earning';
+
 class VortexSums {
   const VortexSums({
     required this.yourNanos,
@@ -97,6 +106,135 @@ int reserveWithdrawPayoutNanos(ShearReserve reserve, String dest, int nowMs) {
   return principal + interest;
 }
 
+/// Inputs for [proveVaultLockReward]. Null when this portal has no seed lock.
+Map<String, dynamic>? vaultRewardProveInput({
+  required ShearReserve reserve,
+  required String dest,
+  required String payout,
+  required Uint8List seed,
+}) {
+  final p = reserve.portal(dest);
+  if (p.lockAmount <= 0 || p.lockRemainMs <= 0 || seed.length != 32) return null;
+  final d20 = hash20FromAddress(payout);
+  if (d20 == null || d20.length != 20) return null;
+  return {
+    'locks': [
+      {
+        'amount': p.lockAmount,
+        'seed': seed,
+        'index': p.lockIndex,
+        'lockMs': p.lockRemainMs,
+      },
+    ],
+    'which': 0,
+    'rootEpoch': p.lockEpoch,
+    'earnEpoch': p.lockEpoch,
+    'bps': reserve.epochBps,
+    'remainMs': p.lockRemainMs,
+    'span': kReserveEpochMs,
+    'dest20': d20,
+    'magic': kBookMagic,
+  };
+}
+
+String _byteHex(Object? v) {
+  if (v is! List<int> || v.isEmpty) return '';
+  const d = '0123456789abcdef';
+  final s = StringBuffer();
+  for (final x in v) {
+    s
+      ..write(d[(x >> 4) & 15])
+      ..write(d[x & 15]);
+  }
+  return s.toString();
+}
+
+Map<String, dynamic> _vaultPostBody({
+  required String kind,
+  required String dest,
+  required String payout,
+  required Map<String, dynamic> proof,
+  required int nanos,
+}) {
+  final note = proof['note'];
+  final vout = note is Map
+      ? [
+          {
+            'kind': 'reward-claim',
+            'commit': _byteHex(note['commit']),
+            'noteCommit': _byteHex(note['noteCommit']),
+            'amtCt': _byteHex(note['amtCt']),
+            'dest20': _byteHex(note['dest20']),
+            'rangeProof': _byteHex(note['rangeProof']),
+            if (note['rEph'] != null) 'rEph': _byteHex(note['rEph']),
+            if (note['rCt'] != null) 'rCt': _byteHex(note['rCt']),
+          },
+        ]
+      : const <Map<String, dynamic>>[];
+  return {
+    'kind': kind,
+    'programId': kReserveProgram,
+    'from': dest,
+    'to': payout,
+    'nanos': nanos.toString(),
+    'nullifier': proof['nullifier'],
+    'vaultProof': proof['blobHex'] ?? _byteHex(proof['blob']),
+    'rootEpoch': proof['rootEpoch'],
+    'earnEpoch': proof['earnEpoch'],
+    'vout': vout,
+    'fee': rewardClaimFee(),
+  };
+}
+
+/// Previous-epoch reward. Builds the vault-lock proof, then posts a claim.
+/// A missing native prover fails closed and does not post a withdraw.
+Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
+  ShearLedger ledger, {
+  required ShearReserve reserve,
+  required String dest,
+  required String payout,
+  required int nowMs,
+  required Uint8List spendSeed,
+  Map<String, dynamic>? vaultProof,
+  bool local = false,
+}) async {
+  final due = reserve.portal(dest).claimableRewards;
+  if (due <= 0) return null;
+  var proof = vaultProof;
+  if (proof == null) {
+    final input = vaultRewardProveInput(
+      reserve: reserve,
+      dest: dest,
+      payout: payout,
+      seed: spendSeed,
+    );
+    if (input == null) throw StateError('unsigned');
+    proof = proveVaultLockRewardWire(input);
+  }
+  final body = _vaultPostBody(
+    kind: 'reward-claim',
+    dest: dest,
+    payout: payout,
+    proof: proof,
+    nanos: 0,
+  );
+  if (!local && ledger.pool != null) {
+    await ledger.pool!.postRaw(body);
+  }
+  final settled = reserve.withdraw(dest: dest, nowMs: nowMs, payout: payout);
+  if (settled == null) return null;
+  return (
+    tx: ShearTx(
+      id: 'vault-claim-${proof['nullifier']}',
+      from: dest,
+      to: payout,
+      amount: due / kUnitsPerShe,
+      kind: 'reward-claim',
+    ),
+    settled: settled,
+  );
+}
+
 /// Post kind withdraw, then settle the local portal. A failed send leaves the portal.
 Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   ShearLedger ledger, {
@@ -131,6 +269,80 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   );
   if (tx.kind != 'withdraw') return null;
   final settled = reserve.withdraw(dest: dest, nowMs: nowMs, payout: payout);
+  if (settled == null) return null;
+  return (tx: tx, settled: settled);
+}
+
+/// Post kind roll. The vault sum stays locked. Continuum pays the levy only.
+Future<({ShearTx tx, Map<String, int> settled})?> postReserveRoll(
+  ShearLedger ledger, {
+  required ShearReserve reserve,
+  required String dest,
+  required int nowMs,
+  Uint8List? spendSeed,
+  bool local = false,
+  String? restFrame,
+  String? paymentCode,
+  bool allowPublicHttp = false,
+  Map<String, dynamic>? vaultProof,
+}) async {
+  if (!reserve.epochIsOver(nowMs)) return null;
+  if (reserve.portal(dest).nanos <= 0) return null;
+  final portal = reserve.portal(dest);
+  final interest = portal.claimableRewards > 0
+      ? portal.claimableRewards
+      : reserveInterestNanos(portal.staked, reserve.epochBps);
+  var proof = vaultProof;
+  if (interest > 0 && proof == null) {
+    if (spendSeed == null || spendSeed.length != 32) throw StateError('fs1_prover_unavailable');
+    final input = vaultRewardProveInput(
+      reserve: reserve,
+      dest: dest,
+      payout: dest,
+      seed: spendSeed,
+    );
+    if (input == null) throw StateError('unsigned');
+    proof = proveVaultLockRewardWire(input);
+  }
+  if (proof != null) {
+    final body = _vaultPostBody(
+      kind: 'roll',
+      dest: dest,
+      payout: dest,
+      proof: proof,
+      nanos: 0,
+    );
+    if (!local && ledger.pool != null) {
+      await ledger.pool!.postRaw(body);
+    }
+    final settled = reserve.roll(dest: dest, nowMs: nowMs);
+    if (settled == null) return null;
+    return (
+      tx: ShearTx(
+        id: 'vault-roll-${proof['nullifier']}',
+        from: dest,
+        to: dest,
+        amount: 0,
+        kind: 'roll',
+      ),
+      settled: settled,
+    );
+  }
+  final tx = await ledger.send(
+    from: dest,
+    to: dest,
+    amount: 0,
+    kind: 'roll',
+    programId: kReserveProgram,
+    local: local,
+    spendSeed: spendSeed,
+    restFrame: restFrame,
+    paymentCode: paymentCode,
+    allowPublicHttp: allowPublicHttp || !local,
+    nanosWire: '0',
+  );
+  if (tx.kind != 'roll') return null;
+  final settled = reserve.roll(dest: dest, nowMs: nowMs);
   if (settled == null) return null;
   return (tx: tx, settled: settled);
 }
@@ -217,6 +429,11 @@ class ReservePortal {
   String? payout;
   int? remoteAccrued;
   int claimableRewards = 0;
+  /// Seed-derived lock. A restored wallet rebuilds the blind from these.
+  int lockIndex = 0;
+  int lockRemainMs = 0;
+  int lockAmount = 0;
+  int lockEpoch = 0;
   final List<ReserveDepositRow> deposits = [];
   int get nanos => staked + idle;
   bool get canVote => nanos >= kPiSheNanos;
@@ -519,6 +736,13 @@ class ShearReserve {
       p.idle += n;
     }
     totalLockedNanos += n;
+    if (p.lockAmount == 0) {
+      p.lockAmount = n;
+      p.lockEpoch = epochStartMs == 0 ? 0 : currentEpoch;
+      final remain = epochStartMs == 0 ? kReserveEpochMs : remainingMs(nowMs);
+      p.lockRemainMs = remain > 0 ? remain : kReserveEpochMs;
+      p.lockIndex = 0;
+    }
     p.deposits.add(ReserveDepositRow(nanos: n, atMs: nowMs));
     if (!p.joined && p.nanos >= kPiSheNanos) {
       p.joined = true;
@@ -614,6 +838,31 @@ class ShearReserve {
       'interest': interest,
       'claimable': claimable,
       'payout': principal + interest,
+    };
+  }
+
+  /// Re-lock the finished sum plus its unclaimed reward. A second call in the
+  /// new epoch does nothing. The coins stay out of Continuum spendable.
+  Map<String, int>? roll({required String dest, required int nowMs}) {
+    final epochOver = epochStartMs != 0 && nowMs >= epochStartMs + kReserveEpochMs;
+    if (!epochOver) return null;
+    final p = portal(dest);
+    final principal = p.nanos;
+    if (principal <= 0) return null;
+    final interest = p.claimableRewards > 0
+        ? p.claimableRewards
+        : reserveInterestNanos(p.staked, epochBps);
+    p.idle = 0;
+    p.staked = principal + interest;
+    p.claimableRewards = 0;
+    totalLockedNanos += interest;
+    epochStartMs = nowMs;
+    bonusEnacted = false;
+    currentEpoch += 1;
+    return {
+      'principal': principal,
+      'interest': interest,
+      'locked': principal + interest,
     };
   }
 

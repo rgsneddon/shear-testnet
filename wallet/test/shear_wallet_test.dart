@@ -3642,7 +3642,7 @@ void main() {
     expect(formatHashBonusShe(2), '0.00000000002');
     expect(levyNanos(0), 100);
     expect(levyTaxed('lock'), isTrue);
-    expect(levyTaxed('vote'), isTrue);
+    expect(levyTaxed('vote'), isFalse);
     expect(levyTaxed('reward-claim'), isTrue);
     expect(levyTaxed('withdraw'), isFalse);
     expect(kEip712ChainId, 2701);

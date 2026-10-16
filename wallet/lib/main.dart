@@ -19,6 +19,7 @@ import 'shear_ctf.dart';
 import 'shear_ctf_cli.dart';
 import 'shear_vortex.dart';
 import 'shear_reserve.dart';
+import 'shear_vault_reward.dart';
 import 'shear_reserve_towers.dart';
 import 'shear_confirm_pie.dart';
 import 'shear_biometrics.dart';
@@ -3714,17 +3715,48 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final posted = await postReserveWithdraw(
-      ledger,
-      reserve: reserve,
-      dest: dest,
-      payout: to,
-      nowMs: now,
-      spendSeed: hexToBytes(ident.seedHex),
-      local: ledger.pool == null || widget.skipPoolSync,
-      restFrame: ident.address,
-      paymentCode: ident.paymentCode,
-    );
+    final ({ShearTx tx, Map<String, int> settled})? posted;
+    try {
+      final seed = hexToBytes(ident.seedHex);
+      final local = ledger.pool == null || widget.skipPoolSync;
+      if (canPrev && !reserve.epochIsOver(now)) {
+        final input = vaultRewardProveInput(
+          reserve: reserve,
+          dest: dest,
+          payout: to,
+          seed: seed,
+        );
+        if (input == null) throw StateError('unsigned');
+        final proved = await compute(proveVaultLockRewardWire, input);
+        posted = await postReserveVaultClaim(
+          ledger,
+          reserve: reserve,
+          dest: dest,
+          payout: to,
+          nowMs: now,
+          spendSeed: seed,
+          vaultProof: proved,
+          local: local,
+        );
+      } else {
+        posted = await postReserveWithdraw(
+          ledger,
+          reserve: reserve,
+          dest: dest,
+          payout: to,
+          nowMs: now,
+          spendSeed: seed,
+          local: local,
+          restFrame: ident.address,
+          paymentCode: ident.paymentCode,
+        );
+      }
+    } on StateError catch (err) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err.message)));
+      }
+      return;
+    }
     if (posted == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3737,6 +3769,104 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Withdraw submitted — tx ${posted.tx.id}')),
+      );
+    }
+  }
+
+  Future<void> _reserveRoll(BuildContext context, ShearIdentity ident) async {
+    final dest = _reserveDestOf(ident);
+    if (dest == null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final p0 = dest.isNotEmpty ? reserve.portal(dest) : null;
+    if (!reserve.epochIsOver(now) || (p0?.nanos ?? 0) <= 0) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
+    final levy = levyNanos(0);
+    if (!spendableCoversLevy(
+      ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+      levy,
+    )) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Not enough Continuum spendable for roll tx fee ${formatShe(levy / kUnitsPerShe)} SHE'),
+        ));
+      }
+      return;
+    }
+    final go = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('reserve-roll-sign'),
+        title: const Text('Sign Reserve roll'),
+        content: const Text(kReserveRollAction),
+        actions: [
+          TextButton(
+            key: const Key('reserve-roll-sign-cancel'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('reserve-roll-sign-accept'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sign'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+    final ({ShearTx tx, Map<String, int> settled})? posted;
+    try {
+      final seed = hexToBytes(ident.seedHex);
+      Map<String, dynamic>? proved;
+      final portal = reserve.portal(dest);
+      final interest = portal.claimableRewards > 0
+          ? portal.claimableRewards
+          : reserveInterestNanos(portal.staked, reserve.epochBps);
+      if (interest > 0) {
+        final input = vaultRewardProveInput(
+          reserve: reserve,
+          dest: dest,
+          payout: dest,
+          seed: seed,
+        );
+        if (input == null) throw StateError('unsigned');
+        proved = await compute(proveVaultLockRewardWire, input);
+      }
+      posted = await postReserveRoll(
+        ledger,
+        reserve: reserve,
+        dest: dest,
+        nowMs: now,
+        spendSeed: seed,
+        local: ledger.pool == null || widget.skipPoolSync,
+        restFrame: ident.address,
+        paymentCode: ident.paymentCode,
+        vaultProof: proved,
+      );
+    } on StateError catch (err) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err.message)));
+      }
+      return;
+    }
+    if (posted == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
+    if (mounted) setState(() {});
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Roll over submitted — tx ${posted.tx.id}')),
       );
     }
   }
@@ -4036,14 +4166,30 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 onPressed: _reserveSendReady ? () => _reserveSend(context, ident) : null,
                 child: const Text('Deposit sum'),
               ),
-              if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0)
+              if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0) ...[
+                Text(
+                  kReserveWithdrawAction,
+                  key: const Key('reserve-withdraw-copy'),
+                ),
                 FilledButton(
                   key: const Key('reserve-withdraw'),
                   onPressed: () => _reserveWithdraw(context, ident),
                   child: Text(p.claimableRewards > 0 && !reserve.epochIsOver(now)
                       ? 'Withdraw previous-epoch rewards'
-                      : 'Withdraw to Continuum'),
+                      : 'Withdraw'),
                 ),
+              ],
+              if (p.nanos > 0 && reserve.epochIsOver(now)) ...[
+                Text(
+                  kReserveRollAction,
+                  key: const Key('reserve-roll-copy'),
+                ),
+                FilledButton(
+                  key: const Key('reserve-roll'),
+                  onPressed: () => _reserveRoll(context, ident),
+                  child: const Text('Roll over'),
+                ),
+              ],
             ]),
     ], key: const Key('reserve-yours-box'));
     final overall = _panel(context, [
@@ -4164,7 +4310,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           Text('portal ${vortex.yourNanos}', key: const Key('vortex-your-portal')),
           Text('Flow continuum ${vortex.flowNanos}', key: const Key('vortex-flow-continuum')),
           Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
-          Text('Idle  $idleShe SHE', textAlign: TextAlign.justify),
+          Text(
+            reserve.epochIsOver(now) && p.nanos > 0
+                ? '$kReserveUnlockedIdle  $totalShe SHE'
+                : 'Idle  $idleShe SHE',
+            key: const Key('reserve-idle-line'),
+            textAlign: TextAlign.justify,
+          ),
           Text(
             'Locked  $totalShe SHE${p.joined ? '  ·  joined this epoch' : ''}',
             textAlign: TextAlign.justify,

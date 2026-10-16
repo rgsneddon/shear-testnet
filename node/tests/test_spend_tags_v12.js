@@ -14,18 +14,11 @@ import {
   flowInputsBound,
   txSpendTags,
   kernelExcess,
-  randomScalar,
-  commit,
-  pointBytes,
 } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { levyNanos } from '../../crypto/levy.js';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
-  admitProveV3,
-  admitPub,
-  jroot,
   applyBlockToFluxset,
   emptyFluxset,
   fluxsetFromBlocks,
@@ -257,45 +250,45 @@ describe('v12 spend tags come from the proof bytes', () => {
     assert.ok(Buffer.from(sealed.admit_proof.blob).equals(blob));
   });
 
-  it('rejects a v3 field that disagrees and a blob tag that is already spent', () => {
-    const x = randomScalar();
-    const pub = admitPub(x);
-    const note = pointBytes(commit(1, randomScalar()));
-    const sealed = admitProveV3({
-      x, index: 0, pubs: [pub], commits: [note], c: note, t: randomScalar(), ctx: Buffer.alloc(64, 3),
-    });
-    assert.ok(sealed, 'header roots come from a point-leaf proof');
+  it('a byte-3 lock is vault_unavailable before a spent tag or a lying field', () => {
     const tag = Buffer.alloc(32, 0xab);
     const blob = Buffer.alloc(129, 0);
     blob[0] = 3;
     tag.copy(blob, 1);
-    sealed.blob.copy(blob, 65, 65, 129);
     const commitBytes = Buffer.alloc(32, 4);
     const base = {
       kind: 'lock',
       anchor: 8,
       vin: [{ commit: commitBytes, anchor: 8 }],
     };
+    let reads = 0;
     const opts = {
       height: 24,
-      magic: MAGIC_TESTNET,
-      noteAtAnchor: () => ({ pubs: [pub], commits: [note], n: 1, jroot: jroot({ pubs: [pub], commits: [note] }) }),
+      noteAtAnchor: () => { reads += 1; return null; },
     };
     const omitted = verifyTypedAdmitFunding({
       ...base,
       admit_proofs: [{ blob, cTilde: commitBytes }],
     }, { ...opts, spentTags: new Set([tag.toString('hex')]) });
     assert.equal(omitted.ok, false);
-    assert.equal(omitted.reason, 'admit_link_tag');
-    assert.equal(omitted.proofChecked, true);
+    assert.equal(omitted.reason, 'vault_unavailable');
     const lying = verifyTypedAdmitFunding({
       ...base,
       spendTag: Buffer.alloc(32, 1),
       admit_proofs: [{ blob, cTilde: commitBytes, spendTag: Buffer.alloc(32, 1) }],
     }, { ...opts, spentTags: new Set() });
     assert.equal(lying.ok, false);
-    assert.equal(lying.reason, 'admit_tag');
-    assert.equal(lying.proofChecked, true);
+    assert.equal(lying.reason, 'vault_unavailable');
+    assert.equal(reads, 0);
+    const record = Buffer.alloc(321, 7);
+    record[0] = 0xf1;
+    tag.copy(record, 1);
+    const parsed = txSpendTags({
+      kind: 'lock',
+      admit_proofs: [{ blob: record, cTilde: commitBytes }],
+    });
+    assert.equal(parsed.ok, true, parsed.reason);
+    assert.ok(parsed.tags[0].equals(tag));
   });
 
   it('a field-less spend cannot be queued twice, reorged back in, or reloaded as unspent', async () => {
