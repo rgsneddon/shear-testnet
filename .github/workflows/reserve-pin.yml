@@ -20,7 +20,13 @@ jobs:
           sudo apt-get install -y build-essential
           VER=$(node -p process.version)
           mkdir -p .node-headers
-          curl -fsSL "https://nodejs.org/dist/${VER}/node-${VER}-headers.tar.gz" | tar -xz -C .node-headers
+          base="https://nodejs.org/dist/${VER}"
+          curl -fsSL "${base}/SHASUMS256.txt" -o .node-headers/SHASUMS256.txt
+          curl -fsSL "${base}/node-${VER}-headers.tar.gz" -o ".node-headers/node-${VER}-headers.tar.gz"
+          grep -E "[[:space:]]node-${VER}-headers\\.tar\\.gz$" .node-headers/SHASUMS256.txt > .node-headers/headers.sha256
+          test "$(wc -l < .node-headers/headers.sha256)" -eq 1
+          (cd .node-headers && sha256sum -c headers.sha256)
+          tar -xzf ".node-headers/node-${VER}-headers.tar.gz" -C .node-headers
           export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
           test -f "$NODE_INC/node_api.h"
           make -C crypto/native shearadmit.node NODE_INC="$NODE_INC"
