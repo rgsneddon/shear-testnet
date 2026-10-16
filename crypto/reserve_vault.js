@@ -1100,24 +1100,7 @@ function portalOf(state, destOrId) {
   return state.portals[id];
 }
 
-/**
- * A balance with no tranche list is one legacy credit. Pin its lock epoch
- * before the vault epoch moves, so a later roll does not lock it again.
- */
-function pinLegacyLockEpochs(state) {
-  const epoch = Math.floor(Number(state?.currentEpoch) || 0);
-  for (const portal of Object.values(state?.portals || {})) {
-    if (!portal || typeof portal !== 'object') continue;
-    if (Array.isArray(portal.tranches) && portal.tranches.length > 0) continue;
-    if (asBig(portal.staked) + asBig(portal.idle) <= 0n) continue;
-    const raw = portal.lockEpoch;
-    if (raw != null && raw !== '' && Number.isInteger(Number(raw)) && Number(raw) >= 0) continue;
-    portal.lockEpoch = epoch;
-  }
-}
-
 function applyEpochOpen(state, nowMs, idx) {
-  pinLegacyLockEpochs(state);
   const magic = state.magic || MAGIC_TESTNET;
   const activationHeight = state.oracleActivationHeight === undefined
     ? ORACLE_ACTIVATION_HEIGHT

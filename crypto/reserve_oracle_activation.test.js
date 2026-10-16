@@ -23,7 +23,7 @@ import {
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { applyReserveBlock, deposit, enact, emptyVault, lockTx, previewWithdraw, trialReserveApply, vote, VOTE_INCREASE, withdraw, withdrawTx } from './reserve_vault.js';
+import { applyReserveBlock, coinbaseRewardRoot, deposit, enact, emptyVault, lockTx, previewWithdraw, trialReserveApply, vote, VOTE_INCREASE, withdraw, withdrawTx } from './reserve_vault.js';
 import {
   GENESIS_PREV,
   buildTemplate,
@@ -645,6 +645,17 @@ function interestOf(stake, bps) {
   return Number((BigInt(stake) * BigInt(bps)) / 10000n);
 }
 
+/** The live coinbase carries the reward root on a withdraw block. */
+function withCoinbaseReward(state, nowMs, txs) {
+  const list = Array.isArray(txs) ? txs.slice() : [];
+  const pulling = list.some((tx) => tx && !tx.coinbase && (tx.kind === 'withdraw' || tx?.vout?.[0]?.kind === 'withdraw'));
+  if (!pulling || !list[0]?.coinbase) return list;
+  const root = coinbaseRewardRoot(state, nowMs);
+  if (!root) return list;
+  list[0] = { ...list[0], rewardRoot: root };
+  return list;
+}
+
 function enactIfDue(state, nowMs) {
   if (!state.epochStartMs || state.bonusEnacted) return;
   if (nowMs < state.epochStartMs + RESERVE_EPOCH_MS) return;
@@ -1134,10 +1145,10 @@ describe('the block path rolls before its transactions', () => {
       assert.equal(view.oracleBps, step.bps, `evm bps ${step.now}`);
     }
     const drawAt = T0 + 4 * epoch;
-    const draw = [
+    const draw = withCoinbaseReward(state, drawAt, [
       cb,
       withdrawTx({ from: who, to: who, nanos: 1, id: 'block-draw' }),
-    ];
+    ]);
     const applied = applyReserveBlock({
       state,
       block: { txs: draw, height: 8 },
@@ -1165,6 +1176,86 @@ describe('the block path rolls before its transactions', () => {
   });
 });
 
+describe('a ≥π withdraw in the second epoch', () => {
+  const full = () => interestOf(PI_SHE_NANOS, GENESIS_BPS);
+
+  async function secondEpochWithdraw(withRoot) {
+    const epoch = RESERVE_EPOCH_MS;
+    const who = minerOf();
+    const state = emptyVault();
+    state.magic = MAGIC_TESTNET;
+    const session = await bootReserveEvm();
+    const lock = [
+      { coinbase: true, vout: [] },
+      lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'pi-second-lock' }),
+    ];
+    const locked = applyReserveBlock({
+      state,
+      block: { height: 1, txs: lock },
+      nowMs: T0,
+      genesisMs: T0,
+      activationHeight: 0,
+    });
+    assert.equal(locked.ok, true, locked.reason);
+    const evmLock = await executeBlockEvm(session, lock, T0, T0);
+    assert.equal(evmLock.ok, true, evmLock.reason);
+    const gapAt = T0 + epoch + 1;
+    const gap = [{ coinbase: true, vout: [] }];
+    const gapped = applyReserveBlock({
+      state,
+      block: { height: 2, txs: gap },
+      nowMs: gapAt,
+      genesisMs: T0,
+      activationHeight: 0,
+    });
+    assert.equal(gapped.ok, true, gapped.reason);
+    const evmGap = await executeBlockEvm(session, gap, gapAt, T0);
+    assert.equal(evmGap.ok, true, evmGap.reason);
+    const drawAt = T0 + 2 * epoch;
+    const preview = previewWithdraw(state, who, drawAt);
+    const cb = { coinbase: true, vout: [] };
+    if (withRoot) cb.rewardRoot = coinbaseRewardRoot(state, drawAt);
+    const draw = [
+      cb,
+      withdrawTx({ from: who, to: who, nanos: preview.payout, id: 'pi-second-draw' }),
+    ];
+    const applied = applyReserveBlock({
+      state,
+      block: { height: 3, txs: draw },
+      nowMs: drawAt,
+      genesisMs: T0,
+      activationHeight: 0,
+      requireStakeReward: true,
+    });
+    const evm = await executeBlockEvm(session, draw, drawAt, T0);
+    const view = decodePublicView(
+      (await callReserve(session, encodePublicView(drawAt), { staticCall: true })).returnValue,
+    );
+    const row = [...applied].find((item) => item && item.action === 'withdraw');
+    return { applied, evm, row, view, state, preview };
+  }
+
+  it('JS and the EVM pay the same interest when the coinbase carries the root', async () => {
+    const got = await secondEpochWithdraw(true);
+    assert.equal(got.applied.ok, true, got.applied.reason);
+    assert.equal(got.evm.ok, true, got.evm.reason);
+    assert.equal(got.row.ok, true, got.row.reason);
+    assert.equal(got.row.interest, full() * 2);
+    assert.equal(got.row.principal, PI_SHE_NANOS);
+    assert.equal(got.evm.withdrawInterest, got.row.interest);
+    assert.equal(got.state.currentEpoch, got.view.currentEpoch);
+    assert.equal(got.state.currentEpoch, 2);
+  });
+
+  it('JS and the EVM both refuse that withdraw when the root is missing', async () => {
+    const got = await secondEpochWithdraw(false);
+    assert.equal(got.applied.ok, false);
+    assert.equal(got.applied.reason, 'stake_reward');
+    assert.equal(got.evm.ok, false);
+    assert.equal(got.evm.reason, 'stake_reward');
+  });
+});
+
 describe('a withdraw stays open after the enacting block', () => {
   const blocksLater = 8;
 
@@ -1187,15 +1278,16 @@ describe('a withdraw stays open after the enacting block', () => {
       assert.equal(later.ok, true, later.reason);
     }
     const run = async (now, txs) => {
+      const body = withCoinbaseReward(state, now, txs);
       const applied = applyReserveBlock({
         state,
-        block: { txs, height: 1 },
+        block: { txs: body, height: 1 },
         nowMs: now,
         genesisMs: T0,
         activationHeight: 0,
       });
       assert.equal(applied.ok, true, `${now} ${applied.reason}`);
-      const evm = await executeBlockEvm(session, txs, now, T0);
+      const evm = await executeBlockEvm(session, body, now, T0);
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
@@ -1280,15 +1372,16 @@ describe('a no-commit gap keeps the last adopted rate', () => {
     assert.equal((await callReserve(session, encodeCommitRate(3, later, T0 + 3 * epoch, T0))).ok, true);
     const cb = { coinbase: true, vout: [] };
     const run = async (now, txs) => {
+      const body = withCoinbaseReward(state, now, txs);
       const applied = applyReserveBlock({
         state,
-        block: { txs, height: 1 },
+        block: { txs: body, height: 1 },
         nowMs: now,
         genesisMs: T0,
         activationHeight: 0,
       });
       assert.equal(applied.ok, true, `${now} ${applied.reason}`);
-      const evm = await executeBlockEvm(session, txs, now, T0);
+      const evm = await executeBlockEvm(session, body, now, T0);
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
@@ -1337,15 +1430,16 @@ describe('a skipped commit carries forward', () => {
     assert.equal((await callReserve(session, encodeCommitRate(3, 10000, T0 + 3 * epoch, T0))).ok, true);
     const cb = { coinbase: true, vout: [] };
     const run = async (now, txs) => {
+      const body = withCoinbaseReward(state, now, txs);
       const applied = applyReserveBlock({
         state,
-        block: { txs, height: 1 },
+        block: { txs: body, height: 1 },
         nowMs: now,
         genesisMs: T0,
         activationHeight: 0,
       });
       assert.equal(applied.ok, true, `${now} ${applied.reason}`);
-      const evm = await executeBlockEvm(session, txs, now, T0);
+      const evm = await executeBlockEvm(session, body, now, T0);
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };

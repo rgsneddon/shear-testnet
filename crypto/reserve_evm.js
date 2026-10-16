@@ -7,6 +7,7 @@ import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
+import { EMPTY_ROOT } from './merkle.js';
 import { reserveAction, blockRewardRoot, packRewardProof } from './reserve_vault.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
@@ -476,6 +477,20 @@ export async function executeReserveTx(session, tx, nowMs) {
   return { ok: false, reason: 'evm_kind' };
 }
 
+/** Chain settlement index from the public view. Epoch 0 before it ends is 0. */
+function evmSettlementIndex(view, nowMs, genesisMs) {
+  const span = RESERVE_EPOCH_MS;
+  const g = Number(genesisMs) || 0;
+  const now = Number(nowMs) || 0;
+  const chain = g > 0 && now > g ? Math.floor((now - g) / span) : 0;
+  const start = Number(view?.epochStartMs) || 0;
+  const ended = start > 0 && now >= start + span;
+  if (chain <= 0 && !ended) return 0;
+  return chain;
+}
+
+const EMPTY_REWARD_ROOT = Buffer.from(EMPTY_ROOT).toString('hex');
+
 /** Run pinned Reserve bytecode + EVM SHE value for a block body. Fail closed. */
 export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
@@ -499,9 +514,10 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
       evm.calls += 1;
       evm.committedBps = bps;
     }
+    let view0 = null;
     const prior = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
     if (prior.ok) {
-      let view0 = decodePublicView(prior.returnValue);
+      view0 = decodePublicView(prior.returnValue);
       if (view0.bonusEnacted) {
         const rolled = await callReserve(session, encodeSyncEpoch(nowMs));
         if (!rolled.ok) return fail(rolled.reason || 'epoch');
@@ -516,6 +532,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
     }
     const rootHex = blockRewardRoot({ txs: list });
     if (rootHex === 'bad') return fail('stake_reward');
+    const withdrawing = list.some((tx) => tx && !tx.coinbase && txKindOf(tx) === 'withdraw');
     for (const tx of list) {
       if (!tx || tx.coinbase) continue;
       if (txKindOf(tx) !== 'withdraw') continue;
@@ -525,10 +542,21 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0) {
       if (!held.ok) return fail(held.reason || 'evm');
       evm.calls += 1;
     }
-    if (rootHex) {
+    // A withdraw does not excuse a missing root. When this clock owes a
+    // reward, the coinbase root has to be the one commitRewards returns.
+    // An empty earning set still commits so matured principal is released.
+    const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs) > 0;
+    if (rootHex || oweRoot) {
+      const sm = session.evm.stateManager;
+      await sm.checkpoint();
       const committed = await callReserve(session, encodeCommitRewards(nowMs));
-      if (!committed.ok) return fail(committed.reason || 'stake_reward');
-      if (decodeBytes32(committed.returnValue) !== rootHex) return fail('stake_reward');
+      const got = committed.ok ? decodeBytes32(committed.returnValue) : '';
+      const matches = committed.ok && (rootHex ? got === rootHex : got === EMPTY_REWARD_ROOT);
+      if (!matches) {
+        await sm.revert();
+        return fail('stake_reward');
+      }
+      await sm.commit();
       evm.calls += 1;
     }
     if (list.slice(1).some((tx) => isReserveCall(tx) || isEvmValueTx(tx))) {

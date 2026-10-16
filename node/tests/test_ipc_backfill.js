@@ -12,6 +12,7 @@ import { encodeWireBlock, headerPrevHash } from '../src/p2p.js';
 import {
   IPC_BACKFILL_MAX,
   ancestorWindow,
+  applyVerifiedIpcBlock,
   attachPoolIpc,
   attachSidecarIpc,
   chunkIpcBlocks,
@@ -87,6 +88,56 @@ async function waitFor(fn, ms = 20000) {
 }
 
 describe('IPC backfill window and parent repair', () => {
+  it('refuses an IPC hello or block that omits magic', async () => {
+    const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ipc-magic-')));
+    let tips = 0;
+    const ipc = await attachPoolIpc({
+      store,
+      port: 0,
+      onSidecarTip: () => { tips += 1; },
+    });
+    const sock = net.connect(ipc.port, '127.0.0.1');
+    const logs = [];
+    const orig = console.error;
+    console.error = (...args) => {
+      logs.push(args.map((part) => String(part)).join(' '));
+    };
+    try {
+      await new Promise((resolve, reject) => {
+        sock.once('connect', resolve);
+        sock.once('error', reject);
+      });
+      sock.write(`${JSON.stringify({ type: 'ipc_hello', height: 3, hash: 'ab', work: '0x1' })}\n`);
+      sock.write(`${JSON.stringify({
+        type: 'ipc_block',
+        block: { height: 1 },
+        powHash: 'aa'.repeat(32),
+      })}\n`);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(tips, 0);
+      assert.equal(logs.some((line) => line.includes('"event":"ipc_apply"')), false, logs.join(' | '));
+      const direct = applyVerifiedIpcBlock(store, {
+        type: 'ipc_block',
+        block: { height: 1 },
+        powHash: 'bb'.repeat(32),
+      });
+      assert.equal(direct.ok, false);
+      assert.equal(direct.reason, 'magic');
+      const wrong = applyVerifiedIpcBlock(store, {
+        type: 'ipc_block',
+        magic: 'shear-testnet-v12',
+        block: { height: 1 },
+        powHash: 'cc'.repeat(32),
+      });
+      assert.equal(wrong.reason, 'magic');
+      assert.equal(store.tip(), null);
+    } finally {
+      console.error = orig;
+      sock.destroy();
+      await ipc.close();
+    }
+  });
+
   it('treats IPC_BACKFILL_MAX as a chunk size and never refuses a gap above 8', () => {
     const src = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
     assert.equal(/local - from > IPC_BACKFILL_MAX/.test(src), false);

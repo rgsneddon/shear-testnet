@@ -5342,8 +5342,6 @@ export function createStore(dir, {
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
       prepareCoinbase: (cb) => {
-        const pulling = pendingTxs.some((tx) => String(tx?.kind || tx?.vout?.[0]?.kind || '') === 'withdraw');
-        if (pulling) return;
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
       },

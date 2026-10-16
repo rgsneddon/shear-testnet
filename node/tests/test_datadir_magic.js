@@ -207,6 +207,38 @@ describe('v3 and v4 datadirs refuse each other', () => {
     }
   });
 
+  it('P2P drops a hello that omits magic', async () => {
+    const { createP2p } = await import('../src/p2p.js');
+    const net = await import('node:net');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-none-'));
+    const store = createStore(dir);
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
+    const bound = await p2p.listen();
+    const sock = net.connect(bound.port, '127.0.0.1');
+    await new Promise((resolve, reject) => {
+      sock.once('connect', resolve);
+      sock.once('error', reject);
+    });
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('no inbound hello')), 2000);
+      let buf = '';
+      sock.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        if (buf.split('\n').filter(Boolean).length >= 2) {
+          clearTimeout(t);
+          resolve();
+        }
+      });
+    });
+    const closed = new Promise((resolve) => sock.once('close', resolve));
+    sock.write(`${JSON.stringify({ type: 'hello', ua: 'no-magic', port: 1 })}\n`);
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('hello without magic did not drop the socket')), 3000)),
+    ]);
+    p2p.close();
+  });
+
   it('P2P hellos, tips, and headers shear-testnet-v13', async () => {
     const { createP2p } = await import('../src/p2p.js');
     const net = await import('node:net');

@@ -30,6 +30,8 @@ import {
   shearMagicBytes,
 } from './reserve_evm.js';
 import { GENESIS_BPS } from './reserve_oracle.js';
+import { encodeDest } from './address.js';
+import { applyReserveBlock, deposit, emptyVault } from './reserve_vault.js';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -269,31 +271,54 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(allowed.ok, true, allowed.reason);
   });
 
-  it('a legacy pin pass stops at 256 portals and the epoch waits for the rest', async () => {
+  it('JS and the EVM roll the epoch on the same call at 257, 300, and 600 portals', async () => {
     const sol = fs.readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
-    assert.match(sol, /LEGACY_PIN_MAX = 256/);
-    assert.match(sol, /gasleft\(\) < LEGACY_PIN_GAS/);
-    assert.match(sol, /if \(!_pinLegacyEpochs\(\)\) return/);
-    const s = await bootReserveEvm();
+    const vault = fs.readFileSync(new URL('./reserve_vault.js', import.meta.url), 'utf8');
+    assert.equal(sol.includes('_pinLegacyEpochs'), false);
+    assert.equal(sol.includes('legacyPinCursor'), false);
+    assert.equal(vault.includes('pinLegacyLockEpochs'), false);
     const t0 = 1_700_000_000_000;
-    assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
-    const n = 257;
-    for (let i = 0; i < n; i += 1) {
-      const dest = `pin-${i}`;
-      const nanos = i === 0 ? PI_SHE_NANOS : 1;
-      const locked = await callReserve(s, encodeDeposit(dest, nanos, t0));
-      assert.equal(locked.ok, true, `${i} ${locked.reason}`);
-    }
     const end = t0 + RESERVE_EPOCH_MS;
-    const en = await callReserve(s, encodeEnact(end));
-    assert.equal(en.ok, true, en.reason);
-    const first = await callReserve(s, encodeSyncEpoch(end));
-    assert.equal(first.ok, true, first.reason);
-    const mid = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
-    assert.equal(mid.currentEpoch, 0);
-    const second = await callReserve(s, encodeSyncEpoch(end));
-    assert.equal(second.ok, true, second.reason);
-    const rolled = decodePublicView((await callReserve(s, encodePublicView(end), { staticCall: true })).returnValue);
-    assert.equal(rolled.currentEpoch, 1);
+    for (const n of [257, 300, 600]) {
+      const state = emptyVault();
+      state.genesisMs = t0;
+      state.magic = MAGIC_TESTNET;
+      const session = await bootReserveEvm();
+      assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
+      for (let i = 0; i < n; i += 1) {
+        const raw = Buffer.alloc(20);
+        raw.writeUInt32BE(i + 1, 16);
+        const dest = encodeDest(raw);
+        const nanos = i === 0 ? PI_SHE_NANOS : 1;
+        const jsLocked = deposit({ state, dest, nanos, nowMs: t0 });
+        assert.equal(jsLocked.ok, true, `${n} js ${i} ${jsLocked.reason}`);
+        const locked = await callReserve(session, encodeDeposit(dest, nanos, t0));
+        assert.equal(locked.ok, true, `${n} evm ${i} ${locked.reason}`);
+      }
+      const enacted = applyReserveBlock({
+        state,
+        block: { height: 1, txs: [{ coinbase: true, vout: [] }] },
+        nowMs: end,
+        genesisMs: t0,
+      });
+      assert.equal(enacted.ok, true, `${n} ${enacted.reason}`);
+      const en = await callReserve(session, encodeEnact(end));
+      assert.equal(en.ok, true, `${n} ${en.reason}`);
+      const evmHeld = decodePublicView((await callReserve(session, encodePublicView(end), { staticCall: true })).returnValue);
+      assert.equal(state.currentEpoch, 0, `${n} js before roll`);
+      assert.equal(evmHeld.currentEpoch, 0, `${n} evm before roll`);
+      const rolled = applyReserveBlock({
+        state,
+        block: { height: 2, txs: [{ coinbase: true, vout: [] }] },
+        nowMs: end,
+        genesisMs: t0,
+      });
+      assert.equal(rolled.ok, true, `${n} ${rolled.reason}`);
+      const sync = await callReserve(session, encodeSyncEpoch(end));
+      assert.equal(sync.ok, true, `${n} ${sync.reason}`);
+      const evmRolled = decodePublicView((await callReserve(session, encodePublicView(end), { staticCall: true })).returnValue);
+      assert.equal(state.currentEpoch, evmRolled.currentEpoch, `${n} roll height`);
+      assert.equal(state.currentEpoch, 1, `${n} rolled`);
+    }
   });
 });
