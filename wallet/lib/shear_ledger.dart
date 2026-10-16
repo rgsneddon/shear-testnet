@@ -9,6 +9,11 @@ import 'shear_identity.dart';
 import 'shear_eip712.dart';
 import 'shear_levy.dart';
 import 'shear_read_open.dart';
+import 'package:crypto/crypto.dart';
+
+import 'shear_asert.dart';
+import 'shear_hash.dart';
+import 'shear_hash_v3.dart';
 import 'shear_read_sync.dart';
 import 'shear_session.dart';
 import 'shear_ed25519.dart';
@@ -449,7 +454,7 @@ int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = fal
   final padded = (weight * 5) ~/ 4 + 8192;
   final raw = (padded + 2047) ~/ 2048;
   final fee = raw < kLevyFloorUnits ? kLevyFloorUnits : raw;
-  return fee > kLevyCapNanos ? kLevyCapNanos : fee;
+  return fee > kLevyCapRho ? kLevyCapRho : fee;
 }
 
 /// [spendableShe] covers a consensus levy of [levyUnits].
@@ -628,6 +633,24 @@ bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
   if (at <= 0) return true;
   if (tipMs == null || tipMs < at) return true;
   return false;
+}
+
+/// Matured lock note that still sits on this wallet's own reserve vault.
+/// That address is not a money dest. Once the lock is open the note is the
+/// principal a send can use. A null [tipMs] stays locked.
+bool unlockedOwnVaultLockNote(
+  Map<dynamic, dynamic> note, {
+  required String vault,
+  required int? tipMs,
+}) {
+  if (vault.isEmpty) return false;
+  if ((note['kind'] ?? '').toString() != 'lock') return false;
+  if (note['spent'] == true) return false;
+  if (!noteHasSealedSpendBytes(note)) return false;
+  final addr = (note['address'] ?? note['dest'])?.toString() ?? '';
+  if (addr != vault) return false;
+  final asMap = note is Map<String, dynamic> ? note : Map<String, dynamic>.from(note);
+  return !lockNoteIsLocked(asMap, tipMs);
 }
 
 /// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
@@ -1199,6 +1222,22 @@ Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
     'vout': List<dynamic>.from(_hexify(body['vout']) as List? ?? const []),
     'admitProof': body['admitProof'] is Map ? _hexify(body['admitProof']) : null,
     if (proofs is List) 'admitProofs': _hexify(body['admitProofs'] ?? const <Map<String, dynamic>>[]),
+  };
+}
+
+/// Lock, vote, and withdraw already hexified vin and vout in the seal worker.
+/// [flowPostHex] would drop the vin dest the signature covers. The admit
+/// proof is hexified on its own and stays on the post.
+Map<String, dynamic> reserveWireBody({
+  required List<dynamic> vin,
+  required List<dynamic> vout,
+  Map<String, dynamic>? admitProof,
+}) {
+  final proof = admitProof == null ? null : _hexify(postedAdmitProof(admitProof));
+  return <String, dynamic>{
+    'vin': vin,
+    'vout': vout,
+    'admitProof': proof is Map ? Map<String, dynamic>.from(proof) : null,
   };
 }
 
@@ -2908,6 +2947,28 @@ class Path1Observation {
       targetIntervalMs <= 0 ? 0 : quantumShe / targetIntervalMs;
 }
 
+/// Heights the unlock clock hashes.
+/// Full-chain ShearHash-v3 rebuilds a 128 MiB RandomX cache for every
+/// header, because the key includes prev. Walking that on the UI isolate
+/// is the Android "isn't responding" dialog. The sound scope is this
+/// window: genesis through the tip while the tip is inside the MTP window,
+/// otherwise the last [window] headers. They are hashed off the UI isolate
+/// by the native interpreter. ShearHash-v1 is not a substitute.
+/// A second login hashes only headers whose bytes changed.
+List<int> unlockClockHeights(int tip, {int window = ShearLedger.verifiedMtpWindow}) {
+  if (tip < 1 || window < 1) return const [];
+  final start = tip <= window ? 1 : tip - window + 1;
+  return [for (var h = start; h <= tip; h++) h];
+}
+
+/// Height that must already be a Flyclient, genesis, or checkpoint anchor
+/// before [unlockClockHeights] may start. Null when the window begins at 1.
+int? unlockClockParentHeight(int tip, {int window = ShearLedger.verifiedMtpWindow}) {
+  final heights = unlockClockHeights(tip, window: window);
+  if (heights.isEmpty || heights.first <= 1) return null;
+  return heights.first - 1;
+}
+
 int? headerTimestampMs(Uint8List header) {
   if (header.length < 108) return null;
   var v = 0;
@@ -3317,7 +3378,7 @@ class ShearLedger implements ReadProofSink {
 
   /// Keep the lock note's blind. The chain drops it, and the spend needs it
   /// once the epoch ends.
-  void _rememberTimeLock(List<Map<String, dynamic>> sealed, String dest) {
+  void _rememberTimeLock(List<Map<String, dynamic>> sealed, String dest, {String? txId}) {
     if (!isDestAddress(dest)) return;
     for (final o in sealed) {
       if ((o['kind'] ?? '').toString() != 'lock') continue;
@@ -3333,6 +3394,7 @@ class ShearLedger implements ReadProofSink {
         'r': o['r'],
         'admitPub': o['admitPub'],
         'unlockAtMs': unlock,
+        if (txId != null && txId.isNotEmpty) 'txId': txId,
         if (o['lockEpoch'] != null) 'lockEpoch': o['lockEpoch'],
         if (o['valueProof'] != null) 'valueProof': o['valueProof'],
         if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
@@ -3344,10 +3406,27 @@ class ShearLedger implements ReadProofSink {
         final she = _sheOfExactNanos(units.toString());
         if (she != null) row['amount'] = she;
       }
-      row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
+      row['locked'] = lockNoteIsLocked(row, _lockClockMs);
       rememberNote(row);
       rememberDest(dest);
       _proofCheckedDests.add(payKey(dest));
+    }
+  }
+
+  /// The lock note this send just sealed gets [txId], matched by commit.
+  /// A newer lock already on the address is left alone.
+  void _stampLockTxId(List<Map<String, dynamic>> sealed, String txId) {
+    if (txId.isEmpty) return;
+    for (final o in sealed) {
+      if ((o['kind'] ?? '').toString() != 'lock') continue;
+      final commit = _noteBytes(o['commit']);
+      if (commit == null) continue;
+      for (final n in _notes) {
+        if ((n['kind'] ?? '').toString() != 'lock') continue;
+        final have = _noteBytes(n['commit']);
+        if (have == null || !_bytesEq(have, commit)) continue;
+        n['txId'] = txId;
+      }
     }
   }
 
@@ -3398,7 +3477,7 @@ class ShearLedger implements ReadProofSink {
         'spent': false,
       };
       if ((row['kind'] ?? '').toString() == 'lock') {
-        row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
+        row['locked'] = lockNoteIsLocked(row, _lockClockMs);
       }
       if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
       rememberNote(row);
@@ -3987,6 +4066,12 @@ class ShearLedger implements ReadProofSink {
     _notesCovered = 0;
     _acceptedCommits.clear();
     restoredBook = false;
+    _verifiedHeaders.clear();
+    _verifiedClockTip = 0;
+    _acceptedTip = 0;
+    _genesisMs = null;
+    _anchorDigest.clear();
+    _anchorTime.clear();
     _noteMisses.clear();
     _ingestMisses.clear();
     _nodeBodies.clear();
@@ -4004,6 +4089,27 @@ class ShearLedger implements ReadProofSink {
 
   int? _headerTimestampMs;
   int? _prevHeaderTimestampMs;
+  /// PoW-and-parent verified headers, keyed by height. Not a raw /stats tip.
+  /// [hashHex] is the digest this wallet recomputed, never the server claim.
+  /// [headerSha256] is the header bytes, so a repeat login does not rehash.
+  final Map<int, ({int timestampMs, String hashHex, String headerSha256})> _verifiedHeaders = {};
+  /// Tip whose whole [unlockClockHeights] window verified. 0 until then.
+  /// Stays 0 unless it equals [_acceptedTip].
+  int _verifiedClockTip = 0;
+  /// Flyclient tip, or a checkpoint tip. A raw /stats height is not this.
+  int _acceptedTip = 0;
+  /// Timestamp of the genesis header, or a checkpoint pin of that time.
+  int? _genesisMs;
+  /// Recomputed digests the wallet may anchor a window to. Height to hex.
+  /// Flyclient, a genesis pin, or a checkpoint writes these. A window header
+  /// does not replace one, and a digest that disagrees leaves the clock off.
+  final Map<int, String> _anchorDigest = {};
+  /// Header time that came with an anchor. The MTP future limit uses it.
+  final Map<int, int> _anchorTime = {};
+  /// Bitcoin-class median window. Matches `MTP_WINDOW` in crypto/asert.js.
+  static const verifiedMtpWindow = 11;
+  /// Keep the MTP window plus recent confirmation heights. Older rows drop.
+  static int verifiedHeaderCap = 32;
   /// Network circulating supply from pool /api/stats. Continuum Integral Q.
   int? circulatingNanos;
 
@@ -4068,7 +4174,241 @@ class ShearLedger implements ReadProofSink {
   int? get observedIntervalMs => _avgBlockTimeMs ?? lastSealedHeaderDtMs;
 
   /// Sealed tip header wall-clock (ms). ShearView date column. Not an interval.
+  /// Not an unlock clock: a /stats header is not proof of work or a parent link.
   int? get tipTimestampMs => _headerTimestampMs;
+
+  /// Median time of headers this wallet has verified. Null until one links.
+  /// A lock stays locked while this is null.
+  int? get _lockClockMs => verifiedMedianTimeMs;
+
+  /// Timestamp of the verified header at [height]. Null when that height
+  /// was not accepted, was trimmed, or was dropped by a reorg.
+  int? verifiedTimeAtHeight(int height) {
+    if (height < 1) return null;
+    if (_acceptedTip >= 1 && height > _acceptedTip) return null;
+    return _verifiedHeaders[height]?.timestampMs;
+  }
+
+  /// Clock tip. Nonzero only when it is the accepted tip and its window is full.
+  int get verifiedClockTip => _verifiedClockTip;
+
+  int get acceptedUnlockTip => _acceptedTip;
+
+  /// Genesis time for ASERT. A checkpoint may pin this before height 1 is hashed.
+  void noteGenesisPin(int timeMs) {
+    if (timeMs > 0) _genesisMs = timeMs;
+  }
+
+  /// Trust [digestHex] as the recomputed header at [height].
+  /// Flyclient, a genesis pin, or a checkpoint writes this. A raw header does not.
+  /// A different digest than the one already stored turns the clock off.
+  void noteUnlockAnchor({
+    required int height,
+    required String digestHex,
+    int? timeMs,
+  }) {
+    final hex = digestHex.trim().toLowerCase();
+    if (height < 1 || !RegExp(r'^[0-9a-f]{64}$').hasMatch(hex)) return;
+    final prev = _anchorDigest[height];
+    if (prev != null && prev != hex) _verifiedClockTip = 0;
+    _anchorDigest[height] = hex;
+    if (timeMs != null && timeMs > 0) _anchorTime[height] = timeMs;
+  }
+
+  /// The tip the unlock clock is allowed to adopt.
+  void noteAcceptedTip(int tip) {
+    if (tip >= 1) _acceptedTip = tip;
+  }
+
+  /// Login and accrual call this. It hashes only headers whose bytes changed.
+  Future<void> refreshUnlockClock() => _verifyUnlockClock();
+
+  /// Median of the last [verifiedMtpWindow] verified header times.
+  /// Null until [unlockClockHeights] for that tip all recomputed and linked.
+  /// A raw server timestamp never enters this clock.
+  int? get verifiedMedianTimeMs {
+    final tip = _verifiedClockTip;
+    if (tip < 1) return null;
+    final heights = unlockClockHeights(tip);
+    if (heights.isEmpty) return null;
+    final times = <int>[];
+    for (final height in heights) {
+      final row = _verifiedHeaders[height];
+      if (row == null) return null;
+      times.add(row.timestampMs);
+    }
+    final sorted = [...times]..sort();
+    return sorted[(sorted.length - 1) ~/ 2];
+  }
+
+  void _advanceVerifiedClock() {
+    final tip = _acceptedTip;
+    final heights = tip < 1 ? const <int>[] : unlockClockHeights(tip);
+    if (tip < 1 || !heights.every(_verifiedHeaders.containsKey)) {
+      _verifiedClockTip = 0;
+      return;
+    }
+    // The window is the accepted tip only when its tip and parent digests
+    // are the Flyclient (or checkpoint) anchors. A self-hashed window is not.
+    if (!_boundToAnchor(tip) || (tip > 1 && !_boundToAnchor(tip - 1))) {
+      _verifiedClockTip = 0;
+      return;
+    }
+    final tipTime = _verifiedHeaders[tip]!.timestampMs;
+    for (final h in heights) {
+      if (_verifiedHeaders[h]!.timestampMs > tipTime + kMtpFutureMs) {
+        _verifiedClockTip = 0;
+        return;
+      }
+    }
+    _verifiedClockTip = tip;
+  }
+
+  bool _boundToAnchor(int height) {
+    final row = _verifiedHeaders[height];
+    final anchor = _anchorDigest[height];
+    return row != null && anchor != null && row.hashHex == anchor;
+  }
+
+  /// Header time against the median of the headers already verified below
+  /// it, and against the anchored tip time. Same 2h cap as the node.
+  bool _headerTimeOk(int height, int timestampMs) {
+    final prior = <int>[];
+    for (var h = height - 1; h >= 1 && prior.length < verifiedMtpWindow; h--) {
+      final t = _verifiedHeaders[h]?.timestampMs ?? _anchorTime[h];
+      if (t == null || t <= 0) break;
+      prior.add(t);
+    }
+    if (prior.isNotEmpty) {
+      prior.sort();
+      final mtp = prior[(prior.length - 1) ~/ 2];
+      if (timestampMs > mtp + kMtpFutureMs) return false;
+    }
+    final tipTime = _acceptedTip >= 1 ? _anchorTime[_acceptedTip] : null;
+    if (tipTime != null && tipTime > 0 && timestampMs > tipTime + kMtpFutureMs) {
+      return false;
+    }
+    return true;
+  }
+
+  void _dropVerifiedFrom(int height) {
+    _verifiedHeaders.removeWhere((h, _) => h >= height);
+    _verifiedClockTip = 0;
+  }
+
+  void _trimVerifiedHeaders() {
+    final window = _acceptedTip >= 1
+        ? unlockClockHeights(_acceptedTip).toSet()
+        : <int>{};
+    while (_verifiedHeaders.length > verifiedHeaderCap) {
+      var drop = 0;
+      for (final h in _verifiedHeaders.keys) {
+        if (window.contains(h)) continue;
+        if (drop == 0 || h < drop) drop = h;
+      }
+      if (drop == 0) return;
+      _verifiedHeaders.remove(drop);
+    }
+  }
+
+  bool _parentAnchored(int height, String prevHex) {
+    final prev = prevHex.toLowerCase();
+    if (height == 1) return RegExp(r'^0+$').hasMatch(prev);
+    final stored = _verifiedHeaders[height - 1];
+    if (stored != null && stored.hashHex == prev) return true;
+    final anchor = _anchorDigest[height - 1];
+    return anchor != null && anchor == prev;
+  }
+
+  void _takeFlyclientAnchors() {
+    final sync = pool?.sync;
+    if (sync == null || !sync.flyclientOk || sync.flyclientTip < 1) return;
+    _acceptedTip = sync.flyclientTip;
+    final genesis = sync.pinnedGenesisMs;
+    if (genesis != null && genesis > 0) _genesisMs ??= genesis;
+    for (final e in sync.acceptedDigests.entries) {
+      final prev = _anchorDigest[e.key];
+      if (prev != null && prev != e.value) _verifiedClockTip = 0;
+      _anchorDigest[e.key] = e.value;
+    }
+    for (final e in sync.acceptedHeaderMs.entries) {
+      if (e.value > 0) _anchorTime[e.key] = e.value;
+    }
+  }
+
+  /// Accept one header whose ShearHash-v3 digest this wallet recomputed.
+  /// The bits must be the genesis-anchored ASERT quote, not the server's
+  /// choice of an easy target. Prev must be the prior verified digest or an
+  /// anchor (Flyclient, genesis pin, or checkpoint). [hashHex] is the server
+  /// claim and is not proof. A conflicting digest drops this height and
+  /// everything above it. Returns false when rejected.
+  bool noteVerifiedHeader({
+    required Uint8List header,
+    required int height,
+    required String hashHex,
+    Uint8List? digest,
+  }) {
+    hashHex;
+    if (height < 1 || header.length != shearHeaderLen) return false;
+    final fly = flyHeaderFromJson({
+      'header': _bytesHex(header),
+      'hash': '',
+    });
+    if (fly == null || fly.version < 1 || fly.bits <= 0 || fly.timestamp <= 0) {
+      return false;
+    }
+    if (!_parentAnchored(height, fly.prevHex)) return false;
+    final parentTime = height > 1
+        ? (_verifiedHeaders[height - 1]?.timestampMs ?? _anchorTime[height - 1])
+        : null;
+    final genesisMs = height == 1 ? fly.timestamp : (_genesisMs ?? 0);
+    if (!headerBitsMatchAsert(
+      height: height,
+      bits: fly.bits,
+      timestampMs: fly.timestamp,
+      parentTimestampMs: parentTime,
+      genesisMs: genesisMs,
+    )) {
+      return false;
+    }
+    if (!_headerTimeOk(height, fly.timestamp)) {
+      _verifiedClockTip = 0;
+      return false;
+    }
+    final finger = sha256.convert(header).toString();
+    final have = _verifiedHeaders[height];
+    if (have != null && have.headerSha256 == finger) {
+      final anchored = _anchorDigest[height];
+      if (anchored != null && anchored != have.hashHex) {
+        _verifiedClockTip = 0;
+        _dropVerifiedFrom(height);
+        return false;
+      }
+      _advanceVerifiedClock();
+      return true;
+    }
+    final got = digest ?? shearHashV3(header);
+    if (got == null || got.length != 32 || !shearMeetsTarget(got, fly.bits)) {
+      return false;
+    }
+    final digestHex = _bytesHex(got);
+    final anchored = _anchorDigest[height];
+    if (anchored != null && anchored != digestHex) {
+      _verifiedClockTip = 0;
+      if (have != null && have.hashHex != anchored) _dropVerifiedFrom(height);
+      return false;
+    }
+    if (have != null && have.hashHex != digestHex) _dropVerifiedFrom(height);
+    _verifiedHeaders[height] = (
+      timestampMs: fly.timestamp,
+      hashHex: digestHex,
+      headerSha256: finger,
+    );
+    if (height == 1) _genesisMs = fly.timestamp;
+    _trimVerifiedHeaders();
+    _advanceVerifiedClock();
+    return true;
+  }
 
   void applyAvgBlockTimeMs(int? ms) {
     if (ms == null || ms < 0) return;
@@ -5089,13 +5429,67 @@ class ShearLedger implements ReadProofSink {
         final sync = pool!.sync;
         if (sync != null && tip > sync.sampledTip) sync.sampledTip = tip;
       }
+      // Login and the accrual tick pass proveChain false. They still have
+      // to fill the unlock clock, or Withdraw stays disabled.
+      await _verifyUnlockClock();
     } catch (_) {}
     if (!proveChain) return;
     try {
       await pool!.followLive().timeout(kWalletTipTimeout);
       final json = await pool!.stats().timeout(const Duration(seconds: 2));
       await _applyStatsTip(json);
+      await _verifyUnlockClock();
     } catch (_) {}
+  }
+
+  /// Fetch the accepted tip's MTP window and recompute headers whose bytes
+  /// changed. The clock turns on only when that tip is fully linked. A raw
+  /// sealed height is not the accepted tip. Short memory leaves the clock off.
+  Future<void> _verifyUnlockClock() async {
+    final client = pool;
+    if (client == null) return;
+    _takeFlyclientAnchors();
+    final tip = _acceptedTip;
+    if (tip < 1) return;
+    if (!shearHashMemoryOk()) return;
+    final heights = unlockClockHeights(tip);
+    if (heights.isEmpty) return;
+    if (_genesisMs == null || _genesisMs! <= 0) {
+      final pinned = await _ingestUnlockHeader(1);
+      if (!pinned || _genesisMs == null || _genesisMs! <= 0) return;
+    }
+    for (final h in heights) {
+      final ok = await _ingestUnlockHeader(h);
+      if (!ok) return;
+    }
+    _advanceVerifiedClock();
+  }
+
+  /// True when [height] is stored and matches the server bytes, or the new
+  /// bytes verified. Unchanged bytes are not hashed again.
+  Future<bool> _ingestUnlockHeader(int height) async {
+    final client = pool;
+    if (client == null) return false;
+    Map<String, dynamic> json;
+    try {
+      json = await client.headerAt(height).timeout(const Duration(seconds: 4));
+    } catch (_) {
+      return false;
+    }
+    final raw = headerFromHex(json['header']?.toString() ?? '');
+    if (raw == null || raw.length != shearHeaderLen) return false;
+    final finger = sha256.convert(raw).toString();
+    final have = _verifiedHeaders[height];
+    if (have != null && have.headerSha256 == finger) return true;
+    if (!shearHashMemoryOk()) return false;
+    final digest = await shearHashV3OffUi(raw);
+    if (digest == null) return false;
+    return noteVerifiedHeader(
+      header: raw,
+      height: height,
+      hashHex: json['hash']?.toString() ?? '',
+      digest: digest,
+    );
   }
 
   Future<double> syncSpendable(String address) async {
@@ -5143,7 +5537,116 @@ class ShearLedger implements ReadProofSink {
     if (!isDestAddress(restFrame) && payKey(restFrame) == restFrame) {
       n += _shownSpendable(restFrame);
     }
+    // Matured lock notes stay on the vault address, which money dests skip.
+    // They are spendable once, and a send of this figure can take them.
+    n += _unlockedVaultLockShe(restFrame);
     return n;
+  }
+
+  String? _ownVaultDest(String restFrame) {
+    final vk = viewSecret;
+    if (vk == null || vk.isEmpty || restFrame.isEmpty) return null;
+    final v = vaultDest(restFrame, viewKey: vk);
+    if (v == null || v.isEmpty) return null;
+    return v;
+  }
+
+  bool _isSpendableVaultLock(Map<String, dynamic> note, String vault) {
+    if (!unlockedOwnVaultLockNote(note, vault: vault, tipMs: _lockClockMs)) return false;
+    return _noteMature(note);
+  }
+
+  double _unlockedVaultLockShe(String restFrame) {
+    final vault = _ownVaultDest(restFrame);
+    if (vault == null) return 0;
+    refreshTimeLockedNotes();
+    var n = 0.0;
+    for (final note in _notes) {
+      if (!_isSpendableVaultLock(note, vault)) continue;
+      n += _noteSheOf(note, 0);
+    }
+    return n;
+  }
+
+  /// Smallest matured vault lock that covers [needShe]. Null when none does.
+  Map<String, dynamic>? _pickUnlockedVaultLock(String restFrame, double needShe) {
+    final vault = _ownVaultDest(restFrame);
+    if (vault == null) return null;
+    refreshTimeLockedNotes();
+    Map<String, dynamic>? best;
+    var bestShe = 0.0;
+    for (final note in _notes) {
+      if (!_isSpendableVaultLock(note, vault)) continue;
+      final she = _noteSheOf(note, 0);
+      if (she + 1e-12 < needShe) continue;
+      if (best == null || she < bestShe) {
+        best = note;
+        bestShe = she;
+      }
+    }
+    return best;
+  }
+
+  bool _hasSpendableVaultLock(String restFrame) {
+    final vault = _ownVaultDest(restFrame);
+    if (vault == null) return false;
+    for (final note in _notes) {
+      if (_isSpendableVaultLock(note, vault)) return true;
+    }
+    return false;
+  }
+
+  void _creditLooseChange(String? dest, double she) {
+    if (dest == null || dest.isEmpty || she <= 1e-18) return;
+    if (_isProgramVaultDest(dest)) return;
+    _spendable[dest] = spendable(dest) + she;
+    rememberDest(dest);
+  }
+
+  /// A bindable dest, or the wallet's own vault when [note] is a matured lock there.
+  bool _isVaultLockSpend(String src, Map<String, dynamic>? note, {String? restFrame}) {
+    if (note == null || restFrame == null) return false;
+    final vault = _ownVaultDest(restFrame);
+    if (vault == null || src != vault) return false;
+    if (note['spent'] == true) {
+      final open = Map<String, dynamic>.from(note);
+      open['spent'] = false;
+      return _isSpendableVaultLock(open, vault);
+    }
+    return _isSpendableVaultLock(note, vault);
+  }
+
+  bool _maySpendVaultLock(
+    String src,
+    Map<String, dynamic>? note, {
+    String? restFrame,
+    String? paymentCode,
+  }) {
+    if (isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) return true;
+    if (note == null || restFrame == null) return false;
+    final vault = _ownVaultDest(restFrame);
+    if (vault == null || src != vault) return false;
+    return _isSpendableVaultLock(note, vault);
+  }
+
+  /// Destinations coin selection may draw on. The reserve vault is included
+  /// only while a matured lock note on that address is spendable.
+  Set<String> selectionDests(String restFrame, {String? paymentCode}) {
+    refreshTimeLockedNotes();
+    final dests = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      dests.add(d);
+      dests.add(payKey(d));
+    }
+    for (final n in _notes) {
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty) continue;
+      if (isBindable(addr, restFrame: restFrame, paymentCode: paymentCode)) dests.add(addr);
+    }
+    final vault = _ownVaultDest(restFrame);
+    if (vault != null && _hasSpendableVaultLock(restFrame)) dests.add(vault);
+    return dests;
   }
 
   /// Vortex Flow figure. One reconstruct input. Exact note nanos win when the
@@ -5163,6 +5666,14 @@ class ShearLedger implements ReadProofSink {
       final exact = noteNanosExact(n);
       if (exact != null) notes.add(exact);
     }
+    final vault = _ownVaultDest(restFrame);
+    if (vault != null) {
+      for (final n in _notes) {
+        if (!_isSpendableVaultLock(n, vault)) continue;
+        final exact = noteNanosExact(n);
+        if (exact != null) notes.add(exact);
+      }
+    }
     return vortexFlowNanos(
       spendableShe: spendableOwned(restFrame, paymentCode: paymentCode),
       exactNotes: notes,
@@ -5173,12 +5684,46 @@ class ShearLedger implements ReadProofSink {
   /// spendable dest. Every other owned ssa1 stays one note and is counted in
   /// that same sum. A young note stays unspendable. Does not invent coins.
   /// Flip lock notes once the tip time has passed their unlock.
-  void refreshTimeLockedNotes() {
-    final tip = tipTimestampMs;
+  /// [nowMs] is the chain clock for a release. The header tip is the default.
+  void refreshTimeLockedNotes({int? nowMs}) {
+    final tip = nowMs ?? _lockClockMs;
     for (final n in _notes) {
       if ((n['kind'] ?? '').toString() != 'lock') continue;
       n['locked'] = lockNoteIsLocked(n, tip);
     }
+  }
+
+  /// A matured time-lock note is the principal. Clear the lock flag once
+  /// [nowMs] (the chain tip) has reached the note's unlock. The on-chain
+  /// address stays the lock address. This does not build a reserve withdraw.
+  int releaseMaturedLockNotes({
+    required String fromDest,
+    required int nowMs,
+    int? unlockAtMs,
+    int? nanos,
+  }) {
+    if (nowMs <= 0) return 0;
+    refreshTimeLockedNotes(nowMs: nowMs);
+    var released = 0;
+    for (final note in _notes) {
+      if ((note['kind'] ?? '').toString() != 'lock') continue;
+      if (note['spent'] == true) continue;
+      final raw = note['unlockAtMs'];
+      final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+      if (at <= 0 || nowMs < at) continue;
+      if (unlockAtMs != null && at != unlockAtMs) continue;
+      final addr = (note['address'] ?? note['dest'])?.toString() ?? '';
+      if (fromDest.isNotEmpty && addr.isNotEmpty && addr != fromDest) continue;
+      if (nanos != null) {
+        final have = note['nanos'];
+        final n = have is num ? have.toInt() : int.tryParse('${have ?? ''}') ?? 0;
+        if (n != nanos) continue;
+      }
+      note['locked'] = false;
+      released += 1;
+      if (nanos != null) break;
+    }
+    return released;
   }
 
   double recheckRestFrameSpendable(String restFrame, {String? paymentCode}) {
@@ -5319,7 +5864,7 @@ class ShearLedger implements ReadProofSink {
       if (at <= 0) continue;
       if (!_noteOnDest(note, key)) continue;
       if (!_noteMature(note)) continue;
-      final open = !lockNoteIsLocked(Map<String, dynamic>.from(note), tipTimestampMs);
+      final open = !lockNoteIsLocked(Map<String, dynamic>.from(note), _lockClockMs);
       if (open != unlocked) continue;
       final she = _noteSheOf(note, 0);
       if (she > 0) n += she;
@@ -5442,7 +5987,7 @@ class ShearLedger implements ReadProofSink {
       if (n['spent'] == true || n['verified'] != true) continue;
       if (!_noteOnDest(n, key)) continue;
       // A time-locked note stays out of Spendable until its epoch ends.
-      if ((n['kind'] ?? '').toString() == 'lock' && lockNoteIsLocked(n, tipTimestampMs)) {
+      if ((n['kind'] ?? '').toString() == 'lock' && lockNoteIsLocked(n, _lockClockMs)) {
         final raw = n['unlockAtMs'];
         final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
         if (at > 0) continue;
@@ -7442,33 +7987,29 @@ class ShearLedger implements ReadProofSink {
     bool memo = false,
     String? needNanos,
   }) async {
-    refreshTimeLockedNotes();
-    final dests = <String>{};
-    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
-      if (!isDestAddress(d)) continue;
-      dests.add(d);
-      dests.add(payKey(d));
-    }
-    for (final n in _notes) {
-      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
-      if (addr.isEmpty) continue;
-      if (isBindable(addr, restFrame: restFrame, paymentCode: paymentCode)) dests.add(addr);
-    }
+    final dests = selectionDests(restFrame, paymentCode: paymentCode);
+    final vault = _ownVaultDest(restFrame);
     // Same length and order as [_notes]. The planner's index is the book index.
+    // A vault-address note that is not a matured lock cannot be selected.
     final snap = <Map<String, dynamic>>[
       for (final n in _notes)
-        {
-          'spent': n['spent'] == true,
-          'locked': n['locked'] == true,
-          'sealed': noteHasSealedSpendBytes(n),
-          'address': (n['address'] ?? n['dest'])?.toString() ?? '',
-          'height': n['height'],
-          'amount': n['amount'],
-          'nanos': n['nanos'],
-          'verifiedNanos': n['verifiedNanos'],
-          'kind': (n['kind'] ?? '').toString(),
-          'unlockAtMs': n['unlockAtMs'],
-        },
+        () {
+          final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+          final openVault = vault != null && addr == vault && _isSpendableVaultLock(n, vault);
+          final hideVault = vault != null && addr == vault && !openVault;
+          return {
+            'spent': n['spent'] == true,
+            'locked': openVault ? false : n['locked'] == true,
+            'sealed': hideVault ? false : noteHasSealedSpendBytes(n),
+            'address': addr,
+            'height': n['height'],
+            'amount': n['amount'],
+            'nanos': n['nanos'],
+            'verifiedNanos': n['verifiedNanos'],
+            'kind': (n['kind'] ?? '').toString(),
+            'unlockAtMs': n['unlockAtMs'],
+          };
+        }(),
     ];
     // flutter_tester's later Isolate.run nulls this closure hook on the
     // caller. The closure captured here survives that, and selection still
@@ -7759,7 +8300,7 @@ class ShearLedger implements ReadProofSink {
     progress?.bump(phase: 'prove', done: done, total: total);
     final posted = postedFlowBody(vin: vin, vout: sealed, proofs: proofs);
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
-    if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
+    if (!_maySpendVaultLock(src, notes.isEmpty ? null : notes.first, restFrame: restFrame, paymentCode: paymentCode)) {
       throw StateError('unspendable_dest');
     }
     final postedVin = List<Map<String, dynamic>>.from(
@@ -8260,6 +8801,15 @@ class ShearLedger implements ReadProofSink {
     Map<String, dynamic>? spent;
     Map<String, dynamic>? chosen;
     var fundedShe = spendable(src);
+    if (sendKind == 'send' && restFrame != null && fundedShe + 1e-12 < needShe) {
+      final vaultNote = _pickUnlockedVaultLock(restFrame, needShe);
+      if (vaultNote != null) {
+        chosen = vaultNote;
+        final addr = (vaultNote['address'] ?? vaultNote['dest'])?.toString() ?? '';
+        if (addr.isNotEmpty) src = addr;
+        fundedShe = _storedNoteShe(vaultNote) ?? _noteSheOf(vaultNote, 0);
+      }
+    }
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local && !paintedCover) {
       // The planner already chose this note off the UI isolate. Do not scan
       // spend tags for every other note.
@@ -8268,6 +8818,8 @@ class ShearLedger implements ReadProofSink {
         final addr = (spendNote['address'] ?? spendNote['dest'])?.toString() ?? '';
         if (addr.isNotEmpty) src = addr;
         fundedShe = _storedNoteShe(spendNote) ?? spendable(src);
+      } else if (_isVaultLockSpend(src, chosen, restFrame: restFrame)) {
+        // The matured vault lock already covers this send.
       } else {
       // Pull the pool note list when the local book has no covering note.
       await _fluxColumns();
@@ -8543,11 +9095,47 @@ class ShearLedger implements ReadProofSink {
       if (boundFee is int && boundFee > 0) reserveFee = boundFee;
       if (built['id'] is String) postedWithdrawId = built['id'] as String;
       if (built['withdrawNonce'] is String) postedWithdrawNonce = built['withdrawNonce'] as String;
+      // The seal vin stays. An FS-1 proof of a covering note is attached
+      // beside it. A missing prover or anchor leaves the proof unset.
+      if (pool != null && !local && spendSeed != null && spendSeed.length == 32) {
+        try {
+          final note = _pickSpendNote(
+            src,
+            needShe <= 0 ? 0 : needShe,
+            spendSeed,
+            amountFallback: spendable(src),
+          );
+          if (note != null) {
+            final spend = await _fs1Spend(
+              notes: [note],
+              sealed: vouts,
+              fee: reserveFee ?? (levy < 0 ? 0 : levy),
+              spendSeed: spendSeed,
+              kind: sendKind,
+            );
+            admitProof = spend.proofs.first;
+            excess = spend.excess;
+            fs1Hex = _bytesHex(spend.fs1);
+            fs1Anchor = spend.anchor;
+          }
+        } on StateError catch (err) {
+          const quiet = <String>{
+            kErrFs1Prover,
+            kErrFs1Anchor,
+            'fluxset',
+            'no_note',
+            'fs1_inputs',
+            'fs1_prove',
+            'send_timeout',
+          };
+          if (!quiet.contains(err.message)) rethrow;
+        }
+      }
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
       if (spendSeed != null && spendSeed.length == 32) {
-        if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
+        if (!_maySpendVaultLock(src, chosen, restFrame: restFrame, paymentCode: paymentCode)) {
           throw StateError('unspendable_dest');
         }
         // Sign the posted C̃-only vin/vout so spendPackDigest matches the server.
@@ -8566,11 +9154,16 @@ class ShearLedger implements ReadProofSink {
     }
     if (pool != null && !local) {
       Future<Map<String, dynamic>> postOnce() async {
-        final wire = await flowPostHexOffUi(<String, dynamic>{
-          'vin': postedVin,
-          'vout': postedVout,
-          'admitProof': admitProof,
-        });
+        // Lock, vote, and withdraw already hexified inside the seal worker.
+        // A second compact drops the vin dest the signature covers.
+        final reserveWire = sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw';
+        final wire = reserveWire
+            ? reserveWireBody(vin: postedVin, vout: postedVout, admitProof: admitProof)
+            : await flowPostHexOffUi(<String, dynamic>{
+                'vin': postedVin,
+                'vout': postedVout,
+                'admitProof': admitProof,
+              });
         final proof = wire['admitProof'];
         return pool!.send(
           from: src,
@@ -8644,6 +9237,7 @@ class ShearLedger implements ReadProofSink {
         throw lastErr ?? StateError('send failed');
       }
       if (sendKind == 'lock') _rememberTimeLock(vouts, destTo);
+      final vaultLockSpend = _isVaultLockSpend(src, chosen, restFrame: restFrame);
       chosen?['spent'] = true;
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
         // The pool balance below is already net. Debit only when Spendable
@@ -8658,7 +9252,10 @@ class ShearLedger implements ReadProofSink {
       // pool's reconstructed leftover whenever change is parked. That figure
       // is the spent output, not the other confirmed notes on this dest.
       // Debit the send from the local sum and park only this note's change.
-      if (sendKind == 'send') {
+      if (vaultLockSpend) {
+        // spendable(vault) is always 0, so the ordinary debit cannot park change.
+        _creditLooseChange(changeDest, fundedShe - needShe);
+      } else if (sendKind == 'send') {
         final left = spendable(src) - needShe;
         _spendable[src] = left <= 1e-18 ? 0 : left;
         final noteChange = fundedShe - needShe;
@@ -8690,11 +9287,16 @@ class ShearLedger implements ReadProofSink {
         memoCt: memoCt ?? raw.memoCt,
         change: changeDest,
       );
+      if (sendKind == 'lock') _stampLockTxId(vouts, tx.id);
       _txs.add(tx);
       return tx;
     }
-    if (sendKind == 'lock') _rememberTimeLock(vouts, destTo);
-    if (sendKind != 'withdraw') {
+    final localId = 'send-${DateTime.now().millisecondsSinceEpoch}';
+    if (sendKind == 'lock') _rememberTimeLock(vouts, destTo, txId: localId);
+    if (_isVaultLockSpend(src, chosen, restFrame: restFrame)) {
+      chosen!['spent'] = true;
+      _creditLooseChange(changeDest, fundedShe - needShe);
+    } else if (sendKind != 'withdraw') {
       final netBook = spendable(src) - needShe;
       _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
@@ -8706,7 +9308,7 @@ class ShearLedger implements ReadProofSink {
       _parkChange(src, changeDest, changeShe: fundedShe - needShe);
     }
     final tx = ShearTx(
-      id: 'send-${DateTime.now().millisecondsSinceEpoch}',
+      id: localId,
       from: src,
       to: destTo,
       amount: amount,
@@ -9297,6 +9899,37 @@ class ShearPoolClient {
   /// Per-portal Reserve stake/idle/accrued. Not a public vortice.
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
+
+  /// Pending mempool rows. Quotes recompute verify-weight from vin and vout.
+  Future<Map<String, dynamic>> mempool() => _get('/api/mempool');
+
+  /// Published epoch reward sets. No view key, no address, no query.
+  Future<Map<String, dynamic>> rewardSets() => _get('/api/vault/rewards');
+
+  /// Post one reward-claim. [fee] is the confirmed integer. It is not re-quoted.
+  Future<Map<String, dynamic>> claimReward({
+    required String to,
+    required Object rho,
+    required String nullifier,
+    required List<dynamic> proof,
+    required List<dynamic> vout,
+    required int fee,
+    String? id,
+  }) {
+    return _post('/api/wallet/send', {
+      'kind': 'reward-claim',
+      'programId': 'shear-reserve-v1',
+      'mint': true,
+      'to': to,
+      'rho': rho,
+      'nullifier': nullifier,
+      'proof': proof,
+      'vin': const <dynamic>[],
+      'vout': vout,
+      'fee': fee,
+      if (id != null && id.isNotEmpty) 'id': id,
+    });
+  }
 }
 
 /// Tip lines the Windows binary prints for `--print-tip`.
@@ -9414,16 +10047,19 @@ Map<String, dynamic> walletSendBody({
     if (admitProof != null) 'admit_proof': admitProof,
     if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
     if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+    if (fs1 != null && fs1.isNotEmpty) 'fs1': fs1,
+    if (anchor != null && anchor > 0) 'anchor': anchor,
     if (id != null && id.isNotEmpty) 'id': id,
     if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
   };
 }
 
-/// Integer nanos as SHE. Eleven protocol digits, no public-frame truncation.
-String exactSheFromNanos(int nanos) {
-  if (nanos <= 0) return '0';
-  final whole = nanos ~/ kUnitsPerShe;
-  final frac = nanos % kUnitsPerShe;
+/// Integer rho as SHE. Eleven protocol digits, no public-frame truncation.
+/// The consensus transaction field stays `nanos`. This helper names the count rho.
+String exactSheFromRho(int rho) {
+  if (rho <= 0) return '0';
+  final whole = rho ~/ kUnitsPerShe;
+  final frac = rho % kUnitsPerShe;
   if (frac == 0) return '$whole';
   var digits = frac.toString().padLeft(11, '0');
   while (digits.endsWith('0')) {
@@ -9432,9 +10068,35 @@ String exactSheFromNanos(int nanos) {
   return '$whole.$digits';
 }
 
+/// Pending rows from GET /api/mempool. Verify-weight is recomputed from
+/// vin and vout. A stated `weight` integer is ignored.
+List<Map<String, dynamic>> mempoolQuoteRows(Map<String, dynamic> json) {
+  final pending = json['pending'];
+  if (pending is! List) return const [];
+  final rows = <Map<String, dynamic>>[];
+  for (final item in pending) {
+    if (item is! Map) continue;
+    final feeRaw = item['fee'];
+    final fee = feeRaw is int ? feeRaw : (feeRaw is num ? feeRaw.toInt() : 0);
+    if (fee <= 0) continue;
+    final kind = item['kind']?.toString() ?? '';
+    rows.add({
+      'fee': fee,
+      if (item['coinbase'] == true || kind == 'coinbase') 'coinbase': true,
+      if (item['vin'] is List) 'vin': item['vin'],
+      if (item['vout'] is List) 'vout': item['vout'],
+      if (kind.isNotEmpty) 'kind': kind,
+      if (item['fs1'] != null && item['fs1'] != '') 'fs1': item['fs1'],
+    });
+  }
+  return rows;
+}
+
 /// Same verify-weight as `txVerifyWeight` in `crypto/block_budget.js`.
+/// A stated `weight` is not read. Coinbase rows are skipped by the quote.
 int _quoteVerifyWeight(Map<String, dynamic> tx) {
-  if (tx['coinbase'] == true) return 0;
+  final kind = tx['kind']?.toString() ?? '';
+  if (tx['coinbase'] == true || kind == 'coinbase') return 0;
   final vin = tx['vin'];
   final vout = tx['vout'];
   final nIn = vin is List ? vin.length : 0;
@@ -9444,7 +10106,6 @@ int _quoteVerifyWeight(Map<String, dynamic> tx) {
     return 2 + (25 + 25 * nIn) + 23 * nOut;
   }
   var w = 2 + 40 * nIn + 23 * nOut;
-  final kind = tx['kind']?.toString() ?? '';
   if (kind == 'lock' || kind == 'vote' || kind == 'withdraw') w += 19;
   return w;
 }
@@ -9478,16 +10139,16 @@ int _claimLevyFloor(Map<String, dynamic> body) {
   final copy = Map<String, dynamic>.from(body);
   copy.remove('fee');
   var fee = levyFromWeight(flowWeight(copy));
-  if (fee > kLevyCapNanos) return kLevyCapNanos;
+  if (fee > kLevyCapRho) return kLevyCapRho;
   copy['fee'] = fee;
   for (var step = 0; step < 8; step++) {
     final need = levyFromWeight(flowWeight(copy));
     if (need <= fee) return fee;
-    if (need > kLevyCapNanos) return fee;
+    if (need > kLevyCapRho) return fee;
     fee = need;
     copy['fee'] = fee;
   }
-  return fee > kLevyCapNanos ? kLevyCapNanos : fee;
+  return fee > kLevyCapRho ? kLevyCapRho : fee;
 }
 
 int _feeAtRate(int peerFee, int peerWeight, int claimWeight) {
@@ -9532,10 +10193,10 @@ Map<String, dynamic> rewardClaimFeePresets({
     var fee = raw;
     var capped = false;
     if (fee < floor) fee = floor;
-    if (fee > kLevyCapNanos) {
-      fee = kLevyCapNanos;
+    if (fee > kLevyCapRho) {
+      fee = kLevyCapRho;
       capped = true;
-    } else if (raw > kLevyCapNanos) {
+    } else if (raw > kLevyCapRho) {
       capped = true;
     }
     return (fee: fee, capped: capped);
@@ -9556,7 +10217,7 @@ Map<String, dynamic> rewardClaimFeePresets({
         'id': labels[i][0],
         'label': labels[i][1],
         'fee': picks[i].fee,
-        'she': exactSheFromNanos(picks[i].fee),
+        'she': exactSheFromRho(picks[i].fee),
         'capped': picks[i].capped,
       },
   ];
@@ -9564,12 +10225,12 @@ Map<String, dynamic> rewardClaimFeePresets({
   if (custom == null) {
     customRow = {'id': 'custom', 'label': 'Custom', 'fee': null, 'she': null, 'ok': true};
   } else {
-    final legal = custom >= floor && custom <= kLevyCapNanos;
+    final legal = custom >= floor && custom <= kLevyCapRho;
     customRow = {
       'id': 'custom',
       'label': 'Custom',
       'fee': custom < 0 ? null : custom,
-      'she': custom < 0 ? null : exactSheFromNanos(custom),
+      'she': custom < 0 ? null : exactSheFromRho(custom),
       'ok': legal,
       if (!legal) 'reason': 'levy',
     };
@@ -9578,7 +10239,7 @@ Map<String, dynamic> rewardClaimFeePresets({
     'weight': weight < 1 ? 1 : weight,
     'bytes': bytes,
     'floor': floor,
-    'cap': kLevyCapNanos,
+    'cap': kLevyCapRho,
     'presets': presets,
     'custom': customRow,
   };
@@ -9588,10 +10249,9 @@ Map<String, dynamic> rewardClaimFeePresets({
 /// Each preset's `she` is the exact cost. [fee] is the custom bid.
 /// [preset] `low`, `medium`, or `high` selects that quote for the tx.
 /// A legal custom bid wins over [preset]. The weight floor is the default.
-/// Continuum does not render these buttons yet.
 Map<String, dynamic> rewardClaimSendBody({
   required String to,
-  required Object nanos,
+  required Object rho,
   required String nullifier,
   required List<dynamic> proof,
   required List<dynamic> vout,
@@ -9605,7 +10265,7 @@ Map<String, dynamic> rewardClaimSendBody({
     'programId': 'shear-reserve-v1',
     'mint': true,
     'to': to,
-    'nanos': nanos,
+    'rho': rho,
     'nullifier': nullifier,
     'proof': proof,
     'vin': const <dynamic>[],

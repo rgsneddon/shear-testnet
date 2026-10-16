@@ -54,15 +54,28 @@ void main() {
         contains('android.permission.INTERNET'));
   });
 
-  test('android floor is API 29, arm64-only, 16 KiB pages', () {
+  test('android floor is API 29 and every shipped ABI has a hash library script', () {
     final gradle = File('android/app/build.gradle.kts').readAsStringSync();
     final script = File('../crypto/native/build-android-arm64.sh').readAsStringSync();
+    final hash = File('../crypto/native/build-shearhash-android.sh').readAsStringSync();
     expect(gradle, contains('minSdk = 29'));
     expect(gradle.contains('flutter.minSdkVersion'), isFalse);
+    expect(gradle, contains('abiFilters.add("armeabi-v7a")'));
     expect(gradle, contains('abiFilters.add("arm64-v8a")'));
-    expect(gradle, contains('lib/armeabi-v7a/**'));
-    expect(gradle, contains('lib/x86_64/**'));
+    expect(gradle, contains('abiFilters.add("x86")'));
+    expect(gradle, contains('abiFilters.add("x86_64")'));
+    expect(gradle.contains('lib/armeabi-v7a/**'), isFalse);
+    expect(hash, contains('armeabi-v7a'));
+    expect(hash, contains('arm64-v8a'));
+    expect(hash, contains('x86_64'));
+    expect(gradle, contains('useLegacyPackaging = true'));
     expect(script, contains('SHEAR_ANDROID_API:-29'));
+    expect(File('../crypto/native/check_shearhash_android_pins.py').existsSync(), isTrue);
+    expect(File('../wallet/lib/shear_hash_pin.dart').existsSync() || File('lib/shear_hash_pin.dart').existsSync(), isTrue);
+    final pinSrc = File('lib/shear_hash_pin.dart').readAsStringSync();
+    expect(pinSrc, contains('SHEAR_HASH_SHA256_ANDROID'));
+    expect(pinSrc, contains('armeabi-v7a'));
+    expect(pinSrc, contains('x86_64'));
     expect(script, contains('max-page-size=16384'));
     expect(script.contains('--features admit-v3'), isFalse);
     expect(elfArm64Page16k(_elfFixture(machine: 183, align: 16384)), isTrue);
@@ -87,14 +100,32 @@ void main() {
     final apk = _apk();
     for (final so in found) {
       final rel = so.path.replaceAll('\\', '/');
-      expect(rel.contains('/arm64-v8a/'), isTrue, reason: rel);
-      expect(rel.contains('/armeabi'), isFalse, reason: rel);
-      expect(rel.contains('/x86'), isFalse, reason: rel);
-      expect(elfArm64Page16k(so.readAsBytesSync()), isTrue, reason: rel);
-      if (so.path.endsWith('libshear_admit.so')) {
+      final bytes = so.readAsBytesSync();
+      if (rel.endsWith('/libshearhash.so')) {
+        expect(
+          rel.contains('/armeabi-v7a/') ||
+              rel.contains('/arm64-v8a/') ||
+              rel.contains('/x86/') ||
+              rel.contains('/x86_64/'),
+          isTrue,
+          reason: rel,
+        );
         final pin = File('${so.path}.sha256');
         expect(pin.existsSync(), isTrue, reason: '${so.path}.sha256 missing');
-        expect(pin.readAsStringSync().trim(), _sha256(so.readAsBytesSync()), reason: so.path);
+        expect(pin.readAsStringSync().trim(), _sha256(bytes), reason: so.path);
+        if (rel.contains('/arm64-v8a/')) {
+          expect(elfArm64Page16k(bytes), isTrue, reason: rel);
+        }
+      } else {
+        expect(rel.contains('/arm64-v8a/'), isTrue, reason: rel);
+        expect(rel.contains('/armeabi'), isFalse, reason: rel);
+        expect(rel.contains('/x86'), isFalse, reason: rel);
+        expect(elfArm64Page16k(bytes), isTrue, reason: rel);
+        if (so.path.endsWith('libshear_admit.so')) {
+          final pin = File('${so.path}.sha256');
+          expect(pin.existsSync(), isTrue, reason: '${so.path}.sha256 missing');
+          expect(pin.readAsStringSync().trim(), _sha256(bytes), reason: so.path);
+        }
       }
     }
     if (found.isNotEmpty) {
@@ -106,7 +137,20 @@ void main() {
     final names = listed.stdout.toString().split('\n').where((l) => l.endsWith('.so')).toList();
     expect(names.any((n) => n == 'lib/arm64-v8a/libshear_admit.so'), isTrue, reason: names.join('\n'));
     expect(names.any((n) => n == 'lib/arm64-v8a/libsodium.so'), isTrue, reason: names.join('\n'));
-    expect(names.every((n) => n.startsWith('lib/arm64-v8a/')), isTrue, reason: names.join('\n'));
+    for (final n in names) {
+      if (n.endsWith('/libshearhash.so')) {
+        expect(
+          n == 'lib/armeabi-v7a/libshearhash.so' ||
+              n == 'lib/arm64-v8a/libshearhash.so' ||
+              n == 'lib/x86/libshearhash.so' ||
+              n == 'lib/x86_64/libshearhash.so',
+          isTrue,
+          reason: n,
+        );
+      } else {
+        expect(n.startsWith('lib/arm64-v8a/'), isTrue, reason: n);
+      }
+    }
   });
 }
 

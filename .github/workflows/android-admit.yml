@@ -70,6 +70,17 @@ jobs:
           echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
       - name: Build arm64 libshear_admit.so
         run: bash crypto/native/build-android-arm64.sh
+      - name: Build libshearhash.so for every shipped ABI
+        run: |
+          set -euo pipefail
+          bash crypto/native/build-shearhash-android.sh
+          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            test -f "wallet/android/app/src/main/jniLibs/$abi/libshearhash.so"
+            test -f "wallet/android/app/src/main/jniLibs/$abi/libshearhash.so.sha256"
+          done
+          python3 crypto/native/check_shearhash_android_pins.py --jni wallet/android/app/src/main/jniLibs
+          DEFINE="$(python3 crypto/native/stamp_shearhash_pin.py --android-define wallet/android/app/src/main/jniLibs)"
+          python3 crypto/native/check_shearhash_android_pins.py --jni wallet/android/app/src/main/jniLibs --define "$DEFINE"
       - name: nm the Android admit library
         run: |
           set -euo pipefail

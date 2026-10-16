@@ -869,6 +869,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       final she = double.parse(amt);
       final from = dest;
       final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
+      final unlockAt = clock == null ? null : clock + kReserveEpochMs;
       final tx = await ledger.sendSpendableSum(
         from: from,
         to: dest,
@@ -882,9 +883,17 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         currentEpoch: clock == null ? null : reserve.currentEpoch,
         epochStartMs: clock,
         lockEpoch: clock == null ? null : reserve.currentEpoch,
-        unlockAtMs: clock == null ? null : clock + kReserveEpochMs,
+        unlockAtMs: unlockAt,
       );
-      reserve.deposit(dest: dest, she: she, nowMs: now);
+      final verified = ledger.verifiedMedianTimeMs ?? 0;
+      if (verified > 0) reserve.reanchorVerifiedClock(verified);
+      reserve.deposit(
+        dest: dest,
+        she: she,
+        nowMs: verified,
+        noteIsPrincipal: true,
+        sealedUnlockAtMs: unlockAt,
+      );
       session.rememberedReserve = _portalSnap(reserve, dest, now);
       await session.persist();
       out.writeln(flags.json ? jsonEncode({'ok': true, 'id': tx.id, 'kind': 'lock'}) : 'lock  id=${tx.id}');

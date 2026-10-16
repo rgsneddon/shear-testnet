@@ -103,6 +103,7 @@ jobs:
           cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native
+          test -f crypto/native/libshearhash.so
           python3 node/pack/zip_node.py linux
           test -f dist/shear-node-v17-linux.zip
           test ! -f dist/shear-node-v17-fedora.zip
@@ -245,6 +246,7 @@ jobs:
           cmake -S crypto/randomx -B crypto/randomx/build
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native -j"$(nproc)"
+          test -f crypto/native/libshearhash.so
           test -f crypto/native/shearhash.node
           test -f crypto/native/shearadmit.node
           file crypto/native/shearhash.node

@@ -5,48 +5,52 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_closure.dart';
 import 'package:shear_wallet/shear_hash.dart';
+import 'package:shear_wallet/shear_hash_v3.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_session.dart';
 
-String _le(int value, int bytes) {
-  final b = Uint8List(bytes);
-  var n = value;
-  for (var i = 0; i < bytes; i++) {
-    b[i] = n & 0xff;
-    n >>= 8;
-  }
-  return b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
-}
-
-/// 24 leading zero bits. Under a 17-bit target, over a zero-work header.
-String _digest(int n) => '000000${n.toRadixString(16).padLeft(58, 'a')}'.substring(0, 64);
-
-String _header({required String prev, int bits = 17 * 65536, int timestamp = 1700000000000}) {
-  final hex = _le(1, 4) +
-      prev.padLeft(64, '0') +
-      ('11' * 32) +
-      ('22' * 32) +
-      _le(timestamp, 8) +
-      _le(bits, 4) +
-      _le(1, 8) +
-      _le(1, 8);
-  if (hex.length != 256) throw StateError('header ${hex.length}');
-  return hex;
-}
-
 class _Chain {
-  _Chain(this.tip) {
-    var prev = '00' * 32;
+  _Chain._(this.tip);
+
+  /// Parent-linked headers. Each digest is ShearHash-v3 and meets bits=1.
+  /// The JSON hash field is not that digest.
+  static _Chain mine(int tip) {
+    stageBundledShearHashForTest(
+      '${Directory.current.path}/../crypto/native/libshearhash.so',
+    );
+    expect(shearHashV3Ready, isTrue, reason: 'bundled libshearhash.so');
+    final chain = _Chain._(tip);
+    var prev = Uint8List(32);
     for (var h = 1; h <= tip; h++) {
-      headers[h] = _header(prev: prev);
-      hashes[h] = _digest(h);
-      prev = hashes[h]!;
+      final header = Uint8List(shearHeaderLen);
+      header[0] = 1;
+      header.setRange(4, 36, prev);
+      var ts = 1700000000000;
+      for (var i = 0; i < 8; i++) {
+        header[100 + i] = ts & 0xff;
+        ts >>= 8;
+      }
+      header[108] = 1;
+      Uint8List? digest;
+      for (var n = 0; n < 64; n++) {
+        shearSetNonce(header, n);
+        final got = shearHashV3(header);
+        if (got != null && shearMeetsTarget(got, 1)) {
+          digest = got;
+          break;
+        }
+      }
+      expect(digest, isNotNull, reason: 'flyclient header $h');
+      chain.headers[h] = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      chain.hashes[h] = 'ff' * 32;
+      prev = digest!;
     }
+    return chain;
   }
 
-  final int tip;
+  int tip;
   final headers = <int, String>{};
   final hashes = <int, String>{};
 }
@@ -106,8 +110,9 @@ void main() {
   });
 
   test('Connect bare samples the heaviest honest tip and does not read notes', () async {
-    final good = _Chain(6);
-    final tall = _Chain(20);
+    final good = _Chain.mine(6);
+    final tall = _Chain.mine(1);
+    tall.tip = 20;
     tall.headers[1] = good.headers[1]!;
     tall.hashes[1] = good.hashes[1]!;
     final paths = <String>[];

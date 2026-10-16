@@ -67,9 +67,12 @@ describe('android native libs', () => {
     const script = fs.readFileSync(path.join(root, 'crypto/native/build-android-arm64.sh'), 'utf8');
     assert.match(gradle, /minSdk = 29/);
     assert.doesNotMatch(gradle, /flutter\.minSdkVersion/);
+    assert.match(gradle, /abiFilters\.add\("armeabi-v7a"\)/);
     assert.match(gradle, /abiFilters\.add\("arm64-v8a"\)/);
-    assert.match(gradle, /lib\/armeabi-v7a\/\*\*/);
-    assert.match(gradle, /lib\/x86_64\/\*\*/);
+    assert.match(gradle, /abiFilters\.add\("x86"\)/);
+    assert.match(gradle, /abiFilters\.add\("x86_64"\)/);
+    assert.match(gradle, /build-shearhash-android\.sh/);
+    assert.doesNotMatch(gradle, /lib\/armeabi-v7a\/\*\*/);
     assert.match(script, /SHEAR_ANDROID_API:-29/);
     assert.match(script, /max-page-size=16384/);
     assert.match(script, /jniLibs\/arm64-v8a/);
@@ -94,18 +97,28 @@ describe('android native libs', () => {
       path.join(root, 'wallet/../dist/shear-wallet-0.48-android.apk'),
     ];
     const apk = apkCandidates.find((p) => fs.existsSync(p));
+    const hashAbis = ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'];
     for (const so of sos) {
       const rel = so.replaceAll('\\', '/');
-      assert.equal(rel.includes('/arm64-v8a/'), true, rel);
-      assert.equal(rel.includes('/armeabi'), false, rel);
-      assert.equal(rel.includes('/x86'), false, rel);
       const bytes = fs.readFileSync(so);
-      assert.equal(elfArm64Page16k(bytes), true, rel);
-      if (so.endsWith('libshear_admit.so')) {
+      if (rel.endsWith('/libshearhash.so')) {
+        assert.equal(hashAbis.some((abi) => rel.includes(`/${abi}/`)), true, rel);
         assert.equal(fs.existsSync(so + '.sha256'), true, `${so}.sha256 missing`);
         const want = fs.readFileSync(so + '.sha256', 'utf8').trim();
         const got = crypto.createHash('sha256').update(bytes).digest('hex');
         assert.equal(got, want, rel);
+        if (rel.includes('/arm64-v8a/')) assert.equal(elfArm64Page16k(bytes), true, rel);
+      } else {
+        assert.equal(rel.includes('/arm64-v8a/'), true, rel);
+        assert.equal(rel.includes('/armeabi'), false, rel);
+        assert.equal(rel.includes('/x86'), false, rel);
+        assert.equal(elfArm64Page16k(bytes), true, rel);
+        if (so.endsWith('libshear_admit.so')) {
+          assert.equal(fs.existsSync(so + '.sha256'), true, `${so}.sha256 missing`);
+          const want = fs.readFileSync(so + '.sha256', 'utf8').trim();
+          const got = crypto.createHash('sha256').update(bytes).digest('hex');
+          assert.equal(got, want, rel);
+        }
       }
     }
     if (sos.length > 0) {
@@ -117,7 +130,11 @@ describe('android native libs', () => {
     assert.equal(names.includes('lib/arm64-v8a/libshear_admit.so'), true, names.join('\n'));
     assert.equal(names.includes('lib/arm64-v8a/libsodium.so'), true, names.join('\n'));
     for (const name of names) {
-      assert.equal(name.startsWith('lib/arm64-v8a/'), true, name);
+      if (name.endsWith('/libshearhash.so')) {
+        assert.equal(hashAbis.some((abi) => name === `lib/${abi}/libshearhash.so`), true, name);
+      } else {
+        assert.equal(name.startsWith('lib/arm64-v8a/'), true, name);
+      }
     }
   });
 });

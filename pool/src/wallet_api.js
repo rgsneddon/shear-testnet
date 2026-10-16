@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums, publishedRewardSets } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1013,6 +1013,30 @@ function memoTxWeight(m) {
   return txWeight({ vouts, memoChunks: memo, bFlag });
 }
 
+/** Structural stubs a wallet re-weighs. The stated weight integer is not the quote. */
+function quoteStructure(m) {
+  const shape = {};
+  if (Array.isArray(m?.vin) && m.vin.length) shape.vin = m.vin.map(() => ({}));
+  if (Array.isArray(m?.vout) && m.vout.length) shape.vout = m.vout.map(() => ({}));
+  if (m?.coinbase === true || String(m?.kind || '') === 'coinbase') shape.coinbase = true;
+  if (m?.fs1 != null && m.fs1 !== '') shape.fs1 = '1';
+  return shape;
+}
+
+function carriesViewKey(url, body) {
+  if (url?.searchParams) {
+    for (const key of url.searchParams.keys()) {
+      if (String(key).toLowerCase() === 'viewkey') return true;
+    }
+  }
+  if (body && typeof body === 'object') {
+    for (const key of Object.keys(body)) {
+      if (String(key).toLowerCase() === 'viewkey') return true;
+    }
+  }
+  return false;
+}
+
 function publicHashTag(login) {
   const dest = String(login || '').trim().split('.')[0];
   const hex = createHash('sha256')
@@ -1084,6 +1108,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       kind: t.kind || 'send',
       fee: Number(t.fee || 0),
       weight,
+      ...quoteStructure(t),
     });
   }
   const rawPending = Array.isArray(opts.networkPending)
@@ -1099,6 +1124,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       kind: m.kind || 'send',
       fee,
       weight,
+      ...quoteStructure(m),
       prime: m.kind === 'b-spend' || m.kind === 'send' || m.kind === 'claim',
       included,
       priority: (included ? 400 : 0) + mass,
@@ -1113,6 +1139,10 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       kind: row.kind,
       fee: row.fee,
       weight: row.weight,
+      ...(Array.isArray(row.vin) ? { vin: row.vin } : {}),
+      ...(Array.isArray(row.vout) ? { vout: row.vout } : {}),
+      ...(row.coinbase === true ? { coinbase: true } : {}),
+      ...(row.fs1 != null && row.fs1 !== '' ? { fs1: row.fs1 } : {}),
       prime: row.kind === 'b-spend' || row.kind === 'send' || row.kind === 'claim',
       included: true,
       priority: 400 + mass,
@@ -1318,13 +1348,26 @@ function sealedSendOnly(body, { queueSend }) {
  * carries: required, at least the weight levy, and at most the levy cap.
  * The mempool orders it by fee rate. The whole fee is paid to miners.
  */
-function queuedRewardClaim(body, { queueSend }) {
+function claimNullifierTaken(store, nullifier) {
+  const id = String(nullifier || '').toLowerCase();
+  if (!id) return false;
+  const minted = store?.reserveVault?.mintedIds;
+  if (minted && minted[id]) return true;
+  const mem = Array.isArray(store?.mempool) ? store.mempool : [];
+  return mem.some((tx) => {
+    if (!tx || tx.coinbase) return false;
+    const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+    return kind === 'reward-claim' && String(tx.nullifier || '').toLowerCase() === id;
+  });
+}
+
+function queuedRewardClaim(body, { queueSend, store }) {
   if (String(body.programId || '') !== RESERVE_PROGRAM) {
     return { status: 400, json: { ok: false, reason: 'bad_kind' } };
   }
   const to = String(body.to || '').trim();
   if (!isDestAddress(to)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
-  const nanos = parseIntegerNanos(body.nanos);
+  const nanos = parseIntegerNanos(body.rho != null ? body.rho : body.nanos);
   if (nanos == null || nanos <= 0n) return { status: 400, json: { ok: false, reason: 'bad_send' } };
   const nullifier = String(body.nullifier || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(nullifier)) return { status: 400, json: { ok: false, reason: 'bad_send' } };
@@ -1332,6 +1375,9 @@ function queuedRewardClaim(body, { queueSend }) {
   const vout = Array.isArray(body.vout) ? body.vout.filter((o) => o && typeof o === 'object') : [];
   if (!vout.length || String(vout[0].kind || '') !== 'reward-claim') {
     return { status: 400, json: { ok: false, reason: 'bad_send' } };
+  }
+  if (claimNullifierTaken(store, nullifier)) {
+    return { status: 400, json: { ok: false, reason: 'double_mint' } };
   }
   const fee = parseIntegerNanos(body.fee);
   if (fee == null) return { status: 400, json: { ok: false, reason: 'bad_send' } };
@@ -1432,6 +1478,22 @@ export function parseSendNanos(body) {
     return { ok: true, nanos: n };
   }
   return { ok: true, nanos: null };
+}
+
+/** Proof fields the wallet posts on lock, vote, and withdraw. The draft
+ * keeps lockTx's vin. Replacing that vin would drop the dest the signature covers. */
+export function reserveAdmitCarry(body) {
+  const out = {};
+  if (body && body.admit_proof) {
+    out.admit_proof = body.admit_proof;
+    const tag = body.spendTag || body.admit_proof.spendTag;
+    if (tag) out.spendTag = tag;
+  }
+  if (Array.isArray(body?.admit_proofs) && body.admit_proofs.length) out.admit_proofs = body.admit_proofs;
+  if (body?.fs1) out.fs1 = body.fs1;
+  if (body?.anchor != null && body.anchor !== '') out.anchor = body.anchor;
+  if (body?.excess) out.excess = body.excess;
+  return out;
 }
 
 export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
@@ -1601,7 +1663,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return sealedSendOnly(body, { queueSend });
     }
     if (String(body.kind || '') === 'reward-claim') {
-      return queuedRewardClaim(body, { queueSend });
+      return queuedRewardClaim(body, { queueSend, store });
     }
     const from = isDestAddress(String(body.from || '')) ? String(body.from).trim() : '';
     const rawTo = String(body.to || '').trim();
@@ -1703,6 +1765,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         return { status: 400, json: { ok: false, reason: 'kt10_nonce' } };
       }
     }
+    const admitCarry = reserveAdmitCarry(body);
     const draft = isLock
       ? {
         ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
@@ -1712,6 +1775,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         spendPub: body.spendPub,
         amount,
         ...(postedVout.length ? { vout: postedVout } : {}),
+        ...admitCarry,
       }
       : isVote
         ? {
@@ -1722,6 +1786,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           spendPub: body.spendPub,
           payer: from,
           ...(postedVout.length ? { vout: postedVout } : {}),
+          ...admitCarry,
         }
         : isWithdraw
         ? {
@@ -1737,6 +1802,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           spendPub: body.spendPub,
           amount,
           ...(postedVout.length ? { vout: postedVout } : {}),
+          ...admitCarry,
         }
         : {
           kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, ephPub,
@@ -1798,6 +1864,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         log: submitLine,
       },
     };
+  }
+  if ((path === '/api/vault/claims' || path === '/api/vault/rewards') && (verb === 'POST' || verb === 'GET')) {
+    if (carriesViewKey(url, body)) {
+      return { status: 400, json: { ok: false, reason: 'view_key' } };
+    }
+    const vault = store?.reserveVault;
+    if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
+    return { status: 200, json: publishedRewardSets(vault) };
   }
   if (path === '/api/vault/reserve' && verb === 'GET') {
     const dest = url.searchParams.get('dest') || '';

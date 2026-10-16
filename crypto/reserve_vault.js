@@ -306,6 +306,64 @@ export function rewardClaimProof(state, nullifierHex) {
   return merkleProof(leaves, index);
 }
 
+/** Unclaimed archived reward nanos for one portal. Minted nullifiers are spent. */
+export function portalClaimableNanos(state, destOrId) {
+  const id = portalKey(destOrId);
+  if (!id || !state?.rewardBook) return 0;
+  const minted = state.mintedIds || {};
+  let sum = 0;
+  for (const [nullifier, row] of Object.entries(state.rewardBook)) {
+    if (!row || String(row.portalId || '') !== id) continue;
+    if (minted[nullifier]) continue;
+    const n = Math.floor(Number(row.nanos) || 0);
+    if (n > 0 && Number.isSafeInteger(sum + n)) sum += n;
+  }
+  return sum;
+}
+
+function rootHex(value) {
+  if (typeof value === 'string') return value.toLowerCase();
+  if (Buffer.isBuffer(value)) return value.toString('hex');
+  if (value instanceof Uint8Array) return Buffer.from(value).toString('hex');
+  return '';
+}
+
+/**
+ * Every archived epoch reward set, in stored leaf order.
+ * A wallet scans these leaves locally. The response has no view key,
+ * no portal id, no lock dest, and no sealed payout.
+ * Spent leaves stay in the list so the published root still matches.
+ */
+export function publishedRewardSets(state) {
+  const book = state?.rewardSets || {};
+  const roots = state?.rewardRoots || {};
+  const minted = state?.mintedIds || {};
+  const sets = [];
+  for (const key of Object.keys(book).sort()) {
+    const rows = book[key];
+    if (!Array.isArray(rows) || rows.length === 0) continue;
+    const root = rootHex(roots[key]);
+    if (!/^[0-9a-f]{64}$/.test(root)) continue;
+    const leaves = [];
+    let dropped = false;
+    for (const row of rows) {
+      const nullifier = String(row?.nullifier || '').toLowerCase();
+      const rho = Math.floor(Number(row?.nanos ?? row?.rho) || 0);
+      if (!/^[0-9a-f]{64}$/.test(nullifier) || !(rho > 0)) {
+        dropped = true;
+        break;
+      }
+      const leaf = { nullifier, rho };
+      if (minted[nullifier]) leaf.spent = true;
+      leaves.push(leaf);
+    }
+    if (dropped || leaves.length !== rows.length) continue;
+    sets.push({ root, leaves });
+  }
+  sets.sort((a, b) => (a.root < b.root ? -1 : a.root > b.root ? 1 : 0));
+  return { ok: true, sets };
+}
+
 /** Packed EVM proof. Side 0 is a right sibling, side 1 is a left sibling. */
 export function packRewardProof(proof) {
   const steps = Array.isArray(proof) ? proof : [];
@@ -1372,6 +1430,7 @@ export function portalRewards(state, dest, nowMs) {
   const p = portalOf(state, dest);
   const bps = Number(state.epochBps ?? GENESIS_BPS);
   const elapsed = elapsedMs(state, nowMs);
+  const claimable = portalClaimableNanos(state, dest);
   return {
     accrued: accruedNanos(p.staked, bps, elapsed, state.magic),
     projected: reserveInterestNanos(p.staked, bps),
@@ -1380,6 +1439,8 @@ export function portalRewards(state, dest, nowMs) {
     oracleBps: bps,
     epochBps: bps,
     elapsedMs: elapsed,
+    claimable,
+    claimableRewards: claimable,
   };
 }
 

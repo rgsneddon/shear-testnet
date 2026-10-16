@@ -8,6 +8,12 @@ sheark-miner/*.dll
 sheark-miner/ShearK-Miner-mainnet
 sheark-miner/dist/
 crypto/native/shearhash.node
+crypto/native/libshearhash.so
+crypto/native/libshearhash.so.sha256
+crypto/native/libshearhash.dll.sha256
+crypto/native/libshearhash.dylib
+crypto/native/libshearhash.dylib.sha256
+crypto/randomx/build-android-*/
 crypto/native/*.dll
 crypto/native/shearadmit.node
 crypto/native/*.node

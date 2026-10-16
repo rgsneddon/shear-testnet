@@ -28,15 +28,17 @@ jobs:
       - name: Linux deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsodium-dev libsecret-1-dev libjsoncpp-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config g++ libgtk-3-dev liblzma-dev libstdc++-12-dev libsodium-dev libsecret-1-dev libjsoncpp-dev
       - name: Build Linux GUI
         working-directory: wallet
         run: |
           flutter config --enable-linux-desktop
           flutter pub get
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          bash ../crypto/native/build-shearhash-wallet.sh
           DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
-          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
+          HASH="$(python3 ../crypto/native/stamp_shearhash_pin.py --define ../crypto/native/libshearhash.so)"
+          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE $HASH
       - name: Bundle libsodium and zip linux + arch
         env:
           PIN: ${{ inputs.pin }}
@@ -96,6 +98,8 @@ jobs:
                       sys.exit(f"miner/PE inside wallet zip: {n}")
               if not any("libsodium.so" in n for n in names):
                   sys.exit(f"libsodium missing in {path}")
+              if not any(n.endswith("lib/libshearhash.so") or n.endswith("libshearhash.so") for n in names):
+                  sys.exit(f"libshearhash.so missing in {path}")
               if arch:
                   if "PKGBUILD" not in names:
                       sys.exit(f"missing PKGBUILD in {path}")

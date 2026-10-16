@@ -7,7 +7,7 @@ import { isDestAddress, encodeDest } from '../../crypto/address.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { networkReport } from './network_report.js';
 import { oracleView } from './oracle_feed.js';
-import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
+import { cloneVault, portalRewards, publicVaultView, publishedRewardSets } from '../../crypto/reserve_vault.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { keyedFetchRejected, syncVerdict, witnessRouteBanned } from './fs1_sync.js';
@@ -380,6 +380,16 @@ export function createRpc({
       const vault = store.reserveVault || null;
       return { ok: true, ...oracleView(vault, store.oracleSnapshot, Date.now()) };
     }
+    if (m === 'getvaultclaims' || m === 'vaultclaims' || m === 'api/vault/claims'
+      || m === 'getvaultrewards' || m === 'api/vault/rewards') {
+      const named = params && typeof params === 'object'
+        ? Object.keys(params).some((key) => String(key).toLowerCase() === 'viewkey')
+        : false;
+      if (named) return { ok: false, reason: 'view_key' };
+      const vault = store?.reserveVault;
+      if (!vault) return { ok: false, reason: 'no_vault' };
+      return publishedRewardSets(vault);
+    }
     if (m === 'getreserve' || m === 'reserve') {
       const vault = store.reserveVault;
       if (!vault) return { ok: false, reason: 'no_reserve' };
@@ -499,6 +509,30 @@ export function createRpc({
     }
     if (req.method === 'GET' && (url.pathname === '/reserve' || url.pathname === '/getreserve' || url.pathname === '/api/reserve')) {
       json(res, 200, dispatch('getreserve', Object.fromEntries(url.searchParams)));
+      return;
+    }
+    if ((req.method === 'GET' || req.method === 'POST') && (
+      url.pathname === '/api/vault/claims' || url.pathname === '/vaultclaims'
+      || url.pathname === '/api/vault/rewards' || url.pathname === '/vaultrewards'
+    )) {
+      let posted = {};
+      if (req.method === 'POST') {
+        try {
+          posted = postedJson(await readBody(req, HTTP_BODY_MAX));
+        } catch (err) {
+          const reason = err?.code === 'body_cap' ? 'body_cap' : (err?.code === 'json_cap' ? 'json_cap' : 'bad_json');
+          json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
+          return;
+        }
+      }
+      const params = {
+        ...Object.fromEntries(url.searchParams),
+        ...posted,
+        ...(posted.params && typeof posted.params === 'object' ? posted.params : {}),
+      };
+      const out = dispatch('getvaultclaims', params);
+      const status = out?.ok === false ? (out.reason === 'no_vault' ? 503 : 400) : 200;
+      json(res, status, out);
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/wallet/send') {

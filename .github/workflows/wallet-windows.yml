@@ -32,8 +32,10 @@ jobs:
           flutter config --enable-windows-desktop
           flutter pub get
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          powershell -ExecutionPolicy Bypass -File ../crypto/native/build-shearhash-windows.ps1
           $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
-          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} $define
+          $hash = (python ../crypto/native/stamp_shearhash_pin.py --define ../crypto/native/libshearhash.dll).Trim()
+          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} $define $hash
       - name: Zip
         run: python wallet/pack/zip_windows.py
       - name: Attach to GitHub release

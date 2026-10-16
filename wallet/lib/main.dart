@@ -254,6 +254,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool _flowSendOk = false;
   bool _flowSending = false;
   bool _reserveVoteBusy = false;
+  bool _claimBusy = false;
 
   /// In-flight Flow send. Plate tests read the Cancel flag from here.
   bool get debugFlowSending => _flowSending;
@@ -1805,6 +1806,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         _flyGenesis = sync.flyclientGenesis;
       });
       if (sync.flyclientOk && !disagree && sync.flyclientTip > 0) {
+        unawaited(ledger.refreshUnlockClock().then((_) {
+          if (!mounted) return;
+          _reanchorReserveClock();
+          setState(() {});
+        }));
         final beforeTip = ledger.sealedHeight;
         if (sync.flyclientTip > ledger.sealedHeight) {
           ledger.noteLiveHeight(sync.flyclientTip);
@@ -3675,14 +3681,248 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
+  void _claimSnack(BuildContext context, String text) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  List<dynamic> _claimVoutOf(Map<String, dynamic> row) {
+    final v = row['vout'];
+    if (v is List) return v;
+    if (v is Map) return [Map<String, dynamic>.from(v)];
+    return const [];
+  }
+
+  bool _claimPayeeIsOurs(Map<String, dynamic> row, String ours) {
+    if (ours.isEmpty) return false;
+    final vout = _claimVoutOf(row);
+    if (vout.isEmpty || vout.first is! Map) return false;
+    final note = Map<String, dynamic>.from(vout.first as Map);
+    return note['address']?.toString() == ours && note['portalId'] == null;
+  }
+
+  Future<String?> _pickClaimFee(
+    BuildContext context, {
+    required List<Map<String, dynamic>> presets,
+    required int rows,
+  }) {
+    var preset = 'medium';
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          Map<String, dynamic> chosen = presets.first;
+          for (final row in presets) {
+            if (row['id'] == preset) chosen = row;
+          }
+          final fee = chosen['fee'] is int ? chosen['fee'] as int : 0;
+          final total = exactSheFromRho(fee * rows);
+          return AlertDialog(
+            key: const Key('reserve-claim-confirm'),
+            title: const Text('Confirm reward claim'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '100% of the fee goes to the miner. A higher fee confirms sooner.',
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final raw in presets)
+                      ChoiceChip(
+                        key: Key('claim-fee-${raw['id']}'),
+                        label: Text(
+                          '${raw['label']}  ${raw['she']} SHE',
+                          key: Key('claim-fee-she-${raw['id']}'),
+                        ),
+                        selected: preset == raw['id'],
+                        onSelected: (_) => setLocal(() => preset = '${raw['id']}'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text('Total $total SHE', key: const Key('reserve-claim-total')),
+              ],
+            ),
+            actions: [
+              TextButton(
+                key: const Key('reserve-claim-cancel'),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                key: const Key('reserve-claim-accept'),
+                onPressed: () => Navigator.pop(ctx, preset),
+                child: const Text('Claim'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<bool> _confirmOutlierFee(BuildContext context, String she) async {
+    final go = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('reserve-claim-outlier'),
+        title: const Text('High fee'),
+        content: Text('This fee is more than four times the low bid ($she SHE).'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('reserve-claim-outlier-accept'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Pay this fee'),
+          ),
+        ],
+      ),
+    );
+    return go == true;
+  }
+
+  Future<void> _reserveClaim(BuildContext context, ShearIdentity ident) async {
+    if (!claimSingleSubmit(held: _claimBusy)) return;
+    final pool = ledger.pool;
+    final dest = _reserveDestOf(ident);
+    if (pool == null || dest == null || dest.isEmpty) return;
+    if (reserve.portal(dest).claimableRewards <= 0) return;
+    _claimBusy = true;
+    if (mounted) setState(() {});
+    try {
+      final to = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
+      final published = await pool.rewardSets();
+      if (!mounted) return;
+      if (published['ok'] == false) {
+        _claimSnack(context, 'Claim was not queued (${published['reason'] ?? 'refused'})');
+        return;
+      }
+      final sets = published['sets'];
+      final built = await scanRewardClaimsOffUi({
+        'viewKey': ident.viewKey,
+        'address': ident.address,
+        'payee': to,
+        'epochs': reserve.rewardScanEpochs(),
+        'sets': sets is List ? sets : const <dynamic>[],
+        'spendSeed': hexToBytes(ident.seedHex),
+      });
+      if (!mounted) return;
+      final stamp = (built['isolateStamp'] ?? '').toString();
+      debugReserveOffIsolateStamp = stamp;
+      if (stamp.isNotEmpty) debugReserveIsolateRuns += 1;
+      if (stamp.isEmpty || stamp == reserveIsolateStamp || built['ok'] != true) {
+        _claimSnack(context, 'Claim was not queued (${built['reason'] ?? 'refused'})');
+        return;
+      }
+      final rows = <Map<String, dynamic>>[];
+      final rawRows = built['rows'];
+      if (rawRows is List) {
+        for (final item in rawRows) {
+          if (item is Map) rows.add(Map<String, dynamic>.from(item));
+        }
+      }
+      if (rows.isEmpty || rows.any((row) => !_claimPayeeIsOurs(row, to))) {
+        _claimSnack(context, 'Claim was not queued (${rows.isEmpty ? 'empty' : 'payee'})');
+        return;
+      }
+      final quoted = mempoolQuoteRows(await pool.mempool());
+      if (!mounted) return;
+      final first = rows.first;
+      final quote = rewardClaimFeePresets(
+        body: {
+          'kind': 'reward-claim',
+          'programId': kReserveProgram,
+          'mint': true,
+          'to': to,
+          'rho': first['rho'],
+          'nullifier': first['nullifier'],
+          'proof': first['proof'] is List ? first['proof'] : const <dynamic>[],
+          'vin': const <dynamic>[],
+          'vout': _claimVoutOf(first),
+        },
+        mempool: quoted,
+      );
+      final presets = <Map<String, dynamic>>[
+        for (final raw in (quote['presets'] as List? ?? const <dynamic>[]))
+          if (raw is Map) Map<String, dynamic>.from(raw),
+      ];
+      if (presets.isEmpty || !context.mounted) {
+        _claimSnack(context, 'Claim was not queued (empty)');
+        return;
+      }
+      final picked = await _pickClaimFee(context, presets: presets, rows: rows.length);
+      if (picked == null || !mounted) return;
+      Map<String, dynamic> chosen = presets.first;
+      for (final row in presets) {
+        if (row['id'] == picked) chosen = row;
+      }
+      final fee = chosen['fee'];
+      if (fee is! int || fee <= 0) {
+        _claimSnack(context, 'Claim was not queued (empty)');
+        return;
+      }
+      final lowRaw = presets.first['fee'];
+      final lowFee = lowRaw is int ? lowRaw : 0;
+      if (lowFee > 0 && fee > 4 * lowFee) {
+        if (!context.mounted) return;
+        final she = chosen['she']?.toString() ?? exactSheFromRho(fee);
+        final outlier = await _confirmOutlierFee(context, she);
+        if (!outlier || !mounted) return;
+      }
+      final total = fee * rows.length;
+      if (!spendableCoversLevy(
+        ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+        total,
+      )) {
+        _claimSnack(context, 'Not enough Continuum spendable for claim fee ${exactSheFromRho(total)} SHE');
+        return;
+      }
+      for (final row in rows) {
+        if (!_claimPayeeIsOurs(row, to)) {
+          _claimSnack(context, 'Claim was not queued (payee)');
+          return;
+        }
+        final posted = await pool.claimReward(
+          to: to,
+          rho: row['rho'] ?? 0,
+          nullifier: row['nullifier']?.toString() ?? '',
+          proof: row['proof'] is List ? List<dynamic>.from(row['proof'] as List) : const [],
+          vout: _claimVoutOf(row),
+          fee: fee,
+        );
+        if (posted['ok'] != true) {
+          _claimSnack(context, 'Claim was not queued (${posted['reason'] ?? 'refused'})');
+          return;
+        }
+      }
+      await _syncVaults(ident);
+      if (mounted) setState(() {});
+      _claimSnack(context, 'Claim submitted');
+    } catch (_) {
+      _claimSnack(context, 'Claim was not queued (refused)');
+    } finally {
+      _claimBusy = false;
+      if (mounted) setState(() {});
+    }
+  }
+
   Future<void> _reserveWithdraw(BuildContext context, ShearIdentity ident) async {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
     final to = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final p0 = dest.isNotEmpty ? reserve.portal(dest) : null;
-    final canPrev = (p0?.claimableRewards ?? 0) > 0;
-    if (!reserve.epochIsOver(now) && !canPrev) {
+    final now = ledger.verifiedMedianTimeMs;
+    final matured = (dest.isNotEmpty && now != null) ? reserve.maturedPrincipalNanos(dest, now) : 0;
+    if (now == null || matured <= 0) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(reserveEpochStillOpenCopy())),
@@ -3712,6 +3952,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
+    final chain = ledger.pool != null && !widget.skipPoolSync;
     final posted = await postReserveWithdraw(
       ledger,
       reserve: reserve,
@@ -3722,7 +3963,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       local: ledger.pool == null || widget.skipPoolSync,
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
+      settleLocal: !chain,
     );
+    if (posted != null && chain) await _syncVaults(ident);
     if (posted == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3735,6 +3978,49 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Withdraw submitted — tx ${posted.tx.id}')),
+      );
+    }
+  }
+
+  /// Time-lock principal is the lock note. Unlock that note once the chain
+  /// tip shows its epoch has ended. Do not post a reserve withdraw.
+  Future<void> _reserveWithdrawTimeLock(
+    BuildContext context,
+    ShearIdentity ident,
+    ReserveDepositRow row,
+  ) async {
+    final dest = _reserveDestOf(ident);
+    if (dest == null || !row.noteIsPrincipal) return;
+    final now = ledger.verifiedMedianTimeMs;
+    final unlock = reserve.depositUnlockAtMs(row);
+    if (now == null || unlock <= 0 || now < unlock) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
+    final released = ledger.releaseMaturedLockNotes(
+      fromDest: dest,
+      nowMs: now,
+      unlockAtMs: unlock,
+      nanos: row.nanos,
+    );
+    if (released <= 0) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+        );
+      }
+      return;
+    }
+    reserve.releaseTimeLockPrincipal(dest: dest, nowMs: now, onlyAtMs: row.atMs);
+    if (ledger.pool != null && !widget.skipPoolSync) await _syncVaults(ident);
+    if (mounted) setState(() {});
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Principal is spendable')),
       );
     }
   }
@@ -3867,7 +4153,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (mounted) setState(() => _reserveVoteDraft = choice);
   }
 
+  void _reanchorReserveClock() {
+    final verified = ledger.verifiedMedianTimeMs;
+    if (verified != null && verified > 0) {
+      reserve.reanchorVerifiedClock(verified);
+    }
+  }
+
   List<Widget> _reservePane(BuildContext context, ShearIdentity ident) {
+    _reanchorReserveClock();
     final dest = _reserveDestOf(ident) ?? '';
     final p = dest.isEmpty ? ReservePortal() : reserve.portal(dest);
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -3981,18 +4275,38 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               const Text('Your deposits', style: TextStyle(fontWeight: FontWeight.w600)),
               SizedBox(
                 key: const Key('reserve-deposits-scroll'),
-                height: kDepositRowHeight * 2,
+                height: (p.deposits.any((d) => d.noteIsPrincipal) ? 48.0 : kDepositRowHeight) * 2,
                 child: ListView.builder(
                   controller: _depositsScroll,
                   primary: false,
                   physics: const AlwaysScrollableScrollPhysics(),
-                  itemExtent: kDepositRowHeight,
+                  itemExtent: p.deposits.any((d) => d.noteIsPrincipal) ? 48.0 : kDepositRowHeight,
                   itemCount: p.deposits.length,
                   itemBuilder: (context, i) {
                     final d = p.deposits.reversed.elementAt(i);
-                    return Text(
-                      '${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}',
+                    final when = DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first;
+                    final label = '${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  $when';
+                    if (!d.noteIsPrincipal) {
+                      return Text(label, key: Key('reserve-deposit-$i'));
+                    }
+                    final tip = ledger.verifiedMedianTimeMs;
+                    final unlock = reserve.depositUnlockAtMs(d);
+                    final open = tip != null && unlock > 0 && tip >= unlock;
+                    return Row(
                       key: Key('reserve-deposit-$i'),
+                      children: [
+                        Expanded(child: Text(label, overflow: TextOverflow.ellipsis)),
+                        TextButton(
+                          key: Key('reserve-deposit-withdraw-$i'),
+                          onPressed: open ? () => _reserveWithdrawTimeLock(context, ident, d) : null,
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                          child: Text(open ? 'Withdraw' : kReserveUnlocksAtEpochEnd),
+                        ),
+                      ],
                     );
                   },
                 ),
@@ -4023,26 +4337,42 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               key: Key('reserve-ip-disclaimer'),
             ),
             const SizedBox(height: 8),
-            if (p.claimableRewards > 0)
-              Text(
-                'Fee ${formatShe(rewardClaimFee() / kUnitsPerShe)} SHE',
-                key: const Key('reserve-claim-fee'),
-              ),
             Wrap(spacing: 8, runSpacing: 8, children: [
               FilledButton(
                 key: const Key('reserve-send'),
                 onPressed: _reserveSendReady ? () => _reserveSend(context, ident) : null,
                 child: const Text('Deposit sum'),
               ),
-              if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0)
+              if (reserve.legacyWithdrawVisible(dest))
                 FilledButton(
                   key: const Key('reserve-withdraw'),
-                  onPressed: () => _reserveWithdraw(context, ident),
-                  child: Text(p.claimableRewards > 0 && !reserve.epochIsOver(now)
-                      ? 'Withdraw previous-epoch rewards'
-                      : 'Withdraw to Continuum'),
+                  onPressed: (ledger.verifiedMedianTimeMs != null &&
+                          reserve.maturedPrincipalNanos(dest, ledger.verifiedMedianTimeMs!) > 0)
+                      ? () => _reserveWithdraw(context, ident)
+                      : null,
+                  child: Text((ledger.verifiedMedianTimeMs != null &&
+                          reserve.maturedPrincipalNanos(dest, ledger.verifiedMedianTimeMs!) > 0)
+                      ? 'Withdraw to Continuum'
+                      : kReserveUnlocksAtEpochEnd),
                 ),
             ]),
+            if (p.claimableRewards > 0) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Claim is a mempool bid. 100% of the fee goes to the miner. A higher fee confirms sooner.',
+                key: Key('reserve-claim-fee-note'),
+              ),
+              if (_claimBusy) ...[
+                const SizedBox(height: 8),
+                const Text('Building claim…', key: Key('reserve-claim-progress')),
+              ],
+              const SizedBox(height: 8),
+              FilledButton(
+                key: const Key('reserve-claim'),
+                onPressed: _claimBusy ? null : () => _reserveClaim(context, ident),
+                child: const Text('Claim rewards'),
+              ),
+            ],
     ], key: const Key('reserve-yours-box'));
     final overall = _panel(context, [
             Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w700)),
@@ -4178,7 +4508,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             textAlign: TextAlign.justify,
           ),
           Text(
-            'Previous-epoch rewards  ${formatShe(p.claimableRewards / kUnitsPerShe)} SHE  ·  withdrawable now',
+            'Previous-epoch rewards  ${exactSheFromRho(p.claimableRewards)} SHE  ·  claim in the mempool',
             textAlign: TextAlign.justify,
           ),
           Text(

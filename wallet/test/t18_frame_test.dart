@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 
@@ -8,6 +9,7 @@ import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_session.dart';
 
 /// Progress and Cancel while a send is in flight. The crypto isolate stamps
@@ -265,6 +267,113 @@ void main() {
     expect(firstAdded <= slack, isTrue, reason: 'first frame at 2000 notes added $firstAdded us');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  testWidgets('T18 reward claim still draws while the scan isolate is in flight', (tester) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final gate = Completer<void>();
+    addTearDown(() {
+      if (!gate.isCompleted) gate.complete();
+    });
+    late HttpServer server;
+    late ShearSession session;
+    late ShearLedger ledger;
+    await tester.runAsync(() async {
+      final dir = Directory.systemTemp.createTempSync('t18-claim-');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      session = ShearSession(store: File('${dir.path}/session.json'));
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+      final ident = session.identity!;
+      final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+      final leaves = <Map<String, dynamic>>[
+        {'nullifier': withdrawMintId(portalIdFromDest(dest), 1), 'rho': 42},
+      ];
+      final sets = [
+        {'root': rewardSetRoot(leaves), 'leaves': leaves},
+      ];
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) async {
+        try {
+          if (req.uri.path == '/api/vault/rewards') {
+            await gate.future;
+            req.response.headers.contentType = ContentType.json;
+            req.response.write(jsonEncode({'ok': true, 'sets': sets}));
+          } else if (req.uri.path == '/api/mempool') {
+            req.response.headers.contentType = ContentType.json;
+            req.response.write(jsonEncode({
+              'ok': true,
+              'pending': [
+                {'id': 'a', 'fee': 1000, 'weight': 999, 'kind': 'send', 'vin': <dynamic>[], 'vout': <dynamic>[{}]},
+              ],
+            }));
+          } else {
+            req.response.headers.contentType = ContentType.json;
+            req.response.write('{"ok":true}');
+          }
+        } finally {
+          await req.response.close();
+        }
+      });
+      ledger = ShearLedger(
+        pool: ShearPoolClient(
+          baseUrl: 'http://127.0.0.1:${server.port}',
+          http: _realHttp(),
+        ),
+      );
+    });
+    addTearDown(() => server.close(force: true));
+    final ident = session.identity!;
+    final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
+    final vault = ShearReserve()..currentEpoch = 1;
+    vault.portal(dest).claimableRewards = 42;
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      reserve: vault,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-claim')));
+    await tester.tap(find.byKey(const Key('reserve-claim')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-claim-progress')), findsOneWidget);
+    expect(find.byKey(const Key('claim-fee-low')), findsNothing);
+    for (var i = 0; i < kSendHoldFrames; i++) {
+      var drew = false;
+      tester.binding.addPostFrameCallback((_) => drew = true);
+      final sw = Stopwatch()..start();
+      await tester.pump();
+      sw.stop();
+      expect(drew, isTrue, reason: 'frame $i');
+      expect(sw.elapsed < kSendFrameHang, isTrue, reason: 'frame $i ${sw.elapsedMicroseconds}');
+      expect(find.byKey(const Key('reserve-claim-progress')), findsOneWidget);
+    }
+    if (!gate.isCompleted) gate.complete();
+    final end = DateTime.now().add(const Duration(seconds: 20));
+    while (find.byKey(const Key('reserve-claim-confirm')).evaluate().isEmpty && DateTime.now().isBefore(end)) {
+      await tester.pump();
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+    }
+    expect(find.byKey(const Key('reserve-claim-confirm')), findsOneWidget);
+    expect(debugReserveOffIsolateStamp, isNotEmpty);
+    expect(debugReserveOffIsolateStamp, isNot(reserveIsolateStamp));
+    await tester.tap(find.byKey(const Key('reserve-claim-cancel')));
+    await tester.pump();
+    ledger.pool?.close();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
   test('a send book stays inside a per-note memory ceiling', () async {
     final counts = <int>[
       1,
@@ -332,6 +441,13 @@ Future<int> _timedPump(WidgetTester tester) async {
   sw.stop();
   return sw.elapsedMicroseconds;
 }
+
+HttpClient _realHttp() {
+  return _PassthroughHttpOverrides().createHttpClient(null)
+    ..connectionTimeout = const Duration(seconds: 30);
+}
+
+class _PassthroughHttpOverrides extends HttpOverrides {}
 
 class _HoldSendPool extends ShearPoolClient {
   _HoldSendPool()

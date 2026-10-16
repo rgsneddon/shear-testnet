@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_admit.dart';
+import 'shear_ctf.dart';
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_levy.dart';
@@ -53,6 +56,9 @@ int reserveDayOfEpoch({
 String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
 
+/// Shown on the withdraw control while this deposit's own lock epoch is open.
+const kReserveUnlocksAtEpochEnd = 'unlocks at epoch end';
+
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
     'Return principal and the Reserve reward for this $days-day epoch to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
 
@@ -84,15 +90,16 @@ VortexSums reconstructVortexSums(ShearReserve reserve, String dest, {int flowNan
 }
 
 /// Payout a withdraw would post, without mutating the reserve.
+/// Principal is only the deposits whose own lock epoch has ended.
 int reserveWithdrawPayoutNanos(ShearReserve reserve, String dest, int nowMs) {
-  final epochOver = reserve.epochIsOver(nowMs);
   final p = reserve.portal(dest);
-  if (!epochOver && p.claimableRewards <= 0) return 0;
-  final principal = (epochOver || reserve.bonusEnacted) ? p.nanos : 0;
-  final interest = epochOver
+  final principal = reserve.maturedPrincipalNanos(dest, nowMs);
+  if (principal <= 0) return 0;
+  final epochOver = reserve.epochIsOver(nowMs);
+  final full = p.nanos > 0 && principal == p.nanos;
+  final interest = epochOver && full
       ? (p.claimableRewards > 0 ? p.claimableRewards : reserveInterestNanos(p.staked, reserve.epochBps))
-      : p.claimableRewards;
-  if (principal <= 0 && interest <= 0) return 0;
+      : 0;
   if (!extraMintAllowed(kReserveProgram)) return 0;
   return principal + interest;
 }
@@ -109,6 +116,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   String? restFrame,
   String? paymentCode,
   bool allowPublicHttp = false,
+  bool settleLocal = true,
 }) async {
   final nanos = reserveWithdrawPayoutNanos(reserve, dest, nowMs);
   if (nanos <= 0) return null;
@@ -130,6 +138,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
     nanosWire: nanos.toString(),
   );
   if (tx.kind != 'withdraw') return null;
+  if (!settleLocal) return (tx: tx, settled: <String, int>{});
   final settled = reserve.withdraw(dest: dest, nowMs: nowMs, payout: payout);
   if (settled == null) return null;
   return (tx: tx, settled: settled);
@@ -193,11 +202,230 @@ String portalIdFromDest(String dest) {
   return sha256.convert(utf8.encode('shear-portal-v1') + utf8.encode(dest)).toString();
 }
 
+/// Same preimage as `withdrawMintId` in crypto/reserve_vault.js.
+String withdrawMintId(String portalId, int epoch) {
+  return sha256.convert([
+    ...utf8.encode(kReserveProgram),
+    ...utf8.encode(portalId),
+    ...utf8.encode('$epoch'),
+    ...utf8.encode('withdraw'),
+  ]).toString();
+}
+
+Uint8List _shaParts(List<int> a, [List<int>? b]) {
+  final buf = BytesBuilder(copy: false);
+  buf.add(a);
+  if (b != null) buf.add(b);
+  return Uint8List.fromList(sha256.convert(buf.toBytes()).bytes);
+}
+
+String _hexBytes(List<int> bytes) {
+  final out = StringBuffer();
+  for (final b in bytes) {
+    out.write(b.toRadixString(16).padLeft(2, '0'));
+  }
+  return out.toString();
+}
+
+Uint8List? _hexTo32(String hex) {
+  final s = hex.trim().toLowerCase();
+  if (s.length != 64) return null;
+  final out = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    final n = int.tryParse(s.substring(i * 2, i * 2 + 2), radix: 16);
+    if (n == null) return null;
+    out[i] = n;
+  }
+  return out;
+}
+
+/// Leaf over one reward. The preimage is the nullifier and the rho amount.
+Uint8List rewardLeafBytes(String nullifierHex, int rho) {
+  final id = _hexTo32(nullifierHex);
+  if (id == null || rho <= 0) return Uint8List(0);
+  final n = ByteData(8)..setUint64(0, rho, Endian.little);
+  return _shaParts([
+    ...utf8.encode('shear-reward-leaf-v1'),
+    ...id,
+    ...n.buffer.asUint8List(),
+  ]);
+}
+
+Uint8List rewardMerkleRoot(List<Uint8List> leaves) {
+  if (leaves.isEmpty) {
+    return Uint8List.fromList(sha256.convert(utf8.encode('shear-empty-root-v1')).bytes);
+  }
+  var layer = <Uint8List>[
+    for (final leaf in leaves)
+      leaf.length == 32 ? leaf : Uint8List.fromList(sha256.convert(leaf).bytes),
+  ];
+  while (layer.length > 1) {
+    final next = <Uint8List>[];
+    for (var i = 0; i < layer.length; i += 2) {
+      final a = layer[i];
+      final b = i + 1 < layer.length ? layer[i + 1] : a;
+      next.add(_shaParts(a, b));
+    }
+    layer = next;
+  }
+  return layer.first;
+}
+
+List<Map<String, String>> rewardMerkleProof(List<Uint8List> leaves, int index) {
+  if (leaves.isEmpty || index < 0 || index >= leaves.length) return const [];
+  var layer = <Uint8List>[
+    for (final leaf in leaves)
+      leaf.length == 32 ? leaf : Uint8List.fromList(sha256.convert(leaf).bytes),
+  ];
+  var idx = index;
+  final proof = <Map<String, String>>[];
+  while (layer.length > 1) {
+    final pair = idx ^ 1;
+    final sibling = pair < layer.length ? layer[pair] : layer[idx];
+    proof.add({'side': idx.isEven ? 'R' : 'L', 'hash': _hexBytes(sibling)});
+    final next = <Uint8List>[];
+    for (var i = 0; i < layer.length; i += 2) {
+      final a = layer[i];
+      final b = i + 1 < layer.length ? layer[i + 1] : a;
+      next.add(_shaParts(a, b));
+    }
+    layer = next;
+    idx ~/= 2;
+  }
+  return proof;
+}
+
+/// Root over published `{nullifier, rho}` leaves, in that order.
+String rewardSetRoot(List<Map<String, dynamic>> leaves) {
+  final bytes = <Uint8List>[];
+  for (final leaf in leaves) {
+    final rhoRaw = leaf['rho'];
+    final rho = rhoRaw is int ? rhoRaw : (rhoRaw is num ? rhoRaw.toInt() : int.tryParse('$rhoRaw') ?? 0);
+    final hashed = rewardLeafBytes('${leaf['nullifier']}', rho);
+    if (hashed.isEmpty) return '';
+    bytes.add(hashed);
+  }
+  return _hexBytes(rewardMerkleRoot(bytes));
+}
+
+/// Scan published reward sets and seal this vault's own claims.
+/// Production calls this only from [Isolate.run]. The view key never leaves
+/// this map, and the returned rows do not carry it.
+Map<String, dynamic> buildRewardClaimsWire(Map<String, dynamic> input) {
+  final viewKey = (input['viewKey'] as String?) ?? '';
+  final address = (input['address'] as String?) ?? '';
+  final payee = (input['payee'] as String?) ?? '';
+  final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
+  final epochs = <int>[
+    for (final raw in (input['epochs'] as List? ?? const <dynamic>[]))
+      if (raw is int) raw else if (raw is num) raw.toInt(),
+  ];
+  final lock = viewKey.isEmpty ? null : vaultDest(address, viewKey: viewKey);
+  if (payee.isEmpty || lock == null || payee == lock || spendSeed == null || spendSeed.length != 32) {
+    return {'ok': false, 'reason': 'payee', 'rows': const <Map<String, dynamic>>[], 'isolateStamp': reserveIsolateStamp};
+  }
+  final portalId = portalIdFromDest(lock);
+  final mine = <String>{
+    for (final epoch in epochs) withdrawMintId(portalId, epoch),
+  };
+  final rows = <Map<String, dynamic>>[];
+  final sets = input['sets'];
+  if (sets is List) {
+    for (final raw in sets) {
+      if (raw is! Map) continue;
+      final root = (raw['root'] ?? '').toString().toLowerCase();
+      final leavesRaw = raw['leaves'];
+      if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(root) || leavesRaw is! List || leavesRaw.isEmpty) {
+        continue;
+      }
+      final leaves = <Uint8List>[];
+      final metas = <Map<String, dynamic>>[];
+      var bad = false;
+      for (final leaf in leavesRaw) {
+        if (leaf is! Map) {
+          bad = true;
+          break;
+        }
+        final id = (leaf['nullifier'] ?? '').toString().toLowerCase();
+        final rhoRaw = leaf['rho'];
+        final rho = rhoRaw is int ? rhoRaw : (rhoRaw is num ? rhoRaw.toInt() : int.tryParse('$rhoRaw') ?? 0);
+        final hashed = rewardLeafBytes(id, rho);
+        if (hashed.isEmpty) {
+          bad = true;
+          break;
+        }
+        leaves.add(hashed);
+        metas.add({
+          'nullifier': id,
+          'rho': rho,
+          'spent': leaf['spent'] == true,
+        });
+      }
+      if (bad || leaves.length != leavesRaw.length) continue;
+      if (_hexBytes(rewardMerkleRoot(leaves)) != root) continue;
+      for (var i = 0; i < metas.length; i++) {
+        final meta = metas[i];
+        if (meta['spent'] == true) continue;
+        if (!mine.contains(meta['nullifier'])) continue;
+        final sealed = sealedReserveVout(payee, meta['rho'] as int, 'reward-claim');
+        sealed.remove('portalId');
+        if (sealed['commit'] is! Uint8List || sealed['address']?.toString() != payee) {
+          return {
+            'ok': false,
+            'reason': 'payee',
+            'rows': const <Map<String, dynamic>>[],
+            'isolateStamp': reserveIsolateStamp,
+          };
+        }
+        final note = attachAdmitPub(sealed, spendSeed: spendSeed);
+        note.remove('portalId');
+        if (note['address']?.toString() != payee) {
+          return {
+            'ok': false,
+            'reason': 'payee',
+            'rows': const <Map<String, dynamic>>[],
+            'isolateStamp': reserveIsolateStamp,
+          };
+        }
+        rows.add({
+          'rho': meta['rho'],
+          'nullifier': meta['nullifier'],
+          'proof': rewardMerkleProof(leaves, i),
+          'vout': note,
+        });
+      }
+    }
+  }
+  return {
+    'ok': true,
+    'rows': rows,
+    'isolateStamp': reserveIsolateStamp,
+  };
+}
+
+/// Reward scan and seal. Always [Isolate.run], off the UI isolate.
+Future<Map<String, dynamic>> scanRewardClaimsOffUi(Map<String, dynamic> input) {
+  return Isolate.run(() => buildRewardClaimsWire(input));
+}
+
 class ReserveDepositRow {
-  ReserveDepositRow({required this.nanos, required this.atMs, this.txid});
+  ReserveDepositRow({
+    required this.nanos,
+    required this.atMs,
+    this.txid,
+    this.noteIsPrincipal = false,
+    this.epoch = 0,
+    this.unlockAtMs = 0,
+  });
   final int nanos;
   final int atMs;
   final String? txid;
+  /// The lock output is the principal. A reserve withdraw would pay it again.
+  final bool noteIsPrincipal;
+  /// Chain epoch that contains [atMs]. 0 until the chain clock assigns one.
+  final int epoch;
+  /// End of [epoch]. 0 until the chain clock assigns one.
+  final int unlockAtMs;
 }
 
 class ReserveEpochRow {
@@ -282,6 +510,192 @@ class ShearReserve {
   bool epochIsOver(int nowMs) =>
       epochStartMs != 0 && nowMs >= epochStartMs + kReserveEpochMs;
 
+  /// End of the chain epoch that contains [d]. Every deposit on a pinned
+  /// chain clock belongs to one epoch and unlocks at that epoch's end.
+  int depositUnlockAtMs(ReserveDepositRow d) {
+    if (d.unlockAtMs > 0) return d.unlockAtMs;
+    return chainEpochOf(d.atMs).unlockAtMs;
+  }
+
+  /// Earliest chain epoch start this vault has been shown. Later epochs are
+  /// this instant plus whole epoch lengths.
+  int get chainGenesisMs {
+    var g = 0;
+    for (final e in epochs) {
+      if (e.startMs > 0 && (g == 0 || e.startMs < g)) g = e.startMs;
+    }
+    if (g == 0 && epochStartMs > 0) return epochStartMs;
+    return g;
+  }
+
+  int get _genesisEpochNumber {
+    ReserveEpochRow? earliest;
+    for (final e in epochs) {
+      if (e.startMs <= 0) continue;
+      if (earliest == null || e.startMs < earliest.startMs) earliest = e;
+    }
+    if (earliest != null && earliest.epoch >= 1) return earliest.epoch;
+    if (epochStartMs > 0 && currentEpoch >= 1) return currentEpoch;
+    return 1;
+  }
+
+  /// Chain epoch containing [atMs], and the instant that epoch ends.
+  /// No pinned clock means no assignment.
+  ({int epoch, int unlockAtMs}) chainEpochOf(int atMs) {
+    if (atMs <= 0) return (epoch: 0, unlockAtMs: 0);
+    for (final e in uniqueEpochs) {
+      if (atMs >= e.startMs && atMs < e.endMs) {
+        return (epoch: e.epoch, unlockAtMs: e.endMs);
+      }
+    }
+    if (epochStartMs > 0 && atMs >= epochStartMs && atMs < epochStartMs + kReserveEpochMs) {
+      final epoch = currentEpoch < 1 ? 1 : currentEpoch;
+      return (epoch: epoch, unlockAtMs: epochStartMs + kReserveEpochMs);
+    }
+    final genesis = chainGenesisMs;
+    if (genesis <= 0 || atMs < genesis) return (epoch: 0, unlockAtMs: 0);
+    final index = (atMs - genesis) ~/ kReserveEpochMs;
+    return (
+      epoch: _genesisEpochNumber + index,
+      unlockAtMs: genesis + (index + 1) * kReserveEpochMs,
+    );
+  }
+
+  void _noteEpoch(int epoch, int endMs) {
+    if (epoch < 1 || endMs <= kReserveEpochMs) return;
+    if (epochs.any((e) => e.epoch == epoch)) return;
+    epochs.add(ReserveEpochRow(
+      epoch: epoch,
+      startMs: endMs - kReserveEpochMs,
+      endMs: endMs,
+    ));
+  }
+
+  /// Stamp each deposit with the chain epoch that contains its time.
+  void _assignOpenDeposits() {
+    for (final p in portals.values) {
+      for (var i = 0; i < p.deposits.length; i++) {
+        final d = p.deposits[i];
+        if (d.unlockAtMs > 0) continue;
+        final hit = chainEpochOf(d.atMs);
+        if (hit.unlockAtMs <= 0) continue;
+        _noteEpoch(hit.epoch, hit.unlockAtMs);
+        p.deposits[i] = ReserveDepositRow(
+          nanos: d.nanos,
+          atMs: d.atMs,
+          txid: d.txid,
+          noteIsPrincipal: d.noteIsPrincipal,
+          epoch: hit.epoch,
+          unlockAtMs: hit.unlockAtMs,
+        );
+      }
+    }
+  }
+
+  /// Epochs whose reward nullifiers this vault should try. Epoch 1 is always
+  /// included so a first-epoch reward is findable before the clock advances.
+  List<int> rewardScanEpochs() {
+    final out = <int>[];
+    final seen = <int>{};
+    void add(int epoch) {
+      if (epoch >= 1 && seen.add(epoch)) out.add(epoch);
+    }
+    final cap = currentEpoch < 1 ? 1 : currentEpoch;
+    for (var epoch = 1; epoch <= cap; epoch++) {
+      add(epoch);
+    }
+    for (final row in uniqueEpochs) {
+      add(row.epoch);
+    }
+    if (out.isEmpty) add(1);
+    return out;
+  }
+
+  /// Legacy principal a reserve withdraw may pay. A deposit with no row list
+  /// is the whole balance once the open epoch has ended. Time-lock rows are
+  /// the note itself and are not part of this sum. [nowMs] is the chain tip.
+  int maturedPrincipalNanos(String dest, int nowMs) {
+    if (nowMs <= 0) return 0;
+    final p = portal(dest);
+    if (p.deposits.isEmpty) return epochIsOver(nowMs) ? p.nanos : 0;
+    var sum = 0;
+    for (final d in p.deposits) {
+      if (d.noteIsPrincipal) continue;
+      final unlock = depositUnlockAtMs(d);
+      if (unlock > 0 && nowMs >= unlock) sum += d.nanos;
+    }
+    if (sum < 0) return 0;
+    if (sum > p.nanos) return p.nanos;
+    return sum;
+  }
+
+  /// True when this portal still has a reserve-withdraw (not a time-lock note).
+  bool legacyWithdrawVisible(String dest) {
+    final p = portal(dest);
+    if (p.nanos <= 0) return false;
+    if (p.deposits.isEmpty) return true;
+    return p.deposits.any((d) => !d.noteIsPrincipal);
+  }
+
+  /// Matured deposits whose lock output is the principal note.
+  /// [nowMs] is the chain tip. No tip means nothing has matured.
+  int maturedTimeLockNanos(String dest, int nowMs) {
+    if (nowMs <= 0) return 0;
+    final p = portal(dest);
+    var sum = 0;
+    for (final d in p.deposits) {
+      if (!d.noteIsPrincipal) continue;
+      final unlock = depositUnlockAtMs(d);
+      if (unlock > 0 && nowMs >= unlock) sum += d.nanos;
+    }
+    if (sum < 0) return 0;
+    if (sum > p.nanos) return p.nanos;
+    return sum;
+  }
+
+  /// Drop matured time-lock rows from the vault mirror. The note is the
+  /// principal, so this does not pay interest and does not build a withdraw.
+  /// [onlyAtMs] drops that one deposit. Omit it to drop every matured time-lock.
+  int releaseTimeLockPrincipal({
+    required String dest,
+    required int nowMs,
+    int? onlyAtMs,
+  }) {
+    final p = portal(dest);
+    if (nowMs <= 0 || p.deposits.isEmpty) return 0;
+    var sum = 0;
+    var droppedOne = false;
+    final keep = <ReserveDepositRow>[];
+    for (final d in p.deposits) {
+      final unlock = depositUnlockAtMs(d);
+      final matured = d.noteIsPrincipal && unlock > 0 && nowMs >= unlock;
+      final targeted = onlyAtMs == null || d.atMs == onlyAtMs;
+      if (matured && targeted && (onlyAtMs == null || !droppedOne)) {
+        sum += d.nanos;
+        if (onlyAtMs != null) droppedOne = true;
+      } else {
+        keep.add(d);
+      }
+    }
+    if (sum <= 0) return 0;
+    if (sum > p.nanos) sum = p.nanos;
+    var fromStaked = sum > p.staked ? p.staked : sum;
+    var fromIdle = sum - fromStaked;
+    if (fromIdle > p.idle) fromIdle = p.idle;
+    final booked = fromStaked + fromIdle;
+    p.staked -= fromStaked;
+    p.idle -= fromIdle;
+    totalLockedNanos -= booked;
+    if (totalLockedNanos < 0) totalLockedNanos = 0;
+    p.deposits
+      ..clear()
+      ..addAll(keep);
+    if (p.nanos < kPiSheNanos) {
+      p.joined = false;
+    }
+    return booked;
+  }
+
   void _recordEpoch(int startMs) {
     if (currentEpoch < 1) currentEpoch = 1;
     if (epochs.any((e) => e.epoch == currentEpoch)) return;
@@ -314,6 +728,46 @@ class ShearReserve {
     bonusEnacted = false;
     epochBps = _freezeEpochBps(nowMs);
     _recordEpoch(nowMs);
+  }
+
+  /// Move a clock-0 epoch onto the first verified header time.
+  /// Epoch start, the zero-start epoch row, and every deposit stamped at 0
+  /// take that time, then open rows are assigned. A later header does not
+  /// move an epoch that already has a positive start, and a later top-up
+  /// must not be used as this anchor.
+  void reanchorVerifiedClock(int verifiedMs) {
+    if (verifiedMs <= 0 || epochStartMs > 0) return;
+    final hasZeroEpoch = epochs.any((e) => e.startMs <= 0);
+    final hasZeroRow = portals.values.any((p) => p.deposits.any((d) => d.atMs <= 0));
+    if (!hasZeroEpoch && !hasZeroRow) return;
+    epochStartMs = verifiedMs;
+    for (var i = 0; i < epochs.length; i++) {
+      final e = epochs[i];
+      if (e.startMs > 0) continue;
+      epochs[i] = ReserveEpochRow(
+        epoch: e.epoch,
+        startMs: verifiedMs,
+        endMs: verifiedMs + kReserveEpochMs,
+      );
+    }
+    if (epochs.isEmpty && currentEpoch >= 1) {
+      _recordEpoch(verifiedMs);
+    }
+    for (final p in portals.values) {
+      for (var i = 0; i < p.deposits.length; i++) {
+        final d = p.deposits[i];
+        if (d.atMs > 0) continue;
+        p.deposits[i] = ReserveDepositRow(
+          nanos: d.nanos,
+          atMs: verifiedMs,
+          txid: d.txid,
+          noteIsPrincipal: d.noteIsPrincipal,
+          epoch: d.epoch,
+          unlockAtMs: d.unlockAtMs,
+        );
+      }
+    }
+    _assignOpenDeposits();
   }
 
   ReserveRewards rewards(String dest, int nowMs) {
@@ -504,7 +958,14 @@ class ShearReserve {
     return null;
   }
 
-  String? deposit({required String dest, required double she, required int nowMs, String? payout}) {
+  String? deposit({
+    required String dest,
+    required double she,
+    required int nowMs,
+    String? payout,
+    bool noteIsPrincipal = false,
+    int? sealedUnlockAtMs,
+  }) {
     if (!isDestAddress(dest) || isShearAddress(dest)) return 'bad_dest';
     final n = (she * kUnitsPerShe).round();
     if (n <= 0) return 'bad_amount';
@@ -521,7 +982,13 @@ class ShearReserve {
       p.idle += n;
     }
     totalLockedNanos += n;
-    p.deposits.add(ReserveDepositRow(nanos: n, atMs: nowMs));
+    final sealed = sealedUnlockAtMs != null && sealedUnlockAtMs > 0 ? sealedUnlockAtMs : 0;
+    p.deposits.add(ReserveDepositRow(
+      nanos: n,
+      atMs: nowMs,
+      noteIsPrincipal: noteIsPrincipal,
+      unlockAtMs: sealed,
+    ));
     if (!p.joined && p.nanos >= kPiSheNanos) {
       p.joined = true;
       if (epochStartMs == 0) {
@@ -535,6 +1002,7 @@ class ShearReserve {
         _beginEpoch(nowMs);
       }
     }
+    _assignOpenDeposits();
     return null;
   }
 
@@ -542,7 +1010,12 @@ class ShearReserve {
     nowMs;
     final p = portal(dest);
     if (!p.canVote) return 'not_voter';
-    if (epochStartMs == 0 || bonusEnacted) return 'not_voter';
+    // A verified clock of 0 still begins the epoch (currentEpoch >= 1 and a
+    // recorded row) so a π deposit can vote. epochStartMs stays 0, and unlock
+    // stays closed, until a verified median time exists.
+    final opened = currentEpoch >= 1 &&
+        (epochStartMs != 0 || epochs.any((e) => e.epoch == currentEpoch));
+    if (!opened || bonusEnacted) return 'not_voter';
     if (choice != kVoteIncrease && choice != kVoteDecrease && choice != kVoteHold) {
       return 'bad_vote';
     }
@@ -557,9 +1030,9 @@ class ShearReserve {
   }
 
   Map<String, int>? withdraw({required String dest, required int nowMs, String? payout}) {
+    final matured = maturedPrincipalNanos(dest, nowMs);
     final epochOver = epochStartMs != 0 && nowMs >= epochStartMs + kReserveEpochMs;
-    final p0 = portal(dest);
-    if (!epochOver && p0.claimableRewards <= 0) return null;
+    if (matured <= 0) return null;
     if (epochOver && !bonusEnacted) {
       final up = votesIncrease, down = votesDecrease, hold = votesHold;
       final m = [up, down, hold].reduce((a, b) => a > b ? a : b);
@@ -581,34 +1054,49 @@ class ShearReserve {
     final p = portal(dest);
     if (p.payout != null && payout != null && payout != p.payout) return null;
     final claimable = p.claimableRewards;
-    var staked = 0;
-    var idle = 0;
-    var principal = 0;
-    if (epochOver || bonusEnacted) {
-      staked = p.staked;
-      idle = p.idle;
-      principal = staked + idle;
-    }
-    final interest = epochOver
-        ? (claimable > 0 ? claimable : reserveInterestNanos(staked, epochBps))
-        : claimable;
+    var principal = matured;
+    if (principal > p.nanos) principal = p.nanos;
+    final full = p.nanos > 0 && principal == p.nanos;
+    final staked = principal > p.staked ? p.staked : principal;
+    final idle = principal - staked > p.idle ? p.idle : principal - staked;
+    final interest = epochOver && full
+        ? (claimable > 0 ? claimable : reserveInterestNanos(p.staked, epochBps))
+        : 0;
     if (principal <= 0 && interest <= 0) return null;
     if (!extraMintAllowed(kReserveProgram)) return null;
     if (p.payout == null && payout != null && isDestAddress(payout) && !isShearAddress(payout)) {
       p.payout = payout;
     }
-    if (principal > 0) totalLockedNanos -= principal;
     if (principal > 0) {
-      if (p.vote == kVoteIncrease) votesIncrease--;
-      if (p.vote == kVoteDecrease) votesDecrease--;
-      if (p.vote == kVoteHold) votesHold--;
-      p.staked = 0;
-      p.idle = 0;
-      p.joined = false;
-      p.vote = null;
-      p.payout = null;
+      totalLockedNanos -= principal;
+      if (totalLockedNanos < 0) totalLockedNanos = 0;
+      p.staked -= staked;
+      p.idle -= idle;
+      if (p.deposits.isNotEmpty) {
+        p.deposits.removeWhere((d) {
+          if (d.noteIsPrincipal) return false;
+          final unlock = depositUnlockAtMs(d);
+          return unlock > 0 && nowMs >= unlock;
+        });
+      }
+      final stillVoter = p.nanos >= kPiSheNanos;
+      if (!stillVoter) {
+        if (p.vote == kVoteIncrease) votesIncrease--;
+        if (p.vote == kVoteDecrease) votesDecrease--;
+        if (p.vote == kVoteHold) votesHold--;
+      }
+      if (p.nanos <= 0) {
+        p.staked = 0;
+        p.idle = 0;
+        p.joined = false;
+        p.vote = null;
+        p.payout = null;
+      } else if (!stillVoter) {
+        p.joined = false;
+        p.vote = null;
+      }
     }
-    p.claimableRewards = 0;
+    if (full) p.claimableRewards = 0;
     return {
       'principal': principal,
       'staked': staked,
@@ -653,6 +1141,48 @@ class ShearReserve {
       };
 
   String publicJson(int nowMs) => jsonEncode(publicView(nowMs));
+}
+
+/// Unlock on the lock note this deposit's tx created.
+/// A later lock on the same address does not match.
+bool _lockNoteMatchesTx(
+  Map<String, dynamic> note,
+  String txId,
+  List<Map<String, dynamic>> notes,
+) {
+  final own = note['txId']?.toString() ?? '';
+  if (own.isNotEmpty) return own == txId;
+  final id = note['id']?.toString() ?? '';
+  if (id.isEmpty || id != txId) return false;
+  // A 32-byte hex id is a blind id, not a transaction id.
+  if (RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(id)) return false;
+  for (final other in notes) {
+    if (identical(other, note)) continue;
+    final otherTx = (other['txId'] ?? '').toString();
+    if (otherTx == txId) return false;
+    // This id is already the blind on a note that has a real tx id.
+    if (otherTx.isNotEmpty && (other['id'] ?? '').toString() == id) return false;
+  }
+  return true;
+}
+
+/// Unlock on the lock note this deposit's tx created.
+/// A later lock on the same address does not match. `id` is used only when
+/// `txId` is absent, the id is not a 32-byte blind, no other note already
+/// has that tx id, and no note with a real tx id carries this string as its id.
+int? sealedUnlockForTx(Iterable<Map<String, dynamic>> notes, String txId) {
+  if (txId.isEmpty) return null;
+  final list = notes is List<Map<String, dynamic>>
+      ? notes
+      : notes.toList();
+  for (final n in list) {
+    if ((n['kind'] ?? '').toString() != 'lock') continue;
+    if (!_lockNoteMatchesTx(n, txId, list)) continue;
+    final raw = n['unlockAtMs'];
+    final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
+    if (at > 0) return at;
+  }
+  return null;
 }
 
 class ReserveDepositResult {
@@ -723,6 +1253,7 @@ Future<ReserveDepositResult> postReserveDeposit({
       keepHome: true,
     );
     final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
+    final unlockAt = clock == null ? null : clock + kReserveEpochMs;
     final tx = await ledger.send(
       from: from,
       to: dest,
@@ -738,13 +1269,28 @@ Future<ReserveDepositResult> postReserveDeposit({
       currentEpoch: clock == null ? null : reserve.currentEpoch,
       epochStartMs: clock,
       lockEpoch: clock == null ? null : reserve.currentEpoch,
-      unlockAtMs: clock == null ? null : clock + kReserveEpochMs,
+      unlockAtMs: unlockAt,
     );
+    final height = tx.height;
+    final atHeight = height != null ? ledger.verifiedTimeAtHeight(height) : null;
+    final verified = atHeight ?? ledger.verifiedMedianTimeMs;
+    // First verified header time, before this row is added, so a top-up
+    // does not become the epoch anchor.
+    if (verified != null && verified > 0) {
+      reserve.reanchorVerifiedClock(verified);
+    }
+    // The newest lock on this address is a different deposit. This row
+    // takes the note stamped with this tx id, or the unlock this send used.
+    final sealed = sealedUnlockForTx(ledger.notes, tx.id) ?? unlockAt;
+    // A lock with no clock is still the principal note. Leaving the flag
+    // false is what paints the legacy Withdraw button.
     final err = reserve.deposit(
       dest: dest,
       she: she,
-      nowMs: DateTime.now().millisecondsSinceEpoch,
+      nowMs: verified ?? 0,
       payout: from,
+      noteIsPrincipal: true,
+      sealedUnlockAtMs: sealed,
     );
     if (err != null) {
       return ReserveDepositResult(posted: false, remark: err, tx: tx);
