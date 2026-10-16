@@ -242,8 +242,10 @@ export const VAULT_LOCK_LAW = 'fs1-tranche';
  * root, consensus sets the rate terms, and one nullifier spends the epoch.
  */
 export const VAULT_REWARD_LAW = 'fs1-lock-root-v1';
-/** Lock amount and reward stay committed. The epoch total is the public mint. */
-export const VAULT_HIDDEN_LAW = 'lock-commit-v1';
+/** Lock amount stays in the member leaf. A claim proves the cap against that leaf. */
+export const VAULT_HIDDEN_LAW = 'leaf-cap-v2';
+/** Claim proof version. Peers on an older byte do not share this book. */
+export const VAULT_PROOF_VER = 0xa7;
 /** Reward-claim proofs in one block. Each proof is a vault-lock membership. */
 export const MAX_BLOCK_VAULT_CLAIMS = 4;
 /**
@@ -465,6 +467,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `VAULT_REWARD=${VAULT_REWARD_LAW}`,
     `VAULT_CLAIM_CAP=${MAX_BLOCK_VAULT_CLAIMS}`,
     `VAULT_HIDDEN=${VAULT_HIDDEN_LAW}`,
+    `VAULT_PROOF=0x${VAULT_PROOF_VER.toString(16)}`,
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,

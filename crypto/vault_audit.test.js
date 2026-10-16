@@ -24,11 +24,14 @@ import { typedCommitSum } from './spend.js';
 import {
   appendVaultLockNote,
   applyReserveBlock,
+  consensusRemainMs,
   deposit,
   emptyVault,
   lockFundContext,
   lockFundingRejected,
   lockTx,
+  proveRemainOpen,
+  verifyRemainOpen,
   portalIdFromDest,
   rewardClaimTx,
   rewardOwnerCommit,
@@ -51,7 +54,9 @@ import {
   encodeSetEpochDue,
 } from './reserve_evm.js';
 import {
+  epochCapBlind,
   proveEpochMint,
+  proveLockCap,
   proveVaultReward,
   stableSpendTag,
   tagDerivedNullifier,
@@ -98,7 +103,7 @@ function proveLock(amount, remain, epoch = 0) {
     dest20: who.d20,
   });
   assert.ok(proved, 'proof');
-    assert.equal(proved.blob[0], 0xa6);
+    assert.equal(proved.blob[0], 0xa7);
   return { who, proved };
 }
 
@@ -301,9 +306,12 @@ describe('hidden vault claims', () => {
     assert.equal(lockFundingRejected(sameValue, ctx), null);
     sameValue.vout[0].fundProof = fundProof(locked, funded, randomScalar(), sameValue, HEIGHT, MAGIC_TESTNET);
     assert.equal(lockFundingRejected(sameValue, ctx).reason, 'stake_reward');
-    const otherHeight = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT + 1, MAGIC_TESTNET);
-    sameValue.vout[0].fundProof = otherHeight;
-    assert.equal(lockFundingRejected(sameValue, ctx).reason, 'stake_reward');
+    const bound = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET);
+    sameValue.vout[0].fundProof = bound;
+    assert.equal(lockFundingRejected(sameValue, ctx), null);
+    assert.equal(lockFundingRejected(sameValue, { height: HEIGHT + 1, magic: MAGIC_TESTNET }), null);
+    assert.equal(lockFundingRejected({ ...sameValue, id: 'renamed-id' }, ctx), null);
+    assert.equal(lockFundingRejected({ ...sameValue, portalId: 'ab'.repeat(32) }, ctx).reason, 'stake_reward');
 
     const state = emptyVault();
     state.genesisMs = T0;
@@ -435,6 +443,21 @@ describe('hidden vault claims', () => {
     assert.equal(first.blob.includes(stable), false);
     assert.equal(second.blob.includes(stable), false);
     assert.notEqual(first.nullifier, second.nullifier);
+    const lockPoint = Buffer.from(first.lockCommit, 'hex');
+    assert.equal(first.blob.includes(lockPoint), false);
+    assert.equal(second.blob.includes(lockPoint), false);
+    assert.notEqual(first.capCommit, second.capCommit);
+    assert.notEqual(first.remainCommit, second.remainCommit);
+    const det = proveLockCap(PI_SHE_NANOS, first.locks[0].blind, GENESIS_BPS);
+    assert.ok(det);
+    assert.equal(first.blob.includes(det.commit), false);
+    assert.equal(second.blob.includes(det.commit), false);
+    const member = (blob) => {
+      const fs1 = blob.readUInt32LE(1);
+      return blob.subarray(5 + fs1 + 33, 5 + fs1 + 65).toString('hex');
+    };
+    assert.notEqual(member(first.blob), member(second.blob));
+    assert.notEqual(first.capCommit, det.commit.toString('hex'));
   });
 
   it('mints a lone claim at the epoch deadline and refuses a block that omits it', () => {
@@ -853,5 +876,119 @@ describe('hidden vault claims', () => {
     assert.equal(nonempty.ok, true, nonempty.reason);
     assert.ok(nonempty.gasUsed > 20000n, `non-empty commitRewards gas ${nonempty.gasUsed}`);
     assert.ok(empty.gasUsed > 0n, `empty commitRewards gas ${empty.gasUsed}`);
+  });
+
+  it('a remain commitment opens to the consensus remainder and not the full span', () => {
+    const who = dest20();
+    const now = T0 + 3_600_000;
+    const r = randomScalar();
+    const note = vaultLockNote(PI_SHE_NANOS, 3n, r).note;
+    const build = () => {
+      const action = lockTx({
+        from: who.dest,
+        to: who.dest,
+        nanos: PI_SHE_NANOS,
+        blind: r,
+        ownerPub: who.id.spendPub.toString('hex'),
+        id: 'remain-lock',
+      });
+      action.vaultLockNote = note;
+      return action;
+    };
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    const remain = consensusRemainMs(state, now);
+    assert.ok(remain > 0);
+    assert.ok(remain < span);
+    const spanTx = build();
+    const spanOpen = proveRemainOpen(span, randomScalar(), spanTx, MAGIC_TESTNET);
+    assert.ok(spanOpen);
+    spanTx.remainCommit = spanOpen.commit.toString('hex');
+    spanTx.remainProof = spanOpen;
+    const tooWide = applyReserveBlock({
+      state,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, spanTx] },
+      nowMs: now,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(tooWide.ok, false);
+    assert.equal(tooWide.reason, 'stake_reward');
+
+    const openTx = build();
+    const open = proveRemainOpen(remain, randomScalar(), openTx, MAGIC_TESTNET);
+    assert.ok(open);
+    openTx.remainCommit = open.commit.toString('hex');
+    openTx.remainProof = open;
+    const fresh = emptyVault();
+    fresh.genesisMs = T0;
+    fresh.magic = MAGIC_TESTNET;
+    const paid = applyReserveBlock({
+      state: fresh,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, openTx] },
+      nowMs: now,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(paid.ok, true, paid.reason);
+    const renamed = { ...openTx, id: 'other-remain-id' };
+    assert.equal(verifyRemainOpen(renamed.remainCommit, remain, renamed.remainProof, renamed, MAGIC_TESTNET), true);
+    const retarget = { ...openTx, portalId: 'cd'.repeat(32) };
+    assert.equal(verifyRemainOpen(retarget.remainCommit, remain, retarget.remainProof, retarget, MAGIC_TESTNET), false);
+  });
+
+  it('refuses a mint over the lock-time cap and does not add the claim cap to the sum', () => {
+    const row = proveLock(PI_SHE_NANOS, span, 0);
+    const lock = row.proved.locks[0];
+    const cap = proveLockCap(lock.amount, lock.blind, GENESIS_BPS);
+    assert.ok(cap);
+    const prep = () => {
+      const state = emptyVault();
+      state.genesisMs = T0;
+      state.magic = MAGIC_TESTNET;
+      const note = vaultLockNote(lock.amount, lock.scalar, lock.blind).note;
+      assert.ok(appendVaultLockNote(state, note, { earnEpoch: 0, remainCommit: row.proved.remainCommit }));
+      state.vaultLockRoots = { 0: state.vaultLockRoot };
+      state.epochStartRoots = { 0: state.vaultLockRoot };
+      state.vaultLockCap = { [row.proved.lockCommit]: cap.commit.toString('hex') };
+      state.epochCapSum = { 0: cap.commit.toString('hex') };
+      return state;
+    };
+    const claim = rewardClaimTx({
+      to: row.who.dest,
+      vault: {
+        blob: row.proved.blob,
+        nullifier: row.proved.nullifier,
+        rootEpoch: 0,
+        earnEpoch: 0,
+        note: row.proved.note,
+      },
+    });
+    claim.full = true;
+    const state = prep();
+    const before = state.epochCapSum['0'];
+    const paid = applyReserveBlock({
+      state,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, claim] },
+      nowMs: T0 + span,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(state.epochCapSum['0'], before);
+    assert.notEqual(state.epochMintSum['0'], row.proved.capCommit);
+
+    const over = prep();
+    over.vaultLockCap[row.proved.lockCommit] = pointBytes(commit(1n, epochCapBlind(lock.blind, GENESIS_BPS))).toString('hex');
+    const refused = applyReserveBlock({
+      state: over,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, { ...claim, id: 'over-cap' }] },
+      nowMs: T0 + span,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'stake_reward');
   });
 });

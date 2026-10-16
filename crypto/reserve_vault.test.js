@@ -207,7 +207,7 @@ describe('Reserve vault protocol', () => {
   });
 
   it('accruedReward is a bigint capped at u64 across a rollover, 0%, and an undo', () => {
-    const U64 = 0xffffffffffffffffn;
+    const nearCap = (9007199254740991n * 10000n) / 281n;
     const t0 = 1_700_000_000_000;
     const who = destOf(newIdentity());
     const rolled = emptyVault();
@@ -241,7 +241,7 @@ describe('Reserve vault protocol', () => {
     const near = emptyVault();
     near.genesisMs = t0;
     const nDest = destOf(newIdentity());
-    const stake = U64 - 5n;
+    const stake = nearCap - 5n;
     assert.equal(deposit({ state: near, dest: nDest, nanos: stake, nowMs: t0 }).ok, true);
     near.epochBps = 10000;
     assert.equal(enact({ state: near, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
@@ -256,7 +256,7 @@ describe('Reserve vault protocol', () => {
     const capped = emptyVault();
     capped.genesisMs = t0;
     const cDest = destOf(newIdentity());
-    assert.equal(deposit({ state: capped, dest: cDest, nanos: U64, nowMs: t0 }).ok, true);
+    assert.equal(deposit({ state: capped, dest: cDest, nanos: nearCap, nowMs: t0 }).ok, true);
     capped.epochBps = 10000;
     assert.equal(enact({ state: capped, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
     const cMore = deposit({
@@ -308,12 +308,12 @@ describe('Reserve vault protocol', () => {
   });
 
   it('a withdraw leaves the u64 reward cap on the portal', () => {
-    const U64 = 0xffffffffffffffffn;
+    const nearCap = (9007199254740991n * 10000n) / 281n;
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
     const dest = destOf(newIdentity());
-    assert.equal(deposit({ state, dest, nanos: U64, nowMs: t0 }).ok, true);
+    assert.equal(deposit({ state, dest, nanos: nearCap, nowMs: t0 }).ok, true);
     state.epochBps = 10000;
     const paid = withdraw({ state, dest, nowMs: t0 + 2 * RESERVE_EPOCH_MS });
     assert.equal(paid.ok, true, paid.reason);

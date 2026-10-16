@@ -162,6 +162,10 @@ contract Reserve {
     mapping(uint256 => bytes32) internal epochStartRootOf;
     /// Remain commitment registered with a lock leaf for that earning epoch.
     mapping(uint256 => mapping(bytes32 => bool)) internal vaultRemainOf;
+    /// Lock commitment that owns one remain commitment. A claim of that remain must bind this leaf.
+    mapping(bytes32 => bytes32) internal remainLockOf;
+    /// Remain commitment stored for one lock commitment.
+    mapping(bytes32 => bytes32) internal leafRemainOf;
     /// Lock commitments whose cap was checked when the lock was credited.
     mapping(bytes32 => bool) internal vaultLockNoted;
     /// Vault proof precompile. Returns 1, 2, or 0.
@@ -1078,6 +1082,17 @@ contract Reserve {
         vaultRemainOf[earn][remain] = true;
     }
 
+    /// One remain commitment belongs to one lock leaf. A second pair must match.
+    function noteVaultLeaf(bytes32 lockCommit, bytes32 remain) external onlyShear {
+        if (lockCommit == bytes32(0) || remain == bytes32(0)) revert BadAmount();
+        bytes32 priorRemain = leafRemainOf[lockCommit];
+        if (priorRemain != bytes32(0) && priorRemain != remain) revert BadAmount();
+        bytes32 priorLock = remainLockOf[remain];
+        if (priorLock != bytes32(0) && priorLock != lockCommit) revert BadAmount();
+        leafRemainOf[lockCommit] = remain;
+        remainLockOf[remain] = lockCommit;
+    }
+
     function setEpochDue(uint256 epoch, uint256 due) external onlyShear {
         if (epochDueSet[epoch] && epochDueOf[epoch] != due) revert BadAmount();
         epochDueSet[epoch] = true;
@@ -1097,7 +1112,7 @@ contract Reserve {
         uint256 bps = _rateFor(epoch);
         uint256 full = 0;
         bytes32 remainCommit = bytes32(0);
-        if (proof.length > 5 && proof[0] == 0xa6) {
+        if (proof.length > 5 && proof[0] == 0xa7) {
             uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
             uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
             if (off < proof.length) full = uint256(uint8(proof[off]));
@@ -1108,17 +1123,12 @@ contract Reserve {
         return abi.encodePacked(root, nullifier, _u64le(epoch), _u32le(bps), _u64le(span), bytes1(uint8(full)), remainCommit, bytes("shear-testnet-v12"));
     }
 
-    /// lockCommit sits immediately after remainCommit: full || qPoint || remain || lock.
-    function _lockNoted(bytes calldata proof, uint256 off) internal view returns (bool) {
-        if (off + 1 + 96 > proof.length) return false;
-        bytes32 lockCommit = bytes32(proof[off + 1 + 64:off + 1 + 96]);
-        return lockCommit != bytes32(0) && vaultLockNoted[lockCommit];
-    }
-
     /// 1 accepts. 2 is a bad reward. 0 is not this proof. A missing root is 2,
     /// so the claim can be retried after the root is committed.
+    /// A short arrival, and a full arrival in epoch 0, must be the remain
+    /// stored on that leaf. The leaf word follows the 17-byte magic.
     function _vaultCode(bytes32 nullifier, uint256 epoch, bytes calldata proof, bytes calldata output) internal view returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xa6) return 0;
+        if (proof.length < 2 || proof[0] != 0xa7) return 0;
         uint256 full = 0;
         bytes32 remainCommit = bytes32(0);
         uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
@@ -1128,15 +1138,14 @@ contract Reserve {
         if (off + 1 + 32 + 32 <= proof.length) {
             remainCommit = bytes32(proof[off + 1 + 32:off + 1 + 64]);
         }
-        // A short arrival, and a full arrival in epoch 0, must be the remain
-        // stored with that leaf. A later full epoch is the public span.
+        bytes32 lockWord = bytes32(0);
         if (full == 0 || epoch == 0) {
-            if (!vaultRemainOf[epoch][remainCommit]) return 2;
+            lockWord = remainLockOf[remainCommit];
+            if (lockWord == bytes32(0)) return 2;
         }
-        if (!_lockNoted(proof, off)) return 2;
         bytes32 root = full == 1 ? epochStartRootOf[epoch] : vaultRootOf[epoch];
         if (root == bytes32(0)) return 2;
-        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(_vaultHead(root, nullifier, epoch, proof), _u32le(output.length), output, proof));
+        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(_vaultHead(root, nullifier, epoch, proof), lockWord, _u32le(output.length), output, proof));
         if (!ok || out.length < 32) return 0;
         return uint256(bytes32(out));
     }
@@ -1150,7 +1159,7 @@ contract Reserve {
         bytes calldata auth
     ) external onlyShear returns (uint256) {
         nanos;
-        if (proof.length < 2 || proof[0] != 0xa6) revert ClaimUnavailable();
+        if (proof.length < 2 || proof[0] != 0xa7) revert ClaimUnavailable();
         if (nullifierMinted[nullifier]) revert AlreadyMinted();
         uint256 code = _vaultCode(nullifier, rootIndex, proof, auth);
         if (code == 2) revert BadAmount();

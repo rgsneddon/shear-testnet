@@ -17,10 +17,11 @@ const String kVaultRelDst = 'shear-vault-reward-rel-v1';
 const String kVaultBalDst = 'shear-vault-reward-bal-v1';
 const String kVaultLockBlindDst = 'shear-vault-lock-blind-v1';
 const String kVaultLockOwnerDst = 'shear-vault-lock-owner-v1';
-const int kVaultProofVer = 0xa6;
+const int kVaultProofVer = 0xa7;
 const String kVaultCapDst = 'shear-epoch-cap-v1';
+const String kVaultLeafDst = 'shear-vault-leaf-v1';
 
-/// Author-built full-epoch cap. Same points the JS prover packs into 0xa6.
+/// Author-built full-epoch cap. Fresh blinds, same value the JS prover packs into 0xa7.
 Map<String, Uint8List> _lockCap({
   required int amount,
   required Uint8List lockBlind,
@@ -34,49 +35,14 @@ Map<String, Uint8List> _lockCap({
   final rem = product - capValue * BigInt.from(10000);
   final slack = BigInt.from(9999) - rem;
   if (slack < BigInt.zero || capValue < BigInt.zero) throw StateError('stake_reward');
-  final rCap = scalarBytes(hashToScalar([
-    utf8Bytes('shear-epoch-cap-blind-v1'),
-    lockBlind,
-    _u32(bps),
-  ]));
-  final rRem = scalarBytes(hashToScalar([
-    utf8Bytes('shear-epoch-cap-rem-v1'),
-    lockBlind,
-    _u32(bps),
-  ]));
-  final rSlack = scalarBytes(hashToScalar([
-    utf8Bytes('shear-epoch-cap-slack-v1'),
-    lockBlind,
-    _u32(bps),
-  ]));
-  final lockCommit = commitBytes(amount, lockBlind);
+  final rCap = scalarBytes(randomScalar());
+  final rRem = scalarBytes(randomScalar());
+  final rSlack = scalarBytes(randomScalar());
   final capCommit = commitBytes(capValue.toInt(), rCap);
   final remCommit = commitBytes(rem.toInt(), rRem);
   final slackCommit = commitBytes(slack.toInt(), rSlack);
-  final lockP = pointFrom(lockCommit);
-  final capP = pointFrom(capCommit);
   final remP = pointFrom(remCommit);
   final slackP = pointFrom(slackCommit);
-  final relP = subEl(
-    subEl(mulEl(lockP, scalarFromInt(bps)), mulEl(capP, scalarFromInt(10000))),
-    remP,
-  );
-  final relS = scalarSub(
-    scalarSub(
-      scalarMul(scalarFromInt(bps), scalarFromBytes(lockBlind)),
-      scalarMul(scalarFromInt(10000), scalarFromBytes(rCap)),
-    ),
-    scalarFromBytes(rRem),
-  );
-  final extra = _sha256(_concat([
-    utf8Bytes(kVaultCapDst),
-    lockCommit,
-    _u32(bps),
-    capCommit,
-    remCommit,
-    slackCommit,
-  ]));
-  final rel = schnorrProveH(relP, relS, extra);
   final balP = subEl(addEl(remP, slackP), mulG(scalarFromInt(9999)));
   final balS = scalarAdd(scalarFromBytes(rRem), scalarFromBytes(rSlack));
   final bal = schnorrProveH(balP, balS, utf8Bytes(kVaultCapDst));
@@ -88,22 +54,27 @@ Map<String, Uint8List> _lockCap({
   }
   final diff = capValue - BigInt.from(reward);
   if (diff < BigInt.zero) throw StateError('stake_reward');
-  final rDiff = scalarBytes(scalarSub(scalarFromBytes(rCap), scalarFromBytes(rewardBlind)));
-  final under = admit.proveRange(diff, rDiff);
-  if (under == null || under.isEmpty) throw StateError('admit_native_required');
+  final det = scalarBytes(hashToScalar([
+    utf8Bytes('shear-epoch-cap-blind-v1'),
+    lockBlind,
+    _u32(bps),
+  ]));
+  final under = admit.proveRange(diff, scalarBytes(scalarSub(scalarFromBytes(rCap), scalarFromBytes(rewardBlind))));
+  final pool = admit.proveRange(diff, scalarBytes(scalarSub(scalarFromBytes(det), scalarFromBytes(rewardBlind))));
+  if (under == null || under.isEmpty || pool == null || pool.isEmpty) throw StateError('admit_native_required');
   return {
-    'lock': lockCommit,
     'cap': capCommit,
     'capRange': capRange,
     'rem': remCommit,
     'remRange': remRange,
     'slack': slackCommit,
     'slackRange': slackRange,
-    'relR': rel['R']!,
-    'relZ': rel['z']!,
     'balR': bal['R']!,
     'balZ': bal['z']!,
     'under': under,
+    'pool': pool,
+    'rCap': rCap,
+    'rRem': rRem,
   };
 }
 
@@ -344,8 +315,13 @@ Map<String, dynamic> proveVaultLockReward({
       _sha256(remRange),
       slackCommit,
       _sha256(slackRange),
-      capPack['lock']!,
       capPack['cap']!,
+      _sha256(capPack['capRange']!),
+      capPack['rem']!,
+      _sha256(capPack['remRange']!),
+      capPack['slack']!,
+      _sha256(capPack['slackRange']!),
+      _sha256(capPack['pool']!),
     ]));
     final epochBase = pointBytes(hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst)));
     final proved = fs1.proveUnlinked(handle, [which], [owners[which]], digest, epoch, epochBase);
@@ -353,6 +329,35 @@ Map<String, dynamic> proveVaultLockReward({
     final record = proved.records.first;
     if (record.length != kFs1RecordBytes || record[0] != kFs1Wire) throw StateError('fs1_prover_unavailable');
     final cTilde = Uint8List.sublistView(record, 33, 65);
+    final t = proved.t.first;
+    final capRelP = subEl(
+      subEl(mulEl(pointFrom(cTilde), scalarFromInt(bps)), mulEl(pointFrom(capPack['cap']!), scalarFromInt(10000))),
+      pointFrom(capPack['rem']!),
+    );
+    final capRelS = scalarSub(
+      scalarSub(
+        scalarMul(scalarFromInt(bps), scalarAdd(scalarFromBytes(blinds[which]), scalarFromBytes(t))),
+        scalarMul(scalarFromInt(10000), scalarFromBytes(capPack['rCap']!)),
+      ),
+      scalarFromBytes(capPack['rRem']!),
+    );
+    if (!elementEq(capRelP, mulEl(noteH, capRelS))) throw StateError('stake_reward');
+    final capExtra = _sha256(_concat([
+      utf8Bytes(kVaultCapDst),
+      cTilde,
+      _u32(bps),
+      capPack['cap']!,
+      capPack['rem']!,
+      capPack['slack']!,
+    ]));
+    final capRel = schnorrProveH(capRelP, capRelS, capExtra);
+    final leafP = subEl(pointFrom(cTilde), pointFrom(commitBytes(amounts[which], blinds[which])));
+    if (!elementEq(leafP, mulEl(noteH, scalarFromBytes(t)))) throw StateError('stake_reward');
+    final leafSig = schnorrProveH(leafP, scalarFromBytes(t), _concat([
+      utf8Bytes(kVaultLeafDst),
+      remainCommit,
+      capPack['cap']!,
+    ]));
     final kSig = randomScalar();
     final kBlind = randomScalar();
     final sigA1 = addEl(mulG(kSig), mulEl(noteH, kBlind));
@@ -373,7 +378,6 @@ Map<String, dynamic> proveVaultLockReward({
       pointFrom(remCommit),
     );
     final factor = scalarFromBigInt(factorN);
-    final t = proved.t.first;
     final s = scalarSub(
       scalarMul(factor, scalarAdd(scalarFromBytes(blinds[which]), scalarFromBytes(t))),
       scalarAdd(scalarMul(denomS, r), rRem),
@@ -428,7 +432,6 @@ Map<String, dynamic> proveVaultLockReward({
       Uint8List.fromList([full]),
       pointBytes(qPoint),
       remainCommit,
-      capPack['lock']!,
       capPack['cap']!,
       timeSlackCommit,
       pointBytes(sigA1),
@@ -470,12 +473,16 @@ Map<String, dynamic> proveVaultLockReward({
       capPack['slack']!,
       _u32(capPack['slackRange']!.length),
       capPack['slackRange']!,
-      capPack['relR']!,
-      capPack['relZ']!,
+      capRel['R']!,
+      capRel['z']!,
       capPack['balR']!,
       capPack['balZ']!,
       _u32(capPack['under']!.length),
       capPack['under']!,
+      _u32(capPack['pool']!.length),
+      capPack['pool']!,
+      leafSig['R']!,
+      leafSig['z']!,
     ]);
     return {
       'ok': true,
