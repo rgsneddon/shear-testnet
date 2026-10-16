@@ -10,6 +10,7 @@ import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519
 import { destCommitFromSpendPub } from './stealth_ed25519.js';
 import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto';
 import { destAtIndex, closureCommit } from './flow_sheet.js';
+import { portalIdFromDest } from './reserve_vault.js';
 
 const dest = 'ssa1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
 const other = 'ssa1qyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy';
@@ -61,12 +62,14 @@ describe('funded spend / no double-spend', () => {
     });
     assert.equal(spendPubFromTx(unsigned)?.toString('hex'), id.spendPub.toString('hex'));
     assert.equal(verifyReservePortalOpen(unsigned), false);
+    const fund = encodeDest(destCommitFromSpendPub(id.spendPub));
     const signed = {
       kind: 'lock',
-      from: encodeDest(destCommitFromSpendPub(id.spendPub)),
+      from: fund,
       to: id.address,
       portalId: 'cd'.repeat(32),
-      vin: [{ dest20: d20 }],
+      payoutPortalId: portalIdFromDest(fund),
+      vin: [{ dest20: destCommitFromSpendPub(id.spendPub) }],
       vout: [{ ...note, kind: 'lock' }],
     };
     signSpendTx(signed, id.privateKey);
@@ -346,6 +349,7 @@ describe('funded spend / no double-spend', () => {
     const lock = {
       kind: 'lock',
       fee: 1,
+      from: encodeDest(destCommitFromSpendPub(ed25519RawPub(key))),
       portalId: 'portal-a',
       payoutPortalId: 'portal-b',
       vin: [{ noteCommit: Buffer.alloc(32, 2) }],

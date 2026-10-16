@@ -80,9 +80,8 @@ import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
 import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
-import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -161,7 +160,7 @@ import {
   custodialPullRejected,
 } from '../../crypto/levy.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange } from '../../crypto/dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 
 export { blockWeight, nextBaseFee } from '../../crypto/levy.js';
 
@@ -2840,6 +2839,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     const lockedNote = lockNoteSpendRejected(reserveState, tx, headerMs);
     if (lockedNote) return lockedNote;
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
@@ -2884,7 +2885,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (flowNeedsDummy(tx) && dummyCount(tx) < 1) {
       return { ok: false, reason: 'dummy_outs' };
     }
-    if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
+    if (moneyNeedsRange(tx)) {
       for (const o of (tx.vout || [])) {
         if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
           return { ok: false, reason: 'range_proof' };
@@ -2923,10 +2924,14 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     const summed = typedCommitSum(tx);
     if (!summed.ok) return summed;
-    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws);
+    const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws, Number(decoded.timestamp) || 0);
     if (!stake.ok) return stake;
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;
+    const claimAuth = rewardClaimRejected(tx, reserveState);
+    if (claimAuth) return claimAuth;
+    const withdrawAuth = withdrawRewardRejected(reserveState, tx, Number(decoded.timestamp) || 0);
+    if (withdrawAuth) return withdrawAuth;
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
     const bound = verifyPoolWithdrawBound(tx);
     if (!bound.ok) return bound;
@@ -2963,7 +2968,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (stake.mintId) drawnWithdraws.add(stake.mintId);
   }
   if (typeof spendableOf === 'function') {
-    const funded = verifyFundedBody(body, spendableOf, { seenDigests, reserveState });
+    const funded = verifyFundedBody(body, spendableOf, {
+      seenDigests,
+      reserveState,
+      nowMs: Number(decoded.timestamp) || 0,
+    });
     if (!funded.ok) return funded;
   }
   const levyBound = coinbaseLevyPays(txs[0], fees, {
@@ -2992,14 +3001,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gotRoot && !Buffer.from(asU8(gotRoot)).equals(wantRoot)) {
     return { ok: false, reason: 'admit_membership' };
   }
-  // The store passes the live vault. A public receipt on a block that has
-  // no carried vault is the first lock, so the trial starts from empty.
-  // A sealed reserve row with no vault still fails closed.
+  // The store passes the live vault. A reserve row with no vault fails closed.
   if (reserveState) {
     const rewardGate = stakeRewardRejected(reserveState, block, headerMs, { require: true });
     if (rewardGate) return rewardGate;
   }
-  const vaultForTrial = reserveState || (txs.some((tx) => publicReserveReceipt(tx)) ? emptyVault() : null);
+  const vaultForTrial = reserveState || null;
   const vaultTry = trialReserveApply({
     state: vaultForTrial,
     block,
@@ -3127,7 +3134,8 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   const headerMs = consensus?.decoded?.timestamp != null
     ? Number(consensus.decoded.timestamp)
     : headerTimeMs(block);
-  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs);
+  const owedRoot = opts.reserveState ? coinbaseRewardRoot(opts.reserveState, headerMs) : undefined;
+  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot);
   if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
   return {
     ...consensus,
@@ -3161,6 +3169,8 @@ export const BOOK_SEAL_DOMAIN = 'bookseal2';
 export function chainLoadSealHash(key, magic = MAGIC_TESTNET) {
   const k = asBuf(key);
   if (k.length !== 32) throw new Error('seal_key');
+  // RESERVE_NOTE lives in consensusFingerprint. A different principal rule
+  // is a different seal, so old and new nodes do not share a chain.
   const rules = Buffer.from(String(consensusFingerprint(magic)), 'utf8');
   const pin = Buffer.from(String(V12_GENESIS_BLOCK_HASH || ''), 'utf8');
   const cpH = Math.floor(Number(V12_BOOTSTRAP_CHECKPOINT?.height) || 0);

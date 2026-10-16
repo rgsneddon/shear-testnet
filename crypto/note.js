@@ -678,6 +678,18 @@ export function verifySealedNote(vout, v) {
   return true;
 }
 
+/**
+ * Verified opening of one input, in nanos. A commit sticker, a public dest20,
+ * or an opening that does not verify is not a value. Null when this input
+ * does not open.
+ */
+export function verifiedInputNanos(vin) {
+  if (!vin || vin.coinbase || !vin.commit || !vin.valueProof) return null;
+  const n = noteU64(vin.valueProof.v);
+  if (n == null || !verifySealedNote(vin, n)) return null;
+  return n;
+}
+
 /** Opened non-negative value of one coinbase output. Range proof is required. */
 export function openedCoinbaseNanos(vout) {
   if (!vout?.commit || !vout.valueProof || vout.valueProof.v == null || vout.valueProof.v === '') return null;

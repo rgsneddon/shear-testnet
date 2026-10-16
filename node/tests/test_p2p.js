@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -89,7 +90,7 @@ async function waitFor(fn, ms = 4000) {
   return false;
 }
 
-describe('p2p gossip', () => {
+describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
   it('two loopback nodes converge on the same most-work tip', async () => {
     const dest = destMiner();
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-a-'));
@@ -689,7 +690,7 @@ async function readJsonLines(sock, want, ms = 3000) {
   return lines;
 }
 
-describe('p2p IBD catch-up', { timeout: 7_200_000 }, () => {
+describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
   it('serves headers after locator and paginates past 2000 without a last-N dump', () => {
     const blocks = fakeBlocks(2500);
     const loc = locatorHashes(blocks);

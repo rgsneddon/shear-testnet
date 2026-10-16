@@ -431,6 +431,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.equal(SHEARK_MINER_VERSION, '2.9');
     assert.equal(MAGIC_TESTNET_V10, 'shear-testnet-v10');
     assert.equal(MAGIC_TESTNET_V11, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(GENESIS_BITS, 17);

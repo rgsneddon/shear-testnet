@@ -5,7 +5,7 @@
  */
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceipt } from './dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceiptRejected } from './dummy.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
@@ -222,7 +222,9 @@ export function admitMempool(pool, tx, opts = {}) {
     if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
     if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
   }
-  if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
+  const publicReceipt = publicReserveReceiptRejected(tx);
+  if (publicReceipt) return publicReceipt;
+  if (moneyNeedsRange(tx)) {
     for (const o of (tx.vout || [])) {
       if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
         return { ok: false, reason: 'range_proof' };
@@ -286,7 +288,13 @@ export function admitMempool(pool, tx, opts = {}) {
       const id = reserveWithdrawMintId(prev, opts.reserveState || null);
       if (id) drawn.add(id);
     }
-    const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn);
+    const headerMs = Number(opts.nowMs);
+    const stake = boundReserveWithdraw(
+      tx,
+      opts.reserveState || null,
+      drawn,
+      Number.isFinite(headerMs) && headerMs > 0 ? headerMs : null,
+    );
     if (!stake.ok) return { ...stake, vault: true };
     // A carried vault already includes every accepted reserve tx. Trial only
     // this one. A caller with no carried vault still trials the prefix once.
