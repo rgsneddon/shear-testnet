@@ -7,7 +7,7 @@ import { potSubsidyAt, potSubsidyNanos, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '.
 import { PI_SHE_NANOS, GENESIS_BPS, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
-import { reserveAction, attachLockEquality, provePrincipalOpen, lockWitnessOf } from '../../crypto/reserve_vault.js';
+import { reserveAction, attachLockEquality, provePrincipalOpen, lockWitnessOf, portalIdFromDest } from '../../crypto/reserve_vault.js';
 import { lockTx, withdrawTx } from '../../crypto/owned_portal.js';
 import { verifySealedNote } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
@@ -142,7 +142,7 @@ function drawBlock(ts, miner, portals, payout, principal = null, lockBlock = nul
     const lock = locks && locks[i];
     const held = lock ? lockWitnessOf(lock) : null;
     if (held && lock?.vout?.[0]?.commit) {
-      tx.principalProof = provePrincipalOpen(lock.vout[0].commit, payout, held.blind);
+      tx.principalProof = provePrincipalOpen(lock.vout[0].commit, payout, held.blind, tx, portalIdFromDest(portal));
     }
     return tx;
   });

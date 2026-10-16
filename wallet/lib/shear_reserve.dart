@@ -193,11 +193,14 @@ const int kVaultMintDelayBlocks = 4;
 /// Target block interval used only to place the shared claim slot.
 const int kVaultBatchBlockMs = 90000;
 
-/// Epoch close plus N target blocks. Claims posted before this slot are early.
-int vaultClaimSlotMs(ShearReserve reserve, int epoch) {
+/// A stable height in [close, close + 4 blocks], chosen from the payout and the epoch.
+/// The same dest retries the same slot. Claims posted before that slot are early.
+int vaultClaimSlotMs(ShearReserve reserve, int epoch, {String dest = ''}) {
   if (reserve.epochStartMs <= 0) return 0;
   final close = reserve.epochStartMs + (epoch + 1) * kReserveEpochMs;
-  return close + kVaultMintDelayBlocks * kVaultBatchBlockMs;
+  final hash = sha256.convert(utf8.encode('$dest|$epoch|${reserve.epochStartMs}')).bytes;
+  final pick = hash[0] % (kVaultMintDelayBlocks + 1);
+  return close + pick * kVaultBatchBlockMs;
 }
 
 /// Previous-epoch reward. Builds the vault-lock proof, then posts a claim.
@@ -215,7 +218,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
 }) async {
   final due = reserve.portal(dest).claimableRewards;
   if (due <= 0) return null;
-  final slot = vaultClaimSlotMs(reserve, reserve.portal(dest).lockEpoch);
+  final slot = vaultClaimSlotMs(reserve, reserve.portal(dest).lockEpoch, dest: dest);
   if (slot > 0 && nowMs < slot) return null;
   var proof = vaultProof;
   if (proof == null) {

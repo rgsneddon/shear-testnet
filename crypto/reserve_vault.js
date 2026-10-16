@@ -48,6 +48,7 @@ import { txDigestV3 } from './admit_v3.js';
 import { publicReserveReceipt } from './dummy.js';
 import {
   proveLockCap, verifyLockCap, verifyVaultReward, vaultProofCap, vaultPublicReward,
+  verifyLeafRetire,
 } from './vault_reward_fs1.js';
 
 export const VOTE_INCREASE = 'increase bonus';
@@ -867,17 +868,51 @@ function lockNoteBytes(note) {
  * Append one vault-lock note. Many locks share an epoch. Each stores its
  * own remainder commitment. The remainder integer is not recorded.
  */
+function liveVaultNotes(state) {
+  const notes = Array.isArray(state?.vaultLockNotes) ? state.vaultLockNotes : [];
+  const retired = state?.vaultRetired || {};
+  return notes.filter((hex) => !retired[hex]);
+}
+
+/** Rebuild the FS-1 root from notes a withdraw has not retired. */
+function rebuildVaultLockRoot(state) {
+  const live = liveVaultNotes(state);
+  const handle = fs1TreeNew();
+  if (!handle) return null;
+  if (live.length && !fs1TreeAppend(handle, Buffer.concat(live.map((hex) => Buffer.from(hex, 'hex'))))) return null;
+  VAULT_LOCK_HANDLES.set(state, { handle, n: live.length });
+  if (!live.length) {
+    state.vaultLockRoot = createHash('sha256').update('shear-empty-root-v1').digest('hex');
+    return state.vaultLockRoot;
+  }
+  const root = fs1TreeRoot(handle);
+  if (!root || root.length !== 32) return null;
+  state.vaultLockRoot = root.toString('hex');
+  return state.vaultLockRoot;
+}
+
+function retireVaultLeaf(state, commitHex) {
+  const noteHex = state?.vaultLockIndex?.[commitHex];
+  if (!noteHex) return { retired: false };
+  if (!state.vaultRetired) state.vaultRetired = Object.create(null);
+  state.vaultRetired[noteHex] = true;
+  if (!rebuildVaultLockRoot(state)) return null;
+  return { retired: true, noteHex };
+}
+
 export function appendVaultLockNote(state, note, terms = null) {
   const buf = lockNoteBytes(note);
   if (!state || !buf) return null;
   if (!Array.isArray(state.vaultLockNotes)) state.vaultLockNotes = [];
   const notes = state.vaultLockNotes;
+  const retired = state.vaultRetired || {};
+  const liveBefore = notes.filter((hex) => !retired[hex]);
   let slot = VAULT_LOCK_HANDLES.get(state);
-  if (!slot || slot.n !== notes.length) {
+  if (!slot || slot.n !== liveBefore.length) {
     const handle = fs1TreeNew();
     if (!handle) return null;
-    if (notes.length && !fs1TreeAppend(handle, Buffer.concat(notes.map((hex) => Buffer.from(hex, 'hex'))))) return null;
-    slot = { handle, n: notes.length };
+    if (liveBefore.length && !fs1TreeAppend(handle, Buffer.concat(liveBefore.map((hex) => Buffer.from(hex, 'hex'))))) return null;
+    slot = { handle, n: liveBefore.length };
     VAULT_LOCK_HANDLES.set(state, slot);
   }
   if (!fs1TreeAppend(slot.handle, buf)) return null;
@@ -990,17 +1025,34 @@ function settleLockTotal(state, block, height) {
   return plaintextOpeningRejected(block, ['epochLockTotal', 'epochLockTotals', 'epochLockProof']);
 }
 
+/** A fund proof stays valid for this many blocks after the height it names. */
+export const LOCK_FUND_HEIGHT_WINDOW = 4;
+
+function fundBoundHeight(height) {
+  const at = Math.floor(Number(height));
+  if (!Number.isSafeInteger(at) || at < 0) return null;
+  return at;
+}
+
 /**
- * Transcript for the lock-leaf equality proof: domain and the tx hash.
- * The free id string and the exact block height are not in it, so a missed
- * block or a reorg of one height does not invalidate the proof.
+ * Transcript for the lock-leaf equality proof: domain, the tx hash, and the
+ * height the proof names. A block in [height, height + window] still accepts it.
+ * The free id string is not in the hash.
  */
 export function lockFundContext(tx, height, magic) {
-  void height;
+  const at = fundBoundHeight(height);
+  if (at == null) return null;
   let digest;
   try { digest = txDigestV3(tx, magic || MAGIC_TESTNET); } catch { return null; }
   if (!digest || digest.length !== 32) return null;
-  return Buffer.concat([Buffer.from(LOCK_FUND_DST), digest]);
+  return Buffer.concat([Buffer.from(LOCK_FUND_DST), digest, u64le(at)]);
+}
+
+export function fundHeightAccepted(proofHeight, blockHeight) {
+  const bound = fundBoundHeight(proofHeight);
+  const now = fundBoundHeight(blockHeight);
+  if (bound == null || now == null) return false;
+  return now >= bound && now <= bound + LOCK_FUND_HEIGHT_WINDOW;
 }
 
 function schnorrH(P, s, extra) {
@@ -1104,8 +1156,16 @@ export function lockFundingRejected(tx, ctx = {}) {
   if (!raw || raw.length !== 32) return { ok: false, reason: 'stake_reward' };
   const range = out?.rangeProof;
   if (!range || !verifyRange(raw, range)) return { ok: false, reason: 'stake_reward' };
-  const extra = lockFundContext(tx, ctx.height, ctx.magic);
   const want = note.subarray(32, 64);
+  let same = false;
+  try {
+    same = pointBytes(pointFrom(want).subtract(pointFrom(raw))).equals(pointBytes(RistrettoPoint.ZERO));
+  } catch {
+    same = false;
+  }
+  const boundHeight = same ? ctx.height : out.fundProof?.height;
+  if (!same && !fundHeightAccepted(boundHeight, ctx.height)) return { ok: false, reason: 'stake_reward' };
+  const extra = lockFundContext(tx, boundHeight, ctx.magic);
   if (!sameCommitValue(want, raw, out.fundProof, extra)) return { ok: false, reason: 'stake_reward' };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   for (const row of outs) {
@@ -1125,16 +1185,17 @@ const PRINCIPAL_OPEN_DST = Buffer.from('shear-withdraw-principal-v1');
 /** Wallet-only witness so a test can bind the equality proof after the vin is set. Not chain state. */
 const LOCK_WITNESS = new WeakMap();
 
-/** Opening of `amount` under `blind` for this lock commitment, bound to the tx hash. */
-export function proveLockEquality(commitBuf, amount, blind, tx, magic = MAGIC_TESTNET) {
+/** Opening of `amount` under `blind` for this lock commitment, bound to the tx hash and height. */
+export function proveLockEquality(commitBuf, amount, blind, tx, magic = MAGIC_TESTNET, height = 0) {
   try {
     const n = BigInt(amount);
     const r = typeof blind === 'bigint' ? blind : scalarFrom(blind);
-    const extra = lockFundContext(tx, null, magic);
-    if (!extra || n < 0n) return null;
+    const at = fundBoundHeight(height);
+    const extra = lockFundContext(tx, at, magic);
+    if (!extra || at == null || n < 0n) return null;
     const P = pointFrom(commitBuf).subtract(G.multiply(Fn.create(n)));
     if (!P.equals(H.multiply(r))) return null;
-    return schnorrH(P, r, extra);
+    return { ...schnorrH(P, r, extra), height: at };
   } catch {
     return null;
   }
@@ -1143,7 +1204,7 @@ export function proveLockEquality(commitBuf, amount, blind, tx, magic = MAGIC_TE
 function verifyLockEquality(commitBuf, amount, proof, tx, magic) {
   try {
     const n = BigInt(amount);
-    const extra = lockFundContext(tx, null, magic);
+    const extra = lockFundContext(tx, proof?.height, magic);
     if (!extra || n < 0n || !proof?.R || !proof?.z) return false;
     const P = pointFrom(commitBuf).subtract(G.multiply(Fn.create(n)));
     return schnorrHOk(P, proof.R, proof.z, extra);
@@ -1191,26 +1252,46 @@ export function attachLockEquality(tx, magic = MAGIC_TESTNET) {
   return true;
 }
 
-/** Opening of a hidden lock commitment to the published withdraw integer. */
-export function provePrincipalOpen(commitBuf, amount, blind) {
+function portalWord(portalId) {
+  const raw = String(portalId || '').replace(/^0x/i, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(raw)) return null;
+  return Buffer.from(raw, 'hex');
+}
+
+/** Domain || tx digest || portal id. A proof with no tx is not a consensus opening. */
+function principalTranscript(tx, portalId, magic) {
+  const portal = portalWord(portalId);
+  if (!portal || !tx) return null;
+  let digest;
+  try { digest = txDigestV3(tx, magic || MAGIC_TESTNET); } catch { return null; }
+  if (!digest || digest.length !== 32) return null;
+  return Buffer.concat([PRINCIPAL_OPEN_DST, digest, portal]);
+}
+
+/** Opening of a hidden lock commitment to the published withdraw integer, bound to this tx and portal. */
+export function provePrincipalOpen(commitBuf, amount, blind, tx, portalId, magic = MAGIC_TESTNET) {
   try {
     const n = BigInt(amount);
     const r = typeof blind === 'bigint' ? blind : scalarFrom(blind);
-    if (n < 0n) return null;
+    const extra = principalTranscript(tx, portalId, magic);
+    if (!extra || n < 0n) return null;
     const P = pointFrom(commitBuf).subtract(G.multiply(Fn.create(n)));
     if (!P.equals(H.multiply(r))) return null;
-    return schnorrH(P, r, PRINCIPAL_OPEN_DST);
+    const sig = schnorrH(P, r, extra);
+    const opened = n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n;
+    return { ...sig, opened };
   } catch {
     return null;
   }
 }
 
-export function verifyPrincipalOpen(commitBuf, amount, proof) {
+export function verifyPrincipalOpen(commitBuf, amount, proof, tx, portalId, magic = MAGIC_TESTNET) {
   try {
     const n = BigInt(amount);
-    if (n < 0n || !proof?.R || !proof?.z) return false;
+    const extra = principalTranscript(tx, portalId, magic);
+    if (!extra || n < 0n || !proof?.R || !proof?.z) return false;
     const P = pointFrom(commitBuf).subtract(G.multiply(Fn.create(n)));
-    return schnorrHOk(P, proof.R, proof.z, PRINCIPAL_OPEN_DST);
+    return schnorrHOk(P, proof.R, proof.z, extra);
   } catch {
     return false;
   }
@@ -1277,6 +1358,7 @@ function vaultClaimRejected(tx, state) {
     root: Buffer.from(terms.root, 'hex'),
     rootEpoch: terms.earnEpoch,
     nullifier: Buffer.from(nullifier, 'hex'),
+    output: hiddenClaimNote(tx),
     terms,
     magic: state?.magic || MAGIC_TESTNET,
   });
@@ -2139,15 +2221,6 @@ function noteLockCap(state, epoch, lockCommit, proof) {
   }
   if (!verifyLockCap(lockCommit, bps, proof)) return false;
   const capHex = Buffer.from(proof.commit).toString('hex');
-  if (!state.epochCapSum) state.epochCapSum = Object.create(null);
-  if (!state.epochCapSeen) state.epochCapSeen = Object.create(null);
-  const key = String(epoch);
-  if (!state.epochCapSeen[key]) state.epochCapSeen[key] = Object.create(null);
-  const seen = `${lockHex}:${capHex}`;
-  if (!state.epochCapSeen[key][seen]) {
-    state.epochCapSeen[key][seen] = true;
-    state.epochCapSum[key] = addPointSum(state.epochCapSum[key], proof.commit);
-  }
   if (!state.vaultLockNoted) state.vaultLockNoted = Object.create(null);
   state.vaultLockNoted[lockHex] = true;
   if (!state.vaultLockCap) state.vaultLockCap = Object.create(null);
@@ -2282,31 +2355,34 @@ export function hiddenOpenOf(portal, commitHex) {
   return row ? { nanos: row.nanos, blind: row.blind } : null;
 }
 
-/** True when `proof` opens `amount` as one matured hidden lock of this portal. */
-export function hiddenPrincipalOpens(state, portal, nowMs, amount, proof) {
-  if (!portal || !proof) return false;
+/** True when `proof` opens `amount` as one matured hidden lock of this portal, on this tx. */
+export function hiddenPrincipalOpens(state, portal, nowMs, amount, proof, tx = null) {
+  if (!portal || !proof || !tx) return false;
   const want = exactBi(amount);
   if (want == null || want <= 0n) return false;
+  const id = portal.id || portalKey(portal.dest);
   return maturedHiddenCommits(state, portal, nowMs).some((hex) =>
-    verifyPrincipalOpen(Buffer.from(hex, 'hex'), want, proof));
+    verifyPrincipalOpen(Buffer.from(hex, 'hex'), want, proof, tx, id, state?.magic));
 }
 
 /**
  * The next matured hidden lock this process can open.
  * The blind stays in the wallet witness. Consensus still requires the proof on the tx.
  */
-export function hiddenWithdrawOpening(state, destOrPortal, nowMs) {
+export function hiddenWithdrawOpening(state, destOrPortal, nowMs, tx = null) {
   const portal = destOrPortal && Array.isArray(destOrPortal.tranches)
     ? destOrPortal
     : state?.portals?.[portalKey(destOrPortal)];
   if (!portal) return null;
+  const id = portal.id || portalKey(destOrPortal);
   for (const hex of maturedHiddenCommits(state, portal, nowMs)) {
     const open = hiddenOpenOf(portal, hex);
     if (!open) continue;
-    const proof = provePrincipalOpen(Buffer.from(hex, 'hex'), open.nanos, open.blind);
-    if (!proof) continue;
     const nanos = open.nanos <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(open.nanos) : open.nanos;
-    return { commit: hex, nanos, proof };
+    const proof = tx
+      ? provePrincipalOpen(Buffer.from(hex, 'hex'), open.nanos, open.blind, tx, id, state?.magic)
+      : null;
+    return { commit: hex, nanos, blind: open.blind, proof };
   }
   return null;
 }
@@ -3456,8 +3532,15 @@ export function verifyReservePayout(state, tx, clockMs) {
   const hidden = maturedHiddenCommits(state, p, clock);
   if (hidden.length) {
     if (act.opened === false || !(act.nanos > 0)) return { ok: false, reason: 'mint_amount' };
-    const opens = hidden.some((hex) => verifyPrincipalOpen(Buffer.from(hex, 'hex'), act.nanos, tx.principalProof));
+    const hinted = tx.principalProof?.opened != null ? exactBi(tx.principalProof.opened) : exactBi(act.nanos);
+    if (hinted == null || hinted <= 0n) return { ok: false, reason: 'stake_reward' };
+    const portalId = p.id || act.portalId;
+    const opens = hidden.some((hex) => verifyPrincipalOpen(
+      Buffer.from(hex, 'hex'), hinted, tx.principalProof, tx, portalId, state.magic,
+    ));
     if (!opens) return { ok: false, reason: 'stake_reward' };
+    if (BigInt(act.nanos) > hinted) return { ok: false, reason: 'over_mint' };
+    if (BigInt(act.nanos) < hinted) return { ok: false, reason: 'principal_short' };
     const mintId = withdrawMintId(p.id || act.portalId, mintEpoch(state, clock));
     if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
     return { ok: true };
@@ -3848,6 +3931,8 @@ export function applyReserveBlock({
         payoutPortalId: act.payoutPortalId,
         principal: act.nanos,
         principalProof: tx.principalProof,
+        retireProof: tx.retireProof,
+        tx,
       });
       results.push({ action: KIND_WITHDRAW, ...got });
       if (!got.ok) {
@@ -4075,7 +4160,10 @@ export function enact({ state, nowMs } = {}) {
   };
 }
 
-export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId, principal = null, principalProof = null } = {}) {
+export function withdraw({
+  state, dest, portalId, nowMs, payout, payoutPortalId,
+  principal = null, principalProof = null, retireProof = null, tx = null,
+} = {}) {
   if (!state) return { ok: false, reason: 'no_vault' };
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   const id = portalKey(portalId || dest);
@@ -4120,13 +4208,23 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId,
     const want = exactBi(principal);
     if (want == null || want <= 0n) return { ok: false, reason: 'mint_amount' };
     for (const hex of hiddenCommits) {
-      if (verifyPrincipalOpen(Buffer.from(hex, 'hex'), want, principalProof)) {
+      if (verifyPrincipalOpen(Buffer.from(hex, 'hex'), want, principalProof, tx, id, state?.magic)) {
         openedCommit = hex;
         hiddenPrincipal = want;
         break;
       }
     }
     if (!openedCommit) return { ok: false, reason: 'stake_reward' };
+  }
+  let retireNullifier = null;
+  if (openedCommit && state.vaultLockIndex?.[openedCommit]) {
+    const noteHex = state.vaultLockIndex[openedCommit];
+    const burned = verifyLeafRetire(retireProof);
+    if (!burned || burned.leaf.toString('hex') !== noteHex) return { ok: false, reason: 'stake_reward' };
+    const tranche = (p.tranches || []).find((row) => commitBytes(row?.commit)?.toString('hex') === openedCommit);
+    const lockEpoch = Math.floor(Number(tranche?.epoch) || 0);
+    if (burned.epoch !== BigInt(lockEpoch)) return { ok: false, reason: 'stake_reward' };
+    retireNullifier = burned.nullifier.toString('hex');
   }
   const release = hiddenCommits.length ? hiddenPrincipal : split.legacy;
   if (release <= 0n && hiddenCommits.length === 0) return { ok: false, reason: 'epoch_open' };
@@ -4202,6 +4300,10 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId,
   state.mintedIds = state.mintedIds || Object.create(null);
   rememberMint(state, withdrawId);
   state.mintedIds[withdrawId] = true;
+  if (retireNullifier) {
+    if (!retireVaultLeaf(state, openedCommit)?.retired) return { ok: false, reason: 'stake_reward' };
+    state.mintedIds[retireNullifier] = true;
+  }
   return {
     ok: true,
     principal: shownPrincipal,

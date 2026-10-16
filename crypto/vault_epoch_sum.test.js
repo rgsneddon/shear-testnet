@@ -23,7 +23,7 @@ import {
   encodePinClock,
 } from './reserve_evm.js';
 import { readFileSync } from 'node:fs';
-import { proveVaultReward, vaultLockNote } from './vault_reward_fs1.js';
+import { packVaultOutput, proveVaultReward, vaultLockNote } from './vault_reward_fs1.js';
 
 const T0 = 1_700_000_000_000;
 const span = RESERVE_EPOCH_MS;
@@ -207,19 +207,19 @@ describe('epoch sums stay commitments', () => {
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, proved.rootHex))).ok, true);
     const evm = await callReserve(
       session,
-      encodeClaim(proved.nullifier, proved.nanos, proved.blob, 0),
+      encodeClaim(proved.nullifier, proved.nanos, proved.blob, 0, packVaultOutput(proved.note)),
     );
     assert.equal(evm.ok, true, evm.reason);
     const word = BigInt(`0x${Buffer.from(evm.returnValue).subarray(0, 32).toString('hex')}`);
     assert.equal(word, BigInt(proved.nanos));
     const again = await callReserve(
       session,
-      encodeClaim(proved.nullifier, proved.nanos, proved.blob, 0),
+      encodeClaim(proved.nullifier, proved.nanos, proved.blob, 0, packVaultOutput(proved.note)),
     );
     assert.equal(again.ok, false);
   });
 
-  it('JS and the EVM publish the reward at the 0xa8 offset and refuse a reward that does not match', async () => {
+  it('JS and the EVM publish the reward at the 0xa9 offset and refuse a reward that does not match', async () => {
     const pay = who();
     const locks = [{ amount: PI_SHE_NANOS, scalar: 4n, blind: 5n }];
     const first = proveVaultReward({
@@ -256,7 +256,7 @@ describe('epoch sums stay commitments', () => {
     assert.equal(partial, null);
     const headerAt = (blob) => 5 + blob.readUInt32LE(1) + 321 + 4 + 8 + 8;
     const off = headerAt(first.blob);
-    assert.equal(first.blob[0], 0xa8);
+    assert.equal(first.blob[0], 0xa9);
     assert.equal(first.blob.readBigUInt64LE(off), BigInt(first.nanos));
     assert.equal(first.blob.includes(first.locks[0].commit), false);
     assert.equal(second.blob.includes(second.locks[0].commit), false);
@@ -272,7 +272,7 @@ describe('epoch sums stay commitments', () => {
     assert.notEqual(memberOf(first.blob), memberOf(second.blob));
     assert.notEqual(first.nullifier, second.nullifier);
     const sol = readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
-    assert.match(sol, /proof\[0\] != 0xa8/);
+    assert.match(sol, /proof\[0\] != 0xa9/);
     assert.match(sol, /5 \+ fs1Len \+ 321 \+ 4 \+ 8 \+ 8/);
     assert.equal(sol.includes('off + 1 + 32:off + 1 + 64'), false);
 
@@ -309,17 +309,17 @@ describe('epoch sums stay commitments', () => {
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, first.rootHex))).ok, true);
-    const evmWrong = await callReserve(session, encodeClaim(first.nullifier, Number(wrong.readBigUInt64LE(off)), wrong, 0));
+    const evmWrong = await callReserve(session, encodeClaim(first.nullifier, Number(wrong.readBigUInt64LE(off)), wrong, 0, packVaultOutput(first.note)));
     assert.equal(evmWrong.ok, false);
 
     const honest = await bootReserveEvm();
     assert.equal((await callReserve(honest, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(honest, encodeCommitEpochStartRoot(0, first.rootHex))).ok, true);
-    const evmHonest = await callReserve(honest, encodeClaim(first.nullifier, first.nanos, first.blob, 0));
+    const evmHonest = await callReserve(honest, encodeClaim(first.nullifier, first.nanos, first.blob, 0, packVaultOutput(first.note)));
     assert.equal(evmHonest.ok, true, evmHonest.reason);
     const evmWord = BigInt(`0x${Buffer.from(evmHonest.returnValue).subarray(0, 32).toString('hex')}`);
     assert.equal(evmWord, BigInt(first.nanos));
-    const evmAgain = await callReserve(honest, encodeClaim(first.nullifier, first.nanos, first.blob, 0));
+    const evmAgain = await callReserve(honest, encodeClaim(first.nullifier, first.nanos, first.blob, 0, packVaultOutput(first.note)));
     assert.equal(evmAgain.ok, false);
   });
 });

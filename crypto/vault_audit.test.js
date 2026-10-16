@@ -47,12 +47,10 @@ import {
 import {
   bootReserveEvm,
   callReserve,
-  encodeChargeEpoch,
   encodeCommitRewards,
   encodeCommitVaultRoot,
   encodeDeposit,
   encodePinClock,
-  encodeSetEpochDue,
 } from './reserve_evm.js';
 import {
   epochCapBlind,
@@ -87,7 +85,7 @@ function fundProof(lockCommit, outCommit, s, tx, height, magic) {
   const extra = lockFundContext(tx, height, magic);
   const e = hashToScalar(pointBytes(P), pointBytes(R), extra);
   const z = Fn.add(k, Fn.mul(e, s));
-  return { R: pointBytes(R), z: scalarBytes(z) };
+  return { R: pointBytes(R), z: scalarBytes(z), height };
 }
 
 function proveLock(amount, epoch = 0) {
@@ -103,7 +101,7 @@ function proveLock(amount, epoch = 0) {
     dest20: who.d20,
   });
   assert.ok(proved, 'proof');
-  assert.equal(proved.blob[0], 0xa8);
+  assert.equal(proved.blob[0], 0xa9);
   assert.equal(proved.blob.includes(proved.locks[0].commit), false);
   return { who, proved };
 }
@@ -182,6 +180,7 @@ describe('hidden vault claims', () => {
         nanos: row.proved.nanos,
         rootEpoch: 0,
         earnEpoch: 0,
+        note: row.proved.note,
       },
     });
     const one = applyReserveBlock({
@@ -242,6 +241,7 @@ describe('hidden vault claims', () => {
         nanos: row.proved.nanos,
         rootEpoch: 1,
         earnEpoch: 1,
+        note: row.proved.note,
       },
     });
     tx.full = true;
@@ -273,6 +273,7 @@ describe('hidden vault claims', () => {
         nanos: Number(forgedBlob.readBigUInt64LE(atReward)),
         rootEpoch: 0,
         earnEpoch: 0,
+        note: bad.proved.note,
       },
     });
     const refused = applyReserveBlock({
@@ -500,6 +501,7 @@ describe('hidden vault claims', () => {
         nanos: row.proved.nanos,
         rootEpoch: 0,
         earnEpoch: 0,
+        note: row.proved.note,
       },
     });
     const early = applyReserveBlock({
@@ -602,7 +604,7 @@ describe('hidden vault claims', () => {
     assert.equal(proofs.every((row) => row.rootHex === root), true);
     const claims = proofs.map((row) => rewardClaimTx({
       to: who.dest,
-      vault: { blob: row.blob, nullifier: row.nullifier, nanos: row.nanos, rootEpoch: 0, earnEpoch: 0 },
+      vault: { blob: row.blob, nullifier: row.nullifier, nanos: row.nanos, rootEpoch: 0, earnEpoch: 0, note: row.note },
     }));
     const paid = applyReserveBlock({
       state,
@@ -648,6 +650,7 @@ describe('hidden vault claims', () => {
             nanos: proofs[0].nanos + 1,
             rootEpoch: 0,
             earnEpoch: 0,
+            note: proofs[0].note,
           },
         })],
       },
@@ -685,6 +688,7 @@ describe('hidden vault claims', () => {
         nanos: later.nanos,
         rootEpoch: 1,
         earnEpoch: 1,
+        note: later.note,
       },
     });
     claim.full = true;
@@ -727,6 +731,7 @@ describe('hidden vault claims', () => {
           nanos: row.proved.nanos,
           rootEpoch: 0,
           earnEpoch: 0,
+          note: row.proved.note,
         },
       });
       tx.full = true;
@@ -735,7 +740,8 @@ describe('hidden vault claims', () => {
     const take = (state) => {
       const commit = state.portals[portalIdFromDest(who.dest)].tranches.at(-1).commit;
       const tx = withdrawTx({ from: who.dest, to: who.dest, nanos: PI_SHE_NANOS, id: `wd-${state.vaultLockRoot.slice(0, 8)}` });
-      tx.principalProof = provePrincipalOpen(Buffer.from(commit, 'hex'), PI_SHE_NANOS, lockBlind);
+      tx.vout.push({ ...row.proved.note, kind: 'reward-claim', address: who.dest });
+      tx.principalProof = provePrincipalOpen(Buffer.from(commit, 'hex'), PI_SHE_NANOS, lockBlind, tx, portalIdFromDest(who.dest));
       tx.vaultProof = row.proved.blob;
       tx.nullifier = row.proved.nullifier;
       tx.rootEpoch = 0;
@@ -818,11 +824,12 @@ describe('hidden vault claims', () => {
         nanos: row.proved.nanos,
         rootEpoch: 0,
         earnEpoch: 0,
+        note: row.proved.note,
       },
     });
     const commit = state.portals[portal].tranches.at(-1).commit;
     const draw = withdrawTx({ from: who.dest, to: who.dest, nanos: PI_SHE_NANOS, id: 'wd-interest' });
-    draw.principalProof = provePrincipalOpen(Buffer.from(commit, 'hex'), PI_SHE_NANOS, lockBlind);
+    draw.principalProof = provePrincipalOpen(Buffer.from(commit, 'hex'), PI_SHE_NANOS, lockBlind, draw, portal);
     signWithdrawReward(draw, who.id.privateKey, {
       portalId: portal,
       nanos: PI_SHE_NANOS,
@@ -890,10 +897,6 @@ describe('hidden vault claims', () => {
     assert.equal(zero.ok, false);
     const stored = await callReserve(session, encodeCommitVaultRoot(0, root));
     assert.equal(stored.ok, true, stored.reason);
-    assert.equal((await callReserve(session, encodeSetEpochDue(0, 100))).ok, true);
-    assert.equal((await callReserve(session, encodeChargeEpoch(0, 40))).ok, true);
-    const over = await callReserve(session, encodeChargeEpoch(0, 61));
-    assert.equal(over.ok, false);
     const empty = await callReserve(session, encodeCommitRewards(T0 + span, '00'.repeat(32)));
     const nonempty = await callReserve(session, encodeCommitRewards(T0 + span, root));
     assert.equal(nonempty.ok, true, nonempty.reason);
@@ -987,6 +990,7 @@ describe('hidden vault claims', () => {
         nanos: row.proved.nanos,
         rootEpoch: 0,
         earnEpoch: 0,
+        note: row.proved.note,
       },
     });
     claim.full = true;

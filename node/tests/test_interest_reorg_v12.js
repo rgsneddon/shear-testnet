@@ -21,7 +21,7 @@ import {
   EPOCH_DAYS_TESTNET,
 } from '../../crypto/asert.js';
 import { MS_PER_DAY } from '../../crypto/pot_sched.js';
-import { applyReserveBlock, attachLockEquality, cloneVault, lockWitnessOf, portalIdFromDest, provePrincipalOpen, supplyIdentity, withdraw } from '../../crypto/reserve_vault.js';
+import { applyReserveBlock, attachLockEquality, cloneVault, lockWitnessOf, portalIdFromDest, provePrincipalOpen, supplyIdentity, withdraw, withdrawTx } from '../../crypto/reserve_vault.js';
 import { lockTx } from '../../crypto/owned_portal.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { kernelExcess, noteU64, sealCoinbaseNote, verifySealedNote } from '../../crypto/note.js';
@@ -127,13 +127,15 @@ describe('store reorg across a note-funded lock', () => {
     const paid = cloneVault(local.reserveVault);
     const feeBefore = nanosOf(paid.feeBankNanos);
     const held = lockWitnessOf(lock);
+    const drawnTx = withdrawTx({ from: portal, to: portal, nanos: PI_SHE_NANOS, id: 'reorg-draw' });
     const drawn = withdraw({
       state: paid,
       dest: portal,
       portalId: pid,
       nowMs: T0 + 90_000 + EPOCH_MS + 1,
       principal: PI_SHE_NANOS,
-      principalProof: provePrincipalOpen(lock.vout[0].commit, PI_SHE_NANOS, held.blind),
+      principalProof: provePrincipalOpen(lock.vout[0].commit, PI_SHE_NANOS, held.blind, drawnTx, pid),
+      tx: drawnTx,
     });
     assert.equal(drawn.ok, true, drawn.reason);
     assert.equal(drawn.principal, PI_SHE_NANOS);

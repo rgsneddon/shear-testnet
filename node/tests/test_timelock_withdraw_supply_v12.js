@@ -28,13 +28,16 @@ import { potSubsidyAt } from '../../crypto/pot_sched.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import {
   applyReserveBlock,
+  attachLockEquality,
   blockPermittedInterest,
   blockWithdrawInterest,
   emptyVault,
   lockUnlockOf,
+  lockWitnessOf,
   portalEpochInterest,
   portalIdFromDest,
   previewWithdraw,
+  provePrincipalOpen,
   rewardCommitment,
   signWithdrawReward,
   supplyIdentity,
@@ -105,6 +108,55 @@ function withdrawRow(applied) {
   return (applied || []).find((row) => row && row.action === 'withdraw') || null;
 }
 
+/** A withdraw that publishes one matured lock's principal, bound to this tx. */
+function openedPrincipalTx(state, dest, when, locks, id, { admit = false } = {}) {
+  const list = (Array.isArray(locks) ? locks : [locks]).filter(Boolean);
+  const portalId = portalIdFromDest(dest);
+  const chain = Math.floor((Number(when) - Number(state.genesisMs)) / RESERVE_EPOCH_MS);
+  let held = null;
+  let commit = null;
+  for (const lock of list) {
+    const witness = lockWitnessOf(lock);
+    const word = lock?.vout?.[0]?.commit;
+    if (!witness || !word) continue;
+    const hex = Buffer.from(word).toString('hex');
+    const tranche = (state.portals?.[portalId]?.tranches || []).find((row) => String(row.commit) === hex);
+    if (!tranche || chain <= Math.floor(Number(tranche.epoch) || 0)) continue;
+    held = witness;
+    commit = Buffer.from(word);
+    break;
+  }
+  if (!held || !commit) return null;
+  const nanos = held.amount <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(held.amount) : held.amount;
+  const tx = admit
+    ? admitWithdraw(dest, nanos, id)
+    : withdrawTx({ from: dest, to: dest, nanos, id });
+  const proof = provePrincipalOpen(commit, held.amount, held.blind, tx, portalId, state.magic);
+  if (!proof) return null;
+  tx.principalProof = proof;
+  signWithdrawReward(tx, ownerFor(dest).key, {
+    portalId,
+    nanos,
+    dest,
+    state,
+    nowMs: when,
+  });
+  return { tx, nanos, proof };
+}
+
+function payOpened(state, dest, when, locks, id) {
+  const opened = openedPrincipalTx(state, dest, when, locks, id);
+  assert.ok(opened, id);
+  return withdraw({
+    state,
+    dest,
+    nowMs: when,
+    principal: opened.nanos,
+    principalProof: opened.proof,
+    tx: opened.tx,
+  });
+}
+
 function header(ts) {
   return encodeHeader({
     prevBlockHash: Buffer.alloc(32),
@@ -153,17 +205,23 @@ describe('time-locked withdraw supply', () => {
     assert.equal(preview.notePrincipal, 0);
     assert.equal(preview.reason, undefined);
     assert.equal(preview.payout, 0);
-    const exact = admitWithdraw(dest, preview.payout, 'spend-withdraw');
-    assert.equal(verifyReservePayout(state, exact, DRAW).ok, true);
+    const hiddenBound = boundReserveWithdraw(
+      admitWithdraw(dest, preview.payout, 'spend-hidden'),
+      state,
+      new Set(),
+      DRAW,
+    );
+    assert.equal(hiddenBound.ok, true, hiddenBound.reason);
+    assert.equal(hiddenBound.cap, preview.payout);
+    const exact = openedPrincipalTx(state, dest, DRAW, lock, 'spend-withdraw', { admit: true });
+    assert.ok(exact);
+    assert.equal(verifyReservePayout(state, exact.tx, DRAW).ok, true, exact && 'payout');
     for (const delta of [1]) {
       const off = admitWithdraw(dest, preview.payout + delta, `spend-${delta}`);
       assert.equal(verifyReservePayout(state, off, DRAW).ok, false, String(delta));
       const bound = boundReserveWithdraw(off, state, new Set(), DRAW);
       assert.equal(bound.ok, false, String(delta));
     }
-    const bound = boundReserveWithdraw(exact, state, new Set(), DRAW);
-    assert.equal(bound.ok, true, bound.reason);
-    assert.equal(bound.cap, preview.payout);
 
     const plan = rewardCommitment(state, DRAW);
     const credited = applyReserveBlock({
@@ -178,17 +236,18 @@ describe('time-locked withdraw supply', () => {
     assert.equal(Number(portal.staked) + Number(portal.idle), 0);
     assert.equal(Number(portal.redeemedNanos || 0), 0);
     assert.equal(Number(state.totalLockedNanos), 0);
-    const paid = withdraw({ state, dest, nowMs: DRAW });
+    const paid = payOpened(state, dest, DRAW, lock, 'spend-pay');
     assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.principal, 0);
+    assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(paid.interest, 0);
-    assert.equal(paid.payout, 0);
+    assert.equal(paid.payout, PI_SHE_NANOS);
     const again = withdraw({ state, dest, nowMs: DRAW });
     assert.equal(again.ok, false);
     assert.equal(Number(state.totalLockedNanos), 0);
     const identity = supplyIdentity(state);
-    assert.equal(identity.ok, true, identity.reason);
     assert.equal(identity.mintedReward, 0);
+    assert.equal(identity.ok, false);
+    assert.equal(identity.reason, 'supply');
   });
 
   it('still withdraws a plain receipt, and a lock is the same tranche', () => {
@@ -204,15 +263,10 @@ describe('time-locked withdraw supply', () => {
       portalEpochInterest(plain, plain.portals[portalIdFromDest(plainDest)], DRAW),
       0,
     );
-    const plainDraw = admitWithdraw(plainDest, plainPreview.payout, 'plain-withdraw');
-    signWithdrawReward(plainDraw, ownerFor(plainDest).key, {
-      portalId: portalIdFromDest(plainDest),
-      nanos: 0,
-      dest: plainDest,
-      state: plain,
-      nowMs: DRAW,
-    });
-    assert.equal(verifyReservePayout(plain, plainDraw, DRAW).ok, true);
+    const plainOpened = openedPrincipalTx(plain, plainDest, DRAW, plainTx, 'plain-withdraw', { admit: true });
+    assert.ok(plainOpened);
+    const plainDraw = plainOpened.tx;
+    assert.equal(verifyReservePayout(plain, plainDraw, DRAW).ok, true, 'plain payout');
     const paid = applyReserveBlock({
       state: plain,
       block: { height: 2, txs: [{ coinbase: true, vout: [] }, plainDraw] },
@@ -221,7 +275,7 @@ describe('time-locked withdraw supply', () => {
     });
     const row = withdrawRow(paid);
     assert.equal(row && row.ok, true, row && row.reason);
-    assert.equal(row.principal, 0);
+    assert.equal(row.principal, PI_SHE_NANOS);
     assert.equal(row.interest, 0);
     assert.equal(row.earned, 0);
     const prior = freshVault();
@@ -242,19 +296,15 @@ describe('time-locked withdraw supply', () => {
       valueProof: sealedNote.valueProof,
       rangeProof: sealedNote.rangeProof,
     }];
+    assert.equal(attachLockEquality(noteTx), true);
     assert.equal(applyLock(note, noteTx, T0).ok, true);
     const notePreview = previewWithdraw(note, noteDest, DRAW);
     assert.equal(notePreview.principal, 0);
     assert.equal(notePreview.notePrincipal, 0);
-    const noteDraw = admitWithdraw(noteDest, notePreview.payout, 'fold-withdraw');
-    signWithdrawReward(noteDraw, ownerFor(noteDest).key, {
-      portalId: portalIdFromDest(noteDest),
-      nanos: 0,
-      dest: noteDest,
-      state: note,
-      nowMs: DRAW,
-    });
-    assert.equal(verifyReservePayout(note, noteDraw, DRAW).ok, true);
+    const noteOpened = openedPrincipalTx(note, noteDest, DRAW, noteTx, 'fold-withdraw', { admit: true });
+    assert.ok(noteOpened);
+    const noteDraw = noteOpened.tx;
+    assert.equal(verifyReservePayout(note, noteDraw, DRAW).ok, true, 'fold payout');
     const chain = [
       supplyBlock(T0, noteDest, [noteTx]),
       supplyBlock(DRAW, noteDest, [noteDraw]),
@@ -293,13 +343,21 @@ describe('time-locked withdraw supply', () => {
       );
       assert.equal(off.ok, false, String(delta));
     }
-    const paid = withdraw({ state, dest, nowMs: DRAW });
+    const paid = payOpened(state, dest, DRAW, [legacy, note], 'mixed-pay');
     assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.principal, 0);
-    assert.equal(paid.payout, preview.payout);
-    assert.equal(portal.tranches.length, 0);
+    assert.equal(paid.principal, PI_SHE_NANOS);
+    assert.equal(paid.interest, 0);
+    assert.equal(paid.payout, PI_SHE_NANOS);
+    assert.equal(portal.tranches.length, 1);
     const again = withdraw({ state, dest, nowMs: DRAW });
     assert.equal(again.ok, false);
+    assert.equal(again.reason, 'double_mint');
+    const later = DRAW + RESERVE_EPOCH_MS;
+    const second = payOpened(state, dest, later, [legacy, note], 'mixed-second');
+    assert.equal(second.ok, true, second.reason);
+    assert.equal(second.principal, PI_SHE_NANOS);
+    assert.equal(portal.tranches.length, 0);
+    assert.equal(withdraw({ state, dest, nowMs: later }).ok, false);
     assert.equal(Number(state.totalLockedNanos), 0);
   });
 
@@ -315,9 +373,9 @@ describe('time-locked withdraw supply', () => {
     const portal = state.portals[portalIdFromDest(dest)];
     assert.equal(portal.tranches.length, 2);
     assert.notEqual(portal.tranches[1].noteIsPrincipal, true);
-    const paid = withdraw({ state, dest, nowMs: later });
+    const paid = payOpened(state, dest, later, first, 'top-pay');
     assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.principal, 0);
+    assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(portal.tranches.length, 1);
     assert.notEqual(portal.tranches[0].noteIsPrincipal, true);
     assert.equal(portal.tranches[0].amount, undefined);
@@ -336,14 +394,9 @@ describe('time-locked withdraw supply', () => {
     assert.equal(applyLock(state, note, T0).ok, true);
     assert.equal(applyLock(state, legacy, T0, 2).ok, true);
     assert.equal(rewardCommitment(state, DRAW).rows.length, 0);
-    const pull = withdrawTx({ from: legacyDest, to: legacyDest, nanos: 0, id: 'grief-withdraw' });
-    signWithdrawReward(pull, ownerFor(legacyDest).key, {
-      portalId: portalIdFromDest(legacyDest),
-      nanos: 0,
-      dest: legacyDest,
-      state,
-      nowMs: DRAW,
-    });
+    const pulled = openedPrincipalTx(state, legacyDest, DRAW, legacy, 'grief-withdraw');
+    assert.ok(pulled);
+    const pull = pulled.tx;
     const grief = trialReserveApply({
       state,
       block: { height: 3, txs: [{ coinbase: true, vout: [] }, pull] },
@@ -365,7 +418,8 @@ describe('time-locked withdraw supply', () => {
     const onlyNote = freshVault();
     onlyNote.epochBps = 0;
     onlyNote.pendingRates[0] = 0;
-    assert.equal(applyLock(onlyNote, timeLock(noteDest, T0, 'grief-only'), T0).ok, true);
+    const onlyLock = timeLock(noteDest, T0, 'grief-only');
+    assert.equal(applyLock(onlyNote, onlyLock, T0).ok, true);
     const parked = applyReserveBlock({
       state: onlyNote,
       block: { height: 4, txs: [{ coinbase: true, vout: [] }] },
@@ -376,9 +430,9 @@ describe('time-locked withdraw supply', () => {
     assert.equal(parked.ok, true, parked.reason);
     assert.equal(Number(onlyNote.totalLockedNanos), 0);
     assert.equal(Number(onlyNote.portals[portalIdFromDest(noteDest)].redeemedNanos || 0), 0);
-    const paid = withdraw({ state: onlyNote, dest: noteDest, nowMs: DRAW + 5 * RESERVE_EPOCH_MS });
+    const paid = payOpened(onlyNote, noteDest, DRAW + 5 * RESERVE_EPOCH_MS, onlyLock, 'grief-pay');
     assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.principal, 0);
+    assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(withdraw({ state: onlyNote, dest: noteDest, nowMs: DRAW + 5 * RESERVE_EPOCH_MS }).ok, false);
   });
 
@@ -484,9 +538,11 @@ describe('time-locked withdraw supply', () => {
         const state = freshVault();
         const when = T0 + offset;
         const name = `${label}-${mixed ? 'mixed' : 'legacy'}`;
-        assert.equal(applyLock(state, plainLock(dest, when, `${name}-legacy`), when).ok, true, name);
+        const legacy = plainLock(dest, when, `${name}-legacy`);
+        const note = mixed ? timeLock(dest, when, `${name}-note`) : null;
+        assert.equal(applyLock(state, legacy, when).ok, true, name);
         if (mixed) {
-          assert.equal(applyLock(state, timeLock(dest, when, `${name}-note`), when, 2).ok, true, name);
+          assert.equal(applyLock(state, note, when, 2).ok, true, name);
         }
         const preview = previewWithdraw(state, dest, DRAW);
         assert.equal(preview.principal, 0, name);
@@ -509,11 +565,11 @@ describe('time-locked withdraw supply', () => {
           const refused = boundReserveWithdraw(off, state, new Set(), DRAW);
           assert.equal(refused.ok, false, `${name} ${delta}`);
         }
-        const paid = withdraw({ state, dest, nowMs: DRAW });
+        const paid = payOpened(state, dest, DRAW, note ? [legacy, note] : legacy, `${name}-pay`);
         assert.equal(paid.ok, true, `${name} ${paid.reason}`);
-        assert.equal(paid.principal, 0, name);
+        assert.equal(paid.principal, PI_SHE_NANOS, name);
         assert.equal(paid.interest, preview.interest, name);
-        assert.equal(paid.payout, preview.payout, name);
+        assert.equal(paid.payout, PI_SHE_NANOS, name);
       }
     }
   });

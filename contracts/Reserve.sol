@@ -160,19 +160,8 @@ contract Reserve {
     mapping(uint256 => bytes32) internal vaultRootOf;
     /// Root frozen when the earning epoch opened. A full claim proves against this.
     mapping(uint256 => bytes32) internal epochStartRootOf;
-    /// Remain commitment registered with a lock leaf for that earning epoch.
-    mapping(uint256 => mapping(bytes32 => bool)) internal vaultRemainOf;
-    /// Lock commitment that owns one remain commitment. A claim of that remain must bind this leaf.
-    mapping(bytes32 => bytes32) internal remainLockOf;
-    /// Remain commitment stored for one lock commitment.
-    mapping(bytes32 => bytes32) internal leafRemainOf;
-    /// Lock commitments whose cap was checked when the lock was credited.
-    mapping(bytes32 => bool) internal vaultLockNoted;
     /// Vault proof precompile. Returns 1, 2, or 0.
     address internal constant VAULT_ZK = address(0x102);
-    mapping(uint256 => uint256) internal epochDueOf;
-    mapping(uint256 => uint256) internal epochPaidOf;
-    mapping(uint256 => bool) internal epochDueSet;
     /// Settlement indexes that have a stored root, in commit order.
     uint256[] internal rewardEpochs;
     /// Greatest committed index, stored as index+1 so epoch 0 is representable.
@@ -182,8 +171,6 @@ contract Reserve {
     /// Previous greatest, same +1 encoding. Zero means there is no earlier root.
     uint256 internal rewardHiPrev;
     mapping(bytes32 => bool) internal nullifierMinted;
-    /// Leaf a same-block withdraw pays, so a claim of that leaf reverts.
-    mapping(bytes32 => bool) internal settledByWithdraw;
     /// Open index through which this portal's reward was already credited.
     mapping(bytes32 => uint256) private creditedThrough;
     uint256 public totalLocked;
@@ -1012,19 +999,6 @@ contract Reserve {
         }
     }
 
-    /// This block's withdraw pays its own leaves. Mark them before the claim
-    /// transactions run. The mark is the holds in this block, not every portal.
-    function _sealHeldRewards(uint256 nowIdx) internal {
-        uint256 n = heldIds.length;
-        for (uint256 i = 0; i < n; i++) {
-            if (_hasPriorArchive(portals[heldIds[i]], nowIdx)) continue;
-            (uint256[] memory epochs,) = _portalAccrual(heldIds[i], nowIdx);
-            for (uint256 j = 0; j < epochs.length; j++) {
-                settledByWithdraw[_nullifier(portalSha[heldIds[i]], epochs[j])] = true;
-            }
-        }
-    }
-
     /// Store the root the node computed. Portal count does not change the
     /// cost. An empty root is not stored. A second root for this index must
     /// match. Principal is not released here.
@@ -1044,7 +1018,6 @@ contract Reserve {
             }
         }
         rewardRootOf[nowIdx] = root;
-        _sealHeldRewards(nowIdx);
         return root;
     }
 
@@ -1071,44 +1044,9 @@ contract Reserve {
         return root;
     }
 
-    /// The remain commitment stored with one lock leaf. The integer stays hidden.
-    function noteVaultLock(bytes32 lockCommit) external onlyShear {
-        if (lockCommit == bytes32(0)) revert BadAmount();
-        vaultLockNoted[lockCommit] = true;
-    }
-
-    function noteVaultRemain(uint256 earn, bytes32 remain) external onlyShear {
-        if (remain == bytes32(0)) revert BadAmount();
-        vaultRemainOf[earn][remain] = true;
-    }
-
-    /// One remain commitment belongs to one lock leaf. A second pair must match.
-    function noteVaultLeaf(bytes32 lockCommit, bytes32 remain) external onlyShear {
-        if (lockCommit == bytes32(0) || remain == bytes32(0)) revert BadAmount();
-        bytes32 priorRemain = leafRemainOf[lockCommit];
-        if (priorRemain != bytes32(0) && priorRemain != remain) revert BadAmount();
-        bytes32 priorLock = remainLockOf[remain];
-        if (priorLock != bytes32(0) && priorLock != lockCommit) revert BadAmount();
-        leafRemainOf[lockCommit] = remain;
-        remainLockOf[remain] = lockCommit;
-    }
-
-    function setEpochDue(uint256 epoch, uint256 due) external onlyShear {
-        if (epochDueSet[epoch] && epochDueOf[epoch] != due) revert BadAmount();
-        epochDueSet[epoch] = true;
-        epochDueOf[epoch] = due;
-    }
-
-    function chargeEpoch(uint256 epoch, uint256 nanos) external onlyShear {
-        if (!epochDueSet[epoch]) return;
-        uint256 next = epochPaidOf[epoch] + nanos;
-        if (next < epochPaidOf[epoch] || next > epochDueOf[epoch]) revert BadAmount();
-        epochPaidOf[epoch] = next;
-    }
-
     /// Header: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic.
     function _vaultReward(bytes calldata proof) internal pure returns (uint256) {
-        if (proof.length < 5 || proof[0] != 0xa8) return 0;
+        if (proof.length < 5 || proof[0] != 0xa9) return 0;
         uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
         uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
         if (off + 8 > proof.length) return 0;
@@ -1130,14 +1068,27 @@ contract Reserve {
     /// so the claim can be retried after the root is committed.
     /// Membership is the full lock set. No remainder index selects a leaf.
     function _vaultCode(bytes32 nullifier, uint256 epoch, bytes calldata proof, bytes calldata output) internal view returns (uint256) {
-        output;
-        if (proof.length < 2 || proof[0] != 0xa8) return 0;
+        if (proof.length < 2 || proof[0] != 0xa9) return 0;
+        if (output.length < 96) return 2;
         if (_vaultReward(proof) == 0) return 2;
         bytes32 root = epochStartRootOf[epoch];
         if (root == bytes32(0)) return 2;
-        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(_vaultHead(root, nullifier, epoch, proof), _u32le(0), proof));
+        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(
+            _vaultHead(root, nullifier, epoch, proof),
+            _u32le(output.length),
+            output,
+            proof
+        ));
         if (!ok || out.length < 32) return 0;
         return uint256(bytes32(out));
+    }
+
+    /// Burn a claim nullifier when its lock leaf is withdrawn. The proof is the key holder's DLEQ.
+    function retire(bytes32 nullifier, bytes calldata proof) external onlyShear {
+        if (nullifierMinted[nullifier]) revert AlreadyMinted();
+        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(nullifier, bytes("shear-retire-v1"), proof));
+        if (!ok || out.length < 32 || uint256(bytes32(out)) != 1) revert Unsigned();
+        nullifierMinted[nullifier] = true;
     }
 
     /// A vault proof mints nothing here. It spends the nullifier. Anything else stays closed.
@@ -1148,7 +1099,7 @@ contract Reserve {
         bytes calldata proof,
         bytes calldata auth
     ) external onlyShear returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xa8) revert ClaimUnavailable();
+        if (proof.length < 2 || proof[0] != 0xa9) revert ClaimUnavailable();
         if (nullifierMinted[nullifier]) revert AlreadyMinted();
         uint256 reward = _vaultReward(proof);
         if (reward == 0 || reward != nanos) revert BadAmount();
