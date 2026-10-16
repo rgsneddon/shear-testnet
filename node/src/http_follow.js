@@ -1,4 +1,4 @@
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { decodeWireBlock } from './p2p.js';
 
@@ -51,9 +51,32 @@ async function readJson(url, signal, fetchImpl) {
   }
 }
 
+function logHttpFail(height, reason) {
+  try {
+    console.error(JSON.stringify({
+      event: 'http_follow',
+      ok: false,
+      height,
+      reason,
+    }));
+  } catch { /* ignore */ }
+}
+
+/** Headers from `from` through `to`. Explorer is only the fallback when /headers is empty. */
+async function fetchHeaderPage(base, from, to, signal, fetchImpl) {
+  const q = `from=${from}&to=${to}`;
+  const first = await readJson(`${base}/headers?${q}`, signal, fetchImpl);
+  const page = Array.isArray(first?.headers) ? first.headers : [];
+  if (page.length) return page;
+  const alt = await readJson(`${base}/api/explorer/headers?${q}`, signal, fetchImpl);
+  return Array.isArray(alt?.headers) ? alt.headers : [];
+}
+
 /**
  * One verified block from the tallest same-magic public node.
  * Returns true when this call appended a block.
+ * A pruned body is offered only after a header page that can bury it.
+ * The remote stats height is not that burial.
  */
 export async function pullNextHttpBlock({
   store,
@@ -83,17 +106,47 @@ export async function pullNextHttpBlock({
   const body = await readJson(`${base}/block?height=${local + 1}`, signal, fetchImpl);
   if (!body || body.ok === false || !body.header) return false;
   const block = decodeWireBlock(body);
-  const got = await store.ingest([block], { offLoopPow: true, tipHeight: tip });
+  const nextH = Math.max(1, Math.floor(Number(block.height) || (local + 1)));
+  if (block.samplesPruned === true) {
+    let headers = [];
+    try {
+      headers = await fetchHeaderPage(base, nextH, nextH + SAMPLE_PRUNE_CONFIRMATIONS, signal, fetchImpl);
+    } catch {
+      headers = [];
+    }
+    let above = 0;
+    let own = false;
+    for (const row of headers) {
+      const rh = Number(row?.height) || 0;
+      if (rh === nextH) own = true;
+      else if (rh > nextH) above += 1;
+    }
+    if (!own && block.header && block.hash) {
+      headers = [{
+        header: Buffer.isBuffer(block.header) ? block.header.toString('hex') : String(block.header),
+        hash: Buffer.isBuffer(block.hash) ? block.hash.toString('hex') : String(block.hash),
+        height: nextH,
+      }, ...headers];
+      own = true;
+    }
+    // A short or missing run is not a body. Return now; the follow loop retries.
+    if (!own || above < SAMPLE_PRUNE_CONFIRMATIONS || typeof store.offerHeaders !== 'function') {
+      logHttpFail(nextH, 'samples_pruned');
+      noteHttpSync(store, tip, Number(store.tip()?.height || local));
+      return false;
+    }
+    try {
+      store.offerHeaders(headers, { peer: 'http', tier: 'pinned' });
+    } catch {
+      logHttpFail(nextH, 'samples_pruned');
+      noteHttpSync(store, tip, Number(store.tip()?.height || local));
+      return false;
+    }
+  }
+  const got = await store.ingest([block], { offLoopPow: true });
   noteHttpSync(store, tip, Number(store.tip()?.height || local));
   if (got?.ok !== true) {
-    try {
-      console.error(JSON.stringify({
-        event: 'http_follow',
-        ok: false,
-        height: local + 1,
-        reason: got?.reason || 'fail',
-      }));
-    } catch { /* ignore */ }
+    logHttpFail(local + 1, got?.reason || 'fail');
     return false;
   }
   try {

@@ -1,6 +1,6 @@
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
-import { MAGIC_TESTNET, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, PRODUCT_VERSION, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
 import {
@@ -734,10 +734,12 @@ export function isUpgradeableIngestFail(reason) {
  * A missing local hasher is not a bad block — do not poison genesis.
  * `side_hold` is a competing branch that has not won fork-choice yet.
  * `not_heavier` must not poison that branch: a later child can still carry more work.
+ * `samples_pruned` means the burial run is not here yet. A later header page can bury it.
  * Upgradeable reasons (`evm`, `unsigned`, `admit_membership`) use a TTL, not `failed` forever. */
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
   if (r === 'prev' || r === 'hash_bonus' || r === 'side_hold' || r === 'not_heavier') return false;
+  if (r === 'samples_pruned') return false;
   if (isUpgradeableIngestFail(r)) return false;
   if (/native[_ ]addon[_ ]missing|native_missing/i.test(r)) return false;
   return true;
@@ -1242,9 +1244,29 @@ export function createP2p({
     return [side, ...base.filter((h) => h !== side)];
   }
 
+  function peerAdvertisedHeight(rec) {
+    const h = Number(rec?.adHeight ?? rec?.gossipHeight ?? rec?.height ?? 0);
+    return Number.isFinite(h) ? h : 0;
+  }
+
+  /** A pruned body is waiting on a header run. Same advertised height is not a new run. */
+  function burialQuiet(rec) {
+    if (!(rec?.burialWait instanceof Set) || rec.burialWait.size === 0) return false;
+    return peerAdvertisedHeight(rec) <= Number(rec.burialAskHeight || 0);
+  }
+
+  function holdBurial(rec, hash) {
+    const h = String(hash || '').toLowerCase();
+    if (!rec || !h) return;
+    if (!(rec.burialWait instanceof Set)) rec.burialWait = new Set();
+    rec.burialWait.add(h);
+    rec.burialAskHeight = peerAdvertisedHeight(rec);
+  }
+
   function beginHeaders(sock) {
     const rec = peers.get(sock);
     if (!rec || rec.syncing) return;
+    if (burialQuiet(rec)) return;
     if (rec.softHoldUntil && Date.now() < rec.softHoldUntil) return;
     if (peerDemoted(rec)) return;
     const eligible = peerTipAhead(rec);
@@ -1281,6 +1303,7 @@ export function createP2p({
   function requestHeaders(sock) {
     const rec = peers.get(sock);
     if (!rec || rec.syncing) return;
+    if (burialQuiet(rec)) return;
     if (rec.softHoldUntil && Date.now() < rec.softHoldUntil) return;
     if (peerDemoted(rec)) return;
     if (!peerTipAhead(rec) && !peerProbeAhead(rec)) return;
@@ -1477,7 +1500,46 @@ export function createP2p({
     }
   }
 
-  function pumpGetblocks(sock) {
+  /**
+   * The page already offered for this peer still names local+1. Queue that
+   * one hash and skip a fresh getheaders. A body this peer's advertised
+   * height would prune still needs SAMPLE_PRUNE_CONFIRMATIONS headers
+   * above it on the page; a shorter page falls through to getheaders.
+   * Advertised height does not accept the body. proveBurial does, and a
+   * missing run still returns samples_pruned. Never queues past local+1.
+   */
+  function queueNextFromCachedPage(rec) {
+    if (!rec || !Array.isArray(rec.page) || rec.page.length === 0) return false;
+    if (rec.burialWait instanceof Set && rec.burialWait.size) return false;
+    const tip = store.tip();
+    const localH = Number(tip?.height || 0);
+    const localHash = tip?.hash ? hexHash(tip.hash) : '';
+    const blocked = activeFailSet(rec);
+    if (rec.burialWait instanceof Set) {
+      for (const h of rec.burialWait) blocked.add(String(h).toLowerCase());
+    }
+    const next = nextSequentialHeader({
+      headers: rec.page,
+      localHeight: localH,
+      localHash,
+      have: seenHashes(),
+      failed: blocked,
+      pending: rec.pending,
+    });
+    if (!next) return false;
+    if (shouldPruneSamples(next.height, peerAdvertisedHeight(rec))) {
+      let above = 0;
+      for (const row of rec.page) {
+        if (Number(row?.height) > next.height) above += 1;
+      }
+      if (above < SAMPLE_PRUNE_CONFIRMATIONS) return false;
+    }
+    rec.want = [next.hash];
+    rec.wantHeight = next.height;
+    return true;
+  }
+
+  function pumpGetblocks(sock, reusePage = true) {
     const rec = peers.get(sock);
     if (!rec) return;
     if (peerDemoted(rec)) {
@@ -1528,6 +1590,10 @@ export function createP2p({
     if (rec.pending.size) return;
     if (rec.verifying && rec.verifying.size) return;
     if (rec.want.length && inflightBlocks.has(String(rec.want[0]).toLowerCase())) return;
+    if (reusePage && queueNextFromCachedPage(rec)) {
+      pumpGetblocks(sock, false);
+      return;
+    }
     rec.syncing = false;
     rec.pending = null;
     requestHeaders(sock);
@@ -1736,10 +1802,9 @@ export function createP2p({
     }
     if (msg.type === 'tip' || msg.type === 'inv') {
       notePeerTip(sock, msg);
-      const rec = peers.get(sock);
-      if (rec && String(rec.hash || '').toLowerCase() === localTipHash().toLowerCase()) {
-        broadcastCensus();
-      }
+      // Mesh census stays on the 2s timer and on disconnect. Sending it from
+      // this handler shares the handshake read: the peer applies the tip and
+      // the census before the loop turns, and syncedOnline jumps 1 → 3.
       const localH = Number(store.tip()?.height || 0);
       const peerH = Number(msg.height);
       const ahead = Number.isFinite(peerH) && peerH > localH;
@@ -1774,8 +1839,9 @@ export function createP2p({
       const page = msg.headers || [];
       rec.page = page;
       // A pruned body served next needs these headers to show its burial.
+      let offered = null;
       if (typeof store.offerHeaders === 'function') {
-        const offered = store.offerHeaders(page, {
+        offered = store.offerHeaders(page, {
           peer: `p2p:${rec.remote || rec.id}`,
           tier: offerTierOf(rec),
           group: peerNetGroup(rec.remote),
@@ -1785,8 +1851,17 @@ export function createP2p({
           return;
         }
       }
+      // A new header extends the run. The parked body can be fetched again.
+      // The same page does not: retrying it would spin on samples_pruned.
+      if (rec.burialWait instanceof Set && rec.burialWait.size && offered?.accepted > 0) {
+        rec.burialWait.clear();
+        rec.burialAskHeight = 0;
+      }
       const sideTip = typeof store.sideTipHash === 'function' ? store.sideTipHash() : '';
       const blocked = activeFailSet(rec);
+      if (rec.burialWait instanceof Set) {
+        for (const h of rec.burialWait) blocked.add(h);
+      }
       // A probe-ahead tip has not served a body, so its winning block is not
       // local+1 on our fork. Sequential misses it. Fetch that header anyway.
       const next = nextSequentialHeader({
@@ -1842,6 +1917,7 @@ export function createP2p({
         if (rec.verifying && rec.verifying.size) return;
         rec.syncing = false;
         rec.pending = null;
+        if (rec.burialWait instanceof Set && rec.burialWait.size) return;
         if (upgradeableHold(rec, page, localH)) {
           armSoftRetry(sock, rec);
           return;
@@ -2016,6 +2092,18 @@ export function createP2p({
             const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
             if (got?.reason === 'prev' && !have.has(lastHash)) {
               queueMissingParent(rec, lastHash, headerPrevHash(last?.header));
+            } else if (got?.reason === 'samples_pruned' && !have.has(lastHash)) {
+              // The body arrived before a 1000-header run. Ask for headers and
+              // return. A peer tipHeight is not passed into ingest. The hash
+              // stays out of `failed`, so a later full run can still bury it.
+              holdBurial(rec, lastHash);
+              rec.syncing = false;
+              send(sock, {
+                type: 'getheaders',
+                magic,
+                locator: locators(),
+                stopHash: String(rec.adHash || rec.hash || ''),
+              });
             } else if (got?.reason === 'hash_bonus' && !have.has(lastHash)) {
               requeuePrevHash(rec, lastHash);
             } else if (got?.reason === 'side_hold') {
@@ -2217,7 +2305,7 @@ export function createP2p({
         const live = peers.get(ahead);
         const pendingN = live?.pending instanceof Set ? live.pending.size : 0;
         const wantN = Array.isArray(live?.want) ? live.want.length : 0;
-        if (pendingN + wantN === 0) beginHeaders(ahead);
+        if (pendingN + wantN === 0 && !burialQuiet(live)) beginHeaders(ahead);
       }
       releaseIdleCatchup();
     }, PENDING_WATCH_MS);

@@ -35,6 +35,7 @@ import {
   headerLinkReason,
   rootHeaderReason,
   discardPreparedHeader,
+  holdPreparedHeader,
   noteFromAnchor,
   OWED_CHECKPOINT_SPACING,
   keepsFrontier,
@@ -88,8 +89,11 @@ import {
   readChainBin,
   packEpochBlock,
   appendChainBin,
+  chainRecordIndex,
+  spliceChainRecordAt,
   readChainSegments,
   writeChainSegments,
+  replaceSegmentRecord,
   segmentFileName,
   segmentRecordBodies,
   CHAIN_SEGMENT_BLOCKS,
@@ -1853,6 +1857,33 @@ export function createStore(dir, {
     return blocks.length ? blocks[blocks.length - 1] : null;
   }
 
+  // One buried body replaces one length-prefixed record. A null result means
+  // the segment was torn or short, and the caller repacks those segments.
+  function spliceChangedRecords(image, idxs) {
+    const bySeg = new Map();
+    for (const i of idxs) {
+      const seg = Math.floor(i / CHAIN_SEGMENT_BLOCKS);
+      if (!bySeg.has(seg)) bySeg.set(seg, []);
+      bySeg.get(seg).push(i);
+    }
+    const written = new Map();
+    for (const [seg, list] of bySeg) {
+      list.sort((a, b) => b - a);
+      const file = path.join(segDir, segmentFileName(seg));
+      let buf = null;
+      for (const i of list) {
+        buf = replaceSegmentRecord(file, i % CHAIN_SEGMENT_BLOCKS, image[i]);
+        if (!buf) return false;
+      }
+      written.set(seg, buf);
+    }
+    for (const [seg, buf] of written) {
+      while (segLive.length < seg) segLive.push({ hash: createHash('sha256'), length: 0 });
+      segLive[seg] = { hash: createHash('sha256').update(buf), length: buf.length };
+    }
+    return written.size > 0;
+  }
+
   function pruneBuried() {
     const tipH = tip()?.height || 0;
     const asked = Number(pruneAfter);
@@ -1862,6 +1893,7 @@ export function createStore(dir, {
     );
     const dirtySegs = new Set();
     const dirtyIdx = [];
+    const changedIdx = [];
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
       if (b.samplesPruned === true && !shouldPruneSamples(b.height, tipH, pruneDepth)) {
@@ -1869,6 +1901,7 @@ export function createStore(dir, {
         if (!lifted) continue;
         blocks[i] = lifted;
         dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
+        changedIdx.push(i);
         noteUnprunedBody(i, packEpochBlock(lifted));
         noteReplacedBlock(i);
         continue;
@@ -1883,6 +1916,7 @@ export function createStore(dir, {
       if ((next.txs?.[0]?.vout || []).length !== nVout) throw new Error('prune_dropped_coinbase');
       blocks[i] = next;
       dirtyIdx.push(i);
+      changedIdx.push(i);
       dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
     }
     if (dirtySegs.size) {
@@ -1895,11 +1929,15 @@ export function createStore(dir, {
             : b
         ))
         : blocks;
+      // One buried body is one record. Repacking the whole segment rewrites
+      // hundreds of untouched blocks on every append past the prune depth.
+      const spliced = segmented && changedIdx.length > 0 && changedIdx.length <= 4
+        && spliceChangedRecords(image, changedIdx);
       if (!segmented) {
         writeChainSegments(segDir, image);
         segmented = true;
         loadSegLive();
-      } else {
+      } else if (!spliced) {
         writeChainSegments(segDir, image, { only: dirtySegs });
         for (const idx of dirtySegs) rehashSegmentFile(idx);
       }
@@ -1913,18 +1951,120 @@ export function createStore(dir, {
     return dirtySegs.size > 0;
   }
 
+  // Record offsets for the published image. A full rewrite drops the cache.
+  // Between 200-block snapshots the file still has to match this tip: one
+  // newly buried body is spliced and the new tip is appended. The prefix
+  // is not rewritten, so append cost stays flat.
+  let bootIndex = null;
+
+  function bootstrapPruneDepth() {
+    const asked = Number(pruneAfter);
+    return Math.max(
+      SAMPLE_PRUNE_CONFIRMATIONS,
+      Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : SAMPLE_PRUNE_CONFIRMATIONS,
+    );
+  }
+
+  function rewriteBootstrapImage() {
+    bootIndex = null;
+    try { writeLatestBootstrap(dir, blocks); } catch { /* observer must not halt append */ }
+  }
+
+  function extendBootstrapImage(manifest) {
+    const tipH = Number(tip()?.height || 0);
+    const published = Number(manifest?.height) || 0;
+    const paths = latestPaths(dir);
+    if (!published || tipH < published || !fs.existsSync(paths.bin)) {
+      rewriteBootstrapImage();
+      return;
+    }
+    const anchor = blocks[published - 1];
+    if (!anchor || Number(anchor.height) !== published || hex32(anchor.hash) !== String(manifest.hash || '')) {
+      rewriteBootstrapImage();
+      return;
+    }
+    if (tipH === published) return;
+    if (!bootIndex || bootIndex.length !== published) bootIndex = chainRecordIndex(paths.bin);
+    if (!bootIndex || bootIndex.length !== published) {
+      rewriteBootstrapImage();
+      return;
+    }
+    const depth = bootstrapPruneDepth();
+    for (let h = published + 1; h <= tipH; h += 1) {
+      const bury = h - depth;
+      if (bury >= 1) {
+        const victim = blocks[bury - 1];
+        const rec = bootIndex[bury - 1];
+        if (victim && victim.samplesPruned === true && rec) {
+          const newLen = spliceChainRecordAt(paths.bin, rec, victim);
+          if (newLen == null) {
+            bootIndex = null;
+            rewriteBootstrapImage();
+            return;
+          }
+          const delta = newLen - rec.len;
+          rec.len = newLen;
+          for (let i = bury; i < bootIndex.length; i += 1) bootIndex[i].off += delta;
+        }
+      }
+      const block = blocks[h - 1];
+      if (!block || Number(block.height) !== h) {
+        bootIndex = null;
+        rewriteBootstrapImage();
+        return;
+      }
+      const prev = bootIndex[bootIndex.length - 1];
+      const eof = prev.off + 4 + prev.len;
+      let size = 0;
+      try { size = fs.statSync(paths.bin).size; } catch { size = -1; }
+      if (size !== eof) {
+        bootIndex = null;
+        rewriteBootstrapImage();
+        return;
+      }
+      const written = appendChainBin(paths.bin, block);
+      if (!written || written.length < 4) {
+        bootIndex = null;
+        rewriteBootstrapImage();
+        return;
+      }
+      bootIndex.push({ off: eof, len: written.length - 4 });
+    }
+    if (bootIndex.length !== tipH) {
+      bootIndex = null;
+      rewriteBootstrapImage();
+      return;
+    }
+    const last = blocks[tipH - 1];
+    const next = {
+      ...manifest,
+      height: tipH,
+      hash: hex32(last.hash),
+      n: tipH,
+      checkpoint: bootstrapCheckpoint(tipH),
+      createdAt: Date.now(),
+    };
+    const tmp = `${paths.json}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify(next)}\n`);
+    fs.renameSync(tmp, paths.json);
+  }
+
   function maybePublishBootstrap() {
     const tipH = Number(tip()?.height || 0);
-    let last = 0;
+    const paths = latestPaths(dir);
+    let manifest = null;
     try {
-      const paths = latestPaths(dir);
-      if (fs.existsSync(paths.json)) {
-        const manifest = JSON.parse(fs.readFileSync(paths.json, 'utf8'));
-        last = Number(manifest.checkpoint) || 0;
-      }
-    } catch { last = 0; }
-    if (!shouldPublishBootstrap(tipH, last)) return;
-    try { writeLatestBootstrap(dir, blocks); } catch { /* observer must not halt append */ }
+      if (fs.existsSync(paths.json)) manifest = JSON.parse(fs.readFileSync(paths.json, 'utf8'));
+    } catch { manifest = null; }
+    const last = Number(manifest?.checkpoint) || 0;
+    // The 200-block cadence still rewrites the whole image. A tip between
+    // those heights has to be in the file too, or a bootstrap node stops
+    // on the previous snapshot.
+    if (!manifest || shouldPublishBootstrap(tipH, last)) {
+      rewriteBootstrapImage();
+      return;
+    }
+    try { extendBootstrapImage(manifest); } catch { /* observer must not halt append */ }
   }
 
   function hourlyWork(nowMs) {
@@ -2903,7 +3043,7 @@ export function createStore(dir, {
       let checked;
       if (decoded.prevBlockHash.equals(GENESIS_PREV)) {
         if (blocks.length) { offerStats.orphaned += 1; continue; }
-        checked = rootHeaderReason(header, hash);
+        checked = rootHeaderReason(header, hash, bookMagic);
         rootMs = Number(decoded.timestamp);
       } else {
         const local = localBlockByHex(prevHex);
@@ -2917,7 +3057,7 @@ export function createStore(dir, {
           }
         }
         if (!parent) { offerStats.orphaned += 1; continue; }
-        checked = headerLinkReason(header, hash, parent, { genesisMs: rootMs || 0 });
+        checked = headerLinkReason(header, hash, parent, { genesisMs: rootMs || 0, magic: bookMagic });
       }
       if (!checked.ok) { out.dropped = true; break; }
       const row = {
@@ -2949,7 +3089,19 @@ export function createStore(dir, {
   }
 
   function rememberProvenRow(row) {
-    const kept = { hex: row.hex, header: row.header, hash: row.hash, prevHex: row.prevHex, height: row.height, rootMs: row.rootMs };
+    let timeMs = Number(row.timeMs);
+    if (!Number.isFinite(timeMs)) {
+      try { timeMs = Number(decodeHeader(Buffer.from(row.header)).timestamp); } catch { timeMs = NaN; }
+    }
+    const kept = {
+      hex: row.hex,
+      header: row.header,
+      hash: row.hash,
+      prevHex: row.prevHex,
+      height: row.height,
+      rootMs: row.rootMs,
+      timeMs,
+    };
     provenRows.delete(row.hex);
     provenRows.set(row.hex, kept);
     linkHeaderRow(kept);
@@ -3049,23 +3201,38 @@ export function createStore(dir, {
       const window = mtp.slice();
       const link = (i, ready) => {
         const got = Buffer.from(ready || []);
-        const linked = got.equals(rows[i].hash)
-          ? headerLinkReason(rows[i].header, got, up, { genesisMs, mtpTimestamps: window, nowMs })
+        const row = rows[i];
+        // This header's ShearHash and link already passed. Walk the cached
+        // timestamp so the next new header still sees a real MTP window.
+        if (
+          known(row)
+          && got.length === 32
+          && got.equals(row.hash)
+          && row.prevHex === up.hash.toString('hex')
+          && Number.isFinite(row.timeMs)
+        ) {
+          window.push(row.timeMs);
+          if (window.length > MTP_WINDOW) window.shift();
+          up = { header: row.header, hash: row.hash, height: h + i + 1 };
+          return true;
+        }
+        const linked = got.equals(row.hash)
+          ? headerLinkReason(row.header, got, up, { genesisMs, mtpTimestamps: window, nowMs, magic: bookMagic })
           : { ok: false };
         if (!linked.ok) {
-          const bad = offeredRows.get(rows[i].hex);
+          const bad = offeredRows.get(row.hex);
           const senders = [...(bad?.senders || [])];
           for (const slotKey of [...(bad?.slots || [])]) {
             for (const p of senders) dropOfferPeer(p, slotKey, nowMs);
             if (!senders.length) evictOfferSlot(slotKey);
           }
-          if (provenRows.has(rows[i].hex)) {
-            provenRows.delete(rows[i].hex);
-            unlinkHeaderRow(rows[i].hex, rows[i].prevHex);
+          if (provenRows.has(row.hex)) {
+            provenRows.delete(row.hex);
+            unlinkHeaderRow(row.hex, row.prevHex);
           }
           return false;
         }
-        if (!trust) rememberProvenRow(offeredRows.get(rows[i].hex) || rows[i]);
+        if (!trust) rememberProvenRow(offeredRows.get(row.hex) || row);
         window.push(Number(linked.decoded.timestamp));
         if (window.length > MTP_WINDOW) window.shift();
         up = { header: rows[i].header, hash: rows[i].hash, height: h + i + 1 };
@@ -3128,17 +3295,46 @@ export function createStore(dir, {
       }
     }
     if (block?.samplesPruned === true) {
-      const proved = proveBurial(block, verifyOpts);
       // No proven run is samples_pruned before any header hash. A height field
       // that is not this tip plus one still answers height first.
       const structuralH = (Number(tip()?.height) || 0) + 1;
       const liedHeight = block.height != null && block.height !== '' && Number(block.height) !== structuralH;
+      // One or two new headers still have to hash. The block header can hash
+      // on the other worker at the same time. A long run keeps both workers.
+      // Advertised height is not an input. A failed run discards the hash.
+      let earlyHash = null;
+      const overlapPow = !!verifyOpts.offLoopPow
+        && !verifyOpts.trustedPowHash
+        && verifyOpts.trustBlockHash !== true
+        && block.header;
+      if (overlapPow) {
+        let claimedHex = '';
+        try { claimedHex = Buffer.from(block.hash).toString('hex'); } catch { claimedHex = ''; }
+        const rows = claimedHex ? offeredPath(claimedHex) : null;
+        if (rows) {
+          let unknown = 0;
+          for (const row of rows) {
+            if (!provenRows.has(row.hex)) unknown += 1;
+            if (unknown > 2) break;
+          }
+          if (unknown >= 1 && unknown <= 2) {
+            earlyHash = hashHeaderOffLoop(Buffer.from(block.header)).then((hash) => {
+              holdPreparedHeader(block.header, hash);
+              return hash;
+            }, () => null);
+          }
+        }
+      }
+      const proved = proveBurial(block, verifyOpts);
       const go = (p) => {
         if (p.ok) return appendVerified(block, verifyOpts, p);
         if (liedHeight) return appendVerified(block, verifyOpts, null);
+        if (earlyHash) discardPreparedHeader(block.header);
         return { ok: false, reason: 'samples_pruned', tip: tip() };
       };
-      if (proved && typeof proved.then === 'function') return proved.then(go);
+      const waitEarly = earlyHash || Promise.resolve(null);
+      if (proved && typeof proved.then === 'function') return Promise.all([proved, waitEarly]).then(([p]) => go(p));
+      if (earlyHash) return waitEarly.then(() => go(proved));
       return go(proved);
     }
     return appendVerified(block, verifyOpts, null);
