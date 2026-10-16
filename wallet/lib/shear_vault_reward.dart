@@ -17,7 +17,95 @@ const String kVaultRelDst = 'shear-vault-reward-rel-v1';
 const String kVaultBalDst = 'shear-vault-reward-bal-v1';
 const String kVaultLockBlindDst = 'shear-vault-lock-blind-v1';
 const String kVaultLockOwnerDst = 'shear-vault-lock-owner-v1';
-const int kVaultProofVer = 0xa4;
+const int kVaultProofVer = 0xa6;
+const String kVaultCapDst = 'shear-epoch-cap-v1';
+
+/// Author-built full-epoch cap. Same points the JS prover packs into 0xa6.
+Map<String, Uint8List> _lockCap({
+  required int amount,
+  required Uint8List lockBlind,
+  required int bps,
+  required int reward,
+  required Uint8List rewardBlind,
+  required AdmitNative admit,
+}) {
+  final product = BigInt.from(amount) * BigInt.from(bps);
+  final capValue = product ~/ BigInt.from(10000);
+  final rem = product - capValue * BigInt.from(10000);
+  final slack = BigInt.from(9999) - rem;
+  if (slack < BigInt.zero || capValue < BigInt.zero) throw StateError('stake_reward');
+  final rCap = scalarBytes(hashToScalar([
+    utf8Bytes('shear-epoch-cap-blind-v1'),
+    lockBlind,
+    _u32(bps),
+  ]));
+  final rRem = scalarBytes(hashToScalar([
+    utf8Bytes('shear-epoch-cap-rem-v1'),
+    lockBlind,
+    _u32(bps),
+  ]));
+  final rSlack = scalarBytes(hashToScalar([
+    utf8Bytes('shear-epoch-cap-slack-v1'),
+    lockBlind,
+    _u32(bps),
+  ]));
+  final lockCommit = commitBytes(amount, lockBlind);
+  final capCommit = commitBytes(capValue.toInt(), rCap);
+  final remCommit = commitBytes(rem.toInt(), rRem);
+  final slackCommit = commitBytes(slack.toInt(), rSlack);
+  final lockP = pointFrom(lockCommit);
+  final capP = pointFrom(capCommit);
+  final remP = pointFrom(remCommit);
+  final slackP = pointFrom(slackCommit);
+  final relP = subEl(
+    subEl(mulEl(lockP, scalarFromInt(bps)), mulEl(capP, scalarFromInt(10000))),
+    remP,
+  );
+  final relS = scalarSub(
+    scalarSub(
+      scalarMul(scalarFromInt(bps), scalarFromBytes(lockBlind)),
+      scalarMul(scalarFromInt(10000), scalarFromBytes(rCap)),
+    ),
+    scalarFromBytes(rRem),
+  );
+  final extra = _sha256(_concat([
+    utf8Bytes(kVaultCapDst),
+    lockCommit,
+    _u32(bps),
+    capCommit,
+    remCommit,
+    slackCommit,
+  ]));
+  final rel = schnorrProveH(relP, relS, extra);
+  final balP = subEl(addEl(remP, slackP), mulG(scalarFromInt(9999)));
+  final balS = scalarAdd(scalarFromBytes(rRem), scalarFromBytes(rSlack));
+  final bal = schnorrProveH(balP, balS, utf8Bytes(kVaultCapDst));
+  final capRange = admit.proveRange(capValue, rCap);
+  final remRange = admit.proveRange(rem, rRem);
+  final slackRange = admit.proveRange(slack, rSlack);
+  if (capRange == null || remRange == null || slackRange == null) {
+    throw StateError('admit_native_required');
+  }
+  final diff = capValue - BigInt.from(reward);
+  if (diff < BigInt.zero) throw StateError('stake_reward');
+  final rDiff = scalarBytes(scalarSub(scalarFromBytes(rCap), scalarFromBytes(rewardBlind)));
+  final under = admit.proveRange(diff, rDiff);
+  if (under == null || under.isEmpty) throw StateError('admit_native_required');
+  return {
+    'lock': lockCommit,
+    'cap': capCommit,
+    'capRange': capRange,
+    'rem': remCommit,
+    'remRange': remRange,
+    'slack': slackCommit,
+    'slackRange': slackRange,
+    'relR': rel['R']!,
+    'relZ': rel['z']!,
+    'balR': bal['R']!,
+    'balZ': bal['z']!,
+    'under': under,
+  };
+}
 
 bool _bytesEq(Uint8List a, Uint8List b) {
   if (a.length != b.length) return false;
@@ -229,6 +317,14 @@ Map<String, dynamic> proveVaultLockReward({
     if (timeRange == null || timeRange.isEmpty || timeSlackRange == null || timeSlackRange.isEmpty) {
       throw StateError('admit_native_required');
     }
+    final capPack = _lockCap(
+      amount: amounts[which],
+      lockBlind: blinds[which],
+      bps: bps,
+      reward: reward,
+      rewardBlind: rb,
+      admit: admit,
+    );
     final digest = _sha256(_concat([
       utf8Bytes(kVaultRewardDst),
       utf8Bytes(magic),
@@ -248,6 +344,8 @@ Map<String, dynamic> proveVaultLockReward({
       _sha256(remRange),
       slackCommit,
       _sha256(slackRange),
+      capPack['lock']!,
+      capPack['cap']!,
     ]));
     final epochBase = pointBytes(hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst)));
     final proved = fs1.proveUnlinked(handle, [which], [owners[which]], digest, epoch, epochBase);
@@ -330,6 +428,8 @@ Map<String, dynamic> proveVaultLockReward({
       Uint8List.fromList([full]),
       pointBytes(qPoint),
       remainCommit,
+      capPack['lock']!,
+      capPack['cap']!,
       timeSlackCommit,
       pointBytes(sigA1),
       pointBytes(sigA2),
@@ -362,6 +462,20 @@ Map<String, dynamic> proveVaultLockReward({
       slackRange,
       bal['R']!,
       bal['z']!,
+      _u32(capPack['capRange']!.length),
+      capPack['capRange']!,
+      capPack['rem']!,
+      _u32(capPack['remRange']!.length),
+      capPack['remRange']!,
+      capPack['slack']!,
+      _u32(capPack['slackRange']!.length),
+      capPack['slackRange']!,
+      capPack['relR']!,
+      capPack['relZ']!,
+      capPack['balR']!,
+      capPack['balZ']!,
+      _u32(capPack['under']!.length),
+      capPack['under']!,
     ]);
     return {
       'ok': true,

@@ -352,6 +352,7 @@ export const COMPACT_TX_KEYS = Object.freeze([
   'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
   'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub', 'piProof',
+  'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs', 'withdrawNonce',
   'weight', 'payer', 'sponsor',
@@ -527,6 +528,7 @@ function compactVout(o, tx) {
     };
     if (keepOpen && o.valueProof) row.valueProof = o.valueProof;
     if (o.rangeProof) row.rangeProof = o.rangeProof;
+    if (o.fundProof) row.fundProof = compactValue(o.fundProof);
     if (o.viewTag) row.viewTag = o.viewTag;
     if (o.admitPub) row.admitPub = o.admitPub;
     if (o.rEph) row.rEph = o.rEph;

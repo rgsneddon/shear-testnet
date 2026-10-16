@@ -3474,7 +3474,7 @@ export function createStore(dir, {
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     });
     if (!noteFund.ok) return noteFund;
-    const summed = typedCommitSum(tx);
+    const summed = typedCommitSum(tx, { height: Number(t?.height || 0) + 1, magic: bookMagic });
     if (!summed.ok) return summed;
     const drawn = new Set();
     for (const m of mempool) {

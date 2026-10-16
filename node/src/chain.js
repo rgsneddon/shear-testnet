@@ -2926,7 +2926,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (Array.isArray(noteFund.tags)) {
       for (const th of noteFund.tags) spentTags.add(th);
     }
-    const summed = typedCommitSum(tx);
+    const summed = typedCommitSum(tx, { height, magic });
     if (!summed.ok) return summed;
     const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws, Number(decoded.timestamp) || 0);
     if (!stake.ok) return stake;

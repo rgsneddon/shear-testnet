@@ -12,7 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
-import { maturedHiddenCount, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { lockFundingRejected, maturedHiddenCount, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -545,6 +545,7 @@ const BODY_KEYS = new Set([
   'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit', 'rewardRoot',
   'nullifier',
   'ownerPub',
+  'piProof', 'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -559,7 +560,7 @@ const VIN_KEYS = new Set([
 const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
-  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch',
+  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch', 'fundProof',
 ]);
 
 const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);
@@ -721,7 +722,7 @@ export function typedCommitRejected(tx) {
  * spent note opens to the fee plus the hidden change. A fee that is not
  * that remainder is commit_sum. The receipt does not have to equal the fee.
  */
-export function typedCommitSum(tx) {
+export function typedCommitSum(tx, ctx = {}) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   if (kind === 'vote') {
@@ -750,6 +751,14 @@ export function typedCommitSum(tx) {
       continue;
     }
     const raw = o?.valueProof?.v;
+    const hiddenLock = kind === 'lock' && tx?.vaultLockNote && (raw == null || raw === '');
+    if (hiddenLock) {
+      if (!o?.commit || !o?.rangeProof || o.rangeProof === true) {
+        return { ok: false, reason: 'commit_sum' };
+      }
+      opened += 1;
+      continue;
+    }
     const v = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
     if (!o?.commit || !o?.valueProof || !Number.isInteger(v) || v < 0) {
       return { ok: false, reason: 'commit_sum' };
@@ -764,6 +773,10 @@ export function typedCommitSum(tx) {
   if (opened !== 1) return { ok: false, reason: 'commit_sum' };
   const vaultPayout = kind === 'withdraw' ? payout : 0;
   if (!verifyFlowConservation(tx, null, vaultPayout)) return { ok: false, reason: 'commit_sum' };
+  if (kind === 'lock' && tx?.vaultLockNote) {
+    const funded = lockFundingRejected(tx, ctx);
+    if (funded) return { ok: false, reason: 'commit_sum' };
+  }
   return { ok: true };
 }
 

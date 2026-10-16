@@ -158,6 +158,12 @@ contract Reserve {
     mapping(uint256 => bytes32) internal rewardRootOf;
     /// Earning epoch → vault-lock root. Same key the node stores.
     mapping(uint256 => bytes32) internal vaultRootOf;
+    /// Root frozen when the earning epoch opened. A full claim proves against this.
+    mapping(uint256 => bytes32) internal epochStartRootOf;
+    /// Remain commitment registered with a lock leaf for that earning epoch.
+    mapping(uint256 => mapping(bytes32 => bool)) internal vaultRemainOf;
+    /// Lock commitments whose cap was checked when the lock was credited.
+    mapping(bytes32 => bool) internal vaultLockNoted;
     /// Vault proof precompile. Returns 1, 2, or 0.
     address internal constant VAULT_ZK = address(0x102);
     mapping(uint256 => uint256) internal epochDueOf;
@@ -1051,6 +1057,27 @@ contract Reserve {
         return root;
     }
 
+    /// Snapshot the vault-lock root at the moment the earning epoch opens.
+    /// A later lock is not in this root, so it cannot prove a full claim.
+    function commitEpochStartRoot(uint256 earn, bytes32 root) external onlyShear returns (bytes32) {
+        if (root == bytes32(0)) revert BadAmount();
+        bytes32 prior = epochStartRootOf[earn];
+        if (prior != bytes32(0) && prior != root) revert BadAmount();
+        epochStartRootOf[earn] = root;
+        return root;
+    }
+
+    /// The remain commitment stored with one lock leaf. The integer stays hidden.
+    function noteVaultLock(bytes32 lockCommit) external onlyShear {
+        if (lockCommit == bytes32(0)) revert BadAmount();
+        vaultLockNoted[lockCommit] = true;
+    }
+
+    function noteVaultRemain(uint256 earn, bytes32 remain) external onlyShear {
+        if (remain == bytes32(0)) revert BadAmount();
+        vaultRemainOf[earn][remain] = true;
+    }
+
     function setEpochDue(uint256 epoch, uint256 due) external onlyShear {
         if (epochDueSet[epoch] && epochDueOf[epoch] != due) revert BadAmount();
         epochDueSet[epoch] = true;
@@ -1070,7 +1097,7 @@ contract Reserve {
         uint256 bps = _rateFor(epoch);
         uint256 full = 0;
         bytes32 remainCommit = bytes32(0);
-        if (proof.length > 5 && proof[0] == 0xa4) {
+        if (proof.length > 5 && proof[0] == 0xa6) {
             uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
             uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
             if (off < proof.length) full = uint256(uint8(proof[off]));
@@ -1081,11 +1108,33 @@ contract Reserve {
         return abi.encodePacked(root, nullifier, _u64le(epoch), _u32le(bps), _u64le(span), bytes1(uint8(full)), remainCommit, bytes("shear-testnet-v12"));
     }
 
+    /// lockCommit sits immediately after remainCommit: full || qPoint || remain || lock.
+    function _lockNoted(bytes calldata proof, uint256 off) internal view returns (bool) {
+        if (off + 1 + 96 > proof.length) return false;
+        bytes32 lockCommit = bytes32(proof[off + 1 + 64:off + 1 + 96]);
+        return lockCommit != bytes32(0) && vaultLockNoted[lockCommit];
+    }
+
     /// 1 accepts. 2 is a bad reward. 0 is not this proof. A missing root is 2,
     /// so the claim can be retried after the root is committed.
     function _vaultCode(bytes32 nullifier, uint256 epoch, bytes calldata proof, bytes calldata output) internal view returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xa4) return 0;
-        bytes32 root = vaultRootOf[epoch];
+        if (proof.length < 2 || proof[0] != 0xa6) return 0;
+        uint256 full = 0;
+        bytes32 remainCommit = bytes32(0);
+        uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
+        uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
+        if (off < proof.length) full = uint256(uint8(proof[off]));
+        if (full > 1) return 2;
+        if (off + 1 + 32 + 32 <= proof.length) {
+            remainCommit = bytes32(proof[off + 1 + 32:off + 1 + 64]);
+        }
+        // A short arrival, and a full arrival in epoch 0, must be the remain
+        // stored with that leaf. A later full epoch is the public span.
+        if (full == 0 || epoch == 0) {
+            if (!vaultRemainOf[epoch][remainCommit]) return 2;
+        }
+        if (!_lockNoted(proof, off)) return 2;
+        bytes32 root = full == 1 ? epochStartRootOf[epoch] : vaultRootOf[epoch];
         if (root == bytes32(0)) return 2;
         (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(_vaultHead(root, nullifier, epoch, proof), _u32le(output.length), output, proof));
         if (!ok || out.length < 32) return 0;
@@ -1101,7 +1150,7 @@ contract Reserve {
         bytes calldata auth
     ) external onlyShear returns (uint256) {
         nanos;
-        if (proof.length < 2 || proof[0] != 0xa4) revert ClaimUnavailable();
+        if (proof.length < 2 || proof[0] != 0xa6) revert ClaimUnavailable();
         if (nullifierMinted[nullifier]) revert AlreadyMinted();
         uint256 code = _vaultCode(nullifier, rootIndex, proof, auth);
         if (code == 2) revert BadAmount();
@@ -1127,13 +1176,14 @@ contract Reserve {
         return false;
     }
 
-    /// The owner's signed roll. When reward is due, the vault proof is required.
+    /// The owner's signed roll. The nullifier is not an argument: a roll that
+    /// named both the portal and the claim nullifier would link them. The
+    /// claim spends the nullifier on its own. The signature binds the chain
+    /// id and this book's magic.
     function roll(
         bytes calldata dest,
         uint256 nowTs,
-        bytes32 nullifier,
         uint256 epoch,
-        bytes calldata proof,
         bytes calldata auth
     ) external onlyShear returns (uint256) {
         bytes32 id = portalId(dest);
@@ -1142,18 +1192,16 @@ contract Reserve {
         // The same sha256 portal id the JS roll signs. keccak portalId is the storage key.
         bytes32 shaId = portalSha[id];
         if (shaId == bytes32(0)) revert Unsigned();
-        bytes memory message = abi.encodePacked("shear-reward-roll-v1", shaId, _u64le(epoch));
+        bytes memory message = abi.encodePacked(
+            "shear-reward-roll-v1",
+            shaId,
+            _u64le(epoch),
+            _u64le(block.chainid),
+            magic
+        );
         if (!_ed25519(_authPub(auth), auth[32:96], message)) revert Unsigned();
         Portal storage p = portals[id];
         _settle(p, nowTs);
-        if (p.accruedReward > 0 || _hiddenDue(p, nowTs)) {
-            if (proof.length < 2 || proof[0] != 0xa4) revert BadAmount();
-            if (nullifierMinted[nullifier]) revert AlreadyMinted();
-            uint256 code = _vaultCode(nullifier, epoch, proof, proof[0:0]);
-            if (code == 2) revert BadAmount();
-            if (code != 1) revert Unsigned();
-            nullifierMinted[nullifier] = true;
-        }
         return 1;
     }
 
@@ -1170,6 +1218,10 @@ contract Reserve {
         bytes32 id = portalId(dest);
         // No recorded owner is not a license to take the principal.
         if (ownerOf[id] == bytes32(0)) revert OwnerMissing();
+        uint256 chainNow = _chainEpoch(nowTs);
+        bytes32 withdrawId = _nullifier(portalSha[id], chainNow);
+        // The interest withdraw id is checked even when no vault proof is attached.
+        if (portalSha[id] != bytes32(0) && nullifierMinted[withdrawId]) revert AlreadyMinted();
         Portal storage p = portals[id];
         uint256 active = p.active;
         uint256 idleBal = p.idle;
@@ -1248,6 +1300,7 @@ contract Reserve {
             p.vote = Vote.None;
             p.voteEpoch = 0;
         }
+        if (portalSha[id] != bytes32(0)) nullifierMinted[withdrawId] = true;
     }
 
     function publicView(uint256 nowTs)

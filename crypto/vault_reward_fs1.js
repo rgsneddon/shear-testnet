@@ -9,8 +9,7 @@
  * publishes a one-time blinding of that tag, so two claims of one lock
  * do not share it. The remainder is a commitment, not a public integer.
  * A later epoch uses the public span, which is the same for every lock.
- * The only public mint is a batch sum, or the one claim still pending
- * when the epoch deadline arrives.
+ * The mint is that reward commitment. It is not opened, alone or in a batch.
  */
 import { createHash } from 'node:crypto';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
@@ -52,7 +51,9 @@ export const VAULT_REL_DST = 'shear-vault-reward-rel-v1';
 export const VAULT_BAL_DST = 'shear-vault-reward-bal-v1';
 export const VAULT_LOCK_BLIND_DST = 'shear-vault-lock-blind-v1';
 export const VAULT_LOCK_OWNER_DST = 'shear-vault-lock-owner-v1';
-export const VAULT_PROOF_VER = 0xa4;
+export const VAULT_PROOF_VER = 0xa6;
+export const VAULT_CAP_DST = 'shear-epoch-cap-v1';
+const CAP_DENOM = 10000n;
 export const VAULT_MAGIC_UTF8 = 'shear-testnet-v12';
 /** Scalar multiplies in the relation stay under this, and this stays under the subgroup order. */
 export const RELATION_BOUND = 2n ** 110n;
@@ -183,7 +184,7 @@ export function vaultLockNote(amount, ownerScalar, blind) {
 
 function statementDigest({
   magic, root, epoch, bps, span, full, remainCommit, timeSlackCommit, commitB, amtCt, dest20, noteCommit,
-  rewardRange, remCommit, remRange, slackCommit, slackRange,
+  rewardRange, remCommit, remRange, slackCommit, slackRange, lockCommit, capCommit,
 }) {
   const hash = (raw) => createHash('sha256').update(raw).digest();
   return createHash('sha256').update(Buffer.concat([
@@ -205,6 +206,8 @@ function statementDigest({
     hash(remRange),
     slackCommit,
     hash(slackRange),
+    lockCommit,
+    capCommit,
   ])).digest();
 }
 
@@ -359,6 +362,133 @@ function schnorrVerify(P, R, z, extra) {
   }
 }
 
+function asBlind(blind) {
+  if (typeof blind === 'bigint') return blind;
+  return scalarFrom(blind);
+}
+
+/** Cap blind for one lock at one rate. The node cannot recompute it. */
+export function epochCapBlind(lockBlind, bps) {
+  return hashToScalar(
+    Buffer.from('shear-epoch-cap-blind-v1'),
+    scalarBytes(asBlind(lockBlind)),
+    u32le(Math.floor(Number(bps) || 0)),
+  );
+}
+
+/**
+ * Full-epoch reward cap for one lock, proved by that lock's author.
+ * reward = floor(v * bps / 10000), and the remainder balances on H.
+ * A zero reward is a valid cap. The amount is not an output.
+ */
+export function proveLockCap(amount, lockBlind, bps) {
+  let v;
+  let rate;
+  try {
+    v = BigInt(amount);
+    rate = BigInt(Math.floor(Number(bps)));
+  } catch {
+    return null;
+  }
+  if (v <= 0n || rate <= 0n || rate >= RELATION_BOUND) return null;
+  const product = v * rate;
+  if (product >= RELATION_BOUND) return null;
+  const reward = product / CAP_DENOM;
+  const rem = product - reward * CAP_DENOM;
+  const slack = CAP_DENOM - 1n - rem;
+  if (slack < 0n || reward > MAX_NANOS) return null;
+  const rLock = asBlind(lockBlind);
+  const rCap = epochCapBlind(rLock, rate);
+  const rRem = hashToScalar(Buffer.from('shear-epoch-cap-rem-v1'), scalarBytes(rLock), u32le(Number(rate)));
+  const rSlack = hashToScalar(Buffer.from('shear-epoch-cap-slack-v1'), scalarBytes(rLock), u32le(Number(rate)));
+  const lockP = commit(v, rLock);
+  const capP = commit(reward, rCap);
+  const remP = commit(rem, rRem);
+  const slackP = commit(slack, rSlack);
+  const P = lockP.multiply(Fn.create(rate)).subtract(capP.multiply(Fn.create(CAP_DENOM))).subtract(remP);
+  const s = Fn.sub(Fn.sub(Fn.mul(Fn.create(rate), rLock), Fn.mul(Fn.create(CAP_DENOM), rCap)), rRem);
+  if (!P.equals(H.multiply(s))) return null;
+  const balP = remP.add(slackP).subtract(G.multiply(Fn.create(CAP_DENOM - 1n)));
+  const balS = Fn.add(rRem, rSlack);
+  if (!balP.equals(H.multiply(balS))) return null;
+  const extra = createHash('sha256').update(Buffer.concat([
+    Buffer.from(VAULT_CAP_DST),
+    pointBytes(lockP),
+    u32le(Number(rate)),
+    pointBytes(capP),
+    pointBytes(remP),
+    pointBytes(slackP),
+  ])).digest();
+  const rel = schnorrProve(P, s, extra);
+  const bal = schnorrProve(balP, balS, Buffer.from(VAULT_CAP_DST));
+  const range = proveRange(reward, rCap);
+  const remRange = proveRange(rem, rRem);
+  const slackRange = proveRange(slack, rSlack);
+  if (!range?.length || !remRange?.length || !slackRange?.length) return null;
+  return {
+    lockCommit: pointBytes(lockP),
+    commit: pointBytes(capP),
+    range,
+    remCommit: pointBytes(remP),
+    remRange,
+    slackCommit: pointBytes(slackP),
+    slackRange,
+    relR: rel.R,
+    relZ: rel.z,
+    balR: bal.R,
+    balZ: bal.z,
+    reward,
+    blind: rCap,
+  };
+}
+
+/** True when `proof` is this lock's cap at the public rate. */
+export function verifyLockCap(lockCommit, bps, proof) {
+  try {
+    const rate = BigInt(Math.floor(Number(bps)));
+    if (rate <= 0n || rate >= RELATION_BOUND) return false;
+    const lockP = pointFrom(lockCommit);
+    const capP = pointFrom(proof.commit);
+    const remP = pointFrom(proof.remCommit);
+    const slackP = pointFrom(proof.slackCommit);
+    if (!verifyRange(pointBytes(capP), proof.range)) return false;
+    if (!verifyRange(pointBytes(remP), proof.remRange)) return false;
+    if (!verifyRange(pointBytes(slackP), proof.slackRange)) return false;
+    const P = lockP.multiply(Fn.create(rate)).subtract(capP.multiply(Fn.create(CAP_DENOM))).subtract(remP);
+    const extra = createHash('sha256').update(Buffer.concat([
+      Buffer.from(VAULT_CAP_DST),
+      pointBytes(lockP),
+      u32le(Number(rate)),
+      pointBytes(capP),
+      pointBytes(remP),
+      pointBytes(slackP),
+    ])).digest();
+    if (!schnorrVerify(P, proof.relR, proof.relZ, extra)) return false;
+    const balP = remP.add(slackP).subtract(G.multiply(Fn.create(CAP_DENOM - 1n)));
+    return schnorrVerify(balP, proof.balR, proof.balZ, Buffer.from(VAULT_CAP_DST));
+  } catch {
+    return false;
+  }
+}
+
+/** Range proof that the cap commitment is at least the reward commitment. */
+export function proveUnderCap(capBlind, capValue, rewardBlind, rewardValue) {
+  const diff = BigInt(capValue) - BigInt(rewardValue);
+  if (diff < 0n || diff > MAX_NANOS) return null;
+  const rDiff = Fn.sub(asBlind(capBlind), asBlind(rewardBlind));
+  const range = proveRange(diff, rDiff);
+  return range?.length ? range : null;
+}
+
+export function verifyUnderCap(capCommit, rewardCommit, range) {
+  try {
+    const D = pointFrom(capCommit).subtract(pointFrom(rewardCommit));
+    return verifyRange(pointBytes(D), range);
+  } catch {
+    return false;
+  }
+}
+
 function packProof(p) {
   return Buffer.concat([
     Buffer.from([VAULT_PROOF_VER]),
@@ -371,6 +501,8 @@ function packProof(p) {
     Buffer.from([p.full ? 1 : 0]),
     p.qPoint,
     p.remainCommit,
+    p.lockCommit,
+    p.capCommit,
     p.timeSlackCommit,
     p.sigA1,
     p.sigA2,
@@ -403,6 +535,20 @@ function packProof(p) {
     p.slackRange,
     p.balR,
     p.balZ,
+    u32le(p.capRange.length),
+    p.capRange,
+    p.capRemCommit,
+    u32le(p.capRemRange.length),
+    p.capRemRange,
+    p.capSlackCommit,
+    u32le(p.capSlackRange.length),
+    p.capSlackRange,
+    p.capRelR,
+    p.capRelZ,
+    p.capBalR,
+    p.capBalZ,
+    u32le(p.underRange.length),
+    p.underRange,
   ]);
 }
 
@@ -439,6 +585,12 @@ function parseProof(blob) {
   const remainCommit = take(buf, off, 32);
   if (!remainCommit) return null;
   off = remainCommit.off;
+  const lockCommit = take(buf, off, 32);
+  if (!lockCommit) return null;
+  off = lockCommit.off;
+  const capCommit = take(buf, off, 32);
+  if (!capCommit) return null;
+  off = capCommit.off;
   const timeSlackCommit = take(buf, off, 32);
   if (!timeSlackCommit) return null;
   off = timeSlackCommit.off;
@@ -533,7 +685,49 @@ function parseProof(blob) {
   if (!balR) return null;
   off = balR.off;
   const balZ = take(buf, off, 32);
-  if (!balZ || balZ.off !== buf.length) return null;
+  if (!balZ) return null;
+  off = balZ.off;
+  const capRangeLen = readU32(buf, off);
+  if (!capRangeLen || capRangeLen.n === 0) return null;
+  off = capRangeLen.off;
+  const capRange = take(buf, off, capRangeLen.n);
+  if (!capRange) return null;
+  off = capRange.off;
+  const capRemCommit = take(buf, off, 32);
+  if (!capRemCommit) return null;
+  off = capRemCommit.off;
+  const capRemRangeLen = readU32(buf, off);
+  if (!capRemRangeLen || capRemRangeLen.n === 0) return null;
+  off = capRemRangeLen.off;
+  const capRemRange = take(buf, off, capRemRangeLen.n);
+  if (!capRemRange) return null;
+  off = capRemRange.off;
+  const capSlackCommit = take(buf, off, 32);
+  if (!capSlackCommit) return null;
+  off = capSlackCommit.off;
+  const capSlackRangeLen = readU32(buf, off);
+  if (!capSlackRangeLen || capSlackRangeLen.n === 0) return null;
+  off = capSlackRangeLen.off;
+  const capSlackRange = take(buf, off, capSlackRangeLen.n);
+  if (!capSlackRange) return null;
+  off = capSlackRange.off;
+  const capRelR = take(buf, off, 32);
+  if (!capRelR) return null;
+  off = capRelR.off;
+  const capRelZ = take(buf, off, 32);
+  if (!capRelZ) return null;
+  off = capRelZ.off;
+  const capBalR = take(buf, off, 32);
+  if (!capBalR) return null;
+  off = capBalR.off;
+  const capBalZ = take(buf, off, 32);
+  if (!capBalZ) return null;
+  off = capBalZ.off;
+  const underLen = readU32(buf, off);
+  if (!underLen || underLen.n === 0) return null;
+  off = underLen.off;
+  const underRange = take(buf, off, underLen.n);
+  if (!underRange || underRange.off !== buf.length) return null;
   return {
     fs1: fs1.b,
     record: record.b,
@@ -544,6 +738,8 @@ function parseProof(blob) {
     full: full === 1,
     qPoint: qPoint.b,
     remainCommit: remainCommit.b,
+    lockCommit: lockCommit.b,
+    capCommit: capCommit.b,
     timeSlackCommit: timeSlackCommit.b,
     sigA1: sigA1.b,
     sigA2: sigA2.b,
@@ -571,13 +767,36 @@ function parseProof(blob) {
     slackRange: slackRange.b,
     balR: balR.b,
     balZ: balZ.b,
+    capRange: capRange.b,
+    capRemCommit: capRemCommit.b,
+    capRemRange: capRemRange.b,
+    capSlackCommit: capSlackCommit.b,
+    capSlackRange: capSlackRange.b,
+    capRelR: capRelR.b,
+    capRelZ: capRelZ.b,
+    capBalR: capBalR.b,
+    capBalZ: capBalZ.b,
+    underRange: underRange.b,
   };
 }
 
-/** Reward commitment inside a proof. The epoch total opens the sum of these. */
+/** Reward commitment inside a proof. The mint keeps this point and does not open it. */
 export function vaultRewardCommit(blob) {
   const parsed = parseProof(blob);
   return parsed ? parsed.commitB : null;
+}
+
+/** The statement's full bit. Null when the blob is not this proof version. */
+export function vaultProofFull(blob) {
+  const parsed = parseProof(blob);
+  return parsed ? parsed.full === true : null;
+}
+
+/** Lock commitment and reward-cap commitment bound into the proof. */
+export function vaultProofCap(blob) {
+  const parsed = parseProof(blob);
+  if (!parsed?.lockCommit || !parsed?.capCommit) return null;
+  return { lockCommit: parsed.lockCommit, capCommit: parsed.capCommit };
 }
 
 function fail(code, reason) {
@@ -690,6 +909,12 @@ export function proveVaultReward({
   if (!timeRange?.length || !timeSlackRange?.length) return null;
   const remainCommit = pointBytes(remainCommitP);
   const timeSlackCommit = pointBytes(timeSlackP);
+  const cap = proveLockCap(rows[which].amount, rows[which].blind, bps);
+  if (!cap) return null;
+  const underRange = proveUnderCap(cap.blind, cap.reward, rReward, reward.nanos);
+  if (!underRange) return null;
+  const lockCommit = cap.lockCommit;
+  const capCommit = cap.commit;
   const digest = statementDigest({
     magic,
     root,
@@ -708,6 +933,8 @@ export function proveVaultReward({
     remRange,
     slackCommit,
     slackRange,
+    lockCommit,
+    capCommit,
   });
   const epochBase = pointBytes(nullBase(epoch));
   const proved = fs1ProveUnlinked(handle, {
@@ -794,6 +1021,18 @@ export function proveVaultReward({
     slackRange,
     balR: bal.R,
     balZ: bal.z,
+    lockCommit,
+    capCommit,
+    capRange: cap.range,
+    capRemCommit: cap.remCommit,
+    capRemRange: cap.remRange,
+    capSlackCommit: cap.slackCommit,
+    capSlackRange: cap.slackRange,
+    capRelR: cap.relR,
+    capRelZ: cap.relZ,
+    capBalR: cap.balR,
+    capBalZ: cap.balZ,
+    underRange,
   });
   const note = { ...hidden, dest20: d20 };
   delete note.r;
@@ -807,6 +1046,8 @@ export function proveVaultReward({
     nanos: Number(reward.nanos),
     rem: reward.rem,
     remainCommit: remainCommit.toString('hex'),
+    capCommit: capCommit.toString('hex'),
+    lockCommit: lockCommit.toString('hex'),
     full: full === 1,
     rewardBlind: rReward,
     rootEpoch: epoch,
@@ -904,7 +1145,22 @@ export function verifyVaultReward({
       remRange: parsed.remRange,
       slackCommit: parsed.slackCommit,
       slackRange: parsed.slackRange,
+      lockCommit: parsed.lockCommit,
+      capCommit: parsed.capCommit,
     });
+    if (!verifyLockCap(parsed.lockCommit, parsed.bps, {
+      commit: parsed.capCommit,
+      range: parsed.capRange,
+      remCommit: parsed.capRemCommit,
+      remRange: parsed.capRemRange,
+      slackCommit: parsed.capSlackCommit,
+      slackRange: parsed.capSlackRange,
+      relR: parsed.capRelR,
+      relZ: parsed.capRelZ,
+      balR: parsed.capBalR,
+      balZ: parsed.capBalZ,
+    })) return fail(2, 'stake_reward');
+    if (!verifyUnderCap(parsed.capCommit, parsed.commitB, parsed.underRange)) return fail(2, 'stake_reward');
     P = relationPoint(parsed.qPoint, parsed.commitB, parsed.remCommit, parsed.bps, parsed.span);
     balP = balancePoint(parsed.remCommit, parsed.slackCommit, denom);
     timeP = pointFrom(parsed.remainCommit).add(pointFrom(parsed.timeSlackCommit)).subtract(G.multiply(Fn.create(parsed.span)));

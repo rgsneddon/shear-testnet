@@ -188,6 +188,27 @@ export function encodeCommitVaultRoot(earn, rootHex) {
   return concat(selector('commitVaultRoot(uint256,bytes32)'), pad32(earn), word);
 }
 
+export function encodeCommitEpochStartRoot(earn, rootHex) {
+  const word = new Uint8Array(32);
+  const raw = String(rootHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('commitEpochStartRoot(uint256,bytes32)'), pad32(earn), word);
+}
+
+export function encodeNoteVaultLock(lockHex) {
+  const word = new Uint8Array(32);
+  const raw = String(lockHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('noteVaultLock(bytes32)'), word);
+}
+
+export function encodeNoteVaultRemain(earn, remainHex) {
+  const word = new Uint8Array(32);
+  const raw = String(remainHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('noteVaultRemain(uint256,bytes32)'), pad32(earn), word);
+}
+
 export function encodeSetEpochDue(epoch, due) {
   return concat(selector('setEpochDue(uint256,uint256)'), pad32(epoch), pad32(due));
 }
@@ -196,25 +217,17 @@ export function encodeChargeEpoch(epoch, nanos) {
   return concat(selector('chargeEpoch(uint256,uint256)'), pad32(epoch), pad32(nanos));
 }
 
-export function encodeRoll(dest, nowTs, nullifierHex, epoch, proof, auth = new Uint8Array()) {
+export function encodeRoll(dest, nowTs, epoch, auth = new Uint8Array()) {
   const body = encodeBytes(dest);
-  const proofBody = encodeBytes(proof || Buffer.alloc(0));
   const authBody = encodeBytes(auth || new Uint8Array());
-  const id = new Uint8Array(32);
-  const raw = Buffer.from(String(nullifierHex || '').replace(/^0x/i, ''), 'hex');
-  if (raw.length === 32) id.set(raw);
-  const head = 192;
-  const proofAt = head + body.length;
+  const head = 128;
   return concat(
-    selector('roll(bytes,uint256,bytes32,uint256,bytes,bytes)'),
+    selector('roll(bytes,uint256,uint256,bytes)'),
     pad32(head),
     pad32(nowTs),
-    id,
     pad32(epoch),
-    pad32(proofAt),
-    pad32(proofAt + proofBody.length),
+    pad32(head + body.length),
     body,
-    proofBody,
     authBody,
   );
 }
@@ -632,7 +645,16 @@ export async function executeReserveTx(session, tx, nowMs) {
     if (!commit || commit.length !== 32) return { ok: false, reason: 'stake_reward' };
     const pub = String(tx?.ownerPub || tx?.spendPub || '').replace(/^0x/i, '');
     const owner = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
-    return callReserve(session, encodeDeposit(dest, commit, nowMs, owner, lockQualifies(commit, act?.piProof)));
+    const locked = await callReserve(session, encodeDeposit(dest, commit, nowMs, owner, lockQualifies(commit, act?.piProof)));
+    if (!locked.ok) return locked;
+    const notedLock = await callReserve(session, encodeNoteVaultLock(Buffer.from(commit).toString('hex')));
+    if (!notedLock.ok) return notedLock;
+    const remain = String(tx?.remainCommit || '').replace(/^0x/i, '');
+    if (/^[0-9a-fA-F]{64}$/.test(remain)) {
+      const noted = await callReserve(session, encodeNoteVaultRemain(Math.floor(Number(tx?.earnEpoch) || 0), remain));
+      if (!noted.ok) return noted;
+    }
+    return locked;
   }
   if (kind === 'vote') {
     const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;
@@ -656,7 +678,7 @@ export async function executeReserveTx(session, tx, nowMs) {
     const auth = tx?.rewardSig
       ? packRewardAuth({ ownerPub: tx.ownerPub || tx.spendPub, sig: tx.rewardSig, dest: from })
       : new Uint8Array();
-    return callReserve(session, encodeRoll(from, nowMs, tx?.nullifier || '', Math.floor(Number(tx?.earnEpoch) || 0), tx?.vaultProof || Buffer.alloc(0), auth || new Uint8Array()));
+    return callReserve(session, encodeRoll(from, nowMs, Math.floor(Number(tx?.earnEpoch) || 0), auth || new Uint8Array()));
   }
   if (kind === 'withdraw') {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
@@ -759,6 +781,23 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     // A withdraw after the epoch, with no root on the coinbase, and no
     // explicit empty expectation from JS, is not an empty earning set.
     if (oweRoot && !rootHex && owedRoot !== '') return fail('stake_reward');
+    const vaultHex = cb?.vaultLockRoot == null || cb.vaultLockRoot === ''
+      ? ''
+      : (Buffer.isBuffer(cb.vaultLockRoot) ? cb.vaultLockRoot.toString('hex') : String(cb.vaultLockRoot).replace(/^0x/i, '').toLowerCase());
+    const startHex = cb?.epochStartRoot == null || cb.epochStartRoot === ''
+      ? ''
+      : (Buffer.isBuffer(cb.epochStartRoot) ? cb.epochStartRoot.toString('hex') : String(cb.epochStartRoot).replace(/^0x/i, '').toLowerCase());
+    const settleIdx = evmSettlementIndex(view0, nowMs, genesisMs);
+    if (/^[0-9a-f]{64}$/.test(startHex)) {
+      const started = await callReserve(session, encodeCommitEpochStartRoot(settleIdx, startHex));
+      if (!started.ok) return fail(started.reason || 'stake_reward');
+      evm.calls += 1;
+    }
+    if (/^[0-9a-f]{64}$/.test(vaultHex) && settleIdx > 0) {
+      const rooted = await callReserve(session, encodeCommitVaultRoot(settleIdx - 1, vaultHex));
+      if (!rooted.ok) return fail(rooted.reason || 'stake_reward');
+      evm.calls += 1;
+    }
     if (rootHex || oweRoot) {
       const pass = rootHex || EMPTY_REWARD_ROOT;
       const sm = session.evm.stateManager;
