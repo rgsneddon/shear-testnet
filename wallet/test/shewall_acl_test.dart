@@ -32,6 +32,10 @@ void main() {
   });
 
   test('file is 0600 and a picked directory keeps its mode', () {
+    if (Platform.isWindows) {
+      markTestSkipped('POSIX file modes');
+      return;
+    }
     final dir = _tempDir();
     final widened = Process.runSync('chmod', ['755', dir.path]);
     expect(widened.exitCode, 0);
@@ -51,6 +55,10 @@ void main() {
   });
 
   test('app-owned shear directory is mode 0700 and the file is 0600', () {
+    if (Platform.isWindows) {
+      markTestSkipped('POSIX file modes');
+      return;
+    }
     final support = _tempDir();
     final app = Directory(shewallAppDirectory(support.path))..createSync();
     final widened = Process.runSync('chmod', ['755', app.path]);
@@ -85,6 +93,10 @@ void main() {
   });
 
   test('a chmod failure before rename keeps the previous shewall.bin', () {
+    if (Platform.isWindows) {
+      markTestSkipped('POSIX chmod');
+      return;
+    }
     final dir = _tempDir();
     final dest = File(p.join(dir.path, shewallName));
     writePrivateShewallSync(dest, Uint8List.fromList([1, 2, 3, 4]));
@@ -179,29 +191,40 @@ void main() {
       final bytes = Uint8List.fromList([1, 2, 3, 4]);
       final exported = File(p.join(dir.path, 'Documents', shewallName));
       exported.parent.createSync(recursive: true);
-      Process.runSync('chmod', ['755', exported.parent.path]);
+      if (!Platform.isWindows) {
+        Process.runSync('chmod', ['755', exported.parent.path]);
+      }
       final path = await saveShewallBytes(bytes, dest: exported);
       expect(path, exported.path);
       expect(exported.readAsBytesSync(), bytes);
-      expect(
-        FileStat.statSync(exported.path).mode & _modeMask,
-        shewallFileMode,
-      );
-      expect(FileStat.statSync(exported.parent.path).mode & _modeMask, 0x1ed);
+      if (!Platform.isWindows) {
+        expect(
+          FileStat.statSync(exported.path).mode & _modeMask,
+          shewallFileMode,
+        );
+        expect(FileStat.statSync(exported.parent.path).mode & _modeMask, 0x1ed);
+      }
       expect(debugShewallWriteStamp, isNotEmpty);
       expect(debugShewallWriteStamp, isNot(caller));
 
       final viaSession = File(p.join(dir.path, 'via-session', shewallName));
       viaSession.parent.createSync(recursive: true);
-      Process.runSync('chmod', ['755', viaSession.parent.path]);
+      if (!Platform.isWindows) {
+        Process.runSync('chmod', ['755', viaSession.parent.path]);
+      }
       final written = await writeShewallFile(viaSession, bytes);
       expect(written.path, viaSession.path);
       expect(viaSession.readAsBytesSync(), bytes);
-      expect(
-        FileStat.statSync(viaSession.path).mode & _modeMask,
-        shewallFileMode,
-      );
-      expect(FileStat.statSync(viaSession.parent.path).mode & _modeMask, 0x1ed);
+      if (!Platform.isWindows) {
+        expect(
+          FileStat.statSync(viaSession.path).mode & _modeMask,
+          shewallFileMode,
+        );
+        expect(
+          FileStat.statSync(viaSession.parent.path).mode & _modeMask,
+          0x1ed,
+        );
+      }
       expect(debugShewallWriteStamp, isNot(caller));
     },
   );
@@ -692,12 +715,14 @@ void main() {
     );
     expect(selectLinuxFstatSymbol((name) => name == '__fxstat'), '__fxstat');
     expect(selectLinuxFstatSymbol((_) => false), isNull);
-    final libc = DynamicLibrary.open('libc.so.6');
-    expect(selectLinuxFstatSymbol(libc.providesSymbol), 'fstat');
-    expect(Abi.current(), Abi.linuxX64);
-    expect(linuxOpenFlags(Abi.current()).nofollow, 0x20000);
-    expect(linuxOpenFlags(Abi.current()).directory, 0x10000);
-    expect(linuxStatModeOffset(Abi.current()), 24);
+    if (Platform.isLinux) {
+      final libc = DynamicLibrary.open('libc.so.6');
+      expect(selectLinuxFstatSymbol(libc.providesSymbol), 'fstat');
+      expect(Abi.current(), Abi.linuxX64);
+      expect(linuxOpenFlags(Abi.current()).nofollow, 0x20000);
+      expect(linuxOpenFlags(Abi.current()).directory, 0x10000);
+      expect(linuxStatModeOffset(Abi.current()), 24);
+    }
   });
 }
 
