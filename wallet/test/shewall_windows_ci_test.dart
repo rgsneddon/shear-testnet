@@ -17,12 +17,13 @@ void main() {
     }
     final sid = _tokenSid();
     final sddl = ownerOnlyFileSddl(sid);
-    // The production string puts one space between the owner and the DACL.
+    // ConvertStringSecurityDescriptorToSecurityDescriptorW rejects a space
+    // between the owner and the DACL.
     expect(
       sddl,
-      'O:$sid D:P(A;;FA;;;$sid)(A;;FA;;;$systemSid)(A;;FA;;;$administratorsSid)',
+      'O:${sid}D:P(A;;FA;;;$sid)(A;;FA;;;$systemSid)(A;;FA;;;$administratorsSid)',
     );
-    expect(sddl.contains(' '), isTrue);
+    expect(sddl.contains(' '), isFalse);
 
     final dir = Directory.systemTemp.createTempSync('shear-win-sddl-');
     addTearDown(() {

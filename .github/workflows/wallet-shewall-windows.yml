@@ -1,5 +1,5 @@
 # Confirm shewall.bin ACL behavior on a real Windows runner.
-# The production SDDL string has a space between the owner and the DACL.
+# The production SDDL string has no space between the owner and the DACL.
 # This job does not build or publish a wallet.
 name: wallet-shewall-windows
 on:

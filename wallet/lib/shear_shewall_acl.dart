@@ -139,11 +139,14 @@ bool shewallParentIsAppOwned(String parent, {String? applicationSupport}) {
 }
 
 /// Owner-only file SDDL. [sid] must already be a SID, not an account name.
+///
+/// No space between the owner and the DACL. `ConvertStringSecurityDescriptorToSecurityDescriptorW`
+/// rejects `O:<sid> D:P...` and the file is never created.
 String ownerOnlyFileSddl(String sid) {
   if (!RegExp(r'^S-1-\d+(?:-\d+)+$', caseSensitive: false).hasMatch(sid)) {
     throw const FormatException(shewallAclToken);
   }
-  return 'O:$sid D:P(A;;FA;;;$sid)(A;;FA;;;$systemSid)(A;;FA;;;$administratorsSid)';
+  return 'O:${sid}D:P(A;;FA;;;$sid)(A;;FA;;;$systemSid)(A;;FA;;;$administratorsSid)';
 }
 
 /// Linux `open` flags. x86 keeps the arch values. arm64 uses the generic ones.
