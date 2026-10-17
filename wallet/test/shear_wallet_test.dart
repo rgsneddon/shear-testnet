@@ -5785,6 +5785,17 @@ void main() {
     expect(kTabs.contains('Reserve'), isFalse);
     expect(kTabs.contains('Join'), isFalse);
     expect(find.text('The Reserve'), findsWidgets);
+    expect(find.byKey(const Key('reserve-how')), findsOneWidget);
+    expect(find.text('Locks are units of π. The remainder stays spendable.'), findsOneWidget);
+    expect(find.text('Rewards are claimable each period, about 25 days.'), findsOneWidget);
+    expect(
+      find.text('Principal unlocks only at epoch end. Withdraw it, or roll it with your own signed transaction.'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Votes equal your locked π. Cast them on days 0-301. Two ballots: the hash-bonus rate and the reserve rate.'),
+      findsWidgets,
+    );
     expect(find.byKey(const Key('reserve-hashbonus-per-u')), findsOneWidget);
     expect(
       tester.widget<Text>(find.byKey(const Key('reserve-hashbonus-per-u'))).data,
@@ -5831,7 +5842,7 @@ void main() {
     expect(find.textContaining('Reserve oracle'), findsNothing);
     expect(find.textContaining('Lock issuance rate'), findsWidgets);
     expect(find.textContaining('Interest'), findsNothing);
-    expect(find.textContaining(kReserveAccruedLabel), findsOneWidget);
+    expect(find.textContaining('$kReserveAccruedLabel  '), findsOneWidget);
     expect(find.textContaining('At epoch end'), findsOneWidget);
     expect(find.textContaining('400-day APR'), findsNothing);
     expect(find.textContaining('a year'), findsNothing);

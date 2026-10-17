@@ -19,7 +19,7 @@ import 'shear_ctf.dart';
 import 'shear_ctf_cli.dart';
 import 'shear_vortex.dart';
 import 'shear_reserve.dart';
-import 'shear_vault_reward.dart';
+import 'shear_vault_reward.dart' hide kPiSheNanos;
 import 'shear_reserve_towers.dart';
 import 'shear_confirm_pie.dart';
 import 'shear_biometrics.dart';
@@ -4034,13 +4034,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 key: const Key('reserve-local-wait'),
                 style: TextStyle(color: shearMutedOf(context)),
               ),
+            const Text('How it works', key: Key('reserve-how'), style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            const Text('Locks are units of π. The remainder stays spendable.'),
+            const Text('Rewards are claimable each period, about 25 days.'),
             const Text(
-              'The Reserve is Shear governance. Deposit any amount into your own portal, '
-              'in as many transactions as you like. Only a vote needs that sum to reach π SHE, '
-              'then 9 confirmations. The first portal to reach π opens a 400-day epoch. '
-              'Last-99-day deposits still unlock a vote but earn no Reserve reward. '
-              'The lock issuance rate is frozen for the epoch. '
-              'The winning vote then moves the hash bonus by one unit.',
+              'Principal unlocks only at epoch end. Withdraw it, or roll it with your own signed transaction.',
+            ),
+            const Text(
+              'Votes equal your locked π. Cast them on days 0-301. Two ballots: the hash-bonus rate and the reserve rate.',
             ),
             const SizedBox(height: 8),
             const Text(
@@ -4245,7 +4247,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             ],
     ], key: const Key('reserve-overall-box'));
     final voteKids = <Widget>[
-      const Text('Vote to raise, lower, or leave the hash bonus (±1 unit). The pot schedule does not change. Your vote is sealed for this epoch.'),
+      const Text('Votes equal your locked π. Cast them on days 0-301. Two ballots: the hash-bonus rate and the reserve rate.'),
     ];
     if (voted) {
       final choice = p.vote!;
@@ -4307,8 +4309,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             textAlign: TextAlign.left,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
-          Text('portal ${vortex.yourNanos}', key: const Key('vortex-your-portal')),
-          Text('Flow continuum ${vortex.flowNanos}', key: const Key('vortex-flow-continuum')),
+          Text('portal ${vortex.yourNanos}', key: const Key('vortex-your-portal'), textAlign: TextAlign.left),
+          Text('Flow continuum ${vortex.flowNanos}', key: const Key('vortex-flow-continuum'), textAlign: TextAlign.left),
           Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
           Text(
             reserve.epochIsOver(now) && p.nanos > 0
