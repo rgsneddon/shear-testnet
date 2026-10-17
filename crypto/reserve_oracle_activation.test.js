@@ -894,7 +894,8 @@ describe('the stake-reward cutoff is per network', () => {
     assert.equal(late.ok, true, late.reason);
     assert.equal(late.idle, true);
     const cast = vote({ state, dest: lateWho, choice: VOTE_INCREASE, nowMs: lateAt });
-    assert.equal(cast.ok, true, cast.reason);
+    assert.equal(cast.ok, false);
+    assert.equal(cast.reason, 'vote_retired');
     const addRemain = end - addAt;
     const want = interestNanos(PI_SHE_NANOS, GENESIS_BPS) + proRata(PI_SHE_NANOS, GENESIS_BPS, addRemain, epoch);
     assert.equal(enact({ state, nowMs: end }).ok, true);
@@ -916,7 +917,8 @@ describe('the stake-reward cutoff is per network', () => {
     assert.equal((await callReserve(session, encodeDeposit(earlyWho, PI_SHE_NANOS, addAt))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(lateWho, PI_SHE_NANOS, lateAt))).ok, true);
     const evmVote = await callReserve(session, encodeVote(lateWho, 1, lateAt));
-    assert.equal(evmVote.ok, true, evmVote.reason);
+    assert.equal(evmVote.ok, false);
+    assert.equal(evmVote.reason, 'not_voter');
     assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
     const evmEarly = await callReserve(session, encodeWithdraw(earlyWho, end, undefined, PI_SHE_NANOS * 2, {
       locks: [
@@ -1039,7 +1041,8 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     assert.equal(late.ok, true, late.reason);
     assert.equal(late.idle, true);
     const cast = vote({ state, dest: who, choice: VOTE_INCREASE, nowMs: lateAt });
-    assert.equal(cast.ok, true, cast.reason);
+    assert.equal(cast.ok, false);
+    assert.equal(cast.reason, 'vote_retired');
     const paid = withdraw({ state, dest: who, nowMs: end });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.interest, 0);
@@ -1051,7 +1054,8 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS - 1, T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lateAt))).ok, true);
     const evmVote = await callReserve(session, encodeVote(who, 1, lateAt));
-    assert.equal(evmVote.ok, true, evmVote.reason);
+    assert.equal(evmVote.ok, false);
+    assert.equal(evmVote.reason, 'not_voter');
     const evm = await callReserve(session, encodeWithdraw(who, end, undefined, 0, {
       locks: [
         { nanos: PI_SHE_NANOS - 1, at: T0 },

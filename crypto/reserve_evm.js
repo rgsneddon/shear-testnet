@@ -14,6 +14,7 @@ import { ED25519_SPKI_PREFIX } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
 import { packVaultOutput, verifyLeafRetire, verifyVaultReward, vaultPublicReward } from './vault_reward_fs1.js';
+import { voteTxDigest } from './leaf_vote.js';
 
 function keccak256(data) {
   const u8 = data instanceof Uint8Array ? data : Buffer.from(data);
@@ -135,6 +136,60 @@ export function encodeHoldWithdraw(dest) {
 
 export function encodeClearWithdrawHolds() {
   return selector('clearWithdrawHolds()');
+}
+
+export function encodeCommitEpochCensus(epoch, leafCount, openHeight) {
+  return concat(
+    selector('commitEpochCensus(uint256,uint256,uint256)'),
+    pad32(epoch),
+    pad32(leafCount),
+    pad32(openHeight),
+  );
+}
+
+export function encodeCastVote({ proof, output, paramId = 0, choice = 0, seq = 1, height = 0, epoch = 0 }) {
+  const proofBody = encodeBytes(Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []));
+  const outputBody = encodeBytes(Buffer.isBuffer(output) ? output : Buffer.from(output || []));
+  const head = 32 * 7;
+  return concat(
+    selector('castVote(bytes,bytes,uint8,int8,uint32,uint256,uint256)'),
+    pad32(head),
+    pad32(head + proofBody.length),
+    pad32(paramId),
+    pad32(choice),
+    pad32(seq),
+    pad32(height),
+    pad32(epoch),
+    proofBody,
+    outputBody,
+  );
+}
+
+export function encodeTallyBallot(paramId, epoch, height) {
+  return concat(
+    selector('tallyBallot(uint8,uint256,uint256)'),
+    pad32(paramId),
+    pad32(epoch),
+    pad32(height),
+  );
+}
+
+export function decodeCastVote(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  return {
+    up: Number(readU256(b, 0)),
+    down: Number(readU256(b, 32)),
+    hold: Number(readU256(b, 64)),
+    turnout: Number(readU256(b, 96)),
+  };
+}
+
+export function decodeTallyStep(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  let x = 0n;
+  for (let i = 0; i < 32 && i < b.length; i += 1) x = (x << 8n) + BigInt(b[i] || 0);
+  if (x >= 1n << 255n) x -= 1n << 256n;
+  return Number(x);
 }
 
 export function encodeVote(dest, choice, nowTs) {
@@ -437,6 +492,11 @@ function evmRevertReason(res) {
     if (sel.equals(Buffer.from(selector('OwnerMissing()')))) return 'owner_missing';
     if (sel.equals(Buffer.from(selector('Unsigned()')))) return 'unsigned';
     if (sel.equals(Buffer.from(selector('AlreadyMinted()')))) return 'already_minted';
+    if (sel.equals(Buffer.from(selector('NotVoter()')))) return 'not_voter';
+    if (sel.equals(Buffer.from(selector('VoteLocked()')))) return 'vote_locked';
+    if (sel.equals(Buffer.from(selector('EpochClosed()')))) return 'epoch_closed';
+    if (sel.equals(Buffer.from(selector('EpochNotEnded()')))) return 'epoch_open';
+    if (sel.equals(Buffer.from(selector('BadAmount()')))) return 'bad_amount';
   }
   return String(res?.execResult?.exceptionError?.error || 'revert');
 }
@@ -482,6 +542,50 @@ function ed25519Precompile(opts) {
 }
 
 const RETIRE_MAGIC = Buffer.from('shear-retire-v1');
+const VOTE_PREFIX = Buffer.from('shear-vote-v1');
+
+function votePrecompile(data) {
+  const base = VOTE_PREFIX.length;
+  const head = 109;
+  if (data.length < base + head + 4) return 0;
+  const epoch = data.readBigUInt64LE(base + 64);
+  const bps = data.readUInt32LE(base + 72);
+  const span = data.readBigUInt64LE(base + 76);
+  const reward = data.readBigUInt64LE(base + 84);
+  const magic = data.subarray(base + 92, base + 109).toString('utf8');
+  const outputLen = data.readUInt32LE(base + 109);
+  const outputAt = base + 113;
+  const outputEnd = outputAt + outputLen;
+  if (outputLen === 0) return 2;
+  if (outputEnd + 4 > data.length) return 0;
+  const proofLen = data.readUInt32LE(outputEnd);
+  const proofAt = outputEnd + 4;
+  const proofEnd = proofAt + proofLen;
+  if (proofLen === 0 || proofEnd + 37 > data.length) return 0;
+  const choiceByte = data[proofEnd];
+  const choice = choiceByte === 0xff ? -1 : choiceByte;
+  const seq = data.readUInt32LE(proofEnd + 1);
+  const proposalId = data.subarray(proofEnd + 5, proofEnd + 37);
+  const txDigest = voteTxDigest({
+    choice,
+    seq,
+    proposalId,
+    epoch: Number(epoch),
+    magic,
+  });
+  if (!txDigest) return 0;
+  const got = verifyVaultReward({
+    root: data.subarray(base, base + 32),
+    nullifier: data.subarray(base + 32, base + 64),
+    rootEpoch: epoch,
+    terms: { bps, span, covered: span / 16n, earnEpoch: epoch, reward },
+    magic,
+    output: data.subarray(outputAt, outputEnd),
+    blob: data.subarray(proofAt, proofEnd),
+    vote: { choice, seq, proposalId, txDigest },
+  });
+  return got.ok ? 1 : (got.code === 2 ? 2 : 0);
+}
 
 /**
  * Precompile 0x102.
@@ -495,7 +599,9 @@ function vaultZkPrecompile(opts) {
   if (opts.gasLimit < gasUsed) return { executionGasUsed: opts.gasLimit, returnValue: zero };
   let code = 0;
   try {
-    if (data.length >= 32 + RETIRE_MAGIC.length && data.subarray(32, 32 + RETIRE_MAGIC.length).equals(RETIRE_MAGIC)) {
+    if (data.length >= VOTE_PREFIX.length && data.subarray(0, VOTE_PREFIX.length).equals(VOTE_PREFIX)) {
+      code = votePrecompile(data);
+    } else if (data.length >= 32 + RETIRE_MAGIC.length && data.subarray(32, 32 + RETIRE_MAGIC.length).equals(RETIRE_MAGIC)) {
       const burned = verifyLeafRetire(data.subarray(32 + RETIRE_MAGIC.length), data.subarray(0, 32));
       code = burned ? 1 : 0;
     } else {
@@ -659,7 +765,7 @@ export function isReserveCall(tx) {
   if (!tx || tx.coinbase) return false;
   if (String(tx.programId || '') !== RESERVE_PROGRAM) return false;
   const k = txKindOf(tx);
-  return k === 'lock' || k === 'vote' || k === 'withdraw' || k === 'reward-claim';
+  return k === 'lock' || k === 'vote' || k === 'leaf-vote' || k === 'withdraw' || k === 'reward-claim';
 }
 
 export function isEvmValueTx(tx) {
@@ -739,6 +845,20 @@ export async function executeReserveTx(session, tx, nowMs) {
     const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;
     if (!dest) return { ok: true };
     return callReserve(session, encodeVote(dest, choice, nowMs));
+  }
+  if (kind === 'leaf-vote') {
+    const output = packVaultOutput(tx.voteOutput || tx.vout?.[0]);
+    if (!output || !tx.voteProof) return { ok: false, reason: 'unsigned' };
+    const paramId = String(tx.voteParam || '') === 'rr' ? 1 : 0;
+    return callReserve(session, encodeCastVote({
+      proof: tx.voteProof,
+      output,
+      paramId,
+      choice: Math.floor(Number(tx.choice) || 0),
+      seq: Math.floor(Number(tx.voteSeq) || 1),
+      height: Math.floor(Number(tx.height) || 0),
+      epoch: Math.floor(Number(tx.earnEpoch) || 0),
+    }));
   }
   if (kind === 'reward-claim') {
     if (tx?.vaultProof) {

@@ -15,6 +15,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { MAGIC_TESTNET, PI_SHE_NANOS, VAULT_PROOF_VER } from './asert.js';
 import { vaultEpochBlocks, vaultPeriodBlocks } from './vault_accrual.js';
+import { voteBindBytes, voteKey, voteTag, voteTxDigest } from './leaf_vote.js';
 
 export { VAULT_PROOF_VER };
 import { admitPub } from './admit.js';
@@ -246,8 +247,9 @@ export function vaultLockNote(amount, ownerScalar, blind, unlockEpoch = VAULT_UN
 function statementDigest({
   magic, root, epoch, bps, span, reward, covered, unlock,
   commit: outCommit, noteCommit, dest20, amtCt, preimage,
+  vote = null,
 }) {
-  return createHash('sha256').update(Buffer.concat([
+  const body = [
     Buffer.from(VAULT_REWARD_DST),
     Buffer.from(String(magic || MAGIC_TESTNET)),
     root,
@@ -262,7 +264,13 @@ function statementDigest({
     dest20,
     amtCt,
     preimage,
-  ])).digest();
+  ];
+  if (vote) {
+    const bound = voteBindBytes(vote);
+    if (!bound) return null;
+    body.push(bound);
+  }
+  return createHash('sha256').update(Buffer.concat(body)).digest();
 }
 
 /**
@@ -855,6 +863,12 @@ function parseProof(blob) {
   };
 }
 
+/** The FS-1 null point inside a proof. A vote tag is the PRF of this point. */
+export function vaultNullPoint(blob) {
+  const parsed = parseProof(blob);
+  return parsed ? parsed.nullP : null;
+}
+
 /** Public reward integer inside a proof. Null when the blob is not this version. */
 export function vaultPublicReward(blob) {
   const parsed = parseProof(blob);
@@ -902,6 +916,7 @@ export function proveVaultReward({
   span,
   dest20,
   magic = MAGIC_TESTNET,
+  vote = null,
 } = {}) {
   if (!fs1NativeLoaded()) return null;
   if (Math.floor(Number(rootEpoch)) !== Math.floor(Number(earnEpoch))) return null;
@@ -973,6 +988,21 @@ export function proveVaultReward({
     reward: reward.nanos,
   });
   if (!preimage) return null;
+  let voteBind = null;
+  if (vote) {
+    const pid = Buffer.isBuffer(vote.proposalId) ? vote.proposalId : Buffer.from(String(vote.proposalId || ''), 'hex');
+    const kVote = voteKey(rows[which].scalar);
+    if (!kVote) return null;
+    const txDigest = voteTxDigest({
+      choice: vote.choice,
+      seq: vote.seq,
+      proposalId: pid,
+      epoch,
+      magic,
+    });
+    if (!txDigest) return null;
+    voteBind = { choice: vote.choice, seq: vote.seq, proposalId: pid, txDigest };
+  }
   const digest = statementDigest({
     magic,
     root,
@@ -987,7 +1017,9 @@ export function proveVaultReward({
     dest20: bound.dest20,
     amtCt: bound.amtCt,
     preimage,
+    vote: voteBind,
   });
+  if (!digest) return null;
   const epochBase = pointBytes(nullBase(epoch));
   const proved = fs1ProveUnlinked(handle, {
     indices: [which],
@@ -1058,6 +1090,13 @@ export function proveVaultReward({
       commit: row.commit,
       unlock: row.unlock,
     })),
+    ...(voteBind ? {
+      voteTag: voteTag(linkN, epoch, voteBind.proposalId),
+      voteSeq: Math.floor(Number(vote.seq)),
+      proposalId: voteBind.proposalId,
+      txDigest: voteBind.txDigest,
+      choice: Math.floor(Number(vote.choice)),
+    } : {}),
   };
 }
 
@@ -1071,6 +1110,7 @@ function fail(code, reason) {
  */
 export function verifyVaultReward({
   blob, root, rootEpoch, nullifier, output = null, terms = null, magic = MAGIC_TESTNET,
+  vote = null,
 } = {}) {
   const bound = claimOutputBinding(output);
   if (!bound) return fail(0, 'unsigned');
@@ -1121,6 +1161,21 @@ export function verifyVaultReward({
       reward: parsed.reward,
     });
     if (!preimage) return fail(0, 'unsigned');
+    let voteBind = null;
+    if (vote) {
+      const pid = Buffer.isBuffer(vote.proposalId) ? vote.proposalId : Buffer.from(String(vote.proposalId || ''), 'hex');
+      const txDigest = vote.txDigest
+        ? (Buffer.isBuffer(vote.txDigest) ? vote.txDigest : Buffer.from(String(vote.txDigest), 'hex'))
+        : voteTxDigest({
+          choice: vote.choice,
+          seq: vote.seq,
+          proposalId: pid,
+          epoch: parsed.epoch,
+          magic,
+        });
+      voteBind = { choice: vote.choice, seq: vote.seq, proposalId: pid, txDigest };
+      if (!voteBindBytes(voteBind)) return fail(0, 'unsigned');
+    }
     digest = statementDigest({
       magic,
       root: rootBuf,
@@ -1135,7 +1190,9 @@ export function verifyVaultReward({
       dest20: bound.dest20,
       amtCt: bound.amtCt,
       preimage,
+      vote: voteBind,
     });
+    if (!digest) return fail(0, 'unsigned');
     openP = pointFrom(cTilde).subtract(G.multiply(Fn.create(VAULT_PI_LEAF))).subtract(unlockBase().multiply(Fn.create(parsed.unlock)));
     noteP = pointFrom(bound.commit).subtract(G.multiply(Fn.create(parsed.reward)));
   } catch {
@@ -1163,7 +1220,13 @@ export function verifyVaultReward({
   const tag = parsed.record.subarray(1, 33);
   const derived = tagDerivedNullifier(tag, parsed.epoch);
   if (derived && derived.equals(nf)) return fail(0, 'unsigned');
-  return { ok: true, code: 1, reason: null, reward: parsed.reward, full: true };
+  let leafTag = null;
+  if (vote) {
+    const pid = Buffer.isBuffer(vote.proposalId) ? vote.proposalId : Buffer.from(String(vote.proposalId || ''), 'hex');
+    leafTag = voteTag(parsed.nullP, parsed.epoch, pid);
+    if (!leafTag) return fail(0, 'unsigned');
+  }
+  return { ok: true, code: 1, reason: null, reward: parsed.reward, full: true, voteTag: leafTag, nullP: parsed.nullP };
 }
 
 /** Opening of the sum of reward commitments. This is the epoch's public mint. */

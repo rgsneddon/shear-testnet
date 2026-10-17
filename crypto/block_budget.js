@@ -5,6 +5,7 @@
  */
 import { performance } from 'node:perf_hooks';
 import { MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
+import { MAX_BLOCK_LEAF_VOTES } from './leaf_vote.js';
 import { txIsCoinbase } from './note.js';
 import { txIsReserveAction } from './reserve_vault.js';
 
@@ -209,6 +210,13 @@ function vaultLeafWeightCount(tx) {
   return locks;
 }
 
+function txIsLeafVote(tx) {
+  if (!tx || txIsCoinbase(tx)) return false;
+  if (String(tx.kind || '') === 'leaf-vote') return true;
+  if (tx.voteProof) return true;
+  return Array.isArray(tx.voteProofs) && tx.voteProofs.length > 0;
+}
+
 function txIsVaultClaim(tx) {
   if (!tx || txIsCoinbase(tx)) return false;
   if (String(tx.kind || '') === 'reward-claim') return true;
@@ -287,6 +295,7 @@ export function blockBudget(txs) {
   const list = Array.isArray(txs) ? txs : [];
   let reserve = 0;
   let claims = 0;
+  let leafVotes = 0;
   let vw = 0;
   let payees = 0;
   let weight = 0;
@@ -305,10 +314,12 @@ export function blockBudget(txs) {
       reserve += 1;
     }
     if (txIsVaultClaim(tx)) claims += 1;
+    if (txIsLeafVote(tx)) leafVotes += 1;
   }
   if (vw > K_VW) return reject('k_vw');
   if (reserve > MAX_BLOCK_RESERVE_TXS) return reject('reserve_txs');
   if (claims > MAX_BLOCK_VAULT_CLAIMS) return reject('claim_cap');
+  if (leafVotes > MAX_BLOCK_LEAF_VOTES) return reject('vote_cap');
   if (payees > payeeCapLive()) return reject('payee_cap');
   if (coinbase > C_MAX) return reject('coinbase_bytes');
   if (block > B_MAX) return reject('block_bytes');
@@ -340,6 +351,7 @@ export function selectBodyIndexes(txs, {
       fee,
       reserve: txIsReserveAction(tx),
       claim: txIsVaultClaim(tx),
+      leafVote: txIsLeafVote(tx),
     };
   }
   const order = rows.slice().sort((a, b) => {
@@ -354,6 +366,7 @@ export function selectBodyIndexes(txs, {
   let accB = Math.max(0, Math.floor(Number(coinbaseBytes) || 0));
   let accR = 0;
   let accC = 0;
+  let accV = 0;
   for (let n = 0; n < order.length; n += 1) {
     const row = order[n];
     if (row.reserve) {
@@ -361,6 +374,7 @@ export function selectBodyIndexes(txs, {
       if (nowMs() - started >= TEMPLATE_BUDGET_MS) continue;
     }
     if (row.claim && accC >= MAX_BLOCK_VAULT_CLAIMS) continue;
+    if (row.leafVote && accV >= MAX_BLOCK_LEAF_VOTES) continue;
     if (accW + row.w > MAX_BLOCK_VERIFY_WEIGHT) continue;
     if (accB + row.bytes > B_MAX) continue;
     chosen.push(row.i);
@@ -368,6 +382,7 @@ export function selectBodyIndexes(txs, {
     accB += row.bytes;
     if (row.reserve) accR += 1;
     if (row.claim) accC += 1;
+    if (row.leafVote) accV += 1;
   }
   return chosen;
 }

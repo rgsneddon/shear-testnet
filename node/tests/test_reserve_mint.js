@@ -149,8 +149,8 @@ describe('Reserve mint is sealed-state pure', () => {
     const id = newIdentity();
     const dest = vaultDest(id.address, { viewKey: id.viewKey });
     deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: 1_700_000_000_000 });
-    assert.equal(vote({ state, dest, choice: VOTE_DECREASE, nowMs: 1_700_000_000_001 }).reason, 'unit_floor');
-    assert.equal(vote({ state, dest, choice: VOTE_HOLD, nowMs: 1_700_000_000_002 }).ok, true);
+    assert.equal(vote({ state, dest, choice: VOTE_DECREASE, nowMs: 1_700_000_000_001 }).reason, 'vote_retired');
+    assert.equal(vote({ state, dest, choice: VOTE_HOLD, nowMs: 1_700_000_000_002 }).reason, 'vote_retired');
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
   });
 });

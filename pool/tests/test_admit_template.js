@@ -93,14 +93,15 @@ describe('admitted txs enter the live miner template', () => {
 
       const vote = publicReceipt(who, 'vote', 'vote-job');
       const qv = pool.store.queueTx(vote);
-      assert.equal(qv.ok, true, qv.reason);
+      assert.equal(qv.ok, false);
+      assert.equal(qv.reason, 'vote_retired');
       await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
       let newest = null;
       for (const rec of pool.store.jobs.values()) newest = rec;
       const ids = (newest?.tpl?.txs || []).filter((t) => t && !t.coinbase).map((t) => String(t.id));
       assert.ok(ids.includes('lock-job'), ids.join(','));
-      assert.ok(ids.includes('vote-job'), ids.join(','));
+      assert.equal(ids.includes('vote-job'), false);
       assert.equal(pool.store.tip()?.height || 0, tipH);
       const held = pool.issueJob();
       assert.equal(held.jobId, newest.job.jobId);
@@ -123,11 +124,11 @@ describe('admitted txs enter the live miner template', () => {
       const port = pool.httpServer.address().port;
       const shown = await fetch(`http://127.0.0.1:${port}/api/mempool`).then((r) => r.json());
       assert.equal(shown.pending.some((t) => t.id === 'lock-job'), true);
-      assert.equal(shown.pending.some((t) => t.id === 'vote-job'), true);
+      assert.equal(shown.pending.some((t) => t.id === 'vote-job'), false);
       assert.equal(shown.pending.some((t) => t.id === 'lock-rejected'), false);
       assert.equal(shown.pending.some((t) => t.id === 'pool-private'), false);
       assert.equal(shown.pendingBlock.txs.some((t) => t.id === 'lock-job' && t.kind === 'lock'), true);
-      assert.equal(shown.pendingBlock.txs.some((t) => t.id === 'vote-job' && t.kind === 'vote'), true);
+      assert.equal(shown.pendingBlock.txs.some((t) => t.id === 'vote-job'), false);
       assert.equal(JSON.stringify(shown).includes(who.dest), false);
       assert.doesNotMatch(JSON.stringify(shown), /ssa1/);
     } finally {

@@ -61,8 +61,9 @@ const TAXED = new Set([
   'transfer',
   'user-spend',
   'lock',
-  // A vote moves no value. typedCommitSum rejects a nonzero fee, so a vote
-  // is not taxed. Lock, withdraw, roll, and reward-claim still pay the weight levy.
+  // A portal vote moves no value and is not taxed. A leaf ballot pays its
+  // own levy, including a revote. Lock, withdraw, roll, and reward-claim still pay.
+  'leaf-vote',
   'withdraw',
   'roll',
   'reward-claim',

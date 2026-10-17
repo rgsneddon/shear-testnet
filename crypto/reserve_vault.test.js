@@ -178,11 +178,12 @@ describe('Reserve vault protocol', () => {
     assert.equal(idleBob.portal.staked, 0);
     assert.equal(idleBob.portal.idle, 0);
     const firstLate = vote({ state, dest: b, choice: VOTE_INCREASE, nowMs: late });
-    assert.equal(firstLate.ok, true);
+    assert.equal(firstLate.ok, false);
+    assert.equal(firstLate.reason, 'vote_retired');
     const changeLate = vote({ state, dest: b, choice: VOTE_HOLD, nowMs: late });
     assert.equal(changeLate.ok, false);
-    assert.equal(changeLate.reason, 'vote_locked');
-    assert.equal(state.votes.increase, 1);
+    assert.equal(changeLate.reason, 'vote_retired');
+    assert.equal(state.votes.increase, 0);
     assert.equal(state.votes.hold, 0);
     const more = deposit({ state, dest: a, nanos: 100, nowMs: late });
     assert.equal(more.ok, true);
@@ -205,23 +206,24 @@ describe('Reserve vault protocol', () => {
     const state = emptyVault();
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    const cast = vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    assert.equal(cast.reason, 'vote_retired');
     assert.equal(Number(state.liveHashBonusNanos), 1);
     const tooSoon = enact({ state, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(tooSoon.ok, false);
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
-    assert.equal(Number(state.liveHashBonusNanos), 2);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(state.bonusEnacted, true);
-    assert.equal(state.enactedUp, 1);
+    assert.equal(state.enactedUp, 0);
     assert.equal(state.enactedDown, 0);
     assert.equal(state.enactedHold, 0);
-    assert.equal(state.enactedDelta, 1);
+    assert.equal(state.enactedDelta, 0);
     const pub = publicVaultView(state, t0 + RESERVE_EPOCH_MS);
-    assert.equal(pub.votes.increase, 1);
+    assert.equal(pub.votes.increase, 0);
     assert.equal(pub.votes.decrease, 0);
     assert.equal(pub.votes.hold, 0);
-    assert.notEqual(pub.votes.increase + pub.votes.decrease + pub.votes.hold, 0);
+    assert.equal(pub.votes.increase + pub.votes.decrease + pub.votes.hold, 0);
     const again = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
     assert.equal(again.ok, false);
   });
@@ -378,18 +380,18 @@ describe('Reserve vault protocol', () => {
     const state = emptyVault();
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).reason, 'vote_retired');
     const height = 40;
     const block = { height, txs: [{ coinbase: true, vout: [] }] };
     applyReserveBlock({ state, block, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(state.bonusEnacted, false);
     applyReserveBlock({ state, block, nowMs: t0 + RESERVE_EPOCH_MS });
-    assert.equal(Number(state.liveHashBonusNanos), 2);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(state.bonusEnacted, true);
     assert.equal(block.height, height);
     applyReserveBlock({ state, block: { height: height + 1, txs: [] }, nowMs: t0 + RESERVE_EPOCH_MS + 90_000 });
-    assert.equal(Number(state.liveHashBonusNanos), 2);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
   });
 
   it('accrued rewards grow on staked SHE and stay zero on idle SHE', () => {
@@ -618,10 +620,10 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     assert.equal(state.epochBps, GENESIS_BPS);
-    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).ok, true);
+    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).reason, 'vote_retired');
     const enacted = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(enacted.ok, true);
-    assert.equal(enacted.delta, 1);
+    assert.equal(enacted.delta, 0);
     assert.equal(state.epochBps, GENESIS_BPS);
     assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + RESERVE_EPOCH_MS + 1 }).ok, false);
     state.oracle.annualBps = 9999;
@@ -640,12 +642,13 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const first = vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
-    assert.equal(first.ok, true);
-    assert.equal(state.votes.increase, 1);
+    assert.equal(first.ok, false);
+    assert.equal(first.reason, 'vote_retired');
+    assert.equal(state.votes.increase, 0);
     const second = vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 });
     assert.equal(second.ok, false);
-    assert.equal(second.reason, 'vote_locked');
-    assert.equal(state.votes.increase, 1);
+    assert.equal(second.reason, 'vote_retired');
+    assert.equal(state.votes.increase, 0);
     assert.equal(state.votes.hold, 0);
   });
 
@@ -676,21 +679,21 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const state = emptyVault();
     state.genesisMs = t0;
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
-    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).ok, true);
-    assert.equal(state.votes.increase, 1);
+    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).reason, 'vote_retired');
+    assert.equal(state.votes.increase, 0);
     const end1 = t0 + RESERVE_EPOCH_MS;
     assert.equal(enact({ state, nowMs: end1 }).ok, true);
     assert.equal(deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: end1 + 1 }).ok, true);
     assert.equal(state.currentEpoch, 1);
     assert.equal(state.votes.increase, 0);
-    assert.equal(vote({ state, dest: b, choice: VOTE_HOLD, nowMs: end1 + 2 }).ok, true);
-    assert.equal(state.votes.hold, 1);
+    assert.equal(vote({ state, dest: b, choice: VOTE_HOLD, nowMs: end1 + 2 }).reason, 'vote_retired');
+    assert.equal(state.votes.hold, 0);
     const end2 = end1 + 1 + RESERVE_EPOCH_MS;
     assert.equal(enact({ state, nowMs: end2 }).ok, true);
     const out = hiddenWithdraw(state, a, end2, { id: 'rollover-alice' });
     assert.equal(out.ok, true, out.reason);
     assert.equal(state.votes.increase, 0);
-    assert.equal(state.votes.hold, 1);
+    assert.equal(state.votes.hold, 0);
     assert.ok(state.votes.increase >= 0);
     assert.ok(state.votes.decrease >= 0);
     assert.ok(state.votes.hold >= 0);
@@ -709,8 +712,8 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const down = vote({ state, dest: a, choice: VOTE_DECREASE, nowMs: t0 + 2 });
     assert.equal(down.ok, false);
-    assert.equal(down.reason, 'unit_floor');
-    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).ok, true);
+    assert.equal(down.reason, 'vote_retired');
+    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).reason, 'vote_retired');
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
     assert.equal(Number(state.liveHashBonusNanos), 1);
@@ -727,8 +730,8 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     state.liveHashBonusNanos = 0n;
     const down = vote({ state, dest: a, choice: VOTE_DECREASE, nowMs: t0 + 2 });
     assert.equal(down.ok, false);
-    assert.equal(down.reason, 'unit_floor');
-    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).ok, true);
+    assert.equal(down.reason, 'vote_retired');
+    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).reason, 'vote_retired');
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
     assert.ok(Number(state.liveHashBonusNanos) >= 1);
@@ -766,7 +769,8 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       block: { txs: [{ coinbase: true, vout: [] }, voteSealed] },
       nowMs: t0 + 2,
     });
-    assert.equal(voted.some((r) => r.action === 'vote' && r.ok === true), true, JSON.stringify(voted));
+    assert.equal(voted.ok, false);
+    assert.equal(voted.reason, 'vote_retired');
 
     const rawWd = withdrawTx({ from: vault, to: continuum, nanos: PI_SHE_NANOS, id: 'wd-c' });
     signWithdrawReward(rawWd, ownerFor(vault).key, {

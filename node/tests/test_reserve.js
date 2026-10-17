@@ -311,13 +311,9 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
     vt.payer = continuum;
     signSpendTx(vt, aliceBox.key);
     const qv = store.queueTx(vt);
-    assert.equal(qv.ok, true, qv.reason);
-    const afterVote = explorerRecentTxs(store);
-    const voteRow = afterVote.find((t) => t.id === 'vote-pend');
-    assert.ok(voteRow, JSON.stringify(afterVote.filter((t) => t.kind === 'vote' || t.kind === 'lock')));
-    assert.equal(voteRow.kind, 'vote');
-    assert.equal(voteRow.status, 'pending');
-    assert.equal(/she1|shear1/i.test(JSON.stringify(voteRow)), false);
+    assert.equal(qv.ok, false);
+    assert.equal(qv.reason, 'vote_retired');
+    assert.equal(explorerRecentTxs(store).some((t) => t.id === 'vote-pend'), false);
     const bad = lockTx({ from: continuum, to: vault, nanos: 1, id: 'lock-rejected' });
     const refused = store.queueTx(bad);
     assert.equal(refused.ok, false);
@@ -326,7 +322,7 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
       bits: GENESIS_BITS_PACKED,
       now: t0 + (5 + SPENDABLE_CONFIRMATIONS) * 90_000,
     });
-    assert.equal(store.reserveVault.votes.increase, 1);
+    assert.equal(store.reserveVault.votes.increase, 0);
     assert.equal(explorerRecentTxs(store).some((t) => t.id === 'lock-rejected' && t.status === 'confirmed'), false);
     for (let i = 1; i <= SPENDABLE_CONFIRMATIONS; i += 1) {
       await mineOne(store, continuum, {

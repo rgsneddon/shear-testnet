@@ -32,7 +32,6 @@ import {
   voteTx,
   reserveAction,
   cloneVault,
-  VOTE_HOLD,
   VOTE_DECREASE,
   blockWithdrawInterest,
   blockPermittedInterest,
@@ -290,9 +289,7 @@ describe('principal-only withdraw receipts', () => {
     assert.equal(vaultAfterBlock(null, observed).ok, false);
     const chain = [
       potBlock(GENESIS, miner, [lockOf(miner, first, stake, 'bps-a')]),
-      potBlock(GENESIS + 1000, miner, [
-        voteTx({ from: miner, dest: first, choice: VOTE_HOLD, id: 'bps-hold' }),
-      ]),
+      potBlock(GENESIS + 1000, miner, []),
       potBlock(DRAW, miner, [
         drawOf(first, miner, stake, 'bps-wa'),
       ]),
