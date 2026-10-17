@@ -5,10 +5,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { encodeDest, newIdentity, hash20FromAddress } from '../../crypto/address.js';
-import { bindWeightFee, levyNeed } from '../../crypto/levy.js';
+import { encodeDest, newIdentity, freshStealthDest } from '../../crypto/address.js';
+import { spendBox, admitSend } from '../../tests/spend_box.js';
+import { destForLogin } from '../../crypto/flow_sheet.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { VOTE_HOLD, portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
 import { MAGIC_TESTNET, GENESIS_BITS_PACKED, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { NODE_DISPLAY } from '../src/product.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
@@ -49,39 +50,6 @@ import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
-}
-
-function payer() {
-  const id = newIdentity();
-  const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, key: id.privateKey };
-}
-
-/** Open dest20 lock/vote. A byte-2 send and a lock with `from` are admit_version. */
-function publicReceipt(who, kind, id) {
-  const d20 = Buffer.from(hash20FromAddress(who.dest));
-  const tx = {
-    id,
-    kind,
-    nanos: kind === 'vote' ? 0 : 1,
-    portalId: portalIdFromDest(who.dest),
-    payoutPortalId: portalIdFromDest(who.dest),
-    vin: [{ dest20: d20 }],
-    vout: [{
-      kind,
-      dest20: d20,
-      portalId: portalIdFromDest(who.dest),
-      valueProof: { v: kind === 'vote' ? 0 : 1 },
-    }],
-  };
-  if (kind === 'vote') tx.choice = VOTE_HOLD;
-  tx.fee = 0;
-  for (let i = 0; i < 6; i += 1) {
-    bindWeightFee(tx);
-    if (levyNeed(tx) === tx.fee) break;
-  }
-  signSpendTx(tx, who.key);
-  return tx;
 }
 
 function shareBitsOf(bits) {
@@ -316,10 +284,30 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       await a.p2p.connect('127.0.0.1', b.bound.port);
       const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && b.p2p.syncedOnline() === 2);
       assert.equal(linked, true);
-      assert.equal((await Promise.resolve(mineOne(a.store, dest, 4))).ok, true);
+      const { levyNanos } = await import('../../crypto/levy.js');
+      const { attachDummyOuts } = await import('../../crypto/dummy.js');
+      const id = newIdentity();
+      const box = spendBox(id);
+      const payDest = box.dest;
+      assert.equal((await Promise.resolve(mineOne(a.store, payDest, 4))).ok, true);
       const synced = await waitFor(() => Number(b.store.tip()?.height || 0) >= 1, 15000);
       assert.equal(synced, true, 'peer did not sync mined block');
-      const tx = publicReceipt(payer(), 'lock', 'net-send-1');
+      const tip = a.store.tip();
+      const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
+      const sendNanos = 2;
+      const fee = levyNanos(sendNanos);
+      const tx = attachDummyOuts({
+        id: 'net-send-1',
+        kind: 'send',
+        from: payDest,
+        to: payDest,
+        nanos: sendNanos,
+        fee,
+        vin: [{ commit: spent.commit, address: payDest }],
+        vout: [{ address: payDest, nanos: sendNanos, kind: 'send' }],
+      }, { spent });
+      admitSend(tx, { id, spent, blocks: a.store.blocks });
+      signSpendTx(tx, box.key);
       const queued = a.store.queueTx(tx);
       assert.equal(queued.ok, true, queued.reason);
       const tag = 'mcafef00d';
@@ -468,10 +456,30 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       await a.p2p.connect('127.0.0.1', c.bound.port);
       const linked = await waitFor(() => a.p2p.syncedOnline() >= 2);
       assert.equal(linked, true);
-      assert.equal((await Promise.resolve(mineOne(a.store, dest, 4))).ok, true);
+      const { levyNanos } = await import('../../crypto/levy.js');
+      const { attachDummyOuts } = await import('../../crypto/dummy.js');
+      const id = newIdentity();
+      const box = spendBox(id);
+      const payDest = box.dest;
+      assert.equal((await Promise.resolve(mineOne(a.store, payDest, 4))).ok, true);
       const synced = await waitFor(() => Number(b.store.tip()?.height || 0) >= 1 && Number(c.store.tip()?.height || 0) >= 1, 15000);
       assert.equal(synced, true, 'peer did not sync mined block');
-      const tx = publicReceipt(payer(), 'lock', 'stem-send-1');
+      const tip = a.store.tip();
+      const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
+      const sendNanos = 2;
+      const fee = levyNanos(sendNanos);
+      const tx = attachDummyOuts({
+        id: 'stem-send-1',
+        kind: 'send',
+        from: payDest,
+        to: payDest,
+        nanos: sendNanos,
+        fee,
+        vin: [{ commit: spent.commit, address: payDest }],
+        vout: [{ address: payDest, nanos: sendNanos, kind: 'send' }],
+      }, { spent });
+      admitSend(tx, { id, spent, blocks: a.store.blocks });
+      signSpendTx(tx, box.key);
       const queued = a.store.queueTx(tx);
       assert.equal(queued.ok, true, queued.reason);
       assert.equal(JSON.stringify(queued.tx || queued).includes('remoteAddress'), false);
@@ -490,7 +498,9 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
   });
 
   it('lock and vote still paint (pending) after fluff', async () => {
-    const who = payer();
+    const id = newIdentity();
+    const box = spendBox(id);
+    const dest = box.dest;
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-b-'));
     const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-c-'));
@@ -501,8 +511,17 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       await a.p2p.connect('127.0.0.1', b.bound.port);
       await a.p2p.connect('127.0.0.1', c.bound.port);
       await waitFor(() => a.p2p.syncedOnline() >= 2);
-      const lock = publicReceipt(who, 'lock', 'lock-fluff');
-      const vote = publicReceipt(who, 'vote', 'vote-fluff');
+      const { levyNanos } = await import('../../crypto/levy.js');
+      const lockNanos = 314159265358;
+      const lock = lockTx({ from: dest, to: dest, nanos: lockNanos, id: 'lock-fluff' });
+      lock.fee = levyNanos(lockNanos, { depth: 1e9 });
+      delete lock.vin;
+      signSpendTx(lock, box.key);
+      const vote = voteTx({ from: dest, dest, choice: 'leave bonus as-is', id: 'vote-fluff' });
+      vote.fee = levyNanos(0, { depth: 1e9 });
+      vote.payer = dest;
+      delete vote.vin;
+      signSpendTx(vote, box.key);
       const qLock = a.store.queueTx(lock);
       const qVote = a.store.queueTx(vote);
       assert.equal(qLock.ok, true, qLock.reason);
