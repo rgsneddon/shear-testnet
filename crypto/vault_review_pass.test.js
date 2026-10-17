@@ -89,6 +89,16 @@ describe('vault review pass', () => {
     });
     assert.equal(paid.ok, false);
     assert.equal(paid.reason, 'stake_reward');
+    const named = withdraw({
+      state,
+      dest: who.dest,
+      portalId: portal.id,
+      nowMs: T0 + RESERVE_EPOCH_MS,
+      payout: who.dest,
+      principal: PI_SHE_NANOS,
+    });
+    assert.equal(named.ok, false);
+    assert.equal(named.reason, 'stake_reward');
   });
 
   it('rebuilds the lock index from lock notes when a trial rolls back', () => {
