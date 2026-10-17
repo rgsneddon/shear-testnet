@@ -5,6 +5,7 @@
 import 'dart:io';
 
 import 'shear_read_sync.dart';
+import 'shear_tip_tick.dart';
 
 const kUnprivateConfirmTitle = 'Public node may see your IP';
 
@@ -30,6 +31,11 @@ const kOwnNodeUrlError =
     'http is only for this machine, a private IP, or a .local name. '
     'Own node means a node you run, not a public Shear host. '
     'A name or address that reaches a public Shear node is still the public node.';
+
+/// DNS failed. The saved own node stays; it is not used until a later check passes.
+const kOwnNodeUnresolvedCopy =
+    'That own node is saved, and it is not used until its name resolves. '
+    'An address that reaches a public Shear node is still refused.';
 
 const kLocalNodeDownCopy = 'local node not running';
 
@@ -71,26 +77,118 @@ bool cliAllowsPublicPost({required String rpc, required bool publicOk}) =>
 typedef OwnNodeLookup = Future<List<InternetAddress>> Function(String host);
 OwnNodeLookup ownNodeLookup = InternetAddress.lookup;
 
+class OwnNodeCheck {
+  const OwnNodeCheck({this.url, this.dnsFailed = false});
+
+  final String? url;
+
+  /// Lookup failed or returned nothing. [url] is null and the saved value stays.
+  final bool dnsFailed;
+
+  bool get ok => url != null;
+}
+
 /// Parse, then refuse a host that resolves to a public Shear address.
 /// http is kept only when every resolved address is loopback or RFC1918.
-Future<String?> acceptOwnNodeUrl(String raw) async {
+Future<OwnNodeCheck> checkOwnNodeUrl(String raw) async {
   final parsed = parseOwnNodeUrl(raw);
-  if (parsed == null) return null;
+  if (parsed == null) return const OwnNodeCheck();
   final uri = Uri.parse(parsed);
   List<InternetAddress> addrs;
   try {
     addrs = await ownNodeLookup(uri.host);
   } catch (_) {
-    return null;
+    return const OwnNodeCheck(dnsFailed: true);
   }
-  if (addrs.isEmpty) return null;
+  if (addrs.isEmpty) return const OwnNodeCheck(dnsFailed: true);
   for (final addr in addrs) {
     final canon = ipv4OfAddress(addr) ?? addr.address;
-    if (hostIsUnspecified(canon) || isPublicWalletHost(canon)) return null;
-    if (uri.scheme == 'http' && !ownNodeAllowsHttp(canon) && !addr.isLoopback) return null;
+    if (hostIsUnspecified(canon) || isPublicWalletHost(canon)) return const OwnNodeCheck();
+    if (uri.scheme == 'http' && !ownNodeAllowsHttp(canon) && !addr.isLoopback) {
+      return const OwnNodeCheck();
+    }
   }
-  return parsed;
+  return OwnNodeCheck(url: parsed);
 }
+
+Future<String?> acceptOwnNodeUrl(String raw) async => (await checkOwnNodeUrl(raw)).url;
+
+/// True when [origin] is a public Shear name or resolves to a refused address.
+Future<bool> vorticeOriginIsPublic(String origin) async {
+  if (isPublicWalletHost(origin)) return true;
+  final host = Uri.tryParse(origin)?.host ?? '';
+  if (host.isEmpty) return true;
+  final literal = InternetAddress.tryParse(host);
+  List<InternetAddress> addrs;
+  if (literal != null) {
+    addrs = [literal];
+  } else {
+    try {
+      addrs = await ownNodeLookup(host);
+    } catch (_) {
+      return true;
+    }
+  }
+  if (addrs.isEmpty) return true;
+  for (final addr in addrs) {
+    final canon = ipv4OfAddress(addr) ?? addr.address;
+    if (hostIsUnspecified(canon) || isPublicWalletHost(canon)) return true;
+  }
+  return false;
+}
+
+/// Dial [uri] at the address resolved now. SNI and Host stay [uri.host].
+Future<ConnectionTask<Socket>> walletConnectTask(Uri uri, {required bool allowPublic}) async {
+  final host = uri.host;
+  final port = uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
+  if (host.isEmpty || host.contains('%')) {
+    throw SocketException('refused host', port: port);
+  }
+  final literal = InternetAddress.tryParse(host);
+  final List<InternetAddress> addrs;
+  if (literal != null) {
+    addrs = [literal];
+  } else {
+    try {
+      addrs = await ownNodeLookup(host);
+    } catch (_) {
+      throw SocketException('dns failed', port: port);
+    }
+  }
+  if (addrs.isEmpty) throw SocketException('dns failed', port: port);
+  InternetAddress? chosen;
+  for (final addr in addrs) {
+    final canon = ipv4OfAddress(addr) ?? addr.address;
+    if (hostIsUnspecified(canon)) throw const SocketException('unspecified address');
+    if (isPublicWalletHost(canon) && !allowPublic) {
+      throw const SocketException('public node refused');
+    }
+    if (uri.scheme == 'http' && !ownNodeAllowsHttp(canon) && !addr.isLoopback) {
+      throw const SocketException('cleartext refused');
+    }
+    chosen ??= addr;
+  }
+  final addr = chosen!;
+  if (uri.scheme == 'https') {
+    // This SDK's connectionFactory is not wrapped in TLS, and
+    // SecureSocket.startConnect has no separate SNI argument. Connect to the
+    // checked address, then handshake with the name so the certificate matches.
+    final tcp = await Socket.startConnect(addr, port);
+    return ConnectionTask.fromSocket(
+      tcp.socket.then((plain) => SecureSocket.secure(plain, host: host)),
+      tcp.cancel,
+    );
+  }
+  return Socket.startConnect(addr, port);
+}
+
+bool _armWalletConnect() {
+  walletConnect = walletConnectTask;
+  return true;
+}
+
+/// Forces the pin to install when this library loads.
+final bool walletConnectReady = _armWalletConnect();
 
 /// Empty input keeps the public node. Anything else must be an own-node URL.
 String? ownNodeUrlError(String raw) {

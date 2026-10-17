@@ -227,8 +227,15 @@ class ShearSession {
   /// Committed Closure send path. Not written as continuumSendPath.
   /// A new session opens on Connect bare. A stored Shear VPN tunnel string opens Connect bare.
   String closureSendMode = kClosureModeBare;
-  /// Connect bare own node. Empty uses the public node.
+  /// Connect bare own node. Empty uses the public node when [publicNodeConsent].
   String ownNodeUrl = '';
+
+  /// Remembered public-node choice. Survives restart until Settings changes it.
+  bool publicNodeConsent = false;
+
+  /// True after the first-run screen or a Settings change. A revoke stays false
+  /// for [publicNodeConsent] and does not ask again on the next launch.
+  bool publicNodeChoiceMade = false;
   bool darkMode = false;
   List<String> rememberedDests = const [];
   List<Map<String, dynamic>> rememberedTxs = const [];
@@ -378,6 +385,8 @@ class ShearSession {
         'darkMode': darkMode,
         'closureSendMode': closureSendMode,
         if (ownNodeUrl.isNotEmpty) 'ownNodeUrl': ownNodeUrl,
+        'publicNodeConsent': publicNodeConsent,
+        'publicNodeChoiceMade': publicNodeChoiceMade,
         'dests': rememberedDests.where((d) => d.startsWith('ssa1')).toList(),
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
@@ -405,6 +414,9 @@ class ShearSession {
     rememberedNotes = const [];
     rememberedNotesCovered = 0;
     rememberedChainGenesis = null;
+    publicNodeConsent = false;
+    publicNodeChoiceMade = false;
+    ownNodeUrl = '';
     rememberedReserve = null;
     deployedVortices = const [];
     final pw = password ?? _password;
@@ -425,6 +437,8 @@ class ShearSession {
     darkMode = j['darkMode'] == true;
     closureSendMode = _closureFromPlain(j);
     ownNodeUrl = parseOwnNodeUrl(j['ownNodeUrl']?.toString() ?? '') ?? '';
+    publicNodeConsent = j['publicNodeConsent'] == true;
+    publicNodeChoiceMade = j['publicNodeChoiceMade'] == true;
     rememberedDests = ((use['dests'] as List?) ?? const [])
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))

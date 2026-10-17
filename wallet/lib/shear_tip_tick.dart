@@ -4,6 +4,24 @@ import 'dart:io';
 
 import 'shear_json_bounds.dart';
 
+/// Installed by the consent library. Connects to the address just resolved
+/// and keeps the URI host as SNI and the Host header.
+typedef WalletConnect = Future<ConnectionTask<Socket>> Function(
+  Uri uri, {
+  required bool allowPublic,
+});
+
+WalletConnect? walletConnect;
+
+/// Every wallet [HttpClient] dials through [walletConnect] when it is set.
+void pinWalletHttp(HttpClient client, {required bool Function() allowPublic}) {
+  final connect = walletConnect;
+  if (connect == null) return;
+  client.connectionFactory = (uri, proxyHost, proxyPort) {
+    return connect(uri, allowPublic: allowPublic());
+  };
+}
+
 /// Accrual-tick guard for Continuum tip polls.
 ///
 /// [tipBusy] must clear on success, throw, timeout, and cancel so a hung RPC
@@ -80,6 +98,7 @@ Future<void> listenNodeTips({
   final root = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
   final uri = Uri.parse('$root/events');
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+  pinWalletHttp(client, allowPublic: () => false);
   try {
     while (!cancelled()) {
       try {

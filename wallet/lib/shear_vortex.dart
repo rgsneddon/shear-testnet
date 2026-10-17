@@ -4,7 +4,9 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_public_confirm.dart';
 import 'shear_read_sync.dart';
+import 'shear_tip_tick.dart';
 
 const vortexPersonal = 'chronoflux-Omega-v1';
 const vorticeKeyPrefix = 'vort1.';
@@ -272,12 +274,16 @@ Future<Vortice?> downloadVorticeFromOrigin(
   String key, {
   HttpClient? http,
   String? source,
+  bool publicConsent = false,
 }) async {
   if (source != null) return verifyVorticeDownload(key, source);
   final parsed = parseVorticeKey(key);
   if (parsed == null || parsed.origin == null) return null;
-  if (isPublicWalletHost(parsed.origin)) return null;
+  if (await vorticeOriginIsPublic(parsed.origin!)) {
+    if (!publicConsent) throw StateError(kPublicNodeEverySendCopy);
+  }
   final client = http ?? HttpClient();
+  pinWalletHttp(client, allowPublic: () => publicConsent);
   try {
     final req = await client.getUrl(Uri.parse(parsed.origin!));
     req.followRedirects = false;

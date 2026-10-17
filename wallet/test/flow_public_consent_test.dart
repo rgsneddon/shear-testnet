@@ -7,11 +7,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_cli.dart';
+import 'package:shear_wallet/shear_closure.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_public_confirm.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_session.dart';
+import 'package:shear_wallet/shear_vortex.dart';
 
 void main() {
   test('docs and the Flow gate agree, and a local send does not ask', () async {
@@ -127,6 +129,15 @@ void main() {
     final again = ShearSession(store: session.store);
     await again.unlock('test-pass-1');
     expect(again.ownNodeUrl, 'http://10.1.1.8:18332');
+    expect(again.publicNodeConsent, isFalse);
+    expect(again.publicNodeChoiceMade, isFalse);
+    session.publicNodeConsent = true;
+    session.publicNodeChoiceMade = true;
+    await session.persist();
+    final chosen = ShearSession(store: session.store);
+    await chosen.unlock('test-pass-1');
+    expect(chosen.publicNodeConsent, isTrue);
+    expect(chosen.publicNodeChoiceMade, isTrue);
 
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     addTearDown(() => server.close(force: true));
@@ -172,7 +183,11 @@ void main() {
     bare.useOwnNode(null);
     expect(bare.usesOwnNode, isFalse);
     expect(bare.sync!.liveBase, isNull);
+    expect(creditFollowReadSeeds(bare).any((s) => s.contains('shear.digital')), isFalse);
+    bare.publicConsent = true;
     expect(creditFollowReadSeeds(bare).any((s) => s.contains('shear.digital')), isTrue);
+    bare.publicConsent = false;
+    expect(creditFollowReadSeeds(bare).any((s) => s.contains('shear.digital')), isFalse);
   });
 
   test('own-node URLs refuse public hosts, cleartext, and broken forms', () {
@@ -211,6 +226,8 @@ void main() {
     expect(parseOwnNodeUrl('1311399764'), isNull);
     expect(parseOwnNodeUrl('0x4d2a5b54'), isNull);
     expect(parseOwnNodeUrl('https://0x4d.0x2a.0x5b.0x54'), isNull);
+    expect(parseOwnNodeUrl('box0x.lan'), 'https://box0x.lan');
+    expect(hostIsNonCanonicalNumeric('box0x.lan'), isFalse);
     expect(parseOwnNodeUrl('0115.052.0133.0124'), isNull);
     expect(parseOwnNodeUrl('[::ffff:77.42.91.84]:18332'), isNull);
     expect(parseOwnNodeUrl('[::ffff:4d2a:5b54]:8443'), isNull);
@@ -356,7 +373,78 @@ void main() {
     }
   });
 
-  testWidgets('switching send mode clears an earlier public consent', (tester) async {
+  test('revoke and a mode change leave no public read base', () async {
+    final saw = _Saw();
+    final http = _SawClient(saw, fail: true);
+    final sync = ShearReadSync(seeds: kPublicNodeSeeds, http: http, jitter: Duration.zero);
+    final client = ShearPoolClient(http: http, sync: sync);
+    addTearDown(client.close);
+    client.publicConsent = true;
+    sync.liveBase = 'https://p2p.shear.digital';
+    client.publicConsent = false;
+    expect(sync.liveBase, isNull);
+    expect(creditFollowReadBase(client), isEmpty);
+    await expectLater(
+      client.history('ssa1from', viewKey: 'ab' * 32),
+      throwsA(isA<StateError>()),
+    );
+    client.publicConsent = true;
+    sync.liveBase = 'https://r2r.shear.digital';
+    final before = saw.uris.length;
+    client.stopPublicReads();
+    expect(sync.liveBase, isNull);
+    expect(client.publicConsent, isFalse);
+    expect(creditFollowReadBase(client), isEmpty);
+    await expectLater(
+      client.history('ssa1from', viewKey: 'cd' * 32),
+      throwsA(isA<StateError>()),
+    );
+    for (final uri in saw.uris.skip(before)) {
+      expect(uri.host.contains('shear.digital'), isFalse, reason: '$uri');
+      expect(kRefusedPublicNodeIps.contains(uri.host), isFalse, reason: '$uri');
+    }
+  });
+
+  test('a public vortice origin is refused until consent, and a name is resolved', () async {
+    final previous = ownNodeLookup;
+    ownNodeLookup = (host) async {
+      if (host == 'alias.example') return [InternetAddress('77.42.91.84')];
+      throw const SocketException('dns');
+    };
+    addTearDown(() => ownNodeLookup = previous);
+    final rx = mintVorticeDeployKey(
+      programId: 'rx-demo',
+      name: 'Rx',
+      origin: 'https://rx.shear.digital/vortices/rx.json',
+      source: '{}',
+    )!;
+    await expectLater(
+      downloadVorticeFromOrigin(rx),
+      throwsA(isA<StateError>().having((e) => e.message, 'message', kPublicNodeEverySendCopy)),
+    );
+    final alias = mintVorticeDeployKey(
+      programId: 'alias-demo',
+      name: 'Alias',
+      origin: 'https://alias.example/v.json',
+      source: '{}',
+    )!;
+    await expectLater(
+      downloadVorticeFromOrigin(alias),
+      throwsA(isA<StateError>().having((e) => e.message, 'message', kPublicNodeEverySendCopy)),
+    );
+    await expectLater(
+      walletConnectTask(Uri.parse('https://alias.example/v.json'), allowPublic: false),
+      throwsA(isA<SocketException>()),
+    );
+    final offline = await checkOwnNodeUrl('https://missing.example:18332');
+    expect(offline.url, isNull);
+    expect(offline.dnsFailed, isTrue);
+    final cli = File('lib/shear_cli.dart').readAsStringSync();
+    expect(cli.contains('ShearPoolClient(userUrl: _rpc'), isFalse);
+    expect(cli.contains('final client = await _rpcClient'), isTrue);
+  });
+
+  testWidgets('a send-mode change keeps an earlier public consent', (tester) async {
     tester.view.physicalSize = const Size(800, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -404,7 +492,97 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
-    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsNothing);
+  });
+
+  testWidgets('desktop first launch offers the existing P2P and solo nodes', (tester) async {
+    final h = await _primePublicChoice(tester, 'flow-choice-desktop');
+    expect(find.byKey(const Key('public-node-choice-accept')), findsOneWidget);
+    expect(find.byKey(const Key('public-node-choice-local')), findsOneWidget);
+    expect(find.text('P2P node'), findsOneWidget);
+    expect(find.text('Solo node'), findsOneWidget);
+    final ui = File('lib/main.dart').readAsStringSync();
+    expect(ui, contains('_chooseExistingLocalMode(ClosureSendMode.localNode)'));
+    expect(ui, contains('_chooseExistingLocalMode(ClosureSendMode.localNodeFull)'));
+
+    await tester.ensureVisible(find.byKey(const Key('public-node-choice-p2p')));
+    await tester.tap(find.byKey(const Key('public-node-choice-p2p')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text(kDesktopNodeMissingCopy), findsOneWidget);
+    expect(find.text('Spendable'), findsNothing);
+    expect(h.session.publicNodeConsent, isFalse);
+    expect(h.session.closureSendMode, kClosureModeLocal);
+    expect(h.client.publicConsent, isFalse);
+    expect(h.sync.liveBase, isNull);
+    _expectNoPublicDial(h.saw);
+
+    await tester.ensureVisible(find.byKey(const Key('local-node-choose-other')));
+    await tester.tap(find.byKey(const Key('local-node-choose-other')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('public-node-choice-solo')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('public-node-choice-solo')));
+    await tester.tap(find.byKey(const Key('public-node-choice-solo')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text(kDesktopNodeMissingCopy), findsOneWidget);
+    expect(find.text('Spendable'), findsNothing);
+    expect(h.session.publicNodeConsent, isFalse);
+    expect(h.session.closureSendMode, kClosureModeFull);
+    expect(h.client.publicConsent, isFalse);
+    _expectNoPublicDial(h.saw);
+  });
+
+  testWidgets('android first launch offers own node and public node only', (tester) async {
+    final h = await _primePublicChoice(tester, 'flow-choice-android', android: true);
+    expect(find.byKey(const Key('public-node-choice-accept')), findsOneWidget);
+    expect(find.byKey(const Key('public-node-choice-own')), findsOneWidget);
+    expect(find.byKey(const Key('public-node-choice-p2p')), findsNothing);
+    expect(find.byKey(const Key('public-node-choice-solo')), findsNothing);
+    expect(find.byKey(const Key('public-node-choice-local')), findsNothing);
+    expect(find.text('Spendable'), findsNothing);
+    _expectNoPublicDial(h.saw);
+  });
+
+  testWidgets('accepting the public node shows Spendable and remembers consent', (tester) async {
+    final h = await _primePublicChoice(tester, 'flow-choice-accept');
+    await tester.tap(find.byKey(const Key('public-node-choice-accept')));
+    await tester.pump();
+    for (var i = 0; i < 24; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 250)));
+      await tester.pump();
+      if (find.text('Spendable').evaluate().isNotEmpty) break;
+    }
+    expect(find.text('Spendable'), findsOneWidget);
+    expect(h.session.publicNodeConsent, isTrue);
+    expect(h.session.publicNodeChoiceMade, isTrue);
+    expect(h.client.publicConsent, isTrue);
+    _expectNoPublicDial(h.saw);
+
+    final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
+    state.didChangeAppLifecycleState(AppLifecycleState.paused);
+    expect(h.session.publicNodeConsent, isTrue);
+    expect(h.client.publicConsent, isTrue);
+
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    h.sync.liveBase = 'https://p2p.shear.digital';
+    final before = h.saw.uris.length;
+    await tester.ensureVisible(find.byKey(const Key('settings-public-node')));
+    await tester.tap(find.byKey(const Key('settings-public-node')));
+    await tester.pump();
+    expect(h.session.publicNodeConsent, isFalse);
+    expect(h.session.publicNodeChoiceMade, isTrue);
+    expect(h.client.publicConsent, isFalse);
+    expect(h.sync.liveBase, isNull);
+    await tester.tap(find.text('Continuum'));
+    await tester.pump();
+    expect(find.text('Spendable'), findsOneWidget);
+    for (final uri in h.saw.uris.skip(before)) {
+      expect(uri.host.contains('shear.digital'), isFalse, reason: '$uri');
+      expect(kRefusedPublicNodeIps.contains(uri.host), isFalse, reason: '$uri');
+    }
   });
 
   testWidgets('public Flow send asks, an own node does not, and a bad URL is rejected', (tester) async {
@@ -697,4 +875,48 @@ class _SawHeaders implements HttpHeaders {
   void set(String name, Object value, {bool preserveHeaderCase = false}) {}
   @override
   String? value(String name) => null;
+}
+
+void _expectNoPublicDial(_Saw saw) {
+  for (final uri in saw.uris) {
+    expect(uri.host.contains('shear.digital'), isFalse, reason: '$uri');
+    expect(kRefusedPublicNodeIps.contains(uri.host), isFalse, reason: '$uri');
+  }
+}
+
+/// First-run screen, with a public read base already armed so a leak is visible.
+Future<({ShearSession session, ShearLedger ledger, _Saw saw, ShearPoolClient client, ShearReadSync sync})>
+    _primePublicChoice(WidgetTester tester, String label, {bool android = false}) async {
+  tester.view.physicalSize = const Size(800, 2400);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  final dir = Directory.systemTemp.createTempSync(label);
+  addTearDown(() {
+    if (dir.existsSync()) dir.deleteSync(recursive: true);
+  });
+  final session = ShearSession(store: File('${dir.path}/session.json'));
+  await tester.runAsync(() async {
+    await session.loadOrCreate();
+    await session.setPassword('test-pass-1');
+  });
+  final saw = _Saw();
+  final http = _SawClient(saw, fail: true);
+  final sync = ShearReadSync(http: http, seeds: kPublicNodeSeeds, jitter: Duration.zero);
+  final client = ShearPoolClient(http: http, sync: sync);
+  addTearDown(client.close);
+  client.publicConsent = true;
+  sync.liveBase = 'https://p2p.shear.digital';
+  final ledger = ShearLedger(pool: client)..bindIdentity(session.identity!);
+  await tester.pumpWidget(ShearWalletApp(
+    session: session,
+    ledger: ledger,
+    startUnlocked: true,
+    skipPoolSync: true,
+    askPublicNode: true,
+    hostAndroid: android,
+  ));
+  await tester.pump();
+  await tester.pump();
+  return (session: session, ledger: ledger, saw: saw, client: client, sync: sync);
 }

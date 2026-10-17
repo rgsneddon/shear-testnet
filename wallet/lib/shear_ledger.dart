@@ -921,6 +921,10 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
   // node, so the worker asks the public book itself. The UI isolate stays free.
   final ownNode = spec['ownNode'] == true;
   final publicConsent = spec['publicConsent'] == true;
+  if (ownNode && base.isNotEmpty) {
+    final accepted = await acceptOwnNodeUrl(base);
+    base = accepted ?? '';
+  }
   if (spendableFirst &&
       creditFollowProbesPublic(ownNode: ownNode, base: base, publicConsent: publicConsent)) {
     final seeds = <String>[
@@ -933,15 +937,19 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
   }
   // A dead port must not hold the lock screen. A real TLS notes read still
   // has to finish; 400ms dropped every phone handshake and left spendable at 0.
+  final workerHttp = spendableFirst
+      ? (HttpClient()
+        ..connectionTimeout = const Duration(seconds: 4)
+        ..idleTimeout = const Duration(seconds: 8))
+      : null;
+  if (workerHttp != null) {
+    pinWalletHttp(workerHttp, allowPublic: () => publicConsent);
+  }
   final pool = base.isEmpty
       ? null
       : ShearPoolClient(
           baseUrl: base,
-          http: spendableFirst
-              ? (HttpClient()
-                ..connectionTimeout = const Duration(seconds: 4)
-                ..idleTimeout = const Duration(seconds: 8))
-              : null,
+          http: workerHttp,
         );
   if (pool != null && ownNode) {
     pool.useOwnNode(base);
@@ -8821,15 +8829,27 @@ bool creditFollowProbesPublic({
     publicConsent && !ownNode && base.trim().isEmpty;
 
 /// Read base for the credit-follow worker. An own node replaces the public book.
+/// A public live base is not passed on without consent.
 String creditFollowReadBase(ShearPoolClient? pool) {
-  if (pool != null && (pool.isPinned || pool.usesOwnNode)) return pool.baseUrl;
-  return pool?.sync?.liveBase ?? '';
+  if (pool != null && pool.usesOwnNode) return pool.baseUrl;
+  if (pool != null && pool.isPinned) {
+    if (!pool.publicConsent && isPublicWalletHost(pool.baseUrl)) return '';
+    return pool.baseUrl;
+  }
+  final live = pool?.sync?.liveBase ?? '';
+  if (live.isEmpty) return '';
+  if (pool?.publicConsent != true && isPublicWalletHost(live)) return '';
+  return live;
 }
 
 /// Seeds the worker may probe. An own node is the only seed.
 List<String> creditFollowReadSeeds(ShearPoolClient? pool) {
   if (pool != null && pool.usesOwnNode) return [pool.baseUrl];
-  return [for (final s in (pool?.sync?.seeds ?? kPublicNodeSeeds)) s];
+  final consent = pool?.publicConsent == true;
+  return [
+    for (final s in (pool?.sync?.seeds ?? kPublicNodeSeeds))
+      if (consent || !isPublicWalletHost(s)) s,
+  ];
 }
 
 class ShearPoolClient {
@@ -8840,17 +8860,22 @@ class ShearPoolClient {
     ShearReadSync? sync,
     String? userUrl,
   })  : _pinned = baseUrl,
-        _http = http ?? (HttpClient()
-          ..connectionTimeout = const Duration(seconds: 8)
-          ..idleTimeout = const Duration(seconds: 30)) {
+        _ownsHttp = http == null,
+        _http = http ?? _freshHttp() {
     _sync = sync ??
         (baseUrl == null
             ? ShearReadSync(http: _http, userUrl: userUrl)
             : null);
+    pinWalletHttp(_http, allowPublic: () => _publicConsent);
   }
 
+  static HttpClient _freshHttp() => HttpClient()
+    ..connectionTimeout = const Duration(seconds: 8)
+    ..idleTimeout = const Duration(seconds: 30);
+
   final String? _pinned;
-  final HttpClient _http;
+  final bool _ownsHttp;
+  HttpClient _http;
   ShearReadSync? _sync;
   String? _ownNode;
   bool _publicConsent = false;
@@ -8858,8 +8883,35 @@ class ShearPoolClient {
   /// Public seeds and the public pool stay dark until this is set.
   bool get publicConsent => _publicConsent;
   set publicConsent(bool value) {
+    final dropping = _publicConsent && !value;
     _publicConsent = value;
     _sync?.publicConsent = value;
+    if (!value) _dropPublicLiveBase();
+    if (dropping) _abandonInFlight();
+  }
+
+  /// Revoke, or a switch off the public path. Clears a public read base and
+  /// drops sockets that were already open to it.
+  void stopPublicReads() {
+    _publicConsent = false;
+    _sync?.publicConsent = false;
+    _dropPublicLiveBase();
+    _abandonInFlight();
+  }
+
+  void _dropPublicLiveBase() {
+    final live = _sync?.liveBase;
+    if (live != null && isPublicWalletHost(live)) _sync!.liveBase = null;
+  }
+
+  void _abandonInFlight() {
+    final old = _http;
+    if (_ownsHttp) {
+      _http = _freshHttp();
+      pinWalletHttp(_http, allowPublic: () => _publicConsent);
+      _sync?.rebindHttp(_http);
+    }
+    old.close(force: true);
   }
 
   /// Reads and posts use only this node. Null returns to the public seeds.
@@ -8891,7 +8943,15 @@ class ShearPoolClient {
 
   String? get genesisHex => _sync?.genesisHex ?? _pinnedGenesis;
 
-  String get baseUrl => _ownNode ?? _pinned ?? _sync?.liveBase ?? kWalletDefaultSeed;
+  String get baseUrl {
+    if (_ownNode != null) return _ownNode!;
+    if (_pinned != null && (_publicConsent || !isPublicWalletHost(_pinned!))) return _pinned!;
+    final live = _sync?.liveBase;
+    if (live != null && live.isNotEmpty && (_publicConsent || !isPublicWalletHost(live))) {
+      return live;
+    }
+    return kWalletDefaultSeed;
+  }
 
   int get provenHeaders => _sync?.provenHeaders ?? _pinnedProven.length;
   int get wantedHeaders =>
@@ -9001,7 +9061,11 @@ class ShearPoolClient {
   }
 
   Future<Map<String, dynamic>> _getRaw(String path, {String? open}) async {
-    final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
+    final base = baseUrl;
+    if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
+      throw StateError(kLocalNodeDownCopy);
+    }
+    final req = await _http.getUrl(Uri.parse('$base$path'));
     req.followRedirects = false;
     req.maxRedirects = 0;
     if (open != null && open.isNotEmpty) {
@@ -9048,6 +9112,9 @@ class ShearPoolClient {
   }
 
   Future<Map<String, dynamic>> _postOnce(String base, String path, Map<String, dynamic> body) async {
+    if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
+      throw StateError(kLocalNodeDownCopy);
+    }
     final req = await _http.postUrl(Uri.parse('$base$path'));
     req.followRedirects = false;
     req.maxRedirects = 0;

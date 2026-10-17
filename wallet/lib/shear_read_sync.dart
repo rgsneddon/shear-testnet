@@ -153,7 +153,8 @@ bool hostIsNonCanonicalNumeric(String host) {
   if (h.contains('%')) return true;
   if (RegExp(r'^0x[0-9a-f]+$').hasMatch(h)) return true;
   if (RegExp(r'^\d+$').hasMatch(h)) return true;
-  if (h.contains('0x')) return true;
+  // A label that is only hex, not a name that happens to contain "0x".
+  if (h.split('.').any((part) => RegExp(r'^0x[0-9a-f]+$').hasMatch(part))) return true;
   if (RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(h)) {
     for (final part in h.split('.')) {
       if (part.length > 1 && part.startsWith('0')) return true;
@@ -336,7 +337,7 @@ Future<String> firstLiveNodeSeed(
 
   for (final seed in usable) {
     unawaited(() async {
-      final height = await probeNodeSeedHeight(seed, budget: budget);
+      final height = await probeNodeSeedHeight(seed, budget: budget, allowPublic: publicConsent);
       if (!done.isCompleted && height != null && height > bestH) {
         bestH = height;
         best = seed;
@@ -358,8 +359,13 @@ Future<String> firstLiveNodeSeed(
 }
 
 /// Height of one node `/stats`, or null when the seed is not the live book.
-Future<int?> probeNodeSeedHeight(String base, {Duration budget = const Duration(seconds: 4)}) async {
+Future<int?> probeNodeSeedHeight(
+  String base, {
+  Duration budget = const Duration(seconds: 4),
+  bool allowPublic = false,
+}) async {
   final http = HttpClient()..connectionTimeout = budget;
+  pinWalletHttp(http, allowPublic: () => allowPublic);
   try {
     for (final path in const ['/stats', '/api/stats']) {
       final req = await http.getUrl(Uri.parse('$base$path')).timeout(budget);
@@ -710,13 +716,20 @@ class ShearReadSync {
             ...seeds.where((s) => !isPoolLedgerHost(s)),
         ])),
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)),
-        _rng = random ?? Random();
+        _rng = random ?? Random() {
+    pinWalletHttp(_http, allowPublic: () => publicConsent);
+  }
 
   final List<String> seeds;
   final String? userUrl;
   final Duration jitter;
-  final HttpClient _http;
+  HttpClient _http;
   final Random _rng;
+
+  void rebindHttp(HttpClient http) {
+    _http = http;
+    pinWalletHttp(_http, allowPublic: () => publicConsent);
+  }
 
   String? liveBase;
 
@@ -1437,6 +1450,7 @@ class ShearReadSync {
   }
 
   Future<Map<String, dynamic>?> _get(String base, String path) async {
+    if (!publicConsent && isPublicWalletHost(base)) return null;
     try {
       final req = await _http.getUrl(Uri.parse('$base$path'));
       req.followRedirects = false;

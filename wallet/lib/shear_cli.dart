@@ -521,13 +521,13 @@ String _rpc(_Flags flags, Map<String, String> env) =>
     normalizeWalletRpc(flags['rpc'] ?? env['SHEAR_RPC'] ?? kWalletDefaultSeed);
 
 void _warnPublicIp(IOSink err, String rpc) {
-  if (!rpcNeedsPublicIpWarning(rpc)) return;
+  if (!isPublicWalletHost(normalizeWalletRpc(rpc))) return;
   err.writeln('warning: $kPublicNodeEverySendCopy');
 }
 
-/// Public hosts are not contacted unless the operator passed --public-ok.
+/// A public Shear host is not contacted unless the operator passed --public-ok.
 int? _needPublicOk(IOSink err, _Flags flags, String rpc, {required bool dry}) {
-  if (dry || !rpcNeedsPublicIpWarning(rpc)) return null;
+  if (dry || !isPublicWalletHost(normalizeWalletRpc(rpc))) return null;
   if (flags['public-ok'] == '1') return null;
   err.writeln('refusing public node without --public-ok. $kPublicNodeEverySendCopy');
   return 2;
@@ -538,12 +538,18 @@ bool _cliConsent(_Flags flags, String rpc, {required bool dry}) =>
 
 Future<ShearPoolClient?> _rpcClient(IOSink err, String rpc, {required bool consent}) async {
   final client = ShearPoolClient(userUrl: rpc);
-  final host = Uri.tryParse(rpc)?.host ?? '';
   if (isPublicWalletHost(rpc)) {
     client.publicConsent = consent;
     return client;
   }
-  if (host.isEmpty || ownNodeAllowsHttp(host)) return client;
+  final host = Uri.tryParse(rpc)?.host ?? '';
+  if (host.isEmpty) {
+    client.close();
+    err.writeln(kOwnNodeUrlError);
+    return null;
+  }
+  // Loopback, LAN, and a remote own node are the only target. A LAN --rpc
+  // is not dropped in favour of 127.0.0.1.
   final accepted = await acceptOwnNodeUrl(rpc);
   if (accepted == null) {
     client.close();
@@ -1140,7 +1146,13 @@ Future<int> _signPull(IOSink out, IOSink err, _Flags flags, Map<String, String> 
         : 'signed pull  dest=$dest  nanos=$nanos\nsig $sig');
     return 0;
   }
-  final ledger = ShearLedger(pool: ShearPoolClient(userUrl: _rpc(flags, env)));
+  final rpc = _rpc(flags, env);
+  final blocked = _needPublicOk(err, flags, rpc, dry: false);
+  if (blocked != null) return blocked;
+  _warnPublicIp(err, rpc);
+  final client = await _rpcClient(err, rpc, consent: _cliConsent(flags, rpc, dry: false));
+  if (client == null) return 2;
+  final ledger = ShearLedger(pool: client);
   _bindLedger(ledger, id, session);
   final tx = await ledger.signPendingPull(
     login: id.paymentCode,
@@ -1200,7 +1212,18 @@ Future<int> _vortex(IOSink out, IOSink err, _Flags flags, Map<String, String> en
       final key = flags['vort1'] ?? flags['key'];
       if (key == null || key.isEmpty) throw const FormatException('vortex register needs --vort1');
       final srcPath = flags['source-file'];
-      final v = await downloadVorticeFromOrigin(key, source: srcPath != null ? File(srcPath).readAsStringSync() : null);
+      final pasted = srcPath != null ? File(srcPath).readAsStringSync() : null;
+      final Vortice? v;
+      try {
+        v = await downloadVorticeFromOrigin(
+          key,
+          source: pasted,
+          publicConsent: flags['public-ok'] == '1',
+        );
+      } on StateError catch (e) {
+        err.writeln(e.message);
+        return 2;
+      }
       if (v == null) {
         err.writeln('vort1 fetch failed');
         return 1;
