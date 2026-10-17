@@ -719,12 +719,20 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
-    const commit = act?.commit;
-    if (!commit || commit.length !== 32) return { ok: false, reason: 'stake_reward' };
+    const outs = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === 'lock');
+    const credits = outs.length ? outs : (act?.commit ? [{ commit: act.commit, piProof: act?.piProof }] : []);
+    if (!credits.length) return { ok: false, reason: 'stake_reward' };
     const pub = String(tx?.ownerPub || tx?.spendPub || '').replace(/^0x/i, '');
     const owner = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
-    const locked = await callReserve(session, encodeDeposit(dest, commit, nowMs, owner, lockQualifies(commit, act?.piProof)));
-    if (!locked.ok) return locked;
+    let locked = { ok: true };
+    for (const out of credits) {
+      let commit = out?.commit || act?.commit;
+      try { commit = Buffer.from(commit); } catch { commit = null; }
+      if (!commit || commit.length !== 32) return { ok: false, reason: 'stake_reward' };
+      const proof = out?.piProof || act?.piProof;
+      locked = await callReserve(session, encodeDeposit(dest, commit, nowMs, owner, lockQualifies(commit, proof)));
+      if (!locked.ok) return locked;
+    }
     return locked;
   }
   if (kind === 'vote') {

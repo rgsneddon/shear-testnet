@@ -71,8 +71,14 @@ describe('epoch sums stay commitments', () => {
             ownerPub: owner.id.spendPub.toString('hex'),
             bps: GENESIS_BPS,
           });
-          assert.equal(tx.vout.length, 1);
+          const amountBi = BigInt(amount);
+          const pi = BigInt(PI_SHE_NANOS);
+          const leaves = amountBi < pi ? 1 : Math.min(16, Number(amountBi / pi));
+          const change = amountBi < pi ? 0n : amountBi - pi * BigInt(leaves);
+          assert.equal(tx.vout.length, leaves + (change > 0n ? 1 : 0));
+          assert.equal(tx.vout.filter((row) => row.kind === 'lock').length, leaves);
           assert.equal(tx.vout[0].kind, 'lock');
+          if (change > 0n) assert.notEqual(tx.vout.at(-1).kind, 'lock');
           assert.equal(tx.nanos, 0);
           const applied = applyLock(state, tx, HEIGHT + i);
           assert.equal(applied.ok, true, applied.reason);
@@ -97,7 +103,10 @@ describe('epoch sums stay commitments', () => {
         assert.equal(Number(state.totalLockedNanos), 0);
         const portal = state.portals[portalIdFromDest(owner.dest)];
         assert.equal(Number(portal.staked) + Number(portal.idle), 0);
-        assert.equal(portal.tranches.length, count);
+        const amountBi = BigInt(amount);
+        const pi = BigInt(PI_SHE_NANOS);
+        const leaves = amountBi < pi ? 1 : Math.min(16, Number(amountBi / pi));
+        assert.equal(portal.tranches.length, count * leaves);
         for (const tranche of portal.tranches) {
           assert.equal(tranche.amount, undefined);
           assert.notEqual(Number(tranche.amount), amount);

@@ -225,9 +225,8 @@ describe('a roll is the owner signed transaction', () => {
     const session = await openEvm(owner, lockedCommit);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: evmAuth.rewardSig, dest: owner.dest });
     const evm = await callReserve(session, encodeWithdraw(owner.dest, at, auth));
-    assert.equal(evm.ok, true, evm.reason);
-    assert.equal(decodeWithdraw(evm.returnValue).principal, 0);
-    assert.equal(decodeWithdraw(evm.returnValue).interest, 0);
+    assert.equal(evm.ok, false);
+    assert.equal(evm.reason, 'unsigned');
     const evmRoll = await callReserve(session, encodeRoll(owner.dest, at, 0, auth));
     assert.equal(evmRoll.ok, false);
 

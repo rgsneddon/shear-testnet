@@ -188,6 +188,8 @@ contract Reserve {
     uint256 public enactedLiveBonus;
     uint256 public enactedAtMs;
     uint256 public enactedAtEpoch;
+    /// Leaf commits this withdraw retired. Cleared before the call returns.
+    bytes32[] private retiredScratch;
 
     modifier onlyShear() {
         _assertShear();
@@ -1114,6 +1116,9 @@ contract Reserve {
         bytes calldata auth
     ) external onlyShear returns (uint256) {
         if (proof.length < 2 || proof[0] != 0xaa) revert ClaimUnavailable();
+        // rootIndex is the period. A claim older than the two-epoch window is closed.
+        uint256 claimChain = rootIndex / 16;
+        if (currentEpoch > claimChain + 2) revert ClaimUnavailable();
         if (nullifierMinted[nullifier]) revert AlreadyMinted();
         uint256 reward = _vaultReward(proof);
         if (reward == 0 || reward != nanos) revert BadAmount();
@@ -1193,7 +1198,8 @@ contract Reserve {
     /// itself names the lock, so the withdraw is linkable to the lock.
     /// `reward` is zero: the stake reward waits for the ZK claim. `earned`
     /// is the qualified amount that claim will pay.
-    /// This entry does not retire vault leaves. withdrawRetire does.
+    /// Refuses when a matured hidden leaf is still on the portal. A leaf
+    /// leaves only through withdrawRetire, which burns its claim nullifiers.
     function withdraw(bytes calldata dest, uint256 nowTs, bytes calldata auth) external onlyShear returns (uint256 principal, uint256 reward, uint256 earned) {
         return _withdraw(dest, nowTs, auth, bytes(""));
     }
@@ -1236,6 +1242,9 @@ contract Reserve {
         // Hash the matured set before the release loop drops those tranches.
         bytes32 trancheSet = _trancheSet(p, chain);
         uint256 hiddenRelease = _retireLeaves(p, chain, retireBlob);
+        // No proof bytes on this call. A matured hidden leaf stays, and the
+        // withdraw does not drop it. An empty blob cannot retire, so it reverts.
+        if (retireBlob.length == 0 && _maturedHiddenExists(p, chain)) revert Unsigned();
         if (_hiddenDue(p, nowTs)) p.hiddenRewardOpen = true;
         uint256 release = 0;
         uint256 noteMatured = 0;
@@ -1250,7 +1259,14 @@ contract Reserve {
                 if (kept != i) p.tranches[kept] = p.tranches[i];
                 kept += 1;
             } else if (p.tranches[i].commit != bytes32(0)) {
-                hiddenCount += 1;
+                // Drop only a leaf this call retired. Any other matured
+                // hidden commit stays on the portal.
+                if (_isRetired(p.tranches[i].commit)) {
+                    hiddenCount += 1;
+                } else {
+                    if (kept != i) p.tranches[kept] = p.tranches[i];
+                    kept += 1;
+                }
             } else {
                 release += p.tranches[i].amount;
             }
@@ -1307,6 +1323,7 @@ contract Reserve {
             nullifierMinted[withdrawId] = true;
             withdrewEpochOf[portalSha[id]][currentEpoch] = true;
         }
+        _clearRetired();
     }
 
     function _readU32(bytes memory b, uint256 off) internal pure returns (uint256) {
@@ -1321,15 +1338,36 @@ contract Reserve {
         for (uint256 i = 0; i < len; i++) out[i] = blob[off + i];
     }
 
+    function _clearRetired() internal {
+        while (retiredScratch.length > 0) retiredScratch.pop();
+    }
+
+    function _isRetired(bytes32 commit) internal view returns (bool) {
+        uint256 n = retiredScratch.length;
+        for (uint256 i = 0; i < n; i++) {
+            if (retiredScratch[i] == commit) return true;
+        }
+        return false;
+    }
+
+    function _maturedHiddenExists(Portal storage p, uint256 chain) internal view returns (bool) {
+        uint256 n = p.tranches.length;
+        for (uint256 i = 0; i < n; i++) {
+            if (chain <= p.tranches[i].epoch || p.tranches[i].notePrincipal) continue;
+            if (p.tranches[i].commit != bytes32(0)) return true;
+        }
+        return false;
+    }
+
     /// One π per distinct leaf commit. A second epoch of the same leaf burns
-    /// another nullifier and does not pay π again.
+    /// another nullifier and does not pay π again. The commits stay in
+    /// retiredScratch until the withdraw loop has dropped them.
     function _retireLeaves(Portal storage p, uint256 chain, bytes memory blob) internal returns (uint256) {
+        _clearRetired();
         if (blob.length == 0) return 0;
         if (blob.length < 4) revert Unsigned();
         uint256 n = _readU32(blob, 0);
         if (n == 0 || n > 64) revert Unsigned();
-        bytes32[16] memory seen;
-        uint256 seenN = 0;
         uint256 off = 4;
         for (uint256 i = 0; i < n; i++) {
             if (off + 36 > blob.length) revert Unsigned();
@@ -1349,22 +1387,14 @@ contract Reserve {
             if (!ok || out.length < 32 || uint256(bytes32(out)) != 1) revert Unsigned();
             bytes32 commit = _retireLeafCommit(proof);
             if (commit == bytes32(0) || !_maturedHidden(p, chain, commit)) revert Unsigned();
-            bool known = false;
-            for (uint256 s = 0; s < seenN; s++) {
-                if (seen[s] == commit) {
-                    known = true;
-                    break;
-                }
-            }
-            if (!known) {
-                if (seenN == 16) revert Unsigned();
-                seen[seenN] = commit;
-                seenN += 1;
+            if (!_isRetired(commit)) {
+                if (retiredScratch.length == 16) revert Unsigned();
+                retiredScratch.push(commit);
             }
             nullifierMinted[nullifier] = true;
         }
         if (off != blob.length) revert Unsigned();
-        return seenN * PI_NANOS;
+        return retiredScratch.length * PI_NANOS;
     }
 
     function _maturedHidden(Portal storage p, uint256 chain, bytes32 commit) internal view returns (bool) {

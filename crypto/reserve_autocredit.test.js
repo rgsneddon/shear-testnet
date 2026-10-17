@@ -550,9 +550,8 @@ describe('aggregated reward root', () => {
     });
     const drawAuth = packRewardAuth({ ownerPub: alice.pub, sig: drawTx.rewardSig, dest });
     const drawn = await callReserve(session, encodeWithdraw(dest, draw, drawAuth));
-    assert.equal(drawn.ok, true, drawn.reason);
-    assert.equal(decodeWithdraw(drawn.returnValue).principal, 0);
-    assert.equal(decodeWithdraw(drawn.returnValue).interest, 0);
+    assert.equal(drawn.ok, false);
+    assert.equal(drawn.reason, 'unsigned');
   });
 
   it('orders mempool claims by fee rate and pays the whole fee to miners', () => {
