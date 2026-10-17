@@ -69,7 +69,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -3319,13 +3319,17 @@ export function createStore(dir, {
     if (mempoolVault) return mempoolVault;
     let carried = cloneVault(reserveVault);
     let n = 0;
+    let retireUsed = 0;
     for (const row of mempool) {
       if (!txIsReserveAction(row)) continue;
       if (n >= RESERVE_ACTION_CAP) break;
+      const adding = txRetireDleqs(row);
+      if (retireCapHit(retireUsed, row)) continue;
       const tried = trialReserveApply({ state: carried, txs: [row], nowMs, inPlace: true });
       if (!tried.ok) continue;
       carried = tried.state;
       n += 1;
+      if (adding != null) retireUsed += adding;
     }
     mempoolVault = carried;
     return mempoolVault;
@@ -5173,6 +5177,7 @@ export function createStore(dir, {
     // clone. A miss undoes itself and does not clone the portal map again.
     let carried = cloneVault(reserveVault);
     let reserveIncluded = 0;
+    let retireIncluded = 0;
     let reserveDropped = false;
     const budgetStarted = performance.now();
     const announced = Array.isArray(shareBatch) ? shareBatch.length
@@ -5276,6 +5281,14 @@ export function createStore(dir, {
         keep.push(m);
         continue;
       }
+      const retireAdding = txIsReserveAction(tx) ? txRetireDleqs(tx) : 0;
+      if (retireCapHit(retireIncluded, tx)) {
+        keep.push(m);
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: 'retire_cap' }));
+        } catch { /* ignore */ }
+        continue;
+      }
       // Chain notes do not cover a painted spend, so it stays queued and out of the block.
       if (paintedSpendSig(tx)) {
         const held = fundedDebit(tx);
@@ -5318,6 +5331,7 @@ export function createStore(dir, {
         if (got.vaultState) {
           carried = got.vaultState;
           reserveIncluded += 1;
+          if (retireAdding != null) retireIncluded += retireAdding;
         }
         for (const tag of txSpendTags(got.tx).tags) spendSeen.add(tag.toString('hex'));
         if (Array.isArray(got.tags)) {

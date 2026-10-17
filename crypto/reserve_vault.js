@@ -504,7 +504,7 @@ export function withdrawBinding(state, portal, nowMs) {
  * The wallet has to re-sign for the epoch that includes the block.
  */
 export function withdrawOwnerMessage({
-  nullifier, nanos, dest, magic, chainId, epoch, trancheSet,
+  nullifier, nanos, dest, magic, chainId, epoch, trancheSet, txBind = null,
 } = {}) {
   const id = Buffer.from(String(nullifier || '').replace(/^0x/i, ''), 'hex');
   if (id.length !== 32) return null;
@@ -526,6 +526,13 @@ export function withdrawOwnerMessage({
   if (chain < 0n || chain > 0xffffffffffffffffn) return null;
   if (at < 0n || at > 0xffffffffffffffffn) return null;
   const destBuf = Buffer.from(String(dest || ''), 'utf8');
+  let bind = Buffer.alloc(32);
+  if (txBind) {
+    try {
+      const raw = Buffer.from(asU8(txBind));
+      if (raw.length === 32) bind = raw;
+    } catch { bind = Buffer.alloc(32); }
+  }
   return Buffer.concat([
     Buffer.from(WITHDRAW_OWNER_TAG),
     id,
@@ -534,9 +541,20 @@ export function withdrawOwnerMessage({
     u64le(chain),
     u64le(at),
     setRaw,
+    bind,
     u32le(destBuf.length),
     destBuf,
   ]);
+}
+
+function proofTxBind(raw) {
+  try {
+    const buf = Buffer.from(asU8(raw));
+    if (buf.length < 32) return null;
+    return Buffer.from(buf.subarray(buf.length - 32));
+  } catch {
+    return null;
+  }
 }
 
 /** Ed25519 over the auth message. Returns hex sig, or '' when the key cannot sign. */
@@ -858,6 +876,7 @@ export function withdrawRewardRejected(state, tx, nowMs) {
   if (presented && presented !== owner) return { ok: false, reason: 'unsigned', nanos: 0 };
   const dest = String(tx?.to || act?.payout || '');
   const bind = withdrawBinding(state, portal, nowMs);
+  const firstProof = tx?.retireProof || (Array.isArray(tx?.retireProofs) ? tx.retireProofs[0] : null);
   const message = withdrawOwnerMessage({
     nullifier: id,
     nanos: principal,
@@ -866,6 +885,7 @@ export function withdrawRewardRejected(state, tx, nowMs) {
     chainId: bind.chainId,
     epoch: bind.epoch,
     trancheSet: bind.trancheSet,
+    txBind: proofTxBind(firstProof),
   });
   if (!verifyRewardAuth(message, owner, tx?.rewardSig)) return { ok: false, reason: 'unsigned', nanos: 0 };
   return null;
@@ -1171,9 +1191,28 @@ export function verifyRemainOpen(commit, remainMs, proof, tx, magic = MAGIC_TEST
   }
 }
 
-function sameCommitValue(lockCommit, outCommit, proof, extra) {
+const LOCK_UNLOCK_DST = Buffer.from('shear-vault-lock-unlock-v1');
+
+/**
+ * The lock-leaf transcript plus the consensus unlock. A proof for another
+ * unlock, including 0 and the open sentinel, does not verify.
+ */
+export function lockUnlockContext(tx, height, magic, unlock) {
+  const base = lockFundContext(tx, height, magic);
+  if (!base) return null;
+  let u;
+  try { u = BigInt(unlock); } catch { return null; }
+  if (u <= 0n || u === VAULT_UNLOCK_OPEN || u > 0xffffffffffffffffn) return null;
+  return Buffer.concat([base, LOCK_UNLOCK_DST, u64le(u)]);
+}
+
+function leafFundingPoint(lockCommit, outCommit, unlock) {
+  return subtractUnlock(pointFrom(lockCommit).subtract(pointFrom(outCommit)), unlock);
+}
+
+function sameCommitValue(lockCommit, outCommit, proof, extra, unlock) {
   try {
-    const P = pointFrom(lockCommit).subtract(pointFrom(outCommit));
+    const P = leafFundingPoint(lockCommit, outCommit, unlock);
     if (pointBytes(P).equals(pointBytes(RistrettoPoint.ZERO))) return !!extra;
     if (!extra || !proof?.R || !proof?.z) return false;
     const e = hashToScalar(pointBytes(P), proof.R, extra);
@@ -1190,10 +1229,10 @@ function consumedLockOutput(tx) {
 }
 
 /**
- * The lock leaf equals the lock output the balance debits.
- * A proof that the two commits differ only by a blind is bound to this
- * tx id, the block height, and the network. An input commit is not that
- * output. The amount is not read.
+ * The lock leaf equals the funded output plus the consensus unlock and a blind.
+ * leaf = funded + unlock·U + H·s. The proof is bound to this tx, the height,
+ * and that unlock. Unlock 0 and the open sentinel are refused. The amount
+ * is not read.
  */
 export function lockFundingRejected(tx, ctx = {}) {
   const note = lockNoteBytes(tx?.vaultLockNote);
@@ -1206,17 +1245,22 @@ export function lockFundingRejected(tx, ctx = {}) {
   if (!raw || raw.length !== 32) return { ok: false, reason: 'stake_reward' };
   const range = out?.rangeProof;
   if (!range || !verifyRange(raw, range)) return { ok: false, reason: 'stake_reward' };
+  let unlock;
+  try { unlock = BigInt(ctx.unlock); } catch { return { ok: false, reason: 'stake_reward' }; }
+  if (unlock <= 0n || unlock === VAULT_UNLOCK_OPEN || unlock > 0xffffffffffffffffn) {
+    return { ok: false, reason: 'stake_reward' };
+  }
   const want = note.subarray(32, 64);
   let same = false;
   try {
-    same = pointBytes(pointFrom(want).subtract(pointFrom(raw))).equals(pointBytes(RistrettoPoint.ZERO));
+    same = pointBytes(leafFundingPoint(want, raw, unlock)).equals(pointBytes(RistrettoPoint.ZERO));
   } catch {
     same = false;
   }
   const boundHeight = same ? ctx.height : out.fundProof?.height;
   if (!same && !fundHeightAccepted(boundHeight, ctx.height)) return { ok: false, reason: 'stake_reward' };
-  const extra = lockFundContext(tx, boundHeight, ctx.magic);
-  if (!sameCommitValue(want, raw, out.fundProof, extra)) return { ok: false, reason: 'stake_reward' };
+  const extra = lockUnlockContext(tx, boundHeight, ctx.magic, unlock);
+  if (!sameCommitValue(want, raw, out.fundProof, extra, unlock)) return { ok: false, reason: 'stake_reward' };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   for (const row of outs) {
     if (row?.valueProof?.v != null && Math.floor(Number(row.valueProof.v) || 0) > 0) {
@@ -2524,19 +2568,28 @@ export function lockQualifies(commit, piProof, portal = null) {
   return true;
 }
 
-function hiddenLockCredit({ nanos, commit: commitRaw, blind, rangeProof }) {
+function hiddenLockCredit({ nanos, commit: commitRaw, blind, rangeProof, unlock, rangeCommit }) {
   const given = commitBytes(commitRaw);
   if (given) {
-    let opens = !!(rangeProof && verifyRange(given, rangeProof));
-    if (!opens && rangeProof) {
-      try {
-        const bare = pointBytes(subtractUnlock(pointFrom(given), VAULT_UNLOCK_OPEN));
-        opens = verifyRange(bare, rangeProof);
-      } catch {
-        opens = false;
+    let u = null;
+    if (unlock != null && unlock !== '') {
+      try { u = BigInt(unlock); } catch { return { ok: false, reason: 'stake_reward' }; }
+      if (u <= 0n || u === VAULT_UNLOCK_OPEN || u > 0xffffffffffffffffn) {
+        return { ok: false, reason: 'stake_reward' };
       }
     }
-    if (!opens) return { ok: false, reason: 'stake_reward' };
+    let ranged = null;
+    if (rangeCommit) ranged = commitBytes(rangeCommit);
+    else if (u != null) {
+      try { ranged = pointBytes(subtractUnlock(pointFrom(given), u)); } catch {
+        return { ok: false, reason: 'stake_reward' };
+      }
+    } else {
+      ranged = given;
+    }
+    if (!ranged || ranged.length !== 32 || !rangeProof || !verifyRange(ranged, rangeProof)) {
+      return { ok: false, reason: 'stake_reward' };
+    }
     return { ok: true, commit: given };
   }
   const n = asBig(nanos);
@@ -2636,13 +2689,16 @@ export function sealEpochLocks(state, epoch) {
   return { ok: true, epoch: opening.epoch, commit: opening.commit };
 }
 
-export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPortalId, ownerPub, commit, blind, rangeProof, piProof } = {}) {
+export function deposit({
+  state, dest, portalId, nanos, nowMs, payout, payoutPortalId, ownerPub,
+  commit, blind, rangeProof, piProof, unlock, rangeCommit,
+} = {}) {
   const id = portalKey(portalId || dest);
   if (!id) return { ok: false, reason: 'bad_dest' };
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
     return { ok: false, reason: 'bad_dest' };
   }
-  const hidden = hiddenLockCredit({ nanos, commit, blind, rangeProof });
+  const hidden = hiddenLockCredit({ nanos, commit, blind, rangeProof, unlock, rangeCommit });
   if (!hidden.ok) return hidden;
   // No clock, no credit. A later pin must not inherit an unpinned lock.
   if (!(Number(state?.genesisMs) > 0)) return { ok: false, reason: 'clock' };
@@ -3480,7 +3536,7 @@ export function rewardClaimTx({
  */
 export function signWithdrawReward(tx, ownerKey, {
   portalId, nanos, dest, state = null, nowMs = null, epoch = null, trancheSet = null,
-  tranches = null, magic = null, chainId = null,
+  tranches = null, magic = null, chainId = null, txBind = null,
 } = {}) {
   if (!tx || !ownerKey) return tx;
   const id = String(portalId || '').replace(/^0x/i, '').toLowerCase();
@@ -3490,6 +3546,7 @@ export function signWithdrawReward(tx, ownerKey, {
   const set = trancheSet || bound?.trancheSet || (tranches && at != null ? trancheSetHash(tranches, at) : null);
   const mag = magic || bound?.magic || null;
   const cid = chainId != null ? chainId : (bound ? bound.chainId : null);
+  const namedBind = txBind != null ? (proofTxBind(txBind) || txBind) : proofTxBind(tx?.retireProof || tx?.retireProofs?.[0]);
   const message = withdrawOwnerMessage({
     nullifier: id,
     nanos,
@@ -3498,6 +3555,7 @@ export function signWithdrawReward(tx, ownerKey, {
     chainId: cid,
     epoch: at,
     trancheSet: set,
+    txBind: namedBind,
   });
   const sig = signRewardAuth(message, ownerKey);
   if (!sig) return tx;
@@ -4116,7 +4174,6 @@ export function applyReserveBlock({
   // The roll applies only the epoch being left.
   maybeTallyBallots(state, blockHeight);
   if (state.bonusEnacted && !holdEpoch) syncVaultEpoch(state, nowMs);
-  snapshotPeriodRoot(state, blockHeight);
   if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     const did = enact({ state, nowMs });
     results.push({ action: 'enact', ...did });
@@ -4205,7 +4262,14 @@ export function applyReserveBlock({
       state.deferEpochRoll = false;
       return finishReserveApply(results);
     }
-    if (act.opened === false) continue;
+    if (act.opened === false) {
+      if (act.kind === KIND_WITHDRAW) {
+        results.push({ action: KIND_WITHDRAW, ok: false, reason: 'stake_reward' });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
+      continue;
+    }
     if (act.kind === KIND_LOCK) {
       const lockOuts = (Array.isArray(tx.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === KIND_LOCK);
       if (lockOuts.length > MAX_LOCK_LEAVES) {
@@ -4220,8 +4284,29 @@ export function applyReserveBlock({
         return finishReserveApply(results);
       }
       const noteCommit = tx?.vaultLockNote ? lockNoteBytes(tx.vaultLockNote)?.subarray(32, 64) : null;
+      const lockEpoch = chainEpochIndex(state, nowMs);
+      const unlockEpoch = tx?.vaultLockNote ? consensusUnlockPeriod(lockEpoch) : null;
+      if (tx?.vaultLockNote) {
+        const funded = lockFundingRejected(tx, {
+          height: blockHeight,
+          magic: state.magic || MAGIC_TESTNET,
+          unlock: unlockEpoch,
+        });
+        if (funded) {
+          results.push({ action: KIND_LOCK, ...funded });
+          state.deferEpochRoll = false;
+          return finishReserveApply(results);
+        }
+      }
+      const fundedOut = tx?.vaultLockNote ? consumedLockOutput(tx) : null;
       const credits = tx?.vaultLockNote
-        ? [{ commit: noteCommit || act.commit, rangeProof: act.rangeProof, piProof: act.piProof }]
+        ? [{
+          commit: noteCommit || act.commit,
+          rangeProof: fundedOut?.rangeProof || act.rangeProof,
+          rangeCommit: fundedOut?.commit || null,
+          unlock: unlockEpoch,
+          piProof: act.piProof,
+        }]
         : lockOuts.map((out) => ({
           commit: commit32(out),
           rangeProof: out?.rangeProof || null,
@@ -4239,6 +4324,8 @@ export function applyReserveBlock({
           dest: act.dest,
           commit: credit.commit,
           rangeProof: credit.rangeProof,
+          rangeCommit: credit.rangeCommit,
+          unlock: credit.unlock,
           piProof: credit.piProof,
           nowMs,
           payout: act.payout,
@@ -4261,15 +4348,8 @@ export function applyReserveBlock({
         }
       }
       if (tx?.vaultLockNote) {
-        const funded = lockFundingRejected(tx, { height: blockHeight, magic: state.magic || MAGIC_TESTNET });
-        if (funded) {
-          results.push({ action: KIND_LOCK, ...funded });
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
         const portal = state.portals?.[act.portalId];
         const tranche = portal?.tranches?.[portal.tranches.length - 1];
-        const lockEpoch = chainEpochIndex(state, nowMs);
         const rooted = appendVaultLockNote(state, tx.vaultLockNote, {
           earnEpoch: Math.floor(Number(tranche?.epoch) || 0),
           bornEpoch: chainPeriodIndex(state, nowMs),
@@ -4360,6 +4440,9 @@ export function applyReserveBlock({
       }
     }
   }
+  // Include this block's locks. The first write wins, so a later block of
+  // the same period does not replace the root.
+  snapshotPeriodRoot(state, blockHeight);
   markEpochsClosed(state, nowMs, blockHeight);
   const minted = settleVaultMint(state, block, blockHeight);
   if (minted) {
@@ -4610,6 +4693,34 @@ function retireBindOf(tx, magic) {
   } catch {
     return null;
   }
+}
+
+/** DLEQ rows a withdraw would add to the block. Null when a proof does not parse. */
+export function txRetireDleqs(tx) {
+  if (txKind(tx) !== KIND_WITHDRAW) return 0;
+  const list = proofListOf(tx, null);
+  if (!list.length) return 0;
+  let n = 0;
+  for (const proof of list) {
+    const rows = retireDeclaredRows(proof);
+    if (rows == null) return null;
+    n += rows;
+  }
+  return n;
+}
+
+/**
+ * Selection refusal for one more withdraw. Null when the tx fits the
+ * block's 64-DLEQ budget or is not a counted withdraw. The overflow stays
+ * queued; it is not an unsigned block.
+ */
+export function retireCapHit(included, tx) {
+  if (!txIsReserveAction(tx)) return null;
+  const adding = txRetireDleqs(tx);
+  if (adding == null) return null;
+  const used = Math.floor(Number(included) || 0);
+  if (used + adding > MAX_BLOCK_RETIRE_DLEQS) return { reason: 'retire_cap', adding };
+  return null;
 }
 
 function proofListOf(tx, retireProof) {

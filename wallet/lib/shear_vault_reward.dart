@@ -20,11 +20,12 @@ const String kVaultRelDst = 'shear-vault-reward-rel-v1';
 const String kVaultBalDst = 'shear-vault-reward-bal-v1';
 const String kVaultLockBlindDst = 'shear-vault-lock-blind-v1';
 const String kVaultLockOwnerDst = 'shear-vault-lock-owner-v1';
-const int kVaultProofVer = 0xaa;
+const int kVaultProofVer = 0xab;
 const int kPiSheNanos = 314159265358;
 const int kVaultUnlockOpen = 0xffffffff;
 const String kVaultUnlockDst = 'shear-vault-unlock-base-v1';
 const String kVaultGapDst = 'shear-vault-unlock-gap-v1';
+const String kVaultGapEqDst = 'shear-vault-gap-eq-v1';
 const String kVaultRetireDleqDst = 'shear-vault-retire-dleq-v1';
 const String kMagicMainnet = 'shear-v1';
 
@@ -219,51 +220,51 @@ Uint8List _lockNote(int amount, Uint8List owner, Uint8List blind, int unlock) {
   return _concat([pub, mixed]);
 }
 
-/// gap = unlock − period − 1. The integer stays off the claim blob.
-Map<String, Uint8List> _proveUnlockGap(int unlock, int epoch, AdmitNative admit) {
+/// gap = unlock − period − 1, hidden in a commitment. gap·G and gap·U stay off the blob.
+Map<String, dynamic> _proveGapCommit(int unlock, int epoch, AdmitNative admit) {
   final gap = unlock - epoch - 1;
   if (gap < 0 || gap > 0xffffffff) throw StateError('stake_reward');
   final r = randomScalar();
   final gapC = commitBytes(gap, scalarBytes(r));
   final range = admit.proveRange(BigInt.from(gap), scalarBytes(r));
   if (range == null || range.isEmpty) throw StateError('admit_native_required');
-  final x = scalarFromU64(BigInt.from(gap));
-  final k = randomScalar();
-  final gBytes = pointBytes(ristrettoG());
-  final uBytes = pointBytes(vaultUnlockBase());
-  final a1 = mulBytes(gBytes, scalarBytes(k));
-  final a2 = mulBytes(uBytes, scalarBytes(k));
-  final p1 = mulBytes(gBytes, scalarBytes(x));
-  final p2 = mulBytes(uBytes, scalarBytes(x));
+  return {'gap': gap, 'r': r, 'gapC': gapC, 'range': range};
+}
+
+/// openP = U·gap + H·openS and gapC = G·gap + H·r. Neither gap point is published.
+Map<String, Uint8List> _proveGapEq({
+  required int gap,
+  required Scalar r,
+  required Scalar openS,
+  required Element openP,
+  required int epoch,
+  required Uint8List gapC,
+}) {
+  final kGap = randomScalar();
+  final kR = randomScalar();
+  final kS = randomScalar();
+  final g = ristrettoG();
+  final u = vaultUnlockBase();
+  final a1 = addEl(mulEl(g, kGap), mulEl(noteH, kR));
+  final a2 = addEl(mulEl(u, kGap), mulEl(noteH, kS));
+  final a1b = pointBytes(a1);
+  final a2b = pointBytes(a2);
+  final openPb = pointBytes(openP);
   final e = hashToScalar([
-    utf8Bytes(kVaultRetireDleqDst),
+    utf8Bytes(kVaultGapEqDst),
     _u64(epoch),
-    gBytes,
-    uBytes,
-    a1,
-    a2,
-    p1,
-    p2,
-    utf8Bytes(kVaultGapDst),
+    a1b,
+    a2b,
     gapC,
+    openPb,
   ]);
-  final s = scalarAdd(k, scalarMul(e, x));
-  final linkP = subBytes(gapC, p1);
-  final link = schnorrProveHBytes(
-    linkP,
-    scalarBytes(r),
-    _concat([utf8Bytes(kVaultUnlockDst), gapC, p1]),
-  );
+  final x = scalarFromU64(BigInt.from(gap));
   return {
-    'gapC': gapC,
-    'range': range,
-    'A1': a1,
-    'A2': a2,
-    's': scalarBytes(s),
-    'P1': p1,
-    'P2': p2,
-    'linkR': link['R']!,
-    'linkZ': link['z']!,
+    'A1': a1b,
+    'A2': a2b,
+    'zGap': scalarBytes(scalarAdd(kGap, scalarMul(e, x))),
+    'zR': scalarBytes(scalarAdd(kR, scalarMul(e, r))),
+    'zS': scalarBytes(scalarAdd(kS, scalarMul(e, openS))),
   };
 }
 
@@ -363,7 +364,7 @@ Map<String, dynamic> proveVaultLockReward({
     }, admitPub(randomScalar()), v: nanos);
     final amtCt = wrapped['amtCt'];
     if (amtCt is! Uint8List || amtCt.length != 8) throw StateError('unsigned');
-    final gap = _proveUnlockGap(unlock, epoch, admit);
+    final gap = _proveGapCommit(unlock, epoch, admit);
     final preimage = _sha256(_concat([
       utf8Bytes(kClaimTxidDst),
       noteC,
@@ -383,7 +384,7 @@ Map<String, dynamic> proveVaultLockReward({
       _u64(blocks),
       _u64(reward),
       _u64(covered),
-      gap['gapC']!,
+      gap['gapC'] as Uint8List,
       noteC,
       noteCommit,
       dest20,
@@ -399,20 +400,23 @@ Map<String, dynamic> proveVaultLockReward({
     final t = proved.t.first;
     final openS = scalarAdd(scalarFromBytes(blinds[which]), scalarFromBytes(t));
     final openP = subEl(
-      subEl(
-        subEl(pointFrom(cTilde), mulG(scalarFromBigInt(BigInt.from(kPiSheNanos)))),
-        mulEl(vaultUnlockBase(), scalarFromU64(BigInt.from(epoch + 1))),
-      ),
-      pointFrom(gap['P2']!),
+      subEl(pointFrom(cTilde), mulG(scalarFromBigInt(BigInt.from(kPiSheNanos)))),
+      mulEl(vaultUnlockBase(), scalarFromU64(BigInt.from(epoch + 1))),
     );
-    if (!elementEq(openP, mulEl(noteH, openS))) throw StateError('stake_reward');
-    final openExtra = _sha256(_concat([
-      utf8Bytes(kVaultRelDst),
-      cTilde,
-      _u64(kPiSheNanos),
-      gap['gapC']!,
-    ]));
-    final open = schnorrProveH(openP, openS, openExtra);
+    final gapN = gap['gap'] as int;
+    final hidden = addEl(
+      mulEl(vaultUnlockBase(), scalarFromU64(BigInt.from(gapN))),
+      mulEl(noteH, openS),
+    );
+    if (!elementEq(openP, hidden)) throw StateError('stake_reward');
+    final eq = _proveGapEq(
+      gap: gapN,
+      r: gap['r'] as Scalar,
+      openS: openS,
+      openP: openP,
+      epoch: epoch,
+      gapC: gap['gapC'] as Uint8List,
+    );
     final portalWord = _sha256(_concat([utf8Bytes(kClaimPortalDst), dest20]));
     final noteExtra = _sha256(_concat([utf8Bytes(kVaultBalDst), preimage, portalWord]));
     final noteP = subEl(pointFrom(noteC), mulG(scalarFromBigInt(nanos)));
@@ -440,24 +444,22 @@ Map<String, dynamic> proveVaultLockReward({
       nullBase: Uint8List.fromList(linkAnn),
       nullP: Uint8List.fromList(linkN),
       nullA1: Uint8List.fromList(linkSr),
-      openR: open['R']!,
-      openZ: open['z']!,
+      openR: eq['A1']!,
+      openZ: eq['zGap']!,
       noteR: noteOpen['R']!,
       noteZ: noteOpen['z']!,
     );
-    final range = gap['range']!;
+    final range = gap['range'] as Uint8List;
     final blob = _concat([
       header,
       _u32(range.length),
       range,
-      gap['gapC']!,
-      gap['A1']!,
-      gap['A2']!,
-      gap['s']!,
-      gap['P1']!,
-      gap['P2']!,
-      gap['linkR']!,
-      gap['linkZ']!,
+      gap['gapC'] as Uint8List,
+      eq['A1']!,
+      eq['A2']!,
+      eq['zGap']!,
+      eq['zR']!,
+      eq['zS']!,
     ]);
     return {
       'ok': true,

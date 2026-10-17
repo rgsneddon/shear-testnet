@@ -6,7 +6,7 @@ import 'package:shear_wallet/shear_vault_reward.dart';
 
 /// Fixed buffers. The hex is the JS packer output in crypto/vault_reward_blob.vector.
 void main() {
-  test('0xaa blob matches the JS packer byte for byte', () {
+  test('0xab blob matches the JS packer byte for byte', () {
     final word = (int b) => Uint8List(32)..fillRange(0, 32, b);
     final fs1 = Uint8List.fromList([0xf1, ...List<int>.filled(8, 0x11)]);
     final record = Uint8List.fromList([0xf1, ...List<int>.filled(320, 0x22)]);
@@ -27,7 +27,7 @@ void main() {
       noteZ: word(7),
     );
     final vector = File('../crypto/vault_reward_blob.vector').readAsStringSync().trim();
-    expect(blob[0], 0xaa);
+    expect(blob[0], 0xab);
     expect(blob.length, 595);
     expect(_hex(blob), vector);
   });

@@ -7,8 +7,8 @@
  * already proves, so the verifier recomputes the tag without the key.
  * There is no miner veto.
  */
-import { createHash, randomBytes, randomInt } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomInt } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAGIC_TESTNET, HASH_BONUS_NANOS, HASH_BONUS_NANOS_FLOOR } from './asert.js';
 import { epochDays, joinCutoffDays } from './pot_sched.js';
@@ -19,7 +19,7 @@ export const VOTE_TAG_DST = 'shear-vote-v1';
 export const VOTE_BIND_DST = 'shear-vote-bind-v1';
 export const VOTE_PROPOSAL_DST = 'shear-vote-proposal-v1';
 export const VOTE_KEY_DST = 'vote';
-export const VOTE_BALLOT_LAW = 'leaf-v1';
+export const VOTE_BALLOT_LAW = 'leaf-v2';
 export const VOTE_VETO_LAW = 'none';
 export const VOTE_SEQ_CAP = 8;
 export const VOTE_FINALITY_BLOCKS = 100;
@@ -451,8 +451,19 @@ function planHeights(count, lo, hi) {
  * [open+10, close-10], at least 30 blocks from the others, never two in
  * one block. Each row carries its own fee input.
  */
+function ownedFeeInput(raw) {
+  const hex = String(raw || '').replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(hex) ? hex : null;
+}
+
+/**
+ * One send per locked leaf. Each height is an independent draw, uniform in
+ * [open+10, close-10], at least 30 blocks from the others, never two in
+ * one block. `feeInputs` are commit ids of spendable notes the wallet owns,
+ * one per leaf, distinct from each other. The planner does not invent them.
+ */
 export function castVotePlan(n, {
-  openHeight = 0, closeHeight = null, magic = MAGIC_TESTNET,
+  openHeight = 0, closeHeight = null, magic = MAGIC_TESTNET, feeInputs = null,
 } = {}) {
   const count = Math.max(0, Math.floor(Number(n) || 0));
   const open = Math.max(0, Math.floor(Number(openHeight) || 0));
@@ -464,12 +475,15 @@ export function castVotePlan(n, {
   const hi = close - VOTE_EDGE_BLOCKS;
   const label = `Cast your ${count} votes`;
   if (count === 0) return { label, openHeight: open, closeHeight: close, txs: [] };
+  const owned = Array.isArray(feeInputs) ? feeInputs.map(ownedFeeInput) : null;
+  if (!owned || owned.length !== count || owned.some((row) => !row)) return null;
+  if (new Set(owned).size !== count) return null;
   const heights = planHeights(count, lo, hi);
   if (!heights) return null;
   const txs = heights.map((height, leaf) => ({
     leaf,
     height,
-    feeInput: randomBytes(32).toString('hex'),
+    feeInput: owned[leaf],
   }));
   return { label, openHeight: open, closeHeight: close, txs };
 }
@@ -478,11 +492,13 @@ export function votePlanPath(dir) {
   return join(String(dir), VOTE_PLAN_FILE);
 }
 
-/** The plan is a file, so a restart reads the same heights and fee inputs. */
+/** The plan is a private file. A restart reads the same heights and fee inputs. */
 export function saveVotePlan(dir, plan) {
   if (!dir || !plan) return null;
   mkdirSync(dir, { recursive: true });
-  writeFileSync(votePlanPath(dir), JSON.stringify(plan));
+  const file = votePlanPath(dir);
+  writeFileSync(file, JSON.stringify(plan), { mode: 0o600 });
+  try { chmodSync(file, 0o600); } catch { /* a platform without modes keeps the write */ }
   return plan;
 }
 

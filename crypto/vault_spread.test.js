@@ -45,10 +45,11 @@ import {
   packVaultOutput,
   proveLeafRetire,
   proveVaultReward,
+  subtractUnlock,
   vaultLockNote,
   VAULT_UNLOCK_OPEN,
 } from './vault_reward_fs1.js';
-import { proveRange } from './note.js';
+import { pointBytes, pointFrom, proveRange } from './note.js';
 
 const T0 = 1_700_000_000_000;
 const span = RESERVE_EPOCH_MS;
@@ -270,6 +271,7 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
       dest: owner.dest,
       nanos: PI_SHE_NANOS,
       commit: note.commit,
+      rangeCommit: pointBytes(subtractUnlock(pointFrom(note.commit), note.unlock)),
       blind: leaf.blind,
       rangeProof: proveRange(PI_SHE_NANOS, leaf.blind),
       nowMs: T0,

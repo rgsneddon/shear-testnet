@@ -27,8 +27,9 @@ import {
   consensusRemainMs,
   deposit,
   emptyVault,
-  lockFundContext,
+  consensusUnlockPeriod,
   lockFundingRejected,
+  lockUnlockContext,
   lockTx,
   proveRemainOpen,
   verifyRemainOpen,
@@ -58,8 +59,10 @@ import {
   proveVaultReward,
   stableSpendTag,
   tagDerivedNullifier,
+  subtractUnlock,
   vaultLockNote,
   vaultRewardNanos,
+  VAULT_PROOF_VER,
 } from './vault_reward_fs1.js';
 
 const T0 = 1_700_000_000_000;
@@ -78,11 +81,11 @@ function recordTag(blob) {
   return blob.subarray(5 + fs1 + 1, 5 + fs1 + 33);
 }
 
-function fundProof(lockCommit, outCommit, s, tx, height, magic) {
-  const P = pointFrom(lockCommit).subtract(pointFrom(outCommit));
+function fundProof(lockCommit, outCommit, s, tx, height, magic, unlock) {
+  const P = subtractUnlock(pointFrom(lockCommit).subtract(pointFrom(outCommit)), unlock);
   const k = randomScalar();
   const R = H.multiply(k);
-  const extra = lockFundContext(tx, height, magic);
+  const extra = lockUnlockContext(tx, height, magic, unlock) || Buffer.alloc(0);
   const e = hashToScalar(pointBytes(P), pointBytes(R), extra);
   const z = Fn.add(k, Fn.mul(e, s));
   return { R: pointBytes(R), z: scalarBytes(z), height };
@@ -101,7 +104,7 @@ function proveLock(amount, epoch = 0) {
     dest20: who.d20,
   });
   assert.ok(proved, 'proof');
-  assert.equal(proved.blob[0], 0xaa);
+  assert.equal(proved.blob[0], VAULT_PROOF_VER);
   assert.equal(proved.blob.includes(proved.locks[0].commit), false);
   return { who, proved };
 }
@@ -305,7 +308,8 @@ describe('hidden vault claims', () => {
     assert.equal(vaultLockNote(1n, 3n, rIn), null);
     const funded = pointBytes(commit(PI_SHE_NANOS, rIn));
     const range = proveRange(PI_SHE_NANOS, rIn);
-    const note = vaultLockNote(PI_SHE_NANOS, 3n, rIn, 0n).note;
+    const unlock = consensusUnlockPeriod(0);
+    const note = vaultLockNote(PI_SHE_NANOS, 3n, rIn, unlock).note;
     const tx = {
       kind: 'lock',
       nanos: 0,
@@ -313,7 +317,7 @@ describe('hidden vault claims', () => {
       vin: [{ commit: funded, rangeProof: range }],
       vout: [{ kind: 'lock', commit: funded, rangeProof: range }],
     };
-    const ctx = { height: HEIGHT, magic: MAGIC_TESTNET };
+    const ctx = { height: HEIGHT, magic: MAGIC_TESTNET, unlock };
     assert.equal(lockFundingRejected(tx, ctx), null);
     assert.equal(tx.nanos, 0);
     assert.equal(tx.vout[0].valueProof, undefined);
@@ -330,8 +334,9 @@ describe('hidden vault claims', () => {
     }, ctx).reason, 'stake_reward');
 
     const rLock = randomScalar();
-    const locked = pointBytes(commit(PI_SHE_NANOS, rLock));
-    const blinded = vaultLockNote(PI_SHE_NANOS, 3n, rLock, 0n).note;
+    const blindedNote = vaultLockNote(PI_SHE_NANOS, 3n, rLock, unlock);
+    const locked = blindedNote.commit;
+    const blinded = blindedNote.note;
     const sameValue = {
       id: 'reblind',
       kind: 'lock',
@@ -339,14 +344,14 @@ describe('hidden vault claims', () => {
       vaultLockNote: blinded,
       vout: [{ kind: 'lock', commit: funded, rangeProof: range }],
     };
-    sameValue.vout[0].fundProof = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET);
+    sameValue.vout[0].fundProof = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
     assert.equal(lockFundingRejected(sameValue, ctx), null);
-    sameValue.vout[0].fundProof = fundProof(locked, funded, randomScalar(), sameValue, HEIGHT, MAGIC_TESTNET);
+    sameValue.vout[0].fundProof = fundProof(locked, funded, randomScalar(), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
     assert.equal(lockFundingRejected(sameValue, ctx).reason, 'stake_reward');
-    const bound = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET);
+    const bound = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
     sameValue.vout[0].fundProof = bound;
     assert.equal(lockFundingRejected(sameValue, ctx), null);
-    assert.equal(lockFundingRejected(sameValue, { height: HEIGHT + 1, magic: MAGIC_TESTNET }), null);
+    assert.equal(lockFundingRejected(sameValue, { height: HEIGHT + 1, magic: MAGIC_TESTNET, unlock }), null);
     assert.equal(lockFundingRejected({ ...sameValue, id: 'renamed-id' }, ctx), null);
     assert.equal(lockFundingRejected({ ...sameValue, portalId: 'ab'.repeat(32) }, ctx).reason, 'stake_reward');
 
@@ -949,7 +954,7 @@ describe('hidden vault claims', () => {
     const now = T0 + 3_600_000;
     const r = randomScalar();
     assert.equal(vaultLockNote(PI_SHE_NANOS + 1, 3n, r), null);
-    const note = vaultLockNote(PI_SHE_NANOS, 3n, r, 0n).note;
+    const note = vaultLockNote(PI_SHE_NANOS, 3n, r, consensusUnlockPeriod(0)).note;
     const build = () => {
       const action = lockTx({
         from: who.dest,

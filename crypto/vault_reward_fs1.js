@@ -62,6 +62,8 @@ export const VAULT_RETIRE_DST = 'shear-vault-retire-dleq-v1';
 export const VAULT_UNLOCK_DST = 'shear-vault-unlock-base-v1';
 /** Gap proof domain. The claimed period is not published as an unlock integer. */
 export const VAULT_GAP_DST = 'shear-vault-unlock-gap-v1';
+/** Equality of the hidden gap. The transcript does not include gap·G or gap·U. */
+export const VAULT_GAP_EQ_DST = 'shear-vault-gap-eq-v1';
 /** Vote-only null base. Not the claim epoch base, so a vote point is not a claim point. */
 export const VAULT_VOTE_NULL_DST = 'shear-vote-null-v1';
 export const VAULT_VOTE_VER = 0x56;
@@ -668,17 +670,23 @@ function remainSigmaVerify(cTilde, A1, A2, C, Q, s, sr) {
   }
 }
 
-function piOpenExtra(cTilde, gapC) {
-  return createHash('sha256').update(Buffer.concat([
-    Buffer.from(VAULT_REL_DST),
-    cTilde,
-    u64le(VAULT_PI_LEAF),
+function gapEqChallenge(epoch, A1, A2, gapC, openP) {
+  return hashToScalar(
+    Buffer.from(VAULT_GAP_EQ_DST),
+    u64le(epoch),
+    A1,
+    A2,
     gapC,
-  ])).digest();
+    pointBytes(openP),
+  );
 }
 
-/** gap = unlock − period − 1. A non-negative gap is claimed_period < unlock. */
-function proveUnlockGap(unlock, epoch) {
+/**
+ * gap = unlock − period − 1, hidden in commit(gap, r). A range proof shows
+ * the gap is non-negative, so the claimed period is below the unlock.
+ * gap·G and gap·U are not returned.
+ */
+function proveGapCommit(unlock, epoch) {
   let gap;
   try {
     gap = BigInt(unlock) - BigInt(epoch) - 1n;
@@ -687,32 +695,50 @@ function proveUnlockGap(unlock, epoch) {
   }
   if (gap < 0n || gap > 0xffffffffn) return null;
   const r = randomScalar();
-  const gapPoint = commit(gap, r);
-  const gapC = pointBytes(gapPoint);
+  const gapC = pointBytes(commit(gap, r));
   const range = proveRange(gap, r);
   if (!range?.length) return null;
-  const x = Fn.create(gap);
-  const d = dleqProve(G, unlockBase(), x, epoch, VAULT_GAP_DST, gapC);
-  if (!d) return null;
-  const linkP = gapPoint.subtract(pointFrom(d.P1));
-  const linkExtra = Buffer.concat([Buffer.from(VAULT_UNLOCK_DST), gapC, d.P1]);
-  if (!linkP.equals(H.multiply(r))) return null;
-  const link = schnorrProve(linkP, r, linkExtra);
-  return { gap, gapC, range, ...d, linkR: link.R, linkZ: link.z };
+  return { gap, r, gapC, range };
 }
 
-function verifyUnlockGap(epoch, tail) {
+/**
+ * openP = U·gap + H·openS and gapC = G·gap + H·r, with independent blinds.
+ * The proof publishes neither gap·G nor gap·U.
+ */
+function proveGapEquality({ gap, r, openS, openP, epoch, gapC }) {
+  const kGap = randomScalar();
+  const kR = randomScalar();
+  const kS = randomScalar();
+  const A1 = G.multiply(kGap).add(H.multiply(kR));
+  const A2 = unlockBase().multiply(kGap).add(H.multiply(kS));
+  const e = gapEqChallenge(epoch, pointBytes(A1), pointBytes(A2), gapC, openP);
+  const x = Fn.create(gap);
+  return {
+    A1: pointBytes(A1),
+    A2: pointBytes(A2),
+    zGap: scalarBytes(Fn.add(kGap, Fn.mul(e, x))),
+    zR: scalarBytes(Fn.add(kR, Fn.mul(e, r))),
+    zS: scalarBytes(Fn.add(kS, Fn.mul(e, openS))),
+  };
+}
+
+function verifyGapEquality(epoch, gapC, openP, A1, A2, zGap, zR, zS) {
+  const e = gapEqChallenge(epoch, A1, A2, gapC, openP);
+  const zG = scalarFrom(zGap);
+  const left1 = G.multiply(zG).add(H.multiply(scalarFrom(zR)));
+  const right1 = pointFrom(A1).add(pointFrom(gapC).multiply(e));
+  const left2 = unlockBase().multiply(zG).add(H.multiply(scalarFrom(zS)));
+  const right2 = pointFrom(A2).add(openP.multiply(e));
+  return left1.equals(right1) && left2.equals(right2);
+}
+
+function verifyUnlockGap(epoch, tail, openP, openR, openZ) {
   try {
     if (!tail?.range?.length || !tail.gapC || tail.gapC.length !== 32) return false;
+    if (!openR || !openZ || !tail.A1 || !tail.A2 || !tail.zGap || !tail.zR || !tail.zS) return false;
     if (!verifyRange(tail.gapC, tail.range)) return false;
-    const U = unlockBase();
-    if (!dleqVerify(
-      pointBytes(G), pointBytes(U), tail.P1, tail.P2, tail.A1, tail.A2, tail.s,
-      epoch, VAULT_GAP_DST, tail.gapC,
-    )) return false;
-    const linkP = pointFrom(tail.gapC).subtract(pointFrom(tail.P1));
-    const linkExtra = Buffer.concat([Buffer.from(VAULT_UNLOCK_DST), tail.gapC, tail.P1]);
-    return schnorrVerify(linkP, tail.linkR, tail.linkZ, linkExtra);
+    if (!openR.equals(tail.A1) || !openZ.equals(tail.zGap)) return false;
+    return verifyGapEquality(epoch, tail.gapC, openP, tail.A1, tail.A2, tail.zGap, tail.zR, tail.zS);
   } catch {
     return false;
   }
@@ -725,11 +751,9 @@ function packGapTail(gap) {
     gap.gapC,
     gap.A1,
     gap.A2,
-    gap.s,
-    gap.P1,
-    gap.P2,
-    gap.linkR,
-    gap.linkZ,
+    gap.zGap,
+    gap.zR,
+    gap.zS,
   ]);
 }
 
@@ -744,23 +768,19 @@ function parseGapTail(buf, off) {
   const gapC = take(buf, off, 32);
   const A1 = gapC && take(buf, gapC.off, 32);
   const A2 = A1 && take(buf, A1.off, 32);
-  const s = A2 && take(buf, A2.off, 32);
-  const P1 = s && take(buf, s.off, 32);
-  const P2 = P1 && take(buf, P1.off, 32);
-  const linkR = P2 && take(buf, P2.off, 32);
-  const linkZ = linkR && take(buf, linkR.off, 32);
-  if (!linkZ || linkZ.off !== buf.length) return null;
+  const zGap = A2 && take(buf, A2.off, 32);
+  const zR = zGap && take(buf, zGap.off, 32);
+  const zS = zR && take(buf, zR.off, 32);
+  if (!zS || zS.off !== buf.length) return null;
   return {
     tail: {
       range: range.b,
       gapC: gapC.b,
       A1: A1.b,
       A2: A2.b,
-      s: s.b,
-      P1: P1.b,
-      P2: P2.b,
-      linkR: linkR.b,
-      linkZ: linkZ.b,
+      zGap: zGap.b,
+      zR: zR.b,
+      zS: zS.b,
     },
   };
 }
@@ -1138,8 +1158,8 @@ export function proveVaultReward({
   const epoch = Math.floor(Number(earnEpoch));
   const unlock = rows[which].unlock;
   if (BigInt(epoch) >= unlock) return null;
-  const gapProof = proveUnlockGap(unlock, epoch);
-  if (!gapProof) return null;
+  const gapCommit = proveGapCommit(unlock, epoch);
+  if (!gapCommit) return null;
   const nullifier = vaultRewardNullifier(rows[which].scalar, epoch);
   if (!nullifier) return null;
   let note = null;
@@ -1172,7 +1192,7 @@ export function proveVaultReward({
     span: blocks,
     reward: reward.nanos,
     covered,
-    gapC: gapProof.gapC,
+    gapC: gapCommit.gapC,
     commit: bound.commit,
     noteCommit: bound.noteCommit,
     dest20: bound.dest20,
@@ -1200,10 +1220,12 @@ export function proveVaultReward({
   const openS = Fn.add(rows[which].blind, t);
   const openP = pointFrom(cTilde)
     .subtract(G.multiply(Fn.create(VAULT_PI_LEAF)))
-    .subtract(unlockBase().multiply(Fn.create(BigInt(epoch) + 1n)))
-    .subtract(pointFrom(gapProof.P2));
-  if (!openP.equals(H.multiply(openS))) return null;
-  const open = schnorrProve(openP, openS, piOpenExtra(cTilde, gapProof.gapC));
+    .subtract(unlockBase().multiply(Fn.create(BigInt(epoch) + 1n)));
+  const hidden = unlockBase().multiply(Fn.create(gapCommit.gap)).add(H.multiply(openS));
+  if (!openP.equals(hidden)) return null;
+  const gapEq = proveGapEquality({ ...gapCommit, openS, openP, epoch });
+  if (!gapEq) return null;
+  const gapProof = { ...gapCommit, ...gapEq };
   const noteS = scalarFrom(note.r);
   const noteP = pointFrom(bound.commit).subtract(G.multiply(Fn.create(reward.nanos)));
   if (!noteP.equals(H.multiply(noteS))) return null;
@@ -1222,8 +1244,8 @@ export function proveVaultReward({
     nullBase: linkAnn,
     nullP: linkN,
     nullA1: linkSr,
-    openR: open.R,
-    openZ: open.z,
+    openR: gapEq.A1,
+    openZ: gapEq.zGap,
     noteR: noteOpen.R,
     noteZ: noteOpen.z,
   });
@@ -1294,7 +1316,7 @@ export function verifyVaultReward({
   if (parsed.span <= 0n || parsed.bps <= 0 || parsed.bps > 1_000_000) return fail(2, 'stake_reward');
   if (BigInt(parsed.bps) * parsed.span >= RELATION_BOUND) return fail(2, 'stake_reward');
   if (parsed.reward <= 0n || parsed.reward > MAX_NANOS) return fail(2, 'stake_reward');
-  if (!parsed.gap || !verifyUnlockGap(parsed.epoch, parsed.gap)) return fail(2, 'stake_reward');
+  if (!parsed.gap) return fail(2, 'stake_reward');
   const expectCovered = terms.covered != null ? BigInt(terms.covered) : (expectSpan / 16n);
   if (expectCovered <= 0n || expectCovered > expectSpan || parsed.covered !== expectCovered) {
     return fail(2, 'stake_reward');
@@ -1336,14 +1358,13 @@ export function verifyVaultReward({
     if (!digest) return fail(0, 'unsigned');
     openP = pointFrom(cTilde)
       .subtract(G.multiply(Fn.create(VAULT_PI_LEAF)))
-      .subtract(unlockBase().multiply(Fn.create(parsed.epoch + 1n)))
-      .subtract(pointFrom(parsed.gap.P2));
+      .subtract(unlockBase().multiply(Fn.create(parsed.epoch + 1n)));
     noteP = pointFrom(bound.commit).subtract(G.multiply(Fn.create(parsed.reward)));
   } catch {
     return fail(2, 'stake_reward');
   }
+  if (!verifyUnlockGap(parsed.epoch, parsed.gap, openP, parsed.openR, parsed.openZ)) return fail(2, 'stake_reward');
   if (!schnorrVerify(noteP, parsed.noteR, parsed.noteZ, balanceExtra(preimage, bound.dest20))) return fail(2, 'stake_reward');
-  if (!schnorrVerify(openP, parsed.openR, parsed.openZ, piOpenExtra(cTilde, parsed.gap.gapC))) return fail(2, 'stake_reward');
   const anchor = Number(rootEpoch);
   if (!Number.isSafeInteger(anchor) || anchor < 0) return fail(0, 'unsigned');
   const epochBase = pointBytes(nullBase(parsed.epoch));
