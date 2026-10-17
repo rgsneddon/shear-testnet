@@ -81,7 +81,7 @@ import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected, rollRewardRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected, rollRewardRejected, leafVoteFundingRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -1536,7 +1536,10 @@ export function buildTemplate({
     hashAcceptedSeries: series,
     hashSpill: spillBatch,
   });
+  // A leaf-vote fee is the note it spends. A declared number with no spend
+  // is not minted into the finder or reserve fee notes.
   const fees = (txs || []).reduce((a, t) => {
+    if (String(t?.kind || '') === 'leaf-vote' && leafVoteFundingRejected(t)) return a;
     const n = postedFeeNanos(t);
     return a + (n == null || n < 0 ? 0 : n);
   }, 0);
@@ -2938,7 +2941,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (Array.isArray(noteFund.tags)) {
       for (const th of noteFund.tags) spentTags.add(th);
     }
-    const summed = typedCommitSum(tx, { height, magic });
+    const summed = typedCommitSum(tx, {
+      height,
+      magic,
+      state: reserveState,
+      nowMs: Number(decoded.timestamp) || 0,
+    });
     if (!summed.ok) return summed;
     const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws, Number(decoded.timestamp) || 0);
     if (!stake.ok) return stake;

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,6 +13,15 @@ import {
 } from './asert.js';
 import { levyNanos } from './levy.js';
 import { typedCommitSum } from './spend.js';
+import {
+  H,
+  kernelExcess,
+  pointBytes,
+  pointFrom,
+  randomScalar,
+  scalarBytes,
+  sealNote,
+} from './note.js';
 import { VAULT_DAY_BLOCKS } from './vault_accrual.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +58,7 @@ import {
   VOTE_SEQ_CAP,
   ballotDirection,
   castVotePlan,
+  pickOwnedFeeNotes,
   loadVotePlan,
   saveVotePlan,
   votePlanPath,
@@ -116,6 +127,22 @@ function voteTx(proved, epoch, { choice = 1, seq = 1, param = 'hb', height, leav
   };
   tx.fee = levyNanos(0, { tx });
   void leaves;
+  return bindVoteFee(tx);
+}
+
+function bindVoteFee(tx) {
+  const fee = Math.floor(Number(tx.fee) || 0);
+  const note = sealNote(fee, { dest20: Buffer.alloc(20, 4), kind: 'send' });
+  const t = randomScalar();
+  const cTilde = pointBytes(pointFrom(note.commit).add(H.multiply(t)));
+  tx.vin = [{ commit: cTilde }];
+  tx.vout = [];
+  tx.excess = kernelExcess([], [{ r: note.r, t: scalarBytes(t) }]);
+  const blob = Buffer.alloc(321, 9);
+  blob[0] = 0xf1;
+  tx.fs1 = Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(40, 1)]);
+  tx.anchor = 16;
+  tx.admit_proof = { blob, cTilde, spendTag: randomBytes(32) };
   return tx;
 }
 
@@ -183,6 +210,24 @@ describe('leaf ballot window, step, and wording', () => {
     }
     assert.equal(new Set(heights).size, 4);
     assert.equal(new Set(plan.txs.map((row) => row.feeInput)).size, 4);
+    const narrow = castVotePlan(2, {
+      openHeight: 0,
+      closeHeight: 100,
+      feeInputs: ['aa', 'bb'].map((b) => b.repeat(32)),
+    });
+    assert.ok(narrow);
+    const narrowHeights = narrow.txs.map((row) => row.height).sort((a, b) => a - b);
+    assert.ok(narrowHeights[0] >= 10 && narrowHeights[1] <= 90);
+    assert.ok(narrowHeights[1] - narrowHeights[0] >= VOTE_MIN_SEPARATION);
+    const notes = [
+      { kind: 'lock', commit: '11'.repeat(32) },
+      { kind: 'send', commit: '22'.repeat(32), voteChange: true },
+      { kind: 'send', commit: '33'.repeat(32), parentTx: 'same' },
+      { kind: 'send', commit: '44'.repeat(32), parentTx: 'same' },
+      { kind: 'send', commit: '55'.repeat(32), parentTx: 'other' },
+    ];
+    const picked = pickOwnedFeeNotes(notes, 2, () => 0);
+    assert.deepEqual(picked, ['33'.repeat(32), '55'.repeat(32)]);
     const dir = mkdtempSync(join(tmpdir(), 'vote-plan-'));
     saveVotePlan(dir, plan);
     const loaded = loadVotePlan(dir);

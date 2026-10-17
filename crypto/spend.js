@@ -11,8 +11,8 @@ import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PRE
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
-import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
-import { hiddenPrincipalOpens, lockFundingRejected, maturedHiddenCount, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
+import { consensusUnlockPeriod, hiddenPrincipalOpens, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -774,7 +774,10 @@ export function typedCommitSum(tx, ctx = {}) {
     const paid = Math.floor(Number(tx?.fee || 0));
     const need = Math.floor(Number(levyNanos(0, { tx })) || 0);
     if (paid < need) return { ok: false, reason: 'levy' };
-    return { ok: true, skip: true };
+    // The fee is paid to the miner only when this note spend balances.
+    // A number with no input is commit_sum, so it is not minted as a fee.
+    if (!leafVoteConserved(tx)) return { ok: false, reason: 'commit_sum' };
+    return { ok: true };
   }
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   if (kind === 'vote') {
@@ -828,7 +831,14 @@ export function typedCommitSum(tx, ctx = {}) {
   const vaultPayout = kind === 'withdraw' ? payout : 0;
   if (!verifyFlowConservation(tx, null, vaultPayout)) return { ok: false, reason: 'commit_sum' };
   if (kind === 'lock' && tx?.vaultLockNote) {
-    const funded = lockFundingRejected(tx, ctx);
+    // The unlock is the chain clock, not a field the locker writes. Admission
+    // and the block path both derive it from the vault and the header time.
+    let fundCtx = ctx;
+    if (ctx.unlock == null && ctx.state && ctx.nowMs != null) {
+      const clock = lockUnlockOf(ctx.state, ctx.nowMs);
+      fundCtx = { ...ctx, unlock: consensusUnlockPeriod(clock.epoch) };
+    }
+    const funded = lockFundingRejected(tx, fundCtx);
     if (funded) return { ok: false, reason: 'commit_sum' };
   }
   return { ok: true };

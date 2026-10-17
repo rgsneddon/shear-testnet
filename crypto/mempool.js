@@ -250,7 +250,12 @@ export function admitMempool(pool, tx, opts = {}) {
   // Same sum as the block body. A missing range proof already returned.
   // Flow sends skip this. An unbalanced lock, vote, or withdraw does not
   // sit in a template until the block path rejects it.
-  const summed = typedCommitSum(tx, { height: Number(opts.height || 0), magic: opts.magic });
+  const summed = typedCommitSum(tx, {
+    height: Number(opts.height || 0),
+    magic: opts.magic,
+    state: opts.reserveState || null,
+    nowMs: opts.nowMs != null ? opts.nowMs : null,
+  });
   if (!summed.ok) return summed;
   // Lock, vote, and withdraw: same funding check, same drawn mint, same
   // header-time vault trial as queue and consensus. A vault miss is marked

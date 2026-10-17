@@ -184,11 +184,26 @@ export function proveValue(v, r) {
   return { C: pointBytes(C), ...schnorrProveH(P, r, Buffer.from('shear-note-val-v1')) };
 }
 
+/** Same opening, same commit, same v. A repeat in queue and the template is not a second multiply. */
+const valueOpenCache = new Map();
+const VALUE_OPEN_MAX = 4096;
+
 export function verifyValue(Cbytes, v, proof) {
   try {
-    const C = pointFrom(Cbytes);
+    const Cbuf = Buffer.from(asU8(Cbytes));
+    const R = proof?.R ? Buffer.from(asU8(proof.R)) : null;
+    const z = proof?.z ? Buffer.from(asU8(proof.z)) : null;
+    if (!R || !z) return false;
+    const key = createHash('sha256').update(Cbuf).update(Buffer.from(String(v))).update(R).update(z).digest('hex');
+    if (valueOpenCache.has(key)) return valueOpenCache.get(key);
+    const C = pointFrom(Cbuf);
     const P = C.subtract(mulG(v));
-    return schnorrVerifyH(P, proof, Buffer.from('shear-note-val-v1'));
+    const ok = schnorrVerifyH(P, { R, z }, Buffer.from('shear-note-val-v1'));
+    if (ok) {
+      if (valueOpenCache.size >= VALUE_OPEN_MAX) valueOpenCache.delete(valueOpenCache.keys().next().value);
+      valueOpenCache.set(key, true);
+    }
+    return ok;
   } catch {
     return false;
   }
@@ -469,17 +484,32 @@ export function proveRange(v, r, opts = {}) {
   return Buffer.alloc(0);
 }
 
+/**
+ * A range proof that already opened does not open again. False is not stored:
+ * a process with no verifier returns false for every proof, and that is not
+ * a verdict on the bytes.
+ */
+const rangeOpenCache = new Set();
+const RANGE_OPEN_MAX = 4096;
+
 export function verifyRange(Cbytes, proof) {
   try {
     if (proof && typeof proof === 'object' && !Buffer.isBuffer(proof) && proof.bits) return false;
     const c = Buffer.from(asU8(Cbytes));
     const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
-    if (nativeLoaded()) return nativeVerifyRange(c, pr);
-    if (rangeJsOptIn()) {
+    const key = createHash('sha256').update(c).update(pr).digest('hex');
+    if (rangeOpenCache.has(key)) return true;
+    let ok = false;
+    if (nativeLoaded()) ok = nativeVerifyRange(c, pr);
+    else if (rangeJsOptIn()) {
       warnJsVerifyOnce();
-      return verifyPackedRange(c, pr);
+      ok = verifyPackedRange(c, pr);
     }
-    return false;
+    if (ok) {
+      if (rangeOpenCache.size >= RANGE_OPEN_MAX) rangeOpenCache.delete(rangeOpenCache.values().next().value);
+      rangeOpenCache.add(key);
+    }
+    return ok;
   } catch {
     return false;
   }
@@ -1323,6 +1353,39 @@ export function verifyFlowConservation(tx, _spentOf, vaultPayout = 0) {
     const lhs = lhsAdd !== 0n ? outC.add(mulG(lhsAdd)) : outC;
     let rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
     if (payout) rhs = rhs.add(mulG(payout));
+    return lhs.equals(rhs);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A leaf vote spends one note. The fee is that note minus a hidden change
+ * output, or the whole note when there is no change. A declared fee with
+ * no balancing input is not a fee.
+ */
+export function leafVoteConserved(tx) {
+  try {
+    if (tx?.from != null && String(tx.from) !== '') return false;
+    if (tx?.payer != null && String(tx.payer) !== '') return false;
+    const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v && !v.coinbase);
+    if (vins.length !== 1 || !vins[0].commit || vins[0].address || vins[0].dest20) return false;
+    const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+    if (outs.length > 1) return false;
+    if (outs.length === 1) {
+      const o = outs[0];
+      const kind = String(o?.kind || '');
+      if (kind === 'leaf-vote' || kind === 'vote' || kind === 'lock' || kind === 'withdraw') return false;
+      if (!o?.commit || !o?.rangeProof || o.rangeProof === true || o.valueProof) return false;
+    }
+    if (!tx?.excess) return false;
+    const fee = Math.floor(Number(tx?.fee || 0));
+    if (!Number.isInteger(fee) || fee <= 0) return false;
+    const inC = mintTotal(vins);
+    const outC = outs.length ? mintTotal(outs) : Point.ZERO;
+    if (!inC || outC == null) return false;
+    const lhs = outC.add(mulG(BigInt(fee)));
+    const rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
     return lhs.equals(rhs);
   } catch {
     return false;

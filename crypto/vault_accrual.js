@@ -189,6 +189,12 @@ export function accrualBetween(amount, h0, h1, rates, epochBlocks) {
  * Arrival stub for a leaf locked at lockHeight. Zero when the lock is on
  * the period boundary (that period is a claim) or the next day is already
  * past the period end.
+ *
+ * The day is 960 blocks on every network. Testnet's period is 240 blocks,
+ * so the next day is always at or past the period end and the stub is 0.
+ * Mainnet's period is 15360 blocks, so a mid-period lock still has a stub.
+ * The day is not scaled down to the testnet period: that would change the
+ * accrual unit the mainnet integral uses.
  */
 export function arrivalStubNanos({ amount, lockHeight, magic, rates, rate }) {
   const period = vaultPeriodBlocks(magic);

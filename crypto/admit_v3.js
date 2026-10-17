@@ -156,7 +156,7 @@ export function checkAdmitAnchor(tx, H) {
   return { ok: true, anchor: A };
 }
 
-const TYPED_ADMIT_KINDS = new Set(['lock', 'vote', 'withdraw']);
+const TYPED_ADMIT_KINDS = new Set(['lock', 'vote', 'withdraw', 'leaf-vote']);
 
 export function typedKindNeedsAdmitV3(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
@@ -444,7 +444,7 @@ export function verifyTypedAdmitFunding(tx, opts = {}) {
   const structure = typedAdmitStructure(tx);
   if (!structure.ok) return structure;
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  const vault = kind === 'lock' || kind === 'vote' || kind === 'withdraw';
+  const vault = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'leaf-vote';
   if (vault && !vaultFs1Active(opts?.height)) {
     // A shape this function does not fund stays on its own predicate.
     if (structure.skip && !structure.vote) return structure;

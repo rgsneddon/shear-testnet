@@ -38,7 +38,6 @@ import {
   voteTx,
   reserveAction,
   hiddenWithdrawOpening,
-  lockWitnessOf,
   provePrincipalOpen,
   signWithdrawReward,
   VOTE_INCREASE,
@@ -345,7 +344,7 @@ describe('Reserve vault protocol', () => {
       },
     });
     assert.equal(undone.ok, false);
-    assert.equal(undone.reason, 'owner_missing');
+    assert.equal(undone.reason, 'stake_reward');
     assert.equal(live.portals[aliceId].accruedReward, 0n);
     assert.equal(live.totalLockedNanos, 0n);
     assert.equal(supplyIdentity(live).ok, true);
@@ -739,7 +738,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.notEqual(Number(state.liveHashBonusNanos), 0);
   });
 
-  it('compactTx(lockTx) through applyReserveBlock credits the portal; vote and withdraw follow', () => {
+  it('a compact lock with no lock note is refused, and so is the wire copy', () => {
     const alice = newIdentity();
     const vault = destOf(alice);
     const continuum = destForLogin(alice.address, { viewKey: alice.viewKey });
@@ -754,14 +753,15 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.doesNotMatch(blob, /she1/);
     assert.doesNotMatch(blob, /"nanos"/);
     assert.doesNotMatch(blob, /"address"/);
+    assert.equal(lock.vaultLockNote, undefined);
     const locked = applyReserveBlock({
       state,
       block: { txs: [{ coinbase: true, vout: [] }, lock] },
       nowMs: t0,
     });
-    assert.equal(locked.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(locked));
-    assert.equal(Number(state.totalLockedNanos), 0);
-    assert.equal(Number(state.portals[pid].staked), 0);
+    assert.equal(locked.ok, false);
+    assert.equal(locked.reason, 'stake_reward');
+    assert.equal(state.portals[pid], undefined);
 
     const voteSealed = compactTx(voteTx({ from: continuum, dest: vault, choice: VOTE_HOLD, id: 'vote-c' }));
     const voted = applyReserveBlock({
@@ -781,24 +781,13 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       nowMs: t0 + RESERVE_EPOCH_MS,
     });
     const wd = compactTx(rawWd);
-    const held = lockWitnessOf(rawLock);
-    const proof = provePrincipalOpen(
-      rawLock.vout[0].commit,
-      held.amount,
-      held.blind,
-      wd,
-      pid,
-      state.magic,
-    );
-    assert.ok(proof);
-    wd.principalProof = proof;
     const withdrawn = applyReserveBlock({
       state,
       block: { txs: [{ coinbase: true, vout: [] }, wd] },
       nowMs: t0 + RESERVE_EPOCH_MS,
     });
-    assert.equal(withdrawn.some((r) => r.action === 'withdraw' && r.ok === true), true, JSON.stringify(withdrawn));
-    assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(withdrawn.ok, false);
+    assert.equal(withdrawn.reason, 'owner_missing');
 
     const wireState = emptyVault();
     const wire = encodeWireBlock({
@@ -816,8 +805,9 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       nowMs: t0,
       genesisMs: t0,
     });
-    assert.equal(peer.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(peer));
-    assert.equal(Number(wireState.totalLockedNanos), 0);
+    assert.equal(peer.ok, false);
+    assert.equal(peer.reason, 'stake_reward');
+    assert.equal(wireState.portals[pid], undefined);
   });
 
   it('compactTx of an address-only lock still credits applyReserveBlock from dest20 and valueProof.v', () => {

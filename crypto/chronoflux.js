@@ -347,12 +347,17 @@ const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw', 'reward-claim']);
  * Top-level keys a sealed body tx may carry, from the signed body list in
  * spend.js. Anything else, including nanos, amount, and changeNanos, is not
  * copied. A key outside the signed list is already `unsigned` at admission.
+ * Retire and principal proofs are not in txDigestV3. They still have to
+ * ride on the sealed withdraw: the owner signature binds the retire blob,
+ * and the vault opens the leaf from that same blob.
  */
 export const COMPACT_TX_KEYS = Object.freeze([
   'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
   'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub', 'piProof',
   'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
+  'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
+  'voteProof', 'voteProofs', 'voteSeq', 'voteParam', 'voteOutput',
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs', 'withdrawNonce',
   'weight', 'payer', 'sponsor',
@@ -731,6 +736,10 @@ export function compactTx(tx) {
     delete out.payer;
     delete out.sponsor;
   }
+  // The withdraw owner signature covers the payout address. dest20 cannot
+  // rebuild it: the address also carries the admit base. A lock or a vote
+  // still drops the string.
+  if (kind === 'withdraw' && typeof tx.to === 'string' && tx.to !== '') out.to = tx.to;
   delete out.owner;
   delete out.payout;
   delete out.address;

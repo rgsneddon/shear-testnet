@@ -22,6 +22,7 @@ import { fs1LeafFor } from './fs1_leaf.js';
 import {
   sealCoinbaseNote, verifySealedNote, asU8, openedCoinbaseNanos, verifiedInputNanos, hashToScalar, scalarBytes, scalarFrom,
   pointFrom, pointBytes, verifyValue, proveValue, commit, proveRange, verifyRange, randomScalar, G, H,
+  leafVoteConserved,
 } from './note.js';
 import {
   emptyOracle,
@@ -103,6 +104,8 @@ export const REWARD_WITHDRAW_TAG = 'shear-reward-withdraw-v1';
  * is not a verify-weight parameter.
  */
 export const RESERVE_ACTION_CAP = 4096;
+/** FS-1 root of a vault that holds no lock notes. A period that starts empty freezes this. */
+export const EMPTY_VAULT_ROOT = createHash('sha256').update('shear-empty-root-v1').digest('hex');
 /**
  * Retained so a block past epoch close + 4 is still a normal block.
  * Lock, withdraw, and reward sums are homomorphic commitments. Nothing
@@ -930,7 +933,7 @@ function rebuildVaultLockRoot(state) {
   if (live.length && !fs1TreeAppend(handle, Buffer.concat(live.map((hex) => Buffer.from(hex, 'hex'))))) return null;
   VAULT_LOCK_HANDLES.set(state, { handle, n: live.length });
   if (!live.length) {
-    state.vaultLockRoot = createHash('sha256').update('shear-empty-root-v1').digest('hex');
+    state.vaultLockRoot = EMPTY_VAULT_ROOT;
     return state.vaultLockRoot;
   }
   const root = fs1TreeRoot(handle);
@@ -994,8 +997,13 @@ export function appendVaultLockNote(state, note, terms = null) {
   if (!state.vaultLeafBorn) state.vaultLeafBorn = Object.create(null);
   const born = Math.floor(Number(terms?.bornEpoch ?? terms?.earnEpoch) || 0);
   state.vaultLeafBorn[noteHex] = born;
-  if (!state.vaultLeafUnlock) state.vaultLeafUnlock = Object.create(null);
-  state.vaultLeafUnlock[noteHex] = String(terms?.unlockEpoch ?? VAULT_UNLOCK_OPEN);
+  if (terms?.unlockEpoch != null && terms.unlockEpoch !== '') {
+    const unlock = String(terms.unlockEpoch);
+    if (unlock !== String(VAULT_UNLOCK_OPEN)) {
+      if (!state.vaultLeafUnlock) state.vaultLeafUnlock = Object.create(null);
+      state.vaultLeafUnlock[noteHex] = unlock;
+    }
+  }
   if (terms?.lockHeight != null && terms.lockHeight !== '') {
     const at = Math.floor(Number(terms.lockHeight));
     if (Number.isInteger(at) && at >= 0) {
@@ -1016,8 +1024,7 @@ function storeVaultLockRoot(state, block, index) {
   const hex = Buffer.isBuffer(raw) ? raw.toString('hex') : String(raw).replace(/^0x/i, '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'stake_reward' };
   if (hex === '0'.repeat(64)) return { ok: false, reason: 'stake_reward' };
-  const empty = createHash('sha256').update('shear-empty-root-v1').digest('hex');
-  if (hex === empty) return null;
+  if (hex === EMPTY_VAULT_ROOT) return null;
   if (!(index > 0)) return { ok: false, reason: 'stake_reward' };
   const key = String(index - 1);
   if (!state.vaultLockRoots) state.vaultLockRoots = Object.create(null);
@@ -1378,13 +1385,38 @@ export function provePrincipalOpen(commitBuf, amount, blind, tx, portalId, magic
   }
 }
 
+/**
+ * The opening is pure in the commitment, the amount, the Schnorr, the
+ * unlock, and the tx transcript. Queue and the template both check it.
+ * A hit skips the scalar multiply. A miss still runs the same relation.
+ */
+const principalOpenCache = new Map();
+const PRINCIPAL_OPEN_MAX = 4096;
+
 export function verifyPrincipalOpen(commitBuf, amount, proof, tx, portalId, magic = MAGIC_TESTNET) {
   try {
     const n = BigInt(amount);
     const extra = principalTranscript(tx, portalId, magic);
     if (!extra || n < 0n || !proof?.R || !proof?.z) return false;
-    const P = subtractUnlock(pointFrom(commitBuf).subtract(G.multiply(Fn.create(n))), proof?.unlock || 0);
-    return schnorrHOk(P, proof.R, proof.z, extra);
+    const commit = Buffer.from(asU8(commitBuf));
+    const R = Buffer.from(asU8(proof.R));
+    const z = Buffer.from(asU8(proof.z));
+    const key = createHash('sha256')
+      .update(commit)
+      .update(extra)
+      .update(R)
+      .update(z)
+      .update(Buffer.from(n.toString()))
+      .update(Buffer.from(String(proof.unlock || 0)))
+      .digest('hex');
+    if (principalOpenCache.has(key)) return principalOpenCache.get(key);
+    const P = subtractUnlock(pointFrom(commit).subtract(G.multiply(Fn.create(n))), proof?.unlock || 0);
+    const ok = schnorrHOk(P, R, z, extra);
+    if (principalOpenCache.size >= PRINCIPAL_OPEN_MAX) {
+      principalOpenCache.delete(principalOpenCache.keys().next().value);
+    }
+    principalOpenCache.set(key, ok);
+    return ok;
   } catch {
     return false;
   }
@@ -1725,6 +1757,7 @@ export function emptyVault() {
     feeBankNanos: 0n,
     mintBankNanos: 0n,
     mintedIds: Object.create(null),
+    vaultLockRoot: EMPTY_VAULT_ROOT,
     portals: Object.create(null),
     votes: { increase: 0, decrease: 0, hold: 0 },
     oracle: emptyOracle(),
@@ -2369,8 +2402,11 @@ export function snapshotPeriodRoot(state, height) {
   if (!state.epochStartRoots) state.epochStartRoots = Object.create(null);
   const key = String(idx);
   if (Object.prototype.hasOwnProperty.call(state.epochStartRoots, key)) return;
-  const root = String(state.vaultLockRoot || '');
-  if (!/^[0-9a-f]{64}$/.test(root)) return;
+  // A missing live root is the empty marker. Leaving the key unset let the
+  // first later lock freeze itself into the period start and collect the
+  // arrival stub plus a full-period claim.
+  const live = String(state.vaultLockRoot || '');
+  const root = /^[0-9a-f]{64}$/.test(live) ? live : EMPTY_VAULT_ROOT;
   state.epochStartRoots[key] = root;
 }
 
@@ -2590,7 +2626,9 @@ function hiddenLockCredit({ nanos, commit: commitRaw, blind, rangeProof, unlock,
     if (!ranged || ranged.length !== 32 || !rangeProof || !verifyRange(ranged, rangeProof)) {
       return { ok: false, reason: 'stake_reward' };
     }
-    return { ok: true, commit: given };
+    // The stored commit is the leaf, which adds the unlock point. The π
+    // proof opens the funding output, the leaf with that point removed.
+    return { ok: true, commit: given, valueCommit: ranged };
   }
   const n = asBig(nanos);
   if (n <= 0n) return { ok: false, reason: 'bad_amount' };
@@ -2733,7 +2771,7 @@ export function deposit({
       qualifies = !!pi?.length && verifyRange(shiftByPi(sum), pi);
     }
   } else {
-    qualifies = lockQualifies(hidden.commit, piProof, p);
+    qualifies = lockQualifies(hidden.valueCommit || hidden.commit, piProof, p);
   }
   noteCredit(state, p, hidden.commit, nowMs, qualifies);
   if (hidden.witnessed) {
@@ -3381,27 +3419,116 @@ export function lockTx({
   return tx;
 }
 
-export function withdrawTx({ from, to, nanos, id, nonce } = {}) {
+export function withdrawTx({ from, to, nanos, id, nonce, portalId, payoutPortalId } = {}) {
   const n = exactFloorNanos(nanos);
   const ident = id == null || String(id) === '' ? freshWithdrawId() : String(id);
   const blindNonce = positiveUnits(n)
     ? (nonce == null ? randomBytes(32) : withdrawNonceBytes(nonce))
     : null;
   const blind = blindNonce ? kt10WithdrawBlind(to, n, ident, blindNonce) : null;
+  const fromId = from ? portalIdFromDest(from) : '';
+  const pid = String(portalId || fromId || '').toLowerCase();
+  const pay = String(payoutPortalId || (to ? portalIdFromDest(to) : '') || pid).toLowerCase();
   const tx = {
     id: ident,
     programId: RESERVE_PROGRAM,
     mint: true,
     kind: KIND_WITHDRAW,
-    from,
     to,
     nanos: n,
-    portalId: portalIdFromDest(from),
-    payoutPortalId: portalIdFromDest(to),
+    portalId: pid,
+    payoutPortalId: pay,
     vin: [],
     vout: [sealedReserveVout(to, n, KIND_WITHDRAW, blind)],
   };
+  if (from) tx.from = from;
   if (blindNonce) tx.withdrawNonce = Buffer.from(blindNonce).toString('hex');
+  return tx;
+}
+
+function fs1RecordBlob(proof) {
+  if (!proof || typeof proof !== 'object') return null;
+  try {
+    const raw = proof.blob != null ? proof.blob : proof.proof;
+    const blob = Buffer.from(asU8(raw));
+    if (!blob.length || blob[0] !== 0xf1) return null;
+    return blob;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A withdraw the wallet can ship. It spends an FS-1 note the wallet owns
+ * and carries the retire and principal proofs. A plaintext `from` is not a
+ * spend and is refused. The pool does not invent the proofs.
+ */
+export function buildFundedWithdraw(body = {}) {
+  if (!body || typeof body !== 'object') return null;
+  if (body.from != null && String(body.from) !== '') return null;
+  if (body.payer != null && String(body.payer) !== '') return null;
+  const to = body.to;
+  if (!isDestAddress(String(to || ''))) return null;
+  const n = exactFloorNanos(body.nanos);
+  if (n == null || n < 0) return null;
+  const proofs = [];
+  if (body.admit_proof) proofs.push(body.admit_proof);
+  if (Array.isArray(body.admit_proofs)) {
+    for (const proof of body.admit_proofs) if (proof) proofs.push(proof);
+  }
+  if (proofs.length < 1 || proofs.length > 8) return null;
+  if (proofs.some((proof) => !fs1RecordBlob(proof))) return null;
+  const vins = (Array.isArray(body.vin) ? body.vin : []).filter((v) => v && !v.coinbase);
+  if (vins.length !== proofs.length) return null;
+  if (vins.some((v) => v.address || v.dest20)) return null;
+  if (body.fs1 == null || body.fs1 === '' || body.anchor == null || !body.excess) return null;
+  const retire = Array.isArray(body.retireProofs) && body.retireProofs.length
+    ? body.retireProofs
+    : (body.retireProof ? [body.retireProof] : []);
+  const principal = Array.isArray(body.principalProofs) && body.principalProofs.length
+    ? body.principalProofs
+    : (body.principalProof ? [body.principalProof] : []);
+  if (!retire.length || !principal.length) return null;
+  const tx = withdrawTx({
+    to,
+    nanos: n,
+    id: body.id,
+    nonce: body.withdrawNonce,
+    portalId: body.portalId,
+    payoutPortalId: body.payoutPortalId,
+  });
+  delete tx.from;
+  const posted = Array.isArray(body.vout) ? body.vout.filter((o) => o && (o.commit || o.kind)) : [];
+  if (posted.length) tx.vout = posted;
+  tx.vin = vins.map((v) => {
+    const next = { ...v };
+    delete next.address;
+    delete next.dest20;
+    return next;
+  });
+  // A funded withdraw is a note spend. The old mint bit and a fresh nonce
+  // would change the body the retire and principal proofs are bound to.
+  delete tx.mint;
+  if (body.withdrawNonce == null || body.withdrawNonce === '') delete tx.withdrawNonce;
+  tx.anchor = body.anchor;
+  tx.fs1 = body.fs1;
+  tx.excess = body.excess;
+  if (body.admit_proof) tx.admit_proof = body.admit_proof;
+  if (Array.isArray(body.admit_proofs) && body.admit_proofs.length) tx.admit_proofs = body.admit_proofs;
+  if (body.fee != null && body.fee !== '') tx.fee = body.fee;
+  if (body.dest20) tx.dest20 = body.dest20;
+  if (retire.length === 1) tx.retireProof = retire[0];
+  else tx.retireProofs = retire;
+  if (principal.length === 1) tx.principalProof = principal[0];
+  else tx.principalProofs = principal;
+  // The spend signature and the portal-owner signature are different
+  // messages. A spend sig must not be stored as the owner sig.
+  const spendSig = body.sig || body.signature;
+  if (spendSig) tx.sig = spendSig;
+  if (body.spendPub) tx.spendPub = body.spendPub;
+  if (body.rewardSig) tx.rewardSig = body.rewardSig;
+  const pub = String(body.ownerPub || '').replace(/^0x/i, '').toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(pub)) tx.ownerPub = pub;
   return tx;
 }
 
@@ -4043,6 +4170,38 @@ function maybeTallyBallots(state, height) {
 }
 
 /**
+ * A leaf vote spends one owned FS-1 note. The fee is the value that note
+ * destroys. A voter-written fee with no input is not credited.
+ */
+export function leafVoteFundingRejected(tx) {
+  if (String(tx?.kind || '') !== KIND_LEAF_VOTE) return null;
+  if (tx?.from != null && String(tx.from) !== '') return { ok: false, reason: 'admit_version' };
+  if (tx?.payer != null && String(tx.payer) !== '') return { ok: false, reason: 'admit_version' };
+  const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v && !v.coinbase);
+  if (vins.length !== 1 || vins[0].address || vins[0].dest20) {
+    return { ok: false, reason: 'admit_version' };
+  }
+  const proofs = [];
+  if (tx?.admit_proof) proofs.push(tx.admit_proof);
+  if (Array.isArray(tx?.admit_proofs)) for (const proof of tx.admit_proofs) if (proof) proofs.push(proof);
+  if (proofs.length !== 1 || !fs1RecordBlob(proofs[0])) return { ok: false, reason: 'admit_version' };
+  if (tx?.fs1 == null || tx.fs1 === '') return { ok: false, reason: 'admit_version' };
+  let posted = null;
+  let tilde = null;
+  try {
+    posted = Buffer.from(asU8(vins[0].commit));
+    tilde = Buffer.from(asU8(proofs[0].cTilde));
+  } catch {
+    return { ok: false, reason: 'admit_version' };
+  }
+  if (posted.length !== 32 || tilde.length !== 32 || !posted.equals(tilde)) {
+    return { ok: false, reason: 'admit_membership' };
+  }
+  if (!leafVoteConserved(tx)) return { ok: false, reason: 'commit_sum' };
+  return null;
+}
+
+/**
  * One leaf, one vote proof. The tag is the vote null point, not the claim
  * null point. A vote publishes no claim nullifier. A cast vote is not
  * removed when the leaf later withdraws.
@@ -4073,6 +4232,8 @@ export function applyLeafVote(state, tx, blockHeight) {
   const paid = Math.floor(Number(tx?.fee || 0));
   const need = Math.floor(Number(levyNanos(0, { tx })) || 0);
   if (paid < need) return { ok: false, reason: 'levy' };
+  const funded = leafVoteFundingRejected(tx);
+  if (funded) return funded;
   const got = verifyLeafVote({
     blob: proof,
     root: Buffer.from(rootHex, 'hex'),
@@ -4210,7 +4371,7 @@ export function applyReserveBlock({
     }
   }
   if (retireDleqs > MAX_BLOCK_RETIRE_DLEQS) {
-    return finishReserveApply([{ ok: false, reason: 'unsigned', action: KIND_WITHDRAW }]);
+    return finishReserveApply([{ ok: false, reason: 'retire_cap', action: KIND_WITHDRAW }]);
   }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
   const reservePaid = openedReserveFeeNanos(cb);
@@ -4271,6 +4432,11 @@ export function applyReserveBlock({
       continue;
     }
     if (act.kind === KIND_LOCK) {
+      if (!tx?.vaultLockNote) {
+        results.push({ action: KIND_LOCK, ok: false, reason: 'stake_reward' });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
       const lockOuts = (Array.isArray(tx.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === KIND_LOCK);
       if (lockOuts.length > MAX_LOCK_LEAVES) {
         results.push({ action: KIND_LOCK, ok: false, reason: 'stake_reward' });
@@ -4685,6 +4851,12 @@ export function leafEpochsToBurn(state, noteHex, withdrawPeriod) {
   return set;
 }
 
+/**
+ * The EVM precompile does not recompute txDigestV3. It checks the trailing
+ * bind the owner signed, and the node only forwards a withdraw whose JS
+ * digest matches that bind. A block that skipped the JS check could present
+ * a different body under the same bind.
+ */
 function retireBindOf(tx, magic) {
   if (!tx) return null;
   try {

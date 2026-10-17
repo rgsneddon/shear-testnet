@@ -507,6 +507,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `VAULT_CLAIM_WINDOW=${VAULT_CLAIM_WINDOW_EPOCHS}`,
     'RETIRE_ROW=window-3',
     'VOTE_BALLOT=leaf-v2',
+    'VOTE_FEE=owned-note',
     'VOTE_VETO=none',
     'VOTE_CAP=64',
     'DINS=pot+hash',

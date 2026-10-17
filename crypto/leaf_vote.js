@@ -417,33 +417,69 @@ export function activateBallot(state, leftEpoch) {
   return { ok: true, hb: hbRow.tallied ? hbRow.step : 0, rr: rrRow.tallied ? rrRow.step : 0 };
 }
 
-function planHeights(count, lo, hi) {
+/**
+ * Uniform combination of k indexes from n. Includes i with probability
+ * (remaining) / (left in the range), so every subset is equally likely
+ * and a subset is returned whenever n >= k.
+ */
+function combination(n, k, draw) {
+  if (k < 0 || n < k) return null;
+  const chosen = [];
+  let left = k;
+  for (let i = 0; i < n && left > 0; i += 1) {
+    if (draw(n - i) < left) {
+      chosen.push(i);
+      left -= 1;
+    }
+  }
+  return left === 0 ? chosen : null;
+}
+
+function planHeights(count, lo, hi, draw = (bound) => randomInt(bound)) {
   const span = hi - lo + 1;
   const need = count <= 1 ? 1 : (count - 1) * VOTE_MIN_SEPARATION + 1;
   if (span < need) return null;
-  for (let attempt = 0; attempt < 256; attempt += 1) {
-    const draw = [];
-    for (let i = 0; i < count; i += 1) draw.push(lo + randomInt(span));
-    draw.sort((a, b) => a - b);
-    let ok = true;
-    for (let i = 1; i < draw.length; i += 1) {
-      if (draw[i] - draw[i - 1] < VOTE_MIN_SEPARATION) {
-        ok = false;
-        break;
-      }
+  const gap = VOTE_MIN_SEPARATION - 1;
+  const reduced = hi - (count - 1) * gap - lo + 1;
+  const picks = combination(reduced, count, draw);
+  if (!picks) return null;
+  return picks.map((y, i) => lo + y + i * gap);
+}
+
+/**
+ * Fee notes for a vote plan. A note that is another vote's change is
+ * skipped. Two notes from the same parent tx are not both used. The
+ * sample is a uniform subset of what remains.
+ */
+export function pickOwnedFeeNotes(notes, count, draw = (bound) => randomInt(bound)) {
+  const n = Math.floor(Number(count) || 0);
+  if (n < 1) return [];
+  const rows = [];
+  const seen = new Set();
+  for (const row of Array.isArray(notes) ? notes : []) {
+    if (!row || typeof row !== 'object') continue;
+    if (row.spent === true || row.locked === true) continue;
+    if (String(row.kind || '') === 'lock') continue;
+    if (row.voteChange === true || String(row.changeOf || '') === 'vote') continue;
+    const hex = ownedFeeInput(row.commit);
+    if (!hex || seen.has(hex)) continue;
+    seen.add(hex);
+    rows.push({ commit: hex, parent: row.parentTx == null ? '' : String(row.parentTx) });
+  }
+  const groups = new Map();
+  const eligible = [];
+  for (const row of rows) {
+    if (!row.parent) {
+      eligible.push(row);
+      continue;
     }
-    if (ok) return draw;
+    if (!groups.has(row.parent)) groups.set(row.parent, []);
+    groups.get(row.parent).push(row);
   }
-  const last = hi - (count - 1) * VOTE_MIN_SEPARATION;
-  const reduced = last - lo + 1;
-  const picked = new Set();
-  let guard = 0;
-  while (picked.size < count && guard < reduced * 8) {
-    picked.add(lo + randomInt(reduced));
-    guard += 1;
-  }
-  if (picked.size < count) return null;
-  return [...picked].sort((a, b) => a - b).map((y, i) => y + i * VOTE_MIN_SEPARATION);
+  for (const group of groups.values()) eligible.push(group[draw(group.length)]);
+  const picks = combination(eligible.length, n, draw);
+  if (!picks) return null;
+  return picks.map((i) => eligible[i].commit);
 }
 
 /**

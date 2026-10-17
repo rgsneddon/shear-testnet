@@ -136,3 +136,17 @@ describe('epoch rate is the total, not a daily rate', () => {
     assert.ok(changed.nanos > base.nanos);
   });
 });
+
+describe('testnet day is longer than the period', () => {
+  it('the arrival stub is 0 on testnet and positive mid-period on mainnet', () => {
+    assert.ok(VAULT_DAY_BLOCKS > vaultPeriodBlocks(MAGIC_TESTNET));
+    assert.ok(VAULT_DAY_BLOCKS < vaultPeriodBlocks(MAGIC_MAINNET));
+    for (let h = 0; h < vaultPeriodBlocks(MAGIC_TESTNET); h += 1) {
+      const stub = arrivalStubNanos({ amount: PI, lockHeight: h, magic: MAGIC_TESTNET, rate: RATE });
+      assert.equal(stub.nanos, 0n, `testnet height ${h}`);
+    }
+    const main = arrivalStubNanos({ amount: PI, lockHeight: 100, magic: MAGIC_MAINNET, rate: RATE });
+    assert.ok(main.nanos > 0n);
+    assert.equal(main.from, nextDayHeight(100));
+  });
+});

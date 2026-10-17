@@ -18,6 +18,8 @@ import {
   attachLockEquality,
   deposit,
   emptyVault,
+  EMPTY_VAULT_ROOT,
+  buildFundedWithdraw,
   leafEpochsToBurn,
   lockNotePrincipal,
   trialReserveApply,
@@ -74,7 +76,7 @@ import {
   VAULT_UNLOCK_OPEN,
 } from './vault_reward_fs1.js';
 import { admitPub } from './admit.js';
-import { G, pointBytes, pointFrom, proveRange, proveValue, scalarFrom, sealHiddenNote, verifySealedNote } from './note.js';
+import { G, commit, pointBytes, pointFrom, proveRange, proveValue, randomScalar, scalarFrom, sealHiddenNote, verifySealedNote } from './note.js';
 import { admitMempool, emptyMempool } from './mempool.js';
 import { blockBudget, fs1VerifyWeight, txVerifyWeight, W_OUT, W_TX, W_VAULT_EXTRA } from './block_budget.js';
 import { consensusFingerprint, MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
@@ -282,7 +284,7 @@ describe('vault-lock reward proof', () => {
       terms: { bps: GENESIS_BPS, span: stranger.span, covered: stranger.covered, earnEpoch: 0, reward: stranger.nanos },
     });
     assert.equal(notMember.ok, false);
-    assert.equal(notMember.code, 0);
+    assert.equal(notMember.code, 2);
 
     const state = openVault(owner);
     plantPair(state, pair, 0);
@@ -321,7 +323,7 @@ describe('vault-lock reward proof', () => {
       pair.first.rootHex,
     );
     assert.equal(stolen.ok, false);
-    assert.equal(stolen.reason, 'unsigned');
+    assert.equal(stolen.reason, 'stake_reward');
 
     const wrong = rewardClaimTx({ to: pay.to, vault: pair.second, id: 'claim-wrong' });
     wrong.vaultProof = corruptBps(wrong.vaultProof);
@@ -691,13 +693,20 @@ describe('vault-lock reward proof', () => {
       genesisMs: T0,
     });
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'owner_missing');
+    assert.equal(refused.reason, 'stake_reward');
     const empty = state.portals[portalIdFromDest(owner.dest)];
     assert.equal(empty == null || empty.ownerPub == null, true);
     assert.equal(Number(state.totalLockedNanos), 0);
+    const ownerBlind = randomScalar();
+    const ownerUnlock = consensusUnlockPeriod(0);
+    const ownerLeaf = vaultLockNote(PI_SHE_NANOS, 3n, ownerBlind, ownerUnlock);
+    const ownerFunded = pointBytes(commit(PI_SHE_NANOS, ownerBlind));
+    const ownerRange = proveRange(PI_SHE_NANOS, ownerBlind);
     const first = lockTx({
-      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'first-owner', ownerPub: owner.pub,
+      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'first-owner', ownerPub: owner.pub, blind: ownerBlind,
     });
+    first.vaultLockNote = ownerLeaf.note;
+    first.vin = [{ commit: ownerFunded, rangeProof: ownerRange }];
     const opened = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, first] },
@@ -706,8 +715,10 @@ describe('vault-lock reward proof', () => {
     });
     assert.equal(opened.ok, true, opened.reason);
     const second = lockTx({
-      from: owner.dest, to: owner.dest, nanos: 1, id: 'other-owner', ownerPub: other.pub,
+      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'other-owner', ownerPub: other.pub, blind: ownerBlind,
     });
+    second.vaultLockNote = ownerLeaf.note;
+    second.vin = [{ commit: ownerFunded, rangeProof: ownerRange }];
     const changed = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, second] },
@@ -1037,7 +1048,7 @@ describe('vault-lock reward proof', () => {
       genesisMs: T0,
     });
     assert.equal(missing.ok, false);
-    assert.equal(missing.reason, 'unsigned');
+    assert.equal(missing.reason, 'stake_reward');
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
@@ -1201,8 +1212,8 @@ describe('vault-lock reward proof', () => {
       height: HEIGHT,
       genesisMs: T0,
     });
-    assert.equal(applied.ok, true, applied.reason);
-    assert.equal(state.portals[portalIdFromDest(owner.dest)].tranches.length, 2);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.reason, 'stake_reward');
     const unit = emptyVault();
     unit.genesisMs = T0;
     unit.magic = MAGIC_TESTNET;
@@ -1931,6 +1942,68 @@ describe('vault-lock reward proof', () => {
       genesisMs: T0,
     });
     assert.equal(packed.ok, false);
-    assert.equal(packed.reason, 'unsigned');
+    assert.equal(packed.reason, 'retire_cap');
+  });
+
+  it('starts a period on the empty root so a later lock is not in that root', () => {
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_MAINNET;
+    assert.equal(state.vaultLockRoot, EMPTY_VAULT_ROOT);
+    const opened = applyReserveBlock({
+      state,
+      block: { height: 0, txs: [{ coinbase: true, vout: [] }] },
+      nowMs: T0,
+      height: 0,
+      genesisMs: T0,
+    });
+    assert.equal(opened.ok, true, opened.reason);
+    assert.equal(state.epochStartRoots['0'], EMPTY_VAULT_ROOT);
+    state.vaultLockRoot = 'ab'.repeat(32);
+    snapshotPeriodRoot(state, 100);
+    assert.equal(state.epochStartRoots['0'], EMPTY_VAULT_ROOT);
+  });
+
+  it('refuses a lock that carries no lock note', () => {
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    const owner = who();
+    const bare = lockTx({ from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'no-note' });
+    assert.equal(bare.vaultLockNote, undefined);
+    const refused = applyReserveBlock({
+      state,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, bare] },
+      nowMs: T0,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, 'stake_reward');
+  });
+
+  it('a funded withdraw has no plaintext from', () => {
+    const owner = who();
+    const blob = Buffer.alloc(321, 7);
+    blob[0] = 0xf1;
+    const commit = Buffer.alloc(32, 3);
+    const built = buildFundedWithdraw({
+      to: owner.dest,
+      nanos: PI_SHE_NANOS,
+      id: 'funded-wd',
+      portalId: portalIdFromDest(owner.dest),
+      anchor: 16,
+      excess: Buffer.alloc(32, 4),
+      fs1: Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(40, 1)]),
+      vin: [{ commit }],
+      admit_proof: { blob, cTilde: commit, spendTag: Buffer.alloc(32, 5) },
+      retireProof: Buffer.alloc(12, 1),
+      principalProof: { R: Buffer.alloc(32, 2), z: Buffer.alloc(32, 3) },
+      ownerPub: owner.pub,
+    });
+    assert.ok(built);
+    assert.equal(built.from, undefined);
+    assert.equal(built.payer, undefined);
+    assert.equal(buildFundedWithdraw({ ...built, from: owner.dest, to: owner.dest }), null);
   });
 });
