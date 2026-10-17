@@ -116,8 +116,9 @@ Map<String, dynamic>? vaultRewardProveInput({
 }) {
   final p = reserve.portal(dest);
   if (p.lockAmount <= 0 || p.lockRemainMs <= 0 || seed.length != 32) return null;
-  final d20 = hash20FromAddress(payout);
-  if (d20 == null || d20.length != 20) return null;
+  final d20 = oneTimeClaimDest20(secret: seed, epoch: p.lockEpoch, leaf: seed);
+  if (d20.length != 20) return null;
+  // `payout` is the wallet's stable address. It is not posted.
   return {
     'locks': [
       {
@@ -151,10 +152,33 @@ String _byteHex(Object? v) {
   return s.toString();
 }
 
+/// One dest20 per claim. The salt is fresh, so two claims of one leaf do not share an address.
+Uint8List oneTimeClaimDest20({
+  required Uint8List secret,
+  required int epoch,
+  required Uint8List leaf,
+}) {
+  final salt = Uint8List(16);
+  final rnd = Random.secure();
+  for (var i = 0; i < salt.length; i++) salt[i] = rnd.nextInt(256);
+  final epochBytes = Uint8List(8);
+  var x = epoch < 0 ? 0 : epoch;
+  for (var i = 0; i < 8; i++) {
+    epochBytes[i] = x & 0xff;
+    x >>= 8;
+  }
+  final digest = sha256.convert(<int>[
+    ...utf8.encode('shear-claim-payout-v1'),
+    ...secret,
+    ...epochBytes,
+    ...leaf,
+    ...salt,
+  ]).bytes;
+  return Uint8List.fromList(digest.take(20).toList());
+}
+
 Map<String, dynamic> _vaultPostBody({
   required String kind,
-  required String dest,
-  required String payout,
   required Map<String, dynamic> proof,
   required int nanos,
 }) {
@@ -176,7 +200,6 @@ Map<String, dynamic> _vaultPostBody({
   return {
     'kind': kind,
     'programId': kReserveProgram,
-    'to': payout,
     'nanos': nanos.toString(),
     'nullifier': proof['nullifier'],
     'vaultProof': proof['blobHex'] ?? _byteHex(proof['blob']),
@@ -236,8 +259,6 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
   }
   final body = _vaultPostBody(
     kind: 'reward-claim',
-    dest: dest,
-    payout: payout,
     proof: proof,
     nanos: (proof['nanos'] as num?)?.toInt() ?? 0,
   );
@@ -330,8 +351,6 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveRoll(
   if (proof != null) {
     final body = _vaultPostBody(
       kind: 'roll',
-      dest: dest,
-      payout: dest,
       proof: proof,
       nanos: 0,
     );

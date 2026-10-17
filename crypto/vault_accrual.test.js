@@ -74,6 +74,25 @@ describe('epoch rate is the total, not a daily rate', () => {
     assert.equal(onBoundary.nanos, 0n);
   });
 
+  it('stubs plus claims across three epochs stay under pi times the integral', () => {
+    const magic = MAGIC_MAINNET;
+    const width = vaultEpochBlocks(magic);
+    const epochs = 3;
+    const lock = 100;
+    const end = BigInt(epochs) * BigInt(width);
+    const stub = arrivalStubNanos({ amount: PI, lockHeight: lock, magic, rate: RATE });
+    assert.ok(stub.nanos > 0n);
+    const periodReward = vaultPeriodReward(PI, RATE, magic).nanos;
+    const claims = periodReward * (BigInt(epochs) * BigInt(VAULT_PERIODS_PER_EPOCH) - 1n);
+    const rates = { 0: RATE };
+    const integral = accrualBetween(PI, lock, end, rates, width);
+    const held = end - BigInt(lock);
+    const closed = (BigInt(PI) * BigInt(RATE) * held) / (BigInt(width) * 10000n);
+    assert.equal(integral.nanos, closed);
+    assert.ok(stub.nanos + claims <= integral.nanos);
+    assert.ok(stub.nanos + claims <= closed);
+  });
+
   it('a rate change is a prefix subtraction, and a reorg restores the table', () => {
     const width = vaultEpochBlocks(MAGIC_TESTNET);
     const rates = { 0: RATE, 1: RATE + 20 };

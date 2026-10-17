@@ -15,7 +15,7 @@ import {
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
-import { castVotePlan } from '../../crypto/leaf_vote.js';
+import { castVotePlan, loadVotePlan, saveVotePlan } from '../../crypto/leaf_vote.js';
 import {
   levyNanos,
   levyNeed,
@@ -1629,7 +1629,19 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 400, json: { ok: false, reason: 'rest_frame' } };
     }
     if (body.lockedLeaves != null) {
-      const plan = castVotePlan(body.lockedLeaves);
+      const count = Math.max(0, Math.floor(Number(body.lockedLeaves) || 0));
+      const dir = store?.dir || body.planDir || null;
+      const prior = dir ? loadVotePlan(dir) : null;
+      if (prior && Array.isArray(prior.txs) && prior.txs.length === count) {
+        return { status: 200, json: { ok: true, label: prior.label, txs: prior.txs } };
+      }
+      const plan = castVotePlan(count, {
+        openHeight: body.openHeight,
+        closeHeight: body.closeHeight,
+        magic: body.magic,
+      });
+      if (!plan) return { status: 400, json: { ok: false, reason: 'epoch_closed' } };
+      if (dir) saveVotePlan(dir, plan);
       return { status: 200, json: { ok: true, label: plan.label, txs: plan.txs } };
     }
     if (String(body.kind || 'send') === 'send') {

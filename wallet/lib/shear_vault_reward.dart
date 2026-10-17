@@ -24,6 +24,8 @@ const int kVaultProofVer = 0xaa;
 const int kPiSheNanos = 314159265358;
 const int kVaultUnlockOpen = 0xffffffff;
 const String kVaultUnlockDst = 'shear-vault-unlock-base-v1';
+const String kVaultGapDst = 'shear-vault-unlock-gap-v1';
+const String kVaultRetireDleqDst = 'shear-vault-retire-dleq-v1';
 const String kMagicMainnet = 'shear-v1';
 
 /// Testnet is 4 days. Mainnet (`shear-v1`) is 400. A day is 960 blocks of 90s.
@@ -217,6 +219,54 @@ Uint8List _lockNote(int amount, Uint8List owner, Uint8List blind, int unlock) {
   return _concat([pub, mixed]);
 }
 
+/// gap = unlock − period − 1. The integer stays off the claim blob.
+Map<String, Uint8List> _proveUnlockGap(int unlock, int epoch, AdmitNative admit) {
+  final gap = unlock - epoch - 1;
+  if (gap < 0 || gap > 0xffffffff) throw StateError('stake_reward');
+  final r = randomScalar();
+  final gapC = commitBytes(gap, scalarBytes(r));
+  final range = admit.proveRange(BigInt.from(gap), scalarBytes(r));
+  if (range == null || range.isEmpty) throw StateError('admit_native_required');
+  final x = scalarFromU64(BigInt.from(gap));
+  final k = randomScalar();
+  final gBytes = pointBytes(ristrettoG());
+  final uBytes = pointBytes(vaultUnlockBase());
+  final a1 = mulBytes(gBytes, scalarBytes(k));
+  final a2 = mulBytes(uBytes, scalarBytes(k));
+  final p1 = mulBytes(gBytes, scalarBytes(x));
+  final p2 = mulBytes(uBytes, scalarBytes(x));
+  final e = hashToScalar([
+    utf8Bytes(kVaultRetireDleqDst),
+    _u64(epoch),
+    gBytes,
+    uBytes,
+    a1,
+    a2,
+    p1,
+    p2,
+    utf8Bytes(kVaultGapDst),
+    gapC,
+  ]);
+  final s = scalarAdd(k, scalarMul(e, x));
+  final linkP = subBytes(gapC, p1);
+  final link = schnorrProveHBytes(
+    linkP,
+    scalarBytes(r),
+    _concat([utf8Bytes(kVaultUnlockDst), gapC, p1]),
+  );
+  return {
+    'gapC': gapC,
+    'range': range,
+    'A1': a1,
+    'A2': a2,
+    's': scalarBytes(s),
+    'P1': p1,
+    'P2': p2,
+    'linkR': link['R']!,
+    'linkZ': link['z']!,
+  };
+}
+
 /// One claim or roll proof. The tree is the vault-lock set the caller
 /// passes, never the chain admit set. A missing native library fails closed.
 Map<String, dynamic> proveVaultLockReward({
@@ -313,6 +363,7 @@ Map<String, dynamic> proveVaultLockReward({
     }, admitPub(randomScalar()), v: nanos);
     final amtCt = wrapped['amtCt'];
     if (amtCt is! Uint8List || amtCt.length != 8) throw StateError('unsigned');
+    final gap = _proveUnlockGap(unlock, epoch, admit);
     final preimage = _sha256(_concat([
       utf8Bytes(kClaimTxidDst),
       noteC,
@@ -332,7 +383,7 @@ Map<String, dynamic> proveVaultLockReward({
       _u64(blocks),
       _u64(reward),
       _u64(covered),
-      _u64(unlock),
+      gap['gapC']!,
       noteC,
       noteCommit,
       dest20,
@@ -348,15 +399,18 @@ Map<String, dynamic> proveVaultLockReward({
     final t = proved.t.first;
     final openS = scalarAdd(scalarFromBytes(blinds[which]), scalarFromBytes(t));
     final openP = subEl(
-      subEl(pointFrom(cTilde), mulG(scalarFromBigInt(BigInt.from(kPiSheNanos)))),
-      mulEl(vaultUnlockBase(), scalarFromU64(BigInt.from(unlock))),
+      subEl(
+        subEl(pointFrom(cTilde), mulG(scalarFromBigInt(BigInt.from(kPiSheNanos)))),
+        mulEl(vaultUnlockBase(), scalarFromU64(BigInt.from(epoch + 1))),
+      ),
+      pointFrom(gap['P2']!),
     );
     if (!elementEq(openP, mulEl(noteH, openS))) throw StateError('stake_reward');
     final openExtra = _sha256(_concat([
       utf8Bytes(kVaultRelDst),
       cTilde,
       _u64(kPiSheNanos),
-      _u64(unlock),
+      gap['gapC']!,
     ]));
     final open = schnorrProveH(openP, openS, openExtra);
     final portalWord = _sha256(_concat([utf8Bytes(kClaimPortalDst), dest20]));
@@ -375,7 +429,7 @@ Map<String, dynamic> proveVaultLockReward({
     if (_bytesEq(stable, tag)) throw StateError('stake_reward');
     final nullifier = _sha256(_concat([utf8Bytes(kVaultNullPrf), linkN]));
     if (!_bytesEq(nullifier, nullifierPre)) throw StateError('stake_reward');
-    final blob = packVaultRewardProof(
+    final header = packVaultRewardProof(
       fs1: proved.fs1,
       record: record,
       bps: bps,
@@ -383,7 +437,6 @@ Map<String, dynamic> proveVaultLockReward({
       epoch: epoch,
       reward: reward,
       covered: covered,
-      unlock: unlock,
       nullBase: Uint8List.fromList(linkAnn),
       nullP: Uint8List.fromList(linkN),
       nullA1: Uint8List.fromList(linkSr),
@@ -392,6 +445,20 @@ Map<String, dynamic> proveVaultLockReward({
       noteR: noteOpen['R']!,
       noteZ: noteOpen['z']!,
     );
+    final range = gap['range']!;
+    final blob = _concat([
+      header,
+      _u32(range.length),
+      range,
+      gap['gapC']!,
+      gap['A1']!,
+      gap['A2']!,
+      gap['s']!,
+      gap['P1']!,
+      gap['P2']!,
+      gap['linkR']!,
+      gap['linkZ']!,
+    ]);
     return {
       'ok': true,
       'blob': blob,

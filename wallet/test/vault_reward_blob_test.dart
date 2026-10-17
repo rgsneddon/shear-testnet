@@ -18,7 +18,6 @@ void main() {
       epoch: 3,
       reward: 551742209,
       covered: 240,
-      unlock: kVaultUnlockOpen,
       nullBase: word(1),
       nullP: word(2),
       nullA1: word(3),
@@ -29,7 +28,7 @@ void main() {
     );
     final vector = File('../crypto/vault_reward_blob.vector').readAsStringSync().trim();
     expect(blob[0], 0xaa);
-    expect(blob.length, 603);
+    expect(blob.length, 595);
     expect(_hex(blob), vector);
   });
 }
