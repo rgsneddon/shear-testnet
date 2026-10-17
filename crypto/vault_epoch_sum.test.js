@@ -6,8 +6,10 @@ import { vaultDest } from './flow_sheet.js';
 import {
   appendVaultLockNote,
   applyReserveBlock,
+  consensusUnlockPeriod,
   emptyVault,
   lockTx,
+  lockWitnessOf,
   portalIdFromDest,
   publicVaultView,
   rewardClaimTx,
@@ -24,6 +26,7 @@ import {
 } from './reserve_evm.js';
 import { readFileSync } from 'node:fs';
 import { packVaultOutput, proveVaultReward, vaultLockNote } from './vault_reward_fs1.js';
+import { randomScalar } from './note.js';
 
 const T0 = 1_700_000_000_000;
 const span = RESERVE_EPOCH_MS;
@@ -53,88 +56,95 @@ function applyLock(state, tx, height) {
   });
 }
 
-describe('epoch sums stay commitments', () => {
-  const amounts = [1, 1_000, PI_SHE_NANOS, 2 ** 53 - 1];
-  const counts = [1, 2, 5];
+/** A π lock carries the leaf note. The output commitment hides the amount. */
+function notedPiLock(owner, id) {
+  const tx = lockTx({
+    from: owner.dest,
+    to: owner.dest,
+    nanos: PI_SHE_NANOS,
+    id,
+    ownerPub: owner.id.spendPub.toString('hex'),
+    bps: GENESIS_BPS,
+  });
+  const held = lockWitnessOf(tx);
+  const leaf = vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
+  if (!leaf) return null;
+  tx.vaultLockNote = leaf.note;
+  return tx;
+}
 
-  for (const amount of amounts) {
-    for (const count of counts) {
-      it(`amount ${amount} with ${count} lock(s) passes close+4 without a halt`, () => {
-        const owner = who();
-        const state = fresh();
-        for (let i = 0; i < count; i += 1) {
-          const tx = lockTx({
-            from: owner.dest,
-            to: owner.dest,
-            nanos: amount,
-            id: `probe-${amount}-${count}-${i}`,
-            ownerPub: owner.id.spendPub.toString('hex'),
-            bps: GENESIS_BPS,
-          });
-          const amountBi = BigInt(amount);
-          const pi = BigInt(PI_SHE_NANOS);
-          const leaves = amountBi < pi ? 1 : Math.min(16, Number(amountBi / pi));
-          const change = amountBi < pi ? 0n : amountBi - pi * BigInt(leaves);
-          assert.equal(tx.vout.length, leaves + (change > 0n ? 1 : 0));
-          assert.equal(tx.vout.filter((row) => row.kind === 'lock').length, leaves);
-          assert.equal(tx.vout[0].kind, 'lock');
-          if (change > 0n) assert.notEqual(tx.vout.at(-1).kind, 'lock');
-          assert.equal(tx.nanos, 0);
-          const applied = applyLock(state, tx, HEIGHT + i);
-          assert.equal(applied.ok, true, applied.reason);
-        }
-        const closeHeight = HEIGHT + count + 1;
-        const closed = applyReserveBlock({
-          state,
-          block: { height: closeHeight, txs: [{ coinbase: true, vout: [] }] },
-          nowMs: T0 + span,
-          height: closeHeight,
-          genesisMs: T0,
-        });
-        assert.equal(closed.ok, true, closed.reason);
-        const past = applyReserveBlock({
-          state,
-          block: { height: closeHeight + VAULT_MINT_DELAY_BLOCKS, txs: [{ coinbase: true, vout: [] }] },
-          nowMs: T0 + span + 1,
-          height: closeHeight + VAULT_MINT_DELAY_BLOCKS,
-          genesisMs: T0,
-        });
-        assert.equal(past.ok, true, past.reason);
-        assert.equal(Number(state.totalLockedNanos), 0);
-        const portal = state.portals[portalIdFromDest(owner.dest)];
-        assert.equal(Number(portal.staked) + Number(portal.idle), 0);
-        const amountBi = BigInt(amount);
-        const pi = BigInt(PI_SHE_NANOS);
-        const leaves = amountBi < pi ? 1 : Math.min(16, Number(amountBi / pi));
-        assert.equal(portal.tranches.length, count * leaves);
-        for (const tranche of portal.tranches) {
-          assert.equal(tranche.amount, undefined);
-          assert.notEqual(Number(tranche.amount), amount);
-        }
-        const identity = supplyIdentity(state);
-        assert.equal(identity.ok, true, identity.reason);
-        assert.equal(identity.principalNanos, 0);
-        assert.equal(identity.principalCommit.length, 64);
-        const view = publicVaultView(state, T0 + span + 1);
-        assert.equal(view.totalLockedNanos, 0);
-        assert.equal(view.totalStakedNanos, 0);
-        assert.equal(view.totalAccruedNanos, 0);
+describe('epoch sums stay commitments', () => {
+  for (const amount of [1, 1_000, 2 ** 53 - 1]) {
+    it(`amount ${amount} has no π lock note and is refused`, () => {
+      const owner = who();
+      const tx = lockTx({
+        from: owner.dest,
+        to: owner.dest,
+        nanos: amount,
+        id: `bare-${amount}`,
+        ownerPub: owner.id.spendPub.toString('hex'),
+        bps: GENESIS_BPS,
       });
-    }
+      assert.equal(tx.vaultLockNote, undefined);
+      const applied = applyLock(fresh(), tx, HEIGHT);
+      assert.equal(applied.ok, false);
+      assert.equal(applied.reason, 'stake_reward');
+    });
+  }
+
+  for (const count of [1, 2, 5]) {
+    it(`π with ${count} lock(s) passes close+4 without a halt`, () => {
+      const owner = who();
+      const state = fresh();
+      for (let i = 0; i < count; i += 1) {
+        const tx = notedPiLock(owner, `probe-pi-${count}-${i}`);
+        assert.ok(tx);
+        assert.equal(tx.vout.length, 1);
+        assert.equal(tx.vout[0].kind, 'lock');
+        assert.equal(tx.nanos, 0);
+        const applied = applyLock(state, tx, HEIGHT + i);
+        assert.equal(applied.ok, true, applied.reason);
+      }
+      const closeHeight = HEIGHT + count + 1;
+      const closed = applyReserveBlock({
+        state,
+        block: { height: closeHeight, txs: [{ coinbase: true, vout: [] }] },
+        nowMs: T0 + span,
+        height: closeHeight,
+        genesisMs: T0,
+      });
+      assert.equal(closed.ok, true, closed.reason);
+      const past = applyReserveBlock({
+        state,
+        block: { height: closeHeight + VAULT_MINT_DELAY_BLOCKS, txs: [{ coinbase: true, vout: [] }] },
+        nowMs: T0 + span + 1,
+        height: closeHeight + VAULT_MINT_DELAY_BLOCKS,
+        genesisMs: T0,
+      });
+      assert.equal(past.ok, true, past.reason);
+      assert.equal(Number(state.totalLockedNanos), 0);
+      const portal = state.portals[portalIdFromDest(owner.dest)];
+      assert.equal(Number(portal.staked) + Number(portal.idle), 0);
+      assert.equal(portal.tranches.length, count);
+      for (const tranche of portal.tranches) {
+        assert.equal(tranche.amount, undefined);
+      }
+      const identity = supplyIdentity(state);
+      assert.equal(identity.ok, true, identity.reason);
+      assert.equal(identity.principalNanos, 0);
+      assert.equal(identity.principalCommit.length, 64);
+      const view = publicVaultView(state, T0 + span + 1);
+      assert.equal(view.totalLockedNanos, 0);
+      assert.equal(view.totalStakedNanos, 0);
+      assert.equal(view.totalAccruedNanos, 0);
+    });
   }
 
   it('a singleton epoch does not reveal the amount, and a forged sum is rejected', () => {
-    const amount = 123_456_789;
     const owner = who();
     const state = fresh();
-    const tx = lockTx({
-      from: owner.dest,
-      to: owner.dest,
-      nanos: amount,
-      id: 'singleton',
-      ownerPub: owner.id.spendPub.toString('hex'),
-      bps: GENESIS_BPS,
-    });
+    const tx = notedPiLock(owner, 'singleton');
+    assert.ok(tx);
     assert.equal(applyLock(state, tx, HEIGHT).ok, true);
     const past = applyReserveBlock({
       state,
@@ -145,14 +155,14 @@ describe('epoch sums stay commitments', () => {
     });
     assert.equal(past.ok, true, past.reason);
     assert.equal(Number(state.totalLockedNanos), 0);
-    assert.notEqual(Number(state.totalLockedNanos), amount);
+    assert.notEqual(Number(state.totalLockedNanos), PI_SHE_NANOS);
     assert.equal(state.epochLockTotal, undefined);
     assert.equal(state.openedEpochPrincipal, undefined);
     const forged = applyReserveBlock({
       state,
       block: {
         height: HEIGHT + 2 + VAULT_MINT_DELAY_BLOCKS,
-        txs: [{ coinbase: true, vout: [], epochLockEpoch: 0, epochLockTotal: amount }],
+        txs: [{ coinbase: true, vout: [], epochLockEpoch: 0, epochLockTotal: PI_SHE_NANOS }],
       },
       nowMs: T0 + span,
       height: HEIGHT + 2 + VAULT_MINT_DELAY_BLOCKS,
@@ -313,7 +323,7 @@ describe('epoch sums stay commitments', () => {
       genesisMs: T0,
     });
     assert.equal(borrowedPaid.ok, false);
-    assert.equal(borrowedPaid.reason, 'unsigned');
+    assert.equal(borrowedPaid.reason, 'stake_reward');
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);

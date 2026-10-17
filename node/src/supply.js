@@ -16,7 +16,7 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifiedInputNanos } from '../../crypto/note.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifiedInputNanos, verifyFlowConservation } from '../../crypto/note.js';
 import { publicReserveReceipt, publicReceiptNanos } from '../../crypto/dummy.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
@@ -139,6 +139,18 @@ function openedLockNanos(tx) {
  * receipt, and the verified openings on its inputs cover the lock.
  * The openings are read in note.js. This file does not touch them.
  */
+/**
+ * A hidden π leaf does not open each input. The fund proof says the lock
+ * commitment is π, and the FS-1 excess says the spent notes cover that
+ * commitment plus the fee. That is a note payment, not a bare credit.
+ */
+function fs1NotePaysLock(tx, need) {
+  if (need <= 0n) return false;
+  if (tx?.fs1 == null || tx.fs1 === '' || !tx?.excess) return false;
+  if (lockNotePrincipal(tx) !== need) return false;
+  return verifyFlowConservation(tx);
+}
+
 function vinPaysNote(tx) {
   if (publicReserveReceipt(tx)) return false;
   const need = openedLockNanos(tx);
@@ -149,7 +161,8 @@ function vinPaysNote(tx) {
     if (n == null) continue;
     opened += n;
   }
-  return opened >= need;
+  if (opened >= need) return true;
+  return fs1NotePaysLock(tx, need);
 }
 
 /**

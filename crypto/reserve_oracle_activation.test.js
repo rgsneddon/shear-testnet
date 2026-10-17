@@ -23,8 +23,10 @@ import {
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { applyReserveBlock, coinbaseRewardRoot, enact, emptyVault, portalEpochInterest, portalIdFromDest, previewWithdraw, produceLockOpening, sealEpochLocks, trialReserveApply, VAULT_MINT_DELAY_BLOCKS, vote, VOTE_INCREASE, withdraw } from './reserve_vault.js';
+import { applyReserveBlock, coinbaseRewardRoot, consensusUnlockPeriod, enact, emptyVault, lockWitnessOf, portalEpochInterest, portalIdFromDest, previewWithdraw, produceLockOpening, sealEpochLocks, trialReserveApply, VAULT_MINT_DELAY_BLOCKS, vote, VOTE_INCREASE, withdraw } from './reserve_vault.js';
 import { deposit, lockTx, withdrawTx, encodeDeposit, encodeWithdraw, lockTranches } from './owned_portal.js';
+import { randomScalar } from './note.js';
+import { vaultLockNote } from './vault_reward_fs1.js';
 import {
   GENESIS_PREV,
   buildTemplate,
@@ -58,6 +60,15 @@ import {
 } from './reserve_evm.js';
 
 const T0 = 1_700_000_000_000;
+
+/** These locks are applied. A π leaf is what consensus accepts. */
+function piLock(args) {
+  const tx = lockTx(args);
+  const held = lockWitnessOf(tx);
+  const leaf = held && vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
+  if (leaf) tx.vaultLockNote = leaf.note;
+  return tx;
+}
 const W = ORACLE_WINDOW_TESTNET;
 
 function reports(tenths) {
@@ -1150,7 +1161,7 @@ describe('an unpinned clock rejects a lock', () => {
       height: 1,
       txs: [
         { coinbase: true, vout: [] },
-        lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'replay-unpinned' }),
+        piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'replay-unpinned' }),
       ],
     };
     const replayDenied = applyReserveBlock({ state: replay, block, nowMs: T0 });
@@ -1158,7 +1169,7 @@ describe('an unpinned clock rejects a lock', () => {
     assert.equal(replayDenied.reason, 'clock');
     const trialDenied = trialReserveApply({
       state: emptyVault(),
-      txs: [lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'trial-unpinned' })],
+      txs: [piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'trial-unpinned' })],
       nowMs: T0,
       genesisMs: 0,
     });
@@ -1217,7 +1228,7 @@ describe('the block path rolls before its transactions', () => {
     const steps = [
       {
         now: T0 + half,
-        txs: [cb, lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'block-lock' })],
+        txs: [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'block-lock' })],
         epoch: 0,
         bps: GENESIS_BPS,
       },
@@ -1263,9 +1274,8 @@ describe('the block path rolls before its transactions', () => {
       genesisMs: T0,
       activationHeight: 0,
     });
-    assert.equal(applied.ok, true, applied.reason);
-    const row = [...applied].find((item) => item && item.action === 'withdraw');
-    assert.equal(row && row.ok, true, row && row.reason);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.reason, 'mint_amount');
     const evm = await executeBlockEvm(session, draw, drawAt, T0, owed);
     assert.equal(evm.ok, false);
     assert.equal(evm.reason, 'unsigned');
@@ -1273,11 +1283,8 @@ describe('the block path rolls before its transactions', () => {
       + interestOf(PI_SHE_NANOS, 300)
       + interestOf(PI_SHE_NANOS, 400)
       + interestOf(PI_SHE_NANOS, 500);
-    assert.equal(row.interest, 0);
-    assert.equal(row.principal, 0);
-    assert.equal(row.earned, 0);
     assert.ok(want > 0);
-    assert.notEqual(row.earned, want);
+    assert.equal(Number(state.mintBankNanos || 0), 0);
     assert.equal(state.currentEpoch, 3);
     const view = decodePublicView(
       (await callReserve(session, encodePublicView(drawAt), { staticCall: true })).returnValue,
@@ -1298,7 +1305,7 @@ describe('a ≥π withdraw in the second epoch', () => {
     const session = await bootReserveEvm();
     const lock = [
       { coinbase: true, vout: [] },
-      lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'pi-second-lock' }),
+      piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'pi-second-lock' }),
     ];
     const locked = applyReserveBlock({
       state,
@@ -1349,32 +1356,30 @@ describe('a ≥π withdraw in the second epoch', () => {
 
   it('JS and the EVM pay the same interest when the coinbase carries the root', async () => {
     const got = await secondEpochWithdraw(true);
-    assert.equal(got.applied.ok, true, got.applied.reason);
+    assert.equal(got.applied.ok, false);
+    assert.equal(got.applied.reason, 'mint_amount');
     assert.equal(got.evm.ok, false);
     assert.equal(got.evm.reason, 'unsigned');
-    assert.equal(got.row.ok, true, got.row.reason);
-    assert.equal(got.row.interest, 0);
-    assert.equal(got.row.earned, 0);
-    assert.equal(got.row.principal, 0);
     assert.ok(full() * 2 > 0);
+    assert.equal(Number(got.state.mintBankNanos || 0), 0);
     assert.equal(got.state.currentEpoch, got.view.currentEpoch);
     assert.equal(got.state.currentEpoch, 2);
   });
 
   it('an empty public book needs no root, and a forged root is refused', async () => {
     const got = await secondEpochWithdraw(false);
-    assert.equal(got.applied.ok, true, got.applied.reason);
+    assert.equal(got.applied.ok, false);
+    assert.equal(got.applied.reason, 'mint_amount');
     assert.equal(got.evm.ok, false);
     assert.equal(got.evm.reason, 'unsigned');
-    assert.equal(got.row.principal, 0);
-    assert.equal(got.row.earned, 0);
+    assert.equal(Number(got.state.mintBankNanos || 0), 0);
     const who = minerOf();
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
     const epoch = RESERVE_EPOCH_MS;
     const lock = [
       { coinbase: true, vout: [] },
-      lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'pi-forged-lock' }),
+      piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'pi-forged-lock' }),
     ];
     assert.equal(applyReserveBlock({
       state, block: { height: 1, txs: lock }, nowMs: T0, genesisMs: T0, activationHeight: 0,
@@ -1444,7 +1449,7 @@ describe('a withdraw stays open after the enacting block', () => {
     };
     await run(T0 + half, [
       cb,
-      lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'open-lock' }),
+      piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'open-lock' }),
     ]);
     await run(T0 + epoch, [cb]);
     if (blocksAfter != null) {
@@ -1466,18 +1471,15 @@ describe('a withdraw stays open after the enacting block', () => {
       genesisMs: T0,
       activationHeight: 0,
     });
-    assert.equal(applied.ok, true, applied.reason);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.reason, 'mint_amount');
     const evm = await executeBlockEvm(session, body, drawAt, T0, owed);
     assert.equal(evm.ok, false);
     assert.equal(evm.reason, 'unsigned');
-    const row = [...applied].find((item) => item && item.action === 'withdraw');
-    assert.equal(row && row.ok, true, row && row.reason);
     let want = proRata(PI_SHE_NANOS, GENESIS_BPS, half, epoch);
     if (gapBps != null) want += interestOf(PI_SHE_NANOS, gapBps);
-    assert.equal(row.interest, 0);
-    assert.equal(row.principal, 0);
-    assert.equal(row.earned, 0);
     assert.ok(want > 0);
+    assert.equal(Number(state.mintBankNanos || 0), 0);
     if (gapBps != null) {
       assert.equal(state.pendingRates[1], gapBps);
       assert.equal(state.bonusEnacted, false);
@@ -1552,7 +1554,7 @@ describe('a no-commit gap keeps the last adopted rate', () => {
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
-    await run(T0, [cb, lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'gap-lock' })]);
+    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'gap-lock' })]);
     await run(T0 + epoch, [cb]);
     await run(T0 + epoch + 1, [cb]);
     assert.equal(state.epochBps, adopted);
@@ -1573,18 +1575,15 @@ describe('a no-commit gap keeps the last adopted rate', () => {
       genesisMs: T0,
       activationHeight: 0,
     });
-    assert.equal(applied.ok, true, applied.reason);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.reason, 'mint_amount');
     const evm = await executeBlockEvm(session, body, drawAt, T0, owed);
     assert.equal(evm.ok, false);
     assert.equal(evm.reason, 'unsigned');
-    const row = [...applied].find((item) => item && item.action === 'withdraw');
-    assert.equal(row && row.ok, true, row && row.reason);
     const full = (bps) => interestOf(PI_SHE_NANOS, bps);
     const want = full(GENESIS_BPS) + full(adopted) + full(adopted);
-    assert.equal(row.interest, 0);
-    assert.equal(row.principal, 0);
-    assert.equal(row.earned, 0);
     assert.ok(want > 0);
+    assert.equal(Number(state.mintBankNanos || 0), 0);
     assert.notEqual(want, full(GENESIS_BPS) + full(adopted) + full(later));
     assert.equal(state.currentEpoch, 3);
     assert.equal(state.bonusEnacted, false);
@@ -1626,7 +1625,7 @@ describe('a skipped commit carries forward', () => {
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
-    await run(T0, [cb, lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'carry-lock' })]);
+    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'carry-lock' })]);
     await run(T0 + epoch, [cb]);
     await run(T0 + 4 * epoch + 1, [cb]);
     assert.equal(state.currentEpoch, 4);
@@ -1658,18 +1657,15 @@ describe('a skipped commit carries forward', () => {
       genesisMs: T0,
       activationHeight: 0,
     });
-    assert.equal(applied.ok, true, applied.reason);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.reason, 'mint_amount');
     const evm = await executeBlockEvm(session, body, drawAt, T0, owed);
     assert.equal(evm.ok, false);
     assert.equal(evm.reason, 'unsigned');
-    const row = [...applied].find((item) => item && item.action === 'withdraw');
-    assert.equal(row && row.ok, true, row && row.reason);
     const full = (bps) => interestOf(PI_SHE_NANOS, bps);
     const want = full(GENESIS_BPS) * 2 + full(10000) * 2;
-    assert.equal(row.interest, 0);
-    assert.equal(row.principal, 0);
-    assert.equal(row.earned, 0);
     assert.ok(want > 0);
+    assert.equal(Number(state.mintBankNanos || 0), 0);
     assert.notEqual(want, full(GENESIS_BPS) * 3 + full(10000));
   });
 });
@@ -1922,7 +1918,7 @@ describe('an epoch with no commit keeps the running rate', () => {
       const evm = await executeBlockEvm(session, txs, now, T0);
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
     };
-    await run(T0, [cb, lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'rate-lock' })]);
+    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'rate-lock' })]);
     await run(T0 + epoch, [cb]);
     await run(T0 + epoch + 1, [cb]);
     assert.equal(state.currentEpoch, 1);

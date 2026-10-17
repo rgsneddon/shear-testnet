@@ -314,6 +314,56 @@ describe('chronoflux prune + collate', () => {
     assert.equal(digestTx(voteSealed).equals(digestTx(voteFat)), true);
   });
 
+  it('sealed withdraw keeps the payout and the retire and principal proofs', () => {
+    const payout = 'shear1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqexample';
+    const retire = Buffer.alloc(40, 7);
+    const principal = { R: Buffer.alloc(32, 3), z: Buffer.alloc(32, 4), opened: 1 };
+    const fat = {
+      id: 'wd-seal',
+      programId: 'shear-reserve-v1',
+      kind: 'withdraw',
+      from: payout,
+      to: payout,
+      nanos: 5,
+      fee: 1,
+      retireProof: retire,
+      principalProof: principal,
+      rewardSig: 'ab',
+      ownerPub: 'cd',
+      vin: [{ commit: Buffer.alloc(32, 9) }],
+      vout: [{ kind: 'withdraw', commit: Buffer.alloc(32, 8), valueProof: { v: 5, R: Buffer.alloc(32, 1), z: Buffer.alloc(32, 2) } }],
+    };
+    const sealed = compactTx(fat);
+    assert.equal(sealed.from, undefined);
+    assert.equal(sealed.nanos, undefined);
+    assert.equal(sealed.to, payout);
+    assert.ok(Buffer.from(sealed.retireProof).equals(retire));
+    assert.ok(Buffer.from(sealed.principalProof.R).equals(principal.R));
+    assert.ok(Buffer.from(sealed.principalProof.z).equals(principal.z));
+    assert.equal(sealed.rewardSig, 'ab');
+    const vote = compactTx({
+      id: 'lv-seal',
+      kind: 'leaf-vote',
+      programId: 'shear-reserve-v1',
+      to: payout,
+      from: payout,
+      voteProof: Buffer.alloc(8, 5),
+      voteParam: 'hb',
+      voteSeq: 2,
+      choice: 1,
+      earnEpoch: 4,
+      fee: 1,
+      vin: [{ commit: Buffer.alloc(32, 1) }],
+      vout: [],
+    });
+    assert.equal(vote.to, undefined);
+    assert.equal(vote.from, undefined);
+    assert.ok(Buffer.from(vote.voteProof).equals(Buffer.alloc(8, 5)));
+    assert.equal(vote.voteParam, 'hb');
+    assert.equal(vote.voteSeq, 2);
+    assert.equal(vote.earnEpoch, 4);
+  });
+
   it('compact pool-withdraw keeps dest20+value so header merkle still matches after lean/wire', () => {
     const id = newIdentity();
     const payee = newIdentity();

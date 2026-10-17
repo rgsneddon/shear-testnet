@@ -597,40 +597,77 @@ export function retireDeclaredRows(proof) {
 }
 
 /**
+ * A retire proof is pure in its bytes and the network name. Queue, the
+ * template, and the block each open the same rows. The template's one-second
+ * budget cannot re-open three DLEQ rows for every withdraw, so a verdict this
+ * process already computed is reused. The nullifier filter stays outside the
+ * cache: a different nullifier is a compare, not another opening.
+ */
+const retireVerifyCache = new Map();
+const RETIRE_VERIFY_MAX = 4096;
+
+function rememberRetire(key, opened) {
+  if (retireVerifyCache.size >= RETIRE_VERIFY_MAX) {
+    retireVerifyCache.delete(retireVerifyCache.keys().next().value);
+  }
+  retireVerifyCache.set(key, opened);
+}
+
+function openLeafRetire(buf, magic) {
+  if (buf.length < 8 + 4 + RETIRE_ROW + 64 + 32) return null;
+  const unlock = buf.readBigUInt64LE(0);
+  const n = buf.readUInt32LE(8);
+  if (n < 1 || n > MAX_RETIRE_ROWS) return null;
+  let off = 12;
+  const epochs = [];
+  const leafAt = 12 + n * RETIRE_ROW;
+  if (buf.length !== leafAt + 64 + 32) return null;
+  const leaf = Buffer.from(buf.subarray(leafAt, leafAt + 64));
+  const txBind = Buffer.from(buf.subarray(leafAt + 64));
+  const P1 = leaf.subarray(0, 32);
+  for (let i = 0; i < n; i += 1) {
+    const epoch = buf.readBigUInt64LE(off); off += 8;
+    const A1 = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+    const A2 = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+    const s = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+    const claim = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+    const retire = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+    const opened = retireRowVerify(epoch, A1, A2, s, claim, retire, P1, magic, txBind);
+    if (!opened) return null;
+    epochs.push({ epoch, nullifier: opened.nullifier, retireNullifier: opened.retireNullifier });
+  }
+  return { nullifier: epochs[0].nullifier, epoch: epochs[0].epoch, unlock, leaf, epochs, txBind };
+}
+
+/**
  * Null when the retire proof does not open `nullifier` for its leaf.
  * A proof wider than the claim window is not a consensus proof.
  */
 export function verifyLeafRetire(proof, nullifier = null, magic = MAGIC_TESTNET) {
   try {
     const buf = Buffer.from(asU8(proof));
-    if (buf.length < 8 + 4 + RETIRE_ROW + 64 + 32) return null;
-    const unlock = buf.readBigUInt64LE(0);
-    const n = buf.readUInt32LE(8);
-    if (n < 1 || n > MAX_RETIRE_ROWS) return null;
-    let off = 12;
-    const epochs = [];
-    const leafAt = 12 + n * RETIRE_ROW;
-    if (buf.length !== leafAt + 64 + 32) return null;
-    const leaf = Buffer.from(buf.subarray(leafAt, leafAt + 64));
-    const txBind = Buffer.from(buf.subarray(leafAt + 64));
-    const P1 = leaf.subarray(0, 32);
-    for (let i = 0; i < n; i += 1) {
-      const epoch = buf.readBigUInt64LE(off); off += 8;
-      const A1 = Buffer.from(buf.subarray(off, off + 32)); off += 32;
-      const A2 = Buffer.from(buf.subarray(off, off + 32)); off += 32;
-      const s = Buffer.from(buf.subarray(off, off + 32)); off += 32;
-      const claim = Buffer.from(buf.subarray(off, off + 32)); off += 32;
-      const retire = Buffer.from(buf.subarray(off, off + 32)); off += 32;
-      const opened = retireRowVerify(epoch, A1, A2, s, claim, retire, P1, magic, txBind);
-      if (!opened) return null;
-      epochs.push({ epoch, nullifier: opened.nullifier, retireNullifier: opened.retireNullifier });
+    const key = createHash('sha256').update(buf).update(Buffer.from(String(magic ?? ''))).digest('hex');
+    let opened;
+    if (retireVerifyCache.has(key)) opened = retireVerifyCache.get(key);
+    else {
+      opened = openLeafRetire(buf, magic);
+      rememberRetire(key, opened);
     }
-    const expect = epochs[0].nullifier;
+    if (!opened) return null;
+    const expect = opened.nullifier;
     const nf = nullifier == null ? expect : bytes32(nullifier);
     if (!nf) return null;
-    const known = epochs.some((row) => row.nullifier.equals(nf) || row.retireNullifier.equals(nf));
+    const known = opened.epochs.some((row) => row.nullifier.equals(nf) || row.retireNullifier.equals(nf));
     if (!known) return null;
-    return { ok: true, nullifier: expect, epoch: epochs[0].epoch, unlock, leaf, epochs, txBind };
+    return {
+      ok: true,
+      nullifier: expect,
+      epoch: opened.epoch,
+      unlock: opened.unlock,
+      leaf: opened.leaf,
+      epochs: opened.epochs,
+      txBind: opened.txBind,
+    };
   } catch {
     return null;
   }
@@ -670,9 +707,14 @@ function remainSigmaVerify(cTilde, A1, A2, C, Q, s, sr) {
   }
 }
 
-function gapEqChallenge(epoch, A1, A2, gapC, openP) {
+function gapEqChallenge(epoch, A1, A2, gapC, openP, magic, digest) {
+  const mag = Buffer.from(String(magic || ''));
+  const dig = digest && digest.length === 32 ? digest : null;
+  if (!mag.length || !dig) return null;
   return hashToScalar(
     Buffer.from(VAULT_GAP_EQ_DST),
+    mag,
+    dig,
     u64le(epoch),
     A1,
     A2,
@@ -705,13 +747,14 @@ function proveGapCommit(unlock, epoch) {
  * openP = U·gap + H·openS and gapC = G·gap + H·r, with independent blinds.
  * The proof publishes neither gap·G nor gap·U.
  */
-function proveGapEquality({ gap, r, openS, openP, epoch, gapC }) {
+function proveGapEquality({ gap, r, openS, openP, epoch, gapC, magic, digest }) {
   const kGap = randomScalar();
   const kR = randomScalar();
   const kS = randomScalar();
   const A1 = G.multiply(kGap).add(H.multiply(kR));
   const A2 = unlockBase().multiply(kGap).add(H.multiply(kS));
-  const e = gapEqChallenge(epoch, pointBytes(A1), pointBytes(A2), gapC, openP);
+  const e = gapEqChallenge(epoch, pointBytes(A1), pointBytes(A2), gapC, openP, magic, digest);
+  if (!e) return null;
   const x = Fn.create(gap);
   return {
     A1: pointBytes(A1),
@@ -722,8 +765,9 @@ function proveGapEquality({ gap, r, openS, openP, epoch, gapC }) {
   };
 }
 
-function verifyGapEquality(epoch, gapC, openP, A1, A2, zGap, zR, zS) {
-  const e = gapEqChallenge(epoch, A1, A2, gapC, openP);
+function verifyGapEquality(epoch, gapC, openP, A1, A2, zGap, zR, zS, magic, digest) {
+  const e = gapEqChallenge(epoch, A1, A2, gapC, openP, magic, digest);
+  if (!e) return false;
   const zG = scalarFrom(zGap);
   const left1 = G.multiply(zG).add(H.multiply(scalarFrom(zR)));
   const right1 = pointFrom(A1).add(pointFrom(gapC).multiply(e));
@@ -732,13 +776,13 @@ function verifyGapEquality(epoch, gapC, openP, A1, A2, zGap, zR, zS) {
   return left1.equals(right1) && left2.equals(right2);
 }
 
-function verifyUnlockGap(epoch, tail, openP, openR, openZ) {
+function verifyUnlockGap(epoch, tail, openP, openR, openZ, magic, digest) {
   try {
     if (!tail?.range?.length || !tail.gapC || tail.gapC.length !== 32) return false;
     if (!openR || !openZ || !tail.A1 || !tail.A2 || !tail.zGap || !tail.zR || !tail.zS) return false;
     if (!verifyRange(tail.gapC, tail.range)) return false;
     if (!openR.equals(tail.A1) || !openZ.equals(tail.zGap)) return false;
-    return verifyGapEquality(epoch, tail.gapC, openP, tail.A1, tail.A2, tail.zGap, tail.zR, tail.zS);
+    return verifyGapEquality(epoch, tail.gapC, openP, tail.A1, tail.A2, tail.zGap, tail.zR, tail.zS, magic, digest);
   } catch {
     return false;
   }
@@ -1223,7 +1267,7 @@ export function proveVaultReward({
     .subtract(unlockBase().multiply(Fn.create(BigInt(epoch) + 1n)));
   const hidden = unlockBase().multiply(Fn.create(gapCommit.gap)).add(H.multiply(openS));
   if (!openP.equals(hidden)) return null;
-  const gapEq = proveGapEquality({ ...gapCommit, openS, openP, epoch });
+  const gapEq = proveGapEquality({ ...gapCommit, openS, openP, epoch, magic, digest });
   if (!gapEq) return null;
   const gapProof = { ...gapCommit, ...gapEq };
   const noteS = scalarFrom(note.r);
@@ -1363,7 +1407,7 @@ export function verifyVaultReward({
   } catch {
     return fail(2, 'stake_reward');
   }
-  if (!verifyUnlockGap(parsed.epoch, parsed.gap, openP, parsed.openR, parsed.openZ)) return fail(2, 'stake_reward');
+  if (!verifyUnlockGap(parsed.epoch, parsed.gap, openP, parsed.openR, parsed.openZ, magic, digest)) return fail(2, 'stake_reward');
   if (!schnorrVerify(noteP, parsed.noteR, parsed.noteZ, balanceExtra(preimage, bound.dest20))) return fail(2, 'stake_reward');
   const anchor = Number(rootEpoch);
   if (!Number.isSafeInteger(anchor) || anchor < 0) return fail(0, 'unsigned');

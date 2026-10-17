@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, buildFundedWithdraw, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1659,7 +1659,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
       && body.spendPub;
-    if ((!sealedSendEarly && !isDestAddress(from)) || !isDestAddress(to)) {
+    const fundedWithdraw = isWithdraw
+      && body.fs1
+      && Array.isArray(body.vin) && body.vin.length > 0
+      && (body.retireProof || (Array.isArray(body.retireProofs) && body.retireProofs.length))
+      && (body.principalProof || (Array.isArray(body.principalProofs) && body.principalProofs.length));
+    if ((!sealedSendEarly && !fundedWithdraw && !isDestAddress(from)) || !isDestAddress(to)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const nanosBi = isVote ? 0n : parsed.nanos;
@@ -1673,7 +1678,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (poolPay && from === poolPay) {
       return { status: 403, json: { ok: false, reason: 'pool_dest' } };
     }
-    const rec = (sealedSendEarly && !isDestAddress(from))
+    const rec = ((sealedSendEarly || fundedWithdraw) && !isDestAddress(from))
       ? { spendableNanos: 0 }
       : reconstructOwner(store, from);
     const nanos = nanosBi == null ? 0 : wireNanos(nanosBi);
@@ -1757,20 +1762,31 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(postedVout.length ? { vout: postedVout } : {}),
         }
         : isWithdraw
-        ? {
-          ...withdrawTx({
-            from,
-            to,
-            nanos,
-            id: typeof body.id === 'string' && body.id ? body.id : `withdraw-${Date.now()}`,
-            nonce: withdrawNonce,
-          }),
+        ? buildFundedWithdraw({
+          to,
+          nanos,
+          id: typeof body.id === 'string' && body.id ? body.id : `withdraw-${Date.now()}`,
+          withdrawNonce,
+          portalId: body.portalId,
+          payoutPortalId: body.payoutPortalId,
+          vin: body.vin,
+          vout: postedVout.length ? postedVout : body.vout,
+          fs1: body.fs1,
+          anchor: body.anchor,
+          excess: body.excess,
           fee,
+          admit_proof: body.admit_proof,
+          admit_proofs: body.admit_proofs,
+          retireProof: body.retireProof,
+          retireProofs: body.retireProofs,
+          principalProof: body.principalProof,
+          principalProofs: body.principalProofs,
           sig: body.sig || body.signature,
           spendPub: body.spendPub,
-          amount,
-          ...(postedVout.length ? { vout: postedVout } : {}),
-        }
+          rewardSig: body.rewardSig,
+          ownerPub: body.ownerPub,
+          dest20: body.dest20,
+        })
         : {
           kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, ephPub,
           vin: Array.isArray(body.vin) && body.vin.length ? body.vin : [{ address: from }],
@@ -1780,6 +1796,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
+    if (isWithdraw && !draft) {
+      return { status: 400, json: { ok: false, reason: 'withdraw_funding' } };
+    }
     if (taxed && postedFee == null) bindWeightFee(draft);
     if (taxed) {
       const need = levyNeed(draft);

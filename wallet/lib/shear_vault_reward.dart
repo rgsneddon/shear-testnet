@@ -239,6 +239,8 @@ Map<String, Uint8List> _proveGapEq({
   required Element openP,
   required int epoch,
   required Uint8List gapC,
+  required String magic,
+  required Uint8List digest,
 }) {
   final kGap = randomScalar();
   final kR = randomScalar();
@@ -252,6 +254,8 @@ Map<String, Uint8List> _proveGapEq({
   final openPb = pointBytes(openP);
   final e = hashToScalar([
     utf8Bytes(kVaultGapEqDst),
+    utf8Bytes(magic),
+    digest,
     _u64(epoch),
     a1b,
     a2b,
@@ -416,6 +420,8 @@ Map<String, dynamic> proveVaultLockReward({
       openP: openP,
       epoch: epoch,
       gapC: gap['gapC'] as Uint8List,
+      magic: magic,
+      digest: digest,
     );
     final portalWord = _sha256(_concat([utf8Bytes(kClaimPortalDst), dest20]));
     final noteExtra = _sha256(_concat([utf8Bytes(kVaultBalDst), preimage, portalWord]));

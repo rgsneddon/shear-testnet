@@ -24,6 +24,9 @@ function keccak256(data) {
 }
 
 export const SHEAR_EVM_CHAIN_ID = 2701n;
+// The precompile checks the retire bind and the owner signature. It does
+// not recompute the FS-1 tx digest. That binding is the node's JS check:
+// a withdraw is forwarded only when txDigestV3 equals the signed bind.
 export const GENESIS_HASH_BONUS_NANOS = 1n;
 const PIN = JSON.parse(fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '../contracts/Reserve.json'),
@@ -833,11 +836,27 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
+    const pub = String(tx?.ownerPub || tx?.spendPub || '').replace(/^0x/i, '');
+    const owner = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
+    // The retire proof opens the leaf commitment, the same one the JS vault
+    // stores. The funding output is that commitment minus the unlock point.
+    let note = null;
+    try { note = tx?.vaultLockNote ? Buffer.from(asU8(tx.vaultLockNote)) : null; } catch { note = null; }
+    if (note && note.length === 64) {
+      const leafCommit = note.subarray(32, 64);
+      const funded = tx?.vout?.find((row) => String(row?.kind || '') === 'lock');
+      const proof = tx?.piProof || funded?.piProof;
+      // The π proof opens the funding output. The leaf adds the unlock point.
+      let valueCommit = leafCommit;
+      try {
+        if (funded?.commit) valueCommit = Buffer.from(asU8(funded.commit));
+      } catch { valueCommit = leafCommit; }
+      if (!valueCommit || valueCommit.length !== 32) valueCommit = leafCommit;
+      return callReserve(session, encodeDeposit(dest, leafCommit, nowMs, owner, lockQualifies(valueCommit, proof)));
+    }
     const outs = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === 'lock');
     const credits = outs.length ? outs : (act?.commit ? [{ commit: act.commit, piProof: act?.piProof }] : []);
     if (!credits.length) return { ok: false, reason: 'stake_reward' };
-    const pub = String(tx?.ownerPub || tx?.spendPub || '').replace(/^0x/i, '');
-    const owner = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
     let locked = { ok: true };
     for (const out of credits) {
       let commit = out?.commit || act?.commit;

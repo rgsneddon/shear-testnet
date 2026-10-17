@@ -19,8 +19,10 @@ import {
   KIND_REWARD_CLAIM,
   applyReserveBlock,
   coinbaseRewardRoot,
+  consensusUnlockPeriod,
   emptyVault,
   lockStampRejected,
+  lockWitnessOf,
   lockNoteSpendRejected,
   packRewardAuth,
   portalEpochInterest,
@@ -54,6 +56,8 @@ import {
   executeBlockEvm,
 } from './reserve_evm.js';
 import { deposit, encodeDeposit, encodeWithdraw, lockTx } from './owned_portal.js';
+import { randomScalar } from './note.js';
+import { vaultLockNote } from './vault_reward_fs1.js';
 import { createNoteLedger } from '../node/src/note_ledger.js';
 
 const T0 = 1_700_000_000_000;
@@ -69,8 +73,17 @@ function vault() {
   return state;
 }
 
+/** A π lock is a leaf. A smaller amount has no leaf and consensus refuses it. */
+function attachPiNote(tx) {
+  const held = lockWitnessOf(tx);
+  if (!held) return tx;
+  const leaf = vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
+  if (leaf) tx.vaultLockNote = leaf.note;
+  return tx;
+}
+
 function lockNote(dest, nanos, id) {
-  return lockTx({
+  return attachPiNote(lockTx({
     from: dest,
     to: dest,
     nanos,
@@ -78,7 +91,7 @@ function lockNote(dest, nanos, id) {
     timeLock: true,
     lockEpoch: 0,
     unlockAtMs: T0 + RESERVE_EPOCH_MS,
-  });
+  }));
 }
 
 describe('time-locked lock notes', () => {
@@ -169,7 +182,7 @@ describe('time-locked lock notes', () => {
       genesisMs: T0,
     });
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'lock_unlock');
+    assert.equal(refused.reason, 'stake_reward');
     assert.equal(Number(state.totalLockedNanos), 0);
     const book = createNoteLedger();
     book.sync([{ height: 1, hash: Buffer.alloc(32, 7), txs: [wire] }]);
@@ -196,6 +209,7 @@ describe('time-locked lock notes', () => {
       lockEpoch: 0,
       unlockAtMs: T0 + RESERVE_EPOCH_MS,
     });
+    attachPiNote(tx);
     const locked = applyReserveBlock({
       state,
       block: { height: 1, txs: [tx] },
@@ -699,6 +713,7 @@ describe('empty reward epochs leave principal in the vault', () => {
       lockEpoch: 0,
       unlockAtMs: T0 + RESERVE_EPOCH_MS,
     });
+    attachPiNote(tx);
     const applied = applyReserveBlock({
       state,
       block: { height: 1, txs: [tx] },
@@ -761,13 +776,15 @@ describe('empty reward epochs leave principal in the vault', () => {
     const dest = who();
     const state = vault();
     const { applied } = timeLock(state, dest, 1, T0 + 1_000, 'empty-root');
-    assert.equal(applied.ok, true, applied.reason);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.reason, 'stake_reward');
+    assert.equal(state.portals[portalIdFromDest(dest)], undefined);
+    assert.equal(Number(state.totalLockedNanos), 0);
     const plan = rewardCommitment(state, draw);
     assert.equal(plan.rows.length, 0);
     assert.equal(plan.root, emptyRoot);
     const settled = settle(state, emptyRoot);
     assert.equal(settled.ok, true, settled.reason);
-    stillLocked(state, dest);
     assert.equal(state.rewardRoots[String(plan.index)], undefined);
 
     const session = await bootReserveEvm();
@@ -810,11 +827,11 @@ describe('empty reward epochs leave principal in the vault', () => {
     const smallDest = who();
     const small = vault();
     const smallLock = timeLock(small, smallDest, 1, T0 + 1_000, 'below-pi');
-    assert.equal(smallLock.applied.ok, true, smallLock.applied.reason);
+    assert.equal(smallLock.applied.ok, false);
+    assert.equal(smallLock.applied.reason, 'stake_reward');
+    assert.equal(small.portals[portalIdFromDest(smallDest)], undefined);
+    assert.equal(Number(small.totalLockedNanos), 0);
     assert.equal(rewardCommitment(small, draw).rows.length, 0);
-    assert.equal(settle(small).ok, true);
-    stillLocked(small, smallDest);
-    assert.equal(lockNoteSpendRejected(small, { vin: [{ commit: smallLock.tx.vout[0].commit }] }, draw), null);
 
     const book = createNoteLedger();
     const wire = compactTx(smallLock.tx);

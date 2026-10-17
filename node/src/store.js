@@ -3503,14 +3503,19 @@ export function createStore(dir, {
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     });
     if (!noteFund.ok) return noteFund;
-    const summed = typedCommitSum(tx, { height: Number(t?.height || 0) + 1, magic: bookMagic });
+    const stamp = headerStamp(opts.nowMs);
+    const summed = typedCommitSum(tx, {
+      height: Number(t?.height || 0) + 1,
+      magic: bookMagic,
+      state: reserveVault,
+      nowMs: stamp,
+    });
     if (!summed.ok) return summed;
     const drawn = new Set();
     for (const m of mempool) {
       const id = reserveWithdrawMintId(m, reserveVault);
       if (id) drawn.add(id);
     }
-    const stamp = headerStamp(opts.nowMs);
     const stake = boundReserveWithdraw(tx, reserveVault, drawn, stamp);
     if (!stake.ok) return stake;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
