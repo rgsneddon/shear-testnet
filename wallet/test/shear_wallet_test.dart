@@ -5819,7 +5819,7 @@ void main() {
     expect(apr.data!.toLowerCase().contains('apr'), isFalse);
     expect(apr.data!.toLowerCase().contains('interest'), isFalse);
     expect(apr.data!.toLowerCase().contains('oracle'), isFalse);
-    expect(find.text('Cast vote'), findsOneWidget);
+    expect(find.text('Cast your 1 votes'), findsOneWidget);
     expect(find.text('Update vote'), findsNothing);
     expect(find.textContaining('change this vote at any time'), findsNothing);
     expect(find.text('Amount SHEAR'), findsOneWidget);

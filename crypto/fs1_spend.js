@@ -335,6 +335,12 @@ export function resetFs1VerifyCount() {
   verifyCalls = 0;
 }
 
+/** Drop cached verifies. The next check of the same proof runs native again. */
+export function resetFs1VerifyCache() {
+  verifyCache.clear();
+  verifyCalls = 0;
+}
+
 /**
  * Verify one spend. A result is cached by the hash of every input to the
  * check, so a mempool re-check after a block is not a second proof verify.

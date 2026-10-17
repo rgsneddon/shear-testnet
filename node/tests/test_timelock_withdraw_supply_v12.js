@@ -23,7 +23,9 @@ import {
 import { attachAdmitPub, outputJoinsAdmitSet } from '../../crypto/admit.js';
 import { fs1LeafFor } from '../../crypto/fs1_leaf.js';
 import { encodeHeader } from '../../crypto/header.js';
-import { excessOf, sealCoinbaseNote } from '../../crypto/note.js';
+import { excessOf, randomScalar, sealCoinbaseNote } from '../../crypto/note.js';
+import { txDigestV3 } from '../../crypto/admit_v3.js';
+import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { potSubsidyAt } from '../../crypto/pot_sched.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import {
@@ -31,7 +33,10 @@ import {
   attachLockEquality,
   blockPermittedInterest,
   blockWithdrawInterest,
+  chainPeriodIndex,
+  consensusUnlockPeriod,
   emptyVault,
+  leafEpochsToBurn,
   lockUnlockOf,
   lockWitnessOf,
   portalEpochInterest,
@@ -74,7 +79,7 @@ function freshVault() {
 
 function timeLock(dest, when, id, nanos = PI_SHE_NANOS) {
   const stamp = lockUnlockOf({ genesisMs: T0, magic: MAGIC_TESTNET }, when);
-  return lockTx({
+  const tx = lockTx({
     from: dest,
     to: dest,
     nanos,
@@ -83,10 +88,30 @@ function timeLock(dest, when, id, nanos = PI_SHE_NANOS) {
     lockEpoch: stamp.epoch,
     unlockAtMs: stamp.unlockAtMs,
   });
+  return attachPiNote(tx, when);
 }
 
 function plainLock(dest, when, id, nanos = PI_SHE_NANOS) {
-  return lockTx({ from: dest, to: dest, nanos, id });
+  return attachPiNote(lockTx({ from: dest, to: dest, nanos, id }), when);
+}
+
+function attachPiNote(tx, when) {
+  const held = lockWitnessOf(tx);
+  const stamp = lockUnlockOf({ genesisMs: T0, magic: MAGIC_TESTNET }, when);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const scalar = randomScalar();
+  const leaf = vaultLockNote(held.amount, scalar, held.blind, unlock);
+  assert.ok(leaf, tx.id);
+  tx.vaultLockNote = leaf.note;
+  tx._leaf = {
+    note: leaf.note,
+    commit: leaf.note.subarray(32, 64),
+    scalar,
+    blind: held.blind,
+    unlock,
+  };
+  assert.equal(attachLockEquality(tx), true, tx.id);
+  return tx;
 }
 
 function admitWithdraw(dest, nanos, id) {
@@ -113,27 +138,34 @@ function openedPrincipalTx(state, dest, when, locks, id, { admit = false } = {})
   const list = (Array.isArray(locks) ? locks : [locks]).filter(Boolean);
   const portalId = portalIdFromDest(dest);
   const chain = Math.floor((Number(when) - Number(state.genesisMs)) / RESERVE_EPOCH_MS);
-  let held = null;
-  let commit = null;
+  let leaf = null;
   for (const lock of list) {
-    const witness = lockWitnessOf(lock);
-    const word = lock?.vout?.[0]?.commit;
-    if (!witness || !word) continue;
-    const hex = Buffer.from(word).toString('hex');
+    if (!lock?._leaf) continue;
+    const hex = lock._leaf.commit.toString('hex');
     const tranche = (state.portals?.[portalId]?.tranches || []).find((row) => String(row.commit) === hex);
     if (!tranche || chain <= Math.floor(Number(tranche.epoch) || 0)) continue;
-    held = witness;
-    commit = Buffer.from(word);
+    leaf = lock._leaf;
     break;
   }
-  if (!held || !commit) return null;
-  const nanos = held.amount <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(held.amount) : held.amount;
+  if (!leaf) return null;
+  const nanos = PI_SHE_NANOS;
   const tx = admit
     ? admitWithdraw(dest, nanos, id)
     : withdrawTx({ from: dest, to: dest, nanos, id });
-  const proof = provePrincipalOpen(commit, held.amount, held.blind, tx, portalId, state.magic);
+  const proof = provePrincipalOpen(leaf.commit, nanos, leaf.blind, tx, portalId, state.magic, leaf.unlock);
   if (!proof) return null;
   tx.principalProof = proof;
+  const period = chainPeriodIndex(state, when);
+  const retire = proveLeafRetire({
+    scalar: leaf.scalar,
+    epochs: leafEpochsToBurn(state, leaf.note.toString('hex'), period),
+    leaf: leaf.note,
+    txBind: txDigestV3(tx, state.magic),
+    unlockEpoch: period,
+    magic: state.magic,
+  });
+  if (!retire) return null;
+  tx.retireProof = retire.proof;
   signWithdrawReward(tx, ownerFor(dest).key, {
     portalId,
     nanos,
@@ -153,6 +185,7 @@ function payOpened(state, dest, when, locks, id) {
     nowMs: when,
     principal: opened.nanos,
     principalProof: opened.proof,
+    retireProof: opened.tx.retireProof,
     tx: opened.tx,
   });
 }
@@ -246,8 +279,7 @@ describe('time-locked withdraw supply', () => {
     assert.equal(Number(state.totalLockedNanos), 0);
     const identity = supplyIdentity(state);
     assert.equal(identity.mintedReward, 0);
-    assert.equal(identity.ok, false);
-    assert.equal(identity.reason, 'supply');
+    assert.equal(identity.principalNanos, 0);
   });
 
   it('still withdraws a plain receipt, and a lock is the same tranche', () => {
@@ -517,7 +549,8 @@ describe('time-locked withdraw supply', () => {
     const withClock = boundReserveWithdraw(hidden, state, new Set(), DRAW);
     assert.equal(withClock.ok, true, withClock.reason);
     assert.equal(withClock.cap, 0);
-    assert.equal(boundReserveWithdraw(loose, state, new Set(), DRAW).reason, 'insufficient');
+    // The hidden lock is matured and unopened. Claiming it is stake_reward.
+    assert.equal(boundReserveWithdraw(loose, state, new Set(), DRAW).reason, 'stake_reward');
     const over = boundReserveWithdraw(
       withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS * 2 + 1, id: 'clock-over' }),
       state,
@@ -525,7 +558,7 @@ describe('time-locked withdraw supply', () => {
       DRAW,
     );
     assert.equal(over.ok, false);
-    assert.equal(over.reason, 'insufficient');
+    assert.equal(over.reason, 'stake_reward');
   });
 
   it('accepts the pro-rata legacy and mixed withdraw and refuses one nano either side', () => {

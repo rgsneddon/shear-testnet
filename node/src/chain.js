@@ -81,7 +81,7 @@ import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected, rollRewardRejected, leafVoteFundingRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected, rollRewardRejected, leafVoteFundingRejected, leafVoteLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -2293,6 +2293,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gated) return gated;
   const bodyTxs = Array.isArray(block?.txs) ? block.txs : [];
   for (let i = 0; i < bodyTxs.length; i += 1) {
+    const leakedVote = leafVoteLeakRejected(bodyTxs[i]);
+    if (leakedVote) return leakedVote;
     const unsignedField = unsignedBodyField(bodyTxs[i]);
     if (unsignedField) return unsignedField;
   }
@@ -3140,6 +3142,31 @@ function evmClockGenesis(consensus, block, opts) {
   return 0;
 }
 
+/** The frozen root and census a claim or leaf vote must carry on the coinbase. */
+function vaultCoinbaseBind(state, txs) {
+  if (!state) return undefined;
+  const roots = Object.create(null);
+  const census = Object.create(null);
+  let need = false;
+  for (const tx of Array.isArray(txs) ? txs : []) {
+    if (!tx || tx.coinbase) continue;
+    const kind = String(tx.kind || '');
+    if (kind !== 'reward-claim' && kind !== 'leaf-vote') continue;
+    if (kind === 'reward-claim' && !tx.vaultProof) continue;
+    if (kind === 'leaf-vote' && !tx.voteProof) continue;
+    need = true;
+    const earn = String(Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0));
+    const start = String(state.epochStartRoots?.[earn] || '').toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(start)) roots[earn] = start;
+    if (kind !== 'leaf-vote') continue;
+    const row = state.epochCensus?.[earn];
+    const leaves = Math.floor(Number(row?.leafCount) || 0);
+    const openH = Math.floor(Number(row?.openHeight) || 0);
+    if (row?.known && leaves >= 1 && openH >= 0) census[earn] = { leafCount: leaves, openHeight: openH };
+  }
+  return need ? { roots, census } : undefined;
+}
+
 async function verifyBlockEvm(consensus, block, opts = {}) {
   let session = opts.evmSession;
   let fresh = false;
@@ -3165,7 +3192,8 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
     ? Number(consensus.decoded.timestamp)
     : headerTimeMs(block);
   const owedRoot = opts.reserveState ? coinbaseRewardRoot(opts.reserveState, headerMs) : undefined;
-  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot);
+  const vaultBind = vaultCoinbaseBind(opts.reserveState, block.txs || []);
+  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot, vaultBind);
   if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
   return {
     ...consensus,

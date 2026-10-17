@@ -16,7 +16,7 @@ import { createStore } from '../src/store.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
-import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
+import { newIdentity, encodeDest, hash20FromAddress, destCommitFromSpendPub } from '../../crypto/address.js';
 import {
   MAGIC_TESTNET,
   PI_SHE_NANOS,
@@ -34,6 +34,8 @@ import {
   asU8,
   kernelExcess,
   openedCoinbaseNanos,
+  proveRange,
+  randomScalar,
   sealHiddenNote,
   sealNote,
 } from '../../crypto/note.js';
@@ -56,6 +58,7 @@ import {
   fs1BlobLen,
   fs1ProveSpend,
   resetFs1Tree,
+  resetFs1VerifyCache,
   txBodyDigestFs1,
 } from '../../crypto/fs1_spend.js';
 import { fs1NativeLoaded } from '../../crypto/native_admit.js';
@@ -64,15 +67,25 @@ import { joinCutoffMs } from '../../crypto/pot_sched.js';
 import {
   VOTE_HOLD,
   applyReserveBlock as applyVault,
+  attachLockEquality,
   canVote as vaultCanVote,
+  chainPeriodIndex,
+  consensusUnlockPeriod,
   emptyVault as freshEmpty,
+  leafEpochsToBurn,
   lockTx as vaultLockTx,
   lockUnlockOf as vaultUnlock,
+  lockWitnessOf,
   portalIdFromDest as portalOfDest,
   previewWithdraw as previewVault,
+  proveLockEquality,
+  provePrincipalOpen,
   reserveDigestSuffix as suffixOf,
   supplyIdentity as vaultSupply,
+  withdraw,
 } from '../../crypto/reserve_vault.js';
+import { txDigestV3 } from '../../crypto/admit_v3.js';
+import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { boundReserveWithdraw as withdrawCap, reserveAuth, signSpendTx, typedCommitSum } from '../../crypto/spend.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -87,7 +100,7 @@ function readSrc(rel) {
 
 function payer() {
   const id = newIdentity();
-  const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
+  const dest = encodeDest(destCommitFromSpendPub(id.spendPub), id.admitBase);
   return { id, dest, spendSeed: id.spendSeed, base: id.admitBase };
 }
 
@@ -245,68 +258,131 @@ describe('vault FS-1 funding rules', () => {
     state.magic = MAGIC_TESTNET;
     state.genesisMs = T0;
     const stamp = vaultUnlock({ genesisMs: T0, magic: MAGIC_TESTNET }, T0);
-    const note = vaultLockTx({
-      from: who.dest,
-      to: who.dest,
-      nanos: PI_SHE_NANOS,
-      id: 'plain-lock',
-      timeLock: true,
-      lockEpoch: stamp.epoch,
-      unlockAtMs: stamp.unlockAtMs,
-    });
+    const note = notedFundingLock(who, 'plain-lock', stamp);
     assert.equal(note.vout[0].admitPub, undefined);
     const locked = applyVault({
       state,
       block: { height: 1, txs: [note] },
       nowMs: T0,
+      height: 1,
       genesisMs: T0,
     });
     assert.equal(locked.ok, true, locked.reason);
     const portal = state.portals[portalOfDest(who.dest)];
     assert.notEqual(portal.tranches[0].noteIsPrincipal, true);
     assert.equal(portal.tranches[0].noteCommit, undefined);
-    assert.equal(String(portal.tranches[0].amount), String(PI_SHE_NANOS));
+    assert.equal(portal.tranches[0].amount, undefined);
+    assert.equal(String(portal.tranches[0].commit).length, 64);
     const mid = withdrawCap(vaultWithdraw(who.dest, 1), state, new Set(), T0 + 1_000);
     assert.equal(mid.reason, 'insufficient');
     const end = previewVault(state, who.dest, T0 + RESERVE_EPOCH_MS);
-    assert.equal(end.reason, undefined);
-    assert.equal(end.principal, PI_SHE_NANOS);
+    assert.equal(end.principal, 0);
+    assert.equal(end.notePrincipal, 0);
     const identity = vaultSupply(state);
     assert.equal(identity.ok, true, identity.reason);
-    assert.equal(identity.lockedNanos, PI_SHE_NANOS);
+    assert.equal(identity.lockedNanos, 0);
+    assert.equal(identity.principalNanos, PI_SHE_NANOS);
+    const paid = payNoted(state, who.dest, note, T0 + RESERVE_EPOCH_MS, 'plain-pay');
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.principal, PI_SHE_NANOS);
     const early = freshEmpty();
     early.magic = MAGIC_TESTNET;
     early.genesisMs = T0;
     const under = vaultLockTx({ from: who.dest, to: who.dest, nanos: PI_SHE_NANOS - 1, id: 'under' });
-    assert.equal(applyVault({ state: early, block: { height: 1, txs: [under] }, nowMs: T0, genesisMs: T0 }).ok, true);
-    assert.equal(vaultCanVote(early.portals[portalOfDest(who.dest)].staked, early.portals[portalOfDest(who.dest)].idle), false);
+    const underGot = applyVault({ state: early, block: { height: 1, txs: [under] }, nowMs: T0, height: 1, genesisMs: T0 });
+    assert.equal(underGot.ok, false);
+    assert.equal(underGot.reason, 'stake_reward');
+    assert.equal(early.portals[portalOfDest(who.dest)], undefined);
     const lateWhen = T0 + RESERVE_EPOCH_MS - joinCutoffMs(MAGIC_TESTNET) + 1_000;
     const late = freshEmpty();
     late.magic = MAGIC_TESTNET;
     late.genesisMs = T0;
-    const lateLock = vaultLockTx({
-      from: who.dest,
-      to: who.dest,
-      nanos: PI_SHE_NANOS,
-      id: 'late',
-      timeLock: true,
-      lockEpoch: vaultUnlock({ genesisMs: T0, magic: MAGIC_TESTNET }, lateWhen).epoch,
-      unlockAtMs: vaultUnlock({ genesisMs: T0, magic: MAGIC_TESTNET }, lateWhen).unlockAtMs,
-    });
+    const lateStamp = vaultUnlock({ genesisMs: T0, magic: MAGIC_TESTNET }, lateWhen);
+    const lateLock = notedFundingLock(who, 'late', lateStamp);
     const lateGot = applyVault({
       state: late,
       block: { height: 1, txs: [lateLock] },
       nowMs: lateWhen,
+      height: 1,
       genesisMs: T0,
     });
     assert.equal(lateGot.ok, true, lateGot.reason);
     const latePortal = late.portals[portalOfDest(who.dest)];
     const remain = Math.floor(Number(latePortal.tranches[0].remainMs) || 0);
     assert.ok(remain < joinCutoffMs(MAGIC_TESTNET), `remain ${remain}`);
-    assert.equal(Number(latePortal.staked), 0);
-    assert.ok(BigInt(latePortal.idle) >= BigInt(PI_SHE_NANOS));
+    assert.equal(Number(latePortal.staked) + Number(latePortal.idle), 0);
+    assert.equal(vaultCanVote(latePortal.staked, latePortal.idle), false);
   });
 });
+
+function notedFundingLock(who, id, stamp) {
+  const ownerPub = Buffer.from(who.id.spendPub).toString('hex');
+  const tx = vaultLockTx({
+    from: who.dest,
+    to: who.dest,
+    nanos: PI_SHE_NANOS,
+    id,
+    ownerPub,
+    timeLock: true,
+    lockEpoch: stamp.epoch,
+    unlockAtMs: stamp.unlockAtMs,
+  });
+  tx.ownerPub = ownerPub;
+  const held = lockWitnessOf(tx);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const scalar = randomScalar();
+  const leaf = vaultLockNote(held.amount, scalar, held.blind, unlock);
+  assert.ok(leaf, id);
+  tx.vaultLockNote = leaf.note;
+  tx._leaf = { note: leaf.note, scalar, blind: held.blind, unlock };
+  assert.equal(attachLockEquality(tx), true, id);
+  return tx;
+}
+
+function payNoted(state, dest, lock, when, id) {
+  const portal = portalOfDest(dest);
+  const leaf = lock._leaf;
+  const tx = {
+    kind: 'withdraw',
+    id,
+    programId: RESERVE_PROGRAM,
+    portalId: portal,
+    payoutPortalId: portal,
+    from: dest,
+    to: dest,
+    nanos: PI_SHE_NANOS,
+    vout: [{ kind: 'withdraw', dest20: hash20FromAddress(dest), valueProof: { v: PI_SHE_NANOS } }],
+  };
+  const period = chainPeriodIndex(state, when);
+  const retire = proveLeafRetire({
+    scalar: leaf.scalar,
+    epochs: leafEpochsToBurn(state, leaf.note.toString('hex'), period),
+    leaf: leaf.note,
+    txBind: txDigestV3(tx, state.magic),
+    unlockEpoch: period,
+    magic: state.magic,
+  });
+  assert.ok(retire, id);
+  tx.retireProof = retire.proof;
+  tx.principalProof = provePrincipalOpen(
+    leaf.note.subarray(32, 64),
+    PI_SHE_NANOS,
+    leaf.blind,
+    tx,
+    portal,
+    state.magic,
+    leaf.unlock,
+  );
+  return withdraw({
+    state,
+    dest,
+    nowMs: when,
+    principal: PI_SHE_NANOS,
+    principalProof: tx.principalProof,
+    retireProof: tx.retireProof,
+    tx,
+  });
+}
 
 function vaultWithdraw(dest, nanos) {
   return {
@@ -496,6 +572,9 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         lockOut(amount, d20, who.base, stamp.unlockAtMs, stamp.epoch),
         hiddenOut(change, d20, who.base, 'send'),
       ];
+      // The reserve suffix hashes the published amount. A lock note publishes
+      // nothing, so the proof is taken after that opening is gone.
+      if (amount === PI_SHE_NANOS) delete outs[0].valueProof;
       draft = compactTx({
         id,
         kind: 'lock',
@@ -504,6 +583,8 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         programId: RESERVE_PROGRAM,
         portalId,
         payoutPortalId,
+        to: who.dest,
+        ownerPub: who.id.spendPub.toString('hex'),
         vin: ph.vin,
         vout: outs,
         fs1: ph.fs1,
@@ -537,6 +618,8 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       programId: RESERVE_PROGRAM,
       portalId,
       payoutPortalId,
+      to: who.dest,
+      ownerPub: who.id.spendPub.toString('hex'),
       vin: proven.proofs.map((p) => ({ commit: Buffer.from(p.cTilde) })),
       vout: outs,
       fs1: proven.fs1,
@@ -544,10 +627,30 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       excess,
     });
     assert.ok(txBodyDigestFs1(tx, MAGIC_TESTNET).equals(proven.digest), `${id} compact digest`);
+    // The vin is the spent note. The owner signature binds tx.dest20, which
+    // compact does not rebuild from the portal address.
+    tx.dest20 = Buffer.from(d20);
+    tx.to = who.dest;
     signSpendTx(tx, who.id.privateKey);
+    if (amount === PI_SHE_NANOS) {
+      const lockBlind = outs[0].r;
+      const lockRow = tx.vout.find((row) => String(row?.kind || '') === 'lock');
+      const unlock = consensusUnlockPeriod(stamp.epoch);
+      const scalar = randomScalar();
+      const leaf = vaultLockNote(amount, scalar, lockBlind, unlock);
+      assert.ok(leaf && lockRow && lockBlind != null, `${id} leaf`);
+      assert.equal(lockRow.valueProof, undefined);
+      tx.vaultLockNote = leaf.note;
+      tx.piProof = proveRange(0n, typeof lockBlind === 'bigint' ? lockBlind : lockBlind);
+      const fund = proveLockEquality(lockRow.commit, PI_SHE_NANOS, lockBlind, tx, MAGIC_TESTNET, 0);
+      assert.ok(tx.piProof && fund, `${id} fund`);
+      lockRow.fundProof = fund;
+    }
     assert.equal(tx.from, undefined);
+    assert.equal(tx._leaf, undefined);
     assert.equal(tx.vin.every((v) => v.commit && !v.dest20 && !v.address), true);
-    assert.equal(tx.vout[0].valueProof.v, amount);
+    if (amount === PI_SHE_NANOS) assert.equal(tx.vout[0].valueProof, undefined);
+    else assert.equal(tx.vout[0].valueProof.v, amount);
     assert.equal(tx.vout[1].valueProof, undefined);
     assert.ok(tx.vout[1].rangeProof);
     assert.equal(txVerifyWeight(tx), W_TX + W_FS1_BASE + W_FS1_PER_INPUT * k + W_OUT * tx.vout.length);
@@ -590,6 +693,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
   async function seal(built, label) {
     const { tx } = built;
     resetFlowProofVerifies();
+    resetFs1VerifyCache();
     resetFs1Tree();
     const queued = store.queueTx(tx);
     assert.equal(queued.ok, true, `${label} queue ${queued.reason}`);
@@ -664,20 +768,33 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         live: view.live,
         amount: row.amount,
       });
-      const bumped = {
-        ...built.tx,
-        vout: built.tx.vout.map((o, i) => (i === 0
-          ? { ...o, valueProof: { ...o.valueProof, v: o.valueProof.v + 1 } }
-          : o)),
-      };
-      assert.equal(typedCommitSum(bumped).reason, 'commit_sum');
-      const dropped = {
-        ...built.tx,
-        vout: built.tx.vout.map((o, i) => (i === 0
-          ? { ...o, valueProof: { ...o.valueProof, v: o.valueProof.v - 1 } }
-          : o)),
-      };
-      assert.equal(typedCommitSum(dropped).reason, 'commit_sum');
+      if (built.tx.vout[0].valueProof) {
+        const bumped = {
+          ...built.tx,
+          vout: built.tx.vout.map((o, i) => (i === 0
+            ? { ...o, valueProof: { ...o.valueProof, v: o.valueProof.v + 1 } }
+            : o)),
+        };
+        assert.equal(typedCommitSum(bumped).reason, 'commit_sum');
+        const dropped = {
+          ...built.tx,
+          vout: built.tx.vout.map((o, i) => (i === 0
+            ? { ...o, valueProof: { ...o.valueProof, v: o.valueProof.v - 1 } }
+            : o)),
+        };
+        assert.equal(typedCommitSum(dropped).reason, 'commit_sum');
+      } else {
+        const flippedExcess = { ...built.tx, excess: Buffer.from(built.tx.excess) };
+        flippedExcess.excess[0] ^= 0xff;
+        assert.equal(typedCommitSum(flippedExcess).reason, 'commit_sum');
+        const published = {
+          ...built.tx,
+          vout: built.tx.vout.map((o, i) => (i === 0
+            ? { ...o, valueProof: { v: row.amount } }
+            : o)),
+        };
+        assert.equal(typedCommitSum(published).reason, 'commit_sum');
+      }
       const past = { ...built.tx, anchor: newest + ANCHOR_QUANTUM };
       assert.equal(verifyTypedAdmitFunding(past, {
         height: H,
@@ -701,7 +818,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         magic: MAGIC_TESTNET,
         noteAtAnchor: (a) => store.anchorNote(a),
       }).ok, false);
-      if (row.edge === 'oldest') {
+      if (row.amount === PI_SHE_NANOS) {
         const twin = { ...built.tx, id: `${built.tx.id}-twin` };
         const heightBefore = store.tip().height;
         const together = await appendBuilt(store, who.dest, [built.tx, twin]);
@@ -709,8 +826,19 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         assert.equal(together.reason, 'admit_link_tag');
         assert.equal(store.tip().height, heightBefore);
       }
+      if (row.amount !== PI_SHE_NANOS) {
+        const heightBefore = store.tip().height;
+        const dropped = await appendBuilt(store, who.dest, [built.tx]);
+        assert.equal(dropped.ok, false, `non-π ${row.amount} sealed`);
+        assert.ok(
+          dropped.reason === 'stake_reward' || dropped.reason === 'template_dropped',
+          dropped.reason,
+        );
+        assert.equal(store.tip().height, heightBefore);
+        return;
+      }
       await seal(built, `lock-${row.n}`);
-      if (row.edge === 'newest' && row.n === 1) {
+      if (row.edge === 'newest' && row.amount === PI_SHE_NANOS) {
         const lockHeight = store.blocks.findIndex((b) => (b.txs || []).some((tx) => tx.id === built.tx.id));
         const peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-vault-fs1-fork-'));
         try {
@@ -732,7 +860,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       }
       for (const c of use) spent.add(c.commit.toString('hex'));
       if (!firstLock) firstLock = built;
-      if (row.edge === 'newest' && row.n === 1) tagLock = built;
+      if (row.amount === PI_SHE_NANOS) tagLock = built;
       if (row.amount === PI_SHE_NANOS) {
         const vote = compactTx({
           id: 'vault-vote-hold',
@@ -745,6 +873,8 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
           vin: [],
           vout: [],
         });
+        vote.dest20 = Buffer.from(hash20FromAddress(who.dest));
+        vote.to = who.dest;
         signSpendTx(vote, who.id.privateKey);
         assert.equal(txVerifyWeight(vote), W_TX + W_SEAL);
         assert.equal(vote.fs1, undefined);
@@ -904,6 +1034,9 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       admit_proofs: proven.proofs,
       excess,
     });
+    tx.dest20 = Buffer.from(d20);
+    tx.to = who.dest;
+    tx.ownerPub = who.id.spendPub.toString('hex');
     signSpendTx(tx, who.id.privateKey);
     assert.equal(txVerifyWeight(tx), W_TX + W_FS1_BASE + W_FS1_PER_INPUT + W_OUT * 2);
     assert.equal(levyTaxed(tx), true);

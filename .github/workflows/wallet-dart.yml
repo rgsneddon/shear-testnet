@@ -19,8 +19,15 @@ jobs:
         with:
           flutter-version: '3.44.6'
           channel: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Dart vote plan, leaf vote, and withdraw builder
         working-directory: wallet
         run: |
           flutter pub get
           flutter test test/shear_vote_plan_test.dart
+      - name: JS verifies a Dart-built withdraw
+        run: |
+          npm ci --ignore-scripts
+          node --test crypto/dart_withdraw_verify.test.js

@@ -21,10 +21,12 @@ import {
   EPOCH_DAYS_TESTNET,
 } from '../../crypto/asert.js';
 import { MS_PER_DAY } from '../../crypto/pot_sched.js';
-import { applyReserveBlock, attachLockEquality, cloneVault, lockWitnessOf, portalIdFromDest, provePrincipalOpen, supplyIdentity, withdraw, withdrawTx } from '../../crypto/reserve_vault.js';
+import { applyReserveBlock, attachLockEquality, chainPeriodIndex, cloneVault, consensusUnlockPeriod, leafEpochsToBurn, lockWitnessOf, portalIdFromDest, provePrincipalOpen, supplyIdentity, withdraw, withdrawTx } from '../../crypto/reserve_vault.js';
+import { txDigestV3 } from '../../crypto/admit_v3.js';
+import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { lockTx } from '../../crypto/owned_portal.js';
 import { levyNeed } from '../../crypto/levy.js';
-import { kernelExcess, noteU64, sealCoinbaseNote, verifySealedNote } from '../../crypto/note.js';
+import { kernelExcess, noteU64, randomScalar, sealCoinbaseNote, verifySealedNote } from '../../crypto/note.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
 import { createStore } from '../src/store.js';
 
@@ -65,6 +67,13 @@ function noteLock(portal, key) {
     arm(fee);
   }
   signSpendTx(tx, key);
+  const held = lockWitnessOf(tx);
+  const scalar = randomScalar();
+  const unlock = consensusUnlockPeriod(0);
+  const leaf = vaultLockNote(held.amount, scalar, held.blind, unlock);
+  if (!leaf) throw new Error('lock note');
+  tx.vaultLockNote = leaf.note;
+  tx._leaf = { note: leaf.note, scalar, blind: held.blind, unlock };
   if (!attachLockEquality(tx)) throw new Error('lock equality');
   return tx;
 }
@@ -126,15 +135,29 @@ describe('store reorg across a note-funded lock', () => {
 
     const paid = cloneVault(local.reserveVault);
     const feeBefore = nanosOf(paid.feeBankNanos);
-    const held = lockWitnessOf(lock);
+    const leaf = lock._leaf;
+    const when = T0 + 90_000 + EPOCH_MS + 1;
     const drawnTx = withdrawTx({ from: portal, to: portal, nanos: PI_SHE_NANOS, id: 'reorg-draw' });
+    const commit = leaf.note.subarray(32, 64);
+    const period = chainPeriodIndex(paid, when);
+    const retire = proveLeafRetire({
+      scalar: leaf.scalar,
+      epochs: leafEpochsToBurn(paid, leaf.note.toString('hex'), period),
+      leaf: leaf.note,
+      txBind: txDigestV3(drawnTx),
+      unlockEpoch: period,
+    });
+    assert.ok(retire, 'retire');
+    drawnTx.retireProof = retire.proof;
+    drawnTx.principalProof = provePrincipalOpen(commit, PI_SHE_NANOS, leaf.blind, drawnTx, pid, undefined, leaf.unlock);
     const drawn = withdraw({
       state: paid,
       dest: portal,
       portalId: pid,
-      nowMs: T0 + 90_000 + EPOCH_MS + 1,
+      nowMs: when,
       principal: PI_SHE_NANOS,
-      principalProof: provePrincipalOpen(lock.vout[0].commit, PI_SHE_NANOS, held.blind, drawnTx, pid),
+      principalProof: drawnTx.principalProof,
+      retireProof: drawnTx.retireProof,
       tx: drawnTx,
     });
     assert.equal(drawn.ok, true, drawn.reason);

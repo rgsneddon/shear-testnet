@@ -459,7 +459,7 @@ export function pickOwnedFeeNotes(notes, count, draw = (bound) => randomInt(boun
   for (const row of Array.isArray(notes) ? notes : []) {
     if (!row || typeof row !== 'object') continue;
     if (row.spent === true || row.locked === true) continue;
-    if (String(row.kind || '') === 'lock') continue;
+    if (String(row.kind || '') === 'lock' || String(row.kind || '') === 'reward-claim') continue;
     if (row.voteChange === true || String(row.changeOf || '') === 'vote') continue;
     const hex = ownedFeeInput(row.commit);
     if (!hex || seen.has(hex)) continue;

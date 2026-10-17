@@ -826,7 +826,7 @@ function destBytesForEvm(tx, act) {
   return '';
 }
 
-export async function executeReserveTx(session, tx, nowMs) {
+export async function executeReserveTx(session, tx, nowMs, ctx = null) {
   const kind = txKindOf(tx);
   const act = reserveAction(tx);
   const dest = destBytesForEvm(tx, act);
@@ -877,13 +877,18 @@ export async function executeReserveTx(session, tx, nowMs) {
     const output = packVaultOutput(tx.voteOutput || tx.vout?.[0]);
     if (!output || !tx.voteProof) return { ok: false, reason: 'unsigned' };
     const paramId = String(tx.voteParam || '') === 'rr' ? 1 : 0;
+    const blockH = Math.floor(Number(ctx?.blockHeight));
+    const namedH = Math.floor(Number(tx.height));
+    const height = Number.isInteger(blockH) && blockH > 0
+      ? blockH
+      : (Number.isInteger(namedH) && namedH > 0 ? namedH : 0);
     return callReserve(session, encodeCastVote({
       proof: tx.voteProof,
       output,
       paramId,
       choice: Math.floor(Number(tx.choice) || 0),
       seq: Math.floor(Number(tx.voteSeq) || 1),
-      height: Math.floor(Number(tx.height) || 0),
+      height,
       epoch: Math.floor(Number(tx.earnEpoch) || 0),
     }));
   }
@@ -952,7 +957,42 @@ function evmSettlementIndex(view, nowMs, genesisMs) {
 const EMPTY_REWARD_ROOT = Buffer.from(EMPTY_ROOT).toString('hex');
 
 /** Run pinned Reserve bytecode + EVM SHE value for a block body. Fail closed. */
-export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRoot = undefined) {
+function hex32Of(value) {
+  if (value == null || value === '') return '';
+  const raw = Buffer.isBuffer(value)
+    ? value.toString('hex')
+    : String(value).replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(raw) ? raw : '';
+}
+
+function epochStartRows(cb) {
+  if (!Array.isArray(cb?.epochStartCommits)) return [];
+  const out = [];
+  for (const item of cb.epochStartCommits) {
+    const epoch = Math.floor(Number(item?.epoch));
+    const hex = hex32Of(item?.root);
+    if (!Number.isInteger(epoch) || epoch < 0 || !hex) continue;
+    out.push({ epoch, hex });
+  }
+  return out;
+}
+
+function epochCensusRows(cb) {
+  if (!Array.isArray(cb?.epochCensusCommit)) return [];
+  const out = [];
+  for (const item of cb.epochCensusCommit) {
+    const epoch = Math.floor(Number(item?.epoch));
+    const leafCount = Math.floor(Number(item?.leafCount));
+    const openHeight = Math.floor(Number(item?.openHeight));
+    if (!Number.isInteger(epoch) || epoch < 0) continue;
+    if (!Number.isInteger(leafCount) || leafCount < 1) continue;
+    if (!Number.isInteger(openHeight) || openHeight < 0) continue;
+    out.push({ epoch, leafCount, openHeight });
+  }
+  return out;
+}
+
+export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRoot = undefined, vaultBind = undefined) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
   const list = Array.isArray(txs) ? txs : [];
   const cb = list[0] || null;
@@ -1018,16 +1058,46 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     // A withdraw after the epoch, with no root on the coinbase, and no
     // explicit empty expectation from JS, is not an empty earning set.
     if (oweRoot && !rootHex && owedRoot !== '') return fail('stake_reward');
-    const vaultHex = cb?.vaultLockRoot == null || cb.vaultLockRoot === ''
-      ? ''
-      : (Buffer.isBuffer(cb.vaultLockRoot) ? cb.vaultLockRoot.toString('hex') : String(cb.vaultLockRoot).replace(/^0x/i, '').toLowerCase());
-    const startHex = cb?.epochStartRoot == null || cb.epochStartRoot === ''
-      ? ''
-      : (Buffer.isBuffer(cb.epochStartRoot) ? cb.epochStartRoot.toString('hex') : String(cb.epochStartRoot).replace(/^0x/i, '').toLowerCase());
+    const vaultHex = hex32Of(cb?.vaultLockRoot);
+    const startHex = hex32Of(cb?.epochStartRoot);
     const settleIdx = evmSettlementIndex(view0, nowMs, genesisMs);
-    if (/^[0-9a-f]{64}$/.test(startHex)) {
-      const started = await callReserve(session, encodeCommitEpochStartRoot(settleIdx, startHex));
+    // A listed commit is the claim's earn epoch. The settlement index is
+    // only the fallback for a coinbase that names one root and no list.
+    const listed = epochStartRows(cb);
+    const censusListed = epochCensusRows(cb);
+    if (vaultBind) {
+      const wantRoots = vaultBind.roots || {};
+      for (const row of listed) {
+        if (wantRoots[String(row.epoch)] !== row.hex) return fail('stake_reward');
+      }
+      for (const [epoch, want] of Object.entries(wantRoots)) {
+        if (!listed.some((row) => String(row.epoch) === epoch && row.hex === want)) return fail('stake_reward');
+      }
+      const wantCensus = vaultBind.census || {};
+      for (const row of censusListed) {
+        const want = wantCensus[String(row.epoch)];
+        if (!want || want.leafCount !== row.leafCount || want.openHeight !== row.openHeight) {
+          return fail('stake_reward');
+        }
+      }
+      for (const [epoch, want] of Object.entries(wantCensus)) {
+        const got = censusListed.find((row) => String(row.epoch) === epoch);
+        if (!got || got.leafCount !== want.leafCount || got.openHeight !== want.openHeight) {
+          return fail('stake_reward');
+        }
+      }
+    }
+    const startRows = listed.length
+      ? listed
+      : (startHex ? [{ epoch: settleIdx, hex: startHex }] : []);
+    for (const row of startRows) {
+      const started = await callReserve(session, encodeCommitEpochStartRoot(row.epoch, row.hex));
       if (!started.ok) return fail(started.reason || 'stake_reward');
+      evm.calls += 1;
+    }
+    for (const row of censusListed) {
+      const noted = await callReserve(session, encodeCommitEpochCensus(row.epoch, row.leafCount, row.openHeight));
+      if (!noted.ok) return fail(noted.reason || 'stake_reward');
       evm.calls += 1;
     }
     if (/^[0-9a-f]{64}$/.test(vaultHex) && settleIdx > 0) {
@@ -1055,7 +1125,9 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     }
     for (const tx of list.slice(1)) {
       if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
-      const got = await executeReserveTx(session, tx, nowMs);
+      const got = await executeReserveTx(session, tx, nowMs, {
+        blockHeight: Math.floor(Number(cb?.height) || 0),
+      });
       if (!got.ok) {
         if (isEvmValueTx(tx)) {
           evm.calls += 1;

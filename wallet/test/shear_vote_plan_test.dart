@@ -67,18 +67,15 @@ void main() {
     expect(FileSystemEntity.typeSync(votePlanPath(dir), followLinks: false), FileSystemEntityType.file);
   });
 
-  test('a leaf vote spends one note and skips a sibling and a vote change', () {
+  test('a leaf vote spends the note it picked and does not publish that note', () {
     final notes = [
       {'kind': 'send', 'commit': 'aa' * 32, 'parentTx': 'p'},
       {'kind': 'send', 'commit': 'bb' * 32, 'parentTx': 'p'},
       {'kind': 'send', 'commit': 'cc' * 32, 'parentTx': 'q', 'voteChange': true},
+      {'kind': 'reward-claim', 'commit': 'ee' * 32, 'parentTx': 's'},
       {'kind': 'send', 'commit': 'dd' * 32, 'parentTx': 'r'},
     ];
-    final blob = List<int>.filled(321, 9);
-    blob[0] = 0xf1;
-    final tilde = List<int>.filled(32, 4);
-    final fs1 = List<int>.filled(41, 1);
-    fs1[0] = 0xf1;
+    final picked = <String>[];
     final vote = buildLeafVote(
       vote: {
         'voteProof': 'proof',
@@ -90,17 +87,32 @@ void main() {
       },
       notes: notes,
       fee: 10,
-      fs1: fs1,
-      excess: List<int>.filled(32, 8),
-      admitProof: {'blob': blob, 'cTilde': tilde},
       anchor: 16,
       random: Random(1),
       usedParents: {'p'},
+      prove: (note) {
+        final commit = note['commit'].toString();
+        picked.add(commit);
+        final blob = List<int>.filled(321, 9);
+        blob[0] = 0xf1;
+        final tilde = List<int>.generate(32, (i) => int.parse(commit.substring(i * 2, i * 2 + 2), radix: 16));
+        final fs1 = List<int>.filled(41, 1);
+        fs1[0] = 0xf1;
+        return {
+          'fs1': fs1,
+          'excess': List<int>.filled(32, 8),
+          'admitProof': {'blob': blob, 'cTilde': tilde},
+        };
+      },
     );
     expect(vote, isNotNull);
+    expect(picked, ['dd' * 32]);
     expect(vote!.containsKey('from'), isFalse);
-    expect(vote['feeInput'], 'dd' * 32);
-    expect(vote['fs1'], fs1);
+    expect(vote.containsKey('feeInput'), isFalse);
+    expect(vote.containsKey('parentTx'), isFalse);
+    expect(vote.containsKey('parent'), isFalse);
+    expect((vote['fs1'] as List).first, 0xf1);
+    final tilde = ((vote['admit_proofs'] as List).first as Map)['cTilde'] as List;
     expect((vote['vin'] as List).first['commit'], tilde);
     expect((vote['vout'] as List), isEmpty);
     expect(
@@ -108,14 +120,48 @@ void main() {
         vote: {'voteProof': 'proof', 'height': 40},
         notes: notes,
         fee: 10,
-        fs1: const [],
-        excess: List<int>.filled(32, 8),
-        admitProof: {'blob': blob, 'cTilde': tilde},
         anchor: 16,
         random: Random(1),
+        prove: (_) => null,
       ),
       isNull,
     );
+  });
+
+  test('a plan for a new epoch replaces the file and a reward-claim is not a fee', () {
+    final notes = [
+      {'kind': 'reward-claim', 'commit': '11' * 32, 'parentTx': 'claim'},
+      {'kind': 'send', 'commit': '22' * 32, 'parentTx': 'fee'},
+    ];
+    final root = '${Directory.systemTemp.path}${Platform.pathSeparator}vote-plan-roll-${pid}';
+    final dir = votePlanFolder(root);
+    final first = plannedLeafVotes(
+      dir: dir,
+      leaves: 1,
+      notes: notes,
+      openHeight: 0,
+      closeHeight: 100,
+      epoch: 1,
+      random: Random(1),
+    );
+    expect(first, isNotNull);
+    expect(first!['epoch'], 1);
+    expect((first['txs'] as List).first['feeInput'], '22' * 32);
+    final next = plannedLeafVotes(
+      dir: dir,
+      leaves: 1,
+      notes: notes,
+      openHeight: 0,
+      closeHeight: 100,
+      epoch: 2,
+      random: Random(2),
+    );
+    expect(next, isNotNull);
+    expect(next!['epoch'], 2);
+    expect(loadWalletVotePlan(dir, epoch: 1), isNull);
+    expect(loadWalletVotePlan(dir, epoch: 2)!['epoch'], 2);
+    expect(File(votePlanPath(dir)).statSync().mode & 0x1ff, voteFileMode);
+    expect(Directory(dir).statSync().mode & 0x1ff, voteDirMode);
   });
 
   test('a withdraw builder refuses a plaintext from', () {

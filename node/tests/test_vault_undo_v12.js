@@ -25,14 +25,18 @@ import {
   reviveTx,
 } from '../../crypto/note.js';
 import {
+  attachLockEquality,
+  consensusUnlockPeriod,
   emptyVault,
   lockTx,
+  lockWitnessOf,
   portalIdFromDest,
   trialReserveApply,
   voteTx,
   VOTE_HOLD,
 } from '../../crypto/reserve_vault.js';
-import { MAX_LOCK_LEAVES, PI_SHE_NANOS } from '../../crypto/asert.js';
+import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { PI_SHE_NANOS } from '../../crypto/asert.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { v3BucketVaultRejected } from '../../crypto/fs1_send_gate.js';
 import { rememberFundVerdict } from '../../crypto/fund_verdict.js';
@@ -303,6 +307,8 @@ describe('v12 vault trial does not clone per reserve tx', () => {
 
   it('an in-place trial undoes a miss and keeps a hit on the same vault', () => {
     const vault = emptyVault();
+    vault.genesisMs = T0;
+    vault.magic = 'shear-testnet-v12';
     fillPortals(vault, 1_000);
     const n0 = Object.keys(vault.portals).length;
     const locked0 = vault.totalLockedNanos;
@@ -315,7 +321,8 @@ describe('v12 vault trial does not clone per reserve tx', () => {
     const missed = watchClones(() => trialReserveApply({
       state: vault,
       txs: [vote],
-      nowMs: 1,
+      nowMs: T0,
+      height: 1,
       inPlace: true,
     }));
     assert.equal(missed.result.ok, false, missed.result.reason || 'vote');
@@ -330,46 +337,56 @@ describe('v12 vault trial does not clone per reserve tx', () => {
         from: to,
         to,
         nanos,
-        id: `lock-hit-${i}`,
+        id: `lock-miss-${i}`,
         ownerPub: randomBytes(32).toString('hex'),
       });
-      const hit = watchClones(() => trialReserveApply({
+      const miss = watchClones(() => trialReserveApply({
         state: vault,
         txs: [tx],
-        nowMs: 1,
+        nowMs: T0,
+        height: 1,
         inPlace: true,
       }));
-      assert.equal(hit.clones, 0, `hit cloned ${hit.clones}`);
-      assert.equal(hit.result.ok, true, hit.result.reason || 'lock');
-      assert.equal(hit.result.state, vault);
-      const portal = vault.portals[portalIdFromDest(to)];
-      assert.equal(portal.ownerPub, tx.ownerPub);
-      const leaves = nanos < PI_SHE_NANOS ? 1 : Math.min(MAX_LOCK_LEAVES, Math.floor(nanos / PI_SHE_NANOS));
-      assert.equal(portal.tranches.length, leaves, `leaves for ${nanos}`);
-      for (const tranche of portal.tranches) {
-        assert.equal(String(tranche.commit).length, 64);
-      }
-      // A hidden lock does not publish its integer on totalLockedNanos.
+      assert.equal(miss.clones, 0, `sub-π cloned ${miss.clones}`);
+      assert.equal(miss.result.ok, false, `sub-π ${nanos} applied`);
+      assert.equal(miss.result.reason, 'stake_reward');
+      assert.equal(Object.keys(vault.portals).length, n0);
       assert.equal(vault.totalLockedNanos, locked0);
     }
-    assert.equal(Object.keys(vault.portals).length, n0 + AMOUNTS.length);
+
+    const to = nextDest();
+    const noted = notedPiLock(to, 'lock-hit');
+    const hit = watchClones(() => trialReserveApply({
+      state: vault,
+      txs: [noted],
+      nowMs: T0,
+      height: 1,
+      inPlace: true,
+    }));
+    assert.equal(hit.clones, 0, `hit cloned ${hit.clones}`);
+    assert.equal(hit.result.ok, true, hit.result.reason || 'lock');
+    assert.equal(hit.result.state, vault);
+    const portal = vault.portals[portalIdFromDest(to)];
+    assert.equal(portal.ownerPub, noted.ownerPub);
+    assert.equal(portal.tranches.length, 1);
+    assert.equal(String(portal.tranches[0].commit).length, 64);
+    assert.equal(portal.tranches[0].amount, undefined);
+    assert.equal(vault.totalLockedNanos, locked0);
+    assert.equal(Object.keys(vault.portals).length, n0 + 1);
 
     const live = emptyVault();
+    live.genesisMs = T0;
+    live.magic = 'shear-testnet-v12';
     fillPortals(live, 64);
     const liveLocked = live.totalLockedNanos;
     const livePorts = Object.keys(live.portals).length;
     const liveTo = nextDest();
-    const tx = lockTx({
-      from: liveTo,
-      to: liveTo,
-      nanos: AMOUNTS[0],
-      id: 'lock-live',
-      ownerPub: randomBytes(32).toString('hex'),
-    });
+    const tx = notedPiLock(liveTo, 'lock-live');
     const once = watchClones(() => trialReserveApply({
       state: live,
       txs: [tx],
-      nowMs: 1,
+      nowMs: T0,
+      height: 1,
     }));
     assert.equal(once.result.ok, true, once.result.reason || 'live');
     assert.notEqual(once.result.state, live);
@@ -378,3 +395,19 @@ describe('v12 vault trial does not clone per reserve tx', () => {
     assert.equal(Object.keys(live.portals).length, livePorts);
   });
 });
+
+function notedPiLock(to, id) {
+  const tx = lockTx({
+    from: to,
+    to,
+    nanos: PI_SHE_NANOS,
+    id,
+    ownerPub: randomBytes(32).toString('hex'),
+  });
+  const held = lockWitnessOf(tx);
+  const leaf = vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
+  assert.ok(leaf, id);
+  tx.vaultLockNote = leaf.note;
+  assert.equal(attachLockEquality(tx), true, id);
+  return tx;
+}

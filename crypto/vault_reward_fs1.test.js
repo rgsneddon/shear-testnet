@@ -1283,7 +1283,7 @@ describe('vault-lock reward proof', () => {
       tx,
     });
     assert.equal(reused.ok, false);
-    assert.equal(reused.reason, 'stake_reward');
+    assert.equal(reused.reason, 'proof_reuse');
     tx.principalProofs = opens;
     signWithdrawReward(tx, owner.key, {
       portalId: portal,
