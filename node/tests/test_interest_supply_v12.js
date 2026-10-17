@@ -15,7 +15,7 @@ import { auditCirculatingSupply, foldSupply, supplyReport, supplyStep, emptySupp
 
 const GENESIS = 1_700_000_000_000;
 const EPOCH_MS = EPOCH_DAYS_TESTNET * MS_PER_DAY;
-const STAKES = [PI_SHE_NANOS, PI_SHE_NANOS + 1, PI_SHE_NANOS * 3];
+const STAKES = [PI_SHE_NANOS];
 const LEADS = [1, EPOCH_MS];
 const PORTALS = [1, 3];
 
@@ -150,7 +150,7 @@ function drawBlock(ts, miner, portals, payout, principal = null, lockBlock = nul
 }
 
 describe('v12 supply counts reserve interest from the chain', () => {
-  it('pays principal only for any stake, portal count, and epoch lead', () => {
+  it('pays principal only for an exact pi lock, any portal count, and any epoch lead', () => {
     const minerOnly = minerDest();
     const potOnly = [blockAt(GENESIS, minerOnly, [{ nanos: potAt(GENESIS), kind: 'pot' }])];
     const potAudit = auditCirculatingSupply(potOnly);
@@ -221,6 +221,17 @@ describe('v12 supply counts reserve interest from the chain', () => {
         }
       }
     }
+    for (const stake of [PI_SHE_NANOS + 1, PI_SHE_NANOS * 3]) {
+      const miner = minerDest();
+      const portal = portalDest();
+      const locked = lockBlock(GENESIS, miner, [portal], stake);
+      const chain = [
+        locked,
+        drawBlock(GENESIS + EPOCH_MS + 1, miner, [portal], stake, null, locked),
+      ];
+      const paid = auditCirculatingSupply(chain);
+      assert.equal(paid.status, 'mismatch', `non-pi ${stake} ${paid.reason}`);
+    }
   });
 
   it('counts locked principal in the total supply', () => {
@@ -276,7 +287,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
   });
 
   it('rejects a receipt that is not the principal, and a second withdraw of the same portal', () => {
-    const stake = PI_SHE_NANOS * 2 + 17;
+    const stake = PI_SHE_NANOS;
     const drawTs = GENESIS + EPOCH_MS + 1;
     const one = earned(stake, GENESIS, drawTs);
     assert.ok(one > 0);
