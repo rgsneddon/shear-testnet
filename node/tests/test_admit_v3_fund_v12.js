@@ -5,6 +5,7 @@
  * cannot be spent again.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -423,7 +424,7 @@ function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptN
   return settled;
 }
 
-describe('ADMITv3 note consumption', () => {
+describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, () => {
   it('unfunded and public-debit typed txs never queue, at every amount', () => {
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-reject-'));

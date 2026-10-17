@@ -4,6 +4,7 @@
  * Amounts, portals, and k vary. The cap is the exported policy value.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -301,7 +302,7 @@ function readCounters() {
   };
 }
 
-describe('v12 reserve trial is incremental', () => {
+describe('v12 reserve trial is incremental', { timeout: fileCapMs(import.meta.url) }, () => {
   it('a byte-3 lock is vault_unavailable before a reserve trial', { timeout: 30_000 }, async () => {
     // FS-1 acceptance is test_vault_fs1_funding_v12.js.
     const commit = Buffer.alloc(32, 4);

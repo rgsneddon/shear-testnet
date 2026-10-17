@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, poolFeeDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
@@ -593,7 +593,7 @@ describe('v12 hash-bonus owed ledger', () => {
   });
 
   it('any later producer pays a sealed shortfall once, and a skip is rejected', () => {
-    const feeTo = minerDest();
+    const feeTo = poolFeeDest();
     const a = minerDest();
     const b = minerDest();
     const c = minerDest();

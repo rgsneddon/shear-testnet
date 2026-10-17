@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PRODUCT_VERSION } from '../../crypto/asert.js';
 import { printHelp, helpTopics } from '../src/help.js';
+import { NODE_DISPLAY } from '../src/product.js';
 import { nodeStatus } from '../src/status.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -20,7 +22,10 @@ describe('shear-node CLI help', () => {
   it('prints full help on --help, -h, and help; topics exist; unknown flag exits 2', () => {
     const topics = helpTopics();
     assert.deepEqual(topics.sort(), ['bootstrap', 'env', 'p2p', 'rpc', 'run', 'solo', 'status'].sort());
+    assert.equal(PRODUCT_VERSION, '19.0');
+    assert.equal(NODE_DISPLAY, 'Shear Sentinel v19');
     const full = printHelp();
+    assert.match(full, /^Shear Sentinel v19 — validating full node \(ADMITv3, sends off\)/);
     assert.match(full, /SHEAR_DATA/);
     assert.match(full, /clock_wait/);
     assert.match(full, /p2p\.shear\.digital:30303/);
@@ -45,7 +50,9 @@ describe('shear-node CLI help', () => {
     const solo = run(['--help', 'solo']);
     assert.equal(solo.status, 0, solo.stderr);
     assert.match(solo.stdout, /YOUR_SSA1\.solo/);
-    assert.match(solo.stdout, /Continuum 0\.62/);
+    assert.match(solo.stdout, /^Shear Sentinel v19 — validating full node \(ADMITv3, sends off\)/);
+    assert.match(solo.stdout, /Continuum 0\.72/);
+    assert.doesNotMatch(solo.stdout, /Continuum 0\.62/);
     assert.doesNotMatch(solo.stdout, /Continuum 0\.40/);
     const bad = run(['--not-a-flag']);
     assert.equal(bad.status, 2);

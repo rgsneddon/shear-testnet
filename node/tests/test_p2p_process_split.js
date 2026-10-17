@@ -77,7 +77,7 @@ function bootChild(args, env) {
   return { child, boot, stderr: () => err, stdout: () => out };
 }
 
-function owningPid(port) {
+function owningPidWindows(port) {
   const out = spawnSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', windowsHide: true });
   const text = `${out.stdout || ''}\n${out.stderr || ''}`;
   for (const line of text.split(/\r?\n/)) {
@@ -89,6 +89,72 @@ function owningPid(port) {
     return Number(parts[parts.length - 1]);
   }
   return 0;
+}
+
+function listenInodes(port) {
+  const inodes = [];
+  for (const name of ['tcp', 'tcp6']) {
+    let text = '';
+    try { text = fs.readFileSync(`/proc/net/${name}`, 'utf8'); } catch { continue; }
+    for (const line of text.split(/\n/).slice(1)) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 10 || parts[3] !== '0A') continue;
+      const local = parts[1] || '';
+      const got = parseInt(local.slice(local.lastIndexOf(':') + 1), 16);
+      if (got !== port) continue;
+      inodes.push(parts[9]);
+    }
+  }
+  return inodes;
+}
+
+function pidForSocketInodes(inodes) {
+  const want = new Set(inodes);
+  if (!want.size) return 0;
+  let pids = [];
+  try { pids = fs.readdirSync('/proc'); } catch { return 0; }
+  for (const pid of pids) {
+    if (!/^\d+$/.test(pid)) continue;
+    let fds = [];
+    try { fds = fs.readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+    for (const fd of fds) {
+      let link = '';
+      try { link = fs.readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { continue; }
+      const inode = /^socket:\[(\d+)\]$/.exec(link);
+      if (inode && want.has(inode[1])) return Number(pid);
+    }
+  }
+  return 0;
+}
+
+function owningPidSs(port) {
+  const out = spawnSync('ss', ['-H', '-lptn', `sport = :${port}`], { encoding: 'utf8' });
+  if (out.error) return 0;
+  const hit = /pid=(\d+)/.exec(`${out.stdout || ''}\n${out.stderr || ''}`);
+  return hit ? Number(hit[1]) : 0;
+}
+
+function owningPidLsof(port) {
+  const out = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+  if (out.error || out.status !== 0) return 0;
+  for (const line of String(out.stdout || '').split(/\r?\n/)) {
+    const pid = Number(line.trim());
+    if (pid > 0) return pid;
+  }
+  return 0;
+}
+
+function owningPid(port) {
+  const want = Number(port);
+  if (!Number.isInteger(want) || want <= 0) return 0;
+  if (process.platform === 'win32') return owningPidWindows(want);
+  if (process.platform === 'linux') {
+    const proc = pidForSocketInodes(listenInodes(want));
+    if (proc) return proc;
+  }
+  const ss = owningPidSs(want);
+  if (ss) return ss;
+  return owningPidLsof(want);
 }
 
 async function waitFor(fn, ms, label) {
@@ -151,6 +217,22 @@ function assertStats(sample) {
   assert.equal(Number.isFinite(Number(sample.body.height)), true);
   assert.equal(sample.body.admit, 'ADMITv3');
 }
+
+describe('owningPid', () => {
+  it('names this process for a loopback listen', async () => {
+    const srv = net.createServer();
+    await new Promise((resolve, reject) => {
+      srv.once('error', reject);
+      srv.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+      const { port } = srv.address();
+      assert.equal(owningPid(port), process.pid, `port ${port}`);
+    } finally {
+      await new Promise((resolve) => srv.close(resolve));
+    }
+  });
+});
 
 describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
   it('pool unit does not bind :30303 and fleet runs the sidecar', () => {
