@@ -63,7 +63,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.match(sol, /UnitFloor/);
   });
 
-  it('wrong withdraw nanos is mint_amount; idle adds 0; default committedBps is the plain-average bundle', async () => {
+  it('an uncovered stake field is unsigned; idle interest is 0; default bps stays the bundle', async () => {
     const id = newIdentity();
     const dest = destOf(id);
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
@@ -84,7 +84,8 @@ describe('Reserve mint is sealed-state pure', () => {
     };
     const denied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, txs: [wrong] })), null, { committedBps: 425, trustedPowHash: TRUSTED }));
     assert.equal(denied.ok, false);
-    assert.equal(denied.reason, 'mint_amount');
+    // stakedNanos and principalNanos are not spend-signed body fields.
+    assert.equal(denied.reason, 'unsigned');
 
     assert.equal(interestNanos(0, 425), 0);
     const idleTaxed = {
@@ -97,7 +98,7 @@ describe('Reserve mint is sealed-state pure', () => {
       trustedPowHash: TRUSTED,
     }));
     assert.equal(idleDenied.ok, false);
-    assert.equal(idleDenied.reason, 'mint_amount');
+    assert.equal(idleDenied.reason, 'unsigned');
 
     const as425 = {
       ...withdrawTx({ from: dest, to: vault, nanos: staked + interestNanos(staked, 425), id: 'w-425' }),
@@ -106,11 +107,11 @@ describe('Reserve mint is sealed-state pure', () => {
     };
     const defDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 180_000, txs: [as425] })), null, { trustedPowHash: TRUSTED }));
     assert.equal(defDenied.ok, false);
-    assert.equal(defDenied.reason, 'mint_amount');
+    assert.equal(defDenied.reason, 'unsigned');
     assert.equal(GENESIS_BPS, 281);
   });
 
-  it('gateVorticeRegister ok:false fails the block', () => {
+  it('a SHE ticker is unsigned on the block, and the gate still names ticker', () => {
     const id = newIdentity();
     const dest = destOf(id);
     const bad = {
@@ -125,7 +126,7 @@ describe('Reserve mint is sealed-state pure', () => {
       vort1: 'vort1.ok',
       ticker: 'SHE',
     };
-    assert.equal(gateVorticeRegister(bad).ok, false);
+    assert.equal(gateVorticeRegister(bad).reason, 'ticker');
     const block = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -136,7 +137,9 @@ describe('Reserve mint is sealed-state pure', () => {
     }));
     const got = verifyBlock(block, null, { trustedPowHash: Buffer.alloc(32) });
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'ticker');
+    // ticker, vort1, and bytesHash are not spend-signed body fields, so the
+    // block refuses before the gate. The gate itself still names ticker.
+    assert.equal(got.reason, 'unsigned');
   });
 
   it('verifyBlock does not read reserve/latest.json; votes never move the 1 SHE pot', () => {
