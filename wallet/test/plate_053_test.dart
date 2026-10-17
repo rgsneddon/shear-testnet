@@ -335,6 +335,7 @@ void main() {
       amount: amount,
       spendSeed: hexToBytes(alice.seedHex),
       local: false,
+      publicIpConsent: true,
     );
     expect(she.posted, isFalse, reason: she.remark);
     expect(she.to, payload);
@@ -352,6 +353,7 @@ void main() {
       amount: amount,
       spendSeed: hexToBytes(alice.seedHex),
       local: false,
+      publicIpConsent: true,
     );
     expect(ssaSend.posted, isFalse, reason: ssaSend.remark);
     expect(ssaSend.to, ssa);
@@ -426,6 +428,7 @@ void main() {
       amount: she,
       spendSeed: hexToBytes(id.seedHex),
       local: false,
+      publicIpConsent: true,
     );
     expect(send.posted, isFalse, reason: send.remark);
     expect(send.remark, kErrSendGeneric);

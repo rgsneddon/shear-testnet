@@ -808,11 +808,17 @@ void main() {
     expect(walletSendBase('http://127.0.0.1:8088/'), kLocalNodeRpc);
     expect(walletSendBase('${kPublicNodeSeeds.first}/'), kPublicNodeSeeds.first);
     final poolTargets = nodeSendTargets(kPublicPoolHttp);
-    expect(poolTargets.contains(kPublicPoolHttp), isFalse);
-    expect(poolTargets.first, kLocalNodeRpc);
-    expect(poolTargets, contains(kPublicNodeSeeds.first));
+    expect(poolTargets, [kLocalNodeRpc]);
+    expect(poolTargets.any((h) => h.contains('shear.digital')), isFalse);
+    final consented = nodeSendTargets(kPublicPoolHttp, publicConsent: true);
+    expect(consented.first, kLocalNodeRpc);
+    expect(consented, contains(kPublicNodeSeeds.first));
     expect(
       nodeSendTargets(kPublicPoolHttp, legacyPoolSend: true),
+      [kLocalNodeRpc],
+    );
+    expect(
+      nodeSendTargets(kPublicPoolHttp, legacyPoolSend: true, publicConsent: true),
       [kPublicPoolHttp],
     );
     expect(
@@ -824,7 +830,11 @@ void main() {
       ['http://127.0.0.1:57299'],
     );
     expect(
-      nodeSendTargets('https://p2p.shear.digital').first,
+      nodeSendTargets('https://p2p.shear.digital').any((h) => h.contains('shear.digital')),
+      isFalse,
+    );
+    expect(
+      nodeSendTargets('https://p2p.shear.digital', publicConsent: true).first,
       'https://p2p.shear.digital',
     );
   });
@@ -1401,6 +1411,7 @@ void main() {
       paymentCode: w.id.paymentCode,
       spendSeed: w.seed,
       allowPublicHttp: true,
+      publicNode: false,
     );
     expect(rounds, greaterThan(0));
     final left = w.ledger.notes.where((n) => n['spent'] != true).toList();
@@ -5971,7 +5982,7 @@ void main() {
     expect(kUnprivateConfirmLabel, 'I already use a VPN / I accept exposing my IP');
     expect(kUnprivateConfirmHelper, kPublicNodeEverySendCopy);
     expect(kUnprivateConfirmHelper, contains('on every send'));
-    expect(kUnprivateConfirmHelper.toLowerCase(), isNot(contains('tor')));
+    expect(RegExp(r'\btor\b').hasMatch(kUnprivateConfirmHelper.toLowerCase()), isFalse);
   });
 
   test('send refuses public pool HTTP without hop', () async {
@@ -9116,6 +9127,7 @@ class _RecordingPool extends ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    bool publicConsent = false,
     String? nanosWire,
     String? id,
     String? withdrawNonce,
@@ -9222,6 +9234,7 @@ class _ReasonPool extends ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    bool publicConsent = false,
     String? nanosWire,
     String? id,
     String? withdrawNonce,
