@@ -13,6 +13,7 @@ import 'shear_read_sync.dart';
 import 'shear_session.dart';
 import 'shear_ed25519.dart';
 import 'shear_pack.dart';
+import 'shear_public_confirm.dart';
 import 'shear_admit.dart';
 import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
@@ -1152,7 +1153,7 @@ Map<String, dynamic> signSpendWire(Map<String, dynamic> input) {
 
 /// flutter_tester does not finish [Isolate.run] inside one pumped frame, so
 /// plate tests sign on the caller. Production leaves FLUTTER_TEST unset and
-/// signs off the UI isolate. [SHEAR_FLOW_OFF_UI] forces that production hop.
+/// signs off the UI isolate. [SHEAR_FLOW_OFF_UI] forces that off-UI path.
 /// Signing does not start the native prover.
 bool _signOnCaller() =>
     !_flowOffUiForced() && Platform.environment['FLUTTER_TEST'] == 'true';
@@ -2386,6 +2387,8 @@ Future<ContinuumSendResult> submitContinuumSend({
   Uint8List? spendSeed,
   bool local = false,
   bool allowPublicHttp = false,
+  bool publicNode = false,
+  bool publicIpConsent = false,
   int depth = 0,
   SendProgress? progress,
   String? nanosWire,
@@ -2397,6 +2400,9 @@ Future<ContinuumSendResult> submitContinuumSend({
   }
   if (amount <= 0 && (nanosWire == null || nanosWire.isEmpty)) {
     return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+  }
+  if (publicNode && !local && !publicNodePostAllowed(consent: publicIpConsent)) {
+    return ContinuumSendResult(posted: false, to: candidate, remark: kPublicIpWaitCopy);
   }
   if (!ledger.beginSend()) {
     return ContinuumSendResult(posted: false, to: candidate, remark: 'send_in_flight');
@@ -2644,47 +2650,6 @@ String flowSendAdvisoryOf(Object error) {
   }
   if (msg.contains(kErrSendUnavailable)) return kErrSendUnavailable;
   return kErrSendGeneric;
-}
-
-/// Submit snack that keeps the reason body so a pool rejection is not
-/// collapsed to [kErrSendGeneric]. Raw `no_note` and HTML parse failures
-/// are rewritten; a real pool reason is kept.
-String hopFeeAdvisoryOf(Object error) {
-  if (error is FormatException) return kErrPoolHtml;
-  var msg = '';
-  if (error is StateError) {
-    msg = error.message.trim();
-  } else if (error is ArgumentError) {
-    msg = error.message?.toString().trim() ?? '';
-  } else {
-    msg = error.toString().trim();
-    const prefixes = <String>[
-      'Bad state: ',
-      'Invalid argument(s): ',
-      'FormatException: ',
-      'Exception: ',
-    ];
-    for (final p in prefixes) {
-      if (msg.startsWith(p)) {
-        msg = msg.substring(p.length).trim();
-        break;
-      }
-    }
-  }
-  if (msg.isEmpty) return kErrSendGeneric;
-  if (msg == 'no_note') return kErrNoSealedNote;
-  if (msg == 'unsigned') return kErrLockUnsigned;
-  if (msg.startsWith('pool returned an error page') || msg == kErrPoolHtml) return msg;
-  final low = msg.toLowerCase();
-  if (low.contains('<html') ||
-      low.contains('<!doctype') ||
-      low.contains('formatexception') ||
-      low.contains('unexpected character')) {
-    final code = RegExp(r'http_(\d+)').firstMatch(msg);
-    if (code != null) return 'pool returned an error page (http_${code.group(1)})';
-    return kErrPoolHtml;
-  }
-  return msg;
 }
 
 /// Public alias of [_sendHumanError] for unit tests.
@@ -5069,7 +5034,9 @@ class ShearLedger implements ReadProofSink {
         // findLiveNode waits out the slowest seed. A dead loopback then
         // expires this tick before a public node is adopted, and the bar
         // stays "not connected".
-        if (sync != null && (sync.liveBase == null || sync.liveBase!.isEmpty)) {
+        if (sync != null &&
+            !pool!.usesOwnNode &&
+            (sync.liveBase == null || sync.liveBase!.isEmpty)) {
           final found = await firstLiveNodeSeed(sync.seeds);
           if (found.isNotEmpty) sync.liveBase = found;
         }
@@ -6030,7 +5997,7 @@ class ShearLedger implements ReadProofSink {
       'full': full,
       'restFrame': restFrame,
       'paymentCode': paymentCode ?? '',
-      'baseUrl': (pool != null && pool!.isPinned) ? pool!.baseUrl : '',
+      'baseUrl': creditFollowReadBase(pool),
       'address': _restFrame ?? restFrame,
       'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
       'viewKey': viewSecret ?? '',
@@ -6319,17 +6286,14 @@ class ShearLedger implements ReadProofSink {
     String? sessionPassword,
     void Function()? onCoins,
   }) async {
-    final pinned = pool != null && pool!.isPinned;
     final spec = <String, dynamic>{
       'full': full,
       'chain': chain,
       'spendableFirst': spendableFirst,
       'restFrame': restFrame,
       'paymentCode': paymentCode ?? '',
-      'baseUrl': pinned ? pool!.baseUrl : (pool?.sync?.liveBase ?? ''),
-      'nodeSeeds': [
-        for (final s in (pool?.sync?.seeds ?? kPublicNodeSeeds)) s,
-      ],
+      'baseUrl': creditFollowReadBase(pool),
+      'nodeSeeds': creditFollowReadSeeds(pool),
       'address': _restFrame ?? restFrame,
       'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
       'viewKey': viewSecret ?? '',
@@ -7582,7 +7546,12 @@ class ShearLedger implements ReadProofSink {
     required Uint8List spendSeed,
     SendProgress? progress,
     bool allowPublicHttp = false,
+    bool publicNode = false,
+    bool publicIpConsent = false,
   }) async {
+    if (publicNode && !publicNodePostAllowed(consent: publicIpConsent)) {
+      throw StateError(kPublicIpWaitCopy);
+    }
     var rounds = 0;
     for (var guard = 0; guard < 100000; guard++) {
       if (progress?.cancelRequested == true) throw StateError('send_cancelled');
@@ -8817,6 +8786,18 @@ class ShearLedger implements ReadProofSink {
   }
 }
 
+/// Read base for the credit-follow worker. An own node replaces the public book.
+String creditFollowReadBase(ShearPoolClient? pool) {
+  if (pool != null && (pool.isPinned || pool.usesOwnNode)) return pool.baseUrl;
+  return pool?.sync?.liveBase ?? '';
+}
+
+/// Seeds the worker may probe. An own node is the only seed.
+List<String> creditFollowReadSeeds(ShearPoolClient? pool) {
+  if (pool != null && pool.usesOwnNode) return [pool.baseUrl];
+  return [for (final s in (pool?.sync?.seeds ?? kPublicNodeSeeds)) s];
+}
+
 class ShearPoolClient {
   /// Production (no [baseUrl]) reads headers 1…tip from a live seed. Tests pin [baseUrl].
   ShearPoolClient({
@@ -8837,6 +8818,24 @@ class ShearPoolClient {
   final String? _pinned;
   final HttpClient _http;
   ShearReadSync? _sync;
+  String? _ownNode;
+
+  /// Reads and posts use only this node. Null returns to the public seeds.
+  void useOwnNode(String? url) {
+    if (url == null || url.trim().isEmpty) {
+      if (_sync != null && _sync!.liveBase == _ownNode) _sync!.liveBase = null;
+      _ownNode = null;
+      return;
+    }
+    final parsed = parseOwnNodeUrl(url);
+    if (parsed == null) {
+      throw ArgumentError(ownNodeUrlError(url) ?? kOwnNodeUrlError);
+    }
+    _ownNode = parsed;
+    if (_sync != null) _sync!.liveBase = parsed;
+  }
+
+  bool get usesOwnNode => _ownNode != null;
   final Set<int> _pinnedProven = {};
   int _pinnedTip = 0;
 
@@ -8846,7 +8845,7 @@ class ShearPoolClient {
 
   String? get genesisHex => _sync?.genesisHex ?? _pinnedGenesis;
 
-  String get baseUrl => _pinned ?? _sync?.liveBase ?? kWalletDefaultSeed;
+  String get baseUrl => _ownNode ?? _pinned ?? _sync?.liveBase ?? kWalletDefaultSeed;
 
   int get provenHeaders => _sync?.provenHeaders ?? _pinnedProven.length;
   int get wantedHeaders =>
@@ -8866,7 +8865,7 @@ class ShearPoolClient {
       );
 
   Future<void> followLive() async {
-    if (_pinned != null) {
+    if (_ownNode != null || _pinned != null) {
       await _provePinned();
       return;
     }
@@ -8980,7 +8979,7 @@ class ShearPoolClient {
   }
 
   Future<void> _ensureBase() async {
-    if (_pinned != null) return;
+    if (_ownNode != null || _pinned != null) return;
     if (_sync?.liveBase != null) return;
     await _sync?.findLiveNode();
   }
@@ -9041,20 +9040,20 @@ class ShearPoolClient {
     if (path == '/api/wallet/send') {
       return _postSpend(path, body, legacyPoolSend: legacyPoolSend);
     }
-    final first = _pinned ?? _nonSpendPostBase(baseUrl);
+    final first = _ownNode ?? _pinned ?? _nonSpendPostBase(baseUrl);
     try {
       return await _postOnce(first, path, body);
     } on FormatException {
-      if (_pinned == null) _sync?.noteFailure();
+      if (_pinned == null && _ownNode == null) _sync?.noteFailure();
       throw StateError(kErrPoolHtml);
     } on SocketException {
-      if (_pinned != null || isPublicPoolHttp(first)) {
-        if (_pinned == null) _sync?.noteFailure();
+      if (_ownNode != null || _pinned != null || isPublicPoolHttp(first)) {
+        if (_pinned == null && _ownNode == null) _sync?.noteFailure();
         rethrow;
       }
       return _postOnce(kPublicPoolHttp, path, body);
     } catch (_) {
-      if (_pinned == null) _sync?.noteFailure();
+      if (_pinned == null && _ownNode == null) _sync?.noteFailure();
       rethrow;
     }
   }
@@ -9066,7 +9065,7 @@ class ShearPoolClient {
     Map<String, dynamic> body, {
     bool legacyPoolSend = false,
   }) async {
-    final targets = nodeSendTargets(baseUrl, pinned: _pinned, legacyPoolSend: legacyPoolSend);
+    final targets = nodeSendTargets(baseUrl, pinned: _ownNode ?? _pinned, legacyPoolSend: legacyPoolSend);
     Object? last;
     for (final base in targets) {
       try {
@@ -9083,7 +9082,7 @@ class ShearPoolClient {
         last = e;
       }
     }
-    if (_pinned == null) _sync?.noteFailure();
+    if (_pinned == null && _ownNode == null) _sync?.noteFailure();
     if (last != null) throw last;
     throw StateError('node not running');
   }

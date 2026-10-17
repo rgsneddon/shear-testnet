@@ -260,6 +260,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   late final List<ScrollController> _tabScroll;
   final _depositsScroll = ScrollController();
   bool _reserveUnprivateOk = false;
+  final _ownNodeCtrl = TextEditingController();
+  String? _ownNodeError;
   String? _reserveDepositProgress;
   int _owedAnchorMs = 0;
   double _owedAnchorShe = 0;
@@ -442,6 +444,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       override: Platform.environment['SHEAR_NODE_BIN'],
       besideDir: beside,
     );
+    _ownNodeCtrl.text = session.ownNodeUrl;
+    _applyOwnNode();
     sidecar = ShearNodeSidecar(
       android: widget.hostAndroid ?? (!kIsWeb && Platform.isAndroid),
       storedMode: widget.session?.closureSendMode,
@@ -460,6 +464,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   @override
   void dispose() {
+    _ownNodeCtrl.dispose();
     flowTo.dispose();
     flowAmt.dispose();
     flowMemo.dispose();
@@ -871,6 +876,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (session.rememberedReserve != null) {
       reserve.installRemembered(ledger, session.rememberedReserve!);
     }
+    _ownNodeCtrl.text = session.ownNodeUrl;
+    _applyOwnNode();
     if (!widget.skipPoolSync) {
       // _finishUnlockSync paints the shell before its credit await.
       if (!mounted || id == null) return;
@@ -2909,6 +2916,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             });
             return;
           }
+          if (continuumPayable(flowTo.text)) {
+            final consent = await _flowPublicConsent(context);
+            if (!consent || !mounted) {
+              setState(() {
+                _flowSendAdvisory = kPublicIpWaitCopy;
+                _flowSendOk = false;
+              });
+              return;
+            }
+          }
           final bare = sidecar.committed == ClosureSendMode.connectBare;
           final progress = SendProgress();
           _watchFlowProgress(progress);
@@ -2930,6 +2947,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               spendSeed: hexToBytes(ident.seedHex),
               local: false,
               allowPublicHttp: bare,
+              publicNode: _flowPostsToPublicNode(),
+              publicIpConsent: _reserveUnprivateOk,
               depth: _mempoolDepth,
               progress: progress,
             );
@@ -2983,6 +3002,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             ? null
             : () async {
           if (!claimSingleSubmit(held: _flowSending)) return;
+          final consent = await _flowPublicConsent(context);
+          if (!consent || !mounted) {
+            setState(() {
+              _flowSendAdvisory = kPublicIpWaitCopy;
+              _flowSendOk = false;
+            });
+            return;
+          }
           final who = id;
           if (who == null) return;
           final progress = SendProgress();
@@ -3000,6 +3027,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               spendSeed: hexToBytes(who.seedHex),
               progress: progress,
               allowPublicHttp: sidecar.committed == ClosureSendMode.connectBare,
+              publicNode: _flowPostsToPublicNode(),
+              publicIpConsent: _reserveUnprivateOk,
             );
             if (!mounted) return;
             setState(() {
@@ -3506,11 +3535,43 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
-  /// Public-node Reserve posts wait on the VPN / IP confirm. A local post does not.
+  /// Public-node posts wait on the VPN / IP confirm. A local or own-node post does not.
   Future<bool> _ensurePublicIpConsent(BuildContext context, {required bool local}) async {
-    if (local || _reserveUnprivateOk) return true;
+    if (local || _reserveUnprivateOk || ownNodeSkipsPublicConsent(session.ownNodeUrl)) return true;
     await _reserveUnprivateConfirm(context);
     return _reserveUnprivateOk;
+  }
+
+  bool _flowPostsToPublicNode() {
+    if (sidecar.committed != ClosureSendMode.connectBare) return false;
+    return !ownNodeSkipsPublicConsent(session.ownNodeUrl);
+  }
+
+  Future<bool> _flowPublicConsent(BuildContext context) async {
+    if (!_flowPostsToPublicNode()) return true;
+    return _ensurePublicIpConsent(context, local: false);
+  }
+
+  void _applyOwnNode() {
+    final url = session.ownNodeUrl.trim();
+    ledger.pool?.useOwnNode(url.isEmpty ? null : url);
+  }
+
+  void _saveOwnNode() {
+    final err = ownNodeUrlError(_ownNodeCtrl.text);
+    if (err != null) {
+      setState(() => _ownNodeError = err);
+      return;
+    }
+    final parsed = parseOwnNodeUrl(_ownNodeCtrl.text) ?? '';
+    setState(() {
+      _ownNodeError = null;
+      session.ownNodeUrl = parsed;
+      if (parsed.isEmpty) _ownNodeCtrl.text = '';
+      else _ownNodeCtrl.text = parsed;
+    });
+    _applyOwnNode();
+    if (!widget.skipPoolSync) unawaited(session.persist());
   }
 
   Future<void> _reserveWithdraw(BuildContext context, ShearIdentity ident) async {
@@ -4285,9 +4346,30 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         title: const Text('Connect Bare'),
         subtitle: Text(_hostAndroid
             ? kConnectBareCopy
-            : 'Connect bare. You push a signed send. This device still runs the book node so blocks can land. No tunnel.'),
+            : 'Connect bare. You push a signed send. This device still runs the book node so blocks can land. $kPublicNodeEverySendCopy'),
         onChanged: (v) => setState(() => sidecar.select(v!)),
       ),
+      if (sidecar.pending == ClosureSendMode.connectBare) ...[
+        const Text(kPublicNodeEverySendCopy, key: Key('connect-bare-ip-copy')),
+        TextField(
+          key: const Key('connect-own-node'),
+          controller: _ownNodeCtrl,
+          decoration: InputDecoration(
+            labelText: 'Own node',
+            helperText: 'Optional. host:port or https://host:port. Empty uses the public node.',
+            errorText: _ownNodeError,
+          ),
+          onSubmitted: (_) => _saveOwnNode(),
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: const Key('connect-own-node-save'),
+            onPressed: _saveOwnNode,
+            child: const Text('Save node'),
+          ),
+        ),
+      ],
       if (!_hostAndroid)
         RadioListTile<ClosureSendMode>(
           key: const Key('closure-send-path-local'),

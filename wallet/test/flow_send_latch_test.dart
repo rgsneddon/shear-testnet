@@ -48,6 +48,8 @@ void main() {
     await tester.enterText(find.byKey(const Key('flow-amount')), '0.2');
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
     final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
