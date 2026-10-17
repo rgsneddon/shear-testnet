@@ -69,7 +69,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -3351,6 +3351,9 @@ export function createStore(dir, {
     if (bucket) return bucket;
     const noteRule = txNoteRuleRejected(tx, 1);
     if (noteRule) return noteRule;
+    // The fee note stays in the wallet. Naming it is vote_leak, not an unknown field.
+    const leakedVote = leafVoteLeakRejected(tx);
+    if (leakedVote) return leakedVote;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a
@@ -5392,6 +5395,34 @@ export function createStore(dir, {
       prepareCoinbase: (cb) => {
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
+        // The contract reads the frozen period root and the census from this
+        // coinbase. A claim looks the root up by its earn epoch, and a leaf
+        // vote is NotVoter until both are stored.
+        const starts = new Map();
+        const censusRows = new Map();
+        for (const tx of pendingTxs) {
+          if (!tx) continue;
+          const kind = String(tx.kind || '');
+          if (kind !== 'reward-claim' && kind !== 'leaf-vote') continue;
+          if (kind === 'reward-claim' && !tx.vaultProof) continue;
+          if (kind === 'leaf-vote' && !tx.voteProof) continue;
+          const earn = Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0);
+          if (!Number.isInteger(earn) || earn < 0) continue;
+          const start = String(reserveVault.epochStartRoots?.[String(earn)] || '').toLowerCase();
+          if (/^[0-9a-f]{64}$/.test(start)) starts.set(earn, start);
+          if (kind !== 'leaf-vote') continue;
+          const census = reserveVault.epochCensus?.[String(earn)];
+          const leaves = Math.floor(Number(census?.leafCount) || 0);
+          const openH = Math.floor(Number(census?.openHeight) || 0);
+          if (census?.known && leaves >= 1 && openH >= 0) {
+            censusRows.set(earn, { epoch: earn, leafCount: leaves, openHeight: openH });
+          }
+        }
+        if (starts.size) {
+          cb.epochStartCommits = [...starts.entries()].map(([epoch, rootHex]) => ({ epoch, root: rootHex }));
+          cb.epochStartRoot = cb.epochStartCommits[0].root;
+        }
+        if (censusRows.size) cb.epochCensusCommit = [...censusRows.values()];
       },
     });
     const jobId = `shear-${height}-${jobSeq++}`;

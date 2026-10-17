@@ -27,6 +27,9 @@ import {
   withdraw,
   portalEpochInterest,
   lockTx,
+  lockWitnessOf,
+  attachLockEquality,
+  consensusUnlockPeriod,
   withdrawTx,
   verifyReservePayout,
   supplyIdentity,
@@ -36,6 +39,8 @@ import {
   applyReserveBlock,
   hiddenWithdrawOpening,
 } from '../../crypto/reserve_vault.js';
+import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { randomScalar } from '../../crypto/note.js';
 import { extraMintAllowed } from '../../crypto/asert.js';
 import { reserveFeeDest } from '../../crypto/levy.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
@@ -85,6 +90,23 @@ const ABI_NAMES = [
 function owner() {
   const id = newIdentity();
   return { id, dest: spendDestOf(id.spendPub), pub: Buffer.from(id.spendPub).toString('hex') };
+}
+
+function notedOwnerLock(who, id, ownerPub = who.pub) {
+  const tx = lockTx({
+    from: who.dest,
+    to: who.dest,
+    nanos: PI_SHE_NANOS,
+    id,
+    ownerPub,
+  });
+  tx.ownerPub = ownerPub;
+  const held = lockWitnessOf(tx);
+  const leaf = vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
+  assert.ok(leaf, id);
+  tx.vaultLockNote = leaf.note;
+  assert.equal(attachLockEquality(tx), true, id);
+  return tx;
 }
 
 function openPortal(principal, when = T0, { payout = null } = {}) {
@@ -149,57 +171,76 @@ describe('Vault Security test map', () => {
       const published = signedWithdraw(who, state, payTo.dest, principal);
       assert.equal(verifyReservePayout(state, foreign, END).reason, 'payout_mismatch');
       assert.equal(boundReserveWithdraw(foreign, state, null, END).reason, 'payout_mismatch');
-      assert.equal(boundReserveWithdraw(published, state, null, END).reason, 'insufficient');
+      assert.equal(boundReserveWithdraw(published, state, null, END).reason, 'stake_reward');
       assert.equal(verifyReservePayout(state, home, END).ok, true, verifyReservePayout(state, home, END).reason);
     }
   });
 
   it('P1-b the lock stays under the owner key', () => {
-    for (const principal of [PI_SHE_NANOS, PI_SHE_NANOS * 3, PI_SHE_NANOS * 100]) {
-      const who = owner();
-      const sealed = lockTx({
+    const who = owner();
+    const sealed = notedOwnerLock(who, 'lock-pi');
+    const out = sealed.vout[0];
+    const want20 = Buffer.from(hash20FromAddress(who.dest)).toString('hex');
+    assert.equal(Buffer.from(out.dest20).toString('hex'), want20);
+    const state = emptyVault();
+    state.genesisMs = T0;
+    const applied = applyReserveBlock({
+      state,
+      block: {
+        height: 1,
+        txs: [
+          { coinbase: true, vout: [] },
+          sealed,
+        ],
+      },
+      nowMs: T0,
+      height: 1,
+      genesisMs: T0,
+    });
+    assert.equal(applied.ok, true, applied.reason);
+    const portal = state.portals[sealed.portalId];
+    assert.equal(Number(portal.staked) + Number(portal.idle), 0);
+    assert.equal(portal.tranches[0].amount, undefined);
+    assert.equal(String(portal.tranches[0].commit).length, 64);
+    assert.equal(portal.qualified, true);
+    const again = notedOwnerLock(who, 'lock-pi-2');
+    const second = applyReserveBlock({
+      state,
+      block: { height: 2, txs: [again] },
+      nowMs: T0 + 1,
+      height: 2,
+      genesisMs: T0,
+    });
+    assert.equal(second.ok, true, second.reason);
+    const stranger = owner();
+    const foreign = notedOwnerLock(who, 'lock-stranger', stranger.pub);
+    const denied = applyReserveBlock({
+      state,
+      block: { height: 3, txs: [foreign] },
+      nowMs: T0 + 2,
+      height: 3,
+      genesisMs: T0,
+    });
+    assert.equal(denied.reason, 'unsigned');
+    assert.equal(state.portals[portalIdFromDest(who.dest)].ownerPub, who.pub);
+    for (const principal of [PI_SHE_NANOS * 3, PI_SHE_NANOS * 100]) {
+      const wide = lockTx({
         from: who.dest,
         to: who.dest,
         nanos: principal,
-        id: `lock-${principal}`,
-      });
-      const out = sealed.vout[0];
-      const want20 = Buffer.from(hash20FromAddress(who.dest)).toString('hex');
-      assert.equal(Buffer.from(out.dest20).toString('hex'), want20);
-      const state = emptyVault();
-      const applied = applyReserveBlock({
-        state,
-        block: {
-          txs: [
-            { coinbase: true, vout: [] },
-            { ...sealed, spendPub: who.pub },
-          ],
-        },
-        nowMs: T0,
-        genesisMs: T0,
-      });
-      assert.equal(applied.ok, true, applied.reason);
-      const portal = state.portals[sealed.portalId];
-      assert.equal(Number(portal.staked) + Number(portal.idle), 0);
-      assert.equal(portal.tranches[0].amount, undefined);
-      assert.equal(String(portal.tranches[0].commit).length, 64);
-      assert.equal(portal.qualified, true);
-      deposit({
-        state,
-        dest: who.dest,
-        nanos: 1,
-        nowMs: T0 + 1,
+        id: `lock-wide-${principal}`,
         ownerPub: who.pub,
       });
-      const stranger = owner();
-      const denied = deposit({
+      assert.ok(wide.vout.filter((row) => row.kind === 'lock').length > 1);
+      const refused = applyReserveBlock({
         state,
-        dest: who.dest,
-        nanos: 1,
-        nowMs: T0 + 2,
-        ownerPub: stranger.pub,
+        block: { height: 4, txs: [wide] },
+        nowMs: T0 + 3,
+        height: 4,
+        genesisMs: T0,
       });
-      assert.equal(denied.reason, 'unsigned');
+      assert.equal(refused.ok, false);
+      assert.equal(refused.reason, 'stake_reward');
       assert.equal(state.portals[portalIdFromDest(who.dest)].ownerPub, who.pub);
     }
   });
@@ -242,7 +283,7 @@ describe('Vault Security test map', () => {
         const wrong = signedWithdraw(who, state, spendDestOf(newIdentity().spendPub), 0);
         assert.equal(verifyReservePayout(state, wrong, END).reason, 'payout_mismatch');
         const fat = signedWithdraw(who, state, who.dest, 1);
-        assert.equal(boundReserveWithdraw(fat, state, null, END).reason, 'insufficient');
+        assert.equal(boundReserveWithdraw(fat, state, null, END).reason, 'stake_reward');
       }
     }
   });

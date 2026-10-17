@@ -770,7 +770,9 @@ function accountBlock(prev, block, opts = {}) {
   );
   if (!reward.ok) return { reason: reward.reason || 'supply', state };
   const claimedReward = reward.claimed || 0n;
-  const publicTotal = potMinted + mintedHashHere + levy + reward.minted;
+  // A claim mint is the claim output, not a coinbase output. Counting it
+  // here made the first honest claim block fail the coinbase sum.
+  const publicTotal = potMinted + mintedHashHere + levy;
   const rememberRange = opts.rememberRange !== false;
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };

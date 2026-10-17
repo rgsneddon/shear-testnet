@@ -925,6 +925,19 @@ function liveVaultNotes(state) {
   return notes.filter((hex) => !retired[hex]);
 }
 
+/** A snapshot that lost the index still names each leaf by its note. */
+function rebuildVaultLockIndex(state) {
+  if (!state) return;
+  if (!state.vaultLockIndex) state.vaultLockIndex = Object.create(null);
+  const notes = Array.isArray(state.vaultLockNotes) ? state.vaultLockNotes : [];
+  for (const hex of notes) {
+    if (typeof hex !== 'string' || hex.length < 128) continue;
+    const commit = hex.slice(64, 128).toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(commit)) continue;
+    if (!state.vaultLockIndex[commit]) state.vaultLockIndex[commit] = hex.toLowerCase();
+  }
+}
+
 /** Rebuild the FS-1 root from notes a withdraw has not retired. */
 function rebuildVaultLockRoot(state) {
   const live = liveVaultNotes(state);
@@ -2244,6 +2257,7 @@ function restoreTrial(state, snap, frame) {
   state.vaultRetired = snap.vaultRetired ? { ...snap.vaultRetired } : Object.create(null);
   state.vaultLockRoot = snap.vaultLockRoot || '';
   state.vaultLockIndex = snap.vaultLockIndex ? { ...snap.vaultLockIndex } : Object.create(null);
+  rebuildVaultLockIndex(state);
   state.vaultLockRoots = snap.vaultLockRoots ? { ...snap.vaultLockRoots } : Object.create(null);
   state.epochStartRoots = snap.epochStartRoots ? { ...snap.epochStartRoots } : Object.create(null);
   state.vaultLeafBorn = snap.vaultLeafBorn ? { ...snap.vaultLeafBorn } : Object.create(null);
@@ -2384,6 +2398,17 @@ function applyEpochOpen(state, nowMs, idx) {
   appendEpochRate(state, idx, state.epochBps);
   void freezeEpochBps;
   void MAGIC_MAINNET;
+}
+
+/** Leaf count for this epoch, once. Later blocks do not rewrite it. */
+function ensureEpochCensus(state, height) {
+  if (!(Number(state?.epochStartMs) > 0)) return;
+  const idx = Math.floor(Number(state.currentEpoch) || 0);
+  if (censusOf(state, idx)) return;
+  const leaves = liveVaultNotes(state).length;
+  if (leaves < 1) return;
+  const openH = Math.max(0, Math.floor(Number(height) || 0));
+  commitCensus(state, idx, leaves, openH);
 }
 
 /** Prospective and append-only. A second write does not rewrite a frozen rate. */
@@ -3903,8 +3928,31 @@ function withdrawNonceSigned(tx) {
   }
 }
 
+/** Unlock bound into the reserve suffix. Absent, or not a positive integer, is 0. */
+function stampedUnlockAtMs(tx) {
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (String(o?.kind || '') !== KIND_LOCK) continue;
+    const unlock = Math.floor(Number(o?.unlockAtMs));
+    return Number.isInteger(unlock) && unlock > 0 ? unlock : 0;
+  }
+  return 0;
+}
+
+/** Lock epoch bound into the reserve suffix. Absent is -1. */
+function stampedLockEpoch(tx) {
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (String(o?.kind || '') !== KIND_LOCK) continue;
+    const epoch = Number(o?.lockEpoch);
+    return Number.isInteger(epoch) && epoch >= 0 ? epoch : -1;
+  }
+  return -1;
+}
+
 /** Merkle, owner, and v3 transcript suffix for a lock, vote, or withdraw.
- * A withdraw also signs its id and its 32-byte nonce. Lock and vote do not. */
+ * Unlock time and lock epoch are always bound. A withdraw also signs its id
+ * and its 32-byte nonce. Lock and vote do not. */
 export function reserveDigestSuffix(tx) {
   const fields = canonicalReserveFields(tx);
   if (!fields) return null;
@@ -3917,6 +3965,8 @@ export function reserveDigestSuffix(tx) {
     lenPrefUtf8(fields.choice),
     i64le(fields.nanos),
     fields.commit,
+    i64le(stampedUnlockAtMs(tx)),
+    i64le(stampedLockEpoch(tx)),
   ];
   if (fields.kind === KIND_LOCK) {
     parts.push(rewardOwnerPub(tx?.ownerPub));
@@ -4173,8 +4223,22 @@ function maybeTallyBallots(state, height) {
  * A leaf vote spends one owned FS-1 note. The fee is the value that note
  * destroys. A voter-written fee with no input is not credited.
  */
+const LEAKED_LEAF_VOTE_FIELDS = ['feeInput', 'parentTx', 'parent'];
+
+/** The fee note's commit and its parent tx stay in the wallet. A vote that carries them is refused. */
+export function leafVoteLeakRejected(tx) {
+  if (String(tx?.kind || '') !== KIND_LEAF_VOTE) return null;
+  for (const key of LEAKED_LEAF_VOTE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(tx, key)) continue;
+    if (tx[key] != null && tx[key] !== '') return { ok: false, reason: 'vote_leak' };
+  }
+  return null;
+}
+
 export function leafVoteFundingRejected(tx) {
   if (String(tx?.kind || '') !== KIND_LEAF_VOTE) return null;
+  const leaked = leafVoteLeakRejected(tx);
+  if (leaked) return leaked;
   if (tx?.from != null && String(tx.from) !== '') return { ok: false, reason: 'admit_version' };
   if (tx?.payer != null && String(tx.payer) !== '') return { ok: false, reason: 'admit_version' };
   const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v && !v.coinbase);
@@ -4207,6 +4271,9 @@ export function leafVoteFundingRejected(tx) {
  * removed when the leaf later withdraws.
  */
 export function applyLeafVote(state, tx, blockHeight) {
+  const leaked = leafVoteLeakRejected(tx);
+  if (leaked) return leaked;
+  ensureEpochCensus(state, blockHeight);
   if (Array.isArray(tx?.voteProofs)) return { ok: false, reason: 'stake_reward' };
   if (tx?.portalId || tx?.from || tx?.to || tx?.payoutPortalId) return { ok: false, reason: 'stake_reward' };
   if (tx?.nullifier || tx?.vaultProof) return { ok: false, reason: 'stake_reward' };
@@ -4335,6 +4402,7 @@ export function applyReserveBlock({
   // The roll applies only the epoch being left.
   maybeTallyBallots(state, blockHeight);
   if (state.bonusEnacted && !holdEpoch) syncVaultEpoch(state, nowMs);
+  ensureEpochCensus(state, blockHeight);
   if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
     const did = enact({ state, nowMs });
     results.push({ action: 'enact', ...did });
@@ -4528,6 +4596,7 @@ export function applyReserveBlock({
           state.deferEpochRoll = false;
           return finishReserveApply(results);
         }
+        ensureEpochCensus(state, blockHeight);
       }
       const noted = lockNotePrincipal(tx, state.magic || MAGIC_TESTNET);
       const claimsNote = (Array.isArray(tx?.vin) ? tx.vin : []).some((vin) => vin && (vin.commit || vin.noteCommit || vin.valueProof));
@@ -4914,6 +4983,35 @@ function openListOf(tx, principalProof) {
  * the next leaf. The retire blob has to parse, bind this tx, and cover
  * the claim window.
  */
+function principalProofKey(proof) {
+  try {
+    const R = Buffer.from(asU8(proof?.R));
+    const z = Buffer.from(asU8(proof?.z));
+    if (!R.length || !z.length) return null;
+    return createHash('sha256')
+      .update(R)
+      .update(z)
+      .update(Buffer.from(String(proof?.unlock || 0)))
+      .digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/** The same principal opening used twice, or an opening of a leaf this withdraw already retired. */
+export function principalProofReused(state, portal, amount, proof, tx) {
+  if (!state || !portal || !proof || !tx) return false;
+  const want = exactBi(amount);
+  if (want == null || want <= 0n) return false;
+  const id = portal.id || portalKey(portal.dest);
+  const retired = state.vaultRetired || {};
+  for (const [commitHex, noteHex] of Object.entries(state.vaultLockIndex || {})) {
+    if (!retired[noteHex]) continue;
+    if (verifyPrincipalOpen(Buffer.from(commitHex, 'hex'), want, proof, tx, id, state?.magic)) return true;
+  }
+  return false;
+}
+
 function openIndexedLeaves({
   state, tx, hiddenCommits, chainNow, portalId, proofList, openList, want,
 } = {}) {
@@ -4922,6 +5020,12 @@ function openIndexedLeaves({
   if (!Number.isSafeInteger(k) || k < 1) return { ok: false, reason: 'mint_amount' };
   if (k > MAX_LOCK_LEAVES) return { ok: false, reason: 'unsigned' };
   if (openList.length !== k) return { ok: false, reason: 'stake_reward' };
+  const seenProof = new Set();
+  for (const proof of openList) {
+    const key = principalProofKey(proof);
+    if (!key || seenProof.has(key)) return { ok: false, reason: 'proof_reuse' };
+    seenProof.add(key);
+  }
   const magic = state?.magic || MAGIC_TESTNET;
   const bind = retireBindOf(tx, magic);
   if (!bind) return { ok: false, reason: 'stake_reward' };
@@ -4940,9 +5044,10 @@ function openIndexedLeaves({
     if (burned.unlock !== BigInt(chainNow)) return { ok: false, reason: 'stake_reward' };
     const commitHex = burned.leaf.subarray(32, 64).toString('hex');
     const noteHex = state.vaultLockIndex?.[commitHex];
-    if (!noteHex || burned.leaf.toString('hex') !== noteHex || used.has(commitHex)) {
+    if (!noteHex || burned.leaf.toString('hex') !== noteHex) {
       return { ok: false, reason: 'stake_reward' };
     }
+    if (used.has(commitHex)) return { ok: false, reason: 'proof_reuse' };
     if (!hiddenCommits.includes(commitHex)) return { ok: false, reason: 'stake_reward' };
     const need = leafEpochsToBurn(state, noteHex, chainNow);
     const have = new Set(burned.epochs.map((row) => Number(row.epoch)));
@@ -5096,9 +5201,8 @@ export function withdraw({
       }
       if (!openedCommits.length) return { ok: false, reason: 'stake_reward' };
     } else {
-      // A commitment that was never a vault leaf. The receipt stays 0.
-      openedCommits = hiddenCommits.slice();
-      hiddenPrincipal = 0n;
+      // A matured commitment with no lock-note index is not a receipt.
+      return { ok: false, reason: 'stake_reward' };
     }
     const stub = leafStubNanos(state, openedCommits);
     if (indexed.length || (want != null && want > 0n)) {

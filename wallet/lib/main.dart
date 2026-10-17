@@ -19,6 +19,7 @@ import 'shear_ctf.dart';
 import 'shear_ctf_cli.dart';
 import 'shear_vortex.dart';
 import 'shear_reserve.dart';
+import 'shear_vote_plan.dart';
 import 'shear_vault_reward.dart' hide kPiSheNanos;
 import 'shear_reserve_towers.dart';
 import 'shear_confirm_pie.dart';
@@ -3739,6 +3740,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           local: local,
         );
       } else {
+        final leaves = reserveLockLeaves(ledger.notes);
+        final spend = leaves == null ? null : reserveWithdrawSpend(ledger.notes);
         posted = await postReserveWithdraw(
           ledger,
           reserve: reserve,
@@ -3749,6 +3752,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           local: local,
           restFrame: ident.address,
           paymentCode: ident.paymentCode,
+          leaves: leaves,
+          fs1: spend?.fs1,
+          vin: spend?.vin,
+          admitProofs: spend?.admitProofs,
+          excess: spend?.excess,
+          anchor: spend?.anchor ?? 0,
         );
       }
     } on StateError catch (err) {
@@ -3975,7 +3984,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
     if (go != true || !mounted) return;
     final tun = hop.tunVerified && !hop.probeOnly;
-    final result = await commandReserveVote(
+    final planned = await castPlannedLeafVotes(
+      ledger: ledger,
+      reserve: reserve,
+      planDir: votePlanFolder(session.store.parent.path),
+      dest: dest,
+      choice: choice,
+      local: ledger.pool == null || widget.skipPoolSync,
+    );
+    final result = planned ?? await commandReserveVote(
       ledger: ledger,
       reserve: reserve,
       restFrame: ident.address,
@@ -4288,7 +4305,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onPressed: draft == null || _reserveVoteBusy
             ? null
             : () => _reserveVote(context, ident, draft),
-        child: const Text('Cast vote'),
+        child: Text(p.nanos ~/ kPiSheNanos > 0
+            ? 'Cast your ${p.nanos ~/ kPiSheNanos} votes'
+            : 'Cast vote'),
       ));
     }
     final vote = _panel(context, voteKids, key: const Key('reserve-vote-box'));

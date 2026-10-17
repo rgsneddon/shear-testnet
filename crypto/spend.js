@@ -12,7 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
-import { consensusUnlockPeriod, hiddenPrincipalOpens, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { consensusUnlockPeriod, hiddenPrincipalOpens, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -444,7 +444,7 @@ export function verifyReservePortalOpen(tx) {
 
 function v3CommitCovers(tx, vin) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return false;
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw' && kind !== 'leaf-vote') return false;
   let posted = null;
   try {
     const b = Buffer.from(asU8(vin?.commit));
@@ -488,6 +488,9 @@ export function txKind(tx) {
   if (!tx || tx.coinbase) return '';
   const top = tx.kind == null ? '' : String(tx.kind);
   if (!top) return '';
+  // The vote note is voteOutput. A hidden change output is a send, and
+  // that label does not make the transaction a send.
+  if (top === 'leaf-vote') return top;
   const raw = tx.vout?.[0]?.kind;
   if (raw != null && String(raw) !== '' && String(raw) !== top) return '';
   return top;
@@ -587,6 +590,7 @@ const BODY_KEYS = new Set([
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
   'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit', 'rewardRoot',
+  'epochStartRoot', 'epochStartCommits', 'epochCensusCommit', 'vaultLockRoot',
   'nullifier',
   'ownerPub',
   'piProof', 'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
@@ -997,7 +1001,10 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
     }
     if (claimed !== 0) {
       if (!hiddenPrincipalOpens(reserveState, portal, clock, claimed, tx?.principalProof, tx)) {
-        return { ok: false, reason: 'insufficient' };
+        if (principalProofReused(reserveState, portal, claimed, tx?.principalProof, tx)) {
+          return { ok: false, reason: 'proof_reuse' };
+        }
+        return { ok: false, reason: 'stake_reward' };
       }
       return { ok: true, principal: claimed, claimed, cap: claimed, mintId };
     }

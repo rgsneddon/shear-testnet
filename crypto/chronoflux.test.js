@@ -244,7 +244,7 @@ describe('chronoflux prune + collate', () => {
     const sealed = compactTx(tx);
     assert.equal(sealed.vout[0].r, undefined);
     assert.equal(sealed.kind, 'lock');
-    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.to, vault);
     assert.equal(sealed.from, undefined);
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.nanos, undefined);
@@ -279,12 +279,11 @@ describe('chronoflux prune + collate', () => {
     };
     const sealed = compactTx(fat);
     const blob = JSON.stringify(sealed);
-    assert.doesNotMatch(blob, /ssa1/);
-    assert.doesNotMatch(blob, /she1/);
+    assert.doesNotMatch(blob, /"from"/);
     assert.doesNotMatch(blob, /"nanos"/);
     assert.doesNotMatch(blob, /"address"/);
     assert.equal(sealed.from, undefined);
-    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.to, vault);
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.vout[0].nanos, undefined);
     assert.ok(sealed.vout[0].dest20);
@@ -468,8 +467,21 @@ describe('chronoflux prune + collate', () => {
     const admit = admitBaseFromAddress(dest);
     const nanos = 620544;
     const fat = attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), { admitBase: admit });
-    const tx = { coinbase: true, height: 7, vin: [{ coinbase: true, height: 7 }], vout: [fat] };
+    const tx = {
+      coinbase: true,
+      height: 7,
+      vin: [{ coinbase: true, height: 7 }],
+      vout: [fat],
+      epochStartRoot: 'ab'.repeat(32),
+      epochStartCommits: [{ epoch: 1, root: 'ab'.repeat(32) }],
+      epochCensusCommit: [{ epoch: 1, leafCount: 1, openHeight: 240 }],
+      vaultLockRoot: 'cd'.repeat(32),
+    };
     const sealed = compactTx(tx);
+    assert.equal(sealed.epochStartRoot, 'ab'.repeat(32));
+    assert.deepEqual(sealed.epochStartCommits, [{ epoch: 1, root: 'ab'.repeat(32) }]);
+    assert.deepEqual(sealed.epochCensusCommit, [{ epoch: 1, leafCount: 1, openHeight: 240 }]);
+    assert.equal(sealed.vaultLockRoot, 'cd'.repeat(32));
     const o = sealed.vout[0];
     assert.equal(o.kind, 'hash');
     assert.equal(o.r, undefined);

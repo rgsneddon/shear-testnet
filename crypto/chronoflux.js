@@ -688,6 +688,38 @@ function unsealedBSpendVin(v) {
   return row;
 }
 
+function hex32Field(value) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/i.test(value)) return '';
+  return value.toLowerCase();
+}
+
+function compactEpochStarts(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const item of list) {
+    const epoch = Math.floor(Number(item?.epoch));
+    const root = hex32Field(item?.root);
+    if (!Number.isInteger(epoch) || epoch < 0 || !root) continue;
+    out.push({ epoch, root });
+  }
+  return out;
+}
+
+function compactEpochCensus(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const item of list) {
+    const epoch = Math.floor(Number(item?.epoch));
+    const leafCount = Math.floor(Number(item?.leafCount));
+    const openHeight = Math.floor(Number(item?.openHeight));
+    if (!Number.isInteger(epoch) || epoch < 0) continue;
+    if (!Number.isInteger(leafCount) || leafCount < 1) continue;
+    if (!Number.isInteger(openHeight) || openHeight < 0) continue;
+    out.push({ epoch, leafCount, openHeight });
+  }
+  return out;
+}
+
 /** Strip a tx down to the sealed fields. No openings, view material, IP, or memo plaintext. */
 export function compactTx(tx) {
   if (!tx) return tx;
@@ -713,6 +745,16 @@ export function compactTx(tx) {
     if (typeof tx.rewardRoot === 'string' && /^[0-9a-f]{64}$/i.test(tx.rewardRoot)) {
       row.rewardRoot = tx.rewardRoot.toLowerCase();
     }
+    // A claim and a leaf vote read the frozen root and the census from the
+    // coinbase. dest20 cannot rebuild either, so compact keeps them.
+    const startRoot = hex32Field(tx.epochStartRoot);
+    if (startRoot) row.epochStartRoot = startRoot;
+    const lockRoot = hex32Field(tx.vaultLockRoot);
+    if (lockRoot) row.vaultLockRoot = lockRoot;
+    const startCommits = compactEpochStarts(tx.epochStartCommits);
+    if (startCommits.length) row.epochStartCommits = startCommits;
+    const censusCommits = compactEpochCensus(tx.epochCensusCommit);
+    if (censusCommits.length) row.epochCensusCommit = censusCommits;
     const carry = Math.floor(Number(tx.carryNanos) || 0);
     if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;
     if (Array.isArray(tx.issuedJobKeys) && tx.issuedJobKeys.length) {
@@ -736,10 +778,20 @@ export function compactTx(tx) {
     delete out.payer;
     delete out.sponsor;
   }
-  // The withdraw owner signature covers the payout address. dest20 cannot
-  // rebuild it: the address also carries the admit base. A lock or a vote
-  // still drops the string.
-  if (kind === 'withdraw' && typeof tx.to === 'string' && tx.to !== '') out.to = tx.to;
+  // The portal id hashes the full address, admit base included. dest20
+  // cannot rebuild it. A lock and a withdraw keep `to` on the wire. A leaf
+  // vote has no portal address and still drops the string.
+  if ((kind === 'withdraw' || kind === 'lock') && typeof tx.to === 'string' && tx.to !== '') {
+    out.to = tx.to;
+  }
+  // The reward integer is public. Compact still drops it from a hidden
+  // lock. A claim without it cannot match the proof.
+  if (kind === 'reward-claim') {
+    const raw = tx.nanos;
+    if (typeof raw === 'bigint' && raw >= 0n) out.nanos = raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : raw.toString();
+    else if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) out.nanos = raw;
+    else if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) out.nanos = raw.trim();
+  }
   delete out.owner;
   delete out.payout;
   delete out.address;

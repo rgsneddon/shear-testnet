@@ -5,9 +5,12 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'shear_identity.dart';
+import 'shear_leaf_vote.dart';
 import 'shear_ledger.dart';
 import 'shear_levy.dart';
 import 'shear_vault_reward.dart';
+import 'shear_vote_plan.dart';
+import 'shear_withdraw.dart';
 
 const kReserveProgram = 'shear-reserve-v1';
 const kReserveOracleId = 'shear-reserve-oracle-v1';
@@ -279,7 +282,90 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
   );
 }
 
+/// Lock leaves the wallet can prove. A note without its scalar, blind, and
+/// leaf is not one of them.
+List<Map<String, Object?>>? reserveLockLeaves(List<Map<String, dynamic>> notes) {
+  final out = <Map<String, Object?>>[];
+  for (final row in notes) {
+    if (row['scalar'] == null || row['blind'] == null || row['note'] == null) continue;
+    final kind = (row['kind'] ?? '').toString();
+    if (kind.isNotEmpty && kind != 'lock') continue;
+    final epochs = row['epochs'];
+    if (epochs is! List || epochs.isEmpty) continue;
+    out.add({
+      'scalar': row['scalar'],
+      'blind': row['blind'],
+      'note': row['note'],
+      'unlock': row['unlock'] is int ? row['unlock'] as int : 0,
+      'epochs': epochs,
+      if (row['amount'] is int) 'amount': row['amount'],
+      if (row['withdrawPeriod'] is int) 'withdrawPeriod': row['withdrawPeriod'],
+    });
+  }
+  return out.isEmpty ? null : out;
+}
+
+List<int>? _noteBytes(Object? raw) {
+  if (raw is Uint8List && raw.isNotEmpty) return raw;
+  if (raw is List<int> && raw.isNotEmpty) return raw;
+  return null;
+}
+
+/// FS-1 spend that belongs to these leaves. Null unless every field is present.
+({
+  List<int> fs1,
+  List<Map<String, Object?>> vin,
+  List<Map<String, Object?>> admitProofs,
+  List<int> excess,
+  int anchor,
+})? reserveWithdrawSpend(List<Map<String, dynamic>> notes) {
+  Map<String, dynamic>? host;
+  for (final row in notes) {
+    if (_noteBytes(row['fs1']) != null && row['vin'] is List && row['admitProofs'] is List) {
+      host = row;
+      break;
+    }
+    if (_noteBytes(row['fs1']) != null && row['vin'] is List && row['admit_proofs'] is List) {
+      host = row;
+      break;
+    }
+  }
+  if (host == null) return null;
+  final fs1 = _noteBytes(host['fs1']);
+  final excess = _noteBytes(host['excess']);
+  final vinRaw = host['vin'];
+  final proofRaw = host['admitProofs'] ?? host['admit_proofs'];
+  if (fs1 == null || fs1[0] != 0xf1 || excess == null || excess.length != 32) return null;
+  if (vinRaw is! List || proofRaw is! List || vinRaw.isEmpty || vinRaw.length != proofRaw.length) {
+    return null;
+  }
+  final vin = <Map<String, Object?>>[];
+  final proofs = <Map<String, Object?>>[];
+  for (var i = 0; i < vinRaw.length; i++) {
+    if (vinRaw[i] is! Map || proofRaw[i] is! Map) return null;
+    vin.add(Map<String, Object?>.from(vinRaw[i] as Map));
+    proofs.add(Map<String, Object?>.from(proofRaw[i] as Map));
+  }
+  final anchor = host['anchor'] is int ? host['anchor'] as int : 0;
+  return (fs1: fs1, vin: vin, admitProofs: proofs, excess: excess, anchor: anchor);
+}
+
+Map<String, dynamic> _wireBody(Map<String, Object?> body) {
+  Object? walk(Object? v) {
+    if (v is Uint8List) return v.toList();
+    if (v is List) return [for (final row in v) walk(row)];
+    if (v is Map) {
+      return {for (final e in v.entries) e.key.toString(): walk(e.value)};
+    }
+    return v;
+  }
+  return Map<String, dynamic>.from(walk(body) as Map);
+}
+
 /// Post kind withdraw, then settle the local portal. A failed send leaves the portal.
+/// When the wallet has the lock leaves and the FS-1 spend, the posted body is
+/// the proved withdraw: retire proofs, principal openings, nonce, dest20, and
+/// the spend signature. Otherwise the ledger send is unchanged.
 Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   ShearLedger ledger, {
   required ShearReserve reserve,
@@ -291,9 +377,55 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   String? restFrame,
   String? paymentCode,
   bool allowPublicHttp = false,
+  List<Map<String, Object?>>? leaves,
+  List<int>? fs1,
+  List<Map<String, Object?>>? vin,
+  List<Map<String, Object?>>? admitProofs,
+  List<int>? excess,
+  int anchor = 0,
+  String? withdrawId,
+  List<int>? withdrawNonce,
 }) async {
   final nanos = reserveWithdrawPayoutNanos(reserve, dest, nowMs);
   if (nanos <= 0) return null;
+  if (leaves != null &&
+      leaves.isNotEmpty &&
+      spendSeed != null &&
+      fs1 != null &&
+      vin != null &&
+      admitProofs != null &&
+      excess != null) {
+    final built = buildProvedWithdraw(
+      to: payout,
+      nanos: nanos,
+      id: withdrawId ?? 'wd-$nowMs',
+      portalId: portalIdFromDest(dest),
+      anchor: anchor,
+      excess: excess,
+      fs1: fs1,
+      vin: vin,
+      admitProofs: admitProofs,
+      leaves: leaves,
+      spendSeed: spendSeed,
+      withdrawNonce: withdrawNonce,
+    );
+    if (built == null) return null;
+    if (!local && ledger.pool != null) {
+      await ledger.pool!.postRaw(_wireBody(built));
+    }
+    final settled = reserve.withdraw(dest: dest, nowMs: nowMs, payout: payout);
+    if (settled == null) return null;
+    return (
+      tx: ShearTx(
+        id: (built['id'] ?? '').toString(),
+        from: dest,
+        to: payout,
+        amount: nanos / kUnitsPerShe,
+        kind: 'withdraw',
+      ),
+      settled: settled,
+    );
+  }
   final amount = nanos / kUnitsPerShe;
   final from = (restFrame != null && restFrame.isNotEmpty)
       ? ledger.currentDest(restFrame, paymentCode: paymentCode)
@@ -1083,6 +1215,73 @@ class ReserveVoteResult {
 
   final bool enacted;
   final String remark;
+}
+
+/// Epoch-keyed leaf votes for the Reserve dapp. The plan is loaded for this
+/// epoch, or replaced when the file belongs to another epoch. A wallet with
+/// no fee note, or no proof for the note it picked, returns null so the
+/// caller can post the portal vote.
+Future<ReserveVoteResult?> castPlannedLeafVotes({
+  required ShearLedger ledger,
+  required ShearReserve reserve,
+  required String planDir,
+  required String dest,
+  required String choice,
+  bool local = true,
+  int? nowMs,
+}) async {
+  final count = reserve.portal(dest).nanos ~/ kPiSheNanos;
+  if (count < 1 || planDir.isEmpty) return null;
+  Map<String, Object?>? plan;
+  try {
+    plan = plannedLeafVotes(
+      dir: planDir,
+      leaves: count,
+      notes: ledger.notes,
+      openHeight: 0,
+      closeHeight: 4000,
+      epoch: reserve.currentEpoch,
+    );
+  } catch (_) {
+    return null;
+  }
+  if (plan == null) return null;
+  final built = buildLeafVote(
+    vote: {'choice': choice},
+    notes: ledger.notes,
+    fee: 1,
+    anchor: 0,
+    epoch: reserve.currentEpoch,
+    prove: (note) {
+      final fs1 = note['fs1'];
+      final excess = note['excess'];
+      final admit = note['admitProof'] ?? note['admit_proof'];
+      if (fs1 is! List<int> || fs1.isEmpty || fs1[0] != 0xf1) return null;
+      if (excess is! List<int> || excess.length != 32) return null;
+      if (admit is! Map || admit['cTilde'] is! List<int>) return null;
+      return {
+        'fs1': fs1,
+        'excess': excess,
+        'admitProof': Map<String, Object?>.from(admit),
+      };
+    },
+  );
+  if (built == null || built['voteProof'] == null) return null;
+  if (built.containsKey('feeInput') || built.containsKey('parentTx') || built.containsKey('parent')) {
+    return null;
+  }
+  if (!local && ledger.pool != null) {
+    await ledger.pool!.postRaw(_wireBody(built));
+  }
+  final err = reserve.vote(
+    dest: dest,
+    choice: choice,
+    nowMs: nowMs ?? DateTime.now().millisecondsSinceEpoch,
+  );
+  if (err != null) {
+    return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError(err)));
+  }
+  return ReserveVoteResult(enacted: true, remark: 'Vote submitted — Your vote: $choice');
 }
 
 /// Shipped vote command. Waits on 9 confirmations, then spends the fee once.

@@ -14,7 +14,7 @@ import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRej
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
-import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected } from './reserve_vault.js';
+import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -121,6 +121,12 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
+  // The fee note stays in the wallet. A leaf vote that names it is refused
+  // before an unknown field is reported as unsigned.
+  if (String(tx?.kind || '') === 'leaf-vote') {
+    const leaked = leafVoteLeakRejected(tx);
+    if (leaked) return leaked;
+  }
   const feeHit = feeFieldRejected(tx);
   if (feeHit) return feeHit;
   const spendFee = bSpendFeeRejected(tx);
@@ -178,6 +184,10 @@ export function admitMempool(pool, tx, opts = {}) {
   // A portal vote is retired. Refuse it before the public-receipt and vault
   // trials so it never sits in a template. A leaf ballot is a different kind.
   if (String(tx?.kind || '') === 'vote') return { ok: false, reason: 'vote_retired' };
+  if (String(tx?.kind || '') === 'leaf-vote') {
+    const leaked = leafVoteLeakRejected(tx);
+    if (leaked) return leaked;
+  }
   const vinAdmit = bSpendVinRejected(tx);
   if (vinAdmit) return vinAdmit;
   for (const v of tx.vin || []) {
