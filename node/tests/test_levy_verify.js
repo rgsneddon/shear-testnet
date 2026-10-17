@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -52,7 +53,7 @@ function mine(tpl) {
   };
 }
 
-describe('verifyBlock Phase B Flow levy', () => {
+describe('verifyBlock Phase B Flow levy', { timeout: fileCapMs(import.meta.url) }, () => {
   it('dust empty L=100; 1 SHE empty 0.0002 SHE; pot/hash pay 0; underpay levy; EVM value same L; maxLevy refuse', async () => {
     assert.equal(levyNanos(1), 100);
     assert.equal(levyNanos(NANOS_PER_SHE), 100);

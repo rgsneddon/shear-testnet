@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
+import 'shear_licenses.dart';
 import 'shear_lock.dart';
 import 'shear_macos_install.dart';
 import 'shear_session.dart';
@@ -82,6 +83,7 @@ Future<void> main(List<String> args) async {
     final height = RegExp(r'displayHeight=(\d+)').firstMatch(report);
     exit((int.tryParse(height?.group(1) ?? '') ?? 0) >= 1 ? 0 : 2);
   }
+  registerShearLicenses();
   runApp(ShearWalletApp(demoTx: kDebugMode, biometrics: DeviceBiometrics()));
 }
 
@@ -4383,6 +4385,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       OutlinedButton(
         onPressed: importShewallNow,
         child: const Text('Import shewall.bin'),
+      ),
+      const SizedBox(height: 16),
+      const Text(kShearAttribution),
+      const SizedBox(height: 8),
+      TextButton(
+        key: const Key('about-licences'),
+        onPressed: () => showShearLicenses(context, version: kWalletVersion),
+        child: const Text('About and licences'),
       ),
     ]);
   }

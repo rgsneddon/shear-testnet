@@ -70,13 +70,31 @@ function reviveField(v) {
   return b.length ? b : v;
 }
 
+/** A range proof is bytes. HTTP compact JSON posts those bytes as hex. A sentinel `true` and a structured object stay as they are. */
+function reviveRangeProof(v) {
+  if (v == null || v === true) return v;
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return Buffer.from(v);
+  if (typeof v === 'string') return reviveField(v);
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    if (v.type === 'Buffer' && Array.isArray(v.data)) return Buffer.from(v.data);
+    if (typeof v.$hex === 'string') return Buffer.from(v.$hex, 'hex');
+  }
+  return v;
+}
+
 function reviveRow(o) {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return o;
   const row = { ...o };
   for (const k of TX_BYTE_KEYS) {
     if (row[k] != null && !Array.isArray(row[k])) row[k] = reviveField(row[k]);
   }
+  // P2P hexify posts dest20 as {$hex}. A 20-byte receipt is not an object.
+  if (row.dest20 != null) {
+    const back = reviveBytes('dest20', row.dest20);
+    if (Buffer.isBuffer(back)) row.dest20 = back;
+  }
   if (row.r != null && !Array.isArray(row.r)) row.r = reviveField(row.r);
+  if (row.rangeProof != null) row.rangeProof = reviveRangeProof(row.rangeProof);
   return row;
 }
 
@@ -676,6 +694,18 @@ export function verifySealedNote(vout, v) {
     if (pr.length && !verifyRange(vout.commit, vout.rangeProof)) return false;
   }
   return true;
+}
+
+/**
+ * Verified opening of one input, in nanos. A commit sticker, a public dest20,
+ * or an opening that does not verify is not a value. Null when this input
+ * does not open.
+ */
+export function verifiedInputNanos(vin) {
+  if (!vin || vin.coinbase || !vin.commit || !vin.valueProof) return null;
+  const n = noteU64(vin.valueProof.v);
+  if (n == null || !verifySealedNote(vin, n)) return null;
+  return n;
 }
 
 /** Opened non-negative value of one coinbase output. Range proof is required. */

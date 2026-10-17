@@ -6,12 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { decodeHeader, encodeHeader } from '../../crypto/header.js';
+import { VERSION, decodeHeader, encodeHeader } from '../../crypto/header.js';
+import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 import { createStore } from '../src/store.js';
 import { encodeWireBlock, headerPrevHash } from '../src/p2p.js';
 import {
   IPC_BACKFILL_MAX,
   ancestorWindow,
+  applyVerifiedIpcBlock,
   attachPoolIpc,
   attachSidecarIpc,
   chunkIpcBlocks,
@@ -87,6 +89,56 @@ async function waitFor(fn, ms = 20000) {
 }
 
 describe('IPC backfill window and parent repair', () => {
+  it('refuses an IPC hello or block that omits magic', async () => {
+    const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ipc-magic-')));
+    let tips = 0;
+    const ipc = await attachPoolIpc({
+      store,
+      port: 0,
+      onSidecarTip: () => { tips += 1; },
+    });
+    const sock = net.connect(ipc.port, '127.0.0.1');
+    const logs = [];
+    const orig = console.error;
+    console.error = (...args) => {
+      logs.push(args.map((part) => String(part)).join(' '));
+    };
+    try {
+      await new Promise((resolve, reject) => {
+        sock.once('connect', resolve);
+        sock.once('error', reject);
+      });
+      sock.write(`${JSON.stringify({ type: 'ipc_hello', height: 3, hash: 'ab', work: '0x1' })}\n`);
+      sock.write(`${JSON.stringify({
+        type: 'ipc_block',
+        block: { height: 1 },
+        powHash: 'aa'.repeat(32),
+      })}\n`);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(tips, 0);
+      assert.equal(logs.some((line) => line.includes('"event":"ipc_apply"')), false, logs.join(' | '));
+      const direct = applyVerifiedIpcBlock(store, {
+        type: 'ipc_block',
+        block: { height: 1 },
+        powHash: 'bb'.repeat(32),
+      });
+      assert.equal(direct.ok, false);
+      assert.equal(direct.reason, 'magic');
+      const wrong = applyVerifiedIpcBlock(store, {
+        type: 'ipc_block',
+        magic: 'shear-testnet-v11',
+        block: { height: 1 },
+        powHash: 'cc'.repeat(32),
+      });
+      assert.equal(wrong.reason, 'magic');
+      assert.equal(store.tip(), null);
+    } finally {
+      console.error = orig;
+      sock.destroy();
+      await ipc.close();
+    }
+  });
+
   it('treats IPC_BACKFILL_MAX as a chunk size and never refuses a gap above 8', () => {
     const src = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
     assert.equal(/local - from > IPC_BACKFILL_MAX/.test(src), false);
@@ -177,19 +229,30 @@ describe('IPC backfill window and parent repair', () => {
   });
 
   it('prev on a jumped ipc_block asks the peer for that parent', async () => {
-    const miner = encodeDest(Buffer.alloc(20, 6));
-    const tall = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ipc-jump-tall-')));
     const pool = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ipc-jump-pool-')));
-    let now = 1_700_000_000_000;
-    for (let i = 0; i < 4; i += 1) {
-      const got = seal(tall, miner, i, now);
-      assert.equal(got.ok, true, got.reason);
-      now = Number(decodeHeader(Buffer.from(tall.tip().header)).timestamp) + 90_000;
+    const parentHash = Buffer.alloc(32, 9);
+    let nonce = 0n;
+    let header = null;
+    let hash = null;
+    while (nonce < 100000n) {
+      header = encodeHeader({
+        version: VERSION,
+        prevBlockHash: parentHash,
+        merkleRoot: Buffer.alloc(32, 1),
+        continuityRoot: Buffer.alloc(32, 2),
+        timestamp: 1_700_000_000_000n,
+        bits: 4,
+        nonce,
+        baseFee: 1n,
+      });
+      hash = shearHash(header);
+      if (meetsTarget(hash, 4)) break;
+      nonce += 1n;
     }
-    const tip = tall.blocks[tall.blocks.length - 1];
-    const wire = encodeWireBlock(tip);
+    assert.ok(meetsTarget(hash, 4));
+    const wire = encodeWireBlock({ header, hash, height: 4, txs: [] });
     const parent = headerPrevHash(wire.header);
-    assert.ok(parent);
+    assert.equal(parent, parentHash.toString('hex'));
     const ipc = await attachPoolIpc({ store: pool, port: 0 });
     const sock = net.connect(ipc.port, '127.0.0.1');
     try {
@@ -202,7 +265,7 @@ describe('IPC backfill window and parent repair', () => {
         type: 'ipc_block',
         magic: MAGIC_TESTNET,
         block: wire,
-        powHash: Buffer.from(tip.hash).toString('hex'),
+        powHash: hash.toString('hex'),
       })}\n`);
       const lines = await pending;
       const ask = lines.find((m) => m.type === 'ipc_getblock');

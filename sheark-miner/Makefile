@@ -19,6 +19,11 @@ ifneq ($(OS),Windows_NT)
   UNAME := $(shell uname -s)
   ifeq ($(UNAME),Linux)
     CFLAGS += -pthread
+    # Static libgcc and libstdc++ (RandomX is C++): no pack ships
+    # libstdc++.so.6 or libgcc_s.so.1 (docs/licensing-audit.md decision 4).
+    # Fedora needs the libstdc++-static package.
+    LINUX_STATIC_RT := -static-libgcc -static-libstdc++
+    GCC_RT_CHECK := python3 ../scripts/licenses/release_notices.py no-gcc-runtime
   endif
 endif
 # Public packs stay on the compiler baseline. SHEARK_NATIVE=1 is a local opt-in.
@@ -40,6 +45,10 @@ ifeq ($(OS),Windows_NT)
   # (_gnu_exception_handler) and cannot link MSYS OpenSSL. Link the DLLs
   # by path. sheark-miner/pack/zip_windows.py copies them beside the exe.
   LIBS ?= -lws2_32 -lcrypt32 -pthread
+  # The GCC runtime and winpthreads are static so their DLLs never ship
+  # (docs/licensing-audit.md decision 4). --whole-archive because the driver
+  # appends a dynamic -lpthread after these flags.
+  WIN_STATIC_RT := -static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic
   CMAKE_GEN ?= -G "MinGW Makefiles"
   OPENSSL_BIN ?= C:/msys64/mingw64/bin
   OPENSSL_INC ?= C:/msys64/mingw64/include
@@ -50,6 +59,7 @@ else
   LIBS ?= -pthread -lm -lssl -lcrypto
   CMAKE_GEN ?=
   OPENSSL_DLLS :=
+  WIN_STATIC_RT :=
 endif
 
 # macOS Homebrew OpenSSL is keg-only. Public packs pass OPENSSL_PREFIX.
@@ -75,9 +85,12 @@ src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(RXLIB) $(OBJS)
-	$(CXX) $(CFLAGS) -o $@ $(OBJS) $(RXLIB) $(OPENSSL_DLLS) $(LIBS)
+	$(CXX) $(CFLAGS) -o $@ $(OBJS) $(RXLIB) $(OPENSSL_DLLS) $(LIBS) $(WIN_STATIC_RT) $(LINUX_STATIC_RT)
 ifeq ($(OS),Windows_NT)
 	python pack/zip_windows.py --stage
+endif
+ifdef GCC_RT_CHECK
+	$(GCC_RT_CHECK) $@
 endif
 
 selftest: $(BIN)

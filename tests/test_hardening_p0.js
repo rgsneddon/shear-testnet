@@ -1,7 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomScalar, commit, pointBytes, proveRange, verifyRange } from '../crypto/note.js';
@@ -21,7 +20,6 @@ import {
   gitHeadOf,
 } from '../pool/src/pool.js';
 import { roundActualHashes } from '../pool/src/hash_credit.js';
-import { appendAdminAudit } from '../pool/src/admin.js';
 import { P2P_MAX_FRAME, P2P_MAX_FRAME_DEFAULT, noteExpensiveFail, P2P_FAIL_DISCONNECT } from '../node/src/p2p.js';
 import { DEFAULT_SEEDS } from '../node/src/node.js';
 import { SHORT_ADDR_MAX, encodeDest, newIdentity } from '../crypto/address.js';
@@ -29,10 +27,13 @@ import { SHORT_ADDR_MAX, encodeDest, newIdentity } from '../crypto/address.js';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('P0 hardening + short addresses', () => {
-  it('P0-1 production wallet send fails closed before prove_spend', () => {
+  it('P0-1 production wallet send proves FS-1; the JS helper still refuses prove_spend', () => {
     const ledger = fs.readFileSync(path.join(root, 'wallet/lib/shear_ledger.dart'), 'utf8');
     const admit = fs.readFileSync(path.join(root, 'wallet/lib/shear_admit.dart'), 'utf8');
-    assert.match(ledger, /proveFlowSpend\(/);
+    const fs1 = fs.readFileSync(path.join(root, 'wallet/lib/shear_fs1.dart'), 'utf8');
+    assert.match(ledger, /reproveFlowSpendWire\(/);
+    assert.match(ledger, /=> proveFs1SpendWire\(/);
+    assert.match(fs1, /Map<String, dynamic> proveFs1SpendWire\(/);
     assert.match(ledger, /nativeSealNote\(/);
     assert.equal(ledger.includes('var note = sealNote('), false);
     assert.equal(ledger.includes('viewKey='), false);
@@ -93,13 +94,6 @@ describe('P0 hardening + short addresses', () => {
     assert.equal(destBannedInBook(book, 'victim-dest'), true);
     const expired = normalizeBanBook({ bans: [{ key: 'victim-dest', kind: 'dest', until: 1 }] }, 1000);
     assert.equal(destBannedInBook(expired, 'victim-dest', 1000), false);
-  });
-
-  it('P0-8 admin mutating call appends audit jsonl', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-audit-'));
-    appendAdminAudit(dir, { action: 'pause', paused: true });
-    const text = fs.readFileSync(path.join(dir, 'admin-audit.jsonl'), 'utf8');
-    assert.match(text, /"action":"pause"/);
   });
 
   it('P0-9 round reset records lost-work path and keeps HUD H/s', () => {

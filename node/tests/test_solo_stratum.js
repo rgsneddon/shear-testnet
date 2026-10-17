@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,9 +26,13 @@ function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
 }
 
-function minerBin() {
+function minerDir() {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const dir = path.join(here, '../../sheark-miner');
+  return path.join(here, '../../sheark-miner');
+}
+
+function minerBin() {
+  const dir = minerDir();
   const names = process.platform === 'win32'
     ? ['ShearK-Miner-2.5.exe', 'ShearK-Miner.exe']
     : ['ShearK-Miner'];
@@ -36,6 +41,19 @@ function minerBin() {
     if (fs.existsSync(p)) return p;
   }
   return '';
+}
+
+function ensureMiner() {
+  const existing = minerBin();
+  if (existing) return existing;
+  const built = spawnSync('make', ['-C', minerDir(), '-j', String(os.availableParallelism?.() || os.cpus().length || 1)], {
+    encoding: 'utf8',
+    timeout: 540_000,
+  });
+  const bin = minerBin();
+  if (bin) return bin;
+  const detail = `${built.stdout || ''}\n${built.stderr || ''}`.trim().slice(-1500);
+  throw new Error(`ShearK-Miner build failed (status ${built.status}): ${detail || built.error?.message || 'make produced no binary'}`);
 }
 
 function stripAnsi(s) {
@@ -141,7 +159,7 @@ function submitAndReply(sock, payload, timeoutMs = 60_000) {
   });
 }
 
-describe('thin solo stratum', () => {
+describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
   it('does not load pool/src/main.js and npm run solo is node --solo', () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const soloSrc = fs.readFileSync(path.join(here, '../src/solo_stratum.js'), 'utf8');
@@ -328,7 +346,7 @@ describe('thin solo stratum', () => {
   });
 });
 
-describe('solo submit share vs block', () => {
+describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, () => {
   setHashBackend('jit-full');
 
   it('does not import pool and share hits skip submitHeader', () => {
@@ -364,13 +382,13 @@ describe('solo submit share vs block', () => {
     assert.doesNotMatch(rejected, /"block":true/);
   });
 
-  it('dest-bound shareBits=8 that misses blockBits is OK and does not append', { timeout: 180_000 }, async () => {
+  it('dest-bound shareBits=8 that misses blockBits is OK and does not append', { timeout: 720_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-share-'));
     const store = createStore(dir);
     const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
     const bound = await stratum.listen();
     const dest = destMiner();
-    const bin = minerBin();
+    const bin = ensureMiner();
     assert.ok(bin, 'ShearK-Miner binary required to hash dest-bound shares');
     let child;
     try {

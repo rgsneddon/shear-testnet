@@ -343,7 +343,7 @@ if (-not $nodeInc) {
   if (-not (Test-Path (Join-Path $nodeInc 'node_api.h'))) { throw "no node_api.h in $nodeInc" }
 }
 
-if (-not (Test-Path (Join-Path $Repo 'node_modules'))) { npm ci }
+if (-not (Test-Path (Join-Path $Repo 'node_modules'))) { npm ci --ignore-scripts }
 
 # RandomX static lib. ARCH=default, not -march=native. MinGW Makefiles, so the archive is librandomx.a.
 cmake -S crypto\randomx -B crypto\randomx\build -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DARCH=default

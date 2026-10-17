@@ -351,7 +351,7 @@ const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw', 'reward-claim']);
 export const COMPACT_TX_KEYS = Object.freeze([
   'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
-  'portalId', 'payoutPortalId', 'programId', 'choice',
+  'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub',
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'weight', 'payer', 'sponsor',
@@ -571,6 +571,116 @@ export function sealedVinLinkField(v) {
   return null;
 }
 
+function vinBytes(raw) {
+  try {
+    if (raw == null || raw === '') return null;
+    return Buffer.from(asU8(raw));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * dest20, prev, and index that spendPackDigest hashes for one vin.
+ * Address is not sealed: the digest already folded it into dest20.
+ * A second compactTx must hash the same bytes.
+ */
+function bSpendDigestDest20(v) {
+  const nc = vinBytes(v?.noteCommit);
+  let d20 = nc && nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : null;
+  if (!d20) {
+    const field = vinBytes(v?.dest20);
+    d20 = field && field.length >= 20 ? Buffer.from(field.subarray(0, 20)) : Buffer.alloc(20);
+  }
+  if (d20.every((b) => b === 0)) {
+    const h = hash20FromAddress(v?.address || '');
+    if (h) d20 = Buffer.from(h);
+  }
+  return d20;
+}
+
+const VIN_INDEX_MAX = 0xffffffff;
+
+/** Integer in 0..2^32-1. Index 0 stays 0. A string, a float, and a boolean are not. */
+function canonicalVinIndex(raw) {
+  if (typeof raw === 'number') {
+    if (!Number.isInteger(raw) || raw < 0 || raw > VIN_INDEX_MAX) return null;
+    return raw;
+  }
+  if (typeof raw === 'bigint') {
+    if (raw < 0n || raw > BigInt(VIN_INDEX_MAX)) return null;
+    return Number(raw);
+  }
+  return null;
+}
+
+function fieldPosted(raw) {
+  return raw != null && raw !== '';
+}
+
+/** Why this b-spend vin is not sealable. Null when the posted link fields are canonical. */
+function bSpendVinFieldRejected(v) {
+  if (!v || typeof v !== 'object') return null;
+  const notePosted = fieldPosted(v.noteCommit);
+  const destPosted = fieldPosted(v.dest20);
+  if (notePosted) {
+    const nc = vinBytes(v.noteCommit);
+    if (!nc || nc.length !== 32) return 'noteCommit';
+    if (destPosted) return 'dest20';
+  }
+  if (fieldPosted(v.prev)) {
+    const prev = vinBytes(v.prev);
+    if (!prev || prev.length !== 32) return 'prev';
+  }
+  if (fieldPosted(v.index) && canonicalVinIndex(v.index) == null) return 'index';
+  return null;
+}
+
+/**
+ * Admission of a b-spend vin. Index must be an integer in 0..2^32-1.
+ * prev and noteCommit must be 32 bytes. dest20 beside noteCommit is refused.
+ * A missing field stays missing. The reason matches the body vin_link gate.
+ */
+export function bSpendVinRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind !== 'b-spend') return null;
+  const vins = Array.isArray(tx.vin) ? tx.vin : [];
+  for (const v of vins) {
+    if (bSpendVinFieldRejected(v)) return { ok: false, reason: 'vin_link' };
+  }
+  return null;
+}
+
+function sealBSpendVin(v) {
+  if (bSpendVinFieldRejected(v)) return null;
+  const commit = v?.pseudo || v?.cTilde || v?.commit;
+  const row = {};
+  if (commit != null && commit !== '') row.commit = compactValue(commit);
+  const notePosted = fieldPosted(v?.noteCommit);
+  if (notePosted) {
+    row.noteCommit = vinBytes(v.noteCommit);
+  } else {
+    const d20 = bSpendDigestDest20(v || {});
+    if (d20.length === 20 && !d20.every((b) => b === 0)) row.dest20 = d20;
+  }
+  if (fieldPosted(v?.prev)) row.prev = vinBytes(v.prev);
+  if (fieldPosted(v?.index)) row.index = canonicalVinIndex(v.index);
+  return row;
+}
+
+/** A refused vin is copied uncoerced, so the sealed body still fails admission. */
+function unsealedBSpendVin(v) {
+  const row = {};
+  const commit = v?.pseudo || v?.cTilde || v?.commit;
+  if (commit != null && commit !== '') row.commit = compactValue(commit);
+  if (fieldPosted(v?.noteCommit)) row.noteCommit = v.noteCommit;
+  if (fieldPosted(v?.dest20)) row.dest20 = v.dest20;
+  if (fieldPosted(v?.prev)) row.prev = v.prev;
+  if (fieldPosted(v?.index)) row.index = v.index;
+  return row;
+}
+
 /** Strip a tx down to the sealed fields. No openings, view material, IP, or memo plaintext. */
 export function compactTx(tx) {
   if (!tx) return tx;
@@ -623,8 +733,12 @@ export function compactTx(tx) {
   delete out.payout;
   delete out.address;
   if (tx.vin) {
-    out.vin = (tx.vin || []).map((v) => {
+    out.vin = (tx.vin || []).map((v, i) => {
       if (v?.coinbase) return compactValue({ coinbase: true, height: v.height });
+      if (kind === 'b-spend') {
+        const sealed = sealBSpendVin(v);
+        return sealed || unsealedBSpendVin(v);
+      }
       const commit = v.pseudo || v.cTilde || v.commit;
       const row = {};
       if (commit != null && commit !== '') row.commit = compactValue(commit);

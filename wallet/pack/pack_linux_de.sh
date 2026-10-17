@@ -41,7 +41,7 @@ flutter config --enable-linux-desktop --no-analytics >/dev/null
 flutter pub get
 REPO="$(cd "$WALLET/.." && pwd)"
 ADMIT="$REPO/crypto/native/admit"
-cargo build --release --manifest-path "$ADMIT/Cargo.toml"
+bash "$REPO/crypto/native/build-linux-admit-so.sh"
 DEFINE="$(python3 "$REPO/crypto/native/stamp_admit_pin.py" --define "$ADMIT/target/release/libshear_admit.so")"
 flutter build linux --release --build-name="$FLUTTER_NAME" --build-number="$BUILD_NUMBER" $DEFINE
 BUNDLE="$WALLET/build/linux/x64/release/bundle"
@@ -72,7 +72,25 @@ ver = os.environ["VER"]
 repo = os.environ["REPO"]
 pack_flavor = os.environ.get("PACK_FLAVOR", "linux")
 sys.path.insert(0, os.path.join(repo, "node", "pack"))
+sys.path.insert(0, os.path.join(repo, "scripts", "licenses"))
 from bundle_modules import assert_zip_has_modules, write_missing_required, write_release_sidecar
+import glob
+import release_notices
+
+def sodium_system_libs():
+    out = []
+    for so in sorted(glob.glob(os.path.join(bundle, "lib", "libsodium.so.*"))):
+        base = os.path.basename(so)
+        for d in ("/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/local/lib"):
+            if os.path.isfile(os.path.join(d, base)):
+                out.append(os.path.join(d, base))
+                break
+        else:
+            sys.exit(f"cannot find the system {base} to copy its licence")
+    return out
+
+def sodium_licenses():
+    return release_notices.runtime_license_members(sodium_system_libs(), "lib/licenses", repo)
 
 def add_tree(z, root):
     for dp, _dns, fns in os.walk(root):
@@ -87,7 +105,9 @@ def pack(path, arch=False):
         if arch:
             z.write(pkgbuild, "PKGBUILD")
         add_tree(z, bundle)
-        write_release_sidecar(z, repo, flavor="linux")
+        for src, arc in sodium_licenses():
+            z.write(src, arc)
+        write_release_sidecar(z, repo, flavor="linux", extra_runtime=sodium_system_libs())
         write_missing_required(z, repo)
     print("wrote", path, os.path.getsize(path))
     return path
@@ -139,6 +159,11 @@ for name in outs:
         )
     if "runtime/node.exe" in names:
         sys.exit(f"unix wallet zip must not ship runtime/node.exe: {name}")
+    if any(n.startswith("node_modules/solc/") for n in names):
+        sys.exit(f"wallet zip must not ship the development-only solc compiler: {name}")
+    release_notices.assert_has_notices(names, repo)
+    # runtime/ is the prebuilt node (and Fedora's libnode). It loads the system libstdc++.
+    release_notices.assert_linux_zip_clean(name, exempt=("runtime/*",))
     assert_zip_has_modules(names, repo)
 print("ok")
 PY
