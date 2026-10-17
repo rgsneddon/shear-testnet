@@ -44,8 +44,9 @@ const feePin = configuredFeeIdentity();
 if (!feePin.ok) {
   console.error(JSON.stringify({
     ok: false,
-    event: 'fee_dest_mismatch',
+    event: feePin.reason === 'fee_dest_not_payable' ? 'fee_dest_not_payable' : 'fee_dest_mismatch',
     reason: feePin.reason,
+    ...(feePin.error ? { error: feePin.error } : {}),
   }));
   process.exit(1);
 }
