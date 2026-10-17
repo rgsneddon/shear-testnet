@@ -12,6 +12,7 @@ import {
   cloneVault,
   deposit,
   emptyVault,
+  trialReserveApply,
   withdraw,
   packRewardAuth,
   portalEpochInterest,
@@ -46,6 +47,7 @@ import {
 import {
   RELATION_BOUND,
   packVaultOutput,
+  packVaultRewardProof,
   proveLeafRetire,
   proveVaultReward,
   tagDerivedNullifier,
@@ -191,6 +193,39 @@ function word(ret) {
 }
 
 describe('vault-lock reward proof', () => {
+  it('packs the 0xaa blob in the same order as the Dart prover', () => {
+    const word = (b) => Buffer.alloc(32, b);
+    const fs1 = Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(8, 0x11)]);
+    const record = Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(320, 0x22)]);
+    const blob = packVaultRewardProof({
+      fs1,
+      record,
+      bps: 281,
+      span: 3840,
+      epoch: 3,
+      reward: 551742209,
+      covered: 240,
+      unlock: VAULT_UNLOCK_OPEN,
+      nullBase: word(1),
+      nullP: word(2),
+      nullA1: word(3),
+      openR: word(4),
+      openZ: word(5),
+      noteR: word(6),
+      noteZ: word(7),
+    });
+    const vector = readFileSync(new URL('./vault_reward_blob.vector', import.meta.url), 'utf8').trim();
+    assert.equal(blob[0], 0xaa);
+    assert.equal(blob.length, 1 + 4 + fs1.length + 321 + 4 + 8 * 5 + 32 * 7);
+    assert.equal(blob.readUInt32LE(1), fs1.length);
+    const rewardAt = 5 + fs1.length + 321 + 4 + 8 + 8;
+    assert.equal(blob.readBigUInt64LE(rewardAt), 551742209n);
+    assert.equal(blob.readBigUInt64LE(rewardAt + 8), 240n);
+    assert.equal(blob.readBigUInt64LE(rewardAt + 16), VAULT_UNLOCK_OPEN);
+    assert.equal(blob.subarray(blob.length - 32).equals(word(7)), true);
+    assert.equal(blob.toString('hex'), vector);
+  });
+
   it('pays a batch, refuses a stranger and a lone public mint, and JS matches the EVM', async () => {
     const owner = who();
     const pay = payee(0x44);
@@ -911,6 +946,9 @@ describe('vault-lock reward proof', () => {
     );
     assert.ok(tx.principalProof);
     tx.retireProof = retire.proof;
+    // A JSON copy of the vault before the withdraw. It is not this chain:
+    // `state` below already refused the claim. A failed in-place trial
+    // restores the retire marks and the tree on the vault it was given.
     const parked = cloneVault(state);
     const paid = withdraw({
       state,
@@ -969,6 +1007,7 @@ describe('vault-lock reward proof', () => {
     assert.equal(evmClaim.ok, false);
     assert.equal(evmClaim.reason, 'already_minted');
 
+    const liveChain = cloneVault(parked);
     const unburned = applyReserveBlock({
       state: parked,
       block: {
@@ -980,6 +1019,45 @@ describe('vault-lock reward proof', () => {
       genesisMs: T0,
     });
     assert.equal(unburned.ok, true, unburned.reason);
+    assert.equal(liveChain.mintedIds?.[proved.nullifier], undefined);
+
+    signWithdrawReward(tx, owner.key, {
+      portalId: portal,
+      nanos: PI_SHE_NANOS,
+      dest: owner.dest,
+      state: liveChain,
+      nowMs: at,
+    });
+    const bounced = trialReserveApply({
+      state: liveChain,
+      inPlace: true,
+      nowMs: at,
+      height: HEIGHT,
+      genesisMs: T0,
+      block: {
+        height: HEIGHT,
+        txs: [
+          { coinbase: true, vout: [] },
+          tx,
+          rewardClaimTx({ to: pay.to, vault: proved, id: 'claim-undo' }),
+        ],
+      },
+    });
+    assert.equal(bounced.ok, false);
+    assert.equal(bounced.reason, 'double_mint');
+    assert.equal(liveChain.vaultRetired?.[leaf.note.toString('hex')], undefined);
+    assert.equal(liveChain.vaultLockRoot, inclusive);
+    const restored = applyReserveBlock({
+      state: liveChain,
+      block: {
+        height: HEIGHT,
+        txs: [{ coinbase: true, vout: [] }, rewardClaimTx({ to: pay.to, vault: proved, id: 'claim-after-undo' })],
+      },
+      nowMs: at,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(restored.ok, true, restored.reason);
 
     const evmTx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'evm-atomic' });
     signWithdrawReward(evmTx, owner.key, {

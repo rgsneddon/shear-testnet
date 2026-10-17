@@ -3,6 +3,9 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'shear_admit.dart';
+import 'shear_vault_blob.dart';
+
+export 'shear_vault_blob.dart' show packVaultRewardProof, kVaultBlobVer;
 import 'shear_admit_ffi.dart';
 import 'shear_fs1.dart';
 import 'shear_identity.dart' show kBookMagic;
@@ -18,6 +21,23 @@ const String kVaultBalDst = 'shear-vault-reward-bal-v1';
 const String kVaultLockBlindDst = 'shear-vault-lock-blind-v1';
 const String kVaultLockOwnerDst = 'shear-vault-lock-owner-v1';
 const int kVaultProofVer = 0xaa;
+const int kPiSheNanos = 314159265358;
+const int kVaultUnlockOpen = 0xffffffff;
+const String kVaultUnlockDst = 'shear-vault-unlock-base-v1';
+const String kMagicMainnet = 'shear-v1';
+
+/// Testnet is 4 days. Mainnet (`shear-v1`) is 400. A day is 960 blocks of 90s.
+int vaultEpochBlocksFor(String magic) => (magic == kMagicMainnet ? 400 : 4) * 960;
+
+int vaultPeriodBlocksFor(String magic) {
+  final blocks = vaultEpochBlocksFor(magic);
+  if (blocks % 16 != 0) throw StateError('stake_reward');
+  return blocks ~/ 16;
+}
+
+Element vaultUnlockBase() =>
+    pointFrom(fromHashBytes(sha512Bytes(utf8Bytes(kVaultUnlockDst))));
+
 const String kClaimTxidDst = 'shear-claim-txid-v1';
 const String kClaimPortalDst = 'shear-claim-portal-v1';
 const String kVaultCapDst = 'shear-epoch-cap-v1';
@@ -185,10 +205,16 @@ Element _commitUnits(BigInt v, Scalar r) {
   return addEl(vg, mulEl(noteH, r));
 }
 
-Uint8List _lockNote(int amount, Uint8List owner, Uint8List blind) {
+Uint8List _lockNote(int amount, Uint8List owner, Uint8List blind, int unlock) {
+  if (amount != kPiSheNanos) throw StateError('stake_reward');
   final pub = pointBytes(admitPub(scalarFromBytes(owner)));
-  final c = commitBytes(amount, blind);
-  return _concat([pub, c]);
+  final bare = commitBytes(amount, blind);
+  if (unlock == 0) return _concat([pub, bare]);
+  final mixed = addBytes(
+    bare,
+    mulBytes(pointBytes(vaultUnlockBase()), scalarBytes(scalarFromU64(BigInt.from(unlock)))),
+  );
+  return _concat([pub, mixed]);
 }
 
 /// One claim or roll proof. The tree is the vault-lock set the caller
@@ -213,14 +239,17 @@ Map<String, dynamic> proveVaultLockReward({
   final blinds = <Uint8List>[];
   final owners = <Uint8List>[];
   final amounts = <int>[];
+  final unlocks = <int>[];
   for (final lock in locks) {
     final amount = (lock['amount'] as num).toInt();
-    if (amount <= 0) throw StateError('unsigned');
+    if (amount != kPiSheNanos) throw StateError('stake_reward');
     final index = (lock['index'] as num?)?.toInt() ?? 0;
     final lockMs = (lock['lockMs'] as num?)?.toInt() ?? 0;
     final seed = _asBytes(lock['seed']);
     var owner = _asBytes(lock['scalar']);
     var blind = _asBytes(lock['blind']);
+    var unlock = kVaultUnlockOpen;
+    if (lock['unlockEpoch'] != null) unlock = (lock['unlockEpoch'] as num).toInt();
     if (owner.length != 32) {
       if (seed.length == 0) owner = scalarBytes(randomScalar());
       else owner = vaultNullBytes(seed, index);
@@ -229,10 +258,11 @@ Map<String, dynamic> proveVaultLockReward({
       if (seed.length == 0) blind = scalarBytes(randomScalar());
       else blind = vaultLockBlindBytes(seed, index, amount, lockMs);
     }
-    notes.add(_lockNote(amount, owner, blind));
+    notes.add(_lockNote(amount, owner, blind, unlock));
     blinds.add(blind);
     owners.add(owner);
     amounts.add(amount);
+    unlocks.add(unlock);
   }
   final handle = fs1.treeNew();
   if (handle == 0) throw StateError('fs1_prover_unavailable');
@@ -241,34 +271,33 @@ Map<String, dynamic> proveVaultLockReward({
     if (!fs1.treeAppend(handle, packed)) throw StateError('fs1_prover_unavailable');
     final root = fs1.treeRoot(handle);
     if (root == null || root.length != 32) throw StateError('fs1_prover_unavailable');
-    // rate_e is the whole-epoch total. covered blocks / epoch blocks, one floor.
-    if (remainMs <= 0 || span <= 0 || remainMs > span) throw StateError('stake_reward');
+    // Callers that pass the epoch length twice ask for one period.
+    // An explicit hold that is not that length is one interval, in blocks.
+    // rate_e is the whole-epoch total. The packed span is epoch blocks.
+    if (remainMs <= 0 || span <= 0) throw StateError('stake_reward');
+    final blocks = vaultEpochBlocksFor(magic);
+    final period = vaultPeriodBlocksFor(magic);
+    var covered = period;
+    if (remainMs != span) {
+      if (remainMs > blocks) throw StateError('stake_reward');
+      covered = remainMs;
+    }
+    final unlock = unlocks[which];
+    final epoch = earnEpoch;
+    if (epoch >= unlock) throw StateError('stake_reward');
     final amount = BigInt.from(amounts[which]);
     final rate = BigInt.from(bps);
     final bound = BigInt.one << 110;
-    final product = amount * rate * BigInt.from(remainMs);
-    final denom = BigInt.from(span) * BigInt.from(10000);
+    final product = amount * rate * BigInt.from(covered);
+    final denom = BigInt.from(blocks) * BigInt.from(10000);
     if (product <= BigInt.zero || product >= bound || denom <= BigInt.zero || denom >= bound) {
       throw StateError('stake_reward');
     }
     final nanos = product ~/ denom;
-    final rem = product % BigInt.from(10000);
     if (nanos <= BigInt.zero || nanos.bitLength > 53) throw StateError('stake_reward');
-    final slack = BigInt.from(9999) - rem;
-    if (slack < BigInt.zero) throw StateError('stake_reward');
     final reward = nanos.toInt();
     final admit = AdmitNative.tryLoad();
     if (admit == null) throw StateError('admit_native_required');
-    final rRem = randomScalar();
-    final rSlack = randomScalar();
-    final remCommit = pointBytes(_commitUnits(rem, rRem));
-    final slackCommit = pointBytes(_commitUnits(slack, rSlack));
-    final remRange = admit.proveRange(rem, scalarBytes(rRem));
-    final slackRange = admit.proveRange(slack, scalarBytes(rSlack));
-    if (remRange == null || remRange.isEmpty || slackRange == null || slackRange.isEmpty) {
-      throw StateError('admit_native_required');
-    }
-    final epoch = earnEpoch;
     final epochEl = hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst));
     final nullP = pointBytes(mulEl(epochEl, scalarFromBytes(owners[which])));
     final nullifierPre = _sha256(_concat([utf8Bytes(kVaultNullPrf), nullP]));
@@ -300,12 +329,10 @@ Map<String, dynamic> proveVaultLockReward({
       root,
       _u64(epoch),
       _u32(bps),
-      _u64(span),
+      _u64(blocks),
       _u64(reward),
-      remCommit,
-      _sha256(remRange),
-      slackCommit,
-      _sha256(slackRange),
+      _u64(covered),
+      _u64(unlock),
       noteC,
       noteCommit,
       dest20,
@@ -319,34 +346,24 @@ Map<String, dynamic> proveVaultLockReward({
     if (record.length != kFs1RecordBytes || record[0] != kFs1Wire) throw StateError('fs1_prover_unavailable');
     final cTilde = Uint8List.sublistView(record, 33, 65);
     final t = proved.t.first;
-    final relP = subEl(
-      subEl(mulEl(pointFrom(cTilde), scalarFromInt(bps)), mulG(scalarFromBigInt(nanos * BigInt.from(10000)))),
-      pointFrom(remCommit),
+    final openS = scalarAdd(scalarFromBytes(blinds[which]), scalarFromBytes(t));
+    final openP = subEl(
+      subEl(pointFrom(cTilde), mulG(scalarFromBigInt(BigInt.from(kPiSheNanos)))),
+      mulEl(vaultUnlockBase(), scalarFromU64(BigInt.from(unlock))),
     );
-    final relS = scalarSub(
-      scalarMul(scalarFromInt(bps), scalarAdd(scalarFromBytes(blinds[which]), scalarFromBytes(t))),
-      rRem,
-    );
-    if (!elementEq(relP, mulEl(noteH, relS))) throw StateError('stake_reward');
-    final extra = _sha256(_concat([
+    if (!elementEq(openP, mulEl(noteH, openS))) throw StateError('stake_reward');
+    final openExtra = _sha256(_concat([
       utf8Bytes(kVaultRelDst),
       cTilde,
-      _u32(bps),
-      _u64(span),
-      _u64(reward),
-      remCommit,
-      slackCommit,
+      _u64(kPiSheNanos),
+      _u64(unlock),
     ]));
-    final rel = schnorrProveH(relP, relS, extra);
-    final balP = subEl(
-      addEl(pointFrom(remCommit), pointFrom(slackCommit)),
-      mulG(scalarFromInt(9999)),
-    );
-    final balS = scalarAdd(rRem, rSlack);
-    if (!elementEq(balP, mulEl(noteH, balS))) throw StateError('stake_reward');
+    final open = schnorrProveH(openP, openS, openExtra);
     final portalWord = _sha256(_concat([utf8Bytes(kClaimPortalDst), dest20]));
-    final balExtra = _sha256(_concat([utf8Bytes(kVaultBalDst), preimage, portalWord]));
-    final bal = schnorrProveH(balP, balS, balExtra);
+    final noteExtra = _sha256(_concat([utf8Bytes(kVaultBalDst), preimage, portalWord]));
+    final noteP = subEl(pointFrom(noteC), mulG(scalarFromBigInt(nanos)));
+    if (!elementEq(noteP, mulEl(noteH, noteR))) throw StateError('stake_reward');
+    final noteOpen = schnorrProveH(noteP, noteR, noteExtra);
     final linkAnn = Uint8List.sublistView(proved.link, 0, 32);
     final linkSr = Uint8List.sublistView(proved.link, 32, 64);
     final linkN = Uint8List.sublistView(proved.link, 64, 96);
@@ -358,31 +375,23 @@ Map<String, dynamic> proveVaultLockReward({
     if (_bytesEq(stable, tag)) throw StateError('stake_reward');
     final nullifier = _sha256(_concat([utf8Bytes(kVaultNullPrf), linkN]));
     if (!_bytesEq(nullifier, nullifierPre)) throw StateError('stake_reward');
-    final blob = _concat([
-      Uint8List.fromList([kVaultProofVer]),
-      _u32(proved.fs1.length),
-      proved.fs1,
-      record,
-      _u32(bps),
-      _u64(span),
-      _u64(epoch),
-      _u64(reward),
-      linkAnn,
-      linkN,
-      linkSr,
-      Uint8List(32),
-      Uint8List(32),
-      rel['R']!,
-      rel['z']!,
-      remCommit,
-      _u32(remRange.length),
-      remRange,
-      slackCommit,
-      _u32(slackRange.length),
-      slackRange,
-      bal['R']!,
-      bal['z']!,
-    ]);
+    final blob = packVaultRewardProof(
+      fs1: proved.fs1,
+      record: record,
+      bps: bps,
+      span: blocks,
+      epoch: epoch,
+      reward: reward,
+      covered: covered,
+      unlock: unlock,
+      nullBase: Uint8List.fromList(linkAnn),
+      nullP: Uint8List.fromList(linkN),
+      nullA1: Uint8List.fromList(linkSr),
+      openR: open['R']!,
+      openZ: open['z']!,
+      noteR: noteOpen['R']!,
+      noteZ: noteOpen['z']!,
+    );
     return {
       'ok': true,
       'blob': blob,
@@ -391,7 +400,7 @@ Map<String, dynamic> proveVaultLockReward({
       'rootHex': _hex(root),
       'nullifier': _hex(nullifier),
       'nanos': reward,
-      'full': true,
+      'full': covered == period,
       'rootEpoch': epoch,
       'earnEpoch': epoch,
       'note': {

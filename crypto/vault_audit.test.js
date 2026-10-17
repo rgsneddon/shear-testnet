@@ -110,24 +110,36 @@ function claimFields(blob) {
   const fs1 = blob.readUInt32LE(1);
   const record = 5 + fs1;
   const rewardAt = record + 321 + 4 + 8 + 8;
-  const after = rewardAt + 8;
+  const after = rewardAt + 8 + 8 + 8;
   const word = (i) => blob.subarray(after + i * 32, after + (i + 1) * 32);
   return {
     tag: blob.subarray(record + 1, record + 33),
     member: blob.subarray(record + 33, record + 65),
     reward: blob.readBigUInt64LE(rewardAt),
+    covered: blob.readBigUInt64LE(rewardAt + 8),
+    unlock: blob.readBigUInt64LE(rewardAt + 16),
     nullP: word(1),
-    relR: word(5),
-    relZ: word(6),
-    remCommit: word(7),
+    openR: word(3),
+    openZ: word(4),
+    noteR: word(5),
   };
 }
 
 describe('hidden vault claims', () => {
   it('hides the leaf, rejects the tag-derived nullifier, and mints each public reward', () => {
     const who = dest20();
+    assert.equal(proveVaultReward({
+      locks: [{ amount: PI_SHE_NANOS + 1, index: 0 }],
+      which: 0,
+      rootEpoch: 0,
+      earnEpoch: 0,
+      bps: GENESIS_BPS,
+      remainMs: span,
+      span,
+      dest20: who.d20,
+    }), null);
     const first = proveVaultReward({
-      locks: [{ amount: PI_SHE_NANOS, index: 0 }, { amount: PI_SHE_NANOS + 1, index: 1 }],
+      locks: [{ amount: PI_SHE_NANOS, index: 0 }, { amount: PI_SHE_NANOS, index: 1 }],
       which: 0,
       rootEpoch: 0,
       earnEpoch: 0,
@@ -156,7 +168,7 @@ describe('hidden vault claims', () => {
     const derived = tagDerivedNullifier(tagA, 0);
     assert.ok(derived);
     assert.notEqual(derived.toString('hex'), a.proved.nullifier);
-    assert.notEqual(claimFields(a.proved.blob).remCommit.toString('hex'), claimFields(b.proved.blob).remCommit.toString('hex'));
+    assert.notEqual(claimFields(a.proved.blob).noteR.toString('hex'), claimFields(b.proved.blob).noteR.toString('hex'));
     assert.equal(a.proved.blob.includes(a.proved.locks[0].commit), false);
 
     const state = emptyVault();
@@ -290,9 +302,11 @@ describe('hidden vault claims', () => {
   it('the lock commitment opens to the funded amount and the integer stays off the action', () => {
     const who = dest20();
     const rIn = randomScalar();
+    assert.equal(vaultLockNote(PI_SHE_NANOS + 1, 3n, rIn), null);
+    assert.equal(vaultLockNote(1n, 3n, rIn), null);
     const funded = pointBytes(commit(PI_SHE_NANOS, rIn));
     const range = proveRange(PI_SHE_NANOS, rIn);
-    const note = vaultLockNote(PI_SHE_NANOS, 3n, rIn).note;
+    const note = vaultLockNote(PI_SHE_NANOS, 3n, rIn, 0n).note;
     const tx = {
       kind: 'lock',
       nanos: 0,
@@ -318,7 +332,7 @@ describe('hidden vault claims', () => {
 
     const rLock = randomScalar();
     const locked = pointBytes(commit(PI_SHE_NANOS, rLock));
-    const blinded = vaultLockNote(PI_SHE_NANOS, 3n, rLock).note;
+    const blinded = vaultLockNote(PI_SHE_NANOS, 3n, rLock, 0n).note;
     const sameValue = {
       id: 'reblind',
       kind: 'lock',
@@ -401,7 +415,9 @@ describe('hidden vault claims', () => {
     const in1 = pointBytes(commit(one, rIn1));
     const locked = pointBytes(commit(one, rLock));
     const change = pointBytes(commit(huge, rChange));
-    const leaf = vaultLockNote(huge, 9n, rLeaf).note;
+    assert.equal(vaultLockNote(huge, 9n, rLeaf), null);
+    assert.equal(vaultLockNote(one, 9n, rLeaf), null);
+    const leaf = Buffer.concat([Buffer.alloc(32, 3), pointBytes(commit(huge, rLeaf))]);
     const opened = proveValue(one, rLock);
     const tx = {
       id: 'two-in-change',
@@ -475,9 +491,9 @@ describe('hidden vault claims', () => {
     assert.equal(left.reward, right.reward);
     assert.notEqual(left.member.toString('hex'), right.member.toString('hex'));
     assert.notEqual(left.nullP.toString('hex'), right.nullP.toString('hex'));
-    assert.notEqual(left.relR.toString('hex'), right.relR.toString('hex'));
-    assert.notEqual(left.relZ.toString('hex'), right.relZ.toString('hex'));
-    assert.notEqual(left.remCommit.toString('hex'), right.remCommit.toString('hex'));
+    assert.notEqual(left.openR.toString('hex'), right.openR.toString('hex'));
+    assert.notEqual(left.openZ.toString('hex'), right.openZ.toString('hex'));
+    assert.notEqual(left.noteR.toString('hex'), right.noteR.toString('hex'));
     const det = proveLockCap(PI_SHE_NANOS, first.locks[0].blind, GENESIS_BPS);
     assert.ok(det);
     assert.equal(first.blob.includes(det.commit), false);
@@ -564,8 +580,18 @@ describe('hidden vault claims', () => {
   it('pays every member of the set and refuses a published reward that is not the proof', () => {
     const who = dest20();
     const count = 3;
-    const base = proveVaultReward({
+    assert.equal(proveVaultReward({
       locks: [0, 1, 2].map((index) => ({ amount: PI_SHE_NANOS + index, index })),
+      which: 0,
+      rootEpoch: 0,
+      earnEpoch: 0,
+      bps: GENESIS_BPS,
+      remainMs: span,
+      span,
+      dest20: who.d20,
+    }), null);
+    const base = proveVaultReward({
+      locks: [0, 1, 2].map((index) => ({ amount: PI_SHE_NANOS, index })),
       which: 0,
       rootEpoch: 0,
       earnEpoch: 0,
@@ -588,7 +614,7 @@ describe('hidden vault claims', () => {
         dest20: who.d20,
       }));
     }
-    assert.equal(new Set(proofs.map((row) => claimFields(row.blob).remCommit.toString('hex'))).size, 3);
+    assert.equal(new Set(proofs.map((row) => claimFields(row.blob).noteR.toString('hex'))).size, 3);
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
@@ -703,7 +729,7 @@ describe('hidden vault claims', () => {
     assert.equal(next.mintBankNanos, BigInt(later.nanos));
   });
 
-  it('spends a claim, a roll, and an interest withdraw from one nullifier set', () => {
+  it('spends a claim once, refuses a withdraw that carries the claim, and leaves a roll unmarked', () => {
     const who = dest20();
     const row = proveLock(PI_SHE_NANOS, 0);
     const ownerPub = who.id.spendPub.toString('hex');
@@ -778,15 +804,30 @@ describe('hidden vault claims', () => {
     assert.equal(claimThenWithdraw.ok, false);
     assert.equal(claimThenWithdraw.reason, 'double_mint');
 
+    const refusedState = fresh();
+    const refusedWithdraw = run(refusedState, take(refusedState));
+    assert.equal(refusedWithdraw.ok, false);
+    assert.equal(refusedWithdraw.reason, 'stake_reward');
+
     const withdrawn = fresh();
-    const did = run(withdrawn, take(withdrawn));
+    const portal = portalIdFromDest(who.dest);
+    const plain = withdrawTx({ from: who.dest, to: who.dest, nanos: PI_SHE_NANOS, id: 'wd-plain' });
+    const commit = withdrawn.portals[portal].tranches.at(-1).commit;
+    plain.principalProof = provePrincipalOpen(Buffer.from(commit, 'hex'), PI_SHE_NANOS, lockBlind, plain, portal);
+    signWithdrawReward(plain, who.id.privateKey, {
+      portalId: portal,
+      nanos: PI_SHE_NANOS,
+      dest: who.dest,
+      state: withdrawn,
+      nowMs: T0 + span,
+    });
+    const did = run(withdrawn, plain);
     assert.equal(did.ok, true, did.reason);
-    assert.equal(withdrawn.mintedIds[row.proved.nullifier], true);
-    assert.equal(withdrawn.pendingReward, undefined);
-    assert.equal(withdrawn.mintBankNanos, BigInt(row.proved.nanos));
+    assert.equal(withdrawn.mintedIds[row.proved.nullifier], undefined);
+    assert.equal(withdrawn.mintBankNanos, 0n);
     const withdrawThenClaim = run(withdrawn, claim());
-    assert.equal(withdrawThenClaim.ok, false);
-    assert.equal(withdrawThenClaim.reason, 'double_mint');
+    assert.equal(withdrawThenClaim.ok, true, withdrawThenClaim.reason);
+    assert.equal(withdrawn.mintedIds[row.proved.nullifier], true);
 
     const rolled = fresh();
     const didRoll = run(rolled, roll(rolled));
@@ -908,7 +949,8 @@ describe('hidden vault claims', () => {
     const who = dest20();
     const now = T0 + 3_600_000;
     const r = randomScalar();
-    const note = vaultLockNote(PI_SHE_NANOS, 3n, r).note;
+    assert.equal(vaultLockNote(PI_SHE_NANOS + 1, 3n, r), null);
+    const note = vaultLockNote(PI_SHE_NANOS, 3n, r, 0n).note;
     const build = () => {
       const action = lockTx({
         from: who.dest,
