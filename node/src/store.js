@@ -3196,9 +3196,12 @@ export function createStore(dir, {
    * not burial. Each bad link drops the peers that offered it, so a retry
    * costs at most one hash batch per bad peer.
    */
-  function proveBurial(block, verifyOpts = {}) {
+  function proveBurial(block, verifyOpts = {}, anchor = null) {
     const parent = tip();
-    const h = (Number(parent?.height) || 0) + 1;
+    // A fork block is not this tip plus one. The caller passes that block's
+    // own height and the MTP of the chain under it. Null keeps the tip path.
+    const anchored = !!(anchor && Number.isInteger(anchor.height) && anchor.height > 0);
+    const h = anchored ? anchor.height : ((Number(parent?.height) || 0) + 1);
     const fail = { ok: false, reason: 'samples_pruned' };
     let claimed;
     let own;
@@ -3207,8 +3210,12 @@ export function createStore(dir, {
       own = decodeHeader(Buffer.from(block.header));
     } catch { return fail; }
     if (claimed.length !== 32) return fail;
-    const genesisMs = blocks.length ? blockTimeMs(blocks[0]) : Number(own.timestamp);
-    const mtp = blocks.slice(-(MTP_WINDOW - 1)).map(blockTimeMs).concat([Number(own.timestamp)]);
+    const genesisMs = anchored && Number(anchor.genesisMs) > 0
+      ? Number(anchor.genesisMs)
+      : (blocks.length ? blockTimeMs(blocks[0]) : Number(own.timestamp));
+    const mtp = anchored && Array.isArray(anchor.mtp) && anchor.mtp.length
+      ? anchor.mtp.slice()
+      : blocks.slice(-(MTP_WINDOW - 1)).map(blockTimeMs).concat([Number(own.timestamp)]);
     const nowMs = verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now();
     const trust = verifyOpts.trustBlockHash === true;
     const standIn = verifyOpts.trustedHeaderHashes instanceof Set ? verifyOpts.trustedHeaderHashes : null;
@@ -3811,6 +3818,16 @@ export function createStore(dir, {
     return verifyOpts?.trustedPowHash || null;
   }
 
+  // A header run buries only the pruned block it stands above. The fork's
+  // own length stays the tip for every other block.
+  function headerRunTip(block, structuralH, chainTip, at) {
+    if (block?.samplesPruned !== true || !at) return chainTip;
+    const own = Number(at[structuralH]);
+    if (!Number.isInteger(own) || !(own > chainTip)) return chainTip;
+    if (!shouldPruneSamples(structuralH, own)) return chainTip;
+    return own;
+  }
+
   function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null, verifyOpts = {}) {
     const noVault = verifyOpts.noVault === true;
     const vault = noVault ? null : (trialVault || reserveVault);
@@ -3844,9 +3861,10 @@ export function createStore(dir, {
     const owedUnit = verifyOpts.unitAt != null
       ? hashBonusUnitNanos(verifyOpts.unitAt)
       : hashBonusUnitNanos(vault?.liveHashBonusNanos || 1);
-    const burialTip = Number.isInteger(verifyOpts.burialTip)
+    const chainTip = Number.isInteger(verifyOpts.burialTip)
       ? verifyOpts.burialTip
       : forkBurial(fork);
+    const burialTip = headerRunTip(fork[i], parentH + 1, chainTip, verifyOpts.provenBurialAt);
     const check = verifyBlock(fork[i], prev, {
       parentSupply: verifyOpts.parentSupply,
       parentFluxset: verifyOpts.parentFlux,
@@ -4626,6 +4644,8 @@ export function createStore(dir, {
         };
       }
       const beforeSpent = new Set(trialSpent);
+      const structuralH = (Number(prev?.height) || 0) + 1;
+      const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
       const check = verifyBlock(fork[i], parentView(prev), {
         ...verifyOpts,
         hashBonusNanos: allUnits[rows.length + i],
@@ -4633,8 +4653,8 @@ export function createStore(dir, {
         hashAcceptedSeries: owedWalk.hashAcceptedSeries,
         spentB: trialSpent,
         trustedPowHash: trustedHashFor(fork[i], verifyOpts),
-        tipHeight: Number(prev?.height || 0) + 1,
-        burialTip: tipH,
+        tipHeight: structuralH,
+        burialTip: blockTip,
         evmHistory: rows.concat(out),
         parentSupply: supply,
         parentFluxset: flux,
@@ -4659,8 +4679,8 @@ export function createStore(dir, {
           acceptedSeries: owedWalk.hashAcceptedSeries,
           block: fork[i],
           unit: owedUnit,
-          height: Number(fork[i]?.height) || (Number(prev?.height || 0) + 1),
-          tipHeight: tipH,
+          height: structuralH,
+          tipHeight: blockTip,
         });
         if (!owedNext.ok) {
           rollbackSpent(trialSpent, beforeSpent);
@@ -4728,6 +4748,7 @@ export function createStore(dir, {
         return { ok: false, reason: 'bad_header', tip: tip() };
       }
       if (!prefer) {
+        rememberRunBurial(staged, verified.burialTip, verifyOpts.provenBurialAt);
         stageSide(anchor, staged);
         return { ok: false, reason: 'side_hold', tip: tip() };
       }
@@ -4916,10 +4937,9 @@ export function createStore(dir, {
   function adopt(fork, verifyOpts = {}) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const verified = verifyOpts.offLoopPow ? verifyForkAsync(fork, verifyOpts) : verifyFork(fork, verifyOpts);
-    if (verified && typeof verified.then === 'function') {
-      return verified.then((v) => finishAdopt(v, verifyOpts));
-    }
-    return finishAdopt(verified, verifyOpts);
+    const take = (v) => finishAdopt(v, verifyOpts);
+    if (verified && typeof verified.then === 'function') return verified.then(take);
+    return take(verified);
   }
 
   function finishAdopt(verified, verifyOpts = {}) {
@@ -4986,9 +5006,11 @@ export function createStore(dir, {
       const adoptedTip = Number(accepted[accepted.length - 1]?.height) || accepted.length;
       // One burial tip for the prefix and the suffix: the chain being adopted.
       // Verify already returned this height. The local tip does not raise it.
-      const suffixBurial = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
+      // A pruned suffix block keeps that tip unless its own header run is deeper.
+      let suffixBurial = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
         ? verified.burialTip
         : adoptedTip;
+      const chainBurial = suffixBurial;
       let adoptedSupply;
       let stagedFlux;
       let stagedVault;
@@ -5016,9 +5038,11 @@ export function createStore(dir, {
         for (let i = lca; i < accepted.length; i += 1) {
           if (verifyOpts.throwSupply === true && i === lca) throw new Error('supply_throw');
           const block = accepted[i];
+          const stepH = Number(block?.height) || i + 1;
+          suffixBurial = headerRunTip(block, stepH, chainBurial, verifyOpts.provenBurialAt);
           const stepped = supplyStep(carriedSupply, block, {
             unit: units && units[i] != null ? units[i] : undefined,
-            height: Number(block?.height) || i + 1,
+            height: stepH,
             tipHeight: suffixBurial,
             genesisMs: carriedSupply.genesisMs,
             blockHash: block?.hash,
@@ -5064,6 +5088,7 @@ export function createStore(dir, {
         const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
         blocks.length = 0;
         for (const b of accepted) blocks.push(b);
+        rememberRunBurial(accepted, chainBurial, verifyOpts.provenBurialAt);
         owedRows = verified.owedRows || [];
         acceptedSeries = (verified.owedSeries || []).slice();
         owedSeriesAll = acceptedSeries;
@@ -5126,6 +5151,109 @@ export function createStore(dir, {
     return commit(spent);
   }
 
+  // The header run is stored against the block hash, including a side chain
+  // that has not won yet. A later extension reads it back. The chain tip is
+  // not raised for blocks this run does not stand above.
+  function rememberRunBurial(list, chainTip, at) {
+    if (!at) return;
+    const floor = Number(chainTip) || 0;
+    let noted = false;
+    for (const b of list || []) {
+      const h = Number(b?.height) || 0;
+      const own = Number(at[h]);
+      if (b?.samplesPruned !== true) continue;
+      if (!Number.isInteger(own) || !(own > floor) || !shouldPruneSamples(h, own)) continue;
+      if (provenTipOf(b) != null) continue;
+      burialProof.note(blockHex(b), h, own);
+      noted = true;
+    }
+    if (noted) burialProof.save();
+  }
+
+  function locateFork(fork) {
+    let decoded;
+    try { decoded = decodeHeader(Buffer.from(fork[0].header)); } catch { return null; }
+    const t = tip();
+    const prev = decoded.prevBlockHash;
+    if (t ? prev.equals(Buffer.from(t.hash)) : prev.equals(GENESIS_PREV)) {
+      return { parentH: Number(t?.height) || 0, prefix: blocks.slice() };
+    }
+    const prevHex = Buffer.from(prev).toString('hex').toLowerCase();
+    const anchorIdx = indexByHex(blocks, prevHex);
+    if (anchorIdx >= 0) {
+      const parent = blocks[anchorIdx];
+      return {
+        parentH: Number(parent?.height) || (anchorIdx + 1),
+        prefix: blocks.slice(0, anchorIdx + 1),
+      };
+    }
+    if (sideBlocks.length && prevHex === sideTipHash()) {
+      const chain = sideChain();
+      const last = chain[chain.length - 1];
+      return { parentH: Number(last?.height) || chain.length, prefix: chain };
+    }
+    if (prev.equals(GENESIS_PREV)) return { parentH: 0, prefix: [] };
+    return null;
+  }
+
+  function burialAnchor(block, structuralH, history) {
+    let ownTs = 0;
+    try { ownTs = Number(decodeHeader(Buffer.from(block.header)).timestamp); } catch { ownTs = 0; }
+    const prior = (history || []).slice(-(MTP_WINDOW - 1)).map(blockTimeMs);
+    const genesisMs = history && history.length ? blockTimeMs(history[0]) : ownTs;
+    return { height: structuralH, genesisMs, mtp: prior.concat([ownTs]) };
+  }
+
+  function heightFieldLied(block, structuralH) {
+    return block?.height != null && block.height !== '' && Number(block.height) !== structuralH;
+  }
+
+  // Fork and adopt paths. A tip-extending single block stays on append, which
+  // already proves. A missing run is not hashed; verify answers continuity
+  // or height before samples_pruned. A full run is hashed off-loop when the
+  // caller asked for that, and only that block's tip is raised.
+  function ensurePrunedBurial(fork, verifyOpts) {
+    const located = locateFork(fork);
+    if (!located) return { ok: true, verifyOpts };
+    const { parentH, prefix } = located;
+    const forkTip = parentH + fork.length;
+    const need = [];
+    for (let i = 0; i < fork.length; i += 1) {
+      const block = fork[i];
+      if (block?.samplesPruned !== true) continue;
+      const structuralH = parentH + i + 1;
+      if (shouldPruneSamples(structuralH, forkTip)) continue;
+      if (heightFieldLied(block, structuralH)) continue;
+      let hex = '';
+      try { hex = Buffer.from(block.hash).toString('hex'); } catch { hex = ''; }
+      // No cached run is not hashed. Verify still answers continuity, height,
+      // then samples_pruned. A present run is the only thing proved here.
+      if (!hex || !offeredPath(hex)) continue;
+      need.push({ block, structuralH, index: i });
+    }
+    if (!need.length) return { ok: true, verifyOpts };
+    const proveAt = (n, at) => {
+      if (n >= need.length) return { ok: true, verifyOpts: { ...verifyOpts, provenBurialAt: at } };
+      const item = need[n];
+      const history = prefix.concat(fork.slice(0, item.index));
+      const proved = proveBurial(item.block, verifyOpts, burialAnchor(item.block, item.structuralH, history));
+      const take = (p) => {
+        const next = p?.ok ? { ...at, [item.structuralH]: p.top } : at;
+        return proveAt(n + 1, next);
+      };
+      if (proved && typeof proved.then === 'function') return proved.then(take);
+      return take(proved);
+    };
+    return proveAt(0, {});
+  }
+
+  function ingestBuried(fork, verifyOpts, apply) {
+    const ready = ensurePrunedBurial(fork, verifyOpts);
+    const go = (row) => (row?.ok ? apply(row.verifyOpts) : row);
+    if (ready && typeof ready.then === 'function') return ready.then(go);
+    return go(ready);
+  }
+
   let offLoopGate = Promise.resolve();
 
   function ingestInner(fork, verifyOpts = {}) {
@@ -5165,15 +5293,15 @@ export function createStore(dir, {
       return last;
     }
     if (extendsTip && fork.length > 1) {
-      if (!blocks.length) return adopt(fork, verifyOpts);
-      return stageOrAdopt(fork, verifyOpts, blocks.length - 1);
+      if (!blocks.length) return ingestBuried(fork, verifyOpts, (opts) => adopt(fork, opts));
+      return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, blocks.length - 1));
     }
     const prevHex = Buffer.from(decoded.prevBlockHash).toString('hex').toLowerCase();
     const anchorIdx = indexByHex(blocks, prevHex);
     if (anchorIdx >= 0 || (sideBlocks.length && prevHex === sideTipHash())) {
-      return stageOrAdopt(fork, verifyOpts, anchorIdx);
+      return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, anchorIdx));
     }
-    return adopt(fork, verifyOpts);
+    return ingestBuried(fork, verifyOpts, (opts) => adopt(fork, opts));
   }
 
   function ingest(fork, verifyOpts = {}) {

@@ -1,8 +1,9 @@
 // Two-node pruned sync over the real P2P transport.
 // Headers and shares are ShearHash. Regtest bits keep the header target small.
-// Floor shares stay at 8 bits: that search is the slow part, and this host's
-// jit-full rate is about 0.3s wall per share on two lanes. 65536 shares would
-// take roughly five hours, past the two-hour run, so the near count is 4096.
+// Floor shares stay at 8 bits: that search is the slow part. jit-full is about
+// 2.5ms per hash here, so a floor share is well under a second. Two lanes
+// each pin a 2GiB dataset and this VM does not have that free, so one lane
+// runs the search. 65536 shares would still be hours, so the near count is 4096.
 // It is still far above the mid count, under MAX_SHARES_PER_BLOCK, and every
 // hash is findShare / mineHeaderParallel. No claimed digest is passed through.
 // Share search is a child process. jit-full is process-global, and a worker
@@ -45,7 +46,7 @@ const DEST_MID = 3;
 const DEST_NEAR = 17;
 const T0 = 1_700_000_000_000;
 const FORBIDDEN = new Set([30303, 18332, 30313, 1111]);
-const LANE_N = 2;
+const LANE_N = 1;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-052-'));
 const threads = Math.max(1, os.cpus().length);
