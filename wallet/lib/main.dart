@@ -493,6 +493,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _dropPublicConsent();
+    }
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       _accrualPaused = true;
       _tipWatchGen += 1;
@@ -2948,7 +2951,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               local: false,
               allowPublicHttp: bare,
               publicNode: _flowPostsToPublicNode(),
-              publicIpConsent: _reserveUnprivateOk,
+              publicIpConsent: _flowPostsToPublicNode() && _reserveUnprivateOk,
               depth: _mempoolDepth,
               progress: progress,
             );
@@ -3028,7 +3031,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               progress: progress,
               allowPublicHttp: sidecar.committed == ClosureSendMode.connectBare,
               publicNode: _flowPostsToPublicNode(),
-              publicIpConsent: _reserveUnprivateOk,
+              publicIpConsent: _flowPostsToPublicNode() && _reserveUnprivateOk,
             );
             if (!mounted) return;
             setState(() {
@@ -3463,7 +3466,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       depth: _mempoolDepth,
       spendSeed: hexToBytes(ident.seedHex),
       local: local,
-      publicIpConsent: local || _reserveUnprivateOk,
+      publicIpConsent: !local && _reserveUnprivateOk,
     );
     if (!result.posted || result.tx == null) {
       if (mounted) setState(() => _reserveDepositProgress = null);
@@ -3532,7 +3535,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
     if (go == true && mounted) {
       setState(() => _reserveUnprivateOk = true);
+      ledger.pool?.publicConsent = true;
     }
+  }
+
+  void _dropPublicConsent() {
+    _reserveUnprivateOk = false;
+    ledger.pool?.publicConsent = false;
+    if (mounted) setState(() {});
+  }
+
+  void _selectSendMode(ClosureSendMode mode) {
+    if (sidecar.pending != mode) _dropPublicConsent();
+    setState(() => sidecar.select(mode));
   }
 
   /// Public-node posts wait on the VPN / IP confirm. A local or own-node post does not.
@@ -3554,22 +3569,62 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   void _applyOwnNode() {
     final url = session.ownNodeUrl.trim();
-    ledger.pool?.useOwnNode(url.isEmpty ? null : url);
+    if (url.isEmpty) {
+      ledger.pool?.useOwnNode(null);
+      return;
+    }
+    final parsed = parseOwnNodeUrl(url);
+    if (parsed == null) {
+      ledger.pool?.useOwnNode(null);
+      return;
+    }
+    ledger.pool?.useOwnNode(parsed);
+    ledger.pool?.publicConsent = false;
+    unawaited(_recheckOwnNode(url));
   }
 
-  void _saveOwnNode() {
-    final err = ownNodeUrlError(_ownNodeCtrl.text);
+  Future<void> _recheckOwnNode(String url) async {
+    final parsed = await acceptOwnNodeUrl(url);
+    if (!mounted || session.ownNodeUrl.trim() != url.trim()) return;
+    if (parsed != null) return;
+    setState(() {
+      session.ownNodeUrl = '';
+      _ownNodeError = kOwnNodeUrlError;
+    });
+    ledger.pool?.useOwnNode(null);
+    _dropPublicConsent();
+  }
+
+  Future<void> _saveOwnNode() async {
+    final raw = _ownNodeCtrl.text;
+    if (raw.trim().isEmpty) {
+      setState(() {
+        _ownNodeError = null;
+        session.ownNodeUrl = '';
+        _ownNodeCtrl.text = '';
+      });
+      _dropPublicConsent();
+      _applyOwnNode();
+      if (!widget.skipPoolSync) unawaited(session.persist());
+      return;
+    }
+    final err = ownNodeUrlError(raw);
     if (err != null) {
       setState(() => _ownNodeError = err);
       return;
     }
-    final parsed = parseOwnNodeUrl(_ownNodeCtrl.text) ?? '';
+    final parsed = await acceptOwnNodeUrl(raw);
+    if (!mounted) return;
+    if (parsed == null) {
+      setState(() => _ownNodeError = kOwnNodeUrlError);
+      return;
+    }
     setState(() {
       _ownNodeError = null;
       session.ownNodeUrl = parsed;
-      if (parsed.isEmpty) _ownNodeCtrl.text = '';
-      else _ownNodeCtrl.text = parsed;
+      _ownNodeCtrl.text = parsed;
     });
+    _dropPublicConsent();
     _applyOwnNode();
     if (!widget.skipPoolSync) unawaited(session.persist());
   }
@@ -3626,7 +3681,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         local: local,
         restFrame: ident.address,
         paymentCode: ident.paymentCode,
-        publicIpConsent: local || _reserveUnprivateOk,
+        publicIpConsent: !local && _reserveUnprivateOk,
       );
     } on StateError catch (e) {
       if (context.mounted) {
@@ -3766,7 +3821,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       depth: depth,
       spendSeed: hexToBytes(ident.seedHex),
       local: local,
-      publicIpConsent: local || _reserveUnprivateOk,
+      publicIpConsent: !local && _reserveUnprivateOk,
     );
     if (context.mounted) {
       final messenger = ScaffoldMessenger.of(context);
@@ -4347,7 +4402,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         subtitle: Text(_hostAndroid
             ? kConnectBareCopy
             : 'Connect bare. You push a signed send. This device still runs the book node so blocks can land. $kPublicNodeEverySendCopy'),
-        onChanged: (v) => setState(() => sidecar.select(v!)),
+        onChanged: (v) => _selectSendMode(v!),
       ),
       if (sidecar.pending == ClosureSendMode.connectBare) ...[
         const Text(kPublicNodeEverySendCopy, key: Key('connect-bare-ip-copy')),
@@ -4358,8 +4413,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             labelText: 'Own node',
             helperText:
                 'Optional. host:port or https://host:port. A bare public host uses https. '
-                'http is only for this machine or your LAN. Own node means a node you run, '
-                'not a public Shear host. Empty uses the public node.',
+                'http is only for this machine, a private IP, or a .local name. '
+                'LAN http exposes your read openings to the LAN. '
+                'Own node means a node you run, not a public Shear host. '
+                'Empty uses the public node after you accept the sentence above.',
             errorText: _ownNodeError,
           ),
           onSubmitted: (_) => _saveOwnNode(),
@@ -4381,7 +4438,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           groupValue: sidecar.pending,
           title: const Text('p2P Node'),
           subtitle: const Text(kLocalNodeModeCopy),
-          onChanged: (v) => setState(() => sidecar.select(v!)),
+          onChanged: (v) => _selectSendMode(v!),
         ),
       if (!_hostAndroid)
         RadioListTile<ClosureSendMode>(
@@ -4391,7 +4448,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           groupValue: sidecar.pending,
           title: const Text('Full Node'),
           subtitle: const Text(kLocalNodeFullModeCopy),
-          onChanged: (v) => setState(() => sidecar.select(v!)),
+          onChanged: (v) => _selectSendMode(v!),
         ),
       FilledButton(
         key: const Key('closure-apply'),

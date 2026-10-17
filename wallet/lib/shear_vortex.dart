@@ -4,6 +4,8 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_read_sync.dart';
+
 const vortexPersonal = 'chronoflux-Omega-v1';
 const vorticeKeyPrefix = 'vort1.';
 const reserveProgram = 'shear-reserve-v1';
@@ -274,9 +276,12 @@ Future<Vortice?> downloadVorticeFromOrigin(
   if (source != null) return verifyVorticeDownload(key, source);
   final parsed = parseVorticeKey(key);
   if (parsed == null || parsed.origin == null) return null;
+  if (isPublicWalletHost(parsed.origin)) return null;
   final client = http ?? HttpClient();
   try {
     final req = await client.getUrl(Uri.parse(parsed.origin!));
+    req.followRedirects = false;
+    req.maxRedirects = 0;
     final res = await req.close();
     if (res.statusCode < 200 || res.statusCode >= 300) return null;
     final body = await utf8.decodeStream(res);

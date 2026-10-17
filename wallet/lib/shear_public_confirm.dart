@@ -27,8 +27,9 @@ const kPublicIpWaitCopy = kPublicNodeEverySendCopy;
 
 const kOwnNodeUrlError =
     'Not a node URL. Use host:port or https://host:port. '
-    'http is only for a node on this machine or your LAN. '
-    'Own node means a node you run, not a public Shear host.';
+    'http is only for this machine, a private IP, or a .local name. '
+    'Own node means a node you run, not a public Shear host. '
+    'A name or address that reaches a public Shear node is still the public node.';
 
 const kLocalNodeDownCopy = 'local node not running';
 
@@ -46,11 +47,49 @@ bool unprivateAmountPermitted(double she) => she.isFinite && she > 0;
 /// Lock, vote, withdraw, and Flow may post to the public node only after this confirm.
 bool publicNodePostAllowed({required bool consent}) => consent;
 
-/// True when [rpc] is not loopback, LAN, link-local, IPv6 ULA, or `.local`.
+/// Adds http:// when the operator omitted the scheme, same as an own-node host.
+String normalizeWalletRpc(String raw) {
+  var s = raw.trim();
+  if (s.isEmpty) return s;
+  if (!s.contains('://')) s = 'http://$s';
+  return s;
+}
+
+/// True when [rpc] is not loopback, a private IP, link-local, IPv6 ULA, or `.local`.
 bool rpcNeedsPublicIpWarning(String rpc) {
-  final u = Uri.tryParse(rpc.trim());
-  if (u == null || u.host.isEmpty) return false;
+  final u = Uri.tryParse(normalizeWalletRpc(rpc));
+  if (u == null || u.host.isEmpty) return true;
+  if (isPublicWalletHost(u.host)) return true;
   return !ownNodeAllowsHttp(u.host);
+}
+
+/// A public RPC post is allowed only when the operator passed --public-ok.
+bool cliAllowsPublicPost({required String rpc, required bool publicOk}) =>
+    publicOk && rpcNeedsPublicIpWarning(rpc);
+
+/// DNS lookup used when an own node is saved or connected. Tests replace this.
+typedef OwnNodeLookup = Future<List<InternetAddress>> Function(String host);
+OwnNodeLookup ownNodeLookup = InternetAddress.lookup;
+
+/// Parse, then refuse a host that resolves to a public Shear address.
+/// http is kept only when every resolved address is loopback or RFC1918.
+Future<String?> acceptOwnNodeUrl(String raw) async {
+  final parsed = parseOwnNodeUrl(raw);
+  if (parsed == null) return null;
+  final uri = Uri.parse(parsed);
+  List<InternetAddress> addrs;
+  try {
+    addrs = await ownNodeLookup(uri.host);
+  } catch (_) {
+    return null;
+  }
+  if (addrs.isEmpty) return null;
+  for (final addr in addrs) {
+    final canon = ipv4OfAddress(addr) ?? addr.address;
+    if (hostIsUnspecified(canon) || isPublicWalletHost(canon)) return null;
+    if (uri.scheme == 'http' && !ownNodeAllowsHttp(canon) && !addr.isLoopback) return null;
+  }
+  return parsed;
 }
 
 /// Empty input keeps the public node. Anything else must be an own-node URL.
@@ -84,19 +123,25 @@ String? parseOwnNodeUrl(String raw) {
   if (u.path.isNotEmpty && u.path != '/') return null;
   if (u.hasPort && (u.port <= 0 || u.port > 65535)) return null;
   final host = _stripDots(u.host.toLowerCase());
-  if (host.isEmpty || isPublicWalletHost(host)) return null;
-  final privateHost = ownNodeAllowsHttp(host);
+  if (host.isEmpty || host.contains('%')) return null;
+  if (hostIsNonCanonicalNumeric(host) || hostIsUnspecified(host)) return null;
+  final canon = canonicalHost(host);
+  if (canon.isEmpty || isPublicWalletHost(canon) || hostIsUnspecified(canon)) return null;
+  final privateHost = ownNodeAllowsHttp(canon);
   var scheme = u.scheme;
   if (!hadScheme && !privateHost) scheme = 'https';
   if (scheme == 'http' && !privateHost) return null;
-  final shown = host.contains(':') ? '[$host]' : host;
+  final shown = canon.contains(':') ? '[$canon]' : canon;
   final port = u.hasPort ? ':${u.port}' : '';
   return '$scheme://$shown$port';
 }
 
 /// http is allowed for loopback, RFC1918, link-local, IPv6 ULA, and `.local`.
 bool ownNodeAllowsHttp(String host) {
-  final h = _stripDots(host.toLowerCase());
+  final raw = _stripDots(host.toLowerCase());
+  if (raw.contains('%')) return false;
+  if (raw == 'localhost' || raw.endsWith('.localhost') || raw.endsWith('.local')) return true;
+  final h = canonicalHost(raw);
   if (h == 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
   final addr = InternetAddress.tryParse(h);
   if (addr == null) return false;

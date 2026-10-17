@@ -84,6 +84,8 @@ Future<void> listenNodeTips({
     while (!cancelled()) {
       try {
         final req = await client.getUrl(uri);
+        req.followRedirects = false;
+        req.maxRedirects = 0;
         req.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
         final res = await req.close();
         if (res.statusCode != 200) {

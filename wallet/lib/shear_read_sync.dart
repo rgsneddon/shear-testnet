@@ -113,7 +113,64 @@ bool isNodeHttpHost(String host) {
 /// This list is a refusal, not a dial target.
 const kRefusedPublicNodeIps = <String>{
   '77.42.91.84',
+  '157.180.70.110',
+  '2.28.8.89',
+  '178.156.222.223',
 };
+
+/// Dotted IPv4, or the IPv4 inside an IPv4-mapped IPv6 address.
+String? ipv4OfAddress(InternetAddress addr) {
+  if (addr.type == InternetAddressType.IPv4) return addr.address;
+  final b = addr.rawAddress;
+  if (b.length == 16 &&
+      b[10] == 0xff &&
+      b[11] == 0xff &&
+      b.sublist(0, 10).every((x) => x == 0)) {
+    return '${b[12]}.${b[13]}.${b[14]}.${b[15]}';
+  }
+  return null;
+}
+
+/// Host form used for the refuse list. Mapped IPv6 becomes dotted IPv4.
+String canonicalHost(String host) {
+  var h = host.trim().toLowerCase();
+  while (h.endsWith('.')) {
+    h = h.substring(0, h.length - 1);
+  }
+  if (h.startsWith('[') && h.endsWith(']') && h.length > 2) {
+    h = h.substring(1, h.length - 1);
+  }
+  final zone = h.indexOf('%');
+  if (zone >= 0) h = h.substring(0, zone);
+  final addr = InternetAddress.tryParse(h);
+  if (addr == null) return h;
+  return ipv4OfAddress(addr) ?? addr.address;
+}
+
+/// Decimal, hex, octal, and short forms are not a dotted quad or a canonical IPv6.
+bool hostIsNonCanonicalNumeric(String host) {
+  final h = host.trim().toLowerCase();
+  if (h.contains('%')) return true;
+  if (RegExp(r'^0x[0-9a-f]+$').hasMatch(h)) return true;
+  if (RegExp(r'^\d+$').hasMatch(h)) return true;
+  if (h.contains('0x')) return true;
+  if (RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(h)) {
+    for (final part in h.split('.')) {
+      if (part.length > 1 && part.startsWith('0')) return true;
+      final n = int.tryParse(part);
+      if (n == null || n > 255) return true;
+    }
+    return false;
+  }
+  if (RegExp(r'^\d+(\.\d+){1,2}$').hasMatch(h)) return true;
+  return false;
+}
+
+/// 0.0.0.0 and :: are not an own node.
+bool hostIsUnspecified(String host) {
+  final h = canonicalHost(host);
+  return h == '0.0.0.0' || h == '::' || h == '0:0:0:0:0:0:0:0';
+}
 
 /// True for a public Shear host or a known public-node address.
 bool isPublicWalletHost(String? urlOrHost) {
@@ -122,9 +179,7 @@ bool isPublicWalletHost(String? urlOrHost) {
   if (host.contains('://')) {
     host = Uri.tryParse(host)?.host.toLowerCase() ?? '';
   }
-  while (host.endsWith('.')) {
-    host = host.substring(0, host.length - 1);
-  }
+  host = canonicalHost(host);
   if (host.isEmpty) return false;
   if (kRefusedPublicNodeIps.contains(host)) return true;
   if (host == 'shear.digital' || host.endsWith('.shear.digital')) return true;
@@ -180,6 +235,7 @@ List<String> nodeSendTargets(
       pinned.trim().isNotEmpty &&
       !isPublicPoolHttp(pinned) &&
       !isPoolLedgerHost(pinned)) {
+    if (!publicConsent && isPublicWalletHost(pinned)) return [kLocalNodeRpc];
     return [_trimBase(pinned)];
   }
   final out = <String>[];
@@ -257,6 +313,7 @@ Future<String> firstLiveNodeSeed(
   List<String> seeds, {
   Duration budget = const Duration(seconds: 4),
   Duration grace = kLiveSeedGrace,
+  bool publicConsent = false,
 }) async {
   final usable = <String>[];
   final seen = <String>{};
@@ -264,6 +321,7 @@ Future<String> firstLiveNodeSeed(
     var s = raw.trim();
     if (s.endsWith('/')) s = s.substring(0, s.length - 1);
     if (s.isEmpty || isPoolLedgerHost(s) || !seen.add(s)) continue;
+    if (!publicConsent && isPublicWalletHost(s)) continue;
     usable.add(s);
   }
   if (usable.isEmpty) return '';
@@ -305,7 +363,13 @@ Future<int?> probeNodeSeedHeight(String base, {Duration budget = const Duration(
   try {
     for (final path in const ['/stats', '/api/stats']) {
       final req = await http.getUrl(Uri.parse('$base$path')).timeout(budget);
+      req.followRedirects = false;
+      req.maxRedirects = 0;
       final res = await req.close().timeout(budget);
+      if (res.statusCode >= 300 && res.statusCode < 400) {
+        await res.drain<void>();
+        continue;
+      }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         await res.drain<void>();
         continue;
@@ -659,6 +723,16 @@ class ShearReadSync {
   /// Set while an own node is the only read target. [findLiveNode] must not probe.
   bool blockPublicProbe = false;
 
+  /// Public seeds stay dark until the user accepts the public-node sentence.
+  bool publicConsent = false;
+
+  Iterable<String> get consentSeeds sync* {
+    for (final seed in seeds) {
+      if (!publicConsent && isPublicWalletHost(seed)) continue;
+      yield seed;
+    }
+  }
+
   DateTime? _backoffUntil;
   int _failures = 0;
   final Set<int> _proven = {};
@@ -833,7 +907,7 @@ class ShearReadSync {
       }
     }
     final probes = <String, ({int height, String genesis})>{};
-    final found = await Future.wait(seeds.map((seed) async {
+    final found = await Future.wait(consentSeeds.map((seed) async {
       final p = await _probe(seed);
       return MapEntry(seed, p);
     }));
@@ -1302,7 +1376,7 @@ class ShearReadSync {
 
   Future<List<(String, int)>> _rankFlyclientPeers() async {
     final probes = <String, ({int height, String genesis})>{};
-    final found = await Future.wait(seeds.map((seed) async {
+    final found = await Future.wait(consentSeeds.map((seed) async {
       final p = await _probe(seed);
       return MapEntry(seed, p);
     }));
@@ -1365,7 +1439,8 @@ class ShearReadSync {
   Future<Map<String, dynamic>?> _get(String base, String path) async {
     try {
       final req = await _http.getUrl(Uri.parse('$base$path'));
-      if (blockPublicProbe) req.followRedirects = false;
+      req.followRedirects = false;
+      req.maxRedirects = 0;
       final res = await req.close();
       if (res.statusCode < 200 || res.statusCode >= 300) {
         await res.drain<void>();

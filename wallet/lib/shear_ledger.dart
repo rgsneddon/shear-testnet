@@ -920,11 +920,16 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
   // Unlock often runs before the UI has a live base. Android has no local
   // node, so the worker asks the public book itself. The UI isolate stays free.
   final ownNode = spec['ownNode'] == true;
-  if (spendableFirst && creditFollowProbesPublic(ownNode: ownNode, base: base)) {
+  final publicConsent = spec['publicConsent'] == true;
+  if (spendableFirst &&
+      creditFollowProbesPublic(ownNode: ownNode, base: base, publicConsent: publicConsent)) {
     final seeds = <String>[
       for (final s in (spec['nodeSeeds'] as List?) ?? const <dynamic>[]) s.toString(),
     ];
-    base = await firstLiveNodeSeed(seeds.isEmpty ? kPublicNodeSeeds : seeds);
+    base = await firstLiveNodeSeed(
+      seeds.isEmpty ? kPublicNodeSeeds : seeds,
+      publicConsent: true,
+    );
   }
   // A dead port must not hold the lock screen. A real TLS notes read still
   // has to finish; 400ms dropped every phone handshake and left spendable at 0.
@@ -938,6 +943,10 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
                 ..idleTimeout = const Duration(seconds: 8))
               : null,
         );
+  if (pool != null && ownNode) {
+    pool.useOwnNode(base);
+  }
+  if (pool != null && publicConsent) pool.publicConsent = true;
   final ledger = ShearLedger(pool: pool);
   try {
     ledger.installCreditFollow(spec);
@@ -5004,6 +5013,7 @@ class ShearLedger implements ReadProofSink {
   /// Returns true when a displayed figure changed.
   Future<bool> readContinuityFigures({ShearPoolClient Function(String baseUrl)? open}) async {
     if (pool?.usesOwnNode == true) return false;
+    if (pool?.publicConsent != true) return false;
     final host = Uri.tryParse(pool?.baseUrl ?? '')?.host ?? '';
     if (host == '127.0.0.1' || host == 'localhost' || host == '::1') return false;
     final client = open != null ? open(kPublicPoolHttp) : ShearPoolClient(baseUrl: kPublicPoolHttp);
@@ -5040,7 +5050,10 @@ class ShearLedger implements ReadProofSink {
         if (sync != null &&
             !pool!.usesOwnNode &&
             (sync.liveBase == null || sync.liveBase!.isEmpty)) {
-          final found = await firstLiveNodeSeed(sync.seeds);
+          final found = await firstLiveNodeSeed(
+            sync.seeds,
+            publicConsent: pool!.publicConsent,
+          );
           if (found.isNotEmpty) sync.liveBase = found;
         }
       }
@@ -6297,6 +6310,7 @@ class ShearLedger implements ReadProofSink {
       'paymentCode': paymentCode ?? '',
       'baseUrl': creditFollowReadBase(pool),
       'ownNode': pool?.usesOwnNode == true,
+      'publicConsent': pool?.publicConsent == true,
       'nodeSeeds': creditFollowReadSeeds(pool),
       'address': _restFrame ?? restFrame,
       'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
@@ -8798,9 +8812,13 @@ class ShearLedger implements ReadProofSink {
   }
 }
 
-/// Unlock probes public seeds only when no own node and no base are set.
-bool creditFollowProbesPublic({required bool ownNode, required String base}) =>
-    !ownNode && base.trim().isEmpty;
+/// Unlock probes public seeds only after consent, with no own node and no base.
+bool creditFollowProbesPublic({
+  required bool ownNode,
+  required String base,
+  bool publicConsent = false,
+}) =>
+    publicConsent && !ownNode && base.trim().isEmpty;
 
 /// Read base for the credit-follow worker. An own node replaces the public book.
 String creditFollowReadBase(ShearPoolClient? pool) {
@@ -8835,6 +8853,14 @@ class ShearPoolClient {
   final HttpClient _http;
   ShearReadSync? _sync;
   String? _ownNode;
+  bool _publicConsent = false;
+
+  /// Public seeds and the public pool stay dark until this is set.
+  bool get publicConsent => _publicConsent;
+  set publicConsent(bool value) {
+    _publicConsent = value;
+    _sync?.publicConsent = value;
+  }
 
   /// Reads and posts use only this node. Null returns to the public seeds.
   void useOwnNode(String? url) {
@@ -8976,12 +9002,16 @@ class ShearPoolClient {
 
   Future<Map<String, dynamic>> _getRaw(String path, {String? open}) async {
     final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
-    if (_ownNode != null) req.followRedirects = false;
+    req.followRedirects = false;
+    req.maxRedirects = 0;
     if (open != null && open.isNotEmpty) {
       req.headers.set('X-Shear-Open', open);
     }
     final res = await req.close();
     final text = await utf8.decodeStream(res);
+    if (res.statusCode >= 300 && res.statusCode < 400) {
+      throw StateError('redirect');
+    }
     final map = _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
     // GET fallbacks try the next path on non-2xx. HTML already threw above.
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -8999,10 +9029,11 @@ class ShearPoolClient {
     return null;
   }
 
-  Future<void> _ensureBase({bool publicConsent = true}) async {
+  Future<void> _ensureBase({bool? publicConsent}) async {
     if (_ownNode != null || _pinned != null) return;
     if (_sync?.liveBase != null) return;
-    if (!publicConsent) return;
+    final allowed = publicConsent ?? _publicConsent;
+    if (!allowed) return;
     await _sync?.findLiveNode();
   }
 
@@ -9018,6 +9049,8 @@ class ShearPoolClient {
 
   Future<Map<String, dynamic>> _postOnce(String base, String path, Map<String, dynamic> body) async {
     final req = await _http.postUrl(Uri.parse('$base$path'));
+    req.followRedirects = false;
+    req.maxRedirects = 0;
     req.persistentConnection = false;
     req.headers.contentType = ContentType.json;
     final payload = utf8.encode(jsonEncode(body));
@@ -9028,6 +9061,10 @@ class ShearPoolClient {
     req.contentLength = payload.length;
     req.add(payload);
     final res = await req.close();
+    if (res.statusCode >= 300 && res.statusCode < 400) {
+      await res.drain<void>();
+      throw StateError('redirect');
+    }
     final text = await utf8.decodeStream(res);
     return _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
   }

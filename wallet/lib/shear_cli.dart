@@ -115,6 +115,7 @@ Global options:
   --store PATH         session.json (default: OS app-support path)
   --password-file PATH read password (no trailing-newline strip beyond one \\n)
   --rpc URL            local node (default http://127.0.0.1:18332)
+  --public-ok          required before a public --rpc is contacted
   --json               machine-readable stdout
   --network MAGIC      must be $kBookMagic today; shear-v1 waits for genesis
   -h, --help           help
@@ -517,11 +518,40 @@ String _voteChoice(String raw) {
 }
 
 String _rpc(_Flags flags, Map<String, String> env) =>
-    flags['rpc'] ?? env['SHEAR_RPC'] ?? kWalletDefaultSeed;
+    normalizeWalletRpc(flags['rpc'] ?? env['SHEAR_RPC'] ?? kWalletDefaultSeed);
 
 void _warnPublicIp(IOSink err, String rpc) {
   if (!rpcNeedsPublicIpWarning(rpc)) return;
   err.writeln('warning: $kPublicNodeEverySendCopy');
+}
+
+/// Public hosts are not contacted unless the operator passed --public-ok.
+int? _needPublicOk(IOSink err, _Flags flags, String rpc, {required bool dry}) {
+  if (dry || !rpcNeedsPublicIpWarning(rpc)) return null;
+  if (flags['public-ok'] == '1') return null;
+  err.writeln('refusing public node without --public-ok. $kPublicNodeEverySendCopy');
+  return 2;
+}
+
+bool _cliConsent(_Flags flags, String rpc, {required bool dry}) =>
+    cliAllowsPublicPost(rpc: rpc, publicOk: !dry && flags['public-ok'] == '1');
+
+Future<ShearPoolClient?> _rpcClient(IOSink err, String rpc, {required bool consent}) async {
+  final client = ShearPoolClient(userUrl: rpc);
+  final host = Uri.tryParse(rpc)?.host ?? '';
+  if (isPublicWalletHost(rpc)) {
+    client.publicConsent = consent;
+    return client;
+  }
+  if (host.isEmpty || ownNodeAllowsHttp(host)) return client;
+  final accepted = await acceptOwnNodeUrl(rpc);
+  if (accepted == null) {
+    client.close();
+    err.writeln(kOwnNodeUrlError);
+    return null;
+  }
+  client.useOwnNode(accepted);
+  return client;
 }
 
 Future<int> _create(IOSink out, IOSink err, _Flags flags, Map<String, String> env) async {
@@ -681,10 +711,15 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
   final id = await _needId(session, flags, env);
   final dry = flags['dry-run'] == '1';
   final rpc = _rpc(flags, env);
+  final blocked = _needPublicOk(err, flags, rpc, dry: dry);
+  if (blocked != null) return blocked;
   if (!dry) _warnPublicIp(err, rpc);
-  final ledger = ShearLedger(
-    pool: dry ? null : ShearPoolClient(userUrl: rpc),
-  );
+  ShearPoolClient? pool;
+  if (!dry) {
+    pool = await _rpcClient(err, rpc, consent: _cliConsent(flags, rpc, dry: dry));
+    if (pool == null) return 2;
+  }
+  final ledger = ShearLedger(pool: pool);
   _bindLedger(ledger, id, session);
   final from = ledger.currentDest(id.address, paymentCode: id.paymentCode);
   final ShearTx tx;
@@ -695,7 +730,7 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
       amount: amount,
       memo: flags['memo'],
       local: dry,
-      publicConsent: !dry && rpcNeedsPublicIpWarning(rpc),
+      publicConsent: _cliConsent(flags, rpc, dry: dry),
       restFrame: id.address,
       paymentCode: id.paymentCode,
       spendSeed: hexToBytes(id.seedHex),
@@ -836,9 +871,12 @@ Future<int> _reset(IOSink out, IOSink err, _Flags flags, Map<String, String> env
 
 Future<int> _sync(IOSink out, IOSink err, _Flags flags, Map<String, String> env) async {
   final rpc = _rpc(flags, env);
+  final blocked = _needPublicOk(err, flags, rpc, dry: false);
+  if (blocked != null) return blocked;
   final session = _session(flags);
   final id = await _needId(session, flags, env);
-  final client = ShearPoolClient(userUrl: rpc);
+  final client = await _rpcClient(err, rpc, consent: _cliConsent(flags, rpc, dry: false));
+  if (client == null) return 2;
   final ledger = ShearLedger(pool: client);
   _bindLedger(ledger, id, session);
   try {
@@ -879,6 +917,8 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       final she = double.parse(amt);
       final rpc = _rpc(flags, env);
       final dry = flags['dry-run'] == '1';
+      final blocked = _needPublicOk(err, flags, rpc, dry: dry);
+      if (blocked != null) return blocked;
       if (!dry) _warnPublicIp(err, rpc);
       final from = dest;
       final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
@@ -889,7 +929,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         kind: 'lock',
         programId: 'shear-reserve-v1',
         local: dry,
-        publicConsent: !dry && rpcNeedsPublicIpWarning(rpc),
+        publicConsent: _cliConsent(flags, rpc, dry: dry),
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
@@ -914,6 +954,8 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       }
       final rpc = _rpc(flags, env);
       final dry = flags['dry-run'] == '1';
+      final blocked = _needPublicOk(err, flags, rpc, dry: dry);
+      if (blocked != null) return blocked;
       if (!dry) _warnPublicIp(err, rpc);
       await ledger.sendSpendableSum(
         from: dest,
@@ -923,7 +965,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         programId: 'shear-reserve-v1',
         choice: choice,
         local: dry,
-        publicConsent: !dry && rpcNeedsPublicIpWarning(rpc),
+        publicConsent: _cliConsent(flags, rpc, dry: dry),
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
@@ -1008,7 +1050,10 @@ Future<int> _claimRewards(
   Map<String, String> env,
 ) async {
   final payout = flags['payout'] ?? dest;
-  _warnPublicIp(err, _rpc(flags, env));
+  final rpc = _rpc(flags, env);
+  final blocked = _needPublicOk(err, flags, rpc, dry: false);
+  if (blocked != null) return blocked;
+  _warnPublicIp(err, rpc);
   final posted = await postReserveWithdraw(
     ledger,
     reserve: reserve,
@@ -1016,8 +1061,7 @@ Future<int> _claimRewards(
     payout: payout,
     nowMs: now,
     local: ledger.pool == null,
-    // The operator typed this claim. That is the public-node consent.
-    publicIpConsent: true,
+    publicIpConsent: cliAllowsPublicPost(rpc: rpc, publicOk: flags['public-ok'] == '1'),
   );
   if (posted == null) {
     err.writeln('nothing to claim — no staked principal or accrued rewards');

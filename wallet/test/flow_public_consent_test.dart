@@ -198,7 +198,46 @@ void main() {
     expect('_warnPublicIp('.allMatches(cli).length, greaterThanOrEqualTo(4));
     expect(creditFollowProbesPublic(ownNode: true, base: ''), isFalse);
     expect(creditFollowProbesPublic(ownNode: false, base: 'http://10.0.0.8:18332'), isFalse);
-    expect(creditFollowProbesPublic(ownNode: false, base: ''), isTrue);
+    expect(creditFollowProbesPublic(ownNode: false, base: ''), isFalse);
+    expect(creditFollowProbesPublic(ownNode: false, base: '', publicConsent: true), isTrue);
+    expect(parseOwnNodeUrl('172.15.0.1:18332'), 'https://172.15.0.1:18332');
+    expect(parseOwnNodeUrl('172.16.0.1:18332'), 'http://172.16.0.1:18332');
+    expect(parseOwnNodeUrl('172.31.255.255:18332'), 'http://172.31.255.255:18332');
+    expect(parseOwnNodeUrl('172.32.0.1:18332'), 'https://172.32.0.1:18332');
+    expect(parseOwnNodeUrl('http://172.15.0.1:18332'), isNull);
+    expect(parseOwnNodeUrl('http://172.32.0.1:18332'), isNull);
+    expect(parseOwnNodeUrl('0.0.0.0:18332'), isNull);
+    expect(parseOwnNodeUrl('[::]:18332'), isNull);
+    expect(parseOwnNodeUrl('1311399764'), isNull);
+    expect(parseOwnNodeUrl('0x4d2a5b54'), isNull);
+    expect(parseOwnNodeUrl('https://0x4d.0x2a.0x5b.0x54'), isNull);
+    expect(parseOwnNodeUrl('0115.052.0133.0124'), isNull);
+    expect(parseOwnNodeUrl('[::ffff:77.42.91.84]:18332'), isNull);
+    expect(parseOwnNodeUrl('[::ffff:4d2a:5b54]:8443'), isNull);
+    expect(parseOwnNodeUrl('[::ffff:10.0.0.1]:18332'), 'http://10.0.0.1:18332');
+    expect(parseOwnNodeUrl('https://157.180.70.110'), isNull);
+    expect(parseOwnNodeUrl('https://2.28.8.89'), isNull);
+    expect(parseOwnNodeUrl('https://178.156.222.223'), isNull);
+    expect(rpcNeedsPublicIpWarning('p2p.shear.digital'), isTrue);
+    expect(rpcNeedsPublicIpWarning('evil.com:18332'), isTrue);
+    expect(cliAllowsPublicPost(rpc: 'https://p2p.shear.digital', publicOk: false), isFalse);
+    expect(cliAllowsPublicPost(rpc: 'https://p2p.shear.digital', publicOk: true), isTrue);
+    expect(cliAllowsPublicPost(rpc: 'http://127.0.0.1:18332', publicOk: true), isFalse);
+    expect(cli.contains('publicIpConsent: true'), isFalse);
+    expect(cli.contains('cliAllowsPublicPost'), isTrue);
+    expect(cli.contains("flags['public-ok']"), isTrue);
+    expect(
+      nodeSendTargets('http://127.0.0.1:18332', pinned: 'https://p2p.shear.digital'),
+      [kLocalNodeRpc],
+    );
+    expect(
+      nodeSendTargets(
+        'http://127.0.0.1:18332',
+        pinned: 'https://p2p.shear.digital',
+        publicConsent: true,
+      ).first,
+      'https://p2p.shear.digital',
+    );
 
     final client = ShearPoolClient();
     addTearDown(client.close);
@@ -264,6 +303,108 @@ void main() {
     sync.blockPublicProbe = true;
     expect(await sync.findLiveNode(), 'http://10.1.1.8:18332');
     expect(probe.uris, isEmpty);
+  });
+
+  test('default seeds dial nothing public before consent', () async {
+    final previous = ownNodeLookup;
+    ownNodeLookup = (host) async {
+      if (host == 'alias.example') return [InternetAddress('77.42.91.84')];
+      if (host == 'lan.local') return [InternetAddress('10.1.1.8')];
+      return InternetAddress.lookup(host);
+    };
+    addTearDown(() => ownNodeLookup = previous);
+    expect(await acceptOwnNodeUrl('https://alias.example'), isNull);
+    expect(await acceptOwnNodeUrl('http://lan.local:18332'), 'http://lan.local:18332');
+    expect(await firstLiveNodeSeed(kPublicNodeSeeds), '');
+
+    final saw = _Saw();
+    final http = _SawClient(saw, fail: true);
+    final client = ShearPoolClient(http: http);
+    addTearDown(client.close);
+    expect(client.publicConsent, isFalse);
+    expect(client.sync!.seeds.any((s) => s.contains('shear.digital')), isTrue);
+    final ledger = ShearLedger(pool: client);
+    await ledger.syncTip(proveChain: false);
+    var opened = false;
+    final figures = await ledger.readContinuityFigures(open: (base) {
+      opened = true;
+      throw StateError(base);
+    });
+    expect(figures, isFalse);
+    expect(opened, isFalse);
+    await expectLater(
+      client.history('ssa1from', viewKey: 'ab' * 32),
+      throwsA(isA<StateError>().having((e) => e.message, 'message', kLocalNodeDownCopy)),
+    );
+    await expectLater(
+      client.send(from: 'ssa1from', to: 'ssa1to', amount: 1, kind: 'lock', publicConsent: false),
+      throwsA(isA<StateError>().having((e) => e.message, 'message', kLocalNodeDownCopy)),
+    );
+    await creditFollowWorker(jsonEncode({
+      'spendableFirst': true,
+      'ownNode': false,
+      'publicConsent': false,
+      'baseUrl': '',
+      'restFrame': '',
+      'nodeSeeds': kPublicNodeSeeds,
+    }));
+    expect(saw.uris, isNotEmpty);
+    expect(saw.redirects.every((follow) => follow == false), isTrue);
+    for (final uri in saw.uris) {
+      expect(uri.host.contains('shear.digital'), isFalse, reason: '$uri');
+      expect(kRefusedPublicNodeIps.contains(uri.host), isFalse, reason: '$uri');
+    }
+  });
+
+  testWidgets('switching send mode clears an earlier public consent', (tester) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final dir = Directory.systemTemp.createTempSync('flow-consent-reset-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+    });
+    final ident = session.identity!;
+    final ledger = ShearLedger()..bindIdentity(ident);
+    final bobId = createIdentity();
+    final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(
+      bobId.address,
+      paymentCode: bobId.paymentCode,
+    );
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), bob);
+    await tester.enterText(find.byKey(const Key('flow-amount')), '0.2');
+    await tester.tap(find.byKey(const Key('flow-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('closure-send-path-local')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('closure-send-path-bare')));
+    await tester.pump();
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('flow-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
   });
 
   testWidgets('public Flow send asks, an own node does not, and a bad URL is rejected', (tester) async {
