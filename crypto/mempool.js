@@ -14,7 +14,7 @@ import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRej
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
-import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected } from './reserve_vault.js';
+import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -162,6 +162,14 @@ export function admitMempool(pool, tx, opts = {}) {
   if (kind === 'reward-claim' && (opts.reserveState || opts.height != null)) {
     const claim = rewardClaimRejected(tx, opts.reserveState || null, opts.height);
     if (claim) return claim;
+  }
+  if (kind === 'withdraw') {
+    const retire = retireBlobRejected(
+      tx,
+      opts.reserveState || null,
+      opts.nowMs != null ? opts.nowMs : null,
+    );
+    if (retire) return retire;
   }
   const clockField = typedClockRejected(tx);
   if (clockField) return clockField;

@@ -451,7 +451,7 @@ describe('time-locked withdraw supply', () => {
     assert.notEqual(other, fp);
   });
 
-  it('the EVM pays the lock on withdraw and an epoch end leaves it locked', async () => {
+  it('a 3-arg EVM withdraw refuses a matured hidden lock and leaves it locked', async () => {
     const sol = readFileSync(new URL('../../contracts/Reserve.sol', import.meta.url), 'utf8');
     assert.equal(sol.includes('function _releaseMatured'), false);
     const dest = destOf();
@@ -484,16 +484,18 @@ describe('time-locked withdraw supply', () => {
       { coinbase: true, vout: [], rewardRoot: owed },
       draw,
     ], DRAW, T0, owed);
-    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.ok, false);
+    assert.equal(paid.reason, 'unsigned');
     const released = decodePublicView(
       (await callReserve(session, encodePublicView(DRAW), { staticCall: true })).returnValue,
     );
     assert.equal(released.totalLockedNanos, 0);
     const again = await executeBlockEvm(session, [
-      { coinbase: true, vout: [] },
+      { coinbase: true, vout: [], rewardRoot: owed },
       withdrawTx({ from: dest, to: dest, nanos: 0, id: 'evm-again' }),
-    ], DRAW, T0);
+    ], DRAW, T0, owed);
     assert.equal(again.ok, false);
+    assert.equal(again.reason, 'unsigned');
   });
 
   it('rejects a withdraw when the header clock is missing', () => {

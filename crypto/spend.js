@@ -4,7 +4,7 @@
  * Spend authority is Ed25519 over shear-spend-v1 || packDigest.
  */
 import { createHash, createPublicKey, sign, verify } from 'node:crypto';
-import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM } from './asert.js';
+import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM, MAX_LOCK_LEAVES } from './asert.js';
 import { levyTaxed, txAmountNanos, custodialPullRejected } from './levy.js';
 import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
@@ -589,6 +589,7 @@ const BODY_KEYS = new Set([
   'nullifier',
   'ownerPub',
   'piProof', 'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
+  'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -603,7 +604,7 @@ const VIN_KEYS = new Set([
 const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
-  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch', 'fundProof',
+  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch', 'fundProof', 'piProof',
 ]);
 
 const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);
@@ -794,7 +795,7 @@ export function typedCommitSum(tx, ctx = {}) {
       continue;
     }
     const raw = o?.valueProof?.v;
-    const hiddenLock = kind === 'lock' && tx?.vaultLockNote && (raw == null || raw === '');
+    const hiddenLock = kind === 'lock' && (raw == null || raw === '');
     if (hiddenLock) {
       if (!o?.commit || !o?.rangeProof || o.rangeProof === true) {
         return { ok: false, reason: 'commit_sum' };
@@ -813,7 +814,9 @@ export function typedCommitSum(tx, ctx = {}) {
       payout += v;
     }
   }
-  if (opened !== 1) return { ok: false, reason: 'commit_sum' };
+  if (kind === 'lock') {
+    if (opened < 1 || opened > MAX_LOCK_LEAVES) return { ok: false, reason: 'commit_sum' };
+  } else if (opened !== 1) return { ok: false, reason: 'commit_sum' };
   const vaultPayout = kind === 'withdraw' ? payout : 0;
   if (!verifyFlowConservation(tx, null, vaultPayout)) return { ok: false, reason: 'commit_sum' };
   if (kind === 'lock' && tx?.vaultLockNote) {
