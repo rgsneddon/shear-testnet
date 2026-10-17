@@ -977,20 +977,19 @@ void main() {
     );
     expect(kept.message, 'fee_rejected');
     expect(kept.message, isNot(kErrPublicHttp));
-    expect(hopFeeAdvisoryOf(kept), 'fee_rejected');
-    expect(hopFeeAdvisoryOf(kept), isNot(kErrSendGeneric));
+    expect(kept.message, isNot(kErrSendGeneric));
     expect(flowSendAdvisoryOf(kept), kErrSendGeneric);
     expect(sendHumanError('note_busy', url, allowPublicHttp: true).message, 'note_busy');
-    expect(hopFeeAdvisoryOf(StateError('insufficient')), 'insufficient');
-    expect(hopFeeAdvisoryOf(StateError('insufficient')), isNot(kErrSendGeneric));
-    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
-    expect(hopFeeAdvisoryOf(StateError('no_note')), isNot(contains('no_note')));
+    expect(sendHumanError('insufficient', url, allowPublicHttp: true).message, 'insufficient');
+    expect(sendHumanError('insufficient', url, allowPublicHttp: true).message, isNot(kErrSendGeneric));
+    expect(sendHumanError('no_note', url, allowPublicHttp: true).message, kErrNoSealedNote);
+    expect(sendHumanError('no_note', url, allowPublicHttp: true).message, isNot(contains('no_note')));
     expect(
-      hopFeeAdvisoryOf(const FormatException('Unexpected character (at character 1)\n<html>')),
+      sendHumanError('Unexpected character (at character 1)\n<html>', url, allowPublicHttp: true).message,
       kErrPoolHtml,
     );
-    expect(hopFeeAdvisoryOf(StateError(kErrPoolHtml)), kErrPoolHtml);
-    expect(hopFeeAdvisoryOf(StateError(kErrPoolHtml)).toLowerCase(), isNot(contains('<html')));
+    expect(sendHumanError(kErrPoolHtml, url, allowPublicHttp: true).message, kErrPoolHtml);
+    expect(sendHumanError(kErrPoolHtml, url, allowPublicHttp: true).message.toLowerCase(), isNot(contains('<html')));
     expect(kReserveLockSent, 'Deposit accepted. Spendable is reduced and staking has started.');
     expect(kReserveLockSent, isNot(contains('wait 9 confirmations')));
     expect(kReserveLockSent, isNot(contains('plesse')));
@@ -1026,9 +1025,9 @@ void main() {
       );
       fail('pool rejection must surface');
     } catch (e) {
-      expect(hopFeeAdvisoryOf(e), 'fee_rejected');
-      expect(hopFeeAdvisoryOf(e), isNot(kErrPublicHttp));
-      expect(hopFeeAdvisoryOf(e), isNot(kErrSendGeneric));
+      expect((e as StateError).message, 'fee_rejected');
+      expect(e.message, isNot(kErrPublicHttp));
+      expect(e.message, isNot(kErrSendGeneric));
       expect(e.toString(), isNot(contains(kErrPublicHttp)));
     }
   });
@@ -1058,7 +1057,6 @@ void main() {
       fail('public HTTP must not send');
     } catch (e) {
       expect(flowSendAdvisoryOf(e), kErrPublicHttp);
-      expect(hopFeeAdvisoryOf(e), kErrPublicHttp);
     }
   });
 
@@ -1154,7 +1152,7 @@ void main() {
       throwsA(isA<StateError>().having((e) => e.message, 'msg', contains('no_note'))),
     );
     expect(ledger.spendable(dest) + 1e-18, lessThan(0.25));
-    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
+    expect(sendHumanError('no_note', 'http://127.0.0.1:18332').message, kErrNoSealedNote);
   });
 
   test('hop fee collates a sealed note when the book was empty, then sends it with one FS-1 spend', () async {
@@ -1228,8 +1226,8 @@ void main() {
     );
     expect(posts, isEmpty);
     expect(ledger.spendable(dest) + 1e-18, lessThan(0.001));
-    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
-    expect(hopFeeAdvisoryOf(StateError('no_note')), isNot('no_note'));
+    expect(sendHumanError('no_note', 'http://127.0.0.1:18332').message, kErrNoSealedNote);
+    expect(sendHumanError('no_note', 'http://127.0.0.1:18332').message, isNot('no_note'));
   });
 
   test('send spends the rest-frame sum when no single note covers', () async {
@@ -1734,7 +1732,7 @@ void main() {
       ),
       throwsA(
         isA<StateError>().having(
-          (e) => hopFeeAdvisoryOf(e),
+          (e) => e.message,
           'advisory',
           'pool returned an error page (http_502)',
         ),
@@ -4511,6 +4509,8 @@ void main() {
     await tester.enterText(find.byKey(const Key('flow-amount')), '0.2');
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
     expect(find.byKey(const Key('flow-send-advisory')), findsOneWidget);
     expect(find.text('sent'), findsOneWidget);
     final ok = tester.widget<Text>(find.byKey(const Key('flow-send-advisory')));
@@ -5969,10 +5969,9 @@ void main() {
     expect(kPoolFeeDest, 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6');
     expect(poolFeeDest(), kPoolFeeDest);
     expect(kUnprivateConfirmLabel, 'I already use a VPN / I accept exposing my IP');
-    expect(
-      kUnprivateConfirmHelper,
-      contains('If you are not already on a VPN, the public node may see your device IP'),
-    );
+    expect(kUnprivateConfirmHelper, kPublicNodeEverySendCopy);
+    expect(kUnprivateConfirmHelper, contains('on every send'));
+    expect(kUnprivateConfirmHelper.toLowerCase(), isNot(contains('tor')));
   });
 
   test('send refuses public pool HTTP without hop', () async {
@@ -6082,7 +6081,7 @@ void main() {
       kErrLockUnsigned,
     );
     expect(
-      hopFeeAdvisoryOf(StateError(kErrLockUnsigned)),
+      sendHumanError('unsigned', kPublicPoolHttp, allowPublicHttp: true, kind: 'lock').message,
       kErrLockUnsigned,
     );
   });
@@ -6327,7 +6326,13 @@ void main() {
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
+    expect(find.text(kPublicNodeEverySendCopy), findsWidgets);
     expect(find.text('Privacy hop'), findsNothing);
+    expect(posts, isEmpty);
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
     expect(find.text(kErrSendGeneric), findsOneWidget);
     expect(posts, isEmpty);
   });

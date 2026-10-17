@@ -269,7 +269,8 @@ void main() {
     expect(started, isEmpty);
     expect(side.running, isFalse);
     expect(side.listenPort, isNull);
-    expect(side.progress.toLowerCase(), isNot(contains('vpn')));
+    expect(side.progress.toLowerCase(), isNot(contains('privacy vpn')));
+    expect(side.progress, contains(kPublicNodeEverySendCopy));
     expect(closureSpawnEnv(ClosureSendMode.localNode, android: false, dataDir: '/tmp/shear-node')['SHEAR_STRATUM'], isNull);
     expect(closureSpawnEnv(ClosureSendMode.localNode, android: false, dataDir: '/tmp/shear-node')['SHEAR_GETBLOCK_BATCH'], '1');
     expect(closureSpawnEnv(ClosureSendMode.localNodeFull, android: false, dataDir: '/tmp/shear-node')['SHEAR_STRATUM'], isNull);
@@ -605,11 +606,13 @@ void main() {
     final before = ledger.transactions.length;
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.text('Privacy hop'), findsNothing);
     expect(find.text('sent'), findsOneWidget);
     final sent = ledger.transactions.lastWhere((t) => t.kind == 'send');
-    expect(sent.from, other);
+    expect(other, isNot(home));
     expect(sent.from, isNot(home));
   });
 

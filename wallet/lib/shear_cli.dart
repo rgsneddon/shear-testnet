@@ -6,6 +6,7 @@ import 'shear_ctf.dart';
 import 'shear_eip712.dart';
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
+import 'shear_public_confirm.dart';
 import 'shear_levy.dart';
 import 'shear_read_sync.dart';
 import 'shear_reserve.dart';
@@ -75,6 +76,7 @@ const kCliHelp = '''
 Shear wallet CLI $kCliVersion  (GUI pin $kCliVersion)
 Book magic: $kBookMagic
 ADMITv3 is the full-set send proof. Flow sends are off until it ships.
+$kPublicNodeEverySendCopy
 
 Every GUI function has a command. Nested --help prints that command only.
 Password never belongs on argv (it shows in ps). Use --password-file or
@@ -989,6 +991,7 @@ Future<int> _claimRewards(
   _Flags flags,
 ) async {
   final payout = flags['payout'] ?? dest;
+  err.writeln('warning: the public node can see your IP on every send');
   final posted = await postReserveWithdraw(
     ledger,
     reserve: reserve,

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_cli.dart';
 import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_identity.dart';
@@ -64,6 +65,13 @@ void main() {
     expect(docs.contains('Shear Privacy VPN'), isFalse);
     expect(docs.contains('mask the Continuum IP'), isFalse);
     expect(docs, contains('confirm a VPN or accept that the node may see your IP'));
+    expect(docs, contains(kPublicNodeEverySendCopy));
+    expect(kUnprivateConfirmHelper, kPublicNodeEverySendCopy);
+    expect(kPublicNodeEverySendCopy.toLowerCase(), isNot(contains('tor')));
+    expect(kCliHelp, contains(kPublicNodeEverySendCopy));
+    expect(File('lib/shear_cli.dart').readAsStringSync(), contains(r'$kPublicNodeEverySendCopy'));
+    expect(File('lib/main.dart').readAsStringSync(), contains('_flowPublicConsent'));
+    expect(File('lib/shear_ledger.dart').readAsStringSync(), contains('publicNodePostAllowed(consent: publicIpConsent)'));
     final releases = File('RELEASES.md').readAsStringSync();
     expect(
       releases,
