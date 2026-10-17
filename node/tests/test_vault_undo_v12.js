@@ -32,7 +32,9 @@ import {
   voteTx,
   VOTE_HOLD,
 } from '../../crypto/reserve_vault.js';
+import { MAX_LOCK_LEAVES, PI_SHE_NANOS } from '../../crypto/asert.js';
 import { levyNeed } from '../../crypto/levy.js';
+import { v3BucketVaultRejected } from '../../crypto/fs1_send_gate.js';
 import { rememberFundVerdict } from '../../crypto/fund_verdict.js';
 import { walletAnchor, readyHeight } from '../../crypto/admit_v3.js';
 
@@ -259,6 +261,9 @@ describe('v12 vault trial does not clone per reserve tx', () => {
           }
           const amounts = new Set(built.map((tx) => tx.nanos));
           if (k > 1) assert.ok(amounts.size > 1, `k=${k} amounts collapsed`);
+          for (const tx of built) {
+            assert.equal(v3BucketVaultRejected(tx)?.reason, 'vault_unavailable');
+          }
           store.mempool.push(...built);
           const portalsBefore = Object.keys(store.reserveVault.portals).length;
           const lockedBefore = store.reserveVault.totalLockedNanos;
@@ -268,7 +273,7 @@ describe('v12 vault trial does not clone per reserve tx', () => {
           const row = { V, k, clones: watched.clones, bytes: watched.bytes, kept };
           rows.push(row);
           console.log(JSON.stringify({ event: 'vault_clone', ...row }));
-          assert.equal(kept, k, `template kept ${kept} of ${k} at V=${V}`);
+          assert.equal(kept, 0, `template kept ${kept} of ${k} byte-3 locks at V=${V}`);
           assert.equal(Object.keys(store.reserveVault.portals).length, portalsBefore);
           assert.equal(store.reserveVault.totalLockedNanos, lockedBefore);
         }
@@ -318,11 +323,16 @@ describe('v12 vault trial does not clone per reserve tx', () => {
     assert.equal(Object.keys(vault.portals).length, n0);
     assert.equal(vault.totalLockedNanos, locked0);
 
-    let expect = 0n;
     for (let i = 0; i < AMOUNTS.length; i += 1) {
       const nanos = AMOUNTS[i];
       const to = nextDest();
-      const tx = lockTx({ from: to, to, nanos, id: `lock-hit-${i}` });
+      const tx = lockTx({
+        from: to,
+        to,
+        nanos,
+        id: `lock-hit-${i}`,
+        ownerPub: randomBytes(32).toString('hex'),
+      });
       const hit = watchClones(() => trialReserveApply({
         state: vault,
         txs: [tx],
@@ -332,16 +342,30 @@ describe('v12 vault trial does not clone per reserve tx', () => {
       assert.equal(hit.clones, 0, `hit cloned ${hit.clones}`);
       assert.equal(hit.result.ok, true, hit.result.reason || 'lock');
       assert.equal(hit.result.state, vault);
-      expect += BigInt(nanos);
+      const portal = vault.portals[portalIdFromDest(to)];
+      assert.equal(portal.ownerPub, tx.ownerPub);
+      const leaves = nanos < PI_SHE_NANOS ? 1 : Math.min(MAX_LOCK_LEAVES, Math.floor(nanos / PI_SHE_NANOS));
+      assert.equal(portal.tranches.length, leaves, `leaves for ${nanos}`);
+      for (const tranche of portal.tranches) {
+        assert.equal(String(tranche.commit).length, 64);
+      }
+      // A hidden lock does not publish its integer on totalLockedNanos.
+      assert.equal(vault.totalLockedNanos, locked0);
     }
-    assert.equal(vault.totalLockedNanos, expect);
     assert.equal(Object.keys(vault.portals).length, n0 + AMOUNTS.length);
 
     const live = emptyVault();
     fillPortals(live, 64);
     const liveLocked = live.totalLockedNanos;
     const livePorts = Object.keys(live.portals).length;
-    const tx = lockTx({ from: nextDest(), to: nextDest(), nanos: AMOUNTS[0], id: 'lock-live' });
+    const liveTo = nextDest();
+    const tx = lockTx({
+      from: liveTo,
+      to: liveTo,
+      nanos: AMOUNTS[0],
+      id: 'lock-live',
+      ownerPub: randomBytes(32).toString('hex'),
+    });
     const once = watchClones(() => trialReserveApply({
       state: live,
       txs: [tx],

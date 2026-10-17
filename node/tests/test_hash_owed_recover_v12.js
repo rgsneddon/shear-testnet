@@ -413,28 +413,41 @@ describe('HASH_OWED_RECOVER_V1', () => {
     assert.equal(HASH_OWED_MAX_ENTRIES, cap);
   });
 
-  it('uses the per-height unit, including a later decrease', () => {
+  it('holds the hash-bonus unit at 1 and refuses a portal vote and a shifted series', () => {
     const who = minerDest();
     const other = minerDest();
     const t0 = 1_700_000_000_000;
     const epoch = RESERVE_EPOCH_MS;
     const times = [t0, t0 + epoch, t0 + epoch + 90_000, t0 + epoch + 90_000 + epoch, t0 + (2 * epoch) + 180_000];
-    // A second portal has to join after the increase is enacted. Another
-    // lock from the same portal does not open the next epoch.
+    const owner = 'ab'.repeat(32);
     const extras = [
-      [
-        lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'lock-pi' }),
-        voteTx({ from: who, dest: who, choice: VOTE_INCREASE, id: 'vote-up' }),
-      ],
+      [lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'lock-pi', ownerPub: owner })],
       [],
-      [
-        lockTx({ from: other, to: other, nanos: PI_SHE_NANOS, id: 'lock-roll' }),
-        voteTx({ from: other, dest: other, choice: VOTE_DECREASE, id: 'vote-down' }),
-      ],
+      [lockTx({ from: other, to: other, nanos: PI_SHE_NANOS, id: 'lock-roll', ownerPub: owner })],
       [],
       [],
     ];
-    const expectUnits = [1, 1, 2, 2, 1];
+    // A portal vote is retired and the hash-bonus unit is held at 1, so a
+    // chain that carries one does not yield a unit series.
+    const voted = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: who,
+      now: t0,
+      bits: GENESIS_BITS_PACKED,
+      txs: [
+        lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'lock-vote', ownerPub: owner }),
+        voteTx({ from: who, dest: who, choice: VOTE_INCREASE, id: 'vote-up' }),
+      ],
+      hashBonusNanos: 1,
+    });
+    assert.equal(bonusUnitsBefore([{
+      header: voted.header,
+      txs: voted.txs,
+      shareBatch: [],
+      height: 1,
+    }]), null);
+    const expectUnits = [1, 1, 1, 1, 1];
     const chain = [];
     let prevHash = GENESIS_PREV;
     let prevHeader = null;
@@ -471,13 +484,13 @@ describe('HASH_OWED_RECOVER_V1', () => {
       accepted = accepted.concat([BigInt(tpl.txs[0].hashAcceptedUnits || 0)]);
     }
     const units = bonusUnitsBefore(chain);
-    assert.deepEqual(units, [1, 1, 2, 2, 1]);
+    assert.deepEqual(units, expectUnits);
     const stamped = chain.map((b) => Number(b.txs[0].hashBonusUnit));
     assert.deepEqual(stamped, units);
     const withSeries = replayHashOwed(chain, { units });
     assert.equal(withSeries.ok, true, withSeries.reason);
-    const tipOnly = replayHashOwed(chain, { unit: units[units.length - 1] });
-    assert.equal(tipOnly.ok, false);
+    const shifted = replayHashOwed(chain, { units: [1, 1, 1, 1, 2] });
+    assert.equal(shifted.ok, false);
     const constantHigh = replayHashOwed(chain, { unit: 2 });
     assert.equal(constantHigh.ok, false);
   });
