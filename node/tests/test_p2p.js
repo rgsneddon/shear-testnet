@@ -1,15 +1,26 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { encodeDest, newIdentity, freshStealthDest } from '../../crypto/address.js';
-import { spendBox, admitSend } from '../../tests/spend_box.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
+import { encodeDest, hash20FromAddress, newIdentity } from '../../crypto/address.js';
+import { spendBox } from '../../tests/spend_box.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
+import { admitScalarFromSeed, attachAdmitPub } from '../../crypto/admit.js';
+import { readyHeight, walletAnchor } from '../../crypto/admit_v3.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { viewTagOf } from '../../crypto/dummy.js';
+import {
+  FS1_RECORD_BYTES,
+  FS1_WIRE,
+  fs1BlobLen,
+  fs1ProveSpend,
+} from '../../crypto/fs1_spend.js';
+import { levyNeed, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
+import { asU8, kernelExcess, openedCoinbaseNanos, sealHiddenNote, sealNote } from '../../crypto/note.js';
 import { MAGIC_TESTNET, GENESIS_BITS_PACKED, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { NODE_DISPLAY } from '../src/product.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
@@ -44,7 +55,7 @@ import {
   locatorHashes,
 } from '../src/p2p.js';
 import { DEFAULT_SEEDS } from '../src/node.js';
-import { mineTemplate } from '../src/chain.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import { printConfig, startNode, createStore } from '../src/node.js';
 import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
 
@@ -57,7 +68,14 @@ function shareBitsOf(bits) {
   return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
 }
 
-function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
+// One light-JIT lane is ~50 H/s here, so five bits-17 blocks miss the 2 h
+// subtest budget. Same ShearHash target and 3e6 nonce cap, searched across
+// the cores the reorg harness already uses.
+const MINE_LANES = os.cpus().length;
+const MINE_WAIT_MS = 90 * 60 * 1000;
+after(() => closeMineWorkers());
+
+async function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
   const packed = Number(bits) >= 65536 ? Number(bits) : GENESIS_BITS_PACKED;
   const sb = shareBitsOf(packed);
   const parent = store.tip();
@@ -65,7 +83,7 @@ function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
     ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
     : Date.now();
   const { tpl } = store.template({ miner: dest, bits: packed, shareBits: sb, now });
-  const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits: sb, blockOnly: true });
+  const found = await mineHeaderParallel(tpl.header, packed, 3_000_000, MINE_LANES, MINE_WAIT_MS);
   assert.ok(found && found.block, 'need pow');
   return store.append({
     header: found.header,
@@ -78,6 +96,181 @@ function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
+  });
+}
+
+// A peer that syncs these funding blocks checks the header hash the sender
+// stored. The gossip assert is the tx, not a second genesis search.
+function trustIngest(node) {
+  const orig = node.store.ingest.bind(node.store);
+  node.store.ingest = (blocks, opts = {}) => {
+    const h = blocks?.[0]?.hash;
+    const trusted = h ? Buffer.from(h) : null;
+    return orig(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
+  };
+}
+
+async function appendTrusted(store, dest, seq) {
+  const parent = store.tip();
+  const now = parent
+    ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
+    : 1_700_000_000_000;
+  const { tpl } = store.template({ miner: dest, bits: GENESIS_BITS_PACKED, shareBits: 4, now });
+  const pot = (tpl.txs[0].vout || []).find((o) => o.kind === 'pot');
+  const opening = pot && pot.r && pot.commit
+    ? { r: Buffer.from(asU8(pot.r)), commit: Buffer.from(asU8(pot.commit)), v: openedCoinbaseNanos(pot) }
+    : null;
+  const pow = Buffer.alloc(32);
+  pow[31] = seq;
+  const got = await store.append({
+    header: tpl.header,
+    txs: tpl.txs,
+    samples: tpl.samples,
+    miner: dest,
+    shareBatch: tpl.shareBatch || [],
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
+  }, { trustedPowHash: pow, skipSharePow: true });
+  assert.equal(got.ok, true, got.reason);
+  return { tpl, opening };
+}
+
+async function fundAnchor(store, id) {
+  const box = spendBox(id);
+  const minerDest = encodeDest(hash20FromAddress(box.dest), id.admitBase);
+  const first = await appendTrusted(store, minerDest, 1);
+  const born = first.opening;
+  assert.ok(born && born.r && born.commit, 'pot opening');
+  const potR = Buffer.from(born.r);
+  const potV = born.v;
+  assert.ok(potV > 0, 'pot value');
+  const includeAt = readyHeight(1);
+  let seq = 2;
+  while (store.tip().height < includeAt - 1) {
+    await appendTrusted(store, minerDest, seq);
+    seq += 1;
+  }
+  const anchor = walletAnchor(includeAt);
+  const live = store.anchorNote(anchor);
+  assert.ok(live && live.n >= 1, `anchor ${anchor}`);
+  const storedPot = (store.blocks[0].txs[0].vout || []).find((o) => o.kind === 'pot');
+  let index = -1;
+  const want = Buffer.from(asU8(storedPot.commit));
+  for (let i = 0; i < live.n; i += 1) {
+    if (Buffer.from(asU8(live.commits[i])).equals(want)) index = i;
+  }
+  assert.ok(index >= 0, 'pot is inside the anchor');
+  return {
+    id,
+    box,
+    coin: {
+      index,
+      r: potR,
+      v: potV,
+      x: admitScalarFromSeed(id.spendSeed, storedPot),
+    },
+    anchor,
+    live,
+  };
+}
+
+function hiddenOut(nanos, dest20, admitBase, kind) {
+  if (kind === 'dummy') {
+    let note = sealNote(0, { dest20, kind: 'dummy' });
+    note = attachAdmitPub(note, admitBase ? { admitBase } : {});
+    return { ...note, kind: 'dummy', dest20: Buffer.from(dest20), viewTag: viewTagOf(note.noteCommit) };
+  }
+  const sealed = admitBase
+    ? sealHiddenNote(nanos, { dest20, kind, admitBase })
+    : sealHiddenNote(nanos, { dest20, kind });
+  let note = attachAdmitPub(sealed, admitBase ? { admitBase } : {});
+  note = { ...note, kind, dest20: Buffer.from(dest20), viewTag: viewTagOf(note.noteCommit) };
+  delete note.valueProof;
+  return note;
+}
+
+function rangeSlack(outs) {
+  let bytes = 0;
+  for (const o of outs) if (o?.rangeProof) bytes += Buffer.from(asU8(o.rangeProof)).length;
+  return Math.ceil((bytes * 2) / 2048) + 8;
+}
+
+function fs1Send({ id, coin, anchor, live, magic, outsOf }) {
+  const ph = Buffer.alloc(fs1BlobLen(1), 255);
+  ph[0] = FS1_WIRE;
+  const blob = Buffer.alloc(FS1_RECORD_BYTES, 255);
+  blob[0] = FS1_WIRE;
+  const proofs = [{ admit_proof: true, v: 3, spendTag: Buffer.alloc(32, 255), blob, cTilde: Buffer.alloc(32, 255) }];
+  let fee = LEVY_FLOOR_UNITS;
+  let outs = null;
+  let draft = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const room = coin.v - fee;
+    if (room < 1) return null;
+    outs = outsOf(room);
+    draft = compactTx({
+      id,
+      kind: 'send',
+      anchor,
+      fee,
+      vin: [{ commit: Buffer.alloc(32, 255) }],
+      vout: outs,
+      fs1: ph,
+      admit_proofs: proofs,
+      excess: Buffer.alloc(32, 255),
+    });
+    const need = levyNeed(draft);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) break;
+    const next = need + rangeSlack(outs);
+    if (!(next > fee && next <= LEVY_CAP_NANOS)) return null;
+    fee = next;
+    draft = null;
+  }
+  if (!draft) return null;
+  const proven = fs1ProveSpend({
+    live,
+    anchor,
+    indices: [coin.index],
+    xs: [coin.x],
+    tx: draft,
+    magic,
+  });
+  if (!proven) return null;
+  const excess = kernelExcess(outs, [{ r: coin.r, t: proven.t[0] }]);
+  if (!excess) return null;
+  return compactTx({
+    id,
+    kind: 'send',
+    anchor,
+    fee: draft.fee,
+    vin: [{ commit: Buffer.from(proven.proofs[0].cTilde) }],
+    vout: outs,
+    fs1: proven.fs1,
+    admit_proofs: proven.proofs,
+    excess,
+  });
+}
+
+function fs1GossipSend({ id, store, funded, payee }) {
+  const pay20 = hash20FromAddress(spendBox(payee).dest);
+  const change20 = hash20FromAddress(funded.box.dest);
+  return fs1Send({
+    id,
+    coin: funded.coin,
+    anchor: funded.anchor,
+    live: funded.live,
+    magic: store.magic,
+    outsOf: (room) => {
+      const pay = Math.max(1, Math.floor(room / 3));
+      return [
+        hiddenOut(pay, pay20, payee.admitBase, 'send'),
+        hiddenOut(room - pay, change20, funded.id.admitBase, 'send'),
+        hiddenOut(0, Buffer.alloc(20, 4), null, 'dummy'),
+      ];
+    },
   });
 }
 
@@ -98,7 +291,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
     const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
     try {
-      const mined = mineOne(a.store, dest);
+      const mined = await mineOne(a.store, dest);
       assert.equal(mined.ok, true, mined.reason);
       a.p2p.announce();
       await a.p2p.connect('127.0.0.1', b.bound.port);
@@ -274,33 +467,16 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 0 });
     const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 0 });
     try {
+      trustIngest(b);
       await a.p2p.connect('127.0.0.1', b.bound.port);
       const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && b.p2p.syncedOnline() === 2);
       assert.equal(linked, true);
-      const { levyNanos } = await import('../../crypto/levy.js');
-      const { attachDummyOuts } = await import('../../crypto/dummy.js');
-      const id = newIdentity();
-      const box = spendBox(id);
-      const payDest = box.dest;
-      assert.equal((await Promise.resolve(mineOne(a.store, payDest, 4))).ok, true);
-      const synced = await waitFor(() => Number(b.store.tip()?.height || 0) >= 1, 15000);
+      const payer = newIdentity();
+      const funded = await fundAnchor(a.store, payer);
+      const synced = await waitFor(() => Number(b.store.tip()?.height || 0) >= a.store.tip().height, 20000);
       assert.equal(synced, true, 'peer did not sync mined block');
-      const tip = a.store.tip();
-      const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
-      const sendNanos = 2;
-      const fee = levyNanos(sendNanos);
-      const tx = attachDummyOuts({
-        id: 'net-send-1',
-        kind: 'send',
-        from: payDest,
-        to: payDest,
-        nanos: sendNanos,
-        fee,
-        vin: [{ commit: spent.commit, address: payDest }],
-        vout: [{ address: payDest, nanos: sendNanos, kind: 'send' }],
-      }, { spent });
-      admitSend(tx, { id, spent, blocks: a.store.blocks });
-      signSpendTx(tx, box.key);
+      const tx = fs1GossipSend({ id: 'net-send-1', store: a.store, funded, payee: newIdentity() });
+      assert.ok(tx, 'net-send-1 proof');
       const queued = a.store.queueTx(tx);
       assert.equal(queued.ok, true, queued.reason);
       const tag = 'mcafef00d';
@@ -445,34 +621,21 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
     const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
     try {
+      trustIngest(b);
+      trustIngest(c);
       await a.p2p.connect('127.0.0.1', b.bound.port);
       await a.p2p.connect('127.0.0.1', c.bound.port);
       const linked = await waitFor(() => a.p2p.syncedOnline() >= 2);
       assert.equal(linked, true);
-      const { levyNanos } = await import('../../crypto/levy.js');
-      const { attachDummyOuts } = await import('../../crypto/dummy.js');
-      const id = newIdentity();
-      const box = spendBox(id);
-      const payDest = box.dest;
-      assert.equal((await Promise.resolve(mineOne(a.store, payDest, 4))).ok, true);
-      const synced = await waitFor(() => Number(b.store.tip()?.height || 0) >= 1 && Number(c.store.tip()?.height || 0) >= 1, 15000);
+      const payer = newIdentity();
+      const funded = await fundAnchor(a.store, payer);
+      const synced = await waitFor(() => (
+        Number(b.store.tip()?.height || 0) >= a.store.tip().height
+        && Number(c.store.tip()?.height || 0) >= a.store.tip().height
+      ), 20000);
       assert.equal(synced, true, 'peer did not sync mined block');
-      const tip = a.store.tip();
-      const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
-      const sendNanos = 2;
-      const fee = levyNanos(sendNanos);
-      const tx = attachDummyOuts({
-        id: 'stem-send-1',
-        kind: 'send',
-        from: payDest,
-        to: payDest,
-        nanos: sendNanos,
-        fee,
-        vin: [{ commit: spent.commit, address: payDest }],
-        vout: [{ address: payDest, nanos: sendNanos, kind: 'send' }],
-      }, { spent });
-      admitSend(tx, { id, spent, blocks: a.store.blocks });
-      signSpendTx(tx, box.key);
+      const tx = fs1GossipSend({ id: 'stem-send-1', store: a.store, funded, payee: newIdentity() });
+      assert.ok(tx, 'stem-send-1 proof');
       const queued = a.store.queueTx(tx);
       assert.equal(queued.ok, true, queued.reason);
       assert.equal(JSON.stringify(queued.tx || queued).includes('remoteAddress'), false);
@@ -643,8 +806,8 @@ function fakeHash(n) {
   return hash.toString('hex');
 }
 
-function mineChainOne(store, dest) {
-  const got = mineOne(store, dest, GENESIS_BITS_PACKED);
+async function mineChainOne(store, dest) {
+  const got = await mineOne(store, dest, GENESIS_BITS_PACKED);
   assert.equal(got.ok, true, got.reason);
   return got;
 }
@@ -907,7 +1070,7 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-a-'));
     const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
     try {
-      for (let i = 0; i < want; i += 1) mineChainOne(a.store, dest);
+      for (let i = 0; i < want; i += 1) await mineChainOne(a.store, dest);
       assert.equal(a.store.tip().height, want);
 
       const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-b-'));

@@ -143,6 +143,19 @@ export function ipcParentRepair(block, reason) {
   return { reason: r, parent: parent || '', child, ask };
 }
 
+/**
+ * `samples_pruned` on IPC apply: ask for the header run, then retry the body.
+ * A peer height is not part of this ask. Other reasons do not fetch headers.
+ */
+export function ipcBurialRepair(block, reason) {
+  if (String(reason || '') !== 'samples_pruned') return null;
+  const child = powHexOf(block);
+  const height = Math.floor(Number(block?.height) || 0);
+  const from = height > 0 ? height : 1;
+  const to = from + SAMPLE_PRUNE_CONFIRMATIONS;
+  return { reason: 'samples_pruned', child, from, to, ask: !!child };
+}
+
 function hex32(value) {
   try {
     const buf = Buffer.from(value);
@@ -343,8 +356,31 @@ function forwardRows(store, send, rows) {
 }
 
 function acceptIpcHeaders(store, msg) {
-  if (msg.magic !== MAGIC_TESTNET) return;
-  if (typeof store?.offerHeaders === 'function') store.offerHeaders(msg.headers || [], { peer: 'ipc' });
+  if (msg.magic !== MAGIC_TESTNET) return { accepted: 0, dropped: false };
+  if (typeof store?.offerHeaders !== 'function') return { accepted: 0, dropped: false };
+  return store.offerHeaders(msg.headers || [], { peer: 'ipc' }) || { accepted: 0, dropped: false };
+}
+
+/** Headers from `from` through `to`, capped at one burial run. No tip height is consulted. */
+function serveIpcHeaders(store, send, msg) {
+  if (msg?.magic !== MAGIC_TESTNET) return;
+  const from = Math.max(1, Math.floor(Number(msg?.from) || 1));
+  const askedTo = Math.floor(Number(msg?.to) || (from + SAMPLE_PRUNE_CONFIRMATIONS));
+  const to = Math.min(Math.max(from, askedTo), from + SAMPLE_PRUNE_CONFIRMATIONS);
+  const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  const headers = [];
+  for (const b of list) {
+    const h = Number(b?.height) || 0;
+    if (h < from || h > to || !b?.header) continue;
+    headers.push({
+      header: Buffer.from(b.header).toString('hex'),
+      hash: powHexOf(b),
+      height: h,
+    });
+    if (headers.length > SAMPLE_PRUNE_CONFIRMATIONS) break;
+  }
+  if (!headers.length) return;
+  send({ type: 'ipc_headers', magic: MAGIC_TESTNET, headers });
 }
 
 function paceBackfill(store, send, afterHeight) {
@@ -426,9 +462,19 @@ function serveIpcGetblock(store, send, msg) {
 
 function makeParentRepair(store, send) {
   const asked = new Map();
-  return (msg, got) => {
+  const parked = new Map();
+  const limited = (key) => {
+    const now = Date.now();
+    const prevAt = asked.get(key) || 0;
+    if (now - prevAt < IPC_REPAIR_RETRY_MS) return false;
+    asked.set(key, now);
+    if (asked.size > 64) asked.delete(asked.keys().next().value);
+    return true;
+  };
+  const repair = (msg, got) => {
     const reason = String(got?.reason || 'fail');
-    const repair = ipcParentRepair(msg?.block, reason);
+    const parentFix = ipcParentRepair(msg?.block, reason);
+    const burial = ipcBurialRepair(msg?.block, reason);
     const height = Number(store.tip()?.height || 0);
     try {
       console.error(JSON.stringify({
@@ -437,29 +483,45 @@ function makeParentRepair(store, send) {
         reason,
         height,
         blockHeight: Number(msg?.block?.height || 0),
-        parent: repair?.parent || '',
+        parent: parentFix?.parent || '',
       }));
     } catch { /* ignore */ }
-    if (!repair?.ask) return;
     // A parent this store already has is not a gap. Asking again every 2s
     // wedges a losing fork whose header does not extend the tip.
-    if (parentKnown(store, repair.parent)) return;
-    const now = Date.now();
-    const prevAt = asked.get(repair.parent) || 0;
-    if (now - prevAt < IPC_REPAIR_RETRY_MS) return;
-    asked.set(repair.parent, now);
-    if (asked.size > 64) {
-      const oldest = asked.keys().next().value;
-      asked.delete(oldest);
+    if (parentFix?.ask && !parentKnown(store, parentFix.parent) && limited(`p:${parentFix.parent}`)) {
+      send({
+        type: 'ipc_getblock',
+        magic: MAGIC_TESTNET,
+        hash: parentFix.parent,
+        child: parentFix.child,
+        height,
+      });
     }
-    send({
-      type: 'ipc_getblock',
-      magic: MAGIC_TESTNET,
-      hash: repair.parent,
-      child: repair.child,
-      height,
-    });
+    if (burial?.ask) {
+      // Park even when the ask is rate-limited. A later full run must still
+      // retry this body. The ask itself stays on the 2s clock so a short
+      // page cannot tight-loop.
+      parked.set(burial.child, msg);
+      if (limited(`h:${burial.child}`)) {
+        send({
+          type: 'ipc_getheaders',
+          magic: MAGIC_TESTNET,
+          from: burial.from,
+          to: burial.to,
+          child: burial.child,
+          height,
+        });
+      }
+    }
   };
+  repair.afterHeaders = (offered) => {
+    if (!(offered?.accepted > 0) || parked.size === 0) return;
+    const batch = [...parked.values()];
+    parked.clear();
+    if (typeof repair.enqueue !== 'function') return;
+    for (const msg of batch) repair.enqueue(msg);
+  };
+  return repair;
 }
 
 function reviveIpcTx(tx) {
@@ -598,6 +660,7 @@ export function attachPoolIpc({
   bindTxForward(store, send);
   const repair = makeParentRepair(store, send);
   const enqueue = enqueueApply(store, skip, onApplied, repair);
+  repair.enqueue = enqueue;
   function noteRemoteTip(msg) {
     if (typeof onSidecarTip !== 'function') return;
     const height = Number(msg?.height);
@@ -641,12 +704,17 @@ export function attachPoolIpc({
         serveIpcGetblock(store, send, msg);
         return;
       }
+      if (msg.type === 'ipc_getheaders') {
+        serveIpcHeaders(store, send, msg);
+        return;
+      }
       if (msg.type === 'ipc_tx') {
         acceptIpcTx(store, msg);
         return;
       }
       if (msg.type === 'ipc_headers') {
-        acceptIpcHeaders(store, msg);
+        const offered = acceptIpcHeaders(store, msg);
+        repair.afterHeaders(offered);
         return;
       }
       if (msg.type === 'ipc_block') enqueue(msg);
@@ -692,6 +760,7 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
   bindTxForward(store, send);
   const repair = makeParentRepair(store, send);
   const enqueue = enqueueApply(store, skip, null, repair);
+  repair.enqueue = enqueue;
 
   function sendPeers() {
     const view = networkMempoolWire(store, p2p);
@@ -738,6 +807,10 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
         serveIpcGetblock(store, send, msg);
         return;
       }
+      if (msg.type === 'ipc_getheaders') {
+        serveIpcHeaders(store, send, msg);
+        return;
+      }
       if (msg.type === 'ipc_work') {
         if (typeof p2p?.publishWork === 'function') p2p.publishWork(msg.rows || []);
         return;
@@ -747,7 +820,8 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
         return;
       }
       if (msg.type === 'ipc_headers') {
-        acceptIpcHeaders(store, msg);
+        const offered = acceptIpcHeaders(store, msg);
+        repair.afterHeaders(offered);
         return;
       }
       if (msg.type === 'ipc_block') enqueue(msg);
