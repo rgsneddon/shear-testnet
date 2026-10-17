@@ -58,7 +58,7 @@ describe('policy mempool', () => {
     const she = admitMempool(book, { kind: 'send', to: 'she1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', fee: 10 }, { baseFee: 1 });
     assert.equal(she.ok, false);
     assert.equal(she.reason, 'silent_id_on_chain');
-    const bsp = admitMempool(book, { kind: 'b-spend', to: dest, fee: 2, bFlag: 1 }, { baseFee: 1 });
+    const bsp = admitMempool(book, { kind: 'b-spend', to: dest, fee: 0, bFlag: 1 }, { baseFee: 1 });
     assert.equal(bsp.ok, true);
     const claim = admitMempool(book, {
       kind: 'claim',

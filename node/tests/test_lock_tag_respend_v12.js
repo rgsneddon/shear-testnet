@@ -4,6 +4,7 @@
  * reuse of that tag, is test_vault_fs1_funding_v12.js.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +13,7 @@ import { createStore } from '../src/store.js';
 import { verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
 import { txSpendTags } from '../../crypto/note.js';
 
-describe('v12 omitted lock spend tag', () => {
+describe('v12 omitted lock spend tag', { timeout: fileCapMs(import.meta.url) }, () => {
   it('a byte-3 lock is unavailable, and an FS-1 record keeps its tag without the JSON field', () => {
     const tag = Buffer.alloc(32, 0x3c);
     const commit = Buffer.alloc(32, 4);

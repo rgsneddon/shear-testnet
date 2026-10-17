@@ -1171,13 +1171,19 @@ export function bindAcceptedShare(openShares, rec) {
     return { ok: false, reason: 'admit_note_point', list: openShares };
   }
   const header = rec?.verifiedHeader || rec?.header;
-  const bound = rememberLiveSharePow(header, rec?.nonce, {
-    noteCommit: noteCommitOfShare(rec),
-    shareBits: rec?.shareBits,
-    lz: rec?.lz,
+  if (header == null || header === '') {
+    return { ok: false, reason: 'share_pow', list: openShares };
+  }
+  // Intake stamps the header that was hashed. A later template seats only
+  // rows that carry it. An unstamped accept is not a row.
+  const stamped = rec?.verifiedHeader ? rec : { ...rec, verifiedHeader: header };
+  const bound = rememberLiveSharePow(header, stamped?.nonce, {
+    noteCommit: noteCommitOfShare(stamped),
+    shareBits: stamped?.shareBits,
+    lz: stamped?.lz,
   });
   if (!bound) return { ok: false, reason: 'share_pow', list: openShares };
-  return rememberOpenShare(openShares, rec);
+  return rememberOpenShare(openShares, stamped);
 }
 
 export function makeLoginChallenge() {

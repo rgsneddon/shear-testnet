@@ -14,7 +14,7 @@ import {
   SPENDABLE_CONFIRMATIONS,
   NANOS_PER_SHE,
   TARGET_BLOCK_INTERVAL_MS,
-  nextBits,
+  asertNextBits,
   medianIntervalMs,
 } from '../../crypto/asert.js';
 import { lockTx } from '../../crypto/reserve_vault.js';
@@ -25,10 +25,7 @@ import { bindWeightFee } from '../../crypto/levy.js';
 import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 
 const workerPath = fileURLToPath(new URL('./lock_mine_worker.js', import.meta.url));
-const LIVE_SEALED_BITS = 1_242_688;
-const LIVE_PRIOR_JOB_BITS = 1_598_531;
 const LIVE_TIP_HEIGHT = 20;
-const LIVE_LAST_GAP_MS = 2_088;
 const UNDER_20_MIN_MS = 20 * 60 * 1000;
 
 function spendBox(id) {
@@ -103,10 +100,9 @@ function mineHeader(header, bits, { timeoutMs = 8 * 60 * 1000 } = {}) {
 
 function installStuckTip(store, miner) {
   const times = new Array(LIVE_TIP_HEIGHT);
-  times[LIVE_TIP_HEIGHT - 1] = Date.now() - 5_000;
+  times[LIVE_TIP_HEIGHT - 1] = Date.now() - TARGET_BLOCK_INTERVAL_MS;
   for (let i = LIVE_TIP_HEIGHT - 2; i >= 0; i -= 1) {
-    const gap = i === LIVE_TIP_HEIGHT - 2 ? LIVE_LAST_GAP_MS : TARGET_BLOCK_INTERVAL_MS;
-    times[i] = times[i + 1] - gap;
+    times[i] = times[i + 1] - TARGET_BLOCK_INTERVAL_MS;
   }
   let prev = null;
   for (let height = 1; height <= LIVE_TIP_HEIGHT; height += 1) {
@@ -117,7 +113,7 @@ function installStuckTip(store, miner) {
       parentWeight: prev ? prev.weight : undefined,
       height,
       miner,
-      bits: LIVE_SEALED_BITS,
+      bits: GENESIS_BITS_PACKED,
       now: times[height - 1],
       txs: [],
       parentBlocks: store.blocks,
@@ -183,18 +179,30 @@ async function mineOne(store, dest, { now } = {}) {
 
 describe('reserve lock does not stall the next block', () => {
   it('refuses an unfunded lock, mines past an unmined lock, then includes a funded one', { timeout: 45 * 60 * 1000 }, async () => {
-    const oneFast = nextBits(LIVE_SEALED_BITS, 2_000);
-    const oneSlow = nextBits(LIVE_SEALED_BITS, 68 * 60 * 1000);
-    const held = nextBits(LIVE_SEALED_BITS, medianIntervalMs([2_000]));
+    const anchor = 1_700_000_000_000;
+    const onTime = asertNextBits({
+      anchorBits: GENESIS_BITS_PACKED,
+      anchorTimeMs: anchor,
+      anchorHeight: 1,
+      blockTimeMs: anchor + TARGET_BLOCK_INTERVAL_MS,
+      blockHeight: 2,
+      parentTimeMs: anchor,
+    });
+    const oneFast = asertNextBits({
+      anchorBits: GENESIS_BITS_PACKED,
+      anchorTimeMs: anchor,
+      anchorHeight: 1,
+      blockTimeMs: anchor + 2_000,
+      blockHeight: 2,
+      parentTimeMs: anchor,
+    });
+    assert.equal(onTime.ok, true, onTime.reason);
+    assert.equal(oneFast.ok, true, oneFast.reason);
     assert.equal(medianIntervalMs([2_000]), TARGET_BLOCK_INTERVAL_MS);
     assert.equal(medianIntervalMs([68 * 60 * 1000]), TARGET_BLOCK_INTERVAL_MS);
-    assert.equal(held, nextBits(LIVE_SEALED_BITS, TARGET_BLOCK_INTERVAL_MS));
-    assert.equal(nextBits(LIVE_SEALED_BITS, medianIntervalMs([68 * 60 * 1000])), held);
-    assert.ok(oneFast > held, `one fast gap jumped to ${oneFast}`);
-    const priorJob = nextBits(LIVE_SEALED_BITS, LIVE_LAST_GAP_MS);
-    assert.equal(priorJob, LIVE_PRIOR_JOB_BITS);
-    assert.equal(held, LIVE_SEALED_BITS);
-    console.log(`CURVE sealed=${LIVE_SEALED_BITS} oneFastGap=${oneFast} oneSlowGap=${oneSlow} priorJob=${priorJob} median11=${held}`);
+    assert.equal(onTime.packed, GENESIS_BITS_PACKED);
+    assert.ok(oneFast.packed > onTime.packed, `one fast gap jumped to ${oneFast.packed}`);
+    console.log(`CURVE sealed=${GENESIS_BITS_PACKED} oneFastGap=${oneFast.packed} onTime=${onTime.packed}`);
 
     const alice = newIdentity();
     const aliceBox = spendBox(alice);
@@ -208,8 +216,9 @@ describe('reserve lock does not stall the next block', () => {
       const parent = stuck.tip();
       const parentBits = Number(decodeHeader(Buffer.from(parent.header)).bits);
       assert.equal(tipHeight(stuck), LIVE_TIP_HEIGHT);
-      assert.equal(parentBits, LIVE_SEALED_BITS);
-      assert.equal(retarget(stuck.blocks), LIVE_SEALED_BITS);
+      assert.equal(parentBits, GENESIS_BITS_PACKED);
+      const parentTime = Number(decodeHeader(Buffer.from(parent.header)).timestamp);
+      assert.equal(retarget(stuck.blocks, parentTime + TARGET_BLOCK_INTERVAL_MS), GENESIS_BITS_PACKED);
       const bareStuck = lockTx({ from: continuum, to: vault, nanos: NANOS_PER_SHE, id: 'lock-unfunded-stuck' });
       bareStuck.open = open;
       bindWeightFee(bareStuck);
@@ -224,12 +233,12 @@ describe('reserve lock does not stall the next block', () => {
         miner: continuum,
         bits: 1,
         shareBits: 8,
-        now: Date.now(),
+        now: parentTime + TARGET_BLOCK_INTERVAL_MS,
       });
       const shippedBits = Number(decodeHeader(Buffer.from(stuckTpl.header)).bits);
-      assert.equal(shippedBits, LIVE_SEALED_BITS);
-      assert.notEqual(shippedBits, LIVE_PRIOR_JOB_BITS);
-      console.log(`STUCK_TIP height=${LIVE_TIP_HEIGHT} sealed=${LIVE_SEALED_BITS} priorJob=${LIVE_PRIOR_JOB_BITS} shippedBits=${shippedBits} workers=2`);
+      assert.equal(shippedBits, GENESIS_BITS_PACKED);
+      assert.ok(shippedBits < oneFast.packed, `shipped the fast-gap target ${shippedBits}`);
+      console.log(`STUCK_TIP height=${LIVE_TIP_HEIGHT} sealed=${GENESIS_BITS_PACKED} shippedBits=${shippedBits} workers=2`);
       const minedAt = Date.now();
       await sealTemplate(stuck, { ...stuckTpl, miner: continuum }, { timeoutMs: 19 * 60 * 1000 + 30 * 1000 });
       const advancedMs = Date.now() - minedAt;

@@ -120,7 +120,7 @@ export function admitNotePointRejected(tx) {
  * AL-1 (T21 public-v) changes that public value field. This reader has to
  * change with it. Leave valueProof.v in place until that lands.
  */
-export function zeroWithdrawRejected(tx) {
+function withdrawKindRejected(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return null;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
@@ -136,6 +136,25 @@ export function zeroWithdrawRejected(tx) {
   return null;
 }
 
+/**
+ * index is the tx's place in the block. Only a body tx (index > 0) flagged
+ * coinbase skips this rule, so verify can refuse it as coinbase. txs[0] keeps
+ * the rule, including a withdraw-kind row on the real coinbase.
+ */
+export function zeroWithdrawRejected(tx, index = 0) {
+  if (Number(index) > 0 && tx?.coinbase) return null;
+  const named = withdrawKindRejected(tx);
+  if (named) return named;
+  if (Number(index) > 0) return null;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (String(o?.kind || '') !== 'withdraw') continue;
+    const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos != null ? o.nanos : tx?.nanos);
+    if (!positiveNanos(raw)) return { ok: false, reason: 'mint_amount' };
+  }
+  return null;
+}
+
 function positiveNanos(raw) {
   if (typeof raw === 'bigint') return raw > 0n;
   if (typeof raw === 'string' && /^\d+$/.test(raw)) {
@@ -145,16 +164,17 @@ function positiveNanos(raw) {
   return Number.isInteger(n) && n > 0;
 }
 
-/** Leaf rule, then the zero-withdraw ban. */
-export function txNoteRuleRejected(tx) {
-  return admitNotePointRejected(tx) || zeroWithdrawRejected(tx);
+/** Leaf rule, then the zero-withdraw ban. index is the tx slot in the block. */
+export function txNoteRuleRejected(tx, index = 0) {
+  return admitNotePointRejected(tx) || zeroWithdrawRejected(tx, index);
 }
 
-/** Every transaction of every block. Height is not an input. */
+/** Every transaction of every block. Height is not an input. txs[0] is the coinbase slot. */
 export function chainNoteRuleRejected(blocks) {
   for (const block of blocks || []) {
-    for (const tx of block?.txs || []) {
-      const hit = txNoteRuleRejected(tx);
+    const txs = block?.txs || [];
+    for (let i = 0; i < txs.length; i += 1) {
+      const hit = txNoteRuleRejected(txs[i], i);
       if (hit) return hit;
     }
   }
