@@ -48,7 +48,7 @@ function sectionEnv() {
     '  SHEAR_STRATUM       solo stratum port (default 1111)',
     '  SHEAR_STRATUM_BIND  solo stratum bind (default 127.0.0.1)',
     '  SHEARK_MINER        optional path to ShearK-Miner 2.8 if shearhash.node is missing',
-    '  SHEAR_MAINNET_EMIT  do not set. Launch is not decided.',
+    '  SHEAR_MAINNET_EMIT  do not set. The 16 Nov countdown is display only and does not emit.',
     '  SHEAR_MAINNET_EMIT_CONFIRM  do not set.',
   ];
 }

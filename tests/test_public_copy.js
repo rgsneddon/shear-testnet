@@ -306,6 +306,9 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     const operatorNote = read('docs/OPERATOR_NOTE_AUDIT.md');
     assert.match(operatorNote, /16th November 2026 at 1400hrs UK time/);
     assert.doesNotMatch(operatorNote, /Launch date is not decided/);
+    const nodeHelp = read('node/src/help.js');
+    assert.match(nodeHelp, /SHEAR_MAINNET_EMIT  do not set\. The 16 Nov countdown is display only and does not emit\./);
+    assert.doesNotMatch(nodeHelp, /Launch is not decided/);
     assert.doesNotMatch(main, /2026-09-18T21:00:00/);
     assert.doesNotMatch(docs, /2026-09-18T21:00:00/);
     assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
