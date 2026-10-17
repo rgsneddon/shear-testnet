@@ -222,6 +222,11 @@ export const SPEND_SIG = 'ed25519-shear-spend-v1';
 /** Epoch reward rate: floor(active lock × bundled bps / 10000). */
 export const REWARD_LAW = 'epoch-bps-floor';
 export const INTEREST_LAW = REWARD_LAW;
+/**
+ * Principal leaves only through the user's own levy-paying withdraw.
+ * Epoch end does not release it.
+ */
+export const RESERVE_NOTE_LAW = 'withdraw-levy-pull';
 /** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
@@ -296,6 +301,30 @@ export const MIN_CONFIRMS_POLICY = 12;
 /** Reserve reward is minted in full. The fee bank is not a reward source. */
 export const RESERVE_FEE_FIRST = 0;
 
+/**
+ * FS-1 parameters for the consensus fingerprint, as the shear-fs1 crate and
+ * N-1 use them. Layer one is Selene, 38 wide (fcmps LAYER_ONE_LEN); layer two
+ * is Helios, 18 wide (LAYER_TWO_LEN); DEPTH layers. The leaf is O || I || C
+ * on Ed25519, FS1_LEAF_BYTES long, with I = E(Hp(admitPub)) under FS1_HP_DST
+ * (crypto/fs1_leaf.js, shear-fs1 src/leaf.rs). The cycle token is shear-fs1
+ * `ADMIT_CYCLE`, built from `CYCLE_C1` (Selene) and `CYCLE_C2` (Helios).
+ * PSA-df82-1: these parameters are the live tokens. The retired Pasta bucket
+ * arity and leaf domain must not reappear in this file.
+ */
+export const FS1_LAYER_ONE_LEN = 38;
+export const FS1_LAYER_TWO_LEN = 18;
+export const FS1_DEPTH = 7;
+export const FS1_LEAF_LEN = 96;
+export const FS1_LEAF_HP_DST = 'shear-admit-Hp';
+/** shear-fs1 `CYCLE_C1`. */
+export const FS1_CYCLE_C1 = 'selene';
+/** shear-fs1 `CYCLE_C2`. */
+export const FS1_CYCLE_C2 = 'helios';
+/** shear-fs1 `ADMIT_CYCLE`: fs1- || CYCLE_C1 || - || CYCLE_C2. */
+export const ADMIT_CYCLE_ID = `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`;
+export const ADMIT_ARITY_ID = `fs1-selene${FS1_LAYER_ONE_LEN}-helios${FS1_LAYER_TWO_LEN}-d${FS1_DEPTH}`;
+export const ADMIT_LEAF_ID = `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DST}`;
+
 /** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
 export function consensusFingerprint(magic = MAGIC_TESTNET) {
   const days = epochDays(magic);
@@ -353,7 +382,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
     `RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2/3:windowMain=${ORACLE_WINDOW_MAINNET}:windowTest=${ORACLE_WINDOW_TESTNET}:windowMs=${ORACLE_WINDOW_MS}:floorBps=0:sourceTenths=-1000..100000:activation=${oracleActivationPin()}`,
-    `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=2:root=${bundleObservationRoot()}`,
+    `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=0:root=${bundleObservationRoot()}`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${network}`,
     'FORK=work-then-lowhash',
@@ -386,6 +415,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'KDF=argon2id-shewall',
     `RESERVE=${RESERVE_PROGRAM}`,
     'RESERVE_EVM=1',
+    `RESERVE_NOTE=${RESERVE_NOTE_LAW}`,
     `RESERVE_REWARD=${days}d-bps-floor`,
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',
@@ -395,10 +425,10 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ADMIT=ADMITv3',
     'N1=admit-note-point',
     'RANGE=packed-bit',
-    'ADMIT_CYCLE=fs1-selene-helios',
-    'ADMIT_ARITY=fs1-selene38-helios18-d7',
+    `ADMIT_CYCLE=${ADMIT_CYCLE_ID}`,
+    `ADMIT_ARITY=${ADMIT_ARITY_ID}`,
     'ADMIT_K=1',
-    'ADMIT_LEAF=fs1-ed25519-OIC96-Hp-shear-admit-Hp',
+    `ADMIT_LEAF=${ADMIT_LEAF_ID}`,
     'ADMIT_SPEND=fs1-f1-agg-sal-v1',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',

@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { encodeDest, hash20FromAddress, newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { SAMPLE_PRUNE_CONFIRMATIONS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { SAMPLE_PRUNE_CONFIRMATIONS, SHARE_FLOOR_BITS, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { flowSkipAllowed } from '../../crypto/chronoflux.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
 import {
@@ -219,6 +219,7 @@ describe('samplesPruned does not forge hash credits', () => {
     assert.equal(store.tip().height, tipBefore);
     const viaIpc = applyVerifiedIpcBlock(store, {
       type: 'ipc_block',
+      magic: MAGIC_TESTNET,
       block: encodeWireBlock({ ...forged, hash: easyPow(5) }),
       powHash: easyPow(5).toString('hex'),
     });

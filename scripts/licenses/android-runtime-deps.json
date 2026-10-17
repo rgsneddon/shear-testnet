@@ -1,0 +1,828 @@
+{
+ "source": "./gradlew :app:dependencies --configuration releaseRuntimeClasspath (wallet/android); licences from each artifact's POM",
+ "artifacts": [
+  {
+   "group": "androidx.activity",
+   "artifact": "activity",
+   "version": "1.9.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.annotation",
+   "artifact": "annotation",
+   "version": "1.10.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.annotation",
+   "artifact": "annotation-experimental",
+   "version": "1.4.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.annotation",
+   "artifact": "annotation-jvm",
+   "version": "1.10.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.appcompat",
+   "artifact": "appcompat",
+   "version": "1.6.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.appcompat",
+   "artifact": "appcompat-resources",
+   "version": "1.6.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.arch.core",
+   "artifact": "core-common",
+   "version": "2.2.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.arch.core",
+   "artifact": "core-runtime",
+   "version": "2.2.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.biometric",
+   "artifact": "biometric",
+   "version": "1.1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.browser",
+   "artifact": "browser",
+   "version": "1.9.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.camera.featurecombinationquery",
+   "artifact": "featurecombinationquery",
+   "version": "1.6.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.camera",
+   "artifact": "camera-camera2",
+   "version": "1.6.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.camera",
+   "artifact": "camera-camera2-pipe",
+   "version": "1.6.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.camera",
+   "artifact": "camera-core",
+   "version": "1.6.1",
+   "pom_license": "The Apache Software License, Version 2.0 | BSD-3-Clause",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.camera",
+   "artifact": "camera-lifecycle",
+   "version": "1.6.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.collection",
+   "artifact": "collection",
+   "version": "1.4.2",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.collection",
+   "artifact": "collection-jvm",
+   "version": "1.4.2",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.concurrent",
+   "artifact": "concurrent-futures",
+   "version": "1.1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.concurrent",
+   "artifact": "concurrent-futures-ktx",
+   "version": "1.1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.core",
+   "artifact": "core",
+   "version": "1.17.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.core",
+   "artifact": "core-backported-fixes",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.core",
+   "artifact": "core-ktx",
+   "version": "1.17.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.core",
+   "artifact": "core-viewtree",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.cursoradapter",
+   "artifact": "cursoradapter",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.customview",
+   "artifact": "customview",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.drawerlayout",
+   "artifact": "drawerlayout",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.emoji2",
+   "artifact": "emoji2",
+   "version": "1.2.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.emoji2",
+   "artifact": "emoji2-views-helper",
+   "version": "1.2.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.exifinterface",
+   "artifact": "exifinterface",
+   "version": "1.4.2",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.fragment",
+   "artifact": "fragment",
+   "version": "1.8.9",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.interpolator",
+   "artifact": "interpolator",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-common",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-common-java8",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-livedata",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-livedata-core",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-livedata-core-ktx",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-process",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-runtime",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-viewmodel",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.lifecycle",
+   "artifact": "lifecycle-viewmodel-savedstate",
+   "version": "2.7.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.loader",
+   "artifact": "loader",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.profileinstaller",
+   "artifact": "profileinstaller",
+   "version": "1.3.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.resourceinspection",
+   "artifact": "resourceinspection-annotation",
+   "version": "1.0.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.savedstate",
+   "artifact": "savedstate",
+   "version": "1.2.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.security",
+   "artifact": "security-crypto",
+   "version": "1.1.0-alpha06",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.startup",
+   "artifact": "startup-runtime",
+   "version": "1.1.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.tracing",
+   "artifact": "tracing",
+   "version": "1.3.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.tracing",
+   "artifact": "tracing-android",
+   "version": "1.3.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.tracing",
+   "artifact": "tracing-ktx",
+   "version": "1.3.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.vectordrawable",
+   "artifact": "vectordrawable",
+   "version": "1.1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.vectordrawable",
+   "artifact": "vectordrawable-animated",
+   "version": "1.1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.versionedparcelable",
+   "artifact": "versionedparcelable",
+   "version": "1.1.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.viewpager",
+   "artifact": "viewpager",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.window.extensions.core",
+   "artifact": "core",
+   "version": "1.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.window",
+   "artifact": "window",
+   "version": "1.2.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "androidx.window",
+   "artifact": "window-java",
+   "version": "1.2.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "The Android Open Source Project"
+   ]
+  },
+  {
+   "group": "com.getkeepsafe.relinker",
+   "artifact": "relinker",
+   "version": "1.4.5",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "KeepSafe Software, Inc."
+   ]
+  },
+  {
+   "group": "com.google.android.datatransport",
+   "artifact": "transport-api",
+   "version": "2.2.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.android.datatransport",
+   "artifact": "transport-backend-cct",
+   "version": "2.3.3",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.android.datatransport",
+   "artifact": "transport-runtime",
+   "version": "2.2.6",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.android.gms",
+   "artifact": "play-services-base",
+   "version": "18.5.0",
+   "pom_license": "Android Software Development Kit License",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.android.gms",
+   "artifact": "play-services-basement",
+   "version": "18.4.0",
+   "pom_license": "Android Software Development Kit License",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.android.gms",
+   "artifact": "play-services-mlkit-barcode-scanning",
+   "version": "18.3.1",
+   "pom_license": "ML Kit Terms of Service",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.android.gms",
+   "artifact": "play-services-tasks",
+   "version": "18.2.0",
+   "pom_license": "Android Software Development Kit License",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.android.odml",
+   "artifact": "image",
+   "version": "1.0.0-beta1",
+   "pom_license": "Android Software Development Kit License",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.auto.value",
+   "artifact": "auto-value-annotations",
+   "version": "1.6.3",
+   "pom_license": "Apache 2.0",
+   "pom_holders": [
+    "Google, Inc."
+   ]
+  },
+  {
+   "group": "com.google.code.findbugs",
+   "artifact": "jsr305",
+   "version": "3.0.2",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.code.gson",
+   "artifact": "gson",
+   "version": "2.10.1",
+   "pom_license": "Apache-2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.crypto.tink",
+   "artifact": "tink-android",
+   "version": "1.9.0",
+   "pom_license": "Apache License, Version 2.0",
+   "pom_holders": [
+    "Google LLC"
+   ]
+  },
+  {
+   "group": "com.google.dagger",
+   "artifact": "dagger",
+   "version": "2.59",
+   "pom_license": "Apache 2.0",
+   "pom_holders": [
+    "Google, Inc."
+   ]
+  },
+  {
+   "group": "com.google.errorprone",
+   "artifact": "error_prone_annotations",
+   "version": "2.18.0",
+   "pom_license": "Apache 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.firebase",
+   "artifact": "firebase-annotations",
+   "version": "16.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.firebase",
+   "artifact": "firebase-components",
+   "version": "16.1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.firebase",
+   "artifact": "firebase-encoders",
+   "version": "16.1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.firebase",
+   "artifact": "firebase-encoders-json",
+   "version": "17.1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.guava",
+   "artifact": "listenablefuture",
+   "version": "1.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "Google"
+   ]
+  },
+  {
+   "group": "com.google.mlkit",
+   "artifact": "barcode-scanning",
+   "version": "17.3.0",
+   "pom_license": "ML Kit Terms of Service",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.mlkit",
+   "artifact": "barcode-scanning-common",
+   "version": "17.0.0",
+   "pom_license": "ML Kit Terms of Service",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.mlkit",
+   "artifact": "common",
+   "version": "18.11.0",
+   "pom_license": "ML Kit Terms of Service",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.mlkit",
+   "artifact": "vision-common",
+   "version": "17.3.0",
+   "pom_license": "ML Kit Terms of Service",
+   "pom_holders": []
+  },
+  {
+   "group": "com.google.mlkit",
+   "artifact": "vision-interfaces",
+   "version": "16.3.0",
+   "pom_license": "ML Kit Terms of Service",
+   "pom_holders": []
+  },
+  {
+   "group": "io.flutter",
+   "artifact": "arm64_v8a_release",
+   "version": "1.0.0-83675ed27633283e7fc296c8bca22e841224c096",
+   "pom_license": "NONE-DECLARED",
+   "pom_holders": []
+  },
+  {
+   "group": "io.flutter",
+   "artifact": "armeabi_v7a_release",
+   "version": "1.0.0-83675ed27633283e7fc296c8bca22e841224c096",
+   "pom_license": "NONE-DECLARED",
+   "pom_holders": []
+  },
+  {
+   "group": "io.flutter",
+   "artifact": "flutter_embedding_release",
+   "version": "1.0.0-83675ed27633283e7fc296c8bca22e841224c096",
+   "pom_license": "NONE-DECLARED",
+   "pom_holders": []
+  },
+  {
+   "group": "io.flutter",
+   "artifact": "x86_64_release",
+   "version": "1.0.0-83675ed27633283e7fc296c8bca22e841224c096",
+   "pom_license": "NONE-DECLARED",
+   "pom_holders": []
+  },
+  {
+   "group": "jakarta.inject",
+   "artifact": "jakarta.inject-api",
+   "version": "2.0.1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "Red Hat Inc."
+   ]
+  },
+  {
+   "group": "javax.inject",
+   "artifact": "javax.inject",
+   "version": "1",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": []
+  },
+  {
+   "group": "org.bouncycastle",
+   "artifact": "bcprov-jdk18on",
+   "version": "1.78.1",
+   "pom_license": "Bouncy Castle Licence",
+   "pom_holders": [
+    "The Legion of the Bouncy Castle Inc."
+   ]
+  },
+  {
+   "group": "org.jetbrains.kotlin",
+   "artifact": "kotlin-stdlib",
+   "version": "2.3.20",
+   "pom_license": "Apache-2.0",
+   "pom_holders": [
+    "JetBrains"
+   ]
+  },
+  {
+   "group": "org.jetbrains.kotlinx",
+   "artifact": "atomicfu",
+   "version": "0.28.0",
+   "pom_license": "Apache-2.0",
+   "pom_holders": [
+    "JetBrains"
+   ]
+  },
+  {
+   "group": "org.jetbrains.kotlinx",
+   "artifact": "atomicfu-jvm",
+   "version": "0.28.0",
+   "pom_license": "Apache-2.0",
+   "pom_holders": [
+    "JetBrains"
+   ]
+  },
+  {
+   "group": "org.jetbrains.kotlinx",
+   "artifact": "kotlinx-coroutines-android",
+   "version": "1.11.0",
+   "pom_license": "Apache-2.0",
+   "pom_holders": [
+    "JetBrains"
+   ]
+  },
+  {
+   "group": "org.jetbrains.kotlinx",
+   "artifact": "kotlinx-coroutines-bom",
+   "version": "1.11.0",
+   "pom_license": "Apache-2.0",
+   "pom_holders": [
+    "JetBrains"
+   ]
+  },
+  {
+   "group": "org.jetbrains.kotlinx",
+   "artifact": "kotlinx-coroutines-core",
+   "version": "1.11.0",
+   "pom_license": "Apache-2.0",
+   "pom_holders": [
+    "JetBrains"
+   ]
+  },
+  {
+   "group": "org.jetbrains.kotlinx",
+   "artifact": "kotlinx-coroutines-core-jvm",
+   "version": "1.11.0",
+   "pom_license": "Apache-2.0",
+   "pom_holders": [
+    "JetBrains"
+   ]
+  },
+  {
+   "group": "org.jetbrains",
+   "artifact": "annotations",
+   "version": "23.0.0",
+   "pom_license": "The Apache Software License, Version 2.0",
+   "pom_holders": [
+    "JetBrains"
+   ]
+  },
+  {
+   "group": "org.jspecify",
+   "artifact": "jspecify",
+   "version": "1.0.0",
+   "pom_license": "The Apache License, Version 2.0",
+   "pom_holders": [
+    "Kevin Bourrillion"
+   ]
+  }
+ ]
+}

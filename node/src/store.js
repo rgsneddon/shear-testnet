@@ -6,6 +6,7 @@ import { oracleContextFor, reserveApplyFields } from '../../crypto/reserve_oracl
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
+import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -45,6 +46,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
+import { ensureDatadir } from './datadir_acl.js';
 import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
@@ -77,8 +79,8 @@ import {
   vaultSealBanner,
 } from '../../crypto/vault_seal.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { valueOpenRejected } from '../../crypto/chronoflux.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected } from '../../crypto/spend.js';
+import { valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
 import { txNoteRuleRejected } from '../../crypto/n1.js';
@@ -128,7 +130,7 @@ import {
 
 /** Full book.snap rewrite cadence after the opening window. Short books snap every block. */
 export const BOOK_SNAP_EVERY = 32;
-import { flowNeedsDummy } from '../../crypto/dummy.js';
+import { flowNeedsDummy, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
@@ -303,13 +305,15 @@ export function createStore(dir, {
   // caller pin) refuses it outright. An unpinned open still needs the permit
   // that only node/tests/regtest_store.js can seal. Env vars do not.
   // magic wins when a caller sets it. network stays the node and datadir path.
+  // The check runs before the datadir is created or locked down, so a refused
+  // regtest open does not touch the directory.
   const configuredMagic = String(magicIn || network || MAGIC_TESTNET);
   if (configuredMagic === MAGIC_REGTEST) {
     const genesisPin = String(genesisHash || '');
     if (genesisPin) throw new Error('regtest_genesis_pin');
     if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
   }
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDatadir(dir);
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
   const segDir = path.join(dir, 'segments');
@@ -563,6 +567,21 @@ export function createStore(dir, {
     supplyTip = folded.state;
   }
   if (blocks.length) noteBurial(Number(blocks[blocks.length - 1].height) || blocks.length);
+  // Snap and a suffix prefix skip verifyBlock. The b-spend predicate still runs,
+  // including the vin format check verifyBlock runs before bindBSpend.
+  if ((loadMode === 'snap' || loadMode === 'suffix') && blocks.length) {
+    for (const block of blocks) {
+      const rows = Array.isArray(block?.txs) ? block.txs : [];
+      for (const tx of rows) {
+        const vinAdmit = bSpendVinRejected(tx);
+        if (vinAdmit) throw new Error(vinAdmit.reason || 'vin_link');
+        const spendFee = bSpendFeeRejected(tx);
+        if (spendFee) throw new Error(spendFee.reason || 'fee');
+      }
+    }
+    const sealedSpend = chainBSpendsRejected(blocks);
+    if (sealedSpend) throw new Error(sealedSpend.reason || 'unsigned');
+  }
   if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
 
   function segmentNames() {
@@ -3517,9 +3536,13 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
+    const feeHit = feeFieldRejected(tx);
+    if (feeHit) return feeHit;
+    const spendFee = bSpendFeeRejected(tx);
+    if (spendFee) return spendFee;
     const bucket = v3BucketProofRejected(tx);
     if (bucket) return bucket;
-    const noteRule = txNoteRuleRejected(tx);
+    const noteRule = txNoteRuleRejected(tx, 1);
     if (noteRule) return noteRule;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
@@ -3552,6 +3575,8 @@ export function createStore(dir, {
     if (open) return open;
     const leafAsk = bLeafAskRejected(tx);
     if (leafAsk) return leafAsk;
+    const vinAdmit = bSpendVinRejected(tx);
+    if (vinAdmit) return vinAdmit;
     if (String(tx.kind || '') === 'b-spend') {
       const tipNow = tip();
       let boundB;
@@ -3655,6 +3680,8 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     if (txIsReserveAction(tx) && mempool.filter(txIsReserveAction).length >= RESERVE_ACTION_CAP) {
       return { ok: false, reason: 'reserve_cap' };
     }
@@ -3673,7 +3700,8 @@ export function createStore(dir, {
       const id = reserveWithdrawMintId(m, reserveVault);
       if (id) drawn.add(id);
     }
-    const stake = boundReserveWithdraw(tx, reserveVault, drawn);
+    const stamp = headerStamp(opts.nowMs);
+    const stake = boundReserveWithdraw(tx, reserveVault, drawn, stamp);
     if (!stake.ok) return stake;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
@@ -3704,7 +3732,6 @@ export function createStore(dir, {
       } catch { /* ignore */ }
       return auth;
     }
-    const stamp = headerStamp(opts.nowMs);
     if (txIsReserveAction(tx)) {
       if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
       ensureMempoolVault(stamp);
@@ -5538,8 +5565,6 @@ export function createStore(dir, {
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
       prepareCoinbase: (cb) => {
-        const pulling = pendingTxs.some((tx) => String(tx?.kind || tx?.vout?.[0]?.kind || '') === 'withdraw');
-        if (pulling) return;
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
       },

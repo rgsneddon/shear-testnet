@@ -156,6 +156,7 @@ Uint8List spendPackDigest({
   int height = 0,
   String? kind,
   List<Map<String, dynamic>>? vin,
+  int fee = 0,
 }) {
   final from20 = hash20FromAddress(from) ?? Uint8List(20);
   final vins = <Map<String, dynamic>>[];
@@ -204,7 +205,9 @@ Uint8List spendPackDigest({
   final packed = packDigest(packTx(vins: vins, vouts: vouts));
   final top = kind ?? (vout.isNotEmpty ? vout.first['kind'] as String? : null) ?? '';
   if (top == 'lock' || top == 'vote' || top == 'withdraw') return packed;
-  return flowAmtDigest(packed, [for (final o in vout) _amtCtBytes(o['amtCt'])]);
+  final flowed = flowAmtDigest(packed, [for (final o in vout) _amtCtBytes(o['amtCt'])]);
+  if (top != 'b-spend') return flowed;
+  return Uint8List.fromList(sha256.convert([...flowed, ..._canonicalFee(fee)]).bytes);
 }
 
 final spendAmtDst = utf8.encode('shear-spend-amt-v1');
@@ -237,8 +240,9 @@ Uint8List spendMessage({
   int height = 0,
   String? kind,
   List<Map<String, dynamic>>? vin,
+  int fee = 0,
 }) {
-  final digest = spendPackDigest(from: from, vout: vout, height: height, kind: kind, vin: vin);
+  final digest = spendPackDigest(from: from, vout: vout, height: height, kind: kind, vin: vin, fee: fee);
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }
 

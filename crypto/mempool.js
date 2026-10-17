@@ -5,12 +5,12 @@
  */
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
-import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceipt } from './dummy.js';
+import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceiptRejected } from './dummy.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
-import { sealedVinLinkField, valueOpenRejected } from './chronoflux.js';
-import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField } from './spend.js';
+import { sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from './chronoflux.js';
+import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
@@ -121,6 +121,10 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
+  const feeHit = feeFieldRejected(tx);
+  if (feeHit) return feeHit;
+  const spendFee = bSpendFeeRejected(tx);
+  if (spendFee) return spendFee;
   const bucket = v3BucketProofRejected(tx);
   if (bucket) return bucket;
   const unsignedField = unsignedBodyField(tx);
@@ -129,7 +133,7 @@ export function admitMempool(pool, tx, opts = {}) {
   if (!capped.ok) return capped;
   const budget = txBudget(tx);
   if (!budget.ok) return budget;
-  const noteRule = txNoteRuleRejected(tx);
+  const noteRule = txNoteRuleRejected(tx, 1);
   if (noteRule) return noteRule;
   const pull = custodialPullRejected(tx);
   if (pull) return pull;
@@ -159,6 +163,8 @@ export function admitMempool(pool, tx, opts = {}) {
   if (clockField) return clockField;
   const receiptPub = receiptAdmitRejected(tx);
   if (receiptPub) return receiptPub;
+  const vinAdmit = bSpendVinRejected(tx);
+  if (vinAdmit) return vinAdmit;
   for (const v of tx.vin || []) {
     const link = sealedVinLinkField(v);
     if (link) return { ok: false, reason: 'vin_link' };
@@ -216,7 +222,9 @@ export function admitMempool(pool, tx, opts = {}) {
     if (isShearAddress(d)) return { ok: false, reason: 'shear1' };
     if (!isDestAddress(d) || bech32Hrp(d) !== 'ssa') return { ok: false, reason: 'dest' };
   }
-  if (moneyNeedsRange(tx) && !publicReserveReceipt(tx)) {
+  const publicReceipt = publicReserveReceiptRejected(tx);
+  if (publicReceipt) return publicReceipt;
+  if (moneyNeedsRange(tx)) {
     for (const o of (tx.vout || [])) {
       if (!o?.commit || !o.rangeProof || o.rangeProof === true) {
         return { ok: false, reason: 'range_proof' };
@@ -280,7 +288,13 @@ export function admitMempool(pool, tx, opts = {}) {
       const id = reserveWithdrawMintId(prev, opts.reserveState || null);
       if (id) drawn.add(id);
     }
-    const stake = boundReserveWithdraw(tx, opts.reserveState || null, drawn);
+    const headerMs = Number(opts.nowMs);
+    const stake = boundReserveWithdraw(
+      tx,
+      opts.reserveState || null,
+      drawn,
+      Number.isFinite(headerMs) && headerMs > 0 ? headerMs : null,
+    );
     if (!stake.ok) return { ...stake, vault: true };
     // A carried vault already includes every accepted reserve tx. Trial only
     // this one. A caller with no carried vault still trials the prefix once.
@@ -317,7 +331,8 @@ export function admitMempool(pool, tx, opts = {}) {
     }
   }
   const need = levyTaxed({ ...tx, kind }) ? levyNanos(0, { tx }) : 0;
-  const paid = Math.floor(Number(tx.fee || tx.paid || 0));
+  const paid = postedFeeNanos(tx);
+  if (paid == null) return { ok: false, reason: 'fee' };
   if (paid < need) return { ok: false, reason: 'levy', need, paid };
   if (levyTaxed({ ...tx, kind }) && tx.maxLevy != null && need > Number(tx.maxLevy)) {
     return { ok: false, reason: 'max_levy', need };
@@ -340,7 +355,8 @@ export function retargetMempool(pool, nextBase) {
   const dropped = [];
   for (const tx of book.txs || []) {
     const need = levyTaxed(tx) ? levyNanos(txAmountNanos(tx), { depth: mempoolDepthBytes(keep) }) : 0;
-    if (Math.floor(Number(tx.fee || 0)) < need) {
+    const paidNow = postedFeeNanos(tx);
+    if (paidNow == null || paidNow < need) {
       dropped.push({ ...tx, requote: need });
     } else {
       keep.push(tx);

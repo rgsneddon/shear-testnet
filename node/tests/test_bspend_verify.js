@@ -1,153 +1,82 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
 import { bProof } from '../../crypto/clearing.js';
-import { decodeHeader } from '../../crypto/header.js';
-import { bitsForBlock, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
-import {
-  buildTemplate,
-  mineTemplate,
-  verifyBlock,
-  GENESIS_PREV,
-} from '../src/chain.js';
+import { SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { excessOf } from '../../crypto/note.js';
+import { signSpendTx } from '../../crypto/spend.js';
+import { openStore, payerIdentity, sealMintOut, templateOn, appendTpl } from './b_leaf_fund.js';
+import { publishBLeaves } from './b_leaf_fs1.js';
 
-function mine(tpl) {
-  const found = mineTemplate(tpl, { maxTries: 3_000_000, shareBits: tpl.bits });
-  assert.ok(found && found.block, 'pow');
-  return {
-    header: found.header,
-    txs: tpl.txs,
-    samples: tpl.samples,
-    shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
-    aLeaves: tpl.aLeaves,
-    bLeaves: tpl.bLeaves,
-    rootA: tpl.rootA,
-    rootB: tpl.rootB,
-    weight: tpl.weight,
-  };
+async function attempt(store, dest, txs) {
+  const tpl = templateOn(store, { miner: dest, txs });
+  const carried = (tpl.txs || []).some((tx) => tx && tx.kind === 'b-spend');
+  assert.equal(carried, true, 'template dropped the b-spend');
+  return appendTpl(store, tpl);
 }
 
 describe('verifyBlock B-spend uses the committing header', () => {
-  it('rejects pre-seal, accepts after seal with proof, rejects double-open', () => {
-    const id = newIdentity();
-    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-    const dest20 = hash20FromAddress(dest);
-    const leaf = {
-      dest20,
-      unit: 9,
-      nonce: 1,
-      memoH: Buffer.alloc(32),
-      tag: 'b-extra',
-    };
-    const t0 = Date.now();
-    const commitTpl = buildTemplate({
-      prev: GENESIS_PREV,
-      height: 1,
-      miner: dest,
-      bits: 8,
-      now: t0,
-      samples: [{ miner: dest, nonce: '1', tag: 'a', count: 1 }],
-      bLeaves: [leaf],
-    });
-    const commit = mine(commitTpl);
-    const commitOk = verifyBlock(commit, null);
-    assert.equal(commitOk.ok, true, commitOk.reason);
-    const commitBlock = { ...commit, hash: commitOk.hash, height: 1 };
-    const proof = bProof([leaf], 0);
-    const fee = 0;
-    const spendTx = {
-      id: 'bspend-1',
-      kind: 'b-spend',
-      from: dest,
-      to: dest,
-      nanos: 9,
-      fee,
-      commitHeight: 1,
-      commitHeader: commit.header,
-      commitRootA: commit.rootA,
-      commitRootB: commit.rootB,
-      leaf,
-      proof,
-      index: 0,
-      vin: [{ address: dest }],
-      vout: [{ address: dest, nanos: 9 }],
-    };
+  it('rejects pre-seal, accepts after seal with proof, rejects double-open', async () => {
+    const who = payerIdentity();
+    const dest = who.dest;
+    const book = openStore('shear-bspend-verify-');
+    try {
+      const funded = await publishBLeaves(book.store, who, [{
+        unit: 9,
+        nonce: 1,
+        tag: 'b-extra',
+        memoH: Buffer.alloc(32),
+        id: 'fund-bspend-1',
+      }]);
+      const leaf = funded.leaves[0];
+      const commit = funded.block;
+      assert.equal(leaf.unit, 9);
+      const spendTx = {
+        id: 'bspend-1',
+        kind: 'b-spend',
+        from: dest,
+        to: dest,
+        nanos: 9,
+        fee: 0,
+        commitHeight: funded.height,
+        commitHeader: commit.header,
+        commitRootA: commit.rootA,
+        commitRootB: commit.rootB,
+        leaf,
+        proof: bProof(funded.leaves, 0),
+        index: 0,
+        vin: [{ address: dest }],
+        vout: [sealMintOut(9, dest, 'b-spend')],
+      };
+      spendTx.excess = excessOf(spendTx.vout);
+      signSpendTx(spendTx, who.key);
 
-    const t1 = t0 + 90_000;
-    const bits2 = bitsForBlock(
-      decodeHeader(commit.header).bits,
-      decodeHeader(commit.header).timestamp,
-      t1,
-    );
-    const early = mine(buildTemplate({
-      prev: commitBlock.hash,
-      prevHeader: commit.header,
-      prevBlock: commitBlock,
-      parentWeight: commit.weight,
-      height: 2,
-      miner: dest,
-      bits: bits2,
-      now: t1,
-      samples: [{ miner: dest, nonce: '2', tag: 'a', count: 1 }],
-      txs: [{ ...spendTx, commitHeight: 3 }],
-    }));
-    const pre = verifyBlock(early, commitBlock, { tipHeight: 2, spentB: new Set() });
-    assert.equal(pre.ok, false);
-    assert.equal(pre.reason, 'pre_seal');
+      const pre = await attempt(book.store, dest, [{ ...spendTx, id: 'bspend-pre', commitHeight: funded.height + 3 }]);
+      assert.equal(pre.ok, false);
+      assert.equal(pre.reason, 'pre_seal');
+      assert.equal(book.store.tip().height, funded.height);
 
-    const sealed = mine(buildTemplate({
-      prev: commitBlock.hash,
-      prevHeader: commit.header,
-      prevBlock: commitBlock,
-      parentWeight: commit.weight,
-      height: 2,
-      miner: dest,
-      bits: bits2,
-      now: t1,
-      samples: [{ miner: dest, nonce: '2', tag: 'a', count: 1 }],
-      txs: [spendTx],
-    }));
-    const spent = new Set();
-    assert.equal(SPENDABLE_CONFIRMATIONS, 9);
-    // 9-conf law: commit at height 1 is not spendable at tip 2.
-    const justSealed = verifyBlock(sealed, commitBlock, { tipHeight: 2, spentB: new Set() });
-    assert.equal(justSealed.ok, false, justSealed.reason);
-    assert.equal(justSealed.reason, 'immature');
-    const matureTip = 1 + SPENDABLE_CONFIRMATIONS - 1;
-    const ok = verifyBlock(sealed, commitBlock, {
-      tipHeight: matureTip,
-      spentB: spent,
-    });
-    assert.equal(ok.ok, true, ok.reason);
+      assert.equal(SPENDABLE_CONFIRMATIONS, 9);
+      const justSealed = await attempt(book.store, dest, [{ ...spendTx, id: 'bspend-immature' }]);
+      assert.equal(justSealed.ok, false, justSealed.reason);
+      assert.equal(justSealed.reason, 'immature');
+      assert.equal(book.store.tip().height, funded.height);
 
-    const laterBits = bitsForBlock(
-      decodeHeader(sealed.header).bits,
-      decodeHeader(sealed.header).timestamp,
-      t1 + 90_000,
-    );
-    const sealedOk = verifyBlock(sealed, commitBlock, {
-      tipHeight: matureTip,
-    });
-    const sealedBlock = { ...sealed, hash: sealedOk.hash, height: 2, weight: sealed.weight };
-    const twice = mine(buildTemplate({
-      prev: sealedBlock.hash,
-      prevHeader: sealed.header,
-      prevBlock: sealedBlock,
-      parentWeight: sealed.weight,
-      height: 3,
-      miner: dest,
-      bits: laterBits,
-      now: t1 + 90_000,
-      samples: [{ miner: dest, nonce: '3', tag: 'a', count: 1 }],
-      txs: [spendTx],
-    }));
-    const dup = verifyBlock(twice, sealedBlock, {
-      tipHeight: matureTip,
-      spentB: spent,
-    });
-    assert.equal(dup.ok, false);
-    assert.equal(dup.reason, 'double_open');
+      const matureParent = funded.height + SPENDABLE_CONFIRMATIONS - 2;
+      while ((book.store.tip()?.height || 0) < matureParent) {
+        const pad = await appendTpl(book.store, templateOn(book.store, { miner: dest }));
+        assert.equal(pad.ok, true, `${book.store.tip()?.height || 0} ${pad.reason}`);
+      }
+      assert.equal(book.store.tip().height, matureParent);
+      const ok = await attempt(book.store, dest, [spendTx]);
+      assert.equal(ok.ok, true, ok.reason);
+      assert.equal(book.store.tip().height, matureParent + 1);
+
+      const dup = await attempt(book.store, dest, [{ ...spendTx, id: 'bspend-twice' }]);
+      assert.equal(dup.ok, false);
+      assert.equal(dup.reason, 'double_open');
+      assert.equal(book.store.tip().height, matureParent + 1);
+    } finally {
+      book.close();
+    }
   });
 });

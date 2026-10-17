@@ -31,7 +31,7 @@ function bSpend(k, blobLen, i) {
     id: `b-${blobLen}-${k}-${i}`,
     kind: 'b-spend',
     to: dest,
-    fee: 2,
+    fee: 0,
     bFlag: 1,
   };
 }

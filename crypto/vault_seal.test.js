@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyVault, cloneVault, deposit, verifyReservePayout, withdraw, applyReserveBlock, publicVaultView, withdrawTx } from './reserve_vault.js';
+import { emptyVault, cloneVault, verifyReservePayout, withdraw, applyReserveBlock, publicVaultView, withdrawTx } from './reserve_vault.js';
+import { deposit } from './owned_portal.js';
 import { PI_SHE_NANOS } from './asert.js';
 import { newIdentity } from './address.js';
 import { vaultDest } from './flow_sheet.js';
@@ -34,6 +35,7 @@ describe('vault seal commitment', () => {
     const dest = destOf(id);
     const st = emptyVault();
     const t0 = 1_700_000_000_000;
+    st.genesisMs = t0;
     assert.equal(deposit({ state: st, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     const c = vaultCommitment(st);
     assert.notEqual(c, a);
@@ -131,6 +133,7 @@ describe('fork has no vault', () => {
     const dest = destOf(id);
     const live = emptyVault();
     const t0 = 1_700_000_000_000;
+    live.genesisMs = t0;
     assert.equal(deposit({ state: live, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     const tx = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'w1' });
     tx.nowMs = t0 + 500 * 86_400_000;

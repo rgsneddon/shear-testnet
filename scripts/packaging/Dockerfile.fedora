@@ -9,7 +9,7 @@ ENV SHEAR_DISTRO=fedora \
 RUN dnf -y --setopt=install_weak_deps=False install \
       binutils ca-certificates clang cmake curl findutils gcc gcc-c++ git gzip \
       gtk3-devel jsoncpp-devel libblkid-devel libsecret-devel libsodium-devel \
-      make ninja-build openssl-devel passwd patchelf pkgconf-pkg-config \
+      libstdc++-static make ninja-build openssl-devel passwd patchelf pkgconf-pkg-config \
       python3 shadow-utils tar unzip which xz xz-devel \
     && dnf clean all
 

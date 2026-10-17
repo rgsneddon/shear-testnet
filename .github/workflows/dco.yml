@@ -1,0 +1,15 @@
+# Developer Certificate of Origin: every commit added by a pull request must be
+# signed off by its author (git commit -s). See CONTRIBUTING.md.
+name: dco
+on:
+  pull_request:
+jobs:
+  signoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Signed-off-by on every commit
+        run: python3 scripts/dco_check.py "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"

@@ -10,12 +10,9 @@ import { HISTORICAL_TIP } from '../../crypto/historical_prefix.js';
 import { chainLoadSeal, retarget } from '../src/chain.js';
 import { bookSealKeyFor } from '../src/book_seal_key.js';
 import { nextBits } from '../../crypto/asert.js';
-import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_TESTNET_V6, MAGIC_TESTNET_V8, MAGIC_TESTNET_V9, MAGIC_MAINNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_TESTNET_V6, MAGIC_TESTNET_V8, MAGIC_TESTNET_V9, MAGIC_MAINNET } from '../../crypto/asert.js';
 import { encodeDest } from '../../crypto/address.js';
-import { mineTemplate } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { setHashBackend } from '../../crypto/shear_hash.js';
-try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 describe('v3 and v4 datadirs refuse each other', () => {
   it('createStore throws datadir_magic on a v2 book.magic file', () => {
@@ -200,19 +197,48 @@ describe('v3 and v4 datadirs refuse each other', () => {
     }
   });
 
+  it('P2P drops a hello that omits magic', async () => {
+    const { createP2p } = await import('../src/p2p.js');
+    const net = await import('node:net');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-none-'));
+    const store = createStore(dir);
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
+    const bound = await p2p.listen();
+    const sock = net.connect(bound.port, '127.0.0.1');
+    await new Promise((resolve, reject) => {
+      sock.once('connect', resolve);
+      sock.once('error', reject);
+    });
+    await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('no inbound hello')), 2000);
+      let buf = '';
+      sock.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        if (buf.split('\n').filter(Boolean).length >= 2) {
+          clearTimeout(t);
+          resolve();
+        }
+      });
+    });
+    const closed = new Promise((resolve) => sock.once('close', resolve));
+    sock.write(`${JSON.stringify({ type: 'hello', ua: 'no-magic', port: 1 })}\n`);
+    await Promise.race([
+      closed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('hello without magic did not drop the socket')), 3000)),
+    ]);
+    p2p.close();
+  });
+
   it('P2P hellos, tips, and headers shear-testnet-v12', async () => {
     const { createP2p } = await import('../src/p2p.js');
     const net = await import('node:net');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-magic-p2p-v3-'));
     const store = createStore(dir);
     const dest = encodeDest(Buffer.alloc(20, 7));
-    const packed = GENESIS_BITS_PACKED;
-    const shareBits = Math.max(4, Math.floor(packed / 65536));
-    const { tpl } = store.template({ miner: dest, bits: packed, shareBits, now: Date.now() });
-    const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits });
-    assert.ok(found && found.block, 'need pow');
+    const { tpl } = store.template({ miner: dest, now: Date.now() });
+    const pow = Buffer.alloc(32, 0);
     assert.equal(store.append({
-      header: found.header,
+      header: tpl.header,
       txs: tpl.txs,
       samples: tpl.samples,
       miner: dest,
@@ -222,7 +248,7 @@ describe('v3 and v4 datadirs refuse each other', () => {
       rootA: tpl.rootA,
       rootB: tpl.rootB,
       weight: tpl.weight,
-    }).ok, true);
+    }, { trustedPowHash: pow, skipSharePow: true }).ok, true);
     const written = fs.readFileSync(path.join(dir, 'book.magic'), 'utf8').trim();
     assert.equal(written, MAGIC_TESTNET);
     assert.equal(store.blocks[0].magic, written);
@@ -277,7 +303,7 @@ describe('v3 and v4 datadirs refuse each other', () => {
     assert.ok(headers.headers.length >= 1);
     const hdr0 = headers.headers[0];
     assert.ok(hdr0.header || hdr0.hash);
-    assert.equal(decodeHeader(Buffer.from(found.header)).version, 1);
+    assert.equal(decodeHeader(Buffer.from(tpl.header)).version, 1);
     sock.destroy();
     p2p.close();
   });

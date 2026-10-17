@@ -16,7 +16,8 @@ import {
   GENESIS_BITS_PACKED,
 } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
-import { vote, deposit, emptyVault, VOTE_DECREASE, VOTE_HOLD, withdrawTx } from '../../crypto/reserve_vault.js';
+import { vote, emptyVault, VOTE_DECREASE, VOTE_HOLD, withdrawTx } from '../../crypto/reserve_vault.js';
+import { deposit } from '../../crypto/owned_portal.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
 import {
@@ -62,7 +63,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.match(sol, /UnitFloor/);
   });
 
-  it('wrong withdraw nanos is mint_amount; idle adds 0; default committedBps is the trimmed bundle', async () => {
+  it('wrong withdraw nanos is mint_amount; idle adds 0; default committedBps is the plain-average bundle', async () => {
     const id = newIdentity();
     const dest = destOf(id);
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
@@ -106,7 +107,7 @@ describe('Reserve mint is sealed-state pure', () => {
     const defDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 180_000, txs: [as425] })), null, { trustedPowHash: TRUSTED }));
     assert.equal(defDenied.ok, false);
     assert.equal(defDenied.reason, 'mint_amount');
-    assert.equal(GENESIS_BPS, 284);
+    assert.equal(GENESIS_BPS, 281);
   });
 
   it('gateVorticeRegister ok:false fails the block', () => {

@@ -9,14 +9,13 @@ import { epochMs, epochDays, vortexEpochIndex } from './pot_sched.js';
  */
 export const RESERVE_ORACLE_ID = 'shear-reserve-oracle-v1';
 /**
- * Placeholder fixed rate until the cut. Refresh this one constant from
- * current central-bank policy before the cut. Fixed mode, the EVM
- * constant, and every default read GENESIS_BPS. It is not copied elsewhere.
- * Today's placeholder is the trimmed mean of the bundled policy rates
- * (drop 2 high and 2 low, half-up the middle 10): 2840 tenths → 284 bps.
+ * Refresh this one constant from current central-bank policy before the cut.
+ * Fixed mode, the EVM constant, and every default read GENESIS_BPS.
+ * Observed 2026-10-15. Plain average of all 14 bundled policy rates
+ * (negatives keep their sign): 39400 tenths → 2814 → 281 bps.
  * Attester keys are not consensus until Russell decides.
  */
-export const GENESIS_BPS = 284;
+export const GENESIS_BPS = 281;
 export const RESERVE_ORACLE_DEFAULT_BPS = GENESIS_BPS;
 export const REWARD_DENOM_DAYS = 400;
 export const INTEREST_DENOM_DAYS = REWARD_DENOM_DAYS;
@@ -28,7 +27,6 @@ export const ORACLE_MIN_SOURCES = 10;
 export const SOURCE_TENTHS_MIN = -1000;
 /** +100% in tenths of a basis point. −1000 tenths is −1%. */
 export const SOURCE_TENTHS_MAX = 100_000;
-export const TRIM_EACH_SIDE = 2;
 /** 3b stays off until a fork sets this height. Null ships the fixed genesis rate. */
 export const ORACLE_ACTIVATION_HEIGHT = null;
 export const ORACLE_SUPERMAJORITY_NUM = 2;
@@ -54,26 +52,27 @@ export const POLICY_BANK_IDS = Object.freeze([
 ]);
 
 /**
- * Attested policy rates in tenths of a basis point, as of 2026-08-01.
+ * Attested policy rates in tenths of a basis point, observed 2026-10-15.
  * These constants are the consensus observation. `reserve/latest.json`
  * documents the same integers; a node does not read that file to freeze.
  * Fed is the target-range median. ECB is median(deposit facility, MRO).
+ * Sources and effective dates: docs/genesis-basket-2026-10-15.md.
  */
 export const BUNDLED_POLICY_TENTHS = Object.freeze({
-  FED: 3625,
+  FED: 3875,
   BOE: 3750,
-  ECB: 2075,
-  BOJ: 500,
-  BOC: 2750,
-  RBA: 3600,
-  RBNZ: 3000,
+  ECB: 2575,
+  BOJ: 1250,
+  BOC: 2250,
+  RBA: 4600,
+  RBNZ: 2750,
   SNB: 0,
-  RIKSBANK: 2000,
-  NORGES: 4000,
-  DNBANK: 1600,
-  BOK: 2500,
-  BOI: 4000,
-  CNB: 3500,
+  RIKSBANK: 1750,
+  NORGES: 4500,
+  DNBANK: 2100,
+  BOK: 3000,
+  BOI: 3250,
+  CNB: 3750,
 });
 
 export function bundledComponents() {
@@ -95,9 +94,9 @@ export function sourceTenthsOk(tenths) {
 }
 
 /**
- * Trimmed mean in whole bps. Negatives stay in the average. The 0 floor is
- * applied to the result only. Null when fewer than ORACLE_MIN_SOURCES values
- * are in range: the caller keeps the previous rate.
+ * Plain average in whole bps. Every in-range tenth is kept. Negatives stay
+ * in the average. The 0 floor applies to the result only. Null when fewer
+ * than ORACLE_MIN_SOURCES values are in range: the caller keeps the previous rate.
  */
 export function trimmedMeanBps(tenthsList) {
   const vals = [];
@@ -107,12 +106,9 @@ export function trimmedMeanBps(tenthsList) {
     vals.push(tenths);
   }
   if (vals.length < ORACLE_MIN_SOURCES) return null;
-  vals.sort((a, b) => a - b);
-  const mid = vals.slice(TRIM_EACH_SIDE, vals.length - TRIM_EACH_SIDE);
-  if (mid.length < 1) return null;
   let sum = 0;
-  for (const t of mid) sum += t;
-  const tenthsMean = halfUpDiv(sum, mid.length);
+  for (const t of vals) sum += t;
+  const tenthsMean = halfUpDiv(sum, vals.length);
   const bps = halfUpDiv(tenthsMean, 10);
   return bps > 0 ? bps : 0;
 }
@@ -346,7 +342,7 @@ export function medianBankTenths(values, windowSize) {
 }
 
 /**
- * 3b. Per-bank supermajority, then the trimmed mean, then the 0 floor.
+ * 3b. Per-bank supermajority, then the plain average, then the 0 floor.
  * Fewer than 10 valid banks keeps `prev`.
  */
 export function epochBpsFromReports(prevEpochBps, blocks, { windowSize = null } = {}) {
@@ -430,7 +426,7 @@ export function classifySource(source, blockTimeMs, seen) {
 }
 
 /**
- * Per-source plausibility, then trimmed mean. One producer annualBps is
+ * Per-source plausibility, then the plain average. One producer annualBps is
  * not a source list and cannot select the rate: a missing list recomputes
  * this release's bundle. Fewer than 10 fresh in-range banks keeps `prev`.
  */
@@ -498,7 +494,7 @@ export function epochRateBps(prevEpochBps = GENESIS_BPS) {
   return adoptObservedBps(prev, proposal);
 }
 
-/** Display helper. Uses the same trimmed mean as consensus, negatives included. Not a freeze. */
+/** Display helper. Uses the same plain average as consensus, negatives included. Not a freeze. */
 export function averagePolicyBps(components = []) {
   const tenths = [];
   for (const c of components || []) {
@@ -663,7 +659,7 @@ export function makeFreezeRecord({
     observationRoot: bundleObservationRoot(),
     frozenAtMs: Number(nowMs) || 0,
     sourceCount: Array.isArray(components) ? components.length : ORACLE_QUORUM,
-    source: 'bundle-trim-10',
+    source: 'bundle-plain-14',
     thin: false,
   };
 }

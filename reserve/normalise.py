@@ -122,7 +122,6 @@ def mean_14(tenths_bp_values) -> int:
 SOURCE_TENTHS_MIN = -1000
 SOURCE_TENTHS_MAX = 100000
 SOURCE_QUORUM = 10
-TRIM_EACH_SIDE = 2
 
 
 def half_up_div(num: int, den: int) -> int:
@@ -135,13 +134,14 @@ def half_up_div(num: int, den: int) -> int:
 
 
 def trimmed_mean_bps(tenths_bp_values):
-    """Same integers as crypto/reserve_oracle.js trimmedMeanBps. None if under quorum."""
-    vals = sorted(int(x) for x in tenths_bp_values if SOURCE_TENTHS_MIN <= int(x) <= SOURCE_TENTHS_MAX)
+    """Plain average in whole bps. Same integers as crypto/reserve_oracle.js trimmedMeanBps.
+
+    Every in-range tenth is kept. Negatives stay in the sum. None if fewer
+    than SOURCE_QUORUM values are in range. The 0 floor applies to the result.
+    """
+    vals = [int(x) for x in tenths_bp_values if SOURCE_TENTHS_MIN <= int(x) <= SOURCE_TENTHS_MAX]
     if len(vals) < SOURCE_QUORUM:
         return None
-    mid = vals[TRIM_EACH_SIDE:len(vals) - TRIM_EACH_SIDE]
-    if not mid:
-        return None
-    tenths_mean = half_up_div(sum(mid), len(mid))
+    tenths_mean = half_up_div(sum(vals), len(vals))
     bps = half_up_div(tenths_mean, 10)
     return bps if bps > 0 else 0
