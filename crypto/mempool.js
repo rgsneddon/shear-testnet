@@ -175,6 +175,9 @@ export function admitMempool(pool, tx, opts = {}) {
   if (clockField) return clockField;
   const receiptPub = receiptAdmitRejected(tx);
   if (receiptPub) return receiptPub;
+  // A portal vote is retired. Refuse it before the public-receipt and vault
+  // trials so it never sits in a template. A leaf ballot is a different kind.
+  if (String(tx?.kind || '') === 'vote') return { ok: false, reason: 'vote_retired' };
   const vinAdmit = bSpendVinRejected(tx);
   if (vinAdmit) return vinAdmit;
   for (const v of tx.vin || []) {
@@ -350,6 +353,9 @@ export function admitMempool(pool, tx, opts = {}) {
     return { ok: false, reason: 'max_levy', need };
   }
   if ((book.txs || []).length >= (book.max || MEMPOOL_MAX)) return { ok: false, reason: 'full' };
+  // A leaf ballot is admitted only after the vault trial. A portal vote
+  // already returned vote_retired. A proof-less ballot does not sit in the pool.
+  if (kind === 'leaf-vote' && !vaultState) return { ok: false, reason: 'not_voter' };
   book.txs.push(mempoolRow(tx, paid, kind));
   const accepted = book.txs[book.txs.length - 1];
   const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));

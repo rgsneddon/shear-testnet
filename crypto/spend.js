@@ -5,7 +5,7 @@
  */
 import { createHash, createPublicKey, sign, verify } from 'node:crypto';
 import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM, MAX_LOCK_LEAVES } from './asert.js';
-import { levyTaxed, txAmountNanos, custodialPullRejected } from './levy.js';
+import { levyTaxed, levyNanos, txAmountNanos, custodialPullRejected } from './levy.js';
 import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
@@ -473,6 +473,7 @@ export const V12_VALUE_KINDS = new Set([
   'transfer',
   'lock',
   'vote',
+  'leaf-vote',
   'withdraw',
   'roll',
   'reward-claim',
@@ -590,6 +591,7 @@ const BODY_KEYS = new Set([
   'ownerPub',
   'piProof', 'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
   'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
+  'voteProof', 'voteProofs', 'voteSeq', 'voteParam', 'voteOutput',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -768,6 +770,12 @@ export function typedCommitRejected(tx) {
  */
 export function typedCommitSum(tx, ctx = {}) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind === 'leaf-vote') {
+    const paid = Math.floor(Number(tx?.fee || 0));
+    const need = Math.floor(Number(levyNanos(0, { tx })) || 0);
+    if (paid < need) return { ok: false, reason: 'levy' };
+    return { ok: true, skip: true };
+  }
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   if (kind === 'vote') {
     // A vote moves no value. A nonzero fee would be paid to miners with no debit.

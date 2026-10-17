@@ -59,8 +59,21 @@ import { txDigestV3 } from './admit_v3.js';
 import { publicReserveReceipt } from './dummy.js';
 import {
   proveLockCap, verifyLockCap, verifyVaultReward, vaultProofCap, vaultPublicReward,
-  verifyLeafRetire, subtractUnlock, VAULT_PI_LEAF, VAULT_UNLOCK_OPEN,
+  verifyLeafRetire, subtractUnlock, VAULT_PI_LEAF, VAULT_UNLOCK_OPEN, vaultNullPoint,
 } from './vault_reward_fs1.js';
+import {
+  activateBallot,
+  censusOf,
+  commitCensus,
+  proposalId,
+  recordVote,
+  tallyBallot,
+  voteChoice,
+  voteParam,
+  voteTag,
+  voteWindowOpen,
+  MAX_BLOCK_LEAF_VOTES,
+} from './leaf_vote.js';
 
 export const VOTE_INCREASE = 'increase bonus';
 export const VOTE_DECREASE = 'decrease bonus';
@@ -68,6 +81,7 @@ export const VOTE_HOLD = 'leave bonus as-is';
 export const KIND_LOCK = 'lock';
 export const KIND_WITHDRAW = 'withdraw';
 export const KIND_VOTE = 'vote';
+export const KIND_LEAF_VOTE = 'leaf-vote';
 export const STAKE_REWARD_KIND = 'stake-reward';
 /** User tx that mints one archived reward. It is not a coinbase row. */
 export const KIND_REWARD_CLAIM = 'reward-claim';
@@ -1689,6 +1703,10 @@ export function emptyVault() {
     rewardRoots: Object.create(null),
     rewardBook: Object.create(null),
     rewardSets: Object.create(null),
+    epochCensus: Object.create(null),
+    ballots: Object.create(null),
+    ballotCount: Object.create(null),
+    ballotStep: Object.create(null),
   };
 }
 
@@ -2091,7 +2109,16 @@ function snapTrial(state) {
     rolled: state.rolled ? { ...state.rolled } : null,
     withdrewEpoch: state.withdrewEpoch ? { ...state.withdrewEpoch } : null,
     vaultLockDirty: !!state.vaultLockDirty,
+    epochCensus: plainCopy(state.epochCensus),
+    ballots: plainCopy(state.ballots),
+    ballotCount: plainCopy(state.ballotCount),
+    ballotStep: plainCopy(state.ballotStep),
   };
+}
+
+function plainCopy(value) {
+  if (value == null) return Object.create(null);
+  return JSON.parse(JSON.stringify(value));
 }
 
 function restoreTrial(state, snap, frame) {
@@ -2146,6 +2173,10 @@ function restoreTrial(state, snap, frame) {
   state.claimNullifierPeriod = snap.claimNullifierPeriod ? { ...snap.claimNullifierPeriod } : Object.create(null);
   state.rolled = snap.rolled ? { ...snap.rolled } : Object.create(null);
   state.withdrewEpoch = snap.withdrewEpoch ? { ...snap.withdrewEpoch } : Object.create(null);
+  state.epochCensus = plainCopy(snap.epochCensus);
+  state.ballots = plainCopy(snap.ballots);
+  state.ballotCount = plainCopy(snap.ballotCount);
+  state.ballotStep = plainCopy(snap.ballotStep);
   state.vaultLockDirty = false;
   VAULT_LOCK_HANDLES.delete(state);
   if (snap.vaultLockRoot || snap.vaultLockDirty || state.vaultLockNotes.length) rebuildVaultLockRoot(state);
@@ -2345,8 +2376,10 @@ function syncVaultEpoch(state, nowMs) {
   if (state.pendingRates[idx] == null || state.pendingRates[idx] === '') {
     state.epochBps = carried;
   }
+  const leftEpoch = Math.floor(Number(state.currentEpoch) || 0);
   state.votes = { increase: 0, decrease: 0, hold: 0 };
   applyEpochOpen(state, nowMs, idx);
+  activateBallot(state, leftEpoch);
 }
 
 /** Keep the rate the open epoch was paying. A queued commit already won. */
@@ -2664,32 +2697,12 @@ export function deposit({ state, dest, portalId, nanos, nowMs, payout, payoutPor
 }
 
 export function vote({ state, dest, portalId, choice, nowMs }) {
-  nowMs;
-  const id = portalKey(portalId || dest);
-  if (!id) return { ok: false, reason: 'bad_dest' };
-  if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {
-    return { ok: false, reason: 'bad_dest' };
-  }
-  const p = portalOf(state, id);
-  if (!p.joined || (!p.qualified && !canVote(p.staked, p.idle))) return { ok: false, reason: 'not_voter' };
-  if (!state.epochStartMs) return { ok: false, reason: 'not_voter' };
-  if (state.bonusEnacted) return { ok: false, reason: 'epoch_closed' };
-  const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
-  if (!allowed.includes(choice)) return { ok: false, reason: 'bad_vote' };
-  if (choice === VOTE_DECREASE && hashBonusUnitNanos(state.liveHashBonusNanos) <= HASH_BONUS_NANOS_FLOOR) {
-    return { ok: false, reason: 'unit_floor' };
-  }
-  const first = !p.vote || p.voteEpoch !== state.currentEpoch;
-  if (!first) return { ok: false, reason: 'vote_locked' };
-  p.vote = choice;
-  p.voteEpoch = state.currentEpoch;
-  if (choice === VOTE_INCREASE) state.votes.increase += 1;
-  if (choice === VOTE_DECREASE) state.votes.decrease += 1;
-  if (choice === VOTE_HOLD) state.votes.hold += 1;
-  return {
-    ok: true,
-    portal: portalPublic(p),
-  };
+  void state;
+  void dest;
+  void portalId;
+  void choice;
+  void nowMs;
+  return { ok: false, reason: 'vote_retired' };
 }
 
 /** Local proposal only. The next freeze reads sealedObserve, which a block writes. */
@@ -3721,6 +3734,7 @@ export function rewardClaimDigestSuffix(tx) {
 
 export function txIsReserveAction(tx) {
   if (!tx || tx.coinbase) return false;
+  if (txKind(tx) === KIND_LEAF_VOTE || tx.voteProof) return true;
   return canonicalReserveFields(tx) != null;
 }
 
@@ -3936,6 +3950,90 @@ function finishReserveApply(results) {
   return results;
 }
 
+function voteProofTerms(state, epoch, proof) {
+  const magic = state?.magic || MAGIC_TESTNET;
+  const blocks = vaultEpochBlocks(magic);
+  const period = vaultPeriodBlocks(magic);
+  const bps = rateForEpoch(state, Math.floor(Number(epoch) / 16));
+  const reward = vaultPublicReward(proof);
+  if (!(bps > 0) || !(blocks > 0) || !(period > 0) || reward == null) return null;
+  return {
+    bps,
+    span: BigInt(blocks),
+    covered: BigInt(period),
+    earnEpoch: BigInt(Math.floor(Number(epoch))),
+    reward,
+  };
+}
+
+function maybeTallyBallots(state, height) {
+  const epoch = Math.floor(Number(state?.currentEpoch) || 0);
+  if (!censusOf(state, epoch)) return;
+  tallyBallot(state, { epoch, param: 'hb', height, magic: state.magic });
+  tallyBallot(state, { epoch, param: 'rr', height, magic: state.magic });
+}
+
+/**
+ * One leaf, one proof. The tag is recomputed from the proof's null point.
+ * A cast vote is not removed when the leaf later withdraws.
+ */
+export function applyLeafVote(state, tx, blockHeight) {
+  if (Array.isArray(tx?.voteProofs)) return { ok: false, reason: 'stake_reward' };
+  const param = voteParam(tx?.voteParam || tx?.param);
+  const choice = voteChoice(tx?.choice);
+  const seq = Math.floor(Number(tx?.voteSeq ?? tx?.seq));
+  const epoch = Math.floor(Number(tx?.earnEpoch ?? tx?.rootEpoch));
+  if (!param || choice == null || !Number.isInteger(epoch) || epoch < 0) {
+    return { ok: false, reason: 'bad_amount' };
+  }
+  const census = censusOf(state, epoch);
+  if (!census) return { ok: false, reason: 'not_voter' };
+  const magic = state.magic || MAGIC_TESTNET;
+  if (!voteWindowOpen(census.openHeight, blockHeight, magic)) {
+    return { ok: false, reason: 'epoch_closed' };
+  }
+  const rootHex = String(state?.epochStartRoots?.[String(epoch)] || '');
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) return { ok: false, reason: 'not_voter' };
+  const proof = tx?.voteProof;
+  const output = tx?.voteOutput || tx?.vout?.[0] || null;
+  if (!proof || !output) return { ok: false, reason: 'unsigned' };
+  const pid = proposalId(epoch, param);
+  const terms = voteProofTerms(state, epoch, proof);
+  if (!terms || !pid) return { ok: false, reason: 'stake_reward' };
+  const nullifier = tx?.nullifier;
+  const paid = Math.floor(Number(tx?.fee || 0));
+  const need = Math.floor(Number(levyNanos(0, { tx })) || 0);
+  if (paid < need) return { ok: false, reason: 'levy' };
+  const got = verifyVaultReward({
+    blob: proof,
+    root: Buffer.from(rootHex, 'hex'),
+    rootEpoch: epoch,
+    nullifier,
+    output,
+    terms,
+    magic,
+    vote: { choice, seq, proposalId: pid },
+  });
+  if (!got.ok || !got.voteTag) return { ok: false, reason: got.reason || 'unsigned' };
+  const recorded = recordVote(state, {
+    epoch,
+    proposal: pid,
+    tag: got.voteTag,
+    choice,
+    seq,
+  });
+  if (!recorded.ok) return recorded;
+  return { ...recorded, voteTag: got.voteTag, nullP: got.nullP };
+}
+
+function applyCombinedVote(state, tx, blockHeight) {
+  if (Array.isArray(tx?.voteProofs)) return { ok: false, reason: 'stake_reward' };
+  const claimP = vaultNullPoint(tx?.vaultProof);
+  const voteP = vaultNullPoint(tx?.voteProof);
+  if (!claimP || !voteP || !claimP.equals(voteP)) return { ok: false, reason: 'stake_reward' };
+  return applyLeafVote(state, tx, blockHeight);
+}
+
 export function applyReserveBlock({
   state,
   block,
@@ -4007,9 +4105,9 @@ export function applyReserveBlock({
     state.nextEpochBps = expected;
     state.rateEpochIndex = epochIdx;
   }
-  // Roll before the block's rows when the previous epoch is already
-  // enacted, so this epoch's open adopts the queued rate. The enacting
-  // block itself does not roll: it still settles the epoch that ended.
+  // A ballot tallies once the window has been closed for the finality depth.
+  // The roll applies only the epoch being left.
+  maybeTallyBallots(state, blockHeight);
   if (state.bonusEnacted && !holdEpoch) syncVaultEpoch(state, nowMs);
   snapshotPeriodRoot(state, blockHeight);
   if (state.epochStartMs && !state.bonusEnacted && nowMs >= state.epochStartMs + epochMs(state.magic)) {
@@ -4026,11 +4124,18 @@ export function applyReserveBlock({
     return finishReserveApply([{ ok: false, reason: vaultRooted.reason || 'stake_reward', action: 'stake-reward' }]);
   }
   let vaultClaims = 0;
+  let leafVotes = 0;
   for (const tx of txs) {
-    if (tx && !tx.coinbase && txKind(tx) === KIND_REWARD_CLAIM) vaultClaims += 1;
+    if (!tx || tx.coinbase) continue;
+    if (txKind(tx) === KIND_REWARD_CLAIM) vaultClaims += 1;
+    if (txKind(tx) === KIND_LEAF_VOTE || tx.voteProof) leafVotes += 1;
+    if (Array.isArray(tx.voteProofs)) leafVotes += tx.voteProofs.length;
   }
   if (vaultClaims > MAX_BLOCK_VAULT_CLAIMS) {
     return finishReserveApply([{ ok: false, reason: 'claim_cap', action: KIND_REWARD_CLAIM }]);
+  }
+  if (leafVotes > MAX_BLOCK_LEAF_VOTES) {
+    return finishReserveApply([{ ok: false, reason: 'vote_cap', action: KIND_LEAF_VOTE }]);
   }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
   const reservePaid = openedReserveFeeNanos(cb);
@@ -4052,6 +4157,23 @@ export function applyReserveBlock({
     if (txKind(tx) === KIND_REWARD_CLAIM) {
       const got = applyRewardClaim(state, tx, blockHeight);
       results.push({ action: KIND_REWARD_CLAIM, ...got });
+      if (!got.ok) {
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
+      if (tx.voteProof || tx.voteProofs) {
+        const voted = applyCombinedVote(state, tx, blockHeight);
+        results.push({ action: KIND_LEAF_VOTE, ...voted });
+        if (!voted.ok) {
+          state.deferEpochRoll = false;
+          return finishReserveApply(results);
+        }
+      }
+      continue;
+    }
+    if (txKind(tx) === KIND_LEAF_VOTE) {
+      const got = applyLeafVote(state, tx, blockHeight);
+      results.push({ action: KIND_LEAF_VOTE, ...got });
       if (!got.ok) {
         state.deferEpochRoll = false;
         return finishReserveApply(results);
@@ -4706,14 +4828,6 @@ export function withdraw({
   const remain = asBig(p.staked) + asBig(p.idle);
   const hiddenLeft = (p.tranches || []).some((tranche) => commitBytes(tranche?.commit) && !tranche.noteIsPrincipal);
   const stillVoter = remain >= BigInt(PI_SHE_NANOS) || (hiddenLeft && p.qualified === true);
-  if (!stillVoter && Number(p.voteEpoch || 0) === Number(state.currentEpoch || 0)) {
-    if (p.vote === VOTE_INCREASE && Number(state.votes.increase) > 0) state.votes.increase -= 1;
-    if (p.vote === VOTE_DECREASE && Number(state.votes.decrease) > 0) state.votes.decrease -= 1;
-    if (p.vote === VOTE_HOLD && Number(state.votes.hold) > 0) state.votes.hold -= 1;
-  }
-  if (Number(state.votes.increase) < 0) state.votes.increase = 0;
-  if (Number(state.votes.decrease) < 0) state.votes.decrease = 0;
-  if (Number(state.votes.hold) < 0) state.votes.hold = 0;
   if (remain <= 0n && !hiddenLeft) {
     p.staked = 0n;
     p.idle = 0n;

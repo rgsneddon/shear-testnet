@@ -28,10 +28,10 @@ pragma solidity ^0.8.20;
  * not re-lock earlier principal. Each tranche keeps the pro-rata of its
  * own lock epoch. After that epoch ends, any later block can withdraw
  * that deposit. A deposit whose epoch is still open stays in the reserve.
- * The still-open epoch is not paid. A portal votes once per epoch;
- * a second cast reverts VoteLocked(). At epoch end the unique plurality of {increase, decrease,
- * hold} enacts ±1 protocol unit on the live hash bonus. It does not set
- * the reserve rate. The freeze is the plain average of the attested 14-bank
+ * The still-open epoch is not paid. A portal vote is retired. One anonymous
+ * ballot per live π leaf steps the hash-bonus unit and the reserve rate.
+ * There is no miner veto. At epoch end an empty portal plurality holds the
+ * live hash bonus. It does not set the reserve rate. The freeze is the plain average of the attested 14-bank
  * policy tenths (FED 3875, BOE 3750, ECB 2575, BOJ 1250, BOC 2250, RBA 4600,
  * RBNZ 2750, SNB 0, RIKSBANK 1750, NORGES 4500, DNBANK 2100, BOK 3000,
  * BOI 3250, CNB 3750), observed 2026-10-15. Negatives keep their sign.
@@ -160,6 +160,14 @@ contract Reserve {
     mapping(uint256 => bytes32) internal vaultRootOf;
     /// Root frozen when the earning epoch opened. A full claim proves against this.
     mapping(uint256 => bytes32) internal epochStartRootOf;
+    /// Bit 255 set once the leaf count and open height are committed.
+    mapping(uint256 => uint256) internal epochCensus;
+    /// epoch → proposal → tag → seq | (choice << 8). Choice 1 up, 2 down, 3 hold.
+    mapping(uint256 => mapping(bytes32 => mapping(bytes32 => uint256))) internal ballotOf;
+    /// epoch → proposal → hold<<128 | down<<64 | up.
+    mapping(uint256 => mapping(bytes32 => uint256)) internal ballotCount;
+    /// 0 unknown, 1 down, 2 hold, 3 up.
+    mapping(uint256 => mapping(bytes32 => uint256)) internal ballotStep;
     /// Vault proof precompile. Returns 1, 2, or 0.
     address internal constant VAULT_ZK = address(0x102);
     /// Settlement indexes that have a stored root, in commit order.
@@ -551,10 +559,12 @@ contract Reserve {
         votesIncrease = 0;
         votesDecrease = 0;
         votesHold = 0;
+        uint256 leftEpoch = currentEpoch;
         currentEpoch = idx;
         epochStart = clockGenesis + idx * epochLengthMs();
         bonusEnacted = false;
         _applyEpochRate(nowTs, false);
+        _activateBallot(leftEpoch);
     }
 
     /// The amount is the commitment. `nanos` is not an argument.
@@ -642,23 +652,11 @@ contract Reserve {
         }
     }
 
-    function vote(bytes calldata dest, Vote choice, uint256 nowTs) external onlyShear {
+    function vote(bytes calldata dest, Vote choice, uint256 nowTs) external view onlyShear {
+        dest;
+        choice;
         nowTs;
-        bytes32 id = portalId(dest);
-        Portal storage p = portals[id];
-        if (!p.joined) revert NotVoter();
-        if (!p.hiddenStake && (p.active + p.idle) < PI_NANOS) revert NotVoter();
-        if (choice == Vote.None) revert NotVoter();
-        if (epochStart == 0) revert NotVoter();
-        if (bonusEnacted) revert EpochClosed();
-        if (choice == Vote.DecreaseBonus && liveHashBonusNanos <= GENESIS_BONUS) revert UnitFloor();
-        bool first = (p.vote == Vote.None || p.voteEpoch != currentEpoch);
-        if (!first) revert VoteLocked();
-        p.vote = choice;
-        p.voteEpoch = currentEpoch;
-        if (choice == Vote.IncreaseBonus) votesIncrease += 1;
-        if (choice == Vote.DecreaseBonus) votesDecrease += 1;
-        if (choice == Vote.LeaveBonusAsIs) votesHold += 1;
+        revert NotVoter();
     }
 
     function enact(uint256 nowTs) external onlyShear {
@@ -1060,6 +1058,190 @@ contract Reserve {
         return root;
     }
 
+    /// Leaf count committed with the frozen root, and the height that root opened.
+    /// A second commit must match. Height 0 is a real open, so the high bit is the flag.
+    function commitEpochCensus(uint256 epoch, uint256 leafCount, uint256 openHeight) external onlyShear {
+        if (leafCount > type(uint64).max || openHeight > type(uint64).max) revert BadAmount();
+        uint256 packed = (uint256(1) << 255) | (leafCount << 64) | openHeight;
+        uint256 prior = epochCensus[epoch];
+        if (prior != 0 && prior != packed) revert BadAmount();
+        epochCensus[epoch] = packed;
+    }
+
+    function castVote(
+        bytes calldata proof,
+        bytes calldata output,
+        uint8 paramId,
+        int8 choice,
+        uint32 seq,
+        uint256 height,
+        uint256 epoch
+    ) external onlyShear returns (uint256 up, uint256 down, uint256 hold, uint256 turnout) {
+        if (paramId > 1 || choice < -1 || choice > 1) revert BadAmount();
+        if (seq == 0 || seq > 8) revert VoteLocked();
+        uint256 census = epochCensus[epoch];
+        if (census == 0) revert NotVoter();
+        uint256 openH = census & ((uint256(1) << 64) - 1);
+        uint256 closeH = openH + _voteCloseDay() * 960;
+        if (height < openH || height > closeH) revert EpochClosed();
+        if (epochStartRootOf[epoch] == bytes32(0)) revert NotVoter();
+        bytes32 pid = _proposalId(epoch, paramId);
+        uint256 code = _voteCode(proof, output, epoch, choice, seq, pid);
+        if (code == 2) revert BadAmount();
+        if (code != 1) revert Unsigned();
+        bytes32 tag = _voteTag(proof, epoch, pid);
+        uint256 prior = ballotOf[epoch][pid][tag];
+        uint256 priorSeq = prior & 0xff;
+        if (priorSeq != 0 && seq <= priorSeq) revert VoteLocked();
+        uint256 priorChoice = (prior >> 8) & 3;
+        uint256 nextChoice = choice == 1 ? 1 : (choice < 0 ? 2 : 3);
+        uint256 counts = ballotCount[epoch][pid];
+        uint256 cUp = counts & ((uint256(1) << 64) - 1);
+        uint256 cDown = (counts >> 64) & ((uint256(1) << 64) - 1);
+        uint256 cHold = (counts >> 128) & ((uint256(1) << 64) - 1);
+        if (priorChoice == 1 && cUp > 0) cUp -= 1;
+        else if (priorChoice == 2 && cDown > 0) cDown -= 1;
+        else if (priorChoice == 3 && cHold > 0) cHold -= 1;
+        if (nextChoice == 1) cUp += 1;
+        else if (nextChoice == 2) cDown += 1;
+        else cHold += 1;
+        ballotOf[epoch][pid][tag] = uint256(seq) | (nextChoice << 8);
+        ballotCount[epoch][pid] = cUp | (cDown << 64) | (cHold << 128);
+        return (cUp, cDown, cHold, cUp + cDown + cHold);
+    }
+
+    function tallyBallot(uint8 paramId, uint256 epoch, uint256 height) external onlyShear returns (int256) {
+        if (paramId > 1) revert BadAmount();
+        bytes32 pid = _proposalId(epoch, paramId);
+        uint256 prior = ballotStep[epoch][pid];
+        if (prior != 0) return _unpackStep(prior);
+        uint256 census = epochCensus[epoch];
+        if (census == 0) revert NotVoter();
+        uint256 openH = census & ((uint256(1) << 64) - 1);
+        uint256 leaves = (census >> 64) & ((uint256(1) << 64) - 1);
+        uint256 closeH = openH + _voteCloseDay() * 960;
+        if (height < closeH + 100) revert EpochNotEnded();
+        uint256 counts = ballotCount[epoch][pid];
+        uint256 cUp = counts & ((uint256(1) << 64) - 1);
+        uint256 cDown = (counts >> 64) & ((uint256(1) << 64) - 1);
+        uint256 cHold = (counts >> 128) & ((uint256(1) << 64) - 1);
+        int256 step = 0;
+        uint256 turnout = cUp + cDown + cHold;
+        if (leaves > 0 && turnout * 5 >= leaves) {
+            uint256 directed = cUp + cDown;
+            if (cUp > cDown && cUp * 3 >= directed * 2) step = 1;
+            else if (cDown > cUp && cDown * 3 >= directed * 2) step = -1;
+        }
+        ballotStep[epoch][pid] = _packStep(step);
+        return step;
+    }
+
+    function _voteCloseDay() internal view returns (uint256) {
+        uint256 days_ = epochDaysOf();
+        uint256 cut = magic == SHEAR_MAINNET ? JOIN_CUTOFF_DAYS : days_ / STAKE_CUTOFF_QUARTER_DEN;
+        return days_ - cut;
+    }
+
+    function _proposalId(uint256 epoch, uint8 paramId) internal pure returns (bytes32) {
+        bytes memory name = paramId == 0 ? bytes("hb") : bytes("rr");
+        return sha256(abi.encodePacked("shear-vote-proposal-v1", _u64le(epoch), name));
+    }
+
+    function _packStep(int256 step) internal pure returns (uint256) {
+        if (step > 0) return 3;
+        if (step < 0) return 1;
+        return 2;
+    }
+
+    function _unpackStep(uint256 packed) internal pure returns (int256) {
+        if (packed == 3) return 1;
+        if (packed == 1) return -1;
+        return 0;
+    }
+
+    function _clampStep(uint256 current, int256 dir, uint256 floor_, uint256 ceil_) internal pure returns (uint256) {
+        if (dir == 0) return current;
+        if (current < 10) return current;
+        uint256 delta = current / 10;
+        uint256 next = dir > 0 ? current + delta : (current > delta ? current - delta : floor_);
+        if (next < floor_) next = floor_;
+        if (next > ceil_) next = ceil_;
+        return next;
+    }
+
+    function _activateBallot(uint256 left) internal {
+        _activateOne(left, 0, true);
+        _activateOne(left, 1, false);
+    }
+
+    function _activateOne(uint256 left, uint8 paramId, bool bonus) internal {
+        bytes32 pid = _proposalId(left, paramId);
+        uint256 packed = ballotStep[left][pid];
+        if (packed != 0) {
+            int256 step = _unpackStep(packed);
+            if (bonus) {
+                liveHashBonusNanos = _clampStep(liveHashBonusNanos, step, GENESIS_BONUS, GENESIS_BONUS);
+            } else {
+                uint256 next = _clampStep(epochBps, step, 100, 2000);
+                epochBps = next;
+                annualBps = next;
+                epochRateOf[currentEpoch] = next;
+                epochRateKnown[currentEpoch] = true;
+            }
+        }
+        delete ballotCount[left][pid];
+        delete ballotStep[left][pid];
+    }
+
+    function _wordAt(bytes calldata blob, uint256 off) internal pure returns (bytes32 word) {
+        assembly {
+            word := calldataload(add(blob.offset, off))
+        }
+    }
+
+    function _nullOff(bytes calldata proof) internal pure returns (uint256) {
+        if (proof.length < 5 || proof[0] != 0xaa) return 0;
+        uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
+        return 5 + fs1Len + 397;
+    }
+
+    function _voteTag(bytes calldata proof, uint256 epoch, bytes32 pid) internal pure returns (bytes32) {
+        uint256 off = _nullOff(proof);
+        if (off == 0 || off + 32 > proof.length) return bytes32(0);
+        return sha256(abi.encodePacked("shear-vote-v1", _wordAt(proof, off), _u64le(epoch), pid));
+    }
+
+    function _voteCode(
+        bytes calldata proof,
+        bytes calldata output,
+        uint256 epoch,
+        int8 choice,
+        uint32 seq,
+        bytes32 pid
+    ) internal view returns (uint256) {
+        if (proof.length < 2 || proof[0] != 0xaa || output.length < 96) return 0;
+        bytes32 root = epochStartRootOf[epoch];
+        if (root == bytes32(0)) return 2;
+        uint256 off = _nullOff(proof);
+        if (off == 0 || off + 32 > proof.length) return 0;
+        bytes32 nullP = _wordAt(proof, off);
+        bytes32 nf = sha256(abi.encodePacked("shear-vault-null-prf-v1", nullP));
+        bytes1 cb = choice < 0 ? bytes1(0xff) : bytes1(uint8(int8(choice)));
+        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(
+            bytes("shear-vote-v1"),
+            _vaultHead(root, nf, epoch, proof),
+            _u32le(output.length),
+            output,
+            _u32le(proof.length),
+            proof,
+            cb,
+            _u32le(seq),
+            pid
+        ));
+        if (!ok || out.length < 32) return 0;
+        return uint256(bytes32(out));
+    }
+
     /// Header: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic.
     function _vaultReward(bytes calldata proof) internal pure returns (uint256) {
         if (proof.length < 5 || proof[0] != 0xaa) return 0;
@@ -1301,12 +1483,6 @@ contract Reserve {
         uint256 remainCredits = p.tranches.length;
         for (uint256 i = 0; i < remainCredits; i++) {
             if (p.tranches[i].commit != bytes32(0)) stillHidden = true;
-        }
-        bool leave = !stillHidden && (left == 0 || left < PI_NANOS);
-        if (leave && p.voteEpoch == currentEpoch) {
-            if (p.vote == Vote.IncreaseBonus && votesIncrease > 0) votesIncrease -= 1;
-            if (p.vote == Vote.DecreaseBonus && votesDecrease > 0) votesDecrease -= 1;
-            if (p.vote == Vote.LeaveBonusAsIs && votesHold > 0) votesHold -= 1;
         }
         if (left == 0 && !stillHidden) {
             p.rewardTracked = false;

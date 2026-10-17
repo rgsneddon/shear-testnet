@@ -518,15 +518,15 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       const qLock = a.store.queueTx(lock);
       const qVote = a.store.queueTx(vote);
       assert.equal(qLock.ok, true, qLock.reason);
-      assert.equal(qVote.ok, true, qVote.reason);
+      assert.equal(qVote.ok, false);
+      assert.equal(qVote.reason, 'vote_retired');
       assert.equal(a.p2p.originInvSetSize('lock-fluff'), 1);
       const { explorerRecentTxs, publicPayloadLeaksIdentity } = await import('../../pool/src/wallet_api.js');
       const painted = await waitFor(() => {
         const rows = explorerRecentTxs(c.store, 30);
         const lockRow = rows.find((t) => t.id === 'lock-fluff');
         const voteRow = rows.find((t) => t.id === 'vote-fluff');
-        return lockRow?.pending === true && voteRow?.pending === true
-          && lockRow.kind === 'lock' && voteRow.kind === 'vote';
+        return lockRow?.pending === true && !voteRow && lockRow.kind === 'lock';
       }, 8000);
       assert.equal(painted, true);
       const rows = explorerRecentTxs(c.store, 30);

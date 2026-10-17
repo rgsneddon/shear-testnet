@@ -15,6 +15,7 @@ import {
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { castVotePlan } from '../../crypto/leaf_vote.js';
 import {
   levyNanos,
   levyNeed,
@@ -1626,6 +1627,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     if (isShearAddress(body.from) || isShearAddress(body.to)) {
       return { status: 400, json: { ok: false, reason: 'rest_frame' } };
+    }
+    if (body.lockedLeaves != null) {
+      const plan = castVotePlan(body.lockedLeaves);
+      return { status: 200, json: { ok: true, label: plan.label, txs: plan.txs } };
     }
     if (String(body.kind || 'send') === 'send') {
       return sealedSendOnly(body, { queueSend });

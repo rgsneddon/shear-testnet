@@ -751,9 +751,10 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         const priced = { ...vote, id: 'vault-vote-fee', fee: 1 };
         assert.equal(typedCommitSum(priced).reason, 'levy');
         const queuedVote = store.queueTx(vote);
-        assert.equal(queuedVote.ok, true, `vote ${queuedVote.reason}`);
+        assert.equal(queuedVote.ok, false);
+        assert.equal(queuedVote.reason, 'vote_retired');
         const voteTpl = await mine(store, who.dest);
-        assert.ok(voteTpl.txs.some((row) => row.id === vote.id), 'vote was not templated');
+        assert.equal(voteTpl.txs.some((row) => row.id === vote.id), false);
         voteSealed = true;
       }
     });

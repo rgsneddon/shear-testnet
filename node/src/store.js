@@ -3483,6 +3483,9 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    // Membership already named a commit vin. A portal vote that got this far
+    // is retired and must not enter the pool or a template.
+    if (String(tx?.kind || '') === 'vote') return { ok: false, reason: 'vote_retired' };
     const publicReceipt = publicReserveReceiptRejected(tx);
     if (publicReceipt) return publicReceipt;
     if (txIsReserveAction(tx) && mempool.filter(txIsReserveAction).length >= RESERVE_ACTION_CAP) {
