@@ -229,11 +229,13 @@ export function vaultLockNote(amount, ownerScalar, blind, unlockEpoch = VAULT_UN
   const x = typeof ownerScalar === 'bigint' ? ownerScalar : scalarFrom(ownerScalar);
   const r = typeof blind === 'bigint' ? blind : scalarFrom(blind);
   const pub = pointBytes(admitPub(x));
-  const C = pointBytes(commit(named, r).add(unlockBase().multiply(Fn.create(unlock))));
+  let C = commit(named, r);
+  if (unlock !== 0n) C = C.add(unlockBase().multiply(Fn.create(unlock)));
+  const packed = pointBytes(C);
   return {
-    note: Buffer.concat([pub, C]),
+    note: Buffer.concat([pub, packed]),
     admitPub: pub,
-    commit: C,
+    commit: packed,
     scalar: x,
     blind: r,
     amount: named,
@@ -751,7 +753,11 @@ export function verifyUnderCap(capCommit, rewardCommit, range) {
   }
 }
 
-function packProof(p) {
+/**
+ * Version, FS-1, record, then bps, epoch-block span, period, reward,
+ * covered blocks, unlock, and the seven 32-byte words. No remainder.
+ */
+export function packVaultRewardProof(p) {
   return Buffer.concat([
     Buffer.from([VAULT_PROOF_VER]),
     u32le(p.fs1.length),
@@ -771,6 +777,10 @@ function packProof(p) {
     p.noteR,
     p.noteZ,
   ]);
+}
+
+function packProof(p) {
+  return packVaultRewardProof(p);
 }
 
 function parseProof(blob) {
