@@ -133,6 +133,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
     restFrame: restFrame,
     paymentCode: paymentCode,
     allowPublicHttp: allowPublicHttp || !local,
+    publicConsent: publicIpConsent,
     nanosWire: nanos.toString(),
   );
   if (tx.kind != 'withdraw') return null;
@@ -733,6 +734,7 @@ Future<ReserveDepositResult> postReserveDeposit({
       return const ReserveDepositResult(posted: false, remark: kPublicIpWaitCopy);
     }
     final tx = await ledger.send(
+      publicConsent: publicIpConsent,
       from: from,
       to: dest,
       amount: she,
@@ -853,6 +855,7 @@ Future<ReserveVoteResult> commandReserveVote({
       return const ReserveVoteResult(enacted: false, remark: kPublicIpWaitCopy);
     }
     await ledger.send(
+      publicConsent: publicIpConsent,
       from: from,
       to: dest,
       amount: 0,

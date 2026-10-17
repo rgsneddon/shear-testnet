@@ -4356,7 +4356,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           controller: _ownNodeCtrl,
           decoration: InputDecoration(
             labelText: 'Own node',
-            helperText: 'Optional. host:port or https://host:port. Empty uses the public node.',
+            helperText:
+                'Optional. host:port or https://host:port. A bare public host uses https. '
+                'http is only for this machine or your LAN. Own node means a node you run, '
+                'not a public Shear host. Empty uses the public node.',
             errorText: _ownNodeError,
           ),
           onSubmitted: (_) => _saveOwnNode(),

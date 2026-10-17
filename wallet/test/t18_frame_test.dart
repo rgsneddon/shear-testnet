@@ -376,6 +376,7 @@ class _HoldSendPool extends ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    bool publicConsent = false,
     String? nanosWire,
     String? id,
     String? withdrawNonce,

@@ -109,6 +109,30 @@ bool isNodeHttpHost(String host) {
   return h == 'p2p.shear.digital' || h == 'r2r.shear.digital' || h == 'b2b.shear.digital';
 }
 
+/// Public node and pool addresses. An own-node URL must not be one of these.
+/// This list is a refusal, not a dial target.
+const kRefusedPublicNodeIps = <String>{
+  '77.42.91.84',
+};
+
+/// True for a public Shear host or a known public-node address.
+bool isPublicWalletHost(String? urlOrHost) {
+  if (urlOrHost == null || urlOrHost.isEmpty) return false;
+  var host = urlOrHost.trim().toLowerCase();
+  if (host.contains('://')) {
+    host = Uri.tryParse(host)?.host.toLowerCase() ?? '';
+  }
+  while (host.endsWith('.')) {
+    host = host.substring(0, host.length - 1);
+  }
+  if (host.isEmpty) return false;
+  if (kRefusedPublicNodeIps.contains(host)) return true;
+  if (host == 'shear.digital' || host.endsWith('.shear.digital')) return true;
+  if (isNodeHttpHost(host)) return true;
+  if (isPublicPoolHttp('https://$host')) return true;
+  return false;
+}
+
 String _trimBase(String raw) {
   var s = raw.trim();
   if (s.endsWith('/')) s = s.substring(0, s.length - 1);
@@ -139,10 +163,18 @@ String walletSendBase(String? url) {
 /// Spend hosts in try order. The public pool is included only when
 /// [legacyPoolSend] is set and the configured host is already a pool.
 /// A pinned non-pool URL is the only target, so a test node is not rewritten.
-List<String> nodeSendTargets(String? base, {String? pinned, bool legacyPoolSend = false}) {
+List<String> nodeSendTargets(
+  String? base, {
+  String? pinned,
+  bool legacyPoolSend = false,
+  bool publicConsent = false,
+}) {
   if (legacyPoolSend) {
     final raw = (pinned != null && pinned.trim().isNotEmpty) ? pinned : (base ?? '');
-    if (isPublicPoolHttp(raw) || isPoolLedgerHost(raw)) return [_trimBase(raw)];
+    if (isPublicPoolHttp(raw) || isPoolLedgerHost(raw)) {
+      if (!publicConsent && isPublicWalletHost(raw)) return [kLocalNodeRpc];
+      return [_trimBase(raw)];
+    }
   }
   if (pinned != null &&
       pinned.trim().isNotEmpty &&
@@ -154,17 +186,23 @@ List<String> nodeSendTargets(String? base, {String? pinned, bool legacyPoolSend 
   void add(String raw) {
     final s = _trimBase(raw);
     if (s.isEmpty || out.contains(s)) return;
+    if (!publicConsent && isPublicWalletHost(s)) return;
     if (isPublicPoolHttp(s) || isPoolLedgerHost(s)) return;
     out.add(s);
   }
-  if (base != null && isWalletSendSeed(base)) {
+  if (publicConsent && base != null && isWalletSendSeed(base)) {
+    add(base);
+  } else if (base != null && isWalletSendSeed(base) && !isPublicWalletHost(base)) {
     add(base);
   } else {
     add(kLocalNodeRpc);
   }
-  for (final seed in kPublicNodeSeeds) {
-    add(seed);
+  if (publicConsent) {
+    for (final seed in kPublicNodeSeeds) {
+      add(seed);
+    }
   }
+  if (out.isEmpty) add(kLocalNodeRpc);
   return out;
 }
 
@@ -617,6 +655,10 @@ class ShearReadSync {
   final Random _rng;
 
   String? liveBase;
+
+  /// Set while an own node is the only read target. [findLiveNode] must not probe.
+  bool blockPublicProbe = false;
+
   DateTime? _backoffUntil;
   int _failures = 0;
   final Set<int> _proven = {};
@@ -783,6 +825,7 @@ class ShearReadSync {
   }
 
   Future<String?> findLiveNode({bool keepOnMiss = false}) async {
+    if (blockPublicProbe) return liveBase;
     if (jitter > Duration.zero) {
       final cap = jitter.inMilliseconds;
       if (cap > 0) {
@@ -1322,6 +1365,7 @@ class ShearReadSync {
   Future<Map<String, dynamic>?> _get(String base, String path) async {
     try {
       final req = await _http.getUrl(Uri.parse('$base$path'));
+      if (blockPublicProbe) req.followRedirects = false;
       final res = await req.close();
       if (res.statusCode < 200 || res.statusCode >= 300) {
         await res.drain<void>();

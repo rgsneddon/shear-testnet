@@ -519,6 +519,11 @@ String _voteChoice(String raw) {
 String _rpc(_Flags flags, Map<String, String> env) =>
     flags['rpc'] ?? env['SHEAR_RPC'] ?? kWalletDefaultSeed;
 
+void _warnPublicIp(IOSink err, String rpc) {
+  if (!rpcNeedsPublicIpWarning(rpc)) return;
+  err.writeln('warning: $kPublicNodeEverySendCopy');
+}
+
 Future<int> _create(IOSink out, IOSink err, _Flags flags, Map<String, String> env) async {
   final session = _session(flags);
   await session.loadOrCreate();
@@ -675,8 +680,10 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
   final session = _session(flags);
   final id = await _needId(session, flags, env);
   final dry = flags['dry-run'] == '1';
+  final rpc = _rpc(flags, env);
+  if (!dry) _warnPublicIp(err, rpc);
   final ledger = ShearLedger(
-    pool: dry ? null : ShearPoolClient(userUrl: _rpc(flags, env)),
+    pool: dry ? null : ShearPoolClient(userUrl: rpc),
   );
   _bindLedger(ledger, id, session);
   final from = ledger.currentDest(id.address, paymentCode: id.paymentCode);
@@ -688,6 +695,7 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
       amount: amount,
       memo: flags['memo'],
       local: dry,
+      publicConsent: !dry && rpcNeedsPublicIpWarning(rpc),
       restFrame: id.address,
       paymentCode: id.paymentCode,
       spendSeed: hexToBytes(id.seedHex),
@@ -869,6 +877,9 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       final amt = flags['amount'];
       if (amt == null) throw const FormatException('reserve lock needs --amount');
       final she = double.parse(amt);
+      final rpc = _rpc(flags, env);
+      final dry = flags['dry-run'] == '1';
+      if (!dry) _warnPublicIp(err, rpc);
       final from = dest;
       final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
       final tx = await ledger.sendSpendableSum(
@@ -877,7 +888,8 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         amount: she,
         kind: 'lock',
         programId: 'shear-reserve-v1',
-        local: flags['dry-run'] == '1',
+        local: dry,
+        publicConsent: !dry && rpcNeedsPublicIpWarning(rpc),
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
@@ -900,6 +912,9 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         err.writeln(errVote);
         return 1;
       }
+      final rpc = _rpc(flags, env);
+      final dry = flags['dry-run'] == '1';
+      if (!dry) _warnPublicIp(err, rpc);
       await ledger.sendSpendableSum(
         from: dest,
         to: dest,
@@ -907,7 +922,8 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         kind: 'vote',
         programId: 'shear-reserve-v1',
         choice: choice,
-        local: flags['dry-run'] == '1',
+        local: dry,
+        publicConsent: !dry && rpcNeedsPublicIpWarning(rpc),
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
@@ -918,7 +934,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       return 0;
     case 'withdraw':
     case 'claim':
-      return _claimRewards(out, err, session, id, ledger, reserve, dest, now, flags);
+      return _claimRewards(out, err, session, id, ledger, reserve, dest, now, flags, env);
     case 'rewards':
       return _printRewards(out, reserve, dest, now, flags);
   }
@@ -989,9 +1005,10 @@ Future<int> _claimRewards(
   String dest,
   int now,
   _Flags flags,
+  Map<String, String> env,
 ) async {
   final payout = flags['payout'] ?? dest;
-  err.writeln('warning: the public node can see your IP on every send');
+  _warnPublicIp(err, _rpc(flags, env));
   final posted = await postReserveWithdraw(
     ledger,
     reserve: reserve,
@@ -1030,7 +1047,7 @@ Future<int> _rewards(IOSink out, IOSink err, _Flags flags, Map<String, String> e
   final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
   final now = DateTime.now().millisecondsSinceEpoch;
   if (flags['claim'] == '1' || flags.rest.contains('claim')) {
-    return _claimRewards(out, err, session, id, ledger, reserve, dest, now, flags);
+    return _claimRewards(out, err, session, id, ledger, reserve, dest, now, flags, env);
   }
   return _printRewards(out, reserve, dest, now, flags);
 }
