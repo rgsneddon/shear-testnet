@@ -299,6 +299,13 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(main, /countdown to 16th November 2026 at 1400hrs UK time/);
     assert.match(main, /2026-11-16T14:00:00\+00:00/);
     assert.doesNotMatch(main, /launch date not decided/);
+    for (const page of ['site/network.html', 'site/mine.html', 'site/governance.html', 'site/get-started.html']) {
+      assert.match(read(page), /countdown to 16th November 2026 at 1400hrs UK time/, page);
+      assert.doesNotMatch(read(page), /launch date not decided/, page);
+    }
+    const operatorNote = read('docs/OPERATOR_NOTE_AUDIT.md');
+    assert.match(operatorNote, /16th November 2026 at 1400hrs UK time/);
+    assert.doesNotMatch(operatorNote, /Launch date is not decided/);
     assert.doesNotMatch(main, /2026-09-18T21:00:00/);
     assert.doesNotMatch(docs, /2026-09-18T21:00:00/);
     assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
