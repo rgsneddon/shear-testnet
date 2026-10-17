@@ -29,5 +29,5 @@ Also in this branch (post-audit book law):
 - Fleet binary rollout + **datadir wipe** for the new fingerprint (`/var/lib/shear/testnet-v4*`).
 - Second physical pool / extra hashrate.
 - External ADMIT/BP+ audit engagement.
-- `SHEAR_MAINNET_EMIT` decision — **do not set**. Double-key still required. Launch date is not decided.
+- `SHEAR_MAINNET_EMIT` decision — **do not set**. Double-key still required. The public countdown is 16th November 2026 at 1400hrs UK time. That countdown is a display date and does not emit.
 - macOS `.dmg` for wallet 0.36 (MacBook / HANDOFF §6b). Android APK was packed on Windows.
